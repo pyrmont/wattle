@@ -40,7 +40,6 @@ const core_sources = &.{
     "src/core/tuple.c",
     "src/core/util.c",
     "src/core/value.c",
-    "src/core/vector.c",
     "src/core/vm.c",
     "src/core/wrap.c",
 };
@@ -98,7 +97,13 @@ const common_c_flags = &.{
     "-fvisibility=hidden",
 };
 
+const SubsystemImplementation = enum {
+    c,
+    zig,
+};
+
 const BuildOptions = struct {
+    vector: SubsystemImplementation,
     single_threaded: bool,
     nanbox: bool,
     nanbox_pointer_shift: ?i32,
@@ -136,10 +141,28 @@ pub fn build(b: *std.Build) void {
     const options = readOptions(b);
     const config_header = makeConfigHeader(b, options);
 
+    const vector_object = if (options.vector == .zig) blk: {
+        const vector_module = b.createModule(.{
+            .root_source_file = b.path("src/zig/subsystems/vector.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        configureCModule(b, vector_module, target, config_header, options);
+        const abi_module = b.createModule(.{
+            .root_source_file = b.path("src/zig/abi.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        configureCModule(b, abi_module, target, config_header, options);
+        vector_module.addImport("abi", abi_module);
+        break :blk b.addObject(.{ .name = "janet-vector-zig", .root_module = vector_module });
+    } else null;
+
     // Bootstrap tools must execute on the build host even during a cross build.
     const boot_module = makeCModule(b, b.graph.host, .Debug, config_header, options);
     boot_module.addCMacro("JANET_BOOTSTRAP", "1");
     boot_module.addCSourceFiles(.{ .files = core_sources, .flags = common_c_flags });
+    boot_module.addCSourceFiles(.{ .files = &.{"src/core/vector.c"}, .flags = common_c_flags });
     boot_module.addCSourceFiles(.{ .files = boot_sources, .flags = common_c_flags });
     const boot = b.addExecutable(.{ .name = "janet-boot", .root_module = boot_module });
 
@@ -150,7 +173,7 @@ pub fn build(b: *std.Build) void {
     generate_image.addFileInput(b.path("src/boot/boot.janet"));
     const image_source = generate_image.captureStdOut(.{ .basename = "janet-image.c" });
 
-    const static_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options);
+    const static_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options, vector_object);
     const static_library = b.addLibrary(.{
         .name = "janet",
         .linkage = .static,
@@ -161,7 +184,7 @@ pub fn build(b: *std.Build) void {
     static_library.installHeader(config_header, "janet/janetconf.h");
     b.installArtifact(static_library);
 
-    const shared_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options);
+    const shared_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options, vector_object);
     const shared_library = b.addLibrary(.{
         .name = "janet",
         .linkage = .dynamic,
@@ -178,7 +201,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     configureCModule(b, client_module, target, config_header, options);
-    addRuntimeSources(client_module, image_source);
+    addRuntimeSources(client_module, image_source, options, vector_object);
     client_module.addCSourceFiles(.{
         .files = &.{"src/zig/interop_bridge.c"},
         .flags = common_c_flags,
@@ -188,7 +211,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(client);
 
     // Keep the original C shell as a comparison target during Phase 2.
-    const c_client_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options);
+    const c_client_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options, vector_object);
     c_client_module.addCSourceFiles(.{
         .files = &.{"src/mainclient/shell.c"},
         .flags = common_c_flags,
@@ -241,12 +264,21 @@ pub fn build(b: *std.Build) void {
     const run_embed_test = b.addRunArtifact(embed_test);
     abi_step.dependOn(&run_embed_test.step);
 
+    const vector_test_module = makeCModule(b, target, optimize, config_header, options);
+    vector_test_module.addIncludePath(b.path("src/core"));
+    vector_test_module.addCSourceFiles(.{ .files = &.{"test/vector.c"}, .flags = common_c_flags });
+    vector_test_module.linkLibrary(static_library);
+    const vector_test = b.addExecutable(.{ .name = "janet-vector-test", .root_module = vector_test_module });
+    const run_vector_test = b.addRunArtifact(vector_test);
+    abi_step.dependOn(&run_vector_test.step);
+
     const zig_abi_module = b.createModule(.{
         .root_source_file = b.path("src/zig/abi_test.zig"),
         .target = target,
         .optimize = optimize,
     });
     zig_abi_module.addIncludePath(b.path("src/include"));
+    zig_abi_module.addIncludePath(b.path("src/zig"));
     zig_abi_module.addIncludePath(config_header.dirname());
     zig_abi_module.linkSystemLibrary("c", .{});
     const zig_abi_test = b.addTest(.{ .name = "janet-zig-abi-test", .root_module = zig_abi_module });
@@ -319,6 +351,7 @@ fn readOptions(b: *std.Build) BuildOptions {
     }
 
     const options: BuildOptions = .{
+        .vector = b.option(SubsystemImplementation, "vector", "Select the vector implementation (c or zig)") orelse .zig,
         .single_threaded = b.option(bool, "single-threaded", "Build without thread-local VM state") orelse false,
         .nanbox = b.option(bool, "nanbox", "Use Janet's NaN-boxed value representation") orelse true,
         .nanbox_pointer_shift = pointer_shift,
@@ -451,15 +484,31 @@ fn makeRuntimeModule(
     config_header: std.Build.LazyPath,
     image_source: std.Build.LazyPath,
     options: BuildOptions,
+    vector_object: ?*std.Build.Step.Compile,
 ) *std.Build.Module {
     const module = makeCModule(b, target, optimize, config_header, options);
-    addRuntimeSources(module, image_source);
+    addRuntimeSources(module, image_source, options, vector_object);
     return module;
 }
 
-fn addRuntimeSources(module: *std.Build.Module, image_source: std.Build.LazyPath) void {
+fn addRuntimeSources(
+    module: *std.Build.Module,
+    image_source: std.Build.LazyPath,
+    options: BuildOptions,
+    vector_object: ?*std.Build.Step.Compile,
+) void {
     module.addCSourceFiles(.{ .files = core_sources, .flags = common_c_flags });
     module.addCSourceFile(.{ .file = image_source, .flags = common_c_flags });
+    switch (options.vector) {
+        .c => module.addCSourceFiles(.{ .files = &.{"src/core/vector.c"}, .flags = common_c_flags }),
+        .zig => {
+            module.addObject(vector_object.?);
+            module.addCSourceFiles(.{
+                .files = &.{"src/zig/runtime_bridge.c"},
+                .flags = common_c_flags,
+            });
+        },
+    }
 }
 
 fn linkPlatformLibraries(module: *std.Build.Module, os: std.Target.Os.Tag, single_threaded: bool) void {

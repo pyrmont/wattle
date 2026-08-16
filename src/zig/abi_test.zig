@@ -1,8 +1,6 @@
 const std = @import("std");
-
-const c = @cImport({
-    @cInclude("janet.h");
-});
+const abi = @import("abi.zig");
+const c = abi.c;
 
 const JanetGCData = extern union {
     next: ?*c.JanetGCObject,

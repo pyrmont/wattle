@@ -1,12 +1,10 @@
 const std = @import("std");
-const interop = @import("interop.zig");
-
-const c = @cImport({
-    @cInclude("interop.h");
-});
+const abi = @import("abi.zig");
+const c = abi.c;
+const runtime = @import("runtime.zig");
 
 pub fn main(init: std.process.Init) !u8 {
-    interop.setIo(init.io);
+    runtime.setIo(init.io);
     const arguments = try init.minimal.args.toSlice(init.arena.allocator());
     if (arguments.len == 0) return 1;
 

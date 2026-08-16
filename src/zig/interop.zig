@@ -1,8 +1,6 @@
 const std = @import("std");
-
-const c = @cImport({
-    @cInclude("interop.h");
-});
+const abi = @import("abi.zig");
+const c = abi.c;
 
 const identity_operation = 0;
 const length_operation = 1;
