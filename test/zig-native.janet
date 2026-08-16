@@ -1,0 +1,5 @@
+(def module-path (get (dyn *args*) 1))
+(def module-env @{})
+(native module-path module-env)
+(def identity ((module-env 'identity) :value))
+(assert (= {:loaded :from-zig} (identity {:loaded :from-zig})))

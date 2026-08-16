@@ -320,6 +320,12 @@ and the usual Zig target, optimization, and installation options. The
 `abi-test` step runs the C and Zig layout checks plus a C embedding smoke test
 without running Janet's full language suite.
 
+The default `janet` artifact now uses the experimental Zig command-line entry
+point and a simple line reader. `janet-c` retains the original C client and
+rich line editing as a comparison target during the migration; run it with
+`zig build run-c`. The current C/Zig ownership, error, callback, and GC rules
+are documented in `src/zig/README.md`.
+
 ## Development
 
 Janet can be hacked on with pretty much any environment you like, but for IDE

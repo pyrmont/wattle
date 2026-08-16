@@ -88,6 +88,7 @@ const test_suites = &.{
     "test/suite-unknown.janet",
     "test/suite-value.janet",
     "test/suite-vm.janet",
+    "test/suite-zig-interop.janet",
 };
 
 const common_c_flags = &.{
@@ -169,22 +170,61 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(shared_library);
 
-    // Compile the runtime directly into the client so all public API symbols are
-    // available to dynamically loaded Janet modules.
-    const client_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options);
+    // Compile the runtime directly into the Zig client so all public API
+    // symbols remain available to dynamically loaded Janet modules.
+    const client_module = b.createModule(.{
+        .root_source_file = b.path("src/zig/cli.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    configureCModule(b, client_module, target, config_header, options);
+    addRuntimeSources(client_module, image_source);
     client_module.addCSourceFiles(.{
-        .files = &.{"src/mainclient/shell.c"},
+        .files = &.{"src/zig/interop_bridge.c"},
         .flags = common_c_flags,
     });
     const client = b.addExecutable(.{ .name = "janet", .root_module = client_module });
     if (target.result.os.tag != .windows) client.rdynamic = true;
     b.installArtifact(client);
 
+    // Keep the original C shell as a comparison target during Phase 2.
+    const c_client_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options);
+    c_client_module.addCSourceFiles(.{
+        .files = &.{"src/mainclient/shell.c"},
+        .flags = common_c_flags,
+    });
+    const c_client = b.addExecutable(.{ .name = "janet-c", .root_module = c_client_module });
+    if (target.result.os.tag != .windows) c_client.rdynamic = true;
+    b.installArtifact(c_client);
+
+    const native_module_root = b.createModule(.{
+        .root_source_file = b.path("src/zig/native_module.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    configureCModule(b, native_module_root, target, config_header, options);
+    native_module_root.addCSourceFiles(.{
+        .files = &.{"src/zig/native_bridge.c"},
+        .flags = common_c_flags,
+    });
+    const native_module = b.addLibrary(.{
+        .name = "janet-zig-native",
+        .linkage = .dynamic,
+        .root_module = native_module_root,
+    });
+    native_module.linker_allow_shlib_undefined = true;
+
     const run_step = b.step("run", "Run Janet");
     const run_client = b.addRunArtifact(client);
     run_client.setCwd(b.path("."));
     if (b.args) |args| run_client.addArgs(args);
     run_step.dependOn(&run_client.step);
+
+    const run_c_step = b.step("run-c", "Run the comparison C Janet client");
+    const run_c_client = b.addRunArtifact(c_client);
+    run_c_client.setCwd(b.path("."));
+    if (b.args) |args| run_c_client.addArgs(args);
+    run_c_step.dependOn(&run_c_client.step);
 
     const abi_step = b.step("abi-test", "Verify Janet C and Zig ABI assumptions");
 
@@ -215,12 +255,61 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run ABI checks and Janet's test suites");
     test_step.dependOn(abi_step);
+    addCliChecks(b, test_step, client, c_client);
+
+    if (options.dynamic_modules and target.result.os.tag != .windows) {
+        const run_native_test = b.addRunArtifact(client);
+        run_native_test.setCwd(b.path("."));
+        run_native_test.addArg("test/zig-native.janet");
+        run_native_test.addFileArg(native_module.getEmittedBin());
+        test_step.dependOn(&run_native_test.step);
+    }
+
     inline for (test_suites) |suite| {
         const run_suite = b.addRunArtifact(client);
         run_suite.setCwd(b.path("."));
         run_suite.addArg(suite);
         test_step.dependOn(&run_suite.step);
     }
+}
+
+fn addCliChecks(
+    b: *std.Build,
+    test_step: *std.Build.Step,
+    zig_client: *std.Build.Step.Compile,
+    c_client: *std.Build.Step.Compile,
+) void {
+    const clients = [_]*std.Build.Step.Compile{ zig_client, c_client };
+    for (clients) |client| {
+        const eval = b.addRunArtifact(client);
+        eval.addArgs(&.{ "-e", "(prin (+ 20 22))" });
+        eval.expectStdOutEqual("42");
+        test_step.dependOn(&eval.step);
+
+        const file = b.addRunArtifact(client);
+        file.setCwd(b.path("."));
+        file.addArg("test/zig-cli-input.janet");
+        file.expectStdOutEqual("file-ok");
+        test_step.dependOn(&file.step);
+
+        const help = b.addRunArtifact(client);
+        help.addArg("--help");
+        help.expectStdOutMatch("Options are:");
+        test_step.dependOn(&help.step);
+
+        const failure = b.addRunArtifact(client);
+        failure.addArgs(&.{ "-e", "(error \"cli-error\")" });
+        failure.expectExitCode(1);
+        failure.expectStdErrMatch("cli-error");
+        test_step.dependOn(&failure.step);
+    }
+
+    const repl = b.addRunArtifact(zig_client);
+    repl.setStdIn(.{ .bytes = "(+ 1 2)\n" });
+    repl.expectStdOutMatch("3");
+    repl.expectStdOutMatch("Janet 1.41.3-dev-zig");
+    repl.expectStdErrMatch("repl:1:>");
+    test_step.dependOn(&repl.step);
 }
 
 fn readOptions(b: *std.Build) BuildOptions {
@@ -337,11 +426,22 @@ fn makeCModule(
     options: BuildOptions,
 ) *std.Build.Module {
     const module = b.createModule(.{ .target = target, .optimize = optimize });
+    configureCModule(b, module, target, config_header, options);
+    return module;
+}
+
+fn configureCModule(
+    b: *std.Build,
+    module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    config_header: std.Build.LazyPath,
+    options: BuildOptions,
+) void {
     module.addIncludePath(b.path("src/include"));
+    module.addIncludePath(b.path("src/zig"));
     module.addIncludePath(config_header.dirname());
     module.linkSystemLibrary("c", .{});
     linkPlatformLibraries(module, target.result.os.tag, options.single_threaded);
-    return module;
 }
 
 fn makeRuntimeModule(
@@ -353,9 +453,13 @@ fn makeRuntimeModule(
     options: BuildOptions,
 ) *std.Build.Module {
     const module = makeCModule(b, target, optimize, config_header, options);
+    addRuntimeSources(module, image_source);
+    return module;
+}
+
+fn addRuntimeSources(module: *std.Build.Module, image_source: std.Build.LazyPath) void {
     module.addCSourceFiles(.{ .files = core_sources, .flags = common_c_flags });
     module.addCSourceFile(.{ .file = image_source, .flags = common_c_flags });
-    return module;
 }
 
 fn linkPlatformLibraries(module: *std.Build.Module, os: std.Target.Os.Tag, single_threaded: bool) void {
