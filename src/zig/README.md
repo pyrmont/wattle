@@ -75,3 +75,44 @@ tests. Set any selector to `c` to run the identical graph against its fallback;
 for example, use `zig build test -Dutilities=c -Dint-scan=c -Dtext-scan=c` for
 the all-C Phase 4 comparison. `zig build test -Dnanbox=false -Dprf=true` covers
 tagged values and keyed hashing with the Zig implementations.
+
+## Compiler front end
+
+Phase 5 begins with the compiler register allocator in
+`subsystems/regalloc.zig`. It replaces `regalloc.c` as a whole in target
+runtime artifacts and preserves the private `regalloc.h` ABI. Pass
+`-Dregalloc=c` for the C fallback. The host bootstrap continues using C, so
+the target compiler component remains independent of bootstrap execution and
+cross-build concerns.
+
+The allocator uses Janet's ordinary allocator and the fatal C bridge for the
+same non-recoverable allocation and invariant failures as the C version. It
+does not handle Janet values or invoke compiler panic paths. Components with
+recoverable parser or compiler errors need an explicit result boundary before
+they can safely move to Zig.
+
+`test/regalloc.c` exercises allocator state directly, while
+`test/regalloc-bytecode.janet` fixes the compiler-visible register assignment,
+slot count, and decoded bytecode for a representative function. Both are part
+of `zig build test` for either implementation.
+
+Bytecode verification is the second Phase 5 component. The default
+`subsystems/verify.zig` implementation validates the existing `JanetFuncDef`
+layout and preserves result codes 0 through 14; use `-Dverify=c` for the
+original function in `bytecode.c`. `test/verify.c` exercises every outcome
+against either provider. Because verification is read-only, allocation-free,
+and result-returning, it introduces no additional error bridge.
+
+The third Phase 5 component is bytecode no-op removal in
+`subsystems/remove_noops.zig`, selectable with `-Dremove-noops=c`. It preserves
+the compiler pass's relative-jump and debug-metadata rewrites while continuing
+to use Janet scratch allocation. `test/remove_noops.c` compares bytecode,
+source maps, local and upvalue symbol maps, and the empty symbol-map case under
+both implementations.
+
+The paired dead-write optimizer lives in `subsystems/movopt.zig` and is
+selectable with `-Dmovopt=c`. It uses the selected register allocator through
+the unchanged compiler-private C ABI. `test/movopt.c` covers iterative
+removal, live and closure-captured slots, and instructions whose side effects
+prevent removal. Together, `movopt.zig` and `remove_noops.zig` now implement
+the compiler's complete post-emission bytecode optimization sequence.

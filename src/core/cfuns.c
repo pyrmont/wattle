@@ -28,6 +28,19 @@
 #include "vector.h"
 #endif
 
+#ifdef JANET_ZIG_BUILTIN_OPTIMIZERS
+Janet janet_c_funopt_wrap_nil(void) {
+    return janet_wrap_nil();
+}
+
+Janet janet_c_funopt_wrap_boolean(int32_t value) {
+    return janet_wrap_boolean(value);
+}
+
+Janet janet_c_funopt_wrap_integer(int32_t value) {
+    return janet_wrap_integer(value);
+}
+#else
 static int arity1or2(JanetFopts opts, JanetSlot *args) {
     (void) opts;
     int32_t arity = janet_v_count(args);
@@ -416,4 +429,4 @@ const JanetFunOptimizer *janetc_funopt(uint32_t flags) {
         return NULL;
     return optimizers + index;
 }
-
+#endif

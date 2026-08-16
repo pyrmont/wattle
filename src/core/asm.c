@@ -58,6 +58,44 @@ struct JanetAssembler {
     JanetTable defs; /* symbol -> funcdefs index */
 };
 
+#ifdef JANET_ZIG_ASM_ENCODE
+typedef struct JanetAsmEncodeResult {
+    uint32_t instruction;
+    const uint8_t *error;
+    int32_t indexed_error;
+} JanetAsmEncodeResult;
+
+typedef struct JanetAsmBytecodeResult {
+    int32_t count;
+    const uint8_t *error;
+    int32_t indexed_error;
+    int32_t error_index;
+} JanetAsmBytecodeResult;
+
+typedef struct JanetAsmHeaderResult {
+    const uint8_t *error;
+    int32_t indexed_error;
+} JanetAsmHeaderResult;
+
+JanetAsmEncodeResult janet_zig_asm_encode(void *assembler, const Janet *arguments);
+JanetAsmBytecodeResult janet_zig_asm_scan_bytecode(void *assembler, Janet source);
+JanetAsmBytecodeResult janet_zig_asm_fill_bytecode(void *assembler, Janet source);
+JanetAsmHeaderResult janet_zig_asm_parse_header(void *assembler, Janet source);
+JanetAsmHeaderResult janet_zig_asm_parse_slots(void *assembler, Janet source);
+JanetAsmBytecodeResult janet_zig_asm_scan_constants(void *assembler, Janet source);
+void janet_zig_asm_fill_constants(void *assembler, Janet source);
+JanetAsmBytecodeResult janet_zig_asm_scan_sourcemap(void *assembler, Janet source);
+JanetAsmHeaderResult janet_zig_asm_fill_sourcemap(void *assembler, Janet source);
+JanetAsmBytecodeResult janet_zig_asm_scan_symbolmap(void *assembler, Janet source);
+JanetAsmHeaderResult janet_zig_asm_fill_symbolmap(void *assembler, Janet source);
+JanetAsmBytecodeResult janet_zig_asm_scan_environments(void *assembler, Janet source);
+JanetAsmHeaderResult janet_zig_asm_fill_environments(void *assembler, Janet source);
+JanetAsmHeaderResult janet_zig_asm_finalize(void *assembler);
+JanetAsmBytecodeResult janet_zig_asm_scan_defs(Janet source);
+Janet janet_zig_asm_def_at(Janet source, int32_t index);
+void janet_zig_asm_register_def(void *assembler, Janet source, int32_t index);
+#endif
+
 /* Janet opcode descriptions in lexicographic order. This
  * allows a binary search over the elements to find the
  * correct opcode given a name. This works in reasonable
@@ -241,6 +279,80 @@ static int32_t janet_asm_addenv(JanetAssembler *a, Janet envname) {
     return envindex;
 }
 
+#ifdef JANET_ZIG_ASM_ENCODE
+JanetTable *janet_c_asm_argument_table(void *context, int32_t argument_type) {
+    JanetAssembler *a = context;
+    enum JanetOpArgType argtype = (enum JanetOpArgType) argument_type;
+    switch (argtype) {
+        case JANET_OAT_SLOT:
+            return &a->slots;
+        case JANET_OAT_ENVIRONMENT:
+            return &a->envs;
+        case JANET_OAT_LABEL:
+            return &a->labels;
+        case JANET_OAT_FUNCDEF:
+            return &a->defs;
+        default:
+            return NULL;
+    }
+}
+
+JanetFuncDef *janet_c_asm_funcdef(void *context) {
+    return ((JanetAssembler *) context)->def;
+}
+
+void janet_c_asm_set_name(void *context, Janet name) {
+    ((JanetAssembler *) context)->name = name;
+}
+
+int32_t janet_c_asm_bytecode_count(void *context) {
+    return ((JanetAssembler *) context)->bytecode_count;
+}
+
+void janet_c_asm_set_bytecode_count(void *context, int32_t count) {
+    ((JanetAssembler *) context)->bytecode_count = count;
+}
+
+int32_t janet_c_asm_add_environment(void *context, Janet name) {
+    return janet_asm_addenv(context, name);
+}
+
+void *janet_c_asm_parent_for_environment(void *context, uint32_t environment) {
+    JanetAssembler *assembler = context;
+    for (environment += 1; environment > 0; environment--) {
+        assembler = assembler->parent;
+        if (!assembler) return NULL;
+    }
+    return assembler;
+}
+
+const uint8_t *janet_c_asm_argument_bounds_error(Janet x, int32_t nbytes, int32_t too_large) {
+    return janet_formatc(too_large
+                         ? "instruction argument %v is too large, must be %d byte%s"
+                         : "instruction argument %v is too small, must be %d byte%s",
+                         x,
+                         nbytes,
+                         nbytes > 1 ? "s" : "");
+}
+
+const uint8_t *janet_c_asm_unknown_instruction(Janet value) {
+    return janet_formatc("unknown instruction %v", value);
+}
+
+const uint8_t *janet_c_asm_resolution_error(Janet value, int32_t kind) {
+    switch (kind) {
+        case 1:
+            return janet_formatc("unknown type %v", value);
+        case 2:
+            return janet_formatc("unknown name %v", value);
+        case 3:
+            return janet_formatc("unknown environment %v", value);
+        default:
+            return janet_formatc("error parsing instruction argument %v", value);
+    }
+}
+#endif
+
 /* Parse an argument to an assembly instruction, and return the result as an
  * integer. This integer will need to be bounds checked. */
 static int32_t doarg_1(
@@ -370,6 +482,7 @@ static uint32_t doarg(
 }
 
 /* Provide parsing methods for the different kinds of arguments */
+#ifndef JANET_ZIG_ASM_ENCODE
 static uint32_t read_instruction(
     JanetAssembler *a,
     const JanetInstructionDef *idef,
@@ -473,6 +586,7 @@ static uint32_t read_instruction(
     }
     return instr;
 }
+#endif
 
 /* Helper to get from a structure */
 static Janet janet_get1(Janet ds, Janet key) {
@@ -485,6 +599,16 @@ static Janet janet_get1(Janet ds, Janet key) {
             return janet_struct_get(janet_unwrap_struct(ds), key);
     }
 }
+
+#ifdef JANET_ZIG_ASM_ENCODE
+Janet janet_c_asm_get_field(Janet source, const char *name) {
+    return janet_get1(source, janet_ckeywordv(name));
+}
+
+const uint8_t *janet_c_asm_invalid_error(int32_t status) {
+    return janet_formatc("invalid assembly (%d)", status);
+}
+#endif
 
 /* Helper to assembly. Return the assembly result */
 static JanetAssembleResult janet_asm1(JanetAssembler *parent, Janet source, int flags) {
@@ -532,6 +656,15 @@ static JanetAssembleResult janet_asm1(JanetAssembler *parent, Janet source, int 
         return result;
     }
 
+#ifdef JANET_ZIG_ASM_ENCODE
+    {
+        JanetAsmHeaderResult header = janet_zig_asm_parse_header(&a, s);
+        if (header.error) {
+            if (header.indexed_error) janet_asm_error(&a, (const char *) header.error);
+            janet_asm_errorv(&a, header.error);
+        }
+    }
+#else
     janet_asm_assert(&a,
                      janet_checktype(s, JANET_STRUCT) ||
                      janet_checktype(s, JANET_TABLE),
@@ -577,7 +710,29 @@ static JanetAssembleResult janet_asm1(JanetAssembler *parent, Janet source, int 
     /* Check source */
     x = janet_get1(s, janet_ckeywordv("source"));
     if (janet_checktype(x, JANET_STRING)) def->source = janet_unwrap_string(x);
+#endif
 
+#ifdef JANET_ZIG_ASM_ENCODE
+    {
+        JanetAsmHeaderResult slots = janet_zig_asm_parse_slots(&a, s);
+        JanetAsmBytecodeResult constants;
+        if (slots.error) {
+            if (slots.indexed_error) janet_asm_error(&a, (const char *) slots.error);
+            janet_asm_errorv(&a, slots.error);
+        }
+        constants = janet_zig_asm_scan_constants(&a, s);
+        def->constants_length = constants.count;
+        if (constants.count > 0) {
+            def->constants = janet_malloc(sizeof(Janet) * (size_t) constants.count);
+            if (NULL == def->constants) {
+                JANET_OUT_OF_MEMORY;
+            }
+            janet_zig_asm_fill_constants(&a, s);
+        } else {
+            def->constants = NULL;
+        }
+    }
+#else
     /* Create slot aliases */
     x = janet_get1(s, janet_ckeywordv("slots"));
     if (janet_indexed_view(x, &arr, &count)) {
@@ -615,8 +770,35 @@ static JanetAssembleResult janet_asm1(JanetAssembler *parent, Janet source, int 
         def->constants = NULL;
         def->constants_length = 0;
     }
+#endif
 
     /* Parse sub funcdefs */
+#ifdef JANET_ZIG_ASM_ENCODE
+    {
+        JanetAsmBytecodeResult definitions = janet_zig_asm_scan_defs(s);
+        for (i = 0; i < definitions.count; i++) {
+            JanetAssembleResult subres;
+            int32_t newlen;
+            Janet subsource = janet_zig_asm_def_at(s, i);
+            subres = janet_asm1(&a, subsource, flags);
+            if (subres.status != JANET_ASSEMBLE_OK) {
+                janet_asm_errorv(&a, subres.error);
+            }
+            janet_zig_asm_register_def(&a, subsource, def->defs_length);
+            newlen = def->defs_length + 1;
+            if (a.defs_capacity < newlen) {
+                int32_t newcap = newlen;
+                def->defs = janet_realloc(def->defs, newcap * sizeof(JanetFuncDef *));
+                if (NULL == def->defs) {
+                    JANET_OUT_OF_MEMORY;
+                }
+                a.defs_capacity = newcap;
+            }
+            def->defs[def->defs_length] = subres.funcdef;
+            def->defs_length = newlen;
+        }
+    }
+#else
     x = janet_get1(s, janet_ckeywordv("closures"));
     if (janet_checktype(x, JANET_NIL)) {
         x = janet_get1(s, janet_ckeywordv("defs"));
@@ -648,9 +830,31 @@ static JanetAssembleResult janet_asm1(JanetAssembler *parent, Janet source, int 
             def->defs_length = newlen;
         }
     }
+#endif
 
     /* Parse bytecode and labels */
     x = janet_get1(s, janet_ckeywordv("bytecode"));
+#ifdef JANET_ZIG_ASM_ENCODE
+    {
+        JanetAsmBytecodeResult bytecode = janet_zig_asm_scan_bytecode(&a, x);
+        if (bytecode.error) {
+            a.errindex = bytecode.error_index;
+            if (bytecode.indexed_error) janet_asm_error(&a, (const char *) bytecode.error);
+            janet_asm_errorv(&a, bytecode.error);
+        }
+        def->bytecode_length = bytecode.count;
+        def->bytecode = janet_malloc(sizeof(uint32_t) * (size_t) bytecode.count);
+        if (NULL == def->bytecode) {
+            JANET_OUT_OF_MEMORY;
+        }
+        bytecode = janet_zig_asm_fill_bytecode(&a, x);
+        if (bytecode.error) {
+            a.errindex = bytecode.error_index;
+            if (bytecode.indexed_error) janet_asm_error(&a, (const char *) bytecode.error);
+            janet_asm_errorv(&a, bytecode.error);
+        }
+    }
+#else
     if (janet_indexed_view(x, &arr, &count)) {
         /* Do labels and find length */
         int32_t blength = 0;
@@ -678,7 +882,9 @@ static JanetAssembleResult janet_asm1(JanetAssembler *parent, Janet source, int 
                 continue;
             } else {
                 uint32_t op;
+#ifndef JANET_ZIG_ASM_ENCODE
                 const JanetInstructionDef *idef;
+#endif
                 const Janet *t;
                 a.errindex = i;
                 janet_asm_assert(&a, janet_checktype(instr, JANET_TUPLE), "expected tuple");
@@ -686,6 +892,17 @@ static JanetAssembleResult janet_asm1(JanetAssembler *parent, Janet source, int 
                 if (janet_tuple_length(t) == 0) {
                     op = 0;
                 } else {
+#ifdef JANET_ZIG_ASM_ENCODE
+                    JanetAsmEncodeResult encoded = janet_zig_asm_encode(&a, t);
+                    if (encoded.error) {
+                        if (encoded.indexed_error) {
+                            janet_asm_error(&a, (const char *) encoded.error);
+                        } else {
+                            janet_asm_errorv(&a, encoded.error);
+                        }
+                    }
+                    op = encoded.instruction;
+#else
                     janet_asm_assert(&a, janet_checktype(t[0], JANET_SYMBOL),
                                      "expected symbol in assembly instruction");
                     idef = janet_strbinsearch(
@@ -696,6 +913,7 @@ static JanetAssembleResult janet_asm1(JanetAssembler *parent, Janet source, int 
                     if (NULL == idef)
                         janet_asm_errorv(&a, janet_formatc("unknown instruction %v", t[0]));
                     op = read_instruction(&a, idef, t);
+#endif
                 }
                 def->bytecode[a.bytecode_count++] = op;
             }
@@ -703,10 +921,26 @@ static JanetAssembleResult janet_asm1(JanetAssembler *parent, Janet source, int 
     } else {
         janet_asm_error(&a, "bytecode expected");
     }
+#endif
     a.errindex = -1;
 
     /* Check for source mapping */
     x = janet_get1(s, janet_ckeywordv("sourcemap"));
+#ifdef JANET_ZIG_ASM_ENCODE
+    {
+        JanetAsmBytecodeResult sourcemap = janet_zig_asm_scan_sourcemap(&a, s);
+        if (sourcemap.error) janet_asm_error(&a, (const char *) sourcemap.error);
+        if (sourcemap.count > 0) {
+            JanetAsmHeaderResult filled;
+            def->sourcemap = janet_malloc(sizeof(JanetSourceMapping) * (size_t) sourcemap.count);
+            if (NULL == def->sourcemap) {
+                JANET_OUT_OF_MEMORY;
+            }
+            filled = janet_zig_asm_fill_sourcemap(&a, s);
+            if (filled.error) janet_asm_error(&a, (const char *) filled.error);
+        }
+    }
+#else
     if (janet_indexed_view(x, &arr, &count)) {
         janet_asm_assert(&a, count == def->bytecode_length, "sourcemap must have the same length as the bytecode");
         def->sourcemap = janet_malloc(sizeof(JanetSourceMapping) * (size_t) count);
@@ -732,11 +966,27 @@ static JanetAssembleResult janet_asm1(JanetAssembler *parent, Janet source, int 
             def->sourcemap[i] = mapping;
         }
     }
+#endif
 
     /* Set symbolmap */
     def->symbolmap = NULL;
     def->symbolmap_length = 0;
     x = janet_get1(s, janet_ckeywordv("symbolmap"));
+#ifdef JANET_ZIG_ASM_ENCODE
+    {
+        JanetAsmBytecodeResult symbolmap = janet_zig_asm_scan_symbolmap(&a, s);
+        if (symbolmap.count > 0) {
+            JanetAsmHeaderResult filled;
+            def->symbolmap_length = symbolmap.count;
+            def->symbolmap = janet_malloc(sizeof(JanetSymbolMap) * (size_t) symbolmap.count);
+            if (NULL == def->symbolmap) {
+                JANET_OUT_OF_MEMORY;
+            }
+            filled = janet_zig_asm_fill_symbolmap(&a, s);
+            if (filled.error) janet_asm_error(&a, (const char *) filled.error);
+        }
+    }
+#else
     if (janet_indexed_view(x, &arr, &count)) {
         def->symbolmap_length = count;
         def->symbolmap = janet_malloc(sizeof(JanetSymbolMap) * (size_t)count);
@@ -773,10 +1023,29 @@ static JanetAssembleResult janet_asm1(JanetAssembler *parent, Janet source, int 
             def->symbolmap[i] = ss;
         }
     }
+#endif
     if (def->symbolmap_length) def->flags |= JANET_FUNCDEF_FLAG_HASSYMBOLMAP;
 
     /* Set environments */
     x = janet_get1(s, janet_ckeywordv("environments"));
+#ifdef JANET_ZIG_ASM_ENCODE
+    {
+        JanetAsmBytecodeResult environments = janet_zig_asm_scan_environments(&a, s);
+        if (environments.count >= 0) {
+            JanetAsmHeaderResult filled;
+            def->environments_length = environments.count;
+            if (environments.count > 0) {
+                def->environments = janet_realloc(def->environments,
+                                                   (size_t) environments.count * sizeof(int32_t));
+            }
+            if (environments.count > 0 && NULL == def->environments) {
+                JANET_OUT_OF_MEMORY;
+            }
+            filled = janet_zig_asm_fill_environments(&a, s);
+            if (filled.error) janet_asm_error(&a, (const char *) filled.error);
+        }
+    }
+#else
     if (janet_indexed_view(x, &arr, &count)) {
         def->environments_length = count;
         if (def->environments_length) {
@@ -792,15 +1061,21 @@ static JanetAssembleResult janet_asm1(JanetAssembler *parent, Janet source, int 
     if (def->environments_length && NULL == def->environments) {
         JANET_OUT_OF_MEMORY;
     }
+#endif
 
-    /* Verify the func def */
+    /* Verify the func def and add final flags */
+#ifdef JANET_ZIG_ASM_ENCODE
+    {
+        JanetAsmHeaderResult finalized = janet_zig_asm_finalize(&a);
+        if (finalized.error) janet_asm_errorv(&a, finalized.error);
+    }
+#else
     int verify_status = janet_verify(def);
     if (verify_status) {
         janet_asm_errorv(&a, janet_formatc("invalid assembly (%d)", verify_status));
     }
-
-    /* Add final flags */
     janet_def_addflags(def);
+#endif
 
     /* Finish everything and return funcdef */
     janet_asm_deinit(&a);
@@ -830,6 +1105,28 @@ static const JanetInstructionDef *janet_asm_reverse_lookup(uint32_t instr) {
     return NULL;
 }
 
+#ifdef JANET_ZIG_ASM_DECODE
+const char *janet_c_asm_opcode_name(uint32_t instr) {
+    const JanetInstructionDef *def = janet_asm_reverse_lookup(instr);
+    return def ? def->name : NULL;
+}
+
+Janet janet_c_asm_wrap_integer(int32_t value) {
+    return janet_wrap_integer(value);
+}
+
+Janet janet_c_asm_wrap_symbol(const char *value) {
+    return janet_csymbolv(value);
+}
+
+Janet janet_c_asm_wrap_tuple(JanetTuple value) {
+    return janet_wrap_tuple(value);
+}
+
+void janet_c_asm_set_breakpoint(JanetTuple value) {
+    janet_tuple_flag(value) |= JANET_TUPLE_FLAG_BRACKETCTOR;
+}
+#else
 /* Create some constant sized tuples */
 static const Janet *tup1(Janet x) {
     Janet *tup = janet_tuple_begin(1);
@@ -918,11 +1215,97 @@ Janet janet_asm_decode_instruction(uint32_t instr) {
     }
     return janet_wrap_nil();
 }
+#endif
 
 /*
  * Disasm sections
  */
 
+#ifdef JANET_ZIG_DISASM
+enum {
+    JANET_ZIG_DISASM_ARITY,
+    JANET_ZIG_DISASM_MIN_ARITY,
+    JANET_ZIG_DISASM_MAX_ARITY,
+    JANET_ZIG_DISASM_BYTECODE,
+    JANET_ZIG_DISASM_SOURCE,
+    JANET_ZIG_DISASM_VARARG,
+    JANET_ZIG_DISASM_STRUCTARG,
+    JANET_ZIG_DISASM_NAMEDARGS,
+    JANET_ZIG_DISASM_NAME,
+    JANET_ZIG_DISASM_SLOTCOUNT,
+    JANET_ZIG_DISASM_SYMBOLMAP,
+    JANET_ZIG_DISASM_CONSTANTS,
+    JANET_ZIG_DISASM_SOURCEMAP,
+    JANET_ZIG_DISASM_ENVIRONMENTS,
+    JANET_ZIG_DISASM_DEFS,
+    JANET_ZIG_DISASM_ALL
+};
+
+Janet janet_zig_disasm_field(JanetFuncDef *def, int field);
+
+#define JANET_ZIG_DISASM_FIELD(name, field) \
+    static Janet name(JanetFuncDef *def) { \
+        return janet_zig_disasm_field(def, field); \
+    }
+
+JANET_ZIG_DISASM_FIELD(janet_disasm_arity, JANET_ZIG_DISASM_ARITY)
+JANET_ZIG_DISASM_FIELD(janet_disasm_min_arity, JANET_ZIG_DISASM_MIN_ARITY)
+JANET_ZIG_DISASM_FIELD(janet_disasm_max_arity, JANET_ZIG_DISASM_MAX_ARITY)
+JANET_ZIG_DISASM_FIELD(janet_disasm_bytecode, JANET_ZIG_DISASM_BYTECODE)
+JANET_ZIG_DISASM_FIELD(janet_disasm_source, JANET_ZIG_DISASM_SOURCE)
+JANET_ZIG_DISASM_FIELD(janet_disasm_vararg, JANET_ZIG_DISASM_VARARG)
+JANET_ZIG_DISASM_FIELD(janet_disasm_structarg, JANET_ZIG_DISASM_STRUCTARG)
+JANET_ZIG_DISASM_FIELD(janet_disasm_namedargs, JANET_ZIG_DISASM_NAMEDARGS)
+JANET_ZIG_DISASM_FIELD(janet_disasm_name, JANET_ZIG_DISASM_NAME)
+JANET_ZIG_DISASM_FIELD(janet_disasm_slotcount, JANET_ZIG_DISASM_SLOTCOUNT)
+JANET_ZIG_DISASM_FIELD(janet_disasm_symbolslots, JANET_ZIG_DISASM_SYMBOLMAP)
+JANET_ZIG_DISASM_FIELD(janet_disasm_constants, JANET_ZIG_DISASM_CONSTANTS)
+JANET_ZIG_DISASM_FIELD(janet_disasm_sourcemap, JANET_ZIG_DISASM_SOURCEMAP)
+JANET_ZIG_DISASM_FIELD(janet_disasm_environments, JANET_ZIG_DISASM_ENVIRONMENTS)
+JANET_ZIG_DISASM_FIELD(janet_disasm_defs, JANET_ZIG_DISASM_DEFS)
+
+#undef JANET_ZIG_DISASM_FIELD
+
+Janet janet_disasm(JanetFuncDef *def) {
+    return janet_zig_disasm_field(def, JANET_ZIG_DISASM_ALL);
+}
+
+Janet janet_c_disasm_wrap_nil(void) {
+    return janet_wrap_nil();
+}
+
+Janet janet_c_disasm_wrap_integer(int32_t value) {
+    return janet_wrap_integer(value);
+}
+
+Janet janet_c_disasm_wrap_boolean(int value) {
+    return janet_wrap_boolean(value);
+}
+
+Janet janet_c_disasm_wrap_string(JanetString value) {
+    return janet_wrap_string(value);
+}
+
+Janet janet_c_disasm_wrap_symbol(JanetSymbol value) {
+    return janet_wrap_symbol(value);
+}
+
+Janet janet_c_disasm_wrap_array(JanetArray *value) {
+    return janet_wrap_array(value);
+}
+
+Janet janet_c_disasm_wrap_tuple(JanetTuple value) {
+    return janet_wrap_tuple(value);
+}
+
+Janet janet_c_disasm_wrap_struct(JanetStruct value) {
+    return janet_wrap_struct(value);
+}
+
+Janet janet_c_disasm_keyword(const char *value) {
+    return janet_ckeywordv(value);
+}
+#else
 static Janet janet_disasm_arity(JanetFuncDef *def) {
     return janet_wrap_integer(def->arity);
 }
@@ -1057,6 +1440,7 @@ Janet janet_disasm(JanetFuncDef *def) {
     janet_table_put(ret, janet_ckeywordv("defs"), janet_disasm_defs(def));
     return janet_wrap_struct(janet_table_to_struct(ret));
 }
+#endif
 
 JANET_CORE_FN(cfun_asm,
               "(asm assembly)",

@@ -111,6 +111,7 @@ const enum JanetInstructionType janet_instructions[JOP_INSTRUCTION_COUNT] = {
 
 /* Remove all noops while preserving jumps and debugging information.
  * Useful as part of a filtering compiler pass. */
+#ifndef JANET_ZIG_REMOVE_NOOPS
 void janet_bytecode_remove_noops(JanetFuncDef *def) {
 
     /* Get an instruction rewrite map so we can rewrite jumps */
@@ -179,9 +180,11 @@ void janet_bytecode_remove_noops(JanetFuncDef *def) {
     def->bytecode = janet_realloc(def->bytecode, def->bytecode_length * sizeof(uint32_t));
     janet_sfree(pc_map);
 }
+#endif
 
 /* Remove redundant loads, moves and other instructions if possible and convert them to
  * noops. Input is assumed valid bytecode. */
+#ifndef JANET_ZIG_MOVOPT
 void janet_bytecode_movopt(JanetFuncDef *def) {
     JanetcRegisterAllocator ra;
     int recur = 1;
@@ -400,8 +403,10 @@ void janet_bytecode_movopt(JanetFuncDef *def) {
 #undef EE
     }
 }
+#endif
 
 /* Verify some bytecode */
+#ifndef JANET_ZIG_VERIFY
 int janet_verify(JanetFuncDef *def) {
     int vargs = !!(def->flags & JANET_FUNCDEF_FLAG_VARARG);
     int32_t i;
@@ -526,6 +531,7 @@ int janet_verify(JanetFuncDef *def) {
 
     return 0;
 }
+#endif
 
 /* Allocate an empty funcdef. This function may have added functionality
  * as commonalities between asm and compile arise. */

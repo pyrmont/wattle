@@ -109,6 +109,7 @@ static int to_hex(uint8_t c) {
 
 
 /* Define a stack on the main parser struct */
+#ifndef JANET_ZIG_PARSER_CORE
 #define DEF_PARSER_STACK(NAME, T, STACK, STACKCOUNT, STACKCAP) \
 static void NAME(JanetParser *p, T x) { \
     size_t oldcount = p->STACKCOUNT; \
@@ -132,6 +133,7 @@ DEF_PARSER_STACK(push_arg, Janet, args, argcount, argcap)
 DEF_PARSER_STACK(_pushstate, JanetParseState, states, statecount, statecap)
 
 #undef DEF_PARSER_STACK
+#endif
 
 #define PFLAG_CONTAINER 0x100
 #define PFLAG_BUFFER 0x200
@@ -145,6 +147,7 @@ DEF_PARSER_STACK(_pushstate, JanetParseState, states, statecount, statecap)
 #define PFLAG_COMMENT 0x20000
 #define PFLAG_TOKEN 0x40000
 
+#ifndef JANET_ZIG_PARSER_CORE
 static void pushstate(JanetParser *p, Consumer consumer, int flags) {
     JanetParseState s;
     s.counter = 0;
@@ -155,7 +158,25 @@ static void pushstate(JanetParser *p, Consumer consumer, int flags) {
     s.column = p->column;
     _pushstate(p, s);
 }
+#else
+void janet_zig_parser_push_buf(JanetParser *parser, uint8_t value);
+void janet_zig_parser_push_arg(JanetParser *parser, Janet value);
+void janet_zig_parser_push_state(JanetParser *parser, Consumer consumer, int flags);
 
+static void push_buf(JanetParser *parser, uint8_t value) {
+    janet_zig_parser_push_buf(parser, value);
+}
+
+static void push_arg(JanetParser *parser, Janet value) {
+    janet_zig_parser_push_arg(parser, value);
+}
+
+static void pushstate(JanetParser *parser, Consumer consumer, int flags) {
+    janet_zig_parser_push_state(parser, consumer, flags);
+}
+#endif
+
+#ifndef JANET_ZIG_PARSER_CORE
 static void popstate(JanetParser *p, Janet val) {
     for (;;) {
         JanetParseState top = p->states[--p->statecount];
@@ -198,6 +219,13 @@ static void popstate(JanetParser *p, Janet val) {
         }
     }
 }
+#else
+void janet_zig_parser_pop_state(JanetParser *parser, Janet value);
+
+static void popstate(JanetParser *parser, Janet value) {
+    janet_zig_parser_pop_state(parser, value);
+}
+#endif
 
 static void delim_error(JanetParser *parser, size_t stack_index, char c, const char *msg) {
     JanetParseState *s = parser->states + stack_index;
@@ -230,6 +258,7 @@ static void delim_error(JanetParser *parser, size_t stack_index, char c, const c
     parser->flag |= JANET_PARSER_GENERATED_ERROR;
 }
 
+#ifndef JANET_ZIG_PARSER_CORE
 static int checkescape(uint8_t c) {
     switch (c) {
         default:
@@ -346,7 +375,9 @@ static int escape1(JanetParser *p, JanetParseState *state, uint8_t c) {
     }
     return 1;
 }
+#endif
 
+#ifndef JANET_ZIG_PARSER_CORE
 static int stringend(JanetParser *p, JanetParseState *state) {
     Janet ret;
     uint8_t *bufstart = p->buf;
@@ -426,7 +457,9 @@ static int stringchar(JanetParser *p, JanetParseState *state, uint8_t c) {
         push_buf(p, c);
     return 1;
 }
+#endif
 
+#ifndef JANET_ZIG_PARSER_CORE
 /* Check for string equality in the buffer */
 static int check_str_const(const char *cstr, const uint8_t *str, int32_t len) {
     int32_t index;
@@ -492,6 +525,7 @@ static int tokenchar(JanetParser *p, JanetParseState *state, uint8_t c) {
     popstate(p, ret);
     return 0;
 }
+#endif
 
 static int comment(JanetParser *p, JanetParseState *state, uint8_t c) {
     (void) state;
@@ -504,6 +538,7 @@ static int comment(JanetParser *p, JanetParseState *state, uint8_t c) {
     return 1;
 }
 
+#ifndef JANET_ZIG_PARSER_CORE
 static Janet close_tuple(JanetParser *p, JanetParseState *state, int32_t flag) {
     Janet *ret = janet_tuple_begin(state->argn);
     janet_tuple_flag(ret) |= flag;
@@ -541,9 +576,32 @@ static Janet close_table(JanetParser *p, JanetParseState *state) {
     p->argcount -= state->argn;
     return janet_wrap_table(table);
 }
+#else
+Janet janet_zig_parser_close_tuple(JanetParser *parser, JanetParseState *state, int32_t flag);
+Janet janet_zig_parser_close_array(JanetParser *parser, JanetParseState *state);
+Janet janet_zig_parser_close_struct(JanetParser *parser, JanetParseState *state);
+Janet janet_zig_parser_close_table(JanetParser *parser, JanetParseState *state);
+
+static Janet close_tuple(JanetParser *parser, JanetParseState *state, int32_t flag) {
+    return janet_zig_parser_close_tuple(parser, state, flag);
+}
+
+static Janet close_array(JanetParser *parser, JanetParseState *state) {
+    return janet_zig_parser_close_array(parser, state);
+}
+
+static Janet close_struct(JanetParser *parser, JanetParseState *state) {
+    return janet_zig_parser_close_struct(parser, state);
+}
+
+static Janet close_table(JanetParser *parser, JanetParseState *state) {
+    return janet_zig_parser_close_table(parser, state);
+}
+#endif
 
 #define PFLAG_INSTRING 0x100000
 #define PFLAG_END_CANDIDATE 0x200000
+#ifndef JANET_ZIG_PARSER_CORE
 static int longstring(JanetParser *p, JanetParseState *state, uint8_t c) {
     if (state->flags & PFLAG_INSTRING) {
         /* We are inside the long string */
@@ -585,6 +643,23 @@ static int longstring(JanetParser *p, JanetParseState *state, uint8_t c) {
         return 1;
     }
 }
+#endif
+
+#ifdef JANET_ZIG_PARSER_CORE
+int janet_zig_parser_stringchar(JanetParser *parser, JanetParseState *state, uint8_t c);
+int janet_zig_parser_longstring(JanetParser *parser, JanetParseState *state, uint8_t c);
+int janet_zig_parser_tokenchar(JanetParser *parser, JanetParseState *state, uint8_t c);
+int janet_zig_parser_comment(JanetParser *parser, JanetParseState *state, uint8_t c);
+#define PARSER_STRINGCHAR janet_zig_parser_stringchar
+#define PARSER_LONGSTRING janet_zig_parser_longstring
+#define PARSER_TOKENCHAR janet_zig_parser_tokenchar
+#define PARSER_COMMENT janet_zig_parser_comment
+#else
+#define PARSER_STRINGCHAR stringchar
+#define PARSER_LONGSTRING longstring
+#define PARSER_TOKENCHAR tokenchar
+#define PARSER_COMMENT comment
+#endif
 
 static int root(JanetParser *p, JanetParseState *state, uint8_t c);
 
@@ -596,10 +671,10 @@ static int atsign(JanetParser *p, JanetParseState *state, uint8_t c) {
             pushstate(p, root, PFLAG_CONTAINER | PFLAG_CURLYBRACKETS | PFLAG_ATSYM);
             return 1;
         case '"':
-            pushstate(p, stringchar, PFLAG_BUFFER | PFLAG_STRING);
+            pushstate(p, PARSER_STRINGCHAR, PFLAG_BUFFER | PFLAG_STRING);
             return 1;
         case '`':
-            pushstate(p, longstring, PFLAG_BUFFER | PFLAG_LONGSTRING);
+            pushstate(p, PARSER_LONGSTRING, PFLAG_BUFFER | PFLAG_LONGSTRING);
             return 1;
         case '[':
             pushstate(p, root, PFLAG_CONTAINER | PFLAG_SQRBRACKETS | PFLAG_ATSYM);
@@ -610,7 +685,7 @@ static int atsign(JanetParser *p, JanetParseState *state, uint8_t c) {
         default:
             break;
     }
-    pushstate(p, tokenchar, PFLAG_TOKEN);
+    pushstate(p, PARSER_TOKENCHAR, PFLAG_TOKEN);
     push_buf(p, '@'); /* Push the leading at-sign that was dropped */
     return 0;
 }
@@ -624,7 +699,7 @@ static int root(JanetParser *p, JanetParseState *state, uint8_t c) {
                 p->error = "unexpected character";
                 return 1;
             }
-            pushstate(p, tokenchar, PFLAG_TOKEN);
+            pushstate(p, PARSER_TOKENCHAR, PFLAG_TOKEN);
             return 0;
         case '\'':
         case ',':
@@ -634,16 +709,16 @@ static int root(JanetParser *p, JanetParseState *state, uint8_t c) {
             pushstate(p, root, PFLAG_READERMAC | c);
             return 1;
         case '"':
-            pushstate(p, stringchar, PFLAG_STRING);
+            pushstate(p, PARSER_STRINGCHAR, PFLAG_STRING);
             return 1;
         case '#':
-            pushstate(p, comment, PFLAG_COMMENT);
+            pushstate(p, PARSER_COMMENT, PFLAG_COMMENT);
             return 1;
         case '@':
             pushstate(p, atsign, PFLAG_ATSYM);
             return 1;
         case '`':
-            pushstate(p, longstring, PFLAG_LONGSTRING);
+            pushstate(p, PARSER_LONGSTRING, PFLAG_LONGSTRING);
             return 1;
         case ')':
         case ']':
@@ -696,6 +771,32 @@ static void janet_parser_checkdead(JanetParser *parser) {
 
 /* Public API */
 
+#ifdef JANET_ZIG_PARSER_CORE
+void janet_zig_parser_consume(JanetParser *parser, uint8_t c);
+void janet_zig_parser_eof(JanetParser *parser);
+
+void janet_parser_consume(JanetParser *parser, uint8_t c) {
+    janet_parser_checkdead(parser);
+    janet_zig_parser_consume(parser, c);
+}
+
+void janet_parser_eof(JanetParser *parser) {
+    janet_parser_checkdead(parser);
+    janet_zig_parser_eof(parser);
+}
+
+void janet_c_parser_eof_error(JanetParser *parser) {
+    delim_error(parser, parser->statecount - 1, 0, "unexpected end of source");
+}
+
+void janet_c_parser_delim_error(
+    JanetParser *parser,
+    size_t stack_index,
+    char c,
+    const char *message) {
+    delim_error(parser, stack_index, c, message);
+}
+#else
 void janet_parser_consume(JanetParser *parser, uint8_t c) {
     int consumed = 0;
     janet_parser_checkdead(parser);
@@ -728,7 +829,9 @@ void janet_parser_eof(JanetParser *parser) {
     parser->column = oldcolumn;
     parser->flag |= JANET_PARSER_DEAD;
 }
+#endif
 
+#ifndef JANET_ZIG_PARSER_CORE
 enum JanetParserStatus janet_parser_status(JanetParser *parser) {
     if (parser->error) return JANET_PARSE_ERROR;
     if (parser->flag) return JANET_PARSE_DEAD;
@@ -857,6 +960,13 @@ nomem:
 int janet_parser_has_more(JanetParser *parser) {
     return !!parser->pending;
 }
+#else
+Consumer janet_c_parser_root_consumer(void) {
+    return root;
+}
+
+void janet_parser_clone(const JanetParser *src, JanetParser *dest);
+#endif
 
 /* C functions */
 
@@ -956,7 +1066,7 @@ JANET_CORE_FN(cfun_parse_insert,
     janet_fixarity(argc, 2);
     JanetParser *p = janet_getabstract(argv, 0, &janet_parser_type);
     JanetParseState *s = p->states + p->statecount - 1;
-    if (s->consumer == tokenchar) {
+    if (s->flags & PFLAG_TOKEN) {
         janet_parser_consume(p, ' ');
         p->column--;
         s = p->states + p->statecount - 1;

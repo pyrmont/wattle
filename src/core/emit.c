@@ -29,7 +29,19 @@
 #include "util.h"
 #endif
 
-/* Get a register */
+/* Get a register. Keep the error raise in C so a non-local jump cannot cross
+ * the Zig implementation's stack frame. */
+#ifdef JANET_ZIG_EMIT_CORE
+int32_t janet_zig_allocfar(JanetCompiler *c);
+
+int32_t janetc_allocfar(JanetCompiler *c) {
+    int32_t reg = janet_zig_allocfar(c);
+    if (reg > 0xFFFF) {
+        janetc_cerror(c, "ran out of internal registers");
+    }
+    return reg;
+}
+#else
 int32_t janetc_allocfar(JanetCompiler *c) {
     int32_t reg = janetc_regalloc_1(&c->scope->ra);
     if (reg > 0xFFFF) {
@@ -37,8 +49,10 @@ int32_t janetc_allocfar(JanetCompiler *c) {
     }
     return reg;
 }
+#endif
 
 /* Get a register less than 256 for temporary use. */
+#ifndef JANET_ZIG_EMIT_CORE
 int32_t janetc_allocnear(JanetCompiler *c, JanetcRegisterTemp tag) {
     return janetc_regalloc_temp(&c->scope->ra, tag);
 }
@@ -48,8 +62,10 @@ void janetc_emit(JanetCompiler *c, uint32_t instr) {
     janet_v_push(c->buffer, instr);
     janet_v_push(c->mapbuffer, c->current_mapping);
 }
+#endif
 
 /* Add a constant to the current scope. Return the index of the constant. */
+#ifndef JANET_ZIG_EMIT_CORE
 static int32_t janetc_const(JanetCompiler *c, Janet x) {
     JanetScope *scope = c->scope;
     int32_t i, len;
@@ -219,8 +235,10 @@ static int32_t janetc_regnear(JanetCompiler *c, JanetSlot s, JanetcRegisterTemp 
     janetc_movenear(c, reg, s);
     return reg;
 }
+#endif
 
 /* Check if two slots are equal */
+#ifndef JANET_ZIG_EMIT_CORE
 int janetc_sequal(JanetSlot lhs, JanetSlot rhs) {
     if ((lhs.flags & ~JANET_SLOTTYPE_ANY) == (rhs.flags & ~JANET_SLOTTYPE_ANY) &&
             lhs.index == rhs.index &&
@@ -233,9 +251,26 @@ int janetc_sequal(JanetSlot lhs, JanetSlot rhs) {
     }
     return 0;
 }
+#endif
 
 /* Move values from one slot to another. The destination must
  * be writeable (not a literal). */
+#ifdef JANET_ZIG_EMIT_CORE
+int janet_zig_copy(JanetCompiler *c, JanetSlot dest, JanetSlot src);
+
+void janetc_copy(
+    JanetCompiler *c,
+    JanetSlot dest,
+    JanetSlot src) {
+    if (dest.flags & JANET_SLOT_CONSTANT) {
+        janetc_cerror(c, "cannot write to constant");
+        return;
+    }
+    if (!janet_zig_copy(c, dest, src)) {
+        janetc_cerror(c, "too many constants");
+    }
+}
+#else
 void janetc_copy(
     JanetCompiler *c,
     JanetSlot dest,
@@ -262,9 +297,98 @@ void janetc_copy(
     /* Cleanup */
     janetc_regalloc_freetemp(&c->scope->ra, nearreg, JANETC_REGTEMP_3);
 }
+#endif
 
 /* Instruction templated emitters */
 
+#ifdef JANET_ZIG_EMIT_CORE
+enum {
+    JANET_ZIG_EMIT_S,
+    JANET_ZIG_EMIT_1S,
+    JANET_ZIG_EMIT_SS,
+    JANET_ZIG_EMIT_2S,
+    JANET_ZIG_EMIT_SSS
+};
+
+int janet_zig_emit_template(
+    JanetCompiler *c,
+    int kind,
+    uint8_t op,
+    JanetSlot s1,
+    JanetSlot s2,
+    JanetSlot s3,
+    int32_t rest,
+    int wr,
+    int32_t *label);
+
+static int32_t janetc_emit_template(
+    JanetCompiler *c,
+    int kind,
+    uint8_t op,
+    JanetSlot s1,
+    JanetSlot s2,
+    JanetSlot s3,
+    int32_t rest,
+    int wr) {
+    int32_t label = 0;
+    int status = janet_zig_emit_template(c, kind, op, s1, s2, s3, rest, wr, &label);
+    if (status == 1) {
+        janetc_cerror(c, "too many constants");
+    } else if (status == 2) {
+        janetc_cerror(c, "ran out of internal registers");
+    }
+    return label;
+}
+
+int32_t janetc_emit_s(JanetCompiler *c, uint8_t op, JanetSlot s, int wr) {
+    JanetSlot unused = {0};
+    return janetc_emit_template(c, JANET_ZIG_EMIT_S, op, s, unused, unused, 0, wr);
+}
+
+int32_t janetc_emit_sl(JanetCompiler *c, uint8_t op, JanetSlot s, int32_t label) {
+    JanetSlot unused = {0};
+    int32_t current = janet_v_count(c->buffer) - 1;
+    int32_t jump = label - current;
+    if (jump < INT16_MIN || jump > INT16_MAX) {
+        janetc_cerror(c, "jump is too far");
+    }
+    return janetc_emit_template(c, JANET_ZIG_EMIT_1S, op, s, unused, unused, jump, 0);
+}
+
+int32_t janetc_emit_st(JanetCompiler *c, uint8_t op, JanetSlot s, int32_t tflags) {
+    JanetSlot unused = {0};
+    return janetc_emit_template(c, JANET_ZIG_EMIT_1S, op, s, unused, unused, tflags, 0);
+}
+
+int32_t janetc_emit_si(JanetCompiler *c, uint8_t op, JanetSlot s, int16_t immediate, int wr) {
+    JanetSlot unused = {0};
+    return janetc_emit_template(c, JANET_ZIG_EMIT_1S, op, s, unused, unused, immediate, wr);
+}
+
+int32_t janetc_emit_su(JanetCompiler *c, uint8_t op, JanetSlot s, uint16_t immediate, int wr) {
+    JanetSlot unused = {0};
+    return janetc_emit_template(c, JANET_ZIG_EMIT_1S, op, s, unused, unused, immediate, wr);
+}
+
+int32_t janetc_emit_ss(JanetCompiler *c, uint8_t op, JanetSlot s1, JanetSlot s2, int wr) {
+    JanetSlot unused = {0};
+    return janetc_emit_template(c, JANET_ZIG_EMIT_SS, op, s1, s2, unused, 0, wr);
+}
+
+int32_t janetc_emit_ssi(JanetCompiler *c, uint8_t op, JanetSlot s1, JanetSlot s2, int8_t immediate, int wr) {
+    JanetSlot unused = {0};
+    return janetc_emit_template(c, JANET_ZIG_EMIT_2S, op, s1, s2, unused, immediate, wr);
+}
+
+int32_t janetc_emit_ssu(JanetCompiler *c, uint8_t op, JanetSlot s1, JanetSlot s2, uint8_t immediate, int wr) {
+    JanetSlot unused = {0};
+    return janetc_emit_template(c, JANET_ZIG_EMIT_2S, op, s1, s2, unused, immediate, wr);
+}
+
+int32_t janetc_emit_sss(JanetCompiler *c, uint8_t op, JanetSlot s1, JanetSlot s2, JanetSlot s3, int wr) {
+    return janetc_emit_template(c, JANET_ZIG_EMIT_SSS, op, s1, s2, s3, 0, wr);
+}
+#else
 static int32_t emit1s(JanetCompiler *c, uint8_t op, JanetSlot s, int32_t rest, int wr) {
     int32_t reg = janetc_regnear(c, s, JANETC_REGTEMP_0);
     int32_t label = janet_v_count(c->buffer);
@@ -351,3 +475,4 @@ int32_t janetc_emit_sss(JanetCompiler *c, uint8_t op, JanetSlot s1, JanetSlot s2
     janetc_free_regnear(c, s1, reg1, JANETC_REGTEMP_0);
     return label;
 }
+#endif

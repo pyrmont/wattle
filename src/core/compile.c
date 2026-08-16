@@ -30,6 +30,7 @@
 #include "state.h"
 #endif
 
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 JanetFopts janetc_fopts_default(JanetCompiler *c) {
     JanetFopts ret;
     ret.compiler = c;
@@ -37,8 +38,10 @@ JanetFopts janetc_fopts_default(JanetCompiler *c) {
     ret.hint = janetc_cslot(janet_wrap_nil());
     return ret;
 }
+#endif
 
 /* Throw an error with a janet string. */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 void janetc_error(JanetCompiler *c, const uint8_t *m) {
     /* Don't override first error */
     if (c->result.status == JANET_COMPILE_ERROR) {
@@ -52,6 +55,7 @@ void janetc_error(JanetCompiler *c, const uint8_t *m) {
 void janetc_cerror(JanetCompiler *c, const char *m) {
     janetc_error(c, janet_cstring(m));
 }
+#endif
 
 static const char *janet_lint_level_names[] = {
     "relaxed",
@@ -84,13 +88,16 @@ void janetc_lintf(JanetCompiler *c, JanetCompileLintLevel level, const char *for
 }
 
 /* Free a slot */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 void janetc_freeslot(JanetCompiler *c, JanetSlot s) {
     if (s.flags & (JANET_SLOT_CONSTANT | JANET_SLOT_REF | JANET_SLOT_NAMED)) return;
     if (s.envindex >= 0) return;
     janetc_regalloc_free(&c->scope->ra, s.index);
 }
+#endif
 
 /* Add a slot to a scope with a symbol associated with it (def or var). */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 void janetc_nameslot(JanetCompiler *c, const uint8_t *sym, JanetSlot s, uint32_t flags) {
     if (!(flags & JANET_DEFFLAG_NO_SHADOWCHECK)) {
         if (sym[0] != '_') {
@@ -128,8 +135,10 @@ void janetc_nameslot(JanetCompiler *c, const uint8_t *sym, JanetSlot s, uint32_t
     sp.death_pc = UINT32_MAX;
     janet_v_push(c->scope->syms, sp);
 }
+#endif
 
 /* Create a slot with a constant */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 JanetSlot janetc_cslot(Janet x) {
     JanetSlot ret;
     ret.flags = (1 << janet_type(x)) | JANET_SLOT_CONSTANT;
@@ -138,8 +147,24 @@ JanetSlot janetc_cslot(Janet x) {
     ret.envindex = -1;
     return ret;
 }
+#endif
 
 /* Get a local slot */
+#ifdef JANET_ZIG_COMPILER_PRIMITIVES
+int janet_zig_farslot(JanetCompiler *c, JanetSlot *out);
+
+JanetSlot janetc_farslot(JanetCompiler *c) {
+    JanetSlot ret;
+    if (!janet_zig_farslot(c, &ret)) {
+        janetc_cerror(c, "ran out of internal registers");
+    }
+    return ret;
+}
+
+Janet janet_c_compiler_wrap_nil(void) {
+    return janet_wrap_nil();
+}
+#else
 JanetSlot janetc_farslot(JanetCompiler *c) {
     JanetSlot ret;
     ret.flags = JANET_SLOTTYPE_ANY;
@@ -148,8 +173,10 @@ JanetSlot janetc_farslot(JanetCompiler *c) {
     ret.envindex = -1;
     return ret;
 }
+#endif
 
 /* Enter a new scope */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 void janetc_scope(JanetScope *s, JanetCompiler *c, int flags, const char *name) {
     JanetScope scope;
     scope.name = name;
@@ -235,6 +262,15 @@ void janetc_popscope_keepslot(JanetCompiler *c, JanetSlot retslot) {
         janetc_regalloc_touch(&scope->ra, retslot.index);
     }
 }
+#else
+void janet_c_compiler_unused_binding(JanetCompiler *c, const uint8_t *sym) {
+    janetc_lintf(c, JANET_C_LINT_STRICT, "binding %q is unused", janet_wrap_symbol(sym));
+}
+
+void janet_c_compiler_assert(int condition, const char *message) {
+    janet_assert(condition, message);
+}
+#endif
 
 static int lookup_missing(
     JanetCompiler *c,
@@ -269,8 +305,92 @@ static int lookup_missing(
     return 1;
 }
 
+#ifdef JANET_ZIG_COMPILER_PRIMITIVES
+void janet_c_compiler_shadow_lint(JanetCompiler *c, const uint8_t *sym, Shadowing shadowing) {
+    switch (shadowing) {
+        default:
+            break;
+        case JANETC_SHADOW_MACRO:
+            janetc_lintf(c, JANET_C_LINT_NORMAL, "binding %q is shadowing a macro", janet_wrap_symbol(sym));
+            break;
+        case JANETC_SHADOW_LOCAL_HIDES_LOCAL:
+            janetc_lintf(c, JANET_C_LINT_STRICT, "binding %q is shadowing a binding", janet_wrap_symbol(sym));
+            break;
+        case JANETC_SHADOW_LOCAL_HIDES_GLOBAL:
+            janetc_lintf(c, JANET_C_LINT_STRICT, "binding %q is shadowing a top-level binding", janet_wrap_symbol(sym));
+            break;
+        case JANETC_SHADOW_GLOBAL_HIDES_GLOBAL:
+            janetc_lintf(c, JANET_C_LINT_STRICT, "top-level binding %q is shadowing another top-level binding", janet_wrap_symbol(sym));
+            break;
+    }
+}
+
+void janet_c_compiler_resolve_global(JanetCompiler *c, const uint8_t *sym, JanetSlot *out) {
+    JanetBinding binding = janet_resolve_ext(c->env, sym);
+    if (binding.type == JANET_BINDING_NONE) {
+        Janet handler = janet_table_get_keyword(c->env, "missing-symbol");
+        switch (janet_type(handler)) {
+            case JANET_NIL:
+                break;
+            case JANET_FUNCTION:
+                if (!lookup_missing(c, sym, janet_unwrap_function(handler), &binding)) {
+                    *out = janetc_cslot(janet_wrap_nil());
+                    return;
+                }
+                break;
+            default:
+                janetc_error(c, janet_formatc("invalid lookup handler %V", handler));
+                *out = janetc_cslot(janet_wrap_nil());
+                return;
+        }
+    }
+
+    switch (binding.type) {
+        default:
+        case JANET_BINDING_NONE:
+            janetc_error(c, janet_formatc("unknown symbol %q", janet_wrap_symbol(sym)));
+            *out = janetc_cslot(janet_wrap_nil());
+            return;
+        case JANET_BINDING_DEF:
+        case JANET_BINDING_MACRO:
+            *out = janetc_cslot(binding.value);
+            break;
+        case JANET_BINDING_DYNAMIC_DEF:
+        case JANET_BINDING_DYNAMIC_MACRO:
+            *out = janetc_cslot(binding.value);
+            out->flags |= JANET_SLOT_REF | JANET_SLOT_NAMED | JANET_SLOTTYPE_ANY;
+            out->flags &= ~JANET_SLOT_CONSTANT;
+            break;
+        case JANET_BINDING_VAR:
+            *out = janetc_cslot(binding.value);
+            out->flags |= JANET_SLOT_REF | JANET_SLOT_NAMED | JANET_SLOT_MUTABLE | JANET_SLOTTYPE_ANY;
+            out->flags &= ~JANET_SLOT_CONSTANT;
+            break;
+    }
+
+    JanetCompileLintLevel depLevel = JANET_C_LINT_RELAXED;
+    switch (binding.deprecation) {
+        case JANET_BINDING_DEP_NONE: break;
+        case JANET_BINDING_DEP_RELAXED: depLevel = JANET_C_LINT_RELAXED; break;
+        case JANET_BINDING_DEP_NORMAL: depLevel = JANET_C_LINT_NORMAL; break;
+        case JANET_BINDING_DEP_STRICT: depLevel = JANET_C_LINT_STRICT; break;
+    }
+    if (binding.deprecation != JANET_BINDING_DEP_NONE)
+        janetc_lintf(c, depLevel, "%q is deprecated", janet_wrap_symbol(sym));
+}
+
+void janet_c_compiler_dead_code(JanetCompiler *c, Janet x) {
+    janetc_lintf(c, JANET_C_LINT_STRICT, "dead code, consider removing %.4q", x);
+}
+
+int janet_c_compiler_is_redef(JanetTable *env) {
+    return janet_truthy(janet_table_get_keyword(env, "redef"));
+}
+#endif
+
 /* Check if a binding is defined in an upper scope. This lets us check for
  * variable shadowing. */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 Shadowing janetc_shadowcheck(JanetCompiler *c, const uint8_t *sym) {
     /* Check locals */
     JanetScope *scope = c->scope;
@@ -455,8 +575,10 @@ found:
     ret.envindex = envindex;
     return ret;
 }
+#endif
 
 /* Generate the return instruction for a slot. */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 JanetSlot janetc_return(JanetCompiler *c, JanetSlot s) {
     if (!(s.flags & JANET_SLOT_RETURNED)) {
         if (s.flags & JANET_SLOT_CONSTANT && janet_checktype(s.constant, JANET_NIL))
@@ -564,6 +686,7 @@ int32_t janetc_pushslots(JanetCompiler *c, JanetSlot *slots) {
     }
     return has_splice ? (-1 - min_arity) : min_arity;
 }
+#endif
 
 /* Check if a list of slots has any spliced slots */
 static int has_spliced(JanetSlot *slots) {
@@ -576,6 +699,7 @@ static int has_spliced(JanetSlot *slots) {
 }
 
 /* Free slots loaded via janetc_toslots */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 void janetc_freeslots(JanetCompiler *c, JanetSlot *slots) {
     int32_t i;
     for (i = 0; i < janet_v_count(slots); i++) {
@@ -583,10 +707,12 @@ void janetc_freeslots(JanetCompiler *c, JanetSlot *slots) {
     }
     janet_v_free(slots);
 }
+#endif
 
 /* Compile some code that will be thrown away. Used to ensure
  * that dead code is well formed without including it in the final
  * bytecode. */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 void janetc_throwaway(JanetFopts opts, Janet x) {
     JanetCompiler *c = opts.compiler;
     JanetScope unusedScope;
@@ -602,8 +728,157 @@ void janetc_throwaway(JanetFopts opts, Janet x) {
             janet_v__cnt(c->mapbuffer) = mapbufstart;
     }
 }
+#endif
+
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
+static void janetc_validate_call(
+    JanetCompiler *c,
+    JanetSlot fun,
+    int32_t min_arity,
+    const Janet *form) {
+    if (!(fun.flags & JANET_SLOT_CONSTANT)) return;
+
+    switch (janet_type(fun.constant)) {
+        case JANET_FUNCTION: {
+            JanetFunction *f = janet_unwrap_function(fun.constant);
+            int32_t min = f->def->min_arity;
+            int32_t max = f->def->max_arity;
+            int structarg = f->def->flags & JANET_FUNCDEF_FLAG_STRUCTARG;
+            int namedarg = f->def->flags & JANET_FUNCDEF_FLAG_NAMEDARGS;
+            if (min_arity < 0) {
+                min_arity = -1 - min_arity;
+                if (min_arity > max && max >= 0) {
+                    const uint8_t *es = janet_formatc(
+                                            "%v expects at most %d argument%s, got at least %d",
+                                            fun.constant, max, max == 1 ? "" : "s", min_arity);
+                    janetc_error(c, es);
+                }
+            } else {
+                if (min_arity > max && max >= 0) {
+                    const uint8_t *es = janet_formatc(
+                                            "%v expects at most %d argument%s, got %d",
+                                            fun.constant, max, max == 1 ? "" : "s", min_arity);
+                    janetc_error(c, es);
+                }
+                if (min_arity < min) {
+                    const uint8_t *es = janet_formatc(
+                                            "%v expects at least %d argument%s, got %d",
+                                            fun.constant, min, min == 1 ? "" : "s", min_arity);
+                    janetc_error(c, es);
+                }
+                if (structarg && (min_arity > f->def->arity) && ((min_arity - f->def->arity) & 1)) {
+                    if (namedarg) {
+                        janetc_lintf(c, JANET_C_LINT_NORMAL,
+                                     "odd number of named arguments to `&named` function %v", fun.constant);
+                    } else {
+                        janetc_lintf(c, JANET_C_LINT_NORMAL,
+                                     "odd number of named arguments to `&keys` function %v", fun.constant);
+                    }
+                }
+                if (namedarg && f->def->named_args_count > 0) {
+                    int32_t first_arg_key_index = f->def->arity + 1;
+                    for (int32_t i = first_arg_key_index; i < janet_tuple_length(form); i += 2) {
+                        Janet argkey = form[i];
+                        int found = 0;
+                        if (janet_checktype(argkey, JANET_KEYWORD)) {
+                            for (int32_t j = 0; j < f->def->named_args_count && j < f->def->constants_length; j++) {
+                                if (janet_equals(argkey, f->def->constants[j])) {
+                                    found = 1;
+                                    break;
+                                }
+                            }
+                        } else if (janet_checktype(argkey, JANET_TUPLE)) {
+                            found = 1;
+                        }
+                        if (!found) {
+                            janetc_lintf(c, JANET_C_LINT_NORMAL,
+                                         "unused named argument %v to function %v", argkey, fun.constant);
+                        }
+                    }
+                }
+            }
+        }
+        break;
+        case JANET_CFUNCTION:
+        case JANET_ABSTRACT:
+        case JANET_NIL:
+            break;
+        case JANET_KEYWORD:
+            if (min_arity == 0) {
+                const uint8_t *es = janet_formatc("%v expects at least 1 argument, got 0", fun.constant);
+                janetc_error(c, es);
+            }
+            break;
+        default:
+            if (min_arity > 1 || min_arity == 0) {
+                const uint8_t *es = janet_formatc("%v expects 1 argument, got %d", fun.constant, min_arity);
+                janetc_error(c, es);
+            }
+            if (min_arity < -2) {
+                const uint8_t *es = janet_formatc(
+                                        "%v expects 1 argument, got at least %d",
+                                        fun.constant, -1 - min_arity);
+                janetc_error(c, es);
+            }
+            break;
+    }
+}
+#else
+void janet_c_compiler_call_diagnostic(
+    JanetCompiler *c,
+    int kind,
+    Janet fun,
+    Janet argument,
+    int32_t expected,
+    int32_t got) {
+    const uint8_t *es;
+    switch (kind) {
+        default:
+        case 0:
+            es = janet_formatc("%v expects at most %d argument%s, got %d",
+                               fun, expected, expected == 1 ? "" : "s", got);
+            janetc_error(c, es);
+            break;
+        case 1:
+            es = janet_formatc("%v expects at most %d argument%s, got at least %d",
+                               fun, expected, expected == 1 ? "" : "s", got);
+            janetc_error(c, es);
+            break;
+        case 2:
+            es = janet_formatc("%v expects at least %d argument%s, got %d",
+                               fun, expected, expected == 1 ? "" : "s", got);
+            janetc_error(c, es);
+            break;
+        case 3:
+            janetc_lintf(c, JANET_C_LINT_NORMAL,
+                         "odd number of named arguments to `&keys` function %v", fun);
+            break;
+        case 4:
+            janetc_lintf(c, JANET_C_LINT_NORMAL,
+                         "odd number of named arguments to `&named` function %v", fun);
+            break;
+        case 5:
+            janetc_lintf(c, JANET_C_LINT_NORMAL,
+                         "unused named argument %v to function %v", argument, fun);
+            break;
+        case 6:
+            es = janet_formatc("%v expects at least 1 argument, got 0", fun);
+            janetc_error(c, es);
+            break;
+        case 7:
+            es = janet_formatc("%v expects 1 argument, got %d", fun, got);
+            janetc_error(c, es);
+            break;
+        case 8:
+            es = janet_formatc("%v expects 1 argument, got at least %d", fun, got);
+            janetc_error(c, es);
+            break;
+    }
+}
+#endif
 
 /* Compile a call or tailcall instruction */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 static JanetSlot janetc_call(JanetFopts opts, JanetSlot *slots, JanetSlot fun, const Janet *form) {
     JanetSlot retslot;
     JanetCompiler *c = opts.compiler;
@@ -621,109 +896,7 @@ static JanetSlot janetc_call(JanetFopts opts, JanetSlot *slots, JanetSlot fun, c
     }
     if (!specialized) {
         int32_t min_arity = janetc_pushslots(c, slots);
-        /* Check for provably incorrect function calls */
-        if (fun.flags & JANET_SLOT_CONSTANT) {
-
-            /* Check for bad arity type if fun is a constant */
-            switch (janet_type(fun.constant)) {
-                case JANET_FUNCTION: {
-                    JanetFunction *f = janet_unwrap_function(fun.constant);
-                    int32_t min = f->def->min_arity;
-                    int32_t max = f->def->max_arity;
-                    int structarg = f->def->flags & JANET_FUNCDEF_FLAG_STRUCTARG;
-                    int namedarg = f->def->flags & JANET_FUNCDEF_FLAG_NAMEDARGS;
-                    if (min_arity < 0) {
-                        /* Call has splices */
-                        min_arity = -1 - min_arity;
-                        if (min_arity > max && max >= 0) {
-                            const uint8_t *es = janet_formatc(
-                                                    "%v expects at most %d argument%s, got at least %d",
-                                                    fun.constant, max, max == 1 ? "" : "s", min_arity);
-                            janetc_error(c, es);
-                        }
-                    } else {
-                        /* Call has no splices */
-                        if (min_arity > max && max >= 0) {
-                            const uint8_t *es = janet_formatc(
-                                                    "%v expects at most %d argument%s, got %d",
-                                                    fun.constant, max, max == 1 ? "" : "s", min_arity);
-                            janetc_error(c, es);
-                        }
-                        if (min_arity < min) {
-                            const uint8_t *es = janet_formatc(
-                                                    "%v expects at least %d argument%s, got %d",
-                                                    fun.constant, min, min == 1 ? "" : "s", min_arity);
-                            janetc_error(c, es);
-                        }
-                        if (structarg && (min_arity > f->def->arity) && ((min_arity - f->def->arity) & 1)) {
-                            /* If we have an odd number of variadic arguments to a `&keys` function, that is almost certainly wrong. */
-                            if (namedarg) {
-                                janetc_lintf(c, JANET_C_LINT_NORMAL,
-                                             "odd number of named arguments to `&named` function %v", fun.constant);
-                            } else {
-                                janetc_lintf(c, JANET_C_LINT_NORMAL,
-                                             "odd number of named arguments to `&keys` function %v", fun.constant);
-                            }
-                        }
-                        if (namedarg && f->def->named_args_count > 0) {
-                            /* For each argument passed in, check if it is one of the used named arguments
-                             * by checking the list defined in the function def. If not, raise a normal compiler
-                             * lint. We can also do a strict lint for _missing_ named arguments, although in many
-                             * cases those are assumed to have some kind of default, or we have dynamic keys. */
-                            int32_t first_arg_key_index = f->def->arity + 1;
-                            for (int32_t i = first_arg_key_index; i < janet_tuple_length(form); i += 2) {
-                                Janet argkey = form[i];
-                                /* Assumption: The first N constants of a function are its named argument keys. This
-                                 * may change if the compiler changes, but is true for all Janet generated functions. */
-                                int found = 0;
-                                if (janet_checktype(argkey, JANET_KEYWORD)) {
-                                    for (int32_t j = 0; j < f->def->named_args_count && j < f->def->constants_length; j++) {
-                                        if (janet_equals(argkey, f->def->constants[j])) {
-                                            found = 1;
-                                            break;
-                                        }
-                                    }
-                                } else if (janet_checktype(argkey, JANET_TUPLE)) {
-                                    /* Possible lint : too dynamic, be dumber
-                                     * (defn f [&named x] [x])
-                                     * (f (if (coin-flip) :x :w) 10)
-                                     * A tuple could be a function call the evaluates to a valid key */
-                                    found = 1;
-                                }
-                                if (!found) {
-                                    janetc_lintf(c, JANET_C_LINT_NORMAL,
-                                                 "unused named argument %v to function %v", argkey, fun.constant);
-                                }
-                            }
-                        }
-                    }
-                }
-                break;
-                case JANET_CFUNCTION:
-                case JANET_ABSTRACT:
-                case JANET_NIL:
-                    break;
-                case JANET_KEYWORD:
-                    if (min_arity == 0) {
-                        const uint8_t *es = janet_formatc("%v expects at least 1 argument, got 0",
-                                                          fun.constant);
-                        janetc_error(c, es);
-                    }
-                    break;
-                default:
-                    if (min_arity > 1 || min_arity == 0) {
-                        const uint8_t *es = janet_formatc("%v expects 1 argument, got %d",
-                                                          fun.constant, min_arity);
-                        janetc_error(c, es);
-                    }
-                    if (min_arity < -2) {
-                        const uint8_t *es = janet_formatc("%v expects 1 argument, got at least %d",
-                                                          fun.constant, -1 - min_arity);
-                        janetc_error(c, es);
-                    }
-                    break;
-            }
-        }
+        janetc_validate_call(c, fun, min_arity, form);
 
         if ((opts.flags & JANET_FOPTS_TAIL) &&
                 /* Prevent top level tail calls for better errors */
@@ -739,7 +912,9 @@ static JanetSlot janetc_call(JanetFopts opts, JanetSlot *slots, JanetSlot fun, c
     janetc_freeslots(c, slots);
     return retslot;
 }
+#endif
 
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 static JanetSlot janetc_maker(JanetFopts opts, JanetSlot *slots, int op) {
     JanetCompiler *c = opts.compiler;
     JanetSlot retslot;
@@ -811,9 +986,11 @@ static JanetSlot janetc_bufferctor(JanetFopts opts, Janet x) {
                         janetc_toslots(c, &onearg, 1),
                         JOP_MAKE_BUFFER);
 }
+#endif
 
 /* Expand a macro one time. Also get the special form compiler if we
  * find that instead. */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 static int macroexpand1(
     JanetCompiler *c,
     Janet x,
@@ -887,8 +1064,54 @@ static int macroexpand1(
 
     return 1;
 }
+#else
+int janet_c_compiler_run_macro(
+    JanetCompiler *c,
+    Janet x,
+    Janet macroval,
+    Janet *out) {
+    const Janet *form = janet_unwrap_tuple(x);
+    JanetFunction *macro = janet_unwrap_function(macroval);
+    int32_t arity = janet_tuple_length(form) - 1;
+    JanetFiber *fiberp = janet_fiber(macro, 64, arity, form + 1);
+    if (NULL == fiberp) {
+        int32_t minar = macro->def->min_arity;
+        int32_t maxar = macro->def->max_arity;
+        const uint8_t *es = NULL;
+        if (minar >= 0 && arity < minar)
+            es = janet_formatc("macro arity mismatch, expected at least %d, got %d", minar, arity);
+        if (maxar >= 0 && arity > maxar)
+            es = janet_formatc("macro arity mismatch, expected at most %d, got %d", maxar, arity);
+        c->result.macrofiber = NULL;
+        janetc_error(c, es);
+        return 0;
+    }
+    fiberp->env = c->env;
+    int lock = janet_gclock();
+    Janet mf_kw = janet_ckeywordv("macro-form");
+    janet_table_put(c->env, mf_kw, x);
+    Janet ml_kw = janet_ckeywordv("macro-lints");
+    if (c->lints) {
+        janet_table_put(c->env, ml_kw, janet_wrap_array(c->lints));
+    }
+    Janet tempOut;
+    JanetSignal status = janet_continue(fiberp, janet_wrap_nil(), &tempOut);
+    janet_table_put(c->env, mf_kw, janet_wrap_nil());
+    janet_table_put(c->env, ml_kw, janet_wrap_nil());
+    janet_gcunlock(lock);
+    if (status != JANET_SIGNAL_OK) {
+        const uint8_t *es = janet_formatc("(macro) %V", tempOut);
+        c->result.macrofiber = fiberp;
+        janetc_error(c, es);
+        return 0;
+    }
+    *out = tempOut;
+    return 1;
+}
+#endif
 
 /* Compile a single value */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 JanetSlot janetc_value(JanetFopts opts, Janet x) {
     JanetSlot ret;
     JanetCompiler *c = opts.compiler;
@@ -973,8 +1196,10 @@ JanetSlot janetc_value(JanetFopts opts, Janet x) {
     c->recursion_guard++;
     return ret;
 }
+#endif
 
 /* Add function flags to janet functions */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 void janet_def_addflags(JanetFuncDef *def) {
     int32_t set_flags = 0;
     int32_t unset_flags = 0;
@@ -998,10 +1223,12 @@ void janet_def_addflags(JanetFuncDef *def) {
     def->flags |= set_flags;
     def->flags &= ~unset_flags;
 }
+#endif
 
 /* Compile a funcdef */
 /* Once the various other settings of the FuncDef have been tweaked,
  * call janet_def_addflags to set the proper flags for the funcdef */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 JanetFuncDef *janetc_pop_funcdef(JanetCompiler *c) {
     JanetScope *scope = c->scope;
     JanetFuncDef *def = janet_funcdef_alloc();
@@ -1136,8 +1363,10 @@ JanetFuncDef *janetc_pop_funcdef(JanetCompiler *c) {
 
     return def;
 }
+#endif
 
 /* Initialize a compiler */
+#ifndef JANET_ZIG_COMPILER_PRIMITIVES
 static void janetc_init(JanetCompiler *c, JanetTable *env, const uint8_t *where, JanetArray *lints) {
     c->scope = NULL;
     c->buffer = NULL;
@@ -1203,6 +1432,7 @@ JanetCompileResult janet_compile_lint(Janet source,
 JanetCompileResult janet_compile(Janet source, JanetTable *env, const uint8_t *where) {
     return janet_compile_lint(source, env, where, NULL);
 }
+#endif
 
 /* C Function for compiling */
 JANET_CORE_FN(cfun_compile,

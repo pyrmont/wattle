@@ -28,7 +28,6 @@ const core_sources = &.{
     "src/core/parse.c",
     "src/core/peg.c",
     "src/core/pp.c",
-    "src/core/regalloc.c",
     "src/core/run.c",
     "src/core/specials.c",
     "src/core/state.c",
@@ -88,6 +87,7 @@ const test_suites = &.{
     "test/suite-value.janet",
     "test/suite-vm.janet",
     "test/suite-zig-interop.janet",
+    "test/regalloc-bytecode.janet",
 };
 
 const common_c_flags = &.{
@@ -107,6 +107,18 @@ const BuildOptions = struct {
     utilities: SubsystemImplementation,
     int_scan: SubsystemImplementation,
     text_scan: SubsystemImplementation,
+    regalloc: SubsystemImplementation,
+    verify: SubsystemImplementation,
+    remove_noops: SubsystemImplementation,
+    movopt: SubsystemImplementation,
+    emit_core: SubsystemImplementation,
+    asm_encode: SubsystemImplementation,
+    asm_decode: SubsystemImplementation,
+    disasm: SubsystemImplementation,
+    compiler_primitives: SubsystemImplementation,
+    parser_core: SubsystemImplementation,
+    specials_core: SubsystemImplementation,
+    builtin_optimizers: SubsystemImplementation,
     single_threaded: bool,
     nanbox: bool,
     nanbox_pointer_shift: ?i32,
@@ -143,6 +155,18 @@ const RuntimeSubsystems = struct {
     utilities: ?*std.Build.Step.Compile,
     int_scan: ?*std.Build.Step.Compile,
     text_scan: ?*std.Build.Step.Compile,
+    regalloc: ?*std.Build.Step.Compile,
+    verify: ?*std.Build.Step.Compile,
+    remove_noops: ?*std.Build.Step.Compile,
+    movopt: ?*std.Build.Step.Compile,
+    emit_core: ?*std.Build.Step.Compile,
+    asm_encode: ?*std.Build.Step.Compile,
+    asm_decode: ?*std.Build.Step.Compile,
+    disasm: ?*std.Build.Step.Compile,
+    compiler_primitives: ?*std.Build.Step.Compile,
+    parser_core: ?*std.Build.Step.Compile,
+    specials_core: ?*std.Build.Step.Compile,
+    builtin_optimizers: ?*std.Build.Step.Compile,
 };
 
 pub fn build(b: *std.Build) void {
@@ -168,6 +192,54 @@ pub fn build(b: *std.Build) void {
             makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-textscan-zig", "src/zig/subsystems/textscan.zig")
         else
             null,
+        .regalloc = if (options.regalloc == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-regalloc-zig", "src/zig/subsystems/regalloc.zig")
+        else
+            null,
+        .verify = if (options.verify == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-verify-zig", "src/zig/subsystems/verify.zig")
+        else
+            null,
+        .remove_noops = if (options.remove_noops == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-remove-noops-zig", "src/zig/subsystems/remove_noops.zig")
+        else
+            null,
+        .movopt = if (options.movopt == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-movopt-zig", "src/zig/subsystems/movopt.zig")
+        else
+            null,
+        .emit_core = if (options.emit_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-emit-core-zig", "src/zig/subsystems/emit_core.zig")
+        else
+            null,
+        .asm_encode = if (options.assembler and options.asm_encode == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-asm-encode-zig", "src/zig/subsystems/asm_encode.zig")
+        else
+            null,
+        .asm_decode = if (options.assembler and options.asm_decode == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-asm-decode-zig", "src/zig/subsystems/asm_decode.zig")
+        else
+            null,
+        .disasm = if (options.assembler and options.disasm == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-disasm-zig", "src/zig/subsystems/disasm.zig")
+        else
+            null,
+        .compiler_primitives = if (options.compiler_primitives == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-compiler-primitives-zig", "src/zig/subsystems/compiler_primitives.zig")
+        else
+            null,
+        .parser_core = if (options.parser_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-parser-core-zig", "src/zig/subsystems/parser_core.zig")
+        else
+            null,
+        .specials_core = if (options.specials_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-specials-core-zig", "src/zig/subsystems/specials_core.zig")
+        else
+            null,
+        .builtin_optimizers = if (options.builtin_optimizers == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-builtin-optimizers-zig", "src/zig/subsystems/builtin_optimizers.zig")
+        else
+            null,
     };
 
     // Bootstrap tools must execute on the build host even during a cross build.
@@ -175,6 +247,7 @@ pub fn build(b: *std.Build) void {
     boot_module.addCMacro("JANET_BOOTSTRAP", "1");
     boot_module.addCSourceFiles(.{ .files = core_sources, .flags = common_c_flags });
     boot_module.addCSourceFiles(.{ .files = &.{"src/core/vector.c"}, .flags = common_c_flags });
+    boot_module.addCSourceFiles(.{ .files = &.{"src/core/regalloc.c"}, .flags = common_c_flags });
     boot_module.addCSourceFiles(.{ .files = boot_sources, .flags = common_c_flags });
     const boot = b.addExecutable(.{ .name = "janet-boot", .root_module = boot_module });
 
@@ -310,6 +383,91 @@ pub fn build(b: *std.Build) void {
     const run_text_scan_test = b.addRunArtifact(text_scan_test);
     subsystem_step.dependOn(&run_text_scan_test.step);
 
+    const regalloc_test_module = makeCModule(b, target, optimize, config_header, options);
+    regalloc_test_module.addIncludePath(b.path("src/core"));
+    regalloc_test_module.addCSourceFiles(.{ .files = &.{"test/regalloc.c"}, .flags = common_c_flags });
+    regalloc_test_module.linkLibrary(static_library);
+    const regalloc_test = b.addExecutable(.{ .name = "janet-regalloc-test", .root_module = regalloc_test_module });
+    const run_regalloc_test = b.addRunArtifact(regalloc_test);
+    subsystem_step.dependOn(&run_regalloc_test.step);
+
+    const verify_test_module = makeCModule(b, target, optimize, config_header, options);
+    verify_test_module.addCSourceFiles(.{ .files = &.{"test/verify.c"}, .flags = common_c_flags });
+    verify_test_module.linkLibrary(static_library);
+    const verify_test = b.addExecutable(.{ .name = "janet-verify-test", .root_module = verify_test_module });
+    const run_verify_test = b.addRunArtifact(verify_test);
+    subsystem_step.dependOn(&run_verify_test.step);
+
+    const remove_noops_test_module = makeCModule(b, target, optimize, config_header, options);
+    remove_noops_test_module.addIncludePath(b.path("src/core"));
+    remove_noops_test_module.addCSourceFiles(.{ .files = &.{"test/remove_noops.c"}, .flags = common_c_flags });
+    remove_noops_test_module.linkLibrary(static_library);
+    const remove_noops_test = b.addExecutable(.{ .name = "janet-remove-noops-test", .root_module = remove_noops_test_module });
+    const run_remove_noops_test = b.addRunArtifact(remove_noops_test);
+    subsystem_step.dependOn(&run_remove_noops_test.step);
+
+    const movopt_test_module = makeCModule(b, target, optimize, config_header, options);
+    movopt_test_module.addIncludePath(b.path("src/core"));
+    movopt_test_module.addCSourceFiles(.{ .files = &.{"test/movopt.c"}, .flags = common_c_flags });
+    movopt_test_module.linkLibrary(static_library);
+    const movopt_test = b.addExecutable(.{ .name = "janet-movopt-test", .root_module = movopt_test_module });
+    const run_movopt_test = b.addRunArtifact(movopt_test);
+    subsystem_step.dependOn(&run_movopt_test.step);
+
+    const emit_core_test_module = makeCModule(b, target, optimize, config_header, options);
+    emit_core_test_module.addIncludePath(b.path("src/core"));
+    emit_core_test_module.addCSourceFiles(.{ .files = &.{"test/emit_core.c"}, .flags = common_c_flags });
+    emit_core_test_module.linkLibrary(static_library);
+    const emit_core_test = b.addExecutable(.{ .name = "janet-emit-core-test", .root_module = emit_core_test_module });
+    const run_emit_core_test = b.addRunArtifact(emit_core_test);
+    subsystem_step.dependOn(&run_emit_core_test.step);
+
+    if (options.assembler) {
+        const asm_encode_test_module = makeCModule(b, target, optimize, config_header, options);
+        asm_encode_test_module.addCSourceFiles(.{ .files = &.{"test/asm_encode.c"}, .flags = common_c_flags });
+        asm_encode_test_module.linkLibrary(static_library);
+        const asm_encode_test = b.addExecutable(.{ .name = "janet-asm-encode-test", .root_module = asm_encode_test_module });
+        const run_asm_encode_test = b.addRunArtifact(asm_encode_test);
+        subsystem_step.dependOn(&run_asm_encode_test.step);
+
+        const asm_decode_test_module = makeCModule(b, target, optimize, config_header, options);
+        asm_decode_test_module.addCSourceFiles(.{ .files = &.{"test/asm_decode.c"}, .flags = common_c_flags });
+        asm_decode_test_module.linkLibrary(static_library);
+        const asm_decode_test = b.addExecutable(.{ .name = "janet-asm-decode-test", .root_module = asm_decode_test_module });
+        const run_asm_decode_test = b.addRunArtifact(asm_decode_test);
+        subsystem_step.dependOn(&run_asm_decode_test.step);
+
+        const disasm_test_module = makeCModule(b, target, optimize, config_header, options);
+        disasm_test_module.addCSourceFiles(.{ .files = &.{"test/disasm.c"}, .flags = common_c_flags });
+        disasm_test_module.linkLibrary(static_library);
+        const disasm_test = b.addExecutable(.{ .name = "janet-disasm-test", .root_module = disasm_test_module });
+        const run_disasm_test = b.addRunArtifact(disasm_test);
+        subsystem_step.dependOn(&run_disasm_test.step);
+    }
+
+    const compiler_primitives_test_module = makeCModule(b, target, optimize, config_header, options);
+    compiler_primitives_test_module.addIncludePath(b.path("src/core"));
+    compiler_primitives_test_module.addCSourceFiles(.{ .files = &.{"test/compiler_primitives.c"}, .flags = common_c_flags });
+    compiler_primitives_test_module.linkLibrary(static_library);
+    const compiler_primitives_test = b.addExecutable(.{ .name = "janet-compiler-primitives-test", .root_module = compiler_primitives_test_module });
+    const run_compiler_primitives_test = b.addRunArtifact(compiler_primitives_test);
+    subsystem_step.dependOn(&run_compiler_primitives_test.step);
+
+    const specials_core_test_module = makeCModule(b, target, optimize, config_header, options);
+    specials_core_test_module.addIncludePath(b.path("src/core"));
+    specials_core_test_module.addCSourceFiles(.{ .files = &.{"test/specials_core.c"}, .flags = common_c_flags });
+    specials_core_test_module.linkLibrary(static_library);
+    const specials_core_test = b.addExecutable(.{ .name = "janet-specials-core-test", .root_module = specials_core_test_module });
+    const run_specials_core_test = b.addRunArtifact(specials_core_test);
+    subsystem_step.dependOn(&run_specials_core_test.step);
+
+    const parser_core_test_module = makeCModule(b, target, optimize, config_header, options);
+    parser_core_test_module.addCSourceFiles(.{ .files = &.{"test/parser_core.c"}, .flags = common_c_flags });
+    parser_core_test_module.linkLibrary(static_library);
+    const parser_core_test = b.addExecutable(.{ .name = "janet-parser-core-test", .root_module = parser_core_test_module });
+    const run_parser_core_test = b.addRunArtifact(parser_core_test);
+    subsystem_step.dependOn(&run_parser_core_test.step);
+
     const zig_abi_module = b.createModule(.{
         .root_source_file = b.path("src/zig/abi_test.zig"),
         .target = target,
@@ -394,6 +552,18 @@ fn readOptions(b: *std.Build) BuildOptions {
         .utilities = b.option(SubsystemImplementation, "utilities", "Select the pure utility implementation (c or zig)") orelse .zig,
         .int_scan = b.option(SubsystemImplementation, "int-scan", "Select the 64-bit integer scanner (c or zig)") orelse .zig,
         .text_scan = b.option(SubsystemImplementation, "text-scan", "Select UTF-8 and symbol validation (c or zig)") orelse .zig,
+        .regalloc = b.option(SubsystemImplementation, "regalloc", "Select the compiler register allocator (c or zig)") orelse .zig,
+        .verify = b.option(SubsystemImplementation, "verify", "Select the bytecode verifier (c or zig)") orelse .zig,
+        .remove_noops = b.option(SubsystemImplementation, "remove-noops", "Select bytecode no-op removal (c or zig)") orelse .zig,
+        .movopt = b.option(SubsystemImplementation, "movopt", "Select bytecode dead-write optimization (c or zig)") orelse .zig,
+        .emit_core = b.option(SubsystemImplementation, "emit-core", "Select compiler emitter core (c or zig)") orelse .zig,
+        .asm_encode = b.option(SubsystemImplementation, "asm-encode", "Select assembly instruction encoding (c or zig)") orelse .zig,
+        .asm_decode = b.option(SubsystemImplementation, "asm-decode", "Select assembly instruction decoding (c or zig)") orelse .zig,
+        .disasm = b.option(SubsystemImplementation, "disasm", "Select function disassembly (c or zig)") orelse .zig,
+        .compiler_primitives = b.option(SubsystemImplementation, "compiler-primitives", "Select compiler slot and funcdef primitives (c or zig)") orelse .zig,
+        .parser_core = b.option(SubsystemImplementation, "parser-core", "Select parser lifecycle and result queue implementation (c or zig)") orelse .zig,
+        .specials_core = b.option(SubsystemImplementation, "specials-core", "Select simple special-form implementations (c or zig)") orelse .zig,
+        .builtin_optimizers = b.option(SubsystemImplementation, "builtin-optimizers", "Select the builtin optimizer registry (c or zig)") orelse .zig,
         .single_threaded = b.option(bool, "single-threaded", "Build without thread-local VM state") orelse false,
         .nanbox = b.option(bool, "nanbox", "Use Janet's NaN-boxed value representation") orelse true,
         .nanbox_pointer_shift = pointer_shift,
@@ -543,13 +713,7 @@ fn addRuntimeSources(
     module.addCSourceFile(.{ .file = image_source, .flags = common_c_flags });
     switch (options.vector) {
         .c => module.addCSourceFiles(.{ .files = &.{"src/core/vector.c"}, .flags = common_c_flags }),
-        .zig => {
-            module.addObject(subsystems.vector.?);
-            module.addCSourceFiles(.{
-                .files = &.{"src/zig/runtime_bridge.c"},
-                .flags = common_c_flags,
-            });
-        },
+        .zig => module.addObject(subsystems.vector.?),
     }
     if (options.utilities == .zig) {
         module.addCMacro("JANET_ZIG_UTILS", "1");
@@ -562,6 +726,60 @@ fn addRuntimeSources(
     if (options.text_scan == .zig) {
         module.addCMacro("JANET_ZIG_TEXTSCAN", "1");
         module.addObject(subsystems.text_scan.?);
+    }
+    switch (options.regalloc) {
+        .c => module.addCSourceFiles(.{ .files = &.{"src/core/regalloc.c"}, .flags = common_c_flags }),
+        .zig => module.addObject(subsystems.regalloc.?),
+    }
+    if (options.verify == .zig) {
+        module.addCMacro("JANET_ZIG_VERIFY", "1");
+        module.addObject(subsystems.verify.?);
+    }
+    if (options.remove_noops == .zig) {
+        module.addCMacro("JANET_ZIG_REMOVE_NOOPS", "1");
+        module.addObject(subsystems.remove_noops.?);
+    }
+    if (options.movopt == .zig) {
+        module.addCMacro("JANET_ZIG_MOVOPT", "1");
+        module.addObject(subsystems.movopt.?);
+    }
+    if (options.emit_core == .zig) {
+        module.addCMacro("JANET_ZIG_EMIT_CORE", "1");
+        module.addObject(subsystems.emit_core.?);
+    }
+    if (options.assembler and options.asm_encode == .zig) {
+        module.addCMacro("JANET_ZIG_ASM_ENCODE", "1");
+        module.addObject(subsystems.asm_encode.?);
+    }
+    if (options.assembler and options.asm_decode == .zig) {
+        module.addCMacro("JANET_ZIG_ASM_DECODE", "1");
+        module.addObject(subsystems.asm_decode.?);
+    }
+    if (options.assembler and options.disasm == .zig) {
+        module.addCMacro("JANET_ZIG_DISASM", "1");
+        module.addObject(subsystems.disasm.?);
+    }
+    if (options.compiler_primitives == .zig) {
+        module.addCMacro("JANET_ZIG_COMPILER_PRIMITIVES", "1");
+        module.addObject(subsystems.compiler_primitives.?);
+    }
+    if (options.parser_core == .zig) {
+        module.addCMacro("JANET_ZIG_PARSER_CORE", "1");
+        module.addObject(subsystems.parser_core.?);
+    }
+    if (options.specials_core == .zig) {
+        module.addCMacro("JANET_ZIG_SPECIALS_CORE", "1");
+        module.addObject(subsystems.specials_core.?);
+    }
+    if (options.builtin_optimizers == .zig) {
+        module.addCMacro("JANET_ZIG_BUILTIN_OPTIMIZERS", "1");
+        module.addObject(subsystems.builtin_optimizers.?);
+    }
+    if (options.vector == .zig or options.regalloc == .zig or options.movopt == .zig or options.parser_core == .zig) {
+        module.addCSourceFiles(.{
+            .files = &.{"src/zig/runtime_bridge.c"},
+            .flags = common_c_flags,
+        });
     }
 }
 
@@ -580,6 +798,7 @@ fn makeZigSubsystemObject(
         .optimize = optimize,
     });
     configureCModule(b, subsystem_module, target, config_header, options);
+    subsystem_module.addIncludePath(b.path("src/core"));
     const abi_module = b.createModule(.{
         .root_source_file = b.path("src/zig/abi.zig"),
         .target = target,

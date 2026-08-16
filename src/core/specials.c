@@ -53,6 +53,28 @@ static void check_24bit_jump(JanetCompiler *c, int32_t lab1, int32_t lab2) {
     }
 }
 
+#ifdef JANET_ZIG_SPECIALS_CORE
+JanetSlot janet_zig_special_quote(JanetFopts opts, int32_t argn, const Janet *argv);
+JanetSlot janet_zig_special_splice(JanetFopts opts, int32_t argn, const Janet *argv);
+JanetSlot janet_zig_special_unquote(JanetFopts opts, int32_t argn, const Janet *argv);
+JanetSlot janet_zig_special_do(JanetFopts opts, int32_t argn, const Janet *argv);
+JanetSlot janet_zig_special_upscope(JanetFopts opts, int32_t argn, const Janet *argv);
+JanetSlot janet_zig_special_break(JanetFopts opts, int32_t argn, const Janet *argv);
+JanetSlot janet_zig_special_if(JanetFopts opts, int32_t argn, const Janet *argv);
+JanetSlot janet_zig_special_quasiquote(JanetFopts opts, int32_t argn, const Janet *argv);
+JanetSlot janet_zig_special_while(JanetFopts opts, int32_t argn, const Janet *argv);
+JanetSlot janet_zig_special_set(JanetFopts opts, int32_t argn, const Janet *argv);
+JanetSlot janet_zig_special_var(JanetFopts opts, int32_t argn, const Janet *argv);
+JanetSlot janet_zig_special_def(JanetFopts opts, int32_t argn, const Janet *argv);
+JanetSlot janet_zig_special_fn(JanetFopts opts, int32_t argn, const Janet *argv);
+const JanetSpecial *janet_zig_special_lookup(const uint8_t *name);
+Janet janet_c_specials_wrap_integer(int32_t value) {
+    return janet_wrap_integer(value);
+}
+Janet janet_c_specials_wrap_keyword(const uint8_t *value) {
+    return janet_wrap_keyword(value);
+}
+#else
 static JanetSlot janetc_quote(JanetFopts opts, int32_t argn, const Janet *argv) {
     if (argn != 1) {
         janetc_cerror(opts.compiler, "expected 1 argument to quote");
@@ -75,7 +97,9 @@ static JanetSlot janetc_splice(JanetFopts opts, int32_t argn, const Janet *argv)
     ret.flags |= JANET_SLOT_SPLICED;
     return ret;
 }
+#endif
 
+#ifndef JANET_ZIG_SPECIALS_CORE
 static JanetSlot qq_slots(JanetFopts opts, JanetSlot *slots, int makeop) {
     JanetSlot target = janetc_gettarget(opts);
     janetc_pushslots(opts.compiler, slots);
@@ -152,13 +176,16 @@ static JanetSlot janetc_quasiquote(JanetFopts opts, int32_t argn, const Janet *a
     }
     return quasiquote(opts, argv[0], JANET_RECURSION_GUARD, 0);
 }
+#endif
 
+#ifndef JANET_ZIG_SPECIALS_CORE
 static JanetSlot janetc_unquote(JanetFopts opts, int32_t argn, const Janet *argv) {
     (void) argn;
     (void) argv;
     janetc_cerror(opts.compiler, "cannot use unquote here");
     return janetc_cslot(janet_wrap_nil());
 }
+#endif
 
 /* Perform destructuring. Be careful to
  * keep the order registers are freed.
@@ -287,6 +314,7 @@ static const Janet *janetc_make_sourcemap(JanetCompiler *c) {
     return janet_tuple_end(tup);
 }
 
+#ifndef JANET_ZIG_SPECIALS_CORE
 static JanetSlot janetc_varset(JanetFopts opts, int32_t argn, const Janet *argv) {
     if (argn != 2) {
         janetc_cerror(opts.compiler, "expected 2 arguments to set");
@@ -329,6 +357,7 @@ static JanetSlot janetc_varset(JanetFopts opts, int32_t argn, const Janet *argv)
         return janetc_cslot(janet_wrap_nil());
     }
 }
+#endif
 
 /* Add attributes to a global def or var table */
 static JanetTable *handleattr(JanetCompiler *c, const char *kind, int32_t argn, const Janet *argv) {
@@ -506,6 +535,7 @@ static void check_metadata_lint(JanetCompiler *c, JanetTable *attr_table) {
     }
 }
 
+#ifndef JANET_ZIG_SPECIALS_CORE
 static JanetSlot janetc_var(JanetFopts opts, int32_t argn, const Janet *argv) {
     JanetCompiler *c = opts.compiler;
     JanetTable *attr_table = handleattr(c, "var", argn, argv);
@@ -528,6 +558,7 @@ static JanetSlot janetc_var(JanetFopts opts, int32_t argn, const Janet *argv) {
     janet_v_free(into);
     return ret;
 }
+#endif
 
 static int defleaf(
     JanetCompiler *c,
@@ -575,6 +606,7 @@ static int defleaf(
     return result;
 }
 
+#ifndef JANET_ZIG_SPECIALS_CORE
 static JanetSlot janetc_def(JanetFopts opts, int32_t argn, const Janet *argv) {
     JanetCompiler *c = opts.compiler;
     JanetTable *attr_table = handleattr(c, "def", argn, argv);
@@ -598,6 +630,7 @@ static JanetSlot janetc_def(JanetFopts opts, int32_t argn, const Janet *argv) {
     janet_v_free(into);
     return ret;
 }
+#endif
 
 /* Check if a form matches the pattern (= nil _) or (not= nil _) */
 static int janetc_check_nil_form(Janet x, Janet *capture, uint32_t fun_tag) {
@@ -630,6 +663,7 @@ static int janetc_check_nil_form(Janet x, Janet *capture, uint32_t fun_tag) {
  * ...
  * :done
  */
+#ifndef JANET_ZIG_SPECIALS_CORE
 static JanetSlot janetc_if(JanetFopts opts, int32_t argn, const Janet *argv) {
     JanetCompiler *c = opts.compiler;
     int32_t labelr, labeljr, labeld, labeljd;
@@ -733,9 +767,11 @@ static JanetSlot janetc_if(JanetFopts opts, int32_t argn, const Janet *argv) {
     if (tail) target.flags |= JANET_SLOT_RETURNED;
     return target;
 }
+#endif
 
 /* Compile a do form. Do forms execute their body sequentially and
  * evaluate to the last expression in the body. */
+#ifndef JANET_ZIG_SPECIALS_CORE
 static JanetSlot janetc_do(JanetFopts opts, int32_t argn, const Janet *argv) {
     int32_t i;
     JanetSlot ret = janetc_cslot(janet_wrap_nil());
@@ -780,6 +816,7 @@ static JanetSlot janetc_upscope(JanetFopts opts, int32_t argn, const Janet *argv
     }
     return ret;
 }
+#endif
 
 /* Add a funcdef to the top most function scope */
 static int32_t janetc_addfuncdef(JanetCompiler *c, JanetFuncDef *def) {
@@ -799,6 +836,7 @@ static int32_t janetc_addfuncdef(JanetCompiler *c, JanetFuncDef *def) {
  *
  * jump :end or retn if in function
  */
+#ifndef JANET_ZIG_SPECIALS_CORE
 static JanetSlot janetc_break(JanetFopts opts, int32_t argn, const Janet *argv) {
     JanetCompiler *c = opts.compiler;
     JanetScope *scope = c->scope;
@@ -845,6 +883,7 @@ static JanetSlot janetc_break(JanetFopts opts, int32_t argn, const Janet *argv) 
         return janetc_cslot(janet_wrap_nil());
     }
 }
+#endif
 
 /*
  * :whiletop
@@ -855,6 +894,7 @@ static JanetSlot janetc_break(JanetFopts opts, int32_t argn, const Janet *argv) 
  * jump :whiletop
  * :done
  */
+#ifndef JANET_ZIG_SPECIALS_CORE
 static JanetSlot janetc_while(JanetFopts opts, int32_t argn, const Janet *argv) {
     JanetCompiler *c = opts.compiler;
     JanetSlot cond;
@@ -989,7 +1029,9 @@ static JanetSlot janetc_while(JanetFopts opts, int32_t argn, const Janet *argv) 
 
     return janetc_cslot(janet_wrap_nil());
 }
+#endif
 
+#ifndef JANET_ZIG_SPECIALS_CORE
 static JanetSlot janetc_fn(JanetFopts opts, int32_t argn, const Janet *argv) {
     JanetCompiler *c = opts.compiler;
     JanetFuncDef *def;
@@ -1213,7 +1255,13 @@ error2:
     janetc_popscope(c);
     return janetc_cslot(janet_wrap_nil());
 }
+#endif
 
+#ifdef JANET_ZIG_SPECIALS_CORE
+const JanetSpecial *janetc_special(const uint8_t *name) {
+    return janet_zig_special_lookup(name);
+}
+#else
 /* Keep in lexicographic order */
 static const JanetSpecial janetc_specials[] = {
     {"break", janetc_break},
@@ -1239,3 +1287,4 @@ const JanetSpecial *janetc_special(const uint8_t *name) {
                sizeof(JanetSpecial),
                name);
 }
+#endif
