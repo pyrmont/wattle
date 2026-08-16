@@ -401,6 +401,8 @@ int janet_scan_number(
 
 #ifdef JANET_INT_TYPES
 
+#ifndef JANET_ZIG_INTSCAN
+
 static int scan_uint64(
     const uint8_t *str,
     int32_t len,
@@ -494,6 +496,8 @@ int janet_scan_uint64(const uint8_t *str, int32_t len, uint64_t *out) {
     }
     return 0;
 }
+
+#endif /* JANET_ZIG_INTSCAN */
 
 /* Similar to janet_scan_number but allows for
  * more numeric types with a given suffix. */

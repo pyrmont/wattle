@@ -118,6 +118,8 @@ const char *const janet_status_names[16] = {
     "alive"
 };
 
+#ifndef JANET_ZIG_UTILS
+
 uint32_t janet_hash_mix(uint32_t input, uint32_t more) {
     uint32_t mix1 = (more + 0x9e3779b9 + (input << 6) + (input >> 2));
     return input ^ (0x9e3779b9 + (mix1 << 6) + (mix1 >> 2));
@@ -247,6 +249,8 @@ int32_t janet_string_calchash(const uint8_t *str, int32_t len) {
 
 #endif
 
+#endif /* JANET_ZIG_UTILS */
+
 /* Computes hash of an array of values */
 int32_t janet_array_calchash(const Janet *array, int32_t len) {
     const Janet *end = array + len;
@@ -271,6 +275,7 @@ int32_t janet_kv_calchash(const JanetKV *kvs, int32_t len) {
 
 /* Calculate next power of 2. May overflow. If n < 0,
  * will return 0. */
+#ifndef JANET_ZIG_UTILS
 int32_t janet_tablen(int32_t n) {
     if (n < 0) return 0;
     n |= n >> 1;
@@ -280,6 +285,7 @@ int32_t janet_tablen(int32_t n) {
     n |= n >> 16;
     return n == INT32_MAX ? INT32_MAX : n + 1;
 }
+#endif
 
 /* Avoid some undefined behavior that was common in the code base. */
 void safe_memcpy(void *dest, const void *src, size_t len) {

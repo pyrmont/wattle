@@ -59,7 +59,19 @@ declared not to return; a custom policy must not `longjmp` through the Zig
 caller. Later ports with recoverable failures should use the explicit
 protected-call pattern described above.
 
-Run `zig build test` and `zig build test -Dvector=c` to exercise the same ABI,
-embedding, CLI, native-module, vector-contract, and Janet language tests with
-each implementation. `zig build test -Dnanbox=false` covers the tagged-value
-configuration with the default Zig vector.
+Phase 4 adds three more Zig-default leaf selectors:
+
+- `-Dutilities=c` for hash primitives and table-capacity rounding.
+- `-Dint-scan=c` for signed and unsigned 64-bit literal scanning.
+- `-Dtext-scan=c` for UTF-8 and symbol-character validation.
+
+The relevant C source remains compiled for its other responsibilities; a
+build macro removes only the functions supplied by the selected Zig object.
+This keeps the migration seam smaller than the original C file boundary.
+
+Run `zig build subsystem-test` for focused contracts. `zig build test` includes
+those contracts plus the ABI, embedding, CLI, native-module, and Janet language
+tests. Set any selector to `c` to run the identical graph against its fallback;
+for example, use `zig build test -Dutilities=c -Dint-scan=c -Dtext-scan=c` for
+the all-C Phase 4 comparison. `zig build test -Dnanbox=false -Dprf=true` covers
+tagged values and keyed hashing with the Zig implementations.

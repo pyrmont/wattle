@@ -45,6 +45,7 @@ static int is_whitespace(uint8_t c) {
  * if the corresponding ascii code is a symbol char, and 0
  * if not. The upper characters are also considered symbol
  * chars and are then checked for utf-8 compliance. */
+#ifndef JANET_ZIG_TEXTSCAN
 static const uint32_t symchars[8] = {
     0x00000000, 0xf7ffec72, 0xc7ffffff, 0x07fffffe,
     0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff
@@ -91,6 +92,7 @@ int janet_valid_utf8(const uint8_t *str, int32_t len) {
     }
     return 1;
 }
+#endif /* JANET_ZIG_TEXTSCAN */
 
 /* Get hex digit from a letter */
 static int to_hex(uint8_t c) {

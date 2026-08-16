@@ -104,6 +104,9 @@ const SubsystemImplementation = enum {
 
 const BuildOptions = struct {
     vector: SubsystemImplementation,
+    utilities: SubsystemImplementation,
+    int_scan: SubsystemImplementation,
+    text_scan: SubsystemImplementation,
     single_threaded: bool,
     nanbox: bool,
     nanbox_pointer_shift: ?i32,
@@ -135,28 +138,37 @@ const BuildOptions = struct {
     stack_max: i32,
 };
 
+const RuntimeSubsystems = struct {
+    vector: ?*std.Build.Step.Compile,
+    utilities: ?*std.Build.Step.Compile,
+    int_scan: ?*std.Build.Step.Compile,
+    text_scan: ?*std.Build.Step.Compile,
+};
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const options = readOptions(b);
     const config_header = makeConfigHeader(b, options);
 
-    const vector_object = if (options.vector == .zig) blk: {
-        const vector_module = b.createModule(.{
-            .root_source_file = b.path("src/zig/subsystems/vector.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        configureCModule(b, vector_module, target, config_header, options);
-        const abi_module = b.createModule(.{
-            .root_source_file = b.path("src/zig/abi.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        configureCModule(b, abi_module, target, config_header, options);
-        vector_module.addImport("abi", abi_module);
-        break :blk b.addObject(.{ .name = "janet-vector-zig", .root_module = vector_module });
-    } else null;
+    const subsystems: RuntimeSubsystems = .{
+        .vector = if (options.vector == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-vector-zig", "src/zig/subsystems/vector.zig")
+        else
+            null,
+        .utilities = if (options.utilities == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-utils-zig", "src/zig/subsystems/utils.zig")
+        else
+            null,
+        .int_scan = if (options.int_types and options.int_scan == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-intscan-zig", "src/zig/subsystems/intscan.zig")
+        else
+            null,
+        .text_scan = if (options.text_scan == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-textscan-zig", "src/zig/subsystems/textscan.zig")
+        else
+            null,
+    };
 
     // Bootstrap tools must execute on the build host even during a cross build.
     const boot_module = makeCModule(b, b.graph.host, .Debug, config_header, options);
@@ -173,7 +185,7 @@ pub fn build(b: *std.Build) void {
     generate_image.addFileInput(b.path("src/boot/boot.janet"));
     const image_source = generate_image.captureStdOut(.{ .basename = "janet-image.c" });
 
-    const static_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options, vector_object);
+    const static_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options, subsystems);
     const static_library = b.addLibrary(.{
         .name = "janet",
         .linkage = .static,
@@ -184,7 +196,7 @@ pub fn build(b: *std.Build) void {
     static_library.installHeader(config_header, "janet/janetconf.h");
     b.installArtifact(static_library);
 
-    const shared_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options, vector_object);
+    const shared_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options, subsystems);
     const shared_library = b.addLibrary(.{
         .name = "janet",
         .linkage = .dynamic,
@@ -201,7 +213,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     configureCModule(b, client_module, target, config_header, options);
-    addRuntimeSources(client_module, image_source, options, vector_object);
+    addRuntimeSources(client_module, image_source, options, subsystems);
     client_module.addCSourceFiles(.{
         .files = &.{"src/zig/interop_bridge.c"},
         .flags = common_c_flags,
@@ -211,7 +223,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(client);
 
     // Keep the original C shell as a comparison target during Phase 2.
-    const c_client_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options, vector_object);
+    const c_client_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options, subsystems);
     c_client_module.addCSourceFiles(.{
         .files = &.{"src/mainclient/shell.c"},
         .flags = common_c_flags,
@@ -250,6 +262,7 @@ pub fn build(b: *std.Build) void {
     run_c_step.dependOn(&run_c_client.step);
 
     const abi_step = b.step("abi-test", "Verify Janet C and Zig ABI assumptions");
+    const subsystem_step = b.step("subsystem-test", "Run mixed-runtime subsystem contract tests");
 
     const c_abi_module = makeCModule(b, target, optimize, config_header, options);
     c_abi_module.addCSourceFiles(.{ .files = &.{"test/abi.c"}, .flags = common_c_flags });
@@ -270,7 +283,32 @@ pub fn build(b: *std.Build) void {
     vector_test_module.linkLibrary(static_library);
     const vector_test = b.addExecutable(.{ .name = "janet-vector-test", .root_module = vector_test_module });
     const run_vector_test = b.addRunArtifact(vector_test);
-    abi_step.dependOn(&run_vector_test.step);
+    subsystem_step.dependOn(&run_vector_test.step);
+
+    const utilities_test_module = makeCModule(b, target, optimize, config_header, options);
+    utilities_test_module.addIncludePath(b.path("src/core"));
+    utilities_test_module.addCSourceFiles(.{ .files = &.{"test/utils.c"}, .flags = common_c_flags });
+    utilities_test_module.linkLibrary(static_library);
+    const utilities_test = b.addExecutable(.{ .name = "janet-utilities-test", .root_module = utilities_test_module });
+    const run_utilities_test = b.addRunArtifact(utilities_test);
+    subsystem_step.dependOn(&run_utilities_test.step);
+
+    if (options.int_types) {
+        const int_scan_test_module = makeCModule(b, target, optimize, config_header, options);
+        int_scan_test_module.addCSourceFiles(.{ .files = &.{"test/intscan.c"}, .flags = common_c_flags });
+        int_scan_test_module.linkLibrary(static_library);
+        const int_scan_test = b.addExecutable(.{ .name = "janet-intscan-test", .root_module = int_scan_test_module });
+        const run_int_scan_test = b.addRunArtifact(int_scan_test);
+        subsystem_step.dependOn(&run_int_scan_test.step);
+    }
+
+    const text_scan_test_module = makeCModule(b, target, optimize, config_header, options);
+    text_scan_test_module.addIncludePath(b.path("src/core"));
+    text_scan_test_module.addCSourceFiles(.{ .files = &.{"test/textscan.c"}, .flags = common_c_flags });
+    text_scan_test_module.linkLibrary(static_library);
+    const text_scan_test = b.addExecutable(.{ .name = "janet-textscan-test", .root_module = text_scan_test_module });
+    const run_text_scan_test = b.addRunArtifact(text_scan_test);
+    subsystem_step.dependOn(&run_text_scan_test.step);
 
     const zig_abi_module = b.createModule(.{
         .root_source_file = b.path("src/zig/abi_test.zig"),
@@ -287,6 +325,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run ABI checks and Janet's test suites");
     test_step.dependOn(abi_step);
+    test_step.dependOn(subsystem_step);
     addCliChecks(b, test_step, client, c_client);
 
     if (options.dynamic_modules and target.result.os.tag != .windows) {
@@ -352,6 +391,9 @@ fn readOptions(b: *std.Build) BuildOptions {
 
     const options: BuildOptions = .{
         .vector = b.option(SubsystemImplementation, "vector", "Select the vector implementation (c or zig)") orelse .zig,
+        .utilities = b.option(SubsystemImplementation, "utilities", "Select the pure utility implementation (c or zig)") orelse .zig,
+        .int_scan = b.option(SubsystemImplementation, "int-scan", "Select the 64-bit integer scanner (c or zig)") orelse .zig,
+        .text_scan = b.option(SubsystemImplementation, "text-scan", "Select UTF-8 and symbol validation (c or zig)") orelse .zig,
         .single_threaded = b.option(bool, "single-threaded", "Build without thread-local VM state") orelse false,
         .nanbox = b.option(bool, "nanbox", "Use Janet's NaN-boxed value representation") orelse true,
         .nanbox_pointer_shift = pointer_shift,
@@ -484,10 +526,10 @@ fn makeRuntimeModule(
     config_header: std.Build.LazyPath,
     image_source: std.Build.LazyPath,
     options: BuildOptions,
-    vector_object: ?*std.Build.Step.Compile,
+    subsystems: RuntimeSubsystems,
 ) *std.Build.Module {
     const module = makeCModule(b, target, optimize, config_header, options);
-    addRuntimeSources(module, image_source, options, vector_object);
+    addRuntimeSources(module, image_source, options, subsystems);
     return module;
 }
 
@@ -495,20 +537,57 @@ fn addRuntimeSources(
     module: *std.Build.Module,
     image_source: std.Build.LazyPath,
     options: BuildOptions,
-    vector_object: ?*std.Build.Step.Compile,
+    subsystems: RuntimeSubsystems,
 ) void {
     module.addCSourceFiles(.{ .files = core_sources, .flags = common_c_flags });
     module.addCSourceFile(.{ .file = image_source, .flags = common_c_flags });
     switch (options.vector) {
         .c => module.addCSourceFiles(.{ .files = &.{"src/core/vector.c"}, .flags = common_c_flags }),
         .zig => {
-            module.addObject(vector_object.?);
+            module.addObject(subsystems.vector.?);
             module.addCSourceFiles(.{
                 .files = &.{"src/zig/runtime_bridge.c"},
                 .flags = common_c_flags,
             });
         },
     }
+    if (options.utilities == .zig) {
+        module.addCMacro("JANET_ZIG_UTILS", "1");
+        module.addObject(subsystems.utilities.?);
+    }
+    if (options.int_types and options.int_scan == .zig) {
+        module.addCMacro("JANET_ZIG_INTSCAN", "1");
+        module.addObject(subsystems.int_scan.?);
+    }
+    if (options.text_scan == .zig) {
+        module.addCMacro("JANET_ZIG_TEXTSCAN", "1");
+        module.addObject(subsystems.text_scan.?);
+    }
+}
+
+fn makeZigSubsystemObject(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    config_header: std.Build.LazyPath,
+    options: BuildOptions,
+    name: []const u8,
+    source: []const u8,
+) *std.Build.Step.Compile {
+    const subsystem_module = b.createModule(.{
+        .root_source_file = b.path(source),
+        .target = target,
+        .optimize = optimize,
+    });
+    configureCModule(b, subsystem_module, target, config_header, options);
+    const abi_module = b.createModule(.{
+        .root_source_file = b.path("src/zig/abi.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    configureCModule(b, abi_module, target, config_header, options);
+    subsystem_module.addImport("abi", abi_module);
+    return b.addObject(.{ .name = name, .root_module = subsystem_module });
 }
 
 fn linkPlatformLibraries(module: *std.Build.Module, os: std.Target.Os.Tag, single_threaded: bool) void {
