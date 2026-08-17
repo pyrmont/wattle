@@ -168,6 +168,111 @@ typedef enum {
     JANET_FFI_CC_AAPCS64
 } JanetFFICallingConvention;
 
+/* The running state of a struct layout, held by the caller and advanced one
+ * field at a time. The widths match what JanetFFIStruct stores these in. */
+typedef struct {
+    uint32_t size;
+    uint32_t alignment;
+    uint32_t is_aligned;
+} JanetFFILayout;
+
+/* Portable kernels of the FFI type system: the two name tables, the array
+ * extent, and the struct layout machine. `src/zig/subsystems/ffi_layout.zig`
+ * supplies these when JANET_ZIG_FFI_LAYOUT is defined, and the definitions
+ * further down are the differential C fallback. Neither JanetFFIType nor
+ * JanetFFIStruct crosses: the code here dispatches on the type and passes the
+ * scalars that result. */
+int32_t janet_ffi_decode_prim(const uint8_t *name, int32_t len);
+int32_t janet_ffi_decode_cc(const uint8_t *name, int32_t len);
+size_t janet_ffi_type_extent(size_t base_size, int32_t array_count);
+void janet_ffi_layout_init(JanetFFILayout *layout);
+size_t janet_ffi_layout_place(JanetFFILayout *layout, size_t el_size, size_t el_align, int packed_field);
+void janet_ffi_layout_finish(JanetFFILayout *layout);
+
+/* One node of a JanetFFIType serialized in pre-order: a struct's fields follow
+ * it immediately, each field's subtree complete before the next begins. This is
+ * how a type reaches the classifiers without a pointer into a collected
+ * abstract crossing with it. `size` is type_size(), with any array count
+ * already multiplied in; `struct_size` is the underlying JanetFFIStruct's own
+ * size, with the array count left out. */
+typedef struct {
+    uint64_t size;
+    uint32_t struct_size;
+    uint32_t prim;
+    uint32_t field_count;
+    uint32_t is_aligned;
+    uint32_t offset;
+    int32_t array_count;
+} JanetFFITypeNode;
+
+/* One argument as a calling convention sees it. `spec` arrives holding the
+ * class the classifier produced and leaves holding the placement. */
+typedef struct {
+    uint64_t size;
+    uint32_t prim;
+    uint32_t spec;
+    uint32_t alignment;
+    uint32_t offset;
+    uint32_t offset2;
+} JanetFFIArgSlot;
+
+/* What a convention concluded about a signature as a whole. A convention that
+ * cannot place an argument reports the position and the reason here rather than
+ * raising, so no Janet signal crosses a Zig frame. */
+typedef struct {
+    uint32_t stack_count;
+    uint32_t variant;
+    uint32_t error_kind;
+    int32_t error_arg;
+} JanetFFIAllocResult;
+
+#define JANET_FFI_ALLOC_OK 0
+#define JANET_FFI_ALLOC_UNSUPPORTED_SPEC 1
+#define JANET_FFI_ALLOC_RETURN_TOO_BIG 2
+
+/* The calling conventions: register classification and argument allocation.
+ * `src/zig/subsystems/ffi_classify.zig` supplies these when
+ * JANET_ZIG_FFI_CLASSIFY is defined. Every convention is declared on every
+ * target — none of this is architecture-specific except the rules it encodes —
+ * and the JANET_FFI_*_ENABLED guards below still decide which one a build may
+ * call. */
+uint32_t janet_ffi_sysv64_classify(const JanetFFITypeNode *nodes, uint32_t count);
+uint32_t janet_ffi_aapcs64_classify(const JanetFFITypeNode *nodes, uint32_t count);
+void janet_ffi_win64_alloc(JanetFFIAllocResult *result, JanetFFIArgSlot *ret,
+                           JanetFFIArgSlot *args, uint32_t arg_count);
+void janet_ffi_sysv64_alloc(JanetFFIAllocResult *result, JanetFFIArgSlot *ret,
+                            JanetFFIArgSlot *args, uint32_t arg_count);
+void janet_ffi_aapcs64_alloc(JanetFFIAllocResult *result, JanetFFIArgSlot *ret,
+                             JanetFFIArgSlot *args, uint32_t arg_count,
+                             int apple_abi, uint64_t max_ret_size);
+
+/* Both enumerations above are file-local, so the Zig port mirrors their
+ * ordinals rather than importing them. This pins the two together: reordering
+ * either enumeration without mirroring the change fails to compile. */
+typedef char janet_ffi_ordinals_are_mirrored[
+             (JANET_FFI_TYPE_VOID == 0 && JANET_FFI_TYPE_BOOL == 1 &&
+              JANET_FFI_TYPE_PTR == 2 && JANET_FFI_TYPE_STRING == 3 &&
+              JANET_FFI_TYPE_FLOAT == 4 && JANET_FFI_TYPE_DOUBLE == 5 &&
+              JANET_FFI_TYPE_INT8 == 6 && JANET_FFI_TYPE_UINT8 == 7 &&
+              JANET_FFI_TYPE_INT16 == 8 && JANET_FFI_TYPE_UINT16 == 9 &&
+              JANET_FFI_TYPE_INT32 == 10 && JANET_FFI_TYPE_UINT32 == 11 &&
+              JANET_FFI_TYPE_INT64 == 12 && JANET_FFI_TYPE_UINT64 == 13 &&
+              JANET_FFI_TYPE_STRUCT == 14 && JANET_FFI_CC_NONE == 0 &&
+              JANET_FFI_CC_SYSV_64 == 1 && JANET_FFI_CC_WIN_64 == 2 &&
+              JANET_FFI_CC_AAPCS64 == 3) ? 1 : -1];
+
+typedef char janet_ffi_word_specs_are_mirrored[
+             (JANET_SYSV64_INTEGER == 0 && JANET_SYSV64_SSE == 1 &&
+              JANET_SYSV64_SSEUP == 2 && JANET_SYSV64_PAIR_INTINT == 3 &&
+              JANET_SYSV64_PAIR_INTSSE == 4 && JANET_SYSV64_PAIR_SSEINT == 5 &&
+              JANET_SYSV64_PAIR_SSESSE == 6 && JANET_SYSV64_NO_CLASS == 7 &&
+              JANET_SYSV64_MEMORY == 8 && JANET_WIN64_REGISTER == 9 &&
+              JANET_WIN64_STACK == 10 && JANET_WIN64_REGISTER_REF == 11 &&
+              JANET_WIN64_STACK_REF == 12 && JANET_AAPCS64_GENERAL == 13 &&
+              JANET_AAPCS64_SSE == 14 && JANET_AAPCS64_GENERAL_REF == 15 &&
+              JANET_AAPCS64_STACK == 16 && JANET_AAPCS64_STACK_REF == 17 &&
+              JANET_AAPCS64_NONE == 18) ? 1 : -1];
+
 #ifdef JANET_FFI_WIN64_ENABLED
 #define JANET_FFI_CC_DEFAULT JANET_FFI_CC_WIN_64
 #elif defined(JANET_FFI_SYSV64_ENABLED)
@@ -290,12 +395,10 @@ static JanetFFIType prim_type(JanetFFIPrimType pt) {
 }
 
 static size_t type_size(JanetFFIType t) {
-    size_t count = t.array_count < 0 ? 1 : (size_t) t.array_count;
-    if (t.prim == JANET_FFI_TYPE_STRUCT) {
-        return t.st->size * count;
-    } else {
-        return janet_ffi_type_info[t.prim].size * count;
-    }
+    size_t base = (t.prim == JANET_FFI_TYPE_STRUCT)
+                  ? t.st->size
+                  : janet_ffi_type_info[t.prim].size;
+    return janet_ffi_type_extent(base, t.array_count);
 }
 
 static size_t type_align(JanetFFIType t) {
@@ -306,66 +409,141 @@ static size_t type_align(JanetFFIType t) {
     }
 }
 
-static JanetFFICallingConvention decode_ffi_cc(const uint8_t *name) {
-    if (!janet_cstrcmp(name, "none")) return JANET_FFI_CC_NONE;
+/* Whether a convention is enabled is a property of the target rather than of
+ * its name, so it stays here while the name table moves. Keeping the two
+ * questions in one function is what left every convention the host does not
+ * use with no coverage at all. */
+static int ffi_cc_enabled(JanetFFICallingConvention cc) {
+    switch (cc) {
+        case JANET_FFI_CC_NONE:
+            return 1;
 #ifdef JANET_FFI_WIN64_ENABLED
-    if (!janet_cstrcmp(name, "win64")) return JANET_FFI_CC_WIN_64;
+        case JANET_FFI_CC_WIN_64:
+            return 1;
 #endif
 #ifdef JANET_FFI_SYSV64_ENABLED
-    if (!janet_cstrcmp(name, "sysv64")) return JANET_FFI_CC_SYSV_64;
+        case JANET_FFI_CC_SYSV_64:
+            return 1;
 #endif
 #ifdef JANET_FFI_AAPCS64_ENABLED
-    if (!janet_cstrcmp(name, "aapcs64")) return JANET_FFI_CC_AAPCS64;
+        case JANET_FFI_CC_AAPCS64:
+            return 1;
 #endif
+        default:
+            return 0;
+    }
+}
+
+static JanetFFICallingConvention decode_ffi_cc(const uint8_t *name) {
     if (!janet_cstrcmp(name, "default")) return JANET_FFI_CC_DEFAULT;
-    janet_panicf("unknown calling convention %s", name);
+    int32_t cc = janet_ffi_decode_cc(name, janet_string_length(name));
+    if (cc < 0 || !ffi_cc_enabled((JanetFFICallingConvention) cc)) {
+        janet_panicf("unknown calling convention %s", name);
+    }
+    return (JanetFFICallingConvention) cc;
 }
 
 static JanetFFIPrimType decode_ffi_prim(const uint8_t *name) {
-    if (!janet_cstrcmp(name, "void")) return JANET_FFI_TYPE_VOID;
-    if (!janet_cstrcmp(name, "bool")) return JANET_FFI_TYPE_BOOL;
-    if (!janet_cstrcmp(name, "ptr")) return JANET_FFI_TYPE_PTR;
-    if (!janet_cstrcmp(name, "pointer")) return JANET_FFI_TYPE_PTR;
-    if (!janet_cstrcmp(name, "string")) return JANET_FFI_TYPE_STRING;
-    if (!janet_cstrcmp(name, "float")) return JANET_FFI_TYPE_FLOAT;
-    if (!janet_cstrcmp(name, "double")) return JANET_FFI_TYPE_DOUBLE;
-    if (!janet_cstrcmp(name, "int8")) return JANET_FFI_TYPE_INT8;
-    if (!janet_cstrcmp(name, "uint8")) return JANET_FFI_TYPE_UINT8;
-    if (!janet_cstrcmp(name, "int16")) return JANET_FFI_TYPE_INT16;
-    if (!janet_cstrcmp(name, "uint16")) return JANET_FFI_TYPE_UINT16;
-    if (!janet_cstrcmp(name, "int32")) return JANET_FFI_TYPE_INT32;
-    if (!janet_cstrcmp(name, "uint32")) return JANET_FFI_TYPE_UINT32;
-    if (!janet_cstrcmp(name, "int64")) return JANET_FFI_TYPE_INT64;
-    if (!janet_cstrcmp(name, "uint64")) return JANET_FFI_TYPE_UINT64;
+    int32_t prim = janet_ffi_decode_prim(name, janet_string_length(name));
+    if (prim < 0) janet_panicf("unknown machine type %s", name);
+    return (JanetFFIPrimType) prim;
+}
+
+#ifndef JANET_ZIG_FFI_LAYOUT
+
+/* Equality on the same terms janet_cstrcmp used: equal length, equal bytes.
+ * The length is explicit because a keyword may contain a zero byte, and
+ * because the contract drives these with ordinary C literals. */
+static int ffi_name_is(const uint8_t *name, int32_t len, const char *other) {
+    size_t other_len = strlen(other);
+    return other_len == (size_t) len && 0 == memcmp(name, other, other_len);
+}
+
+int32_t janet_ffi_decode_cc(const uint8_t *name, int32_t len) {
+    if (ffi_name_is(name, len, "none")) return JANET_FFI_CC_NONE;
+    if (ffi_name_is(name, len, "sysv64")) return JANET_FFI_CC_SYSV_64;
+    if (ffi_name_is(name, len, "win64")) return JANET_FFI_CC_WIN_64;
+    if (ffi_name_is(name, len, "aapcs64")) return JANET_FFI_CC_AAPCS64;
+    return -1;
+}
+
+int32_t janet_ffi_decode_prim(const uint8_t *name, int32_t len) {
+    if (ffi_name_is(name, len, "void")) return JANET_FFI_TYPE_VOID;
+    if (ffi_name_is(name, len, "bool")) return JANET_FFI_TYPE_BOOL;
+    if (ffi_name_is(name, len, "ptr")) return JANET_FFI_TYPE_PTR;
+    if (ffi_name_is(name, len, "pointer")) return JANET_FFI_TYPE_PTR;
+    if (ffi_name_is(name, len, "string")) return JANET_FFI_TYPE_STRING;
+    if (ffi_name_is(name, len, "float")) return JANET_FFI_TYPE_FLOAT;
+    if (ffi_name_is(name, len, "double")) return JANET_FFI_TYPE_DOUBLE;
+    if (ffi_name_is(name, len, "int8")) return JANET_FFI_TYPE_INT8;
+    if (ffi_name_is(name, len, "uint8")) return JANET_FFI_TYPE_UINT8;
+    if (ffi_name_is(name, len, "int16")) return JANET_FFI_TYPE_INT16;
+    if (ffi_name_is(name, len, "uint16")) return JANET_FFI_TYPE_UINT16;
+    if (ffi_name_is(name, len, "int32")) return JANET_FFI_TYPE_INT32;
+    if (ffi_name_is(name, len, "uint32")) return JANET_FFI_TYPE_UINT32;
+    if (ffi_name_is(name, len, "int64")) return JANET_FFI_TYPE_INT64;
+    if (ffi_name_is(name, len, "uint64")) return JANET_FFI_TYPE_UINT64;
 #ifdef JANET_64
-    if (!janet_cstrcmp(name, "size")) return JANET_FFI_TYPE_UINT64;
-    if (!janet_cstrcmp(name, "ssize")) return JANET_FFI_TYPE_INT64;
+    if (ffi_name_is(name, len, "size")) return JANET_FFI_TYPE_UINT64;
+    if (ffi_name_is(name, len, "ssize")) return JANET_FFI_TYPE_INT64;
 #else
-    if (!janet_cstrcmp(name, "size")) return JANET_FFI_TYPE_UINT32;
-    if (!janet_cstrcmp(name, "ssize")) return JANET_FFI_TYPE_INT32;
+    if (ffi_name_is(name, len, "size")) return JANET_FFI_TYPE_UINT32;
+    if (ffi_name_is(name, len, "ssize")) return JANET_FFI_TYPE_INT32;
 #endif
     /* aliases */
-    if (!janet_cstrcmp(name, "r32")) return JANET_FFI_TYPE_FLOAT;
-    if (!janet_cstrcmp(name, "r64")) return JANET_FFI_TYPE_DOUBLE;
-    if (!janet_cstrcmp(name, "s8")) return JANET_FFI_TYPE_INT8;
-    if (!janet_cstrcmp(name, "u8")) return JANET_FFI_TYPE_UINT8;
-    if (!janet_cstrcmp(name, "s16")) return JANET_FFI_TYPE_INT16;
-    if (!janet_cstrcmp(name, "u16")) return JANET_FFI_TYPE_UINT16;
-    if (!janet_cstrcmp(name, "s32")) return JANET_FFI_TYPE_INT32;
-    if (!janet_cstrcmp(name, "u32")) return JANET_FFI_TYPE_UINT32;
-    if (!janet_cstrcmp(name, "s64")) return JANET_FFI_TYPE_INT64;
-    if (!janet_cstrcmp(name, "u64")) return JANET_FFI_TYPE_UINT64;
-    if (!janet_cstrcmp(name, "char")) return JANET_FFI_TYPE_INT8;
-    if (!janet_cstrcmp(name, "short")) return JANET_FFI_TYPE_INT16;
-    if (!janet_cstrcmp(name, "int")) return JANET_FFI_TYPE_INT32;
-    if (!janet_cstrcmp(name, "long")) return JANET_FFI_TYPE_INT64;
-    if (!janet_cstrcmp(name, "byte")) return JANET_FFI_TYPE_UINT8;
-    if (!janet_cstrcmp(name, "uchar")) return JANET_FFI_TYPE_UINT8;
-    if (!janet_cstrcmp(name, "ushort")) return JANET_FFI_TYPE_UINT16;
-    if (!janet_cstrcmp(name, "uint")) return JANET_FFI_TYPE_UINT32;
-    if (!janet_cstrcmp(name, "ulong")) return JANET_FFI_TYPE_UINT64;
-    janet_panicf("unknown machine type %s", name);
+    if (ffi_name_is(name, len, "r32")) return JANET_FFI_TYPE_FLOAT;
+    if (ffi_name_is(name, len, "r64")) return JANET_FFI_TYPE_DOUBLE;
+    if (ffi_name_is(name, len, "s8")) return JANET_FFI_TYPE_INT8;
+    if (ffi_name_is(name, len, "u8")) return JANET_FFI_TYPE_UINT8;
+    if (ffi_name_is(name, len, "s16")) return JANET_FFI_TYPE_INT16;
+    if (ffi_name_is(name, len, "u16")) return JANET_FFI_TYPE_UINT16;
+    if (ffi_name_is(name, len, "s32")) return JANET_FFI_TYPE_INT32;
+    if (ffi_name_is(name, len, "u32")) return JANET_FFI_TYPE_UINT32;
+    if (ffi_name_is(name, len, "s64")) return JANET_FFI_TYPE_INT64;
+    if (ffi_name_is(name, len, "u64")) return JANET_FFI_TYPE_UINT64;
+    if (ffi_name_is(name, len, "char")) return JANET_FFI_TYPE_INT8;
+    if (ffi_name_is(name, len, "short")) return JANET_FFI_TYPE_INT16;
+    if (ffi_name_is(name, len, "int")) return JANET_FFI_TYPE_INT32;
+    if (ffi_name_is(name, len, "long")) return JANET_FFI_TYPE_INT64;
+    if (ffi_name_is(name, len, "byte")) return JANET_FFI_TYPE_UINT8;
+    if (ffi_name_is(name, len, "uchar")) return JANET_FFI_TYPE_UINT8;
+    if (ffi_name_is(name, len, "ushort")) return JANET_FFI_TYPE_UINT16;
+    if (ffi_name_is(name, len, "uint")) return JANET_FFI_TYPE_UINT32;
+    if (ffi_name_is(name, len, "ulong")) return JANET_FFI_TYPE_UINT64;
+    return -1;
 }
+
+size_t janet_ffi_type_extent(size_t base_size, int32_t array_count) {
+    size_t count = array_count < 0 ? 1 : (size_t) array_count;
+    return base_size * count;
+}
+
+void janet_ffi_layout_init(JanetFFILayout *layout) {
+    layout->size = 0;
+    layout->alignment = 1;
+    layout->is_aligned = 1;
+}
+
+size_t janet_ffi_layout_place(JanetFFILayout *layout, size_t el_size, size_t el_align, int packed_field) {
+    if (packed_field) {
+        size_t offset = layout->size;
+        if (layout->size % el_align != 0) layout->is_aligned = 0;
+        layout->size += (uint32_t) el_size;
+        return offset;
+    }
+    if (el_align > layout->alignment) layout->alignment = (uint32_t) el_align;
+    uint32_t offset = (uint32_t)(((layout->size + el_align - 1) / el_align) * el_align);
+    layout->size = (uint32_t)(el_size + offset);
+    return offset;
+}
+
+void janet_ffi_layout_finish(JanetFFILayout *layout) {
+    layout->size += (layout->alignment - 1);
+    layout->size /= layout->alignment;
+    layout->size *= layout->alignment;
+}
+
+#endif /* JANET_ZIG_FFI_LAYOUT */
 
 /* A common callback function signature. To avoid runtime code generation, which is prohibited
  * on many platforms, often buggy (see libffi), and generally complicated, instead provide
@@ -406,7 +584,12 @@ static JanetFFIStruct *build_struct_type(int32_t argc, const Janet *argv) {
     if (argc == 0) {
         janet_panic("invalid empty struct");
     }
-    uint32_t is_aligned = 1;
+    /* The layout runs beside the struct rather than inside it. field_count
+     * stays zero until the end so a collection triggered by a nested type does
+     * not scan a field that has not been filled in yet, and the totals are
+     * copied over once the last field has been placed. */
+    JanetFFILayout layout;
+    janet_ffi_layout_init(&layout);
     int32_t i = 0;
     for (int32_t j = 0; j < argc; j++) {
         int pack_one = 0;
@@ -419,21 +602,14 @@ static JanetFFIStruct *build_struct_type(int32_t argc, const Janet *argv) {
         size_t el_size = type_size(st->fields[i].type);
         size_t el_align = type_align(st->fields[i].type);
         if (el_align <= 0) janet_panicf("bad field type %V", argv[j]);
-        if (all_packed || pack_one) {
-            if (st->size % el_align != 0) is_aligned = 0;
-            st->fields[i].offset = st->size;
-            st->size += (uint32_t) el_size;
-        } else {
-            if (el_align > st->align) st->align = (uint32_t) el_align;
-            st->fields[i].offset = (uint32_t)(((st->size + el_align - 1) / el_align) * el_align);
-            st->size = (uint32_t)(el_size + st->fields[i].offset);
-        }
+        st->fields[i].offset = janet_ffi_layout_place(&layout, el_size, el_align,
+                               all_packed || pack_one);
         i++;
     }
-    st->is_aligned = is_aligned;
-    st->size += (st->align - 1);
-    st->size /= st->align;
-    st->size *= st->align;
+    janet_ffi_layout_finish(&layout);
+    st->size = layout.size;
+    st->align = layout.alignment;
+    st->is_aligned = layout.is_aligned;
     st->field_count = member_count;
     return st;
 }
@@ -681,11 +857,130 @@ static JanetFFIMapping void_mapping(void) {
     return m;
 }
 
-#ifdef JANET_FFI_SYSV64_ENABLED
+/* Count the nodes a type serializes into. */
+static uint32_t ffi_type_node_count(JanetFFIType type) {
+    uint32_t count = 1;
+    if (type.prim == JANET_FFI_TYPE_STRUCT) {
+        JanetFFIStruct *st = type.st;
+        for (uint32_t i = 0; i < st->field_count; i++) {
+            count += ffi_type_node_count(st->fields[i].type);
+        }
+    }
+    return count;
+}
+
+/* Write `type` and everything under it into `nodes` in pre-order, returning the
+ * index just past what was written. `offset` is the byte offset of `type`
+ * within its enclosing struct, which the SysV rules need in order to tell which
+ * eightbyte a field falls in. */
+static uint32_t ffi_serialize_type(JanetFFITypeNode *nodes, uint32_t at,
+                                   JanetFFIType type, uint32_t offset) {
+    JanetFFITypeNode *node = nodes + at;
+    node->size = (uint64_t) type_size(type);
+    node->prim = (uint32_t) type.prim;
+    node->offset = offset;
+    node->array_count = type.array_count;
+    if (type.prim != JANET_FFI_TYPE_STRUCT) {
+        node->struct_size = 0;
+        node->field_count = 0;
+        node->is_aligned = 1;
+        return at + 1;
+    }
+    JanetFFIStruct *st = type.st;
+    node->struct_size = st->size;
+    node->field_count = st->field_count;
+    node->is_aligned = st->is_aligned;
+    uint32_t next = at + 1;
+    for (uint32_t i = 0; i < st->field_count; i++) {
+        next = ffi_serialize_type(nodes, next, st->fields[i].type,
+                                  (uint32_t) st->fields[i].offset);
+    }
+    return next;
+}
+
+/* Classify a type for one convention. The type is serialized into scratch
+ * memory first so that no pointer into a collected abstract reaches the
+ * classifier, which is why this is the only place the two representations
+ * meet. */
+static JanetFFIWordSpec ffi_classify(JanetFFICallingConvention cc, JanetFFIType type) {
+    uint32_t count = ffi_type_node_count(type);
+    JanetFFITypeNode *nodes = janet_smalloc(count * sizeof(JanetFFITypeNode));
+    ffi_serialize_type(nodes, 0, type, 0);
+    uint32_t spec = (cc == JANET_FFI_CC_AAPCS64)
+                    ? janet_ffi_aapcs64_classify(nodes, count)
+                    : janet_ffi_sysv64_classify(nodes, count);
+    janet_sfree(nodes);
+    return (JanetFFIWordSpec) spec;
+}
+
+/* Turn one convention's report of a failure back into the panic the C
+ * implementation raised in the same position. */
+static void ffi_check_alloc(const JanetFFIAllocResult *result) {
+    switch (result->error_kind) {
+        case JANET_FFI_ALLOC_OK:
+            return;
+        case JANET_FFI_ALLOC_RETURN_TOO_BIG:
+            janet_panic("return value bigger than supported");
+        default:
+            janet_panic("nyi");
+    }
+}
+
+/* Describe one argument the way a calling convention wants it: the scalars, and
+ * the class the classifier reached. */
+static JanetFFIArgSlot ffi_slot_of(JanetFFIType type, JanetFFIWordSpec spec) {
+    JanetFFIArgSlot slot;
+    slot.size = (uint64_t) type_size(type);
+    slot.prim = (uint32_t) type.prim;
+    slot.spec = (uint32_t) spec;
+    slot.alignment = (uint32_t) type_align(type);
+    slot.offset = 0;
+    slot.offset2 = 0;
+    return slot;
+}
+
+/* Copy a convention's placements back onto the mappings the signature keeps.
+ * The types never left C, so only the placements travel back. */
+static void ffi_apply_slots(JanetFFIMapping *ret, JanetFFIMapping *mappings,
+                            uint32_t arg_count, const JanetFFIArgSlot *ret_slot,
+                            const JanetFFIArgSlot *slots, const JanetFFIAllocResult *alloc,
+                            uint32_t *variant, uint32_t *stack_count) {
+    ret->spec = (JanetFFIWordSpec) ret_slot->spec;
+    for (uint32_t i = 0; i < arg_count; i++) {
+        mappings[i].spec = (JanetFFIWordSpec) slots[i].spec;
+        mappings[i].offset = slots[i].offset;
+        mappings[i].offset2 = slots[i].offset2;
+    }
+    *variant = alloc->variant;
+    *stack_count = alloc->stack_count;
+}
+
+#ifndef JANET_ZIG_FFI_CLASSIFY
+
+/* The index just past `idx`'s subtree. Non-struct nodes have no fields, so this
+ * is the single step that ends the recursion. */
+static uint32_t ffi_skip_subtree(const JanetFFITypeNode *nodes, uint32_t idx) {
+    uint32_t i = idx + 1;
+    for (uint32_t remaining = nodes[idx].field_count; remaining > 0; remaining--) {
+        i = ffi_skip_subtree(nodes, i);
+    }
+    return i;
+}
+
+static uint32_t ffi_align_up(uint32_t value, uint32_t alignment) {
+    return (value + (alignment - 1)) & ~(alignment - 1);
+}
+
+static int ffi_is_floating(uint32_t prim) {
+    return prim == JANET_FFI_TYPE_FLOAT || prim == JANET_FFI_TYPE_DOUBLE;
+}
+
 /* AMD64 ABI Draft 0.99.7 – November 17, 2014 – 15:08
  * See section 3.2.3 Parameter Passing */
-static JanetFFIWordSpec sysv64_classify_ext(JanetFFIType type, size_t shift) {
-    switch (type.prim) {
+static uint32_t sysv64_classify_ext(const JanetFFITypeNode *nodes, uint32_t idx,
+                                    uint64_t shift, uint32_t *next) {
+    const JanetFFITypeNode *node = nodes + idx;
+    switch (node->prim) {
         case JANET_FFI_TYPE_PTR:
         case JANET_FFI_TYPE_STRING:
         case JANET_FFI_TYPE_BOOL:
@@ -697,26 +992,33 @@ static JanetFFIWordSpec sysv64_classify_ext(JanetFFIType type, size_t shift) {
         case JANET_FFI_TYPE_UINT16:
         case JANET_FFI_TYPE_UINT32:
         case JANET_FFI_TYPE_UINT64:
+            *next = idx + 1;
             return JANET_SYSV64_INTEGER;
         case JANET_FFI_TYPE_DOUBLE:
         case JANET_FFI_TYPE_FLOAT:
+            *next = idx + 1;
             return JANET_SYSV64_SSE;
         case JANET_FFI_TYPE_STRUCT: {
-            JanetFFIStruct *st = type.st;
-            if (st->size > 16) return JANET_SYSV64_MEMORY;
-            if (!st->is_aligned) return JANET_SYSV64_MEMORY;
-            JanetFFIWordSpec clazz = JANET_SYSV64_NO_CLASS;
-            if (st->size > 8 && st->size <= 16) {
-                /* map to pair classification */
-                int has_int_lo = 0;
-                int has_int_hi = 0;
-                for (uint32_t i = 0; i < st->field_count; i++) {
-                    JanetFFIWordSpec next_class = sysv64_classify_ext(st->fields[i].type, shift + st->fields[i].offset);
+            if (node->struct_size > 16 || !node->is_aligned) {
+                *next = ffi_skip_subtree(nodes, idx);
+                return JANET_SYSV64_MEMORY;
+            }
+            uint32_t clazz = JANET_SYSV64_NO_CLASS;
+            uint32_t child = idx + 1;
+            if (node->struct_size > 8) {
+                /* Two eightbytes: decide each half separately, then name the
+                 * pair. */
+                uint32_t has_int_lo = 0;
+                uint32_t has_int_hi = 0;
+                for (uint32_t i = 0; i < node->field_count; i++) {
+                    uint64_t field_offset = nodes[child].offset;
+                    uint64_t field_size = nodes[child].size;
+                    uint32_t next_class = sysv64_classify_ext(nodes, child, shift + field_offset, &child);
                     switch (next_class) {
                         default:
                             break;
                         case JANET_SYSV64_INTEGER:
-                            if (shift + st->fields[i].offset + type_size(st->fields[i].type) <= 8) {
+                            if (shift + field_offset + field_size <= 8) {
                                 has_int_lo = 1;
                             } else {
                                 has_int_hi = 2;
@@ -732,7 +1034,6 @@ static JanetFFIWordSpec sysv64_classify_ext(JanetFFIType type, size_t shift) {
                         case JANET_SYSV64_PAIR_SSEINT:
                             has_int_hi = 2;
                             break;
-                            break;
                     }
                 }
                 switch (has_int_hi + has_int_lo) {
@@ -745,14 +1046,14 @@ static JanetFFIWordSpec sysv64_classify_ext(JanetFFIType type, size_t shift) {
                     case 2:
                         clazz = JANET_SYSV64_PAIR_SSEINT;
                         break;
-                    case 3:
+                    default:
                         clazz = JANET_SYSV64_PAIR_INTINT;
                         break;
                 }
             } else {
-                /* Normal struct classification */
-                for (uint32_t i = 0; i < st->field_count; i++) {
-                    JanetFFIWordSpec next_class = sysv64_classify_ext(st->fields[i].type, shift + st->fields[i].offset);
+                for (uint32_t i = 0; i < node->field_count; i++) {
+                    uint64_t field_offset = nodes[child].offset;
+                    uint32_t next_class = sysv64_classify_ext(nodes, child, shift + field_offset, &child);
                     if (next_class != clazz) {
                         if (clazz == JANET_SYSV64_NO_CLASS) {
                             clazz = next_class;
@@ -766,19 +1067,343 @@ static JanetFFIWordSpec sysv64_classify_ext(JanetFFIType type, size_t shift) {
                     }
                 }
             }
+            *next = child;
             return clazz;
         }
         case JANET_FFI_TYPE_VOID:
-            return JANET_SYSV64_NO_CLASS;
         default:
-            janet_panic("nyi");
+            *next = idx + 1;
             return JANET_SYSV64_NO_CLASS;
     }
 }
-static JanetFFIWordSpec sysv64_classify(JanetFFIType type) {
-    return sysv64_classify_ext(type, 0);
+
+uint32_t janet_ffi_sysv64_classify(const JanetFFITypeNode *nodes, uint32_t count) {
+    uint32_t next;
+    if (count == 0) return JANET_SYSV64_NO_CLASS;
+    return sysv64_classify_ext(nodes, 0, 0, &next);
 }
-#endif
+
+/* Procedure Call Standard for the Arm® 64-bit Architecture (AArch64) 2023Q3 –
+ * October 6, 2023. See section 6.8.2 Parameter passing rules. */
+static uint32_t aapcs64_classify_node(const JanetFFITypeNode *nodes, uint32_t idx, uint32_t *next) {
+    const JanetFFITypeNode *node = nodes + idx;
+    switch (node->prim) {
+        case JANET_FFI_TYPE_PTR:
+        case JANET_FFI_TYPE_STRING:
+        case JANET_FFI_TYPE_BOOL:
+        case JANET_FFI_TYPE_INT8:
+        case JANET_FFI_TYPE_INT16:
+        case JANET_FFI_TYPE_INT32:
+        case JANET_FFI_TYPE_INT64:
+        case JANET_FFI_TYPE_UINT8:
+        case JANET_FFI_TYPE_UINT16:
+        case JANET_FFI_TYPE_UINT32:
+        case JANET_FFI_TYPE_UINT64:
+            *next = idx + 1;
+            return JANET_AAPCS64_GENERAL;
+        case JANET_FFI_TYPE_DOUBLE:
+        case JANET_FFI_TYPE_FLOAT:
+            *next = idx + 1;
+            return JANET_AAPCS64_SSE;
+        case JANET_FFI_TYPE_STRUCT: {
+            *next = ffi_skip_subtree(nodes, idx);
+            /* A homogeneous floating-point aggregate travels in the vector
+             * registers. The field_count guard is a deliberate divergence from
+             * the original, which read the first field without checking that
+             * one exists; see FOUND.md. */
+            if (node->field_count > 0 && node->field_count <= 4) {
+                uint32_t after_first;
+                if (aapcs64_classify_node(nodes, idx + 1, &after_first) == JANET_AAPCS64_SSE) {
+                    int is_hfa = 1;
+                    uint32_t child = after_first;
+                    for (uint32_t i = 1; i < node->field_count; i++) {
+                        if (nodes[idx + 1].prim != nodes[child].prim) {
+                            is_hfa = 0;
+                            break;
+                        }
+                        child = ffi_skip_subtree(nodes, child);
+                    }
+                    if (is_hfa) return JANET_AAPCS64_SSE;
+                }
+            }
+            if (node->size > 16) return JANET_AAPCS64_GENERAL_REF;
+            return JANET_AAPCS64_GENERAL;
+        }
+        case JANET_FFI_TYPE_VOID:
+        default:
+            *next = idx + 1;
+            return JANET_AAPCS64_NONE;
+    }
+}
+
+uint32_t janet_ffi_aapcs64_classify(const JanetFFITypeNode *nodes, uint32_t count) {
+    uint32_t next;
+    if (count == 0) return JANET_AAPCS64_NONE;
+    return aapcs64_classify_node(nodes, 0, &next);
+}
+
+void janet_ffi_win64_alloc(JanetFFIAllocResult *result, JanetFFIArgSlot *ret,
+                           JanetFFIArgSlot *args, uint32_t arg_count) {
+    result->stack_count = 0;
+    result->variant = 0;
+    result->error_kind = JANET_FFI_ALLOC_OK;
+    result->error_arg = -1;
+
+    uint32_t stack_count = 0;
+    uint32_t ref_stack_count = 0;
+    uint32_t next_register = 0;
+
+    ret->spec = JANET_WIN64_REGISTER;
+    uint64_t ret_size = ret->size;
+    if (ret_size != 0 && ret_size != 1 && ret_size != 2 && ret_size != 4 && ret_size != 8) {
+        ret->spec = JANET_WIN64_REGISTER_REF;
+        next_register++;
+    } else if (ffi_is_floating(ret->prim)) {
+        result->variant += 16;
+    }
+
+    for (uint32_t i = 0; i < arg_count; i++) {
+        uint64_t el_size = args[i].size;
+        int is_register_sized = (el_size == 1 || el_size == 2 || el_size == 4 || el_size == 8);
+        if (next_register < 4) {
+            args[i].offset = next_register;
+            if (is_register_sized) {
+                args[i].spec = JANET_WIN64_REGISTER;
+                if (ffi_is_floating(args[i].prim)) {
+                    result->variant += 1u << (3 - next_register);
+                }
+            } else {
+                args[i].spec = JANET_WIN64_REGISTER_REF;
+                args[i].offset2 = ref_stack_count;
+                ref_stack_count += (uint32_t)((el_size + 15) / 16);
+            }
+            next_register++;
+        } else {
+            args[i].offset = stack_count;
+            stack_count++;
+            if (is_register_sized) {
+                args[i].spec = JANET_WIN64_STACK;
+            } else {
+                args[i].spec = JANET_WIN64_STACK_REF;
+                args[i].offset2 = ref_stack_count;
+                ref_stack_count += (uint32_t)((el_size + 15) / 16);
+            }
+        }
+    }
+
+    stack_count += 2 * ref_stack_count;
+    if (stack_count & 0x1) {
+        stack_count++;
+    }
+
+    /* The reference area sits above the stack arguments and is addressed from
+     * the top, so the offsets recorded above are inverted now that the total is
+     * known. */
+    for (uint32_t i = 0; i < arg_count; i++) {
+        if (args[i].spec == JANET_WIN64_STACK_REF || args[i].spec == JANET_WIN64_REGISTER_REF) {
+            uint64_t size = (args[i].size + 15) & ~(uint64_t)0xF;
+            args[i].offset2 = (uint32_t)(stack_count - args[i].offset2 - (size / 8));
+        }
+    }
+
+    result->stack_count = stack_count;
+}
+
+void janet_ffi_sysv64_alloc(JanetFFIAllocResult *result, JanetFFIArgSlot *ret,
+                            JanetFFIArgSlot *args, uint32_t arg_count) {
+    result->stack_count = 0;
+    result->variant = 0;
+    result->error_kind = JANET_FFI_ALLOC_OK;
+    result->error_arg = -1;
+
+    if (ret->spec == JANET_SYSV64_SSE) result->variant = 1;
+    if (ret->spec == JANET_SYSV64_PAIR_INTSSE) result->variant = 2;
+    if (ret->spec == JANET_SYSV64_PAIR_SSEINT) result->variant = 3;
+
+    const uint32_t max_regs = 6;
+    const uint32_t max_fp_regs = 8;
+    uint32_t next_register = 0;
+    uint32_t next_fp_register = 0;
+    uint32_t stack_count = 0;
+
+    /* A return value in memory is written through a pointer the caller passes
+     * in the first integer register, so that register is not available to
+     * arguments. */
+    if (ret->spec == JANET_SYSV64_MEMORY) next_register = 1;
+
+    for (uint32_t i = 0; i < arg_count; i++) {
+        args[i].offset = 0;
+        uint32_t el_size = (uint32_t)((args[i].size + 7) / 8);
+        switch (args[i].spec) {
+            case JANET_SYSV64_INTEGER:
+                if (next_register < max_regs) {
+                    args[i].offset = next_register++;
+                } else {
+                    args[i].spec = JANET_SYSV64_MEMORY;
+                    args[i].offset = stack_count;
+                    stack_count += el_size;
+                }
+                break;
+            case JANET_SYSV64_SSE:
+                if (next_fp_register < max_fp_regs) {
+                    args[i].offset = next_fp_register++;
+                } else {
+                    args[i].spec = JANET_SYSV64_MEMORY;
+                    args[i].offset = stack_count;
+                    stack_count += el_size;
+                }
+                break;
+            case JANET_SYSV64_MEMORY:
+                args[i].offset = stack_count;
+                stack_count += el_size;
+                break;
+            case JANET_SYSV64_PAIR_INTINT:
+                if (next_register + 1 < max_regs) {
+                    args[i].offset = next_register++;
+                    args[i].offset2 = next_register++;
+                } else {
+                    args[i].spec = JANET_SYSV64_MEMORY;
+                    args[i].offset = stack_count;
+                    stack_count += el_size;
+                }
+                break;
+            case JANET_SYSV64_PAIR_INTSSE:
+                if (next_register < max_regs && next_fp_register < max_fp_regs) {
+                    args[i].offset = next_register++;
+                    args[i].offset2 = next_fp_register++;
+                } else {
+                    args[i].spec = JANET_SYSV64_MEMORY;
+                    args[i].offset = stack_count;
+                    stack_count += el_size;
+                }
+                break;
+            case JANET_SYSV64_PAIR_SSEINT:
+                if (next_register < max_regs && next_fp_register < max_fp_regs) {
+                    args[i].offset = next_fp_register++;
+                    args[i].offset2 = next_register++;
+                } else {
+                    args[i].spec = JANET_SYSV64_MEMORY;
+                    args[i].offset = stack_count;
+                    stack_count += el_size;
+                }
+                break;
+            case JANET_SYSV64_PAIR_SSESSE:
+                if (next_fp_register < max_fp_regs) {
+                    args[i].offset = next_fp_register++;
+                    args[i].offset2 = next_fp_register++;
+                } else {
+                    args[i].spec = JANET_SYSV64_MEMORY;
+                    args[i].offset = stack_count;
+                    stack_count += el_size;
+                }
+                break;
+            default:
+                result->error_kind = JANET_FFI_ALLOC_UNSUPPORTED_SPEC;
+                result->error_arg = (int32_t) i;
+                return;
+        }
+    }
+
+    result->stack_count = stack_count;
+}
+
+void janet_ffi_aapcs64_alloc(JanetFFIAllocResult *result, JanetFFIArgSlot *ret,
+                             JanetFFIArgSlot *args, uint32_t arg_count,
+                             int apple_abi, uint64_t max_ret_size) {
+    result->stack_count = 0;
+    result->variant = 0;
+    result->error_kind = JANET_FFI_ALLOC_OK;
+    result->error_arg = -1;
+
+    if (ret->spec == JANET_AAPCS64_SSE) {
+        result->variant = 1;
+    } else if (ret->spec == JANET_AAPCS64_GENERAL_REF) {
+        if (ret->size > max_ret_size) {
+            result->error_kind = JANET_FFI_ALLOC_RETURN_TOO_BIG;
+            result->error_arg = -1;
+            return;
+        }
+        result->variant = 2;
+    } else {
+        result->variant = 0;
+    }
+
+    uint32_t next_general_reg = 0;
+    uint32_t next_fp_reg = 0;
+    uint32_t stack_offset = 0;
+    uint32_t ref_stack_offset = 0;
+
+    for (uint32_t i = 0; i < arg_count; i++) {
+        uint32_t arg_size = (uint32_t) args[i].size;
+        switch (args[i].spec) {
+            case JANET_AAPCS64_GENERAL: {
+                uint32_t needed_registers = (arg_size + 7) / 8;
+                if (next_general_reg + needed_registers <= 8) {
+                    args[i].offset = next_general_reg;
+                    next_general_reg += needed_registers;
+                } else {
+                    /* A struct on the stack is aligned as a word regardless of
+                     * what its fields would demand. */
+                    uint32_t arg_align = (args[i].prim == JANET_FFI_TYPE_STRUCT) ? 8 : args[i].alignment;
+                    args[i].spec = JANET_AAPCS64_STACK;
+                    stack_offset = ffi_align_up(stack_offset, apple_abi ? arg_align : 8);
+                    args[i].offset = stack_offset;
+                    if (apple_abi) {
+                        stack_offset += arg_size;
+                    } else {
+                        stack_offset += arg_size > 8 ? arg_size : 8;
+                    }
+                    next_general_reg = 8;
+                }
+                break;
+            }
+            case JANET_AAPCS64_GENERAL_REF:
+                if (next_general_reg < 8) {
+                    args[i].offset = next_general_reg++;
+                } else {
+                    args[i].spec = JANET_AAPCS64_STACK_REF;
+                    stack_offset = ffi_align_up(stack_offset, 8);
+                    args[i].offset = stack_offset;
+                    stack_offset += 8;
+                }
+                ref_stack_offset = ffi_align_up(ref_stack_offset, 8);
+                args[i].offset2 = ref_stack_offset;
+                ref_stack_offset += arg_size;
+                break;
+            case JANET_AAPCS64_SSE: {
+                uint32_t needed_registers = (arg_size + 7) / 8;
+                if (next_fp_reg + needed_registers <= 8) {
+                    args[i].offset = next_fp_reg;
+                    next_fp_reg += needed_registers;
+                } else {
+                    args[i].spec = JANET_AAPCS64_STACK;
+                    stack_offset = ffi_align_up(stack_offset, 8);
+                    args[i].offset = stack_offset;
+                    stack_offset += apple_abi ? arg_size : 8;
+                }
+                break;
+            }
+            default:
+                result->error_kind = JANET_FFI_ALLOC_UNSUPPORTED_SPEC;
+                result->error_arg = (int32_t) i;
+                return;
+        }
+    }
+
+    stack_offset = ffi_align_up(stack_offset, 16);
+    ref_stack_offset = ffi_align_up(ref_stack_offset, 16);
+    result->stack_count = stack_offset + ref_stack_offset;
+
+    /* The by-reference area follows the stack arguments, so its offsets are
+     * relative until the stack area's final size is known. */
+    for (uint32_t i = 0; i < arg_count; i++) {
+        if (args[i].spec == JANET_AAPCS64_GENERAL_REF || args[i].spec == JANET_AAPCS64_STACK_REF) {
+            args[i].offset2 = stack_offset + args[i].offset2;
+        }
+    }
+}
+
+#endif /* JANET_ZIG_FFI_CLASSIFY */
 
 #ifdef JANET_FFI_AAPCS64_ENABLED
 /* Procedure Call Standard for the Arm® 64-bit Architecture (AArch64) 2023Q3 – October 6, 2023
@@ -787,13 +1412,6 @@ static JanetFFIWordSpec sysv64_classify(JanetFFIType type) {
  *
  * Additional documentation needed for Apple platforms.
  * https://developer.apple.com/documentation/xcode/writing-arm64-code-for-apple-platforms */
-
-#define JANET_FFI_AAPCS64_FORCE_STACK_ALIGN(ptr, alignment) (ptr = ((ptr) + ((alignment) - 1)) & ~((alignment) - 1))
-#if !defined(JANET_APPLE)
-#define JANET_FFI_AAPCS64_STACK_ALIGN(ptr, alignment) ((void) alignment, JANET_FFI_AAPCS64_FORCE_STACK_ALIGN(ptr, 8))
-#else
-#define JANET_FFI_AAPCS64_STACK_ALIGN(ptr, alignment) JANET_FFI_AAPCS64_FORCE_STACK_ALIGN(ptr, alignment)
-#endif
 
 typedef struct {
     uint64_t a;
@@ -828,51 +1446,6 @@ typedef struct {
     uint64_t p;
 } Aapcs64Variant3ReturnPointer;
 
-static JanetFFIWordSpec aapcs64_classify(JanetFFIType type) {
-    switch (type.prim) {
-        case JANET_FFI_TYPE_PTR:
-        case JANET_FFI_TYPE_STRING:
-        case JANET_FFI_TYPE_BOOL:
-        case JANET_FFI_TYPE_INT8:
-        case JANET_FFI_TYPE_INT16:
-        case JANET_FFI_TYPE_INT32:
-        case JANET_FFI_TYPE_INT64:
-        case JANET_FFI_TYPE_UINT8:
-        case JANET_FFI_TYPE_UINT16:
-        case JANET_FFI_TYPE_UINT32:
-        case JANET_FFI_TYPE_UINT64:
-            return JANET_AAPCS64_GENERAL;
-        case JANET_FFI_TYPE_DOUBLE:
-        case JANET_FFI_TYPE_FLOAT:
-            return JANET_AAPCS64_SSE;
-        case JANET_FFI_TYPE_STRUCT: {
-            JanetFFIStruct *st = type.st;
-            if (st->field_count <= 4 && aapcs64_classify(st->fields[0].type) == JANET_AAPCS64_SSE) {
-                bool is_hfa = true;
-                for (uint32_t i = 1; i < st->field_count; i++) {
-                    if (st->fields[0].type.prim != st->fields[i].type.prim) {
-                        is_hfa = false;
-                        break;
-                    }
-                }
-                if (is_hfa) {
-                    return JANET_AAPCS64_SSE;
-                }
-            }
-
-            if (type_size(type) > 16) {
-                return JANET_AAPCS64_GENERAL_REF;
-            }
-
-            return JANET_AAPCS64_GENERAL;
-        }
-        case JANET_FFI_TYPE_VOID:
-            return JANET_AAPCS64_NONE;
-        default:
-            janet_panic("nyi");
-            return JANET_AAPCS64_NONE;
-    }
-}
 #endif
 
 JANET_CORE_FN(cfun_ffi_signature,
@@ -894,6 +1467,13 @@ JANET_CORE_FN(cfun_ffi_signature,
     };
     JanetFFIMapping mappings[JANET_FFI_MAX_ARGS];
     for (int i = 0; i < JANET_FFI_MAX_ARGS; i++) mappings[i] = void_mapping();
+    /* The conventions work over scalars rather than types, so each argument is
+     * decoded and classified here and the whole signature is placed in one go.
+     * Decoding stays inside the loop, one argument at a time, so that a bad
+     * type still raises from the position it always did. */
+    JanetFFIArgSlot ret_slot;
+    JanetFFIArgSlot slots[JANET_FFI_MAX_ARGS];
+    JanetFFIAllocResult alloc;
     switch (cc) {
         default:
         case JANET_FFI_CC_NONE: {
@@ -907,258 +1487,62 @@ JANET_CORE_FN(cfun_ffi_signature,
 
 #ifdef JANET_FFI_WIN64_ENABLED
         case JANET_FFI_CC_WIN_64: {
-            size_t ret_size = type_size(ret.type);
-            uint32_t ref_stack_count = 0;
-            ret.spec = JANET_WIN64_REGISTER;
-            uint32_t next_register = 0;
-            if (ret_size != 0 && ret_size != 1 && ret_size != 2 && ret_size != 4 && ret_size != 8) {
-                ret.spec = JANET_WIN64_REGISTER_REF;
-                next_register++;
-            } else if (ret.type.prim == JANET_FFI_TYPE_FLOAT ||
-                       ret.type.prim == JANET_FFI_TYPE_DOUBLE) {
-                variant += 16;
-            }
+            ret_slot = ffi_slot_of(ret.type, JANET_WIN64_REGISTER);
             for (uint32_t i = 0; i < arg_count; i++) {
                 mappings[i].type = decode_ffi_type(argv[i + 2]);
-                size_t el_size = type_size(mappings[i].type);
-                int is_register_sized = (el_size == 1 || el_size == 2 || el_size == 4 || el_size == 8);
-                if (next_register < 4) {
-                    mappings[i].offset = next_register;
-                    if (is_register_sized) {
-                        mappings[i].spec = JANET_WIN64_REGISTER;
-                        if (mappings[i].type.prim == JANET_FFI_TYPE_FLOAT ||
-                                mappings[i].type.prim == JANET_FFI_TYPE_DOUBLE) {
-                            variant += 1 << (3 - next_register);
-                        }
-                    } else {
-                        mappings[i].spec = JANET_WIN64_REGISTER_REF;
-                        mappings[i].offset2 = ref_stack_count;
-                        ref_stack_count += (uint32_t)((el_size + 15) / 16);
-                    }
-                    next_register++;
-                } else {
-                    if (is_register_sized) {
-                        mappings[i].spec = JANET_WIN64_STACK;
-                        mappings[i].offset = stack_count;
-                        stack_count++;
-                    } else {
-                        mappings[i].spec = JANET_WIN64_STACK_REF;
-                        mappings[i].offset = stack_count;
-                        stack_count++;
-                        mappings[i].offset2 = ref_stack_count;
-                        ref_stack_count += (uint32_t)((el_size + 15) / 16);
-                    }
-                }
+                slots[i] = ffi_slot_of(mappings[i].type, JANET_WIN64_REGISTER);
             }
-
-            /* Add reference items */
-            stack_count += 2 * ref_stack_count;
-            if (stack_count & 0x1) {
-                stack_count++;
-            }
-
-            /* Invert stack
-             * Offsets are in units of 8-bytes */
-            for (uint32_t i = 0; i < arg_count; i++) {
-                if (mappings[i].spec == JANET_WIN64_STACK_REF || mappings[i].spec == JANET_WIN64_REGISTER_REF) {
-                    /* Align size to 16 bytes */
-                    size_t size = (type_size(mappings[i].type) + 15) & ~0xFUL;
-                    mappings[i].offset2 = (uint32_t)(stack_count - mappings[i].offset2 - (size / 8));
-                }
-            }
-
+            janet_ffi_win64_alloc(&alloc, &ret_slot, slots, arg_count);
+            ffi_check_alloc(&alloc);
+            ffi_apply_slots(&ret, mappings, arg_count, &ret_slot, slots,
+                            &alloc, &variant, &stack_count);
         }
         break;
 #endif
 
 #ifdef JANET_FFI_SYSV64_ENABLED
         case JANET_FFI_CC_SYSV_64: {
-            JanetFFIWordSpec ret_spec = sysv64_classify(ret.type);
-            ret.spec = ret_spec;
-            if (ret_spec == JANET_SYSV64_SSE) variant = 1;
-            if (ret_spec == JANET_SYSV64_PAIR_INTSSE) variant = 2;
-            if (ret_spec == JANET_SYSV64_PAIR_SSEINT) variant = 3;
-            /* Spill register overflow to memory */
-            uint32_t next_register = 0;
-            uint32_t next_fp_register = 0;
-            const uint32_t max_regs = 6;
-            const uint32_t max_fp_regs = 8;
-            if (ret_spec == JANET_SYSV64_MEMORY) {
-                /* First integer reg is pointer. */
-                next_register = 1;
-            }
+            ret_slot = ffi_slot_of(ret.type, ffi_classify(cc, ret.type));
             for (uint32_t i = 0; i < arg_count; i++) {
                 mappings[i].type = decode_ffi_type(argv[i + 2]);
-                mappings[i].offset = 0;
-                mappings[i].spec = sysv64_classify(mappings[i].type);
-                if (mappings[i].spec == JANET_SYSV64_NO_CLASS) {
+                JanetFFIWordSpec spec = ffi_classify(cc, mappings[i].type);
+                if (spec == JANET_SYSV64_NO_CLASS) {
                     janet_panic("unexpected void parameter");
                 }
-                size_t el_size = (type_size(mappings[i].type) + 7) / 8;
-                switch (mappings[i].spec) {
-                    default:
-                        janet_panicf("nyi: %d", mappings[i].spec);
-                    case JANET_SYSV64_INTEGER: {
-                        if (next_register < max_regs) {
-                            mappings[i].offset = next_register++;
-                        } else {
-                            mappings[i].spec = JANET_SYSV64_MEMORY;
-                            mappings[i].offset = stack_count;
-                            stack_count += el_size;
-                        }
-                    }
-                    break;
-                    case JANET_SYSV64_SSE: {
-                        if (next_fp_register < max_fp_regs) {
-                            mappings[i].offset = next_fp_register++;
-                        } else {
-                            mappings[i].spec = JANET_SYSV64_MEMORY;
-                            mappings[i].offset = stack_count;
-                            stack_count += el_size;
-                        }
-                    }
-                    break;
-                    case JANET_SYSV64_MEMORY: {
-                        mappings[i].offset = stack_count;
-                        stack_count += el_size;
-                    }
-                    break;
-                    case JANET_SYSV64_PAIR_INTINT: {
-                        if (next_register + 1 < max_regs) {
-                            mappings[i].offset = next_register++;
-                            mappings[i].offset2 = next_register++;
-                        } else {
-                            mappings[i].spec = JANET_SYSV64_MEMORY;
-                            mappings[i].offset = stack_count;
-                            stack_count += el_size;
-                        }
-                    }
-                    break;
-                    case JANET_SYSV64_PAIR_INTSSE: {
-                        if (next_register < max_regs && next_fp_register < max_fp_regs) {
-                            mappings[i].offset = next_register++;
-                            mappings[i].offset2 = next_fp_register++;
-                        } else {
-                            mappings[i].spec = JANET_SYSV64_MEMORY;
-                            mappings[i].offset = stack_count;
-                            stack_count += el_size;
-                        }
-                    }
-                    break;
-                    case JANET_SYSV64_PAIR_SSEINT: {
-                        if (next_register < max_regs && next_fp_register < max_fp_regs) {
-                            mappings[i].offset = next_fp_register++;
-                            mappings[i].offset2 = next_register++;
-                        } else {
-                            mappings[i].spec = JANET_SYSV64_MEMORY;
-                            mappings[i].offset = stack_count;
-                            stack_count += el_size;
-                        }
-                    }
-                    break;
-                    case JANET_SYSV64_PAIR_SSESSE: {
-                        if (next_fp_register < max_fp_regs) {
-                            mappings[i].offset = next_fp_register++;
-                            mappings[i].offset2 = next_fp_register++;
-                        } else {
-                            mappings[i].spec = JANET_SYSV64_MEMORY;
-                            mappings[i].offset = stack_count;
-                            stack_count += el_size;
-                        }
-                    }
-                    break;
-                }
+                slots[i] = ffi_slot_of(mappings[i].type, spec);
             }
+            janet_ffi_sysv64_alloc(&alloc, &ret_slot, slots, arg_count);
+            ffi_check_alloc(&alloc);
+            ffi_apply_slots(&ret, mappings, arg_count, &ret_slot, slots,
+                            &alloc, &variant, &stack_count);
         }
         break;
 #endif
 
 #ifdef JANET_FFI_AAPCS64_ENABLED
         case JANET_FFI_CC_AAPCS64: {
-            uint32_t next_general_reg = 0;
-            uint32_t next_fp_reg = 0;
-            uint32_t stack_offset = 0;
-            uint32_t ref_stack_offset = 0;
-
-            JanetFFIWordSpec ret_spec = aapcs64_classify(ret_type);
-            ret.spec = ret_spec;
-            if (ret_spec == JANET_AAPCS64_SSE) {
-                variant = 1;
-            } else if (ret_spec == JANET_AAPCS64_GENERAL_REF) {
-                if (type_size(ret_type) > sizeof(Aapcs64Variant3ReturnPointer)) {
-                    janet_panic("return value bigger than supported");
-                }
-                variant = 2;
-            } else {
-                variant = 0;
+            ret_slot = ffi_slot_of(ret_type, ffi_classify(cc, ret_type));
+            /* The allocator reports an oversized return as well, but the
+             * original raised it before any argument was decoded, and this
+             * keeps that order. */
+            if (ret_slot.spec == JANET_AAPCS64_GENERAL_REF &&
+                    ret_slot.size > sizeof(Aapcs64Variant3ReturnPointer)) {
+                janet_panic("return value bigger than supported");
             }
-
             for (uint32_t i = 0; i < arg_count; i++) {
                 mappings[i].type = decode_ffi_type(argv[i + 2]);
-                mappings[i].spec = aapcs64_classify(mappings[i].type);
-                size_t arg_size = type_size(mappings[i].type);
-
-                switch (mappings[i].spec) {
-                    case JANET_AAPCS64_GENERAL: {
-                        bool arg_is_struct = mappings[i].type.prim == JANET_FFI_TYPE_STRUCT;
-                        uint32_t needed_registers = (arg_size + 7) / 8;
-                        if (next_general_reg + needed_registers <= 8) {
-                            mappings[i].offset = next_general_reg;
-                            next_general_reg += needed_registers;
-                        } else {
-                            size_t arg_align = arg_is_struct ? 8 : type_align(mappings[i].type);
-                            mappings[i].spec = JANET_AAPCS64_STACK;
-                            mappings[i].offset = JANET_FFI_AAPCS64_STACK_ALIGN(stack_offset, arg_align);
-#if !defined(JANET_APPLE)
-                            stack_offset += arg_size > 8 ? arg_size : 8;
-#else
-                            stack_offset += arg_size;
-#endif
-                            next_general_reg = 8;
-                        }
-                        break;
-                    }
-                    case JANET_AAPCS64_GENERAL_REF:
-                        if (next_general_reg < 8) {
-                            mappings[i].offset = next_general_reg++;
-                        } else {
-                            mappings[i].spec = JANET_AAPCS64_STACK_REF;
-                            mappings[i].offset = JANET_FFI_AAPCS64_STACK_ALIGN(stack_offset, 8);
-                            stack_offset += 8;
-                        }
-                        mappings[i].offset2 = JANET_FFI_AAPCS64_FORCE_STACK_ALIGN(ref_stack_offset, 8);
-                        ref_stack_offset += arg_size;
-                        break;
-                    case JANET_AAPCS64_SSE: {
-                        uint32_t needed_registers = (arg_size + 7) / 8;
-                        if (next_fp_reg + needed_registers <= 8) {
-                            mappings[i].offset = next_fp_reg;
-                            next_fp_reg += needed_registers;
-                        } else {
-                            mappings[i].spec = JANET_AAPCS64_STACK;
-                            mappings[i].offset = JANET_FFI_AAPCS64_STACK_ALIGN(stack_offset, 8);
-#if !defined(JANET_APPLE)
-                            stack_offset += 8;
-#else
-                            stack_offset += arg_size;
-#endif
-                        }
-                        break;
-                    }
-                    default:
-                        janet_panic("nyi");
-                }
+                slots[i] = ffi_slot_of(mappings[i].type, ffi_classify(cc, mappings[i].type));
             }
-
-            stack_offset = (stack_offset + 15) & ~0xFUL;
-            ref_stack_offset = (ref_stack_offset + 15) & ~0xFUL;
-            stack_count = stack_offset + ref_stack_offset;
-
-            for (uint32_t i = 0; i < arg_count; i++) {
-                if (mappings[i].spec == JANET_AAPCS64_GENERAL_REF || mappings[i].spec == JANET_AAPCS64_STACK_REF) {
-                    mappings[i].offset2 = stack_offset + mappings[i].offset2;
-                }
-            }
+            janet_ffi_aapcs64_alloc(&alloc, &ret_slot, slots, arg_count,
+#ifdef JANET_APPLE
+                                    1,
+#else
+                                    0,
+#endif
+                                    sizeof(Aapcs64Variant3ReturnPointer));
+            ffi_check_alloc(&alloc);
+            ffi_apply_slots(&ret, mappings, arg_count, &ret_slot, slots,
+                            &alloc, &variant, &stack_count);
         }
         break;
 #endif

@@ -45,10 +45,135 @@
 #include <fcntl.h>
 #endif
 
-typedef struct {
-    const char *name;
-    uint32_t flag;
-} JanetWatchFlagName;
+/* Which backend's keyword vocabulary a lookup refers to. Mirrored by the
+ * `Platform` enumeration in `src/zig/subsystems/filewatch_flags.zig`; the
+ * assertion below fails the build if either side is renumbered alone. */
+#define JANET_WATCH_PLATFORM_LINUX 0u
+#define JANET_WATCH_PLATFORM_WINDOWS 1u
+#define JANET_WATCH_PLATFORM_KQUEUE 2u
+
+typedef char janet_watch_platforms_are_mirrored[
+             (JANET_WATCH_PLATFORM_LINUX == 0 &&
+              JANET_WATCH_PLATFORM_WINDOWS == 1 &&
+              JANET_WATCH_PLATFORM_KQUEUE == 2) ? 1 : -1];
+
+/* The name tables live in the subsystem, which compiles all three on every
+ * target; only the flag values below are host facts. Declared unconditionally
+ * so the declaration is checked whichever implementation the build selects. */
+extern int32_t janet_filewatch_flag_index(uint32_t platform, const uint8_t *name, int32_t len);
+extern int32_t janet_filewatch_flag_count(uint32_t platform);
+extern const char *janet_filewatch_flag_name(uint32_t platform, int32_t index);
+extern const char *janet_filewatch_action_name(int32_t action);
+
+#ifndef JANET_ZIG_FILEWATCH_FLAGS
+
+/* The C half of the same split, selected by `-Dfilewatch-flags=c`.
+ *
+ * Only the names are here, which is why — unlike the tables this increment
+ * replaced — all three compile on every host: a name is a string, not a host
+ * constant. That is what lets either implementation answer for a backend the
+ * build is not running on, and it is what makes the two comparable at all. */
+
+static const char *const watcher_names_linux[] = {
+    "access", "all", "attrib", "close-nowrite", "close-write", "create",
+    "delete", "delete-self", "ignored", "modify", "move-self", "moved-from",
+    "moved-to", "open", "q-overflow", "unmount",
+};
+
+static const char *const watcher_names_windows[] = {
+    "all", "attributes", "creation", "dir-name", "file-name", "last-access",
+    "last-write", "recursive", "security", "size",
+};
+
+static const char *const watcher_names_kqueue[] = {
+    "all", "attrib", "close", "close-write", "delete", "extend", "funlock",
+    "link", "open", "read", "rename", "revoke", "truncate", "write",
+};
+
+static const char *const watcher_action_names[] = {
+    "unknown", "added", "removed", "modified", "renamed-old", "renamed-new",
+};
+
+static const char *const *janet_watch_names_for(uint32_t platform, int32_t *count) {
+    switch (platform) {
+        case JANET_WATCH_PLATFORM_LINUX:
+            *count = (int32_t)(sizeof(watcher_names_linux) / sizeof(const char *));
+            return watcher_names_linux;
+        case JANET_WATCH_PLATFORM_WINDOWS:
+            *count = (int32_t)(sizeof(watcher_names_windows) / sizeof(const char *));
+            return watcher_names_windows;
+        case JANET_WATCH_PLATFORM_KQUEUE:
+            *count = (int32_t)(sizeof(watcher_names_kqueue) / sizeof(const char *));
+            return watcher_names_kqueue;
+        default:
+            *count = 0;
+            return NULL;
+    }
+}
+
+/* Compared by length and bytes rather than with `janet_cstrcmp`, because a
+ * Janet keyword is length-prefixed and may contain a zero byte. A keyword
+ * holding one matches nothing, which is what the original binary search did
+ * too — it just arrived there by comparing against the name's terminator. */
+int32_t janet_filewatch_flag_index(uint32_t platform, const uint8_t *name, int32_t len) {
+    int32_t count = 0;
+    const char *const *names = janet_watch_names_for(platform, &count);
+    if (NULL == names || len < 0) return -1;
+    for (int32_t i = 0; i < count; i++) {
+        size_t entry_len = strlen(names[i]);
+        if (entry_len == (size_t) len && 0 == memcmp(names[i], name, entry_len)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int32_t janet_filewatch_flag_count(uint32_t platform) {
+    int32_t count = 0;
+    return (NULL == janet_watch_names_for(platform, &count)) ? -1 : count;
+}
+
+const char *janet_filewatch_flag_name(uint32_t platform, int32_t index) {
+    int32_t count = 0;
+    const char *const *names = janet_watch_names_for(platform, &count);
+    if (NULL == names || index < 0 || index >= count) return NULL;
+    return names[index];
+}
+
+const char *janet_filewatch_action_name(int32_t action) {
+    if (action < 0 || action >= (int32_t)(sizeof(watcher_action_names) / sizeof(const char *))) {
+        return NULL;
+    }
+    return watcher_action_names[action];
+}
+
+#endif /* JANET_ZIG_FILEWATCH_FLAGS */
+
+/* Turn a run of keyword options into a flag mask for one backend.
+ *
+ * `values` is the backend's flag values in the table's own order, so the index
+ * the lookup reports selects one directly. A zero there means the host's
+ * headers do not define that constant — the BSDs disagree about several — and
+ * the name is refused exactly as it was when the entry was absent altogether.
+ * `what` names the backend in the panic, which is the only part of the message
+ * that ever differed between them. */
+static uint32_t janet_watch_decode_flags(const Janet *options, int32_t n,
+                                         uint32_t platform, const uint32_t *values,
+                                         const char *what) {
+    uint32_t flags = 0;
+    for (int32_t i = 0; i < n; i++) {
+        if (!(janet_checktype(options[i], JANET_KEYWORD))) {
+            janet_panicf("expected keyword, got %v", options[i]);
+        }
+        JanetKeyword keyw = janet_unwrap_keyword(options[i]);
+        int32_t index = janet_filewatch_flag_index(platform, keyw, janet_string_length(keyw));
+        if (index < 0 || values[index] == 0) {
+            janet_panicf("unknown %s flag %v", what, options[i]);
+        }
+        flags |= values[index];
+    }
+    return flags;
+}
 
 typedef struct {
 #ifndef JANET_WINDOWS
@@ -65,42 +190,35 @@ typedef struct {
 #include <sys/inotify.h>
 #include <unistd.h>
 
-static const JanetWatchFlagName watcher_flags_linux[] = {
-    {"access", IN_ACCESS},
-    {"all", IN_ALL_EVENTS},
-    {"attrib", IN_ATTRIB},
-    {"close-nowrite", IN_CLOSE_NOWRITE},
-    {"close-write", IN_CLOSE_WRITE},
-    {"create", IN_CREATE},
-    {"delete", IN_DELETE},
-    {"delete-self", IN_DELETE_SELF},
-    {"ignored", IN_IGNORED},
-    {"modify", IN_MODIFY},
-    {"move-self", IN_MOVE_SELF},
-    {"moved-from", IN_MOVED_FROM},
-    {"moved-to", IN_MOVED_TO},
-    {"open", IN_OPEN},
-    {"q-overflow", IN_Q_OVERFLOW},
-    {"unmount", IN_UNMOUNT},
+/* inotify's flag values, in the order the subsystem's `linux_names` lists
+ * them. The two arrays are one table split in half, so an edit to either has to
+ * be an edit to both. The assertion below pins this half's length, and
+ * `test/filewatch_flags.c` pins the other half's to the same number. */
+static const uint32_t watcher_flag_values_linux[] = {
+    IN_ACCESS,
+    IN_ALL_EVENTS,
+    IN_ATTRIB,
+    IN_CLOSE_NOWRITE,
+    IN_CLOSE_WRITE,
+    IN_CREATE,
+    IN_DELETE,
+    IN_DELETE_SELF,
+    IN_IGNORED,
+    IN_MODIFY,
+    IN_MOVE_SELF,
+    IN_MOVED_FROM,
+    IN_MOVED_TO,
+    IN_OPEN,
+    IN_Q_OVERFLOW,
+    IN_UNMOUNT,
 };
 
+typedef char janet_watch_linux_table_is_whole[
+             (sizeof(watcher_flag_values_linux) / sizeof(uint32_t) == 16) ? 1 : -1];
+
 static uint32_t decode_watch_flags(const Janet *options, int32_t n) {
-    uint32_t flags = 0;
-    for (int32_t i = 0; i < n; i++) {
-        if (!(janet_checktype(options[i], JANET_KEYWORD))) {
-            janet_panicf("expected keyword, got %v", options[i]);
-        }
-        JanetKeyword keyw = janet_unwrap_keyword(options[i]);
-        const JanetWatchFlagName *result = janet_strbinsearch(watcher_flags_linux,
-            sizeof(watcher_flags_linux) / sizeof(JanetWatchFlagName),
-            sizeof(JanetWatchFlagName),
-            keyw);
-        if (!result) {
-            janet_panicf("unknown linux flag %v", options[i]);
-        }
-        flags |= result->flag;
-    }
-    return flags;
+    return janet_watch_decode_flags(options, n, JANET_WATCH_PLATFORM_LINUX,
+                                    watcher_flag_values_linux, "linux");
 }
 
 static void janet_watcher_init(JanetWatcher *watcher, JanetChannel *channel, uint32_t default_flags) {
@@ -246,9 +364,18 @@ static void watcher_callback_read(JanetFiber *fiber, JanetAsyncEvent event) {
                 }
                 janet_struct_put(event, janet_ckeywordv("cookie"), janet_wrap_integer(inevent.cookie));
                 Janet etype = janet_ckeywordv("type");
-                const JanetWatchFlagName *wfn_end = watcher_flags_linux + sizeof(watcher_flags_linux) / sizeof(watcher_flags_linux[0]);
-                for (const JanetWatchFlagName *wfn = watcher_flags_linux; wfn < wfn_end; wfn++) {
-                    if ((inevent.mask & wfn->flag) == wfn->flag) janet_struct_put(event, etype, janet_ckeywordv(wfn->name));
+                /* Reported in table order, and `janet_struct_put` overwrites,
+                 * so the last matching name wins as it did before. The zero
+                 * check is for the split's absent-constant convention; every
+                 * inotify constant is defined, but without it a zero would
+                 * match every mask rather than none. */
+                int32_t flag_count = janet_filewatch_flag_count(JANET_WATCH_PLATFORM_LINUX);
+                for (int32_t fi = 0; fi < flag_count; fi++) {
+                    uint32_t flag = watcher_flag_values_linux[fi];
+                    if (flag != 0 && (inevent.mask & flag) == flag) {
+                        janet_struct_put(event, etype,
+                                         janet_ckeywordv(janet_filewatch_flag_name(JANET_WATCH_PLATFORM_LINUX, fi)));
+                    }
                 }
                 Janet eventv = janet_wrap_struct(janet_struct_end(event));
 
@@ -284,47 +411,35 @@ static void janet_watcher_unlisten(JanetWatcher *watcher) {
 
 #define WATCHFLAG_RECURSIVE 0x100000u
 
-static const JanetWatchFlagName watcher_flags_windows[] = {
-    {
-        "all",
-        FILE_NOTIFY_CHANGE_ATTRIBUTES |
-        FILE_NOTIFY_CHANGE_CREATION |
-        FILE_NOTIFY_CHANGE_DIR_NAME |
-        FILE_NOTIFY_CHANGE_FILE_NAME |
-        FILE_NOTIFY_CHANGE_LAST_ACCESS |
-        FILE_NOTIFY_CHANGE_LAST_WRITE |
-        FILE_NOTIFY_CHANGE_SECURITY |
-        FILE_NOTIFY_CHANGE_SIZE |
-        WATCHFLAG_RECURSIVE
-    },
-    {"attributes", FILE_NOTIFY_CHANGE_ATTRIBUTES},
-    {"creation", FILE_NOTIFY_CHANGE_CREATION},
-    {"dir-name", FILE_NOTIFY_CHANGE_DIR_NAME},
-    {"file-name", FILE_NOTIFY_CHANGE_FILE_NAME},
-    {"last-access", FILE_NOTIFY_CHANGE_LAST_ACCESS},
-    {"last-write", FILE_NOTIFY_CHANGE_LAST_WRITE},
-    {"recursive", WATCHFLAG_RECURSIVE},
-    {"security", FILE_NOTIFY_CHANGE_SECURITY},
-    {"size", FILE_NOTIFY_CHANGE_SIZE},
+/* The `ReadDirectoryChangesW` filter values, in the order the subsystem's
+ * `windows_names` lists them. See the note on the Linux half. */
+static const uint32_t watcher_flag_values_windows[] = {
+    FILE_NOTIFY_CHANGE_ATTRIBUTES |
+    FILE_NOTIFY_CHANGE_CREATION |
+    FILE_NOTIFY_CHANGE_DIR_NAME |
+    FILE_NOTIFY_CHANGE_FILE_NAME |
+    FILE_NOTIFY_CHANGE_LAST_ACCESS |
+    FILE_NOTIFY_CHANGE_LAST_WRITE |
+    FILE_NOTIFY_CHANGE_SECURITY |
+    FILE_NOTIFY_CHANGE_SIZE |
+    WATCHFLAG_RECURSIVE,
+    FILE_NOTIFY_CHANGE_ATTRIBUTES,
+    FILE_NOTIFY_CHANGE_CREATION,
+    FILE_NOTIFY_CHANGE_DIR_NAME,
+    FILE_NOTIFY_CHANGE_FILE_NAME,
+    FILE_NOTIFY_CHANGE_LAST_ACCESS,
+    FILE_NOTIFY_CHANGE_LAST_WRITE,
+    WATCHFLAG_RECURSIVE,
+    FILE_NOTIFY_CHANGE_SECURITY,
+    FILE_NOTIFY_CHANGE_SIZE,
 };
 
+typedef char janet_watch_windows_table_is_whole[
+             (sizeof(watcher_flag_values_windows) / sizeof(uint32_t) == 10) ? 1 : -1];
+
 static uint32_t decode_watch_flags(const Janet *options, int32_t n) {
-    uint32_t flags = 0;
-    for (int32_t i = 0; i < n; i++) {
-        if (!(janet_checktype(options[i], JANET_KEYWORD))) {
-            janet_panicf("expected keyword, got %v", options[i]);
-        }
-        JanetKeyword keyw = janet_unwrap_keyword(options[i]);
-        const JanetWatchFlagName *result = janet_strbinsearch(watcher_flags_windows,
-            sizeof(watcher_flags_windows) / sizeof(JanetWatchFlagName),
-            sizeof(JanetWatchFlagName),
-            keyw);
-        if (!result) {
-            janet_panicf("unknown windows filewatch flag %v", options[i]);
-        }
-        flags |= result->flag;
-    }
-    return flags;
+    return janet_watch_decode_flags(options, n, JANET_WATCH_PLATFORM_WINDOWS,
+                                    watcher_flag_values_windows, "windows filewatch");
 }
 
 static void janet_watcher_init(JanetWatcher *watcher, JanetChannel *channel, uint32_t default_flags) {
@@ -364,15 +479,6 @@ static void read_dir_changes(OverlappedWatch *ow) {
         janet_panicv(janet_ev_lasterr());
     }
 }
-
-static const char *watcher_actions_windows[] = {
-    "unknown",
-    "added",
-    "removed",
-    "modified",
-    "renamed-old",
-    "renamed-new",
-};
 
 static void watcher_callback_read(JanetFiber *fiber, JanetAsyncEvent event) {
     OverlappedWatch *ow = (OverlappedWatch *) fiber->ev_state;
@@ -420,7 +526,13 @@ static void watcher_callback_read(JanetFiber *fiber, JanetAsyncEvent event) {
                 }
 
                 JanetKV *event = janet_struct_begin(3);
-                janet_struct_put(event, janet_ckeywordv("type"), janet_ckeywordv(watcher_actions_windows[fni->Action]));
+                /* The original indexed a six-entry array with the action code
+                 * and had nothing to say about a code outside it. The lookup
+                 * reports NULL there instead, so name the fallback explicitly
+                 * rather than read past the end. */
+                const char *action = janet_filewatch_action_name((int32_t) fni->Action);
+                if (NULL == action) action = "unknown";
+                janet_struct_put(event, janet_ckeywordv("type"), janet_ckeywordv(action));
                 janet_struct_put(event, janet_ckeywordv("file-name"), filename);
                 janet_struct_put(event, janet_ckeywordv("dir-name"), janet_wrap_string(ow->dir_path));
                 Janet eventv = janet_wrap_struct(janet_struct_end(event));
@@ -521,74 +633,81 @@ static void janet_watcher_unlisten(JanetWatcher *watcher) {
 /* Cribbed from ev.c */
 #define EV_SETx(ev, a, b, c, d, e, f) EV_SET((ev), (a), (b), (c), (d), (e), ((__typeof__((ev)->udata))(f)))
 
-/* Different BSDs define different NOTE_* constants for different kinds of events. Use ifdef to
-   determine when they are available (assuming they are defines and not enums */
-static const JanetWatchFlagName watcher_flags_kqueue[] = {
-    {
-        "all", NOTE_ATTRIB | NOTE_DELETE | NOTE_EXTEND | NOTE_RENAME | NOTE_REVOKE | NOTE_WRITE | NOTE_LINK
+/* kqueue's `NOTE_*` values, in the order the subsystem's `kqueue_names` lists
+ * them. The two arrays are one table split in half, so an edit to either has to
+ * be an edit to both.
+ *
+ * Different BSDs define different NOTE_* constants for different kinds of
+ * events. Use ifdef to determine when they are available (assuming they are
+ * defines and not enums). A host that lacks one stores zero here, and
+ * `janet_watch_decode_flags` refuses that name — the same answer the original
+ * gave by leaving the entry out of the table altogether. */
+static const uint32_t watcher_flag_values_kqueue[] = {
+    NOTE_ATTRIB | NOTE_DELETE | NOTE_EXTEND | NOTE_RENAME | NOTE_REVOKE | NOTE_WRITE | NOTE_LINK
 #ifdef NOTE_CLOSE
-        | NOTE_CLOSE
+    | NOTE_CLOSE
 #endif
 #ifdef NOTE_CLOSE_WRITE
-        | NOTE_CLOSE_WRITE
+    | NOTE_CLOSE_WRITE
 #endif
 #ifdef NOTE_OPEN
-        | NOTE_OPEN
+    | NOTE_OPEN
 #endif
 #ifdef NOTE_READ
-        | NOTE_READ
+    | NOTE_READ
 #endif
 #ifdef NOTE_FUNLOCK
-        | NOTE_FUNLOCK
+    | NOTE_FUNLOCK
 #endif
 #ifdef NOTE_TRUNCATE
-        | NOTE_TRUNCATE
+    | NOTE_TRUNCATE
 #endif
-    },
-    {"attrib", NOTE_ATTRIB},
+    ,
+    NOTE_ATTRIB,
 #ifdef NOTE_CLOSE
-    {"close", NOTE_CLOSE},
+    NOTE_CLOSE,
+#else
+    0,
 #endif
 #ifdef NOTE_CLOSE_WRITE
-    {"close-write", NOTE_CLOSE_WRITE},
+    NOTE_CLOSE_WRITE,
+#else
+    0,
 #endif
-    {"delete", NOTE_DELETE},
-    {"extend", NOTE_EXTEND},
+    NOTE_DELETE,
+    NOTE_EXTEND,
 #ifdef NOTE_FUNLOCK
-    {"funlock", NOTE_FUNLOCK},
+    NOTE_FUNLOCK,
+#else
+    0,
 #endif
-    {"link", NOTE_LINK},
+    NOTE_LINK,
 #ifdef NOTE_OPEN
-    {"open", NOTE_OPEN},
+    NOTE_OPEN,
+#else
+    0,
 #endif
 #ifdef NOTE_READ
-    {"read", NOTE_READ},
+    NOTE_READ,
+#else
+    0,
 #endif
-    {"rename", NOTE_RENAME},
-    {"revoke", NOTE_REVOKE},
+    NOTE_RENAME,
+    NOTE_REVOKE,
 #ifdef NOTE_TRUNCATE
-    {"truncate", NOTE_TRUNCATE},
+    NOTE_TRUNCATE,
+#else
+    0,
 #endif
-    {"write", NOTE_WRITE},
+    NOTE_WRITE,
 };
 
+typedef char janet_watch_kqueue_table_is_whole[
+             (sizeof(watcher_flag_values_kqueue) / sizeof(uint32_t) == 14) ? 1 : -1];
+
 static uint32_t decode_watch_flags(const Janet *options, int32_t n) {
-    uint32_t flags = 0;
-    for (int32_t i = 0; i < n; i++) {
-        if (!(janet_checktype(options[i], JANET_KEYWORD))) {
-            janet_panicf("expected keyword, got %v", options[i]);
-        }
-        JanetKeyword keyw = janet_unwrap_keyword(options[i]);
-        const JanetWatchFlagName *result = janet_strbinsearch(watcher_flags_kqueue,
-            sizeof(watcher_flags_kqueue) / sizeof(JanetWatchFlagName),
-            sizeof(JanetWatchFlagName),
-            keyw);
-        if (!result) {
-            janet_panicf("unknown bsd flag %v", options[i]);
-        }
-        flags |= result->flag;
-    }
-    return flags;
+    return janet_watch_decode_flags(options, n, JANET_WATCH_PLATFORM_KQUEUE,
+                                    watcher_flag_values_kqueue, "bsd");
 }
 
 static void janet_watcher_init(JanetWatcher *watcher, JanetChannel *channel, uint32_t default_flags) {
@@ -702,14 +821,20 @@ static void watcher_callback_read(JanetFiber *fiber, JanetAsyncEvent event) {
                 int is_dir = S_ISDIR(stat_buf.st_mode);
                 Janet ident = janet_wrap_integer(kev.ident);
                 Janet path = janet_table_get(watcher->watch_descriptors, ident);
-                for (unsigned int j = 1; j < (sizeof(watcher_flags_kqueue) / sizeof(watcher_flags_kqueue[0])); j++) {
-                    uint32_t flagcheck = watcher_flags_kqueue[j].flag;
+                /* From one rather than zero: index zero is `all`, whose value
+                 * is the union of the others and would match everything. A
+                 * constant the host does not define is zero here, and `fflags &
+                 * 0` is already false, so it is skipped without a guard. */
+                int32_t flag_count = janet_filewatch_flag_count(JANET_WATCH_PLATFORM_KQUEUE);
+                for (int32_t j = 1; j < flag_count; j++) {
+                    uint32_t flagcheck = watcher_flag_values_kqueue[j];
                     if (kev.fflags & flagcheck) {
                         JanetKV *event = janet_struct_begin(6);
                         janet_struct_put(event, janet_ckeywordv("wd"), ident);
                         janet_struct_put(event, janet_ckeywordv("wd-path"), path);
                         janet_struct_put(event, janet_ckeywordv("cookie"), janet_wrap_number((double) state->cookie));
-                        janet_struct_put(event, janet_ckeywordv("type"), janet_ckeywordv(watcher_flags_kqueue[j].name));
+                        janet_struct_put(event, janet_ckeywordv("type"),
+                                         janet_ckeywordv(janet_filewatch_flag_name(JANET_WATCH_PLATFORM_KQUEUE, j)));
                         if (is_dir) {
                             /* Pass in directly */
                             janet_struct_put(event, janet_ckeywordv("file-name"), janet_cstringv(""));

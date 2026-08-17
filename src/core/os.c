@@ -147,6 +147,99 @@ static void janet_unlock_environ(void) {
 #define janet_stringify1(x) #x
 #define janet_stringify(x) janet_stringify1(x)
 
+#ifdef JANET_ZIG_OS_PLATFORM
+
+const char *janet_os_name(void);
+const char *janet_os_arch(void);
+const char *janet_os_compiler(void);
+#ifndef JANET_REDUCED_OS
+int32_t janet_os_cpu_count(void);
+#endif
+
+#else
+
+const char *janet_os_name(void) {
+#if defined(JANET_OS_NAME)
+    return janet_stringify(JANET_OS_NAME);
+#elif defined(JANET_MINGW)
+    return "mingw";
+#elif defined(JANET_CYGWIN)
+    return "cygwin";
+#elif defined(JANET_WINDOWS)
+    return "windows";
+#elif defined(JANET_APPLE)
+    return "macos";
+#elif defined(__EMSCRIPTEN__)
+    return "web";
+#elif defined(JANET_LINUX)
+    return "linux";
+#elif defined(JANET_GNU_HURD)
+    return "hurd";
+#elif defined(__FreeBSD__)
+    return "freebsd";
+#elif defined(__NetBSD__)
+    return "netbsd";
+#elif defined(__OpenBSD__)
+    return "openbsd";
+#elif defined(__DragonFly__)
+    return "dragonfly";
+#elif defined(JANET_BSD)
+    return "bsd";
+#elif defined(JANET_ILLUMOS)
+    return "illumos";
+#else
+    return "posix";
+#endif
+}
+
+const char *janet_os_arch(void) {
+#if defined(JANET_ARCH_NAME)
+    return janet_stringify(JANET_ARCH_NAME);
+#elif defined(__EMSCRIPTEN__)
+    return "wasm";
+#elif (defined(__x86_64__) || defined(_M_X64))
+    return "x64";
+#elif defined(__i386) || defined(_M_IX86)
+    return "x86";
+#elif defined(_M_ARM64) || defined(__aarch64__)
+    return "aarch64";
+#elif defined(_M_ARM) || defined(__arm__)
+    return "arm";
+#elif (defined(__riscv) && (__riscv_xlen == 64))
+    return "riscv64";
+#elif (defined(__riscv) && (__riscv_xlen == 32))
+    return "riscv32";
+#elif (defined(__sparc__))
+    return "sparc";
+#elif (defined(__ppc__))
+    return "ppc";
+#elif (defined(__ppc64__) || defined(_ARCH_PPC64) || defined(_M_PPC))
+    return "ppc64";
+#elif (defined(__s390x__))
+    return "s390x";
+#elif (defined(__s390__))
+    return "s390";
+#else
+    return "unknown";
+#endif
+}
+
+const char *janet_os_compiler(void) {
+#if defined(_MSC_VER)
+    return "msvc";
+#elif defined(__clang__)
+    return "clang";
+#elif defined(__GNUC__)
+    return "gcc";
+#elif defined(JANET_PLAN9)
+    return "kencc";
+#else
+    return "unknown";
+#endif
+}
+
+#endif /* JANET_ZIG_OS_PLATFORM */
+
 JANET_CORE_FN(os_which,
               "(os/which &opt test)",
               "Check the current operating system. If `test` is nil or unset, Returns one of:\n\n"
@@ -169,36 +262,10 @@ JANET_CORE_FN(os_which,
         janet_getkeyword(argv, 0); /* Constrain to keywords */
         return janet_wrap_boolean(janet_equals(argv[0], os_which(0, NULL)));
     }
-#if defined(JANET_OS_NAME)
+#if defined(JANET_ZIG_OS_PLATFORM) && defined(JANET_OS_NAME)
     return janet_ckeywordv(janet_stringify(JANET_OS_NAME));
-#elif defined(JANET_MINGW)
-    return janet_ckeywordv("mingw");
-#elif defined(JANET_CYGWIN)
-    return janet_ckeywordv("cygwin");
-#elif defined(JANET_WINDOWS)
-    return janet_ckeywordv("windows");
-#elif defined(JANET_APPLE)
-    return janet_ckeywordv("macos");
-#elif defined(__EMSCRIPTEN__)
-    return janet_ckeywordv("web");
-#elif defined(JANET_LINUX)
-    return janet_ckeywordv("linux");
-#elif defined(JANET_GNU_HURD)
-    return janet_ckeywordv("hurd");
-#elif defined(__FreeBSD__)
-    return janet_ckeywordv("freebsd");
-#elif defined(__NetBSD__)
-    return janet_ckeywordv("netbsd");
-#elif defined(__OpenBSD__)
-    return janet_ckeywordv("openbsd");
-#elif defined(__DragonFly__)
-    return janet_ckeywordv("dragonfly");
-#elif defined(JANET_BSD)
-    return janet_ckeywordv("bsd");
-#elif defined(JANET_ILLUMOS)
-    return janet_ckeywordv("illumos");
 #else
-    return janet_ckeywordv("posix");
+    return janet_ckeywordv(janet_os_name());
 #endif
 }
 
@@ -220,34 +287,10 @@ JANET_CORE_FN(os_arch,
     janet_fixarity(argc, 0);
     (void) argv;
     /* Check 64-bit vs 32-bit */
-#if defined(JANET_ARCH_NAME)
+#if defined(JANET_ZIG_OS_PLATFORM) && defined(JANET_ARCH_NAME)
     return janet_ckeywordv(janet_stringify(JANET_ARCH_NAME));
-#elif defined(__EMSCRIPTEN__)
-    return janet_ckeywordv("wasm");
-#elif (defined(__x86_64__) || defined(_M_X64))
-    return janet_ckeywordv("x64");
-#elif defined(__i386) || defined(_M_IX86)
-    return janet_ckeywordv("x86");
-#elif defined(_M_ARM64) || defined(__aarch64__)
-    return janet_ckeywordv("aarch64");
-#elif defined(_M_ARM) || defined(__arm__)
-    return janet_ckeywordv("arm");
-#elif (defined(__riscv) && (__riscv_xlen == 64))
-    return janet_ckeywordv("riscv64");
-#elif (defined(__riscv) && (__riscv_xlen == 32))
-    return janet_ckeywordv("riscv32");
-#elif (defined(__sparc__))
-    return janet_ckeywordv("sparc");
-#elif (defined(__ppc__))
-    return janet_ckeywordv("ppc");
-#elif (defined(__ppc64__) || defined(_ARCH_PPC64) || defined(_M_PPC))
-    return janet_ckeywordv("ppc64");
-#elif (defined(__s390x__))
-    return janet_ckeywordv("s390x");
-#elif (defined(__s390__))
-    return janet_ckeywordv("s390");
 #else
-    return janet_ckeywordv("unknown");
+    return janet_ckeywordv(janet_os_arch());
 #endif
 }
 
@@ -262,17 +305,7 @@ JANET_CORE_FN(os_compiler,
               "* :unknown\n\n") {
     janet_fixarity(argc, 0);
     (void) argv;
-#if defined(_MSC_VER)
-    return janet_ckeywordv("msvc");
-#elif defined(__clang__)
-    return janet_ckeywordv("clang");
-#elif defined(__GNUC__)
-    return janet_ckeywordv("gcc");
-#elif defined(JANET_PLAN9)
-    return janet_ckeywordv("kencc");
-#else
-    return janet_ckeywordv("unknown");
-#endif
+    return janet_ckeywordv(janet_os_compiler());
 }
 
 #undef janet_stringify1
@@ -309,52 +342,247 @@ JANET_CORE_FN(os_exit,
 
 #ifndef JANET_REDUCED_OS
 
+#ifndef JANET_ZIG_OS_PLATFORM
+int32_t janet_os_cpu_count(void) {
+#ifdef JANET_WINDOWS
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    return (int32_t) info.dwNumberOfProcessors;
+#elif defined(JANET_LINUX)
+    cpu_set_t cs;
+    CPU_ZERO(&cs);
+    sched_getaffinity(0, sizeof(cs), &cs);
+    return CPU_COUNT(&cs);
+#elif defined(JANET_BSD) && defined(HW_NCPUONLINE)
+    const int name[2] = {CTL_HW, HW_NCPUONLINE};
+    int result = 0;
+    size_t len = sizeof(int);
+    if (-1 == sysctl(name, 2, &result, &len, NULL, 0)) return -1;
+    return result;
+#elif defined(JANET_BSD) && defined(HW_NCPU)
+    const int name[2] = {CTL_HW, HW_NCPU};
+    int result = 0;
+    size_t len = sizeof(int);
+    if (-1 == sysctl(name, 2, &result, &len, NULL, 0)) return -1;
+    return result;
+#elif defined(JANET_ILLUMOS)
+    long result = sysconf(_SC_NPROCESSORS_CONF);
+    return result < 0 ? -1 : (int32_t) result;
+#elif defined(JANET_PLAN9)
+    return atoi(getenv("NPROC"));
+#else
+    return -1;
+#endif
+}
+#endif /* JANET_ZIG_OS_PLATFORM */
+
 JANET_CORE_FN(os_cpu_count,
               "(os/cpu-count &opt dflt)",
               "Get an approximate number of CPUs available on for this process to use. If "
               "unable to get an approximation, will return a default value dflt.") {
     janet_arity(argc, 0, 1);
     (void) argv; /* Prevent unused argument warning */
-#ifdef JANET_WINDOWS
-    SYSTEM_INFO info;
-    GetSystemInfo(&info);
-    return janet_wrap_integer(info.dwNumberOfProcessors);
-#elif defined(JANET_LINUX)
-    cpu_set_t cs;
-    CPU_ZERO(&cs);
-    sched_getaffinity(0, sizeof(cs), &cs);
-    int count = CPU_COUNT(&cs);
+    int32_t count = janet_os_cpu_count();
+    if (count < 0) return argc > 0 ? argv[0] : janet_wrap_nil();
     return janet_wrap_integer(count);
-#elif defined(JANET_BSD) && defined(HW_NCPUONLINE)
-    const int name[2] = {CTL_HW, HW_NCPUONLINE};
-    int result = 0;
-    size_t len = sizeof(int);
-    if (-1 == sysctl(name, 2, &result, &len, NULL, 0)) {
-        return argc > 0 ? argv[0] : janet_wrap_nil();
-    }
-    return janet_wrap_integer(result);
-#elif defined(JANET_BSD) && defined(HW_NCPU)
-    const int name[2] = {CTL_HW, HW_NCPU};
-    int result = 0;
-    size_t len = sizeof(int);
-    if (-1 == sysctl(name, 2, &result, &len, NULL, 0)) {
-        return argc > 0 ? argv[0] : janet_wrap_nil();
-    }
-    return janet_wrap_integer(result);
-#elif defined(JANET_ILLUMOS)
-    long result = sysconf(_SC_NPROCESSORS_CONF);
-    if (result < 0) {
-        return argc > 0 ? argv[0] : janet_wrap_nil();
-    }
-    return janet_wrap_integer(result);
-#elif defined(JANET_PLAN9)
-    return janet_wrap_integer(atoi(getenv("NPROC")));
-#else
-    return argc > 0 ? argv[0] : janet_wrap_nil();
-#endif
 }
 
 #ifndef JANET_NO_PROCESSES
+
+/* How a process ended, as reported by janet_os_wait. The offset that the two
+ * signal outcomes carry, and the panic the fourth one raises, stay here. */
+#define JANET_OS_WAIT_EXITED 0
+#define JANET_OS_WAIT_STOPPED 1
+#define JANET_OS_WAIT_SIGNALED 2
+#define JANET_OS_WAIT_UNKNOWN 3
+
+#ifdef JANET_ZIG_OS_PROCESS
+
+int32_t janet_os_exec_escape_arg(const char *arg, uint8_t *dest, int32_t cap);
+int32_t janet_os_env_key_ok(const uint8_t *key, int32_t len);
+void janet_os_env_entry_fill(const uint8_t *key, int32_t klen, const uint8_t *value,
+                             int32_t vlen, uint8_t *dest);
+int64_t janet_os_getpid(void);
+int32_t janet_os_system(const char *command);
+#ifndef JANET_WINDOWS
+int32_t janet_os_wait(int64_t pid, int32_t *value);
+void janet_os_reap(int64_t pid);
+int32_t janet_os_kill(int64_t pid, int32_t sig);
+int32_t janet_os_pipe(int *fds);
+int32_t janet_os_close_fd(int fd);
+#ifndef JANET_PLAN9
+int64_t janet_os_fork(void);
+int32_t janet_os_exec(const char *path, char *const *argv, int32_t search_path);
+int32_t janet_os_chroot(const char *path);
+#endif
+#endif
+
+#else
+
+/* Append one byte of an escaped argument, counting it whether or not there is
+ * anywhere to put it. */
+static void os_escape_push(uint8_t *dest, size_t limit, size_t *len, uint8_t value) {
+    if (dest != NULL && *len < limit) dest[*len] = value;
+    (*len)++;
+}
+
+static void os_escape_repeat(uint8_t *dest, size_t limit, size_t *len, uint8_t value, size_t count) {
+    while (count > 0) {
+        os_escape_push(dest, limit, len, value);
+        count--;
+    }
+}
+
+int32_t janet_os_exec_escape_arg(const char *arg, uint8_t *dest, int32_t cap) {
+    size_t len = 0;
+    size_t limit = (dest != NULL && cap > 0) ? (size_t) cap : 0;
+
+    /* Find first special character */
+    const char *first_spec = arg;
+    while (*first_spec) {
+        if (*first_spec == ' ' || *first_spec == '\t' || *first_spec == '\v' ||
+                *first_spec == '\n' || *first_spec == '"') break;
+        first_spec++;
+    }
+
+    if (*first_spec == '\0') {
+        /* No escape needed */
+        for (const char *c = arg; *c; c++) os_escape_push(dest, limit, &len, (uint8_t) *c);
+    } else {
+        /* Escape */
+        os_escape_push(dest, limit, &len, '"');
+        for (const char *c = arg; ; c++) {
+            size_t numBackSlashes = 0;
+            while (*c == '\\') {
+                c++;
+                numBackSlashes++;
+            }
+            if (*c == '"') {
+                /* Escape all backslashes and double quote mark */
+                os_escape_repeat(dest, limit, &len, '\\', 2 * numBackSlashes + 1);
+                os_escape_push(dest, limit, &len, '"');
+            } else if (*c) {
+                /* Don't escape backslashes. */
+                os_escape_repeat(dest, limit, &len, '\\', numBackSlashes);
+                os_escape_push(dest, limit, &len, (uint8_t) *c);
+            } else {
+                /* we finished Escape all backslashes */
+                os_escape_repeat(dest, limit, &len, '\\', 2 * numBackSlashes);
+                break;
+            }
+        }
+        os_escape_push(dest, limit, &len, '"');
+    }
+
+    if (len > (size_t) INT32_MAX) return -1;
+    return (int32_t) len;
+}
+
+int32_t janet_os_env_key_ok(const uint8_t *key, int32_t len) {
+    if (len < 0) return 0;
+    for (int32_t index = 0; index < len; index++) {
+        if (key[index] == '\0' || key[index] == '=') return 0;
+    }
+    return 1;
+}
+
+void janet_os_env_entry_fill(const uint8_t *key, int32_t klen, const uint8_t *value,
+                             int32_t vlen, uint8_t *dest) {
+    size_t k = klen > 0 ? (size_t) klen : 0;
+    size_t v = vlen > 0 ? (size_t) vlen : 0;
+    memcpy(dest, key, k);
+    dest[k] = '=';
+    memcpy(dest + k + 1, value, v);
+    dest[k + v + 1] = '\0';
+}
+
+int64_t janet_os_getpid(void) {
+#ifdef JANET_WINDOWS
+    return (int64_t) _getpid();
+#else
+    return (int64_t) getpid();
+#endif
+}
+
+int32_t janet_os_system(const char *command) {
+    return (int32_t) system(command);
+}
+
+#ifndef JANET_WINDOWS
+
+int32_t janet_os_wait(int64_t pid, int32_t *value) {
+    int status = 0;
+    pid_t result;
+    do {
+        result = waitpid((pid_t) pid, &status, 0);
+    } while (result == -1 && errno == EINTR);
+    if (WIFEXITED(status)) {
+        *value = (int32_t) WEXITSTATUS(status);
+        return JANET_OS_WAIT_EXITED;
+    }
+    if (WIFSTOPPED(status)) {
+        *value = (int32_t) WSTOPSIG(status);
+        return JANET_OS_WAIT_STOPPED;
+    }
+    if (WIFSIGNALED(status)) {
+        *value = (int32_t) WTERMSIG(status);
+        return JANET_OS_WAIT_SIGNALED;
+    }
+    *value = (int32_t) status;
+    return JANET_OS_WAIT_UNKNOWN;
+}
+
+void janet_os_reap(int64_t pid) {
+    int status = 0;
+    waitpid((pid_t) pid, &status, 0);
+}
+
+int32_t janet_os_kill(int64_t pid, int32_t sig) {
+    return (int32_t) kill((pid_t) pid, (int) sig);
+}
+
+int32_t janet_os_pipe(int *fds) {
+    return (int32_t) pipe(fds);
+}
+
+int32_t janet_os_close_fd(int fd) {
+    return (int32_t) close(fd);
+}
+
+#ifndef JANET_PLAN9
+
+int64_t janet_os_fork(void) {
+    pid_t result;
+    do {
+        result = fork();
+    } while (result == -1 && errno == EINTR);
+    return (int64_t) result;
+}
+
+int32_t janet_os_exec(const char *path, char *const *argv, int32_t search_path) {
+    int status;
+    do {
+        if (search_path) {
+            status = execvp(path, argv);
+        } else {
+            status = execv(path, argv);
+        }
+    } while (status == -1 && errno == EINTR);
+    return (int32_t) status;
+}
+
+int32_t janet_os_chroot(const char *path) {
+    int status;
+    do {
+        status = chroot(path);
+    } while (status == -1 && errno == EINTR);
+    return (int32_t) status;
+}
+
+#endif /* JANET_PLAN9 */
+#endif /* JANET_WINDOWS */
+
+#endif /* JANET_ZIG_OS_PROCESS */
 
 /* Get env for os_execute */
 #ifdef JANET_WINDOWS
@@ -375,10 +603,13 @@ static EnvBlock os_execute_env(int32_t argc, const Janet *argv) {
         if (!janet_checktype(kv->value, JANET_STRING)) continue;
         const uint8_t *keys = janet_unwrap_string(kv->key);
         const uint8_t *vals = janet_unwrap_string(kv->value);
-        janet_buffer_push_bytes(temp, keys, janet_string_length(keys));
-        janet_buffer_push_u8(temp, '=');
-        janet_buffer_push_bytes(temp, vals, janet_string_length(vals));
-        janet_buffer_push_u8(temp, '\0');
+        int32_t klen = janet_string_length(keys);
+        int32_t vlen = janet_string_length(vals);
+        /* The Windows block accepts every key, including one holding a
+         * separator, which is what the C implementation did here. */
+        janet_buffer_extra(temp, klen + vlen + 2);
+        janet_os_env_entry_fill(keys, klen, vals, vlen, temp->data + temp->count);
+        temp->count += klen + vlen + 2;
     }
     /* Windows environment blocks must be double-NULL terminated */
     if (temp->count == 0) janet_buffer_push_u8(temp, '\0');
@@ -398,19 +629,9 @@ static EnvBlock os_execute_env(int32_t argc, const Janet *argv) {
         int32_t klen = janet_string_length(keys);
         int32_t vlen = janet_string_length(vals);
         /* Check keys has no embedded 0s or =s. */
-        int skip = 0;
-        for (int32_t k = 0; k < klen; k++) {
-            if (keys[k] == '\0' || keys[k] == '=') {
-                skip = 1;
-                break;
-            }
-        }
-        if (skip) continue;
+        if (!janet_os_env_key_ok(keys, klen)) continue;
         char *envitem = janet_smalloc((size_t) klen + (size_t) vlen + 2);
-        memcpy(envitem, keys, klen);
-        envitem[klen] = '=';
-        memcpy(envitem + klen + 1, vals, vlen);
-        envitem[klen + vlen + 1] = 0;
+        janet_os_env_entry_fill(keys, klen, vals, vlen, (uint8_t *) envitem);
         envp[j++] = envitem;
     }
     envp[j] = NULL;
@@ -448,63 +669,13 @@ static JanetBuffer *os_exec_escape(JanetView args) {
         /* Push leading space if not first */
         if (i) janet_buffer_push_u8(b, ' ');
 
-        /* Find first special character */
-        const char *first_spec = arg;
-        while (*first_spec) {
-            switch (*first_spec) {
-                case ' ':
-                case '\t':
-                case '\v':
-                case '\n':
-                case '"':
-                    goto found;
-                case '\0':
-                    janet_panic("embedded 0 not allowed in command line string");
-                default:
-                    first_spec++;
-                    break;
-            }
-        }
-    found:
-
-        /* Check if needs escape */
-        if (*first_spec == '\0') {
-            /* No escape needed */
-            janet_buffer_push_cstring(b, arg);
-        } else {
-            /* Escape */
-            janet_buffer_push_u8(b, '"');
-            for (const char *c = arg; ; c++) {
-                unsigned numBackSlashes = 0;
-                while (*c == '\\') {
-                    c++;
-                    numBackSlashes++;
-                }
-                if (*c == '"') {
-                    /* Escape all backslashes and double quote mark */
-                    int32_t n = 2 * numBackSlashes + 1;
-                    janet_buffer_extra(b, n + 1);
-                    memset(b->data + b->count, '\\', n);
-                    b->count += n;
-                    janet_buffer_push_u8(b, '"');
-                } else if (*c) {
-                    /* Don't escape backslashes. */
-                    int32_t n = numBackSlashes;
-                    janet_buffer_extra(b, n + 1);
-                    memset(b->data + b->count, '\\', n);
-                    b->count += n;
-                    janet_buffer_push_u8(b, *c);
-                } else {
-                    /* we finished Escape all backslashes */
-                    int32_t n = 2 * numBackSlashes;
-                    janet_buffer_extra(b, n + 1);
-                    memset(b->data + b->count, '\\', n);
-                    b->count += n;
-                    break;
-                }
-            }
-            janet_buffer_push_u8(b, '"');
-        }
+        /* Measure, make room, then fill: growing the buffer can panic, which
+         * may not happen inside the escaping itself. */
+        int32_t needed = janet_os_exec_escape_arg(arg, NULL, 0);
+        if (needed < 0) janet_panic("command line string too long (max 8191 characters)");
+        janet_buffer_extra(b, needed);
+        janet_os_exec_escape_arg(arg, b->data + b->count, needed);
+        b->count += needed;
     }
     janet_buffer_push_u8(b, 0);
     return b;
@@ -558,22 +729,14 @@ static JanetEVGenericMessage janet_proc_wait_subr(JanetEVGenericMessage args) {
 
 static int proc_get_status(JanetProc *proc) {
     /* Use POSIX shell semantics for interpreting signals */
-    int status = 0;
-    pid_t result;
-    do {
-        result = waitpid(proc->pid, &status, 0);
-    } while (result == -1 && errno == EINTR);
-    if (WIFEXITED(status)) {
-        status = WEXITSTATUS(status);
-    } else if (WIFSTOPPED(status)) {
-        status = WSTOPSIG(status) + 128;
-    } else if (WIFSIGNALED(status)) {
-        status = WTERMSIG(status) + 128;
-    } else {
-        /* Could possibly return -1 but for now, just panic */
-        janet_panicf("Undefined status code for process termination, %d.", status);
+    int32_t value = 0;
+    int32_t outcome = janet_os_wait((int64_t) proc->pid, &value);
+    if (outcome == JANET_OS_WAIT_EXITED) return (int) value;
+    if (outcome == JANET_OS_WAIT_STOPPED || outcome == JANET_OS_WAIT_SIGNALED) {
+        return (int) value + 128;
     }
-    return status;
+    /* Could possibly return -1 but for now, just panic */
+    janet_panicf("Undefined status code for process termination, %d.", value);
 }
 
 /* Function that is called in separate thread to wait on a pid */
@@ -623,10 +786,9 @@ static int janet_proc_gc(void *p, size_t s) {
 #else
     if (!(proc->flags & (JANET_PROC_WAITED | JANET_PROC_ALLOW_ZOMBIE))) {
         /* Kill and wait to prevent zombies */
-        kill(proc->pid, SIGKILL);
-        int status;
+        janet_os_kill((int64_t) proc->pid, SIGKILL);
         if (!(proc->flags & JANET_PROC_WAITING)) {
-            waitpid(proc->pid, &status, 0);
+            janet_os_reap((int64_t) proc->pid);
         }
     }
 #endif
@@ -699,98 +861,200 @@ JANET_CORE_FN(os_proc_wait,
 #endif
 }
 
-struct keyword_signal {
-    const char *keyword;
-    int signal;
-};
-
 #ifndef JANET_WINDOWS
-static const struct keyword_signal signal_keywords[] = {
+
+/* The signal a keyword names, by position in the shared name list. A signal
+ * this platform's headers do not define has no number, and -1 stands for it so
+ * that the lookup reports the keyword as undefined, exactly as the previous
+ * table did by omitting the entry. */
+#define JANET_OS_SIGNAL_COUNT 28
+static const int os_signal_numbers[JANET_OS_SIGNAL_COUNT] = {
 #ifdef SIGKILL
-    {"kill", SIGKILL},
+    SIGKILL,
+#else
+    -1,
 #endif
-    {"int", SIGINT},
-    {"abrt", SIGABRT},
-    {"fpe", SIGFPE},
-    {"ill", SIGILL},
-    {"segv", SIGSEGV},
+    SIGINT,
+    SIGABRT,
+    SIGFPE,
+    SIGILL,
+    SIGSEGV,
 #ifdef SIGTERM
-    {"term", SIGTERM},
+    SIGTERM,
+#else
+    -1,
 #endif
 #ifdef SIGALRM
-    {"alrm", SIGALRM},
+    SIGALRM,
+#else
+    -1,
 #endif
 #ifdef SIGHUP
-    {"hup", SIGHUP},
+    SIGHUP,
+#else
+    -1,
 #endif
 #ifdef SIGPIPE
-    {"pipe", SIGPIPE},
+    SIGPIPE,
+#else
+    -1,
 #endif
 #ifdef SIGQUIT
-    {"quit", SIGQUIT},
+    SIGQUIT,
+#else
+    -1,
 #endif
 #ifdef SIGUSR1
-    {"usr1", SIGUSR1},
+    SIGUSR1,
+#else
+    -1,
 #endif
 #ifdef SIGUSR2
-    {"usr2", SIGUSR2},
+    SIGUSR2,
+#else
+    -1,
 #endif
 #ifdef SIGCHLD
-    {"chld", SIGCHLD},
+    SIGCHLD,
+#else
+    -1,
 #endif
 #ifdef SIGCONT
-    {"cont", SIGCONT},
+    SIGCONT,
+#else
+    -1,
 #endif
 #ifdef SIGSTOP
-    {"stop", SIGSTOP},
+    SIGSTOP,
+#else
+    -1,
 #endif
 #ifdef SIGTSTP
-    {"tstp", SIGTSTP},
+    SIGTSTP,
+#else
+    -1,
 #endif
 #ifdef SIGTTIN
-    {"ttin", SIGTTIN},
+    SIGTTIN,
+#else
+    -1,
 #endif
 #ifdef SIGTTOU
-    {"ttou", SIGTTOU},
+    SIGTTOU,
+#else
+    -1,
 #endif
 #ifdef SIGBUS
-    {"bus", SIGBUS},
+    SIGBUS,
+#else
+    -1,
 #endif
 #ifdef SIGPOLL
-    {"poll", SIGPOLL},
+    SIGPOLL,
+#else
+    -1,
 #endif
 #ifdef SIGPROF
-    {"prof", SIGPROF},
+    SIGPROF,
+#else
+    -1,
 #endif
 #ifdef SIGSYS
-    {"sys", SIGSYS},
+    SIGSYS,
+#else
+    -1,
 #endif
 #ifdef SIGTRAP
-    {"trap", SIGTRAP},
+    SIGTRAP,
+#else
+    -1,
 #endif
 #ifdef SIGURG
-    {"urg", SIGURG},
+    SIGURG,
+#else
+    -1,
 #endif
 #ifdef SIGVTALRM
-    {"vtlarm", SIGVTALRM},
+    SIGVTALRM,
+#else
+    -1,
 #endif
 #ifdef SIGXCPU
-    {"xcpu", SIGXCPU},
+    SIGXCPU,
+#else
+    -1,
 #endif
 #ifdef SIGXFSZ
-    {"xfsz", SIGXFSZ},
+    SIGXFSZ,
+#else
+    -1,
 #endif
-    {NULL, 0},
 };
+
+#ifdef JANET_ZIG_OS_PROCESS
+
+int32_t janet_os_signal_index(const uint8_t *key, int32_t len);
+
+#else
+
+/* The keyword each position stands for. `vtlarm` is a misspelling of the name
+ * SIGVTALRM would give; it is recorded in FOUND.md and kept rather than
+ * corrected. */
+static const char *const os_signal_names[JANET_OS_SIGNAL_COUNT] = {
+    "kill",
+    "int",
+    "abrt",
+    "fpe",
+    "ill",
+    "segv",
+    "term",
+    "alrm",
+    "hup",
+    "pipe",
+    "quit",
+    "usr1",
+    "usr2",
+    "chld",
+    "cont",
+    "stop",
+    "tstp",
+    "ttin",
+    "ttou",
+    "bus",
+    "poll",
+    "prof",
+    "sys",
+    "trap",
+    "urg",
+    "vtlarm",
+    "xcpu",
+    "xfsz"
+};
+
+int32_t janet_os_signal_index(const uint8_t *key, int32_t len) {
+    if (len < 0) return -1;
+    for (int32_t signal = 0; signal < JANET_OS_SIGNAL_COUNT; signal++) {
+        const char *name = os_signal_names[signal];
+        int32_t index;
+        for (index = 0; index < len; index++) {
+            uint8_t k = ((const uint8_t *) name)[index];
+            if (key[index] != k) goto next;
+            if (k == '\0') break;
+        }
+        if (name[index] == '\0') return signal;
+next:
+        ;
+    }
+    return -1;
+}
+
+#endif /* JANET_ZIG_OS_PROCESS */
 
 static int get_signal_kw(const Janet *argv, int32_t n) {
     JanetKeyword signal_kw = janet_getkeyword(argv, n);
-    const struct keyword_signal *ptr = signal_keywords;
-    while (ptr->keyword) {
-        if (!janet_cstrcmp(signal_kw, ptr->keyword)) {
-            return ptr->signal;
-        }
-        ptr++;
+    int32_t index = janet_os_signal_index(signal_kw, janet_string_length(signal_kw));
+    if (index >= 0 && os_signal_numbers[index] >= 0) {
+        return os_signal_numbers[index];
     }
     janet_panicf("undefined signal %v", argv[n]);
 }
@@ -823,7 +1087,7 @@ JANET_CORE_FN(os_proc_kill,
     if (argc == 3) {
         signal = get_signal_kw(argv, 2);
     }
-    int status = kill(proc->pid, signal == -1 ? SIGKILL : signal);
+    int status = janet_os_kill((int64_t) proc->pid, signal == -1 ? SIGKILL : signal);
     if (status) {
         janet_panic(janet_strerror(errno));
     }
@@ -873,11 +1137,7 @@ JANET_CORE_FN(os_proc_getpid,
     janet_sandbox_assert(JANET_SANDBOX_SUBPROCESS);
     janet_fixarity(argc, 0);
     (void) argv;
-#ifdef JANET_WINDOWS
-    return janet_wrap_number((double) _getpid());
-#else
-    return janet_wrap_number((double) getpid());
-#endif
+    return janet_wrap_number((double) janet_os_getpid());
 }
 
 static void swap_handles(JanetHandle *handles) {
@@ -890,7 +1150,7 @@ static void close_handle(JanetHandle handle) {
 #ifdef JANET_WINDOWS
     CloseHandle(handle);
 #else
-    close(handle);
+    janet_os_close_fd(handle);
 #endif
 }
 
@@ -1027,7 +1287,7 @@ static JanetHandle make_pipes(JanetHandle *handle, int reverse, int *errflag) {
     *handle = handles[1];
     return handles[0];
 #else
-    if (pipe(handles)) goto error;
+    if (janet_os_pipe(handles)) goto error;
     if (reverse) swap_handles(handles);
     *handle = handles[1];
     return handles[0];
@@ -1380,20 +1640,15 @@ static Janet os_execute_impl(int32_t argc, Janet *argv, JanetExecuteMode mode) {
 
     /* exec mode */
     if (mode == JANET_EXECUTE_EXEC) {
-        int status;
+        /* Only a failure returns, and the panic reads errno rather than the
+         * result, so the result is deliberately discarded. */
 #ifdef JANET_PLAN9
-        status = exec(cargv[0], cargv);
+        (void) exec(cargv[0], cargv);
 #else
         if (!use_environ) {
             environ = envp;
         }
-        do {
-            if (janet_flag_at(flags, 1)) {
-                status = execvp(cargv[0], cargv);
-            } else {
-                status = execv(cargv[0], cargv);
-            }
-        } while (status == -1 && errno == EINTR);
+        (void) janet_os_exec(cargv[0], cargv, janet_flag_at(flags, 1) ? 1 : 0);
 #endif
         janet_panicf("%p: %s", cargv[0], janet_strerror(errno ? errno : ENOENT));
     }
@@ -1578,9 +1833,7 @@ JANET_CORE_FN(os_posix_fork,
 #ifdef JANET_PLAN9
     result = fork();
 #else
-    do {
-        result = fork();
-    } while (result == -1 && errno == EINTR);
+    result = (pid_t) janet_os_fork();
 #endif
     if (result == -1) {
         janet_panic(janet_strerror(errno));
@@ -1607,10 +1860,7 @@ JANET_CORE_FN(os_posix_chroot,
     janet_panic("not supported on Windows or Plan 9");
 #else
     const char *root = janet_getcstring(argv, 0);
-    int result;
-    do {
-        result = chroot(root);
-    } while (result == -1 && errno == EINTR);
+    int result = janet_os_chroot(root);
     if (result == -1) {
         janet_panic(janet_strerror(errno));
     }
@@ -1621,7 +1871,7 @@ JANET_CORE_FN(os_posix_chroot,
 #ifdef JANET_EV
 /* Runs in a separate thread */
 static JanetEVGenericMessage os_shell_subr(JanetEVGenericMessage args) {
-    int stat = system((const char *) args.argp);
+    int stat = janet_os_system((const char *) args.argp);
     janet_free(args.argp);
     if (args.argi) {
         args.tag = JANET_EV_TCTAG_INTEGER;
@@ -1651,7 +1901,7 @@ JANET_CORE_FN(os_shell,
     }
     janet_ev_threaded_await(os_shell_subr, 0, argc, cmd_copy);
 #else
-    int stat = system(cmd);
+    int stat = janet_os_system(cmd);
     return argc
            ? janet_wrap_integer(stat)
            : janet_wrap_boolean(stat);
@@ -1660,6 +1910,44 @@ JANET_CORE_FN(os_shell,
 
 #endif /* JANET_NO_PROCESSES */
 
+#ifdef JANET_ZIG_OS_ENVIRON
+
+int32_t janet_os_environ_count(char *const *env);
+int32_t janet_os_environ_separator(const char *entry);
+const char *janet_os_getenv(const char *name);
+int32_t janet_os_setenv(const char *name, const char *value);
+
+#else
+
+int32_t janet_os_environ_count(char *const *env) {
+    int32_t count = 0;
+    while (env[count]) count++;
+    return count;
+}
+
+int32_t janet_os_environ_separator(const char *entry) {
+    const char *separator = strchr(entry, '=');
+    return separator ? (int32_t)(separator - entry) : -1;
+}
+
+const char *janet_os_getenv(const char *name) {
+    return getenv(name);
+}
+
+int32_t janet_os_setenv(const char *name, const char *value) {
+#ifdef JANET_WINDOWS
+    return value ? _putenv_s(name, value) : _putenv_s(name, "");
+#elif defined(JANET_PLAN9)
+    if (value) putenv(name, value);
+    else unsetenv(name);
+    return 0;
+#else
+    return value ? setenv(name, value, 1) : unsetenv(name);
+#endif
+}
+
+#endif /* JANET_ZIG_OS_ENVIRON */
+
 #ifndef JANET_PLAN9
 JANET_CORE_FN(os_environ,
               "(os/environ)",
@@ -1667,25 +1955,21 @@ JANET_CORE_FN(os_environ,
     janet_sandbox_assert(JANET_SANDBOX_ENV);
     (void) argv;
     janet_fixarity(argc, 0);
-    int32_t nenv = 0;
     janet_lock_environ();
-    char **env = environ;
-    while (*env++)
-        nenv += 1;
+    int32_t nenv = janet_os_environ_count(environ);
     JanetTable *t = janet_table(nenv);
     for (int32_t i = 0; i < nenv; i++) {
         char *e = environ[i];
-        char *eq = strchr(e, '=');
-        if (!eq) {
+        int32_t separator = janet_os_environ_separator(e);
+        if (separator < 0) {
             janet_unlock_environ();
             janet_panic("no '=' in environ");
         }
-        char *v = eq + 1;
-        int32_t full_len = (int32_t) strlen(e);
+        char *v = e + separator + 1;
         int32_t val_len = (int32_t) strlen(v);
         janet_table_put(
             t,
-            janet_stringv((const uint8_t *)e, full_len - val_len - 1),
+            janet_stringv((const uint8_t *)e, separator),
             janet_stringv((const uint8_t *)v, val_len)
         );
     }
@@ -1701,7 +1985,7 @@ JANET_CORE_FN(os_getenv,
     janet_arity(argc, 1, 2);
     const char *cstr = janet_getcstring(argv, 0);
     janet_lock_environ();
-    const char *res = getenv(cstr);
+    const char *res = janet_os_getenv(cstr);
     Janet ret = res
                 ? janet_cstringv(res)
                 : argc == 2
@@ -1714,29 +1998,42 @@ JANET_CORE_FN(os_getenv,
 JANET_CORE_FN(os_setenv,
               "(os/setenv variable value)",
               "Set an environment variable.") {
-#ifdef JANET_WINDOWS
-#define SETENV(K,V) _putenv_s(K, V)
-#define UNSETENV(K) _putenv_s(K, "")
-#elif defined(JANET_PLAN9)
-#define SETENV(K,V) putenv(K, V)
-#define UNSETENV(K) unsetenv(K)
-#else
-#define SETENV(K,V) setenv(K, V, 1)
-#define UNSETENV(K) unsetenv(K)
-#endif
     janet_sandbox_assert(JANET_SANDBOX_ENV);
     janet_arity(argc, 1, 2);
     const char *ks = janet_getcstring(argv, 0);
     const char *vs = janet_optcstring(argv, argc, 1, NULL);
     janet_lock_environ();
-    if (NULL == vs) {
-        UNSETENV(ks);
-    } else {
-        SETENV(ks, vs);
-    }
+    (void) janet_os_setenv(ks, vs);
     janet_unlock_environ();
     return janet_wrap_nil();
 }
+
+#ifdef JANET_ZIG_OS_TIME
+
+double janet_os_time_now(void);
+void janet_os_sleep(double seconds);
+
+#else
+
+double janet_os_time_now(void) {
+    return (double)(time(NULL));
+}
+
+void janet_os_sleep(double delay) {
+#ifdef JANET_WINDOWS
+    Sleep((DWORD)(delay * 1000));
+#else
+    int rc;
+    struct timespec ts;
+    ts.tv_sec = (time_t) delay;
+    ts.tv_nsec = (delay <= UINT32_MAX)
+                 ? (long)((delay - ((uint32_t)delay)) * 1000000000)
+                 : 0;
+    RETRY_EINTR(rc, nanosleep(&ts, &ts));
+#endif
+}
+
+#endif /* JANET_ZIG_OS_TIME */
 
 JANET_CORE_FN(os_time,
               "(os/time)",
@@ -1744,8 +2041,7 @@ JANET_CORE_FN(os_time,
               "January 1, 1970, the Unix epoch. Returns a real number.") {
     janet_fixarity(argc, 0);
     (void) argv;
-    double dtime = (double)(time(NULL));
-    return janet_wrap_number(dtime);
+    return janet_wrap_number(janet_os_time_now());
 }
 
 JANET_CORE_FN(os_clock,
@@ -1803,17 +2099,7 @@ JANET_CORE_FN(os_sleep,
     janet_fixarity(argc, 1);
     double delay = janet_getnumber(argv, 0);
     if (delay < 0) janet_panic("invalid argument to sleep");
-#ifdef JANET_WINDOWS
-    Sleep((DWORD)(delay * 1000));
-#else
-    int rc;
-    struct timespec ts;
-    ts.tv_sec = (time_t) delay;
-    ts.tv_nsec = (delay <= UINT32_MAX)
-                 ? (long)((delay - ((uint32_t)delay)) * 1000000000)
-                 : 0;
-    RETRY_EINTR(rc, nanosleep(&ts, &ts));
-#endif
+    janet_os_sleep(delay);
     return janet_wrap_nil();
 }
 
@@ -1834,20 +2120,69 @@ JANET_CORE_FN(os_isatty,
 #endif
 }
 
+#ifdef JANET_ZIG_OS_FS
+
+int32_t janet_os_getcwd(char *buffer, int32_t size);
+int32_t janet_os_mkdir(const char *path);
+int32_t janet_os_rmdir(const char *path);
+int32_t janet_os_chdir(const char *path);
+int32_t janet_os_remove(const char *path);
+int32_t janet_os_rename(const char *oldpath, const char *newpath);
+
+#else
+
+int32_t janet_os_getcwd(char *buffer, int32_t size) {
+#ifdef JANET_WINDOWS
+    return _getcwd(buffer, size) ? 0 : -1;
+#else
+    return getcwd(buffer, (size_t) size) ? 0 : -1;
+#endif
+}
+
+int32_t janet_os_mkdir(const char *path) {
+#ifdef JANET_WINDOWS
+    return _mkdir(path);
+#else
+    return mkdir(path, S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP | S_IROTH | S_IXOTH);
+#endif
+}
+
+int32_t janet_os_rmdir(const char *path) {
+#ifdef JANET_WINDOWS
+    return _rmdir(path);
+#elif defined(JANET_PLAN9)
+    return remove(path);
+#else
+    return rmdir(path);
+#endif
+}
+
+int32_t janet_os_chdir(const char *path) {
+#ifdef JANET_WINDOWS
+    return _chdir(path);
+#else
+    return chdir(path);
+#endif
+}
+
+int32_t janet_os_remove(const char *path) {
+    return remove(path);
+}
+
+int32_t janet_os_rename(const char *oldpath, const char *newpath) {
+    return rename(oldpath, newpath);
+}
+
+#endif /* JANET_ZIG_OS_FS */
+
 JANET_CORE_FN(os_cwd,
               "(os/cwd)",
               "Returns the current working directory.") {
     janet_fixarity(argc, 0);
     (void) argv;
     char buf[FILENAME_MAX];
-    char *ptr;
-#ifdef JANET_WINDOWS
-    ptr = _getcwd(buf, FILENAME_MAX);
-#else
-    ptr = getcwd(buf, FILENAME_MAX);
-#endif
-    if (NULL == ptr) janet_panic("could not get current directory");
-    return janet_cstringv(ptr);
+    if (janet_os_getcwd(buf, FILENAME_MAX)) janet_panic("could not get current directory");
+    return janet_cstringv(buf);
 }
 
 JANET_CORE_FN(os_cryptorand,
@@ -2078,10 +2413,89 @@ JANET_CORE_FN(os_mktime,
     return janet_wrap_number((double)t);
 }
 
-#ifdef JANET_NO_SYMLINKS
-#define j_symlink link
+#ifdef JANET_ZIG_OS_FS_PATHS
+
+#ifndef JANET_WINDOWS
+void *janet_os_dir_open(const char *path);
+int32_t janet_os_dir_next(void *handle, const char **name);
+void janet_os_dir_close(void *handle);
+int32_t janet_os_link(const char *oldpath, const char *newpath);
+#ifndef JANET_NO_SYMLINKS
+int32_t janet_os_symlink(const char *oldpath, const char *newpath);
+int64_t janet_os_readlink(const char *path, char *buffer, size_t size);
+#endif
+#endif
+int32_t janet_os_touch(const char *path, int32_t has_times, double actime, double modtime);
+#ifndef JANET_NO_REALPATH
+char *janet_os_realpath(const char *path);
+#endif
+
 #else
-#define j_symlink symlink
+
+#ifndef JANET_WINDOWS
+
+void *janet_os_dir_open(const char *path) {
+    return opendir(path);
+}
+
+/* Report the next entry that is neither "." nor "..", returning 1 with a
+ * borrowed name, 0 at the end of the stream, or -1 with errno set. */
+int32_t janet_os_dir_next(void *handle, const char **name) {
+    for (;;) {
+        errno = 0;
+        struct dirent *dp = readdir((DIR *) handle);
+        if (dp == NULL) return errno ? -1 : 0;
+        if (!strcmp(dp->d_name, ".") || !strcmp(dp->d_name, "..")) continue;
+        *name = dp->d_name;
+        return 1;
+    }
+}
+
+void janet_os_dir_close(void *handle) {
+    closedir((DIR *) handle);
+}
+
+int32_t janet_os_link(const char *oldpath, const char *newpath) {
+    return link(oldpath, newpath);
+}
+
+#ifndef JANET_NO_SYMLINKS
+
+int32_t janet_os_symlink(const char *oldpath, const char *newpath) {
+    return symlink(oldpath, newpath);
+}
+
+int64_t janet_os_readlink(const char *path, char *buffer, size_t size) {
+    return readlink(path, buffer, size);
+}
+
+#endif /* JANET_NO_SYMLINKS */
+#endif /* JANET_WINDOWS */
+
+int32_t janet_os_touch(const char *path, int32_t has_times, double actime, double modtime) {
+    struct utimbuf timebuf;
+    if (!has_times) return utime(path, NULL);
+    timebuf.actime = (time_t) actime;
+    timebuf.modtime = (time_t) modtime;
+    return utime(path, &timebuf);
+}
+
+#ifndef JANET_NO_REALPATH
+char *janet_os_realpath(const char *path) {
+#ifdef JANET_WINDOWS
+    return _fullpath(NULL, path, _MAX_PATH);
+#else
+    return realpath(path, NULL);
+#endif
+}
+#endif
+
+#endif /* JANET_ZIG_OS_FS_PATHS */
+
+#ifdef JANET_NO_SYMLINKS
+#define j_symlink janet_os_link
+#else
+#define j_symlink janet_os_symlink
 #endif
 
 #ifndef JANET_NO_LOCALES
@@ -2138,7 +2552,7 @@ JANET_CORE_FN(os_link,
 #else
     const char *oldpath = janet_getcstring(argv, 0);
     const char *newpath = janet_getcstring(argv, 1);
-    int res = ((argc == 3 && janet_truthy(argv[2])) ? j_symlink : link)(oldpath, newpath);
+    int res = ((argc == 3 && janet_truthy(argv[2])) ? j_symlink : janet_os_link)(oldpath, newpath);
     if (-1 == res) janet_panicf("%s: %s -> %s", janet_strerror(errno), oldpath, newpath);
     return janet_wrap_nil();
 #endif
@@ -2172,11 +2586,7 @@ JANET_CORE_FN(os_mkdir,
     janet_sandbox_assert(JANET_SANDBOX_FS_WRITE);
     janet_fixarity(argc, 1);
     const char *path = janet_getcstring(argv, 0);
-#ifdef JANET_WINDOWS
-    int res = _mkdir(path);
-#else
-    int res = mkdir(path, S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP | S_IROTH | S_IXOTH);
-#endif
+    int res = janet_os_mkdir(path);
     if (res == 0) return janet_wrap_true();
     if (errno == EEXIST) return janet_wrap_false();
     janet_panicf("%s: %s", janet_strerror(errno), path);
@@ -2188,13 +2598,7 @@ JANET_CORE_FN(os_rmdir,
     janet_sandbox_assert(JANET_SANDBOX_FS_WRITE);
     janet_fixarity(argc, 1);
     const char *path = janet_getcstring(argv, 0);
-#ifdef JANET_WINDOWS
-    int res = _rmdir(path);
-#elif defined(JANET_PLAN9)
-    int res = remove(path);
-#else
-    int res = rmdir(path);
-#endif
+    int res = janet_os_rmdir(path);
     if (-1 == res) janet_panicf("%s: %s", janet_strerror(errno), path);
     return janet_wrap_nil();
 }
@@ -2205,11 +2609,7 @@ JANET_CORE_FN(os_cd,
     janet_sandbox_assert(JANET_SANDBOX_FS_READ);
     janet_fixarity(argc, 1);
     const char *path = janet_getcstring(argv, 0);
-#ifdef JANET_WINDOWS
-    int res = _chdir(path);
-#else
-    int res = chdir(path);
-#endif
+    int res = janet_os_chdir(path);
     if (-1 == res) janet_panicf("%s: %s", janet_strerror(errno), path);
     return janet_wrap_nil();
 }
@@ -2221,19 +2621,13 @@ JANET_CORE_FN(os_touch,
     janet_sandbox_assert(JANET_SANDBOX_FS_WRITE);
     janet_arity(argc, 1, 3);
     const char *path = janet_getcstring(argv, 0);
-    struct utimbuf timebuf, *bufp;
+    double actime = 0;
+    double modtime = 0;
     if (argc >= 2) {
-        bufp = &timebuf;
-        timebuf.actime = (time_t) janet_getnumber(argv, 1);
-        if (argc >= 3) {
-            timebuf.modtime = (time_t) janet_getnumber(argv, 2);
-        } else {
-            timebuf.modtime = timebuf.actime;
-        }
-    } else {
-        bufp = NULL;
+        actime = janet_getnumber(argv, 1);
+        modtime = (argc >= 3) ? janet_getnumber(argv, 2) : actime;
     }
-    int res = utime(path, bufp);
+    int res = janet_os_touch(path, argc >= 2, actime, modtime);
     if (-1 == res) janet_panic(janet_strerror(errno));
     return janet_wrap_nil();
 }
@@ -2243,7 +2637,7 @@ JANET_CORE_FN(os_remove,
               "Delete a file. Returns nil.") {
     janet_fixarity(argc, 1);
     const char *path = janet_getcstring(argv, 0);
-    int status = remove(path);
+    int status = janet_os_remove(path);
     if (-1 == status) janet_panicf("%s: %s", janet_strerror(errno), path);
     return janet_wrap_nil();
 }
@@ -2260,7 +2654,7 @@ JANET_CORE_FN(os_readlink,
 #else
     char buffer[PATH_MAX];
     const char *path = janet_getcstring(argv, 0);
-    ssize_t len = readlink(path, buffer, sizeof buffer);
+    int64_t len = janet_os_readlink(path, buffer, sizeof buffer);
     if (len < 0 || (size_t)len >= sizeof buffer)
         janet_panicf("%s: %s", janet_strerror(errno), path);
     return janet_stringv((const uint8_t *)buffer, len);
@@ -2273,7 +2667,35 @@ JANET_CORE_FN(os_readlink,
 typedef struct _stat jstat_t;
 typedef unsigned short jmode_t;
 
-static int32_t janet_perm_to_unix(unsigned short m) {
+#else
+
+typedef struct stat jstat_t;
+typedef mode_t jmode_t;
+
+#endif
+
+#ifdef JANET_ZIG_OS_STAT
+
+const char *janet_os_mode_name(uint32_t mode);
+int32_t janet_os_decode_permissions(uint32_t mode);
+int32_t janet_os_perm_to_unix(uint32_t mode);
+uint32_t janet_os_perm_from_unix(int32_t permissions);
+
+#elif defined(JANET_WINDOWS)
+
+const char *janet_os_mode_name(uint32_t m) {
+    const char *str = "other";
+    if (m & _S_IFREG) str = "file";
+    else if (m & _S_IFDIR) str = "directory";
+    else if (m & _S_IFCHR) str = "character";
+    return str;
+}
+
+int32_t janet_os_decode_permissions(uint32_t mode) {
+    return (int32_t)(mode & (S_IEXEC | S_IWRITE | S_IREAD));
+}
+
+int32_t janet_os_perm_to_unix(uint32_t m) {
     int32_t ret = 0;
     if (m & S_IEXEC) ret |= 0111;
     if (m & S_IWRITE) ret |= 0222;
@@ -2281,40 +2703,17 @@ static int32_t janet_perm_to_unix(unsigned short m) {
     return ret;
 }
 
-static unsigned short janet_perm_from_unix(int32_t x) {
-    unsigned short m = 0;
+uint32_t janet_os_perm_from_unix(int32_t x) {
+    uint32_t m = 0;
     if (x & 111) m |= S_IEXEC;
     if (x & 222) m |= S_IWRITE;
     if (x & 444) m |= S_IREAD;
     return m;
 }
 
-static const uint8_t *janet_decode_mode(unsigned short m) {
-    const char *str = "other";
-    if (m & _S_IFREG) str = "file";
-    else if (m & _S_IFDIR) str = "directory";
-    else if (m & _S_IFCHR) str = "character";
-    return janet_ckeyword(str);
-}
-
-static int32_t janet_decode_permissions(jmode_t mode) {
-    return (int32_t)(mode & (S_IEXEC | S_IWRITE | S_IREAD));
-}
-
 #else
 
-typedef struct stat jstat_t;
-typedef mode_t jmode_t;
-
-static int32_t janet_perm_to_unix(mode_t m) {
-    return (int32_t) m;
-}
-
-static mode_t janet_perm_from_unix(int32_t x) {
-    return (mode_t) x;
-}
-
-static const uint8_t *janet_decode_mode(mode_t m) {
+const char *janet_os_mode_name(uint32_t m) {
     const char *str = "other";
     if (S_ISREG(m)) str = "file";
     else if (S_ISDIR(m)) str = "directory";
@@ -2325,16 +2724,31 @@ static const uint8_t *janet_decode_mode(mode_t m) {
     else if (S_ISLNK(m)) str = "link";
     else if (S_ISCHR(m)) str = "character";
 #endif
-    return janet_ckeyword(str);
+    return str;
 }
 
-static int32_t janet_decode_permissions(jmode_t mode) {
+int32_t janet_os_decode_permissions(uint32_t mode) {
     return (int32_t)(mode & 0777);
+}
+
+int32_t janet_os_perm_to_unix(uint32_t m) {
+    return (int32_t) m;
+}
+
+uint32_t janet_os_perm_from_unix(int32_t x) {
+    return (uint32_t) x;
 }
 
 #endif
 
-static int32_t os_parse_permstring(const uint8_t *perm) {
+#ifdef JANET_ZIG_OS_PERMISSIONS
+
+int32_t janet_os_parse_permissions(const uint8_t *perm);
+void janet_os_format_permissions(int32_t permissions, uint8_t *out);
+
+#else
+
+int32_t janet_os_parse_permissions(const uint8_t *perm) {
     int32_t m = 0;
     if (perm[0] == 'r') m |= 0400;
     if (perm[1] == 'w') m |= 0200;
@@ -2348,8 +2762,7 @@ static int32_t os_parse_permstring(const uint8_t *perm) {
     return m;
 }
 
-static Janet os_make_permstring(int32_t permissions) {
-    uint8_t bytes[9] = {0};
+void janet_os_format_permissions(int32_t permissions, uint8_t *bytes) {
     bytes[0] = (permissions & 0400) ? 'r' : '-';
     bytes[1] = (permissions & 0200) ? 'w' : '-';
     bytes[2] = (permissions & 0100) ? 'x' : '-';
@@ -2359,6 +2772,13 @@ static Janet os_make_permstring(int32_t permissions) {
     bytes[6] = (permissions & 0004) ? 'r' : '-';
     bytes[7] = (permissions & 0002) ? 'w' : '-';
     bytes[8] = (permissions & 0001) ? 'x' : '-';
+}
+
+#endif /* JANET_ZIG_OS_PERMISSIONS */
+
+static Janet os_make_permstring(int32_t permissions) {
+    uint8_t bytes[9];
+    janet_os_format_permissions(permissions, bytes);
     return janet_stringv(bytes, sizeof(bytes));
 }
 
@@ -2377,13 +2797,13 @@ static int32_t os_get_unix_mode(const Janet *argv, int32_t n) {
         if (bytes.len != 9) {
             janet_panicf("bad slot #%d: expected byte sequence of length 9, got %v", n, argv[n]);
         }
-        unix_mode = os_parse_permstring(bytes.bytes);
+        unix_mode = janet_os_parse_permissions(bytes.bytes);
     }
     return unix_mode;
 }
 
 static jmode_t os_getmode(const Janet *argv, int32_t n) {
-    return janet_perm_from_unix(os_get_unix_mode(argv, n));
+    return (jmode_t) janet_os_perm_from_unix(os_get_unix_mode(argv, n));
 }
 
 /* Getters */
@@ -2394,13 +2814,13 @@ static Janet os_stat_inode(jstat_t *st) {
     return janet_wrap_number(st->st_ino);
 }
 static Janet os_stat_mode(jstat_t *st) {
-    return janet_wrap_keyword(janet_decode_mode(st->st_mode));
+    return janet_wrap_keyword(janet_ckeyword(janet_os_mode_name(st->st_mode)));
 }
 static Janet os_stat_int_permissions(jstat_t *st) {
-    return janet_wrap_integer(janet_perm_to_unix(janet_decode_permissions(st->st_mode)));
+    return janet_wrap_integer(janet_os_perm_to_unix(janet_os_decode_permissions(st->st_mode)));
 }
 static Janet os_stat_permissions(jstat_t *st) {
-    return os_make_permstring(janet_perm_to_unix(janet_decode_permissions(st->st_mode)));
+    return os_make_permstring(janet_os_perm_to_unix(janet_os_decode_permissions(st->st_mode)));
 }
 static Janet os_stat_uid(jstat_t *st) {
     return janet_wrap_number(st->st_uid);
@@ -2444,29 +2864,117 @@ static Janet os_stat_blocksize(jstat_t *st) {
 }
 #endif
 
-struct OsStatGetter {
-    const char *name;
-    Janet(*fn)(jstat_t *st);
+/* Field identifiers. The registry below lists the same fields in this order,
+ * so an identifier is also the index of its name. */
+enum JanetOsStatField {
+    JANET_OS_STAT_DEV,
+    JANET_OS_STAT_INODE,
+    JANET_OS_STAT_MODE,
+    JANET_OS_STAT_INT_PERMISSIONS,
+    JANET_OS_STAT_PERMISSIONS,
+    JANET_OS_STAT_UID,
+    JANET_OS_STAT_GID,
+    JANET_OS_STAT_NLINK,
+    JANET_OS_STAT_RDEV,
+    JANET_OS_STAT_SIZE,
+    JANET_OS_STAT_BLOCKS,
+    JANET_OS_STAT_BLOCKSIZE,
+    JANET_OS_STAT_ACCESSED,
+    JANET_OS_STAT_MODIFIED,
+    JANET_OS_STAT_CHANGED,
+    JANET_OS_STAT_FIELD_COUNT
 };
 
-static const struct OsStatGetter os_stat_getters[] = {
-    {"dev", os_stat_dev},
-    {"inode", os_stat_inode},
-    {"mode", os_stat_mode},
-    {"int-permissions", os_stat_int_permissions},
-    {"permissions", os_stat_permissions},
-    {"uid", os_stat_uid},
-    {"gid", os_stat_gid},
-    {"nlink", os_stat_nlink},
-    {"rdev", os_stat_rdev},
-    {"size", os_stat_size},
-    {"blocks", os_stat_blocks},
-    {"blocksize", os_stat_blocksize},
-    {"accessed", os_stat_accessed},
-    {"modified", os_stat_modified},
-    {"changed", os_stat_changed},
-    {NULL, NULL}
+#ifdef JANET_ZIG_OS_STAT
+
+int32_t janet_os_stat_field_count(void);
+const char *janet_os_stat_field_name(int32_t index);
+int32_t janet_os_stat_field_lookup(const uint8_t *key, int32_t len);
+
+#else
+
+static const char *const os_stat_field_names[JANET_OS_STAT_FIELD_COUNT] = {
+    "dev",
+    "inode",
+    "mode",
+    "int-permissions",
+    "permissions",
+    "uid",
+    "gid",
+    "nlink",
+    "rdev",
+    "size",
+    "blocks",
+    "blocksize",
+    "accessed",
+    "modified",
+    "changed"
 };
+
+int32_t janet_os_stat_field_count(void) {
+    return (int32_t) JANET_OS_STAT_FIELD_COUNT;
+}
+
+const char *janet_os_stat_field_name(int32_t index) {
+    if (index < 0 || index >= (int32_t) JANET_OS_STAT_FIELD_COUNT) return NULL;
+    return os_stat_field_names[index];
+}
+
+int32_t janet_os_stat_field_lookup(const uint8_t *key, int32_t len) {
+    if (len < 0) return -1;
+    for (int32_t field = 0; field < (int32_t) JANET_OS_STAT_FIELD_COUNT; field++) {
+        const char *name = os_stat_field_names[field];
+        int32_t index;
+        for (index = 0; index < len; index++) {
+            uint8_t k = ((const uint8_t *) name)[index];
+            if (key[index] != k) goto next;
+            if (k == '\0') break;
+        }
+        if (name[index] == '\0') return field;
+next:
+        ;
+    }
+    return -1;
+}
+
+#endif /* JANET_ZIG_OS_STAT */
+
+static Janet os_stat_field(int32_t field, jstat_t *st) {
+    switch (field) {
+        default:
+            return janet_wrap_nil();
+        case JANET_OS_STAT_DEV:
+            return os_stat_dev(st);
+        case JANET_OS_STAT_INODE:
+            return os_stat_inode(st);
+        case JANET_OS_STAT_MODE:
+            return os_stat_mode(st);
+        case JANET_OS_STAT_INT_PERMISSIONS:
+            return os_stat_int_permissions(st);
+        case JANET_OS_STAT_PERMISSIONS:
+            return os_stat_permissions(st);
+        case JANET_OS_STAT_UID:
+            return os_stat_uid(st);
+        case JANET_OS_STAT_GID:
+            return os_stat_gid(st);
+        case JANET_OS_STAT_NLINK:
+            return os_stat_nlink(st);
+        case JANET_OS_STAT_RDEV:
+            return os_stat_rdev(st);
+        case JANET_OS_STAT_SIZE:
+            return os_stat_size(st);
+        case JANET_OS_STAT_BLOCKS:
+            return os_stat_blocks(st);
+        case JANET_OS_STAT_BLOCKSIZE:
+            return os_stat_blocksize(st);
+        case JANET_OS_STAT_ACCESSED:
+            return os_stat_accessed(st);
+        case JANET_OS_STAT_MODIFIED:
+            return os_stat_modified(st);
+        case JANET_OS_STAT_CHANGED:
+            return os_stat_changed(st);
+    }
+}
 
 static Janet os_stat_or_lstat(int do_lstat, int32_t argc, Janet *argv) {
     janet_sandbox_assert(JANET_SANDBOX_FS_READ);
@@ -2506,17 +3014,16 @@ static Janet os_stat_or_lstat(int do_lstat, int32_t argc, Janet *argv) {
 
     if (NULL == key) {
         /* Put results in table */
-        for (const struct OsStatGetter *sg = os_stat_getters; sg->name != NULL; sg++) {
-            janet_table_put(tab, janet_ckeywordv(sg->name), sg->fn(&st));
+        int32_t count = janet_os_stat_field_count();
+        for (int32_t field = 0; field < count; field++) {
+            janet_table_put(tab, janet_ckeywordv(janet_os_stat_field_name(field)), os_stat_field(field, &st));
         }
         return janet_wrap_table(tab);
     } else {
         /* Get one result */
-        for (const struct OsStatGetter *sg = os_stat_getters; sg->name != NULL; sg++) {
-            if (janet_cstrcmp(key, sg->name)) continue;
-            return sg->fn(&st);
-        }
-        janet_panicf("unexpected keyword %v", janet_wrap_keyword(key));
+        int32_t field = janet_os_stat_field_lookup(key, janet_string_length(key));
+        if (field < 0) janet_panicf("unexpected keyword %v", janet_wrap_keyword(key));
+        return os_stat_field(field, &st);
     }
 }
 
@@ -2583,7 +3090,7 @@ JANET_CORE_FN(os_umask,
 #else
     int res = umask(mask);
 #endif
-    return janet_wrap_integer(janet_perm_to_unix(res));
+    return janet_wrap_integer(janet_os_perm_to_unix((uint32_t) res));
 }
 #endif
 
@@ -2612,26 +3119,20 @@ JANET_CORE_FN(os_dir,
     _findclose(res);
 #else
     /* Read directory items with opendir / readdir / closedir */
-    struct dirent *dp;
-    DIR *dfd = opendir(dir);
+    void *dfd = janet_os_dir_open(dir);
     if (dfd == NULL) janet_panicf("cannot open directory %s: %s", dir, janet_strerror(errno));
     for (;;) {
-        errno = 0;
-        dp = readdir(dfd);
-        if (dp == NULL) {
-            if (errno) {
-                int olderr = errno;
-                closedir(dfd);
-                janet_panicf("failed to read directory %s: %s", dir, janet_strerror(olderr));
-            }
-            break;
+        const char *name;
+        int32_t status = janet_os_dir_next(dfd, &name);
+        if (status < 0) {
+            int olderr = errno;
+            janet_os_dir_close(dfd);
+            janet_panicf("failed to read directory %s: %s", dir, janet_strerror(olderr));
         }
-        if (!strcmp(dp->d_name, ".") || !strcmp(dp->d_name, "..")) {
-            continue;
-        }
-        janet_array_push(paths, janet_cstringv(dp->d_name));
+        if (status == 0) break;
+        janet_array_push(paths, janet_cstringv(name));
     }
-    closedir(dfd);
+    janet_os_dir_close(dfd);
 #endif
     return janet_wrap_array(paths);
 }
@@ -2643,7 +3144,7 @@ JANET_CORE_FN(os_rename,
     janet_fixarity(argc, 2);
     const char *src = janet_getcstring(argv, 0);
     const char *dest = janet_getcstring(argv, 1);
-    int status = rename(src, dest);
+    int status = janet_os_rename(src, dest);
     if (status) {
         janet_panic(janet_strerror(errno));
     }
@@ -2660,11 +3161,7 @@ JANET_CORE_FN(os_realpath,
 #ifdef JANET_NO_REALPATH
     janet_panic("os/realpath not enabled for this platform");
 #else
-#ifdef JANET_WINDOWS
-    char *dest = _fullpath(NULL, src, _MAX_PATH);
-#else
-    char *dest = realpath(src, NULL);
-#endif
+    char *dest = janet_os_realpath(src);
     if (NULL == dest) janet_panicf("%s: %s", janet_strerror(errno), src);
     Janet ret = janet_cstringv(dest);
 #ifdef JANET_WINDOWS
@@ -2705,7 +3202,7 @@ JANET_CORE_FN(os_permission_int,
 
 static jmode_t os_optmode(int32_t argc, const Janet *argv, int32_t n, int32_t dflt) {
     if (argc > n) return os_getmode(argv, n);
-    return janet_perm_from_unix(dflt);
+    return (jmode_t) janet_os_perm_from_unix(dflt);
 }
 
 JANET_CORE_FN(os_open,

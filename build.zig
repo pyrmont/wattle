@@ -97,6 +97,18 @@ const common_c_flags = &.{
     "-fvisibility=hidden",
 };
 
+// Test translation units must keep assert() active in every optimize mode. Zig
+// defines NDEBUG for C sources in ReleaseFast and ReleaseSmall, which would
+// otherwise delete the contract checks along with the calls nested inside them,
+// leaving the tests silently vacuous and their call sequences incomplete.
+const test_c_flags = &.{
+    "-std=c99",
+    "-Wall",
+    "-Wextra",
+    "-fvisibility=hidden",
+    "-UNDEBUG",
+};
+
 const SubsystemImplementation = enum {
     c,
     zig,
@@ -119,6 +131,23 @@ const BuildOptions = struct {
     parser_core: SubsystemImplementation,
     specials_core: SubsystemImplementation,
     builtin_optimizers: SubsystemImplementation,
+    number_scan: SubsystemImplementation,
+    math_core: SubsystemImplementation,
+    int_types_core: SubsystemImplementation,
+    os_permissions: SubsystemImplementation,
+    os_platform: SubsystemImplementation,
+    os_environ: SubsystemImplementation,
+    os_fs: SubsystemImplementation,
+    os_stat: SubsystemImplementation,
+    os_time: SubsystemImplementation,
+    os_fs_paths: SubsystemImplementation,
+    io_core: SubsystemImplementation,
+    os_process: SubsystemImplementation,
+    ev_core: SubsystemImplementation,
+    ffi_layout: SubsystemImplementation,
+    ffi_classify: SubsystemImplementation,
+    filewatch_flags: SubsystemImplementation,
+    install_tests: bool,
     single_threaded: bool,
     nanbox: bool,
     nanbox_pointer_shift: ?i32,
@@ -167,6 +196,22 @@ const RuntimeSubsystems = struct {
     parser_core: ?*std.Build.Step.Compile,
     specials_core: ?*std.Build.Step.Compile,
     builtin_optimizers: ?*std.Build.Step.Compile,
+    number_scan: ?*std.Build.Step.Compile,
+    math_core: ?*std.Build.Step.Compile,
+    int_types_core: ?*std.Build.Step.Compile,
+    os_permissions: ?*std.Build.Step.Compile,
+    os_platform: ?*std.Build.Step.Compile,
+    os_environ: ?*std.Build.Step.Compile,
+    os_fs: ?*std.Build.Step.Compile,
+    os_stat: ?*std.Build.Step.Compile,
+    os_time: ?*std.Build.Step.Compile,
+    os_fs_paths: ?*std.Build.Step.Compile,
+    io_core: ?*std.Build.Step.Compile,
+    os_process: ?*std.Build.Step.Compile,
+    ev_core: ?*std.Build.Step.Compile,
+    ffi_layout: ?*std.Build.Step.Compile,
+    ffi_classify: ?*std.Build.Step.Compile,
+    filewatch_flags: ?*std.Build.Step.Compile,
 };
 
 pub fn build(b: *std.Build) void {
@@ -240,10 +285,87 @@ pub fn build(b: *std.Build) void {
             makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-builtin-optimizers-zig", "src/zig/subsystems/builtin_optimizers.zig")
         else
             null,
+        .number_scan = if (options.number_scan == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-numscan-zig", "src/zig/subsystems/numscan.zig")
+        else
+            null,
+        .math_core = if (options.math_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-math-zig", "src/zig/subsystems/math.zig")
+        else
+            null,
+        .int_types_core = if (options.int_types and options.int_types_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-inttypes-zig", "src/zig/subsystems/inttypes.zig")
+        else
+            null,
+        .os_permissions = if (!options.reduced_os and options.os_permissions == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-permissions-zig", "src/zig/subsystems/os_permissions.zig")
+        else
+            null,
+        .os_platform = if (options.os_platform == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-platform-zig", "src/zig/subsystems/os_platform.zig")
+        else
+            null,
+        .os_environ = if (!options.reduced_os and options.os_environ == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-environ-zig", "src/zig/subsystems/os_environ.zig")
+        else
+            null,
+        .os_fs = if (!options.reduced_os and options.os_fs == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-fs-zig", "src/zig/subsystems/os_fs.zig")
+        else
+            null,
+        .os_stat = if (!options.reduced_os and options.os_stat == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-stat-zig", "src/zig/subsystems/os_stat.zig")
+        else
+            null,
+        .os_time = if (hasGettime(options) and options.os_time == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-time-zig", "src/zig/subsystems/os_time.zig")
+        else
+            null,
+        .os_fs_paths = if (!options.reduced_os and options.os_fs_paths == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-fs-paths-zig", "src/zig/subsystems/os_fs_paths.zig")
+        else
+            null,
+        .io_core = if (options.io_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-io-core-zig", "src/zig/subsystems/io_core.zig")
+        else
+            null,
+        .os_process = if (hasProcesses(options) and options.os_process == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-process-zig", "src/zig/subsystems/os_process.zig")
+        else
+            null,
+        .ev_core = if (hasEv(options) and options.ev_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-ev-core-zig", "src/zig/subsystems/ev_core.zig")
+        else
+            null,
+        .ffi_layout = if (options.ffi and options.ffi_layout == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-ffi-layout-zig", "src/zig/subsystems/ffi_layout.zig")
+        else
+            null,
+        .filewatch_flags = if (hasFilewatch(options) and options.filewatch_flags == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-filewatch-flags-zig", "src/zig/subsystems/filewatch_flags.zig")
+        else
+            null,
+        .ffi_classify = if (options.ffi and options.ffi_classify == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-ffi-classify-zig", "src/zig/subsystems/ffi_classify.zig")
+        else
+            null,
     };
 
     // Bootstrap tools must execute on the build host even during a cross build.
-    const boot_module = makeCModule(b, b.graph.host, .Debug, config_header, options);
+    // Keep the host's architecture, OS, and ABI, but pin a baseline CPU instead
+    // of the detected model. The bootstrap runs once to generate the image and
+    // gains nothing from host-specific instructions, while native CPU detection
+    // is a portability hazard: an emulated or unusual host can report a model
+    // the code generator rejects, which fails the build before any Janet source
+    // is compiled. Pinning it also keeps image generation reproducible across
+    // machines of the same architecture.
+    const boot_host = b.resolveTargetQuery(.{
+        .cpu_arch = b.graph.host.result.cpu.arch,
+        .os_tag = b.graph.host.result.os.tag,
+        .abi = b.graph.host.result.abi,
+        .cpu_model = .baseline,
+    });
+    const boot_module = makeCModule(b, boot_host, .Debug, config_header, options);
     boot_module.addCMacro("JANET_BOOTSTRAP", "1");
     boot_module.addCSourceFiles(.{ .files = core_sources, .flags = common_c_flags });
     boot_module.addCSourceFiles(.{ .files = &.{"src/core/vector.c"}, .flags = common_c_flags });
@@ -321,6 +443,9 @@ pub fn build(b: *std.Build) void {
         .root_module = native_module_root,
     });
     native_module.linker_allow_shlib_undefined = true;
+    // Dynamic module loading is platform-specific, so ship this alongside the
+    // test executables for cross-platform runs.
+    installTest(b, options, native_module);
 
     const run_step = b.step("run", "Run Janet");
     const run_client = b.addRunArtifact(client);
@@ -338,133 +463,294 @@ pub fn build(b: *std.Build) void {
     const subsystem_step = b.step("subsystem-test", "Run mixed-runtime subsystem contract tests");
 
     const c_abi_module = makeCModule(b, target, optimize, config_header, options);
-    c_abi_module.addCSourceFiles(.{ .files = &.{"test/abi.c"}, .flags = common_c_flags });
+    c_abi_module.addCSourceFiles(.{ .files = &.{"test/abi.c"}, .flags = test_c_flags });
     const c_abi_test = b.addExecutable(.{ .name = "janet-c-abi-test", .root_module = c_abi_module });
+    installTest(b, options, c_abi_test);
     const run_c_abi_test = b.addRunArtifact(c_abi_test);
     abi_step.dependOn(&run_c_abi_test.step);
 
     const embed_module = makeCModule(b, target, optimize, config_header, options);
-    embed_module.addCSourceFiles(.{ .files = &.{"test/embed.c"}, .flags = common_c_flags });
+    embed_module.addCSourceFiles(.{ .files = &.{"test/embed.c"}, .flags = test_c_flags });
     embed_module.linkLibrary(static_library);
     const embed_test = b.addExecutable(.{ .name = "janet-embed-test", .root_module = embed_module });
+    installTest(b, options, embed_test);
     const run_embed_test = b.addRunArtifact(embed_test);
     abi_step.dependOn(&run_embed_test.step);
 
     const vector_test_module = makeCModule(b, target, optimize, config_header, options);
     vector_test_module.addIncludePath(b.path("src/core"));
-    vector_test_module.addCSourceFiles(.{ .files = &.{"test/vector.c"}, .flags = common_c_flags });
+    vector_test_module.addCSourceFiles(.{ .files = &.{"test/vector.c"}, .flags = test_c_flags });
     vector_test_module.linkLibrary(static_library);
     const vector_test = b.addExecutable(.{ .name = "janet-vector-test", .root_module = vector_test_module });
+    installTest(b, options, vector_test);
     const run_vector_test = b.addRunArtifact(vector_test);
     subsystem_step.dependOn(&run_vector_test.step);
 
     const utilities_test_module = makeCModule(b, target, optimize, config_header, options);
     utilities_test_module.addIncludePath(b.path("src/core"));
-    utilities_test_module.addCSourceFiles(.{ .files = &.{"test/utils.c"}, .flags = common_c_flags });
+    utilities_test_module.addCSourceFiles(.{ .files = &.{"test/utils.c"}, .flags = test_c_flags });
     utilities_test_module.linkLibrary(static_library);
     const utilities_test = b.addExecutable(.{ .name = "janet-utilities-test", .root_module = utilities_test_module });
+    installTest(b, options, utilities_test);
     const run_utilities_test = b.addRunArtifact(utilities_test);
     subsystem_step.dependOn(&run_utilities_test.step);
 
     if (options.int_types) {
         const int_scan_test_module = makeCModule(b, target, optimize, config_header, options);
-        int_scan_test_module.addCSourceFiles(.{ .files = &.{"test/intscan.c"}, .flags = common_c_flags });
+        int_scan_test_module.addCSourceFiles(.{ .files = &.{"test/intscan.c"}, .flags = test_c_flags });
         int_scan_test_module.linkLibrary(static_library);
         const int_scan_test = b.addExecutable(.{ .name = "janet-intscan-test", .root_module = int_scan_test_module });
+        installTest(b, options, int_scan_test);
         const run_int_scan_test = b.addRunArtifact(int_scan_test);
         subsystem_step.dependOn(&run_int_scan_test.step);
     }
 
     const text_scan_test_module = makeCModule(b, target, optimize, config_header, options);
     text_scan_test_module.addIncludePath(b.path("src/core"));
-    text_scan_test_module.addCSourceFiles(.{ .files = &.{"test/textscan.c"}, .flags = common_c_flags });
+    text_scan_test_module.addCSourceFiles(.{ .files = &.{"test/textscan.c"}, .flags = test_c_flags });
     text_scan_test_module.linkLibrary(static_library);
     const text_scan_test = b.addExecutable(.{ .name = "janet-textscan-test", .root_module = text_scan_test_module });
+    installTest(b, options, text_scan_test);
     const run_text_scan_test = b.addRunArtifact(text_scan_test);
     subsystem_step.dependOn(&run_text_scan_test.step);
 
     const regalloc_test_module = makeCModule(b, target, optimize, config_header, options);
     regalloc_test_module.addIncludePath(b.path("src/core"));
-    regalloc_test_module.addCSourceFiles(.{ .files = &.{"test/regalloc.c"}, .flags = common_c_flags });
+    regalloc_test_module.addCSourceFiles(.{ .files = &.{"test/regalloc.c"}, .flags = test_c_flags });
     regalloc_test_module.linkLibrary(static_library);
     const regalloc_test = b.addExecutable(.{ .name = "janet-regalloc-test", .root_module = regalloc_test_module });
+    installTest(b, options, regalloc_test);
     const run_regalloc_test = b.addRunArtifact(regalloc_test);
     subsystem_step.dependOn(&run_regalloc_test.step);
 
     const verify_test_module = makeCModule(b, target, optimize, config_header, options);
-    verify_test_module.addCSourceFiles(.{ .files = &.{"test/verify.c"}, .flags = common_c_flags });
+    verify_test_module.addCSourceFiles(.{ .files = &.{"test/verify.c"}, .flags = test_c_flags });
     verify_test_module.linkLibrary(static_library);
     const verify_test = b.addExecutable(.{ .name = "janet-verify-test", .root_module = verify_test_module });
+    installTest(b, options, verify_test);
     const run_verify_test = b.addRunArtifact(verify_test);
     subsystem_step.dependOn(&run_verify_test.step);
 
     const remove_noops_test_module = makeCModule(b, target, optimize, config_header, options);
     remove_noops_test_module.addIncludePath(b.path("src/core"));
-    remove_noops_test_module.addCSourceFiles(.{ .files = &.{"test/remove_noops.c"}, .flags = common_c_flags });
+    remove_noops_test_module.addCSourceFiles(.{ .files = &.{"test/remove_noops.c"}, .flags = test_c_flags });
     remove_noops_test_module.linkLibrary(static_library);
     const remove_noops_test = b.addExecutable(.{ .name = "janet-remove-noops-test", .root_module = remove_noops_test_module });
+    installTest(b, options, remove_noops_test);
     const run_remove_noops_test = b.addRunArtifact(remove_noops_test);
     subsystem_step.dependOn(&run_remove_noops_test.step);
 
     const movopt_test_module = makeCModule(b, target, optimize, config_header, options);
     movopt_test_module.addIncludePath(b.path("src/core"));
-    movopt_test_module.addCSourceFiles(.{ .files = &.{"test/movopt.c"}, .flags = common_c_flags });
+    movopt_test_module.addCSourceFiles(.{ .files = &.{"test/movopt.c"}, .flags = test_c_flags });
     movopt_test_module.linkLibrary(static_library);
     const movopt_test = b.addExecutable(.{ .name = "janet-movopt-test", .root_module = movopt_test_module });
+    installTest(b, options, movopt_test);
     const run_movopt_test = b.addRunArtifact(movopt_test);
     subsystem_step.dependOn(&run_movopt_test.step);
 
     const emit_core_test_module = makeCModule(b, target, optimize, config_header, options);
     emit_core_test_module.addIncludePath(b.path("src/core"));
-    emit_core_test_module.addCSourceFiles(.{ .files = &.{"test/emit_core.c"}, .flags = common_c_flags });
+    emit_core_test_module.addCSourceFiles(.{ .files = &.{"test/emit_core.c"}, .flags = test_c_flags });
     emit_core_test_module.linkLibrary(static_library);
     const emit_core_test = b.addExecutable(.{ .name = "janet-emit-core-test", .root_module = emit_core_test_module });
+    installTest(b, options, emit_core_test);
     const run_emit_core_test = b.addRunArtifact(emit_core_test);
     subsystem_step.dependOn(&run_emit_core_test.step);
 
     if (options.assembler) {
         const asm_encode_test_module = makeCModule(b, target, optimize, config_header, options);
-        asm_encode_test_module.addCSourceFiles(.{ .files = &.{"test/asm_encode.c"}, .flags = common_c_flags });
+        asm_encode_test_module.addCSourceFiles(.{ .files = &.{"test/asm_encode.c"}, .flags = test_c_flags });
         asm_encode_test_module.linkLibrary(static_library);
         const asm_encode_test = b.addExecutable(.{ .name = "janet-asm-encode-test", .root_module = asm_encode_test_module });
+        installTest(b, options, asm_encode_test);
         const run_asm_encode_test = b.addRunArtifact(asm_encode_test);
         subsystem_step.dependOn(&run_asm_encode_test.step);
 
         const asm_decode_test_module = makeCModule(b, target, optimize, config_header, options);
-        asm_decode_test_module.addCSourceFiles(.{ .files = &.{"test/asm_decode.c"}, .flags = common_c_flags });
+        asm_decode_test_module.addCSourceFiles(.{ .files = &.{"test/asm_decode.c"}, .flags = test_c_flags });
         asm_decode_test_module.linkLibrary(static_library);
         const asm_decode_test = b.addExecutable(.{ .name = "janet-asm-decode-test", .root_module = asm_decode_test_module });
+        installTest(b, options, asm_decode_test);
         const run_asm_decode_test = b.addRunArtifact(asm_decode_test);
         subsystem_step.dependOn(&run_asm_decode_test.step);
 
         const disasm_test_module = makeCModule(b, target, optimize, config_header, options);
-        disasm_test_module.addCSourceFiles(.{ .files = &.{"test/disasm.c"}, .flags = common_c_flags });
+        disasm_test_module.addCSourceFiles(.{ .files = &.{"test/disasm.c"}, .flags = test_c_flags });
         disasm_test_module.linkLibrary(static_library);
         const disasm_test = b.addExecutable(.{ .name = "janet-disasm-test", .root_module = disasm_test_module });
+        installTest(b, options, disasm_test);
         const run_disasm_test = b.addRunArtifact(disasm_test);
         subsystem_step.dependOn(&run_disasm_test.step);
     }
 
     const compiler_primitives_test_module = makeCModule(b, target, optimize, config_header, options);
     compiler_primitives_test_module.addIncludePath(b.path("src/core"));
-    compiler_primitives_test_module.addCSourceFiles(.{ .files = &.{"test/compiler_primitives.c"}, .flags = common_c_flags });
+    compiler_primitives_test_module.addCSourceFiles(.{ .files = &.{"test/compiler_primitives.c"}, .flags = test_c_flags });
     compiler_primitives_test_module.linkLibrary(static_library);
     const compiler_primitives_test = b.addExecutable(.{ .name = "janet-compiler-primitives-test", .root_module = compiler_primitives_test_module });
+    installTest(b, options, compiler_primitives_test);
     const run_compiler_primitives_test = b.addRunArtifact(compiler_primitives_test);
     subsystem_step.dependOn(&run_compiler_primitives_test.step);
 
     const specials_core_test_module = makeCModule(b, target, optimize, config_header, options);
     specials_core_test_module.addIncludePath(b.path("src/core"));
-    specials_core_test_module.addCSourceFiles(.{ .files = &.{"test/specials_core.c"}, .flags = common_c_flags });
+    specials_core_test_module.addCSourceFiles(.{ .files = &.{"test/specials_core.c"}, .flags = test_c_flags });
     specials_core_test_module.linkLibrary(static_library);
     const specials_core_test = b.addExecutable(.{ .name = "janet-specials-core-test", .root_module = specials_core_test_module });
+    installTest(b, options, specials_core_test);
     const run_specials_core_test = b.addRunArtifact(specials_core_test);
     subsystem_step.dependOn(&run_specials_core_test.step);
 
+    const number_scan_test_module = makeCModule(b, target, optimize, config_header, options);
+    number_scan_test_module.addIncludePath(b.path("src/core"));
+    number_scan_test_module.addCSourceFiles(.{ .files = &.{"test/numscan.c"}, .flags = test_c_flags });
+    number_scan_test_module.linkLibrary(static_library);
+    const number_scan_test = b.addExecutable(.{ .name = "janet-numscan-test", .root_module = number_scan_test_module });
+    installTest(b, options, number_scan_test);
+    const run_number_scan_test = b.addRunArtifact(number_scan_test);
+    subsystem_step.dependOn(&run_number_scan_test.step);
+
+    const math_test_module = makeCModule(b, target, optimize, config_header, options);
+    math_test_module.addCSourceFiles(.{ .files = &.{"test/math.c"}, .flags = test_c_flags });
+    math_test_module.linkLibrary(static_library);
+    const math_test = b.addExecutable(.{ .name = "janet-math-test", .root_module = math_test_module });
+    installTest(b, options, math_test);
+    const run_math_test = b.addRunArtifact(math_test);
+    subsystem_step.dependOn(&run_math_test.step);
+
+    if (options.int_types) {
+        const int_types_core_test_module = makeCModule(b, target, optimize, config_header, options);
+        int_types_core_test_module.addCSourceFiles(.{ .files = &.{"test/inttypes.c"}, .flags = test_c_flags });
+        int_types_core_test_module.linkLibrary(static_library);
+        const int_types_core_test = b.addExecutable(.{ .name = "janet-inttypes-test", .root_module = int_types_core_test_module });
+        installTest(b, options, int_types_core_test);
+        const run_int_types_core_test = b.addRunArtifact(int_types_core_test);
+        subsystem_step.dependOn(&run_int_types_core_test.step);
+    }
+
+    if (!options.reduced_os) {
+        const os_permissions_test_module = makeCModule(b, target, optimize, config_header, options);
+        os_permissions_test_module.addCSourceFiles(.{ .files = &.{"test/os_permissions.c"}, .flags = test_c_flags });
+        os_permissions_test_module.linkLibrary(static_library);
+        const os_permissions_test = b.addExecutable(.{ .name = "janet-os-permissions-test", .root_module = os_permissions_test_module });
+        installTest(b, options, os_permissions_test);
+        const run_os_permissions_test = b.addRunArtifact(os_permissions_test);
+        subsystem_step.dependOn(&run_os_permissions_test.step);
+    }
+
+    const os_platform_test_module = makeCModule(b, target, optimize, config_header, options);
+    os_platform_test_module.addCSourceFiles(.{ .files = &.{"test/os_platform.c"}, .flags = test_c_flags });
+    os_platform_test_module.linkLibrary(static_library);
+    const os_platform_test = b.addExecutable(.{ .name = "janet-os-platform-test", .root_module = os_platform_test_module });
+    installTest(b, options, os_platform_test);
+    const run_os_platform_test = b.addRunArtifact(os_platform_test);
+    subsystem_step.dependOn(&run_os_platform_test.step);
+
+    if (!options.reduced_os) {
+        const os_environ_test_module = makeCModule(b, target, optimize, config_header, options);
+        os_environ_test_module.addCSourceFiles(.{ .files = &.{"test/os_environ.c"}, .flags = test_c_flags });
+        os_environ_test_module.linkLibrary(static_library);
+        const os_environ_test = b.addExecutable(.{ .name = "janet-os-environ-test", .root_module = os_environ_test_module });
+        installTest(b, options, os_environ_test);
+        const run_os_environ_test = b.addRunArtifact(os_environ_test);
+        subsystem_step.dependOn(&run_os_environ_test.step);
+
+        const os_fs_test_module = makeCModule(b, target, optimize, config_header, options);
+        os_fs_test_module.addCSourceFiles(.{ .files = &.{"test/os_fs.c"}, .flags = test_c_flags });
+        os_fs_test_module.linkLibrary(static_library);
+        const os_fs_test = b.addExecutable(.{ .name = "janet-os-fs-test", .root_module = os_fs_test_module });
+        installTest(b, options, os_fs_test);
+        const run_os_fs_test = b.addRunArtifact(os_fs_test);
+        subsystem_step.dependOn(&run_os_fs_test.step);
+
+        const os_stat_test_module = makeCModule(b, target, optimize, config_header, options);
+        os_stat_test_module.addCSourceFiles(.{ .files = &.{"test/os_stat.c"}, .flags = test_c_flags });
+        os_stat_test_module.linkLibrary(static_library);
+        const os_stat_test = b.addExecutable(.{ .name = "janet-os-stat-test", .root_module = os_stat_test_module });
+        installTest(b, options, os_stat_test);
+        const run_os_stat_test = b.addRunArtifact(os_stat_test);
+        subsystem_step.dependOn(&run_os_stat_test.step);
+
+        const os_time_test_module = makeCModule(b, target, optimize, config_header, options);
+        os_time_test_module.addCSourceFiles(.{ .files = &.{"test/os_time.c"}, .flags = test_c_flags });
+        os_time_test_module.addIncludePath(b.path("src/core"));
+        os_time_test_module.linkLibrary(static_library);
+        const os_time_test = b.addExecutable(.{ .name = "janet-os-time-test", .root_module = os_time_test_module });
+        installTest(b, options, os_time_test);
+        const run_os_time_test = b.addRunArtifact(os_time_test);
+        subsystem_step.dependOn(&run_os_time_test.step);
+
+        const os_fs_paths_test_module = makeCModule(b, target, optimize, config_header, options);
+        os_fs_paths_test_module.addCSourceFiles(.{ .files = &.{"test/os_fs_paths.c"}, .flags = test_c_flags });
+        os_fs_paths_test_module.linkLibrary(static_library);
+        const os_fs_paths_test = b.addExecutable(.{ .name = "janet-os-fs-paths-test", .root_module = os_fs_paths_test_module });
+        installTest(b, options, os_fs_paths_test);
+        const run_os_fs_paths_test = b.addRunArtifact(os_fs_paths_test);
+        subsystem_step.dependOn(&run_os_fs_paths_test.step);
+    }
+
+    if (hasProcesses(options)) {
+        const os_process_test_module = makeCModule(b, target, optimize, config_header, options);
+        os_process_test_module.addCSourceFiles(.{ .files = &.{"test/os_process.c"}, .flags = test_c_flags });
+        os_process_test_module.linkLibrary(static_library);
+        const os_process_test = b.addExecutable(.{ .name = "janet-os-process-test", .root_module = os_process_test_module });
+        installTest(b, options, os_process_test);
+        const run_os_process_test = b.addRunArtifact(os_process_test);
+        subsystem_step.dependOn(&run_os_process_test.step);
+    }
+
+    if (hasEv(options)) {
+        const ev_core_test_module = makeCModule(b, target, optimize, config_header, options);
+        ev_core_test_module.addCSourceFiles(.{ .files = &.{"test/ev_core.c"}, .flags = test_c_flags });
+        ev_core_test_module.linkLibrary(static_library);
+        const ev_core_test = b.addExecutable(.{ .name = "janet-ev-core-test", .root_module = ev_core_test_module });
+        installTest(b, options, ev_core_test);
+        const run_ev_core_test = b.addRunArtifact(ev_core_test);
+        subsystem_step.dependOn(&run_ev_core_test.step);
+    }
+
+    if (hasFilewatch(options)) {
+        const filewatch_flags_test_module = makeCModule(b, target, optimize, config_header, options);
+        filewatch_flags_test_module.addCSourceFiles(.{ .files = &.{"test/filewatch_flags.c"}, .flags = test_c_flags });
+        filewatch_flags_test_module.linkLibrary(static_library);
+        const filewatch_flags_test = b.addExecutable(.{ .name = "janet-filewatch-flags-test", .root_module = filewatch_flags_test_module });
+        installTest(b, options, filewatch_flags_test);
+        const run_filewatch_flags_test = b.addRunArtifact(filewatch_flags_test);
+        subsystem_step.dependOn(&run_filewatch_flags_test.step);
+    }
+
+    if (options.ffi) {
+        const ffi_layout_test_module = makeCModule(b, target, optimize, config_header, options);
+        ffi_layout_test_module.addCSourceFiles(.{ .files = &.{"test/ffi_layout.c"}, .flags = test_c_flags });
+        ffi_layout_test_module.linkLibrary(static_library);
+        const ffi_layout_test = b.addExecutable(.{ .name = "janet-ffi-layout-test", .root_module = ffi_layout_test_module });
+        installTest(b, options, ffi_layout_test);
+        const run_ffi_layout_test = b.addRunArtifact(ffi_layout_test);
+        subsystem_step.dependOn(&run_ffi_layout_test.step);
+
+        const ffi_classify_test_module = makeCModule(b, target, optimize, config_header, options);
+        ffi_classify_test_module.addCSourceFiles(.{ .files = &.{"test/ffi_classify.c"}, .flags = test_c_flags });
+        ffi_classify_test_module.linkLibrary(static_library);
+        const ffi_classify_test = b.addExecutable(.{ .name = "janet-ffi-classify-test", .root_module = ffi_classify_test_module });
+        installTest(b, options, ffi_classify_test);
+        const run_ffi_classify_test = b.addRunArtifact(ffi_classify_test);
+        subsystem_step.dependOn(&run_ffi_classify_test.step);
+    }
+
+    const io_core_test_module = makeCModule(b, target, optimize, config_header, options);
+    io_core_test_module.addCSourceFiles(.{ .files = &.{"test/io_core.c"}, .flags = test_c_flags });
+    io_core_test_module.linkLibrary(static_library);
+    const io_core_test = b.addExecutable(.{ .name = "janet-io-core-test", .root_module = io_core_test_module });
+    installTest(b, options, io_core_test);
+    const run_io_core_test = b.addRunArtifact(io_core_test);
+    subsystem_step.dependOn(&run_io_core_test.step);
+
     const parser_core_test_module = makeCModule(b, target, optimize, config_header, options);
-    parser_core_test_module.addCSourceFiles(.{ .files = &.{"test/parser_core.c"}, .flags = common_c_flags });
+    parser_core_test_module.addCSourceFiles(.{ .files = &.{"test/parser_core.c"}, .flags = test_c_flags });
     parser_core_test_module.linkLibrary(static_library);
     const parser_core_test = b.addExecutable(.{ .name = "janet-parser-core-test", .root_module = parser_core_test_module });
+    installTest(b, options, parser_core_test);
     const run_parser_core_test = b.addRunArtifact(parser_core_test);
     subsystem_step.dependOn(&run_parser_core_test.step);
 
@@ -478,6 +764,7 @@ pub fn build(b: *std.Build) void {
     zig_abi_module.addIncludePath(config_header.dirname());
     zig_abi_module.linkSystemLibrary("c", .{});
     const zig_abi_test = b.addTest(.{ .name = "janet-zig-abi-test", .root_module = zig_abi_module });
+    installTest(b, options, zig_abi_test);
     const run_zig_abi_test = b.addRunArtifact(zig_abi_test);
     abi_step.dependOn(&run_zig_abi_test.step);
 
@@ -500,6 +787,19 @@ pub fn build(b: *std.Build) void {
         run_suite.addArg(suite);
         test_step.dependOn(&run_suite.step);
     }
+}
+
+/// Install a test executable under `<prefix>/test` when -Dinstall-tests is set.
+///
+/// `zig build test` runs what it builds, which is impossible when the target is
+/// not the host. Installing the executables lets a cross-compiled build be
+/// carried to the target machine and run there.
+fn installTest(b: *std.Build, options: BuildOptions, exe: *std.Build.Step.Compile) void {
+    if (!options.install_tests) return;
+    const install = b.addInstallArtifact(exe, .{
+        .dest_dir = .{ .override = .{ .custom = "test" } },
+    });
+    b.getInstallStep().dependOn(&install.step);
 }
 
 fn addCliChecks(
@@ -564,6 +864,23 @@ fn readOptions(b: *std.Build) BuildOptions {
         .parser_core = b.option(SubsystemImplementation, "parser-core", "Select parser lifecycle and result queue implementation (c or zig)") orelse .zig,
         .specials_core = b.option(SubsystemImplementation, "specials-core", "Select simple special-form implementations (c or zig)") orelse .zig,
         .builtin_optimizers = b.option(SubsystemImplementation, "builtin-optimizers", "Select the builtin optimizer registry (c or zig)") orelse .zig,
+        .number_scan = b.option(SubsystemImplementation, "number-scan", "Select number scanning and double formatting (c or zig)") orelse .zig,
+        .math_core = b.option(SubsystemImplementation, "math-core", "Select the random number generator and math kernels (c or zig)") orelse .zig,
+        .int_types_core = b.option(SubsystemImplementation, "int-types-core", "Select the 64-bit integer numeric kernels (c or zig)") orelse .zig,
+        .os_permissions = b.option(SubsystemImplementation, "os-permissions", "Select OS permission parsing and formatting (c or zig)") orelse .zig,
+        .os_platform = b.option(SubsystemImplementation, "os-platform", "Select OS, architecture, compiler, and CPU detection (c or zig)") orelse .zig,
+        .os_environ = b.option(SubsystemImplementation, "os-environ", "Select environment scanning and host operations (c or zig)") orelse .zig,
+        .os_fs = b.option(SubsystemImplementation, "os-fs", "Select basic filesystem host operations (c or zig)") orelse .zig,
+        .os_stat = b.option(SubsystemImplementation, "os-stat", "Select file metadata classification and the stat field registry (c or zig)") orelse .zig,
+        .os_time = b.option(SubsystemImplementation, "os-time", "Select the platform clock shim, wall clock, and sleep (c or zig)") orelse .zig,
+        .os_fs_paths = b.option(SubsystemImplementation, "os-fs-paths", "Select directory enumeration, links, timestamps, and canonical paths (c or zig)") orelse .zig,
+        .io_core = b.option(SubsystemImplementation, "io-core", "Select file mode parsing and the stream host operations (c or zig)") orelse .zig,
+        .os_process = b.option(SubsystemImplementation, "os-process", "Select the process control kernels and host operations (c or zig)") orelse .zig,
+        .ev_core = b.option(SubsystemImplementation, "ev-core", "Select the event loop queue, timeout heap ordering, and timestamp kernels (c or zig)") orelse .zig,
+        .ffi_layout = b.option(SubsystemImplementation, "ffi-layout", "Select the FFI type name tables and struct layout kernels (c or zig)") orelse .zig,
+        .ffi_classify = b.option(SubsystemImplementation, "ffi-classify", "Select the FFI register classification and argument allocation kernels (c or zig)") orelse .zig,
+        .filewatch_flags = b.option(SubsystemImplementation, "filewatch-flags", "Select the file watcher's keyword vocabularies for every backend (c or zig)") orelse .zig,
+        .install_tests = b.option(bool, "install-tests", "Install the C contract test executables so they can be run on another machine") orelse false,
         .single_threaded = b.option(bool, "single-threaded", "Build without thread-local VM state") orelse false,
         .nanbox = b.option(bool, "nanbox", "Use Janet's NaN-boxed value representation") orelse true,
         .nanbox_pointer_shift = pointer_shift,
@@ -775,12 +1092,108 @@ fn addRuntimeSources(
         module.addCMacro("JANET_ZIG_BUILTIN_OPTIMIZERS", "1");
         module.addObject(subsystems.builtin_optimizers.?);
     }
-    if (options.vector == .zig or options.regalloc == .zig or options.movopt == .zig or options.parser_core == .zig) {
+    if (options.number_scan == .zig) {
+        module.addCMacro("JANET_ZIG_NUMSCAN", "1");
+        module.addObject(subsystems.number_scan.?);
+    }
+    if (options.math_core == .zig) {
+        module.addCMacro("JANET_ZIG_MATH_CORE", "1");
+        module.addObject(subsystems.math_core.?);
+    }
+    if (options.int_types and options.int_types_core == .zig) {
+        module.addCMacro("JANET_ZIG_INT_TYPES_CORE", "1");
+        module.addObject(subsystems.int_types_core.?);
+    }
+    if (!options.reduced_os and options.os_permissions == .zig) {
+        module.addCMacro("JANET_ZIG_OS_PERMISSIONS", "1");
+        module.addObject(subsystems.os_permissions.?);
+    }
+    if (options.os_platform == .zig) {
+        module.addCMacro("JANET_ZIG_OS_PLATFORM", "1");
+        module.addObject(subsystems.os_platform.?);
+    }
+    if (!options.reduced_os and options.os_environ == .zig) {
+        module.addCMacro("JANET_ZIG_OS_ENVIRON", "1");
+        module.addObject(subsystems.os_environ.?);
+    }
+    if (!options.reduced_os and options.os_fs == .zig) {
+        module.addCMacro("JANET_ZIG_OS_FS", "1");
+        module.addObject(subsystems.os_fs.?);
+    }
+    if (!options.reduced_os and options.os_stat == .zig) {
+        module.addCMacro("JANET_ZIG_OS_STAT", "1");
+        module.addObject(subsystems.os_stat.?);
+    }
+    if (hasGettime(options) and options.os_time == .zig) {
+        module.addCMacro("JANET_ZIG_OS_TIME", "1");
+        module.addObject(subsystems.os_time.?);
+    }
+    if (!options.reduced_os and options.os_fs_paths == .zig) {
+        module.addCMacro("JANET_ZIG_OS_FS_PATHS", "1");
+        module.addObject(subsystems.os_fs_paths.?);
+    }
+    if (options.io_core == .zig) {
+        module.addCMacro("JANET_ZIG_IO_CORE", "1");
+        module.addObject(subsystems.io_core.?);
+    }
+    if (hasProcesses(options) and options.os_process == .zig) {
+        module.addCMacro("JANET_ZIG_OS_PROCESS", "1");
+        module.addObject(subsystems.os_process.?);
+    }
+    if (hasEv(options) and options.ev_core == .zig) {
+        module.addCMacro("JANET_ZIG_EV_CORE", "1");
+        module.addObject(subsystems.ev_core.?);
+    }
+    if (options.ffi and options.ffi_layout == .zig) {
+        module.addCMacro("JANET_ZIG_FFI_LAYOUT", "1");
+        module.addObject(subsystems.ffi_layout.?);
+    }
+    if (options.ffi and options.ffi_classify == .zig) {
+        module.addCMacro("JANET_ZIG_FFI_CLASSIFY", "1");
+        module.addObject(subsystems.ffi_classify.?);
+    }
+    if (hasFilewatch(options) and options.filewatch_flags == .zig) {
+        module.addCMacro("JANET_ZIG_FILEWATCH_FLAGS", "1");
+        module.addObject(subsystems.filewatch_flags.?);
+    }
+    if (options.vector == .zig or options.regalloc == .zig or options.movopt == .zig or
+        options.parser_core == .zig or options.number_scan == .zig or
+        (hasEv(options) and options.ev_core == .zig))
+    {
         module.addCSourceFiles(.{
             .files = &.{"src/zig/runtime_bridge.c"},
             .flags = common_c_flags,
         });
     }
+}
+
+/// `src/core/util.h` defines JANET_GETTIME unless the build is both reduced-OS
+/// and single-threaded, and the clock shim exists only when it is defined.
+fn hasGettime(options: BuildOptions) bool {
+    return !options.reduced_os or !options.single_threaded;
+}
+
+/// The process functions are compiled only outside a reduced-OS build and only
+/// when process support is enabled, so the subsystem that serves them exists
+/// under the same two conditions.
+fn hasProcesses(options: BuildOptions) bool {
+    return !options.reduced_os and options.processes;
+}
+
+/// `src/core/features.h` defines JANET_EV unless JANET_NO_EV is set, which
+/// `addRuntimeSources` does for a build that disables the event loop or is
+/// single-threaded. Everything in `ev.c` — the subsystem included — is compiled
+/// only when it is defined.
+fn hasEv(options: BuildOptions) bool {
+    return options.ev and !options.single_threaded;
+}
+
+/// `src/core/filewatch.c` is wrapped in JANET_EV and JANET_FILEWATCH, so the
+/// keyword vocabularies exist only when both are on. The subsystem compiles all
+/// three backends' names on every target, but there is nothing to compile them
+/// for when the file watcher itself is absent.
+fn hasFilewatch(options: BuildOptions) bool {
+    return hasEv(options) and options.filewatch;
 }
 
 fn makeZigSubsystemObject(
@@ -792,10 +1205,14 @@ fn makeZigSubsystemObject(
     name: []const u8,
     source: []const u8,
 ) *std.Build.Step.Compile {
+    // These objects are linked into the shared library as well as the static
+    // one, and ELF shared objects require position-independent code. Mach-O is
+    // always position independent, so omitting this only fails on ELF targets.
     const subsystem_module = b.createModule(.{
         .root_source_file = b.path(source),
         .target = target,
         .optimize = optimize,
+        .pic = true,
     });
     configureCModule(b, subsystem_module, target, config_header, options);
     subsystem_module.addIncludePath(b.path("src/core"));
@@ -803,6 +1220,7 @@ fn makeZigSubsystemObject(
         .root_source_file = b.path("src/zig/abi.zig"),
         .target = target,
         .optimize = optimize,
+        .pic = true,
     });
     configureCModule(b, abi_module, target, config_header, options);
     subsystem_module.addImport("abi", abi_module);

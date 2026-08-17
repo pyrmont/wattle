@@ -71,6 +71,22 @@ JanetRNG *janet_default_rng(void) {
     return &janet_vm.rng;
 }
 
+#ifdef JANET_ZIG_MATH_CORE
+
+/* The generator, its seeding, and the numeric kernels live in
+ * src/zig/subsystems/math.zig. The math/ C functions stay here: their bodies
+ * are argument extraction that panics, and a Janet signal must not unwind
+ * across a Zig frame. */
+int32_t janet_zig_math_rng_int(JanetRNG *rng, int32_t max);
+void janet_zig_math_rng_fill(JanetRNG *rng, uint8_t *out, int32_t count);
+double janet_zig_math_gcd(double x, double y);
+double janet_zig_math_lcm(double x, double y);
+
+#define janet_gcd janet_zig_math_gcd
+#define janet_lcm janet_zig_math_lcm
+
+#else
+
 void janet_rng_seed(JanetRNG *rng, uint32_t seed) {
     rng->a = seed;
     rng->b = 0x97654321u;
@@ -117,6 +133,8 @@ double janet_rng_double(JanetRNG *rng) {
     return ldexp((double)(big >> (64 - 52)), -52);
 }
 
+#endif /* JANET_ZIG_MATH_CORE */
+
 JANET_CORE_FN(cfun_rng_make,
               "(math/rng &opt seed)",
               "Creates a Pseudo-Random number generator, with an optional seed. "
@@ -161,6 +179,9 @@ JANET_CORE_FN(cfun_rng_int,
     } else {
         int32_t max = janet_optnat(argv, argc, 1, INT32_MAX);
         if (max == 0) return janet_wrap_number(0.0);
+#ifdef JANET_ZIG_MATH_CORE
+        return janet_wrap_integer(janet_zig_math_rng_int(rng, max));
+#else
         uint32_t modulo = (uint32_t) max;
         uint32_t maxgen = INT32_MAX;
         uint32_t maxword = maxgen - (maxgen % modulo);
@@ -169,9 +190,11 @@ JANET_CORE_FN(cfun_rng_int,
             word = janet_rng_u32(rng) >> 1;
         } while (word > maxword);
         return janet_wrap_integer(word % modulo);
+#endif
     }
 }
 
+#ifndef JANET_ZIG_MATH_CORE
 static void rng_get_4bytes(JanetRNG *rng, uint8_t *buf) {
     uint32_t word = janet_rng_u32(rng);
     buf[0] = word & 0xFF;
@@ -179,6 +202,7 @@ static void rng_get_4bytes(JanetRNG *rng, uint8_t *buf) {
     buf[2] = (word >> 16) & 0xFF;
     buf[3] = (word >> 24) & 0xFF;
 }
+#endif
 
 JANET_CORE_FN(cfun_rng_buffer,
               "(math/rng-buffer rng n &opt buf)",
@@ -190,6 +214,13 @@ JANET_CORE_FN(cfun_rng_buffer,
     int32_t n = janet_getnat(argv, 1);
     JanetBuffer *buffer = janet_optbuffer(argv, argc, 2, n);
 
+#ifdef JANET_ZIG_MATH_CORE
+    /* Reserve here rather than in Zig: janet_buffer_extra can panic, and a
+     * Janet signal must not unwind across a Zig frame. */
+    janet_buffer_extra(buffer, n);
+    janet_zig_math_rng_fill(rng, buffer->data + buffer->count, n);
+    buffer->count += n;
+#else
     /* Split into first part (that is divisible by 4), and rest */
     int32_t first_part = n & ~3;
     int32_t second_part = n - first_part;
@@ -206,6 +237,7 @@ JANET_CORE_FN(cfun_rng_buffer,
         rng_get_4bytes(rng, wordbuf);
         janet_buffer_push_bytes(buffer, wordbuf, second_part);
     }
+#endif
 
     return janet_wrap_buffer(buffer);
 }
@@ -316,6 +348,7 @@ JANET_CORE_FN(janet_not, "(not x)", "Returns the boolean inverse of x.") {
     return janet_wrap_boolean(!janet_truthy(argv[0]));
 }
 
+#ifndef JANET_ZIG_MATH_CORE
 static double janet_gcd(double x, double y) {
     if (isnan(x) || isnan(y)) {
 #ifdef NAN
@@ -336,6 +369,7 @@ static double janet_gcd(double x, double y) {
 static double janet_lcm(double x, double y) {
     return (x / janet_gcd(x, y)) * y;
 }
+#endif /* JANET_ZIG_MATH_CORE */
 
 JANET_CORE_FN(janet_cfun_gcd, "(math/gcd x y)",
               "Returns the greatest common divisor between x and y.") {

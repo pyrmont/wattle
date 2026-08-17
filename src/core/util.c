@@ -999,7 +999,21 @@ int32_t janet_sorted_keys(const JanetKV *dict, int32_t cap, int32_t *index_buffe
 
 /* Clock shims for various platforms */
 #ifdef JANET_GETTIME
-#ifdef JANET_WINDOWS
+#ifdef JANET_ZIG_OS_TIME
+
+int32_t janet_os_gettime(int32_t source, int64_t *sec, int64_t *nsec);
+
+/* The Zig kernel reports seconds and nanoseconds separately, because the
+ * layout of struct timespec varies by platform and libc. */
+int janet_gettime(struct timespec *spec, enum JanetTimeSource source) {
+    int64_t sec, nsec;
+    if (janet_os_gettime((int32_t) source, &sec, &nsec)) return -1;
+    spec->tv_sec = (time_t) sec;
+    spec->tv_nsec = (long) nsec;
+    return 0;
+}
+
+#elif defined(JANET_WINDOWS)
 #include <profileapi.h>
 int janet_gettime(struct timespec *spec, enum JanetTimeSource source) {
     if (source == JANET_TIME_REALTIME) {

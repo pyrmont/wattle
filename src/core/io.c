@@ -63,50 +63,207 @@ const JanetAbstractType janet_file_type = {
     JANET_ATEND_NEXT
 };
 
-/* Check arguments to fopen */
-static int32_t checkflags(const uint8_t *str) {
+/* Outcomes of scanning a file/open mode string. */
+#define JANET_IO_MODE_OK 0
+#define JANET_IO_MODE_BAD_LENGTH 1
+#define JANET_IO_MODE_BAD_FIRST 2
+#define JANET_IO_MODE_BAD_LATER 3
+#define JANET_IO_MODE_REPEATED 4
+
+#ifdef JANET_ZIG_IO_CORE
+
+int32_t janet_io_scan_mode(const uint8_t *mode, int32_t len, int32_t *flags,
+                           uint32_t *sandbox, int32_t *index);
+int32_t janet_io_seek_whence(const uint8_t *key, int32_t len);
+int32_t janet_io_mode_from_flags(int32_t flags, char *out);
+void *janet_io_open(const char *path, const char *mode);
+void *janet_io_temp(void);
+int32_t janet_io_close(void *file);
+int32_t janet_io_flush(void *file);
+size_t janet_io_read(void *file, uint8_t *dest, size_t count);
+int32_t janet_io_write(void *file, const uint8_t *src, size_t count);
+int32_t janet_io_getc(void *file);
+int32_t janet_io_putc(void *file, int32_t ch);
+int32_t janet_io_error(void *file);
+int32_t janet_io_setvbuf(void *file, size_t size);
+int32_t janet_io_seek(void *file, int64_t offset, int32_t whence);
+int64_t janet_io_tell(void *file);
+#ifndef JANET_WINDOWS
+int32_t janet_io_set_cloexec(void *file);
+#endif
+
+#else
+
+/* Report the flag word a mode string denotes, the sandbox permissions the
+ * accepted prefix implies, and where the scan stopped. The caller asserts the
+ * permissions and raises the errors. A repeated flag yields a flag word of -1,
+ * which the caller then uses as a flag word; see FOUND.md. */
+int32_t janet_io_scan_mode(const uint8_t *mode, int32_t len, int32_t *flags_out,
+                           uint32_t *sandbox_out, int32_t *index_out) {
     int32_t flags = 0;
     int32_t i;
-    int32_t len = janet_string_length(str);
-    if (!len || len > 10)
-        janet_panic("file mode must have a length between 1 and 10");
-    switch (*str) {
+    *flags_out = 0;
+    *sandbox_out = 0;
+    *index_out = 0;
+    if (len < 1 || len > 10) return JANET_IO_MODE_BAD_LENGTH;
+    switch (mode[0]) {
         default:
-            janet_panicf("invalid flag %c, expected w, a, or r", *str);
-            break;
+            return JANET_IO_MODE_BAD_FIRST;
         case 'w':
             flags |= JANET_FILE_WRITE;
-            janet_sandbox_assert(JANET_SANDBOX_FS_WRITE);
+            *sandbox_out |= JANET_SANDBOX_FS_WRITE;
             break;
         case 'a':
             flags |= JANET_FILE_APPEND;
-            janet_sandbox_assert(JANET_SANDBOX_FS);
+            *sandbox_out |= JANET_SANDBOX_FS;
             break;
         case 'r':
             flags |= JANET_FILE_READ;
-            janet_sandbox_assert(JANET_SANDBOX_FS_READ);
+            *sandbox_out |= JANET_SANDBOX_FS_READ;
             break;
     }
     for (i = 1; i < len; i++) {
-        switch (str[i]) {
+        *index_out = i;
+        switch (mode[i]) {
             default:
-                janet_panicf("invalid flag %c, expected +, b, or n", str[i]);
-                break;
+                return JANET_IO_MODE_BAD_LATER;
             case '+':
-                if (flags & JANET_FILE_UPDATE) return -1;
-                janet_sandbox_assert(JANET_SANDBOX_FS_WRITE);
+                if (flags & JANET_FILE_UPDATE) {
+                    *flags_out = -1;
+                    return JANET_IO_MODE_REPEATED;
+                }
+                *sandbox_out |= JANET_SANDBOX_FS_WRITE;
                 flags |= JANET_FILE_UPDATE;
                 break;
             case 'b':
-                if (flags & JANET_FILE_BINARY) return -1;
+                if (flags & JANET_FILE_BINARY) {
+                    *flags_out = -1;
+                    return JANET_IO_MODE_REPEATED;
+                }
                 flags |= JANET_FILE_BINARY;
                 break;
             case 'n':
-                if (flags & JANET_FILE_NONIL) return -1;
+                if (flags & JANET_FILE_NONIL) {
+                    *flags_out = -1;
+                    return JANET_IO_MODE_REPEATED;
+                }
                 flags |= JANET_FILE_NONIL;
                 break;
         }
     }
+    *flags_out = flags;
+    return JANET_IO_MODE_OK;
+}
+
+/* Find a seek origin by keyword, returning its position or -1. The comparison
+ * reproduces janet_cstrcmp, which the caller used here, including its
+ * treatment of a key whose own bytes end in NUL. */
+int32_t janet_io_seek_whence(const uint8_t *key, int32_t len) {
+    static const char *const names[] = {"cur", "set", "end"};
+    int32_t origin;
+    if (len < 0) return -1;
+    for (origin = 0; origin < 3; origin++) {
+        const char *name = names[origin];
+        int32_t index;
+        for (index = 0; index < len; index++) {
+            uint8_t k = ((const uint8_t *) name)[index];
+            if (key[index] != k) goto next;
+            if (k == '\0') break;
+        }
+        if (((const uint8_t *) name)[index] == '\0') return origin;
+next:
+        ;
+    }
+    return -1;
+}
+
+int32_t janet_io_mode_from_flags(int32_t flags, char *out) {
+    int32_t len = 0;
+    out[0] = 0;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    if (flags & JANET_FILE_READ) out[len++] = 'r';
+    if (flags & JANET_FILE_APPEND) {
+        out[len++] = 'a';
+    } else if (flags & JANET_FILE_WRITE) {
+        out[len++] = 'w';
+    }
+    return len;
+}
+
+void *janet_io_open(const char *path, const char *mode) {
+    return fopen(path, mode);
+}
+
+void *janet_io_temp(void) {
+    return tmpfile();
+}
+
+int32_t janet_io_close(void *file) {
+    return fclose((FILE *) file);
+}
+
+int32_t janet_io_flush(void *file) {
+    return fflush((FILE *) file);
+}
+
+size_t janet_io_read(void *file, uint8_t *dest, size_t count) {
+    return fread(dest, 1, count, (FILE *) file);
+}
+
+int32_t janet_io_write(void *file, const uint8_t *src, size_t count) {
+    return (int32_t) fwrite(src, count, 1, (FILE *) file);
+}
+
+int32_t janet_io_getc(void *file) {
+    return fgetc((FILE *) file);
+}
+
+int32_t janet_io_putc(void *file, int32_t ch) {
+    return fputc(ch, (FILE *) file);
+}
+
+int32_t janet_io_error(void *file) {
+    return ferror((FILE *) file);
+}
+
+int32_t janet_io_setvbuf(void *file, size_t size) {
+    return setvbuf((FILE *) file, NULL, size ? _IOFBF : _IONBF, size);
+}
+
+int32_t janet_io_seek(void *file, int64_t offset, int32_t whence) {
+    int origin = whence == 0 ? SEEK_CUR : whence == 1 ? SEEK_SET : SEEK_END;
+    return fseek((FILE *) file, offset, origin);
+}
+
+int64_t janet_io_tell(void *file) {
+    return ftell((FILE *) file);
+}
+
+#if !(defined(JANET_WINDOWS) || defined(JANET_PLAN9))
+int32_t janet_io_set_cloexec(void *file) {
+    return fcntl(fileno((FILE *) file), F_SETFD, FD_CLOEXEC);
+}
+#endif
+
+#endif /* JANET_ZIG_IO_CORE */
+
+/* Check arguments to fopen */
+static int32_t checkflags(const uint8_t *str) {
+    int32_t flags = 0;
+    uint32_t sandbox = 0;
+    int32_t index = 0;
+    int32_t status = janet_io_scan_mode(str, janet_string_length(str), &flags, &sandbox, &index);
+    if (status == JANET_IO_MODE_BAD_LENGTH)
+        janet_panic("file mode must have a length between 1 and 10");
+    if (status == JANET_IO_MODE_BAD_FIRST)
+        janet_panicf("invalid flag %c, expected w, a, or r", str[index]);
+    /* Assert what the accepted prefix implies before reporting a later bad
+     * flag, which is the order the scan itself used. */
+    janet_sandbox_assert(sandbox);
+    if (status == JANET_IO_MODE_BAD_LATER)
+        janet_panicf("invalid flag %c, expected +, b, or n", str[index]);
     return flags;
 }
 
@@ -119,7 +276,7 @@ static void *makef(FILE *f, int32_t flags, size_t bufsize) {
     /* While we would like fopen to set cloexec by default (like O_CLOEXEC) with the e flag, that is
      * not standard. */
     if (!(flags & JANET_FILE_NOT_CLOSEABLE))
-        fcntl(fileno(f), F_SETFD, FD_CLOEXEC);
+        janet_io_set_cloexec(f);
 #endif
     return iof;
 }
@@ -132,7 +289,7 @@ JANET_CORE_FN(cfun_io_temp,
     (void)argv;
     janet_fixarity(argc, 0);
     // XXX use mkostemp when we can to avoid CLOEXEC race.
-    FILE *tmp = tmpfile();
+    FILE *tmp = janet_io_temp();
     if (!tmp)
         janet_panicf("unable to create temporary file - %s", janet_strerror(errno));
     return janet_makefile(tmp, JANET_FILE_WRITE | JANET_FILE_READ | JANET_FILE_BINARY);
@@ -165,7 +322,7 @@ JANET_CORE_FN(cfun_io_fopen,
         janet_sandbox_assert(JANET_SANDBOX_FS_READ);
         flags = JANET_FILE_READ;
     }
-    FILE *f = fopen((const char *)fname, (const char *)fmode);
+    FILE *f = janet_io_open((const char *)fname, (const char *)fmode);
     size_t bufsize = BUFSIZ;
     if (f != NULL) {
 #if !(defined(JANET_WINDOWS) || defined(JANET_PLAN9))
@@ -178,7 +335,7 @@ JANET_CORE_FN(cfun_io_fopen,
 #endif
         bufsize = janet_optsize(argv, argc, 2, BUFSIZ);
         if (bufsize != BUFSIZ) {
-            int result = setvbuf(f, NULL, bufsize ? _IOFBF : _IONBF, bufsize);
+            int result = janet_io_setvbuf(f, bufsize);
             if (result) {
                 janet_panic("failed to set buffer size for file");
             }
@@ -195,8 +352,8 @@ static void read_chunk(JanetFile *iof, JanetBuffer *buffer, int32_t nBytesMax) {
         janet_panic("file is not readable");
     janet_buffer_extra(buffer, nBytesMax);
     size_t ntoread = nBytesMax;
-    size_t nread = fread((char *)(buffer->data + buffer->count), 1, ntoread, iof->file);
-    if (nread != ntoread && ferror(iof->file))
+    size_t nread = janet_io_read(iof->file, buffer->data + buffer->count, ntoread);
+    if (nread != ntoread && janet_io_error(iof->file))
         janet_panic("could not read file");
     buffer->count += (int32_t) nread;
 }
@@ -234,7 +391,7 @@ JANET_CORE_FN(cfun_io_fread,
             return janet_wrap_buffer(buffer);
         } else if (!janet_cstrcmp(sym, "line")) {
             for (;;) {
-                int x = fgetc(iof->file);
+                int x = janet_io_getc(iof->file);
                 if (x != EOF) janet_buffer_push_u8(buffer, (uint8_t)x);
                 if (x == EOF || x == '\n') break;
             }
@@ -268,7 +425,7 @@ JANET_CORE_FN(cfun_io_fwrite,
     for (i = 1; i < argc; i++) {
         JanetByteView view = janet_getbytes(argv, i);
         if (view.len) {
-            if (!fwrite(view.bytes, view.len, 1, iof->file)) {
+            if (!janet_io_write(iof->file, view.bytes, view.len)) {
                 janet_panic("error writing to file");
             }
         }
@@ -291,7 +448,7 @@ JANET_CORE_FN(cfun_io_fflush,
     janet_fixarity(argc, 1);
     JanetFile *iof = janet_getabstract(argv, 0, &janet_file_type);
     io_assert_writeable(iof);
-    if (fflush(iof->file))
+    if (janet_io_flush(iof->file))
         janet_panic("could not flush file");
     return argv[0];
 }
@@ -304,7 +461,7 @@ JANET_CORE_FN(cfun_io_fflush,
 int janet_file_close(JanetFile *file) {
     int ret = 0;
     if (!(file->flags & (JANET_FILE_NOT_CLOSEABLE | JANET_FILE_CLOSED))) {
-        ret = fclose(file->file);
+        ret = janet_io_close(file->file);
         file->flags |= JANET_FILE_CLOSED;
         file->file = NULL; /* NULL dereference is easier to debug then other problems */
         return ret;
@@ -332,7 +489,7 @@ JANET_CORE_FN(cfun_io_fclose,
         return janet_wrap_nil();
     if (iof->flags & (JANET_FILE_NOT_CLOSEABLE))
         janet_panic("file not closable");
-    if (fclose(iof->file)) {
+    if (janet_io_close(iof->file)) {
         iof->flags |= JANET_FILE_NOT_CLOSEABLE;
         janet_panic("could not close file");
     }
@@ -355,23 +512,18 @@ JANET_CORE_FN(cfun_io_fseek,
     if (iof->flags & JANET_FILE_CLOSED)
         janet_panic("file is closed");
     int64_t offset = 0;
-    int whence = SEEK_CUR;
+    int32_t whence = 0;
     if (argc >= 2) {
         const uint8_t *whence_sym = janet_getkeyword(argv, 1);
-        if (!janet_cstrcmp(whence_sym, "cur")) {
-            whence = SEEK_CUR;
-        } else if (!janet_cstrcmp(whence_sym, "set")) {
-            whence = SEEK_SET;
-        } else if (!janet_cstrcmp(whence_sym, "end")) {
-            whence = SEEK_END;
-        } else {
+        whence = janet_io_seek_whence(whence_sym, janet_string_length(whence_sym));
+        if (whence < 0) {
             janet_panicf("expected one of :cur, :set, :end, got %v", argv[1]);
         }
         if (argc == 3) {
             offset = (int64_t) janet_getinteger64(argv, 2);
         }
     }
-    if (fseek(iof->file, offset, whence)) janet_panic("error seeking file");
+    if (janet_io_seek(iof->file, offset, whence)) janet_panic("error seeking file");
     return argv[0];
 }
 
@@ -382,7 +534,7 @@ JANET_CORE_FN(cfun_io_ftell,
     JanetFile *iof = janet_getabstract(argv, 0, &janet_file_type);
     if (iof->flags & JANET_FILE_CLOSED)
         janet_panic("file is closed");
-    int64_t pos = ftell(iof->file);
+    int64_t pos = janet_io_tell(iof->file);
     if (pos == -1) janet_panic("error getting position in file");
     return janet_wrap_number((double)pos);
 }
@@ -444,14 +596,8 @@ static void *io_file_unmarshal(JanetMarshalContext *ctx) {
         JanetFile *iof = janet_unmarshal_abstract(ctx, sizeof(JanetFile));
         int32_t fd = janet_unmarshal_int(ctx);
         int32_t flags = janet_unmarshal_int(ctx);
-        char fmt[4] = {0};
-        int index = 0;
-        if (flags & JANET_FILE_READ) fmt[index++] = 'r';
-        if (flags & JANET_FILE_APPEND) {
-            fmt[index++] = 'a';
-        } else if (flags & JANET_FILE_WRITE) {
-            fmt[index++] = 'w';
-        }
+        char fmt[4];
+        janet_io_mode_from_flags(flags, fmt);
 #ifdef JANET_WINDOWS
         iof->file = _fdopen(fd, fmt);
 #else
@@ -464,7 +610,7 @@ static void *io_file_unmarshal(JanetMarshalContext *ctx) {
         }
         iof->vbufsize = janet_unmarshal_size(ctx);
         if (iof->vbufsize != BUFSIZ) {
-            int result = setvbuf(iof->file, NULL, iof->vbufsize ? _IOFBF : _IONBF, iof->vbufsize);
+            int result = janet_io_setvbuf(iof->file, iof->vbufsize);
             janet_assert(!result, "unmarshal setvbuf");
         }
         return iof;
@@ -537,7 +683,7 @@ static Janet cfun_io_print_impl_x(int32_t argc, Janet *argv, int newline,
             len = janet_string_length(vstr);
         }
         if (len) {
-            if (1 != fwrite(vstr, len, 1, f)) {
+            if (1 != janet_io_write(f, vstr, len)) {
                 if (f == dflt_file) {
                     janet_panicf("cannot print %d bytes", len);
                 } else {
@@ -547,7 +693,7 @@ static Janet cfun_io_print_impl_x(int32_t argc, Janet *argv, int newline,
         }
     }
     if (newline)
-        putc('\n', f);
+        janet_io_putc(f, '\n');
     return janet_wrap_nil();
 }
 
@@ -711,13 +857,13 @@ static void janet_flusher(const char *name, FILE *dflt_file) {
         default:
             break;
         case JANET_NIL:
-            fflush(dflt_file);
+            janet_io_flush(dflt_file);
             break;
         case JANET_ABSTRACT: {
             void *abstract = janet_unwrap_abstract(x);
             if (janet_abstract_type(abstract) != &janet_file_type) break;
             JanetFile *iofile = abstract;
-            fflush(iofile->file);
+            janet_io_flush(iofile->file);
             break;
         }
     }
@@ -773,7 +919,7 @@ void janet_dynprintf(const char *name, FILE *dflt_file, const char *format, ...)
                 io_assert_writeable(iofile);
                 f = iofile->file;
             }
-            fwrite(buffer.data, buffer.count, 1, f);
+            janet_io_write(f, buffer.data, buffer.count);
             janet_buffer_deinit(&buffer);
             break;
         }

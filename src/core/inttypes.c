@@ -42,6 +42,31 @@ static int it_u64_get(void *p, Janet key, Janet *out);
 static Janet janet_int64_next(void *p, Janet key);
 static Janet janet_uint64_next(void *p, Janet key);
 
+#ifdef JANET_ZIG_INT_TYPES_CORE
+
+/* The numeric kernels live in src/zig/subsystems/inttypes.zig. The arithmetic
+ * C functions stay here: they unwrap Janet values, allocate abstracts, and
+ * panic, and a Janet signal must not unwind across a Zig frame. */
+int32_t janet_zig_it_hash(void *p, size_t size);
+int janet_zig_it_s64_compare_abstract(void *p1, void *p2);
+int janet_zig_it_u64_compare_abstract(void *p1, void *p2);
+int janet_zig_it_compare_s64_double(int64_t x, double y);
+int janet_zig_it_compare_u64_double(uint64_t x, double y);
+int janet_zig_it_compare_s64_u64(int64_t x, uint64_t y);
+int janet_zig_it_compare_u64_s64(uint64_t x, int64_t y);
+int32_t janet_zig_it_s64_tostring(int64_t value, char *out);
+int32_t janet_zig_it_u64_tostring(uint64_t value, char *out);
+int64_t janet_zig_it_s64_divf(int64_t op1, int64_t op2);
+int64_t janet_zig_it_s64_mod(int64_t op1, int64_t op2);
+
+#define janet_int64_hash janet_zig_it_hash
+#define janet_int64_compare janet_zig_it_s64_compare_abstract
+#define janet_uint64_compare janet_zig_it_u64_compare_abstract
+#define compare_int64_double janet_zig_it_compare_s64_double
+#define compare_uint64_double janet_zig_it_compare_u64_double
+
+#else
+
 static int32_t janet_int64_hash(void *p1, size_t size) {
     (void) size;
     int32_t *words = p1;
@@ -60,6 +85,8 @@ static int janet_uint64_compare(void *p1, void *p2) {
     return x == y ? 0 : x < y ? -1 : 1;
 }
 
+#endif /* JANET_ZIG_INT_TYPES_CORE */
+
 static void int64_marshal(void *p, JanetMarshalContext *ctx) {
     janet_marshal_abstract(ctx, p);
     janet_marshal_int64(ctx, *((int64_t *)p));
@@ -70,6 +97,24 @@ static void *int64_unmarshal(JanetMarshalContext *ctx) {
     p[0] = janet_unmarshal_int64(ctx);
     return p;
 }
+
+#ifdef JANET_ZIG_INT_TYPES_CORE
+
+/* Reserve here rather than in Zig: janet_buffer_extra can panic, and a Janet
+ * signal must not unwind across a Zig frame. */
+static void it_s64_tostring(void *p, JanetBuffer *buffer) {
+    janet_buffer_extra(buffer, 32);
+    buffer->count += janet_zig_it_s64_tostring(*((int64_t *)p),
+                     (char *) buffer->data + buffer->count);
+}
+
+static void it_u64_tostring(void *p, JanetBuffer *buffer) {
+    janet_buffer_extra(buffer, 32);
+    buffer->count += janet_zig_it_u64_tostring(*((uint64_t *)p),
+                     (char *) buffer->data + buffer->count);
+}
+
+#else
 
 static void it_s64_tostring(void *p, JanetBuffer *buffer) {
     char str[32];
@@ -82,6 +127,8 @@ static void it_u64_tostring(void *p, JanetBuffer *buffer) {
     snprintf(str, sizeof(str), "%" PRIu64, *((uint64_t *)p));
     janet_buffer_push_cstring(buffer, str);
 }
+
+#endif /* JANET_ZIG_INT_TYPES_CORE */
 
 const JanetAbstractType janet_s64_type = {
     "core/s64",
@@ -297,6 +344,8 @@ JANET_CORE_FN(cfun_to_bytes,
  * In the following code explicit casts are sometimes used to help
  * make it clear when int/float conversions are happening.
  */
+#ifndef JANET_ZIG_INT_TYPES_CORE
+
 static int compare_double_double(double x, double y) {
     return (x < y) ? -1 : ((x > y) ? 1 : 0);
 }
@@ -333,6 +382,8 @@ static int compare_uint64_double(uint64_t x, double y) {
     }
 }
 
+#endif /* JANET_ZIG_INT_TYPES_CORE */
+
 static JANET_CFUNCTION_ALIGN Janet cfun_it_s64_compare(int32_t argc, Janet *argv) {
     janet_fixarity(argc, 2);
     if (janet_is_int(argv[0]) != JANET_INT_S64) {
@@ -353,6 +404,9 @@ static JANET_CFUNCTION_ALIGN Janet cfun_it_s64_compare(int32_t argc, Janet *argv
                 return janet_wrap_number((x < y) ? -1 : (x > y ? 1 : 0));
             } else if (janet_abstract_type(abst) == &janet_u64_type) {
                 uint64_t y = *(uint64_t *)abst;
+#ifdef JANET_ZIG_INT_TYPES_CORE
+                return janet_wrap_number(janet_zig_it_compare_s64_u64(x, y));
+#else
                 if (x < 0) {
                     return janet_wrap_number(-1);
                 } else if (y > INT64_MAX) {
@@ -361,6 +415,7 @@ static JANET_CFUNCTION_ALIGN Janet cfun_it_s64_compare(int32_t argc, Janet *argv
                     int64_t y2 = (int64_t) y;
                     return janet_wrap_number((x < y2) ? -1 : (x > y2 ? 1 : 0));
                 }
+#endif
             }
             break;
         }
@@ -388,6 +443,9 @@ static JANET_CFUNCTION_ALIGN Janet cfun_it_u64_compare(int32_t argc, Janet *argv
                 return janet_wrap_number((x < y) ? -1 : (x > y ? 1 : 0));
             } else if (janet_abstract_type(abst) == &janet_s64_type) {
                 int64_t y = *(int64_t *)abst;
+#ifdef JANET_ZIG_INT_TYPES_CORE
+                return janet_wrap_number(janet_zig_it_compare_u64_s64(x, y));
+#else
                 if (y < 0) {
                     return janet_wrap_number(1);
                 } else if (x > INT64_MAX) {
@@ -396,6 +454,7 @@ static JANET_CFUNCTION_ALIGN Janet cfun_it_u64_compare(int32_t argc, Janet *argv
                     int64_t x2 = (int64_t) x;
                     return janet_wrap_number((x2 < y) ? -1 : (x2 > y ? 1 : 0));
                 }
+#endif
             }
             break;
         }
@@ -505,8 +564,12 @@ static JANET_CFUNCTION_ALIGN Janet cfun_it_s64_divf(int32_t argc, Janet *argv) {
     int64_t op1 = janet_unwrap_s64(argv[0]);
     int64_t op2 = janet_unwrap_s64(argv[1]);
     if (op2 == 0) janet_panic("division by zero");
+#ifdef JANET_ZIG_INT_TYPES_CORE
+    *box = janet_zig_it_s64_divf(op1, op2);
+#else
     int64_t x = op1 / op2;
     *box = x - (((op1 ^ op2) < 0) && (x * op2 != op1));
+#endif
     return janet_wrap_abstract(box);
 }
 
@@ -516,8 +579,12 @@ static JANET_CFUNCTION_ALIGN Janet cfun_it_s64_divfi(int32_t argc, Janet *argv) 
     int64_t op2 = janet_unwrap_s64(argv[0]);
     int64_t op1 = janet_unwrap_s64(argv[1]);
     if (op2 == 0) janet_panic("division by zero");
+#ifdef JANET_ZIG_INT_TYPES_CORE
+    *box = janet_zig_it_s64_divf(op1, op2);
+#else
     int64_t x = op1 / op2;
     *box = x - (((op1 ^ op2) < 0) && (x * op2 != op1));
+#endif
     return janet_wrap_abstract(box);
 }
 
@@ -526,12 +593,16 @@ static JANET_CFUNCTION_ALIGN Janet cfun_it_s64_mod(int32_t argc, Janet *argv) {
     int64_t *box = janet_abstract(&janet_s64_type, sizeof(int64_t));
     int64_t op1 = janet_unwrap_s64(argv[0]);
     int64_t op2 = janet_unwrap_s64(argv[1]);
+#ifdef JANET_ZIG_INT_TYPES_CORE
+    *box = janet_zig_it_s64_mod(op1, op2);
+#else
     if (op2 == 0) {
         *box = op1;
     } else {
         int64_t x = op1 % op2;
         *box = (((op1 ^ op2) < 0) && (x != 0)) ? x + op2 : x;
     }
+#endif
     return janet_wrap_abstract(box);
 }
 
@@ -540,12 +611,16 @@ static JANET_CFUNCTION_ALIGN Janet cfun_it_s64_modi(int32_t argc, Janet *argv) {
     int64_t *box = janet_abstract(&janet_s64_type, sizeof(int64_t));
     int64_t op2 = janet_unwrap_s64(argv[0]);
     int64_t op1 = janet_unwrap_s64(argv[1]);
+#ifdef JANET_ZIG_INT_TYPES_CORE
+    *box = janet_zig_it_s64_mod(op1, op2);
+#else
     if (op2 == 0) {
         *box = op1;
     } else {
         int64_t x = op1 % op2;
         *box = (((op1 ^ op2) < 0) && (x != 0)) ? x + op2 : x;
     }
+#endif
     return janet_wrap_abstract(box);
 }
 

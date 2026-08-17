@@ -51,6 +51,7 @@
 
 #define JANET_NUMBER_LENGTH_RIDICULOUS 0xFFFF
 
+#if !defined(JANET_ZIG_NUMSCAN) || (defined(JANET_INT_TYPES) && !defined(JANET_ZIG_INTSCAN))
 /* Lookup table for getting values of characters when parsing numbers. Handles
  * digits 0-9 and a-z (and A-Z). A-Z have values of 10 to 35. */
 static uint8_t digit_lookup[128] = {
@@ -63,6 +64,9 @@ static uint8_t digit_lookup[128] = {
     0xff, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
     25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 0xff, 0xff, 0xff, 0xff, 0xff
 };
+#endif
+
+#ifndef JANET_ZIG_NUMSCAN
 
 #define BIGNAT_NBIT 31
 #define BIGNAT_BASE 0x80000000U
@@ -399,6 +403,8 @@ int janet_scan_number(
     return janet_scan_number_base(str, len, 0, out);
 }
 
+#endif /* JANET_ZIG_NUMSCAN */
+
 #ifdef JANET_INT_TYPES
 
 #ifndef JANET_ZIG_INTSCAN
@@ -499,6 +505,8 @@ int janet_scan_uint64(const uint8_t *str, int32_t len, uint64_t *out) {
 
 #endif /* JANET_ZIG_INTSCAN */
 
+#ifndef JANET_ZIG_NUMSCAN
+
 /* Similar to janet_scan_number but allows for
  * more numeric types with a given suffix. */
 int janet_scan_numeric(
@@ -533,7 +541,39 @@ int janet_scan_numeric(
     }
 }
 
-#endif
+#else /* JANET_ZIG_NUMSCAN */
+
+/* Representation-sensitive wrapping stays in C so that both NaN-boxed and
+ * tagged builds use the runtime's own macros. */
+
+Janet janet_c_numscan_wrap_s64(int64_t x) {
+    return janet_wrap_s64(x);
+}
+
+Janet janet_c_numscan_wrap_u64(uint64_t x) {
+    return janet_wrap_u64(x);
+}
+
+#endif /* JANET_ZIG_NUMSCAN */
+
+#endif /* JANET_INT_TYPES */
+
+#ifdef JANET_ZIG_NUMSCAN
+
+Janet janet_c_numscan_wrap_number(double x) {
+    return janet_wrap_number(x);
+}
+
+void janet_zig_buffer_dtostr_fill(JanetBuffer *buffer, double x);
+
+void janet_buffer_dtostr(JanetBuffer *buffer, double x) {
+    /* Reserve the space here rather than in Zig: janet_buffer_extra can panic,
+     * and a Janet signal must not unwind across an active Zig frame. */
+    janet_buffer_extra(buffer, 32);
+    janet_zig_buffer_dtostr_fill(buffer, x);
+}
+
+#else
 
 void janet_buffer_dtostr(JanetBuffer *buffer, double x) {
 #define BUFSIZE 32
@@ -549,3 +589,5 @@ void janet_buffer_dtostr(JanetBuffer *buffer, double x) {
     }
     buffer->count += count;
 }
+
+#endif /* JANET_ZIG_NUMSCAN */
