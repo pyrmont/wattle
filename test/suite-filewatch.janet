@@ -23,6 +23,15 @@
 
 (assert true)
 
+# File watching can be disabled on its own, and it is also built on the event
+# loop, so this suite needs both. An absent binding is a compile error rather
+# than a runtime one, and Janet compiles and runs a file one top-level form at
+# a time, so leaving here keeps the rest of the suite from reaching the
+# compiler at all.
+(compwhen (or (not (dyn 'ev/chan)) (not (dyn 'filewatch/new)))
+  (end-suite)
+  (os/exit 0))
+
 (def chan (ev/chan 1000))
 (var is-win (or (= :mingw (os/which)) (= :windows (os/which))))
 (var is-linux (= :linux (os/which)))

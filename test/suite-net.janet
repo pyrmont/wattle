@@ -26,6 +26,14 @@
 # Smoke
 (assert true)
 
+# Nothing in this suite exists in a build without JANET_NET, and an absent
+# binding is a compile error rather than a runtime one. Janet compiles and runs
+# a file one top-level form at a time, so leaving here keeps the rest of the
+# suite from reaching the compiler at all.
+(compwhen (not (dyn 'net/server))
+  (end-suite)
+  (os/exit 0))
+
 # Raw socket testing
 (def s (net/socket :datagram :ipv4))
 (assert-no-error "multicast ipv4" (net/setsockopt s :ip-multicast-ttl 255))

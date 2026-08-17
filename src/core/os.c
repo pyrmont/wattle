@@ -712,6 +712,25 @@ typedef struct {
 #endif
 } JanetProc;
 
+#ifndef JANET_WINDOWS
+
+/* Wait on a pid and reduce the raw wait status to the value Janet reports.
+ * Both the evented and non-evented implementations need this: without it a
+ * caller sees the encoded status word rather than an exit code. */
+static int proc_get_status(JanetProc *proc) {
+    /* Use POSIX shell semantics for interpreting signals */
+    int32_t value = 0;
+    int32_t outcome = janet_os_wait((int64_t) proc->pid, &value);
+    if (outcome == JANET_OS_WAIT_EXITED) return (int) value;
+    if (outcome == JANET_OS_WAIT_STOPPED || outcome == JANET_OS_WAIT_SIGNALED) {
+        return (int) value + 128;
+    }
+    /* Could possibly return -1 but for now, just panic */
+    janet_panicf("Undefined status code for process termination, %d.", value);
+}
+
+#endif /* End windows check */
+
 #ifdef JANET_EV
 
 #ifdef JANET_WINDOWS
@@ -726,18 +745,6 @@ static JanetEVGenericMessage janet_proc_wait_subr(JanetEVGenericMessage args) {
 }
 
 #else /* windows check */
-
-static int proc_get_status(JanetProc *proc) {
-    /* Use POSIX shell semantics for interpreting signals */
-    int32_t value = 0;
-    int32_t outcome = janet_os_wait((int64_t) proc->pid, &value);
-    if (outcome == JANET_OS_WAIT_EXITED) return (int) value;
-    if (outcome == JANET_OS_WAIT_STOPPED || outcome == JANET_OS_WAIT_SIGNALED) {
-        return (int) value + 128;
-    }
-    /* Could possibly return -1 but for now, just panic */
-    janet_panicf("Undefined status code for process termination, %d.", value);
-}
 
 /* Function that is called in separate thread to wait on a pid */
 static JanetEVGenericMessage janet_proc_wait_subr(JanetEVGenericMessage args) {
@@ -838,7 +845,7 @@ os_proc_wait_impl(JanetProc *proc) {
         CloseHandle(proc->tHandle);
     }
 #else
-    waitpid(proc->pid, &status, 0);
+    status = proc_get_status(proc);
 #endif
     proc->return_code = (int32_t) status;
     return janet_wrap_integer(proc->return_code);

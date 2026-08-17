@@ -21,6 +21,22 @@
 (import ./helper :prefix "" :exit true)
 (start-suite)
 
+# Peg swallowing errors
+# 159651117
+# This is the control for the peg case further down: an ordinary call raising
+# the same error. It needs no peg support, so it is kept above the guard below
+# rather than skipped along with the rest of the suite.
+(assert (try ((fn [x] (nil x))) ([err] err))
+        "errors should not be swallowed 2")
+
+# Nothing in this suite exists in a build without JANET_PEG, and an absent
+# binding is a compile error rather than a runtime one. Janet compiles and runs
+# a file one top-level form at a time, so leaving here keeps the rest of the
+# suite from reaching the compiler at all.
+(compwhen (not (dyn 'peg/match))
+  (end-suite)
+  (os/exit 0))
+
 # Peg
 
 # 83f4a11bf
@@ -277,8 +293,6 @@
 # 159651117
 (assert (try (peg/match ~(/ '1 ,(fn [x] (nil x))) "x") ([err] err))
         "errors should not be swallowed")
-(assert (try ((fn [x] (nil x))) ([err] err))
-        "errors should not be swallowed 2")
 
 # Check for bad memoization (+ :a) should mean different things in
 # different contexts
@@ -316,8 +330,11 @@
 (check-deep '(uint 2) "\xff\x7f" @[0x7fff])
 (check-deep '(uint-be 2) "\x7f\xff" @[0x7fff])
 (check-deep '(uint-be 2) "\x7f\xff" @[0x7fff])
-(when-let [u64 int/u64
-           i64 int/s64]
+# A `when-let` cannot guard these: without JANET_INT_TYPES the bindings are
+# absent, which is a compile error rather than a nil value.
+(compwhen (dyn 'int/u64)
+  (def u64 int/u64)
+  (def i64 int/s64)
   (check-deep '(uint 8) "\xff\x7f\x00\x00\x00\x00\x00\x00" @[(u64 0x7fff)])
   (check-deep '(int 8) "\xff\x7f\x00\x00\x00\x00\x00\x00" @[(i64 0x7fff)])
   (check-deep '(uint 7) "\xff\x7f\x00\x00\x00\x00\x00" @[(u64 0x7fff)])

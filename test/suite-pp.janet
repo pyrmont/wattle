@@ -127,16 +127,18 @@
          (:keyword "string" @"buffer") <cycle 1>}}`)))
 
 # Issue 1737
-(def capture-buf @"")
-(with-dyns [*err* capture-buf]
-  (peg/match ~(* (constant @[]) (??)) "a"))
-(assert (deep= ```
-               ?? at [a] (index 0)
-               stack [1]:
-                 [0]: @[]
+# The (??) debug pattern is a peg feature, absent without JANET_PEG.
+(compwhen (dyn 'peg/match)
+  (def capture-buf @"")
+  (with-dyns [*err* capture-buf]
+    (peg/match ~(* (constant @[]) (??)) "a"))
+  (assert (deep= ```
+                 ?? at [a] (index 0)
+                 stack [1]:
+                   [0]: @[]
 
-               ```
-               (string capture-buf)))
+                 ```
+                 (string capture-buf))))
 
 (assert (=
          (string/format "?? at [bc] (index 2)\nstack [5]:\n  [0]: %m\n  [1]: %m\n  [2]: %m\n  [3]: %m\n  [4]: %m\n" "a" 1 true {} @[])

@@ -890,11 +890,13 @@
 
 # Evaluate stream with `dofile`
 # 9cc4e4812
-(def [r w] (os/pipe))
-(:write w "(setdyn :x 10)")
-(:close w)
-(def stream-env (dofile r))
-(assert (= (stream-env :x) 10) "dofile stream 1")
+# os/pipe is part of the event loop, absent without JANET_EV.
+(compwhen (dyn 'os/pipe)
+  (def [r w] (os/pipe))
+  (:write w "(setdyn :x 10)")
+  (:close w)
+  (def stream-env (dofile r))
+  (assert (= (stream-env :x) 10) "dofile stream 1"))
 
 # Test thaw and freeze
 # 9cc0645a1

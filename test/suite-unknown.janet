@@ -258,21 +258,24 @@
 (assert-error "compile error" (eval-string "(+ a 5)"))
 
 # 88813c4
-(assert (deep= (in (disasm (defn a [] (def x 10) x)) :symbolmap)
-               @[[0 2 0 'a] [0 2 1 'x]])
-        "symbolmap when *debug* is true")
+# disasm and asm are absent from a build without JANET_ASSEMBLER, and an absent
+# binding is a compile error rather than a runtime one.
+(compwhen (dyn 'disasm)
+  (assert (deep= (in (disasm (defn a [] (def x 10) x)) :symbolmap)
+                 @[[0 2 0 'a] [0 2 1 'x]])
+          "symbolmap when *debug* is true")
 
-(defn a [arg]
-  (def x 10)
-  (do
-    (def y 20)
-    (def z 30)
-    (+ x y z)))
-(def symbolslots (in (disasm a) :symbolslots))
-(def f (asm (disasm a)))
-(assert (deep= (in (disasm f) :symbolslots)
-               symbolslots)
-        "symbolslots survive disasm/asm")
+  (defn a [arg]
+    (def x 10)
+    (do
+      (def y 20)
+      (def z 30)
+      (+ x y z)))
+  (def symbolslots (in (disasm a) :symbolslots))
+  (def f (asm (disasm a)))
+  (assert (deep= (in (disasm f) :symbolslots)
+                 symbolslots)
+          "symbolslots survive disasm/asm"))
 
 (comment
   (setdyn *debug* true)
@@ -282,18 +285,19 @@
                  @['x 'y])
           "symbolmap upvalues"))
 
-(assert (deep= (in (disasm (defn a [arg]
-                             (def x 10)
-                             (do
-                               (def y 20)
-                               (def z 30)
-                               (+ x y z)))) :symbolmap)
-               @[[0 6 0 'arg]
-                 [0 6 1 'a]
-                 [0 6 2 'x]
-                 [1 6 3 'y]
-                 [2 6 4 'z]])
-        "arg & inner symbolmap")
+(compwhen (dyn 'disasm)
+  (assert (deep= (in (disasm (defn a [arg]
+                               (def x 10)
+                               (do
+                                 (def y 20)
+                                 (def z 30)
+                                 (+ x y z)))) :symbolmap)
+                 @[[0 6 0 'arg]
+                   [0 6 1 'a]
+                   [0 6 2 'x]
+                   [1 6 3 'y]
+                   [2 6 4 'z]])
+          "arg & inner symbolmap"))
 
 # 4782a76
 (assert (= 10 (do (var x 10) (def y x) (++ x) y)) "no invalid aliasing")

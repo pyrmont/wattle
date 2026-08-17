@@ -21,7 +21,14 @@
 (import ./helper :prefix "" :exit true)
 (start-suite)
 
-(var has-ffi (dyn 'ffi/native))
+# Both mechanisms are needed here. Without JANET_FFI the bindings are absent,
+# which is a compile error, so the probe below must not be compiled at all.
+# With the FFI present but JANET_DYNAMIC_MODULES disabled the bindings exist and
+# raise only when called, so the probe is what detects that.
+(var has-ffi
+  (compif (dyn 'ffi/native)
+    (truthy? (first (protect (ffi/context))))
+    false))
 (def has-full-ffi
   (and has-ffi
        (when-let [entry (dyn 'ffi/calling-conventions)]

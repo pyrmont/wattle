@@ -23,6 +23,15 @@
 
 (assert true) # smoke test
 
+# This suite's setup resolves a real path and seeds from the system CSPRNG.
+# Both functions still exist without JANET_REALPATH and JANET_CRYPTORAND, and
+# only raise when called, so these are runtime checks rather than compwhen on
+# the bindings.
+(unless (and (first (protect (os/realpath ".")))
+             (first (protect (os/cryptorand 1))))
+  (end-suite)
+  (os/exit 0))
+
 # Testing here is stateful since we are manipulating the filesystem.
 
 # Copy since not exposed in boot.janet

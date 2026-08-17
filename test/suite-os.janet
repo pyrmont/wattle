@@ -89,11 +89,15 @@
     (++ attempts))
   (not= attempts max-attempts))
 
-(def v (math/rng-int (math/rng (os/time)) 100))
-(assert (cryptorand-check 0 |(= $ v)) "cryptorand skips value sometimes")
-(assert (cryptorand-check 1 |(= $ v)) "cryptorand has value sometimes")
+# os/cryptorand still exists without JANET_CRYPTORAND, but raises when called,
+# so this is a runtime check rather than a compwhen on the binding.
+(def has-cryptorand (first (protect (os/cryptorand 1))))
 
-(do
+(when has-cryptorand
+  (def v (math/rng-int (math/rng (os/time)) 100))
+  (assert (cryptorand-check 0 |(= $ v)) "cryptorand skips value sometimes")
+  (assert (cryptorand-check 1 |(= $ v)) "cryptorand has value sometimes")
+
   (def buf (buffer/new-filled 1))
   (os/cryptorand 1 buf)
   (assert (= (in buf 0) 0) "cryptorand doesn't overwrite buffer")
@@ -135,61 +139,70 @@
 (assert (= (os/perm-string 8r644) "rw-r--r--") "perm 9")
 
 # Pipes
-(assert-no-error (os/pipe))
-(assert-no-error (os/pipe :RW))
-(assert-no-error (os/pipe :R))
-(assert-no-error (os/pipe :W))
+# os/pipe is part of the event loop, absent without JANET_EV.
+(compwhen (dyn 'os/pipe)
+  (assert-no-error (os/pipe))
+  (assert-no-error (os/pipe :RW))
+  (assert-no-error (os/pipe :R))
+  (assert-no-error (os/pipe :W)))
 
-# os/execute with environment variables
-# issue #636 - 7e2c433ab
-(assert (= 0 (os/execute [;run janet "-e" "(+ 1 2 3)"] :pe
-                         (merge (os/environ) {"HELLO" "WORLD"})))
-        "os/execute with env")
+# os/execute is absent from a build without JANET_PROCESSES, and an absent
+# binding is a compile error rather than a runtime one.
+(compwhen (dyn 'os/execute)
+  # os/execute with environment variables
+  # issue #636 - 7e2c433ab
+  (assert (= 0 (os/execute [;run janet "-e" "(+ 1 2 3)"] :pe
+                           (merge (os/environ) {"HELLO" "WORLD"})))
+          "os/execute with env")
 
-# os/execute with empty environment
-# pr #1686
-# native MinGW can't find system DLLs without PATH, SystemRoot, etc. and so fails
-# Also fails for address sanitizer builds on windows.
-(def result (os/execute [;run janet "-e" "(+ 1 2 3)"] :pe {}))
-(assert (or (= result -1073741515) (= result 0))
-        "os/execute with minimal env")
+  # os/execute with empty environment
+  # pr #1686
+  # native MinGW can't find system DLLs without PATH, SystemRoot, etc. and so fails
+  # Also fails for address sanitizer builds on windows.
+  (def result (os/execute [;run janet "-e" "(+ 1 2 3)"] :pe {}))
+  (assert (or (= result -1073741515) (= result 0))
+          "os/execute with minimal env")
 
-# os/execute regressions
-# 427f7c362
-(for i 0 10
-  (assert (= i (os/execute [;run janet "-e"
-                            (string/format "(os/exit %d)" i)] :p))
-          (string "os/execute " i)))
+  # os/execute regressions
+  # 427f7c362
+  (for i 0 10
+    (assert (= i (os/execute [;run janet "-e"
+                              (string/format "(os/exit %d)" i)] :p))
+            (string "os/execute " i)))
 
-# os/execute IO redirection
-(assert-no-error "IO redirection"
-                 (defn devnull []
-                   (def os (os/which))
-                   (def path (if (or (= os :mingw) (= os :windows))
-                               "NUL"
-                               "/dev/null"))
-                   (os/open path :w))
-                 (with [dn (devnull)]
-                   (os/execute [;run janet
-                                "-e"
-                                "(print :foo) (eprint :bar)"]
-                               :px
-                               {:out dn :err dn})))
+  # os/open is part of the event loop, absent without JANET_EV.
+  (compwhen (dyn 'os/open)
+    # os/execute IO redirection
+    (assert-no-error "IO redirection"
+                     (defn devnull []
+                       (def os (os/which))
+                       (def path (if (or (= os :mingw) (= os :windows))
+                                   "NUL"
+                                   "/dev/null"))
+                       (os/open path :w))
+                     (with [dn (devnull)]
+                       (os/execute [;run janet
+                                    "-e"
+                                    "(print :foo) (eprint :bar)"]
+                                   :px
+                                   {:out dn :err dn}))))
 
-# os/execute IO redirection with more windows flags
-(assert-no-error "IO redirection more windows flags"
-                 (defn devnull []
-                   (def os (os/which))
-                   (def path (if (or (= os :mingw) (= os :windows))
-                               "NUL"
-                               "/dev/null"))
-                   (os/open path (if (= os :windows) :wWI :wW)))
-                 (with [dn (devnull)]
-                   (os/execute [;run janet
-                                "-e"
-                                "(print :foo) (eprint :bar)"]
-                               :px
-                               {:out dn :err dn})))
+  # os/open is part of the event loop, absent without JANET_EV.
+  (compwhen (dyn 'os/open)
+    # os/execute IO redirection with more windows flags
+    (assert-no-error "IO redirection more windows flags"
+                     (defn devnull []
+                       (def os (os/which))
+                       (def path (if (or (= os :mingw) (= os :windows))
+                                   "NUL"
+                                   "/dev/null"))
+                       (os/open path (if (= os :windows) :wWI :wW)))
+                     (with [dn (devnull)]
+                       (os/execute [;run janet
+                                    "-e"
+                                    "(print :foo) (eprint :bar)"]
+                                   :px
+                                   {:out dn :err dn})))))
 
 # Issue 16922
 (assert-error "os/realpath errors when path does not exist"

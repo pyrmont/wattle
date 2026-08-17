@@ -24,6 +24,14 @@
 # Disable linting warnings
 (setdyn *lint-warn* :none)
 
+# Nothing in this suite exists in a build without JANET_INT_TYPES, and an
+# absent binding is a compile error rather than a runtime one. Janet compiles
+# and runs a file one top-level form at a time, so leaving here keeps the rest
+# of the suite from reaching the compiler at all.
+(compwhen (not (dyn 'int/s64))
+  (end-suite)
+  (os/exit 0))
+
 # some tests for bigint
 # 319575c
 (def i64 int/s64)
