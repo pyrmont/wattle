@@ -133,6 +133,18 @@ otherwise the build swaps whole source files.
 | `-Dfiber-core=c` | `fiber_core.zig` | `core/fiber.c` | `JANET_ZIG_FIBER_CORE` |
 | `-Dsignal-core=c` | `signal_core.zig` | `core/vm.c`, `core/capi.c` | `JANET_ZIG_SIGNAL_CORE` |
 | `-Dtrace-frames=c` | `trace_frames.zig` | `core/debug.c` | `JANET_ZIG_TRACE_FRAMES` |
+| `-Dargs-core=c` | `args_core.zig` | `core/capi.c`, `core/util.c` | `JANET_ZIG_ARGS_CORE` |
+| `-Dgc-alloc=c` | `gc_alloc.zig` | `core/gc.c` | `JANET_ZIG_GC_ALLOC` |
+| `-Dgc-mark=c` | `gc_mark.zig` | `core/gc.c` | `JANET_ZIG_GC_MARK` |
+| `-Dgc-sweep=c` | `gc_sweep.zig` | `core/gc.c` | `JANET_ZIG_GC_SWEEP` |
+| `-Dbuffer-array=c` | `buffer_array.zig` | `core/buffer.c`, `core/array.c` | `JANET_ZIG_BUFFER_ARRAY` |
+| `-Dstring-symbol=c` | `string_symbol.zig` | `core/string.c`, `core/symcache.c`, `core/tuple.c` | `JANET_ZIG_STRING_SYMBOL` |
+| `-Dstruct-table=c` | `struct_table.zig` | `core/struct.c`, `core/table.c` | `JANET_ZIG_STRUCT_TABLE` |
+| `-Dvalue-order=c` | `value_order.zig` | `core/value.c` | `JANET_ZIG_VALUE_ORDER` |
+| `-Dvalue-access=c` | `value_access.zig` | `core/value.c` | `JANET_ZIG_VALUE_ACCESS` |
+| `-Dabstract-core=c` | `abstract_core.zig` | `core/abstract.c` | `JANET_ZIG_ABSTRACT_CORE` |
+| `-Dvalue-alloc=c` | `value_alloc.zig` | `core/fiber.c`, `core/bytecode.c` | `JANET_ZIG_VALUE_ALLOC` |
+| `-Dvalue-wrap=c` | `value_wrap.zig` | `core/wrap.c` | `JANET_ZIG_VALUE_WRAP` |
 
 `-Dint-scan` and `-Dint-types-core` are only offered when integer types are
 enabled, the three assembly selectors only when the assembler is, and
@@ -170,7 +182,16 @@ mechanism split across `vm.c` and `capi.c`; its guard leaves the `longjmp`, the
 coercion message, `janet_check_can_resume`, and the whole of
 `janet_continue_no_check` in C in both configurations. `-Dtrace-frames` guards
 only the decoding: `janet_stacktrace_ext` itself is compiled once and prints
-through either implementation.
+through either implementation. `-Dargs-core` is ungated as well, and spans two
+C files for the same reason `-Dsignal-core` does: the numeric predicates in
+`util.c` and the getters in `capi.c` are one layer split across two files. Its
+guard leaves every exported `janet_get*` and `janet_opt*` in C, because the
+raise cannot be on the Zig side, along with the three view constructors, whose
+signatures are public and one of which has to run an abstract type's `bytes`
+callback itself. `-Dgc-alloc` is ungated too — there is no build without a
+collector — and it takes the first of three bites out of `gc.c`, leaving
+marking, sweeping, `janet_collect` and `janet_clear_memory` in C in both
+configurations.
 
 ## Raising out of `run_vm` instead of jumping past it
 
@@ -466,13 +487,27 @@ by an `if`, rather than being exported with `@export`: Zig 0.16 cannot
 `@export` a thread-local at all, because the address of one is not
 comptime-known, so `export threadlocal var` is the only spelling available.
 
-One difference follows from that and is not repairable in Zig 0.16. `export`
-carries default visibility, so `janet_vm` becomes an exported dynamic symbol of
-`libjanet`, where the C build's `-fvisibility=hidden` kept it internal. Nothing
-public references it — it appears nowhere in `janet.h` — so this widens the
-shared library's symbol set without changing anything that already linked, and
-the `c` selector restores the original. Worth knowing when reading a symbol
-diff; not worth working around with a linker script.
+One difference follows from that. `export` carries default visibility, so
+`janet_vm` becomes an exported dynamic symbol of `libjanet`, where the C
+build's `-fvisibility=hidden` kept it internal. Nothing public references it —
+it appears nowhere in `janet.h` — so this widens the shared library's symbol
+set without changing anything that already linked, and the `c` selector
+restores the original.
+
+For `janet_vm` itself this is not repairable in Zig 0.16, because it is a
+thread-local and `@export` cannot take the address of one. **But the same
+widening applies to every function a Zig subsystem exports that `janet.h` does
+not declare `JANET_API`, and for a function it is repairable** —
+`@export(&f, .{ .name = "f", .visibility = .hidden })` instead of `export fn`.
+Four such symbols exist so far, one per increment that took an internal
+function: `janet_free_all_scratch` (Part 3), `janet_symbol_deinit` (Part 6b),
+`janet_trace_frame` (Phase 7 Part 8) and `janet_next_impl` (Part 8 Part 7b).
+Each is visible in `nm` on the Zig build's `libjanet.dylib` and hidden in the
+`c` build's. None is referenced from outside the library and none changes what
+already linked, so this is a symbol-set difference rather than a behavioural
+one — but it is a difference between the two selectors, and unlike `janet_vm`
+it has a one-line fix. Left as it is because fixing it belongs to a single
+pass over all four rather than to whichever increment noticed.
 
 ### Ownership and lifetime rules
 
@@ -876,6 +911,594 @@ The contract also drives `janet_stacktrace_ext` over a real fiber stopped at an
 error, with and without a prefix. That checks the descriptor and the loop that
 consumes it agree about a live stack; it does not inspect the text, which belongs
 to the suites and to the harness.
+
+## Reporting an argument fault instead of formatting one
+
+Phase 8 Part 1. `-Dargs-core=c` restores the C implementation; Zig is the
+default.
+
+This is the layer Phase 7's fifth rule named and did not build. It blocked three
+Phase 6 bullets, it is why `fiber.c`'s ten cfunctions and `janet_check_can_resume`
+stayed in C in Phase 7, and until it existed neither the core native functions
+nor `peg.c` nor `marsh.c` could be touched at all: those files are argument
+extraction and Janet value construction end to end.
+
+**The rule that shapes it.** `janet_panicf` allocates a Janet string and
+allocation can panic, so a non-panicking getter that formatted eagerly would
+need a panic-free allocator. Reporting a code plus the slot and formatting only
+at the boundary avoids that — and it makes the messages identical between the
+two implementations by construction rather than by inspection, because the
+format strings then live in exactly one place. `JanetArgFault` in
+`src/core/state.h` is the report; `janet_arg_raise` in `capi.c` is that place.
+
+Nothing in `JanetArgFault` is a Janet value. The slot index is enough for the
+boundary to recover `argv[slot]` and render it with `%v`, and `%v` runs an
+abstract type's `tostring` callback. Same reasoning as `JanetTraceFrame`, and
+the same reasoning that kept the coercion message in C in Phase 7 Part 8.
+
+### The nouns are a code, not a string
+
+Eleven numeric getters name what they wanted — "size", "16 bit signed integer",
+"non-negative 32 bit signed integer". Zig reports `JanetArgExpect` and
+`janet_arg_expect_name` in `capi.c` decides the words. Handing the string across
+instead would have worked and would have been one field shorter; the code is
+what makes a wording change impossible to make on one side only.
+
+### Three things are classified rather than done
+
+Each is the same sentence — nothing Zig calls may raise — applied to a different
+caller.
+
+**`janet_arg_bytes` reports the abstract case.** A byte view of an abstract runs
+the type's `bytes` callback, which is third-party code and may panic. So the
+kernel classifies into string, buffer, abstract-with-a-callback, or fault, and
+the two callers that can raise — `janet_getbytes` in `capi.c` and
+`janet_bytes_view` in `util.c` — make the call themselves. This is the first
+increment to hit the panicking-callback problem, and it is settled here by
+placement rather than by mechanism; SPIKE-8 decides the general case before the
+GC, which cannot avoid it.
+
+**`janet_arg_cbytes` decides which of three shapes applies and stops.** Two of
+them mutate or allocate: one pushes a zero byte onto the buffer, one calls
+`janet_smalloc` because pushing would panic on a buffer that cannot realloc.
+Both are carried out by the caller, which is also where the embedded-zero test
+then happens.
+
+**`janet_arg_nextmethod` returns the entry, not the keyword.** `janet_ckeywordv`
+allocates.
+
+### What stayed in C, and why none of it is an oversight
+
+Every exported `janet_get*` and `janet_opt*`, because the raise cannot be on the
+Zig side — the same shape as every C wrapper in Phases 5 through 7. The three
+view constructors, because their signatures are public and cannot report
+"a callback is needed" to a third-party caller. `janet_getinteger64` and
+`janet_getuinteger64` in a build with integer types, because there they accept an
+`int/s64` abstract and `janet_unwrap_s64` raises its own message: there is no
+fault for a kernel to report, so there is no seam to draw.
+
+### Where the two implementations genuinely differ
+
+One place, and it is recorded in `FOUND.md` rather than smoothed over.
+`janet_checksize` casts a double to `size_t` *before* testing whether the
+conversion means anything, which is undefined for a negative, infinite or
+enormous value and reachable from Janet source as `(gcsetinterval -1)`. On the
+supported targets the conversion saturates and the answer comes out right; a
+Debug build traps it and aborts.
+
+Zig cannot reproduce that. `@intFromFloat` outside the destination's range is
+checked illegal behavior, not a saturating cast, so `args_core.zig` tests first
+and converts second. So `-Dargs-core=c` aborts on `(gcsetinterval -1)` in a Debug
+build and the Zig default raises `bad slot #0, expected size, got -1`; they agree
+in every release mode and on every other input. `test/args_core.c` exercises only
+the defined half of that domain, under this phase's rule that reproduced
+undefined behavior gets no contract.
+
+### Two defects reproduced rather than repaired, and both pinned
+
+`janet_checkfloat` tests `>= FLT_MIN`, the smallest positive *normal* float
+rather than the most negative finite one, so `janet_getfloat` rejects zero, every
+negative value, and every subnormal. Nothing in the core calls it — it exists for
+native modules — which is why no suite has ever noticed. `janet_getflags` clamps
+a permitted set longer than 64 characters and then reports a character past the
+ceiling as `unexpected flag`, quoting the full oversized set back in the message.
+Both are defined behavior rather than undefined, so unlike `janet_checksize` both
+are pinned by the contract: a later fix has to change the test deliberately.
+
+The range faults also widen three operands to `int64_t` before handing them to a
+`%d` that Janet's formatter reads as an `int32_t`. That is the existing `%d`
+entry in `FOUND.md`, and the widening is preserved on both sides so the rendering
+matches on the targets where it works.
+
+### The contract
+
+`test/args_core.c` runs against either implementation. What it guards is a set of
+decisions and a set of messages, and it checks them separately because the port
+separates them: every case drives an exported getter through a try scope and
+compares the payload byte for byte, which is the only way to show that a fault
+code plus a slot really does reconstruct the message the C original raised.
+
+The suites reach almost none of this. A Janet program that calls a cfunction with
+a wrong argument sees one message and stops, so the common shapes are covered
+incidentally and the rest are not reached at all: every width of integer at both
+its boundaries, both range foldings, the flag ceiling, the three `cbytes` shapes,
+the abstract-with-a-`bytes`-callback path, and the eleven expectation nouns. The
+panic count is asserted rather than floored, because a case that stopped raising
+would otherwise be a silent subtraction.
+
+Three mutations confirm it is not vacuous: folding the half range against
+`length` instead of `length + 1`, reporting `S16` as `U16`, and giving a full
+no-realloc buffer the terminating shape instead of the copying one. The last of
+those is the one that matters — it fails with `buffer cannot reallocate foreign
+memory`, which is precisely the panic the copying shape exists to avoid, and it
+is unreachable from Janet source.
+
+### The callback question this increment postponed
+
+`janet_arg_bytes` settles the abstract case by placement — the classifier is a
+leaf, so its C caller can make the call. Nothing later in Phase 8 is a leaf, and
+the collector cannot use placement at all: the mutator's try scope is
+arbitrarily far away, so a jump from `gcmark` crosses every Zig mark frame
+regardless of where the callback is invoked.
+
+`SPIKE-8.md` settles the general case, and the rule it produces governs Parts 3
+onward: **an abstract type's callbacks may not raise, and a signal from one that
+does may jump straight through the Zig frames that invoked it.** Zig calls
+`gcmark`, the finalizers, `compare`, `hash`, `get`, `put`, `next` and `length`
+directly. Not one of the fifteen in-tree abstract types can raise from any of
+them, so this restricts third-party modules only, and the fork breaks those by
+design.
+
+A `longjmp` through a Zig frame is mechanically harmless — Zig has no
+destructors, and a probe crosses eight nested frames without complaint. The one
+thing it breaks is `defer`, skipped silently. So a subsystem on such a path
+declares `//! jump-transparent` at its head, and `checkJumpTransparency` in
+`build.zig` fails the build if that file contains a `defer` or `errdefer`:
+
+```text
+src/zig/subsystems/remove_noops.zig:15: 'defer' in a jump-transparent source.
+A Janet signal may jump through these frames, which skips it silently.
+```
+
+Eight `defer`s exist across the subsystems today and none of those files is
+jump-transparent. Two of them are `defer c.janet_gcunlock(gc_lock)`, in
+`asm_decode.zig` and `disasm.zig`; a skipped `janet_gcunlock` wedges the
+collector permanently rather than leaking, and both are safe only because the
+regions they guard can exhaust memory and exit but cannot jump.
+
+Part 1 itself is *not* jump-transparent and does not carry the marker: it keeps
+the abstract `bytes` call on the C side, which was the cheaper answer for a leaf
+and remains correct.
+
+## The collector's memory, without the collector
+
+Phase 8 Part 3. `-Dgc-alloc=c` restores the C implementation; Zig is the
+default. `gc_alloc.zig` owns thirteen functions from `gc.c`: `janet_gcalloc`
+and `janet_gcpressure`, the four root-set functions, `janet_gclock` and
+`janet_gcunlock`, and the whole scratch allocator including
+`janet_free_all_scratch`.
+
+### The split is by data structure, not by call graph
+
+`gc.c` is three things wearing one file: the memory the collector manages, the
+traversal that decides what is live, and the sweep that acts on the decision.
+Part 3 takes the first, and the boundary is worth stating because it is not
+where a reader would draw it from the call graph — `janet_collect` calls
+`janet_free_all_scratch`, and `janet_gcalloc` moves the counter that eventually
+triggers `janet_collect`, so the three parts are mutually recursive at the level
+of who calls whom.
+
+They are not recursive at the level of who *owns* what, which is the boundary
+that matters for a port. Nothing in Part 3 traverses an object. `janet_gcalloc`
+writes a type tag into a header and pushes the block onto a list; it never looks
+at what the caller puts there, and it is the caller's job to make the block
+well-formed before anything can collect. The heap lists are touched at one end
+only, and by exactly one function each: this file prepends, `janet_sweep`
+unlinks. Marking and sweeping can therefore move independently, in either order,
+and Parts 4 and 5 inherit no decision from this one.
+
+Two thread-locals stay behind because they belong to the traversal rather than
+to the memory: `depth`, the recursion guard `janet_mark` decrements, and
+`orig_rootcount`, which `janet_collect` uses to tell roots that existed when the
+collection began from roots added by a `gcmark` callback while it ran. Both move
+with Part 4.
+
+### One seam, and why it is a declaration rather than a bridge
+
+`janet_free_all_scratch` was `static` in `gc.c` and had two callers there,
+`janet_collect` and `janet_clear_memory`, both of which stay in C for this
+increment. Moving the scratch allocator without them means the symbol has to
+cross the file boundary, so it is now declared in `gc.h`:
+
+```c
+void janet_free_all_scratch(void);
+```
+
+That is the whole seam. It is not public API, it takes no arguments, and it
+needs no wrapper — which is the point. The previous seam this phase drew,
+`JanetArgFault`, existed because the two sides could not agree on who was
+allowed to raise. Here they agree completely: releasing scratch memory is the
+same operation on either side of the boundary, so dropping `static` is the
+entire cost of making it selectable. A seam that needs more than this is a sign
+the split is in the wrong place.
+
+`gc.h` also joined `abi.zig`'s single translation, for `enum JanetMemoryType`.
+Its function-like macros over `JanetGCObject` — `janet_gc_settype`,
+`janet_gc_mark`, `janet_gc_reachable` — do not survive translate-c and are
+written out in Zig where they are used, which for this increment is one
+assignment to `flags`.
+
+### The file is jump-transparent, and for one call
+
+`freeOneScratch` invokes a `JanetScratchFinalizer` that an embedder installed
+through `janet_sfinalizer`. That is third-party code on a Zig frame, so SPIKE-8's
+rule applies and the file carries `//! jump-transparent`; `build.zig` enforces
+that it holds no `defer`.
+
+It is worth being precise about how thin this is. No in-tree caller of
+`janet_sfinalizer` exists — the API has none, in any of `src/core`, and the
+scratch blocks the runtime allocates are all released by `janet_sfree` or by the
+collection that follows. So the marker guards a path that only an embedding
+reaches, and only one that installs a finalizer that raises, which the rule
+already forbids. It is carried anyway because the alternative is a file whose
+safety depends on nobody using a public API.
+
+If such a finalizer does raise, `scratch_len` is left unreduced and the block is
+re-finalized at the next collection. That is exactly what the C original does,
+for the same reason — the counter is zeroed after the loop, not during it — so
+the port does not diverge, and the failure mode is the abstract-finalizer one
+`FOUND.md` already records rather than a new one.
+
+### Three pieces of arithmetic reproduced rather than repaired
+
+All three are in `FOUND.md`, and the first is the only one a caller can observe:
+
+- **`janet_gcunrootall` removes `floor(n / 2)` of `n` rootings.** It fills the
+  vacated slot from the top and then advances, so the root it moved down is
+  never examined. It returns 1 either way, so a caller cannot tell. Nothing in
+  the tree calls it. `test/gc_alloc.c` pins the halving for n of 1, 2, 3, 4, 5
+  and 8 against both selectors, which is what stops a later cleanup from
+  "fixing" one side into a silent divergence.
+- **The scratch table is sized by `sizeof(JanetScratch)` where its elements are
+  `JanetScratch *`.** The header is a function pointer followed by a flexible
+  array, so it is never smaller than a pointer and the table is over-allocated
+  rather than short — exact on 64-bit, double on 32-bit. Reproduced so the two
+  selectors request the same byte counts.
+- **`janet_smalloc` and `janet_srealloc` add the header size without checking
+  for wraparound.** Zig would trap where C wraps, so the additions here are
+  written `+%`. No in-tree caller can approach `SIZE_MAX`; every one derives its
+  size from an `int32_t` count.
+
+One further difference is a Zig artifact rather than a C defect. `janet_gcroot`
+stores the `realloc` result before testing it, so a failed grow leaves
+`janet_vm.roots` null on its way to `exit(1)`. That store is preserved rather
+than tidied into a temporary, because the two selectors should be
+indistinguishable under a debugger as well as under a test.
+
+### The contract
+
+`test/gc_alloc.c` includes `state.h` and `gc.h`, for the same reason
+`test/vm_state.c` includes `state.h`: every operation under test is a mutation
+of `janet_vm`'s collection fields, and the fields are the observable result.
+There is no public accessor for `block_count` or `scratch_len`, and an accessor
+invented for the test would be the thing the test proves correct.
+
+Twenty-two cases, in four groups. The heap-list cases allocate a block, check
+the list it landed on, the header it was given, and the three counters, then
+*unlink it themselves* and restore the counters — so no synthetic block ever
+reaches `janet_sweep`, and the contract stays independent of Parts 4 and 5. The
+weak boundary is enumerated over all four weak types and five strong ones rather
+than sampled at the edge, because the split is a numeric comparison against
+`JANET_MEMORY_TABLE_WEAKK` and a table of types would pass a sampled test.
+
+The root cases cover pointer identity, the three immediate types that compare
+equal to anything of their own type, the swap-from-top that leaves the root set
+unordered, capacity growth, and the `gcunrootall` halving. The scratch cases
+cover registration and the header offset the whole allocator depends on,
+zeroing, reallocation preserving both the bytes and the finalizer and the table
+slot, the swap-from-top on free, and growth to `2 * cap + 2` with every held
+block's contents checked across the move.
+
+Two paths are described in the file rather than run: `janet_srealloc` and
+`janet_sfree` on a pointer this allocator never handed out, both of which abort
+the process.
+
+Four mutations of the Zig side were run against it, and all four were caught by
+a named assertion. The one that matters is repairing `janet_gcunrootall` to
+remove every rooting — the contract exists to hold the two implementations to
+the same defect, so a mutation that improves one of them has to fail.
+
+### What this cost
+
+Thirteen functions, 296 lines of Zig against 203 lines of C. The ratio is
+the usual one for this project and comes from the same place: the module
+comment, the per-function documentation, and the comments naming each preserved
+defect at the line that preserves it. No behaviour was added.
+
+## The mark phase, and the collection that drives it
+
+Phase 8 Part 4. `-Dgc-mark=c` restores the C implementation; Zig is the default.
+`gc_mark.zig` owns the whole traversal — `janet_mark` and the fifteen static
+helpers beneath it — the recursion guard, and `janet_collect`. It exports
+exactly two symbols, because everything between them is `static` in the C
+original and stays private here.
+
+### Nothing in it frees anything
+
+That is the boundary, stated as a property rather than as a list of functions.
+The traversal reads the object graph and writes one bit per object,
+`JANET_MEM_REACHABLE`, into a header it did not allocate and will not release.
+Part 3 allocates those headers and Part 5 releases them, so the three parts
+touch the same objects at three disjoint moments and none of them has to know
+how the others do it.
+
+The one place the walk does more than set a bit is a threaded abstract, which is
+recorded in `janet_vm.threaded_abstracts` instead of being marked. That is a
+table write, so it can allocate, which makes it the only step of the traversal
+that can fail — and it fails before anything has been marked rather than
+half-way through.
+
+### `janet_collect` moved with marking, and that is why there is no seam
+
+`PLAN.md` had it in Part 5, with sweeping. Moving it here was the whole design
+decision of the increment, and the argument is short: `janet_collect` is the
+only reader of `depth` and `orig_rootcount`, the two thread-locals `gc.c` keeps
+outside `janet_vm`. Leaving it in C would have meant either exporting a
+thread-local across the language boundary — where a single-threaded build and a
+Zig `threadlocal` disagree about what storage class even means — or adding a
+function whose only job is to reset a counter.
+
+Putting it in Part 4 costs nothing. Everything it calls outward is already
+declared for reasons that predate the port: `janet_sweep` and `janet_collect`
+are public API in `janet.h`, `janet_free_all_scratch` was declared in `gc.h` by
+Part 3, and `janet_ev_mark` lives in `util.h`, which `abi.zig` does not
+translate and which this file therefore declares directly — the case `abi.zig`'s
+comment describes, a function whose parameters are all primitive.
+
+So **this increment added no seam at all**. Part 3 needed one declaration; Part
+4 needed none; Part 5 will inherit none. That is worth more than it sounds,
+because a seam is the part of a port that has to be unpicked later, and Phase 10
+deletes the C side entirely.
+
+### The guard is a contract, not a safety net
+
+`janet_mark` decrements a budget on the way in and restores it on the way out.
+When the budget is gone it *roots* the value instead of traversing it, and
+`janet_collect`'s second loop drains those roots and marks each one from a fresh
+budget. So a graph deeper than `JANET_RECURSION_GUARD` is marked completely, in
+slices — not truncated, and not paid for in C stack.
+
+Both halves are pinned. `test_depth_guard_roots_the_overflow` marks a chain one
+link longer than the guard and asserts that link 1023 is marked, link 1024 is
+not, and the root set grew by exactly one whose pointer is link 1024.
+`test_collect_finishes_deep_graphs` takes a chain three times the guard's depth
+and asserts the last link survives a collection, observed through a weak-valued
+table — which is how a mark that has already been cleared can still be seen.
+
+The drain loop's other consequence is easy to miss and is pinned too: a root
+added *during* a collection is consumed by that collection. A `gcmark` callback
+that calls `janet_gcroot` does not leave a root behind.
+
+### Three things reproduced rather than repaired
+
+All three are in `FOUND.md`. Two are arithmetic in `janet_collect` — a
+`uint32_t` counter walking a `size_t` root count, and the collection-interval
+heuristic multiplying without a guard — and both are reproduced with wrapping
+operators so that the two selectors agree rather than one of them trapping.
+Neither is reachable on a heap that fits in an address space.
+
+The third is not a defect: `janet_mark_array` marks a weak array's header but
+not its elements, and the type test that decides this reads like a redundant
+check. `test_mark_array_weak` pins it so that a later reader who removes it gets
+a failure instead of a silently strengthened weak array.
+
+### What translate-c cannot give us
+
+The C macros recover an object's header by subtracting
+`offsetof(Head, data)` — and `data` is a flexible array member, which
+translate-c drops entirely, so `@offsetOf` does not compile. All five head
+recoveries use `@sizeOf` instead, which is the same number exactly when the
+flexible array needs no padding after the last declared field.
+
+Rather than assert that in Zig, where the field does not exist,
+`test/gc_mark.c` compares `sizeof` against `offsetof` for all five heads in C,
+where both spellings do. It runs under the `c` selector as well, where the
+equality is merely true rather than load-bearing — which is the cheapest way to
+notice if a future field ever breaks it. Part 3 has the same assumption for
+`JanetScratch` and records it the same way.
+
+### The file is jump-transparent
+
+Two calls reach code this runtime does not own: an abstract type's `gcmark`, and
+a root fiber's `ev_callback`. Under SPIKE-8's rule neither may raise, and a
+signal from one jumps straight out through every frame of the walk. Those frames
+own nothing, `build.zig` checks that they do not, and the check was confirmed to
+cover this file by planting a `defer` and watching the build fail.
+
+What a jump costs is exactly what the C original costs: a half-marked heap, no
+sweep, `next_collection` not reset. The port does not diverge there, and
+`SPIKE-8.md` records the baseline.
+
+### What this cost
+
+Seventeen functions, 460 lines of Zig against 311 lines of C, and two exported
+symbols. The ratio is the usual one and comes from the same place: the module
+comment, the per-function documentation, and the comments naming each preserved
+defect where it is preserved.
+
+One acceptance check does not pass, and it is not the port's doing.
+`-Doptimize=ReleaseSafe` traps inside `janet_init` in the new test binary,
+before any code under test runs, because the thread-local `janet_vm` lands
+4-byte-aligned in that image and ReleaseSafe traps on the misaligned load.
+It reproduces with `-Dgc-mark=c`, does not reproduce in a minimal program
+against the same library, and is recorded in `FOUND.md` with the two fixes that
+were tried and did not move it.
+
+## The sweep, the weak heap, and the teardown
+
+Phase 8 Part 5, and the end of `gc.c`. `-Dgc-sweep=c` restores the C
+implementation; Zig is the default. `gc_sweep.zig` owns `janet_sweep`,
+`janet_clear_memory`, and the two static functions beneath them,
+`janet_deinit_block` and `janet_check_liveref`. It exports two symbols, and
+with this increment `gc.c` contains no C the port has not taken.
+
+### Everything here frees, and nothing here traverses
+
+That is Part 4's boundary read backwards, and it is what makes a three-way split
+of one file hold together. The mark phase reads the object graph and writes one
+bit per object; the sweep reads that bit and never follows a pointer the bit
+does not justify.
+
+The single place the two touch is `checkLiveref`, which reads the mark of a
+value a weak container refers to. That is a read of one header, not a walk, and
+it is the reason a weak reference is dropped in the sweep rather than skipped in
+the walk: the walk cannot know whether anything *else* will reach the value, and
+by the time the sweep runs, everything that will reach it already has.
+
+### Three increments, no seam between any of them
+
+Part 3 needed one declaration — `janet_free_all_scratch` lost its `static`.
+Parts 4 and 5 needed none at all. `janet_sweep` and `janet_clear_memory` are
+public API in `janet.h`; `janet_deinit_block` and `janet_check_liveref` were
+`static` with no caller outside the region that moved with them; and the one
+symbol this file reaches for that is neither public API nor already declared for
+Zig is `janet_symbol_deinit`, which takes a `const uint8_t *` and is therefore
+declared directly under the same rule `gc_mark.zig` uses for `janet_ev_mark`.
+
+`nm` on the object is the whole interface:
+
+```text
+T _janet_clear_memory     T _janet_sweep
+U _janet_abstract_decref_maybe_free   U _janet_buffer_deinit
+U _janet_ev_dec_refcount              U _janet_free
+U _janet_free_all_scratch             U _janet_symbol_deinit
+...
+```
+
+Two defined, and every undefined name either public API, Part 3's one
+declaration, or the runtime bridge.
+
+### The weak heap is walked twice, and the order is the contract
+
+The first pass visits every *surviving* weak container and nils out the entries
+whose weak half died. The second pass frees the weak containers that did not
+survive. Doing them in one pass, or in the other order, would mean reading the
+header of a block that had already been freed — the test for a dead weak
+reference is a read of the mark bit in the very object being dropped.
+
+That makes the ordering a property a sanitizer sees rather than one an assertion
+can catch, so `test_weak_entry_and_its_target_die_together` asserts what it can:
+the container survives, the entry is gone, and the block count fell by exactly
+the blocks that should have died.
+
+The variants are pinned exactly, because which half is checked here has to
+mirror which half the mark phase skipped. A weak-keyed table keeps an entry
+whose value is otherwise unreferenced — the walk marked that value — and drops
+one whose key is; a weak-valued table is the mirror; a table weak in both keeps
+neither. `test_weak_table_variants` builds all four kinds, including a strong
+control, and checks each one. Swapping the two predicates fails it.
+
+There is one consequence of the mirror worth naming, because it looks like a
+bug and is not: a weak table's key outlives the entry by one collection. The
+walk reaches the keyword through the entry and marks it, and the sweep then
+drops the entry — so the key is freed by the *next* collection. That is the one
+collection of lag a weak container costs, and the test asserts both halves of
+it.
+
+### Finalization, and what "exactly once" rests on
+
+`janet_deinit_block` runs a type's `gcperthread` and then its `gc`, in that
+order, and both before the block is unlinked. Each of those is a contract:
+
+- The order is not incidental. `gcperthread` releases what belongs to this
+  interpreter and `gc` releases what the value owns outright, so reversing them
+  would let `gc` free memory `gcperthread` still reads.
+- The finalizer is driven by reachability, not by the sweep visiting the block:
+  a survivor is not finalized, and a block is not finalized twice.
+- Running *before* the unlink is the C original's order, and it is what makes a
+  panicking finalizer poison the heap permanently — the block is still on the
+  list, so the next collection finds it unreachable again. That is in
+  `FOUND.md`, measured by the Phase 8 probes, and reproduced here rather than
+  quietly repaired.
+
+A threaded abstract is on neither heap list, so its fate is decided through
+`janet_vm.threaded_abstracts` instead. The table is a per-collection visit
+record: the mark phase writes true for every threaded abstract it reaches, and
+the sweep reads the entry, drops this interpreter's reference if it is still
+false, and resets it to false for next time. Whichever interpreter takes the
+refcount to zero is the one that runs the type's `gc`, which is what makes the
+finalizer run once across all of them.
+
+### Freeing is mostly invisible, and the contract says so
+
+A freed block cannot be read, and a `janet_free` that does not happen leaves
+nothing to observe from inside the process. `test/gc_sweep.c` therefore leans on
+three channels that survive the free: `janet_vm.block_count`, which falls
+exactly once per block; an abstract type's finalizers, which can count
+themselves on the way out; and `janet_vm.cache_count`, which falls when a symbol
+leaves the symbol cache — the one external obligation an immutable block has,
+and the only reason `janet_deinit_block` has a `JANET_MEMORY_SYMBOL` case at
+all.
+
+What that leaves uncovered is stated in the test rather than papered over: the
+`janet_free` calls for an array's, a table's, a fiber's or a funcdef's payload
+are leaks when omitted and double frees when duplicated, and neither is visible
+from inside a process. A leak checker sees the first; the repeated init/deinit
+cycle at the end of the file is what would catch the second.
+
+Eight mutations of the Zig were checked against the contract and each failed a
+different named assertion: ignoring `JANET_MEM_DISABLED`, leaving the mark set
+on survivors, swapping the two weak predicates, skipping the symbol cache,
+reversing the two finalizers, not resetting the threaded-abstract visit record,
+never freeing the weak list, and skipping `janet_deinit_block` at teardown.
+
+### One defect reproduced, and asserted as a defect
+
+`janet_clear_memory` walks `janet_vm.blocks` and never `janet_vm.weak_blocks`,
+so every weak container alive at `janet_deinit` leaks its block and its data
+array — 32KB per teardown for a 4096-element weak array, measured against a
+strong-array control. `janet_init` then nulls the
+list head, so the memory is unrecoverable rather than merely retained.
+
+The port reproduces it by walking the same single list, and the contract asserts
+its signature:
+
+```c
+janet_deinit();
+assert(janet_vm.blocks == NULL);
+assert(janet_vm.weak_blocks != NULL);
+```
+
+That asserts the defect rather than a guarantee, deliberately. It holds for both
+selectors today and fails for whichever one is fixed first, which is exactly the
+reminder the other one needs. `FOUND.md` has the entry and the measurement.
+
+### The file is jump-transparent
+
+Three calls reach code this runtime does not own, and they are all finalizers:
+an abstract type's `gc` and `gcperthread` from `janet_deinit_block`, and
+`gcperthread` again from the threaded-abstract sweep. This is the increment
+SPIKE-8's rule was written for, since a finalizer is the callback most likely to
+be doing something an author thinks is worth raising about. Under that rule none
+of them may raise; the frames own nothing, `build.zig` checks it, and the check
+was confirmed to cover this file by planting a `defer` and watching the build
+fail.
+
+### What this cost
+
+Eight functions plus eleven inline helpers where the C original has four
+functions and a handful of macros, 439 lines of Zig against 240 lines of C, and
+two exported symbols. The extra functions are not decomposition for its own
+sake: `dropDeadElements`, `dropDeadEntries` and `freeUnreachable` are lifted out
+of `janet_sweep`'s body, and `freeUnreachable` in particular is the C original's
+two identical loops over the two heap lists written once and called twice.
+
+This increment passes every acceptance check, including `-Doptimize=ReleaseSafe`,
+where the only failing binary in the build is Part 4's `janet-gc-mark-test` —
+still failing for the `janet_vm` alignment reason recorded in `FOUND.md`, and
+still not the port's doing. That the new binary passes the same check in the
+same build is one more piece of evidence for that entry's diagnosis: what
+decides it is which library objects a binary pulls out of the archive.
 
 ## Adding a subsystem
 
@@ -1746,3 +2369,1439 @@ it matches with `(mask & flag) == flag` and a zero under the absent-constant
 convention would match every mask rather than none. Every inotify constant is
 defined, so this changes no behavior on any host; it keeps the convention from
 becoming a trap if one ever is not.
+
+
+## The growable containers
+
+Phase 8 Part 6a. `-Dbuffer-array=c` restores the C implementation; Zig is the
+default. `buffer_array.zig` owns the data-structure core of `core/buffer.c` and
+`core/array.c`: the constructors, the capacity policy, and the push and pop
+primitives. Twenty-three exported symbols, 385 lines of Zig against 265 lines
+of C.
+
+### Why buffer and array are one increment, and where Part 6 splits
+
+Part 6 is "the containers", which is about a thousand lines of C across seven
+files — too much to take in one step, and the collector had already shown what
+a good split looks like. Parts 3 to 5 divided `gc.c` by data structure rather
+than by call graph, and the parts came out independent because each data
+structure was touched at one end by exactly one of them. The same test applied
+to the containers gives three groups:
+
+  - **Buffer and array**, this increment: one data structure with two element
+    types. Both are a `JanetGCObject` header followed by `count`, `capacity`
+    and `data`, both keep the payload in a separate `janet_malloc` block that
+    grows in place, and neither calls the other.
+  - **String, symbol and the symbol cache, and tuple**: the immutable
+    head-allocated sequences, where the payload is part of the block, the hash
+    is computed once at construction, and `janet_symbol` interns through
+    `janet_vm.cache`.
+  - **Struct and table**: the key/value containers, which share the `JanetKV`
+    layout and the Robin Hood probing over it.
+
+The last group is one increment rather than two because struct and table are
+mutually recursive — `janet_struct_to_table` calls `janet_table_put`, and
+`janet_table_to_struct` calls `janet_struct_begin`, `janet_struct_put` and
+`janet_struct_end` — so no boundary can be drawn between them. That is a
+correction to the grouping `PLAN.md` used to suggest, which paired tuple with
+struct and left table alone; the pairing that survives contact with the call
+graph is the one above.
+
+### The standard-library half of each file stays in C
+
+Every one of these files is two files stapled together: a data-structure core,
+and a block of `JANET_CORE_FN` bodies that expose it to Janet. Only the core
+moves. That is not a new decision — no Zig subsystem in the tree exports a
+cfun-shaped function, and `io.c` and `os.c` were guarded the same way — but
+Part 6 is the first time the two halves live in the same short file, so it is
+worth naming. The cfuns reach the ported code through the same public API an
+embedder uses, and Phase 8's exit gate is about value construction rather than
+about the standard library.
+
+### One seam, and it is a declaration
+
+`cfun_buffer_trim` calls `janet_buffer_can_realloc`, which was `static` in
+`buffer.c` and belongs to the half that moved. So it is exported from
+`buffer_array.zig` and declared in `util.h`, beside `janet_buffer_push_types`
+and `janet_buffer_dtostr` — the cross-file buffer helpers that already live
+there. Three words, the same shape as Part 3's `janet_free_all_scratch`.
+
+The alternative was to leave a private copy in C and write a second one in Zig.
+It is four lines, so the duplication would have been cheap, and it was still
+the wrong call: the function is a policy — *a buffer that does not own its
+memory may not be reallocated* — and a policy in two places is a policy that
+drifts. Nothing else crossed. `safe_memcpy` is declared directly under the
+standing `util.h` rule, and everything else the file reaches for is public API,
+`janet_vm`, or the `janet_zig_out_of_memory` bridge.
+
+### The first subsystem that panics for ordinary reasons
+
+`buffer_array.zig` is jump-transparent, and unlike the three collector files it
+is not an exotic case. Three functions call `janet_panic` directly — the
+realloc guard, `janet_pointer_buffer_unsafe`'s argument checks, and
+`janet_buffer_extra`'s overflow check — and `janet_gcalloc` can trigger a
+collection, which runs finalizers, which SPIKE-8 permits to raise. A signal
+from any of them unwinds through these frames.
+
+What makes that safe is a property of where the panics are rather than of the
+frames themselves: **every panic here happens before the allocation it guards**.
+`janet_buffer_can_realloc` runs before the `janet_realloc` it protects, and
+`janet_buffer_extra` checks for overflow in its first statement. So no frame
+below ever holds a raw block between acquiring it and storing it somewhere the
+collector can see, which is the one shape a skipped cleanup turns into a leak.
+`build.zig` still checks for `defer`, and planting one produces the expected
+refusal.
+
+### Part 5 frees what Part 6a allocates
+
+`janet_deinit_block` in `gc_sweep.zig` calls `janet_buffer_deinit` from this
+file for a buffer, and frees an array's `data` directly. So the two increments
+form a round trip inside Zig: this file allocates the payload, that one releases
+it, and the C originals are no longer involved on either end. The contract test
+drives one collection over ten of each container to exercise it in both
+directions.
+
+### The capacity policy is a contract, not an implementation detail
+
+Both containers overshoot by a caller-supplied growth factor, and the resulting
+capacity is observable — `array/ensure` puts it in the hands of Janet code. So
+`test/buffer_array.c` asserts exact capacities rather than lower bounds, along
+with three differences between the two files that look like oversights and are
+preserved as-is:
+
+  - The buffer has a capacity floor of four bytes and the array has none, so
+    `janet_array(0)` really does have a null payload.
+  - `janet_buffer_ensure` charges GC pressure before its `janet_realloc` and
+    `janet_array_ensure` charges it after.
+  - `janet_array_n` charges no pressure for the payload it allocates.
+
+None of the three is a defect — both `ensure` variants exit on allocation
+failure, so nothing observes the ordering — but all three are observable, and
+pinning them is what stops the two selectors drifting on an accounting term
+nothing else would catch.
+
+### What the growth factor does when it is not positive
+
+`FOUND.md` gained an entry here, and it is the first one in Phase 8 that is
+reachable from pure Janet with no embedding involved. `cfun_array_ensure`
+validates its count and passes its growth factor through untouched, and
+`janet_array_ensure` guards only the top of the range:
+
+```c
+int64_t new_capacity = ((int64_t) capacity) * growth;
+if (new_capacity > INT32_MAX) new_capacity = INT32_MAX;
+capacity = (int32_t) new_capacity;
+newData = janet_realloc(old, capacity * sizeof(Janet));
+```
+
+A growth of zero frees the backing store and leaves `count` alone, so every
+element the array claims to hold becomes a read of freed memory — silently, with
+the value still circulating. A negative growth converts to a `size_t` near the
+top of the range, fails to allocate, and ends the process through
+`JANET_OUT_OF_MEMORY`, which is not a Janet error and which `protect` cannot
+catch. Both are left unfixed under the standing rule and reproduced exactly.
+
+Reproducing them is why the arithmetic in this file uses wrapping operators and
+an explicit `asSize` conversion rather than `@intCast`. C converts a negative
+`int32_t` to `size_t` silently and then dies in the allocator; Zig would trap
+one statement earlier, on the conversion, which is a different failure in a
+different place. Replacing `asSize` with `@intCast` is one of the mutations the
+contract test catches, and it catches it exactly there.
+
+The zero case turned out to be platform-dependent, which is why the test probes
+before asserting it: `realloc(p, 0)` returns a minimal block on macOS and NULL
+on glibc, and the second answer reaches `JANET_OUT_OF_MEMORY` like the negative
+case. The negative case is not covered by any test on any platform — it dies
+inside the allocator on the next line — and the test file says so rather than
+implying otherwise.
+
+
+## The immutable head-allocated sequences
+
+Phase 8 Part 6b. `-Dstring-symbol=c` restores the C implementation; Zig is the
+default. `string_symbol.zig` owns the data-structure core of `core/string.c`,
+the whole of `core/symcache.c`, and the three constructors in `core/tuple.c`.
+Sixteen exported symbols, 468 lines of Zig against 285 lines of C.
+
+### One allocation strategy, three types
+
+A buffer or an array is a fixed-size block pointing at a payload that can be
+reallocated. A string, a symbol or a tuple is a header and its payload in a
+single `janet_gcalloc`, sized once and never resized — which is what
+"immutable" means to the runtime, and what gives all three the same three
+properties:
+
+  - **The head is recovered by pointer arithmetic.** The value Janet passes
+    around is the address of the payload, so every operation subtracts the
+    header size. `gc_sweep.zig` already did this on the free path; this file
+    does it on the construction path, and `test/string_symbol.c` pins
+    `sizeof == offsetof(…, data)` for both heads from C, which is the assumption
+    the Zig cannot state for itself.
+  - **The hash is written once, at the end of construction.** `janet_string_begin`
+    and `janet_tuple_begin` leave it uninitialised; `janet_string_end` and
+    `janet_tuple_end` fill it in. A value observed between the two has an
+    indeterminate hash, and the port does not helpfully zero it.
+  - **Symbols are interned**, which is `janet_string` plus a lookup in
+    `janet_vm.cache`.
+
+Tuples ride along rather than forming a group of their own: `tuple.c`'s core is
+three functions and twenty-five lines, each of them the string pattern with
+`Janet` in place of `uint8_t`.
+
+### No seam at all
+
+6b is the first increment since Part 4 to need nothing. Every function that
+moved is either public API in `janet.h` or declared in `symcache.h`, and every
+`static` in the three files moved with its callers — `symcache.c` moved whole,
+so its five statics and its tombstone never crossed anything. No header
+changed, and the C diff is three `#ifndef`s.
+
+Four `util.h` functions are declared directly, and one of them widens the
+standing rule enough to say so. `safe_memcpy`, `janet_string_calchash` and
+`janet_tablen` take primitive parameters, which is the usual justification.
+`janet_array_calchash` takes a `const Janet *`. The single-translation rule is
+still satisfied — the `c.Janet` in the declaration is the shared translation's
+type, not a second one — but the reason usually given, that no Janet type
+crosses, no longer applies. What applies instead is that hashing belongs to
+`value.c` and moves in Part 7; until then this is the only way to reach it.
+
+### The symbol cache is the collector's one external obligation
+
+Everything else the collector frees is self-contained. A symbol is not: it is
+registered in `janet_vm.cache` at construction, and freeing it without removing
+it would leave the cache pointing at released memory for the next symbol that
+hashed to that bucket to compare against. So `janet_deinit_block` in
+`gc_sweep.zig` calls `janet_symbol_deinit` — which is why Part 5 needed a
+declaration for it, and why that declaration now resolves to Zig at both ends.
+
+The cache is open-addressed with tombstones, and two of its properties are worth
+naming because neither is obvious and both are pinned by the contract test:
+
+  - **A successful lookup rewrites the table.** If the key is found *after* a
+    tombstone, it is moved back into the tombstone's slot and its old slot
+    becomes one. Without it, a table that has churned degrades toward a full
+    scan per lookup. The test finds a colliding pair of names rather than
+    assuming one, so it can watch a symbol change position while keeping its
+    address.
+  - **Tombstones count toward the load factor.** A symbol created and
+    immediately collected leaves the live count where it was, so counting only
+    live entries would let tombstones accumulate without bound until no empty
+    slot remained.
+
+The tombstone itself is compared by address and never dereferenced.
+`symcache_deleted` is declared `var` rather than `const` for that reason: a
+single zero byte is exactly the sort of object a linker may merge with an
+identical constant elsewhere in the image, and a merged tombstone would alias
+something that is not one.
+
+### What is reproduced rather than repaired
+
+`janet_cache_resize` re-inserts the old entries and `break`s out if one reports
+the key was already present or returns no bucket. Neither can happen, and the
+recovery is worse than the condition — it abandons every remaining entry while
+still freeing the old table. Preserved as written.
+
+The second is a new `FOUND.md` entry, and it is reachable. `janet_symcache_findmem`
+aborts the process when the table is full, and the load factor that is supposed
+to prevent that permits `capacity / 2 + 1` entries — below capacity for every
+capacity of four or more, and *equal* to it at two. A rehash chooses a capacity
+of two when `cache_count` is zero, and `janet_init` leaves it at zero, because
+the core environment is built lazily by `janet_core_env` rather than at
+initialization.
+
+A probe reached it: 513 transient symbols — the exact maximum
+the load factor allows, which is why a fixed count usually misses — then one
+collection, then three more symbols.
+
+```text
+after a collection: count=0 deleted=513 capacity=1024
+interning survivor-0 ...
+  ok: count=1 deleted=0 capacity=2
+interning survivor-1 ...
+  ok: count=2 deleted=0 capacity=2
+interning survivor-2 ...
+janet abort at src/core/symcache.c:113: symcache failed to get memory
+```
+
+`janet_assert` expands to `JANET_EXIT`, so this is an `abort()` rather than a
+Janet error and `protect` does not see it. Loading the core environment hides it
+completely, which is why the `janet` binary is unaffected and a host using
+Janet's data structures without its standard library is not. Left unfixed, and
+the port reproduces both the policy and the exit. The contract test does not
+assert this one — the assertion would have to end the test process.
+
+### What the contract test had to be rebuilt around
+
+Three assertions in the first draft passed for the wrong reason, and mutation
+testing is what found them. They are worth recording because the same traps sit
+in front of Part 6c.
+
+**A terminator on a fresh block.** `janet_string_begin` writes a zero one byte
+past the length, and asserting `s[length] == 0` on a freshly allocated block
+proves nothing if the block arrived zeroed. Whether it does is a property of the
+C library rather than of Janet: macOS zeroes small allocations and leaves large
+ones alone; glibc leaves both. The test now fills the free list with 0xFF blocks,
+*checks whether they come back that way*, and asserts only when the answer makes
+the assertion mean something.
+
+**A rejection that never reached the clause being tested.** `janet_string_equalconst`
+checks the hash, then the length, then the bytes — but the hash mixes the length
+in, so almost every mismatched argument is rejected by the hash before the other
+two run. Both were dead code that no test distinguished. They are reachable
+through the public API, though, which is what the test now does: pass the hash
+`lhs` actually has, and vary only the thing under test.
+
+**A test that set up its own precondition.** The gensym odometer test resets
+`janet_vm.gensym_counter` so the sequence is predictable, which also overwrote
+the only observable evidence of what `janet_symcache_init` puts there. A
+separate test now runs first, before the reset.
+
+One mutation was equivalent rather than surviving: moving `inc_gensym`'s loop
+to start one position later changes the counter's last byte, which is never part
+of a name — the name is the first seven of eight bytes and the eighth is
+overwritten by the terminator. Twenty-nine others were each caught by a named
+assertion.
+
+## The key/value containers
+
+Phase 8 Part 6c. `-Dstruct-table=c` restores the C implementation; Zig is the
+default. `struct_table.zig` owns the data-structure core of `core/struct.c` and
+`core/table.c`, including the three weak table variants. Twenty-nine exported
+symbols, 716 lines of Zig against 430 lines of C.
+
+### Struct and table are one increment because nothing separates them
+
+The grouping this part inherited from the plan was "tuple and struct, table",
+and the call graph does not support it. `janet_struct_to_table` calls
+`janet_table_put`; `janet_table_to_struct` calls `janet_struct_begin`,
+`janet_struct_put` and `janet_struct_end`. They are mutually recursive across
+the file boundary, they share the `JanetKV` bucket layout, and each is the
+other's conversion target. Tuple has nothing in common with struct beyond
+immutability, which is why it went to 6b with the other head-allocated
+sequences.
+
+### One layout, two probing disciplines
+
+It is tempting to read "struct" as "immutable table" and expect one probe loop.
+They are not the same algorithm, and that is why `janet_struct_find` exists
+beside `janet_dict_find` rather than calling it.
+
+  - **A table probes linearly and carries tombstones.** A removal leaves a nil
+    key with a *false* value, and `janet_dict_find` stops only where key and
+    value are both nil. The hole therefore does not truncate a probe run
+    through it. Table layout depends on deletion history as well as insertion
+    order, and nothing observable depends on table layout.
+  - **A struct probes Robin Hood and has no tombstones.** Nothing is ever
+    removed, and the ordering rule makes the final layout a function of the
+    *set* of pairs rather than of the order they arrived in. That is not an
+    optimisation: `janet_struct_end` hashes the bucket array, so two structs
+    built from the same pairs in different orders must lay out identically or
+    `{1 2 3 4}` would not equal `{3 4 1 2}`.
+
+So `janet_struct_find` is the simpler loop despite the harder insert — with no
+tombstones, the first nil key really is the end.
+
+### The tiebreak chain is three deep, and the last link leaves the file
+
+Displacement, then full hash, then `janet_compare` on the keys. The first two
+are cheap to believe; the third is the one worth naming, because it is what
+makes the order *total* and therefore what makes the layout well defined.
+
+Two keys reach it whenever they want the same bucket, sit at the same
+displacement, and have the same 32-bit hash. That is not exotic: `janet_hash`
+reads only the bytes for all three string-like types, so `:tie` and `"tie"`
+have the same hash and are not equal. Without `janet_compare` the two would
+compare as duplicates and the second would be silently dropped.
+
+This also makes 6c the increment SPIKE-8 was written for. Every other Phase 8
+increment inherited the spike's decision without exercising it; this one calls
+`janet_compare` and `janet_equals` on arbitrary keys, either of which reaches a
+third-party abstract type's callback. Under SPIKE-8 such a callback may not
+raise, and if one does the signal jumps straight through these frames. There is
+no `defer` in the file and `build.zig` checks that there is not.
+
+One consequence is worth naming rather than leaving to be found.
+`janet_table_rehash` publishes the new bucket array into `t->data` before it
+re-inserts, and holds the old one only in a local, so a signal raised out of a
+key comparison during that loop leaks the old array and leaves the table
+holding a partially populated new one. The C does the same. Nothing is
+restructured to survive it, because surviving it is not the promise.
+
+### The count lives in the hash field during construction
+
+`janet_struct_begin` sets `hash` to zero and every `janet_struct_put` that
+fills an empty slot increments it. The field is a running count until
+`janet_struct_end` overwrites it with the real hash, which is also how `put`
+enforces the declared length — it returns early once the count reaches
+`length`, so a struct built with more pairs than it was begun with silently
+drops the surplus. A struct observed between `begin` and `end` has a hash that
+is a count, and the port preserves that rather than helpfully separating the
+two.
+
+### Two seams, and both are declarations that should already have existed
+
+`janet_struct_put_ext` and `janet_table_proto_flatten` are not `static`, and
+neither has ever been declared in a header. Each was reached from the
+`JANET_CORE_FN` half of its own file, below its own definition, so C never
+needed one. Once the definition moves to Zig the call site has nothing to
+resolve against, so both are now declared in `util.h` beside
+`janet_table_get_keyword` — the same shape as Part 6a's
+`janet_buffer_can_realloc`.
+
+Everything else that moved is public API in `janet.h`, and the four statics
+(`janet_memalloc_empty_local`, `janet_table_init_impl`, `janet_table_rehash`,
+`janet_table_put_no_overwrite`) moved with every one of their callers.
+
+Six functions are declared directly rather than imported, which is more than
+any previous increment: `safe_memcpy`, `janet_tablen`, `janet_kv_calchash`,
+`janet_dict_find`, `janet_dict_find_keyword`, `janet_memempty` and
+`janet_memalloc_empty`. Three of them take a `JanetKV *` or a `Janet`, widening
+the rule the same way Part 6b's `janet_array_calchash` did. The reason not to
+move them is that they belong to files this increment does not open:
+`janet_dict_find` is also `value.c`'s indexing helper and goes with Part 7, and
+the last two live in `wrap.c` beside the representation-dependent constructors.
+
+### What is reproduced rather than repaired
+
+Four entries, all in `FOUND.md`, and three of them were found by the contract
+test on its first run against the C original.
+
+**A zero-capacity table cannot be looked up in.** `janet_maphash` masks with
+`capacity - 1`, all ones here, so `janet_dict_find` uses the whole hash as a
+bucket index and both its loops are bounded by that rather than by the
+capacity. Only a hash of exactly zero survives. `janet_table(-1)` is the only
+way to reach it, so it needs a C API caller. `FOUND.md` has it.
+
+**`janet_table_proto_flatten` does not bound the prototype chain**, where every
+other walk in the file uses `JANET_MAX_PROTO_DEPTH`, so `(table/proto-flatten
+t)` on a cycle spins forever. Reachable from Janet source with no embedding,
+and confirmed identical under `-Dstruct-table=c`.
+
+**The tombstone-retiring branch in `janet_table_put` is dead.**
+`janet_dict_find` prefers a truly empty bucket and returns a remembered
+tombstone only when there is none, and the load factor guarantees one exists.
+So a rehash is the only thing that ever reclaims a tombstone, and re-inserting
+a key that was just removed leaves its hole behind and takes the next slot.
+
+**`janet_table_clone` uses plain `memcpy`** where `safe_memcpy` exists for
+exactly this case. The port departs here and uses `safe_memcpy`, on the same
+grounds as `janet_checksize`: Zig cannot form a zero-length slice from a null
+pointer without going out of its way to reintroduce undefined behaviour that
+has no observable effect.
+
+### What the contract test had to be built around
+
+Two traps, and both are worth carrying forward.
+
+**Order-independence does not pin the direction of the displacement rule.**
+Inverting the comparison consistently still produces a layout that is a
+function of the pair set, so the obvious test — build the same struct three
+ways, compare — passes against a reversed implementation. Mutation testing
+caught it. What pins the direction is a run of keys that all want the same
+bucket, where every displacement comparison ties and the full hash decides: the
+larger hash keeps the earlier slot. The keys are searched for rather than
+hard-coded, because the integer hash changes outright under `-Dprf`.
+
+**`memcmp` is not available for a layout comparison.** Under `-Dnanbox=false` a
+`Janet` is a struct with an eight-byte union and a four-byte type tag, so it
+carries four bytes of tail padding that nothing ever writes. Two identical
+values compare equal and differ byte for byte. The first draft used `memcmp`
+throughout, passed under the NaN-boxed default, and failed on allocator garbage
+under tagged values. `same_layout` compares position by position instead.
+
+Twenty-one mutations were run against the Zig side; twenty were caught by a
+named assertion. The survivor is equivalent rather than surviving: sizing
+`janet_table_to_struct`'s result from the table's capacity rather than its
+count produces an identical struct, because `janet_struct_end` rebuilds
+whenever the pairs that landed do not fill the declared length. It costs one
+extra allocation and changes nothing observable.
+
+### What this cost
+
+No new C beyond two header declarations, and 430 lines of C guarded out. Both
+selectors pass every suite and contract on macOS ARM64 across four optimize
+modes, tagged values, keyed hashing, single-threaded, `-Dcall-trampoline=true`,
+and seventeen feature flags disabled individually; both cross-compile for
+aarch64 and x86-64 Linux musl and Windows x86-64 MinGW; and both run 45
+contract binaries and 34 suites natively on aarch64 Linux musl.
+
+## Hashing, equality and ordering
+
+Phase 8 Part 7a. `-Dvalue-order=c` restores the C implementation; Zig is the
+default. `value_order.zig` owns `janet_hash`, `janet_equals` and
+`janet_compare` from `core/value.c`, together with the non-recursive traversal
+stack the last two share. Three exported symbols, 540 lines of Zig against 297
+lines of C.
+
+### Three functions, one contract
+
+Not because they read alike — `janet_hash` is a flat switch with no traversal
+in it at all. They are one increment because they are one contract. A hash
+table needs `janet_hash` and `janet_equals` to agree; a struct needs
+`janet_compare` to totally order whatever `janet_hash` collides. Part 6c is the
+proof: its Robin Hood insert breaks a displacement tie by full hash and then by
+`janet_compare` on the keys, and that last link is load-bearing rather than
+defensive, because `janet_hash` reads only the bytes for all three string-like
+types — so `:tie` and `"tie"` collide and are not equal. Splitting these three
+across increments would produce a configuration in which half of that agreement
+is Zig and half is C, which is a differential test whose failures point
+nowhere.
+
+### Where `value.c` splits, and why the guard has two regions
+
+Part 7b takes the rest: `janet_next` and `janet_next_impl`, and the indexed and
+keyed accessors from `getter_checkint` down. The split costs nothing to make,
+because every helper in the file is `static` and every one of them is used by
+exactly one half. `push_traversal_node`, `traversal_next`,
+`janet_compare_abstract` and `murmur64` belong to this increment;
+`getter_checkint` belongs to the accessors. Both halves are closed over their
+own privates.
+
+`janet_next` sits physically between them, which is why `value.c` carries two
+`JANET_ZIG_VALUE_ORDER` regions rather than one. Nothing was moved to make them
+contiguous. A reordered C file is a permanent diff against upstream that buys
+only tidiness, and the guard is not confusing when it is two `#ifndef` blocks
+with a function between them.
+
+### No seam at all
+
+The third increment in the phase to need none, after Parts 4 and 5, and for the
+same reason 6b needed none: everything that moved is already public API. The
+four helpers are `static` and left the file with their callers.
+
+### The traversal stack is the shape, not an optimisation
+
+`janet_equals` and `janet_compare` are written as a loop over an explicit stack
+in `janet_vm`, not as recursion, because a tuple or struct may nest to any
+depth a parser will accept and a C stack overflow is not a catchable error.
+That constraint applies to the port unchanged, so the port keeps the shape
+rather than the meaning: same stack, same growth policy, same node layout, same
+four return codes. A Zig rewrite as recursion with a depth guard would be a
+different function with different limits.
+
+Three things about that stack are easy to misread and all three are
+load-bearing:
+
+  - **The stack pointer addresses the top element, and the base slot is never
+    used.** `push_traversal_node` pre-increments before storing and
+    `traversal_next` walks while `t > traversal_base`. One slot at the bottom
+    is permanently dead, which is also what makes the empty test cheap.
+  - **Neither entry point pops what it pushed.** Each resets `traversal` to
+    `traversal_base` on entry and leaves whatever it pushed behind on an early
+    return. The stack is scratch owned by whichever comparison is running,
+    never state that survives one — which is why an early return needs no
+    unwinding, and why these two may not be re-entered.
+  - **The prototype hop rewrites the top of the stack rather than pushing.**
+    When a struct's buckets are exhausted and both sides have prototypes,
+    `traversal_next` sets `traversal = t - 1` and hands the two prototypes back
+    as the next pair; the caller's own loop pushes a fresh node for them.
+    Written as a push it would grow the stack by one per level of prototype
+    chain for no reason. `test/value_order.c` pins this on the array's
+    *capacity* after comparing two five-hundred-level chains, because a
+    successful comparison ends with the pointer back at the base and the depth
+    afterwards says nothing.
+
+### SPIKE-8 applies directly, and twice over
+
+Both entry points reach a third-party abstract type's `compare` callback
+through `janet_compare_abstract`, and `janet_hash` reaches its `hash` callback.
+Under SPIKE-8 such a callback may not raise, and a signal from one that does
+jumps straight through these frames. There is no `defer` here and `build.zig`
+checks that there is not. What a jump would strand is the traversal array's
+*contents*, never the array itself: the array belongs to `janet_vm` and the
+next comparison resets the pointer over whatever was left. That is the reason
+the reset lives at the top of each entry point rather than at the bottom.
+
+These three are also on the VM call path — `run_vm` calls `janet_equals` and
+`janet_compare` directly — which is the constraint `-Dcall-trampoline` stays
+off for through this phase, rather than an independent one.
+
+### What is reproduced rather than repaired
+
+**A re-entrant `compare` callback corrupts the comparison that called it.**
+There is one traversal stack per VM and both entry points reset it, so a
+callback that compares anything — or looks anything up, since
+`janet_table_get` reaches `janet_equals` through `janet_dict_find` — destroys
+the state of the comparison that invoked it. The outer `janet_compare` then
+sees an empty stack, takes it for a finished traversal, and returns
+`status - 2`, which is zero: two values that differ are reported equal. No
+sanitizer fires and nothing crashes. `FOUND.md` records it, with the
+demonstration. `janet_equals` has the same hole and is shielded
+from it in practice, because it compares stored hashes before pushing anything
+and so only ever traverses values that are equal. Nothing in the tree
+re-enters, so this needs an embedder or a native module with a comparator.
+
+**`janet_compare` is not an ordering on NaN.** Both `==` and `<` are false, so
+it returns 1 whichever way round the arguments are. The C comment above the
+function says "excepts NaNs" and this is what that means. Pinned by the
+contract test rather than repaired.
+
+`traversal_next`'s key-returning branch is written in the C original as a `for`
+loop whose body returns unconditionally on its first iteration, so the
+induction variable is read once as a bound and never incremented. It is an `if`
+spelled as a `for`. The port writes the `if`: reproducing a typo is not
+reproducing a behaviour, and the contract test pins that the two are the same
+function of the same inputs. That branch also walks every *bucket* of the
+struct rather than every entry, so nil keys of empty buckets are compared
+alongside real ones. That is correct rather than sloppy, for a reason Part 6c
+established — a struct's layout is a function of the set of pairs — and
+`janet_compare` has already rejected a capacity mismatch before any node is
+pushed.
+
+`janet_hash`'s pointer fallback reads the raw payload word through `janet_u64`,
+whose spelling differs per value representation: `x.u64` for both NaN-boxed
+layouts, where `Janet` is a union, and `x.as.u64` for the tagged one, where it
+is a struct. `janetU64` selects on whether the translated type has the field
+directly, which gets all three without restating the `#ifdef`. The consequence
+is deliberate in the original and preserved: a pointer's hash is not the same
+number across representations, because the NaN-boxed word carries the type tag
+and the tagged one does not.
+
+### What the contract test had to be built around
+
+**`janet_equals` almost never traverses.** It compares the stored hashes of two
+tuples or two structs before it pushes anything, and for values that differ
+those essentially always disagree. So the only inputs that get `janet_equals`
+into the traversal are ones that are *equal*, which then run to completion.
+Every observation about a partly-consumed stack is therefore made through
+`janet_compare`, which has no such exit because an ordering cannot stop at
+"different". The first draft asserted a stack depth after a failed
+`janet_equals` and got zero.
+
+**Three checks in `janet_equals` sit behind that hash comparison** and are
+unreachable while the hashes disagree: the tuple length, the struct length, and
+the struct prototype-presence pair. They are not dead code — a 32-bit hash
+collides, and when it does these are what stop the traversal from reading a
+bucket array off the end of itself or reporting two different values equal. A
+collision cannot be constructed to order, so the test forges one by
+overwriting a head hash after construction, which is exactly the state a
+collision produces. Mutation testing is what found this: all three survived
+until the forged-collision tests existed.
+
+**The number hashes are pinned as exact constants.** A struct's bucket array is
+part of the language contract, and the layout is a function of `janet_hash`, so
+the hash of a double is observable through every struct with a numeric key. It
+does not vary with the target or with `-Dprf`. Taking the low word of the
+`murmur64` mix instead of the high one would be just as good a hash and a
+different language, and nothing else in the suite would have noticed.
+
+**The traversal-capacity assertions are order-dependent** and that is the one
+place in the file where the order of `main` matters. The array only ever grows,
+so every test that asserts a capacity has to run before the ones that grow it
+past the 128-node floor.
+
+### What this cost
+
+No new C at all, and 297 lines of C guarded out. Both selectors pass every
+suite and contract on macOS ARM64 across four optimize modes, tagged values,
+keyed hashing, single-threaded, `-Dcall-trampoline=true`, and all seven earlier
+Phase 8 selectors set to `c` at once; both cross-compile for aarch64 and x86-64
+Linux musl and Windows x86-64 MinGW; and both run 46 contract binaries and 34
+suites natively on aarch64 Linux musl.
+
+Seventeen feature flags were disabled individually. Sixteen of them run the
+whole of `zig build test`. `-Dreduced-os=true` runs the contract binaries only,
+because `test/helper.janet` opens with `os/getenv` and a reduced-OS build does
+not have it — every Janet suite fails to compile there, identically under both
+selectors and for a reason that predates this increment.
+
+## Indexed and keyed access
+
+Phase 8 Part 7b. `-Dvalue-access=c` restores the C implementation; Zig is the
+default. `value_access.zig` owns the rest of `core/value.c`: `janet_next` and
+`janet_next_impl`, and the seven accessors beneath `getter_checkint` —
+`janet_in`, `janet_get`, `janet_getindex`, `janet_length`, `janet_lengthv`,
+`janet_putindex` and `janet_put`. Nine exported symbols, 730 lines of Zig
+against 484 lines of C. With Part 7a beside it, `value.c` holds no C the port
+has not taken.
+
+### No seam, and two guarded regions
+
+Like 7a this needs no seam at all — the fourth increment in the phase to need
+none. `getter_checkint` is the file's only remaining `static` and every one of
+its callers moved with it, so both halves stay closed over their own privates.
+`janet_next` sits physically between 7a's two regions, so `value.c` carries two
+`JANET_ZIG_VALUE_ACCESS` regions as well as two `JANET_ZIG_VALUE_ORDER` ones.
+Nothing was moved to make either pair contiguous; a reordered C file is a
+permanent diff against upstream that buys only tidiness.
+
+### Three lookups that answer the same question differently
+
+`janet_in`, `janet_get` and `janet_getindex` read the same containers and
+differ only in what a failure is, and the differences run all the way down:
+
+|  | bad key type | index out of range | not a container | abstract with no `get` | abstract `get` reports absence | fiber, key ≠ 0 |
+|---|---|---|---|---|---|---|
+| `janet_in` | panic | panic | panic | panic | panic | panic |
+| `janet_get` | nil | nil | nil | nil | nil | nil |
+| `janet_getindex` | n/a | nil | panic | panic | nil | nil |
+
+`janet_getindex` has no bad-key-type column because it takes an `int32_t`; what
+it has instead is a panic on a negative one. The row that matters most is the
+last column but one: an abstract `get` that runs and reports absence is an
+error to `janet_in` and a nil to `janet_getindex`, and that is not a
+simplification anyone would arrive at by deriving one function from the other.
+They are written out separately here for the same reason they are separate in
+C. Factoring them into one function with a policy flag would put a branch on
+the VM's hot path to save thirty lines.
+
+`test/value_access.c` runs the same failing inputs through all three and
+asserts each answer against the others, rather than testing each in isolation.
+
+### Zig calls `janet_panicf` through the C variadic ABI
+
+This is the first subsystem to do that, and Part 1 went the other way, so the
+difference is worth stating. `capi.c`'s getters report a `JanetArgFault` code
+and let C format it because a getter must not raise, and a formatter that
+allocates can. These accessors are under no such constraint: panicking *is*
+their contract, and the file is jump-transparent, so a `longjmp` out of
+`janet_panicf` strands nothing. A fault-code seam here would add a translation
+layer to twelve messages whose only job is to be identical to the C original's.
+
+What the direct call costs is an ABI assumption. `%v` passes a `Janet` by value
+through `...` — eight bytes as a union under nanboxing, sixteen as a struct
+under `-Dnanbox=false`, which is exactly the size class where the
+classification rules diverge — and `%T`, `%d` and `%u` pass a type-flag mask,
+an `int32_t` and a `size_t` where the formatter reads `int`, `int32_t` and
+`uint64_t`. An ABI mismatch in any of those produces a plausible wrong message
+rather than a crash. So the contract test asserts the rendered text of all
+forty-nine panics byte for byte, and that check runs under both selectors,
+under both value layouts, and on every platform in the acceptance matrix. The
+ABI is a tested fact here rather than an assumed one.
+
+### The two callbacks that are allowed to raise
+
+Six of the nine functions reach a third-party abstract type's `get`, `put`,
+`next` or `length` callback, and `janet_next_impl` resumes an arbitrary fiber
+through `janet_continue`. SPIKE-8 governs all of it: they are called directly,
+in the shape of the C original, and a signal from one jumps straight through
+the Zig frame that invoked it.
+
+One piece of state has to survive such a jump, and the C original handles it by
+hand rather than by scope. `janet_next_impl` parks the child fiber in
+`janet_vm.fiber->child` across the resume and has to clear it again. It clears
+the slot *before* `janet_panicv` on the C API path and deliberately does **not**
+clear it before `janet_signalv` on the interpreter's path, because the
+interpreter unwinds through the fiber chain and needs the link. That asymmetry
+is reproduced exactly; written as a `defer` it would be both a
+jump-transparency violation and wrong.
+
+The link is what `debug/lineage` walks and what puts a resumed fiber's frames
+into a stack trace, and it is only observable while the child is running — so
+the contract test has the child observe it, from inside itself.
+
+### What is reproduced rather than repaired
+
+Three of `FOUND.md`'s new entries are here, and it carries the evidence for two
+of them.
+
+`janet_next` on a fiber writes `janet_vm.fiber->child` before it resumes
+anything, and `janet_vm.fiber` is null outside a running fiber. `janet_next` —
+as opposed to `janet_next_impl(ds, key, 1)`, which is all `run_vm` ever calls —
+has no in-tree caller at all, so the one caller it exists for is exactly the
+one with no fiber running.
+
+`janet_next_impl` and `janet_putindex` each add one to an `int32_t` that may be
+`INT32_MAX`. Both are written here with `+%`, which is the rule the other
+wrapping defects in `FOUND.md` follow: the port does what the C does when the
+sanitizer is not watching, rather than trapping where the C would not. That
+makes the selectors disagree under a sanitizer and agree without one, and the
+probe records both columns. The alternative — Zig's checked `+` — would match
+the sanitized C and introduce illegal behaviour in ReleaseFast, where the C
+merely wraps.
+
+`janet_length` and `janet_lengthv` render an abstract type's `size_t` with
+`%u`, which the formatter reads as a `uint64_t`. The two agree only where
+`size_t` is 64 bits, which is every target here; the widening is preserved
+rather than corrected so the rendering is identical where it works.
+
+The fourth entry is not a defect in behaviour but in linkage.
+`janet_wrap_integer` is declared in `janet.h` beside the twenty-one other
+`janet_wrap_*` functions and defined by `wrap.c` only inside the nanbox block,
+so it does not exist in a `-Dnanbox=false` build. Every Zig subsystem is a
+consumer that cannot expand C macros — translate-c keeps the declaration in
+preference to the macro — so this file writes the macro out in a one-line
+`wrapInteger` helper rather than depending on a symbol that is not always
+there. It is the first subsystem to need an integer wrapped, which is why it is
+the first to find this.
+
+### What the contract test had to be built around
+
+Three things shaped `test/value_access.c` more than the functions did.
+
+**The fiber arm cannot be reached from the top level.** Every fiber case needs
+`janet_vm.fiber` non-null, so the tests that touch one are driven from Janet
+source through cfunctions registered for the purpose. That is also the only way
+to exercise `janet_next` itself, since nothing in the tree calls it.
+
+**`is_interpreter` is not observable from either side alone.** The flag decides
+whether an untrapped signal from the resumed fiber reaches the caller as that
+signal or as a plain error. The payload survives both ways, so the test runs
+the same fiber through `next` and through the C API entry point and compares
+the resulting *fiber statuses* — `:user5` against `:error`.
+
+**The two length bounds are different bounds.** `janet_length` stops at
+`INT32_MAX` and `janet_lengthv` at `JANET_INTMAX_INT64`, so there is a wide
+band in which one panics and the other succeeds. An implementation that used
+one bound for both passes every test that does not look inside it, so the test
+has abstract types whose lengths are `INT32_MAX + 1` and `JANET_INTMAX_INT64`
+exactly.
+
+Forty-eight mutations were run against the finished contract. Forty-six were
+caught. The two survivors are equivalent rather than missed: reading a buffer's
+`count` through `janet_unwrap_array` reads the same bytes, because `JanetArray`
+and `JanetBuffer` have identical layouts up to that field; and zeroing a
+buffer's gap one byte short leaves only the byte the next statement overwrites
+with the value. Four assertions were added because a mutation survived them —
+a negative index on a string in `janet_get`, an append at exactly the current
+count in `janet_putindex`, a buffer byte with its high bit set through
+`janet_put`, and the fiber-chain link, which nothing had observed at all.
+
+## Abstract values
+
+Phase 8 Part 8. `-Dabstract-core=c` restores the C implementation; Zig is the
+default. `abstract_core.zig` owns all of `core/abstract.c` except the mutex and
+rwlock shims: `janet_abstract_begin`, `janet_abstract_end` and
+`janet_abstract`; `janet_abstract_begin_threaded`,
+`janet_abstract_end_threaded` and `janet_abstract_threaded`; and
+`janet_abstract_incref`, `janet_abstract_decref` and
+`janet_abstract_decref_maybe_free`. Nine exported symbols, 260 lines of Zig
+against 61 lines of C.
+
+### No seam, and three guarded regions
+
+The fifth increment in the phase to need no seam. Every function that moved is
+public API in `janet.h` and `abstract.c` has no `static` at all, so there was
+nothing private to expose and nothing to declare.
+
+Three guarded regions rather than one, because the twelve shims sit between the
+threaded constructors and the refcount primitives. Nothing was moved to make
+them contiguous, for the reason Part 7a gives: a reordered C file is a permanent
+diff against upstream that buys only tidiness.
+
+### What stays in C, and by which rule
+
+`janet_os_mutex_*` and `janet_os_rwlock_*` stay behind under the rule that keeps
+`struct tm` and `jstat_t` in C. Each is a cast onto a host structure —
+`pthread_mutex_t`, `pthread_rwlock_t`, `CRITICAL_SECTION`, `SRWLOCK` — whose
+layout the platform owns and whose size Janet republishes through
+`janet_os_mutex_size` and `janet_os_rwlock_size`. Porting them would move the
+cast without moving the structure, and would make Zig's translation of
+`<pthread.h>` a build dependency of the runtime core for nothing. They are also
+the only functions in the file with no connection to abstract values; the
+comment that files them under "Refcounting primitives and sync primitives" is
+the only thing that groups them.
+
+### Two allocators, one head
+
+A plain abstract and a threaded abstract share `JanetAbstractHead` and share
+nothing else.
+
+|  | plain | threaded |
+| --- | --- | --- |
+| allocator | `janet_gcalloc` | `janet_malloc` |
+| heap list | `janet_vm.blocks` | neither |
+| lifetime decided by | reachability | `gc.data.refcount` |
+| recorded in | the heap list | `janet_vm.threaded_abstracts` |
+| freed by | `janet_sweep` | `janet_abstract_decref_maybe_free` |
+
+So the threaded path does by hand the three things `janet_gcalloc` would have
+done: write the type tag, clear the union, and charge the block against
+`janet_vm.next_collection`. The charge is worth stating because it is written
+differently on the two paths and has to come to the same number:
+`janet_abstract_begin` asks `janet_gcalloc` for `sizeof(JanetAbstractHead) +
+size` and `janet_gcalloc` charges what it was asked for, while the threaded path
+charges `size + sizeof(JanetAbstractHead)` itself. `test/abstract_core.c`
+asserts both against `janet_vm.next_collection`, and has to net out the visit
+table's own charge when the new entry makes it rehash — `janet_memalloc_empty`
+bills its bucket array to the same counter.
+
+Clearing the union before storing the refcount is the one write with no
+behavioural consequence at all. `gc_alloc.zig` never clears it, because the
+heap-list link overwrites the whole word immediately; here the word holds a
+four-byte refcount, and the C original's comment says what the clear is for —
+the address sanitizers. It is reproduced for that reason and not because
+anything reads it.
+
+### The two-step protocol protects the sweep, not the traversal
+
+`janet_abstract_begin` allocates with `JANET_MEMORY_NONE` and
+`janet_abstract_end` writes `JANET_MEMORY_ABSTRACT` over it, and the block is on
+`janet_vm.blocks` — visible to the collector — for the whole window in between,
+with an uninitialised payload. What makes that safe is `janet_deinit_block`,
+which has no case for `JANET_MEMORY_NONE`: a collection in the window frees the
+block without calling a finalizer on it and without reading a field of it. An
+abstract type whose `gc` releases a pointer it has not been given yet is the
+crash this prevents, and it is why an embedder that cannot fill the payload in
+one expression uses the pair rather than `janet_abstract`.
+
+It is the sweep the tag protects and not the traversal, which is easy to get
+backwards — the first draft of the contract test asserted the opposite and
+failed against the C original, which is what the rule about verifying a contract
+against the `c` selector first is for. The mark phase dispatches on the type of
+the `Janet` it is handed, never on the block's memory tag, so an embedder that
+wraps and roots the block *before* filling it in gets `gcmark` called on an
+uninitialised payload. Nothing prevents that and nothing should; the contract is
+that the caller roots the value after `janet_abstract_end`. Both halves are
+pinned, so a port that "fixed" the second by tagging early would be caught.
+
+`janet_gc_settype` is an or and not a store, and the plain path is where that
+matters: a block already marked `JANET_MEM_REACHABLE` by a collection inside the
+window must still be marked when `janet_abstract_end` returns, or the sweep
+frees a block the caller is about to use. On the threaded path the same or is a
+no-op, because `janet_abstract_begin_threaded` has already written the tag —
+which is why `janet_abstract_end_threaded` is an identity function that the
+contract pins as one.
+
+### SPIKE-8, and the block that is briefly owned by nobody
+
+Two calls here reach code this runtime does not own.
+`janet_abstract_decref_maybe_free` runs the type's `gc` finalizer, and
+`janet_abstract_begin_threaded` calls `janet_table_put`, which hashes an
+abstract key and so may run the type's own `hash` callback. Both are called
+directly, in the shape of the C original; there is no `defer` in the file and
+`build.zig` checks that there is not.
+
+One frame does hold a raw block across such a call, and it is the exception to
+Part 6a's observation that every panic in a container port happens before the
+allocation it guards. `janet_abstract_begin_threaded` has a `janet_malloc`ed
+header in hand when it calls `janet_table_put`; a signal out of that call leaks
+the header, because nothing has recorded it yet — not a heap list, not the visit
+table, not the caller. The C original leaks it identically and the port does not
+diverge. It is reachable only through the raising `hash` callback SPIKE-8
+forbids, so it is recorded here rather than in `FOUND.md`.
+
+The finalizer is the other way round. By the time it runs the refcount is
+already zero and no other thread can reach the block, so a signal out of it
+leaks a block that was about to be freed and nothing else.
+
+### What the contract test had to be built around
+
+Three things shaped `test/abstract_core.c` more than the functions did.
+
+**Almost nothing here has an interesting return value.** Six of the nine
+functions return their argument or a pointer the caller already has, so the
+contract is entirely in state the caller cannot see: `head->size`,
+`head->type`, the raw `gc.flags` word, membership of `janet_vm.blocks`,
+`janet_vm.block_count`, `janet_vm.next_collection`, and
+`janet_vm.threaded_abstracts`. The flags word is the only place
+`janet_gc_settype`'s or is distinguishable from a store, and nothing else in the
+tree reads it that way.
+
+**Dropping a threaded reference by hand is not the same as letting the sweep do
+it.** Calling `janet_abstract_decref_maybe_free` down to zero frees the block
+while `janet_vm.threaded_abstracts` still keys on it, and the next collection
+then reads a freed header — the first draft segfaulted on exactly that. The
+sweep removes the entry and then decrements, so every threaded test here ends
+through a helper that does the same. That ordering is a property of the API's
+contract rather than a defect: the reference the creating interpreter holds
+belongs to the visit table, and an embedder is only ever supposed to drop a
+reference it took itself.
+
+**The finalizer's arguments are not observable from its return value.**
+`janet_abstract_decref_maybe_free` calls `head->type->gc(head->data,
+head->size)`, and the header is one word from the payload, so handing over the
+header instead — or a zero length — changes nothing any caller can see. Two
+mutations survived the first draft for that reason; the probe now records both
+arguments and the test asserts them against a payload it filled with a sentinel.
+
+Thirty-four mutations were run against the finished contract. Thirty were
+caught. The four survivors are equivalent or out of reach rather than missed:
+
+- **Dropping the `0xFF` mask in `janet_gc_settype`.** Every value in
+  `enum JanetMemoryType` is at most 17, so the mask never removes a bit.
+- **Skipping the union clear on the threaded path.** It is a write with no
+  reader; MSan is the tool that sees it, and it is not available on the
+  development target.
+- **Skipping `janet_abstract_end_threaded` inside `janet_abstract_threaded`.**
+  Equivalent by construction, since the tag is already written. The contract
+  pins that the function is a no-op, which is the same fact from the other side.
+- **Omitting `janet_free` in `janet_abstract_decref_maybe_free`.** A leak is
+  invisible in-process, the same gap `test/gc_sweep.c` records for
+  `janet_deinit_block`. This one is reachable from outside, though:
+  `leaks --atExit` reports zero leaks for the contract as it stands and eleven
+  for the mutant, so the mutation is caught by the platform's leak checker even
+  though the assertions cannot see it.
+
+### What this cost
+
+No seam, three guarded regions, one new selector, and one new contract test.
+The suites pass with `-Dabstract-core` set both ways, with every Phase 8
+selector set to `c` together, and under ReleaseSafe, ReleaseFast, ReleaseSmall,
+`-Dnanbox=false`, `-Dprf=true`, `-Dsingle-threaded=true`, `-Dev=false`,
+`-Dsourcemaps=false`, `-Ddocstrings=false` and `-Dcall-trampoline=true`. The
+`x86_64-linux-musl` and `x86_64-windows-gnu` cross-compiles build, and the
+static and shared artifacts each contain exactly one provider of all nine
+symbols.
+
+`-Dev=false` is the configuration this increment adds a shape for rather than
+inherits one: six of the nine functions do not exist without the event loop, so
+they are declared as ordinary functions and `@export`ed inside a `comptime`
+block that tests `JANET_VM_HAS_EV`. Zig analyses a function only when something
+references it, so the bodies that reach `janet_vm.threaded_abstracts` are never
+compiled in a build where that field does not exist. `os_fs_paths.zig` uses the
+same shape for its non-Windows half.
+
+## The remaining collectable constructors
+
+Phase 8 Part 9. `-Dvalue-alloc=c` restores the C implementation; Zig is the
+default. `value_alloc.zig` owns `fiber_alloc`, `janet_fiber` and
+`janet_fiber_reset` from `core/fiber.c` together with `janet_funcdef_alloc` and
+`janet_thunk` from `core/bytecode.c`: four exported symbols and two file-local
+helpers, 286 lines of Zig against a hundred lines of C.
+
+### Two files, one increment
+
+The two files are one increment because they are one gap rather than two. After
+Parts 6 and 8 every other collectable kind can be built from Zig; fiber,
+function and funcdef were what remained, and these are the last `janet_gcalloc`
+call sites outside `vm.c` and `marsh.c`. Splitting them would have produced two
+selectors and two contract tests that each covered half of the same sentence.
+
+Both files already carried selectors, so neither needed a new guard convention —
+only a new region.
+
+### A second region in `fiber.c`, and why not the first
+
+`fiber_alloc` and its two callers sit physically *above* the
+`JANET_ZIG_FIBER_CORE` region, and Phase 7 left them there deliberately: the
+code below that `#ifndef` is the frame machinery, and the code above it is
+allocation, which is this phase's subject rather than that one's. So `fiber.c`
+now carries two guarded regions belonging to two different selectors, and the
+boundary between them is the one this phase has drawn everywhere else — who owns
+the memory, not who uses it.
+
+The two selectors are independent, and that is checked rather than assumed:
+`-Dvalue-alloc=zig -Dfiber-core=c` and `-Dvalue-alloc=c -Dfiber-core=c` both
+build and both pass the suites. Everything crossing between the two regions is a
+public entry point — this file calls `janet_fiber_setcapacity` and
+`janet_fiber_funcframe` by name and does not care which selector answered.
+
+### Two allocations, one of them collectable
+
+A fiber is two allocations. The block comes from `janet_gcalloc`, which charges
+it against `janet_vm.next_collection` and prepends it to `janet_vm.blocks`; the
+value stack is a plain `janet_malloc` that the collector learns about only
+through `janet_deinit_block`, so its bytes are charged here by hand. That is the
+same split `janet_fiber_setcapacity` maintains in `fiber_core.zig`, and the two
+have to agree — a fiber allocated here and grown there must be charged once for
+its initial capacity and once per resize, never twice and never not at all.
+`test/value_alloc.c` checks the initial charge against the same arithmetic
+`test/fiber_core.c` checks the resize against.
+
+The 32-slot floor is applied before the capacity is written and before the stack
+is allocated, so a request for 0 produces a fiber whose `capacity` reads 32 and
+whose charge is 32 slots. A negative request lands on the same floor rather than
+wrapping into an enormous allocation, which is the only reason the widening to
+`usize` in `janetBytes` is safe.
+
+### The only vantage point on a newborn fiber
+
+`fiber_reset` writes eleven fields, or sixteen under the event loop, and nothing
+that survives a successful call: `janet_fiber_reset` runs
+`janet_fiber_funcframe` immediately afterwards, which overwrites `frame`,
+`stackstart` and `stacktop` before returning. A test that only ever built
+working fibers could not see most of what this function does.
+
+So the contract reads the newborn state through a *rejected* call. A callee
+whose arity turns the argument count down makes `janet_fiber_reset` return NULL
+after `fiber_reset` has run and before anything has run over it, and every field
+is then exactly as `fiber_reset` left it. The same vantage point makes the
+argument block visible: arguments are written before the arity is checked, so a
+rejected three-argument call still shows where the three values landed.
+
+The fields are dirtied before each call rather than merely asserted afterwards.
+A fresh block reads as whatever the allocator returned, which is usually zero,
+and zero is what most of a newborn fiber looks like — so an assertion over an
+untouched block would pass whether or not the store happened.
+
+### Jump transparency, and the one call that needs it
+
+The file is marked `//! jump-transparent` and `build.zig` enforces it.
+`janet_fiber_reset` calls `janet_fiber_funcframe`, which packs a variadic tail
+when the callee takes one, which for a `JANET_FUNCDEF_FLAG_STRUCTARG` function
+means `janet_struct_put`, which hashes the caller's arguments and so may run an
+abstract type's `hash` callback. Under SPIKE-8 that callback may not raise, but
+if it does the `longjmp` goes straight through the Zig frame, so there is no
+`defer` in the file.
+
+Nothing is stranded when that happens. The fiber is on `janet_vm.blocks` from
+the moment `janet_gcalloc` returns, so the collector owns it whether or not the
+function returns, and its value stack is freed with it. The half-built frame the
+signal leaves behind is exactly what C leaves behind, because C runs the same
+statements in the same order.
+
+### What the mutation sweep could and could not see
+
+Fifty-five mutations were run against the finished contract. Forty-four were
+caught. The survivors fall into two groups, and only the second is a limit of
+the test.
+
+Three are equivalent:
+
+- **`setStatus` not clearing the status bits before writing them.** The C macro
+  clears first, and so does the port, but every caller here assigns `flags`
+  immediately beforehand, so the bits are already zero.
+- **Storing `JANET_STACKFRAME_ENTRANCE` rather than or-ing it.**
+  `janet_fiber_funcframe` leaves `flags` at 0, so the two coincide. The contract
+  asserts `frame->flags == JANET_STACKFRAME_ENTRANCE`, which pins the same fact
+  from the other side.
+- **Dropping the second `supervisor_channel = NULL`.** `fiber_reset` has already
+  cleared it and nothing in between writes it, so the store in the C original is
+  redundant. Reproduced rather than dropped, because a port is not the place to
+  decide that.
+
+The rest are the same mutation repeated across eight fields: *removing a store
+whose correct value is zero*. On the development target these cannot be caught
+in-process at all, and the reason is the platform rather than the contract —
+macOS zeroes a block when it is freed, so a recycled block reads exactly like a
+correctly emptied one, and an uninitialised field is indistinguishable from an
+initialised one. `max_arity` is the single field in `janet_funcdef_alloc` whose
+right answer is not zero, and its mutants are caught.
+
+This was worth establishing rather than assuming: the contract originally
+carried two tests that poisoned a block, freed it, took it back from the
+allocator and read the fields over the garbage. They passed, and they proved
+nothing — first because a plain `memset` before a `free` is a dead store that
+the compiler removes, and then, once the poison was written through a volatile
+pointer, because the allocator zeroed it anyway. Both tests were removed rather
+than left in place looking like coverage. The tools that would see this class are
+MSan, or any allocator that does not zero on free; `test/gc_sweep.c` records the
+same shape of gap for leaks.
+
+One survivor was closed rather than explained. `janet_thunk`'s refusal to wrap a
+funcdef that needs upvalues is fatal — `janet_assert` on the C side,
+`janet_zig_fatal` on the Zig side — and a fatal path needs a child process to
+observe. The contract forks, builds a def with `environments_length` set, and
+checks that the child died of `SIGABRT`. It is guarded for non-Windows the same
+way `test/fiber_core.c` guards its pthread half. Without it, deleting the check
+outright was invisible, and a caller that got such a thunk back would read
+`envs[0]` off the end of a 24-byte allocation.
+
+`leaks --atExit`, which Part 8 used as a channel for the one mutation its
+assertions could not see, is not available here: it does not compose with a test
+that forks, and stalls instead of reporting. It would have had nothing to find —
+the only plain allocation this file makes is a fiber's value stack, and freeing
+that belongs to `janet_deinit_block`, which `test/gc_sweep.c` covers.
+
+### What this cost
+
+Two guarded regions in two files, one new selector, one new contract test. The
+suites pass with `-Dvalue-alloc` set both ways, with `-Dfiber-core` set both
+ways against it, with every Phase 8 selector set to `c` together, and under
+ReleaseSafe, ReleaseFast, ReleaseSmall, `-Dnanbox=false`, `-Dprf=true`,
+`-Dsingle-threaded=true`, `-Dev=false`, `-Dsourcemaps=false`,
+`-Ddocstrings=false` and `-Dcall-trampoline=true`. The `x86_64-linux-musl` and
+`x86_64-windows-gnu` cross-compiles build, and the static and shared artifacts
+each contain exactly one provider of all four symbols.
+
+`sizeof(JanetFunction)` is the second and last flexible array member the port
+has to size around. translate-c drops `envs[]` entirely, so `@sizeOf` in Zig is
+the number C's `sizeof` produces — true here, and asserted from the C side in
+`test/value_alloc.c` the same way `test/abstract_core.c` asserts it for
+`JanetAbstractHead`.
+
+## The value representation
+
+Phase 8 Part 10, and the last increment of the phase. `-Dvalue-wrap=c` restores
+the C implementation; Zig is the default. `value_wrap.zig` owns the whole of
+`core/wrap.c`: the four macro fills over the type tag and truthiness, the
+sixteen unwrap entry points, the nineteen wrap entry points, the per-layout
+nanbox helpers `janet.h` declares beside them, and `janet_memalloc_empty` and
+`janet_memempty`. One guarded region, from the includes to the end of the file.
+
+Porting this moves the representation. It does not change it, which is guiding
+principle 7 applied to the one file where the distinction is easy to lose.
+
+### Three implementations behind one set of signatures
+
+`wrap.c` is the only file in the phase whose *content* changes shape per target.
+`JANET_NANBOX_64`, `JANET_NANBOX_32` and the tagged fallback are three different
+implementations, and which one a build gets is decided by `janet.h` from the
+target's pointer width and architecture rather than by a build option alone.
+`-Dnanbox=false` reaches the third; nothing reaches the second on a 64-bit host.
+
+None of those three macros is defined with a value, so none survives
+translate-c. Restating the `#ifdef` chain in `state_abi.h` the way
+`JANET_VM_HAS_EV` restates `JANET_EV` was available and was not needed, because
+the *shape of the translated `Janet`* already separates all three:
+
+| layout            | translated `Janet`                          | test |
+| ----------------- | ------------------------------------------- | ---- |
+| `JANET_NANBOX_64` | union of `u64`, `i64`, `number`, `pointer`  | neither field below |
+| `JANET_NANBOX_32` | union whose first member is `tagged`        | `@hasField(c.Janet, "tagged")` |
+| tagged fallback   | *struct* of `as` and `type`                 | `@hasField(c.Janet, "as")` |
+
+`value_order.zig` already selected on `@hasField(c.Janet, "u64")` to spell
+`janet_u64`; this is that test carried to its conclusion. The advantage over a
+restated macro is not brevity — it is that a layout and the type it produces
+cannot disagree.
+
+### The exported set differs per layout, three ways
+
+This is the second increment in the phase whose functions do not all exist in
+every configuration, and where Part 8 had one condition this has three. Twenty-
+four symbols are common. A NaN-boxed build adds the eighteen wrappers `janet.h`
+provides as macros, plus five nanbox-64 helpers or two nanbox-32 ones; the
+tagged build defines its wrappers outright and defines every one of them except
+`janet_wrap_integer`.
+
+Forty-seven symbols under nanbox-64, forty-four under nanbox-32, forty-one under
+the tagged layout, and `nm` reports the same set for both selectors in each. The
+conditional ones are exported from `comptime` blocks rather than declared
+`export fn`, which is Part 8's pattern for `JANET_EV` and is needed here for the
+same reason: a body naming `x.tagged` must not be analysed in a build where
+`Janet` has no such field.
+
+`janet_wrap_integer`'s absence under the tagged layout is the defect `FOUND.md`
+records against `wrap.c`, reproduced rather than repaired under the standing
+rule. It is one `if (is_nanbox)` in the export block, and `test/value_wrap.c`
+references the symbol behind the same condition — so the contract compiles under
+the tagged layout only because it does not name a symbol that is not there.
+
+### What the contract can and cannot say
+
+Three channels, and the increment is unusual in that the obvious one is the
+weakest.
+
+The **layout-independent** assertions are the bulk: a wrapper's tag, a round
+trip through the matching unwrapper, the full thirteen-by-thirteen
+`janet_checktype` matrix rather than its diagonal, truthiness, and the fact that
+one address under two tags is two values. These say the representation is *a*
+working one.
+
+The **macro-versus-function** channel is the one `wrap.c` exists for — the file
+is there so that a language binding which cannot expand macros can call a
+function — and C's rule that a parenthesised name is not expanded is what lets
+one test call both. It is weaker than it looks: under either NaN-boxed layout
+the macro bottoms out in `janet_nanbox_from_bits` and friends, which this
+increment also ports, so the comparison is between two paths through the same
+implementation. It catches a wrapper wired to the wrong helper and nothing more.
+
+The **exact bit patterns** are what catch the helpers, and they are computed
+from `janet.h`'s own constants rather than from either implementation: the tag
+word for nil, true and false; a double stored unchanged; a pointer's payload
+equal to the address shifted by `JANET_NANBOX_64_POINTER_SHIFT` and its tag
+bits equal to `janet_nanbox_tag`; under nanbox-32 the raw type field and the
+`JANET_DOUBLE_OFFSET` bias; under the tagged layout the `as.u64 = 0` that
+`JANET_WRAP_DEFINE` performs before the narrower store. Without these a port
+that shifted every tag by one would pass everything above.
+
+### The nanbox-32 layout is compiled, run, and only half covered
+
+The phase's plan said the contract has to run under all three representations
+rather than sample one. It does, and getting there turned up a wall.
+
+`riscv32-linux-musl` is the only 32-bit target Zig 0.16's translate-c can
+handle — musl's 32-bit `time64` `__REDIR` declarations are rejected by Aro on
+x86 and arm, which fails `abi.zig` and so fails every Zig subsystem at once —
+and the whole tree cross-compiles for it. Alpine ships `qemu-riscv32`, so the
+binaries run:
+
+```sh
+zig build -Dtarget=riscv32-linux-musl -Dcpu=baseline -Dinstall-tests=true \
+          --cache-dir /tmp/janet-xc-rv -p xbuild/rv
+podman run --rm -v "$PWD/xbuild/rv":/xb:ro alpine:latest sh -c '
+  apk add --no-cache -q qemu-riscv32
+  qemu-riscv32 /xb/test/janet-value-wrap-test'
+rm -rf /tmp/janet-xc-rv xbuild/rv
+```
+
+**With every selector set to `c`, `janet-value-wrap-test` passes there**, which
+is what validates the nanbox-32 arm of the bit-layout assertions above. Set
+`-Dvalue-wrap=zig` and it fails, and the failure is not in `value_wrap.zig`.
+
+Zig 0.16 and clang disagree about how many argument registers an eight-byte
+union consumes under riscv32 ILP32D. A probe measured it in isolation, and the
+result is sharper than "unions do not cross": a lone `Janet`
+parameter arrives intact, and every argument *behind* a by-value `Janet` arrives
+displaced. The first parameter is right every time; the rest are shifted.
+
+That is exactly the failure the runtime shows. `janet_type(Janet)` and
+`janet_truthy(Janet)` answer correctly, because their `Janet` is the only
+parameter. `janet_checktype(Janet, JanetType)` reads a garbage type tag and so
+answers a constant.
+
+The wall is older than this increment. `janet_equals(Janet, Janet)` from Part 7a
+reads a garbage second value and so returns 0 for two *identical* arguments,
+which is why an all-Zig riscv32 build dies inside `janet_init` registering
+`core/rng`, long before any of this file runs — shown by setting every selector
+to `c` except `-Dvalue-order=zig`, which fails the same way on its own. Nothing
+in Phase 8 can move it. `PLAN.md` carries it as a toolchain constraint.
+
+### What the mutation sweep found, and it was in the contract
+
+Fifteen mutants of `value_wrap.zig`, run by the cheap recipe in `AGENTS.md` —
+`zig build`, then one `zig cc` of the contract against the freshly built
+`libjanet.a`. Eleven died on the first pass. The interesting result is the three
+that did not, because two of them exposed the trap this file is uniquely prone
+to.
+
+**Most of the contract was testing `janet.h`, not the library.** `janet_truthy`
+and `janet_checktype` are macros under all three layouts, so
+`assert(janet_truthy(janet_wrap_false()))` never calls anything this increment
+ported. Dropping the boolean arm of `truthy` survived, and so did dropping the
+second arm of `janet_nanbox_isnumber` — the one that recognizes a canonical NaN
+by its type nibble reading as `JANET_NUMBER`, which is the arm every NaN takes
+and no other double does. The function forms were only reached by
+`test_macro_and_function_agree`, whose sample was one value per type: `2.5` for
+a number and `true` for a boolean, both of which take the ordinary arm of every
+predicate.
+
+The fix is a second value set — NaN, both infinities, both zeroes, `false`,
+`boolean(0)`, `boolean(3)`, a null pointer — run through the same agreement
+helper, plus direct function-form assertions in the truthiness and NaN tests.
+Both mutants die against it, and so does a third that had failed to build.
+
+The last survivor is not a survivor: removing the pointer-alignment shift is a
+no-op on the development target, because `janet.h` sets
+`JANET_NANBOX_64_POINTER_SHIFT` to 0 on Apple aarch64 and to 2 elsewhere. Under
+`-Dnanbox-pointer-shift=2` it dies, and so does its counterpart in
+`janet_nanbox_to_pointer`. Fifteen mutants, fourteen killed, one equivalent
+under the default configuration and killed under the flag that makes it
+meaningful.
+
+### What this cost
+
+One guarded region in one file, one new selector, one new contract test, and no
+seam at all — the seventh increment in the phase to need none. Everything that
+moved is `JANET_API` except `janet_memalloc_empty` and `janet_memempty`, which
+were already declared in `util.h` for `struct.c` and `table.c` and which
+`struct_table.zig` has been calling by declaration since Part 6c. Those two are
+the fifth and sixth symbols to pick up default visibility from `export fn` where
+the C build's `-fvisibility=hidden` kept them internal; the one-line fix belongs
+to a single pass over all six rather than to this increment.
+
+The suites pass with `-Dvalue-wrap` set both ways, under both value layouts,
+with every subsystem selector set to `c` together, and under ReleaseSafe,
+ReleaseFast, ReleaseSmall, `-Dnanbox-pointer-shift=2`, `-Dprf=true`,
+`-Dsingle-threaded=true`, `-Dev=false`, `-Dsourcemaps=false`,
+`-Ddocstrings=false` and `-Dcall-trampoline=true`. The `x86_64-linux-musl`,
+`aarch64-linux-musl`, `x86_64-windows-gnu` and `riscv32-linux-musl`
+cross-compiles build, and the static and shared artifacts each contain exactly
+one provider of every symbol the increment exports, under all three layouts.
+
+`riscv32-linux-musl` is new to that list as of this increment and is there for a
+reason the other three do not share: it is the only target that selects
+`JANET_NANBOX_32`, and Zig analyses only the comptime branches it selects, so
+without it the 73-line `nanbox32` half of this file is never compiled anywhere.
+The same is true of two branches that predate it — the `@hasDecl(c, "JANET_32")`
+arm of `janet_lengthv` and the pointer-hash else-branch in `value_order.zig` —
+which this build type-checked for the first time. All three were correct.
+`PLAN.md` has the standing of the target and why its binaries are not run.
+
+One thing this increment fixed rather than reproduced, and it is in `build.zig`
+rather than in Janet. `src/zig/runtime_bridge.c` supplies
+`janet_zig_out_of_memory` and `janet_zig_fatal`, and it was compiled only when
+one of ten named subsystems was Zig. Nineteen subsystems call one of the two, so
+ten were missing from the list; nothing noticed, because the default build turns
+every subsystem on and one of the named few was always among them. Only a build
+selecting a single unnamed subsystem — which is what a differential test is —
+failed to link, and `-Dvalue-wrap=zig` on its own is the configuration that
+found it. The condition is now `hasZigSubsystem`, reflection over the selector
+fields, which cannot go stale.
+
+## Closing the gate
+
+Phase 8 Part 11, and the only increment in the phase that ports nothing. Every
+file the phase named was done at Part 10; what was left was the exit gate's
+testing clauses. `test/gc_stress.c` is the first contract in the tree with no
+`-D` of its own, because what it tests is the collector as a whole rather than
+any function in it, and `build.zig` gained the sanitizer configuration the tree
+had been getting by accident.
+
+### A GC callback may not keep what it allocates
+
+SPIKE-8 established that an abstract type's callbacks may not *raise*. The
+stress work establishes a second prohibition beside it, written down nowhere
+before, and the two halves fail differently.
+
+From `gcmark`, an allocation is freed by the collection that ran the callback.
+The mark phase reaches objects from the root set rather than by walking
+`janet_vm.blocks`, so a block prepended during marking is never marked, and the
+sweep in the same `janet_collect` frees it and runs its finalizer.
+
+From a finalizer, it depends on where the dying block sits. `janet_sweep` saves
+`next` before running the callback and restores the list head from it after, so
+a prepend made by the finalizer is discarded whenever the block being finalized
+is the head — orphaned permanently, never finalized, not freed by
+`janet_deinit`, and counted by `janet_vm.block_count` forever. Mid-list, with a
+non-null predecessor, the same allocation is correct and is collected on the
+next cycle.
+
+Both are in `FOUND.md` with the measurements, both are reproduced identically
+under either selector, and both are pinned by the contract. A leak is
+deterministic and observable, which is what makes it pinnable where undefined
+behaviour is not.
+
+### The cross-thread half asserts what only threads can show
+
+Threaded abstracts are the cross-thread facility this phase owns; channels and
+the event loop belong to the standard library. Three properties: the refcount
+survives four threads taking and dropping a reference two thousand times each,
+each thread's heap is its own, and the last reference finalizes exactly once.
+
+The middle one is the reason to write it. A port that reached a process-wide
+`janet_vm` rather than the thread-local one would pass every other test in the
+tree — the damage is invisible until two runtimes exist at once, and then it is
+heap corruption rather than a wrong answer.
+
+### The sanitizer configuration, and what it is not
+
+`sanitize_c` is now set explicitly and per optimize mode: `.full` in Debug and
+ReleaseSafe, `.off` in ReleaseFast and ReleaseSmall. Setting it unconditionally
+was tried first and rejected on measurement — it puts the UBSan runtime inside
+ReleaseFast, and a ReleaseFast build then reports on `(gcsetinterval -1)` where
+the same build without it does not. The gate wants the check named, not the
+shipping artifact changed.
+
+`-Dsanitize-thread` exists and is wired, including the two exclusions a working
+build needs: the bootstrap compiler, which is built for the host whatever
+`-Dtarget` says and whose TSan link fails on macOS SDK headers; and the shared
+library and native-module fixture, whose links `ld.lld` rejects because TSan
+gives its thread-locals the initial-exec model. With those in place the build
+succeeds for `aarch64-linux-musl` — and the binaries then segfault before
+reaching any assertion, where the same build without TSan passes. On macOS it
+never builds at all. `PLAN.md` carries it as deferred to Phase 10 beside ASan,
+which is the same conclusion by a different route.
+
+### What the leak checker found
+
+`leaks --atExit` was run over all fifty-one contract binaries rather than
+sampled, which is what turns "the gate has to name which contracts it covers"
+into a list. It is macOS-only and documentary rather than a build step, in the
+same way the container recipes are:
+
+```sh
+zig build -Dinstall-tests=true --cache-dir /tmp/janet-lk -p /tmp/janet-lk-out
+for t in /tmp/janet-lk-out/test/janet-*-test; do
+    case $(basename "$t") in
+        janet-gc-stress-test|janet-gc-sweep-test) continue ;;     # known leaks
+        janet-value-alloc-test|janet-os-process-test) continue ;; # fork, stall
+    esac
+    leaks --atExit -- "$t" | grep -q "0 leaks for 0" || echo "LEAKS: $t"
+done
+rm -rf /tmp/janet-lk /tmp/janet-lk-out
+```
+
+The loop deliberately does *not* skip `janet-args-core-test`, so it reports one
+line today. That line is the open item below, and it should keep appearing until
+someone diagnoses it rather than being silenced by a fifth `continue`. Forty-six are clean. Two stall, and both fork — Part 9 found this
+against `test/value_alloc.c` and Part 11 confirms it is about forking rather
+than about that contract. `test/gc_stress.c` leaks forty-eight bytes on purpose,
+being the contract that pins the orphaned block.
+
+The other two are the interesting ones. `test/gc_sweep.c` leaks eight blocks,
+and the stacks are `janet_array_weak` and `janet_table_weakv` — the
+`janet_clear_memory` weak-heap leak Part 5 recorded, rediscovered independently
+by a channel that had no knowledge of it. That is the clearest argument for
+naming the check.
+
+And `test/args_core.c` leaks eighty-six blocks, which is **not diagnosed**. It
+is identical under both selectors, so it is not a port defect. Three things are
+ruled out: it is not one block per panic, whether the raise comes from
+`janet_panic` or from `janet_getcstring` on a bad slot; it is not
+`janet_core_env`; and no isolated reproducer has been found. `leaks` prints one
+stack for eighty-six leaks even under `MallocStackLogging=1`, so the single
+panic-path stack it does print may be a red herring. `PLAN.md` records it as
+open, with the mechanical next step, rather than excluding it quietly.

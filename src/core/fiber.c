@@ -29,6 +29,13 @@
 #include "util.h"
 #endif
 
+/* Fiber allocation: the collectable block, the value stack that hangs off it,
+ * and the two entry points that hand back a fiber ready to run. This is a
+ * separate region from the one below because it is a separate subsystem — the
+ * frame machinery is -Dfiber-core, this is -Dvalue-alloc — and the two
+ * selectors are independent. */
+#ifndef JANET_ZIG_VALUE_ALLOC
+
 static void fiber_reset(JanetFiber *fiber) {
     fiber->maxstack = JANET_STACK_MAX;
     fiber->frame = 0;
@@ -96,6 +103,8 @@ JanetFiber *janet_fiber_reset(JanetFiber *fiber, JanetFunction *callee, int32_t 
 JanetFiber *janet_fiber(JanetFunction *callee, int32_t capacity, int32_t argc, const Janet *argv) {
     return janet_fiber_reset(fiber_alloc(capacity), callee, argc, argv);
 }
+
+#endif /* JANET_ZIG_VALUE_ALLOC */
 
 #if defined(JANET_DEBUG) && !defined(JANET_ZIG_FIBER_CORE)
 /* Test for memory issues by reallocating fiber every time we push a stack frame */

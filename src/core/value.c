@@ -31,6 +31,8 @@
 
 #include <math.h>
 
+#ifndef JANET_ZIG_VALUE_ORDER
+
 static void push_traversal_node(void *lhs, void *rhs, int32_t index2) {
     JanetTraversalNode node;
     node.self = (JanetGCObject *) lhs;
@@ -119,9 +121,13 @@ static int traversal_next(Janet *x, Janet *y) {
     return 2;
 }
 
+#endif /* JANET_ZIG_VALUE_ORDER */
+
 /*
  * Define a number of functions that can be used internally on ANY Janet.
  */
+
+#ifndef JANET_ZIG_VALUE_ACCESS
 
 Janet janet_next(Janet ds, Janet key) {
     return janet_next_impl(ds, key, 0);
@@ -231,6 +237,10 @@ Janet janet_next_impl(Janet ds, Janet key, int is_interpreter) {
     }
     return janet_wrap_nil();
 }
+
+#endif /* JANET_ZIG_VALUE_ACCESS */
+
+#ifndef JANET_ZIG_VALUE_ORDER
 
 /* Compare two abstract values */
 static int janet_compare_abstract(JanetAbstract xx, JanetAbstract yy) {
@@ -438,6 +448,10 @@ int janet_compare(Janet x, Janet y) {
     } while (!(status = traversal_next(&x, &y)));
     return status - 2;
 }
+
+#endif /* JANET_ZIG_VALUE_ORDER */
+
+#ifndef JANET_ZIG_VALUE_ACCESS
 
 static int32_t getter_checkint(JanetType type, Janet key, int32_t max) {
     if (!janet_checkint(key)) goto bad;
@@ -807,3 +821,5 @@ void janet_put(Janet ds, Janet key, Janet value) {
         }
     }
 }
+
+#endif /* JANET_ZIG_VALUE_ACCESS */

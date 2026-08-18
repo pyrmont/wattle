@@ -30,6 +30,8 @@
 
 #include <string.h>
 
+#ifndef JANET_ZIG_BUFFER_ARRAY
+
 static void janet_array_impl(JanetArray *array, int32_t capacity) {
     Janet *data = NULL;
     if (capacity > 0) {
@@ -130,6 +132,8 @@ Janet janet_array_peek(JanetArray *array) {
         return janet_wrap_nil();
     }
 }
+
+#endif /* JANET_ZIG_BUFFER_ARRAY */
 
 /* C Functions */
 

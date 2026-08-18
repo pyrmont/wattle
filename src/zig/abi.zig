@@ -4,10 +4,13 @@
 /// header produce distinct, incompatible types.
 ///
 /// `state_abi.h` comes first because it includes `features.h`, which has to
-/// precede every system header. `fiber.h` joins it as an internal core header
-/// on the same footing as `state.h`: from Phase 7 onward the ports are
-/// runtime-core work, so the private declarations those two carry are the
-/// intended interface rather than a layout leak.
+/// precede every system header. `fiber.h` and `gc.h` join it as internal core
+/// headers on the same footing as `state.h`: from Phase 7 onward the ports are
+/// runtime-core work, so the private declarations those three carry are the
+/// intended interface rather than a layout leak. `gc.h` arrived with Phase 8
+/// Part 3, which needs `enum JanetMemoryType` to tell the two heap lists apart;
+/// the function-like macros it defines over `JanetGCObject` do not survive
+/// translation and are written out in Zig where they are used.
 ///
 /// `util.h` is deliberately *not* here, and adding it breaks the Windows
 /// cross-compile for every subsystem at once. Its dynamic-library section falls
@@ -20,6 +23,7 @@
 pub const c = @cImport({
     @cInclude("state_abi.h");
     @cInclude("fiber.h");
+    @cInclude("gc.h");
     @cInclude("interop.h");
     @cInclude("runtime.h");
 });

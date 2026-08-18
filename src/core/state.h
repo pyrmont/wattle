@@ -299,6 +299,150 @@ typedef struct {
 
 void janet_trace_frame(JanetStackFrame *frame, JanetTraceFrame *out);
 
+/* ------------------------------------------------------------- arguments */
+
+/* Why the argument-extraction layer reports instead of formatting.
+ *
+ * Every janet_get* and janet_opt* in src/core/capi.c ends a failure in
+ * janet_panicf, which allocates a Janet string, and allocation can panic. A
+ * non-panicking getter that formatted eagerly would therefore need a
+ * panic-free allocator. Reporting a code plus the slot and formatting only at
+ * the C boundary avoids that, and it makes the messages identical by
+ * construction rather than by inspection: the format strings below stay in one
+ * place, in janet_arg_raise.
+ *
+ * Nothing in JanetArgFault is a Janet value. The slot index is enough for the
+ * boundary to recover argv[slot] and render it with "%v", which runs an
+ * abstract type's tostring callback and so must not happen on this side.
+ *
+ * Provided by src/core/capi.c or src/zig/subsystems/args_core.zig. */
+
+/* The literal noun each numeric getter names in its message. A code rather
+ * than a string so that the wording cannot drift between implementations;
+ * janet_arg_expect_name in capi.c is the only place the words appear. */
+typedef enum {
+    JANET_ARG_EXPECT_NAT = 0,   /* "non-negative 32 bit signed integer" */
+    JANET_ARG_EXPECT_SIZE = 1,  /* "size" */
+    JANET_ARG_EXPECT_S32 = 2,   /* "32 bit signed integer" */
+    JANET_ARG_EXPECT_U32 = 3,   /* "32 bit unsigned integer" */
+    JANET_ARG_EXPECT_S16 = 4,   /* "16 bit signed integer" */
+    JANET_ARG_EXPECT_U16 = 5,   /* "16 bit unsigned integer" */
+    JANET_ARG_EXPECT_S8 = 6,    /* "8 bit signed integer" */
+    JANET_ARG_EXPECT_U8 = 7,    /* "8 bit unsigned integer" */
+    JANET_ARG_EXPECT_FLOAT = 8, /* "float number" */
+    JANET_ARG_EXPECT_S64 = 9,   /* "64 bit signed integer" */
+    JANET_ARG_EXPECT_U64 = 10   /* "64 bit unsigned integer" */
+} JanetArgExpect;
+
+typedef enum {
+    /* No fault. Every kernel below leaves the descriptor untouched on success,
+     * so a caller that tests its return value never reads a stale field. */
+    JANET_ARG_OK = 0,
+    /* janet_panic_type: "bad slot #%d, expected %T, got %v" over `typeflags`. */
+    JANET_ARG_TYPE = 1,
+    /* janet_panic_abstract: "bad slot #%d, expected %s, got %v" over `at`. */
+    JANET_ARG_ABSTRACT = 2,
+    /* "bad slot #%d, expected <expect>, got %v". */
+    JANET_ARG_EXPECT = 3,
+    /* "%s index %d out of range [%d,%d]" over `which`, `raw`, `lo`, `hi`. */
+    JANET_ARG_RANGE_INCLUSIVE = 4,
+    /* As above with a half-open interval: "... [%d,%d)". */
+    JANET_ARG_RANGE_EXCLUSIVE = 5,
+    /* "unexpected flag %c, expected one of \"%s\"" over `raw` and `flags`. */
+    JANET_ARG_FLAG = 6,
+    /* "bytes contain embedded 0s". Carries nothing. */
+    JANET_ARG_ZEROS = 7,
+    /* "arity mismatch, expected %d, got %d" over `bound` and `arity`. */
+    JANET_ARG_ARITY_FIX = 8,
+    /* "arity mismatch, expected at least %d, got %d". */
+    JANET_ARG_ARITY_MIN = 9,
+    /* "arity mismatch, expected at most %d, got %d". */
+    JANET_ARG_ARITY_MAX = 10
+} JanetArgFaultKind;
+
+typedef struct {
+    uint8_t kind;                 /* JanetArgFaultKind */
+    uint8_t expect;               /* JanetArgExpect, for kind EXPECT */
+    int32_t slot;                 /* argv index, for the three slot kinds */
+    int32_t typeflags;            /* for kind TYPE */
+    const JanetAbstractType *at;  /* for kind ABSTRACT */
+    const char *which;            /* "start", "end", or a caller's word */
+    const char *flags;            /* the permitted set, for kind FLAG */
+    /* The C original widens every one of these to int64_t before handing it to
+     * a "%d", which is a defect recorded in FOUND.md rather than a design. The
+     * width here is the width the format call already uses. */
+    int64_t raw;                  /* the index as written, or the flag byte */
+    int64_t lo;
+    int64_t hi;
+    int32_t arity;                /* for the three arity kinds */
+    int32_t bound;
+} JanetArgFault;
+
+/* How janet_getbytes and janet_getcbytes must proceed once the type is known.
+ * The abstract case is separated because it runs the type's `bytes` callback,
+ * which is third-party code that may panic; the call is made on the C side so
+ * that no jump crosses the frame that classified the value. */
+typedef enum {
+    /* Not byte-viewable: the caller raises the fault the kernel filled in. */
+    JANET_ARG_BYTES_FAULT = 0,
+    /* String, symbol or keyword: `bytes` and `len` are set. */
+    JANET_ARG_BYTES_STRING = 1,
+    /* Buffer: `bytes` and `len` are set from its current contents. */
+    JANET_ARG_BYTES_BUFFER = 2,
+    /* An abstract type with a `bytes` callback the caller must invoke. */
+    JANET_ARG_BYTES_ABSTRACT = 3
+} JanetArgBytes;
+
+/* Which of janet_getcbytes' three shapes applies, decided without touching the
+ * buffer. The two buffer cases both mutate or allocate, so both are carried
+ * out by the caller. */
+typedef enum {
+    JANET_ARG_CBYTES_FAULT = 0,
+    /* A buffer that cannot be realloced and is exactly full: copy it with
+     * janet_smalloc and terminate the copy. */
+    JANET_ARG_CBYTES_COPY = 1,
+    /* Any other buffer: push a 0, then drop the count back. */
+    JANET_ARG_CBYTES_TERMINATE = 2,
+    /* Not a buffer: take an ordinary byte view. */
+    JANET_ARG_CBYTES_VIEW = 3
+} JanetArgCBytes;
+
+int janet_arg_checktype(const Janet *argv, int32_t n, int32_t type,
+                        int32_t typeflags, JanetArgFault *fault);
+int janet_arg_isdefault(const Janet *argv, int32_t argc, int32_t n);
+int janet_arg_integer(const Janet *argv, int32_t n, int32_t *out, JanetArgFault *fault);
+int janet_arg_uinteger(const Janet *argv, int32_t n, uint32_t *out, JanetArgFault *fault);
+int janet_arg_integer16(const Janet *argv, int32_t n, int16_t *out, JanetArgFault *fault);
+int janet_arg_uinteger16(const Janet *argv, int32_t n, uint16_t *out, JanetArgFault *fault);
+int janet_arg_integer8(const Janet *argv, int32_t n, int8_t *out, JanetArgFault *fault);
+int janet_arg_uinteger8(const Janet *argv, int32_t n, uint8_t *out, JanetArgFault *fault);
+int janet_arg_float(const Janet *argv, int32_t n, float *out, JanetArgFault *fault);
+int janet_arg_integer64(const Janet *argv, int32_t n, int64_t *out, JanetArgFault *fault);
+int janet_arg_uinteger64(const Janet *argv, int32_t n, uint64_t *out, JanetArgFault *fault);
+int janet_arg_size(const Janet *argv, int32_t n, size_t *out, JanetArgFault *fault);
+int janet_arg_nat(const Janet *argv, int32_t n, int32_t *out, JanetArgFault *fault);
+int janet_arg_abstract(const Janet *argv, int32_t n, const JanetAbstractType *at,
+                       void **out, JanetArgFault *fault);
+int janet_arg_indexed(const Janet *argv, int32_t n, JanetView *out, JanetArgFault *fault);
+int janet_arg_dictionary(const Janet *argv, int32_t n, JanetDictView *out, JanetArgFault *fault);
+JanetArgBytes janet_arg_bytes(Janet x, int32_t n, JanetByteView *out, JanetArgFault *fault);
+JanetArgCBytes janet_arg_cbytes(const Janet *argv, int32_t n, JanetArgFault *fault);
+int janet_arg_zeros(const char *bytes, int32_t len, JanetArgFault *fault);
+int janet_arg_halfrange(const Janet *argv, int32_t n, int32_t length, const char *which,
+                        int32_t *out, JanetArgFault *fault);
+int janet_arg_argindex(const Janet *argv, int32_t n, int32_t length, const char *which,
+                       int32_t *out, JanetArgFault *fault);
+int janet_arg_flags(const uint8_t *keyw, int32_t klen, const char *flags,
+                    uint64_t *out, JanetArgFault *fault);
+int janet_arg_fixarity(int32_t arity, int32_t fix, JanetArgFault *fault);
+int janet_arg_arity(int32_t arity, int32_t min, int32_t max, JanetArgFault *fault);
+int janet_arg_strlike(int32_t type, Janet x, const char *cstring);
+int janet_arg_method(const uint8_t *method, const JanetMethod *methods, const JanetMethod **out);
+const JanetMethod *janet_arg_nextmethod(const JanetMethod *methods, Janet key);
+
+/* The formatting half. Always raises; never returns. */
+JANET_NO_RETURN void janet_arg_raise(const Janet *argv, const JanetArgFault *fault);
+
 #ifdef JANET_NET
 void janet_net_init(void);
 void janet_net_deinit(void);

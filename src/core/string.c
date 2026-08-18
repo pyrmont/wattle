@@ -30,6 +30,8 @@
 
 #include <string.h>
 
+#ifndef JANET_ZIG_STRING_SYMBOL
+
 /* Begin building a string */
 uint8_t *janet_string_begin(int32_t length) {
     JanetStringHead *head = janet_gcalloc(JANET_MEMORY_STRING, sizeof(JanetStringHead) + (size_t) length + 1);
@@ -88,6 +90,8 @@ int janet_string_equal(const uint8_t *lhs, const uint8_t *rhs) {
 const uint8_t *janet_cstring(const char *str) {
     return janet_string((const uint8_t *)str, (int32_t)strlen(str));
 }
+
+#endif /* JANET_ZIG_STRING_SYMBOL */
 
 /* Knuth Morris Pratt Algorithm */
 

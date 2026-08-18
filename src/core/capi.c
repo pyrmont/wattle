@@ -159,46 +159,415 @@ void janet_panic_abstract(Janet x, int32_t n, const JanetAbstractType *at) {
     janet_panicf("bad slot #%d, expected %s, got %v", n, at->name, x);
 }
 
-void janet_fixarity(int32_t arity, int32_t fix) {
-    if (arity != fix)
-        janet_panicf("arity mismatch, expected %d, got %d", fix, arity);
+/* ------------------------------------------------------------------------
+ * Argument extraction: the formatting half.
+ *
+ * Compiled in both configurations. Everything below turns a JanetArgFault
+ * back into the exact message the C original raised; the kernels that decide
+ * whether there is a fault at all are either the guarded C block further down
+ * or src/zig/subsystems/args_core.zig.
+ * --------------------------------------------------------------------- */
+
+/* The only place the nouns appear. A getter reports JANET_ARG_EXPECT_S16 and
+ * this decides it is spelled "16 bit signed integer", which is what makes the
+ * two implementations word-identical without either of them formatting. */
+static const char *janet_arg_expect_name(uint8_t expect) {
+    switch ((JanetArgExpect) expect) {
+        case JANET_ARG_EXPECT_NAT:
+            return "non-negative 32 bit signed integer";
+        case JANET_ARG_EXPECT_SIZE:
+            return "size";
+        case JANET_ARG_EXPECT_S32:
+            return "32 bit signed integer";
+        case JANET_ARG_EXPECT_U32:
+            return "32 bit unsigned integer";
+        case JANET_ARG_EXPECT_S16:
+            return "16 bit signed integer";
+        case JANET_ARG_EXPECT_U16:
+            return "16 bit unsigned integer";
+        case JANET_ARG_EXPECT_S8:
+            return "8 bit signed integer";
+        case JANET_ARG_EXPECT_U8:
+            return "8 bit unsigned integer";
+        case JANET_ARG_EXPECT_FLOAT:
+            return "float number";
+        case JANET_ARG_EXPECT_S64:
+            return "64 bit signed integer";
+        default:
+            return "64 bit unsigned integer";
+    }
 }
 
-void janet_arity(int32_t arity, int32_t min, int32_t max) {
-    if (min >= 0 && arity < min)
-        janet_panicf("arity mismatch, expected at least %d, got %d", min, arity);
-    if (max >= 0 && arity > max)
-        janet_panicf("arity mismatch, expected at most %d, got %d", max, arity);
+/* `argv` may be NULL for the kinds that do not name a slot - the arity kinds,
+ * the range kinds, the flag kind and the embedded-zero kind all render without
+ * touching the argument. */
+void janet_arg_raise(const Janet *argv, const JanetArgFault *fault) {
+    switch ((JanetArgFaultKind) fault->kind) {
+        case JANET_ARG_TYPE:
+            janet_panic_type(argv[fault->slot], fault->slot, fault->typeflags);
+        case JANET_ARG_ABSTRACT:
+            janet_panic_abstract(argv[fault->slot], fault->slot, fault->at);
+        case JANET_ARG_EXPECT:
+            janet_panicf("bad slot #%d, expected %s, got %v", fault->slot,
+                         janet_arg_expect_name(fault->expect), argv[fault->slot]);
+        /* The three int64_t arguments to "%d" below are the C original's, and
+         * "%d" reads an int32_t. That is undefined and is recorded in FOUND.md;
+         * it is reproduced here rather than repaired, so that both
+         * implementations render the same line on the targets where it works. */
+        case JANET_ARG_RANGE_INCLUSIVE:
+            janet_panicf("%s index %d out of range [%d,%d]", fault->which,
+                         fault->raw, fault->lo, fault->hi);
+        case JANET_ARG_RANGE_EXCLUSIVE:
+            janet_panicf("%s index %d out of range [%d,%d)", fault->which,
+                         fault->raw, fault->lo, fault->hi);
+        case JANET_ARG_FLAG:
+            janet_panicf("unexpected flag %c, expected one of \"%s\"",
+                         (char) fault->raw, fault->flags);
+        case JANET_ARG_ZEROS:
+            janet_panic("bytes contain embedded 0s");
+        case JANET_ARG_ARITY_FIX:
+            janet_panicf("arity mismatch, expected %d, got %d", fault->bound, fault->arity);
+        case JANET_ARG_ARITY_MIN:
+            janet_panicf("arity mismatch, expected at least %d, got %d", fault->bound, fault->arity);
+        case JANET_ARG_ARITY_MAX:
+            janet_panicf("arity mismatch, expected at most %d, got %d", fault->bound, fault->arity);
+        default:
+            janet_panic("argument fault with no kind");
+    }
 }
 
-#define DEFINE_GETTER(name, NAME, type) \
-type janet_get##name(const Janet *argv, int32_t n) { \
+/* ------------------------------------------------------------------------
+ * Argument extraction: the deciding half.
+ *
+ * Replaced wholesale by src/zig/subsystems/args_core.zig under
+ * -Dargs-core=zig. Nothing here allocates, constructs a Janet value, or calls
+ * anything that can raise - which is why janet_arg_bytes reports the abstract
+ * case instead of running the type's `bytes` callback, and why the two buffer
+ * shapes janet_arg_cbytes distinguishes are carried out by its caller.
+ * --------------------------------------------------------------------- */
+
+#ifndef JANET_ZIG_ARGS_CORE
+
+int janet_arg_checktype(const Janet *argv, int32_t n, int32_t type,
+                        int32_t typeflags, JanetArgFault *fault) {
+    if (janet_checktype(argv[n], (JanetType) type)) return 1;
+    fault->kind = JANET_ARG_TYPE;
+    fault->slot = n;
+    fault->typeflags = typeflags;
+    return 0;
+}
+
+int janet_arg_isdefault(const Janet *argv, int32_t argc, int32_t n) {
+    return n >= argc || janet_checktype(argv[n], JANET_NIL);
+}
+
+#define DEFINE_ARG_NUMBER(name, check, EXPECT, type) \
+int janet_arg_##name(const Janet *argv, int32_t n, type *out, JanetArgFault *fault) { \
     Janet x = argv[n]; \
-    if (!janet_checktype(x, JANET_##NAME)) { \
-        janet_panic_type(x, n, JANET_TFLAG_##NAME); \
+    if (!check(x)) { \
+        fault->kind = JANET_ARG_EXPECT; \
+        fault->expect = JANET_ARG_EXPECT_##EXPECT; \
+        fault->slot = n; \
+        return 0; \
     } \
-    return janet_unwrap_##name(x); \
+    *out = (type) janet_unwrap_number(x); \
+    return 1; \
 }
 
-#define DEFINE_OPT(name, NAME, type) \
-type janet_opt##name(const Janet *argv, int32_t argc, int32_t n, type dflt) { \
-    if (n >= argc) return dflt; \
-    if (janet_checktype(argv[n], JANET_NIL)) return dflt; \
-    return janet_get##name(argv, n); \
+DEFINE_ARG_NUMBER(uinteger, janet_checkuint, U32, uint32_t)
+DEFINE_ARG_NUMBER(uinteger16, janet_checkuint16, U16, uint16_t)
+DEFINE_ARG_NUMBER(float, janet_checkfloat, FLOAT, float)
+DEFINE_ARG_NUMBER(size, janet_checksize, SIZE, size_t)
+
+/* janet_getinteger unwraps rather than converting, which differs from every
+ * other width: janet_unwrap_integer is a distinct operation under a tagged
+ * representation, where the integer is not stored as a double. */
+int janet_arg_integer(const Janet *argv, int32_t n, int32_t *out, JanetArgFault *fault) {
+    Janet x = argv[n];
+    if (!janet_checkint(x)) {
+        fault->kind = JANET_ARG_EXPECT;
+        fault->expect = JANET_ARG_EXPECT_S32;
+        fault->slot = n;
+        return 0;
+    }
+    *out = janet_unwrap_integer(x);
+    return 1;
 }
 
-#define DEFINE_OPTLEN(name, NAME, type) \
-type janet_opt##name(const Janet *argv, int32_t argc, int32_t n, int32_t dflt_len) { \
-    if (n >= argc || janet_checktype(argv[n], JANET_NIL)) {\
-        return janet_##name(dflt_len); \
-    }\
-    return janet_get##name(argv, n); \
+int janet_arg_integer16(const Janet *argv, int32_t n, int16_t *out, JanetArgFault *fault) {
+    Janet x = argv[n];
+    if (!janet_checkint16(x)) {
+        fault->kind = JANET_ARG_EXPECT;
+        fault->expect = JANET_ARG_EXPECT_S16;
+        fault->slot = n;
+        return 0;
+    }
+    *out = (int16_t) janet_unwrap_number(x);
+    return 1;
 }
 
-int janet_getmethod(const uint8_t *method, const JanetMethod *methods, Janet *out) {
+/* The two 8-bit getters convert through 16 bits in the C original before the
+ * return narrows them again. janet_checkint8 has already established the
+ * range, so the intermediate cast cannot change the value; it is kept because
+ * a port that quietly tidied it would be changing the code under test. */
+int janet_arg_integer8(const Janet *argv, int32_t n, int8_t *out, JanetArgFault *fault) {
+    Janet x = argv[n];
+    if (!janet_checkint8(x)) {
+        fault->kind = JANET_ARG_EXPECT;
+        fault->expect = JANET_ARG_EXPECT_S8;
+        fault->slot = n;
+        return 0;
+    }
+    *out = (int8_t)(int16_t) janet_unwrap_number(x);
+    return 1;
+}
+
+int janet_arg_uinteger8(const Janet *argv, int32_t n, uint8_t *out, JanetArgFault *fault) {
+    Janet x = argv[n];
+    if (!janet_checkuint8(x)) {
+        fault->kind = JANET_ARG_EXPECT;
+        fault->expect = JANET_ARG_EXPECT_U8;
+        fault->slot = n;
+        return 0;
+    }
+    *out = (uint8_t)(uint16_t) janet_unwrap_number(x);
+    return 1;
+}
+
+int janet_arg_integer64(const Janet *argv, int32_t n, int64_t *out, JanetArgFault *fault) {
+    Janet x = argv[n];
+    if (!janet_checkint64(x)) {
+        fault->kind = JANET_ARG_EXPECT;
+        fault->expect = JANET_ARG_EXPECT_S64;
+        fault->slot = n;
+        return 0;
+    }
+    *out = (int64_t) janet_unwrap_number(x);
+    return 1;
+}
+
+int janet_arg_uinteger64(const Janet *argv, int32_t n, uint64_t *out, JanetArgFault *fault) {
+    Janet x = argv[n];
+    if (!janet_checkuint64(x)) {
+        fault->kind = JANET_ARG_EXPECT;
+        fault->expect = JANET_ARG_EXPECT_U64;
+        fault->slot = n;
+        return 0;
+    }
+    *out = (uint64_t) janet_unwrap_number(x);
+    return 1;
+}
+
+int janet_arg_nat(const Janet *argv, int32_t n, int32_t *out, JanetArgFault *fault) {
+    Janet x = argv[n];
+    if (janet_checkint(x)) {
+        int32_t ret = janet_unwrap_integer(x);
+        if (ret >= 0) {
+            *out = ret;
+            return 1;
+        }
+    }
+    fault->kind = JANET_ARG_EXPECT;
+    fault->expect = JANET_ARG_EXPECT_NAT;
+    fault->slot = n;
+    return 0;
+}
+
+int janet_arg_abstract(const Janet *argv, int32_t n, const JanetAbstractType *at,
+                       void **out, JanetArgFault *fault) {
+    Janet x = argv[n];
+    if (janet_checktype(x, JANET_ABSTRACT)) {
+        void *abstractx = janet_unwrap_abstract(x);
+        if (janet_abstract_type(abstractx) == at) {
+            *out = abstractx;
+            return 1;
+        }
+    }
+    fault->kind = JANET_ARG_ABSTRACT;
+    fault->slot = n;
+    fault->at = at;
+    return 0;
+}
+
+int janet_arg_indexed(const Janet *argv, int32_t n, JanetView *out, JanetArgFault *fault) {
+    Janet x = argv[n];
+    if (janet_checktype(x, JANET_ARRAY)) {
+        out->items = janet_unwrap_array(x)->data;
+        out->len = janet_unwrap_array(x)->count;
+        return 1;
+    } else if (janet_checktype(x, JANET_TUPLE)) {
+        out->items = janet_unwrap_tuple(x);
+        out->len = janet_tuple_length(janet_unwrap_tuple(x));
+        return 1;
+    }
+    fault->kind = JANET_ARG_TYPE;
+    fault->slot = n;
+    fault->typeflags = JANET_TFLAG_INDEXED;
+    return 0;
+}
+
+int janet_arg_dictionary(const Janet *argv, int32_t n, JanetDictView *out, JanetArgFault *fault) {
+    Janet x = argv[n];
+    if (janet_checktype(x, JANET_TABLE)) {
+        out->kvs = janet_unwrap_table(x)->data;
+        out->cap = janet_unwrap_table(x)->capacity;
+        out->len = janet_unwrap_table(x)->count;
+        return 1;
+    } else if (janet_checktype(x, JANET_STRUCT)) {
+        out->kvs = janet_unwrap_struct(x);
+        out->cap = janet_struct_capacity(janet_unwrap_struct(x));
+        out->len = janet_struct_length(janet_unwrap_struct(x));
+        return 1;
+    }
+    fault->kind = JANET_ARG_TYPE;
+    fault->slot = n;
+    fault->typeflags = JANET_TFLAG_DICTIONARY;
+    return 0;
+}
+
+/* The abstract case is reported rather than taken. Running `bytes` here would
+ * put third-party code below a frame that must not be jumped through once this
+ * function is Zig. */
+JanetArgBytes janet_arg_bytes(Janet x, int32_t n, JanetByteView *out, JanetArgFault *fault) {
+    JanetType t = janet_type(x);
+    if (t == JANET_STRING || t == JANET_SYMBOL || t == JANET_KEYWORD) {
+        out->bytes = janet_unwrap_string(x);
+        out->len = janet_string_length(janet_unwrap_string(x));
+        return JANET_ARG_BYTES_STRING;
+    } else if (t == JANET_BUFFER) {
+        out->bytes = janet_unwrap_buffer(x)->data;
+        out->len = janet_unwrap_buffer(x)->count;
+        return JANET_ARG_BYTES_BUFFER;
+    } else if (t == JANET_ABSTRACT) {
+        void *abst = janet_unwrap_abstract(x);
+        if (NULL != janet_abstract_type(abst)->bytes) {
+            return JANET_ARG_BYTES_ABSTRACT;
+        }
+    }
+    fault->kind = JANET_ARG_TYPE;
+    fault->slot = n;
+    fault->typeflags = JANET_TFLAG_BYTES;
+    return JANET_ARG_BYTES_FAULT;
+}
+
+JanetArgCBytes janet_arg_cbytes(const Janet *argv, int32_t n, JanetArgFault *fault) {
+    Janet x = argv[n];
+    if (janet_checktype(x, JANET_BUFFER)) {
+        JanetBuffer *b = janet_unwrap_buffer(x);
+        if ((b->gc.flags & JANET_BUFFER_FLAG_NO_REALLOC) && b->count == b->capacity) {
+            return JANET_ARG_CBYTES_COPY;
+        }
+        return JANET_ARG_CBYTES_TERMINATE;
+    }
+    (void) fault;
+    return JANET_ARG_CBYTES_VIEW;
+}
+
+int janet_arg_zeros(const char *bytes, int32_t len, JanetArgFault *fault) {
+    if (strlen(bytes) == (size_t) len) return 1;
+    fault->kind = JANET_ARG_ZEROS;
+    return 0;
+}
+
+int janet_arg_halfrange(const Janet *argv, int32_t n, int32_t length, const char *which,
+                        int32_t *out, JanetArgFault *fault) {
+    int32_t raw;
+    if (!janet_arg_integer(argv, n, &raw, fault)) return 0;
+    int32_t not_raw = raw;
+    if (not_raw < 0) not_raw += length + 1;
+    if (not_raw < 0 || not_raw > length) {
+        fault->kind = JANET_ARG_RANGE_INCLUSIVE;
+        fault->which = which;
+        fault->raw = (int64_t) raw;
+        fault->lo = -(int64_t) length - 1;
+        fault->hi = (int64_t) length;
+        return 0;
+    }
+    *out = not_raw;
+    return 1;
+}
+
+int janet_arg_argindex(const Janet *argv, int32_t n, int32_t length, const char *which,
+                       int32_t *out, JanetArgFault *fault) {
+    int32_t raw;
+    if (!janet_arg_integer(argv, n, &raw, fault)) return 0;
+    int32_t not_raw = raw;
+    if (not_raw < 0) not_raw += length;
+    if (not_raw < 0 || not_raw > length) {
+        fault->kind = JANET_ARG_RANGE_EXCLUSIVE;
+        fault->which = which;
+        fault->raw = (int64_t) raw;
+        fault->lo = -(int64_t) length;
+        fault->hi = (int64_t) length;
+        return 0;
+    }
+    *out = not_raw;
+    return 1;
+}
+
+/* The 64-flag ceiling is the C original's and is a silent truncation rather
+ * than an error: a `flags` string longer than 64 characters has its tail
+ * ignored, so a keyword naming one of those characters reports it as
+ * unexpected. Preserved, not repaired. */
+int janet_arg_flags(const uint8_t *keyw, int32_t klen, const char *flags,
+                    uint64_t *out, JanetArgFault *fault) {
+    uint64_t ret = 0;
+    int32_t flen = (int32_t) strlen(flags);
+    if (flen > 64) {
+        flen = 64;
+    }
+    for (int32_t j = 0; j < klen; j++) {
+        int32_t i;
+        for (i = 0; i < flen; i++) {
+            if (((uint8_t) flags[i]) == keyw[j]) {
+                ret |= 1ULL << i;
+                break;
+            }
+        }
+        if (i == flen) {
+            fault->kind = JANET_ARG_FLAG;
+            fault->raw = (int64_t) keyw[j];
+            fault->flags = flags;
+            return 0;
+        }
+    }
+    *out = ret;
+    return 1;
+}
+
+int janet_arg_fixarity(int32_t arity, int32_t fix, JanetArgFault *fault) {
+    if (arity == fix) return 1;
+    fault->kind = JANET_ARG_ARITY_FIX;
+    fault->arity = arity;
+    fault->bound = fix;
+    return 0;
+}
+
+int janet_arg_arity(int32_t arity, int32_t min, int32_t max, JanetArgFault *fault) {
+    if (min >= 0 && arity < min) {
+        fault->kind = JANET_ARG_ARITY_MIN;
+        fault->arity = arity;
+        fault->bound = min;
+        return 0;
+    }
+    if (max >= 0 && arity > max) {
+        fault->kind = JANET_ARG_ARITY_MAX;
+        fault->arity = arity;
+        fault->bound = max;
+        return 0;
+    }
+    return 1;
+}
+
+int janet_arg_strlike(int32_t type, Janet x, const char *cstring) {
+    if (janet_type(x) != (JanetType) type) return 0;
+    return !janet_cstrcmp(janet_unwrap_string(x), cstring);
+}
+
+int janet_arg_method(const uint8_t *method, const JanetMethod *methods, const JanetMethod **out) {
     while (methods->name) {
         if (!janet_cstrcmp(method, methods->name)) {
-            *out = janet_wrap_cfunction(methods->cfun);
+            *out = methods;
             return 1;
         }
         methods++;
@@ -206,7 +575,10 @@ int janet_getmethod(const uint8_t *method, const JanetMethod *methods, Janet *ou
     return 0;
 }
 
-Janet janet_nextmethod(const JanetMethod *methods, Janet key) {
+/* Returns the entry whose name the caller should wrap as a keyword, or the
+ * terminating entry - the one with a null name - when the walk runs off the
+ * end. Constructing the keyword is the caller's job because it allocates. */
+const JanetMethod *janet_arg_nextmethod(const JanetMethod *methods, Janet key) {
     if (!janet_checktype(key, JANET_NIL)) {
         while (methods->name) {
             if (janet_keyeq(key, methods->name)) {
@@ -216,8 +588,70 @@ Janet janet_nextmethod(const JanetMethod *methods, Janet key) {
             methods++;
         }
     }
-    if (methods->name) {
-        return janet_ckeywordv(methods->name);
+    return methods;
+}
+
+#undef DEFINE_ARG_NUMBER
+
+#endif /* JANET_ZIG_ARGS_CORE */
+
+/* ------------------------------------------------------------------------
+ * Argument extraction: the exported surface.
+ *
+ * Each of these is a kernel call and, on failure, a janet_arg_raise. Compiled
+ * in both configurations, because the raise cannot be on the Zig side.
+ * --------------------------------------------------------------------- */
+
+void janet_fixarity(int32_t arity, int32_t fix) {
+    JanetArgFault fault;
+    if (!janet_arg_fixarity(arity, fix, &fault)) janet_arg_raise(NULL, &fault);
+}
+
+void janet_arity(int32_t arity, int32_t min, int32_t max) {
+    JanetArgFault fault;
+    if (!janet_arg_arity(arity, min, max, &fault)) janet_arg_raise(NULL, &fault);
+}
+
+#define DEFINE_GETTER(name, NAME, type) \
+type janet_get##name(const Janet *argv, int32_t n) { \
+    JanetArgFault fault; \
+    if (!janet_arg_checktype(argv, n, JANET_##NAME, JANET_TFLAG_##NAME, &fault)) { \
+        janet_arg_raise(argv, &fault); \
+    } \
+    return janet_unwrap_##name(argv[n]); \
+}
+
+#define DEFINE_OPT(name, NAME, type) \
+type janet_opt##name(const Janet *argv, int32_t argc, int32_t n, type dflt) { \
+    if (janet_arg_isdefault(argv, argc, n)) return dflt; \
+    return janet_get##name(argv, n); \
+}
+
+#define DEFINE_OPTLEN(name, NAME, type) \
+type janet_opt##name(const Janet *argv, int32_t argc, int32_t n, int32_t dflt_len) { \
+    if (janet_arg_isdefault(argv, argc, n)) return janet_##name(dflt_len); \
+    return janet_get##name(argv, n); \
+}
+
+#define DEFINE_ARG_GETTER(name, type) \
+type janet_get##name(const Janet *argv, int32_t n) { \
+    type out; \
+    JanetArgFault fault; \
+    if (!janet_arg_##name(argv, n, &out, &fault)) janet_arg_raise(argv, &fault); \
+    return out; \
+}
+
+int janet_getmethod(const uint8_t *method, const JanetMethod *methods, Janet *out) {
+    const JanetMethod *found;
+    if (!janet_arg_method(method, methods, &found)) return 0;
+    *out = janet_wrap_cfunction(found->cfun);
+    return 1;
+}
+
+Janet janet_nextmethod(const JanetMethod *methods, Janet key) {
+    const JanetMethod *found = janet_arg_nextmethod(methods, key);
+    if (found->name) {
+        return janet_ckeywordv(found->name);
     } else {
         return janet_wrap_nil();
     }
@@ -255,9 +689,7 @@ DEFINE_OPTLEN(table, TABLE, JanetTable *)
 DEFINE_OPTLEN(array, ARRAY, JanetArray *)
 
 const char *janet_optcstring(const Janet *argv, int32_t argc, int32_t n, const char *dflt) {
-    if (n >= argc || janet_checktype(argv[n], JANET_NIL)) {
-        return dflt;
-    }
+    if (janet_arg_isdefault(argv, argc, n)) return dflt;
     return janet_getcstring(argv, n);
 }
 
@@ -266,239 +698,175 @@ const char *janet_optcstring(const Janet *argv, int32_t argc, int32_t n, const c
 #undef DEFINE_OPTLEN
 
 const char *janet_getcstring(const Janet *argv, int32_t n) {
-    if (!janet_checktype(argv[n], JANET_STRING)) {
-        janet_panic_type(argv[n], n, JANET_TFLAG_STRING);
+    JanetArgFault fault;
+    if (!janet_arg_checktype(argv, n, JANET_STRING, JANET_TFLAG_STRING, &fault)) {
+        janet_arg_raise(argv, &fault);
     }
     return janet_getcbytes(argv, n);
 }
 
+/* The two buffer shapes are carried out here rather than in the kernel: one
+ * pushes a byte and one calls janet_smalloc, and both can panic. */
 const char *janet_getcbytes(const Janet *argv, int32_t n) {
-    /* Ensure buffer 0-padded */
-    if (janet_checktype(argv[n], JANET_BUFFER)) {
-        JanetBuffer *b = janet_unwrap_buffer(argv[n]);
-        if ((b->gc.flags & JANET_BUFFER_FLAG_NO_REALLOC) && b->count == b->capacity) {
+    JanetArgFault fault;
+    const char *cstr;
+    int32_t len;
+    switch (janet_arg_cbytes(argv, n, &fault)) {
+        case JANET_ARG_CBYTES_COPY: {
+            JanetBuffer *b = janet_unwrap_buffer(argv[n]);
             /* Make a copy with janet_smalloc in the rare case we have a buffer that
              * cannot be realloced and pushing a 0 byte would panic. */
             char *new_string = janet_smalloc(b->count + 1);
             memcpy(new_string, b->data, b->count);
             new_string[b->count] = 0;
-            if (strlen(new_string) != (size_t) b->count) goto badzeros;
-            return new_string;
-        } else {
+            cstr = new_string;
+            len = b->count;
+            break;
+        }
+        case JANET_ARG_CBYTES_TERMINATE: {
+            JanetBuffer *b = janet_unwrap_buffer(argv[n]);
             /* Ensure trailing 0 */
             janet_buffer_push_u8(b, 0);
             b->count--;
-            if (strlen((char *)b->data) != (size_t) b->count) goto badzeros;
-            return (const char *) b->data;
+            cstr = (const char *) b->data;
+            len = b->count;
+            break;
+        }
+        default: {
+            JanetByteView view = janet_getbytes(argv, n);
+            cstr = (const char *) view.bytes;
+            len = view.len;
+            break;
         }
     }
-    JanetByteView view = janet_getbytes(argv, n);
-    const char *cstr = (const char *)view.bytes;
-    if (strlen(cstr) != (size_t) view.len) goto badzeros;
+    if (!janet_arg_zeros(cstr, len, &fault)) janet_arg_raise(argv, &fault);
     return cstr;
-
-badzeros:
-    janet_panic("bytes contain embedded 0s");
 }
 
 const char *janet_optcbytes(const Janet *argv, int32_t argc, int32_t n, const char *dflt) {
-    if (n >= argc || janet_checktype(argv[n], JANET_NIL)) {
-        return dflt;
-    }
+    if (janet_arg_isdefault(argv, argc, n)) return dflt;
     return janet_getcbytes(argv, n);
 }
 
-int32_t janet_getnat(const Janet *argv, int32_t n) {
-    Janet x = argv[n];
-    if (!janet_checkint(x)) goto bad;
-    int32_t ret = janet_unwrap_integer(x);
-    if (ret < 0) goto bad;
-    return ret;
-bad:
-    janet_panicf("bad slot #%d, expected non-negative 32 bit signed integer, got %v", n, x);
-}
+DEFINE_ARG_GETTER(nat, int32_t)
+DEFINE_ARG_GETTER(integer, int32_t)
+DEFINE_ARG_GETTER(uinteger, uint32_t)
+DEFINE_ARG_GETTER(integer16, int16_t)
+DEFINE_ARG_GETTER(uinteger16, uint16_t)
+DEFINE_ARG_GETTER(integer8, int8_t)
+DEFINE_ARG_GETTER(uinteger8, uint8_t)
+DEFINE_ARG_GETTER(float, float)
+DEFINE_ARG_GETTER(size, size_t)
 
-JanetAbstract janet_checkabstract(Janet x, const JanetAbstractType *at) {
-    if (!janet_checktype(x, JANET_ABSTRACT)) return NULL;
-    JanetAbstract a = janet_unwrap_abstract(x);
-    if (janet_abstract_type(a) != at) return NULL;
-    return a;
-}
+#undef DEFINE_ARG_GETTER
 
-static int janet_strlike_cmp(JanetType type, Janet x, const char *cstring) {
-    if (janet_type(x) != type) return 0;
-    return !janet_cstrcmp(janet_unwrap_string(x), cstring);
-}
-
-int janet_keyeq(Janet x, const char *cstring) {
-    return janet_strlike_cmp(JANET_KEYWORD, x, cstring);
-}
-
-int janet_streq(Janet x, const char *cstring) {
-    return janet_strlike_cmp(JANET_STRING, x, cstring);
-}
-
-int janet_symeq(Janet x, const char *cstring) {
-    return janet_strlike_cmp(JANET_SYMBOL, x, cstring);
-}
-
-int32_t janet_getinteger(const Janet *argv, int32_t n) {
-    Janet x = argv[n];
-    if (!janet_checkint(x)) {
-        janet_panicf("bad slot #%d, expected 32 bit signed integer, got %v", n, x);
-    }
-    return janet_unwrap_integer(x);
-}
-
-uint32_t janet_getuinteger(const Janet *argv, int32_t n) {
-    Janet x = argv[n];
-    if (!janet_checkuint(x)) {
-        janet_panicf("bad slot #%d, expected 32 bit unsigned integer, got %v", n, x);
-    }
-    return (uint32_t) janet_unwrap_number(x);
-}
-
-int16_t janet_getinteger16(const Janet *argv, int32_t n) {
-    Janet x = argv[n];
-    if (!janet_checkint16(x)) {
-        janet_panicf("bad slot #%d, expected 16 bit signed integer, got %v", n, x);
-    }
-    return (int16_t) janet_unwrap_number(x);
-}
-
-uint16_t janet_getuinteger16(const Janet *argv, int32_t n) {
-    Janet x = argv[n];
-    if (!janet_checkuint16(x)) {
-        janet_panicf("bad slot #%d, expected 16 bit unsigned integer, got %v", n, x);
-    }
-    return (uint16_t) janet_unwrap_number(x);
-}
-
-int8_t janet_getinteger8(const Janet *argv, int32_t n) {
-    Janet x = argv[n];
-    if (!janet_checkint8(x)) {
-        janet_panicf("bad slot #%d, expected 8 bit signed integer, got %v", n, x);
-    }
-    return (int16_t) janet_unwrap_number(x);
-}
-
-uint8_t janet_getuinteger8(const Janet *argv, int32_t n) {
-    Janet x = argv[n];
-    if (!janet_checkuint8(x)) {
-        janet_panicf("bad slot #%d, expected 8 bit unsigned integer, got %v", n, x);
-    }
-    return (uint16_t) janet_unwrap_number(x);
-}
-
-float janet_getfloat(const Janet *argv, int32_t n) {
-    Janet x = argv[n];
-    if (!janet_checkfloat(x)) {
-        janet_panicf("bad slot #%d, expected float number, got %v", n, x);
-    }
-    return (float) janet_unwrap_number(x);
-}
-
-int64_t janet_getinteger64(const Janet *argv, int32_t n) {
 #ifdef JANET_INT_TYPES
+/* With integer types enabled these accept an int/s64 or int/u64 abstract as
+ * well as a number, and janet_unwrap_s64 raises its own message. There is no
+ * fault for a kernel to report, so the whole body stays here. */
+int64_t janet_getinteger64(const Janet *argv, int32_t n) {
     return janet_unwrap_s64(argv[n]);
-#else
-    Janet x = argv[n];
-    if (!janet_checkint64(x)) {
-        janet_panicf("bad slot #%d, expected 64 bit signed integer, got %v", n, x);
-    }
-    return (int64_t) janet_unwrap_number(x);
-#endif
 }
 
 uint64_t janet_getuinteger64(const Janet *argv, int32_t n) {
-#ifdef JANET_INT_TYPES
     return janet_unwrap_u64(argv[n]);
+}
 #else
-    Janet x = argv[n];
-    if (!janet_checkuint64(x)) {
-        janet_panicf("bad slot #%d, expected 64 bit unsigned integer, got %v", n, x);
-    }
-    return (uint64_t) janet_unwrap_number(x);
-#endif
+int64_t janet_getinteger64(const Janet *argv, int32_t n) {
+    int64_t out;
+    JanetArgFault fault;
+    if (!janet_arg_integer64(argv, n, &out, &fault)) janet_arg_raise(argv, &fault);
+    return out;
 }
 
-size_t janet_getsize(const Janet *argv, int32_t n) {
-    Janet x = argv[n];
-    if (!janet_checksize(x)) {
-        janet_panicf("bad slot #%d, expected size, got %v", n, x);
-    }
-    return (size_t) janet_unwrap_number(x);
+uint64_t janet_getuinteger64(const Janet *argv, int32_t n) {
+    uint64_t out;
+    JanetArgFault fault;
+    if (!janet_arg_uinteger64(argv, n, &out, &fault)) janet_arg_raise(argv, &fault);
+    return out;
+}
+#endif
+
+JanetAbstract janet_checkabstract(Janet x, const JanetAbstractType *at) {
+    void *out;
+    JanetArgFault fault;
+    if (!janet_arg_abstract(&x, 0, at, &out, &fault)) return NULL;
+    return out;
+}
+
+int janet_keyeq(Janet x, const char *cstring) {
+    return janet_arg_strlike(JANET_KEYWORD, x, cstring);
+}
+
+int janet_streq(Janet x, const char *cstring) {
+    return janet_arg_strlike(JANET_STRING, x, cstring);
+}
+
+int janet_symeq(Janet x, const char *cstring) {
+    return janet_arg_strlike(JANET_SYMBOL, x, cstring);
 }
 
 int32_t janet_gethalfrange(const Janet *argv, int32_t n, int32_t length, const char *which) {
-    int32_t raw = janet_getinteger(argv, n);
-    int32_t not_raw = raw;
-    if (not_raw < 0) not_raw += length + 1;
-    if (not_raw < 0 || not_raw > length)
-        janet_panicf("%s index %d out of range [%d,%d]", which, (int64_t) raw, -(int64_t)length - 1, (int64_t) length);
-    return not_raw;
+    int32_t out;
+    JanetArgFault fault;
+    if (!janet_arg_halfrange(argv, n, length, which, &out, &fault)) janet_arg_raise(argv, &fault);
+    return out;
 }
 
 int32_t janet_getstartrange(const Janet *argv, int32_t argc, int32_t n, int32_t length) {
-    if (n >= argc || janet_checktype(argv[n], JANET_NIL)) {
-        return 0;
-    }
+    if (janet_arg_isdefault(argv, argc, n)) return 0;
     return janet_gethalfrange(argv, n, length, "start");
 }
 
 int32_t janet_getendrange(const Janet *argv, int32_t argc, int32_t n, int32_t length) {
-    if (n >= argc || janet_checktype(argv[n], JANET_NIL)) {
-        return length;
-    }
+    if (janet_arg_isdefault(argv, argc, n)) return length;
     return janet_gethalfrange(argv, n, length, "end");
 }
 
 int32_t janet_getargindex(const Janet *argv, int32_t n, int32_t length, const char *which) {
-    int32_t raw = janet_getinteger(argv, n);
-    int32_t not_raw = raw;
-    if (not_raw < 0) not_raw += length;
-    if (not_raw < 0 || not_raw > length)
-        janet_panicf("%s index %d out of range [%d,%d)", which, (int64_t)raw, -(int64_t)length, (int64_t)length);
-    return not_raw;
+    int32_t out;
+    JanetArgFault fault;
+    if (!janet_arg_argindex(argv, n, length, which, &out, &fault)) janet_arg_raise(argv, &fault);
+    return out;
 }
 
 JanetView janet_getindexed(const Janet *argv, int32_t n) {
-    Janet x = argv[n];
     JanetView view;
-    if (!janet_indexed_view(x, &view.items, &view.len)) {
-        janet_panic_type(x, n, JANET_TFLAG_INDEXED);
-    }
+    JanetArgFault fault;
+    if (!janet_arg_indexed(argv, n, &view, &fault)) janet_arg_raise(argv, &fault);
     return view;
 }
 
+/* The abstract branch runs the type's `bytes` callback, which is third-party
+ * code and may panic, so it runs here and not in the kernel. */
 JanetByteView janet_getbytes(const Janet *argv, int32_t n) {
-    Janet x = argv[n];
     JanetByteView view;
-    if (!janet_bytes_view(x, &view.bytes, &view.len)) {
-        janet_panic_type(x, n, JANET_TFLAG_BYTES);
+    JanetArgFault fault;
+    switch (janet_arg_bytes(argv[n], n, &view, &fault)) {
+        case JANET_ARG_BYTES_STRING:
+        case JANET_ARG_BYTES_BUFFER:
+            return view;
+        case JANET_ARG_BYTES_ABSTRACT: {
+            void *abst = janet_unwrap_abstract(argv[n]);
+            return janet_abstract_type(abst)->bytes(abst, janet_abstract_size(abst));
+        }
+        default:
+            janet_arg_raise(argv, &fault);
     }
-    return view;
 }
 
 JanetDictView janet_getdictionary(const Janet *argv, int32_t n) {
-    Janet x = argv[n];
     JanetDictView view;
-    if (!janet_dictionary_view(x, &view.kvs, &view.len, &view.cap)) {
-        janet_panic_type(x, n, JANET_TFLAG_DICTIONARY);
-    }
+    JanetArgFault fault;
+    if (!janet_arg_dictionary(argv, n, &view, &fault)) janet_arg_raise(argv, &fault);
     return view;
 }
 
 void *janet_getabstract(const Janet *argv, int32_t n, const JanetAbstractType *at) {
-    Janet x = argv[n];
-    if (!janet_checktype(x, JANET_ABSTRACT)) {
-        janet_panic_abstract(x, n, at);
-    }
-    void *abstractx = janet_unwrap_abstract(x);
-    if (janet_abstract_type(abstractx) != at) {
-        janet_panic_abstract(x, n, at);
-    }
-    return abstractx;
+    void *out;
+    JanetArgFault fault;
+    if (!janet_arg_abstract(argv, n, at, &out, &fault)) janet_arg_raise(argv, &fault);
+    return out;
 }
 
 JanetRange janet_getslice(int32_t argc, const Janet *argv) {
@@ -564,67 +932,33 @@ JanetFunction *janet_thunk_delay(Janet x) {
 }
 
 uint64_t janet_getflags(const Janet *argv, int32_t n, const char *flags) {
-    uint64_t ret = 0;
     const uint8_t *keyw = janet_getkeyword(argv, n);
-    int32_t klen = janet_string_length(keyw);
-    int32_t flen = (int32_t) strlen(flags);
-    if (flen > 64) {
-        flen = 64;
+    uint64_t out;
+    JanetArgFault fault;
+    if (!janet_arg_flags(keyw, janet_string_length(keyw), flags, &out, &fault)) {
+        janet_arg_raise(argv, &fault);
     }
-    for (int32_t j = 0; j < klen; j++) {
-        for (int32_t i = 0; i < flen; i++) {
-            if (((uint8_t) flags[i]) == keyw[j]) {
-                ret |= 1ULL << i;
-                goto found;
-            }
-        }
-        janet_panicf("unexpected flag %c, expected one of \"%s\"", (char) keyw[j], flags);
-    found:
-        ;
-    }
-    return ret;
+    return out;
 }
 
-int32_t janet_optnat(const Janet *argv, int32_t argc, int32_t n, int32_t dflt) {
-    if (argc <= n) return dflt;
-    if (janet_checktype(argv[n], JANET_NIL)) return dflt;
-    return janet_getnat(argv, n);
+#define DEFINE_ARG_OPT(name, type) \
+type janet_opt##name(const Janet *argv, int32_t argc, int32_t n, type dflt) { \
+    if (janet_arg_isdefault(argv, argc, n)) return dflt; \
+    return janet_get##name(argv, n); \
 }
 
-int32_t janet_optinteger(const Janet *argv, int32_t argc, int32_t n, int32_t dflt) {
-    if (argc <= n) return dflt;
-    if (janet_checktype(argv[n], JANET_NIL)) return dflt;
-    return janet_getinteger(argv, n);
-}
+DEFINE_ARG_OPT(nat, int32_t)
+DEFINE_ARG_OPT(integer, int32_t)
+DEFINE_ARG_OPT(integer64, int64_t)
+DEFINE_ARG_OPT(size, size_t)
+DEFINE_ARG_OPT(uinteger, uint32_t)
+DEFINE_ARG_OPT(uinteger64, uint64_t)
 
-int64_t janet_optinteger64(const Janet *argv, int32_t argc, int32_t n, int64_t dflt) {
-    if (argc <= n) return dflt;
-    if (janet_checktype(argv[n], JANET_NIL)) return dflt;
-    return janet_getinteger64(argv, n);
-}
-
-size_t janet_optsize(const Janet *argv, int32_t argc, int32_t n, size_t dflt) {
-    if (argc <= n) return dflt;
-    if (janet_checktype(argv[n], JANET_NIL)) return dflt;
-    return janet_getsize(argv, n);
-}
+#undef DEFINE_ARG_OPT
 
 void *janet_optabstract(const Janet *argv, int32_t argc, int32_t n, const JanetAbstractType *at, void *dflt) {
-    if (argc <= n) return dflt;
-    if (janet_checktype(argv[n], JANET_NIL)) return dflt;
+    if (janet_arg_isdefault(argv, argc, n)) return dflt;
     return janet_getabstract(argv, n, at);
-}
-
-uint32_t janet_optuinteger(const Janet *argv, int32_t argc, int32_t n, uint32_t dflt) {
-    if (argc <= n) return dflt;
-    if (janet_checktype(argv[n], JANET_NIL)) return dflt;
-    return janet_getuinteger(argv, n);
-}
-
-uint64_t janet_optuinteger64(const Janet *argv, int32_t argc, int32_t n, uint64_t dflt) {
-    if (argc <= n) return dflt;
-    if (janet_checktype(argv[n], JANET_NIL)) return dflt;
-    return janet_getuinteger64(argv, n);
 }
 
 /* Atomic refcounts */

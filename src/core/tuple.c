@@ -28,6 +28,8 @@
 #include "util.h"
 #endif
 
+#ifndef JANET_ZIG_STRING_SYMBOL
+
 /* Create a new empty tuple of the given size. This will return memory
  * which should be filled with Janets. The memory will not be collected until
  * janet_tuple_end is called. */
@@ -52,6 +54,8 @@ const Janet *janet_tuple_n(const Janet *values, int32_t n) {
     safe_memcpy(t, values, sizeof(Janet) * n);
     return janet_tuple_end(t);
 }
+
+#endif /* JANET_ZIG_STRING_SYMBOL */
 
 /* C Functions */
 

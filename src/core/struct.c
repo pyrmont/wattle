@@ -28,6 +28,8 @@
 #include <math.h>
 #endif
 
+#ifndef JANET_ZIG_STRUCT_TABLE
+
 /* Begin creation of a struct */
 JanetKV *janet_struct_begin(int32_t count) {
     /* Calculate capacity as power of 2 after 2 * count. */
@@ -201,6 +203,8 @@ JanetTable *janet_struct_to_table(const JanetKV *st) {
     }
     return table;
 }
+
+#endif /* JANET_ZIG_STRUCT_TABLE */
 
 /* C Functions */
 

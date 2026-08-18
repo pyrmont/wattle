@@ -818,127 +818,83 @@ Janet janet_resolve_core(const char *name) {
     return out;
 }
 
+/* The three view constructors and the ten numeric predicates below are the
+ * substrate the janet_get* layer is built on, and they move with it: see
+ * src/core/state.h for why that layer reports a fault instead of formatting
+ * one. Only the predicates are guarded, because all three views are public API
+ * with a fixed signature and janet_bytes_view has to be able to run an
+ * abstract type's `bytes` callback itself. */
+
 /* Read both tuples and arrays as c pointers + int32_t length. Return 1 if the
  * view can be constructed, 0 if an invalid type. */
 int janet_indexed_view(Janet seq, const Janet **data, int32_t *len) {
-    if (janet_checktype(seq, JANET_ARRAY)) {
-        *data = janet_unwrap_array(seq)->data;
-        *len = janet_unwrap_array(seq)->count;
-        return 1;
-    } else if (janet_checktype(seq, JANET_TUPLE)) {
-        *data = janet_unwrap_tuple(seq);
-        *len = janet_tuple_length(janet_unwrap_tuple(seq));
-        return 1;
-    }
-    return 0;
+    JanetView view;
+    JanetArgFault fault;
+    if (!janet_arg_indexed(&seq, 0, &view, &fault)) return 0;
+    *data = view.items;
+    *len = view.len;
+    return 1;
 }
 
 /* Read both strings and buffer as unsigned character array + int32_t len.
  * Returns 1 if the view can be constructed and 0 if the type is invalid. */
 int janet_bytes_view(Janet str, const uint8_t **data, int32_t *len) {
-    JanetType t = janet_type(str);
-    if (t == JANET_STRING || t == JANET_SYMBOL || t == JANET_KEYWORD) {
-        *data = janet_unwrap_string(str);
-        *len = janet_string_length(janet_unwrap_string(str));
-        return 1;
-    } else if (t == JANET_BUFFER) {
-        *data = janet_unwrap_buffer(str)->data;
-        *len = janet_unwrap_buffer(str)->count;
-        return 1;
-    } else if (t == JANET_ABSTRACT) {
-        void *abst = janet_unwrap_abstract(str);
-        const JanetAbstractType *atype = janet_abstract_type(abst);
-        if (NULL == atype->bytes) {
-            return 0;
+    JanetByteView view;
+    JanetArgFault fault;
+    switch (janet_arg_bytes(str, 0, &view, &fault)) {
+        case JANET_ARG_BYTES_STRING:
+        case JANET_ARG_BYTES_BUFFER:
+            break;
+        case JANET_ARG_BYTES_ABSTRACT: {
+            /* Third-party code, and the reason the classification above is a
+             * separate step: it may panic, and the frame that classified must
+             * not be jumped through once it is Zig. */
+            void *abst = janet_unwrap_abstract(str);
+            view = janet_abstract_type(abst)->bytes(abst, janet_abstract_size(abst));
+            break;
         }
-        JanetByteView view = atype->bytes(abst, janet_abstract_size(abst));
-        *data = view.bytes;
-        *len = view.len;
-        return 1;
+        default:
+            return 0;
     }
-    return 0;
+    *data = view.bytes;
+    *len = view.len;
+    return 1;
 }
 
 /* Read both structs and tables as the entries of a hashtable with
  * identical structure. Returns 1 if the view can be constructed and
  * 0 if the type is invalid. */
 int janet_dictionary_view(Janet tab, const JanetKV **data, int32_t *len, int32_t *cap) {
-    if (janet_checktype(tab, JANET_TABLE)) {
-        *data = janet_unwrap_table(tab)->data;
-        *cap = janet_unwrap_table(tab)->capacity;
-        *len = janet_unwrap_table(tab)->count;
-        return 1;
-    } else if (janet_checktype(tab, JANET_STRUCT)) {
-        *data = janet_unwrap_struct(tab);
-        *cap = janet_struct_capacity(janet_unwrap_struct(tab));
-        *len = janet_struct_length(janet_unwrap_struct(tab));
-        return 1;
-    }
-    return 0;
+    JanetDictView view;
+    JanetArgFault fault;
+    if (!janet_arg_dictionary(&tab, 0, &view, &fault)) return 0;
+    *data = view.kvs;
+    *len = view.len;
+    *cap = view.cap;
+    return 1;
 }
 
-int janet_checkint(Janet x) {
-    if (!janet_checktype(x, JANET_NUMBER))
-        return 0;
-    double dval = janet_unwrap_number(x);
-    return janet_checkintrange(dval);
+#ifndef JANET_ZIG_ARGS_CORE
+
+#define DEFINE_CHECK(name, range) \
+int janet_check##name(Janet x) { \
+    if (!janet_checktype(x, JANET_NUMBER)) \
+        return 0; \
+    double dval = janet_unwrap_number(x); \
+    return range(dval); \
 }
 
-int janet_checkuint(Janet x) {
-    if (!janet_checktype(x, JANET_NUMBER))
-        return 0;
-    double dval = janet_unwrap_number(x);
-    return janet_checkuintrange(dval);
-}
+DEFINE_CHECK(int, janet_checkintrange)
+DEFINE_CHECK(uint, janet_checkuintrange)
+DEFINE_CHECK(int64, janet_checkint64range)
+DEFINE_CHECK(uint64, janet_checkuint64range)
+DEFINE_CHECK(int16, janet_checkint16range)
+DEFINE_CHECK(uint16, janet_checkuint16range)
+DEFINE_CHECK(int8, janet_checkint8range)
+DEFINE_CHECK(uint8, janet_checkuint8range)
+DEFINE_CHECK(float, janet_checkfloatrange)
 
-int janet_checkint64(Janet x) {
-    if (!janet_checktype(x, JANET_NUMBER))
-        return 0;
-    double dval = janet_unwrap_number(x);
-    return janet_checkint64range(dval);
-}
-
-int janet_checkuint64(Janet x) {
-    if (!janet_checktype(x, JANET_NUMBER))
-        return 0;
-    double dval = janet_unwrap_number(x);
-    return janet_checkuint64range(dval);
-}
-
-int janet_checkint16(Janet x) {
-    if (!janet_checktype(x, JANET_NUMBER))
-        return 0;
-    double dval = janet_unwrap_number(x);
-    return janet_checkint16range(dval);
-}
-
-int janet_checkuint16(Janet x) {
-    if (!janet_checktype(x, JANET_NUMBER))
-        return 0;
-    double dval = janet_unwrap_number(x);
-    return janet_checkuint16range(dval);
-}
-
-int janet_checkint8(Janet x) {
-    if (!janet_checktype(x, JANET_NUMBER))
-        return 0;
-    double dval = janet_unwrap_number(x);
-    return janet_checkint8range(dval);
-}
-
-int janet_checkuint8(Janet x) {
-    if (!janet_checktype(x, JANET_NUMBER))
-        return 0;
-    double dval = janet_unwrap_number(x);
-    return janet_checkuint8range(dval);
-}
-
-int janet_checkfloat(Janet x) {
-    if (!janet_checktype(x, JANET_NUMBER))
-        return 0;
-    double dval = janet_unwrap_number(x);
-    return janet_checkfloatrange(dval);
-}
+#undef DEFINE_CHECK
 
 int janet_checksize(Janet x) {
     if (!janet_checktype(x, JANET_NUMBER))
@@ -955,6 +911,8 @@ int janet_checksize(Janet x) {
     }
 #endif
 }
+
+#endif /* JANET_ZIG_ARGS_CORE */
 
 JanetTable *janet_get_core_table(const char *name) {
     JanetTable *env = janet_core_env(NULL);

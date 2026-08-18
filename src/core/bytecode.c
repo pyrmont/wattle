@@ -533,6 +533,8 @@ int janet_verify(JanetFuncDef *def) {
 }
 #endif
 
+#ifndef JANET_ZIG_VALUE_ALLOC
+
 /* Allocate an empty funcdef. This function may have added functionality
  * as commonalities between asm and compile arise. */
 JanetFuncDef *janet_funcdef_alloc(void) {
@@ -567,3 +569,5 @@ JanetFunction *janet_thunk(JanetFuncDef *def) {
     janet_assert(def->environments_length == 0, "tried to create thunk that needs upvalues");
     return func;
 }
+
+#endif /* JANET_ZIG_VALUE_ALLOC */

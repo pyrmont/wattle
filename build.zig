@@ -147,11 +147,24 @@ const BuildOptions = struct {
     ffi_layout: SubsystemImplementation,
     ffi_classify: SubsystemImplementation,
     filewatch_flags: SubsystemImplementation,
+    args_core: SubsystemImplementation,
     vm_state: SubsystemImplementation,
     fiber_core: SubsystemImplementation,
     signal_core: SubsystemImplementation,
     trace_frames: SubsystemImplementation,
+    gc_alloc: SubsystemImplementation,
+    gc_mark: SubsystemImplementation,
+    gc_sweep: SubsystemImplementation,
+    buffer_array: SubsystemImplementation,
+    string_symbol: SubsystemImplementation,
+    struct_table: SubsystemImplementation,
+    value_order: SubsystemImplementation,
+    value_access: SubsystemImplementation,
+    abstract_core: SubsystemImplementation,
+    value_alloc: SubsystemImplementation,
+    value_wrap: SubsystemImplementation,
     install_tests: bool,
+    sanitize_thread: bool,
     single_threaded: bool,
     nanbox: bool,
     nanbox_pointer_shift: ?i32,
@@ -217,10 +230,22 @@ const RuntimeSubsystems = struct {
     ffi_layout: ?*std.Build.Step.Compile,
     ffi_classify: ?*std.Build.Step.Compile,
     filewatch_flags: ?*std.Build.Step.Compile,
+    args_core: ?*std.Build.Step.Compile,
     vm_state: ?*std.Build.Step.Compile,
     fiber_core: ?*std.Build.Step.Compile,
     signal_core: ?*std.Build.Step.Compile,
     trace_frames: ?*std.Build.Step.Compile,
+    gc_alloc: ?*std.Build.Step.Compile,
+    gc_mark: ?*std.Build.Step.Compile,
+    gc_sweep: ?*std.Build.Step.Compile,
+    buffer_array: ?*std.Build.Step.Compile,
+    string_symbol: ?*std.Build.Step.Compile,
+    struct_table: ?*std.Build.Step.Compile,
+    value_order: ?*std.Build.Step.Compile,
+    value_access: ?*std.Build.Step.Compile,
+    abstract_core: ?*std.Build.Step.Compile,
+    value_alloc: ?*std.Build.Step.Compile,
+    value_wrap: ?*std.Build.Step.Compile,
 };
 
 pub fn build(b: *std.Build) void {
@@ -358,6 +383,54 @@ pub fn build(b: *std.Build) void {
             makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-ffi-classify-zig", "src/zig/subsystems/ffi_classify.zig")
         else
             null,
+        .args_core = if (options.args_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-args-core-zig", "src/zig/subsystems/args_core.zig")
+        else
+            null,
+        .gc_alloc = if (options.gc_alloc == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-gc-alloc-zig", "src/zig/subsystems/gc_alloc.zig")
+        else
+            null,
+        .gc_mark = if (options.gc_mark == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-gc-mark-zig", "src/zig/subsystems/gc_mark.zig")
+        else
+            null,
+        .gc_sweep = if (options.gc_sweep == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-gc-sweep-zig", "src/zig/subsystems/gc_sweep.zig")
+        else
+            null,
+        .buffer_array = if (options.buffer_array == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-buffer-array-zig", "src/zig/subsystems/buffer_array.zig")
+        else
+            null,
+        .string_symbol = if (options.string_symbol == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-string-symbol-zig", "src/zig/subsystems/string_symbol.zig")
+        else
+            null,
+        .struct_table = if (options.struct_table == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-struct-table-zig", "src/zig/subsystems/struct_table.zig")
+        else
+            null,
+        .value_order = if (options.value_order == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-value-order-zig", "src/zig/subsystems/value_order.zig")
+        else
+            null,
+        .value_access = if (options.value_access == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-value-access-zig", "src/zig/subsystems/value_access.zig")
+        else
+            null,
+        .abstract_core = if (options.abstract_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-abstract-core-zig", "src/zig/subsystems/abstract_core.zig")
+        else
+            null,
+        .value_alloc = if (options.value_alloc == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-value-alloc-zig", "src/zig/subsystems/value_alloc.zig")
+        else
+            null,
+        .value_wrap = if (options.value_wrap == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-value-wrap-zig", "src/zig/subsystems/value_wrap.zig")
+        else
+            null,
         .vm_state = if (options.vm_state == .zig)
             makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-vm-state-zig", "src/zig/subsystems/vm_state.zig")
         else
@@ -391,6 +464,13 @@ pub fn build(b: *std.Build) void {
         .cpu_model = .baseline,
     });
     const boot_module = makeCModule(b, boot_host, .Debug, config_header, options);
+    // The bootstrap compiler is a build-time tool that runs on the host, not a
+    // thing under test, and it is built for the host even when -Dtarget names
+    // something else. ThreadSanitizer is dropped from it for that reason and
+    // for a practical one: Zig's bundled libtsan needs macOS SDK headers it
+    // cannot see, so leaving it on makes -Dsanitize-thread fail on this
+    // development machine no matter which target was asked for.
+    boot_module.sanitize_thread = null;
     boot_module.addCMacro("JANET_BOOTSTRAP", "1");
     boot_module.addCSourceFiles(.{ .files = core_sources, .flags = common_c_flags });
     boot_module.addCSourceFiles(.{ .files = &.{"src/core/vector.c"}, .flags = common_c_flags });
@@ -423,7 +503,15 @@ pub fn build(b: *std.Build) void {
         .version = version,
         .root_module = shared_module,
     });
-    b.installArtifact(shared_library);
+    // A ThreadSanitizer build produces test binaries, not distributable
+    // artifacts, and it cannot produce this one: TSan gives its thread-locals
+    // the initial-exec model, and `ld.lld` rejects the resulting
+    // R_AARCH64_TLSLE_ADD_TPREL_HI12 against `debug.panic_stage` with "cannot
+    // be used with -shared". Clearing the flag on this module alone does not
+    // help, because the subsystem objects are shared with the static library
+    // and are compiled once. Nothing that TSan exists to run needs the shared
+    // object -- every contract links the static library.
+    if (!options.sanitize_thread) b.installArtifact(shared_library);
 
     // Compile the runtime directly into the Zig client so all public API
     // symbols remain available to dynamically loaded Janet modules.
@@ -790,6 +878,127 @@ pub fn build(b: *std.Build) void {
     const run_vm_state_test = b.addRunArtifact(vm_state_test);
     subsystem_step.dependOn(&run_vm_state_test.step);
 
+    const args_core_test_module = makeCModule(b, target, optimize, config_header, options);
+    args_core_test_module.addIncludePath(b.path("src/core"));
+    args_core_test_module.addCSourceFiles(.{ .files = &.{"test/args_core.c"}, .flags = test_c_flags });
+    args_core_test_module.linkLibrary(static_library);
+    const args_core_test = b.addExecutable(.{ .name = "janet-args-core-test", .root_module = args_core_test_module });
+    installTest(b, options, args_core_test);
+    const run_args_core_test = b.addRunArtifact(args_core_test);
+    subsystem_step.dependOn(&run_args_core_test.step);
+
+    const gc_alloc_test_module = makeCModule(b, target, optimize, config_header, options);
+    gc_alloc_test_module.addIncludePath(b.path("src/core"));
+    gc_alloc_test_module.addCSourceFiles(.{ .files = &.{"test/gc_alloc.c"}, .flags = test_c_flags });
+    gc_alloc_test_module.linkLibrary(static_library);
+    const gc_alloc_test = b.addExecutable(.{ .name = "janet-gc-alloc-test", .root_module = gc_alloc_test_module });
+    installTest(b, options, gc_alloc_test);
+    const run_gc_alloc_test = b.addRunArtifact(gc_alloc_test);
+    subsystem_step.dependOn(&run_gc_alloc_test.step);
+
+    const gc_mark_test_module = makeCModule(b, target, optimize, config_header, options);
+    gc_mark_test_module.addIncludePath(b.path("src/core"));
+    gc_mark_test_module.addCSourceFiles(.{ .files = &.{"test/gc_mark.c"}, .flags = test_c_flags });
+    gc_mark_test_module.linkLibrary(static_library);
+    const gc_mark_test = b.addExecutable(.{ .name = "janet-gc-mark-test", .root_module = gc_mark_test_module });
+    installTest(b, options, gc_mark_test);
+    const run_gc_mark_test = b.addRunArtifact(gc_mark_test);
+    subsystem_step.dependOn(&run_gc_mark_test.step);
+
+    const gc_sweep_test_module = makeCModule(b, target, optimize, config_header, options);
+    gc_sweep_test_module.addIncludePath(b.path("src/core"));
+    gc_sweep_test_module.addCSourceFiles(.{ .files = &.{"test/gc_sweep.c"}, .flags = test_c_flags });
+    gc_sweep_test_module.linkLibrary(static_library);
+    const gc_sweep_test = b.addExecutable(.{ .name = "janet-gc-sweep-test", .root_module = gc_sweep_test_module });
+    installTest(b, options, gc_sweep_test);
+    const run_gc_sweep_test = b.addRunArtifact(gc_sweep_test);
+    subsystem_step.dependOn(&run_gc_sweep_test.step);
+
+    const buffer_array_test_module = makeCModule(b, target, optimize, config_header, options);
+    buffer_array_test_module.addIncludePath(b.path("src/core"));
+    buffer_array_test_module.addCSourceFiles(.{ .files = &.{"test/buffer_array.c"}, .flags = test_c_flags });
+    buffer_array_test_module.linkLibrary(static_library);
+    const buffer_array_test = b.addExecutable(.{ .name = "janet-buffer-array-test", .root_module = buffer_array_test_module });
+    installTest(b, options, buffer_array_test);
+    const run_buffer_array_test = b.addRunArtifact(buffer_array_test);
+    subsystem_step.dependOn(&run_buffer_array_test.step);
+
+    const string_symbol_test_module = makeCModule(b, target, optimize, config_header, options);
+    string_symbol_test_module.addIncludePath(b.path("src/core"));
+    string_symbol_test_module.addCSourceFiles(.{ .files = &.{"test/string_symbol.c"}, .flags = test_c_flags });
+    string_symbol_test_module.linkLibrary(static_library);
+    const string_symbol_test = b.addExecutable(.{ .name = "janet-string-symbol-test", .root_module = string_symbol_test_module });
+    installTest(b, options, string_symbol_test);
+    const run_string_symbol_test = b.addRunArtifact(string_symbol_test);
+    subsystem_step.dependOn(&run_string_symbol_test.step);
+
+    const struct_table_test_module = makeCModule(b, target, optimize, config_header, options);
+    struct_table_test_module.addIncludePath(b.path("src/core"));
+    struct_table_test_module.addCSourceFiles(.{ .files = &.{"test/struct_table.c"}, .flags = test_c_flags });
+    struct_table_test_module.linkLibrary(static_library);
+    const struct_table_test = b.addExecutable(.{ .name = "janet-struct-table-test", .root_module = struct_table_test_module });
+    installTest(b, options, struct_table_test);
+    const run_struct_table_test = b.addRunArtifact(struct_table_test);
+    subsystem_step.dependOn(&run_struct_table_test.step);
+
+    const value_order_test_module = makeCModule(b, target, optimize, config_header, options);
+    value_order_test_module.addIncludePath(b.path("src/core"));
+    value_order_test_module.addCSourceFiles(.{ .files = &.{"test/value_order.c"}, .flags = test_c_flags });
+    value_order_test_module.linkLibrary(static_library);
+    const value_order_test = b.addExecutable(.{ .name = "janet-value-order-test", .root_module = value_order_test_module });
+    installTest(b, options, value_order_test);
+    const run_value_order_test = b.addRunArtifact(value_order_test);
+    subsystem_step.dependOn(&run_value_order_test.step);
+
+    const value_access_test_module = makeCModule(b, target, optimize, config_header, options);
+    value_access_test_module.addIncludePath(b.path("src/core"));
+    value_access_test_module.addCSourceFiles(.{ .files = &.{"test/value_access.c"}, .flags = test_c_flags });
+    value_access_test_module.linkLibrary(static_library);
+    const value_access_test = b.addExecutable(.{ .name = "janet-value-access-test", .root_module = value_access_test_module });
+    installTest(b, options, value_access_test);
+    const run_value_access_test = b.addRunArtifact(value_access_test);
+    subsystem_step.dependOn(&run_value_access_test.step);
+
+    const abstract_core_test_module = makeCModule(b, target, optimize, config_header, options);
+    abstract_core_test_module.addIncludePath(b.path("src/core"));
+    abstract_core_test_module.addCSourceFiles(.{ .files = &.{"test/abstract_core.c"}, .flags = test_c_flags });
+    abstract_core_test_module.linkLibrary(static_library);
+    const abstract_core_test = b.addExecutable(.{ .name = "janet-abstract-core-test", .root_module = abstract_core_test_module });
+    installTest(b, options, abstract_core_test);
+    const run_abstract_core_test = b.addRunArtifact(abstract_core_test);
+    subsystem_step.dependOn(&run_abstract_core_test.step);
+
+    const value_alloc_test_module = makeCModule(b, target, optimize, config_header, options);
+    value_alloc_test_module.addIncludePath(b.path("src/core"));
+    value_alloc_test_module.addCSourceFiles(.{ .files = &.{"test/value_alloc.c"}, .flags = test_c_flags });
+    value_alloc_test_module.linkLibrary(static_library);
+    const value_alloc_test = b.addExecutable(.{ .name = "janet-value-alloc-test", .root_module = value_alloc_test_module });
+    installTest(b, options, value_alloc_test);
+    const run_value_alloc_test = b.addRunArtifact(value_alloc_test);
+    subsystem_step.dependOn(&run_value_alloc_test.step);
+
+    const value_wrap_test_module = makeCModule(b, target, optimize, config_header, options);
+    value_wrap_test_module.addIncludePath(b.path("src/core"));
+    value_wrap_test_module.addCSourceFiles(.{ .files = &.{"test/value_wrap.c"}, .flags = test_c_flags });
+    value_wrap_test_module.linkLibrary(static_library);
+    const value_wrap_test = b.addExecutable(.{ .name = "janet-value-wrap-test", .root_module = value_wrap_test_module });
+    installTest(b, options, value_wrap_test);
+    const run_value_wrap_test = b.addRunArtifact(value_wrap_test);
+    subsystem_step.dependOn(&run_value_wrap_test.step);
+
+    // Not a subsystem contract and deliberately not selectable: this covers the
+    // two stress bullets of Phase 8's exit gate that no single increment owns.
+    // It leaks on purpose -- see its header -- so the leak-checker gate must
+    // skip it.
+    const gc_stress_test_module = makeCModule(b, target, optimize, config_header, options);
+    gc_stress_test_module.addIncludePath(b.path("src/core"));
+    gc_stress_test_module.addCSourceFiles(.{ .files = &.{"test/gc_stress.c"}, .flags = test_c_flags });
+    gc_stress_test_module.linkLibrary(static_library);
+    const gc_stress_test = b.addExecutable(.{ .name = "janet-gc-stress-test", .root_module = gc_stress_test_module });
+    installTest(b, options, gc_stress_test);
+    const run_gc_stress_test = b.addRunArtifact(gc_stress_test);
+    subsystem_step.dependOn(&run_gc_stress_test.step);
+
     const signal_core_test_module = makeCModule(b, target, optimize, config_header, options);
     signal_core_test_module.addIncludePath(b.path("src/core"));
     signal_core_test_module.addCSourceFiles(.{ .files = &.{"test/signal_core.c"}, .flags = test_c_flags });
@@ -837,7 +1046,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(subsystem_step);
     addCliChecks(b, test_step, client, c_client);
 
-    if (options.dynamic_modules and target.result.os.tag != .windows) {
+    // The native-module fixture is a dynamic library and is skipped under TSan
+    // for the same reason the shared library is; see there.
+    if (options.dynamic_modules and target.result.os.tag != .windows and !options.sanitize_thread) {
         const run_native_test = b.addRunArtifact(client);
         run_native_test.setCwd(b.path("."));
         run_native_test.addArg("test/zig-native.janet");
@@ -944,11 +1155,24 @@ fn readOptions(b: *std.Build) BuildOptions {
         .ffi_layout = b.option(SubsystemImplementation, "ffi-layout", "Select the FFI type name tables and struct layout kernels (c or zig)") orelse .zig,
         .ffi_classify = b.option(SubsystemImplementation, "ffi-classify", "Select the FFI register classification and argument allocation kernels (c or zig)") orelse .zig,
         .filewatch_flags = b.option(SubsystemImplementation, "filewatch-flags", "Select the file watcher's keyword vocabularies for every backend (c or zig)") orelse .zig,
+        .args_core = b.option(SubsystemImplementation, "args-core", "Select the argument extraction layer behind janet_get* and janet_opt* (c or zig)") orelse .zig,
+        .gc_alloc = b.option(SubsystemImplementation, "gc-alloc", "Select the collector's block allocation, root set, GC lock, and scratch allocator (c or zig)") orelse .zig,
+        .gc_mark = b.option(SubsystemImplementation, "gc-mark", "Select the collector's mark phase, recursion guard, and janet_collect (c or zig)") orelse .zig,
+        .gc_sweep = b.option(SubsystemImplementation, "gc-sweep", "Select the collector's sweep, weak heap, finalization, and janet_clear_memory (c or zig)") orelse .zig,
+        .buffer_array = b.option(SubsystemImplementation, "buffer-array", "Select the buffer and array cores (c or zig)") orelse .zig,
+        .string_symbol = b.option(SubsystemImplementation, "string-symbol", "Select the string, symbol cache, and tuple cores (c or zig)") orelse .zig,
+        .struct_table = b.option(SubsystemImplementation, "struct-table", "Select the struct and table cores, including the weak tables (c or zig)") orelse .zig,
+        .value_order = b.option(SubsystemImplementation, "value-order", "Select hashing, equality and ordering over any Janet value (c or zig)") orelse .zig,
+        .value_access = b.option(SubsystemImplementation, "value-access", "Select janet_next and the indexed and keyed accessors over any Janet value (c or zig)") orelse .zig,
+        .abstract_core = b.option(SubsystemImplementation, "abstract-core", "Select abstract value construction and the threaded abstract refcount (c or zig)") orelse .zig,
+        .value_alloc = b.option(SubsystemImplementation, "value-alloc", "Select fiber, funcdef and thunk allocation (c or zig)") orelse .zig,
+        .value_wrap = b.option(SubsystemImplementation, "value-wrap", "Select the value representation: wrap, unwrap and type checks (c or zig)") orelse .zig,
         .vm_state = b.option(SubsystemImplementation, "vm-state", "Select the thread-local JanetVM storage and the operations over it as a whole (c or zig)") orelse .zig,
         .fiber_core = b.option(SubsystemImplementation, "fiber-core", "Select the fiber stack frame, funcframe, and function environment machinery (c or zig)") orelse .zig,
         .signal_core = b.option(SubsystemImplementation, "signal-core", "Select the try scope, signal decision, and signal injection machinery (c or zig)") orelse .zig,
         .trace_frames = b.option(SubsystemImplementation, "trace-frames", "Select the stack frame decoding behind stack traces (c or zig)") orelse .zig,
         .install_tests = b.option(bool, "install-tests", "Install the C contract test executables so they can be run on another machine") orelse false,
+        .sanitize_thread = b.option(bool, "sanitize-thread", "Build with ThreadSanitizer, for the threaded-abstract and event-loop paths") orelse false,
         .single_threaded = b.option(bool, "single-threaded", "Build without thread-local VM state") orelse false,
         .nanbox = b.option(bool, "nanbox", "Use Janet's NaN-boxed value representation") orelse true,
         .nanbox_pointer_shift = pointer_shift,
@@ -1082,7 +1306,41 @@ fn configureCModule(
     module.addIncludePath(b.path("src/zig"));
     module.addIncludePath(config_header.dirname());
     module.linkSystemLibrary("c", .{});
+    applySanitizers(module, options);
     linkPlatformLibraries(module, target.result.os.tag, options.single_threaded);
+}
+
+/// The sanitizer configuration Phase 8's exit gate names, applied to every
+/// module the build makes -- the C runtime, the Zig subsystems, and the
+/// contract binaries alike.
+///
+/// **`sanitize_c` is set explicitly rather than left to the optimize mode.**
+/// Zig turns C undefined-behaviour checking on in Debug and ReleaseSafe by
+/// itself, and the tree had been relying on that: the `janet_vm` misalignment
+/// in `FOUND.md` was found by a check nobody had asked for. A check that fires
+/// by luck is not a gate, and the default is `.trap`, which aborts on a bare
+/// `ud2` with no message and no line. `.full` links the UBSan runtime and
+/// prints what was violated and where, which is the difference between a
+/// diagnosis and a core dump.
+///
+/// It is set per optimize mode rather than unconditionally, and the difference
+/// is not cosmetic: forcing `.full` everywhere puts the UBSan runtime inside
+/// ReleaseFast, which is the mode a release artifact is built in. Measured --
+/// a ReleaseFast build with `sanitize_c = .full` reports on `(gcsetinterval -1)`
+/// where the same build without it does not. The gate wants the check *named*,
+/// not the shipping binary changed, so the release modes keep the `.off` Zig
+/// would have chosen and the two checked modes say `.full` out loud.
+///
+/// `sanitize_thread` is opt-in through `-Dsanitize-thread` rather than on by
+/// default. TSan needs its own runtime and slows the suites by roughly an order
+/// of magnitude, and the paths it covers -- the threaded-abstract refcount and
+/// the event loop -- are exercised by two contracts rather than by all of them.
+fn applySanitizers(module: *std.Build.Module, options: BuildOptions) void {
+    module.sanitize_c = switch (module.optimize orelse .Debug) {
+        .Debug, .ReleaseSafe => .full,
+        .ReleaseFast, .ReleaseSmall => .off,
+    };
+    if (options.sanitize_thread) module.sanitize_thread = true;
 }
 
 fn makeRuntimeModule(
@@ -1235,6 +1493,54 @@ fn addRuntimeSources(
         module.addCMacro("JANET_ZIG_FILEWATCH_FLAGS", "1");
         module.addObject(subsystems.filewatch_flags.?);
     }
+    if (options.args_core == .zig) {
+        module.addCMacro("JANET_ZIG_ARGS_CORE", "1");
+        module.addObject(subsystems.args_core.?);
+    }
+    if (options.gc_alloc == .zig) {
+        module.addCMacro("JANET_ZIG_GC_ALLOC", "1");
+        module.addObject(subsystems.gc_alloc.?);
+    }
+    if (options.gc_mark == .zig) {
+        module.addCMacro("JANET_ZIG_GC_MARK", "1");
+        module.addObject(subsystems.gc_mark.?);
+    }
+    if (options.buffer_array == .zig) {
+        module.addCMacro("JANET_ZIG_BUFFER_ARRAY", "1");
+        module.addObject(subsystems.buffer_array.?);
+    }
+    if (options.string_symbol == .zig) {
+        module.addCMacro("JANET_ZIG_STRING_SYMBOL", "1");
+        module.addObject(subsystems.string_symbol.?);
+    }
+    if (options.value_order == .zig) {
+        module.addCMacro("JANET_ZIG_VALUE_ORDER", "1");
+        module.addObject(subsystems.value_order.?);
+    }
+    if (options.value_access == .zig) {
+        module.addCMacro("JANET_ZIG_VALUE_ACCESS", "1");
+        module.addObject(subsystems.value_access.?);
+    }
+    if (options.abstract_core == .zig) {
+        module.addCMacro("JANET_ZIG_ABSTRACT_CORE", "1");
+        module.addObject(subsystems.abstract_core.?);
+    }
+    if (options.value_alloc == .zig) {
+        module.addCMacro("JANET_ZIG_VALUE_ALLOC", "1");
+        module.addObject(subsystems.value_alloc.?);
+    }
+    if (options.value_wrap == .zig) {
+        module.addCMacro("JANET_ZIG_VALUE_WRAP", "1");
+        module.addObject(subsystems.value_wrap.?);
+    }
+    if (options.struct_table == .zig) {
+        module.addCMacro("JANET_ZIG_STRUCT_TABLE", "1");
+        module.addObject(subsystems.struct_table.?);
+    }
+    if (options.gc_sweep == .zig) {
+        module.addCMacro("JANET_ZIG_GC_SWEEP", "1");
+        module.addObject(subsystems.gc_sweep.?);
+    }
     if (options.vm_state == .zig) {
         module.addCMacro("JANET_ZIG_VM_STATE", "1");
         module.addObject(subsystems.vm_state.?);
@@ -1251,17 +1557,36 @@ fn addRuntimeSources(
         module.addCMacro("JANET_ZIG_TRACE_FRAMES", "1");
         module.addObject(subsystems.trace_frames.?);
     }
-    if (options.vector == .zig or options.regalloc == .zig or options.movopt == .zig or
-        options.parser_core == .zig or options.number_scan == .zig or
-        options.vm_state == .zig or options.fiber_core == .zig or
-        options.signal_core == .zig or options.trace_frames == .zig or
-        (hasEv(options) and options.ev_core == .zig))
-    {
+    if (hasZigSubsystem(options)) {
         module.addCSourceFiles(.{
             .files = &.{"src/zig/runtime_bridge.c"},
             .flags = common_c_flags,
         });
     }
+}
+
+/// Whether any subsystem at all is answered by Zig, computed by reflection over
+/// the selector fields rather than from a list.
+///
+/// `src/zig/runtime_bridge.c` provides `janet_zig_out_of_memory` and
+/// `janet_zig_fatal`, and nineteen subsystems call one of them. This condition
+/// used to name the ones that did, and the list went stale the moment an
+/// increment added a twentieth: ten of the nineteen were missing by Phase 8
+/// Part 10, which nothing noticed because the default build turns every
+/// subsystem on and one of the named few was always among them. Only a build
+/// selecting a single unnamed subsystem failed to link, which is exactly what a
+/// differential test does.
+///
+/// Compiling the bridge for a build that does not need it costs two unreferenced
+/// functions. Leaving a symbol out of a build that does costs a link error in
+/// one configuration out of forty-eight, discovered by whoever tries it next.
+fn hasZigSubsystem(options: BuildOptions) bool {
+    inline for (@typeInfo(BuildOptions).@"struct".fields) |field| {
+        if (field.type == SubsystemImplementation) {
+            if (@field(options, field.name) == .zig) return true;
+        }
+    }
+    return false;
 }
 
 /// `src/core/util.h` defines JANET_GETTIME unless the build is both reduced-OS
@@ -1293,6 +1618,48 @@ fn hasFilewatch(options: BuildOptions) bool {
     return hasEv(options) and options.filewatch;
 }
 
+/// A subsystem whose frames a Janet signal is allowed to jump through declares
+/// itself with `//! jump-transparent` on a line of its own, and must then hold
+/// nothing that a skipped cleanup would strand: no `defer`, no `errdefer`.
+///
+/// SPIKE-8 decided to let a third-party callback's panic jump straight past the
+/// Zig frames that invoked it, rather than catching it below each one. A probe
+/// established that the jump itself is harmless — Zig has no destructors, so a
+/// frame owning nothing is as jump-safe as a C one — and that the single
+/// casualty is `defer`, which is skipped silently. That makes the whole
+/// decision rest on a property of the source, so it is checked here rather than
+/// written down and hoped for. Two of the eight `defer`s in the tree today
+/// release a GC lock, and a skipped `janet_gcunlock` wedges the collector
+/// permanently rather than merely leaking.
+///
+/// Deliberately crude: a token scan, skipping line comments. It cannot tell
+/// which frames a signal actually reaches, so it over-approximates to the whole
+/// file, which for the collector and the value core is very nearly exact.
+fn checkJumpTransparency(b: *std.Build, source: []const u8) void {
+    const text = b.build_root.handle.readFileAlloc(b.graph.io, source, b.allocator, .limited(4 * 1024 * 1024)) catch return;
+    if (std.mem.indexOf(u8, text, "//! jump-transparent") == null) return;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var lineno: usize = 0;
+    while (lines.next()) |line| {
+        lineno += 1;
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, trimmed, "//")) continue;
+        var it = std.mem.tokenizeAny(u8, trimmed, " \t({;");
+        while (it.next()) |tok| {
+            if (std.mem.eql(u8, tok, "defer") or std.mem.eql(u8, tok, "errdefer")) {
+                std.debug.panic(
+                    "{s}:{d}: '{s}' in a jump-transparent source.\n" ++
+                        "A Janet signal may jump through these frames, which skips it silently.\n" ++
+                        "Release the resource on every path explicitly, or drop the\n" ++
+                        "'//! jump-transparent' marker and catch the signal below this frame.\n" ++
+                        "See SPIKE-8.md.",
+                    .{ source, lineno, tok },
+                );
+            }
+        }
+    }
+}
+
 fn makeZigSubsystemObject(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -1302,6 +1669,7 @@ fn makeZigSubsystemObject(
     name: []const u8,
     source: []const u8,
 ) *std.Build.Step.Compile {
+    checkJumpTransparency(b, source);
     // These objects are linked into the shared library as well as the static
     // one, and ELF shared objects require position-independent code. Mach-O is
     // always position independent, so omitting this only fails on ELF targets.

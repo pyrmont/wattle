@@ -28,8 +28,10 @@
 #include "state.h"
 #endif
 
+#ifndef JANET_ZIG_BUFFER_ARRAY
+
 /* Allow for managed buffers that cannot realloc/free their backing memory */
-static void janet_buffer_can_realloc(JanetBuffer *buffer) {
+void janet_buffer_can_realloc(JanetBuffer *buffer) {
     if (buffer->gc.flags & JANET_BUFFER_FLAG_NO_REALLOC) {
         janet_panic("buffer cannot reallocate foreign memory");
     }
@@ -190,6 +192,8 @@ void janet_buffer_push_u64(JanetBuffer *buffer, uint64_t x) {
     buffer->data[buffer->count + 7] = (x >> 56) & 0xFF;
     buffer->count += 8;
 }
+
+#endif /* JANET_ZIG_BUFFER_ARRAY */
 
 /* C functions */
 

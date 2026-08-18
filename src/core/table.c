@@ -28,6 +28,8 @@
 #include <math.h>
 #endif
 
+#ifndef JANET_ZIG_STRUCT_TABLE
+
 #define JANET_TABLE_FLAG_STACK 0x10000
 
 static void *janet_memalloc_empty_local(int32_t count) {
@@ -316,6 +318,8 @@ JanetTable *janet_table_proto_flatten(JanetTable *t) {
     }
     return newTable;
 }
+
+#endif /* JANET_ZIG_STRUCT_TABLE */
 
 /* C Functions */
 

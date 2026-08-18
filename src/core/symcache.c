@@ -36,6 +36,8 @@
 
 #include <string.h>
 
+#ifndef JANET_ZIG_STRING_SYMBOL
+
 /* Initialize the cache (allocate cache memory) */
 void janet_symcache_init() {
     janet_vm.cache_capacity = 1024;
@@ -238,3 +240,5 @@ const uint8_t *janet_symbol_gen(void) {
     janet_symcache_put((const uint8_t *)sym, bucket);
     return (const uint8_t *)sym;
 }
+
+#endif /* JANET_ZIG_STRING_SYMBOL */

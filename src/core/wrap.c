@@ -28,6 +28,8 @@
 #include "state.h"
 #endif
 
+#ifndef JANET_ZIG_VALUE_WRAP
+
 /* Macro fills */
 
 JanetType(janet_type)(Janet x) {
@@ -328,3 +330,5 @@ JANET_WRAP_DEFINE(pointer, void *, JANET_POINTER, pointer)
 #undef JANET_WRAP_DEFINE
 
 #endif
+
+#endif /* JANET_ZIG_VALUE_WRAP */

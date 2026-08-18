@@ -34,6 +34,8 @@
 #endif
 #endif
 
+#ifndef JANET_ZIG_ABSTRACT_CORE
+
 /* Create new userdata */
 void *janet_abstract_begin(const JanetAbstractType *atype, size_t size) {
     JanetAbstractHead *header = janet_gcalloc(JANET_MEMORY_NONE,
@@ -52,11 +54,15 @@ void *janet_abstract(const JanetAbstractType *atype, size_t size) {
     return janet_abstract_end(janet_abstract_begin(atype, size));
 }
 
+#endif /* JANET_ZIG_ABSTRACT_CORE */
+
 #ifdef JANET_EV
 
 /*
  * Threaded abstracts
  */
+
+#ifndef JANET_ZIG_ABSTRACT_CORE
 
 void *janet_abstract_begin_threaded(const JanetAbstractType *atype, size_t size) {
     JanetAbstractHead *header = janet_malloc(sizeof(JanetAbstractHead) + size);
@@ -82,6 +88,8 @@ void *janet_abstract_end_threaded(void *x) {
 void *janet_abstract_threaded(const JanetAbstractType *atype, size_t size) {
     return janet_abstract_end_threaded(janet_abstract_begin_threaded(atype, size));
 }
+
+#endif /* JANET_ZIG_ABSTRACT_CORE */
 
 /* Refcounting primitives and sync primitives */
 
@@ -193,6 +201,8 @@ void janet_os_rwlock_wunlock(JanetOSRWLock *rwlock) {
 
 #endif
 
+#ifndef JANET_ZIG_ABSTRACT_CORE
+
 int32_t janet_abstract_incref(void *abst) {
     return janet_atomic_inc(&janet_abstract_head(abst)->gc.data.refcount);
 }
@@ -213,5 +223,7 @@ int32_t janet_abstract_decref_maybe_free(void *abst) {
     }
     return result;
 }
+
+#endif /* JANET_ZIG_ABSTRACT_CORE */
 
 #endif

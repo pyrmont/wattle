@@ -31,6 +31,8 @@
 #include "vector.h"
 #endif
 
+#ifndef JANET_ZIG_GC_MARK
+
 /* Helpers for marking the various gc types */
 static void janet_mark_funcenv(JanetFuncEnv *env);
 static void janet_mark_funcdef(JanetFuncDef *def);
@@ -48,10 +50,18 @@ static void janet_mark_abstract(void *adata);
 static JANET_THREAD_LOCAL uint32_t depth = JANET_RECURSION_GUARD;
 static JANET_THREAD_LOCAL size_t orig_rootcount;
 
+#endif
+
+#ifndef JANET_ZIG_GC_ALLOC
+
 /* Hint to the GC that we may need to collect */
 void janet_gcpressure(size_t s) {
     janet_vm.next_collection += s;
 }
+
+#endif
+
+#ifndef JANET_ZIG_GC_MARK
 
 /* Mark a value */
 void janet_mark(Janet x) {
@@ -311,6 +321,10 @@ recur:
     }
 }
 
+#endif
+
+#ifndef JANET_ZIG_GC_SWEEP
+
 /* Deinitialize a block of memory */
 static void janet_deinit_block(JanetGCObject *mem) {
     switch (mem->flags & JANET_MEM_TYPEBITS) {
@@ -522,6 +536,10 @@ void janet_sweep() {
 #endif
 }
 
+#endif
+
+#ifndef JANET_ZIG_GC_ALLOC
+
 /* Allocate some memory that is tracked for garbage collection */
 void *janet_gcalloc(enum JanetMemoryType type, size_t size) {
     JanetGCObject *mem;
@@ -562,7 +580,7 @@ static void free_one_scratch(JanetScratch *s) {
 }
 
 /* Free all allocated scratch memory */
-static void janet_free_all_scratch(void) {
+void janet_free_all_scratch(void) {
     for (size_t i = 0; i < janet_vm.scratch_len; i++) {
         free_one_scratch(janet_vm.scratch_mem[i]);
     }
@@ -573,6 +591,10 @@ static JanetScratch *janet_mem2scratch(void *mem) {
     JanetScratch *s = (JanetScratch *)mem;
     return s - 1;
 }
+
+#endif
+
+#ifndef JANET_ZIG_GC_MARK
 
 /* Run garbage collection */
 void janet_collect(void) {
@@ -606,6 +628,10 @@ void janet_collect(void) {
     janet_vm.next_collection = 0;
     janet_free_all_scratch();
 }
+
+#endif
+
+#ifndef JANET_ZIG_GC_ALLOC
 
 /* Add a root value to the GC. This prevents the GC from removing a value
  * and all of its children. If gcroot is called on a value n times, unroot
@@ -668,6 +694,10 @@ int janet_gcunrootall(Janet root) {
     return ret;
 }
 
+#endif
+
+#ifndef JANET_ZIG_GC_SWEEP
+
 /* Free all allocated memory */
 void janet_clear_memory(void) {
 #ifdef JANET_EV
@@ -694,6 +724,10 @@ void janet_clear_memory(void) {
     janet_free_all_scratch();
     janet_free(janet_vm.scratch_mem);
 }
+
+#endif
+
+#ifndef JANET_ZIG_GC_ALLOC
 
 /* Primitives for suspending GC. */
 int janet_gclock(void) {
@@ -775,3 +809,5 @@ void janet_sfree(void *mem) {
     }
     JANET_EXIT("invalid janet_sfree");
 }
+
+#endif

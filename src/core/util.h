@@ -85,6 +85,10 @@ int32_t janet_tablen(int32_t n);
 
 void safe_memcpy(void *dest, const void *src, size_t len);
 
+/* Defined with the buffer core, which Phase 8 Part 6 moved to Zig.
+ * `cfun_buffer_trim` is the one caller left on the C side. */
+void janet_buffer_can_realloc(JanetBuffer *buffer);
+
 void janet_buffer_push_types(JanetBuffer *buffer, int types);
 
 const JanetKV *janet_dict_find(const JanetKV *buckets, int32_t cap, Janet key);
@@ -131,6 +135,14 @@ const JanetKV *janet_dict_find_keyword(
     int32_t cstr_len);
 
 Janet janet_table_get_keyword(JanetTable *t, const char *keyword);
+
+/* Defined with the struct and table cores, which Phase 8 Part 6c moved to Zig.
+ * Neither was ever declared in a header: each was reached from the
+ * standard-library half of its own file, below its definition. The cfuns stay
+ * in C, so the two halves now need a declaration between them. */
+void janet_struct_put_ext(JanetKV *st, Janet key, Janet value, int replace);
+
+JanetTable *janet_table_proto_flatten(JanetTable *t);
 
 /* Registry functions */
 void janet_registry_put(

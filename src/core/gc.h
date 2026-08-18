@@ -67,4 +67,11 @@ enum JanetMemoryType {
  * and then call when janet_enablegc when it is initialized and reachable by the gc (on the JANET stack) */
 void *janet_gcalloc(enum JanetMemoryType type, size_t size);
 
+/* Release every scratch allocation made since the last collection. Internal,
+ * not part of the public API: `janet_collect` and `janet_clear_memory` are the
+ * only callers. It is declared here rather than left static in `gc.c` so that
+ * the scratch allocator can be selected independently of the two functions
+ * that drive it. */
+void janet_free_all_scratch(void);
+
 #endif
