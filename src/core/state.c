@@ -27,11 +27,26 @@
 #include "util.h"
 #endif
 
+#include <stddef.h>
+
 #ifdef JANET_WINDOWS
 #include <windows.h>
 #endif
 
+/* The VM state is owned either here or by src/zig/subsystems/vm_state.zig,
+ * never by both: the Zig implementation defines janet_vm itself, so the guard
+ * covers the storage as well as the functions over it. */
+#ifndef JANET_ZIG_VM_STATE
+
 JANET_THREAD_LOCAL JanetVM janet_vm;
+
+size_t janet_vm_state_size(void) {
+    return sizeof(JanetVM);
+}
+
+size_t janet_vm_state_align(void) {
+    return offsetof(JanetVMAlignProbe, vm);
+}
 
 JanetVM *janet_local_vm(void) {
     return &janet_vm;
@@ -69,3 +84,5 @@ void janet_interpreter_interrupt_handled(JanetVM *vm) {
     vm = vm ? vm : &janet_vm;
     janet_atomic_dec(&vm->auto_suspend);
 }
+
+#endif /* JANET_ZIG_VM_STATE */

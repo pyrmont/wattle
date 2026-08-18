@@ -210,6 +210,95 @@ struct JanetVM {
 
 extern JANET_THREAD_LOCAL JanetVM janet_vm;
 
+/* The view of JanetVM held by whichever implementation owns the state:
+ * src/core/state.c, or src/zig/subsystems/vm_state.zig. janet_vm_save and
+ * janet_vm_load copy the whole structure, so the owner's size is the length
+ * those copies use, and test/vm_state.c compares it against the C compiler's. */
+size_t janet_vm_state_size(void);
+size_t janet_vm_state_align(void);
+
+/* Janet is built as C99, which has no _Alignof, so the alignment both sides
+ * report is the classic offsetof-after-a-char probe. The type is here rather
+ * than local to either side so that the contract measures the same thing. */
+typedef struct {
+    char pad;
+    JanetVM vm;
+} JanetVMAlignProbe;
+
+/* ---------------------------------------------------------------- signals */
+
+/* What janet_signalv must still do once the decision has been made. The
+ * decision is janet_signal_plan's; the formatting and the jump stay in C,
+ * because "%v" runs an abstract type's tostring callback and can itself panic,
+ * and because a longjmp may not cross a Zig frame.
+ *
+ * Provided by src/core/capi.c or src/zig/subsystems/signal_core.zig. */
+typedef enum {
+    /* No return register: nothing to jump to, so report at top level. */
+    JANET_SIGNAL_PLAN_TOP_LEVEL = 0,
+    /* Store the message and jump with the signal janet_signal_plan reports. */
+    JANET_SIGNAL_PLAN_RAISE = 1,
+    /* As RAISE, but build the coercion message first. */
+    JANET_SIGNAL_PLAN_COERCE = 2
+} JanetSignalPlan;
+
+JanetSignalPlan janet_signal_plan(JanetSignal sig, JanetSignal *out_sig);
+void janet_signal_commit(const Janet *message);
+void janet_signal_inject(JanetFiber *fiber, JanetSignal sig);
+
+/* ----------------------------------------------------------------- traces */
+
+/* How janet_stacktrace_ext names a frame.
+ *
+ * The name and the location are classified separately because the C original
+ * classifies them separately, and no single tag can express the result: `reg`
+ * is set whenever the registry has an entry, but the name is printed only when
+ * that entry also has a name, so an entry with a null name and a positive
+ * source_line prints "<cfunction> on line 42". Collapsing the two would change
+ * that line. */
+typedef enum {
+    /* Neither a function nor a cfunction: the frame contributes no name. */
+    JANET_TRACE_NAME_NONE = 0,
+    /* A Janet function whose def has no name: "<anonymous>". */
+    JANET_TRACE_NAME_ANONYMOUS = 1,
+    /* A Janet function with a name, in `name`. */
+    JANET_TRACE_NAME_FUNCTION = 2,
+    /* A registered cfunction: `name`, and `name_prefix` when it has one. */
+    JANET_TRACE_NAME_CFUNCTION = 3,
+    /* A cfunction with no registry entry or no name in it: "<cfunction>". */
+    JANET_TRACE_NAME_CFUNCTION_BARE = 4
+} JanetTraceName;
+
+/* How janet_stacktrace_ext locates a frame. */
+typedef enum {
+    JANET_TRACE_LOC_NONE = 0,
+    /* From the funcdef's source map: `line` and `column`. */
+    JANET_TRACE_LOC_SOURCEMAP = 1,
+    /* A funcdef without a source map: the bytecode offset in `pc`. */
+    JANET_TRACE_LOC_PC = 2,
+    /* From the cfunction registry: `line` alone. */
+    JANET_TRACE_LOC_CFUN_LINE = 3
+} JanetTraceLoc;
+
+/* One stack frame, decoded far enough to be printed and no further. Every
+ * string points into a funcdef or the cfunction registry and is owned by
+ * neither this structure nor its producer.
+ *
+ * Provided by src/core/debug.c or src/zig/subsystems/trace_frames.zig. */
+typedef struct {
+    const char *name;         /* NULL unless name_kind names one */
+    const char *name_prefix;  /* NULL unless a registered cfunction has one */
+    const char *source;       /* NULL when the frame reports no source */
+    int32_t pc;               /* valid for LOC_PC */
+    int32_t line;             /* valid for LOC_SOURCEMAP and LOC_CFUN_LINE */
+    int32_t column;           /* valid for LOC_SOURCEMAP */
+    uint8_t name_kind;        /* JanetTraceName */
+    uint8_t loc_kind;         /* JanetTraceLoc */
+    uint8_t tail;             /* frame was entered by a tail call */
+} JanetTraceFrame;
+
+void janet_trace_frame(JanetStackFrame *frame, JanetTraceFrame *out);
+
 #ifdef JANET_NET
 void janet_net_init(void);
 void janet_net_deinit(void);

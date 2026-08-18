@@ -9,6 +9,12 @@ subsystems move to Zig:
   collector. The interop test uses `janet_gcroot` and `janet_gcunroot`
   explicitly around a forced collection.
 - A Janet `setjmp`/`longjmp` signal must never cross an active Zig frame.
+- Any `setjmp` on a hot path must use the `_setjmp` spelling on Darwin, and must
+  never become `sigsetjmp` with a non-zero savemask. Darwin's `setjmp` saves the
+  signal mask and costs about 104ns per call against 2ns for `_setjmp`; glibc's
+  and musl's `setjmp` do not save it, so the split at `janet.h:422-425` is what
+  keeps a `setjmp` affordable at call granularity. Getting the spelling wrong is
+  a fifty-fold regression on one platform only. Measured in `SPIKE-7.md`.
 - Janet callbacks therefore enter through a C trampoline. Zig returns success
   or failure and an out-parameter normally; only after Zig has returned may
   the trampoline call `janet_panicv`.
@@ -52,6 +58,12 @@ port depends on Janet's scratch allocator (`janet_srealloc`), ordinary
 allocator (`janet_malloc`), and a C OOM bridge. Its two-word `int32_t` prefix
 is part of the existing private vector contract shared with `vector.h`; it is
 not added to the public Janet API.
+
+The "unrelated" in that rule is load-bearing, and Phase 7 reaches the case it
+was reserving. A leaf subsystem that reproduced `JanetVM`'s shape would be
+copying a layout it has no business knowing; a port *of* the runtime core has
+to know it. See "Owning the thread-local VM state" for where the line moved and
+why.
 
 No Janet signal may cross an active Zig frame. The vector allocation failure
 bridge invokes the existing fatal `JANET_OUT_OF_MEMORY` policy from C and is
@@ -117,6 +129,10 @@ otherwise the build swaps whole source files.
 | `-Dffi-layout=c` | `ffi_layout.zig` | `core/ffi.c` | `JANET_ZIG_FFI_LAYOUT` |
 | `-Dffi-classify=c` | `ffi_classify.zig` | `core/ffi.c` | `JANET_ZIG_FFI_CLASSIFY` |
 | `-Dfilewatch-flags=c` | `filewatch_flags.zig` | `core/filewatch.c` | `JANET_ZIG_FILEWATCH_FLAGS` |
+| `-Dvm-state=c` | `vm_state.zig` | `core/state.c` | `JANET_ZIG_VM_STATE` |
+| `-Dfiber-core=c` | `fiber_core.zig` | `core/fiber.c` | `JANET_ZIG_FIBER_CORE` |
+| `-Dsignal-core=c` | `signal_core.zig` | `core/vm.c`, `core/capi.c` | `JANET_ZIG_SIGNAL_CORE` |
+| `-Dtrace-frames=c` | `trace_frames.zig` | `core/debug.c` | `JANET_ZIG_TRACE_FRAMES` |
 
 `-Dint-scan` and `-Dint-types-core` are only offered when integer types are
 enabled, the three assembly selectors only when the assembler is, and
@@ -142,6 +158,724 @@ discussed below. `-Dfilewatch-flags` follows both `JANET_EV` and
 where the file watcher does. Like the FFI conventions, it does not follow the
 *backend* gates inside that file — all three vocabularies are compiled on every
 target, and the `#ifdef`s decide only which backend a build actually runs.
+`-Dvm-state` is ungated: `state.c` is compiled in every configuration, and the
+selector covers the storage of `janet_vm` as well as the functions over it, so
+its guard macro removes the variable too. `-Dfiber-core` is ungated for the same
+reason — there is no build without fibers — and its guard leaves `fiber.c`'s
+cfunctions, its fiber allocation, and its variadic-tail builder in C in both
+configurations. `-Dsignal-core` and `-Dtrace-frames` are ungated as well: try
+scopes, raising, and stack traces exist in every build. `-Dsignal-core` spans two
+C files rather than one, because the try scope and the raise it catches are one
+mechanism split across `vm.c` and `capi.c`; its guard leaves the `longjmp`, the
+coercion message, `janet_check_can_resume`, and the whole of
+`janet_continue_no_check` in C in both configurations. `-Dtrace-frames` guards
+only the decoding: `janet_stacktrace_ext` itself is compiled once and prints
+through either implementation.
+
+## Raising out of `run_vm` instead of jumping past it
+
+`-Dcall-trampoline=true` is not a subsystem selector: there is no Zig source
+behind it, and it is off by default. It is the mechanism Phase 7 needs, built
+under a flag so that both behaviours stay comparable while `run_vm` is still C.
+
+### Two mechanics that are easy to get backwards
+
+Both are cheap to state and expensive to get wrong, and everything in this
+section and the three that follow depends on them.
+
+**`longjmp` carries panics, not yields.** `vm_return` (`core/vm.c:82-86`) is an
+ordinary `return` out of `run_vm`, and a fiber's stack is a heap-allocated array
+of `Janet` values (`janet.h:995`), not a machine stack. Yield and resume are
+normal returns and calls; Janet fibers are not stackful coroutines in the
+machine-stack sense. The single `longjmp` at `capi.c:89-92` exists only to unwind
+a panic out of a deep C call chain to the nearest `janet_try`. Porting fibers
+therefore never required taking stack switching over from libc, because libc was
+never doing it.
+
+**`signal_buf` is VM-global, not fiber state** (`core/state.h`). `janet_try_init`
+and `janet_restore` push and pop it as a stack of try scopes, and the `jmp_buf`
+itself lives in the caller's `JanetTryState` on the *native* stack — so a jump
+target is bound to a native frame. Every fiber resume opens a fresh scope, which
+is why a fiber may be resumed later from a different native frame than the one it
+suspended under. Any replacement has to preserve that per-resume
+re-establishment; the Part 8 port does, by leaving `janet_continue_no_check` in C
+entirely.
+
+### Why the flag exists
+
+It exists because placement stops working. Once `run_vm` is Zig it sits between
+the try scope at `vm.c:2002` and every signal a callee raises, so the rule above
+— a signal must never cross an active Zig frame — can no longer be satisfied by
+keeping Zig at the leaves. Third-party cfunctions cannot be recompiled to return
+a result instead, so a `setjmp` in the same C frame as the call is required for
+as long as the C API is supported. Under the flag, no signal reaches `run_vm`'s
+frame by jumping: every one arrives as a return value.
+
+Two halves, and they are separable:
+
+**Signals raised by a callee** go through a scope: `vm_scope_enter`,
+`vm_scope_setjmp` and `vm_scope_leave` in `core/vm.c`, wrapped by
+`vm_scope_run`, which is the body of every `scoped_*` function there. Each
+catches the jump one frame below `run_vm` and hands the signal and payload back
+as ordinary values, which the matching `vm_*` macro then returns out of
+`run_vm`. The signal is returned unaltered rather than re-raised through
+`janet_signalv`: because these scopes leave `coerce_error` alone, coercion and
+the `sched_id` bump for an `EVENT` signal already happened at the raise, and a
+second pass would find the signal already `JANET_SIGNAL_ERROR` and do nothing.
+`capi.c:89` is the only `longjmp` that targets `janet_vm.signal_buf`, so nothing
+can enter this path having skipped that.
+
+Every `scoped_*` wrapper is a separate function rather than a macro expanded
+into `run_vm`, and that is structural rather than stylistic. A local of the
+frame holding the `setjmp` has an indeterminate value after a `longjmp` if it
+was modified in between and is not `volatile`; `run_vm`'s `stack`, `pc` and
+`func` are modified constantly and are declared `register` because the dispatch
+loop cannot afford to spill them. The `setjmp` has to live in a frame of its
+own.
+
+Everything `run_vm` can reach is scoped, in three groups. The cfunction call
+itself, at `JOP_CALL` and `JOP_TAILCALL`. The raise-capable value helpers
+`run_vm` calls directly: `janet_in`, `janet_get`, `janet_getindex`, `janet_put`,
+`janet_putindex`, `janet_lengthv`, `janet_next_impl`, `janet_equals`,
+`janet_compare`, `janet_mcall`, `janet_binop_call` and `janet_unary_call` — the
+last three are the operator method fallbacks and sit behind a number fast path,
+so they are reached only when an operand is not a number. And the frame and
+collection machinery: `resolve_method` and `call_nonfn` at both call opcodes,
+`janet_fiber_push`, `janet_fiber_push2`, `janet_fiber_push3` and
+`janet_fiber_pushn` at the four push opcodes, and the fill loops of
+`JOP_MAKE_TABLE`, `JOP_MAKE_STRUCT`, `JOP_MAKE_STRING` and `JOP_MAKE_BUFFER`.
+
+The property that closes is worth stating exactly, because Phase 9 depends on
+it: **nothing reached from `run_vm` raises by jumping past `run_vm`'s frame.**
+
+The four fill loops take one scope around the loop rather than one per element.
+That is cheaper, and it is also the only placement that can see a partially
+built collection, which makes two things decidable that were not before. Both
+were decided to reproduce rather than repair, and both are in `FOUND.md`:
+`JOP_MAKE_STRING`'s scratch `JanetBuffer` is `janet_malloc`ed and invisible to
+the collector, so a raise mid-loop leaks it — measured at 754MB of resident set
+over 100,000 raises — and a loop-wide scope is the first construct positioned to
+run its `deinit` on the error path. `JOP_MAKE_TABLE` and `JOP_MAKE_STRUCT` sit
+on the "dictionary builder can collect the dictionary it is filling" entry, but
+only its collection half: a *panic* from `hash` or `compare` abandons a
+collector-owned allocation rather than freeing it early, so the scope neither
+worsens nor fixes that, and it is left alone.
+
+Three things do not need a scope, checked rather than assumed.
+`janet_fiber_funcframe`, `janet_fiber_funcframe_tail` and
+`janet_check_can_resume` contain no `janet_panic` and report by return value.
+`janet_gcalloc`, `janet_tuple_n`, `janet_array_n`, `janet_table`,
+`janet_struct_begin` and `janet_buffer` end an allocation failure in
+`JANET_OUT_OF_MEMORY`, which exits rather than jumping. `janet_continue_no_check`
+and `janet_continue_signal` open a `janet_try` of their own and already return a
+signal.
+
+**Signals `run_vm` raises itself** go through `vm_raisev` and `vm_raisef`, which
+return instead of calling `janet_panicv`. These cannot use a scope at all: they
+are raised in `run_vm`'s own frame, not a callee's, so there is nothing below to
+catch them. `JOP_ERROR` returning `JANET_SIGNAL_ERROR` is the precedent that the
+return path is equivalent.
+
+Five properties are deliberate and are not free to change:
+
+- The scope saves `signal_buf` and `return_reg` only, not the six fields
+  `janet_try_init` saves. `stackn` in particular must not be incremented per
+  call, which would tighten `JANET_RECURSION_GUARD` for every C call in a chain.
+- It leaves `coerce_error` alone. `janet_try_init` clears it, but `ev/give`,
+  `ev/take` and `ev/select` read it inside the cfunction to refuse suspension
+  inside `janet_call`. `test/suite-ev.janet` covers all three, asserting on the
+  message: if the check is skipped, two of the three still raise, but from
+  `janet_await` as a coerced `:await` signal, which `assert-error` alone cannot
+  distinguish from the guard.
+- Every return path sets `JANET_FIBER_DID_LONGJUMP`, exactly as `janet_signalv`
+  does. The flag is read on the next resume to pop a C frame and to turn a raise
+  at a tail call into an implicit return, so a signal that returned without it
+  would resume differently from the panic it replaces.
+- Nothing pops a frame that the jump would have left standing. The return skips
+  the same `janet_fiber_popframe` the jump skipped, so stack traces are
+  unchanged.
+- `vm_raisev` and `vm_raisef` do not commit the program counter. Commit is not
+  uniform across the raise sites — `JOP_PUSH_ARRAY` never committed, `JOP_CALL`'s
+  `stack` is already stale when its arity error fires, and `JOP_TAILCALL` commits
+  to a frame it recomputes — so each site keeps the commit it had. Folding one
+  into the macro changes a stack trace at the first site and writes through a
+  stale pointer at the second.
+
+A scope costs about 2.5ns on macOS arm64, which is the figure `SPIKE-7.md`
+measured for the cfunction call and holds for the helpers too. What changed with
+the helpers is what that buys against: a cfunction call is expensive enough that
+2.5ns is a few per cent, and a data-access opcode is not. Measured against the
+same tree with the flag off, per opcode in a loop that does nothing else:
+`length` +35%, `in` on an array +28%, `putindex` +27%, `equals` +25%, `compare`
++22%, `next` +18%, `get` on a table or struct +16%, `put` +15%.
+
+The push scopes moved the figure again, and by more, because a push is the
+cheapest opcode there is and there is one per argument of every call. With every
+group routed, `ReleaseFast`, minimum of five interleaved rounds:
+
+| workload | delta | ns |
+|---|---|---|
+| empty loop (control) | +3.8% | +0.17 |
+| zero-argument call (control) | −0.9% | −0.13 |
+| one-argument call | +10.8% | +1.69 |
+| two-argument call | +10.8% | +1.74 |
+| three-argument call | +10.9% | +1.78 |
+| spread call | +9.1% | +1.84 |
+| `@{:a i :b i}` | +10.8% | +6.68 |
+| `{:a i :b i}` | +10.7% | +8.39 |
+| method call | +16.2% | +3.93 |
+| calling a table | +25.6% | +4.67 |
+
+The deltas compose exactly as the scope count predicts: a table constructor pays
+two push scopes and one fill scope, a method call pays a push and a
+`resolve_method`, and a zero-argument call pays nothing and measures nothing.
+
+On real programs the same binaries give +18% on a table-building and iteration
+workload, +15% on naive recursive `fib`, +17% on a method-dispatch loop, +1% on
+the compiler front end, −0.4% on a peg match, and +0.4% over the whole test
+corpus. The call-heavy figures are the ones that grew: everything that calls a
+Janet function now pays a scope per argument.
+
+The cost is the scope, not the return: the return paths add nothing to a
+signal-free run.
+
+Almost all of the above is temporary. A scope exists only where a C callee might
+`longjmp`; once that callee is Zig returning an explicit result, the scope goes
+with it. Do not spend effort recovering it here.
+
+**One prediction in that paragraph was wrong, and Part 7 is where it came due.**
+This section used to say the per-argument push cost "ends with `fiber.c`", on the
+reasoning that `janet_fiber_push*` belongs to that file. Porting them did not end
+it. The kernels are Zig and return a result, but the *symbol* `janet_fiber_push`
+is still a C wrapper that raises — `run_vm` is C, and `janet_panic` has to be
+called from somewhere — so `vm.c` still needs a scope around it. The scope ends
+when `run_vm` itself is Zig and can consume the kernel's return value directly,
+which is Phase 9; `call_nonfn` and `resolve_method` are `vm.c`'s own statics and
+end with the same increment.
+
+The rule to carry forward, and the one that governs every remaining estimate of
+when a scaffold cost expires: **a port ends a scope only when it removes the
+*raise*, not when it moves the *work*.**
+
+`janet_equals` and `janet_compare` pay the most for the least. Neither can raise
+from Janet source at all — the only route is an abstract type's `compare`
+callback, and no in-tree abstract type panics from one. They are scoped because
+the C API permits a native module to, and the guard cannot be narrowed by
+checking operand types, since both recurse into arrays and tuples that may hold
+an abstract anywhere.
+
+They keep their scopes anyway. The alternative was to narrow the contract and
+declare that `compare` may not panic, and that was declined on 2026-08-18: the
+endpoint of this work removes the jumps rather than restricting who may start
+one, so buying back 25% on two opcodes by narrowing a published API would be
+paying a permanent cost for a temporary gain. Looking for that argument did turn
+up something separate and real — an abstract type's `hash` or `compare` callback
+can run the collector while a struct or table is being built and unrooted, which
+frees it under the builder. That is recorded in `FOUND.md`; it predates the port
+and is unaffected by it.
+
+### Verifying a routed raise site
+
+Most of these sites cannot be reached from Janet source, so "the suites pass" is
+not evidence about them. The differential probe that established equivalence is
+worth describing, because the next session will want the same shape.
+
+The probe registers abstract types whose `hash`, `compare`, `tostring` and
+`call` callbacks panic, then drives each site and prints the signal, the
+payload, and every stack frame. Three things it has to do that are easy to miss:
+
+- **Two distinct instances, one hash.** `janet_compare_abstract` short-circuits
+  on pointer equality, so the same abstract used as a key twice never reaches
+  the `compare` callback. The probe's compare type carries a constant `hash`
+  callback so that two different instances collide.
+- **The assembler, not the compiler.** `JOP_MAKE_STRING` is never emitted, and
+  `JOP_MAKE_BUFFER` only for a constant buffer literal. The compiler also
+  rejects a zero-argument method call outright, so `resolve_method`'s arity
+  branch is reachable only from `asm`.
+- **Assert that each probe fired.** The output prints `:did-not-fire` for a
+  fiber that came back alive, and the run counts them. A probe that silently
+  succeeds looks exactly like one that passed — three of them did, at first.
+
+22 probes, 16 of them raise sites and 6 controls, byte-identical between the two
+configurations after normalising addresses. The probe sources and the build
+recipe are in `probe-7/`.
+
+The `janet_fiber_push` family is the exception: its only panic is at `INT32_MAX`,
+a 32GB fiber stack, so no input reaches it. Those four were verified against a
+temporarily instrumented `fiber.c` that panics on demand, with a distinct
+message per function so the probe output shows which one fired, built in both
+configurations. Eight probes, all fired, identical.
+
+## Owning the thread-local VM state
+
+Phase 7 Part 6, and the first Zig code in the runtime core. `-Dvm-state=c`
+restores the C implementation; Zig is the default.
+
+The port itself is seven small functions. What it establishes is the seam every
+later runtime port depends on, and that decision is the substance here.
+
+### Zig sees `JanetVM` as C does
+
+`src/zig/state_abi.h` hands `src/core/state.h` to `@cImport`, so `abi.zig`'s `c`
+namespace carries the real `JanetVM` — translated per configuration, from the
+same header the C files compile — along with `janet_vm` itself. Zig core code
+reads and writes VM fields by name. There is no mirror structure to drift out of
+date and no accessor function per field.
+
+That is a deliberate reversal of the Phase 3 rule about not exposing private
+structures, and the reason it is right here is that the rule's condition no
+longer holds. Phase 3 said to prefer narrow bridge functions "where layout
+access is not an intended long-term interface". From Phase 7 onward the ports
+*are* the runtime core, and `JanetVM` is something Zig ends up owning outright,
+so layout access is exactly the intended interface. The alternative costs more
+than it saves: `fiber.c` alone reaches `next_collection`, `fiber` and
+`root_fiber`, `gc.c` reaches sixteen fields including the hot allocation
+counter, and an accessor per field would be both a call on the allocation path
+and a second copy of the structure's shape to keep in step.
+
+Two consequences follow, and neither is optional:
+
+- **The ABI module stays single.** Two `@cImport` blocks over the same header
+  produce distinct, incompatible Zig types, so `state_abi.h` goes into
+  `abi.zig` rather than into a module of its own. Every module that reaches
+  `abi.zig` — directly, or through `cli.zig`, `interop.zig` or
+  `native_module.zig` — therefore needs `src/core` on its include path;
+  `addAbiIncludePath` in `build.zig` is the one place that says so. Contract
+  tests deliberately do not get it unless, like `test/vm_state.c`, they
+  exercise an internal header themselves.
+- **`__thread` has to be respelled.** `janet.h` expands `JANET_THREAD_LOCAL` to
+  GCC's `__thread`, and Aro — the translate-c front end in Zig 0.16 — does not
+  accept that keyword: it parses as an ordinary identifier and the declaration
+  of `janet_vm` fails with an implicit-int error. C11's `_Thread_local` is the
+  same storage class and Aro accepts it, so `state_abi.h` redefines the macro
+  for translation only. A single-threaded build has no thread-local storage at
+  all and is left alone.
+
+### Zig owns the storage, not just the functions
+
+`janet_vm` is *defined* in `vm_state.zig` when the selector is `zig`, which is
+why the guard in `state.c` covers the variable as well as the functions. C's
+`extern JANET_THREAD_LOCAL JanetVM janet_vm` binds to it: same address, same
+per-thread instance, same zero initialisation, confirmed on Mach-O ARM64 and on
+ELF aarch64 and x86-64.
+
+The storage class is chosen at compile time from `JANET_VM_THREAD_LOCAL`, which
+`state_abi.h` derives from `JANET_SINGLE_THREADED` because translate-c does not
+surface a storage class. The variable therefore lives inside a container picked
+by an `if`, rather than being exported with `@export`: Zig 0.16 cannot
+`@export` a thread-local at all, because the address of one is not
+comptime-known, so `export threadlocal var` is the only spelling available.
+
+One difference follows from that and is not repairable in Zig 0.16. `export`
+carries default visibility, so `janet_vm` becomes an exported dynamic symbol of
+`libjanet`, where the C build's `-fvisibility=hidden` kept it internal. Nothing
+public references it — it appears nowhere in `janet.h` — so this widens the
+shared library's symbol set without changing anything that already linked, and
+the `c` selector restores the original. Worth knowing when reading a symbol
+diff; not worth working around with a linker script.
+
+### Ownership and lifetime rules
+
+These are the rules the rest of Phase 7 and Phase 8 inherit.
+
+1. **One VM per thread, and its storage outlives every pointer to it.**
+   `janet_local_vm()` returns the calling thread's VM and never fails. The
+   pointer is stable for the life of the thread. A pointer handed to another
+   thread — which is what `janet_interpreter_interrupt` is for — is only valid
+   while that thread lives.
+2. **The VM is a plain aggregate.** Nothing in `vm_state.zig` allocates, frees
+   or traces anything the VM points at. `janet_init` and `janet_deinit` in
+   `vm.c` own the fields' contents, and they are the only things that do.
+3. **A save is shallow.** `janet_vm_save` copies the structure and nothing
+   below it, so every snapshot names the same tables, the same fiber, the same
+   root array and the same blocks list. Two snapshots differ only in the
+   scalars written between them, and freeing one frees the structure alone.
+4. **`janet_vm_alloc` returns uninitialised memory,** exactly as the C
+   implementation did. It is a destination for `janet_vm_save`, never a VM in
+   its own right; reading a field of a fresh one is a caller error.
+5. **`auto_suspend` is a counter, not a flag.** Nested interrupts need the same
+   number of `janet_interpreter_interrupt_handled` calls to clear, and the
+   increment and decrement keep `janet_atomic_inc`'s and `janet_atomic_dec`'s
+   orderings rather than choosing new ones.
+
+Rules 3 and 4 describe established behaviour rather than a design: nothing in
+the tree calls `janet_vm_alloc`, `janet_vm_save` or `janet_vm_load`. They are
+public API for embedders, and the port reproduces them as they were.
+
+### The contract
+
+`test/vm_state.c` is the only contract that includes `state.h`. It has to: what
+is under test is the storage of `janet_vm` itself, and a stand-in structure
+would test the stand-in. It never calls `janet_init`, which is what lets the
+later cases write whatever they like into the VM.
+
+It checks that the owner's `sizeof` and alignment match the compiler's, that
+`janet_local_vm()` and `&janet_vm` are one object, that a save copies fields at
+both ends of the structure and not one byte past it, that two snapshots restore
+independently, that the interrupt counter nests, and — where the build has
+threads — that a second thread gets its own zero-initialised VM without
+disturbing the first.
+
+Three mutations confirm it is not vacuous: reporting a size eight bytes short,
+returning a decoy from `janet_local_vm`, and dropping `threadlocal` from the
+storage each fail it.
+
+Running that contract across every configuration that changes the structure's
+shape found something unrelated to the port, in C, and in a configuration this
+selector does not touch: `-Dinterpreter-interrupt=false` hung
+`test/suite-ev.janet` forever, because `ev/deadline` accepted its interrupt flag
+and then did nothing, where `os/sigaction` panics for the same reason. Fixed by
+agreement using the guard `os/sigaction` already had, and recorded in `FOUND.md`
+with what the fix costs — the ordinary half of the deadline did work in that
+configuration, so a program that passed the flag and cooperated now gets an error
+instead. Both `ev` suites gained the capability probe that `zig build test
+-Dinterpreter-interrupt=false` needed in order to complete at all.
+
+### What this cost
+
+Nothing measurable. Access is unchanged on both sides — Darwin's `__thread` and
+Zig's `threadlocal` are the same TLV mechanism, and ELF general-dynamic likewise
+— and the five `probe-7/work.janet` workloads differ by under a percent in
+either direction between the selectors at `ReleaseFast`. The `-Dvm-state=c`
+fallback exists for differential testing, not to recover speed.
+
+## Owning the fiber's stack frames
+
+Phase 7 Part 7. `-Dfiber-core=c` restores the C implementation; Zig is the
+default.
+
+Zig owns the machinery a call goes through on its way onto and off a fiber's
+value stack: `janet_fiber_setcapacity` and the growth policy behind it, the four
+`janet_fiber_push*` kernels, `janet_fiber_funcframe`,
+`janet_fiber_funcframe_tail`, `janet_fiber_cframe`, `janet_fiber_popframe`, the
+environment detach and validate pair, and the four inspectors
+(`janet_fiber_status`, `janet_fiber_can_resume`, `janet_current_fiber`,
+`janet_root_fiber`). It reaches `janet_vm` by name and reads and writes
+`JanetFiber`, `JanetStackFrame` and `JanetFuncEnv` directly — all three are
+public in `janet.h`, so nothing private is exposed to get here. `abi.zig` now
+also translates `fiber.h` and `util.h`, which are internal headers on the same
+footing as `state.h`: from Phase 7 onward the ports *are* the runtime core.
+
+### Nothing in Zig may raise, so two things stayed in C
+
+Both exceptions are the same rule — `janet_panic` is a `longjmp`, and a
+`longjmp` may not cross a Zig frame — and they are the whole design of the
+increment.
+
+**The stack-overflow panic is reported, not raised.** The push family's only
+recoverable failure is a stack that has reached `INT32_MAX`. The kernels return
+nonzero and thin wrappers in `fiber.c` call `janet_panic("stack overflow")`
+after the Zig frame has returned. Allocation failure is different and needs no
+wrapper: `JANET_OUT_OF_MEMORY` is fatal by policy, so `janet_zig_out_of_memory`
+is called directly, exactly as the vector port does.
+
+**Zig reports where the variadic tail goes; C builds it.** Packing a `&` or
+`&keys` tail means `janet_tuple_n` or `janet_struct_put`, and
+`janet_struct_put` hashes the caller's keys — which runs an abstract type's
+`hash` callback, which can panic. So the funcframe kernels stop at the slot
+index and the count, and `janet_fiber_fill_varargs` in `fiber.c` constructs and
+stores the value. This is the scan/allocate/fill split from Phase 5, and it
+costs nothing: the packing was already a call.
+
+That second rule is what shapes `janet_fiber_funcframe_tail`. A tail call moves
+its arguments down over the frame it is replacing, and the move copies the
+tail's slot along with them, so the tail's value has to exist *before* the move
+rather than after it. The kernel is therefore in two halves —
+`janet_zig_fiber_funcframe_tail_begin` and `..._finish` — with C packing between
+them. `janet_fiber_funcframe` needs only one call, because there the packing is
+the last thing the function does.
+
+### What stayed in C, and why it is not an oversight
+
+`janet_fiber`, `janet_fiber_reset` and `fiber_alloc` are fiber *allocation*:
+`janet_gcalloc` plus the collector's byte budget. That is Phase 8's subject, and
+splitting it from this increment keeps each port's dependency on the collector
+explicit. `make_struct_n` stays for the reason above. The ten cfunctions stay
+because they are argument extraction and `janet_panicf`, which is the layer
+Phase 7 still owes and the one that blocked three Phase 6 bullets.
+
+`janet_fiber_did_resume` is not in this file at all — it lives in `ev.c` under
+`JANET_EV`, and belongs to the event loop rather than to frame management.
+
+### The contract
+
+`test/fiber_core.c` includes `fiber.h` and `state.h`, because the frame macros
+and the collector's byte budget are what the machinery manipulates.
+
+Almost everything here is exercised constantly by the Janet suites — every
+function call in the language goes through `janet_fiber_funcframe` — so the
+contract is aimed at the edges the suites reach only by accident: both arity
+boundaries and the requirement that a rejection leave the fiber untouched, an
+empty variadic tail against a non-empty one, a tail call whose arguments have to
+move down over a frame with a different slot count, the growth policy at the
+exact point a fiber fills up, a zero-length `pushn` with a null array, and the
+environment validator, whose whole job is to reject input the suites never
+produce — so its three checks are defeated one at a time rather than only
+satisfied together.
+
+Two cases do not use `janet_init` at all. `janet_fiber_setcapacity` resizes a
+plain allocation and charges the collector's budget, and testing it against a
+hand-made `JanetFiber` keeps the arithmetic visible — including the refund on
+shrink, which the C original expresses as an unsigned wraparound rather than a
+subtraction. The second is the reason the whole increment can trust Part 6: a
+child thread charges its *own* VM's budget, which is the one property that could
+be wrong while everything else still linked and passed.
+
+Seven mutations confirm the contract is not vacuous: dropping the nil fill in
+`funcframe`, growing by `needed` instead of `2 * needed`, ignoring the closure
+bitset, dropping the slot-count check in `janet_env_valid`, an off-by-one in the
+tail call's `stacksize`, charging the budget the new total instead of the
+difference, and leaving `stackstart` behind in `popframe`. Each fails it.
+
+### What this cost
+
+Measured at `ReleaseFast`, interleaving the two selectors rep by rep and keeping
+the minimum of twenty-one:
+
+| Workload | Zig | C | Delta |
+| --- | --- | --- | --- |
+| naive recursive `fib 30` | 0.0724 | 0.0652 | **+11.0%** |
+| method-dispatch loop | 0.0190 | 0.0186 | +2.2% |
+| table and struct building | 0.1178 | 0.1168 | +0.9% |
+| compiler front end | 0.0732 | 0.0729 | +0.4% |
+| peg match | 0.1433 | 0.1431 | +0.1% |
+
+Everything except the call-heavy workload is at the noise floor. `fib` is the
+figure that matters, and a third build attributes it: with the push family kept
+in C and only the funcframe pair wrapped, the same workload costs +9.6%, so
+nearly all of it is `janet_fiber_funcframe` and only about a point and a half is
+the four pushes.
+
+That is one extra call per Janet function call, worth about 2.3ns here, and it
+is **inherent to the wrapper rather than to the port**. `janet_fiber_funcframe`
+cannot be the Zig symbol while `run_vm` is C, because building the variadic tail
+can raise and only C may do that; and the wrapper cannot be inlined into
+`vm.c`'s call site, which was already a cross-object call before the port. It
+ends when `run_vm` is Zig and calls the kernel directly — Phase 9, the same
+increment that removes the trampoline's scopes.
+
+One micro-optimisation is available and was not taken: the kernels report the
+variadic slot and count through out-parameters, and both could be encoded in the
+return value instead, since C can derive the slot from the frame it already has.
+That would remove some spill traffic but not the call, so it addresses a point
+or so of a figure that is going to zero anyway, at the cost of a less obvious
+seam. `PLAN.md`'s rule about not spending effort recovering scaffold costs
+applies.
+
+### Two defects found, both recorded and neither fixed
+
+`make_struct_n` reads one slot past its arguments when the tail length is odd,
+so a `&keys` call with an even argument count binds its last key to whatever the
+previous frame left on the stack. `janet_env_detach` dereferences the null that
+`janet_env_valid` installs when it rejects an environment, which a fiber
+unmarshalled from crafted bytes can reach. Both are in `FOUND.md` with
+reproducers; both are shared by the two selectors, since the code in question
+stays in C either way.
+
+## Owning the try scope and the decision to raise
+
+Phase 7 Part 8. `-Dsignal-core=c` restores the C implementation; Zig is the
+default.
+
+Zig owns `janet_try_init` and `janet_restore`, the decision half of
+`janet_signalv` (`janet_signal_plan` and `janet_signal_commit`), and the signal
+injection behind `janet_continue_signal` (`janet_signal_inject`). The three new
+names are declared in `src/core/state.h`, which is where a seam goes when both
+implementations must agree on a type as well as a signature — `JanetSignalPlan`
+is the type in question, and `janet_vm_state_size` set the precedent.
+
+### The rule is Part 7's, and it decides three splits
+
+**Nothing in Zig may raise, and nothing in Zig jumps.** Applied to control flow
+rather than to frames, that settles what could otherwise look arbitrary.
+
+**The `longjmp` stays in C.** This is a choice rather than a constraint: Zig can
+call `_longjmp`, and `janet_signalv`'s own frame is the raise site rather than an
+intermediate one, so jumping out of it would not violate the letter of the rule.
+It stays in C for two other reasons. A jump out of a Zig frame is the shape this
+phase exists to remove, and adopting it here would set a precedent Phase 9 has to
+unpick. And Phase 10 deletes this jump outright along with the public `janet_try`
+perimeter, so porting it is work with a known expiry — whereas the decision it
+guards is not, because a tagged signal-and-payload result still has to make every
+one of those choices.
+
+**The coercion message stays in C.** `janet_formatc("%v coerced from %s to
+error", ...)` renders a Janet value, which runs an abstract type's `tostring`
+callback, which can panic. So `janet_signal_plan` reports `JANET_SIGNAL_PLAN_COERCE`
+and stops; `capi.c` builds the message and hands it to `janet_signal_commit`.
+That is the report-rather-than-format rule from Phase 5, and the ordering it
+produces is the C original's exactly — including the case that matters, where the
+formatting itself panics and the re-entrant raise must find `sched_id` already
+bumped and the return register not yet written.
+
+**`janet_try_init` does not `setjmp`, and cannot.** Zig has no `setjmp`, and the
+buffer must be filled in the frame that will be jumped *to*. The `janet_try` macro
+in `janet.h` still expands to `janet_try_init(state)` followed by
+`_setjmp((state)->buf)` in the caller's own frame; Zig owns only the field
+shuffling in front of it.
+
+### What that leaves in C, and why none of it is an oversight
+
+`janet_continue_no_check` stays in C **in its entirety**, and this is the finding
+of the increment rather than a deferral. It *is* the frame that holds the
+`jmp_buf` for every fiber resume. A Zig function cannot hold one, so the fiber
+resume path cannot move until Phase 10 removes the perimeter — not in Phase 8,
+and not in Phase 9. Anyone reading Phase 7's bullet as "port fibers" should read
+this paragraph first.
+
+`janet_check_can_resume` stays because its three failure paths build diagnostics
+as Janet strings — the report-rather-than-format layer Phase 7 still owes, and
+the same one that blocked three Phase 6 bullets. `janet_call` open-codes the same
+coercion decision on its own return path and was left alone: it is not a second
+caller of `janet_signalv` but a parallel implementation, and folding the two
+together would be a behavioural change rather than a port.
+
+### The contract
+
+`test/signal_core.c` runs against either implementation. The suites exercise
+these paths constantly and observe almost none of them — every `try` opens a
+scope and every `error` raises through the plan, but all a Janet program can see
+afterwards is the payload. So the contract checks the things that are invisible
+from the language: that `stackn` is saved before it is incremented and restored
+exactly, that `coerce_error` is cleared inside the scope and restored outside it,
+that scopes nest with the inner one's saved fields being the outer one's live
+fields, which of the fourteen signals coerce and which do not, that the `EVENT`
+`sched_id` bump is gated on all three of its conditions, and that an injected
+signal reaches the *innermost* fiber of a chain and travels in `gc.flags` while
+the resume flag travels in `flags`.
+
+Three mutations of the Zig side confirm it is not vacuous: pre-incrementing
+`stackn`, leaving `coerce_error` set, and writing the injected signal into
+`flags` instead of `gc.flags` each fail it.
+
+### A flag aliasing that is preserved rather than tidied
+
+`janet_signal_inject` writes the signal into `gc.flags`, not `flags`, and clears
+`JANET_FIBER_STATUS_MASK` there first. That looks wrong twice over and is right
+both times: `run_vm` reads the signal back out of `gc.flags` and clears it there
+(`vm.c:1026-1029`), so the two halves agree, and the fiber's real status stays
+untouched in `flags` meanwhile.
+
+What is genuinely uncomfortable is that the mask covers bits 16 through 21 of
+`gc.flags`, and `JANET_FIBER_EV_FLAG_CANCELED`, `..._SUSPENDED` and
+`JANET_FIBER_FLAG_ROOT` are bits 16, 17 and 18 of that same word. Clearing the
+mask clears all three. Nothing observable depends on it — `janet_schedule_general`
+re-sets `FLAG_ROOT` on every schedule, and the fiber is running between the clear
+and the next schedule, so nothing else can look — and a probe driving `ev/cancel`
+twice against a live task fiber confirms it. It is recorded here because a port
+that "fixed" the field or narrowed the mask would change the carrier, and the
+suites would not notice.
+
+### What this cost
+
+Measured at `ReleaseFast`, interleaving the two selectors rep by rep and keeping
+the minimum. The five `probe-7/work.janet` workloads show nothing — the deltas
+sit between −3.1% and +2.8% and change sign between runs — and that is not a
+result, it is the absence of one: none of those workloads resumes a fiber in a
+loop, raises in a loop, or prints a trace, so none of them touches this code
+often enough to say anything. Workloads that do:
+
+| Workload | Zig | C | Delta |
+| --- | --- | --- | --- |
+| one fiber, resumed 1,000,000 times | 0.0370 | 0.0339 | **+9.1%** |
+| 200,000 fibers, allocated and resumed | 0.0497 | 0.0476 | +4.4% |
+| 200,000 `try`/`error` round trips | 0.0417 | 0.0412 | +1.2% |
+| 20,000 `debug/stacktrace` calls | 0.0131 | 0.0129 | +1.6% |
+
+The first is the honest figure and the rest are it, diluted. **+3.10ns per
+resume**, which is two cross-object calls: the C build can inline `janet_try_init`
+and `janet_restore` into `janet_continue_no_check` inside `vm.c`, and a Zig
+implementation cannot be inlined into a C caller. Same mechanism as Part 7's
+`janet_fiber_funcframe`, and the same size per call.
+
+**This one does not end at Phase 9, and that is worth stating because Part 7's
+did.** The scope's cost ends when its caller can consume the kernel directly, and
+the caller here is `janet_continue_no_check`, which holds the `jmp_buf` and
+therefore cannot be Zig until Phase 10 removes the public `janet_try` perimeter.
+At that point the try scope is replaced by the tagged signal-and-payload result
+rather than ported, and these two functions stop existing in this shape. So the
+figure is a scaffold cost like the trampoline's, but on a longer lease.
+
+It is also worth keeping in proportion: a resume already costs about 34ns, and a
+resume-in-a-loop is generator-style code rather than anything on an ordinary hot
+path. `PLAN.md`'s rule about not spending effort recovering scaffold costs
+applies, and no attempt was made to.
+
+## Decoding a stack frame
+
+Phase 7 Part 8. `-Dtrace-frames=c` restores the C implementation; Zig is the
+default.
+
+`janet_stacktrace_ext` is two jobs braided together: a walk over the fiber chain
+and its frames, and a rendering of each frame into text. Zig takes the decoding
+in between; the walk and the rendering both stay in C. The rendering has to —
+`janet_eprintf` is variadic, formats Janet values, and writes to a stream taken
+from a dynamic binding, so it can panic, and Phase 5's third rule keeps exact
+diagnostics on that side. The walk stays because it is four lines and one of
+them is `janet_v_push`, which is already a Zig subsystem.
+
+The seam is `JanetTraceFrame` in `src/core/state.h`. Every string in it points
+into a funcdef or the cfunction registry; nothing in `trace_frames.zig`
+allocates, holds a Janet value, or can fail.
+
+### Why a seam here is worth drawing at all
+
+`debug.c` decodes a stack frame **twice**, independently: in
+`janet_stacktrace_ext`, and in `doframe`, which builds the table `debug/stack`
+returns. The two read the same facts — name, source, tail-call flag, bytecode
+offset, source mapping, registry entry — through separately written code, and
+they have already drifted: the trace version tests `NULL != reg` before using the
+registry entry and `doframe` does not, which is a latent null dereference now in
+`FOUND.md`. This port makes one of them a caller of a shared decoder. `doframe`
+cannot be the other yet, because it is `janet_table_put` and `janet_ckeywordv`
+end to end and Janet value construction is Phase 8's subject; it becomes the
+second consumer when that lands, and the duplication ends there.
+
+### Two classifications, not one
+
+The awkward part, and the reason `JanetTraceFrame` has the shape it has. **The
+name and the location are classified separately**, because the C original
+classifies them separately:
+
+- `reg` is set whenever the registry has an entry for the cfunction.
+- The name is printed only when that entry *also* has a name.
+- The location is printed whenever that entry has a positive source line.
+
+So a registry entry with a null name and a source line renders as `<cfunction> on
+line 42` — it fails the name test and passes the location test. A single kind tag
+covering both would have to choose, and either choice changes a line the C
+implementation prints today. Hence `JanetTraceName` and `JanetTraceLoc` as
+independent fields.
+
+Three smaller cases fall out of the same reading and are easy to lose:
+
+- A funcdef frame with a null `pc` reports *no* location — not offset zero. The C
+  original arrives there by falling out of `frame->func && frame->pc` into an
+  `else if (NULL != reg)` that cannot fire, `reg` being null on every path that
+  has a function.
+- An unnamed cfunction reports no source even when its registry entry has one,
+  because the original prints a source only in the branch that printed a name.
+- A frame with neither a function nor a cfunction renders as a bare `  in` line.
+
+### The contract
+
+`test/trace_frames.c` runs against either implementation and enumerates the
+cases rather than sampling them, because the suites reach only two of them. A
+frame is a plain local rather than four slots of a live fiber's stack — the
+decoder reads three fields and nothing else — which is what makes the shapes no
+fiber would ever hold constructible at all. The registry cases are built with
+`janet_registry_put` directly, including the unnamed entry that no `janet_cfuns`
+call produces.
+
+Three mutations confirm it is not vacuous: folding the location test into the
+named branch, reporting a source for an unnamed cfunction, and treating a null
+`pc` as offset zero each fail it. The first of those is exactly the
+simplification the two-field descriptor exists to forbid.
+
+The contract also drives `janet_stacktrace_ext` over a real fiber stopped at an
+error, with and without a prefix. That checks the descriptor and the loop that
+consumes it agree about a live stack; it does not inspect the text, which belongs
+to the suites and to the harness.
 
 ## Adding a subsystem
 
@@ -258,6 +992,16 @@ building only for the development host:
   and ABI but does not inherit the detected CPU model. Native detection makes
   image generation depend on the build machine, and an unusual or emulated host
   can report a model the code generator rejects.
+- **A header added to `abi.zig` is added to every subsystem, on every target.**
+  Phase 7 Part 7 needed one function from `src/core/util.h` and translated the
+  whole header to get it. That header's dynamic-library section falls through to
+  `#include <dlfcn.h>` unless `JANET_WINDOWS` is defined, and it is not defined
+  in the translation, so the MinGW cross-compile failed on every Zig object at
+  once — including with the new selector set to `c`, since `abi.zig` is shared.
+  Declare the function directly instead when it takes primitive parameters; no
+  Janet type crosses, so the single-translation rule is not at stake. The
+  failure is invisible on the development host, so run the Windows
+  cross-compile before believing a port that touched `abi.zig`.
 
 `-Dinstall-tests=true` installs the C contract executables and the native module
 into `<prefix>/test`, which is how a cross-compiled build gets tested: `zig

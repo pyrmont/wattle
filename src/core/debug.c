@@ -101,6 +101,71 @@ void janet_stacktrace(JanetFiber *fiber, Janet err) {
     janet_stacktrace_ext(fiber, err, prefix);
 }
 
+#ifndef JANET_ZIG_TRACE_FRAMES
+
+/* Decode one stack frame far enough to print it. The kernel in
+ * src/zig/subsystems/trace_frames.zig; the boundary and the reason the name and
+ * the location are classified separately are documented there and in
+ * src/core/state.h beside JanetTraceFrame. */
+void janet_trace_frame(JanetStackFrame *frame, JanetTraceFrame *out) {
+    out->name = NULL;
+    out->name_prefix = NULL;
+    out->source = NULL;
+    out->pc = 0;
+    out->line = 0;
+    out->column = 0;
+    out->name_kind = JANET_TRACE_NAME_NONE;
+    out->loc_kind = JANET_TRACE_LOC_NONE;
+    out->tail = (frame->flags & JANET_STACKFRAME_TAILCALL) ? 1 : 0;
+
+    if (frame->func) {
+        JanetFuncDef *def = frame->func->def;
+        if (def->name) {
+            out->name_kind = JANET_TRACE_NAME_FUNCTION;
+            out->name = (const char *)def->name;
+        } else {
+            out->name_kind = JANET_TRACE_NAME_ANONYMOUS;
+        }
+        out->source = (const char *)def->source;
+        if (frame->pc) {
+            int32_t off = (int32_t)(frame->pc - def->bytecode);
+            if (def->sourcemap) {
+                JanetSourceMapping mapping = def->sourcemap[off];
+                out->loc_kind = JANET_TRACE_LOC_SOURCEMAP;
+                out->line = mapping.line;
+                out->column = mapping.column;
+            } else {
+                out->loc_kind = JANET_TRACE_LOC_PC;
+                out->pc = off;
+            }
+        }
+        return;
+    }
+
+    JanetCFunction cfun = (JanetCFunction)(frame->pc);
+    if (NULL == cfun) return;
+    JanetCFunRegistry *reg = janet_registry_get(cfun);
+    if (NULL != reg && NULL != reg->name) {
+        out->name_kind = JANET_TRACE_NAME_CFUNCTION;
+        out->name = reg->name;
+        out->name_prefix = reg->name_prefix;
+        /* Only the named branch reports a source: an entry with a source file
+         * and no name prints "<cfunction>" and nothing more. */
+        out->source = reg->source_file;
+    } else {
+        out->name_kind = JANET_TRACE_NAME_CFUNCTION_BARE;
+    }
+    /* Deliberately outside the branch above. The location comes from the entry
+     * existing, the name from the entry having a name, so an entry with a null
+     * name and a source line prints "<cfunction> on line 42". */
+    if (NULL != reg && reg->source_line > 0) {
+        out->loc_kind = JANET_TRACE_LOC_CFUN_LINE;
+        out->line = reg->source_line;
+    }
+}
+
+#endif /* JANET_ZIG_TRACE_FRAMES */
+
 /* Error reporting. This can be emulated from within Janet, but for
  * consistency with the top level code it is defined once. */
 void janet_stacktrace_ext(JanetFiber *fiber, Janet err, const char *prefix) {
@@ -122,10 +187,10 @@ void janet_stacktrace_ext(JanetFiber *fiber, Janet err, const char *prefix) {
         fiber = fibers[fi];
         int32_t i = fiber->frame;
         while (i > 0) {
-            JanetCFunRegistry *reg = NULL;
             JanetStackFrame *frame = (JanetStackFrame *)(fiber->data + i - JANET_FRAME_SIZE);
-            JanetFuncDef *def = NULL;
+            JanetTraceFrame desc;
             i = frame->prevframe;
+            janet_trace_frame(frame, &desc);
 
             /* Print prelude to stack frame */
             if (!wrote_error) {
@@ -139,45 +204,47 @@ void janet_stacktrace_ext(JanetFiber *fiber, Janet err, const char *prefix) {
 
             janet_eprintf("  in");
 
-            if (frame->func) {
-                def = frame->func->def;
-                janet_eprintf(" %s", def->name ? (const char *)def->name : "<anonymous>");
-                if (def->source) {
-                    janet_eprintf(" [%s]", (const char *)def->source);
-                }
-            } else {
-                JanetCFunction cfun = (JanetCFunction)(frame->pc);
-                if (cfun) {
-                    reg = janet_registry_get(cfun);
-                    if (NULL != reg && NULL != reg->name) {
-                        if (reg->name_prefix) {
-                            janet_eprintf(" %s/%s", reg->name_prefix, reg->name);
-                        } else {
-                            janet_eprintf(" %s", reg->name);
-                        }
-                        if (NULL != reg->source_file) {
-                            janet_eprintf(" [%s]", reg->source_file);
-                        }
+            switch (desc.name_kind) {
+                default:
+                    break;
+                case JANET_TRACE_NAME_ANONYMOUS:
+                    janet_eprintf(" %s", "<anonymous>");
+                    break;
+                case JANET_TRACE_NAME_FUNCTION:
+                    janet_eprintf(" %s", desc.name);
+                    break;
+                case JANET_TRACE_NAME_CFUNCTION:
+                    if (desc.name_prefix) {
+                        janet_eprintf(" %s/%s", desc.name_prefix, desc.name);
                     } else {
-                        janet_eprintf(" <cfunction>");
+                        janet_eprintf(" %s", desc.name);
                     }
-                }
+                    break;
+                case JANET_TRACE_NAME_CFUNCTION_BARE:
+                    janet_eprintf(" <cfunction>");
+                    break;
             }
-            if (frame->flags & JANET_STACKFRAME_TAILCALL)
-                janet_eprintf(" (tail call)");
-            if (frame->func && frame->pc) {
-                int32_t off = (int32_t)(frame->pc - def->bytecode);
-                if (def->sourcemap) {
-                    JanetSourceMapping mapping = def->sourcemap[off];
-                    janet_eprintf(" on line %d, column %d", mapping.line, mapping.column);
-                } else {
-                    janet_eprintf(" pc=%d", off);
-                }
-            } else if (NULL != reg) {
-                /* C Function */
-                if (reg->source_line > 0) {
-                    janet_eprintf(" on line %d", (long) reg->source_line);
-                }
+            /* `source` is null in exactly the cases that printed no source
+             * before: an unnamed cfunction, and a frame that names nothing. */
+            if (desc.source) janet_eprintf(" [%s]", desc.source);
+
+            if (desc.tail) janet_eprintf(" (tail call)");
+
+            switch (desc.loc_kind) {
+                default:
+                    break;
+                case JANET_TRACE_LOC_SOURCEMAP:
+                    janet_eprintf(" on line %d, column %d", desc.line, desc.column);
+                    break;
+                case JANET_TRACE_LOC_PC:
+                    janet_eprintf(" pc=%d", desc.pc);
+                    break;
+                case JANET_TRACE_LOC_CFUN_LINE:
+                    /* The (long) cast is the original's. Janet's "%d" reads an
+                     * int32_t, so this is a width mismatch; it is preserved
+                     * rather than fixed, and recorded in FOUND.md. */
+                    janet_eprintf(" on line %d", (long) desc.line);
+                    break;
             }
             janet_eprintf("\n");
             /* Print fiber points optionally. Clutters traces but provides info

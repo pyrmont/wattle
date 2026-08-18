@@ -138,5 +138,78 @@
 (assert (= :hi (cancel fc :hi)) "cancel resume 3")
 (assert (= :error (fiber/status fc)) "cancel resume 4")
 
+#
+# Signals a cfunction raises, and the frame the raise leaves behind
+#
+# The per-call try scope (-Dcall-trampoline) catches these one frame below
+# run_vm and returns them rather than letting them jump past it. A non-error
+# signal is the case that distinguishes returning the signal unaltered from
+# re-raising it: `signal` is a cfunction, so its signal crosses the scope.
+(def fs (fiber/new (fn [] (signal 3 :payload)) :i0123456789))
+(assert (= :payload (resume fs)) "user signal from a cfunction carries its value")
+(assert (= :user3 (fiber/status fs)) "user signal from a cfunction keeps its number")
+
+(def fst (fiber/new (fn [] (defn g [] (signal 5 :deep)) (g)) :i0123456789))
+(assert (= :deep (resume fst)) "user signal at a tail call carries its value")
+(assert (= :user5 (fiber/status fst)) "user signal at a tail call keeps its number")
+
+# A cfunction that raises must leave its own frame on the stack, or the trace
+# loses the function that actually failed.
+(def fe (fiber/new (fn [] (defn g [x] (string/ascii-upper x)) (g 7)) :ei))
+(resume fe)
+(assert (= :error (fiber/status fe)) "cfunction error is an error")
+(def frames (debug/stack fe))
+(assert (= 2 (length frames)) "cfunction error leaves the c frame unpopped")
+(assert (get (first frames) :c) "the unpopped frame is the cfunction's")
+(assert (= "string/ascii-upper" (get (first frames) :name))
+        "the unpopped frame names the cfunction")
+
+# A signal raised inside a Janet callback that a cfunction invoked has to
+# unwind through the cfunction's frame the same way. A PEG function capture is
+# the cheapest cfunction that calls back into Janet, so this region needs the
+# matcher and is compiled out of a build without it.
+(compwhen (dyn 'peg/match)
+  (def fp (fiber/new (fn [] (peg/match ~(/ '1 ,(fn [_] (error :grammar))) "abc")) :ei))
+  (assert (= :grammar (resume fp)) "error from a peg callback reaches the fiber")
+  (assert (= :error (fiber/status fp)) "error from a peg callback is an error"))
+
+#
+# Operator method fallback, and signals raised inside it
+#
+# The arithmetic, bitwise and comparison opcodes take a number fast path and
+# fall back to a method lookup for anything else. Under -Dcall-trampoline that
+# fallback runs inside a try scope, so it has to be right on both paths: the
+# value comes back and the VM's stack pointer is refreshed, or the signal comes
+# back and nothing after the call runs.
+(def adder @{:+ (fn [_self other] [:added other])})
+(assert (= [:added 5] (+ adder 5)) "binary operator falls back to a method")
+(assert (= [:added 5] (+ adder 5) (+ adder 5)) "method fallback refreshes the stack")
+
+(def shifter @{:<< (fn [_self other] [:shifted other])})
+(assert (= [:shifted 2] (blshift shifter 2)) "bitwise operator falls back to a method")
+
+(def notter @{(keyword "~") (fn [_self] :notted)})
+(assert (= :notted (bnot notter)) "unary operator falls back to a method")
+
+(assert-error "could not find method :+ for :x" (+ :x :y)
+              "missing binary method raises")
+(assert-error "could not find method :+ for :x" (+ :x 1)
+              "missing method raises for the immediate form too")
+
+(def thrower @{:+ (fn [_self _other] (error :from-method))})
+(assert-error :from-method (+ thrower 1) "a raising method propagates its value")
+(def fm (fiber/new (fn [] (defn g [x] (+ thrower x)) (g 1)) :ei))
+(resume fm)
+(assert (= :error (fiber/status fm)) "a raising method leaves the fiber in error")
+(assert (= :from-method (fiber/last-value fm)) "a raising method keeps its value")
+
+# The data-access opcodes are routed the same way, so their messages have to
+# survive the round trip unchanged.
+(assert-error "expected integer key for tuple, got :k" (in [1 2 3] :k) "in raises")
+(assert-error "expected iterable, got 7" (next 7 nil) "next raises")
+(assert-error "expected abstract|array|buffer|dictionary|string|symbol|keyword|tuple, got 7"
+              (length 7) "length raises")
+(assert-error "cannot put value in immutable type" (put [1 2 3] 0 :v) "put raises")
+
 (end-suite)
 

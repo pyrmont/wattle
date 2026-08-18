@@ -67,32 +67,60 @@ JANET_NO_RETURN static void janet_top_level_signal(const char *msg) {
 #endif
 }
 
-void janet_signalv(JanetSignal sig, Janet message) {
-    if (janet_vm.return_reg != NULL) {
-        /* Should match logic in janet_call for coercing everything not ok to an error (no awaits, yields, etc.) */
-        if (janet_vm.coerce_error && sig != JANET_SIGNAL_OK) {
+#ifndef JANET_ZIG_SIGNAL_CORE
+
+JanetSignalPlan janet_signal_plan(JanetSignal sig, JanetSignal *out_sig) {
+    *out_sig = sig;
+    if (janet_vm.return_reg == NULL) return JANET_SIGNAL_PLAN_TOP_LEVEL;
+    /* Should match logic in janet_call for coercing everything not ok to an error (no awaits, yields, etc.) */
+    if (janet_vm.coerce_error && sig != JANET_SIGNAL_OK) {
 #ifdef JANET_EV
-            if (NULL != janet_vm.root_fiber && sig == JANET_SIGNAL_EVENT) {
-                janet_vm.root_fiber->sched_id++;
-            }
-#endif
-            if (sig != JANET_SIGNAL_ERROR) {
-                message = janet_wrap_string(janet_formatc("%v coerced from %s to error", message, janet_signal_names[sig]));
-            }
-            sig = JANET_SIGNAL_ERROR;
+        if (NULL != janet_vm.root_fiber && sig == JANET_SIGNAL_EVENT) {
+            janet_vm.root_fiber->sched_id++;
         }
-        *janet_vm.return_reg = message;
-        if (NULL != janet_vm.fiber) {
-            janet_vm.fiber->flags |= JANET_FIBER_DID_LONGJUMP;
-        }
-#if defined(JANET_BSD) || defined(JANET_APPLE)
-        _longjmp(*janet_vm.signal_buf, sig);
-#else
-        longjmp(*janet_vm.signal_buf, sig);
 #endif
-    } else {
+        *out_sig = JANET_SIGNAL_ERROR;
+        if (sig != JANET_SIGNAL_ERROR) return JANET_SIGNAL_PLAN_COERCE;
+    }
+    return JANET_SIGNAL_PLAN_RAISE;
+}
+
+void janet_signal_commit(const Janet *message) {
+    *janet_vm.return_reg = *message;
+    if (NULL != janet_vm.fiber) {
+        janet_vm.fiber->flags |= JANET_FIBER_DID_LONGJUMP;
+    }
+}
+
+#endif /* JANET_ZIG_SIGNAL_CORE */
+
+/* The decision is janet_signal_plan's and the payload is janet_signal_commit's;
+ * what stays here is the formatting and the jump, and both stay for a reason.
+ * Rendering "%v" runs an abstract type's tostring callback, which can panic, so
+ * Zig may not call it. And a longjmp may not cross a Zig frame - this one is the
+ * only jump that targets janet_vm.signal_buf, and Phase 10 removes it outright
+ * along with the public try perimeter, so it is not worth moving first.
+ *
+ * The order is the original's. In particular the sched_id bump inside the plan
+ * happens before the coercion message is built, so a panic raised by that
+ * formatting finds the counter already advanced and the return register not yet
+ * written, exactly as before. */
+void janet_signalv(JanetSignal sig, Janet message) {
+    JanetSignal out_sig = sig;
+    JanetSignalPlan plan = janet_signal_plan(sig, &out_sig);
+    if (plan == JANET_SIGNAL_PLAN_TOP_LEVEL) {
         const char *str = (const char *)janet_formatc("janet top level signal - %v\n", message);
         janet_top_level_signal(str);
+    } else {
+        if (plan == JANET_SIGNAL_PLAN_COERCE) {
+            message = janet_wrap_string(janet_formatc("%v coerced from %s to error", message, janet_signal_names[sig]));
+        }
+        janet_signal_commit(&message);
+#if defined(JANET_BSD) || defined(JANET_APPLE)
+        _longjmp(*janet_vm.signal_buf, out_sig);
+#else
+        longjmp(*janet_vm.signal_buf, out_sig);
+#endif
     }
 }
 

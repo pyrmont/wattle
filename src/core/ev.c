@@ -3423,6 +3423,13 @@ JANET_CORE_FN(cfun_ev_deadline,
     to.is_error = 0;
     to.sched_id = to.fiber->sched_id;
     if (use_interrupt) {
+#ifdef JANET_NO_INTERPRETER_INTERRUPT
+        /* The interpreter's half of this is compiled out, so a timer thread
+         * would raise auto_suspend at a VM that never reads it and a fiber
+         * that does not yield would run forever. Refuse the same way
+         * os/sigaction does, before anything is allocated or started. */
+        janet_panic("interpreter interrupt not enabled");
+#endif
 #ifdef JANET_ANDROID
         janet_sandbox_assert(JANET_SANDBOX_SIGNAL);
 #endif

@@ -606,17 +606,40 @@
        (,ev/deadline ,sec nil ,f true)
        (,resume ,f))))
 
-(for i 0 10
-  # (print "deadline 1 iteration " i)
-  (assert (= :done (with-deadline2 10
-                     (ev/sleep 0.01)
-                     :done)) "deadline with interrupt exits normally"))
+# ev/deadline's interrupt flag needs JANET_INTERPRETER_INTERRUPT, which a build
+# can disable. Nothing disappears when it does — ev/deadline itself is still
+# there — so there is no binding to test for, and the capability has to be
+# asked for. Requesting it is refused before any timer thread starts, so the
+# probe costs nothing in a build that lacks it and creates one ordinary
+# ten-second deadline in a build that has it, exactly like the loop below. The
+# result is a var rather than a def so that the guarded blocks keep compiling
+# in both configurations instead of being folded away as dead code.
+(var interrupt-available? false)
+(let [f (coro (ev/sleep 0.01))
+      [ok] (protect (ev/deadline 10 nil f true))]
+  (when ok (resume f))
+  (set interrupt-available? ok))
 
-(for i 0 10
-  # (print "deadline 2 iteration " i)
+# Without the capability the request must be an error rather than a hang: the
+# fiber below never yields, so a deadline that cannot interrupt the VM would
+# spin forever.
+(unless interrupt-available?
   (let [f (coro (forever :foo))]
-    (ev/deadline 0.01 nil f true)
-    (assert-error "deadline expired" (resume f))))
+    (assert-error "interpreter interrupt not enabled"
+                  (ev/deadline 0.01 nil f true))))
+
+(when interrupt-available?
+  (for i 0 10
+    # (print "deadline 1 iteration " i)
+    (assert (= :done (with-deadline2 10
+                       (ev/sleep 0.01)
+                       :done)) "deadline with interrupt exits normally"))
+
+  (for i 0 10
+    # (print "deadline 2 iteration " i)
+    (let [f (coro (forever :foo))]
+      (ev/deadline 0.01 nil f true)
+      (assert-error "deadline expired" (resume f)))))
 
 # os/spawn and os/execute are absent from a build without JANET_PROCESSES,
 # and an absent binding is a compile error rather than a runtime one.
@@ -641,5 +664,45 @@
 # Error handling
 (assert-error "bad thread" (ev/thread in))
 (assert-error "bad thread 2" (ev/thread (fn [x y] x) 1))
+
+# Channel operations refuse to suspend inside janet_call, because the C frame
+# that called back into Janet cannot be unwound and resumed. ev/give, ev/take
+# and ev/select each check janet_vm.coerce_error to enforce that. Nothing else
+# in this suite reaches those checks: they need a callback invoked through
+# janet_call, and the reachable core paths are peg.c, util.c, io.c and ffi.c
+# rather than anything a plain function call goes through. A PEG function
+# capture is the cheapest of them.
+#
+# These assert on the message, not merely that something was raised. If the
+# check is skipped, two of the three still raise -- but from janet_await, as a
+# coerced :await signal rather than as the guard -- and assert-error alone
+# cannot tell the two apart.
+# The whole region needs the matcher, since that is what supplies the
+# janet_call, so it is compiled out of a build without PEGs.
+(compwhen (dyn 'peg/match)
+ (do
+  (defn in-janet-call [f]
+    (peg/match ~(/ '(some :d) ,(fn [_] (f))) "123"))
+  (defn message [f]
+    (try (do (f) :no-error) ([e] (string e))))
+  (def a (ev/chan 1))
+  (assert (= "cannot give to channel inside janet_call"
+             (message (fn [] (in-janet-call (fn [] (ev/give a 1))))))
+          "give inside janet_call")
+  (def b (ev/chan 1))
+  (ev/give b 9)
+  (assert (= "cannot take from channel inside janet_call"
+             (message (fn [] (in-janet-call (fn [] (ev/take b))))))
+          "take inside janet_call")
+  (def c (ev/chan 1))
+  (ev/give c 9)
+  (assert (= "cannot select from channel inside janet_call"
+             (message (fn [] (in-janet-call (fn [] (ev/select c))))))
+          "select inside janet_call")
+  # The same operations outside janet_call still work, so the check is not
+  # simply disabling channels for the whole fiber.
+  (def d (ev/chan 1))
+  (assert (= d (ev/give d 1)) "give outside janet_call")
+  (assert (= 1 (ev/take d)) "take outside janet_call")))
 
 (end-suite)

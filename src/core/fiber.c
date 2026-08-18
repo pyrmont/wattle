@@ -97,7 +97,7 @@ JanetFiber *janet_fiber(JanetFunction *callee, int32_t capacity, int32_t argc, c
     return janet_fiber_reset(fiber_alloc(capacity), callee, argc, argv);
 }
 
-#ifdef JANET_DEBUG
+#if defined(JANET_DEBUG) && !defined(JANET_ZIG_FIBER_CORE)
 /* Test for memory issues by reallocating fiber every time we push a stack frame */
 static void janet_fiber_refresh_memory(JanetFiber *fiber) {
     int32_t n = fiber->capacity;
@@ -112,6 +112,12 @@ static void janet_fiber_refresh_memory(JanetFiber *fiber) {
     }
 }
 #endif
+
+/* Everything from here to the cfunctions is owned either by this file or by
+ * src/zig/subsystems/fiber_core.zig, never by both. What the Zig build keeps in
+ * C is collected under the #else below, and is exactly the code that can raise:
+ * a Janet signal is a longjmp and may not cross a Zig frame. */
+#ifndef JANET_ZIG_FIBER_CORE
 
 /* Ensure that the fiber has enough extra capacity */
 void janet_fiber_setcapacity(JanetFiber *fiber, int32_t n) {
@@ -177,6 +183,8 @@ void janet_fiber_pushn(JanetFiber *fiber, const Janet *arr, int32_t n) {
     fiber->stacktop = newtop;
 }
 
+#endif /* JANET_ZIG_FIBER_CORE */
+
 /* Create a struct with n values. If n is odd, the last value is ignored. */
 static Janet make_struct_n(const Janet *args, int32_t n) {
     int32_t i = 0;
@@ -186,6 +194,8 @@ static Janet make_struct_n(const Janet *args, int32_t n) {
     }
     return janet_wrap_struct(janet_struct_end(st));
 }
+
+#ifndef JANET_ZIG_FIBER_CORE
 
 /* Push a stack frame to a fiber */
 int janet_fiber_funcframe(JanetFiber *fiber, JanetFunction *func) {
@@ -448,6 +458,87 @@ JanetFiber *janet_root_fiber(void) {
     return janet_vm.root_fiber;
 }
 
+int janet_fiber_can_resume(JanetFiber *fiber) {
+    JanetFiberStatus s = janet_fiber_status(fiber);
+    int isFinished = s == JANET_STATUS_DEAD ||
+                     s == JANET_STATUS_ERROR ||
+                     s == JANET_STATUS_USER0 ||
+                     s == JANET_STATUS_USER1 ||
+                     s == JANET_STATUS_USER2 ||
+                     s == JANET_STATUS_USER3 ||
+                     s == JANET_STATUS_USER4;
+    return !isFinished;
+}
+
+#else /* JANET_ZIG_FIBER_CORE */
+
+/* The kernels in src/zig/subsystems/fiber_core.zig. Two things stay on this
+ * side of the boundary, and both are the same rule: nothing Zig calls may
+ * raise, because a Janet signal is a longjmp and a longjmp may not cross a Zig
+ * frame. So a stack that has reached INT32_MAX is reported and raised here,
+ * and the variadic tail is built here — janet_struct_put hashes the caller's
+ * keys, and an abstract type's hash callback can panic. */
+
+int janet_zig_fiber_push(JanetFiber *fiber, const Janet *x);
+int janet_zig_fiber_push2(JanetFiber *fiber, const Janet *x, const Janet *y);
+int janet_zig_fiber_push3(JanetFiber *fiber, const Janet *x, const Janet *y, const Janet *z);
+int janet_zig_fiber_pushn(JanetFiber *fiber, const Janet *arr, int32_t n);
+int janet_zig_fiber_funcframe(JanetFiber *fiber, JanetFunction *func,
+                              int32_t *slot, int32_t *count);
+int janet_zig_fiber_funcframe_tail_begin(JanetFiber *fiber, JanetFunction *func,
+        int32_t *slot, int32_t *count, int32_t *stacksize);
+void janet_zig_fiber_funcframe_tail_finish(JanetFiber *fiber, JanetFunction *func,
+        int32_t stacksize);
+
+void janet_fiber_push(JanetFiber *fiber, Janet x) {
+    if (janet_zig_fiber_push(fiber, &x)) janet_panic("stack overflow");
+}
+
+void janet_fiber_push2(JanetFiber *fiber, Janet x, Janet y) {
+    if (janet_zig_fiber_push2(fiber, &x, &y)) janet_panic("stack overflow");
+}
+
+void janet_fiber_push3(JanetFiber *fiber, Janet x, Janet y, Janet z) {
+    if (janet_zig_fiber_push3(fiber, &x, &y, &z)) janet_panic("stack overflow");
+}
+
+void janet_fiber_pushn(JanetFiber *fiber, const Janet *arr, int32_t n) {
+    if (janet_zig_fiber_pushn(fiber, arr, n)) janet_panic("stack overflow");
+}
+
+/* Build the variadic tail the kernel located and store it in its slot. A count
+ * of zero is an empty tail rather than an empty range, which is why the source
+ * pointer is NULL there — that is the distinction the C original drew with its
+ * `tuplehead >= oldtop` branch. */
+static void janet_fiber_fill_varargs(JanetFiber *fiber, JanetFunction *func,
+                                     int32_t slot, int32_t count) {
+    int st = func->def->flags & JANET_FUNCDEF_FLAG_STRUCTARG;
+    const Janet *values = count ? fiber->data + slot : NULL;
+    fiber->data[slot] = st
+                        ? make_struct_n(values, count)
+                        : janet_wrap_tuple(janet_tuple_n(values, count));
+}
+
+int janet_fiber_funcframe(JanetFiber *fiber, JanetFunction *func) {
+    int32_t slot, count;
+    if (janet_zig_fiber_funcframe(fiber, func, &slot, &count)) return 1;
+    if (slot >= 0) janet_fiber_fill_varargs(fiber, func, slot, count);
+    return 0;
+}
+
+/* A tail call needs the tail's value before its arguments are moved down over
+ * the outgoing frame, so the kernel is in two halves with the packing between
+ * them rather than one call with the packing after it. */
+int janet_fiber_funcframe_tail(JanetFiber *fiber, JanetFunction *func) {
+    int32_t slot, count, stacksize = 0;
+    if (janet_zig_fiber_funcframe_tail_begin(fiber, func, &slot, &count, &stacksize)) return 1;
+    if (slot >= 0) janet_fiber_fill_varargs(fiber, func, slot, count);
+    janet_zig_fiber_funcframe_tail_finish(fiber, func, stacksize);
+    return 0;
+}
+
+#endif /* JANET_ZIG_FIBER_CORE */
+
 /* CFuns */
 
 JANET_CORE_FN(cfun_fiber_getenv,
@@ -637,18 +728,6 @@ JANET_CORE_FN(cfun_fiber_setmaxstack,
     }
     fiber->maxstack = maxs;
     return argv[0];
-}
-
-int janet_fiber_can_resume(JanetFiber *fiber) {
-    JanetFiberStatus s = janet_fiber_status(fiber);
-    int isFinished = s == JANET_STATUS_DEAD ||
-                     s == JANET_STATUS_ERROR ||
-                     s == JANET_STATUS_USER0 ||
-                     s == JANET_STATUS_USER1 ||
-                     s == JANET_STATUS_USER2 ||
-                     s == JANET_STATUS_USER3 ||
-                     s == JANET_STATUS_USER4;
-    return !isFinished;
 }
 
 JANET_CORE_FN(cfun_fiber_can_resume,

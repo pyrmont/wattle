@@ -147,6 +147,10 @@ const BuildOptions = struct {
     ffi_layout: SubsystemImplementation,
     ffi_classify: SubsystemImplementation,
     filewatch_flags: SubsystemImplementation,
+    vm_state: SubsystemImplementation,
+    fiber_core: SubsystemImplementation,
+    signal_core: SubsystemImplementation,
+    trace_frames: SubsystemImplementation,
     install_tests: bool,
     single_threaded: bool,
     nanbox: bool,
@@ -173,6 +177,7 @@ const BuildOptions = struct {
     ffi_jit: bool,
     filewatch: bool,
     cryptorand: bool,
+    call_trampoline: bool,
     recursion_guard: i32,
     max_proto_depth: i32,
     max_macro_expand: i32,
@@ -212,6 +217,10 @@ const RuntimeSubsystems = struct {
     ffi_layout: ?*std.Build.Step.Compile,
     ffi_classify: ?*std.Build.Step.Compile,
     filewatch_flags: ?*std.Build.Step.Compile,
+    vm_state: ?*std.Build.Step.Compile,
+    fiber_core: ?*std.Build.Step.Compile,
+    signal_core: ?*std.Build.Step.Compile,
+    trace_frames: ?*std.Build.Step.Compile,
 };
 
 pub fn build(b: *std.Build) void {
@@ -349,6 +358,22 @@ pub fn build(b: *std.Build) void {
             makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-ffi-classify-zig", "src/zig/subsystems/ffi_classify.zig")
         else
             null,
+        .vm_state = if (options.vm_state == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-vm-state-zig", "src/zig/subsystems/vm_state.zig")
+        else
+            null,
+        .fiber_core = if (options.fiber_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-fiber-core-zig", "src/zig/subsystems/fiber_core.zig")
+        else
+            null,
+        .signal_core = if (options.signal_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-signal-core-zig", "src/zig/subsystems/signal_core.zig")
+        else
+            null,
+        .trace_frames = if (options.trace_frames == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-trace-frames-zig", "src/zig/subsystems/trace_frames.zig")
+        else
+            null,
     };
 
     // Bootstrap tools must execute on the build host even during a cross build.
@@ -408,6 +433,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     configureCModule(b, client_module, target, config_header, options);
+    addAbiIncludePath(b, client_module);
     addRuntimeSources(client_module, image_source, options, subsystems);
     client_module.addCSourceFiles(.{
         .files = &.{"src/zig/interop_bridge.c"},
@@ -433,6 +459,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     configureCModule(b, native_module_root, target, config_header, options);
+    addAbiIncludePath(b, native_module_root);
     native_module_root.addCSourceFiles(.{
         .files = &.{"src/zig/native_bridge.c"},
         .flags = common_c_flags,
@@ -754,6 +781,42 @@ pub fn build(b: *std.Build) void {
     const run_parser_core_test = b.addRunArtifact(parser_core_test);
     subsystem_step.dependOn(&run_parser_core_test.step);
 
+    const vm_state_test_module = makeCModule(b, target, optimize, config_header, options);
+    vm_state_test_module.addIncludePath(b.path("src/core"));
+    vm_state_test_module.addCSourceFiles(.{ .files = &.{"test/vm_state.c"}, .flags = test_c_flags });
+    vm_state_test_module.linkLibrary(static_library);
+    const vm_state_test = b.addExecutable(.{ .name = "janet-vm-state-test", .root_module = vm_state_test_module });
+    installTest(b, options, vm_state_test);
+    const run_vm_state_test = b.addRunArtifact(vm_state_test);
+    subsystem_step.dependOn(&run_vm_state_test.step);
+
+    const signal_core_test_module = makeCModule(b, target, optimize, config_header, options);
+    signal_core_test_module.addIncludePath(b.path("src/core"));
+    signal_core_test_module.addCSourceFiles(.{ .files = &.{"test/signal_core.c"}, .flags = test_c_flags });
+    signal_core_test_module.linkLibrary(static_library);
+    const signal_core_test = b.addExecutable(.{ .name = "janet-signal-core-test", .root_module = signal_core_test_module });
+    installTest(b, options, signal_core_test);
+    const run_signal_core_test = b.addRunArtifact(signal_core_test);
+    subsystem_step.dependOn(&run_signal_core_test.step);
+
+    const trace_frames_test_module = makeCModule(b, target, optimize, config_header, options);
+    trace_frames_test_module.addIncludePath(b.path("src/core"));
+    trace_frames_test_module.addCSourceFiles(.{ .files = &.{"test/trace_frames.c"}, .flags = test_c_flags });
+    trace_frames_test_module.linkLibrary(static_library);
+    const trace_frames_test = b.addExecutable(.{ .name = "janet-trace-frames-test", .root_module = trace_frames_test_module });
+    installTest(b, options, trace_frames_test);
+    const run_trace_frames_test = b.addRunArtifact(trace_frames_test);
+    subsystem_step.dependOn(&run_trace_frames_test.step);
+
+    const fiber_core_test_module = makeCModule(b, target, optimize, config_header, options);
+    fiber_core_test_module.addIncludePath(b.path("src/core"));
+    fiber_core_test_module.addCSourceFiles(.{ .files = &.{"test/fiber_core.c"}, .flags = test_c_flags });
+    fiber_core_test_module.linkLibrary(static_library);
+    const fiber_core_test = b.addExecutable(.{ .name = "janet-fiber-core-test", .root_module = fiber_core_test_module });
+    installTest(b, options, fiber_core_test);
+    const run_fiber_core_test = b.addRunArtifact(fiber_core_test);
+    subsystem_step.dependOn(&run_fiber_core_test.step);
+
     const zig_abi_module = b.createModule(.{
         .root_source_file = b.path("src/zig/abi_test.zig"),
         .target = target,
@@ -761,6 +824,7 @@ pub fn build(b: *std.Build) void {
     });
     zig_abi_module.addIncludePath(b.path("src/include"));
     zig_abi_module.addIncludePath(b.path("src/zig"));
+    addAbiIncludePath(b, zig_abi_module);
     zig_abi_module.addIncludePath(config_header.dirname());
     zig_abi_module.linkSystemLibrary("c", .{});
     const zig_abi_test = b.addTest(.{ .name = "janet-zig-abi-test", .root_module = zig_abi_module });
@@ -880,6 +944,10 @@ fn readOptions(b: *std.Build) BuildOptions {
         .ffi_layout = b.option(SubsystemImplementation, "ffi-layout", "Select the FFI type name tables and struct layout kernels (c or zig)") orelse .zig,
         .ffi_classify = b.option(SubsystemImplementation, "ffi-classify", "Select the FFI register classification and argument allocation kernels (c or zig)") orelse .zig,
         .filewatch_flags = b.option(SubsystemImplementation, "filewatch-flags", "Select the file watcher's keyword vocabularies for every backend (c or zig)") orelse .zig,
+        .vm_state = b.option(SubsystemImplementation, "vm-state", "Select the thread-local JanetVM storage and the operations over it as a whole (c or zig)") orelse .zig,
+        .fiber_core = b.option(SubsystemImplementation, "fiber-core", "Select the fiber stack frame, funcframe, and function environment machinery (c or zig)") orelse .zig,
+        .signal_core = b.option(SubsystemImplementation, "signal-core", "Select the try scope, signal decision, and signal injection machinery (c or zig)") orelse .zig,
+        .trace_frames = b.option(SubsystemImplementation, "trace-frames", "Select the stack frame decoding behind stack traces (c or zig)") orelse .zig,
         .install_tests = b.option(bool, "install-tests", "Install the C contract test executables so they can be run on another machine") orelse false,
         .single_threaded = b.option(bool, "single-threaded", "Build without thread-local VM state") orelse false,
         .nanbox = b.option(bool, "nanbox", "Use Janet's NaN-boxed value representation") orelse true,
@@ -906,6 +974,7 @@ fn readOptions(b: *std.Build) BuildOptions {
         .ffi_jit = b.option(bool, "ffi-jit", "Enable the FFI JIT") orelse true,
         .filewatch = b.option(bool, "filewatch", "Enable file watching") orelse true,
         .cryptorand = b.option(bool, "cryptorand", "Enable cryptographic random bytes") orelse true,
+        .call_trampoline = b.option(bool, "call-trampoline", "Enter cfunctions from JOP_CALL/JOP_TAILCALL through a per-call setjmp scope (Phase 7 groundwork; see SPIKE-7.md)") orelse false,
         .recursion_guard = b.option(i32, "recursion-guard", "C recursion guard") orelse 1024,
         .max_proto_depth = b.option(i32, "max-proto-depth", "Maximum prototype lookup depth") orelse 200,
         .max_macro_expand = b.option(i32, "max-macro-expand", "Maximum macro expansion depth") orelse 200,
@@ -939,7 +1008,7 @@ fn makeConfigHeader(b: *std.Build, options: BuildOptions) std.Build.LazyPath {
         \\#define JANET_MAX_PROTO_DEPTH {d}
         \\#define JANET_MAX_MACRO_EXPAND {d}
         \\#define JANET_STACK_MAX {d}
-        \\{s}#endif
+        \\{s}{s}#endif
         \\
     , .{
         defineIf(options.single_threaded, "JANET_SINGLE_THREADED"),
@@ -971,6 +1040,7 @@ fn makeConfigHeader(b: *std.Build, options: BuildOptions) std.Build.LazyPath {
         options.max_macro_expand,
         options.stack_max,
         defineIf(!options.cryptorand, "JANET_NO_CRYPTORAND"),
+        defineIf(options.call_trampoline, "JANET_CALL_TRAMPOLINE"),
     });
     const generated = b.addWriteFiles();
     return generated.add("janetconf.h", header);
@@ -978,6 +1048,15 @@ fn makeConfigHeader(b: *std.Build, options: BuildOptions) std.Build.LazyPath {
 
 fn defineIf(enabled: bool, comptime name: []const u8) []const u8 {
     return if (enabled) "#define " ++ name ++ "\n" else "";
+}
+
+/// `src/zig/abi.zig` translates `src/zig/state_abi.h`, which reaches Janet's
+/// internal `src/core/state.h`. Every module that imports abi.zig — directly or
+/// through cli.zig, interop.zig, or native_module.zig — therefore needs the
+/// core include path as well as the public one. Contract tests deliberately do
+/// not get it unless they exercise an internal header themselves.
+fn addAbiIncludePath(b: *std.Build, module: *std.Build.Module) void {
+    module.addIncludePath(b.path("src/core"));
 }
 
 fn makeCModule(
@@ -1156,8 +1235,26 @@ fn addRuntimeSources(
         module.addCMacro("JANET_ZIG_FILEWATCH_FLAGS", "1");
         module.addObject(subsystems.filewatch_flags.?);
     }
+    if (options.vm_state == .zig) {
+        module.addCMacro("JANET_ZIG_VM_STATE", "1");
+        module.addObject(subsystems.vm_state.?);
+    }
+    if (options.fiber_core == .zig) {
+        module.addCMacro("JANET_ZIG_FIBER_CORE", "1");
+        module.addObject(subsystems.fiber_core.?);
+    }
+    if (options.signal_core == .zig) {
+        module.addCMacro("JANET_ZIG_SIGNAL_CORE", "1");
+        module.addObject(subsystems.signal_core.?);
+    }
+    if (options.trace_frames == .zig) {
+        module.addCMacro("JANET_ZIG_TRACE_FRAMES", "1");
+        module.addObject(subsystems.trace_frames.?);
+    }
     if (options.vector == .zig or options.regalloc == .zig or options.movopt == .zig or
         options.parser_core == .zig or options.number_scan == .zig or
+        options.vm_state == .zig or options.fiber_core == .zig or
+        options.signal_core == .zig or options.trace_frames == .zig or
         (hasEv(options) and options.ev_core == .zig))
     {
         module.addCSourceFiles(.{
@@ -1223,6 +1320,7 @@ fn makeZigSubsystemObject(
         .pic = true,
     });
     configureCModule(b, abi_module, target, config_header, options);
+    addAbiIncludePath(b, abi_module);
     subsystem_module.addImport("abi", abi_module);
     return b.addObject(.{ .name = name, .root_module = subsystem_module });
 }

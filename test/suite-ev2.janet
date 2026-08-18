@@ -29,26 +29,36 @@
   (end-suite)
   (os/exit 0))
 
+# ev/deadline's interrupt flag needs JANET_INTERPRETER_INTERRUPT and is refused
+# without it. test/suite-ev.janet explains the probe; the tests below pass the
+# flag, so they only apply where the capability exists.
+(var interrupt-available? false)
+(let [f (coro (ev/sleep 0.01))
+      [ok] (protect (ev/deadline 10 nil f true))]
+  (when ok (resume f))
+  (set interrupt-available? ok))
+
 # Issue #1629
-(def thread-channel (ev/thread-chan 100))
-(def super (ev/thread-chan 10))
-(defn worker []
-  (while true
-    (def item (ev/take thread-channel))
-    (when (= item :deadline)
-      (ev/deadline 0.1 nil (fiber/current) true))))
-(ev/thread worker nil :n super)
-(ev/give thread-channel :item)
-(ev/sleep 0.05)
-(ev/give thread-channel :item)
-(ev/sleep 0.05)
-(ev/give thread-channel :deadline)
-(ev/sleep 0.05)
-(ev/give thread-channel :item)
-(ev/sleep 0.05)
-(ev/give thread-channel :item)
-(ev/sleep 0.15)
-(assert (deep= '(:error "deadline expired" nil) (ev/take super)) "deadline expirataion")
+(when interrupt-available?
+  (def thread-channel (ev/thread-chan 100))
+  (def super (ev/thread-chan 10))
+  (defn worker []
+    (while true
+      (def item (ev/take thread-channel))
+      (when (= item :deadline)
+        (ev/deadline 0.1 nil (fiber/current) true))))
+  (ev/thread worker nil :n super)
+  (ev/give thread-channel :item)
+  (ev/sleep 0.05)
+  (ev/give thread-channel :item)
+  (ev/sleep 0.05)
+  (ev/give thread-channel :deadline)
+  (ev/sleep 0.05)
+  (ev/give thread-channel :item)
+  (ev/sleep 0.05)
+  (ev/give thread-channel :item)
+  (ev/sleep 0.15)
+  (assert (deep= '(:error "deadline expired" nil) (ev/take super)) "deadline expirataion"))
 
 # Another variant
 (def thread-channel :shadow (ev/thread-chan 100))
