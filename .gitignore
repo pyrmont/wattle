@@ -11,6 +11,7 @@ janet
 /Emscripten
 /.zig-cache
 /zig-out
+/xbuild
 /src/include/generated/*.h
 janet-*.tar.gz
 dist
