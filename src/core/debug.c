@@ -348,8 +348,20 @@ JANET_CORE_FN(cfun_debug_lineage,
     return janet_wrap_array(array);
 }
 
-/* Extract info from one stack frame */
-static Janet doframe(JanetStackFrame *frame) {
+/* One stack frame decoded into the table debug/stack reports.
+ *
+ * Renamed from `doframe` for the reason Phase 9's other statics were: a
+ * static's name becomes a library symbol the moment the definition can move to
+ * another translation unit, and `doframe` is too general a name to put there.
+ *
+ * Provided by this file or by src/zig/subsystems/debug_frames.zig; state.h has
+ * the declaration. The Zig version reads the shared decoding through
+ * janet_trace_frame, which is what ends the duplication this file had with
+ * janet_stacktrace_ext -- and with it the missing null check below, which
+ * FOUND.md records and which this version still has. */
+#ifndef JANET_ZIG_DEBUG_FRAMES
+
+Janet janet_debug_frame(JanetStackFrame *frame) {
     int32_t off;
     JanetTable *t = janet_table(3);
     JanetFuncDef *def = NULL;
@@ -438,6 +450,8 @@ static Janet doframe(JanetStackFrame *frame) {
     return janet_wrap_table(t);
 }
 
+#endif /* JANET_ZIG_DEBUG_FRAMES */
+
 JANET_CORE_FN(cfun_debug_stack,
               "(debug/stack fib)",
               "Gets information about the stack as an array of tables. Each table "
@@ -461,7 +475,7 @@ JANET_CORE_FN(cfun_debug_stack,
         JanetStackFrame *frame;
         while (i > 0) {
             frame = (JanetStackFrame *)(fiber->data + i - JANET_FRAME_SIZE);
-            janet_array_push(array, doframe(frame));
+            janet_array_push(array, janet_debug_frame(frame));
             i = frame->prevframe;
         }
     }

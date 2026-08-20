@@ -145,6 +145,11 @@ otherwise the build swaps whole source files.
 | `-Dabstract-core=c` | `abstract_core.zig` | `core/abstract.c` | `JANET_ZIG_ABSTRACT_CORE` |
 | `-Dvalue-alloc=c` | `value_alloc.zig` | `core/fiber.c`, `core/bytecode.c` | `JANET_ZIG_VALUE_ALLOC` |
 | `-Dvalue-wrap=c` | `value_wrap.zig` | `core/wrap.c` | `JANET_ZIG_VALUE_WRAP` |
+| `-Dvm-calls=c` | `vm_calls.zig` | `core/vm.c` | `JANET_ZIG_VM_CALLS` |
+| `-Dvm-run=c` | `vm_run.zig` | `core/vm.c` | `JANET_ZIG_VM_RUN` |
+| `-Dvm-entry=c` | `vm_entry.zig` | `core/vm.c` | `JANET_ZIG_VM_ENTRY` |
+| `-Dvm-lifecycle=c` | `vm_lifecycle.zig` | `core/vm.c` | `JANET_ZIG_VM_LIFECYCLE` |
+| `-Ddebug-frames=c` | `debug_frames.zig` | `core/debug.c` | `JANET_ZIG_DEBUG_FRAMES` |
 
 `-Dint-scan` and `-Dint-types-core` are only offered when integer types are
 enabled, the three assembly selectors only when the assembler is, and
@@ -192,6 +197,14 @@ callback itself. `-Dgc-alloc` is ungated too — there is no build without a
 collector — and it takes the first of three bites out of `gc.c`, leaving
 marking, sweeping, `janet_collect` and `janet_clear_memory` in C in both
 configurations.
+
+`-Dboot` is not a subsystem selector either, though it takes the same `c` or
+`zig` values. It selects what the *bootstrap image generator* is built from
+rather than what the runtime is: `-Dboot=zig` gives `janet-boot` the same
+selectors as the runtime and builds a second set of subsystem objects for the
+build host, so that `zig build image` can be run both ways and the two images
+compared. It defaults to `c`, and Phase 9's gate is where the comparison was
+first made — see "Closing the gate on the interpreter" at the end of this file.
 
 ## Raising out of `run_vm` instead of jumping past it
 
@@ -1041,9 +1054,14 @@ the collector cannot use placement at all: the mutator's try scope is
 arbitrarily far away, so a jump from `gcmark` crosses every Zig mark frame
 regardless of where the callback is invoked.
 
-`SPIKE-8.md` settles the general case, and the rule it produces governs Parts 3
+`SPIKE-8.md` settled the general case, and the rule it produced governs Parts 3
 onward: **an abstract type's callbacks may not raise, and a signal from one that
-does may jump straight through the Zig frames that invoked it.** Zig calls
+does may jump straight through the Zig frames that invoked it.** That document is
+no longer in the tree, so this paragraph is the rule's home; `build.zig` points
+here when it rejects a `defer` in a jump-transparent file. Phase 9 Part 3 made
+the rule load-bearing for `run_vm` itself.
+
+ Zig calls
 `gcmark`, the finalizers, `compare`, `hash`, `get`, `put`, `next` and `length`
 directly. Not one of the fifteen in-tree abstract types can raise from any of
 them, so this restricts third-party modules only, and the fork breaks those by
@@ -3805,3 +3823,1061 @@ ruled out: it is not one block per panic, whether the raise comes from
 stack for eighty-six leaks even under `MallocStackLogging=1`, so the single
 panic-path stack it does print may be a red herring. `PLAN.md` records it as
 open, with the mechanical next step, rather than excluding it quietly.
+
+## Dispatching without a computed goto
+
+Phase 9 Part 1, and the only increment in the phase that ports nothing. Phase 7
+closed with one cost unmeasured and assigned here — Zig has no computed goto,
+and whether its labelled `switch` produces comparable dispatch on `run_vm`'s
+loop was unknown. `SPIKE-9.md` has the method and the tables; the two results
+that govern the rest of the phase are these.
+
+**A labelled `switch` with `continue :sw` in every arm is the technique, not an
+approximation of it.** Each arm ends in its own indirect jump — fifteen of them
+in a twelve-opcode skeleton, against clang's twelve for the same interpreter
+written with computed gotos — and it lands within 1.3% of C at both ends of a
+bracket built to exaggerate the difference: a perfectly predicted loop and a
+straight line of pseudo-randomly chosen opcodes.
+
+**Dispatch shape is worth at most 3% of anything real.** `-Dcomputed-gotos=false`
+is a new build option that forces the C `run_vm` onto its switch — 20 indirect
+branches become 1 — and over `probe-9/bench/`'s seven workloads six move less
+than the noise and the seventh, the most dispatch-dense of them, is 8% *faster*
+that way. So the interpreter's time is in what the opcodes do rather than in
+reaching them, and Part 3 is free to write the loop the way that reads best.
+
+`-Dcomputed-gotos` stays in the tree as the C-side control for later dispatch
+comparisons. It is not a supported configuration, and `zig build test` passes
+both ways.
+
+## The callee side of the interpreter
+
+Phase 9 Part 2. `-Dvm-calls=c` restores the C implementation; Zig is the
+default. `vm_calls.zig` owns eleven functions from `vm.c`: `janet_method_invoke`
+and the five helpers around it, the three `fill_*` loops, and `janet_mcall`.
+
+### What groups them, since it is not a data structure
+
+Phase 8's first rule says to split by data structure rather than by call graph,
+and an interpreter has none to split by. What groups these eleven is that they
+answer one question in stages — *given a callee that is not a function, what
+does calling it mean* — and that none of them touches `run_vm`'s three
+registers. That is what lets them move a full increment ahead of the loop.
+
+`vm.c` keeps two guarded regions rather than one, because `janet_mcall` sits
+eight hundred lines below the rest and nothing was moved to make them
+contiguous. `value.c` set that precedent in Phase 8 Part 7.
+
+**This increment ends no scope**, which Phase 7's first rule predicts: a port
+ends a scope only when it removes the *raise*, not when it moves the work. These
+eleven raise directly — SPIKE-8's rule covers it, the file is jump-transparent,
+and panicking is what these functions are for — so `run_vm` still needs every
+scope it needed before. The reporting layer the plan had expected here was not
+needed for the same reason.
+
+### Five renamed symbols, and one that needed no seam
+
+Ten of the eleven were `static`. Nine of those now have external linkage and a
+declaration in `state.h`, beside `janet_trace_frame` and the argument-fault
+layer; five of the nine had names too general for a library's symbol table and
+are renamed on both sides, so `run_vm`'s call sites read identically under
+either selector:
+
+| was | is |
+| --- | --- |
+| `call_nonfn` | `janet_call_nonfn` |
+| `resolve_method` | `janet_resolve_method` |
+| `fill_table` | `janet_fill_table` |
+| `fill_struct` | `janet_fill_struct` |
+| `fill_string` | `janet_fill_string` |
+
+`method_to_fun` is the tenth and stays a Zig-private inline. It is `janet_get`
+with its operands swapped and both of its callers moved with it, so there is
+nothing for a symbol to be.
+
+### The first subsystem to export hidden
+
+The nine internal symbols are exported with `.visibility = .hidden`, which is
+what the C build's `-fvisibility=hidden` already gave them. That is the
+one-line fix the cross-platform section lists as open for four earlier
+subsystems, applied here at the point of writing rather than added to the debt:
+the two selectors' dynamic symbol sets are byte-identical, 706 symbols each,
+and the nine do not appear in either. `janet_mcall` is `JANET_API` and is
+exported normally. Hidden visibility is invisible to a contract test, which
+links the static archive.
+
+### Jump transparency, and the two tests that depend on it
+
+Every function here raises and most do nothing else, so the file carries
+`//! jump-transparent` and `build.zig` enforces that it holds no `defer`. It
+calls third-party cfunctions, an abstract type's `call`, `janet_call`,
+`janet_get`, `janet_in`, `janet_table_put`, `janet_struct_put` and
+`janet_to_string_b` directly, in the shape of the C original, and a signal from
+any of them jumps straight through the Zig frame that invoked it.
+
+`test/vm_calls.c` drives two of those on purpose: an abstract type whose
+`tostring` panics, through `janet_fill_string`, and one whose `hash` panics,
+through `janet_fill_table`. Both assert what survives the jump — the buffer
+holds the element written before the raise, the table holds nothing — and they
+are the only tests in the file that would notice if jump transparency stopped
+being true. Neither is reachable from Janet source; no in-tree abstract type
+raises from either callback.
+
+`janet_panicf` is called through the C variadic ABI, as `value_access.zig`
+established. Seven messages cross it, and the contract compares all seven byte
+for byte. The values in them are numbers, keywords and strings rather than
+tables or tuples, because `%v` renders a container with its address.
+
+### What the contract had to be built around
+
+**A live fiber under everything.** `janet_method_invoke` reaches `janet_call`
+for a function callee, which needs a current fiber and a frame to push onto. The
+contract therefore registers a cfunction and calls it from Janet source, so
+every assertion runs where `run_vm` would have made the same call, rather than
+installing a fiber by hand.
+
+**Order, not just outcome.** Two of these functions reverse their operands and
+both reversals are invisible to a test that only checks that something came
+back. `janet_binop_call`'s right-hand fallback passes `{rhs, lhs}`, so a `:r+`
+method receives its own receiver first; `janet_method_invoke`'s default arm
+indexes the *argument* by the callee, which is what makes `(:key struct)` work.
+The contract asserts both through a cfunction that returns its arguments as a
+tuple.
+
+**Rooting every evaluated value.** The helper that compiles a Janet expression
+roots its result and never releases it. These tests hold values across calls
+that intern keywords and compile source, either of which can collect, and a
+`Janet` in a C local is not a root.
+
+### What the mutation sweep found
+
+Twelve mutations, all caught, and one of them found a hole first. The abstract
+arm's `call` callback was tested at three arguments and at zero, and the
+mutation that consults the indexed fallback *before* the callback survived both
+— because it changes behaviour only at exactly one argument, where the arity
+check would not have fired anyway. The contract gained that case.
+
+One mechanical note for the next sweep, which cost a rerun here: the harness
+splits its mutation table on `|`, which is also Zig's capture syntax, so a
+mutation whose text contains `|call|` is silently mangled and reports as caught
+at build time rather than at runtime. A mutation "caught (build)" is not caught;
+it is a mutation that never ran. The sweep also restores the source but leaves
+the last mutant's library in `zig-out`, so rebuild before trusting anything
+measured afterwards.
+
+### What this cost, and what Part 3 should do about it
+
+`methods`, the one workload in `probe-9/bench/` that is almost entirely method
+dispatch, is **2.4% to 3.4% slower** with the Zig implementation, reproduced
+across two independent runs. Everything else in the corpus is inside ±1.2%.
+
+The cause is not codegen but the translation-unit boundary, and the
+disassembly says so exactly. With the C selector, `run_vm` inlines
+`janet_resolve_method`, `janet_call_nonfn` and all three `fill_*` loops outright
+— it calls none of them, only `janet_method_invoke` and `janet_binop_call`.
+With the Zig selector it calls all six across an object boundary.
+
+That is worth stating as a constraint on Part 3 rather than as a regression to
+chase now. When `run_vm` becomes Zig, it recovers this only if the helpers are
+`@import`ed as a module it can inline into, not if they stay a separately
+compiled object linked beside it. The alternative is to accept a call at each
+of those six sites permanently. It is also worth keeping in proportion: the
+per-call scopes that Part 3 removes cost 16.2% on this same workload, which is
+five times what this increment gave up.
+
+## The interpreter loop
+
+Phase 9 Part 3. `-Dvm-run=c` restores the C implementation; Zig is the default.
+This is the increment that first puts a Zig frame on the VM call path, and it
+takes `run_vm` whole: the dispatch loop, its seventy-eight opcode bodies, and
+the resume-state decoding at its head.
+
+What stayed in `vm.c` is everything above the loop or holding a `jmp_buf`:
+`janet_call`, `janet_step`, `janet_continue`, `janet_continue_signal`,
+`janet_pcall`, `janet_check_can_resume` and `janet_continue_no_check`. The first
+six went in Part 4, below; the last is beyond this phase by Phase 7's fourth
+rule.
+
+### The loop dispatches with a labelled switch, as Part 1 settled
+
+`sw: switch (opcode)` with `continue :sw` at the end of every arm, which is
+Zig's equivalent of the computed goto and which Part 1 measured rather than
+assumed. Nothing in the delivered loop revisits that decision, and nothing
+needed to.
+
+The one place the shape shows through is `JOP_MAKE_TUPLE` and
+`JOP_MAKE_BRACKET_TUPLE`, which C reaches by falling through one label into the
+next and then testing `opcode` to tell them apart. Zig has no fallthrough, so
+the two share a prong and the switch's own capture supplies the discriminator —
+which is the same runtime load and compare the C makes. Three other C
+fallthrough-or-shared bodies went the other way: `JOP_RETURN`/`JOP_RETURN_NIL`,
+`JOP_LOAD_UPVALUE`/`JOP_SET_UPVALUE` and `JOP_EQUALS`/`JOP_NOT_EQUALS` are
+separate prongs calling one `inline fn` with a `comptime` parameter, so neither
+opcode pays a branch to discover which one it is.
+
+### Two subsystems are imported rather than linked, and one of them had to be
+
+Part 2 ended by predicting that a Zig `run_vm` recovers its lost inlining "only
+if the helpers are `@import`ed as a module it can inline into". That turned out
+to be true and badly understated, because the same problem exists one layer
+down and is an order of magnitude larger.
+
+In C, `janet_checktype`, `janet_unwrap_number`, `janet_wrap_number` and
+`janet_truthy` are macros in `janet.h`. `run_vm` pays a shift and a compare for
+a type check. Zig sees the *functions* the same header declares, and the first
+working version of this loop reached all of them through the symbol table:
+
+```text
+workload           C run_vm   Zig run_vm    delta
+arithmetic           0.0514       0.0973   +89.3%
+fib                  0.0282       0.0381   +35.3%
+methods              0.0304       0.0384   +26.4%
+tables               0.0779       0.0955   +22.6%
+```
+
+An interpreter that pays a call to ask what a value is spends more time asking
+than acting. So `value_wrap.zig` grew a `pub const ops` namespace — the same
+operations, as `inline fn`s over the layout code the exports already use, not a
+second copy — and `vm_run.zig` imports it. `vm_calls.zig` arrives the same way.
+
+`build.zig` chooses what each import resolves to, and that is what keeps the
+selectors honest: `vm_calls.zig` or `vm_calls_extern.zig`, `value_wrap.zig` or
+`value_wrap_extern.zig`, the `*_extern.zig` shims being nothing but declarations
+of the C symbols behind the same decl names. `-Dvm-calls=c` and `-Dvalue-wrap=c`
+therefore still answer for the loop, out of line, and that cost is charged to
+the selector rather than hidden by a silent substitution.
+
+Folding an implementation in folds its `@export`s in with it, so `build.zig`
+stops building those two as objects of their own in the folded configuration.
+Two objects defining `janet_wrap_number` is a duplicate symbol, not a choice.
+`makeVmRunObject` is the one place in the build that assembles a Zig object from
+more than one source, and it shares a single `abi` module across all three, for
+the reason `abi.zig` states at the top: two translations of one header produce
+two incompatible `JanetFiber` types.
+
+### Phase 7's trampoline decision, reversed
+
+Phase 7 closed a decision that `-Dcall-trampoline` would flip to default-*on* in
+this increment. Part 3 reverses it. The scopes stay implemented, stay selectable,
+and stay in the acceptance matrix; they are no longer the default under either
+selector.
+
+The measurement that prompted the question separates cleanly into three, because
+the trampoline can be turned on for the C loop as well:
+
+```text
+the scopes alone, C run_vm with and without them
+  fib +11.6%   methods +21.1%   tables +13.9%   strings +6.4%
+
+the port alone, C run_vm against Zig run_vm, both with the scopes
+  fib  +5.1%   methods  +1.7%   tables  +4.0%   strings -0.8%
+
+both, C run_vm as it ships against Zig run_vm as it now ships
+  fib  -8.9%   methods -10.2%   tables  -1.8%   strings +0.5%
+```
+
+The port is nearly free. The scopes are the whole of the difference. But
+performance is the smallest of the three reasons to reverse, and it is worth
+recording the other two, because a future increment that wants the scopes back
+should have to answer them.
+
+**The scope machinery is C written to serve a Zig caller.** `janet_vm_scoped`,
+`janet_vm_error_string`, `JanetVmTryState`, `vm_scope_enter` and
+`vm_scope_leave` exist for no other reason. Defaulting them on would have the
+increment that moves the interpreter into Zig add C underneath it, which is the
+wrong direction for a project measured in how much C is left.
+
+**They would make `run_vm` an exception to a rule the runtime already relies
+on.** SPIKE-8 established that a Zig frame carrying no `defer` may be abandoned
+by a passing `longjmp`, and Phase 8 shipped on exactly that: `janet_in`,
+`janet_get`, `janet_equals`, `janet_compare`, `janet_lengthv` and
+`janet_next_impl` are all Zig, all called directly by `run_vm`, and all raise
+through their own Zig frames today. Scoping `run_vm` would not remove a single
+one of those jumps; it would only add a mechanism beside them.
+
+And neither setting is closer to the end state, which has no `setjmp` *and* no
+`longjmp` — raises become returns threaded through the callees, which is work on
+`janet_get` and `janet_table_put` and the cfunctions rather than on the loop.
+The call-site shape that end state needs is present either way, because the
+difference between the two mechanisms is confined to `scoped` and `raiseSignal`,
+about ten lines, and every one of the seventy-eight arms reads the same under
+both: make the call, check the signal, propagate it.
+
+Phase 7's exit gate is unaffected in substance and worth restating precisely. No
+`longjmp` crosses a Zig frame that has anything to release, which is what the
+gate was protecting; `run_vm` now joins the Phase 8 subsystems in relying on
+jump transparency to say so, and `build.zig` enforces the "nothing to release"
+half by rejecting `defer` and `errdefer` in any file carrying the marker.
+
+### The seam
+
+Six symbols, in both directions.
+
+| symbol | direction | was |
+| --- | --- | --- |
+| `janet_run_vm` | Zig provides | `static run_vm` in `vm.c` |
+| `janet_check_can_resume` | C provides | `static` in `vm.c` |
+| `janet_continue_no_check` | C provides | `static` in `vm.c` |
+| `janet_vm_trace` | C provides | the `vm_do_trace` macro |
+| `janet_vm_scoped` | C provides | twenty-five `scoped_*` wrappers |
+| `janet_vm_error_string` | C provides | `static vm_error_string` |
+
+`run_vm` is renamed for the reason Part 2 renamed five of its callees: a
+static's name becomes a library symbol the moment its definition moves to
+another translation unit, and `run_vm` is too general a name to put in one. The
+export is hidden, as Part 2's nine are, so the two selectors' dynamic symbol
+sets stay identical.
+
+`janet_vm_trace` takes the *fiber* rather than a pointer into its stack, and
+that is the whole reason the C original is a macro rather than a function:
+`janet_eprintf` can resize the stack, so `fiber->data + fiber->stackstart` has to
+be recomputed for every element traced. Handing Zig a pointer would freeze it at
+the first. It is compiled under both selectors so that the two archives hold the
+same symbols.
+
+`janet_vm_scoped` is the interesting one. The `setjmp` has to live in a C frame,
+so that much cannot move; what moves is the choice of *what* runs inside it,
+which belongs with the interpreter. `vm.c` spells that choice as twenty-five
+`scoped_*` wrappers, one per callee — an enumeration of the call graph, which is
+exactly what Phase 8's first rule warns against. The Zig side needs one C symbol
+and a `comptime` thunk per call site, and the thunk is written by the compiler
+from the argument tuple. Measured, the extra indirect call is invisible: with
+the scopes on, the Zig loop is +1.7% against the C loop's twenty-five direct
+wrappers on the most call-dense workload in the corpus.
+
+### What the contract was built around
+
+`test/vm_run.c` is not an opcode-by-opcode reimplementation of the Janet suites,
+which already run every instruction — thirty-eight of them execute before this
+binary reaches `main`. It pins the three things they do not.
+
+**The fifteen messages the loop raises itself**, byte for byte. These are the one
+part of `run_vm` no Janet program checks and every Janet programmer reads, and
+under the Zig selector every one crosses the C variadic ABI, where a mismatch
+produces a plausible wrong message rather than a crash.
+
+**The signal rather than the payload.** `JOP_SIGNAL` clamps its operand into the
+user range, `JOP_PROPAGATE` passes a child's status upward unchanged, and an
+unknown opcode is how a breakpoint reports itself. A contract that only looked at
+payloads would pass with all three confused, so these assert what
+`janet_continue` returned.
+
+**The resume-state decoding at the head of the loop.** Five flags decide where a
+resumed fiber puts its value, whether it re-runs the instruction it stopped on,
+and whether it pops a C frame first. Nothing else in the tree reads them.
+
+Four things are deliberately not pinned, all under Phase 8's sixth rule:
+`"rhs must be valid 32-bit signed integer, got %f"`, whose tail is undefined and
+differs between the two behavioral targets; the three left-shift cases C leaves
+undefined; and `"invalid constant"`, `"invalid funcdef"` and the two invalid-upvalue
+messages, which the assembler refuses to encode — they belong to the verifier
+rather than to the loop. `JOP_SIGNAL`'s lower clamp is unreachable for the same
+reason.
+
+### What the mutation sweep found, which was a great deal
+
+Twenty-seven mutations. The first pass caught eighteen and **missed eight**,
+which is the worst first-pass result of any contract in this project and the most
+useful. Two findings account for most of it.
+
+**The compiler folds constant arithmetic, so a contract written with literal
+operands does not test the interpreter at all.** `(- 2 3)` is a load of -1. Every
+arithmetic and comparison assertion in the first draft was written that way, and
+the sweep proved it by swapping the operands of every binary opcode without
+failing a single one. Every operand in the contract now comes from a function
+parameter. This generalises past this file: a contract for anything the optimizer
+can see through has to keep its inputs away from it.
+
+**A call in tail position is a different opcode.** All four arity-message
+assertions were written as `(defn g [] (f))`, which is `JOP_TAILCALL`, so
+`JOP_CALL`'s identical-looking message — a separate format call in both
+implementations — was never reached. Inverting one plural survived. The contract
+now forces a non-tail call with arithmetic around it.
+
+The remaining six were ordinary gaps: no negative immediate operand anywhere, so
+reading the signed field unsigned survived; no permanent breakpoint, so the mask
+the loop applies to its first opcode was never exercised (`janet_step` restores
+the instruction words, so only `debug/fbreak` reaches it); no `next` over a fiber
+whose signal escapes its mask, which is the only thing `janet_next_impl`'s
+`is_interpreter` argument changes; and no shift count above `INT32_MAX`, which is
+the one well-defined way to tell the two operand narrowings apart.
+
+The final pass is **25 caught, 0 that never ran, 2 missed**, and both survivors
+are equivalences rather than holes:
+
+- *The type check in `JOP_EQUALS_IMMEDIATE`* is redundant under either NaN-boxed
+  layout, because every non-number unwraps to a NaN and a NaN compares false
+  against everything. Removing it is caught under `-Dnanbox=false`, where a
+  tagged nil unwraps to `0.0` and `(= nil 0)` becomes true — verified by hand,
+  since the sweep builds one configuration.
+- *`JANET_FIBER_RESUME_NO_USEVAL` and `JANET_FIBER_RESUME_NO_SKIP`* cannot be
+  told apart by any reachable state. Every site that sets one sets the other,
+  except `JOP_PUT` and `JOP_PUT_INDEX`, which set `NO_USEVAL` alone and clear it
+  three lines later; escaping that window needs a raise, after which the fiber is
+  `:error` and cannot be resumed.
+
+One harness note, and it has now cost this project twice. **A mutation sweep must
+bound the mutant's run time.** "Resumed fiber re-runs its instruction" turns the
+interpreter into an infinite loop, and without a timeout the sweep wedges and
+leaves a process spinning at 100% until somebody notices — two such processes
+from Phase 8's sweep were still running, ten hours of CPU each, when this
+increment started. The harness now kills a mutant after twenty seconds and counts
+the hang as caught, which it is.
+
+### What this cost
+
+Measured with `probe-9/bench/run.sh`, five interleaved rounds at
+`-Doptimize=ReleaseFast`, minimum per workload. Baseline is `-Dvm-run=c` as it
+ships; candidate is the Zig loop as it now ships.
+
+```text
+workload           base       cand    delta
+arithmetic       0.0503     0.0488     -2.8%
+fib              0.0275     0.0267     -2.6%
+methods          0.0300     0.0278     -7.3%
+tables           0.0764     0.0742     -2.9%
+strings          0.0553     0.0547     -1.0%
+compiler         0.0573     0.0567     -0.9%
+pegmatch         0.0377     0.0370     -2.0%
+```
+
+All seven are faster, `methods` by enough to be worth believing and the rest by
+one to three percent, which is at the edge of what this corpus resolves. An
+earlier run of the same comparison, taken before two runaway processes from
+Phase 8's mutation sweep were noticed and killed, put `methods` at -10.2% and
+`fib` at -8.9%; the direction agreed and the magnitudes did not, which is a
+reminder to check what else is on the machine before quoting a number.
+
+Almost none of this is the loop: the same comparison with the trampoline forced on for both sides
+puts the Zig loop within ±5% everywhere, so what the corpus is showing is mostly
+Part 2's inlining recovered plus the scopes never switched on.
+
+Two costs are worth naming rather than leaving in the delta. The value layer had
+to be imported before any of this was true — through the symbol table the
+arithmetic workload was 89% slower, and that number is the reason `ops` exists.
+And `-Dvalue-wrap=c` now carries that cost by design: it is the only
+configuration in the matrix where anybody pays a call for a type check, and it is
+the price of asking a C-selected value layer to answer for a Zig loop.
+
+The `methods` regression Part 2 recorded is gone. `-Dvm-calls=c` still has it, for
+the same reason it had it before, which is now visible as a selector cost rather
+than as a port cost.
+
+
+## The entry points
+
+Phase 9 Part 4. `-Dvm-entry=c` restores the C implementation; Zig is the
+default. Six functions, all of them above `run_vm`: `janet_step`, `janet_call`,
+`janet_pcall`, `janet_continue`, `janet_continue_signal` and
+`janet_check_can_resume`. Five are public API and keep their names; the sixth
+lost `static` in Part 3 and is declared in `state.h`.
+
+`janet_continue_no_check` did not move and does not move in this phase. Phase
+7's fourth rule keeps it in C because it holds the `jmp_buf` that every fiber
+resume re-establishes.
+
+### The seam now runs in both directions
+
+Part 3's seam was one-directional: a Zig `run_vm` called down into C. Part 4
+puts Zig on the other side of the same C function, and `janet_continue_no_check`
+becomes the hinge. It calls `janet_run_vm` downward and `janet_continue`
+sideways, and under the default selectors both of those are Zig. Nothing had to
+be added to make that work — a static's name became a library symbol in Part 3
+and the calls resolve at link time either way — but it is the first place in the
+project where a C function sits *between* two Zig ones, and it is worth naming
+because the next phase removes it.
+
+### Not a folded module, and why that is the right answer here
+
+Part 3's rule is that a subsystem the interpreter touches on every instruction
+is `@import`ed rather than linked, because a translation-unit boundary on the
+value layer cost the arithmetic workload 89%. None of these six is on that path.
+`janet_call` runs once per C-to-Janet call, against a `janet_fiber_pushn`, a
+`janet_fiber_funcframe` and the whole of `run_vm`; `janet_step` runs once per
+debugger step and installs two breakpoints while it is at it.
+
+So `vm_entry.zig` is an ordinary object that reaches the value layer through the
+symbol table, which has the pleasant consequence that `-Dvalue-wrap` is honoured
+by the linker rather than by a shim. The rule is about the per-instruction path,
+not about Zig objects in general, and applying it here would have bought nothing
+and coupled two selectors.
+
+### One thing stayed in C, and it needed a second signature
+
+`janet_call`'s trace line. `vm_do_trace` is a macro over `janet_eprintf`, which
+is itself a variadic macro over `janet_dynprintf` and does not survive
+translation. Part 3 met this and exposed the macro as `janet_vm_trace`, taking
+the *fiber* rather than a pointer into its stack, because `janet_eprintf` can
+move that stack between elements and the address has to be recomputed each time.
+
+That signature cannot serve `janet_call`, which traces the array its own caller
+passed. So `vm.c` gained `janet_vm_trace_argv`, the same macro over a
+caller-owned `argv`, defined under either selector so the two archives hold the
+same symbols.
+
+The hazard the fiber-taking signature exists to survive is real, and looking for
+it here turned up where it does bite. `janet_dynprintf`'s `JANET_FUNCTION` case
+calls the `:err` handler through `janet_call`, so every `janet_eprintf` inside a
+trace re-enters the interpreter on the same fiber. The macro recomputes `argv`
+and survives that; `vm_commit()` writes through `run_vm`'s own local `stack`
+pointer and does not. `FOUND.md` has the reproduction — a traced call in
+non-tail position with a stack-growing `:err` handler traces twice, the second
+time with the return value where the first argument was, and then aborts. Both
+selectors fail identically, which is the port reproducing the original rather
+than diverging from it.
+
+### `janet_check_can_resume` is exported hidden
+
+It is declared in `state.h` rather than in `janet.h`, so the C build hides it
+under `-fvisibility=hidden`. A plain `export fn` does not, and the first build
+of this increment widened the shared library by exactly one symbol. Written as
+`@export(&checkCanResume, .{ .visibility = .hidden })` instead, both artifacts
+carry the same 1209 archive symbols and the same 706 dylib symbols under either
+selector. This is the fifth subsystem to need it and the first where the two
+selectors would otherwise have disagreed, which is what makes it worth checking
+per increment rather than per phase.
+
+### Jump transparency, and what `janet_call` does not hold
+
+`vm_entry.zig` carries the marker. Under the default every panic below
+`janet_run_vm` is a `longjmp` to the `setjmp` in `janet_continue_no_check`, so
+`janet_call`'s frame is abandoned along with the loop's — and nothing in it is
+lost. `janet_gclock`'s handle and the `stackn` bump are both restored by
+`janet_restore` on the way out, which is why the C original does not release
+them on that path either, and the guard frame a dirty stack gets belongs to a
+fiber the jump has already unwound. `build.zig` enforces the other half by
+rejecting `defer` in a file carrying the marker.
+
+Under `-Dcall-trampoline` the shape changes and the file does not: `janet_run_vm`
+returns the signal instead of jumping, the teardown runs, and `janet_panicv` at
+the end raises from this frame rather than from a deeper one. Both are the C
+behaviour and neither needed a branch here.
+
+### What the contract was built around
+
+`test/vm_entry.c`, seven panics and ten reports, verified against `-Dvm-entry=c`
+before it was trusted against Zig.
+
+The organising question is *which mechanism* each refusal uses, because the same
+message delivered the wrong way turns a recoverable error into an abort. Four of
+the six only ever return a `JanetSignal` and two raise, and the split is not
+where a reader would guess: `janet_step` raises for a fiber it will not step
+while `janet_continue` reports for a fiber it will not resume, and `janet_pcall`
+reports even the arity failure that `janet_call` raises three different messages
+for.
+
+The rest is state that no return value shows. `janet_check_can_resume` marks the
+fiber errored for one of its three refusals and not the other two.
+`janet_pcall` writes its out-parameter before it decides whether it failed, so a
+caller reusing a fiber sees it cleared rather than stale. `janet_call` restores
+`stackn`, the collector lock and a dirty stack on the way out, and the dirty-stack
+case is set up deliberately from a cfunction because nothing in the tree
+produces one. And `janet_step` writes breakpoints into the funcdef every fiber
+over that function shares, so each stepping test ends by running the same
+function normally and checking it still works.
+
+Three things needed a running fiber underneath them — the root-fiber refusals,
+the arity messages, the dirty stack — and get it from a registered cfunction
+rather than from a fixture, which is the same idiom `test/vm_calls.c` uses.
+
+The coercion message is the one that took arranging. `janet_call` sets
+`coerce_error`, so a signal the loop *returns* rather than raises becomes an
+error naming the signal it came from. Reaching it needs a Janet function entered
+through `janet_call` rather than through `JOP_CALL`, and the binary operator
+fallback is the way in: `(+ t 1)` on a table looks `:+` up as a method, and
+`janet_method_invoke` calls `janet_call` for a Janet function. A `yield` in that
+method comes back as `"5 coerced from yield to error"`.
+
+### What the mutation sweep found
+
+Thirty-four mutations, all caught, none vacuous. The two that had to be repaired
+before that was true are the interesting ones, and only one of them was a
+mutation problem.
+
+`the gate admits the running fiber` did not compile: `JANET_STATUS_SUSPENDED`
+does not exist without the event loop. Rewritten to drop the `ALIVE` term
+instead. A mutation that will not compile never ran, which is the rule Part 3
+established and the harness still prints in those words.
+
+`step skips an instruction` — `nexta = pc + 2` — was missed, and it was the
+contract's fault. Stepping was asserted with `steps > 1` and `steps > 6`, which
+is a scalar summary of something structural: a stepper that visits every other
+instruction still terminates, still produces the right answer, and still takes
+more than one step. **Assert the structure, not a summary of it.** The
+straight-line case now asserts that the offsets stopped at are exactly
+`1..bytecode_length-1`, in order, and the branching case scans the funcdef for
+the conditional jump and asserts that stepping stopped at *both* of its
+successors. That second assertion is what pins `nextb`, which is the only reason
+`janet_step` is more than four lines, and the step count would have caught it
+only by accident — nineteen with the branch target breakpoint and fifteen
+without, a difference that says nothing about why.
+
+### What this cost
+
+Measured with `probe-9/bench/run.sh`, seven interleaved rounds at
+`-Doptimize=ReleaseFast`, minimum per workload. Baseline is `-Dvm-entry=c`;
+candidate is Zig. Both sides have the Zig `run_vm`, so this isolates the six
+entry points.
+
+```text
+workload           base       cand    delta
+arithmetic       0.0488     0.0488     -0.0%
+fib              0.0265     0.0266     +0.5%
+methods          0.0276     0.0280     +1.3%
+tables           0.0754     0.0761     +0.9%
+strings          0.0552     0.0545     -1.2%
+compiler         0.0563     0.0575     +2.0%
+pegmatch         0.0373     0.0373     -0.1%
+```
+
+That table is not the measurement, and saying so is the point. **No workload in
+the corpus enters the interpreter through `janet_call`.** `fib` and `methods`
+look like they should — they are the call-heavy pair — but a Janet function
+called from Janet goes through `JOP_CALL`, and a keyword method is resolved and
+then called the same way. What the corpus establishes is the negative result
+worth having: moving the entry points costs nothing anywhere else, and every
+figure above is inside the ±2% this corpus resolves.
+
+For the path this increment actually owns, two loops reach `janet_call`. The
+binary operator fallback does — `(+ t 1)` on a table looks `:+` up and
+`janet_method_invoke` enters a Janet function through `janet_call` — and so does
+a PEG capture whose constant is a function, which `peg.c` calls once per match.
+Nine interleaved rounds, same optimize mode:
+
+```text
+workload           base       cand    delta
+opfallback       0.0203     0.0208     +2.3%
+pegcall          0.0323     0.0327     +1.4%
+```
+
+Run with the roles swapped as a control, the C side comes out 0.9% and 2.4%
+ahead, so the direction is stable across three pairings and the magnitude is
+one to three percent. It is a real cost rather than noise, and it is charged to
+the C-to-Janet call boundary rather than to anything a Janet program does in a
+loop.
+
+Two things were ruled out rather than assumed. Binding `&c.janet_vm` to a local
+once instead of re-reading it at every use — the C original re-reads it through
+a macro, and `janet_vm` is `_Thread_local` — made it *worse*, so the thread-local
+lookup is not where the time goes. And the folded-module treatment Part 3 needed
+is not the answer either: the value operations `janet_call` performs on its hot
+path amount to one `janet_wrap_nil`, against a `janet_fiber_pushn`, a
+`janet_fiber_funcframe`, a `janet_gclock` and the whole of `run_vm`.
+
+The machine was not quiet for these runs — a system media-indexing daemon held a
+core throughout — which is why the swapped control is here. Interleaving puts
+the drift on both sides and the minimum is the right statistic under one-sided
+noise, but the rule from Part 3 stands: check what else is running before
+quoting a figure, and say so when it was not clean.
+
+## The runtime's lifecycle, and the second reader of a stack frame
+
+Phase 9 Part 5. Two subjects and two selectors, because the increment has two
+and the acceptance matrix has to be able to revert them separately:
+`-Dvm-lifecycle=c` restores the C `janet_init`, `janet_deinit`, `janet_sandbox`
+and `janet_sandbox_assert`; `-Ddebug-frames=c` restores the C `doframe`. Zig is
+the default for both.
+
+### `janet_init` is a transcription, and the order in it is load-bearing twice
+
+Thirty-odd assignments in the same order as the original, which matters in two
+places and nowhere else. `janet_symcache_init` runs after the collector's fields
+and before anything allocates. The abstract registry is created and rooted after
+the root set exists — it is the first allocation of the process and the first
+thing rooted, so `janet_init` leaves `block_count` at one and `root_count` at
+one rather than at zero.
+
+What `janet_init` does *not* touch is the part worth stating, because a port is
+tempted to tidy it. `signal_buf`, `return_reg` and `coerce_error` belong to
+`janet_try`; `gc_suspend` to `janet_gclock`; the symbol cache's four fields to
+`janet_symcache_init`; `rng` to `janet_rng_seed`. Zeroing them here would be a
+change to established behaviour dressed as thoroughness.
+
+The sandbox is four lines, and the one-way property is the whole of it:
+`janet_sandbox` calls `janet_sandbox_assert(JANET_SANDBOX_SANDBOX)` on itself
+before widening the flags, so a sandbox that has forbidden sandboxing cannot be
+widened again — including with an empty set. That is pinned directly rather than
+through a standard-library function that happens to check a flag.
+
+### `doframe` becomes the second consumer, three years of duplication later
+
+`debug.c` decoded a stack frame twice, independently: once for
+`janet_stacktrace_ext`, which Phase 7 Part 8 moved to `trace_frames.zig`, and
+once in `doframe`, which builds the table `debug/stack` returns. Written
+separately, they had drifted. `janet_trace_frame` tests `NULL != reg` before
+reading a cfunction registry entry; `doframe` did not, and `debug/stack` on a
+cframe holding a cfunction that never went through `janet_cfuns` dereferences
+null. That is `FOUND.md`'s entry, and its own text predicted this increment as
+its expiry.
+
+`debug_frames.zig` calls `janet_trace_frame` — through the symbol table, which
+is Part 4's rule and keeps `-Dtrace-frames` independent of `-Ddebug-frames` — so
+the registry lookup, the name classification and the source-map read happen once
+in the tree and the null check comes with them. Measured, decoding a cframe with
+an unregistered cfunction:
+
+```text
+-Ddebug-frames=c   thread panic: member access within null pointer of type
+                   'JanetCFunRegistry'  (src/core/debug.c:378)
+default (zig)      decoded: <table 0x600003891C50>
+```
+
+The C side is untouched, so it still segfaults; that is the control, not an
+oversight.
+
+**What the descriptor deliberately does not carry**, and why this is a second
+consumer rather than a merge. `JanetTraceFrame` exists to print one line of a
+stack trace, and `debug/stack` wants more than a line. Three things come from
+the funcdef directly — `:pc`, which `doframe` reports for every frame with a
+program counter while the descriptor carries it only when there is *no* source
+map; `:slots` and `:locals`, which have nothing to do with printing a line; and
+`:source` for a Janet frame, which `doframe` emits only inside its
+`func && pc` branch. Two more differences go the other way and are preserved by
+reading the descriptor's *kind* rather than its fields: a registry entry with a
+source line and no name gives `LOC_CFUN_LINE`, and a stack trace prints
+`<cfunction> on line 42` where `debug/stack` prints nothing, so the check here is
+on `NAME_CFUNCTION` first. And `doframe` hard-codes `:source-column` to 1 for a
+cfunction, which is not a column the descriptor has or could have.
+
+None of those is a gap in the descriptor. They are two consumers of one decoding
+that legitimately want different things, which is exactly why the decoding is
+worth sharing and the presentation is not.
+
+### `janet_debug_frame` is exported hidden, for the second time in two parts
+
+Declared in `state.h` rather than in `janet.h`, so the C build hides it under
+`-fvisibility=hidden` and a plain `export fn` does not. The first build of this
+increment widened the shared library by exactly one symbol, which is what Part 4
+found with `janet_check_can_resume` and is now the second time in two
+increments. Written as `@export(&debugFrame, .{ .visibility = .hidden })`
+instead, both selectors carry the same 1210 archive symbols and the same 706
+dylib symbols. The check belongs in the per-increment list rather than the
+per-phase one, and both of these would have shipped without it.
+
+### One test module gets a selector macro, and it is the first
+
+`test/vm_lifecycle.c` has one assertion that cannot run under
+`-Ddebug-frames=c`, because what it pins is a null dereference the C original has
+and the port does not. `build.zig` gives that module `JANET_ZIG_DEBUG_FRAMES`;
+every other assertion in the file runs under both selectors, and no other test
+module in the tree is given a selector macro. The alternative was to leave the
+fix unpinned, which would have made the increment's whole point untestable.
+
+### What the contract was built around
+
+Four panics, and two subjects.
+
+For the lifecycle, the organising idea is that **`janet_init` assigns rather
+than assumes**. Every field it sets is scribbled on before it is called, so the
+post-init assertions are about what `janet_init` wrote rather than about what a
+freshly zeroed `janet_vm` already held. Three fields — `next_collection`,
+`weak_blocks`, `block_count` — are invisible without that, and the mutation
+sweep proved it: removing `root_count = 0` from `janet_init` survived a contract
+that did not scribble, because `janet_deinit` happens to leave it at zero. A
+teardown that leaks looks identical to one that does not until something reuses
+the runtime, so two full cycles run afterwards, each doing real work.
+
+For the frames, the subject is the table's keys, and the geometry is written
+down rather than checked for type. A source map that swapped line for column
+passes any assertion that only checks both are numbers, so the probe function is
+laid out in the contract with its line and column stated — `(debug/stack` opens
+at line 4, column 11 — and both are pinned. The register file is checked for
+contents as well as length, for the same reason.
+
+The local bindings needed the most care. `:locals` is built with
+`janet_table_put`, and **a table with a nil value is a table without the key**,
+so a binding wrongly reported as live but holding nil is indistinguishable from
+one correctly left out. The probe therefore carries a `let`-scoped binding that
+goes out of scope while its register still holds a value: reported live, it
+shows up holding a fiber, which is visible. Both branches of the captured-binding
+case are covered too, and the difference between them is one pair of parentheses
+— a closure called in tail position loses its enclosing frame and reads its
+capture out of a detached environment, while the same closure called in
+non-tail position reads it off the stack.
+
+### What the mutation sweep found
+
+Forty mutations, all caught, none vacuous — after four repairs to the contract
+and one to a mutation.
+
+Three of the four contract repairs are the lessons above: the scribble, the
+`let`-scoped dead binding, and the register contents. The fourth is a reminder
+that a contract can be strengthened by *changing the fixture rather than the
+assertion*. Dropping the name prefix from a cfunction frame survived the first
+sweep, because every core cfunction is registered with its qualified name in
+`name` and a null `name_prefix` — so `debug/stack`, the only cfunction the
+contract had looked at, could not tell a dropped prefix from a kept one. The
+contract now registers its own cfunction through `janet_cfuns` with a prefix,
+and that fixture also pins the two keys a registry entry with no source file and
+no source line must not produce.
+
+The mutation that had to be repaired is the familiar one: `} else if (false) {`
+left `pc` unused and would not compile. Rewritten as a condition that is always
+false at run time and uses its operands, it is caught.
+
+### What this cost
+
+Nothing measurable, and nothing measurable was expected. `janet_init` and
+`janet_deinit` run once per process; `janet_sandbox_assert` is a mask and a
+branch on a field the branch predictor sees constantly; `janet_debug_frame` runs
+when a program asks where it is. The benchmark corpus is unchanged within noise
+and is not reproduced here, because a table of seven flat numbers for an
+increment that touches nothing in a loop would be noise dressed as evidence.
+Part 4's note applies: check that the corpus reaches the increment before
+reading its numbers.
+
+## Closing the gate on the interpreter
+
+Phase 9 Part 6, and the second increment in the project that ports nothing.
+Everything the phase set out to move was Zig at Part 5 — save
+`janet_continue_no_check`, which holds a `jmp_buf` and which Phase 7's fourth
+rule puts beyond this phase — and what was left was the exit
+gate — the bootstrap image, the full corpus, the benchmark corpus against the
+Phase 8 baseline, and the cross-compiles. Three of those four turned out to have
+a hole in them, the cross-compiles were the one clean clause, and a fifth finding
+came out of a check the gate added rather than inherited. The holes are the
+interesting part.
+
+### The bootstrap image had never been generated by the Zig runtime
+
+`janet-boot` was built from C in every configuration, including the ones where
+every selector said `zig`. So the image the Zig runtime embeds — the whole core
+library, compiled and marshalled — had been produced by the C implementation in
+every phase up to this one. Nothing was wrong with that, and nothing had checked
+it either.
+
+`-Dboot=<c|zig>` gives the image generator the same selectors as the runtime,
+and `zig build image` writes the generator's output on its own rather than
+linking something against it. The two agree byte for byte:
+
+```
+-Dboot=c     b187b036…8666
+-Dboot=zig   b187b036…8666      324,831 image bytes
+```
+
+That is the most discriminating single comparison in the tree. The image is the
+output of the parser, the compiler, the interpreter and the marshaller run over
+the 5,147 lines of `boot.janet`, and a difference anywhere in any of them moves
+the bytes.
+
+**Both halves of "identical" were checked.** A comparison that passes because
+nothing changed is worth nothing, so: the `-Dboot=zig` binary carries 98 `.zig`
+symbol references where the C one carries none, and a one-line mutation to
+`movopt.zig` — return before eliminating any dead write — changes the image.
+The comparison is sensitive to the Zig path rather than merely to the file.
+
+Two smaller things came with it. `build()`'s 224-line subsystem literal became
+`makeSubsystems`, which is the name `makeVmRunObject`'s doc comment had already
+been using for a function that did not exist; the bootstrap needs a set of its
+own because it runs on the build machine, whatever `-Dtarget` says. And
+`addRuntimeSources` now takes an optional image, because the bootstrap compiler
+is the one runtime built without one: it is what produces it.
+
+**`-Dboot` defaults to `c`.** Phase 9's gate is a measurement of the Zig
+generator, not an adoption of it; making the image generator's selectors follow
+the runtime's would double the subsystem objects on every cross build for no
+gain until Phase 10, whose plan owns the bootstrap clause.
+
+### The benchmark corpus did not reach the phase
+
+Part 4 recorded the lesson and then let the evidence go. No workload in
+`probe-9/bench/` enters the interpreter through `janet_call` — `fib` and
+`methods` are call-heavy, but a Janet function called from Janet goes through
+`JOP_CALL` — so the entry points were measured with two loops built for the
+occasion and thrown away afterwards. A gate should not have to re-derive them.
+
+Three workloads are now permanent, and the corpus is ten:
+
+- `opfallback` — `JOP_ADD` meets a value it cannot add, and `janet_binop_call`
+  enters the method through `janet_call`.
+- `pegcall` — a PEG capture holding a Janet closure. The PEG engine is C, so
+  the only way back into Janet is an entry point.
+- `fibers` — 150,000 create-resume-resume cycles, which is `janet_continue` and
+  the resume check.
+
+### Two opcodes had never been executed by anything
+
+`test/vm_run.c` is built on the premise that the Janet suites already run every
+instruction, and the phase's plan asks for every opcode to be tested directly.
+Neither had been measured, and `nextOp` makes measuring it easy: every
+`continue :sw` in the loop goes through that one function, so a tally there and
+one on the opcode the loop is entered with counts every dispatch exactly once.
+
+Across 35 suites and 55 contracts, 75 of 77 opcodes execute. The two that never
+did are unreachable from the compiler by construction rather than by omission:
+
+- **`JOP_NOOP`** is *written* by the dead-write optimizer and then deleted by
+  no-op removal before the function is ever run. The pipeline guarantees that no
+  compiled function contains one.
+- **`JOP_MAKE_STRING`** has no emitter anywhere in the compiler. `(string ...)`
+  compiles to a call of the `string` cfunction; the opcode exists in the loop and
+  only the assembler can produce it.
+
+The second one is the sharper finding, because **it was already written down in
+this file.** SPIKE-8's probe notes say it — "The assembler, not the compiler.
+`JOP_MAKE_STRING` is never emitted" — as an aside about how to reach a callback,
+in a section three thousand lines above the one you are reading. The fact was
+known, it was recorded, and it never became a test. That is what a census is for:
+knowing which opcodes the compiler cannot emit is not the same as executing
+them, and only one of the two is checkable by a machine.
+
+Both are now assembled directly in `test/vm_run.c`, and `disasm` confirms the
+assembler leaves the `noop`s in place rather than optimizing them away. The
+census reads 77 of 77. `probe-9/census/` has the harness, which is a temporary
+source instrumentation rather than a build option, and the README there has the
+recipe.
+
+### A contract that could not be built without the assembler
+
+`-Dassembler=false` was not in Parts 3 to 5's matrices, and it fails: nine
+fixtures across `test/vm_run.c` and `test/vm_lifecycle.c` call `asm`, an absent
+binding is a *compile* error rather than a runtime one, and it surfaces as an
+assertion inside `eval` with the message buried. `test/suite-asm.janet` has
+guarded against exactly this since the Phase 8 commit that fixed the suites'
+guards, but no C contract had ever needed one, so the pattern had not reached
+the Phase 9 contracts.
+
+They are guarded now, and the two expected-count constants are conditional with
+them — 25 errors against 21, four panics against three. A count that is not
+adjusted with its guard turns a skipped assertion into a failure, which is the
+same class of mistake one level down.
+
+### What the leak sweep and the second platform say
+
+Phase 8's gate ran `leaks --atExit` over every contract binary rather than a
+sample, and left the loop and its four exclusions behind as a recipe. Re-run
+here, now that the interpreter, its entry points and the runtime's lifecycle are
+Zig: the loop's four exclusions leave **51 of the tree's 55 contract binaries
+checked, 50 of them clean, and the one remaining line is
+`janet-args-core-test`** — the same open item Phase 8 left, unchanged and still
+unsilenced. Phase 8 checked 47 of 51 on the same terms. The four contracts this
+phase added leak nothing.
+
+The container recipe puts the aarch64 numbers at **55 contracts and 35 suites,
+none failing**, up from Phase 8's 47 and 34. That build runs a host-generated
+image on another architecture, which is the only evidence anywhere that the
+image is architecture-neutral; it has never been run on a 32-bit target, whose
+binaries are deliberately not executed for the ABI reason `PLAN.md` records.
+
+### What the phase cost, measured end to end
+
+The gate's benchmark is the one this project has been building toward: Phase 8's
+binary, whose `vm.c` is entirely C, against HEAD, whose interpreter loop, callee
+side, entry points and lifecycle are all Zig. Both at `-Doptimize=ReleaseFast`,
+interleaved, minimum per workload over five rounds.
+
+The machine could not be made quiet — macOS's Spotlight and media-analysis
+daemons were running throughout and the one-minute load average never fell below
+about 3.5 — so the comparison was run with the roles swapped as well, which is
+what `PLAN.md` says to do when it cannot. A delta that keeps its direction
+across both pairings is real; one that flips is not.
+
+| workload   | Phase 8 → HEAD | swapped | verdict                |
+|------------|----------------|---------|------------------------|
+| arithmetic | −5.9%          | +4.0%   | **Zig faster, ~5%**    |
+| fibers     | −2.8%          | +2.6%   | **Zig faster, ~2.7%**  |
+| fib        | −2.0%          | +2.8%   | **Zig faster, ~2.4%**  |
+| tables     | −1.4%          | +1.6%   | **Zig faster, ~1.5%**  |
+| strings    | −1.2%          | +1.3%   | **Zig faster, ~1.2%**  |
+| compiler   | −0.1%          | +0.5%   | flat                   |
+| pegmatch   | −0.2%          | +0.3%   | flat, as designed      |
+| opfallback | +0.8%          | −1.2%   | **Zig slower, ~1%**    |
+| methods    | −0.7%          | −2.3%   | direction flips — noise|
+| pegcall    | +0.8%          | +0.5%   | direction flips — noise|
+
+Three things in that table are worth saying out loud.
+
+**The interpreter is faster, and the most dispatch-dense workload is the one it
+gains most on.** That is the same shape Part 3 measured for `run_vm` alone, and
+it survives the whole phase being stacked on top of it.
+
+**`pegmatch` is the control and it did not move.** It spends its time inside
+`peg.c`, which this phase did not touch. A corpus where the control drifts is
+measuring the machine rather than the change, and this one does not.
+
+**The one real regression is where Part 4 said it would be.** `opfallback` is
+the binary operator fallback, which is `janet_call`, which is Part 4's subject —
+and Part 4 measured 1.4% to 3.3% there against a purpose-built loop. About 1%
+survives at the phase level. It is the cost of an entry point that used to be
+inlined into `vm.c` and is now an object boundary, it is paid only by calls that
+enter the interpreter from C, and it is not worth an import folding of the kind
+Part 3 needed: nothing on the per-instruction path goes through it.
+
+`methods` and `pegcall` flip direction between the pairings and are reported as
+what they are. Both are short — `pegcall` is the shortest workload in the corpus
+at seven milliseconds — and on a machine under this much background load, a
+sub-1% figure over seven milliseconds is not a measurement.
+
+### The Zig build exports 257 symbols the C build hides
+
+The per-increment symbol rule compares the increment's *own* selector: build
+with `-Dvm-entry=c` and with `-Dvm-entry=zig`, and check that the archives and
+the shared library carry the same names. That is what caught
+`janet_check_can_resume` in Part 4 and `janet_debug_frame` in Part 5, and it is
+the right check for the question it asks. It is not the right check for the
+question nobody had asked, which is what the *whole* scaffold does to the shared
+library's surface.
+
+Default against every one of the fifty-three selectors set to `c`:
+
+```
+libjanet.dylib   zig 706   c 449   257 names in the Zig build and not the C one
+                                     0 names in the C build and not the Zig one
+```
+
+It is purely additive, and **not one of the 257 is public API** — every name is
+checked against `janet.h` and none appears there. They are internal helpers:
+27 `janet_arg_*`, 27 `janet_os_*`, 21 `janetc_*`, the `janet_zig_*` families,
+and — the one worth naming on its own — `janet_vm`, the thread-local VM state
+itself.
+
+The cause is a one-line asymmetry the tree has carried since Phase 3. C sources
+are compiled with `-fvisibility=hidden`, so anything not marked `JANET_API` is
+hidden in the shared library; a plain Zig `export fn` takes default visibility
+and is not. Parts 4 and 5 each fixed one instance by hand with
+`@export(..., .visibility = .hidden)`, and both times the note said this was the
+second occurrence in two increments. It was the two hundred and fifty-sixth and
+seventh.
+
+**Recorded rather than fixed, and the reason is not that it is large.** The cost
+of leaving it is bounded and mostly theoretical here: the ABI surface is
+migration scaffold that Phase 10 removes, and macOS's two-level namespace makes
+intra-library calls direct regardless. What is *unmeasured* is ELF, where an
+exported symbol is preemptible and a `janet_vm` that could have been local-exec
+TLS may not be — a cost this project's benchmarks, all taken on macOS, are
+structurally unable to see.
+
+The fix is also not the obvious one. Marking 257 exports hidden by hand is a
+change to fifty files, but the central version — an exported-symbols list on the
+shared library link, generated from `janet.h`'s `JANET_API` set — is one place in
+`build.zig` and would be *better*. It is deferred because it requires deciding
+what the finished runtime's exported surface is, which is Phase 10's question
+and not this phase's, and because changing the shipping artifact is not
+something a gate increment should do on its own initiative.
+
+What the gate does change is the rule. A per-increment symbol comparison against
+the adjacent configuration cannot see anything that is already wrong in both, so
+**the phase-level check compares against a fully C build** and is now written
+down that way.
+
+### The matrix the gate ran
+
+Twenty-six configurations, of which twenty-three run the whole corpus and three
+are cross-compiles: the default; every one of the fifty-three selectors set to
+`c` together; the five Phase 9 selectors set to `c`; `-Dboot=zig`; both raise
+mechanisms under both selectors; all four optimize modes, with `ReleaseFast`
+also run against the C interpreter; tagged values; `-Dnanbox-pointer-shift=2`;
+keyed hashing; single-threaded; and the eight reduced builds — no event loop, no
+source maps, no docstrings, no interpreter interrupt, no computed gotos, no
+assembler (twice, once against the C selectors), no PEG, no FFI. Then
+`x86_64-linux-musl`, `aarch64-linux-musl` and `riscv32-linux-musl`.
+
+Earlier increments in this phase ran smaller matrices, each plus the same three
+cross-compiles: twenty-three configurations for Part 3, seventeen for Part 4,
+nineteen for Part 5. They grew by inheritance, which is the blind spot the
+assembler row exposed and `PLAN.md`'s sixth rule for this phase records.
+
+`-Dreduced-os=true` is still not among them, for the reason Part 3 recorded:
+`test/helper.janet` calls `os/getenv`, so the Janet suites do not compile in a
+build that omits it. That is a property of the harness rather than of the port,
+and the contracts themselves pass there.

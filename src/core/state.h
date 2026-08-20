@@ -285,6 +285,14 @@ typedef enum {
  * neither this structure nor its producer.
  *
  * Provided by src/core/debug.c or src/zig/subsystems/trace_frames.zig. */
+/* One stack frame decoded into the table debug/stack reports, which is the
+ * other consumer of the decoding below. It was `doframe`, a static in debug.c
+ * that read a JanetStackFrame independently and had already drifted from the
+ * decoder beside it.
+ *
+ * Provided by src/core/debug.c or src/zig/subsystems/debug_frames.zig. */
+Janet janet_debug_frame(JanetStackFrame *frame);
+
 typedef struct {
     const char *name;         /* NULL unless name_kind names one */
     const char *name_prefix;  /* NULL unless a registered cfunction has one */
@@ -442,6 +450,88 @@ const JanetMethod *janet_arg_nextmethod(const JanetMethod *methods, Janet key);
 
 /* The formatting half. Always raises; never returns. */
 JANET_NO_RETURN void janet_arg_raise(const Janet *argv, const JanetArgFault *fault);
+
+/* ------------------------------------------------ interpreter callees */
+
+/* The callee side of the interpreter: what run_vm delegates to when the thing
+ * it is about to call is not a plain Janet function, plus the three loops that
+ * fill a collection from the fiber stack.
+ *
+ * Every one of these raises, and most of them do nothing else: they reach
+ * third-party cfunctions, an abstract type's call callback, janet_call,
+ * janet_get, janet_in, janet_table_put, janet_struct_put and
+ * janet_to_string_b. A caller that cannot afford a longjmp has to place a
+ * scope of its own; run_vm does exactly that under JANET_CALL_TRAMPOLINE.
+ *
+ * Five of these were statics in vm.c whose names were too general to put in a
+ * library's symbol table, and carry a janet_ prefix here that the C original
+ * did not have: janet_call_nonfn, janet_resolve_method, and the three fills.
+ *
+ * Provided by src/core/vm.c or src/zig/subsystems/vm_calls.zig. */
+Janet janet_method_invoke(Janet method, int32_t argc, Janet *argv);
+Janet janet_call_nonfn(JanetFiber *fiber, Janet callee);
+Janet janet_resolve_method(Janet name, JanetFiber *fiber);
+Janet janet_method_lookup(Janet x, const char *name);
+Janet janet_unary_call(const char *method, Janet arg);
+Janet janet_binop_call(const char *lmethod, const char *rmethod, Janet lhs, Janet rhs);
+void janet_fill_table(JanetTable *table, const Janet *mem, int32_t count);
+void janet_fill_struct(JanetKV *st, const Janet *mem, int32_t count);
+void janet_fill_string(JanetBuffer *buffer, const Janet *mem, int32_t count);
+
+/* ------------------------------------------------ the interpreter loop */
+
+/* run_vm, and the two functions it reaches that vm.c used to keep private.
+ *
+ * janet_run_vm was `run_vm`. Both it and janet_vm_error_string are renamed for
+ * the same reason the five callees above were: a static's name becomes a
+ * library symbol the moment the definition moves to another translation unit,
+ * and `run_vm` is too general a name to put there.
+ *
+ * janet_check_can_resume and janet_continue_no_check kept their names and
+ * merely lost `static`.
+ *
+ * Provided by src/core/vm.c or src/zig/subsystems/vm_run.zig. */
+JanetSignal janet_run_vm(JanetFiber *fiber, Janet in);
+
+/* The gate every resume passes through, and the one function on this path that
+ * is not selectable at all.
+ *
+ * janet_check_can_resume moved to the entry points in Part 4 and is provided by
+ * src/core/vm.c or src/zig/subsystems/vm_entry.zig. janet_continue_no_check is
+ * always src/core/vm.c: Phase 7's fourth rule keeps it there because it holds
+ * the jmp_buf every fiber resume re-establishes. That makes it the hinge of a
+ * seam that runs in both directions — it calls janet_run_vm downward and
+ * janet_continue sideways, and either may be the Zig side. */
+JanetSignal janet_check_can_resume(JanetFiber *fiber, Janet *out, int is_cancel);
+JanetSignal janet_continue_no_check(JanetFiber *fiber, Janet in, Janet *out);
+
+/* Always src/core/vm.c, whichever selector provides the loop.
+ *
+ * janet_vm_trace is vm.c's vm_do_trace as a function. It takes the fiber
+ * rather than a pointer into its stack because janet_eprintf can resize that
+ * stack between elements, which is why the C original is a macro.
+ *
+ * janet_vm_trace_argv is the same macro over an argv the caller owns, which is
+ * what janet_call has. Both can re-enter the interpreter through janet_eprintf,
+ * which is the subject of a FOUND.md entry. */
+void janet_vm_trace(JanetFunction *func, int32_t argc, JanetFiber *fiber);
+void janet_vm_trace_argv(JanetFunction *func, int32_t argc, const Janet *argv);
+
+#ifdef JANET_CALL_TRAMPOLINE
+/* The other direction: a setjmp scope in a C frame around an action a Zig
+ * frame chose. `context` points at the caller's frame and carries both the
+ * arguments and the result; it is read only when JANET_SIGNAL_OK is returned.
+ * Exists only in a trampoline build, which since Phase 9 Part 3 is not the
+ * default under either selector; PLAN.md's Phase 9 section has the reversal.
+ *
+ * janet_vm_error_string builds the message janet_panicf would have built
+ * without raising it, and is variadic for the same reason janet_panicf is: the
+ * caller's format string and arguments have to arrive unaltered for the
+ * message to be identical. */
+typedef void (*JanetVmAction)(void *context);
+JanetSignal janet_vm_scoped(JanetVmAction action, void *context, Janet *out);
+Janet janet_vm_error_string(const char *format, ...);
+#endif
 
 #ifdef JANET_NET
 void janet_net_init(void);

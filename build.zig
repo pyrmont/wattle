@@ -152,6 +152,11 @@ const BuildOptions = struct {
     fiber_core: SubsystemImplementation,
     signal_core: SubsystemImplementation,
     trace_frames: SubsystemImplementation,
+    debug_frames: SubsystemImplementation,
+    vm_calls: SubsystemImplementation,
+    vm_run: SubsystemImplementation,
+    vm_entry: SubsystemImplementation,
+    vm_lifecycle: SubsystemImplementation,
     gc_alloc: SubsystemImplementation,
     gc_mark: SubsystemImplementation,
     gc_sweep: SubsystemImplementation,
@@ -163,6 +168,7 @@ const BuildOptions = struct {
     abstract_core: SubsystemImplementation,
     value_alloc: SubsystemImplementation,
     value_wrap: SubsystemImplementation,
+    boot: SubsystemImplementation,
     install_tests: bool,
     sanitize_thread: bool,
     single_threaded: bool,
@@ -191,6 +197,7 @@ const BuildOptions = struct {
     filewatch: bool,
     cryptorand: bool,
     call_trampoline: bool,
+    computed_gotos: bool,
     recursion_guard: i32,
     max_proto_depth: i32,
     max_macro_expand: i32,
@@ -235,6 +242,11 @@ const RuntimeSubsystems = struct {
     fiber_core: ?*std.Build.Step.Compile,
     signal_core: ?*std.Build.Step.Compile,
     trace_frames: ?*std.Build.Step.Compile,
+    debug_frames: ?*std.Build.Step.Compile,
+    vm_calls: ?*std.Build.Step.Compile,
+    vm_run: ?*std.Build.Step.Compile,
+    vm_entry: ?*std.Build.Step.Compile,
+    vm_lifecycle: ?*std.Build.Step.Compile,
     gc_alloc: ?*std.Build.Step.Compile,
     gc_mark: ?*std.Build.Step.Compile,
     gc_sweep: ?*std.Build.Step.Compile,
@@ -254,200 +266,7 @@ pub fn build(b: *std.Build) void {
     const options = readOptions(b);
     const config_header = makeConfigHeader(b, options);
 
-    const subsystems: RuntimeSubsystems = .{
-        .vector = if (options.vector == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-vector-zig", "src/zig/subsystems/vector.zig")
-        else
-            null,
-        .utilities = if (options.utilities == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-utils-zig", "src/zig/subsystems/utils.zig")
-        else
-            null,
-        .int_scan = if (options.int_types and options.int_scan == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-intscan-zig", "src/zig/subsystems/intscan.zig")
-        else
-            null,
-        .text_scan = if (options.text_scan == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-textscan-zig", "src/zig/subsystems/textscan.zig")
-        else
-            null,
-        .regalloc = if (options.regalloc == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-regalloc-zig", "src/zig/subsystems/regalloc.zig")
-        else
-            null,
-        .verify = if (options.verify == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-verify-zig", "src/zig/subsystems/verify.zig")
-        else
-            null,
-        .remove_noops = if (options.remove_noops == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-remove-noops-zig", "src/zig/subsystems/remove_noops.zig")
-        else
-            null,
-        .movopt = if (options.movopt == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-movopt-zig", "src/zig/subsystems/movopt.zig")
-        else
-            null,
-        .emit_core = if (options.emit_core == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-emit-core-zig", "src/zig/subsystems/emit_core.zig")
-        else
-            null,
-        .asm_encode = if (options.assembler and options.asm_encode == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-asm-encode-zig", "src/zig/subsystems/asm_encode.zig")
-        else
-            null,
-        .asm_decode = if (options.assembler and options.asm_decode == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-asm-decode-zig", "src/zig/subsystems/asm_decode.zig")
-        else
-            null,
-        .disasm = if (options.assembler and options.disasm == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-disasm-zig", "src/zig/subsystems/disasm.zig")
-        else
-            null,
-        .compiler_primitives = if (options.compiler_primitives == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-compiler-primitives-zig", "src/zig/subsystems/compiler_primitives.zig")
-        else
-            null,
-        .parser_core = if (options.parser_core == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-parser-core-zig", "src/zig/subsystems/parser_core.zig")
-        else
-            null,
-        .specials_core = if (options.specials_core == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-specials-core-zig", "src/zig/subsystems/specials_core.zig")
-        else
-            null,
-        .builtin_optimizers = if (options.builtin_optimizers == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-builtin-optimizers-zig", "src/zig/subsystems/builtin_optimizers.zig")
-        else
-            null,
-        .number_scan = if (options.number_scan == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-numscan-zig", "src/zig/subsystems/numscan.zig")
-        else
-            null,
-        .math_core = if (options.math_core == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-math-zig", "src/zig/subsystems/math.zig")
-        else
-            null,
-        .int_types_core = if (options.int_types and options.int_types_core == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-inttypes-zig", "src/zig/subsystems/inttypes.zig")
-        else
-            null,
-        .os_permissions = if (!options.reduced_os and options.os_permissions == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-permissions-zig", "src/zig/subsystems/os_permissions.zig")
-        else
-            null,
-        .os_platform = if (options.os_platform == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-platform-zig", "src/zig/subsystems/os_platform.zig")
-        else
-            null,
-        .os_environ = if (!options.reduced_os and options.os_environ == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-environ-zig", "src/zig/subsystems/os_environ.zig")
-        else
-            null,
-        .os_fs = if (!options.reduced_os and options.os_fs == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-fs-zig", "src/zig/subsystems/os_fs.zig")
-        else
-            null,
-        .os_stat = if (!options.reduced_os and options.os_stat == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-stat-zig", "src/zig/subsystems/os_stat.zig")
-        else
-            null,
-        .os_time = if (hasGettime(options) and options.os_time == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-time-zig", "src/zig/subsystems/os_time.zig")
-        else
-            null,
-        .os_fs_paths = if (!options.reduced_os and options.os_fs_paths == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-fs-paths-zig", "src/zig/subsystems/os_fs_paths.zig")
-        else
-            null,
-        .io_core = if (options.io_core == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-io-core-zig", "src/zig/subsystems/io_core.zig")
-        else
-            null,
-        .os_process = if (hasProcesses(options) and options.os_process == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-process-zig", "src/zig/subsystems/os_process.zig")
-        else
-            null,
-        .ev_core = if (hasEv(options) and options.ev_core == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-ev-core-zig", "src/zig/subsystems/ev_core.zig")
-        else
-            null,
-        .ffi_layout = if (options.ffi and options.ffi_layout == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-ffi-layout-zig", "src/zig/subsystems/ffi_layout.zig")
-        else
-            null,
-        .filewatch_flags = if (hasFilewatch(options) and options.filewatch_flags == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-filewatch-flags-zig", "src/zig/subsystems/filewatch_flags.zig")
-        else
-            null,
-        .ffi_classify = if (options.ffi and options.ffi_classify == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-ffi-classify-zig", "src/zig/subsystems/ffi_classify.zig")
-        else
-            null,
-        .args_core = if (options.args_core == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-args-core-zig", "src/zig/subsystems/args_core.zig")
-        else
-            null,
-        .gc_alloc = if (options.gc_alloc == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-gc-alloc-zig", "src/zig/subsystems/gc_alloc.zig")
-        else
-            null,
-        .gc_mark = if (options.gc_mark == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-gc-mark-zig", "src/zig/subsystems/gc_mark.zig")
-        else
-            null,
-        .gc_sweep = if (options.gc_sweep == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-gc-sweep-zig", "src/zig/subsystems/gc_sweep.zig")
-        else
-            null,
-        .buffer_array = if (options.buffer_array == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-buffer-array-zig", "src/zig/subsystems/buffer_array.zig")
-        else
-            null,
-        .string_symbol = if (options.string_symbol == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-string-symbol-zig", "src/zig/subsystems/string_symbol.zig")
-        else
-            null,
-        .struct_table = if (options.struct_table == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-struct-table-zig", "src/zig/subsystems/struct_table.zig")
-        else
-            null,
-        .value_order = if (options.value_order == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-value-order-zig", "src/zig/subsystems/value_order.zig")
-        else
-            null,
-        .value_access = if (options.value_access == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-value-access-zig", "src/zig/subsystems/value_access.zig")
-        else
-            null,
-        .abstract_core = if (options.abstract_core == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-abstract-core-zig", "src/zig/subsystems/abstract_core.zig")
-        else
-            null,
-        .value_alloc = if (options.value_alloc == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-value-alloc-zig", "src/zig/subsystems/value_alloc.zig")
-        else
-            null,
-        .value_wrap = if (options.value_wrap == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-value-wrap-zig", "src/zig/subsystems/value_wrap.zig")
-        else
-            null,
-        .vm_state = if (options.vm_state == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-vm-state-zig", "src/zig/subsystems/vm_state.zig")
-        else
-            null,
-        .fiber_core = if (options.fiber_core == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-fiber-core-zig", "src/zig/subsystems/fiber_core.zig")
-        else
-            null,
-        .signal_core = if (options.signal_core == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-signal-core-zig", "src/zig/subsystems/signal_core.zig")
-        else
-            null,
-        .trace_frames = if (options.trace_frames == .zig)
-            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-trace-frames-zig", "src/zig/subsystems/trace_frames.zig")
-        else
-            null,
-    };
+    const subsystems = makeSubsystems(b, target, optimize, config_header, options);
 
     // Bootstrap tools must execute on the build host even during a cross build.
     // Keep the host's architecture, OS, and ABI, but pin a baseline CPU instead
@@ -457,6 +276,14 @@ pub fn build(b: *std.Build) void {
     // the code generator rejects, which fails the build before any Janet source
     // is compiled. Pinning it also keeps image generation reproducible across
     // machines of the same architecture.
+    //
+    // Running the generator on the host is viable because the image is
+    // architecture-neutral -- a marshalled byte stream rather than anything
+    // laid out for a particular machine -- and that is what makes cross
+    // compiling work at all. It is evidenced rather than proved: a
+    // host-generated image runs on aarch64 under the container recipe in
+    // `PLAN.md`, and has never been run on a 32-bit target, whose binaries are
+    // deliberately not executed.
     const boot_host = b.resolveTargetQuery(.{
         .cpu_arch = b.graph.host.result.cpu.arch,
         .os_tag = b.graph.host.result.os.tag,
@@ -472,9 +299,32 @@ pub fn build(b: *std.Build) void {
     // development machine no matter which target was asked for.
     boot_module.sanitize_thread = null;
     boot_module.addCMacro("JANET_BOOTSTRAP", "1");
-    boot_module.addCSourceFiles(.{ .files = core_sources, .flags = common_c_flags });
-    boot_module.addCSourceFiles(.{ .files = &.{"src/core/vector.c"}, .flags = common_c_flags });
-    boot_module.addCSourceFiles(.{ .files = &.{"src/core/regalloc.c"}, .flags = common_c_flags });
+    // `-Dboot=c` builds the image generator from C whatever the runtime is
+    // selected to be, which is the arrangement every phase up to here shipped:
+    // the image the Zig runtime embeds was compiled and marshalled by the C
+    // one. `-Dboot=zig` gives the generator the same selectors as the runtime,
+    // so that `zig build image` can be run both ways and the two images
+    // compared. The subsystem objects are built a second time here because
+    // they must run on the host -- see `boot_host` above.
+    //
+    // `JANET_BOOTSTRAP` reaches only the C registration layer: it swaps the
+    // `JANET_CORE_*` macros in `util.h` for their non-`_S` forms and adds the
+    // `math/pi` family in `math.c`. No Zig subsystem defines a global or
+    // registers a cfunction, so none of them needs the macro or changes shape
+    // under it.
+    switch (options.boot) {
+        .c => {
+            boot_module.addCSourceFiles(.{ .files = core_sources, .flags = common_c_flags });
+            boot_module.addCSourceFiles(.{ .files = &.{"src/core/vector.c"}, .flags = common_c_flags });
+            boot_module.addCSourceFiles(.{ .files = &.{"src/core/regalloc.c"}, .flags = common_c_flags });
+        },
+        .zig => addRuntimeSources(
+            boot_module,
+            null,
+            options,
+            makeSubsystems(b, boot_host, .Debug, config_header, options),
+        ),
+    }
     boot_module.addCSourceFiles(.{ .files = boot_sources, .flags = common_c_flags });
     const boot = b.addExecutable(.{ .name = "janet-boot", .root_module = boot_module });
 
@@ -484,6 +334,12 @@ pub fn build(b: *std.Build) void {
     generate_image.addArgs(&.{ "JANET_PATH", "/usr/local/lib/janet", "image-only" });
     generate_image.addFileInput(b.path("src/boot/boot.janet"));
     const image_source = generate_image.captureStdOut(.{ .basename = "janet-image.c" });
+
+    // The image on its own, so that a build can be asked for the generator's
+    // output rather than for something linked against it. Phase 9's gate reads
+    // it under `-Dboot=c` and `-Dboot=zig` and compares the bytes.
+    const image_step = b.step("image", "Generate the core image and write it to <prefix>/janet-image.c");
+    image_step.dependOn(&b.addInstallFile(image_source, "janet-image.c").step);
 
     const static_module = makeRuntimeModule(b, target, optimize, config_header, image_source, options, subsystems);
     const static_library = b.addLibrary(.{
@@ -1017,6 +873,47 @@ pub fn build(b: *std.Build) void {
     const run_trace_frames_test = b.addRunArtifact(trace_frames_test);
     subsystem_step.dependOn(&run_trace_frames_test.step);
 
+    const vm_run_test_module = makeCModule(b, target, optimize, config_header, options);
+    vm_run_test_module.addIncludePath(b.path("src/core"));
+    vm_run_test_module.addCSourceFiles(.{ .files = &.{"test/vm_run.c"}, .flags = test_c_flags });
+    vm_run_test_module.linkLibrary(static_library);
+    const vm_run_test = b.addExecutable(.{ .name = "janet-vm-run-test", .root_module = vm_run_test_module });
+    installTest(b, options, vm_run_test);
+    const run_vm_run_test = b.addRunArtifact(vm_run_test);
+    subsystem_step.dependOn(&run_vm_run_test.step);
+
+    const vm_lifecycle_test_module = makeCModule(b, target, optimize, config_header, options);
+    vm_lifecycle_test_module.addIncludePath(b.path("src/core"));
+    // The only test module given a selector macro. Part 5's contract has one
+    // assertion that cannot run under -Ddebug-frames=c, because what it pins is
+    // a null dereference the C original has and the port does not; every other
+    // assertion in the file runs under both.
+    if (options.debug_frames == .zig) vm_lifecycle_test_module.addCMacro("JANET_ZIG_DEBUG_FRAMES", "1");
+    vm_lifecycle_test_module.addCSourceFiles(.{ .files = &.{"test/vm_lifecycle.c"}, .flags = test_c_flags });
+    vm_lifecycle_test_module.linkLibrary(static_library);
+    const vm_lifecycle_test = b.addExecutable(.{ .name = "janet-vm-lifecycle-test", .root_module = vm_lifecycle_test_module });
+    installTest(b, options, vm_lifecycle_test);
+    const run_vm_lifecycle_test = b.addRunArtifact(vm_lifecycle_test);
+    subsystem_step.dependOn(&run_vm_lifecycle_test.step);
+
+    const vm_entry_test_module = makeCModule(b, target, optimize, config_header, options);
+    vm_entry_test_module.addIncludePath(b.path("src/core"));
+    vm_entry_test_module.addCSourceFiles(.{ .files = &.{"test/vm_entry.c"}, .flags = test_c_flags });
+    vm_entry_test_module.linkLibrary(static_library);
+    const vm_entry_test = b.addExecutable(.{ .name = "janet-vm-entry-test", .root_module = vm_entry_test_module });
+    installTest(b, options, vm_entry_test);
+    const run_vm_entry_test = b.addRunArtifact(vm_entry_test);
+    subsystem_step.dependOn(&run_vm_entry_test.step);
+
+    const vm_calls_test_module = makeCModule(b, target, optimize, config_header, options);
+    vm_calls_test_module.addIncludePath(b.path("src/core"));
+    vm_calls_test_module.addCSourceFiles(.{ .files = &.{"test/vm_calls.c"}, .flags = test_c_flags });
+    vm_calls_test_module.linkLibrary(static_library);
+    const vm_calls_test = b.addExecutable(.{ .name = "janet-vm-calls-test", .root_module = vm_calls_test_module });
+    installTest(b, options, vm_calls_test);
+    const run_vm_calls_test = b.addRunArtifact(vm_calls_test);
+    subsystem_step.dependOn(&run_vm_calls_test.step);
+
     const fiber_core_test_module = makeCModule(b, target, optimize, config_header, options);
     fiber_core_test_module.addIncludePath(b.path("src/core"));
     fiber_core_test_module.addCSourceFiles(.{ .files = &.{"test/fiber_core.c"}, .flags = test_c_flags });
@@ -1122,6 +1019,7 @@ fn readOptions(b: *std.Build) BuildOptions {
         if (shift < 0 or shift > 4) @panic("-Dnanbox-pointer-shift must be between 0 and 4");
     }
 
+
     const options: BuildOptions = .{
         .vector = b.option(SubsystemImplementation, "vector", "Select the vector implementation (c or zig)") orelse .zig,
         .utilities = b.option(SubsystemImplementation, "utilities", "Select the pure utility implementation (c or zig)") orelse .zig,
@@ -1170,7 +1068,13 @@ fn readOptions(b: *std.Build) BuildOptions {
         .vm_state = b.option(SubsystemImplementation, "vm-state", "Select the thread-local JanetVM storage and the operations over it as a whole (c or zig)") orelse .zig,
         .fiber_core = b.option(SubsystemImplementation, "fiber-core", "Select the fiber stack frame, funcframe, and function environment machinery (c or zig)") orelse .zig,
         .signal_core = b.option(SubsystemImplementation, "signal-core", "Select the try scope, signal decision, and signal injection machinery (c or zig)") orelse .zig,
+        .debug_frames = b.option(SubsystemImplementation, "debug-frames", "Select the stack-frame decoding behind debug/stack (c or zig)") orelse .zig,
         .trace_frames = b.option(SubsystemImplementation, "trace-frames", "Select the stack frame decoding behind stack traces (c or zig)") orelse .zig,
+        .vm_calls = b.option(SubsystemImplementation, "vm-calls", "Select method invocation, the operator fallbacks, and the collection fill loops the interpreter delegates to (c or zig)") orelse .zig,
+        .vm_run = b.option(SubsystemImplementation, "vm-run", "Select the bytecode interpreter's main loop and its opcode bodies (c or zig)") orelse .zig,
+        .vm_entry = b.option(SubsystemImplementation, "vm-entry", "Select the entry points above the loop: janet_call, janet_step, janet_pcall, janet_continue and the resume check (c or zig)") orelse .zig,
+        .vm_lifecycle = b.option(SubsystemImplementation, "vm-lifecycle", "Select janet_init, janet_deinit and the sandbox (c or zig)") orelse .zig,
+        .boot = b.option(SubsystemImplementation, "boot", "Select the implementation the bootstrap image generator itself is built from (c or zig)") orelse .c,
         .install_tests = b.option(bool, "install-tests", "Install the C contract test executables so they can be run on another machine") orelse false,
         .sanitize_thread = b.option(bool, "sanitize-thread", "Build with ThreadSanitizer, for the threaded-abstract and event-loop paths") orelse false,
         .single_threaded = b.option(bool, "single-threaded", "Build without thread-local VM state") orelse false,
@@ -1198,7 +1102,14 @@ fn readOptions(b: *std.Build) BuildOptions {
         .ffi_jit = b.option(bool, "ffi-jit", "Enable the FFI JIT") orelse true,
         .filewatch = b.option(bool, "filewatch", "Enable file watching") orelse true,
         .cryptorand = b.option(bool, "cryptorand", "Enable cryptographic random bytes") orelse true,
-        .call_trampoline = b.option(bool, "call-trampoline", "Enter cfunctions from JOP_CALL/JOP_TAILCALL through a per-call setjmp scope (Phase 7 groundwork; see SPIKE-7.md)") orelse false,
+        // Off under both selectors, including the Zig one. Phase 7 decided this
+        // would flip on in the increment that first put a Zig frame on the VM
+        // call path; Phase 9 Part 3 reversed that on SPIKE-8's rule, which is
+        // later than the decision, plus a measurement. PLAN.md's Phase 9 section
+        // has the reasoning. Still selectable, and still in the per-increment
+        // acceptance set, so the scoped path stays exercised and measurable.
+        .call_trampoline = b.option(bool, "call-trampoline", "Enter raise-capable callees from run_vm through a per-call setjmp scope, instead of letting their signal jump past run_vm's frame") orelse false,
+        .computed_gotos = b.option(bool, "computed-gotos", "Dispatch run_vm with computed gotos where the compiler has them; -Dcomputed-gotos=false forces the switch, for measuring dispatch shape (see SPIKE-9.md)") orelse true,
         .recursion_guard = b.option(i32, "recursion-guard", "C recursion guard") orelse 1024,
         .max_proto_depth = b.option(i32, "max-proto-depth", "Maximum prototype lookup depth") orelse 200,
         .max_macro_expand = b.option(i32, "max-macro-expand", "Maximum macro expansion depth") orelse 200,
@@ -1232,7 +1143,7 @@ fn makeConfigHeader(b: *std.Build, options: BuildOptions) std.Build.LazyPath {
         \\#define JANET_MAX_PROTO_DEPTH {d}
         \\#define JANET_MAX_MACRO_EXPAND {d}
         \\#define JANET_STACK_MAX {d}
-        \\{s}{s}#endif
+        \\{s}{s}{s}#endif
         \\
     , .{
         defineIf(options.single_threaded, "JANET_SINGLE_THREADED"),
@@ -1265,6 +1176,7 @@ fn makeConfigHeader(b: *std.Build, options: BuildOptions) std.Build.LazyPath {
         options.stack_max,
         defineIf(!options.cryptorand, "JANET_NO_CRYPTORAND"),
         defineIf(options.call_trampoline, "JANET_CALL_TRAMPOLINE"),
+        defineIf(!options.computed_gotos, "JANET_NO_COMPUTED_GOTOS"),
     });
     const generated = b.addWriteFiles();
     return generated.add("janetconf.h", header);
@@ -1359,12 +1271,14 @@ fn makeRuntimeModule(
 
 fn addRuntimeSources(
     module: *std.Build.Module,
-    image_source: std.Build.LazyPath,
+    image_source: ?std.Build.LazyPath,
     options: BuildOptions,
     subsystems: RuntimeSubsystems,
 ) void {
     module.addCSourceFiles(.{ .files = core_sources, .flags = common_c_flags });
-    module.addCSourceFile(.{ .file = image_source, .flags = common_c_flags });
+    // The bootstrap compiler is the one runtime built without an image: it is
+    // what produces one.
+    if (image_source) |image| module.addCSourceFile(.{ .file = image, .flags = common_c_flags });
     switch (options.vector) {
         .c => module.addCSourceFiles(.{ .files = &.{"src/core/vector.c"}, .flags = common_c_flags }),
         .zig => module.addObject(subsystems.vector.?),
@@ -1531,7 +1445,8 @@ fn addRuntimeSources(
     }
     if (options.value_wrap == .zig) {
         module.addCMacro("JANET_ZIG_VALUE_WRAP", "1");
-        module.addObject(subsystems.value_wrap.?);
+        // Null when the loop is Zig: that object carries these symbols instead.
+        if (subsystems.value_wrap) |object| module.addObject(object);
     }
     if (options.struct_table == .zig) {
         module.addCMacro("JANET_ZIG_STRUCT_TABLE", "1");
@@ -1556,6 +1471,27 @@ fn addRuntimeSources(
     if (options.trace_frames == .zig) {
         module.addCMacro("JANET_ZIG_TRACE_FRAMES", "1");
         module.addObject(subsystems.trace_frames.?);
+    }
+    if (options.debug_frames == .zig) {
+        module.addCMacro("JANET_ZIG_DEBUG_FRAMES", "1");
+        module.addObject(subsystems.debug_frames.?);
+    }
+    if (options.vm_calls == .zig) {
+        module.addCMacro("JANET_ZIG_VM_CALLS", "1");
+        // Null when the loop is Zig: that object carries these symbols instead.
+        if (subsystems.vm_calls) |object| module.addObject(object);
+    }
+    if (options.vm_run == .zig) {
+        module.addCMacro("JANET_ZIG_VM_RUN", "1");
+        module.addObject(subsystems.vm_run.?);
+    }
+    if (options.vm_entry == .zig) {
+        module.addCMacro("JANET_ZIG_VM_ENTRY", "1");
+        module.addObject(subsystems.vm_entry.?);
+    }
+    if (options.vm_lifecycle == .zig) {
+        module.addCMacro("JANET_ZIG_VM_LIFECYCLE", "1");
+        module.addObject(subsystems.vm_lifecycle.?);
     }
     if (hasZigSubsystem(options)) {
         module.addCSourceFiles(.{
@@ -1652,12 +1588,256 @@ fn checkJumpTransparency(b: *std.Build, source: []const u8) void {
                         "A Janet signal may jump through these frames, which skips it silently.\n" ++
                         "Release the resource on every path explicitly, or drop the\n" ++
                         "'//! jump-transparent' marker and catch the signal below this frame.\n" ++
-                        "See SPIKE-8.md.",
+                        "See src/zig/README.md, \"The callback question this increment postponed\".",
                     .{ source, lineno, tok },
                 );
             }
         }
     }
+}
+
+/// Build every Zig subsystem object the selectors ask for.
+///
+/// Split out of `build` so the bootstrap compiler can have a set of its own.
+/// `-Dboot=zig` builds these a second time for the *host* rather than for
+/// `-Dtarget`: `janet-boot` is a build-time tool that runs on the build
+/// machine, so it has to be a host binary whatever `-Dtarget` says. Nothing is
+/// given up by that, because the image it emits is architecture-neutral -- see
+/// the `boot_host` comment in `build`, which is why cross-compiling works at
+/// all.
+fn makeSubsystems(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    config_header: std.Build.LazyPath,
+    options: BuildOptions,
+) RuntimeSubsystems {
+    return .{
+        .vector = if (options.vector == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-vector-zig", "src/zig/subsystems/vector.zig")
+        else
+            null,
+        .utilities = if (options.utilities == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-utils-zig", "src/zig/subsystems/utils.zig")
+        else
+            null,
+        .int_scan = if (options.int_types and options.int_scan == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-intscan-zig", "src/zig/subsystems/intscan.zig")
+        else
+            null,
+        .text_scan = if (options.text_scan == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-textscan-zig", "src/zig/subsystems/textscan.zig")
+        else
+            null,
+        .regalloc = if (options.regalloc == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-regalloc-zig", "src/zig/subsystems/regalloc.zig")
+        else
+            null,
+        .verify = if (options.verify == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-verify-zig", "src/zig/subsystems/verify.zig")
+        else
+            null,
+        .remove_noops = if (options.remove_noops == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-remove-noops-zig", "src/zig/subsystems/remove_noops.zig")
+        else
+            null,
+        .movopt = if (options.movopt == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-movopt-zig", "src/zig/subsystems/movopt.zig")
+        else
+            null,
+        .emit_core = if (options.emit_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-emit-core-zig", "src/zig/subsystems/emit_core.zig")
+        else
+            null,
+        .asm_encode = if (options.assembler and options.asm_encode == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-asm-encode-zig", "src/zig/subsystems/asm_encode.zig")
+        else
+            null,
+        .asm_decode = if (options.assembler and options.asm_decode == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-asm-decode-zig", "src/zig/subsystems/asm_decode.zig")
+        else
+            null,
+        .disasm = if (options.assembler and options.disasm == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-disasm-zig", "src/zig/subsystems/disasm.zig")
+        else
+            null,
+        .compiler_primitives = if (options.compiler_primitives == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-compiler-primitives-zig", "src/zig/subsystems/compiler_primitives.zig")
+        else
+            null,
+        .parser_core = if (options.parser_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-parser-core-zig", "src/zig/subsystems/parser_core.zig")
+        else
+            null,
+        .specials_core = if (options.specials_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-specials-core-zig", "src/zig/subsystems/specials_core.zig")
+        else
+            null,
+        .builtin_optimizers = if (options.builtin_optimizers == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-builtin-optimizers-zig", "src/zig/subsystems/builtin_optimizers.zig")
+        else
+            null,
+        .number_scan = if (options.number_scan == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-numscan-zig", "src/zig/subsystems/numscan.zig")
+        else
+            null,
+        .math_core = if (options.math_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-math-zig", "src/zig/subsystems/math.zig")
+        else
+            null,
+        .int_types_core = if (options.int_types and options.int_types_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-inttypes-zig", "src/zig/subsystems/inttypes.zig")
+        else
+            null,
+        .os_permissions = if (!options.reduced_os and options.os_permissions == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-permissions-zig", "src/zig/subsystems/os_permissions.zig")
+        else
+            null,
+        .os_platform = if (options.os_platform == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-platform-zig", "src/zig/subsystems/os_platform.zig")
+        else
+            null,
+        .os_environ = if (!options.reduced_os and options.os_environ == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-environ-zig", "src/zig/subsystems/os_environ.zig")
+        else
+            null,
+        .os_fs = if (!options.reduced_os and options.os_fs == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-fs-zig", "src/zig/subsystems/os_fs.zig")
+        else
+            null,
+        .os_stat = if (!options.reduced_os and options.os_stat == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-stat-zig", "src/zig/subsystems/os_stat.zig")
+        else
+            null,
+        .os_time = if (hasGettime(options) and options.os_time == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-time-zig", "src/zig/subsystems/os_time.zig")
+        else
+            null,
+        .os_fs_paths = if (!options.reduced_os and options.os_fs_paths == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-fs-paths-zig", "src/zig/subsystems/os_fs_paths.zig")
+        else
+            null,
+        .io_core = if (options.io_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-io-core-zig", "src/zig/subsystems/io_core.zig")
+        else
+            null,
+        .os_process = if (hasProcesses(options) and options.os_process == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-os-process-zig", "src/zig/subsystems/os_process.zig")
+        else
+            null,
+        .ev_core = if (hasEv(options) and options.ev_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-ev-core-zig", "src/zig/subsystems/ev_core.zig")
+        else
+            null,
+        .ffi_layout = if (options.ffi and options.ffi_layout == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-ffi-layout-zig", "src/zig/subsystems/ffi_layout.zig")
+        else
+            null,
+        .filewatch_flags = if (hasFilewatch(options) and options.filewatch_flags == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-filewatch-flags-zig", "src/zig/subsystems/filewatch_flags.zig")
+        else
+            null,
+        .ffi_classify = if (options.ffi and options.ffi_classify == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-ffi-classify-zig", "src/zig/subsystems/ffi_classify.zig")
+        else
+            null,
+        .args_core = if (options.args_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-args-core-zig", "src/zig/subsystems/args_core.zig")
+        else
+            null,
+        .gc_alloc = if (options.gc_alloc == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-gc-alloc-zig", "src/zig/subsystems/gc_alloc.zig")
+        else
+            null,
+        .gc_mark = if (options.gc_mark == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-gc-mark-zig", "src/zig/subsystems/gc_mark.zig")
+        else
+            null,
+        .gc_sweep = if (options.gc_sweep == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-gc-sweep-zig", "src/zig/subsystems/gc_sweep.zig")
+        else
+            null,
+        .buffer_array = if (options.buffer_array == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-buffer-array-zig", "src/zig/subsystems/buffer_array.zig")
+        else
+            null,
+        .string_symbol = if (options.string_symbol == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-string-symbol-zig", "src/zig/subsystems/string_symbol.zig")
+        else
+            null,
+        .struct_table = if (options.struct_table == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-struct-table-zig", "src/zig/subsystems/struct_table.zig")
+        else
+            null,
+        .value_order = if (options.value_order == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-value-order-zig", "src/zig/subsystems/value_order.zig")
+        else
+            null,
+        .value_access = if (options.value_access == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-value-access-zig", "src/zig/subsystems/value_access.zig")
+        else
+            null,
+        .abstract_core = if (options.abstract_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-abstract-core-zig", "src/zig/subsystems/abstract_core.zig")
+        else
+            null,
+        .value_alloc = if (options.value_alloc == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-value-alloc-zig", "src/zig/subsystems/value_alloc.zig")
+        else
+            null,
+        // Same rule as vm_calls below: a Zig run_vm imports the value layer
+        // rather than linking against it, so building the object as well would
+        // define every wrap and unwrap twice.
+        .value_wrap = if (options.value_wrap == .zig and options.vm_run == .c)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-value-wrap-zig", "src/zig/subsystems/value_wrap.zig")
+        else
+            null,
+        .vm_state = if (options.vm_state == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-vm-state-zig", "src/zig/subsystems/vm_state.zig")
+        else
+            null,
+        .fiber_core = if (options.fiber_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-fiber-core-zig", "src/zig/subsystems/fiber_core.zig")
+        else
+            null,
+        .signal_core = if (options.signal_core == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-signal-core-zig", "src/zig/subsystems/signal_core.zig")
+        else
+            null,
+        .trace_frames = if (options.trace_frames == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-trace-frames-zig", "src/zig/subsystems/trace_frames.zig")
+        else
+            null,
+        // The second consumer of janet_trace_frame. It calls that symbol rather
+        // than importing it, so -Dtrace-frames stays independent of this one.
+        .debug_frames = if (options.debug_frames == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-debug-frames-zig", "src/zig/subsystems/debug_frames.zig")
+        else
+            null,
+        // Only when the loop is C. A Zig run_vm imports these rather than
+        // linking against them, so building the object as well would define the
+        // nine hidden symbols twice; makeVmRunObject has the reasoning.
+        .vm_calls = if (options.vm_calls == .zig and options.vm_run == .c)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-vm-calls-zig", "src/zig/subsystems/vm_calls.zig")
+        else
+            null,
+        .vm_run = if (options.vm_run == .zig)
+            makeVmRunObject(b, target, optimize, config_header, options)
+        else
+            null,
+        // Nothing here is on the per-instruction path, so this is an ordinary
+        // object rather than a second folded module: vm_entry.zig calls the
+        // value layer through the symbol table and the linker resolves
+        // -Dvalue-wrap for it.
+        .vm_entry = if (options.vm_entry == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-vm-entry-zig", "src/zig/subsystems/vm_entry.zig")
+        else
+            null,
+        .vm_lifecycle = if (options.vm_lifecycle == .zig)
+            makeZigSubsystemObject(b, target, optimize, config_header, options, "janet-vm-lifecycle-zig", "src/zig/subsystems/vm_lifecycle.zig")
+        else
+            null,
+    };
 }
 
 fn makeZigSubsystemObject(
@@ -1691,6 +1871,86 @@ fn makeZigSubsystemObject(
     addAbiIncludePath(b, abi_module);
     subsystem_module.addImport("abi", abi_module);
     return b.addObject(.{ .name = name, .root_module = subsystem_module });
+}
+
+/// The interpreter loop's object, and the only Zig object here built from more
+/// than one source file.
+///
+/// Part 2 measured what a translation-unit boundary costs the method-dispatch
+/// path — 2.4 to 3.4% on `methods`, because the C loop inlines
+/// `janet_resolve_method`, `janet_call_nonfn` and the three fills outright while
+/// a separate object cannot — so Part 3 *imports* those helpers rather than
+/// linking against them. Which module the import resolves to is the selector:
+/// `vm_calls.zig` when that subsystem is Zig, and `vm_calls_extern.zig`, which
+/// declares the C symbols, when it is C. Both wear the same decl names, so the
+/// loop never learns which it got.
+///
+/// Folding the implementation in folds in its nine `@export`s with it, and that
+/// is why `makeSubsystems` stops building `vm_calls.zig` as an object of its own
+/// in this configuration. Two objects defining `janet_resolve_method` is a
+/// duplicate symbol rather than a choice.
+///
+/// The `abi` module is created once and shared by both, which is the same rule
+/// `abi.zig` states for the tree as a whole: two translations of the same header
+/// produce two incompatible `JanetFiber` types.
+fn makeVmRunObject(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    config_header: std.Build.LazyPath,
+    options: BuildOptions,
+) *std.Build.Step.Compile {
+    checkJumpTransparency(b, "src/zig/subsystems/vm_run.zig");
+    checkJumpTransparency(b, "src/zig/subsystems/vm_calls.zig");
+    checkJumpTransparency(b, "src/zig/subsystems/value_wrap.zig");
+
+    const abi_module = b.createModule(.{
+        .root_source_file = b.path("src/zig/abi.zig"),
+        .target = target,
+        .optimize = optimize,
+        .pic = true,
+    });
+    configureCModule(b, abi_module, target, config_header, options);
+    addAbiIncludePath(b, abi_module);
+
+    const calls_module = b.createModule(.{
+        .root_source_file = b.path(if (options.vm_calls == .zig)
+            "src/zig/subsystems/vm_calls.zig"
+        else
+            "src/zig/subsystems/vm_calls_extern.zig"),
+        .target = target,
+        .optimize = optimize,
+        .pic = true,
+    });
+    configureCModule(b, calls_module, target, config_header, options);
+    calls_module.addIncludePath(b.path("src/core"));
+    calls_module.addImport("abi", abi_module);
+
+    const wrap_module = b.createModule(.{
+        .root_source_file = b.path(if (options.value_wrap == .zig)
+            "src/zig/subsystems/value_wrap.zig"
+        else
+            "src/zig/subsystems/value_wrap_extern.zig"),
+        .target = target,
+        .optimize = optimize,
+        .pic = true,
+    });
+    configureCModule(b, wrap_module, target, config_header, options);
+    wrap_module.addIncludePath(b.path("src/core"));
+    wrap_module.addImport("abi", abi_module);
+
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/zig/subsystems/vm_run.zig"),
+        .target = target,
+        .optimize = optimize,
+        .pic = true,
+    });
+    configureCModule(b, module, target, config_header, options);
+    module.addIncludePath(b.path("src/core"));
+    module.addImport("abi", abi_module);
+    module.addImport("vm_calls", calls_module);
+    module.addImport("value_wrap", wrap_module);
+    return b.addObject(.{ .name = "janet-vm-run-zig", .root_module = module });
 }
 
 fn linkPlatformLibraries(module: *std.Build.Module, os: std.Target.Os.Tag, single_threaded: bool) void {

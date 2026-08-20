@@ -47,4 +47,34 @@
 #define JANET_VM_HAS_EV 0
 #endif
 
+/* Whether this build has the socket layer. `janet_init` and `janet_deinit` call
+ * `janet_net_init` and `janet_net_deinit` only under JANET_NET, and translate-c
+ * does not surface a macro defined with no value, so the condition is restated
+ * as one that does. The declarations themselves are inside the same guard in
+ * `state.h`, so a Zig branch on this has to be comptime-false rather than
+ * merely untaken. */
+#ifdef JANET_NET
+#define JANET_VM_HAS_NET 1
+#else
+#define JANET_VM_HAS_NET 0
+#endif
+
+/* Whether this build checks for an interpreter interrupt between instructions.
+ * `run_vm` compiles the check out entirely without it, and translate-c does not
+ * surface a macro defined with no value, so the condition is restated as one
+ * that does. */
+#ifdef JANET_NO_INTERPRETER_INTERRUPT
+#define JANET_VM_HAS_INTERRUPT 0
+#else
+#define JANET_VM_HAS_INTERRUPT 1
+#endif
+
+/* Whether raise-capable callees are entered through a per-call setjmp scope.
+ * Same restatement as above, for the same reason. */
+#ifdef JANET_CALL_TRAMPOLINE
+#define JANET_VM_CALL_TRAMPOLINE 1
+#else
+#define JANET_VM_CALL_TRAMPOLINE 0
+#endif
+
 #endif /* JANET_ZIG_STATE_ABI_H */

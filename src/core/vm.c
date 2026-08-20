@@ -52,8 +52,13 @@
 
 /* How we dispatch instructions. By default, we use
  * a switch inside an infinite loop. For GCC/clang, we use
- * computed gotos. */
-#if defined(__GNUC__) && !defined(__EMSCRIPTEN__)
+ * computed gotos.
+ *
+ * JANET_NO_COMPUTED_GOTOS forces the switch on a compiler that has
+ * labels-as-values. It exists to measure what dispatch shape is worth on real
+ * programs, because Zig has no computed goto and Phase 9 has to choose a
+ * replacement; see SPIKE-9.md. It is not a supported configuration. */
+#if defined(__GNUC__) && !defined(__EMSCRIPTEN__) && !defined(JANET_NO_COMPUTED_GOTOS)
 #define JANET_USE_COMPUTED_GOTOS
 #endif
 
@@ -123,7 +128,7 @@
     return (sig); \
 } while (0)
 #define vm_raisev(v) vm_raise_signal(JANET_SIGNAL_ERROR, (v))
-#define vm_raisef(...) vm_raisev(vm_error_string(__VA_ARGS__))
+#define vm_raisef(...) vm_raisev(janet_vm_error_string(__VA_ARGS__))
 #else
 #define vm_raisev(v) janet_panicv(v)
 #define vm_raisef(...) janet_panicf(__VA_ARGS__)
@@ -157,8 +162,13 @@
 #ifdef JANET_CALL_TRAMPOLINE
 /* Build the message janet_panicf would have built, without raising it. Kept
  * deliberately identical to janet_panicf (capi.c): the whole point of returning
- * an error rather than jumping is that nothing observable changes. */
-static Janet vm_error_string(const char *format, ...) {
+ * an error rather than jumping is that nothing observable changes.
+ *
+ * Not static, and prefixed: a Zig run_vm has to reach it, and it is the one
+ * place a Janet error message is formatted for the interpreter's own raises.
+ * Zig calls it across the C variadic ABI exactly as it calls janet_panicf, so
+ * the messages stay identical without a second formatter. */
+Janet janet_vm_error_string(const char *format, ...) {
     va_list args;
     JanetBuffer buffer;
     int32_t len = 0;
@@ -310,8 +320,55 @@ static Janet vm_error_string(const char *format, ...) {
     janet_eprintf(")\n");\
 } while (0)
 
+/* vm_do_trace as a function, for a run_vm that is not C.
+ *
+ * The fiber is passed rather than a pointer into its stack, and that is the
+ * whole reason the macro above exists: janet_eprintf can resize the stack, so
+ * `fiber->data + fiber->stackstart` has to be recomputed for every element.
+ * Handing Zig a pointer would freeze it at the first.
+ *
+ * Not scoped. janet_eprintf reaches janet_formatbv, which panics on a string
+ * containing zeros, so this can raise; the C loop calls the macro unscoped in a
+ * trampoline build too, and src/zig/subsystems/vm_run.zig is jump-transparent
+ * for exactly this reason. Defined whichever selector provides the loop, so
+ * that the two archives hold the same symbols. */
+void janet_vm_trace(JanetFunction *func, int32_t argc, JanetFiber *fiber) {
+    vm_do_trace(func, argc, fiber->data + fiber->stackstart);
+}
+
+/* The same macro over an argv the caller owns, for janet_call.
+ *
+ * janet_call traces the array its own caller passed rather than a window on the
+ * fiber stack, so the recomputation above has nothing to recompute and the
+ * fiber-taking signature cannot serve it. No caller in the tree hands it fiber
+ * stack memory, and an embedder that passed a cfunction's own argv would be
+ * exposed to the same move the recomputation above exists to survive.
+ *
+ * That move is real, and FOUND.md records where it does bite: janet_eprintf
+ * reaches janet_dynprintf, whose JANET_FUNCTION case calls back into the
+ * interpreter, and run_vm's own frame pointer does not survive it.
+ *
+ * janet_eprintf is a variadic macro over janet_dynprintf and does not survive
+ * translation, which is the immediate reason this is a function rather than
+ * six lines in vm_entry.zig. */
+void janet_vm_trace_argv(JanetFunction *func, int32_t argc, const Janet *argv) {
+    vm_do_trace(func, argc, argv);
+}
+
+/* The callee side of the interpreter: what run_vm delegates to when the thing
+ * it is about to call is not a plain Janet function, plus the three loops that
+ * fill a collection from the fiber stack.
+ *
+ * Provided by this file or by src/zig/subsystems/vm_calls.zig; state.h has the
+ * declarations. Five of these were statics with names too general to put in a
+ * library's symbol table, and are renamed here as well as there so that
+ * run_vm's call sites read identically under either selector. method_to_fun
+ * stays static: it is janet_get with its operands swapped, and both of its
+ * callers are in this region. */
+#ifndef JANET_ZIG_VM_CALLS
+
 /* Invoke a method once we have looked it up */
-static Janet janet_method_invoke(Janet method, int32_t argc, Janet *argv) {
+Janet janet_method_invoke(Janet method, int32_t argc, Janet *argv) {
     switch (janet_type(method)) {
         case JANET_CFUNCTION:
             return (janet_unwrap_cfunction(method))(argc, argv);
@@ -349,7 +406,7 @@ static Janet janet_method_invoke(Janet method, int32_t argc, Janet *argv) {
 
 /* Call a non function type from a JOP_CALL or JOP_TAILCALL instruction.
  * Assumes that the arguments are on the fiber stack. */
-static Janet call_nonfn(JanetFiber *fiber, Janet callee) {
+Janet janet_call_nonfn(JanetFiber *fiber, Janet callee) {
     int32_t argc = fiber->stacktop - fiber->stackstart;
     fiber->stacktop = fiber->stackstart;
     return janet_method_invoke(callee, argc, fiber->data + fiber->stacktop);
@@ -361,7 +418,7 @@ static Janet method_to_fun(Janet method, Janet obj) {
 }
 
 /* Get a callable from a keyword method name and ensure that it is valid. */
-static Janet resolve_method(Janet name, JanetFiber *fiber) {
+Janet janet_resolve_method(Janet name, JanetFiber *fiber) {
     int32_t argc = fiber->stacktop - fiber->stackstart;
     if (argc < 1) janet_panicf("method call (%v) takes at least 1 argument, got 0", name);
     Janet callee = method_to_fun(name, fiber->data[fiber->stackstart]);
@@ -371,11 +428,11 @@ static Janet resolve_method(Janet name, JanetFiber *fiber) {
 }
 
 /* Lookup method on value x */
-static Janet janet_method_lookup(Janet x, const char *name) {
+Janet janet_method_lookup(Janet x, const char *name) {
     return method_to_fun(janet_ckeywordv(name), x);
 }
 
-static Janet janet_unary_call(const char *method, Janet arg) {
+Janet janet_unary_call(const char *method, Janet arg) {
     Janet m = janet_method_lookup(arg, method);
     if (janet_checktype(m, JANET_NIL)) {
         janet_panicf("could not find method :%s for %v", method, arg);
@@ -386,7 +443,7 @@ static Janet janet_unary_call(const char *method, Janet arg) {
 }
 
 /* Call a method first on the righthand side, and then on the left hand side with a prefix */
-static Janet janet_binop_call(const char *lmethod, const char *rmethod, Janet lhs, Janet rhs) {
+Janet janet_binop_call(const char *lmethod, const char *rmethod, Janet lhs, Janet rhs) {
     Janet lm = janet_method_lookup(lhs, lmethod);
     if (janet_checktype(lm, JANET_NIL)) {
         /* Invert order for rmethod */
@@ -416,24 +473,26 @@ static Janet janet_binop_call(const char *lmethod, const char *rmethod, Janet lh
  * can reach a callback supplied by a native module. janet_to_string_b can also
  * raise "buffer overflow" from janet_buffer_ensure without any callback at all.
  */
-static void fill_table(JanetTable *table, const Janet *mem, int32_t count) {
+void janet_fill_table(JanetTable *table, const Janet *mem, int32_t count) {
     for (int32_t i = 0; i < count; i += 2)
         janet_table_put(table, mem[i], mem[i + 1]);
 }
 
-static void fill_struct(JanetKV *st, const Janet *mem, int32_t count) {
+void janet_fill_struct(JanetKV *st, const Janet *mem, int32_t count) {
     for (int32_t i = 0; i < count; i += 2)
         janet_struct_put(st, mem[i], mem[i + 1]);
 }
 
-static void fill_string(JanetBuffer *buffer, const Janet *mem, int32_t count) {
+void janet_fill_string(JanetBuffer *buffer, const Janet *mem, int32_t count) {
     for (int32_t i = 0; i < count; i++)
         janet_to_string_b(buffer, mem[i]);
 }
 
-/* Forward declaration */
-static JanetSignal janet_check_can_resume(JanetFiber *fiber, Janet *out, int is_cancel);
-static JanetSignal janet_continue_no_check(JanetFiber *fiber, Janet in, Janet *out);
+#endif /* JANET_ZIG_VM_CALLS */
+
+/* Both are declared in state.h: run_vm reaches them at JOP_RESUME and
+ * JOP_CANCEL, and a Zig run_vm needs them by name. Neither is static any more
+ * for that reason; both already carried the janet_ prefix. */
 
 #ifdef JANET_CALL_TRAMPOLINE
 
@@ -513,6 +572,24 @@ static void vm_scope_leave(JanetVmTryState *st) {
     vm_scope_leave(&_st); \
     return _sig
 
+/* The same scope, with the call it wraps chosen by the caller rather than by
+ * the wrapper's own name. This is the seam a Zig run_vm uses, and it is one
+ * symbol where the C loop below has twenty-five.
+ *
+ * The setjmp still has to be in a C frame, so that much cannot move; what can
+ * move is the decision of *what* to run inside it, and that belongs with the
+ * interpreter. `context` points at a structure in the caller's frame holding
+ * the arguments and, on the success path, the result. Nothing reads that
+ * result unless JANET_SIGNAL_OK comes back, which is what keeps the rule about
+ * indeterminate locals satisfied: the fields the action writes are written from
+ * the action's own frame, and after a longjmp the caller checks the signal
+ * before it looks at any of them. */
+JanetSignal janet_vm_scoped(JanetVmAction action, void *context, Janet *out) {
+    vm_scope_run(action(context));
+}
+
+#ifndef JANET_ZIG_VM_RUN
+
 static JanetSignal scoped_cfunction(JanetCFunction cfun, int32_t argc, Janet *argv, Janet *out) {
     vm_scope_run(*out = cfun(argc, argv));
 }
@@ -568,7 +645,7 @@ static JanetSignal scoped_putindex(Janet ds, int32_t index, Janet value, Janet *
 
 /* The frame and collection machinery run_vm reaches directly.
  *
- * resolve_method and call_nonfn are the method and non-function call paths at
+ * janet_resolve_method and janet_call_nonfn are the method and non-function call paths at
  * JOP_CALL and JOP_TAILCALL. The janet_fiber_push family each raise
  * "stack overflow" (fiber.c:136-178). The three fill wrappers take the scope
  * around the loop rather than around each element, which is both cheaper and
@@ -582,11 +659,11 @@ static JanetSignal scoped_putindex(Janet ds, int32_t index, Janet value, Janet *
  * and janet_continue_signal open a janet_try of their own and already return a
  * signal. */
 static JanetSignal scoped_resolve_method(Janet name, JanetFiber *fiber, Janet *out) {
-    vm_scope_run(*out = resolve_method(name, fiber));
+    vm_scope_run(*out = janet_resolve_method(name, fiber));
 }
 
 static JanetSignal scoped_call_nonfn(JanetFiber *fiber, Janet callee, Janet *out) {
-    vm_scope_run(*out = call_nonfn(fiber, callee));
+    vm_scope_run(*out = janet_call_nonfn(fiber, callee));
 }
 
 static JanetSignal scoped_fiber_push(JanetFiber *fiber, Janet x, Janet *out) {
@@ -606,15 +683,15 @@ static JanetSignal scoped_fiber_pushn(JanetFiber *fiber, const Janet *arr, int32
 }
 
 static JanetSignal scoped_fill_table(JanetTable *table, const Janet *mem, int32_t count, Janet *out) {
-    vm_scope_run(fill_table(table, mem, count));
+    vm_scope_run(janet_fill_table(table, mem, count));
 }
 
 static JanetSignal scoped_fill_struct(JanetKV *st, const Janet *mem, int32_t count, Janet *out) {
-    vm_scope_run(fill_struct(st, mem, count));
+    vm_scope_run(janet_fill_struct(st, mem, count));
 }
 
 static JanetSignal scoped_fill_string(JanetBuffer *buffer, const Janet *mem, int32_t count, Janet *out) {
-    vm_scope_run(fill_string(buffer, mem, count));
+    vm_scope_run(janet_fill_string(buffer, mem, count));
 }
 
 /* Call through a scope and return anything it caught out of run_vm, rather than
@@ -707,6 +784,8 @@ static JanetSignal scoped_fill_string(JanetBuffer *buffer, const Janet *mem, int
         vm_scoped(_payload, scoped_fill_string((buffer), (mem), (count), &_payload)); \
     } while (0)
 
+#endif /* JANET_ZIG_VM_RUN */
+
 #else
 
 #define vm_call_cfunction(cfun, argc, argv, dest) do { \
@@ -739,23 +818,30 @@ static JanetSignal scoped_fill_string(JanetBuffer *buffer, const Janet *mem, int
         janet_putindex((ds), (index), (value)); \
     } while (0)
 #define vm_resolve_method(dest, name, fiber) do { \
-        (dest) = resolve_method((name), (fiber)); \
+        (dest) = janet_resolve_method((name), (fiber)); \
     } while (0)
 #define vm_call_nonfn(dest, fiber, callee) do { \
-        (dest) = call_nonfn((fiber), (callee)); \
+        (dest) = janet_call_nonfn((fiber), (callee)); \
     } while (0)
 #define vm_fiber_push(fiber, x) janet_fiber_push((fiber), (x))
 #define vm_fiber_push2(fiber, x, y) janet_fiber_push2((fiber), (x), (y))
 #define vm_fiber_push3(fiber, x, y, z) janet_fiber_push3((fiber), (x), (y), (z))
 #define vm_fiber_pushn(fiber, arr, n) janet_fiber_pushn((fiber), (arr), (n))
-#define vm_fill_table(table, mem, count) fill_table((table), (mem), (count))
-#define vm_fill_struct(st, mem, count) fill_struct((st), (mem), (count))
-#define vm_fill_string(buffer, mem, count) fill_string((buffer), (mem), (count))
+#define vm_fill_table(table, mem, count) janet_fill_table((table), (mem), (count))
+#define vm_fill_struct(st, mem, count) janet_fill_struct((st), (mem), (count))
+#define vm_fill_string(buffer, mem, count) janet_fill_string((buffer), (mem), (count))
 
 #endif
 
-/* Interpreter main loop */
-static JanetSignal run_vm(JanetFiber *fiber, Janet in) {
+#ifndef JANET_ZIG_VM_RUN
+
+/* Interpreter main loop.
+ *
+ * Not static, and prefixed: `run_vm` is too general a name for a library's
+ * symbol table, and both its callers are below, so the rename costs nothing and
+ * makes them read identically under either selector. Provided by this file or
+ * by src/zig/subsystems/vm_run.zig. */
+JanetSignal janet_run_vm(JanetFiber *fiber, Janet in) {
 
     /* opcode -> label lookup if using clang/GCC */
 #ifdef JANET_USE_COMPUTED_GOTOS
@@ -1735,6 +1821,22 @@ static JanetSignal run_vm(JanetFiber *fiber, Janet in) {
     VM_END()
 }
 
+#endif /* JANET_ZIG_VM_RUN */
+
+/* The entry points: everything that stands above run_vm and decides whether,
+ * and in what state, the loop is entered at all.
+ *
+ * Provided by this file or by src/zig/subsystems/vm_entry.zig. Five of the six
+ * are public API and keep their names; janet_check_can_resume lost `static` in
+ * Part 3 and is declared in state.h.
+ *
+ * janet_continue_no_check is not here and is not selectable. It holds the
+ * jmp_buf every fiber resume re-establishes, which Phase 7's fourth rule puts
+ * beyond this phase, so it sits between the two guarded regions below and calls
+ * janet_continue and janet_run_vm across the seam in whichever direction the
+ * selectors point. */
+#ifndef JANET_ZIG_VM_ENTRY
+
 /*
  * Execute a single instruction in the fiber. Does this by inspecting
  * the fiber, setting a breakpoint at the next instruction, executing, and
@@ -1845,7 +1947,7 @@ Janet janet_call(JanetFunction *fun, int32_t argc, const Janet *argv) {
     janet_vm.fiber->flags |= JANET_FIBER_RESUME_NO_USEVAL | JANET_FIBER_RESUME_NO_SKIP;
     int old_coerce_error = janet_vm.coerce_error;
     janet_vm.coerce_error = 1;
-    JanetSignal signal = run_vm(janet_vm.fiber, janet_wrap_nil());
+    JanetSignal signal = janet_run_vm(janet_vm.fiber, janet_wrap_nil());
     janet_vm.coerce_error = old_coerce_error;
 
     /* Teardown */
@@ -1872,7 +1974,7 @@ Janet janet_call(JanetFunction *fun, int32_t argc, const Janet *argv) {
     return *janet_vm.return_reg;
 }
 
-static JanetSignal janet_check_can_resume(JanetFiber *fiber, Janet *out, int is_cancel) {
+JanetSignal janet_check_can_resume(JanetFiber *fiber, Janet *out, int is_cancel) {
     /* Check conditions */
     JanetFiberStatus old_status = janet_fiber_status(fiber);
     if (janet_vm.stackn >= JANET_RECURSION_GUARD) {
@@ -1905,6 +2007,8 @@ static JanetSignal janet_check_can_resume(JanetFiber *fiber, Janet *out, int is_
     }
     return JANET_SIGNAL_OK;
 }
+
+#endif /* JANET_ZIG_VM_ENTRY */
 
 #ifndef JANET_ZIG_SIGNAL_CORE
 
@@ -1943,7 +2047,7 @@ void janet_signal_inject(JanetFiber *fiber, JanetSignal sig) {
 
 #endif /* JANET_ZIG_SIGNAL_CORE */
 
-static JanetSignal janet_continue_no_check(JanetFiber *fiber, Janet in, Janet *out) {
+JanetSignal janet_continue_no_check(JanetFiber *fiber, Janet in, Janet *out) {
 
     JanetFiberStatus old_status = janet_fiber_status(fiber);
 
@@ -2021,7 +2125,7 @@ static JanetSignal janet_continue_no_check(JanetFiber *fiber, Janet in, Janet *o
         if (janet_vm.root_fiber == NULL) janet_vm.root_fiber = fiber;
         janet_vm.fiber = fiber;
         janet_fiber_set_status(fiber, JANET_STATUS_ALIVE);
-        sig = run_vm(fiber, in);
+        sig = janet_run_vm(fiber, in);
     }
 
     /* Restore */
@@ -2036,6 +2140,8 @@ static JanetSignal janet_continue_no_check(JanetFiber *fiber, Janet in, Janet *o
 
     return sig;
 }
+
+#ifndef JANET_ZIG_VM_ENTRY
 
 /* Enter the main vm loop */
 JanetSignal janet_continue(JanetFiber *fiber, Janet in, Janet *out) {
@@ -2075,6 +2181,10 @@ JanetSignal janet_pcall(
     return janet_continue(fiber, janet_wrap_nil(), out);
 }
 
+#endif /* JANET_ZIG_VM_ENTRY */
+
+#ifndef JANET_ZIG_VM_CALLS
+
 Janet janet_mcall(const char *name, int32_t argc, Janet *argv) {
     /* At least 1 argument */
     if (argc < 1) {
@@ -2088,6 +2198,15 @@ Janet janet_mcall(const char *name, int32_t argc, Janet *argv) {
     /* Invoke method */
     return janet_method_invoke(method, argc, argv);
 }
+
+#endif /* JANET_ZIG_VM_CALLS */
+
+/* The runtime's lifecycle: the first and last functions an embedder calls, and
+ * the sandbox that sits between them.
+ *
+ * Provided by this file or by src/zig/subsystems/vm_lifecycle.zig. All four are
+ * public API and keep their names. */
+#ifndef JANET_ZIG_VM_LIFECYCLE
 
 /* Setup VM */
 int janet_init(void) {
@@ -2193,3 +2312,5 @@ void janet_deinit(void) {
     janet_net_deinit();
 #endif
 }
+
+#endif /* JANET_ZIG_VM_LIFECYCLE */

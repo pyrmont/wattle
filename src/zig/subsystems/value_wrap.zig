@@ -681,6 +681,92 @@ comptime {
     if (is_nanbox) @export(&wrapIntegerFn, .{ .name = "janet_wrap_integer" });
 }
 
+// --------------------------------------------------------- the inline surface
+
+/// The file's own struct, so that `ops` below can name a declaration it
+/// shadows. Without it `ops.wrapNil` would resolve to itself.
+const outer = @This();
+
+/// The same operations `janet.h` hands a C caller as macros, gathered for a Zig
+/// caller that needs them inlined rather than called.
+///
+/// `run_vm` is the only such caller and the reason this exists. An interpreter
+/// that pays a function call to ask what a value is spends more time asking
+/// than acting: measured at +89% on the arithmetic workload with these reached
+/// through the symbol table, against the same loop with them reached through
+/// here. `build.zig` resolves `vm_run.zig`'s `value_wrap` import to this file
+/// when the selector is Zig and to `value_wrap_extern.zig` when it is C, so
+/// `-Dvalue-wrap=c` still answers for the loop -- out of line, which is the
+/// honest cost of that combination rather than a silent substitution.
+///
+/// Every member is the body of the identically named export above rather than a
+/// second copy of it.
+pub const ops = struct {
+    pub inline fn checkType(x: c.Janet, t: c.JanetType) bool {
+        return repr.checkType(x, t);
+    }
+    pub inline fn checkTypes(x: c.Janet, typeflags: c_int) bool {
+        return ((@as(c_int, 1) << @intCast(repr.typeOf(x))) & typeflags) != 0;
+    }
+    pub inline fn isNumber(x: c.Janet) bool {
+        return repr.checkType(x, c.JANET_NUMBER);
+    }
+    pub inline fn truthy(x: c.Janet) bool {
+        return repr.truthy(x);
+    }
+    pub inline fn unwrapNumber(x: c.Janet) f64 {
+        return repr.unwrapNumber(x);
+    }
+    pub inline fn unwrapInteger(x: c.Janet) i32 {
+        return outer.unwrapInteger(x);
+    }
+    pub inline fn wrapNumber(d: f64) c.Janet {
+        return repr.wrapNumber(d);
+    }
+    pub inline fn wrapInteger(n: i32) c.Janet {
+        return outer.wrapInteger(n);
+    }
+    pub inline fn wrapBoolean(b: bool) c.Janet {
+        return outer.wrapBoolean(b);
+    }
+    pub inline fn wrapNil() c.Janet {
+        return outer.wrapNil();
+    }
+    pub inline fn wrapTrue() c.Janet {
+        return outer.wrapBoolean(true);
+    }
+    pub inline fn wrapFalse() c.Janet {
+        return outer.wrapBoolean(false);
+    }
+    pub inline fn wrapFunction(x: [*c]c.JanetFunction) c.Janet {
+        return repr.wrapPointer(x, c.JANET_FUNCTION);
+    }
+    pub inline fn wrapArray(x: [*c]c.JanetArray) c.Janet {
+        return repr.wrapPointer(x, c.JANET_ARRAY);
+    }
+    pub inline fn wrapTable(x: [*c]c.JanetTable) c.Janet {
+        return repr.wrapPointer(x, c.JANET_TABLE);
+    }
+    pub inline fn wrapBuffer(x: [*c]c.JanetBuffer) c.Janet {
+        return repr.wrapPointer(x, c.JANET_BUFFER);
+    }
+    pub inline fn wrapStruct(x: c.JanetStruct) c.Janet {
+        return repr.wrapCPointer(x, c.JANET_STRUCT);
+    }
+    pub inline fn wrapTuple(x: c.JanetTuple) c.Janet {
+        return repr.wrapCPointer(x, c.JANET_TUPLE);
+    }
+    pub inline fn unwrapFunction(x: c.Janet) [*c]c.JanetFunction {
+        return @ptrCast(@alignCast(unwrapPointer(x)));
+    }
+    pub inline fn unwrapCFunction(x: c.Janet) c.JanetCFunction {
+        return @ptrFromInt(@intFromPtr(unwrapPointer(x)));
+    }
+    pub inline fn unwrapFiber(x: c.Janet) [*c]c.JanetFiber {
+        return @ptrCast(@alignCast(unwrapPointer(x)));
+    }
+};
+
 // -------------------------------------------------- per-layout nanbox helpers
 
 fn nanboxToPointer(x: c.Janet) callconv(.c) ?*anyopaque {
