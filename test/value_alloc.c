@@ -132,7 +132,7 @@ static void dirty(JanetFiber *fiber, JanetFiber *child, JanetTable *env) {
     fiber->child = child;
     fiber->env = env;
     fiber->last_value = janet_wrap_integer(23);
-    fiber->flags = JANET_FIBER_MASK_ERROR | JANET_FIBER_DID_LONGJUMP |
+    fiber->flags = JANET_FIBER_MASK_ERROR | JANET_FIBER_DID_RAISE |
                    (JANET_STATUS_ALIVE << JANET_FIBER_STATUS_OFFSET);
 #ifdef JANET_EV
     fiber->sched_id = 29;
@@ -543,7 +543,49 @@ static void test_repeated_cycles(JanetFunction *nullary) {
     }
 }
 
-int main(void) {
+/* -------------------------------------------------------- delayed thunks */
+
+/* janet_thunk_delay assembles a funcdef by hand rather than compiling one, and
+ * every field it sets is one the interpreter will read. The two allocations
+ * are janet_malloc and not janet_gcalloc deliberately: a funcdef owns its
+ * bytecode and constants outright.
+ *
+ * The last assertion is the one that matters. Every field could be right and
+ * the bytecode still be wrong -- JOP_LOAD_CONSTANT takes its constant index
+ * from the instruction, and a zeroed second word would return an empty slot
+ * instead of the value. Calling it is the only check that covers that. */
+static void test_thunk_delay_returns_its_value(void) {
+    Janet x = janet_cstringv("delayed");
+    JanetFunction *f;
+    Janet out = janet_wrap_nil();
+
+    janet_gcroot(x);
+    f = janet_thunk_delay(x);
+    janet_gcroot(janet_wrap_function(f));
+
+    assert(f->def->arity == 0);
+    assert(f->def->min_arity == 0);
+    assert(f->def->max_arity == INT32_MAX);
+    assert(f->def->flags & JANET_FUNCDEF_FLAG_VARARG);
+    assert(f->def->slotcount == 1);
+    assert(f->def->bytecode_length == 2);
+    assert(f->def->constants_length == 1);
+    assert(janet_equals(f->def->constants[0], x));
+    assert(f->def->name == NULL);
+    assert(f->def->environments_length == 0);
+
+    assert(janet_pcall(f, 0, NULL, &out, NULL) == JANET_SIGNAL_OK);
+    assert(janet_equals(out, x));
+
+    /* Varargs: it ignores whatever it is called with. */
+    assert(janet_pcall(f, 1, &x, &out, NULL) == JANET_SIGNAL_OK);
+    assert(janet_equals(out, x));
+
+    janet_gcunroot(janet_wrap_function(f));
+    janet_gcunroot(x);
+}
+
+void value_alloc_contract(void) {
     JanetFunction *nullary, *binary, *variadic;
 
     janet_init();
@@ -579,9 +621,10 @@ int main(void) {
     test_thunk_refuses_upvalues();
 #endif
 
+    test_thunk_delay_returns_its_value();
+
     test_repeated_cycles(nullary);
 
     janet_deinit();
     printf("value alloc contract ok\n");
-    return 0;
 }

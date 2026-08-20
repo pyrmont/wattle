@@ -267,7 +267,7 @@ static void test_dtostr(void) {
     for (int32_t i = 0; i < buffer->count; i++) assert(buffer->data[i] != ',');
 }
 
-int main(void) {
+void numscan_contract(void) {
     janet_init();
 
     test_integers();
@@ -285,5 +285,4 @@ int main(void) {
     test_dtostr();
 
     janet_deinit();
-    return 0;
 }

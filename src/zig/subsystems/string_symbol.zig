@@ -1,12 +1,11 @@
-//! jump-transparent
-//!
 //! The immutable head-allocated sequences: strings, symbols and the symbol
 //! cache, and tuples. This is Part 6b of Phase 8, and it takes the
 //! data-structure core of `src/core/string.c`, the whole of
 //! `src/core/symcache.c`, and the constructors in `src/core/tuple.c`. The
-//! `JANET_CORE_FN` bodies in `string.c` and `tuple.c` stay in C, along with
+//! `JANET_CORE_FN` bodies in `string.c` and `tuple.c` stayed in C, along with
 //! `string.c`'s Knuth-Morris-Pratt searcher, on the same rule Part 6a followed:
-//! the standard-library surface is not value construction.
+//! the standard-library surface is not value construction. Phase 10 Part 6
+//! brought all three here, at the foot of the file.
 //!
 //! These three belong together because they are one allocation strategy. A
 //! buffer or an array is a fixed-size block pointing at a payload that can be
@@ -87,7 +86,13 @@
 
 const std = @import("std");
 const abi = @import("abi");
+const corefn = @import("corefn");
 const c = abi.c;
+const containers = @import("containers.zig");
+const raise = @import("raise");
+const arglayer = @import("arglayer.zig");
+const registration = @import("registration.zig");
+const pp_format = @import("pp_format.zig");
 
 /// `janet_vm` as `src/core/state.h` declares it, resolved through `abi.zig`.
 inline fn vm() *c.JanetVM {
@@ -467,4 +472,668 @@ export fn janet_tuple_n(values: [*c]const c.Janet, n: i32) callconv(.c) [*c]cons
     const t = janet_tuple_begin(n);
     safe_memcpy(@ptrCast(t), @ptrCast(values), @sizeOf(c.Janet) *% asSize(n));
     return janet_tuple_end(t);
+}
+
+// ==========================================================================
+// tuple/*, the cfunction surface.
+//
+// Phase 10 Part 6. Everything above this line is value construction, which is
+// what Phase 8 took; the standard-library surface stayed in C then because
+// every one of these functions raises and nothing in Zig could. It can now,
+// though not by returning: a `JanetCFunction` has no error channel in its
+// signature, so a cfunction delivers a raise as the jump its C caller is
+// waiting for whichever language it is written in. That is why this file's
+// `//! jump-transparent` marker matters more than it did -- each of these
+// frames may be jumped out of, and none of them holds anything.
+// ==========================================================================
+
+/// `janet_wrap_integer`, written out because the function it would call does
+/// not exist in every configuration: `janet.h` declares it beside its macro,
+/// and `wrap.c` defines the declaration only for the NaN-boxed layouts. Same
+/// reasoning, and the same three lines, as `value_access.zig` and
+/// `pp_pretty.zig`.
+inline fn wrapInteger(x: i32) c.Janet {
+    return c.janet_wrap_number(@floatFromInt(x));
+}
+
+fn cfunTupleBrackets(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    const tup = janet_tuple_n(argv, argc);
+    tupleHead(tup).gc.flags |= @intCast(c.JANET_TUPLE_FLAG_BRACKETCTOR);
+    return c.janet_wrap_tuple(tup);
+}
+
+fn cfunTupleSlice(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    const view = try arglayer.getIndexed(argv, 0);
+    const range = try arglayer.getSlice(argc, argv);
+    return c.janet_wrap_tuple(janet_tuple_n(view.items + @as(usize, @intCast(range.start)), range.end - range.start));
+}
+
+fn cfunTupleType(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    const tup = try arglayer.getTuple(argv, 0);
+    if (tupleHead(tup).gc.flags & @as(i32, @intCast(c.JANET_TUPLE_FLAG_BRACKETCTOR)) != 0) {
+        return c.janet_ckeywordv("brackets");
+    }
+    return c.janet_ckeywordv("parens");
+}
+
+fn cfunTupleSourcemap(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    const tup = try arglayer.getTuple(argv, 0);
+    var contents: [2]c.Janet = .{
+        wrapInteger(tupleHead(tup).sm_line),
+        wrapInteger(tupleHead(tup).sm_column),
+    };
+    return c.janet_wrap_tuple(janet_tuple_n(&contents, 2));
+}
+
+fn cfunTupleSetmap(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 3);
+    const tup = try arglayer.getTuple(argv, 0);
+    tupleHead(tup).sm_line = try arglayer.getInteger(argv, 1);
+    tupleHead(tup).sm_column = try arglayer.getInteger(argv, 2);
+    return argv[0];
+}
+
+/// The two passes over `argv` are the C original's and are not redundant: the
+/// first is what rejects a bad argument and what checks the total for
+/// overflow, and it has to finish before anything is allocated, because
+/// `janet_tuple_begin` would otherwise leave a half-filled tuple behind when
+/// the second argument turned out not to be indexed.
+fn cfunTupleJoin(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.arity(argc, 0, -1);
+    var total_len: i32 = 0;
+    var i: i32 = 0;
+    while (i < argc) : (i += 1) {
+        var len: i32 = 0;
+        var vals: [*c]const c.Janet = null;
+        if (c.janet_indexed_view(argv[@intCast(i)], &vals, &len) == 0) {
+            return pp_format.panicf("expected indexed type for argument %d, got %v", .{ i, argv[@intCast(i)] });
+        }
+        if (std.math.maxInt(i32) - total_len < len) return raise.panic("tuple too large");
+        total_len += len;
+    }
+    const tup = janet_tuple_begin(total_len);
+    var cursor = tup;
+    i = 0;
+    while (i < argc) : (i += 1) {
+        var len: i32 = 0;
+        var vals: [*c]const c.Janet = null;
+        _ = c.janet_indexed_view(argv[@intCast(i)], &vals, &len);
+        safe_memcpy(@ptrCast(cursor), @ptrCast(vals), asSize(len) *% @sizeOf(c.Janet));
+        cursor += @intCast(len);
+    }
+    return c.janet_wrap_tuple(janet_tuple_end(tup));
+}
+
+export fn janet_lib_tuple(env: *c.JanetTable) callconv(.c) void {
+    const entries = [_]corefn.Entry{
+        corefn.reg("tuple/brackets", &cfunTupleBrackets, @src(), "(tuple/brackets & xs)", "Creates a new bracketed tuple containing the elements xs."),
+        corefn.reg("tuple/slice", &cfunTupleSlice, @src(), "(tuple/slice arrtup [,start=0 [,end=(length arrtup)]])", "Take a sub-sequence of an array or tuple from index `start` " ++
+            "inclusive to index `end` exclusive. If `start` or `end` are not provided, " ++
+            "they default to 0 and the length of `arrtup`, respectively. " ++
+            "`start` and `end` can also be negative to indicate indexing " ++
+            "from the end of the input. Note that if `start` is negative it is " ++
+            "exclusive, and if `end` is negative it is inclusive, to allow a full " ++
+            "negative slice range. Returns the new tuple."),
+        corefn.reg("tuple/type", &cfunTupleType, @src(), "(tuple/type tup)", "Checks how the tuple was constructed. Will return the keyword " ++
+            ":brackets if the tuple was parsed with brackets, and :parens " ++
+            "otherwise. The two types of tuples will behave the same most of " ++
+            "the time, but will print differently and be treated differently by " ++
+            "the compiler."),
+        corefn.reg("tuple/sourcemap", &cfunTupleSourcemap, @src(), "(tuple/sourcemap tup)", "Returns the sourcemap metadata attached to a tuple, " ++
+            "which is another tuple (line, column)."),
+        corefn.reg("tuple/setmap", &cfunTupleSetmap, @src(), "(tuple/setmap tup line column)", "Set the sourcemap metadata on a tuple. line and column indicate " ++
+            "should be integers."),
+        corefn.reg("tuple/join", &cfunTupleJoin, @src(), "(tuple/join & parts)", "Create a tuple by joining together other tuples and arrays."),
+        corefn.end,
+    };
+    corefn.install(env, &entries);
+}
+
+// ==========================================================================
+// string/*, keyword/slice and symbol/slice, the cfunction surface.
+// ==========================================================================
+
+/// `src/core/util.h`, provided by `pp_format.zig` or `pp.c` according to
+/// `-Dpp`.
+extern fn janet_buffer_format(
+    b: *c.JanetBuffer,
+    strfrmt: [*c]const u8,
+    argstart: i32,
+    argc: i32,
+    argv: [*c]c.Janet,
+) callconv(.c) void;
+
+/// Knuth-Morris-Pratt, and the one piece of this file that owns heap memory
+/// across a call that can raise.
+///
+/// `lookup` comes from `janet_calloc` and is released by `deinit`. The C
+/// original releases it on every path it can see and misses the ones it
+/// cannot: `janet_text_substitution` runs a Janet function, and a panic from
+/// there skips the `kmp_deinit` below it. That leak is reproduced rather than
+/// repaired -- `FOUND.md` has it -- and reproducing it is also why nothing
+/// here uses `defer` or `errdefer`.
+///
+/// Phase 10 Part 17f changed the *mechanism* of that raise without changing
+/// the leak. A raising builtin now returns an error the `try` on
+/// `registration.textSubstitution` propagates, so the skipped `deinit` is a
+/// plain early return rather than a jump; a raising Janet *function* still
+/// jumps out of `janet_call` inside that call, which is why this file keeps
+/// its jump-transparent marker.
+const KmpState = struct {
+    i: i32,
+    j: i32,
+    textlen: i32,
+    patlen: i32,
+    lookup: [*c]i32,
+    text: [*c]const u8,
+    pat: [*c]const u8,
+
+    fn init(text: [*c]const u8, textlen: i32, pat: [*c]const u8, patlen: i32) raise.Raising(KmpState) {
+        if (patlen == 0) return raise.panic("expected non-empty pattern");
+        const lookup: [*c]i32 = @ptrCast(@alignCast(c.janet_calloc(@intCast(patlen), @sizeOf(i32)) orelse
+            c.janet_zig_out_of_memory()));
+        const s: KmpState = .{
+            .i = 0,
+            .j = 0,
+            .text = text,
+            .pat = pat,
+            .textlen = textlen,
+            .patlen = patlen,
+            .lookup = lookup,
+        };
+        var i: i32 = 1;
+        var j: i32 = 0;
+        while (i < patlen) : (i += 1) {
+            while (j != 0 and pat[@intCast(j)] != pat[@intCast(i)]) j = lookup[@intCast(j - 1)];
+            if (pat[@intCast(j)] == pat[@intCast(i)]) j += 1;
+            lookup[@intCast(i)] = j;
+        }
+        return s;
+    }
+
+    fn deinit(s: *KmpState) void {
+        c.janet_free(@ptrCast(s.lookup));
+    }
+
+    fn seti(s: *KmpState, i: i32) void {
+        s.i = i;
+        s.j = 0;
+    }
+
+    fn next(s: *KmpState) i32 {
+        var i = s.i;
+        var j = s.j;
+        while (i < s.textlen) {
+            if (s.text[@intCast(i)] == s.pat[@intCast(j)]) {
+                if (j == s.patlen - 1) {
+                    s.i = i + 1;
+                    s.j = s.lookup[@intCast(j)];
+                    return i - j;
+                }
+                i += 1;
+                j += 1;
+            } else if (j > 0) {
+                j = s.lookup[@intCast(j - 1)];
+            } else {
+                i += 1;
+            }
+        }
+        return -1;
+    }
+};
+
+fn findsetup(argc: i32, argv: [*c]c.Janet, extra: i32) raise.Raising(KmpState) {
+    try arglayer.arity(argc, 2, 3 + extra);
+    const pat = try arglayer.getBytes(argv, 0);
+    const text = try arglayer.getBytes(argv, 1);
+    var start: i32 = 0;
+    if (argc >= 3) {
+        start = try arglayer.getInteger(argv, 2);
+        if (start < 0) return raise.panic("expected non-negative start index");
+    }
+    var s = try KmpState.init(text.bytes, text.len, pat.bytes, pat.len);
+    s.i = start;
+    return s;
+}
+
+fn cfunStringSlice(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    const view = try arglayer.getBytes(argv, 0);
+    const range = try arglayer.getSlice(argc, argv);
+    return c.janet_wrap_string(janet_string(view.bytes + @as(usize, @intCast(range.start)), range.end - range.start));
+}
+
+fn cfunSymbolSlice(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    const view = try arglayer.getBytes(argv, 0);
+    const range = try arglayer.getSlice(argc, argv);
+    return c.janet_wrap_symbol(janet_symbol(view.bytes + @as(usize, @intCast(range.start)), range.end - range.start));
+}
+
+fn cfunKeywordSlice(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    const view = try arglayer.getBytes(argv, 0);
+    const range = try arglayer.getSlice(argc, argv);
+    // `janet.h` spells `janet_keyword` as a #define onto `janet_symbol`: a
+    // keyword and a symbol are the same interned bytes under a different tag.
+    return c.janet_wrap_keyword(janet_symbol(view.bytes + @as(usize, @intCast(range.start)), range.end - range.start));
+}
+
+fn cfunStringRepeat(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 2);
+    const view = try arglayer.getBytes(argv, 0);
+    const rep = try arglayer.getInteger(argv, 1);
+    if (rep < 0) return raise.panic("expected non-negative number of repetitions");
+    if (rep == 0) return c.janet_cstringv("");
+    const mulres = @as(i64, rep) * view.len;
+    if (mulres > std.math.maxInt(i32)) return raise.panic("result string is too long");
+    const newbuf = janet_string_begin(@intCast(mulres));
+    var offset: usize = 0;
+    const total: usize = @intCast(mulres);
+    while (offset < total) : (offset += asSize(view.len)) {
+        safe_memcpy(@ptrCast(newbuf + offset), @ptrCast(view.bytes), asSize(view.len));
+    }
+    return c.janet_wrap_string(janet_string_end(newbuf));
+}
+
+fn cfunStringBytes(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    const view = try arglayer.getBytes(argv, 0);
+    const tup = janet_tuple_begin(view.len);
+    var i: i32 = 0;
+    while (i < view.len) : (i += 1) tup[@intCast(i)] = wrapInteger(view.bytes[@intCast(i)]);
+    return c.janet_wrap_tuple(janet_tuple_end(tup));
+}
+
+fn cfunStringFrombytes(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    const buf = janet_string_begin(argc);
+    var i: i32 = 0;
+    while (i < argc) : (i += 1) {
+        buf[@intCast(i)] = @truncate(@as(u32, @bitCast(try arglayer.getInteger(argv, i))));
+    }
+    return c.janet_wrap_string(janet_string_end(buf));
+}
+
+/// ASCII only, as the docstring says: the two case functions test the byte
+/// ranges directly rather than calling `tolower`, so a locale cannot change
+/// what they do.
+fn mapCase(comptime lo: u8, comptime hi: u8, comptime delta: i8, argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    const view = try arglayer.getBytes(argv, 0);
+    const buf = janet_string_begin(view.len);
+    var i: i32 = 0;
+    while (i < view.len) : (i += 1) {
+        const byte = view.bytes[@intCast(i)];
+        buf[@intCast(i)] = if (byte >= lo and byte <= hi)
+            @intCast(@as(i16, byte) + delta)
+        else
+            byte;
+    }
+    return c.janet_wrap_string(janet_string_end(buf));
+}
+
+fn cfunStringAsciilower(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    return try mapCase(65, 90, 32, argc, argv);
+}
+
+fn cfunStringAsciiupper(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    return try mapCase(97, 122, -32, argc, argv);
+}
+
+fn cfunStringReverse(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    const view = try arglayer.getBytes(argv, 0);
+    const buf = janet_string_begin(view.len);
+    var i: i32 = 0;
+    while (i < view.len) : (i += 1) buf[@intCast(i)] = view.bytes[@intCast(view.len - 1 - i)];
+    return c.janet_wrap_string(janet_string_end(buf));
+}
+
+fn cfunStringFind(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    var state = try findsetup(argc, argv, 0);
+    const result = state.next();
+    state.deinit();
+    return if (result < 0) c.janet_wrap_nil() else wrapInteger(result);
+}
+
+fn cfunStringHasprefix(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 2);
+    const prefix = try arglayer.getBytes(argv, 0);
+    const str = try arglayer.getBytes(argv, 1);
+    if (str.len < prefix.len) return c.janet_wrap_false();
+    const n = asSize(prefix.len);
+    return c.janet_wrap_boolean(@intFromBool(std.mem.eql(u8, prefix.bytes[0..n], str.bytes[0..n])));
+}
+
+fn cfunStringHassuffix(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 2);
+    const suffix = try arglayer.getBytes(argv, 0);
+    const str = try arglayer.getBytes(argv, 1);
+    if (str.len < suffix.len) return c.janet_wrap_false();
+    const n = asSize(suffix.len);
+    const tail = str.bytes + asSize(str.len - suffix.len);
+    return c.janet_wrap_boolean(@intFromBool(std.mem.eql(u8, suffix.bytes[0..n], tail[0..n])));
+}
+
+fn cfunStringFindall(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    var state = try findsetup(argc, argv, 0);
+    const array = c.janet_array(0);
+    while (true) {
+        const result = state.next();
+        if (result < 0) break;
+        try containers.arrayPush(array, wrapInteger(result));
+    }
+    state.deinit();
+    return c.janet_wrap_array(array);
+}
+
+const ReplaceState = struct { kmp: KmpState, subst: c.Janet };
+
+fn replacesetup(argc: i32, argv: [*c]c.Janet) raise.Raising(ReplaceState) {
+    try arglayer.arity(argc, 3, 4);
+    const pat = try arglayer.getBytes(argv, 0);
+    const subst = argv[1];
+    const text = try arglayer.getBytes(argv, 2);
+    var start: i32 = 0;
+    if (argc == 4) {
+        start = try arglayer.getInteger(argv, 3);
+        if (start < 0) return raise.panic("expected non-negative start index");
+    }
+    var s: ReplaceState = .{
+        .kmp = try KmpState.init(text.bytes, text.len, pat.bytes, pat.len),
+        .subst = subst,
+    };
+    s.kmp.i = start;
+    return s;
+}
+
+fn cfunStringReplace(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    var s = try replacesetup(argc, argv);
+    const result = s.kmp.next();
+    if (result < 0) {
+        const text = s.kmp.text;
+        const textlen = s.kmp.textlen;
+        s.kmp.deinit();
+        return c.janet_wrap_string(janet_string(text, textlen));
+    }
+    const subst = try registration.textSubstitution(
+        &s.subst,
+        s.kmp.text + @as(usize, @intCast(result)),
+        @intCast(s.kmp.patlen),
+        null,
+    );
+    const buf = janet_string_begin(s.kmp.textlen - s.kmp.patlen + subst.len);
+    safe_memcpy(@ptrCast(buf), @ptrCast(s.kmp.text), asSize(result));
+    safe_memcpy(@ptrCast(buf + asSize(result)), @ptrCast(subst.bytes), asSize(subst.len));
+    safe_memcpy(
+        @ptrCast(buf + asSize(result) + asSize(subst.len)),
+        @ptrCast(s.kmp.text + asSize(result) + asSize(s.kmp.patlen)),
+        asSize(s.kmp.textlen - result - s.kmp.patlen),
+    );
+    s.kmp.deinit();
+    return c.janet_wrap_string(janet_string_end(buf));
+}
+
+fn cfunStringReplaceall(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    var s = try replacesetup(argc, argv);
+    var b: c.JanetBuffer = undefined;
+    var lastindex: i32 = 0;
+    _ = c.janet_buffer_init(&b, s.kmp.textlen);
+    while (true) {
+        const result = s.kmp.next();
+        if (result < 0) break;
+        const subst = try registration.textSubstitution(
+            &s.subst,
+            s.kmp.text + @as(usize, @intCast(result)),
+            @intCast(s.kmp.patlen),
+            null,
+        );
+        try containers.bufferPushBytes(&b, s.kmp.text + asSize(lastindex), result - lastindex);
+        try containers.bufferPushBytes(&b, subst.bytes, subst.len);
+        lastindex = result + s.kmp.patlen;
+        s.kmp.seti(lastindex);
+    }
+    try containers.bufferPushBytes(&b, s.kmp.text + asSize(lastindex), s.kmp.textlen - lastindex);
+    const ret = janet_string(b.data, b.count);
+    c.janet_buffer_deinit(&b);
+    s.kmp.deinit();
+    return c.janet_wrap_string(ret);
+}
+
+/// The limit arithmetic is the C original's, decrement and all: `limit`
+/// defaults to -1, so `--limit` runs away from zero and never stops the loop,
+/// and an explicit limit of 0 behaves like an explicit 1. Reproduced.
+fn cfunStringSplit(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    var limit: i32 = -1;
+    var lastindex: i32 = 0;
+    if (argc == 4) limit = try arglayer.getInteger(argv, 3);
+    var state = try findsetup(argc, argv, 1);
+    const array = c.janet_array(0);
+    while (true) {
+        const result = state.next();
+        if (result < 0) break;
+        limit -%= 1;
+        if (limit == 0) break;
+        const slice = janet_string(state.text + asSize(lastindex), result - lastindex);
+        try containers.arrayPush(array, c.janet_wrap_string(slice));
+        lastindex = result + state.patlen;
+        state.seti(lastindex);
+    }
+    const slice = janet_string(state.text + asSize(lastindex), state.textlen - lastindex);
+    try containers.arrayPush(array, c.janet_wrap_string(slice));
+    state.deinit();
+    return c.janet_wrap_array(array);
+}
+
+/// A 256-bit set held in eight words, indexed by the top three bits of the
+/// byte and masked by the low five. The same arithmetic as the C original,
+/// which is worth keeping because a `[256]bool` would be clearer and slower.
+fn cfunStringCheckset(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    var bitset: [8]u32 = @splat(0);
+    try arglayer.fixarity(argc, 2);
+    const set = try arglayer.getBytes(argv, 0);
+    const str = try arglayer.getBytes(argv, 1);
+    var i: i32 = 0;
+    while (i < set.len) : (i += 1) {
+        const byte = set.bytes[@intCast(i)];
+        bitset[byte >> 5] |= @as(u32, 1) << @intCast(byte & 0x1F);
+    }
+    i = 0;
+    while (i < str.len) : (i += 1) {
+        const byte = str.bytes[@intCast(i)];
+        if (bitset[byte >> 5] & (@as(u32, 1) << @intCast(byte & 0x1F)) == 0) {
+            return c.janet_wrap_false();
+        }
+    }
+    return c.janet_wrap_true();
+}
+
+fn cfunStringJoin(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.arity(argc, 1, 2);
+    const parts = try arglayer.getIndexed(argv, 0);
+    const joiner: c.JanetByteView = if (argc == 2)
+        try arglayer.getBytes(argv, 1)
+    else
+        .{ .bytes = null, .len = 0 };
+
+    // Two passes, and the first one is what rejects a bad part: nothing is
+    // allocated until every item is known to be a byte sequence and the total
+    // is known to fit.
+    var i: i32 = 0;
+    var finallen: i64 = 0;
+    while (i < parts.len) : (i += 1) {
+        var chunk: [*c]const u8 = null;
+        var chunklen: i32 = 0;
+        if (c.janet_bytes_view(parts.items[@intCast(i)], &chunk, &chunklen) == 0) {
+            return pp_format.panicf("item %d of parts is not a byte sequence, got %v", .{ i, parts.items[@intCast(i)] });
+        }
+        if (i != 0) finallen += joiner.len;
+        finallen += chunklen;
+        if (finallen > std.math.maxInt(i32)) return raise.panic("result string too long");
+    }
+
+    const buf = janet_string_begin(@intCast(finallen));
+    var out: usize = 0;
+    i = 0;
+    while (i < parts.len) : (i += 1) {
+        var chunk: [*c]const u8 = null;
+        var chunklen: i32 = 0;
+        if (i != 0) {
+            safe_memcpy(@ptrCast(buf + out), @ptrCast(joiner.bytes), asSize(joiner.len));
+            out += asSize(joiner.len);
+        }
+        _ = c.janet_bytes_view(parts.items[@intCast(i)], &chunk, &chunklen);
+        safe_memcpy(@ptrCast(buf + out), @ptrCast(chunk), asSize(chunklen));
+        out += asSize(chunklen);
+    }
+    return c.janet_wrap_string(janet_string_end(buf));
+}
+
+fn cfunStringFormat(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.arity(argc, 1, -1);
+    const buffer = c.janet_buffer(0);
+    const strfrmt = try arglayer.getString(argv, 0);
+    try pp_format.bufferFormat(buffer, @ptrCast(strfrmt), 0, argc, argv);
+    return c.janet_wrap_string(janet_string(buffer.*.data, buffer.*.count));
+}
+
+const default_trim_set = " \t\r\n\x0b\x0c";
+
+fn trimArgs(argc: i32, argv: [*c]c.Janet, str: *c.JanetByteView, set: *c.JanetByteView) raise.Raising(void) {
+    try arglayer.arity(argc, 1, 2);
+    str.* = try arglayer.getBytes(argv, 0);
+    if (argc >= 2) {
+        set.* = try arglayer.getBytes(argv, 1);
+    } else {
+        set.* = .{ .bytes = default_trim_set, .len = default_trim_set.len };
+    }
+}
+
+fn inSet(set: c.JanetByteView, x: u8) bool {
+    var j: i32 = 0;
+    while (j < set.len) : (j += 1) if (set.bytes[@intCast(j)] == x) return true;
+    return false;
+}
+
+fn leftEdge(str: c.JanetByteView, set: c.JanetByteView) i32 {
+    var i: i32 = 0;
+    while (i < str.len) : (i += 1) if (!inSet(set, str.bytes[@intCast(i)])) return i;
+    return str.len;
+}
+
+fn rightEdge(str: c.JanetByteView, set: c.JanetByteView) i32 {
+    var i: i32 = str.len - 1;
+    while (i >= 0) : (i -= 1) if (!inSet(set, str.bytes[@intCast(i)])) return i + 1;
+    return 0;
+}
+
+fn cfunStringTrim(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    var str: c.JanetByteView = undefined;
+    var set: c.JanetByteView = undefined;
+    try trimArgs(argc, argv, &str, &set);
+    const left = leftEdge(str, set);
+    const right = rightEdge(str, set);
+    if (right < left) return c.janet_wrap_string(janet_string(null, 0));
+    return c.janet_wrap_string(janet_string(str.bytes + asSize(left), right - left));
+}
+
+fn cfunStringTriml(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    var str: c.JanetByteView = undefined;
+    var set: c.JanetByteView = undefined;
+    try trimArgs(argc, argv, &str, &set);
+    const left = leftEdge(str, set);
+    return c.janet_wrap_string(janet_string(str.bytes + asSize(left), str.len - left));
+}
+
+fn cfunStringTrimr(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    var str: c.JanetByteView = undefined;
+    var set: c.JanetByteView = undefined;
+    try trimArgs(argc, argv, &str, &set);
+    return c.janet_wrap_string(janet_string(str.bytes, rightEdge(str, set)));
+}
+
+export fn janet_lib_string(env: *c.JanetTable) callconv(.c) void {
+    const slice_doc = "Returns a substring from a byte sequence. The substring is from " ++
+        "index `start` inclusive to index `end`, exclusive. All indexing " ++
+        "is from 0. `start` and `end` can also be negative to indicate indexing " ++
+        "from the end of the string. Note that if `start` is negative it is " ++
+        "exclusive, and if `end` is negative it is inclusive, to allow a full " ++
+        "negative slice range.";
+    const trim_doc_tail = "whitespace from a byte sequence. If the argument " ++
+        "`set` is provided, consider only characters in `set` to be whitespace.";
+    const entries = [_]corefn.Entry{
+        corefn.reg("string/slice", &cfunStringSlice, @src(), "(string/slice bytes &opt start end)", slice_doc),
+        corefn.reg("keyword/slice", &cfunKeywordSlice, @src(), "(keyword/slice bytes &opt start end)", "Same as string/slice, but returns a keyword."),
+        corefn.reg("symbol/slice", &cfunSymbolSlice, @src(), "(symbol/slice bytes &opt start end)", "Same as string/slice, but returns a symbol."),
+        corefn.reg("string/repeat", &cfunStringRepeat, @src(), "(string/repeat bytes n)", "Returns a string that is `n` copies of `bytes` concatenated."),
+        corefn.reg("string/bytes", &cfunStringBytes, @src(), "(string/bytes str)", "Returns a tuple of integers that are the byte values of the string."),
+        corefn.reg("string/from-bytes", &cfunStringFrombytes, @src(), "(string/from-bytes & byte-vals)", "Creates a string from integer parameters with byte values. All integers " ++
+            "will be coerced to the range of 1 byte 0-255."),
+        corefn.reg("string/ascii-lower", &cfunStringAsciilower, @src(), "(string/ascii-lower str)", "Returns a new string where all bytes are replaced with the " ++
+            "lowercase version of themselves in ASCII. Does only a very simple " ++
+            "case check, meaning no unicode support."),
+        corefn.reg("string/ascii-upper", &cfunStringAsciiupper, @src(), "(string/ascii-upper str)", "Returns a new string where all bytes are replaced with the " ++
+            "uppercase version of themselves in ASCII. Does only a very simple " ++
+            "case check, meaning no unicode support."),
+        corefn.reg("string/reverse", &cfunStringReverse, @src(), "(string/reverse str)", "Returns a string that is the reversed version of `str`."),
+        corefn.reg("string/find", &cfunStringFind, @src(), "(string/find patt str &opt start-index)", "Searches for the first instance of pattern `patt` in string " ++
+            "`str`. Returns the index of the first character in `patt` if found, " ++
+            "otherwise returns nil."),
+        corefn.reg("string/find-all", &cfunStringFindall, @src(), "(string/find-all patt str &opt start-index)", "Searches for all instances of pattern `patt` in string " ++
+            "`str`. Returns an array of all indices of found patterns. Overlapping " ++
+            "instances of the pattern are counted individually, meaning a byte in `str` " ++
+            "may contribute to multiple found patterns."),
+        corefn.reg("string/has-prefix?", &cfunStringHasprefix, @src(), "(string/has-prefix? pfx str)", "Tests whether `str` starts with `pfx`."),
+        corefn.reg("string/has-suffix?", &cfunStringHassuffix, @src(), "(string/has-suffix? sfx str)", "Tests whether `str` ends with `sfx`."),
+        corefn.reg("string/replace", &cfunStringReplace, @src(), "(string/replace patt subst str)", "Replace the first occurrence of `patt` with `subst` in the string `str`. " ++
+            "If `subst` is a function, it will be called with `patt` only if a match is found, " ++
+            "and should return the actual replacement text to use. " ++
+            "Will return the new string if `patt` is found, otherwise returns `str`."),
+        corefn.reg("string/replace-all", &cfunStringReplaceall, @src(), "(string/replace-all patt subst str)", "Replace all instances of `patt` with `subst` in the string `str`. Overlapping " ++
+            "matches will not be counted, only the first match in such a span will be replaced. " ++
+            "If `subst` is a function, it will be called with `patt` once for each match, " ++
+            "and should return the actual replacement text to use. " ++
+            "Will return the new string if `patt` is found, otherwise returns `str`."),
+        corefn.reg("string/split", &cfunStringSplit, @src(), "(string/split delim str &opt start limit)", "Splits a string `str` with delimiter `delim` and returns an array of " ++
+            "substrings. The substrings will not contain the delimiter `delim`. If `delim` " ++
+            "is not found, the returned array will have one element. Will start searching " ++
+            "for `delim` at the index `start` (if provided), and return up to a maximum " ++
+            "of `limit` results (if provided)."),
+        corefn.reg("string/check-set", &cfunStringCheckset, @src(), "(string/check-set set str)", "Checks that the string `str` only contains bytes that appear in the string `set`. " ++
+            "Returns true if all bytes in `str` appear in `set`, false if some bytes in `str` do " ++
+            "not appear in `set`."),
+        corefn.reg("string/join", &cfunStringJoin, @src(), "(string/join parts &opt sep)", "Joins an array of strings into one string, optionally separated by " ++
+            "a separator string `sep`."),
+        corefn.reg("string/format", &cfunStringFormat, @src(), "(string/format format & values)", "Similar to C's `snprintf`, but specialized for operating with Janet values. Returns " ++
+            "a new string.\n\n" ++
+            "The following conversion specifiers are supported, where the upper case specifiers generate " ++
+            "upper case output:\n" ++
+            "- `c`: ASCII character.\n" ++
+            "- `d`, `i`: integer, formatted as a decimal number.\n" ++
+            "- `x`, `X`: integer, formatted as a hexadecimal number.\n" ++
+            "- `o`: integer, formatted as an octal number.\n" ++
+            "- `f`, `F`: floating point number, formatted as a decimal number.\n" ++
+            "- `e`, `E`: floating point number, formatted in scientific notation.\n" ++
+            "- `g`, `G`: floating point number, formatted in its shortest form.\n" ++
+            "- `a`, `A`: floating point number, formatted as a hexadecimal number.\n" ++
+            "- `s`: formatted as a string, precision indicates padding and maximum length.\n" ++
+            "- `t`: emit the type of the given value.\n" ++
+            "- `v`: format with (describe x)\n" ++
+            "- `V`: format with (string x)\n" ++
+            "- `j`: format to jdn (Janet data notation).\n" ++
+            "\n" ++
+            "The following conversion specifiers are used for \"pretty-printing\", where the upper-case " ++
+            "variants generate colored output. These specifiers can take a precision " ++
+            "argument to specify the maximum nesting depth to print. " ++
+            "The multiline specifiers can also take a width argument, " ++
+            "which defaults to 80 columns.\n" ++
+            "- `p`, `P`: pretty format, truncating if necessary\n" ++
+            "- `m`, `M`: pretty format without truncating.\n" ++
+            "- `q`, `Q`: pretty format on one line, truncating if necessary.\n" ++
+            "- `n`, `N`: pretty format on one line without truncation.\n"),
+        corefn.reg("string/trim", &cfunStringTrim, @src(), "(string/trim str &opt set)", "Trim leading and trailing " ++ trim_doc_tail),
+        corefn.reg("string/triml", &cfunStringTriml, @src(), "(string/triml str &opt set)", "Trim leading " ++ trim_doc_tail),
+        corefn.reg("string/trimr", &cfunStringTrimr, @src(), "(string/trimr str &opt set)", "Trim trailing " ++ trim_doc_tail),
+        corefn.end,
+    };
+    corefn.install(env, &entries);
 }

@@ -4,7 +4,7 @@
 #include <janet.h>
 #include "compile.h"
 
-int main(void) {
+void remove_noops_contract(void) {
     JanetFuncDef definition;
     JanetSourceMapping *source_map;
     JanetSymbolMap symbols[2];
@@ -61,5 +61,4 @@ int main(void) {
     assert(definition.bytecode_length == 1);
     assert(definition.bytecode[0] == JOP_RETURN_NIL);
     janet_free(definition.bytecode);
-    return 0;
 }

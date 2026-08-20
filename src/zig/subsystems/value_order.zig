@@ -1,5 +1,3 @@
-//! jump-transparent
-//!
 //! Hashing, equality and ordering over an arbitrary Janet value. This is Part
 //! 7a of Phase 8, and it takes the first half of `src/core/value.c`:
 //! `janet_hash`, `janet_equals` and `janet_compare`, together with the
@@ -83,8 +81,9 @@
 //! reset lives at the top of each entry point rather than at the bottom.
 //!
 //! These three are also on the VM call path -- `run_vm` calls `janet_equals`
-//! and `janet_compare` directly -- which is the constraint `-Dcall-trampoline`
-//! stays off for through this phase.
+//! and `janet_compare` directly. That was the constraint `-Dcall-trampoline`
+//! stayed off for; since the hinge each is an ordinary Zig call `run_vm`
+//! `try`s, and the selector is gone.
 //!
 //! ## What is reproduced rather than repaired
 //!

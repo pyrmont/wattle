@@ -78,5 +78,193 @@
 
 (assert-error "cannot print to 3" (xprintf 3 "123"))
 
+# Every destination the print families accept
+# Phase 10 Part 11
+(def sink @"")
+(defn collected [f] (buffer/clear sink) (f) (string sink))
+
+(assert (= "a1\n" (collected |(with-dyns [:out sink] (print "a" 1)))) "print to buffer")
+(assert (= "a1" (collected |(with-dyns [:out sink] (prin "a" 1)))) "prin to buffer")
+(assert (= "x=2\n" (collected |(with-dyns [:out sink] (printf "x=%d" 2)))) "printf to buffer")
+(assert (= "x=2" (collected |(with-dyns [:out sink] (prinf "x=%d" 2)))) "prinf to buffer")
+(assert (= "e\n" (collected |(with-dyns [:err sink] (eprint "e")))) "eprint to buffer")
+(assert (= "e" (collected |(with-dyns [:err sink] (eprin "e")))) "eprin to buffer")
+(assert (= "y=3\n" (collected |(with-dyns [:err sink] (eprintf "y=%d" 3)))) "eprintf to buffer")
+(assert (= "y=3" (collected |(with-dyns [:err sink] (eprinf "y=%d" 3)))) "eprinf to buffer")
+
+(assert (= "b\n" (collected |(xprint sink "b"))) "xprint to buffer")
+(assert (= "b" (collected |(xprin sink "b"))) "xprin to buffer")
+(assert (= "z=4\n" (collected |(xprintf sink "z=%d" 4))) "xprintf to buffer")
+(assert (= "z=4" (collected |(xprinf sink "z=%d" 4))) "xprinf to buffer")
+
+# A function destination is handed one buffer with everything already in it
+(def calls @[])
+(defn record [x] (array/push calls (string x)))
+(array/clear calls)
+(xprint record "p" "q")
+(assert (deep= @["pq\n"] calls) "xprint to function is one call")
+(array/clear calls)
+(xprinf record "%s-%s" "p" "q")
+(assert (deep= @["p-q"] calls) "xprinf to function is one call")
+
+# Values that are neither a byte sequence nor a destination
+(assert-error-value "xprint to a number" "cannot print to 3" (xprint 3 "x"))
+(assert-error-value "xprin to a number" "cannot print to 3" (xprin 3 "x"))
+(assert-error-value "xprinf to a keyword" "cannot print to :k" (xprinf :k "%s" "x"))
+(assert-error-value "xprint to nil" "cannot print to nil" (xprint nil "x"))
+(assert-error-value "xprintf to nil" "cannot print to nil" (xprintf nil "%s" "x"))
+
+# An abstract that is not a file is silently ignored rather than refused
+(assert (nil? (xprint (math/rng) "ignored")) "xprint to a non-file abstract")
+(assert (nil? (xprintf (math/rng) "%s" "ignored")) "xprintf to a non-file abstract")
+
+# Values are converted the way `describe` converts them, and a buffer argument
+# is written out rather than described
+(assert (= "raw1x\n" (collected |(xprint sink @"raw" 1 :x))) "xprint converts")
+(assert (= "raw\n" (collected |(with-dyns [:out sink] (print @"raw")))) "print writes a buffer argument")
+
+# Flushing a binding that is not a file does nothing at all
+(assert (nil? (with-dyns [:out sink] (flush))) "flush a buffer binding")
+(assert (nil? (with-dyns [:err 3] (eflush))) "eflush a non-file binding")
+(assert (nil? (with-dyns [:out stdout] (flush))) "flush a file binding")
+
+# The file methods, and the order `next` walks them in
+(def tmp (file/temp))
+(assert (= tmp (:write tmp "method\n")) "method :write returns the file")
+(assert (= tmp (:flush tmp)) "method :flush returns the file")
+(assert (= 7 (:tell tmp)) "method :tell")
+(assert (= tmp (:seek tmp :set 0)) "method :seek returns the file")
+(assert (= "method\n" (string (:read tmp :all))) "method :read")
+(assert (deep= @[:close :flush :read :seek :tell :write] (keys tmp))
+        "file methods are walked in table order")
+(assert (nil? (:close tmp)) "method :close")
+
+# What each failure says
+(def tmp2 (file/temp))
+(assert-error-value "seek keyword" "expected one of :cur, :set, :end, got :middle"
+                    (file/seek tmp2 :middle 0))
+(assert-error-value "read keyword" "expected one of :all, :line, got :some"
+                    (file/read tmp2 :some))
+(assert-error-value "negative read" "expected positive integer" (file/read tmp2 -1))
+(file/close tmp2)
+(assert-error-value "closed read" "file is closed" (file/read tmp2 :all))
+(assert-error-value "closed write" "file is closed" (file/write tmp2 "x"))
+(assert-error-value "closed seek" "file is closed" (file/seek tmp2 :set 0))
+(assert-error-value "closed tell" "file is closed" (file/tell tmp2))
+(assert-error-value "closed flush" "file is closed" (file/flush tmp2))
+(assert (nil? (file/close tmp2)) "closing twice is nil")
+
+# stdin is not writeable, and stdout is not closeable
+(assert-error-value "stdin write" "file is not writeable" (file/write stdin "x"))
+(assert-error-value "stdin flush" "file is not writeable" (file/flush stdin))
+(assert-error-value "stdout close" "file not closable" (file/close stdout))
+(assert (= :core/file (type stdout)) "stdout is a file")
+(assert (= :core/file (type stderr)) "stderr is a file")
+(assert (= :core/file (type stdin)) "stdin is a file")
+
+# A file in safe mode marshals no better from Janet than from C
+(assert-error-value "marshal a file" "cannot marshal file in safe mode" (marshal stdout))
+
+# A read-only file is not writeable and a write-only file is not readable
+(def path "janet-suite-io-11")
+(defer (os/rm path)
+  (spit path "seed")
+  (with [f (file/open path :r)]
+    (assert-error-value "read mode write" "file is not writeable" (file/write f "x"))
+    (assert (= "seed" (string (file/read f :all))) "read mode read"))
+  (with [f (file/open path :w)]
+    (assert-error-value "write mode read" "file is not readable" (file/read f :all)))
+  (assert-error-value "open a directory" "cannot open directory: ." (file/open "." :r))
+  (assert (nil? (file/open "janet-suite-io-11-absent" :r)) "a missing file is nil")
+  (assert-error "missing file with :n" (file/open "janet-suite-io-11-absent" :rn)))
+
+# Printing to a file takes the other branch of the same conversion: a buffer
+# argument is written raw and everything else goes through `describe`
+(defer (os/rm path)
+  (with [f (file/open path :w)]
+    (xprint f @"raw" 1 :x)
+    (xprinf f "%d" 5)
+    (xprintf f "%s" "fmt"))
+  (assert (= "raw1x\n5fmt\n" (string (slurp path))) "xprint and xprintf to a file")
+  (with [f (file/open path :r)]
+    (assert-error-value "xprint to a read-only file" "file is not writeable" (xprint f "x"))
+    (assert-error-value "xprintf to a read-only file" "file is not writeable" (xprintf f "%s" "x"))))
+
+# A closed file reports itself differently to the two families, which is what
+# the C original did and is pinned here rather than smoothed over
+(def closed (file/temp))
+(file/close closed)
+(assert-error-value "xprint to a closed file" "file is closed" (xprint closed "x"))
+(assert-error-value "xprintf to a closed file" "cannot print to closed file"
+                    (xprintf closed "%s" "x"))
+
+# A zero-length read is not an error, and neither is a zero-byte write
+(def tmp3 (file/temp))
+(file/write tmp3 "abc")
+(file/seek tmp3 :set 0)
+(assert (nil? (file/read tmp3 0)) "reading zero bytes is nil")
+(assert (= "abc" (string (file/read tmp3 :all))) "reading zero bytes consumed nothing")
+(assert (= tmp3 (file/write tmp3 "")) "writing zero bytes")
+(file/close tmp3)
+
+# Every argument is checked before any of them is written, so a bad one leaves
+# the file untouched rather than half-written
+(def tmp4 (file/temp))
+(assert-error "write checks every argument" (file/write tmp4 "kept" 3))
+(file/seek tmp4 :set 0)
+(assert (= "" (string (file/read tmp4 :all))) "a rejected write wrote nothing")
+(file/close tmp4)
+
+# `(flush)` really flushes the file its binding names
+(def flushed "janet-suite-io-11-flush")
+(defer (os/rm flushed)
+  (with [f (file/open flushed :w)]
+    (file/write f "buffered")
+    (assert (= "" (string (slurp flushed))) "a buffered write is not on disk yet")
+    (with-dyns [:out f] (flush))
+    (assert (= "buffered" (string (slurp flushed))) "flush flushes the bound file")))
+
+# An explicit buffer size is applied, and a size the C library cannot allocate
+# is reported rather than ignored. A write mode cannot be reached this way at
+# all -- the third argument replaces the mode with read-only, which FOUND.md
+# records -- so a failing `setvbuf` is the only observable the size has.
+(def buffered "janet-suite-io-11-buffered")
+(defer (os/rm buffered)
+  (spit buffered "sized")
+  (each n [0 1 8192]
+    (with [f (file/open buffered :r n)]
+      (assert (= "sized" (string (file/read f :all))) (string "buffer size " n))))
+  (assert-error-value "unallocatable buffer size" "failed to set buffer size for file"
+                      (file/open buffered :r (- (math/pow 2 53) 1))))
+
+# The whole length message, not a prefix of it
+(assert-error-value "empty mode" "file mode must have a length between 1 and 10"
+                    (file/open "janet-suite-io-11-absent" (keyword "")))
+(assert-error-value "eleven-byte mode" "file mode must have a length between 1 and 10"
+                    (file/open "janet-suite-io-11-absent" :rbnbnbnbnbn))
+
+# A file this runtime will close does not survive an exec.
+#
+# `compwhen` rather than `when`: a `-Dprocesses=false` build has no `os/spawn`
+# to *compile* against, and a runtime guard does not stop the compiler
+# resolving the symbol inside its body. Part 11 added this unguarded; Phase 10
+# Part 12's matrix is the first to run `zig build test -Dprocesses=false` and
+# is what found it. Exactly the shape of the `peg/find` guard in
+# `test/suite-debug.janet`, which Part 9 added for the same reason.
+(compwhen (dyn 'os/spawn)
+ (when (os/stat "/dev/fd")
+  (defn open-fds []
+    (def p (os/spawn [(dyn *executable*) "-e" `(print (length (os/dir "/dev/fd")))`]
+                     :p {:out :pipe}))
+    (def n (scan-number (string/trim (string (:read (p :out) :all)))))
+    (os/proc-wait p)
+    n)
+  (def held "janet-suite-io-11-cloexec")
+  (defer (os/rm held)
+    (spit held "x")
+    (def before (open-fds))
+    (with [f (file/open held :r)]
+      (assert (= before (open-fds)) "an opened file is closed on exec")))))
+
 (end-suite)
 

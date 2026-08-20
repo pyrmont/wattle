@@ -13,7 +13,7 @@ static JanetAssembleResult assemble(JanetTable *environment, const char *source)
     return janet_asm(assembly_source(environment, source), 0);
 }
 
-int main(void) {
+void asm_encode_contract(void) {
     JanetTable *environment;
     JanetAssembleResult result;
 
@@ -190,5 +190,4 @@ int main(void) {
                    "expected struct or table for assembly source, instruction 0"));
 
     janet_deinit();
-    return 0;
 }

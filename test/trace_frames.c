@@ -311,29 +311,115 @@ static void test_empty_frame(void) {
 
 /* ---------------------------------------------------------- the whole trace */
 
+/* Run the printer with `:err` bound to a buffer, which is how the rendering is
+ * read back rather than sent to the harness's stderr. `janet_stacktrace_ext`
+ * goes through `janet_dynprintf`, and that is exactly what the binding
+ * redirects.
+ *
+ * Phase 10 Part 7 moved the printer to Zig, and this is the branch a suite
+ * cannot reach: `%s/%s` is taken only when a registered cfunction has a
+ * *prefix*, and every core registration passes NULL for it. A native module
+ * calling `janet_cfuns_prefix` gets one, and so does the registry entry this
+ * file plants by hand. */
+static void trace_into(JanetBuffer *sink, JanetFiber *fiber, Janet err, const char *prefix) {
+    janet_buffer_setcount(sink, 0);
+    janet_setdyn("err", janet_wrap_buffer(sink));
+    janet_stacktrace_ext(fiber, err, prefix);
+    janet_setdyn("err", janet_wrap_nil());
+}
+
+static void test_prefixed_cfunction_renders(void) {
+    JanetBuffer *sink = janet_buffer(256);
+    JanetFiber *fiber;
+    JanetStackFrame *frame;
+
+    janet_gcroot(janet_wrap_buffer(sink));
+
+    /* A fiber whose only frame is a cframe for the prefixed cfunction. The
+     * frame is written directly because there is no way to stop a real fiber
+     * inside a cfunction that does not itself error. */
+    fiber = janet_fiber(compile_function("(fn [] nil)"), 32, 0, NULL);
+    assert(fiber != NULL);
+    janet_gcroot(janet_wrap_fiber(fiber));
+    fiber->frame = JANET_FRAME_SIZE;
+    fiber->stackstart = JANET_FRAME_SIZE;
+    fiber->stacktop = JANET_FRAME_SIZE;
+    frame = (JanetStackFrame *)(fiber->data);
+    frame_of_cfunction(frame, probe_named);
+    frame->prevframe = 0;
+
+    trace_into(sink, fiber, janet_cstringv("prefixed"), "P");
+    assert(strstr((const char *) sink->data, "  in trace/probe [trace_frames.c] on line 41\n"));
+    /* The error line is printed once, above the first frame, as
+     * "<prefix><status>: <message>". The status is the fiber's, which for a
+     * frame written by hand rather than reached by running is "new". */
+    assert(sink->data[0] == 'P');
+    assert(strstr((const char *) sink->data, ": prefixed\n") == (const char *) sink->data + 4);
+
+    /* A null prefix suppresses the error line and keeps the frames. */
+    trace_into(sink, fiber, janet_cstringv("prefixed"), NULL);
+    assert(!strstr((const char *) sink->data, "prefixed"));
+    assert(strstr((const char *) sink->data, "  in trace/probe ["));
+
+    /* :err-color wraps the whole rendering. */
+    janet_setdyn("err-color", janet_wrap_true());
+    trace_into(sink, fiber, janet_cstringv("prefixed"), "P");
+    janet_setdyn("err-color", janet_wrap_nil());
+    assert(!strncmp((const char *) sink->data, "\x1b[31m", 5));
+    assert(!strcmp((const char *) sink->data + sink->count - 4, "\x1b[0m"));
+
+    janet_gcunroot(janet_wrap_fiber(fiber));
+    janet_gcunroot(janet_wrap_buffer(sink));
+}
+
 /* The decoder is one half of a printer, so run the printer too. This does not
  * inspect the text - stderr belongs to the harness - but it does drive
  * janet_stacktrace_ext over a real fiber that has stopped at an error, which is
  * the only check here that the descriptor and the loop that consumes it agree
  * about the frames of a live stack. */
+/* The printer writes to `(dyn :err)`, so binding that to a buffer both keeps a
+ * real stack trace out of `zig build test`'s output and makes the result
+ * something this contract can assert. It used to do neither: the trace went to
+ * the terminal on every run, where it reads exactly like a failure, and
+ * nothing checked what was in it. `test/suite-debug.janet` captures the same
+ * way, with `with-dyns [:err out]`. */
 static void test_stacktrace_over_a_real_fiber(JanetFunction *failing) {
     JanetFiber *fiber = janet_fiber(failing, 32, 0, NULL);
     Janet out = janet_wrap_nil();
+    JanetBuffer *sink = janet_buffer(0);
     JanetSignal sig;
 
     assert(fiber != NULL);
     janet_gcroot(janet_wrap_fiber(fiber));
+    janet_gcroot(janet_wrap_buffer(sink));
     sig = janet_continue(fiber, janet_wrap_nil(), &out);
     assert(sig == JANET_SIGNAL_ERROR);
+
+    janet_setdyn("err", janet_wrap_buffer(sink));
+    /* Bound explicitly for the reason `test/suite-debug.janet` gives at
+     * `trace-of`: a truthy `:err-color` wraps the whole trace in escapes, and
+     * an assertion on the leading bytes then depends on ambient state. It is
+     * nil here because a contract runs no `cli-main`, which is precisely the
+     * kind of thing that is true until it is not. */
+    janet_setdyn("err-color", janet_wrap_nil());
     janet_stacktrace_ext(fiber, out, "trace-frames-test");
+    assert(sink->count > 0);
+    assert(NULL != strstr((const char *) sink->data, "trace-frames-testerror: from a fiber"));
+
     /* And with no prefix, which suppresses the error line entirely. */
+    sink->count = 0;
     janet_stacktrace_ext(fiber, out, NULL);
+    assert(sink->count > 0);
+    assert(NULL == strstr((const char *) sink->data, "error: from a fiber"));
+    janet_setdyn("err", janet_wrap_nil());
+
+    janet_gcunroot(janet_wrap_buffer(sink));
     janet_gcunroot(janet_wrap_fiber(fiber));
 }
 
 /* ------------------------------------------------------------------- main */
 
-int main(void) {
+void trace_frames_contract(void) {
     JanetFunction *named;
     JanetFunction *anonymous;
     JanetFunction *failing;
@@ -366,9 +452,9 @@ int main(void) {
     test_registered_cfunction_without_a_prefix();
     test_empty_frame();
 
+    test_prefixed_cfunction_renders();
     test_stacktrace_over_a_real_fiber(failing);
 
     janet_deinit();
     printf("trace frames contract ok\n");
-    return 0;
 }

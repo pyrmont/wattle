@@ -1,5 +1,3 @@
-//! jump-transparent
-//!
 //! `run_vm`: the bytecode interpreter's main loop, its seventy-eight opcode
 //! bodies, and the resume-state decoding at its head. This is Part 3 of Phase 9
 //! and it is the increment that first puts a Zig frame on the VM call path.
@@ -27,48 +25,45 @@
 //!
 //! ## Raising
 //!
-//! By default a raise is a `longjmp` that passes straight through this frame to
-//! the `setjmp` in `janet_continue_no_check`, which is exactly what happens to
-//! the C loop's frame. Nothing here catches it and nothing here needs to: the
-//! frame holds no resource, and every piece of state a resume depends on has
-//! already been committed to the fiber. The loop's *own* raises — the arity
-//! message, `"stack overflow"`, `"invalid constant"` — go the same way, through
-//! `janet_panicf` and `janet_signalv`.
+//! A raise is a returned `raise.Error`, propagated arm by arm with `try` and
+//! caught by `continueNoCheck` one frame above. The loop's *own* raises — the
+//! arity message, `"stack overflow"`, `"invalid constant"` — are the same
+//! thing through `raise.panicf`.
 //!
-//! `-Dcall-trampoline=true` selects the other mechanism, which Phase 7 built:
-//! a `setjmp` scope one frame below this one catches a callee's signal and hands
-//! it back as a value, and the loop's own raises are *returned* out of
-//! `janet_run_vm` rather than jumped, since no scope can catch a raise in its
-//! own frame. Both are supported and the difference is confined to `scoped` and
-//! `raiseSignal`; every one of the seventy-eight arms reads the same either way,
-//! because a raise arrives at the call site as a signal to propagate in both.
+//! **There were two mechanisms here until Phase 10's hinge**, and the history
+//! is worth keeping because it shaped the file. By default a raise was a
+//! `longjmp` passing straight through this frame to the `setjmp` in
+//! `janet_continue_no_check`, exactly as it passed through the C loop's frame;
+//! `-Dcall-trampoline=true` selected the other, which Phase 7 built, where a
+//! `setjmp` scope one frame below caught a callee's signal and handed it back
+//! as a value. Both were supported, and the difference was confined to
+//! `scoped` and `raiseSignal` — every one of the seventy-eight arms read the
+//! same either way, because a raise arrives at the call site as something to
+//! propagate under all three mechanisms. That is why converting them cost
+//! nothing structural.
 //!
-//! Phase 7 closed the decision that the scopes would flip *on* in this
-//! increment. Part 3 reversed it, and PLAN.md's Phase 9 section has the
-//! reasoning rather than just the outcome. In short: the scope machinery is C
-//! written to serve a Zig caller, so switching it on would have the increment
-//! that moves the interpreter to Zig add C underneath it; every Phase 8
-//! subsystem below this loop already raises through its own Zig frame, so the
-//! scopes would make `run_vm` a carved-out exception to a mechanism the runtime
-//! relies on everywhere; and the end state has neither a `setjmp` nor a
-//! `longjmp`, so neither setting is closer to it. The scopes cost 6 to 21% on
-//! call-heavy workloads, which is the smallest of those reasons.
+//! Phase 7 closed the decision that the scopes would flip *on* in Phase 9.
+//! Part 3 reversed it, and one of its three reasons is why neither survives:
+//! the end state has neither a `setjmp` nor a `longjmp`, so neither setting
+//! was closer to it. Part 17e removed the trampoline's last callee and the
+//! hinge spent the selector, which by then was the only configuration in the
+//! tree that compiled a `setjmp` at all.
 //!
-//! ## The file is jump-transparent, and that is load-bearing
+//! ## What this frame holds, which is still nothing
 //!
-//! Under the default every raise crosses this frame. Under `-Dcall-trampoline`
-//! three still do, all of them uncaught in the C loop too:
+//! The file carried `//! jump-transparent` and `build.zig` rejected `defer` in
+//! it, because a raise crossing this frame would skip any cleanup silently.
+//! Nothing crosses it now — a raise returns — so the marker and the ban are
+//! gone along with the jump. The three calls that used to cross it uncaught
+//! are worth naming anyway, since two are still positions where a raise has
+//! nowhere to go:
 //!
 //!  - `janet_vm_trace` reaches `janet_eprintf`, which reaches `janet_formatbv`,
 //!    which panics on a string containing zeros.
-//!  - `janet_collect` runs finalizers and `gcmark` callbacks. SPIKE-8 says
-//!    those may not raise; nothing enforces it.
+//!  - `janet_collect` runs finalizers and `gcmark` callbacks. The hinge typed
+//!    both non-raising, so this one is now enforced rather than assumed.
 //!  - the allocators end an allocation failure in `JANET_OUT_OF_MEMORY`, which
 //!    exits rather than jumping — checked, not assumed.
-//!
-//! Abandoning this frame is safe because there is nothing in it to release, and
-//! `build.zig` enforces that half by rejecting `defer` and `errdefer` in a file
-//! carrying the marker at the top.
 //!
 //! ## Two subsystems are imported rather than linked
 //!
@@ -92,18 +87,49 @@
 
 const std = @import("std");
 const abi = @import("abi");
+const raise = @import("raise");
+const io_core = @import("io_core.zig");
+const pp_format = @import("pp_format.zig");
 const c = abi.c;
-const vm_calls = @import("vm_calls");
-const value_wrap = @import("value_wrap");
+const stdio = @import("stdio.zig");
+const options = @import("options");
+
+/// The two subsystems the loop reaches on every instruction, resolved here
+/// rather than by `build.zig`.
+///
+/// Part 3 made these module imports rather than symbol-table calls because a
+/// translation-unit boundary costs the method-dispatch path 2.4-3.4% and the
+/// arithmetic path 89%. Which module the import resolved to was the selector,
+/// and `build.zig` chose the file. Since Part 17a every Zig subsystem is in one
+/// module, so the choice has nowhere to live but here — and a comptime-false
+/// branch is not analysed, which is what keeps the unselected shim out of the
+/// build. Both spellings wear the same decl names, so nothing below learns
+/// which it got.
+const vm_calls = if (options.vm_calls) @import("vm_calls.zig") else @import("vm_calls_extern.zig");
+const value_wrap = if (options.value_wrap) @import("value_wrap.zig") else @import("value_wrap_extern.zig");
+
+/// The fiber's four pushes, which raise "stack overflow" by returning it since
+/// Part 17a. Selector-resolved like the two above, and for the same reason:
+/// `-Dfiber-core=c` answers with a C body that jumps, wearing the Zig
+/// signature so that the `try` sites below go on compiling.
+const fiber_core = if (options.fiber_core) @import("fiber_core.zig") else @import("fiber_core_extern.zig");
+
+/// The access layer, which seven opcodes reach and which raises on its own
+/// account: `janet_in` on a key that is wrong for its container,
+/// `janet_lengthv` on a value with no length. Selector-resolved like the three
+/// above, and converted in Part 17c.
+const access = @import("access.zig");
+
+/// The hinge above the loop: `JOP_RESUME` resumes a child fiber through it,
+/// and it is what calls `runVm` back. Zig allows the cycle because both files
+/// are in one module -- Part 17a's fold is what made this an import rather
+/// than a C-ABI call with a jump underneath it.
+const vm_entry = @import("vm_entry.zig");
 
 /// Whether this build checks for an interpreter interrupt between instructions.
 /// `state_abi.h` restates `JANET_NO_INTERPRETER_INTERRUPT` as a valued macro,
 /// because translate-c does not surface one defined without a value.
 const has_interrupt = c.JANET_VM_HAS_INTERRUPT == 1;
-
-/// Whether raise-capable callees are entered through a per-call `setjmp` scope.
-/// Off by default; the header has the reasoning and the two shapes.
-const trampoline = c.JANET_VM_CALL_TRAMPOLINE == 1;
 
 /// `janet.h`'s frame size. The function-like macros over it — `janet_stack_frame`
 /// and `janet_fiber_frame` — do not survive translation and are written out below.
@@ -197,74 +223,13 @@ inline fn fES(pc: [*c]const u32) i32 {
     return @as(i32, @bitCast(pc[0])) >> 16;
 }
 
-// ------------------------------------------------------------ scoped call
-
-/// What one call through a C setjmp scope produced. `value` is meaningful only
-/// when `sig` is `JANET_SIGNAL_OK`; `payload` only when it is not.
-fn Scoped(comptime Value: type) type {
-    return struct {
-        sig: c.JanetSignal,
-        value: Value,
-        payload: c.Janet,
-    };
-}
-
-fn ReturnOf(comptime F: type) type {
-    return @typeInfo(F).@"fn".return_type.?;
-}
-
-/// Call `f` inside a `setjmp` scope that lives in a C frame, and hand back
-/// whatever it produced or whatever signal it raised.
-///
-/// This is `vm.c`'s `vm_scoped` and its twenty-five `scoped_*` wrappers, with
-/// the enumeration replaced by a thunk the compiler writes. The context struct
-/// holds the arguments on the way in and the result on the way out, and lives
-/// in the caller's frame; the thunk writes `ret` from its own frame, and the
-/// caller reads it only after seeing `JANET_SIGNAL_OK`. That ordering is what
-/// keeps the C rule about indeterminate locals after a `longjmp` satisfied.
-inline fn scoped(comptime f: anytype, args: anytype) Scoped(ReturnOf(@TypeOf(f))) {
-    if (!trampoline) {
-        // The default. No scope: a raise in the callee jumps past this frame,
-        // which is what the C loop does without JANET_CALL_TRAMPOLINE. Nothing
-        // after the call runs on that path, and nothing needs to -- every caller
-        // here already checks the signal before touching the result, so the two
-        // shapes agree at the call site.
-        return .{ .sig = c.JANET_SIGNAL_OK, .value = @call(.auto, f, args), .payload = undefined };
-    }
-    const Context = struct {
-        args: @TypeOf(args),
-        ret: ReturnOf(@TypeOf(f)),
-
-        fn thunk(context: ?*anyopaque) callconv(.c) void {
-            const self: *@This() = @ptrCast(@alignCast(context.?));
-            self.ret = @call(.auto, f, self.args);
-        }
-    };
-    var context: Context = .{ .args = args, .ret = undefined };
-    var payload: c.Janet = undefined;
-    const sig = c.janet_vm_scoped(&Context.thunk, &context, &payload);
-    return .{ .sig = sig, .value = context.ret, .payload = payload };
-}
-
-/// `janet_in`, `janet_get` and the rest of the access layer are reached through
-/// `scoped`, which needs a comptime-known callee. A `JanetCFunction` is not one,
-/// so the indirection is named here and the pointer travels as an argument.
-fn invokeCFunction(cfun: c.JanetCFunction, argc: i32, argv: [*c]c.Janet) callconv(.c) c.Janet {
-    return cfun.?(argc, argv);
-}
-
-/// `src/core/util.h`, declared here rather than translated, for the reason
-/// `abi.zig` gives: that header falls through to `dlfcn.h` on any target it does
-/// not recognise as Windows and breaks the shared translation. The `Janet`
-/// parameters are `abi.zig`'s own type, so nothing about the single-translation
-/// rule is at stake.
-extern fn janet_next_impl(ds: c.Janet, key: c.Janet, is_interpreter: c_int) callconv(.c) c.Janet;
-
-/// `janet_next_impl` always takes 1 from `run_vm`; naming that here keeps the
-/// argument tuple at the call site the shape the C macro has.
-fn nextImpl(ds: c.Janet, key: c.Janet) callconv(.c) c.Janet {
-    return janet_next_impl(ds, key, 1);
-}
+// The per-call `setjmp` scope Phase 7 built for this loop was here, and Phase
+// 10 Part 17e removed it. It had thirteen callees when Part 17 began -- the
+// access layer, the callee layer, the fiber pushes, `janet_equals`,
+// `janet_compare`, the three fills and the cfunction call -- and every one of
+// them now returns its raise, so there was nothing left for a scope to catch.
+// `-Dcall-trampoline` selected it, and the hinge spent the selector: by then
+// its C arm was the only configuration in the tree that compiled a `setjmp`.
 
 // ------------------------------------------------------- opcode templates
 
@@ -444,7 +409,7 @@ const Interp = struct {
     }
 
     /// `vm_raise_signal`. Returns the error out of `janet_run_vm` rather than
-    /// jumping past its frame, and sets `JANET_FIBER_DID_LONGJUMP` exactly as
+    /// jumping past its frame, and sets `JANET_FIBER_DID_RAISE` exactly as
     /// `janet_signalv` does, because the resume path reads that flag to pop a C
     /// frame and to turn a raise at a tail call into an implicit return.
     ///
@@ -453,69 +418,59 @@ const Interp = struct {
     /// `JOP_CALL` committed before entering `janet_fiber_funcframe` and its
     /// `stack` is stale afterwards, and `JOP_TAILCALL` commits to a frame it
     /// recomputes.
-    inline fn raiseSignal(self: *Interp, sig: c.JanetSignal, value: c.Janet) c.JanetSignal {
+    inline fn raiseSignal(self: *Interp, sig: c.JanetSignal, value: c.Janet) raise.Error!c.JanetSignal {
         _ = self;
-        if (!trampoline) {
-            // The jump the C loop takes without JANET_CALL_TRAMPOLINE.
-            // janet_signalv sets JANET_FIBER_DID_LONGJUMP itself, which is the
-            // flag the branch below has to set by hand.
-            c.janet_signalv(sig, value);
-            unreachable;
-        }
-        c.janet_vm.return_reg[0] = value;
-        if (c.janet_vm.fiber != null) {
-            c.janet_vm.fiber.*.flags |= c.JANET_FIBER_DID_LONGJUMP;
-        }
-        return sig;
+        // Returned rather than jumped since Phase 10 Part 2. `raise.signal`
+        // reaches the same `janet_zig_signal_record` `janet_signalv` does, so
+        // the plan, the coercion and `JANET_FIBER_DID_RAISE` are unchanged;
+        // only the delivery differs. Since the hinge there is no other
+        // delivery: `continueNoCheck` catches the error one frame up.
+        return raise.signal(sig, value);
     }
 
     /// `vm_raisev`.
-    inline fn raisev(self: *Interp, value: c.Janet) c.JanetSignal {
-        return self.raiseSignal(c.JANET_SIGNAL_ERROR, value);
+    inline fn raisev(self: *Interp, value: c.Janet) raise.Error!c.JanetSignal {
+        return try self.raiseSignal(c.JANET_SIGNAL_ERROR, value);
     }
 
-    /// `vm_raisef`. The format string and its arguments cross the C variadic
-    /// ABI untouched, which is the whole reason the message is built in C:
-    /// `janet_vm_error_string` is `janet_panicf` with the jump removed, so the
-    /// two produce the same bytes by construction rather than by inspection.
-    inline fn raisef(self: *Interp, comptime format: [*c]const u8, args: anytype) c.JanetSignal {
-        if (!trampoline) {
-            @call(.auto, c.janet_panicf, .{format} ++ args);
-            unreachable;
-        }
-        return self.raisev(@call(.auto, c.janet_vm_error_string, .{format} ++ args));
+    /// `vm_raisef`. The message is built by `pp_format.panicf`, which parses
+    /// the format string at compile time and indexes the tuple; the specifier
+    /// and the value it renders are checked against each other here.
+    inline fn raisef(self: *Interp, comptime format: [:0]const u8, args: anytype) raise.Error!c.JanetSignal {
+        _ = self;
+        return pp_format.panicf(format, args);
     }
 
     /// `vm_throw`: commit, then raise a plain string.
-    inline fn throw(self: *Interp, message: [*c]const u8) c.JanetSignal {
+    inline fn throw(self: *Interp, message: [*c]const u8) raise.Error!c.JanetSignal {
         self.commit();
-        return self.raisev(c.janet_cstringv(message));
+        return try self.raisev(c.janet_cstringv(message));
     }
 
     /// `vm_assert`.
-    inline fn assert(self: *Interp, condition: bool, message: [*c]const u8) ?c.JanetSignal {
+    inline fn assert(self: *Interp, condition: bool, message: [*c]const u8) raise.Error!?c.JanetSignal {
         if (condition) return null;
-        return self.throw(message);
+        return try self.throw(message);
     }
 
     /// `vm_assert_type`.
-    inline fn assertType(self: *Interp, x: c.Janet, comptime t: c.JanetType) ?c.JanetSignal {
+    inline fn assertType(self: *Interp, x: c.Janet, comptime t: c.JanetType) raise.Error!?c.JanetSignal {
         if (val.checkType(x, t)) return null;
         self.commit();
-        return self.raisef("expected %T, got %v", .{ @as(c_int, 1) << t, x });
+        return try self.raisef("expected %T, got %v", .{ @as(c_int, 1) << t, x });
     }
 
     /// `vm_assert_types`.
-    inline fn assertTypes(self: *Interp, x: c.Janet, typeflags: c_int) ?c.JanetSignal {
+    inline fn assertTypes(self: *Interp, x: c.Janet, typeflags: c_int) raise.Error!?c.JanetSignal {
         if (val.checkTypes(x, typeflags)) return null;
         self.commit();
-        return self.raisef("expected %T, got %v", .{ typeflags, x });
+        return try self.raisef("expected %T, got %v", .{ typeflags, x });
     }
 
     /// `vm_maybe_auto_suspend`. The condition is only ever a comparison on an
     /// instruction field, so evaluating it in a build without the interrupt —
     /// where C does not evaluate it at all — costs nothing and changes nothing.
-    inline fn maybeAutoSuspend(self: *Interp, condition: bool) ?c.JanetSignal {
+    inline fn maybeAutoSuspend(self: *Interp, condition: bool) raise.Error!?c.JanetSignal {
         if (!has_interrupt) return null;
         if (condition and c.janet_atomic_load_relaxed(&c.janet_vm.auto_suspend) != 0) {
             self.fiber.*.flags |= (c.JANET_FIBER_RESUME_NO_USEVAL | c.JANET_FIBER_RESUME_NO_SKIP);
@@ -535,7 +490,7 @@ const Interp = struct {
 
     /// `JOP_RETURN` and `JOP_RETURN_NIL`, which differ only in where the value
     /// comes from.
-    inline fn doReturn(self: *Interp, retval: c.Janet) ?c.JanetSignal {
+    inline fn doReturn(self: *Interp, retval: c.Janet) raise.Error!?c.JanetSignal {
         const entrance_frame = (stackFrame(self.stack).flags & c.JANET_STACKFRAME_ENTRANCE) != 0;
         c.janet_fiber_popframe(self.fiber);
         if (entrance_frame) return self.retNoRestore(c.JANET_SIGNAL_OK, retval);
@@ -549,13 +504,13 @@ const Interp = struct {
     /// `JOP_LOAD_UPVALUE` and `JOP_SET_UPVALUE`. The three assertions and the
     /// on-stack/off-stack choice are shared; `store` is comptime, so neither
     /// opcode pays a branch to find out which one it is.
-    inline fn upvalue(self: *Interp, comptime store: bool) ?c.JanetSignal {
+    inline fn upvalue(self: *Interp, comptime store: bool) raise.Error!?c.JanetSignal {
         const eindex: i32 = @intCast(fB(self.pc));
         const vindex: i32 = @intCast(fC(self.pc));
-        if (self.assert(self.func.*.def.*.environments_length > eindex, "invalid upvalue environment")) |s| return s;
+        if (try self.assert(self.func.*.def.*.environments_length > eindex, "invalid upvalue environment")) |s| return s;
         const env = funcEnvSlot(self.func, eindex).*;
-        if (self.assert(env.*.length > vindex, "invalid upvalue index")) |s| return s;
-        if (self.assert(c.janet_env_valid(env) != 0, "invalid upvalue environment")) |s| return s;
+        if (try self.assert(env.*.length > vindex, "invalid upvalue index")) |s| return s;
+        if (try self.assert(c.janet_env_valid(env) != 0, "invalid upvalue environment")) |s| return s;
         const slot: [*c]c.Janet = if (env.*.offset > 0)
             env.*.as.fiber.*.data + asSize(env.*.offset + vindex)
         else
@@ -570,26 +525,23 @@ const Interp = struct {
     }
 
     /// `JOP_EQUALS` and `JOP_NOT_EQUALS`.
-    inline fn equals(self: *Interp, comptime negate: bool) ?c.JanetSignal {
+    inline fn equals(self: *Interp, comptime negate: bool) raise.Error!?c.JanetSignal {
         self.commit();
-        const r = scoped(c.janet_equals, .{ self.stack[fB(self.pc)], self.stack[fC(self.pc)] });
-        if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
-        const eq = r.value != 0;
+        const eq = c.janet_equals(self.stack[fB(self.pc)], self.stack[fC(self.pc)]) != 0;
         self.stack[fA(self.pc)] = val.wrapBoolean(if (negate) !eq else eq);
         self.pc += 1;
         return null;
     }
 
     /// `vm_binop_immediate`.
-    inline fn binopImmediate(self: *Interp, comptime op: Op) ?c.JanetSignal {
+    inline fn binopImmediate(self: *Interp, comptime op: Op) raise.Error!?c.JanetSignal {
         const op1 = self.stack[fB(self.pc)];
         if (!val.isNumber(op1)) {
             self.commit();
             var argv = [_]c.Janet{ op1, val.wrapNumber(@floatFromInt(fCS(self.pc))) };
-            const r = scoped(vm_calls.mcall, .{ op.method(), 2, &argv });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            const value = try vm_calls.mcall(op.method(), 2, &argv);
             self.reload();
-            self.stack[fA(self.pc)] = r.value;
+            self.stack[fA(self.pc)] = value;
             self.maybeCollect();
         } else {
             const x1 = val.unwrapNumber(op1);
@@ -600,22 +552,21 @@ const Interp = struct {
     }
 
     /// `_vm_bitop_immediate`.
-    inline fn bitopImmediate(self: *Interp, comptime op: Op) ?c.JanetSignal {
+    inline fn bitopImmediate(self: *Interp, comptime op: Op) raise.Error!?c.JanetSignal {
         const op1 = self.stack[fB(self.pc)];
         if (!val.isNumber(op1)) {
             self.commit();
             var argv = [_]c.Janet{ op1, val.wrapNumber(@floatFromInt(fCS(self.pc))) };
-            const r = scoped(vm_calls.mcall, .{ op.method(), 2, &argv });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            const value = try vm_calls.mcall(op.method(), 2, &argv);
             self.reload();
-            self.stack[fA(self.pc)] = r.value;
+            self.stack[fA(self.pc)] = value;
             self.maybeCollect();
         } else {
             const T = op.intType();
             const y1 = val.unwrapNumber(op1);
             if (!checkRange(T, y1)) {
                 self.commit();
-                return self.raisef("value %v out of range for " ++ op.intMessage(), .{op1});
+                return try self.raisef("value %v out of range for " ++ op.intMessage(), .{op1});
             }
             const x1: T = @intFromFloat(y1);
             self.stack[fA(self.pc)] = val.wrapNumber(intToDouble(T, op.applyBits(x1, fCS(self.pc))));
@@ -625,7 +576,7 @@ const Interp = struct {
     }
 
     /// `_vm_binop`.
-    inline fn binop(self: *Interp, comptime op: Op) ?c.JanetSignal {
+    inline fn binop(self: *Interp, comptime op: Op) raise.Error!?c.JanetSignal {
         const op1 = self.stack[fB(self.pc)];
         const op2 = self.stack[fC(self.pc)];
         if (val.isNumber(op1) and val.isNumber(op2)) {
@@ -639,7 +590,7 @@ const Interp = struct {
     }
 
     /// `_vm_bitop`.
-    inline fn bitop(self: *Interp, comptime op: Op) ?c.JanetSignal {
+    inline fn bitop(self: *Interp, comptime op: Op) raise.Error!?c.JanetSignal {
         const op1 = self.stack[fB(self.pc)];
         const op2 = self.stack[fC(self.pc)];
         if (val.isNumber(op1) and val.isNumber(op2)) {
@@ -648,11 +599,20 @@ const Interp = struct {
             const y2 = val.unwrapNumber(op2);
             if (!checkRange(T, y1)) {
                 self.commit();
-                return self.raisef("value %v out of range for " ++ op.intMessage(), .{op1});
+                return try self.raisef("value %v out of range for " ++ op.intMessage(), .{op1});
             }
             if (!checkRange(i32, y2)) {
                 self.commit();
-                return self.raisef("rhs must be valid 32-bit signed integer, got %f", .{op2});
+                // `y2`, not `op2`. The C passes the `Janet` to a `%f` that
+                // reads a `double` -- undefined, and observed to print
+                // `0.000000` on x86-64 where the System V classification sends
+                // the union through a general-purpose register while
+                // `va_arg(double)` reads the SSE save area. `FOUND.md` has the
+                // measurement and names `y2` as the value the message wants.
+                // Part 8's rule applies: there is no defined behaviour to
+                // reproduce, so the port gets it right. The tuple driver made
+                // it a compile error rather than a choice.
+                return try self.raisef("rhs must be valid 32-bit signed integer, got %f", .{y2});
             }
             const x1: T = @intFromFloat(y1);
             const x2: i32 = @intFromFloat(y2);
@@ -672,19 +632,18 @@ const Interp = struct {
         rmethod: [*c]const u8,
         op1: c.Janet,
         op2: c.Janet,
-    ) ?c.JanetSignal {
+    ) raise.Error!?c.JanetSignal {
         self.commit();
-        const r = scoped(vm_calls.binopCall, .{ lmethod, rmethod, op1, op2 });
-        if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+        const value = try vm_calls.binopCall(lmethod, rmethod, op1, op2);
         self.reload();
-        self.stack[fA(self.pc)] = r.value;
+        self.stack[fA(self.pc)] = value;
         self.maybeCollect();
         self.pc += 1;
         return null;
     }
 
     /// `vm_compop`.
-    inline fn compop(self: *Interp, comptime op: Cmp) ?c.JanetSignal {
+    inline fn compop(self: *Interp, comptime op: Cmp) raise.Error!?c.JanetSignal {
         const op1 = self.stack[fB(self.pc)];
         const op2 = self.stack[fC(self.pc)];
         if (val.isNumber(op1) and val.isNumber(op2)) {
@@ -698,7 +657,7 @@ const Interp = struct {
     }
 
     /// `vm_compop_imm`.
-    inline fn compopImmediate(self: *Interp, comptime op: Cmp) ?c.JanetSignal {
+    inline fn compopImmediate(self: *Interp, comptime op: Cmp) raise.Error!?c.JanetSignal {
         const op1 = self.stack[fB(self.pc)];
         if (val.isNumber(op1)) {
             const x1 = val.unwrapNumber(op1);
@@ -710,11 +669,9 @@ const Interp = struct {
         return self.compareFallback(op, op1, val.wrapInteger(fCS(self.pc)));
     }
 
-    inline fn compareFallback(self: *Interp, comptime op: Cmp, op1: c.Janet, op2: c.Janet) ?c.JanetSignal {
+    inline fn compareFallback(self: *Interp, comptime op: Cmp, op1: c.Janet, op2: c.Janet) raise.Error!?c.JanetSignal {
         self.commit();
-        const r = scoped(c.janet_compare, .{ op1, op2 });
-        if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
-        const a = val.wrapBoolean(op.applyOrder(r.value));
+        const a = val.wrapBoolean(op.applyOrder(c.janet_compare(op1, op2)));
         self.reload();
         self.stack[fA(self.pc)] = a;
         self.maybeCollect();
@@ -736,7 +693,7 @@ inline fn intToDouble(comptime T: type, x: T) f64 {
 /// `run_vm`, renamed for the same reason Part 2 renamed five of its callees: a
 /// static's name becomes a library symbol the moment its definition moves to
 /// another translation unit, and `run_vm` is too general a name to put there.
-fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
+pub fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) raise.Error!c.JanetSignal {
     // Seventy-eight arms, each of which inlines several comptime templates.
     @setEvalBranchQuota(20000);
     var self: Interp = .{
@@ -760,7 +717,7 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
 
     self.restore();
 
-    if ((fiber.*.flags & c.JANET_FIBER_DID_LONGJUMP) != 0) {
+    if ((fiber.*.flags & c.JANET_FIBER_DID_RAISE) != 0) {
         if (stackFrame(self.stack).func == null) {
             // Inside a c function
             c.janet_fiber_popframe(fiber);
@@ -795,50 +752,50 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
         c.JOP_ERROR => return self.ret(c.JANET_SIGNAL_ERROR, self.stack[fA(self.pc)]),
 
         c.JOP_TYPECHECK => {
-            if (self.assertTypes(self.stack[fA(self.pc)], @intCast(fE(self.pc)))) |s| return s;
+            if (try self.assertTypes(self.stack[fA(self.pc)], @intCast(fE(self.pc)))) |s| return s;
             self.pc += 1;
             continue :sw self.nextOp();
         },
 
         c.JOP_RETURN => {
-            if (self.doReturn(self.stack[fD(self.pc)])) |s| return s;
+            if (try self.doReturn(self.stack[fD(self.pc)])) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_RETURN_NIL => {
-            if (self.doReturn(val.wrapNil())) |s| return s;
+            if (try self.doReturn(val.wrapNil())) |s| return s;
             continue :sw self.nextOp();
         },
 
         c.JOP_ADD_IMMEDIATE => {
-            if (self.binopImmediate(.add)) |s| return s;
+            if (try self.binopImmediate(.add)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_ADD => {
-            if (self.binop(.add)) |s| return s;
+            if (try self.binop(.add)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_SUBTRACT_IMMEDIATE => {
-            if (self.binopImmediate(.sub)) |s| return s;
+            if (try self.binopImmediate(.sub)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_SUBTRACT => {
-            if (self.binop(.sub)) |s| return s;
+            if (try self.binop(.sub)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_MULTIPLY_IMMEDIATE => {
-            if (self.binopImmediate(.mul)) |s| return s;
+            if (try self.binopImmediate(.mul)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_MULTIPLY => {
-            if (self.binop(.mul)) |s| return s;
+            if (try self.binop(.mul)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_DIVIDE_IMMEDIATE => {
-            if (self.binopImmediate(.div)) |s| return s;
+            if (try self.binopImmediate(.div)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_DIVIDE => {
-            if (self.binop(.div)) |s| return s;
+            if (try self.binop(.div)) |s| return s;
             continue :sw self.nextOp();
         },
 
@@ -852,7 +809,7 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
                 self.pc += 1;
                 continue :sw self.nextOp();
             }
-            if (self.binopFallback("div", "rdiv", op1, op2)) |s| return s;
+            if (try self.binopFallback("div", "rdiv", op1, op2)) |s| return s;
             continue :sw self.nextOp();
         },
 
@@ -871,7 +828,7 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
                 self.pc += 1;
                 continue :sw self.nextOp();
             }
-            if (self.binopFallback("mod", "rmod", op1, op2)) |s| return s;
+            if (try self.binopFallback("mod", "rmod", op1, op2)) |s| return s;
             continue :sw self.nextOp();
         },
 
@@ -885,20 +842,20 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
                 self.pc += 1;
                 continue :sw self.nextOp();
             }
-            if (self.binopFallback("%", "r%", op1, op2)) |s| return s;
+            if (try self.binopFallback("%", "r%", op1, op2)) |s| return s;
             continue :sw self.nextOp();
         },
 
         c.JOP_BAND => {
-            if (self.bitop(.band)) |s| return s;
+            if (try self.bitop(.band)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_BOR => {
-            if (self.bitop(.bor)) |s| return s;
+            if (try self.bitop(.bor)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_BXOR => {
-            if (self.bitop(.bxor)) |s| return s;
+            if (try self.bitop(.bxor)) |s| return s;
             continue :sw self.nextOp();
         },
 
@@ -910,37 +867,36 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
                 continue :sw self.nextOp();
             }
             self.commit();
-            const r = scoped(vm_calls.unaryCall, .{ "~", op });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            const value = try vm_calls.unaryCall("~", op);
             self.reload();
-            self.stack[fA(self.pc)] = r.value;
+            self.stack[fA(self.pc)] = value;
             self.maybeCollect();
             self.pc += 1;
             continue :sw self.nextOp();
         },
 
         c.JOP_SHIFT_RIGHT_UNSIGNED => {
-            if (self.bitop(.shru)) |s| return s;
+            if (try self.bitop(.shru)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_SHIFT_RIGHT_UNSIGNED_IMMEDIATE => {
-            if (self.bitopImmediate(.shru)) |s| return s;
+            if (try self.bitopImmediate(.shru)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_SHIFT_RIGHT => {
-            if (self.bitop(.shr)) |s| return s;
+            if (try self.bitop(.shr)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_SHIFT_RIGHT_IMMEDIATE => {
-            if (self.bitopImmediate(.shr)) |s| return s;
+            if (try self.bitopImmediate(.shr)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_SHIFT_LEFT => {
-            if (self.bitop(.shl)) |s| return s;
+            if (try self.bitop(.shl)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_SHIFT_LEFT_IMMEDIATE => {
-            if (self.bitopImmediate(.shl)) |s| return s;
+            if (try self.bitopImmediate(.shl)) |s| return s;
             continue :sw self.nextOp();
         },
 
@@ -957,14 +913,14 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
         },
 
         c.JOP_JUMP => {
-            if (self.maybeAutoSuspend(fDS(self.pc) <= 0)) |s| return s;
+            if (try self.maybeAutoSuspend(fDS(self.pc) <= 0)) |s| return s;
             self.pc += asOffset(fDS(self.pc));
             continue :sw self.nextOp();
         },
 
         c.JOP_JUMP_IF => {
             if (val.truthy(self.stack[fA(self.pc)])) {
-                if (self.maybeAutoSuspend(fES(self.pc) <= 0)) |s| return s;
+                if (try self.maybeAutoSuspend(fES(self.pc) <= 0)) |s| return s;
                 self.pc += asOffset(fES(self.pc));
             } else {
                 self.pc += 1;
@@ -976,7 +932,7 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
             if (val.truthy(self.stack[fA(self.pc)])) {
                 self.pc += 1;
             } else {
-                if (self.maybeAutoSuspend(fES(self.pc) <= 0)) |s| return s;
+                if (try self.maybeAutoSuspend(fES(self.pc) <= 0)) |s| return s;
                 self.pc += asOffset(fES(self.pc));
             }
             continue :sw self.nextOp();
@@ -984,7 +940,7 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
 
         c.JOP_JUMP_IF_NIL => {
             if (val.checkType(self.stack[fA(self.pc)], c.JANET_NIL)) {
-                if (self.maybeAutoSuspend(fES(self.pc) <= 0)) |s| return s;
+                if (try self.maybeAutoSuspend(fES(self.pc) <= 0)) |s| return s;
                 self.pc += asOffset(fES(self.pc));
             } else {
                 self.pc += 1;
@@ -996,43 +952,43 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
             if (val.checkType(self.stack[fA(self.pc)], c.JANET_NIL)) {
                 self.pc += 1;
             } else {
-                if (self.maybeAutoSuspend(fES(self.pc) <= 0)) |s| return s;
+                if (try self.maybeAutoSuspend(fES(self.pc) <= 0)) |s| return s;
                 self.pc += asOffset(fES(self.pc));
             }
             continue :sw self.nextOp();
         },
 
         c.JOP_LESS_THAN => {
-            if (self.compop(.lt)) |s| return s;
+            if (try self.compop(.lt)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_LESS_THAN_EQUAL => {
-            if (self.compop(.le)) |s| return s;
+            if (try self.compop(.le)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_LESS_THAN_IMMEDIATE => {
-            if (self.compopImmediate(.lt)) |s| return s;
+            if (try self.compopImmediate(.lt)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_GREATER_THAN => {
-            if (self.compop(.gt)) |s| return s;
+            if (try self.compop(.gt)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_GREATER_THAN_EQUAL => {
-            if (self.compop(.ge)) |s| return s;
+            if (try self.compop(.ge)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_GREATER_THAN_IMMEDIATE => {
-            if (self.compopImmediate(.gt)) |s| return s;
+            if (try self.compopImmediate(.gt)) |s| return s;
             continue :sw self.nextOp();
         },
 
         c.JOP_EQUALS => {
-            if (self.equals(false)) |s| return s;
+            if (try self.equals(false)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_NOT_EQUALS => {
-            if (self.equals(true)) |s| return s;
+            if (try self.equals(true)) |s| return s;
             continue :sw self.nextOp();
         },
 
@@ -1054,9 +1010,7 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
 
         c.JOP_COMPARE => {
             self.commit();
-            const r = scoped(c.janet_compare, .{ self.stack[fB(self.pc)], self.stack[fC(self.pc)] });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
-            const a = val.wrapInteger(r.value);
+            const a = val.wrapInteger(c.janet_compare(self.stack[fB(self.pc)], self.stack[fC(self.pc)]));
             self.reload();
             self.stack[fA(self.pc)] = a;
             self.pc += 1;
@@ -1065,10 +1019,9 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
 
         c.JOP_NEXT => {
             self.commit();
-            const r = scoped(nextImpl, .{ self.stack[fB(self.pc)], self.stack[fC(self.pc)] });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            const value = try access.nextImpl(self.stack[fB(self.pc)], self.stack[fC(self.pc)], 1);
             self.restore();
-            self.stack[fA(self.pc)] = r.value;
+            self.stack[fA(self.pc)] = value;
             self.pc += 1;
             continue :sw self.nextOp();
         },
@@ -1099,7 +1052,7 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
 
         c.JOP_LOAD_CONSTANT => {
             const cindex: i32 = @intCast(fE(self.pc));
-            if (self.assert(cindex < self.func.*.def.*.constants_length, "invalid constant")) |s| return s;
+            if (try self.assert(cindex < self.func.*.def.*.constants_length, "invalid constant")) |s| return s;
             self.stack[fA(self.pc)] = self.func.*.def.*.constants[asSize(cindex)];
             self.pc += 1;
             continue :sw self.nextOp();
@@ -1112,17 +1065,17 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
         },
 
         c.JOP_LOAD_UPVALUE => {
-            if (self.upvalue(false)) |s| return s;
+            if (try self.upvalue(false)) |s| return s;
             continue :sw self.nextOp();
         },
         c.JOP_SET_UPVALUE => {
-            if (self.upvalue(true)) |s| return s;
+            if (try self.upvalue(true)) |s| return s;
             continue :sw self.nextOp();
         },
 
         c.JOP_CLOSURE => {
             const defindex: i32 = @intCast(fE(self.pc));
-            if (self.assert(defindex < self.func.*.def.*.defs_length, "invalid funcdef")) |s| return s;
+            if (try self.assert(defindex < self.func.*.def.*.defs_length, "invalid funcdef")) |s| return s;
             const fd = self.func.*.def.*.defs[asSize(defindex)];
             const elen = fd.*.environments_length;
             const fn_ptr: [*c]c.JanetFunction = @ptrCast(@alignCast(c.janet_gcalloc(
@@ -1158,8 +1111,7 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
         },
 
         c.JOP_PUSH => {
-            const r = scoped(c.janet_fiber_push, .{ fiber, self.stack[fD(self.pc)] });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            try fiber_core.push(fiber, self.stack[fD(self.pc)]);
             self.reload();
             self.maybeCollect();
             self.pc += 1;
@@ -1167,8 +1119,7 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
         },
 
         c.JOP_PUSH_2 => {
-            const r = scoped(c.janet_fiber_push2, .{ fiber, self.stack[fA(self.pc)], self.stack[fE(self.pc)] });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            try fiber_core.push2(fiber, self.stack[fA(self.pc)], self.stack[fE(self.pc)]);
             self.reload();
             self.maybeCollect();
             self.pc += 1;
@@ -1176,13 +1127,12 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
         },
 
         c.JOP_PUSH_3 => {
-            const r = scoped(c.janet_fiber_push3, .{
+            try fiber_core.push3(
                 fiber,
                 self.stack[fA(self.pc)],
                 self.stack[fB(self.pc)],
                 self.stack[fC(self.pc)],
-            });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            );
             self.reload();
             self.maybeCollect();
             self.pc += 1;
@@ -1193,10 +1143,9 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
             var vals: [*c]const c.Janet = undefined;
             var len: i32 = undefined;
             if (c.janet_indexed_view(self.stack[fD(self.pc)], &vals, &len) != 0) {
-                const r = scoped(c.janet_fiber_pushn, .{ fiber, vals, len });
-                if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+                try fiber_core.pushn(fiber, vals, len);
             } else {
-                return self.raisef("expected %T, got %v", .{
+                return try self.raisef("expected %T, got %v", .{
                     @as(c_int, c.JANET_TFLAG_INDEXED),
                     self.stack[fD(self.pc)],
                 });
@@ -1208,24 +1157,22 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
         },
 
         c.JOP_CALL => {
-            if (self.maybeAutoSuspend(true)) |s| return s;
+            if (try self.maybeAutoSuspend(true)) |s| return s;
             var callee = self.stack[fE(self.pc)];
-            if (fiber.*.stacktop > fiber.*.maxstack) return self.throw("stack overflow");
+            if (fiber.*.stacktop > fiber.*.maxstack) return try self.throw("stack overflow");
             if (val.checkType(callee, c.JANET_KEYWORD)) {
                 self.commit();
-                const r = scoped(vm_calls.resolveMethod, .{ callee, fiber });
-                if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
-                callee = r.value;
+                callee = try vm_calls.resolveMethod(callee, fiber);
             }
             if (val.checkType(callee, c.JANET_FUNCTION)) {
                 self.func = val.unwrapFunction(callee);
                 if ((self.func.*.gc.flags & c.JANET_FUNCFLAG_TRACE) != 0) {
-                    c.janet_vm_trace(self.func, fiber.*.stacktop - fiber.*.stackstart, fiber);
+                    traceFiber(self.func, fiber.*.stacktop - fiber.*.stackstart, fiber);
                 }
                 self.commit();
                 if (c.janet_fiber_funcframe(fiber, self.func) != 0) {
                     const n = fiber.*.stacktop - fiber.*.stackstart;
-                    return self.raisef("%v called with %d argument%s, expected %d", .{
+                    return try self.raisef("%v called with %d argument%s, expected %d", .{
                         callee,
                         n,
                         if (n == 1) @as([*c]const u8, "") else @as([*c]const u8, "s"),
@@ -1240,49 +1187,44 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
                 self.commit();
                 const argc = fiber.*.stacktop - fiber.*.stackstart;
                 c.janet_fiber_cframe(fiber, val.unwrapCFunction(callee));
-                const r = scoped(invokeCFunction, .{
-                    val.unwrapCFunction(callee),
+                const value = try raise.cfunction(val.unwrapCFunction(callee))(
                     argc,
                     fiber.*.data + asSize(fiber.*.frame),
-                });
-                if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+                );
                 c.janet_fiber_popframe(fiber);
                 self.reload();
-                self.stack[fA(self.pc)] = r.value;
+                self.stack[fA(self.pc)] = value;
                 self.maybeCollect();
                 self.pc += 1;
                 continue :sw self.nextOp();
             } else {
                 self.commit();
-                const r = scoped(vm_calls.callNonfn, .{ fiber, callee });
-                if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+                const value = try vm_calls.callNonfn(fiber, callee);
                 // `stack` is deliberately not refreshed here; FOUND.md records
                 // it, and reproducing it is the point.
-                self.stack[fA(self.pc)] = r.value;
+                self.stack[fA(self.pc)] = value;
                 self.pc += 1;
                 continue :sw self.nextOp();
             }
         },
 
         c.JOP_TAILCALL => {
-            if (self.maybeAutoSuspend(true)) |s| return s;
+            if (try self.maybeAutoSuspend(true)) |s| return s;
             var callee = self.stack[fD(self.pc)];
-            if (fiber.*.stacktop > fiber.*.maxstack) return self.throw("stack overflow");
+            if (fiber.*.stacktop > fiber.*.maxstack) return try self.throw("stack overflow");
             if (val.checkType(callee, c.JANET_KEYWORD)) {
                 self.commit();
-                const r = scoped(vm_calls.resolveMethod, .{ callee, fiber });
-                if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
-                callee = r.value;
+                callee = try vm_calls.resolveMethod(callee, fiber);
             }
             if (val.checkType(callee, c.JANET_FUNCTION)) {
                 self.func = val.unwrapFunction(callee);
                 if ((self.func.*.gc.flags & c.JANET_FUNCFLAG_TRACE) != 0) {
-                    c.janet_vm_trace(self.func, fiber.*.stacktop - fiber.*.stackstart, fiber);
+                    traceFiber(self.func, fiber.*.stacktop - fiber.*.stackstart, fiber);
                 }
                 if (c.janet_fiber_funcframe_tail(fiber, self.func) != 0) {
                     stackFrame(fiber.*.data + asSize(fiber.*.frame)).pc = self.pc;
                     const n = fiber.*.stacktop - fiber.*.stackstart;
-                    return self.raisef("%v called with %d argument%s, expected %d", .{
+                    return try self.raisef("%v called with %d argument%s, expected %d", .{
                         callee,
                         n,
                         if (n == 1) @as([*c]const u8, "") else @as([*c]const u8, "s"),
@@ -1300,18 +1242,13 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
             if (val.checkType(callee, c.JANET_CFUNCTION)) {
                 const argc = fiber.*.stacktop - fiber.*.stackstart;
                 c.janet_fiber_cframe(fiber, val.unwrapCFunction(callee));
-                const r = scoped(invokeCFunction, .{
-                    val.unwrapCFunction(callee),
+                retreg = try raise.cfunction(val.unwrapCFunction(callee))(
                     argc,
                     fiber.*.data + asSize(fiber.*.frame),
-                });
-                if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
-                retreg = r.value;
+                );
                 c.janet_fiber_popframe(fiber);
             } else {
-                const r = scoped(vm_calls.callNonfn, .{ fiber, callee });
-                if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
-                retreg = r.value;
+                retreg = try vm_calls.callNonfn(fiber, callee);
             }
             c.janet_fiber_popframe(fiber);
             if (entrance_frame) return self.retNoRestore(c.JANET_SIGNAL_OK, retreg);
@@ -1323,16 +1260,16 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
         },
 
         c.JOP_RESUME => {
-            if (self.maybeAutoSuspend(true)) |s| return s;
-            if (self.assertType(self.stack[fB(self.pc)], c.JANET_FIBER)) |s| return s;
+            if (try self.maybeAutoSuspend(true)) |s| return s;
+            if (try self.assertType(self.stack[fB(self.pc)], c.JANET_FIBER)) |s| return s;
             var retreg: c.Janet = undefined;
             const child = val.unwrapFiber(self.stack[fB(self.pc)]);
             if (c.janet_check_can_resume(child, &retreg, 0) != 0) {
                 self.commit();
-                return self.raisev(retreg);
+                return try self.raisev(retreg);
             }
             fiber.*.child = child;
-            const sig = c.janet_continue_no_check(child, self.stack[fC(self.pc)], &retreg);
+            const sig = vm_entry.continueNoCheck(child, self.stack[fC(self.pc)], &retreg);
             self.reload();
             if (sig != c.JANET_SIGNAL_OK and (child.*.flags & (@as(i32, 1) << @intCast(sig))) == 0) {
                 return self.ret(sig, retreg);
@@ -1353,12 +1290,12 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
 
         c.JOP_PROPAGATE => {
             const fv = self.stack[fC(self.pc)];
-            if (self.assertType(fv, c.JANET_FIBER)) |s| return s;
+            if (try self.assertType(fv, c.JANET_FIBER)) |s| return s;
             const f = val.unwrapFiber(fv);
             const sub_status = c.janet_fiber_status(f);
             if (sub_status > c.JANET_STATUS_USER9) {
                 self.commit();
-                return self.raisef("cannot propagate from fiber with status :%s", .{
+                return try self.raisef("cannot propagate from fiber with status :%s", .{
                     c.janet_status_names[@intCast(sub_status)],
                 });
             }
@@ -1367,12 +1304,12 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
         },
 
         c.JOP_CANCEL => {
-            if (self.assertType(self.stack[fB(self.pc)], c.JANET_FIBER)) |s| return s;
+            if (try self.assertType(self.stack[fB(self.pc)], c.JANET_FIBER)) |s| return s;
             var retreg: c.Janet = undefined;
             const child = val.unwrapFiber(self.stack[fB(self.pc)]);
             if (c.janet_check_can_resume(child, &retreg, 1) != 0) {
                 self.commit();
-                return self.raisev(retreg);
+                return try self.raisev(retreg);
             }
             fiber.*.child = child;
             const sig = c.janet_continue_signal(child, self.stack[fC(self.pc)], &retreg, c.JANET_SIGNAL_ERROR);
@@ -1390,12 +1327,11 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
         c.JOP_PUT => {
             self.commit();
             fiber.*.flags |= c.JANET_FIBER_RESUME_NO_USEVAL;
-            const r = scoped(c.janet_put, .{
+            try access.put(
                 self.stack[fA(self.pc)],
                 self.stack[fB(self.pc)],
                 self.stack[fC(self.pc)],
-            });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            );
             self.reload();
             fiber.*.flags &= ~@as(i32, c.JANET_FIBER_RESUME_NO_USEVAL);
             self.maybeCollect();
@@ -1406,12 +1342,11 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
         c.JOP_PUT_INDEX => {
             self.commit();
             fiber.*.flags |= c.JANET_FIBER_RESUME_NO_USEVAL;
-            const r = scoped(c.janet_putindex, .{
+            try access.putIndex(
                 self.stack[fA(self.pc)],
                 @as(i32, @intCast(fC(self.pc))),
                 self.stack[fB(self.pc)],
-            });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            );
             self.reload();
             fiber.*.flags &= ~@as(i32, c.JANET_FIBER_RESUME_NO_USEVAL);
             self.maybeCollect();
@@ -1421,40 +1356,38 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
 
         c.JOP_IN => {
             self.commit();
-            const r = scoped(c.janet_in, .{ self.stack[fB(self.pc)], self.stack[fC(self.pc)] });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            const value = try access.in(self.stack[fB(self.pc)], self.stack[fC(self.pc)]);
             self.reload();
-            self.stack[fA(self.pc)] = r.value;
+            self.stack[fA(self.pc)] = value;
             self.pc += 1;
             continue :sw self.nextOp();
         },
 
         c.JOP_GET => {
             self.commit();
-            const r = scoped(c.janet_get, .{ self.stack[fB(self.pc)], self.stack[fC(self.pc)] });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            // `janet_get` answers nil rather than raising, so it needs no
+            // scope and no `try`; Phase 10's fourth rule.
+            const value = try access.get(self.stack[fB(self.pc)], self.stack[fC(self.pc)]);
             self.reload();
-            self.stack[fA(self.pc)] = r.value;
+            self.stack[fA(self.pc)] = value;
             self.pc += 1;
             continue :sw self.nextOp();
         },
 
         c.JOP_GET_INDEX => {
             self.commit();
-            const r = scoped(c.janet_getindex, .{ self.stack[fB(self.pc)], @as(i32, @intCast(fC(self.pc))) });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            const value = try access.getIndex(self.stack[fB(self.pc)], @as(i32, @intCast(fC(self.pc))));
             self.reload();
-            self.stack[fA(self.pc)] = r.value;
+            self.stack[fA(self.pc)] = value;
             self.pc += 1;
             continue :sw self.nextOp();
         },
 
         c.JOP_LENGTH => {
             self.commit();
-            const r = scoped(c.janet_lengthv, .{self.stack[fE(self.pc)]});
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            const value = try access.lengthv(self.stack[fE(self.pc)]);
             self.reload();
-            self.stack[fA(self.pc)] = r.value;
+            self.stack[fA(self.pc)] = value;
             self.pc += 1;
             continue :sw self.nextOp();
         },
@@ -1488,11 +1421,10 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
             const mem = fiber.*.data + asSize(fiber.*.stackstart);
             if (count & 1 != 0) {
                 self.commit();
-                return self.raisef("expected even number of arguments to table constructor, got %d", .{count});
+                return try self.raisef("expected even number of arguments to table constructor, got %d", .{count});
             }
             const table = c.janet_table(@divTrunc(count, 2));
-            const r = scoped(vm_calls.fillTable, .{ table, mem, count });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            vm_calls.fillTable(table, mem, count);
             self.stack[fD(self.pc)] = val.wrapTable(table);
             fiber.*.stacktop = fiber.*.stackstart;
             self.maybeCollect();
@@ -1505,11 +1437,10 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
             const mem = fiber.*.data + asSize(fiber.*.stackstart);
             if (count & 1 != 0) {
                 self.commit();
-                return self.raisef("expected even number of arguments to struct constructor, got %d", .{count});
+                return try self.raisef("expected even number of arguments to struct constructor, got %d", .{count});
             }
             const st = c.janet_struct_begin(@divTrunc(count, 2));
-            const r = scoped(vm_calls.fillStruct, .{ st, mem, count });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            vm_calls.fillStruct(st, mem, count);
             self.stack[fD(self.pc)] = val.wrapStruct(c.janet_struct_end(st));
             fiber.*.stacktop = fiber.*.stackstart;
             self.maybeCollect();
@@ -1528,8 +1459,7 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
             // scratch buffer when a conversion raises". Reproduced deliberately
             // rather than fixed -- and the reason this arm cannot use `defer`
             // even if the file were not jump-transparent.
-            const r = scoped(vm_calls.fillString, .{ &buffer, mem, count });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            vm_calls.fillString(&buffer, mem, count);
             self.stack[fD(self.pc)] = c.janet_stringv(buffer.data, buffer.count);
             c.janet_buffer_deinit(&buffer);
             fiber.*.stacktop = fiber.*.stackstart;
@@ -1542,8 +1472,7 @@ fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) callconv(.c) c.JanetSignal {
             const count = fiber.*.stacktop - fiber.*.stackstart;
             const mem = fiber.*.data + asSize(fiber.*.stackstart);
             const buffer = c.janet_buffer(10 *% count);
-            const r = scoped(vm_calls.fillString, .{ buffer, mem, count });
-            if (r.sig != c.JANET_SIGNAL_OK) return self.raiseSignal(r.sig, r.payload);
+            vm_calls.fillString(buffer, mem, count);
             self.stack[fD(self.pc)] = val.wrapBuffer(buffer);
             fiber.*.stacktop = fiber.*.stackstart;
             self.maybeCollect();
@@ -1572,6 +1501,55 @@ inline fn asOffset(n: i32) usize {
 /// `JOP_REMAINDER` is reachable with either.
 extern fn fmod(x: f64, y: f64) f64;
 
-comptime {
-    @export(&runVm, .{ .name = "janet_run_vm", .visibility = .hidden });
+// The C-ABI face of the loop was here: `janet_run_vm`, built by
+// `raise.jumping`, whose whole purpose was to turn the error back into the
+// `longjmp` that `janet_continue_no_check` in `src/core/vm.c` was waiting for
+// with a `setjmp`. It was the last such face in the tree. The hinge moved that
+// caller to `vm_entry.zig`, where it catches the error instead, so the loop is
+// reached by an ordinary import and there is nothing left for a face to
+// convert.
+
+// ------------------------------------------------------------- `(trace)`
+
+/// `vm_do_trace`. Print a traced call and its arguments to `(dyn :err)`.
+///
+/// C kept this as a macro over two one-line functions in `src/core/vm.c`, and
+/// the reason was the stack: `janet_eprintf` can resize a fiber's stack, so
+/// `fiber->data + fiber->stackstart` has to be recomputed for every element and
+/// a pointer handed across would freeze at the first. That is why there are two
+/// entry points rather than one -- `traceFiber` recomputes, `traceArgv` takes
+/// an argv the caller owns and that nothing here can move.
+///
+/// Neither can carry a raise: both are called from the middle of a call
+/// sequence that has already committed. `dynprintf` can raise, because
+/// `(dyn :err)` may be a Janet function; that is reported exactly as the C face
+/// reported it.
+pub fn traceFiber(func: *c.JanetFunction, argc: i32, fiber: *c.JanetFiber) void {
+    traceHeader(func);
+    var i: i32 = 0;
+    while (i < argc) : (i += 1) {
+        const argv = fiber.data + @as(usize, @intCast(fiber.stackstart));
+        eprintf(" %p", .{argv[@intCast(i)]});
+    }
+    eprintf(")\n", .{});
+}
+
+pub fn traceArgv(func: *c.JanetFunction, argc: i32, argv: [*c]const c.Janet) void {
+    traceHeader(func);
+    var i: i32 = 0;
+    while (i < argc) : (i += 1) eprintf(" %p", .{argv[@intCast(i)]});
+    eprintf(")\n", .{});
+}
+
+fn traceHeader(func: *c.JanetFunction) void {
+    if (func.def.*.name != null) {
+        eprintf("trace (%S", .{func.def.*.name});
+    } else {
+        eprintf("trace (%p", .{c.janet_wrap_function(func)});
+    }
+}
+
+
+inline fn eprintf(comptime format: [:0]const u8, args: anytype) void {
+    raise.reported(pp_format.dynprintf("err", @ptrCast(@alignCast(stdio.err())), format, args));
 }

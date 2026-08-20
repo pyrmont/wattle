@@ -221,5 +221,220 @@
 (assert (= -2 -0x1p1))
 (assert (= -0.5 -0x1p-1))
 
+# Phase 10 Part 7 moved the parser's abstract type and its whole cfunction
+# surface to Zig. `parser/state` in particular was called for its side effects
+# above and never for its content.
+
+# :delimiters, one byte per open form, outermost first. The characters are
+# built on the parser's own buffer and the count put back, so a second call
+# has to give the same answer.
+(def pd (parser/new))
+(parser/consume pd `(1 [2 {3 "ab`)
+(assert (= `([{"` (parser/state pd :delimiters)) "delimiters")
+(assert (= `([{"` (parser/state pd :delimiters)) "delimiters again")
+(def pl (parser/new))
+(parser/consume pl "```abc")
+(assert (= "```" (parser/state pl :delimiters)) "long-string delimiters count backticks")
+
+# :frames, innermost last, with the arguments each container has collected.
+(def pf (parser/new))
+(parser/consume pf `(1 2 [3`)
+(def frames (parser/state pf :frames))
+(assert (deep= @[:root :tuple :tuple :token] (map |(get $ :type) frames)) "frame types")
+(assert (deep= @[1 2] (get (get frames 1) :args)) "frame arguments")
+(assert (= 1 (get (last frames) :line)) "frame line")
+
+# The buffer-carrying frame types report what they have read so far.
+(def ps (parser/new))
+(parser/consume ps `"partial`)
+(assert (= "partial" (get (last (parser/state ps :frames)) :buffer)) "string frame buffer")
+(def pt (parser/new))
+(parser/consume pt "sym")
+(assert (= :token (get (last (parser/state pt :frames)) :type)) "token frame")
+(def pc (parser/new))
+(parser/consume pc "# note")
+(assert (= :comment (get (last (parser/state pc :frames)) :type)) "comment frame")
+
+# Reader macros name themselves.
+(defn reader-frame-type [text]
+  (def rp (parser/new))
+  (parser/consume rp text)
+  (get (last (parser/state rp :frames)) :type))
+(assert (= :quote (reader-frame-type "'")) "quote frame")
+(assert (= :unquote (reader-frame-type ",")) "unquote frame")
+(assert (= :splice (reader-frame-type ";")) "splice frame")
+(assert (= :quasiquote (reader-frame-type "~")) "quasiquote frame")
+(assert (= :at (reader-frame-type "@")) "at frame")
+
+# A keyless call gives both, and an unknown key is an error.
+(assert (deep= @[:delimiters :frames] (sorted (keys (parser/state pd)))) "state keys")
+(assert-error "unexpected keyword :nope" (parser/state pd :nope))
+
+# parser/status over all four states.
+(assert (= :root (parser/status (parser/new))) "status root")
+(def pp1 (parser/new))
+(parser/consume pp1 "(")
+(assert (= :pending (parser/status pp1)) "status pending")
+(def pp2 (parser/new))
+(parser/consume pp2 ")")
+(assert (= :error (parser/status pp2)) "status error")
+(def pp3 (parser/new))
+(parser/eof pp3)
+(assert (= :dead (parser/status pp3)) "status dead")
+
+# A dead or unread-error parser refuses more input. Part 7 moved this raise
+# out of C, so it is the first panic a Zig parser frame delivers.
+(assert-error "parser is dead, cannot consume" (parser/consume pp3 "x"))
+(assert-error "parser is dead, cannot consume" (parser/eof pp3))
+(assert-error "parser is dead, cannot consume" (parser/consume pp2 "x"))
+
+# parser/where sets as well as reads, and rejects out-of-range values.
+(def pw (parser/new))
+(assert (= [10 3] (parser/where pw 10 3)) "where sets line and column")
+(assert (= [10 3] (parser/where pw)) "where reads back")
+(assert-error "invalid line number 0" (parser/where (parser/new) 0))
+(assert-error "invalid column number -1" (parser/where (parser/new) 1 -1))
+
+# parser/consume's optional start index, and its return value.
+(def po (parser/new))
+(assert (= 3 (parser/consume po "xxx(1)" 3)) "consume from an offset")
+(assert (= [1] (parser/produce po)) "and parses from there")
+(assert-error "invalid offset 9 out of range [0,3]" (parser/consume (parser/new) "abc" 9))
+(assert-error "invalid offset -1 out of range [0,3]" (parser/consume (parser/new) "abc" -1))
+# A parse error stops the loop, and the count includes the byte that stopped it.
+(def pe (parser/new))
+(assert (= 1 (parser/consume pe ")abc")) "consume stops at an error")
+
+# parser/byte takes the low eight bits.
+(def pb (parser/new))
+(each b [40 49 41] (parser/byte pb b))
+(assert (= [1] (parser/produce pb)) "byte stream")
+
+# parser/produce with a wrapper, for source mapping.
+(def pv (parser/new))
+(parser/consume pv "  hello")
+(parser/eof pv)
+(assert (= 'hello (first (parser/produce pv true))) "wrapped produce")
+
+# parser/flush drops the queue.
+(def pq (parser/new))
+(parser/consume pq "(1 2)")
+(parser/flush pq)
+(assert (not (parser/has-more pq)) "flush empties the queue")
+
+# parser/error re-interns a literal message and returns a generated one as is.
+(def pm (parser/new))
+(parser/consume pm ")")
+(assert (string? (parser/error pm)) "generated error is a string")
+(assert (nil? (parser/error (parser/new))) "no error is nil")
+
+# parser/insert into a string frame, into a token frame, and at the top level.
+(def pi1 (parser/new))
+(parser/insert pi1 :top)
+(assert (= :top (parser/produce pi1)) "insert at the root")
+(def pi2 (parser/new))
+(parser/consume pi2 "tok")
+(parser/insert pi2 :after)
+(assert (= 'tok (parser/produce pi2)) "insert terminates a token")
+(assert (= :after (parser/produce pi2)) "and queues the inserted value")
+(def pi3 (parser/new))
+(parser/consume pi3 "@")
+(assert-error "cannot insert value into parser" (parser/insert pi3 1))
+
+# The methods on the abstract type reach the same functions.
+(def pmeth (parser/new))
+(:consume pmeth "(9)")
+(assert (:has-more pmeth) "method has-more")
+(assert (= [9] (:produce pmeth)) "method produce")
+(assert (= :root (:status pmeth)) "method status")
+(assert (= "core/parser" (string (type pmeth))) "abstract type name")
+
+# A clone carries the state forward independently of the original.
+(def pc1 (parser/new))
+(parser/consume pc1 "(1 2")
+(def pc2 (parser/clone pc1))
+(parser/consume pc2 " 3)")
+(parser/consume pc1 ")")
+(assert (= [1 2 3] (parser/produce pc2)) "clone continues independently")
+(assert (= [1 2] (parser/produce pc1)) "original is unaffected")
+
+# The two delimiter mismatch messages.
+(def pmm (parser/new))
+(parser/consume pmm "(]")
+(assert (= "mismatched delimiter ], ( opened at line 1, column 1" (parser/error pmm))
+        "mismatched delimiter")
+(def pud (parser/new))
+(parser/consume pud ")")
+(assert (= "unexpected closing delimiter )" (parser/error pud))
+        "unexpected closing delimiter")
+(def pod (parser/new))
+(parser/consume pod "{1}")
+(assert (= "struct and table literals expect even number of arguments" (parser/error pod))
+        "odd struct literal")
+
+# A parse error that is *not* a delimiter error leaves the parser alive but
+# holding an unread message, and the two states report differently. This is the
+# only way to reach the second of the two checks that guard input.
+(def pun (parser/new))
+(parser/consume pun "\x01")
+(assert (= :error (parser/status pun)) "an unexpected character is an error")
+(assert-error "parser has unchecked error, cannot consume" (parser/consume pun "x"))
+(assert-error "parser has unchecked error, cannot consume" (parser/eof pun))
+# Reading the error clears it, and the parser accepts input again.
+(assert (= "unexpected character" (parser/error pun)) "the literal message")
+(parser/consume pun "1")
+(parser/eof pun)
+(assert (= 1 (parser/produce pun)) "and parsing continues")
+
+# :delimiters builds its answer on the parser's own buffer and has to put the
+# count back, which is only visible through a frame that reports a buffer.
+(def pbuf (parser/new))
+(parser/consume pbuf "(\"abc")
+(assert (= `("` (parser/state pbuf :delimiters)) "delimiters with a string open")
+(assert (deep= @[[:root nil] [:tuple nil] [:string "abc"]]
+               (map |[(get $ :type) (get $ :buffer)] (parser/state pbuf :frames)))
+        "the delimiters scan leaves the buffer as it found it")
+
+# Each container frame owns its own arguments, which the frame walk has to
+# apportion from one shared array.
+(def pargs (parser/new))
+(parser/consume pargs "(1 (2 3 (4")
+(assert (deep= @[@[] @[1] @[2 3] @[] nil]
+               (map |(get $ :args) (parser/state pargs :frames)))
+        "arguments belong to the frame that collected them")
+
+# A buffer literal's frame says buffer, not string.
+(def pbl (parser/new))
+(parser/consume pbl "@\"ab")
+(assert (= :buffer (get (last (parser/state pbl :frames)) :type)) "buffer frame")
+
+# parser/insert terminates a token with a space and un-counts it, so the column
+# still points at the value that was inserted.
+(def pins (parser/new))
+(parser/consume pins "(tok")
+(assert (deep= [1 4] (parser/where pins)) "column before the insert")
+(parser/insert pins :v)
+(assert (deep= [1 4] (parser/where pins)) "the terminating space is not counted")
+
+# Every method on the abstract type resolves, and the table's order is the
+# order `next` reports -- lookup scans linearly, but iteration does not sort.
+(def pall (parser/new))
+(each m [:byte :clone :consume :eof :error :flush :has-more :insert :produce
+         :state :status :where]
+  (assert (= :cfunction (type (pall m))) (string "method " m)))
+(assert-error "key :not-a-method not found in" (pall :not-a-method))
+(assert (deep= @[:byte :clone :consume :eof :error :flush :has-more :insert
+                 :produce :state :status :where]
+               (keys pall))
+        "methods are iterated in the order the table is written")
+
+# A generated message is a Janet string the parser holds a reference to, so it
+# survives a collection; a literal one is not traced because it is not one.
+(def pgc (parser/new))
+(parser/consume pgc "(]")
+(gccollect)
+(assert (= "mismatched delimiter ], ( opened at line 1, column 1" (parser/error pgc))
+        "a generated message survives a collection")
+
 (end-suite)
 

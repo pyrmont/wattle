@@ -21,9 +21,18 @@
 /// parameters, so no Janet type crosses and the single-translation rule is not
 /// at stake.
 pub const c = @cImport({
+    // `janet.h` includes <math.h>, but only inside `#ifdef JANET_NANBOX_64`,
+    // so without this line the translated namespace gains and loses the libm
+    // declarations according to `-Dnanbox` -- which `math.zig` noticed in
+    // Phase 10 Part 6 by failing to find `acos` under the tagged layout.
+    // `math.c` includes it directly for the same reason. Including it here
+    // makes one translation rather than two.
+    @cInclude("math.h");
     @cInclude("state_abi.h");
     @cInclude("fiber.h");
     @cInclude("gc.h");
+    @cInclude("emit.h");
+    @cInclude("vector.h");
     @cInclude("interop.h");
     @cInclude("runtime.h");
 });

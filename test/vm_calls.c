@@ -47,6 +47,8 @@
 
 #include "features.h"
 #include <janet.h>
+
+#include "support.h"
 #include "fiber.h"
 #include "state.h"
 
@@ -54,20 +56,24 @@
 
 /* Every panic this file expects is counted, because a case that silently
  * stopped panicking would otherwise look exactly like one that passed. Fixed
- * rather than a floor, and verified against -Dvm-calls=c first. */
+ * rather than a floor, and verified against -Dvm-calls=c first.
+ *
+ * It was 13 until the hinge, when the raising `hash` callback went; see
+ * test_a_raise_from_inside_a_fill_loop. */
 static int panics_fired = 0;
-#define EXPECTED_PANICS 13
+#define EXPECTED_PANICS 12
 
 #define EXPECT_PANIC(expr, message) do { \
     JanetTryState _state; \
-    volatile int _returned = 0; \
-    JanetSignal _sig = janet_try(&_state); \
-    if (!_sig) { \
-        (void)(expr); \
-        _returned = 1; \
-    } \
+    int _raised = 0; \
+    JanetSignal _sig = JANET_SIGNAL_OK; \
+    janet_try_init(&_state); \
+    janet_contract_arm(); \
+    (void)(expr); \
+    _raised = janet_contract_raised(); \
+    if (_raised) _sig = janet_contract_signal(); \
     janet_restore(&_state); \
-    assert(!_returned && "expected a panic, got a return"); \
+    assert(_raised && "expected a panic, got a return"); \
     assert(_sig == JANET_SIGNAL_ERROR); \
     assert(janet_checktype(_state.payload, JANET_STRING)); \
     if (janet_cstrcmp(janet_unwrap_string(_state.payload), (message))) { \
@@ -133,7 +139,7 @@ static Janet cfun_args(int32_t argc, Janet *argv) {
 
 static Janet cfun_contract(int32_t argc, Janet *argv);
 
-static const JanetReg cfuns[] = {
+static JanetReg cfuns[] = {
     {"vmcalls/sum", cfun_sum, NULL},
     {"vmcalls/args", cfun_args, NULL},
     {"vmcalls/contract", cfun_contract, NULL},
@@ -182,32 +188,17 @@ static const JanetAbstractType loud_string_type = {
     .tostring = loud_tostring,
 };
 
-/* Raises from `hash`, which janet_fill_table reaches through janet_table_put. */
-static int32_t loud_hash(void *p, size_t len) {
-    (void) p;
-    (void) len;
-    janet_panic("hash raised");
-}
-
-static const JanetAbstractType loud_hash_type = {
-    .name = "vm-calls/loud-hash",
-    .hash = loud_hash,
-};
-
 static Janet callable_value;
 static Janet indexable_value;
 static Janet loud_string_value;
-static Janet loud_hash_value;
 
 static void make_abstracts(void) {
-    callable_value = janet_wrap_abstract(janet_abstract(&callable_type, 1));
-    indexable_value = janet_wrap_abstract(janet_abstract(&indexable_type, 1));
-    loud_string_value = janet_wrap_abstract(janet_abstract(&loud_string_type, 1));
-    loud_hash_value = janet_wrap_abstract(janet_abstract(&loud_hash_type, 1));
+    callable_value = janet_wrap_abstract(janet_abstract(CONTRACT_AT(callable_type), 1));
+    indexable_value = janet_wrap_abstract(janet_abstract(CONTRACT_AT(indexable_type), 1));
+    loud_string_value = janet_wrap_abstract(janet_abstract(CONTRACT_AT(loud_string_type), 1));
     janet_gcroot(callable_value);
     janet_gcroot(indexable_value);
     janet_gcroot(loud_string_value);
-    janet_gcroot(loud_hash_value);
 }
 
 /* ------------------------------------------------------ janet_method_invoke */
@@ -249,12 +240,13 @@ static void test_an_abstract_without_call_falls_through_to_indexing(void) {
      * is the one arity panic not compared whole. */
     {
         JanetTryState state;
-        JanetSignal sig = janet_try(&state);
-        if (!sig) {
-            (void) janet_method_invoke(indexable_value, 2, argv);
-            assert(0 && "expected a panic");
-        }
+        janet_try_init(&state);
+        janet_contract_arm();
+        (void) janet_method_invoke(indexable_value, 2, argv);
+        int raised = janet_contract_raised();
+        JanetSignal sig = janet_contract_signal();
         janet_restore(&state);
+        assert(raised && "expected a panic");
         assert(sig == JANET_SIGNAL_ERROR);
         assert(janet_checktype(state.payload, JANET_STRING));
         {
@@ -478,13 +470,22 @@ static void test_fill_string(void) {
     janet_gcunroot(janet_wrap_buffer(buffer));
 }
 
-/* A raise from inside each loop, which is the one thing about these three that
- * a Janet-level test cannot reach: the callbacks that raise belong to abstract
- * types no in-tree module defines. Under the Zig selector the signal crosses a
- * Zig frame on its way out. */
+/* A raise from inside the fill loop, which is the one thing about these three
+ * that a Janet-level test cannot reach: the callback that raises belongs to an
+ * abstract type no in-tree module defines.
+ *
+ * There were two halves here until the hinge, and the second is gone rather
+ * than fixed. It drove `janet_fill_table` through an abstract whose `hash`
+ * called `janet_panic`, and it worked because `janet_panic` was a `longjmp`:
+ * the jump left `janet_table_put` from inside a callback whose signature had
+ * no way to say it had failed. The hinge typed `hash` non-raising -- see
+ * `src/zig/subsystems/abstract_type.zig`, which gives the reason: `hash` is
+ * reached from comparisons that must be total, so a raise there has no caller
+ * that could act on it. With the jump gone the callback has no way out, so the
+ * case is not a behaviour this runtime has any more. `tostring` is raising and
+ * is what this keeps. */
 static void test_a_raise_from_inside_a_fill_loop(void) {
     JanetBuffer *buffer = janet_buffer(8);
-    JanetTable *table = janet_table(4);
     Janet mem[2];
 
     janet_gcroot(janet_wrap_buffer(buffer));
@@ -492,17 +493,10 @@ static void test_a_raise_from_inside_a_fill_loop(void) {
     mem[1] = loud_string_value;
     EXPECT_PANIC(janet_fill_string(buffer, mem, 2), "tostring raised");
     /* The element before the raising one was already written, and the buffer
-     * survives the jump. */
+     * survives the raise. */
     assert(buffer->count == 1);
     assert(buffer->data[0] == '1');
     janet_gcunroot(janet_wrap_buffer(buffer));
-
-    janet_gcroot(janet_wrap_table(table));
-    mem[0] = loud_hash_value;
-    mem[1] = intv(1);
-    EXPECT_PANIC(janet_fill_table(table, mem, 2), "hash raised");
-    assert(table->count == 0);
-    janet_gcunroot(janet_wrap_table(table));
 }
 
 /* ------------------------------------------------------------------- entry */
@@ -538,9 +532,10 @@ static Janet cfun_contract(int32_t argc, Janet *argv) {
     return janet_wrap_nil();
 }
 
-int main(void) {
+void vm_calls_contract(void) {
     janet_init();
     test_env = janet_core_env(NULL);
+    janet_contract_adapt_regs(cfuns);
     janet_cfuns(test_env, NULL, cfuns);
     make_abstracts();
 
@@ -556,5 +551,4 @@ int main(void) {
 
     janet_deinit();
     printf("vm calls contract ok (%d panics)\n", panics_fired);
-    return 0;
 }

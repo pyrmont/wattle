@@ -562,7 +562,7 @@ static void test_collect_frees_scratch(void) {
     assert(janet_vm.scratch_len == 0);
 }
 
-int main(void) {
+void gc_alloc_contract(void) {
     janet_init();
 
     test_gcpressure();
@@ -593,5 +593,4 @@ int main(void) {
 
     janet_deinit();
     printf("gc alloc contract ok\n");
-    return 0;
 }

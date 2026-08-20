@@ -8,6 +8,8 @@
 #include <string.h>
 #include <janet.h>
 
+#include "support.h"
+
 static JanetFunction *compare_fn;
 
 /* Compare through a compiled function rather than a literal expression, so a
@@ -163,25 +165,25 @@ static void test_tostring(void) {
     uint64_t u;
 
     s = 0;
-    janet_s64_type.tostring(&s, buffer);
+    janet_contract_at_tostring(&janet_s64_type, &s, buffer);
     assert(buffer->count == 1 && !memcmp(buffer->data, "0", 1));
 
     buffer->count = 0;
     s = INT64_MIN;
-    janet_s64_type.tostring(&s, buffer);
+    janet_contract_at_tostring(&janet_s64_type, &s, buffer);
     assert(buffer->count == 20);
     assert(!memcmp(buffer->data, "-9223372036854775808", 20));
 
     buffer->count = 0;
     s = INT64_MAX;
-    janet_s64_type.tostring(&s, buffer);
+    janet_contract_at_tostring(&janet_s64_type, &s, buffer);
     assert(buffer->count == 19);
     assert(!memcmp(buffer->data, "9223372036854775807", 19));
 
     /* The unsigned formatter must not print the high bit as a sign. */
     buffer->count = 0;
     u = UINT64_MAX;
-    janet_u64_type.tostring(&u, buffer);
+    janet_contract_at_tostring(&janet_u64_type, &u, buffer);
     assert(buffer->count == 20);
     assert(!memcmp(buffer->data, "18446744073709551615", 20));
 
@@ -189,7 +191,7 @@ static void test_tostring(void) {
     buffer->count = 0;
     janet_buffer_push_cstring(buffer, "n=");
     u = 42;
-    janet_u64_type.tostring(&u, buffer);
+    janet_contract_at_tostring(&janet_u64_type, &u, buffer);
     assert(buffer->count == 4 && !memcmp(buffer->data, "n=42", 4));
 }
 
@@ -238,7 +240,7 @@ static void test_divf_mod(void) {
         assert(janet_is_int(result) == JANET_INT_S64);
         {
             JanetBuffer *buffer = janet_buffer(0);
-            janet_s64_type.tostring(janet_unwrap_abstract(result), buffer);
+            janet_contract_at_tostring(&janet_s64_type, janet_unwrap_abstract(result), buffer);
             assert(buffer->count == (int32_t) strlen(cases[i].expected));
             assert(!memcmp(buffer->data, cases[i].expected, buffer->count));
         }
@@ -253,7 +255,7 @@ static void test_divf_mod(void) {
     }
 }
 
-int main(void) {
+void inttypes_contract(void) {
     JanetTable *env;
     Janet fn;
 
@@ -273,5 +275,4 @@ int main(void) {
 
     janet_gcunroot(fn);
     janet_deinit();
-    return 0;
 }

@@ -53,7 +53,11 @@
 #define JANET_FIBER_BREAKPOINT       0x1000000
 #define JANET_FIBER_RESUME_NO_USEVAL 0x2000000
 #define JANET_FIBER_RESUME_NO_SKIP   0x4000000
-#define JANET_FIBER_DID_LONGJUMP     0x8000000
+/* Set by a raise on the fiber it unwound out of, and read on resume to pop a C
+ * frame and to turn a raise at a tail call into an implicit return. It was
+ * JANET_FIBER_DID_LONGJUMP until Phase 10's hinge, which deleted the longjmp;
+ * the flag outlived the mechanism it was named after. */
+#define JANET_FIBER_DID_RAISE        0x8000000
 #define JANET_FIBER_FLAG_MASK        0xF000000
 
 #define JANET_FIBER_EV_FLAG_CANCELED 0x10000

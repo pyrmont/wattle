@@ -44,6 +44,8 @@
 
 #include "features.h"
 #include <janet.h>
+
+#include "support.h"
 #include "fiber.h"
 #include "state.h"
 
@@ -74,14 +76,15 @@ static Janet eval(const char *source) {
 
 #define EXPECT_PANIC(expr, message) do { \
     JanetTryState _state; \
-    volatile int _returned = 0; \
-    JanetSignal _sig = janet_try(&_state); \
-    if (!_sig) { \
-        (void)(expr); \
-        _returned = 1; \
-    } \
+    int _raised = 0; \
+    JanetSignal _sig = JANET_SIGNAL_OK; \
+    janet_try_init(&_state); \
+    janet_contract_arm(); \
+    (void)(expr); \
+    _raised = janet_contract_raised(); \
+    if (_raised) _sig = janet_contract_signal(); \
     janet_restore(&_state); \
-    assert(!_returned && "expected a panic, got a return"); \
+    assert(_raised && "expected a panic, got a return"); \
     assert(_sig == JANET_SIGNAL_ERROR); \
     assert(janet_checktype(_state.payload, JANET_STRING)); \
     if (janet_cstrcmp(janet_unwrap_string(_state.payload), (message))) { \
@@ -537,7 +540,7 @@ static Janet cfun_selfframe(int32_t argc, Janet *argv) {
     return janet_debug_frame(janet_fiber_frame(janet_vm.fiber));
 }
 
-static const JanetReg cfuns[] = {
+static JanetReg cfuns[] = {
     {"selfframe", cfun_selfframe, "(selfframe)\n\nIts own stack frame."},
     {NULL, NULL, NULL}
 };
@@ -609,7 +612,7 @@ static void test_an_unregistered_cfunction_frame(void) {
 
 /* ------------------------------------------------------------------- entry */
 
-int main(void) {
+void vm_lifecycle_contract(void) {
     /* Three cycles of their own, before anything shared exists. */
     test_the_state_janet_init_leaves();
     test_what_janet_deinit_clears();
@@ -617,6 +620,7 @@ int main(void) {
 
     janet_init();
     test_env = janet_core_env(NULL);
+    janet_contract_adapt_regs(cfuns);
     janet_cfuns(test_env, "vmlife", cfuns);
 
     test_a_janet_frame();
@@ -641,5 +645,4 @@ int main(void) {
     }
 
     printf("vm lifecycle contract ok (%d panics)\n", panics_fired);
-    return 0;
 }

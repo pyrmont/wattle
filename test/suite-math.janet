@@ -65,5 +65,52 @@
 (assert (< 11899423.08 (math/gamma 11.5) 11899423.085) "math/gamma")
 (assert (< 2605.1158 (math/log-gamma 500) 2605.1159) "math/log-gamma")
 
+# One value per unary operation. The suite covered a handful of these and
+# reached the rest through nothing at all, so an operation wired to the wrong
+# library function was invisible.
+(defn- close [a b msg] (assert (< (math/abs (- a b)) 1e-9) msg))
+(close (math/acos 0.5) 1.0471975511965979 "math/acos")
+(close (math/asin 0.5) 0.5235987755982989 "math/asin")
+(close (math/atan 0.5) 0.4636476090008061 "math/atan")
+(close (math/cos 0.5) 0.8775825618903728 "math/cos")
+(close (math/cosh 0.5) 1.1276259652063807 "math/cosh")
+(close (math/acosh 1.5) 0.9624236501192069 "math/acosh")
+(close (math/sin 0.5) 0.479425538604203 "math/sin")
+(close (math/sinh 0.5) 0.5210953054937474 "math/sinh")
+(close (math/tan 0.5) 0.5463024898437905 "math/tan")
+(close (math/tanh 0.5) 0.46211715726000974 "math/tanh")
+(close (math/atanh 0.5) 0.5493061443340549 "math/atanh")
+(close (math/asinh 0.5) 0.48121182505960347 "math/asinh")
+(close (math/exp 0.5) 1.6487212707001282 "math/exp")
+(close (math/exp2 0.5) 1.4142135623730951 "math/exp2")
+(close (math/expm1 0.5) 0.6487212707001282 "math/expm1")
+(close (math/log 0.5) -0.6931471805599453 "math/log")
+(close (math/log10 0.5) -0.30102999566398120 "math/log10")
+(close (math/log2 0.5) -1 "math/log2")
+(close (math/log1p 0.5) 0.4054651081081644 "math/log1p")
+(close (math/sqrt 0.5) 0.7071067811865476 "math/sqrt")
+(close (math/cbrt 0.5) 0.7937005259840998 "math/cbrt")
+(close (math/erf 0.5) 0.5204998778130465 "math/erf")
+(close (math/erfc 0.5) 0.4795001221869535 "math/erfc")
+(assert (= 3 (math/ceil 2.5)) "math/ceil")
+(assert (= 2 (math/floor 2.5)) "math/floor")
+(assert (= 2 (math/trunc 2.5)) "math/trunc")
+(assert (= 3 (math/round 2.5)) "math/round")
+(assert (= 2.5 (math/abs -2.5)) "math/abs")
+(close (math/hypot 3 4) 5 "math/hypot")
+(close (math/atan2 1 1) 0.7853981633974483 "math/atan2")
+(close (math/pow 2 10) 1024 "math/pow")
+(close (math/next 1 2) 1.0000000000000002 "math/next")
+
+# frexp splits a number into a mantissa in [0.5, 1) and an exponent, and ldexp
+# puts it back together. Neither half was reached.
+(let [[m e] (math/frexp 8)]
+  (assert (= 0.5 m) "math/frexp mantissa")
+  (assert (= 4 e) "math/frexp exponent")
+  (assert (= 8 (math/ldexp m e)) "math/ldexp round trip"))
+(let [[m e] (math/frexp 0)]
+  (assert (= 0 m) "math/frexp zero mantissa")
+  (assert (= 0 e) "math/frexp zero exponent"))
+
 (end-suite)
 

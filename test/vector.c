@@ -3,7 +3,7 @@
 #include <janet.h>
 #include "vector.h"
 
-int main(void) {
+void vector_contract(void) {
     int32_t *vector = NULL;
     int32_t i;
 
@@ -30,5 +30,4 @@ int main(void) {
 
     janet_v_free(vector);
     janet_deinit();
-    return 0;
 }

@@ -110,11 +110,25 @@ struct JanetVM {
     JanetFiber *fiber;
     JanetFiber *root_fiber;
 
-    /* The current pointer to the inner most jmp_buf. The current
-     * return point for panics. */
-    jmp_buf *signal_buf;
+    /* Where the innermost try scope wants a raise's payload written. It is
+     * also what says a scope exists at all: janet_signal_plan answers
+     * TOP_LEVEL when this is null, which is the whole of what the scope is
+     * for. A jmp_buf *signal_buf sat beside it until Phase 10's hinge, and
+     * pointed at the setjmp a raise would land in; a raise returns now, so
+     * there is nothing left to point at. */
     Janet *return_reg;
     int coerce_error;
+
+    /* The signal a raise decided on, published by janet_zig_signal_record and
+     * read by whoever is delivering the raise. Under the jump it is redundant -
+     * longjmp carries the signal in its second argument and setjmp returns it -
+     * but a Zig raise returns an error, and a Zig error carries no payload. The
+     * two deliveries read the same field, which is what keeps them in step.
+     *
+     * Written on every raise and meaningful only between the record and the
+     * catch. Phase 10 removes signal_buf and leaves this. */
+    JanetSignal pending_signal;
+
 
     /* The global registry for c functions. Used to store meta-data
      * along with otherwise bare c function pointers. */
@@ -206,6 +220,20 @@ struct JanetVM {
 #endif
 #endif
 
+    /* Whether a raise reached a C-ABI face and was returned rather than jumped.
+     *
+     * Phase 10 Part 17h. A converted symbol keeps a C face for the callers that
+     * are still C, and until this part that face delivered by longjmp. The
+     * remaining C callers are the contracts and four variadic shells, and a
+     * contract cannot keep the jump: `janet_try` is a setjmp and the exit gate
+     * forbids one anywhere in the tree. So the face records here and returns a
+     * zeroed value, and the caller tests this on the next statement.
+     *
+     * This is not Part 17e's `raising` reinstated. That flag was on the
+     * interpreter's hot path, one branch per cfunction call; this one is on the
+     * C ABI, which since Part 17g the runtime never crosses. It dies with the
+     * faces in Part 18. */
+    int32_t c_raised;
 };
 
 extern JANET_THREAD_LOCAL JanetVM janet_vm;
@@ -227,16 +255,19 @@ typedef struct {
 
 /* ---------------------------------------------------------------- signals */
 
-/* What janet_signalv must still do once the decision has been made. The
- * decision is janet_signal_plan's; the formatting and the jump stay in C,
- * because "%v" runs an abstract type's tostring callback and can itself panic,
- * and because a longjmp may not cross a Zig frame.
+/* How janet_zig_signal_record decides what a raise means here. Through Phase 9
+ * the plan was reported back to C, which owned both the coercion message -
+ * "%v" runs an abstract type's tostring callback and can itself panic - and the
+ * jump. Phase 10 Part 2 moved the message across with the rest of the decision,
+ * on the strength of jump transparency, and left C only the jump. The plan is
+ * still an interface rather than an internal step, because -Dsignal-core=c
+ * answers with the same three values.
  *
  * Provided by src/core/capi.c or src/zig/subsystems/signal_core.zig. */
 typedef enum {
-    /* No return register: nothing to jump to, so report at top level. */
+    /* No return register: nothing to raise into, so report at top level. */
     JANET_SIGNAL_PLAN_TOP_LEVEL = 0,
-    /* Store the message and jump with the signal janet_signal_plan reports. */
+    /* Store the message and raise with the signal janet_signal_plan reports. */
     JANET_SIGNAL_PLAN_RAISE = 1,
     /* As RAISE, but build the coercion message first. */
     JANET_SIGNAL_PLAN_COERCE = 2
@@ -311,23 +342,32 @@ void janet_trace_frame(JanetStackFrame *frame, JanetTraceFrame *out);
 
 /* Why the argument-extraction layer reports instead of formatting.
  *
- * Every janet_get* and janet_opt* in src/core/capi.c ends a failure in
- * janet_panicf, which allocates a Janet string, and allocation can panic. A
- * non-panicking getter that formatted eagerly would therefore need a
- * panic-free allocator. Reporting a code plus the slot and formatting only at
- * the C boundary avoids that, and it makes the messages identical by
+ * Through Phase 9 the reason was a language boundary. Every janet_get* and
+ * janet_opt* ends a failure in janet_panicf, which allocates a Janet string,
+ * and allocation can panic; a non-panicking getter that formatted eagerly
+ * would therefore have needed a panic-free allocator. Phase 10 Part 5 removed
+ * that constraint - a panic is a returned error, and a frame holding nothing
+ * may be jumped through anyway - and the split survived it, because the
+ * kernels have callers that must not raise at all: janet_checkabstract answers
+ * NULL, and the three view constructors in util.c answer 0. A kernel that
+ * raised would need a non-raising twin for each of them.
+ *
+ * Reporting a code plus the slot also keeps the messages identical by
  * construction rather than by inspection: the format strings below stay in one
  * place, in janet_arg_raise.
  *
  * Nothing in JanetArgFault is a Janet value. The slot index is enough for the
  * boundary to recover argv[slot] and render it with "%v", which runs an
- * abstract type's tostring callback and so must not happen on this side.
+ * abstract type's tostring callback - third-party code that raises by jumping
+ * whatever language surrounds it.
  *
- * Provided by src/core/capi.c or src/zig/subsystems/args_core.zig. */
+ * Provided by src/core/capi.c or src/zig/subsystems/args_core.zig, whole:
+ * -Dargs-core selects the kernels and the layer above them together. */
 
 /* The literal noun each numeric getter names in its message. A code rather
  * than a string so that the wording cannot drift between implementations;
- * janet_arg_expect_name in capi.c is the only place the words appear. */
+ * the expect_name helper in whichever implementation is selected is the only
+ * place the words appear. */
 typedef enum {
     JANET_ARG_EXPECT_NAT = 0,   /* "non-negative 32 bit signed integer" */
     JANET_ARG_EXPECT_SIZE = 1,  /* "size" */
@@ -388,8 +428,9 @@ typedef struct {
 
 /* How janet_getbytes and janet_getcbytes must proceed once the type is known.
  * The abstract case is separated because it runs the type's `bytes` callback,
- * which is third-party code that may panic; the call is made on the C side so
- * that no jump crosses the frame that classified the value. */
+ * which is third-party code that raises by jumping. The call is made by the
+ * getter rather than by the kernel, so that janet_bytes_view - which may not
+ * raise at all - can still use the classification. */
 typedef enum {
     /* Not byte-viewable: the caller raises the fault the kernel filled in. */
     JANET_ARG_BYTES_FAULT = 0,
@@ -448,7 +489,9 @@ int janet_arg_strlike(int32_t type, Janet x, const char *cstring);
 int janet_arg_method(const uint8_t *method, const JanetMethod *methods, const JanetMethod **out);
 const JanetMethod *janet_arg_nextmethod(const JanetMethod *methods, Janet key);
 
-/* The formatting half. Always raises; never returns. */
+/* The formatting half. Always raises; never returns. Still exported, and still
+ * declared here, because the kernels are usable on their own: a C caller of one
+ * needs a way to report what it found. */
 JANET_NO_RETURN void janet_arg_raise(const Janet *argv, const JanetArgFault *fault);
 
 /* ------------------------------------------------ interpreter callees */
@@ -478,6 +521,39 @@ void janet_fill_table(JanetTable *table, const Janet *mem, int32_t count);
 void janet_fill_struct(JanetKV *st, const Janet *mem, int32_t count);
 void janet_fill_string(JanetBuffer *buffer, const Janet *mem, int32_t count);
 
+/* ------------------------------------------------------ raising a signal */
+
+/* The two halves of a raise, split in Phase 10 Part 2 so that a Zig caller and
+ * a C caller share the decision and differ only in the delivery.
+ *
+ * janet_zig_signal_record plans, coerces, commits the payload into the return
+ * register, sets the fiber flag, and publishes the chosen signal in
+ * janet_vm.pending_signal. It does not return when there is no scope to raise
+ * into. Provided by src/core/capi.c or src/zig/subsystems/signal_core.zig, and
+ * selected by -Dsignal-core along with the rest of the decision.
+ *
+ * janet_zig_signal_deliver was the jump, for the callers that expected one.
+ * The hinge deleted it with the last setjmp: every caller either returns
+ * error.JanetSignal or, across the C ABI, reports through the pair below.
+ *
+ * janet_top_level_signal is the no-scope case: it ends the process or the
+ * thread. Always src/core/capi.c, where it was static until Part 2. */
+void janet_zig_signal_record(JanetSignal sig, Janet message);
+
+/* Phase 10 Part 17h: a raise handed to a C caller by returning.
+ *
+ * A converted symbol's C face records with the first of these and returns a
+ * zeroed value; the caller asks the second on the next statement. The third is
+ * for a caller about to open a window it means to measure -- a contract's
+ * EXPECT_PANIC -- and is separate from janet_try_init because a scope and a
+ * report are different things. See src/zig/raise.zig for why the jump could
+ * not stay: a contract catches one with janet_try, which is a setjmp, and the
+ * exit gate forbids a setjmp anywhere in the tree. */
+void janet_zig_c_raise_record(void);
+int janet_zig_c_raise_take(void);
+void janet_zig_c_raise_clear(void);
+JANET_NO_RETURN void janet_top_level_signal(const char *msg);
+
 /* ------------------------------------------------ the interpreter loop */
 
 /* run_vm, and the two functions it reaches that vm.c used to keep private.
@@ -505,33 +581,23 @@ JanetSignal janet_run_vm(JanetFiber *fiber, Janet in);
 JanetSignal janet_check_can_resume(JanetFiber *fiber, Janet *out, int is_cancel);
 JanetSignal janet_continue_no_check(JanetFiber *fiber, Janet in, Janet *out);
 
-/* Always src/core/vm.c, whichever selector provides the loop.
- *
- * janet_vm_trace is vm.c's vm_do_trace as a function. It takes the fiber
- * rather than a pointer into its stack because janet_eprintf can resize that
- * stack between elements, which is why the C original is a macro.
- *
- * janet_vm_trace_argv is the same macro over an argv the caller owns, which is
- * what janet_call has. Both can re-enter the interpreter through janet_eprintf,
- * which is the subject of a FOUND.md entry. */
-void janet_vm_trace(JanetFunction *func, int32_t argc, JanetFiber *fiber);
-void janet_vm_trace_argv(JanetFunction *func, int32_t argc, const Janet *argv);
+/* janet_vm_trace and janet_vm_trace_argv stood here. They are vm_run.zig's
+ * traceFiber and traceArgv since Phase 10 Part 18, which deleted the
+ * janet_dynprintf they were the last live C callers of. */
 
-#ifdef JANET_CALL_TRAMPOLINE
-/* The other direction: a setjmp scope in a C frame around an action a Zig
- * frame chose. `context` points at the caller's frame and carries both the
- * arguments and the result; it is read only when JANET_SIGNAL_OK is returned.
- * Exists only in a trampoline build, which since Phase 9 Part 3 is not the
- * default under either selector; PLAN.md's Phase 9 section has the reversal.
+/* Three things stood here and all three went with the jump.
  *
- * janet_vm_error_string builds the message janet_panicf would have built
- * without raising it, and is variadic for the same reason janet_panicf is: the
- * caller's format string and arguments have to arrive unaltered for the
- * message to be identical. */
-typedef void (*JanetVmAction)(void *context);
-JanetSignal janet_vm_scoped(JanetVmAction action, void *context, Janet *out);
-Janet janet_vm_error_string(const char *format, ...);
-#endif
+ * janet_vm_scoped and the JanetVmAction behind it: a setjmp scope in a C frame
+ * around an action a Zig frame chose. Part 17e emptied it -- all thirteen of
+ * run_vm's raise-capable callees return their raise now -- and it kept a
+ * setjmp alive for two more parts with no caller in the tree.
+ *
+ * janet_vm_error_string, which built the message janet_panicf would have built
+ * without raising it, for a run_vm that had to return its own raises rather
+ * than jump them. vm_run.zig's raisef calls raise.panicf instead.
+ *
+ * -Dcall-trampoline, which selected both. Its C arm was the last configuration
+ * in the tree that compiled a setjmp at all. */
 
 #ifdef JANET_NET
 void janet_net_init(void);

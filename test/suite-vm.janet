@@ -141,10 +141,10 @@
 #
 # Signals a cfunction raises, and the frame the raise leaves behind
 #
-# The per-call try scope (-Dcall-trampoline) catches these one frame below
-# run_vm and returns them rather than letting them jump past it. A non-error
-# signal is the case that distinguishes returning the signal unaltered from
-# re-raising it: `signal` is a cfunction, so its signal crosses the scope.
+# A cfunction returns its raise and run_vm propagates it, so a non-error signal
+# is the case that distinguishes carrying the signal unaltered from re-raising
+# it as an error. This was the per-call try scope's job under -Dcall-trampoline,
+# which the hinge spent along with the last setjmp.
 (def fs (fiber/new (fn [] (signal 3 :payload)) :i0123456789))
 (assert (= :payload (resume fs)) "user signal from a cfunction carries its value")
 (assert (= :user3 (fiber/status fs)) "user signal from a cfunction keeps its number")
@@ -177,10 +177,9 @@
 # Operator method fallback, and signals raised inside it
 #
 # The arithmetic, bitwise and comparison opcodes take a number fast path and
-# fall back to a method lookup for anything else. Under -Dcall-trampoline that
-# fallback runs inside a try scope, so it has to be right on both paths: the
-# value comes back and the VM's stack pointer is refreshed, or the signal comes
-# back and nothing after the call runs.
+# fall back to a method lookup for anything else. That fallback has to be right
+# on both paths: the value comes back and the VM's stack pointer is refreshed,
+# or the raise comes back and nothing after the call runs.
 (def adder @{:+ (fn [_self other] [:added other])})
 (assert (= [:added 5] (+ adder 5)) "binary operator falls back to a method")
 (assert (= [:added 5] (+ adder 5) (+ adder 5)) "method fallback refreshes the stack")

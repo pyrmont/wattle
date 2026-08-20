@@ -19,7 +19,7 @@ static void assert_integer(Janet value, int32_t expected) {
     assert(janet_unwrap_integer(value) == expected);
 }
 
-int main(void) {
+void asm_decode_contract(void) {
     const Janet *tuple;
     Janet unknown;
 
@@ -70,5 +70,4 @@ int main(void) {
     assert(janet_tuple_flag(tuple) & JANET_TUPLE_FLAG_BRACKETCTOR);
 
     janet_deinit();
-    return 0;
 }

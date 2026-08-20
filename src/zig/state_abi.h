@@ -20,6 +20,27 @@
  */
 
 #include "features.h"
+
+/* Aro -- the translate-c front end in Zig 0.16 -- predefines `__unix__`,
+ * `unix` and `__unix` for the mingw targets as well as `_WIN32`, and
+ * `janet.h` tests its Unix chain *before* its Windows one. So the translation
+ * of `janet.h` for `x86_64-windows-gnu` defines `JANET_POSIX` where the
+ * compilation of the same header for the same target defines `JANET_WINDOWS`,
+ * and every type that varies by platform -- `JanetHandle` above all, which is
+ * `void *` on Windows and `int` elsewhere -- comes out describing the wrong
+ * operating system. Nothing detected it until a Zig subsystem first needed
+ * one of those types, in Phase 10 Part 12.
+ *
+ * The correction belongs here rather than in `janet.h`: it is a fact about
+ * the tool, the C build is already right, and this file exists to make
+ * exactly this kind of translation-only adjustment. `FOUND.md` records it.
+ */
+#if defined(_WIN32) || defined(WIN32)
+#undef __unix__
+#undef unix
+#undef __unix
+#endif
+
 #include <janet.h>
 
 #ifndef JANET_SINGLE_THREADED
@@ -69,12 +90,20 @@
 #define JANET_VM_HAS_INTERRUPT 1
 #endif
 
-/* Whether raise-capable callees are entered through a per-call setjmp scope.
- * Same restatement as above, for the same reason. */
-#ifdef JANET_CALL_TRAMPOLINE
-#define JANET_VM_CALL_TRAMPOLINE 1
-#else
-#define JANET_VM_CALL_TRAMPOLINE 0
+/* `JANET_OS_NAME` and `JANET_ARCH_NAME` are build-time overrides that name the
+ * keyword `os/which` and `os/arch` report. Both are *bare tokens* -- `os.c`
+ * stringifies them with the preprocessor -- so a Zig caller cannot recover the
+ * text: translate-c surfaces a macro's value, and an identifier is not one.
+ * Stringifying them here is the only place that can be done, and it is the
+ * same kind of restatement as the flags above. Neither is set by this
+ * project's build; a user's `janetconf.h` is where they would come from. */
+#define JANET_ZIG_STRINGIFY1(x) #x
+#define JANET_ZIG_STRINGIFY(x) JANET_ZIG_STRINGIFY1(x)
+#ifdef JANET_OS_NAME
+#define JANET_ZIG_OS_NAME JANET_ZIG_STRINGIFY(JANET_OS_NAME)
+#endif
+#ifdef JANET_ARCH_NAME
+#define JANET_ZIG_ARCH_NAME JANET_ZIG_STRINGIFY(JANET_ARCH_NAME)
 #endif
 
 #endif /* JANET_ZIG_STATE_ABI_H */

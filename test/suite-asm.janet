@@ -69,5 +69,24 @@
                        (def foo (fn [one two] one))
                        (foo 100 200)))))
 
+# A failed nested assembly reports the child's message at the top level.
+#
+# Until Phase 10 Part 3 this path had two mechanisms and no coverage: the child
+# longjmped into the parent's handler having copied its message across, which
+# made the parent's own check on the child's result unreachable. That check is
+# the live path now, and a mutation sweep found nothing anywhere noticed when it
+# was removed -- the assembler stored a null funcdef instead of failing.
+(assert-error "nested assembly failure propagates"
+              (asm {:arity 0
+                    :bytecode ['(ret 0)]
+                    :defs [{:arity 0 :bytecode ['(bogus-op 0)]}]}))
+
+(let [[ok err] (protect (asm {:arity 0
+                              :bytecode ['(ret 0)]
+                              :defs [{:arity 0 :bytecode ['(bogus-op 0)]}]}))]
+  (assert (not ok) "nested assembly failure is an error")
+  (assert (string/find "bogus-op" (string err))
+          "nested assembly failure names the child's instruction"))
+
 (end-suite)
 

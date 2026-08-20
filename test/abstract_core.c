@@ -41,6 +41,8 @@
 
 #include "features.h"
 #include <janet.h>
+
+#include "support.h"
 #include "state.h"
 #include "gc.h"
 
@@ -122,11 +124,11 @@ static void test_begin_publishes_an_untyped_block(void) {
     size_t before_count = janet_vm.block_count;
     size_t before_charge = janet_vm.next_collection;
 
-    void *a = janet_abstract_begin(&at_counted, 40);
+    void *a = janet_abstract_begin(CONTRACT_AT(at_counted), 40);
     JanetAbstractHead *head = janet_abstract_head(a);
 
     assert(head->size == 40);
-    assert(head->type == &at_counted);
+    assert(head->type == CONTRACT_AT(at_counted));
     assert(janet_gc_type(head) == JANET_MEMORY_NONE);
     assert(0 == (head->gc.flags & JANET_MEM_REACHABLE));
 
@@ -140,7 +142,7 @@ static void test_begin_publishes_an_untyped_block(void) {
      * header behind it. */
     assert((char *) a == (char *) head + sizeof(JanetAbstractHead));
     assert(janet_abstract_size(a) == 40);
-    assert(janet_abstract_type(a) == &at_counted);
+    assert(janet_abstract_type(a) == CONTRACT_AT(at_counted));
 
     /* `long long data[]` is the most general alignment the header can ask for,
      * so the payload is aligned for anything an embedder puts in it. */
@@ -151,7 +153,7 @@ static void test_begin_publishes_an_untyped_block(void) {
 
 /* `janet_abstract_end` writes the type tag and returns the same pointer. */
 static void test_end_types_the_block(void) {
-    void *a = janet_abstract_begin(&at_counted, 8);
+    void *a = janet_abstract_begin(CONTRACT_AT(at_counted), 8);
     JanetAbstractHead *head = janet_abstract_head(a);
     assert(janet_gc_type(head) == JANET_MEMORY_NONE);
 
@@ -159,7 +161,7 @@ static void test_end_types_the_block(void) {
     assert(b == a);
     assert(janet_gc_type(head) == JANET_MEMORY_ABSTRACT);
     assert(head->size == 8);
-    assert(head->type == &at_counted);
+    assert(head->type == CONTRACT_AT(at_counted));
 }
 
 /* `janet_gc_settype` is an or, not a store, and this is the only place the
@@ -168,7 +170,7 @@ static void test_end_types_the_block(void) {
  * clear `JANET_MEM_REACHABLE` and the sweep would then free a block the caller
  * is about to use. */
 static void test_end_preserves_the_other_flag_bits(void) {
-    void *a = janet_abstract_begin(&at_counted, 8);
+    void *a = janet_abstract_begin(CONTRACT_AT(at_counted), 8);
     JanetAbstractHead *head = janet_abstract_head(a);
 
     janet_gc_mark(head);
@@ -191,12 +193,12 @@ static void test_abstract_is_begin_then_end(void) {
     size_t before_count = janet_vm.block_count;
     size_t before_charge = janet_vm.next_collection;
 
-    void *a = janet_abstract(&at_counted, 24);
+    void *a = janet_abstract(CONTRACT_AT(at_counted), 24);
     JanetAbstractHead *head = janet_abstract_head(a);
 
     assert(janet_gc_type(head) == JANET_MEMORY_ABSTRACT);
     assert(head->size == 24);
-    assert(head->type == &at_counted);
+    assert(head->type == CONTRACT_AT(at_counted));
     assert(janet_vm.block_count == before_count + 1);
     assert(on_list(janet_vm.blocks, head));
     assert(janet_vm.next_collection ==
@@ -205,7 +207,7 @@ static void test_abstract_is_begin_then_end(void) {
 
 /* A zero-length abstract is a header and nothing else, and is legal. */
 static void test_zero_length_abstract(void) {
-    void *a = janet_abstract(&at_bare, 0);
+    void *a = janet_abstract(CONTRACT_AT(at_bare), 0);
     JanetAbstractHead *head = janet_abstract_head(a);
     assert(head->size == 0);
     assert(janet_gc_type(head) == JANET_MEMORY_ABSTRACT);
@@ -214,7 +216,7 @@ static void test_zero_length_abstract(void) {
 /* The payload is untouched by construction, so an embedder that writes it
  * before `janet_abstract_end` finds it intact afterwards. */
 static void test_payload_survives_end(void) {
-    void *a = janet_abstract_begin(&at_bare, 16);
+    void *a = janet_abstract_begin(CONTRACT_AT(at_bare), 16);
     memset(a, 0x5a, 16);
     janet_abstract_end(a);
     for (int i = 0; i < 16; i++) assert(((unsigned char *) a)[i] == 0x5a);
@@ -236,7 +238,7 @@ static void test_collection_between_begin_and_end(void) {
     perthread_calls = 0;
 
     size_t counted = janet_vm.block_count;
-    void *a = janet_abstract_begin(&at_counted, 32);
+    void *a = janet_abstract_begin(CONTRACT_AT(at_counted), 32);
     assert(janet_vm.block_count == counted + 1);
     (void) a;
 
@@ -262,7 +264,7 @@ static void test_the_window_does_not_stop_the_traversal(void) {
     gc_calls = 0;
     perthread_calls = 0;
 
-    void *a = janet_abstract_begin(&at_counted, 32);
+    void *a = janet_abstract_begin(CONTRACT_AT(at_counted), 32);
     Janet v = janet_wrap_abstract(a);
     janet_gcroot(v);
 
@@ -292,7 +294,7 @@ static void test_a_finished_abstract_is_traversed_and_finalized(void) {
     gc_calls = 0;
     perthread_calls = 0;
 
-    void *a = janet_abstract(&at_counted, 32);
+    void *a = janet_abstract(CONTRACT_AT(at_counted), 32);
     Janet v = janet_wrap_abstract(a);
     janet_gcroot(v);
 
@@ -367,11 +369,11 @@ static void test_begin_threaded_registers_without_the_heap(void) {
     int32_t before_tracked = janet_vm.threaded_abstracts.count;
     int32_t before_capacity = janet_vm.threaded_abstracts.capacity;
 
-    void *a = janet_abstract_begin_threaded(&at_threaded_bare, 48);
+    void *a = janet_abstract_begin_threaded(CONTRACT_AT(at_threaded_bare), 48);
     JanetAbstractHead *head = janet_abstract_head(a);
 
     assert(head->size == 48);
-    assert(head->type == &at_threaded_bare);
+    assert(head->type == CONTRACT_AT(at_threaded_bare));
     assert(janet_gc_type(head) == JANET_MEMORY_THREADED_ABSTRACT);
     assert(head->gc.data.refcount == 1);
 
@@ -410,7 +412,7 @@ static void test_begin_threaded_registers_without_the_heap(void) {
  * An implementation that stored `JANET_MEMORY_ABSTRACT` instead would put a
  * malloced block on the collector's abstract path, which is a double free. */
 static void test_end_threaded_changes_nothing(void) {
-    void *a = janet_abstract_begin_threaded(&at_threaded_bare, 8);
+    void *a = janet_abstract_begin_threaded(CONTRACT_AT(at_threaded_bare), 8);
     JanetAbstractHead *head = janet_abstract_head(a);
     int32_t flags_before = head->gc.flags;
 
@@ -428,7 +430,7 @@ static void test_abstract_threaded_is_begin_then_end(void) {
     int32_t before_tracked = janet_vm.threaded_abstracts.count;
     size_t before_count = janet_vm.block_count;
 
-    void *a = janet_abstract_threaded(&at_threaded_bare, 16);
+    void *a = janet_abstract_threaded(CONTRACT_AT(at_threaded_bare), 16);
     JanetAbstractHead *head = janet_abstract_head(a);
 
     assert(janet_gc_type(head) == JANET_MEMORY_THREADED_ABSTRACT);
@@ -446,7 +448,7 @@ static void test_abstract_threaded_is_begin_then_end(void) {
 /* Both primitives return the value *after* their own change, not before, and
  * both write it through to the header. */
 static void test_incref_and_decref_return_the_new_count(void) {
-    void *a = janet_abstract_threaded(&at_threaded_bare, 8);
+    void *a = janet_abstract_threaded(CONTRACT_AT(at_threaded_bare), 8);
     JanetAbstractHead *head = janet_abstract_head(a);
 
     assert(janet_abstract_incref(a) == 2);
@@ -466,14 +468,14 @@ static void test_incref_and_decref_return_the_new_count(void) {
  * -- which is readable, because nothing has freed the header. */
 static void test_decref_to_zero_does_not_free(void) {
     threaded_gc_calls = 0;
-    void *a = janet_abstract_threaded(&at_threaded, 8);
+    void *a = janet_abstract_threaded(CONTRACT_AT(at_threaded), 8);
     JanetAbstractHead *head = janet_abstract_head(a);
     janet_table_remove(&janet_vm.threaded_abstracts, janet_wrap_abstract(a));
 
     assert(janet_abstract_decref(a) == 0);
     assert(head->gc.data.refcount == 0);
     assert(threaded_gc_calls == 0);
-    assert(head->type == &at_threaded);
+    assert(head->type == CONTRACT_AT(at_threaded));
 
     /* Drop it properly. The count is zero, so this takes it to -1 and does not
      * free either -- the free is on the transition, and the caller that used
@@ -492,7 +494,7 @@ static void test_decref_maybe_free_finalizes_once(void) {
     threaded_gc_data = NULL;
     threaded_gc_len = 0;
     perthread_calls = 0;
-    void *a = janet_abstract_threaded(&at_threaded, 24);
+    void *a = janet_abstract_threaded(CONTRACT_AT(at_threaded), 24);
     memset(a, 0x7e, 24);
 
     assert(janet_abstract_incref(a) == 2);
@@ -512,7 +514,7 @@ static void test_decref_maybe_free_finalizes_once(void) {
 
 /* A type with no `gc` callback is freed without one being looked up. */
 static void test_decref_maybe_free_without_a_finalizer(void) {
-    void *a = janet_abstract_threaded(&at_threaded_bare, 8);
+    void *a = janet_abstract_threaded(CONTRACT_AT(at_threaded_bare), 8);
     assert(drop(a) == 0);
 }
 
@@ -522,7 +524,7 @@ static void test_decref_maybe_free_without_a_finalizer(void) {
  * plausible pointer in `next`, and the sweep must not find the block by
  * walking. */
 static void test_refcount_and_list_link_share_one_word(void) {
-    void *a = janet_abstract_threaded(&at_threaded_bare, 8);
+    void *a = janet_abstract_threaded(CONTRACT_AT(at_threaded_bare), 8);
     JanetAbstractHead *head = janet_abstract_head(a);
 
     assert((void *) &head->gc.data.refcount == (void *) &head->gc.data.next);
@@ -541,8 +543,8 @@ static void test_refcount_and_list_link_share_one_word(void) {
 static void test_two_threaded_abstracts_are_two_entries(void) {
     settle();
     int32_t before = janet_vm.threaded_abstracts.count;
-    void *a = janet_abstract_threaded(&at_threaded_bare, 8);
-    void *b = janet_abstract_threaded(&at_threaded_bare, 8);
+    void *a = janet_abstract_threaded(CONTRACT_AT(at_threaded_bare), 8);
+    void *b = janet_abstract_threaded(CONTRACT_AT(at_threaded_bare), 8);
 
     assert(a != b);
     assert(janet_vm.threaded_abstracts.count == before + 2);
@@ -561,14 +563,14 @@ static void test_two_threaded_abstracts_are_two_entries(void) {
  * charge against `next_collection` and the heap list are both per-VM state. */
 static void test_repeated_cycles(void) {
     for (int i = 0; i < 3; i++) {
-        void *a = janet_abstract(&at_counted, 16);
+        void *a = janet_abstract(CONTRACT_AT(at_counted), 16);
         Janet v = janet_wrap_abstract(a);
         janet_gcroot(v);
         JanetTable *t = janet_table(4);
         janet_table_put(t, janet_ckeywordv("abstract"), v);
         janet_collect();
 #ifdef JANET_EV
-        void *th = janet_abstract_threaded(&at_threaded_bare, 16);
+        void *th = janet_abstract_threaded(CONTRACT_AT(at_threaded_bare), 16);
         assert(drop(th) == 0);
 #endif
         janet_gcunroot(v);
@@ -577,7 +579,38 @@ static void test_repeated_cycles(void) {
     }
 }
 
-int main(void) {
+/* ------------------------------------------------------------- atomics */
+
+/* The four primitives under the refcount above. The C original picks between
+ * MSVC intrinsics, stdatomic.h, Plan 9's aincl and GCC's __atomic builtins by
+ * preprocessor; the Zig implementation is one @atomicRmw per operation, which
+ * is why the return convention is worth pinning. @atomicRmw answers with the
+ * value before the operation and __atomic_add_fetch with the value after, so
+ * an implementation that forgot to add the delta back would be off by one on
+ * every call and still pass every refcount test above -- the counts would be
+ * consistently shifted, and only the comparison against zero would notice. */
+static void test_atomics_return_the_new_value(void) {
+    JanetAtomicInt x = 0;
+
+    assert(janet_atomic_inc(&x) == 1);
+    assert(janet_atomic_inc(&x) == 2);
+    assert(janet_atomic_load(&x) == 2);
+    assert(janet_atomic_load_relaxed(&x) == 2);
+
+    assert(janet_atomic_dec(&x) == 1);
+    assert(janet_atomic_dec(&x) == 0);
+    assert(janet_atomic_load(&x) == 0);
+
+    /* Signed, and nothing stops it going below zero. janet_abstract_decref
+     * relies on reaching exactly 0, not on saturating there. */
+    assert(janet_atomic_dec(&x) == -1);
+    assert(janet_atomic_load_relaxed(&x) == -1);
+
+    x = 41;
+    assert(janet_atomic_inc(&x) == 42);
+}
+
+void abstract_core_contract(void) {
     janet_init();
 
     test_head_offset();
@@ -605,9 +638,10 @@ int main(void) {
     test_two_threaded_abstracts_are_two_entries();
 #endif
 
+    test_atomics_return_the_new_value();
+
     test_repeated_cycles();
 
     janet_deinit();
     printf("abstract core contract ok\n");
-    return 0;
 }

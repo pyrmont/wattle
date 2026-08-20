@@ -267,7 +267,11 @@ void janetc_error(JanetCompiler *c, const uint8_t *m);
 void janetc_cerror(JanetCompiler *c, const char *m);
 
 /* Linting */
-void janetc_lintf(JanetCompiler *C, JanetCompileLintLevel level, const char *format, ...);
+/* File a lint against the form being compiled. Not variadic: the C original
+ * was, and Phase 10 Part 7 removed the last C caller, at which point the
+ * `va_list` Zig cannot name on every target stopped being necessary. A caller
+ * with something to interpolate formats it with `janet_formatc` first. */
+void janetc_lint(JanetCompiler *C, JanetCompileLintLevel level, const char *message);
 
 /* Dispatch to correct form compiler */
 JanetSlot janetc_value(JanetFopts opts, Janet x);

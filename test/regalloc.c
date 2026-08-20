@@ -1,7 +1,7 @@
 #include <assert.h>
 #include "regalloc.h"
 
-int main(void) {
+void regalloc_contract(void) {
     JanetcRegisterAllocator allocator;
     JanetcRegisterAllocator clone;
     int32_t registers[240];
@@ -40,5 +40,4 @@ int main(void) {
     janetc_regalloc_freetemp(&allocator, 0xf3, JANETC_REGTEMP_3);
     assert(allocator.regtemps == 0);
     janetc_regalloc_deinit(&allocator);
-    return 0;
 }

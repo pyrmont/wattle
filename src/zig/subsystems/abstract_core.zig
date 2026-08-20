@@ -1,5 +1,3 @@
-//! jump-transparent
-//!
 //! Constructing an abstract value, and the refcount that decides when a
 //! threaded one dies. This is Part 8 of Phase 8 and it takes the whole of
 //! `src/core/abstract.c` except the mutex and rwlock shims: the three plain
@@ -103,6 +101,8 @@
 
 const std = @import("std");
 const abi = @import("abi");
+const raise = @import("raise");
+const abstract_type = @import("abstract_type.zig");
 const c = abi.c;
 
 /// `janet_vm` as `src/core/state.h` declares it, resolved through `abi.zig`.
@@ -247,7 +247,7 @@ fn abstractDecrefMaybeFree(abst: ?*anyopaque) callconv(.c) i32 {
     const result = abstractDecref(abst);
     if (result == 0) {
         const head = abstractHead(abst);
-        if (head.type.*.gc) |finalizer| {
+        if (abstract_type.of(head.type).gc) |finalizer| {
             // `janet_assert(!head->type->gc(...), "finalizer failed")`. A
             // finalizer that reports failure is not an error to be raised: the
             // C original prints and calls `abort`.
@@ -257,4 +257,39 @@ fn abstractDecrefMaybeFree(abst: ?*anyopaque) callconv(.c) i32 {
         c.janet_free(head);
     }
     return result;
+}
+
+// ----------------------------------------------------------- atomic counts
+
+// The primitives under the threaded abstract refcount above, moved out of
+// `capi.c` in Phase 10 Part 5. Two other counters in the runtime use them --
+// the event loop's `listener_count` and the VM's `auto_suspend` -- but this is
+// where the refcount they were written for lives.
+//
+// The C original picks between four spellings by preprocessor: `_MSC_VER`
+// interlocked intrinsics, `stdatomic.h`, Plan 9's `aincl`, and GCC's
+// `__atomic_*` builtins. Zig has one spelling that compiles to the right
+// instruction on every target, so the four collapse to one implementation
+// rather than to a Zig `switch` over the same four cases.
+//
+// `@atomicRmw` answers with the value *before* the operation and
+// `__atomic_add_fetch` with the value after, so each of the first two adds the
+// delta back. The orderings are the C original's, not a fresh choice: relaxed
+// to increment, acquire-release to decrement -- which is what makes the
+// decrement that reaches zero see every write the other owners made.
+
+export fn janet_atomic_inc(x: *volatile c.JanetAtomicInt) callconv(.c) c.JanetAtomicInt {
+    return @atomicRmw(c.JanetAtomicInt, x, .Add, 1, .monotonic) +% 1;
+}
+
+export fn janet_atomic_dec(x: *volatile c.JanetAtomicInt) callconv(.c) c.JanetAtomicInt {
+    return @atomicRmw(c.JanetAtomicInt, x, .Add, -1, .acq_rel) -% 1;
+}
+
+export fn janet_atomic_load(x: *volatile c.JanetAtomicInt) callconv(.c) c.JanetAtomicInt {
+    return @atomicLoad(c.JanetAtomicInt, x, .acquire);
+}
+
+export fn janet_atomic_load_relaxed(x: *volatile c.JanetAtomicInt) callconv(.c) c.JanetAtomicInt {
+    return @atomicLoad(c.JanetAtomicInt, x, .monotonic);
 }

@@ -410,18 +410,12 @@ typedef struct JanetChannel JanetChannel;
 #include <stdint.h>
 #include <string.h>
 #include <stdarg.h>
-#include <setjmp.h>
 #include <stddef.h>
 #include <stdio.h>
 
 /* What to do when out of memory */
 #ifndef JANET_OUT_OF_MEMORY
 #define JANET_OUT_OF_MEMORY do { fprintf(stderr, "%s:%d - janet out of memory\n", __FILE__, __LINE__); exit(1); } while (0)
-#endif
-
-#ifdef JANET_BSD
-int _setjmp(jmp_buf);
-JANET_NO_RETURN void _longjmp(jmp_buf, int);
 #endif
 
 /* Names of all of the types */
@@ -673,7 +667,7 @@ typedef void (*JanetEVCallback)(JanetFiber *fiber, JanetAsyncEvent event);
  * it can no longer be referenced. On windows, the contents of state MUST contained an OVERLAPPED struct at the 0 offset. */
 
 JANET_API void janet_async_start_fiber(JanetFiber *fiber, JanetStream *stream, JanetAsyncMode mode, JanetEVCallback callback, void *state);
-JANET_API JANET_NO_RETURN void janet_async_start(JanetStream *stream, JanetAsyncMode mode, JanetEVCallback callback, void *state);
+JANET_API void janet_async_start(JanetStream *stream, JanetAsyncMode mode, JanetEVCallback callback, void *state);
 
 /* Do not send any more events to the given callback. Call this after scheduling fiber to be resume
  * or canceled. */
@@ -1317,16 +1311,21 @@ struct JanetFile {
     size_t vbufsize;
 };
 
-/* For janet_try and janet_restore */
+/* For janet_try_init and janet_restore.
+ *
+ * There was a jmp_buf here, and a jmp_buf * beside it holding the enclosing
+ * scope's. Phase 10's hinge removed the jump: a raise returns an error and
+ * reads janet_vm.pending_signal, so what a scope has to save and redirect is
+ * the return register and the four fields around it. `payload` is unchanged --
+ * it is still where the innermost scope points janet_vm.return_reg, and still
+ * where the raise's value arrives. */
 typedef struct {
     /* old state */
     int32_t stackn;
     int gc_handle;
     JanetFiber *vm_fiber;
-    jmp_buf *vm_jmp_buf;
     Janet *vm_return_reg;
     /* new state */
-    jmp_buf buf;
     Janet payload;
     int coerce_error;
 } JanetTryState;
@@ -1492,10 +1491,12 @@ JANET_API void janet_loop1_interrupt(JanetVM *vm);
 JANET_API JanetStream *janet_stream(JanetHandle handle, uint32_t flags, const JanetMethod *methods);
 JANET_API JanetStream *janet_stream_ext(JanetHandle handle, uint32_t flags, const JanetMethod *methods, size_t size); /* Allow for type punning streams */
 JANET_API void janet_stream_close(JanetStream *stream);
-JANET_API Janet janet_cfun_stream_close(int32_t argc, Janet *argv);
-JANET_API Janet janet_cfun_stream_read(int32_t argc, Janet *argv);
-JANET_API Janet janet_cfun_stream_chunk(int32_t argc, Janet *argv);
-JANET_API Janet janet_cfun_stream_write(int32_t argc, Janet *argv);
+/* Phase 10 Part 17g removed janet_cfun_stream_close, janet_cfun_stream_read,
+ * janet_cfun_stream_chunk and janet_cfun_stream_write. They were the only
+ * cfunctions this header declared, and a cfunction is no longer a C function:
+ * it returns `raise.Error!Janet` and is called with Zig's calling convention,
+ * so a C body cannot be one and a C caller cannot invoke one. Decision 2 is
+ * the general form -- this header stops being a native-module interface. */
 JANET_API void janet_stream_flags(JanetStream *stream, uint32_t flags);
 
 /* Queue a fiber to run on the event loop */
@@ -1505,8 +1506,8 @@ JANET_API void janet_schedule_signal(JanetFiber *fiber, Janet value, JanetSignal
 JANET_API void janet_schedule_soon(JanetFiber *fiber, Janet value, JanetSignal sig);
 
 /* Shorthand for yielding to event loop in C */
-JANET_NO_RETURN JANET_API void janet_await(void);
-JANET_NO_RETURN JANET_API void janet_sleep_await(double sec);
+JANET_API void janet_await(void);
+JANET_API void janet_sleep_await(double sec);
 
 /* For use inside listeners - adds a timeout to the current fiber, such that
  * it will be resumed after sec seconds if no other event schedules the current fiber. */
@@ -1598,7 +1599,7 @@ typedef void (*JanetThreadedCallback)(JanetEVGenericMessage return_value);
 
 /* API calls for quickly offloading some work in C to a new thread or thread pool. */
 JANET_API void janet_ev_threaded_call(JanetThreadedSubroutine fp, JanetEVGenericMessage arguments, JanetThreadedCallback cb);
-JANET_NO_RETURN JANET_API void janet_ev_threaded_await(JanetThreadedSubroutine fp, int tag, int argi, void *argp);
+JANET_API void janet_ev_threaded_await(JanetThreadedSubroutine fp, int tag, int argi, void *argp);
 
 /* Post callback + userdata to an event loop. Takes the vm parameter to allow posting from other
  * threads or signal handlers. Use NULL to post to the current thread. */
@@ -1609,23 +1610,23 @@ JANET_API void janet_ev_default_threaded_callback(JanetEVGenericMessage return_v
 
 /* Read async from a stream. These function yield to the event-loop with janet_await(), and so do not return.
  * When the fiber is resumed, the fiber will simply continue to the next Janet abstract machine instruction. */
-JANET_NO_RETURN JANET_API void janet_ev_read(JanetStream *stream, JanetBuffer *buf, int32_t nbytes);
-JANET_NO_RETURN JANET_API void janet_ev_readchunk(JanetStream *stream, JanetBuffer *buf, int32_t nbytes);
+JANET_API void janet_ev_read(JanetStream *stream, JanetBuffer *buf, int32_t nbytes);
+JANET_API void janet_ev_readchunk(JanetStream *stream, JanetBuffer *buf, int32_t nbytes);
 #ifdef JANET_NET
-JANET_NO_RETURN JANET_API void janet_ev_recv(JanetStream *stream, JanetBuffer *buf, int32_t nbytes, int flags);
-JANET_NO_RETURN JANET_API void janet_ev_recvchunk(JanetStream *stream, JanetBuffer *buf, int32_t nbytes, int flags);
-JANET_NO_RETURN JANET_API void janet_ev_recvfrom(JanetStream *stream, JanetBuffer *buf, int32_t nbytes, int flags);
+JANET_API void janet_ev_recv(JanetStream *stream, JanetBuffer *buf, int32_t nbytes, int flags);
+JANET_API void janet_ev_recvchunk(JanetStream *stream, JanetBuffer *buf, int32_t nbytes, int flags);
+JANET_API void janet_ev_recvfrom(JanetStream *stream, JanetBuffer *buf, int32_t nbytes, int flags);
 #endif
 
 /* Write async to a stream. These function yield to the event-loop with janet_await(), and so do not return.
  * When the fiber is resumed, the fiber will simply continue to the next Janet abstract machine instruction. */
-JANET_NO_RETURN JANET_API void janet_ev_write_buffer(JanetStream *stream, JanetBuffer *buf);
-JANET_NO_RETURN JANET_API void janet_ev_write_string(JanetStream *stream, JanetString str);
+JANET_API void janet_ev_write_buffer(JanetStream *stream, JanetBuffer *buf);
+JANET_API void janet_ev_write_string(JanetStream *stream, JanetString str);
 #ifdef JANET_NET
-JANET_NO_RETURN JANET_API void janet_ev_send_buffer(JanetStream *stream, JanetBuffer *buf, int flags);
-JANET_NO_RETURN JANET_API void janet_ev_send_string(JanetStream *stream, JanetString str, int flags);
-JANET_NO_RETURN JANET_API void janet_ev_sendto_buffer(JanetStream *stream, JanetBuffer *buf, void *dest, int flags);
-JANET_NO_RETURN JANET_API void janet_ev_sendto_string(JanetStream *stream, JanetString str, void *dest, int flags);
+JANET_API void janet_ev_send_buffer(JanetStream *stream, JanetBuffer *buf, int flags);
+JANET_API void janet_ev_send_string(JanetStream *stream, JanetString str, int flags);
+JANET_API void janet_ev_sendto_buffer(JanetStream *stream, JanetBuffer *buf, void *dest, int flags);
+JANET_API void janet_ev_sendto_string(JanetStream *stream, JanetString str, void *dest, int flags);
 #endif
 
 #endif
@@ -1826,9 +1827,11 @@ JANET_API void janet_to_string_b(JanetBuffer *buffer, Janet x);
 JANET_API void janet_description_b(JanetBuffer *buffer, Janet x);
 #define janet_cstringv(cstr) janet_wrap_string(janet_cstring(cstr))
 #define janet_stringv(str, len) janet_wrap_string(janet_string((str), (len)))
-JANET_API JanetString janet_formatc(const char *format, ...);
-JANET_API JanetBuffer *janet_formatb(JanetBuffer *bufp, const char *format, ...);
-JANET_API void janet_formatbv(JanetBuffer *bufp, const char *format, va_list args);
+/* janet_formatc, janet_formatb and janet_formatbv stood here. Phase 10 Part 18
+ * deleted the variadic surface: the format string is a compile-time parameter
+ * now, so a caller instantiates the driver rather than calling it, and there
+ * is no symbol for a C declaration to name. src/zig/subsystems/pp_format.zig
+ * has formatc, formatb and dynprintf. */
 
 /* Symbol functions */
 JANET_API JanetSymbol janet_symbol(const uint8_t *str, int32_t len);
@@ -1975,12 +1978,12 @@ JANET_API JanetBuffer *janet_pretty(JanetBuffer *buffer, int depth, int flags, J
 #define JANET_HASH_KEY_SIZE 16
 JANET_API void janet_init_hash_key(uint8_t key[JANET_HASH_KEY_SIZE]);
 #endif
+/* Open a protected scope, and close it. The janet_try macro that sat between
+ * these two was janet_try_init followed by a setjmp, and returned the signal
+ * the matching longjmp carried; the hinge deleted the jump, so a scope is
+ * opened by calling janet_try_init and a raise inside it is read from
+ * janet_vm.pending_signal rather than returned by the macro. */
 JANET_API void janet_try_init(JanetTryState *state);
-#if defined(JANET_BSD) || defined(JANET_APPLE)
-#define janet_try(state) (janet_try_init(state), (JanetSignal) _setjmp((state)->buf))
-#else
-#define janet_try(state) (janet_try_init(state), (JanetSignal) setjmp((state)->buf))
-#endif
 JANET_API void janet_restore(JanetTryState *state);
 JANET_API int janet_equals(Janet x, Janet y);
 JANET_API int32_t janet_hash(Janet x);
@@ -2185,16 +2188,14 @@ JANET_API void janet_register(const char *name, JanetCFunction cfun);
 #define JANET_MODULE_ENTRY JANET_MODULE_PREFIX JANET_API void JANET_ENTRY_NAME
 #endif
 
-JANET_NO_RETURN JANET_API void janet_signalv(JanetSignal signal, Janet message);
-JANET_NO_RETURN JANET_API void janet_panicv(Janet message);
-JANET_NO_RETURN JANET_API void janet_panic(const char *message);
-JANET_NO_RETURN JANET_API void janet_panics(JanetString message);
-JANET_NO_RETURN JANET_API void janet_panicf(const char *format, ...);
-JANET_API void janet_dynprintf(const char *name, FILE *dflt_file, const char *format, ...);
-#define janet_printf(...) janet_dynprintf("out", stdout, __VA_ARGS__)
-#define janet_eprintf(...) janet_dynprintf("err", stderr, __VA_ARGS__)
-JANET_NO_RETURN JANET_API void janet_panic_type(Janet x, int32_t n, int expected);
-JANET_NO_RETURN JANET_API void janet_panic_abstract(Janet x, int32_t n, const JanetAbstractType *at);
+JANET_API void janet_signalv(JanetSignal signal, Janet message);
+JANET_API void janet_panicv(Janet message);
+JANET_API void janet_panic(const char *message);
+JANET_API void janet_panics(JanetString message);
+/* janet_panicf, janet_dynprintf and the two macros over it went the same way,
+ * in the same increment. pp_format.zig has panicf and dynprintf. */
+JANET_API void janet_panic_type(Janet x, int32_t n, int expected);
+JANET_API void janet_panic_abstract(Janet x, int32_t n, const JanetAbstractType *at);
 JANET_API void janet_arity(int32_t arity, int32_t min, int32_t max);
 JANET_API void janet_fixarity(int32_t arity, int32_t fix);
 

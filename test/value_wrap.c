@@ -702,7 +702,7 @@ static void test_repeated_cycles(void) {
     }
 }
 
-int main(void) {
+void value_wrap_contract(void) {
     janet_init();
     test_env = janet_core_env(NULL);
     janet_gcroot(janet_wrap_table(test_env));
@@ -734,5 +734,4 @@ int main(void) {
 
     janet_deinit();
     printf("value wrap contract ok\n");
-    return 0;
 }

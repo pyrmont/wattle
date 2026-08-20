@@ -6,7 +6,7 @@ static int valid(const uint8_t *bytes, int32_t length) {
     return janet_valid_utf8(bytes, length);
 }
 
-int main(void) {
+void textscan_contract(void) {
     static const uint8_t ascii[] = "janet";
     static const uint8_t two_byte[] = {0xc2, 0xa2};
     static const uint8_t three_byte[] = {0xe3, 0x81, 0x98};
@@ -40,5 +40,4 @@ int main(void) {
     assert(!janet_is_symbol_char(','));
     assert(!janet_is_symbol_char('('));
     assert(!janet_is_symbol_char(')'));
-    return 0;
 }

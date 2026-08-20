@@ -1,21 +1,45 @@
-const c = @cImport({
-    @cInclude("compile.h");
-    @cInclude("emit.h");
-    @cInclude("runtime.h");
-    @cInclude("vector.h");
-});
+//! The thirteen special forms: `quote`, `do`, `if`, `fn`, `def`, `var`, `set`,
+//! `while`, `break`, `upscope`, `splice`, `quasiquote` and `unquote`.
+//!
+//! `janetc_special` at the foot of this file is what `janetc_value` consults
+//! before treating a tuple's head as a call. It was one line of `specials.c`
+//! forwarding here until Phase 10 Part 7, which is when this file took the
+//! name outright.
+//!
+//! Nothing here raises. Like `emit_core.zig`, the compiler front end reports
+//! by flag through `janetc_error`.
+
+const abi = @import("abi");
+const c = abi.c;
+const raise = @import("raise");
+const pp_format = @import("pp_format.zig");
+const containers = @import("containers.zig");
+const compiler_primitives = @import("compiler_primitives.zig");
+const special = @import("special.zig");
 
 extern fn janet_def_addflags(definition: *c.JanetFuncDef) callconv(.c) void;
-extern fn janet_c_specials_wrap_integer(value: i32) callconv(.c) c.Janet;
-extern fn janet_c_specials_wrap_keyword(value: [*c]const u8) callconv(.c) c.Janet;
+/// `janet_wrap_keyword`, and `janet_wrap_integer` written out.
+///
+/// Both were one-line C functions in `specials.c` until Phase 10 Part 7,
+/// because this subsystem translated only `compile.h` and `emit.h`. Sharing
+/// `abi.zig` removes the detour; `wrapInteger` stays spelled out because
+/// `janet_wrap_integer` is a macro under nanboxing and a symbol `wrap.c`
+/// never defines there.
+inline fn wrapKeyword(value: [*c]const u8) c.Janet {
+    return c.janet_wrap_keyword(value);
+}
+
+inline fn wrapInteger(value: i32) c.Janet {
+    return c.janet_wrap_number(@floatFromInt(value));
+}
 
 const vector_header_size = 2 * @sizeOf(i32);
 
-export fn janet_zig_special_quote(
+fn janet_zig_special_quote(
     options: c.JanetFopts,
     argument_count: i32,
     arguments: [*c]const c.Janet,
-) callconv(.c) c.JanetSlot {
+) raise.Raising(c.JanetSlot) {
     if (argument_count != 1) {
         c.janetc_cerror(options.compiler, "expected 1 argument to quote");
         return nilSlot();
@@ -23,11 +47,11 @@ export fn janet_zig_special_quote(
     return c.janetc_cslot(arguments[0]);
 }
 
-export fn janet_zig_special_splice(
+fn janet_zig_special_splice(
     options: c.JanetFopts,
     argument_count: i32,
     arguments: [*c]const c.Janet,
-) callconv(.c) c.JanetSlot {
+) raise.Raising(c.JanetSlot) {
     if (options.flags & c.JANET_FOPTS_ACCEPT_SPLICE == 0) {
         c.janetc_cerror(options.compiler, "splice can only be used in function parameters and data constructors, it has no effect here");
         return nilSlot();
@@ -36,46 +60,46 @@ export fn janet_zig_special_splice(
         c.janetc_cerror(options.compiler, "expected 1 argument to splice");
         return nilSlot();
     }
-    var result = c.janetc_value(options, arguments[0]);
+    var result = try compiler_primitives.janetc_valueImpl(options, arguments[0]);
     result.flags |= c.JANET_SLOT_SPLICED;
     return result;
 }
 
-export fn janet_zig_special_unquote(
+fn janet_zig_special_unquote(
     options: c.JanetFopts,
     _: i32,
     _: [*c]const c.Janet,
-) callconv(.c) c.JanetSlot {
+) raise.Raising(c.JanetSlot) {
     c.janetc_cerror(options.compiler, "cannot use unquote here");
     return nilSlot();
 }
 
-export fn janet_zig_special_do(
+fn janet_zig_special_do(
     options: c.JanetFopts,
     argument_count: i32,
     arguments: [*c]const c.Janet,
-) callconv(.c) c.JanetSlot {
+) raise.Raising(c.JanetSlot) {
     const compiler: *c.JanetCompiler = options.compiler;
     var scope: c.JanetScope = undefined;
     c.janetc_scope(&scope, compiler, 0, "do");
-    const result = compileSequence(options, argument_count, arguments);
+    const result = try compileSequence(options, argument_count, arguments);
     c.janetc_popscope_keepslot(compiler, result);
     return result;
 }
 
-export fn janet_zig_special_upscope(
+fn janet_zig_special_upscope(
     options: c.JanetFopts,
     argument_count: i32,
     arguments: [*c]const c.Janet,
-) callconv(.c) c.JanetSlot {
+) raise.Raising(c.JanetSlot) {
     return compileSequence(options, argument_count, arguments);
 }
 
-export fn janet_zig_special_break(
+fn janet_zig_special_break(
     options: c.JanetFopts,
     argument_count: i32,
     arguments: [*c]const c.Janet,
-) callconv(.c) c.JanetSlot {
+) raise.Raising(c.JanetSlot) {
     const compiler: *c.JanetCompiler = options.compiler;
     if (argument_count > 1) {
         c.janetc_cerror(compiler, "expected at most 1 argument");
@@ -95,29 +119,29 @@ export fn janet_zig_special_break(
     if (scope.*.flags & c.JANET_SCOPE_FUNCTION != 0) {
         if (scope.*.flags & c.JANET_SCOPE_WHILE == 0 and argument_count != 0) {
             suboptions.flags |= c.JANET_FOPTS_TAIL;
-            _ = c.janetc_value(suboptions, arguments[0]);
+            _ = try compiler_primitives.janetc_valueImpl(suboptions, arguments[0]);
         } else {
             if (argument_count != 0) {
                 suboptions.flags |= c.JANET_FOPTS_DROP;
-                _ = c.janetc_value(suboptions, arguments[0]);
+                _ = try compiler_primitives.janetc_valueImpl(suboptions, arguments[0]);
             }
             _ = c.janetc_emit(compiler, c.JOP_RETURN_NIL);
         }
     } else {
         if (argument_count != 0) {
             suboptions.flags |= c.JANET_FOPTS_DROP;
-            _ = c.janetc_value(suboptions, arguments[0]);
+            _ = try compiler_primitives.janetc_valueImpl(suboptions, arguments[0]);
         }
         _ = c.janetc_emit(compiler, 0x80 | c.JOP_JUMP);
     }
     return nilSlot();
 }
 
-export fn janet_zig_special_if(
+fn janet_zig_special_if(
     options: c.JanetFopts,
     argument_count: i32,
     arguments: [*c]const c.Janet,
-) callconv(.c) c.JanetSlot {
+) raise.Raising(c.JanetSlot) {
     const compiler: *c.JanetCompiler = options.compiler;
     if (argument_count < 2 or argument_count > 3) {
         c.janetc_cerror(compiler, "expected 2 or 3 arguments to if");
@@ -142,7 +166,7 @@ export fn janet_zig_special_if(
     } else if (checkNilForm(condition_form, &condition_form, c.JANET_FUN_NEQ)) {
         jump_opcode = c.JOP_JUMP_IF_NIL;
     }
-    const condition = c.janetc_value(condition_options, condition_form);
+    const condition = try compiler_primitives.janetc_valueImpl(condition_options, condition_form);
 
     if (condition.flags & c.JANET_SLOT_CONSTANT != 0) {
         const swap_condition =
@@ -156,22 +180,22 @@ export fn janet_zig_special_if(
         }
         var body_scope: c.JanetScope = undefined;
         c.janetc_scope(&body_scope, compiler, 0, "if-true");
-        const right = c.janetc_value(body_options, true_body);
+        const right = try compiler_primitives.janetc_valueImpl(body_options, true_body);
         if (!drop and !tail) c.janetc_copy(compiler, target, right);
-        c.janetc_popscope(compiler);
+        try compiler_primitives.janetc_popscopeImpl(compiler);
         if (c.janet_checktype(false_body, c.JANET_NIL) == 0) {
-            c.janetc_throwaway(body_options, false_body);
+            try compiler_primitives.janetc_throwawayImpl(body_options, false_body);
         }
-        c.janetc_popscope(compiler);
+        try compiler_primitives.janetc_popscopeImpl(compiler);
         return target;
     }
 
     const right_jump = c.janetc_emit_si(compiler, jump_opcode, condition, 0, 0);
     var body_scope: c.JanetScope = undefined;
     c.janetc_scope(&body_scope, compiler, 0, "if-true");
-    const left = c.janetc_value(body_options, true_body);
+    const left = try compiler_primitives.janetc_valueImpl(body_options, true_body);
     if (!drop and !tail) c.janetc_copy(compiler, target, left);
-    c.janetc_popscope(compiler);
+    try compiler_primitives.janetc_popscopeImpl(compiler);
 
     const done_jump = vectorCount(u32, compiler.buffer);
     if (!tail and !(drop and c.janet_checktype(false_body, c.JANET_NIL) != 0)) {
@@ -179,10 +203,10 @@ export fn janet_zig_special_if(
     }
     const right_label = vectorCount(u32, compiler.buffer);
     c.janetc_scope(&body_scope, compiler, 0, "if-false");
-    const right = c.janetc_value(body_options, false_body);
+    const right = try compiler_primitives.janetc_valueImpl(body_options, false_body);
     if (!drop and !tail) c.janetc_copy(compiler, target, right);
-    c.janetc_popscope(compiler);
-    c.janetc_popscope(compiler);
+    try compiler_primitives.janetc_popscopeImpl(compiler);
+    try compiler_primitives.janetc_popscopeImpl(compiler);
 
     const done_label = vectorCount(u32, compiler.buffer);
     if (right_jump < done_label) {
@@ -198,11 +222,11 @@ export fn janet_zig_special_if(
     return target;
 }
 
-export fn janet_zig_special_quasiquote(
+fn janet_zig_special_quasiquote(
     options: c.JanetFopts,
     argument_count: i32,
     arguments: [*c]const c.Janet,
-) callconv(.c) c.JanetSlot {
+) raise.Raising(c.JanetSlot) {
     if (argument_count != 1) {
         c.janetc_cerror(options.compiler, "expected 1 argument to quasiquote");
         return nilSlot();
@@ -210,11 +234,11 @@ export fn janet_zig_special_quasiquote(
     return quasiquote(options, arguments[0], c.JANET_RECURSION_GUARD, 0);
 }
 
-export fn janet_zig_special_while(
+fn janet_zig_special_while(
     options: c.JanetFopts,
     argument_count: i32,
     arguments: [*c]const c.Janet,
-) callconv(.c) c.JanetSlot {
+) raise.Raising(c.JanetSlot) {
     const compiler: *c.JanetCompiler = options.compiler;
     if (argument_count < 1) {
         c.janetc_cerror(compiler, "expected at least 1 argument to while");
@@ -242,7 +266,7 @@ export fn janet_zig_special_while(
         false_jump = c.JOP_JUMP_IF_NIL;
     }
 
-    var condition = c.janetc_value(suboptions, condition_form);
+    var condition = try compiler_primitives.janetc_valueImpl(suboptions, condition_form);
     var infinite = false;
     if (condition.flags & c.JANET_SLOT_CONSTANT != 0) {
         const never_executes = if (is_nil_form)
@@ -252,7 +276,7 @@ export fn janet_zig_special_while(
         else
             c.janet_truthy(condition.constant) == 0;
         if (never_executes) {
-            c.janetc_popscope(compiler);
+            try compiler_primitives.janetc_popscopeImpl(compiler);
             return nilSlot();
         }
         infinite = true;
@@ -265,18 +289,18 @@ export fn janet_zig_special_while(
     var index: i32 = 1;
     while (index < argument_count) : (index += 1) {
         suboptions.flags = c.JANET_FOPTS_DROP;
-        c.janetc_freeslot(compiler, c.janetc_value(suboptions, arguments[@intCast(index)]));
+        c.janetc_freeslot(compiler, try compiler_primitives.janetc_valueImpl(suboptions, arguments[@intCast(index)]));
     }
 
     if (scope.flags & c.JANET_SCOPE_CLOSURE != 0) {
         suboptions = c.janetc_fopts_default(compiler);
         scope.flags |= c.JANET_SCOPE_UNUSED;
-        c.janetc_popscope(compiler);
+        try compiler_primitives.janetc_popscopeImpl(compiler);
         if (compiler.buffer != null) setVectorCount(u32, compiler.buffer, while_label);
         if (compiler.mapbuffer != null) setVectorCount(c.JanetSourceMapping, compiler.mapbuffer, while_label);
 
         c.janetc_scope(&scope, compiler, c.JANET_SCOPE_FUNCTION, "while-iife");
-        condition = c.janetc_value(suboptions, condition_form);
+        condition = try compiler_primitives.janetc_valueImpl(suboptions, condition_form);
         if (condition.flags & c.JANET_SLOT_CONSTANT == 0) {
             _ = c.janetc_emit_si(compiler, true_jump, condition, 2, 0);
             _ = c.janetc_emit(compiler, c.JOP_RETURN_NIL);
@@ -284,7 +308,7 @@ export fn janet_zig_special_while(
         index = 1;
         while (index < argument_count) : (index += 1) {
             suboptions.flags = c.JANET_FOPTS_DROP;
-            c.janetc_freeslot(compiler, c.janetc_value(suboptions, arguments[@intCast(index)]));
+            c.janetc_freeslot(compiler, try compiler_primitives.janetc_valueImpl(suboptions, arguments[@intCast(index)]));
         }
 
         const self_register = c.janetc_regalloc_temp(&scope.ra, c.JANETC_REGTEMP_0);
@@ -292,7 +316,7 @@ export fn janet_zig_special_while(
         emitInstruction(compiler, @as(u32, c.JOP_TAILCALL) | (@as(u32, @intCast(self_register)) << 8));
         c.janetc_regalloc_freetemp(&compiler.scope.*.ra, self_register, c.JANETC_REGTEMP_0);
 
-        const definition = c.janetc_pop_funcdef(compiler);
+        const definition = try compiler_primitives.janetc_pop_funcdefImpl(compiler);
         definition.*.name = c.janet_cstring("while");
         janet_def_addflags(definition);
         const definition_index = addFunctionDefinition(compiler, definition);
@@ -332,15 +356,15 @@ export fn janet_zig_special_while(
                 (@as(u32, @intCast(done_label - index)) << 8);
         }
     }
-    c.janetc_popscope(compiler);
+    try compiler_primitives.janetc_popscopeImpl(compiler);
     return nilSlot();
 }
 
-export fn janet_zig_special_set(
+fn janet_zig_special_set(
     options: c.JanetFopts,
     argument_count: i32,
     arguments: [*c]const c.Janet,
-) callconv(.c) c.JanetSlot {
+) raise.Raising(c.JanetSlot) {
     const compiler: *c.JanetCompiler = options.compiler;
     if (argument_count != 2) {
         c.janetc_cerror(compiler, "expected 2 arguments to set");
@@ -349,7 +373,7 @@ export fn janet_zig_special_set(
     const suboptions = c.janetc_fopts_default(compiler);
 
     if (c.janet_checktype(arguments[0], c.JANET_SYMBOL) != 0) {
-        const destination = c.janetc_resolve(compiler, c.janet_unwrap_symbol(arguments[0]));
+        const destination = try compiler_primitives.janetc_resolveImpl(compiler, c.janet_unwrap_symbol(arguments[0]));
         if (destination.flags & c.JANET_SLOT_MUTABLE == 0) {
             c.janetc_cerror(compiler, "cannot set constant");
             return nilSlot();
@@ -357,7 +381,7 @@ export fn janet_zig_special_set(
         var value_options = suboptions;
         value_options.flags = c.JANET_FOPTS_HINT;
         value_options.hint = destination;
-        const result = c.janetc_value(value_options, arguments[1]);
+        const result = try compiler_primitives.janetc_valueImpl(value_options, arguments[1]);
         c.janetc_copy(compiler, destination, result);
         return result;
     }
@@ -368,11 +392,11 @@ export fn janet_zig_special_set(
             c.janetc_cerror(compiler, "expected 2 element tuple for l-value to set");
             return nilSlot();
         }
-        const data_structure = c.janetc_value(suboptions, tuple[0]);
-        const key = c.janetc_value(suboptions, tuple[1]);
+        const data_structure = try compiler_primitives.janetc_valueImpl(suboptions, tuple[0]);
+        const key = try compiler_primitives.janetc_valueImpl(suboptions, tuple[1]);
         var value_options = options;
         value_options.flags &= ~@as(u32, c.JANET_FOPTS_TAIL | c.JANET_FOPTS_DROP);
-        const result = c.janetc_value(value_options, arguments[1]);
+        const result = try compiler_primitives.janetc_valueImpl(value_options, arguments[1]);
         _ = c.janetc_emit_sss(compiler, c.JOP_PUT, data_structure, key, result, 0);
         return result;
     }
@@ -381,27 +405,27 @@ export fn janet_zig_special_set(
     return nilSlot();
 }
 
-export fn janet_zig_special_var(
+fn janet_zig_special_var(
     options: c.JanetFopts,
     argument_count: i32,
     arguments: [*c]const c.Janet,
-) callconv(.c) c.JanetSlot {
-    return compileBinding(options, argument_count, arguments, .variable);
+) raise.Raising(c.JanetSlot) {
+    return try compileBinding(options, argument_count, arguments, .variable);
 }
 
-export fn janet_zig_special_def(
+fn janet_zig_special_def(
     options: c.JanetFopts,
     argument_count: i32,
     arguments: [*c]const c.Janet,
-) callconv(.c) c.JanetSlot {
-    return compileBinding(options, argument_count, arguments, .definition);
+) raise.Raising(c.JanetSlot) {
+    return try compileBinding(options, argument_count, arguments, .definition);
 }
 
-export fn janet_zig_special_fn(
+fn janet_zig_special_fn(
     options: c.JanetFopts,
     argument_count: i32,
     arguments: [*c]const c.Janet,
-) callconv(.c) c.JanetSlot {
+) raise.Raising(c.JanetSlot) {
     const compiler: *c.JanetCompiler = options.compiler;
     compiler.scope.*.flags |= c.JANET_SCOPE_CLOSURE;
     var function_scope: c.JanetScope = undefined;
@@ -449,7 +473,7 @@ export fn janet_zig_special_fn(
             }
             c.janet_table_put(
                 named_table.?,
-                janet_c_specials_wrap_keyword(c.janet_unwrap_symbol(parameter)),
+                wrapKeyword(c.janet_unwrap_symbol(parameter)),
                 parameter,
             );
             pushSlot(&named_parameters, c.janetc_farslot(compiler));
@@ -463,7 +487,7 @@ export fn janet_zig_special_fn(
 
         const symbol = c.janet_unwrap_symbol(parameter);
         if (symbol[0] != '&') {
-            c.janetc_nameslot(compiler, symbol, c.janetc_farslot(compiler), 0);
+            try compiler_primitives.janetc_nameslotImpl(compiler, symbol, c.janetc_farslot(compiler), 0);
             continue;
         }
 
@@ -509,12 +533,12 @@ export fn janet_zig_special_fn(
             named_table = c.janet_table(10);
             named_slot = c.janetc_farslot(compiler);
         } else {
-            c.janetc_nameslot(compiler, symbol, c.janetc_farslot(compiler), 0);
+            try compiler_primitives.janetc_nameslotImpl(compiler, symbol, c.janetc_farslot(compiler), 0);
         }
     }
 
     if (named_arguments) {
-        _ = destructure(
+        _ = try destructure(
             compiler,
             c.janet_wrap_table(named_table.?),
             named_slot,
@@ -534,7 +558,7 @@ export fn janet_zig_special_fn(
         if (destructured_index >= vectorCount(c.JanetSlot, destructured_parameters)) unreachable;
         const parameter_slot = destructured_parameters[@intCast(destructured_index)];
         destructured_index += 1;
-        _ = destructure(compiler, parameter, parameter_slot, .definition, null);
+        _ = try destructure(compiler, parameter, parameter_slot, .definition, null);
         c.janetc_freeslot(compiler, parameter_slot);
     }
     freeVector(c.JanetSlot, destructured_parameters);
@@ -554,7 +578,7 @@ export fn janet_zig_special_fn(
             var slot = c.janetc_farslot(compiler);
             slot.flags = @as(u32, c.JANET_SLOT_NAMED) | @as(u32, c.JANET_FUNCTION);
             _ = c.janetc_emit_s(compiler, c.JOP_LOAD_SELF, slot, 1);
-            c.janetc_nameslot(
+            try compiler_primitives.janetc_nameslotImpl(
                 compiler,
                 symbol,
                 slot,
@@ -570,15 +594,15 @@ export fn janet_zig_special_fn(
         var argument_index = parameter_index + 1;
         while (argument_index < argument_count) : (argument_index += 1) {
             suboptions.flags = if (argument_index == argument_count - 1) c.JANET_FOPTS_TAIL else c.JANET_FOPTS_DROP;
-            _ = c.janetc_value(suboptions, arguments[@intCast(argument_index)]);
+            _ = try compiler_primitives.janetc_valueImpl(suboptions, arguments[@intCast(argument_index)]);
             if (compiler.result.status == c.JANET_COMPILE_ERROR) {
-                c.janetc_popscope(compiler);
+                try compiler_primitives.janetc_popscopeImpl(compiler);
                 return nilSlot();
             }
         }
     }
 
-    const definition = c.janetc_pop_funcdef(compiler);
+    const definition = try compiler_primitives.janetc_pop_funcdefImpl(compiler);
     definition.*.arity = arity;
     definition.*.min_arity = minimum_arity;
     definition.*.max_arity = maximum_arity;
@@ -597,7 +621,7 @@ export fn janet_zig_special_fn(
     return result;
 }
 
-const specials = [_]c.JanetSpecial{
+const specials = [_]special.Special{
     .{ .name = "break", .compile = janet_zig_special_break },
     .{ .name = "def", .compile = janet_zig_special_def },
     .{ .name = "do", .compile = janet_zig_special_do },
@@ -613,7 +637,15 @@ const specials = [_]c.JanetSpecial{
     .{ .name = "while", .compile = janet_zig_special_while },
 };
 
-export fn janet_zig_special_lookup(name: [*c]const u8) callconv(.c) ?*const c.JanetSpecial {
+/// `janetc_special`: the special form named, or null.
+///
+/// The table above is in lexicographic order and this is a binary search over
+/// it, exactly as the C original was. Until Phase 10 Part 7 the export was
+/// called `janet_zig_special_lookup` and `specials.c` held a one-line
+/// `janetc_special` that forwarded to it; there was never a reason for the
+/// indirection beyond the increment that introduced it not yet owning the
+/// name.
+fn lookup(name: [*c]const u8) ?*const special.Special {
     var lower: usize = 0;
     var upper: usize = specials.len;
     while (lower < upper) {
@@ -629,9 +661,13 @@ export fn janet_zig_special_lookup(name: [*c]const u8) callconv(.c) ?*const c.Ja
     return null;
 }
 
-fn functionError(compiler: *c.JanetCompiler, message: [*:0]const u8) c.JanetSlot {
+export fn janetc_special(name: [*c]const u8) callconv(.c) ?*const c.JanetSpecial {
+    return if (lookup(name)) |s| special.stored(s) else null;
+}
+
+fn functionError(compiler: *c.JanetCompiler, message: [*:0]const u8) raise.Raising(c.JanetSlot) {
     c.janetc_cerror(compiler, message);
-    c.janetc_popscope(compiler);
+    try compiler_primitives.janetc_popscopeImpl(compiler);
     return nilSlot();
 }
 
@@ -640,7 +676,7 @@ fn cleanupFunctionError(
     destructured_parameters: [*c]c.JanetSlot,
     named_parameters: [*c]c.JanetSlot,
     message: [*:0]const u8,
-) c.JanetSlot {
+) raise.Raising(c.JanetSlot) {
     freeVector(c.JanetSlot, destructured_parameters);
     freeVector(c.JanetSlot, named_parameters);
     return functionError(compiler, message);
@@ -658,7 +694,7 @@ fn compileBinding(
     argument_count: i32,
     arguments: [*c]const c.Janet,
     kind: BindingKind,
-) c.JanetSlot {
+) raise.Raising(c.JanetSlot) {
     const compiler: *c.JanetCompiler = original_options.compiler;
     const attributes = handleAttributes(
         compiler,
@@ -667,12 +703,12 @@ fn compileBinding(
         arguments,
     );
     if (compiler.result.status == c.JANET_COMPILE_ERROR) return nilSlot();
-    checkMetadataLint(compiler, attributes);
+    try checkMetadataLint(compiler, attributes);
 
     var options = original_options;
     if (kind == .definition) options.flags &= ~@as(u32, c.JANET_FOPTS_HINT);
     var pairs: [*c]SlotHeadPair = null;
-    buildDestructureHeads(&pairs, options, arguments[0], arguments[@intCast(argument_count - 1)]);
+    try buildDestructureHeads(&pairs, options, arguments[0], arguments[@intCast(argument_count - 1)]);
     if (compiler.result.status == c.JANET_COMPILE_ERROR) {
         freeVector(SlotHeadPair, pairs);
         return nilSlot();
@@ -684,7 +720,7 @@ fn compileBinding(
     var index: i32 = 0;
     while (index < count) : (index += 1) {
         const pair = pairs[@intCast(index)];
-        _ = destructure(compiler, pair.lhs, pair.rhs, kind, attributes);
+        _ = try destructure(compiler, pair.lhs, pair.rhs, kind, attributes);
         result = pair.rhs;
     }
     freeVector(SlotHeadPair, pairs);
@@ -698,7 +734,7 @@ fn handleAttributes(
     arguments: [*c]const c.Janet,
 ) ?*c.JanetTable {
     if (argument_count < 2) {
-        c.janetc_error(compiler, c.janet_formatc("expected at least 2 arguments to %s", kind));
+        c.janetc_error(compiler, pp_format.formatcReported("expected at least 2 arguments to %s", .{kind}));
         return null;
     }
     const table = c.janet_table(2);
@@ -716,17 +752,17 @@ fn handleAttributes(
             c.JANET_STRUCT => c.janet_table_merge_struct(table, c.janet_unwrap_struct(attribute)),
             else => c.janetc_error(
                 compiler,
-                c.janet_formatc("cannot add metadata %v to binding %s", attribute, binding_name),
+                pp_format.formatcReported("cannot add metadata %v to binding %s", .{ attribute, binding_name }),
             ),
         }
     }
     return table;
 }
 
-fn checkMetadataLint(compiler: *c.JanetCompiler, attributes: ?*c.JanetTable) void {
+fn checkMetadataLint(compiler: *c.JanetCompiler, attributes: ?*c.JanetTable) raise.Raising(void) {
     if (compiler.scope.*.flags & c.JANET_SCOPE_TOP != 0 or attributes == null or attributes.?.*.count == 0) return;
     if (c.janet_truthy(tableGetKeyword(attributes.?, "macro")) != 0) {
-        c.janetc_lintf(compiler, c.JANET_C_LINT_NORMAL, "macro tag is ignored in inner scopes");
+        try compiler_primitives.janetc_lintImpl(compiler, c.JANET_C_LINT_NORMAL, "macro tag is ignored in inner scopes");
     }
 }
 
@@ -735,7 +771,7 @@ fn buildDestructureHeads(
     options: c.JanetFopts,
     lhs: c.Janet,
     rhs: c.Janet,
-) void {
+) raise.Raising(void) {
     const compiler: *c.JanetCompiler = options.compiler;
     const lhs_indexed = c.janet_checktype(lhs, c.JANET_TUPLE) != 0 or
         c.janet_checktype(lhs, c.JANET_ARRAY) != 0;
@@ -776,14 +812,14 @@ fn buildDestructureHeads(
             index = 0;
             while (index < lhs_length) : (index += 1) {
                 const sub_rhs = if (index < rhs_length) rhs_items[@intCast(index)] else c.janet_wrap_nil();
-                buildDestructureHeads(pairs, suboptions, lhs_items[@intCast(index)], sub_rhs);
+                try buildDestructureHeads(pairs, suboptions, lhs_items[@intCast(index)], sub_rhs);
             }
             return;
         }
     }
 
     suboptions.hint = options.hint;
-    pushVector(SlotHeadPair, pairs, .{ .lhs = lhs, .rhs = c.janetc_value(suboptions, rhs) });
+    pushVector(SlotHeadPair, pairs, .{ .lhs = lhs, .rhs = try compiler_primitives.janetc_valueImpl(suboptions, rhs) });
 }
 
 fn destructure(
@@ -792,9 +828,9 @@ fn destructure(
     rhs: c.JanetSlot,
     kind: BindingKind,
     attributes: ?*c.JanetTable,
-) bool {
+) raise.Raising(bool) {
     switch (c.janet_type(lhs)) {
-        c.JANET_SYMBOL => return bindLeaf(compiler, c.janet_unwrap_symbol(lhs), rhs, kind, attributes),
+        c.JANET_SYMBOL => return try bindLeaf(compiler, c.janet_unwrap_symbol(lhs), rhs, kind, attributes),
         c.JANET_TUPLE, c.JANET_ARRAY => {
             var values: [*c]const c.Janet = null;
             var length: i32 = 0;
@@ -818,25 +854,19 @@ fn destructure(
                         }
                         c.janetc_error(
                             compiler,
-                            c.janet_formatc(
-                                "expected a single symbol follow '& in destructuring pattern, found %q",
-                                c.janet_wrap_tuple(c.janet_tuple_end(extra)),
-                            ),
+                            try pp_format.formatc("expected a single symbol follow '& in destructuring pattern, found %q", .{c.janet_wrap_tuple(c.janet_tuple_end(extra))}),
                         );
                         return true;
                     }
                     if (c.janet_checktype(values[@intCast(index + 1)], c.JANET_SYMBOL) == 0) {
                         c.janetc_error(
                             compiler,
-                            c.janet_formatc(
-                                "expected symbol following '& in destructuring pattern, found %q",
-                                values[@intCast(index + 1)],
-                            ),
+                            try pp_format.formatc("expected symbol following '& in destructuring pattern, found %q", .{values[@intCast(index + 1)]}),
                         );
                         return true;
                     }
                     compileRestDestructure(compiler, rhs, next_rhs, index);
-                    _ = bindLeaf(
+                    _ = try bindLeaf(
                         compiler,
                         c.janet_unwrap_symbol(values[@intCast(index + 1)]),
                         next_rhs,
@@ -853,7 +883,7 @@ fn destructure(
                     const key = c.janetc_cslot(wrapInteger(index));
                     _ = c.janetc_emit_sss(compiler, c.JOP_IN, next_rhs, rhs, key, 1);
                 }
-                if (destructure(compiler, subvalue, next_rhs, kind, attributes)) {
+                if (try destructure(compiler, subvalue, next_rhs, kind, attributes)) {
                     c.janetc_freeslot(compiler, next_rhs);
                 }
             }
@@ -869,16 +899,16 @@ fn destructure(
                 const pair = key_values[@intCast(index)];
                 if (c.janet_checktype(pair.key, c.JANET_NIL) != 0) continue;
                 const next_rhs = c.janetc_farslot(compiler);
-                const key = c.janetc_value(c.janetc_fopts_default(compiler), pair.key);
+                const key = try compiler_primitives.janetc_valueImpl(c.janetc_fopts_default(compiler), pair.key);
                 _ = c.janetc_emit_sss(compiler, c.JOP_IN, next_rhs, rhs, key, 1);
-                if (destructure(compiler, pair.value, next_rhs, kind, attributes)) {
+                if (try destructure(compiler, pair.value, next_rhs, kind, attributes)) {
                     c.janetc_freeslot(compiler, next_rhs);
                 }
             }
             return true;
         },
         else => {
-            c.janetc_error(compiler, c.janet_formatc("unexpected type in destructuring, got %v", lhs));
+            c.janetc_error(compiler, try pp_format.formatc("unexpected type in destructuring, got %v", .{lhs}));
             return true;
         },
     }
@@ -914,9 +944,9 @@ fn bindLeaf(
     slot: c.JanetSlot,
     kind: BindingKind,
     attributes: ?*c.JanetTable,
-) bool {
+) raise.Raising(bool) {
     return switch (kind) {
-        .variable => bindVariableLeaf(compiler, symbol, slot, attributes),
+        .variable => try bindVariableLeaf(compiler, symbol, slot, attributes),
         .definition => bindDefinitionLeaf(compiler, symbol, slot, attributes),
     };
 }
@@ -927,7 +957,7 @@ fn nameLocal(
     binding_flags: u32,
     original_slot: c.JanetSlot,
     original_definition_flags: u32,
-) bool {
+) raise.Raising(bool) {
     var slot = original_slot;
     var definition_flags = original_definition_flags;
     var unnamed_register = slot.flags & c.JANET_SLOT_NAMED == 0 and slot.index > 0 and slot.envindex >= 0;
@@ -945,7 +975,7 @@ fn nameLocal(
     }
     slot.flags |= binding_flags;
     if (compiler.scope.*.flags & c.JANET_SCOPE_TOP != 0) definition_flags |= c.JANET_DEFFLAG_NO_UNUSED;
-    c.janetc_nameslot(compiler, symbol, slot, definition_flags);
+    try compiler_primitives.janetc_nameslotImpl(compiler, symbol, slot, definition_flags);
     return !unnamed_register;
 }
 
@@ -954,7 +984,7 @@ fn bindVariableLeaf(
     symbol: [*c]const u8,
     slot: c.JanetSlot,
     attributes: ?*c.JanetTable,
-) bool {
+) raise.Raising(bool) {
     if (compiler.scope.*.flags & c.JANET_SCOPE_TOP != 0) {
         const entry = c.janet_table_clone(attributes);
         var reference: *c.JanetArray = undefined;
@@ -963,10 +993,10 @@ fn bindVariableLeaf(
             if (old_binding.type == c.JANET_BINDING_VAR) {
                 reference = c.janet_unwrap_array(old_binding.value);
             } else {
-                reference = newReferenceArray();
+                reference = try newReferenceArray();
             }
         } else {
-            reference = newReferenceArray();
+            reference = try newReferenceArray();
         }
         c.janet_table_put(entry, c.janet_ckeywordv("ref"), c.janet_wrap_array(reference));
         c.janet_table_put(entry, c.janet_ckeywordv("source-map"), c.janet_wrap_tuple(makeSourceMap(compiler)));
@@ -998,7 +1028,7 @@ fn bindDefinitionLeaf(
     symbol: [*c]const u8,
     slot: c.JanetSlot,
     attributes: ?*c.JanetTable,
-) bool {
+) raise.Raising(bool) {
     var entry: ?*c.JanetTable = null;
     var redef = false;
     if (compiler.scope.*.flags & c.JANET_SCOPE_TOP != 0) {
@@ -1013,11 +1043,11 @@ fn bindDefinitionLeaf(
                 c.janet_unwrap_array(binding.value)
             else
                 newReferenceArray();
-            c.janet_table_put(entry, c.janet_ckeywordv("ref"), c.janet_wrap_array(reference));
+            c.janet_table_put(entry, c.janet_ckeywordv("ref"), c.janet_wrap_array(try reference));
             _ = c.janetc_emit_ssu(
                 compiler,
                 c.JOP_PUT_INDEX,
-                c.janetc_cslot(c.janet_wrap_array(reference)),
+                c.janetc_cslot(c.janet_wrap_array(try reference)),
                 slot,
                 0,
                 0,
@@ -1044,7 +1074,7 @@ fn bindDefinitionLeaf(
     {
         definition_flags |= c.JANET_DEFFLAG_NO_SHADOWCHECK;
     }
-    const result = nameLocal(compiler, symbol, 0, slot, definition_flags);
+    const result = try nameLocal(compiler, symbol, 0, slot, definition_flags);
     if (entry != null) {
         c.janet_table_put(compiler.env, c.janet_wrap_symbol(symbol), c.janet_wrap_table(entry));
     }
@@ -1059,14 +1089,10 @@ fn makeSourceMap(compiler: *c.JanetCompiler) c.JanetTuple {
     return c.janet_tuple_end(tuple);
 }
 
-fn newReferenceArray() *c.JanetArray {
+fn newReferenceArray() raise.Raising(*c.JanetArray) {
     const reference = c.janet_array(1);
-    c.janet_array_push(reference, c.janet_wrap_nil());
+    try containers.arrayPush(reference, c.janet_wrap_nil());
     return reference;
-}
-
-fn wrapInteger(value: i32) c.Janet {
-    return janet_c_specials_wrap_integer(value);
 }
 
 fn symbolEquals(value: c.Janet, string: [*:0]const u8) bool {
@@ -1078,7 +1104,7 @@ fn tableGetKeyword(table: *c.JanetTable, keyword: [*:0]const u8) c.Janet {
     return c.janet_table_get(table, c.janet_ckeywordv(keyword));
 }
 
-fn quasiquote(options: c.JanetFopts, value: c.Janet, depth: i32, original_level: i32) c.JanetSlot {
+fn quasiquote(options: c.JanetFopts, value: c.Janet, depth: i32, original_level: i32) raise.Raising(c.JanetSlot) {
     if (depth == 0) {
         c.janetc_cerror(options.compiler, "quasiquote too deeply nested");
         return nilSlot();
@@ -1098,7 +1124,7 @@ fn quasiquote(options: c.JanetFopts, value: c.Janet, depth: i32, original_level:
                     if (level == 0) {
                         var unquote_options = c.janetc_fopts_default(options.compiler);
                         unquote_options.flags |= c.JANET_FOPTS_ACCEPT_SPLICE;
-                        return c.janetc_value(unquote_options, tuple[1]);
+                        return try compiler_primitives.janetc_valueImpl(unquote_options, tuple[1]);
                     }
                     level -= 1;
                 } else if (c.janet_cstrcmp(head, "quasiquote") == 0) {
@@ -1107,7 +1133,7 @@ fn quasiquote(options: c.JanetFopts, value: c.Janet, depth: i32, original_level:
             }
             var index: i32 = 0;
             while (index < length) : (index += 1) {
-                pushSlot(&slots, quasiquote(suboptions, tuple[@intCast(index)], depth - 1, level));
+                pushSlot(&slots, try quasiquote(suboptions, tuple[@intCast(index)], depth - 1, level));
             }
             const opcode = if (c.janet_tuple_head(tuple).*.gc.flags & c.JANET_TUPLE_FLAG_BRACKETCTOR != 0)
                 c.JOP_MAKE_BRACKET_TUPLE
@@ -1119,7 +1145,7 @@ fn quasiquote(options: c.JanetFopts, value: c.Janet, depth: i32, original_level:
             const array = c.janet_unwrap_array(value);
             var index: i32 = 0;
             while (index < array.*.count) : (index += 1) {
-                pushSlot(&slots, quasiquote(suboptions, array.*.data[@intCast(index)], depth - 1, level));
+                pushSlot(&slots, try quasiquote(suboptions, array.*.data[@intCast(index)], depth - 1, level));
             }
             return quoteSlots(options, slots, c.JOP_MAKE_ARRAY);
         },
@@ -1130,8 +1156,8 @@ fn quasiquote(options: c.JanetFopts, value: c.Janet, depth: i32, original_level:
             _ = c.janet_dictionary_view(value, &key_values, &length, &capacity);
             var pair = c.janet_dictionary_next(key_values, capacity, null);
             while (pair != null) : (pair = c.janet_dictionary_next(key_values, capacity, pair)) {
-                var key = quasiquote(suboptions, pair.*.key, depth - 1, level);
-                var pair_value = quasiquote(suboptions, pair.*.value, depth - 1, level);
+                var key = try quasiquote(suboptions, pair.*.key, depth - 1, level);
+                var pair_value = try quasiquote(suboptions, pair.*.value, depth - 1, level);
                 key.flags &= ~@as(u32, c.JANET_SLOT_SPLICED);
                 pair_value.flags &= ~@as(u32, c.JANET_SLOT_SPLICED);
                 pushSlot(&slots, key);
@@ -1159,7 +1185,7 @@ fn compileSequence(
     options: c.JanetFopts,
     argument_count: i32,
     arguments: [*c]const c.Janet,
-) c.JanetSlot {
+) raise.Raising(c.JanetSlot) {
     const compiler: *c.JanetCompiler = options.compiler;
     var result = nilSlot();
     var suboptions = c.janetc_fopts_default(compiler);
@@ -1171,7 +1197,7 @@ fn compileSequence(
             suboptions = options;
             suboptions.flags &= ~@as(u32, c.JANET_FOPTS_ACCEPT_SPLICE);
         }
-        result = c.janetc_value(suboptions, arguments[@intCast(index)]);
+        result = try compiler_primitives.janetc_valueImpl(suboptions, arguments[@intCast(index)]);
         if (index != argument_count - 1) c.janetc_freeslot(compiler, result);
     }
     return result;

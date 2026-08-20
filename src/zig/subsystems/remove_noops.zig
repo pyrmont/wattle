@@ -1,9 +1,7 @@
 const std = @import("std");
 
-const c = @cImport({
-    @cInclude("janet.h");
-    @cInclude("runtime.h");
-});
+const abi = @import("abi");
+const c = abi.c;
 
 export fn janet_bytecode_remove_noops(definition: *c.JanetFuncDef) callconv(.c) void {
     const old_length = definition.bytecode_length;

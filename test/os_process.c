@@ -327,7 +327,7 @@ static void test_core_functions(void) {
 
 #endif /* JANET_WINDOWS */
 
-int main(void) {
+void os_process_contract(void) {
     test_exec_escaping();
     test_env_entries();
 #ifndef JANET_WINDOWS
@@ -338,5 +338,4 @@ int main(void) {
     test_core_functions();
     janet_deinit();
 #endif
-    return 0;
 }

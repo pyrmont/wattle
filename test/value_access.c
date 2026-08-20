@@ -54,6 +54,8 @@
 
 #include "features.h"
 #include <janet.h>
+
+#include "support.h"
 #include "state.h"
 #include "util.h"
 
@@ -67,14 +69,15 @@ static int panics_fired = 0;
 
 #define EXPECT_PANIC(expr, message) do { \
     JanetTryState _state; \
-    volatile int _returned = 0; \
-    JanetSignal _sig = janet_try(&_state); \
-    if (!_sig) { \
-        (void)(expr); \
-        _returned = 1; \
-    } \
+    int _raised = 0; \
+    JanetSignal _sig = JANET_SIGNAL_OK; \
+    janet_try_init(&_state); \
+    janet_contract_arm(); \
+    (void)(expr); \
+    _raised = janet_contract_raised(); \
+    if (_raised) _sig = janet_contract_signal(); \
     janet_restore(&_state); \
-    assert(!_returned && "expected a panic, got a return"); \
+    assert(_raised && "expected a panic, got a return"); \
     assert(_sig == JANET_SIGNAL_ERROR); \
     assert(janet_checktype(_state.payload, JANET_STRING)); \
     if (janet_cstrcmp(janet_unwrap_string(_state.payload), (message))) { \
@@ -89,14 +92,15 @@ static int panics_fired = 0;
  * by prefix. Everything else is compared whole. */
 #define EXPECT_PANIC_PREFIX(expr, prefix) do { \
     JanetTryState _state; \
-    volatile int _returned = 0; \
-    JanetSignal _sig = janet_try(&_state); \
-    if (!_sig) { \
-        (void)(expr); \
-        _returned = 1; \
-    } \
+    int _raised = 0; \
+    JanetSignal _sig = JANET_SIGNAL_OK; \
+    janet_try_init(&_state); \
+    janet_contract_arm(); \
+    (void)(expr); \
+    _raised = janet_contract_raised(); \
+    if (_raised) _sig = janet_contract_signal(); \
     janet_restore(&_state); \
-    assert(!_returned && "expected a panic, got a return"); \
+    assert(_raised && "expected a panic, got a return"); \
     assert(_sig == JANET_SIGNAL_ERROR); \
     assert(janet_checktype(_state.payload, JANET_STRING)); \
     { \
@@ -111,12 +115,15 @@ static int panics_fired = 0;
 
 #define EXPECT_NO_PANIC(expr) do { \
     JanetTryState _state; \
-    JanetSignal _sig = janet_try(&_state); \
-    if (!_sig) { \
-        (void)(expr); \
-    } \
+    int _raised = 0; \
+    JanetSignal _sig = JANET_SIGNAL_OK; \
+    janet_try_init(&_state); \
+    janet_contract_arm(); \
+    (void)(expr); \
+    _raised = janet_contract_raised(); \
+    if (_raised) _sig = janet_contract_signal(); \
     janet_restore(&_state); \
-    assert(_sig == JANET_SIGNAL_OK && "expected a return, got a panic"); \
+    assert(!_raised && "expected a return, got a panic"); \
 } while (0)
 
 static Janet kw(const char *name) {
@@ -225,14 +232,14 @@ static Janet method_keyword(int32_t argc, Janet *argv) {
 static int good_method_get(void *p, Janet key, Janet *out) {
     (void) p;
     if (!janet_keyeq(key, "length")) return 0;
-    *out = janet_wrap_cfunction(method_seven);
+    *out = janet_wrap_cfunction(janet_contract_cfunction(method_seven));
     return 1;
 }
 
 static int bad_method_get(void *p, Janet key, Janet *out) {
     (void) p;
     if (!janet_keyeq(key, "length")) return 0;
-    *out = janet_wrap_cfunction(method_keyword);
+    *out = janet_wrap_cfunction(janet_contract_cfunction(method_keyword));
     return 1;
 }
 
@@ -254,16 +261,16 @@ static Janet good_method_value;
 static Janet bad_method_value;
 
 static void make_abstracts(void) {
-    slots *s = janet_abstract(&slots_type, sizeof(slots));
+    slots *s = janet_abstract(CONTRACT_AT(slots_type), sizeof(slots));
     s->slot[0] = 10;
     s->slot[1] = 11;
     s->slot[2] = 12;
     slots_value = janet_wrap_abstract(s);
-    bare_value = janet_wrap_abstract(janet_abstract(&bare_type, 8));
-    big_value = janet_wrap_abstract(janet_abstract(&big_type, 8));
-    huge_value = janet_wrap_abstract(janet_abstract(&huge_type, 8));
-    good_method_value = janet_wrap_abstract(janet_abstract(&good_method_type, 8));
-    bad_method_value = janet_wrap_abstract(janet_abstract(&bad_method_type, 8));
+    bare_value = janet_wrap_abstract(janet_abstract(CONTRACT_AT(bare_type), 8));
+    big_value = janet_wrap_abstract(janet_abstract(CONTRACT_AT(big_type), 8));
+    huge_value = janet_wrap_abstract(janet_abstract(CONTRACT_AT(huge_type), 8));
+    good_method_value = janet_wrap_abstract(janet_abstract(CONTRACT_AT(good_method_type), 8));
+    bad_method_value = janet_wrap_abstract(janet_abstract(CONTRACT_AT(bad_method_type), 8));
     janet_gcroot(slots_value);
     janet_gcroot(bare_value);
     janet_gcroot(big_value);
@@ -463,7 +470,7 @@ static void test_next_on_a_non_iterable_panics(void) {
                  "expected iterable type, got nil");
     EXPECT_PANIC(janet_next(janet_wrap_true(), janet_wrap_nil()),
                  "expected iterable type, got true");
-    EXPECT_PANIC_PREFIX(janet_next(janet_wrap_cfunction(method_seven), janet_wrap_nil()),
+    EXPECT_PANIC_PREFIX(janet_next(janet_wrap_cfunction(janet_contract_cfunction(method_seven)), janet_wrap_nil()),
                         "expected iterable type, got <cfunction ");
 }
 
@@ -496,17 +503,16 @@ static Janet cfun_next_child_cleared_on_panic(int32_t argc, Janet *argv) {
     janet_fixarity(argc, 2);
     JanetFiber *self = janet_vm.fiber;
     JanetTryState state;
-    JanetSignal sig = janet_try(&state);
-    if (!sig) {
-        (void) janet_next(argv[0], argv[1]);
-        janet_restore(&state);
-        return janet_wrap_nil();     /* did not panic; the caller asserts */
-    }
+    janet_try_init(&state);
+    janet_contract_arm();
+    (void) janet_next(argv[0], argv[1]);
+    int raised = janet_contract_raised();
     janet_restore(&state);
+    if (!raised) return janet_wrap_nil();   /* did not panic; the caller asserts */
     return janet_wrap_boolean(self->child == NULL);
 }
 
-static const JanetReg cfuns[] = {
+static JanetReg cfuns[] = {
     {"va/next", cfun_next, NULL},
     {"va/next-child-cleared", cfun_next_child_cleared, NULL},
     {"va/next-child-cleared-on-panic", cfun_next_child_cleared_on_panic, NULL},
@@ -548,6 +554,7 @@ static void test_next_resumes_a_fiber(void) {
  * in-tree caller, so this is the only exercise it gets. It agrees with the
  * interpreter's path everywhere except on a signal. */
 static void test_janet_next_entry_point_on_a_fiber(void) {
+    janet_contract_adapt_regs(cfuns);
     janet_cfuns(janet_core_env(NULL), NULL, cfuns);
     Janet r = run("(def f (fiber/new (fn [] (yield :a) :done)))"
                   "[(va/next f nil) (in f 0) (va/next f 0) (va/next f 0)]");
@@ -721,7 +728,7 @@ static void test_in_on_a_non_lengthable_panics(void) {
                  "array, tuple, table, struct or buffer, got nil");
     EXPECT_PANIC(janet_in(janet_wrap_true(), intv(0)), "expected string, symbol, keyword, "
                  "array, tuple, table, struct or buffer, got true");
-    EXPECT_PANIC_PREFIX(janet_in(janet_wrap_cfunction(method_seven), intv(0)), msg);
+    EXPECT_PANIC_PREFIX(janet_in(janet_wrap_cfunction(janet_contract_cfunction(method_seven)), intv(0)), msg);
 }
 
 /* An abstract type is the one place where a key that is simply absent is an
@@ -775,7 +782,7 @@ static void test_get_answers_nil_where_in_panics(void) {
     assert(is_nil(janet_get(janet_wrap_true(), kw("x"))));
     assert(is_nil(janet_get(bare_value, intv(0))));
     assert(is_nil(janet_get(slots_value, intv(7))));
-    assert(is_nil(janet_get(janet_wrap_cfunction(method_seven), intv(0))));
+    assert(is_nil(janet_get(janet_wrap_cfunction(janet_contract_cfunction(method_seven)), intv(0))));
 }
 
 /* ...and where both succeed they agree. */
@@ -1162,9 +1169,10 @@ static void test_from_janet(void) {
 
 /* ------------------------------------------------------------------- main */
 
-int main(void) {
+void value_access_contract(void) {
     janet_init();
     make_abstracts();
+    janet_contract_adapt_regs(cfuns);
     janet_cfuns(janet_core_env(NULL), NULL, cfuns);
 
     test_next_visits_every_table_key_once();
@@ -1228,5 +1236,4 @@ int main(void) {
 
     janet_deinit();
     printf("value access contract ok\n");
-    return 0;
 }

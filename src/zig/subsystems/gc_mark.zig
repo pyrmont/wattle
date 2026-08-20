@@ -1,5 +1,3 @@
-//! jump-transparent
-//!
 //! The mark phase: the traversal that decides what is reachable, the recursion
 //! guard that stops it running off the stack, and `janet_collect`, which drives
 //! it. This is the second of the three increments `gc.c` is split into.
@@ -46,7 +44,10 @@
 
 const std = @import("std");
 const abi = @import("abi");
+const raise = @import("raise");
+const abstract_type = @import("abstract_type.zig");
 const c = abi.c;
+const ev_callback = @import("ev_callback.zig");
 
 /// `janet_vm` as `src/core/state.h` declares it, resolved through `abi.zig`.
 inline fn vm() *c.JanetVM {
@@ -206,7 +207,11 @@ fn markAbstract(adata: ?*anyopaque) void {
     }
     if (gcReachable(head)) return;
     gcMark(head);
-    if (head.type.*.gcmark) |gcmark| {
+    // A `gcmark` cannot raise, and the type says so. It ran through rule
+    // 11's jump for one part of the hinge, which is how it became clear that
+    // the collector had nowhere to deliver one to; `abstract_type.zig` has
+    // the contract.
+    if (abstract_type.of(head.type).gcmark) |gcmark| {
         _ = gcmark(adata, head.size);
     }
 }
@@ -399,7 +404,7 @@ fn markFiber(fiber_in: [*c]c.JanetFiber) void {
                 markAbstract(fiber.*.ev_stream);
             }
             if (fiber.*.ev_callback) |callback| {
-                callback(fiber, c.JANET_ASYNC_EVENT_MARK);
+                ev_callback.dispatchTotal(ev_callback.of(callback), fiber, c.JANET_ASYNC_EVENT_MARK);
             }
         }
 

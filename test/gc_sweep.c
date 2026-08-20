@@ -40,6 +40,8 @@
 
 #include "features.h"
 #include <janet.h>
+
+#include "support.h"
 #include "state.h"
 #include "gc.h"
 
@@ -209,7 +211,7 @@ static void test_sweep_preserves_disabled(void) {
  * handed the type -- not the block address, and not the header size. */
 static void test_finalizer_runs_once_with_the_abstract(void) {
     settle();
-    void *a = janet_abstract(&at_final, 24);
+    void *a = janet_abstract(CONTRACT_AT(at_final), 24);
     gc_calls = 0;
     gc_data = NULL;
     gc_size = 0;
@@ -228,7 +230,7 @@ static void test_finalizer_runs_once_with_the_abstract(void) {
  * reachability rather than by the sweep visiting the block. */
 static void test_survivor_is_not_finalized(void) {
     settle();
-    void *a = janet_abstract(&at_final, 8);
+    void *a = janet_abstract(CONTRACT_AT(at_final), 8);
     Janet v = janet_wrap_abstract(a);
     janet_gcroot(v);
     gc_calls = 0;
@@ -247,7 +249,7 @@ static void test_survivor_is_not_finalized(void) {
  * reversing them would let `gc` free memory `gcperthread` still reads. */
 static void test_perthread_finalizer_runs_before_gc(void) {
     settle();
-    (void) janet_abstract(&at_ordered, 8);
+    (void) janet_abstract(CONTRACT_AT(at_ordered), 8);
     order_len = 0;
 
     janet_collect();
@@ -261,7 +263,7 @@ static void test_perthread_finalizer_runs_before_gc(void) {
 static void test_abstract_without_finalizers(void) {
     settle();
     size_t before = janet_vm.block_count;
-    (void) janet_abstract(&at_plain, 8);
+    (void) janet_abstract(CONTRACT_AT(at_plain), 8);
     assert(janet_vm.block_count == before + 1);
     janet_collect();
     assert(janet_vm.block_count == before);
@@ -462,7 +464,7 @@ static const JanetAbstractType at_threaded = {
  * interpreter that ever held it. */
 static void test_threaded_abstract_loses_its_reference(void) {
     settle();
-    void *a = janet_abstract_threaded(&at_threaded, 8);
+    void *a = janet_abstract_threaded(CONTRACT_AT(at_threaded), 8);
     Janet v = janet_wrap_abstract(a);
     janet_gcroot(v);
     threaded_gc_calls = 0;
@@ -502,9 +504,9 @@ static void test_threaded_abstract_loses_its_reference(void) {
  * process. `FOUND.md` records it; the port reproduces it, so the assertion
  * holds for both selectors and will fail for whichever is fixed first. */
 static void test_clear_memory_finalizes_everything(void) {
-    void *a = janet_abstract(&at_final, 8);
+    void *a = janet_abstract(CONTRACT_AT(at_final), 8);
     janet_gcroot(janet_wrap_abstract(a));
-    (void) janet_abstract(&at_final, 8);
+    (void) janet_abstract(CONTRACT_AT(at_final), 8);
     gc_calls = 0;
 
     JanetTable *w = janet_table_weakv(4);
@@ -530,7 +532,7 @@ static void test_repeated_cycles(void) {
         janet_table_put(t, janet_ckeywordv("array"), janet_wrap_array(janet_array(4)));
         janet_table_put(t, janet_ckeywordv("buffer"), janet_wrap_buffer(janet_buffer(8)));
         janet_table_put(t, janet_ckeywordv("weak"), janet_wrap_array(janet_array_weak(4)));
-        janet_table_put(t, janet_ckeywordv("abstract"), janet_wrap_abstract(janet_abstract(&at_plain, 8)));
+        janet_table_put(t, janet_ckeywordv("abstract"), janet_wrap_abstract(janet_abstract(CONTRACT_AT(at_plain), 8)));
         Janet f = janet_wrap_nil();
         janet_dostring(janet_core_env(NULL), "(fn [] 1)", "gc-sweep-test", &f);
         assert(janet_checktype(f, JANET_FUNCTION));
@@ -542,7 +544,7 @@ static void test_repeated_cycles(void) {
     }
 }
 
-int main(void) {
+void gc_sweep_contract(void) {
     janet_init();
 
     test_head_offsets();
@@ -571,5 +573,4 @@ int main(void) {
 
     janet_deinit();
     printf("gc sweep contract ok\n");
-    return 0;
 }

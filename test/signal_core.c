@@ -25,6 +25,8 @@
 
 #include "features.h"
 #include <janet.h>
+
+#include "support.h"
 #include "fiber.h"
 #include "state.h"
 
@@ -61,7 +63,6 @@ static void test_try_scope_saves_redirects_and_restores(void) {
     int old_stackn = janet_vm.stackn;
     int old_gc_suspend = janet_vm.gc_suspend;
     JanetFiber *old_fiber = janet_vm.fiber;
-    jmp_buf *old_signal_buf = janet_vm.signal_buf;
     Janet *old_return_reg = janet_vm.return_reg;
     int old_coerce_error = janet_vm.coerce_error;
 
@@ -73,7 +74,6 @@ static void test_try_scope_saves_redirects_and_restores(void) {
     assert(state.stackn == old_stackn);
     assert(state.gc_handle == old_gc_suspend);
     assert(state.vm_fiber == old_fiber);
-    assert(state.vm_jmp_buf == old_signal_buf);
     assert(state.vm_return_reg == old_return_reg);
     assert(state.coerce_error == 1);
 
@@ -84,7 +84,6 @@ static void test_try_scope_saves_redirects_and_restores(void) {
     assert(janet_vm.stackn == old_stackn + 1);
 
     assert(janet_vm.return_reg == &state.payload);
-    assert(janet_vm.signal_buf == &state.buf);
     assert(janet_vm.coerce_error == 0);
 
     /* Whatever the scope's body did to the saved fields is undone rather than
@@ -99,7 +98,6 @@ static void test_try_scope_saves_redirects_and_restores(void) {
     assert(janet_vm.stackn == old_stackn);
     assert(janet_vm.gc_suspend == old_gc_suspend);
     assert(janet_vm.fiber == old_fiber);
-    assert(janet_vm.signal_buf == old_signal_buf);
     assert(janet_vm.return_reg == old_return_reg);
     assert(janet_vm.coerce_error == 1);
 
@@ -119,12 +117,10 @@ static void test_try_scopes_nest(void) {
 
     janet_try_init(&inner);
     assert(janet_vm.stackn == base + 2);
-    assert(inner.vm_jmp_buf == &outer.buf);
     assert(inner.vm_return_reg == &outer.payload);
 
     janet_restore(&inner);
     assert(janet_vm.stackn == base + 1);
-    assert(janet_vm.signal_buf == &outer.buf);
     assert(janet_vm.return_reg == &outer.payload);
 
     janet_restore(&outer);
@@ -139,10 +135,11 @@ static void test_try_scopes_nest(void) {
 static void test_try_catches_a_panic(void) {
     JanetTryState state;
     int base = janet_vm.stackn;
-    JanetSignal sig = janet_try(&state);
-    if (!sig) {
-        janet_panic("caught me");
-    }
+    JanetSignal sig;
+    janet_try_init(&state);
+    janet_contract_arm();
+    janet_panic("caught me");
+    sig = janet_contract_raised() ? janet_contract_signal() : JANET_SIGNAL_OK;
     janet_restore(&state);
     assert(sig == JANET_SIGNAL_ERROR);
     assert(janet_checktype(state.payload, JANET_STRING));
@@ -288,13 +285,13 @@ static void test_commit_publishes_and_marks(JanetFunction *nothing) {
     JanetFiber *fiber = rooted_fiber(nothing);
 
     janet_gcroot(message);
-    fiber->flags &= ~JANET_FIBER_DID_LONGJUMP;
+    fiber->flags &= ~JANET_FIBER_DID_RAISE;
     janet_vm.return_reg = &reg;
     janet_vm.fiber = fiber;
 
     janet_signal_commit(&message);
     assert(janet_equals(reg, message));
-    assert(fiber->flags & JANET_FIBER_DID_LONGJUMP);
+    assert(fiber->flags & JANET_FIBER_DID_RAISE);
 
     /* With no current fiber the register is still written and nothing is
      * dereferenced. janet_signalv reaches this whenever a panic is raised
@@ -308,6 +305,225 @@ static void test_commit_publishes_and_marks(JanetFunction *nothing) {
     janet_vm.return_reg = old_return_reg;
     janet_gcunroot(message);
     janet_gcunroot(janet_wrap_fiber(fiber));
+}
+
+
+/* ------------------------------------------------------- recording a raise */
+
+/* janet_zig_signal_record is the whole of a raise except the delivery, added in
+ * Phase 10 Part 2 when janet_signalv was split so that a Zig caller returning
+ * error.JanetSignal and a C caller taking the longjmp could not drift apart.
+ *
+ * These test the record, not the jump. Its two observable outputs are the
+ * payload in the return register and the signal in janet_vm.pending_signal, and
+ * the second is the one that is new: under the jump the signal travelled as
+ * longjmp's second argument and was never stored anywhere. */
+
+/* The ordinary case. Nothing coerces, so the message and the signal both arrive
+ * unaltered, and the fiber is marked exactly as janet_signal_commit marks it. */
+static void test_record_publishes_signal_and_payload(JanetFunction *nothing) {
+    Janet reg = janet_wrap_nil();
+    Janet message = janet_cstringv("recorded");
+    Janet *old_return_reg = janet_vm.return_reg;
+    JanetFiber *old_fiber = janet_vm.fiber;
+    int old_coerce_error = janet_vm.coerce_error;
+    JanetFiber *fiber = rooted_fiber(nothing);
+
+    janet_gcroot(message);
+    fiber->flags &= ~JANET_FIBER_DID_RAISE;
+    janet_vm.return_reg = &reg;
+    janet_vm.fiber = fiber;
+    janet_vm.coerce_error = 0;
+    /* Scribbled first, so that a record which never writes it is caught rather
+     * than passing because the field already held the value wanted. */
+    janet_vm.pending_signal = JANET_SIGNAL_USER9;
+
+    janet_zig_signal_record(JANET_SIGNAL_ERROR, message);
+    assert(janet_vm.pending_signal == JANET_SIGNAL_ERROR);
+    assert(janet_equals(reg, message));
+    assert(fiber->flags & JANET_FIBER_DID_RAISE);
+
+    /* A signal that does not coerce travels unaltered, which is what makes
+     * pending_signal worth reading rather than assuming. */
+    janet_vm.pending_signal = JANET_SIGNAL_USER9;
+    janet_zig_signal_record(JANET_SIGNAL_YIELD, message);
+    assert(janet_vm.pending_signal == JANET_SIGNAL_YIELD);
+    assert(janet_equals(reg, message));
+
+    janet_vm.coerce_error = old_coerce_error;
+    janet_vm.fiber = old_fiber;
+    janet_vm.return_reg = old_return_reg;
+    janet_gcunroot(message);
+    janet_gcunroot(janet_wrap_fiber(fiber));
+}
+
+/* The coercing case, which is the one that moved languages in Part 2: building
+ * the message was C's until then, because rendering "%v" can panic.
+ *
+ * Both halves are checked. The signal the caller passed is replaced by ERROR,
+ * and the payload is replaced by a string naming the original signal - so a
+ * port that coerced the signal but forwarded the message unchanged, which is
+ * the plausible slip, fails here rather than in a suite. */
+static void test_record_coerces_message_and_signal(JanetFunction *nothing) {
+    Janet reg = janet_wrap_nil();
+    Janet message = janet_cstringv("original");
+    Janet *old_return_reg = janet_vm.return_reg;
+    JanetFiber *old_fiber = janet_vm.fiber;
+    int old_coerce_error = janet_vm.coerce_error;
+    JanetFiber *fiber = rooted_fiber(nothing);
+    const uint8_t *rendered;
+
+    janet_gcroot(message);
+    janet_vm.return_reg = &reg;
+    janet_vm.fiber = fiber;
+    janet_vm.coerce_error = 1;
+    janet_vm.pending_signal = JANET_SIGNAL_USER9;
+
+    janet_zig_signal_record(JANET_SIGNAL_YIELD, message);
+    assert(janet_vm.pending_signal == JANET_SIGNAL_ERROR);
+    assert(janet_checktype(reg, JANET_STRING));
+    rendered = janet_unwrap_string(reg);
+    assert(strstr((const char *)rendered, "coerced from") != NULL);
+    assert(strstr((const char *)rendered, "yield") != NULL);
+
+    /* ERROR under coercion is a raise rather than a coercion: the signal is
+     * already what it would be coerced to, so the message must survive. */
+    reg = janet_wrap_nil();
+    janet_zig_signal_record(JANET_SIGNAL_ERROR, message);
+    assert(janet_vm.pending_signal == JANET_SIGNAL_ERROR);
+    assert(janet_equals(reg, message));
+
+    janet_vm.coerce_error = old_coerce_error;
+    janet_vm.fiber = old_fiber;
+    janet_vm.return_reg = old_return_reg;
+    janet_gcunroot(message);
+    janet_gcunroot(janet_wrap_fiber(fiber));
+}
+
+/* The two deliveries agree. janet_signalv is now a record followed by a jump,
+ * and the value setjmp returns has to be the same signal the record published -
+ * which is exactly what a Zig caller reads out of pending_signal instead of
+ * jumping. If these ever disagree the mechanism has forked, and every other
+ * test here would still pass. */
+static void test_jump_delivers_the_recorded_signal(void) {
+    JanetTryState tstate;
+    JanetSignal caught;
+    Janet message = janet_cstringv("delivered");
+
+    janet_gcroot(message);
+    janet_try_init(&tstate);
+    janet_contract_arm();
+    janet_signalv(JANET_SIGNAL_YIELD, message);
+    caught = janet_contract_raised() ? janet_contract_signal() : JANET_SIGNAL_OK;
+    janet_restore(&tstate);
+    assert(caught == JANET_SIGNAL_YIELD);
+    assert(caught == janet_vm.pending_signal);
+    assert(janet_equals(tstate.payload, message));
+    janet_gcunroot(message);
+}
+
+/* ------------------------------------------------- the public perimeter */
+
+/* The four public ways to raise, each now the C face of an entry point in
+ * src/zig/raise.zig and nothing else: record, then jump. A Zig caller reaches
+ * raise.panicv, raise.panic or raise.signal directly and gets
+ * error.JanetSignal returned instead, so the two faces share every decision
+ * and differ only in the delivery. What is pinned here is the delivery -- that
+ * the C face still arrives as a longjmp carrying the payload its entry point
+ * built.
+ *
+ * janet_panicf is the exception and is here for it: a C-variadic function has
+ * no Zig implementation at all, so this is the same code in both
+ * configurations and the case exists to show that the shell still reaches the
+ * engine Part 4 moved. */
+static void test_the_panic_family(void) {
+    JanetTryState state;
+    JanetSignal sig;
+
+    janet_try_init(&state);
+    janet_contract_arm();
+    janet_panic("plain");
+    sig = janet_contract_raised() ? janet_contract_signal() : JANET_SIGNAL_OK;
+    janet_restore(&state);
+    assert(sig == JANET_SIGNAL_ERROR);
+    assert(janet_checktype(state.payload, JANET_STRING));
+    assert(!janet_cstrcmp(janet_unwrap_string(state.payload), "plain"));
+
+    janet_try_init(&state);
+    janet_contract_arm();
+    janet_panics(janet_cstring("interned"));
+    sig = janet_contract_raised() ? janet_contract_signal() : JANET_SIGNAL_OK;
+    janet_restore(&state);
+    assert(sig == JANET_SIGNAL_ERROR);
+    assert(!janet_cstrcmp(janet_unwrap_string(state.payload), "interned"));
+
+    /* The payload is not coerced to a string: janet_panicv takes any value. */
+    janet_try_init(&state);
+    janet_contract_arm();
+    janet_panicv(janet_wrap_integer(11));
+    sig = janet_contract_raised() ? janet_contract_signal() : JANET_SIGNAL_OK;
+    janet_restore(&state);
+    assert(sig == JANET_SIGNAL_ERROR);
+    assert(janet_equals(state.payload, janet_wrap_integer(11)));
+
+    /* The formatted spelling -- `janet_panicf("bad %d and %v", 7, ...)` -- was
+     * asserted here and is in `test/pp_format.zig` now. Part 18 made the
+     * format string a `comptime` parameter, so a caller instantiates the
+     * raise rather than calling it, and no C contract can. It sits beside the
+     * engine that builds its message, which is where it belongs anyway. */
+
+    /* janet_panics takes a JanetString, which carries its own length, and must
+     * not re-intern it through a C string. Nothing else in the tree notices:
+     * every other message raised anywhere is NUL-free, so a janet_cstring
+     * inserted here would produce an equal string in every case but this one.
+     * A mutation sweep found that hole, which is why the case exists. */
+    {
+        const uint8_t *embedded = janet_string((const uint8_t *) "a\0b", 3);
+        janet_gcroot(janet_wrap_string(embedded));
+        janet_try_init(&state);
+        janet_contract_arm();
+        janet_panics(embedded);
+        sig = janet_contract_raised() ? janet_contract_signal() : JANET_SIGNAL_OK;
+        janet_restore(&state);
+        assert(sig == JANET_SIGNAL_ERROR);
+        assert(janet_checktype(state.payload, JANET_STRING));
+        assert(janet_string_length(janet_unwrap_string(state.payload)) == 3);
+        assert(!memcmp(janet_unwrap_string(state.payload), "a\0b", 3));
+        janet_gcunroot(janet_wrap_string(embedded));
+    }
+}
+
+/* The two slot diagnostics are public API of the panic family but live with
+ * the argument layer, under -Dargs-core, because the fault path there needs
+ * the error and not the jump and an error cannot cross a selector seam. Their
+ * wording is pinned by test/args_core.c against every fault kind; what is
+ * pinned here is that the C faces still deliver a jump, which is the half that
+ * disappears. */
+static void test_the_slot_diagnostics(void) {
+    JanetTryState state;
+    JanetSignal sig;
+    static const JanetAbstractType probe_at = {
+        "signal-core/probe", NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        NULL, NULL, NULL, NULL, NULL, NULL
+    };
+
+    janet_try_init(&state);
+    janet_contract_arm();
+    janet_panic_type(janet_wrap_nil(), 3, JANET_TFLAG_NUMBER);
+    sig = janet_contract_raised() ? janet_contract_signal() : JANET_SIGNAL_OK;
+    janet_restore(&state);
+    assert(sig == JANET_SIGNAL_ERROR);
+    assert(!janet_cstrcmp(janet_unwrap_string(state.payload),
+                          "bad slot #3, expected number, got nil"));
+
+    janet_try_init(&state);
+    janet_contract_arm();
+    janet_panic_abstract(janet_wrap_nil(), 0, CONTRACT_AT(probe_at));
+    sig = janet_contract_raised() ? janet_contract_signal() : JANET_SIGNAL_OK;
+    janet_restore(&state);
+    assert(sig == JANET_SIGNAL_ERROR);
+    assert(!janet_cstrcmp(janet_unwrap_string(state.payload),
+                          "bad slot #0, expected signal-core/probe, got nil"));
 }
 
 /* ------------------------------------------------------------- injection */
@@ -400,7 +616,7 @@ static void test_continue_signal_ok_is_an_ordinary_resume(JanetFunction *yielder
 
 /* ------------------------------------------------------------------- main */
 
-int main(void) {
+void signal_core_contract(void) {
     JanetFunction *nothing;
     JanetFunction *yielder;
 
@@ -424,11 +640,16 @@ int main(void) {
 #endif
     test_commit_publishes_and_marks(nothing);
 
+    test_record_publishes_signal_and_payload(nothing);
+    test_record_coerces_message_and_signal(nothing);
+    test_jump_delivers_the_recorded_signal();
+    test_the_panic_family();
+    test_the_slot_diagnostics();
+
     test_inject_reaches_the_innermost_fiber(nothing);
     test_continue_signal_delivers_an_error(yielder);
     test_continue_signal_ok_is_an_ordinary_resume(yielder);
 
     janet_deinit();
     printf("signal core contract ok\n");
-    return 0;
 }

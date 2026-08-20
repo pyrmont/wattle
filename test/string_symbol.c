@@ -676,7 +676,40 @@ static void test_from_janet(void) {
     assert(janet_tuple_length(janet_unwrap_tuple(r[6])) == 2);
 }
 
-int main(void) {
+/* ------------------------------------------------------- the registration */
+
+/* Every core cfunction is registered with the file and line it was declared
+ * on, and that pair is what a stack trace prints for a frame that is not a
+ * Janet function. Phase 10 Part 6 moved the registration of every surface in
+ * this file to Zig, where the location comes from `@src()` at the table row
+ * rather than from `__LINE__` at the definition; what has to hold either way
+ * is that there *is* one.
+ *
+ * This is here rather than in a Janet suite because nothing in Janet reads the
+ * registry directly -- the `:source-map` a binding carries comes from the
+ * image, so a runtime that recorded nothing would still answer `(doc)`
+ * correctly and only stack traces would go blank. A mutation sweep found that
+ * hole. */
+static void test_the_registry_records_a_location(void) {
+    static const char *const names[] = {
+        "tuple/join", "string/split", "buffer/blit", "array/concat",
+        "table/clone", "struct/rawget", "math/log2", "int/to-number",
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        Janet binding = janet_resolve_core(names[i]);
+        /* A build without integer types has no int/ functions to look up. */
+        if (janet_checktype(binding, JANET_NIL)) continue;
+        assert(janet_checktype(binding, JANET_CFUNCTION));
+        JanetCFunRegistry *entry = janet_registry_get(janet_unwrap_cfunction(binding));
+        assert(entry != NULL);
+        assert(entry->name != NULL);
+        assert(!strcmp((const char *) entry->name, names[i]));
+        assert(entry->source_file != NULL);
+        assert(entry->source_line > 0);
+    }
+}
+
+void string_symbol_contract(void) {
     janet_init();
 
     test_head_layout();
@@ -702,7 +735,8 @@ int main(void) {
 
     test_from_janet();
 
+    test_the_registry_records_a_location();
+
     janet_deinit();
     printf("string symbol contract ok\n");
-    return 0;
 }

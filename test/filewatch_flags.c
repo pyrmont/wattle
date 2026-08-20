@@ -168,7 +168,7 @@ static void test_action_names_cover_the_documented_codes(void) {
     assert(janet_filewatch_action_name(COUNT_OF(action_names)) == NULL);
 }
 
-int main(void) {
+void filewatch_flags_contract(void) {
     test_each_vocabulary_is_complete();
     test_names_hold_their_positions();
     test_each_vocabulary_is_ascending();
@@ -180,5 +180,4 @@ int main(void) {
     test_action_names_cover_the_documented_codes();
 
     printf("filewatch_flags: all tests passed\n");
-    return 0;
 }

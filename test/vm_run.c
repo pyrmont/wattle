@@ -1,15 +1,16 @@
-/* Behavioral contract for the bytecode interpreter's main loop. Run against
- * whichever implementation the build selected (`-Dvm-run=c` or the Zig
- * default), and under either raise mechanism (`-Dcall-trampoline`).
+/* Behavioral contract for the bytecode interpreter's main loop.
+ *
+ * There is one implementation and one raise mechanism now. `-Dvm-run=c` was
+ * spent in Part 17g and `-Dcall-trampoline` in the hinge, which deleted the
+ * per-call `setjmp` scope the second selected.
  *
  * The Janet suites already run every opcode; thirty-eight of them execute for
  * this binary to reach `main`. What they do not pin is what this file is for.
  *
  * **The messages the loop raises itself.** Fourteen of them, and they are the
  * one part of `run_vm` that no Janet program checks and every Janet programmer
- * reads. Under the Zig selector each crosses the C variadic ABI --
- * `janet_panicf` without the trampoline, `janet_vm_error_string` with it -- so
- * a `%v` holding a `Janet`, a `%d` holding an `int32_t` and a `%s` holding a
+ * reads. Each crosses the C variadic ABI through `janet_panicf`, so a `%v`
+ * holding a `Janet`, a `%d` holding an `int32_t` and a `%s` holding a
  * `const char *` are all live ABI questions whose failure mode is a plausible
  * wrong message rather than a crash. Every one is compared byte for byte.
  *
@@ -492,7 +493,7 @@ static void test_a_new_fiber_receives_its_value_as_an_argument(void) {
     assert(janet_equals(janet_unwrap_tuple(out)[1], janet_ckeywordv("in")));
 }
 
-/* After a raise the fiber carries JANET_FIBER_DID_LONGJUMP, which the head of
+/* After a raise the fiber carries JANET_FIBER_DID_RAISE, which the head of
  * the loop reads to pop a C frame and to turn a raise at a tail call into an
  * implicit return. The signal-injection path sets it too, and travels in
  * gc.flags rather than in flags. */
@@ -645,7 +646,7 @@ static void test_the_remaining_opcodes(void) {
 
 /* ------------------------------------------------------------------- entry */
 
-int main(void) {
+void vm_run_contract(void) {
     janet_init();
     test_env = janet_core_env(NULL);
 
@@ -687,5 +688,4 @@ int main(void) {
 
     janet_deinit();
     printf("vm run contract ok (%d errors)\n", errors_fired);
-    return 0;
 }

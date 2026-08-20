@@ -8,6 +8,8 @@
 #include <string.h>
 #include <janet.h>
 
+#include "support.h"
+
 int32_t janet_os_getcwd(char *buffer, int32_t size);
 int32_t janet_os_mkdir(const char *path);
 int32_t janet_os_rmdir(const char *path);
@@ -67,29 +69,29 @@ static void test_core_functions(const char *original) {
     Janet args[2];
     Janet result;
 
-    result = cwd_fn(0, NULL);
+    result = janet_contract_call_cfunction(cwd_fn, 0, NULL);
     assert(janet_checktype(result, JANET_STRING));
     assert(!janet_cstrcmp(janet_unwrap_string(result), original));
 
     args[0] = janet_cstringv(public_dir);
-    assert(janet_unwrap_boolean(mkdir_fn(1, args)));
-    assert(!janet_unwrap_boolean(mkdir_fn(1, args)));
-    assert(janet_checktype(cd_fn(1, args), JANET_NIL));
+    assert(janet_unwrap_boolean(janet_contract_call_cfunction(mkdir_fn, 1, args)));
+    assert(!janet_unwrap_boolean(janet_contract_call_cfunction(mkdir_fn, 1, args)));
+    assert(janet_checktype(janet_contract_call_cfunction(cd_fn, 1, args), JANET_NIL));
     make_file("source");
 
     args[0] = janet_cstringv(original);
-    assert(janet_checktype(cd_fn(1, args), JANET_NIL));
+    assert(janet_checktype(janet_contract_call_cfunction(cd_fn, 1, args), JANET_NIL));
 
     args[0] = janet_cstringv(public_source);
     args[1] = janet_cstringv(public_dest);
-    assert(janet_checktype(rename_fn(2, args), JANET_NIL));
+    assert(janet_checktype(janet_contract_call_cfunction(rename_fn, 2, args), JANET_NIL));
     args[0] = args[1];
-    assert(janet_checktype(remove_fn(1, args), JANET_NIL));
+    assert(janet_checktype(janet_contract_call_cfunction(remove_fn, 1, args), JANET_NIL));
     args[0] = janet_cstringv(public_dir);
-    assert(janet_checktype(rmdir_fn(1, args), JANET_NIL));
+    assert(janet_checktype(janet_contract_call_cfunction(rmdir_fn, 1, args), JANET_NIL));
 }
 
-int main(void) {
+void os_fs_contract(void) {
     char original[FILENAME_MAX];
 
     assert(janet_os_getcwd(original, FILENAME_MAX) == 0);
@@ -102,5 +104,4 @@ int main(void) {
 
     assert(janet_os_chdir(original) == 0);
     clean_paths();
-    return 0;
 }

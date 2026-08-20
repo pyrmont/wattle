@@ -437,7 +437,7 @@ static void test_packed_layout_invariants_over_a_sweep(void) {
     }
 }
 
-int main(void) {
+void ffi_layout_contract(void) {
     test_primary_machine_types();
     test_machine_type_aliases();
     test_word_sized_machine_types();
@@ -461,5 +461,4 @@ int main(void) {
     test_packed_layout_invariants_over_a_sweep();
 
     printf("ffi_layout: all tests passed\n");
-    return 0;
 }

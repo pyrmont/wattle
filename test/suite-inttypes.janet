@@ -304,4 +304,26 @@
 # Issue #1217
 (assert (= (- (int/u64 "0xFFFFFFFF") 1) (int/u64 "0xFFFFFFFE")) "u64 subtract")
 
+# The r-prefixed methods, which the interpreter reaches when the boxed integer
+# is the right-hand operand. The commuting operations were covered by the
+# arithmetic above; subtraction and division were reached by nothing.
+(assert (= (int/s64 7) (- 10 (int/s64 3))) "s64 inverted subtract")
+(assert (= (int/u64 7) (- 10 (int/u64 3))) "u64 inverted subtract")
+(assert (= (int/s64 5) (/ 10 (int/s64 2))) "s64 inverted divide")
+(assert (= (int/u64 5) (/ 10 (int/u64 2))) "u64 inverted divide")
+(assert (= (int/s64 1) (% 10 (int/s64 3))) "s64 inverted remainder")
+(assert (= (int/u64 1) (% 10 (int/u64 3))) "u64 inverted remainder")
+(assert (= (int/s64 -3) (- 0 (int/s64 3))) "s64 inverted subtract from zero")
+
+# int/to-number's range check. The values above are all small; the bound is
+# 2^53, beyond which a double cannot tell neighbouring integers apart.
+(assert-error "int/to-number s64 too large"
+              (int/to-number (int/s64 "9007199254740993")))
+(assert-error "int/to-number s64 too small"
+              (int/to-number (int/s64 "-9007199254740993")))
+(assert-error "int/to-number u64 too large"
+              (int/to-number (int/u64 "9007199254740993")))
+(assert (= 9007199254740992 (int/to-number (int/s64 "9007199254740992")))
+        "int/to-number at the bound")
+
 (end-suite)

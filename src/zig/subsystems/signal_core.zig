@@ -14,7 +14,7 @@
 //!    targets `janet_vm.signal_buf`, and Zig owns everything it does except the
 //!    jump itself: the null test on the return register, the coercion
 //!    predicate, the `EVENT` bump of the root fiber's `sched_id`, the store
-//!    into the return register, and `JANET_FIBER_DID_LONGJUMP`. `src/core/capi.c`
+//!    into the return register, and `JANET_FIBER_DID_RAISE`. `src/core/capi.c`
 //!    keeps the three lines that jump. That is not a limitation of Zig — Zig
 //!    can call `_longjmp` — but a jump out of a Zig frame is the thing this
 //!    phase exists to remove, and it is what Phase 10 deletes outright. Porting
@@ -22,14 +22,24 @@
 //!    because a tagged signal-and-payload result still has to make every one of
 //!    these choices.
 //!
-//!  - **The coercion message stays in C.** `janet_formatc("%v coerced from %s
-//!    to error", ...)` renders a Janet value, which runs an abstract type's
-//!    `tostring` callback, which can panic. So `janet_signal_plan` reports that
-//!    a message is needed and stops. C builds it and hands it back to
-//!    `janet_signal_commit`. The order is the C original's exactly, including
-//!    the case that matters: a panic raised *by* the formatting happens after
-//!    the `sched_id` bump and before the return register is written, in both
-//!    implementations.
+//!    *Phase 10 Part 2 made that concrete.* `janet_zig_signal_record` at the
+//!    foot of this file is the whole decision, and the jump in `capi.c` is now
+//!    `janet_zig_signal_deliver` — three lines that read
+//!    `janet_vm.pending_signal` and go. A Zig caller returns
+//!    `error.JanetSignal` instead. Both deliveries share this file's decision,
+//!    which is what stops them drifting while both are live.
+//!
+//!  - **The coercion message stayed in C, and no longer does.** `janet_formatc`
+//!    renders a Janet value by running an abstract type's `tostring` callback,
+//!    which can panic, so through Phase 9 `janet_signal_plan` reported that a
+//!    message was needed and stopped, and C built it. Part 2 brought it here
+//!    with `janet_zig_signal_record`: the constraint was the old rule that no
+//!    Zig frame may be jumped through, and jump transparency replaced that in
+//!    Phase 8. The order is the C original's exactly, including the case that
+//!    matters: a panic raised *by* the formatting happens after the `sched_id`
+//!    bump and before the return register is written, in both implementations.
+//!    `JANET_SIGNAL_PLAN_COERCE` stays in the interface because `-Dsignal-core=c`
+//!    still answers with it.
 //!
 //!  - **`janet_try_init` does not `setjmp`.** It cannot: Zig has no `setjmp`,
 //!    and the buffer has to be filled in the frame that will be jumped to. The
@@ -47,7 +57,10 @@
 
 const std = @import("std");
 const abi = @import("abi");
+const raise = @import("raise");
+const pp_format = @import("pp_format.zig");
 const c = abi.c;
+const stdio = @import("stdio.zig");
 
 /// `JANET_VM_HAS_EV` in `src/zig/state_abi.h`. The `sched_id` bump below is
 /// inside `#ifdef JANET_EV` in the C original; the field itself is
@@ -65,7 +78,7 @@ const sig_ok: c.JanetSignal = @intCast(c.JANET_SIGNAL_OK);
 const sig_error: c.JanetSignal = @intCast(c.JANET_SIGNAL_ERROR);
 const sig_event: c.JanetSignal = @intCast(c.JANET_SIGNAL_EVENT);
 
-const did_longjmp: i32 = @intCast(c.JANET_FIBER_DID_LONGJUMP);
+const did_raise: i32 = @intCast(c.JANET_FIBER_DID_RAISE);
 const status_mask: i32 = @intCast(c.JANET_FIBER_STATUS_MASK);
 const status_offset: u5 = @intCast(c.JANET_FIBER_STATUS_OFFSET);
 const resume_signal: i32 = @intCast(c.JANET_FIBER_RESUME_SIGNAL);
@@ -81,21 +94,27 @@ const resume_signal: i32 = @intCast(c.JANET_FIBER_RESUME_SIGNAL);
 /// back, so an off-by-one would leak a level of `JANET_RECURSION_GUARD` per
 /// scope.
 ///
-/// Note what this is *not*: the per-call scope `src/core/vm.c` uses under
-/// `-Dcall-trampoline=true` saves two of these six deliberately, for reasons
-/// recorded beside it. This is the wide scope, and it is the one the public
-/// `janet_try` macro opens.
+/// This is the wide scope, and since the hinge it is the only one: the
+/// per-call scope `src/core/vm.c` kept under `-Dcall-trampoline=true` saved
+/// two of these six deliberately, and went with the last `setjmp`. It is also
+/// no longer opened by a `janet_try` macro, which was this call followed by a
+/// `setjmp`; a caller opens a scope by calling it.
 export fn janet_try_init(state: *c.JanetTryState) callconv(.c) void {
     const v = vm();
+    // A report outstanding when a scope opens was left by whatever ran before
+    // it. Phase 10 Part 17h added this pair of assertions after three days of
+    // hunting a raise that was reported and never consumed: the symptom always
+    // arrived far from the cause, as a blank value or a jump with no scope.
+    // Bracketing the leak to one scope found it in a single run. They cost a
+    // branch on a path the runtime rarely takes, and they go with the flag.
+    if (v.c_raised != 0) c.janet_zig_fatal("a raise was reported to a C caller and never consumed");
     state.stackn = @intCast(v.stackn);
     v.stackn += 1;
     state.gc_handle = v.gc_suspend;
     state.vm_fiber = v.fiber;
-    state.vm_jmp_buf = v.signal_buf;
     state.vm_return_reg = v.return_reg;
     state.coerce_error = v.coerce_error;
     v.return_reg = &state.payload;
-    v.signal_buf = &state.buf;
     v.coerce_error = 0;
 }
 
@@ -105,12 +124,38 @@ export fn janet_try_init(state: *c.JanetTryState) callconv(.c) void {
 /// where it was taken.
 export fn janet_restore(state: *c.JanetTryState) callconv(.c) void {
     const v = vm();
+    // ...and one outstanding when a scope closes was made inside it. See the
+    // note in `janet_try_init`.
+    if (v.c_raised != 0) c.janet_zig_fatal("a raise was reported to a C caller and never consumed");
     v.stackn = @intCast(state.stackn);
     v.gc_suspend = state.gc_handle;
     v.fiber = state.vm_fiber;
-    v.signal_buf = state.vm_jmp_buf;
     v.return_reg = state.vm_return_reg;
     v.coerce_error = state.coerce_error;
+}
+
+// ------------------------------------------- a raise handed to a C caller
+
+/// Record that a raise reached a C-ABI face, which returned rather than
+/// jumping. Phase 10 Part 17h; `src/zig/raise.zig` has the argument.
+export fn janet_zig_c_raise_record() callconv(.c) void {
+    vm().c_raised = 1;
+}
+
+/// Whether a raise reached a C-ABI face since the last time this was asked.
+/// Clears, because a raise is consumed exactly once.
+export fn janet_zig_c_raise_take() callconv(.c) c_int {
+    const v = vm();
+    if (v.c_raised == 0) return 0;
+    v.c_raised = 0;
+    return 1;
+}
+
+/// Discard any record of one, for a caller about to open a window it wants to
+/// measure. `janet_try_init` does not do this: a scope and a report are
+/// different things, and the ev loop opens scopes without caring.
+export fn janet_zig_c_raise_clear() callconv(.c) void {
+    vm().c_raised = 0;
 }
 
 // ---------------------------------------------------------------- raising
@@ -150,7 +195,7 @@ export fn janet_signal_plan(sig: c.JanetSignal, out_sig: *c.JanetSignal) callcon
 export fn janet_signal_commit(message: *const c.Janet) callconv(.c) void {
     const v = vm();
     v.return_reg.* = message.*;
-    if (v.fiber != null) v.fiber.*.flags |= did_longjmp;
+    if (v.fiber != null) v.fiber.*.flags |= did_raise;
 }
 
 /// Arm the innermost live fiber of a chain to raise `sig` the moment it
@@ -178,4 +223,104 @@ export fn janet_signal_inject(fiber: *c.JanetFiber, sig: c.JanetSignal) callconv
     child.gc.flags &= ~status_mask;
     child.gc.flags |= @bitCast(shifted);
     child.flags |= resume_signal;
+}
+
+// ------------------------------------------ the decision half of a raise
+
+/// Decide and publish a raise, without delivering it.
+///
+/// Phase 10 Part 2 split `janet_signalv` into this and the jump, so that a Zig
+/// caller returning `error.JanetSignal` and a C caller taking the `longjmp`
+/// cannot drift apart: both go through here first, and both read the signal
+/// this leaves in `janet_vm.pending_signal`. `src/zig/raise.zig` is the Zig
+/// side and `janet_zig_signal_deliver` in `src/core/capi.c` is the C one.
+///
+/// The order is the C original's, and one part of it is load-bearing rather
+/// than incidental: the `sched_id` bump inside `janet_signal_plan` happens
+/// *before* the coercion message is built, so a panic raised by that formatting
+/// finds the counter already advanced and the return register not yet written.
+/// A port must not tidy that.
+///
+/// Two calls here can still panic through C, which is why the file's
+/// prohibition on raising is now narrower than it was rather than gone.
+/// `janet_formatc` renders `%v` by running an abstract type's `tostring`
+/// callback. This function holds nothing, so the jump costs nothing, and Phase
+/// 10 Part 4 takes `pp.c` and removes it.
+///
+/// Does not return when the plan is `TOP_LEVEL`: there is no scope to raise
+/// into, so `janet_top_level_signal` ends the process or the thread.
+export fn janet_zig_signal_record(sig: c.JanetSignal, message: c.Janet) callconv(.c) void {
+    const v = vm();
+    var out_sig: c.JanetSignal = sig;
+    const plan = janet_signal_plan(sig, &out_sig);
+    if (plan == @as(c.JanetSignalPlan, @intCast(c.JANET_SIGNAL_PLAN_TOP_LEVEL))) {
+        const str = pp_format.formatcReported("janet top level signal - %v\n", .{message});
+        c.janet_top_level_signal(@ptrCast(str));
+    }
+    var payload = message;
+    if (plan == @as(c.JanetSignalPlan, @intCast(c.JANET_SIGNAL_PLAN_COERCE))) {
+        payload = c.janet_wrap_string(pp_format.formatcReported("%v coerced from %s to error", .{ message, c.janet_signal_names[@intCast(sig)] }));
+    }
+    janet_signal_commit(&payload);
+    v.pending_signal = out_sig;
+}
+
+// ------------------------------------------------ the public raise perimeter
+
+// Phase 10 Part 5. Each of these is the C face of an entry point in
+// `raise.zig` and nothing else: record the raise, then deliver it as the jump
+// a C caller is waiting for. A Zig caller skips the face and calls
+// `raise.signal`, `raise.panicv` or `raise.panic` directly, which returns
+// `error.JanetSignal` instead — so the two are each other's differential for
+// as long as any C caller remains.
+//
+// `raise.panicking` does not generate these. It builds a face for a function
+// that *returns* a payload on the way through, and there is no way through
+// here: the C originals are `JANET_NO_RETURN`, and the Zig entry points return
+// the bare error set rather than an error union, so there is nothing to catch.
+//
+// This is also why the file now carries the jump-transparent marker. It always
+// could be jumped through — `janet_zig_signal_record` renders a coercion
+// message with `%v`, which runs an abstract type's `tostring` callback — and
+// four functions whose whole body is a jump make that impossible to overlook.
+
+export fn janet_signalv(sig: c.JanetSignal, message: c.Janet) callconv(.c) void {
+    raise.report(raise.signal(sig, message));
+}
+
+export fn janet_panicv(message: c.Janet) callconv(.c) void {
+    raise.report(raise.panicv(message));
+}
+
+export fn janet_panic(message: [*:0]const u8) callconv(.c) void {
+    raise.report(raise.panic(message));
+}
+
+export fn janet_panics(message: [*c]const u8) callconv(.c) void {
+    raise.report(raise.panicv(c.janet_wrap_string(message)));
+}
+
+/// `janet_top_level_signal`. The end of a raise that has no scope to land in.
+///
+/// It was the last symbol `capi.c` defined. The C wrote to `stdout` rather
+/// than to `stderr`, which looks like a mistake and is reproduced: a Janet
+/// program can redirect one and not the other, and `test/signal_core.c` pins
+/// the destination. `FOUND.md` has the entry.
+///
+/// `JANET_SANDBOX_EXIT` is what makes the two endings different. Without it the
+/// process ends; with it only the calling thread does, because a sandboxed
+/// child interpreter must not be able to take the host down.
+fn topLevelSignal(msg: [*c]const u8) callconv(.c) void {
+    _ = fputs(msg, @ptrCast(@alignCast(stdio.out())));
+    if ((c.janet_vm.sandbox_flags & c.JANET_SANDBOX_EXIT) == 0) {
+        c.exit(1);
+    }
+    pthread_exit(null);
+}
+
+extern fn fputs(s: [*c]const u8, stream: ?*anyopaque) callconv(.c) c_int;
+extern fn pthread_exit(value: ?*anyopaque) callconv(.c) noreturn;
+
+comptime {
+    @export(&topLevelSignal, .{ .name = "janet_top_level_signal" });
 }

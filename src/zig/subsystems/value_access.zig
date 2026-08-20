@@ -1,5 +1,3 @@
-//! jump-transparent
-//!
 //! Indexed and keyed access over an arbitrary Janet value, and the iteration
 //! protocol beneath `next`. This is Part 7b of Phase 8 and it takes the rest
 //! of `src/core/value.c`: `janet_next` and `janet_next_impl`, and the seven
@@ -62,8 +60,9 @@
 //!
 //! `janet_in`, `janet_get`, `janet_getindex`, `janet_length`, `janet_lengthv`,
 //! `janet_putindex`, `janet_put` and `janet_next_impl` are all called directly
-//! by `run_vm`, which is the constraint `-Dcall-trampoline` stays off for
-//! through this phase.
+//! by `run_vm`. That was the constraint `-Dcall-trampoline` stayed off for;
+//! since the hinge each is an ordinary Zig call that `run_vm` `try`s, and the
+//! selector is gone.
 //!
 //! ## What is reproduced rather than repaired
 //!
@@ -120,6 +119,11 @@
 
 const std = @import("std");
 const abi = @import("abi");
+const raise = @import("raise");
+const pp_format = @import("pp_format.zig");
+const vm_calls = @import("vm_calls.zig");
+const abstract_type = @import("abstract_type.zig");
+const containers = @import("containers.zig");
 const c = abi.c;
 
 /// From `util.c`, which `abi.zig` deliberately does not translate. This is the
@@ -177,8 +181,12 @@ inline fn nextBucket(p: [*c]const c.JanetKV) [*c]const c.JanetKV {
 /// rather than being re-raised. Nothing in the tree calls it; `run_vm` always
 /// passes one. It exists for embedders, and `FOUND.md` has what happens when
 /// one uses it on a fiber.
+pub fn next(ds: c.Janet, key: c.Janet) raise.Raising(c.Janet) {
+    return nextImpl(ds, key, 0);
+}
+
 export fn janet_next(ds: c.Janet, key: c.Janet) callconv(.c) c.Janet {
-    return janet_next_impl(ds, key, 0);
+    return raise.reported(next(ds, key));
 }
 
 /// `janet_next_impl`. Given a data structure and the previous key, produces
@@ -211,7 +219,7 @@ export fn janet_next(ds: c.Janet, key: c.Janet) callconv(.c) c.Janet {
 /// That widens the shared library's symbol set and changes nothing that
 /// already linked; `src/zig/README.md` has the general form of it, which four
 /// subsystems now share.
-export fn janet_next_impl(ds: c.Janet, key: c.Janet, is_interpreter: c_int) callconv(.c) c.Janet {
+pub fn nextImpl(ds: c.Janet, key: c.Janet, is_interpreter: c_int) raise.Raising(c.Janet) {
     const t = c.janet_type(ds);
     switch (t) {
         c.JANET_TABLE, c.JANET_STRUCT => {
@@ -258,7 +266,7 @@ export fn janet_next_impl(ds: c.Janet, key: c.Janet, is_interpreter: c_int) call
         },
         c.JANET_ABSTRACT => {
             const abst = c.janet_unwrap_abstract(ds);
-            const at = c.janet_abstract_type(abst);
+            const at = abstract_type.ofAbstract(abst);
             if (at.*.next == null) return c.janet_wrap_nil();
             return at.*.next.?(abst, key);
         },
@@ -284,10 +292,10 @@ export fn janet_next_impl(ds: c.Janet, key: c.Janet, is_interpreter: c_int) call
                     // Deliberately without clearing `child` first: the
                     // interpreter unwinds through the fiber chain and the link
                     // has to still be there when it does.
-                    c.janet_signalv(sig, retreg);
+                    return raise.signal(sig, retreg);
                 } else {
                     vm().fiber.*.child = null;
-                    c.janet_panicv(retreg);
+                    return raise.panicv(retreg);
                 }
             }
             vm().fiber.*.child = null;
@@ -305,9 +313,13 @@ export fn janet_next_impl(ds: c.Janet, key: c.Janet, is_interpreter: c_int) call
                 return wrapInteger(0);
             }
         },
-        else => c.janet_panicf("expected iterable type, got %v", ds),
+        else => return pp_format.panicf("expected iterable type, got %v", .{ds}),
     }
     return c.janet_wrap_nil();
+}
+
+export fn janet_next_impl(ds: c.Janet, key: c.Janet, is_interpreter: c_int) callconv(.c) c.Janet {
+    return raise.reported(nextImpl(ds, key, is_interpreter));
 }
 
 // ------------------------------------------------------------- the getters
@@ -320,21 +332,16 @@ export fn janet_next_impl(ds: c.Janet, key: c.Janet, is_interpreter: c_int) call
 /// past the `return`, which is how it keeps one copy of a format string with
 /// four arguments. Written here as three early panics, which is the same
 /// control flow without the label.
-fn getterCheckInt(vtype: c.JanetType, key: c.Janet, max: i32) i32 {
-    if (c.janet_checkint(key) == 0) badKey(vtype, key, max);
+fn getterCheckInt(vtype: c.JanetType, key: c.Janet, max: i32) raise.Raising(i32) {
+    if (c.janet_checkint(key) == 0) return badKey(vtype, key, max);
     const ret = c.janet_unwrap_integer(key);
-    if (ret < 0) badKey(vtype, key, max);
-    if (ret >= max) badKey(vtype, key, max);
+    if (ret < 0) return badKey(vtype, key, max);
+    if (ret >= max) return badKey(vtype, key, max);
     return ret;
 }
 
-fn badKey(vtype: c.JanetType, key: c.Janet, max: i32) noreturn {
-    c.janet_panicf(
-        "expected integer key for %s in range [0, %d), got %v",
-        c.janet_type_names[@intCast(vtype)],
-        @as(c_int, max),
-        key,
-    );
+fn badKey(vtype: c.JanetType, key: c.Janet, max: i32) raise.Error {
+    return pp_format.panicf("expected integer key for %s in range [0, %d), got %v", .{ c.janet_type_names[@intCast(vtype)], @as(c_int, max), key });
 }
 
 /// `janet_in`. Keyed access that treats a bad key as an error. This is `(in ds
@@ -350,7 +357,7 @@ fn badKey(vtype: c.JanetType, key: c.Janet, max: i32) noreturn {
 /// its `get` callback reports presence separately from the value it produces
 /// and the C original chose to treat absence as an error. Note the trailing
 /// space in that message; it is the C original's and is preserved.
-export fn janet_in(ds: c.Janet, key: c.Janet) callconv(.c) c.Janet {
+pub fn in(ds: c.Janet, key: c.Janet) raise.Raising(c.Janet) {
     var value: c.Janet = undefined;
     const vtype = c.janet_type(ds);
     switch (vtype) {
@@ -359,30 +366,30 @@ export fn janet_in(ds: c.Janet, key: c.Janet) callconv(.c) c.Janet {
         c.JANET_ARRAY => {
             const array = c.janet_unwrap_array(ds);
             const index = getterCheckInt(vtype, key, array.*.count);
-            value = array.*.data[asSize(index)];
+            value = array.*.data[asSize(try index)];
         },
         c.JANET_TUPLE => {
             const tuple = c.janet_unwrap_tuple(ds);
             const len = c.janet_tuple_length(tuple);
-            value = tuple[asSize(getterCheckInt(vtype, key, len))];
+            value = tuple[asSize(try getterCheckInt(vtype, key, len))];
         },
         c.JANET_BUFFER => {
             const buffer = c.janet_unwrap_buffer(ds);
             const index = getterCheckInt(vtype, key, buffer.*.count);
-            value = wrapInteger(buffer.*.data[asSize(index)]);
+            value = wrapInteger(buffer.*.data[asSize(try index)]);
         },
         c.JANET_STRING, c.JANET_SYMBOL, c.JANET_KEYWORD => {
             const str = c.janet_unwrap_string(ds);
             const index = getterCheckInt(vtype, key, c.janet_string_length(str));
-            value = wrapInteger(str[asSize(index)]);
+            value = wrapInteger(str[asSize(try index)]);
         },
         c.JANET_ABSTRACT => {
-            const at = c.janet_abstract_type(c.janet_unwrap_abstract(ds));
+            const at = abstract_type.ofAbstract(c.janet_unwrap_abstract(ds));
             if (at.*.get) |get| {
-                if (get(c.janet_unwrap_abstract(ds), key, &value) == 0)
-                    c.janet_panicf("key %v not found in %v ", key, ds);
+                if (try get(c.janet_unwrap_abstract(ds), key, &value) == 0)
+                    return pp_format.panicf("key %v not found in %v ", .{ key, ds });
             } else {
-                c.janet_panicf("no getter for %v", ds);
+                return pp_format.panicf("no getter for %v", .{ds});
             }
         },
         c.JANET_FIBER => {
@@ -390,12 +397,16 @@ export fn janet_in(ds: c.Janet, key: c.Janet) callconv(.c) c.Janet {
             if (c.janet_equals(key, wrapInteger(0)) != 0) {
                 return c.janet_unwrap_fiber(ds).*.last_value;
             } else {
-                c.janet_panicf("expected key 0, got %v", key);
+                return pp_format.panicf("expected key 0, got %v", .{key});
             }
         },
-        else => c.janet_panicf("expected %T, got %v", @as(c_int, c.JANET_TFLAG_LENGTHABLE), ds),
+        else => return pp_format.panicf("expected %T, got %v", .{ @as(c_int, c.JANET_TFLAG_LENGTHABLE), ds }),
     }
     return value;
+}
+
+export fn janet_in(ds: c.Janet, key: c.Janet) callconv(.c) c.Janet {
+    return raise.reported(in(ds, key));
 }
 
 /// `janet_get`. Keyed access that treats every failure as nil. This is `(get
@@ -408,7 +419,7 @@ export fn janet_in(ds: c.Janet, key: c.Janet) callconv(.c) c.Janet {
 /// shadows `t`: the outer `t` is the `JanetType` and the inner one is the
 /// tuple. Renamed here, since Zig will not allow the shadowing and the C is no
 /// clearer for it.
-export fn janet_get(ds: c.Janet, key: c.Janet) callconv(.c) c.Janet {
+pub fn getImpl(ds: c.Janet, key: c.Janet) raise.Raising(c.Janet) {
     const t = c.janet_type(ds);
     switch (t) {
         c.JANET_STRING, c.JANET_SYMBOL, c.JANET_KEYWORD => {
@@ -422,9 +433,9 @@ export fn janet_get(ds: c.Janet, key: c.Janet) callconv(.c) c.Janet {
         c.JANET_ABSTRACT => {
             var value: c.Janet = undefined;
             const abst = c.janet_unwrap_abstract(ds);
-            const at = c.janet_abstract_type(abst);
+            const at = abstract_type.ofAbstract(abst);
             const get = at.*.get orelse return c.janet_wrap_nil();
-            if (get(abst, key, &value) != 0) return value;
+            if ((try get(abst, key, &value)) != 0) return value;
             return c.janet_wrap_nil();
         },
         c.JANET_ARRAY, c.JANET_TUPLE, c.JANET_BUFFER => {
@@ -464,6 +475,10 @@ export fn janet_get(ds: c.Janet, key: c.Janet) callconv(.c) c.Janet {
     }
 }
 
+export fn janet_get(ds: c.Janet, key: c.Janet) callconv(.c) c.Janet {
+    return raise.reported(getImpl(ds, key));
+}
+
 /// `janet_getindex`. Access by a machine integer rather than a `Janet`, which
 /// is a third failure policy again: a negative index panics, a value with no
 /// indexed access panics, an abstract type with no `get` callback panics, and
@@ -474,9 +489,9 @@ export fn janet_get(ds: c.Janet, key: c.Janet) callconv(.c) c.Janet {
 /// difference between this and `janet_in` on the same value: both panic when
 /// the type has no `get` at all, but a `get` that runs and reports absence is
 /// an error to `janet_in` and a nil to `janet_getindex`.
-export fn janet_getindex(ds: c.Janet, index: i32) callconv(.c) c.Janet {
+pub fn getIndex(ds: c.Janet, index: i32) raise.Raising(c.Janet) {
     var value: c.Janet = undefined;
-    if (index < 0) c.janet_panic("expected non-negative index");
+    if (index < 0) return raise.panic("expected non-negative index");
     switch (c.janet_type(ds)) {
         c.JANET_STRING, c.JANET_SYMBOL, c.JANET_KEYWORD => {
             if (index >= c.janet_string_length(c.janet_unwrap_string(ds))) {
@@ -509,12 +524,12 @@ export fn janet_getindex(ds: c.Janet, index: i32) callconv(.c) c.Janet {
         c.JANET_TABLE => value = c.janet_table_get(c.janet_unwrap_table(ds), wrapInteger(index)),
         c.JANET_STRUCT => value = c.janet_struct_get(c.janet_unwrap_struct(ds), wrapInteger(index)),
         c.JANET_ABSTRACT => {
-            const at = c.janet_abstract_type(c.janet_unwrap_abstract(ds));
+            const at = abstract_type.ofAbstract(c.janet_unwrap_abstract(ds));
             if (at.*.get) |get| {
-                if (get(c.janet_unwrap_abstract(ds), wrapInteger(index), &value) == 0)
+                if (try get(c.janet_unwrap_abstract(ds), wrapInteger(index), &value) == 0)
                     value = c.janet_wrap_nil();
             } else {
-                c.janet_panicf("no getter for %v", ds);
+                return pp_format.panicf("no getter for %v", .{ds});
             }
         },
         c.JANET_FIBER => {
@@ -524,9 +539,13 @@ export fn janet_getindex(ds: c.Janet, index: i32) callconv(.c) c.Janet {
                 value = c.janet_wrap_nil();
             }
         },
-        else => c.janet_panicf("expected %T, got %v", @as(c_int, c.JANET_TFLAG_LENGTHABLE), ds),
+        else => return pp_format.panicf("expected %T, got %v", .{ @as(c_int, c.JANET_TFLAG_LENGTHABLE), ds }),
     }
     return value;
+}
+
+export fn janet_getindex(ds: c.Janet, index: i32) callconv(.c) c.Janet {
+    return raise.reported(getIndex(ds, index));
 }
 
 // ------------------------------------------------------------- the lengths
@@ -540,7 +559,7 @@ export fn janet_getindex(ds: c.Janet, index: i32) callconv(.c) c.Janet {
 /// without one is asked for a `length` *method* through `janet_mcall`, which
 /// returns a `Janet` and is rejected when that is not an integer. Two
 /// rejections, two messages, two format specifiers.
-export fn janet_length(x: c.Janet) callconv(.c) i32 {
+pub fn length(x: c.Janet) raise.Raising(i32) {
     switch (c.janet_type(x)) {
         c.JANET_STRING, c.JANET_SYMBOL, c.JANET_KEYWORD => return c.janet_string_length(c.janet_unwrap_string(x)),
         c.JANET_ARRAY => return c.janet_unwrap_array(x).*.count,
@@ -550,22 +569,26 @@ export fn janet_length(x: c.Janet) callconv(.c) i32 {
         c.JANET_TABLE => return c.janet_unwrap_table(x).*.count,
         c.JANET_ABSTRACT => {
             const abst = c.janet_unwrap_abstract(x);
-            const at = c.janet_abstract_type(abst);
-            if (at.*.length) |length| {
-                const len = length(abst, c.janet_abstract_head(abst).*.size);
+            const at = abstract_type.ofAbstract(abst);
+            if (at.*.length) |callback| {
+                const len = try callback(abst, c.janet_abstract_head(abst).*.size);
                 if (len > @as(usize, @intCast(std.math.maxInt(i32)))) {
-                    c.janet_panicf("invalid integer length %u", @as(u64, len));
+                    return pp_format.panicf("invalid integer length %u", .{@as(u64, len)});
                 }
                 return @intCast(len);
             }
             var argv = [_]c.Janet{x};
-            const len = c.janet_mcall("length", 1, &argv);
+            const len = try vm_calls.mcall("length", 1, &argv);
             if (c.janet_checkint(len) == 0)
-                c.janet_panicf("invalid integer length %v", len);
+                return pp_format.panicf("invalid integer length %v", .{len});
             return c.janet_unwrap_integer(len);
         },
-        else => c.janet_panicf("expected %T, got %v", @as(c_int, c.JANET_TFLAG_LENGTHABLE), x),
+        else => return pp_format.panicf("expected %T, got %v", .{ @as(c_int, c.JANET_TFLAG_LENGTHABLE), x }),
     }
+}
+
+export fn janet_length(x: c.Janet) callconv(.c) i32 {
+    return raise.reported(length(x));
 }
 
 /// `janet_lengthv`. The length as a `Janet`, which exists so that an abstract
@@ -578,7 +601,7 @@ export fn janet_length(x: c.Janet) callconv(.c) i32 {
 /// the C original's `#ifdef JANET_32`, kept here as a `comptime` branch on the
 /// same condition rather than dropped, even though no target this project
 /// builds for takes it.
-export fn janet_lengthv(x: c.Janet) callconv(.c) c.Janet {
+pub fn lengthv(x: c.Janet) raise.Raising(c.Janet) {
     switch (c.janet_type(x)) {
         c.JANET_STRING, c.JANET_SYMBOL, c.JANET_KEYWORD => return wrapInteger(c.janet_string_length(c.janet_unwrap_string(x))),
         c.JANET_ARRAY => return wrapInteger(c.janet_unwrap_array(x).*.count),
@@ -588,9 +611,9 @@ export fn janet_lengthv(x: c.Janet) callconv(.c) c.Janet {
         c.JANET_TABLE => return wrapInteger(c.janet_unwrap_table(x).*.count),
         c.JANET_ABSTRACT => {
             const abst = c.janet_unwrap_abstract(x);
-            const at = c.janet_abstract_type(abst);
-            if (at.*.length) |length| {
-                const len = length(abst, c.janet_abstract_head(abst).*.size);
+            const at = abstract_type.ofAbstract(abst);
+            if (at.*.length) |callback| {
+                const len = try callback(abst, c.janet_abstract_head(abst).*.size);
                 // If len is always less then double, we can never overflow
                 if (comptime @hasDecl(c, "JANET_32")) {
                     return c.janet_wrap_number(@floatFromInt(len));
@@ -598,15 +621,19 @@ export fn janet_lengthv(x: c.Janet) callconv(.c) c.Janet {
                     if (len < @as(usize, c.JANET_INTMAX_INT64)) {
                         return c.janet_wrap_number(@floatFromInt(len));
                     } else {
-                        c.janet_panicf("integer length %u too large", @as(u64, len));
+                        return pp_format.panicf("integer length %u too large", .{@as(u64, len)});
                     }
                 }
             }
             var argv = [_]c.Janet{x};
-            return c.janet_mcall("length", 1, &argv);
+            return try vm_calls.mcall("length", 1, &argv);
         },
-        else => c.janet_panicf("expected %T, got %v", @as(c_int, c.JANET_TFLAG_LENGTHABLE), x),
+        else => return pp_format.panicf("expected %T, got %v", .{ @as(c_int, c.JANET_TFLAG_LENGTHABLE), x }),
     }
+}
+
+export fn janet_lengthv(x: c.Janet) callconv(.c) c.Janet {
+    return raise.reported(lengthv(x));
 }
 
 // ------------------------------------------------------------- the setters
@@ -629,7 +656,7 @@ export fn janet_lengthv(x: c.Janet) callconv(.c) c.Janet {
 /// integer at all, so `(put @"" 0 300)` stores 44 and does not complain. That
 /// is established behaviour, not an oversight, and the same truncation is in
 /// `janet_put`.
-export fn janet_putindex(ds: c.Janet, index: i32, value: c.Janet) callconv(.c) void {
+pub fn putIndex(ds: c.Janet, index: i32, value: c.Janet) raise.Raising(void) {
     switch (c.janet_type(ds)) {
         c.JANET_ARRAY => {
             const array = c.janet_unwrap_array(ds);
@@ -646,9 +673,9 @@ export fn janet_putindex(ds: c.Janet, index: i32, value: c.Janet) callconv(.c) v
         c.JANET_BUFFER => {
             const buffer = c.janet_unwrap_buffer(ds);
             if (c.janet_checkint(value) == 0)
-                c.janet_panicf("can only put integers in buffers, got %v", value);
+                return pp_format.panicf("can only put integers in buffers, got %v", .{value});
             if (index >= buffer.*.count) {
-                c.janet_buffer_ensure(buffer, index +% 1, 2);
+                try containers.bufferEnsure(buffer, index +% 1, 2);
                 @memset((buffer.*.data + asSize(buffer.*.count))[0..asSize(index +% 1 -% buffer.*.count)], 0);
                 buffer.*.count = index +% 1;
             }
@@ -659,19 +686,19 @@ export fn janet_putindex(ds: c.Janet, index: i32, value: c.Janet) callconv(.c) v
             c.janet_table_put(table, wrapInteger(index), value);
         },
         c.JANET_ABSTRACT => {
-            const at = c.janet_abstract_type(c.janet_unwrap_abstract(ds));
-            if (at.*.put) |put| {
-                put(c.janet_unwrap_abstract(ds), wrapInteger(index), value);
+            const at = abstract_type.ofAbstract(c.janet_unwrap_abstract(ds));
+            if (at.*.put) |callback| {
+                try callback(c.janet_unwrap_abstract(ds), wrapInteger(index), value);
             } else {
-                c.janet_panicf("no setter for %v ", ds);
+                return pp_format.panicf("no setter for %v ", .{ds});
             }
         },
-        else => c.janet_panicf(
-            "expected %T, got %v",
-            @as(c_int, c.JANET_TFLAG_ARRAY | c.JANET_TFLAG_BUFFER | c.JANET_TFLAG_TABLE),
-            ds,
-        ),
+        else => return pp_format.panicf("expected %T, got %v", .{ @as(c_int, c.JANET_TFLAG_ARRAY | c.JANET_TFLAG_BUFFER | c.JANET_TFLAG_TABLE), ds }),
     }
+}
+
+export fn janet_putindex(ds: c.Janet, index: i32, value: c.Janet) callconv(.c) void {
+    _ = raise.reported(putIndex(ds, index, value));
 }
 
 /// `janet_put`. Write by a `Janet` key. The array and buffer arms are
@@ -684,12 +711,12 @@ export fn janet_putindex(ds: c.Janet, index: i32, value: c.Janet) callconv(.c) v
 /// difference in the panic each one raises first is observable: `janet_put` on
 /// a buffer checks the *key* before the value, so `(put @"" :x :y)` complains
 /// about the key and `(put @"" 0 :y)` complains about the value.
-export fn janet_put(ds: c.Janet, key: c.Janet, value: c.Janet) callconv(.c) void {
+pub fn put(ds: c.Janet, key: c.Janet, value: c.Janet) raise.Raising(void) {
     const vtype = c.janet_type(ds);
     switch (vtype) {
         c.JANET_ARRAY => {
             const array = c.janet_unwrap_array(ds);
-            const index = getterCheckInt(vtype, key, std.math.maxInt(i32) - 1);
+            const index = try getterCheckInt(vtype, key, std.math.maxInt(i32) - 1);
             if (index >= array.*.count) {
                 c.janet_array_ensure(array, index + 1, 2);
                 var i = array.*.count;
@@ -702,11 +729,11 @@ export fn janet_put(ds: c.Janet, key: c.Janet, value: c.Janet) callconv(.c) void
         },
         c.JANET_BUFFER => {
             const buffer = c.janet_unwrap_buffer(ds);
-            const index = getterCheckInt(vtype, key, std.math.maxInt(i32) - 1);
+            const index = try getterCheckInt(vtype, key, std.math.maxInt(i32) - 1);
             if (c.janet_checkint(value) == 0)
-                c.janet_panicf("can only put integers in buffers, got %v", value);
+                return pp_format.panicf("can only put integers in buffers, got %v", .{value});
             if (index >= buffer.*.count) {
-                c.janet_buffer_ensure(buffer, index + 1, 2);
+                try containers.bufferEnsure(buffer, index + 1, 2);
                 @memset((buffer.*.data + asSize(buffer.*.count))[0..asSize(index + 1 - buffer.*.count)], 0);
                 buffer.*.count = index + 1;
             }
@@ -714,17 +741,17 @@ export fn janet_put(ds: c.Janet, key: c.Janet, value: c.Janet) callconv(.c) void
         },
         c.JANET_TABLE => c.janet_table_put(c.janet_unwrap_table(ds), key, value),
         c.JANET_ABSTRACT => {
-            const at = c.janet_abstract_type(c.janet_unwrap_abstract(ds));
-            if (at.*.put) |put| {
-                put(c.janet_unwrap_abstract(ds), key, value);
+            const at = abstract_type.ofAbstract(c.janet_unwrap_abstract(ds));
+            if (at.*.put) |callback| {
+                try callback(c.janet_unwrap_abstract(ds), key, value);
             } else {
-                c.janet_panicf("no setter for %v ", ds);
+                return pp_format.panicf("no setter for %v ", .{ds});
             }
         },
-        else => c.janet_panicf(
-            "expected %T, got %v",
-            @as(c_int, c.JANET_TFLAG_ARRAY | c.JANET_TFLAG_BUFFER | c.JANET_TFLAG_TABLE),
-            ds,
-        ),
+        else => return pp_format.panicf("expected %T, got %v", .{ @as(c_int, c.JANET_TFLAG_ARRAY | c.JANET_TFLAG_BUFFER | c.JANET_TFLAG_TABLE), ds }),
     }
+}
+
+export fn janet_put(ds: c.Janet, key: c.Janet, value: c.Janet) callconv(.c) void {
+    _ = raise.reported(put(ds, key, value));
 }

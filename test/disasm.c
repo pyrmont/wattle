@@ -17,7 +17,7 @@ static void assert_string(Janet value, const char *expected) {
     assert(!janet_cstrcmp(janet_unwrap_string(value), expected));
 }
 
-int main(void) {
+void disasm_contract(void) {
     JanetFuncDef definition;
     JanetFuncDef child;
     JanetFuncDef *definitions[] = {&child};
@@ -131,5 +131,4 @@ int main(void) {
     assert_integer(get_field(janet_unwrap_struct(array->data[0]), "arity"), 1);
 
     janet_deinit();
-    return 0;
 }

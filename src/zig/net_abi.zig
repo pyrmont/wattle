@@ -1,0 +1,200 @@
+//! The single translation of the host socket headers `net.c` worked through.
+//!
+//! `net_abi.h` carries the reasoning, including why this is a third
+//! translation rather than ten lines added to `abi.zig`, and why the Windows
+//! arm is translated where `ev_stream.zig` declared its Winsock calls by hand.
+//! The two files of the `-Dnet-sockets` object share this module, so a
+//! `struct addrinfo` filled by one is the same Zig type as a `struct addrinfo`
+//! read by the other.
+//!
+//! What is here beyond the translation is the handful of spellings `net.c`
+//! made with the preprocessor and that a translation therefore cannot carry: a
+//! socket handle's type and its invalid value, and one GUID that is a brace
+//! initializer.
+
+const std = @import("std");
+const builtin = @import("builtin");
+
+pub const h = @cImport({
+    @cInclude("net_abi.h");
+});
+
+pub const windows = builtin.os.tag == .windows;
+
+/// `MSG_NOSIGNAL`, or the 0 `net.c` supplies where the platform has none.
+pub const msg_nosignal: c_int = h.JANET_ZIG_MSG_NOSIGNAL;
+
+/// Whether `serverify_socket` may ask for `SO_REUSEPORT`; see `net_abi.h`.
+pub const has_reuseport = h.JANET_ZIG_REUSEPORT != 0;
+
+/// Whether an `IP_MULTICAST_TTL` value is an `unsigned char`; see `net_abi.h`.
+pub const multicast_ttl_char = h.JANET_ZIG_MULTICAST_TTL_CHAR != 0;
+
+/// Whether this build has IPv6. `janet.h` spells the negative,
+/// `JANET_NO_IPV6`, and translate-c does not surface a macro defined with no
+/// value, so `net_abi.h` restates it as one that does -- the same restatement
+/// `state_abi.h` makes for `JANET_NET` and for four flags beside it.
+pub const has_ipv6 = h.JANET_ZIG_HAS_IPV6 != 0;
+
+// ==========================================================================
+// `JSock` and its four macros
+// ==========================================================================
+
+/// `JSock`: `SOCKET` on Windows and a file descriptor elsewhere.
+pub const JSock = if (windows) h.SOCKET else c_int;
+
+/// `JSOCKDEFAULT`. Note that the POSIX value is 0 rather than -1, which is a
+/// valid descriptor; nothing reads it before assigning, and reproducing
+/// `net.c` exactly is the rule.
+pub const sock_default: JSock = if (windows) h.INVALID_SOCKET else 0;
+
+/// `JSOCKVALID`.
+pub inline fn sockValid(s: JSock) bool {
+    return if (windows) s != h.INVALID_SOCKET else s >= 0;
+}
+
+/// `JSOCKFLAGS`: the extra `socket(2)` flags, which is `SOCK_CLOEXEC` where
+/// the platform has it. macOS does not, and neither does Windows.
+pub const sock_flags: c_int = if (windows or !@hasDecl(h, "SOCK_CLOEXEC")) 0 else h.SOCK_CLOEXEC;
+
+/// `JSOCKCLOSE`.
+pub inline fn sockClose(s: JSock) void {
+    if (windows) {
+        _ = h.closesocket(s);
+    } else {
+        _ = h.close(s);
+    }
+}
+
+/// `SA_ADDRSTRLEN`: the buffer `janet_so_getname` decodes into. `net.c` takes
+/// the larger of the numeric-address length and the unix path length, and has
+/// no unix domain sockets on Windows.
+pub const sa_addrstrlen: usize = blk: {
+    const numeric: usize = if (has_ipv6) h.INET6_ADDRSTRLEN + 1 else h.INET_ADDRSTRLEN + 1;
+    if (windows) break :blk numeric;
+    const path: usize = @sizeOf(@FieldType(SockAddrUn, "sun_path")) + 1;
+    break :blk @max(numeric, path);
+};
+
+// ==========================================================================
+// Two structures the Windows translation cannot give us
+// ==========================================================================
+
+/// `struct sockaddr_un`, and an opaque stand-in where there is no such thing.
+/// Windows has no unix domain sockets, `net.c` guards every use of one with
+/// `#ifndef JANET_WINDOWS`, and a Zig *field type* is analysed whether or not
+/// the code around it is -- so the stand-in is what lets `AddrInfo` name the
+/// pointer on every target.
+pub const SockAddrUn = if (windows) opaque {} else h.struct_sockaddr_un;
+
+/// `struct sockaddr_in6`.
+///
+/// Windows' declaration ends in an anonymous union -- `sin6_scope_id` against
+/// a `SCOPE_ID` -- and translate-c demotes any record holding one to
+/// `opaque{}`, so on that target the modern structure has no fields at all.
+/// `sockaddr_in6_old` is the same structure without that trailing union, so
+/// its four members sit at the same offsets as the first four of the modern
+/// one, and the two this project reads are both inside them. The two asserts
+/// below are what makes that a checked claim rather than a hopeful one.
+///
+/// This is the same class of fault Part 13 met when `std.os.windows` stopped
+/// declaring `OVERLAPPED`, arriving from the other side: there the
+/// declaration was gone, here it survives translation with its fields
+/// dissolved.
+pub const SockAddrIn6 = if (windows) h.struct_sockaddr_in6_old else h.struct_sockaddr_in6;
+
+comptime {
+    if (has_ipv6) {
+        std.debug.assert(@sizeOf(h.struct_in6_addr) == 16);
+        // `sin6_port` after the family, `sin6_addr` after the flow label.
+        std.debug.assert(@offsetOf(SockAddrIn6, "sin6_port") == 2);
+        std.debug.assert(@offsetOf(SockAddrIn6, "sin6_addr") == 8);
+    }
+}
+
+// ==========================================================================
+// Windows
+// ==========================================================================
+
+/// `FIONBIO`, which `winsock2.h` builds with `_IOW` -- a macro whose body
+/// translate-c cannot parse, because it contains a `sizeof`. The pieces it is
+/// built from *do* survive, so this is the same expression rather than the
+/// number it evaluates to (0x8004667E).
+pub const fionbio: c_long = if (windows)
+    @bitCast(@as(u32, @intCast(h.IOC_IN |
+        ((@as(c_int, @sizeOf(h.u_long)) & h.IOCPARM_MASK) << 16) |
+        (@as(c_int, 'f') << 8) |
+        126)))
+else
+    0;
+
+/// `WSAID_CONNECTEX`, the one declaration in `mswsock.h` that does not survive
+/// translation: it is a brace initializer, and translate-c renders those as
+/// `@compileError`. Naming it is what makes this restatement necessary rather
+/// than the whole header.
+pub const wsaid_connectex = if (windows) h.GUID{
+    .Data1 = 0x25a207b9,
+    .Data2 = 0xddf3,
+    .Data3 = 0x4660,
+    .Data4 = .{ 0x8e, 0xe9, 0x76, 0xe5, 0x8c, 0x74, 0x06, 0x3e },
+} else undefined;
+
+// ==========================================================================
+// The spellings that differ between the two header sets
+// ==========================================================================
+//
+// Winsock and the POSIX headers agree on what these calls do and disagree on
+// how they are spelled: `setsockopt` takes a `char *` on one and a `void *`
+// on the other, `inet_ntop` sizes its buffer with a `size_t` rather than a
+// `socklen_t`, `gai_strerror` is a macro over an ANSI/wide pair, and
+// `struct in_addr` hides its four bytes behind a union whose accessor is a
+// macro. Normalising them here is what keeps `net_addr.zig` and
+// `net_sockets.zig` free of `if (windows)` at every host call -- and each of
+// these is the same *call*, so this is not the kind of platform arm the
+// backends in `ev_backend.zig` are.
+
+/// `socklen_t`: `c_uint` on Linux, `__darwin_socklen_t` on macOS and `c_int`
+/// on Windows.
+pub const SockLen = h.socklen_t;
+
+/// `ntohs`. macOS spells it as a macro over `__DARWIN_OSSwapInt16`, which
+/// translate-c does not surface at all, so this is written rather than
+/// borrowed on every platform for the sake of one.
+pub inline fn ntohs(x: u16) u16 {
+    return std.mem.bigToNative(u16, x);
+}
+
+/// `htonl`, for the same reason.
+pub inline fn htonl(x: u32) u32 {
+    return std.mem.nativeToBig(u32, x);
+}
+
+/// `gai_strerror`, which mingw defines as `__MINGW_NAME_AW(gai_strerror)` --
+/// a macro over the ANSI and wide spellings, which translate-c cannot render.
+pub inline fn gaiStrerror(status: c_int) [*c]const u8 {
+    return if (windows) h.gai_strerrorA(status) else h.gai_strerror(status);
+}
+
+/// `setsockopt`.
+pub inline fn setSockOpt(s: JSock, level: c_int, name: c_int, val: *const anyopaque, len: usize) c_int {
+    return h.setsockopt(s, level, name, @ptrCast(val), @intCast(len));
+}
+
+/// `getsockopt`.
+pub inline fn getSockOpt(s: JSock, level: c_int, name: c_int, val: *anyopaque, len: *SockLen) c_int {
+    return h.getsockopt(s, level, name, @ptrCast(val), len);
+}
+
+/// `inet_ntop`.
+pub inline fn inetNtop(af: c_int, src: *const anyopaque, dst: [*]u8, size: usize) [*c]const u8 {
+    return h.inet_ntop(af, @ptrCast(src), dst, @intCast(size));
+}
+
+/// The four bytes of a `struct in_addr`. POSIX names them `s_addr`; Winsock
+/// puts them in an unnamed union and reaches them with a macro, which does not
+/// survive translation. The structure is four bytes wide on both, and both
+/// hold them in network order.
+pub inline fn inAddrBits(a: *h.struct_in_addr) *u32 {
+    comptime std.debug.assert(@sizeOf(h.struct_in_addr) == 4);
+    return @ptrCast(@alignCast(a));
+}

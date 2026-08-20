@@ -1,8 +1,7 @@
-const c = @cImport({
-    @cInclude("janet.h");
-});
+const abi = @import("abi");
+const c = abi.c;
 
-const Field = enum(c_int) {
+pub const Field = enum(c_int) {
     arity,
     min_arity,
     max_arity,
@@ -25,15 +24,48 @@ comptime {
     @export(&disassembleFieldExport, .{ .name = "janet_zig_disasm_field", .visibility = .hidden });
 }
 
-extern fn janet_c_disasm_wrap_nil() callconv(.c) c.Janet;
-extern fn janet_c_disasm_wrap_integer(value: i32) callconv(.c) c.Janet;
-extern fn janet_c_disasm_wrap_boolean(value: c_int) callconv(.c) c.Janet;
-extern fn janet_c_disasm_wrap_string(value: c.JanetString) callconv(.c) c.Janet;
-extern fn janet_c_disasm_wrap_symbol(value: c.JanetSymbol) callconv(.c) c.Janet;
-extern fn janet_c_disasm_wrap_array(value: [*c]c.JanetArray) callconv(.c) c.Janet;
-extern fn janet_c_disasm_wrap_tuple(value: c.JanetTuple) callconv(.c) c.Janet;
-extern fn janet_c_disasm_wrap_struct(value: c.JanetStruct) callconv(.c) c.Janet;
-extern fn janet_c_disasm_keyword(value: [*:0]const u8) callconv(.c) c.Janet;
+// The nine wraps this file builds its table from. They were nine one-line C
+// functions in `asm.c`, and they were there because `-Ddisasm` once had a C arm
+// that had to share the runtime's own macros. Every `janet_wrap_*` except
+// `janet_wrap_integer` is an ordinary exported function as well as a macro, so
+// only that one needs writing out; see the note in `asm_decode.zig`.
+inline fn janet_c_disasm_wrap_nil() c.Janet {
+    return c.janet_wrap_nil();
+}
+inline fn janet_c_disasm_wrap_integer(value: i32) c.Janet {
+    return c.janet_wrap_number(@floatFromInt(value));
+}
+inline fn janet_c_disasm_wrap_boolean(value: c_int) c.Janet {
+    return c.janet_wrap_boolean(value);
+}
+inline fn janet_c_disasm_wrap_string(value: c.JanetString) c.Janet {
+    return c.janet_wrap_string(value);
+}
+inline fn janet_c_disasm_wrap_symbol(value: c.JanetSymbol) c.Janet {
+    return c.janet_wrap_symbol(value);
+}
+inline fn janet_c_disasm_wrap_array(value: [*c]c.JanetArray) c.Janet {
+    return c.janet_wrap_array(value);
+}
+inline fn janet_c_disasm_wrap_tuple(value: c.JanetTuple) c.Janet {
+    return c.janet_wrap_tuple(value);
+}
+inline fn janet_c_disasm_wrap_struct(value: c.JanetStruct) c.Janet {
+    return c.janet_wrap_struct(value);
+}
+inline fn janet_c_disasm_keyword(value: [*:0]const u8) c.Janet {
+    return c.janet_wrap_keyword(c.janet_csymbol(value));
+}
+
+/// `janet_disasm`, the public entry. `asm.c` spelled it as a call into this
+/// file with the `all` field; there is nothing else to it.
+fn janetDisasm(definition: *c.JanetFuncDef) callconv(.c) c.Janet {
+    return disassembleFieldExport(definition, @intFromEnum(Field.all));
+}
+
+comptime {
+    @export(&janetDisasm, .{ .name = "janet_disasm" });
+}
 
 fn disassembleFieldExport(definition: *c.JanetFuncDef, field_value: c_int) callconv(.c) c.Janet {
     const gc_lock = c.janet_gclock();
@@ -41,7 +73,7 @@ fn disassembleFieldExport(definition: *c.JanetFuncDef, field_value: c_int) callc
     return disassembleField(definition, @enumFromInt(field_value));
 }
 
-fn disassembleField(definition: *c.JanetFuncDef, field: Field) c.Janet {
+pub fn disassembleField(definition: *c.JanetFuncDef, field: Field) c.Janet {
     return switch (field) {
         .arity => wrapInteger(definition.arity),
         .min_arity => wrapInteger(definition.min_arity),

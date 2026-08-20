@@ -7,6 +7,8 @@
 #include <string.h>
 #include <janet.h>
 
+#include "support.h"
+
 const char *janet_os_name(void);
 const char *janet_os_arch(void);
 const char *janet_os_compiler(void);
@@ -118,16 +120,16 @@ static void test_core_functions(void) {
     JanetCFunction compiler = janet_unwrap_cfunction(janet_resolve_core("os/compiler"));
     Janet test;
 
-    expect_keyword(which(0, NULL), expected_os());
-    expect_keyword(arch(0, NULL), expected_arch());
-    expect_keyword(compiler(0, NULL), expected_compiler());
+    expect_keyword(janet_contract_call_cfunction(which, 0, NULL), expected_os());
+    expect_keyword(janet_contract_call_cfunction(arch, 0, NULL), expected_arch());
+    expect_keyword(janet_contract_call_cfunction(compiler, 0, NULL), expected_compiler());
 
     test = janet_ckeywordv(expected_os());
-    assert(janet_unwrap_boolean(which(1, &test)));
+    assert(janet_unwrap_boolean(janet_contract_call_cfunction(which, 1, &test)));
     test = janet_ckeywordv("not-a-platform");
-    assert(!janet_unwrap_boolean(which(1, &test)));
+    assert(!janet_unwrap_boolean(janet_contract_call_cfunction(which, 1, &test)));
     test = janet_wrap_nil();
-    expect_keyword(which(1, &test), expected_os());
+    expect_keyword(janet_contract_call_cfunction(which, 1, &test), expected_os());
 }
 
 #ifndef JANET_REDUCED_OS
@@ -135,20 +137,20 @@ static void test_cpu_count(void) {
     JanetCFunction cpu_count = janet_unwrap_cfunction(janet_resolve_core("os/cpu-count"));
     int32_t direct = janet_os_cpu_count();
     Janet fallback = janet_ckeywordv("fallback");
-    Janet actual = cpu_count(1, &fallback);
+    Janet actual = janet_contract_call_cfunction(cpu_count, 1, &fallback);
 
     if (direct < 0) {
         assert(janet_equals(actual, fallback));
-        assert(janet_checktype(cpu_count(0, NULL), JANET_NIL));
+        assert(janet_checktype(janet_contract_call_cfunction(cpu_count, 0, NULL), JANET_NIL));
     } else {
         assert(janet_checkint(actual));
         assert(janet_unwrap_integer(actual) == direct);
-        assert(janet_unwrap_integer(cpu_count(0, NULL)) == direct);
+        assert(janet_unwrap_integer(janet_contract_call_cfunction(cpu_count, 0, NULL)) == direct);
     }
 }
 #endif
 
-int main(void) {
+void os_platform_contract(void) {
     test_classification();
     janet_init();
     test_core_functions();
@@ -156,5 +158,4 @@ int main(void) {
     test_cpu_count();
 #endif
     janet_deinit();
-    return 0;
 }

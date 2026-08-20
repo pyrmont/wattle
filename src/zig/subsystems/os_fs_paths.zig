@@ -16,6 +16,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const raise = @import("raise");
 
 const windows = builtin.os.tag == .windows;
 
@@ -65,7 +66,7 @@ fn dirOpen(path: [*:0]const u8) callconv(.c) ?*anyopaque {
 /// Returns 1 with a name, 0 at the end of the stream, or -1 with `errno` set.
 /// The C loop this replaces cleared `errno` before each read, because a null
 /// result means either the end of the stream or a failure.
-fn dirNext(handle: *anyopaque, name_out: *[*:0]const u8) callconv(.c) i32 {
+fn dirNextImpl(handle: *anyopaque, name_out: *[*:0]const u8) raise.Raising(i32) {
     const dir: *std.c.DIR = @ptrCast(handle);
     while (true) {
         std.c._errno().* = 0;
@@ -77,6 +78,10 @@ fn dirNext(handle: *anyopaque, name_out: *[*:0]const u8) callconv(.c) i32 {
         name_out.* = name;
         return 1;
     }
+}
+
+fn dirNext(handle: *anyopaque, name_out: *[*:0]const u8) callconv(.c) i32 {
+    return raise.reported(dirNextImpl(handle, name_out));
 }
 
 fn dirClose(handle: *anyopaque) callconv(.c) void {

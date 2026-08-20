@@ -1,5 +1,3 @@
-//! jump-transparent
-//!
 //! The runtime's lifecycle: `janet_init`, `janet_deinit`, and the sandbox.
 //! This is Part 5 of Phase 9.
 //!
@@ -34,6 +32,9 @@
 
 const abi = @import("abi");
 const c = abi.c;
+const evloop = @import("evloop.zig");
+const raise = @import("raise");
+const gc_sweep = @import("gc_sweep.zig");
 
 /// `JANET_VM_HAS_EV` and `JANET_VM_HAS_NET` in `src/zig/state_abi.h`. Both
 /// guard a pair of calls whose declarations live inside the same `#ifdef` in
@@ -52,7 +53,7 @@ extern fn janet_symcache_deinit() callconv(.c) void;
 // ------------------------------------------------------------------ setup
 
 /// Set up the VM.
-export fn janet_init() callconv(.c) c_int {
+pub fn init() raise.Raising(c_int) {
 
     // Garbage collection.
     c.janet_vm.blocks = null;
@@ -111,25 +112,40 @@ export fn janet_init() callconv(.c) c_int {
     c.janet_vm.root_fiber = null;
     c.janet_vm.stackn = 0;
 
-    if (has_ev) c.janet_ev_init();
+    if (has_ev) try evloop.evInit();
     if (has_net) c.janet_net_init();
     return 0;
+}
+
+export fn janet_init() callconv(.c) c_int {
+    return raise.reported(init());
 }
 
 // ---------------------------------------------------------------- sandbox
 
 /// Disable some features at run time with no way to re-enable them.
-export fn janet_sandbox(flags: u32) callconv(.c) void {
-    janet_sandbox_assert(c.JANET_SANDBOX_SANDBOX);
+pub fn sandbox(flags: u32) raise.Raising(void) {
+    try sandboxAssert(c.JANET_SANDBOX_SANDBOX);
     c.janet_vm.sandbox_flags |= flags;
 }
 
-/// Panic if any of `forbidden_flags` has been sandboxed away.
-export fn janet_sandbox_assert(forbidden_flags: u32) callconv(.c) void {
+export fn janet_sandbox(flags: u32) callconv(.c) void {
+    raise.reported(sandbox(flags));
+}
+
+/// Raise if any of `forbidden_flags` has been sandboxed away.
+///
+/// Fifty-eight cfunctions open with this, which makes it the most-called raise
+/// in the runtime after the argument layer's, and Part 17d is where it stopped
+/// jumping.
+pub fn sandboxAssert(forbidden_flags: u32) raise.Raising(void) {
     if ((forbidden_flags & c.janet_vm.sandbox_flags) != 0) {
-        c.janet_panics(c.janet_cstring("operation forbidden by sandbox"));
-        unreachable;
+        return raise.panic("operation forbidden by sandbox");
     }
+}
+
+export fn janet_sandbox_assert(forbidden_flags: u32) callconv(.c) void {
+    raise.reported(sandboxAssert(forbidden_flags));
 }
 
 // --------------------------------------------------------------- teardown
@@ -140,8 +156,8 @@ export fn janet_sandbox_assert(forbidden_flags: u32) callconv(.c) void {
 /// the block lists and runs what finalizers there are, so it has to see the
 /// root set and the registry still standing. Everything below it is release
 /// and reset.
-export fn janet_deinit() callconv(.c) void {
-    c.janet_clear_memory();
+pub fn deinit() void {
+    gc_sweep.clearMemory();
     janet_symcache_deinit();
     c.janet_free(c.janet_vm.roots);
     c.janet_vm.roots = null;
@@ -158,4 +174,13 @@ export fn janet_deinit() callconv(.c) void {
     c.janet_vm.registry = null;
     if (has_ev) c.janet_ev_deinit();
     if (has_net) c.janet_net_deinit();
+}
+
+export fn janet_deinit() callconv(.c) void {
+    // Nothing here can raise since the hinge typed `gc` and `gcmark`
+    // non-raising: the only thing teardown could ever raise was a finalizer,
+    // through `clearMemory`. `FOUND.md`'s "A panicking finalizer poisons the
+    // heap and kills the process at deinit" was the report of that path, and
+    // the type is what closed it.
+    deinit();
 }

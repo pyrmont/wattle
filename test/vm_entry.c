@@ -1,8 +1,9 @@
 /* Behavioral contract for the interpreter's entry points: the six functions
  * that stand above `run_vm` and decide whether, and in what state, the loop is
- * entered at all. Run against whichever implementation the build selected
- * (`-Dvm-entry=c` or the Zig default), and under either raise mechanism
- * (`-Dcall-trampoline`).
+ * entered at all.
+ *
+ * There is one implementation and one raise mechanism now: `-Dvm-entry=c` was
+ * spent in Part 17g, and `-Dcall-trampoline` in the hinge.
  *
  * These are the runtime's front door, and almost nothing in the Janet suites
  * looks at them directly: a suite that calls a function exercises `janet_call`
@@ -56,6 +57,8 @@
 
 #include "features.h"
 #include <janet.h>
+
+#include "support.h"
 #include "fiber.h"
 #include "state.h"
 
@@ -107,14 +110,15 @@ static JanetFiber *fiber_over(const char *source) {
 
 #define EXPECT_PANIC(expr, message) do { \
     JanetTryState _state; \
-    volatile int _returned = 0; \
-    JanetSignal _sig = janet_try(&_state); \
-    if (!_sig) { \
-        (void)(expr); \
-        _returned = 1; \
-    } \
+    int _raised = 0; \
+    JanetSignal _sig = JANET_SIGNAL_OK; \
+    janet_try_init(&_state); \
+    janet_contract_arm(); \
+    (void)(expr); \
+    _raised = janet_contract_raised(); \
+    if (_raised) _sig = janet_contract_signal(); \
     janet_restore(&_state); \
-    assert(!_returned && "expected a panic, got a return"); \
+    assert(_raised && "expected a panic, got a return"); \
     assert(_sig == JANET_SIGNAL_ERROR); \
     assert(janet_checktype(_state.payload, JANET_STRING)); \
     if (janet_cstrcmp(janet_unwrap_string(_state.payload), (message))) { \
@@ -500,7 +504,7 @@ static Janet cfun_arity_variants(int32_t argc, Janet *argv) {
     return janet_wrap_nil();
 }
 
-static const JanetReg cfuns[] = {
+static JanetReg cfuns[] = {
     {"vmentry/probe", cfun_probe, NULL},
     {"vmentry/arity", cfun_arity_variants, NULL},
     {NULL, NULL, NULL}
@@ -558,9 +562,10 @@ static void test_a_traced_call(void) {
 
 /* ------------------------------------------------------------------- entry */
 
-int main(void) {
+void vm_entry_contract(void) {
     janet_init();
     test_env = janet_core_env(NULL);
+    janet_contract_adapt_regs(cfuns);
     janet_cfuns(test_env, NULL, cfuns);
 
     test_pcall_reports_rather_than_raises();
@@ -594,5 +599,4 @@ int main(void) {
 
     janet_deinit();
     printf("vm entry contract ok (%d panics, %d reports)\n", panics_fired, reports_fired);
-    return 0;
 }

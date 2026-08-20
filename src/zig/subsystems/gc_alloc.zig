@@ -1,5 +1,3 @@
-//! jump-transparent
-//!
 //! The collector's memory: allocating a collectable block onto one of the two
 //! heap lists, the root set, the GC suspend counter, and the scratch
 //! allocator. This is the first of the three increments `gc.c` is split into;

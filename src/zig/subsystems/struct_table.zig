@@ -1,10 +1,9 @@
-//! jump-transparent
-//!
 //! The key/value containers: structs and tables, including the three weak
 //! table variants. This is Part 6c of Phase 8, and it takes the
 //! data-structure core of `src/core/struct.c` and of `src/core/table.c`. The
-//! `JANET_CORE_FN` bodies in both files stay in C, on the rule Parts 6a and 6b
-//! followed: the standard-library surface is not value construction.
+//! `JANET_CORE_FN` bodies in both files stayed in C, on the rule Parts 6a and
+//! 6b followed: the standard-library surface is not value construction. Phase
+//! 10 Part 6 brought them here, at the foot of the file.
 //!
 //! These two are one increment because no boundary can be drawn between them.
 //! `janet_struct_to_table` calls `janet_table_put`; `janet_table_to_struct`
@@ -102,7 +101,10 @@
 
 const std = @import("std");
 const abi = @import("abi");
+const corefn = @import("corefn");
 const c = abi.c;
+const raise = @import("raise");
+const arglayer = @import("arglayer.zig");
 
 /// Functions from `src/core/util.c` and `src/core/wrap.c`, declared here rather
 /// than imported: `util.h` is deliberately outside `abi.zig` -- see the note at
@@ -750,4 +752,216 @@ export fn janet_table_proto_flatten(t_in: *c.JanetTable) callconv(.c) *c.JanetTa
         }
     }
     return new_table;
+}
+
+// ==========================================================================
+// struct/* and table/*, the cfunction surfaces.
+//
+// Phase 10 Part 6, on the same footing as every other cfunction this phase
+// moves: a `JanetCFunction` has no error channel in its signature, so these
+// deliver a raise as the jump their C caller expects whatever language they
+// are written in, and the file's jump-transparent marker is what makes that
+// legal. Nothing below holds anything across a call that can raise.
+// ==========================================================================
+
+fn cfunStructWithProto(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.arity(argc, 1, -1);
+    const proto = try arglayer.optStruct(argv, argc, 0, null);
+    if (argc & 1 == 0) return raise.panic("expected odd number of arguments");
+    const st = c.janet_struct_begin(@divTrunc(argc, 2));
+    var i: i32 = 1;
+    while (i < argc) : (i += 2) {
+        c.janet_struct_put(st, argv[@intCast(i)], argv[@intCast(i + 1)]);
+    }
+    structHead(st).proto = proto;
+    return c.janet_wrap_struct(c.janet_struct_end(st));
+}
+
+fn cfunStructGetproto(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    const st = try arglayer.getStruct(argv, 0);
+    const proto = structHead(st).proto;
+    return if (proto != null) c.janet_wrap_struct(proto) else c.janet_wrap_nil();
+}
+
+/// The bound is an upper one and deliberately loose: a key that appears in
+/// both a struct and its prototype is counted twice, so the accumulator is
+/// over-allocated rather than resized. `janet_struct_end` compacts it.
+fn cfunStructFlatten(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    const st = try arglayer.getStruct(argv, 0);
+
+    var pair_count: i64 = 0;
+    var cursor = st;
+    while (cursor != null) {
+        pair_count += structHead(cursor).length;
+        cursor = structHead(cursor).proto;
+    }
+    if (pair_count > std.math.maxInt(i32)) return raise.panic("struct too large");
+
+    const accum = c.janet_struct_begin(@intCast(pair_count));
+    cursor = st;
+    while (cursor != null) {
+        var i: i32 = 0;
+        while (i < structHead(cursor).capacity) : (i += 1) {
+            const kv = &cursor[@intCast(i)];
+            if (c.janet_checktype(kv.key, c.JANET_NIL) == 0) {
+                janet_struct_put_ext(accum, kv.key, kv.value, 0);
+            }
+        }
+        cursor = structHead(cursor).proto;
+    }
+    return c.janet_wrap_struct(c.janet_struct_end(accum));
+}
+
+/// The loop is a `do`/`while` in C and the difference matters: a struct with
+/// no prototype still produces one table, and `recursive` only decides whether
+/// the walk continues past the first.
+fn cfunStructToTable(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.arity(argc, 1, 2);
+    const st = try arglayer.getStruct(argv, 0);
+    const recursive = argc > 1 and c.janet_truthy(argv[1]) != 0;
+    var tab: [*c]c.JanetTable = null;
+    var cursor = st;
+    var tab_cursor: [*c]c.JanetTable = null;
+    while (true) {
+        if (tab != null) {
+            tab_cursor.*.proto = c.janet_table(structHead(cursor).length);
+            tab_cursor = tab_cursor.*.proto;
+        } else {
+            tab = c.janet_table(structHead(cursor).length);
+            tab_cursor = tab;
+        }
+        var i: i32 = 0;
+        while (i < structHead(cursor).capacity) : (i += 1) {
+            const kv = &cursor[@intCast(i)];
+            if (c.janet_checktype(kv.key, c.JANET_NIL) == 0) {
+                c.janet_table_put(tab_cursor, kv.key, kv.value);
+            }
+        }
+        cursor = structHead(cursor).proto;
+        if (!(recursive and cursor != null)) break;
+    }
+    return c.janet_wrap_table(tab);
+}
+
+fn cfunStructRawget(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 2);
+    const st = try arglayer.getStruct(argv, 0);
+    return c.janet_struct_rawget(st, argv[1]);
+}
+
+export fn janet_lib_struct(env: *c.JanetTable) callconv(.c) void {
+    const entries = [_]corefn.Entry{
+        corefn.reg("struct/with-proto", &cfunStructWithProto, @src(), "(struct/with-proto proto & kvs)", "Create a structure, as with the usual struct constructor but set the " ++
+            "struct prototype as well."),
+        corefn.reg("struct/getproto", &cfunStructGetproto, @src(), "(struct/getproto st)", "Return the prototype of a struct, or nil if it doesn't have one."),
+        corefn.reg("struct/proto-flatten", &cfunStructFlatten, @src(), "(struct/proto-flatten st)", "Convert a struct with prototypes to a struct with no prototypes by merging " ++
+            "all key value pairs from recursive prototypes into one new struct."),
+        corefn.reg("struct/to-table", &cfunStructToTable, @src(), "(struct/to-table st &opt recursive)", "Convert a struct to a table. If recursive is true, also convert the " ++
+            "table's prototypes into the new struct's prototypes as well."),
+        corefn.reg("struct/rawget", &cfunStructRawget, @src(), "(struct/rawget st key)", "Gets a value from a struct `st` without looking at the prototype struct. " ++
+            "If `st` does not contain the key directly, the function will return " ++
+            "nil without checking the prototype. Returns the value in the struct."),
+        corefn.end,
+    };
+    corefn.install(env, &entries);
+}
+
+fn cfunTableNew(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    return c.janet_wrap_table(c.janet_table(try arglayer.getNat(argv, 0)));
+}
+
+fn cfunTableWeak(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    return c.janet_wrap_table(janet_table_weakkv(try arglayer.getNat(argv, 0)));
+}
+
+fn cfunTableWeakKeys(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    return c.janet_wrap_table(janet_table_weakk(try arglayer.getNat(argv, 0)));
+}
+
+fn cfunTableWeakValues(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    return c.janet_wrap_table(janet_table_weakv(try arglayer.getNat(argv, 0)));
+}
+
+fn cfunTableGetproto(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    const t = try arglayer.getTable(argv, 0);
+    return if (t.*.proto != null) c.janet_wrap_table(t.*.proto) else c.janet_wrap_nil();
+}
+
+/// An explicit nil clears the prototype rather than faulting, which is why the
+/// second argument is tested before it is fetched instead of going through
+/// `janet_opttable` -- that would build an empty table for the default.
+fn cfunTableSetproto(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 2);
+    const table = try arglayer.getTable(argv, 0);
+    var proto: [*c]c.JanetTable = null;
+    if (c.janet_checktype(argv[1], c.JANET_NIL) == 0) proto = try arglayer.getTable(argv, 1);
+    table.*.proto = proto;
+    return argv[0];
+}
+
+fn cfunTableTostruct(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.arity(argc, 1, 2);
+    const t = try arglayer.getTable(argv, 0);
+    const proto = try arglayer.optStruct(argv, argc, 1, null);
+    const st = janet_table_to_struct(t);
+    structHead(st).proto = proto;
+    return c.janet_wrap_struct(st);
+}
+
+fn cfunTableRawget(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 2);
+    return janet_table_rawget(try arglayer.getTable(argv, 0), argv[1]);
+}
+
+fn cfunTableClone(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    return c.janet_wrap_table(janet_table_clone(try arglayer.getTable(argv, 0)));
+}
+
+fn cfunTableClear(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    const table = try arglayer.getTable(argv, 0);
+    janet_table_clear(table);
+    return c.janet_wrap_table(table);
+}
+
+fn cfunTableProtoFlatten(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
+    try arglayer.fixarity(argc, 1);
+    return c.janet_wrap_table(janet_table_proto_flatten(try arglayer.getTable(argv, 0)));
+}
+
+export fn janet_lib_table(env: *c.JanetTable) callconv(.c) void {
+    const entries = [_]corefn.Entry{
+        corefn.reg("table/new", &cfunTableNew, @src(), "(table/new capacity)", "Creates a new empty table with pre-allocated memory " ++
+            "for `capacity` entries. This means that if one knows the number of " ++
+            "entries going into a table on creation, extra memory allocation " ++
+            "can be avoided. " ++
+            "Returns the new table."),
+        corefn.reg("table/weak", &cfunTableWeak, @src(), "(table/weak capacity)", "Creates a new empty table with weak references to keys and values. Similar to `table/new`. " ++
+            "Returns the new table."),
+        corefn.reg("table/weak-keys", &cfunTableWeakKeys, @src(), "(table/weak-keys capacity)", "Creates a new empty table with weak references to keys and normal references to values. Similar to `table/new`. " ++
+            "Returns the new table."),
+        corefn.reg("table/weak-values", &cfunTableWeakValues, @src(), "(table/weak-values capacity)", "Creates a new empty table with normal references to keys and weak references to values. Similar to `table/new`. " ++
+            "Returns the new table."),
+        corefn.reg("table/to-struct", &cfunTableTostruct, @src(), "(table/to-struct tab &opt proto)", "Convert a table to a struct. Returns a new struct."),
+        corefn.reg("table/getproto", &cfunTableGetproto, @src(), "(table/getproto tab)", "Get the prototype table of a table. Returns nil if the table " ++
+            "has no prototype, otherwise returns the prototype."),
+        corefn.reg("table/setproto", &cfunTableSetproto, @src(), "(table/setproto tab proto)", "Set the prototype of a table. Returns the original table `tab`."),
+        corefn.reg("table/rawget", &cfunTableRawget, @src(), "(table/rawget tab key)", "Gets a value from a table `tab` without looking at the prototype table. " ++
+            "If `tab` does not contain the key directly, the function will return " ++
+            "nil without checking the prototype. Returns the value in the table."),
+        corefn.reg("table/clone", &cfunTableClone, @src(), "(table/clone tab)", "Create a copy of a table. Updates to the new table will not change the old table, " ++
+            "and vice versa."),
+        corefn.reg("table/clear", &cfunTableClear, @src(), "(table/clear tab)", "Remove all key-value pairs in a table and return the modified table `tab`."),
+        corefn.reg("table/proto-flatten", &cfunTableProtoFlatten, @src(), "(table/proto-flatten tab)", "Create a new table that is the result of merging all prototypes into a new table."),
+        corefn.end,
+    };
+    corefn.install(env, &entries);
 }

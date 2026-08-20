@@ -158,4 +158,149 @@
 
 (check-lint-compile '(def [xxx [xxx yyy]] [1 [2 3]]) "shadow global-to-global one form")
 
+# The content of a lint, not just its presence. Phase 10 Part 7 moved the lint
+# layer to Zig and made it non-variadic, so the level, the position and the
+# interpolated message are all newly the port's responsibility.
+(defn lints-of
+  [code]
+  (def lints @[])
+  (compile code (curenv) "lint-src" lints)
+  lints)
+
+(defn errof2
+  [code env]
+  (def r (compile code env "lint-src"))
+  (if (table? r) (get r :error) :ok))
+
+(defn errof
+  [code]
+  (errof2 code (curenv)))
+
+(def unused-lints (lints-of '(do (def unused-binding-here 1) 2)))
+(assert (= 1 (length unused-lints)) "one unused lint")
+(def [level line col msg] (first unused-lints))
+(assert (= :strict level) "unused lint is strict")
+(assert (and (number? line) (number? col)) "unused lint carries a position")
+(assert (= msg "binding unused-binding-here is unused") "unused lint message")
+
+(assert (= :strict (first (first (lints-of '(do (def print 1) print)))))
+        "shadowing a top-level binding is a strict lint")
+
+# Deprecation lints, one per level, in the order the bindings are referenced.
+(def depenv (make-env))
+(put depenv 'dep-r @{:value 1 :deprecated :relaxed})
+(put depenv 'dep-n @{:value 1 :deprecated :normal})
+(put depenv 'dep-s @{:value 1 :deprecated :strict})
+(def dep-lints @[])
+(compile '(do dep-r dep-n dep-s) depenv "lint-src" dep-lints)
+(assert (deep= @[:relaxed :normal :strict] (map first dep-lints)) "deprecation levels")
+(assert (= "dep-r is deprecated" (last (first dep-lints))) "deprecation message")
+
+# A compile that collects no lints must still compile; the message is simply
+# not built. This is the `lints == NULL` short circuit.
+(assert (function? (compile '(do (def unused2 1) 2) (curenv) "lint-src"))
+        "no lint array is not an error")
+
+# Arity diagnostics. Each is a compile error rather than a lint, and the
+# singular/plural in the message is chosen by the bound rather than the count.
+(defn arity1 [a] a)
+(defn arity2 [a _b] a)
+(assert (= "<function arity1> expects at most 1 argument, got 2" (errof '(arity1 1 2)))
+        "at most, singular")
+(assert (= "<function arity2> expects at most 2 arguments, got 3" (errof '(arity2 1 2 3)))
+        "at most, plural")
+(assert (= "<function arity1> expects at least 1 argument, got 0" (errof '(arity1)))
+        "at least, singular")
+(assert (= "<function arity2> expects at least 2 arguments, got 1" (errof '(arity2 1)))
+        "at least, plural")
+(assert (= "<function arity2> expects at most 2 arguments, got at least 3"
+           (errof '(arity2 ;[1] 2 3 4)))
+        "at most, with a splice")
+(assert (= ":kw expects at least 1 argument, got 0" (errof '(:kw)))
+        "keyword call with no argument")
+(assert (= "1 expects 1 argument, got 2" (errof '(1 2 3)))
+        "indexing call with too many arguments")
+(assert (= "1 expects 1 argument, got 0" (errof '(1)))
+        "indexing call with no argument")
+
+# The two escapes into user code.
+(def missing (make-env))
+(put missing :missing-symbol (fn [_s] @{:value 42}))
+(assert (= 42 ((compile 'nope missing "lint-src"))) "missing-symbol handler")
+(def missing-bad (make-env))
+(put missing-bad :missing-symbol (fn [a _b] a))
+(assert (= "missing symbol lookup handler must take 1 argument" (errof2 '(nope) missing-bad))
+        "missing-symbol arity")
+(def missing-err (make-env))
+(put missing-err :missing-symbol (fn [_s] (error "handler boom")))
+(assert (= "(lookup) handler boom" (errof2 '(nope) missing-err)) "missing-symbol error")
+(def missing-junk (make-env))
+(put missing-junk :missing-symbol 17)
+(assert (= "invalid lookup handler 17" (errof2 '(nope) missing-junk)) "missing-symbol not callable")
+(assert (= "unknown symbol definitely-not-bound" (errof '(definitely-not-bound)))
+        "unknown symbol")
+
+(defmacro boom-macro [_a] (error "macro boom"))
+(assert (= "(macro) macro boom" (errof '(boom-macro 1))) "macro error")
+(assert (= "macro arity mismatch, expected at least 1, got 0" (errof '(boom-macro)))
+        "macro too few arguments")
+(assert (= "macro arity mismatch, expected at most 1, got 2" (errof '(boom-macro 1 2)))
+        "macro too many arguments")
+
+# The lint's position is the form's, and the two numbers are not
+# interchangeable. The form is built through a parser with its line and column
+# set explicitly, so both are known here rather than depending on where in this
+# file the test happens to sit.
+(def pos-parser (parser/new))
+(parser/where pos-parser 7 0)
+(parser/consume pos-parser "  (do (def pos-probe 1) 2)")
+(parser/eof pos-parser)
+(def pos-lints @[])
+(compile (parser/produce pos-parser) (curenv) "lint-src" pos-lints)
+(assert (deep= [:strict 7 3 "binding pos-probe is unused"] (tuple ;(first pos-lints)))
+        "lint line and column, in that order")
+
+# A form built at runtime carries no source map at all, and the lint records
+# nil rather than the -1 the mapping actually holds.
+(def unmapped-lints (lints-of (tuple 'do (tuple 'def 'unmapped-unused 1) 2)))
+(assert (deep= [:strict nil nil "binding unmapped-unused is unused"]
+               (tuple ;(first unmapped-lints)))
+        "an absent source mapping is nil, not -1")
+
+# The unused-binding lint is filed from two places -- when a named slot goes
+# out of scope, and when a function scope is popped -- and both are strict.
+(assert (= :strict (first (first (lints-of '(fn [] (def fn-local-unused 1) 2)))))
+        "unused lint inside a function scope")
+
+# A missing-symbol handler may take its argument optionally: the check is that
+# the handler *can* be called with one argument, not that it must be.
+(def opt-handler-env (make-env))
+(put opt-handler-env :missing-symbol (fn [&opt _s] @{:value 7}))
+(assert (= 7 ((compile 'nope opt-handler-env "lint-src"))) "an &opt handler is accepted")
+
+# A macro that fails leaves its fiber on the result for the caller to inspect,
+# and leaves nothing behind in the environment.
+(def macro-env (make-env))
+(eval '(defmacro failing-macro [_a] (error "mb")) macro-env)
+(def macro-result (compile '(failing-macro 1) macro-env "lint-src"))
+(assert (= :fiber (type (get macro-result :fiber))) "the failing macro fiber is attached")
+(assert (nil? (get macro-env :macro-form)) "macro-form is cleared afterwards")
+(assert (nil? (get macro-env :macro-lints)) "macro-lints is cleared afterwards")
+
+# A compile error carries a position only when the form had one.
+(def unmapped-error (compile (tuple 'no-such-symbol-at-all) (curenv) "lint-src"))
+(assert (and (nil? (get unmapped-error :line)) (nil? (get unmapped-error :column)))
+        "an unmapped compile error reports no position")
+(def mapped-error (compile '(no-such-symbol-at-all) (curenv) "lint-src"))
+(assert (and (number? (get mapped-error :line)) (number? (get mapped-error :column)))
+        "a mapped compile error reports one")
+
+# The builtin optimizers' identities and their degenerate arities.
+(assert (= 1 (*)) "the identity for * is 1")
+(assert (= 0 (+)) "the identity for + is 0")
+(assert (= 1 (/ 1)) "the identity for / is 1")
+(assert (deep= @[true true true true true false]
+               @[(< 1) (> 1) (<= 1) (>= 1) (= 1) (not= 1)])
+        "a comparison of fewer than two values")
+
 (end-suite)

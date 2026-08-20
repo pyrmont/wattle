@@ -120,6 +120,18 @@ const AllocResult = extern struct {
     /// Index of the argument that could not be placed, or -1 when the failure
     /// belongs to the return value or there was none.
     error_arg: i32,
+    /// The *outgoing* part of the frame, in words: the stack arguments the
+    /// callee will read, without the by-reference payloads that follow them.
+    ///
+    /// Appended in Phase 10 Part 16, and appended rather than placed where it
+    /// belongs so that the field order the two arms of this selector already
+    /// agree on is left alone. C never had to draw the distinction: one
+    /// `alloca` served both purposes and neither half was passed as an
+    /// argument. A Zig caller declares the outgoing words as parameters, so it
+    /// has to know how many there are -- and must not count the payloads,
+    /// which is what would make a large by-reference argument reach a ceiling
+    /// that is not meant for it.
+    arg_stack_count: u32,
 };
 
 /// Where a walk of the node array stopped, and what it concluded.
@@ -301,7 +313,7 @@ export fn janet_ffi_win64_alloc(
     args: [*]ArgSlot,
     arg_count: u32,
 ) callconv(.c) void {
-    result.* = .{ .stack_count = 0, .variant = 0, .error_kind = err_none, .error_arg = -1 };
+    result.* = .{ .stack_count = 0, .variant = 0, .error_kind = err_none, .error_arg = -1, .arg_stack_count = 0 };
 
     var stack_count: u32 = 0;
     var ref_stack_count: u32 = 0;
@@ -347,6 +359,7 @@ export fn janet_ffi_win64_alloc(
         }
     }
 
+    result.arg_stack_count = stack_count;
     stack_count +%= 2 *% ref_stack_count;
     if (stack_count & 1 != 0) stack_count +%= 1;
 
@@ -373,7 +386,7 @@ export fn janet_ffi_sysv64_alloc(
     args: [*]ArgSlot,
     arg_count: u32,
 ) callconv(.c) void {
-    result.* = .{ .stack_count = 0, .variant = 0, .error_kind = err_none, .error_arg = -1 };
+    result.* = .{ .stack_count = 0, .variant = 0, .error_kind = err_none, .error_arg = -1, .arg_stack_count = 0 };
 
     switch (ret.spec) {
         sysv64_sse => result.variant = 1,
@@ -478,6 +491,7 @@ export fn janet_ffi_sysv64_alloc(
     }
 
     result.stack_count = stack_count;
+    result.arg_stack_count = stack_count;
 }
 
 /// AAPCS64. Eight general registers, eight vector registers, and a stack whose
@@ -494,7 +508,7 @@ export fn janet_ffi_aapcs64_alloc(
     apple_abi: c_int,
     max_ret_size: u64,
 ) callconv(.c) void {
-    result.* = .{ .stack_count = 0, .variant = 0, .error_kind = err_none, .error_arg = -1 };
+    result.* = .{ .stack_count = 0, .variant = 0, .error_kind = err_none, .error_arg = -1, .arg_stack_count = 0 };
 
     const apple = apple_abi != 0;
 
@@ -575,6 +589,8 @@ export fn janet_ffi_aapcs64_alloc(
     stack_offset = alignUp(stack_offset, 16);
     ref_stack_offset = alignUp(ref_stack_offset, 16);
     result.stack_count = stack_offset +% ref_stack_offset;
+    // This convention's offsets are bytes; the outgoing count is words.
+    result.arg_stack_count = (stack_offset +% 7) / 8;
 
     // The by-reference area follows the stack arguments, so its offsets are
     // relative until the stack area's final size is known.

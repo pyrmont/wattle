@@ -3,6 +3,7 @@
 #include <janet.h>
 #include "compile.h"
 #include "vector.h"
+#include "support.h"
 
 static const JanetSpecial *special(const char *name) {
     const uint8_t *symbol = janet_csymbol(name);
@@ -17,7 +18,7 @@ static void clear_error(JanetCompiler *compiler) {
     compiler->recursion_guard = JANET_RECURSION_GUARD;
 }
 
-int main(void) {
+void specials_core_contract(void) {
     JanetCompiler compiler;
     JanetFopts options;
     JanetSlot result;
@@ -35,17 +36,17 @@ int main(void) {
     arguments[0] = janet_wrap_integer(1);
     arguments[1] = janet_wrap_integer(2);
 
-    result = special("quote")->compile(options, 1, arguments);
+    result = janet_contract_special_compile(special("quote"), options, 1, arguments);
     assert(result.flags & JANET_SLOT_CONSTANT);
     assert(janet_unwrap_integer(result.constant) == 1);
 
-    result = special("quote")->compile(options, 0, arguments);
+    result = janet_contract_special_compile(special("quote"), options, 0, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(compiler.result.status == JANET_COMPILE_ERROR);
     assert(!strcmp((const char *) compiler.result.error, "expected 1 argument to quote"));
     clear_error(&compiler);
 
-    result = special("splice")->compile(options, 1, arguments);
+    result = janet_contract_special_compile(special("splice"), options, 1, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(compiler.result.status == JANET_COMPILE_ERROR);
     assert(!strcmp((const char *) compiler.result.error,
@@ -53,34 +54,34 @@ int main(void) {
     clear_error(&compiler);
 
     options.flags |= JANET_FOPTS_ACCEPT_SPLICE;
-    result = special("splice")->compile(options, 1, arguments);
+    result = janet_contract_special_compile(special("splice"), options, 1, arguments);
     assert(result.flags & JANET_SLOT_CONSTANT);
     assert(result.flags & JANET_SLOT_SPLICED);
     assert(janet_unwrap_integer(result.constant) == 1);
     options.flags = 0;
 
-    result = special("unquote")->compile(options, 0, arguments);
+    result = janet_contract_special_compile(special("unquote"), options, 0, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(compiler.result.status == JANET_COMPILE_ERROR);
     assert(!strcmp((const char *) compiler.result.error, "cannot use unquote here"));
     clear_error(&compiler);
 
-    result = special("do")->compile(options, 2, arguments);
+    result = janet_contract_special_compile(special("do"), options, 2, arguments);
     assert(result.flags & JANET_SLOT_CONSTANT);
     assert(janet_unwrap_integer(result.constant) == 2);
     assert(compiler.scope == NULL);
 
-    result = special("do")->compile(options, 0, arguments);
+    result = janet_contract_special_compile(special("do"), options, 0, arguments);
     assert(result.flags & JANET_SLOT_CONSTANT);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(compiler.scope == NULL);
 
-    result = special("upscope")->compile(options, 2, arguments);
+    result = janet_contract_special_compile(special("upscope"), options, 2, arguments);
     assert(result.flags & JANET_SLOT_CONSTANT);
     assert(janet_unwrap_integer(result.constant) == 2);
     assert(compiler.scope == NULL);
 
-    result = special("break")->compile(options, 0, arguments);
+    result = janet_contract_special_compile(special("break"), options, 0, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(compiler.result.status == JANET_COMPILE_ERROR);
     assert(!strcmp((const char *) compiler.result.error,
@@ -88,7 +89,7 @@ int main(void) {
     clear_error(&compiler);
 
     janetc_scope(&scope, &compiler, JANET_SCOPE_FUNCTION, "function");
-    result = special("break")->compile(options, 0, arguments);
+    result = janet_contract_special_compile(special("break"), options, 0, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(janet_v_count(compiler.buffer) == 1);
     assert(compiler.buffer[0] == JOP_RETURN_NIL);
@@ -96,13 +97,13 @@ int main(void) {
 
     janet_v_empty(compiler.buffer);
     janetc_scope(&scope, &compiler, JANET_SCOPE_WHILE, "while");
-    result = special("break")->compile(options, 0, arguments);
+    result = janet_contract_special_compile(special("break"), options, 0, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(janet_v_count(compiler.buffer) == 1);
     assert(compiler.buffer[0] == (0x80 | JOP_JUMP));
     janetc_popscope(&compiler);
 
-    result = special("if")->compile(options, 1, arguments);
+    result = janet_contract_special_compile(special("if"), options, 1, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(compiler.result.status == JANET_COMPILE_ERROR);
     assert(!strcmp((const char *) compiler.result.error, "expected 2 or 3 arguments to if"));
@@ -113,7 +114,7 @@ int main(void) {
     arguments[0] = janet_wrap_true();
     arguments[1] = janet_wrap_integer(11);
     arguments[2] = janet_wrap_integer(22);
-    result = special("if")->compile(options, 3, arguments);
+    result = janet_contract_special_compile(special("if"), options, 3, arguments);
     assert(compiler.result.status == JANET_COMPILE_OK);
     assert(!(result.flags & JANET_SLOT_CONSTANT));
     assert(janet_v_count(compiler.buffer) == 1);
@@ -127,7 +128,7 @@ int main(void) {
         janetc_nameslot(&compiler, condition_symbol, condition, JANET_DEFFLAG_NO_SHADOWCHECK);
         arguments[0] = janet_wrap_symbol(condition_symbol);
     }
-    result = special("if")->compile(options, 3, arguments);
+    result = janet_contract_special_compile(special("if"), options, 3, arguments);
     assert(compiler.result.status == JANET_COMPILE_OK);
     assert(!(result.flags & JANET_SLOT_CONSTANT));
     assert(janet_v_count(compiler.buffer) >= 4);
@@ -135,14 +136,14 @@ int main(void) {
     assert((compiler.buffer[0] >> 16) != 0);
     janetc_popscope(&compiler);
 
-    result = special("quasiquote")->compile(options, 0, arguments);
+    result = janet_contract_special_compile(special("quasiquote"), options, 0, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(compiler.result.status == JANET_COMPILE_ERROR);
     assert(!strcmp((const char *) compiler.result.error, "expected 1 argument to quasiquote"));
     clear_error(&compiler);
 
     arguments[0] = janet_wrap_integer(42);
-    result = special("quasiquote")->compile(options, 1, arguments);
+    result = janet_contract_special_compile(special("quasiquote"), options, 1, arguments);
     assert(result.flags & JANET_SLOT_CONSTANT);
     assert(janet_unwrap_integer(result.constant) == 42);
 
@@ -150,7 +151,7 @@ int main(void) {
     tuple[0] = janet_csymbolv("unquote");
     tuple[1] = janet_wrap_integer(43);
     arguments[0] = janet_wrap_tuple(janet_tuple_end(tuple));
-    result = special("quasiquote")->compile(options, 1, arguments);
+    result = janet_contract_special_compile(special("quasiquote"), options, 1, arguments);
     assert(result.flags & JANET_SLOT_CONSTANT);
     assert(janet_unwrap_integer(result.constant) == 43);
 
@@ -160,13 +161,13 @@ int main(void) {
     tuple[0] = janet_wrap_integer(1);
     tuple[1] = janet_wrap_integer(2);
     arguments[0] = janet_wrap_tuple(janet_tuple_end(tuple));
-    result = special("quasiquote")->compile(options, 1, arguments);
+    result = janet_contract_special_compile(special("quasiquote"), options, 1, arguments);
     assert(!(result.flags & JANET_SLOT_CONSTANT));
     assert(janet_v_count(compiler.buffer) == 4);
     assert((compiler.buffer[3] & 0xFF) == JOP_MAKE_TUPLE);
     janetc_popscope(&compiler);
 
-    result = special("while")->compile(options, 0, arguments);
+    result = janet_contract_special_compile(special("while"), options, 0, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(compiler.result.status == JANET_COMPILE_ERROR);
     assert(!strcmp((const char *) compiler.result.error, "expected at least 1 argument to while"));
@@ -174,13 +175,13 @@ int main(void) {
 
     janet_v_empty(compiler.buffer);
     arguments[0] = janet_wrap_false();
-    result = special("while")->compile(options, 1, arguments);
+    result = janet_contract_special_compile(special("while"), options, 1, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(janet_v_count(compiler.buffer) == 0);
     assert(compiler.scope == NULL);
 
     arguments[0] = janet_wrap_true();
-    result = special("while")->compile(options, 1, arguments);
+    result = janet_contract_special_compile(special("while"), options, 1, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(janet_v_count(compiler.buffer) == 1);
     assert((compiler.buffer[0] & 0xFF) == JOP_JUMP);
@@ -197,7 +198,7 @@ int main(void) {
         tuple[0] = janet_csymbolv("break");
         arguments[1] = janet_wrap_tuple(janet_tuple_end(tuple));
     }
-    result = special("while")->compile(options, 2, arguments);
+    result = janet_contract_special_compile(special("while"), options, 2, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(janet_v_count(compiler.buffer) == 3);
     assert((compiler.buffer[0] & 0xFF) == JOP_JUMP_IF_NOT);
@@ -207,14 +208,14 @@ int main(void) {
     assert((compiler.buffer[2] & 0xFF) == JOP_JUMP);
     janetc_popscope(&compiler);
 
-    result = special("set")->compile(options, 1, arguments);
+    result = janet_contract_special_compile(special("set"), options, 1, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(compiler.result.status == JANET_COMPILE_ERROR);
     assert(!strcmp((const char *) compiler.result.error, "expected 2 arguments to set"));
     clear_error(&compiler);
 
     arguments[0] = janet_wrap_integer(1);
-    result = special("set")->compile(options, 2, arguments);
+    result = janet_contract_special_compile(special("set"), options, 2, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(compiler.result.status == JANET_COMPILE_ERROR);
     assert(!strcmp((const char *) compiler.result.error,
@@ -230,7 +231,7 @@ int main(void) {
         janetc_nameslot(&compiler, mutable_symbol, mutable_slot, JANET_DEFFLAG_NO_SHADOWCHECK);
         arguments[0] = janet_wrap_symbol(mutable_symbol);
         arguments[1] = janet_wrap_integer(7);
-        result = special("set")->compile(options, 2, arguments);
+        result = janet_contract_special_compile(special("set"), options, 2, arguments);
         assert(compiler.result.status == JANET_COMPILE_OK);
         assert(result.index == mutable_slot.index);
     }
@@ -245,20 +246,20 @@ int main(void) {
         tuple[1] = janet_ckeywordv("key");
         arguments[0] = janet_wrap_tuple(janet_tuple_end(tuple));
         arguments[1] = janet_wrap_integer(8);
-        result = special("set")->compile(options, 2, arguments);
+        result = janet_contract_special_compile(special("set"), options, 2, arguments);
         assert(compiler.result.status == JANET_COMPILE_OK);
         assert(janet_v_count(compiler.buffer) > 0);
         assert((compiler.buffer[janet_v_count(compiler.buffer) - 1] & 0xFF) == JOP_PUT);
     }
     janetc_popscope(&compiler);
 
-    result = special("var")->compile(options, 1, arguments);
+    result = janet_contract_special_compile(special("var"), options, 1, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(compiler.result.status == JANET_COMPILE_ERROR);
     assert(!strcmp((const char *) compiler.result.error, "expected at least 2 arguments to var"));
     clear_error(&compiler);
 
-    result = special("def")->compile(options, 1, arguments);
+    result = janet_contract_special_compile(special("def"), options, 1, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(compiler.result.status == JANET_COMPILE_ERROR);
     assert(!strcmp((const char *) compiler.result.error, "expected at least 2 arguments to def"));
@@ -266,7 +267,7 @@ int main(void) {
 
     janet_v_empty(compiler.buffer);
     janetc_scope(&scope, &compiler, JANET_SCOPE_FUNCTION, "fn-root");
-    result = special("fn")->compile(options, 0, arguments);
+    result = janet_contract_special_compile(special("fn"), options, 0, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(compiler.result.status == JANET_COMPILE_ERROR);
     assert(!strcmp((const char *) compiler.result.error,
@@ -275,7 +276,7 @@ int main(void) {
     clear_error(&compiler);
 
     arguments[0] = janet_wrap_integer(1);
-    result = special("fn")->compile(options, 1, arguments);
+    result = janet_contract_special_compile(special("fn"), options, 1, arguments);
     assert(janet_checktype(result.constant, JANET_NIL));
     assert(compiler.result.status == JANET_COMPILE_ERROR);
     assert(!strcmp((const char *) compiler.result.error, "expected function parameters"));
@@ -284,7 +285,7 @@ int main(void) {
 
     tuple = janet_tuple_begin(0);
     arguments[0] = janet_wrap_tuple(janet_tuple_end(tuple));
-    result = special("fn")->compile(options, 1, arguments);
+    result = janet_contract_special_compile(special("fn"), options, 1, arguments);
     assert(compiler.result.status == JANET_COMPILE_OK);
     assert(!(result.flags & JANET_SLOT_CONSTANT));
     assert(janet_v_count(scope.defs) == 1);
@@ -383,5 +384,4 @@ int main(void) {
     }
 
     janet_deinit();
-    return 0;
 }

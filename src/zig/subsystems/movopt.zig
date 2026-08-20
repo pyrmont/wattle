@@ -1,7 +1,5 @@
-const c = @cImport({
-    @cInclude("compile.h");
-    @cInclude("runtime.h");
-});
+const abi = @import("abi");
+const c = abi.c;
 
 export fn janet_bytecode_movopt(definition: *c.JanetFuncDef) callconv(.c) void {
     var repeat = true;

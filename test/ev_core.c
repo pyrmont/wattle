@@ -413,7 +413,7 @@ static void test_kqueue_interval(void) {
  * scheduler, and they run against whichever implementation the selector chose.
  * That is where the end-to-end coverage for this subsystem belongs. */
 
-int main(void) {
+void ev_core_contract(void) {
     test_queue_empty();
     test_queue_fifo();
     test_queue_push_head();
@@ -431,5 +431,4 @@ int main(void) {
     test_ts_delta();
     test_ts_parts();
     test_kqueue_interval();
-    return 0;
 }

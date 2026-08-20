@@ -961,7 +961,7 @@ static void test_from_janet(void) {
     assert(janet_unwrap_integer(r[8]) == 0);
 }
 
-int main(void) {
+void struct_table_contract(void) {
     janet_init();
 
     test_head_layout();
@@ -1008,5 +1008,4 @@ int main(void) {
 
     janet_deinit();
     printf("struct table contract ok\n");
-    return 0;
 }

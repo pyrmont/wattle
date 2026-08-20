@@ -68,5 +68,13 @@
                    "table/clone 1")
 (check-table-clone @{} "table/clone 2")
 
+# An explicit nil clears the prototype rather than being an error, which is the
+# one thing about table/setproto that the arity check does not cover.
+(let [t (table/setproto @{:a 1} @{:b 2})]
+  (assert (= 2 (get t :b)) "table/setproto inherits")
+  (table/setproto t nil)
+  (assert (nil? (table/getproto t)) "table/setproto nil clears")
+  (assert (nil? (get t :b)) "table/setproto nil stops inheriting"))
+
 (end-suite)
 

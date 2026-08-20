@@ -24,6 +24,8 @@
 
 #include "features.h"
 #include <janet.h>
+
+#include "support.h"
 #include "fiber.h"
 #include "state.h"
 
@@ -461,6 +463,129 @@ static void test_pushes(JanetFunction *add) {
  * name still matches them in offset, identity, and slot count. Each of those
  * three is checked separately, because a validator that ignored one would pass
  * every test built only from valid input. */
+/* Both faces of the four pushes, which Phase 10 Part 17a is the increment for.
+ *
+ * The kernels raise "stack overflow" by returning `raise.Error` now, and the
+ * exported `janet_fiber_push` and its three siblings are two-line faces that
+ * turn that back into the jump a C caller expects. Two mechanisms, one
+ * decision, and the acceptance rule for the phase is that they are tested
+ * separately: the C face is the one that disappears in Part 17f, so it is the
+ * one that rots.
+ *
+ * Neither arm was tested before this part, in either implementation. That is
+ * not surprising -- the guard fires when `stacktop` reaches INT32_MAX, which
+ * honestly needs a sixteen-gigabyte fiber stack -- but it means the mechanism
+ * change had nothing observing it. Setting `stacktop` by hand reaches it in a
+ * few instructions, and it is safe to do because every one of the four checks
+ * its bound *before* it touches `fiber->data`: the raise happens without a
+ * single write through the poisoned top.
+ */
+
+#define EXPECT_OVERFLOW(expr) do { \
+    JanetTryState _state; \
+    int _raised = 0; \
+    JanetSignal _sig = JANET_SIGNAL_OK; \
+    janet_try_init(&_state); \
+    janet_contract_arm(); \
+    (void)(expr); \
+    _raised = janet_contract_raised(); \
+    if (_raised) _sig = janet_contract_signal(); \
+    janet_restore(&_state); \
+    assert(_raised && "expected a stack overflow panic, got a return"); \
+    assert(_sig == JANET_SIGNAL_ERROR); \
+    assert(janet_checktype(_state.payload, JANET_STRING)); \
+    assert(!janet_cstrcmp(janet_unwrap_string(_state.payload), "stack overflow")); \
+} while (0)
+
+static void test_push_overflow_c_face(JanetFunction *add) {
+    Janet args[2];
+    Janet values[3];
+    JanetFiber *fiber;
+    int32_t saved;
+
+    args[0] = janet_wrap_integer(1);
+    args[1] = janet_wrap_integer(2);
+    fiber = rooted_fiber(add, 2, args);
+    saved = fiber->stacktop;
+
+    /* Each push has its own bound, and they are off by one from each other
+     * because each reserves room for what it is about to write. A single push
+     * refuses only at the top itself; the three-value push refuses two slots
+     * earlier. Testing them at a common value would leave three of the four
+     * bounds unobserved. */
+    fiber->stacktop = INT32_MAX;
+    EXPECT_OVERFLOW(janet_fiber_push(fiber, janet_wrap_integer(0)));
+
+    fiber->stacktop = INT32_MAX - 1;
+    EXPECT_OVERFLOW(janet_fiber_push2(fiber, janet_wrap_integer(0), janet_wrap_integer(1)));
+
+    fiber->stacktop = INT32_MAX - 2;
+    EXPECT_OVERFLOW(janet_fiber_push3(fiber, janet_wrap_integer(0),
+                                      janet_wrap_integer(1), janet_wrap_integer(2)));
+
+    values[0] = janet_wrap_integer(0);
+    values[1] = janet_wrap_integer(1);
+    values[2] = janet_wrap_integer(2);
+    fiber->stacktop = INT32_MAX - 2;
+    EXPECT_OVERFLOW(janet_fiber_pushn(fiber, values, 3));
+
+    /* One below each bound still succeeds, so the assertions above are testing
+     * a boundary rather than a poisoned fiber. The capacity is raised first
+     * because a push that is allowed to proceed does write. */
+    fiber->stacktop = saved;
+    janet_fiber_push(fiber, janet_wrap_integer(7));
+    assert(fiber->stacktop == saved + 1);
+
+    fiber->stacktop = saved;
+}
+
+/* The Zig face, reached the only way it can be: through `run_vm`.
+ *
+ * `JOP_PUSH_ARRAY` is the one push whose count comes from a value rather than
+ * from the instruction, so an array claiming INT32_MAX elements drives
+ * `pushn` past its bound without the contract having to reach inside a running
+ * fiber. Nothing dereferences the claim -- `janet_indexed_view` copies the
+ * pointer and the count, and `pushn` checks the count first -- but the
+ * collector would, so the array exists only inside a `janet_gclock`.
+ *
+ * What this observes that the C-face test cannot: the raise leaves `run_vm`'s
+ * Zig frame as a returned error, crosses the loop, and arrives at `janet_pcall`
+ * as a signal. Before Part 17a there was no such path -- the raise was a
+ * `longjmp` out of `fiber.c` that passed straight through the loop's frame.
+ */
+static void test_push_overflow_zig_face(void) {
+    JanetFunction *splice = compile_function("(fn [f xs] (f ;xs))");
+    JanetFunction *identity = compile_function("(fn [& xs] xs)");
+    JanetArray *arr = janet_array(4);
+    Janet args[2];
+    Janet out = janet_wrap_nil();
+    JanetSignal sig;
+    int handle;
+
+    args[0] = janet_wrap_function(identity);
+    args[1] = janet_wrap_array(arr);
+
+    handle = janet_gclock();
+    arr->count = INT32_MAX;
+    sig = janet_pcall(splice, 2, args, &out, NULL);
+    arr->count = 0;
+    janet_gcunlock(handle);
+
+    assert(sig == JANET_SIGNAL_ERROR);
+    assert(janet_checktype(out, JANET_STRING));
+    assert(!janet_cstrcmp(janet_unwrap_string(out), "stack overflow"));
+
+    /* And the same call with an honest array returns, so the assertion above
+     * is about the count rather than about splicing. */
+    arr->count = 2;
+    arr->data[0] = janet_wrap_integer(11);
+    arr->data[1] = janet_wrap_integer(12);
+    sig = janet_pcall(splice, 2, args, &out, NULL);
+    assert(sig == JANET_SIGNAL_OK);
+    assert(janet_checktype(out, JANET_TUPLE));
+    assert(janet_tuple_length(janet_unwrap_tuple(out)) == 2);
+}
+
 static void test_env_valid(JanetFunction *add, JanetFunction *other) {
     Janet args[2];
     JanetFiber *fiber;
@@ -645,7 +770,7 @@ static void test_current_and_root_fiber(JanetFunction *add) {
 
 /* ------------------------------------------------------------------- main */
 
-int main(void) {
+void fiber_core_contract(void) {
     JanetFunction *add;
     JanetFunction *other;
     JanetFunction *rest;
@@ -679,6 +804,8 @@ int main(void) {
     test_funcframe_tail_varargs(add, rest);
     test_cframe_and_popframe(add);
     test_pushes(add);
+    test_push_overflow_c_face(add);
+    test_push_overflow_zig_face();
     test_env_valid(add, other);
     test_env_maybe_detach(add);
     test_env_detach_honours_the_closure_bitset(capturing);
@@ -687,5 +814,4 @@ int main(void) {
 
     janet_deinit();
     printf("fiber core contract ok\n");
-    return 0;
 }

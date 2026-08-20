@@ -10,6 +10,8 @@
 const std = @import("std");
 const abi = @import("abi");
 const c = abi.c;
+const raise = @import("raise");
+const containers = @import("containers.zig");
 
 /// Reject absurd inputs outright rather than auditing every exponent for
 /// overflow, matching `JANET_NUMBER_LENGTH_RIDICULOUS`.
@@ -29,9 +31,20 @@ extern fn ldexp(value: f64, exponent: c_int) callconv(.c) f64;
 extern fn log2(value: f64) callconv(.c) f64;
 extern fn snprintf(buffer: [*c]u8, size: usize, format: [*:0]const u8, ...) callconv(.c) c_int;
 
-extern fn janet_c_numscan_wrap_number(value: f64) callconv(.c) c.Janet;
-extern fn janet_c_numscan_wrap_s64(value: i64) callconv(.c) c.Janet;
-extern fn janet_c_numscan_wrap_u64(value: u64) callconv(.c) c.Janet;
+/// The three wraps this scanner produces. They were three one-line C functions
+/// in `strtod.c` for as long as `-Dnumber-scan` had a C arm to share them
+/// with; `value_wrap.zig` has the same three and `janet_wrap_s64` and
+/// `janet_wrap_u64` are ordinary exported functions rather than macros, so
+/// nothing here needs a shim.
+inline fn janet_c_numscan_wrap_number(value: f64) c.Janet {
+    return c.janet_wrap_number(value);
+}
+inline fn janet_c_numscan_wrap_s64(value: i64) c.Janet {
+    return c.janet_wrap_s64(value);
+}
+inline fn janet_c_numscan_wrap_u64(value: u64) c.Janet {
+    return c.janet_wrap_u64(value);
+}
 
 comptime {
     if (int_types_enabled) {
@@ -398,10 +411,29 @@ fn scanNumeric(str: [*c]const u8, len: i32, out: *c.Janet) callconv(.c) c_int {
     }
 }
 
-/// Format `value` into space the C caller has already reserved. The reservation
-/// stays in C because it can panic, and a Janet panic must not unwind across
-/// this frame.
-export fn janet_zig_buffer_dtostr_fill(buffer: *c.JanetBuffer, value: f64) callconv(.c) void {
+/// `janet_buffer_dtostr`. Reserve, then format.
+///
+/// The two halves were split across languages for as long as a panic was a
+/// jump: `janet_buffer_extra` can raise, and no Zig frame could be unwound
+/// through, so the reservation stayed in `strtod.c` and only the formatting was
+/// here. A raise is a returned error now, so the split has no reason to exist
+/// and the C half is gone. The face keeps the C name because `janet.h`
+/// declares it.
+fn bufferDtostr(buffer: *c.JanetBuffer, value: f64) raise.Raising(void) {
+    try containers.bufferExtra(buffer, 32);
+    fill(buffer, value);
+}
+
+fn bufferDtostrFace(buffer: *c.JanetBuffer, value: f64) callconv(.c) void {
+    raise.reported(bufferDtostr(buffer, value));
+}
+
+comptime {
+    @export(&bufferDtostrFace, .{ .name = "janet_buffer_dtostr" });
+}
+
+/// Format `value` into space the caller has already reserved.
+fn fill(buffer: *c.JanetBuffer, value: f64) void {
     const start: usize = @intCast(buffer.count);
     const target = buffer.data + start;
     const count = snprintf(target, 32, "%.17g", value);

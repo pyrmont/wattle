@@ -335,7 +335,7 @@ static void test_core_functions(void) {
         "(os/rmdir \"janet-zig-os-paths-public-4f70\")\n");
 }
 
-int main(void) {
+void os_fs_paths_contract(void) {
     clean_paths();
 
 #ifndef JANET_WINDOWS
@@ -355,5 +355,4 @@ int main(void) {
     janet_deinit();
 
     clean_paths();
-    return 0;
 }

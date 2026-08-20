@@ -1,6 +1,6 @@
-const c = @cImport({
-    @cInclude("janet.h");
-});
+const abi = @import("abi");
+const c = abi.c;
+const raise = @import("raise");
 
 const ResolvedArgument = struct {
     value: i32,
@@ -34,7 +34,12 @@ extern fn janet_c_asm_set_name(assembler: ?*anyopaque, name: c.Janet) callconv(.
 extern fn janet_c_asm_bytecode_count(assembler: ?*anyopaque) callconv(.c) i32;
 extern fn janet_c_asm_set_bytecode_count(assembler: ?*anyopaque, count: i32) callconv(.c) void;
 extern fn janet_c_asm_add_environment(assembler: ?*anyopaque, name: c.Janet) callconv(.c) i32;
-extern fn janet_c_asm_wrap_integer(value: i32) callconv(.c) c.Janet;
+/// `janet_wrap_integer`, written out. `janet.h` declares it beside its macro
+/// and `wrap.c` defines it only for the two nanbox layouts, so a Zig caller
+/// that reaches the declaration does not link against `-Dnanbox=false`.
+inline fn janet_c_asm_wrap_integer(value: i32) c.Janet {
+    return c.janet_wrap_number(@floatFromInt(value));
+}
 extern fn janet_c_asm_get_field(source: c.Janet, name: [*:0]const u8) callconv(.c) c.Janet;
 extern fn janet_c_asm_parent_for_environment(
     assembler: ?*anyopaque,
@@ -82,7 +87,7 @@ const type_aliases = [_]TypeAlias{
     .{ .name = "tuple", .mask = c.JANET_TFLAG_TUPLE },
 };
 
-const opcodes = [_]OpcodeDefinition{
+pub const opcodes = [_]OpcodeDefinition{
     .{ .name = "add", .opcode = c.JOP_ADD },
     .{ .name = "addim", .opcode = c.JOP_ADD_IMMEDIATE },
     .{ .name = "band", .opcode = c.JOP_BAND },
@@ -281,10 +286,15 @@ export fn janet_zig_asm_scan_sourcemap(
     return bytecodeSuccess(length);
 }
 
-export fn janet_zig_asm_fill_sourcemap(
+/// Cannot raise: every failure is a `HeaderResult` carrying a message, which
+/// is the assembler's own channel. The signature said `raise.Raising` through
+/// the hinge and never returned an error, which cost its two callers in
+/// `asm_core.zig` a `catch` they could not do anything with -- the assembler
+/// has its own error set and a `JanetSignal` cannot travel through it.
+pub fn janet_zig_asm_fill_sourcemapImpl(
     assembler: ?*anyopaque,
     source: c.Janet,
-) callconv(.c) HeaderResult {
+) HeaderResult {
     const sourcemap = janet_c_asm_get_field(source, "sourcemap");
     var items: [*c]const c.Janet = null;
     var length: i32 = 0;
@@ -305,6 +315,13 @@ export fn janet_zig_asm_fill_sourcemap(
     return headerSuccess();
 }
 
+export fn janet_zig_asm_fill_sourcemap(
+    assembler: ?*anyopaque,
+    source: c.Janet,
+) callconv(.c) HeaderResult {
+    return janet_zig_asm_fill_sourcemapImpl(assembler, source);
+}
+
 export fn janet_zig_asm_scan_symbolmap(
     _: ?*anyopaque,
     source: c.Janet,
@@ -316,10 +333,15 @@ export fn janet_zig_asm_scan_symbolmap(
     return bytecodeSuccess(length);
 }
 
-export fn janet_zig_asm_fill_symbolmap(
+/// Cannot raise: every failure is a `HeaderResult` carrying a message, which
+/// is the assembler's own channel. The signature said `raise.Raising` through
+/// the hinge and never returned an error, which cost its two callers in
+/// `asm_core.zig` a `catch` they could not do anything with -- the assembler
+/// has its own error set and a `JanetSignal` cannot travel through it.
+pub fn janet_zig_asm_fill_symbolmapImpl(
     assembler: ?*anyopaque,
     source: c.Janet,
-) callconv(.c) HeaderResult {
+) HeaderResult {
     const symbolmap = janet_c_asm_get_field(source, "symbolmap");
     var items: [*c]const c.Janet = null;
     var length: i32 = 0;
@@ -348,6 +370,13 @@ export fn janet_zig_asm_fill_symbolmap(
         };
     }
     return headerSuccess();
+}
+
+export fn janet_zig_asm_fill_symbolmap(
+    assembler: ?*anyopaque,
+    source: c.Janet,
+) callconv(.c) HeaderResult {
+    return janet_zig_asm_fill_symbolmapImpl(assembler, source);
 }
 
 export fn janet_zig_asm_scan_environments(

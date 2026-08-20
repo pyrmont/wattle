@@ -970,4 +970,33 @@
 
     ```))
 
+# Three properties `FOUND.md` records as defects, pinned here so that the two
+# implementations go on agreeing about them. None of these is fixed.
+
+# `(lenprefix a b)` sets the capture mode to :normal before running `a`, and
+# returns without putting it back when `a` fails. So a failed lenprefix inside
+# an accumulation leaves the accumulation collecting into the wrong stack, and
+# the alternative that follows it captures into the void.
+(assert (deep= @[""] (peg/match '(% (+ (lenprefix "q" "x") (<- "ab"))) "ab"))
+        "lenprefix leaks its capture mode on failure")
+(assert (deep= @["ab"] (peg/match '(% (<- "ab")) "ab"))
+        "and the same accumulation without it is what it should have been")
+
+# The bytecode verifier checks the readint width against the operand word,
+# which also carries the signedness bit and the endianness bit. Only `uint`,
+# whose mask is zero, survives being marshalled and read back.
+(assert (= :core/peg (type (unmarshal (marshal (peg/compile '(uint 4))))))
+        "a uint peg round-trips")
+(each readint-peg ['(int 4) '(uint-be 4) '(int-be 4)]
+  (assert-error "invalid peg bytecode"
+                (unmarshal (marshal (peg/compile readint-peg)))))
+
+# A peg whose bytecode is empty passes the verifier, and the matcher then reads
+# its first instruction from past the end of the bytecode array. What that read
+# finds depends on the padding, so only the acceptance is asserted here;
+# `test/peg.c` computes the layout and pins the rest.
+(assert (= :core/peg
+           (type (unmarshal (buffer/push-string @"" "\xd9\xcf\x08core/peg\x00\x00"))))
+        "a peg program with no instructions is accepted")
+
 (end-suite)

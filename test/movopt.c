@@ -13,7 +13,7 @@ static JanetFuncDef definition_for(uint32_t *bytecode, int32_t length, int32_t s
     return definition;
 }
 
-int main(void) {
+void movopt_contract(void) {
     uint32_t dead_load[] = {JOP_LOAD_NIL, JOP_RETURN_NIL};
     uint32_t cascading[] = {
         JOP_LOAD_NIL,
@@ -47,5 +47,4 @@ int main(void) {
     definition = definition_for(side_effect, 2, 1);
     janet_bytecode_movopt(&definition);
     assert(side_effect[0] == JOP_MAKE_BUFFER);
-    return 0;
 }

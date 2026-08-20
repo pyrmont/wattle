@@ -78,10 +78,9 @@ static void test_core_functions(void) {
     }
 }
 
-int main(void) {
+void os_permissions_contract(void) {
     janet_init();
     test_kernels();
     test_core_functions();
     janet_deinit();
-    return 0;
 }

@@ -1,27 +1,66 @@
-const c = @cImport({
-    @cInclude("emit.h");
-    @cInclude("vector.h");
-});
+//! Emitting one bytecode instruction, and the register bookkeeping around it.
+//!
+//! Ten entry points, one per operand shape, over five kernels. Phase 10 Part 7
+//! removed the seam between them: until then the kernels returned an error
+//! union, an error union cannot cross a subsystem seam, and so the five shapes
+//! were squeezed through one `int`-returning C-ABI call with an enum to say
+//! which -- and a small C wrapper in `emit.c` turned the code back into a
+//! message. With the callers in Zig there is no seam, no enum, and no wrapper.
+//!
+//! Nothing here raises. The compiler front end reports by *flag*:
+//! `janetc_error` sets `c->result.status`, keeps the first error, and returns,
+//! so compilation continues and the user sees the first thing that went wrong
+//! rather than the last.
+
+const std = @import("std");
+const abi = @import("abi");
+const c = abi.c;
 
 const vector_header_size = 2 * @sizeOf(i32);
 const slot_type_mask: u32 = c.JANET_SLOTTYPE_ANY;
 const EmitError = error{ TooManyConstants, TooManyRegisters };
 
-const TemplateKind = enum(c_int) {
-    s,
-    one_s,
-    ss,
-    two_s,
-    sss,
-};
-
-comptime {
-    @export(&allocFar, .{ .name = "janet_zig_allocfar", .visibility = .hidden });
-    @export(&copySlot, .{ .name = "janet_zig_copy", .visibility = .hidden });
-    @export(&emitTemplate, .{ .name = "janet_zig_emit_template", .visibility = .hidden });
+/// Record an emit failure on the compiler and carry on.
+///
+/// Until Phase 10 Part 7 this switch was in `emit.c`, because the kernels
+/// below returned an error union and an error union cannot cross a subsystem
+/// seam: the five emit shapes were squeezed through one `int`-returning
+/// C-ABI entry point and a small C wrapper turned the code back into a
+/// message. With the callers in Zig there is no seam, and the mapping from an
+/// error to its text sits next to the code that raises it.
+///
+/// This is not a raise. `janetc_error` sets `c->result.status` and returns;
+/// the compiler front end reports by flag, and keeps compiling so that the
+/// first error is the one the user sees. `janetc_cerror` is C's or
+/// `compiler_primitives.zig`'s according to `-Dcompiler-primitives`, which is
+/// why it is reached by its C name rather than imported.
+fn report(compiler: *c.JanetCompiler, emit_error: EmitError) void {
+    switch (emit_error) {
+        error.TooManyConstants => c.janetc_cerror(compiler, "too many constants"),
+        error.TooManyRegisters => c.janetc_cerror(compiler, "ran out of internal registers"),
+    }
 }
 
-fn allocFar(compiler: *c.JanetCompiler) callconv(.c) i32 {
+/// A far register, or an error recorded on the compiler.
+///
+/// `janetc_regalloc_1` allocates from the whole 32-bit space and the
+/// instruction encoding has sixteen bits for a far slot, so the ceiling is
+/// checked here rather than in the allocator.
+export fn janetc_allocfar(compiler: *c.JanetCompiler) callconv(.c) i32 {
+    const register = allocFar(compiler);
+    if (register > 0xFFFF) {
+        c.janetc_cerror(compiler, "ran out of internal registers");
+    }
+    return register;
+}
+
+/// The allocation without the ceiling check. `registerFar` below has its own
+/// caller to unwind before it can report, so it takes the raw number and
+/// answers `error.TooManyRegisters`, which `report` renders as the same
+/// message. The C original reaches `janetc_allocfar` there and lets the
+/// second report be swallowed by "keep the first error"; this says the same
+/// thing once.
+fn allocFar(compiler: *c.JanetCompiler) i32 {
     return c.janetc_regalloc_1(&compiler.scope.*.ra);
 }
 
@@ -51,49 +90,174 @@ export fn janetc_sequal(lhs: c.JanetSlot, rhs: c.JanetSlot) callconv(.c) c_int {
     return 1;
 }
 
-fn copySlot(compiler: *c.JanetCompiler, destination: c.JanetSlot, source: c.JanetSlot) callconv(.c) c_int {
-    if (slotsEqual(destination, source)) return 1;
+/// `dest = src`, or an error recorded on the compiler.
+export fn janetc_copy(
+    compiler: *c.JanetCompiler,
+    destination: c.JanetSlot,
+    source: c.JanetSlot,
+) callconv(.c) void {
+    if (destination.flags & c.JANET_SLOT_CONSTANT != 0) {
+        c.janetc_cerror(compiler, "cannot write to constant");
+        return;
+    }
+    if (!copySlot(compiler, destination, source)) {
+        c.janetc_cerror(compiler, "too many constants");
+    }
+}
+
+fn copySlot(compiler: *c.JanetCompiler, destination: c.JanetSlot, source: c.JanetSlot) bool {
+    if (slotsEqual(destination, source)) return true;
 
     if (destination.envindex < 0 and destination.index >= 0 and destination.index <= 0xff) {
-        return @intFromBool(moveNear(compiler, destination.index, source));
+        return moveNear(compiler, destination.index, source);
     }
     if (source.envindex < 0 and source.index >= 0 and source.index <= 0xff) {
-        return @intFromBool(moveBack(compiler, destination, source.index));
+        return moveBack(compiler, destination, source.index);
     }
 
     const temporary = c.janetc_regalloc_temp(&compiler.scope.*.ra, c.JANETC_REGTEMP_3);
     if (!moveNear(compiler, temporary, source)) {
         c.janetc_regalloc_freetemp(&compiler.scope.*.ra, temporary, c.JANETC_REGTEMP_3);
-        return 0;
+        return false;
     }
     const success = moveBack(compiler, destination, temporary);
     c.janetc_regalloc_freetemp(&compiler.scope.*.ra, temporary, c.JANETC_REGTEMP_3);
-    return @intFromBool(success);
+    return success;
 }
 
-fn emitTemplate(
+/// The ten emit entry points, one per operand shape.
+///
+/// Each is the label of the instruction it appended, or zero if the compiler
+/// recorded an error instead -- which is what the C original returned too,
+/// having initialised its label to zero and left it untouched on a nonzero
+/// status. A label of zero is a real instruction index, so it is not a
+/// sentinel a caller may test; the caller tests `c->result.status`, as it did
+/// before.
+export fn janetc_emit_s(
     compiler: *c.JanetCompiler,
-    kind_value: c_int,
+    operation: u8,
+    slot_value: c.JanetSlot,
+    write_back: c_int,
+) callconv(.c) i32 {
+    return emitS(compiler, operation, slot_value, write_back != 0) catch |emit_error| {
+        report(compiler, emit_error);
+        return 0;
+    };
+}
+
+/// A jump to an already-known label, encoded as a signed 16-bit displacement.
+///
+/// The range check reports and then emits anyway, exactly as the C original
+/// does: `janetc_error` keeps only the first error, and the truncated
+/// instruction is never run because the compile has already failed.
+export fn janetc_emit_sl(
+    compiler: *c.JanetCompiler,
+    operation: u8,
+    slot_value: c.JanetSlot,
+    label: i32,
+) callconv(.c) i32 {
+    const current = vectorCount(u32, compiler.buffer) - 1;
+    const jump = label - current;
+    if (jump < std.math.minInt(i16) or jump > std.math.maxInt(i16)) {
+        c.janetc_cerror(compiler, "jump is too far");
+    }
+    return emitOneSlot(compiler, operation, slot_value, jump, false) catch |emit_error| {
+        report(compiler, emit_error);
+        return 0;
+    };
+}
+
+export fn janetc_emit_st(
+    compiler: *c.JanetCompiler,
+    operation: u8,
+    slot_value: c.JanetSlot,
+    typeflags: i32,
+) callconv(.c) i32 {
+    return emitOneSlot(compiler, operation, slot_value, typeflags, false) catch |emit_error| {
+        report(compiler, emit_error);
+        return 0;
+    };
+}
+
+export fn janetc_emit_si(
+    compiler: *c.JanetCompiler,
+    operation: u8,
+    slot_value: c.JanetSlot,
+    immediate: i16,
+    write_back: c_int,
+) callconv(.c) i32 {
+    return emitOneSlot(compiler, operation, slot_value, immediate, write_back != 0) catch |emit_error| {
+        report(compiler, emit_error);
+        return 0;
+    };
+}
+
+export fn janetc_emit_su(
+    compiler: *c.JanetCompiler,
+    operation: u8,
+    slot_value: c.JanetSlot,
+    immediate: u16,
+    write_back: c_int,
+) callconv(.c) i32 {
+    return emitOneSlot(compiler, operation, slot_value, immediate, write_back != 0) catch |emit_error| {
+        report(compiler, emit_error);
+        return 0;
+    };
+}
+
+export fn janetc_emit_ss(
+    compiler: *c.JanetCompiler,
+    operation: u8,
+    slot1: c.JanetSlot,
+    slot2: c.JanetSlot,
+    write_back: c_int,
+) callconv(.c) i32 {
+    return emitSS(compiler, operation, slot1, slot2, write_back != 0) catch |emit_error| {
+        report(compiler, emit_error);
+        return 0;
+    };
+}
+
+export fn janetc_emit_ssi(
+    compiler: *c.JanetCompiler,
+    operation: u8,
+    slot1: c.JanetSlot,
+    slot2: c.JanetSlot,
+    immediate: i8,
+    write_back: c_int,
+) callconv(.c) i32 {
+    return emitTwoSlots(compiler, operation, slot1, slot2, immediate, write_back != 0) catch |emit_error| {
+        report(compiler, emit_error);
+        return 0;
+    };
+}
+
+export fn janetc_emit_ssu(
+    compiler: *c.JanetCompiler,
+    operation: u8,
+    slot1: c.JanetSlot,
+    slot2: c.JanetSlot,
+    immediate: u8,
+    write_back: c_int,
+) callconv(.c) i32 {
+    return emitTwoSlots(compiler, operation, slot1, slot2, immediate, write_back != 0) catch |emit_error| {
+        report(compiler, emit_error);
+        return 0;
+    };
+}
+
+export fn janetc_emit_sss(
+    compiler: *c.JanetCompiler,
     operation: u8,
     slot1: c.JanetSlot,
     slot2: c.JanetSlot,
     slot3: c.JanetSlot,
-    rest: i32,
     write_back: c_int,
-    label_out: *i32,
-) callconv(.c) c_int {
-    const kind: TemplateKind = @enumFromInt(kind_value);
-    label_out.* = switch (kind) {
-        .s => emitS(compiler, operation, slot1, write_back != 0),
-        .one_s => emitOneSlot(compiler, operation, slot1, rest, write_back != 0),
-        .ss => emitSS(compiler, operation, slot1, slot2, write_back != 0),
-        .two_s => emitTwoSlots(compiler, operation, slot1, slot2, rest, write_back != 0),
-        .sss => emitSSS(compiler, operation, slot1, slot2, slot3, write_back != 0),
-    } catch |emit_error| return switch (emit_error) {
-        error.TooManyConstants => 1,
-        error.TooManyRegisters => 2,
+) callconv(.c) i32 {
+    return emitSSS(compiler, operation, slot1, slot2, slot3, write_back != 0) catch |emit_error| {
+        report(compiler, emit_error);
+        return 0;
     };
-    return 0;
 }
 
 fn emitS(compiler: *c.JanetCompiler, operation: u8, slot_value: c.JanetSlot, write_back: bool) EmitError!i32 {

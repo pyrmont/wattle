@@ -1,5 +1,3 @@
-//! jump-transparent
-//!
 //! The callee side of the interpreter: everything `run_vm` delegates to when
 //! the thing it is about to call is not a plain Janet function, plus the three
 //! loops that fill a collection from the fiber stack. This is Part 2 of Phase
@@ -64,20 +62,26 @@
 //! a `const char *` in a `%s`, and `test/vm_calls.c` asserts every one of them
 //! byte for byte under both selectors and both value layouts.
 //!
-//! ## This increment ends no scope
+//! ## This increment ended no scope, and the scopes are now gone anyway
 //!
 //! Phase 7's first rule: a port ends a scope only when it removes the *raise*,
-//! not when it moves the *work*. Under `-Dcall-trampoline=true`, `run_vm` still
-//! wraps `janet_mcall`, `janet_binop_call`, `janet_unary_call`,
+//! not when it moves the *work*. Under `-Dcall-trampoline=true`, `run_vm`
+//! wrapped `janet_mcall`, `janet_binop_call`, `janet_unary_call`,
 //! `janet_resolve_method`, `janet_call_nonfn` and the three fills in a
-//! `scoped_*` setjmp, and it still has to: these functions raise, and `run_vm`
-//! is still C. The scopes go in Part 3, when a Zig `run_vm` can consume a
-//! result directly. Nothing here should be measured as though it had recovered
-//! them.
+//! `scoped_*` setjmp, and it had to: these functions raise, and `run_vm` was
+//! still C. Phase 10 Part 17e removed the last of those callees when each
+//! started returning its raise, and the hinge spent the selector with the
+//! `setjmp` it was the last configuration to compile.
 
 const std = @import("std");
 const abi = @import("abi");
+const raise = @import("raise");
+const pp_format = @import("pp_format.zig");
 const c = abi.c;
+const printer = @import("printer.zig");
+const access = @import("access.zig");
+const vm_entry = @import("vm_entry.zig");
+const abstract_type = @import("abstract_type.zig");
 
 /// A sign-preserving widening, matching C's `int32_t` to `size_t` conversion
 /// in `fiber->data + fiber->stacktop`. The two operands are fiber stack
@@ -100,11 +104,11 @@ inline fn isNil(x: c.Janet) bool {
 /// the C reads `argv[0]` only after the arity check has passed, so a
 /// zero-argument call must not touch it. Reading it eagerly would be a read of
 /// whatever the previous frame left in that stack slot.
-inline fn invokeIndexed(method: c.Janet, argc: i32, argv: [*c]c.Janet, method_is_ds: bool) c.Janet {
+inline fn invokeIndexed(method: c.Janet, argc: i32, argv: [*c]c.Janet, method_is_ds: bool) raise.Error!c.Janet {
     if (argc != 1) {
-        c.janet_panicf("%v called with %d arguments, possibly expected 1", method, argc);
+        return pp_format.panicf("%v called with %d arguments, possibly expected 1", .{ method, argc });
     }
-    return if (method_is_ds) c.janet_in(method, argv[0]) else c.janet_in(argv[0], method);
+    return if (method_is_ds) try access.in(method, argv[0]) else try access.in(argv[0], method);
 }
 
 /// `janet_method_invoke`. Calls a value that has already been resolved to a
@@ -120,18 +124,18 @@ inline fn invokeIndexed(method: c.Janet, argc: i32, argv: [*c]c.Janet, method_is
 /// The default arm is the one that reverses the operands: calling a keyword
 /// looks the *keyword* up in its argument, which is what makes `(:key struct)`
 /// work, while calling a table looks the *argument* up in the table.
-fn methodInvoke(method: c.Janet, argc: i32, argv: [*c]c.Janet) callconv(.c) c.Janet {
+pub fn methodInvoke(method: c.Janet, argc: i32, argv: [*c]c.Janet) raise.Error!c.Janet {
     switch (c.janet_type(method)) {
-        c.JANET_CFUNCTION => return c.janet_unwrap_cfunction(method).?(argc, argv),
+        c.JANET_CFUNCTION => return raise.cfunction(c.janet_unwrap_cfunction(method))(argc, argv),
         c.JANET_FUNCTION => {
             const fun = c.janet_unwrap_function(method);
-            return c.janet_call(fun, argc, argv);
+            return try vm_entry.callImpl(fun, argc, argv);
         },
         c.JANET_ABSTRACT => {
             const abst = c.janet_unwrap_abstract(method);
-            const at = c.janet_abstract_type(abst);
-            if (at.*.call) |call| return call(abst, argc, argv);
-            return invokeIndexed(method, argc, argv, true);
+            const at = abstract_type.ofAbstract(abst);
+            if (at.call) |call| return try call(abst, argc, argv);
+            return try invokeIndexed(method, argc, argv, true);
         },
         c.JANET_STRING,
         c.JANET_BUFFER,
@@ -139,8 +143,8 @@ fn methodInvoke(method: c.Janet, argc: i32, argv: [*c]c.Janet) callconv(.c) c.Ja
         c.JANET_STRUCT,
         c.JANET_ARRAY,
         c.JANET_TUPLE,
-        => return invokeIndexed(method, argc, argv, true),
-        else => return invokeIndexed(method, argc, argv, false),
+        => return try invokeIndexed(method, argc, argv, true),
+        else => return try invokeIndexed(method, argc, argv, false),
     }
 }
 
@@ -153,7 +157,7 @@ fn methodInvoke(method: c.Janet, argc: i32, argv: [*c]c.Janet) callconv(.c) c.Ja
 /// not tidiness: `janet_method_invoke` can reach `janet_call`, which pushes a
 /// frame of its own, and it would push it over these arguments if the top were
 /// still where the caller left it.
-pub fn callNonfn(fiber: [*c]c.JanetFiber, callee: c.Janet) callconv(.c) c.Janet {
+pub fn callNonfn(fiber: [*c]c.JanetFiber, callee: c.Janet) raise.Error!c.Janet {
     const argc = fiber.*.stacktop - fiber.*.stackstart;
     fiber.*.stacktop = fiber.*.stackstart;
     return methodInvoke(callee, argc, fiber.*.data + asSize(fiber.*.stacktop));
@@ -172,15 +176,15 @@ inline fn methodToFun(method: c.Janet, obj: c.Janet) c.Janet {
 /// The zero-argument branch cannot be reached from Janet source — the compiler
 /// rejects a method call with no receiver outright — so `asm` is the only route
 /// to it, and `test/vm_calls.c` takes that route.
-pub fn resolveMethod(name: c.Janet, fiber: [*c]c.JanetFiber) callconv(.c) c.Janet {
+pub fn resolveMethod(name: c.Janet, fiber: [*c]c.JanetFiber) raise.Error!c.Janet {
     const argc = fiber.*.stacktop - fiber.*.stackstart;
     if (argc < 1) {
-        c.janet_panicf("method call (%v) takes at least 1 argument, got 0", name);
+        return pp_format.panicf("method call (%v) takes at least 1 argument, got 0", .{name});
     }
     const receiver = fiber.*.data[asSize(fiber.*.stackstart)];
     const callee = methodToFun(name, receiver);
     if (isNil(callee)) {
-        c.janet_panicf("unknown method %v invoked on %v", name, receiver);
+        return pp_format.panicf("unknown method %v invoked on %v", .{ name, receiver });
     }
     return callee;
 }
@@ -197,10 +201,10 @@ fn methodLookup(x: c.Janet, name: [*c]const u8) callconv(.c) c.Janet {
 
 /// `janet_unary_call`. The operator fallback for a one-operand opcode whose
 /// operand is not a number — `JOP_BNOT` is the only one that reaches it.
-pub fn unaryCall(method: [*c]const u8, arg: c.Janet) callconv(.c) c.Janet {
+pub fn unaryCall(method: [*c]const u8, arg: c.Janet) raise.Error!c.Janet {
     const m = methodLookup(arg, method);
     if (isNil(m)) {
-        c.janet_panicf("could not find method :%s for %v", method, arg);
+        return pp_format.panicf("could not find method :%s for %v", .{ method, arg });
     }
     var argv = [_]c.Janet{arg};
     return methodInvoke(m, 1, &argv);
@@ -213,18 +217,15 @@ pub fn unaryCall(method: [*c]const u8, arg: c.Janet) callconv(.c) c.Janet {
 /// The right-hand attempt swaps the arguments, so a `:r+` method receives its
 /// own receiver first. Both `argv` arrays are built before the nil check the
 /// way the C does, which matters only in that the panic path never reads them.
-pub fn binopCall(lmethod: [*c]const u8, rmethod: [*c]const u8, lhs: c.Janet, rhs: c.Janet) callconv(.c) c.Janet {
+pub fn binopCall(lmethod: [*c]const u8, rmethod: [*c]const u8, lhs: c.Janet, rhs: c.Janet) raise.Error!c.Janet {
     const lm = methodLookup(lhs, lmethod);
     if (isNil(lm)) {
         const lr = methodLookup(rhs, rmethod);
         var argv = [_]c.Janet{ rhs, lhs };
         if (isNil(lr)) {
-            c.janet_panicf(
+            return pp_format.panicf(
                 "could not find method :%s for %v or :%s for %v",
-                lmethod,
-                lhs,
-                rmethod,
-                rhs,
+                .{ lmethod, lhs, rmethod, rhs },
             );
         }
         return methodInvoke(lr, 2, &argv);
@@ -238,21 +239,16 @@ pub fn binopCall(lmethod: [*c]const u8, rmethod: [*c]const u8, lhs: c.Janet, rhs
 /// function here that was never `static`. `value.c` calls it for `:length` on
 /// an abstract type, and `run_vm` reaches it from the immediate-operand
 /// arithmetic opcodes.
-export fn janet_mcall(name: [*c]const u8, argc: i32, argv: [*c]c.Janet) callconv(.c) c.Janet {
+pub fn mcall(name: [*c]const u8, argc: i32, argv: [*c]c.Janet) raise.Error!c.Janet {
     if (argc < 1) {
-        c.janet_panicf("method :%s expected at least 1 argument", name);
+        return pp_format.panicf("method :%s expected at least 1 argument", .{name});
     }
     const method = methodLookup(argv[0], name);
     if (isNil(method)) {
-        c.janet_panicf("could not find method :%s for %v", name, argv[0]);
+        return pp_format.panicf("could not find method :%s for %v", .{ name, argv[0] });
     }
     return methodInvoke(method, argc, argv);
 }
-
-/// The name Part 3 imports this by. `janet_mcall` is the C symbol and the
-/// public entry; `mcall` is the same function reached without going through the
-/// symbol table, which is what lets a Zig `run_vm` inline it.
-pub const mcall = janet_mcall;
 
 // ------------------------------------------------------------- fill loops
 
@@ -291,25 +287,58 @@ pub fn fillStruct(st: [*c]c.JanetKV, mem: [*c]const c.Janet, count: i32) callcon
 /// it — recorded in `FOUND.md`, reproduced rather than repaired, and the reason
 /// the trampoline build takes one scope around this loop rather than one per
 /// element.
-pub fn fillString(buffer: [*c]c.JanetBuffer, mem: [*c]const c.Janet, count: i32) callconv(.c) void {
+fn fillStringImpl(buffer: [*c]c.JanetBuffer, mem: [*c]const c.Janet, count: i32) raise.Raising(void) {
     var i: i32 = 0;
     while (i < count) : (i += 1) {
-        c.janet_to_string_b(buffer, mem[asSize(i)]);
+        try printer.toStringB(buffer, mem[asSize(i)]);
     }
 }
 
+pub fn fillString(buffer: [*c]c.JanetBuffer, mem: [*c]const c.Janet, count: i32) callconv(.c) void {
+    raise.reported(fillStringImpl(buffer, mem, count));
+}
+
+// ----------------------------------------------------------- the two faces
+
+// Each raise-capable function above has a C-ABI face here, built by
+// `raise.panicking`: call the implementation, and turn a returned error back
+// into the jump a C caller still expects.
+//
+// The position of the `catch` is the whole safety argument and it is inside the
+// face, one frame below the implementation. By the time control reaches it the
+// error has returned normally through every frame between the raise and there,
+// so the jump leaves a frame that owns nothing.
+//
+// These disappear one at a time as each caller converts, and the last goes with
+// the `setjmp` in Part 17. `vm_run.zig` still reaches them through `scoped`,
+// which needs a plain return type; converting the loop is what retires them.
+// Under `-Dvm-calls=c` the C originals answer instead, raising from the inside
+// by jumping — the two faces are each other's differential, and
+// `test/vm_calls.c` drives the C one.
+
+pub const methodInvokePanicking = raise.panicking(methodInvoke).face;
+pub const callNonfnPanicking = raise.panicking(callNonfn).face;
+pub const resolveMethodPanicking = raise.panicking(resolveMethod).face;
+pub const unaryCallPanicking = raise.panicking(unaryCall).face;
+pub const binopCallPanicking = raise.panicking(binopCall).face;
+pub const mcallPanicking = raise.panicking(mcall).face;
+
 // ----------------------------------------------------------------- exports
 
-// The nine internal symbols, hidden exactly as the C build hides them. Only
-// `janet_mcall` is `JANET_API`, and it is exported at its definition above.
+// The nine internal symbols, hidden exactly as the C build hides them. Every
+// one of them is now the C face rather than the implementation, `janet_mcall`
+// included: a C caller cannot consume a Zig error. Only `janet_mcall` is
+// `JANET_API` and it is exported normally; the rest stay hidden, which is what
+// `-fvisibility=hidden` gives the C build.
 comptime {
-    @export(&methodInvoke, .{ .name = "janet_method_invoke", .visibility = .hidden });
-    @export(&callNonfn, .{ .name = "janet_call_nonfn", .visibility = .hidden });
-    @export(&resolveMethod, .{ .name = "janet_resolve_method", .visibility = .hidden });
+    @export(&methodInvokePanicking, .{ .name = "janet_method_invoke", .visibility = .hidden });
+    @export(&callNonfnPanicking, .{ .name = "janet_call_nonfn", .visibility = .hidden });
+    @export(&resolveMethodPanicking, .{ .name = "janet_resolve_method", .visibility = .hidden });
     @export(&methodLookup, .{ .name = "janet_method_lookup", .visibility = .hidden });
-    @export(&unaryCall, .{ .name = "janet_unary_call", .visibility = .hidden });
-    @export(&binopCall, .{ .name = "janet_binop_call", .visibility = .hidden });
+    @export(&unaryCallPanicking, .{ .name = "janet_unary_call", .visibility = .hidden });
+    @export(&binopCallPanicking, .{ .name = "janet_binop_call", .visibility = .hidden });
     @export(&fillTable, .{ .name = "janet_fill_table", .visibility = .hidden });
     @export(&fillStruct, .{ .name = "janet_fill_struct", .visibility = .hidden });
     @export(&fillString, .{ .name = "janet_fill_string", .visibility = .hidden });
+    @export(&mcallPanicking, .{ .name = "janet_mcall" });
 }

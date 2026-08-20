@@ -1,9 +1,7 @@
 const std = @import("std");
 
-const c = @cImport({
-    @cInclude("regalloc.h");
-    @cInclude("runtime.h");
-});
+const abi = @import("abi");
+const c = abi.c;
 
 const chunk_bits = 32;
 const reserved_chunk = 7;

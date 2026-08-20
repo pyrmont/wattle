@@ -7,6 +7,8 @@
 #include <string.h>
 #include <janet.h>
 
+#include "support.h"
+
 int32_t janet_os_environ_count(char *const *env);
 int32_t janet_os_environ_separator(const char *entry);
 const char *janet_os_getenv(const char *name);
@@ -56,15 +58,15 @@ static void test_core_functions(void) {
 
     args[0] = janet_cstringv(test_name);
     args[1] = janet_cstringv("public-value");
-    assert(janet_checktype(setenv_fn(2, args), JANET_NIL));
-    result = getenv_fn(1, args);
+    assert(janet_checktype(janet_contract_call_cfunction(setenv_fn, 2, args), JANET_NIL));
+    result = janet_contract_call_cfunction(getenv_fn, 1, args);
     assert(janet_checktype(result, JANET_STRING));
     assert(!janet_cstrcmp(janet_unwrap_string(result), "public-value"));
 
 #ifndef JANET_PLAN9
     {
         JanetCFunction environ_fn = janet_unwrap_cfunction(janet_resolve_core("os/environ"));
-        JanetTable *snapshot = janet_unwrap_table(environ_fn(0, NULL));
+        JanetTable *snapshot = janet_unwrap_table(janet_contract_call_cfunction(environ_fn, 0, NULL));
         Janet captured = janet_table_get(snapshot, args[0]);
         assert(janet_checktype(captured, JANET_STRING));
         assert(!janet_cstrcmp(janet_unwrap_string(captured), "public-value"));
@@ -73,18 +75,17 @@ static void test_core_functions(void) {
 
     args[1] = janet_ckeywordv("fallback");
     args[0] = janet_cstringv("JANET_ZIG_OS_ENVIRON_MISSING_7A21C9");
-    assert(janet_equals(getenv_fn(2, args), args[1]));
+    assert(janet_equals(janet_contract_call_cfunction(getenv_fn, 2, args), args[1]));
 
     args[0] = janet_cstringv(test_name);
-    assert(janet_checktype(setenv_fn(1, args), JANET_NIL));
-    assert(janet_checktype(getenv_fn(1, args), JANET_NIL));
+    assert(janet_checktype(janet_contract_call_cfunction(setenv_fn, 1, args), JANET_NIL));
+    assert(janet_checktype(janet_contract_call_cfunction(getenv_fn, 1, args), JANET_NIL));
 }
 
-int main(void) {
+void os_environ_contract(void) {
     janet_init();
     test_scanning();
     test_host_operations();
     test_core_functions();
     janet_deinit();
-    return 0;
 }

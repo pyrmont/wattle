@@ -37,6 +37,8 @@
 
 #include "features.h"
 #include <janet.h>
+
+#include "support.h"
 #include "state.h"
 #include "gc.h"
 #include "util.h"
@@ -133,7 +135,7 @@ static const JanetAbstractType other_type = {
 };
 
 static Janet mkcell(int32_t key) {
-    Cell *cell = janet_abstract(&cell_type, sizeof(Cell));
+    Cell *cell = janet_abstract(CONTRACT_AT(cell_type), sizeof(Cell));
     cell->key = key;
     return janet_wrap_abstract(cell);
 }
@@ -276,8 +278,8 @@ static void test_abstract_hash_callback(void) {
     /* Without a callback the pointer is hashed, so the same instance is stable
      * and two instances are (overwhelmingly) not equal. Two draws rather than
      * one, because a constant-returning implementation passes with one. */
-    Janet b1 = mkbare(&bare_type);
-    Janet b2 = mkbare(&bare_type);
+    Janet b1 = mkbare(CONTRACT_AT(bare_type));
+    Janet b2 = mkbare(CONTRACT_AT(bare_type));
     assert(janet_hash(b1) == janet_hash(b1));
     assert(janet_hash(b1) != janet_hash(b2));
 }
@@ -604,13 +606,13 @@ static void test_equality_of_abstracts(void) {
     assert(!janet_equals(a, c));
 
     /* Without a callback, only identity. */
-    Janet p = mkbare(&bare_type);
-    Janet q = mkbare(&bare_type);
+    Janet p = mkbare(CONTRACT_AT(bare_type));
+    Janet q = mkbare(CONTRACT_AT(bare_type));
     assert(janet_equals(p, p));
     assert(!janet_equals(p, q));
 
     /* Different abstract types are never equal even with equal payloads. */
-    Janet r = mkbare(&other_type);
+    Janet r = mkbare(CONTRACT_AT(other_type));
     assert(!janet_equals(p, r));
 }
 
@@ -773,21 +775,21 @@ static void test_order_of_abstracts(void) {
     assert(janet_compare(a, mkcell(1)) == 0);
 
     /* No callback: pointer order, consistent both ways and in that direction. */
-    Janet p = mkbare(&bare_type);
-    Janet q = mkbare(&bare_type);
+    Janet p = mkbare(CONTRACT_AT(bare_type));
+    Janet q = mkbare(CONTRACT_AT(bare_type));
     int fwd = janet_compare(p, q);
     assert(fwd != 0 && fwd == -janet_compare(q, p));
     assert(fwd == (janet_unwrap_abstract(p) > janet_unwrap_abstract(q) ? 1 : -1));
 
     /* Different types: decided by the type pointers, before either type's
      * callback could be consulted -- `cell_type` has one and it is not used. */
-    Janet r = mkbare(&other_type);
+    Janet r = mkbare(CONTRACT_AT(other_type));
     int cross = janet_compare(p, r);
     assert(cross != 0 && cross == -janet_compare(r, p));
-    int expect = (&bare_type > &other_type) ? 1 : -1;
+    int expect = (CONTRACT_AT(bare_type) > CONTRACT_AT(other_type)) ? 1 : -1;
     assert(cross == expect);
 
-    assert(janet_compare(a, p) == ((&cell_type > &bare_type) ? 1 : -1));
+    assert(janet_compare(a, p) == ((CONTRACT_AT(cell_type) > CONTRACT_AT(bare_type)) ? 1 : -1));
 }
 
 /* --------------------------------------------------------------- traversal */
@@ -1040,8 +1042,8 @@ static void test_the_relations_hold_over_a_corpus(void) {
         janet_wrap_table(janet_table(1)),
         janet_wrap_buffer(janet_buffer(1)),
         mkcell(42),
-        mkbare(&bare_type),
-        janet_wrap_pointer((void *) &cell_type),
+        mkbare(CONTRACT_AT(bare_type)),
+        janet_wrap_pointer((void *) CONTRACT_AT(cell_type)),
         janet_wrap_cfunction(NULL),
     };
     const int n = (int)(sizeof(corpus) / sizeof(corpus[0]));
@@ -1123,7 +1125,7 @@ static void test_from_janet(void) {
     assert(janet_truthy(r[10]));
 }
 
-int main(void) {
+void value_order_contract(void) {
     janet_init();
 
     test_hash_of_the_atoms();
@@ -1175,5 +1177,4 @@ int main(void) {
 
     janet_deinit();
     printf("value order contract ok\n");
-    return 0;
 }

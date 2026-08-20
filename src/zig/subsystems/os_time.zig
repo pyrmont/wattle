@@ -150,3 +150,55 @@ test "saturating conversion clamps rather than trapping" {
     try std.testing.expectEqual(@as(u32, std.math.maxInt(u32)), saturatingCast(u32, 1e30));
     try std.testing.expectEqual(@as(i64, std.math.maxInt(i64)), saturatingCast(i64, 1e300));
 }
+
+/// The host's `struct timespec`.
+///
+/// `std.c.timespec` everywhere it is a real declaration, which is every POSIX
+/// target and is the type `janet_os_gettime` above already hands to
+/// `clock_gettime` -- so using it here adds no exposure that this file did not
+/// already have. **Windows is not one of those targets**: `std.c.time_t` is
+/// `void` there, because Zig's `std.c` describes a libc Windows does not have,
+/// and the field types therefore do not exist. mingw-w64's own declaration is
+/// `{ __int64 tv_sec; long tv_nsec; }`, with `long` 32 bits, and that is what
+/// the Windows arm spells out.
+///
+/// The `x86_64-windows-gnu` cross-compile is what found this, by failing with
+/// `expected integer or vector, found 'void'`. Phase 10's rule 5 again: the
+/// arm this host does not select is not merely unreachable but unchecked.
+const Timespec = if (windows) extern struct {
+    sec: i64,
+    nsec: c_long,
+} else std.c.timespec;
+
+/// `janet_gettime`, the `struct timespec` face over `janet_os_gettime` above.
+///
+/// Phase 10 Part 17f. This was the last live code in `src/core/util.c`: four
+/// lines of C that existed because the Zig kernel reports seconds and
+/// nanoseconds separately, and something had to put them into a `timespec`.
+///
+/// The comment it replaces said `struct timespec` "cannot be named from Zig",
+/// and that is true of the *translated* one -- musl declares its padding as a
+/// bitfield and translate-c demotes any structure with one to an opaque type,
+/// which `os_files.zig` measured. It is not true of `std.c.timespec`, which is
+/// Zig's own declaration of the same layout and which this file already uses
+/// for `clock_gettime` and `nanosleep`. Phase 10's rule 3 is the general form:
+/// a host structure stays in C only when translate-c cannot give it to us, and
+/// this one never needed translate-c.
+///
+/// `enum JanetTimeSource` is passed as `c_uint`, which is what clang gives an
+/// enumeration whose enumerators are all non-negative. `test/os_time.c` calls
+/// this with the enum directly, including a value outside it, so the width is
+/// checked rather than assumed.
+///
+/// Nothing in the runtime calls it any more -- every Zig caller uses
+/// `janet_os_gettime` and takes the parts. It is kept because it is `util.h`'s
+/// interface and deleting an exported symbol is Phase 11's decision, not this
+/// part's.
+export fn janet_gettime(spec: *Timespec, source: c_uint) callconv(.c) c_int {
+    var sec: i64 = undefined;
+    var nsec: i64 = undefined;
+    if (janet_os_gettime(@bitCast(source), &sec, &nsec) != 0) return -1;
+    spec.sec = @intCast(sec);
+    spec.nsec = @intCast(nsec);
+    return 0;
+}

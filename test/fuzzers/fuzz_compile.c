@@ -18,16 +18,15 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     janet_parser_init(&parser);
 
     JanetTryState tstate;
-    if (janet_try(&tstate) == JANET_SIGNAL_OK) {
-        for (size_t i = 0; i < size; i++) {
-            if (janet_parser_status(&parser) == JANET_PARSE_ERROR)
-                break;
-            janet_parser_consume(&parser, data[i]);
-            while (janet_parser_has_more(&parser)) {
-                Janet form = janet_parser_produce(&parser);
-                JanetCompileResult res = janet_compile(form, env, janet_cstring("fuzz"));
-                (void) res;
-            }
+    janet_try_init(&tstate);
+    for (size_t i = 0; i < size; i++) {
+        if (janet_parser_status(&parser) == JANET_PARSE_ERROR)
+            break;
+        janet_parser_consume(&parser, data[i]);
+        while (janet_parser_has_more(&parser)) {
+            Janet form = janet_parser_produce(&parser);
+            JanetCompileResult res = janet_compile(form, env, janet_cstring("fuzz"));
+            (void) res;
         }
     }
     janet_restore(&tstate);

@@ -139,5 +139,14 @@
 # Check string formatting, #1600
 (assert (= "" (string/format "%.99s" @"")) "string/format %s buffer")
 
+# string/split's optional start and limit. Everything above passes both
+# defaults, so the two arguments were reached by nothing.
+(assert (deep= (string/split "," "a,b,c" 0 2) @["a" "b,c"]) "string/split limit 2")
+(assert (deep= (string/split "," "a,b,c" 0 1) @["a,b,c"]) "string/split limit 1")
+# The start index moves where the *search* begins, not where the output does:
+# the first slice still runs from 0, so it can contain a delimiter.
+(assert (deep= (string/split "," "a,b,c" 2) @["a,b" "c"]) "string/split start")
+(assert (deep= (string/split "," "a,b,c" 0 100) @["a" "b" "c"]) "string/split limit above count")
+
 (end-suite)
 

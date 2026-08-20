@@ -224,4 +224,17 @@ neldb\0\0\0\xD8\x05printG\x01\0\xDE\xDE\xDE'\x03\0marshal_tes/\x02
 (assert (deep= (freeze t) (freeze tclone)) "marsh weak tables with prototypes 4")
 (assert (deep= (getproto t) (getproto tclone)) "marsh weak tables with prototypes 5")
 
+# A threaded channel marshals and cannot be read back: the safe encoding for a
+# threaded abstract calls janet_unmarshal_abstract_threaded, whose only
+# compiled arm raises. See FOUND.md, "janet_unmarshal_abstract_threaded is
+# compiled out of every build there is".
+(compwhen (dyn 'ev/thread-chan)
+  (def tchan (ev/thread-chan 4))
+  (assert (buffer? (marshal tchan)) "threaded channel marshals")
+  (assert-error "threaded abstracts not supported"
+                (unmarshal (marshal tchan)))
+  # The unthreaded one is what isolates the flag byte as the cause.
+  (assert (= :core/channel (type (unmarshal (marshal (ev/chan 4)))))
+          "unthreaded channel round-trips"))
+
 (end-suite)

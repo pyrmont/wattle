@@ -99,3 +99,35 @@ export fn janet_vm_state_size() callconv(.c) usize {
 export fn janet_vm_state_align() callconv(.c) usize {
     return @offsetOf(c.JanetVMAlignProbe, "vm");
 }
+
+// ------------------------------------------------------- dynamic bindings
+
+// `janet_dyn` and `janet_setdyn` came from `capi.c` in Phase 10 Part 5. They
+// are here rather than with the fiber because the storage they choose between
+// is the VM's: a running fiber's `env` when there is one, and `janet_vm.top_dyns`
+// when there is not. The lazy creation of both tables is the C original's --
+// neither exists until something is bound.
+
+/// `src/core/util.h`, which `abi.zig` does not translate.
+extern fn janet_table_get_keyword(t: *c.JanetTable, keyword: [*c]const u8) callconv(.c) c.Janet;
+
+export fn janet_dyn(name: [*c]const u8) callconv(.c) c.Janet {
+    const v = currentVm();
+    if (v.fiber == null) {
+        const dyns = v.top_dyns orelse return c.janet_wrap_nil();
+        return c.janet_table_get(dyns, c.janet_ckeywordv(name));
+    }
+    if (v.fiber.*.env) |env| return janet_table_get_keyword(env, name);
+    return c.janet_wrap_nil();
+}
+
+export fn janet_setdyn(name: [*c]const u8, value: c.Janet) callconv(.c) void {
+    const v = currentVm();
+    if (v.fiber == null) {
+        if (v.top_dyns == null) v.top_dyns = c.janet_table(10);
+        c.janet_table_put(v.top_dyns, c.janet_ckeywordv(name), value);
+    } else {
+        if (v.fiber.*.env == null) v.fiber.*.env = c.janet_table(1);
+        c.janet_table_put(v.fiber.*.env, c.janet_ckeywordv(name), value);
+    }
+}

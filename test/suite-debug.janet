@@ -30,5 +30,166 @@
 (debug/unfbreak map 1)
 (map inc [1 2 3])
 
+# Phase 10 Part 7 moved the breakpoint machinery, the stack-trace printer and
+# the whole `debug/` cfunction surface to Zig. Everything below was reachable
+# before and tested by one assertion.
+
+# debug/fbreak range checking, which janet_debug_break does for both the
+# function form and the source form.
+(defn breakable [x] (+ x 1))
+(assert-error "invalid bytecode offset" (debug/fbreak breakable 100000))
+(assert-error "invalid bytecode offset" (debug/fbreak breakable -1))
+(assert-error "invalid bytecode offset" (debug/unfbreak breakable 100000))
+
+# debug/break over a source position that no funcdef claims.
+(assert-error "could not find breakpoint" (debug/break "no-such-source-file" 1 1))
+(assert-error "could not find breakpoint" (debug/unbreak "no-such-source-file" 1 1))
+
+# A breakpoint stops the fiber, and clearing it lets the fiber finish.
+(debug/fbreak breakable 0)
+(def bf (fiber/new (fn [] (breakable 5)) :dy))
+(resume bf)
+(assert (= :debug (fiber/status bf)) "fbreak stops the fiber")
+(debug/unfbreak breakable 0)
+(assert (= 6 (resume bf)) "unfbreak lets it run")
+
+# debug/step advances one instruction at a time.
+(def sf (fiber/new (fn [] (+ 1 2)) :dy))
+(debug/step sf)
+(assert (= :debug (fiber/status sf)) "step leaves the fiber debuggable")
+
+# debug/lineage walks the child chain. The child link survives only while the
+# inner fiber is still suspended inside the outer one, which is what
+# `propagate` arranges: a plain `resume` that has already returned leaves no
+# chain to walk.
+(def lin-inner (fiber/new (fn [] (error "li")) :ie))
+(def lin-outer (fiber/new (fn [] (propagate (resume lin-inner) lin-inner)) :ie))
+(resume lin-outer)
+(assert (= 2 (length (debug/lineage lin-outer))) "lineage includes the child")
+(assert (= 1 (length (debug/lineage lin-inner))) "lineage of a leaf is itself")
+
+# debug/stack names the frames it can name.
+(def stk-f (fiber/new (fn [] (defn named-frame [] (error "x")) (named-frame)) :ie))
+(resume stk-f)
+(assert (deep= @["named-frame"] (map |(get $ :name) (debug/stack stk-f))) "stack names")
+
+# debug/arg-stack is empty unless the fiber signalled mid-call.
+(assert (deep= @[] (debug/arg-stack stk-f)) "arg stack is empty")
+
+# The stack-trace printer, captured through the :err dynamic binding rather
+# than by reading stderr. This is what makes `janet_eprintf` -- a C variadic
+# Zig calls but cannot define -- observable from a suite.
+# `:err-color` is bound explicitly, and that is the point rather than tidiness.
+# The printer wraps the whole trace in "\e[31m" and "\e[0m" when the binding is
+# truthy, and Janet's CLI turns it on when stderr is a terminal -- so without
+# this every prefix and suffix assertion below passes when the suite's output is
+# redirected and fails when a person runs it in a shell. It was latent from
+# Phase 10 Part 7 until someone ran `zig build test` interactively.
+#
+# The colour path itself is asserted further down, with `:err-color true` bound
+# just as explicitly.
+(defn trace-of
+  [fib err prefix]
+  (def out @"")
+  (with-dyns [:err out :err-color false] (debug/stacktrace fib err prefix))
+  (string out))
+
+(def tf (fiber/new (fn [] (defn traced [] (error "trace-me")) (traced)) :ie))
+(resume tf)
+(def full-trace (trace-of tf "trace-me" "P"))
+(assert (string/has-prefix? "Perror: trace-me\n" full-trace) "prefix and error line")
+(assert (string/find "  in traced [" full-trace) "frame line")
+
+# A nil prefix skips the error line entirely.
+(def bare-trace (trace-of tf "trace-me" nil))
+(assert (not (string/find "error: trace-me" bare-trace)) "nil prefix skips the error line")
+(assert (string/find "  in traced [" bare-trace) "but still prints frames")
+
+# :err-color wraps the whole trace, including the case where nothing is
+# printed between the two escapes.
+(def colored
+  (do (def out @"")
+      (with-dyns [:err out :err-color true] (debug/stacktrace tf "c" "P"))
+      (string out)))
+(assert (string/has-prefix? "\e[31m" colored) "color prologue")
+(assert (string/has-suffix? "\e[0m" colored) "color epilogue")
+
+# A nested fiber chain prints innermost first. Part 7 replaced a heap vector
+# walked backwards with a recursion, so the order is newly the port's.
+(defn depth3 [] (error "deep"))
+(def n1 (fiber/new depth3 :ie))
+(def n2 (fiber/new (fn [] (propagate (resume n1) n1)) :ie))
+(def n3 (fiber/new (fn [] (propagate (resume n2) n2)) :ie))
+(resume n3)
+(def chain-trace (trace-of n3 (fiber/last-value n3) "C"))
+(def frame-lines (filter |(string/has-prefix? "  in " $) (string/split "\n" chain-trace)))
+(assert (= 3 (length frame-lines)) "one frame line per fiber in the chain")
+(assert (string/find "depth3" (first frame-lines)) "innermost fiber prints first")
+
+# The trace's location is a line and a column in that order, and the numbers
+# come from the same source map `debug/stack` reads -- so the two have to
+# agree. Comparing them rather than hard-coding a position keeps this stable
+# when the file above it grows.
+(def loc-f (fiber/new (fn [] (defn located [] (error "loc")) (located)) :ie))
+(resume loc-f)
+(def loc-frame (first (debug/stack loc-f)))
+(def loc-line (get loc-frame :source-line))
+(def loc-col (get loc-frame :source-column))
+(assert (not= loc-line loc-col) "the probe frame has distinguishable coordinates")
+(assert (string/find (string/format "on line %d, column %d" loc-line loc-col)
+                     (trace-of loc-f "loc" "L"))
+        "the trace agrees with debug/stack about which number is which")
+
+# A cfunction frame names its prefix, records the file it was registered from,
+# and reports a bare line rather than a line and column.
+(def cf (fiber/new (fn [] (string/find 1 2)) :ie))
+(resume cf)
+(def cf-trace (trace-of cf (fiber/last-value cf) "C"))
+(assert (string/find "  in string/find [" cf-trace) "a cfunction keeps its prefix")
+(assert (not (string/find "  in find [" cf-trace)) "and is not printed without one")
+# Guarded because it is the one assertion in this suite that needs a peg, and
+# a `-Dpeg=false` build has no `peg/find` to compile against. Part 7 added it
+# unguarded; Part 9's matrix is the first to run `zig build test -Dpeg=false`
+# and is what found that.
+(compwhen (dyn 'peg/find)
+  (assert (peg/find '(* "  in string/find [" (some (if-not "]" 1)) "] on line " (some :d) "\n")
+                    cf-trace)
+          "a registered cfunction reports a line and no column"))
+
+# The tail-call marker appears on a tail call and not otherwise.
+(defn tail-callee [] (error "t"))
+(defn tail-caller [] (tail-callee))
+(def tf2 (fiber/new tail-caller :ie))
+(resume tf2)
+(def tail-trace (trace-of tf2 "t" "T"))
+(assert (string/find "(tail call)" tail-trace) "a tail call is marked")
+(assert (not (string/find "(tail call)" cf-trace)) "a cfunction frame is not")
+
+# debug/break by source position, which is the only way `janet_debug_find` is
+# reached with a match. The form is built through a parser with an explicit
+# source name so the position is known here rather than depending on this
+# file's line numbering.
+(def brk-parser (parser/new))
+(parser/consume brk-parser "(fn [x] (+ x 1))")
+(parser/eof brk-parser)
+(def brk-fn ((compile (parser/produce brk-parser) (curenv) "brk-src")))
+(assert (deep= @[[1 9] [1 9]] (disasm brk-fn :sourcemap)) "the probe's source map")
+
+(debug/break "brk-src" 1 9)
+(def brk-fiber (fiber/new (fn [] (brk-fn 5)) :dy))
+(assert (nil? (resume brk-fiber)) "a source breakpoint raises a nil signal")
+(assert (= :debug (fiber/status brk-fiber)) "and stops the fiber")
+(debug/unbreak "brk-src" 1 9)
+(assert (= 6 (resume brk-fiber)) "clearing it lets the fiber finish")
+
+# The source name is compared, so another name finds nothing...
+(assert-error "could not find breakpoint" (debug/break "not-brk-src" 1 9))
+# ...and the column is a bound, so a position before the only mapping finds
+# nothing either.
+(assert-error "could not find breakpoint" (debug/break "brk-src" 1 0))
+# A position after it does find it, because the rule is "at or before".
+(debug/break "brk-src" 1 40)
+(debug/unbreak "brk-src" 1 40)
+
 (end-suite)
 

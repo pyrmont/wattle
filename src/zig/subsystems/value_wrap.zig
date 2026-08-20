@@ -627,7 +627,7 @@ fn wrapFunction(x: [*c]c.JanetFunction) callconv(.c) c.Janet {
 }
 
 fn wrapCFunction(x: c.JanetCFunction) callconv(.c) c.Janet {
-    return repr.wrapPointer(@constCast(@ptrCast(x)), c.JANET_CFUNCTION);
+    return repr.wrapPointer(@ptrCast(@constCast(x)), c.JANET_CFUNCTION);
 }
 
 fn wrapTable(x: [*c]c.JanetTable) callconv(.c) c.Janet {

@@ -11,7 +11,7 @@ static int scan_u64(const char *text, uint64_t *out) {
     return janet_scan_uint64((const uint8_t *) text, (int32_t) strlen(text), out);
 }
 
-int main(void) {
+void intscan_contract(void) {
     int64_t signed_value = 123;
     uint64_t unsigned_value = 123;
 
@@ -35,5 +35,4 @@ int main(void) {
     assert(!scan_u64("0x", &unsigned_value));
     assert(!scan_u64("37r1", &unsigned_value));
     assert(!scan_u64("12z", &unsigned_value));
-    return 0;
 }

@@ -156,7 +156,7 @@ static void test_core_functions(void) {
         "(assert (not (first (protect (os/sleep -1)))))\n");
 }
 
-int main(void) {
+void os_time_contract(void) {
     test_realtime();
     test_monotonic();
     test_cputime();
@@ -166,5 +166,4 @@ int main(void) {
     janet_init();
     test_core_functions();
     janet_deinit();
-    return 0;
 }

@@ -6,7 +6,7 @@
 #include "util.h"
 #include "vector.h"
 
-int main(void) {
+void compiler_primitives_contract(void) {
     JanetCompiler compiler;
     JanetScope scope;
     JanetFopts options;
@@ -364,5 +364,4 @@ int main(void) {
     janet_v_free(compiler.buffer);
 
     janet_deinit();
-    return 0;
 }

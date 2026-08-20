@@ -54,6 +54,8 @@
 
 #include "features.h"
 #include <janet.h>
+
+#include "support.h"
 #include "state.h"
 #include "gc.h"
 #include "util.h"
@@ -64,14 +66,15 @@ static int panics_fired = 0;
 
 #define EXPECT_PANIC(expr, message) do { \
     JanetTryState _state; \
-    volatile int _returned = 0; \
-    JanetSignal _sig = janet_try(&_state); \
-    if (!_sig) { \
-        (void)(expr); \
-        _returned = 1; \
-    } \
+    int _raised = 0; \
+    JanetSignal _sig = JANET_SIGNAL_OK; \
+    janet_try_init(&_state); \
+    janet_contract_arm(); \
+    (void)(expr); \
+    _raised = janet_contract_raised(); \
+    if (_raised) _sig = janet_contract_signal(); \
     janet_restore(&_state); \
-    assert(!_returned && "expected a panic, got a return"); \
+    assert(_raised && "expected a panic, got a return"); \
     assert(_sig == JANET_SIGNAL_ERROR); \
     assert(janet_checktype(_state.payload, JANET_STRING)); \
     if (janet_cstrcmp(janet_unwrap_string(_state.payload), (message))) { \
@@ -590,7 +593,7 @@ static void test_from_janet(void) {
     assert(janet_unwrap_integer(t[4]) == 1);
 }
 
-int main(void) {
+void buffer_array_contract(void) {
     janet_init();
 
     test_buffer_starts_with_a_capacity_floor();
@@ -617,5 +620,4 @@ int main(void) {
 
     janet_deinit();
     printf("buffer array contract ok\n");
-    return 0;
 }

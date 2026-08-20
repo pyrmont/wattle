@@ -8,7 +8,7 @@ static void consume(JanetParser *parser, const char *source) {
     while (*source) janet_parser_consume(parser, (uint8_t) *source++);
 }
 
-int main(void) {
+void parser_core_contract(void) {
     JanetParser parser;
     JanetParser clone;
     Janet value;
@@ -180,5 +180,4 @@ int main(void) {
     janet_parser_deinit(&parser);
 
     janet_deinit();
-    return 0;
 }

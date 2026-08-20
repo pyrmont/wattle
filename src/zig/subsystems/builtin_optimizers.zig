@@ -1,13 +1,28 @@
-const c = @cImport({
-    @cInclude("compile.h");
-    @cInclude("emit.h");
-});
+const abi = @import("abi");
+const c = abi.c;
 
 const vector_header_size = 2 * @sizeOf(i32);
 
-extern fn janet_c_funopt_wrap_nil() callconv(.c) c.Janet;
-extern fn janet_c_funopt_wrap_boolean(value: i32) callconv(.c) c.Janet;
-extern fn janet_c_funopt_wrap_integer(value: i32) callconv(.c) c.Janet;
+/// The three constants this file builds slots out of.
+///
+/// Until Phase 10 Part 7 these were three one-line C functions in `cfuns.c`,
+/// because this subsystem translated only `compile.h` and `emit.h` and so had
+/// no `janet_wrap_*` of its own. Sharing `abi.zig`'s translation removes the
+/// detour. `janet_wrap_integer` is still written out rather than called: it is
+/// a macro under nanboxing and a symbol `wrap.c` never defines there, which is
+/// the defect `FOUND.md` records and `value_wrap_extern.zig` works around the
+/// same way.
+inline fn wrapNil() c.Janet {
+    return c.janet_wrap_nil();
+}
+
+inline fn wrapBoolean(value: bool) c.Janet {
+    return c.janet_wrap_boolean(@intFromBool(value));
+}
+
+inline fn wrapInteger(value: i32) c.Janet {
+    return c.janet_wrap_number(@floatFromInt(value));
+}
 
 fn vectorCount(comptime Element: type, vector: [*c]Element) i32 {
     if (vector == null) return 0;
@@ -20,11 +35,11 @@ fn argumentCount(args: [*c]c.JanetSlot) i32 {
 }
 
 fn nilSlot() c.JanetSlot {
-    return c.janetc_cslot(janet_c_funopt_wrap_nil());
+    return c.janetc_cslot(wrapNil());
 }
 
 fn integerSlot(value: i32) c.JanetSlot {
-    return c.janetc_cslot(janet_c_funopt_wrap_integer(value));
+    return c.janetc_cslot(wrapInteger(value));
 }
 
 fn arity1or2(_: c.JanetFopts, args: [*c]c.JanetSlot) callconv(.c) c_int {
@@ -121,7 +136,7 @@ fn opReduce(
 
 fn compareReduce(options: c.JanetFopts, args: [*c]c.JanetSlot, opcode: u8, immediate_opcode: u8, invert: bool) c.JanetSlot {
     const count = argumentCount(args);
-    if (count < 2) return c.janetc_cslot(janet_c_funopt_wrap_boolean(@intFromBool(!invert)));
+    if (count < 2) return c.janetc_cslot(wrapBoolean(!invert));
     const target = c.janetc_gettarget(options);
     const first_instruction = vectorCount(u32, options.compiler.*.buffer);
     var index: i32 = 1;
@@ -148,7 +163,7 @@ fn compareReduce(options: c.JanetFopts, args: [*c]c.JanetSlot, opcode: u8, immed
 }
 
 fn doPropagate(options: c.JanetFopts, args: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(options, args, c.JOP_PROPAGATE, 0, janet_c_funopt_wrap_nil(), janet_c_funopt_wrap_nil());
+    return opReduce(options, args, c.JOP_PROPAGATE, 0, wrapNil(), wrapNil());
 }
 
 fn doError(options: c.JanetFopts, args: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
@@ -164,11 +179,11 @@ fn doDebug(options: c.JanetFopts, args: [*c]c.JanetSlot) callconv(.c) c.JanetSlo
 }
 
 fn doIn(options: c.JanetFopts, args: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(options, args, c.JOP_IN, 0, janet_c_funopt_wrap_nil(), janet_c_funopt_wrap_nil());
+    return opReduce(options, args, c.JOP_IN, 0, wrapNil(), wrapNil());
 }
 
 fn doGet(options: c.JanetFopts, args: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    if (argumentCount(args) != 3) return opReduce(options, args, c.JOP_GET, 0, janet_c_funopt_wrap_nil(), janet_c_funopt_wrap_nil());
+    if (argumentCount(args) != 3) return opReduce(options, args, c.JOP_GET, 0, wrapNil(), wrapNil());
     const target = c.janetc_gettarget(options);
     const target_is_default = c.janetc_sequal(target, args[2]) != 0;
     var default_slot = args[2];
@@ -229,43 +244,43 @@ fn doApply(options: c.JanetFopts, args: [*c]c.JanetSlot) callconv(.c) c.JanetSlo
 }
 
 fn doAdd(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(o, a, c.JOP_ADD, c.JOP_ADD_IMMEDIATE, janet_c_funopt_wrap_integer(0), janet_c_funopt_wrap_integer(0));
+    return opReduce(o, a, c.JOP_ADD, c.JOP_ADD_IMMEDIATE, wrapInteger(0), wrapInteger(0));
 }
 fn doSub(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(o, a, c.JOP_SUBTRACT, c.JOP_SUBTRACT_IMMEDIATE, janet_c_funopt_wrap_integer(0), janet_c_funopt_wrap_integer(0));
+    return opReduce(o, a, c.JOP_SUBTRACT, c.JOP_SUBTRACT_IMMEDIATE, wrapInteger(0), wrapInteger(0));
 }
 fn doMul(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(o, a, c.JOP_MULTIPLY, c.JOP_MULTIPLY_IMMEDIATE, janet_c_funopt_wrap_integer(1), janet_c_funopt_wrap_integer(1));
+    return opReduce(o, a, c.JOP_MULTIPLY, c.JOP_MULTIPLY_IMMEDIATE, wrapInteger(1), wrapInteger(1));
 }
 fn doDiv(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(o, a, c.JOP_DIVIDE, c.JOP_DIVIDE_IMMEDIATE, janet_c_funopt_wrap_integer(1), janet_c_funopt_wrap_integer(1));
+    return opReduce(o, a, c.JOP_DIVIDE, c.JOP_DIVIDE_IMMEDIATE, wrapInteger(1), wrapInteger(1));
 }
 fn doDivf(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(o, a, c.JOP_DIVIDE_FLOOR, 0, janet_c_funopt_wrap_integer(1), janet_c_funopt_wrap_integer(1));
+    return opReduce(o, a, c.JOP_DIVIDE_FLOOR, 0, wrapInteger(1), wrapInteger(1));
 }
 fn doModulo(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(o, a, c.JOP_MODULO, 0, janet_c_funopt_wrap_integer(0), janet_c_funopt_wrap_integer(1));
+    return opReduce(o, a, c.JOP_MODULO, 0, wrapInteger(0), wrapInteger(1));
 }
 fn doRemainder(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(o, a, c.JOP_REMAINDER, 0, janet_c_funopt_wrap_integer(0), janet_c_funopt_wrap_integer(1));
+    return opReduce(o, a, c.JOP_REMAINDER, 0, wrapInteger(0), wrapInteger(1));
 }
 fn doBand(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(o, a, c.JOP_BAND, 0, janet_c_funopt_wrap_integer(-1), janet_c_funopt_wrap_integer(-1));
+    return opReduce(o, a, c.JOP_BAND, 0, wrapInteger(-1), wrapInteger(-1));
 }
 fn doBor(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(o, a, c.JOP_BOR, 0, janet_c_funopt_wrap_integer(0), janet_c_funopt_wrap_integer(0));
+    return opReduce(o, a, c.JOP_BOR, 0, wrapInteger(0), wrapInteger(0));
 }
 fn doBxor(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(o, a, c.JOP_BXOR, 0, janet_c_funopt_wrap_integer(0), janet_c_funopt_wrap_integer(0));
+    return opReduce(o, a, c.JOP_BXOR, 0, wrapInteger(0), wrapInteger(0));
 }
 fn doLshift(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(o, a, c.JOP_SHIFT_LEFT, c.JOP_SHIFT_LEFT_IMMEDIATE, janet_c_funopt_wrap_integer(1), janet_c_funopt_wrap_integer(1));
+    return opReduce(o, a, c.JOP_SHIFT_LEFT, c.JOP_SHIFT_LEFT_IMMEDIATE, wrapInteger(1), wrapInteger(1));
 }
 fn doRshift(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(o, a, c.JOP_SHIFT_RIGHT, c.JOP_SHIFT_RIGHT_IMMEDIATE, janet_c_funopt_wrap_integer(1), janet_c_funopt_wrap_integer(1));
+    return opReduce(o, a, c.JOP_SHIFT_RIGHT, c.JOP_SHIFT_RIGHT_IMMEDIATE, wrapInteger(1), wrapInteger(1));
 }
 fn doRshiftu(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(o, a, c.JOP_SHIFT_RIGHT_UNSIGNED, c.JOP_SHIFT_RIGHT_UNSIGNED_IMMEDIATE, janet_c_funopt_wrap_integer(1), janet_c_funopt_wrap_integer(1));
+    return opReduce(o, a, c.JOP_SHIFT_RIGHT_UNSIGNED, c.JOP_SHIFT_RIGHT_UNSIGNED_IMMEDIATE, wrapInteger(1), wrapInteger(1));
 }
 fn doBnot(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
     return genericSS(o, c.JOP_BNOT, a[0]);
@@ -295,16 +310,16 @@ fn doYield(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
     return genericSSI(o, c.JOP_SIGNAL, if (argumentCount(a) == 0) nilSlot() else a[0], 3);
 }
 fn doResume(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opFunction(o, a, c.JOP_RESUME, janet_c_funopt_wrap_nil());
+    return opFunction(o, a, c.JOP_RESUME, wrapNil());
 }
 fn doCancel(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opFunction(o, a, c.JOP_CANCEL, janet_c_funopt_wrap_nil());
+    return opFunction(o, a, c.JOP_CANCEL, wrapNil());
 }
 fn doNext(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opFunction(o, a, c.JOP_NEXT, janet_c_funopt_wrap_nil());
+    return opFunction(o, a, c.JOP_NEXT, wrapNil());
 }
 fn doCmp(o: c.JanetFopts, a: [*c]c.JanetSlot) callconv(.c) c.JanetSlot {
-    return opReduce(o, a, c.JOP_COMPARE, 0, janet_c_funopt_wrap_nil(), janet_c_funopt_wrap_nil());
+    return opReduce(o, a, c.JOP_COMPARE, 0, wrapNil(), wrapNil());
 }
 
 const optimizers = [_]c.JanetFunOptimizer{

@@ -1,16 +1,92 @@
-/* Behavioral contract for file-mode parsing and the stream host operations,
- * run against whichever implementation the build selected (`-Dio-core=c` or
- * the Zig default).
+/* Behavioral contract for `src/core/io.c` -- file-mode parsing, the stream host
+ * operations, the `core/file` abstract type, the public `JanetFile` entry
+ * points, and the cfunction surface over all of them -- run against whichever
+ * implementation the build selected (`-Dio-core=c` or the Zig default).
  *
  * The kernel section calls the seam directly, because the mode scanner reports
  * sandbox permissions and stop positions that the public `file/open` collapses
  * into a panic or a flag word. The public section then pins what a caller can
- * actually observe, including the repeated-flag handle recorded in FOUND.md. */
+ * actually observe, including the repeated-flag handle recorded in FOUND.md.
+ *
+ * Three things here are unreachable from Janet and are the reason this file
+ * exists at all rather than the suite covering it. The eight `JanetFile` entry
+ * points are C API with no Janet spelling; the abstract type's `marshal` and
+ * `unmarshal` callbacks run only under `JANET_MARSHAL_UNSAFE`, which
+ * `(marshal f)` never sets; and `janet_dynprintf` is a C variadic. Phase 10's
+ * acceptance list asks for the C face and the Zig face of a converted symbol
+ * to be tested separately, and for this subsystem the C face is most of the
+ * surface area. */
 
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include "features.h"
 #include <janet.h>
+
+#include "support.h"
+#include "state.h"
+
+/* Catch a raise from a C caller. Both mechanisms end here while any C caller
+ * remains: a Zig implementation returns an error, its C face turns that back
+ * into the jump this scope established. */
+static int panics_fired = 0;
+/* Six, not seven: `test_dynprintf`'s "file is not writeable" case moved to
+ * `test/pp_format.zig` with its subject in Phase 10 Part 18. */
+#define EXPECTED_PANICS 6
+
+/* The message is checked, not just the fact of a raise. Part 10 recorded that
+ * `assert-error` names the test rather than the text, so three mutations
+ * inside message literals survived a whole sweep; a contract that only asks
+ * "did it raise" has the same hole. */
+#define EXPECT_PANIC_MSG(expr, text) do { \
+    JanetTryState _state; \
+    int _raised = 0; \
+    JanetSignal _sig = JANET_SIGNAL_OK; \
+    janet_try_init(&_state); \
+    janet_contract_arm(); \
+    (void)(expr); \
+    _raised = janet_contract_raised(); \
+    if (_raised) _sig = janet_contract_signal(); \
+    janet_restore(&_state); \
+    assert(_raised && "expected a panic, got a return"); \
+    assert(_sig == JANET_SIGNAL_ERROR); \
+    if ((text) != NULL) { \
+        assert(janet_checktype(_state.payload, JANET_STRING)); \
+        assert(!janet_cstrcmp(janet_unwrap_string(_state.payload), (text))); \
+    } \
+    panics_fired++; \
+} while (0)
+
+#define EXPECT_PANIC(expr) EXPECT_PANIC_MSG(expr, NULL)
+
+/* For the one message that carries an address: `%v` renders a core/file by
+ * pointer, so only the fixed part can be compared -- and the fixed part is
+ * exactly what distinguishes it from the message the other branch produces. */
+#define EXPECT_PANIC_PREFIX(expr, text) do { \
+    JanetTryState _state; \
+    int _raised = 0; \
+    JanetSignal _sig = JANET_SIGNAL_OK; \
+    janet_try_init(&_state); \
+    janet_contract_arm(); \
+    (void)(expr); \
+    _raised = janet_contract_raised(); \
+    if (_raised) _sig = janet_contract_signal(); \
+    janet_restore(&_state); \
+    assert(_raised && "expected a panic, got a return"); \
+    assert(_sig == JANET_SIGNAL_ERROR); \
+    assert(janet_checktype(_state.payload, JANET_STRING)); \
+    assert((size_t) janet_string_length(janet_unwrap_string(_state.payload)) >= strlen(text)); \
+    assert(!memcmp(janet_unwrap_string(_state.payload), (text), strlen(text))); \
+    panics_fired++; \
+} while (0)
+
+/* Call a core cfunction by name, so that a path no Janet program can construct
+ * an argument for can still be driven through the cfunction that owns it. */
+static Janet call_core(const char *name, int32_t argc, Janet *argv) {
+    Janet fun = janet_resolve_core(name);
+    assert(janet_checktype(fun, JANET_CFUNCTION));
+    return janet_contract_call_cfunction(janet_unwrap_cfunction(fun), argc, argv);
+}
 
 #define JANET_IO_MODE_OK 0
 #define JANET_IO_MODE_BAD_LENGTH 1
@@ -245,6 +321,236 @@ static void test_stream_operations(void) {
     remove(scratch);
 }
 
+
+/* ------------------------------------------------------ the abstract type */
+
+static void test_abstract_type(void) {
+    /* The callback set is part of the type's contract: `core/file` has a
+     * finalizer, a method getter, a marshal pair and a key walker, and nothing
+     * else. A `tostring` in particular would change how every file prints. */
+    assert(!strcmp(janet_file_type.name, "core/file"));
+    assert(janet_file_type.gc != NULL);
+    assert(janet_file_type.gcmark == NULL);
+    assert(janet_file_type.get != NULL);
+    assert(janet_file_type.put == NULL);
+    assert(janet_file_type.marshal != NULL);
+    assert(janet_file_type.unmarshal != NULL);
+    assert(janet_file_type.tostring == NULL);
+    assert(janet_file_type.compare == NULL);
+    assert(janet_file_type.hash == NULL);
+    assert(janet_file_type.next != NULL);
+    assert(janet_file_type.call == NULL);
+    assert(janet_file_type.length == NULL);
+    assert(janet_file_type.bytes == NULL);
+}
+
+/* The method table is scanned linearly and walked in order, so its order is
+ * observable through `next` and is part of the contract rather than a
+ * tidiness; Part 7 found the same thing about the parser's table. */
+static void test_method_order(void) {
+    static const char *const expected[] = {
+        "close", "flush", "read", "seek", "tell", "write", NULL
+    };
+    Janet key = janet_wrap_nil();
+    int i = 0;
+    for (;;) {
+        key = janet_contract_at_next(&janet_file_type, NULL, key);
+        if (janet_checktype(key, JANET_NIL)) break;
+        assert(expected[i] != NULL);
+        assert(!janet_cstrcmp(janet_unwrap_keyword(key), expected[i]));
+        i++;
+    }
+    assert(expected[i] == NULL);
+
+    /* The getter answers only keywords, and only names in the table. */
+    Janet out = janet_wrap_nil();
+    assert(janet_contract_at_get(&janet_file_type, NULL, janet_ckeywordv("read"), &out) == 1);
+    assert(janet_checktype(out, JANET_CFUNCTION));
+    assert(janet_contract_at_get(&janet_file_type, NULL, janet_ckeywordv("open"), &out) == 0);
+    assert(janet_contract_at_get(&janet_file_type, NULL, janet_cstringv("read"), &out) == 0);
+}
+
+/* ----------------------------------------------------------- the C API */
+
+static void test_public_api(void) {
+    FILE *raw = fopen(scratch, "wb");
+    assert(raw != NULL);
+
+    /* janet_makejfile hands back the payload; janet_makefile wraps it. The
+     * buffer size is the C library's default, which is what `file/open`
+     * compares against to decide whether a caller asked for another one. */
+    JanetFile *jf = janet_makejfile(raw, JANET_FILE_WRITE);
+    assert(jf->file == raw);
+    assert(jf->flags == JANET_FILE_WRITE);
+    assert(jf->vbufsize == BUFSIZ);
+
+    Janet wrapped = janet_wrap_abstract(jf);
+    assert(janet_checkfile(wrapped) == jf);
+    assert(janet_checkfile(janet_wrap_nil()) == NULL);
+    assert(janet_checkfile(janet_wrap_integer(3)) == NULL);
+
+    int32_t flags = 0;
+    assert(janet_unwrapfile(wrapped, &flags) == raw);
+    assert(flags == JANET_FILE_WRITE);
+    assert(janet_unwrapfile(wrapped, NULL) == raw);
+
+    Janet argv[1] = { wrapped };
+    assert(janet_getjfile(argv, 0) == jf);
+    flags = 0;
+    assert(janet_getfile(argv, 0, &flags) == raw);
+    assert(flags == JANET_FILE_WRITE);
+    assert(janet_getfile(argv, 0, NULL) == raw);
+
+    /* Closing marks the payload and clears the stream, so a later use is a
+     * null dereference rather than a use-after-free. A second close is a
+     * no-op, and so is closing a file this runtime only borrowed. */
+    assert(janet_file_close(jf) == 0);
+    assert(jf->flags & JANET_FILE_CLOSED);
+    assert(jf->file == NULL);
+    assert(janet_file_close(jf) == 0);
+
+    JanetFile *borrowed = janet_makejfile(stdout, JANET_FILE_APPEND | JANET_FILE_NOT_CLOSEABLE);
+    assert(janet_file_close(borrowed) == 0);
+    assert(!(borrowed->flags & JANET_FILE_CLOSED));
+    assert(borrowed->file == stdout);
+
+    /* A value of the wrong type is an argument fault rather than a null. */
+    Janet bad[1] = { janet_wrap_integer(3) };
+    EXPECT_PANIC(janet_getjfile(bad, 0));
+    EXPECT_PANIC(janet_getfile(bad, 0, NULL));
+
+    remove(scratch);
+}
+
+static void test_dynfile(void) {
+    /* Outside a fiber the dynamic bindings live in the VM's top-level table,
+     * which is what lets this run without one. */
+    assert(janet_dynfile("io-core-out", stdout) == stdout);
+    assert(janet_dynfile("io-core-out", NULL) == NULL);
+
+    /* Anything that is not a core/file falls back to the default, including
+     * another abstract type. */
+    janet_setdyn("io-core-out", janet_wrap_integer(3));
+    assert(janet_dynfile("io-core-out", stderr) == stderr);
+    janet_setdyn("io-core-out", janet_wrap_abstract(janet_abstract(&janet_rng_type, sizeof(JanetRNG))));
+    assert(janet_dynfile("io-core-out", stderr) == stderr);
+
+    JanetFile *jf = janet_makejfile(stdout, JANET_FILE_APPEND | JANET_FILE_NOT_CLOSEABLE);
+    janet_setdyn("io-core-out", janet_wrap_abstract(jf));
+    assert(janet_dynfile("io-core-out", stderr) == stdout);
+    janet_setdyn("io-core-out", janet_wrap_nil());
+}
+
+/* --------------------------------------------------------- marshalling */
+
+/* A file marshals only under JANET_MARSHAL_UNSAFE, which no Janet caller can
+ * ask for, so the whole callback pair is C-only. */
+static void test_marshalling(void) {
+    FILE *raw = fopen(scratch, "wb");
+    assert(raw != NULL);
+    Janet file = janet_wrap_abstract(janet_makejfile(raw, JANET_FILE_WRITE));
+
+    JanetBuffer *buf = janet_buffer(0);
+    EXPECT_PANIC_MSG(janet_marshal(buf, file, NULL, 0), "cannot marshal file in safe mode");
+
+    buf->count = 0;
+    janet_marshal(buf, file, NULL, JANET_MARSHAL_UNSAFE);
+    assert(buf->count > 0);
+
+    /* Reading it back in safe mode is refused by the other half of the pair. */
+    EXPECT_PANIC_MSG(janet_unmarshal(buf->data, buf->count, 0, NULL, NULL), "cannot unmarshal file in safe mode");
+
+    Janet back = janet_unmarshal(buf->data, buf->count, JANET_MARSHAL_UNSAFE, NULL, NULL);
+    JanetFile *copy = janet_checkfile(back);
+    assert(copy != NULL);
+    assert(copy->flags == JANET_FILE_WRITE);
+    assert(copy->vbufsize == BUFSIZ);
+
+    /* The descriptor was duplicated, because the original owns its stream, so
+     * the copy is a different FILE * on the same file and closing one leaves
+     * the other usable. */
+    assert(copy->file != raw);
+    assert(janet_file_close(copy) == 0);
+    assert(janet_io_write(raw, (const uint8_t *) "kept", 4) == 1);
+    assert(janet_file_close(janet_checkfile(file)) == 0);
+    remove(scratch);
+}
+
+/* ------------------------------------------------------- janet_dynprintf */
+
+/* `test_dynprintf` stood here and is in `test/pp_format.zig` now. Part 18
+ * deleted the C variadic and `dynprintf` moved to `pp_format.zig`, beside the
+ * other three entry points that surface used to hold; its format string is a
+ * `comptime` parameter, so the caller instantiates it and no C contract can
+ * reach it. What it asserts -- the four destinations a dynamic binding can
+ * name -- is unchanged, and it is the same file that now asserts the message
+ * those destinations receive. */
+
+/* ------------------------------------- what only a mismatched handle reaches */
+
+/* A `JanetFile`'s flags and its stream can disagree, which nothing in Janet can
+ * arrange and which is the only way into two of the failure paths. Both are
+ * reachable by an embedder, since `janet_makejfile` takes the flag word from
+ * its caller and never consults the stream. */
+static void test_mismatched_handles(void) {
+    void *writer = janet_io_open(scratch, "wb");
+    assert(writer != NULL);
+    Janet claims_readable = janet_wrap_abstract(
+        janet_makejfile((FILE *) writer, JANET_FILE_READ));
+
+    /* The readability check passes on the flags and `fread` then fails, which
+     * is the branch that separates a short read from a broken one. */
+    Janet read_args[2] = { claims_readable, janet_wrap_integer(10) };
+    EXPECT_PANIC_MSG(call_core("file/read", 2, read_args), "could not read file");
+    assert(janet_file_close(janet_checkfile(claims_readable)) == 0);
+
+    void *reader = janet_io_open(scratch, "rb");
+    assert(reader != NULL);
+    Janet claims_writeable = janet_wrap_abstract(
+        janet_makejfile((FILE *) reader, JANET_FILE_WRITE));
+
+    /* `xprint` has no default handle, so a failed write names the destination
+     * rather than reporting a bare byte count. */
+    Janet print_args[2] = { claims_writeable, janet_wrap_string(janet_cstring("text")) };
+    EXPECT_PANIC_PREFIX(call_core("xprint", 2, print_args), "cannot print 4 bytes to ");
+    assert(janet_file_close(janet_checkfile(claims_writeable)) == 0);
+
+    remove(scratch);
+}
+
+/* --------------------------------- the buffer size survives a marshal */
+
+/* The recorded buffer size is restored by a real `setvbuf` on the way back in,
+ * which is only visible if it is not the default: an unbuffered stream reaches
+ * the filesystem with no flush and a buffered one does not. */
+static void test_marshalled_buffer_size(void) {
+    void *stream = janet_io_open(scratch, "wb");
+    assert(stream != NULL);
+    JanetFile *jf = janet_makejfile((FILE *) stream, JANET_FILE_WRITE);
+    jf->vbufsize = 0;
+    Janet file = janet_wrap_abstract(jf);
+
+    JanetBuffer *buf = janet_buffer(0);
+    janet_marshal(buf, file, NULL, JANET_MARSHAL_UNSAFE);
+    JanetFile *copy = janet_checkfile(
+        janet_unmarshal(buf->data, buf->count, JANET_MARSHAL_UNSAFE, NULL, NULL));
+    assert(copy != NULL);
+    assert(copy->vbufsize == 0);
+
+    assert(janet_io_write(copy->file, (const uint8_t *) "now", 3) == 1);
+    {
+        uint8_t seen[8];
+        void *check = janet_io_open(scratch, "rb");
+        assert(check != NULL);
+        assert(janet_io_read(check, seen, sizeof(seen)) == 3);
+        assert(!memcmp(seen, "now", 3));
+        assert(janet_io_close(check) == 0);
+    }
+    assert(janet_file_close(copy) == 0);
+    assert(janet_file_close(jf) == 0);
+    remove(scratch);
+}
+
 static void run(JanetTable *env, const char *source) {
     Janet result;
     assert(janet_dostring(env, source, "io-core-contract", &result) == 0);
@@ -331,8 +637,8 @@ static void test_core_functions(void) {
      * stopped the scan. */
     run(env,
         "(defn why [mode] (last (protect (file/open \"janet-zig-io-core-public-9d24\" mode))))\n"
-        "(assert (string/has-prefix? \"file mode\" (why (keyword \"\"))))\n"
-        "(assert (string/has-prefix? \"file mode\" (why :rbnbnbnbnbn)))\n"
+        "(assert (= \"file mode must have a length between 1 and 10\" (why (keyword \"\"))))\n"
+        "(assert (= \"file mode must have a length between 1 and 10\" (why :rbnbnbnbnbn)))\n"
         "(assert (= \"invalid flag q, expected w, a, or r\" (why :q)))\n"
         "(assert (= \"invalid flag +, expected w, a, or r\" (why (keyword \"+\"))))\n"
         "(assert (= \"invalid flag q, expected +, b, or n\" (why :rq)))\n"
@@ -386,7 +692,7 @@ static void test_core_functions(void) {
      * contract still runs in a reduced-OS build. */
 }
 
-int main(void) {
+void io_core_contract(void) {
     clean_paths();
 
     test_mode_scanning();
@@ -395,9 +701,21 @@ int main(void) {
     test_stream_operations();
 
     janet_init();
+    /* The abstract type has to be in the registry before anything marshals a
+     * file, and the registration is `janet_lib_io`'s. Building the core
+     * environment first is also what the public section needs, and it is
+     * memoized, so the two share one. */
+    janet_core_env(NULL);
+    test_abstract_type();
+    test_method_order();
+    test_public_api();
+    test_dynfile();
+    test_marshalling();
+    test_marshalled_buffer_size();
+    test_mismatched_handles();
     test_core_functions();
+    assert(panics_fired == EXPECTED_PANICS);
     janet_deinit();
 
     clean_paths();
-    return 0;
 }

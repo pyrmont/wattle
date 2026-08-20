@@ -1,5 +1,3 @@
-//! jump-transparent
-//!
 //! Sweeping: the pass that acts on the mark phase's decision. Dropping dead
 //! weak references, unlinking and freeing unreachable blocks, running
 //! finalizers, and tearing the whole heap down at `janet_deinit`. This is the
@@ -44,6 +42,8 @@
 const std = @import("std");
 const abi = @import("abi");
 const c = abi.c;
+const raise = @import("raise");
+const abstract_type = @import("abstract_type.zig");
 
 /// `janet_vm` as `src/core/state.h` declares it, resolved through `abi.zig`.
 inline fn vm() *c.JanetVM {
@@ -194,7 +194,12 @@ fn deinitBlock(mem: [*c]c.JanetGCObject) void {
             if (head.type.*.gcperthread) |gcperthread| {
                 assertFinalized(gcperthread(abstractData(head), head.size), "per-thread finalizer failed");
             }
-            if (head.type.*.gc) |gc| {
+            if (abstract_type.of(head.type).gc) |gc| {
+                // A finalizer cannot raise -- `abstract_type.zig` has the
+                // contract, and `FOUND.md`'s "A panicking finalizer poisons
+                // the heap and kills the process at deinit" is what allowing
+                // it costs. The nonzero return is the failure channel, and
+                // this is `janet_assert(!head->type->gc(...))` unchanged.
                 assertFinalized(gc(abstractData(head), head.size), "finalizer failed");
             }
         },
@@ -401,7 +406,7 @@ fn sweepThreadedAbstracts() void {
 /// This is not a collection: nothing is marked, no block is spared, and the
 /// list is not unlinked as it goes. Every finalizer runs, in heap order, which
 /// is allocation order reversed.
-export fn janet_clear_memory() callconv(.c) void {
+pub fn clearMemory() void {
     const v = vm();
 
     if (has_ev) {
@@ -436,4 +441,8 @@ export fn janet_clear_memory() callconv(.c) void {
 
     c.janet_free_all_scratch();
     c.janet_free(@ptrCast(v.scratch_mem));
+}
+
+export fn janet_clear_memory() callconv(.c) void {
+    clearMemory();
 }

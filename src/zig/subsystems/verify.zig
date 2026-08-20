@@ -1,6 +1,20 @@
+//! The bytecode verifier, and the instruction table it reads.
+//!
+//! `janet_verify` is the gate every funcdef passes before it can be run: the
+//! assembler's output, and anything `unmarshal` produces. It answers a numbered
+//! reason rather than a message, which is why `test/verify.c` is written
+//! against numbers.
+//!
+//! What each check *is* depends on the opcode's operand shape, and that comes
+//! from `janet_instructions` at the foot of this file -- `bytecode.c`'s last
+//! definition, which Phase 10 Part 7 moved here. It is here rather than with
+//! either `asm_*` subsystem because `-Dverify` is the one selector whose C
+//! original is `bytecode.c`; the assembler's are `asm.c`'s.
+
 const std = @import("std");
 
-const c = @cImport(@cInclude("janet.h"));
+const abi = @import("abi");
+const c = abi.c;
 
 export fn janet_verify(definition: *c.JanetFuncDef) callconv(.c) c_int {
     const varargs: i32 = @intFromBool(definition.flags & c.JANET_FUNCDEF_FLAG_VARARG != 0);
@@ -83,3 +97,125 @@ fn slotC(instruction: u32) i32 {
 fn signedField(instruction: u32, comptime shift: u5) i32 {
     return @as(i32, @bitCast(instruction)) >> shift;
 }
+
+// ==========================================================================
+// The instruction table
+//
+// `bytecode.c`'s only remaining definition, and it comes here rather than to
+// one of the two `asm_*` subsystems that also read it, because `-Dverify` is
+// the one selector whose C original is `bytecode.c` -- the assembler's are
+// `asm.c`'s. So this guard is that file's guard, and moving the table under
+// it empties the file rather than splitting it.
+//
+// The C original is seventy-seven bare initialisers with the opcode named in
+// a trailing comment, so an opcode inserted in the middle of `JanetOpCode`
+// silently shifts every row after it and a comment that no compiler reads is
+// what says otherwise. Here each row names its opcode, and the loop below
+// places it by that name and refuses to compile if any opcode is missed or
+// written twice. The check costs nothing at run time: `janet_instructions` is
+// built at comptime and lands in read-only data exactly as the C array does.
+// ==========================================================================
+
+const Row = struct { op: c_int, type: c_uint };
+
+const rows = [_]Row{
+    .{ .op = c.JOP_NOOP, .type = c.JINT_0 },
+    .{ .op = c.JOP_ERROR, .type = c.JINT_S },
+    .{ .op = c.JOP_TYPECHECK, .type = c.JINT_ST },
+    .{ .op = c.JOP_RETURN, .type = c.JINT_S },
+    .{ .op = c.JOP_RETURN_NIL, .type = c.JINT_0 },
+    .{ .op = c.JOP_ADD_IMMEDIATE, .type = c.JINT_SSI },
+    .{ .op = c.JOP_ADD, .type = c.JINT_SSS },
+    .{ .op = c.JOP_SUBTRACT_IMMEDIATE, .type = c.JINT_SSI },
+    .{ .op = c.JOP_SUBTRACT, .type = c.JINT_SSS },
+    .{ .op = c.JOP_MULTIPLY_IMMEDIATE, .type = c.JINT_SSI },
+    .{ .op = c.JOP_MULTIPLY, .type = c.JINT_SSS },
+    .{ .op = c.JOP_DIVIDE_IMMEDIATE, .type = c.JINT_SSI },
+    .{ .op = c.JOP_DIVIDE, .type = c.JINT_SSS },
+    .{ .op = c.JOP_DIVIDE_FLOOR, .type = c.JINT_SSS },
+    .{ .op = c.JOP_MODULO, .type = c.JINT_SSS },
+    .{ .op = c.JOP_REMAINDER, .type = c.JINT_SSS },
+    .{ .op = c.JOP_BAND, .type = c.JINT_SSS },
+    .{ .op = c.JOP_BOR, .type = c.JINT_SSS },
+    .{ .op = c.JOP_BXOR, .type = c.JINT_SSS },
+    .{ .op = c.JOP_BNOT, .type = c.JINT_SS },
+    .{ .op = c.JOP_SHIFT_LEFT, .type = c.JINT_SSS },
+    .{ .op = c.JOP_SHIFT_LEFT_IMMEDIATE, .type = c.JINT_SSI },
+    .{ .op = c.JOP_SHIFT_RIGHT, .type = c.JINT_SSS },
+    .{ .op = c.JOP_SHIFT_RIGHT_IMMEDIATE, .type = c.JINT_SSI },
+    .{ .op = c.JOP_SHIFT_RIGHT_UNSIGNED, .type = c.JINT_SSS },
+    .{ .op = c.JOP_SHIFT_RIGHT_UNSIGNED_IMMEDIATE, .type = c.JINT_SSU },
+    .{ .op = c.JOP_MOVE_FAR, .type = c.JINT_SS },
+    .{ .op = c.JOP_MOVE_NEAR, .type = c.JINT_SS },
+    .{ .op = c.JOP_JUMP, .type = c.JINT_L },
+    .{ .op = c.JOP_JUMP_IF, .type = c.JINT_SL },
+    .{ .op = c.JOP_JUMP_IF_NOT, .type = c.JINT_SL },
+    .{ .op = c.JOP_JUMP_IF_NIL, .type = c.JINT_SL },
+    .{ .op = c.JOP_JUMP_IF_NOT_NIL, .type = c.JINT_SL },
+    .{ .op = c.JOP_GREATER_THAN, .type = c.JINT_SSS },
+    .{ .op = c.JOP_GREATER_THAN_IMMEDIATE, .type = c.JINT_SSI },
+    .{ .op = c.JOP_LESS_THAN, .type = c.JINT_SSS },
+    .{ .op = c.JOP_LESS_THAN_IMMEDIATE, .type = c.JINT_SSI },
+    .{ .op = c.JOP_EQUALS, .type = c.JINT_SSS },
+    .{ .op = c.JOP_EQUALS_IMMEDIATE, .type = c.JINT_SSI },
+    .{ .op = c.JOP_COMPARE, .type = c.JINT_SSS },
+    .{ .op = c.JOP_LOAD_NIL, .type = c.JINT_S },
+    .{ .op = c.JOP_LOAD_TRUE, .type = c.JINT_S },
+    .{ .op = c.JOP_LOAD_FALSE, .type = c.JINT_S },
+    .{ .op = c.JOP_LOAD_INTEGER, .type = c.JINT_SI },
+    .{ .op = c.JOP_LOAD_CONSTANT, .type = c.JINT_SC },
+    .{ .op = c.JOP_LOAD_UPVALUE, .type = c.JINT_SES },
+    .{ .op = c.JOP_LOAD_SELF, .type = c.JINT_S },
+    .{ .op = c.JOP_SET_UPVALUE, .type = c.JINT_SES },
+    .{ .op = c.JOP_CLOSURE, .type = c.JINT_SD },
+    .{ .op = c.JOP_PUSH, .type = c.JINT_S },
+    .{ .op = c.JOP_PUSH_2, .type = c.JINT_SS },
+    .{ .op = c.JOP_PUSH_3, .type = c.JINT_SSS },
+    .{ .op = c.JOP_PUSH_ARRAY, .type = c.JINT_S },
+    .{ .op = c.JOP_CALL, .type = c.JINT_SS },
+    .{ .op = c.JOP_TAILCALL, .type = c.JINT_S },
+    .{ .op = c.JOP_RESUME, .type = c.JINT_SSS },
+    .{ .op = c.JOP_SIGNAL, .type = c.JINT_SSU },
+    .{ .op = c.JOP_PROPAGATE, .type = c.JINT_SSS },
+    .{ .op = c.JOP_IN, .type = c.JINT_SSS },
+    .{ .op = c.JOP_GET, .type = c.JINT_SSS },
+    .{ .op = c.JOP_PUT, .type = c.JINT_SSS },
+    .{ .op = c.JOP_GET_INDEX, .type = c.JINT_SSU },
+    .{ .op = c.JOP_PUT_INDEX, .type = c.JINT_SSU },
+    .{ .op = c.JOP_LENGTH, .type = c.JINT_SS },
+    .{ .op = c.JOP_MAKE_ARRAY, .type = c.JINT_S },
+    .{ .op = c.JOP_MAKE_BUFFER, .type = c.JINT_S },
+    .{ .op = c.JOP_MAKE_STRING, .type = c.JINT_S },
+    .{ .op = c.JOP_MAKE_STRUCT, .type = c.JINT_S },
+    .{ .op = c.JOP_MAKE_TABLE, .type = c.JINT_S },
+    .{ .op = c.JOP_MAKE_TUPLE, .type = c.JINT_S },
+    .{ .op = c.JOP_MAKE_BRACKET_TUPLE, .type = c.JINT_S },
+    .{ .op = c.JOP_GREATER_THAN_EQUAL, .type = c.JINT_SSS },
+    .{ .op = c.JOP_LESS_THAN_EQUAL, .type = c.JINT_SSS },
+    .{ .op = c.JOP_NEXT, .type = c.JINT_SSS },
+    .{ .op = c.JOP_NOT_EQUALS, .type = c.JINT_SSS },
+    .{ .op = c.JOP_NOT_EQUALS_IMMEDIATE, .type = c.JINT_SSI },
+    .{ .op = c.JOP_CANCEL, .type = c.JINT_SSS },
+};
+
+/// `extern const enum JanetInstructionType janet_instructions[]` in `janet.h`:
+/// the operand shape of every opcode, read by `janet_verify` above, by both
+/// assembler directions, and by `janet_disasm`.
+export const janet_instructions: [c.JOP_INSTRUCTION_COUNT]c_uint = build: {
+    var table: [c.JOP_INSTRUCTION_COUNT]c_uint = undefined;
+    var filled = [_]bool{false} ** c.JOP_INSTRUCTION_COUNT;
+    for (rows) |row| {
+        if (filled[@intCast(row.op)]) {
+            @compileError("janet_instructions: opcode listed twice");
+        }
+        filled[@intCast(row.op)] = true;
+        table[@intCast(row.op)] = row.type;
+    }
+    for (filled, 0..) |present, opcode| {
+        if (!present) {
+            @compileError("janet_instructions: no row for opcode " ++
+                std.fmt.comptimePrint("{d}", .{opcode}));
+        }
+    }
+    break :build table;
+};

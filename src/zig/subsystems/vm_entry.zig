@@ -1,5 +1,3 @@
-//! jump-transparent
-//!
 //! The entry points: everything that stands above `run_vm` and decides whether,
 //! and in what state, the loop is entered at all. `janet_step`, `janet_call`,
 //! `janet_pcall`, `janet_continue`, `janet_continue_signal` and
@@ -56,7 +54,21 @@
 //! because the argv it traces belongs to its caller rather than to the fiber.
 
 const abi = @import("abi");
+const options = @import("options");
+const raise = @import("raise");
+const pp_format = @import("pp_format.zig");
 const c = abi.c;
+
+/// The fiber's pushes, which raise by returning since Part 17a. Resolved to
+/// `fiber_core_extern.zig` under `-Dfiber-core=c`, where the C body jumps and
+/// the declared error is never returned.
+const fiber_core = if (options.fiber_core) @import("fiber_core.zig") else @import("fiber_core_extern.zig");
+
+/// The loop itself. `continueNoCheck` below is the one caller that opens a
+/// protected scope around it, and it reaches it by import: until the hinge
+/// this was `c.janet_run_vm`, a C-ABI face that turned the error back into a
+/// `longjmp`. `vm_run.zig` imports this file in turn, for `JOP_RESUME`.
+const vm_run = @import("vm_run.zig");
 
 /// `JANET_VM_HAS_EV` in `src/zig/state_abi.h`. Two regions below are inside
 /// `#ifdef JANET_EV` in the C original: the `sched_id` bump on a coerced
@@ -114,15 +126,14 @@ inline fn fES(pc: [*c]const u32) i32 {
 /// returns signals rather than raising, and the only way out of it that skips
 /// the restore is a panic from below the `setjmp` it installs, which cannot
 /// reach here.
-export fn janet_step(fiber: [*c]c.JanetFiber, in: c.Janet, out: [*c]c.Janet) callconv(.c) c.JanetSignal {
+pub fn stepImpl(fiber: [*c]c.JanetFiber, in: c.Janet, out: [*c]c.Janet) raise.Error!c.JanetSignal {
     // No finished or currently alive fibers.
     const status = c.janet_fiber_status(fiber);
     if (status == c.JANET_STATUS_ALIVE or
         status == c.JANET_STATUS_DEAD or
         status == c.JANET_STATUS_ERROR)
     {
-        c.janet_panicf("cannot step fiber with status :%s", c.janet_status_names[@intCast(status)]);
-        unreachable;
+        return pp_format.panicf("cannot step fiber with status :%s", .{c.janet_status_names[@intCast(status)]});
     }
 
     // Get PC for setting breakpoints.
@@ -174,11 +185,10 @@ export fn janet_step(fiber: [*c]c.JanetFiber, in: c.Janet, out: [*c]c.Janet) cal
 /// overwritten by the call being set up. Its address is not observable — the
 /// frame stores it in `pc` with `func` left null, and an unregistered
 /// `JanetCFunction` renders as `<cfunction>` in a stack trace either way.
-fn voidCFunction(argc: i32, argv: [*c]c.Janet) callconv(.c) c.Janet {
+fn voidCFunction(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
     _ = argc;
     _ = argv;
-    c.janet_panics(c.janet_cstring("placeholder"));
-    unreachable;
+    return raise.panic("placeholder");
 }
 
 /// Call a Janet function from C, on the current fiber, and raise rather than
@@ -187,46 +197,41 @@ fn voidCFunction(argc: i32, argv: [*c]c.Janet) callconv(.c) c.Janet {
 /// `janet_vm.fiber` is re-read at every use rather than held in a local, which
 /// is what the C original does through the macro. The last two uses are after
 /// `janet_run_vm` has returned, and the loop can re-enter fibers underneath it.
-export fn janet_call(fun: [*c]c.JanetFunction, argc: i32, argv: [*c]const c.Janet) callconv(.c) c.Janet {
+pub fn callImpl(fun: [*c]c.JanetFunction, argc: i32, argv: [*c]const c.Janet) raise.Error!c.Janet {
     // Check entry conditions.
     if (c.janet_vm.fiber == null) {
-        c.janet_panics(c.janet_cstring("janet_call failed because there is no current fiber"));
-        unreachable;
+        return raise.panic("janet_call failed because there is no current fiber");
     }
     if (c.janet_vm.stackn >= c.JANET_RECURSION_GUARD) {
-        c.janet_panics(c.janet_cstring("C stack recursed too deeply"));
-        unreachable;
+        return raise.panic("C stack recursed too deeply");
     }
 
     // Dirty stack.
     const dirty_stack: i32 = c.janet_vm.fiber.*.stacktop - c.janet_vm.fiber.*.stackstart;
     if (dirty_stack != 0) {
-        c.janet_fiber_cframe(c.janet_vm.fiber, &voidCFunction);
+        c.janet_fiber_cframe(c.janet_vm.fiber, raise.stored(&voidCFunction));
     }
 
     // Tracing.
     if ((fun.*.gc.flags & c.JANET_FUNCFLAG_TRACE) != 0) {
         c.janet_vm.stackn += 1;
-        c.janet_vm_trace_argv(fun, argc, argv);
+        vm_run.traceArgv(fun, argc, argv);
         c.janet_vm.stackn -= 1;
     }
 
     // Push frame.
-    c.janet_fiber_pushn(c.janet_vm.fiber, argv, argc);
+    try fiber_core.pushn(c.janet_vm.fiber, argv, argc);
     if (c.janet_fiber_funcframe(c.janet_vm.fiber, fun) != 0) {
         const min = fun.*.def.*.min_arity;
         const max = fun.*.def.*.max_arity;
         const funv = c.janet_wrap_function(fun);
         if (min == max and min != argc) {
-            c.janet_panicf("arity mismatch in %v, expected %d, got %d", funv, min, argc);
-            unreachable;
+            return pp_format.panicf("arity mismatch in %v, expected %d, got %d", .{ funv, min, argc });
         }
         if (min >= 0 and argc < min) {
-            c.janet_panicf("arity mismatch in %v, expected at least %d, got %d", funv, min, argc);
-            unreachable;
+            return pp_format.panicf("arity mismatch in %v, expected at least %d, got %d", .{ funv, min, argc });
         }
-        c.janet_panicf("arity mismatch in %v, expected at most %d, got %d", funv, max, argc);
-        unreachable;
+        return pp_format.panicf("arity mismatch in %v, expected at most %d, got %d", .{ funv, max, argc });
     }
     fiberFrame(c.janet_vm.fiber).flags |= c.JANET_STACKFRAME_ENTRANCE;
 
@@ -239,7 +244,7 @@ export fn janet_call(fun: [*c]c.JanetFunction, argc: i32, argv: [*c]const c.Jane
     c.janet_vm.fiber.*.flags |= c.JANET_FIBER_RESUME_NO_USEVAL | c.JANET_FIBER_RESUME_NO_SKIP;
     const old_coerce_error = c.janet_vm.coerce_error;
     c.janet_vm.coerce_error = 1;
-    const signal = c.janet_run_vm(c.janet_vm.fiber, c.janet_wrap_nil());
+    const signal = try vm_run.runVm(c.janet_vm.fiber, c.janet_wrap_nil());
     c.janet_vm.coerce_error = old_coerce_error;
 
     // Teardown.
@@ -258,14 +263,9 @@ export fn janet_call(fun: [*c]c.JanetFunction, argc: i32, argv: [*c]const c.Jane
             }
         }
         if (signal != c.JANET_SIGNAL_ERROR) {
-            c.janet_vm.return_reg.* = c.janet_wrap_string(c.janet_formatc(
-                "%v coerced from %s to error",
-                c.janet_vm.return_reg.*,
-                c.janet_signal_names[@intCast(signal)],
-            ));
+            c.janet_vm.return_reg.* = c.janet_wrap_string(try pp_format.formatc("%v coerced from %s to error", .{ c.janet_vm.return_reg.*, c.janet_signal_names[@intCast(signal)] }));
         }
-        c.janet_panicv(c.janet_vm.return_reg.*);
-        unreachable;
+        return raise.panicv(c.janet_vm.return_reg.*);
     }
 
     return c.janet_vm.return_reg.*;
@@ -312,14 +312,122 @@ fn checkCanResume(fiber: [*c]c.JanetFiber, out: [*c]c.Janet, is_cancel: c_int) c
         (old_status >= c.JANET_STATUS_USER0 and old_status <= c.JANET_STATUS_USER4) or
         old_status == c.JANET_STATUS_ERROR)
     {
-        const str = c.janet_formatc(
-            "cannot resume fiber with status :%s",
-            c.janet_status_names[@intCast(old_status)],
-        );
+        const str = pp_format.formatcReported("cannot resume fiber with status :%s", .{c.janet_status_names[@intCast(old_status)]});
         out.* = c.janet_wrap_string(str);
         return c.JANET_SIGNAL_ERROR;
     }
     return c.JANET_SIGNAL_OK;
+}
+
+/// Resume `fiber`, with the protected scope every resume re-establishes.
+///
+/// **This is the hinge, and until Phase 10's last increment it was the third
+/// and final `setjmp`.** It stayed in `src/core/vm.c` from Phase 7 to here for
+/// one reason: it held the `jmp_buf`, a Zig function cannot hold one, and
+/// every raise anywhere below it — in C or in Zig — was a `longjmp` that
+/// landed exactly here. Phase 7's fourth rule was written around that fact.
+///
+/// What replaced it is `janet_try_init` with nothing after it. The scope was
+/// never the jump: `janet_try_init` is what points `janet_vm.return_reg` at
+/// `tstate.payload`, and therefore what makes `janet_signal_plan` answer
+/// `RAISE` instead of `TOP_LEVEL`. The `setjmp` only carried the raise from
+/// where it happened up to here, and a returned error carries it instead —
+/// through frames that have already run their `defer`s, which the jump never
+/// did.
+///
+/// So the whole of the mechanism is `runVm(fiber, in) catch pending_signal`.
+/// The signal a raise carries is in `janet_vm.pending_signal`, which is where
+/// `longjmp`'s second argument used to put it and where `janet_zig_signal_record`
+/// has written it since Part 2; the payload is in `tstate.payload`, which is
+/// where `return_reg` pointed. Both readings are unchanged. Only the travel is
+/// gone.
+///
+/// It is not exported and no longer appears in `state.h`. Nothing in C calls
+/// it: `janet_continue` and `janet_continue_signal` are just above,
+/// `JOP_RESUME` reaches it by import from `vm_run.zig`, and the C bodies that
+/// used to do both are behind selectors that have no `c` arm left.
+pub fn continueNoCheck(fiber: [*c]c.JanetFiber, in_init: c.Janet, out: [*c]c.Janet) c.JanetSignal {
+    var in = in_init;
+    const old_status = c.janet_fiber_status(fiber);
+
+    if (has_ev) c.janet_fiber_did_resume(fiber);
+
+    // Clear last value.
+    fiber.*.last_value = c.janet_wrap_nil();
+
+    // Continue child fiber if it exists.
+    if (fiber.*.child != null) {
+        if (c.janet_vm.root_fiber == null) c.janet_vm.root_fiber = fiber;
+        const child = fiber.*.child;
+        const instr = fiberFrame(fiber).pc[0];
+        c.janet_vm.stackn += 1;
+        const sig = janet_continue(child, in, &in);
+        c.janet_vm.stackn -= 1;
+        if (c.janet_vm.root_fiber == fiber) c.janet_vm.root_fiber = null;
+        if (sig != c.JANET_SIGNAL_OK and (child.*.flags & (@as(i32, 1) << @intCast(sig))) == 0) {
+            out.* = in;
+            setStatus(fiber, @intCast(sig));
+            fiber.*.last_value = child.*.last_value;
+            return sig;
+        }
+        // Check if we need any special handling for certain opcodes.
+        if (instr & 0x7F == c.JOP_NEXT) {
+            in = if (sig == c.JANET_SIGNAL_OK or
+                sig == c.JANET_SIGNAL_ERROR or
+                sig == c.JANET_SIGNAL_USER0 or
+                sig == c.JANET_SIGNAL_USER1 or
+                sig == c.JANET_SIGNAL_USER2 or
+                sig == c.JANET_SIGNAL_USER3 or
+                sig == c.JANET_SIGNAL_USER4)
+                c.janet_wrap_nil()
+            else
+                // `janet_wrap_integer(0)`, written out. It is the one declared
+                // `janet_wrap_*` with no definition under `-Dnanbox=false`, so
+                // calling it links only under a NaN-boxed layout;
+                // `value_access.zig`'s `wrapInteger` has the whole account and
+                // `FOUND.md` has the defect.
+                c.janet_wrap_number(0);
+        }
+        fiber.*.child = null;
+    }
+
+    // Handle new fibers being resumed with a non-nil value.
+    if (old_status == c.JANET_STATUS_NEW and c.janet_checktype(in, c.JANET_NIL) == 0) {
+        const stack = fiber.*.data + asSize(fiber.*.frame);
+        const func = fiberFrame(fiber).func;
+        if (func != null) {
+            if (func.*.def.*.arity > 0) {
+                stack[0] = in;
+            } else if (func.*.def.*.flags & c.JANET_FUNCDEF_FLAG_VARARG != 0) {
+                stack[0] = c.janet_wrap_tuple(c.janet_tuple_n(&in, 1));
+            }
+        }
+    }
+
+    // If this is a nested continue (root_fiber already set), root the fiber so
+    // it survives GC. `janet_collect` only marks `root_fiber`, so without this
+    // a nested fiber -- one from a `janet_pcall` in a C function, say -- would
+    // be invisible to the collector and could be freed while actively running.
+    const fiber_rooted = c.janet_vm.root_fiber != null;
+    if (fiber_rooted) c.janet_gcroot(c.janet_wrap_fiber(fiber));
+
+    // Save global state, and run.
+    var tstate: c.JanetTryState = undefined;
+    c.janet_try_init(&tstate);
+    if (c.janet_vm.root_fiber == null) c.janet_vm.root_fiber = fiber;
+    c.janet_vm.fiber = fiber;
+    setStatus(fiber, c.JANET_STATUS_ALIVE);
+    const sig = vm_run.runVm(fiber, in) catch c.janet_vm.pending_signal;
+
+    // Restore.
+    if (c.janet_vm.root_fiber == fiber) c.janet_vm.root_fiber = null;
+    setStatus(fiber, @intCast(sig));
+    c.janet_restore(&tstate);
+    if (fiber_rooted) _ = c.janet_gcunroot(c.janet_wrap_fiber(fiber));
+    fiber.*.last_value = tstate.payload;
+    out.* = tstate.payload;
+
+    return sig;
 }
 
 /// Enter the main vm loop.
@@ -327,7 +435,7 @@ export fn janet_continue(fiber: [*c]c.JanetFiber, in: c.Janet, out: [*c]c.Janet)
     // Check conditions.
     const tmp_signal = checkCanResume(fiber, out, 0);
     if (tmp_signal != 0) return tmp_signal;
-    return c.janet_continue_no_check(fiber, in, out);
+    return continueNoCheck(fiber, in, out);
 }
 
 /// Enter the main vm loop but immediately raise a signal.
@@ -337,7 +445,7 @@ export fn janet_continue_signal(fiber: [*c]c.JanetFiber, in: c.Janet, out: [*c]c
     if (sig != c.JANET_SIGNAL_OK) {
         c.janet_signal_inject(fiber, sig);
     }
-    return c.janet_continue_no_check(fiber, in, out);
+    return continueNoCheck(fiber, in, out);
 }
 
 /// Call a function on a fresh or recycled fiber, and report rather than raise.
@@ -362,6 +470,18 @@ export fn janet_pcall(
     return janet_continue(fiber, c.janet_wrap_nil(), out);
 }
 
+/// The C-ABI faces of the two entry points that raise. Both are `JANET_API`,
+/// so the exported names are the faces and the implementations above are
+/// reached only from Zig.
+///
+/// Nothing else here needs one: `janet_continue`, `janet_continue_signal`,
+/// `janet_pcall` and `janet_check_can_resume` report a signal rather than
+/// raising, which is what makes them the boundary a caller can already handle.
+const janetStepFace = raise.panicking(stepImpl).face;
+const janetCallFace = raise.panicking(callImpl).face;
+
 comptime {
+    @export(&janetStepFace, .{ .name = "janet_step" });
+    @export(&janetCallFace, .{ .name = "janet_call" });
     @export(&checkCanResume, .{ .name = "janet_check_can_resume", .visibility = .hidden });
 }

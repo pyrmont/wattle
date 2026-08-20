@@ -31,6 +31,8 @@
 
 #include "features.h"
 #include <janet.h>
+
+#include "support.h"
 #include "state.h"
 #include "util.h"
 
@@ -51,14 +53,15 @@ static int panics_fired = 0;
 
 #define EXPECT_PANIC(expr, message) do { \
     JanetTryState _state; \
-    volatile int _returned = 0; \
-    JanetSignal _sig = janet_try(&_state); \
-    if (!_sig) { \
-        (void)(expr); \
-        _returned = 1; \
-    } \
+    int _raised = 0; \
+    JanetSignal _sig = JANET_SIGNAL_OK; \
+    janet_try_init(&_state); \
+    janet_contract_arm(); \
+    (void)(expr); \
+    _raised = janet_contract_raised(); \
+    if (_raised) _sig = janet_contract_signal(); \
     janet_restore(&_state); \
-    assert(!_returned && "expected a panic, got a return"); \
+    assert(_raised && "expected a panic, got a return"); \
     assert(_sig == JANET_SIGNAL_ERROR); \
     assert(janet_checktype(_state.payload, JANET_STRING)); \
     if (janet_cstrcmp(janet_unwrap_string(_state.payload), (message))) { \
@@ -73,14 +76,15 @@ static int panics_fired = 0;
  * compared by prefix. Everything else is compared whole. */
 #define EXPECT_PANIC_PREFIX(expr, prefix) do { \
     JanetTryState _state; \
-    volatile int _returned = 0; \
-    JanetSignal _sig = janet_try(&_state); \
-    if (!_sig) { \
-        (void)(expr); \
-        _returned = 1; \
-    } \
+    int _raised = 0; \
+    JanetSignal _sig = JANET_SIGNAL_OK; \
+    janet_try_init(&_state); \
+    janet_contract_arm(); \
+    (void)(expr); \
+    _raised = janet_contract_raised(); \
+    if (_raised) _sig = janet_contract_signal(); \
     janet_restore(&_state); \
-    assert(!_returned && "expected a panic, got a return"); \
+    assert(_raised && "expected a panic, got a return"); \
     assert(_sig == JANET_SIGNAL_ERROR); \
     assert(janet_checktype(_state.payload, JANET_STRING)); \
     { \
@@ -188,11 +192,12 @@ static void test_numeric_boundaries(void) {
 #define REJECTS(getter, value) do { \
     argv[0] = janet_wrap_number((double)(value)); \
     JanetTryState _s; \
-    volatile int _r = 0; \
-    JanetSignal _g = janet_try(&_s); \
-    if (!_g) { (void) getter(argv, 0); _r = 1; } \
+    janet_try_init(&_s); \
+    janet_contract_arm(); \
+    (void) getter(argv, 0); \
+    int _r = janet_contract_raised(); \
     janet_restore(&_s); \
-    assert(!_r && "expected a range rejection"); \
+    assert(_r && "expected a range rejection"); \
     panics_fired++; \
 } while (0)
 
@@ -520,23 +525,23 @@ static const JanetAbstractType other_at = {
 
 static void test_abstract(void) {
     Janet argv[3];
-    void *p = janet_abstract(&probe_at, 4);
-    void *q = janet_abstract(&probe_bytes_at, 4);
+    void *p = janet_abstract(CONTRACT_AT(probe_at), 4);
+    void *q = janet_abstract(CONTRACT_AT(probe_bytes_at), 4);
     memcpy(q, "xyz", 3);
     argv[0] = janet_wrap_abstract(p);
     argv[1] = janet_wrap_abstract(q);
     argv[2] = janet_wrap_nil();
 
-    assert(janet_getabstract(argv, 0, &probe_at) == p);
-    assert(janet_checkabstract(argv[0], &probe_at) == p);
+    assert(janet_getabstract(argv, 0, CONTRACT_AT(probe_at)) == p);
+    assert(janet_checkabstract(argv[0], CONTRACT_AT(probe_at)) == p);
     /* checkabstract reports the mismatch by returning NULL rather than by
      * raising: it is the same decision with the other half discarded. */
-    assert(janet_checkabstract(argv[0], &other_at) == NULL);
-    assert(janet_checkabstract(argv[2], &probe_at) == NULL);
+    assert(janet_checkabstract(argv[0], CONTRACT_AT(other_at)) == NULL);
+    assert(janet_checkabstract(argv[2], CONTRACT_AT(probe_at)) == NULL);
 
-    EXPECT_PANIC_PREFIX(janet_getabstract(argv, 0, &other_at),
+    EXPECT_PANIC_PREFIX(janet_getabstract(argv, 0, CONTRACT_AT(other_at)),
                         "bad slot #0, expected args-core/other, got <args-core/probe 0x");
-    EXPECT_PANIC(janet_getabstract(argv, 2, &probe_at),
+    EXPECT_PANIC(janet_getabstract(argv, 2, CONTRACT_AT(probe_at)),
                  "bad slot #2, expected args-core/probe, got nil");
 
     /* An abstract with a `bytes` callback is byte-viewable, and the callback
@@ -549,9 +554,9 @@ static void test_abstract(void) {
     EXPECT_PANIC_PREFIX(janet_getbytes(argv, 0),
                         "bad slot #0, expected string, symbol, keyword or buffer, got <args-core/probe 0x");
 
-    assert(janet_optabstract(argv, 3, 0, &probe_at, NULL) == p);
-    assert(janet_optabstract(argv, 3, 2, &probe_at, p) == p);
-    assert(janet_optabstract(argv, 1, 2, &probe_at, p) == p);
+    assert(janet_optabstract(argv, 3, 0, CONTRACT_AT(probe_at), NULL) == p);
+    assert(janet_optabstract(argv, 3, 2, CONTRACT_AT(probe_at), p) == p);
+    assert(janet_optabstract(argv, 1, 2, CONTRACT_AT(probe_at), p) == p);
 }
 
 /* -------------------------------------------------------------- defaulting */
@@ -730,7 +735,7 @@ static void test_views(void) {
     assert(!janet_dictionary_view(janet_wrap_nil(), &kvs, &len, &cap));
 }
 
-int main(void) {
+void args_core_contract(void) {
     janet_init();
 
     test_arity();
@@ -759,5 +764,4 @@ int main(void) {
 
     janet_deinit();
     printf("args core contract ok (%d panics)\n", panics_fired);
-    return 0;
 }

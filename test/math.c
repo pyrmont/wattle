@@ -11,6 +11,8 @@
 #include <string.h>
 #include <janet.h>
 
+#include "support.h"
+
 static int same_double(double a, double b) {
     return memcmp(&a, &b, sizeof(double)) == 0;
 }
@@ -143,7 +145,7 @@ static double call2(JanetCFunction fn, double a, double b) {
     Janet argv[2];
     argv[0] = janet_wrap_number(a);
     argv[1] = janet_wrap_number(b);
-    return janet_unwrap_number(fn(2, argv));
+    return janet_unwrap_number(janet_contract_call_cfunction(fn, 2, argv));
 }
 
 static void test_gcd_lcm(void) {
@@ -291,7 +293,7 @@ static void test_marshal_roundtrip(void) {
     assert(janet_truthy(result));
 }
 
-int main(void) {
+void math_contract(void) {
     janet_init();
 
     test_seed();
@@ -304,5 +306,4 @@ int main(void) {
     test_marshal_roundtrip();
 
     janet_deinit();
-    return 0;
 }

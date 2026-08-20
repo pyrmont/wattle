@@ -705,4 +705,356 @@
   (assert (= d (ev/give d 1)) "give outside janet_call")
   (assert (= 1 (ev/take d)) "take outside janet_call")))
 
+# Phase 10 Part 13 added the block below. Every assertion in it closes a
+# mutation the first sweep over `src/zig/subsystems/ev_loop.zig` and
+# `ev_channel.zig` left alive -- that is, a change to the event loop that the
+# 742 assertions above did not notice. They are here rather than in
+# `test/ev_loop.c` because each needs a *task* -- a root fiber the scheduler
+# owns -- and a C contract has no way to be one.
+
+# `janet_ev_mark` is the only thing that keeps a queued task, a pending
+# timeout, or a channel's contents alive across a collection: a fiber sitting
+# in the spawn queue has no other root. Nothing above ever collects with the
+# scheduler non-empty, so every loop bound in `janet_ev_mark` and in
+# `janet_chanat_mark` was invisible.
+# gc marks what the scheduler is holding
+(do
+  (def done (ev/chan 64))
+  (def items (ev/chan 64))
+  # Queue values the channel is the only reference to.
+  (loop [i :range [0 16]] (ev/give items (string "item-" i)))
+  # Queue tasks, each with a timeout of its own, and drop every reference to
+  # them: the spawn queue and the timeout heap are all that hold them.
+  (loop [i :range [0 16]]
+    (ev/go (fn [] (ev/sleep 0.001) (ev/give done i))))
+  (gccollect)
+  (ev/sleep 0.05)
+  (assert (= 16 (ev/count done)) "every marked task ran")
+  (assert (= 16 (ev/count items)) "channel contents survived the collection")
+  (def seen @{})
+  (loop [i :range [0 16]] (put seen (ev/take done) true))
+  (assert (= 16 (length seen)) "each task reported once")
+  (loop [i :range [0 16]]
+    (assert (string/has-prefix? "item-" (ev/take items)) "item survived")))
+
+# `janet_schedule_general` adds a fiber to `janet_vm.active_tasks` the first
+# time it is scheduled, and `janet_loop1` removes it when it can no longer be
+# resumed. `ev/all-tasks` is the only window onto that table, and nothing above
+# looked through it.
+# all-tasks tracks live tasks
+(do
+  (def before (length (ev/all-tasks)))
+  (def f (ev/go (fn [] (ev/sleep 0.05))))
+  (def during (ev/all-tasks))
+  (assert (= (+ 1 before) (length during)) "a scheduled task is listed")
+  (assert (has-value? during f) "the listed task is the one scheduled")
+  (ev/sleep 0.1)
+  (assert (= before (length (ev/all-tasks))) "a finished task is removed"))
+
+# `ev/full` is `count >= limit`, not `count > limit`, and the boundary is the
+# only place the two differ.
+# full is inclusive at the limit
+(do
+  (def c (ev/chan 2))
+  (assert (not (ev/full c)) "empty is not full")
+  (ev/give c 1)
+  (assert (not (ev/full c)) "one below the limit is not full")
+  (ev/give c 2)
+  (assert (ev/full c) "at the limit is full")
+  (assert (= 2 (ev/count c)) "count agrees"))
+
+# `ev/rselect` shuffles its arguments with `janet_vm.ev_rng`, which
+# `janet_ev_init_common` seeds with a constant. So the permutation is fixed for
+# a given argument count, and the shuffle can be pinned rather than only
+# smoke-tested. What this actually asserts is that *some* clause other than the
+# first is preferred -- a shuffle that did nothing would always take clause 0.
+# rselect does not simply prefer the first clause
+(do
+  (def chans (seq [i :range [0 8]] (ev/chan 4)))
+  (each c chans (ev/give c :ready))
+  (def picked @{})
+  (loop [i :range [0 8]]
+    (def [tag c] (ev/rselect ;chans))
+    (assert (= :take tag) "rselect took")
+    (put picked (find-index |(= $ c) chans) true))
+  (assert (> (length picked) 1) "rselect reached more than one clause"))
+
+# `ev/select` walks its clauses in order and distinguishes a two-element
+# indexed clause (a write) from anything else (a read). Nothing above passes it
+# more than two clauses, or a clause that is indexed but not of length two.
+# select scans every clause in order
+(do
+  (def a (ev/chan 4))
+  (def b (ev/chan 4))
+  (def c (ev/chan 4))
+  (ev/give c :third)
+  (assert (= [:take c :third] (ev/select a b c)) "a later clause is reached")
+  (ev/give b :second)
+  (ev/give c :third)
+  (assert (= [:take b :second] (ev/select a b c)) "the earliest ready clause wins")
+  (assert (= :take (first (ev/select a b c))) "the remaining clause is still ready")
+  # A three-element tuple is not a write clause, so it is read as a channel --
+  # which is an error, because a tuple is not a channel.
+  (assert-error "a three-element clause is not a write" (ev/select [a 1 2]))
+  (assert (= [:give a] (ev/select [a 1])) "a two-element clause is a write")
+  (assert (= 1 (ev/take a)) "the write clause wrote"))
+
+# A closed channel among the clauses is answered immediately, whichever
+# position it is in and whichever kind of clause it is.
+# select answers a closed clause
+(do
+  (def open (ev/chan 4))
+  (def shut (ev/chan 4))
+  (ev/chan-close shut)
+  (assert (= [:close shut] (ev/select open shut)) "a closed read clause")
+  (assert (= [:close shut] (ev/select [shut 1])) "a closed write clause"))
+
+# The third element of a supervisor message is the task's `task-id`, which
+# comes from the fiber's environment table -- and is nil when the fiber has
+# none. `ev/go` always gives its fiber an environment, so the nil arm needs a
+# fiber made with `fiber/new`.
+# supervisor messages carry the task id
+(do
+  (def sup (ev/chan 8))
+  (def with-env (ev/go (fn [] (error :x)) nil sup))
+  (ev/sleep 0.01)
+  (def [tag fib id] (ev/take sup))
+  (assert (= :error tag) "tag")
+  (assert (= fib with-env) "fiber")
+  (assert (nil? id) "no task-id set means nil")
+
+  (def tagged (fiber/new (fn [] (error :y)) :e))
+  (fiber/setenv tagged @{:task-id :the-id})
+  (ev/go tagged nil sup)
+  (ev/sleep 0.01)
+  (def [tag2 _ id2] (ev/take sup))
+  (assert (= :error tag2) "tag with an env")
+  (assert (= :the-id id2) "task-id is read from the fiber env"))
+
+# `ev/go` accepts a function of no arguments or of one; the boundary between
+# "accepted" and "rejected" is what a mutation moves, so both sides need an
+# assertion.
+# go and thread accept nullary and unary functions
+(do
+  # A plain channel rather than a supervisor: the loop pushes an `[:ok ...]`
+  # completion message to a supervisor for every task that finishes, so a
+  # supervisor's contents are not only what the tasks wrote.
+  (def out (ev/chan 8))
+  (ev/go (fn [] (ev/give out :nullary)))
+  (ev/go (fn [x] (ev/give out [:unary x])) :seed)
+  (ev/sleep 0.02)
+  (def got @{})
+  (repeat 2 (let [m (ev/take out)] (put got (if (tuple? m) (first m) m) m)))
+  (assert (got :nullary) "a nullary task ran")
+  (assert (= [:unary :seed] (got :unary)) "a unary task was passed the value")
+  (assert-error "a binary task function is refused" (ev/go (fn [a b] a)))
+  (assert-error "a binary thread function is refused" (ev/thread (fn [a b] a))))
+
+# `ev/thread`'s `:t` flag copies the resume value into the new thread's fiber
+# environment as `task-id`, which is the only way a supervisor message from a
+# thread can be attributed. Nothing above sets it.
+# thread :t sets the task id
+(do
+  # The task id rides on the *completion* message the loop pushes, not on
+  # anything the thread writes: `make_supervisor_event` reads it out of the
+  # fiber's environment, which is where the `:t` flag put it.
+  (def sup (ev/thread-chan 8))
+  (ev/thread (fn [x] nil) :my-task :nt sup)
+  (var found nil)
+  (var tries 0)
+  (while (and (nil? found) (< tries 400))
+    (ev/sleep 0.01)
+    (set tries (+ tries 1))
+    (when (> (ev/count sup) 0)
+      (def msg (ev/take sup))
+      (when (= :ok (first msg)) (set found msg))))
+  (assert found "the thread reported completion to its supervisor")
+  (assert (= 3 (length found)) "a supervisor message is a three-tuple")
+  (assert (= :my-task (last found)) ":t put the value in task-id"))
+
+# A blocked writer woken by a take resumes with the channel, and a blocked
+# `ev/select` writer resumes with a `[:give chan]` tuple. Only the first of
+# those two arms is reached above.
+# a blocked select writer resumes with a give tuple
+(do
+  (def c (ev/chan 0))
+  (def sup (ev/chan 8))
+  (ev/go (fn [] (ev/give-supervisor :result (ev/select [c :payload]))) nil sup)
+  (ev/sleep 0.01)
+  (assert (= :payload (ev/take c)) "the take released the writer")
+  (ev/sleep 0.01)
+  (def [tag result] (ev/take sup))
+  (assert (= :result tag) "the writer reported")
+  (assert (= :give (first result)) "a select writer resumes with :give")
+  (assert (= c (last result)) "and with its channel"))
+
+# A channel marshals its queue by walking `head` to `tail`, which wraps when
+# more has been taken than the buffer holds. Nothing above marshals a channel
+# whose queue has wrapped, so the wrap-around arm of four separate walks --
+# marshal, mark, and both halves of the pending-queue scan -- was unreached.
+# a wrapped channel marshals in order
+(do
+  (def c (ev/chan 8))
+  # Fill, drain most of it, and fill again, so that head > tail.
+  (loop [i :range [0 6]] (ev/give c i))
+  (loop [i :range [0 5]] (ev/take c))
+  (loop [i :range [6 12]] (ev/give c i))
+  (assert (= 7 (ev/count c)) "the queue holds what was left")
+  (gccollect)
+  (def back (unmarshal (marshal c)))
+  (assert (= 7 (ev/count back)) "the wrapped queue marshalled whole")
+  (loop [i :range [5 12]]
+    (assert (= i (ev/take back)) (string "wrapped item " i " in order"))))
+
+# `janet_chanat_unmarshal` rejects a count above the limit and accepts one
+# equal to it, so the boundary needs both sides.
+# a channel unmarshals at its limit
+(do
+  (def c (ev/chan 3))
+  (loop [i :range [0 3]] (ev/give c i))
+  (def back (unmarshal (marshal c)))
+  (assert (= 3 (ev/count back)) "a full channel round-trips")
+  (assert (= 3 (ev/capacity back)) "with its limit"))
+
+# Closing a stream steps both of its listeners before it closes the handle:
+# a blocked reader is resumed with nil and a blocked writer is cancelled. Above
+# this block only the reader arm is reached, and only through `net.c`.
+(do
+  (def [r w] (os/pipe))
+  (def out (ev/chan 8))
+  (ev/go (fn [] (ev/give out [:read (ev/read r 16)])))
+  (ev/sleep 0.01)
+  (ev/close r)
+  (ev/sleep 0.01)
+  (assert (= [:read nil] (ev/take out)) "a blocked reader is resumed with nil")
+  (ev/close w))
+
+(do
+  # A writer blocks only once the pipe buffer is full, so the payload has to be
+  # larger than it.
+  (def [r w] (os/pipe))
+  (def big (string/repeat "x" 4000000))
+  (def out (ev/chan 8))
+  (ev/go (fn [] (ev/give out [:write (protect (ev/write w big))])))
+  (ev/sleep 0.02)
+  (ev/close w)
+  (ev/sleep 0.02)
+  (def [tag result] (ev/take out))
+  (assert (= :write tag) "the writer reported")
+  (assert (not (first result)) "a blocked writer is cancelled")
+  (assert (= "stream closed" (last result)) "with the close message")
+  (ev/close r))
+
+# --- Second batch, closing what the first sweep over the four ev sources left
+# alive. Each block names the decision it pins.
+
+# `janet_ev_mark` walks the timeout heap and marks each timeout's `curr_fiber`
+# -- the fiber `ev/deadline` was told to *check*, which is not the one it
+# cancels and which nothing else roots. A deadline whose `tocheck` is a fresh
+# fiber is the only way to hold one that the collector cannot otherwise see.
+(do
+  (def out (ev/chan 8))
+  (ev/go (fn []
+           (ev/deadline 0.02 (fiber/root) (fiber/new (fn [] (forever (yield)))))
+           (ev/sleep 0.01)
+           (ev/give out :survived)))
+  (gccollect)
+  (ev/sleep 0.06)
+  (assert (= :survived (ev/take out)) "a deadline's tocheck fiber survives a collection"))
+
+# `ev/all-tasks` is checked above *before* the scheduler has run the task, so
+# only `janet_schedule_general`'s half of the bookkeeping was reached. Yielding
+# first means the task has actually been resumed and suspended, which is what
+# makes `janet_loop1`'s removal test observable.
+(do
+  (def before (length (ev/all-tasks)))
+  (def f (ev/go (fn [] (ev/sleep 0.05))))
+  (ev/sleep 0)                       # let the scheduler resume and suspend it
+  (def during (ev/all-tasks))
+  (assert (has-value? during f) "a suspended task is still listed")
+  (assert (= :suspended (fiber/status f)) "and is suspended rather than finished")
+  (ev/sleep 0.1)
+  (def after (ev/all-tasks))
+  (assert (not (has-value? after f)) "a finished task is removed")
+  (assert (= before (length after)) "and the table returns to its old size"))
+
+# `ev/go` gives the new fiber an environment whose prototype is the *current*
+# fiber's, which is how a dynamic binding reaches a task. That requires the
+# current fiber to have an environment, which `ev/go` creates if it has none --
+# and creating one where it already exists would discard the bindings.
+(do
+  (def out (ev/chan 8))
+  (setdyn :contract-marker :inherited)
+  (ev/go (fn [] (ev/give out (dyn :contract-marker))))
+  (ev/sleep 0.02)
+  (assert (= :inherited (ev/take out)) "a task inherits the parent's dynamic bindings")
+  (setdyn :contract-marker nil))
+
+# `ev/thread` passes its second argument to the new thread. With exactly two
+# arguments the count test is at its boundary, and nothing above is there: the
+# thread blocks the caller until it finishes, so an error inside it surfaces
+# here.
+(assert-no-error "thread passes its value at two arguments"
+                 (ev/thread (fn [x] (unless (= x :value) (error "wrong value"))) :value))
+
+# ...and with exactly three, the flag word is read. `:n` returns immediately
+# rather than waiting, which is the only flag whose effect is visible without a
+# supervisor.
+(do
+  (def start (os/clock :monotonic))
+  (ev/thread (fn [] (os/sleep 0.4)) nil :n)
+  (def elapsed (- (os/clock :monotonic) start))
+  (assert (< elapsed 0.2) "the :n flag is read at three arguments")
+  # And without it the same call waits.
+  (def start2 (os/clock :monotonic))
+  (ev/thread (fn [] (os/sleep 0.2)) nil)
+  (assert (>= (- (os/clock :monotonic) start2) 0.15) "without :n the caller waits"))
+
+# `janet_go_thread_subr`'s failure arm has three exits and no Janet test above
+# reaches any of them. A thread started with `:a` does not receive the abstract
+# registry, so unmarshalling a value carrying an abstract type fails during
+# setup -- before the fiber ever runs.
+(do
+  # No supervisor and no `:n`: the parent's call raises, carrying the child's
+  # message, which the failure arm copies byte for byte.
+  (def [ok err] (protect (ev/thread (fn [x] nil) (int/s64 1) :a)))
+  (assert (not ok) "a thread that fails during setup raises in the parent")
+  (assert (string? err) "and the message arrives as a string")
+  (assert (not (empty? err)) "which is not empty"))
+
+(do
+  # With a supervisor, the failure goes there instead as [:error payload].
+  (def sup (ev/thread-chan 8))
+  (ev/thread (fn [x] nil) (int/s64 1) :a sup)
+  (var found nil)
+  (var tries 0)
+  (while (and (nil? found) (< tries 400))
+    (ev/sleep 0.01)
+    (set tries (+ tries 1))
+    (when (> (ev/count sup) 0) (set found (ev/take sup))))
+  (assert found "a failing thread reports to its supervisor")
+  (assert (= :error (first found)) "as an :error message"))
+
+# A threaded channel shared with a real thread is what drives
+# `janet_thread_chan_cb` and the per-thread cleanup that follows it. Nothing
+# above sends a value *between* threads through one.
+(do
+  (def to-child (ev/thread-chan 4))
+  (def from-child (ev/thread-chan 4))
+  (ev/thread (fn [chans]
+               (def [inbox outbox] chans)
+               (ev/give outbox [:got (ev/take inbox)]))
+             [to-child from-child]
+             :n)
+  (ev/give to-child :ping)
+  (var reply nil)
+  (var tries 0)
+  (while (and (nil? reply) (< tries 400))
+    (ev/sleep 0.01)
+    (set tries (+ tries 1))
+    (when (> (ev/count from-child) 0) (set reply (ev/take from-child))))
+  (assert reply "a value crossed into the thread and back")
+  (assert (= [:got :ping] reply) "and survived packing in both directions")
+  (gccollect))
+
 (end-suite)

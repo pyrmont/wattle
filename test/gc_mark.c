@@ -29,6 +29,8 @@
 
 #include "features.h"
 #include <janet.h>
+
+#include "support.h"
 #include "state.h"
 #include "gc.h"
 
@@ -329,7 +331,7 @@ static const JanetAbstractType at_plain = {
  * reachability test in front of it is what stops a shared abstract from being
  * walked again by every holder. */
 static void test_mark_abstract(void) {
-    void *a = janet_abstract(&at_marked, 8);
+    void *a = janet_abstract(CONTRACT_AT(at_marked), 8);
     probe_child_value = janet_cstringv("reached by gcmark");
     probe_gcmark_calls = 0;
 
@@ -346,7 +348,7 @@ static void test_mark_abstract(void) {
 }
 
 static void test_mark_abstract_without_gcmark(void) {
-    void *a = janet_abstract(&at_plain, 8);
+    void *a = janet_abstract(CONTRACT_AT(at_plain), 8);
     unmark(janet_abstract_head(a));
     janet_mark(janet_wrap_abstract(a));
     assert(reachable(janet_abstract_head(a)));
@@ -561,7 +563,7 @@ static void test_collect_finishes_deep_graphs(void) {
 static void test_collect_drains_roots_added_during_marking(void) {
     fresh_heap();
 
-    void *a = janet_abstract(&at_marked, 8);
+    void *a = janet_abstract(CONTRACT_AT(at_marked), 8);
     Janet abstract_v = janet_wrap_abstract(a);
     janet_gcroot(abstract_v);
 
@@ -592,7 +594,7 @@ static void test_collect_drains_roots_added_during_marking(void) {
 /* The flag is set for the duration of the traversal and clear once it is over.
  * A `gcmark` callback is the only thing that can see it set. */
 static void test_collect_mark_phase_flag(void) {
-    void *a = janet_abstract(&at_marked, 8);
+    void *a = janet_abstract(CONTRACT_AT(at_marked), 8);
     Janet abstract_v = janet_wrap_abstract(a);
     janet_gcroot(abstract_v);
     probe_child_value = janet_wrap_nil();
@@ -645,7 +647,7 @@ static void test_collect_interval_heuristic(void) {
     janet_vm.gc_interval = saved;
 }
 
-int main(void) {
+void gc_mark_contract(void) {
     janet_init();
 
     test_head_offsets();
@@ -680,5 +682,4 @@ int main(void) {
 
     janet_deinit();
     printf("gc mark contract ok\n");
-    return 0;
 }

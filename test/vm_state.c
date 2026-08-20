@@ -6,11 +6,16 @@
  * point of the increment is that C's `janet_vm` and the owner's are one
  * object. Declaring a stand-in structure here would test the stand-in.
  *
- * Nothing below calls janet_init(). These are operations over the state as a
- * whole — its address, its size, and whole-structure copies — and none of them
- * reads a field the runtime has to have filled in. Keeping the VM
- * uninitialised is deliberate: it lets the destructive cases at the end write
- * whatever they like.
+ * Nothing below calls janet_init(), with one exception. These are operations
+ * over the state as a whole — its address, its size, and whole-structure
+ * copies — and none of them reads a field the runtime has to have filled in.
+ * Keeping the VM uninitialised is deliberate: it lets the destructive cases
+ * write whatever they like.
+ *
+ * The exception is the dynamic bindings, which arrived with Phase 10 Part 5
+ * and are the first thing here that reads a field rather than the structure.
+ * They run last, inside their own janet_init/janet_deinit, so that the
+ * destructive cases above still get an uninitialised VM to scribble on.
  */
 
 #include <assert.h>
@@ -267,7 +272,57 @@ static void test_thread_local_storage(void) {
 
 #endif
 
-int main(void) {
+/* ------------------------------------------------------ dynamic bindings */
+
+/* janet_dyn and janet_setdyn choose between two tables, and which one is the
+ * VM's business rather than the fiber's: a running fiber's own env when there
+ * is one, janet_vm.top_dyns when there is not. Both tables are created lazily,
+ * and the laziness is the part a port can quietly lose -- a reader that
+ * allocated would turn every (dyn :missing) into a table.
+ *
+ * The Janet suites exercise this constantly through setdyn and dyn, but always
+ * with a fiber running, so the no-fiber half below is reached by nothing else. */
+static void test_dynamic_bindings(void) {
+    JanetFiber *fiber;
+    JanetFiber *saved = janet_vm.fiber;
+    JanetTable *saved_dyns = janet_vm.top_dyns;
+
+    janet_vm.fiber = NULL;
+    janet_vm.top_dyns = NULL;
+
+    /* A read finds nothing and creates nothing. */
+    assert(janet_checktype(janet_dyn("nope"), JANET_NIL));
+    assert(janet_vm.top_dyns == NULL);
+
+    janet_setdyn("x", janet_wrap_integer(7));
+    assert(janet_vm.top_dyns != NULL);
+    assert(janet_equals(janet_dyn("x"), janet_wrap_integer(7)));
+    assert(janet_checktype(janet_dyn("y"), JANET_NIL));
+
+    /* With a fiber, the same names go to the fiber's env instead, and the VM's
+     * table is neither read nor written. */
+    fiber = janet_fiber(janet_thunk_delay(janet_wrap_nil()), 8, 0, NULL);
+    assert(fiber != NULL);
+    janet_gcroot(janet_wrap_fiber(fiber));
+    assert(fiber->env == NULL);
+    janet_vm.fiber = fiber;
+
+    assert(janet_checktype(janet_dyn("x"), JANET_NIL));
+    assert(fiber->env == NULL);
+
+    janet_setdyn("x", janet_wrap_integer(9));
+    assert(fiber->env != NULL);
+    assert(janet_equals(janet_dyn("x"), janet_wrap_integer(9)));
+
+    janet_vm.fiber = NULL;
+    assert(janet_equals(janet_dyn("x"), janet_wrap_integer(7)));
+
+    janet_gcunroot(janet_wrap_fiber(fiber));
+    janet_vm.fiber = saved;
+    janet_vm.top_dyns = saved_dyns;
+}
+
+void vm_state_contract(void) {
     test_layout_agrees();
     test_local_vm_is_janet_vm();
     test_alloc_and_free();
@@ -278,6 +333,11 @@ int main(void) {
 #if defined(JANET_VM_STATE_THREADS)
     test_thread_local_storage();
 #endif
+
+    /* Last, and the only case here that needs a live runtime. */
+    janet_init();
+    test_dynamic_bindings();
+    janet_deinit();
+
     printf("vm state contract ok\n");
-    return 0;
 }

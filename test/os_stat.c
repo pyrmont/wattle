@@ -204,7 +204,7 @@ static void clean_paths(void) {
 #endif
 }
 
-int main(void) {
+void os_stat_contract(void) {
     test_mode_names();
     test_permission_bits();
     test_field_registry();
@@ -214,5 +214,4 @@ int main(void) {
     test_core_functions();
     janet_deinit();
     clean_paths();
-    return 0;
 }

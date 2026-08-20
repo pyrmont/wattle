@@ -57,6 +57,8 @@
 
 #include "features.h"
 #include <janet.h>
+
+#include "support.h"
 #include "state.h"
 #include "gc.h"
 
@@ -117,7 +119,7 @@ static int allocating_gcmark(void *data, size_t len) {
     (void) len;
     if (allocations_left > 0) {
         allocations_left--;
-        (void) janet_abstract(&at_child, 8);
+        (void) janet_abstract(CONTRACT_AT(at_child), 8);
     }
     return 0;
 }
@@ -142,7 +144,7 @@ static int allocating_gc(void *data, size_t len) {
     parent_finalized++;
     if (allocations_left > 0) {
         allocations_left--;
-        (void) janet_abstract(&at_child, 8);
+        (void) janet_abstract(CONTRACT_AT(at_child), 8);
     }
     return 0;
 }
@@ -169,7 +171,7 @@ static void test_allocation_from_gcmark_dies_in_the_same_collection(void) {
     parent_finalized = 0;
     allocations_left = 1;
 
-    parent = janet_wrap_abstract(janet_abstract(&at_marking_parent, 8));
+    parent = janet_wrap_abstract(janet_abstract(CONTRACT_AT(at_marking_parent), 8));
     janet_gcroot(parent);
 
     janet_collect();
@@ -200,8 +202,8 @@ static void test_finalizer_allocation_survives_when_mid_list(void) {
     parent_finalized = 0;
     allocations_left = 1;
 
-    (void) janet_abstract(&at_finalizing_parent, 8);   /* unrooted: dies */
-    keeper = janet_wrap_abstract(janet_abstract(&at_child, 8));
+    (void) janet_abstract(CONTRACT_AT(at_finalizing_parent), 8);   /* unrooted: dies */
+    keeper = janet_wrap_abstract(janet_abstract(CONTRACT_AT(at_child), 8));
     janet_gcroot(keeper);
 
     janet_collect();
@@ -236,7 +238,7 @@ static void test_finalizer_allocation_is_orphaned_at_the_head(void) {
     allocations_left = 1;
 
     /* Allocated last and left unrooted, so it is both the list head and dead. */
-    (void) janet_abstract(&at_finalizing_parent, 8);
+    (void) janet_abstract(CONTRACT_AT(at_finalizing_parent), 8);
 
     janet_collect();
     assert(parent_finalized == 1);
@@ -297,7 +299,7 @@ static void test_refcount_is_atomic_across_threads(void) {
     pthread_t threads[STRESS_THREADS];
     int i;
 
-    shared_abstract = janet_abstract_threaded(&at_shared, 16);
+    shared_abstract = janet_abstract_threaded(CONTRACT_AT(at_shared), 16);
     assert(shared_abstract != NULL);
 
     for (i = 0; i < STRESS_THREADS; i++)
@@ -350,7 +352,7 @@ static void test_each_thread_has_its_own_heap(void) {
  * once. This one drops it on the main thread; the point is the count, not the
  * thread identity, which no part of the runtime promises. */
 static void test_the_last_reference_finalizes_once(void) {
-    void *abst = janet_abstract_threaded(&at_shared, 16);
+    void *abst = janet_abstract_threaded(CONTRACT_AT(at_shared), 16);
     pthread_t thread;
 
     threaded_finalized = 0;
@@ -384,7 +386,7 @@ static void test_repeated_cycles(void) {
         parent_finalized = 0;
         allocations_left = 1;
 
-        parent = janet_wrap_abstract(janet_abstract(&at_marking_parent, 8));
+        parent = janet_wrap_abstract(janet_abstract(CONTRACT_AT(at_marking_parent), 8));
         janet_gcroot(parent);
         janet_collect();
         assert(child_finalized == 1);
@@ -395,7 +397,7 @@ static void test_repeated_cycles(void) {
     }
 }
 
-int main(void) {
+void gc_stress_contract(void) {
     janet_init();
     janet_gcroot(janet_wrap_table(janet_core_env(NULL)));
 
@@ -415,5 +417,4 @@ int main(void) {
 
     janet_deinit();
     printf("gc stress contract ok\n");
-    return 0;
 }

@@ -218,4 +218,338 @@
 (assert-error "limit short-fn parameters 6" (macex1 '|$8888888888888888888888888888888888888888888888888888888888888888888888888888888))
 (assert-error "limit short-fn parameters 7" (macex1 '|$8.8))
 
+# Phase 10 Part 10: the core environment.
+#
+# The cfunctions `corelib.c` owned, asserted here because every one of them has
+# a Janet spelling. What has none -- `janet_core_env`'s replacements, the flag
+# words `janet_dobytes` answers with, `janet_native`'s failure paths -- is in
+# `test/core_env.c` instead.
+
+# module/expand-path: each template replacement
+(assert (= (string (module/expand-path "foo/bar/baz.j" ":all:")) "foo/bar/baz.j") "expand-path :all:")
+(assert (= (string (module/expand-path "foo/bar/baz.j" ":dir:")) "foo/bar/") "expand-path :dir:")
+(assert (= (string (module/expand-path "foo/bar/baz.j" ":name:")) "baz.j") "expand-path :name:")
+(assert (= (string (module/expand-path "foo/bar/baz.j" ":native:"))
+           (if (= :windows (os/which)) ".dll" ".so")) "expand-path :native:")
+(assert (= (string (with-dyns [:syspath "/sys"] (module/expand-path "x" ":sys:"))) "/sys")
+        "expand-path :sys:")
+(assert (= (string (with-dyns [:current-file "x/y/z.janet"] (module/expand-path "q" ":cur:"))) "x/y")
+        "expand-path :cur:")
+
+# A current file with no directory part is the . directory, which the
+# normalizer then removes entirely.
+(assert (= (string (with-dyns [:current-file "z.janet"] (module/expand-path "q" ":cur:"))) "")
+        "expand-path :cur: with a bare filename")
+
+# :@all: substitutes the first segment of an @-prefixed path with a dyn
+(assert (= (string (with-dyns [:dyn "REPL"] (module/expand-path "@dyn/thing" ":@all:"))) "REPL/thing")
+        "expand-path :@all: substitutes")
+(assert (= (string (with-dyns [:dyn "REPL"] (module/expand-path "@dyn" ":@all:"))) "REPL")
+        "expand-path :@all: with no trailing segment")
+(assert (= (string (module/expand-path "plain/path" ":@all:")) "plain/path")
+        "expand-path :@all: without an @ is :all:")
+
+# An unrecognized :word: is copied through a colon at a time, and a colon that
+# begins no replacement at all is a literal.
+(assert (= (string (module/expand-path "x" ":nope:")) ":nope:") "expand-path unknown replacement")
+(assert (= (string (module/expand-path "x" "a:y")) "a:y") "expand-path bare colon")
+(assert (= (string (module/expand-path "x" "a:all:b")) "axb") "expand-path replacement mid-template")
+
+# The normalizer collapses . and .. segments
+(assert (= (string (module/expand-path "a/./b" ":all:")) "a/b") "expand-path drops a dot segment")
+(assert (= (string (module/expand-path "a/../b" ":all:")) "b") "expand-path applies dot-dot")
+(assert (= (string (module/expand-path "a/b/../../c" ":all:")) "c") "expand-path applies two dot-dots")
+(assert (= (string (module/expand-path "a//b" ":all:")) "a/b") "expand-path collapses a double separator")
+(assert (= (string (module/expand-path "../a" ":all:")) "../a") "expand-path keeps a leading dot-dot")
+(assert (= (string (module/expand-path "a/../../b" ":all:")) "../b") "expand-path keeps an escaping dot-dot")
+(assert (= (string (module/expand-path "/a/b" ":all:")) "/a/b") "expand-path keeps a leading separator")
+(assert (= (string (module/expand-path "a/.../b" ":all:")) "a/.../b") "expand-path leaves three dots alone")
+# A dot run that ends at an ordinary character is flushed back out one dot at a
+# time, so the count of dots that survives is what distinguishes the flush from
+# a coarser one.
+(assert (= (string (module/expand-path "a/..b" ":all:")) "a/..b") "expand-path flushes two leading dots")
+(assert (= (string (module/expand-path "a/...b" ":all:")) "a/...b") "expand-path flushes three leading dots")
+(assert (= (string (module/expand-path "a/.b" ":all:")) "a/.b") "expand-path flushes one leading dot")
+
+# A trailing . or .. with no separator after it is dropped rather than applied.
+# Recorded in FOUND.md; reproduced rather than repaired.
+(assert (= (string (module/expand-path "a/b/.." ":all:")) "a/b/") "expand-path drops a trailing dot-dot")
+(assert (= (string (module/expand-path "a/b/../" ":all:")) "a/") "expand-path applies a closed dot-dot")
+(assert (= (string (module/expand-path "." ":all:")) "") "expand-path drops a lone dot")
+
+(assert-error-value "expand-path rejects a non-string current-file" "expected string, got 5"
+                    (with-dyns [:current-file 5] (module/expand-path "a" ":cur:")))
+# `%v` renders the offending string with escapes, so the zero byte reaches the
+# message as a backslash and a zero rather than as itself.
+(assert-error-value "expand-path rejects an embedded zero"
+                    "string \"a\\0b\" contains embedded 0s"
+                    (with-dyns [:current-file "a\0b"] (module/expand-path "a" ":cur:")))
+
+# scan-number
+(assert (= (scan-number "ff" 16) 255) "scan-number with a base")
+(assert (= (scan-number "0x10") 16) "scan-number with a radix prefix")
+(assert (= (scan-number "zz") nil) "scan-number rejects a non-number")
+(assert-error-value "scan-number base too low" "expected base between 2 and 36, got 1" (scan-number "10" 1))
+(assert-error-value "scan-number base too high" "expected base between 2 and 36, got 37" (scan-number "10" 37))
+
+# The error messages the odd-arity constructors and getproto raise
+(assert-error-value "table odd arity" "expected even number of arguments" (table :a))
+(assert-error-value "struct odd arity" "expected even number of arguments" (struct :a))
+(assert-error-value "getproto type" "expected struct or table, got 1" (getproto 1))
+(assert (= nil (getproto @{})) "getproto with no prototype")
+(assert (deep= @{:a 1} (getproto (table/setproto @{} @{:a 1}))) "getproto with a prototype")
+(assert (= nil (getproto {})) "getproto of a struct with no prototype")
+
+# slice reports both accepted shapes in one message
+(assert-error-value "slice reports both accepted shapes"
+                    "bad slot #0, expected string, symbol, keyword, array, tuple or buffer, got 1"
+                    (slice 1))
+
+# signal, by keyword and by number
+(defn- signal-status [what]
+  (def f (fiber/new (fn [] (signal what :payload)) :a))
+  (resume f)
+  (fiber/status f))
+(assert (= :error (signal-status :error)) "signal :error")
+(assert (= :debug (signal-status :debug)) "signal :debug")
+(assert (= :pending (signal-status :yield)) "signal :yield")
+(assert (= :user0 (signal-status :user0)) "signal :user0")
+(assert (= :user7 (signal-status :user7)) "signal :user7")
+(assert (= :interrupted (signal-status :interrupt)) "signal :interrupt")
+(assert (= :suspended (signal-status :await)) "signal :await")
+(assert (= :user0 (signal-status 0)) "signal 0")
+(assert (= :user7 (signal-status 7)) "signal 7")
+# 8 and 9 are accepted and are the interrupt and await signals rather than user
+# signals, which the docstring's "0 through 7" does not say. FOUND.md has it.
+(assert (= :interrupted (signal-status 8)) "signal 8 is the interrupt signal")
+(assert (= :suspended (signal-status 9)) "signal 9 is the await signal")
+(assert-error-value "signal above range" "expected user signal between 0 and 9, got 10" (signal 10))
+(assert-error-value "signal below range" "expected user signal between 0 and 9, got -1" (signal -1))
+(assert-error-value "signal unknown keyword" "unknown signal :nope" (signal :nope))
+# A string is rejected by the keyword getter before the signal-name walk is
+# reached, so the message is the argument layer's rather than this one's.
+(assert-error-value "signal rejects a string"
+                    "bad slot #0, expected keyword, got \"error\"" (signal "error"))
+
+# sandbox rejects a capability it does not know, before applying any of them
+(assert-error-value "sandbox unknown capability" "unknown capability :nope" (sandbox :nope))
+
+# gcsetinterval is capped at 48 bits on a 64-bit build
+(assert-error-value "gcsetinterval cap" "interval too large" (gcsetinterval 0x1000000000000))
+# The value is not read back: a collection recomputes the interval from the
+# live heap, so `gcinterval` reports the collector's number rather than the
+# last one set.
+(assert (number? (gcinterval)) "gcinterval answers a number")
+(assert-no-error "gcsetinterval accepts 48 bits" (gcsetinterval 0xFFFFFFFFFFFF))
+(gcsetinterval 0x400000)
+
+# range
+(assert-error-value "range infinite step" "infinite step not allowed" (range 0 10 math/inf))
+(assert-error-value "range too large" "range is too large, 1099511627775.000000 elements" (range 0xFFFFFFFFFF))
+(assert (deep= @[] (range 3 3 0)) "a zero step gives an empty range")
+
+# dyn reads the running fiber's env, which a fresh fiber does not have
+(assert (= nil (resume (fiber/new (fn [] (dyn :absent))))) "dyn in a fiber with no env")
+(assert (= :dflt (resume (fiber/new (fn [] (dyn :absent :dflt))))) "dyn default in a fiber with no env")
+
+# type names an abstract by its own type rather than by :abstract
+(assert (= :core/file (type (file/temp))) "type of an abstract")
+(assert (abstract? (file/temp)) "abstract? of an abstract")
+(assert (not (abstract? 1)) "abstract? of a number")
+
+# memcmp defaults its length to the shorter of the two views
+(assert (< (memcmp "abc" "abd") 0) "memcmp with defaulted length")
+(assert (= 0 (memcmp "abc" "abc")) "memcmp equal")
+(assert (= 0 (memcmp "abcZZ" "abc")) "memcmp stops at the shorter view")
+
+
+# Holes the mutation sweep found, closed.
+
+# :@all: walks to the first separator, so a first segment of odd length
+# distinguishes a one-step walk from a two-step one.
+(assert (= (string (with-dyns [:ab "REPL"] (module/expand-path "@ab/x" ":@all:"))) "REPL/x")
+        "expand-path :@all: with an odd-length first segment")
+(assert (= (string (with-dyns [:abcd "REPL"] (module/expand-path "@abcd/x" ":@all:"))) "REPL/x")
+        "expand-path :@all: with an even-length first segment")
+
+# A leading separator is not a section, so a dot-dot after it cannot cancel it.
+(assert (= (string (module/expand-path "/a/../../b" ":all:")) "/../b")
+        "expand-path cannot pop past a leading separator")
+
+# dyn returns the binding when there is one, whether or not a default was given
+(assert (= 1 (resume (fiber/new (fn [] (setdyn :present 1) (dyn :present))))) "dyn with a binding")
+(assert (= 1 (resume (fiber/new (fn [] (setdyn :present 1) (dyn :present :dflt)))))
+        "dyn prefers the binding to the default")
+(assert (= :dflt (resume (fiber/new (fn [] (setdyn :present nil) (dyn :present :dflt)))))
+        "dyn falls through a nil binding to the default")
+
+# setdyn creates the fiber's env once and adds to it thereafter
+(assert (= [1 2] (resume (fiber/new (fn [] (setdyn :one 1) (setdyn :two 2) [(dyn :one) (dyn :two)]))))
+        "setdyn keeps earlier bindings")
+(assert (= 2 (resume (fiber/new (fn [] (setdyn :one 1) (setdyn :one 2) (dyn :one)))))
+        "setdyn replaces a binding")
+
+# The concatenating constructors walk every argument, and no more
+(assert (= "12" (describe 1 2)) "describe concatenates its arguments")
+(assert (= "" (describe)) "describe with no arguments")
+(assert (= "12" (string 1 2)) "string concatenates its arguments")
+(assert (= "" (string)) "string with no arguments")
+(assert (= :12 (keyword 1 2)) "keyword concatenates its arguments")
+(assert (= (symbol "12") (symbol 1 2)) "symbol concatenates its arguments")
+(assert (deep= @"12" (buffer 1 2)) "buffer concatenates its arguments")
+
+# The accepted radix range is inclusive at both ends
+(assert (= 2 (scan-number "10" 2)) "scan-number accepts base 2")
+(assert (= 35 (scan-number "z" 36)) "scan-number accepts base 36")
+(assert (= 0 (scan-number "0")) "scan-number accepts base 0 as the default")
+
+# type answers a keyword for every type, not only for abstracts
+(assert (= :number (type 1)) "type of a number")
+(assert (= :nil (type nil)) "type of nil")
+(assert (= :cfunction (type type)) "type of a cfunction")
+
+# range's three arities are distinguished by argument count
+(assert (deep= @[0 1 2] (range 3)) "range with one argument")
+(assert (deep= @[1 2] (range 1 3)) "range with two arguments")
+(assert (deep= @[1] (range 1 3 2)) "range with three arguments")
+
+# getproto looks at the second type as well as the first
+(assert (= nil (getproto (struct))) "getproto of an empty struct")
+(assert (deep= {:a 1} (getproto (struct/with-proto {:a 1}))) "getproto of a struct with a prototype")
+
+# sandbox accumulates every capability it is given, and rejects the whole call
+# on the first it does not know. Applying one is irreversible, so the flags
+# themselves are asserted in test/core_env.c and not here.
+(assert-error-value "sandbox rejects the whole call" "unknown capability :nope" (sandbox :fs-read :nope))
+(assert-no-error "sandbox with no capabilities" (sandbox))
+
+
+# The bootstrap's assembled thunks, reached as values rather than by name.
+#
+# `janet_core_env` assembles thirty-four functions out of bytecode by hand --
+# thirteen `janet_quick_asm` calls, thirteen variadic operators and six
+# comparators -- and the compiler inlines every one of them when it sees the
+# name in call position: `(+ 1 2)` becomes JOP_ADD and never enters the thunk.
+# That is what `JANET_FUN_ADD` and its kin are for. So ordinary Janet code, and
+# every other assertion in this file, exercises the *opcodes* and leaves the
+# assembled bodies unrun. Passing the function as a value is what reaches them,
+# and the mutation sweep found this: inverting the `<` comparator's result
+# changes nothing observable until `<` stops being a call.
+#
+# These also matter more than they look: the bodies exist only in the image, so
+# `-Dboot=zig` is the only configuration that assembles them at all.
+
+(defn- thru [f & args] (apply f args))
+
+# The variadic operators, at each of their three arities
+(assert (= 0 (thru +)) "+ nullary")
+(assert (= 3 (thru + 3)) "+ unary")
+(assert (= 6 (thru + 1 2 3)) "+ variadic")
+(assert (= 0 (thru -)) "- nullary")
+(assert (= -3 (thru - 3)) "- unary")
+(assert (= -4 (thru - 1 2 3)) "- variadic")
+(assert (= 1 (thru *)) "* nullary")
+(assert (= 3 (thru * 3)) "* unary")
+(assert (= 24 (thru * 2 3 4)) "* variadic")
+(assert (= 1 (thru /)) "/ nullary")
+(assert (= 0.5 (thru / 2)) "/ unary")
+(assert (= 2 (thru / 12 3 2)) "/ variadic")
+(assert (= 1 (thru div)) "div nullary")
+(assert (= 2 (thru div 12 3 2)) "div variadic")
+(assert (= 0 (thru mod)) "mod nullary")
+(assert (= 1 (thru mod 13 3)) "mod variadic")
+(assert (= 0 (thru %)) "% nullary")
+(assert (= 1 (thru % 13 3)) "% variadic")
+(assert (= -1 (thru band)) "band nullary")
+(assert (= 8 (thru band 12 9)) "band variadic")
+(assert (= 0 (thru bor)) "bor nullary")
+(assert (= 13 (thru bor 12 9)) "bor variadic")
+(assert (= 0 (thru bxor)) "bxor nullary")
+(assert (= 5 (thru bxor 12 9)) "bxor variadic")
+(assert (= 1 (thru blshift)) "blshift nullary")
+(assert (= 8 (thru blshift 1 3)) "blshift variadic")
+(assert (= 1 (thru brshift)) "brshift nullary")
+(assert (= 1 (thru brshift 8 3)) "brshift variadic")
+(assert (= 1 (thru brushift)) "brushift nullary")
+(assert (= 1 (thru brushift 8 3)) "brushift variadic")
+
+# The comparators, including the branch each one returns from. The `invert`
+# flag only shows here: it swaps which of the two exits loads true.
+(assert (= true (thru < 1 2 3)) "< ascending")
+(assert (= false (thru < 1 3 2)) "< not ascending")
+(assert (= true (thru < 1)) "< with one argument is vacuously true")
+(assert (= true (thru >)) "> with no arguments is vacuously true")
+(assert (= true (thru > 3 2 1)) "> descending")
+(assert (= false (thru > 1 2)) "> not descending")
+(assert (= true (thru <= 1 1 2)) "<= non-descending")
+(assert (= false (thru <= 2 1)) "<= not non-descending")
+(assert (= true (thru >= 2 1 1)) ">= non-ascending")
+(assert (= false (thru >= 1 2)) ">= not non-ascending")
+(assert (= true (thru = 1 1 1)) "= all equal")
+(assert (= false (thru = 1 1 2)) "= not all equal")
+(assert (= false (thru not= 1 1)) "not= is the inverted comparator")
+(assert (= true (thru not= 1 2)) "not= differing")
+
+# The thirteen hand-assembled thunks
+(assert (= -1 (thru cmp 1 2)) "cmp less")
+(assert (= 1 (thru cmp 2 1)) "cmp greater")
+(assert (= 0 (thru cmp 1 1)) "cmp equal")
+(assert (= 0 (thru next [:a :b])) "next first key")
+(assert (= 1 (thru next [:a :b] 0)) "next second key")
+(assert (= nil (thru next [:a :b] 1)) "next past the end")
+(assert (= 2 (thru in [1 2 3] 1)) "in indexed")
+(assert (= 1 (thru in {:a 1} :a)) "in dictionary")
+(assert (= :d (thru in {:a 1} :b :d)) "in default")
+(assert (= 2 (thru get [1 2 3] 1)) "get indexed")
+(assert (= nil (thru get [1 2 3] 10)) "get out of bounds is nil, not an error")
+(assert (= :d (thru get {:a 1} :b :d)) "get default")
+(assert (deep= @[9] (thru put @[1] 0 9)) "put returns the mutated value")
+(assert (= 3 (thru length [1 2 3])) "length")
+(assert (= -1 (thru bnot 0)) "bnot")
+(assert (= 6 (thru apply + [1 2 3])) "apply as a value")
+(assert (= 6 (thru apply + 1 [2 3])) "apply with leading arguments")
+(assert-error-value "error as a value" :thrown (thru error :thrown))
+
+# The three that raise a non-error signal, reached the same way
+(defn- signal-status-of [f & args]
+  (def fib (fiber/new (fn [] (apply f args)) :a))
+  (resume fib)
+  (fiber/status fib))
+(assert (= :debug (signal-status-of debug :payload)) "debug as a value")
+(assert (= :pending (signal-status-of yield :payload)) "yield as a value")
+(assert (= :error (signal-status-of error :payload)) "error as a value signals")
+
+# resume, cancel and propagate move a signal between fibers
+(assert (= 7 (thru resume (fiber/new (fn [] 7)))) "resume as a value")
+(assert (= :cancelled
+           (let [f (fiber/new (fn [] (yield 1) 2) :ye)]
+             (resume f)
+             (try (thru cancel f :cancelled) ([e] e))))
+        "cancel as a value")
+(assert (= :inner
+           (let [inner (fiber/new (fn [] (error :inner)) :e)]
+             (resume inner)
+             (let [outer (fiber/new (fn [] (thru propagate (fiber/last-value inner) inner)) :e)]
+               (resume outer)
+               (fiber/last-value outer))))
+        "propagate as a value")
+
+# A backslash is a path separator on Windows and an ordinary character
+# everywhere else, and `is_path_sep` is the only place that distinction lives.
+(assert (= (string (module/expand-path "a\\b" ":all:"))
+           (if (= :windows (os/which)) "a\\b" "a\\b"))
+        "expand-path leaves a backslash alone off Windows")
+(assert (= (string (module/expand-path "a\\../b" ":all:"))
+           (if (= :windows (os/which)) "b" "a\\../b"))
+        "a backslash does not open a path segment off Windows")
+
+# A zero step takes the other arm of the range assertion pair
+(assert (deep= @[] (range 0 10 0)) "a zero step over a non-empty interval")
+
+# struct walks exactly its arguments; reading one past would take a nil key
+(assert (deep= {:a 1} (struct :a 1)) "struct with one pair")
+(assert (deep= {:a 1 :b 2} (struct :a 1 :b 2)) "struct with two pairs")
+(assert (deep= {} (struct)) "struct with no pairs")
+(assert (deep= @{:a 1} (table :a 1)) "table with one pair")
+
 (end-suite)

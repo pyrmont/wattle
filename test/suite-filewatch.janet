@@ -48,6 +48,102 @@
 (assert-no-error "filewatch/new" (filewatch/new chan))
 (gccollect)
 
+#
+# The surface: arities, argument types, flag decoding and the watcher's own
+# life cycle. None of this was reachable from a Janet test before Phase 10
+# Part 15 -- the suite went straight from `(assert true)` to driving real
+# events, so every failure message in the file was untested. Written against
+# `-Dfilewatch-core=c` first, on the rule in `AGENTS.md`.
+#
+
+(defn- errmsg
+  "The message a form raises, or nil if it does not raise."
+  [f]
+  (def [ok result] (protect (f)))
+  (if ok nil result))
+
+(assert (= "arity mismatch, expected at least 1, got 0" (errmsg |(filewatch/new)))
+        "filewatch/new arity")
+(assert (= "bad slot #0, expected core/channel, got 7" (errmsg |(filewatch/new 7)))
+        "filewatch/new wants a channel")
+(assert (= "arity mismatch, expected at least 2, got 1" (errmsg |(filewatch/add 1)))
+        "filewatch/add arity")
+(assert (= "arity mismatch, expected 2, got 1" (errmsg |(filewatch/remove 1)))
+        "filewatch/remove arity")
+(assert (= "arity mismatch, expected 1, got 2" (errmsg |(filewatch/listen 1 2)))
+        "filewatch/listen arity")
+(assert (= "arity mismatch, expected 1, got 0" (errmsg |(filewatch/unlisten)))
+        "filewatch/unlisten arity")
+(assert (string/has-prefix? "bad slot #0, expected filewatch/watcher, got "
+                            (errmsg |(filewatch/listen chan)))
+        "filewatch/listen wants a watcher")
+
+# A flag that is not a keyword is refused before any vocabulary is consulted,
+# so this message is the same on every backend.
+(assert (= "expected keyword, got \"all\"" (errmsg |(filewatch/new chan "all")))
+        "a flag must be a keyword")
+(assert (= "expected keyword, got 3" (errmsg |(filewatch/new chan 3)))
+        "a number is not a flag")
+
+# An unknown one names the backend, and that word is the only part of the
+# message that differs between them.
+(def backend-word (cond is-win "windows filewatch" is-linux "linux" "bsd"))
+(assert (= (string "unknown " backend-word " flag :not-a-flag")
+           (errmsg |(filewatch/new chan :not-a-flag)))
+        "an unknown flag names the backend")
+(assert (= (string "unknown " backend-word " flag :not-a-flag")
+           (errmsg |(filewatch/new chan :all :not-a-flag)))
+        "the decoder reports the flag that failed, not the first one")
+
+# `:all` is the one name every backend has, and it is the union of the rest.
+(assert-no-error "every backend has :all" (filewatch/new chan :all))
+
+# A name from another backend's vocabulary is refused here. The three tables
+# share only `:all`, which is what makes the split a split.
+(def foreign (cond is-win :attrib is-linux :recursive :modify))
+(assert (string/has-prefix? "unknown " (errmsg |(filewatch/new chan foreign)))
+        "a foreign backend's flag is refused")
+
+# The abstract type is opaque: it has a name and a mark callback and nothing
+# else, so it answers to `type` and to nothing that indexes or compares.
+(def probe-watcher (filewatch/new chan))
+(assert (= :filewatch/watcher (type probe-watcher)) "watcher type name")
+(assert (nil? (get probe-watcher :stream)) "a watcher has no fields to index")
+(assert (nil? (next probe-watcher)) "a watcher has no keys to walk")
+(assert (string/has-prefix? "<filewatch/watcher " (string probe-watcher))
+        "a watcher prints as its type and address")
+
+# The life cycle, on a directory of its own. `filewatch/add` answers with the
+# watcher rather than with a descriptor, which is what lets the calls thread.
+(def probe-dir (randdir))
+(rmrf probe-dir)
+(os/mkdir probe-dir)
+(assert (= probe-watcher (filewatch/add probe-watcher probe-dir :all))
+        "filewatch/add returns the watcher")
+(assert-error "a path that cannot be opened is refused"
+              (filewatch/add probe-watcher (string probe-dir "/no-such-entry") :all))
+(assert-error "a path that was never added cannot be removed"
+              (filewatch/remove probe-watcher (string probe-dir "/never-added")))
+(assert (= probe-watcher (filewatch/remove probe-watcher probe-dir))
+        "filewatch/remove returns the watcher")
+
+# Listening twice is refused; unlistening twice is not.
+(filewatch/add probe-watcher probe-dir :all)
+(assert-no-error "listen once" (filewatch/listen probe-watcher))
+(assert (= "already watching" (errmsg |(filewatch/listen probe-watcher)))
+        "listening twice is refused")
+(assert-no-error "unlisten once" (filewatch/unlisten probe-watcher))
+(assert-no-error "unlisten twice" (filewatch/unlisten probe-watcher))
+
+# And the watcher is dead after that: `filewatch/unlisten` closes the
+# watcher's own descriptor and nothing reopens it. See `port/FOUND.md`,
+# "filewatch/unlisten leaves the watcher unusable".
+(when (not is-win)
+  (assert-error "a watcher cannot be added to after unlisten"
+                (filewatch/add probe-watcher probe-dir :all)))
+(gccollect)
+(rmrf probe-dir)
+
 (defn- expect
   [key value & more-kvs]
   (ev/with-deadline

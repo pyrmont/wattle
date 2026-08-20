@@ -954,7 +954,7 @@ static void test_aapcs64_does_not_backfill_registers(void) {
     assert(args[2].spec == AAPCS64_STACK);
 }
 
-int main(void) {
+void ffi_classify_contract(void) {
     test_sysv64_classifies_scalars();
     test_sysv64_sends_wide_structs_to_memory();
     test_sysv64_sends_misaligned_structs_to_memory();
@@ -1001,5 +1001,4 @@ int main(void) {
     test_aapcs64_does_not_backfill_registers();
 
     printf("ffi_classify: all tests passed\n");
-    return 0;
 }

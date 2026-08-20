@@ -1,5 +1,3 @@
-//! jump-transparent
-//!
 //! The last three collectable kinds a caller cannot otherwise construct
 //! through Zig: a fiber, a funcdef, and the thunk that wraps one. This is
 //! Part 9 of Phase 8 and it takes `fiber_alloc`, `janet_fiber` and
@@ -283,4 +281,37 @@ export fn janet_thunk(def: *c.JanetFuncDef) callconv(.c) *c.JanetFunction {
     if (def.environments_length != 0)
         c.janet_zig_fatal("tried to create thunk that needs upvalues");
     return func;
+}
+
+/// `src/core/util.h`, which `abi.zig` does not translate.
+extern fn janet_def_addflags(def: *c.JanetFuncDef) callconv(.c) void;
+
+/// A function that, called, returns `x`. Trivial in Janet, a pain in C, and
+/// here because both allocations it is assembled from are already in this file.
+///
+/// The two `janet_malloc`s are the C original's and are deliberately not
+/// `janet_gcalloc`: a funcdef owns its bytecode and constants outright, and
+/// the collector frees them through `janet_free` when the funcdef dies.
+export fn janet_thunk_delay(x: c.Janet) callconv(.c) *c.JanetFunction {
+    const bytecode = [_]u32{
+        @intCast(c.JOP_LOAD_CONSTANT),
+        @intCast(c.JOP_RETURN),
+    };
+    const def = janet_funcdef_alloc();
+    def.arity = 0;
+    def.min_arity = 0;
+    def.max_arity = std.math.maxInt(i32);
+    def.flags = @intCast(c.JANET_FUNCDEF_FLAG_VARARG);
+    def.slotcount = 1;
+    def.bytecode = @ptrCast(@alignCast(c.janet_malloc(@sizeOf(@TypeOf(bytecode))) orelse
+        c.janet_zig_out_of_memory()));
+    def.bytecode_length = @intCast(bytecode.len);
+    def.constants = @ptrCast(@alignCast(c.janet_malloc(@sizeOf(c.Janet)) orelse
+        c.janet_zig_out_of_memory()));
+    def.constants_length = 1;
+    def.name = null;
+    def.constants[0] = x;
+    @memcpy(def.bytecode[0..bytecode.len], &bytecode);
+    janet_def_addflags(def);
+    return janet_thunk(def);
 }
