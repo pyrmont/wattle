@@ -60,9 +60,9 @@ const pp_format = @import("pp_format.zig");
 const c = abi.c;
 
 /// The fiber's pushes, which raise by returning since Part 17a. Resolved to
-/// `fiber_core_extern.zig` under `-Dfiber-core=c`, where the C body jumps and
-/// the declared error is never returned.
-const fiber_core = if (options.fiber_core) @import("fiber_core.zig") else @import("fiber_core_extern.zig");
+/// `fiber_core_extern.zig` under `-Dfiber-core=c` until Phase 11 Part 26, where
+/// the C body jumped and the declared error was never returned.
+const fiber_core = @import("fiber_core.zig");
 
 /// The loop itself. `continueNoCheck` below is the one caller that opens a
 /// protected scope around it, and it reaches it by import: until the hinge
@@ -279,11 +279,14 @@ pub fn callImpl(fun: [*c]c.JanetFunction, argc: i32, argv: [*c]const c.Janet) ra
 /// fiber errored, which the other two do not: a fiber refused for recursion
 /// depth has had nothing done to it, while one refused for its status already
 /// carries the status that refused it.
-/// Exported with hidden visibility, which is what the C build's
-/// `-fvisibility=hidden` already gives it: it is declared in `state.h` rather
-/// than in `janet.h`, so a plain `export` would widen the shared library's
-/// symbol set relative to the other selector.
-fn checkCanResume(fiber: [*c]c.JanetFiber, out: [*c]c.Janet, is_cancel: c_int) callconv(.c) c.JanetSignal {
+/// `janet_check_can_resume` was the C-ABI face of this, exported with hidden
+/// visibility because `state.h` declared it rather than `janet.h`. Phase 11
+/// Part 12 retired it: `test/vm_entry.c` and `test/vm_run.c` were its last C
+/// callers, and `vm_run.zig`'s `JOP_RESUME` and `JOP_CANCEL` arms were reaching
+/// it through the symbol table from inside the same compilation. It reports
+/// rather than raises, so this is rule 17's harmless half — a round trip
+/// removed rather than a flattened raise.
+pub fn checkCanResume(fiber: [*c]c.JanetFiber, out: [*c]c.Janet, is_cancel: c_int) callconv(.c) c.JanetSignal {
     // Check conditions.
     const old_status = c.janet_fiber_status(fiber);
     if (c.janet_vm.stackn >= c.JANET_RECURSION_GUARD) {
@@ -474,14 +477,19 @@ export fn janet_pcall(
 /// so the exported names are the faces and the implementations above are
 /// reached only from Zig.
 ///
-/// Nothing else here needs one: `janet_continue`, `janet_continue_signal`,
-/// `janet_pcall` and `janet_check_can_resume` report a signal rather than
-/// raising, which is what makes them the boundary a caller can already handle.
+/// Nothing else here needs one: `janet_continue`, `janet_continue_signal` and
+/// `janet_pcall` report a signal rather than raising, which is what makes them
+/// the boundary a caller can already handle.
+///
+/// Neither of these two has an in-tree caller any more — `test/vm_entry.zig`
+/// reaches `stepImpl` and `callImpl` by import, and every other Zig caller
+/// always did. They stay because they are `janet.h`'s public surface, which is
+/// the same finding Part 10 recorded for nine `value.c` exports and Part 11 for
+/// `janet_signalv` and `janet_panics`.
 const janetStepFace = raise.panicking(stepImpl).face;
 const janetCallFace = raise.panicking(callImpl).face;
 
 comptime {
     @export(&janetStepFace, .{ .name = "janet_step" });
     @export(&janetCallFace, .{ .name = "janet_call" });
-    @export(&checkCanResume, .{ .name = "janet_check_can_resume", .visibility = .hidden });
 }

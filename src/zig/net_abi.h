@@ -27,10 +27,10 @@
  * survives the translation for `x86_64-windows-gnu` except `WSAID_CONNECTEX`,
  * which is a brace initializer; that one is restated in `net_abi.zig`.
  *
- * `features.h` comes first, as it must before any system header.
+ * `janet_features.h` comes first, as it must before any system header.
  */
 
-#include "features.h"
+#include "janet_features.h"
 
 /* Aro -- the translate-c front end in Zig 0.16 -- predefines `__unix__`,
  * `unix` and `__unix` for the mingw targets as well as `_WIN32`. `os_abi.h`

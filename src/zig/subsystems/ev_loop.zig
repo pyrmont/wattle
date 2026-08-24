@@ -61,6 +61,8 @@ pub const stream = @import("ev_stream.zig");
 // and `-Dev-loop` is one selector over four.
 pub const streamFlags = stream.streamFlags;
 pub const streamClose = stream.streamClose;
+pub const makeStream = stream.makeStream;
+pub const makeStreamExt = stream.makeStreamExt;
 pub const evInit = backend.evInit;
 pub const edgeTriggeredStream = backend.edgeTriggeredStream;
 pub const levelTriggeredStream = backend.levelTriggeredStream;
@@ -94,22 +96,16 @@ pub const has_interrupt = c.JANET_VM_HAS_INTERRUPT != 0;
 // The C ABI this subsystem reaches through
 // ==========================================================================
 
-/// The portable kernels, behind `-Dev-core`. They keep their C ABI here
-/// exactly as they had it in `ev.c`: this increment moves the callers and
-/// leaves that seam where Phase 8 drew it, so `-Dev-core=c` still swaps the
-/// queue and the heap ordering under a Zig scheduler.
-pub extern fn janet_ev_q_init(q: *c.JanetQueue) callconv(.c) void;
-pub extern fn janet_ev_q_deinit(q: *c.JanetQueue) callconv(.c) void;
-pub extern fn janet_ev_q_count(q: *const c.JanetQueue) callconv(.c) i32;
-pub extern fn janet_ev_q_push(q: *c.JanetQueue, item: *const anyopaque, itemsize: usize) callconv(.c) c_int;
-pub extern fn janet_ev_q_push_head(q: *c.JanetQueue, item: *const anyopaque, itemsize: usize) callconv(.c) c_int;
-pub extern fn janet_ev_q_pop(q: *c.JanetQueue, out: *anyopaque, itemsize: usize) callconv(.c) c_int;
-pub extern fn janet_ev_heap_sift_down(base: *const anyopaque, stride: usize, when_offset: usize, count: usize, index: usize) callconv(.c) isize;
-pub extern fn janet_ev_heap_sift_up(base: *const anyopaque, stride: usize, when_offset: usize, index: usize) callconv(.c) isize;
-pub extern fn janet_ev_ts_delta(ts: c.JanetTimestamp, delta: f64) callconv(.c) c.JanetTimestamp;
-pub extern fn janet_ev_ts_from_parts(sec: i64, nsec: i64) callconv(.c) c.JanetTimestamp;
-pub extern fn janet_ev_ts_to_parts(ts: c.JanetTimestamp, sec: *i64, nsec: *i64) callconv(.c) void;
-pub extern fn janet_ev_kqueue_interval(ts: c.JanetTimestamp) callconv(.c) c.JanetTimestamp;
+/// The portable kernels, by import.
+///
+/// Each was declared here as a `pub extern fn` and `@export`ed from
+/// `ev_core.zig`, which is the shape `ev.c` needed when the queue and the heap
+/// ordering were the first Zig inside it -- and `ev_channel.zig` and
+/// `ev_backend.zig` reached them *through this file*, because a re-exported
+/// declaration is how a symbol gets a namespace. Both ends have been Zig since
+/// Phase 10 Part 18, so Phase 11 Part 21 replaced thirteen exported symbols
+/// with the import and pointed the other two callers at the subject directly.
+const ev_core = @import("ev_core.zig");
 
 /// `src/core/util.h`. The clock arrives in parts because `struct timespec`
 /// cannot be named portably from Zig; `os_time.zig` records the measurement
@@ -205,7 +201,7 @@ pub fn tsNow() c.JanetTimestamp {
     var sec: i64 = undefined;
     var nsec: i64 = undefined;
     assert(@src(), janet_os_gettime(1, &sec, &nsec) != -1, "failed to get time");
-    return janet_ev_ts_from_parts(sec, nsec);
+    return ev_core.tsFromParts(sec, nsec);
 }
 
 /// Look at the next timeout without removing it.
@@ -223,7 +219,7 @@ pub fn popTimeout(start: usize) void {
     v.tq_count -= 1;
     v.tq[index] = v.tq[v.tq_count];
     while (true) {
-        const smallest = janet_ev_heap_sift_down(
+        const smallest = ev_core.heapSiftDown(
             v.tq,
             @sizeOf(c.JanetTimeout),
             @offsetOf(c.JanetTimeout, "when"),
@@ -258,7 +254,7 @@ pub fn addTimeout(to: c.JanetTimeout) void {
     v.tq[oldcount] = to;
     var index = oldcount;
     while (true) {
-        const parent = janet_ev_heap_sift_up(
+        const parent = ev_core.heapSiftUp(
             v.tq,
             @sizeOf(c.JanetTimeout),
             @offsetOf(c.JanetTimeout, "when"),
@@ -307,9 +303,9 @@ fn scheduleGeneral(fiber: [*c]c.JanetFiber, value: c.Janet, sig: c.JanetSignal, 
     fiber.*.gc.flags |= fiber_flag_root;
     if (sig == sig_error) fiber.*.gc.flags |= fiber_flag_canceled;
     const pushed = if (soon)
-        janet_ev_q_push_head(&vm().spawn, &t, @sizeOf(Task))
+        ev_core.qPushHead(&vm().spawn, &t, @sizeOf(Task))
     else
-        janet_ev_q_push(&vm().spawn, &t, @sizeOf(Task));
+        ev_core.qPush(&vm().spawn, &t, @sizeOf(Task));
     assert(@src(), pushed == 0, "schedule queue overflow");
 }
 
@@ -463,7 +459,7 @@ pub export fn janet_ev_dec_refcount() callconv(.c) void {
 
 pub export fn janet_ev_init_common() callconv(.c) void {
     const v = vm();
-    janet_ev_q_init(&v.spawn);
+    ev_core.qInit(&v.spawn);
     v.tq = null;
     v.tq_count = 0;
     v.tq_capacity = 0;
@@ -484,7 +480,7 @@ pub export fn janet_ev_deinit_common() callconv(.c) void {
         handleTimeoutWorker(to, true);
         popTimeout(0);
     }
-    janet_ev_q_deinit(&v.spawn);
+    ev_core.qDeinit(&v.spawn);
     c.janet_free(v.tq);
     c.janet_table_deinit(&v.threaded_abstracts);
     c.janet_table_deinit(&v.active_tasks);
@@ -510,7 +506,7 @@ export fn janet_await() callconv(.c) void {
 fn addFiberTimeout(sec: f64, is_error: bool) void {
     const fiber = vm().root_fiber;
     addTimeout(.{
-        .when = janet_ev_ts_delta(tsNow(), sec),
+        .when = ev_core.tsDelta(tsNow(), sec),
         .fiber = fiber,
         .curr_fiber = null,
         .sched_id = fiber.*.sched_id,
@@ -531,7 +527,7 @@ pub export fn janet_addtimeout_nil(sec: f64) callconv(.c) void {
 pub fn sleepAwait(sec: f64) raise.Error {
     const fiber = vm().root_fiber;
     addTimeout(.{
-        .when = janet_ev_ts_delta(tsNow(), sec),
+        .when = ev_core.tsDelta(tsNow(), sec),
         .fiber = fiber,
         .curr_fiber = null,
         .sched_id = fiber.*.sched_id,
@@ -687,7 +683,7 @@ pub fn loop1() raise.Raising([*c]c.JanetFiber) {
             .sig = sig_ok,
             .expected_sched_id = 0,
         };
-        _ = janet_ev_q_pop(&v.spawn, &task, @sizeOf(Task));
+        _ = ev_core.qPop(&v.spawn, &task, @sizeOf(Task));
         if (task.fiber.*.gc.flags & fiber_flag_suspended != 0) janet_ev_dec_refcount();
         task.fiber.*.gc.flags &= ~(fiber_flag_canceled | fiber_flag_suspended);
         if (task.expected_sched_id != task.fiber.*.sched_id) continue;
@@ -1216,7 +1212,10 @@ fn goThreadBodyImpl(ctx: *GoThreadContext) raise.Raising(void) {
     }
     fiber.*.supervisor_channel = v.user;
     janet_schedule(fiber, value);
-    janet_loop();
+    // `loop`, not the `janet_loop` face beside it: this function is
+    // `raise.Raising` and the face flattens a raise into a report nobody here
+    // would consume. Phase 11 Part 15; `port/swallowed.py` found it.
+    try loop();
     ctx.args.tag = c.JANET_EV_TCTAG_NIL;
 }
 
@@ -1291,7 +1290,7 @@ fn goImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
         argv,
         argc,
         2,
-        abstract_type.stored(&janet_channel_type),
+        abstract_type.stored(&channel.janet_channel_type),
         vm().root_fiber.*.supervisor_channel,
     );
     var fiber: [*c]c.JanetFiber = undefined;
@@ -1341,7 +1340,7 @@ fn threadImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
         argv,
         argc,
         3,
-        abstract_type.stored(&janet_channel_type),
+        abstract_type.stored(&channel.janet_channel_type),
         vm().root_fiber.*.supervisor_channel,
     );
     if (supervisor != null) flags |= thread_supervisor_flag;
@@ -1413,7 +1412,7 @@ fn deadlineImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
     const tocheck = try arglayer.optFiber(argv, argc, 2, vm().fiber);
     const use_interrupt = try arglayer.optBoolean(argv, argc, 3, 0) != 0;
     var to: c.JanetTimeout = .{
-        .when = janet_ev_ts_delta(tsNow(), sec),
+        .when = ev_core.tsDelta(tsNow(), sec),
         .fiber = tocancel,
         .curr_fiber = tocheck,
         .is_error = 0,
@@ -1600,8 +1599,18 @@ fn rwlockWriteReleaseImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
 // Registration
 // ==========================================================================
 
-extern const janet_channel_type: abstract_type.AbstractType;
-extern const janet_stream_type: abstract_type.AbstractType;
+// `janet_channel_type` and `janet_stream_type` were declared here as
+// `extern const`s -- while lines 56 and 57 of this file were already importing
+// the two modules that define them. Rule 31's blindness with the alternative in
+// plain sight: an unreferenced declaration is never checked, and a referenced
+// one that resolves says nothing either. Phase 11 Part 22 replaced them with
+// the imports, and each use site names the module.
+//
+// **Not with a local alias.** `const janet_stream_type =
+// stream.janet_stream_type;` compiles and is wrong: an alias of a `const` is a
+// *copy* of the value, so `&janet_stream_type` is the address of this file's
+// copy and an abstract built through it is not the type `getAbstract` compares
+// against. Rule 36 is the same hazard from the other side.
 
 fn selfEntries() []const corefn.Entry {
     const list = comptime blk: {
@@ -1697,8 +1706,8 @@ pub fn janet_lib_evImpl(env: *c.JanetTable) raise.Raising(void) {
     table[n] = corefn.end;
     corefn.install(env, table[0 .. n + 1]);
 
-    try registration.registerAbstractType(abstract_type.stored(&janet_stream_type));
-    try registration.registerAbstractType(abstract_type.stored(&janet_channel_type));
+    try registration.registerAbstractType(abstract_type.stored(&stream.janet_stream_type));
+    try registration.registerAbstractType(abstract_type.stored(&channel.janet_channel_type));
     try registration.registerAbstractType(abstract_type.stored(&janet_mutex_type));
     try registration.registerAbstractType(abstract_type.stored(&janet_rwlock_type));
 }

@@ -1,6 +1,9 @@
-//! The growable containers' raise-capable kernels as their callers see them:
-//! `-Dbuffer-array`'s implementation when the selector says Zig, and the C
-//! symbols wearing the same signatures when it says C.
+//! The growable containers' raise-capable kernels as their callers see them.
+//!
+//! It had a second arm until Phase 11 Part 26: `-Dbuffer-array=c` resolved
+//! this to `buffer_array_extern.zig`. Phase 10 Part 18 spent the selector; the
+//! shim then sat behind a comptime-`false` branch that nothing analyses, which
+//! is how Part 9 came to find it naming a face that increment had just deleted.
 //!
 //! Phase 10 Part 17c. Only the kernels that *raise* are here, which is a small
 //! part of the subsystem's surface and the whole of its jump surface. Two
@@ -21,14 +24,8 @@
 //! 17b already converted — rather than in kernels another subsystem calls, so
 //! there is nothing for a façade to present.
 
-const options = @import("options");
+const impl = @import("buffer_array.zig");
 
-const impl = if (options.buffer_array)
-    @import("buffer_array.zig")
-else
-    @import("buffer_array_extern.zig");
-
-pub const canRealloc = impl.canRealloc; // janet_buffer_can_realloc
 pub const pointerBufferUnsafe = impl.pointerBufferUnsafe; // janet_pointer_buffer_unsafe
 pub const bufferEnsure = impl.bufferEnsure; // janet_buffer_ensure
 pub const bufferSetcount = impl.bufferSetcount; // janet_buffer_setcount

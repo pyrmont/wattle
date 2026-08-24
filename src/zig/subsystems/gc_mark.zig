@@ -113,9 +113,11 @@ inline fn gcType(mem: anytype) i32 {
 /// declared field — true for all five here, on both 32- and 64-bit layouts,
 /// because each header ends on a field at least as aligned as the array
 /// element. That is an assumption about C layout rather than about this file,
-/// so it is not asserted here: `test/gc_mark.c` compares `sizeof` against
-/// `offsetof` for each of the five, in C, where `offsetof` exists. Part 3 has
-/// the same assumption for `JanetScratch` and records it the same way.
+/// so it is not asserted here: `test/abi.c` compares `sizeof` against
+/// `offsetof` for each of the five, in C, where `offsetof` exists.
+/// `test/gc_mark.zig` asks the complementary question from this side, deriving
+/// each offset from the address the allocator recorded. Part 3 has the same
+/// assumption for `JanetScratch` and records it the same way.
 inline fn stringHead(s: [*c]const u8) *c.JanetStringHead {
     return @ptrFromInt(@intFromPtr(s) -% @sizeOf(c.JanetStringHead));
 }

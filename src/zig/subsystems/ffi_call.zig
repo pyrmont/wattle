@@ -83,63 +83,25 @@ const has_ev = @hasDecl(c, "JANET_EV");
 const has_jit = @hasDecl(c, "JANET_FFI_JIT");
 
 // ==========================================================================
-// The flat forms, which are `-Dffi-classify`'s vocabulary
+// The flat forms, which are the conventions' vocabulary
 // ==========================================================================
+//
+// `TypeNode`, `ArgSlot` and `AllocResult` were written out a second time here
+// until Phase 11 Part 16, on this side of five `extern fn` declarations
+// against `ffi_classify.zig`'s exported symbols. Both ends had been Zig since
+// Phase 10 Part 18 and nothing compared the two copies of a layout the C ABI
+// was carrying between them. They are imported now, and the conventions are
+// ordinary calls.
 
-/// `JanetFFITypeNode`: one node of a type serialized in pre-order.
-const TypeNode = extern struct {
-    size: u64,
-    struct_size: u32,
-    prim: u32,
-    field_count: u32,
-    is_aligned: u32,
-    offset: u32,
-    array_count: i32,
-};
+const ffi_classify = @import("ffi_classify.zig");
 
-/// `JanetFFIArgSlot`: one argument as a convention sees it.
-const ArgSlot = extern struct {
-    size: u64,
-    prim: u32,
-    spec: u32,
-    alignment: u32,
-    offset: u32,
-    offset2: u32,
-};
-
-/// `JanetFFIAllocResult`.
-///
-/// `arg_stack_count` is Part 16's addition and is appended rather than placed
-/// where it belongs, so that the field order the two `-Dffi-classify` arms
-/// already agree on is left alone. It is the *outgoing* part of the frame in
-/// words, where `stack_count` is the whole frame including the by-reference
-/// payloads that follow it -- a distinction C never had to draw, because one
-/// `alloca` served both purposes and neither half was ever passed as an
-/// argument.
-const AllocResult = extern struct {
-    stack_count: u32,
-    variant: u32,
-    error_kind: u32,
-    error_arg: i32,
-    arg_stack_count: u32,
-};
+const TypeNode = ffi_classify.TypeNode;
+const ArgSlot = ffi_classify.ArgSlot;
+const AllocResult = ffi_classify.AllocResult;
 
 const alloc_ok: u32 = 0;
 const alloc_unsupported_spec: u32 = 1;
 const alloc_return_too_big: u32 = 2;
-
-extern fn janet_ffi_sysv64_classify(nodes: [*]const TypeNode, count: u32) callconv(.c) u32;
-extern fn janet_ffi_aapcs64_classify(nodes: [*]const TypeNode, count: u32) callconv(.c) u32;
-extern fn janet_ffi_win64_alloc(result: *AllocResult, ret: *ArgSlot, args: [*]ArgSlot, arg_count: u32) callconv(.c) void;
-extern fn janet_ffi_sysv64_alloc(result: *AllocResult, ret: *ArgSlot, args: [*]ArgSlot, arg_count: u32) callconv(.c) void;
-extern fn janet_ffi_aapcs64_alloc(
-    result: *AllocResult,
-    ret: *ArgSlot,
-    args: [*]ArgSlot,
-    arg_count: u32,
-    apple_abi: c_int,
-    max_ret_size: u64,
-) callconv(.c) void;
 
 // ==========================================================================
 // The return shapes the variant tables name
@@ -152,6 +114,10 @@ const Sysv64SseIntReturn = extern struct { y: f64, x: u64 };
 
 const Aapcs64ReturnGeneral = extern struct { a: u64, b: u64 };
 const Aapcs64ReturnSse = extern struct { a: f64, b: f64, c: f64, d: f64 };
+
+/// The most members an AAPCS64 homogeneous floating-point aggregate may have,
+/// which is what makes `Aapcs64ReturnSse` four wide.
+const max_hfa_members = 4;
 /// The workaround for passing a return-value pointer through `x8`, which is
 /// what limits a struct return to 128 bytes.
 const Aapcs64ReturnPointer = extern struct { w: [16]u64 };
@@ -380,11 +346,31 @@ fn classify(cc: Cc, ty: Type) Spec {
         &node_buf;
     _ = serializeType(nodes, 0, ty, 0);
     const spec = if (cc == .aapcs64)
-        janet_ffi_aapcs64_classify(nodes, count)
+        ffi_classify.classifyAapcs64(nodes[0..count])
     else
-        janet_ffi_sysv64_classify(nodes, count);
+        ffi_classify.classifySysv64(nodes[0..count]);
     if (heap) c.janet_sfree(nodes);
     return @enumFromInt(spec);
+}
+
+/// How many vector registers an AAPCS64 homogeneous floating-point aggregate
+/// occupies, or zero where the question does not arise.
+///
+/// §6.8.2 gives an HFA **one register per member**. The C implementation sized
+/// it by bytes, which agrees only when a member is exactly eight bytes wide --
+/// so an aggregate of `double` was right by coincidence and one of `float` got
+/// half the registers it needed, with two members written into each. See
+/// `FOUND.md`.
+///
+/// Zero for a scalar and for a top-level array, whose extent both conventions
+/// ignore for a reason `FOUND.md` records separately; the byte arithmetic
+/// stands there, which is where it was always right. The classifier has
+/// already decided this argument is an HFA, so the only question left is how
+/// many members it has.
+fn hfaMembers(ty: Type) u32 {
+    if (ty.prim != .@"struct") return 0;
+    const st = ty.st orelse return 0;
+    return st.field_count;
 }
 
 /// `ffi_slot_of`.
@@ -396,6 +382,7 @@ fn slotOf(ty: Type, spec: Spec) ArgSlot {
         .alignment = @intCast(types.typeAlign(ty)),
         .offset = 0,
         .offset2 = 0,
+        .hfa_members = if (spec == .aapcs64_sse) hfaMembers(ty) else 0,
     };
 }
 
@@ -441,7 +428,16 @@ fn applySlots(
 // ==========================================================================
 
 pub fn signature(argc: i32, argv: [*c]const c.Janet) raise.Raising(c.Janet) {
-    try arglayer.arity(argc, 2, -1);
+    // The upper bound is `FOUND.md`'s one-line repair, taken in Phase 11 Part
+    // 17 and a deliberate divergence from upstream. C checked only the lower
+    // bound, so `arg_count` was whatever the caller passed and the loop below
+    // filled `mappings` and `slots` past their ends -- into this frame and
+    // then into its caller's, with no native library and no call involved,
+    // since `ffi/signature` only describes one. The bound is on `argc` and the
+    // first two arguments are the convention and the return type, so it admits
+    // exactly `max_args` argument types and refuses a signature the structure
+    // could never have represented.
+    try arglayer.arity(argc, 2, @intCast(types.max_args + 2));
     const arg_count: u32 = @intCast(argc - 2);
     const cc = try types.decodeCc(try arglayer.getKeyword(argv, 0));
     const ret_type = try types.decodeType(argv[1]);
@@ -477,7 +473,7 @@ pub fn signature(argc: i32, argv: [*c]const c.Janet) raise.Raising(c.Janet) {
                 mappings[i].type = try types.decodeType(argv[i + 2]);
                 slots[i] = slotOf(mappings[i].type, .win64_register);
             }
-            janet_ffi_win64_alloc(&alloc, &ret_slot, &slots, arg_count);
+            ffi_classify.allocWin64(&alloc, &ret_slot, slots[0..arg_count]);
             try checkAlloc(&alloc);
             try checkStackCeiling(alloc.arg_stack_count, &win64_ladder);
             applySlots(&ret, &mappings, arg_count, &ret_slot, &slots);
@@ -496,7 +492,7 @@ pub fn signature(argc: i32, argv: [*c]const c.Janet) raise.Raising(c.Janet) {
                 if (spec == .sysv64_no_class) return raise.panic("unexpected void parameter");
                 slots[i] = slotOf(mappings[i].type, spec);
             }
-            janet_ffi_sysv64_alloc(&alloc, &ret_slot, &slots, arg_count);
+            ffi_classify.allocSysv64(&alloc, &ret_slot, slots[0..arg_count]);
             try checkAlloc(&alloc);
             try checkStackCeiling(alloc.arg_stack_count, &sysv64_ladder);
             applySlots(&ret, &mappings, arg_count, &ret_slot, &slots);
@@ -519,12 +515,11 @@ pub fn signature(argc: i32, argv: [*c]const c.Janet) raise.Raising(c.Janet) {
                 mappings[i].type = try types.decodeType(argv[i + 2]);
                 slots[i] = slotOf(mappings[i].type, classify(cc, mappings[i].type));
             }
-            janet_ffi_aapcs64_alloc(
+            ffi_classify.allocAapcs64(
                 &alloc,
                 &ret_slot,
-                &slots,
-                arg_count,
-                @intFromBool(builtin.os.tag.isDarwin()),
+                slots[0..arg_count],
+                builtin.os.tag.isDarwin(),
                 aapcs64_return_size,
             );
             try checkAlloc(&alloc);
@@ -730,6 +725,32 @@ fn callWin64(sig: *Signature, function_pointer: *const anyopaque, argv: [*c]cons
     return marshal.readOne(ret_mem, sig.ret.type, types.max_recur);
 }
 
+/// The mirror of the scatter above, for a returned HFA.
+///
+/// Each member comes back in its own vector register, so `Aapcs64ReturnSse`
+/// lands them in the buffer eight bytes apart; `readOne` expects the type's
+/// natural layout, which for members narrower than a register is tighter. A
+/// four-member aggregate of `double` needs no gathering and gets one anyway,
+/// because at eight bytes a member the two layouts coincide and the copy is a
+/// move of each word onto itself.
+///
+/// This half is not in `FOUND.md`'s entry, which describes only the outgoing
+/// direction. It is the same defect read backwards, and Phase 11 Part 18 found
+/// it by asking whether it could be: `ret_hfa2` answered `(1.5 0)`.
+fn gatherHfaReturn(buffer: [*]u8, ty: Type) void {
+    const members = hfaMembers(ty);
+    if (members <= 1) return;
+    const member_size = @as(usize, @intCast(types.typeSize(ty))) / members;
+    var gathered: [max_hfa_members * @sizeOf(f64)]u8 align(8) = undefined;
+    var member: u32 = 0;
+    while (member < members) : (member += 1) {
+        const from = @as(usize, member) * @sizeOf(f64);
+        const to = @as(usize, member) * member_size;
+        @memcpy(gathered[to .. to + member_size], buffer[from .. from + member_size]);
+    }
+    @memcpy(buffer[0 .. @as(usize, members) * member_size], gathered[0 .. @as(usize, members) * member_size]);
+}
+
 /// AAPCS64. Eight general registers, eight vector registers, a stack measured
 /// in bytes rather than words, and three return variants.
 fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: [*c]const c.Janet) raise.Raising(c.Janet) {
@@ -739,15 +760,25 @@ fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: [*c]co
     const ret_mem: [*]u8 = &ret_buf;
 
     var frame_buf: [inline_frame_bytes]u8 align(16) = undefined;
-    const frame = Frame.init(&frame_buf, aapcs64FrameBytes(sig));
+    const frame = Frame.init(&frame_buf, sig.stack_count);
+
+    // Where a multi-member HFA is marshalled before being dealt out one member
+    // to a register. `max_hfa_members` of the widest member is its bound.
+    var hfa_buf: [max_hfa_members * @sizeOf(f64)]u8 align(8) = undefined;
 
     var i: u32 = 0;
     while (i < sig.arg_count) : (i += 1) {
         const n: i32 = @intCast(i + 2);
         const arg = sig.args[i];
+        // An HFA occupies one register per member, and `writeOne` lays a
+        // struct out at its natural offsets -- which for members narrower than
+        // a register packs two of them into the first. So it is written to
+        // scratch and scattered afterwards. A single-member aggregate and a
+        // scalar need neither.
+        const scatter: u32 = if (arg.spec == .aapcs64_sse) hfaMembers(arg.type) else 0;
         const to: [*]u8 = switch (arg.spec) {
             .aapcs64_general => @ptrCast(&gen[arg.offset]),
-            .aapcs64_sse => @ptrCast(&fp[arg.offset]),
+            .aapcs64_sse => if (scatter > 1) &hfa_buf else @ptrCast(&fp[arg.offset]),
             .aapcs64_general_ref => blk: {
                 const payload = frame.at(arg.offset2);
                 gen[arg.offset] = @intFromPtr(payload);
@@ -756,16 +787,26 @@ fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: [*c]co
             .aapcs64_stack => frame.at(arg.offset),
             .aapcs64_stack_ref => blk: {
                 const payload = frame.at(arg.offset2);
-                // `(uint64_t *) stack + arg.offset` in C, where `arg.offset`
-                // is already a byte offset -- see `FOUND.md`. Reproduced, with
-                // the frame grown to keep the write inside it.
-                const slot: *align(1) u64 = @ptrCast(frame.at(@as(usize, arg.offset) * @sizeOf(u64)));
+                // A byte offset, like every other arm of this switch and like
+                // the `aapcs64_stack` case three lines up. C read it as a word
+                // index and wrote the pointer eight times further out --
+                // usually past its own `alloca` block. See `FOUND.md`.
+                const slot: *align(1) u64 = @ptrCast(frame.at(arg.offset));
                 slot.* = @intFromPtr(payload);
                 break :blk payload;
             },
             else => return raise.panic("nyi"),
         };
         try marshal.writeOne(to, argv, n, arg.type, types.max_recur);
+        if (scatter > 1) {
+            const member_size = @as(usize, @intCast(types.typeSize(arg.type))) / scatter;
+            var member: u32 = 0;
+            while (member < scatter) : (member += 1) {
+                const register: [*]u8 = @ptrCast(&fp[arg.offset + member]);
+                const from = @as(usize, member) * member_size;
+                @memcpy(register[0..member_size], hfa_buf[from .. from + member_size]);
+            }
+        }
     }
 
     const fps: [8]f64 = @bitCast(fp);
@@ -787,28 +828,12 @@ fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: [*c]co
         else => {},
     }
 
+    // Variant 1 is the vector-register return, and it is the only one whose
+    // members arrive one to a register.
+    if (sig.variant == 1) gatherHfaReturn(ret_mem, sig.ret.type);
+
     frame.release();
     return marshal.readOne(ret_mem, sig.ret.type, types.max_recur);
-}
-
-/// How many bytes AAPCS64's frame needs.
-///
-/// `stack_count` is the answer C allocated, and it is not always enough: the
-/// `JANET_AAPCS64_STACK_REF` arm indexes a byte offset as though it were a
-/// word index, so the pointer it stores can land up to eight times further out
-/// than the allocator planned for. The defect is reproduced rather than
-/// repaired, which means the frame has to cover where it writes -- in C that
-/// write went past the `alloca` block and into the caller's own frame, which
-/// is undefined and so is not something a port has to imitate exactly.
-fn aapcs64FrameBytes(sig: *Signature) usize {
-    var bytes: usize = sig.stack_count;
-    var i: u32 = 0;
-    while (i < sig.arg_count) : (i += 1) {
-        if (sig.args[i].spec != .aapcs64_stack_ref) continue;
-        const end = (@as(usize, sig.args[i].offset) + 1) * @sizeOf(u64);
-        if (end > bytes) bytes = end;
-    }
-    return bytes;
 }
 
 // ==========================================================================
@@ -820,7 +845,18 @@ fn aapcs64FrameBytes(sig: *Signature) usize {
 /// One signature, in each calling convention, rather than runtime code
 /// generation -- which is prohibited on many platforms, often buggy, and
 /// generally complicated. Every callback eventually arrives here.
-export fn janet_ffi_trampoline(ctx: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
+///
+/// A raise is *reported* rather than propagated, and that is not this phase's
+/// swallowed-report family: there is no scope above a callback to raise into.
+/// A C library called us; the frames between here and any Janet scope belong
+/// to it. `raise.reported` is what a boundary with nowhere to return an error
+/// to looks like, which is the same argument `abstract_type.zig` makes for
+/// typing `gc` and `gcmark` non-raising.
+///
+/// It was an `export fn` until Phase 11 Part 16 and had no header declaring
+/// it. The three wrappers below hand out *addresses*, never the name, so the
+/// symbol's only reader was `test/ffi_core.c`.
+pub fn callbackEntry(ctx: ?*anyopaque, userdata: ?*anyopaque) void {
     if (userdata == null) {
         // `janet_eprintf` is a variadic macro and does not survive
         // translation; `io.c`'s `stdio.err` is how a Zig source names
@@ -833,19 +869,18 @@ export fn janet_ffi_trampoline(ctx: ?*anyopaque, userdata: ?*anyopaque) callconv
     _ = raise.reported(vm_entry.callImpl(fun, 1, &context));
 }
 
-
 /// The three exist so that each convention hands out a pointer of its own,
 /// which is the only thing that distinguishes them.
 fn sysv64Callback(ctx: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
-    janet_ffi_trampoline(ctx, userdata);
+    callbackEntry(ctx, userdata);
 }
 
 fn win64Callback(ctx: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
-    janet_ffi_trampoline(ctx, userdata);
+    callbackEntry(ctx, userdata);
 }
 
 fn aapcs64Callback(ctx: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
-    janet_ffi_trampoline(ctx, userdata);
+    callbackEntry(ctx, userdata);
 }
 
 pub fn trampoline(argc: i32, argv: [*c]const c.Janet) raise.Raising(c.Janet) {

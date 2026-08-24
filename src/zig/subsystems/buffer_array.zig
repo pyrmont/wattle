@@ -52,7 +52,7 @@
 //! ends the process through `JANET_OUT_OF_MEMORY`, which `protect` cannot catch.
 //! `FOUND.md` records both symptoms and the measurement; they are left unfixed
 //! under the usual rule and reproduced exactly here, so that the two selectors
-//! misbehave identically. `test/buffer_array.c` pins them.
+//! misbehave identically. `test/buffer_array.zig` pins them.
 //!
 //! Two smaller asymmetries between the C originals are preserved for the same
 //! reason, and neither is a defect:
@@ -102,8 +102,8 @@ inline fn asSize(n: i32) usize {
 
 /// Recover a string's head from its data pointer. Same shape as `gc_sweep.zig`
 /// uses: `@sizeOf` rather than `@offsetOf`, because translate-c drops the
-/// flexible array member and the two are equal for this layout. `test/gc_sweep.c`
-/// already pins that equality from C.
+/// flexible array member and the two are equal for this layout. `test/abi.c`
+/// pins that equality from C, where `offsetof` still exists.
 inline fn stringHead(s: [*c]const u8) *c.JanetStringHead {
     return @ptrFromInt(@intFromPtr(s) -% @sizeOf(c.JanetStringHead));
 }
@@ -122,18 +122,14 @@ inline fn stringLength(s: [*c]const u8) i32 {
 /// function was `static` in `buffer.c`, and `cfun_buffer_trim` called it from
 /// the standard-library half of the file that stayed in C, so it is exported
 /// here and declared in `util.h` beside the other cross-file buffer helpers.
-/// Phase 10 Part 6 brought that caller here too, so the declaration is now for
-/// `buffer.c`'s benefit under `-Dbuffer-array=c` and nothing else.
-/// Duplicating it instead would put the same policy in two places and let them
-/// drift; one definition and three words of declaration is cheaper.
+/// Phase 10 Part 6 brought that caller here too, and Phase 11 Part 9 took the
+/// `janet_buffer_can_realloc` face with `test/buffer_array.c`: `util.h` was
+/// the only header that declared it, the migrated contract calls this function
+/// directly, and `cfunBufferTrim` below is the last caller in the tree.
 pub fn canRealloc(buffer: *c.JanetBuffer) raise.Raising(void) {
     if ((buffer.gc.flags & buffer_flag_no_realloc) != 0) {
         return raise.panic("buffer cannot reallocate foreign memory");
     }
-}
-
-export fn janet_buffer_can_realloc(buffer: *c.JanetBuffer) callconv(.c) void {
-    raise.reported(canRealloc(buffer));
 }
 
 /// Give a buffer its initial payload. Shared by the collectable and the

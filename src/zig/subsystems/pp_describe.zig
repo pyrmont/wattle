@@ -135,11 +135,15 @@ fn shortEscape(byte: u8) ?*const [2]u8 {
 /// occupies, which is what the pretty printer adds to its alignment.
 ///
 /// `pp_pretty.zig` calls this directly, as an import rather than across the C
-/// ABI. The C name below exists for `test/pp_describe.c`, which asserts the
-/// returned width: nothing else observes it, and a width consistently two too
-/// small would show up only as slightly wrong wrapping in output no test
-/// compares.
-fn escapeStringImpl(buffer: *c.JanetBuffer, str: [*c]const u8, len: i32) raise.Raising(i32) {
+/// ABI, and since Phase 11 Part 5 so does `test/pp_describe.zig`. **The C face
+/// that stood beside this is gone**: `janet_zig_pp_escape_string` existed for
+/// `pp.c` under the other selector and outlived it by one caller, the C
+/// contract, which asserted the returned width because nothing else observes
+/// it — a width consistently two too small would show up only as slightly
+/// wrong wrapping in output no test compares. The Zig contract asserts the
+/// same thing through this function and takes the error, so the face and its
+/// `@export` have no callers left.
+pub fn escapeStringImpl(buffer: *c.JanetBuffer, str: [*c]const u8, len: i32) raise.Raising(i32) {
     try containers.bufferPushU8(buffer, '"');
     var align_count: i32 = 1;
     var i: i32 = 0;
@@ -159,17 +163,6 @@ fn escapeStringImpl(buffer: *c.JanetBuffer, str: [*c]const u8, len: i32) raise.R
     }
     try containers.bufferPushU8(buffer, '"');
     return align_count + 1;
-}
-
-/// The C face. `pp.c` declares `janet_zig_pp_escape_string` under the other
-/// selector, so the symbol has to exist with the C convention; every Zig
-/// caller reaches `escapeStringImpl` and gets the error instead.
-pub fn escapeString(buffer: *c.JanetBuffer, str: [*c]const u8, len: i32) callconv(.c) i32 {
-    return raise.reported(escapeStringImpl(buffer, str, len));
-}
-
-comptime {
-    if (options.pp) @export(&escapeString, .{ .name = "janet_zig_pp_escape_string" });
 }
 
 fn escapeStringB(buffer: *c.JanetBuffer, str: c.JanetString) raise.Raising(void) {

@@ -24,7 +24,7 @@
 #define JANET_STATE_H_defined
 
 #ifndef JANET_AMALG
-#include "features.h"
+#include "janet_features.h"
 #include <janet.h>
 #include <stdint.h>
 #endif
@@ -238,21 +238,6 @@ struct JanetVM {
 
 extern JANET_THREAD_LOCAL JanetVM janet_vm;
 
-/* The view of JanetVM held by whichever implementation owns the state:
- * src/core/state.c, or src/zig/subsystems/vm_state.zig. janet_vm_save and
- * janet_vm_load copy the whole structure, so the owner's size is the length
- * those copies use, and test/vm_state.c compares it against the C compiler's. */
-size_t janet_vm_state_size(void);
-size_t janet_vm_state_align(void);
-
-/* Janet is built as C99, which has no _Alignof, so the alignment both sides
- * report is the classic offsetof-after-a-char probe. The type is here rather
- * than local to either side so that the contract measures the same thing. */
-typedef struct {
-    char pad;
-    JanetVM vm;
-} JanetVMAlignProbe;
-
 /* ---------------------------------------------------------------- signals */
 
 /* How janet_zig_signal_record decides what a raise means here. Through Phase 9
@@ -274,7 +259,6 @@ typedef enum {
 } JanetSignalPlan;
 
 JanetSignalPlan janet_signal_plan(JanetSignal sig, JanetSignal *out_sig);
-void janet_signal_commit(const Janet *message);
 void janet_signal_inject(JanetFiber *fiber, JanetSignal sig);
 
 /* ----------------------------------------------------------------- traces */
@@ -316,14 +300,6 @@ typedef enum {
  * neither this structure nor its producer.
  *
  * Provided by src/core/debug.c or src/zig/subsystems/trace_frames.zig. */
-/* One stack frame decoded into the table debug/stack reports, which is the
- * other consumer of the decoding below. It was `doframe`, a static in debug.c
- * that read a JanetStackFrame independently and had already drifted from the
- * decoder beside it.
- *
- * Provided by src/core/debug.c or src/zig/subsystems/debug_frames.zig. */
-Janet janet_debug_frame(JanetStackFrame *frame);
-
 typedef struct {
     const char *name;         /* NULL unless name_kind names one */
     const char *name_prefix;  /* NULL unless a registered cfunction has one */
@@ -494,33 +470,6 @@ const JanetMethod *janet_arg_nextmethod(const JanetMethod *methods, Janet key);
  * needs a way to report what it found. */
 JANET_NO_RETURN void janet_arg_raise(const Janet *argv, const JanetArgFault *fault);
 
-/* ------------------------------------------------ interpreter callees */
-
-/* The callee side of the interpreter: what run_vm delegates to when the thing
- * it is about to call is not a plain Janet function, plus the three loops that
- * fill a collection from the fiber stack.
- *
- * Every one of these raises, and most of them do nothing else: they reach
- * third-party cfunctions, an abstract type's call callback, janet_call,
- * janet_get, janet_in, janet_table_put, janet_struct_put and
- * janet_to_string_b. A caller that cannot afford a longjmp has to place a
- * scope of its own; run_vm does exactly that under JANET_CALL_TRAMPOLINE.
- *
- * Five of these were statics in vm.c whose names were too general to put in a
- * library's symbol table, and carry a janet_ prefix here that the C original
- * did not have: janet_call_nonfn, janet_resolve_method, and the three fills.
- *
- * Provided by src/core/vm.c or src/zig/subsystems/vm_calls.zig. */
-Janet janet_method_invoke(Janet method, int32_t argc, Janet *argv);
-Janet janet_call_nonfn(JanetFiber *fiber, Janet callee);
-Janet janet_resolve_method(Janet name, JanetFiber *fiber);
-Janet janet_method_lookup(Janet x, const char *name);
-Janet janet_unary_call(const char *method, Janet arg);
-Janet janet_binop_call(const char *lmethod, const char *rmethod, Janet lhs, Janet rhs);
-void janet_fill_table(JanetTable *table, const Janet *mem, int32_t count);
-void janet_fill_struct(JanetKV *st, const Janet *mem, int32_t count);
-void janet_fill_string(JanetBuffer *buffer, const Janet *mem, int32_t count);
-
 /* ------------------------------------------------------ raising a signal */
 
 /* The two halves of a raise, split in Phase 10 Part 2 so that a Zig caller and
@@ -569,16 +518,6 @@ JANET_NO_RETURN void janet_top_level_signal(const char *msg);
  * Provided by src/core/vm.c or src/zig/subsystems/vm_run.zig. */
 JanetSignal janet_run_vm(JanetFiber *fiber, Janet in);
 
-/* The gate every resume passes through, and the one function on this path that
- * is not selectable at all.
- *
- * janet_check_can_resume moved to the entry points in Part 4 and is provided by
- * src/core/vm.c or src/zig/subsystems/vm_entry.zig. janet_continue_no_check is
- * always src/core/vm.c: Phase 7's fourth rule keeps it there because it holds
- * the jmp_buf every fiber resume re-establishes. That makes it the hinge of a
- * seam that runs in both directions — it calls janet_run_vm downward and
- * janet_continue sideways, and either may be the Zig side. */
-JanetSignal janet_check_can_resume(JanetFiber *fiber, Janet *out, int is_cancel);
 JanetSignal janet_continue_no_check(JanetFiber *fiber, Janet in, Janet *out);
 
 /* janet_vm_trace and janet_vm_trace_argv stood here. They are vm_run.zig's

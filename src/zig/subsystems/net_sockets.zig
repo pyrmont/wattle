@@ -87,9 +87,17 @@ extern fn janet_strerror(e: c_int) callconv(.c) [*c]const u8;
 /// `make_stream`. Every socket this file produces is `NODUPS`, which is what
 /// lets `janet_stream_close` skip the unregister: nothing has duplicated the
 /// descriptor, so closing it removes it from the poll set for free.
-fn makeStream(handle: JSock, flags: u32) *c.JanetStream {
+///
+/// Raising, since Phase 11 Part 15: `registerStream` refuses a descriptor the
+/// backend will not take, and every caller below is inside a `raise.Raising`
+/// function — the four cfunctions, and both halves of the accept callback,
+/// because `ev_callback.EVCallback` is `raise.Error!void` too. They reached
+/// the C face until that part, so the refusal became a report nobody consumed
+/// and `raise.reported`'s `blank(*JanetStream)` — a null pointer — was
+/// dereferenced on top of it.
+fn makeStream(handle: JSock, flags: u32) raise.Raising(*c.JanetStream) {
     const jh: c.JanetHandle = if (windows) @ptrFromInt(handle) else handle;
-    return c.janet_stream(jh, flags | stream_socket | stream_nodups, @ptrCast(&net_stream_methods));
+    return evloop.makeStream(jh, flags | stream_socket | stream_nodups, @ptrCast(&net_stream_methods));
 }
 
 /// `janet_net_socknoblock`: make sure a socket does not block, and on the
@@ -283,7 +291,7 @@ fn net_callback_accept(fiber: [*c]c.JanetFiber, event: c.JanetAsyncEvent) raise.
             if (windows) {
                 try acceptWindows(fiber, state, event);
             } else {
-                acceptPosix(fiber, state, event);
+                try acceptPosix(fiber, state, event);
             }
         },
     }
@@ -317,7 +325,7 @@ fn acceptWindows(fiber: [*c]c.JanetFiber, state: *NetStateAccept, event: c.Janet
         sub_fiber.*.supervisor_channel = fiber.*.supervisor_channel;
         c.janet_schedule(sub_fiber, c.janet_wrap_nil());
         var err: c.Janet = undefined;
-        if (schedAcceptImpl(state, fiber, &err)) {
+        if (try schedAcceptImpl(state, fiber, &err)) {
             try evloop.cancel(fiber, err);
             c.janet_async_end(fiber);
         }
@@ -327,18 +335,22 @@ fn acceptWindows(fiber: [*c]c.JanetFiber, state: *NetStateAccept, event: c.Janet
     }
 }
 
-fn acceptPosix(fiber: [*c]c.JanetFiber, state: *NetStateAccept, event: c.JanetAsyncEvent) void {
+/// Raising, as `acceptWindows` beside it already was. A callback in this fork
+/// is `raise.Error!void`, so an accept whose stream the backend refuses
+/// reports the way that function's `failed to accept connection` does rather
+/// than carrying on with a null stream.
+fn acceptPosix(fiber: [*c]c.JanetFiber, state: *NetStateAccept, event: c.JanetAsyncEvent) raise.Raising(void) {
     if (event != c.JANET_ASYNC_EVENT_INIT and event != c.JANET_ASYNC_EVENT_READ) return;
     const stream: *c.JanetStream = fiber.*.ev_stream;
     const connfd: JSock = if (builtin.os.tag == .linux)
-        h.accept4(sockOf(stream), null, null, h.SOCK_CLOEXEC)
+        net_abi.accept4(sockOf(stream), null, null, h.SOCK_CLOEXEC)
     else
         // On BSDs, CLOEXEC should be inherited from server socket.
-        h.accept(sockOf(stream), null, null);
+        net_abi.accept(sockOf(stream), null, null);
     if (!net_abi.sockValid(connfd)) return;
 
     sockNoBlock(connfd);
-    const astream = makeStream(connfd, stream_readable | stream_writable);
+    const astream = try makeStream(connfd, stream_readable | stream_writable);
     const streamv = c.janet_wrap_abstract(astream);
     if (state.function) |f| {
         const sub_fiber = c.janet_fiber(f, 64, 1, &streamv);
@@ -352,14 +364,17 @@ fn acceptPosix(fiber: [*c]c.JanetFiber, state: *NetStateAccept, event: c.JanetAs
 
 /// `net_sched_accept_impl`, the Windows half: put an accepting socket and a
 /// buffer in flight. True on failure, with `*err` set.
-fn schedAcceptImpl(state: *NetStateAccept, fiber: [*c]c.JanetFiber, err: *c.Janet) bool {
+fn schedAcceptImpl(state: *NetStateAccept, fiber: [*c]c.JanetFiber, err: *c.Janet) raise.Raising(bool) {
     const lsock = sockOf(state.lstream.?);
     const asock = h.WSASocketW(h.AF_INET, h.SOCK_STREAM, h.IPPROTO_TCP, null, 0, h.WSA_FLAG_OVERLAPPED);
     if (asock == h.INVALID_SOCKET) {
         err.* = c.janet_ev_lasterr();
         return true;
     }
-    state.astream = makeStream(asock, stream_readable | stream_writable);
+    // `try` rather than this function's `err`/`true` protocol: that protocol
+    // is for a failure `janet_ev_lasterr` describes, and a refused
+    // registration already carries its own message.
+    state.astream = try makeStream(asock, stream_readable | stream_writable);
     const socksize: h.DWORD = @sizeOf(h.SOCKADDR_STORAGE) + 16;
     if (h.AcceptEx(lsock, asock, &state.buf, 0, socksize, socksize, null, @ptrCast(&state.overlapped.as)) == 0) {
         if (h.WSAGetLastError() == h.WSA_IO_PENDING) {
@@ -383,7 +398,7 @@ fn schedAccept(stream: *c.JanetStream, fun: ?*c.JanetFunction) raise.Error {
     if (windows) {
         state.lstream = stream;
         var err: c.Janet = undefined;
-        if (schedAcceptImpl(state, c.janet_root_fiber(), &err)) {
+        if (try schedAcceptImpl(state, c.janet_root_fiber(), &err)) {
             c.janet_free(state);
             return raise.panicv(err);
         }
@@ -401,10 +416,13 @@ fn schedAccept(stream: *c.JanetStream, fun: ?*c.JanetFunction) raise.Error {
 // ==========================================================================
 
 fn getStream(argv: [*c]const c.Janet, n: i32) raise.Raising(*c.JanetStream) {
-    return @ptrCast(@alignCast(try arglayer.getAbstract(argv, n, abstract_type.stored(&janet_stream_type))));
+    return @ptrCast(@alignCast(try arglayer.getAbstract(argv, n, abstract_type.stored(&ev_stream.janet_stream_type))));
 }
 
-extern const janet_stream_type: abstract_type.AbstractType;
+// The stream type is reached through the `ev_stream` import at the head of
+// this file. It was an `extern const janet_stream_type` here until Phase 11
+// Part 22 -- declared beside an import of the very file that defines it, which
+// is the same thing `ev_loop.zig` was doing.
 
 /// `cfun_net_connect`, registered as `net/connect`.
 fn connectImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
@@ -486,7 +504,7 @@ fn connectImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
         var did_bind = false;
         var rp = binding;
         while (rp != null) : (rp = rp.*.ai_next) {
-            if (h.bind(sock, rp.*.ai_addr, @intCast(rp.*.ai_addrlen)) == 0) {
+            if (net_abi.bind(sock, rp.*.ai_addr, @intCast(rp.*.ai_addrlen)) == 0) {
                 did_bind = true;
                 break;
             }
@@ -503,7 +521,7 @@ fn connectImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
 
     // Wrap socket in abstract type JanetStream.
     const udp_flag: u32 = if (socktype == h.SOCK_DGRAM) stream_udpserver else 0;
-    const stream = makeStream(sock, stream_readable | stream_writable | udp_flag);
+    const stream = try makeStream(sock, stream_readable | stream_writable | udp_flag);
 
     // Connect to socket.
     var status: c_int = undefined;
@@ -537,7 +555,7 @@ fn connectImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
         // Set up the socket for non-blocking IO before connecting.
         sockNoBlock(sock);
         while (true) {
-            status = h.connect(sock, sa, addrlen);
+            status = net_abi.connect(sock, sa, addrlen);
             if (!(status == -1 and errno() == h.EINTR)) break;
         }
         err = errno();
@@ -602,7 +620,7 @@ fn socketImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
 
     // Wrap socket in abstract type JanetStream.
     const udp_flag: u32 = if (socktype == h.SOCK_DGRAM) stream_udpserver else 0;
-    const stream = makeStream(sfd, stream_readable | stream_writable | udp_flag);
+    const stream = try makeStream(sfd, stream_readable | stream_writable | udp_flag);
 
     // Set up the socket for non-blocking IO.
     sockNoBlock(sfd);
@@ -668,7 +686,7 @@ fn listenImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
                 return pp_format.panicf("could not create socket: %V", .{c.janet_ev_lasterr()});
             }
             const serr = serverifySocket(sfd, reuse, false);
-            if (serr != null or h.bind(sfd, @ptrCast(un), info.size) != 0) {
+            if (serr != null or net_abi.bind(sfd, @ptrCast(un), info.size) != 0) {
                 net_abi.sockClose(sfd);
                 info.free();
                 if (serr) |message| return raise.panic(message);
@@ -687,7 +705,7 @@ fn listenImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
                 net_abi.sockClose(sfd);
                 continue;
             }
-            if (h.bind(sfd, rp.*.ai_addr, @intCast(rp.*.ai_addrlen)) == 0) break;
+            if (net_abi.bind(sfd, rp.*.ai_addr, @intCast(rp.*.ai_addrlen)) == 0) break;
             net_abi.sockClose(sfd);
         }
         const found = rp != null;
@@ -697,7 +715,7 @@ fn listenImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
 
     if (socktype == h.SOCK_DGRAM) {
         // Datagram server (UDP).
-        return c.janet_wrap_abstract(makeStream(sfd, stream_udpserver | stream_readable));
+        return c.janet_wrap_abstract(try makeStream(sfd, stream_udpserver | stream_readable));
     }
 
     // Stream server (TCP).
@@ -706,7 +724,7 @@ fn listenImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
         return pp_format.panicf("could not listen on file descriptor: %V", .{c.janet_ev_lasterr()});
     }
     // Put sfd on our loop.
-    return c.janet_wrap_abstract(makeStream(sfd, stream_acceptable));
+    return c.janet_wrap_abstract(try makeStream(sfd, stream_acceptable));
 }
 
 /// `cfun_stream_accept_loop`, registered as `net/accept-loop`.

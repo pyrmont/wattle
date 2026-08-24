@@ -66,6 +66,7 @@ const raise = @import("raise");
 const pp_format = @import("pp_format.zig");
 const c = abi.c;
 const host_stat = @import("host_stat.zig");
+const evloop = @import("evloop.zig");
 const lifecycle = @import("lifecycle.zig");
 const containers = @import("containers.zig");
 const arglayer = @import("arglayer.zig");
@@ -126,9 +127,11 @@ extern fn janet_os_mode_name(mode: u32) callconv(.c) [*:0]const u8;
 extern fn janet_os_decode_permissions(mode: u32) callconv(.c) i32;
 extern fn janet_os_perm_to_unix(mode: u32) callconv(.c) i32;
 extern fn janet_os_perm_from_unix(permissions: i32) callconv(.c) u32;
-extern fn janet_os_stat_field_count() callconv(.c) i32;
-extern fn janet_os_stat_field_name(index: i32) callconv(.c) ?[*:0]const u8;
-extern fn janet_os_stat_field_lookup(key: [*]const u8, len: i32) callconv(.c) i32;
+/// `-Dos-stat`'s field registry, by import. These were `export fn`s reached
+/// back through the linker, which is the shape `os.c` needed; Phase 11 Part 20
+/// spent the three symbols along with `test/os_surface.c`, their last reader
+/// outside this file.
+const os_stat = @import("os_stat.zig");
 
 extern fn janet_os_parse_permissions(perm: [*]const u8) callconv(.c) i32;
 extern fn janet_os_format_permissions(permissions: i32, out: [*]u8) callconv(.c) void;
@@ -525,18 +528,18 @@ fn statOrLstat(do_lstat: bool, argc: i32, argv: [*c]c.Janet) raise.Raising(c.Jan
     }
 
     if (key) |k| {
-        const field = janet_os_stat_field_lookup(k, c.janet_string_length(k));
+        const field = os_stat.fieldLookup(k, c.janet_string_length(k));
         if (field < 0) return pp_format.panicf("unexpected keyword %v", .{c.janet_wrap_keyword(k)});
         return statField(@enumFromInt(field), mode, &numbers);
     }
     // The registry's count is `-Dos-stat`'s, and this walks it rather than
     // `field_count` so that the two cannot silently disagree.
-    const count = janet_os_stat_field_count();
+    const count = os_stat.fieldCount();
     var field: i32 = 0;
     while (field < count) : (field += 1) {
         c.janet_table_put(
             tab.?,
-            c.janet_ckeywordv(janet_os_stat_field_name(field).?),
+            c.janet_ckeywordv(os_stat.fieldName(field).?),
             statField(@enumFromInt(field), mode, &numbers),
         );
     }
@@ -741,7 +744,7 @@ fn openImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
         if (fd == -1) return raise.panicv(c.janet_ev_lasterr());
     }
     const flags = if (scan.disable_stream_mode) 0 else scan.stream_flags;
-    return c.janet_wrap_abstract(c.janet_stream(fd, flags, null));
+    return c.janet_wrap_abstract(try evloop.makeStream(fd, flags, null));
 }
 
 // ==========================================================================

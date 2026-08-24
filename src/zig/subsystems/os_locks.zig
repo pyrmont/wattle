@@ -39,7 +39,7 @@ const windows = builtin.os.tag == .windows;
 /// caller passes a `JanetOSMutex *`, which `janet.h` declares opaque; the
 /// `pthread_*` types stay inside this file.
 const sys = if (windows) struct {} else @cImport({
-    @cInclude("features.h");
+    @cInclude("janet_features.h");
     @cInclude("pthread.h");
 });
 

@@ -5044,104 +5044,23 @@
         (put temp v k))
       (marshal root-env reverse-lookup)))
 
-  # Create amalgamation
-
-  (def feature-header "src/core/features.h")
-
-  (def local-headers
-    ["src/core/state.h"
-     "src/core/util.h"
-     "src/core/gc.h"
-     "src/core/vector.h"
-     "src/core/fiber.h"
-     "src/core/regalloc.h"
-     "src/core/compile.h"
-     "src/core/emit.h"
-     "src/core/symcache.h"])
-
-  (def core-sources
-    ["src/core/abstract.c"
-     "src/core/array.c"
-     "src/core/asm.c"
-     "src/core/buffer.c"
-     "src/core/bytecode.c"
-     "src/core/capi.c"
-     "src/core/cfuns.c"
-     "src/core/compile.c"
-     "src/core/corelib.c"
-     "src/core/debug.c"
-     "src/core/emit.c"
-     "src/core/ev.c"
-     "src/core/ffi.c"
-     "src/core/fiber.c"
-     "src/core/filewatch.c"
-     "src/core/gc.c"
-     "src/core/inttypes.c"
-     "src/core/io.c"
-     "src/core/marsh.c"
-     "src/core/math.c"
-     "src/core/net.c"
-     "src/core/os.c"
-     "src/core/parse.c"
-     "src/core/peg.c"
-     "src/core/pp.c"
-     "src/core/regalloc.c"
-     "src/core/run.c"
-     "src/core/specials.c"
-     "src/core/state.c"
-     "src/core/string.c"
-     "src/core/strtod.c"
-     "src/core/struct.c"
-     "src/core/symcache.c"
-     "src/core/table.c"
-     "src/core/tuple.c"
-     "src/core/util.c"
-     "src/core/value.c"
-     "src/core/vector.c"
-     "src/core/vm.c"
-     "src/core/wrap.c"])
-
-  # Print janet.c to stdout
-  (def image-only (has-value? boot/args "image-only"))
-  (print "/* " (if image-only "Image-only" "Amalgamated") " build - DO NOT EDIT */")
-  (print "/* Generated from janet version " janet/version "-" janet/build " */")
-  (print "#define JANET_BUILD \"" janet/build "\"")
-  (print ```#define JANET_AMALG```)
-
-  (defn do-one-file
-    [fname]
-    (unless image-only
-      (print "\n/* " fname " */")
-      (print "#line 0 \"" fname "\"\n")
-      (def source (slurp fname))
-      (print (string/replace-all "\r" "" source))))
-
-  (do-one-file feature-header)
-
-  (print ```#include "janet.h"```)
-
-  (each h local-headers
-    (do-one-file h))
-
-  # windows.h should not be included in any of the external or internal headers - only in .c files.
-  (print)
-  (print "/* Windows work around - winsock2 must be included before windows.h, especially in amalgamated build */")
-  (print "#if defined(JANET_WINDOWS) && defined(JANET_NET)")
-  (print "#include <winsock2.h>")
-  (print "#endif")
-  (print)
-
-  (each s core-sources
-    (do-one-file s))
-
-  # Create C source file that contains the boot image in a uint8_t buffer. This
-  # can be compiled and linked statically into the main janet library and client
-  (print "static const unsigned char janet_core_image_bytes[] = {")
-  (loop [line :in (partition 16 image)]
-    (prin "  ")
-    (each b line
-      (prinf "0x%.2X, " b))
-    (print))
-  (print "  0\n};\n")
-  (print "const unsigned char *janet_core_image = janet_core_image_bytes;")
-  (print "size_t janet_core_image_size = sizeof(janet_core_image_bytes);"))
+  # Write the core image out, as itself.
+  #
+  # It was a C source file until Phase 11 Part 19: an array of hex literals
+  # wrapped in `#include "janet.h"`, 2,007,197 bytes of text carrying 324,310
+  # bytes of image, compiled into the library, the client and both contract
+  # drivers. `core_env.zig` reaches the bytes with `@embedFile` now, so what
+  # goes out is the marshalled stream and nothing here emits C.
+  #
+  # The amalgamation shared this code path and went with it. It named the
+  # fifty `src/core/*.c` files Phase 10 Part 18 deleted and slurped each one,
+  # so it had not been able to run for a phase; `Makefile` and `meson.build`
+  # name the same missing sources and are in the same state.
+  #
+  # `spit` defaults to `:wb`, which is what a marshalled stream needs on a
+  # host that would otherwise translate a 0x0A.
+  (var image-out nil)
+  (each [k v] (partition 2 (tuple/slice boot/args 2))
+    (when (= k "image-out") (set image-out v)))
+  (unless image-out (error "boot: no `image-out <path>` in boot/args"))
+  (spit image-out image))

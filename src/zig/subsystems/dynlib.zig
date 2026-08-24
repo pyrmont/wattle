@@ -42,7 +42,6 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const options = @import("options");
 const abi = @import("abi");
 const raise = @import("raise");
 const pp_format = @import("pp_format.zig");
@@ -51,13 +50,6 @@ const c = abi.c;
 const windows = builtin.os.tag == .windows;
 const has_dynamic_modules = @hasDecl(c, "JANET_DYNAMIC_MODULES");
 
-/// Whether the Win32 primitives below are this build's, or `util.c`'s.
-///
-/// They belong to `-Dutilities`, which is where the rest of `util.c`'s
-/// dynamic-module code went: `get_processed_name`, and the `error_clib` that a
-/// `JANET_NO_DYNAMIC_MODULES` build has instead of all of this.
-const use_zig = options.utilities;
-
 /// `Clib`. A `HINSTANCE` on Windows and a `void *` elsewhere, which are the
 /// same width; `int` when the feature is off, because `util.h` types it that
 /// way so that the macro forms have something to return.
@@ -65,7 +57,7 @@ pub const Handle = if (has_dynamic_modules) ?*anyopaque else c_int;
 
 pub fn load(name: ?[*:0]const u8) Handle {
     if (!has_dynamic_modules) return 0;
-    if (windows) return if (use_zig) loadClib(name) else load_clib(name);
+    if (windows) return loadClib(name);
     return std.c.dlopen(name, .{ .NOW = true });
 }
 
@@ -75,13 +67,13 @@ pub fn load(name: ?[*:0]const u8) Handle {
 /// head of this file has the reason.
 pub fn symbol(lib: Handle, sym: [*:0]const u8) raise.Raising(?*anyopaque) {
     if (!has_dynamic_modules) return null;
-    if (windows) return if (use_zig) symbolClib(lib, sym) else symbol_clib_declared(lib, sym);
+    if (windows) return symbolClib(lib, sym);
     return std.c.dlsym(lib, sym);
 }
 
 pub fn free(lib: Handle) void {
     if (!has_dynamic_modules) return;
-    if (windows) return if (use_zig) freeClib(lib) else free_clib(lib);
+    if (windows) return freeClib(lib);
     _ = std.c.dlclose(lib.?);
 }
 
@@ -95,7 +87,7 @@ pub fn free(lib: Handle) void {
 /// implicit because Zig's type says it can happen.
 pub fn lastError() [*:0]const u8 {
     if (!has_dynamic_modules) return @ptrCast(errorClibUnsupported());
-    if (windows) return if (use_zig) @ptrCast(errorClib()) else @ptrCast(error_clib());
+    if (windows) return @ptrCast(errorClib());
     return std.c.dlerror() orelse "unknown dynamic linker error";
 }
 
@@ -105,21 +97,16 @@ pub fn failed(lib: Handle) bool {
 }
 
 // ==========================================================================
-// `util.c`'s symbols, for `-Dutilities=c`
-// ==========================================================================
-
-extern fn error_clib() callconv(.c) [*c]const u8;
-extern fn load_clib(name: ?[*:0]const u8) callconv(.c) ?*anyopaque;
-extern fn free_clib(lib: ?*anyopaque) callconv(.c) void;
-extern fn symbol_clib(lib: ?*anyopaque, sym: [*:0]const u8) callconv(.c) ?*anyopaque;
-
-/// The C body raises by jumping, so the error is declared and never returned;
-/// this file carries the jump-transparent marker for it.
-const symbol_clib_declared = raise.declared(symbol_clib).call;
-
-// ==========================================================================
 // The Win32 loader
 // ==========================================================================
+
+// `util.c`'s four symbols stood here until Phase 11 Part 26 -- `error_clib`,
+// `load_clib`, `free_clib` and `symbol_clib`, each reached through
+// `if (use_zig) ... else ...` where `use_zig` was `options.utilities`. That
+// selector has been comptime-`true` since Phase 10 Part 18, which deleted
+// `util.c` along with the symbols; the four `extern fn`s named nothing from
+// that increment onward and no build ever looked at them. Rule 31's class, one
+// directory over from the eleven `_extern.zig` shims Part 26 took.
 
 // `JANET_NO_DYNAMIC_MODULES` gets a real `error_clib` and nothing else, which
 // is `util.h`'s arrangement rather than a choice here.
@@ -129,10 +116,10 @@ fn errorClibUnsupported() [*:0]const u8 {
 }
 
 comptime {
-    if (use_zig and !has_dynamic_modules) {
+    if (!has_dynamic_modules) {
         @export(&errorClibUnsupportedFace, .{ .name = "error_clib" });
     }
-    if (use_zig and has_dynamic_modules and windows) {
+    if (has_dynamic_modules and windows) {
         @export(&errorClibFace, .{ .name = "error_clib" });
         @export(&loadClibFace, .{ .name = "load_clib" });
         @export(&freeClibFace, .{ .name = "free_clib" });
@@ -156,9 +143,9 @@ fn errorClibFace() callconv(.c) [*c]const u8 {
     return errorClib();
 }
 
-/// The C-ABI face a `-Dffi-core=c` or `-Dcore-env=c` build still calls. It
-/// delivers by jumping, which is what those C bodies expect and what 17i
-/// deletes along with the rest.
+/// The C-ABI face under `util.h`'s name. Its C callers went with `ffi.c` and
+/// `corelib.c` in Phase 10 Part 18; what keeps it is `util.h`, which declares
+/// the four Win32 forms, and that is the header question Phase 12 owns.
 const symbolClibFace = raise.panicking(symbolClib).face;
 
 /// `FormatMessageA`'s buffer. Static in the C original and static here, so the
@@ -228,7 +215,7 @@ fn symbolClib(lib: ?*anyopaque, sym: [*:0]const u8) raise.Raising(?*anyopaque) {
     var modules: [1024]?*anyopaque = undefined;
     var needed: u32 = 0;
     if (EnumProcessModules(GetCurrentProcess(), &modules, @sizeOf(@TypeOf(modules)), &needed) == 0) {
-        return pp_format.panicf("ffi: %s", .{errorClibOrC()});
+        return pp_format.panicf("ffi: %s", .{@as([*c]const u8, @ptrCast(errorClib()))});
     }
 
     const count = needed / @sizeOf(?*anyopaque);
@@ -237,14 +224,6 @@ fn symbolClib(lib: ?*anyopaque, sym: [*:0]const u8) raise.Raising(?*anyopaque) {
         if (GetProcAddress(modules[i], sym)) |address| return address;
     }
     return null;
-}
-
-/// The message the panic above carries. It is `error_clib()` in the C
-/// original, and which `error_clib` that is depends on the selector, so the
-/// panic goes through the same choice `lastError` makes rather than assuming
-/// this file's.
-fn errorClibOrC() [*c]const u8 {
-    return if (use_zig) @ptrCast(errorClib()) else error_clib();
 }
 
 extern "kernel32" fn GetModuleHandleA(name: ?[*:0]const u8) callconv(.winapi) ?*anyopaque;

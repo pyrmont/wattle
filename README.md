@@ -182,157 +182,62 @@ before building. For the latest development, build directly on the master
 branch. The master branch is not-necessarily stable as most Janet development
 happens directly on the master branch.
 
-### macOS and Unix-like
-
-The Makefile is non-portable and requires GNU-flavored make.
-
-```sh
-cd somewhere/my/projects/janet
-make
-make test
-make repl
-make install
-make install-spork-git # optional
-make install-jpm-git # optional
-```
-
-Find out more about the available make targets by running `make help`.
-
-### Alpine Linux
-
-To build a statically-linked build of Janet, Alpine Linux + MUSL is a good
-combination. Janet can also be built inside a docker container or similar in
-this manner. This is a great way to try Janet without committing to a full
-install or needing to customize the default install.
-
-```sh
-docker run -it --rm alpine /bin/ash
-$ apk add make gcc musl-dev git
-$ git clone https://github.com/janet-lang/janet.git
-$ cd janet
-$ make -j10
-$ make test
-$ make install
-$ make install-spork-git # optional
-$ make install-jpm-git # optional
-```
-
-Note that for a true statically-linked binary with MUSL, one needs to add `-static` to the Makefile flags. This
-will also disable runtime loading of native modules (plugins) as well as the FFI.
-
-### 32-bit Haiku
-
-32-bit Haiku build instructions are the same as the UNIX-like build instructions,
-but you need to specify an alternative compiler, such as `gcc-x86`.
+Janet is built with [Zig](https://ziglang.org). The version is pinned in
+`.zigversion` and is currently **0.16.0**; that is the only prerequisite.
 
 ```sh
 cd somewhere/my/projects/janet
-make CC=gcc-x86
-make test
-make repl
-make install
-make install-spork-git # optional
-make install-jpm-git # optional
+zig build              # the executable, the libraries and the headers
+zig build test         # the contracts and the Janet test suites
+zig build run          # a REPL
 ```
 
-### FreeBSD
-
-FreeBSD build instructions are the same as the UNIX-like build instructions,
-but you need `gmake` to compile. Alternatively, install the package directly with `pkg install lang/janet`.
+Artifacts are installed under `zig-out`: the executable in `zig-out/bin`,
+static and shared libraries in `zig-out/lib`, and the C headers in
+`zig-out/include/janet`. Pass `-p <prefix>` to install somewhere else, and
+`zig build --help` to see the feature flags — the runtime can be built without
+the event loop, networking, the PEG engine, the assembler, the FFI, integer
+types, dynamic modules or docstrings.
 
 ```sh
-cd somewhere/my/projects/janet
-gmake
-gmake test
-gmake repl
-gmake install
-gmake install-spork-git # optional
-gmake install-jpm-git # optional
+zig build -Doptimize=ReleaseFast          # an optimized build
+zig build -Dtarget=aarch64-linux-musl     # cross-compile
 ```
 
-### NetBSD
+Cross-compilation needs no extra toolchain: Zig ships the C headers and linkers
+for every supported target.
 
-NetBSD build instructions are the same as the FreeBSD build instructions.
-Alternatively, install the package directly with `pkgin install janet`.
+### Supported platforms
 
-### illumos
+| platform | state |
+| --- | --- |
+| macOS arm64 and x86-64 | built and fully tested |
+| Linux, musl | built and fully tested; a musl target links statically |
+| Linux, glibc | builds; the test driver is not yet run there, see `port/FOUND.md` |
+| Windows | cross-compiles; binaries have never been executed |
+| 32-bit (riscv32) | compiles only, and is the only target that type-checks the 32-bit paths |
 
-Building on illumos is exactly the same as building on FreeBSD.
+`.github/workflows/test.yml` is what actually runs, and is the honest statement
+of what is covered.
 
-### Windows
+### Where the old build systems went
 
-1. Install [Visual Studio](https://visualstudio.microsoft.com/thank-you-downloading-visual-studio/?sku=Community&rel=15#) or [Visual Studio Build Tools](https://visualstudio.microsoft.com/thank-you-downloading-visual-studio/?sku=BuildTools&rel=15#).
-2. Run a Visual Studio Command Prompt (`cl.exe` and `link.exe` need to be on your PATH) and `cd` to the directory with Janet.
-3. Run `build_win` to compile Janet.
-4. Run `build_win test` to make sure everything is working.
+Until Phase 11 Part 25 this file documented `make`, `meson`, `plan9.mk` and
+`build_win.bat`. All four named the fifty C sources under `src/core` that the
+Zig rewrite deleted, so none of them had been able to build anything for some
+time; they have been removed rather than left as instructions that cannot work.
+`port/PLAN.md` has the rewrite's history.
 
-To build an `.msi` installer executable, in addition to the above steps, you will have to:
-
-5. Install, or otherwise add to your PATH the [WiX 3.14 Toolset](https://github.com/wixtoolset/wix3/releases).
-6. Run `build_win dist`.
-
-Now you should have an `.msi`. You can run `build_win install` to install the `.msi`, or execute the file itself.
-
-### Meson
-
-Janet also has a build file for [Meson](https://mesonbuild.com/), a cross-platform build
-system. Although Meson has a Python dependency, Meson is a very complete build system that
-is maybe more convenient and flexible for integrating into existing pipelines.
-Meson also provides much better IDE integration than Make or batch files, as well as support
-for cross-compilation.
-
-For the impatient, building with Meson is as follows. The options provided to
-`meson setup` below emulate Janet's Makefile.
-
-```sh
-git clone https://github.com/janet-lang/janet.git
-cd janet
-meson setup build \
-          --buildtype release \
-          --optimization 2 \
-          --libdir /usr/local/lib \
-          -Dgit_hash=$(git log --pretty=format:'%h' -n 1)
-ninja -C build
-
-# Run the binary
-build/janet
-
-# Installation
-ninja -C build install
-```
-
-### Zig (experimental)
-
-The incremental Zig rewrite has an experimental build that compiles the
-unchanged C runtime. It currently requires Zig 0.16.0, as recorded in
-`.zigversion`.
-
-```sh
-zig build
-zig build test
-zig build run -- -e '(print "hello")'
-```
-
-Artifacts are installed under `zig-out` by default: the Janet executable in
-`zig-out/bin`, static and shared libraries in `zig-out/lib`, and matching C
-headers in `zig-out/include/janet`. Use `zig build --help` to see feature flags
-and the usual Zig target, optimization, and installation options. The
-`abi-test` step runs the C and Zig layout checks plus a C embedding smoke test
-without running Janet's full language suite.
-
-The default `janet` artifact now uses the experimental Zig command-line entry
-point and a simple line reader. `janet-c` retains the original C client and
-rich line editing as a comparison target during the migration; run it with
-`zig build run-c`. The current C/Zig ownership, error, callback, and GC rules
-are documented in `src/zig/README.md`.
 
 ## Development
 
-Janet can be hacked on with pretty much any environment you like, but for IDE
-lovers, [Gnome Builder](https://wiki.gnome.org/Apps/Builder) is probably the
-best option, as it has excellent Meson integration. It also offers code completion
-for Janet's C API right out of the box, which is very useful for exploring. VSCode, Vim,
-Emacs, and Atom each have syntax packages for the Janet language, though.
+Janet can be hacked on with pretty much any environment you like. VSCode, Vim,
+Emacs and Atom each have syntax packages for the Janet language, and any editor
+with Zig support will do for the runtime itself.
+
+`AGENTS.md` at the repository root describes how to work in this tree — the
+build, the Zig cache and its disk behaviour, the acceptance matrix and the
+scripts under `port/`. `port/PLAN.md` is the map of the C-to-Zig rewrite.
 
 ## Installation
 
@@ -386,17 +291,29 @@ If installed, you can also run `man janet` to get usage information.
 
 ## Embedding
 
-Janet can be embedded in a host program very easily. The normal build
-will create a file `build/c/janet.c`, a C source code file that
-that contains the amalgamated source to Janet. This file, along with
-`src/include/janet.h` and `src/conf/janetconf.h`, can be dragged into any C
-project and compiled into it. Janet should be compiled with `-std=c99`
-on most compilers, and will need to be linked to the math library, `-lm`, and
-the dynamic linker, `-ldl`, if one wants to be able to load dynamic modules. If
-there is no need for dynamic modules, add the define
-`-DJANET_NO_DYNAMIC_MODULES` to the compiler options.
+`zig build` produces `zig-out/lib/libjanet.a` and `zig-out/lib/libjanet.so`
+(or `.dylib`) together with the headers in `zig-out/include/janet`. Link
+against either and include `<janet/janet.h>`; on most systems you will also
+want `-lm`, and `-ldl` if dynamic module loading is wanted.
 
-See the [Embedding Section](https://janet-lang.org/capi/embedding.html) on the website for more information.
+The amalgamated single-file `janet.c` that older instructions describe no
+longer exists. It was produced by a generator that slurped the fifty C sources
+under `src/core`, and those were deleted by the Zig rewrite.
+
+**One limitation, and it is worth knowing before you start.** Calling *into*
+Janet from C works: `janet_init`, `janet_dostring`, the unwrap functions and
+the layout of every public structure are exercised by `test/embed.c` and
+`test/abi.c` on every build. **Defining a cfunction in C does not.** A
+cfunction has been a Zig function returning an error union since the rewrite
+removed Janet's non-local jumps, while `janet.h` still declares
+`Janet (*)(int32_t, Janet *)` — so a C program that registers one compiles,
+links, and segfaults at the call. The same applies to a `JanetAbstractType`'s
+callbacks.
+
+Native modules are therefore written in Zig against
+`src/zig/native_module.zig`, where a module's cfunction returns
+`error{JanetSignal}!Janet`. `port/phase_11.md` has the measurement and
+`port/PLAN.md` the reasoning; replacing the header is the next phase's subject.
 
 ## Discussion
 

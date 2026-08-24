@@ -165,8 +165,15 @@ pub fn callNonfn(fiber: [*c]c.JanetFiber, callee: c.Janet) raise.Error!c.Janet {
 
 /// `method_to_fun`. Kept as a Zig-private inline rather than a symbol: it is
 /// `janet_get` with its operands swapped, and both of its callers are here.
-inline fn methodToFun(method: c.Janet, obj: c.Janet) c.Janet {
-    return c.janet_get(obj, method);
+///
+/// Raising, since Phase 11 Part 15. It reached `janet_get` — the C face, which
+/// is `raise.panicking` over `access.get` — from inside a chain every one of
+/// whose callers is `raise.Raising`, so an abstract's `get` callback refusing
+/// became a report nobody consumed. `(+ (int/s64 1) {})` killed the process
+/// instead of raising a catchable error, because the binop fallback looks
+/// `:r+` up on the right operand and that lookup is this function.
+inline fn methodToFun(method: c.Janet, obj: c.Janet) raise.Raising(c.Janet) {
+    return access.get(obj, method);
 }
 
 /// `resolve_method`, renamed. Turns the keyword of a method call into the
@@ -182,7 +189,7 @@ pub fn resolveMethod(name: c.Janet, fiber: [*c]c.JanetFiber) raise.Error!c.Janet
         return pp_format.panicf("method call (%v) takes at least 1 argument, got 0", .{name});
     }
     const receiver = fiber.*.data[asSize(fiber.*.stackstart)];
-    const callee = methodToFun(name, receiver);
+    const callee = try methodToFun(name, receiver);
     if (isNil(callee)) {
         return pp_format.panicf("unknown method %v invoked on %v", .{ name, receiver });
     }
@@ -195,14 +202,19 @@ pub fn resolveMethod(name: c.Janet, fiber: [*c]c.JanetFiber) raise.Error!c.Janet
 /// `janet_ckeywordv` interns the name on every call. The C original does the
 /// same, and the symbol cache makes the second and later calls a lookup rather
 /// than an allocation.
-fn methodLookup(x: c.Janet, name: [*c]const u8) callconv(.c) c.Janet {
+///
+/// The `callconv(.c)` this carried was a translation artefact: nothing exports
+/// it and nothing takes its address, so `janet_method_lookup` has not been a
+/// symbol since the seam closed. It went with the conversion above, because a
+/// C calling convention cannot carry an error union.
+pub fn methodLookup(x: c.Janet, name: [*c]const u8) raise.Raising(c.Janet) {
     return methodToFun(c.janet_ckeywordv(name), x);
 }
 
 /// `janet_unary_call`. The operator fallback for a one-operand opcode whose
 /// operand is not a number — `JOP_BNOT` is the only one that reaches it.
 pub fn unaryCall(method: [*c]const u8, arg: c.Janet) raise.Error!c.Janet {
-    const m = methodLookup(arg, method);
+    const m = try methodLookup(arg, method);
     if (isNil(m)) {
         return pp_format.panicf("could not find method :%s for %v", .{ method, arg });
     }
@@ -218,9 +230,9 @@ pub fn unaryCall(method: [*c]const u8, arg: c.Janet) raise.Error!c.Janet {
 /// own receiver first. Both `argv` arrays are built before the nil check the
 /// way the C does, which matters only in that the panic path never reads them.
 pub fn binopCall(lmethod: [*c]const u8, rmethod: [*c]const u8, lhs: c.Janet, rhs: c.Janet) raise.Error!c.Janet {
-    const lm = methodLookup(lhs, lmethod);
+    const lm = try methodLookup(lhs, lmethod);
     if (isNil(lm)) {
-        const lr = methodLookup(rhs, rmethod);
+        const lr = try methodLookup(rhs, rmethod);
         var argv = [_]c.Janet{ rhs, lhs };
         if (isNil(lr)) {
             return pp_format.panicf(
@@ -243,7 +255,7 @@ pub fn mcall(name: [*c]const u8, argc: i32, argv: [*c]c.Janet) raise.Error!c.Jan
     if (argc < 1) {
         return pp_format.panicf("method :%s expected at least 1 argument", .{name});
     }
-    const method = methodLookup(argv[0], name);
+    const method = try methodLookup(argv[0], name);
     if (isNil(method)) {
         return pp_format.panicf("could not find method :%s for %v", .{ name, argv[0] });
     }
@@ -287,58 +299,39 @@ pub fn fillStruct(st: [*c]c.JanetKV, mem: [*c]const c.Janet, count: i32) callcon
 /// it — recorded in `FOUND.md`, reproduced rather than repaired, and the reason
 /// the trampoline build takes one scope around this loop rather than one per
 /// element.
-fn fillStringImpl(buffer: [*c]c.JanetBuffer, mem: [*c]const c.Janet, count: i32) raise.Raising(void) {
+/// **This raises, and it used to be reached through a face that did not.**
+/// Phase 11 Part 12: `janet_fill_string` was `raise.reported` over this
+/// implementation, and `vm_run.zig`'s `JOP_MAKE_STRING` and `JOP_MAKE_BUFFER`
+/// arms called the *face* from inside `runVm`, which is itself raising. A
+/// `tostring` refusal was therefore flattened into a report nobody consumed:
+/// the loop went on to build a string out of a half-filled buffer, and the
+/// outstanding report killed the process at the next scope boundary with
+/// `a raise was reported to a C caller and never consumed` — arbitrarily far
+/// from the cause. Under the C original the same refusal was a `longjmp` and
+/// propagated. The face is gone and the callers use `try`, which is rule 13's
+/// family: an ordinary import away from not needing the face at all.
+pub fn fillString(buffer: [*c]c.JanetBuffer, mem: [*c]const c.Janet, count: i32) raise.Raising(void) {
     var i: i32 = 0;
     while (i < count) : (i += 1) {
         try printer.toStringB(buffer, mem[asSize(i)]);
     }
 }
 
-pub fn fillString(buffer: [*c]c.JanetBuffer, mem: [*c]const c.Janet, count: i32) callconv(.c) void {
-    raise.reported(fillStringImpl(buffer, mem, count));
-}
+// ------------------------------------------------------------- the one face
 
-// ----------------------------------------------------------- the two faces
-
-// Each raise-capable function above has a C-ABI face here, built by
-// `raise.panicking`: call the implementation, and turn a returned error back
-// into the jump a C caller still expects.
+// There were nine C-ABI faces here, hidden exactly as the C build hid them,
+// because `state.h` declared all nine and C callers cannot consume a Zig
+// error. Phase 11 Part 12 spent eight of them: every remaining caller reaches
+// this file by import, and the last C caller of each was `test/vm_calls.c`.
+// The `state.h` block went with them.
 //
-// The position of the `catch` is the whole safety argument and it is inside the
-// face, one frame below the implementation. By the time control reaches it the
-// error has returned normally through every frame between the raise and there,
-// so the jump leaves a frame that owns nothing.
-//
-// These disappear one at a time as each caller converts, and the last goes with
-// the `setjmp` in Part 17. `vm_run.zig` still reaches them through `scoped`,
-// which needs a plain return type; converting the loop is what retires them.
-// Under `-Dvm-calls=c` the C originals answer instead, raising from the inside
-// by jumping — the two faces are each other's differential, and
-// `test/vm_calls.c` drives the C one.
+// `janet_mcall` stays, and the reason is the same one Part 10 and Part 11
+// recorded for eleven other names: it is `janet.h`'s public surface. It has no
+// in-tree caller at all now — `value_access.zig` reaches `mcall` by import —
+// and it is what an embedder calls to invoke a method.
 
-pub const methodInvokePanicking = raise.panicking(methodInvoke).face;
-pub const callNonfnPanicking = raise.panicking(callNonfn).face;
-pub const resolveMethodPanicking = raise.panicking(resolveMethod).face;
-pub const unaryCallPanicking = raise.panicking(unaryCall).face;
-pub const binopCallPanicking = raise.panicking(binopCall).face;
 pub const mcallPanicking = raise.panicking(mcall).face;
 
-// ----------------------------------------------------------------- exports
-
-// The nine internal symbols, hidden exactly as the C build hides them. Every
-// one of them is now the C face rather than the implementation, `janet_mcall`
-// included: a C caller cannot consume a Zig error. Only `janet_mcall` is
-// `JANET_API` and it is exported normally; the rest stay hidden, which is what
-// `-fvisibility=hidden` gives the C build.
 comptime {
-    @export(&methodInvokePanicking, .{ .name = "janet_method_invoke", .visibility = .hidden });
-    @export(&callNonfnPanicking, .{ .name = "janet_call_nonfn", .visibility = .hidden });
-    @export(&resolveMethodPanicking, .{ .name = "janet_resolve_method", .visibility = .hidden });
-    @export(&methodLookup, .{ .name = "janet_method_lookup", .visibility = .hidden });
-    @export(&unaryCallPanicking, .{ .name = "janet_unary_call", .visibility = .hidden });
-    @export(&binopCallPanicking, .{ .name = "janet_binop_call", .visibility = .hidden });
-    @export(&fillTable, .{ .name = "janet_fill_table", .visibility = .hidden });
-    @export(&fillStruct, .{ .name = "janet_fill_struct", .visibility = .hidden });
-    @export(&fillString, .{ .name = "janet_fill_string", .visibility = .hidden });
     @export(&mcallPanicking, .{ .name = "janet_mcall" });
 }

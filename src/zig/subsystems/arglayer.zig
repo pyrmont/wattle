@@ -1,6 +1,9 @@
-//! The argument layer as its callers see it: `-Dargs-core`'s implementation
-//! when the selector says Zig, and the C symbols wearing the same signatures
-//! when it says C.
+//! The argument layer as its callers see it.
+//!
+//! It had a second arm until Phase 11 Part 26: `-Dargs-core=c` resolved this
+//! to `args_core_extern.zig`, the C symbols wearing the same signatures. Phase
+//! 10 Part 18 spent that selector and the shim was stranded behind a
+//! comptime-`false` branch for eight parts.
 //!
 //! Phase 10 Part 17b. Every cfunction in the runtime opens with two or three
 //! calls into this layer — `janet_fixarity`, then a getter per argument — and
@@ -11,10 +14,11 @@
 //!
 //! ## Why this file exists rather than a conditional import per caller
 //!
-//! `vm_run.zig` resolves `vm_calls` and `value_wrap` with a comptime `if` at
-//! its own head, which is right for two importers. This layer has twenty-eight,
-//! and twenty-eight copies of the same two-line conditional is worse than one
-//! copy plus an import. Naming each declaration also makes the layer's Zig
+//! `vm_run.zig` imports `vm_calls` and `value_wrap` at its own head, which was
+//! right for two importers when each of those was a comptime `if`. This layer
+//! has twenty-eight, and twenty-eight copies of the same two-line conditional
+//! is worse than one copy plus an import. The conditionals are gone and the
+//! argument stands without them: naming each declaration makes the layer's Zig
 //! interface a thing a reader can look at, which the C header stopped being
 //! once the getters were generated rather than written.
 //!
@@ -39,12 +43,7 @@
 //! be forgotten *or* observed; now forgetting it is a compile error and every
 //! raise-capable path is visible in the signature.
 
-const options = @import("options");
-
-const impl = if (options.args_core)
-    @import("args_core.zig")
-else
-    @import("args_core_extern.zig");
+const impl = @import("args_core.zig");
 
 pub const fixarity = impl.fixarity;
 pub const arity = impl.arity;

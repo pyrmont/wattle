@@ -63,8 +63,10 @@
 //! by this file, because the loop inlines them — Part 2 measured 2.4-3.4% on
 //! method dispatch and 89% on arithmetic for reaching them out of line. One
 //! module means one instance either way, so the two importers are not two
-//! copies. Their `_extern.zig` shims are named by `vm_run.zig` alone, and only
-//! when the selector says C.
+//! copies. Their `_extern.zig` shims were named by `vm_run.zig` alone and only
+//! when the selector said C, which is why Phase 11 Part 26 could delete all
+//! eleven of them without anything here changing: a comptime-`false` branch is
+//! not analysed, so nothing in one was ever diagnosed.
 //!
 //! The other absences are subsystems reached through the file that registers
 //! them: `os_calendar`, `os_files` and `os_procs` through `os_surface.zig`,
@@ -113,13 +115,11 @@ comptime {
     if (options.io_core) _ = @import("io_core.zig");
     if (options.os_process) _ = @import("os_process.zig");
     if (options.os_surface) _ = @import("os_surface.zig");
-    if (options.ev_core) _ = @import("ev_core.zig");
     if (options.ev_loop) _ = @import("ev_loop.zig");
     if (options.net_sockets) _ = @import("net_sockets.zig");
     if (options.ffi_layout) _ = @import("ffi_layout.zig");
     if (options.ffi_classify) _ = @import("ffi_classify.zig");
     if (options.ffi_core) _ = @import("ffi_core.zig");
-    if (options.filewatch_flags) _ = @import("filewatch_flags.zig");
     if (options.filewatch_core) _ = @import("filewatch_core.zig");
 
     // The value layer and the collector.
@@ -154,3 +154,124 @@ comptime {
     if (options.vm_entry) _ = @import("vm_entry.zig");
     if (options.vm_lifecycle) _ = @import("vm_lifecycle.zig");
 }
+
+// ------------------------------------------------------- the same, by name
+
+// Phase 11 Part 1. The block above is what makes a subsystem's `export`s
+// exist; this one is what lets something *call* a subsystem without going
+// through one.
+//
+// The caller is `test/contracts.zig`, which `build.zig` gives this file as an
+// imported module. A contract that reaches its subject here is inside the
+// compilation, so `raise.Error` crosses to it exactly as it crosses between
+// two subsystems -- which is the whole reason the Zig contracts are built this
+// way rather than linked against `libjanet.a`. `makeRuntimeGraph` has the
+// argument.
+//
+// **These are lazy and must stay lazy.** A `pub const` at container scope is
+// analysed when something references it, and nothing in the runtime
+// references any of these -- so a configuration that cannot compile a
+// subsystem is unharmed as long as no contract names it either. That is the
+// same condition `build.zig` already applies to the contract *list*
+// (`-Dpeg=false` compiles neither `peg.zig` nor the peg contract), so the two
+// cannot drift apart without the build saying so. Do not add a
+// `comptime { _ = ... }` over this block: it would make every name eager and
+// break `-Dpeg=false`, `-Dffi=false` and `-Dev=false` at once.
+//
+// The list is deliberately flat rather than grouped the way the block above
+// is. A contract spells one name and does not care which layer it came from.
+
+pub const vector = @import("vector.zig");
+pub const utils = @import("utils.zig");
+pub const registry = @import("registry.zig");
+pub const intscan = @import("intscan.zig");
+pub const textscan = @import("textscan.zig");
+pub const regalloc = @import("regalloc.zig");
+pub const verify = @import("verify.zig");
+pub const remove_noops = @import("remove_noops.zig");
+pub const movopt = @import("movopt.zig");
+pub const emit_core = @import("emit_core.zig");
+pub const asm_encode = @import("asm_encode.zig");
+pub const asm_decode = @import("asm_decode.zig");
+pub const disasm = @import("disasm.zig");
+pub const asm_core = @import("asm_core.zig");
+pub const compiler_primitives = @import("compiler_primitives.zig");
+pub const parser_core = @import("parser_core.zig");
+pub const specials_core = @import("specials_core.zig");
+pub const special = @import("special.zig");
+pub const builtin_optimizers = @import("builtin_optimizers.zig");
+
+pub const numscan = @import("numscan.zig");
+pub const math = @import("math.zig");
+pub const inttypes = @import("inttypes.zig");
+
+pub const os_permissions = @import("os_permissions.zig");
+pub const os_platform = @import("os_platform.zig");
+pub const os_environ = @import("os_environ.zig");
+pub const os_fs = @import("os_fs.zig");
+pub const os_stat = @import("os_stat.zig");
+pub const os_time = @import("os_time.zig");
+pub const os_fs_paths = @import("os_fs_paths.zig");
+pub const io_core = @import("io_core.zig");
+pub const os_process = @import("os_process.zig");
+pub const os_surface = @import("os_surface.zig");
+pub const os_calendar = @import("os_calendar.zig");
+pub const os_files = @import("os_files.zig");
+pub const os_procs = @import("os_procs.zig");
+pub const os_locks = @import("os_locks.zig");
+pub const host_stat = @import("host_stat.zig");
+pub const ev_core = @import("ev_core.zig");
+pub const ev_loop = @import("ev_loop.zig");
+pub const ev_channel = @import("ev_channel.zig");
+pub const ev_stream = @import("ev_stream.zig");
+pub const ev_backend = @import("ev_backend.zig");
+pub const net_sockets = @import("net_sockets.zig");
+pub const net_addr = @import("net_addr.zig");
+pub const ffi_layout = @import("ffi_layout.zig");
+pub const ffi_classify = @import("ffi_classify.zig");
+pub const ffi_core = @import("ffi_core.zig");
+pub const ffi_types = @import("ffi_types.zig");
+pub const ffi_marshal = @import("ffi_marshal.zig");
+pub const ffi_call = @import("ffi_call.zig");
+pub const filewatch_flags = @import("filewatch_flags.zig");
+pub const filewatch_core = @import("filewatch_core.zig");
+
+pub const args_core = @import("args_core.zig");
+pub const arglayer = @import("arglayer.zig");
+pub const gc_alloc = @import("gc_alloc.zig");
+pub const gc_mark = @import("gc_mark.zig");
+pub const gc_sweep = @import("gc_sweep.zig");
+pub const buffer_array = @import("buffer_array.zig");
+pub const containers = @import("containers.zig");
+pub const string_symbol = @import("string_symbol.zig");
+pub const struct_table = @import("struct_table.zig");
+pub const value_order = @import("value_order.zig");
+pub const value_access = @import("value_access.zig");
+pub const access = @import("access.zig");
+pub const abstract_core = @import("abstract_core.zig");
+pub const abstract_type = @import("abstract_type.zig");
+pub const value_alloc = @import("value_alloc.zig");
+pub const value_wrap = @import("value_wrap.zig");
+pub const pp_format = @import("pp_format.zig");
+pub const pp_pretty = @import("pp_pretty.zig");
+pub const pp_describe = @import("pp_describe.zig");
+pub const printer = @import("printer.zig");
+pub const marsh = @import("marsh.zig");
+pub const marshalling = @import("marshalling.zig");
+pub const peg = @import("peg.zig");
+pub const core_env = @import("core_env.zig");
+pub const registration = @import("registration.zig");
+
+pub const vm_state = @import("vm_state.zig");
+pub const fiber_core = @import("fiber_core.zig");
+pub const signal_core = @import("signal_core.zig");
+pub const trace_frames = @import("trace_frames.zig");
+pub const debug_frames = @import("debug_frames.zig");
+pub const vm_calls = @import("vm_calls.zig");
+pub const vm_run = @import("vm_run.zig");
+pub const vm_entry = @import("vm_entry.zig");
+pub const vm_lifecycle = @import("vm_lifecycle.zig");
+pub const lifecycle = @import("lifecycle.zig");
+pub const dynlib = @import("dynlib.zig");
+pub const stdio = @import("stdio.zig");
+pub const fatal = @import("fatal.zig");

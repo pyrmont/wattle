@@ -57,7 +57,7 @@
 //! `time64` `__REDIR` declarations defeat Aro on x86 and arm -- and the whole
 //! tree cross-compiles for it. Alpine ships `qemu-riscv32`, so the binaries run.
 //!
-//! `test/value_wrap.c` **passes there against the C original**, which is what
+//! `test/value_wrap.c` **passed there against the C original**, which is what
 //! validates the nanbox-32 arm of its bit-layout assertions. It does not pass
 //! against this file, and the reason is not in this file. Zig 0.16 and clang
 //! disagree about how many argument registers an eight-byte union consumes
@@ -694,10 +694,10 @@ const outer = @This();
 /// that pays a function call to ask what a value is spends more time asking
 /// than acting: measured at +89% on the arithmetic workload with these reached
 /// through the symbol table, against the same loop with them reached through
-/// here. `build.zig` resolves `vm_run.zig`'s `value_wrap` import to this file
-/// when the selector is Zig and to `value_wrap_extern.zig` when it is C, so
-/// `-Dvalue-wrap=c` still answers for the loop -- out of line, which is the
-/// honest cost of that combination rather than a silent substitution.
+/// here. `vm_run.zig`'s `value_wrap` import was a comptime `if` resolving to
+/// this file or to `value_wrap_extern.zig` until Phase 11 Part 26; it names
+/// this file now, and the shim is gone with the selector Phase 10 Part 18
+/// spent.
 ///
 /// Every member is the body of the identically named export above rather than a
 /// second copy of it.

@@ -1,23 +1,34 @@
-//! The keyword vocabularies of `filewatch.c`, for every platform at once.
+//! The keyword vocabularies of the file watcher, for every platform at once.
 //!
 //! `filewatch/add` and `filewatch/new` take their options as keywords, and each
 //! backend has its own set: inotify names on Linux, `ReadDirectoryChangesW`
 //! names on Windows, and kqueue's `NOTE_*` names on the BSDs and macOS. In C
-//! each table sits inside the `#ifdef` for its own backend, so on any one host
-//! the other two are not merely unreachable but uncompiled. All three are
-//! compiled here, on every target, and asserted by `test/filewatch_flags.c`.
+//! each table sat inside the `#ifdef` for its own backend, so on any one host
+//! the other two were not merely unreachable but uncompiled. All three are
+//! compiled here, on every target, and asserted by `test/filewatch_flags.zig`.
 //!
-//! Only the *names* move. Every flag's value is a host constant — `IN_ATTRIB`,
-//! `FILE_NOTIFY_CHANGE_SIZE`, `NOTE_EXTEND` — so C keeps a value array in the
-//! same order and indexes it with what the lookup reports. That split is also
-//! what lets the BSD table vary: the `NOTE_*` set differs between the BSDs, and
-//! C writes a zero for a constant its headers do not define, which the caller
-//! reads as the name not existing on this host. The C original reached the same
-//! place by leaving the entry out of the table altogether.
+//! Only the *names* are here. Every flag's value is a host constant —
+//! `IN_ATTRIB`, `FILE_NOTIFY_CHANGE_SIZE`, `NOTE_EXTEND` — so
+//! `filewatch_core.zig` keeps a value array in the same order and indexes it
+//! with what the lookup reports. That split is also what lets the BSD table
+//! vary: the `NOTE_*` set differs between the BSDs, and the value half writes a
+//! zero for a constant its headers do not define, which the caller reads as the
+//! name not existing on this host. The C original reached the same place by
+//! leaving the entry out of the table altogether.
 //!
 //! Nothing here allocates or can fail. A name that matches nothing is reported
-//! as `-1`; the panic that follows stays in C, where it can say which keyword
-//! was wrong.
+//! as null; the raise that follows belongs to `filewatch_core.zig`, which is
+//! where the keyword and the backend's name are both in hand.
+//!
+//! ## The vocabularies are reached by import
+//!
+//! Until Phase 11 Part 21 the four lookups below were `export fn
+//! janet_filewatch_flag_*`, and `filewatch_core.zig` declared each of them
+//! again as an `extern fn` -- one Zig file calling another through the symbol
+//! table, which is the shape `filewatch.c` needed and rule 44's class. The
+//! symbols are gone and the `platform_linux`/`platform_windows`/
+//! `platform_kqueue` ordinals that stood in for `Platform` on the far side of
+//! that seam went with them: a caller names the tag now.
 
 const std = @import("std");
 
@@ -111,12 +122,11 @@ const windows_action_names = [_][:0]const u8{
     "renamed-new",
 };
 
-fn namesFor(platform: u32) ?[]const [:0]const u8 {
+fn namesFor(platform: Platform) []const [:0]const u8 {
     return switch (platform) {
-        @intFromEnum(Platform.linux) => &linux_names,
-        @intFromEnum(Platform.windows) => &windows_names,
-        @intFromEnum(Platform.kqueue) => &kqueue_names,
-        else => null,
+        .linux => &linux_names,
+        .windows => &windows_names,
+        .kqueue => &kqueue_names,
     };
 }
 
@@ -124,59 +134,55 @@ fn namesFor(platform: u32) ?[]const [:0]const u8 {
 // Lookup
 // ---------------------------------------------------------------------------
 
-/// Report the position of a flag name in a platform's table, or -1 for a name
-/// the platform does not have.
+/// Report the position of a flag name in a platform's table, or null for a
+/// name the platform does not have.
 ///
-/// The keyword arrives as bytes and a length rather than as a C string, because
-/// a Janet keyword is length-prefixed and may contain a zero byte. That is also
-/// what `janet_cstrcmp` compared, so a match here means what a match meant
-/// before. The search is linear over at most sixteen entries; the original
+/// The keyword arrives as bytes rather than as a C string, because a Janet
+/// keyword is length-prefixed and may contain a zero byte. That is also what
+/// `janet_cstrcmp` compared, so a match here means what a match meant before. The search is linear over at most sixteen entries; the original
 /// binary search needed the table sorted, and this does not, which removes a
 /// standing invariant rather than relying on it.
-export fn janet_filewatch_flag_index(platform: u32, name: [*]const u8, len: i32) callconv(.c) i32 {
-    const names = namesFor(platform) orelse return -1;
-    if (len < 0) return -1;
-    const key = name[0..@intCast(len)];
-    for (names, 0..) |entry, index| {
-        if (std.mem.eql(u8, key, entry)) return @intCast(index);
+pub fn flagIndex(platform: Platform, name: []const u8) ?usize {
+    for (namesFor(platform), 0..) |entry, index| {
+        if (std.mem.eql(u8, name, entry)) return index;
     }
-    return -1;
+    return null;
 }
 
-/// The number of flags a platform names. C asserts its value array against this
-/// so the two cannot drift apart unnoticed.
-export fn janet_filewatch_flag_count(platform: u32) callconv(.c) i32 {
-    const names = namesFor(platform) orelse return -1;
-    return @intCast(names.len);
+/// The number of flags a platform names. `filewatch_core.zig` asserts its
+/// value array against this so the two halves cannot drift apart unnoticed.
+pub fn flagCount(platform: Platform) usize {
+    return namesFor(platform).len;
 }
 
 /// The flag name at a position, or null when the position is out of range.
 ///
-/// C does not need this — it indexes its own array — but the contract does, to
-/// assert that both sides agree on the order the index refers to.
-export fn janet_filewatch_flag_name(platform: u32, index: i32) callconv(.c) [*c]const u8 {
-    const names = namesFor(platform) orelse return null;
-    if (index < 0 or index >= names.len) return null;
-    return names[@intCast(index)].ptr;
+/// The value half indexes its own array and does not need this; the contract
+/// does, to assert that both halves agree on the order the index refers to,
+/// and so does the event decoder, which names the flag it matched.
+pub fn flagName(platform: Platform, index: usize) ?[:0]const u8 {
+    const names = namesFor(platform);
+    if (index >= names.len) return null;
+    return names[index];
 }
 
 /// The keyword name for a Windows `FILE_ACTION_*` code, or null when the code
 /// is outside the documented range.
 ///
 /// The C original indexed a six-entry array with the code and had nothing to
-/// say about a code beyond it. Reporting null instead lets `filewatch.c` fall
-/// back to `unknown` explicitly rather than reading past the array.
-export fn janet_filewatch_action_name(action: i32) callconv(.c) [*c]const u8 {
-    if (action < 0 or action >= windows_action_names.len) return null;
-    return windows_action_names[@intCast(action)].ptr;
+/// say about a code beyond it. Reporting null instead lets the Windows decoder
+/// name the fallback explicitly rather than read past the array.
+pub fn actionName(action: u32) ?[:0]const u8 {
+    if (action >= windows_action_names.len) return null;
+    return windows_action_names[action];
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-fn indexOf(platform: Platform, name: []const u8) i32 {
-    return janet_filewatch_flag_index(@intFromEnum(platform), name.ptr, @intCast(name.len));
+fn indexOf(platform: Platform, name: []const u8) ?usize {
+    return flagIndex(platform, name);
 }
 
 test "every table is ascending" {
@@ -193,57 +199,57 @@ test "every table is ascending" {
 
 test "names resolve to their own positions" {
     for ([_]Platform{ .linux, .windows, .kqueue }) |platform| {
-        const names = namesFor(@intFromEnum(platform)).?;
-        for (names, 0..) |entry, index| {
-            try std.testing.expectEqual(@as(i32, @intCast(index)), indexOf(platform, entry));
+        for (namesFor(platform), 0..) |entry, index| {
+            try std.testing.expectEqual(@as(?usize, index), indexOf(platform, entry));
         }
     }
 }
 
 test "a name belongs only to its own platform" {
-    try std.testing.expect(indexOf(.linux, "recursive") < 0);
-    try std.testing.expect(indexOf(.windows, "attrib") < 0);
-    try std.testing.expect(indexOf(.kqueue, "modify") < 0);
+    try std.testing.expect(indexOf(.linux, "recursive") == null);
+    try std.testing.expect(indexOf(.windows, "attrib") == null);
+    try std.testing.expect(indexOf(.kqueue, "modify") == null);
     // `all` is the one name every backend shares.
-    try std.testing.expect(indexOf(.linux, "all") >= 0);
-    try std.testing.expect(indexOf(.windows, "all") >= 0);
-    try std.testing.expect(indexOf(.kqueue, "all") >= 0);
+    try std.testing.expect(indexOf(.linux, "all") != null);
+    try std.testing.expect(indexOf(.windows, "all") != null);
+    try std.testing.expect(indexOf(.kqueue, "all") != null);
 }
 
 test "a partial or extended name matches nothing" {
-    try std.testing.expect(indexOf(.linux, "acces") < 0);
-    try std.testing.expect(indexOf(.linux, "accessx") < 0);
-    try std.testing.expect(indexOf(.linux, "") < 0);
-    try std.testing.expect(indexOf(.kqueue, "close-writ") < 0);
-    try std.testing.expect(indexOf(.kqueue, "close-writes") < 0);
+    try std.testing.expect(indexOf(.linux, "acces") == null);
+    try std.testing.expect(indexOf(.linux, "accessx") == null);
+    try std.testing.expect(indexOf(.linux, "") == null);
+    try std.testing.expect(indexOf(.kqueue, "close-writ") == null);
+    try std.testing.expect(indexOf(.kqueue, "close-writes") == null);
 }
 
 test "a name containing a zero byte matches nothing" {
-    try std.testing.expect(indexOf(.linux, "all\x00") < 0);
-    try std.testing.expect(indexOf(.linux, "a\x00ll") < 0);
+    try std.testing.expect(indexOf(.linux, "all\x00") == null);
+    try std.testing.expect(indexOf(.linux, "a\x00ll") == null);
 }
 
-test "an unknown platform reports rather than indexes" {
-    // Called through the exports with a raw ordinal rather than through
-    // `indexOf`: `Platform` has no tag for 3, which is the case being tested.
-    const name = "all";
-    try std.testing.expectEqual(@as(i32, -1), janet_filewatch_flag_index(3, name.ptr, name.len));
-    try std.testing.expectEqual(@as(i32, -1), janet_filewatch_flag_count(3));
-    try std.testing.expect(janet_filewatch_flag_name(3, 0) == null);
-}
+// There is no "an unknown platform reports rather than indexes" test any more,
+// and its absence is the interesting half. The exported form took the ordinal
+// as a `u32` and answered -1 for 3, because C had no way to say that only three
+// values exist; `Platform` says it, so the case cannot be written. A type
+// refusing a mistake is better than a test catching it -- rule 42 -- but the
+// assertion it replaces was real, so this note stands where it was.
 
 test "counts match the tables" {
-    try std.testing.expectEqual(@as(i32, 16), janet_filewatch_flag_count(@intFromEnum(Platform.linux)));
-    try std.testing.expectEqual(@as(i32, 10), janet_filewatch_flag_count(@intFromEnum(Platform.windows)));
-    try std.testing.expectEqual(@as(i32, 14), janet_filewatch_flag_count(@intFromEnum(Platform.kqueue)));
+    try std.testing.expectEqual(@as(usize, 16), flagCount(.linux));
+    try std.testing.expectEqual(@as(usize, 10), flagCount(.windows));
+    try std.testing.expectEqual(@as(usize, 14), flagCount(.kqueue));
+}
+
+test "a position outside a table has no name" {
+    try std.testing.expect(flagName(.linux, flagCount(.linux)) == null);
+    try std.testing.expect(flagName(.windows, flagCount(.windows)) == null);
+    try std.testing.expect(flagName(.kqueue, flagCount(.kqueue)) == null);
 }
 
 test "action names cover the documented codes" {
-    try std.testing.expect(janet_filewatch_action_name(-1) == null);
-    try std.testing.expect(janet_filewatch_action_name(6) == null);
+    try std.testing.expect(actionName(6) == null);
     for (windows_action_names, 0..) |expected, code| {
-        const got = janet_filewatch_action_name(@intCast(code));
-        try std.testing.expect(got != null);
-        try std.testing.expectEqualStrings(expected, std.mem.span(@as([*:0]const u8, @ptrCast(got))));
+        try std.testing.expectEqualStrings(expected, actionName(@intCast(code)).?);
     }
 }

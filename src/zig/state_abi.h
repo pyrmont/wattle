@@ -19,7 +19,7 @@
  * the macro empty — and is left alone.
  */
 
-#include "features.h"
+#include "janet_features.h"
 
 /* Aro -- the translate-c front end in Zig 0.16 -- predefines `__unix__`,
  * `unix` and `__unix` for the mingw targets as well as `_WIN32`, and

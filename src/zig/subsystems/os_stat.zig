@@ -114,11 +114,11 @@ const field_names = [_][:0]const u8{
     "changed",
 };
 
-export fn janet_os_stat_field_count() callconv(.c) i32 {
+pub fn fieldCount() i32 {
     return @intCast(field_names.len);
 }
 
-export fn janet_os_stat_field_name(index: i32) callconv(.c) ?[*:0]const u8 {
+pub fn fieldName(index: i32) ?[*:0]const u8 {
     if (index < 0 or index >= field_names.len) return null;
     return field_names[@intCast(index)].ptr;
 }
@@ -127,7 +127,7 @@ export fn janet_os_stat_field_name(index: i32) callconv(.c) ?[*:0]const u8 {
 ///
 /// The comparison reproduces `janet_cstrcmp`, which the C implementation used
 /// here, including its treatment of a key whose own bytes end in NUL.
-export fn janet_os_stat_field_lookup(key: [*]const u8, len: i32) callconv(.c) i32 {
+pub fn fieldLookup(key: [*]const u8, len: i32) i32 {
     if (len < 0) return -1;
     for (field_names, 0..) |name, index| {
         if (cstrequal(key, @intCast(len), name)) return @intCast(index);
@@ -156,7 +156,7 @@ test "field names are unique and NUL terminated" {
 }
 
 test "lookup matches whole names only" {
-    try std.testing.expectEqual(@as(i32, 0), janet_os_stat_field_lookup("dev", 3));
-    try std.testing.expectEqual(@as(i32, -1), janet_os_stat_field_lookup("de", 2));
-    try std.testing.expectEqual(@as(i32, -1), janet_os_stat_field_lookup("device", 6));
+    try std.testing.expectEqual(@as(i32, 0), fieldLookup("dev", 3));
+    try std.testing.expectEqual(@as(i32, -1), fieldLookup("de", 2));
+    try std.testing.expectEqual(@as(i32, -1), fieldLookup("device", 6));
 }

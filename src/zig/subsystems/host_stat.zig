@@ -65,7 +65,7 @@ const windows = builtin.os.tag == .windows;
 /// inside that file rather than a header, so there was nothing for `abi.zig`
 /// to have picked up.
 const sys = @cImport({
-    @cInclude("features.h");
+    @cInclude("janet_features.h");
     @cInclude("sys/stat.h");
 });
 
@@ -248,10 +248,6 @@ const fstat_name = if (darwin_inode64) "fstat$INODE64" else "fstat";
 const c_fstat: *const fn (c_int, *Stat) callconv(.c) c_int =
     @extern(*const fn (c_int, *Stat) callconv(.c) c_int, .{ .name = fstat_name });
 
-fn isDirectoryFace(file: ?*anyopaque) callconv(.c) c_int {
-    return if (isDirectory(file)) 1 else 0;
-}
-
 // ---------------------------------------------------------------- the faces
 
 /// `janet_zig_os_stat_read`. Stat a path and copy out the mode word and one
@@ -278,20 +274,20 @@ inline fn zeroAll(numbers: [*]f64) void {
     while (i < Field.count) : (i += 1) numbers[i] = 0;
 }
 
-fn statReadFace(path: [*:0]const u8, do_lstat: i32, mode: *u32, numbers: [*]f64) callconv(.c) i32 {
-    return statRead(path, do_lstat != 0, mode, numbers);
-}
-
 /// The same signature `os_files.zig` used to reach through the C ABI, so that
 /// its call sites did not have to change with the implementation.
 pub fn statReadFaceCompat(path: [*:0]const u8, do_lstat: i32, mode: *u32, numbers: [*]f64) i32 {
     return statRead(path, do_lstat != 0, mode, numbers);
 }
 
-comptime {
-    // Compiled under both arms while `os.c` still had one, so a contract could
-    // reach it either way; there is one arm now and the name is kept because
-    // `test/os_stat.c` calls it.
-    @export(&statReadFace, .{ .name = "janet_zig_os_stat_read" });
-    @export(&isDirectoryFace, .{ .name = "janet_zig_io_isdir" });
-}
+// Nothing here is a symbol any more.
+//
+// `janet_zig_os_stat_read` and `janet_zig_io_isdir` were the two functions
+// `os.c` and `io.c` kept when everything else around them moved to Zig, and
+// they were exported so that those two files could call back in. Phase 10 Part
+// 18 deleted both callers; `os_files.zig` was already reaching this file by
+// import, `io_core.zig` was still going through the linker, and
+// `test/os_surface.c` was the last reader of the first name. Phase 11 Part 20
+// spent both, along with the two C-shaped faces that existed only to be
+// exported. `statReadFaceCompat` stays because `os_files.zig`'s call sites
+// pass the `i32` the C signature took.

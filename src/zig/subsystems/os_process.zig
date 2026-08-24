@@ -28,11 +28,14 @@ const windows = builtin.os.tag == .windows;
 
 const pid_t = if (windows) c_int else std.c.pid_t;
 
-/// Mirrors the `JANET_OS_WAIT_*` codes in `src/core/os.c`.
-const wait_exited: i32 = 0;
-const wait_stopped: i32 = 1;
-const wait_signaled: i32 = 2;
-const wait_unknown: i32 = 3;
+/// What `wait` reports. These were the `JANET_OS_WAIT_*` codes in
+/// `src/core/os.c` and are now the whole of that vocabulary: `os_procs.zig`
+/// restates the first three for the policy it applies to them, and
+/// `test/os_process.zig` names all four rather than restating the numbers.
+pub const wait_exited: i32 = 0;
+pub const wait_stopped: i32 = 1;
+pub const wait_signaled: i32 = 2;
+pub const wait_unknown: i32 = 3;
 
 extern fn getpid() callconv(.c) pid_t;
 extern fn _getpid() callconv(.c) c_int;
@@ -47,24 +50,15 @@ extern fn close(fd: c_int) callconv(.c) c_int;
 extern fn execv(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) callconv(.c) c_int;
 extern fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) callconv(.c) c_int;
 
-comptime {
-    @export(&escapeArgument, .{ .name = "janet_os_exec_escape_arg" });
-    @export(&envKeyOk, .{ .name = "janet_os_env_key_ok" });
-    @export(&envEntryFill, .{ .name = "janet_os_env_entry_fill" });
-    @export(&processId, .{ .name = "janet_os_getpid" });
-    @export(&shell, .{ .name = "janet_os_system" });
-    if (!windows) {
-        @export(&signalIndex, .{ .name = "janet_os_signal_index" });
-        @export(&wait, .{ .name = "janet_os_wait" });
-        @export(&reap, .{ .name = "janet_os_reap" });
-        @export(&sendSignal, .{ .name = "janet_os_kill" });
-        @export(&makePipe, .{ .name = "janet_os_pipe" });
-        @export(&closeDescriptor, .{ .name = "janet_os_close_fd" });
-        @export(&forkProcess, .{ .name = "janet_os_fork" });
-        @export(&exec, .{ .name = "janet_os_exec" });
-        @export(&changeRoot, .{ .name = "janet_os_chroot" });
-    }
-}
+// The fourteen kernels below are reached by import rather than by symbol.
+//
+// Each was `@export`ed under a `janet_os_*` name and declared back as an
+// `extern fn` by `os_procs.zig`, which is the only caller there has ever
+// been. That shape is what `os.c` needed when these were the first Zig inside
+// it; both ends have been Zig since Phase 10 Part 18 and nothing said so,
+// because an `extern fn` declaration compiles forever and a symbol that
+// resolves is silent. Phase 11 Part 16 named the class; Part 20 spent this
+// instance of it.
 
 /// The signal keywords `os/proc-kill` and `os/sigaction` accept, in the order
 /// the C table listed them.
@@ -111,7 +105,7 @@ const signal_names = [_][:0]const u8{
 ///
 /// The comparison reproduces `janet_cstrcmp`, which the C implementation used
 /// here, including its treatment of a key whose own bytes end in NUL.
-fn signalIndex(key: [*]const u8, len: i32) callconv(.c) i32 {
+pub fn signalIndex(key: [*]const u8, len: i32) i32 {
     if (len < 0) return -1;
     for (signal_names, 0..) |name, index| {
         if (cstrequal(key, @intCast(len), name)) return @intCast(index);
@@ -162,7 +156,7 @@ const Escaped = struct {
 /// Returns -1 if the escaped form would not fit in a Janet string, which the C
 /// implementation reached only by overflowing its own length arithmetic; the
 /// command line limit C already enforces makes it unreachable in practice.
-fn escapeArgument(arg: [*:0]const u8, dest: ?[*]u8, cap: i32) callconv(.c) i32 {
+pub fn escapeArgument(arg: [*:0]const u8, dest: ?[*]u8, cap: i32) i32 {
     var out: Escaped = .{ .dest = dest, .cap = if (cap > 0) @intCast(cap) else 0 };
 
     // Quoting is needed only when the argument holds a byte the splitter would
@@ -214,7 +208,7 @@ fn escapeArgument(arg: [*:0]const u8, dest: ?[*]u8, cap: i32) callconv(.c) i32 {
 /// A key containing `=` would be read back as a shorter name with a longer
 /// value, and one containing NUL would end the entry early, so C drops both
 /// rather than building an entry that means something else.
-fn envKeyOk(key: [*]const u8, len: i32) callconv(.c) i32 {
+pub fn envKeyOk(key: [*]const u8, len: i32) i32 {
     if (len < 0) return 0;
     var index: usize = 0;
     while (index < @as(usize, @intCast(len))) : (index += 1) {
@@ -225,13 +219,13 @@ fn envKeyOk(key: [*]const u8, len: i32) callconv(.c) i32 {
 
 /// Write one environment entry as `key=value` followed by a terminator. The
 /// caller sizes the destination as `klen + vlen + 2`.
-fn envEntryFill(
+pub fn envEntryFill(
     key: [*]const u8,
     klen: i32,
     value: [*]const u8,
     vlen: i32,
     dest: [*]u8,
-) callconv(.c) void {
+) void {
     const k: usize = if (klen > 0) @intCast(klen) else 0;
     const v: usize = if (vlen > 0) @intCast(vlen) else 0;
     @memcpy(dest[0..k], key[0..k]);
@@ -240,12 +234,12 @@ fn envEntryFill(
     dest[k + 1 + v] = 0;
 }
 
-fn processId() callconv(.c) i64 {
+pub fn processId() i64 {
     if (windows) return _getpid();
     return getpid();
 }
 
-fn shell(command: ?[*:0]const u8) callconv(.c) i32 {
+pub fn shell(command: ?[*:0]const u8) i32 {
     return system(command);
 }
 
@@ -258,7 +252,7 @@ fn shell(command: ?[*:0]const u8) callconv(.c) i32 {
 /// A failed `waitpid` is not reported. The C implementation ignored its result
 /// and decoded the untouched status word, which classifies as a zero exit; that
 /// is preserved here.
-fn wait(pid: i64, value: *i32) callconv(.c) i32 {
+pub fn wait(pid: i64, value: *i32) i32 {
     var status: c_int = 0;
     while (true) {
         const result = waitpid(@intCast(pid), &status, 0);
@@ -286,24 +280,24 @@ fn wait(pid: i64, value: *i32) callconv(.c) i32 {
 /// Collect a process the collector is discarding. Unlike `wait` this does not
 /// retry and does not report the status, because the C implementation it
 /// replaces did neither.
-fn reap(pid: i64) callconv(.c) void {
+pub fn reap(pid: i64) void {
     var status: c_int = 0;
     _ = waitpid(@intCast(pid), &status, 0);
 }
 
-fn sendSignal(pid: i64, sig: i32) callconv(.c) i32 {
+pub fn sendSignal(pid: i64, sig: i32) i32 {
     return kill(@intCast(pid), sig);
 }
 
-fn makePipe(fds: *[2]c_int) callconv(.c) i32 {
+pub fn makePipe(fds: *[2]c_int) i32 {
     return pipe(fds);
 }
 
-fn closeDescriptor(fd: c_int) callconv(.c) i32 {
+pub fn closeDescriptor(fd: c_int) i32 {
     return close(fd);
 }
 
-fn forkProcess() callconv(.c) i64 {
+pub fn forkProcess() i64 {
     while (true) {
         const result = fork();
         if (result != -1) return result;
@@ -312,11 +306,11 @@ fn forkProcess() callconv(.c) i64 {
 }
 
 /// Replace the current process. Returns only on failure, with `errno` set.
-fn exec(
+pub fn exec(
     path: [*:0]const u8,
     argv: [*:null]const ?[*:0]const u8,
     search_path: i32,
-) callconv(.c) i32 {
+) i32 {
     while (true) {
         const status = if (search_path != 0) execvp(path, argv) else execv(path, argv);
         if (status != -1) return status;
@@ -324,7 +318,7 @@ fn exec(
     }
 }
 
-fn changeRoot(path: [*:0]const u8) callconv(.c) i32 {
+pub fn changeRoot(path: [*:0]const u8) i32 {
     while (true) {
         const status = chroot(path);
         if (status != -1) return status;

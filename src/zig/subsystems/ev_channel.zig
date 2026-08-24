@@ -20,6 +20,7 @@ const corefn = @import("corefn");
 const raise = @import("raise");
 const pp_format = @import("pp_format.zig");
 const ev = @import("ev_loop.zig");
+const ev_core = @import("ev_core.zig");
 
 const c = abi.c;
 const marshalling = @import("marshalling.zig");
@@ -130,9 +131,9 @@ fn chanInit(chan: *Channel, limit: i32, threaded: bool) void {
     chan.limit = limit;
     chan.closed = 0;
     chan.is_threaded = @intFromBool(threaded);
-    ev.janet_ev_q_init(&chan.items);
-    ev.janet_ev_q_init(&chan.read_pending);
-    ev.janet_ev_q_init(&chan.write_pending);
+    ev_core.qInit(&chan.items);
+    ev_core.qInit(&chan.read_pending);
+    ev_core.qInit(&chan.write_pending);
     c.janet_os_mutex_init(@ptrCast(&chan.lock));
 }
 
@@ -150,21 +151,21 @@ fn chanDeinit(chan: *Channel) void {
     if (isThreaded(chan)) {
         var item: c.Janet = undefined;
         lock(chan);
-        ev.janet_ev_q_deinit(&chan.read_pending);
-        ev.janet_ev_q_deinit(&chan.write_pending);
-        while (ev.janet_ev_q_pop(&chan.items, &item, @sizeOf(c.Janet)) == 0) {
+        ev_core.qDeinit(&chan.read_pending);
+        ev_core.qDeinit(&chan.write_pending);
+        while (ev_core.qPop(&chan.items, &item, @sizeOf(c.Janet)) == 0) {
             // Draining a threaded channel's items as it is torn down. The
             // channel is already unlinked and its queues are being freed
             // around this loop, so there is no scope above it and nothing
             // that could act on a raise if there were.
             _ = raise.total(unpack(chan, &item, true), "a channel's teardown");
         }
-        ev.janet_ev_q_deinit(&chan.items);
+        ev_core.qDeinit(&chan.items);
         unlock(chan);
     } else {
-        ev.janet_ev_q_deinit(&chan.read_pending);
-        ev.janet_ev_q_deinit(&chan.write_pending);
-        ev.janet_ev_q_deinit(&chan.items);
+        ev_core.qDeinit(&chan.read_pending);
+        ev_core.qDeinit(&chan.write_pending);
+        ev_core.qDeinit(&chan.items);
     }
     c.janet_os_mutex_deinit(@ptrCast(&chan.lock));
 }
@@ -260,7 +261,7 @@ fn chanatMarshal(p: ?*anyopaque, ctx: [*c]c.JanetMarshalContext) raise.Raising(v
     c.janet_marshal_abstract(ctx, chan);
     try marshalling.marshalByte(ctx, @intCast(chan.closed));
     try marshalling.marshalInt(ctx, chan.limit);
-    try marshalling.marshalInt(ctx, ev.janet_ev_q_count(&chan.items));
+    try marshalling.marshalInt(ctx, ev_core.qCount(&chan.items));
     const items = &chan.items;
     const data: [*c]c.Janet = @ptrCast(@alignCast(items.data));
     if (items.head <= items.tail) {
@@ -292,12 +293,15 @@ fn chanatUnmarshal(ctx: [*c]c.JanetMarshalContext) raise.Raising(?*anyopaque) {
     var i: i32 = 0;
     while (i < count) : (i += 1) {
         var item = try marsh.unmarshalJanet(ctx);
-        ev.assert(@src(), ev.janet_ev_q_push(&abst.items, &item, @sizeOf(c.Janet)) == 0, "bad unmarshal channel");
+        ev.assert(@src(), ev_core.qPush(&abst.items, &item, @sizeOf(c.Janet)) == 0, "bad unmarshal channel");
     }
     return abst;
 }
 
-export const janet_channel_type: abstract_type.AbstractType = .{
+/// `pub` for `ev_loop.zig`, which declared it `extern const` while already
+/// importing this file, and for `test/ev_loop.zig`. The `export` stays --
+/// `janet.h` declares it.
+pub export const janet_channel_type: abstract_type.AbstractType = .{
     .name = "core/channel",
     .gc = chanatGC,
     .gcmark = chanatMark,
@@ -385,7 +389,7 @@ fn threadChanCallback(msg: c.JanetEVGenericMessage) callconv(.c) void {
         if (is_read) {
             var reader: Pending = undefined;
             var sent = false;
-            while (ev.janet_ev_q_pop(&chan.read_pending, &reader, @sizeOf(Pending)) == 0) {
+            while (ev_core.qPop(&chan.read_pending, &reader, @sizeOf(Pending)) == 0) {
                 const target = reader.thread orelse continue;
                 ev.janet_ev_post_event(target, threadChanCallback, .{
                     .tag = reader.mode,
@@ -400,7 +404,7 @@ fn threadChanCallback(msg: c.JanetEVGenericMessage) callconv(.c) void {
             if (!sent) _ = raise.total(unpack(chan, &x, true), "a threaded channel's wakeup");
         } else {
             var writer: Pending = undefined;
-            while (ev.janet_ev_q_pop(&chan.write_pending, &writer, @sizeOf(Pending)) == 0) {
+            while (ev_core.qPop(&chan.write_pending, &writer, @sizeOf(Pending)) == 0) {
                 const target = writer.thread orelse continue;
                 ev.janet_ev_post_event(target, threadChanCallback, .{
                     .tag = writer.mode,
@@ -440,20 +444,20 @@ fn pushWithLock(chan: *Channel, x_in: c.Janet, mode: c_int) raise.Raising(bool) 
     var is_empty: c_int = undefined;
     if (is_threaded) {
         // Don't dereference a fiber owned by another thread.
-        is_empty = ev.janet_ev_q_pop(&chan.read_pending, &reader, @sizeOf(Pending));
+        is_empty = ev_core.qPop(&chan.read_pending, &reader, @sizeOf(Pending));
     } else {
         while (true) {
-            is_empty = ev.janet_ev_q_pop(&chan.read_pending, &reader, @sizeOf(Pending));
+            is_empty = ev_core.qPop(&chan.read_pending, &reader, @sizeOf(Pending));
             if (is_empty != 0 or reader.sched_id == reader.fiber.*.sched_id) break;
         }
     }
     if (is_empty != 0) {
         // No pending reader.
-        if (ev.janet_ev_q_push(&chan.items, &x, @sizeOf(c.Janet)) != 0) {
+        if (ev_core.qPush(&chan.items, &x, @sizeOf(c.Janet)) != 0) {
             _ = try unpack(chan, &x, true);
             unlock(chan);
             return pp_format.panicf("channel overflow: %v", .{x});
-        } else if (ev.janet_ev_q_count(&chan.items) > chan.limit) {
+        } else if (ev_core.qCount(&chan.items) > chan.limit) {
             // No root fiber, we are in completion on a root fiber. Don't block.
             if (mode == 2) {
                 unlock(chan);
@@ -466,7 +470,7 @@ fn pushWithLock(chan: *Channel, x_in: c.Janet, mode: c_int) raise.Raising(bool) 
                 .sched_id = c.janet_vm.root_fiber.*.sched_id,
                 .mode = if (mode != 0) mode_choice_write else mode_write,
             };
-            _ = ev.janet_ev_q_push(&chan.write_pending, &pending, @sizeOf(Pending));
+            _ = ev_core.qPush(&chan.write_pending, &pending, @sizeOf(Pending));
             unlock(chan);
             if (is_threaded) c.janet_gcroot(c.janet_wrap_fiber(pending.fiber));
             return true;
@@ -513,7 +517,7 @@ fn popWithLock(chan: *Channel, item: *c.Janet, is_choice: c_int) raise.Raising(b
         return true;
     }
     const is_threaded = isThreaded(chan);
-    if (ev.janet_ev_q_pop(&chan.items, item, @sizeOf(c.Janet)) != 0) {
+    if (ev_core.qPop(&chan.items, item, @sizeOf(c.Janet)) != 0) {
         // Queue empty.
         if (is_choice == 2) return false; // Skip pending read.
         const pending: Pending = .{
@@ -522,13 +526,13 @@ fn popWithLock(chan: *Channel, item: *c.Janet, is_choice: c_int) raise.Raising(b
             .sched_id = c.janet_vm.root_fiber.*.sched_id,
             .mode = if (is_choice != 0) mode_choice_read else mode_read,
         };
-        _ = ev.janet_ev_q_push(&chan.read_pending, &pending, @sizeOf(Pending));
+        _ = ev_core.qPush(&chan.read_pending, &pending, @sizeOf(Pending));
         unlock(chan);
         if (is_threaded) c.janet_gcroot(c.janet_wrap_fiber(pending.fiber));
         return false;
     }
     ev.assert(@src(), !(try unpack(chan, item, false)), "bad channel packing");
-    if (ev.janet_ev_q_pop(&chan.write_pending, &writer, @sizeOf(Pending)) == 0) {
+    if (ev_core.qPop(&chan.write_pending, &writer, @sizeOf(Pending)) == 0) {
         // Pending writer.
         if (is_threaded) {
             if (writer.thread) |target| {
@@ -595,14 +599,14 @@ export fn janet_channel_take(chan: ?*c.JanetChannel, out: *c.Janet) callconv(.c)
     return @intFromBool(raise.reported(channelTake(chan, out)));
 }
 
-export fn janet_channel_make(limit: u32) callconv(.c) ?*c.JanetChannel {
+pub export fn janet_channel_make(limit: u32) callconv(.c) ?*c.JanetChannel {
     ev.assert(@src(), limit <= std.math.maxInt(i32), "bad limit");
     const chan = unwrap(c.janet_abstract(abstract_type.stored(&janet_channel_type), @sizeOf(Channel)));
     chanInit(chan, @intCast(limit), false);
     return @ptrCast(chan);
 }
 
-export fn janet_channel_make_threaded(limit: u32) callconv(.c) ?*c.JanetChannel {
+pub export fn janet_channel_make_threaded(limit: u32) callconv(.c) ?*c.JanetChannel {
     ev.assert(@src(), limit <= std.math.maxInt(i32), "bad limit");
     const chan = unwrap(c.janet_abstract_threaded(abstract_type.stored(&janet_channel_type), @sizeOf(Channel)));
     chanInit(chan, @intCast(limit), true);
@@ -658,7 +662,7 @@ fn choiceImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
                 unlock(chan);
                 return makeCloseResult(chan);
             }
-            if (ev.janet_ev_q_count(&chan.items) < chan.limit) {
+            if (ev_core.qCount(&chan.items) < chan.limit) {
                 _ = try pushWithLock(chan, data[1], 1);
                 return makeWriteResult(chan);
             }
@@ -702,7 +706,7 @@ fn fullImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
     try arglayer.fixarity(argc, 1);
     const chan = try channelArg(argv, 0);
     lock(chan);
-    const ret = c.janet_wrap_boolean(@intFromBool(ev.janet_ev_q_count(&chan.items) >= chan.limit));
+    const ret = c.janet_wrap_boolean(@intFromBool(ev_core.qCount(&chan.items) >= chan.limit));
     unlock(chan);
     return ret;
 }
@@ -720,7 +724,7 @@ fn countImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
     try arglayer.fixarity(argc, 1);
     const chan = try channelArg(argv, 0);
     lock(chan);
-    const ret = ev.wrapInteger(ev.janet_ev_q_count(&chan.items));
+    const ret = ev.wrapInteger(ev_core.qCount(&chan.items));
     unlock(chan);
     return ret;
 }
@@ -764,7 +768,7 @@ fn closeImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
     if (chan.closed == 0) {
         chan.closed = 1;
         var writer: Pending = undefined;
-        while (ev.janet_ev_q_pop(&chan.write_pending, &writer, @sizeOf(Pending)) == 0) {
+        while (ev_core.qPop(&chan.write_pending, &writer, @sizeOf(Pending)) == 0) {
             if (writer.thread != &c.janet_vm) {
                 if (writer.thread) |target| {
                     ev.janet_ev_post_event(target, threadChanCallback, .{
@@ -786,7 +790,7 @@ fn closeImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
             }
         }
         var reader: Pending = undefined;
-        while (ev.janet_ev_q_pop(&chan.read_pending, &reader, @sizeOf(Pending)) == 0) {
+        while (ev_core.qPop(&chan.read_pending, &reader, @sizeOf(Pending)) == 0) {
             if (reader.thread != &c.janet_vm) {
                 if (reader.thread) |target| {
                     ev.janet_ev_post_event(target, threadChanCallback, .{

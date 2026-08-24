@@ -429,7 +429,16 @@ fn prettyLeaf(S: *Pretty, x: c.Janet) raise.Raising(void) {
         // does not chase its own output.
         try containers.bufferEnsure(S.buffer, S.buffer.count + S.bufstartlen * 4 + 3, 1);
         try S.pushByte('@');
-        S.align_col += 1 + describe.escapeString(S.buffer, S.buffer.data, S.bufstartlen);
+        // `try`, not the C face. This read `describe.escapeString` -- the
+        // `raise.reported` wrapper -- until Phase 11 Part 5 deleted it, and
+        // that was a crossing rather than a choice: a raise inside the escape
+        // became a report *nobody consumed*, so the blank width was used and
+        // the leak surfaced at the next scope boundary's assertion. Both
+        // functions are in this compilation, `prettyLeaf` is already
+        // `raise.Raising`, and `raise.crossing`'s note says of the whole
+        // family that each is "an ordinary import away from not needing this
+        // at all". This is one of them.
+        S.align_col += 1 + try describe.escapeStringImpl(S.buffer, S.buffer.data, S.bufstartlen);
     } else {
         S.align_col -= S.buffer.count;
         try printer.descriptionB(S.buffer, x);
@@ -685,25 +694,14 @@ pub fn jdnImpl(
     return S.buffer;
 }
 
-/// `janet_jdn`. Nothing in the tree calls it — it is declared in no header and
-/// reached from no C file, and has been dead since it was added. It is ported
-/// anyway, so that the two selectors define the same set of symbols; it goes
-/// with the export surface in Phase 11.
-fn jdn(buffer: ?*c.JanetBuffer, depth: c_int, x: c.Janet) raise.Raising(*c.JanetBuffer) {
-    const start: i32 = if (buffer) |b| b.count else 0;
-    return jdnImpl(buffer, depth, x, start, start);
-}
-
-pub const jdnPanicking = raise.panicking(jdn).face;
-
-comptime {
-    // Hidden exactly as the C build hides it: no header declares it.
-    // Gated on the selector rather than unconditional, so that a *contract*
-    // module can root itself at this file and instantiate the comptime-generic
-    // drivers without redefining the runtime's symbols. `root.zig` gates the
-    // import on the same flag, so this costs the runtime nothing.
-    if (options.pp) @export(&jdnPanicking, .{ .name = "janet_jdn", .visibility = .hidden });
-}
+// `janet_jdn` and its `raise.panicking` face stood here, with a comment saying
+// nothing in the tree called it. **That was wrong by one**, and Phase 11 Part 5
+// found out by deleting it: `test/pp_pretty.c` hand-declared the symbol -- no
+// header has ever carried it -- and was its only caller anywhere. The contract
+// is `test/pp_pretty.zig` now, inside this compilation, so it calls `jdnImpl`
+// and takes the error. The wrapper that fixed `startlen` and the lookback
+// barrier to the buffer's current count went with it; the contract passes both
+// explicitly, which is what every real caller does through the formatter.
 
 // A subsystem's exports follow its selector, which is what lets a *contract*
 // module root itself at one of these files and compile the generic code under

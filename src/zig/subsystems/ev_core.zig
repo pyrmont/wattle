@@ -2,29 +2,38 @@
 //! and the scheduler, the timeout min-heap's ordering decisions, and the
 //! timestamp arithmetic all three POSIX backends share.
 //!
-//! This is the first increment inside `ev.c`, and it deliberately takes none of
+//! This was the first increment inside `ev.c`, and it deliberately took none of
 //! the backends. What is here holds no Janet values, touches no host structure,
 //! and has no non-local control flow; the only failure is an allocation failure,
 //! which routes through the same fatal bridge the vector port uses.
 //!
-//! `JanetTimeout` never crosses the boundary. It carries a `pthread_t` on POSIX
-//! and two `HANDLE`s on Windows, so it falls under the rule that kept `jstat_t`
-//! and `struct timespec` in C. The heap functions therefore take a base pointer,
-//! a stride, and the offset of the `when` field, and report an index to swap
-//! with; C owns the array, the `janet_vm` fields it lives in, and the moves.
+//! ## The kernels are reached by import
+//!
+//! Every function below was an `export fn janet_ev_*` until Phase 11 Part 21,
+//! and `ev_loop.zig` declared each one again as a `pub extern fn` so that
+//! `ev_channel.zig` and `ev_backend.zig` could reach it through the symbol
+//! table. That was the shape `ev.c` needed. Both ends have been Zig since
+//! Phase 10 Part 18, so the thirteen symbols existed to let one Zig file call
+//! another -- rule 44, and the largest instance of it after Part 20's.
+//!
+//! Two things went with the seam. The `Queue` mirror this file kept of
+//! `state.h`'s `JanetQueue` is gone, because a direct call has to agree about
+//! the type and `c.JanetQueue` is the one the `janet_vm` fields are declared
+//! with -- rule 45. And `qMaybeResize` is private now: it was exported and
+//! declared by the C contract, and its only callers are the two pushes.
+//!
+//! `JanetTimeout` still never reaches these functions. It carries a `pthread_t`
+//! on POSIX and two `HANDLE`s on Windows, and the heap functions take a base
+//! pointer, a stride, and the offset of the `when` field rather than the
+//! structure; the caller owns the array, the `janet_vm` fields it lives in, and
+//! the moves. That interface no longer has to be untyped -- a comptime element
+//! type and field name would say the same thing and check it -- but the change
+//! belongs with `ev_loop`'s own migration rather than with this one, because
+//! `test/ev_loop.c` is the oracle over the callers until then.
 
 const std = @import("std");
 const abi = @import("abi");
 const c = abi.c;
-
-/// Mirrors `JanetQueue` in `src/core/state.h`. This is one of Janet's own
-/// structures rather than a host structure, so its layout is fixed by Janet.
-const Queue = extern struct {
-    capacity: i32,
-    head: i32,
-    tail: i32,
-    data: ?*anyopaque,
-};
 
 /// `JANET_MAX_Q_CAPACITY` in `src/core/ev.c`.
 const max_queue_capacity: i32 = 0x7FFFFFF;
@@ -40,14 +49,14 @@ const milliseconds_per_second: i64 = 1000;
 // Generic queue
 // ---------------------------------------------------------------------------
 
-export fn janet_ev_q_init(q: *Queue) callconv(.c) void {
+pub fn qInit(q: *c.JanetQueue) void {
     q.data = null;
     q.head = 0;
     q.tail = 0;
     q.capacity = 0;
 }
 
-export fn janet_ev_q_deinit(q: *Queue) callconv(.c) void {
+pub fn qDeinit(q: *c.JanetQueue) void {
     c.janet_free(q.data);
 }
 
@@ -57,7 +66,7 @@ export fn janet_ev_q_deinit(q: *Queue) callconv(.c) void {
 /// inside `int32_t` — capacity never exceeds `JANET_MAX_Q_CAPACITY` — but C
 /// leaves a corrupted queue's overflow undefined and Zig may not, so the port
 /// commits to wrapping rather than trapping.
-export fn janet_ev_q_count(q: *const Queue) callconv(.c) i32 {
+pub fn qCount(q: *const c.JanetQueue) i32 {
     return if (q.head > q.tail)
         q.tail +% q.capacity -% q.head
     else
@@ -68,8 +77,8 @@ export fn janet_ev_q_count(q: *const Queue) callconv(.c) i32 {
 ///
 /// One slot is always left empty so that a full queue is distinguishable from an
 /// empty one, which is why the test is `count + 1 >= capacity`.
-export fn janet_ev_q_maybe_resize(q: *Queue, itemsize: usize) callconv(.c) c_int {
-    const count = janet_ev_q_count(q);
+fn qMaybeResize(q: *c.JanetQueue, itemsize: usize) c_int {
+    const count = qCount(q);
     if (count +% 1 < q.capacity) return 0;
     if (count +% 1 >= max_queue_capacity) return 1;
 
@@ -103,31 +112,34 @@ export fn janet_ev_q_maybe_resize(q: *Queue, itemsize: usize) callconv(.c) c_int
     return 0;
 }
 
-export fn janet_ev_q_push(q: *Queue, item: [*]const u8, itemsize: usize) callconv(.c) c_int {
-    if (janet_ev_q_maybe_resize(q, itemsize) != 0) return 1;
+pub fn qPush(q: *c.JanetQueue, item: *const anyopaque, itemsize: usize) c_int {
+    if (qMaybeResize(q, itemsize) != 0) return 1;
     const base: [*]u8 = @ptrCast(q.data.?);
     const slot = base + @as(usize, @intCast(q.tail)) * itemsize;
-    @memcpy(slot[0..itemsize], item[0..itemsize]);
+    const source: [*]const u8 = @ptrCast(item);
+    @memcpy(slot[0..itemsize], source[0..itemsize]);
     q.tail = if (q.tail +% 1 < q.capacity) q.tail +% 1 else 0;
     return 0;
 }
 
-export fn janet_ev_q_push_head(q: *Queue, item: [*]const u8, itemsize: usize) callconv(.c) c_int {
-    if (janet_ev_q_maybe_resize(q, itemsize) != 0) return 1;
+pub fn qPushHead(q: *c.JanetQueue, item: *const anyopaque, itemsize: usize) c_int {
+    if (qMaybeResize(q, itemsize) != 0) return 1;
     var newhead = q.head -% 1;
     if (newhead < 0) newhead +%= q.capacity;
     const base: [*]u8 = @ptrCast(q.data.?);
     const slot = base + @as(usize, @intCast(newhead)) * itemsize;
-    @memcpy(slot[0..itemsize], item[0..itemsize]);
+    const source: [*]const u8 = @ptrCast(item);
+    @memcpy(slot[0..itemsize], source[0..itemsize]);
     q.head = newhead;
     return 0;
 }
 
-export fn janet_ev_q_pop(q: *Queue, out: [*]u8, itemsize: usize) callconv(.c) c_int {
+pub fn qPop(q: *c.JanetQueue, out: *anyopaque, itemsize: usize) c_int {
     if (q.head == q.tail) return 1;
     const base: [*]const u8 = @ptrCast(q.data.?);
     const slot = base + @as(usize, @intCast(q.head)) * itemsize;
-    @memcpy(out[0..itemsize], slot[0..itemsize]);
+    const destination: [*]u8 = @ptrCast(out);
+    @memcpy(destination[0..itemsize], slot[0..itemsize]);
     q.head = if (q.head +% 1 < q.capacity) q.head +% 1 else 0;
     return 0;
 }
@@ -140,9 +152,10 @@ export fn janet_ev_q_pop(q: *Queue, out: [*]u8, itemsize: usize) callconv(.c) c_
 ///
 /// The read goes through `@memcpy` rather than a pointer cast because the caller
 /// only promises the C structure's own alignment, which Zig has not been told.
-fn whenAt(base: [*]const u8, stride: usize, when_offset: usize, index: usize) i64 {
+fn whenAt(base: *const anyopaque, stride: usize, when_offset: usize, index: usize) i64 {
     var value: i64 = undefined;
-    const source = base + index * stride + when_offset;
+    const bytes: [*]const u8 = @ptrCast(base);
+    const source = bytes + index * stride + when_offset;
     const destination: [*]u8 = @ptrCast(&value);
     @memcpy(destination[0..@sizeOf(i64)], source[0..@sizeOf(i64)]);
     return value;
@@ -153,13 +166,13 @@ fn whenAt(base: [*]const u8, stride: usize, when_offset: usize, index: usize) i6
 ///
 /// The left child is preferred on a tie, which is what the C implementation's
 /// strict `<` comparisons produce.
-export fn janet_ev_heap_sift_down(
-    base: [*]const u8,
+pub fn heapSiftDown(
+    base: *const anyopaque,
     stride: usize,
     when_offset: usize,
     count: usize,
     index: usize,
-) callconv(.c) isize {
+) isize {
     const left = (index << 1) + 1;
     const right = left + 1;
     var smallest = index;
@@ -178,12 +191,12 @@ export fn janet_ev_heap_sift_down(
 
 /// One step of sifting up: report the parent that should take `index`'s place,
 /// or -1 when the heap property already holds there.
-export fn janet_ev_heap_sift_up(
-    base: [*]const u8,
+pub fn heapSiftUp(
+    base: *const anyopaque,
     stride: usize,
     when_offset: usize,
     index: usize,
-) callconv(.c) isize {
+) isize {
     if (index == 0) return -1;
     const parent = (index - 1) >> 1;
     if (whenAt(base, stride, when_offset, parent) <=
@@ -202,7 +215,7 @@ export fn janet_ev_heap_sift_up(
 /// conversion of a NaN or an out-of-range delay undefined, exactly as `os/sleep`
 /// and `os/touch` do; the port saturates for the same reason and with the same
 /// result on the development target.
-export fn janet_ev_ts_delta(ts: i64, delta: f64) callconv(.c) i64 {
+pub fn tsDelta(ts: i64, delta: f64) i64 {
     if (std.math.isInf(delta)) {
         return if (delta < 0) ts else std.math.maxInt(i64);
     }
@@ -215,7 +228,7 @@ export fn janet_ev_ts_delta(ts: i64, delta: f64) callconv(.c) i64 {
 /// identically after calling `janet_gettime`. It is arithmetic rather than a
 /// clock reading, so it is shared here while `janet_gettime` stays with
 /// `-Dos-time`.
-export fn janet_ev_ts_from_parts(sec: i64, nsec: i64) callconv(.c) i64 {
+pub fn tsFromParts(sec: i64, nsec: i64) i64 {
     return milliseconds_per_second *% sec +%
         @divTrunc(nsec, nanoseconds_per_millisecond);
 }
@@ -225,7 +238,7 @@ export fn janet_ev_ts_from_parts(sec: i64, nsec: i64) callconv(.c) i64 {
 /// C fills a `struct timespec`; the parts cross the boundary separately because
 /// that structure's layout varies by platform, libc, and word size. A zero
 /// timestamp is answered directly, as the C implementation's ternaries do.
-export fn janet_ev_ts_to_parts(ts: i64, sec_out: *i64, nsec_out: *i64) callconv(.c) void {
+pub fn tsToParts(ts: i64, sec_out: *i64, nsec_out: *i64) void {
     if (ts == 0) {
         sec_out.* = 0;
         nsec_out.* = 0;
@@ -240,7 +253,7 @@ export fn janet_ev_ts_to_parts(ts: i64, sec_out: *i64, nsec_out: *i64) callconv(
 /// Only the kqueue backend calls this, but the rule belongs to kqueue's
 /// interface rather than to the host running the build, so it is compiled and
 /// tested everywhere — as the Windows command-line escaping is.
-export fn janet_ev_kqueue_interval(ts: i64) callconv(.c) i64 {
+pub fn kqueueInterval(ts: i64) i64 {
     return if (ts >= kqueue_min_interval) ts else kqueue_min_interval;
 }
 
@@ -258,10 +271,10 @@ fn saturatingCast(comptime T: type, value: f64) T {
 }
 
 test "queue counts across a wrap" {
-    var q: Queue = undefined;
-    janet_ev_q_init(&q);
-    defer janet_ev_q_deinit(&q);
-    try std.testing.expectEqual(@as(i32, 0), janet_ev_q_count(&q));
+    var q: c.JanetQueue = undefined;
+    qInit(&q);
+    defer qDeinit(&q);
+    try std.testing.expectEqual(@as(i32, 0), qCount(&q));
 }
 
 test "saturating conversion clamps rather than trapping" {

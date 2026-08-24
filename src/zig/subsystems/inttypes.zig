@@ -291,6 +291,17 @@ export fn janet_unwrap_s64(x: c.Janet) callconv(.c) i64 {
     return raise.reported(janet_unwrap_s64Impl(x));
 }
 
+/// The Zig entry points, for a caller inside the compilation.
+///
+/// Phase 11 Part 13. `args_core.zig`'s `getInteger64` and `getUInteger64`
+/// reached these through the `export fn`s above, from inside a
+/// `raise.Raising` function -- so a refusal became a report nobody consumed,
+/// the getter answered `reportToC`'s zero, and the process died at the next
+/// scope boundary. `(string/format "%d" "x")` was enough to reproduce it.
+/// That is rule 32's family, found by a contract's type rather than by a grep.
+pub const unwrapS64 = janet_unwrap_s64Impl;
+pub const unwrapU64 = janet_unwrap_u64Impl;
+
 fn janet_unwrap_u64Impl(x: c.Janet) raise.Raising(u64) {
     switch (c.janet_type(x)) {
         c.JANET_NUMBER => {
@@ -374,7 +385,21 @@ fn applyBin(comptime op: BinOp, lhs: u64, rhs: u64) u64 {
 fn Box(comptime T: type) type {
     return struct {
         const at: *const c.JanetAbstractType = if (T == i64) abstract_type.stored(&janet_s64_type) else abstract_type.stored(&janet_u64_type);
-        const unwrap = if (T == i64) janet_unwrap_s64 else janet_unwrap_u64;
+        /// The *raising* conversion, not the face beside it.
+        ///
+        /// This was `janet_unwrap_s64` until Phase 11 Part 15, which is Part
+        /// 13's defect in the file Part 13 fixed it for. That part gave
+        /// `args_core.zig`'s `Wide` the `unwrapS64`/`unwrapU64` entry points
+        /// because reaching the face from a `raise.Raising` caller swallowed
+        /// the refusal; every `call` below is `raise.Raising` too, and this
+        /// binding kept them on the face. `(+ (int/s64 1) {})` killed the
+        /// process instead of raising a catchable error.
+        ///
+        /// A comptime alias is why neither the compiler nor a grep for
+        /// `c.janet_unwrap_s64` found it: the call sites read
+        /// `Box(T).unwrap(...)`, and the face is a bare identifier in this
+        /// file rather than a `c.` one. `port/swallowed.py` follows both now.
+        const unwrap = if (T == i64) janet_unwrap_s64Impl else janet_unwrap_u64Impl;
         inline fn make(value: T) c.Janet {
             return boxed(T, at, value);
         }
@@ -386,10 +411,10 @@ fn OpMethod(comptime T: type, comptime op: BinOp) type {
     return struct {
         fn call(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
             try arglayer.arity(argc, 2, -1);
-            var acc: u64 = @bitCast(Box(T).unwrap(argv[0]));
+            var acc: u64 = @bitCast(try Box(T).unwrap(argv[0]));
             var i: i32 = 1;
             while (i < argc) : (i += 1) {
-                acc = applyBin(op, acc, @bitCast(Box(T).unwrap(argv[@intCast(i)])));
+                acc = applyBin(op, acc, @bitCast(try Box(T).unwrap(argv[@intCast(i)])));
             }
             return Box(T).make(@bitCast(acc));
         }
@@ -402,8 +427,8 @@ fn OpMethodInvert(comptime T: type, comptime op: BinOp) type {
     return struct {
         fn call(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
             try arglayer.fixarity(argc, 2);
-            const lhs: u64 = @bitCast(Box(T).unwrap(argv[1]));
-            const rhs: u64 = @bitCast(Box(T).unwrap(argv[0]));
+            const lhs: u64 = @bitCast(try Box(T).unwrap(argv[1]));
+            const rhs: u64 = @bitCast(try Box(T).unwrap(argv[0]));
             return Box(T).make(@bitCast(applyBin(op, lhs, rhs)));
         }
     };
@@ -414,7 +439,7 @@ fn NotMethod(comptime T: type) type {
     return struct {
         fn call(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
             try arglayer.fixarity(argc, 1);
-            return Box(T).make(~Box(T).unwrap(argv[0]));
+            return Box(T).make(~try Box(T).unwrap(argv[0]));
         }
     };
 }
@@ -446,16 +471,16 @@ fn DivMethod(comptime T: type, comptime rem: bool, comptime on_zero: DivZero) ty
 
         fn call(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
             try arglayer.arity(argc, 2, -1);
-            var acc = Box(T).unwrap(argv[0]);
+            var acc = try Box(T).unwrap(argv[0]);
             var i: i32 = 1;
-            while (i < argc) : (i += 1) try apply(&acc, Box(T).unwrap(argv[@intCast(i)]));
+            while (i < argc) : (i += 1) try apply(&acc, try Box(T).unwrap(argv[@intCast(i)]));
             return Box(T).make(acc);
         }
 
         fn calli(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising(c.Janet) {
             try arglayer.fixarity(argc, 2);
-            var acc = Box(T).unwrap(argv[1]);
-            try apply(&acc, Box(T).unwrap(argv[0]));
+            var acc = try Box(T).unwrap(argv[1]);
+            try apply(&acc, try Box(T).unwrap(argv[0]));
             return Box(T).make(acc);
         }
     };

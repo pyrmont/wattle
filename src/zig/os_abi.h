@@ -22,7 +22,7 @@
  * Zig type, and it is met: this header is included once, by `os_abi.zig`, and
  * the four files of the `-Dos-surface` object share that module.
  *
- * `features.h` comes first, as it must before any system header: it is what
+ * `janet_features.h` comes first, as it must before any system header: it is what
  * sets `_POSIX_C_SOURCE`, and without it `localtime_r`, `gmtime_r` and
  * `sigaction` are not declared.
  *
@@ -33,7 +33,7 @@
  * `isatty` declares it directly, because a one-line `extern fn` has no layout
  * to get wrong and does not grow the translation. */
 
-#include "features.h"
+#include "janet_features.h"
 
 /* Aro -- the translate-c front end in Zig 0.16 -- predefines `__unix__`,
  * `unix` and `__unix` for the mingw targets as well as `_WIN32`, and

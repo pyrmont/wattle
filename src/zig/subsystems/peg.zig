@@ -171,7 +171,6 @@ inline fn extraAt(extrav: [*c]const c.Janet, index: i32) c.Janet {
 /// The handle `janet_dynprintf` falls back to when `:err` is unbound.
 /// `trace_frames.zig` records why `stderr` cannot be named from Zig portably
 /// and why `io.c` keeps this one-line accessor.
-
 /// `janet_wrap_integer`, written out rather than called. `janet.h` declares the
 /// function beside its macro and `wrap.c` defines it only for the two nanbox
 /// layouts, so a tagged build has no such symbol and a Zig caller -- which
@@ -1809,7 +1808,7 @@ fn pegMark(pointer: ?*anyopaque, size: usize) callconv(.c) c_int {
 
 fn pegMarshal(pointer: ?*anyopaque, ctx: [*c]c.JanetMarshalContext) raise.Raising(void) {
     const peg: *c.JanetPeg = @ptrCast(@alignCast(pointer));
-    c.janet_marshal_size(ctx, peg.bytecode_len);
+    try marshalling.marshalSize(ctx, peg.bytecode_len);
     try marshalling.marshalInt(ctx, @bitCast(peg.num_constants));
     c.janet_marshal_abstract(ctx, pointer);
     var i: usize = 0;
@@ -2050,7 +2049,7 @@ fn pegNext(pointer: ?*anyopaque, key: c.Janet) raise.Raising(c.Janet) {
     return c.janet_nextmethod(@ptrCast(&peg_methods), key);
 }
 
-export const janet_peg_type: abstract_type.AbstractType = .{
+pub export const janet_peg_type: abstract_type.AbstractType = .{
     .name = "core/peg",
     .gc = null,
     .gcmark = pegMark,

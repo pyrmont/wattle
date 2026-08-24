@@ -83,7 +83,7 @@ fn janet_zig_special_do(
     var scope: c.JanetScope = undefined;
     c.janetc_scope(&scope, compiler, 0, "do");
     const result = try compileSequence(options, argument_count, arguments);
-    c.janetc_popscope_keepslot(compiler, result);
+    try compiler_primitives.janetc_popscope_keepslotImpl(compiler, result);
     return result;
 }
 

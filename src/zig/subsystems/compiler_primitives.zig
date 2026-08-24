@@ -98,14 +98,6 @@ pub fn janetc_lintImpl(
     try record(compiler, @enumFromInt(level), c.janet_cstring(message));
 }
 
-export fn janetc_lint(
-    compiler: *c.JanetCompiler,
-    level: c_uint,
-    message: [*c]const u8,
-) callconv(.c) void {
-    raise.reported(janetc_lintImpl(compiler, level, message));
-}
-
 /// Append one finished lint, tagged with the level and the form's position.
 ///
 /// A line or column of -1 means the source had no mapping there, and becomes
@@ -185,15 +177,6 @@ pub fn janetc_nameslotImpl(
     });
 }
 
-export fn janetc_nameslot(
-    compiler: *c.JanetCompiler,
-    symbol: [*c]const u8,
-    slot: c.JanetSlot,
-    flags: u32,
-) callconv(.c) void {
-    raise.reported(janetc_nameslotImpl(compiler, symbol, slot, flags));
-}
-
 pub fn janetc_resolveImpl(compiler: *c.JanetCompiler, symbol: [*c]const u8) raise.Raising(c.JanetSlot) {
     var scope = compiler.scope;
     var found_pair: ?*c.SymPair = null;
@@ -258,10 +241,6 @@ pub fn janetc_resolveImpl(compiler: *c.JanetCompiler, symbol: [*c]const u8) rais
     }
     result.envindex = environment_index;
     return result;
-}
-
-export fn janetc_resolve(compiler: *c.JanetCompiler, symbol: [*c]const u8) callconv(.c) c.JanetSlot {
-    return raise.reported(janetc_resolveImpl(compiler, symbol));
 }
 
 export fn janetc_cslot(value: c.Janet) callconv(.c) c.JanetSlot {
@@ -382,12 +361,20 @@ pub fn janetc_popscopeImpl(compiler: *c.JanetCompiler) raise.Raising(void) {
     compiler.scope = new_scope;
 }
 
-export fn janetc_popscope(compiler: *c.JanetCompiler) callconv(.c) void {
-    raise.reported(janetc_popscopeImpl(compiler));
-}
-
-export fn janetc_popscope_keepslot(compiler: *c.JanetCompiler, return_slot: c.JanetSlot) callconv(.c) void {
-    raise.reported(janetc_popscopeImpl(compiler));
+/// Pop a scope and reserve the register its result lives in.
+///
+/// This was an `export fn` that swallowed the pop's raise into a report, and
+/// Phase 11 Part 7 found it by deleting `janetc_popscope` beside it: the one
+/// caller is `specials_core.zig`'s `do`, which is itself raising, so the
+/// report had nobody to consume it and would have surfaced at the next scope
+/// boundary's assertion arbitrarily far from the cause. That is
+/// `raise.crossing`'s documented family, of which it says each is "an
+/// ordinary import away from not needing this at all". This is the import.
+pub fn janetc_popscope_keepslotImpl(
+    compiler: *c.JanetCompiler,
+    return_slot: c.JanetSlot,
+) raise.Raising(void) {
+    try janetc_popscopeImpl(compiler);
     if (compiler.scope != null and return_slot.envindex < 0 and return_slot.index >= 0) {
         c.janetc_regalloc_touch(&compiler.scope.*.ra, return_slot.index);
     }
@@ -437,15 +424,13 @@ pub fn janetc_toslotsImpl(
     return result;
 }
 
-export fn janetc_toslots(
-    compiler: *c.JanetCompiler,
-    values: [*c]const c.Janet,
-    length: i32,
-) callconv(.c) [*c]c.JanetSlot {
-    return raise.reported(janetc_toslotsImpl(compiler, values, length));
-}
-
-export fn janetc_toslotskv(compiler: *c.JanetCompiler, dictionary: c.Janet) callconv(.c) [*c]c.JanetSlot {
+/// A dictionary's keys and values, interleaved, in sorted key order.
+///
+/// The two `janetc_value` calls below raise, and until Part 7 this was an
+/// `export fn` that reported them — with its only caller, `makeDictionary`,
+/// inside `janetc_valueImpl`'s raising chain. Same family as
+/// `janetc_popscope_keepslotImpl` above and found the same way.
+pub fn janetc_toslotskvImpl(compiler: *c.JanetCompiler, dictionary: c.Janet) raise.Raising([*c]c.JanetSlot) {
     var result: [*c]c.JanetSlot = null;
     var options = janetc_fopts_default(compiler);
     options.flags |= c.JANET_FOPTS_ACCEPT_SPLICE;
@@ -469,8 +454,8 @@ export fn janetc_toslotskv(compiler: *c.JanetCompiler, dictionary: c.Janet) call
     var index: i32 = 0;
     while (index < length) : (index += 1) {
         const pair = key_values[@intCast(indices[@intCast(index)])];
-        pushVector(c.JanetSlot, &result, raise.reported(janetc_valueImpl(options, pair.key)));
-        pushVector(c.JanetSlot, &result, raise.reported(janetc_valueImpl(options, pair.value)));
+        pushVector(c.JanetSlot, &result, try janetc_valueImpl(options, pair.key));
+        pushVector(c.JanetSlot, &result, try janetc_valueImpl(options, pair.value));
     }
     // This was a `defer` until Phase 10 Part 7 gave the file its
     // `//! jump-transparent` marker, and the marker is what makes the
@@ -553,10 +538,6 @@ pub fn janetc_throwawayImpl(options: c.JanetFopts, value: c.Janet) raise.Raising
     }
 }
 
-export fn janetc_throwaway(options: c.JanetFopts, value: c.Janet) callconv(.c) void {
-    raise.reported(janetc_throwawayImpl(options, value));
-}
-
 pub fn janetc_valueImpl(options: c.JanetFopts, original_value: c.Janet) raise.Raising(c.JanetSlot) {
     const compiler: *c.JanetCompiler = options.compiler;
     const previous_mapping = compiler.current_mapping;
@@ -610,8 +591,8 @@ pub fn janetc_valueImpl(options: c.JanetFopts, original_value: c.Janet) raise.Ra
             },
             c.JANET_SYMBOL => result = try janetc_resolveImpl(compiler, c.janet_unwrap_symbol(value)),
             c.JANET_ARRAY => result = try makeArray(options, value),
-            c.JANET_STRUCT => result = makeDictionary(options, value, c.JOP_MAKE_STRUCT),
-            c.JANET_TABLE => result = makeDictionary(options, value, c.JOP_MAKE_TABLE),
+            c.JANET_STRUCT => result = try makeDictionary(options, value, c.JOP_MAKE_STRUCT),
+            c.JANET_TABLE => result = try makeDictionary(options, value, c.JOP_MAKE_TABLE),
             c.JANET_BUFFER => result = try makeBuffer(options, value),
             else => result = janetc_cslot(value),
         }
@@ -626,10 +607,6 @@ pub fn janetc_valueImpl(options: c.JanetFopts, original_value: c.Janet) raise.Ra
     compiler.current_mapping = previous_mapping;
     compiler.recursion_guard += 1;
     return result;
-}
-
-export fn janetc_value(options: c.JanetFopts, original_value: c.Janet) callconv(.c) c.JanetSlot {
-    return raise.reported(janetc_valueImpl(options, original_value));
 }
 
 fn expandMacroOnce(
@@ -1040,9 +1017,9 @@ fn makeTuple(options: c.JanetFopts, value: c.Janet) raise.Raising(c.JanetSlot) {
     return makeValue(options, try janetc_toslotsImpl(compiler, tuple, c.janet_tuple_length(tuple)), c.JOP_MAKE_TUPLE);
 }
 
-fn makeDictionary(options: c.JanetFopts, value: c.Janet, operation: c_int) c.JanetSlot {
+fn makeDictionary(options: c.JanetFopts, value: c.Janet, operation: c_int) raise.Raising(c.JanetSlot) {
     const compiler: *c.JanetCompiler = options.compiler;
-    return makeValue(options, janetc_toslotskv(compiler, value), operation);
+    return makeValue(options, try janetc_toslotskvImpl(compiler, value), operation);
 }
 
 fn makeBuffer(options: c.JanetFopts, value: c.Janet) raise.Raising(c.JanetSlot) {
@@ -1162,10 +1139,6 @@ pub fn janetc_pop_funcdefImpl(compiler: *c.JanetCompiler) raise.Raising([*c]c.Ja
     c.janet_bytecode_movopt(definition);
     c.janet_bytecode_remove_noops(definition);
     return definition;
-}
-
-export fn janetc_pop_funcdef(compiler: *c.JanetCompiler) callconv(.c) [*c]c.JanetFuncDef {
-    return raise.reported(janetc_pop_funcdefImpl(compiler));
 }
 
 export fn janet_compile_lint(
@@ -1328,7 +1301,7 @@ fn cfunCompile(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raisi
     else
         null;
 
-    const result = c.janet_compile_lint(argv[0], env, source, lints);
+    const result = try janet_compile_lintImpl(argv[0], env, source, lints);
     if (result.status == c.JANET_COMPILE_OK) {
         return c.janet_wrap_function(c.janet_thunk(result.funcdef));
     }

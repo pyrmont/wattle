@@ -1,6 +1,9 @@
-//! Indexed and keyed access as its callers see it: `-Dvalue-access`'s
-//! implementation when the selector says Zig, and the C symbols wearing the
-//! same signatures when it says C.
+//! Indexed and keyed access as its callers see it.
+//!
+//! It had a second arm until Phase 11 Part 26: `-Dvalue-access=c` resolved
+//! this to `value_access_extern.zig`, the C symbols wearing the same
+//! signatures. Phase 10 Part 18 spent the selector; the shim then sat behind a
+//! comptime-`false` branch that nothing analyses.
 //!
 //! Phase 10 Part 17c. `janet_in`, `janet_getindex`, `janet_length`,
 //! `janet_lengthv`, `janet_putindex`, `janet_put` and the iteration protocol
@@ -18,12 +21,7 @@
 //! whichever implementation the selector linked, exactly as before, because it
 //! is the same symbol either way.
 
-const options = @import("options");
-
-const impl = if (options.value_access)
-    @import("value_access.zig")
-else
-    @import("value_access_extern.zig");
+const impl = @import("value_access.zig");
 
 pub const next = impl.next;
 pub const nextImpl = impl.nextImpl; // janet_next_impl

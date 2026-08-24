@@ -1,0 +1,125 @@
+//! Behavioral contract for `janet_asm_decode_instruction`: one bytecode word
+//! turned back into the tuple the assembler would have written.
+//!
+//! `disasm` reaches this for every instruction of a function, so the Janet
+//! suites exercise it heavily and observe almost nothing about it — a
+//! disassembly that decoded an operand wrongly still looks like a
+//! disassembly. What is pinned here is the *shape* each instruction type
+//! produces, and in particular the three ways an operand byte can be read.
+//!
+//! ## The three readings of the same bits
+//!
+//! An operand is not just a number, and the whole point of the instruction
+//! table is to say which of these each field is:
+//!
+//!   - **unsigned**, as a slot index or a constant index;
+//!   - **signed**, as a jump displacement or a small integer literal, where
+//!     `0xFFFFFE` in the top three bytes is -2 rather than 16,777,214;
+//!   - **unsigned again in a field that looks signed**, which
+//!     `JOP_SHIFT_RIGHT_UNSIGNED_IMMEDIATE` is: its 8-bit immediate reads as
+//!     253 where `JOP_ADD_IMMEDIATE`'s reads as -3 from the identical byte.
+//!
+//! That last pair is the assertion worth having. The two instructions differ
+//! only in their table row, so a row shifted by one turns 253 into -3 and
+//! nothing else notices.
+//!
+//! ## The two edges
+//!
+//! An unknown opcode decodes to the raw word as a *number* rather than to a
+//! tuple, which is how a disassembly of corrupt bytecode stays printable. And
+//! bit 7 of the word is the breakpoint flag: it is not part of the opcode, and
+//! it comes back as the tuple's bracket-constructor flag rather than as an
+//! operand.
+
+const std = @import("std");
+const abi = @import("abi");
+const c = abi.c;
+const harness = @import("harness.zig");
+
+/// Decode, and assert the instruction is the named one with `length` fields.
+fn decoded(instruction: u32, length: i32, name: [*:0]const u8) [*]const c.Janet {
+    const value = c.janet_asm_decode_instruction(instruction);
+    std.debug.assert(harness.isType(value, c.JANET_TUPLE));
+    const tuple = c.janet_unwrap_tuple(value);
+    std.debug.assert(c.janet_tuple_length(tuple) == length);
+    std.debug.assert(harness.symbolIs(tuple[0], name));
+    return tuple;
+}
+
+fn anUnknownOpcodeStaysANumber() void {
+    // 0x7F is not an opcode, so this word has no row to decode against.
+    const value = c.janet_asm_decode_instruction(0x1234567F);
+    std.debug.assert(harness.isType(value, c.JANET_NUMBER));
+    std.debug.assert(@as(u32, @bitCast(c.janet_unwrap_integer(value))) == 0x1234567F);
+}
+
+fn theOperandShapes() void {
+    // No operands.
+    const noop = decoded(c.JOP_NOOP, 1, "noop");
+    std.debug.assert((c.janet_tuple_flag(noop) & c.JANET_TUPLE_FLAG_BRACKETCTOR) == 0);
+
+    // One unsigned 24-bit field.
+    const err = decoded(harness.op(c.JOP_ERROR) | (@as(u32, 0x123456) << 8), 2, "err");
+    std.debug.assert(harness.integerIs(err[1], 0x123456));
+
+    // One *signed* 24-bit field: the same bit width, read the other way.
+    const jmp = decoded(harness.op(c.JOP_JUMP) | (@as(u32, 0xFFFFFE) << 8), 2, "jmp");
+    std.debug.assert(harness.integerIs(jmp[1], -2));
+
+    // A slot and an unsigned 16-bit field.
+    const movn = decoded(
+        harness.op(c.JOP_MOVE_NEAR) | (@as(u32, 7) << 8) | (@as(u32, 300) << 16),
+        3,
+        "movn",
+    );
+    std.debug.assert(harness.integerIs(movn[1], 7));
+    std.debug.assert(harness.integerIs(movn[2], 300));
+
+    // A slot and a signed 16-bit field.
+    const ldi = decoded(
+        harness.op(c.JOP_LOAD_INTEGER) | (@as(u32, 5) << 8) | (@as(u32, 0xFFF4) << 16),
+        3,
+        "ldi",
+    );
+    std.debug.assert(harness.integerIs(ldi[1], 5));
+    std.debug.assert(harness.integerIs(ldi[2], -12));
+
+    // Three slots.
+    const add = decoded(
+        harness.op(c.JOP_ADD) | (@as(u32, 3) << 8) | (@as(u32, 7) << 16) | (@as(u32, 9) << 24),
+        4,
+        "add",
+    );
+    std.debug.assert(harness.integerIs(add[1], 3));
+    std.debug.assert(harness.integerIs(add[2], 7));
+    std.debug.assert(harness.integerIs(add[3], 9));
+}
+
+/// The pair that distinguishes one table row from its neighbour. Identical
+/// words, identical final byte, opposite readings.
+fn theSignedAndUnsignedImmediatesAgreeOnNothing() void {
+    const word = (@as(u32, 3) << 8) | (@as(u32, 7) << 16) | (@as(u32, 0xFD) << 24);
+
+    const addim = decoded(harness.op(c.JOP_ADD_IMMEDIATE) | word, 4, "addim");
+    std.debug.assert(harness.integerIs(addim[3], -3));
+
+    const sruim = decoded(harness.op(c.JOP_SHIFT_RIGHT_UNSIGNED_IMMEDIATE) | word, 4, "sruim");
+    std.debug.assert(harness.integerIs(sruim[3], 253));
+}
+
+/// Bit 7 is the breakpoint flag rather than part of the opcode, and it is
+/// reported out of band: the tuple is still `(noop)`, and the flag rides on
+/// the tuple itself.
+fn aBreakpointIsAFlagRatherThanAnOperand() void {
+    const tuple = decoded(harness.op(c.JOP_NOOP) | @as(u32, 0x80), 1, "noop");
+    std.debug.assert((c.janet_tuple_flag(tuple) & c.JANET_TUPLE_FLAG_BRACKETCTOR) != 0);
+}
+
+pub fn run() void {
+    _ = c.janet_init();
+    anUnknownOpcodeStaysANumber();
+    theOperandShapes();
+    theSignedAndUnsignedImmediatesAgreeOnNothing();
+    aBreakpointIsAFlagRatherThanAnOperand();
+    c.janet_deinit();
+}

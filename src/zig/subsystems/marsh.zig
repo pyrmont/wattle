@@ -142,7 +142,7 @@ const lb_struct_proto: u8 = 223;
 /// That is a defect, it is upstream's, and it is reproduced here rather than
 /// repaired: pinning the numbers would make this implementation disagree with
 /// the C one under `-Dev=false`, which is the one configuration where the
-/// difference shows. `FOUND.md` has the entry and `test/marsh.c` pins the
+/// difference shows. `FOUND.md` has the entry and `test/marsh.zig` pins the
 /// arithmetic in both configurations.
 const lb_threaded_abstract: u8 = 224;
 const lb_pointer_buffer: u8 = 225;
@@ -173,8 +173,8 @@ inline fn stackFrame(values: [*c]c.Janet) *c.JanetStackFrame {
 
 /// `janet_tuple_head` and `janet_struct_head` from `janet.h`. translate-c
 /// drops the flexible array member, so the offset is spelled as the size of
-/// the head; `test/gc_sweep.c` and `test/string_symbol.c` already assert from
-/// C that the two are equal.
+/// the head; `test/abi.c` asserts from C that the two are equal, and
+/// `test/gc_mark.zig` checks the offset the allocator actually used.
 inline fn tupleHead(t: [*c]const c.Janet) *c.JanetTupleHead {
     return @ptrFromInt(@intFromPtr(t) -% @sizeOf(c.JanetTupleHead));
 }
@@ -886,8 +886,12 @@ inline fn marshalState(ctx: [*c]c.JanetMarshalContext) *MarshalState {
 /// widens before it reinterprets, and `(size_t)` on the way back truncates.
 /// Zig's `@bitCast` refuses a width change, which is what makes the two steps
 /// visible here and invisible there.
+pub fn marshalSize(ctx: [*c]c.JanetMarshalContext, value: usize) raise.Raising(void) {
+    return marshalInt64(ctx, @bitCast(@as(u64, value)));
+}
+
 export fn janet_marshal_size(ctx: [*c]c.JanetMarshalContext, value: usize) callconv(.c) void {
-    raise.reported(marshalInt64(ctx, @bitCast(@as(u64, value))));
+    raise.reported(marshalSize(ctx, value));
 }
 
 pub fn marshalInt64(ctx: [*c]c.JanetMarshalContext, value: i64) raise.Raising(void) {
@@ -922,7 +926,7 @@ export fn janet_marshal_byte(ctx: [*c]c.JanetMarshalContext, value: u8) callconv
     raise.reported(marshalByte(ctx, value));
 }
 
-fn marshalBytes(ctx: [*c]c.JanetMarshalContext, bytes: [*c]const u8, len: usize) raise.Raising(void) {
+pub fn marshalBytes(ctx: [*c]c.JanetMarshalContext, bytes: [*c]const u8, len: usize) raise.Raising(void) {
     const st = marshalState(ctx);
     if (len > std.math.maxInt(i32)) return raise.panic("size_t too large to fit in buffer");
     try pushBytes(st, bytes, @intCast(len));
@@ -1446,7 +1450,7 @@ inline fn unmarshalState(ctx: [*c]c.JanetMarshalContext) *UnmarshalState {
     return @ptrCast(@alignCast(ctx.*.u_state));
 }
 
-fn unmarshalEnsure(ctx: [*c]c.JanetMarshalContext, size: usize) raise.Raising(void) {
+pub fn unmarshalEnsure(ctx: [*c]c.JanetMarshalContext, size: usize) raise.Raising(void) {
     return eosAddr(unmarshalState(ctx), @intFromPtr(ctx.*.data) +% size);
 }
 
@@ -1482,7 +1486,7 @@ pub fn unmarshalByte(ctx: [*c]c.JanetMarshalContext) raise.Raising(u8) {
     return value;
 }
 
-fn unmarshalBytes(ctx: [*c]c.JanetMarshalContext, dest: [*c]u8, len: usize) raise.Raising(void) {
+pub fn unmarshalBytes(ctx: [*c]c.JanetMarshalContext, dest: [*c]u8, len: usize) raise.Raising(void) {
     const st = unmarshalState(ctx);
     try eosAddr(st, @intFromPtr(ctx.*.data) +% len -% 1);
     safe_memcpy(dest, ctx.*.data, len);
@@ -1498,7 +1502,7 @@ pub fn unmarshalJanet(ctx: [*c]c.JanetMarshalContext) raise.Raising(c.Janet) {
 /// Enter an already-allocated abstract into the reference table, and mark the
 /// context as having done so. `at` is the flag: `unmarshalOneAbstract` checks
 /// that it was cleared, which is how a callback that forgets is caught.
-fn unmarshalAbstractReuse(ctx: [*c]c.JanetMarshalContext, p: ?*anyopaque) raise.Raising(void) {
+pub fn unmarshalAbstractReuse(ctx: [*c]c.JanetMarshalContext, p: ?*anyopaque) raise.Raising(void) {
     if (ctx.*.at == null) {
         return raise.panic("janet_unmarshal_abstract called more than once");
     }

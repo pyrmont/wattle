@@ -3,7 +3,7 @@
 /// `JanetFiber *` consumed by another; two `@cImport` blocks over the same
 /// header produce distinct, incompatible types.
 ///
-/// `state_abi.h` comes first because it includes `features.h`, which has to
+/// `state_abi.h` comes first because it includes `janet_features.h`, which has to
 /// precede every system header. `fiber.h` and `gc.h` join it as internal core
 /// headers on the same footing as `state.h`: from Phase 7 onward the ports are
 /// runtime-core work, so the private declarations those three carry are the

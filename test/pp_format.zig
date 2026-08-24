@@ -1,6 +1,6 @@
 //! Behavioral contract for the format-string engine.
 //!
-//! This is the first Zig contract in the tree, and it is Zig because its
+//! This was the first Zig contract in the tree, and it is Zig because its
 //! subject stopped having a C name. Phase 10 Part 18 deleted the variadic
 //! surface -- `janet_formatc`, `janet_formatb`, `janet_formatbv`,
 //! `janet_panicf` and the six `va_arg` accessors -- and what replaced it is
@@ -9,20 +9,28 @@
 //!
 //! ## What it links against
 //!
-//! `build.zig`'s `includeZig` gives this module an `options` where every
-//! selector is `false`, so `pp_format.zig`'s *neighbours* resolve to their
-//! `_extern.zig` shims and bind to the real `libjanet.a`: `printer` is
-//! `pp_extern.zig`, `containers` is `buffer_array_extern.zig`. Only the
-//! generic code under test compiles locally, because only generic code has
-//! to. The same `false` suppresses the subsystem's own `@export`s, which
-//! would otherwise collide with the library's.
+//! The runtime, because it is inside it. Phase 11 Part 1 moved this file onto
+//! `test/contracts.zig`, and `@import("subsystems").pp_format` is the same
+//! `pp_format.zig` the rest of the binary runs.
 //!
-//! The pretty printer is the exception and is worth saying out loud:
-//! `pp_format.zig` imports `pp_pretty.zig` by path rather than through a
-//! façade, so `%q` and its seven siblings run a local copy. They share their
-//! source with the runtime's and their state -- the abstract-type registry,
-//! the buffer allocator -- through `janet_vm`, so what is not tested here is a
-//! link, not a behaviour.
+//! **That is a stronger arrangement than the one it replaced, and the
+//! difference is worth recording rather than quietly enjoying.** Part 18 built
+//! this contract as its own module beside `libjanet.a` with every selector
+//! `false`, which resolved the *neighbours* to their `_extern.zig` shims and
+//! suppressed the subject's own `@export`s so they would not collide with the
+//! library's. It worked, but what it tested was a **local copy**: `%q` and its
+//! seven siblings ran a second instance of `pp_pretty.zig`, sharing the
+//! runtime's state through `janet_vm` and its source through the file system,
+//! but not its code. The comment here used to say so and call it "a link, not
+//! a behaviour". There is no copy now.
+//!
+//! Two things follow for anyone adding a contract. The all-`false` shape is
+//! gone along with `build.zig`'s `includeZig`, so nothing here needs its
+//! subject's `export fn`s turned into gated `@export`s -- which was the entry
+//! price of the old mechanism and is why it never spread past this file. And
+//! the `_extern.zig` shims were then unreached by anything -- the C arm of a
+//! selector that no longer had two arms. Phase 11 Part 26 deleted all eleven,
+//! and found that one of them had not compiled since Part 12.
 //!
 //! ## Why this file exists rather than leaning on the Janet suites
 //!
@@ -47,10 +55,12 @@
 //! them on. `theGrammarFaults` below asserts all six there.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const abi = @import("abi");
 const c = abi.c;
 const raise = @import("raise");
-const fmt = @import("subject");
+const harness = @import("harness.zig");
+const fmt = @import("subsystems").pp_format;
 
 var test_env: [*c]c.JanetTable = undefined;
 var raises_fired: usize = 0;
@@ -74,20 +84,10 @@ fn checkBuffer(b: *c.JanetBuffer, expected: []const u8) void {
     }
 }
 
-/// `janet_wrap_integer`, written out rather than called.
-///
-/// `janet.h` declares `JANET_API Janet janet_wrap_integer(int32_t)` beside its
-/// macro, and `wrap.c` defines it only inside
-/// `#if defined(JANET_NANBOX_32) || defined(JANET_NANBOX_64)`. It is the one
-/// `janet_wrap_*` declaration with no definition under `-Dnanbox=false`, so a
-/// caller that reaches the declaration rather than the macro -- which is every
-/// Zig caller, since `@cImport` prefers the function -- does not link against a
-/// tagged build. `value_access.zig` has the same three lines and the same
-/// reason; `FOUND.md` has the entry. The matrix's `tagged values` entry is what
-/// found it here, which is rule 13 arriving at the first Zig contract.
-inline fn wrapInteger(x: i32) c.Janet {
-    return c.janet_wrap_number(@floatFromInt(x));
-}
+/// `janet_wrap_integer`, which no Zig contract may call under
+/// `-Dnanbox=false`. This file found that, and `test/harness.zig` now holds
+/// the replacement and the argument for it.
+const wrapInteger = harness.wrapInteger;
 
 fn bytes(s: c.JanetString) []const u8 {
     return s[0..@intCast(c.janet_string_length(s))];
@@ -159,7 +159,7 @@ fn formatted(format: [*c]const u8, argv: []c.Janet) raise.Raising(c.JanetString)
 /// checks, which is the whole point of the change -- but the rendering still
 /// has to be right.
 fn everyArgumentWidthInOneCall() void {
-    const s = fmt.formatc("%c|%d|%D|%x|%.2f|%s|%v|%d", .{
+    const s = fmt.formatc("%c|%d|%d|%x|%.2f|%s|%v|%d", .{
         @as(c_int, 'A'),
         @as(i32, -2000000000),
         @as(i64, -8000000000000000000),
@@ -170,6 +170,36 @@ fn everyArgumentWidthInOneCall() void {
         @as(i32, 7),
     }) catch @panic("raised");
     checkString(s, "A|-2000000000|-8000000000000000000|fedcba9876543210|3.25|tail|:kw|7");
+}
+
+/// `%D` renders whatever the host libc makes of an unrecognised conversion,
+/// and this is the only place that says so.
+///
+/// **This assertion was `%D` inside `everyArgumentWidthInOneCall` until Phase
+/// 11 Part 4, and it made that contract fail on Linux.** `FOUND.md` records
+/// the defect -- `format_mappings` carries `D` and `I` entries that
+/// `FMT_REPLACE_INTTYPES` never consults, so the specifier reaches `snprintf`
+/// unrewritten -- and says of the C original that it "pins only that the
+/// mapping does *not* happen, which is the part that is the same everywhere".
+/// The Zig rewrite in Part 18 pinned the *rendering* instead, which is macOS's
+/// BSD synonym for `%ld` and is not the same everywhere: musl produces nothing
+/// at all.
+///
+/// So the widths above use `%d`, which maps to `PRId64` and is well defined on
+/// every host, and the host-specific behaviour is asserted here and only where
+/// it is known. Nothing is lost on macOS and Linux stops failing on a
+/// divergence this project has already decided not to fix.
+fn theUnmappedIntegerConversions() void {
+    if (builtin.os.tag != .macos) return;
+
+    // macOS accepts `%D` as a BSD synonym for `%ld`...
+    const rendered = fmt.formatc("%D", .{@as(i64, -8000000000000000000)}) catch @panic("raised");
+    checkString(rendered, "-8000000000000000000");
+
+    // ...and does not recognise `%I`, rendering the conversion character as a
+    // literal, padded according to the flags.
+    const literal = fmt.formatc("[%-8I]", .{@as(i64, 8)}) catch @panic("raised");
+    checkString(literal, "[I       ]");
 }
 
 /// `formatb` appends to a buffer the caller already owns, and returns it. A
@@ -482,14 +512,14 @@ fn dynprintfReachesItsFourDestinations() void {
     fmt.dynprintf("pp-format-absent", raw, "to the default", .{}) catch @panic("raised");
     fmt.dynprintf("", raw, "%d", .{@as(i32, 42)}) catch @panic("raised");
     fmt.dynprintf(null, raw, "!", .{}) catch @panic("raised");
-    std.debug.assert(janet_io_close(raw) == 0);
+    std.debug.assert(io_core.close(raw.?) == 0);
 
     const check = c.janet_buffer(0);
-    raw = janet_io_open(scratch, "rb");
+    raw = io_core.open(scratch, "rb");
     std.debug.assert(raw != null);
     _ = c.janet_buffer_extra(check, 64);
-    check.*.count = @intCast(janet_io_read(raw, check.*.data, 64));
-    std.debug.assert(janet_io_close(raw) == 0);
+    check.*.count = @intCast(io_core.read(raw.?, check.*.data, 64));
+    std.debug.assert(io_core.close(raw.?) == 0);
     checkBuffer(check, "to the default42!");
 
     // A bound value of any other type is ignored entirely.
@@ -497,7 +527,7 @@ fn dynprintfReachesItsFourDestinations() void {
     fmt.dynprintf("pp-format-out", null, "dropped", .{}) catch @panic("raised");
 
     // A closed file is a raise.
-    const jf = c.janet_makejfile(@ptrCast(@alignCast(janet_io_open(scratch, "rb"))), c.JANET_FILE_READ);
+    const jf = c.janet_makejfile(@ptrCast(@alignCast(io_core.open(scratch, "rb"))), c.JANET_FILE_READ);
     c.janet_setdyn("pp-format-out", c.janet_wrap_abstract(jf));
     expectRaise("file is not writeable", fmt.dynprintf, .{
         @as([*c]const u8, "pp-format-out"),
@@ -513,11 +543,20 @@ fn dynprintfReachesItsFourDestinations() void {
 
 extern fn fopen(path: [*c]const u8, mode: [*c]const u8) callconv(.c) ?*anyopaque;
 extern fn remove(path: [*c]const u8) callconv(.c) c_int;
-extern fn janet_io_open(path: [*c]const u8, mode: [*c]const u8) callconv(.c) ?*anyopaque;
-extern fn janet_io_close(handle: ?*anyopaque) callconv(.c) c_int;
-extern fn janet_io_read(handle: ?*anyopaque, dest: [*c]u8, count: usize) callconv(.c) i32;
 
-/// A formatted raise, which was `test/signal_core.c`'s last `janet_panicf`.
+/// The stream operations, by import.
+///
+/// This contract declared three of them as `extern fn janet_io_*` when it was
+/// written, because that is what they were: `io.c`'s seam, exported so a C
+/// caller could reach them. Phase 11 Part 20 migrated `test/io_core.c` and
+/// found the same names had no caller left anywhere, so fourteen of the
+/// fifteen stopped being symbols -- and this file was one of the two readers
+/// that made the retirement visible. `janet_io_write` is the one that stays,
+/// because `pp_format.zig` itself is a real caller by symbol.
+const io_core = @import("subsystems").io_core;
+
+/// A formatted raise, which was the last `janet_panicf` in the C contracts,
+/// asserted by `test/signal_core.c` until Phase 10 Part 18 moved it here.
 ///
 /// `panicf` answers with the bare error set rather than an error union --
 /// every call to it raises -- so the thunk gives `expectRaise` the shape it
@@ -535,12 +574,13 @@ fn panicfCarriesItsFormattedMessage() void {
 
 // -------------------------------------------------------------------- main
 
-export fn pp_format_contract() callconv(.c) void {
+pub fn run() void {
     _ = c.janet_init();
     test_env = c.janet_core_env(null);
     _ = c.janet_gcroot(c.janet_wrap_table(test_env));
 
     everyArgumentWidthInOneCall();
+    theUnmappedIntegerConversions();
     formatbAppendsAndReturnsItsBuffer();
     theJanetStringConversion();
     theTypeSetConversion();

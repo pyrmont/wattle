@@ -24,7 +24,7 @@
 #define JANET_COMPILE_H
 
 #ifndef JANET_AMALG
-#include "features.h"
+#include "janet_features.h"
 #include <janet.h>
 #include "regalloc.h"
 #endif
@@ -237,26 +237,16 @@ const JanetSpecial *janetc_special(const uint8_t *name);
 #define JANET_DEFFLAG_NO_UNUSED 2
 
 void janetc_freeslot(JanetCompiler *c, JanetSlot s);
-void janetc_nameslot(JanetCompiler *c, const uint8_t *sym, JanetSlot s, uint32_t flags);
 JanetSlot janetc_farslot(JanetCompiler *c);
-
-/* Throw away some code after checking that it is well formed. */
-void janetc_throwaway(JanetFopts opts, Janet x);
 
 /* Get a target slot for emitting an instruction. Will always return
  * a local slot. */
 JanetSlot janetc_gettarget(JanetFopts opts);
 
-/* Get a bunch of slots for function arguments */
-JanetSlot *janetc_toslots(JanetCompiler *c, const Janet *vals, int32_t len);
-
-/* Get a bunch of slots for function arguments */
-JanetSlot *janetc_toslotskv(JanetCompiler *c, Janet ds);
-
-/* Push slots loaded via janetc_toslots. */
+/* Push slots loaded by the compiler's argument walk. */
 int32_t janetc_pushslots(JanetCompiler *c, JanetSlot *slots);
 
-/* Free slots loaded via janetc_toslots */
+/* Free slots loaded by the compiler's argument walk. */
 void janetc_freeslots(JanetCompiler *c, JanetSlot *slots);
 
 /* Generate the return instruction for a slot. */
@@ -266,27 +256,13 @@ JanetSlot janetc_return(JanetCompiler *c, JanetSlot s);
 void janetc_error(JanetCompiler *c, const uint8_t *m);
 void janetc_cerror(JanetCompiler *c, const char *m);
 
-/* Linting */
-/* File a lint against the form being compiled. Not variadic: the C original
- * was, and Phase 10 Part 7 removed the last C caller, at which point the
- * `va_list` Zig cannot name on every target stopped being necessary. A caller
- * with something to interpolate formats it with `janet_formatc` first. */
-void janetc_lint(JanetCompiler *C, JanetCompileLintLevel level, const char *message);
-
-/* Dispatch to correct form compiler */
-JanetSlot janetc_value(JanetFopts opts, Janet x);
-
-/* Push and pop from the scope stack */
+/* Push a scope. Popping one raises, so it has no C declaration: Phase 11
+ * Part 7 spent the last caller of every face that flattened a raise here.
+ * What is left below is the part of the compiler that cannot fail. */
 void janetc_scope(JanetScope *s, JanetCompiler *c, int flags, const char *name);
-void janetc_popscope(JanetCompiler *c);
-void janetc_popscope_keepslot(JanetCompiler *c, JanetSlot retslot);
-JanetFuncDef *janetc_pop_funcdef(JanetCompiler *c);
 
 /* Create a destroy slot */
 JanetSlot janetc_cslot(Janet x);
-
-/* Search for a symbol, and mark any found symbols as "used" for dead code elimination and linting */
-JanetSlot janetc_resolve(JanetCompiler *c, const uint8_t *sym);
 
 /* Check if a symbol is already in scope for shadowing lints */
 Shadowing janetc_shadowcheck(JanetCompiler *c, const uint8_t *sym);

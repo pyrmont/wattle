@@ -19,8 +19,9 @@
 //!    operation subtracts the header size to get back to the header. `gc_sweep.zig`
 //!    already does this for the free path; `stringHead` and `tupleHead` below
 //!    are the same shape, `@sizeOf` rather than `@offsetOf` because translate-c
-//!    drops the flexible array member. `test/gc_sweep.c` pins the equality from
-//!    C and `test/string_symbol.c` pins it again for the tuple head.
+//!    drops the flexible array member. `test/abi.c` pins the equality with a
+//!    `_Static_assert` — the last place in the tree that can spell `offsetof` —
+//!    and `test/gc_mark.zig` checks the offset the allocator actually used.
 //!  - **A hash computed once, at the end of construction.** `janet_string_begin`
 //!    and `janet_tuple_begin` leave `hash` uninitialised and `janet_string_end`
 //!    and `janet_tuple_end` fill it in. A value observed between the two has an

@@ -17,10 +17,10 @@
  * Adding <sys/inotify.h> and <sys/event.h> to `abi.zig` would put a backend's
  * headers into the translation the whole tree shares, to serve one file.
  *
- * `features.h` comes first, as it must before any system header.
+ * `janet_features.h` comes first, as it must before any system header.
  */
 
-#include "features.h"
+#include "janet_features.h"
 
 /* Aro -- the translate-c front end in Zig 0.16 -- predefines `__unix__`,
  * `unix` and `__unix` for the mingw targets as well as `_WIN32`, and `janet.h`

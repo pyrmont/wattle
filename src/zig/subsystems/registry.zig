@@ -636,11 +636,11 @@ fn textSubstitutionImpl(
     }
 }
 
-/// The Zig entry point, for a caller inside this module.
+/// The Zig entry point, and now the only one.
+///
+/// The `raise.panicking` face under the name `janet_text_substitution` went in
+/// Phase 11 Part 13. `util.h` was the only header that declared it, so nothing
+/// outside the runtime ever had a reason to call it, and inside the runtime
+/// `string_symbol.zig` reaches this by import through `registration.zig`. Its
+/// last caller was `test/registry.c`, which is now `test/registry.zig`.
 pub const textSubstitution = textSubstitutionImpl;
-
-const textSubstitutionFace = raise.panicking(textSubstitutionImpl).face;
-
-comptime {
-    @export(&textSubstitutionFace, .{ .name = "janet_text_substitution" });
-}

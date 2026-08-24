@@ -86,34 +86,19 @@ const spawn_chdir = oa.spawn_chdir;
 // `-Dos-process`'s kernels, and the rest of the C ABI this file stands on
 // ==========================================================================
 
-extern fn janet_os_exec_escape_arg(arg: [*:0]const u8, dest: ?[*]u8, cap: i32) callconv(.c) i32;
-extern fn janet_os_env_key_ok(key: [*]const u8, len: i32) callconv(.c) i32;
-extern fn janet_os_env_entry_fill(
-    key: [*]const u8,
-    klen: i32,
-    value: [*]const u8,
-    vlen: i32,
-    out: [*]u8,
-) callconv(.c) void;
-extern fn janet_os_getpid() callconv(.c) i64;
-extern fn janet_os_system(command: ?[*:0]const u8) callconv(.c) i32;
-extern fn janet_os_wait(pid: i64, value: *i32) callconv(.c) i32;
-extern fn janet_os_reap(pid: i64) callconv(.c) void;
-extern fn janet_os_kill(pid: i64, sig: i32) callconv(.c) i32;
-extern fn janet_os_pipe(fds: *[2]c_int) callconv(.c) i32;
-extern fn janet_os_close_fd(fd: c_int) callconv(.c) i32;
-extern fn janet_os_fork() callconv(.c) i64;
-extern fn janet_os_exec(
-    path: [*:0]const u8,
-    argv: [*:null]const ?[*:0]const u8,
-    search_path: i32,
-) callconv(.c) i32;
-extern fn janet_os_chroot(path: [*:0]const u8) callconv(.c) i32;
-extern fn janet_os_signal_index(key: [*]const u8, len: i32) callconv(.c) i32;
+/// `-Dos-process`'s kernels, by import.
+///
+/// Each of these was declared here as an `extern fn` under a `janet_os_*`
+/// name and `@export`ed from `os_process.zig`, which is the shape `os.c`
+/// needed when they were the first Zig inside it. This file is the only
+/// caller any of them has ever had, and both ends have been Zig since Phase
+/// 10 Part 18 -- so the symbols were fourteen exports that existed to let one
+/// Zig file call another. Phase 11 Part 20 replaced them with the import,
+/// which is rule 44 applied a second time.
+const os_process = @import("os_process.zig");
 
 /// `src/core/util.h`, which `abi.zig` deliberately does not translate.
 extern fn janet_strerror(e: c_int) callconv(.c) [*c]const u8;
-extern fn janet_make_pipe(handles: *[2]c.JanetHandle, mode: c_int) callconv(.c) c_int;
 
 extern fn janet_smalloc(size: usize) callconv(.c) ?*anyopaque;
 extern fn janet_sfree(ptr: ?*anyopaque) callconv(.c) void;
@@ -151,10 +136,10 @@ inline fn flagAt(flags: u64, index: u6) bool {
 // The signal number table
 // ==========================================================================
 
-/// The names are `-Dos-process`'s and are reached by position through
-/// `janet_os_signal_index`, so that a build selecting the C kernel still
-/// agrees about the order. This is the other half: what number each position
-/// carries on *this* platform, or -1 where the headers define none.
+/// The names are `os_process.zig`'s and are reached by position through
+/// `os_process.signalIndex`, so that the two halves cannot disagree about the
+/// order. This is the other half: what number each position carries on *this*
+/// platform, or -1 where the headers define none.
 ///
 /// The misspelling `vtlarm` is `signal_names`' and is recorded in `FOUND.md`;
 /// it is not repeated here, because this table is indexed rather than named.
@@ -179,7 +164,7 @@ const signal_numbers: [signal_number_names.len]i32 = blk: {
 /// `#ifdef`-gated C table produced by omitting the entry.
 fn getSignalKw(argv: [*c]const c.Janet, n: i32) raise.Raising(c_int) {
     const kw = try arglayer.getKeyword(argv, n);
-    const index = janet_os_signal_index(kw, c.janet_string_length(kw));
+    const index = os_process.signalIndex(kw, c.janet_string_length(kw));
     if (index >= 0 and signal_numbers[@intCast(index)] >= 0) {
         return signal_numbers[@intCast(index)];
     }
@@ -222,7 +207,7 @@ const JanetProc = extern struct {
 /// `-Dos-process` because a raise may not cross that seam.
 fn procGetStatus(proc: *JanetProc) raise.Raising(c_int) {
     var value: i32 = 0;
-    const outcome = janet_os_wait(proc.pid(), &value);
+    const outcome = os_process.wait(proc.pid(), &value);
     if (outcome == wait_exited) return value;
     if (outcome == wait_stopped or outcome == wait_signaled) return value + 128;
     return pp_format.panicf("Undefined status code for process termination, %d.", .{value});
@@ -310,8 +295,8 @@ fn procGc(p: ?*anyopaque, s: usize) callconv(.c) c_int {
     } else {
         if (proc.flags & (proc_waited | proc_allow_zombie) == 0) {
             // Kill and wait, so that the child does not become a zombie.
-            _ = janet_os_kill(proc.pid(), h.SIGKILL);
-            if (proc.flags & proc_waiting == 0) janet_os_reap(proc.pid());
+            _ = os_process.sendSignal(proc.pid(), h.SIGKILL);
+            if (proc.flags & proc_waiting == 0) os_process.reap(proc.pid());
         }
     }
     return 0;
@@ -397,7 +382,7 @@ fn procKill(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
     } else {
         var signal: c_int = -1;
         if (argc == 3) signal = try getSignalKw(argv, 2);
-        const status = janet_os_kill(proc.pid(), if (signal == -1) h.SIGKILL else signal);
+        const status = os_process.sendSignal(proc.pid(), if (signal == -1) h.SIGKILL else signal);
         if (status != 0) return raise.panic(@ptrCast(janet_strerror(errno())));
     }
     // Having killed it, wait on it -- but only if asked.
@@ -427,7 +412,7 @@ fn procGetpid(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
     _ = argv;
     try lifecycle.sandboxAssert(c.JANET_SANDBOX_SUBPROCESS);
     try arglayer.fixarity(argc, 0);
-    return c.janet_wrap_number(@floatFromInt(janet_os_getpid()));
+    return c.janet_wrap_number(@floatFromInt(os_process.processId()));
 }
 
 // ==========================================================================
@@ -511,7 +496,7 @@ inline fn isHandle(x: c.JanetHandle) bool {
 }
 
 fn closeHandle(handle: c.JanetHandle) void {
-    if (windows) _ = CloseHandle(handle) else _ = janet_os_close_fd(handle);
+    if (windows) _ = CloseHandle(handle) else _ = os_process.closeDescriptor(handle);
 }
 
 /// `make_pipes`. The caller keeps `handle.*`; the returned end is the one the
@@ -522,7 +507,7 @@ fn makePipes(handle: *c.JanetHandle, reverse: bool, errflag: *c_int) c.JanetHand
     var handles: [2]c.JanetHandle = undefined;
     if (has_ev) {
         // Non-blocking pipes.
-        if (janet_make_pipe(&handles, if (reverse) 2 else 1) != 0) {
+        if (ev_stream.makePipe(&handles, if (reverse) 2 else 1) != 0) {
             errflag.* = 1;
             return handle_none;
         }
@@ -548,7 +533,7 @@ fn makePipes(handle: *c.JanetHandle, reverse: bool, errflag: *c_int) c.JanetHand
             return handle_none;
         }
     } else {
-        if (janet_os_pipe(&handles) != 0) {
+        if (os_process.makePipe(&handles) != 0) {
             errflag.* = 1;
             return handle_none;
         }
@@ -650,9 +635,9 @@ fn getStdioForHandle(handle: c.JanetHandle, orig: ?*anyopaque, iswrite: bool) ?*
 const EnvBlock = if (windows) ?[*]u8 else ?[*:null]?[*:0]u8;
 
 /// `os_execute_env`. The two blocks are built separately rather than unified,
-/// which is `-Dos-process`'s note repeated here: the POSIX block drops a key
-/// holding `=` or NUL and the Windows block does not, so `janet_os_env_key_ok`
-/// is called only where C called it.
+/// which is `os_process.zig`'s note repeated here: the POSIX block drops a key
+/// holding `=` or NUL and the Windows block does not, so `os_process.envKeyOk`
+/// is called only where the C original called it.
 fn buildEnv(argc: i32, argv: [*c]c.Janet) raise.Raising(EnvBlock) {
     if (argc <= 2) return null;
     const dict = try arglayer.getDictionary(argv, 2);
@@ -668,7 +653,7 @@ fn buildEnv(argc: i32, argv: [*c]c.Janet) raise.Raising(EnvBlock) {
             const klen = c.janet_string_length(keys);
             const vlen = c.janet_string_length(vals);
             try containers.bufferExtra(temp, klen + vlen + 2);
-            janet_os_env_entry_fill(keys, klen, vals, vlen, temp.*.data + @as(usize, @intCast(temp.*.count)));
+            os_process.envEntryFill(keys, klen, vals, vlen, temp.*.data + @as(usize, @intCast(temp.*.count)));
             temp.*.count += klen + vlen + 2;
         }
         // A Windows environment block is double-NUL terminated.
@@ -691,9 +676,9 @@ fn buildEnv(argc: i32, argv: [*c]c.Janet) raise.Raising(EnvBlock) {
             const klen = c.janet_string_length(keys);
             const vlen = c.janet_string_length(vals);
             // The key must hold no NUL and no `=`.
-            if (janet_os_env_key_ok(keys, klen) == 0) continue;
+            if (os_process.envKeyOk(keys, klen) == 0) continue;
             const item: [*]u8 = @ptrCast(janet_smalloc(@as(usize, @intCast(klen)) + @as(usize, @intCast(vlen)) + 2).?);
-            janet_os_env_entry_fill(keys, klen, vals, vlen, item);
+            os_process.envEntryFill(keys, klen, vals, vlen, item);
             envp[j] = @ptrCast(item);
             j += 1;
         }
@@ -726,10 +711,10 @@ fn execEscape(args: c.JanetView) raise.Raising(*c.JanetBuffer) {
     while (i < args.len) : (i += 1) {
         const arg = try arglayer.getCString(args.items, i);
         if (i != 0) try containers.bufferPushU8(b, ' ');
-        const needed = janet_os_exec_escape_arg(@ptrCast(arg), null, 0);
+        const needed = os_process.escapeArgument(@ptrCast(arg), null, 0);
         if (needed < 0) return raise.panic("command line string too long (max 8191 characters)");
         try containers.bufferExtra(b, needed);
-        _ = janet_os_exec_escape_arg(@ptrCast(arg), b.*.data + @as(usize, @intCast(b.*.count)), needed);
+        _ = os_process.escapeArgument(@ptrCast(arg), b.*.data + @as(usize, @intCast(b.*.count)), needed);
         b.*.count += needed;
     }
     try containers.bufferPushU8(b, 0);
@@ -943,7 +928,7 @@ fn spawnPosix(
         // Only a failure returns, and the message reads `errno` rather than
         // the result, so the result is deliberately discarded.
         if (!use_environ) oa.setEnviron(@ptrCast(envp));
-        _ = janet_os_exec(cargv[0].?, cargv, if (flagAt(flags, 1)) 1 else 0);
+        _ = os_process.exec(cargv[0].?, cargv, if (flagAt(flags, 1)) 1 else 0);
         // `%s`, not the `%p` the C original writes. `%p` pulls a `Janet` and
         // `cargv[0]` is a `char *`: a mismatched `va_arg` type, which is
         // undefined, so Part 8's rule applies rather than Part 9's and this
@@ -1006,9 +991,9 @@ fn spawnPosix(
 
     _ = posix_spawn_file_actions_destroy(&actions);
 
-    if (isHandle(r.pipe_in)) _ = janet_os_close_fd(r.pipe_in);
-    if (isHandle(r.pipe_out)) _ = janet_os_close_fd(r.pipe_out);
-    if (isHandle(r.pipe_err)) _ = janet_os_close_fd(r.pipe_err);
+    if (isHandle(r.pipe_in)) _ = os_process.closeDescriptor(r.pipe_in);
+    if (isHandle(r.pipe_out)) _ = os_process.closeDescriptor(r.pipe_out);
+    if (isHandle(r.pipe_err)) _ = os_process.closeDescriptor(r.pipe_err);
 
     if (use_environ) oa.unlockEnviron();
 
@@ -1160,7 +1145,7 @@ fn posixFork(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
     try lifecycle.sandboxAssert(c.JANET_SANDBOX_SUBPROCESS);
     try arglayer.fixarity(argc, 0);
     if (windows) return raise.panic("not supported on Windows");
-    const result = janet_os_fork();
+    const result = os_process.forkProcess();
     if (result == -1) return raise.panic(@ptrCast(janet_strerror(errno())));
     if (result != 0) {
         const proc: *JanetProc = @ptrCast(@alignCast(c.janet_abstract(abstract_type.stored(&proc_type), @sizeOf(JanetProc))));
@@ -1177,7 +1162,7 @@ fn posixChroot(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
     try arglayer.fixarity(argc, 1);
     if (windows) return raise.panic("not supported on Windows or Plan 9");
     const root = try arglayer.getCString(argv, 0);
-    if (janet_os_chroot(@ptrCast(root)) == -1) {
+    if (os_process.changeRoot(@ptrCast(root)) == -1) {
         return raise.panic(@ptrCast(janet_strerror(errno())));
     }
     return c.janet_wrap_nil();
@@ -1188,11 +1173,11 @@ fn posixChroot(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
 /// It frees the copied command and leaves `args.argp` pointing at the freed
 /// block; the default threaded callback frees it a second time, which aborts.
 /// That is the defect `FOUND.md` records, reproduced here rather than
-/// repaired, and it is why `test/os_process.c` exercises only the
+/// repaired, and it is why `test/os_process.zig` exercises only the
 /// no-argument form.
 fn shellSubroutine(args: c.JanetEVGenericMessage) callconv(.c) c.JanetEVGenericMessage {
     var out = args;
-    const stat = janet_os_system(@ptrCast(@alignCast(args.argp)));
+    const stat = os_process.shell(@ptrCast(@alignCast(args.argp)));
     janet_free(args.argp);
     out.tag = if (args.argi != 0) c.JANET_EV_TCTAG_INTEGER else c.JANET_EV_TCTAG_BOOLEAN;
     out.argi = stat;
@@ -1215,7 +1200,7 @@ fn shell(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
         try raise.crossing(c.janet_ev_threaded_await(&shellSubroutine, 0, argc, cmd_copy));
         unreachable;
     } else {
-        const stat = janet_os_system(cmd);
+        const stat = os_process.shell(cmd);
         return if (argc != 0) wrapInteger(stat) else c.janet_wrap_boolean(stat);
     }
 }
@@ -1368,7 +1353,7 @@ fn pipeCfn(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
     if (argc > 0 and c.janet_checktype(argv[0], c.JANET_NIL) == 0) {
         flags = @intCast(try arglayer.getFlags(argv, 0, "WR"));
     }
-    if (janet_make_pipe(&fds, flags) != 0) return raise.panicv(c.janet_ev_lasterr());
+    if (ev_stream.makePipe(&fds, flags) != 0) return raise.panicv(c.janet_ev_lasterr());
     const reader = janet_stream(fds[0], if (flags & 2 != 0) 0 else stream_readable, null);
     const writer = janet_stream(fds[1], if (flags & 1 != 0) 0 else stream_writable, null);
     var tup = [2]c.Janet{ c.janet_wrap_abstract(reader), c.janet_wrap_abstract(writer) };

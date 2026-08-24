@@ -75,12 +75,12 @@
 //! `janet_unwrap_number` as macros, and reaching them through the symbol table
 //! instead costs the arithmetic workload 89%, measured.
 //!
-//! So both arrive as modules. `build.zig` resolves each import to the Zig
-//! subsystem when that selector is Zig and to a small `*_extern.zig` shim
-//! declaring the C symbols when it is C, which keeps the selectors independent:
-//! `-Dvm-calls=c` and `-Dvalue-wrap=c` still answer for the loop, out of line,
-//! and that is the honest cost of those combinations rather than a silent
-//! substitution. Folding an implementation in folds its exports in too, so
+//! So both arrive as modules. Each import was a comptime `if` resolving to the
+//! Zig subsystem or to a small `*_extern.zig` shim declaring the C symbols,
+//! which kept the selectors independent: `-Dvm-calls=c` and `-Dvalue-wrap=c`
+//! still answered for the loop, out of line, and that was the honest cost of
+//! those combinations rather than a silent substitution. Phase 11 Part 26
+//! deleted both shims. Folding an implementation in folds its exports in too, so
 //! `build.zig` stops building those objects separately in the folded
 //! configuration; two objects defining `janet_wrap_number` is a duplicate
 //! symbol rather than a choice.
@@ -100,19 +100,21 @@ const options = @import("options");
 /// Part 3 made these module imports rather than symbol-table calls because a
 /// translation-unit boundary costs the method-dispatch path 2.4-3.4% and the
 /// arithmetic path 89%. Which module the import resolved to was the selector,
-/// and `build.zig` chose the file. Since Part 17a every Zig subsystem is in one
-/// module, so the choice has nowhere to live but here — and a comptime-false
-/// branch is not analysed, which is what keeps the unselected shim out of the
-/// build. Both spellings wear the same decl names, so nothing below learns
-/// which it got.
-const vm_calls = if (options.vm_calls) @import("vm_calls.zig") else @import("vm_calls_extern.zig");
-const value_wrap = if (options.value_wrap) @import("value_wrap.zig") else @import("value_wrap_extern.zig");
+/// and `build.zig` chose the file; since Part 17a every Zig subsystem is in one
+/// module, so the choice had nowhere to live but here.
+///
+/// **Phase 11 Part 26 spent it.** The `else` arm reached `vm_calls_extern.zig`
+/// and `value_wrap_extern.zig`, and a comptime-false branch is not analysed —
+/// which is what kept the unselected shim out of the build, and also what kept
+/// `vm_calls_extern.zig` naming seven faces Part 12 had deleted. It had not
+/// compiled for fourteen parts and nothing in the tree could say so.
+const vm_calls = @import("vm_calls.zig");
+const value_wrap = @import("value_wrap.zig");
 
 /// The fiber's four pushes, which raise "stack overflow" by returning it since
-/// Part 17a. Selector-resolved like the two above, and for the same reason:
-/// `-Dfiber-core=c` answers with a C body that jumps, wearing the Zig
-/// signature so that the `try` sites below go on compiling.
-const fiber_core = if (options.fiber_core) @import("fiber_core.zig") else @import("fiber_core_extern.zig");
+/// Part 17a. Resolved by the same comptime `if` as the two above until Part 26,
+/// where `-Dfiber-core=c` answered with a C body that jumped.
+const fiber_core = @import("fiber_core.zig");
 
 /// The access layer, which seven opcodes reach and which raises on its own
 /// account: `janet_in` on a key that is wrong for its container,
@@ -167,9 +169,9 @@ inline fn funcEnvSlot(func: [*c]c.JanetFunction, i: i32) *[*c]c.JanetFuncEnv {
 /// and a compare for a type check rather than a call. Zig sees the *functions*
 /// the same header declares, and reaching them through the symbol table costs
 /// the arithmetic workload 89% -- measured, before this import existed. So the
-/// value layer arrives the same way Part 2's helpers do: as a module `build.zig`
-/// resolves to `value_wrap.zig` itself when that selector is Zig, and to
-/// `value_wrap_extern.zig` when it is C.
+/// value layer arrives the same way Part 2's helpers do: as a module, which was
+/// resolved to `value_wrap.zig` or to `value_wrap_extern.zig` on the selector
+/// until Phase 11 Part 26.
 const val = value_wrap.ops;
 
 /// `janet_checkintrange` and `janet_checkuintrange` from `janet.h`, which are
@@ -1264,7 +1266,7 @@ pub fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) raise.Error!c.JanetSignal 
             if (try self.assertType(self.stack[fB(self.pc)], c.JANET_FIBER)) |s| return s;
             var retreg: c.Janet = undefined;
             const child = val.unwrapFiber(self.stack[fB(self.pc)]);
-            if (c.janet_check_can_resume(child, &retreg, 0) != 0) {
+            if (vm_entry.checkCanResume(child, &retreg, 0) != 0) {
                 self.commit();
                 return try self.raisev(retreg);
             }
@@ -1307,7 +1309,7 @@ pub fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) raise.Error!c.JanetSignal 
             if (try self.assertType(self.stack[fB(self.pc)], c.JANET_FIBER)) |s| return s;
             var retreg: c.Janet = undefined;
             const child = val.unwrapFiber(self.stack[fB(self.pc)]);
-            if (c.janet_check_can_resume(child, &retreg, 1) != 0) {
+            if (vm_entry.checkCanResume(child, &retreg, 1) != 0) {
                 self.commit();
                 return try self.raisev(retreg);
             }
@@ -1459,7 +1461,7 @@ pub fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) raise.Error!c.JanetSignal 
             // scratch buffer when a conversion raises". Reproduced deliberately
             // rather than fixed -- and the reason this arm cannot use `defer`
             // even if the file were not jump-transparent.
-            vm_calls.fillString(&buffer, mem, count);
+            try vm_calls.fillString(&buffer, mem, count);
             self.stack[fD(self.pc)] = c.janet_stringv(buffer.data, buffer.count);
             c.janet_buffer_deinit(&buffer);
             fiber.*.stacktop = fiber.*.stackstart;
@@ -1472,7 +1474,7 @@ pub fn runVm(fiber_in: [*c]c.JanetFiber, in: c.Janet) raise.Error!c.JanetSignal 
             const count = fiber.*.stacktop - fiber.*.stackstart;
             const mem = fiber.*.data + asSize(fiber.*.stackstart);
             const buffer = c.janet_buffer(10 *% count);
-            vm_calls.fillString(buffer, mem, count);
+            try vm_calls.fillString(buffer, mem, count);
             self.stack[fD(self.pc)] = val.wrapBuffer(buffer);
             fiber.*.stacktop = fiber.*.stackstart;
             self.maybeCollect();

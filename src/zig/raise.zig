@@ -302,65 +302,21 @@ pub inline fn total(
     );
 }
 
-/// The inverse of `panicking`: put the Zig signature on a C symbol that raises
-/// by jumping, so that a converted caller can `try` it either way.
+/// `declared` stood here until Phase 11 Part 26: the inverse of `panicking`,
+/// putting the Zig signature on a C symbol that raised by jumping, so that a
+/// converted caller could `try` it either way.
 ///
 ///     pub const getString = raise.declared(c.janet_getstring).call;
 ///
-/// This is what an `_extern.zig` shim is made of, and what makes a `c` selector
-/// go on answering after its callers have converted. The error is **declared
-/// and never returned**: the C body jumps from the inside, so the Zig frame
-/// that called it is jumped through rather than returned to, and `raise.Error`
-/// appears in the signature and never in the value. A caller written to `try`
-/// it compiles and behaves exactly as it did before the conversion, which is
-/// what keeps such a selector a selector rather than a second dialect its
-/// callers have to know about.
+/// It was what an `_extern.zig` shim was made of, and what let a `c` selector
+/// go on answering after its callers had converted: the error was **declared
+/// and never returned**, because the C body jumped from the inside. Its last
+/// users were the eleven stranded shims and `dynlib.zig`'s four `util.c`
+/// symbols, and all fifteen went in Part 26.
 ///
-/// Deriving the signature rather than writing it out is not tidiness. A shim
-/// is sixty-odd declarations that must match `janet.h` exactly, and a
-/// hand-written one that drifts is a silent ABI mismatch rather than a compile
-/// error -- the same argument `panicking` rests on, from the other side.
-///
-/// The arity cases are unavoidable for the reason `panicking` gives: a Zig
-/// function body cannot be written generically over a parameter list.
-pub fn declared(comptime f: anytype) type {
-    const info = @typeInfo(@TypeOf(f)).@"fn";
-    const R = info.return_type.?;
-    const p = info.params;
-    return switch (p.len) {
-        0 => struct {
-            pub inline fn call() Error!R {
-                return f();
-            }
-        },
-        1 => struct {
-            pub inline fn call(a: p[0].type.?) Error!R {
-                return f(a);
-            }
-        },
-        2 => struct {
-            pub inline fn call(a: p[0].type.?, b: p[1].type.?) Error!R {
-                return f(a, b);
-            }
-        },
-        3 => struct {
-            pub inline fn call(a: p[0].type.?, b: p[1].type.?, d: p[2].type.?) Error!R {
-                return f(a, b, d);
-            }
-        },
-        4 => struct {
-            pub inline fn call(a: p[0].type.?, b: p[1].type.?, d: p[2].type.?, e: p[3].type.?) Error!R {
-                return f(a, b, d, e);
-            }
-        },
-        5 => struct {
-            pub inline fn call(a: p[0].type.?, b: p[1].type.?, d: p[2].type.?, e: p[3].type.?, g: p[4].type.?) Error!R {
-                return f(a, b, d, e, g);
-            }
-        },
-        else => @compileError("raise.declared: add an arity case for this signature"),
-    };
-}
+/// `panicking` below is the surviving direction and is not its mirror. That one
+/// wraps a Zig function so C can call it; this one wrapped a C function so Zig
+/// could. Nothing left in the tree is a C function.
 
 /// Build the C-ABI face of a raise-capable function: call it, and hand a
 /// returned error to the C caller as a *report* rather than as a jump.

@@ -185,14 +185,22 @@ export fn janet_signal_plan(sig: c.JanetSignal, out_sig: *c.JanetSignal) callcon
     return @intCast(c.JANET_SIGNAL_PLAN_RAISE);
 }
 
-/// Publish the payload and mark the fiber, immediately before the caller jumps.
-/// Split from `janet_signal_plan` so that the coercion message — which only C
-/// may build — lands in the return register rather than beside it.
+/// Publish the payload and mark the fiber, which is the last thing a raise does
+/// before it becomes the caller's problem. Split from `janet_signal_plan` so
+/// that the coercion message lands in the return register rather than beside
+/// it — that split was drawn when only C could build the message, and it earns
+/// its keep now for a different reason: the plan's `sched_id` bump has to
+/// precede the formatting, and the store has to follow it.
 ///
 /// The flag is what a resume reads to pop a C frame and to turn a raise at a
 /// tail call into an implicit return, so setting it is not bookkeeping: a raise
 /// that skipped it would resume differently.
-export fn janet_signal_commit(message: *const c.Janet) callconv(.c) void {
+///
+/// **Not exported.** It was `janet_signal_commit`, declared in `state.h`, and
+/// Phase 11 Part 11 found that its only caller outside this file was
+/// `test/signal_core.c`. `state.h` is an internal header, so the face went
+/// with the contract and `test/signal_core.zig` reaches this by import.
+pub fn signalCommit(message: *const c.Janet) void {
     const v = vm();
     v.return_reg.* = message.*;
     if (v.fiber != null) v.fiber.*.flags |= did_raise;
@@ -261,7 +269,7 @@ export fn janet_zig_signal_record(sig: c.JanetSignal, message: c.Janet) callconv
     if (plan == @as(c.JanetSignalPlan, @intCast(c.JANET_SIGNAL_PLAN_COERCE))) {
         payload = c.janet_wrap_string(pp_format.formatcReported("%v coerced from %s to error", .{ message, c.janet_signal_names[@intCast(sig)] }));
     }
-    janet_signal_commit(&payload);
+    signalCommit(&payload);
     v.pending_signal = out_sig;
 }
 
@@ -303,9 +311,15 @@ export fn janet_panics(message: [*c]const u8) callconv(.c) void {
 /// `janet_top_level_signal`. The end of a raise that has no scope to land in.
 ///
 /// It was the last symbol `capi.c` defined. The C wrote to `stdout` rather
-/// than to `stderr`, which looks like a mistake and is reproduced: a Janet
-/// program can redirect one and not the other, and `test/signal_core.c` pins
-/// the destination. `FOUND.md` has the entry.
+/// than to `stderr`, which looks like a mistake and is reproduced deliberately:
+/// a Janet program can redirect one and not the other.
+///
+/// **Nothing pins the destination**, and nothing can from inside this process:
+/// every path here ends it or ends the calling thread, so a contract that
+/// reached this function would not come back to assert anything. This comment
+/// claimed `test/signal_core.c` pinned it and that file never did; Phase 11
+/// Part 11 migrated the contract, went looking for the case, and corrected the
+/// claim rather than inheriting it.
 ///
 /// `JANET_SANDBOX_EXIT` is what makes the two endings different. Without it the
 /// process ends; with it only the calling thread does, because a sandboxed

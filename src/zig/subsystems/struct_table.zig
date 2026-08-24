@@ -155,10 +155,10 @@ inline fn mapHash(cap: i32, hash: i32) i32 {
 
 /// Recover a struct's head from the bucket address Janet passes around.
 /// `@sizeOf` rather than `@offsetOf`, because translate-c drops the flexible
-/// array member and the two are equal for this layout; `test/gc_mark.c` and
-/// `test/gc_sweep.c` already pin that equality from C, and
-/// `test/struct_table.c` pins it again beside the constructor that depends on
-/// it.
+/// array member and the two are equal for this layout. `test/abi.c` pins that
+/// equality with a `_Static_assert`, which is the only place that can still
+/// spell `offsetof`, and `test/gc_mark.zig` checks the offset the allocator
+/// actually used.
 inline fn structHead(st: [*c]const c.JanetKV) *c.JanetStructHead {
     return @ptrFromInt(@intFromPtr(st) -% @sizeOf(c.JanetStructHead));
 }

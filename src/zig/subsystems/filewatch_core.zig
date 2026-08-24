@@ -84,17 +84,16 @@ extern fn abort() callconv(.c) noreturn;
 // The keyword vocabularies, which live behind `-Dfilewatch-flags`
 // ==========================================================================
 
-/// `JANET_WATCH_PLATFORM_*`. Mirrored by the `Platform` enumeration in
-/// `filewatch_flags.zig` and by the macros in `filewatch.c`, which a
-/// compile-time assertion beside them pins to these values.
-const platform_linux: u32 = 0;
-const platform_windows: u32 = 1;
-const platform_kqueue: u32 = 2;
-
-extern fn janet_filewatch_flag_index(platform: u32, name: [*]const u8, len: i32) callconv(.c) i32;
-extern fn janet_filewatch_flag_count(platform: u32) callconv(.c) i32;
-extern fn janet_filewatch_flag_name(platform: u32, index: i32) callconv(.c) [*c]const u8;
-extern fn janet_filewatch_action_name(action: i32) callconv(.c) [*c]const u8;
+/// The name half of the flag table, by import.
+///
+/// Its four lookups were `export fn janet_filewatch_flag_*` and were declared
+/// here as `extern fn`s, which is what `filewatch.c` needed and what Phase 11
+/// Part 21 retired -- rule 44. The `platform_linux`/`platform_windows`/
+/// `platform_kqueue` ordinals went with them: they were this side's copy of
+/// `Platform`, kept because a `u32` was the only thing that could cross a
+/// C-ABI seam, and a direct call names the tag instead.
+const vocab = @import("filewatch_flags.zig");
+const Platform = vocab.Platform;
 
 /// `janet_watch_decode_flags`: turn a run of keyword options into a flag mask
 /// for one backend.
@@ -106,11 +105,11 @@ extern fn janet_filewatch_action_name(action: i32) callconv(.c) [*c]const u8;
 fn decodeFlags(
     options: [*c]c.Janet,
     n: i32,
-    platform: u32,
+    platform: Platform,
     values: []const u32,
     comptime what: [*c]const u8,
 ) raise.Raising(u32) {
-    var flags: u32 = 0;
+    var mask: u32 = 0;
     var i: i32 = 0;
     while (i < n) : (i += 1) {
         const opt = options[@intCast(i)];
@@ -118,13 +117,15 @@ fn decodeFlags(
             return pp_format.panicf("expected keyword, got %v", .{opt});
         }
         const keyw = c.janet_unwrap_keyword(opt);
-        const index = janet_filewatch_flag_index(platform, keyw, c.janet_string_length(keyw));
-        if (index < 0 or index >= values.len or values[@intCast(index)] == 0) {
+        const name = keyw[0..@intCast(c.janet_string_length(keyw))];
+        const index = vocab.flagIndex(platform, name) orelse
+            return pp_format.panicf("unknown %s flag %v", .{ what, opt });
+        if (index >= values.len or values[index] == 0) {
             return pp_format.panicf("unknown %s flag %v", .{ what, opt });
         }
-        flags |= values[@intCast(index)];
+        mask |= values[index];
     }
-    return flags;
+    return mask;
 }
 
 // ==========================================================================
@@ -190,7 +191,7 @@ const inotify = struct {
     }
 
     fn decode(options: [*c]c.Janet, n: i32) raise.Raising(u32) {
-        return decodeFlags(options, n, platform_linux, &values, "linux");
+        return decodeFlags(options, n, .linux, &values, "linux");
     }
 
     fn init(watcher: *JanetWatcher, channel: ?*c.JanetChannel, default_flags: u32) raise.Raising(void) {
@@ -204,7 +205,7 @@ const inotify = struct {
         watcher.channel = channel;
         watcher.default_flags = default_flags;
         watcher.is_watching = 0;
-        watcher.stream = c.janet_stream(fd, stream_readable, null);
+        watcher.stream = try evloop.makeStream(fd, stream_readable, null);
     }
 
     fn add(watcher: *JanetWatcher, path: [*c]const u8, flags: u32) raise.Raising(void) {
@@ -326,7 +327,7 @@ const inotify = struct {
                         for (values, 0..) |flag, fi| {
                             if (flag != 0 and (inevent.mask & flag) == flag) {
                                 c.janet_struct_put(kvs, etype, c.janet_ckeywordv(
-                                    janet_filewatch_flag_name(platform_linux, @intCast(fi)),
+                                    vocab.flagName(.linux, fi).?.ptr,
                                 ));
                             }
                         }
@@ -430,7 +431,7 @@ const kqueue = struct {
     }
 
     fn decode(options: [*c]c.Janet, n: i32) raise.Raising(u32) {
-        return decodeFlags(options, n, platform_kqueue, &values, "bsd");
+        return decodeFlags(options, n, .kqueue, &values, "bsd");
     }
 
     fn init(watcher: *JanetWatcher, channel: ?*c.JanetChannel, default_flags: u32) raise.Raising(void) {
@@ -441,7 +442,7 @@ const kqueue = struct {
         watcher.channel = channel;
         watcher.default_flags = default_flags;
         watcher.is_watching = 0;
-        watcher.stream = c.janet_stream(kq, stream_readable, null);
+        watcher.stream = try evloop.makeStream(kq, stream_readable, null);
         try evloop.levelTriggeredStream(watcher.stream.?);
     }
 
@@ -550,7 +551,7 @@ const kqueue = struct {
                         c.janet_struct_put(kvs, c.janet_ckeywordv("wd-path"), path);
                         c.janet_struct_put(kvs, c.janet_ckeywordv("cookie"), c.janet_wrap_number(@floatFromInt(state.cookie)));
                         c.janet_struct_put(kvs, c.janet_ckeywordv("type"), c.janet_ckeywordv(
-                            janet_filewatch_flag_name(platform_kqueue, @intCast(j)),
+                            vocab.flagName(.kqueue, j).?.ptr,
                         ));
                         if (is_dir) {
                             // Pass in directly.
@@ -652,7 +653,7 @@ const win = struct {
     };
 
     fn decode(options: [*c]c.Janet, n: i32) raise.Raising(u32) {
-        return decodeFlags(options, n, platform_windows, &values, "windows filewatch");
+        return decodeFlags(options, n, .windows, &values, "windows filewatch");
     }
 
     fn init(watcher: *JanetWatcher, channel: ?*c.JanetChannel, default_flags: u32) raise.Raising(void) {
@@ -717,8 +718,8 @@ const win = struct {
                     // code and had nothing to say about a code outside it. The
                     // lookup reports null there instead, so name the fallback
                     // explicitly rather than read past the end.
-                    const named = janet_filewatch_action_name(@intCast(fni.Action));
-                    const action: [*c]const u8 = if (named == null) "unknown" else named;
+                    const named = vocab.actionName(@intCast(fni.Action));
+                    const action: [*c]const u8 = if (named) |name| name.ptr else "unknown";
                     c.janet_struct_put(kvs, c.janet_ckeywordv("type"), c.janet_ckeywordv(action));
                     c.janet_struct_put(kvs, c.janet_ckeywordv("file-name"), filename);
                     c.janet_struct_put(kvs, c.janet_ckeywordv("dir-name"), c.janet_wrap_string(ow.dir_path));
@@ -760,7 +761,7 @@ const win = struct {
             null,
         );
         if (handle == fw_abi.invalid_handle_value) return raise.panicv(c.janet_ev_lasterr());
-        const stream = c.janet_stream(handle, stream_readable, null);
+        const stream = try evloop.makeStream(handle, stream_readable, null);
         const ow: *OverlappedWatch = @ptrCast(@alignCast(c.janet_malloc(@sizeOf(OverlappedWatch))));
         @memset(std.mem.asBytes(ow), 0);
         ow.stream = stream;
@@ -944,23 +945,23 @@ const be = switch (backend) {
     .none => unsupported,
 };
 
-/// The platform ordinal `-Dfilewatch-flags` answers for on this target, or
-/// null where there is no backend and therefore no vocabulary.
-const be_platform: ?u32 = switch (backend) {
-    .inotify => platform_linux,
-    .windows => platform_windows,
-    .kqueue => platform_kqueue,
+/// The platform whose vocabulary this target's backend uses, or null where
+/// there is no backend and therefore no vocabulary.
+const be_platform: ?Platform = switch (backend) {
+    .inotify => .linux,
+    .windows => .windows,
+    .kqueue => .kqueue,
     .none => null,
 };
 
 /// The two halves of the flag table agree on their length.
 ///
-/// C asserts each half against a literal at compile time -- 16, 10, 14 -- and
-/// the halves are in different translation units, so neither assertion can see
-/// the other. This one compares them, which is the thing worth knowing, and it
-/// is the only reason the count lookup exists: the loops above index the value
-/// table directly, so a disagreement would otherwise show up as a name read
-/// from the wrong row rather than as a fault.
+/// Each half asserts its own length against a literal -- 16, 10, 14 -- and
+/// neither assertion can see the other. This one compares them, which is the
+/// thing worth knowing, and it is the only reason the count lookup exists: the
+/// loops above index the value table directly, so a disagreement would
+/// otherwise show up as a name read from the wrong row rather than as a
+/// fault.
 fn assertTableIsWhole() void {
     // `comptime` on the unwrap, not merely on the value: `be.values` does not
     // exist in the no-backend arm, and Zig analyses both branches of a runtime
@@ -969,7 +970,7 @@ fn assertTableIsWhole() void {
     if (comptime be_platform) |platform| {
         assert(
             @src(),
-            janet_filewatch_flag_count(platform) == be.values.len,
+            vocab.flagCount(platform) == be.values.len,
             "the two halves of the flag table disagree about its length",
         );
     }
@@ -1025,7 +1026,12 @@ fn filewatchMark(p: ?*anyopaque, s: usize) callconv(.c) c_int {
 
 /// `janet_filewatch_at`. `JANET_ATEND_GCMARK` leaves every field after
 /// `gcmark` null, which the translated structure already defaults them to.
-const janet_filewatch_at: abstract_type.AbstractType = .{
+///
+/// `pub` for `test/filewatch_core.zig`, which asks the mirror rather than the
+/// `JanetAbstractType` behind `janet_abstract_type`: every field after
+/// `gcmark` being null is what makes a watcher opaque, and the mirror is where
+/// that is written.
+pub const janet_filewatch_at: abstract_type.AbstractType = .{
     .name = "filewatch/watcher",
     .gc = null,
     .gcmark = &filewatchMark,

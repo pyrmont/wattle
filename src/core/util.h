@@ -24,7 +24,7 @@
 #define JANET_UTIL_H_defined
 
 #ifndef JANET_AMALG
-#include "features.h"
+#include "janet_features.h"
 #include <janet.h>
 #include "state.h"
 #endif
@@ -85,10 +85,6 @@ int32_t janet_tablen(int32_t n);
 
 void safe_memcpy(void *dest, const void *src, size_t len);
 
-/* Defined with the buffer core, which Phase 8 Part 6 moved to Zig.
- * `cfun_buffer_trim` is the one caller left on the C side. */
-void janet_buffer_can_realloc(JanetBuffer *buffer);
-
 void janet_buffer_push_types(JanetBuffer *buffer, int types);
 
 const JanetKV *janet_dict_find(const JanetKV *buckets, int32_t cap, Janet key);
@@ -121,12 +117,6 @@ void janet_buffer_format(
 Janet janet_next_impl(Janet ds, Janet key, int is_interpreter);
 
 JanetBinding janet_binding_from_entry(Janet entry);
-
-JanetByteView janet_text_substitution(
-    Janet *subst,
-    const uint8_t *bytes,
-    uint32_t len,
-    JanetArray *extra_args);
 
 const JanetKV *janet_dict_find_keyword(
     const JanetKV *buckets,

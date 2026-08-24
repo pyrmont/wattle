@@ -1,0 +1,390 @@
+//! Stress contract for the two collector behaviours Phase 8's exit gate names
+//! and no per-increment contract covers: allocation from inside a GC callback,
+//! and the cross-thread facilities.
+//!
+//! This file is not a subsystem contract and never had a selector of its own.
+//! The other five stress bullets are covered where they belong — root
+//! categories by `test/gc_alloc.zig`, deep and cyclic graphs by
+//! `test/gc_mark.zig`, weak references by `test/gc_sweep.zig`, and repeated
+//! init/deinit by the cycle test those files end with. These two are the
+//! remainder, and they are here rather than split across three files because
+//! both are properties of the collector as a whole rather than of any one
+//! function in it.
+//!
+//! The sixth bullet was "mixed C and Zig calls across a collection", and the
+//! migration retires it: every contract used to be a C binary calling Zig, and
+//! none is now. What it was really checking — that a collection is correct
+//! when it interleaves with foreign frames — is covered by the suites, which
+//! collect constantly under the interpreter.
+//!
+//! ## Two of the assertions below pin defects
+//!
+//! A GC callback may not keep anything it allocates, and the two halves of
+//! that sentence fail differently:
+//!
+//!  - Allocated from `gcmark`, during the mark phase: the block is prepended
+//!    to `janet_vm.blocks` with its mark bit clear, and the sweep that follows
+//!    in the same `janet_collect` frees it. The object is created and
+//!    destroyed inside one collection and the caller never sees it live.
+//!
+//!  - Allocated from a finalizer, during the sweep: the outcome depends on
+//!    where in the heap list the block being finalized sits. Mid-list it is
+//!    fine and the new block is collected on the next cycle. At the *head* it
+//!    is orphaned permanently — the sweep restores the list head from a
+//!    pointer it saved before the callback ran, which discards the prepend.
+//!    The block is then reachable from nothing, is never finalized, is not
+//!    freed by `janet_deinit`, and `janet_vm.block_count` counts it forever.
+//!
+//! Both are the C implementation's behaviour and both are in `FOUND.md`. They
+//! are pinned rather than merely described because a leak is deterministic and
+//! observable — unlike undefined behaviour, which this phase's rules say not
+//! to pin.
+//!
+//! **This contract leaks on purpose and must stay out of the leak-checker
+//! gate.** That was true when it was a C translation unit in
+//! `janet-contract-test` and is true now that it is a Zig one in
+//! `janet-zig-contract-test`; what changed is only which binary it leaks in.
+//!
+//! ## The cross-thread half
+//!
+//! Threaded abstracts are the cross-thread facility Phase 8 owns. What is
+//! asserted is the refcount's atomicity under contention, that each thread's
+//! heap is its own, and that the last reference finalizes exactly once no
+//! matter which thread drops it.
+//!
+//! It needs threads and `janet_vm.threaded_abstracts`, so it is guarded — and
+//! the guard is now `std.Thread` rather than a `#include <pthread.h>` behind
+//! three `#ifdef`s, which is the one place this migration made a contract
+//! *shorter* rather than longer.
+
+const std = @import("std");
+const builtin = @import("builtin");
+const abi = @import("abi");
+const c = abi.c;
+const options = @import("options");
+const abstract_type = @import("subsystems").abstract_type;
+const AbstractType = abstract_type.AbstractType;
+
+/// `options.ev_core` is `hasEv(options)`, which is already
+/// `ev and !single_threaded`. Windows is cross-compiled and never executed
+/// here, so its path is left out rather than written blind — the same
+/// condition, and the same reason, as `test/fiber_core.zig`.
+const has_threads = options.ev_core and builtin.os.tag != .windows;
+
+fn headerOf(pointer: ?*anyopaque) *c.JanetGCObject {
+    return @ptrCast(@alignCast(pointer.?));
+}
+
+/// The length of the main heap list, walked rather than counted.
+/// `block_count` is the collector's own tally and the two are supposed to
+/// agree; where they do not, a block is on the tally and on no list, which is
+/// the leak this file pins. The bound stops a corrupt list from hanging the
+/// test.
+fn walkBlocks() usize {
+    var count: usize = 0;
+    var current = c.janet_vm.blocks;
+    while (current != null and count < 1_000_000) {
+        count += 1;
+        current = @ptrCast(headerOf(current).data.next);
+    }
+    return count;
+}
+
+/// Blocks counted but not reachable from the list. Zero in a healthy runtime.
+fn orphanedBlocks() isize {
+    return @as(isize, @intCast(c.janet_vm.block_count)) - @as(isize, @intCast(walkBlocks()));
+}
+
+// ------------------------------------------- allocation from callbacks
+
+var child_finalized: i32 = 0;
+var parent_finalized: i32 = 0;
+var allocations_left: i32 = 0;
+
+fn childGc(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+    child_finalized += 1;
+    return 0;
+}
+
+const at_child: AbstractType = .{ .name = "gc-stress/child", .gc = childGc };
+
+/// A `gcmark` that allocates. Bounded by `allocations_left` so that marking
+/// terminates: without the bound each new block would be marked in turn and
+/// the callback would allocate forever.
+fn allocatingGcmark(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+    if (allocations_left > 0) {
+        allocations_left -= 1;
+        _ = c.janet_abstract(abstract_type.stored(&at_child), 8);
+    }
+    return 0;
+}
+
+fn parentGc(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+    parent_finalized += 1;
+    return 0;
+}
+
+const at_marking_parent: AbstractType = .{
+    .name = "gc-stress/marking-parent",
+    .gc = parentGc,
+    .gcmark = allocatingGcmark,
+};
+
+/// A finalizer that allocates while the sweep is walking the block list.
+fn allocatingGc(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+    parent_finalized += 1;
+    if (allocations_left > 0) {
+        allocations_left -= 1;
+        _ = c.janet_abstract(abstract_type.stored(&at_child), 8);
+    }
+    return 0;
+}
+
+const at_finalizing_parent: AbstractType = .{
+    .name = "gc-stress/finalizing-parent",
+    .gc = allocatingGc,
+};
+
+/// An object allocated from `gcmark` is freed by the collection that ran the
+/// callback. The mark phase has already passed the head of the list by the
+/// time the block is prepended, so nothing marks it, and the sweep in the same
+/// `janet_collect` frees it and runs its finalizer.
+///
+/// The finalizer count is what makes this observable without touching the
+/// freed block: a third-party `gcmark` that allocated something and stored it
+/// would be left holding a dangling pointer, and there is no safe way to read
+/// that.
+fn allocationFromGcmarkDiesInTheSameCollection() void {
+    const orphans_before = orphanedBlocks();
+
+    child_finalized = 0;
+    parent_finalized = 0;
+    allocations_left = 1;
+
+    const parent = c.janet_wrap_abstract(c.janet_abstract(abstract_type.stored(&at_marking_parent), 8));
+    c.janet_gcroot(parent);
+
+    c.janet_collect();
+    std.debug.assert(allocations_left == 0); // the callback ran
+    std.debug.assert(child_finalized == 1); // and what it made is already gone
+    std.debug.assert(parent_finalized == 0); // the parent itself is rooted
+    std.debug.assert(orphanedBlocks() == orphans_before);
+
+    _ = c.janet_gcunroot(parent);
+    c.janet_collect();
+    std.debug.assert(parent_finalized == 1);
+    std.debug.assert(child_finalized == 1); // nothing further to finalize
+}
+
+/// A finalizer that allocates while its own block is *not* at the head of the
+/// list behaves correctly. The prepend lands ahead of the sweep's walk
+/// position, so the new block survives this collection untouched and is
+/// collected on the next one, having never been marked.
+///
+/// The keeper is allocated after the dying block and rooted, so it is the head
+/// and is retained — which is what puts the dying block mid-list with a
+/// non-null predecessor.
+fn finalizerAllocationSurvivesWhenMidList() void {
+    const orphans_before = orphanedBlocks();
+
+    child_finalized = 0;
+    parent_finalized = 0;
+    allocations_left = 1;
+
+    _ = c.janet_abstract(abstract_type.stored(&at_finalizing_parent), 8); // unrooted: dies
+    const keeper = c.janet_wrap_abstract(c.janet_abstract(abstract_type.stored(&at_child), 8));
+    c.janet_gcroot(keeper);
+
+    c.janet_collect();
+    std.debug.assert(parent_finalized == 1);
+    std.debug.assert(allocations_left == 0);
+    std.debug.assert(child_finalized == 0); // survived this cycle
+    std.debug.assert(orphanedBlocks() == orphans_before); // and is on the list
+
+    c.janet_collect();
+    std.debug.assert(child_finalized == 1); // collected on the next
+    std.debug.assert(orphanedBlocks() == orphans_before);
+
+    _ = c.janet_gcunroot(keeper);
+    c.janet_collect();
+    std.debug.assert(child_finalized == 2); // the keeper, in turn
+    std.debug.assert(orphanedBlocks() == orphans_before);
+}
+
+/// The defect. When the block being finalized *is* the head of the heap list,
+/// the sweep restores the head from the pointer it saved before running the
+/// callback, and the block the callback allocated is discarded with it.
+///
+/// What is asserted is every consequence: the block is counted and not on the
+/// list, its finalizer never runs however many collections follow, and the gap
+/// never closes. `FOUND.md` has the analysis. Nothing here dereferences the
+/// orphan — it is unreachable by construction, which is the whole problem.
+fn finalizerAllocationIsOrphanedAtTheHead() void {
+    const orphans_before = orphanedBlocks();
+
+    child_finalized = 0;
+    parent_finalized = 0;
+    allocations_left = 1;
+
+    // Allocated last and left unrooted, so it is both the list head and dead.
+    _ = c.janet_abstract(abstract_type.stored(&at_finalizing_parent), 8);
+
+    c.janet_collect();
+    std.debug.assert(parent_finalized == 1);
+    std.debug.assert(allocations_left == 0); // the callback allocated
+    std.debug.assert(child_finalized == 0); // and it was never freed
+    std.debug.assert(orphanedBlocks() == orphans_before + 1); // counted, not listed
+
+    // No number of collections reclaims it, because nothing can reach it.
+    c.janet_collect();
+    c.janet_collect();
+    std.debug.assert(child_finalized == 0);
+    std.debug.assert(orphanedBlocks() == orphans_before + 1);
+}
+
+// ---------------------------------------------------------- cross-thread
+
+const stress_threads = 4;
+const stress_rounds = 2000;
+
+var threaded_finalized: i32 = 0;
+var shared_abstract: ?*anyopaque = null;
+
+fn threadedGc(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+    threaded_finalized += 1;
+    return 0;
+}
+
+const at_shared: AbstractType = .{ .name = "gc-stress/shared", .gc = threadedGc };
+
+/// Each worker runs its own runtime, which is what a real second thread does.
+/// The reference it takes is balanced before it exits, so the count returns to
+/// exactly what the main thread left.
+fn hammerRefcount() void {
+    _ = c.janet_init();
+    for (0..stress_rounds) |_| {
+        _ = c.janet_abstract_incref(shared_abstract);
+        _ = c.janet_abstract_decref(shared_abstract);
+    }
+    c.janet_deinit();
+}
+
+/// The refcount is the whole cross-thread contract for a threaded abstract,
+/// and it is the one thing here that a non-atomic implementation would still
+/// pass every single-threaded test with. Four threads take and drop a
+/// reference two thousand times each; a lost update shows up as a count that
+/// is not one.
+fn theRefcountIsAtomicAcrossThreads() !void {
+    shared_abstract = c.janet_abstract_threaded(abstract_type.stored(&at_shared), 16);
+    std.debug.assert(shared_abstract != null);
+
+    var threads: [stress_threads]std.Thread = undefined;
+    for (&threads) |*thread| thread.* = try std.Thread.spawn(.{}, hammerRefcount, .{});
+    for (threads) |thread| thread.join();
+
+    // Back to the single reference this thread made it with.
+    std.debug.assert(c.janet_abstract_incref(shared_abstract) == 2);
+    std.debug.assert(c.janet_abstract_decref(shared_abstract) == 1);
+}
+
+var child_block_count: usize = 0;
+var child_saw_main_blocks: usize = 0;
+
+fn allocateInChild() void {
+    child_saw_main_blocks = c.janet_vm.block_count;
+    _ = c.janet_init();
+    for (0..64) |_| _ = c.janet_array(8);
+    child_block_count = c.janet_vm.block_count;
+    c.janet_collect();
+    c.janet_deinit();
+}
+
+/// Each thread's heap belongs to that thread. A port that reached a
+/// process-wide `janet_vm` rather than the thread-local one would still pass
+/// every other test in the tree: the damage is invisible until two runtimes
+/// exist at once, and then it is heap corruption rather than a wrong answer.
+fn eachThreadHasItsOwnHeap() !void {
+    const main_blocks_before = c.janet_vm.block_count;
+    const main_walk_before = walkBlocks();
+
+    const thread = try std.Thread.spawn(.{}, allocateInChild, .{});
+    thread.join();
+
+    // Before its own `janet_init`, the child's VM is zeroed rather than shared.
+    std.debug.assert(child_saw_main_blocks == 0);
+    std.debug.assert(child_block_count >= 64);
+    // And nothing it did touched this thread's heap.
+    std.debug.assert(c.janet_vm.block_count == main_blocks_before);
+    std.debug.assert(walkBlocks() == main_walk_before);
+}
+
+/// The finalizer runs on whichever thread drops the last reference, exactly
+/// once. This one drops it on the main thread; the point is the count, not the
+/// thread identity, which no part of the runtime promises.
+fn theLastReferenceFinalizesOnce() !void {
+    const abstract = c.janet_abstract_threaded(abstract_type.stored(&at_shared), 16);
+
+    threaded_finalized = 0;
+    shared_abstract = abstract;
+
+    const thread = try std.Thread.spawn(.{}, hammerRefcount, .{});
+    thread.join();
+    std.debug.assert(threaded_finalized == 0);
+
+    // This thread still holds the reference it was made with. Dropping it is
+    // what frees the block and runs the finalizer.
+    _ = c.janet_table_remove(&c.janet_vm.threaded_abstracts, c.janet_wrap_abstract(abstract));
+    std.debug.assert(c.janet_abstract_decref_maybe_free(abstract) == 0);
+    std.debug.assert(threaded_finalized == 1);
+}
+
+// ---------------------------------------------------------------- cycles
+
+/// Every Phase 8 contract ends by cycling the runtime, and this one has more
+/// reason than most: the callbacks above run during collection, and a state
+/// they corrupted would show up as a heap that stops being walkable.
+fn repeatedCycles() void {
+    for (0..32) |_| {
+        const orphans_before = orphanedBlocks();
+
+        child_finalized = 0;
+        parent_finalized = 0;
+        allocations_left = 1;
+
+        const parent = c.janet_wrap_abstract(
+            c.janet_abstract(abstract_type.stored(&at_marking_parent), 8),
+        );
+        c.janet_gcroot(parent);
+        c.janet_collect();
+        std.debug.assert(child_finalized == 1);
+        _ = c.janet_gcunroot(parent);
+        c.janet_collect();
+        std.debug.assert(parent_finalized == 1);
+        std.debug.assert(orphanedBlocks() == orphans_before);
+    }
+}
+
+fn body() !void {
+    std.debug.assert(orphanedBlocks() == 0);
+
+    allocationFromGcmarkDiesInTheSameCollection();
+    finalizerAllocationSurvivesWhenMidList();
+    finalizerAllocationIsOrphanedAtTheHead();
+
+    if (has_threads) {
+        try theRefcountIsAtomicAcrossThreads();
+        try eachThreadHasItsOwnHeap();
+        try theLastReferenceFinalizesOnce();
+    }
+
+    repeatedCycles();
+}
+
+pub fn run() void {
+    _ = c.janet_init();
+    c.janet_gcroot(c.janet_wrap_table(c.janet_core_env(null)));
+
+    body() catch @panic("gc_stress: a thread could not be started");
+
+    c.janet_deinit();
+}

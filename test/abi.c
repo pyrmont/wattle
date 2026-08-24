@@ -23,6 +23,33 @@ ABI_ASSERT(offsetof(JanetArray, count) == sizeof(JanetGCObject), "JanetArray pre
 ABI_ASSERT(offsetof(JanetBuffer, count) == sizeof(JanetGCObject), "JanetBuffer prefix changed");
 ABI_ASSERT(offsetof(JanetTable, count) == sizeof(JanetGCObject), "JanetTable prefix changed");
 
+/* The five flexible-array headers, and the one assumption the Zig runtime
+ * cannot check about itself.
+ *
+ * Every head in `janet.h` ends in a flexible array, and the C macros recover a
+ * header by subtracting `offsetof(Head, data)`. `@cImport` **drops flexible
+ * array members**, so `@offsetOf(JanetStringHead, "data")` does not compile
+ * and every one of those subtractions is spelled `@sizeOf` in Zig instead.
+ * The two agree only where the flexible array needs no padding after the last
+ * declared field.
+ *
+ * `test/gc_mark.c` and `test/gc_sweep.c` carried these five lines until Phase
+ * 11 Part 8 migrated both to Zig, at which point there was nowhere left in
+ * either file to write `offsetof`. They live here now, which is where they
+ * always belonged: this file is C's view of `janet.h`'s layout, and that is
+ * exactly what the assumption is about.
+ *
+ * `test/gc_mark.zig` keeps a run-time check beside these, and it is a
+ * *different* property -- that the runtime's own `@sizeOf` arithmetic agrees
+ * with what the allocator did. Only these five compare the two spellings. If
+ * this file is ever deleted rather than rewritten, they have to go somewhere
+ * that is still C. */
+ABI_ASSERT(sizeof(JanetStringHead) == offsetof(JanetStringHead, data), "JanetStringHead gained padding before its data");
+ABI_ASSERT(sizeof(JanetTupleHead) == offsetof(JanetTupleHead, data), "JanetTupleHead gained padding before its data");
+ABI_ASSERT(sizeof(JanetStructHead) == offsetof(JanetStructHead, data), "JanetStructHead gained padding before its data");
+ABI_ASSERT(sizeof(JanetAbstractHead) == offsetof(JanetAbstractHead, data), "JanetAbstractHead gained padding before its data");
+ABI_ASSERT(sizeof(JanetFunction) == offsetof(JanetFunction, envs), "JanetFunction gained padding before its environments");
+
 #if defined(JANET_NANBOX_64) || defined(JANET_NANBOX_32)
 ABI_ASSERT(sizeof(Janet) == sizeof(uint64_t), "NaN-boxed Janet must be 64 bits");
 #else

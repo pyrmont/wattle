@@ -88,6 +88,31 @@ comptime {
     if (@sizeOf(AbstractType) != @sizeOf(c.JanetAbstractType)) {
         @compileError("abstract_type.AbstractType has drifted from janet.h's layout");
     }
+    // Field by field, because the size alone does not say it.
+    //
+    // Every callback here is pointer-sized, so a field *inserted* into one
+    // mirror and *removed* from the other leaves `@sizeOf` unmoved and every
+    // later slot reading as its neighbour -- a `marshal` that dispatches to
+    // `unmarshal`, silently. Phase 11 Part 14 added this after
+    // `test/peg.zig` set out to compare the two descriptions of
+    // `janet_peg_type` and found that the claim it wanted belonged here: it
+    // is about the two *types* rather than about the PEG engine, and a
+    // `@compileError` reaches every build rather than one contract.
+    const ours = @typeInfo(AbstractType).@"struct".fields;
+    const theirs = @typeInfo(c.JanetAbstractType).@"struct".fields;
+    if (ours.len != theirs.len) {
+        @compileError("abstract_type.AbstractType has a different number of fields from janet.h's");
+    }
+    for (ours, theirs) |a, b| {
+        if (!std.mem.eql(u8, a.name, b.name)) {
+            @compileError("abstract_type.AbstractType field '" ++ a.name ++
+                "' is '" ++ b.name ++ "' in janet.h");
+        }
+        if (@offsetOf(AbstractType, a.name) != @offsetOf(c.JanetAbstractType, b.name)) {
+            @compileError("abstract_type.AbstractType field '" ++ a.name ++
+                "' is at a different offset from janet.h's");
+        }
+    }
 }
 
 /// An abstract type read out of the storage `janet.h` still describes: a

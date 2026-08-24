@@ -29,6 +29,7 @@ const abi = @import("abi");
 const raise = @import("raise");
 const pp_format = @import("pp_format.zig");
 const ev = @import("ev_loop.zig");
+const ev_core = @import("ev_core.zig");
 const stream_mod = @import("ev_stream.zig");
 
 const c = abi.c;
@@ -143,7 +144,7 @@ export fn janet_loop1_impl(has_timeout: c_int, timeout: c.JanetTimestamp) callco
 /// writing to.
 const SelfPipe = struct {
     fn setup() void {
-        if (janet_make_pipe(&c.janet_vm.selfpipe, 1) != 0) {
+        if (stream_mod.makePipe(&c.janet_vm.selfpipe, 1) != 0) {
             ev.exitWith(@src(), "failed to initialize self pipe in event loop");
         }
     }
@@ -171,7 +172,6 @@ const SelfPipe = struct {
     }
 };
 
-extern fn janet_make_pipe(handles: *[2]c.JanetHandle, mode: c_int) callconv(.c) c_int;
 
 /// Deliver one event to whichever fiber is waiting on `s`, for the two
 /// backends that report a bare readiness mask.
@@ -578,7 +578,7 @@ const Kqueue = struct {
     fn loop1(has_timeout: bool, timeout: c.JanetTimestamp) raise.Raising(void) {
         // The interval is calculated per iteration. When it drops to zero or
         // below the timeout is zero; an infinite timeout would make other
-        // fibers miss theirs. `janet_ev_kqueue_interval` is what keeps it at
+        // fibers miss theirs. `ev_core.kqueueInterval` is what keeps it at
         // or above the minimum the platform accepts.
         const v = &c.janet_vm;
         var ts: std.c.timespec = undefined;
@@ -588,7 +588,7 @@ const Kqueue = struct {
             if (v.timer_enabled != 0 or has_timeout) {
                 var sec: i64 = undefined;
                 var nsec: i64 = undefined;
-                ev.janet_ev_ts_to_parts(ev.janet_ev_kqueue_interval(timeout - ev.tsNow()), &sec, &nsec);
+                ev_core.tsToParts(ev_core.kqueueInterval(timeout - ev.tsNow()), &sec, &nsec);
                 ts = .{ .sec = @intCast(sec), .nsec = @intCast(nsec) };
                 status = std.c.kevent(v.kq, undefined, 0, &events, max_events, &ts);
             } else {

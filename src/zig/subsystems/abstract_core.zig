@@ -62,7 +62,7 @@
 //! never on the block's memory tag, so an embedder that wraps and roots the
 //! block before filling it in gets `gcmark` called on an uninitialised payload.
 //! Nothing here prevents that and nothing should: the contract is that the
-//! caller roots the value after `janet_abstract_end`. `test/abstract_core.c`
+//! caller roots the value after `janet_abstract_end`. `test/abstract_core.zig`
 //! pins both halves, so a port that "fixed" the second by tagging early would
 //! be caught.
 //!
@@ -119,9 +119,9 @@ const has_ev = c.JANET_VM_HAS_EV != 0;
 
 /// `janet_abstract_head(u)` from `janet.h`, which subtracts
 /// `offsetof(JanetAbstractHead, data)`. translate-c drops the flexible array
-/// member, so the offset is spelled as the size of the head; `test/gc_sweep.c`
-/// and `test/abstract_core.c` both assert the two are equal in C, which is the
-/// only place that can ask.
+/// member, so the offset is spelled as the size of the head. `test/abi.c`
+/// asserts the two are equal, which is the only place left that can ask in C,
+/// and `test/gc_mark.zig` checks the offset the allocator actually used.
 inline fn abstractHead(a: ?*anyopaque) *c.JanetAbstractHead {
     return @ptrFromInt(@intFromPtr(a) -% @sizeOf(c.JanetAbstractHead));
 }

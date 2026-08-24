@@ -24,14 +24,17 @@ may require changes before being merged.
 * Include a description of the changes.
 * If there are changes to the compiler or the language, please include tests in the test folder.
   The test suites are not organized in any particular way now, so simply add your tests
-  to one of the test suite files (test/suite0.janet, test/suite1.janet, etc.). You can
-  run tests with `make test`. If you want to add a new test suite, simply add a file to
-  the test folder and make sure it is run when`make test` is invoked.
-* Be consistent with the style. For C this means follow the indentation and style in
-  other files (files have MIT license at top, 4 spaces indentation, no trailing
-  whitespace, cuddled brackets, etc.) Use `make format` to automatically format your C code with
-  [astyle](http://astyle.sourceforge.net/astyle.html). You will probably need
-  to install this, but it can be installed with most package managers.
+  to one of the test suite files in `test/`. You can run the whole graph with
+  `zig build test`, which builds the runtime, runs the sixty-five contracts in
+  `test/*.zig`, the fuzz targets over their corpora, and every
+  `test/suite-*.janet`. If you add a suite, add it to `test_suites` in
+  `build.zig`; if you add a contract, `build.zig` refuses to build until it is
+  named in `test/contracts.zig`, so you cannot silently add one that never
+  runs.
+* Be consistent with the style. The runtime is Zig: use `zig fmt`, and read the
+  surrounding file for how much a comment is expected to explain — this tree
+  documents *why* far more than most, and `src/zig/README.md` is the record of
+  it.
 
   For janet code, use lisp indentation with 2 spaces. One can use janet.vim to
   do this indentation, or approximate as close as possible. There is a janet formatter
@@ -56,14 +59,17 @@ In practice, this means programming for both MSVC on one hand and everything els
 The code must also build with emscripten, even if some features are not available, although
 this is not a priority.
 
-Code should compile warning free and run valgrind clean. I find that these two criteria are some
-of the easiest ways to protect against a large number of bugs in an unsafe language like C. To check for
-valgrind errors, run `make valtest` and check the output for undefined or flagged behavior.
+Code should compile warning free. Zig's Debug and ReleaseSafe modes carry
+bounds and overflow checks, and `zig build test` runs in Debug — but note that
+Debug does not fold identical functions and does not elide safety checks, so a
+release mode is a genuinely different check; `port/phase_11.md` records three
+defects that only a release mode exposed. `port/matrix.janet` runs the
+configurations, the optimize modes and the cross-compiles together.
 
 ### Formatting
 
-Use [astyle](http://astyle.sourceforge.net/astyle.html) via `make format` to
-ensure a consistent code style for C.
+Use `zig fmt` for Zig. For Janet code, use lisp indentation with two spaces;
+there is a formatter in [spork](https://github.com/janet-lang/spork.git).
 
 ## Janet style
 

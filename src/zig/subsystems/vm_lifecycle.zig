@@ -168,6 +168,22 @@ pub fn deinit() void {
     c.janet_vm.top_dyns = null;
     c.janet_vm.user = null;
     c.janet_free(c.janet_vm.traversal_base);
+    // Cleared for the reason `clearMemory` clears the scratch table, and found
+    // in the same audit: `value_order.zig` decides whether to grow the
+    // traversal stack with `traversal_base == null`, so a dangling one sends
+    // it down the grow path to `janet_realloc` a pointer that is already free.
+    // Every other field this function releases is cleared right after --
+    // `roots`, `registry`, and the symbol cache's four in
+    // `janet_symcache_deinit` -- and these two were the exceptions.
+    //
+    // All three, because `janet_init` sets all three: nulling only the base
+    // would be enough for correctness -- `is_new` short-circuits the other two
+    // out of the comparison -- but it would leave `traversal` and
+    // `traversal_top` pointing into the freed block, which is the same
+    // inconsistency one field over.
+    c.janet_vm.traversal = null;
+    c.janet_vm.traversal_base = null;
+    c.janet_vm.traversal_top = null;
     c.janet_vm.fiber = null;
     c.janet_vm.root_fiber = null;
     c.janet_free(c.janet_vm.registry);

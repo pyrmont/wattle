@@ -70,6 +70,15 @@ const pp_format = @import("pp_format.zig");
 const c = abi.c;
 const containers = @import("containers.zig");
 const access = @import("access.zig");
+const options = @import("options");
+
+/// The two 64-bit conversions, when the configuration has them.
+///
+/// `-Dint-types=false` compiles no `inttypes.zig` at all, and `Wide` below
+/// names nothing in this namespace in that case -- Zig does not analyse the
+/// untaken arm of a comptime-known `if`, which is what makes the empty struct
+/// sufficient rather than a stub.
+const inttypes = if (options.int_types_core) @import("inttypes.zig") else struct {};
 
 // -------------------------------------------------------------- predicates
 
@@ -811,11 +820,21 @@ const GetFloat = ArgGetter(f32, janet_arg_float);
 const GetSize = ArgGetter(usize, janet_arg_size);
 
 /// With integer types enabled these accept an `int/s64` or `int/u64` abstract
-/// as well as a number, and `janet_unwrap_s64` raises its own message. There
-/// is no fault for a kernel to report, so the whole decision is there -- and
-/// it is a C-ABI call into `-Dint-types-core`, so that raise arrives as a jump
-/// through this frame rather than as an error. Nothing is held across it.
-const int_types_enabled = @hasDecl(c, "janet_unwrap_s64");
+/// as well as a number, and the conversion raises its own message rather than
+/// filling in a fault, so the whole decision is there and there is nothing for
+/// a kernel to report.
+///
+/// **The conversion is reached by import, and until Phase 11 Part 13 it was
+/// reached through its C face.** `c.janet_unwrap_s64` is `raise.reported` over
+/// `inttypes.unwrapS64`, so calling it from inside this `raise.Raising`
+/// function turned a refusal into a report nobody consumed: the getter
+/// answered zero, its caller carried on with a value the user never supplied,
+/// and the outstanding report killed the process at the next scope boundary
+/// with a message naming neither the slot nor the builtin.
+/// `(string/format "%d" "x")` reproduced it, because `pp_format.zig` is one of
+/// the seven callers. That is the same defect Part 12 found in
+/// `JOP_MAKE_STRING`, in the layer every cfunction opens with.
+const int_types_enabled = options.int_types_core;
 
 fn Wide(comptime T: type, comptime unwrap: anytype, comptime kernel: anytype) type {
     return struct {
@@ -831,8 +850,8 @@ fn Wide(comptime T: type, comptime unwrap: anytype, comptime kernel: anytype) ty
     };
 }
 
-const GetInteger64 = Wide(i64, if (int_types_enabled) c.janet_unwrap_s64 else {}, janet_arg_integer64);
-const GetUInteger64 = Wide(u64, if (int_types_enabled) c.janet_unwrap_u64 else {}, janet_arg_uinteger64);
+const GetInteger64 = Wide(i64, if (int_types_enabled) inttypes.unwrapS64 else {}, janet_arg_integer64);
+const GetUInteger64 = Wide(u64, if (int_types_enabled) inttypes.unwrapU64 else {}, janet_arg_uinteger64);
 
 // ----------------------------------------------------------------- ranges
 
@@ -1122,9 +1141,10 @@ pub const janet_getflags = raise.panicking(getFlags).face;
 // so the implementation is reachable directly, and these are the names it is
 // reachable by.
 //
-// `subsystems/arglayer.zig` is what a caller imports; it picks between this and
-// `args_core_extern.zig` on the selector. Nothing here is `export`ed: these are
-// aliases for a Zig caller, and the exported set is unchanged.
+// `subsystems/arglayer.zig` is what a caller imports; it picked between this
+// and `args_core_extern.zig` on the selector until Phase 11 Part 26, and names
+// this file now. Nothing here is `export`ed: these are aliases for a Zig
+// caller, and the exported set is unchanged.
 //
 // The names are the C ones with the prefix dropped and the words separated,
 // which is the only liberty taken. `janet_getcstring` reads `getCString` here

@@ -13,11 +13,13 @@
 //! and their mark callbacks -- so the pointer stays inside one language again
 //! and the dispatchers are three lines here instead of three lines there.
 //!
-//! What does *not* change is the seam with those two selectors. Their kernels
-//! are reached across the C ABI exactly as `ffi.c` reached them, so
-//! `-Dffi-layout=c` still runs a C struct-layout machine under a Zig type
-//! system, and the flat `TypeNode` form still exists for the classifiers'
-//! sake.
+//! What outlived those selectors is the *seam*: `ffi_layout.zig`'s kernels
+//! were reached across the C ABI exactly as `ffi.c` reached them, long after
+//! the C arm they were shaped for had gone. Phase 11 Part 16 spent it, when
+//! the contract that tests those kernels moved inside the compilation and
+//! wanted the same import. The flat `TypeNode` form still exists for the
+//! classifiers' sake, and for their own reason: a classifier is a decision
+//! about scalars and must not see a pointer into a collected abstract.
 //!
 //! ## Why this file is jump-transparent
 //!
@@ -34,6 +36,7 @@ const pp_format = @import("pp_format.zig");
 pub const c = abi.c;
 const arglayer = @import("arglayer.zig");
 const abstract_type = @import("abstract_type.zig");
+const ffi_layout = @import("ffi_layout.zig");
 
 /// How deep a type may nest before `ffi/read` and `ffi/write` give up.
 pub const max_recur: c_int = 64;
@@ -262,18 +265,25 @@ fn primInfo(prim: Prim) PrimInfo {
 }
 
 // ==========================================================================
-// The kernels behind `-Dffi-layout`
+// The kernels in `ffi_layout.zig`
 // ==========================================================================
+//
+// Reached by import since Phase 11 Part 16. They were `extern fn` declarations
+// against six exported symbols until then -- the shape `ffi.c` needed, kept
+// after both ends had become Zig, with `Layout` written out a second time here
+// and nothing checking either declaration against its definition.
 
-extern fn janet_ffi_decode_prim(name: [*c]const u8, len: i32) callconv(.c) i32;
-extern fn janet_ffi_decode_cc(name: [*c]const u8, len: i32) callconv(.c) i32;
-extern fn janet_ffi_type_extent(base_size: usize, array_count: i32) callconv(.c) usize;
+/// A Janet keyword as the name tables read it: length-prefixed bytes, which
+/// may contain a zero, rather than a C string.
+fn keywordBytes(name: [*c]const u8) []const u8 {
+    return name[0..@intCast(c.janet_string_length(name))];
+}
 
 /// `type_size`. The array count is multiplied in by the kernel, which is where
 /// the "no array count" sentinel is decided.
 pub fn typeSize(t: Type) usize {
     const base = if (t.prim == .@"struct") t.st.?.size else primInfo(t.prim).size;
-    return janet_ffi_type_extent(base, t.array_count);
+    return ffi_layout.typeExtent(base, t.array_count);
 }
 
 /// `type_align`.
@@ -286,7 +296,7 @@ pub fn typeAlign(t: Type) usize {
 /// whichever convention the build enables, which is a property of the target.
 pub fn decodeCc(name: [*c]const u8) raise.Raising(Cc) {
     if (0 == c.janet_cstrcmp(name, "default")) return default_cc;
-    const cc = janet_ffi_decode_cc(name, c.janet_string_length(name));
+    const cc = ffi_layout.decodeCc(keywordBytes(name));
     if (cc < 0 or !ccEnabled(@enumFromInt(@as(u32, @intCast(cc))))) {
         return pp_format.panicf("unknown calling convention %s", .{name});
     }
@@ -295,20 +305,10 @@ pub fn decodeCc(name: [*c]const u8) raise.Raising(Cc) {
 
 /// `decode_ffi_prim`.
 pub fn decodePrim(name: [*c]const u8) raise.Raising(Prim) {
-    const prim = janet_ffi_decode_prim(name, c.janet_string_length(name));
+    const prim = ffi_layout.decodePrim(keywordBytes(name));
     if (prim < 0) return pp_format.panicf("unknown machine type %s", .{name});
     return @enumFromInt(@as(u32, @intCast(prim)));
 }
-
-const Layout = extern struct {
-    size: u32,
-    alignment: u32,
-    is_aligned: u32,
-};
-
-extern fn janet_ffi_layout_init(layout: *Layout) callconv(.c) void;
-extern fn janet_ffi_layout_place(layout: *Layout, el_size: usize, el_align: usize, packed_field: c_int) callconv(.c) usize;
-extern fn janet_ffi_layout_finish(layout: *Layout) callconv(.c) void;
 
 // ==========================================================================
 // The abstract types
@@ -390,8 +390,7 @@ pub fn buildStruct(argc: i32, argv: [*c]const c.Janet) raise.Raising(*Struct) {
     st.alignment = 1;
     if (argc == 0) return raise.panic("invalid empty struct");
 
-    var layout: Layout = undefined;
-    janet_ffi_layout_init(&layout);
+    var layout = ffi_layout.Layout.init();
     const members = Struct.fields(st);
     var i: usize = 0;
     var j: i32 = 0;
@@ -410,15 +409,10 @@ pub fn buildStruct(argc: i32, argv: [*c]const c.Janet) raise.Raising(*Struct) {
         // `el_align <= 0` in C, on a size_t, which is `el_align == 0` -- the
         // void type is the only entry with no alignment.
         if (el_align == 0) return pp_format.panicf("bad field type %V", .{argv[@intCast(j)]});
-        members[i].offset = janet_ffi_layout_place(
-            &layout,
-            el_size,
-            el_align,
-            @intFromBool(all_packed or pack_one),
-        );
+        members[i].offset = layout.place(el_size, el_align, all_packed or pack_one);
         i += 1;
     }
-    janet_ffi_layout_finish(&layout);
+    layout.finish();
     st.size = layout.size;
     st.alignment = layout.alignment;
     st.is_aligned = layout.is_aligned;

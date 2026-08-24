@@ -24,7 +24,7 @@
 #define JANET_GC_H
 
 #ifndef JANET_AMALG
-#include "features.h"
+#include "janet_features.h"
 #include <janet.h>
 #endif
 

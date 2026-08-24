@@ -36,8 +36,8 @@
 //! `janet_vm.weak_blocks`, so every weak table and weak array still alive at
 //! `janet_deinit` leaks its block and its data array — 32KB per cycle for a
 //! 4096-element weak array, measured and recorded in `FOUND.md`. This file walks
-//! the same one list the original does, and `test/gc_sweep.c` asserts the
-//! leak's signature so that whichever selector is fixed first says so.
+//! the same one list the original does, and `test/gc_sweep.zig` asserts the
+//! leak's signature so that whichever side is fixed first says so.
 
 const std = @import("std");
 const abi = @import("abi");
@@ -106,8 +106,9 @@ inline fn gcType(mem: [*c]c.JanetGCObject) i32 {
 /// precisely when the flexible array needs no padding after the last declared
 /// field — true for all four heads here, because each ends on a field at least
 /// as aligned as the array element. That is an assumption about C layout
-/// rather than about this file, so `test/gc_sweep.c` pins it in C, where
-/// `offsetof` exists, exactly as `test/gc_mark.c` and Part 3 do.
+/// rather than about this file, so `test/abi.c` pins it in C, where
+/// `offsetof` exists, and `test/gc_mark.zig` checks the offset the allocator
+/// actually used.
 inline fn stringHead(s: [*c]const u8) *c.JanetStringHead {
     return @ptrFromInt(@intFromPtr(s) -% @sizeOf(c.JanetStringHead));
 }
@@ -441,6 +442,32 @@ pub fn clearMemory() void {
 
     c.janet_free_all_scratch();
     c.janet_free(@ptrCast(v.scratch_mem));
+
+    // **The three fields go with the block.** `janet_free_all_scratch` sets
+    // `scratch_len` to zero and the line above frees the table, but upstream's
+    // `janet_clear_memory` leaves `scratch_mem` dangling and `scratch_cap` at
+    // its old value -- so a `janet_smalloc` after a `janet_deinit` and before
+    // the next `janet_init` finds `scratch_len != scratch_cap`, takes the
+    // no-growth path, and writes `scratch_mem[0] = s` **through the pointer
+    // just freed**.
+    //
+    // `janet_init` resets all three, so a program that re-initialises never
+    // sees it; what does see it is anything that calls into the runtime
+    // between the two. Phase 11 Part 27 found it as heap corruption that only
+    // glibc's allocator hardening detects -- `FOUND.md` has the entry and the
+    // bisection.
+    //
+    // Nulling here makes that path **correct** rather than loud, and the
+    // difference is worth stating because the first write-up of this got it
+    // backwards: with all three cleared, the next `janet_smalloc` finds
+    // `scratch_len == scratch_cap == 0`, takes the growth path, and allocates
+    // a fresh table. It does not trap. So this removes the corruption and
+    // does not diagnose the caller -- which is why the actual fix for Part
+    // 27's defect is the contract that called in after `janet_deinit`, and
+    // this is defence in depth behind it.
+    v.scratch_mem = null;
+    v.scratch_cap = 0;
+    v.scratch_len = 0;
 }
 
 export fn janet_clear_memory() callconv(.c) void {

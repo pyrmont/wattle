@@ -2,9 +2,14 @@
 //!
 //! It initialises a runtime, runs the five smoke tests, builds the environment
 //! `src/boot/boot.janet` compiles against, and hands that script the core
-//! image to emit on stdout. `build.zig` captures the output as
-//! `janet-image.c`, which is the one generated C file this tree still produces
-//! and the reason `janet-image.o` is in the archive.
+//! image to write out. The script `spit`s it to the path `build.zig` names in
+//! `boot/args` as `image-out`.
+//!
+//! It was stdout until Phase 11 Part 19, captured as `janet-image.c` -- the
+//! one generated C file this tree produced and the reason `janet-image.o` was
+//! in the archive. The image is a marshalled byte stream now and
+//! `core_env.zig` reaches it with `@embedFile`, so there is no C to capture
+//! and no reason to route bytes through a stream a host may translate.
 //!
 //! This was `src/boot/boot.c` until Phase 10 Part 18, and it was the last
 //! `main` in C anywhere under `src/`. It lives beside `cli.zig` rather than in

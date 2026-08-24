@@ -244,7 +244,13 @@ inline fn wrapInteger(x: anytype) c.Janet {
 // The four address cfunctions
 // ==========================================================================
 
-extern const janet_stream_type: abstract_type.AbstractType;
+/// The stream type, by import. Declared `extern const` here until Phase 11
+/// Part 22; the socket layer exists only where the event loop does, so there
+/// was never a configuration in which the symbol was the only way to reach it.
+///
+/// The *module* is named rather than the constant: an alias of a `const` is a
+/// copy, and `&copy` is not the address an abstract carries.
+const ev_stream = @import("ev_stream.zig");
 
 const stream_closed: u32 = @intCast(c.JANET_STREAM_CLOSED);
 
@@ -321,11 +327,11 @@ pub fn getpeernameImpl(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
 /// of the behaviour.
 fn endpointName(argc: i32, argv: [*c]c.Janet, comptime peer: bool) raise.Raising(c.Janet) {
     try arglayer.fixarity(argc, 1);
-    const js: *c.JanetStream = @ptrCast(@alignCast(try arglayer.getAbstract(argv, 0, abstract_type.stored(&janet_stream_type))));
+    const js: *c.JanetStream = @ptrCast(@alignCast(try arglayer.getAbstract(argv, 0, abstract_type.stored(&ev_stream.janet_stream_type))));
     if (js.flags & stream_closed != 0) return raise.panic("stream closed");
     var ss = std.mem.zeroes(h.struct_sockaddr_storage);
     var slen: SockLen = @sizeOf(h.struct_sockaddr_storage);
-    const call = if (peer) h.getpeername else h.getsockname;
+    const call = if (peer) net_abi.getpeername else net_abi.getsockname;
     if (call(sockOf(js), @ptrCast(&ss), &slen) != 0) {
         const what = if (peer) "peername" else "localname";
         return pp_format.panicf(

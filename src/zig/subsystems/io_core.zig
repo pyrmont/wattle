@@ -70,7 +70,9 @@
 //! over `<sys/stat.h>` is the duplicate translation `abi.zig`'s
 //! single-translation rule prevents, and a hand-written layout per platform is
 //! what `os_stat.zig` declined to do with `jstat_t`. So the test keeps a
-//! five-line C body, `janet_zig_io_isdir`, and this file calls it.
+//! test lives in `host_stat.zig`, beside the other reader of a host stat
+//! structure, and this file imports it. It was `io.c`'s `janet_zig_io_isdir`
+//! and was reached back through that symbol until Phase 11 Part 20.
 //!
 //! The marshalling path reaches a descriptor, through `dup` and `fdopen`.
 //! Plan 9 spells `dup` with two arguments, and the C original has a branch for
@@ -113,12 +115,15 @@ const sandbox_fs_read: u32 = 64;
 const sandbox_fs_temp: u32 = 1024;
 const sandbox_fs: u32 = sandbox_fs_write | sandbox_fs_read | sandbox_fs_temp;
 
-/// Mirrors the `JANET_IO_MODE_*` codes in `src/core/io.c`.
-const mode_ok: i32 = 0;
-const mode_bad_length: i32 = 1;
-const mode_bad_first: i32 = 2;
-const mode_bad_later: i32 = 3;
-const mode_repeated: i32 = 4;
+/// What `scanMode` reports. These were the `JANET_IO_MODE_*` codes in
+/// `src/core/io.c`, and this is now the only place they are written down:
+/// `test/io_core.zig` names them rather than restating the numbers, which is
+/// what the C contract's own `#define` block had to do.
+pub const mode_ok: i32 = 0;
+pub const mode_bad_length: i32 = 1;
+pub const mode_bad_first: i32 = 2;
+pub const mode_bad_later: i32 = 3;
+pub const mode_repeated: i32 = 4;
 
 /// `SEEK_SET`, `SEEK_CUR`, and `SEEK_END` are 0, 1, and 2 on every platform
 /// Janet builds for, but they are host constants, so the boundary carries the
@@ -157,25 +162,18 @@ extern fn ftell(file: ?*FILE) callconv(.c) c_long;
 extern fn _fseeki64(file: ?*FILE, offset: i64, whence: c_int) callconv(.c) c_int;
 extern fn _ftelli64(file: ?*FILE) callconv(.c) i64;
 
+// The sixteen stream kernels below were `@export`ed under `janet_io_*` names
+// so that `io.c` could reach them, and one of the sixteen still is.
+//
+// `janet_io_write` keeps its symbol because `pp_format.zig` is a real caller
+// and reaches it deliberately by symbol: importing this file would make the
+// printer depend on the whole io surface, which the note beside that
+// declaration explains and Phase 11 Part 20 did not overrule. The other
+// fifteen had no caller anywhere -- `io.c` went in Phase 10 Part 18 and
+// `test/io_core.c` in Part 20 -- so they are ordinary Zig functions now and
+// the contract reaches them by import.
 comptime {
-    @export(&scanMode, .{ .name = "janet_io_scan_mode" });
-    @export(&seekWhence, .{ .name = "janet_io_seek_whence" });
-    @export(&modeFromFlags, .{ .name = "janet_io_mode_from_flags" });
-    @export(&open, .{ .name = "janet_io_open" });
-    @export(&temp, .{ .name = "janet_io_temp" });
-    @export(&close, .{ .name = "janet_io_close" });
-    @export(&flush, .{ .name = "janet_io_flush" });
-    @export(&read, .{ .name = "janet_io_read" });
     @export(&write, .{ .name = "janet_io_write" });
-    @export(&getChar, .{ .name = "janet_io_getc" });
-    @export(&putChar, .{ .name = "janet_io_putc" });
-    @export(&err, .{ .name = "janet_io_error" });
-    @export(&setBufferSize, .{ .name = "janet_io_setvbuf" });
-    @export(&seek, .{ .name = "janet_io_seek" });
-    @export(&tell, .{ .name = "janet_io_tell" });
-    if (!windows) {
-        @export(&setCloexec, .{ .name = "janet_io_set_cloexec" });
-    }
 }
 
 /// Classify an `file/open` mode string.
@@ -189,13 +187,13 @@ comptime {
 /// A repeated flag yields a flag word of -1, which is what the C implementation
 /// returned and what its caller then used as a flag word. That is recorded in
 /// `FOUND.md` as a defect and reproduced rather than fixed.
-fn scanMode(
+pub fn scanMode(
     mode: [*]const u8,
     len: i32,
     flags_out: *i32,
     sandbox_out: *u32,
     index_out: *i32,
-) callconv(.c) i32 {
+) i32 {
     flags_out.* = 0;
     sandbox_out.* = 0;
     index_out.* = 0;
@@ -254,7 +252,7 @@ const whence_names = [_][:0]const u8{ "cur", "set", "end" };
 ///
 /// The comparison reproduces `janet_cstrcmp`, which the C implementation used
 /// here, including its treatment of a key whose own bytes end in NUL.
-fn seekWhence(key: [*]const u8, len: i32) callconv(.c) i32 {
+pub fn seekWhence(key: [*]const u8, len: i32) i32 {
     if (len < 0) return -1;
     for (whence_names, 0..) |name, index| {
         if (cstrequal(key, @intCast(len), name)) return @intCast(index);
@@ -279,7 +277,7 @@ fn cstrequal(key: [*]const u8, len: usize, other: [:0]const u8) bool {
 /// This is not the inverse of `scanMode`: it drops the binary, update, and
 /// no-nil flags, and it collapses append and write, because the C
 /// implementation only needed a mode `fdopen` would accept.
-fn modeFromFlags(flags: i32, out: *[4]u8) callconv(.c) i32 {
+pub fn modeFromFlags(flags: i32, out: *[4]u8) i32 {
     out.* = .{ 0, 0, 0, 0 };
     var len: usize = 0;
     if (flags & file_read != 0) {
@@ -296,11 +294,11 @@ fn modeFromFlags(flags: i32, out: *[4]u8) callconv(.c) i32 {
     return @intCast(len);
 }
 
-fn open(path: [*:0]const u8, mode: [*:0]const u8) callconv(.c) ?*anyopaque {
+pub fn open(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque {
     return @ptrCast(fopen(path, mode));
 }
 
-fn temp() callconv(.c) ?*anyopaque {
+pub fn temp() ?*anyopaque {
     return @ptrCast(tmpfile());
 }
 
@@ -319,7 +317,7 @@ fn closeStream(file: ?*FILE) i32 {
     return fclose(file);
 }
 
-fn close(handle: *anyopaque) callconv(.c) i32 {
+pub fn close(handle: *anyopaque) i32 {
     return closeStream(stream(handle));
 }
 
@@ -327,7 +325,7 @@ fn flushStream(file: ?*FILE) i32 {
     return fflush(file);
 }
 
-fn flush(handle: *anyopaque) callconv(.c) i32 {
+pub fn flush(handle: *anyopaque) i32 {
     return flushStream(stream(handle));
 }
 
@@ -337,7 +335,7 @@ fn readStream(file: ?*FILE, dest: [*]u8, count: usize) usize {
     return fread(dest, 1, count, file);
 }
 
-fn read(handle: *anyopaque, dest: [*]u8, count: usize) callconv(.c) usize {
+pub fn read(handle: *anyopaque, dest: [*]u8, count: usize) usize {
     return readStream(stream(handle), dest, count);
 }
 
@@ -364,7 +362,7 @@ fn writeStream(file: ?*FILE, src: [*]const u8, count: usize) i32 {
     return @intCast(fwrite(src, count, 1, file));
 }
 
-fn write(handle: *anyopaque, src: [*]const u8, count: usize) callconv(.c) i32 {
+pub fn write(handle: *anyopaque, src: [*]const u8, count: usize) callconv(.c) i32 {
     return writeStream(stream(handle), src, count);
 }
 
@@ -373,7 +371,7 @@ fn getCharStream(file: ?*FILE) i32 {
     return fgetc(file);
 }
 
-fn getChar(handle: *anyopaque) callconv(.c) i32 {
+pub fn getChar(handle: *anyopaque) i32 {
     return getCharStream(stream(handle));
 }
 
@@ -381,7 +379,7 @@ fn putCharStream(file: ?*FILE, ch: i32) i32 {
     return fputc(ch, file);
 }
 
-fn putChar(handle: *anyopaque, ch: i32) callconv(.c) i32 {
+pub fn putChar(handle: *anyopaque, ch: i32) i32 {
     return putCharStream(stream(handle), ch);
 }
 
@@ -389,7 +387,7 @@ fn errStream(file: ?*FILE) i32 {
     return ferror(file);
 }
 
-fn err(handle: *anyopaque) callconv(.c) i32 {
+pub fn err(handle: *anyopaque) i32 {
     return errStream(stream(handle));
 }
 
@@ -398,7 +396,7 @@ fn setBufferSizeStream(file: ?*FILE, size: usize) i32 {
     return setvbuf(file, null, if (size != 0) iofbf else ionbf, size);
 }
 
-fn setBufferSize(handle: *anyopaque, size: usize) callconv(.c) i32 {
+pub fn setBufferSize(handle: *anyopaque, size: usize) i32 {
     return setBufferSizeStream(stream(handle), size);
 }
 
@@ -418,7 +416,7 @@ fn seekStream(file: ?*FILE, offset: i64, whence: i32) i32 {
     return fseek(file, @truncate(offset), origin);
 }
 
-fn seek(handle: *anyopaque, offset: i64, whence: i32) callconv(.c) i32 {
+pub fn seek(handle: *anyopaque, offset: i64, whence: i32) i32 {
     return seekStream(stream(handle), offset, whence);
 }
 
@@ -427,18 +425,19 @@ fn tellStream(file: ?*FILE) i64 {
     return ftell(file);
 }
 
-fn tell(handle: *anyopaque) callconv(.c) i64 {
+pub fn tell(handle: *anyopaque) i64 {
     return tellStream(stream(handle));
 }
 
 /// Close the stream's descriptor across an exec. `fopen` has no standard flag
 /// for this, which is why the C implementation set it separately.
+///
+/// The handle-taking face over this -- `janet_io_set_cloexec` -- went in Phase
+/// 11 Part 20. Its only caller was `io.c`, which Phase 10 Part 18 deleted, and
+/// nothing announced that: an `@export` with no caller links forever. This
+/// file's own use is the internal one below.
 fn setCloexecStream(file: ?*FILE) i32 {
     return std.c.fcntl(fileno(file), std.c.F.SETFD, fd_cloexec);
-}
-
-fn setCloexec(handle: *anyopaque) callconv(.c) i32 {
-    return setCloexecStream(stream(handle));
 }
 
 fn stream(handle: *anyopaque) *FILE {
@@ -487,11 +486,12 @@ extern fn janet_buffer_format(
     argv: [*c]c.Janet,
 ) callconv(.c) void;
 
-/// `src/core/io.c`. The three handles that cannot be named from Zig; the note
-/// beside them there has the three spellings translate-c produces.
-/// `src/core/io.c` again: the directory test, which needs `struct stat`.
-extern fn janet_zig_io_isdir(file: *anyopaque) callconv(.c) c_int;
-
+/// The directory test, which needs `struct stat` and therefore lives with the
+/// other host-structure reader. It was `io.c`'s `janet_zig_io_isdir` and was
+/// reached back through that symbol until Phase 11 Part 20; `host_stat.zig`
+/// has been the definition since Phase 10 Part 18, so the symbol was one Zig
+/// file calling another through the linker.
+const host_stat = @import("host_stat.zig");
 
 inline fn errno() c_int {
     return std.c._errno().*;
@@ -581,7 +581,7 @@ fn fileMarshal(pointer: ?*anyopaque, ctx: [*c]c.JanetMarshalContext) raise.Raisi
         (if (borrowed) fileno(streamOf(iof)) else dup(fileno(streamOf(iof))));
     try marshalling.marshalInt(ctx, @intCast(fno));
     try marshalling.marshalInt(ctx, iof.flags);
-    c.janet_marshal_size(ctx, iof.vbufsize);
+    try marshalling.marshalSize(ctx, iof.vbufsize);
 }
 
 /// Reattach a descriptor read back out of a stream.
@@ -610,7 +610,7 @@ fn fileUnmarshal(ctx: [*c]c.JanetMarshalContext) raise.Raising(?*anyopaque) {
     return iof;
 }
 
-export const janet_file_type: abstract_type.AbstractType = .{
+pub export const janet_file_type: abstract_type.AbstractType = .{
     .name = "core/file",
     .gc = fileGC,
     .gcmark = null,
@@ -701,9 +701,9 @@ fn cfunFopen(argc: i32, argv: [*c]c.Janet) align(corefn.alignment) raise.Raising
     var bufsize: usize = bufsiz;
     if (f) |handle| {
         // A directory that `fopen` accepted is rejected here. The test is
-        // `io.c`'s, not this file's: see `janet_zig_io_isdir` there for why a
-        // `struct stat` cannot be named from Zig on all four targets.
-        if (janet_zig_io_isdir(handle) != 0) {
+        // `host_stat.zig`'s rather than this file's: see the note there for
+        // why a `struct stat` is read in one place for all four targets.
+        if (host_stat.isDirectory(handle)) {
             _ = closeStream(streamOfHandle(handle));
             return pp_format.panicf("cannot open directory: %s", .{fname});
         }
@@ -1147,7 +1147,7 @@ fn Flush(comptime name: [:0]const u8, comptime handle: anytype) type {
 // The public C API
 // ==========================================================================
 
-fn janet_getjfileImpl(argv: [*c]const c.Janet, n: i32) raise.Raising(*c.JanetFile) {
+pub fn janet_getjfileImpl(argv: [*c]const c.Janet, n: i32) raise.Raising(*c.JanetFile) {
     return @ptrCast(@alignCast(try arglayer.getAbstract(argv, n, abstract_type.stored(&janet_file_type))));
 }
 

@@ -86,20 +86,6 @@ export fn janet_interpreter_interrupt_handled(vm: ?*c.JanetVM) callconv(.c) void
     _ = c.janet_atomic_dec(&target.auto_suspend);
 }
 
-/// The owning side's view of the structure, for the contract to compare
-/// against the C compiler's. A disagreement here is the one way this port
-/// could be wrong without being obviously wrong: every whole-VM copy above
-/// would then be the wrong length. The alignment goes through the same
-/// offsetof probe C uses, so the two sides measure the same thing rather than
-/// two definitions that usually agree.
-export fn janet_vm_state_size() callconv(.c) usize {
-    return @sizeOf(c.JanetVM);
-}
-
-export fn janet_vm_state_align() callconv(.c) usize {
-    return @offsetOf(c.JanetVMAlignProbe, "vm");
-}
-
 // ------------------------------------------------------- dynamic bindings
 
 // `janet_dyn` and `janet_setdyn` came from `capi.c` in Phase 10 Part 5. They

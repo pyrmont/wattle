@@ -87,11 +87,6 @@ const vm_entry = @import("vm_entry.zig");
 /// and does not survive translation.
 const frame_size: usize = c.JANET_FRAME_SIZE;
 
-/// Provided by `src/core/debug.c` or `src/zig/subsystems/trace_frames.zig`,
-/// whichever `-Dtrace-frames` selects. Declared through `abi.zig`'s types, so
-/// the `JanetStackFrame` handed over is the same Zig type on both sides.
-extern fn janet_trace_frame(frame: *c.JanetStackFrame, out: *c.JanetTraceFrame) callconv(.c) void;
-
 /// `src/core/util.h`, declared here rather than translated, for the reason
 /// `abi.zig` gives. It is `memcpy` with a zero-length guard, which is what
 /// `doframe` needs for a funcdef with no slots.
@@ -111,8 +106,8 @@ inline fn kw(name: [*c]const u8) c.Janet {
 
 /// `janet_wrap_integer` spelled out. The macro is absent from a
 /// `-Dnanbox=false` build, which is the defect `FOUND.md` records against
-/// `wrap.c`; `value_wrap_extern.zig` writes it the same way and for the same
-/// reason.
+/// `wrap.c`; `value_wrap_extern.zig` wrote it the same way and for the same
+/// reason until Phase 11 Part 26 deleted it.
 inline fn wrapInteger(n: i32) c.Janet {
     return c.janet_wrap_number(@floatFromInt(n));
 }
@@ -133,16 +128,12 @@ inline fn funcEnv(func: [*c]c.JanetFunction, i: u32) [*c]c.JanetFuncEnv {
 
 /// Extract info from one stack frame.
 ///
-/// Exported with hidden visibility, which is what the C build's
-/// `-fvisibility=hidden` already gives it: it is declared in `state.h` rather
-/// than in `janet.h`, so a plain `export` would widen the shared library's
-/// symbol set relative to the other selector. Part 4 met the same thing with
-/// `janet_check_can_resume`.
-fn debugFrame(frame: *c.JanetStackFrame) callconv(.c) c.Janet {
-    return raise.reported(debugFrameImpl(frame));
-}
-
-fn debugFrameImpl(frame: *c.JanetStackFrame) raise.Raising(c.Janet) {
+/// `janet_debug_frame` was the C-ABI face over this, exported with hidden
+/// visibility because it is declared in `state.h` rather than in `janet.h`.
+/// Phase 11 Part 12 retired it: `cfunStack` below already called the
+/// implementation, so the face's only caller was `test/vm_lifecycle.c`, and
+/// the migrated contract reaches this by import.
+pub fn debugFrameImpl(frame: *c.JanetStackFrame) raise.Raising(c.Janet) {
     var desc: c.JanetTraceFrame = undefined;
     try trace_frames.janet_trace_frameImpl(frame, &desc);
 
@@ -238,10 +229,6 @@ fn debugFrameImpl(frame: *c.JanetStackFrame) raise.Raising(c.Janet) {
     }
 
     return c.janet_wrap_table(t);
-}
-
-comptime {
-    @export(&debugFrame, .{ .name = "janet_debug_frame", .visibility = .hidden });
 }
 
 // ==========================================================================

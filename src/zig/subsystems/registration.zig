@@ -1,6 +1,10 @@
-//! Registration and substitution as their callers see it: `-Dregistry`'s
-//! implementation when the selector says Zig, and the C symbols wearing the
-//! same signatures when it says C.
+//! Registration and substitution as their callers see it.
+//!
+//! It had a second arm until Phase 11 Part 26: `-Dregistry=c` resolved this to
+//! `registry_extern.zig`. Phase 10 Part 18 spent the selector; the shim then
+//! sat behind a comptime-`false` branch that nothing analyses, which is how it
+//! came to declare `janet_text_substitution` for thirteen parts after Part 13
+//! retired that face.
 //!
 //! Phase 10 Part 17f. Only the two raise-capable entry points need a façade.
 //! Everything else `registry.zig` exports -- `janet_def`, the four
@@ -8,12 +12,7 @@
 //! raise, so a caller reaches those through the C ABI as it always did and
 //! nothing is gained by naming them here.
 
-const options = @import("options");
-
-const impl = if (options.registry)
-    @import("registry.zig")
-else
-    @import("registry_extern.zig");
+const impl = @import("registry.zig");
 
 pub const registerAbstractType = impl.registerAbstractType;
 pub const textSubstitution = impl.textSubstitution;

@@ -1,0 +1,566 @@
+//! Behavioral contract for the collector's sweep: dropping dead weak
+//! references, unlinking and freeing unreachable blocks, running finalizers,
+//! and tearing the heap down at `janet_deinit`.
+//!
+//! The sweep is driven through `janet_collect` rather than by calling
+//! `janet_sweep` directly, and that is not a convenience. `janet_sweep` frees
+//! every block the mark phase did not reach, so calling it against a hand-made
+//! mark set would free the core environment along with everything else.
+//! Driving it through a collection means liveness is expressed the way the
+//! runtime expresses it — a value is alive because it is rooted — and the mark
+//! phase is an input to this contract rather than part of it.
+//!
+//! Freeing is mostly invisible: a freed block cannot be read, and a
+//! `janet_free` that does not happen leaves nothing to observe from inside the
+//! process. So three channels stand in for it. `janet_vm.block_count` is
+//! decremented exactly once per block freed. An abstract type's `gc` and
+//! `gcperthread` callbacks fire on the way out and can count themselves. And
+//! `janet_vm.cache_count` falls when a symbol block leaves the symbol cache,
+//! which is the only external obligation any immutable block has.
+//!
+//! What that leaves uncovered is honest to state: the frees inside
+//! `janet_deinit_block` for an array's, a table's, a fiber's or a funcdef's
+//! payload are leaks when omitted and double frees when duplicated, and
+//! neither is observable here. A leak checker sees the first; the second is
+//! what the repeated init/deinit cycle at the end of this file would catch.
+//!
+//! Nothing here exercises a raising finalizer. The hinge typed `gc`
+//! non-raising, so the case can no longer be written — see `test/gc_mark.zig`,
+//! which says the same thing about `gcmark`.
+//!
+//! ## The head-offset check is not repeated here
+//!
+//! `test/gc_sweep.c` carried its own copy of the four
+//! `sizeof(Head) == offsetof(Head, data)` assertions, because each C contract
+//! was a standalone translation unit and the sweep crosses those headers in
+//! both directions. **`test/gc_mark.zig` now holds the one oracle**, and it is
+//! a different one: the C spelling cannot be translated at all, so what
+//! replaced it derives the offset from the allocator at run time. Copying that
+//! machinery into a second file would test the same property twice and give
+//! two places to keep correct. The property belongs to the layout rather than
+//! to either subsystem.
+
+const std = @import("std");
+const abi = @import("abi");
+const c = abi.c;
+const options = @import("options");
+const harness = @import("harness.zig");
+const abstract_type = @import("subsystems").abstract_type;
+const AbstractType = abstract_type.AbstractType;
+
+/// `janet_vm.threaded_abstracts` and `janet_abstract_threaded` exist only
+/// where the event loop does, and this has to be comptime so that the branch
+/// naming them is not analysed elsewhere.
+///
+/// `options` is the build's `Selection`, which names **subsystems** rather
+/// than features — Part 3's lesson 7 — so there is no `options.ev` to read.
+/// `ev_core` is set to `hasEv(options)` by `build.zig` and is therefore the
+/// same condition spelled in the vocabulary this module has.
+const has_ev = options.ev_core;
+
+fn headerOf(pointer: ?*anyopaque) *c.JanetGCObject {
+    return @ptrCast(@alignCast(pointer.?));
+}
+
+fn reachable(pointer: ?*anyopaque) bool {
+    return headerOf(pointer).flags & c.JANET_MEM_REACHABLE != 0;
+}
+
+/// Whether a block is still on one of the two heap lists. Only ever called for
+/// a block that is known to have survived, so nothing freed is dereferenced.
+fn onList(list: ?*anyopaque, block: ?*anyopaque) bool {
+    var current = list;
+    while (current != null) {
+        if (current == block) return true;
+        current = @ptrCast(headerOf(current).data.next);
+    }
+    return false;
+}
+
+/// Start from a heap with nothing collectable left over from an earlier case,
+/// so that a block count taken here means what the next case assumes.
+fn settle() void {
+    c.janet_collect();
+}
+
+// ------------------------------------------------------------ probe types
+
+var gc_calls: i32 = 0;
+var gc_data: ?*anyopaque = null;
+var gc_size: usize = 0;
+
+fn probeGc(data: ?*anyopaque, length: usize) callconv(.c) c_int {
+    gc_calls += 1;
+    gc_data = data;
+    gc_size = length;
+    return 0;
+}
+
+var order_log: [8]u8 = undefined;
+var order_len: usize = 0;
+
+fn logOrder(character: u8) void {
+    if (order_len < order_log.len) {
+        order_log[order_len] = character;
+        order_len += 1;
+    }
+}
+
+fn probeGcOrdered(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+    logOrder('G');
+    return 0;
+}
+
+fn probePerthreadOrdered(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+    logOrder('P');
+    return 0;
+}
+
+const at_final: AbstractType = .{ .name = "gc-sweep-test/final", .gc = probeGc };
+const at_ordered: AbstractType = .{
+    .name = "gc-sweep-test/ordered",
+    .gc = probeGcOrdered,
+    .gcperthread = probePerthreadOrdered,
+};
+const at_plain: AbstractType = .{ .name = "gc-sweep-test/plain" };
+
+fn plain() [*c]const c.JanetAbstractType {
+    return abstract_type.stored(&at_plain);
+}
+
+fn final() [*c]const c.JanetAbstractType {
+    return abstract_type.stored(&at_final);
+}
+
+// --------------------------------------------------------- freeing blocks
+
+/// The block count is the sweep's arithmetic made visible: one decrement per
+/// block freed, and no decrement for a block kept.
+fn unreachableBlocksAreFreed() void {
+    settle();
+    const before = c.janet_vm.block_count;
+
+    for (0..16) |_| _ = c.janet_buffer(8);
+    std.debug.assert(c.janet_vm.block_count == before + 16);
+
+    c.janet_collect();
+    std.debug.assert(c.janet_vm.block_count == before);
+}
+
+/// A survivor stays on its list, keeps its payload, and loses its mark. The
+/// last part is what makes the next collection meaningful: `REACHABLE` is
+/// cleared on the way past, so every mark phase starts from a clean heap.
+fn aSurvivorKeepsItsPayloadAndLosesItsMark() void {
+    settle();
+    const before = c.janet_vm.block_count;
+
+    const buffer = c.janet_buffer(8);
+    _ = c.janet_buffer_push_cstring(buffer, "still here");
+    const value = c.janet_wrap_buffer(buffer);
+    c.janet_gcroot(value);
+
+    c.janet_collect();
+    std.debug.assert(c.janet_vm.block_count == before + 1);
+    std.debug.assert(onList(c.janet_vm.blocks, buffer));
+    std.debug.assert(!reachable(buffer));
+    std.debug.assert(buffer.*.count == 10);
+    std.debug.assert(std.mem.eql(u8, buffer.*.data[0..10], "still here"));
+
+    _ = c.janet_gcunroot(value);
+    c.janet_collect();
+    std.debug.assert(c.janet_vm.block_count == before);
+}
+
+/// `JANET_MEM_DISABLED` holds a block through a sweep that never reached it,
+/// and unlike `JANET_MEM_REACHABLE` it is not cleared on the way past — it
+/// holds the block through every later sweep too, until whoever set it clears
+/// it. `janet_buffer_init` sets it on a caller-owned buffer for exactly that
+/// reason; here it is set by hand on a heap block, which is the general case
+/// the flag is defined for.
+fn theDisabledFlagOutlivesASweep() void {
+    settle();
+    const before = c.janet_vm.block_count;
+
+    const buffer = c.janet_buffer(8);
+    buffer.*.gc.flags |= c.JANET_MEM_DISABLED;
+
+    c.janet_collect();
+    std.debug.assert(c.janet_vm.block_count == before + 1);
+    std.debug.assert(onList(c.janet_vm.blocks, buffer));
+    std.debug.assert(buffer.*.gc.flags & c.JANET_MEM_DISABLED != 0);
+    std.debug.assert(!reachable(buffer));
+
+    c.janet_collect();
+    std.debug.assert(c.janet_vm.block_count == before + 1);
+
+    buffer.*.gc.flags &= ~@as(i32, c.JANET_MEM_DISABLED);
+    c.janet_collect();
+    std.debug.assert(c.janet_vm.block_count == before);
+}
+
+// ------------------------------------------------------------ finalization
+
+/// A finalizer runs once, on the way out, with the pointer and size the
+/// runtime handed the type — not the block address, and not the header size.
+fn aFinalizerRunsOnceWithTheAbstract() void {
+    settle();
+    const abstract = c.janet_abstract(final(), 24);
+    gc_calls = 0;
+    gc_data = null;
+    gc_size = 0;
+
+    c.janet_collect();
+    std.debug.assert(gc_calls == 1);
+    std.debug.assert(gc_data == abstract);
+    std.debug.assert(gc_size == 24);
+
+    c.janet_collect();
+    std.debug.assert(gc_calls == 1);
+}
+
+/// A block that survives is not finalized. The pair matters more than either
+/// half: it is the only place the contract says the callback is driven by
+/// reachability rather than by the sweep visiting the block.
+fn aSurvivorIsNotFinalized() void {
+    settle();
+    const abstract = c.janet_abstract(final(), 8);
+    const value = c.janet_wrap_abstract(abstract);
+    c.janet_gcroot(value);
+    gc_calls = 0;
+
+    c.janet_collect();
+    std.debug.assert(gc_calls == 0);
+
+    _ = c.janet_gcunroot(value);
+    c.janet_collect();
+    std.debug.assert(gc_calls == 1);
+}
+
+/// Both finalizers run, and `gcperthread` runs first. The order is not
+/// incidental: the per-thread callback releases what belongs to this
+/// interpreter, and the type's `gc` releases what the value owns outright, so
+/// reversing them would let `gc` free memory `gcperthread` still reads.
+fn perthreadRunsBeforeGc() void {
+    settle();
+    _ = c.janet_abstract(abstract_type.stored(&at_ordered), 8);
+    order_len = 0;
+
+    c.janet_collect();
+    std.debug.assert(order_len == 2);
+    std.debug.assert(order_log[0] == 'P');
+    std.debug.assert(order_log[1] == 'G');
+}
+
+/// An abstract with no callbacks at all is freed without incident. The sweep
+/// tests each slot before calling it, and a type may fill neither.
+fn anAbstractWithoutFinalizers() void {
+    settle();
+    const before = c.janet_vm.block_count;
+    _ = c.janet_abstract(plain(), 8);
+    std.debug.assert(c.janet_vm.block_count == before + 1);
+    c.janet_collect();
+    std.debug.assert(c.janet_vm.block_count == before);
+}
+
+/// A symbol is the one immutable block with an obligation outside its own
+/// allocation: it has to leave the symbol cache, or the cache keeps a pointer
+/// into freed memory and the next symbol with those bytes is handed it. The
+/// cache counters are the observation.
+fn aSymbolLeavesTheCache() void {
+    settle();
+    const count = c.janet_vm.cache_count;
+    const deleted = c.janet_vm.cache_deleted;
+
+    _ = c.janet_csymbolv("gc-sweep-test-unique-symbol");
+    std.debug.assert(c.janet_vm.cache_count == count + 1);
+
+    c.janet_collect();
+    std.debug.assert(c.janet_vm.cache_count == count);
+    std.debug.assert(c.janet_vm.cache_deleted == deleted + 1);
+}
+
+// -------------------------------------------------------------- weak heap
+
+/// A weak array keeps its shape and loses its dead elements. The count does
+/// not change and the live entries do not move: a dead slot becomes nil in
+/// place, which is what lets an index into a weak array stay meaningful across
+/// a collection. Immediates have no header to consult and are always live.
+fn aWeakArrayDropsDeadElementsInPlace() void {
+    settle();
+    const weak = c.janet_array_weak(4);
+    c.janet_gcroot(c.janet_wrap_array(weak));
+
+    const live = c.janet_buffer(8);
+    c.janet_gcroot(c.janet_wrap_buffer(live));
+    const dead = c.janet_buffer(8);
+
+    c.janet_array_push(weak, c.janet_wrap_buffer(live));
+    c.janet_array_push(weak, c.janet_wrap_buffer(dead));
+    c.janet_array_push(weak, harness.wrapInteger(42));
+
+    c.janet_collect();
+
+    std.debug.assert(weak.*.count == 3);
+    std.debug.assert(c.janet_unwrap_buffer(weak.*.data[0]) == live);
+    std.debug.assert(harness.isType(weak.*.data[1], c.JANET_NIL));
+    std.debug.assert(harness.integerIs(weak.*.data[2], 42));
+
+    _ = c.janet_gcunroot(c.janet_wrap_buffer(live));
+    _ = c.janet_gcunroot(c.janet_wrap_array(weak));
+}
+
+/// Which half of an entry is checked is what makes a table weak, and it
+/// mirrors the mark phase exactly: whichever half the walk did not mark is the
+/// half that may have died. A weak-keyed table therefore keeps an entry whose
+/// value is otherwise unreferenced — the walk marked that value — and drops
+/// one whose key is. A dropped entry becomes the (nil, false) tombstone
+/// `janet_table_put` writes, so the count falls and the deleted count rises.
+fn theFourTableKinds() void {
+    settle();
+
+    const weakk = c.janet_table_weakk(4);
+    const weakv = c.janet_table_weakv(4);
+    const weakkv = c.janet_table_weakkv(4);
+    const strong = c.janet_table(4);
+    c.janet_gcroot(c.janet_wrap_table(weakk));
+    c.janet_gcroot(c.janet_wrap_table(weakv));
+    c.janet_gcroot(c.janet_wrap_table(weakkv));
+    c.janet_gcroot(c.janet_wrap_table(strong));
+
+    const live = c.janet_buffer(8);
+    c.janet_gcroot(c.janet_wrap_buffer(live));
+    const live_value = c.janet_wrap_buffer(live);
+
+    // One entry per table with a doomed key, one with a doomed value.
+    for ([_][*c]c.JanetTable{ weakk, weakv, weakkv, strong }) |table| {
+        c.janet_table_put(table, c.janet_wrap_buffer(c.janet_buffer(8)), live_value);
+        c.janet_table_put(table, live_value, c.janet_wrap_buffer(c.janet_buffer(8)));
+    }
+
+    std.debug.assert(weakk.*.count == 2 and weakv.*.count == 2 and weakkv.*.count == 2);
+    const deleted = weakk.*.deleted;
+
+    c.janet_collect();
+
+    // Weak keys: the doomed-key entry goes, the doomed-value one stays because
+    // a weak-keyed table's values are marked.
+    std.debug.assert(weakk.*.count == 1);
+    std.debug.assert(weakk.*.deleted == deleted + 1);
+    std.debug.assert(!harness.isType(c.janet_table_get(weakk, live_value), c.JANET_NIL));
+
+    // Weak values: the mirror image.
+    std.debug.assert(weakv.*.count == 1);
+    std.debug.assert(harness.isType(c.janet_table_get(weakv, live_value), c.JANET_NIL));
+
+    // Weak in both halves: neither entry survives.
+    std.debug.assert(weakkv.*.count == 0);
+
+    // A strong table marks both halves, so nothing in it can die.
+    std.debug.assert(strong.*.count == 2);
+    std.debug.assert(!harness.isType(c.janet_table_get(strong, live_value), c.JANET_NIL));
+
+    _ = c.janet_gcunroot(c.janet_wrap_buffer(live));
+    _ = c.janet_gcunroot(c.janet_wrap_table(weakk));
+    _ = c.janet_gcunroot(c.janet_wrap_table(weakv));
+    _ = c.janet_gcunroot(c.janet_wrap_table(weakkv));
+    _ = c.janet_gcunroot(c.janet_wrap_table(strong));
+}
+
+/// The weak heap is swept for blocks as well as for references. A weak
+/// container nothing refers to is freed like any other block — it is on a
+/// separate list, not exempt from collection.
+fn weakContainersAreThemselvesCollected() void {
+    settle();
+    const before = c.janet_vm.block_count;
+
+    _ = c.janet_array_weak(4);
+    _ = c.janet_table_weakk(4);
+    _ = c.janet_table_weakv(4);
+    _ = c.janet_table_weakkv(4);
+    std.debug.assert(c.janet_vm.block_count == before + 4);
+
+    c.janet_collect();
+    std.debug.assert(c.janet_vm.block_count == before);
+}
+
+/// A weak reference to a block that is itself dying is dropped, not read after
+/// it is freed. That is the whole reason the weak heap is walked twice: the
+/// first pass consults the mark of every value a surviving weak container
+/// holds, and the second frees. Reversing them would make this case a
+/// use-after-free rather than a wrong answer, so what is asserted here is only
+/// that the survivor is intact and empty; a sanitizer is what sees the
+/// difference.
+fn aWeakEntryAndItsTargetDieTogether() void {
+    settle();
+    const before = c.janet_vm.block_count;
+
+    const weak = c.janet_table_weakv(4);
+    c.janet_gcroot(c.janet_wrap_table(weak));
+    c.janet_table_put(weak, c.janet_ckeywordv("doomed"), c.janet_wrap_buffer(c.janet_buffer(8)));
+    std.debug.assert(weak.*.count == 1);
+
+    c.janet_collect();
+
+    std.debug.assert(weak.*.count == 0);
+    std.debug.assert(onList(c.janet_vm.weak_blocks, weak));
+
+    // The table and its key survive this collection; the buffer does not. The
+    // key is alive because a weak-valued table marks its keys — the entry was
+    // dropped by the sweep, after the walk had already reached the keyword
+    // through it. The next collection is where the keyword goes, which is the
+    // one collection of lag a weak table costs.
+    std.debug.assert(c.janet_vm.block_count == before + 2);
+    c.janet_collect();
+    std.debug.assert(c.janet_vm.block_count == before + 1);
+
+    _ = c.janet_gcunroot(c.janet_wrap_table(weak));
+}
+
+// ------------------------------------------------------ threaded abstracts
+
+var threaded_gc_calls: i32 = 0;
+var threaded_perthread_calls: i32 = 0;
+
+fn probeThreadedGc(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+    threaded_gc_calls += 1;
+    return 0;
+}
+
+fn probeThreadedPerthread(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+    threaded_perthread_calls += 1;
+    return 0;
+}
+
+const at_threaded: AbstractType = .{
+    .name = "gc-sweep-test/threaded",
+    .gc = probeThreadedGc,
+    .gcperthread = probeThreadedPerthread,
+};
+
+/// A threaded abstract is not on either heap list, so the sweep decides its
+/// fate through `janet_vm.threaded_abstracts` instead. The table is a visit
+/// record: the mark phase writes true for every threaded abstract it reaches,
+/// and the sweep reads the entry and resets it to false for next time. An
+/// entry still false is one this interpreter no longer refers to, so this
+/// interpreter's reference goes — and because the last reference anywhere is
+/// what frees the value, the type's `gc` runs exactly once across every
+/// interpreter that ever held it.
+fn aThreadedAbstractLosesItsReference() void {
+    settle();
+    const abstract = c.janet_abstract_threaded(abstract_type.stored(&at_threaded), 8);
+    const value = c.janet_wrap_abstract(abstract);
+    c.janet_gcroot(value);
+    threaded_gc_calls = 0;
+    threaded_perthread_calls = 0;
+
+    const tracked = c.janet_vm.threaded_abstracts.count;
+    c.janet_collect();
+    std.debug.assert(threaded_perthread_calls == 0);
+    std.debug.assert(threaded_gc_calls == 0);
+    std.debug.assert(c.janet_vm.threaded_abstracts.count == tracked);
+
+    _ = c.janet_gcunroot(value);
+    c.janet_collect();
+    std.debug.assert(threaded_perthread_calls == 1);
+    std.debug.assert(threaded_gc_calls == 1);
+    std.debug.assert(c.janet_vm.threaded_abstracts.count == tracked - 1);
+
+    // The entry is a tombstone now, so a later sweep must not find it again.
+    c.janet_collect();
+    std.debug.assert(threaded_perthread_calls == 1);
+    std.debug.assert(threaded_gc_calls == 1);
+}
+
+// --------------------------------------------------------------- teardown
+
+/// `janet_clear_memory` is not a collection. Nothing is marked, rooting buys a
+/// block nothing, and every finalizer runs — which is what makes
+/// `janet_deinit` safe to call with live values outstanding.
+///
+/// The last assertion pins a defect rather than a guarantee, and is written
+/// that way on purpose. `janet_clear_memory` walks `janet_vm.blocks` and never
+/// touches `janet_vm.weak_blocks`, so every weak table and weak array alive at
+/// teardown leaks its block and its data array. The list head still pointing
+/// at them after `janet_deinit` returns is that leak, visible from inside the
+/// process. `FOUND.md` records it; the port reproduces it, so this assertion
+/// will fail for whichever implementation is fixed first.
+///
+/// It is also visible from outside: `port/leaks.sh` carries
+/// `expected_gc_sweep=8`, which is the four weak containers this file leaves
+/// alive across a teardown -- the one here and `repeatedCycles`' three --
+/// times the block and the data array each of them leaks.
+fn clearMemoryFinalizesEverything() void {
+    const abstract = c.janet_abstract(final(), 8);
+    c.janet_gcroot(c.janet_wrap_abstract(abstract));
+    _ = c.janet_abstract(final(), 8);
+    gc_calls = 0;
+
+    const weak = c.janet_table_weakv(4);
+    c.janet_gcroot(c.janet_wrap_table(weak));
+
+    c.janet_deinit();
+
+    std.debug.assert(gc_calls == 2);
+    std.debug.assert(c.janet_vm.blocks == null);
+    std.debug.assert(c.janet_vm.weak_blocks != null);
+
+    _ = c.janet_init();
+}
+
+/// A second cycle over a heap that has held every block type. Nothing is
+/// asserted beyond arriving here: this is the case that fails by crashing, and
+/// it is the only coverage the port has for the frees inside
+/// `janet_deinit_block` that a leak checker would otherwise have to find.
+fn repeatedCycles() void {
+    for (0..3) |_| {
+        const table = c.janet_table(4);
+        c.janet_gcroot(c.janet_wrap_table(table));
+        c.janet_table_put(table, c.janet_ckeywordv("array"), c.janet_wrap_array(c.janet_array(4)));
+        c.janet_table_put(table, c.janet_ckeywordv("buffer"), c.janet_wrap_buffer(c.janet_buffer(8)));
+        c.janet_table_put(table, c.janet_ckeywordv("weak"), c.janet_wrap_array(c.janet_array_weak(4)));
+        c.janet_table_put(
+            table,
+            c.janet_ckeywordv("abstract"),
+            c.janet_wrap_abstract(c.janet_abstract(plain(), 8)),
+        );
+
+        var function: c.Janet = c.janet_wrap_nil();
+        _ = c.janet_dostring(c.janet_core_env(null), "(fn [] 1)", "gc-sweep-test", &function);
+        std.debug.assert(harness.isType(function, c.JANET_FUNCTION));
+        c.janet_table_put(
+            table,
+            c.janet_ckeywordv("fiber"),
+            c.janet_wrap_fiber(c.janet_fiber(c.janet_unwrap_function(function), 8, 0, null)),
+        );
+
+        c.janet_collect();
+        c.janet_deinit();
+        _ = c.janet_init();
+    }
+}
+
+pub fn run() void {
+    _ = c.janet_init();
+
+    unreachableBlocksAreFreed();
+    aSurvivorKeepsItsPayloadAndLosesItsMark();
+    theDisabledFlagOutlivesASweep();
+
+    aFinalizerRunsOnceWithTheAbstract();
+    aSurvivorIsNotFinalized();
+    perthreadRunsBeforeGc();
+    anAbstractWithoutFinalizers();
+    aSymbolLeavesTheCache();
+
+    aWeakArrayDropsDeadElementsInPlace();
+    theFourTableKinds();
+    weakContainersAreThemselvesCollected();
+    aWeakEntryAndItsTargetDieTogether();
+
+    if (has_ev) aThreadedAbstractLosesItsReference();
+
+    clearMemoryFinalizesEverything();
+    repeatedCycles();
+
+    c.janet_deinit();
+}

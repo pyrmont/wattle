@@ -200,7 +200,14 @@ const default_methods = [_]corefn.Method{
     .{ .name = null, .cfun = null },
 };
 
-fn janet_stream_extImpl(
+/// Build a stream over `handle` and register it with the backend.
+///
+/// `registerStream` raises when the backend refuses the descriptor -- a failed
+/// `epoll_ctl` or `kevent` -- so this is raise-capable and every caller inside
+/// the runtime reaches it rather than `janet_stream_ext`. Phase 11 Part 15:
+/// four such callers were reaching the face, and a raise there became a report
+/// nobody consumed.
+pub fn makeStreamExt(
     handle: c.JanetHandle,
     flags: u32,
     methods: [*c]const c.JanetMethod,
@@ -224,11 +231,20 @@ export fn janet_stream_ext(
     methods: [*c]const c.JanetMethod,
     size: usize,
 ) callconv(.c) *c.JanetStream {
-    return raise.reported(janet_stream_extImpl(handle, flags, methods, size));
+    return raise.reported(makeStreamExt(handle, flags, methods, size));
+}
+
+/// The same at the default size, which is what every caller in the tree wants.
+pub fn makeStream(
+    handle: c.JanetHandle,
+    flags: u32,
+    methods: [*c]const c.JanetMethod,
+) raise.Raising(*c.JanetStream) {
+    return makeStreamExt(handle, flags, methods, @sizeOf(c.JanetStream));
 }
 
 export fn janet_stream(handle: c.JanetHandle, flags: u32, methods: [*c]const c.JanetMethod) callconv(.c) *c.JanetStream {
-    return raise.reported(janet_stream_extImpl(handle, flags, methods, @sizeOf(c.JanetStream)));
+    return raise.reported(makeStream(handle, flags, methods));
 }
 
 /// Close the underlying handle, unregistering it first where the backend
@@ -387,7 +403,13 @@ fn streamToString(p: ?*anyopaque, buffer: [*c]c.JanetBuffer) raise.Raising(void)
     _ = try pp_format.formatb(buffer, "[fd=%d]", .{shown});
 }
 
-export const janet_stream_type: abstract_type.AbstractType = .{
+/// `pub` for the three subsystems that used to declare it `extern const` --
+/// `ev_loop.zig`, `net_addr.zig` and `net_sockets.zig` -- and for
+/// `test/ev_loop.zig`, which calls the raising callbacks and therefore needs
+/// the mirror rather than `janet_abstract_type`'s `JanetAbstractType`. The
+/// `export` stays: `janet.h` declares this one, so it is the population rule 44
+/// says cannot go.
+pub export const janet_stream_type: abstract_type.AbstractType = .{
     .name = "core/stream",
     .gc = streamGC,
     .gcmark = streamMark,
@@ -927,7 +949,12 @@ fn evSendToString(s: *c.JanetStream, str: [*c]const u8, dest: ?*anyopaque, flags
 /// mode 1: only the read side non-blocking; the write side goes to a subprocess.
 /// mode 2: only the write side non-blocking; the read side goes to a subprocess.
 /// mode 3: both sides blocking, for a pipeline between two external processes.
-export fn janet_make_pipe(handles: *[2]c.JanetHandle, mode: c_int) callconv(.c) c_int {
+/// Reached by import. It was `export fn janet_make_pipe`, declared again as an
+/// `extern fn` by `os_procs.zig` and `ev_backend.zig` -- two Zig files calling
+/// a third through the symbol table, which is rule 44's class and which Phase
+/// 11 Part 22 spent. `util.h` declared it and nothing outside the runtime ever
+/// called one, so the symbol went with the seam.
+pub fn makePipe(handles: *[2]c.JanetHandle, mode: c_int) c_int {
     if (windows) {
         // The built-in CreatePipe does not support overlapped IO, so this
         // lifts the Windows source and modifies it, exactly as `ev.c` does.

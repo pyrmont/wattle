@@ -66,6 +66,82 @@ pub inline fn sockClose(s: JSock) void {
     }
 }
 
+// ==========================================================================
+// The socket-address calls, which glibc does not declare with a pointer
+// ==========================================================================
+
+/// Whether this target's `sockaddr` parameters arrive as a transparent union.
+///
+/// Under `_GNU_SOURCE` -- which `janet_features.h` sets -- glibc declares
+/// `bind`, `getsockname`, `getpeername` and `accept4` with `__SOCKADDR_ARG`
+/// and `__CONST_SOCKADDR_ARG`: unions of every `sockaddr_*` pointer, marked
+/// `__attribute__((__transparent_union__))`. The C ABI passes such a union
+/// exactly as the pointer inside it, which is the whole point of the
+/// attribute, but `translate-c` has no rendering for it and produces a real
+/// Zig union. Every call site then fails with `expected pointer type, found
+/// 'cimport.__SOCKADDR_ARG'`.
+///
+/// musl, the BSDs and macOS declare the plain pointer, so this is glibc-only
+/// in cause. Found in Phase 11 Part 25, when the first native glibc build this
+/// project has ever attempted got as far as these five call sites.
+const transparent_sockaddr = builtin.os.tag == .linux and builtin.abi.isGnu();
+
+/// The four calls, taken by symbol where the declaration is unusable.
+///
+/// `@extern` names the symbol directly, so what is bypassed is glibc's
+/// *prototype* and not its implementation -- the signatures below are the ABI
+/// on every POSIX target, which is why the union is transparent in the first
+/// place. Nothing here reaches Windows: `bind` and the rest live in `ws2_32`
+/// with their own calling convention there, and `h` declares them correctly.
+const CSockaddr = h.struct_sockaddr;
+const bindPlain = @extern(*const fn (JSock, ?*const CSockaddr, h.socklen_t) callconv(.c) c_int, .{ .name = "bind" });
+const getsocknamePlain = @extern(*const fn (JSock, ?*CSockaddr, *h.socklen_t) callconv(.c) c_int, .{ .name = "getsockname" });
+const getpeernamePlain = @extern(*const fn (JSock, ?*CSockaddr, *h.socklen_t) callconv(.c) c_int, .{ .name = "getpeername" });
+
+/// `bind(2)`. Use this rather than `h.bind`; see `transparent_sockaddr`.
+pub inline fn bind(sock: JSock, addr: ?*const CSockaddr, len: h.socklen_t) c_int {
+    if (transparent_sockaddr) return bindPlain(sock, addr, len);
+    return h.bind(sock, addr, len);
+}
+
+/// `getsockname(2)`. Use this rather than `h.getsockname`.
+pub inline fn getsockname(sock: JSock, addr: ?*CSockaddr, len: *h.socklen_t) c_int {
+    if (transparent_sockaddr) return getsocknamePlain(sock, addr, len);
+    return h.getsockname(sock, addr, len);
+}
+
+/// `getpeername(2)`. Use this rather than `h.getpeername`.
+pub inline fn getpeername(sock: JSock, addr: ?*CSockaddr, len: *h.socklen_t) c_int {
+    if (transparent_sockaddr) return getpeernamePlain(sock, addr, len);
+    return h.getpeername(sock, addr, len);
+}
+
+/// `connect(2)`. Use this rather than `h.connect`.
+const connectPlain = @extern(*const fn (JSock, ?*const CSockaddr, h.socklen_t) callconv(.c) c_int, .{ .name = "connect" });
+
+pub inline fn connect(sock: JSock, addr: ?*const CSockaddr, len: h.socklen_t) c_int {
+    if (transparent_sockaddr) return connectPlain(sock, addr, len);
+    return h.connect(sock, addr, len);
+}
+
+/// `accept(2)`. Use this rather than `h.accept`.
+const acceptPlain = @extern(*const fn (JSock, ?*CSockaddr, ?*h.socklen_t) callconv(.c) JSock, .{ .name = "accept" });
+
+pub inline fn accept(sock: JSock, addr: ?*CSockaddr, len: ?*h.socklen_t) JSock {
+    if (transparent_sockaddr) return acceptPlain(sock, addr, len);
+    return h.accept(sock, addr, len);
+}
+
+/// `accept4(2)`, which is Linux's alone -- the BSDs inherit `SOCK_CLOEXEC`
+/// from the listening socket and have no such call, so nothing outside Linux
+/// reaches this and `accept4Plain` is never analysed there.
+const accept4Plain = @extern(*const fn (JSock, ?*CSockaddr, ?*h.socklen_t, c_int) callconv(.c) c_int, .{ .name = "accept4" });
+
+pub inline fn accept4(sock: JSock, addr: ?*CSockaddr, len: ?*h.socklen_t, flags: c_int) c_int {
+    if (transparent_sockaddr) return accept4Plain(sock, addr, len, flags);
+    return h.accept4(sock, addr, len, flags);
+}
+
 /// `SA_ADDRSTRLEN`: the buffer `janet_so_getname` decodes into. `net.c` takes
 /// the larger of the numeric-address length and the unix path length, and has
 /// no unix domain sockets on Windows.

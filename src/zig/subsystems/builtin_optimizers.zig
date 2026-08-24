@@ -10,8 +10,8 @@ const vector_header_size = 2 * @sizeOf(i32);
 /// no `janet_wrap_*` of its own. Sharing `abi.zig`'s translation removes the
 /// detour. `janet_wrap_integer` is still written out rather than called: it is
 /// a macro under nanboxing and a symbol `wrap.c` never defines there, which is
-/// the defect `FOUND.md` records and `value_wrap_extern.zig` works around the
-/// same way.
+/// the defect `FOUND.md` records. `value_wrap_extern.zig` worked around it the
+/// same way until Phase 11 Part 26 deleted it.
 inline fn wrapNil() c.Janet {
     return c.janet_wrap_nil();
 }

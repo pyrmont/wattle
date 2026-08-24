@@ -181,7 +181,7 @@ which `util.h` defines unless the build is both reduced-OS and single-threaded.
 only under both conditions, so the subsystem and its contract exist only there.
 `-Dio-core` is ungated: `core/io.c` is compiled in every configuration,
 reduced-OS included, so the selector and its contract apply there too.
-`-Dev-core` follows `JANET_EV`, which `features.h` defines unless the build
+`-Dev-core` follows `JANET_EV`, which `janet_features.h` defines unless the build
 disables the event loop or is single-threaded; `hasEv` in `build.zig` expresses
 the same condition, and everything in `ev.c` — the subsystem and its contract
 included — exists only there. `-Dffi-layout` and `-Dffi-classify` both follow
@@ -11473,3 +11473,4894 @@ why the rule existed. `panics.py` is 0, 34 suites pass, `zig build test`
 passes, five cross-compiles are clean, the `x86_64-macos` build runs under
 Rosetta with `os/stat` and the directory test agreeing with the native one, and
 the acceptance matrix is **21 PASS / 0 FLAKY / 0 FAIL**.
+
+## A contract inside the compilation
+
+*Phase 11 Part 1.* The phase that takes `test/`'s C opens with the question of
+what a Zig contract *is*, and the answer is worth more than the nine files that
+came with it, because the remaining fifty-three are all shaped by it.
+
+### Two readings of "the contracts are Zig"
+
+`phase_11.md`'s clause pairs two things: migrate the contracts, and delete the
+reporting faces. It is one piece of work because a C contract reaches a
+raise-capable function through its C-ABI face and reads the result with
+`janet_contract_raised`, so neither half moves alone.
+
+The straightforward reading — translate each `test/*.c` into a `test/*.zig`
+that links `libjanet.a` — reaches the gate and nothing else. Part 17a's
+argument does not care which language the caller is written in:
+
+```text
+error: return type 'error{X}!i32' not allowed in function with calling
+convention 'aarch64_aapcs_darwin'
+```
+
+A caller on the far side of a symbol table gets a symbol, a symbol has a
+calling convention, and the raise still has to travel out of band. The faces
+would have survived the migration in full.
+
+So a Zig contract is compiled *into* the runtime instead. `makeRuntimeGraph` —
+the module graph `makeZigRuntimeObject` used to build inline — is now built
+twice: once wrapped in the object the library and the client link, and once
+with `test/contracts.zig` as the root and the subsystems as a named import. A
+contract reaches its subject with `@import("subsystems")`, and a raise crosses
+as `error.JanetSignal`, checked.
+
+What that costs is one more compilation of the runtime, about eight seconds,
+against sixty-odd C translation units it will eventually replace.
+
+### What was rejected had already shipped
+
+Part 18 built `test/pp_format.zig` a different way: its own module beside
+`libjanet.a` with every selector `false`, so the subject's neighbours resolved
+to their `_extern.zig` shims and its own `@export`s were suppressed. That
+worked, and two things made it wrong to generalise.
+
+It has an entry price. A subject whose exports are `export fn` declarations
+cannot be used until they become gated `@export`s in a `comptime` block — which
+is why, in the increment that introduced it, the mechanism reached exactly one
+file.
+
+And what it compiles is a **local copy**. `pp_format.zig` imports
+`pp_pretty.zig` by path, so `%q` and its seven siblings ran a second instance
+of the pretty printer, sharing the runtime's state through `janet_vm` and its
+source through the file system but not its code. The comment in that file said
+so and called it "a link, not a behaviour", which was true of a
+`comptime`-generic subject with no symbol either way. It is not true of a
+collector or an interpreter.
+
+`pp_format` moved onto the new driver in the same increment and `includeZig`
+is gone, so the tree carries one kind of Zig contract rather than two — and
+that contract now tests the printer the rest of the binary runs.
+
+### The scope is not a formality, restated from the other side
+
+`test/support.zig` worked this out for C and `test/harness.zig` needs it again:
+`janet_signal_plan` answers `TOP_LEVEL` when `janet_vm.return_reg` is null, and
+a `TOP_LEVEL` raise ends the process rather than reporting. So `harness.raised`
+brackets the call in `janet_try_init` and `janet_restore` even though nothing
+jumps. **The `setjmp` was never the scope; it was only the travel** — and the
+converse, that removing the jump removed the scope, is the mistake this note
+exists to prevent.
+
+Everything else in `support.zig` does go: the cfunction adapter pool, the
+abstract-type pool, the four callback shims and the `arm`/`raised` protocol are
+all machinery for moving a raise or a Zig-ABI function pointer across the C
+ABI, and there is no C ABI to cross. `harness.zig` is a ninth of its size and
+most of what remains is convenience — `isType`, `equals`, `stringIs` — rather
+than mechanism.
+
+### The two things the driver had to be taught
+
+**Nothing referenced the runtime, so the link failed on `janet_init`.**
+`root.zig` emits every subsystem's exports from a container-level `comptime`
+block, and a module nothing references is never analysed. `test/contracts.zig`
+carries `comptime { _ = @import("subsystems"); }` for exactly that.
+
+**The namespace beside it must stay lazy.** `root.zig` gained a flat block of
+`pub const <subsystem> = @import("<subsystem>.zig");`, and a `pub const` at
+container scope is analysed only when something references it. That is what
+lets `-Dpeg=false`, `-Dffi=false` and `-Dev=false` go on building: the
+`comptime` block skips the import, no contract names `subsystems.peg`, and the
+declaration is never looked at. A `comptime { _ = ... }` over that block would
+make every name eager and break three configurations at once.
+
+### What the instruments found
+
+The build-only sweep, which `AGENTS.md` prescribes as the cheap check before
+the matrix, earned its place on the first run. `-Dnanbox=false` failed to link
+`janet_wrap_integer` in `os_environ` and `os_permissions` — `janet.h` declares
+it beside a macro of the same name and the runtime defines the function only
+under the two nanbox layouts, so C callers get the macro and `@cImport` prefers
+the function. This is the third time that symbol has done it and the second in
+a contract; `harness.wrapInteger` now holds the three lines and the argument.
+The general form is already written down for the previous occurrence: **a
+contract that moves to Zig acquires the whole `@cImport` hazard list.**
+
+Nothing else failed. Four cross-compiles, twelve reduced configurations and the
+tagged build's contracts are clean, and the acceptance matrix is **21 PASS / 0
+FLAKY / 0 FAIL** in 184.7s wall.
+
+### One guard added
+
+Migrating a contract is five edits across four files — delete `test/<name>.c`,
+drop its line from `build.zig` and from `test/contracts.h`, write
+`test/<name>.zig`, add its line to `test/contracts.zig`. Forget the last and
+**the tree is green with a contract that never runs**: the C driver no longer
+compiles it and the Zig driver never heard of it.
+
+`checkContractsListed` in `build.zig` reads `test/` at configure time and
+refuses to build when a `.zig` file there is not named in the driver. It is
+deliberately crude — a substring search, in the manner of the retired
+`checkJumpTransparency` — because what it looks for is a file nobody has
+mentioned at all. Fifty-three migrations remain; this is the mistake that would
+otherwise be made silently in one of them.
+
+### The nine
+
+Eight moved from C and one — `pp_format` — moved driver, which is why `test/`
+lost eight `.c` files rather than nine. `vector`, `intscan`, `textscan`, `regalloc`, `movopt` and `remove_noops` are
+leaf subjects reached by symbol, and they are close translations. `os_environ`,
+`os_permissions` and `pp_format` are where the arrangement shows: each calls
+core cfunctions directly with `try`, and the first two gained a `theRefusals`
+section their C originals did not have — a refusal was reachable in C only
+through the flag protocol, or, in `os_permissions.c`, by compiling a Janet
+closure with `janet_dostring` and calling it under `janet_pcall` "so they stay
+off stderr". Three lines and a wrapper per case in C; one line here. **Migrating
+is not transcription**, and the contracts that come out of it assert more than
+the ones going in.
+
+## The bytecode group
+
+*Phase 11 Part 2.* The first ordinary increment of the migration. Part 1
+decided what a Zig contract is; this one spends that decision on four
+contracts and settles the vocabulary the rest will use.
+
+The four are one subject seen from four sides — `asm_encode` produces
+bytecode, `asm_decode` reads a word back, `disasm` renders a whole function,
+`verify` decides whether a function is legal at all — and three of them share
+the `-Dassembler` condition, which is what makes them a group rather than four
+files that happened to be adjacent in a list. It also means the increment
+exercises the driver's conditional gating: `-Dassembler=false` has to drop
+three of the four and keep `verify`.
+
+### One `c_int` that would have been found forty times
+
+All four build bytecode words by hand, and all four failed the same way on the
+first build:
+
+```text
+error: type 'c_int' cannot represent integer value '4294966784'
+    const jmp = decoded(c.JOP_JUMP | (@as(u32, 0xFFFFFE) << 8), 2, "jmp");
+```
+
+`janet.h`'s `JOP_*` are enumeration constants, so translate-c gives them
+`c_int`, and mixing one with a `u32` shift yields a `c_int` expression that
+cannot hold its own value. Five sites in one build — and `vm_run`,
+`vm_calls`, `emit_core` and `compiler_primitives` are all still to come.
+
+`harness.op` is the widening cast, written once with the reason at it. The
+general point is not about that constant: **a group is the right place to
+discover the shared surface, and the first group is the right group**, because
+the alternative is finding it in the fortieth file and going back through
+thirty-nine. The same increment moved `integerIs`, `symbolIs`, `keywordIs`,
+`stringValueIs` and `field` into the harness; each had been a `static` helper
+copy-pasted into every C contract that needed it.
+
+### What the C contracts could not say, and these do
+
+`asm_encode` keeps all eighteen refusal messages verbatim, and that is a
+deliberate call rather than transcription. `janet_asm` reports by filling in
+`JanetAssembleResult.error` rather than by raising, so **the message is a
+return value and part of the interface** — a port that reworded one would be
+changing observable behaviour and nothing else in the tree would notice.
+
+`verify`'s fifteen numbered refusals are the same kind of thing: a caller
+distinguishes them by number, so the numbering is contract. Neither of these
+needed the new mechanism — both subjects are non-raising C-ABI exports — which
+is worth saying plainly: **most of the remaining migrations will not need it
+either.** The mechanism exists for the ones that do, and the C-ABI faces
+cannot go while any contract still needs them.
+
+### The sweep grew a step
+
+Part 1's build-only sweep established that twelve reduced configurations
+compile. Part 2 ran the contract binary in each of them, which costs seconds
+and asks a different question — `-Dnanbox=false` compiling says nothing about
+whether the tagged layout answers the same values as the boxed one. Nothing
+failed. The upgrade is cheap enough that it should not have waited for
+something to fail, and it is now the standing shape.
+
+### Verified to be capable of failing
+
+Both intricate contracts were perverted and re-run before being believed: one
+refusal number changed in `verify.zig`, one refusal message in
+`asm_encode.zig`. Each failed naming its own line. This is worth doing here in
+particular because `asm_encode` asserts eighteen exact strings through a single
+`refused` helper — if that helper were subtly wrong, all eighteen would pass
+vacuously and the file would look like unusually thorough coverage.
+
+Four cross-compiles, eight reduced configurations run rather than built, 41
+suites, and the acceptance matrix at **21 PASS / 0 FLAKY / 0 FAIL** in 170.5s.
+
+## The OS group
+
+*Phase 11 Part 3.* `os_platform`, `os_time` and `os_fs`. Two of the three
+translated straightforwardly; the third could not be translated at all without
+becoming circular, and that is the part worth reading.
+
+### An oracle a migration can lose
+
+`test/os_platform.c` computed what the platform *ought* to be from a
+seventy-line chain of `#if defined(JANET_APPLE)` and its kin — the C
+preprocessor's view of the target — and compared that with what
+`os_platform.zig` derives from Zig's `builtin`. Two independent descriptions of
+one fact, which is what a contract is for.
+
+That oracle is unavailable here, and by rule rather than by inconvenience.
+`AGENTS.md`: *test the platform with `builtin.os.tag`; read only what the build
+wrote into `janetconf.h` with `@hasDecl`* — because a `JANET_*` macro derived
+from the compiler's own predefines is unreliable through `@cImport`. Aro
+predefines `__unix__` for `x86_64-windows-gnu`, so the *translation* of
+`janet.h` says `JANET_POSIX` where the *compilation* of it says
+`JANET_WINDOWS`. A Zig contract reading those macros would be checking a
+description already known to be wrong.
+
+So the straightforward translation of this file asserts `builtin` against
+`builtin`. It passes, it is fast, and it establishes nothing — the worst
+possible outcome, because it *looks* like coverage.
+
+**`uname` is the replacement, and on the platforms this project runs it is the
+better oracle.** It describes the machine the process is executing on rather
+than either compiler's belief about the target, so it catches the failure that
+actually matters — a build that thinks it is Linux while running on macOS — and
+it stays correct under Rosetta, where an `x86_64-macos` binary genuinely is an
+x86_64 process. Where it cannot speak, the assertion is **skipped rather than
+faked**: an unrecognised sysname returns null and the check is passed over, and
+`janet_os_compiler` has no external oracle at all, which the file says out loud
+instead of inventing one.
+
+Verified by mutation, which matters more here than usual: changing the table's
+`Darwin → macos` row to `Darwin → linux` failed at the expected line. Without
+that step there would be no evidence the oracle was connected to anything.
+
+The general rule, now in `phase_11.md`: **when a translation would make a
+contract circular, say so at the site and find a different oracle or drop the
+assertion.** Never let it become an assertion that cannot fail.
+
+### Rule 5 paid for itself on its first outing
+
+Part 2 changed the reduced-configuration sweep from "build these twelve" to
+"build them and *run* the contracts". The first run of the new form found a
+real failure: `-Dreduced-os=true` compiled cleanly and then died on
+
+```text
+os-time-contract:1:18: compile error: unknown symbol os/clock
+```
+
+The gate was `options.os_time`, which is `hasGettime` and therefore **true**
+under `-Dreduced-os=true` — the event loop needs `janet_gettime` whether or not
+`os/clock` is registered. **A subsystem being compiled and a core function
+being registered are different facts**, and no field of `Selection` answers the
+second. `os/cpu-count` had needed the same distinction an hour earlier in
+`os_platform`, which is what put `harness.coreOptional` there to be reached
+for.
+
+Worth being precise about what would have happened without the upgrade: a
+build-only sweep passes this, and the matrix's `reduced os` entry runs only the
+contracts named in `CONTRACTS`. It would have shipped.
+
+### A hazard that predates the migration
+
+`matrix.py`'s `contracts` jobs do not take the SUITES lock — only `full` does,
+because that is what runs the Janet suites — so two of them execute
+concurrently in the **same repository working directory**. Any contract that
+creates files there has two entries fighting over one fixture, which is
+precisely the shared-fixture problem the SUITES lock exists to solve, one layer
+down.
+
+`os_fs` is kept out of `CONTRACTS` for that reason. It is not a new problem:
+`test/os_fs.c` behaved identically and could have been named there at any point
+in the last four phases. It is written down now because `os_fs_paths`,
+`os_stat`, `os_process` and `io_core` are all still to migrate and each is the
+same trap.
+
+### The other two
+
+`os_time` is invariants rather than vectors — a clock cannot be pinned to fixed
+values — so what it asserts is ranges, orderings, the fallback for an
+unrecognised source, and that a sleep advances a monotonic clock. Every bound
+is deliberately loose, because this runs under a matrix at `-j2` and a tight
+one fails for scheduling reasons; the lower bound is the contract and the upper
+bound only catches a sleep that multiplied its argument by the wrong factor.
+
+`os_fs` gained a refusal section: the kernels answer a status and set `errno`
+where the Janet functions raise, and `os/mkdir` answers *false* for an existing
+directory rather than raising — a return value a suite would have to know to
+look for.
+
+Four cross-compiles, eight reduced configurations run rather than built, 41
+suites, and the acceptance matrix at **21 PASS / 0 FLAKY / 0 FAIL** in 171.0s.
+
+## The filesystem group
+
+*Phase 11 Part 4.* `os_stat` and `os_fs_paths` — and the first Linux run this
+project has done since Phase 10's gate, which is where the increment's value
+turned out to be.
+
+### The first contract that needed the mechanism for something other than a raise
+
+Every migration up to here would have worked under the arrangement Part 1
+rejected: translate the `.c` in place, link `libjanet.a`, call exported
+symbols. `os_fs_paths` would not have.
+
+It needs `st_ino`, `st_nlink` and the timestamps to observe what
+`janet_os_link` and `janet_os_touch` did — and `sys/stat.h` is deliberately
+absent from `abi.zig`'s translation, for the reason `os_abi.h` records. A
+contract outside the compilation has to translate `struct stat` a second time
+and read the fields out of its own copy, which is a fifth translation of a host
+header in a tree that has carefully limited itself to four.
+
+Inside the compilation there is no copy: `subsystems.host_stat` exposes
+`statRead` and `Field`, the same reader and the same index `os/stat` uses.
+Using one kernel to observe another is not circular — reading metadata and
+writing it are different code — and what *would* be circular, checking
+`statRead` with `statRead`, is not done here or in `os_stat`.
+
+### The container run, and what a driver's abort hides
+
+`port/testing.md` has carried a podman recipe throughout and it had been run
+exactly once, at Phase 10's gate. Part 4 ran it again because this is the
+filesystem group and `host_stat`'s Linux arm goes through `statx` where macOS
+goes through `stat`.
+
+It found two failures. Neither is a regression — both reproduce identically at
+`be120a4a`, checked by building that commit in a worktree and running the same
+container — and **neither was in `FOUND.md`**, whose Linux entry named a
+different contract entirely.
+
+The reason is worth more than the failures. **The C driver runs contracts in
+declaration order and aborts at the first one that fails.** `os_surface` comes
+before `pp_format`, so `os_surface`'s abort hid it, and the entry recorded
+"three suites and one contract" when the truth was three suites and three
+contracts. Running each by name in a loop — `janet-zig-contract-test <name>` —
+separates them in one pass. The Zig driver has exactly the same property.
+
+`FOUND.md`'s third claim did not survive re-testing either: `test/remove_noops.c`
+**passes** on `aarch64-linux-musl` at the baseline. It is left recorded rather
+than deleted, with what is now established written beside it.
+
+### A contract asserting what `FOUND.md` calls undefined
+
+The `pp_format` failure is the interesting one, because the defect behind it
+was already documented and the *contract* was the thing at fault.
+
+`%D` reaches `snprintf` unrewritten — `format_mappings` carries `D` and `I`
+entries that `FMT_REPLACE_INTTYPES` never consults — so what it prints is
+whatever the host libc makes of an unrecognised conversion. macOS accepts it as
+a BSD synonym for `%ld`; musl prints nothing. `FOUND.md` says of the C original
+that it "pins only that the mapping does *not* happen, which is the part that
+is the same everywhere".
+
+Part 18's Zig rewrite pinned the *rendering* instead, and put it inside
+`everyArgumentWidthInOneCall` — so a well-defined assertion about seven
+argument widths failed on musl for a reason that had nothing to do with widths,
+and took the whole driver down with it. The width case now uses `%d`, which
+maps to `PRId64` on every host; the host-specific behaviour is
+`theUnmappedIntegerConversions`, guarded to macOS and pointing at the entry.
+Nothing is lost on macOS and all eighteen contracts now pass on Linux.
+
+The rule: **where a divergence is recorded and deliberately unfixed, the
+contract asserts the part that is common and quarantines the rest.**
+
+### The rest
+
+`os_stat`'s field registry is the assertion worth having: `field_name(i)` and
+`field_lookup(name)` are inverses, and the index they agree on is what the
+getters switch on — so the order of the fifteen names is load-bearing and
+nothing in Janet can see an index. The preserved `janet_cstrcmp` quirk is
+asserted too: a key whose own bytes end in NUL still matches, so
+`lookup("dev\0", 4)` is 0.
+
+Both contracts write fixture directories into the working tree, so both are
+kept out of `matrix.py`'s `CONTRACTS` under Part 3's rule. `os_stat` *was*
+named there through Part 18, which makes that hazard a live one rather than a
+hypothetical.
+
+Four cross-compiles, eight reduced configurations run rather than built, 41
+suites, the acceptance matrix at **21 PASS / 0 FLAKY / 0 FAIL** in 171.1s, and
+eighteen contracts passing on `aarch64-linux-musl` under Alpine.
+
+## The printer
+
+*Phase 11 Part 5.* `pp_describe` and `pp_pretty`, which complete a trio whose
+third member has been Zig since Part 18 — and the first increment where the
+*second* half of Phase 11's migration clause landed. Two C-ABI faces died with
+these contracts.
+
+### Both faces claimed to have no callers, and both were wrong by one
+
+`janet_zig_pp_escape_string` was built for `pp.c` under the old selector.
+`janet_jdn` carried a comment saying, in as many words, "nothing in the tree
+calls it — it is declared in no header and reached from no C file, and has been
+dead since it was added. It is ported anyway… it goes with the export surface
+in Phase 11."
+
+Each had exactly one caller: its own C contract, which hand-declared the symbol
+because no header carries it. `test/pp_describe.c` needed the escape function's
+returned column width and could not take a `raise.Raising(i32)`;
+`test/pp_pretty.c` needed `janet_jdn` for the same reason.
+
+That generalises into something practical. **The way to find a dead face is to
+migrate its contract and then delete it**, not to grep for callers — a grep
+over `src/` says "no callers" for both of these, and a grep over the whole tree
+says "one, in a test", which reads as "keep it" rather than "it is waiting for
+this migration".
+
+### Deleting a face found a defect in the runtime
+
+`pp_pretty.zig`'s `prettyLeaf` computed its alignment with
+
+```zig
+S.align_col += 1 + describe.escapeString(S.buffer, S.buffer.data, S.bufstartlen);
+```
+
+`escapeString` was the `raise.reported` wrapper. `prettyLeaf` is itself
+`raise.Raising`. So a raise inside the escape became a report **nobody
+consumed**: the blank width was used as though it were real, and the
+outstanding report surfaced at the next scope boundary's assertion, arbitrarily
+far from the cause — which is the exact failure mode the hinge spent three days
+hunting before it added those assertions.
+
+Nothing found it, because the code compiled and the raise is only reachable on
+allocation failure. Removing the face turned it into a compile error naming its
+own line, and the fix is one word:
+
+```zig
+S.align_col += 1 + try describe.escapeStringImpl(S.buffer, S.buffer.data, S.bufstartlen);
+```
+
+`raise.crossing`'s own note describes this family — 140 of them found when the
+jump was removed — and says each is "an ordinary import away from not needing
+this at all". This one was, and nothing had made it look at itself until the
+face went away.
+
+### What the contracts stopped needing
+
+`test/pp_pretty.c` spelled each expected panic as a fourteen-line
+`EXPECT_PANIC` macro over `janet_try_init`, `janet_contract_arm`,
+`janet_contract_raised` and `janet_contract_signal`, and kept a running count
+of how many fired, because "a case that silently stopped panicking would look
+exactly like one that passed". All of that is `harness.raised` and
+`Raise.says` now, and the count is unnecessary: a refusal that stops happening
+is a `null` where the contract asked for a value.
+
+`test/pp_describe.c` built a `JanetAbstractType` and pushed it through
+`test/support.zig`'s adapter pool to test the 32-byte title truncation, because
+the runtime dispatches raising Zig callbacks and C cannot define one. It is an
+`AbstractType` literal with no callbacks at all here.
+
+### The `pp` alias is retired from both tools
+
+`pp` was three C files behind one selector. `contract.sh` expanded the name and
+`matrix.py` did not, so naming it in `CONTRACTS` failed twenty entries at once
+with `test/pp.c:1:1: error: CacheCheckFailed` — a compile error in a file that
+has never existed. `AGENTS.md` records it happening twice.
+
+All three layers are ordinary names now and the expansion is gone.
+`matrix.py`'s `NOT_A_FILE` entry stays as a preflight diagnostic: the habit
+outlived the mechanism twice, so one line that turns it into a sentence before
+the first build is worth keeping after the mechanism is gone.
+
+### One process note
+
+`zig build zig-contract-test` does not build the C driver, so a half-applied
+migration — a `build.zig` line still naming a `.c` that has been deleted —
+passes it and fails a full `zig build`. That happened here, and the full build
+is what caught it. Run it before believing a migration is done.
+
+Four cross-compiles, eight reduced configurations run rather than built, 41
+suites, and the acceptance matrix at **21 PASS / 0 FLAKY / 0 FAIL** in 171.2s.
+
+## The numbers
+
+*Phase 11 Part 6.* `numscan`, `math` and `inttypes` — 875 lines of C, and the
+first group since Part 2 where nothing writes to the working directory, so all
+three could go into `matrix.py`'s `CONTRACTS` without tripping Part 3's rule.
+
+### Where the mechanism is the wrong tool
+
+`inttypes` asserts that `(div (int/s64 1) (int/s64 0))` raises. The obvious
+move, after five increments of it, is `harness.core("div")` — and it fails,
+loudly, on the type assertion inside that helper.
+
+`div` is not a cfunction. It is a *Janet* function that dispatches to the
+abstract type's `div` method, so there is no `raise.CFunction` to call and no
+`error.JanetSignal` to catch: the raise happens inside the interpreter, and a
+protected call is the instrument for that. `janet_pcall` was right in the C
+contract and is still right here.
+
+That is worth writing down because the migration has a pull toward using the
+new mechanism everywhere. **The import is for reaching a raise-capable Zig
+function. A protected call is for a raise that happens inside Janet.** The two
+are not interchangeable and the second is not a leftover.
+
+It also argues for the assertion in `harness.core`. `janet_resolve_core`
+answers a `Janet`; without the type check the contract would have cast a
+non-cfunction to a function pointer and jumped into it.
+
+### An abstract type reached as itself
+
+`janet_s64_type`'s `tostring` raises, so `test/inttypes.c` went through
+`test/support.zig`'s `janet_contract_at_tostring` — one of three shims that
+exist so C can invoke a raising Zig callback. The Zig contract declares the
+type `extern` with the runtime's own `AbstractType` and calls the callback with
+`try`.
+
+**The shim does not die here.** `test/ev_loop.c` and `test/io_core.c` still use
+it, so it goes when the last of the three moves. Said in the file rather than
+implied, because the tempting summary — "the contract no longer needs the
+shim" — reads as "the shim is gone".
+
+### A matrix that passed and measured nothing
+
+Part 6's acceptance matrix reported **21 PASS / 0 FLAKY / 0 FAIL** in
+**1079 seconds**, against 171 for each of the five before it.
+
+Six entries — three concurrent pairs — ran at about twenty times their usual
+cost; the other fifteen were normal. Nothing tripped: the test bound is 300
+seconds and the build bound 900, and no entry reached either.
+
+The check took one command. `-Dffi=false` was 320.6s inside the matrix and
+**16.0s** run by hand immediately afterwards, in a throwaway cache, on the same
+tree. Twenty to one, so it is the machine and not the code.
+
+`AGENTS.md` already had two rules of this shape — treat a FLAKY as a disk
+question first, and re-run a clock-named failure alone before believing it —
+and neither fires when everything passes. The third is now beside them:
+**read the per-entry times even when every verdict is PASS.** The verdict here
+stands; what would not have stood is a conclusion drawn from the timing.
+
+Four cross-compiles, eight reduced configurations run rather than built, 41
+suites, all three contracts verified capable of failing, and the acceptance
+matrix at 21 PASS / 0 FLAKY / 0 FAIL.
+
+## The front end
+
+*Phase 11 Part 7.* `parser_core`, `emit_core`, `compiler_primitives` and
+`specials_core` — 1,290 lines of C, and the largest face harvest of the phase:
+**ten** exported names died with them, against Part 5's two.
+
+### The faces were the point, and there were ten of them
+
+Part 5 established that a face dies when its last C caller does, and that the
+last caller is often the contract. The compiler is where that pays, because
+`compile.h` is an *internal* header: nothing outside the runtime ever had a
+reason to call `janetc_value` or `janetc_popscope`, so once the two C contracts
+stopped, eight faces had no caller in the tree at all.
+
+    janetc_lint      janetc_nameslot   janetc_pop_funcdef  janetc_popscope
+    janetc_resolve   janetc_throwaway  janetc_toslots      janetc_value
+
+Each was `raise.reported(janetc_*Impl(...))` — the raise flattened into a
+report because C could not hold an error union. The migrated contracts call
+the `Impl` functions with `try`, which is Part 1's argument arriving at the
+compiler, and the faces went with their declarations in `compile.h`.
+
+`nm -gU libjanet.dylib` counts 773 exported symbols before and 763 after. All
+ten are `janetc_*`, which is one of the four families the phase's
+exported-symbol-surface bullet names, so its count of 257 internal names is now
+247.
+
+### Deleting a face found two Zig callers using it as one
+
+The other two of the ten are the interesting ones, and they are Part 5's
+lesson 13 repeating exactly.
+
+`janetc_popscope_keepslot` sat beside `janetc_popscope` and did the same
+`raise.reported`. Its one caller is `specials_core.zig`'s `do`, which is itself
+`raise.Raising` — so a raise from the pop became a report nobody consumed, the
+compile carried on with a scope it thought it had closed, and the leak would
+have surfaced at the next scope boundary's assertion arbitrarily far from the
+cause.
+
+`janetc_toslotskv` is the same shape one level down: two
+`raise.reported(janetc_valueImpl(...))` calls inside it, and its only caller
+`makeDictionary` inside `janetc_valueImpl`'s own raising chain. Every struct
+and table literal in every Janet program goes through it.
+
+Both are now `pub fn ...Impl` returning `raise.Raising`, reached by import.
+Neither has a C face any more and neither has a `compile.h` declaration.
+
+**The general form: when a face's last C caller goes, do not only delete the
+face — look at what is still calling it, because a Zig caller that was using a
+face as a face is a report with nowhere to go.** `raise.crossing`'s own
+comment says each of these is "an ordinary import away from not needing this at
+all"; the way to find them is to remove the alternative.
+
+### `Impl` now means nothing, and that is deliberate for one more part
+
+Every surviving `janetc_*Impl` is the only function of its name. The suffix
+distinguished it from a face that no longer exists, so it is stale vocabulary
+of exactly the kind this project keeps flagging. It is left alone: thirty-seven
+contracts remain and later parts will spend more faces, so one sweep at the end
+— with the exported-symbol-surface bullet, which asks the same question — is
+cheaper and clearer than eight renames now.
+
+### A refusal must leave the compiler where it found it
+
+`fn` opens a scope before it validates its parameters. Both of its arity
+refusals therefore have to close it, and a port that returned early from either
+would leave the compiler one scope deep and corrupt every form after it —
+without failing anywhere near the mistake.
+
+`std.debug.assert(compiler.scope == &scope)` after each refusal is the whole
+check, and it is inherited from the C contract rather than invented here. It is
+called out because it is the assertion in this group most likely to be dropped
+as noise by someone translating: the interesting-looking line is the error
+message, and the load-bearing one is the scope.
+
+### The vector vocabulary, established where three contracts needed it
+
+`janet_v_push`, `janet_v_count`, `janet_v_empty` and `janet_v_free` are
+function-like macros over a two-word `int32_t` prefix, so `@cImport` does not
+translate them. Six subsystems already carry a private copy each; Part 7 is the
+first increment where three *contracts* need one at once, so `harness.vector`
+holds it — the same argument that put `harness.op` there in Part 2, and the
+same rule: **establish the shared vocabulary on the group that needs it rather
+than retrofitting it.**
+
+`harness.opcode` joins `harness.op` beside it. An emit entry point takes its
+operation as a `u8` and the word it builds carries it in the low byte of a
+`u32`; `emit_core` needs each in turn, and neither cast reads as obviously
+correct at the site.
+
+### Two refusals the C contract could not reach
+
+`janet_parser_consume` and `janet_parser_eof` are faces over `consumeChecked`
+and `eofChecked`, which panic on a parser that has already finished or is
+holding an unread error. From C those are a jump with nowhere to go, so the C
+contract simply never fed a dead parser and the two messages had no test at
+all. Here each is one line.
+
+The distinction they draw is the parser's whole error policy and is worth
+having asserted: a *parse* error is data and goes into `parser->error` for the
+caller to read; a *use* error is a panic, because there is no value to answer
+with. A port could keep one half and lose the other invisibly.
+
+Neither face dies — `janet.h` documents both and the fuzzers use them — which
+is worth saying because the harvest above makes "migrate the contract, delete
+the face" sound automatic. It is not: the question is who else calls it.
+
+### Where the import is wrong and the plain call is right
+
+`emit_core`'s ten entry points do not raise. They record into
+`compiler->result` and return, so the contract reaches them through `c.janetc_*`
+exactly as the C one did. Part 6 wrote down that the import is for a
+raise-capable Zig function and a protected call is for a raise inside Janet;
+this is the third case, and the smallest: **a function that cannot raise is
+reached by whatever call is in front of you.** `specials_core` uses all three
+in one file — the import for a special's `compile`, the plain call for
+`janetc_scope`, and `janet_dostring` for the six whole-program cases at the
+foot.
+
+### The instruments
+
+`zig build test` with all 41 suites; four cross-compiles; a **run** sweep over
+thirteen reduced configurations rather than a build-only one — including
+`-Ddocstrings=false`, which is not a matrix entry and was added because
+`specials_core` asserts that a docstring reaches the binding table; all four
+contracts verified capable of failing by mutating their subjects; and the
+acceptance matrix at **21 PASS / 0 FLAKY / 0 FAIL in 178.0s**, against the 171s
+that is normal for it.
+
+A benchmark *was* owed here and is not usually. The migration alone cannot
+reach the runtime, but converting `janetc_popscope_keepslot` and
+`janetc_toslotskv` touches the compile path for every `do` form and every
+struct or table literal. Compiling 4,000 forms built to exercise both, five
+passes, three runs each: 0.2508 / 0.2492 / 0.2496s before and 0.2502 / 0.2510 /
+0.2498s after. Inside run-to-run variance, and it is the compile path rather
+than the VM's execution loop either way.
+
+## The collector
+
+*Phase 11 Part 8.* `gc_alloc`, `gc_mark`, `gc_sweep` and `gc_stress` — 2,277
+lines of C, the largest group of the phase so far, and the first one where the
+migration would have destroyed something rather than merely moved it.
+
+### An oracle that could not come along, and did not belong here either
+
+`test/gc_mark.c` and `test/gc_sweep.c` each opened with the same block:
+
+```c
+assert(sizeof(JanetStringHead) == offsetof(JanetStringHead, data));
+```
+
+— five of them, for the four value heads and `JanetFunction`'s environment
+array. `gc_mark.zig`'s own comment names those files as where the assumption
+is checked, and the assumption is load-bearing: **`@cImport` drops flexible
+array members**, so `@offsetOf(JanetStringHead, "data")` does not compile and
+every header recovery in the runtime is spelled `@sizeOf` instead. The two
+numbers agree only where the flexible array needs no padding after the last
+declared field.
+
+Translating the five lines into Zig would have compared `@sizeOf(X)` with
+`@sizeOf(X)`. It compiles, it passes, and it cannot fail — Part 3's rule
+arriving for the second time: *a translation that would make a contract
+circular must find a different oracle or drop the assertion.*
+
+**The first answer was wrong in an instructive way.** This increment built a
+run-time oracle — allocate a value, compare the pointer the runtime handed back
+against the block the allocator had just recorded — and put it in
+`test/gc_mark.zig` as *the* replacement. It works, and then the question "what
+exactly did the C version compare?" gave a better answer: C's `offsetof`
+against C's `sizeof`, which is a fact about **`janet.h`**, not about the
+collector. It has a natural home already, and that home is `test/abi.c`, whose
+whole job is C's view of `janet.h`'s layout and which can hold the five lines
+unchanged as `_Static_assert`s that cost nothing to run.
+
+So both exist now, and they are not redundant:
+
+| | what it would catch |
+| --- | --- |
+| `test/abi.c` | a `janet.h` edit that pads a header before its flexible array |
+| `test/gc_mark.zig` | a runtime that computes an offset one way and allocates another |
+
+Neither implies the other, and until this part the tree had only the first.
+Each was verified by breaking it: adding `char abi_probe_pad;` to
+`JanetStringHead` makes `abi.c` refuse to compile and name the field, and
+skewing the funcenv slot by eight bytes makes `gc_mark` fail.
+
+**One string is attached and is recorded in `phase_11.md` rather than only
+here.** `abi.c` is one of the nine non-contract `.c` files that phase is still
+deciding about — rewrite in Zig against the module interface, or delete as a
+check on something this fork no longer promises. That decision now carries this
+oracle with it. Rewriting `abi.c` in Zig would lose the five assertions exactly
+the way migrating `gc_mark.c` would have.
+
+### The general form, restated
+
+Part 3 said it about `uname`. Saying it twice is the point:
+
+> **When a migration would make an assertion circular, ask what the two sides
+> of the original comparison actually were.** The answer names the replacement,
+> and it may name a different file.
+
+`os_platform` compared two compilers' beliefs about the target, and the
+replacement asks the machine. `gc_mark` compared two of one compiler's
+computations over one declaration, and the replacement is the same comparison
+somewhere it still compiles.
+
+### A shim that was already dead
+
+`test/support.zig`'s `janet_contract_adapt_methods` had **zero** callers at
+`HEAD` — not orphaned by Part 7, not orphaned by this part, just stale. It went
+here because the sweep for orphaned scaffold happened to run.
+
+Part 7's lesson was to read a face's remaining callers when its last C caller
+goes. The corollary: **the adapter pool deserves that sweep on a schedule, not
+only when something forces it.** A dead face announces itself by being deleted;
+a dead *shim* announces nothing at all, because the file it lives in still
+compiles and its neighbours still have users. The count is worth reading each
+increment — `janet_contract_adapt_regs` is down to four users,
+`janet_contract_protect` and `janet_contract_at_tostring` to one each, and each
+of those dies with a single named contract.
+
+### What the abstract types stopped needing
+
+Twelve C contracts reach `CONTRACT_AT`, which is `janet_contract_abstract_type`
+— the adapter pool that exists because a `JanetAbstractType`'s callbacks have
+been Zig-ABI since the hinge and C can define none of them. Three of the twelve
+were the collector's, and in Zig there is nothing to adapt: these contracts
+need `gc`, `gcmark` and `gcperthread`, all three of which the hinge typed
+**non**-raising, so they are ordinary `callconv(.c)` functions and the table is
+the runtime's own `AbstractType`.
+
+That is the adapter pool losing a quarter of its users to a change that
+required no thought at all, which is the cheapest kind of progress this phase
+has.
+
+### `pthread` became `std.Thread`, and the guard shrank
+
+`test/gc_stress.c` reached its cross-thread half through three `#ifdef`s and an
+`#include <pthread.h>`; the Zig version reaches it through
+`std.Thread.spawn` and one comptime `const`. It is the one place in the whole
+migration where a contract came out materially *shorter*.
+
+The condition needed a translation of its own, and it is Part 3's lesson 7
+again: `options` names **subsystems**, so there is no `options.ev` to read.
+`options.ev_core` is set to `hasEv(options)` by `build.zig` and is therefore
+the same condition in the vocabulary the module has.
+
+### Verified to be capable of failing, and one mutation that was not
+
+Four subject mutations, all caught: the weak-heap boundary moved
+(`gc_alloc`), a weak array traversed during marking (`gc_mark`),
+`gcperthread` skipped (`gc_sweep`), and **a non-atomic `janet_abstract_incref`**
+(`gc_stress`, three runs out of three) — which is precisely the failure that
+file's header says "a non-atomic implementation would still pass every
+single-threaded test with".
+
+The first mutation tried for `gc_stress` was **not** caught, and it is worth
+recording why: repairing the head-orphan defect by re-reading
+`current.*.data.next` after the finalizer changes nothing, because the
+finalizer's prepend moves `janet_vm.blocks`, not the dying block's `next`
+field. The mutation was a no-op and the "NOT CAUGHT" was correct. **A mutation
+that fails to provoke is not evidence about the contract**; check that the
+mutation is real before drawing a conclusion from it.
+
+### The instruments
+
+`zig build test` with all 41 suites; four cross-compiles; the contracts *run*
+in thirteen reduced configurations rather than merely built; four subject
+mutations and one abi-header mutation, each caught; and the acceptance matrix
+at **21 PASS / 0 FLAKY / 0 FAIL in 172.6s**, against the 171s that is normal.
+
+No benchmark is owed. Unlike Part 7 this increment touched no runtime source —
+the only non-test edits are five static assertions in `test/abi.c` and the
+deletion of a shim nothing called.
+## The data structures
+
+*Phase 11 Part 9.* `buffer_array`, `abstract_core`, `string_symbol` and
+`struct_table` — 3,023 lines of C for 3,109 of Zig, the largest group of the
+phase and the one where the previous part had already paid for the hardest
+part of it.
+
+### Part 8 pre-paid for three of the four
+
+Every one of `abstract_core`, `string_symbol` and `struct_table` opened with a
+head-layout assertion:
+
+```c
+assert(sizeof(JanetAbstractHead) == offsetof(JanetAbstractHead, data));
+```
+
+Four such lines across the three files, for the abstract, string, tuple and
+struct heads. Part 8 met exactly this in `gc_mark.c` and `gc_sweep.c` and
+answered it twice over: the static assertions went to `test/abi.c`, which is C
+and can still spell `offsetof`, and a run-time oracle derived from the
+allocator went into `test/gc_mark.zig`. **Both replacements already cover all
+four heads**, so this part deleted four assertions and wrote none.
+
+That is worth recording because it looks like a loss and is not. The temptation
+was to build a third thing — a local `@sizeOf` comparison in each migrated file
+— which would have compiled, passed, and been unable to fail. Part 3's rule and
+Part 8's sharpening of it both say to ask what the two sides of the original
+comparison were; here the answer was *already sitting in two other files*, and
+the work was to check that rather than to write something.
+
+Each migrated file says so at the top, so a reader looking for the assertion it
+used to have finds where it went.
+
+### The refusals got cheaper, and the tally went with them
+
+`buffer_array.c` reached its six refusals through a twenty-line `EXPECT_PANIC`
+macro — open a scope, `janet_contract_arm`, call the face, `janet_contract_raised`,
+`janet_contract_signal`, `janet_restore`, compare the payload — and then
+asserted `panics_fired == 6` at the foot, because with a macro that big it is
+worth proving all six ran.
+
+In Zig each is one line and the tally is gone. A refusal that does not happen
+now fails at the call that expected it rather than in a count at the end, which
+is a better failure and not merely a shorter one. This is Part 1's lesson 2
+arriving in the group where it saves the most.
+
+### The adapter pool lost its second-largest user
+
+`abstract_core.c` reached every abstract type through `CONTRACT_AT`, which is
+`test/support.zig`'s `janet_contract_abstract_type`: a pool of pre-built tables
+that exists because a `JanetAbstractType`'s callbacks have been Zig-ABI since
+Phase 10's hinge and C can define none of them.
+
+It needs `gc`, `gcmark` and `gcperthread` — the three the hinge typed
+**non**-raising, for the reason `abstract_type.zig` sets out at length. So
+there is nothing to adapt: they are ordinary `callconv(.c)` functions and the
+table is the runtime's own `AbstractType`. `CONTRACT_AT` is down from twelve
+users to eight, and four of those four went for free.
+
+### One face, and it was the one the C contract's own comment named
+
+`janet_buffer_can_realloc` is gone. `test/buffer_array.c` said of it:
+
+> This is the increment's one seam: `janet_buffer_can_realloc` was static in
+> `buffer.c` and is now shared, because `cfun_buffer_trim` still calls it from
+> the half of the file that stays in C.
+
+That half of the file has not existed since Phase 10 Part 18. `cfunBufferTrim`
+is Zig and calls `canRealloc` directly; `util.h` was the only header that
+declared the face; and after the contract moved, a grep found **no caller
+anywhere in the tree**. Part 5's lesson 12 exactly: the way to find a dead face
+is to migrate its contract and then look.
+
+Part 7's lesson 17 — read the remaining callers before deleting — found nothing
+to worry about here, because there were none.
+
+### What the deletion did find: eleven stranded selector shims
+
+`janet_buffer_can_realloc` had one nominal mention left, in
+`src/zig/subsystems/buffer_array_extern.zig`, reached only through
+`containers.zig`'s `if (options.buffer_array) ... else ...`. That condition has
+been comptime-`true` since Part 18 spent the last selector, so the `else`
+branch is never analysed and a dangling name in it would never be diagnosed.
+
+There are **eleven** such files — `args_core_extern.zig`, `buffer_array_extern.zig`,
+`ev_loop_extern.zig`, `fiber_core_extern.zig`, `marsh_extern.zig`,
+`pp_extern.zig`, `registry_extern.zig`, `value_access_extern.zig`,
+`value_wrap_extern.zig`, `vm_calls_extern.zig` and `vm_lifecycle_extern.zig` —
+each named by an `if (options.X)` whose condition is a constant. They are
+`PLAN.md`'s "whatever the deletion stranded", and they are a part of their own
+rather than a detail of this one. This increment took only the two lines that
+named the face it deleted.
+
+### Verified to be capable of failing, and one mutation that did not compile
+
+Four subject mutations, all caught: `janet_gc_settype` written as a store
+rather than an or (`abstract_core`), `janet_buffer_extra` reserving exactly what
+was asked rather than doubling it (`buffer_array`), `janet_string_equalconst`
+dropping its length check (`string_symbol`), and the Robin Hood hash tiebreak
+deciding the other way round (`struct_table`).
+
+The `string_symbol` one was reported **NOT CAUGHT** on its first attempt, and
+the reason is new. Deleting the length comparison left `const llen` unused,
+which is a Zig *compile error*; the build failed, `zig-out` still held the
+previous binary, and the contract ran against an unmutated runtime and passed.
+
+Part 8 established that a mutation which fails to provoke is not evidence. This
+is the same rule one step earlier: **a mutation that fails to compile is not
+evidence either, and it is the more dangerous of the two**, because a mutation
+sweep that does not check the build's exit status scores it exactly as a
+mutation the contract caught. `AGENTS.md` already warns twice about trusting a
+stale `zig-out`; this is that trap wearing a mutation sweep's clothes. The
+replacement kept `llen` used — `llen < 0` in place of `llen != rlen` — and was
+caught.
+
+### The shim sweep found a second dead one
+
+Rule 22 says to read `test/support.zig`'s user counts every increment rather
+than waiting to be forced. `janet_contract_payload` had **zero** callers, and
+`git grep` over the last eight commits says it had none at Part 4 either — so,
+like Part 8's `janet_contract_adapt_methods`, it was stale rather than orphaned
+by anything recent. It is deleted.
+
+Two consecutive scheduled sweeps, two dead shims neither of which announced
+itself. That is the argument for the schedule.
+
+### The instruments
+
+`zig build test` with all 41 suites; every Zig contract run by name in a loop
+rather than trusting the driver's abort-at-first-failure (rule 10) — 35 PASS;
+four subject mutations, each caught, plus the one that had to be rewritten
+before it meant anything; the acceptance matrix with `CONTRACTS` retargeted to
+this increment's four, at **21 PASS / 0 FLAKY / 0 FAIL in 232.6s** with every
+per-entry time at its usual cost; and two configurations by hand that the
+matrix does not carry.
+
+Those two are rule 19's, and one of them is the rule's clearest case so far.
+`-Ddocstrings=false` is the standing entry. **`-Dprf=true` is named by two of
+this part's contracts in their own prose**: `janet_hash` changes outright under
+it, which is precisely why `struct_table.zig` *searches* for colliding integer
+keys instead of hard-coding a pair and why `string_symbol.zig` asserts only
+that a stored hash matches the one the hash function returns. Both pass, so
+nothing changed — but a configuration a contract's comments spend a paragraph
+defending against is one worth actually running once.
+
+No benchmark is owed by the migration itself, and the one runtime edit —
+deleting `janet_buffer_can_realloc` — removes a wrapper nothing called rather
+than changing a function on any path. That is the other side of Part 7's
+lesson 18: read what the increment touched, and a deletion with no callers
+touches no path.
+
+## The value core
+
+*Phase 11 Part 10.* `value_wrap`, `value_alloc`, `value_order` and
+`value_access` — 3,786 lines of C for 3,735 of Zig, and the group where the
+migration lost an oracle it could not replace from outside the port.
+
+### The oracle that had no analogue, and the one the port had already built
+
+`wrap.c` exists to provide a *function* form of what `janet.h` provides as a
+*macro*. So `test/value_wrap.c` had a channel available nowhere else in the
+phase: for every entry point with both spellings, call each and compare, using
+C's rule that a parenthesised name is not macro-expanded — `(janet_truthy)(v)`
+against `janet_truthy(v)`, in the same file, on the same value.
+
+**A Zig contract cannot reach the macro at all.** `janet.h` declares
+`janet_checktype`, `janet_truthy`, `janet_wrap_integer` and their kin as
+functions *beside* macros of the same name, and `@cImport` prefers the
+function — which is `harness.wrapInteger`'s note from Part 1, arriving from the
+other direction. Both spellings become one thing here, so a translated
+`agree_on` would have compared a function with itself: Part 3's rule 8, an
+assertion that cannot fail and looks thorough.
+
+Rules 20 and 24 say to ask what the two sides of the original comparison
+actually were, and then to ask where that comparison already lives. The two
+sides were *the operation a caller gets inlined* and *the operation the library
+exports* — and this runtime has that pair, for a reason that has nothing to do
+with testing. `value_wrap.zig`'s `ops` namespace exists because `run_vm`
+measured **+89%** on the arithmetic workload when it reached these through the
+symbol table; everything else calls the `export fn`s. Twenty-one operations
+have both spellings, and a disagreement would make the interpreter answer
+differently from the C API about the same value.
+
+`theTwoSpellingsAgree` is that channel. It is the C original's claim carried
+over rather than a new one, and it is weak in exactly the same way the original
+was and for the reason the original's header gave: both spellings bottom out in
+`repr`, so it catches an operation wired to the wrong helper and nothing more.
+The absolute bit patterns are what catch the helper.
+
+**It is load-bearing, and that was measured rather than asserted.** Making
+`ops.wrapNil` build nil with a different payload bit — a divergence the tag
+never sees — leaves `zig build` green, the REPL working, and
+`suite-value`, `suite-table`, `suite-marsh` and `suite-struct` all passing.
+Only `value_wrap` fails. That is a mutation nothing else in the tree can see.
+
+### Two assertions that had already moved, and none that had to
+
+Rule 24's case, twice more. `test/value_alloc.c` opened with
+`sizeof(JanetFunction) == offsetof(JanetFunction, envs)`, which is what makes
+`janet_thunk`'s `@sizeOf(JanetFunction)` the right size for a function with no
+environments. `@cImport` drops a flexible array member, so a translation would
+have compared `@sizeOf` with itself.
+
+Part 8 put that exact line in `test/abi.c` when it moved the four head-offset
+assertions there — **before anything needed it here**, on the general argument
+that the property is about `janet.h` and C is the only side that can spell both
+halves. So this part deleted an assertion and wrote none, and
+`value_alloc.zig`'s own comment now points at where it went.
+
+### The abstract fixtures cost nothing, twice over
+
+`value_order.c` and `value_access.c` between them held **twenty-one** of the
+twenty-nine `CONTRACT_AT` uses in the tree, and every one of them is gone.
+
+The two files need opposite halves of `abstract_type.zig`'s split and both are
+free. `value_order`'s types supply `compare` and `hash`, which the hinge typed
+**non**-raising because they are called from inside comparisons that must be
+total — so they are ordinary `callconv(.c)` functions and the table is the
+runtime's own `AbstractType`. `value_access`'s types supply `get`, `put`,
+`next` and `length`, which the hinge typed **raising** — which is precisely why
+C could not define them and needed `test/support.zig`'s pool of pre-built
+tables, and why in Zig they are ordinary functions returning `raise.Error!T`.
+
+`CONTRACT_AT` is down from eight users to six.
+
+### The tally went with the macro, for the third time
+
+`value_access.c` reached its refusals through a twenty-line `EXPECT_PANIC`
+macro and asserted `panics_fired == 49` at the foot, because with a macro that
+big it is worth proving all forty-nine ran. In Zig each is one line and the
+tally is gone: a refusal that stops happening now fails at the call that
+expected it. Part 9 recorded the same thing for `buffer_array`'s six; this is
+Part 1's lesson 2 at eight times the scale.
+
+`EXPECT_PANIC_PREFIX` became `harness.Raise.beginsWith`, the one piece of new
+shared vocabulary this part added beside `harness.u64Of` and
+`harness.heap.reachable`. Every case that needs a prefix is a case about an
+abstract, which renders with its address.
+
+### No face died, and the grep says something else instead
+
+Rule 12 says the way to find a dead face is to migrate its contract and then
+look. Looked: `janet_memalloc_empty`, `janet_memempty`, the seven
+`janet_nanbox*` helpers, `janet_thunk_delay`, `janet_fiber_reset` and the nine
+accessor exports all still have callers, and nothing was deleted.
+
+What the sweep *did* turn up belongs to a different bullet. `janet_next`,
+`janet_next_impl`, `janet_in`, `janet_get`, `janet_getindex`, `janet_length`,
+`janet_lengthv`, `janet_put` and `janet_putindex` now have **zero in-tree
+callers**: the Zig contract reaches `value_access.zig`'s `pub fn`s directly and
+the C contract that used to cross the ABI is gone. Their doc comments already
+said as much — "Nothing in the tree calls it… It exists for embedders" — and
+they are `janet.h`'s public surface, so they stay. That is data for the
+exported-symbol-surface bullet rather than a deletion this part could make.
+
+### Verified to be capable of failing, and two mutations that were not evidence
+
+Four subject mutations, all caught: `janet_wrap_number_safe` no longer
+canonicalising a NaN (`value_wrap`), the fiber capacity floor applied one slot
+late (`value_alloc`), `janet_hash` no longer normalising negative zero
+(`value_order`), and `getterCheckInt` letting index −1 through
+(`value_access`). Plus the `ops.wrapNil` payload-bit divergence above, which is
+what makes the replacement oracle a measurement rather than an argument.
+
+**Two earlier attempts were discarded, and the reason extends Part 9's rule
+23.** That rule says a mutation which fails to *compile* is not evidence, and
+to assert the build's exit status before running the contract. These two
+compiled. They broke the **bootstrap**: `ops.truthy` and `janet_truthy` are
+both on the image generator's path, so `zig build` failed at `run exe
+janet-boot` with
+
+    boot.janet:3165:9: compile error: the first element of `catch` must be a
+    tuple or array
+
+— a diagnostic naming `boot.janet` and a Janet macro, in a run whose only
+change was four tokens in `value_wrap.zig`. `zig-out` still held the previous
+binary, so a sweep that looked only at whether the contract failed would have
+scored both as **caught**.
+
+So rule 23's check is right and its stated cause is too narrow: a mutation can
+fail the build at *any* step, and the most confusing one is the step that
+consumes the runtime rather than the step that compiles it. The exit status is
+still the whole test; what changes is that the message will not name the file
+you mutated.
+
+### The instruments
+
+`zig build test` with all 35 suites and 4,813 of 4,813 tests; every Zig
+contract run by name in a loop rather than trusting the driver's
+abort-at-first-failure (rule 10) — **39 PASS**, up from 35; five subject
+mutations, each caught, plus two that had to be discarded before they meant
+anything; two configurations by hand under rule 19 — `-Ddocstrings=false`, the
+standing entry, and `-Dprf=true`, which `value_order.zig`'s
+`theExactNumberHashes` spends a paragraph arguing it is *insensitive* to and is
+therefore worth running once; and the acceptance matrix with `CONTRACTS`
+retargeted to this increment's four, at **21 PASS / 0 FLAKY / 0 FAIL in
+175.0s**, every per-entry time at its usual cost.
+
+No benchmark is owed. The only runtime edits are three comment corrections —
+two in `value_alloc.zig` naming a file that no longer exists, one tense fix in
+`value_wrap.zig` — and a comment touches no path.
+
+## The fibers and signals
+
+*Phase 11 Part 11.* `fiber_core`, `signal_core` and `trace_frames` — 1,932
+lines of C for 1,903 of Zig, four C-ABI faces retired, and the first migration
+whose failure was found by the acceptance matrix rather than by the contract.
+
+### Four faces, and the arithmetic that decided which
+
+Rule 12 says the way to find a dead face is to migrate its contract and then
+look. Looked, and four were dead:
+
+| face | declared in | who was left |
+| --- | --- | --- |
+| `janet_fiber_push2` | `fiber.h` | nobody |
+| `janet_fiber_push3` | `fiber.h` | nobody |
+| `janet_fiber_pushn` | `fiber.h` | nobody |
+| `janet_signal_commit` | `state.h` | its own file |
+
+The push faces are Part 7's argument arriving at a different header. `run_vm`
+and `janet_call` reach `push2`, `push3` and `pushn` by import — `fiber_core.
+push2(fiber, …)`, not `c.janet_fiber_push2(…)` — so the only caller of any of
+the three exports was `test/fiber_core.c`, and `fiber.h` is internal rather
+than `janet.h`. Nothing outside the runtime ever had a reason to call one.
+
+`janet_signal_commit` is the other shape: `janet_zig_signal_record` calls it
+from three lines away in the same file, so the *export* had one caller outside
+`signal_core.zig` and it was the contract. It is `pub fn signalCommit` now,
+with the `state.h` declaration gone, and `test/signal_core.zig` reaches it by
+import.
+
+**`janet_fiber_push` survives, and only just.** `test/vm_calls.c` and
+`test/vm_entry.c` still call it, so it goes when they do. That leaves the push
+family with one face where it had four, which is worth being explicit about
+because the C contract tested each push *twice over* and said why: "the C face
+is the one that disappears, so it is the one that rots." It disappeared. Three
+of the four kernels are now reached by import alone and the fourth is tested
+through `harness.faceRaised` for exactly as long as the two remaining C
+contracts keep it alive.
+
+### The assertion that became a definition
+
+`test/signal_core.c`'s `test_jump_delivers_the_recorded_signal` was the one
+case in that file with two independent transports: `janet_signalv` recorded
+the raise and then jumped, and the value `setjmp` returned had to equal the
+signal the record had published. "If these ever disagree the mechanism has
+forked, and every other test here would still pass."
+
+There is one transport now. `raise.signal` calls `janet_zig_signal_record` and
+returns `error.JanetSignal`; the C face is `raise.report` over exactly that
+expression, and `report`'s entire body is setting a flag. Asserting that the
+two agree is asserting that a definition holds — rule 8's assertion that
+cannot fail and looks thorough.
+
+So it is **dropped, and said so in the file's header** rather than translated.
+What takes its place is narrower and true: `janet_vm.pending_signal` is where
+a Zig caller reads the signal, so every raising case in the migrated contract
+reads it back through `harness.raised` instead of assuming the value it passed
+in. That is not a replacement oracle in rules 20 and 24's sense — there was
+none to find — it is the honest remainder of a claim that lost half its
+subject.
+
+### Two public faces with no in-tree caller, which is now a pattern
+
+Part 10 found nine `value.c` exports with zero in-tree callers that stay
+because they are `janet.h`'s public surface. This part adds two:
+`janet_signalv` and `janet_panics` had exactly one caller each — the C
+contract — and neither has another anywhere in the tree. `janet_panicv` and
+`janet_panic` do (`interop.zig` and `native_module.zig` reach them through the
+C ABI), which is what makes the pair interesting rather than uniform.
+
+All four stay, and all four are still tested here. A public entry point with
+no in-tree caller is precisely the kind that rots without anything saying so,
+and `harness.faceRaised` makes each one line. That is data for the
+exported-symbol-surface bullet from the other direction: the question is not
+only "who exports too much" but "what is the surface *for*", and two of these
+four exist solely for an embedder.
+
+### `harness.faceRaised`, and where the shim went
+
+The C contracts read a raise with `janet_contract_arm`, then the call, then
+`janet_contract_raised` and `janet_contract_signal` — three shims in
+`test/support.zig` over `janet_vm.c_raised`. A contract inside the compilation
+reads that flag directly, so the whole protocol is `raise.tookCRaise`:
+
+```zig
+pub fn faceRaised(face: anytype, args: anytype) ?Raise {
+    var state: c.JanetTryState = undefined;
+    c.janet_try_init(&state);
+    defer c.janet_restore(&state);
+    @call(.auto, face, args);
+    if (!raise.tookCRaise()) return null;
+    return .{ .signal = c.janet_vm.pending_signal, .payload = state.payload };
+}
+```
+
+It went to `test/harness.zig` under rule 6 rather than staying local, because
+two contracts in this one increment needed it: `signal_core` for the four
+public faces and the two slot diagnostics, `fiber_core` for the one surviving
+push face. The report has to be taken **inside** the scope — `janet_restore`
+aborts on an outstanding one, which is Part 17h's assertion — so the ordering
+is load-bearing and is written down at the definition rather than at each use.
+
+Reach for `harness.raised` instead wherever the subject is a Zig function.
+That is rule 15 with a second door: `raised` is for a raise that arrives as an
+error, `faceRaised` for one that arrives as a report, and which you get is
+decided by whether you spelled the import or the symbol.
+
+### An identical function body is not a distinct address
+
+**The failure this part is worth remembering for.** `test/trace_frames.c`
+carried three cfunctions used only as registry keys — `probe_named`,
+`probe_unnamed`, `probe_unregistered` — each `{ (void) argc; (void) argv;
+return janet_wrap_nil(); }`. The contract's whole subject is that the registry
+answers differently for the three, so their being three *addresses* is the
+premise of every assertion in the file.
+
+Translated as three identical Zig functions, they are one address. Every
+optimize mode above Debug folds identical function bodies, so
+`janet_registry_get(probeUnregistered)` returns the entry planted for
+`probeNamed` and `anUnregisteredCfunction` fails — as
+`panic: reached unreachable code` under `-Doptimize=ReleaseSafe` and as a
+segfault under `ReleaseFast` and `ReleaseSmall`.
+
+Three things about how it was found:
+
+- **`zig build test`, `port/contract.sh` and every contract run by name all
+  passed.** The narrow loop is Debug, and Debug does not fold. Nothing in the
+  per-increment routine except the matrix builds another optimize mode.
+- **The matrix found it in its first three entries**, and the report — `test /
+  error: process terminated with signal ABRT` — named neither the file nor the
+  contract. Finding which of forty-two contracts had died took building
+  `-Doptimize=ReleaseSafe` by hand and running the driver with no argument, so
+  that it printed the thirty-nine that passed before it.
+- **The C original had the same three identical bodies and never met this**,
+  because `test/contracts.c` is compiled by a separate `zig cc` at the
+  matrix's own flags rather than folded into the runtime's compilation. So
+  this is a hazard the Part 1 mechanism *introduced*, not one it inherited.
+
+The fix is one token per probe: each returns a different integer. Nothing
+calls them, so the values are never read; what they buy is that the fold is
+illegal. The comment at the site says so, because the next contract that needs
+distinct cfunction addresses will otherwise write the C shape again.
+
+**The general form: when a contract's premise is that two things are
+different, ask what makes them different to the *compiler*.** Two Zig
+functions are distinct values and identical machine code, and only the first
+of those is what a registry key means.
+
+This is also the strongest evidence yet for `phase_11.md`'s argument that the
+matrix belongs per increment rather than at the gate. Nine parts of contract
+migration had not needed an optimize mode to catch anything; this one did, and
+a Debug-only routine would have shipped it.
+
+### An oracle that did not move, and a `%s/%s` no suite can reach
+
+`trace_frames` needed no replacement oracle and lost nothing. It reads a
+`JanetStackFrame` a contract wrote by hand, which is as constructible in Zig as
+in C, and the registry entries it plants are `harness.internal.janet_registry_
+put` — a line added to the `util.h` block Part 9 established, exactly as that
+rule intended.
+
+What it does keep is the case the suites cannot reach at all. `%s/%s` is taken
+only when a registered cfunction has a **prefix**, and every core registration
+passes null for one; a native module calling `janet_cfuns_prefix` gets one, and
+so does the entry this contract plants. So `aPrefixedCfunctionRenders` builds a
+fiber whose only frame is a cframe, binds `:err` to a buffer, and reads the
+line back — `  in trace/probe [trace_frames.zig] on line 41`.
+
+The migration made one improvement there for free. The C contract called
+`janet_stacktrace_ext` and `janet_trace_frame`, which are `raise.reported` over
+the entry points beside them, so a raise from a `tostring` callback reached
+through `%v` would have become a report nobody consumed — rule 13's family. The
+Zig contract calls `stacktraceExt` and `janet_trace_frameImpl` with `try`, and
+the hazard is gone by construction rather than by care.
+
+### A dead `extern fn`, found by looking at who calls a face
+
+Rule 17 says to read a surviving face's remaining callers rather than assuming.
+`janet_trace_frame` has three mentions in `debug_frames.zig`, and reading them
+turned up an `extern fn janet_trace_frame(...)` declaration with **no caller in
+that file**: `doframe` was converted to `trace_frames.janet_trace_frameImpl` at
+some point and the declaration stayed. Zig does not analyse an unreferenced
+container-level declaration, so it compiled and said nothing.
+
+That is Part 9's rule 22 one directory over — a dead face announces itself, a
+dead *declaration* does not — and it is the same blindness the eleven stranded
+`*_extern.zig` shims have. Deleted.
+
+It also means `janet_trace_frame`'s only remaining caller in the tree is
+`test/vm_lifecycle.c`. It is a fifth face waiting on a contract.
+
+### The shim sweep, and nothing dead this time
+
+Read per AGENTS.md, and the counts moved without anything reaching zero:
+`arm`, `raised` and `signal` at **twelve** each, down from fifteen;
+`call_cfunction` five; `CONTRACT_AT` five, down from six; `adapt_regs` three;
+`cfunction` two; `at_get` and `at_next` two; `protect`, `at_tostring` and
+`raising` one each. Two consecutive parts found a stale shim and this one found
+none, which is the sweep working rather than the sweep being unnecessary.
+
+### Verified to be capable of failing
+
+Three subject mutations, each caught, each checked against rules 21, 23 and 26
+before being believed — the build's exit status asserted first, and no
+candidate taken from the image generator's path:
+
+- `envValid` no longer comparing the frame function's `slotcount` with the
+  environment's `length`, so an unmarshalled environment with the wrong slot
+  count validates (`fiber_core`);
+- `janet_signal_inject` writing the injected signal into `flags` instead of
+  `gc.flags` — the "tidied into one word" mutation the contract's own comment
+  names (`signal_core`);
+- the cfunction location test gaining `reg.*.name != null`, which collapses the
+  two classifications the descriptor exists to keep apart (`trace_frames`).
+
+### The instruments
+
+`zig build test` with 4,813 of 4,813 tests; every Zig contract run by name in a
+loop rather than trusting the driver's abort-at-first-failure (rule 10) —
+**42 PASS**, up from 39; three subject mutations, each caught; two
+configurations by hand under rule 19 — `-Ddocstrings=false`, the standing
+entry, and `-Dsourcemaps=false`, which `trace_frames` names in two cases and
+the matrix does not have; and the acceptance matrix with `CONTRACTS` retargeted
+to this increment's three, at **21 PASS / 0 FLAKY / 0 FAIL in 175.0s**, every
+per-entry time at its usual cost. The first run of that matrix was
+**3 FAIL**, which is the increment's main finding and is above.
+
+A benchmark **is** owed and was taken, because `janet_signal_commit` losing its
+export is a linkage change on the raise path and rule 18 says to read what the
+increment touched rather than what it was about. Two `ReleaseFast` binaries,
+`HEAD` in a worktree against this tree, twelve stack layouts each on the Phase
+9 corpus, minimum per workload:
+
+| | before | after |
+| --- | --- | --- |
+| arithmetic | 0.046208 | 0.046861 |
+| fib | 0.016398 | 0.016406 |
+| methods | 0.018082 | 0.018082 |
+| tables | 0.053885 | 0.054219 |
+| strings | 0.048577 | 0.049729 |
+| compiler | 0.043632 | 0.043616 |
+| pegmatch | 0.040121 | 0.040678 |
+| opfallback | 0.015614 | 0.016536 |
+| fibers | 0.025294 | 0.025413 |
+
+Every workload inside `bench-layout.sh`'s own ±5% resolution but `opfallback`
+at +5.9%, on the smallest workload in the corpus and the one furthest from
+anything this part touched. No finding.
+
+## The VM
+
+*Phase 11 Part 12.* `vm_state`, `vm_lifecycle`, `vm_entry`, `vm_calls` and
+`vm_run` — 2,838 lines of C for 2,976 of Zig, **fourteen C-ABI faces retired**,
+one `test/support.zig` shim spent, and a defect the port had introduced and
+nothing else could have found.
+
+Five contracts rather than the four the pace had settled at, because the group
+is five and `vm_run` is almost entirely Janet source: it drives the loop
+through `janet_dostring` and compares messages, so the migration is a
+transcription of the strings with a different `snprintf`.
+
+### The defect: a raise the loop swallowed
+
+**`JOP_MAKE_STRING` and `JOP_MAKE_BUFFER` dropped a `tostring` refusal on the
+floor, and had since the hinge.**
+
+`vm_calls.zig` had `fillStringImpl`, which is `raise.Raising(void)`, and
+`fillString`, which was `raise.reported` over it — the C-ABI face `state.h`
+declared as `janet_fill_string`. `vm_run.zig`'s two constructor arms called the
+**face**, from inside `runVm`, which is itself raising. So an abstract's
+`tostring` raising mid-loop became a report nobody consumed: the loop went on
+to build a string out of a half-filled buffer, kept interpreting, and the
+outstanding report killed the process at the next scope boundary with
+
+    a raise was reported to a C caller and never consumed
+
+— arbitrarily far from the cause, in a function that had nothing to do with it.
+Under the C original the same refusal was a `longjmp` out to `janet_continue`
+and propagated correctly.
+
+This is rule 13's family and rule 17's, and it is the *third* instance:
+Part 5 found `prettyLeaf` calling `describe.escapeString` from inside a raising
+function, Part 7 found `janetc_popscope_keepslot` and `janetc_toslotskv` doing
+it on the compile path. What is new is how it was found. There the face was
+deleted and the compiler named the site; here **the migrated contract would not
+compile**, because `harness.raised` demands an error union and `fillString` did
+not return one. The C contract could not have found it — it called the face
+deliberately and read the report with `janet_contract_raised`, which is the
+correct way to test a face. It tested the face and the face was right; the
+caller was wrong, and only a caller-shaped instrument sees that.
+
+The fix is the shape rule 13 predicts: `fillString` *is* the raising function
+now, `janet_fill_string` is gone, and `vm_run.zig` writes `try`.
+
+**How reachable it was.** Not from compiled Janet source: `(string ...)` and
+`(buffer ...)` compile to calls of the `string` and `buffer` cfunctions —
+`disasm` confirms — so neither opcode is emitted by the compiler at all, and
+`test/vm_run.zig` reaches them through `asm`. Reaching the swallowed raise
+needs an assembled `mkstr` or `mkbuf` over an abstract whose `tostring` raises,
+which means a native module. So it was a live defect with no in-tree
+reproduction, which is exactly the kind a contract exists for.
+
+### Fourteen faces, and why only three of them were symbols
+
+Rule 12 again: migrate, then look. Fourteen were dead, which is the largest
+harvest of the phase — Part 7's ten was the previous high.
+
+| face | declared in | why it went |
+| --- | --- | --- |
+| `janet_method_invoke` | `state.h` | `run_vm` reaches `vm_calls` by import |
+| `janet_call_nonfn` | `state.h` | ditto |
+| `janet_resolve_method` | `state.h` | ditto |
+| `janet_method_lookup` | `state.h` | ditto |
+| `janet_unary_call` | `state.h` | ditto |
+| `janet_binop_call` | `state.h` | ditto |
+| `janet_fill_table` | `state.h` | ditto |
+| `janet_fill_struct` | `state.h` | ditto |
+| `janet_fill_string` | `state.h` | ditto, and see above |
+| `janet_debug_frame` | `state.h` | `cfunStack` already used the impl |
+| `janet_check_can_resume` | `state.h` | `vm_run.zig` was using it as a face |
+| `janet_fiber_push` | `fiber.h` | Part 11's fourth push, on schedule |
+| `janet_vm_state_size` | `state.h` | its only reader was the contract |
+| `janet_vm_state_align` | `state.h` | ditto, with `JanetVMAlignProbe` |
+
+Nine of the fourteen are one `state.h` block — the whole "interpreter callees"
+section, which is what `run_vm` delegates to. It went in one edit because
+`vm_run.zig` had already converted every call to an import; the exports were
+kept alive by `test/vm_calls.c` alone.
+
+`janet_check_can_resume` is the one that needed rule 17's second half. Its two
+C callers were the contracts, but `vm_run.zig`'s `JOP_RESUME` and `JOP_CANCEL`
+arms were reaching it as `c.janet_check_can_resume` — a symbol-table round trip
+inside the runtime's own compilation. Unlike Part 7's two, this one is
+*harmless*: it reports a signal rather than raising, so there was no flattened
+raise to leak. It is `pub fn checkCanResume` now and the call is an import.
+**The sweep is worth running even when what it finds is only a round trip.**
+
+**And the export surface moved by three, not fourteen.** Eleven of these
+carried `.visibility = .hidden`, because they are declared in `state.h` and
+`fiber.h` rather than in `janet.h` and the C build's `-fvisibility=hidden` hid
+them. Only `janet_vm_state_size`, `janet_vm_state_align` and
+`janet_fiber_push` were plain `export fn`s, and the shared library goes from
+758 exported symbols to 755. So the phase's running "242 internal names" figure
+becomes **239**, and the two counts — faces retired and symbols shed — are
+different currencies. A face harvest is a *header* cleanup first and a linker
+question second.
+
+### The oracle whose second side was the C implementation
+
+Rules 8, 20, 24 and 25 are about an oracle lost in translation and a
+replacement found somewhere — in `uname`, in `test/abi.c`, in a duplication the
+port introduced. `vm_state` lost one with no replacement anywhere, and the
+reason is worth separating from the others.
+
+`test/vm_state.c` opened with
+
+    assert(janet_vm_state_size() == sizeof(JanetVM));
+    assert(janet_vm_state_align() == offsetof(JanetVMAlignProbe, vm));
+
+Two compilers' views of `src/core/state.h`: the C build's, and the Zig build's
+through `@cImport`. `janet_vm_save` copies the whole structure using the
+owner's length, so a disagreement would truncate or overrun a copy and neither
+would be a compile error. That was real for as long as C files read
+`janet_vm.field`.
+
+Phase 10 deleted the last of those. There is one view now — `@sizeOf(c.JanetVM)`
+is what `janet_vm_alloc` allocates, what `janet_vm_save` copies, and what
+`janet_vm_state_size` returned — so a Zig contract asserting the equality
+asserts a definition. The guard-page case ("a save must copy no further than
+the end of the structure") is the same claim from the other end and goes with
+it: `janet_vm_save` is `into.* = currentVm().*`, and a whole-struct assignment
+writing past the struct is not a behaviour Zig has.
+
+So the section is dropped rather than translated, and the three declarations it
+was the only reader of go with it. **The tell that this is the right call
+rather than laziness is that the deletion is possible at all**: an oracle with a
+live second side has a second reader, and these had none.
+
+What is *kept* from that section, because it is still two independently
+produced things: `janet_local_vm()` must answer the address of the object every
+translation unit reaches as `c.janet_vm`. One side is what the function
+computes, the other where the linker put the symbol `state.h` declares.
+
+### `@hasField` is a better question than `#ifdef`
+
+`test_save_spans_the_structure` scribbles on fields at both ends of `JanetVM`
+and checks a save carried them. The last field is configuration-dependent, and
+the C original found it through a four-deep cascade — `JANET_EV`,
+`JANET_WINDOWS`, `JANET_EV_EPOLL`, `JANET_EV_KQUEUE` — asking four
+configuration questions in order to learn one structural fact.
+
+The Zig contract asks the structure: `if (comptime @hasField(c.JanetVM,
+"timer_enabled"))`. Shorter, and a better question in two ways. A configuration
+that gains a backend needs no branch here, and a field that is *renamed* fails
+to compile rather than dropping silently out of the sweep — which is what the
+`#ifdef` cascade would have done, and nothing would have said so.
+
+The other translation note in that file is smaller and went the other way:
+`traversal_base` is a typed pointer, so `@ptrFromInt(0x5555)` does not compile
+and the witness value is `0x5550`. Zig rejecting an unaligned literal is the
+same family as Part 10's `intmax_int64_fits_in_a_length` — the compiler
+refusing a constant the C original cast silently.
+
+### A contract that tests a face is not a caller of it
+
+`janet_fiber_push` was the last of the four push faces, and Part 11 predicted
+exactly when it would go: "it survives because `test/vm_calls.c` and
+`test/vm_entry.c` still call it, and it goes when they do." They went here.
+
+What Part 11 did not predict is that deleting it would break
+**`test/fiber_core.zig`**, the Zig contract it had written one part earlier.
+That file kept a case reaching the face by symbol through `harness.faceRaised`,
+beside three reaching the kernels by import, and said so in its header: "the C
+face is the one that disappears, so it is the one that rots." It was the last
+caller of `janet_fiber_push` in the whole tree.
+
+So the rule that falls out is narrow and worth stating: **a face whose only
+remaining caller is the contract that tests it has no callers.** The test is
+not a use. The case is deleted and the header now says why, which is the
+second half of rule 30 — say in the file which half of a two-sided claim
+survived, because the next reader will look for the other half.
+
+### Three counters that the type system already holds
+
+`vm_lifecycle`, `vm_entry`, `vm_calls` and `vm_run` each counted the refusals
+they expected and compared a total at the end, with `EXPECTED_PANICS` and
+`EXPECTED_REPORTS` maintained by hand — and in two files with a second value in
+an `#ifdef` arm, because a build without the assembler expects four fewer. All
+of it is gone.
+
+The reason it existed is `EXPECT_PANIC`'s shape: a macro whose failure to fire
+is a statement that did nothing, and a case that silently stopped raising was
+indistinguishable from one that passed. `harness.raised` answers `?Raise` and
+every site unwraps it, so a refusal that stops arriving fails on its own line.
+
+`vm_entry`'s pair is the interesting one, because the two counters were holding
+a *distinction* rather than a total: "the same refusal delivered by the wrong
+mechanism would still carry the right message". Four of the six entry points
+report a `JanetSignal` and two raise, and getting that backwards turns a
+recoverable error into an abort. In Zig that distinction is in the type —
+`janet_pcall` and `janet_continue` return `JanetSignal`, `stepImpl` and
+`callImpl` return `raise.Error!T`, and `harness.raised` will not compile
+against anything else. A refusal that changed mechanism would not build.
+
+### `harness.frame`, and the guard that disappeared
+
+One addition to the shared vocabulary, on the group that first needed it:
+`harness.frame.at` and `harness.frame.current`, which are `fiber.h`'s
+`janet_stack_frame` and `janet_fiber_frame` — macros `@cImport` does not
+translate. Three of the five contracts need them at once. `test/fiber_core.zig`
+predates this and keeps a private copy beside two other `fiber.h` macros
+nothing else needs, which is the same call `harness.heap` records.
+
+And one guard that is simply gone. `test/vm_lifecycle.c`'s
+unregistered-cfunction case ran only under `JANET_ZIG_DEBUG_FRAMES`, because
+the C implementation read a cfunction registry entry without checking it for
+null and dereferenced null for a function `janet_cfuns` never saw — `FOUND.md`
+has it, and `build.zig` passed that file a macro so the case could be pinned
+where it was defined and skipped where it was not. There is one implementation
+now. The case is unconditional and the macro is one fewer thing `build.zig`
+defines.
+
+### Verified to be capable of failing
+
+Five subject mutations, one per contract, each caught, each checked against
+rules 21, 23 and 26 — the build's exit status asserted before the contract ran,
+and no candidate taken from the image generator's path:
+
+- `janet_interpreter_interrupt_handled` incrementing instead of decrementing,
+  so the interrupt counter never balances (`vm_state`);
+- `sandbox` no longer asserting `JANET_SANDBOX_SANDBOX` against itself, which
+  is the whole one-way property (`vm_lifecycle`);
+- `callImpl`'s arity cascade saying "at most" where it means "at least", which
+  is the branch that reads plausibly when wrong (`vm_entry`);
+- `binopCall`'s right-hand fallback passing its operands in source order rather
+  than swapped, which a commutative operator would hide (`vm_calls`);
+- `JOP_CALL`'s plural inverted, `argument` for `arguments`, which is the
+  mutation the C contract's own comment records finding a gap with (`vm_run`).
+
+### The instruments
+
+`zig build test`, green; every contract run by name in a loop rather than
+trusting either driver's abort-at-first-failure (rule 10) — **47 Zig PASS**, up
+from 42, and **17 C PASS**, down from 22; five subject mutations, each caught;
+two configurations by hand under rule 19 — `-Ddocstrings=false`, the standing
+entry, and `-Dsourcemaps=false`, which `vm_lifecycle` names in the source-map
+half of its Janet-frame case; and the acceptance matrix with `CONTRACTS`
+retargeted to this increment's five, at **21 PASS / 0 FLAKY / 0 FAIL in
+176.7s**, every per-entry time at its usual cost.
+
+One note on the C loop, which is rule 10's trap one level up and cost a
+misreading: **a plain `zig build` does not install `janet-contract-test`.** It
+goes through `installTest`, which returns early without `-Dinstall-tests=true`,
+so `zig-out/bin/janet-contract-test` does not exist and a by-name loop over it
+reports every C contract as failing. `janet-zig-contract-test` is installed
+unconditionally, which is why the Zig half of the loop needs nothing.
+
+A benchmark is owed under rule 18 and was taken: this increment edits `runVm`.
+Two `ReleaseFast` binaries, `HEAD` in a worktree against this tree, twelve
+stack layouts each on the Phase 9 corpus, minimum per workload, run twice:
+
+| | before | after | run 2 |
+| --- | --- | --- | --- |
+| arithmetic | 0.047923 | 0.048179 | +0.8% |
+| fib | 0.016416 | 0.016182 | −0.4% |
+| methods | 0.017830 | 0.019086 | **+5.2%** |
+| tables | 0.055510 | 0.055890 | +1.5% |
+| strings | 0.051615 | 0.051586 | −0.5% |
+| compiler | 0.044968 | 0.044906 | +0.6% |
+| pegmatch | 0.040856 | 0.040976 | −0.8% |
+| opfallback | 0.016654 | 0.016558 | +0.9% |
+| pegcall | 0.006963 | 0.006920 | −0.1% |
+| fibers | 0.026277 | 0.026080 | +1.1% |
+
+Everything inside `bench-layout.sh`'s ±5% resolution except **`methods`**, at
++7.0% and +5.2% over two passes — reproducing in the same direction while the
+control and every other workload stay flat.
+
+It was probed rather than shrugged at, per rule 16's discipline. The obvious
+suspect is the eight `@export`s this part removed from `vm_calls.zig`, since
+`methods` is `(:bump obj 1)` four hundred thousand times and therefore the most
+`JOP_CALL`-dense workload in the corpus. Restoring `janet_method_invoke`,
+`janet_resolve_method` and `janet_method_lookup` and rebuilding gives 0.018902
+against the final tree's 0.019180 and the baseline's 0.018235 — about a third of
+the gap, so **the exports are not the explanation**.
+
+What is left is codegen. `runVm` is one enormous function, and the fix above
+adds two error-propagation points to its dispatch switch where there were none;
+`bench-layout.sh` marginalises *stack* layout and does nothing about *code*
+layout, which its own header records as worth ±5% on the dispatch-heavy
+workloads between builds differing in one file. So: recorded, not resolved, and
+accepted — five percent on one workload is the price of a raise that no longer
+disappears.
+
+## The registry and arguments
+
+*Phase 11 Part 13.* `utils`, `registry`, `core_env` and `args_core` — 2,187
+lines of C for 2,441 of Zig, **one** C-ABI face retired, and a live defect in
+the layer every cfunction opens with.
+
+The group's headline number is the small one. Twelve parts of contract
+migration have retired thirty-one faces, and this group — which contains the
+largest face family in the tree by an order of magnitude — retires exactly one.
+That is not a disappointing result; it is the answer to the question the
+exported-symbol-surface bullet keeps asking, and it arrives from the opposite
+side of every previous part.
+
+### The defect: `(string/format "%d" "x")` killed the process
+
+`args_core.zig`'s `Wide` builds `getInteger64` and `getUInteger64`, and with
+integer types enabled those two do not fill in a `JanetArgFault` at all: they
+delegate to the conversion in `inttypes.zig`, which raises a message of its own.
+The delegation was written as
+
+```zig
+const int_types_enabled = @hasDecl(c, "janet_unwrap_s64");
+...
+if (int_types_enabled) return unwrap(argv[@intCast(n)]);
+```
+
+with `unwrap` bound to `c.janet_unwrap_s64` — **the C face**, which is
+`raise.reported` over `inttypes.unwrapS64`. So a refusal inside a
+`raise.Raising` function became a report nobody consumed: the getter answered
+`reportToC`'s zero, its caller carried on with a value the user never supplied,
+and the outstanding report killed the process at the next scope boundary.
+
+```
+$ janet -e '(try (string/format "%d" "x") ([e] (print "caught: " e)))'
+janet abort: a raise was reported to a C caller and never consumed
+```
+
+Seven call sites are affected — `pp_format.zig`'s `%d`/`%x`/`%o`/`%u`,
+`io_core.zig`'s seek offset, `buffer_array.zig`'s `buffer/push-uint64`,
+`os_calendar.zig`, `ffi_marshal.zig` and `ffi_core.zig` — and the C original
+propagated correctly, because `janet_getinteger64` called `janet_unwrap_s64`
+and that `longjmp`ed. It is a regression the port introduced against the C
+baseline rather than a defect in the C implementation, so `FOUND.md` and
+guiding principle 8 do not reach it and the fix is taken here. `inttypes.zig`
+gained the two Zig entry points the rest of the tree already has a name for —
+`unwrapS64` and `unwrapU64` — and `Wide` calls those.
+
+```
+$ janet -e '(try (string/format "%d" "x") ([e] (print "caught: " e)))'
+caught: can not convert string "x" to 64 bit signed integer
+```
+
+**How it was found is the part worth keeping.** Not by a grep and not by a
+type: by translating a *skip*. The C contract carries
+
+```c
+#ifndef JANET_INT_TYPES
+    EXPECT_PANIC(janet_getinteger64(argv, 1), "bad slot #1, expected 64 bit signed integer, got 1.5");
+#endif
+```
+
+and its expected-panic count is 70 with integer types and 74 without. A
+transcription would have carried the `#ifndef` across unexamined; asking *why*
+those two cases are skipped in the default configuration is what turned up the
+answer — because there the refusal is not a fault the layer renders — and
+asking how it raises instead is what found the face. This is Part 12's lesson
+with a different trigger. There, `harness.raised` demanded an error union and
+the subject did not return one, so the compiler asked the question. Here
+nothing failed to compile: **the question came from a conditional the C
+contract had no reason to explain.**
+
+The two cases are now asserted in *both* configurations rather than skipped in
+one, which is the assertion the C contract could not make and the reason there
+is no expected-panic counter in the migrated file.
+
+### One face, seventy names, and what that says about the export surface
+
+`janet_text_substitution` is the whole harvest. It is declared in `util.h`
+alone, its only in-tree caller reaches `registration.textSubstitution` by
+import, and its last C caller was `test/registry.c` — rule 12's shape exactly.
+It was a plain `@export` with no `.visibility`, so the shared library went from
+**755 exported symbols to 754**: rule 34 in the other direction, where the one
+face that dies is one symbol shed.
+
+Nothing else could go, and the reason is the finding. `args_core.zig` exports
+**fifty-one** `raise.panicking` faces — `janet_getnumber` through
+`janet_optcstring`, `janet_fixarity`, `janet_arity` — and every one of them is
+what `janet.h` promises an embedder writing a native module. The runtime does
+not call any of them: it reaches the layer through `arglayer.zig`, so the only
+Zig callers left are `interop.zig` and `native_module.zig`, and both wrap each
+call in `raise.crossing` deliberately. The same is true of `janet_var`,
+`janet_var_sm`, `janet_register`, `janet_resolve_core`, `janet_cfuns_prefix`,
+`janet_cfuns_ext_prefix`, `janet_native` and `janet_core_lookup_table`.
+
+Counted rather than asserted, over `src/**.zig` with comments stripped:
+**sixty-five of `args_core.zig`'s eighty public exports**, seven of
+`registry.zig`'s fourteen and three of `core_env.zig`'s six have no caller
+anywhere in `src/` — seventy-five names. Two exclusions keep the number honest.
+`janet_register_abstract_type` is left out because `test/marsh.c` still calls
+it. And `utils.zig`'s four head accessors are left out although the same grep
+flags them, because `@cImport` translates `janet_string_length` and its kin
+into inline functions that call the *prototype*: every one of the runtime's
+hundreds of `c.janet_string_length` calls is an indirect call to
+`janet_string_head`, and a name search does not see it. That is worth
+remembering the next time this bullet is measured.
+
+So the count of public exports with no in-tree caller, which Parts 10, 11 and
+12 grew to eighteen, is now **ninety-three** — and the shape of the remaining
+decision is clear in a way it was not before. It is not a list of names to
+prune one at a time. It is a question about `janet.h`, and this group is most
+of the answer.
+
+**The grep found one thing beside that**, and it belongs to the same bullet
+rather than to this migration: the **twenty-eight `janet_arg_*` kernels** in
+`args_core.zig` are plain `export fn`s with no caller outside their own file.
+They are declared in `state.h`, they exist because the C arm of `-Dargs-core`
+called them across the seam, and that arm has been gone since Phase 10 Part 18.
+Twenty-eight symbols, each removable by deleting the word `export`. Left alone
+here on purpose — the phase's bullet says the central fix is an
+exported-symbols list on the link rather than hand-edited visibilities, and
+twenty-eight by hand is exactly the thing that argument is against.
+
+`janet_get_core_table` is a third case and a smaller one: an internal export
+whose only remaining user is the contract that tests it. Rule 33 says not to
+count the contract, so it has none — but it is an implementation rather than a
+face, and deleting it would delete behaviour, so it is recorded rather than
+taken.
+
+### The oracle the head accessors lost, and the two that already existed
+
+`test/utils.c` opened by comparing each of the four head accessors with the
+macro of the same name:
+
+```c
+assert((janet_string_head)(s) == janet_string_head(s));
+```
+
+`janet.h` declares both, C callers get the macro and an embedder linking the
+shared library gets the function, and the port has to keep them the same
+pointer. **`@cImport` prefers the prototype**, so there is one spelling in Zig
+and a translation would compare `c.janet_string_head` with itself — rule 25's
+shape, met for the third time this phase.
+
+Rule 24 says to ask where the comparison already lives before building a third
+one, and both halves of this one were already built. `test/abi.c` carries
+`sizeof(Head) == offsetof(Head, data)` for all five heads as static assertions,
+which is C's view of `janet.h`'s layout and the only place the flexible array
+member is visible at all — Part 8 moved them there for this reason.
+`test/gc_mark.zig` carries the run-time half, that the runtime's own `@sizeOf`
+arithmetic agrees with what the allocator did.
+
+What is left for the migrated file is a real question rather than a
+consolation: **the four accessors in `utils.zig` recover what four other files
+wrote.** A string's length goes in through `string_symbol.zig`'s private
+`stringHead` and comes out through `utils.zig`'s `headOf`; a struct's through
+`struct_table.zig`'s. So each case builds a value with a constructor and reads
+its head back with the accessor, plus one assertion that the accessor moved by
+exactly `@sizeOf(Head)` — the Zig side of the equality `abi.c` pins from the C
+side.
+
+### A contract's premise can be about data, and then `const` is the wrong word
+
+Rule 28 says a contract whose premise is "these two things differ" must ask
+what makes them differ *to the compiler*, and Part 11 met it as three identical
+cfunction bodies folding into one address. **Part 13 met the same rule in
+data.**
+
+`test/registry.c` declares two abstract types with the same name, because the
+section is about the registry refusing a second type under a name that is
+taken:
+
+```c
+static const JanetAbstractType probe_at = { "registry/probe", NULL, ... };
+static const JanetAbstractType probe_at_same_name = { "registry/probe", NULL, ... };
+```
+
+Transcribed as two `const`s, their initialisers are identical and every
+optimize mode above Debug merges them into one address. Registering the
+"different" type then registers the *same* pointer, which is the no-op case
+asserted three lines earlier, so no refusal happens and `harness.raised(...).?`
+unwraps a null. The matrix reported
+
+```
+FAIL  ReleaseSafe   test / error: process terminated with signal ABRT
+FAIL  ReleaseFast   test / error: process terminated with signal ABRT
+FAIL  ReleaseSmall  test / error: process terminated with signal TRAP
+```
+
+with `zig build test`, `port/contract.sh` and every by-name run — all Debug —
+green. That is rule 29 exactly, and the diagnosis followed its recipe: build
+`-Doptimize=ReleaseSafe` by hand, run the driver with no argument, and read
+which contract the list stops after.
+
+The fix is one word: `var` rather than `const`, since two mutable objects must
+have distinct addresses and nothing writes to either. The premise is now also
+*asserted* at the head of the section, so a future merge fails by name instead
+of as a null unwrap three assertions later.
+
+**So rule 28 generalises past function bodies.** Identical function bodies fold;
+identical constant initialisers merge. The question is the same one — is this
+contract's premise a premise the compiler shares — and the answer has to be
+made true rather than assumed in both.
+
+### The registry finally gets distinct keys
+
+The C original's growth section says its own limitation out loud: "every row
+needs a distinct key, and the key is a function pointer, so the keys have to
+come from somewhere. Offsetting into a table of distinct pointers is not
+available in portable C." It settles for pushing the *same* pointer 513 times,
+so the ordering assertion beside it — that the whole registry is sorted by
+pointer — ran over three distinct rows and five hundred identical ones.
+
+A comptime family gives as many distinct probes as are asked for, and each
+returns a different integer so that rule 28's fold is illegal. Sixteen of them
+are registered and each is looked up afterwards, so a sort that loses or
+duplicates a row is caught rather than merely ordered. The capacity fill stays
+as it was, with a repeated pointer, because what it tests is the `realloc` and
+neither the growth nor the new capacity reads the key.
+
+### `harness.faceRaised` learns that a face can return something
+
+One harness edit, and it is the kind rule 22's neighbourhood produces:
+`faceRaised` called its face as a bare statement, which every previous user
+could afford because every previous face returned `void`. `janet_native`
+answers a `JanetModule`, so the call is now discarded with `_ =`. What it
+answers on the raising path is `reportToC`'s zero rather than anything a
+contract should read, and the declaration says so.
+
+`harness.internal` gained seven `util.h` declarations — `janet_hash_mix`,
+`safe_memcpy`, `janet_strbinsearch`, the two dictionary probes,
+`janet_binding_from_entry` and `janet_get_core_table` — under the block's
+standing reason rather than a new one.
+
+### Three shims emptied, and none of them retired
+
+`CONTRACT_AT` went from four users to one, `janet_contract_cfunction` from two
+to one, and the `arm`/`raised`/`signal` trio from nine to six. Nothing reached
+zero: `test/marsh.c` is the last `CONTRACT_AT` user and `test/ev_loop.c` the
+last `janet_contract_cfunction` user, and each dies with a contract this phase
+already plans to migrate. Rule 22's sweep ran and found nothing already stale.
+
+### Verified to be capable of failing
+
+Four mutations, one per contract, each built successfully before the contract
+ran (rule 23) and each caught:
+
+- `janet_sorted_keys` stops skipping tombstones, so an empty dictionary sorts
+  to `cap` rather than to nothing (`utils`);
+- `janet_registry_put` stops setting `registry_dirty`, so the sort never runs —
+  which the runtime survives, because the linear scan in `janet_registry_get`
+  makes the bisection dead code (`registry`);
+- a parse failure reports `JANET_DO_ERROR_COMPILE` (`core_env`);
+- `checkRange`'s upper bound becomes exclusive, so every width rejects its own
+  maximum (`args_core`).
+
+### The instruments
+
+`zig build test`, green. Every contract run by name rather than trusting either
+driver's abort-at-first-failure (rule 10) — **51 Zig PASS**, up from 47, and
+**13 C PASS**, down from 17. Part 12's note about the C loop needs one more
+word: `-Dinstall-tests=true` puts `janet-contract-test` under
+`<prefix>/test/`, not `<prefix>/bin/`, and a loop pointed at `bin/` reports all
+thirteen as failing — rule 10's trap for the third time, and it costs a minute
+every time because the symptom is a clean sweep of failures rather than an
+error. Four subject mutations, each caught. Two
+configurations by hand under rule 19: `-Ddocstrings=false`, the standing entry,
+which `registry` names because `checkEntry` asserts a `:doc` key; and
+**`-Dprf=true`**, which `utils` names because `janet_string_calchash` has two
+implementations and the configuration picks one. The matrix has no `prf` entry
+and neither did anything else, so the half-SipHash constants in that branch had
+never been run in this project's life. They pass.
+
+The acceptance matrix with `CONTRACTS` retargeted to this increment's four, at
+**21 PASS / 0 FLAKY / 0 FAIL in 177.4s**, every per-entry time at its usual
+cost — after the `const`-merge failure above, which is what the first run was
+for.
+
+A benchmark is owed under rule 18, because the defect fix edits the argument
+layer. Two `ReleaseFast` binaries, `HEAD` in a worktree against this tree, over
+two million `(string/format "%d" i)` calls — the densest `getInteger64`
+workload the tree can express — at 0.23/0.24s before and 0.23/0.24s after. The
+change replaces a C-ABI call with a direct one, so a regression would have been
+a surprise; the point of measuring was that the call is on a hot path at all.
+
+`panics.py` is 0 and stays 0.
+
+## The marshalling and PEG group
+
+*Phase 11 Part 14.* `marsh` and `peg` — 1,635 lines of C for 1,651 of Zig,
+**zero** C-ABI faces retired, **two `test/support.zig` shims retired outright**,
+one live defect fixed, and seven more of the same defect found by a sweep that
+had never been run.
+
+Two contracts rather than four, because the group is two. It is also the group
+that finally empties something: `janet_contract_abstract_type` — the
+`CONTRACT_AT` macro and the sixty-four-entry adapter pool under it — and
+`janet_contract_raising` both went to zero users here, the first shims a single
+increment has emptied since Part 12's `janet_contract_adapt_regs`.
+
+### The defect: `janet_marshal_size` had no raising twin
+
+`marsh.zig` exposes the marshal context API twice: a `pub fn` that raises and a
+`raise.reported` face over it, so that a Zig caller reaches the first and a
+native module the second. Twenty of the twenty-one entry points have both.
+`janet_marshal_size` had only the face:
+
+```zig
+export fn janet_marshal_size(ctx: [*c]c.JanetMarshalContext, value: usize) callconv(.c) void {
+    raise.reported(marshalInt64(ctx, @bitCast(@as(u64, value))));
+}
+```
+
+and `marshalling.zig`'s header said, in the list of what it deliberately left
+out, that `janet_marshal_size` was "reached from inside the subsystem". It was
+not. `peg.zig`'s `pegMarshal` and `io_core.zig`'s `fileMarshal` are both
+`raise.Raising` callbacks and both called the face, so a refusal inside it
+became a report nobody consumed — the callback carried on writing, and the
+outstanding report killed the process at the next scope boundary.
+
+What can refuse there is a buffer that will not grow. `marshalInt64` reaches
+`bufferExtra`, which raises `buffer overflow` past `INT32_MAX` and
+`buffer cannot reallocate foreign memory` on a pointer-backed one; `marshal`
+takes a target buffer as its third argument and `ffi/pointer-buffer` makes a
+foreign one, so the whole path is spellable from Janet:
+
+```
+$ janet -e '(def b (ffi/pointer-buffer (ffi/malloc 64) 11 0))
+            (try (marshal (peg/compile "a") @{} b) ([e] (print "caught: " e)))'
+janet abort: a raise was reported to a C caller and never consumed
+```
+
+Eleven is not arbitrary, and sweeping the capacity is what pins the diagnosis
+to one call rather than to the subsystem:
+
+| capacity | 9 | 10 | **11** | 12 | 13 | 14 | 16 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| before | raises | raises | **abort** | raises | raises | raises | fits |
+| after | raises | raises | raises | raises | raises | raises | fits |
+
+`LB_ABSTRACT` plus the eleven bytes of `core/peg` fill exactly eleven, so
+capacity 11 is the one where the *first* write that overflows is
+`janet_marshal_size`. At every other capacity the overflow lands in a call that
+already raised properly, which is why nothing had ever seen this.
+
+`marsh.marshalSize` is the twin, `janet_marshal_size` is now
+`raise.reported` over it, and both callbacks `try` it. This is a regression the
+port introduced against the C baseline rather than a defect in the C
+implementation — `janet_marshal_size` `longjmp`ed there — so `FOUND.md` and
+guiding principle 8 do not reach it, and the fix is taken here. That is Part
+12's and Part 13's reasoning for the third time.
+
+### The sweep this one deserves, and the seven it found
+
+Parts 12, 13 and 14 have each found this defect a different way — a type that
+would not unify, a `#ifdef` with no stated reason, a callback written out in
+full. All three are accidents of what the increment happened to be doing, and
+the class is mechanically enumerable:
+
+  1. every `export fn janet_*` whose body contains `raise.reported`;
+  2. every `c.janet_*` call site of one in `src/zig`;
+  3. whether the *enclosing* function's return type is `raise.Raising`.
+
+Seventy-nine reporting faces, twenty-nine call sites, **nine raising callers** —
+two of them in `ev_loop_extern.zig`, which is one of the eleven stranded
+`_extern.zig` files nothing analyses, so they are noise. The other seven are
+live and are the same defect:
+
+| face | raising caller |
+| --- | --- |
+| `janet_stream` | `filewatch_core.zig`'s `init` (twice) and `add`, `os_files.zig`'s `openImpl` |
+| `janet_loop` | `core_env.zig`'s `janet_dobytesImpl` and `loopFiber` |
+| `janet_compile_lint` | `compiler_primitives.zig`'s `cfunCompile` |
+
+Each is one line. **None is taken here**, and the reason is scope rather than
+doubt: every one belongs to a subsystem whose contract has not migrated —
+`filewatch_core`, `io_core`, `ev_loop`, `core_env`, `compiler_primitives` —
+and turning a contract migration into seven runtime edits across five
+subsystems is how an increment stops being reviewable. `phase_11.md` carries
+them as an item of their own.
+
+The sweep itself is the more useful output. It costs seconds, it is the third
+increment in a row to want it, and it should be run per increment from here
+rather than waited for.
+
+### `BAIL_IF_RAISING`, and what a shim count hides
+
+`test/marsh.c` could not define an abstract type. The hinge typed
+`JanetAbstractType`'s `marshal` and `unmarshal` as raising Zig functions, so a
+C contract's callbacks had to go through `janet_contract_abstract_type`, which
+wrapped each in a thunk that turned a standing report back into an error. What
+that cost inside the callback is the part worth keeping:
+
+```c
+#define BAIL_IF_RAISING(value) do { if (janet_contract_raising()) return (value); } while (0)
+
+static void *probe_unmarshal(JanetMarshalContext *ctx) {
+    Probe *probe = janet_unmarshal_abstract(ctx, sizeof(Probe));
+    BAIL_IF_RAISING(NULL);
+    probe->i32 = janet_unmarshal_int(ctx);
+    BAIL_IF_RAISING(probe);
+    ...
+```
+
+Eight reads, eight tests after them, and they were not defensive: the
+truncation section cuts the stream at every offset in turn, so each one really
+is reached, and a callback that carried on would read past the end of the
+source. In Zig every one of them is `try`, and `janet_contract_raising` — which
+existed for this file alone — goes with the file.
+
+The pool went the same way. Eight contracts used `CONTRACT_AT`; all eight have
+migrated, and a Zig contract writes `abstract_type.AbstractType` with raising
+callbacks directly. So the entry price the pool existed to pay is not paid
+differently — it is not paid. That is rule 27 again: the shims that made this
+group look expensive are exactly the part that cost nothing.
+
+### An oracle that could not be written where it was wanted
+
+`test/peg.c` asserted the shape of `janet_peg_type` — thirteen callbacks, each
+present or absent — through `janet.h`'s `JanetAbstractType`. The Zig runtime
+defines the same object as an `abstract_type.AbstractType`, which is the same
+layout with seven callbacks typed as raising. **Two descriptions of one table,
+and comparing them is rule 25's shape**: a duplication the port introduced,
+wanting the contract the old pair had.
+
+The migrated contract reads both, and both agree. What would not compile into
+an assertion is that they are the *same object*:
+
+```zig
+assert(@as(*const anyopaque, @ptrCast(&peg.janet_peg_type)) ==
+       @as(*const anyopaque, @ptrCast(&c.janet_peg_type)));   // fails
+```
+
+It fails, and the addresses are equal. `nm` says so —
+
+```
+00000001004d7608 (__DATA,__const) external     _janet_peg_type
+00000001004d7608 (__DATA,__const) non-external _peg.janet_peg_type
+```
+
+— and a `std.debug.print` of the two `@intFromPtr`s prints one number twice.
+**Zig compares the addresses of two distinct declarations at comptime, and two
+distinct declarations are not equal**, whatever the linker later does with the
+`export`. Sameness here is a link-time fact and the comparison never reaches
+run time.
+
+Two things came out of that, and neither is where the assertion started.
+
+**The layout claim went to `abstract_type.zig`**, which is rule 20's answer:
+ask what the two sides of the comparison were, and the answer may name a file
+the increment was not otherwise touching. That file already asserted
+`@sizeOf(AbstractType) == @sizeOf(c.JanetAbstractType)` at comptime, which is
+weak — every field is pointer-sized, so a field inserted into one mirror and
+removed from the other leaves the size alone and shifts every later slot, which
+is a `marshal` that dispatches to `unmarshal`. It now walks the two field lists
+together and compares names and `@offsetOf`. A `@compileError` reaches every
+build rather than one contract, and the claim is about the two types rather
+than about the PEG engine.
+
+**The identity claim went through the registry.** `janet_get_abstract_type`
+answers a pointer it was handed at registration, from the import side; comparing
+*that* with `&c.janet_peg_type` is a run-time comparison of a run-time value,
+so nothing folds it. Two lines, and together they say what one line could not.
+
+### Asking the wrong thing, and rule 35's limit
+
+`test/marsh.c` chose the weak-container lead bytes with `#ifdef JANET_EV`,
+because `LB_THREADED_ABSTRACT` and `LB_POINTER_BUFFER` sit inside that guard in
+the lead-byte enum and the seven weak bytes after them do not — so the weak
+bytes are 226..232 with an event loop and 224..230 without. That is upstream's
+defect and `FOUND.md` has it.
+
+Rule 35 says to ask the thing rather than the build that produced it, so the
+first translation asked the enumeration:
+`if (@hasDecl(c, "LB_POINTER_BUFFER")) 226 else 224`. It compiled, and it was
+wrong by two, because **the lead-byte enum is private to the subsystem and is
+in no header at all** — `@hasDecl` answered false in a build that has an event
+loop. The contract died on its first weak assertion.
+
+So rule 35 has a precondition: the thing has to be askable. What the contract
+asks instead is `c.JANET_VM_HAS_EV`, which is the config header's — the same
+input `marsh.zig`'s own `has_ev` reads, and the same one `#ifdef JANET_EV` was.
+What it must *not* read is `marsh.zig`'s `weak_base`, which is the arithmetic
+under test; that would be rule 8's circularity one import away, and it is the
+mistake that was available here.
+
+### Zero faces, and twenty-one more names
+
+Every entry point these two contracts reach is declared in `janet.h`:
+`janet_marshal` and `janet_unmarshal`, the twenty-one context functions,
+`janet_env_lookup` and `janet_env_lookup_into`, `janet_register_abstract_type`,
+`janet_peg_type`. None may go, for Part 13's reason exactly — they are what a
+native module writing a marshallable abstract type calls — so the library stays
+at **754 exported symbols** and this is the second increment running to retire
+nothing.
+
+What it adds is to the other side of the ledger. Twenty-one of them now have no
+caller anywhere in `src/`: `janet_marshal_size` (whose two callers this
+increment moved to the import), the six other `janet_marshal_*`, the eleven
+`janet_unmarshal_*`, the two `janet_env_lookup*`, and
+`janet_register_abstract_type` — which Part 13 had excluded from its count
+precisely because `test/marsh.c` still called it. Ninety-three becomes
+**114**. `janet_marshal` and `janet_unmarshal` are held out on the same rule
+Part 13 used, because `test/ev_loop.c` and `test/io_core.c` still call them;
+they make it 116 when those go.
+
+Three faces keep a runtime caller and are not on the list:
+`janet_marshal_abstract`, `janet_marshal_flags` and `janet_unmarshal_flags`.
+All three are field reads or a table insert — none can raise — which is why
+they were never the defect above and why nothing wants a raising twin for them.
+
+### Verified to be capable of failing
+
+Two mutations, one per contract, each built successfully before the contract
+ran:
+
+- `marshalPtr`'s unsafe gate inverted, so safe mode writes a pointer and unsafe
+  mode refuses (`marsh`) — caught;
+- `verifyBytecode`'s final pass tests `op_flags[i] == 0x03` rather than `0x01`,
+  so a rule operand pointing into the middle of another instruction is no
+  longer rejected (`peg`) — caught.
+
+**The first `peg` mutation is rule 23's trap for the third time.** Setting
+`peg.has_backref = 0` in `pegUnmarshal` left the local it replaced unused, Zig
+rejected the build, `zig-out` still held the previous binary, and the contract
+passed against an unmutated runtime. The exit-status check is what turned a
+confident wrong answer into a discarded attempt.
+
+### The instruments
+
+`zig build test`, green. Every contract run by name rather than trusting either
+driver's abort-at-first-failure (rule 10) — **53 Zig PASS**, up from 51, and
+**11 C PASS**, down from 13. Two subject mutations, both caught, and one
+discarded under rule 23. The full build after the migration, because
+`zig build zig-contract-test` does not build the C driver (rule 14).
+
+The acceptance matrix with `CONTRACTS` retargeted to `marsh` and `peg`, at
+**21 PASS / 0 FLAKY / 0 FAIL in 178.7s** against a usual 171s, every per-entry
+time at its usual cost. No hand-rolled configuration sweep beside it: the two
+entries these contracts name are both matrix entries — `no event loop` for
+`marsh`'s weak lead bytes, `no int types` for `peg`'s readint width — and `no
+peg` already carried the `skip` this contract needs.
+
+A benchmark is owed under rule 18, because the fix edits `pegMarshal`. Two
+`ReleaseFast` binaries, `HEAD` in a worktree against this tree, over 200,000
+`(marshal peg)` round trips — the densest `janet_marshal_size` workload the
+tree can express — at a minimum of 0.0573s before and 0.0582s after, with
+identical output byte counts. That is +1.5% on a corpus whose floor is about
+5%, so it is unresolved rather than a regression; the point of measuring was
+that a C-ABI call became a direct one on a path a contract now exercises.
+
+`panics.py` is 0 and stays 0.
+
+## The swallowed raises, and the sweep that had to be written three times
+
+*Phase 11 Part 15.* Not a contract migration. **Thirteen call sites across
+seven subsystems where a `raise.Raising` function reached a raise through a
+C-ABI face**, so the refusal became a report nobody consumed and the process
+died at an unrelated scope boundary. `port/swallowed.py` is the increment's
+real output; the fixes are what it found.
+
+### Why a script rather than an eleventh finding
+
+Three consecutive increments met this defect three different ways:
+
+| | how it was found | what it cost |
+| --- | --- | --- |
+| Part 12 | `harness.raised` demanded an error union and `vm_calls.fillString` did not return one | a compile error, free |
+| Part 13 | an `#ifndef JANET_INT_TYPES` in a C contract with no stated reason | a question nobody had to ask |
+| Part 14 | writing an abstract type's `marshal` callback out in full | a capacity sweep to localise |
+
+Every one of those is an accident of what the increment happened to be doing,
+and the symptom is the least informative message in the runtime:
+
+```
+janet abort: a raise was reported to a C caller and never consumed
+```
+
+It names neither the face nor the file, and it fires at the next protected
+scope rather than at the call. Meanwhile the class is mechanically
+enumerable, which is `phase_11.md`'s rule 40 and is what this part carries out.
+
+### The script, and the three times it was wrong
+
+Worth recording because each correction changed the answer, and the first
+version would have been published as complete.
+
+**First: `raise.reported` is not the only face constructor.** The hand-rolled
+version in Part 14 looked for `export fn janet_*` whose body contains
+`raise.reported`, and found seventy-nine faces and seven live sites. But
+`raise.panicking(f).face` ends in `reportToC` too, and those are `@export`ed
+from a `comptime` block rather than written as `export fn`. Counting both:
+**119 faces**, not 79.
+
+**Second: the caller is often not the raising function.** `net_sockets.zig`'s
+`makeStream` is a *non-raising helper* around `janet_stream` with four raising
+callers, and `vm_calls.zig`'s `methodToFun` sits two levels under `binopCall`.
+So a function that reaches a face and cannot itself propagate is a face in
+turn, to a fixpoint — **88 such helpers**.
+
+**Third, and the one that actually hid a defect: a call site need not spell a
+face at all.** `inttypes.zig` has
+
+```zig
+const unwrap = if (T == i64) janet_unwrap_s64 else janet_unwrap_u64;
+...
+var acc: u64 = @bitCast(Box(T).unwrap(argv[0]));
+```
+
+Nothing there is a `c.janet_*` call. The face is a bare identifier in the file
+that defines it, bound through a comptime alias, and read at the call site as a
+struct member. `grep c.janet_unwrap_s64 src/zig` reports the file clean. All
+three spellings are matched now.
+
+The counterweight is recognising a *legitimate* call, and there are three
+spellings of that too — `try raise.crossing(face(...))` wrapping it,
+`_ = try raise.crossing({})` on the following line, and an alias built through
+`raise.declared(...).call`. Getting that wrong is the difference between a
+report worth reading and six sites of which five are correct code.
+
+**Verified capable of failing**, which is rule 21 applied to a tool rather than
+to a mutation: re-introducing four of the fixed defects makes it name five
+sites (`inttypes` has two), and restoring them makes it silent again.
+
+### What it found
+
+Thirteen sites, of which eleven were found by the script and two more by
+reading the file it pointed at. Several are reachable from ordinary Janet
+source; the rest are the same shape on a path that needs a failing syscall.
+
+| face | raising callers |
+| --- | --- |
+| `janet_stream` | `filewatch_core.zig`'s `init` ×2 and `add`, `os_files.zig`'s `openImpl`, `net_sockets.zig`'s `makeStream` (four cfunctions under it, plus both accept callbacks) |
+| `janet_loop` | `core_env.zig`'s `janet_dobytesImpl` and `loopFiber`, `ev_loop.zig`'s `goThreadBodyImpl` |
+| `janet_compile_lint` | `compiler_primitives.zig`'s `cfunCompile` |
+| `janet_get` | `vm_calls.zig`'s `methodToFun`, under `resolveMethod`, `unaryCall`, `binopCall` and `mcall` |
+| `janet_unwrap_s64` / `janet_unwrap_u64` | every arithmetic method of `int/s64` and `int/u64`, through `Box(T).unwrap` |
+
+The last is the one that matters most, and it is **Part 13's defect in the file
+Part 13 fixed it for.** That part gave `inttypes.zig` the `unwrapS64` and
+`unwrapU64` entry points because `args_core.zig`'s `Wide` was reaching the face
+from a raising caller. It did not look at `inttypes.zig`'s *own* callers, and
+`Box`'s alias kept every boxed-integer operator on the face:
+
+```
+$ janet -e '(print (try (+ (int/s64 1) {}) ([e] (string "caught: " e))))'
+janet abort: a raise was reported to a C caller and never consumed
+
+$ janet -e '(print (try (+ (int/s64 1) {}) ([e] (string "caught: " e))))'   # after
+caught: can not convert struct {} to 64 bit signed integer
+```
+
+Any arithmetic between a boxed 64-bit integer and a value that will not convert
+— a table, a struct, a tuple, a string that does not scan, a keyword — killed
+the process instead of raising. `(+ (int/s64 1) "x")`, `(* (int/u64 2) [1])`,
+`(band (int/u64 1) :nope)` and the whole `r`-prefixed family with the operands
+the other way round.
+
+**Finding it needed a trace rather than the sweep**, because the sweep's third
+correction did not exist yet. `janet_zig_c_raise_record` with a
+`dumpCurrentStackTrace` in it names the reporting site directly, which is worth
+knowing: the abort's own trace names `janet_restore` and tells you nothing.
+
+### The two sites that looked like a design decision and were not
+
+`net_sockets.zig`'s remaining callers of `janet_stream` are **event-loop
+callbacks** — `acceptPosix` and `schedAcceptImpl` — and they were held back
+from the conversion on the reasoning that a callback has no scope above it to
+raise into. That is `abstract_type.zig`'s argument for typing `gc` and `gcmark`
+non-raising, and it is the right argument for *those* two. Their behaviour was
+worse than a swallowed report, which is what made the question feel like it
+needed answering rather than deferring: `raise.reported` answers `blank(T)`,
+and `blank` of a `*JanetStream` is a **null pointer**, so a refused
+registration left both dereferencing null on top of the outstanding report.
+
+**The argument does not survive reading the file.** `ev_callback.EVCallback`
+is
+
+```zig
+pub const EVCallback = *const fn ([*c]c.JanetFiber, c.JanetAsyncEvent) raise.Error!void;
+```
+
+— the hinge typed it raising exactly as it typed `JanetCFunction`. And ten
+lines from the site being excused, `acceptWindows` is *already*
+`raise.Raising(void)`, already reports a failed accept with
+`try evloop.cancel(fiber, ...)` and `janet_async_end(fiber)`, and the shared
+dispatcher already `try`s it. Only the POSIX half had been left non-raising.
+
+So there was no decision to take: the file had already made it, and the fix is
+the same conversion as the other ten. `acceptPosix` becomes raising and
+`schedAcceptImpl` too — the latter keeping its own `err`/`true` protocol for
+the two failures `janet_ev_lasterr` genuinely describes, and using `try` for
+the registration, which carries its own message. `swallowed.py`'s `ALLOW` list
+is empty, with the reason recorded beside it.
+
+**The general lesson is about where to look for a policy**, and it is cheap:
+before treating a conversion as a design question, read the sibling that does
+the same job on the other platform. Half of `#ifdef`-split code has already
+answered the question the other half is asking.
+
+**And the Windows arm needed a cross-compile to find its second caller.**
+`schedAcceptImpl` has two, one of them inside `acceptWindows`, which the host
+never compiles — so `zig build` was green with the conversion half applied.
+That is `AGENTS.md`'s standing warning, and it also turned up the *other*
+Windows failure this tree already carries: `test/ev_loop.c`'s three
+`INVALID_HANDLE_VALUE`s, which reproduce at the Part 14 commit and are owed to
+no recent increment.
+
+### Two things the type system now enforces
+
+`evloop.zig` gained `makeStream`, `makeStreamExt` and `loop`, which were
+missing from the façade rather than excluded from it — its header had said the
+loop's absent entry points "cannot raise", and all three can. A caller that
+reaches for the façade now gets the raising form by default.
+
+And the `inttypes` fix is **compiler-enforced**, which came out of trying to
+mutate it. Every `Box(T).unwrap(...)` call site is now `try Box(T).unwrap(...)`,
+so rebinding the alias to the face does not compile: `try` on a non-error value
+is an error. That is a stronger guard than any contract, and it is worth
+reaching for wherever a face and its twin differ only in a binding.
+
+### Contract coverage, and rule 23 a fourth time
+
+`test/inttypes.zig` gained `anUnconvertibleOperandRefusesCatchably`: six
+expressions through `janet_pcall`, each asserted to answer `JANET_SIGNAL_ERROR`
+*and* to carry the conversion's own message, which is what says the refusal
+travelled rather than being manufactured downstream. `test/vm_calls.zig`'s
+`methodLookup` section became raising, which is rule 33's corollary arriving
+from the runtime side — a signature change edits a contract that landed three
+parts ago.
+
+The first mutation for that coverage **failed to build**, and the reason is the
+paragraph above: reverting the alias leaves nine `try`s on a non-error value.
+Rule 23 says a mutation that fails to compile is not evidence, and here the
+failure is the point rather than an accident. The replacement — the conversion
+returning `0` instead of raising — compiles and is caught.
+
+### The instruments
+
+`zig build test`, green. **53 Zig contracts PASS and 11 C contracts PASS**, each
+run by name. `port/swallowed.py` silent, and verified capable of failing.
+`suite-net` at 43/43 and `suite-ev` at 832/832 run alone, because
+`net_sockets.zig` changed shape. The four cross-compiles by hand rather than
+only through the matrix, because this increment converts a function whose
+second caller is inside `acceptWindows` — `x86_64-windows-gnu` with
+`-Dinstall-tests=true` is the only thing that compiles it, and it caught the
+half-applied conversion. `panics.py` 0.
+
+The acceptance matrix with `CONTRACTS` retargeted to the six whose subjects
+changed — `inttypes`, `vm_calls`, `core_env`, `compiler_primitives`, `marsh`,
+`peg` — at **21 PASS / 0 FLAKY / 0 FAIL in 178.8s**, every per-entry time at
+its usual cost.
+
+### The benchmark, and a corpus that had to be rebuilt twice
+
+Rule 18 applies and hard: this increment converts `Box(T).unwrap`, which every
+boxed-integer operator reads twice per operation, and `methodToFun`, which the
+binop fallback and every keyword-callee `JOP_CALL` reach.
+
+**Ask what the changed lines are reachable from — of the benchmark, not only of
+the code.** The first corpus had a `length` on a buffer as its
+`methodToFun` workload. Probing it — a `std.debug.print` in each converted
+function, five iterations, count the lines — gives:
+
+| workload | `methodToFun` hits | `unwrapS64` hits |
+| --- | --- | --- |
+| `(length @"abcdefgh")` ×5 | **0** | **0** |
+| `(+ (int/s64 x) one)` ×5 | 5 | 12 |
+| `(:m t)` ×5 | 5 | 0 |
+
+`length` on a buffer is `JOP_LENGTH` handled in the interpreter; `janet_mcall`
+is only reached for an abstract without a `length` callback. So that row
+measured nothing this increment touched, and it became the **control**. The
+probe also earned the arithmetic row its place: `(+ (int/s64 a) b)` is not one
+converted path but both, at about one `methodToFun` and two-and-a-half
+`unwrapS64` per iteration.
+
+**And then the control said the corpus was not measuring.** At 400,000
+iterations the workloads ran 2–14ms, and a layout-swept control read
+**−6.1%** — larger than any workload. That is `AGENTS.md`'s rule exactly: a
+corpus whose control is large has not measured its workloads, whatever they
+say. Scaling the loops twenty-fold, to 300ms workloads and a 43ms control:
+
+| | pass 1 | pass 2 |
+| --- | --- | --- |
+| `s64arith` | −0.8% | +0.6% |
+| `u64arith` | −0.5% | −1.6% |
+| `method` | +0.9% | +2.0% |
+| **control** | **−1.5%** | **−1.2%** |
+
+Two `ReleaseFast` binaries, the Part 14 commit in a worktree against this tree,
+each swept over twelve initial stack layouts with the minimum per workload.
+Every sign flips between passes and no workload clears its own control, so the
+floor is about 2% and **nothing here is resolvable** — which is the answer a
+conversion that strictly removes a C-ABI indirection should give. What the
+measurement establishes is the absence of a regression on two hot paths, not a
+win.
+
+## The FFI group, and a seam that outlived both its ends
+
+*Phase 11 Part 16.* `ffi_layout`, `ffi_classify` and `ffi_core` — 1,966 lines
+of C for 1,906 of Zig, **twelve exported symbols retired**, and the largest
+move the library's export count has made in this phase: **754 to 742**.
+
+Three contracts, no shim emptied, and one finding that is not about the
+contracts at all. The FFI group is where the migration stopped being a way to
+kill *faces* and became a way to find a **seam** — a C-ABI boundary between two
+subsystems that were both Zig, kept because nothing had ever asked it to
+justify itself.
+
+### What the contracts were the last readers of
+
+`test/ffi_layout.c` opened with six hand-written declarations:
+
+```c
+/* Declared rather than included from src/core/ffi.c, so the contract depends
+ * only on the internal ABI it exercises. */
+int32_t janet_ffi_decode_prim(const uint8_t *name, int32_t len);
+```
+
+`test/ffi_classify.c` had five more and `test/ffi_core.c` four. None of the
+twelve is declared in `janet.h`, `state.h`, or any other header — they were
+`export fn`s reached by a hand-written `extern fn` at the one place that
+called them, which is what `ffi.c` needed when the type system was C and the
+kernels were the first Zig inside it.
+
+Phase 10 Part 18 made both ends Zig and nothing changed, because there was
+nothing to change: an `extern fn` declaration compiles forever, a symbol that
+resolves says nothing, and the calls kept working. `ffi_types.zig` was reaching
+`ffi_layout.zig` through the symbol table; `ffi_call.zig` was reaching
+`ffi_classify.zig` the same way. **The seam was invisible for two phases and it
+took a contract to ask about it**, because a Zig contract wants the same import
+its subject's caller wants, and writing the import is what makes the export's
+last reason visible.
+
+So the sequence is rule 12's, one level up. Rule 12 says the way to find a dead
+face is to migrate its contract and then delete it. Here the faces were *not*
+dead — each had exactly one caller — and the right move was to convert the
+caller. The twelve:
+
+| file | symbols | caller that was crossing |
+| --- | --- | --- |
+| `ffi_layout.zig` | `janet_ffi_decode_prim`, `janet_ffi_decode_cc`, `janet_ffi_type_extent`, `janet_ffi_layout_init`, `janet_ffi_layout_place`, `janet_ffi_layout_finish` | `ffi_types.zig` |
+| `ffi_classify.zig` | `janet_ffi_sysv64_classify`, `janet_ffi_aapcs64_classify`, `janet_ffi_win64_alloc`, `janet_ffi_sysv64_alloc`, `janet_ffi_aapcs64_alloc` | `ffi_call.zig` |
+| `ffi_call.zig` | `janet_ffi_trampoline` | its own three convention wrappers |
+
+All twelve were plain `export fn`s with no header, so all twelve were rule 34's
+*other* case: every one of them moved the number. Part 12 retired fourteen
+faces for three symbols; this one retired twelve for twelve.
+
+### Six copies of three structures, compared by nothing
+
+The seam cost more than the symbols. A C-ABI call between two Zig files needs
+the argument types spelled at both ends, so `TypeNode`, `ArgSlot` and
+`AllocResult` each existed **three** times — in `ffi_classify.zig`, in
+`ffi_call.zig`, and in `test/ffi_classify.c` — and `Layout` three times, in
+`ffi_layout.zig`, `ffi_types.zig` and `test/ffi_layout.c`. Nothing compared any
+pair of them.
+
+That is rule 38's hazard without rule 38's defence: `abstract_type.zig` mirrors
+`janet.h`'s `JanetAbstractType` and walks the two field lists together on names
+and `@offsetOf` as a `@compileError`, precisely because a pointer-sized field
+inserted on one side and removed on the other leaves `@sizeOf` alone. These
+mirrors had neither the walk nor the `@sizeOf`. And the risk was not
+hypothetical — Phase 10 Part 16 *appended* `arg_stack_count` to `AllocResult`,
+by hand, in two files, and the field's own comment records that it was appended
+rather than placed where it belongs "so that the field order the two arms of
+this selector already agree on is left alone". The arms have been gone since
+Part 18; the constraint they imposed outlived them by five parts.
+
+After the conversion there is one definition of each and the caller imports it.
+The count that used to be a `u32` parameter beside a `[*]ArgSlot` is a slice's
+own, and `packed_field: c_int` is a `bool`.
+
+### What the contracts should import, and what they must not
+
+The migration's one real judgement, and it goes both ways in the same file.
+
+`test/ffi_classify.c` declared its own copies of the three structures **and**
+its own copies of the primitive and word-spec ordinals, for one reason: both
+were file-local to `ffi.c` and a C contract could not reach either. Translating
+that faithfully would keep both copies; translating it lazily would import
+both. Neither is right.
+
+- **The structures should be imported.** What the C contract's copy bought was
+  a fourth unchecked mirror. One type shared by subject and contract cannot
+  drift, which is strictly stronger than a copy nothing compares.
+- **The ordinals must not be.** They are the *values* the classifier and
+  `ffi_call.zig`'s `Spec` enumeration agree on, and either end can be wrong
+  about them. `assert(decodePrim("void") == @intFromEnum(PrimType.void))` is an
+  assertion that cannot fail; `assert(decodePrim("void") == 0)` is the one the
+  C contract was making. Both files write the numbers out, with the reason at
+  the top.
+
+The distinction generalises and is `phase_11.md`'s rule 46: **import the thing
+whose identity matters, write out the thing whose value matters.**
+
+### The alignment oracle, rebuilt rather than translated
+
+`test/ffi_core.c` spelled its own alignment macro, because `alignof` is not in
+c99:
+
+```c
+#define ALIGNOF(type) offsetof(struct { char c; type member; }, member)
+```
+
+That is alignment derived from the compiler's *struct layout*. `@alignOf(T)` is
+the direct question — and it is also the expression `ffi_types.zig`'s `primInfo`
+uses, so a translation reaching for it would have compared `primInfo` with
+itself for all thirty-six entries. `alignOfMember` in the migrated file is the
+C macro's shape in Zig:
+
+```zig
+fn alignOfMember(comptime T: type) usize {
+    return @offsetOf(extern struct { leading: u8, member: T }, "member");
+}
+```
+
+Rules 8, 20, 24 and 25 ask what the two sides of the original comparison were.
+Here the answer was cheap, and asking is what kept the section from becoming
+thirty-six tautologies. The same question in `test/ffi_layout.zig` has the same
+shape and the same answer: the host-ABI section compared `janet_ffi_layout_*`
+against `offsetof` on three real C structures, and `extern struct` with
+`@offsetOf` is the same claim asked of the same ABI by a different
+implementation of it — Zig's, rather than this hand-written machine's.
+
+### What the migration added
+
+Lesson 2 again, and it is one line. Both classifiers open with a guard for a
+walk of no nodes:
+
+```zig
+if (nodes.len == 0) return sysv64_no_class;
+```
+
+Nothing had ever reached either guard. A zero-length array is not something
+`test/ffi_classify.c` could spell, and `ffi_call.zig` always serializes at
+least the root of a type. In Zig an empty slice is `&.{}`.
+
+### Verified to be capable of failing
+
+One mutation per contract, each after a build whose exit status was asserted —
+rule 23, and rule 26's reminder that a failure need not look like a compile
+error:
+
+| contract | mutation | result |
+| --- | --- | --- |
+| `ffi_layout` | `.{ "ulong", .uint64 }` → `.uint32` in the name table | caught |
+| `ffi_classify` | `node.struct_size > 16` → `>= 16` in the SysV struct rule | caught |
+| `ffi_core` | `result.arg_stack_count` assigned *after* the payload words are added | caught |
+
+The third is the one worth keeping. It collapses the outgoing/frame split that
+Phase 10 Part 16 added the field for — and **`ffi_classify` does not catch it**,
+checked by running that contract against the same mutant. The group's three
+contracts are not three views of one subject: `ffi_classify` asserts where each
+argument lands, and only `ffi_core` asserts how many of the resulting words are
+*parameters*.
+
+### The instruments
+
+`zig build test`, green. **56 Zig contracts and 8 C contracts PASS**, each run
+by name. `port/swallowed.py` silent, at 118 faces rather than 119 —
+`janet_ffi_trampoline` is a face by its shape and was correctly not a finding,
+because a callback entered from a C library has no scope above it to raise
+into, which is `abstract_type.zig`'s argument for `gc` and `gcmark`. `suite-ffi`
+11/11. `nm -gU zig-out/lib/libjanet.dylib | wc -l` at **742**, measured rather
+than subtracted. `panics.py` 0.
+
+The acceptance matrix with `CONTRACTS` set to this increment's three, at
+**21 PASS / 0 FLAKY / 0 FAIL in 178.2s** — the same wall time as Part 15's
+178.8s, with every per-entry time at its usual cost. Two entries earn their
+place here: `no dynamic modules`, which is the arm `ffi_core` takes when there
+is no native object to have, and the three optimize modes, which are where
+rules 28 and 36 would have fired if this group had carried a premise the
+compiler is allowed to break. It does not — nothing here needs two things to
+differ.
+
+### The benchmark
+
+Rule 18 applies: the increment converted four call sites in `ffi_types.zig` and
+`ffi_call.zig`, which is a runtime edit however test-shaped the reason for it.
+Nothing it touched is reachable from the Phase 9 corpus — the FFI is not on the
+interpreter's path — so the corpus is a new one, three workloads over exactly
+what changed and a control that no changed line is reachable from.
+
+Two `ReleaseFast` binaries, `HEAD` in a worktree against this tree, each swept
+over twelve initial stack layouts with the minimum per workload. Positive is
+slower:
+
+| | pass 1 | pass 2 |
+| --- | --- | --- |
+| `names` (`ffi/size`, `ffi/align`) | +1.5% | −1.7% |
+| `layout` (`ffi/struct`) | +0.3% | +1.6% |
+| `signatures` (`ffi/signature`) | −1.0% | −1.2% |
+| **control** (arithmetic) | **+1.1%** | **+1.0%** |
+
+Two of the three flip sign between passes and the third does not clear its own
+control, so the floor is about 1–2% and **nothing here is resolvable** — which
+is again the answer a conversion that strictly removes a C-ABI indirection
+should give. The measurement establishes the absence of a regression, not a
+win.
+
+## The arity bound, three phases after it was agreed
+
+*Phase 11 Part 17.* One line in `ffi_call.zig` and one section in
+`test/ffi_core.zig`. Not a port and not a migration: `FOUND.md`'s only
+agreed-but-unmade fix, taken as a deliberate divergence from upstream.
+
+`ffi/signature` stores `max_args` argument mappings and checked only the lower
+bound of its arity, so the loop that fills `mappings` and `slots` ran for
+however many types the caller passed:
+
+```zig
+try arglayer.arity(argc, 2, -1);
+const arg_count: u32 = @intCast(argc - 2);
+```
+
+Past the thirty-second argument that writes off the end of two stack arrays,
+into the builder's own frame and then its caller's — a safety trap in a checked
+build, a silent overrun in `ReleaseFast`, and upstream C's behaviour exactly.
+It needs no native library and no call, because `ffi/signature` only *describes*
+a call, so a binding generator building a signature from a computed list of
+types reaches it with nothing unsafe-looking anywhere in the program.
+
+The repair is the upper bound:
+
+```zig
+try arglayer.arity(argc, 2, @intCast(types.max_args + 2));
+```
+
+**Spelled `max_args + 2` rather than `34`**, because the bound is on `argc` and
+the first two arguments are the calling convention and the return type. The two
+numbers are the same limit counted from different ends, and the literal invites
+the question every reader will ask.
+
+### What the original write-up missed
+
+`FOUND.md` described the overrun as a write past `mappings` in the builder's
+frame. It is also a *call*-path defect: `abst.arg_count = arg_count` recorded
+the same unbounded count into the abstract, and `callSysv64` walks
+`while (i < sig.arg_count)` over a `sig.args` of exactly `max_args`. So a
+signature that survived being built would have been read out of bounds later,
+at every call. One bound closes both.
+
+### Why not Part 16, which had the file open
+
+Because Part 16's evidence is that nothing observable changed — three
+mutations, a matrix, a benchmark against its own parent commit — and a
+behavioural divergence inside that increment would make all of it harder to
+read. That is guiding principle 8's separation of compatibility work from
+design changes, applied to a change whose *decision* had already been taken
+three phases earlier. The trigger this fix had been waiting for fired twice
+without being noticed; what it needed at the end was not another trigger but an
+increment of its own, however small.
+
+### Verified to be capable of failing
+
+`test/ffi_core.zig` pins thirty-two argument types accepted, the thirty-third
+refused, and one far past the bound refused the same way — by message, so the
+case distinguishes the arity error from any other refusal. Restoring the `-1`
+makes the contract fail, checked rather than assumed. The limit is written out
+as a literal there rather than read from `types.max_args`: rule 46, since what
+a Janet program can observe is a value, and asking the subject how many
+arguments it accepts would pass whatever it answered.
+
+`zig build test` green, `ffi_core` at **17 raises** rather than 15, and the
+acceptance matrix at **21 PASS / 0 FLAKY / 0 FAIL**.
+
+## The FFI divergences, and a defect read backwards
+
+*Phase 11 Part 18.* Three deliberate divergences from upstream, taken together
+so that the FFI is one decision rather than three spread across the phase: the
+homogeneous float aggregate sized by bytes, its unrecorded mirror image on the
+return path, and the by-reference slot written eight times too far out. The
+first two are below; the third is at the end and is the only one that was a
+crash.
+
+AAPCS64 §6.8.2 passes a homogeneous floating-point
+aggregate in **one vector register per member**. The C implementation sized it
+by bytes, which agrees with the ABI exactly when a member is eight bytes wide —
+so an aggregate of `double` was right by coincidence, and one of `float` got
+half the registers the callee reads with two members packed into the first.
+`FOUND.md` had the entry; this is the increment that took it.
+
+### It is three changes, not one
+
+The entry predicted one: "count members rather than bytes for the `SSE` case".
+That is where the defect starts and not where it ends.
+
+**The allocator counts members.** `ArgSlot` gained `hfa_members`, filled by
+`slotOf` from the aggregate's `field_count` and left zero wherever the caller
+cannot say — a scalar, and a top-level array whose extent both conventions
+ignore for a reason `FOUND.md` records separately. The byte arithmetic still
+stands there, which is where it was always right.
+
+Worth noting what that field cost: **one edit**. Part 16 collapsed three copies
+of `ArgSlot` into one; before that this was three hand-edits with nothing
+comparing them, and the compiler would have said nothing if one had been
+missed. Here it said something useful instead — adding the field broke both
+contracts' slot builders, which is the collapse paying its first dividend.
+
+**The outgoing members are dealt out one to a register.** Counting was not
+enough. `marshal.writeOne` lays a struct out at its *natural* offsets, so two
+floats still went into the first register whatever the allocator had reserved
+behind it. The aggregate is marshalled to scratch and scattered eight bytes
+apart.
+
+**The returned members are gathered back**, and this half had no entry
+anywhere. Each member returns in its own vector register, so `Aapcs64ReturnSse`
+lands them at a stride of eight where the type's own layout is four:
+
+```
+ret_hfa2  (1.5 0)        want (1.5 2.5)
+ret_hfa3  (1.5 2.5)  ->  (1.5 0 2.5)
+```
+
+It was found by asking whether the defect had a mirror image — the entry
+describes an *argument* defect throughout, and "allocation" in its title hides
+that the same bank is read on the way back. **When a defect is about a
+direction, ask what the other direction does**; a register bank has two ends and
+an entry written from one of them will not mention the other.
+
+### A placement mistake worth recording
+
+The return gather went into `callSysv64` first, because the edit was anchored on
+`frame.release()` and that string appears in all three conventions. It compiled
+and every AAPCS64 case passed, because the code was in a function this host's
+probe never reaches. It would have corrupted a `{float, float}` SysV return.
+
+Nothing caught it — the probe on this machine runs AAPCS64, and there is no
+contract for a SysV struct return. What caught it was re-reading the diff for
+where it had landed. **An anchor that appears in three sibling functions is not
+an anchor**, and the check is one `grep` for the inserted line.
+
+### Verified to be capable of failing
+
+Each half separately, which is the point: they are two changes and a single
+mutation would not have distinguished them.
+
+| reverted | caught by |
+| --- | --- |
+| the allocator's member count | `test/ffi_classify.zig` |
+| the return gather | `test/ffi_core.zig` |
+| the by-reference slot's word index | `test/ffi_core.zig` |
+
+**And the contract is a better instrument than the probe here.** A Zig contract
+is compiled into the runtime, so it can define the callee itself and make a
+real `ffi/call` against a function in the same binary — `hfa2Weighted` and
+`hfa2Build` are eight lines, and they run under `zig build test` on every
+AAPCS64 host. `port/probe-16/abi/` needs a `zig cc`, a `.dylib` and a driver
+script to say the same thing. It keeps its place as the cross-convention
+instrument and gains `ret_hfa2`; `hfa2` there goes from 1 to 5.
+
+The section is gated on `ffi/calling-conventions` naming `aapcs64` rather than
+on `builtin.cpu.arch`, because what the case needs to know is which convention
+`:default` will resolve to — rule 7's question, one subsystem over.
+
+### The third one, where the repair is a deletion
+
+`AAPCS64_STACK_REF` read a byte offset as a word index, so the pointer to a
+by-reference payload was written eight times further out than the allocator
+planned — past the `alloca` block in C, and into the wrong slot here.
+`large_after_stack_arg` in the probe exited 134 because of it.
+
+It hid behind an accident worth stating, because it is why the defect survived
+a whole phase of FFI work: the offset is only wrong when it is *nonzero*, so a
+by-reference aggregate that is the first thing on the stack works, and one with
+any stack argument ahead of it crashes.
+
+The fix is one expression:
+
+```zig
+- const slot: *align(1) u64 = @ptrCast(frame.at(@as(usize, arg.offset) * @sizeOf(u64)));
++ const slot: *align(1) u64 = @ptrCast(frame.at(arg.offset));
+```
+
+and then `aapcs64FrameBytes` has no callers. That function existed only to grow
+the frame far enough that the misplaced write still landed in memory the call
+owned; with the write in the right place it is dead, and leaving it would be
+rule 31's trap. **The repaired version is sixteen lines shorter than the
+reproduction** — which is the answer to "what is the simplest way to handle
+this": the simplest and the smallest are the same edit here, because a
+workaround for a defect goes with the defect.
+
+**And the edit has to be scoped by hand, for the third time in this
+increment.** The identical expression appears in `callSysv64` and
+`callWin64`, and in both it is *correct*: those allocators assign `arg.offset`
+as a word index and count `stack_count` in words, where this convention counts
+bytes throughout. A file-wide replace breaks two working conventions and
+neither has a contract that would notice. That is the same hazard the misplaced
+`gatherHfaReturn` above demonstrated, met twice in one afternoon in the same
+three functions — so it is worth stating as a property of this file rather than
+as an anecdote: **`callSysv64`, `callWin64` and `callAapcs64` are three
+near-identical bodies over three different units, and no edit to one of them
+may be anchored on a string.**
+
+`large_after_stack_arg` now answers 1033, which is the right number and not
+merely a non-crashing one: nine integers weighted one to nine are the sum of
+the squares, 285, and `[11 22 33]` weighted ten to twelve is 748.
+
+`test/ffi_core.zig` has the case, built to defeat the accident — nine integers
+to exhaust the general bank and put one word on the stack, so the pointer slot
+lands at a nonzero offset where the two readings finally disagree. Verified by
+restoring both lines.
+
+**And the matrix earned its place again on the way in.** The first version of
+that case read its answer with `janet_unwrap_s64`, which `janet.h` declares
+only under `JANET_INT_TYPES`; `zig build test`, the contract by name and the
+probe were all green, and `-Dint-types=false` did not compile. The case returns
+a `double` now, because nothing in it is about the return type. This is rule
+3's family for the fourth time in the phase — **a contract that moves to Zig
+reaches `janet.h`'s declarations rather than its macros, and a declaration
+guarded by a feature is a configuration failure waiting for the sweep** — and
+it is the second time a *contract* has broken a reduced configuration rather
+than a subsystem.
+
+### One thing not taken, and why it is written down
+
+The same `SSE` arm does not set `next_fp_reg = 8` when an aggregate spills,
+where the `general` arm sets `next_general_reg = 8`. §6.8.2's C.4 says an HFA
+that does not fit exhausts the bank, so a later scalar float may not backfill
+the register it skipped. That looks like a defect of the same family and it is
+one line — but it has no entry, no reproduction, and no failing case on this
+host, and inventing all three inside an increment that already changes
+behaviour is how a fix arrives without evidence. Recorded here for whoever
+takes the `STACK_REF` decision, since both are §6.8.2 and want reading
+together.
+
+## The image stops being C, and the flags for compiling C run out of users
+
+*Phase 11 Part 19.* Not a port and not a contract migration. The bootstrap
+image was emitted as a C source file, compiled by a C compiler, and linked into
+every binary this tree produces; it is a marshalled byte stream reached with
+`@embedFile` now. That is the last C translation unit out of the product, and
+it is the item `phase_11.md` scheduled ahead of the remaining contract groups
+on the grounds that it needs no decision and is cheaper the earlier it lands.
+
+### What was actually being compiled
+
+`src/boot/boot.janet` printed the image as C text:
+
+```janet
+(print "static const unsigned char janet_core_image_bytes[] = {")
+(loop [line :in (partition 16 image)]
+  (prin "  ")
+  (each b line (prinf "0x%.2X, " b))
+  (print))
+(print "  0\n};\n")
+(print "const unsigned char *janet_core_image = janet_core_image_bytes;")
+(print "size_t janet_core_image_size = sizeof(janet_core_image_bytes);")
+```
+
+`build.zig` captured stdout as `janet-image.c` and handed it to
+`addCSourceFile` four times over: the static library, the shared library, the
+client, and the Zig contract driver. **2,007,197 bytes of file carrying 324,310
+bytes of image** — 84% of it hex text for a C compiler to parse, once per
+module, in every one of the matrix's twenty-one entries.
+
+`PLAN.md` counted zero `.c` files under `src/` while this was true, which is
+the sense in which it falsified the phase's own gate: the file is generated
+rather than checked in, so no `wc` over the tree ever saw it.
+
+**It is not a build-time argument, and that is worth measuring rather than
+assuming**, because 2,007,197 bytes of hex text invites one. `zig cc -c -O2` on
+that file is 0.19s with the cache busted, four modules take it, and a cold
+`zig build` is 7.6s. Three quarters of a second. The reason to do this is the
+gate and the C compiler in the pipeline, not the clock.
+
+### The generator was already Zig; only its output was not
+
+Worth stating because the two are easy to run together. Phase 10 Part 17g
+removed `-Dboot=c` — the image generator registers the whole core environment,
+so a C generator needed every C cfunction there is, and a cfunction stopped
+being a C function at the hinge. Part 18 then ported `src/boot/boot.c` to
+`src/zig/boot.zig`, the last `main` in C anywhere under `src/`. So for two
+parts the pipeline has been a Zig program emitting C for a C compiler to hand
+back to Zig.
+
+### The change
+
+The generator writes to a path rather than to stdout:
+
+```zig
+generate_image.addArg("image-out");
+const image_source = generate_image.addOutputFileArg("janet-image.bin");
+```
+
+and `boot.janet` `spit`s the bytes there, `spit` defaulting to `:wb` — which
+matters now that the payload is binary and did not while it was C text. A byte
+stream through a captured stdout is one text-mode host away from a translated
+`0x0A`, and this is a build-time tool that runs on whatever host is building.
+
+The image reaches the runtime as a module import rather than as a symbol:
+
+```zig
+if (image_source) |image| module.addAnonymousImport("janet_image", .{ .root_source_file = image });
+```
+
+added to the subsystems module inside `makeRuntimeGraph`, which is what makes
+one change serve both graphs — the runtime object and the Zig contract driver's
+second copy of it. `core_env.zig` replaces two `extern const`s with
+`@embedFile("janet_image")`.
+
+**`makeRuntimeGraph` takes the image as an optional and the bootstrap passes
+null**, because the generator is the one runtime built without an image: it is
+what produces one. Nothing needs guarding for that beyond the optional.
+`corefn.bootstrap` is comptime, so `imageCoreEnv` is not analysed in that
+build, and a container-level declaration nothing references is never resolved.
+That is the same laziness the `extern` relied on, one step earlier — it used to
+be the linker that was never asked.
+
+The ordering in `build()` changes with it. `zig_runtime` was the first thing
+built and is now built after the generator, because the object *contains* the
+image instead of being linked beside it.
+
+### One byte, and the assertion that settles it
+
+`janet_core_image_size` was `sizeof(janet_core_image_bytes)`, and that array
+ended in a `0` the emitter appended so it had a terminator. So the runtime has
+been handing `unmarshal` **324,311 bytes for a 324,310-byte image** for as long
+as there has been an image. `@embedFile`'s `.len` is the file's, so the length
+is now the image's.
+
+That is only safe if nothing read the extra byte, which was an assumption
+nobody had checked. `test/core_env.zig` checks it:
+
+```zig
+const image = core_env.core_image;
+var next: [*c]const u8 = null;
+const out = try marsh.unmarshal(image, image.len, 0, try core_env.coreLookupTable(null), &next);
+assert(harness.isType(out, c.JANET_TABLE));
+assert(@intFromPtr(next) == @intFromPtr(image) + image.len);
+```
+
+`unmarshal`'s fifth parameter reports where the stream stopped, and nothing in
+the tree passed it a non-null pointer for the core image. The stream ends
+exactly where the file does, so there was no slack the longer length was
+covering for.
+
+### `common_c_flags` had no users left, and nothing said so
+
+Two lines below the image in `addRuntimeSources`:
+
+```zig
+if (!sel.vector) module.addCSourceFiles(.{ .files = &.{"src/core/vector.c"}, .flags = common_c_flags });
+if (!sel.regalloc) module.addCSourceFiles(.{ .files = &.{"src/core/regalloc.c"}, .flags = common_c_flags });
+```
+
+`zigSelection` has said `.vector = true` and `.regalloc = true` **literally**
+since Phase 10 Part 18 deleted both files. Neither branch could be taken and
+each named a source that is not there. `build.zig` is an ordinary Zig program,
+so the branch compiles and the string is just a string — rule 31's blindness in
+the build script rather than in a subsystem, and rule 22's in a file nobody
+thinks of as code.
+
+Removing the image and those two lines left `common_c_flags` — the flag set for
+C compiled *into the product* — with **no user at all**, which Zig does not
+diagnose either, because an unreferenced container declaration is not an error.
+It is gone. `test_c_flags` remains and the name is now the whole distinction:
+every C flag in `build.zig` is a flag for something under `test/`.
+
+That is this increment's own evidence for its claim. "No C is compiled into the
+product" is otherwise a thing to be checked by reading; "the C flags have no
+users" is a thing the file says. The archive says it too — `ar t
+zig-out/lib/libjanet.a` lists **one object**, `janet-zig.o`, where it listed
+two. `boot.zig`'s header comment used to end "and the reason `janet-image.o` is
+in the archive".
+
+### The amalgamation went with it, having been dead for a phase
+
+The emitter above was the tail of one function that also produced the
+amalgamated `janet.c`: a `feature-header`, nine `local-headers` and fifty
+`core-sources`, each `slurp`ed and printed. Every one of the fifty is a
+`src/core/*.c` that Phase 10 Part 18 deleted, so `janet.c` has been
+unproducible for a phase and nothing in the tree asks for it. `Makefile` and
+`meson.build` name the same missing sources and are in the same state, which
+`phase_11.md` already records as a deletion rather than a decision.
+
+### `image-diff.py` had been unrunnable since Part 17g
+
+It built `-Dboot=c` and `-Dboot=zig` and diffed the two images. That option went
+with the last cfunction-bearing C arm, so every invocation since has failed at
+the first build — and nothing said so, because nothing runs it but a person.
+The same silence as a stranded `_extern.zig`, one directory over.
+
+Rewritten around the two questions it can still answer: the absolute host paths
+the image embeds, and the bytes against a saved copy (`--save` on one host,
+`--against` on the other), which is what the reproducibility bullet compares now
+that the artefact is the bytes rather than something to be recovered from C text
+around them.
+
+### And it was one of four
+
+Rule 47's own prescription is to grep `port/` for a build option an increment
+deletes. Two were deleted — `-Dboot` in Phase 10 Part 17g, `-D<selector>=c|zig`
+in Part 18 — and four scripts still passed one of them:
+
+| script | | |
+| --- | --- | --- |
+| `image-diff.py` | `-Dboot=c`, `-Dboot=zig` | repaired |
+| `differential.sh` | `-D<sel>=c`, `-D<sel>=zig` | **deleted** — there is no second arm to diff |
+| `panics.py` | globs `src/core/*.c` | **deleted** — the directory holds no `.c` |
+| `mutate.py` | `-Dboot=zig`, two of three stages | **repaired** |
+
+The last is the one that mattered, and it is worse than silence. The mutation
+sweep is a queued gate item; a sweep that reached the `boot` stage would have
+failed its build for a reason having nothing to do with the mutant, and
+`judge_boot` scores a failed build as **caught**. Every mutant would have come
+back caught and the sweep would have read as a perfect result. That is rule 23 —
+"a mutation that fails to compile is not evidence" — pre-armed in the tool
+rather than met one mutant at a time.
+
+**The `boot` stage went with its reason rather than being rewired.** It existed
+because `janet_core_env`'s bootstrap half was compiled only by the image
+generator and the generator was C by default, so a mutation to the Zig
+bootstrap half was not compiled by `default` at all. Part 17g removed the C
+generator; every `zig build` now builds `janet-boot` from these sources, because
+that is the only thing that can emit an image. `default` therefore reaches what
+`boot` was added for — and Part 10's lesson 26 is the evidence, two
+`value_wrap.zig` mutations having broken the bootstrap under a plain
+`zig build`. Two stages now, `default` and `full`.
+
+The repair is smoke-tested rather than assumed, which is the whole point of the
+finding: `./port/mutate.py --only 4` runs its two baselines — `zig build` ok in
+11s, `zig build test` ok in 8s — where the previous code would have died at
+`zig build -Dboot=zig` before reaching a mutant. The one site chosen came back
+`uncompilable`, which is the verdict rule 23 asks for and is exactly the
+distinction the broken stage would have destroyed: a build that fails for a
+reason unrelated to the mutant must not be scored as a catch.
+
+`differential.sh` and `panics.py` are the harmless kind and are deleted rather
+than repaired. `panics.py` counts `janet_panic` call sites surviving the
+preprocessor in `src/core/*.c` and can report nothing but 0 for the rest of the
+project; `differential.sh` runs one Janet script under both arms of a selector
+and there is no selector. **A gate check that can only report a constant is not
+a check**, and `phase_11.md`'s gate list carried the first of them as one.
+
+**And the first thing it reported is that the twenty-two absolute paths are
+zero.** Phase 10 Part 6 found the image is not reproducible across checkouts,
+because `build.zig` hands the C compiler absolute paths, `__FILE__` keeps them,
+and a core cfunction's source file goes into the image. A Zig-registered
+cfunction records a repo-relative path — `src/zig/subsystems/io_core.zig` — so
+the figure fell by one per C file an increment emptied and reached zero when
+Part 18 took the last of them. Every source path in the image today is
+repo-relative; `/Users` and `/private` appear nowhere in it. **Nobody knew,
+because the instrument that would have said so could not run.** That is half of
+the reproducibility bullet arriving as a measurement rather than as work.
+
+### Verified to be capable of failing
+
+Three mutations, all in the emitter, because that is where the new failure
+modes are.
+
+**A truncated image.** `(spit image-out (slice image 0 1000))` builds cleanly —
+`zig build` is green and the library links — and every runtime then dies with
+`unexpected end of source`. `zig build test` fails at seventeen `run exe janet`
+steps. Worth recording as a property rather than only as a check: **a plain
+`zig build` does not exercise the image at all**, and did not when it was C
+either. The link is not the test.
+
+**A trailing byte.** `(spit image-out (buffer image 0))` restores exactly what
+the C array had, and the new assertion fails at its own line with `next` one
+short of the end. Checked by running the mutated binary out of the cache rather
+than `zig-out`, because the build failed at the *run* step and `zig-out` still
+held the previous binary — rule 23's trap, arriving unprompted.
+
+**Both restored, and the image compared.** The bytes the byte-emitter writes
+are identical to the bytes the C emitter's array held, all 324,310 of them, the
+C form having carried a 324,311th that was the terminator. Two runs of the new
+generator agree with each other as well, which is same-host reproducibility and
+the cheap half of that bullet.
+
+### The instruments
+
+`zig build test` green. `core_env` and `marsh` by name through
+`port/contract.sh`. A build-only sweep over twenty-two configurations — the
+matrix's twenty-one flag sets plus `-Ddocstrings=false`, rule 19 — all PASS,
+which is where `-Dreduced-os=true` was settled: the generator now calls `spit`,
+so `file/open` has to be registered in every configuration that builds an
+image, and `io_core` is unconditional. `port/swallowed.py` silent. The acceptance matrix
+with `CONTRACTS` set to `core_env` and `marsh`: **21 PASS / 0 FLAKY / 0 FAIL**
+in 177.9s, against the usual 171s, which is rule 16's check passing rather than
+a figure worth reporting.
+
+## The OS and IO remainder, and thirty-four symbols between two Zig files
+
+Phase 11 Part 20. `test/os_process.c`, `test/io_core.c` and `test/os_surface.c`
+— 2,133 lines — become `test/os_process.zig`, `test/io_core.zig` and
+`test/os_surface.zig`, 2,082 lines in the Zig driver. Five contracts remain in
+C and all five are the event-loop group.
+
+The migration itself was the second-cheapest of the phase, for Part 16's
+reason: two of the three subjects are scalar kernels over bytes and integers,
+and the third is mostly Janet source driven through the interpreter. What the
+part cost is the thing beside it, and that is rule 44 at four times the scale
+Part 16 found it.
+
+### Thirty-four exported symbols, none of which had a caller outside Zig
+
+Part 16's grep is "`extern fn` inside `src/zig` naming something defined inside
+`src/zig`", and this group answered it four times:
+
+| declared in | reached | how many |
+| --- | --- | --- |
+| `os_procs.zig` | `os_process.zig` | 14 |
+| `os_files.zig` | `os_stat.zig` | 3 |
+| `io_core.zig` | `host_stat.zig` | 1 |
+| — | `io_core.zig`'s own kernels | 15 |
+
+The first three are the same shape Part 16 described: a symbol that existed
+because one end was C, kept after both ends became Zig, and silent about it,
+because an `extern fn` declaration compiles forever and a symbol that resolves
+says nothing. The fourth is the shape *without* a caller at all — fifteen
+`janet_io_*` kernels whose only reader was `io.c` and then this contract.
+
+`nm -gU zig-out/lib/libjanet.dylib | wc -l` is **708**, from 742. Rule 34's
+figure, read rather than subtracted.
+
+**One symbol was kept on purpose and that is the interesting one.**
+`janet_io_write` stays, because `pp_format.zig` reaches it by symbol
+deliberately — the note beside that declaration says importing `io_core.zig`
+would make the printer depend on the whole io surface. Part 20 did not overrule
+it. So the rule is not "an `extern fn` between two Zig files is a defect"; it
+is "an `extern fn` between two Zig files is a *claim*, and most of them turn
+out to be nobody's." Fifteen of sixteen here were nobody's and the sixteenth
+had an argument.
+
+### A face whose last caller went two phases ago
+
+`janet_io_set_cloexec` was the handle-taking face over `setCloexecStream`, and
+its only caller was `io.c`. Phase 10 Part 18 deleted `io.c`. Nothing announced
+it: an `@export` with no caller links forever, its neighbours in the same
+`comptime` block still had callers, and the *internal* half of the pair is
+still used, so even a reader of the file sees a live function one line below a
+dead one. It is deleted, and this is Part 9's lesson about a dead file, one
+declaration down.
+
+### A check that had silently stopped skipping
+
+`test/os_surface.c` ran its source-map order check only under `-Dboot=zig`, and
+explained why: the C bootstrap recorded `src/core/os.c` for every one of these
+bindings however the surface was compiled, so under `-Dboot=c` the loop was a
+presence check that skipped.
+
+`-Dboot` was deleted in Phase 10 Part 17g. What is worth recording is the shape
+of the gate rather than the staleness: it was never a `#ifdef`. The contract
+tested the source-map path at **run time** —
+
+    int from_zig = janet_string_length(file) > 8 &&
+                   memcmp(file, "src/zig/", 8) == 0;
+
+— so it self-gated on data, correctly, whatever the build did. The comment
+above it is the part that named the option, and the *data* changed under both:
+Part 18 emptied the last C source, so every path in the image became
+`src/zig/`-relative and the check silently went from skipping to running. It
+has been a real assertion for two phases and the file said it was a presence
+check.
+
+This is rule 47 arriving from `test/` rather than from `port/`. That rule was
+written about scripts passing a flag the build no longer defines; the same
+question — **what did this condition depend on, and does that still exist?** —
+is worth asking of a contract's own conditions, and it is Part 13's lesson
+about `#ifndef JANET_INT_TYPES` from the other side. Part 13 asked what a skip
+claimed about the subject and found a defect. This one asked what a skip
+depended on and found that the skip had stopped happening.
+
+### The hazard a migrated contract acquires, found only by cross-compiling
+
+`test/io_core.c` wrote `stdout`. The translation of it does not survive being
+written in Zig: `c.stdout` is an inline **function** in Darwin's headers, a
+**variable** of opaque type on musl — which is not callable — and on mingw a
+container-level constant whose initializer calls an extern function, which Zig
+rejects outright as `comptime call of extern function`. `stdio.zig` exists for
+exactly this and its header comment has the table; the runtime has not named
+`c.stdout` since Phase 10.
+
+The migrated contract named it anyway, compiled on the host, passed, and failed
+**four cross-compile entries of the matrix** — three musl targets on the
+callability and mingw on the comptime call. Nothing on macOS could have said
+so.
+
+Two things worth keeping. This is the general form of Part 1's
+`janet_wrap_integer` lesson — *a contract that moves to Zig acquires the whole
+`@cImport` hazard list* — with the strongest instance yet, because the C
+spelling is a single word that any C programmer would write without thinking.
+And the matrix's four **build-only** entries earned their place here: they are
+not a compile check that happens to run, they are the only instrument in the
+tree that sees this class.
+
+### What the contracts stopped restating
+
+Three blocks of numbers went. `test/os_process.c` carried
+`#define JANET_OS_WAIT_EXITED 0` and its three siblings; `test/io_core.c`
+carried `JANET_IO_MODE_OK` and its four. Each was a third copy of a value two
+files already agreed on, kept because a C contract could not see a `const`
+inside the subject. Both sets are `pub const` on the subject now and the
+contracts name them, so a renumbering is a compile error rather than a passing
+assertion against a stale literal.
+
+The third is `janet_contract_at_next` and `janet_contract_at_get`, which called
+a raising abstract-type callback on C's behalf and flattened the error into a
+report. `janet_file_type` is an `abstract_type.AbstractType` — the mirror whose
+`get` and `next` are typed raising — so `test/io_core.zig` calls the callbacks
+and handles the error. Both shims now have one user, `test/ev_loop.c`, and
+`janet_contract_call_cfunction` has two.
+
+### Some of `os_process` is asserted twice, deliberately
+
+`os_process.zig` carries `test` blocks over the escaping, the signal lookup and
+the environment rule, and `zig build test` runs them; the C contract asserted
+the same things because C could not reach a `zig test`. The duplication is kept
+and the migrated contract does not shrink to avoid it, for one reason:
+**`port/mutate.py` scores contracts and does not run `zig build test`**, so a
+mutation in `escapeArgument` is caught by one of the two instruments and not
+the other. Which of two overlapping tests the sweep can see is a property of
+the sweep, not of the tests.
+
+### `harness.inFiber`, and why it is in the harness
+
+`janet_dostring` evaluates each *top level* form in its own fiber and does not
+drive the event loop, so a form that spawns a process and then waits on it can
+outlive the wait that follows. Both `os_process.c` and `os_surface.c` solved
+that identically — wrap the whole source in `(fn [] ...)`, make one fiber,
+root it, schedule it, run the loop, assert it is dead — in eleven lines under
+an `#ifdef JANET_EV`, twice.
+
+Two contracts in one increment needing the same idiom is the harness rule, so
+it went to `test/harness.zig` with `harness.has_ev` beside it. It is the first
+thing in the Zig driver that drives the loop at all.
+
+### Rule 9, one directory further out
+
+`os_surface` writes nothing to the working tree — Phase 10 Part 12 moved its
+fixtures to `/tmp` after a mutant left a mode-0000 file in the repository root
+— and it still may not be named in `matrix.py`'s `CONTRACTS`, because it builds
+`/tmp/janet-os-surface-contract` and expects to own it. Two `contracts` entries
+run concurrently in the same working directory *and* on the same host, so the
+rule is about a **shared fixture** rather than about the working directory; the
+path is only where the shared fixture usually is. `io_core` is excluded by the
+rule as written and `os_process` writes nothing anywhere, so `CONTRACTS` is
+`("os_process",)`.
+
+And `os_process` needed the other half of the matrix's per-increment edit:
+`-Dreduced-os=true` compiles no process subsystem, so the contract does not
+exist there and the driver says so with an exit code. That is `skip=`, which
+AGENTS.md documents for `-Dpeg=false` — and it is worth noting that the
+preflight cannot catch this one, because the name *is* a real contract file.
+
+### Verified to be capable of failing
+
+Three mutations, one per contract, each in the subject rather than in the
+contract.
+
+**`envKeyOk` stops rejecting `=`.** `test/os_process.zig` asserts that a key
+holding the separator is refused; caught.
+
+**`whence_names` reordered**, so `:cur` and `:set` exchange positions. Caught —
+and re-run after the `stdio.zig` fix, because the contract file had changed
+under it.
+
+**`os/clock` registered as `os/clocks`.** Caught twice over: the expected
+binding is absent, and the environment holds an `os/` symbol the list does not
+name. Worth recording that this one *built* — `os/clock` is not on the image
+generator's path, so rule 23's bootstrap trap did not fire.
+
+### The instruments
+
+`zig build` green, `zig build test` green, all fifty-nine Zig contracts green
+in one driver run. The three migrated contracts by name through
+`port/contract.sh`. `port/swallowed.py` silent. No benchmark is owed: the
+runtime edits are import-for-symbol substitutions and four deletions, none of
+which changes what is computed.
+
+The acceptance matrix with `CONTRACTS = ("os_process",)`: **21 PASS / 0 FLAKY /
+0 FAIL**, after a first run of 16 PASS / 5 FAIL that found both faults above —
+one `skip=` and four cross-compiles — in 177.4s, and a 34.7s re-run of the five.
+Reporting the first run's verdict rather than only the second is the point of
+running it.
+
+## The event loop's kernels and the watcher's vocabularies, and seventeen more symbols between two Zig files
+
+Phase 11 Part 21. `test/ev_core.c`, `test/filewatch_flags.c`,
+`test/filewatch_core.c` and `test/net_sockets.c` — 1,671 lines — become
+`test/ev_core.zig`, `test/filewatch_flags.zig`, `test/filewatch_core.zig` and
+`test/net_sockets.zig`, 1,650 lines in the Zig driver. **One contract remains
+in C**, and it is `test/ev_loop.c`.
+
+The group boundary is not where the line count would have drawn it. This file's
+estimate said the event-loop group was five contracts and one or two parts; the
+split taken is four and one, and the reason is the shims. `janet_contract_arm`,
+`janet_contract_raised`, `janet_contract_signal` and
+`janet_contract_call_cfunction` had exactly two users each —
+`test/net_sockets.c` and `test/filewatch_core.c` — so taking those two retires
+four shims, and the other five (`at_get`, `at_next`, `at_tostring`,
+`cfunction`, `protect`) are on `test/ev_loop.c` alone and cannot go until it
+does. Rule 22 says a shim's user count decides when it dies; here it decided
+where the part ended.
+
+### Seventeen exported symbols, and the same seam twice
+
+Rule 44's grep — an `extern fn` inside `src/zig` whose target is defined inside
+`src/zig` — answered twice in this group, and the larger answer wore a disguise
+Part 20's did not:
+
+| declared in | reached | how many |
+| --- | --- | --- |
+| `ev_loop.zig` | `ev_core.zig` | 13 |
+| `filewatch_core.zig` | `filewatch_flags.zig` | 4 |
+
+**The `ev_core` half is the form to watch for, because the declaration is a
+namespace.** `ev_loop.zig` did not merely declare the thirteen kernels; it
+declared them `pub`, and `ev_channel.zig` and `ev_backend.zig` then reached
+them as `ev.janet_ev_q_pop` and `ev.janet_ev_ts_to_parts`. Twenty-nine of the
+fifty-two call sites are in those two files, so the seam looked from every
+caller like an ordinary import of a neighbour — the symbol table was doing the
+work of a `pub const`, and only the one file holding the `extern` block could
+see it. Part 20's instances were a file calling a symbol; this one is a file
+*re-exporting* symbols, which is the same defect with a better hiding place.
+
+`nm -gU zig-out/lib/libjanet.dylib | wc -l` is **691**, from 708. Rule 34's
+figure, read rather than subtracted. None of the seventeen is in any header —
+the C contracts hand-declared every one — so unlike Part 12's fourteen faces
+for three symbols, all seventeen counted.
+
+### Two mirrors went with them, which is rule 45 arriving on time
+
+Rule 45 says to count the mirrors before counting the symbols, because a C-ABI
+call between two Zig files needs its argument types spelled at both ends and
+nothing compares them. Both ends of both seams had one.
+
+`ev_core.zig` kept a private `Queue` — a four-field `extern struct` mirroring
+`state.h`'s `JanetQueue` — while `ev_loop.zig` passed `*c.JanetQueue`, and the
+two met as a pointer at a symbol. There was a *third* copy in `test/ev_core.c`.
+The kernels take `*c.JanetQueue` now, which is the type the `janet_vm` fields
+are declared with, so the mirror is not merely deleted but unrepresentable.
+
+`filewatch_core.zig` kept `platform_linux`, `platform_windows` and
+`platform_kqueue` as bare `u32`s beside a comment saying they mirror
+`filewatch_flags.zig`'s `Platform` enumeration. They existed because a `u32`
+was the only thing that could cross the seam; the lookups take `Platform` now
+and a caller names the tag. `test/filewatch_flags.c` and
+`test/filewatch_core.c` had a fourth and fifth copy of the same three numbers.
+
+### Three assertions the type refused, and where they went
+
+Rule 42 says a type refusing a regression beats a contract catching it. Rule 30
+says an assertion that loses half its subject should say which half survived.
+This increment is the first where both apply to the same edits, and the answer
+is to write the loss down at the site rather than to let a reader find an
+absence.
+
+**The distinction that matters is whether the subject's branch went with the
+assertion.** In two of the three cases it did, and that is the whole of why
+the loss is acceptable: what was a run-time refusal is a compile error at the
+call site, and the deleted assertion has a deleted branch to match. In the
+third the subject never had a branch, and what is lost is a *detection
+technique* rather than a check.
+
+
+- **`janet_ev_q_pop(&q, NULL, sizeof(int32_t))`.** The C contract passed a null
+  destination so that a write on the empty-queue path would be a segfault
+  rather than a wrong value. `qPop` takes `*anyopaque`; there is no null to
+  pass. **`ev_core.zig` never had a guard for it** — nothing was deleted from
+  the subject — so what replaces it is the sentinel the same C function also
+  carried: `out = 12345`, the pop reports 1, `out` is still 12345. That is
+  weaker by exactly the difference between "wrote anything" and "wrote
+  something other than 12345", and it is the one place in this increment where
+  coverage genuinely thinned.
+- **`janet_filewatch_flag_count(3)`, `janet_filewatch_flag_name(3, 0)` and
+  `janet_filewatch_flag_index(3, "all")`.** The ordinal was a `u32` and each
+  lookup answered -1 or NULL for a platform naming no backend. The parameter
+  is `Platform` now, so the call does not compile — **and `namesFor`'s
+  `else => null` arm and the three `orelse return -1` guards are gone from the
+  subsystem with it.** Every caller names a tag, so the deleted branch has no
+  way in; the only route back would be `@enumFromInt` on an untrusted ordinal,
+  which nothing does and which is checked illegal behaviour in Debug and
+  ReleaseSafe anyway. The subsystem's own `test` block for the case is gone
+  too, replaced by the note saying why.
+- **`janet_filewatch_flag_name(PLATFORM_LINUX, -1)`.** A position below the
+  table. The parameter is `usize`, so the `index < 0` half of that guard is
+  gone from the subject. The `index >= names.len` half remains and is asserted,
+  in both the contract and the subsystem's tests.
+
+None of the three is a case anyone would rather have back as a test. What would
+be wrong is to delete them silently, because the next reader of either file
+will go looking for the pair.
+
+### `net_sockets` builds its addresses from `std.posix`, and that is an oracle rather than a convenience
+
+`test/net_sockets.c` included `<netinet/in.h>` and `<sys/un.h>` and laid down a
+`struct sockaddr_in` by hand. The decoder under test reads one described by
+`net_abi.h`'s translation of those same headers — so the bytes the contract
+wrote and the bytes the subject read came from one description, and a contract
+comparing a description with itself is rule 8's circularity with a network
+stack in the middle.
+
+The migrated file uses `std.posix.sockaddr.in`, `.in6`, `.un` and `.storage`,
+whose layouts `std` states per platform and independently, and parses the
+textual addresses with `std.Io.net.Ip4Address.parse` rather than `inet_pton`.
+Two descriptions again, and the port field is `std.mem.nativeToBig` rather than
+`htons` for the same reason. It also keeps the contract module free of a fourth
+`@cImport` of the socket headers, which is the practical half.
+
+One detail is deliberately unchanged: each structure is zeroed and then has its
+family, port and address set, which is what the C contract's `memset` produced.
+macOS's `sin_len` is therefore zero in both, and the decoder does not read it.
+
+### The backend a contract believes in
+
+`test/filewatch_core.c` chose its vocabulary with `#if defined(JANET_LINUX)`
+… `#elif defined(JANET_APPLE) || defined(JANET_BSD)`, which is exactly the
+cascade `filewatch_abi.h` uses to set `JANET_ZIG_WATCH_BACKEND`. Two
+descriptions of one fact, agreeing by construction.
+
+Asking the subject — `filewatch_core.zig`'s `backend` — would have collapsed
+them into one, which is what rule 8 warns about. The migrated contract reads
+`builtin.os.tag` instead: Zig's view of the target rather than the C
+preprocessor's, and a genuinely different input. If the two ever disagree the
+contract fails, which is what an oracle is for.
+
+### `zig build test` runs the vocabularies too, and the duplication stays
+
+`filewatch_flags.zig` carries `test` blocks over the same orderings the
+contract asserts. Rule 52 settled this in Part 20 and it applies unchanged:
+`port/mutate.py` scores contracts and does not run `zig build test`, so a
+mutation in the tables is caught by one instrument and not the other. Deleting
+the "redundant" half would be invisible until the queued gate sweep ran.
+
+### `harness.callCore` and `harness.coreRaised`
+
+Two contracts in one increment needed the same thing, which is this file's rule
+for putting an idiom in the harness rather than in each subject. Every C
+contract whose subject is a cfunction surface wrote the same `call_core`
+static:
+
+    static Janet call_core(const char *name, int32_t argc, Janet *argv) {
+        Janet fun = janet_resolve_core(name);
+        assert(janet_checktype(fun, JANET_CFUNCTION));
+        return janet_contract_call_cfunction(janet_unwrap_cfunction(fun), argc, argv);
+    }
+
+In Zig the shim is gone and what is left is the `argc`/`argv` split, which a
+contract otherwise spells at every call from an array it already has.
+`harness.callCore` is that with `try`; `harness.coreRaised` is the same call
+under a protected scope, answering the raise. `test/ev_loop.zig` will want
+both.
+
+Each contract keeps its own `expectRaise` wrapper, because that one carries the
+file's name, its message comparison and its raise counter — the parts that are
+not shared.
+
+### What was not taken, and why
+
+**`janet_address_type` is still a `pub extern const` in `ev_loop.zig`**, naming
+what `net_addr.zig` defines: rule 44's class, in this group, found by this
+increment. It is not taken here. `ev_stream.zig` reaches it through that
+declaration and compiles whenever the event loop does, while `net_addr.zig`
+exists only under `-Dnet`, so the conversion is a question about what
+`-Dnet=false` leaves reachable rather than a substitution. It belongs with
+`ev_loop`'s own migration, which is the increment that has to answer it anyway.
+
+**The heap kernels still take a base pointer, a stride and a field offset.**
+That interface exists because `JanetTimeout` could not cross a C ABI — it
+carries a `pthread_t` on POSIX and two `HANDLE`s on Windows — and with both
+ends Zig a comptime element type and field name would say the same thing and
+check it. Not taken, for Part 16's reason: `test/ev_loop.c` is the oracle over
+those callers until Part 22 migrates it, and a design change inside a migration
+puts a behavioural edit in an increment whose whole evidence rests on nothing
+observable having changed. The note is at the site.
+
+### Verified to be capable of failing
+
+Four mutations, one per contract, each in the subject rather than in the
+contract, and each with the build's exit status asserted first — rule 23.
+
+**`heapSiftUp` compares with `<` rather than `<=`.** A parent equal to the
+child then reports a swap, which is the tie case `test/ev_core.zig` asserts in
+two places. Caught.
+
+**`q-overflow` renamed in the inotify table.** Caught by the position
+assertion, which is the one that matters: the index is what selects a flag
+value in the other half.
+
+**`"expected keyword, got %v"` reworded.** Caught by the message comparison in
+`test/filewatch_core.zig`, not merely by the fact of a raise.
+
+**`"unknown socket option %q"` reworded.** Caught, and worth quoting because it
+is what a message assertion buys:
+
+    expected: unknown socket option :so-nonsense
+         got: unknown sockopt :so-nonsense
+    thread 61225633 panic: net_sockets: the raise carried another message
+    test/net_sockets.zig:489:20: in theStreamFaults
+
+### The instruments
+
+`zig build` green, `zig build test` green, all sixty-three Zig contracts green
+in one driver run. The four migrated contracts by name. `port/swallowed.py`
+silent — 118 faces now, one fewer than Part 20 saw. The `port/` grep for a
+deleted build option found nothing, because this increment deletes none.
+
+The acceptance matrix with `CONTRACTS = ("ev_core", "filewatch_flags",
+"net_sockets")`: **21 PASS / 0 FLAKY / 0 FAIL** in 178.2s wall, which is the
+usual figure and therefore satisfies rule 16 as well as its own verdict.
+`filewatch_core` is held out of `CONTRACTS` on rule 53 rather than rule 9 — it
+writes nothing to the working tree and owns `/tmp/janet-filewatch-contract`,
+which is `os_surface`'s shape exactly — and the `full` entries run it, because
+`zig build test` runs the whole Zig driver.
+
+**No benchmark is owed, and the reasoning is worth stating because it is not
+Part 20's.** Part 20 declined on the grounds that import-for-symbol
+substitution changes nothing that is computed, which is true here too: a call
+through the symbol table becomes a direct call, and a direct call cannot be the
+slower of the two. But this increment touched the *event loop's* hot path —
+`qPush` and `qPop` run per channel operation — so rule 18's "read what the
+increment touched" points at code the standing corpus does not execute at all.
+`port/probe-9/bench/bench.janet` is a VM and PEG corpus. Running it would have
+produced a number about something else, and reporting that number as evidence
+would be worse than reporting none.
+
+## The last C contract, the driver that ran it, and an alias that was a copy
+
+Phase 11 Part 22. `test/ev_loop.c` — 1,062 lines — becomes `test/ev_loop.zig`,
+1,095 lines in the Zig driver, and **`test/contracts.c`, `test/contracts.h`,
+`test/support.h` and `test/support.zig` go with it**: 364 further lines, the C
+driver's `build.zig` target, its second `abi` translation, the `raise` and
+`abstract_type` modules built on that, and the unconditional install of
+`janet-contract-support.o`. `build.zig` is 104 lines shorter.
+
+**There is no C contract left in the tree.** `test/` holds `abi.c` and
+`embed.c` beside the suites and six files in subdirectories, and none of the
+eight is a contract — they are the endgame's question, which is whether this
+fork still owes a C program anything.
+
+### What the five shims were, and what replaced each
+
+`test/support.zig` existed because Phase 10 Part 17g gave `JanetCFunction` the
+type `raise.CFunction`: a raising Zig function with Zig's calling convention,
+which C can neither call nor be. Eleven shims were written over that gap and
+this increment spent the last five:
+
+| shim | what a Zig contract does instead |
+| --- | --- |
+| `janet_contract_protect` | `harness.raised` — the same scope, without the C body |
+| `janet_contract_at_get` | `janet_stream_type.get.?(...)` with `try` |
+| `janet_contract_at_next` | `janet_stream_type.next.?(...)` with `try` |
+| `janet_contract_at_tostring` | `janet_stream_type.tostring.?(...)` with `try` |
+| `janet_contract_cfunction` | a cfunction written in Zig, stored with `raise.stored` |
+
+The right-hand column is the argument for Part 1's decision, restated at the
+end of the phase it opened: none of these is an *adapter* any more, because
+there is no boundary to adapt across. A contract compiled into the runtime
+calls what a subsystem calls.
+
+**One section had a shim as its subject, and it did not simply go.**
+`test_protect_scope` tested `janet_contract_protect` — three claims about a
+scope: a returning body reports nothing, a raising body reports the signal and
+publishes the payload, and scopes nest. That is test-only code, so the obvious
+move is to delete the section with the shim. But the three claims are true of
+`harness.raised`, which is the mechanism **sixty-four contracts rest on and
+nothing else asserts directly**, so they are kept and pointed there. The
+nesting case is the one that earns its keep: `janet_restore` has to put back
+what `janet_try_init` displaced rather than null, and only a nested scope can
+tell the difference.
+
+### The Windows arm compiles now, and the gap closed itself exactly as predicted
+
+`phase_11.md` recorded that `zig build -Dtarget=x86_64-windows-gnu
+-Dinstall-tests=true` failed on three `INVALID_HANDLE_VALUE`s in
+`test/ev_loop.c`, that it reproduced at Part 9's `HEAD`, and that no standing
+instrument could see it: `janet-contract-test` went through `installTest`,
+which returns early unless `-Dinstall-tests=true`, and the matrix's four
+build-only entries do not pass it. **So the matrix cross-compiled the Zig
+contracts and never the C ones.**
+
+`janet-zig-contract-test` is installed unconditionally, so the four
+cross-compile entries compile this file. Checked directly rather than inferred
+from a green matrix: a `-Dtarget=x86_64-windows-gnu` build emits
+`janet-zig-contract-test.exe`, and `test/ev_loop.zig` is inside it. What the C
+file could not spell is one function —
+
+    fn invalidHandle() c.JanetHandle {
+        return if (windows) @ptrFromInt(std.math.maxInt(usize)) else -1;
+    }
+
+— which is the value half of rule 46. `ev_stream.zig` has the same two lines
+privately, and importing them would have made the contract unable to notice the
+subject holding the wrong constant.
+
+### An alias of a `const` is a copy, and this increment shipped that defect for an hour
+
+Four subsystems declared `extern const janet_stream_type` or
+`extern const janet_channel_type` — `ev_loop.zig`, `net_addr.zig`,
+`net_sockets.zig` — while **already importing the file that defines it**.
+`ev_loop.zig`'s two sat 1,545 lines below its own `pub const stream =
+@import("ev_stream.zig")`. That is rule 31's blindness with the alternative in
+plain sight, and the conversion looks like a one-line substitution:
+
+    const janet_stream_type = stream.janet_stream_type;   // compiles; wrong
+
+It compiles, it resolves, and `&janet_stream_type` is **the address of this
+file's copy**. `janet_abstract` stores the address the *creating* file used, so
+`getAbstract` compared two different pointers and `net/localname` died with
+
+    bad slot #0, expected core/stream, got <core/stream [fd=7]>
+
+— a message that reads as impossible, because the value is exactly the type it
+was refused for. The fix is to name the module at each use site.
+
+The mechanism was verified rather than assumed, which took six lines and a
+`zig run`: a `const` aliasing another file's `const` prints an address sixteen
+bytes from the original's. This is rule 36 from the other side — that one is
+about two identical constants being *merged* into one address, this one is
+about one constant being *copied* into two — and both say the same thing about
+Zig, which is that a `const`'s identity is a property of the declaration and
+not of the value.
+
+**What caught it is the driver, not the contract.** Every contract passed by
+name, including `net_sockets`; the failure needs `janet-zig-contract-test` with
+no argument, which runs all sixty-four in one process. The reason is ordinary
+and worth writing down: the by-name path had not been re-run for the contract
+that broke, because the increment's own contract was `ev_loop` and that one was
+green. **Run the driver with no argument before believing an increment**, which
+costs two seconds and is the only instrument that sees a subsystem edit through
+a contract the increment was not thinking about.
+
+### `port/mutate.py` was armed with rule 47's trap, in the same file as last time
+
+`judge_default` linked the contract with
+
+    zig cc ... test/contracts.c test/<name>.c ... libjanet.a -o /tmp/janet-mutant-contract
+
+and scores a failed link as `("caught", "contract (build)")`. After this
+deletion that link fails for **every mutant**, so a sweep would have reported a
+perfect score and measured nothing — the mutation sweep being a queued gate
+item, this is the second time the same file has been found waiting to lie in
+the direction that looks like success. Part 19 found it passing a deleted
+`-Dboot=zig`; this one is a deleted *file*, which is a different trigger for
+rule 47 and the same consequence.
+
+Repaired to run `janet-zig-contract-test <name>`, which also removes the
+"fails to link" hazard the comment there warned about: a Zig contract cannot
+fail to link, and a configuration that cannot compile one fails `zig build`
+above, where the sweep already calls it `uncompilable`.
+
+### One more symbol, and the last of this seam
+
+`janet_make_pipe` was an `export fn` in `ev_stream.zig` declared again as an
+`extern fn` by `os_procs.zig` and `ev_backend.zig` — rule 44's class, `util.h`
+its only header, no caller outside the runtime. It is `pub fn makePipe` now and
+the symbol is gone: **690**, from 691.
+
+### Verified to be capable of failing
+
+Two mutations, both in the subject and both with the build's exit status
+asserted first.
+
+**`janet_schedule_soon` made to append**, by passing `false` where it passes
+`true`. Caught at `theScheduleSoonOrder`, which is the assertion whose whole
+point is that one prepends and the other does not.
+
+**`makePipe`'s mode 3 made to skip the write end's `FD_CLOEXEC`.** Caught at
+`thePipeModes` — the section that exists because nothing in Janet can observe a
+descriptor flag, and the one that exercises the function this increment
+converted from a symbol to an import.
+
+### The instruments
+
+`zig build` green, `zig build test` green, all **sixty-four** contracts green
+in one driver run, and the four migrated in Part 21 plus this one by name
+through `port/contract.sh` — which is a shorter script now: no `zig cc`, no
+`janetconf.h` lookup, no support object. `port/swallowed.py` silent. The
+`port/` grep for a deleted flag found no *flag*, which is why the deleted
+*file* in `mutate.py` needed a second look; rule 47's sweep is about anything a
+script names that the tree no longer has.
+
+The acceptance matrix with `CONTRACTS = ("ev_loop",)`: **21 PASS / 0 FLAKY / 0
+FAIL** in 175.7s, the usual wall time.
+
+No benchmark is owed. The runtime edits are three seam conversions and a
+`pub` — `janet_make_pipe` and the two abstract types stop being reached through
+the symbol table, which removes an indirection and computes nothing new. Rule
+54's second half applies as it did in Part 21: what this touched is the event
+loop, and the standing corpus does not execute it.
+
+## The six files no build step named, and a gate counted over two directories
+
+Phase 11 Part 23. Six of the eight `.c` files left in `test/` go — `amalg/main.c`,
+`c/test-gc-pcall.c` and the four fuzzers — and the two that stay, `abi.c` and
+`embed.c`, stay because they are the `janet.h` question rather than this one.
+`test/` holds two `.c` files and no subdirectory of them.
+
+**None of the six was named by any build system.** Not `build.zig`, not
+`Makefile`, not `meson.build`, and nothing in `port/`. `test/amalg/main.c` was
+already recorded as an orphan; the other five were not, and the reason nobody
+had noticed is the same in all five cases — a `.c` file nothing compiles is
+exactly as silent as a dead shim, a dead `extern fn` and a stranded
+`_extern.zig`. That is rule 22's blindness in its fourth home, and it is the
+one where the file can be *read* without the question arising, because reading
+it tells you what it does and not whether anything does it.
+
+### The gate had never been counted over the tree
+
+The exit gate says **no `.c` file remains anywhere in the tree**. Twenty did.
+Eight in `test/`, which every count in `phase_11.md` and `PLAN.md` tracks, and
+twelve that no planning document mentions at all:
+
+| where | count | what |
+| --- | --- | --- |
+| `test/` | 8 | the endgame bullet's own list |
+| `tools/` | 1 | `symcharsgen.c`, an orphan nothing in the tree references |
+| `examples/` | 2 | `ffi/so.c` and `numarray/numarray.c` |
+| `port/probe-9`, `-10`, `-16` | 9 | the three spikes' corpora |
+
+`grep -n 'examples/\|tools/\|symcharsgen' port/*.md AGENTS.md` returned
+nothing.
+
+This is rule 48 inverted and it is worth writing down in that form. Rule 48
+says a *generated* artefact is in no count taken over the tree, and the fix is
+to ask the build rather than `ls`. Here `ls` was never asked: the counts were
+taken over `src/` and `test/`, which is where the work was, and a clause
+saying "anywhere" was read against them for eleven parts.
+
+**The gate is narrowed rather than the files deleted**, and that is a decision
+rather than a discovery — see `phase_11.md`. It means `src/` and `test/`: the
+implementation and its tests. `examples/` and `tools/` are documentation and
+dev tooling and `port/probe-*/` is measurement input, none of which the
+runtime compiles or the suites run.
+
+### A regression test that had never run, for a fix that is live
+
+`test/c/test-gc-pcall.c` is 143 lines and its header comment opens with the
+word **Bug**. `janet_collect` marks `janet_vm.root_fiber` and the chain of
+`child` pointers under it. A fiber entered by `janet_pcall` from inside a
+cfunction is neither: `continueNoCheck` sets `root_fiber` only when it is null,
+and `janet_pcall` never sets `child`, because `child` is what `janet_resume`
+and `JOP_RESUME` maintain for a *Janet* nesting. So the fiber is in no root
+set, is running, and owns the stack every frame above it executes on.
+
+`continueNoCheck` roots it by hand for exactly that reason, and the comment
+beside the line says so. The file is that line's regression test.
+
+**It could not have run even if something had built it.** It registers its
+cfunction with `janet_wrap_cfunction` over a C function, and a
+`JanetCFunction` has been a raising Zig function since Phase 10 Part 17g. That
+is the measurement `phase_11.md`'s `janet.h` bullet already carries — the
+registration succeeds and the call segfaults — arriving at a file that was
+written to catch a collector bug. So the fix has been unguarded for the whole
+rewrite, in a tree that has a contract for the mark phase, one for the sweep,
+one for allocation and one for stress.
+
+`test/gc_pcall.zig` is the sixty-fifth contract and it keeps both of the
+original's stress programs unchanged in substance: 200 rounds each at
+`(gcsetinterval 1024)`, single and deep nesting, every allocation made from
+Janet source because `janet_gcalloc` does not itself collect and the VM loop's
+check is what does.
+
+### What the migration added, and the difference is diagnosability rather than strength
+
+The stress programs infer the fiber's survival from the answers coming back
+right. They cannot *name* the mechanism: they hope a collection lands while the
+nested fiber is live. `directCase` makes it land — a cfunction called from
+Janet source running on the nested fiber, which calls `janet_collect` and then
+asserts the fiber's block is still on `janet_vm.blocks`.
+
+Both halves catch the defect, and rebuilding with `const fiber_rooted = false;`
+is how that was established rather than assumed. They read nothing like each
+other:
+
+| | where it dies |
+| --- | --- |
+| `directCase` | `test/gc_pcall.zig:137`, `harness.heap.onList` after the collect |
+| the stress cases | `vm_run.zig`'s `self.stack[fA(self.pc)] = value` — a null store in the interpreter loop, naming neither a collector nor a fiber |
+
+So the direct case is not a stronger check. It is a diagnosable one, which is
+rule 36's second half arriving in a file that had no assertion to attach it to.
+
+**One assertion was written, run and found to be unwritable.** The first
+version asserted the mark bit after the collection — `harness.heap.reachable`
+— on the reasoning that a block which survived by being *marked* is a
+different claim from one the sweep missed. It fails, and the runtime is right:
+`gc_sweep.zig` clears `JANET_MEM_REACHABLE` on every survivor so the next mark
+phase starts from a clean heap, so that assertion answers false for every live
+block in the process. It is rule 8's circularity in its other form — an
+assertion that cannot *succeed* rather than one that cannot fail — and rule 21's
+discipline is what caught it: check the claim before believing the failure.
+
+What replaced it reads the root set directly, which is the mechanism itself:
+`continueNoCheck`'s `janet_gcroot` is the only thing that makes the fiber
+reachable, so a survival with that false would be a survival by accident.
+
+**And the contract asserts its own premise.** `assertNested` walks
+`root_fiber`'s whole `child` chain and asserts the running fiber is not on it.
+If `janet_pcall` ever maintained `child`, `markFiber` would reach the fiber on
+its own, the rooting line could be deleted, and every assertion here would
+still pass. That is rule 36 at a pointer rather than at an address.
+
+### The four fuzzers, and why a faithful translation aborts
+
+`test/fuzzers/*.c` are four `LLVMFuzzerTestOneInput` entry points over
+`janet.h`: the parser, the compiler, `janet_dobytes` and `janet_unmarshal`.
+Each opens a `janet_try_init` scope, calls its entry point, and calls
+`janet_restore`.
+
+That is right for C and wrong here, and the reason is the whole shape of Phase
+10's hinge. Three of the four entry points are `raise.reported` or
+`raise.panicking(...).face` wrappers, so a raise leaves a *report* rather than
+travelling, and `janet_restore` aborts on an outstanding one. A fuzzer's
+inputs are mostly malformed. A translated fuzzer would die with
+
+    janet abort: a raise was reported to a C caller and never consumed
+
+on roughly its first interesting input, naming neither the target nor the bytes
+that got there.
+
+So each target reaches the raising function by import:
+
+| target | the face a translation would call | what `test/fuzz.zig` calls |
+| --- | --- | --- |
+| parser | `janet_parser_consume`, `janet_parser_eof` | `parser_core.consumeChecked`, `parser_core.eofChecked` |
+| compile | `janet_compile` → `janet_compile_lint` | `compiler_primitives.janet_compile_lintImpl` |
+| dobytes | `janet_dobytes` | `core_env.janet_dobytesImpl` |
+| unmarshal | `janet_unmarshal` | `marsh.unmarshal` |
+
+`harness.raised` is the scope, unchanged from what sixty-five contracts use it
+for. This is `swallowed.py`'s rule reaching a caller that did not exist yet:
+the script polices `raise.Raising` functions in `src/zig` that reach a raise
+through a face, and a fuzz target is not one — it is a *new* caller, and the
+question the script asks is the question writing one asks first.
+
+Two things the C originals did that are not carried across. `fuzz_dostring.c`
+fuzzes the parser — its body and its own comment both say so — so the target
+is called `parser` and `dobytes` is the one the old name suggested. And the
+compile target now drains the parser rather than leaving forms in it, so the
+value constructors are reached at all.
+
+### They are in `zig build` for the first time
+
+`std.testing.fuzz` resolves through `@import("root").fuzz`, which exists only
+in a test root, so a fuzz target cannot be a contract and `test/fuzz.zig`
+needs its own artifact — a third compilation of the runtime.
+
+    zig build fuzz            # each target once over its corpus
+    zig build fuzz --fuzz     # the campaign
+
+The first is what `zig build test` runs, and it is there for the reason the C
+originals died of: **a fuzz target nothing executes is a file, not an
+instrument.** Verified capable of failing rather than assumed — a `@panic` in
+one target's body reports `3/4 tests passed (1 crashed)` and fails the step,
+which is rule 41's discipline pointed at a new instrument.
+
+The costs, measured cold in throwaway caches:
+
+| | before | after |
+| --- | --- | --- |
+| `zig build`, wall | 11.1s | 11.2s |
+| `zig build`, CPU | 13.2s | 16.2s |
+| `zig build`, cache | 160 MB | 189 MB |
+| `zig build test`, wall | 19.9s | 19.3s |
+| `zig build test`, CPU | 20.5s | 23.3s |
+| `zig build test`, cache | 177 MB | 205 MB |
+
+Wall time is unchanged in both, because the third compilation runs beside the
+other two rather than after them. That is what decided the artifact is
+installed unconditionally, the way `janet-zig-contract-test` is: rule 51 says
+the matrix's four build-only entries are the only instrument that sees the
+`@cImport` hazard class for a file that has just moved into Zig, and a plain
+`zig build -Dtarget=X` builds only what the install step reaches.
+`-Dtarget=x86_64-windows-gnu` emits `janet-fuzz-test.exe`, checked directly.
+
+### What ran
+
+`zig build test`, all sixty-five contracts by name and again with no argument,
+`./port/swallowed.py` (silent), a `grep` of `port/` for anything naming the
+deleted files (nothing), and `port/matrix.py -j2` with `CONTRACTS =
+("gc_pcall",)` at **21 PASS / 0 FLAKY / 0 FAIL** in 182.4s wall, 355.3s of
+work — the usual figures.
+
+The mutation is rule 21's and it is the one this increment was built around:
+`const fiber_rooted = false;` in `vm_entry.zig`'s `continueNoCheck`, built
+successfully (rule 23) and caught three ways over — by the direct case, by the
+single-nesting stress program and by the deep one. Restored and verified
+identical to `HEAD` before anything else ran.
+
+Two instruments were themselves verified rather than assumed, which is rule
+41's discipline arriving twice in one part. `zig build fuzz` was checked
+capable of failing with a `@panic` in one target's body: `3/4 tests passed (1
+crashed)`, step fails. And a first version of the direct case's third
+assertion — the mark bit after the collect — was checked against the sweep
+before being believed, which is where rule 60 came from.
+
+No benchmark is owed. Nothing under `src/zig` changed: this increment's edits
+are `test/`, `build.zig` and the planning documents. `nm -gU
+zig-out/lib/libjanet.dylib | wc -l` is **690**, unmoved, and expected to be —
+the part adds tests and retires no symbol.
+
+## The gate: six Darwin-shaped assertions, one byte of image, and an instrument that had never run
+
+Phase 11 Part 24. Not a port — the phase's exit gate, run clause by clause the
+way Phase 10's was. `port/phase_11.md` has the reading and rules 63 through 67;
+this is the narrative and the numbers.
+
+### The container is the only instrument that executes a second platform, and it had run twice
+
+Everything else this project has for cross-platform confidence is a *compile*:
+four cross-compile entries in the matrix, and `riscv32-linux-musl` for the
+32-bit branches Zig would otherwise never analyse. The podman recipe in
+`port/testing.md` is the one thing that runs a binary somewhere else, and before
+this increment it had run at Phase 10's gate and at Phase 11 Part 4.
+
+Parts 5 through 23 migrated **forty-seven further contracts** in between. So
+`ffi_core` (Part 16), `os_surface` (Part 20), `filewatch_core` (Part 21) and
+`ev_loop` (Part 22) had never executed anywhere but macOS, and the gate found
+what that cost: four contracts failing and six assertions behind them.
+
+| contract | assertion | why macOS was the wrong witness |
+| --- | --- | --- |
+| `filewatch_core` | `flagName(platform, 0) == "all"` | `windows_names` and `kqueue_names` open with `all`; `linux_names` is alphabetical, so `access` sorts ahead of it |
+| `ffi_core` | guarded on `has_dynamic_modules` | that says the subsystem was **compiled**. Zig links musl statically and musl's static `dlopen` is a stub, so every binding registers and every `ffi/native` raises |
+| `os_surface` | `(= 7 (os/cpu-count 7))` | asserts the **fallback**, which is reached only where the count is unavailable — `janet_os_cpu_count` has no macOS arm at all and returns -1 |
+| `os_surface` | `(not= (os/date 0) (os/date 0 true))` | UTC against local, which coincide when the zone is UTC |
+| `os_surface` | `(not= (os/mktime … :dst true) (… :dst false))` | the `:dst` slot is observable only in a zone that has a daylight rule |
+| `os_surface` | `os/spawn ["/usr/bin/true"]` | Alpine is busybox and puts it at `/bin/true` |
+
+**Every replacement is stronger than what it replaced**, which is the part worth
+remembering, because the instinct when a test fails on a second platform is to
+weaken it. `(= (os/cpu-count 7) (or (os/cpu-count) 7))` says the fallback is
+used *exactly* when the count is missing — a claim the original could not make.
+Epoch zero pinned absolutely (`[1970 0 0 0 0 0]`) beats epoch zero compared with
+itself in another zone, and `os/strftime "%H"` cross-checks the local branch
+against a second renderer rather than against itself. And a POSIX `TZ` string —
+`EST5EDT,M3.2.0,M11.1.0`, which musl and Darwin both parse without tzdata —
+turns "these differ" into "these differ by exactly 3600 seconds", on every host.
+
+`os_surface` had to be fixed four times, each fix revealing the next assertion
+behind it, because a contract aborts at its first failure exactly as the driver
+does. Rule 63. The cheap defence is to read the file for the whole class at
+once: one `grep -n '"/'` found both `/usr/bin/true` sites and proved `/bin/sh`,
+`/bin/sleep`, `/bin/cat`, `/bin/echo` and `/dev/null` were fine.
+
+**All 65 contracts now pass on `aarch64-linux-musl`, and so does the driver run
+with no argument.** First time in this project's life. 32 of 34 suites pass and
+both failures are `FOUND.md`'s, reproducing exactly as recorded.
+
+### The one that is not a contract defect
+
+`test/ev_loop.zig` failed with `janet top level signal - "No such file or
+directory"` and no stack. `strace` named it in one run:
+
+    dup(7)                                = 9
+    epoll_ctl(5, EPOLL_CTL_ADD, 7, {…})   = 0
+    epoll_ctl(5, EPOLL_CTL_DEL, 9, NULL)  = -1 ENOENT
+
+`janet_marshal` with `JANET_MARSHAL_UNSAFE` duplicates a stream's descriptor and
+clears `JANET_STREAM_NODUPS`; epoll keys registration by *descriptor*, so the
+`dup` was never added under its own number, and closing the unmarshalled stream
+takes the deregistering path and raises. The reason macOS is silent is in the
+other half of the same file:
+
+```zig
+// kqueue                          // epoll
+_ = apply(kevs[0..length]);        if (status == -1) return raise.panicv(…);
+```
+
+kqueue throws the status away — "the status might be -1 on the BSDs for
+subprocesses" — and epoll raises it. Both reproduce upstream `ev.c`. Recorded in
+`FOUND.md` and quarantined in the contract behind
+`unregister_of_an_unregistered_handle_is_quiet`, because the two candidate
+repairs are opposite answers to which half of the split is right, and a gate is
+not where a behavioural change to the event loop belongs.
+
+### The image is reproducible across hosts, and the proof is a control rather than a match
+
+The last outstanding half of the bootstrap bullet. `zig build image` on macOS
+arm64, and again natively under Alpine on `aarch64-linux-musl` with the same
+Zig 0.16.0: **324,310 bytes each, differing in exactly one byte** — offset
+220093, `0x01` against `0x11`.
+
+That byte is the value of `janet/config-bits`, and `0x10` is `0x4 << 2`, so
+`JANET_NANBOX_64_POINTER_SHIFT` is 2 on one host and unset on the other. The
+image is recording a genuinely different build, in the one field designed to
+vary.
+
+What makes that an answer rather than a story is the control: rebuilding the
+macOS image with `-Dnanbox-pointer-shift=2` produces a file byte-identical to
+the Linux one, same sha256 across all 324,310 bytes. **The image is a function
+of the configuration and of nothing else about the host.** A cross-host diff is
+worth nothing until the configurations are known to agree, and the fastest way
+to know is to make them agree and re-measure.
+
+### The sweep that had been repaired twice and never run
+
+Phase 10's gate deferred the mutation sweep and did not run one. `mutate.py` was
+then repaired in Part 19 (it passed a deleted `-Dboot=zig` at two of three
+stages) and again in Part 22 (its judge linked a deleted `test/contracts.c`) —
+twice fixed, never executed, which is rule 41's own discipline unapplied to the
+tool that most needs it.
+
+Fifteen mutants of `ev_stream.zig`, sites 108 through 122, the exact index the
+original run aborted at:
+
+| | |
+| --- | --- |
+| wall | 246s, 16.4s a mutant |
+| SURVIVED | 9 |
+| caught | 6, **all six by `suite-ev.janet`** |
+| caught by the `ev_loop` contract | **0** |
+
+Three of the nine — `WSAGetLastError` and `GetLastError` in Windows arms this
+host does not compile — cannot change the binary and are not survivors. That is
+the **first of the two items Phase 10 queued for this sweep**, priced: a fifth
+of one window is noise, so hashing the artifact and reporting a byte-identical
+one as *no effect* is worth doing before the full run, not after.
+
+The other six are real, consecutive, and all in the stream write path —
+`is_buffer`, `sendto`, the `EINTR` retry. A sweep tests the tests, and this one
+named the file and the function.
+
+**The second sample did not finish, and that is the more useful half.** Fifteen
+mutants of `ev_backend.zig` from index 0 — the source whose original run aborted
+at mutant 0, so it has never been swept at all. Mutant 6 turns the self-pipe
+drain's `while (true)` into `while (false)` and `judge_default` sat on it for
+over five minutes against a `BOUND` of twelve seconds. One argument explains it:
+
+```python
+def sh(cmd, timeout=BOUND):   # 12s -- what every suite run gets
+...
+r = sh("%s/bin/janet-zig-contract-test %s" % (PREFIX, CONTRACT), timeout=600)
+```
+
+A mutant that hangs a suite costs 12 seconds; one that hangs the contract costs
+600, for a program that normally returns in well under a second. It is scored
+correctly in the end, as `contract (hang)`. But `ev_backend.zig` *is* the event
+loop, so contract hangs are not the exception there, and the 16.4s-a-mutant
+figure from `ev_stream.zig` does not transfer.
+
+That is the third thing wrong with this instrument, found while it has still
+never completed a run: a deleted flag in Part 19, a deleted file in Part 22, and
+now a bound that does not bind. **A tool repaired twice and executed zero times
+has been reviewed, not tested.** Rule 41 says to verify a sweep the way a
+contract is verified; running it is the only thing that does that, and two
+samples found more than two reviews had.
+
+### What ran
+
+The clean-checkout build from `git archive HEAD` (build, bootstrap, test,
+install, embed, native-module load — 11.3s cold). `zig build test`. All 65
+contracts by name and again with no argument, on macOS and in the container.
+`port/matrix.py -j2` at **21 PASS / 0 FLAKY / 0 FAIL twice** — 185.7s/361.7s
+over the state the gate found and 185.5s/361.9s over the state it left, four
+contracts having changed in between — with `CONTRACTS` widened from one name to
+twenty-three because a gate asks whether each reduced configuration passes what
+it compiles rather than whether one increment's contracts survived. `port/swallowed.py`, silent. Rule
+47's sweep of `port/`, clean — six hits, all prose. `leaks --atExit` over 61
+contracts. `port/image-diff.py --save` and the container comparison.
+`port/mutate.py` twice, as samples.
+
+No benchmark is owed, and nothing under `src/` changed at all: the edits are
+four contracts in `test/`, `port/matrix.py`'s `CONTRACTS` line, and the planning
+documents. `nm -gU zig-out/lib/libjanet.dylib | wc -l` is **690**, unmoved, and
+expected to be — a gate retires no symbol.
+
+## The build wrappers, the CI that had never run, and a header shadowing libc's
+
+Phase 11 Part 25. The ship half of the gate: `port/phase_11.md`'s Make-versus-
+Meson bullet, the documentation bullet, and — unplanned — the first build this
+project has ever made against glibc.
+
+### Five wrappers and every CI job in the tree were dead
+
+`Makefile` and `meson.build` each named forty files under `src/core`, none of
+which had existed since Phase 10 Part 18; `plan9.mk` globbed the same directory
+and named `src/boot/boot.c` and `src/mainclient/shell.c`, and `src/mainclient/`
+is not a directory any more. So was every configuration that drove them:
+
+| | |
+| --- | --- |
+| `.github/workflows/test.yml` | eleven jobs, all `make`, `build_win` or `meson` |
+| `.github/workflows/release.yml` | `make`, `build_win all`, cosmo |
+| `.github/workflows/codeql.yml` | `language: [cpp]` — analysing a language the tree no longer holds |
+| `.github/cosmo/build`, `setup` | `make -j CC=…cosmo-cc` |
+| `.builds/{linux,openbsd,freebsd}.yml` | meson and gmake — **and `sources:` is `git.sr.ht/~bakpakin/janet`**, so they built upstream and had never tested this fork at all |
+
+That last row is worth its own sentence. A CI file that checks out somebody
+else's repository is *green*, forever, whatever you do to yours. It is rule
+58's silence with a status badge on it.
+
+`README.md` meanwhile documented `make` as the way to build on macOS and Unix,
+and the Zig build as "experimental… compiles the **unchanged C runtime**" —
+backwards twice, since it is the only build and there is no C runtime. The
+"build from a clean checkout using only documented prerequisites" bullet was
+met by `zig build` and failed on the documented prerequisites.
+
+### The header that answered for libc's
+
+The CI work turned up something much larger. Writing a Linux job meant asking
+what a runner actually does, and GitHub's Ubuntu runners are glibc — which this
+tree had **never** been built against. It does not build:
+
+    /…/generic-glibc/bits/libc-header-start.h:74:17: error: cannot call non function type 'long'
+    #if __GLIBC_USE (IEC_60559_BFP_EXT) || __GLIBC_USE (ISOC23)
+
+6,662 of those. `__GLIBC_USE` is defined in glibc's `features.h`; `build.zig`
+puts `src/core` on the `-I` path so `src/zig/state_abi.h` can say
+`#include "features.h"`; `-I` outranks the system search path. **Every libc
+header that asked for `<features.h>` got ours.** In a `#if`, an undefined
+identifier is `0`, so `__GLIBC_USE (X)` is `0 (X)`.
+
+One command settles it, and finding that command is most of the work:
+
+```sh
+printf '#include <math.h>\n' > probe.c
+zig translate-c -target aarch64-linux-gnu -lc probe.c              # clean
+zig translate-c -target aarch64-linux-gnu -lc -I src/core probe.c  # 195 errors
+```
+
+Renamed to `janet_features.h`, eleven includers updated. A rename rather than
+`-idirafter`, because a rename removes the ambiguity and an ordering makes
+correctness depend on it.
+
+**Then the rename opened three more targets.** `port/testing.md` had recorded,
+for two phases, that Aro rejects musl's 32-bit `time64` `__REDIR` declarations
+and that `x86-linux-musl` and `arm-linux-musleabihf` therefore cannot build.
+They build. So do both glibc targets. The cross-compile set went from four to
+**eight**, and the 32-bit set — the only thing anywhere that type-checks
+`JANET_NANBOX_32` — from one target to three. Nothing about Aro changed; the
+note had been filed against the toolchain, sat beside two genuine Aro failures,
+and was ours. Rule 69.
+
+What is genuinely translate-c's, checked at the same time: `x86-windows-gnu`
+fails in mingw's `malloc.h` on `_ALLOCA_S_MARKER`. `x86_64-windows-gnu` builds.
+
+### Six socket calls glibc does not declare with a pointer
+
+The second glibc obstacle, and a different kind. Under `_GNU_SOURCE` glibc
+declares `bind`, `connect`, `accept`, `accept4`, `getsockname` and
+`getpeername` with `__SOCKADDR_ARG`: a union of every `sockaddr_*` pointer
+marked `__attribute__((__transparent_union__))`, which the C ABI passes exactly
+as the pointer inside it. `translate-c` has no rendering for the attribute and
+produces a real Zig union.
+
+`net_abi.zig` takes all six by symbol with `@extern`, guarded to glibc so
+Windows keeps its own Winsock declarations. What is bypassed is glibc's
+*prototype*, not its implementation — the plain-pointer signature is the ABI on
+every POSIX target, which is the whole point of the attribute.
+
+The six were **enumerated from `sys/socket.h`** after the first two were found
+by building. That is rule 40 at a header instead of at a sweep, and it turned
+four more build cycles into one.
+
+### What glibc found that nothing else can see
+
+All 65 contracts pass by name on `aarch64-linux-gnu`, and 32 of 34 suites — the
+two failures being `FOUND.md`'s existing entries, which this confirms are *not*
+musl-specific. But the driver run with **no argument** aborts:
+
+    pp format contract ok
+    malloc_consolidate(): unaligned fastbin chunk detected
+
+Latent heap corruption. Plain glibc aborts at contract 9; under valgrind the
+same binary reaches contract 64 — so the detection point is allocator-dependent
+and the corrupting write is earlier. musl and macOS have no equivalent check
+and pass. The socket shim is not implicated: `net_sockets` is contract 70.
+
+Recorded in `FOUND.md`, not diagnosed. It is the concrete subject the "Settle
+ASan and ThreadSanitizer" bullet has never had. *(Written as "and Part 26's".
+Part 26 took the stranded shims instead; the corruption is still the next
+subject that bullet has, and still undiagnosed.)*
+
+### The workflow, and what could not be checked
+
+`.github/workflows/test.yml` is five job groups: `zig build test` on two macOS
+runners, Linux tested against **musl** on x86-64 and aarch64 (because of the
+corruption above), a glibc build-only job so the glibc build cannot rot again,
+three optimize modes, and eight cross-compiles.
+
+**A workflow is the one instrument that cannot be verified where it is
+written.** Every *command* in it was run — `zig build test` on macOS, all eight
+cross-compiles locally, the contract loop against the real driver (65 ran, 3
+non-contract `test/*.zig` correctly skipped, 0 failures), the musl and glibc
+artifacts under podman. The YAML around them — runner labels, the action, the
+expression syntax — is verified by the first run and by nothing else. The file
+says so at the top. Rule 71.
+
+### What ran
+
+`zig build` and `zig build test` on macOS, all 65 contracts by name and with no
+argument, all eight cross-compile targets, and the glibc and musl artifacts
+under podman on Debian and Alpine — musl unchanged at 65 of 65 with the driver
+clean, glibc 65 of 65 by name.
+
+`port/matrix.py -j2` at **21 PASS / 0 FLAKY / 0 FAIL**, 185.7s wall and 362.2s
+of work — the third consecutive run within half a second of the other two, so
+the rename, the socket shim and the deletions cost nothing measurable.
+`./port/swallowed.py` silent. `nm -gU zig-out/lib/libjanet.dylib | wc -l` is
+**690**, unmoved.
+
+No benchmark is owed. The runtime changes are a header rename and six socket
+calls taken by symbol instead of through a prototype; neither alters what is
+computed, and `port/probe-9/bench/bench.janet` does not reach the socket path
+anyway — rule 54.
+
+## The eleven stranded shims, and a file that had not compiled for fourteen parts
+
+Phase 11 Part 26. `port/phase_11.md` listed these as "one part, mechanical" —
+eleven `*_extern.zig` files reached only through an `if (options.X)` that has
+been comptime-`true` since Phase 10 Part 18 spent the last selector, and Zig
+never analyses the untaken branch of a comptime-known `if`. Part 9 found
+`buffer_array_extern.zig` still naming a face it had just deleted, said the
+class was worth a sweep, and nothing swept it again for seventeen parts.
+
+The deletion is mechanical. What was inside them is not.
+
+### Ten of the eleven conditions were comptime-`true`. One was not
+
+`phase_11.md` said all eleven were, and that is the first thing to correct.
+`zigSelection` in `build.zig` answers `.ev_loop = hasEv(options)`, so
+`-Dev=false` and `-Dsingle-threaded=true` selected `ev_loop_extern.zig` **for
+real**. Those configurations build today and built before, and the reason is
+not that the shim was fine: it is that nothing in such a build references a
+declaration in `evloop.zig`, and Zig analyses a container-level `const` only
+when something reads it. A selected file and an analysed file are different
+things.
+
+The other ten are `true` unconditionally, so their shims were unreachable on
+every target in every configuration.
+
+### `vm_calls_extern.zig` had not compiled since Part 12
+
+Two probes, both cheap, and each finds what the other cannot.
+
+**The symbol sweep.** Every `c.janet_*` reference and every `extern fn` name
+under `src/zig`, checked against `nm zig-out/lib/libjanet.a`. 134 symbols from
+the shims, 276 `extern fn` names from the tree. Eight names are defined
+nowhere:
+
+| | |
+| --- | --- |
+| `janet_call_nonfn`, `janet_resolve_method`, `janet_unary_call`, `janet_binop_call`, `janet_fill_table`, `janet_fill_struct`, `janet_fill_string` | `vm_calls_extern.zig` — retired by **Part 12** |
+| `janet_text_substitution` | `registry_extern.zig` — retired by **Part 13** |
+
+**The forced-analysis probe.** A temporary `comptime` block in `root.zig`
+walking each shim's decls with `@field`, one build per shim. Ten compile. One
+does not:
+
+    src/zig/subsystems/vm_calls_extern.zig:26:33: error: root source file
+    struct 'cimport' has no member named 'janet_call_nonfn'
+
+That is the sharper half of the finding. A dead `extern fn` is a *link* error
+waiting to happen, and `registry_extern.zig` is one of those. But
+`vm_calls_extern.zig` reaches its seven through `c.`, and no header declares
+them any more, so it is a **compile** error — the file has not been valid Zig
+since Part 12 retired the faces, fourteen parts and fourteen acceptance
+matrices and one phase gate ago, and nothing in the tree could say so.
+
+### The same file contradicts its own reason for existing
+
+Worth reading rather than only deleting. `vm_calls_extern.zig`'s header says it
+exists so that
+
+> `-Dvm-calls=c` would not silently keep answering with Zig for every call the
+> interpreter makes, which is the one thing a differential selector may not do.
+
+and five of its thirteen declarations are
+
+    pub inline fn mcall(...) raise.Error!c.Janet {
+        return try vm_calls.mcall(name, argc, argv);
+    }
+
+— straight to `vm_calls.zig`, the Zig implementation. They were added for
+converted callers, which needed the Zig signature, and taking it from the Zig
+body was the path of least resistance. Under the selector this file existed to
+honour, it would have done the one thing it was written to prevent. Nothing
+said so, because nothing read it.
+
+### One directory over: `dynlib.zig`'s four
+
+The sweep of `extern fn` names found the same mechanism outside the eleven.
+`dynlib.zig` had
+
+    const use_zig = options.utilities;
+
+which is comptime-`true`, and four branches of the form
+`if (use_zig) loadClib(name) else load_clib(name)` reaching `extern fn`
+declarations of `error_clib`, `load_clib`, `free_clib` and `symbol_clib` —
+`util.c`'s Win32 loader, deleted with `util.c` in Phase 10 Part 18. Four
+`extern fn`s naming nothing, on a branch no build takes. Rule 31's class, found
+by a sweep rather than by anything forcing it.
+
+`raise.declared` went with them. It was the inverse of `raise.panicking` — the
+Zig signature over a C symbol that raised by jumping — and its users were eight
+of the eleven shims and `dynlib.zig`'s `symbol_clib`. There is no C function
+left in the tree for it to wrap.
+
+### The change compiles to the same code, and that is checkable
+
+A pure deletion should leave the artifact's *code* untouched, and saying so is
+cheaper than a benchmark. Built before and after into separate prefixes:
+
+| | before | after |
+| --- | --- | --- |
+| exported symbols in `libjanet.dylib` | 690 | **690**, and the two lists `diff` clean |
+| `__TEXT,__text` | 2,789,788 bytes | **2,789,788 bytes** |
+| `shasum` of the binary | — | **differs** |
+
+The last row is the useful one and it bears on a queued gate item. Phase 10's
+first mutation-sweep prerequisite is "hash the built artifact and report a
+byte-identical one as *no effect*"; a **file** hash will not do that, because
+debug info carries line and column numbers and this increment moved comments.
+Compare the text section, not the file.
+
+### What ran
+
+`zig build` and `zig build test` on macOS — 34 suites, 65 contracts, 4 fuzz
+targets, the native-module load, all clean. Fifteen contracts by name through
+`port/contract.sh`: the subjects behind every façade this increment collapsed.
+`-Dev=false`, `-Dsingle-threaded=true`, `-Dnet=false` and `-Dfilewatch=false`
+built directly, because `ev_loop` is the one selector that genuinely reached a
+shim. `./port/swallowed.py` silent at 118 faces and 84 helpers.
+
+`port/matrix.py -j2` at **21 PASS / 0 FLAKY / 0 FAIL**, 189.1s wall and 369.0s of work — up from Part 25's 185.7s and 362.2s by about the cost of nine more contracts per entry, with `CONTRACTS` widened by nine —
+`args_core`, `registry`, `core_env`, `fiber_core`, `vm_entry`, `vm_lifecycle`,
+`vm_calls`, `pp_describe` and `pp_pretty`, each compiled by every configuration
+because the `options` field behind it is comptime-`true`, which is the fact
+this increment is about.
+
+No benchmark is owed and rule 18 is why: the increment deleted declarations
+nothing analysed and collapsed thirteen comptime `if`s onto the branch already
+taken. The `__text` measurement above is stronger evidence than a timing would
+be.
+
+No mutation is owed either. Rule 21 asks a *migrated contract* to prove it
+provokes; no contract changed here.
+
+## The heap corruption, and a teardown that freed two things and cleared neither
+
+Phase 11 Part 27. Part 25 found that `janet-zig-contract-test` with no argument
+aborts on `aarch64-linux-gnu` in `malloc_consolidate` with an unaligned fastbin
+chunk, recorded it, and did not diagnose it. `phase_11.md`'s "Settle ASan and
+ThreadSanitizer" bullet had been open since Phase 9 waiting for exactly such a
+subject.
+
+**It was diagnosed without a sanitizer, and the bullet is still open.** What the
+bug wanted was not an instrument that could *observe* the corruption but one
+that could *narrow* it.
+
+### The driver could not run a subset, and that was the whole obstacle
+
+Every contract opens with `janet_init` and closes with `janet_deinit`, so the
+no-argument run is sixty-five teardowns and re-initialisations in one process.
+All 65 pass individually. So the failure needs the sequence, and a driver that
+takes one name or all of them cannot bisect a sequence.
+
+`test/contracts.zig` now takes several names and runs them in order in one
+process. Six lines, and everything below follows from them:
+
+| | |
+| --- | --- |
+| prefix of 8 | passes |
+| prefix of 9 | aborts |
+| any 8 of those 9, dropping one | **still aborts, except when the one dropped is `remove_noops`** |
+| `remove_noops` alone, or with any one other | passes |
+
+Necessary and not sufficient is the signature of a stray write rather than a bad
+free: it damages the heap, and something else has to be allocated beside the
+damage before the allocator notices. That is also why the abort point moves
+under valgrind and why `MALLOC_PERTURB_` does nothing.
+
+### The mechanism, and whose defect it is
+
+`janet_clear_memory` ends:
+
+```c
+janet_free_all_scratch();          /* sets scratch_len = 0 */
+janet_free(janet_vm.scratch_mem);  /* frees the table */
+```
+
+`scratch_mem` is left dangling and `scratch_cap` at its old value, so the next
+`janet_smalloc` finds `scratch_len != scratch_cap`, skips the growth path, and
+writes `scratch_mem[0] = s` **through the pointer just freed**.
+
+`test/remove_noops.zig` called `janet_bytecode_remove_noops` — which opens with
+`janet_smalloc` for its pc map — with **no `janet_init` at all**, after an
+earlier contract had already torn the runtime down.
+
+**The first write-up of this called it an upstream defect and that was wrong.**
+The code shape is upstream's verbatim, which is what made it plausible. But
+upstream cannot reach it: `janet_init` assigns all three fields, nothing after
+`clearMemory` in `janet_deinit` uses scratch, every scratch caller in the
+runtime runs inside an initialised VM, and upstream has no analogue of a
+single-process driver that cycles the runtime sixty-five times. Upstream builds
+and runs on glibc constantly.
+
+The experiment that settles it is one build: **revert your own fix, fix only
+your side, and see whether it passes.** With `clearMemory` exactly as upstream
+has it and the contract initialising, the no-argument run exits 0. The contract
+was the bug. Rule 76.
+
+### The audit found a second field, and the correct pattern in the same function
+
+`scratch_mem` is not special; it is one of the things teardown frees. Asking
+what else teardown frees:
+
+| freed at teardown | cleared after? |
+| --- | --- |
+| `roots` | yes |
+| `registry` | yes |
+| the symbol cache's four, in `janet_symcache_deinit` | yes |
+| `scratch_mem` | **no** |
+| `traversal_base`, `traversal`, `traversal_top` | **no** |
+
+`traversal_base` is arguably worse than the scratch table. `value_order.zig`
+decides whether to grow the traversal stack with `traversal_base == null`, so a
+dangling one takes the *grow* path and hands `janet_realloc` a pointer that is
+already free — a bad free rather than a stray write. It is reachable the same
+way, by `janet_equals` or `janet_compare` between a teardown and the next
+`janet_init`.
+
+Both are cleared now, all three traversal fields rather than only the base,
+because `janet_init` assigns all three and the point is that teardown should
+match it. Thirty-two bytes of text for the scratch half, in a function called
+once per teardown that already walks and frees the whole heap.
+
+### The hardening makes the path correct, not loud
+
+Worth stating because this file said the opposite first. With all three scratch
+fields cleared, the next `janet_smalloc` finds `scratch_len == scratch_cap == 0`,
+takes the growth path and allocates a fresh table. It does not trap. So the
+nulling removes the corruption and does **not** diagnose the caller — which is
+why the contract fix is the fix and this is defence in depth behind it.
+
+### Nine other contracts never initialise, and a verified detector cleared them
+
+`remove_noops` was one of ten contracts that never call `janet_init`. Reading
+nine files would have been a guess, so the class was enumerated instead: a
+temporary live-VM flag set by `janet_init` and cleared at the end of
+`janet_deinit`, with a check in `janet_smalloc` and in the traversal stack's
+growth.
+
+It was verified capable of firing before it was believed — 2 hits on the
+un-fixed `remove_noops`, 0 with the fix, which is rule 41's discipline — and
+then run over all 65 contracts standalone. **Zero hits.** `ev_core`,
+`ffi_classify`, `ffi_layout`, `filewatch_flags`, `intscan`, `movopt`,
+`regalloc`, `textscan` and `verify` genuinely need no VM. The probe is reverted.
+
+### The contract that should have caught this was written from the implementation
+
+`test/vm_lifecycle.zig`'s `whatDeinitClears` asserted every field `janet_deinit`
+assigns. That is a list derived from the code it is testing, so it agreed with
+it by construction and was silent about the two fields teardown freed and never
+assigned. Its sibling `scribbleOverTheVm` *does* cover `scratch_mem` and all
+three traversal fields — on the `janet_init` side, where the implementation
+assigns them.
+
+It now asserts the invariant rather than the assignments: **anything teardown
+frees, teardown clears.** Both allocations are forced first — a `janet_smalloc`
+and a nested `janet_equals` — because without that the new assertions hold
+vacuously, which is exactly how the omission survived. Rule 75.
+
+### What ran
+
+`zig build` and `zig build test` on macOS, clean. All 65 contracts by name and
+the driver with no argument, on macOS, on `aarch64-linux-musl` under Alpine and
+on `aarch64-linux-gnu` under Debian — **the glibc no-argument run exits 0 for
+the first time in this project's life.** 32 of 34 suites on musl, the two
+failures being `FOUND.md`'s existing entries, reproducing exactly.
+
+`port/matrix.py -j2` at **21 PASS / 0 FLAKY / 0 FAIL**, 181.1s wall and 353.6s
+of work, with `CONTRACTS` set to the increment's own five.
+`./port/swallowed.py` silent at 118 faces and 84 helpers. `nm -gU
+zig-out/lib/libjanet.dylib | wc -l` is **690**, unmoved.
+
+`port/testing.md` gains the glibc recipe, which had never been written down:
+Part 25 ran it ad hoc and Part 27 had to reconstruct it to reproduce the bug it
+was diagnosing.
+
+No benchmark is owed, and rule 54 is why rather than rule 18 being waived. The
+increment touches runtime source — three stores in `clearMemory`, three in
+`deinit` — but both run once per teardown, and the corpus is a Janet script the
+`janet` binary runs, which initialises and tears down exactly once per process.
+The corpus cannot reach it. What can be measured instead is the code: the
+scratch half is **32 bytes of `__TEXT,__text`**, added to a function that
+already walks and frees the entire heap.
+
+## The leak check, a severed heap list, and an instrument that stops what it scans
+
+Phase 11 Part 28. Part 24's gate ran `leaks --atExit` over the contracts and
+left two findings rather than one: **three contracts leak** — `args_core` at 88
+blocks, `gc_sweep` at 8, `net_sockets` at 3 — and **three more never return
+under the tool at all**, so the check covered 61 of the 65. Rule 65 wrote the
+second down as a gap and, on the evidence of a process count, said it was not a
+fork.
+
+It is a fork. And of the three leaks, one was real, one is `FOUND.md`'s, and
+one is `FOUND.md`'s.
+
+### The eighty-eight blocks were one severed list
+
+`leaks` reported them as a chain: one ROOT LEAK with eighty-seven descendants,
+each the `next` of the last. That is `janet_vm.blocks`, and `janet_clear_memory`
+walks exactly that list at `janet_deinit`, so the question was never *which
+allocation leaked* — it was how a segment of the heap list stopped being on it.
+
+Two probes answered it. A count in `clearMemory` said **113 blocks live and 29
+freed**; a check in `janet_gcalloc` comparing the list's length to
+`block_count` fired at the first allocation after the divergence, with a stack:
+
+    args_core.cbytesCopiesAFullNoReallocBuffer   ← between here
+    args_core.theAbstractGettersAndTheBytesCallback ← and here
+
+The contract builds a full, no-realloc buffer like this:
+
+```zig
+const b = c.janet_buffer(0);        // collectable: prepended to janet_vm.blocks
+c.janet_buffer_deinit(b);
+_ = c.janet_buffer_init(b, 0);      // ← this
+```
+
+`janet_buffer_init` is for a buffer the *caller* owns, and it says so in one
+line of its own body:
+
+```zig
+export fn janet_buffer_init(buffer: *c.JanetBuffer, capacity: i32) callconv(.c) *c.JanetBuffer {
+    _ = bufferInitImpl(buffer, capacity);
+    buffer.gc.data.next = null;
+    buffer.gc.flags = mem_disabled;
+    return buffer;
+}
+```
+
+`b` was the head of `janet_vm.blocks`. `buffer.gc.data.next = null` therefore
+severed the list behind it, and the eighty-four blocks allocated before that
+point were never freed by anything. The two lines are upstream's verbatim and
+upstream is right: the function is documented for a buffer that is not on a
+heap list, and every other caller in this tree — `pp_format`, `pp_describe`,
+`vm_run`, `string_symbol`, `ev_channel`, `ev_loop` — passes either a local or a
+`janet_malloc`ed block. Only the contract passed a collectable one.
+
+The repair is a deletion: `janet_buffer_deinit` alone frees the payload, nulls
+the pointer, and leaves both the list and the block's type intact. **88 leaks
+and 6,928 bytes to 0.**
+
+The block is now on the heap list with nothing on the Zig stack rooting it, so
+it is `janet_gcroot`ed for the window — `AGENTS.md`'s rule about a `Janet` in a
+local. Nothing between the two points allocates a collectable block today; the
+root is what keeps that from being load-bearing.
+
+### The other two leaks are recorded defects, and both were already asserted
+
+`gc_sweep`'s 8 are `janet_clear_memory` never walking `janet_vm.weak_blocks` —
+`FOUND.md`'s entry, reproduced deliberately, and the contract's
+`clearMemoryFinalizesEverything` already asserts `weak_blocks != null` after
+`janet_deinit` so that whichever implementation is fixed first says so. Four
+weak containers survive teardown across the file (one weak table, three weak
+arrays) and each leaks its block and its data array: 4 × 2 = 8.
+
+`net_sockets`'s 3 are `FOUND.md`'s `net/address` unix-domain leak, one 112-byte
+`janet_calloc` per call at three call sites in `theUnixAddressLookup`.
+
+So of the three "leaks" the gate found, **one was a defect in a contract and
+two are defects the contracts exist to pin.** The number that was actually
+undiagnosed was the first, and it had been carried since Part 1.
+
+### `leaks --atExit` cannot measure a process that forks
+
+`os_process`, `os_surface` and `value_alloc` hang under it, each finishing in
+under 0.2s unmeasured. Rule 65 checked the process count and concluded it was
+not a fork. The count is three, not two, and one of the three is in state `T`:
+
+    80947 80945 S    leaks --atExit -- .../janet-zig-contract-test os_process
+    80948 80947 S    .../janet-zig-contract-test os_process
+    80953 80948 T    .../janet-zig-contract-test os_process
+
+`sample` on each says the rest. The parent is in `__wait4` inside
+`os_process.wait`; the child is here:
+
+    750 os_process.theHostOperations
+      750 my__exit  (in libLeaksAtExit.dylib)
+        750 __kill  (in libsystem_kernel.dylib)
+
+And `libLeaksAtExit.dylib` is thirty instructions long:
+
+    _my__exit:  getpid(); kill(pid, 17); _exit(status)
+    _my_abort:  getpid(); kill(pid, 17); abort()
+
+Signal 17 is `SIGSTOP` on macOS. **The stop is the protocol**: it is how the
+waiting `leaks` process is told there is a heap to scan, and `leaks` resumes
+the process afterwards. A `fork()`ed child carries the dylib in its inherited
+image and stops itself the same way — but `leaks` is watching the parent, so
+nothing ever resumes it, and the parent's `waitpid` never returns.
+
+An `exec`ed child is safe, and for a reason that is in the same dylib:
+`___library_initializer` calls `_resetDyldInsertLibraries`, which strips
+`libLeaksAtExit.dylib` out of `DYLD_INSERT_LIBRARIES`. So `os/spawn` is not the
+hazard and a raw `fork` is. `os_process` has seven fork sites, `value_alloc`
+one, and `os_surface` reaches one through `os/posix-fork` — which is exactly
+the three.
+
+### The fix is to stop using `--atExit`
+
+`port/leaks.sh` reaches the same heap by a route with no interposer in it. The
+driver stops *itself* at the end of `main` when `JANET_CONTRACT_PAUSE` is set;
+the script scans the stopped process with `leaks <pid>` and then resumes it. A
+forked child exits normally, because nothing was inserted into it.
+
+That is six lines in `test/contracts.zig` and a script. It also turns an
+ad-hoc command line into an instrument with an expectation in it:
+
+    args_core                0
+    gc_sweep                 8 (expected: FOUND.md)
+    gc_stress                skipped (leaks on purpose)
+    net_sockets              3 (expected: FOUND.md)
+
+`gc_stress` is excluded rather than expected, because its whole subject is a
+heap the collector is not allowed to reach. Every other contract is measured
+and expected to be zero, and the two `FOUND.md` counts are written down, so a
+fourth leak — or a change in either of those two — fails the run instead of
+being read off a report by a person.
+
+**64 of 65 measured, 1 excluded on purpose, 42 seconds, exit 0.** It was 61 of
+65 with three counts nobody had explained.
+
+### Verified capable of failing
+
+Rule 41. The `args_core` repair was reverted, the tree rebuilt, and the script
+run: `args_core 88 LEAKS, expected 0`, exit 1, with the allocation stack. The
+byte total under `leaks <pid>` is 6,928 — the figure the gate recorded — where
+`--atExit` reported 5,904 for the same eighty-eight blocks, because the two
+scan at different points and `MallocStackLogging` changes the bucket sizes.
+
+### What ran
+
+`zig build` and `zig build test` on macOS, clean — 34 suites, 65 contracts, 4
+fuzz targets. All 65 contracts by name through `port/contract.sh` and the
+driver with no argument, exit 0. `./port/leaks.sh` over all 65.
+
+`port/matrix.py -j2` at **21 PASS / 0 FLAKY / 0 FAIL**, 179.8s wall and 351.2s
+of work, with `CONTRACTS` set to the increment's own four. `./port/swallowed.py` silent at 118 faces and 84 helpers.
+`nm -gU zig-out/lib/libjanet.dylib | wc -l` is **690**, unmoved — nothing under
+`src/` changed.
+
+No benchmark is owed, and not by rule 54's argument but by a simpler one: the
+increment touches no runtime source at all. `test/args_core.zig`,
+`test/contracts.zig`, `port/leaks.sh` and `port/matrix.py`'s `CONTRACTS`.
+
+## The Python tooling becomes Janet, and three ways a transliteration lies
+
+Phase 11 Part 29. Five Python scripts sat in `port/`; four are Janet now and
+the fifth is deleted. Development depends on no Python.
+
+This is not a port of the runtime and nothing under `src/` changed. It is here
+because the instruments are how every other increment is judged, and because
+rewriting four of them at once was an unusually clean natural experiment in
+what a transliteration silently changes.
+
+### Why Janet rather than Zig
+
+Zig was the other candidate and it is the smaller dependency: the toolchain is
+already required to build, where Janet is one more binary on the PATH. Three
+things decided it the other way.
+
+The two things this tooling is made of are **pattern matching** and **timed
+subprocesses**, and Zig's standard library has neither. There is no regex and
+no PEG, so `swallowed`'s ten patterns and `mutate`'s fourteen become hand-rolled
+`std.mem.indexOf` scanning. And `std.process.Child.run` — the capture
+convenience — no longer exists in 0.16; `wait` takes an `Io`, and there is no
+child timeout at all. You would compose one from `io.async`, `io.sleep` and
+cancellation, which means writing the tooling against **`std.Io`** — an
+interface this phase has an open, deliberately deferred decision about. Doing
+that in a tooling increment would answer a runtime question sideways.
+
+Janet does both as builtins. Capture, exit status, timeout, and *partial output
+from the killed child*, measured at 0.41s against a 0.40s deadline:
+
+```
+(0 "hi")
+(:timeout "partial")
+elapsed 0.41s
+```
+
+And the tree already self-hosts — `boot.janet` emits the image, the suites are
+`.janet` — so a janet on the PATH is not a new class of dependency the way
+Python was. Which janet is the PATH's answer and the user's to change. It is
+deliberately not the one a build under test produces: `mutate.janet` breaks the
+runtime on purpose, and a sweep whose driver runs on the mutant scores itself.
+
+### `convert.py` was deleted rather than ported, because it was dead
+
+Its `split` stage emits `X catch raise.deliverToC()`. `raise.deliverToC` has
+not existed since Phase 10 Part 17h — the only occurrences left in the tree are
+three prose comments describing its removal — so the stage had emitted
+uncompilable Zig for a phase and a half. Nothing said so, because nothing runs
+it but a person.
+
+Rule 47's sweep did not catch it, and the reason is worth keeping: that sweep
+greps `port/` for a deleted **build option**, and this was a deleted
+**function**. Fourth instance of the class, after a dead shim, a dead
+`extern fn` and a stranded `_extern.zig`.
+
+### Four constructions that read the same in both languages and are not
+
+Each compiled, ran, and printed a plausible answer. The differential against
+the Python found the first three; reading the code found none of them; and the
+fourth is one no differential could have found.
+
+**`slurp` returns a buffer, and `=` on two buffers is identity.** Python's
+`read()` gives immutable bytes compared by value. So `image-diff --against`,
+whose entire job is *are these two images the same*, reported a file compared
+with itself as different — and printed "0 strings only in the saved image, 0
+strings only in the built image" underneath, which is the shape of a program
+that knows the answer and says the opposite. `(string ...)` or `deep=`.
+
+**A PEG's `some` is possessive where a regex's `+` backtracks.** The host-path
+pattern is `(?<![A-Za-z])/[A-Za-z0-9_./-]+\.(?:c|zig)`, and the character class
+contains `.`, so the `+` swallows the extension and the regex *backtracks* to
+find it again — ending the match at the **last** `.c` or `.zig` in the run. A
+PEG cannot express that and would never match at all. The run is captured whole
+and the ending chosen afterwards, which is the same answer by construction
+rather than by resemblance; a synthetic corpus pins the three cases that
+distinguish them (`/a.c.zig`, `/tmp/x.czz`, `/q/w.zig/e.txt`).
+
+**Closing a Janet channel discards what is buffered in it**, where draining a
+Python queue does not. The matrix's worker pool was fed by filling a channel
+and closing it; every worker took nil immediately and the run reported every
+entry as "did not run", exit 0. The queue is an index now — safe because
+`ev/go` fibers are cooperatively scheduled and nothing between the read and the
+increment yields.
+
+**`ev/lock` excludes nothing between fibers on one thread**, and it is the
+obvious translation of Python's `threading.Lock`. Its own docstring says it
+"will block this entire thread ... and will not yield to other fibers on this
+system thread" — it is an OS mutex for coordinating *threads*, and the pool is
+fibers on one. Measured:
+
+```
+ev/lock       @[:a-acquired :b-trying :b-acquired :a-releasing]
+one-token chan @[:a-acquired :b-trying :a-releasing :b-acquired]
+```
+
+B acquires while A still holds it. So the suites lock — which exists to stop
+two `full` entries running the Janet suites against three shared fixtures at
+once — was a no-op. It is a capacity-1 channel now: take is acquire, give is
+release, and both yield.
+
+This one is not like the other three, and rule 84 is why: **a differential
+cannot see it, because both sides pass.** The matrix ran 21 PASS / 0 FLAKY /
+0 FAIL *twice* with the lock excluding nothing, since whether two overlapping
+entries actually collide is probabilistic. What found it was reading the
+primitive's documentation and a four-line probe.
+
+It is also worth saying how it was found, because the route was wrong. One
+matrix run came in at 278.1s against the usual 186s and `ev/lock` looked like
+the cause. It was not: rule 16's check — re-run a slow entry standalone —
+settled it as machine noise (`no filewatch` 94.1s in the matrix and **20.3s**
+alone; `no peg` 83.5s and **11.8s**), and the next two runs came in at 180.5s
+and 181.0s with the lock untouched. A wrong hypothesis about a real anomaly
+led to a real defect the anomaly had nothing to do with.
+
+A fifth is performance rather than meaning, and it cost the first run of
+`swallowed.janet`, which did not finish: **a PEG handed to a matcher as a
+structure is compiled on every call.** Python's `re` caches by pattern string,
+so the transliterated inner loop — 118 symbols across every function body, per
+fixpoint pass — looked identical and was not. Compiled once and kept, it is
+**4.0s against the Python's 9.0s**.
+
+### Killing a hung build means killing a tree, and Janet has no `killpg`
+
+`matrix.py` used `start_new_session=True` and `os.killpg`. Janet's `os/spawn`
+passes no `posix_spawnattr_t`, so a child stays in the driver's own process
+group and killing that group would kill the driver.
+
+`tools.janet` reads every `(pid, ppid)` pair once, takes the descendants of the
+process it started, and kills them leaves-first in a single `kill` — leaves
+first because killing a parent first can leave a child reparented to init and
+unfindable a moment later. Verified against a `sh -c` holding a `cat /dev/zero`
+grandchild: 0.52s to the deadline, partial output preserved, no survivor.
+
+One rough edge found on the way, which is why the wait runs in its own fiber
+rather than under the deadline: **cancelling `os/proc-wait` leaves the process
+permanently unwaitable.** The flag saying a wait is in flight is never cleared,
+so a second wait raises "cannot wait twice" and the finalizer declines to reap —
+a zombie per timeout. Killing the tree and letting the *original* wait complete
+reaps it.
+
+### What each differential actually proved
+
+Rule 82: agreement on a clean tree is nearly worthless, so each tool was given
+a planted failure.
+
+| tool | exhaustive | planted failure |
+| --- | --- | --- |
+| `swallowed` | output byte-identical, 118 faces / 84 helpers | a `c.janet_buffer_ensure` call added inside raising `bufferSetcount`; both name `buffer_array.zig:212` and exit 1 |
+| `image-diff` | path scan identical on a synthetic corpus; image identical at 324,310 bytes | one byte patched in a saved image; both list `buffer/pusX-uint16` and exit 1 |
+| `matrix` | logs byte-identical on build-only, contracts, preflight and failure entries | `@compileError` in `raise.zig`; both extract the same three error lines, exit 1 |
+| `mutate` | site enumeration over 8 source-and-flag combinations; **all 280 mutant texts** of two files, 15MB, byte-identical | four verdict kinds sampled — `uncompilable`, `SURVIVED`, caught-by-contract, caught-by-startup — identical including the `by:` tally |
+
+`mutate` is the one whose port has no full oracle, because the Python had never
+completed a run. Rule 83.
+
+### The sweep's known defect bit again, during the port
+
+Three sites were picked for the verdict comparison without checking what they
+mutate. Two of them mutate `peekTimeout` — the event loop's timer peek — which
+hangs the `ev_loop` contract, and the contract call is bounded at **600
+seconds** where a suite gets 12. The probe was killed at ten minutes and left
+the tree mutated, because a killed sweep never reaches its restore.
+
+That bound has now cost two runs, the gate's and this one. It is deliberately
+**not** fixed here, along with the text-section comparison rule 74 asks for:
+both change what a verdict *means*, and the phase that owns the sweep should
+own them. What the port does provide is the mechanism — `ev/with-deadline`
+makes the fix one argument rather than a redesign.
+
+### What ran
+
+`zig build` and `zig build test` on macOS, clean — 34 suites, 65 contracts, 4
+fuzz targets. `./port/swallowed.janet` silent at 118 faces and 84 helpers.
+`nm -gU zig-out/lib/libjanet.dylib | wc -l` is **690**, unmoved — nothing under
+`src/` changed, and the only non-`port/` edits are comments in `build.zig`.
+
+`port/matrix.janet -j2` at **21 PASS / 0 FLAKY / 0 FAIL**, 181.0s wall and
+353.9s of work, with `contracts-default` at Part 28's four — this increment
+migrated no contract. That is the third full run of the day; the first reported
+278.1s and was machine noise, which rule 16's standalone check settled and the
+second and third runs (180.5s, 181.0s) confirmed.
+
+Each replaced script was also run against the Python it replaces, which is the
+increment's real check and is tabulated above. No benchmark is owed: the
+increment touches no runtime source.

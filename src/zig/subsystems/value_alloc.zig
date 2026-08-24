@@ -53,8 +53,8 @@
 //! `janet_fiber_setcapacity` maintains in `fiber_core.zig`, and the two have to
 //! agree: a fiber allocated here and grown there must have been charged once
 //! for its initial capacity and once per resize, never twice and never zero
-//! times. `test/value_alloc.c` checks the initial charge against the same
-//! arithmetic `test/fiber_core.c` checks the resize against.
+//! times. `test/value_alloc.zig` checks the initial charge against the same
+//! arithmetic `test/fiber_core.zig` checks the resize against.
 //!
 //! The 32-slot floor is applied *after* the capacity is used for nothing and
 //! *before* it is written to the fiber, so a caller asking for 0 gets a fiber
@@ -270,8 +270,10 @@ export fn janet_funcdef_alloc() callconv(.c) *c.JanetFuncDef {
 ///
 /// `sizeof(JanetFunction)` is the size of a function with no environments:
 /// `envs` is a flexible array member, which translate-c drops entirely, so
-/// `@sizeOf` here is the same number C's `sizeof` produces. `test/value_alloc.c`
-/// asserts that from the C side, where the flexible member is visible.
+/// `@sizeOf` here is the same number C's `sizeof` produces. `test/abi.c`
+/// asserts that from the C side, where the flexible member is visible -- it
+/// moved there when `test/value_alloc.c` became Zig, for the reason
+/// `test/value_alloc.zig`'s header gives.
 export fn janet_thunk(def: *c.JanetFuncDef) callconv(.c) *c.JanetFunction {
     const func: *c.JanetFunction = @ptrCast(@alignCast(c.janet_gcalloc(
         c.JANET_MEMORY_FUNCTION,

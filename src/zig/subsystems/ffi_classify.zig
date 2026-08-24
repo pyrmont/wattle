@@ -1,35 +1,47 @@
 //! The FFI's calling conventions: register classification and argument
 //! allocation for SysV AMD64, Windows x64, and AAPCS64.
 //!
-//! This is the second increment inside `ffi.c`. The first took the type
+//! This was the second increment inside `ffi.c`. The first took the type
 //! system's name tables and struct layout; this one takes the part that decides,
 //! for a given signature, which argument travels in which register and which
-//! spills to the stack. It stops at the same place: marshalling reads and writes
-//! Janet values, and the trampolines are inline assembly, so both stay in C.
+//! spills to the stack. It stops where `ffi_call.zig` begins: nothing here
+//! touches a Janet value or a trampoline.
 //!
-//! In C each convention is compiled only on the architecture that uses it, so on
-//! any one machine two of the three have never been built. Everything here is
+//! In C each convention was compiled only on the architecture that uses it, so
+//! on any one machine two of the three had never been built. Everything here is
 //! arithmetic over sizes, alignments, and ordinals — nothing about it is
 //! architecture-specific except the rules it encodes — so all three are compiled
-//! and asserted on every target, and `ffi.c` keeps the `#ifdef`s that decide
-//! which one a build is allowed to *call*. The one genuine host divergence,
-//! Apple's departure from AAPCS64 stack packing, is a parameter rather than a
-//! conditional, so both variants are reachable from any machine.
+//! and asserted on every target, and `ffi_call.zig` keeps the conditions that
+//! decide which one a build is allowed to *call*. The one genuine host
+//! divergence, Apple's departure from AAPCS64 stack packing, is a parameter
+//! rather than a conditional, so both variants are reachable from any machine.
 //!
-//! `JanetFFIType` and `JanetFFIStruct` still do not cross; the reasoning from
-//! `ffi_layout.zig` is unchanged, since they carry a pointer into a
-//! garbage-collected abstract. Instead C serializes the type tree into the flat
-//! pre-order array of `TypeNode` below, which holds only scalars. Classification
-//! is genuinely structural — SysV consults each nested struct's own size and
-//! alignment, not just its leaves — so a flattened list of leaves would not be
-//! enough; the tree has to arrive, just without the pointers.
+//! `Type` and `Struct` do not cross into this file, for `ffi_layout.zig`'s
+//! reason: they carry a pointer into a garbage-collected abstract. Instead
+//! `ffi_call.zig` serializes the type tree into the flat pre-order array of
+//! `TypeNode` below, which holds only scalars. Classification is genuinely
+//! structural — SysV consults each nested struct's own size and alignment, not
+//! just its leaves — so a flattened list of leaves would not be enough; the tree
+//! has to arrive, just without the pointers.
 //!
 //! Nothing here raises. A convention that cannot place an argument reports the
-//! position and the reason, and `ffi.c` panics.
+//! position and the reason, and `ffi_call.zig` turns that into a panic.
 //!
-//! The primitive ordinals mirror the enumerations in `src/core/ffi.c`, which are
-//! file-local and so cannot be imported. A compile-time assertion beside those
-//! enumerations pins them to these values.
+//! ## Reached by import, not by symbol
+//!
+//! `ffi_layout.zig`'s note applies here and cost more: `TypeNode`, `ArgSlot`
+//! and `AllocResult` were written out twice, once here and once in
+//! `ffi_call.zig`, on either side of five `extern fn` declarations against five
+//! exported symbols that only Zig ever called. Two mirrors of three `extern
+//! struct`s with nothing comparing them — `abstract_type.zig` at least asserts
+//! its mirror field by field. Phase 11 Part 16 spent the seam when
+//! `test/ffi_classify.zig` moved inside the compilation and wanted the same
+//! import; there is one copy of each type now, and the count that used to be a
+//! parameter beside a pointer is a slice's own.
+//!
+//! The primitive ordinals mirror the enumerations `ffi.c` kept file-local.
+//! `test/ffi_classify.zig` pins them, by writing the numbers out rather than by
+//! importing these declarations.
 
 const std = @import("std");
 
@@ -86,7 +98,7 @@ const err_return_too_big: u32 = 2;
 /// `struct_size` is the underlying `JanetFFIStruct`'s own size with the array
 /// count left out. The two conventions want different ones, and conflating them
 /// is the sort of mistake this split exists to prevent.
-const TypeNode = extern struct {
+pub const TypeNode = extern struct {
     size: u64,
     struct_size: u32,
     prim: u32,
@@ -103,17 +115,32 @@ const TypeNode = extern struct {
 /// matching classifier produced and leaves holding the placement, which is not
 /// always the same: an argument that classifies into a register but finds none
 /// free is rewritten to a stack or memory spec.
-const ArgSlot = extern struct {
+pub const ArgSlot = extern struct {
     size: u64,
     prim: u32,
     spec: u32,
     alignment: u32,
     offset: u32,
     offset2: u32,
+    /// How many vector registers an AAPCS64 homogeneous floating-point
+    /// aggregate occupies: **one per member**, which is what §6.8.2 says and
+    /// is not the same as one per eight bytes.
+    ///
+    /// Zero where the caller could not say — every non-SSE argument, a scalar,
+    /// and a top-level array of floats, whose extent the conventions ignore
+    /// for a reason `FOUND.md` records separately. The byte arithmetic stands
+    /// in those cases, which is where it was always right.
+    ///
+    /// It has to be a field because the allocator sees an `ArgSlot` and not a
+    /// `Type`, and the member count is a fact about the type. Adding it is a
+    /// one-line change since Phase 11 Part 16 collapsed the three copies of
+    /// this structure into one; before that it was three, with nothing
+    /// comparing them.
+    hfa_members: u32,
 };
 
 /// What a convention decided for the signature as a whole.
-const AllocResult = extern struct {
+pub const AllocResult = extern struct {
     stack_count: u32,
     variant: u32,
     error_kind: u32,
@@ -234,9 +261,9 @@ fn sysv64ClassifyStruct(nodes: []const TypeNode, idx: usize, shift: u64) Walk {
     return .{ .class = clazz, .next = child };
 }
 
-export fn janet_ffi_sysv64_classify(nodes: [*]const TypeNode, count: u32) callconv(.c) u32 {
-    if (count == 0) return sysv64_no_class;
-    return sysv64ClassifyExt(nodes[0..count], 0, 0).class;
+pub fn classifySysv64(nodes: []const TypeNode) u32 {
+    if (nodes.len == 0) return sysv64_no_class;
+    return sysv64ClassifyExt(nodes, 0, 0).class;
 }
 
 // -- AAPCS64 ---------------------------------------------------------------
@@ -286,9 +313,9 @@ fn aapcs64Classify(nodes: []const TypeNode, idx: usize) Walk {
     };
 }
 
-export fn janet_ffi_aapcs64_classify(nodes: [*]const TypeNode, count: u32) callconv(.c) u32 {
-    if (count == 0) return aapcs64_none;
-    return aapcs64Classify(nodes[0..count], 0).class;
+pub fn classifyAapcs64(nodes: []const TypeNode) u32 {
+    if (nodes.len == 0) return aapcs64_none;
+    return aapcs64Classify(nodes, 0).class;
 }
 
 // -- Argument allocation ---------------------------------------------------
@@ -307,12 +334,12 @@ fn alignUp(value: u32, alignment: u32) u32 {
 /// four, or eight bytes wide passed by reference, and a `variant` whose bits say
 /// which of the first four arguments are floating point so the trampoline knows
 /// to load the vector registers as well.
-export fn janet_ffi_win64_alloc(
+pub fn allocWin64(
     result: *AllocResult,
     ret: *ArgSlot,
-    args: [*]ArgSlot,
-    arg_count: u32,
-) callconv(.c) void {
+    args: []ArgSlot,
+) void {
+    const arg_count: u32 = @intCast(args.len);
     result.* = .{ .stack_count = 0, .variant = 0, .error_kind = err_none, .error_arg = -1, .arg_stack_count = 0 };
 
     var stack_count: u32 = 0;
@@ -380,12 +407,12 @@ export fn janet_ffi_win64_alloc(
 
 /// SysV AMD64. Six general registers, eight vector registers, and a `variant`
 /// that tells the trampoline how to read the return value back out.
-export fn janet_ffi_sysv64_alloc(
+pub fn allocSysv64(
     result: *AllocResult,
     ret: *ArgSlot,
-    args: [*]ArgSlot,
-    arg_count: u32,
-) callconv(.c) void {
+    args: []ArgSlot,
+) void {
+    const arg_count: u32 = @intCast(args.len);
     result.* = .{ .stack_count = 0, .variant = 0, .error_kind = err_none, .error_arg = -1, .arg_stack_count = 0 };
 
     switch (ret.spec) {
@@ -497,20 +524,18 @@ export fn janet_ffi_sysv64_alloc(
 /// AAPCS64. Eight general registers, eight vector registers, and a stack whose
 /// packing rules differ on Apple platforms: the generic standard rounds every
 /// stack argument up to eight bytes, while Apple packs them at their natural
-/// alignment. `apple_abi` carries that difference so both are reachable from any
+/// alignment. `apple` carries that difference so both are reachable from any
 /// build. `max_ret_size` is the width of the trampoline's return buffer, which
-/// is a host fact and so arrives from C.
-export fn janet_ffi_aapcs64_alloc(
+/// is a host fact and so arrives from the caller.
+pub fn allocAapcs64(
     result: *AllocResult,
     ret: *ArgSlot,
-    args: [*]ArgSlot,
-    arg_count: u32,
-    apple_abi: c_int,
+    args: []ArgSlot,
+    apple: bool,
     max_ret_size: u64,
-) callconv(.c) void {
+) void {
+    const arg_count: u32 = @intCast(args.len);
     result.* = .{ .stack_count = 0, .variant = 0, .error_kind = err_none, .error_arg = -1, .arg_stack_count = 0 };
-
-    const apple = apple_abi != 0;
 
     if (ret.spec == aapcs64_sse) {
         result.variant = 1;
@@ -567,7 +592,14 @@ export fn janet_ffi_aapcs64_alloc(
                 ref_stack_offset +%= arg_size;
             },
             aapcs64_sse => {
-                const needed_registers = (arg_size +% 7) / 8;
+                // One register per member for an aggregate, one for a scalar.
+                // Sizing this by bytes gave a four-float HFA two registers
+                // where the callee reads four, and wrote its members two to a
+                // register -- `FOUND.md`, fixed in Phase 11 Part 18.
+                const needed_registers = if (arg.hfa_members != 0)
+                    arg.hfa_members
+                else
+                    (arg_size +% 7) / 8;
                 if (next_fp_reg + needed_registers <= 8) {
                     arg.offset = next_fp_reg;
                     next_fp_reg += needed_registers;
@@ -631,13 +663,13 @@ fn structNode(size: u32, field_count: u32, offset: u32) TypeNode {
 
 test "sysv64 classifies scalars" {
     const int_node = [_]TypeNode{leaf(prim_int32, 4, 0)};
-    try std.testing.expectEqual(sysv64_integer, janet_ffi_sysv64_classify(&int_node, 1));
+    try std.testing.expectEqual(sysv64_integer, classifySysv64(&int_node));
 
     const double_node = [_]TypeNode{leaf(prim_double, 8, 0)};
-    try std.testing.expectEqual(sysv64_sse, janet_ffi_sysv64_classify(&double_node, 1));
+    try std.testing.expectEqual(sysv64_sse, classifySysv64(&double_node));
 
     const void_node = [_]TypeNode{leaf(prim_void, 0, 0)};
-    try std.testing.expectEqual(sysv64_no_class, janet_ffi_sysv64_classify(&void_node, 1));
+    try std.testing.expectEqual(sysv64_no_class, classifySysv64(&void_node));
 }
 
 test "sysv64 sends anything over sixteen bytes to memory" {
@@ -647,7 +679,7 @@ test "sysv64 sends anything over sixteen bytes to memory" {
         leaf(prim_int64, 8, 8),
         leaf(prim_int64, 8, 16),
     };
-    try std.testing.expectEqual(sysv64_memory, janet_ffi_sysv64_classify(&nodes, nodes.len));
+    try std.testing.expectEqual(sysv64_memory, classifySysv64(&nodes));
 }
 
 test "sysv64 names the pair of a two-eightbyte struct" {
@@ -657,7 +689,7 @@ test "sysv64 names the pair of a two-eightbyte struct" {
         leaf(prim_int64, 8, 0),
         leaf(prim_double, 8, 8),
     };
-    try std.testing.expectEqual(sysv64_pair_intsse, janet_ffi_sysv64_classify(&nodes, nodes.len));
+    try std.testing.expectEqual(sysv64_pair_intsse, classifySysv64(&nodes));
 
     // { double; int64 } is the mirror image.
     const mirrored = [_]TypeNode{
@@ -665,7 +697,7 @@ test "sysv64 names the pair of a two-eightbyte struct" {
         leaf(prim_double, 8, 0),
         leaf(prim_int64, 8, 8),
     };
-    try std.testing.expectEqual(sysv64_pair_sseint, janet_ffi_sysv64_classify(&mirrored, mirrored.len));
+    try std.testing.expectEqual(sysv64_pair_sseint, classifySysv64(&mirrored));
 
     // { double; double } stays in the vector registers.
     const both = [_]TypeNode{
@@ -673,7 +705,7 @@ test "sysv64 names the pair of a two-eightbyte struct" {
         leaf(prim_double, 8, 0),
         leaf(prim_double, 8, 8),
     };
-    try std.testing.expectEqual(sysv64_pair_ssesse, janet_ffi_sysv64_classify(&both, both.len));
+    try std.testing.expectEqual(sysv64_pair_ssesse, classifySysv64(&both));
 }
 
 test "sysv64 merges a small struct into a single class" {
@@ -683,7 +715,7 @@ test "sysv64 merges a small struct into a single class" {
         leaf(prim_float, 4, 0),
         leaf(prim_float, 4, 4),
     };
-    try std.testing.expectEqual(sysv64_sse, janet_ffi_sysv64_classify(&floats, floats.len));
+    try std.testing.expectEqual(sysv64_sse, classifySysv64(&floats));
 
     // Mixing an integer in makes the whole eightbyte an integer.
     const mixed = [_]TypeNode{
@@ -691,7 +723,7 @@ test "sysv64 merges a small struct into a single class" {
         leaf(prim_int32, 4, 0),
         leaf(prim_float, 4, 4),
     };
-    try std.testing.expectEqual(sysv64_integer, janet_ffi_sysv64_classify(&mixed, mixed.len));
+    try std.testing.expectEqual(sysv64_integer, classifySysv64(&mixed));
 }
 
 test "sysv64 sends a misaligned struct to memory" {
@@ -701,7 +733,7 @@ test "sysv64 sends a misaligned struct to memory" {
         leaf(prim_uint64, 8, 1),
     };
     nodes[0].is_aligned = 0;
-    try std.testing.expectEqual(sysv64_memory, janet_ffi_sysv64_classify(&nodes, nodes.len));
+    try std.testing.expectEqual(sysv64_memory, classifySysv64(&nodes));
 }
 
 test "aapcs64 recognises a homogeneous floating-point aggregate" {
@@ -712,7 +744,7 @@ test "aapcs64 recognises a homogeneous floating-point aggregate" {
         leaf(prim_float, 4, 8),
         leaf(prim_float, 4, 12),
     };
-    try std.testing.expectEqual(aapcs64_sse, janet_ffi_aapcs64_classify(&hfa, hfa.len));
+    try std.testing.expectEqual(aapcs64_sse, classifyAapcs64(&hfa));
 
     // A fifth member takes it out of the homogeneous case, and twenty bytes is
     // then too wide for the registers.
@@ -724,7 +756,7 @@ test "aapcs64 recognises a homogeneous floating-point aggregate" {
         leaf(prim_float, 4, 12),
         leaf(prim_float, 4, 16),
     };
-    try std.testing.expectEqual(aapcs64_general_ref, janet_ffi_aapcs64_classify(&too_many, too_many.len));
+    try std.testing.expectEqual(aapcs64_general_ref, classifyAapcs64(&too_many));
 
     // Mixed element types are not homogeneous either.
     const mixed = [_]TypeNode{
@@ -732,13 +764,13 @@ test "aapcs64 recognises a homogeneous floating-point aggregate" {
         leaf(prim_float, 4, 0),
         leaf(prim_double, 8, 8),
     };
-    try std.testing.expectEqual(aapcs64_general, janet_ffi_aapcs64_classify(&mixed, mixed.len));
+    try std.testing.expectEqual(aapcs64_general, classifyAapcs64(&mixed));
 }
 
 test "aapcs64 treats an empty struct as an ordinary aggregate" {
     // C reads the absent first field here; the port declines to.
     const empty = [_]TypeNode{structNode(0, 0, 0)};
-    try std.testing.expectEqual(aapcs64_general, janet_ffi_aapcs64_classify(&empty, empty.len));
+    try std.testing.expectEqual(aapcs64_general, classifyAapcs64(&empty));
 }
 
 test "win64 passes the first four arguments in registers" {
@@ -748,7 +780,7 @@ test "win64 passes the first four arguments in registers" {
         .{ .size = 8, .prim = prim_double, .spec = 0, .alignment = 8, .offset = 0, .offset2 = 0 },
     };
     var result: AllocResult = undefined;
-    janet_ffi_win64_alloc(&result, &ret, &args, args.len);
+    allocWin64(&result, &ret, &args);
 
     try std.testing.expectEqual(win64_register, args[0].spec);
     try std.testing.expectEqual(@as(u32, 0), args[0].offset);
@@ -766,7 +798,7 @@ test "sysv64 spills past the sixth integer register" {
         a.* = .{ .size = 8, .prim = prim_int64, .spec = sysv64_integer, .alignment = 8, .offset = 0, .offset2 = 0 };
     }
     var result: AllocResult = undefined;
-    janet_ffi_sysv64_alloc(&result, &ret, &args, args.len);
+    allocSysv64(&result, &ret, &args);
 
     for (args[0..6], 0..) |a, i| {
         try std.testing.expectEqual(sysv64_integer, a.spec);
@@ -782,14 +814,14 @@ test "sysv64 spills past the sixth integer register" {
 test "aapcs64 packs the stack differently on Apple platforms" {
     // Nine one-byte arguments: the first eight take the general registers and
     // the ninth goes to the stack, where the two variants disagree on width.
-    for ([_]c_int{ 0, 1 }) |apple| {
+    for ([_]bool{ false, true }) |apple| {
         var ret = ArgSlot{ .size = 0, .prim = prim_void, .spec = aapcs64_none, .alignment = 1, .offset = 0, .offset2 = 0 };
         var args: [9]ArgSlot = undefined;
         for (&args) |*a| {
             a.* = .{ .size = 1, .prim = prim_uint8, .spec = aapcs64_general, .alignment = 1, .offset = 0, .offset2 = 0 };
         }
         var result: AllocResult = undefined;
-        janet_ffi_aapcs64_alloc(&result, &ret, &args, args.len, apple, 128);
+        allocAapcs64(&result, &ret, &args, apple, 128);
 
         try std.testing.expectEqual(aapcs64_stack, args[8].spec);
         try std.testing.expectEqual(@as(u32, 0), args[8].offset);
@@ -803,7 +835,7 @@ test "aapcs64 refuses a return value wider than the trampoline buffer" {
     var ret = ArgSlot{ .size = 256, .prim = prim_struct, .spec = aapcs64_general_ref, .alignment = 8, .offset = 0, .offset2 = 0 };
     var args: [0]ArgSlot = undefined;
     var result: AllocResult = undefined;
-    janet_ffi_aapcs64_alloc(&result, &ret, &args, 0, 0, 128);
+    allocAapcs64(&result, &ret, &args, false, 128);
 
     try std.testing.expectEqual(err_return_too_big, result.error_kind);
     try std.testing.expectEqual(@as(i32, -1), result.error_arg);

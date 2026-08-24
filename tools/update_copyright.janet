@@ -1,7 +1,7 @@
 (def usage (string "usage: janet " (first (dyn :args)) " <last-year> <this-year>"))
 
 (def ignores [".git"])
-(def exts ["LICENSE" "Makefile" ".build" ".c" ".h" ".janet"])
+(def exts ["LICENSE" ".build" ".c" ".h" ".janet" ".zig"])
 
 (defn arg [i]
   (defn bail [] (print usage) (quit))
