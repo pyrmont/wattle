@@ -45,19 +45,32 @@
 //!
 //! **And writing the callback as the runtime types it found a live defect in
 //! the runtime**, one directory over. `janet_marshal_size` was a
-//! `raise.reported` face with no raising twin, and `peg.zig`'s `pegMarshal`
-//! and `io_core.zig`'s `fileMarshal` were both calling *the face* from inside
+//! `raise.reported` abi with no raising twin, and `peg.zig`'s `pegMarshal`
+//! and `io_core.zig`'s `fileMarshal` were both calling *the abi* from inside
 //! a raising callback -- so a buffer that refused to grow at exactly that call
 //! became a report nobody consumed. `marsh.marshalSize` is the twin; the
 //! increment's entry in `src/zig/README.md` has the reproduction.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const raise = @import("raise");
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
+const value = @import("subsystems").value;
+const structs = @import("subsystems").value.structs;
+const tables = @import("subsystems").value.tables;
+const gc_alloc = @import("subsystems").gc_alloc;
+const arrays = @import("subsystems").value.arrays;
+const buffers = @import("subsystems").value.buffers;
+const core_env = @import("subsystems").env;
+const vm_entry = @import("subsystems").vm_entry;
+const marsh_mod = @import("subsystems").marsh;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const abstracts = @import("subsystems").value.abstracts;
 const marsh = subsystems.marsh;
 const registry = subsystems.registry;
 const abstract_type = subsystems.abstract_type;
@@ -65,15 +78,15 @@ const AbstractType = abstract_type.AbstractType;
 
 const assert = std.debug.assert;
 
-var test_env: *c.JanetTable = undefined;
+var test_env: *types.JanetTable = undefined;
 
 /// Values a `Janet` local would not keep alive. The probe types have no
 /// `gcmark`, so nothing an abstract holds is a root either.
-var rooted: *c.JanetArray = undefined;
+var rooted: *types.JanetArray = undefined;
 
-fn keep(value: c.Janet) c.Janet {
-    c.janet_array_push(rooted, value);
-    return value;
+fn keep(val: types.Janet) types.Janet {
+    harness.arrayPush(rooted, val);
+    return val;
 }
 
 // ------------------------------------------------------------ wire assertions
@@ -83,8 +96,8 @@ fn keep(value: c.Janet) c.Janet {
 /// The C original's `check_bytes` printed the two byte strings and then
 /// `assert(0)`. Kept, because a wire-format failure is unreadable without
 /// them: the assertion that fires says only that two buffers differ.
-fn wireIs(b: *c.JanetBuffer, expected: []const u8) void {
-    const got = b.data[0..@intCast(b.count)];
+fn wireIs(b: *types.JanetBuffer, expected: []const u8) void {
+    const got = b.data.?[0..@intCast(b.count)];
     if (std.mem.eql(u8, got, expected)) return;
     std.debug.print("expected {d} bytes:", .{expected.len});
     for (expected) |byte| std.debug.print(" {x:0>2}", .{byte});
@@ -94,22 +107,22 @@ fn wireIs(b: *c.JanetBuffer, expected: []const u8) void {
     @panic("wire format mismatch");
 }
 
-fn marshalled(x: c.Janet, rreg: [*c]c.JanetTable, flags: c_int) raise.Raising(*c.JanetBuffer) {
-    const b = c.janet_buffer(16);
+fn marshalled(x: types.Janet, rreg: ?*types.JanetTable, flags: c_int) raise.Raising(*types.JanetBuffer) {
+    const b = buffers.new(16);
     try marsh.marshal(b, x, rreg, flags);
     return b;
 }
 
-fn unmarshalled(b: *c.JanetBuffer, flags: c_int) raise.Raising(c.Janet) {
-    return marsh.unmarshal(b.data, @intCast(b.count), flags, null, null);
+fn unmarshalled(b: *types.JanetBuffer, flags: c_int) raise.Raising(types.Janet) {
+    return marsh.unmarshal(b.data.?[0..@intCast(b.count)], flags, null, null);
 }
 
 /// `unmarshal` over a literal, which is how every crafted stream below is
 /// spelled. Slices rather than pointer-and-length: the length of a Zig string
 /// literal is part of it, and the C original had to write `sizeof(x) - 1` at
 /// every site to say the same thing.
-fn unmarshalBytes(bytes: []const u8, flags: c_int) raise.Raising(c.Janet) {
-    return marsh.unmarshal(bytes.ptr, bytes.len, flags, null, null);
+fn unmarshalBytes(bytes: []const u8, flags: c_int) raise.Raising(types.Janet) {
+    return marsh.unmarshal(bytes, flags, null, null);
 }
 
 /// The refusal a crafted stream produced, or null if it was accepted.
@@ -130,27 +143,27 @@ const Probe = extern struct {
     sz: usize,
     byte: u8,
     bytes: [4]u8,
-    value: c.Janet,
+    value: types.Janet,
     ptr: ?*anyopaque,
 };
 
-fn probeMarshal(pointer: ?*anyopaque, ctx: [*c]c.JanetMarshalContext) raise.Raising(void) {
+fn probeMarshal(pointer: ?*anyopaque, ctx: *types.JanetMarshalContext) raise.Raising(void) {
     const probe: *Probe = @ptrCast(@alignCast(pointer));
-    c.janet_marshal_abstract(ctx, pointer);
+    marsh_mod.marshalAbstract(ctx, pointer);
     try marsh.marshalInt(ctx, probe.i32_field);
     try marsh.marshalInt64(ctx, probe.i64_field);
     try marsh.marshalSize(ctx, probe.sz);
     try marsh.marshalByte(ctx, probe.byte);
-    try marsh.marshalBytes(ctx, &probe.bytes, probe.bytes.len);
+    try marsh.marshalBytes(ctx, &probe.bytes);
     try marsh.marshalJanet(ctx, probe.value);
-    const unsafe = (c.janet_marshal_flags(ctx) & c.JANET_MARSHAL_UNSAFE) != 0;
+    const unsafe = (marsh_mod.marshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE) != 0;
     try marsh.marshalByte(ctx, @intFromBool(unsafe));
     if (unsafe) try marsh.marshalPtr(ctx, probe.ptr);
 }
 
 /// Every read is a `try`, which is the whole of what the C original spelled as
 /// a `BAIL_IF_RAISING` after each one -- see the header comment.
-fn probeUnmarshal(ctx: [*c]c.JanetMarshalContext) raise.Raising(?*anyopaque) {
+fn probeUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
     const probe: *Probe = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(Probe))));
     probe.i32_field = try marsh.unmarshalInt(ctx);
     probe.i64_field = try marsh.unmarshalInt64(ctx);
@@ -162,7 +175,7 @@ fn probeUnmarshal(ctx: [*c]c.JanetMarshalContext) raise.Raising(?*anyopaque) {
     probe.ptr = null;
     const unsafe = try marsh.unmarshalByte(ctx);
     if (unsafe != 0) {
-        assert((c.janet_unmarshal_flags(ctx) & c.JANET_MARSHAL_UNSAFE) != 0);
+        assert((marsh_mod.unmarshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE) != 0);
         probe.ptr = try marsh.unmarshalPtr(ctx);
     }
     return probe;
@@ -176,12 +189,12 @@ const probe_at: AbstractType = .{
 
 /// A type that always reaches for a pointer, so that the safe-mode refusal has
 /// something to refuse.
-fn refuserMarshal(pointer: ?*anyopaque, ctx: [*c]c.JanetMarshalContext) raise.Raising(void) {
-    c.janet_marshal_abstract(ctx, pointer);
+fn refuserMarshal(pointer: ?*anyopaque, ctx: *types.JanetMarshalContext) raise.Raising(void) {
+    marsh_mod.marshalAbstract(ctx, pointer);
     try marsh.marshalPtr(ctx, pointer);
 }
 
-fn refuserUnmarshal(ctx: [*c]c.JanetMarshalContext) raise.Raising(?*anyopaque) {
+fn refuserUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
     const p = try marsh.unmarshalAbstract(ctx, @sizeOf(i32));
     _ = try marsh.unmarshalPtr(ctx);
     return p;
@@ -194,9 +207,10 @@ const refuser_at: AbstractType = .{
 };
 
 /// A type that writes more bytes than a Janet buffer can index.
-fn toobigMarshal(pointer: ?*anyopaque, ctx: [*c]c.JanetMarshalContext) raise.Raising(void) {
-    c.janet_marshal_abstract(ctx, pointer);
-    try marsh.marshalBytes(ctx, @ptrCast(pointer), @as(usize, std.math.maxInt(i32)) + 1);
+fn toobigMarshal(pointer: ?*anyopaque, ctx: *types.JanetMarshalContext) raise.Raising(void) {
+    marsh_mod.marshalAbstract(ctx, pointer);
+    const bytes: [*]const u8 = @ptrCast(pointer);
+    try marsh.marshalBytes(ctx, bytes[0 .. @as(usize, std.math.maxInt(i32)) + 1]);
 }
 
 const toobig_at: AbstractType = .{
@@ -206,13 +220,13 @@ const toobig_at: AbstractType = .{
 
 /// The marshal half of the three types whose *unmarshal* half breaks the
 /// abstract protocol.
-fn protocolMarshal(pointer: ?*anyopaque, ctx: [*c]c.JanetMarshalContext) raise.Raising(void) {
-    c.janet_marshal_abstract(ctx, pointer);
+fn protocolMarshal(pointer: ?*anyopaque, ctx: *types.JanetMarshalContext) raise.Raising(void) {
+    marsh_mod.marshalAbstract(ctx, pointer);
     try marsh.marshalByte(ctx, @as(*u8, @ptrCast(pointer)).*);
 }
 
 /// Registers itself twice.
-fn twiceUnmarshal(ctx: [*c]c.JanetMarshalContext) raise.Raising(?*anyopaque) {
+fn twiceUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
     const p = try marsh.unmarshalAbstract(ctx, 1);
     try marsh.unmarshalAbstractReuse(ctx, p);
     return p;
@@ -225,9 +239,9 @@ const twice_at: AbstractType = .{
 };
 
 /// Never registers at all.
-fn neverUnmarshal(ctx: [*c]c.JanetMarshalContext) raise.Raising(?*anyopaque) {
+fn neverUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
     _ = try marsh.unmarshalByte(ctx);
-    return c.janet_abstract(abstract_type.stored(&probe_at), @sizeOf(Probe));
+    return abstracts.new(abstract_type.stored(&probe_at), @sizeOf(Probe));
 }
 
 const never_at: AbstractType = .{
@@ -236,7 +250,7 @@ const never_at: AbstractType = .{
     .unmarshal = neverUnmarshal,
 };
 
-fn threadedUnmarshal(ctx: [*c]c.JanetMarshalContext) raise.Raising(?*anyopaque) {
+fn threadedUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
     return marsh.unmarshalAbstractThreaded(ctx, 1);
 }
 
@@ -250,7 +264,7 @@ const threaded_at: AbstractType = .{
 /// unmarshallable rather than merely unregistered.
 const inert_at: AbstractType = .{ .name = "test/marsh-inert" };
 
-fn stored(at: *const AbstractType) [*c]const c.JanetAbstractType {
+fn stored(at: *const AbstractType) *const types.JanetAbstractType {
     return abstract_type.stored(at);
 }
 
@@ -292,17 +306,17 @@ fn theThreeIntegerEncodings() raise.Raising(void) {
 /// A double that is not an exact int32 takes the eight-byte path and is
 /// recorded as a reference; an integral one never is.
 fn realsAndIntegralDoublesDiffer() raise.Raising(void) {
-    var b = try marshalled(c.janet_wrap_number(0.5), null, 0);
+    var b = try marshalled(wrap.fromNumber(0.5), null, 0);
     assert(b.count == 9);
-    assert(b.data[0] == lb_real);
-    assert(c.janet_unwrap_number(try unmarshalled(b, 0)) == 0.5);
+    assert(b.data.?[0] == lb_real);
+    assert(wrap.toNumber(try unmarshalled(b, 0)) == 0.5);
 
-    wireIs(try marshalled(c.janet_wrap_number(3.0), null, 0), "\x03");
+    wireIs(try marshalled(wrap.fromNumber(3.0), null, 0), "\x03");
 
     // 2^31 is integral and outside int32, so it is a real.
-    b = try marshalled(c.janet_wrap_number(2147483648.0), null, 0);
-    assert(b.count == 9 and b.data[0] == lb_real);
-    assert(c.janet_unwrap_number(try unmarshalled(b, 0)) == 2147483648.0);
+    b = try marshalled(wrap.fromNumber(2147483648.0), null, 0);
+    assert(b.count == 9 and b.data.?[0] == lb_real);
+    assert(wrap.toNumber(try unmarshalled(b, 0)) == 2147483648.0);
 }
 
 // -------------------------------------------------------- the 64-bit codec
@@ -314,24 +328,24 @@ fn theSizeEncodingBoundaries() raise.Raising(void) {
         0,          1,          0xEF,               0xF0, 0xF1, 0xFF, 0x100, 0xFFFFFFFF,
         0x01020304, 0x05060708, 0xFFFFFFFFFFFFFFFF,
     };
-    for (values) |value| {
-        const probe: *Probe = @ptrCast(@alignCast(c.janet_abstract(stored(&probe_at), @sizeOf(Probe))));
+    for (values) |val| {
+        const probe: *Probe = @ptrCast(@alignCast(abstracts.new(stored(&probe_at), @sizeOf(Probe))));
         probe.* = std.mem.zeroes(Probe);
-        probe.i64_field = @bitCast(value);
-        probe.sz = @truncate(value);
-        probe.value = c.janet_wrap_nil();
-        const b = try marshalled(keep(c.janet_wrap_abstract(probe)), null, 0);
-        const back: *Probe = @ptrCast(@alignCast(c.janet_unwrap_abstract(try unmarshalled(b, 0))));
-        assert(@as(u64, @bitCast(back.i64_field)) == value);
-        assert(back.sz == @as(usize, @truncate(value)));
+        probe.i64_field = @bitCast(val);
+        probe.sz = @truncate(val);
+        probe.value = wrap.fromNil();
+        const b = try marshalled(keep(wrap.fromAbstract(probe)), null, 0);
+        const back: *Probe = @ptrCast(@alignCast(wrap.toAbstract(try unmarshalled(b, 0))));
+        assert(@as(u64, @bitCast(back.i64_field)) == val);
+        assert(back.sz == @as(usize, @truncate(val)));
     }
 
     // The prefix byte counts the bytes that follow, little endian.
-    const probe: *Probe = @ptrCast(@alignCast(c.janet_abstract(stored(&probe_at), @sizeOf(Probe))));
+    const probe: *Probe = @ptrCast(@alignCast(abstracts.new(stored(&probe_at), @sizeOf(Probe))));
     probe.* = std.mem.zeroes(Probe);
     probe.i64_field = 0x0102;
-    probe.value = c.janet_wrap_nil();
-    const b = try marshalled(keep(c.janet_wrap_abstract(probe)), null, 0);
+    probe.value = wrap.fromNil();
+    const b = try marshalled(keep(wrap.fromAbstract(probe)), null, 0);
     // ...LB_ABSTRACT, name, i32 = 0, then the int64.
     const tail = 3 // the i64: prefix and two bytes
         + 1 // sz, zero
@@ -339,7 +353,7 @@ fn theSizeEncodingBoundaries() raise.Raising(void) {
         + 4 // bytes
         + 1 // value: nil
         + 1; // the unsafe marker
-    const at = b.data + @as(usize, @intCast(b.count)) - tail;
+    const at = b.data.? + @as(usize, @intCast(b.count)) - tail;
     assert(at[0] == 0xF2 and at[1] == 0x02 and at[2] == 0x01);
 
     // Nine bytes of length is not a 64-bit integer.
@@ -349,25 +363,25 @@ fn theSizeEncodingBoundaries() raise.Raising(void) {
 // ---------------------------------------------------------- the context API
 
 fn makeProbe() *Probe {
-    const probe: *Probe = @ptrCast(@alignCast(c.janet_abstract(stored(&probe_at), @sizeOf(Probe))));
+    const probe: *Probe = @ptrCast(@alignCast(abstracts.new(stored(&probe_at), @sizeOf(Probe))));
     probe.i32_field = -12345;
     probe.i64_field = -0x0102030405060708;
     probe.sz = 0x1234;
     probe.byte = 0xAB;
     probe.bytes = "wxyz".*;
-    probe.value = c.janet_cstringv("payload");
+    probe.value = value.fromBytes("payload", .string);
     probe.ptr = @ptrCast(@constCast(stored(&probe_at)));
-    _ = keep(c.janet_wrap_abstract(probe));
+    _ = keep(wrap.fromAbstract(probe));
     return probe;
 }
 
 fn theContextApiRoundTrips() raise.Raising(void) {
     const probe = makeProbe();
-    var b = try marshalled(c.janet_wrap_abstract(probe), null, 0);
+    var b = try marshalled(wrap.fromAbstract(probe), null, 0);
     const out = keep(try unmarshalled(b, 0));
-    assert(harness.isType(out, c.JANET_ABSTRACT));
-    assert(c.janet_abstract_type(c.janet_unwrap_abstract(out)) == stored(&probe_at));
-    var back: *Probe = @ptrCast(@alignCast(c.janet_unwrap_abstract(out)));
+    assert(harness.isType(out, constants.JANET_ABSTRACT));
+    assert(types.abstractHead(wrap.toAbstract(out)).type == stored(&probe_at));
+    var back: *Probe = @ptrCast(@alignCast(wrap.toAbstract(out)));
     assert(back != probe);
     assert(back.i32_field == probe.i32_field);
     assert(back.i64_field == probe.i64_field);
@@ -379,85 +393,85 @@ fn theContextApiRoundTrips() raise.Raising(void) {
     assert(back.ptr == null);
 
     // Unsafe mode carries it.
-    b = try marshalled(c.janet_wrap_abstract(probe), null, c.JANET_MARSHAL_UNSAFE);
-    back = @ptrCast(@alignCast(c.janet_unwrap_abstract(
-        keep(try unmarshalled(b, c.JANET_MARSHAL_UNSAFE)),
+    b = try marshalled(wrap.fromAbstract(probe), null, constants.JANET_MARSHAL_UNSAFE);
+    back = @ptrCast(@alignCast(wrap.toAbstract(
+        keep(try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE)),
     )));
     assert(back.ptr == @as(?*anyopaque, @ptrCast(@constCast(stored(&probe_at)))));
 
     // The stream opens with LB_ABSTRACT and the type's name as a symbol.
     const name = std.mem.span(probe_at.name);
-    assert(b.data[0] == lb_abstract);
-    assert(b.data[1] == lb_symbol);
-    assert(b.data[2] == name.len);
-    assert(std.mem.eql(u8, b.data[3 .. 3 + name.len], name));
+    assert(b.data.?[0] == lb_abstract);
+    assert(b.data.?[1] == lb_symbol);
+    assert(b.data.?[2] == name.len);
+    assert(std.mem.eql(u8, b.data.?[3 .. 3 + name.len], name));
 }
 
 /// The abstract is entered into the reference table before its fields are
 /// read, so a value that contains itself resolves rather than recursing.
 fn anAbstractCanContainItself() raise.Raising(void) {
     const probe = makeProbe();
-    const self = c.janet_wrap_abstract(probe);
-    const holder = c.janet_array(1);
-    c.janet_array_push(holder, self);
-    probe.value = c.janet_wrap_array(holder);
+    const self = wrap.fromAbstract(probe);
+    const holder = arrays.new(1);
+    harness.arrayPush(holder, self);
+    probe.value = wrap.fromArray(holder);
 
     const b = try marshalled(self, null, 0);
-    const back: *Probe = @ptrCast(@alignCast(c.janet_unwrap_abstract(keep(try unmarshalled(b, 0)))));
-    assert(harness.isType(back.value, c.JANET_ARRAY));
-    const back_holder = c.janet_unwrap_array(back.value);
+    const back: *Probe = @ptrCast(@alignCast(wrap.toAbstract(keep(try unmarshalled(b, 0)))));
+    assert(harness.isType(back.value, constants.JANET_ARRAY));
+    const back_holder = wrap.toArray(back.value);
     assert(back_holder.*.count == 1);
-    assert(c.janet_unwrap_abstract(back_holder.*.data[0]) == @as(?*anyopaque, back));
+    assert(wrap.toAbstract(back_holder.*.data.?[0]) == @as(?*anyopaque, back));
 }
 
 fn theAbstractProtocolIsEnforced() raise.Raising(void) {
-    const twice: *u8 = @ptrCast(c.janet_abstract(stored(&twice_at), 1));
+    const twice: *u8 = @ptrCast(abstracts.new(stored(&twice_at), 1));
     twice.* = 7;
-    var b = try marshalled(keep(c.janet_wrap_abstract(twice)), null, 0);
+    var b = try marshalled(keep(wrap.fromAbstract(twice)), null, 0);
     assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("janet_unmarshal_abstract called more than once"));
 
-    const never: *u8 = @ptrCast(c.janet_abstract(stored(&never_at), 1));
+    const never: *u8 = @ptrCast(abstracts.new(stored(&never_at), 1));
     never.* = 7;
-    b = try marshalled(keep(c.janet_wrap_abstract(never)), null, 0);
+    b = try marshalled(keep(wrap.fromAbstract(never)), null, 0);
     assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("janet_unmarshal_abstract not called"));
 
-    const threaded: *u8 = @ptrCast(c.janet_abstract(stored(&threaded_at), 1));
+    const threaded: *u8 = @ptrCast(abstracts.new(stored(&threaded_at), 1));
     threaded.* = 7;
-    b = try marshalled(keep(c.janet_wrap_abstract(threaded)), null, 0);
+    b = try marshalled(keep(wrap.fromAbstract(threaded)), null, 0);
     // `JANET_THREADS` is defined by no build in this tree, so this arm is the
     // only one that has ever been compiled. See `FOUND.md`.
     assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("threaded abstracts not supported"));
 
-    const inert: *i32 = @ptrCast(@alignCast(c.janet_abstract(stored(&inert_at), @sizeOf(i32))));
+    const inert: *i32 = @ptrCast(@alignCast(abstracts.new(stored(&inert_at), @sizeOf(i32))));
     inert.* = 7;
     assert(harness.raised(
         marshalled,
-        .{ keep(c.janet_wrap_abstract(inert)), @as([*c]c.JanetTable, null), @as(c_int, 0) },
+        .{ keep(wrap.fromAbstract(inert)), @as(?*types.JanetTable, null), @as(c_int, 0) },
     ).?.beginsWith("cannot marshal <test/marsh-inert 0x"));
 }
 
 fn theUnsafeGateOnTheContextApi() raise.Raising(void) {
-    const refuser = keep(c.janet_wrap_abstract(c.janet_abstract(stored(&refuser_at), @sizeOf(i32))));
+    const refuser = keep(wrap.fromAbstract(abstracts.new(stored(&refuser_at), @sizeOf(i32))));
     assert(harness.raised(
         marshalled,
-        .{ refuser, @as([*c]c.JanetTable, null), @as(c_int, 0) },
+        .{ refuser, @as(?*types.JanetTable, null), @as(c_int, 0) },
     ).?.says("can only marshal pointers in unsafe mode"));
 
-    const b = try marshalled(refuser, null, c.JANET_MARSHAL_UNSAFE);
+    const b = try marshalled(refuser, null, constants.JANET_MARSHAL_UNSAFE);
     assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("can only unmarshal pointers in unsafe mode"));
     // And succeeds when the flag is given.
-    assert(harness.isType(try unmarshalled(b, c.JANET_MARSHAL_UNSAFE), c.JANET_ABSTRACT));
+    assert(harness.isType(try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE), constants.JANET_ABSTRACT));
 
     // A length that cannot be a buffer index is refused before anything is
     // read from it.
-    const toobig = keep(c.janet_wrap_abstract(c.janet_abstract(stored(&toobig_at), @sizeOf(i32))));
+    const toobig = keep(wrap.fromAbstract(abstracts.new(stored(&toobig_at), @sizeOf(i32))));
     assert(harness.raised(
         marshalled,
-        .{ toobig, @as([*c]c.JanetTable, null), @as(c_int, 0) },
+        .{ toobig, @as(?*types.JanetTable, null), @as(c_int, 0) },
     ).?.says("size_t too large to fit in buffer"));
 }
 
@@ -469,33 +483,33 @@ fn theUnsafeGateOnTheContextApi() raise.Raising(void) {
 /// a pointer shift steals the low bits of a cfunction pointer, and
 /// `-Dnanbox-pointer-shift=2` is a matrix entry. The C original got the same
 /// requirement from `JANET_CFUNCTION_ALIGN`.
-fn aCfunction(argc: i32, argv: [*c]c.Janet) align(@import("corefn").alignment) raise.Raising(c.Janet) {
-    _ = argc;
-    _ = argv;
+fn aCfunction(argv: []types.Janet) align(@import("corefn").alignment) raise.Raising(types.Janet) {
+    _ = @as(i32, @intCast(argv.len));
+
     return harness.wrapInteger(1729);
 }
 
 fn pointersAndCfunctionsNeedTheUnsafeFlag() raise.Raising(void) {
-    const ptr = c.janet_wrap_pointer(@ptrCast(@constCast(stored(&probe_at))));
-    const cfun = c.janet_wrap_cfunction(raise.stored(&aCfunction));
+    const ptr = wrap.fromPointer(@ptrCast(@constCast(stored(&probe_at))));
+    const cfun = wrap.fromCfunction(raise.stored(&aCfunction));
 
-    assert(harness.raised(marshalled, .{ ptr, @as([*c]c.JanetTable, null), @as(c_int, 0) }).?
+    assert(harness.raised(marshalled, .{ ptr, @as(?*types.JanetTable, null), @as(c_int, 0) }).?
         .beginsWith("no registry value and cannot marshal <pointer 0x"));
-    assert(harness.raised(marshalled, .{ cfun, @as([*c]c.JanetTable, null), @as(c_int, 0) }).?
+    assert(harness.raised(marshalled, .{ cfun, @as(?*types.JanetTable, null), @as(c_int, 0) }).?
         .beginsWith("no registry value and cannot marshal <cfunction 0x"));
 
-    var b = try marshalled(ptr, null, c.JANET_MARSHAL_UNSAFE);
-    assert(b.data[0] == lb_unsafe_pointer);
+    var b = try marshalled(ptr, null, constants.JANET_MARSHAL_UNSAFE);
+    assert(b.data.?[0] == lb_unsafe_pointer);
     assert(b.count == 1 + @sizeOf(*anyopaque));
-    assert(c.janet_unwrap_pointer(try unmarshalled(b, c.JANET_MARSHAL_UNSAFE)) ==
+    assert(wrap.toPointer(try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE)) ==
         @as(?*anyopaque, @ptrCast(@constCast(stored(&probe_at)))));
     assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("unsafe flag not given, will not unmarshal raw pointer at index 1"));
 
-    b = try marshalled(cfun, null, c.JANET_MARSHAL_UNSAFE);
-    assert(b.data[0] == lb_unsafe_cfunction);
-    const back = try unmarshalled(b, c.JANET_MARSHAL_UNSAFE);
-    assert(c.janet_unwrap_cfunction(back) == raise.stored(&aCfunction));
+    b = try marshalled(cfun, null, constants.JANET_MARSHAL_UNSAFE);
+    assert(b.data.?[0] == lb_unsafe_cfunction);
+    const back = try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE);
+    assert(wrap.toCfunction(back) == raise.stored(&aCfunction));
     assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("unsafe flag not given, will not unmarshal function pointer at index 1"));
 }
@@ -516,7 +530,7 @@ fn pointersAndCfunctionsNeedTheUnsafeFlag() raise.Raising(void) {
 ///
 /// The lead-byte enumeration is private to the subsystem, so there is no
 /// `LB_POINTER_BUFFER` in the translation to ask instead.
-const lb_weak_base: u8 = if (c.JANET_VM_HAS_EV != 0) 226 else 224;
+const lb_weak_base: u8 = if (constants.JANET_VM_HAS_EV != 0) 226 else 224;
 
 // The lead bytes this file names by number, so that the numbers appear once.
 // Every one is a wire-format constant: `janet.h` does not export the enum and
@@ -531,31 +545,31 @@ const lb_unsafe_cfunction: u8 = 221;
 const lb_unsafe_pointer: u8 = 222;
 
 fn theWeakLeadBytesMoveWithTheEventLoop() raise.Raising(void) {
-    const weakk = c.janet_table_weakk(1);
-    const weakv = c.janet_table_weakv(1);
-    const weakkv = c.janet_table_weakkv(1);
-    const weak_array = c.janet_array_weak(0);
+    const weakk = tables.weakk(1);
+    const weakv = tables.weakv(1);
+    const weakkv = tables.weakkv(1);
+    const weak_array = arrays.weak(0);
 
-    assert((try marshalled(c.janet_wrap_table(weakk), null, 0)).data[0] == lb_weak_base + 0);
-    assert((try marshalled(c.janet_wrap_table(weakv), null, 0)).data[0] == lb_weak_base + 1);
-    assert((try marshalled(c.janet_wrap_table(weakkv), null, 0)).data[0] == lb_weak_base + 2);
-    assert((try marshalled(c.janet_wrap_array(weak_array), null, 0)).data[0] == lb_weak_base + 6);
+    assert((try marshalled(wrap.fromTable(weakk), null, 0)).data.?[0] == lb_weak_base + 0);
+    assert((try marshalled(wrap.fromTable(weakv), null, 0)).data.?[0] == lb_weak_base + 1);
+    assert((try marshalled(wrap.fromTable(weakkv), null, 0)).data.?[0] == lb_weak_base + 2);
+    assert((try marshalled(wrap.fromArray(weak_array), null, 0)).data.?[0] == lb_weak_base + 6);
 
-    weakk.*.proto = c.janet_table(0);
-    weakv.*.proto = c.janet_table(0);
-    weakkv.*.proto = c.janet_table(0);
-    assert((try marshalled(c.janet_wrap_table(weakk), null, 0)).data[0] == lb_weak_base + 3);
-    assert((try marshalled(c.janet_wrap_table(weakv), null, 0)).data[0] == lb_weak_base + 4);
-    assert((try marshalled(c.janet_wrap_table(weakkv), null, 0)).data[0] == lb_weak_base + 5);
+    weakk.*.proto = tables.new(0);
+    weakv.*.proto = tables.new(0);
+    weakkv.*.proto = tables.new(0);
+    assert((try marshalled(wrap.fromTable(weakk), null, 0)).data.?[0] == lb_weak_base + 3);
+    assert((try marshalled(wrap.fromTable(weakv), null, 0)).data.?[0] == lb_weak_base + 4);
+    assert((try marshalled(wrap.fromTable(weakkv), null, 0)).data.?[0] == lb_weak_base + 5);
 
     // And each comes back as the same flavour of weak container.
-    var b = try marshalled(c.janet_wrap_array(weak_array), null, 0);
+    var b = try marshalled(wrap.fromArray(weak_array), null, 0);
     var back = try unmarshalled(b, 0);
-    assert(harness.isType(back, c.JANET_ARRAY));
-    b = try marshalled(c.janet_wrap_table(weakkv), null, 0);
+    assert(harness.isType(back, constants.JANET_ARRAY));
+    b = try marshalled(wrap.fromTable(weakkv), null, 0);
     back = try unmarshalled(b, 0);
-    assert(harness.isType(back, c.JANET_TABLE));
-    assert(c.janet_unwrap_table(back).*.proto != null);
+    assert(harness.isType(back, constants.JANET_TABLE));
+    assert(wrap.toTable(back).*.proto != null);
 }
 
 // ------------------------------------------------------- the reference table
@@ -564,36 +578,36 @@ fn theWeakLeadBytesMoveWithTheEventLoop() raise.Raising(void) {
 /// everything else before, which decides whether a self-reference is
 /// expressible at all.
 fn whenAValueBecomesAReference() raise.Raising(void) {
-    const a = c.janet_array(1);
-    c.janet_array_push(a, c.janet_wrap_array(a));
-    var b = try marshalled(keep(c.janet_wrap_array(a)), null, 0);
+    const a = arrays.new(1);
+    harness.arrayPush(a, wrap.fromArray(a));
+    var b = try marshalled(keep(wrap.fromArray(a)), null, 0);
     // LB_ARRAY, count 1, then LB_REFERENCE 0.
     wireIs(b, "\xd1\x01\xda\x00");
-    var back_a = c.janet_unwrap_array(keep(try unmarshalled(b, 0)));
-    assert(back_a.*.count == 1 and c.janet_unwrap_array(back_a.*.data[0]) == back_a);
+    var back_a = wrap.toArray(keep(try unmarshalled(b, 0)));
+    assert(back_a.*.count == 1 and wrap.toArray(back_a.*.data.?[0]) == back_a);
 
     // The same array twice is one reference and one back-reference.
-    const outer = c.janet_array(2);
-    const inner = c.janet_array(0);
-    c.janet_array_push(outer, c.janet_wrap_array(inner));
-    c.janet_array_push(outer, c.janet_wrap_array(inner));
-    b = try marshalled(keep(c.janet_wrap_array(outer)), null, 0);
+    const outer = arrays.new(2);
+    const inner = arrays.new(0);
+    harness.arrayPush(outer, wrap.fromArray(inner));
+    harness.arrayPush(outer, wrap.fromArray(inner));
+    b = try marshalled(keep(wrap.fromArray(outer)), null, 0);
     wireIs(b, "\xd1\x02\xd1\x00\xda\x01");
-    back_a = c.janet_unwrap_array(keep(try unmarshalled(b, 0)));
-    assert(c.janet_unwrap_array(back_a.*.data[0]) == c.janet_unwrap_array(back_a.*.data[1]));
+    back_a = wrap.toArray(keep(try unmarshalled(b, 0)));
+    assert(wrap.toArray(back_a.*.data.?[0]) == wrap.toArray(back_a.*.data.?[1]));
 
     // With cycles switched off nothing is recorded, so the same array is
     // written twice and the copies come back distinct.
-    b = try marshalled(c.janet_wrap_array(outer), null, c.JANET_MARSHAL_NO_CYCLES);
+    b = try marshalled(wrap.fromArray(outer), null, constants.JANET_MARSHAL_NO_CYCLES);
     wireIs(b, "\xd1\x02\xd1\x00\xd1\x00");
-    back_a = c.janet_unwrap_array(keep(try unmarshalled(b, 0)));
-    assert(c.janet_unwrap_array(back_a.*.data[0]) != c.janet_unwrap_array(back_a.*.data[1]));
+    back_a = wrap.toArray(keep(try unmarshalled(b, 0)));
+    assert(wrap.toArray(back_a.*.data.?[0]) != wrap.toArray(back_a.*.data.?[1]));
 
     // And a cyclic value has nothing to stop it but the recursion guard.
     assert(harness.raised(marshalled, .{
-        c.janet_wrap_array(a),
-        @as([*c]c.JanetTable, null),
-        @as(c_int, c.JANET_MARSHAL_NO_CYCLES),
+        wrap.fromArray(a),
+        @as(?*types.JanetTable, null),
+        @as(c_int, constants.JANET_MARSHAL_NO_CYCLES),
     }).?.says("stack overflow"));
 }
 
@@ -611,11 +625,11 @@ fn aReferenceIndexIsBoundsChecked() void {
 
 // -------------------------------------------------- functions and closures
 
-fn onlyIndexOf(b: *c.JanetBuffer, lead: u8) i32 {
+fn onlyIndexOf(b: *types.JanetBuffer, lead: u8) i32 {
     var found: i32 = -1;
     var i: i32 = 0;
     while (i < b.count) : (i += 1) {
-        if (b.data[@intCast(i)] != lead) continue;
+        if (b.data.?[@intCast(i)] != lead) continue;
         assert(found < 0); // expected exactly one occurrence of this lead byte
         found = i;
     }
@@ -623,17 +637,17 @@ fn onlyIndexOf(b: *c.JanetBuffer, lead: u8) i32 {
     return found;
 }
 
-fn callThunk(f: c.Janet) i32 {
-    var result = c.janet_wrap_nil();
-    var fiber: [*c]c.JanetFiber = null;
-    const sig = c.janet_pcall(c.janet_unwrap_function(f), 0, null, &result, &fiber);
-    assert(sig == c.JANET_SIGNAL_OK);
-    return c.janet_unwrap_integer(result);
+fn callThunk(f: types.Janet) i32 {
+    var result = wrap.fromNil();
+    var fiber: ?*types.JanetFiber = null;
+    const sig = vm_entry.pcall(wrap.toFunction(f), 0, null, &result, &fiber);
+    assert(sig == constants.JANET_SIGNAL_OK);
+    return wrap.toInteger(result);
 }
 
-fn evaluate(source: [*:0]const u8) c.Janet {
-    var out: c.Janet = undefined;
-    assert(c.janet_dostring(test_env, source, "marsh-test", &out) == 0);
+fn evaluate(source: [*:0]const u8) types.Janet {
+    var out: types.Janet = undefined;
+    assert(core_env.dostring(test_env, source, "marsh-test", &out) == 0);
     return keep(out);
 }
 
@@ -645,13 +659,13 @@ fn functionStreamsAndTheirBackReferences() raise.Raising(void) {
     // as a back reference.
     var out = evaluate("(do (var x 41) [(fn [] x) (fn [] (+ x 1))])");
     var b = try marshalled(out, null, 0);
-    _ = keep(c.janet_wrap_buffer(b));
+    _ = keep(wrap.fromBuffer(b));
     var at = onlyIndexOf(b, lb_funcenv_ref);
     var closures = keep(try unmarshalled(b, 0));
-    var back = c.janet_unwrap_tuple(closures);
+    var back = wrap.toTuple(closures);
     assert(callThunk(back[0]) == 41);
     assert(callThunk(back[1]) == 42);
-    b.data[@intCast(at + 1)] = 0x7f;
+    b.data.?[@intCast(at + 1)] = 0x7f;
     assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("invalid funcenv reference 127"));
 
@@ -659,13 +673,13 @@ fn functionStreamsAndTheirBackReferences() raise.Raising(void) {
     // reference -- the closed-over values are still written twice.
     out = evaluate("(tuple ;(map (fn [x] (fn [] x)) [7 8]))");
     b = try marshalled(out, null, 0);
-    _ = keep(c.janet_wrap_buffer(b));
+    _ = keep(wrap.fromBuffer(b));
     at = onlyIndexOf(b, lb_funcdef_ref);
     closures = keep(try unmarshalled(b, 0));
-    back = c.janet_unwrap_tuple(closures);
+    back = wrap.toTuple(closures);
     assert(callThunk(back[0]) == 7);
     assert(callThunk(back[1]) == 8);
-    b.data[@intCast(at + 1)] = 0x7f;
+    b.data.?[@intCast(at + 1)] = 0x7f;
     assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("invalid funcdef reference 127"));
 
@@ -683,87 +697,87 @@ fn functionStreamsAndTheirBackReferences() raise.Raising(void) {
 // ------------------------------------------------------------- the registry
 
 fn theReverseRegistryShortCircuits() raise.Raising(void) {
-    const rreg = c.janet_table(1);
-    const a = c.janet_array(0);
-    c.janet_table_put(rreg, c.janet_wrap_array(a), c.janet_csymbolv("an-array"));
+    const rreg = tables.new(1);
+    const a = arrays.new(0);
+    tables.put(rreg, wrap.fromArray(a), value.fromBytes("an-array", .symbol));
 
-    var b = try marshalled(c.janet_wrap_array(a), rreg, 0);
+    var b = try marshalled(wrap.fromArray(a), rreg, 0);
     // LB_REGISTRY, length, name.
     wireIs(b, "\xd8\x08an-array");
 
     // Without a forward table the name resolves to nil.
-    assert(harness.isType(try unmarshalled(b, 0), c.JANET_NIL));
+    assert(harness.isType(try unmarshalled(b, 0), constants.JANET_NIL));
 
-    const reg = c.janet_table(1);
-    c.janet_table_put(reg, c.janet_csymbolv("an-array"), c.janet_wrap_array(a));
-    const back = try marsh.unmarshal(b.data, @intCast(b.count), 0, reg, null);
-    assert(c.janet_unwrap_array(back) == a);
+    const reg = tables.new(1);
+    tables.put(reg, value.fromBytes("an-array", .symbol), wrap.fromArray(a));
+    const back = try marsh.unmarshal(b.data.?[0..@intCast(b.count)], 0, reg, null);
+    assert(wrap.toArray(back) == a);
 
     // A registry hit is still recorded as a reference, so a second occurrence
     // is a back-reference rather than a second name.
-    const outer = c.janet_array(2);
-    c.janet_array_push(outer, c.janet_wrap_array(a));
-    c.janet_array_push(outer, c.janet_wrap_array(a));
-    b = try marshalled(c.janet_wrap_array(outer), rreg, 0);
+    const outer = arrays.new(2);
+    harness.arrayPush(outer, wrap.fromArray(a));
+    harness.arrayPush(outer, wrap.fromArray(a));
+    b = try marshalled(wrap.fromArray(outer), rreg, 0);
     wireIs(b, "\xd1\x02\xd8\x08an-array\xda\x01");
 }
 
 // -------------------------------------------------------- the environment API
 
-fn anEntry(key: [*:0]const u8, value: c.Janet) c.Janet {
-    const entry = c.janet_table(1);
-    c.janet_table_put(entry, c.janet_ckeywordv(key), value);
-    return c.janet_wrap_table(entry);
+fn anEntry(key: [*:0]const u8, val: types.Janet) types.Janet {
+    const entry = tables.new(1);
+    tables.put(entry, value.fromBytes(std.mem.span(key), .keyword), val);
+    return wrap.fromTable(entry);
 }
 
 fn envLookupIntoPrefixesAndRecurses() void {
     const w = harness.wrapInteger;
-    const proto = c.janet_table(2);
-    c.janet_table_put(proto, c.janet_csymbolv("inherited"), anEntry("value", w(1)));
+    const proto = tables.new(2);
+    tables.put(proto, value.fromBytes("inherited", .symbol), anEntry("value", w(1)));
 
-    const env = c.janet_table(4);
+    const env = tables.new(4);
     env.*.proto = proto;
-    c.janet_table_put(env, c.janet_csymbolv("plain"), anEntry("value", w(2)));
-    c.janet_table_put(env, c.janet_csymbolv("by-ref"), anEntry("ref", w(3)));
+    tables.put(env, value.fromBytes("plain", .symbol), anEntry("value", w(2)));
+    tables.put(env, value.fromBytes("by-ref", .symbol), anEntry("ref", w(3)));
     // A struct entry is read the same way a table entry is.
-    const st = c.janet_struct_begin(1);
-    c.janet_struct_put(st, c.janet_ckeywordv("value"), w(4));
-    c.janet_table_put(env, c.janet_csymbolv("from-struct"), c.janet_wrap_struct(c.janet_struct_end(st)));
+    const st = structs.begin(1);
+    structs.put(st, value.fromBytes("value", .keyword), w(4));
+    tables.put(env, value.fromBytes("from-struct", .symbol), wrap.fromStruct(structs.end(st)));
     // Anything else has no value at all, and a non-symbol key is skipped.
-    c.janet_table_put(env, c.janet_csymbolv("opaque"), w(99));
-    c.janet_table_put(env, c.janet_ckeywordv("not-a-symbol"), anEntry("value", w(5)));
+    tables.put(env, value.fromBytes("opaque", .symbol), w(99));
+    tables.put(env, value.fromBytes("not-a-symbol", .keyword), anEntry("value", w(5)));
 
-    const flat = c.janet_table(0);
-    c.janet_env_lookup_into(flat, env, null, 1);
-    assert(harness.integerIs(c.janet_table_get(flat, c.janet_csymbolv("plain")), 2));
-    assert(harness.integerIs(c.janet_table_get(flat, c.janet_csymbolv("by-ref")), 3));
-    assert(harness.integerIs(c.janet_table_get(flat, c.janet_csymbolv("from-struct")), 4));
-    assert(harness.integerIs(c.janet_table_get(flat, c.janet_csymbolv("inherited")), 1));
-    assert(harness.isType(c.janet_table_get(flat, c.janet_csymbolv("opaque")), c.JANET_NIL));
-    assert(harness.isType(c.janet_table_get(flat, c.janet_ckeywordv("not-a-symbol")), c.JANET_NIL));
+    const flat = tables.new(0);
+    marsh_mod.envLookupInto(flat, env, null, 1);
+    assert(harness.integerIs(tables.get(flat, value.fromBytes("plain", .symbol)), 2));
+    assert(harness.integerIs(tables.get(flat, value.fromBytes("by-ref", .symbol)), 3));
+    assert(harness.integerIs(tables.get(flat, value.fromBytes("from-struct", .symbol)), 4));
+    assert(harness.integerIs(tables.get(flat, value.fromBytes("inherited", .symbol)), 1));
+    assert(harness.isType(tables.get(flat, value.fromBytes("opaque", .symbol)), constants.JANET_NIL));
+    assert(harness.isType(tables.get(flat, value.fromBytes("not-a-symbol", .keyword)), constants.JANET_NIL));
 
     // Without recursion the prototype is not walked.
-    const shallow = c.janet_table(0);
-    c.janet_env_lookup_into(shallow, env, null, 0);
-    assert(harness.integerIs(c.janet_table_get(shallow, c.janet_csymbolv("plain")), 2));
-    assert(harness.isType(c.janet_table_get(shallow, c.janet_csymbolv("inherited")), c.JANET_NIL));
+    const shallow = tables.new(0);
+    marsh_mod.envLookupInto(shallow, env, null, 0);
+    assert(harness.integerIs(tables.get(shallow, value.fromBytes("plain", .symbol)), 2));
+    assert(harness.isType(tables.get(shallow, value.fromBytes("inherited", .symbol)), constants.JANET_NIL));
 
     // A prefix is prepended to the symbol, not to the entry.
-    const prefixed = c.janet_table(0);
-    c.janet_env_lookup_into(prefixed, env, "mod/", 1);
-    assert(harness.integerIs(c.janet_table_get(prefixed, c.janet_csymbolv("mod/plain")), 2));
-    assert(harness.integerIs(c.janet_table_get(prefixed, c.janet_csymbolv("mod/inherited")), 1));
-    assert(harness.isType(c.janet_table_get(prefixed, c.janet_csymbolv("plain")), c.JANET_NIL));
+    const prefixed = tables.new(0);
+    marsh_mod.envLookupInto(prefixed, env, "mod/", 1);
+    assert(harness.integerIs(tables.get(prefixed, value.fromBytes("mod/plain", .symbol)), 2));
+    assert(harness.integerIs(tables.get(prefixed, value.fromBytes("mod/inherited", .symbol)), 1));
+    assert(harness.isType(tables.get(prefixed, value.fromBytes("plain", .symbol)), constants.JANET_NIL));
 
     // An empty prefix is not the same code path as a null one, and gives the
     // same answer.
-    const empty = c.janet_table(0);
-    c.janet_env_lookup_into(empty, env, "", 1);
-    assert(harness.integerIs(c.janet_table_get(empty, c.janet_csymbolv("plain")), 2));
+    const empty = tables.new(0);
+    marsh_mod.envLookupInto(empty, env, "", 1);
+    assert(harness.integerIs(tables.get(empty, value.fromBytes("plain", .symbol)), 2));
 
     // `janet_env_lookup` is the recursive, unprefixed case with a fresh table.
-    const made = c.janet_env_lookup(env);
-    assert(harness.integerIs(c.janet_table_get(made, c.janet_csymbolv("inherited")), 1));
+    const made = marsh_mod.envLookup(env);
+    assert(harness.integerIs(tables.get(made, value.fromBytes("inherited", .symbol)), 1));
 }
 
 // -------------------------------------------------------------- truncation
@@ -777,23 +791,23 @@ fn envLookupIntoPrefixesAndRecurses() void {
 /// read from beyond the end of the source.
 fn aTruncatedStreamIsRefusedAtEveryLength() raise.Raising(void) {
     const probe = makeProbe();
-    const a = c.janet_array(2);
-    c.janet_array_push(a, c.janet_wrap_abstract(probe));
-    c.janet_array_push(a, c.janet_cstringv("tail"));
-    const whole = try marshalled(keep(c.janet_wrap_array(a)), null, 0);
-    _ = keep(c.janet_wrap_buffer(whole));
+    const a = arrays.new(2);
+    harness.arrayPush(a, wrap.fromAbstract(probe));
+    harness.arrayPush(a, value.fromBytes("tail", .string));
+    const whole = try marshalled(keep(wrap.fromArray(a)), null, 0);
+    _ = keep(wrap.fromBuffer(whole));
 
     var len: usize = 0;
     while (len < @as(usize, @intCast(whole.count))) : (len += 1) {
-        const refusal = harness.raised(unmarshalBytes, .{ whole.data[0..len], @as(c_int, 0) });
+        const refusal = harness.raised(unmarshalBytes, .{ whole.data.?[0..len], @as(c_int, 0) });
         if (refusal == null) {
             std.debug.print("prefix of {d} bytes unmarshalled without error\n", .{len});
             @panic("a truncated stream was accepted");
         }
-        assert(refusal.?.signal == c.JANET_SIGNAL_ERROR);
+        assert(refusal.?.signal == constants.JANET_SIGNAL_ERROR);
     }
     // The whole thing is fine.
-    assert(harness.isType(try unmarshalled(whole, 0), c.JANET_ARRAY));
+    assert(harness.isType(try unmarshalled(whole, 0), constants.JANET_ARRAY));
 }
 
 fn theDiagnosticsNameAByteAndAnOffset() void {
@@ -821,18 +835,18 @@ fn aPrototypeIsTypeChecked() void {
 /// provoked from inside one.
 fn aLiveFiberCannotBeMarshalled() raise.Raising(void) {
     var out = evaluate("(fn [] (marshal (fiber/current)))");
-    var result = c.janet_wrap_nil();
-    var fiber: [*c]c.JanetFiber = null;
-    const sig = c.janet_pcall(c.janet_unwrap_function(out), 0, null, &result, &fiber);
-    assert(sig == c.JANET_SIGNAL_ERROR);
+    var result = wrap.fromNil();
+    var fiber: ?*types.JanetFiber = null;
+    const sig = vm_entry.pcall(wrap.toFunction(out), 0, null, &result, &fiber);
+    assert(sig == constants.JANET_SIGNAL_ERROR);
     assert(harness.stringValueIs(result, "cannot marshal alive fiber"));
 
     // A suspended one round-trips, and the reader checks the frame arithmetic
     // the writer produced.
     out = evaluate("(fiber/new (fn [] (yield 1) 2))");
     const b = try marshalled(out, null, 0);
-    assert(b.data[0] == lb_fiber);
-    assert(harness.isType(try unmarshalled(b, 0), c.JANET_FIBER));
+    assert(b.data.?[0] == lb_fiber);
+    assert(harness.isType(try unmarshalled(b, 0), constants.JANET_FIBER));
 
     assert(refusedBy("\xcc\x00\x01\x00\x00\x00").?.says("fiber has incorrect stack setup"));
     // A status field of 16 is one past `JANET_STATUS_ALIVE` and still inside
@@ -847,28 +861,28 @@ fn aLiveFiberCannotBeMarshalled() raise.Raising(void) {
 /// can see where a value ended -- which is what makes a stream of concatenated
 /// values readable at all.
 fn nextPointsPastTheValue() raise.Raising(void) {
-    const b = c.janet_buffer(16);
+    const b = buffers.new(16);
     try marsh.marshal(b, harness.wrapInteger(1), null, 0);
     const first: usize = @intCast(b.*.count);
-    try marsh.marshal(b, c.janet_cstringv("second"), null, 0);
+    try marsh.marshal(b, value.fromBytes("second", .string), null, 0);
 
-    var next: [*c]const u8 = null;
-    const one = try marsh.unmarshal(b.*.data, @intCast(b.*.count), 0, null, &next);
+    var next: [*]const u8 = undefined;
+    const one = try marsh.unmarshal(b.*.data.?[0..@intCast(b.*.count)], 0, null, &next);
     assert(harness.integerIs(one, 1));
-    assert(next == b.*.data + first);
+    assert(next == b.*.data.? + first);
 
-    const two = try marsh.unmarshal(next, @as(usize, @intCast(b.*.count)) - first, 0, null, &next);
+    const two = try marsh.unmarshal(next[0..@intCast(@as(usize, @intCast(b.*.count)) - first)], 0, null, &next);
     assert(harness.stringValueIs(two, "second"));
-    assert(next == b.*.data + @as(usize, @intCast(b.*.count)));
+    assert(next == b.*.data.? + @as(usize, @intCast(b.*.count)));
 }
 
 // -------------------------------------------------------------------- entry
 
 fn body() raise.Raising(void) {
-    test_env = c.janet_core_env(null);
-    c.janet_gcroot(c.janet_wrap_table(test_env));
-    rooted = c.janet_array(0);
-    c.janet_gcroot(c.janet_wrap_array(rooted));
+    test_env = harness.coreEnv();
+    gc_alloc.gcroot(wrap.fromTable(test_env));
+    rooted = arrays.new(0);
+    gc_alloc.gcroot(wrap.fromArray(rooted));
 
     try registry.registerAbstractType(stored(&probe_at));
     try registry.registerAbstractType(stored(&refuser_at));
@@ -900,9 +914,9 @@ fn body() raise.Raising(void) {
 }
 
 pub fn run() void {
-    _ = c.janet_init();
+    harness.init();
     body() catch @panic("marsh: an entry point raised unexpectedly");
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 
     std.debug.print("marsh contract ok\n", .{});
 }

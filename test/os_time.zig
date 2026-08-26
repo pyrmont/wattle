@@ -25,13 +25,16 @@
 //! is asserted here so a port cannot quietly start refusing.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const c = @import("cabi");
+const value = @import("subsystems").value;
 const harness = @import("harness.zig");
+const core_env = @import("subsystems").env;
+const vm_lifecycle = @import("subsystems").lifecycle;
 
 /// `enum JanetTimeSource` and the three kernels, declared rather than
-/// translated: they live in `src/core/util.h`, which `abi.zig` deliberately
-/// does not include, and they take primitives so nothing Janet-shaped crosses.
+/// translated: they live in `src/core/util.h`, which no translation ever
+/// carried, and they take primitives so nothing Janet-shaped crosses.
 const Source = enum(c_int) {
     realtime = 0,
     monotonic = 1,
@@ -130,11 +133,11 @@ fn sleepingAdvancesTheMonotonicClock() void {
 
 // -------------------------------------------------------- the Janet surface
 
-var environment: [*c]c.JanetTable = undefined;
+var environment: *types.JanetTable = undefined;
 
 fn eval(source: [*:0]const u8) void {
-    var result: c.Janet = undefined;
-    std.debug.assert(c.janet_dostring(environment, source, "os-time-contract", &result) == 0);
+    var result: types.Janet = undefined;
+    std.debug.assert(core_env.dostring(environment, source, "os-time-contract", &result) == 0);
 }
 
 /// `os/clock` takes a source and a format, and the combinations are what the
@@ -192,18 +195,18 @@ fn theSourcesAndFormats() void {
 fn theRefusals() void {
     const clock = harness.coreOptional("os/clock") orelse return;
     const sleep = harness.coreOptional("os/sleep") orelse return;
-    var argument: [2]c.Janet = undefined;
+    var argument: [2]types.Janet = undefined;
 
-    argument[0] = c.janet_ckeywordv("nope");
-    std.debug.assert(harness.raised(clock, .{ @as(i32, 1), &argument }) != null);
+    argument[0] = value.fromBytes("nope", .keyword);
+    std.debug.assert(harness.raised(clock, .{argument[0..1]}) != null);
 
-    argument[0] = c.janet_ckeywordv("realtime");
-    argument[1] = c.janet_ckeywordv("nope");
-    std.debug.assert(harness.raised(clock, .{ @as(i32, 2), &argument }) != null);
+    argument[0] = value.fromBytes("realtime", .keyword);
+    argument[1] = value.fromBytes("nope", .keyword);
+    std.debug.assert(harness.raised(clock, .{argument[0..2]}) != null);
 
     // A negative sleep is refused rather than treated as zero.
     argument[0] = harness.wrapInteger(-1);
-    std.debug.assert(harness.raised(sleep, .{ @as(i32, 1), &argument }) != null);
+    std.debug.assert(harness.raised(sleep, .{argument[0..1]}) != null);
 }
 
 pub fn run() void {
@@ -213,9 +216,9 @@ pub fn run() void {
     anUnknownSourceIsTheRealtimeClock();
     sleepingAdvancesTheMonotonicClock();
 
-    _ = c.janet_init();
-    environment = c.janet_core_env(null);
+    harness.init();
+    environment = harness.coreEnv();
     theSourcesAndFormats();
     theRefusals();
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }

@@ -12,7 +12,7 @@
 //!
 //! ## What the migration retired
 //!
-//! **`janet_jdn`'s C face is gone**, and this file is why. `pp_pretty.zig`
+//! **`janet_jdn`'s abi is gone**, and this file is why. `pp_pretty.zig`
 //! said of it: "Nothing in the tree calls it — it is declared in no header and
 //! reached from no C file, and has been dead since it was added. It is ported
 //! anyway, so that the two selectors define the same set of symbols; it goes
@@ -30,51 +30,58 @@
 //! count is unnecessary, and the message is checked by `Raise.says`.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const config = @import("config");
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
 const subsystems = @import("subsystems");
+const gc_alloc = @import("subsystems").gc_alloc;
+const buffers = @import("subsystems").value.buffers;
+const core_env = @import("subsystems").env;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
 
 const pretty = subsystems.pp_pretty;
 const format = subsystems.pp_format;
 
-var test_env: [*c]c.JanetTable = undefined;
+var test_env: *types.JanetTable = undefined;
 
-fn checkBuffer(b: *c.JanetBuffer, expected: []const u8) void {
+fn checkBuffer(b: *types.JanetBuffer, expected: []const u8) void {
     const count: usize = @intCast(b.count);
-    if (count != expected.len or !std.mem.eql(u8, b.data[0..count], expected)) {
-        std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.data[0..count] });
+    if (count != expected.len or !std.mem.eql(u8, b.data.?[0..count], expected)) {
+        std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.data.?[0..count] });
         @panic("buffer mismatch");
     }
 }
 
-fn contains(b: *c.JanetBuffer, needle: []const u8) bool {
+fn contains(b: *types.JanetBuffer, needle: []const u8) bool {
     const count: usize = @intCast(b.count);
-    return std.mem.indexOf(u8, b.data[0..count], needle) != null;
+    return std.mem.indexOf(u8, b.data.?[0..count], needle) != null;
 }
 
-fn endsWith(b: *c.JanetBuffer, tail: []const u8) bool {
+fn endsWith(b: *types.JanetBuffer, tail: []const u8) bool {
     const count: usize = @intCast(b.count);
-    return std.mem.endsWith(u8, b.data[0..count], tail);
+    return std.mem.endsWith(u8, b.data.?[0..count], tail);
 }
 
-fn newlines(b: *c.JanetBuffer) usize {
+fn newlines(b: *types.JanetBuffer) usize {
     const count: usize = @intCast(b.count);
-    return std.mem.count(u8, b.data[0..count], "\n");
+    return std.mem.count(u8, b.data.?[0..count], "\n");
 }
 
-fn eval(source: [*:0]const u8) c.Janet {
-    var out: c.Janet = c.janet_wrap_nil();
-    std.debug.assert(c.janet_dostring(test_env, source, "pp-pretty-test", &out) == 0);
-    c.janet_gcroot(out);
+fn eval(source: [*:0]const u8) types.Janet {
+    var out: types.Janet = wrap.fromNil();
+    std.debug.assert(core_env.dostring(test_env, source, "pp-pretty-test", &out) == 0);
+    gc_alloc.gcroot(out);
     return out;
 }
 
-fn buffer(capacity: i32) *c.JanetBuffer {
-    return c.janet_buffer(capacity);
+fn buffer(capacity: i32) *types.JanetBuffer {
+    return buffers.new(capacity);
 }
 
-const guard = c.JANET_RECURSION_GUARD;
+const guard = config.recursion_guard;
 
 /// Print with an explicit width and flag set.
 ///
@@ -86,20 +93,20 @@ const guard = c.JANET_RECURSION_GUARD;
 ///
 /// Eight conversion characters carry the eight flag combinations, and the
 /// width field holds two digits, which bounds the width at 99.
-fn prettyWidth(b: *c.JanetBuffer, width: u32, flags: c_int, x: c.Janet) !void {
+fn prettyWidth(b: *types.JanetBuffer, width: u32, flags: c_int, x: types.Janet) !void {
     const conv = [8]u8{ 'p', 'P', 'q', 'Q', 'm', 'M', 'n', 'N' };
     const index: usize =
-        @as(usize, if (flags & c.JANET_PRETTY_COLOR != 0) 1 else 0) |
-        @as(usize, if (flags & c.JANET_PRETTY_ONELINE != 0) 2 else 0) |
-        @as(usize, if (flags & c.JANET_PRETTY_NOTRUNC != 0) 4 else 0);
+        @as(usize, if (flags & constants.JANET_PRETTY_COLOR != 0) 1 else 0) |
+        @as(usize, if (flags & constants.JANET_PRETTY_ONELINE != 0) 2 else 0) |
+        @as(usize, if (flags & constants.JANET_PRETTY_NOTRUNC != 0) 4 else 0);
 
     std.debug.assert(width >= 1 and width <= 99);
     var spec: [8]u8 = undefined;
     const written = std.fmt.bufPrint(&spec, "%{d}{c}", .{ width, conv[index] }) catch unreachable;
     spec[written.len] = 0;
 
-    var argv = [1]c.Janet{x};
-    try format.bufferFormat(b, &spec, -1, 1, &argv);
+    var argv = [1]types.Janet{x};
+    try format.bufferFormat(b, &spec, -1, argv[0..1]);
 }
 
 // ------------------------------------------------------- the null buffer
@@ -124,19 +131,19 @@ fn aNullBufferIsAllocated() !void {
 fn theBarrierProtectsEarlierText() !void {
     const b = buffer(64);
     const preamble = "one\n  two\n  three)";
-    const value = eval("@[@[1 2] @[3 4]]");
+    const val = eval("@[@[1 2] @[3 4]]");
 
-    _ = c.janet_buffer_push_cstring(b, preamble);
-    try prettyWidth(b, 12, 0, value);
+    _ = buffers.pushCstringAbi(b, preamble);
+    try prettyWidth(b, 12, 0, val);
 
     // Byte for byte, the preamble is untouched — including its newlines and
     // the ')' that would otherwise make the backtracker start here.
     const count: usize = @intCast(b.count);
     std.debug.assert(count > preamble.len);
-    std.debug.assert(std.mem.eql(u8, b.data[0..preamble.len], preamble));
+    std.debug.assert(std.mem.eql(u8, b.data.?[0..preamble.len], preamble));
 
     // And what followed it did wrap, so the case is not vacuous.
-    std.debug.assert(std.mem.indexOfScalar(u8, b.data[preamble.len..count], '\n') != null);
+    std.debug.assert(std.mem.indexOfScalar(u8, b.data.?[preamble.len..count], '\n') != null);
 }
 
 // ------------------------------------------------------------ the width
@@ -151,12 +158,12 @@ fn theBarrierProtectsEarlierText() !void {
 /// at the inner level's indentation and the walk stops at the first newline
 /// indented less than that.
 fn theWidthDecidesTheWrapping() !void {
-    const value = eval("@[1 2 3 4 5]");
+    const val = eval("@[1 2 3 4 5]");
     const narrow = buffer(64);
     const wide = buffer(64);
 
-    try prettyWidth(narrow, 12, 0, value);
-    try prettyWidth(wide, 16, 0, value);
+    try prettyWidth(narrow, 12, 0, val);
+    try prettyWidth(wide, 16, 0, val);
 
     checkBuffer(narrow, "@[1\n  2\n  3\n  4\n  5]");
     checkBuffer(wide, "@[1 2 3 4 5]");
@@ -164,7 +171,7 @@ fn theWidthDecidesTheWrapping() !void {
 
 fn oneLineNeverWraps() !void {
     const b = buffer(64);
-    try prettyWidth(b, 4, c.JANET_PRETTY_ONELINE, eval("@[@[1 2] @[3 4]]"));
+    try prettyWidth(b, 4, constants.JANET_PRETTY_ONELINE, eval("@[@[1 2] @[3 4]]"));
     checkBuffer(b, "@[@[1 2] @[3 4]]");
 }
 
@@ -182,12 +189,12 @@ fn nestingBlocksTheReflow() !void {
 /// must therefore wrap the same way with and without colour — the one
 /// observable consequence of two comparisons nothing else covers.
 fn colourCostsNoColumns() !void {
-    const value = eval("@[1 2 3 4 5]");
+    const val = eval("@[1 2 3 4 5]");
     const plain = buffer(64);
     const colored = buffer(64);
 
-    try prettyWidth(plain, 16, 0, value);
-    try prettyWidth(colored, 16, c.JANET_PRETTY_COLOR, value);
+    try prettyWidth(plain, 16, 0, val);
+    try prettyWidth(colored, 16, constants.JANET_PRETTY_COLOR, val);
 
     std.debug.assert(colored.count > plain.count);
     std.debug.assert(newlines(plain) == 0);
@@ -196,8 +203,8 @@ fn colourCostsNoColumns() !void {
     // And one column narrower, where both must wrap the same way.
     const narrow_plain = buffer(64);
     const narrow_colored = buffer(64);
-    try prettyWidth(narrow_plain, 12, 0, value);
-    try prettyWidth(narrow_colored, 12, c.JANET_PRETTY_COLOR, value);
+    try prettyWidth(narrow_plain, 12, 0, val);
+    try prettyWidth(narrow_colored, 12, constants.JANET_PRETTY_COLOR, val);
     std.debug.assert(newlines(narrow_plain) == 4);
     std.debug.assert(newlines(narrow_colored) == 4);
 }
@@ -216,7 +223,7 @@ fn aTwoDigitCycleId() !void {
         \\(as 0)
     );
     const b = buffer(64);
-    try prettyWidth(b, 99, c.JANET_PRETTY_ONELINE, outer);
+    try prettyWidth(b, 99, constants.JANET_PRETTY_ONELINE, outer);
     checkBuffer(b, "@[@[@[@[@[@[@[@[@[@[@[@[@[<cycle 12>]]]]]]]]]]]]]");
 }
 
@@ -226,7 +233,7 @@ fn aTwoDigitCycleId() !void {
 fn aRepeatThatIsNotACycle() !void {
     const pair = eval("(def inner @[1 2]) @[inner inner]");
     const b = buffer(64);
-    try prettyWidth(b, 99, c.JANET_PRETTY_ONELINE, pair);
+    try prettyWidth(b, 99, constants.JANET_PRETTY_ONELINE, pair);
     checkBuffer(b, "@[@[1 2] @[1 2]]");
 }
 
@@ -239,8 +246,8 @@ fn theArrayTruncationBoundary() !void {
     const at_limit = buffer(1024);
     const over = buffer(1024);
 
-    try prettyWidth(at_limit, 99, c.JANET_PRETTY_ONELINE, eval("(seq [i :range [0 160]] i)"));
-    try prettyWidth(over, 99, c.JANET_PRETTY_ONELINE, eval("(seq [i :range [0 161]] i)"));
+    try prettyWidth(at_limit, 99, constants.JANET_PRETTY_ONELINE, eval("(seq [i :range [0 160]] i)"));
+    try prettyWidth(over, 99, constants.JANET_PRETTY_ONELINE, eval("(seq [i :range [0 161]] i)"));
 
     // 160 elements, whole: no elision anywhere, and the last element is the
     // last one rather than the last one printed before an elision.
@@ -257,8 +264,8 @@ fn theDictionaryTruncationBoundary() !void {
     const at_limit = buffer(1024);
     const over = buffer(1024);
 
-    try prettyWidth(at_limit, 99, c.JANET_PRETTY_ONELINE, eval("(tabseq [i :range [0 30]] i i)"));
-    try prettyWidth(over, 99, c.JANET_PRETTY_ONELINE, eval("(tabseq [i :range [0 31]] i i)"));
+    try prettyWidth(at_limit, 99, constants.JANET_PRETTY_ONELINE, eval("(tabseq [i :range [0 30]] i i)"));
+    try prettyWidth(over, 99, constants.JANET_PRETTY_ONELINE, eval("(tabseq [i :range [0 31]] i i)"));
 
     std.debug.assert(!contains(at_limit, "..."));
     std.debug.assert(endsWith(over, " ...}"));
@@ -268,7 +275,7 @@ fn theDictionaryTruncationBoundary() !void {
     try prettyWidth(
         whole,
         99,
-        c.JANET_PRETTY_ONELINE | c.JANET_PRETTY_NOTRUNC,
+        constants.JANET_PRETTY_ONELINE | constants.JANET_PRETTY_NOTRUNC,
         eval("(tabseq [i :range [0 31]] i i)"),
     );
     std.debug.assert(!contains(whole, "..."));
@@ -281,7 +288,7 @@ fn theDictionaryTruncationBoundary() !void {
 fn keysAreSortedBelowTheLimit() !void {
     const forward = buffer(1024);
     const backward = buffer(1024);
-    const flags = c.JANET_PRETTY_ONELINE | c.JANET_PRETTY_NOTRUNC;
+    const flags = constants.JANET_PRETTY_ONELINE | constants.JANET_PRETTY_NOTRUNC;
 
     try prettyWidth(forward, 99, flags, eval("(tabseq [i :range [0 40]] i i)"));
     try prettyWidth(backward, 99, flags, eval(
@@ -290,9 +297,9 @@ fn keysAreSortedBelowTheLimit() !void {
 
     std.debug.assert(forward.count == backward.count);
     const count: usize = @intCast(forward.count);
-    std.debug.assert(std.mem.eql(u8, forward.data[0..count], backward.data[0..count]));
+    std.debug.assert(std.mem.eql(u8, forward.data.?[0..count], backward.data.?[0..count]));
     // Sorted, so the first entry is the smallest key.
-    std.debug.assert(std.mem.eql(u8, forward.data[0..6], "@{0 0 "));
+    std.debug.assert(std.mem.eql(u8, forward.data.?[0..6], "@{0 0 "));
 }
 
 /// Nested dictionaries share one key-sort scratch allocation, each level
@@ -301,7 +308,7 @@ fn keysAreSortedBelowTheLimit() !void {
 /// scratch without bound and mis-index the level above it.
 fn nestedDictionariesShareTheKeySortScratch() !void {
     const b = buffer(4096);
-    try prettyWidth(b, 99, c.JANET_PRETTY_ONELINE, eval(
+    try prettyWidth(b, 99, constants.JANET_PRETTY_ONELINE, eval(
         "{:a {:x 1 :y 2 :z 3} :b {:x 4 :y 5 :z 6} :c {:x 7 :y 8 :z 9}}",
     ));
     checkBuffer(b, "{:a {:x 1 :y 2 :z 3} :b {:x 4 :y 5 :z 6} :c {:x 7 :y 8 :z 9}}");
@@ -314,8 +321,8 @@ fn nestedDictionariesShareTheKeySortScratch() !void {
 /// where every real caller puts it.
 fn theDepthLimit() !void {
     const b = buffer(64);
-    var argv = [1]c.Janet{eval("[1 [2 [3 [4]]]]")};
-    try format.bufferFormat(b, "%.2q", -1, 1, &argv);
+    var argv = [1]types.Janet{eval("[1 [2 [3 [4]]]]")};
+    try format.bufferFormat(b, "%.2q", -1, argv[0..1]);
     checkBuffer(b, "(1 (...))");
 }
 
@@ -336,9 +343,9 @@ fn whatJdnRefuses() !void {
         "(keyword \"a b\")", // nor a keyword whose text would not lex
         "math/inf", // nor infinity
     }) |source| {
-        const value = eval(source);
-        const r = harness.raised(pretty.jdnImpl, .{ buffer(16), guard, value, @as(i32, 0), @as(i32, 0) }).?;
-        std.debug.assert(r.signal == c.JANET_SIGNAL_ERROR);
+        const val = eval(source);
+        const r = harness.raised(pretty.jdnImpl, .{ buffer(16), guard, val, @as(i32, 0), @as(i32, 0) }).?;
+        std.debug.assert(r.signal == constants.JANET_SIGNAL_ERROR);
         std.debug.assert(r.says("could not print to jdn format"));
     }
 }
@@ -377,12 +384,12 @@ fn body() !void {
 }
 
 pub fn run() void {
-    _ = c.janet_init();
-    test_env = c.janet_core_env(null);
-    c.janet_gcroot(c.janet_wrap_table(test_env));
+    harness.init();
+    test_env = harness.coreEnv();
+    gc_alloc.gcroot(wrap.fromTable(test_env));
 
     body() catch @panic("pp_pretty: a printer raised unexpectedly");
 
-    c.janet_deinit();
+    vm_lifecycle.deinit();
     std.debug.print("pp pretty contract ok\n", .{});
 }

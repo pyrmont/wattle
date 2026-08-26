@@ -103,24 +103,24 @@ const contracts: []const Contract = blk: {
     if (options.os_environ) list = with(list, "os_environ", @import("os_environ.zig"));
     if (options.pp) list = with(list, "pp_format", @import("pp_format.zig"));
     // `-Dint-types=false` compiles neither the subsystem nor its contract.
-    if (options.int_scan) list = with(list, "intscan", @import("intscan.zig"));
+    if (options.scan) list = with(list, "intscan", @import("intscan.zig"));
     list = with(list, "textscan", @import("textscan.zig"));
     list = with(list, "regalloc", @import("regalloc.zig"));
     list = with(list, "movopt", @import("movopt.zig"));
     list = with(list, "remove_noops", @import("remove_noops.zig"));
     // `-Dreduced-os=true` compiles neither the subsystem nor its contract.
-    if (options.os_permissions) list = with(list, "os_permissions", @import("os_permissions.zig"));
+    if (options.os_fs) list = with(list, "os_permissions", @import("os_permissions.zig"));
     list = with(list, "verify", @import("verify.zig"));
     // `-Dassembler=false` leaves `janet.h` without `JanetAssembleResult`, and
     // the three subsystems these test with nothing to compile.
-    if (options.asm_encode) list = with(list, "asm_encode", @import("asm_encode.zig"));
-    if (options.asm_decode) list = with(list, "asm_decode", @import("asm_decode.zig"));
+    if (options.bytecode) list = with(list, "asm_encode", @import("asm_encode.zig"));
+    if (options.disasm) list = with(list, "asm_decode", @import("asm_decode.zig"));
     if (options.disasm) list = with(list, "disasm", @import("disasm.zig"));
     list = with(list, "os_platform", @import("os_platform.zig"));
     if (options.os_time) list = with(list, "os_time", @import("os_time.zig"));
     if (options.os_fs) list = with(list, "os_fs", @import("os_fs.zig"));
-    if (options.os_stat) list = with(list, "os_stat", @import("os_stat.zig"));
-    if (options.os_fs_paths) list = with(list, "os_fs_paths", @import("os_fs_paths.zig"));
+    if (options.os_fs) list = with(list, "os_stat", @import("os_stat.zig"));
+    if (options.os_fs) list = with(list, "os_fs_paths", @import("os_fs_paths.zig"));
     if (options.pp) list = with(list, "pp_describe", @import("pp_describe.zig"));
     if (options.pp) list = with(list, "pp_pretty", @import("pp_pretty.zig"));
     list = with(list, "emit_core", @import("emit_core.zig"));
@@ -153,16 +153,16 @@ const contracts: []const Contract = blk: {
     list = with(list, "vm_run", @import("vm_run.zig"));
     if (options.utilities) list = with(list, "utils", @import("utils.zig"));
     if (options.registry) list = with(list, "registry", @import("registry.zig"));
-    if (options.core_env) list = with(list, "core_env", @import("core_env.zig"));
-    if (options.args_core) list = with(list, "args_core", @import("args_core.zig"));
+    if (options.env) list = with(list, "core_env", @import("core_env.zig"));
+    if (options.args) list = with(list, "args_core", @import("args_core.zig"));
     if (options.marsh) list = with(list, "marsh", @import("marsh.zig"));
     // `-Dpeg=false` leaves `janet.h` without `JanetPeg` and the subsystem
     // without `janet_peg_type`, so neither the subject nor its contract exists.
     if (options.peg_engine) list = with(list, "peg", @import("peg.zig"));
     // `-Dffi=false` compiles neither the subsystems nor their contracts.
-    if (options.ffi_layout) list = with(list, "ffi_layout", @import("ffi_layout.zig"));
-    if (options.ffi_classify) list = with(list, "ffi_classify", @import("ffi_classify.zig"));
-    if (options.ffi_core) list = with(list, "ffi_core", @import("ffi_core.zig"));
+    if (options.ffi_zig) list = with(list, "ffi_layout", @import("ffi_layout.zig"));
+    if (options.ffi_zig) list = with(list, "ffi_classify", @import("ffi_classify.zig"));
+    if (options.ffi_zig) list = with(list, "ffi_core", @import("ffi_core.zig"));
     // `-Dprocesses=false` and `-Dreduced-os=true` each compile neither the
     // subsystem nor its contract.
     if (options.os_process) list = with(list, "os_process", @import("os_process.zig"));
@@ -171,11 +171,11 @@ const contracts: []const Contract = blk: {
     // The event loop's kernels and the file watcher's vocabularies: both are
     // `hasEv`-conditioned in `build.zig`, and `filewatch_flags` needs the file
     // watcher as well.
-    if (options.ev_core) list = with(list, "ev_core", @import("ev_core.zig"));
-    if (options.filewatch_flags) list = with(list, "filewatch_flags", @import("filewatch_flags.zig"));
-    if (options.filewatch_core) list = with(list, "filewatch_core", @import("filewatch_core.zig"));
-    if (options.net_sockets) list = with(list, "net_sockets", @import("net_sockets.zig"));
-    if (options.ev_loop) list = with(list, "ev_loop", @import("ev_loop.zig"));
+    if (options.ev) list = with(list, "ev_core", @import("ev_core.zig"));
+    if (options.filewatch) list = with(list, "filewatch_flags", @import("filewatch_flags.zig"));
+    if (options.filewatch) list = with(list, "filewatch_core", @import("filewatch_core.zig"));
+    if (options.net) list = with(list, "net_sockets", @import("net_sockets.zig"));
+    if (options.ev) list = with(list, "ev_loop", @import("ev_loop.zig"));
     break :blk list;
 };
 

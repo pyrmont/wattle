@@ -55,11 +55,21 @@
 //! actually encodes.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
+const value = @import("subsystems").value;
+const config = @import("config");
+const gc_alloc = @import("subsystems").gc_alloc;
+const tuples = @import("subsystems").value.tuples;
+const core_env = @import("subsystems").env;
+const kind = @import("subsystems").value.kind;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const buffers = @import("subsystems").value.buffers;
 const ffi_classify = subsystems.ffi_classify;
 const ffi_call = subsystems.ffi_call;
 
@@ -68,7 +78,7 @@ const AllocResult = ffi_classify.AllocResult;
 
 const assert = std.debug.assert;
 
-const has_dynamic_modules = @hasDecl(c, "JANET_DYNAMIC_MODULES");
+const has_dynamic_modules = config.dynamic_modules;
 
 var raises_seen: u32 = 0;
 
@@ -80,7 +90,7 @@ fn expectRaise(function: anytype, args: anytype, message: []const u8) void {
     const raise = harness.raised(function, args) orelse {
         std.debug.panic("ffi_core: expected a raise, got a return: {s}\n", .{message});
     };
-    assert(raise.signal == c.JANET_SIGNAL_ERROR);
+    assert(raise.signal == constants.JANET_SIGNAL_ERROR);
     assert(raise.says(message));
     raises_seen += 1;
 }
@@ -91,15 +101,15 @@ fn expectRaisePrefix(function: anytype, args: anytype, prefix: []const u8) void 
     const raise = harness.raised(function, args) orelse {
         std.debug.panic("ffi_core: expected a raise, got a return: {s}\n", .{prefix});
     };
-    assert(raise.signal == c.JANET_SIGNAL_ERROR);
+    assert(raise.signal == constants.JANET_SIGNAL_ERROR);
     assert(raise.beginsWith(prefix));
     raises_seen += 1;
 }
 
-fn eval(source: [*:0]const u8) c.Janet {
-    var out = c.janet_wrap_nil();
-    const env = c.janet_core_env(null);
-    assert(c.janet_dostring(env, source, "ffi_core", &out) == 0);
+fn eval(source: [*:0]const u8) types.Janet {
+    var out = wrap.fromNil();
+    const env = harness.coreEnv();
+    assert(core_env.dostring(env, source, "ffi_core", &out) == 0);
     return out;
 }
 
@@ -120,10 +130,10 @@ fn eval(source: [*:0]const u8) c.Janet {
 /// Part 16 and the container had last run in Part 4.
 fn dynamicLoadingWorks() bool {
     if (!has_dynamic_modules) return false;
-    var out = c.janet_wrap_nil();
-    const env = c.janet_core_env(null);
-    if (c.janet_dostring(env, "(first (protect (ffi/native)))", "ffi_core", &out) != 0) return false;
-    return c.janet_truthy(out) != 0;
+    var out = wrap.fromNil();
+    const env = harness.coreEnv();
+    if (core_env.dostring(env, "(first (protect (ffi/native)))", "ffi_core", &out) != 0) return false;
+    return kind.truthy(out) != 0;
 }
 
 // ------------------------------------------------------------ registration
@@ -167,7 +177,7 @@ fn primTable() void {
         primCase("bool", u8),
         primCase("ptr", *anyopaque),
         primCase("pointer", *anyopaque),
-        primCase("string", [*c]u8),
+        primCase("string", [*]u8),
         primCase("float", f32),
         primCase("double", f64),
         primCase("int8", i8),
@@ -206,11 +216,11 @@ fn primTable() void {
     const size_of = harness.core("ffi/size");
     const align_of = harness.core("ffi/align");
     for (cases) |case| {
-        var arg = c.janet_ckeywordv(case.name);
-        const size = size_of(1, &arg) catch @panic("ffi_core: ffi/size raised");
-        const alignment = align_of(1, &arg) catch @panic("ffi_core: ffi/align raised");
-        assert(c.janet_unwrap_number(size) == @as(f64, @floatFromInt(case.size)));
-        assert(c.janet_unwrap_number(alignment) == @as(f64, @floatFromInt(case.alignment)));
+        var arg = value.fromBytes(std.mem.span(case.name), .keyword);
+        const size = size_of((&arg)[0..1]) catch @panic("ffi_core: ffi/size raised");
+        const alignment = align_of((&arg)[0..1]) catch @panic("ffi_core: ffi/align raised");
+        assert(wrap.toNumber(size) == @as(f64, @floatFromInt(case.size)));
+        assert(wrap.toNumber(alignment) == @as(f64, @floatFromInt(case.alignment)));
     }
 }
 
@@ -231,9 +241,9 @@ fn expectShape(
     has_bytes: bool,
     has_length: bool,
 ) void {
-    const value = eval(expr);
-    assert(harness.isType(value, c.JANET_ABSTRACT));
-    const at = c.janet_abstract_type(c.janet_unwrap_abstract(value));
+    const val = eval(expr);
+    assert(harness.isType(val, constants.JANET_ABSTRACT));
+    const at = types.abstractHead(wrap.toAbstract(val)).type;
     // `strcmp`, not `janet_cstrcmp`: an abstract type's `name` is a plain C
     // string rather than a length-prefixed `JanetString`, and the second reads
     // a header that is not there.
@@ -368,7 +378,7 @@ fn ceilingIsReachableOnlyOnSysv() void {
 // ------------------------------------------------------------- the raises
 
 fn theRaises() void {
-    var argv: [4]c.Janet = undefined;
+    var argv: [4]types.Janet = undefined;
 
     const ffi_struct = harness.core("ffi/struct");
     const ffi_size = harness.core("ffi/size");
@@ -377,76 +387,76 @@ fn theRaises() void {
     const ffi_read = harness.core("ffi/read");
     const ffi_write = harness.core("ffi/write");
 
-    expectRaise(ffi_struct, .{ @as(i32, 0), null }, "arity mismatch, expected at least 1, got 0");
-    expectRaise(ffi_size, .{ @as(i32, 0), null }, "arity mismatch, expected 1, got 0");
+    expectRaise(ffi_struct, .{&.{}}, "arity mismatch, expected at least 1, got 0");
+    expectRaise(ffi_size, .{&.{}}, "arity mismatch, expected 1, got 0");
 
-    argv[0] = c.janet_ckeywordv("nonesuch");
-    expectRaise(ffi_size, .{ @as(i32, 1), &argv }, "unknown machine type nonesuch");
+    argv[0] = value.fromBytes("nonesuch", .keyword);
+    expectRaise(ffi_size, .{argv[0..1]}, "unknown machine type nonesuch");
 
     argv[0] = harness.wrapInteger(7);
-    expectRaise(ffi_size, .{ @as(i32, 1), &argv }, "bad native type 7");
+    expectRaise(ffi_size, .{argv[0..1]}, "bad native type 7");
 
     argv[0] = eval("@[:int32 1 2]");
-    expectRaisePrefix(ffi_size, .{ @as(i32, 1), &argv }, "array type must be of form @[type count], got ");
+    expectRaisePrefix(ffi_size, .{argv[0..1]}, "array type must be of form @[type count], got ");
 
     // A struct of one void member: the void type has no alignment, which is
     // the `el_align == 0` arm of the layout loop.
-    argv[0] = c.janet_ckeywordv("void");
-    expectRaise(ffi_struct, .{ @as(i32, 1), &argv }, "bad field type void");
+    argv[0] = value.fromBytes("void", .keyword);
+    expectRaise(ffi_struct, .{argv[0..1]}, "bad field type void");
 
-    argv[0] = c.janet_ckeywordv("nonesuch");
-    argv[1] = c.janet_ckeywordv("void");
-    expectRaise(ffi_signature, .{ @as(i32, 2), &argv }, "unknown calling convention nonesuch");
+    argv[0] = value.fromBytes("nonesuch", .keyword);
+    argv[1] = value.fromBytes("void", .keyword);
+    expectRaise(ffi_signature, .{argv[0..2]}, "unknown calling convention nonesuch");
 
     // `:none` describes but cannot call.
     {
-        argv[0] = c.janet_ckeywordv("none");
-        argv[1] = c.janet_ckeywordv("void");
-        const sig = ffi_signature(2, &argv) catch @panic("ffi_core: ffi/signature raised");
-        var call_argv: [2]c.Janet = undefined;
-        call_argv[0] = c.janet_wrap_pointer(@ptrCast(@constCast(&theRaises)));
+        argv[0] = value.fromBytes("none", .keyword);
+        argv[1] = value.fromBytes("void", .keyword);
+        const sig = ffi_signature(argv[0..2]) catch @panic("ffi_core: ffi/signature raised");
+        var call_argv: [2]types.Janet = undefined;
+        call_argv[0] = wrap.fromPointer(@ptrCast(@constCast(&theRaises)));
         call_argv[1] = sig;
-        expectRaise(ffi_call_fn, .{ @as(i32, 2), &call_argv }, "calling convention not supported");
+        expectRaise(ffi_call_fn, .{call_argv[0..2]}, "calling convention not supported");
     }
 
     // A callable pointer is a pointer or a jitfn, and nothing else.
     {
-        var call_argv: [2]c.Janet = undefined;
+        var call_argv: [2]types.Janet = undefined;
         call_argv[0] = harness.wrapInteger(7);
         call_argv[1] = eval("(ffi/signature :none :void)");
         expectRaise(
             ffi_call_fn,
-            .{ @as(i32, 2), &call_argv },
+            .{call_argv[0..2]},
             "bad slot #0, expected ffi callable pointer type, got 7",
         );
     }
 
     // Reading past the end of a byte source.
-    argv[0] = c.janet_ckeywordv("int64");
-    argv[1] = c.janet_cstringv("abc");
-    expectRaise(ffi_read, .{ @as(i32, 2), &argv }, "read out of range");
+    argv[0] = value.fromBytes("int64", .keyword);
+    argv[1] = value.fromBytes("abc", .string);
+    expectRaise(ffi_read, .{argv[0..2]}, "read out of range");
 
     // Writing at an index beyond the buffer's own count.
-    argv[0] = c.janet_ckeywordv("int32");
+    argv[0] = value.fromBytes("int32", .keyword);
     argv[1] = harness.wrapInteger(1);
-    argv[2] = c.janet_wrap_buffer(c.janet_buffer(8));
+    argv[2] = wrap.fromBuffer(buffers.new(8));
     argv[3] = harness.wrapInteger(4);
-    expectRaise(ffi_write, .{ @as(i32, 4), &argv }, "index out of bounds");
+    expectRaise(ffi_write, .{argv[0..4]}, "index out of bounds");
 
     // A struct written with the wrong number of fields, and an array with the
     // wrong length. Both are shape faults the marshaller reports.
     argv[0] = eval("(ffi/struct :int32 :int32)");
     argv[1] = eval("[1 2 3]");
-    expectRaise(ffi_write, .{ @as(i32, 2), &argv }, "wrong number of fields in struct, expected 2, got 3");
+    expectRaise(ffi_write, .{argv[0..2]}, "wrong number of fields in struct, expected 2, got 3");
 
     argv[0] = eval("@[:int32 3]");
     argv[1] = eval("[1 2]");
-    expectRaise(ffi_write, .{ @as(i32, 2), &argv }, "bad array length, expected 3, got 2");
+    expectRaise(ffi_write, .{argv[0..2]}, "bad array length, expected 3, got 2");
 
     // `:void` writes only nil.
-    argv[0] = c.janet_ckeywordv("void");
+    argv[0] = value.fromBytes("void", .keyword);
     argv[1] = harness.wrapInteger(1);
-    expectRaise(ffi_write, .{ @as(i32, 2), &argv }, "expected nil, got 1");
+    expectRaise(ffi_write, .{argv[0..2]}, "expected nil, got 1");
 
     // A native object closed twice, and the running binary refusing to close.
     //
@@ -457,24 +467,24 @@ fn theRaises() void {
     // this contract assuming the other one.
     if (dynamicLoadingWorks()) {
         const self = eval("(ffi/native)");
-        c.janet_gcroot(self);
-        var self_argv = [_]c.Janet{self};
-        expectRaise(harness.core("ffi/close"), .{ @as(i32, 1), &self_argv }, "cannot close self");
+        gc_alloc.gcroot(self);
+        var self_argv = [_]types.Janet{self};
+        expectRaise(harness.core("ffi/close"), .{self_argv[0..1]}, "cannot close self");
         {
-            var lookup = [_]c.Janet{ self, c.janet_cstringv("a_symbol_that_does_not_exist") };
-            const found = harness.core("ffi/lookup")(2, &lookup) catch
+            var lookup = [_]types.Janet{ self, value.fromBytes("a_symbol_that_does_not_exist", .string) };
+            const found = harness.core("ffi/lookup")(lookup[0..2]) catch
                 @panic("ffi_core: ffi/lookup raised");
-            assert(harness.isType(found, c.JANET_NIL));
+            assert(harness.isType(found, constants.JANET_NIL));
         }
-        _ = c.janet_gcunroot(self);
+        _ = gc_alloc.gcunroot(self);
     } else if (!has_dynamic_modules) {
-        expectRaise(harness.core("ffi/native"), .{ @as(i32, 0), null }, "dynamic modules not supported");
+        expectRaise(harness.core("ffi/native"), .{&.{}}, "dynamic modules not supported");
     } else {
         // Compiled, registered, and unable to load: a statically linked musl
         // build. Asserted rather than skipped, so the arm says what it is --
         // the message comes from `load_clib`, not from the `util.h` reduction
         // the branch above pins, and the two are different refusals.
-        expectRaise(harness.core("ffi/native"), .{ @as(i32, 0), null }, "Dynamic loading not supported");
+        expectRaise(harness.core("ffi/native"), .{&.{}}, "Dynamic loading not supported");
     }
 }
 
@@ -517,47 +527,47 @@ fn homogeneousFloatAggregates() void {
     const ffi_signature = harness.core("ffi/signature");
     const ffi_call_fn = harness.core("ffi/call");
 
-    var pair = [_]c.Janet{ c.janet_ckeywordv("float"), c.janet_ckeywordv("float") };
-    const hfa = ffi_struct(2, &pair) catch @panic("ffi_core: ffi/struct raised");
+    var pair = [_]types.Janet{ value.fromBytes("float", .keyword), value.fromBytes("float", .keyword) };
+    const hfa = ffi_struct(pair[0..2]) catch @panic("ffi_core: ffi/struct raised");
 
     // Outgoing: 1.5 in the first vector register and 2.5 in the second, so the
     // callee's weighted sum is 1.5 + 5. Sized by bytes it was one register,
     // the second member was never written, and the sum was 1.5.
     {
-        var types = [_]c.Janet{ c.janet_ckeywordv("default"), c.janet_ckeywordv("double"), hfa };
-        const sig = ffi_signature(3, &types) catch @panic("ffi_core: ffi/signature raised");
+        var argtypes = [_]types.Janet{ value.fromBytes("default", .keyword), value.fromBytes("double", .keyword), hfa };
+        const sig = ffi_signature(argtypes[0..3]) catch @panic("ffi_core: ffi/signature raised");
 
-        const members = c.janet_tuple_begin(2);
-        members[0] = c.janet_wrap_number(1.5);
-        members[1] = c.janet_wrap_number(2.5);
-        var args = [_]c.Janet{
-            c.janet_wrap_pointer(@ptrCast(@constCast(&hfa2Weighted))),
+        const members = tuples.begin(2);
+        members[0] = wrap.fromNumber(1.5);
+        members[1] = wrap.fromNumber(2.5);
+        var args = [_]types.Janet{
+            wrap.fromPointer(@ptrCast(@constCast(&hfa2Weighted))),
             sig,
-            c.janet_wrap_tuple(c.janet_tuple_end(members)),
+            wrap.fromTuple(tuples.end(members)),
         };
-        const answer = ffi_call_fn(3, &args) catch @panic("ffi_core: ffi/call raised");
-        assert(harness.isType(answer, c.JANET_NUMBER));
-        assert(c.janet_unwrap_number(answer) == 6.5);
+        const answer = ffi_call_fn(args[0..3]) catch @panic("ffi_core: ffi/call raised");
+        assert(harness.isType(answer, constants.JANET_NUMBER));
+        assert(wrap.toNumber(answer) == 6.5);
     }
 
     // Returning: each member arrives in its own register, eight bytes apart,
     // and the type's own layout is four. Read without gathering, the second
     // member is the first register's unused half.
     {
-        var types = [_]c.Janet{ c.janet_ckeywordv("default"), hfa, c.janet_ckeywordv("float") };
-        const sig = ffi_signature(3, &types) catch @panic("ffi_core: ffi/signature raised");
+        var argtypes = [_]types.Janet{ value.fromBytes("default", .keyword), hfa, value.fromBytes("float", .keyword) };
+        const sig = ffi_signature(argtypes[0..3]) catch @panic("ffi_core: ffi/signature raised");
 
-        var args = [_]c.Janet{
-            c.janet_wrap_pointer(@ptrCast(@constCast(&hfa2Build))),
+        var args = [_]types.Janet{
+            wrap.fromPointer(@ptrCast(@constCast(&hfa2Build))),
             sig,
-            c.janet_wrap_number(1.5),
+            wrap.fromNumber(1.5),
         };
-        const answer = ffi_call_fn(3, &args) catch @panic("ffi_core: ffi/call raised");
-        assert(harness.isType(answer, c.JANET_TUPLE));
-        const built = c.janet_unwrap_tuple(answer);
-        assert(c.janet_tuple_length(built) == 2);
-        assert(c.janet_unwrap_number(built[0]) == 1.5);
-        assert(c.janet_unwrap_number(built[1]) == 2.5);
+        const answer = ffi_call_fn(args[0..3]) catch @panic("ffi_core: ffi/call raised");
+        assert(harness.isType(answer, constants.JANET_TUPLE));
+        const built = wrap.toTuple(answer);
+        assert(types.tupleHead(built).length == 2);
+        assert(wrap.toNumber(built[0]) == 1.5);
+        assert(wrap.toNumber(built[1]) == 2.5);
     }
 }
 
@@ -566,12 +576,12 @@ fn homogeneousFloatAggregates() void {
 /// which one `:default` will resolve to.
 fn supports(want: [*:0]const u8) bool {
     const conventions = harness.core("ffi/calling-conventions");
-    const listed = conventions(0, null) catch return false;
-    if (!harness.isType(listed, c.JANET_ARRAY)) return false;
-    const array = c.janet_unwrap_array(listed);
+    const listed = conventions(&.{}) catch return false;
+    if (!harness.isType(listed, constants.JANET_ARRAY)) return false;
+    const array = wrap.toArray(listed);
     var i: i32 = 0;
     while (i < array.*.count) : (i += 1) {
-        if (harness.keywordIs(array.*.data[@intCast(i)], want)) return true;
+        if (harness.keywordIs(array.*.data.?[@intCast(i)], want)) return true;
     }
     return false;
 }
@@ -622,36 +632,36 @@ fn anAggregateBehindAStackArgument() void {
     const ffi_signature = harness.core("ffi/signature");
     const ffi_call_fn = harness.core("ffi/call");
 
-    var members = [_]c.Janet{
-        c.janet_ckeywordv("int64"),
-        c.janet_ckeywordv("int64"),
-        c.janet_ckeywordv("int64"),
+    var members = [_]types.Janet{
+        value.fromBytes("int64", .keyword),
+        value.fromBytes("int64", .keyword),
+        value.fromBytes("int64", .keyword),
     };
-    const large = ffi_struct(3, &members) catch @panic("ffi_core: ffi/struct raised");
+    const large = ffi_struct(members[0..3]) catch @panic("ffi_core: ffi/struct raised");
 
-    var types: [12]c.Janet = undefined;
-    types[0] = c.janet_ckeywordv("default");
-    types[1] = c.janet_ckeywordv("double");
-    for (types[2..11]) |*t| t.* = c.janet_ckeywordv("int64");
-    types[11] = large;
-    const sig = ffi_signature(12, &types) catch @panic("ffi_core: ffi/signature raised");
+    var argtypes: [12]types.Janet = undefined;
+    argtypes[0] = value.fromBytes("default", .keyword);
+    argtypes[1] = value.fromBytes("double", .keyword);
+    for (argtypes[2..11]) |*t| t.* = value.fromBytes("int64", .keyword);
+    argtypes[11] = large;
+    const sig = ffi_signature(argtypes[0..12]) catch @panic("ffi_core: ffi/signature raised");
 
-    const payload = c.janet_tuple_begin(3);
+    const payload = tuples.begin(3);
     payload[0] = harness.wrapInteger(11);
     payload[1] = harness.wrapInteger(22);
     payload[2] = harness.wrapInteger(33);
 
-    var args: [12]c.Janet = undefined;
-    args[0] = c.janet_wrap_pointer(@ptrCast(@constCast(&stackRefWeighted)));
+    var args: [12]types.Janet = undefined;
+    args[0] = wrap.fromPointer(@ptrCast(@constCast(&stackRefWeighted)));
     args[1] = sig;
     for (args[2..11], 1..) |*a, n| a.* = harness.wrapInteger(@intCast(n));
-    args[11] = c.janet_wrap_tuple(c.janet_tuple_end(payload));
+    args[11] = wrap.fromTuple(tuples.end(payload));
 
-    const answer = ffi_call_fn(12, &args) catch @panic("ffi_core: ffi/call raised");
+    const answer = ffi_call_fn(args[0..12]) catch @panic("ffi_core: ffi/call raised");
     // The nine integers weighted 1..9 are the sum of the squares, 285; the
     // three members weighted 10..12 are 110 + 242 + 396.
-    assert(harness.isType(answer, c.JANET_NUMBER));
-    assert(c.janet_unwrap_number(answer) == 285 + 748);
+    assert(harness.isType(answer, constants.JANET_NUMBER));
+    assert(wrap.toNumber(answer) == 285 + 748);
 }
 
 // ------------------------------------------------- the signature arity bound
@@ -668,7 +678,7 @@ fn anAggregateBehindAStackArgument() void {
 /// library and no call were needed to reach it: `ffi/signature` only describes
 /// a call.
 ///
-/// **Thirty-two is written out rather than read from `types.max_args`**, on
+/// **Thirty-two is written out rather than read from `ffi_types.max_args`**, on
 /// rule 46: the limit is a value a Janet program can observe, and asking the
 /// subject how many arguments it accepts would pass whatever it answered.
 ///
@@ -677,25 +687,25 @@ fn anAggregateBehindAStackArgument() void {
 /// one whose only convention is `:none`.
 fn theSignatureArityBound() void {
     const signature = harness.core("ffi/signature");
-    var argv: [42]c.Janet = undefined;
-    argv[0] = c.janet_ckeywordv("none");
-    argv[1] = c.janet_ckeywordv("void");
-    for (argv[2..]) |*a| a.* = c.janet_ckeywordv("s64");
+    var argv: [42]types.Janet = undefined;
+    argv[0] = value.fromBytes("none", .keyword);
+    argv[1] = value.fromBytes("void", .keyword);
+    for (argv[2..]) |*a| a.* = value.fromBytes("s64", .keyword);
 
     // Thirty-two argument types is exactly what the structure holds, so the
     // bound admits it. The two leading arguments are the convention and the
     // return type, which is why the arity the message names is thirty-four.
-    const full = signature(34, &argv) catch @panic("ffi_core: 32 arguments were refused");
-    assert(harness.isType(full, c.JANET_ABSTRACT));
+    const full = signature(argv[0..34]) catch @panic("ffi_core: 32 arguments were refused");
+    assert(harness.isType(full, constants.JANET_ABSTRACT));
 
     // One more is refused as an ordinary arity error rather than a corrupted
     // frame, and so is a signature far past the bound.
-    expectRaise(signature, .{ @as(i32, 35), &argv }, "arity mismatch, expected at most 34, got 35");
-    expectRaise(signature, .{ @as(i32, 42), &argv }, "arity mismatch, expected at most 34, got 42");
+    expectRaise(signature, .{argv[0..35]}, "arity mismatch, expected at most 34, got 35");
+    expectRaise(signature, .{argv[0..42]}, "arity mismatch, expected at most 34, got 42");
 }
 
 pub fn run() void {
-    _ = c.janet_init();
+    harness.init();
 
     registration();
     primTable();
@@ -709,5 +719,5 @@ pub fn run() void {
     anAggregateBehindAStackArgument();
 
     std.debug.print("ffi_core contract ok ({d} raises)\n", .{raises_seen});
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }

@@ -48,11 +48,11 @@
 //! look for the other.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const c = @import("cabi");
 
 const subsystems = @import("subsystems");
-const ev_core = subsystems.ev_core;
+const ev_core = subsystems.ev;
 
 const assert = std.debug.assert;
 
@@ -61,7 +61,7 @@ const assert = std.debug.assert;
 // ==========================================================================
 
 fn theEmptyQueue() void {
-    var q: c.JanetQueue = undefined;
+    var q: types.JanetQueue = undefined;
     ev_core.qInit(&q);
     defer ev_core.qDeinit(&q);
 
@@ -76,7 +76,7 @@ fn theEmptyQueue() void {
 }
 
 fn theQueueIsFirstInFirstOut() void {
-    var q: c.JanetQueue = undefined;
+    var q: types.JanetQueue = undefined;
     ev_core.qInit(&q);
     defer ev_core.qDeinit(&q);
 
@@ -95,7 +95,7 @@ fn theQueueIsFirstInFirstOut() void {
 }
 
 fn theHeadPushReversesTheOrder() void {
-    var q: c.JanetQueue = undefined;
+    var q: types.JanetQueue = undefined;
     ev_core.qInit(&q);
     defer ev_core.qDeinit(&q);
 
@@ -115,7 +115,7 @@ fn theHeadPushReversesTheOrder() void {
 /// Interleaving pushes and pops walks head and tail around the buffer, so the
 /// resize path runs with head > tail and has to move the wrapped segment.
 fn theQueueWrapsAndResizes() void {
-    var q: c.JanetQueue = undefined;
+    var q: types.JanetQueue = undefined;
     ev_core.qInit(&q);
     defer ev_core.qDeinit(&q);
 
@@ -149,7 +149,7 @@ fn theQueueWrapsAndResizes() void {
 
 /// A head push on a queue that is about to wrap takes the newhead < 0 branch.
 fn theHeadPushWraps() void {
-    var q: c.JanetQueue = undefined;
+    var q: types.JanetQueue = undefined;
     ev_core.qInit(&q);
     defer ev_core.qDeinit(&q);
 
@@ -177,7 +177,7 @@ fn theQueueCarriesLargeItems() void {
         tag: [24]u8,
     };
 
-    var q: c.JanetQueue = undefined;
+    var q: types.JanetQueue = undefined;
     ev_core.qInit(&q);
     defer ev_core.qDeinit(&q);
 
@@ -204,7 +204,7 @@ fn theQueueCarriesLargeItems() void {
 /// One slot is always left empty, so a resize happens one item before the
 /// buffer is actually full.
 fn theQueueKeepsASpareSlot() void {
-    var q: c.JanetQueue = undefined;
+    var q: types.JanetQueue = undefined;
     ev_core.qInit(&q);
     defer ev_core.qDeinit(&q);
 

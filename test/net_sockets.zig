@@ -44,7 +44,7 @@
 //!
 //! **The address structures come from `std.posix` rather than from the host
 //! headers.** The C contract included `<netinet/in.h>` and built a
-//! `struct sockaddr_in`; the subject reads one described by `net_abi.h`'s
+//! `struct sockaddr_in`; the subject reads one described by `net/abi.h`'s
 //! translation of the same header, so the two descriptions were one. `std`'s
 //! are written per platform and independently, which is what rules 8 and 20
 //! ask for: the bytes this file lays down and the bytes the decoder reads are
@@ -54,19 +54,31 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
+const ev_stream = @import("subsystems").ev_stream;
+const raise = @import("raise");
 
 const subsystems = @import("subsystems");
-const net_addr = subsystems.net_addr;
+const value = @import("subsystems").value;
+const config = @import("config");
+const gc_alloc = @import("subsystems").gc_alloc;
+const core_env = @import("subsystems").env;
+const wrap = @import("subsystems").value.wrap;
+const args_core = @import("subsystems").args;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const abstracts = @import("subsystems").value.abstracts;
+const pp_describe = @import("subsystems").pp_describe;
+const net_addr = subsystems.net;
 const abstract_type = subsystems.abstract_type;
 
 const assert = std.debug.assert;
 const posix = std.posix;
 
 const windows = builtin.os.tag == .windows;
-const has_ipv6 = !@hasDecl(c, "JANET_NO_IPV6");
+const has_ipv6 = config.ipv6;
 
 /// Ten on Windows, which reaches neither the unix-domain bindhost refusal nor
 /// anything else this file guards. The count is asserted at the end, because a
@@ -78,15 +90,15 @@ var raises_seen: u32 = 0;
 // Refusals
 // ==========================================================================
 
-fn expectRaise(name: [*:0]const u8, argv: []c.Janet, message: []const u8) void {
+fn expectRaise(name: [*:0]const u8, argv: []types.Janet, message: []const u8) void {
     const r = harness.coreRaised(name, argv) orelse {
         std.debug.print("net_sockets: expected a raise saying: {s}\n", .{message});
         @panic("net_sockets: expected a raise, got a return");
     };
-    assert(r.signal == c.JANET_SIGNAL_ERROR);
+    assert(r.signal == constants.JANET_SIGNAL_ERROR);
     if (!r.says(message)) {
         std.debug.print("expected: {s}\n", .{message});
-        std.debug.print("     got: {s}\n", .{c.janet_to_string(r.payload)});
+        std.debug.print("     got: {s}\n", .{pp_describe.toString(r.payload)});
         @panic("net_sockets: the raise carried another message");
     }
     raises_seen += 1;
@@ -96,24 +108,24 @@ fn expectRaise(name: [*:0]const u8, argv: []c.Janet, message: []const u8) void {
 /// `strerror` differ by platform and by libc, and pinning them would make this
 /// contract a test of the C library -- or which names a stream and therefore
 /// carries an address.
-fn expectRaisePrefix(name: [*:0]const u8, argv: []c.Janet, prefix: []const u8) void {
+fn expectRaisePrefix(name: [*:0]const u8, argv: []types.Janet, prefix: []const u8) void {
     const r = harness.coreRaised(name, argv) orelse {
         std.debug.print("net_sockets: expected a raise starting: {s}\n", .{prefix});
         @panic("net_sockets: expected a raise, got a return");
     };
-    assert(r.signal == c.JANET_SIGNAL_ERROR);
+    assert(r.signal == constants.JANET_SIGNAL_ERROR);
     if (!r.beginsWith(prefix)) {
         std.debug.print("expected prefix: {s}\n", .{prefix});
-        std.debug.print("            got: {s}\n", .{c.janet_to_string(r.payload)});
+        std.debug.print("            got: {s}\n", .{pp_describe.toString(r.payload)});
         @panic("net_sockets: the raise carried another message");
     }
     raises_seen += 1;
 }
 
 /// A cfunction that is expected to return, by the name the registry knows.
-/// This is the pointer `janet_lib_net` registered, so it is the same face a
+/// This is the pointer `janet_lib_net` registered, so it is the same abi a
 /// Janet call would reach.
-fn callCore(name: [*:0]const u8, argv: []c.Janet) c.Janet {
+fn callCore(name: [*:0]const u8, argv: []types.Janet) types.Janet {
     return harness.callCore(name, argv) catch
         @panic("net_sockets: a call that should have returned raised");
 }
@@ -124,52 +136,52 @@ fn callCore(name: [*:0]const u8, argv: []c.Janet) c.Janet {
 
 /// Wrap `bytes` as a `core/socket-address`, which is what `net/address-unpack`
 /// takes. The abstract has no callbacks, so this is the whole of building one.
-fn addressOf(bytes: []const u8) c.Janet {
-    const abst = c.janet_abstract(
-        abstract_type.stored(&net_addr.janet_address_type),
+fn addressOf(bytes: []const u8) types.Janet {
+    const abst = abstracts.new(
+        abstract_type.stored(&net_addr.addressType),
         bytes.len,
     ).?;
     const destination: [*]u8 = @ptrCast(abst);
     @memcpy(destination[0..bytes.len], bytes);
-    return c.janet_wrap_abstract(abst);
+    return wrap.fromAbstract(abst);
 }
 
-fn asBytes(value: anytype) []const u8 {
-    const bytes: [*]const u8 = @ptrCast(value);
-    return bytes[0..@sizeOf(@TypeOf(value.*))];
+fn asBytes(val: anytype) []const u8 {
+    const bytes: [*]const u8 = @ptrCast(val);
+    return bytes[0..@sizeOf(@TypeOf(val.*))];
 }
 
-fn unpack(address: c.Janet) c.Janet {
-    var argv = [_]c.Janet{address};
+fn unpack(address: types.Janet) types.Janet {
+    var argv = [_]types.Janet{address};
     return callCore("net/address-unpack", &argv);
 }
 
-fn tupleIs2(value: c.Janet, host: []const u8, port: i32) bool {
-    if (!harness.isType(value, c.JANET_TUPLE)) return false;
-    const t = c.janet_unwrap_tuple(value);
-    if (c.janet_tuple_length(t) != 2) return false;
-    if (!harness.isType(t[0], c.JANET_STRING)) return false;
-    const text = c.janet_unwrap_string(t[0]);
-    const length: usize = @intCast(c.janet_string_length(text));
+fn tupleIs2(val: types.Janet, host: []const u8, port: i32) bool {
+    if (!harness.isType(val, constants.JANET_TUPLE)) return false;
+    const t = wrap.toTuple(val);
+    if (types.tupleHead(t).length != 2) return false;
+    if (!harness.isType(t[0], constants.JANET_STRING)) return false;
+    const text = wrap.toString(t[0]);
+    const length: usize = @intCast(types.stringHead(text).length);
     if (!std.mem.eql(u8, text[0..length], host)) return false;
-    return c.janet_checkint(t[1]) != 0 and c.janet_unwrap_integer(t[1]) == port;
+    return args_core.checkint(t[1]) != 0 and wrap.toInteger(t[1]) == port;
 }
 
-fn tupleIs1(value: c.Janet, path: []const u8) bool {
-    if (!harness.isType(value, c.JANET_TUPLE)) return false;
-    const t = c.janet_unwrap_tuple(value);
-    if (c.janet_tuple_length(t) != 1) return false;
-    if (!harness.isType(t[0], c.JANET_STRING)) return false;
-    const text = c.janet_unwrap_string(t[0]);
-    const length: usize = @intCast(c.janet_string_length(text));
+fn tupleIs1(val: types.Janet, path: []const u8) bool {
+    if (!harness.isType(val, constants.JANET_TUPLE)) return false;
+    const t = wrap.toTuple(val);
+    if (types.tupleHead(t).length != 1) return false;
+    if (!harness.isType(t[0], constants.JANET_STRING)) return false;
+    const text = wrap.toString(t[0]);
+    const length: usize = @intCast(types.stringHead(text).length);
     return std.mem.eql(u8, text[0..length], path);
 }
 
-fn pathLength(value: c.Janet) usize {
-    assert(harness.isType(value, c.JANET_TUPLE));
-    const t = c.janet_unwrap_tuple(value);
-    assert(c.janet_tuple_length(t) == 1);
-    return @intCast(c.janet_string_length(c.janet_unwrap_string(t[0])));
+fn pathLength(val: types.Janet) usize {
+    assert(harness.isType(val, constants.JANET_TUPLE));
+    const t = wrap.toTuple(val);
+    assert(types.tupleHead(t).length == 1);
+    return @intCast(types.stringHead(wrap.toString(t[0])).length);
 }
 
 // ==========================================================================
@@ -182,10 +194,10 @@ fn pathLength(value: c.Janet) usize {
 /// recorded that a registration table is the one place a cfunction can go
 /// missing without a link error.
 const net_bindings = [_][*:0]const u8{
-    "net/address",  "net/listen",   "net/socket",         "net/accept",
-    "net/accept-loop", "net/read",  "net/chunk",          "net/write",
-    "net/send-to",  "net/recv-from", "net/flush",         "net/connect",
-    "net/shutdown", "net/peername", "net/localname",      "net/address-unpack",
+    "net/address",     "net/listen",    "net/socket",    "net/accept",
+    "net/accept-loop", "net/read",      "net/chunk",     "net/write",
+    "net/send-to",     "net/recv-from", "net/flush",     "net/connect",
+    "net/shutdown",    "net/peername",  "net/localname", "net/address-unpack",
     "net/setsockopt",
 };
 
@@ -291,7 +303,7 @@ fn theUnknownFamily() void {
     // `AF_UNSPEC` is what a zeroed address reports, and nothing decodes it.
     var storage = std.mem.zeroes(posix.sockaddr.storage);
     storage.family = posix.AF.UNSPEC;
-    var argv = [_]c.Janet{addressOf(asBytes(&storage))};
+    var argv = [_]types.Janet{addressOf(asBytes(&storage))};
     expectRaise("net/address-unpack", &argv, "unknown address family");
 }
 
@@ -302,36 +314,36 @@ fn theUnknownFamily() void {
 fn theAddressLookup() void {
     // A numeric host needs no resolver, so this is the one lookup that is the
     // same on every machine and in every network.
-    var argv = [_]c.Janet{
-        c.janet_cstringv("127.0.0.1"),
+    var argv = [_]types.Janet{
+        value.fromBytes("127.0.0.1", .string),
         harness.wrapInteger(9999),
-        c.janet_wrap_nil(),
-        c.janet_wrap_nil(),
+        wrap.fromNil(),
+        wrap.fromNil(),
     };
     assert(tupleIs2(unpack(callCore("net/address", argv[0..2])), "127.0.0.1", 9999));
 
     // The port may also be a string, which is the branch `janet_checkint` does
     // not take.
-    argv[1] = c.janet_cstringv("9999");
+    argv[1] = value.fromBytes("9999", .string);
     assert(tupleIs2(unpack(callCore("net/address", argv[0..2])), "127.0.0.1", 9999));
 
     // `multi` truthy returns an array of them, and every element decodes.
     argv[1] = harness.wrapInteger(9999);
-    argv[2] = c.janet_ckeywordv("stream");
-    argv[3] = c.janet_wrap_true();
+    argv[2] = value.fromBytes("stream", .keyword);
+    argv[3] = wrap.fromTrue();
     {
         const all = callCore("net/address", argv[0..4]);
-        assert(harness.isType(all, c.JANET_ARRAY));
-        const array = c.janet_unwrap_array(all);
+        assert(harness.isType(all, constants.JANET_ARRAY));
+        const array = wrap.toArray(all);
         assert(array.*.count >= 1);
         for (0..@intCast(array.*.count)) |i| {
-            assert(tupleIs2(unpack(array.*.data[i]), "127.0.0.1", 9999));
+            assert(tupleIs2(unpack(array.*.data.?[i]), "127.0.0.1", 9999));
         }
     }
 
     // `:datagram` is the other socket type, and it resolves the same host.
-    argv[2] = c.janet_ckeywordv("datagram");
-    argv[3] = c.janet_wrap_false();
+    argv[2] = value.fromBytes("datagram", .keyword);
+    argv[3] = wrap.fromFalse();
     assert(tupleIs2(unpack(callCore("net/address", argv[0..4])), "127.0.0.1", 9999));
 }
 
@@ -343,11 +355,11 @@ fn theAddressLookup() void {
 /// expectation and fixing the defect empties it.
 fn theUnixAddressLookup() void {
     const path = "/tmp/janet-contract.sock";
-    var argv = [_]c.Janet{
-        c.janet_ckeywordv("unix"),
-        c.janet_cstringv(path),
-        c.janet_wrap_nil(),
-        c.janet_wrap_nil(),
+    var argv = [_]types.Janet{
+        value.fromBytes("unix", .keyword),
+        value.fromBytes(path, .string),
+        wrap.fromNil(),
+        wrap.fromNil(),
     };
     assert(tupleIs1(unpack(callCore("net/address", argv[0..2])), path));
 
@@ -359,21 +371,21 @@ fn theUnixAddressLookup() void {
     {
         var big = std.mem.zeroes([512]u8);
         @memset(big[0 .. big.len - 1], 'a');
-        argv[1] = c.janet_cstringv(&big);
+        argv[1] = value.fromBytes(std.mem.sliceTo(&big, 0), .string);
         const got = unpack(callCore("net/address", argv[0..2]));
         assert(pathLength(got) == @typeInfo(@FieldType(posix.sockaddr.un, "path")).array.len - 1);
     }
 
     // `multi` on a unix path is the one-element array branch.
     {
-        argv[1] = c.janet_cstringv(path);
-        argv[2] = c.janet_ckeywordv("stream");
-        argv[3] = c.janet_wrap_true();
+        argv[1] = value.fromBytes(path, .string);
+        argv[2] = value.fromBytes("stream", .keyword);
+        argv[3] = wrap.fromTrue();
         const all = callCore("net/address", argv[0..4]);
-        assert(harness.isType(all, c.JANET_ARRAY));
-        const array = c.janet_unwrap_array(all);
+        assert(harness.isType(all, constants.JANET_ARRAY));
+        const array = wrap.toArray(all);
         assert(array.*.count == 1);
-        assert(tupleIs1(unpack(array.*.data[0]), path));
+        assert(tupleIs1(unpack(array.*.data.?[0]), path));
     }
 }
 
@@ -384,10 +396,10 @@ fn theUnixAddressLookup() void {
 fn theArgumentFaults() void {
     // The socket type vocabulary: two keywords and nothing else.
     {
-        var argv = [_]c.Janet{
-            c.janet_cstringv("127.0.0.1"),
+        var argv = [_]types.Janet{
+            value.fromBytes("127.0.0.1", .string),
             harness.wrapInteger(9999),
-            c.janet_ckeywordv("tcp"),
+            value.fromBytes("tcp", .keyword),
         };
         expectRaise(
             "net/address",
@@ -399,8 +411,8 @@ fn theArgumentFaults() void {
     // A host the resolver cannot answer for. The tail is `gai_strerror`'s and
     // differs by libc, so only the prefix is pinned.
     {
-        var argv = [_]c.Janet{
-            c.janet_cstringv("no-such-host.invalid"),
+        var argv = [_]types.Janet{
+            value.fromBytes("no-such-host.invalid", .string),
             harness.wrapInteger(9999),
         };
         expectRaisePrefix("net/address", &argv, "could not get address info: ");
@@ -421,11 +433,11 @@ fn theArgumentFaults() void {
     // entry and the reproducer; the port releases it correctly, so eleven
     // characters is what left the reinterpreted fields zero under both
     // implementations and it is kept because the *message* is what this asserts.
-    var argv = [_]c.Janet{
-        c.janet_ckeywordv("unix"),
-        c.janet_cstringv("/tmp/a.sock"),
-        c.janet_ckeywordv("stream"),
-        c.janet_cstringv("127.0.0.1"),
+    var argv = [_]types.Janet{
+        value.fromBytes("unix", .keyword),
+        value.fromBytes("/tmp/a.sock", .string),
+        value.fromBytes("stream", .keyword),
+        value.fromBytes("127.0.0.1", .string),
         harness.wrapInteger(0),
     };
     expectRaise("net/connect", &argv, "bindhost not supported for unix domain sockets");
@@ -434,28 +446,28 @@ fn theArgumentFaults() void {
 fn theStreamFaults() void {
     // A listener is the one socket a contract can make without entering the
     // loop: `net/listen` returns before anything suspends.
-    var listen_argv = [_]c.Janet{ c.janet_cstringv("127.0.0.1"), harness.wrapInteger(0) };
+    var listen_argv = [_]types.Janet{ value.fromBytes("127.0.0.1", .string), harness.wrapInteger(0) };
     const listener = callCore("net/listen", &listen_argv);
-    assert(harness.isType(listener, c.JANET_ABSTRACT));
-    c.janet_gcroot(listener);
-    defer _ = c.janet_gcunroot(listener);
+    assert(harness.isType(listener, constants.JANET_ABSTRACT));
+    gc_alloc.gcroot(listener);
+    defer _ = gc_alloc.gcunroot(listener);
 
     // Its local name is a real address, decoded by the same path the hand-built
     // ones above went through -- and the port is whatever the kernel picked, so
     // only the host is pinned.
     {
-        var argv = [_]c.Janet{listener};
+        var argv = [_]types.Janet{listener};
         const name = callCore("net/localname", &argv);
-        assert(harness.isType(name, c.JANET_TUPLE));
-        const t = c.janet_unwrap_tuple(name);
-        assert(c.janet_tuple_length(t) == 2);
-        assert(harness.stringIs(c.janet_unwrap_string(t[0]), "127.0.0.1"));
-        assert(c.janet_checkint(t[1]) != 0 and c.janet_unwrap_integer(t[1]) > 0);
+        assert(harness.isType(name, constants.JANET_TUPLE));
+        const t = wrap.toTuple(name);
+        assert(types.tupleHead(t).length == 2);
+        assert(harness.stringIs(wrap.toString(t[0]), "127.0.0.1"));
+        assert(args_core.checkint(t[1]) != 0 and wrap.toInteger(t[1]) > 0);
     }
 
     // A listener has no peer, and the message names the stream it failed on.
     {
-        var argv = [_]c.Janet{listener};
+        var argv = [_]types.Janet{listener};
         expectRaisePrefix("net/peername", &argv, "Failed to get peername on ");
     }
 
@@ -463,15 +475,15 @@ fn theStreamFaults() void {
     // read back; from Janet only membership is visible.
     {
         const expected = [_][]const u8{
-            "chunk",   "close",    "read",    "write",     "flush",
-            "accept",  "accept-loop", "send-to", "recv-from", "evread",
-            "evchunk", "evwrite",  "shutdown", "setsockopt",
+            "chunk",   "close",       "read",     "write",      "flush",
+            "accept",  "accept-loop", "send-to",  "recv-from",  "evread",
+            "evchunk", "evwrite",     "shutdown", "setsockopt",
         };
-        const stream: *c.JanetStream = @ptrCast(@alignCast(c.janet_unwrap_abstract(listener)));
-        const methods: [*]const c.JanetMethod = @ptrCast(@alignCast(stream.methods));
+        const stream: *types.JanetStream = @ptrCast(@alignCast(wrap.toAbstract(listener)));
+        const methods: [*]const types.JanetMethod = @ptrCast(@alignCast(stream.methods));
         for (expected, 0..) |name, i| {
             assert(methods[i].name != null);
-            assert(std.mem.eql(u8, std.mem.span(methods[i].name), name));
+            assert(std.mem.eql(u8, std.mem.span(methods[i].name.?), name));
             assert(methods[i].cfun != null);
         }
         assert(methods[expected.len].name == null);
@@ -480,25 +492,25 @@ fn theStreamFaults() void {
 
     // `net/shutdown`'s vocabulary is three keywords.
     {
-        var argv = [_]c.Janet{ listener, c.janet_ckeywordv("both") };
+        var argv = [_]types.Janet{ listener, value.fromBytes("both", .keyword) };
         expectRaise("net/shutdown", &argv, "unexpected keyword :both");
     }
 
     // And the option table's, which is a name it does not hold.
     {
-        var argv = [_]c.Janet{
+        var argv = [_]types.Janet{
             listener,
-            c.janet_ckeywordv("so-nonsense"),
-            c.janet_wrap_true(),
+            value.fromBytes("so-nonsense", .keyword),
+            wrap.fromTrue(),
         };
         expectRaise("net/setsockopt", &argv, "unknown socket option :so-nonsense");
     }
 
     // A handler that cannot be given the connection it is handed.
     {
-        var handler = c.janet_wrap_nil();
-        assert(c.janet_dostring(c.janet_core_env(null), "(fn [] nil)", "contract", &handler) == 0);
-        var argv = [_]c.Janet{ listener, handler };
+        var handler = wrap.fromNil();
+        assert(core_env.dostring(harness.coreEnv(), "(fn [] nil)", "contract", &handler) == 0);
+        var argv = [_]types.Janet{ listener, handler };
         expectRaise("net/accept-loop", &argv, "handler function must take at least 1 argument");
     }
 
@@ -506,14 +518,14 @@ fn theStreamFaults() void {
     // name-reading cfunctions check it themselves rather than through
     // `janet_stream_flags`.
     {
-        const stream: *c.JanetStream = @ptrCast(@alignCast(c.janet_unwrap_abstract(listener)));
-        c.janet_stream_close(stream);
-        var one = [_]c.Janet{listener};
+        const stream: *types.JanetStream = @ptrCast(@alignCast(wrap.toAbstract(listener)));
+        raise.reported(ev_stream.streamClose(stream));
+        var one = [_]types.Janet{listener};
         expectRaise("net/localname", &one, "stream closed");
         expectRaise("net/peername", &one, "stream closed");
         // Everything else reports through `janet_stream_flags`, whose wording
         // belongs to the event loop rather than to this subsystem.
-        var shutdown_argv = [_]c.Janet{ listener, c.janet_ckeywordv("rw") };
+        var shutdown_argv = [_]types.Janet{ listener, value.fromBytes("rw", .keyword) };
         expectRaise("net/shutdown", &shutdown_argv, "stream is closed");
     }
 }
@@ -526,28 +538,28 @@ fn theUnboundSocket() void {
     // `net/socket` binds nothing, so its local name is the wildcard address on
     // port zero -- the one decode a live socket cannot otherwise produce.
     {
-        var argv = [_]c.Janet{ c.janet_ckeywordv("datagram"), c.janet_ckeywordv("ipv4") };
+        var argv = [_]types.Janet{ value.fromBytes("datagram", .keyword), value.fromBytes("ipv4", .keyword) };
         const sock = callCore("net/socket", &argv);
-        assert(harness.isType(sock, c.JANET_ABSTRACT));
-        var name_argv = [_]c.Janet{sock};
+        assert(harness.isType(sock, constants.JANET_ABSTRACT));
+        var name_argv = [_]types.Janet{sock};
         assert(tupleIs2(callCore("net/localname", &name_argv), "0.0.0.0", 0));
-        c.janet_stream_close(@ptrCast(@alignCast(c.janet_unwrap_abstract(sock))));
+        raise.reported(ev_stream.streamClose(@ptrCast(@alignCast(wrap.toAbstract(sock)))));
     }
 
     // No arguments at all is a stream socket in whatever family the resolver
     // prefers, which is the default path through the family lookup.
     {
-        var none = [_]c.Janet{};
+        var none = [_]types.Janet{};
         const sock = callCore("net/socket", &none);
-        assert(harness.isType(sock, c.JANET_ABSTRACT));
-        c.janet_stream_close(@ptrCast(@alignCast(c.janet_unwrap_abstract(sock))));
+        assert(harness.isType(sock, constants.JANET_ABSTRACT));
+        raise.reported(ev_stream.streamClose(@ptrCast(@alignCast(wrap.toAbstract(sock)))));
     }
 }
 
 pub fn run() void {
-    _ = c.janet_init();
-    defer c.janet_deinit();
-    _ = c.janet_core_env(null);
+    harness.init();
+    defer vm_lifecycle.deinit();
+    _ = harness.coreEnv();
 
     theRegistration();
     theIpv4Decoding();

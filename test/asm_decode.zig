@@ -32,43 +32,47 @@
 //! operand.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const disasm = @import("subsystems").disasm;
 
 /// Decode, and assert the instruction is the named one with `length` fields.
-fn decoded(instruction: u32, length: i32, name: [*:0]const u8) [*]const c.Janet {
-    const value = c.janet_asm_decode_instruction(instruction);
-    std.debug.assert(harness.isType(value, c.JANET_TUPLE));
-    const tuple = c.janet_unwrap_tuple(value);
-    std.debug.assert(c.janet_tuple_length(tuple) == length);
+fn decoded(instruction: u32, length: i32, name: [*:0]const u8) [*]const types.Janet {
+    const val = disasm.asmDecodeInstruction(instruction);
+    std.debug.assert(harness.isType(val, constants.JANET_TUPLE));
+    const tuple = wrap.toTuple(val);
+    std.debug.assert(types.tupleHead(tuple).length == length);
     std.debug.assert(harness.symbolIs(tuple[0], name));
     return tuple;
 }
 
 fn anUnknownOpcodeStaysANumber() void {
     // 0x7F is not an opcode, so this word has no row to decode against.
-    const value = c.janet_asm_decode_instruction(0x1234567F);
-    std.debug.assert(harness.isType(value, c.JANET_NUMBER));
-    std.debug.assert(@as(u32, @bitCast(c.janet_unwrap_integer(value))) == 0x1234567F);
+    const val = disasm.asmDecodeInstruction(0x1234567F);
+    std.debug.assert(harness.isType(val, constants.JANET_NUMBER));
+    std.debug.assert(@as(u32, @bitCast(wrap.toInteger(val))) == 0x1234567F);
 }
 
 fn theOperandShapes() void {
     // No operands.
-    const noop = decoded(c.JOP_NOOP, 1, "noop");
-    std.debug.assert((c.janet_tuple_flag(noop) & c.JANET_TUPLE_FLAG_BRACKETCTOR) == 0);
+    const noop = decoded(constants.JOP_NOOP, 1, "noop");
+    std.debug.assert((types.tupleHead(noop).gc.flags & constants.JANET_TUPLE_FLAG_BRACKETCTOR) == 0);
 
     // One unsigned 24-bit field.
-    const err = decoded(harness.op(c.JOP_ERROR) | (@as(u32, 0x123456) << 8), 2, "err");
+    const err = decoded(harness.op(constants.JOP_ERROR) | (@as(u32, 0x123456) << 8), 2, "err");
     std.debug.assert(harness.integerIs(err[1], 0x123456));
 
     // One *signed* 24-bit field: the same bit width, read the other way.
-    const jmp = decoded(harness.op(c.JOP_JUMP) | (@as(u32, 0xFFFFFE) << 8), 2, "jmp");
+    const jmp = decoded(harness.op(constants.JOP_JUMP) | (@as(u32, 0xFFFFFE) << 8), 2, "jmp");
     std.debug.assert(harness.integerIs(jmp[1], -2));
 
     // A slot and an unsigned 16-bit field.
     const movn = decoded(
-        harness.op(c.JOP_MOVE_NEAR) | (@as(u32, 7) << 8) | (@as(u32, 300) << 16),
+        harness.op(constants.JOP_MOVE_NEAR) | (@as(u32, 7) << 8) | (@as(u32, 300) << 16),
         3,
         "movn",
     );
@@ -77,7 +81,7 @@ fn theOperandShapes() void {
 
     // A slot and a signed 16-bit field.
     const ldi = decoded(
-        harness.op(c.JOP_LOAD_INTEGER) | (@as(u32, 5) << 8) | (@as(u32, 0xFFF4) << 16),
+        harness.op(constants.JOP_LOAD_INTEGER) | (@as(u32, 5) << 8) | (@as(u32, 0xFFF4) << 16),
         3,
         "ldi",
     );
@@ -86,7 +90,7 @@ fn theOperandShapes() void {
 
     // Three slots.
     const add = decoded(
-        harness.op(c.JOP_ADD) | (@as(u32, 3) << 8) | (@as(u32, 7) << 16) | (@as(u32, 9) << 24),
+        harness.op(constants.JOP_ADD) | (@as(u32, 3) << 8) | (@as(u32, 7) << 16) | (@as(u32, 9) << 24),
         4,
         "add",
     );
@@ -100,10 +104,10 @@ fn theOperandShapes() void {
 fn theSignedAndUnsignedImmediatesAgreeOnNothing() void {
     const word = (@as(u32, 3) << 8) | (@as(u32, 7) << 16) | (@as(u32, 0xFD) << 24);
 
-    const addim = decoded(harness.op(c.JOP_ADD_IMMEDIATE) | word, 4, "addim");
+    const addim = decoded(harness.op(constants.JOP_ADD_IMMEDIATE) | word, 4, "addim");
     std.debug.assert(harness.integerIs(addim[3], -3));
 
-    const sruim = decoded(harness.op(c.JOP_SHIFT_RIGHT_UNSIGNED_IMMEDIATE) | word, 4, "sruim");
+    const sruim = decoded(harness.op(constants.JOP_SHIFT_RIGHT_UNSIGNED_IMMEDIATE) | word, 4, "sruim");
     std.debug.assert(harness.integerIs(sruim[3], 253));
 }
 
@@ -111,15 +115,15 @@ fn theSignedAndUnsignedImmediatesAgreeOnNothing() void {
 /// reported out of band: the tuple is still `(noop)`, and the flag rides on
 /// the tuple itself.
 fn aBreakpointIsAFlagRatherThanAnOperand() void {
-    const tuple = decoded(harness.op(c.JOP_NOOP) | @as(u32, 0x80), 1, "noop");
-    std.debug.assert((c.janet_tuple_flag(tuple) & c.JANET_TUPLE_FLAG_BRACKETCTOR) != 0);
+    const tuple = decoded(harness.op(constants.JOP_NOOP) | @as(u32, 0x80), 1, "noop");
+    std.debug.assert((types.tupleHead(tuple).gc.flags & constants.JANET_TUPLE_FLAG_BRACKETCTOR) != 0);
 }
 
 pub fn run() void {
-    _ = c.janet_init();
+    harness.init();
     anUnknownOpcodeStaysANumber();
     theOperandShapes();
     theSignedAndUnsignedImmediatesAgreeOnNothing();
     aBreakpointIsAFlagRatherThanAnOperand();
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }

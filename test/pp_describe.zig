@@ -17,14 +17,14 @@
 //!
 //! ## What the migration retired
 //!
-//! **The C face `janet_zig_pp_escape_string` is gone**, and this file is why.
+//! **The abi `janet_zig_pp_escape_string` is gone**, and this file is why.
 //! It existed for `pp.c` under the other selector, outlived it, and had
 //! exactly one caller left: `test/pp_describe.c`, which needed the width and
 //! could not take a `raise.Raising(i32)`. Inside the compilation the width is
-//! just a return value and the error is just an error, so the face, its
+//! just a return value and the error is just an error, so the abi, its
 //! `raise.reported` wrapper and its `@export` all went with the `.c` file.
-//! That is Phase 11's "delete the reporting faces with them" landing for the
-//! first time on a real face rather than on a contract.
+//! That is Phase 11's "delete the reporting abis with them" landing for the
+//! first time on a real abi rather than on a contract.
 //!
 //! The abstract type below is the other one. The C contract had to build a
 //! `JanetAbstractType` and pass it through `test/support.zig`'s adapter pool,
@@ -33,10 +33,18 @@
 //! all.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const c = @import("cabi");
 const harness = @import("harness.zig");
 const subsystems = @import("subsystems");
+const value = @import("subsystems").value;
+const gc_alloc = @import("subsystems").gc_alloc;
+const buffers = @import("subsystems").value.buffers;
+const core_env = @import("subsystems").env;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const abstracts = @import("subsystems").value.abstracts;
+const pp_describe = @import("subsystems").pp_describe;
 
 /// The subject, by import. `toStringB` and `descriptionB` raise — rendering a
 /// value runs an abstract type's `tostring` callback — so a caller outside the
@@ -44,26 +52,26 @@ const subsystems = @import("subsystems");
 const describe = subsystems.pp_describe;
 const AbstractType = subsystems.abstract_type.AbstractType;
 
-var test_env: [*c]c.JanetTable = undefined;
+var test_env: *types.JanetTable = undefined;
 
-fn checkBuffer(b: *c.JanetBuffer, expected: []const u8) void {
+fn checkBuffer(b: *types.JanetBuffer, expected: []const u8) void {
     const count: usize = @intCast(b.count);
-    if (count != expected.len or !std.mem.eql(u8, b.data[0..count], expected)) {
-        std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.data[0..count] });
+    if (count != expected.len or !std.mem.eql(u8, b.data.?[0..count], expected)) {
+        std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.data.?[0..count] });
         @panic("buffer mismatch");
     }
 }
 
-fn checkString(s: c.JanetString, expected: [*:0]const u8) void {
+fn checkString(s: types.JanetString, expected: [*:0]const u8) void {
     if (!harness.stringIs(s, expected)) {
         std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, s });
         @panic("string mismatch");
     }
 }
 
-fn eval(source: [*:0]const u8) c.Janet {
-    var out: c.Janet = c.janet_wrap_nil();
-    std.debug.assert(c.janet_dostring(test_env, source, "pp-describe-test", &out) == 0);
+fn eval(source: [*:0]const u8) types.Janet {
+    var out: types.Janet = wrap.fromNil();
+    std.debug.assert(core_env.dostring(test_env, source, "pp-describe-test", &out) == 0);
     return out;
 }
 
@@ -74,16 +82,16 @@ fn eval(source: [*:0]const u8) c.Janet {
 /// buffer first would pass every Janet suite that formats a whole string at
 /// once.
 fn bothAppendRatherThanReplace() !void {
-    const b: *c.JanetBuffer = c.janet_buffer(16);
+    const b: *types.JanetBuffer = buffers.new(16);
 
-    _ = c.janet_buffer_push_cstring(b, "head:");
+    _ = buffers.pushCstringAbi(b, "head:");
     try describe.toStringB(b, harness.wrapInteger(7));
-    _ = c.janet_buffer_push_u8(b, '|');
-    try describe.descriptionB(b, c.janet_cstringv("x"));
+    buffers.pushU8(b, '|') catch @panic("pp_describe: buffer push raised");
+    try describe.descriptionB(b, value.fromBytes("x", .string));
     checkBuffer(b, "head:7|\"x\"");
 
     // And again, so that a second append after a first is covered too.
-    try describe.toStringB(b, c.janet_wrap_boolean(1));
+    try describe.toStringB(b, wrap.fromBoolean(1));
     checkBuffer(b, "head:7|\"x\"true");
 }
 
@@ -93,14 +101,14 @@ fn bothAppendRatherThanReplace() !void {
 /// either reservation is a use-after-free that a sanitizer build would catch
 /// and an ordinary one would not.
 fn aBufferPrintedIntoItself() !void {
-    const b: *c.JanetBuffer = c.janet_buffer(1);
-    _ = c.janet_buffer_push_cstring(b, "ab");
-    try describe.toStringB(b, c.janet_wrap_buffer(b));
+    const b: *types.JanetBuffer = buffers.new(1);
+    _ = buffers.pushCstringAbi(b, "ab");
+    try describe.toStringB(b, wrap.fromBuffer(b));
     checkBuffer(b, "abab");
 
-    const d: *c.JanetBuffer = c.janet_buffer(1);
-    _ = c.janet_buffer_push_cstring(d, "a\nb");
-    try describe.descriptionB(d, c.janet_wrap_buffer(d));
+    const d: *types.JanetBuffer = buffers.new(1);
+    _ = buffers.pushCstringAbi(d, "a\nb");
+    try describe.descriptionB(d, wrap.fromBuffer(d));
     // The '@' is pushed before the length is read, so it is escaped as part of
     // the contents. That is a defect and it is pinned rather than corrected:
     // `FOUND.md` has it, and the pretty printer avoids it by escaping
@@ -118,8 +126,8 @@ fn theWholeEscapeTable() !void {
         '"',  '\n', '\r', 0,  0x0C, 0x0B, 0x07, 0x08, 27,
         '\\', '\t', 31,   32, 126,  127,  255,  'z',
     };
-    const b: *c.JanetBuffer = c.janet_buffer(64);
-    const width = try describe.escapeStringImpl(b, &raw, raw.len);
+    const b: *types.JanetBuffer = buffers.new(64);
+    const width = try describe.escapeStringImpl(b, &raw);
 
     checkBuffer(b, "\"\\\"\\n\\r\\0\\f\\v\\a\\b\\e\\\\\\t" ++
         "\\x1F \x7E\\x7F\\xFFz\"");
@@ -135,8 +143,8 @@ fn theWholeEscapeTable() !void {
 /// difference between the two entry points for the byte types, and the pair is
 /// asserted together so a change to one cannot look like a change to both.
 fn descriptionEscapesWhereToStringDoesNot() !void {
-    const s = c.janet_cstringv("a\"b");
-    const b: *c.JanetBuffer = c.janet_buffer(16);
+    const s = value.fromBytes("a\"b", .string);
+    const b: *types.JanetBuffer = buffers.new(16);
 
     try describe.toStringB(b, s);
     checkBuffer(b, "a\"b");
@@ -147,10 +155,10 @@ fn descriptionEscapesWhereToStringDoesNot() !void {
 
     // A keyword keeps its colon in a description and loses it in a string.
     b.count = 0;
-    try describe.descriptionB(b, c.janet_ckeywordv("kw"));
+    try describe.descriptionB(b, value.fromBytes("kw", .keyword));
     checkBuffer(b, ":kw");
     b.count = 0;
-    try describe.toStringB(b, c.janet_ckeywordv("kw"));
+    try describe.toStringB(b, value.fromBytes("kw", .keyword));
     checkBuffer(b, "kw");
 }
 
@@ -158,26 +166,26 @@ fn descriptionEscapesWhereToStringDoesNot() !void {
 
 /// Three properties of the number path, none of which the suites pin.
 fn theNumbers() !void {
-    const b: *c.JanetBuffer = c.janet_buffer(32);
+    const b: *types.JanetBuffer = buffers.new(32);
 
     // Negative zero prints without its sign.
-    try describe.toStringB(b, c.janet_wrap_number(-0.0));
+    try describe.toStringB(b, wrap.fromNumber(-0.0));
     checkBuffer(b, "0");
 
     // An integral value inside the exactly-representable range prints with no
     // fraction and no exponent.
     b.count = 0;
-    try describe.toStringB(b, c.janet_wrap_number(9007199254740992.0));
+    try describe.toStringB(b, wrap.fromNumber(9007199254740992.0));
     checkBuffer(b, "9007199254740992");
 
     // One past it: the integral shortcut must not take it, because `%.0f`
     // would print all of its digits as if they were significant.
     b.count = 0;
-    try describe.toStringB(b, c.janet_wrap_number(9007199254740994.0));
+    try describe.toStringB(b, wrap.fromNumber(9007199254740994.0));
     checkBuffer(b, "9.00719925474099e+15");
 
     b.count = 0;
-    try describe.toStringB(b, c.janet_wrap_number(1.5));
+    try describe.toStringB(b, wrap.fromNumber(1.5));
     checkBuffer(b, "1.5");
 }
 
@@ -189,30 +197,30 @@ fn theNumbers() !void {
 /// why a change there is invisible to a test that only checks the text.
 /// The two wrappers are reached by *symbol* rather than by import, and
 /// deliberately: `janet_to_string` and `janet_description` are what `janet.h`
-/// declares and what an embedder calls, so the exported face is the subject
+/// declares and what an embedder calls, so the exported abi is the subject
 /// here rather than an obstacle to it. Neither can raise for any value below.
 fn theTwoWrappersDifferWhereTheyShould() void {
-    const s = c.janet_cstringv("a\"b");
-    const k = c.janet_ckeywordv("kw");
+    const s = value.fromBytes("a\"b", .string);
+    const k = value.fromBytes("kw", .keyword);
     const n = harness.wrapInteger(12);
 
-    checkString(c.janet_to_string(s), "a\"b");
-    checkString(c.janet_description(s), "\"a\\\"b\"");
-    checkString(c.janet_to_string(k), "kw");
-    checkString(c.janet_description(k), ":kw");
-    checkString(c.janet_to_string(n), "12");
-    checkString(c.janet_description(n), "12");
+    checkString(pp_describe.toString(s), "a\"b");
+    checkString(pp_describe.description(s), "\"a\\\"b\"");
+    checkString(pp_describe.toString(k), "kw");
+    checkString(pp_describe.description(k), ":kw");
+    checkString(pp_describe.toString(n), "12");
+    checkString(pp_describe.description(n), "12");
 
     // A buffer answers with a copy of its contents rather than with itself.
-    const b: *c.JanetBuffer = c.janet_buffer(4);
-    _ = c.janet_buffer_push_cstring(b, "raw");
-    checkString(c.janet_to_string(c.janet_wrap_buffer(b)), "raw");
-    checkString(c.janet_description(c.janet_wrap_buffer(b)), "@\"raw\"");
+    const b: *types.JanetBuffer = buffers.new(4);
+    _ = buffers.pushCstringAbi(b, "raw");
+    checkString(pp_describe.toString(wrap.fromBuffer(b)), "raw");
+    checkString(pp_describe.description(wrap.fromBuffer(b)), "@\"raw\"");
 
     // A symbol is returned as it stands, without a copy: the identity is the
     // point, since symbols are interned.
-    const sym = c.janet_csymbolv("sym");
-    std.debug.assert(c.janet_to_string(sym) == c.janet_unwrap_symbol(sym));
+    const sym = value.fromBytes("sym", .symbol);
+    std.debug.assert(pp_describe.toString(sym) == wrap.toSymbol(sym));
 }
 
 // ------------------------------------------------------------ the callables
@@ -221,7 +229,7 @@ fn theTwoWrappersDifferWhereTheyShould() void {
 /// has one. An unregistered one falls through to the pointer description,
 /// which is the same fall-through an anonymous function takes.
 fn theCfunctionsAndFunctions() !void {
-    const b: *c.JanetBuffer = c.janet_buffer(64);
+    const b: *types.JanetBuffer = buffers.new(64);
 
     try describe.descriptionB(b, eval("print"));
     checkBuffer(b, "<cfunction print>");
@@ -240,8 +248,8 @@ fn theCfunctionsAndFunctions() !void {
     b.count = 0;
     try describe.descriptionB(b, eval("(fn [] nil)"));
     std.debug.assert(b.count > 11);
-    std.debug.assert(std.mem.eql(u8, b.data[0..12], "<function 0x"));
-    std.debug.assert(b.data[@intCast(b.count - 1)] == '>');
+    std.debug.assert(std.mem.eql(u8, b.data.?[0..12], "<function 0x"));
+    std.debug.assert(b.data.?[@intCast(b.count - 1)] == '>');
 }
 
 /// A pointer description truncates the type name at 32 bytes, which keeps the
@@ -256,15 +264,15 @@ fn thePointerDescriptionTruncatesItsTitle() !void {
     const long_name = AbstractType{
         .name = "abstract/with-an-extremely-long-type-name-here",
     };
-    const p = c.janet_abstract(@ptrCast(&long_name), 8);
-    const b: *c.JanetBuffer = c.janet_buffer(64);
+    const p = abstracts.new(@ptrCast(&long_name), 8);
+    const b: *types.JanetBuffer = buffers.new(64);
 
-    try describe.descriptionB(b, c.janet_wrap_abstract(p));
-    std.debug.assert(b.data[0] == '<');
-    std.debug.assert(b.data[@intCast(b.count - 1)] == '>');
+    try describe.descriptionB(b, wrap.fromAbstract(p));
+    std.debug.assert(b.data.?[0] == '<');
+    std.debug.assert(b.data.?[@intCast(b.count - 1)] == '>');
     // '<' + exactly 32 title bytes + " 0x". The name is 45 bytes long, so the
     // cut lands mid-word and that is the point.
-    std.debug.assert(std.mem.eql(u8, b.data[1..36], "abstract/with-an-extremely-long- 0x"));
+    std.debug.assert(std.mem.eql(u8, b.data.?[1..36], "abstract/with-an-extremely-long- 0x"));
 }
 
 /// An abstract type with a `tostring` callback is wrapped in angle brackets
@@ -272,14 +280,14 @@ fn thePointerDescriptionTruncatesItsTitle() !void {
 /// stringification. The two spellings are easy to swap and the suites print
 /// only one of them.
 fn anAbstractWithATostring() !void {
-    const value = eval("(int/s64 -5)");
-    const b: *c.JanetBuffer = c.janet_buffer(32);
+    const val = eval("(int/s64 -5)");
+    const b: *types.JanetBuffer = buffers.new(32);
 
-    try describe.toStringB(b, value);
+    try describe.toStringB(b, val);
     checkBuffer(b, "-5");
 
     b.count = 0;
-    try describe.descriptionB(b, value);
+    try describe.descriptionB(b, val);
     checkBuffer(b, "<core/s64 -5>");
 }
 
@@ -297,12 +305,12 @@ fn body() !void {
 }
 
 pub fn run() void {
-    _ = c.janet_init();
-    test_env = c.janet_core_env(null);
-    _ = c.janet_gcroot(c.janet_wrap_table(test_env));
+    harness.init();
+    test_env = harness.coreEnv();
+    _ = gc_alloc.gcroot(wrap.fromTable(test_env));
 
     body() catch @panic("pp_describe: a renderer raised unexpectedly");
 
-    c.janet_deinit();
+    vm_lifecycle.deinit();
     std.debug.print("pp describe contract ok\n", .{});
 }

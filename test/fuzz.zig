@@ -16,7 +16,7 @@
 //! Each C original opens a `janet_try_init` scope, calls its entry point, and
 //! calls `janet_restore`. That is right for C and wrong here, and the reason
 //! is the whole shape of Phase 10's hinge: three of the four entry points are
-//! `raise.reported` or `raise.panicking(...).face` wrappers, so a raise leaves
+//! `raise.reported` or `raise.panicking(...).abi` wrappers, so a raise leaves
 //! a *report* rather than travelling, and `janet_restore` aborts on an
 //! outstanding one. A fuzzer's inputs are mostly malformed, so a faithful
 //! translation would die with
@@ -30,7 +30,7 @@
 //! refusal as a value, which is `swallowed.py`'s rule applied to a caller that
 //! did not exist yet:
 //!
-//! | target | the face a translation would call | what this calls |
+//! | target | the abi a translation would call | what this calls |
 //! | --- | --- | --- |
 //! | parser | `janet_parser_consume`, `janet_parser_eof` | `parser_core.consumeChecked`, `parser_core.eofChecked` |
 //! | compile | `janet_compile` → `janet_compile_lint` | `compiler_primitives.janet_compile_lintImpl` |
@@ -52,14 +52,20 @@
 //! instrument.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
-const parser_core = subsystems.parser_core;
+const strings = @import("subsystems").value.strings;
+const marsh_mod = @import("subsystems").marsh;
+const parser_core_mod = @import("subsystems").parser;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const parser_core = subsystems.parser;
 const compiler_primitives = subsystems.compiler_primitives;
-const core_env = subsystems.core_env;
+const core_env = subsystems.env;
 const marsh = subsystems.marsh;
 
 /// The largest input a target is handed.
@@ -77,10 +83,10 @@ const max_input = 4096;
 /// carried across inputs makes a crash depend on the inputs before it, and a
 /// reproducer that needs a history is not a reproducer. `janet_deinit` also
 /// frees the heap, so a leak this finds is attributable to the one input.
-fn session(comptime body: fn (env: *c.JanetTable, data: []const u8) void, data: []const u8) void {
-    _ = c.janet_init();
-    defer c.janet_deinit();
-    body(c.janet_core_env(null).?, data);
+fn session(comptime body: fn (env: *types.JanetTable, data: []const u8) void, data: []const u8) void {
+    harness.init();
+    defer vm_lifecycle.deinit();
+    body(harness.coreEnv(), data);
 }
 
 // ------------------------------------------------------------------- parser
@@ -91,15 +97,15 @@ fn session(comptime body: fn (env: *c.JanetTable, data: []const u8) void, data: 
 /// body and comment both say parser. The name is not carried across: what it
 /// does is what it is called here, and `dobytes` below is the target the old
 /// name suggests.
-fn parserBody(env: *c.JanetTable, data: []const u8) void {
+fn parserBody(env: *types.JanetTable, data: []const u8) void {
     _ = env;
-    var parser: c.JanetParser = undefined;
-    c.janet_parser_init(&parser);
-    defer c.janet_parser_deinit(&parser);
+    var parser: types.JanetParser = undefined;
+    parser_core_mod.parserInit(&parser);
+    defer parser_core_mod.parserDeinit(&parser);
 
     for (data) |byte| {
-        switch (c.janet_parser_status(&parser)) {
-            c.JANET_PARSE_DEAD, c.JANET_PARSE_ERROR => return,
+        switch (parser_core_mod.parserStatus(&parser)) {
+            constants.JANET_PARSE_DEAD, constants.JANET_PARSE_ERROR => return,
             else => {},
         }
         _ = harness.raised(parser_core.consumeChecked, .{ &parser, byte });
@@ -107,7 +113,7 @@ fn parserBody(env: *c.JanetTable, data: []const u8) void {
         // Drain, so that a form that parses is also *built*. The C original
         // left them in the parser, which meant the value constructors were
         // never reached for this target at all.
-        while (c.janet_parser_has_more(&parser) != 0) _ = c.janet_parser_produce(&parser);
+        while (parser_core_mod.parserHasMore(&parser) != 0) _ = parser_core_mod.parserProduce(&parser);
     }
 
     _ = harness.raised(parser_core.eofChecked, .{&parser});
@@ -126,18 +132,18 @@ test "parser" {
 // ------------------------------------------------------------------ compile
 
 /// Parse untrusted bytes and compile every form they produce.
-fn compileBody(env: *c.JanetTable, data: []const u8) void {
-    var parser: c.JanetParser = undefined;
-    c.janet_parser_init(&parser);
-    defer c.janet_parser_deinit(&parser);
+fn compileBody(env: *types.JanetTable, data: []const u8) void {
+    var parser: types.JanetParser = undefined;
+    parser_core_mod.parserInit(&parser);
+    defer parser_core_mod.parserDeinit(&parser);
 
-    const where = c.janet_cstring("fuzz");
+    const where = strings.cstring("fuzz");
 
     for (data) |byte| {
-        if (c.janet_parser_status(&parser) == c.JANET_PARSE_ERROR) return;
+        if (parser_core_mod.parserStatus(&parser) == constants.JANET_PARSE_ERROR) return;
         _ = harness.raised(parser_core.consumeChecked, .{ &parser, byte });
-        while (c.janet_parser_has_more(&parser) != 0) {
-            const form = c.janet_parser_produce(&parser);
+        while (parser_core_mod.parserHasMore(&parser) != 0) {
+            const form = parser_core_mod.parserProduce(&parser);
             // The result carries its own error field for an ordinary compile
             // failure; the scope is for the refusals that are not ordinary.
             _ = harness.raised(
@@ -163,12 +169,11 @@ test "compile" {
 /// Parse, compile and *run* untrusted bytes.
 ///
 /// The deepest of the four, and the only one that reaches the interpreter.
-fn dobytesBody(env: *c.JanetTable, data: []const u8) void {
-    var out: c.Janet = c.janet_wrap_nil();
+fn dobytesBody(env: *types.JanetTable, data: []const u8) void {
+    var out: types.Janet = wrap.fromNil();
     _ = harness.raised(core_env.janet_dobytesImpl, .{
         env,
-        data.ptr,
-        @as(i32, @intCast(data.len)),
+        data,
         "<fuzz>",
         &out,
     });
@@ -192,10 +197,10 @@ test "dobytes" {
 /// and fibers from a byte stream, and `FOUND.md` already carries three defects
 /// found by reading it. A registry is looked up because the C original did —
 /// it is what lets a stream name an abstract type or a cfunction.
-fn unmarshalBody(env: *c.JanetTable, data: []const u8) void {
-    const registry = c.janet_env_lookup(env);
-    var next: [*c]const u8 = null;
-    _ = harness.raised(marsh.unmarshal, .{ data.ptr, data.len, 0, registry, &next });
+fn unmarshalBody(env: *types.JanetTable, data: []const u8) void {
+    const registry = marsh_mod.envLookup(env);
+    var next: [*]const u8 = undefined;
+    _ = harness.raised(marsh.unmarshal, .{ data, 0, registry, &next });
 }
 
 test "unmarshal" {

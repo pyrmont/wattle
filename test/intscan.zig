@@ -12,15 +12,15 @@
 //! argument and the `strlen` the C original needed is gone.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const c = @import("cabi");
+const scan = @import("subsystems").scan;
 
 fn signed(text: []const u8, out: *i64) bool {
-    return c.janet_scan_int64(text.ptr, @intCast(text.len), out) != 0;
+    return scan.scanInt64(text, out) != 0;
 }
 
 fn unsigned(text: []const u8, out: *u64) bool {
-    return c.janet_scan_uint64(text.ptr, @intCast(text.len), out) != 0;
+    return scan.scanUint64(text, out) != 0;
 }
 
 fn theSignedRange() void {

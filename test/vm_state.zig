@@ -47,14 +47,22 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
+const config = @import("config");
+const gc_alloc = @import("subsystems").gc_alloc;
+const functions = @import("subsystems").value.functions;
+const vm_state = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const fibers = @import("subsystems").value.fibers;
 
 const assert = std.debug.assert;
 
-fn vm() *c.JanetVM {
-    return &c.janet_vm;
+fn vm() *types.JanetVM {
+    return c.vm();
 }
 
 /// The per-thread half of the contract needs a second thread to say it with.
@@ -64,7 +72,7 @@ fn vm() *c.JanetVM {
 /// here to check. Windows is cross-compiled and never executed, so its path is
 /// left out rather than written blind, which is `fiber_core.zig`'s condition
 /// and its reason.
-const has_threads = c.JANET_VM_THREAD_LOCAL != 0 and builtin.os.tag != .windows;
+const has_threads = constants.JANET_VM_THREAD_LOCAL != 0 and builtin.os.tag != .windows;
 
 // ------------------------------------------------------------------ address
 
@@ -74,15 +82,15 @@ const has_threads = c.JANET_VM_THREAD_LOCAL != 0 and builtin.os.tag != .windows;
 /// circular: the left side is what the function computes and the right side is
 /// where the linker put the symbol `state.h` declares. Through Phase 10 it was
 /// what let Zig define the storage while every core C file went on writing
-/// `janet_vm.field`; what it pins now is that `@import("abi")`'s view of the
+/// `janet_vm.field`; what it pins now is that `@import("cabi")`'s view of the
 /// extern and the definition in `vm_state.zig` are one object rather than two.
 fn localVmIsJanetVm() void {
-    assert(c.janet_local_vm() == vm());
-    assert(c.janet_local_vm() == c.janet_local_vm());
+    assert(vm_state.localVm() == vm());
+    assert(vm_state.localVm() == vm_state.localVm());
 
     vm().stackn = 1234;
-    assert(c.janet_local_vm().*.stackn == 1234);
-    c.janet_local_vm().*.stackn = 4321;
+    assert(vm_state.localVm().*.stackn == 1234);
+    vm_state.localVm().*.stackn = 4321;
     assert(vm().stackn == 4321);
     vm().stackn = 0;
 }
@@ -90,18 +98,24 @@ fn localVmIsJanetVm() void {
 // --------------------------------------------------------------- allocation
 
 fn allocAndFree() void {
-    const a = c.janet_vm_alloc();
-    const b = c.janet_vm_alloc();
-    assert(a != null);
-    assert(b != null);
+    const a = vm_state.vmAlloc();
+    const b = vm_state.vmAlloc();
+    // `assert(a != null)` stood here until Phase 12 increment 5d and cannot
+    // be written now: `janet.h` declared `janet_vm_alloc` as `[*c]JanetVM`,
+    // so through the C ABI the result was "maybe null, maybe many" and the
+    // assertion was a real check. The definition returns `*c.JanetVM` and
+    // either succeeds or reaches `janet_zig_out_of_memory`, which does not
+    // return -- so the property is carried by the type and comparing with
+    // null is a compile error. `DESIGN.md` §3: the property stops being an
+    // agreement between two spellings and becomes a construction from one.
     assert(a != b);
     // A detached VM is a destination for `janet_vm_save` and nothing else, so
     // the only thing to check about a fresh one is that it can hold a save.
-    c.janet_vm_save(a);
-    c.janet_vm_save(b);
-    c.janet_vm_free(a);
-    c.janet_vm_free(b);
-    c.janet_vm_free(null);
+    vm_state.vmSave(a);
+    vm_state.vmSave(b);
+    vm_state.vmFree(a);
+    vm_state.vmFree(b);
+    vm_state.vmFree(null);
 }
 
 // ------------------------------------------------------------ save and load
@@ -111,35 +125,35 @@ fn allocAndFree() void {
 /// VM owns outright — a field reached through one of the VM's pointers would
 /// be shared by every snapshot rather than copied.
 fn saveLoadRoundTrip() void {
-    const first = c.janet_vm_alloc();
-    const second = c.janet_vm_alloc();
+    const first = vm_state.vmAlloc();
+    const second = vm_state.vmAlloc();
 
     vm().stackn = 11;
     vm().coerce_error = 1;
-    c.janet_vm_save(first);
+    vm_state.vmSave(first);
 
     vm().stackn = 22;
     vm().coerce_error = 0;
-    c.janet_vm_save(second);
+    vm_state.vmSave(second);
 
     vm().stackn = 33;
     vm().coerce_error = 1;
 
-    c.janet_vm_load(first);
+    vm_state.vmLoad(first);
     assert(vm().stackn == 11);
     assert(vm().coerce_error == 1);
 
-    c.janet_vm_load(second);
+    vm_state.vmLoad(second);
     assert(vm().stackn == 22);
     assert(vm().coerce_error == 0);
 
     // A load is a plain copy: loading the same snapshot twice is idempotent,
     // and the snapshot is not consumed.
-    c.janet_vm_load(second);
+    vm_state.vmLoad(second);
     assert(vm().stackn == 22);
 
-    c.janet_vm_free(first);
-    c.janet_vm_free(second);
+    vm_state.vmFree(first);
+    vm_state.vmFree(second);
     vm().stackn = 0;
     vm().coerce_error = 0;
 }
@@ -155,7 +169,7 @@ fn saveLoadRoundTrip() void {
 /// branch here, and a field that is renamed fails to compile rather than
 /// silently dropping out of the sweep.
 fn saveSpansTheStructure() void {
-    const snapshot = c.janet_vm_alloc();
+    const snapshot = vm_state.vmAlloc();
 
     vm().user = @ptrFromInt(0x1111);
     vm().registry_count = 0x2222;
@@ -166,53 +180,53 @@ fn saveSpansTheStructure() void {
     // alignment. The value is a witness rather than an address, so any
     // distinguishable one does.
     vm().traversal_base = @ptrFromInt(0x5550);
-    if (comptime @hasField(c.JanetVM, "strerror_buf")) {
+    if (comptime builtin.os.tag != .windows) {
         vm().strerror_buf[0] = 'z';
         vm().strerror_buf[vm().strerror_buf.len - 1] = 'q';
     }
-    if (comptime @hasField(c.JanetVM, "tq_capacity")) {
+    if (comptime config.ev) {
         vm().tq_capacity = 0x6666;
         vm().spawn.capacity = 0x7777;
         vm().active_tasks.capacity = 0x8888;
     }
     // Whichever of the four event-loop backends this build has, its last
     // field is the furthest into the structure a save has to reach.
-    if (comptime @hasField(c.JanetVM, "connect_ex_loaded")) {
+    if (comptime config.ev and builtin.os.tag == .windows) {
         vm().connect_ex_loaded = 0x9999;
-    } else if (comptime @hasField(c.JanetVM, "timer_enabled")) {
+    } else if (comptime config.ev and (config.ev_epoll or config.ev_kqueue)) {
         vm().timer_enabled = 0x9999;
-    } else if (comptime @hasField(c.JanetVM, "stream_capacity")) {
+    } else if (comptime config.ev and config.ev_poll) {
         vm().stream_capacity = 0x9999;
     }
 
-    c.janet_vm_save(snapshot);
-    vm().* = std.mem.zeroes(c.JanetVM);
-    c.janet_vm_load(snapshot);
+    vm_state.vmSave(snapshot);
+    vm().* = std.mem.zeroes(types.JanetVM);
+    vm_state.vmLoad(snapshot);
 
     assert(@intFromPtr(vm().user) == 0x1111);
     assert(vm().registry_count == 0x2222);
     assert(vm().root_capacity == 0x3333);
     assert(vm().sandbox_flags == 0x4444);
     assert(@intFromPtr(vm().traversal_base) == 0x5550);
-    if (comptime @hasField(c.JanetVM, "strerror_buf")) {
+    if (comptime builtin.os.tag != .windows) {
         assert(vm().strerror_buf[0] == 'z');
         assert(vm().strerror_buf[vm().strerror_buf.len - 1] == 'q');
     }
-    if (comptime @hasField(c.JanetVM, "tq_capacity")) {
+    if (comptime config.ev) {
         assert(vm().tq_capacity == 0x6666);
         assert(vm().spawn.capacity == 0x7777);
         assert(vm().active_tasks.capacity == 0x8888);
     }
-    if (comptime @hasField(c.JanetVM, "connect_ex_loaded")) {
+    if (comptime config.ev and builtin.os.tag == .windows) {
         assert(vm().connect_ex_loaded == 0x9999);
-    } else if (comptime @hasField(c.JanetVM, "timer_enabled")) {
+    } else if (comptime config.ev and (config.ev_epoll or config.ev_kqueue)) {
         assert(vm().timer_enabled == 0x9999);
-    } else if (comptime @hasField(c.JanetVM, "stream_capacity")) {
+    } else if (comptime config.ev and config.ev_poll) {
         assert(vm().stream_capacity == 0x9999);
     }
 
-    c.janet_vm_free(snapshot);
-    vm().* = std.mem.zeroes(c.JanetVM);
+    vm_state.vmFree(snapshot);
+    vm().* = std.mem.zeroes(types.JanetVM);
 }
 
 // ------------------------------------------------------------- interruption
@@ -221,43 +235,43 @@ fn saveSpansTheStructure() void {
 /// are balanced by the same number of handled calls. A null argument means the
 /// calling thread's own VM, which is the form `os/sigaction`'s handler uses.
 fn interruptCounter() void {
-    const self = c.janet_local_vm();
+    const self = vm_state.localVm();
     const before = self.*.auto_suspend;
 
-    c.janet_interpreter_interrupt(null);
+    vm_state.interpreterInterrupt(null);
     assert(self.*.auto_suspend == before + 1);
-    c.janet_interpreter_interrupt(self);
+    vm_state.interpreterInterrupt(self);
     assert(self.*.auto_suspend == before + 2);
-    c.janet_interpreter_interrupt_handled(null);
+    vm_state.interpreterInterruptHandled(null);
     assert(self.*.auto_suspend == before + 1);
-    c.janet_interpreter_interrupt_handled(self);
+    vm_state.interpreterInterruptHandled(self);
     assert(self.*.auto_suspend == before);
 
     // An explicit VM pointer must reach that VM and no other.
-    const other = c.janet_vm_alloc();
-    c.janet_vm_save(other);
+    const other = vm_state.vmAlloc();
+    vm_state.vmSave(other);
     other.*.auto_suspend = 0;
-    c.janet_interpreter_interrupt(other);
+    vm_state.interpreterInterrupt(other);
     assert(other.*.auto_suspend == 1);
     assert(self.*.auto_suspend == before);
-    c.janet_interpreter_interrupt_handled(other);
+    vm_state.interpreterInterruptHandled(other);
     assert(other.*.auto_suspend == 0);
-    c.janet_vm_free(other);
+    vm_state.vmFree(other);
 }
 
 // ------------------------------------------------------------------ threads
 
-var main_vm: *c.JanetVM = undefined;
-var child_vm: ?*c.JanetVM = null;
+var main_vm: *types.JanetVM = undefined;
+var child_vm: ?*types.JanetVM = null;
 var child_saw_zero = false;
 var child_local_matches = false;
 
 fn child() void {
-    const bytes: [*]const u8 = @ptrCast(&c.janet_vm);
-    child_saw_zero = std.mem.allEqual(u8, bytes[0..@sizeOf(c.JanetVM)], 0);
-    child_vm = c.janet_local_vm();
-    child_local_matches = child_vm == &c.janet_vm;
-    c.janet_vm.stackn = 99;
+    const bytes: [*]const u8 = @ptrCast(c.vm());
+    child_saw_zero = std.mem.allEqual(u8, bytes[0..@sizeOf(types.JanetVM)], 0);
+    child_vm = vm_state.localVm();
+    child_local_matches = child_vm == c.vm();
+    c.vm().stackn = 99;
 }
 
 /// Each thread gets its own VM, zero-initialised, and writing one leaves the
@@ -273,7 +287,7 @@ fn child() void {
 fn threadLocalStorage() !void {
     if (!has_threads) return;
 
-    main_vm = c.janet_local_vm();
+    main_vm = vm_state.localVm();
     vm().stackn = 7;
     const thread = try std.Thread.spawn(.{}, child, .{});
     thread.join();
@@ -282,7 +296,7 @@ fn threadLocalStorage() !void {
     assert(child_saw_zero);
     assert(child_vm != main_vm);
     assert(vm().stackn == 7);
-    assert(c.janet_local_vm() == main_vm);
+    assert(vm_state.localVm() == main_vm);
     vm().stackn = 0;
 }
 
@@ -305,33 +319,32 @@ fn dynamicBindings() void {
     vm().top_dyns = null;
 
     // A read finds nothing and creates nothing.
-    assert(harness.isType(c.janet_dyn("nope"), c.JANET_NIL));
+    assert(harness.isType(vm_state.dyn("nope"), constants.JANET_NIL));
     assert(vm().top_dyns == null);
 
-    c.janet_setdyn("x", harness.wrapInteger(7));
+    vm_state.setdyn("x", harness.wrapInteger(7));
     assert(vm().top_dyns != null);
-    assert(harness.equals(c.janet_dyn("x"), harness.wrapInteger(7)));
-    assert(harness.isType(c.janet_dyn("y"), c.JANET_NIL));
+    assert(harness.equals(vm_state.dyn("x"), harness.wrapInteger(7)));
+    assert(harness.isType(vm_state.dyn("y"), constants.JANET_NIL));
 
     // With a fiber, the same names go to the fiber's env instead, and the VM's
     // table is neither read nor written.
-    const fiber = c.janet_fiber(c.janet_thunk_delay(c.janet_wrap_nil()), 8, 0, null);
-    assert(fiber != null);
-    c.janet_gcroot(c.janet_wrap_fiber(fiber));
+    const fiber = fibers.new(functions.thunkDelay(wrap.fromNil()), 8, 0, null).?;
+    gc_alloc.gcroot(wrap.fromFiber(fiber));
     assert(fiber.*.env == null);
     vm().fiber = fiber;
 
-    assert(harness.isType(c.janet_dyn("x"), c.JANET_NIL));
+    assert(harness.isType(vm_state.dyn("x"), constants.JANET_NIL));
     assert(fiber.*.env == null);
 
-    c.janet_setdyn("x", harness.wrapInteger(9));
+    vm_state.setdyn("x", harness.wrapInteger(9));
     assert(fiber.*.env != null);
-    assert(harness.equals(c.janet_dyn("x"), harness.wrapInteger(9)));
+    assert(harness.equals(vm_state.dyn("x"), harness.wrapInteger(9)));
 
     vm().fiber = null;
-    assert(harness.equals(c.janet_dyn("x"), harness.wrapInteger(7)));
+    assert(harness.equals(vm_state.dyn("x"), harness.wrapInteger(7)));
 
-    _ = c.janet_gcunroot(c.janet_wrap_fiber(fiber));
+    _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
     vm().fiber = saved_fiber;
     vm().top_dyns = saved_dyns;
 }
@@ -347,9 +360,9 @@ pub fn run() void {
     threadLocalStorage() catch @panic("vm_state: could not spawn a thread");
 
     // Last, and the only case here that needs a live runtime.
-    _ = c.janet_init();
+    harness.init();
     dynamicBindings();
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 
     std.debug.print("vm state contract ok\n", .{});
 }

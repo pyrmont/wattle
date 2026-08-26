@@ -44,7 +44,7 @@
 const std = @import("std");
 
 const subsystems = @import("subsystems");
-const flags = subsystems.filewatch_flags;
+const flags = subsystems.filewatch;
 const Platform = flags.Platform;
 
 const assert = std.debug.assert;
@@ -54,22 +54,22 @@ const assert = std.debug.assert;
 // ==========================================================================
 
 const linux_names = [_][]const u8{
-    "access",     "all",         "attrib",     "close-nowrite",
-    "close-write", "create",     "delete",     "delete-self",
-    "ignored",    "modify",      "move-self",  "moved-from",
-    "moved-to",   "open",        "q-overflow", "unmount",
+    "access",      "all",    "attrib",     "close-nowrite",
+    "close-write", "create", "delete",     "delete-self",
+    "ignored",     "modify", "move-self",  "moved-from",
+    "moved-to",    "open",   "q-overflow", "unmount",
 };
 
 const windows_names = [_][]const u8{
-    "all",        "attributes", "creation",   "dir-name",
-    "file-name",  "last-access", "last-write", "recursive",
-    "security",   "size",
+    "all",       "attributes",  "creation",   "dir-name",
+    "file-name", "last-access", "last-write", "recursive",
+    "security",  "size",
 };
 
 const kqueue_names = [_][]const u8{
-    "all",     "attrib", "close",  "close-write", "delete",
-    "extend",  "funlock", "link",  "open",        "read",
-    "rename",  "revoke", "truncate", "write",
+    "all",    "attrib",  "close",    "close-write", "delete",
+    "extend", "funlock", "link",     "open",        "read",
+    "rename", "revoke",  "truncate", "write",
 };
 
 const action_names = [_][]const u8{

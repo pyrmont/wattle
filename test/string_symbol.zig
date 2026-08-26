@@ -49,32 +49,36 @@
 //! so cannot be arranged while a core environment is loaded.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
+const gc_alloc = @import("subsystems").gc_alloc;
+const strings = @import("subsystems").value.strings;
+const symbols = @import("subsystems").value.symbols;
+const tuples = @import("subsystems").value.tuples;
+const utils = @import("subsystems").utils;
+const gc_mark = @import("subsystems").gc_mark;
+const core_env = @import("subsystems").env;
+const registry = @import("subsystems").registry;
+const kind = @import("subsystems").value.kind;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
 
 const heap = harness.heap;
 const internal = harness.internal;
 
 // --------------------------------------------------------------- helpers
 
-fn stringHead(s: [*c]const u8) *c.JanetStringHead {
-    return c.janet_string_head(s);
+fn stringLength(s: [*]const u8) i32 {
+    return types.stringHead(s).length;
 }
 
-fn tupleHead(t: [*c]const c.Janet) *c.JanetTupleHead {
-    return c.janet_tuple_head(t);
+fn stringHash(s: [*]const u8) i32 {
+    return types.stringHead(s).hash;
 }
 
-fn stringLength(s: [*c]const u8) i32 {
-    return stringHead(s).length;
-}
-
-fn stringHash(s: [*c]const u8) i32 {
-    return stringHead(s).hash;
-}
-
-fn bytesOf(s: [*c]const u8) []const u8 {
+fn bytesOf(s: [*]const u8) []const u8 {
     return s[0..@intCast(stringLength(s))];
 }
 
@@ -85,10 +89,10 @@ fn calchash(bytes: []const u8) i32 {
 /// Is `symbol` in the cache? Walks the table rather than calling the finder,
 /// so that a case can distinguish "interned" from "would be found by the same
 /// lookup the implementation uses".
-fn inCache(symbol: [*c]const u8) bool {
+fn inCache(symbol: [*:0]const u8) bool {
     var index: u32 = 0;
-    while (index < c.janet_vm.cache_capacity) : (index += 1) {
-        if (c.janet_vm.cache[index] == symbol) return true;
+    while (index < c.vm().cache_capacity) : (index += 1) {
+        if (c.vm().cache.?[index] == symbol) return true;
     }
     return false;
 }
@@ -106,16 +110,16 @@ fn inCache(symbol: [*c]const u8) bool {
 fn dirtyFreeList(size: usize) bool {
     var junk: [8]?*anyopaque = undefined;
     for (&junk) |*slot| {
-        slot.* = c.janet_malloc(size);
+        slot.* = utils.malloc(size);
         std.debug.assert(slot.* != null);
         @memset(@as([*]u8, @ptrCast(slot.*))[0..size], 0xFF);
     }
-    for (junk) |slot| c.janet_free(slot);
+    for (junk) |slot| utils.free(slot);
 
-    const check: [*]u8 = @ptrCast(c.janet_malloc(size).?);
+    const check: [*]u8 = @ptrCast(utils.malloc(size).?);
     const dirty = check[size - 1] != 0;
     @memset(check[0..size], 0xFF);
-    c.janet_free(check);
+    utils.free(check);
     return dirty;
 }
 
@@ -124,46 +128,46 @@ fn dirtyFreeList(size: usize) bool {
 /// large enough that this allocator does not zero it -- see above.
 fn constructorsWriteTheTerminator() void {
     const n: i32 = 8192;
-    const block = @sizeOf(c.JanetStringHead) + @as(usize, n) + 1;
+    const block = @sizeOf(types.JanetStringHead) + @as(usize, n) + 1;
     if (!dirtyFreeList(block)) return;
 
-    const begun = c.janet_string_begin(n);
+    const begun = strings.begin(n);
     std.debug.assert(begun[@intCast(n)] == 0);
 
-    const source: [*]u8 = @ptrCast(c.janet_malloc(@intCast(n)).?);
+    const source: [*]u8 = @ptrCast(utils.malloc(@intCast(n)).?);
     @memset(source[0..@intCast(n)], 'x');
     _ = dirtyFreeList(block);
-    const copied = c.janet_string(source, n);
+    const copied = strings.new(source[0..@intCast(n)]);
     std.debug.assert(copied[@intCast(n)] == 0);
     std.debug.assert(std.mem.eql(u8, copied[0..@intCast(n)], source[0..@intCast(n)]));
-    c.janet_free(source);
+    utils.free(source);
 }
 
 /// A string built in two steps: the length is set by `begin`, the terminator
 /// is written by `begin`, and the hash is written by `end` and nowhere else.
 fn stringBeginAndEnd() void {
-    const s = c.janet_string_begin(5);
+    const s = strings.begin(5);
     std.debug.assert(stringLength(s) == 5);
     std.debug.assert(s[5] == 0);
-    std.debug.assert(heap.memoryType(stringHead(s)) == c.JANET_MEMORY_STRING);
-    std.debug.assert(heap.onList(c.janet_vm.blocks, stringHead(s)));
+    std.debug.assert(heap.memoryType(types.stringHead(s)) == constants.JANET_MEMORY_STRING);
+    std.debug.assert(heap.onList(c.vm().blocks, types.stringHead(s)));
 
     @memcpy(s[0..5], "hello");
-    const done = c.janet_string_end(s);
+    const done = strings.end(s);
     std.debug.assert(done == s);
     std.debug.assert(stringLength(done) == 5);
     std.debug.assert(stringHash(done) == calchash("hello"));
 
     // A zero-length string is legal, terminated, and has the empty hash.
-    const e = c.janet_string_begin(0);
+    const e = strings.begin(0);
     std.debug.assert(stringLength(e) == 0);
     std.debug.assert(e[0] == 0);
-    std.debug.assert(stringHash(c.janet_string_end(e)) == calchash(""));
+    std.debug.assert(stringHash(strings.end(e)) == calchash(""));
 }
 
 /// The one-step constructor copies and hashes immediately.
 fn stringCopiesAndHashes() void {
-    const s = c.janet_string("world", 5);
+    const s = strings.new("world");
     std.debug.assert(stringLength(s) == 5);
     std.debug.assert(std.mem.eql(u8, bytesOf(s), "world"));
     std.debug.assert(s[5] == 0);
@@ -171,19 +175,19 @@ fn stringCopiesAndHashes() void {
 
     // The source is copied, so a caller's buffer may change afterwards.
     var source = [3]u8{ 'a', 'b', 'c' };
-    const copy = c.janet_string(&source, 3);
+    const copy = strings.new(source[0..@intCast(3)]);
     source[0] = 'z';
     std.debug.assert(std.mem.eql(u8, bytesOf(copy), "abc"));
 
     // An interior zero is content, not a terminator: the length comes from the
     // head and the bytes past the zero are part of the string.
-    const nul = c.janet_string("a\x00b", 3);
+    const nul = strings.new("a\x00b");
     std.debug.assert(stringLength(nul) == 3);
     std.debug.assert(std.mem.eql(u8, bytesOf(nul), "a\x00b"));
     std.debug.assert(nul[3] == 0);
 
     // `janet_cstring` takes its length from the bytes instead.
-    const cs = c.janet_cstring("a\x00b");
+    const cs = strings.cstring("a\x00b");
     std.debug.assert(stringLength(cs) == 1);
     std.debug.assert(cs[0] == 'a' and cs[1] == 0);
 }
@@ -192,49 +196,49 @@ fn stringCopiesAndHashes() void {
 /// `memcmp` may return any value of the right sign, and callers compare
 /// against 1 and -1.
 fn stringCompareIsThreeValued() void {
-    const a = c.janet_cstring("abc");
-    const b = c.janet_cstring("abd");
-    const prefix = c.janet_cstring("ab");
-    const same = c.janet_cstring("abc");
+    const a = strings.cstring("abc");
+    const b = strings.cstring("abd");
+    const prefix = strings.cstring("ab");
+    const same = strings.cstring("abc");
 
-    std.debug.assert(c.janet_string_compare(a, b) == -1);
-    std.debug.assert(c.janet_string_compare(b, a) == 1);
-    std.debug.assert(c.janet_string_compare(a, same) == 0);
-    std.debug.assert(c.janet_string_compare(a, a) == 0);
+    std.debug.assert(strings.compare(a, b) == -1);
+    std.debug.assert(strings.compare(b, a) == 1);
+    std.debug.assert(strings.compare(a, same) == 0);
+    std.debug.assert(strings.compare(a, a) == 0);
 
     // A prefix is less than what extends it, whichever side it is on.
-    std.debug.assert(c.janet_string_compare(prefix, a) == -1);
-    std.debug.assert(c.janet_string_compare(a, prefix) == 1);
+    std.debug.assert(strings.compare(prefix, a) == -1);
+    std.debug.assert(strings.compare(a, prefix) == 1);
 
     // A large byte difference still normalises to exactly one.
-    const low = c.janet_string("\x01", 1);
-    const high = c.janet_string("\xFF", 1);
-    std.debug.assert(c.janet_string_compare(low, high) == -1);
-    std.debug.assert(c.janet_string_compare(high, low) == 1);
+    const low = strings.new("\x01");
+    const high = strings.new("\xFF");
+    std.debug.assert(strings.compare(low, high) == -1);
+    std.debug.assert(strings.compare(high, low) == 1);
 
     // The empty string is least, and equal to itself.
-    const empty = c.janet_cstring("");
-    std.debug.assert(c.janet_string_compare(empty, a) == -1);
-    std.debug.assert(c.janet_string_compare(empty, empty) == 0);
+    const empty = strings.cstring("");
+    std.debug.assert(strings.compare(empty, a) == -1);
+    std.debug.assert(strings.compare(empty, empty) == 0);
 }
 
 /// Equality rejects on the hash or the length before it touches the bytes, and
 /// short-circuits on identity. Both are what make the symbol cache cheap.
 fn stringEquality() void {
-    const a = c.janet_cstring("abc");
-    const b = c.janet_cstring("abc");
-    const d = c.janet_cstring("abd");
+    const a = strings.cstring("abc");
+    const b = strings.cstring("abc");
+    const d = strings.cstring("abd");
 
-    std.debug.assert(c.janet_string_equal(a, b) != 0);
-    std.debug.assert(c.janet_string_equal(a, a) != 0);
-    std.debug.assert(c.janet_string_equal(a, d) == 0);
+    std.debug.assert(strings.equal(a, b) != 0);
+    std.debug.assert(strings.equal(a, a) != 0);
+    std.debug.assert(strings.equal(a, d) == 0);
 
     // Same bytes, right hash and length: equal.
-    std.debug.assert(c.janet_string_equalconst(a, "abc", 3, calchash("abc")) != 0);
+    std.debug.assert(strings.equalconst(a, "abc", calchash("abc")) != 0);
 
     // A wrong hash rejects even when the bytes are identical -- the hash is
     // trusted, not recomputed, which is the whole point of this entry point.
-    std.debug.assert(c.janet_string_equalconst(a, "abc", 3, calchash("zzz")) == 0);
+    std.debug.assert(strings.equalconst(a, "abc", calchash("zzz")) == 0);
 
     // The length and byte checks are harder to reach honestly, because the
     // hash mixes the length in and so rejects almost every mismatched argument
@@ -242,17 +246,17 @@ fn stringEquality() void {
     // which is what these two do: pass the hash `lhs` actually has, and vary
     // only the thing being tested. Without this, the length comparison and the
     // `memcmp` are both dead code that no case distinguishes.
-    std.debug.assert(c.janet_string_equalconst(a, "abc", 2, stringHash(a)) == 0);
-    std.debug.assert(c.janet_string_equalconst(a, "abd", 3, stringHash(a)) == 0);
+    std.debug.assert(strings.equalconst(a, "abc"[0..2], stringHash(a)) == 0);
+    std.debug.assert(strings.equalconst(a, "abd", stringHash(a)) == 0);
 
     // And the same arguments with nothing varied still match, so the two above
     // are rejections rather than an entry point that rejects everything.
-    std.debug.assert(c.janet_string_equalconst(a, "abc", 3, stringHash(a)) != 0);
+    std.debug.assert(strings.equalconst(a, "abc", stringHash(a)) != 0);
 
     // Interior zeros are compared, not stopped at.
-    const n1 = c.janet_string("a\x00b", 3);
-    const n2 = c.janet_string("a\x00c", 3);
-    std.debug.assert(c.janet_string_equal(n1, n2) == 0);
+    const n1 = strings.new("a\x00b");
+    const n2 = strings.new("a\x00c");
+    std.debug.assert(strings.equal(n1, n2) == 0);
 }
 
 // ---------------------------------------------------------------- symbol
@@ -260,83 +264,83 @@ fn stringEquality() void {
 /// Interning is pointer identity, which is stronger than equality and is what
 /// the rest of the runtime relies on.
 fn symbolInterns() void {
-    const before = c.janet_vm.cache_count;
+    const before = c.vm().cache_count;
 
-    const s1 = c.janet_csymbol("interned-test-symbol");
-    std.debug.assert(c.janet_vm.cache_count == before + 1);
-    std.debug.assert(heap.memoryType(stringHead(s1)) == c.JANET_MEMORY_SYMBOL);
-    std.debug.assert(heap.onList(c.janet_vm.blocks, stringHead(s1)));
+    const s1 = symbols.csymbol("interned-test-symbol");
+    std.debug.assert(c.vm().cache_count == before + 1);
+    std.debug.assert(heap.memoryType(types.stringHead(s1)) == constants.JANET_MEMORY_SYMBOL);
+    std.debug.assert(heap.onList(c.vm().blocks, types.stringHead(s1)));
     std.debug.assert(inCache(s1));
 
     // The same name returns the same address and allocates nothing.
-    const s2 = c.janet_csymbol("interned-test-symbol");
+    const s2 = symbols.csymbol("interned-test-symbol");
     std.debug.assert(s2 == s1);
-    std.debug.assert(c.janet_vm.cache_count == before + 1);
+    std.debug.assert(c.vm().cache_count == before + 1);
 
     // A different name is a different address.
-    const s3 = c.janet_csymbol("interned-test-symbol-2");
+    const s3 = symbols.csymbol("interned-test-symbol-2");
     std.debug.assert(s3 != s1);
-    std.debug.assert(c.janet_vm.cache_count == before + 2);
+    std.debug.assert(c.vm().cache_count == before + 2);
 
     // Interning is by length as well as by bytes, so an interior zero
     // distinguishes two symbols a C string could not tell apart.
-    const z1 = c.janet_symbol("zz\x00a", 4);
-    const z2 = c.janet_symbol("zz\x00b", 4);
+    const z1 = symbols.new("zz\x00a");
+    const z2 = symbols.new("zz\x00b");
     std.debug.assert(z1 != z2);
-    std.debug.assert(c.janet_symbol("zz\x00a", 4) == z1);
+    std.debug.assert(symbols.new("zz\x00a") == z1);
 
     // A symbol and a string with the same bytes are different objects with
     // different memory types, and still compare equal as byte strings.
-    const str = c.janet_cstring("interned-test-symbol");
+    const str = strings.cstring("interned-test-symbol");
     std.debug.assert(str != s1);
-    std.debug.assert(heap.memoryType(stringHead(str)) == c.JANET_MEMORY_STRING);
-    std.debug.assert(c.janet_string_equal(str, s1) != 0);
+    std.debug.assert(heap.memoryType(types.stringHead(str)) == constants.JANET_MEMORY_STRING);
+    std.debug.assert(strings.equal(str, s1) != 0);
 }
 
 /// Removing a symbol leaves a tombstone: the count falls, the deleted count
 /// rises, and the name is available again -- at a new address.
 fn symbolDeinitLeavesATombstone() void {
-    var count = c.janet_vm.cache_count;
-    var deleted = c.janet_vm.cache_deleted;
+    var count = c.vm().cache_count;
+    var deleted = c.vm().cache_deleted;
 
-    const s = c.janet_csymbol("tombstone-test-symbol");
-    std.debug.assert(c.janet_vm.cache_count == count + 1);
+    const s = symbols.csymbol("tombstone-test-symbol");
+    std.debug.assert(c.vm().cache_count == count + 1);
     std.debug.assert(inCache(s));
 
     internal.janet_symbol_deinit(s);
-    std.debug.assert(c.janet_vm.cache_count == count);
-    std.debug.assert(c.janet_vm.cache_deleted == deleted + 1);
+    std.debug.assert(c.vm().cache_count == count);
+    std.debug.assert(c.vm().cache_deleted == deleted + 1);
     std.debug.assert(!inCache(s));
 
     // The name interns again, to a different block.
-    const again = c.janet_csymbol("tombstone-test-symbol");
+    const again = symbols.csymbol("tombstone-test-symbol");
     std.debug.assert(again != s);
-    std.debug.assert(c.janet_vm.cache_count == count + 1);
+    std.debug.assert(c.vm().cache_count == count + 1);
     std.debug.assert(inCache(again));
 
     // Removing something that was never there changes nothing.
-    count = c.janet_vm.cache_count;
-    deleted = c.janet_vm.cache_deleted;
-    const loose = c.janet_string("never-interned", 14);
+    count = c.vm().cache_count;
+    deleted = c.vm().cache_deleted;
+    const loose = strings.new("never-interned");
     internal.janet_symbol_deinit(loose);
-    std.debug.assert(c.janet_vm.cache_count == count);
-    std.debug.assert(c.janet_vm.cache_deleted == deleted);
+    std.debug.assert(c.vm().cache_count == count);
+    std.debug.assert(c.vm().cache_deleted == deleted);
 }
 
 /// Where in the table is `symbol`, and where would a name ideally go? Together
 /// these make the probe sequence observable, which is the only way to see what
 /// a lookup does to the table on its way past a tombstone.
-fn cacheIndexOf(symbol: [*c]const u8) ?u32 {
+fn cacheIndexOf(symbol: [*:0]const u8) ?u32 {
     var index: u32 = 0;
-    while (index < c.janet_vm.cache_capacity) : (index += 1) {
-        if (c.janet_vm.cache[index] == symbol) return index;
+    while (index < c.vm().cache_capacity) : (index += 1) {
+        if (c.vm().cache.?[index] == symbol) return index;
     }
     return null;
 }
 
 fn idealIndex(name: []const u8) u32 {
     const hash: u32 = @bitCast(calchash(name));
-    return hash & (c.janet_vm.cache_capacity - 1);
+    return hash & (c.vm().cache_capacity - 1);
 }
 
 /// A successful lookup is not a pure read: if the key was found *after* a
@@ -369,12 +373,12 @@ fn lookupReclaimsATombstone() void {
     }
     std.debug.assert(found);
 
-    const capacity = c.janet_vm.cache_capacity;
-    const a = c.janet_csymbol(first.ptr);
-    const b = c.janet_csymbol(second.ptr);
-    c.janet_gcroot(c.janet_wrap_symbol(a));
-    c.janet_gcroot(c.janet_wrap_symbol(b));
-    std.debug.assert(c.janet_vm.cache_capacity == capacity);
+    const capacity = c.vm().cache_capacity;
+    const a = symbols.csymbol(first.ptr);
+    const b = symbols.csymbol(second.ptr);
+    gc_alloc.gcroot(wrap.fromSymbol(a));
+    gc_alloc.gcroot(wrap.fromSymbol(b));
+    std.debug.assert(c.vm().cache_capacity == capacity);
 
     const pos_a = cacheIndexOf(a).?;
     const pos_b = cacheIndexOf(b).?;
@@ -384,51 +388,51 @@ fn lookupReclaimsATombstone() void {
     // Delete the first, leaving a tombstone directly in the second's path.
     internal.janet_symbol_deinit(a);
     std.debug.assert(cacheIndexOf(a) == null);
-    std.debug.assert(c.janet_vm.cache[pos_a] != null);
+    std.debug.assert(c.vm().cache.?[pos_a] != null);
 
     // Looking the second one up moves it into that slot. Its address does not
     // change -- interning is still identity -- only its position does.
-    std.debug.assert(c.janet_csymbol(second.ptr) == b);
+    std.debug.assert(symbols.csymbol(second.ptr) == b);
     std.debug.assert(cacheIndexOf(b).? == pos_a);
-    std.debug.assert(c.janet_vm.cache[pos_b] != null);
-    std.debug.assert(c.janet_vm.cache[pos_b] != b);
-    std.debug.assert(c.janet_vm.cache_capacity == capacity);
+    std.debug.assert(c.vm().cache.?[pos_b] != null);
+    std.debug.assert(c.vm().cache.?[pos_b] != b);
+    std.debug.assert(c.vm().cache_capacity == capacity);
 
-    _ = c.janet_gcunroot(c.janet_wrap_symbol(a));
-    _ = c.janet_gcunroot(c.janet_wrap_symbol(b));
+    _ = gc_alloc.gcunroot(wrap.fromSymbol(a));
+    _ = gc_alloc.gcunroot(wrap.fromSymbol(b));
 }
 
 /// Growing past the load factor rehashes: the capacity rises, every tombstone
 /// is dropped, and every live symbol is still found at its original address.
 fn cacheResizesAndKeepsIdentity() void {
     var name: [40]u8 = undefined;
-    var kept: [400][*c]const u8 = undefined;
+    var kept: [400][*:0]const u8 = undefined;
 
     // Keep them alive across the resize by rooting them.
     for (&kept, 0..) |*slot, i| {
         const text = std.fmt.bufPrintZ(&name, "resize-probe-{d}", .{i}) catch unreachable;
-        slot.* = c.janet_csymbol(text.ptr);
-        c.janet_gcroot(c.janet_wrap_symbol(slot.*));
+        slot.* = symbols.csymbol(text.ptr);
+        gc_alloc.gcroot(wrap.fromSymbol(slot.*));
     }
 
     // Delete half, which raises the tombstone count without lowering capacity.
     var i: usize = 0;
     while (i < 400) : (i += 2) internal.janet_symbol_deinit(kept[i]);
-    std.debug.assert(c.janet_vm.cache_deleted >= 200);
+    std.debug.assert(c.vm().cache_deleted >= 200);
 
     // Force enough puts to cross the load factor and rehash.
-    const capacity_before = c.janet_vm.cache_capacity;
+    const capacity_before = c.vm().cache_capacity;
     for (0..1200) |n| {
         const text = std.fmt.bufPrintZ(&name, "resize-filler-{d}", .{n}) catch unreachable;
-        c.janet_gcroot(c.janet_wrap_symbol(c.janet_csymbol(text.ptr)));
+        gc_alloc.gcroot(wrap.fromSymbol(symbols.csymbol(text.ptr)));
     }
-    std.debug.assert(c.janet_vm.cache_capacity > capacity_before);
+    std.debug.assert(c.vm().cache_capacity > capacity_before);
 
     // Every survivor is still interned, at the address it always had.
     i = 1;
     while (i < 400) : (i += 2) {
         const text = std.fmt.bufPrintZ(&name, "resize-probe-{d}", .{i}) catch unreachable;
-        std.debug.assert(c.janet_csymbol(text.ptr) == kept[i]);
+        std.debug.assert(symbols.csymbol(text.ptr) == kept[i]);
         std.debug.assert(inCache(kept[i]));
     }
 
@@ -436,10 +440,10 @@ fn cacheResizesAndKeepsIdentity() void {
     i = 0;
     while (i < 400) : (i += 2) {
         const text = std.fmt.bufPrintZ(&name, "resize-probe-{d}", .{i}) catch unreachable;
-        std.debug.assert(c.janet_csymbol(text.ptr) != kept[i]);
+        std.debug.assert(symbols.csymbol(text.ptr) != kept[i]);
     }
 
-    for (kept) |symbol| _ = c.janet_gcunroot(c.janet_wrap_symbol(symbol));
+    for (kept) |symbol| _ = gc_alloc.gcunroot(wrap.fromSymbol(symbol));
 }
 
 /// Tombstones count toward the load factor, and that is what keeps a table
@@ -455,13 +459,13 @@ fn tombstonesForceARehash() void {
 
     for (0..200000) |i| {
         const text = std.fmt.bufPrintZ(&name, "churn-symbol-{d}", .{i}) catch unreachable;
-        const s = c.janet_csymbol(text.ptr);
+        const s = symbols.csymbol(text.ptr);
 
-        if (c.janet_vm.cache_deleted > high_water) high_water = c.janet_vm.cache_deleted;
+        if (c.vm().cache_deleted > high_water) high_water = c.vm().cache_deleted;
         // The invariant a live count alone would not maintain.
-        std.debug.assert(c.janet_vm.cache_deleted < c.janet_vm.cache_capacity);
+        std.debug.assert(c.vm().cache_deleted < c.vm().cache_capacity);
 
-        if (c.janet_vm.cache_deleted == 0 and high_water > 8) {
+        if (c.vm().cache_deleted == 0 and high_water > 8) {
             rehashed = true;
             internal.janet_symbol_deinit(s);
             break;
@@ -473,27 +477,27 @@ fn tombstonesForceARehash() void {
 
 /// The length of a generated name, which is the odometer minus its leading
 /// underscore.
-const gensym_length: i32 = @as(i32, @intCast(@typeInfo(@TypeOf(c.janet_vm.gensym_counter)).array.len)) - 1;
+const gensym_length: i32 = @as(i32, @intCast(@typeInfo(@TypeOf(c.vm().gensym_counter)).array.len)) - 1;
 
 /// The leading underscore comes from `janet_symcache_init` and nothing else
 /// ever writes it, so it is the one part of the counter's initial state that
 /// survives to be observed. This case has to run before the one below, which
 /// resets the counter itself and would make the same assertion vacuous.
 fn generatedNamesComeFromTheInitialCounter() void {
-    const g = c.janet_symbol_gen();
-    c.janet_gcroot(c.janet_wrap_symbol(g));
+    const g = symbols.gen();
+    gc_alloc.gcroot(wrap.fromSymbol(g));
     std.debug.assert(g[0] == '_');
     std.debug.assert(stringLength(g) == gensym_length);
     for (bytesOf(g)[1..]) |byte| {
         std.debug.assert(std.ascii.isAlphanumeric(byte));
     }
-    _ = c.janet_gcunroot(c.janet_wrap_symbol(g));
+    _ = gc_alloc.gcunroot(wrap.fromSymbol(g));
 }
 
 /// Reset the odometer to the state `janet_symcache_init` leaves.
 fn resetGensymCounter() void {
-    @memset(&c.janet_vm.gensym_counter, '0');
-    c.janet_vm.gensym_counter[0] = '_';
+    @memset(&c.vm().gensym_counter, '0');
+    c.vm().gensym_counter[0] = '_';
 }
 
 /// A generated symbol is interned like any other, and the counter advances
@@ -504,24 +508,24 @@ fn gensymAdvancesTheOdometer() void {
     // predictable however many gensyms ran before this. Collecting first drops
     // the ones earlier cases made, which would otherwise still be cached and
     // would make the counter skip past them.
-    c.janet_collect();
+    gc_mark.collect();
     resetGensymCounter();
 
     const last: usize = @intCast(gensym_length - 1);
-    var seen: [40][*c]const u8 = undefined;
+    var seen: [40][*:0]const u8 = undefined;
     for (&seen) |*slot| {
-        slot.* = c.janet_symbol_gen();
-        c.janet_gcroot(c.janet_wrap_symbol(slot.*));
+        slot.* = symbols.gen();
+        gc_alloc.gcroot(wrap.fromSymbol(slot.*));
         std.debug.assert(stringLength(slot.*) == gensym_length);
         std.debug.assert(slot.*[0] == '_');
-        std.debug.assert(heap.memoryType(stringHead(slot.*)) == c.JANET_MEMORY_SYMBOL);
+        std.debug.assert(heap.memoryType(types.stringHead(slot.*)) == constants.JANET_MEMORY_SYMBOL);
         std.debug.assert(inCache(slot.*));
     }
 
     // All distinct, and each is the one the cache holds for its own name.
     for (seen, 0..) |symbol, i| {
         for (seen[i + 1 ..]) |other| std.debug.assert(symbol != other);
-        std.debug.assert(c.janet_symbol(symbol, gensym_length) == symbol);
+        std.debug.assert(symbols.new(symbol[0..@intCast(gensym_length)]) == symbol);
     }
 
     // The last character walks '0'..'9', then 'a'..'z', then 'A'..'Z' -- the
@@ -541,7 +545,7 @@ fn gensymAdvancesTheOdometer() void {
         for (bytesOf(symbol)[1..last]) |byte| std.debug.assert(byte == '0');
     }
 
-    for (seen) |symbol| _ = c.janet_gcunroot(c.janet_wrap_symbol(symbol));
+    for (seen) |symbol| _ = gc_alloc.gcunroot(wrap.fromSymbol(symbol));
 }
 
 /// The third carry, which the forty-name run above cannot reach: exhausting a
@@ -549,51 +553,51 @@ fn gensymAdvancesTheOdometer() void {
 /// counting would take sixty-three names, so the odometer is set to its last
 /// value at the lowest position and stepped once.
 fn gensymCarriesBetweenPositions() void {
-    c.janet_collect();
+    gc_mark.collect();
     const last: usize = @intCast(gensym_length - 1);
     resetGensymCounter();
-    c.janet_vm.gensym_counter[last] = 'Z';
+    c.vm().gensym_counter[last] = 'Z';
 
-    const before = c.janet_symbol_gen();
-    c.janet_gcroot(c.janet_wrap_symbol(before));
+    const before = symbols.gen();
+    gc_alloc.gcroot(wrap.fromSymbol(before));
     std.debug.assert(before[last] == 'Z');
     for (bytesOf(before)[1..last]) |byte| std.debug.assert(byte == '0');
 
-    const carried = c.janet_symbol_gen();
-    c.janet_gcroot(c.janet_wrap_symbol(carried));
+    const carried = symbols.gen();
+    gc_alloc.gcroot(wrap.fromSymbol(carried));
     std.debug.assert(carried != before);
     std.debug.assert(carried[last] == '0');
     std.debug.assert(carried[last - 1] == '1');
     for (bytesOf(carried)[1 .. last - 1]) |byte| std.debug.assert(byte == '0');
 
-    _ = c.janet_gcunroot(c.janet_wrap_symbol(before));
-    _ = c.janet_gcunroot(c.janet_wrap_symbol(carried));
+    _ = gc_alloc.gcunroot(wrap.fromSymbol(before));
+    _ = gc_alloc.gcunroot(wrap.fromSymbol(carried));
 }
 
 /// The collector's one external obligation: a symbol that dies leaves the
 /// cache. `janet_deinit_block` calls `janet_symbol_deinit` from this
 /// subsystem, so the round trip is entirely inside Zig.
 fn collectedSymbolLeavesTheCache() void {
-    c.janet_collect();
-    const before = c.janet_vm.cache_count;
+    gc_mark.collect();
+    const before = c.vm().cache_count;
 
     var name: [40]u8 = undefined;
     for (0..50) |i| {
         const text = std.fmt.bufPrintZ(&name, "doomed-symbol-{d}", .{i}) catch unreachable;
-        _ = c.janet_csymbol(text.ptr);
+        _ = symbols.csymbol(text.ptr);
     }
-    std.debug.assert(c.janet_vm.cache_count == before + 50);
+    std.debug.assert(c.vm().cache_count == before + 50);
 
-    c.janet_collect();
-    std.debug.assert(c.janet_vm.cache_count == before);
+    gc_mark.collect();
+    std.debug.assert(c.vm().cache_count == before);
 
     // A rooted one survives the same collection and keeps its address.
-    const kept = c.janet_csymbol("kept-symbol");
-    c.janet_gcroot(c.janet_wrap_symbol(kept));
-    c.janet_collect();
-    std.debug.assert(c.janet_csymbol("kept-symbol") == kept);
+    const kept = symbols.csymbol("kept-symbol");
+    gc_alloc.gcroot(wrap.fromSymbol(kept));
+    gc_mark.collect();
+    std.debug.assert(symbols.csymbol("kept-symbol") == kept);
     std.debug.assert(inCache(kept));
-    _ = c.janet_gcunroot(c.janet_wrap_symbol(kept));
+    _ = gc_alloc.gcunroot(wrap.fromSymbol(kept));
 }
 
 // ----------------------------------------------------------------- tuple
@@ -602,64 +606,64 @@ fn collectedSymbolLeavesTheCache() void {
 /// source-map position absent with -1; `end` computes the hash over every
 /// slot.
 fn tupleBeginAndEnd() void {
-    const t = c.janet_tuple_begin(3);
-    std.debug.assert(tupleHead(t).length == 3);
-    std.debug.assert(tupleHead(t).sm_line == -1);
-    std.debug.assert(tupleHead(t).sm_column == -1);
-    std.debug.assert(heap.memoryType(tupleHead(t)) == c.JANET_MEMORY_TUPLE);
-    std.debug.assert(heap.onList(c.janet_vm.blocks, tupleHead(t)));
+    const t = tuples.begin(3);
+    std.debug.assert(types.tupleHead(t).length == 3);
+    std.debug.assert(types.tupleHead(t).sm_line == -1);
+    std.debug.assert(types.tupleHead(t).sm_column == -1);
+    std.debug.assert(heap.memoryType(types.tupleHead(t)) == constants.JANET_MEMORY_TUPLE);
+    std.debug.assert(heap.onList(c.vm().blocks, types.tupleHead(t)));
 
     t[0] = harness.wrapInteger(1);
-    t[1] = c.janet_wrap_nil();
-    t[2] = c.janet_wrap_keyword(c.janet_cstring("k"));
-    const done = c.janet_tuple_end(t);
+    t[1] = wrap.fromNil();
+    t[2] = wrap.fromKeyword(strings.cstring("k"));
+    const done = tuples.end(t);
     std.debug.assert(done == t);
-    std.debug.assert(tupleHead(done).hash == internal.janet_array_calchash(t, 3));
+    std.debug.assert(types.tupleHead(done).hash == internal.janet_array_calchash(t, 3));
 
     // A zero-length tuple is legal and hashes as the empty sequence.
-    const empty = c.janet_tuple_end(c.janet_tuple_begin(0));
-    std.debug.assert(tupleHead(empty).length == 0);
-    std.debug.assert(tupleHead(empty).hash == internal.janet_array_calchash(empty, 0));
+    const empty = tuples.end(tuples.begin(0));
+    std.debug.assert(types.tupleHead(empty).length == 0);
+    std.debug.assert(types.tupleHead(empty).hash == internal.janet_array_calchash(empty, 0));
 }
 
 /// The one-step constructor copies its elements and closes the tuple, so equal
 /// contents give equal hashes -- which is what the dictionaries need.
 fn tupleNCopiesAndHashes() void {
-    var source = [3]c.Janet{
+    var source = [3]types.Janet{
         harness.wrapInteger(10),
-        c.janet_wrap_true(),
-        c.janet_wrap_string(c.janet_cstring("s")),
+        wrap.fromTrue(),
+        wrap.fromString(strings.cstring("s")),
     };
 
-    const a = c.janet_tuple_n(&source, 3);
-    std.debug.assert(tupleHead(a).length == 3);
+    const a = tuples.newFrom(&source, 3);
+    std.debug.assert(types.tupleHead(a).length == 3);
     std.debug.assert(harness.equals(a[0], source[0]));
     std.debug.assert(harness.equals(a[1], source[1]));
     std.debug.assert(harness.equals(a[2], source[2]));
-    std.debug.assert(tupleHead(a).sm_line == -1);
+    std.debug.assert(types.tupleHead(a).sm_line == -1);
 
     // Copied, not aliased.
     source[0] = harness.wrapInteger(99);
     std.debug.assert(harness.equals(a[0], harness.wrapInteger(10)));
 
     // Equal contents, equal hash; different contents, different tuple.
-    var again = [3]c.Janet{
+    var again = [3]types.Janet{
         harness.wrapInteger(10),
-        c.janet_wrap_true(),
-        c.janet_wrap_string(c.janet_cstring("s")),
+        wrap.fromTrue(),
+        wrap.fromString(strings.cstring("s")),
     };
-    const b = c.janet_tuple_n(&again, 3);
+    const b = tuples.newFrom(&again, 3);
     std.debug.assert(b != a);
-    std.debug.assert(tupleHead(b).hash == tupleHead(a).hash);
-    std.debug.assert(harness.equals(c.janet_wrap_tuple(a), c.janet_wrap_tuple(b)));
+    std.debug.assert(types.tupleHead(b).hash == types.tupleHead(a).hash);
+    std.debug.assert(harness.equals(wrap.fromTuple(a), wrap.fromTuple(b)));
 
     again[0] = harness.wrapInteger(11);
-    const different = c.janet_tuple_n(&again, 3);
-    std.debug.assert(!harness.equals(c.janet_wrap_tuple(a), c.janet_wrap_tuple(different)));
+    const different = tuples.newFrom(&again, 3);
+    std.debug.assert(!harness.equals(wrap.fromTuple(a), wrap.fromTuple(different)));
 
     // Zero elements needs no source at all.
-    const none = c.janet_tuple_n(null, 0);
-    std.debug.assert(tupleHead(none).length == 0);
+    const none = tuples.newFrom(null, 0);
+    std.debug.assert(types.tupleHead(none).length == 0);
 }
 
 // ------------------------------------------------------ across the seam
@@ -667,8 +671,8 @@ fn tupleNCopiesAndHashes() void {
 /// The standard library reaches all of this through the core environment, so
 /// the Zig entry points above have to agree with what Janet sees.
 fn fromJanet() void {
-    var out: c.Janet = undefined;
-    const env = c.janet_core_env(null);
+    var out: types.Janet = undefined;
+    const env = harness.coreEnv();
     const source =
         \\(let [s (string "ab" "cd")
         \\      y (symbol "sy" "mb")
@@ -678,15 +682,15 @@ fn fromJanet() void {
         \\  [s (length s) (= y (symbol "symb")) (not= g1 g2)
         \\   (= t [1 2 3]) (= (hash [1 2 3]) (hash t)) (tuple/slice t 1)])
     ;
-    std.debug.assert(c.janet_dostring(env, source, "string-symbol-test", &out) == 0);
-    const r = c.janet_unwrap_tuple(out);
+    std.debug.assert(core_env.dostring(env, source, "string-symbol-test", &out) == 0);
+    const r = wrap.toTuple(out);
     std.debug.assert(harness.stringValueIs(r[0], "abcd"));
     std.debug.assert(harness.integerIs(r[1], 4));
-    std.debug.assert(c.janet_truthy(r[2]) != 0);
-    std.debug.assert(c.janet_truthy(r[3]) != 0);
-    std.debug.assert(c.janet_truthy(r[4]) != 0);
-    std.debug.assert(c.janet_truthy(r[5]) != 0);
-    std.debug.assert(tupleHead(c.janet_unwrap_tuple(r[6])).length == 2);
+    std.debug.assert(kind.truthy(r[2]) != 0);
+    std.debug.assert(kind.truthy(r[3]) != 0);
+    std.debug.assert(kind.truthy(r[4]) != 0);
+    std.debug.assert(kind.truthy(r[5]) != 0);
+    std.debug.assert(types.tupleHead(wrap.toTuple(r[6])).length == 2);
 }
 
 // ------------------------------------------------------ the registration
@@ -709,21 +713,21 @@ fn theRegistryRecordsALocation() void {
         "table/clone", "struct/rawget", "math/log2",   "int/to-number",
     };
     for (names) |name| {
-        const binding = c.janet_resolve_core(name);
+        const binding = registry.resolveCore(name);
         // A build without integer types has no int/ functions to look up.
-        if (harness.isType(binding, c.JANET_NIL)) continue;
-        std.debug.assert(harness.isType(binding, c.JANET_CFUNCTION));
-        const entry = internal.janet_registry_get(c.janet_unwrap_cfunction(binding));
+        if (harness.isType(binding, constants.JANET_NIL)) continue;
+        std.debug.assert(harness.isType(binding, constants.JANET_CFUNCTION));
+        const entry = internal.janet_registry_get(wrap.toCfunction(binding));
         std.debug.assert(entry != null);
-        std.debug.assert(entry.*.name != null);
-        std.debug.assert(std.mem.eql(u8, std.mem.span(entry.*.name), std.mem.span(name)));
-        std.debug.assert(entry.*.source_file != null);
-        std.debug.assert(entry.*.source_line > 0);
+        std.debug.assert(entry.?.name != null);
+        std.debug.assert(std.mem.eql(u8, std.mem.span(entry.?.name.?), std.mem.span(name)));
+        std.debug.assert(entry.?.source_file != null);
+        std.debug.assert(entry.?.source_line > 0);
     }
 }
 
 pub fn run() void {
-    _ = c.janet_init();
+    harness.init();
 
     stringBeginAndEnd();
     constructorsWriteTheTerminator();
@@ -748,5 +752,5 @@ pub fn run() void {
 
     theRegistryRecordsALocation();
 
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }

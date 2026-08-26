@@ -59,93 +59,116 @@
 //! only the first.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const config = @import("config");
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
+const value = @import("subsystems").value;
 const harness = @import("harness.zig");
 const abstract_type = @import("subsystems").abstract_type;
+const structs = @import("subsystems").value.structs;
+const tables = @import("subsystems").value.tables;
+const gc_alloc = @import("subsystems").gc_alloc;
+const arrays = @import("subsystems").value.arrays;
+const buffers = @import("subsystems").value.buffers;
+const strings = @import("subsystems").value.strings;
+const tuples = @import("subsystems").value.tuples;
+const utils = @import("subsystems").utils;
+const gc_mark = @import("subsystems").gc_mark;
+const core_env = @import("subsystems").env;
+const kind = @import("subsystems").value.kind;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const abstracts = @import("subsystems").value.abstracts;
+const vm_entry = @import("subsystems").vm_entry;
 const AbstractType = abstract_type.AbstractType;
 
 /// `janet.h` declares all four head accessors as real functions as well as
 /// macros, and the runtime exports them — so the contract uses the runtime's
 /// own arithmetic to *find* a header. That is circular only for the layout
 /// question, which `theHeadOffsets` answers from the allocator instead.
-fn headerOf(pointer: ?*anyopaque) *c.JanetGCObject {
+fn headerOf(pointer: ?*anyopaque) *types.JanetGCObject {
     return @ptrCast(@alignCast(pointer.?));
 }
 
 fn reachable(pointer: ?*anyopaque) bool {
-    return headerOf(pointer).flags & c.JANET_MEM_REACHABLE != 0;
+    return headerOf(pointer).flags & constants.JANET_MEM_REACHABLE != 0;
 }
 
 fn unmark(pointer: ?*anyopaque) void {
-    headerOf(pointer).flags &= ~@as(i32, c.JANET_MEM_REACHABLE);
+    headerOf(pointer).flags &= ~@as(i32, constants.JANET_MEM_REACHABLE);
 }
 
 /// The head of whatever `value` refers to, or null for a value the collector
 /// does not trace. Mirrors the cases `janet_check_liveref` distinguishes.
-fn headOf(value: c.Janet) ?*anyopaque {
-    return switch (c.janet_type(value)) {
-        c.JANET_ARRAY,
-        c.JANET_TABLE,
-        c.JANET_FUNCTION,
-        c.JANET_BUFFER,
-        c.JANET_FIBER,
-        => c.janet_unwrap_pointer(value),
-        c.JANET_STRING,
-        c.JANET_SYMBOL,
-        c.JANET_KEYWORD,
-        => c.janet_string_head(c.janet_unwrap_string(value)),
-        c.JANET_ABSTRACT => c.janet_abstract_head(c.janet_unwrap_abstract(value)),
-        c.JANET_TUPLE => c.janet_tuple_head(c.janet_unwrap_tuple(value)),
-        c.JANET_STRUCT => c.janet_struct_head(c.janet_unwrap_struct(value)),
+fn headOf(val: types.Janet) ?*anyopaque {
+    return switch (kind.typeOf(val)) {
+        constants.JANET_ARRAY,
+        constants.JANET_TABLE,
+        constants.JANET_FUNCTION,
+        constants.JANET_BUFFER,
+        constants.JANET_FIBER,
+        => wrap.toPointer(val),
+        constants.JANET_STRING,
+        constants.JANET_SYMBOL,
+        constants.JANET_KEYWORD,
+        => utils.stringHead(wrap.toString(val)),
+        constants.JANET_ABSTRACT => utils.abstractHead(wrap.toAbstract(val)),
+        constants.JANET_TUPLE => utils.tupleHead(wrap.toTuple(val)),
+        constants.JANET_STRUCT => utils.structHead(wrap.toStruct(val)),
         else => null,
     };
 }
 
-fn unmarkValue(value: c.Janet) void {
-    if (headOf(value)) |head| unmark(head);
+fn unmarkValue(val: types.Janet) void {
+    if (headOf(val)) |head| unmark(head);
 }
 
-fn valueReachable(value: c.Janet) bool {
-    return reachable(headOf(value).?);
+fn valueReachable(val: types.Janet) bool {
+    return reachable(headOf(val).?);
 }
 
 /// Start from a heap with no marks left over from an earlier case. A
 /// collection ends by clearing every bit it set, so this is the cheapest way
 /// to get one.
 fn freshHeap() void {
-    c.janet_collect();
+    gc_mark.collect();
 }
 
 /// The block `janet_gcalloc` most recently prepended to the main heap.
 fn newestBlock() usize {
-    return @intFromPtr(c.janet_vm.blocks);
+    return @intFromPtr(c.vm().blocks);
 }
 
-/// The runtime's `@sizeOf` arithmetic against its own allocator.
+/// The runtime's payload offsets against its own allocator.
 ///
 /// Each case allocates one value of the kind under test and compares the
 /// pointer the runtime handed back against the block it just allocated. The
 /// C spelling of this question lives in `test/abi.c`; this is the half that
 /// needs a running heap, and the two are independent.
+///
+/// **`@sizeOf` here is the oracle and must stay `@sizeOf`**, for the reason
+/// `test/utils.zig` gives at `payloadOffset`: the allocator uses
+/// `types.<kind>_payload` since increment 5e, and this compares what it did
+/// against the other spelling of the same number.
 fn theHeadOffsets() void {
     freshHeap();
 
-    const string = c.janet_string("head-offset-probe", 17);
-    std.debug.assert(@intFromPtr(string) - newestBlock() == @sizeOf(c.JanetStringHead));
+    const string = strings.new("head-offset-probe");
+    std.debug.assert(@intFromPtr(string) - newestBlock() == @sizeOf(types.JanetStringHead));
 
-    const tuple = c.janet_tuple_begin(1);
-    std.debug.assert(@intFromPtr(tuple) - newestBlock() == @sizeOf(c.JanetTupleHead));
-    tuple[0] = c.janet_wrap_nil();
-    _ = c.janet_tuple_end(tuple);
+    const tuple = tuples.begin(1);
+    std.debug.assert(@intFromPtr(tuple) - newestBlock() == @sizeOf(types.JanetTupleHead));
+    tuple[0] = wrap.fromNil();
+    _ = tuples.end(tuple);
 
-    const structure = c.janet_struct_begin(1);
-    std.debug.assert(@intFromPtr(structure) - newestBlock() == @sizeOf(c.JanetStructHead));
-    c.janet_struct_put(structure, c.janet_ckeywordv("k"), c.janet_wrap_nil());
-    _ = c.janet_struct_end(structure);
+    const structure = structs.begin(1);
+    std.debug.assert(@intFromPtr(structure) - newestBlock() == @sizeOf(types.JanetStructHead));
+    structs.put(structure, value.fromBytes("k", .keyword), wrap.fromNil());
+    _ = structs.end(structure);
 
-    const abstract = c.janet_abstract(abstract_type.stored(&at_plain), 8);
-    std.debug.assert(@intFromPtr(abstract) - newestBlock() == @sizeOf(c.JanetAbstractHead));
+    const abstract = abstracts.new(abstract_type.stored(&at_plain), 8);
+    std.debug.assert(@intFromPtr(abstract) - newestBlock() == @sizeOf(types.JanetAbstractHead));
 
     // `JanetFunction`'s environments are its own flexible array, and the
     // function *is* its block — so the oracle is what lives at the computed
@@ -153,30 +176,30 @@ fn theHeadOffsets() void {
     // binding puts a real `JanetFuncEnv` there; if the offset were wrong the
     // slot would hold padding, and a padding word is not a live block of type
     // `JANET_MEMORY_FUNCENV`.
-    var out: c.Janet = undefined;
-    std.debug.assert(c.janet_dostring(
-        c.janet_core_env(null),
+    var out: types.Janet = undefined;
+    std.debug.assert(core_env.dostring(
+        harness.coreEnv(),
         "(let [x 1] (fn [] x))",
         "gc-mark-test",
         &out,
     ) == 0);
-    const function = c.janet_unwrap_function(out);
-    c.janet_gcroot(out);
-    std.debug.assert(function.*.def.*.environments_length > 0);
+    const function = wrap.toFunction(out);
+    gc_alloc.gcroot(out);
+    std.debug.assert(function.*.def.?.environments_length > 0);
 
-    const slot: *[*c]c.JanetFuncEnv = @ptrFromInt(@intFromPtr(function) + @sizeOf(c.JanetFunction));
+    const slot: **types.JanetFuncEnv = @ptrFromInt(@intFromPtr(function) + @sizeOf(types.JanetFunction));
     const environment = slot.*;
-    std.debug.assert(environment != null);
-    std.debug.assert(headerOf(environment).flags & c.JANET_MEM_TYPEBITS == c.JANET_MEMORY_FUNCENV);
+    std.debug.assert(@intFromPtr(environment) != 0);
+    std.debug.assert(headerOf(environment).flags & constants.JANET_MEM_TYPEBITS == constants.JANET_MEMORY_FUNCENV);
     std.debug.assert(onBlockList(environment));
 
-    _ = c.janet_gcunroot(out);
+    _ = gc_alloc.gcunroot(out);
 }
 
 /// Whether a block is still on the main heap list. Only ever called for a
 /// block known to be live, so nothing freed is dereferenced.
 fn onBlockList(block: ?*anyopaque) bool {
-    var current = c.janet_vm.blocks;
+    var current = c.vm().blocks;
     while (current != null) {
         if (current == block) return true;
         current = @ptrCast(headerOf(current).data.next);
@@ -189,14 +212,14 @@ fn onBlockList(block: ?*anyopaque) bool {
 var probe_gcmark_calls: i32 = 0;
 var probe_saw_mark_phase: i32 = -1;
 var probe_roots_on_mark = false;
-var probe_root_value: c.Janet = undefined;
-var probe_child_value: c.Janet = undefined;
+var probe_root_value: types.Janet = undefined;
+var probe_child_value: types.Janet = undefined;
 
 fn probeGcmark(_: ?*anyopaque, _: usize) callconv(.c) c_int {
     probe_gcmark_calls += 1;
-    probe_saw_mark_phase = c.janet_vm.gc_mark_phase;
-    c.janet_mark(probe_child_value);
-    if (probe_roots_on_mark) c.janet_gcroot(probe_root_value);
+    probe_saw_mark_phase = c.vm().gc_mark_phase;
+    gc_mark.mark(probe_child_value);
+    if (probe_roots_on_mark) gc_alloc.gcroot(probe_root_value);
     return 0;
 }
 
@@ -217,35 +240,35 @@ const at_plain: AbstractType = .{ .name = "gc-mark-test/plain" };
 /// must not disturb the guard: the string marked afterwards proves `depth`
 /// came back to where it started.
 fn immediatesAreIgnored() void {
-    const roots = c.janet_vm.root_count;
+    const roots = c.vm().root_count;
     var local: usize = 0;
 
-    c.janet_mark(c.janet_wrap_nil());
-    c.janet_mark(c.janet_wrap_true());
-    c.janet_mark(c.janet_wrap_number(3.5));
-    c.janet_mark(harness.wrapInteger(-7));
-    c.janet_mark(c.janet_wrap_pointer(&local));
+    gc_mark.mark(wrap.fromNil());
+    gc_mark.mark(wrap.fromTrue());
+    gc_mark.mark(wrap.fromNumber(3.5));
+    gc_mark.mark(harness.wrapInteger(-7));
+    gc_mark.mark(wrap.fromPointer(&local));
 
-    std.debug.assert(c.janet_vm.root_count == roots);
+    std.debug.assert(c.vm().root_count == roots);
 
-    const string = c.janet_cstringv("after-immediates");
+    const string = value.fromBytes("after-immediates", .string);
     unmarkValue(string);
-    c.janet_mark(string);
+    gc_mark.mark(string);
     std.debug.assert(valueReachable(string));
 }
 
 fn theThreeStringKinds() void {
-    const string = c.janet_cstringv("a string");
-    const keyword = c.janet_ckeywordv("a-keyword");
-    const symbol = c.janet_csymbolv("a-symbol");
+    const string = value.fromBytes("a string", .string);
+    const keyword = value.fromBytes("a-keyword", .keyword);
+    const symbol = value.fromBytes("a-symbol", .symbol);
 
     unmarkValue(string);
     unmarkValue(keyword);
     unmarkValue(symbol);
 
-    c.janet_mark(string);
-    c.janet_mark(keyword);
-    c.janet_mark(symbol);
+    gc_mark.mark(string);
+    gc_mark.mark(keyword);
+    gc_mark.mark(symbol);
 
     std.debug.assert(valueReachable(string));
     std.debug.assert(valueReachable(keyword));
@@ -253,23 +276,23 @@ fn theThreeStringKinds() void {
 }
 
 fn aBuffer() void {
-    const buffer = c.janet_buffer(8);
-    _ = c.janet_buffer_push_cstring(buffer, "contents");
+    const buffer = buffers.new(8);
+    _ = buffers.pushCstringAbi(buffer, "contents");
     unmark(buffer);
-    c.janet_mark(c.janet_wrap_buffer(buffer));
+    gc_mark.mark(wrap.fromBuffer(buffer));
     std.debug.assert(reachable(buffer));
 }
 
 // ----------------------------------------------------------------- arrays
 
 fn anArrayMarksItsElements() void {
-    const array = c.janet_array(2);
-    const string = c.janet_cstringv("in an array");
-    c.janet_array_push(array, string);
+    const array = arrays.new(2);
+    const string = value.fromBytes("in an array", .string);
+    harness.arrayPush(array, string);
 
     unmark(array);
     unmarkValue(string);
-    c.janet_mark(c.janet_wrap_array(array));
+    gc_mark.mark(wrap.fromArray(array));
 
     std.debug.assert(reachable(array));
     std.debug.assert(valueReachable(string));
@@ -279,13 +302,13 @@ fn anArrayMarksItsElements() void {
 /// is the only thing that distinguishes the two kinds during marking, and it
 /// is easy to mistake for a redundant check.
 fn aWeakArrayDoesNotMarkItsElements() void {
-    const array = c.janet_array_weak(2);
-    const string = c.janet_cstringv("in a weak array");
-    c.janet_array_push(array, string);
+    const array = arrays.weak(2);
+    const string = value.fromBytes("in a weak array", .string);
+    harness.arrayPush(array, string);
 
     unmark(array);
     unmarkValue(string);
-    c.janet_mark(c.janet_wrap_array(array));
+    gc_mark.mark(wrap.fromArray(array));
 
     std.debug.assert(reachable(array));
     std.debug.assert(!valueReachable(string));
@@ -300,31 +323,31 @@ fn aWeakArrayDoesNotMarkItsElements() void {
 /// the case with no branch of its own in the C original.
 fn theFourTableKinds() void {
     const Case = struct {
-        make: *const fn (i32) callconv(.c) [*c]c.JanetTable,
+        make: *const fn (i32) *types.JanetTable,
         keeps_key: bool,
         keeps_value: bool,
     };
     const cases = [_]Case{
-        .{ .make = c.janet_table, .keeps_key = true, .keeps_value = true },
-        .{ .make = c.janet_table_weakk, .keeps_key = false, .keeps_value = true },
-        .{ .make = c.janet_table_weakv, .keeps_key = true, .keeps_value = false },
-        .{ .make = c.janet_table_weakkv, .keeps_key = false, .keeps_value = false },
+        .{ .make = tables.new, .keeps_key = true, .keeps_value = true },
+        .{ .make = tables.weakk, .keeps_key = false, .keeps_value = true },
+        .{ .make = tables.weakv, .keeps_key = true, .keeps_value = false },
+        .{ .make = tables.weakkv, .keeps_key = false, .keeps_value = false },
     };
 
     for (cases) |case| {
         const table = case.make(4);
-        const key = c.janet_cstringv("the key");
-        const value = c.janet_cstringv("the value");
-        c.janet_table_put(table, key, value);
+        const key = value.fromBytes("the key", .string);
+        const val = value.fromBytes("the value", .string);
+        tables.put(table, key, val);
 
         unmark(table);
         unmarkValue(key);
-        unmarkValue(value);
-        c.janet_mark(c.janet_wrap_table(table));
+        unmarkValue(val);
+        gc_mark.mark(wrap.fromTable(table));
 
         std.debug.assert(reachable(table));
         std.debug.assert(valueReachable(key) == case.keeps_key);
-        std.debug.assert(valueReachable(value) == case.keeps_value);
+        std.debug.assert(valueReachable(val) == case.keeps_value);
     }
 }
 
@@ -332,78 +355,78 @@ fn theFourTableKinds() void {
 /// what terminates a cycle. Both halves are checked here: a three-link chain
 /// is marked to its end, and a two-table cycle returns rather than spinning.
 fn thePrototypeChain() void {
-    const a = c.janet_table(1);
-    const b = c.janet_table(1);
-    const d = c.janet_table(1);
+    const a = tables.new(1);
+    const b = tables.new(1);
+    const d = tables.new(1);
     a.*.proto = b;
     b.*.proto = d;
 
-    const deep = c.janet_cstringv("in the last proto");
-    c.janet_table_put(d, c.janet_ckeywordv("k"), deep);
+    const deep = value.fromBytes("in the last proto", .string);
+    tables.put(d, value.fromBytes("k", .keyword), deep);
 
     unmark(a);
     unmark(b);
     unmark(d);
     unmarkValue(deep);
-    c.janet_mark(c.janet_wrap_table(a));
+    gc_mark.mark(wrap.fromTable(a));
 
     std.debug.assert(reachable(a) and reachable(b) and reachable(d));
     std.debug.assert(valueReachable(deep));
 
-    const x = c.janet_table(1);
-    const y = c.janet_table(1);
+    const x = tables.new(1);
+    const y = tables.new(1);
     x.*.proto = y;
     y.*.proto = x;
     unmark(x);
     unmark(y);
-    c.janet_mark(c.janet_wrap_table(x));
+    gc_mark.mark(wrap.fromTable(x));
     std.debug.assert(reachable(x) and reachable(y));
 }
 
 // -------------------------------------------------------- structs, tuples
 
 fn aStructMarksItsProtoAndEntries() void {
-    const proto_builder = c.janet_struct_begin(1);
-    const proto_value = c.janet_cstringv("in the struct proto");
-    c.janet_struct_put(proto_builder, c.janet_ckeywordv("p"), proto_value);
-    const proto = c.janet_struct_end(proto_builder);
+    const proto_builder = structs.begin(1);
+    const proto_value = value.fromBytes("in the struct proto", .string);
+    structs.put(proto_builder, value.fromBytes("p", .keyword), proto_value);
+    const proto = structs.end(proto_builder);
 
-    const builder = c.janet_struct_begin(1);
-    const key = c.janet_cstringv("struct key");
-    const value = c.janet_cstringv("struct value");
-    c.janet_struct_put(builder, key, value);
-    const structure = c.janet_struct_end(builder);
-    c.janet_struct_head(structure).*.proto = proto;
+    const builder = structs.begin(1);
+    const key = value.fromBytes("struct key", .string);
+    const val = value.fromBytes("struct value", .string);
+    structs.put(builder, key, val);
+    const structure = structs.end(builder);
+    utils.structHead(structure).*.proto = proto;
 
-    unmark(c.janet_struct_head(structure));
-    unmark(c.janet_struct_head(proto));
+    unmark(utils.structHead(structure));
+    unmark(utils.structHead(proto));
     unmarkValue(key);
-    unmarkValue(value);
+    unmarkValue(val);
     unmarkValue(proto_value);
 
-    c.janet_mark(c.janet_wrap_struct(structure));
+    gc_mark.mark(wrap.fromStruct(structure));
 
-    std.debug.assert(reachable(c.janet_struct_head(structure)));
-    std.debug.assert(reachable(c.janet_struct_head(proto)));
+    std.debug.assert(reachable(utils.structHead(structure)));
+    std.debug.assert(reachable(utils.structHead(proto)));
     std.debug.assert(valueReachable(key));
-    std.debug.assert(valueReachable(value));
+    std.debug.assert(valueReachable(val));
     std.debug.assert(valueReachable(proto_value));
 }
 
 fn aTupleMarksItsElements() void {
-    var items = [2]c.Janet{
-        c.janet_cstringv("tuple element one"),
-        c.janet_cstringv("tuple element two"),
+    var items = [2]types.Janet{
+        value.fromBytes("tuple element one", .string),
+        value.fromBytes("tuple element two", .string),
     };
-    const tuple = c.janet_tuple_n(&items, 2);
+    const tuple = tuples.newFrom(&items, 2);
 
-    unmark(c.janet_tuple_head(tuple));
+    unmark(utils.tupleHead(tuple));
     unmarkValue(items[0]);
     unmarkValue(items[1]);
 
-    c.janet_mark(c.janet_wrap_tuple(tuple));
+    gc_mark.mark(wrap.fromTuple(tuple));
 
-    std.debug.assert(reachable(c.janet_tuple_head(tuple)));
+    std.debug.assert(reachable(utils.tupleHead(tuple)));
     std.debug.assert(valueReachable(items[0]));
     std.debug.assert(valueReachable(items[1]));
 }
@@ -414,36 +437,36 @@ fn aTupleMarksItsElements() void {
 /// reachability test in front of it is what stops a shared abstract from being
 /// walked again by every holder.
 fn anAbstractMarksThroughItsCallbackOnce() void {
-    const abstract = c.janet_abstract(abstract_type.stored(&at_marked), 8);
-    probe_child_value = c.janet_cstringv("reached by gcmark");
+    const abstract = abstracts.new(abstract_type.stored(&at_marked), 8);
+    probe_child_value = value.fromBytes("reached by gcmark", .string);
     probe_gcmark_calls = 0;
 
-    unmark(c.janet_abstract_head(abstract));
+    unmark(utils.abstractHead(abstract));
     unmarkValue(probe_child_value);
 
-    c.janet_mark(c.janet_wrap_abstract(abstract));
-    std.debug.assert(reachable(c.janet_abstract_head(abstract)));
+    gc_mark.mark(wrap.fromAbstract(abstract));
+    std.debug.assert(reachable(utils.abstractHead(abstract)));
     std.debug.assert(probe_gcmark_calls == 1);
     std.debug.assert(valueReachable(probe_child_value));
 
-    c.janet_mark(c.janet_wrap_abstract(abstract));
+    gc_mark.mark(wrap.fromAbstract(abstract));
     std.debug.assert(probe_gcmark_calls == 1);
 }
 
 fn anAbstractWithoutAGcmark() void {
-    const abstract = c.janet_abstract(abstract_type.stored(&at_plain), 8);
-    unmark(c.janet_abstract_head(abstract));
-    c.janet_mark(c.janet_wrap_abstract(abstract));
-    std.debug.assert(reachable(c.janet_abstract_head(abstract)));
+    const abstract = abstracts.new(abstract_type.stored(&at_plain), 8);
+    unmark(utils.abstractHead(abstract));
+    gc_mark.mark(wrap.fromAbstract(abstract));
+    std.debug.assert(reachable(utils.abstractHead(abstract)));
 }
 
 // ------------------------------------------------------ functions, fibers
 
 /// `func->envs[i]`, which `@cImport` cannot spell: `envs` is a flexible array
 /// member. `theHeadOffsets` is what makes this arithmetic safe to write.
-fn funcEnv(function: [*c]c.JanetFunction, index: usize) [*c]c.JanetFuncEnv {
-    const base = @intFromPtr(function) + @sizeOf(c.JanetFunction);
-    const slot: *[*c]c.JanetFuncEnv = @ptrFromInt(base + index * @sizeOf(*c.JanetFuncEnv));
+fn funcEnv(function: *types.JanetFunction, index: usize) *types.JanetFuncEnv {
+    const base = @intFromPtr(function) + @sizeOf(types.JanetFunction);
+    const slot: **types.JanetFuncEnv = @ptrFromInt(base + index * @sizeOf(*types.JanetFuncEnv));
     return slot.*;
 }
 
@@ -453,34 +476,34 @@ fn funcEnv(function: [*c]c.JanetFunction, index: usize) [*c]c.JanetFuncEnv {
 /// fiber first, so what is marked is the copied-out values rather than the
 /// fiber.
 fn aClosureMarksItsCapturedEnvironment() void {
-    var out: c.Janet = undefined;
-    std.debug.assert(c.janet_dostring(
-        c.janet_core_env(null),
+    var out: types.Janet = undefined;
+    std.debug.assert(core_env.dostring(
+        harness.coreEnv(),
         "(let [x \"captured-by-closure\"] (fn [] x))",
         "gc-mark-test",
         &out,
     ) == 0);
-    std.debug.assert(harness.isType(out, c.JANET_FUNCTION));
-    c.janet_gcroot(out);
+    std.debug.assert(harness.isType(out, constants.JANET_FUNCTION));
+    gc_alloc.gcroot(out);
 
-    const function = c.janet_unwrap_function(out);
+    const function = wrap.toFunction(out);
     std.debug.assert(function.*.def != null);
-    std.debug.assert(function.*.def.*.environments_length > 0);
+    std.debug.assert(function.*.def.?.environments_length > 0);
 
     unmark(function);
     unmark(function.*.def);
-    if (function.*.def.*.source != null) unmark(c.janet_string_head(function.*.def.*.source));
+    if (function.*.def.?.source) |source| unmark(utils.stringHead(source));
     var index: usize = 0;
-    while (index < function.*.def.*.environments_length) : (index += 1) {
+    while (index < function.*.def.?.environments_length) : (index += 1) {
         unmark(funcEnv(function, index));
     }
 
-    c.janet_mark(out);
+    gc_mark.mark(out);
 
     std.debug.assert(reachable(function));
     std.debug.assert(reachable(function.*.def));
-    if (function.*.def.*.source != null) {
-        std.debug.assert(reachable(c.janet_string_head(function.*.def.*.source)));
+    if (function.*.def.?.source) |source| {
+        std.debug.assert(reachable(utils.stringHead(source)));
     }
 
     // The environment is detached by the mark, so its values are off the stack
@@ -491,42 +514,42 @@ fn aClosureMarksItsCapturedEnvironment() void {
     var found: i32 = 0;
     var slot: i32 = 0;
     while (slot < environment.*.length) : (slot += 1) {
-        const head = headOf(environment.*.as.values[@intCast(slot)]) orelse continue;
+        const head = headOf(environment.*.as.values.?[@intCast(slot)]) orelse continue;
         std.debug.assert(reachable(head));
         found += 1;
     }
     std.debug.assert(found > 0);
 
-    _ = c.janet_gcunroot(out);
+    _ = gc_alloc.gcunroot(out);
 }
 
 /// A suspended fiber holds its frames, and each frame holds a function whose
 /// only reference may be that frame. The fiber below is stopped inside a call,
 /// so `frame->func` is set and the frame walk is what reaches it.
 fn aSuspendedFiberMarksItsFrames() void {
-    var out: c.Janet = undefined;
-    std.debug.assert(c.janet_dostring(
-        c.janet_core_env(null),
+    var out: types.Janet = undefined;
+    std.debug.assert(core_env.dostring(
+        harness.coreEnv(),
         "(fiber/new (fn [] (yield \"suspended\") nil))",
         "gc-mark-test",
         &out,
     ) == 0);
-    std.debug.assert(harness.isType(out, c.JANET_FIBER));
-    c.janet_gcroot(out);
+    std.debug.assert(harness.isType(out, constants.JANET_FIBER));
+    gc_alloc.gcroot(out);
 
-    const fiber = c.janet_unwrap_fiber(out);
-    var resumed: c.Janet = undefined;
-    _ = c.janet_continue(fiber, c.janet_wrap_nil(), &resumed);
+    const fiber = wrap.toFiber(out);
+    var resumed: types.Janet = undefined;
+    _ = vm_entry.continueFiber(fiber, wrap.fromNil(), &resumed);
     std.debug.assert(fiber.*.frame > 0);
 
-    const frame: *c.JanetStackFrame = @ptrCast(@alignCast(
-        fiber.*.data + @as(usize, @intCast(fiber.*.frame - c.JANET_FRAME_SIZE)),
+    const frame: *types.JanetStackFrame = @ptrCast(@alignCast(
+        fiber.*.data.? + @as(usize, @intCast(fiber.*.frame - constants.JANET_FRAME_SIZE)),
     ));
     std.debug.assert(frame.func != null);
 
-    const dyns = c.janet_table(1);
+    const dyns = tables.new(1);
     fiber.*.env = dyns;
-    const last = c.janet_cstringv("the last value");
+    const last = value.fromBytes("the last value", .string);
     fiber.*.last_value = last;
 
     unmark(fiber);
@@ -534,49 +557,49 @@ fn aSuspendedFiberMarksItsFrames() void {
     unmark(dyns);
     unmarkValue(last);
 
-    c.janet_mark(out);
+    gc_mark.mark(out);
 
     std.debug.assert(reachable(fiber));
     std.debug.assert(reachable(frame.func));
     std.debug.assert(reachable(dyns));
     std.debug.assert(valueReachable(last));
 
-    _ = c.janet_gcunroot(out);
+    _ = gc_alloc.gcunroot(out);
 }
 
 /// The child chain is followed iteratively, and a fiber already marked ends
 /// it. Built by hand because reaching this state from Janet source needs a
 /// fiber suspended inside another one.
 fn theFiberChildChain() void {
-    var parent_value: c.Janet = undefined;
-    var child_value: c.Janet = undefined;
-    const env = c.janet_core_env(null);
-    std.debug.assert(c.janet_dostring(env, "(fiber/new (fn [] nil))", "gc-mark-test", &parent_value) == 0);
-    std.debug.assert(c.janet_dostring(env, "(fiber/new (fn [] nil))", "gc-mark-test", &child_value) == 0);
-    c.janet_gcroot(parent_value);
-    c.janet_gcroot(child_value);
+    var parent_value: types.Janet = undefined;
+    var child_value: types.Janet = undefined;
+    const env = harness.coreEnv();
+    std.debug.assert(core_env.dostring(env, "(fiber/new (fn [] nil))", "gc-mark-test", &parent_value) == 0);
+    std.debug.assert(core_env.dostring(env, "(fiber/new (fn [] nil))", "gc-mark-test", &child_value) == 0);
+    gc_alloc.gcroot(parent_value);
+    gc_alloc.gcroot(child_value);
 
-    const parent = c.janet_unwrap_fiber(parent_value);
-    const child = c.janet_unwrap_fiber(child_value);
+    const parent = wrap.toFiber(parent_value);
+    const child = wrap.toFiber(child_value);
     const saved = parent.*.child;
     parent.*.child = child;
 
-    const held = c.janet_cstringv("held by the child fiber");
+    const held = value.fromBytes("held by the child fiber", .string);
     child.*.last_value = held;
 
     unmark(parent);
     unmark(child);
     unmarkValue(held);
 
-    c.janet_mark(parent_value);
+    gc_mark.mark(parent_value);
 
     std.debug.assert(reachable(parent));
     std.debug.assert(reachable(child));
     std.debug.assert(valueReachable(held));
 
     parent.*.child = saved;
-    _ = c.janet_gcunroot(child_value);
-    _ = c.janet_gcunroot(parent_value);
+    _ = gc_alloc.gcunroot(child_value);
+    _ = gc_alloc.gcunroot(parent_value);
 }
 
 // --------------------------------------------------------- recursion guard
@@ -585,14 +608,14 @@ fn theFiberChildChain() void {
 /// Collection is suspended for the duration: nothing roots the chain until it
 /// is finished, and it is long enough that building it would otherwise trigger
 /// one.
-fn buildChain(chain: [][*c]c.JanetArray) void {
-    const handle = c.janet_gclock();
-    chain[0] = c.janet_array(1);
+fn buildChain(chain: []*types.JanetArray) void {
+    const handle = gc_alloc.gclock();
+    chain[0] = arrays.new(1);
     for (1..chain.len) |index| {
-        chain[index] = c.janet_array(1);
-        c.janet_array_push(chain[index - 1], c.janet_wrap_array(chain[index]));
+        chain[index] = arrays.new(1);
+        harness.arrayPush(chain[index - 1], wrap.fromArray(chain[index]));
     }
-    c.janet_gcunlock(handle);
+    gc_alloc.gcunlock(handle);
 }
 
 /// The guard is exact, and where it stops is the contract. Marking a chain one
@@ -601,29 +624,29 @@ fn buildChain(chain: [][*c]c.JanetArray) void {
 /// the traversal off the C stack, and rooting rather than dropping is what
 /// keeps the rest of the graph from being collected.
 fn theGuardRootsTheOverflow() !void {
-    const n: usize = c.JANET_RECURSION_GUARD + 2;
-    const chain = try std.heap.c_allocator.alloc([*c]c.JanetArray, n);
+    const n: usize = config.recursion_guard + 2;
+    const chain = try std.heap.c_allocator.alloc(*types.JanetArray, n);
     defer std.heap.c_allocator.free(chain);
     buildChain(chain);
 
-    const head = c.janet_wrap_array(chain[0]);
-    c.janet_gcroot(head);
+    const head = wrap.fromArray(chain[0]);
+    gc_alloc.gcroot(head);
 
     for (chain) |link| unmark(link);
-    const roots = c.janet_vm.root_count;
+    const roots = c.vm().root_count;
 
-    c.janet_mark(head);
+    gc_mark.mark(head);
 
-    std.debug.assert(c.janet_vm.root_count == roots + 1);
-    std.debug.assert(c.janet_unwrap_pointer(c.janet_vm.roots[roots]) ==
-        @as(?*anyopaque, chain[c.JANET_RECURSION_GUARD]));
-    std.debug.assert(reachable(chain[c.JANET_RECURSION_GUARD - 1]));
-    std.debug.assert(!reachable(chain[c.JANET_RECURSION_GUARD]));
-    std.debug.assert(!reachable(chain[c.JANET_RECURSION_GUARD + 1]));
+    std.debug.assert(c.vm().root_count == roots + 1);
+    std.debug.assert(wrap.toPointer(c.vm().roots.?[roots]) ==
+        @as(?*anyopaque, chain[config.recursion_guard]));
+    std.debug.assert(reachable(chain[config.recursion_guard - 1]));
+    std.debug.assert(!reachable(chain[config.recursion_guard]));
+    std.debug.assert(!reachable(chain[config.recursion_guard + 1]));
 
     // Drop the root the guard added, then the chain itself.
-    c.janet_vm.root_count = roots;
-    _ = c.janet_gcunroot(head);
+    c.vm().root_count = roots;
+    _ = gc_alloc.gcunroot(head);
 }
 
 /// What the guard defers, `janet_collect` finishes. The chain below is three
@@ -631,29 +654,29 @@ fn theGuardRootsTheOverflow() !void {
 /// every link before it; if the drain loop stopped early or dropped what it
 /// popped, the weak table would lose the entry in the sweep.
 fn aCollectionFinishesDeepGraphs() !void {
-    const n: usize = 3 * c.JANET_RECURSION_GUARD;
-    const chain = try std.heap.c_allocator.alloc([*c]c.JanetArray, n);
+    const n: usize = 3 * config.recursion_guard;
+    const chain = try std.heap.c_allocator.alloc(*types.JanetArray, n);
     defer std.heap.c_allocator.free(chain);
     buildChain(chain);
 
-    const head = c.janet_wrap_array(chain[0]);
-    c.janet_gcroot(head);
+    const head = wrap.fromArray(chain[0]);
+    gc_alloc.gcroot(head);
 
-    const witness = c.janet_table_weakv(2);
-    const witness_value = c.janet_wrap_table(witness);
-    c.janet_gcroot(witness_value);
-    const key = c.janet_ckeywordv("tail");
-    const tail = c.janet_wrap_array(chain[n - 1]);
-    c.janet_table_put(witness, key, tail);
+    const witness = tables.weakv(2);
+    const witness_value = wrap.fromTable(witness);
+    gc_alloc.gcroot(witness_value);
+    const key = value.fromBytes("tail", .keyword);
+    const tail = wrap.fromArray(chain[n - 1]);
+    tables.put(witness, key, tail);
 
-    const roots = c.janet_vm.root_count;
-    c.janet_collect();
+    const roots = c.vm().root_count;
+    gc_mark.collect();
 
-    std.debug.assert(c.janet_vm.root_count == roots);
-    std.debug.assert(harness.equals(c.janet_table_get(witness, key), tail));
+    std.debug.assert(c.vm().root_count == roots);
+    std.debug.assert(harness.equals(tables.get(witness, key), tail));
 
-    _ = c.janet_gcunroot(witness_value);
-    _ = c.janet_gcunroot(head);
+    _ = gc_alloc.gcunroot(witness_value);
+    _ = gc_alloc.gcunroot(head);
 }
 
 // ------------------------------------------------------------- collection
@@ -663,49 +686,49 @@ fn aCollectionFinishesDeepGraphs() !void {
 fn aCollectionDrainsRootsAddedDuringMarking() void {
     freshHeap();
 
-    const abstract = c.janet_abstract(abstract_type.stored(&at_marked), 8);
-    const abstract_value = c.janet_wrap_abstract(abstract);
-    c.janet_gcroot(abstract_value);
+    const abstract = abstracts.new(abstract_type.stored(&at_marked), 8);
+    const abstract_value = wrap.fromAbstract(abstract);
+    gc_alloc.gcroot(abstract_value);
 
-    probe_child_value = c.janet_cstringv("marked by gcmark");
-    probe_root_value = c.janet_cstringv("rooted by gcmark");
+    probe_child_value = value.fromBytes("marked by gcmark", .string);
+    probe_root_value = value.fromBytes("rooted by gcmark", .string);
     probe_roots_on_mark = true;
     probe_gcmark_calls = 0;
     probe_saw_mark_phase = -1;
 
-    const witness = c.janet_table_weakv(2);
-    const witness_value = c.janet_wrap_table(witness);
-    c.janet_gcroot(witness_value);
-    const key = c.janet_ckeywordv("rooted");
-    c.janet_table_put(witness, key, probe_root_value);
+    const witness = tables.weakv(2);
+    const witness_value = wrap.fromTable(witness);
+    gc_alloc.gcroot(witness_value);
+    const key = value.fromBytes("rooted", .keyword);
+    tables.put(witness, key, probe_root_value);
 
-    const roots = c.janet_vm.root_count;
-    c.janet_collect();
+    const roots = c.vm().root_count;
+    gc_mark.collect();
 
     std.debug.assert(probe_gcmark_calls == 1);
-    std.debug.assert(c.janet_vm.root_count == roots);
-    std.debug.assert(harness.equals(c.janet_table_get(witness, key), probe_root_value));
+    std.debug.assert(c.vm().root_count == roots);
+    std.debug.assert(harness.equals(tables.get(witness, key), probe_root_value));
 
     probe_roots_on_mark = false;
-    _ = c.janet_gcunroot(witness_value);
-    _ = c.janet_gcunroot(abstract_value);
+    _ = gc_alloc.gcunroot(witness_value);
+    _ = gc_alloc.gcunroot(abstract_value);
 }
 
 /// The flag is set for the duration of the traversal and clear once it is
 /// over. A `gcmark` callback is the only thing that can see it set.
 fn theMarkPhaseFlag() void {
-    const abstract = c.janet_abstract(abstract_type.stored(&at_marked), 8);
-    const abstract_value = c.janet_wrap_abstract(abstract);
-    c.janet_gcroot(abstract_value);
-    probe_child_value = c.janet_wrap_nil();
+    const abstract = abstracts.new(abstract_type.stored(&at_marked), 8);
+    const abstract_value = wrap.fromAbstract(abstract);
+    gc_alloc.gcroot(abstract_value);
+    probe_child_value = wrap.fromNil();
     probe_saw_mark_phase = -1;
 
-    std.debug.assert(c.janet_vm.gc_mark_phase == 0);
-    c.janet_collect();
+    std.debug.assert(c.vm().gc_mark_phase == 0);
+    gc_mark.collect();
     std.debug.assert(probe_saw_mark_phase == 1);
-    std.debug.assert(c.janet_vm.gc_mark_phase == 0);
+    std.debug.assert(c.vm().gc_mark_phase == 0);
 
-    _ = c.janet_gcunroot(abstract_value);
+    _ = gc_alloc.gcunroot(abstract_value);
 }
 
 /// A locked collector does nothing at all — not even the bookkeeping at the
@@ -714,37 +737,37 @@ fn theMarkPhaseFlag() void {
 fn aLockedCollectorDoesNothing() void {
     freshHeap();
 
-    const handle = c.janet_gclock();
-    c.janet_vm.next_collection = 4242;
-    const blocks = c.janet_vm.block_count;
+    const handle = gc_alloc.gclock();
+    c.vm().next_collection = 4242;
+    const blocks = c.vm().block_count;
 
-    c.janet_collect();
+    gc_mark.collect();
 
-    std.debug.assert(c.janet_vm.next_collection == 4242);
-    std.debug.assert(c.janet_vm.block_count == blocks);
+    std.debug.assert(c.vm().next_collection == 4242);
+    std.debug.assert(c.vm().block_count == blocks);
 
-    c.janet_gcunlock(handle);
-    c.janet_collect();
-    std.debug.assert(c.janet_vm.next_collection == 0);
+    gc_alloc.gcunlock(handle);
+    gc_mark.collect();
+    std.debug.assert(c.vm().next_collection == 0);
 }
 
 /// The interval heuristic keeps a large heap from being collected on every
 /// allocation. It runs before the sweep, so it is sized by the block count
 /// going in, and it only ever raises the interval.
 fn theIntervalHeuristic() void {
-    const saved = c.janet_vm.gc_interval;
+    const saved = c.vm().gc_interval;
 
-    c.janet_vm.gc_interval = 0;
-    const blocks = c.janet_vm.block_count;
-    c.janet_collect();
-    std.debug.assert(c.janet_vm.gc_interval == blocks * @sizeOf(c.JanetGCObject));
+    c.vm().gc_interval = 0;
+    const blocks = c.vm().block_count;
+    gc_mark.collect();
+    std.debug.assert(c.vm().gc_interval == blocks * @sizeOf(types.JanetGCObject));
 
     const high = std.math.maxInt(usize) / 2;
-    c.janet_vm.gc_interval = high;
-    c.janet_collect();
-    std.debug.assert(c.janet_vm.gc_interval == high);
+    c.vm().gc_interval = high;
+    gc_mark.collect();
+    std.debug.assert(c.vm().gc_interval == high);
 
-    c.janet_vm.gc_interval = saved;
+    c.vm().gc_interval = saved;
 }
 
 fn body() !void {
@@ -780,7 +803,7 @@ fn body() !void {
 }
 
 pub fn run() void {
-    _ = c.janet_init();
+    harness.init();
     body() catch @panic("gc_mark: out of memory building a chain");
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }

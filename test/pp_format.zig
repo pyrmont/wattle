@@ -56,30 +56,41 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const raise = @import("raise");
 const harness = @import("harness.zig");
+const value = @import("subsystems").value;
 const fmt = @import("subsystems").pp_format;
+const gc_alloc = @import("subsystems").gc_alloc;
+const buffers = @import("subsystems").value.buffers;
+const strings = @import("subsystems").value.strings;
+const core_env = @import("subsystems").env;
+const vm_state = @import("subsystems").lifecycle;
+const signal_core = @import("subsystems").signal;
+const kind = @import("subsystems").value.kind;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
 
-var test_env: [*c]c.JanetTable = undefined;
+var test_env: *types.JanetTable = undefined;
 var raises_fired: usize = 0;
 const expected_raises = 15;
 
 // ------------------------------------------------------------- assertions
 
-fn checkString(s: c.JanetString, expected: []const u8) void {
-    const len: usize = @intCast(c.janet_string_length(s));
+fn checkString(s: types.JanetString, expected: []const u8) void {
+    const len: usize = @intCast(types.stringHead(s).length);
     if (len != expected.len or !std.mem.eql(u8, s[0..len], expected)) {
         std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, s[0..len] });
         @panic("string mismatch");
     }
 }
 
-fn checkBuffer(b: *c.JanetBuffer, expected: []const u8) void {
+fn checkBuffer(b: *types.JanetBuffer, expected: []const u8) void {
     const len: usize = @intCast(b.count);
-    if (len != expected.len or !std.mem.eql(u8, b.data[0..len], expected)) {
-        std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.data[0..len] });
+    if (len != expected.len or !std.mem.eql(u8, b.data.?[0..len], expected)) {
+        std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.data.?[0..len] });
         @panic("buffer mismatch");
     }
 }
@@ -89,15 +100,15 @@ fn checkBuffer(b: *c.JanetBuffer, expected: []const u8) void {
 /// the replacement and the argument for it.
 const wrapInteger = harness.wrapInteger;
 
-fn bytes(s: c.JanetString) []const u8 {
-    return s[0..@intCast(c.janet_string_length(s))];
+fn bytes(s: types.JanetString) []const u8 {
+    return s[0..@intCast(types.stringHead(s).length)];
 }
 
-fn eval(source: [*:0]const u8) c.Janet {
-    var out = c.janet_wrap_nil();
-    const status = c.janet_dostring(test_env, source, "pp-format-test", &out);
+fn eval(source: [*:0]const u8) types.Janet {
+    var out = wrap.fromNil();
+    const status = core_env.dostring(test_env, source, "pp-format-test", &out);
     std.debug.assert(status == 0);
-    _ = c.janet_gcroot(out);
+    _ = gc_alloc.gcroot(out);
     return out;
 }
 
@@ -110,18 +121,18 @@ fn eval(source: [*:0]const u8) c.Janet {
 /// payload and therefore what makes `janet_signal_plan` answer `RAISE` rather
 /// than ending the process.
 fn expectRaise(comptime message: []const u8, comptime body: anytype, args: anytype) void {
-    var state: c.JanetTryState = undefined;
-    c.janet_try_init(&state);
+    var state: types.JanetTryState = undefined;
+    signal_core.tryInit(&state);
     const result = @call(.auto, body, args);
-    c.janet_restore(&state);
+    signal_core.restore(&state);
 
     if (result) |_| {
         std.debug.print("expected a raise: {s}\n", .{message});
         @panic("expected a raise, got a return");
     } else |_| {}
 
-    std.debug.assert(c.janet_checktype(state.payload, c.JANET_STRING) != 0);
-    const got = bytes(c.janet_unwrap_string(state.payload));
+    std.debug.assert(kind.checkType(state.payload, constants.JANET_STRING) != 0);
+    const got = bytes(wrap.toString(state.payload));
     if (!std.mem.eql(u8, got, message)) {
         std.debug.print("expected: {s}\n     got: {s}\n", .{ message, got });
         @panic("message mismatch");
@@ -131,20 +142,20 @@ fn expectRaise(comptime message: []const u8, comptime body: anytype, args: anyty
 
 /// `janet_buffer_format`, which is what `string/format` and `buffer/format`
 /// run, and the only way into the other loop. It is the library's, not this
-/// module's -- a panicking face, so a raise comes back as a report.
+/// module's -- a panicking abi, so a raise comes back as a report.
 extern fn janet_buffer_format(
-    b: *c.JanetBuffer,
-    strfrmt: [*c]const u8,
+    b: *types.JanetBuffer,
+    strfrmt: [*]const u8,
     argstart: i32,
     argc: i32,
-    argv: [*c]c.Janet,
+    argv: [*]types.Janet,
 ) callconv(.c) void;
 
-fn formatted(format: [*c]const u8, argv: []c.Janet) raise.Raising(c.JanetString) {
-    const b = c.janet_buffer(32);
+fn formatted(format: [*]const u8, argv: []types.Janet) raise.Raising(types.JanetString) {
+    const b = buffers.new(32);
     janet_buffer_format(b, format, -1, @intCast(argv.len), argv.ptr);
     _ = try raise.crossing({});
-    return c.janet_string(b.*.data, b.*.count);
+    return strings.new(b.*.data.?[0..@intCast(b.*.count)]);
 }
 
 // ------------------------------------------- the widths that crossed va_arg
@@ -165,8 +176,8 @@ fn everyArgumentWidthInOneCall() void {
         @as(i64, -8000000000000000000),
         @as(u64, 0xFEDCBA9876543210),
         @as(f64, 3.25),
-        @as([*c]const u8, "tail"),
-        c.janet_ckeywordv("kw"),
+        @as([*]const u8, "tail"),
+        value.fromBytes("kw", .keyword),
         @as(i32, 7),
     }) catch @panic("raised");
     checkString(s, "A|-2000000000|-8000000000000000000|fedcba9876543210|3.25|tail|:kw|7");
@@ -206,14 +217,14 @@ fn theUnmappedIntegerConversions() void {
 /// version that replaced the contents rather than appending would be invisible
 /// until an embedder tripped over it.
 fn formatbAppendsAndReturnsItsBuffer() void {
-    const b = c.janet_buffer(16);
-    _ = c.janet_buffer_push_cstring(b, "head:");
+    const b = buffers.new(16);
+    _ = buffers.pushCstringAbi(b, "head:");
 
     const returned = fmt.formatb(b, "%d-%d", .{ @as(i32, 1), @as(i32, 2) }) catch @panic("raised");
     std.debug.assert(returned == b);
     checkBuffer(b, "head:1-2");
 
-    _ = fmt.formatb(b, "|%s", .{@as([*c]const u8, "tail")}) catch @panic("raised");
+    _ = fmt.formatb(b, "|%s", .{@as([*]const u8, "tail")}) catch @panic("raised");
     checkBuffer(b, "head:1-2|tail");
 }
 
@@ -224,10 +235,10 @@ fn formatbAppendsAndReturnsItsBuffer() void {
 /// string with an interior zero, which is exactly the case `%s` cannot carry.
 fn theJanetStringConversion() void {
     const raw = [_]u8{ 'a', 0, 'b' };
-    const embedded = c.janet_string(&raw, 3);
+    const embedded = strings.new(raw[0..@intCast(3)]);
 
     const s = fmt.formatc("[%S]", .{embedded}) catch @panic("raised");
-    std.debug.assert(c.janet_string_length(s) == 5);
+    std.debug.assert(types.stringHead(s).length == 5);
     std.debug.assert(std.mem.eql(u8, bytes(s), "[a\x00b]"));
 
     // The same bytes through `%s` stop at the zero.
@@ -240,12 +251,12 @@ fn theJanetStringConversion() void {
 fn theTypeSetConversion() void {
     // One member: no separator at all.
     checkString(
-        fmt.formatc("%T", .{@as(c_int, c.JANET_TFLAG_NUMBER)}) catch @panic("raised"),
+        fmt.formatc("%T", .{@as(c_int, constants.JANET_TFLAG_NUMBER)}) catch @panic("raised"),
         "number",
     );
     // Two: joined with " or " rather than a comma, because the last pair always is.
     checkString(
-        fmt.formatc("%T", .{@as(c_int, c.JANET_TFLAG_NUMBER | c.JANET_TFLAG_STRING)}) catch @panic("raised"),
+        fmt.formatc("%T", .{@as(c_int, constants.JANET_TFLAG_NUMBER | constants.JANET_TFLAG_STRING)}) catch @panic("raised"),
         "number or string",
     );
     // Three: commas until the last, then " or ". Getting this backwards reads
@@ -253,7 +264,7 @@ fn theTypeSetConversion() void {
     checkString(
         fmt.formatc("%T", .{@as(
             c_int,
-            c.JANET_TFLAG_NUMBER | c.JANET_TFLAG_STRING | c.JANET_TFLAG_KEYWORD,
+            constants.JANET_TFLAG_NUMBER | constants.JANET_TFLAG_STRING | constants.JANET_TFLAG_KEYWORD,
         )}) catch @panic("raised"),
         "number, string or keyword",
     );
@@ -265,8 +276,8 @@ fn theTypeSetConversion() void {
 /// the word "abstract".
 fn theTypeNameConversion() void {
     checkString(fmt.formatc("%t", .{wrapInteger(1)}) catch @panic("raised"), "number");
-    checkString(fmt.formatc("%t", .{c.janet_ckeywordv("k")}) catch @panic("raised"), "keyword");
-    checkString(fmt.formatc("%t", .{c.janet_wrap_nil()}) catch @panic("raised"), "nil");
+    checkString(fmt.formatc("%t", .{value.fromBytes("k", .keyword)}) catch @panic("raised"), "keyword");
+    checkString(fmt.formatc("%t", .{wrap.fromNil()}) catch @panic("raised"), "nil");
 }
 
 /// `%D` and `%I` are declared in the mapping table and never reached by it,
@@ -303,7 +314,7 @@ fn flagsWidthAndPrecisionSurviveTheRebuild() void {
     checkString(fmt.formatc("[%.2f]", .{third}) catch @panic("raised"), "[0.33]");
     checkString(fmt.formatc("[%8.2f]", .{third}) catch @panic("raised"), "[    0.33]");
     checkString(
-        fmt.formatc("[%.3s]", .{@as([*c]const u8, "abcdef")}) catch @panic("raised"),
+        fmt.formatc("[%.3s]", .{@as([*]const u8, "abcdef")}) catch @panic("raised"),
         "[abc]",
     );
 
@@ -316,8 +327,8 @@ fn flagsWidthAndPrecisionSurviveTheRebuild() void {
 fn aBareStringConversionHasNoLengthLimit() void {
     var big: [600]u8 = @splat('x');
     big[big.len - 1] = 0;
-    const s = fmt.formatc("%s", .{@as([*c]const u8, &big)}) catch @panic("raised");
-    std.debug.assert(c.janet_string_length(s) == big.len - 1);
+    const s = fmt.formatc("%s", .{@as([*]const u8, &big)}) catch @panic("raised");
+    std.debug.assert(types.stringHead(s).length == big.len - 1);
 }
 
 // -------------------------------------------------------- the raise messages
@@ -329,7 +340,7 @@ fn theRefusals() void {
     // A width or precision means `snprintf`, which stops at the first zero;
     // refusing is better than silently dropping the rest.
     const raw = [_]u8{ 'a', 0, 'b' };
-    const embedded = c.janet_string(&raw, 3);
+    const embedded = strings.new(raw[0..@intCast(3)]);
     expectRaise("string contains zeros", fmt.formatc, .{ "%10S", .{embedded} });
 
     // Without a precision, `snprintf` would write as many bytes as the string
@@ -339,11 +350,11 @@ fn theRefusals() void {
     expectRaise(
         "no precision and string is too long to be formatted",
         fmt.formatc,
-        .{ "%10s", .{@as([*c]const u8, &big)} },
+        .{ "%10s", .{@as([*]const u8, &big)} },
     );
 
     // Only the Janet-array loop can run out of arguments.
-    var two = [_]c.Janet{ wrapInteger(1), wrapInteger(2) };
+    var two = [_]types.Janet{ wrapInteger(1), wrapInteger(2) };
     expectRaise("not enough values for format", formatted, .{ "%d %d %d", two[0..] });
 
     // `%j` is the one conversion that can refuse the value it was given, and it
@@ -351,7 +362,7 @@ fn theRefusals() void {
     // pretty-printed instead of writing JDN would pass every other assertion
     // here: the two spellings agree on the values that have both forms, and
     // disagree only on the values that have one.
-    var fn_slot = [_]c.Janet{eval("print")};
+    var fn_slot = [_]types.Janet{eval("print")};
     expectRaise("could not print to jdn format", fmt.formatc, .{ "%j", .{fn_slot[0]} });
     expectRaise("could not print to jdn format", formatted, .{ "%j", fn_slot[0..] });
 }
@@ -363,7 +374,7 @@ fn theRefusals() void {
 /// in any case, because a Janet program supplies `string/format`'s format
 /// string and no Janet program supplies `formatTuple`'s.
 fn theGrammarFaults() void {
-    var one = [_]c.Janet{wrapInteger(1)};
+    var one = [_]types.Janet{wrapInteger(1)};
 
     // An unrecognised conversion names the rebuilt specifier, not the original:
     // `%5z` reports as `%5z`, and a mapped one would report its mapping.
@@ -396,13 +407,13 @@ fn anOversizedItemIsRefused() void {
 
     // One byte under, which must still be accepted.
     const ok = fmt.formatc("%.99f", .{@as(f64, 1e154)}) catch @panic("raised");
-    std.debug.assert(c.janet_string_length(ok) == 255);
+    std.debug.assert(types.stringHead(ok).length == 255);
 }
 
 // -------------------------------------------------------- the two loops
 
 fn theTwoLoopsAgreeWhereTheyOverlap() void {
-    var slot = [_]c.Janet{eval("@{:a [1 2 3] :b \"x\"}")};
+    var slot = [_]types.Janet{eval("@{:a [1 2 3] :b \"x\"}")};
 
     inline for (.{ "%q", "%j", "%t", "%V" }) |spelling| {
         checkString(
@@ -411,7 +422,7 @@ fn theTwoLoopsAgreeWhereTheyOverlap() void {
         );
     }
 
-    slot[0] = c.janet_wrap_number(1.0 / 3.0);
+    slot[0] = wrap.fromNumber(1.0 / 3.0);
     const third: f64 = 1.0 / 3.0;
     checkString(
         formatted("%.4f", slot[0..]) catch @panic("raised"),
@@ -429,24 +440,24 @@ fn theTwoLoopsAgreeWhereTheyOverlap() void {
 /// the decoding is by character rather than by table. Each flag is asserted
 /// through the one spelling that sets it alone.
 fn theEightPrettySpellings() void {
-    const value = eval("@[1 2 3 4 5]");
+    const val = eval("@[1 2 3 4 5]");
 
     const has = struct {
-        fn scalar(s: c.JanetString, needle: u8) bool {
+        fn scalar(s: types.JanetString, needle: u8) bool {
             return std.mem.indexOfScalar(u8, bytes(s), needle) != null;
         }
-        fn sub(s: c.JanetString, needle: []const u8) bool {
+        fn sub(s: types.JanetString, needle: []const u8) bool {
             return std.mem.indexOf(u8, bytes(s), needle) != null;
         }
     };
 
     // Lower case: no colour. Upper case: colour.
-    std.debug.assert(!has.scalar(fmt.formatc("%p", .{value}) catch @panic("raised"), 0x1B));
-    std.debug.assert(has.scalar(fmt.formatc("%P", .{value}) catch @panic("raised"), 0x1B));
+    std.debug.assert(!has.scalar(fmt.formatc("%p", .{val}) catch @panic("raised"), 0x1B));
+    std.debug.assert(has.scalar(fmt.formatc("%P", .{val}) catch @panic("raised"), 0x1B));
 
     // q and Q are one-line; p and P are not, at a width that forces a wrap.
-    std.debug.assert(!has.scalar(fmt.formatc("%12q", .{value}) catch @panic("raised"), '\n'));
-    std.debug.assert(has.scalar(fmt.formatc("%12p", .{value}) catch @panic("raised"), '\n'));
+    std.debug.assert(!has.scalar(fmt.formatc("%12q", .{val}) catch @panic("raised"), '\n'));
+    std.debug.assert(has.scalar(fmt.formatc("%12p", .{val}) catch @panic("raised"), '\n'));
 
     // m and M keep everything; p truncates.
     const big = eval("(seq [i :range [0 400]] i)");
@@ -477,11 +488,11 @@ fn theEightPrettySpellings() void {
 /// length from the start of the whole format. Both parameters are invisible
 /// unless something was written first.
 fn aPrettyConversionAfterOtherText() void {
-    const b = c.janet_buffer(64);
-    _ = c.janet_buffer_push_cstring(b, "prefix)\n");
+    const b = buffers.new(64);
+    _ = buffers.pushCstringAbi(b, "prefix)\n");
     _ = fmt.formatb(b, "%12p", .{eval("@[1 2 3 4 5]")}) catch @panic("raised");
     // The prefix, its newline and its bracket are all still there.
-    std.debug.assert(std.mem.eql(u8, b.*.data[0..8], "prefix)\n"));
+    std.debug.assert(std.mem.eql(u8, b.*.data.?[0..8], "prefix)\n"));
 }
 
 // ----------------------------------------------- the fourth entry point
@@ -497,11 +508,11 @@ const scratch = "janet-zig-pp-format-9d24";
 /// an absent name, an empty name, a null name, a bound value of the wrong
 /// type, and a file that cannot be written.
 fn dynprintfReachesItsFourDestinations() void {
-    const sink = c.janet_buffer(0);
-    c.janet_setdyn("pp-format-out", c.janet_wrap_buffer(sink));
+    const sink = buffers.new(0);
+    vm_state.setdyn("pp-format-out", wrap.fromBuffer(sink));
     fmt.dynprintf("pp-format-out", null, "%d and %s", .{
         @as(i32, 7),
-        @as([*c]const u8, "text"),
+        @as([*]const u8, "text"),
     }) catch @panic("raised");
     checkBuffer(sink, "7 and text");
 
@@ -514,35 +525,35 @@ fn dynprintfReachesItsFourDestinations() void {
     fmt.dynprintf(null, raw, "!", .{}) catch @panic("raised");
     std.debug.assert(io_core.close(raw.?) == 0);
 
-    const check = c.janet_buffer(0);
+    const check = buffers.new(0);
     raw = io_core.open(scratch, "rb");
     std.debug.assert(raw != null);
-    _ = c.janet_buffer_extra(check, 64);
-    check.*.count = @intCast(io_core.read(raw.?, check.*.data, 64));
+    buffers.extra(check, 64) catch @panic("pp_format: buffer extra raised");
+    check.*.count = @intCast(io_core.read(raw.?, check.*.data.?, 64));
     std.debug.assert(io_core.close(raw.?) == 0);
     checkBuffer(check, "to the default42!");
 
     // A bound value of any other type is ignored entirely.
-    c.janet_setdyn("pp-format-out", wrapInteger(3));
+    vm_state.setdyn("pp-format-out", wrapInteger(3));
     fmt.dynprintf("pp-format-out", null, "dropped", .{}) catch @panic("raised");
 
     // A closed file is a raise.
-    const jf = c.janet_makejfile(@ptrCast(@alignCast(io_core.open(scratch, "rb"))), c.JANET_FILE_READ);
-    c.janet_setdyn("pp-format-out", c.janet_wrap_abstract(jf));
+    const jf = io_core.makejfile(@ptrCast(@alignCast(io_core.open(scratch, "rb"))), constants.JANET_FILE_READ);
+    vm_state.setdyn("pp-format-out", wrap.fromAbstract(jf));
     expectRaise("file is not writeable", fmt.dynprintf, .{
-        @as([*c]const u8, "pp-format-out"),
+        @as(?[*:0]const u8, "pp-format-out"),
         @as(?*anyopaque, null),
         "not writeable",
         .{},
     });
-    std.debug.assert(c.janet_file_close(jf) == 0);
+    std.debug.assert(io_core.fileClose(jf) == 0);
 
-    c.janet_setdyn("pp-format-out", c.janet_wrap_nil());
+    vm_state.setdyn("pp-format-out", wrap.fromNil());
     _ = remove(scratch);
 }
 
-extern fn fopen(path: [*c]const u8, mode: [*c]const u8) callconv(.c) ?*anyopaque;
-extern fn remove(path: [*c]const u8) callconv(.c) c_int;
+extern fn fopen(path: [*]const u8, mode: [*]const u8) callconv(.c) ?*anyopaque;
+extern fn remove(path: [*]const u8) callconv(.c) c_int;
 
 /// The stream operations, by import.
 ///
@@ -553,7 +564,7 @@ extern fn remove(path: [*c]const u8) callconv(.c) c_int;
 /// fifteen stopped being symbols -- and this file was one of the two readers
 /// that made the retirement visible. `janet_io_write` is the one that stays,
 /// because `pp_format.zig` itself is a real caller by symbol.
-const io_core = @import("subsystems").io_core;
+const io_core = @import("subsystems").io;
 
 /// A formatted raise, which was the last `janet_panicf` in the C contracts,
 /// asserted by `test/signal_core.c` until Phase 10 Part 18 moved it here.
@@ -568,16 +579,16 @@ fn panicfThunk(comptime format: [:0]const u8, args: anytype) raise.Raising(void)
 fn panicfCarriesItsFormattedMessage() void {
     expectRaise("bad 7 and true", panicfThunk, .{
         "bad %d and %v",
-        .{ @as(i32, 7), c.janet_wrap_true() },
+        .{ @as(i32, 7), wrap.fromTrue() },
     });
 }
 
 // -------------------------------------------------------------------- main
 
 pub fn run() void {
-    _ = c.janet_init();
-    test_env = c.janet_core_env(null);
-    _ = c.janet_gcroot(c.janet_wrap_table(test_env));
+    harness.init();
+    test_env = harness.coreEnv();
+    _ = gc_alloc.gcroot(wrap.fromTable(test_env));
 
     everyArgumentWidthInOneCall();
     theUnmappedIntegerConversions();
@@ -599,6 +610,6 @@ pub fn run() void {
 
     std.debug.assert(raises_fired == expected_raises);
 
-    c.janet_deinit();
+    vm_lifecycle.deinit();
     std.debug.print("pp format contract ok\n", .{});
 }

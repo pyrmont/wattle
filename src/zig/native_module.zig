@@ -12,11 +12,13 @@
 //! `.auto` calling convention, deterministic for a compiler version and
 //! target rather than documented.
 
-const abi = @import("abi.zig");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const config = @import("config");
+const c = @import("cabi");
 
 /// `raise.CFunction`, spelled out -- this object is not the runtime's module.
-const CFunction = *const fn (i32, [*c]c.Janet) error{JanetSignal}!c.Janet;
+const CFunction = *const fn ([]types.Janet) error{JanetSignal}!types.Janet;
 
 const alignment = 16;
 
@@ -29,16 +31,16 @@ inline fn crossing(value: anytype) error{JanetSignal}!@TypeOf(value) {
     return value;
 }
 
-export fn janet_zig_native_identity(argc: i32, argv: [*c]c.Janet, out: *c.Janet) callconv(.c) c_int {
+export fn janet_zig_native_identity(argc: i32, argv: [*]types.Janet, out: *types.Janet) callconv(.c) c_int {
     _ = argc;
     out.* = argv[0];
     return 1;
 }
 
-fn nativeIdentity(argc: i32, argv: [*c]c.Janet) align(alignment) error{JanetSignal}!c.Janet {
-    var result: c.Janet = undefined;
-    try crossing(c.janet_fixarity(argc, 1));
-    if (janet_zig_native_identity(argc, argv, &result) == 0) {
+fn nativeIdentity(argv: []types.Janet) align(alignment) error{JanetSignal}!types.Janet {
+    var result: types.Janet = undefined;
+    try crossing(c.janet_fixarity(@as(i32, @intCast(argv.len)), 1));
+    if (janet_zig_native_identity(@intCast(argv.len), argv.ptr, &result) == 0) {
         try crossing(c.janet_panic("Zig native identity failed"));
     }
     return result;
@@ -46,7 +48,7 @@ fn nativeIdentity(argc: i32, argv: [*c]c.Janet) align(alignment) error{JanetSign
 
 /// The one definition `JANET_MODULE_ENTRY` installs, reached from the C
 /// bridge so that the entry point stays where the loader looks for it.
-export fn janet_zig_native_defs(env: *c.JanetTable) callconv(.c) void {
+export fn janet_zig_native_defs(env: *types.JanetTable) callconv(.c) void {
     const cfun: CFunction = &nativeIdentity;
     c.janet_def(
         env,
@@ -69,11 +71,20 @@ export fn janet_zig_native_defs(env: *c.JanetTable) callconv(.c) void {
 /// finding `stdio.zig` records about `stderr` and `io_core.zig` about
 /// `JANET_EXIT`. Decision 2 ended the C ABI for module *authors*; the loader's
 /// two symbol names are the interface itself and stay exactly as they were.
-fn modConfig() callconv(.c) c.JanetBuildConfig {
-    return c.janet_config_current();
+/// `janet_config_current`, which `janet.h` spells as a macro building the
+/// struct from four version constants. `cabi.zig` carried translate-c's
+/// rendering of it until increment 5e; the constants are `config`'s since
+/// increment 4, so the struct is written here rather than reached for.
+fn modConfig() callconv(.c) types.JanetBuildConfig {
+    return .{
+        .major = config.version_major,
+        .minor = config.version_minor,
+        .patch = config.version_patch,
+        .bits = constants.JANET_CURRENT_CONFIG_BITS,
+    };
 }
 
-fn modInit(env: *c.JanetTable) callconv(.c) void {
+fn modInit(env: *types.JanetTable) callconv(.c) void {
     janet_zig_native_defs(env);
 }
 

@@ -37,31 +37,36 @@
 //! the symbol a range it never had.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const utils = @import("subsystems").utils;
+const remove_noops = @import("subsystems").optimize;
+const harness = @import("harness.zig");
+const vm_lifecycle = @import("subsystems").lifecycle;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 
 /// `JOP_JUMP`'s offset is a signed 24-bit field in the top three bytes, so a
 /// backward jump is written as a wrapped `u32`.
 fn jump(offset: i32) u32 {
     // `JOP_JUMP` translates as a `c_int`, and the offset is the top three
     // bytes of a `u32`, so both halves are widened before they are joined.
-    const opcode: u32 = c.JOP_JUMP;
+    const opcode: u32 = constants.JOP_JUMP;
     return opcode | (@as(u32, @bitCast(offset)) << 8);
 }
 
 fn theThreeTablesMoveTogether() void {
     const count = 6;
-    const bytecode: [*]u32 = @ptrCast(@alignCast(c.janet_malloc(count * @sizeOf(u32)).?));
-    const source_map: [*]c.JanetSourceMapping =
-        @ptrCast(@alignCast(c.janet_malloc(count * @sizeOf(c.JanetSourceMapping)).?));
-    var symbols: [2]c.JanetSymbolMap = @splat(std.mem.zeroes(c.JanetSymbolMap));
+    const bytecode: [*]u32 = @ptrCast(@alignCast(utils.malloc(count * @sizeOf(u32)).?));
+    const source_map: [*]types.JanetSourceMapping =
+        @ptrCast(@alignCast(utils.malloc(count * @sizeOf(types.JanetSourceMapping)).?));
+    var symbols: [2]types.JanetSymbolMap = @splat(std.mem.zeroes(types.JanetSymbolMap));
 
-    bytecode[0] = c.JOP_NOOP;
-    bytecode[1] = c.JOP_LOAD_NIL;
-    bytecode[2] = c.JOP_JUMP_IF | (@as(u32, 2) << 8) | (@as(u32, 3) << 16);
-    bytecode[3] = c.JOP_NOOP;
+    bytecode[0] = constants.JOP_NOOP;
+    bytecode[1] = constants.JOP_LOAD_NIL;
+    bytecode[2] = constants.JOP_JUMP_IF | (@as(u32, 2) << 8) | (@as(u32, 3) << 16);
+    bytecode[3] = constants.JOP_NOOP;
     bytecode[4] = jump(-3);
-    bytecode[5] = c.JOP_RETURN_NIL;
+    bytecode[5] = constants.JOP_RETURN_NIL;
 
     // Distinct line and column per instruction, so that a mapping that moved
     // the wrong entry is visible rather than coincidentally right.
@@ -75,54 +80,54 @@ fn theThreeTablesMoveTogether() void {
     symbols[1].birth_pc = std.math.maxInt(u32);
     symbols[1].death_pc = 0;
 
-    var definition: c.JanetFuncDef = std.mem.zeroes(c.JanetFuncDef);
+    var definition: types.JanetFuncDef = std.mem.zeroes(types.JanetFuncDef);
     definition.bytecode = bytecode;
     definition.bytecode_length = count;
     definition.sourcemap = source_map;
     definition.symbolmap = &symbols;
     definition.symbolmap_length = symbols.len;
 
-    c.janet_bytecode_remove_noops(&definition);
+    remove_noops.bytecodeRemoveNoops(&definition);
 
     std.debug.assert(definition.bytecode_length == 4);
-    std.debug.assert(definition.bytecode[0] == c.JOP_LOAD_NIL);
-    std.debug.assert(definition.bytecode[1] ==
-        (c.JOP_JUMP_IF | (@as(u32, 2) << 8) | (@as(u32, 2) << 16)));
-    std.debug.assert(definition.bytecode[2] == jump(-2));
-    std.debug.assert(definition.bytecode[3] == c.JOP_RETURN_NIL);
+    std.debug.assert(definition.bytecode.?[0] == constants.JOP_LOAD_NIL);
+    std.debug.assert(definition.bytecode.?[1] ==
+        (constants.JOP_JUMP_IF | (@as(u32, 2) << 8) | (@as(u32, 2) << 16)));
+    std.debug.assert(definition.bytecode.?[2] == jump(-2));
+    std.debug.assert(definition.bytecode.?[3] == constants.JOP_RETURN_NIL);
 
     // Lines 10 and 13 belonged to the two noops and go with them.
-    std.debug.assert(definition.sourcemap[0].line == 11);
-    std.debug.assert(definition.sourcemap[1].line == 12);
-    std.debug.assert(definition.sourcemap[2].line == 14);
-    std.debug.assert(definition.sourcemap[3].line == 15);
+    std.debug.assert(definition.sourcemap.?[0].line == 11);
+    std.debug.assert(definition.sourcemap.?[1].line == 12);
+    std.debug.assert(definition.sourcemap.?[2].line == 14);
+    std.debug.assert(definition.sourcemap.?[3].line == 15);
 
     std.debug.assert(symbols[0].birth_pc == 0);
     std.debug.assert(symbols[0].death_pc == 3);
     std.debug.assert(symbols[1].birth_pc == std.math.maxInt(u32));
     std.debug.assert(symbols[1].death_pc == 0);
 
-    c.janet_free(@ptrCast(definition.bytecode));
-    c.janet_free(@ptrCast(source_map));
+    utils.free(@ptrCast(definition.bytecode));
+    utils.free(@ptrCast(source_map));
 }
 
 /// A function with nothing to remove, and with no source map or symbol map at
 /// all. The pass must not walk a null table, and must not reallocate to the
 /// same length it already has.
 fn aFunctionWithNoNoopsIsUntouched() void {
-    const bytecode: [*]u32 = @ptrCast(@alignCast(c.janet_malloc(@sizeOf(u32)).?));
-    bytecode[0] = c.JOP_RETURN_NIL;
+    const bytecode: [*]u32 = @ptrCast(@alignCast(utils.malloc(@sizeOf(u32)).?));
+    bytecode[0] = constants.JOP_RETURN_NIL;
 
-    var definition: c.JanetFuncDef = std.mem.zeroes(c.JanetFuncDef);
+    var definition: types.JanetFuncDef = std.mem.zeroes(types.JanetFuncDef);
     definition.bytecode = bytecode;
     definition.bytecode_length = 1;
 
-    c.janet_bytecode_remove_noops(&definition);
+    remove_noops.bytecodeRemoveNoops(&definition);
 
     std.debug.assert(definition.bytecode_length == 1);
-    std.debug.assert(definition.bytecode[0] == c.JOP_RETURN_NIL);
+    std.debug.assert(definition.bytecode.?[0] == constants.JOP_RETURN_NIL);
 
-    c.janet_free(@ptrCast(definition.bytecode));
+    utils.free(@ptrCast(definition.bytecode));
 }
 
 /// The runtime is initialised here and by nine sibling contracts it is not,
@@ -135,8 +140,8 @@ fn aFunctionWithNoNoopsIsUntouched() void {
 /// `FOUND.md` has the bisection, and the no-argument driver run aborted under
 /// glibc for eleven parts because of these two missing lines.
 pub fn run() void {
-    _ = c.janet_init();
+    harness.init();
     theThreeTablesMoveTogether();
     aFunctionWithNoNoopsIsUntouched();
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }

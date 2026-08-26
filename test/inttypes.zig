@@ -29,10 +29,18 @@
 //! decide to answer something else.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
 const subsystems = @import("subsystems");
+const gc_alloc = @import("subsystems").gc_alloc;
+const buffers = @import("subsystems").value.buffers;
+const core_env = @import("subsystems").env;
+const vm_entry = @import("subsystems").vm_entry;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const inttypes = @import("subsystems").inttypes;
 
 const AbstractType = subsystems.abstract_type.AbstractType;
 
@@ -41,33 +49,33 @@ const AbstractType = subsystems.abstract_type.AbstractType;
 extern const janet_s64_type: AbstractType;
 extern const janet_u64_type: AbstractType;
 
-var environment: [*c]c.JanetTable = undefined;
-var compare_fn: [*c]c.JanetFunction = undefined;
+var environment: *types.JanetTable = undefined;
+var compare_fn: *types.JanetFunction = undefined;
 
-fn compareValues(a: c.Janet, b: c.Janet) f64 {
-    var argv = [2]c.Janet{ a, b };
-    var out: c.Janet = undefined;
-    std.debug.assert(c.janet_pcall(compare_fn, 2, &argv, &out, null) == c.JANET_SIGNAL_OK);
-    std.debug.assert(harness.isType(out, c.JANET_NUMBER));
-    return c.janet_unwrap_number(out);
+fn compareValues(a: types.Janet, b: types.Janet) f64 {
+    var argv = [2]types.Janet{ a, b };
+    var out: types.Janet = undefined;
+    std.debug.assert(vm_entry.pcall(compare_fn, 2, &argv, &out, null) == constants.JANET_SIGNAL_OK);
+    std.debug.assert(harness.isType(out, constants.JANET_NUMBER));
+    return wrap.toNumber(out);
 }
 
 fn compareS64Double(x: i64, y: f64) f64 {
-    return compareValues(c.janet_wrap_s64(x), c.janet_wrap_number(y));
+    return compareValues(inttypes.wrapS64(x), wrap.fromNumber(y));
 }
 
 fn compareU64Double(x: u64, y: f64) f64 {
-    return compareValues(c.janet_wrap_u64(x), c.janet_wrap_number(y));
+    return compareValues(inttypes.wrapU64(x), wrap.fromNumber(y));
 }
 
 /// Render through the abstract type's own `tostring`, which raises.
-fn render(at: *const AbstractType, p: *const anyopaque, b: *c.JanetBuffer) !void {
+fn render(at: *const AbstractType, p: *const anyopaque, b: *types.JanetBuffer) !void {
     try at.tostring.?(@constCast(p), b);
 }
 
-fn bufferIs(b: *c.JanetBuffer, expected: []const u8) bool {
+fn bufferIs(b: *types.JanetBuffer, expected: []const u8) bool {
     const count: usize = @intCast(b.count);
-    return count == expected.len and std.mem.eql(u8, b.data[0..count], expected);
+    return count == expected.len and std.mem.eql(u8, b.data.?[0..count], expected);
 }
 
 // ------------------------------------------------------------------- hash
@@ -183,13 +191,13 @@ fn theUnsignedAgainstDoubles() void {
 /// The two 64-bit types against each other, where neither can be widened into
 /// the other without losing a value.
 fn theTwoTypesAgainstEachOther() void {
-    const s_neg = c.janet_wrap_s64(-1);
-    const s_zero = c.janet_wrap_s64(0);
-    const s_max = c.janet_wrap_s64(std.math.maxInt(i64));
-    const u_zero = c.janet_wrap_u64(0);
-    const u_small = c.janet_wrap_u64(1);
-    const u_huge = c.janet_wrap_u64(@as(u64, std.math.maxInt(i64)) + 1);
-    const u_max = c.janet_wrap_u64(std.math.maxInt(u64));
+    const s_neg = inttypes.wrapS64(-1);
+    const s_zero = inttypes.wrapS64(0);
+    const s_max = inttypes.wrapS64(std.math.maxInt(i64));
+    const u_zero = inttypes.wrapU64(0);
+    const u_small = inttypes.wrapU64(1);
+    const u_huge = inttypes.wrapU64(@as(u64, std.math.maxInt(i64)) + 1);
+    const u_max = inttypes.wrapU64(std.math.maxInt(u64));
 
     // A negative signed value is below every unsigned value.
     std.debug.assert(compareValues(s_neg, u_zero) == -1);
@@ -206,13 +214,13 @@ fn theTwoTypesAgainstEachOther() void {
     std.debug.assert(compareValues(s_zero, u_zero) == 0);
     std.debug.assert(compareValues(s_zero, u_small) == -1);
     std.debug.assert(compareValues(u_small, s_zero) == 1);
-    std.debug.assert(compareValues(s_max, c.janet_wrap_u64(std.math.maxInt(i64))) == 0);
+    std.debug.assert(compareValues(s_max, inttypes.wrapU64(std.math.maxInt(i64))) == 0);
 }
 
 // ------------------------------------------------------------- formatting
 
 fn theFormatters() !void {
-    const b: *c.JanetBuffer = c.janet_buffer(0);
+    const b: *types.JanetBuffer = buffers.new(0);
 
     var s: i64 = 0;
     try render(&janet_s64_type, &s, b);
@@ -236,7 +244,7 @@ fn theFormatters() !void {
 
     // Formatting appends rather than replacing.
     b.count = 0;
-    _ = c.janet_buffer_push_cstring(b, "n=");
+    _ = buffers.pushCstringAbi(b, "n=");
     u = 42;
     try render(&janet_u64_type, &u, b);
     std.debug.assert(bufferIs(b, "n=42"));
@@ -251,7 +259,7 @@ fn theFormatters() !void {
 /// undefined division — `FOUND.md` has it, unresolved. Pinning either outcome
 /// would assert behaviour that has not been decided.
 fn theFlooredDivision() !void {
-    const cases = [_]struct { []const u8, []const u8 }{
+    const cases = [_]struct { [:0]const u8, []const u8 }{
         // Floored division rounds toward negative infinity, unlike `/`.
         .{ "(div (int/s64 7) (int/s64 2))", "3" },
         .{ "(div (int/s64 -7) (int/s64 2))", "-4" },
@@ -279,12 +287,12 @@ fn theFlooredDivision() !void {
     };
 
     for (cases) |case| {
-        var result: c.Janet = undefined;
-        std.debug.assert(c.janet_dostring(environment, case[0].ptr, "inttypes-contract", &result) == 0);
-        std.debug.assert(c.janet_is_int(result) == c.JANET_INT_S64);
+        var result: types.Janet = undefined;
+        std.debug.assert(core_env.dostring(environment, case[0].ptr, "inttypes-contract", &result) == 0);
+        std.debug.assert(inttypes.isInt(result) == constants.JANET_INT_S64);
 
-        const b: *c.JanetBuffer = c.janet_buffer(0);
-        try render(&janet_s64_type, c.janet_unwrap_abstract(result).?, b);
+        const b: *types.JanetBuffer = buffers.new(0);
+        try render(&janet_s64_type, wrap.toAbstract(result).?, b);
         std.debug.assert(bufferIs(b, case[1]));
     }
 
@@ -299,14 +307,14 @@ fn theFlooredDivision() !void {
     // instrument for that. `harness.core("div")` fails its type assertion,
     // which is how this was found.
     const closure = eval("(fn [] (div (int/s64 1) (int/s64 0)))");
-    var out: c.Janet = undefined;
-    std.debug.assert(c.janet_pcall(
-        c.janet_unwrap_function(closure),
+    var out: types.Janet = undefined;
+    std.debug.assert(vm_entry.pcall(
+        wrap.toFunction(closure),
         0,
         null,
         &out,
         null,
-    ) == c.JANET_SIGNAL_ERROR);
+    ) == constants.JANET_SIGNAL_ERROR);
 }
 
 /// An operand the boxed types cannot convert refuses *catchably*.
@@ -317,7 +325,7 @@ fn theFlooredDivision() !void {
 /// under test is not that the conversion refuses — `theSignedAgainstDoubles`
 /// covers that — but that the refusal *arrives*.
 ///
-/// `Box(T).unwrap` was bound to `janet_unwrap_s64`, the C face, from inside
+/// `Box(T).unwrap` was bound to `janet_unwrap_s64`, the abi, from inside
 /// `raise.Raising` methods, so every one of these killed the process with
 /// `a raise was reported to a C caller and never consumed` instead of raising.
 /// That is Part 13's defect in the file Part 13 fixed it for, hidden behind a
@@ -336,26 +344,26 @@ fn anUnconvertibleOperandRefusesCatchably() void {
     };
     for (cases) |source| {
         const closure = eval(source);
-        var out: c.Janet = undefined;
-        std.debug.assert(c.janet_pcall(
-            c.janet_unwrap_function(closure),
+        var out: types.Janet = undefined;
+        std.debug.assert(vm_entry.pcall(
+            wrap.toFunction(closure),
             0,
             null,
             &out,
             null,
-        ) == c.JANET_SIGNAL_ERROR);
+        ) == constants.JANET_SIGNAL_ERROR);
         // And the payload is the conversion's own message, which is what says
         // the refusal travelled rather than being manufactured downstream.
-        std.debug.assert(harness.isType(out, c.JANET_STRING));
-        const message = c.janet_unwrap_string(out);
-        const length: usize = @intCast(c.janet_string_length(message));
+        std.debug.assert(harness.isType(out, constants.JANET_STRING));
+        const message = wrap.toString(out);
+        const length: usize = @intCast(types.stringHead(message).length);
         std.debug.assert(std.mem.indexOf(u8, message[0..length], "can not convert") != null);
     }
 }
 
-fn eval(source: [*:0]const u8) c.Janet {
-    var out: c.Janet = undefined;
-    std.debug.assert(c.janet_dostring(environment, source, "inttypes-contract", &out) == 0);
+fn eval(source: [*:0]const u8) types.Janet {
+    var out: types.Janet = undefined;
+    std.debug.assert(core_env.dostring(environment, source, "inttypes-contract", &out) == 0);
     return out;
 }
 
@@ -371,14 +379,14 @@ fn body() !void {
 }
 
 pub fn run() void {
-    _ = c.janet_init();
-    environment = c.janet_core_env(null);
+    harness.init();
+    environment = harness.coreEnv();
 
     const fun = eval("(fn [a b] (compare a b))");
-    compare_fn = c.janet_unwrap_function(fun);
-    c.janet_gcroot(fun);
+    compare_fn = wrap.toFunction(fun);
+    gc_alloc.gcroot(fun);
 
     body() catch @panic("inttypes: a kernel raised unexpectedly");
 
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }

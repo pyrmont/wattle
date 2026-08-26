@@ -15,12 +15,12 @@
 //! behaviour rather than an oversight, and the assertion below is here so that
 //! a port cannot quietly tighten it.
 //!
-//! `util.h` is the one core header `abi.zig` deliberately does not translate:
-//! its dynamic-library section falls through to `<dlfcn.h>` when
-//! `JANET_WINDOWS` is undefined, which breaks the Windows cross-compile for
-//! every subsystem at once. Its rule is that a caller declares what it needs
-//! directly, because these take primitives and no Janet type crosses. Two
-//! declarations is what that costs here.
+//! `util.h` was the one core header the shared translation deliberately left
+//! out: its dynamic-library section falls through to `<dlfcn.h>` when
+//! `JANET_WINDOWS` is undefined, which broke the Windows cross-compile for
+//! every subsystem at once. Its rule outlived it -- a caller declares what it
+//! needs directly, because these take primitives and no Janet type crosses.
+//! Two declarations is what that costs here.
 
 const std = @import("std");
 

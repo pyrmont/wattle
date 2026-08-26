@@ -59,19 +59,27 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const c = @import("cabi");
 const options = @import("options");
 const abstract_type = @import("subsystems").abstract_type;
+const tables = @import("subsystems").value.tables;
+const gc_alloc = @import("subsystems").gc_alloc;
+const gc_mark = @import("subsystems").gc_mark;
+const harness = @import("harness.zig");
+const wrap = @import("subsystems").value.wrap;
+const abstracts = @import("subsystems").value.abstracts;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const arrays = @import("subsystems").value.arrays;
 const AbstractType = abstract_type.AbstractType;
 
-/// `options.ev_core` is `hasEv(options)`, which is already
+/// `options.ev` is `hasEv(options)`, which is already
 /// `ev and !single_threaded`. Windows is cross-compiled and never executed
 /// here, so its path is left out rather than written blind — the same
 /// condition, and the same reason, as `test/fiber_core.zig`.
-const has_threads = options.ev_core and builtin.os.tag != .windows;
+const has_threads = options.ev and builtin.os.tag != .windows;
 
-fn headerOf(pointer: ?*anyopaque) *c.JanetGCObject {
+fn headerOf(pointer: ?*anyopaque) *types.JanetGCObject {
     return @ptrCast(@alignCast(pointer.?));
 }
 
@@ -82,7 +90,7 @@ fn headerOf(pointer: ?*anyopaque) *c.JanetGCObject {
 /// test.
 fn walkBlocks() usize {
     var count: usize = 0;
-    var current = c.janet_vm.blocks;
+    var current = c.vm().blocks;
     while (current != null and count < 1_000_000) {
         count += 1;
         current = @ptrCast(headerOf(current).data.next);
@@ -92,7 +100,7 @@ fn walkBlocks() usize {
 
 /// Blocks counted but not reachable from the list. Zero in a healthy runtime.
 fn orphanedBlocks() isize {
-    return @as(isize, @intCast(c.janet_vm.block_count)) - @as(isize, @intCast(walkBlocks()));
+    return @as(isize, @intCast(c.vm().block_count)) - @as(isize, @intCast(walkBlocks()));
 }
 
 // ------------------------------------------- allocation from callbacks
@@ -114,7 +122,7 @@ const at_child: AbstractType = .{ .name = "gc-stress/child", .gc = childGc };
 fn allocatingGcmark(_: ?*anyopaque, _: usize) callconv(.c) c_int {
     if (allocations_left > 0) {
         allocations_left -= 1;
-        _ = c.janet_abstract(abstract_type.stored(&at_child), 8);
+        _ = abstracts.new(abstract_type.stored(&at_child), 8);
     }
     return 0;
 }
@@ -135,7 +143,7 @@ fn allocatingGc(_: ?*anyopaque, _: usize) callconv(.c) c_int {
     parent_finalized += 1;
     if (allocations_left > 0) {
         allocations_left -= 1;
-        _ = c.janet_abstract(abstract_type.stored(&at_child), 8);
+        _ = abstracts.new(abstract_type.stored(&at_child), 8);
     }
     return 0;
 }
@@ -161,17 +169,17 @@ fn allocationFromGcmarkDiesInTheSameCollection() void {
     parent_finalized = 0;
     allocations_left = 1;
 
-    const parent = c.janet_wrap_abstract(c.janet_abstract(abstract_type.stored(&at_marking_parent), 8));
-    c.janet_gcroot(parent);
+    const parent = wrap.fromAbstract(abstracts.new(abstract_type.stored(&at_marking_parent), 8));
+    gc_alloc.gcroot(parent);
 
-    c.janet_collect();
+    gc_mark.collect();
     std.debug.assert(allocations_left == 0); // the callback ran
     std.debug.assert(child_finalized == 1); // and what it made is already gone
     std.debug.assert(parent_finalized == 0); // the parent itself is rooted
     std.debug.assert(orphanedBlocks() == orphans_before);
 
-    _ = c.janet_gcunroot(parent);
-    c.janet_collect();
+    _ = gc_alloc.gcunroot(parent);
+    gc_mark.collect();
     std.debug.assert(parent_finalized == 1);
     std.debug.assert(child_finalized == 1); // nothing further to finalize
 }
@@ -191,22 +199,22 @@ fn finalizerAllocationSurvivesWhenMidList() void {
     parent_finalized = 0;
     allocations_left = 1;
 
-    _ = c.janet_abstract(abstract_type.stored(&at_finalizing_parent), 8); // unrooted: dies
-    const keeper = c.janet_wrap_abstract(c.janet_abstract(abstract_type.stored(&at_child), 8));
-    c.janet_gcroot(keeper);
+    _ = abstracts.new(abstract_type.stored(&at_finalizing_parent), 8); // unrooted: dies
+    const keeper = wrap.fromAbstract(abstracts.new(abstract_type.stored(&at_child), 8));
+    gc_alloc.gcroot(keeper);
 
-    c.janet_collect();
+    gc_mark.collect();
     std.debug.assert(parent_finalized == 1);
     std.debug.assert(allocations_left == 0);
     std.debug.assert(child_finalized == 0); // survived this cycle
     std.debug.assert(orphanedBlocks() == orphans_before); // and is on the list
 
-    c.janet_collect();
+    gc_mark.collect();
     std.debug.assert(child_finalized == 1); // collected on the next
     std.debug.assert(orphanedBlocks() == orphans_before);
 
-    _ = c.janet_gcunroot(keeper);
-    c.janet_collect();
+    _ = gc_alloc.gcunroot(keeper);
+    gc_mark.collect();
     std.debug.assert(child_finalized == 2); // the keeper, in turn
     std.debug.assert(orphanedBlocks() == orphans_before);
 }
@@ -227,17 +235,17 @@ fn finalizerAllocationIsOrphanedAtTheHead() void {
     allocations_left = 1;
 
     // Allocated last and left unrooted, so it is both the list head and dead.
-    _ = c.janet_abstract(abstract_type.stored(&at_finalizing_parent), 8);
+    _ = abstracts.new(abstract_type.stored(&at_finalizing_parent), 8);
 
-    c.janet_collect();
+    gc_mark.collect();
     std.debug.assert(parent_finalized == 1);
     std.debug.assert(allocations_left == 0); // the callback allocated
     std.debug.assert(child_finalized == 0); // and it was never freed
     std.debug.assert(orphanedBlocks() == orphans_before + 1); // counted, not listed
 
     // No number of collections reclaims it, because nothing can reach it.
-    c.janet_collect();
-    c.janet_collect();
+    gc_mark.collect();
+    gc_mark.collect();
     std.debug.assert(child_finalized == 0);
     std.debug.assert(orphanedBlocks() == orphans_before + 1);
 }
@@ -261,12 +269,12 @@ const at_shared: AbstractType = .{ .name = "gc-stress/shared", .gc = threadedGc 
 /// The reference it takes is balanced before it exits, so the count returns to
 /// exactly what the main thread left.
 fn hammerRefcount() void {
-    _ = c.janet_init();
+    harness.init();
     for (0..stress_rounds) |_| {
-        _ = c.janet_abstract_incref(shared_abstract);
-        _ = c.janet_abstract_decref(shared_abstract);
+        _ = abstracts.incref(shared_abstract);
+        _ = abstracts.decref(shared_abstract);
     }
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }
 
 /// The refcount is the whole cross-thread contract for a threaded abstract,
@@ -275,7 +283,7 @@ fn hammerRefcount() void {
 /// reference two thousand times each; a lost update shows up as a count that
 /// is not one.
 fn theRefcountIsAtomicAcrossThreads() !void {
-    shared_abstract = c.janet_abstract_threaded(abstract_type.stored(&at_shared), 16);
+    shared_abstract = abstracts.threaded(abstract_type.stored(&at_shared), 16);
     std.debug.assert(shared_abstract != null);
 
     var threads: [stress_threads]std.Thread = undefined;
@@ -283,20 +291,20 @@ fn theRefcountIsAtomicAcrossThreads() !void {
     for (threads) |thread| thread.join();
 
     // Back to the single reference this thread made it with.
-    std.debug.assert(c.janet_abstract_incref(shared_abstract) == 2);
-    std.debug.assert(c.janet_abstract_decref(shared_abstract) == 1);
+    std.debug.assert(abstracts.incref(shared_abstract) == 2);
+    std.debug.assert(abstracts.decref(shared_abstract) == 1);
 }
 
 var child_block_count: usize = 0;
 var child_saw_main_blocks: usize = 0;
 
 fn allocateInChild() void {
-    child_saw_main_blocks = c.janet_vm.block_count;
-    _ = c.janet_init();
-    for (0..64) |_| _ = c.janet_array(8);
-    child_block_count = c.janet_vm.block_count;
-    c.janet_collect();
-    c.janet_deinit();
+    child_saw_main_blocks = c.vm().block_count;
+    harness.init();
+    for (0..64) |_| _ = arrays.new(8);
+    child_block_count = c.vm().block_count;
+    gc_mark.collect();
+    vm_lifecycle.deinit();
 }
 
 /// Each thread's heap belongs to that thread. A port that reached a
@@ -304,7 +312,7 @@ fn allocateInChild() void {
 /// every other test in the tree: the damage is invisible until two runtimes
 /// exist at once, and then it is heap corruption rather than a wrong answer.
 fn eachThreadHasItsOwnHeap() !void {
-    const main_blocks_before = c.janet_vm.block_count;
+    const main_blocks_before = c.vm().block_count;
     const main_walk_before = walkBlocks();
 
     const thread = try std.Thread.spawn(.{}, allocateInChild, .{});
@@ -314,7 +322,7 @@ fn eachThreadHasItsOwnHeap() !void {
     std.debug.assert(child_saw_main_blocks == 0);
     std.debug.assert(child_block_count >= 64);
     // And nothing it did touched this thread's heap.
-    std.debug.assert(c.janet_vm.block_count == main_blocks_before);
+    std.debug.assert(c.vm().block_count == main_blocks_before);
     std.debug.assert(walkBlocks() == main_walk_before);
 }
 
@@ -322,7 +330,7 @@ fn eachThreadHasItsOwnHeap() !void {
 /// once. This one drops it on the main thread; the point is the count, not the
 /// thread identity, which no part of the runtime promises.
 fn theLastReferenceFinalizesOnce() !void {
-    const abstract = c.janet_abstract_threaded(abstract_type.stored(&at_shared), 16);
+    const abstract = abstracts.threaded(abstract_type.stored(&at_shared), 16);
 
     threaded_finalized = 0;
     shared_abstract = abstract;
@@ -333,8 +341,8 @@ fn theLastReferenceFinalizesOnce() !void {
 
     // This thread still holds the reference it was made with. Dropping it is
     // what frees the block and runs the finalizer.
-    _ = c.janet_table_remove(&c.janet_vm.threaded_abstracts, c.janet_wrap_abstract(abstract));
-    std.debug.assert(c.janet_abstract_decref_maybe_free(abstract) == 0);
+    _ = tables.remove(&c.vm().threaded_abstracts, wrap.fromAbstract(abstract));
+    std.debug.assert(abstracts.decrefMaybeFree(abstract) == 0);
     std.debug.assert(threaded_finalized == 1);
 }
 
@@ -351,14 +359,14 @@ fn repeatedCycles() void {
         parent_finalized = 0;
         allocations_left = 1;
 
-        const parent = c.janet_wrap_abstract(
-            c.janet_abstract(abstract_type.stored(&at_marking_parent), 8),
+        const parent = wrap.fromAbstract(
+            abstracts.new(abstract_type.stored(&at_marking_parent), 8),
         );
-        c.janet_gcroot(parent);
-        c.janet_collect();
+        gc_alloc.gcroot(parent);
+        gc_mark.collect();
         std.debug.assert(child_finalized == 1);
-        _ = c.janet_gcunroot(parent);
-        c.janet_collect();
+        _ = gc_alloc.gcunroot(parent);
+        gc_mark.collect();
         std.debug.assert(parent_finalized == 1);
         std.debug.assert(orphanedBlocks() == orphans_before);
     }
@@ -381,10 +389,10 @@ fn body() !void {
 }
 
 pub fn run() void {
-    _ = c.janet_init();
-    c.janet_gcroot(c.janet_wrap_table(c.janet_core_env(null)));
+    harness.init();
+    gc_alloc.gcroot(wrap.fromTable(harness.coreEnv()));
 
     body() catch @panic("gc_stress: a thread could not be started");
 
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }

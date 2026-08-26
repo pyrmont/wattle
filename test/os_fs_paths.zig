@@ -38,15 +38,20 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const c = @import("cabi");
 const harness = @import("harness.zig");
+const value = @import("subsystems").value;
+const config = @import("config");
+const utils = @import("subsystems").utils;
+const core_env = @import("subsystems").env;
+const vm_lifecycle = @import("subsystems").lifecycle;
 
 /// The runtime's own stat reader, reached by *import* rather than by symbol.
 ///
 /// This is the first contract in the tree that needs Phase 11 Part 1's
 /// arrangement for something other than a raise. `sys/stat.h` is deliberately
-/// not in `abi.zig`'s translation -- `os_abi.h` records why -- so a contract
+/// outside the host translations -- `os/abi.h` records why -- so a contract
 /// linking `libjanet.a` had to translate `struct stat` a second time and read
 /// `st_ino`, `st_nlink` and `st_mtimespec` out of its own copy. Inside the
 /// compilation there is no second copy: `host_stat.statRead` is the same
@@ -111,8 +116,8 @@ fn errnoValue() c_int {
     return std.c._errno().*;
 }
 
-fn setErrno(value: c_int) void {
-    std.c._errno().* = value;
+fn setErrno(code: c_int) void {
+    std.c._errno().* = code;
 }
 
 // ------------------------------------------------------------ enumeration
@@ -232,7 +237,7 @@ fn theLinks() void {
 
     std.debug.assert(janet_os_remove(hard) == 0);
 
-    if (@hasDecl(c, "JANET_NO_SYMLINKS")) return;
+    if (!config.symlinks) return;
 
     std.debug.assert(janet_os_symlink("first", soft) == 0);
 
@@ -288,10 +293,10 @@ fn theTimestamps() void {
 // --------------------------------------------------------------- realpath
 
 fn theRealpath() void {
-    if (@hasDecl(c, "JANET_NO_REALPATH")) return;
+    if (!config.realpath) return;
 
     const resolved = janet_os_realpath(dir).?;
-    defer c.janet_free(@ptrCast(resolved));
+    defer utils.free(@ptrCast(resolved));
     const absolute = std.mem.span(resolved);
 
     // Absolute, and ending in the directory's own name.
@@ -302,7 +307,7 @@ fn theRealpath() void {
     // Redundant segments are removed, so two spellings of one path agree.
     const indirect = "./" ++ dir ++ "/../" ++ dir ++ "/.";
     const again = janet_os_realpath(indirect).?;
-    defer c.janet_free(@ptrCast(again));
+    defer utils.free(@ptrCast(again));
     std.debug.assert(std.mem.eql(u8, absolute, std.mem.span(again)));
 
     // A missing path fails on POSIX. Windows' `_fullpath` succeeds instead and
@@ -314,11 +319,11 @@ fn theRealpath() void {
 
 // -------------------------------------------------------- the Janet surface
 
-var environment: [*c]c.JanetTable = undefined;
+var environment: *types.JanetTable = undefined;
 
 fn eval(source: [*:0]const u8) void {
-    var result: c.Janet = undefined;
-    std.debug.assert(c.janet_dostring(environment, source, "os-fs-paths-contract", &result) == 0);
+    var result: types.Janet = undefined;
+    std.debug.assert(core_env.dostring(environment, source, "os-fs-paths-contract", &result) == 0);
 }
 
 fn theCoreFunctions() void {
@@ -341,7 +346,7 @@ fn theCoreFunctions() void {
         \\(assert (= :kept (first supplied)))
     );
 
-    if (!@hasDecl(c, "JANET_NO_SYMLINKS")) {
+    if (config.symlinks) {
         // `os/link` is hard by default and symbolic when asked; `os/symlink`
         // is the same as passing true.
         eval(
@@ -371,7 +376,7 @@ fn theCoreFunctions() void {
         \\(assert (> ((os/stat "janet-zig-os-paths-public-4f70/file") :modified) 1672531200))
     );
 
-    if (!@hasDecl(c, "JANET_NO_REALPATH")) {
+    if (config.realpath) {
         eval(
             \\(assert (= (os/realpath ".") (os/cwd)))
             \\(def resolved (os/realpath "janet-zig-os-paths-public-4f70"))
@@ -384,22 +389,22 @@ fn theCoreFunctions() void {
 /// The refusals, which the C contract could only reach through `protect`
 /// inside a Janet string.
 fn theRefusals() void {
-    var args: [2]c.Janet = undefined;
-    args[0] = c.janet_cstringv(missing);
+    var args: [2]types.Janet = undefined;
+    args[0] = value.fromBytes(missing, .string);
 
-    std.debug.assert(harness.raised(harness.core("os/dir"), .{ @as(i32, 1), &args }) != null);
-    std.debug.assert(harness.raised(harness.core("os/touch"), .{ @as(i32, 1), &args }) != null);
+    std.debug.assert(harness.raised(harness.core("os/dir"), .{args[0..1]}) != null);
+    std.debug.assert(harness.raised(harness.core("os/touch"), .{args[0..1]}) != null);
 
-    if (!@hasDecl(c, "JANET_NO_REALPATH")) {
-        std.debug.assert(harness.raised(harness.core("os/realpath"), .{ @as(i32, 1), &args }) != null);
+    if (config.realpath) {
+        std.debug.assert(harness.raised(harness.core("os/realpath"), .{args[0..1]}) != null);
     }
 
-    if (!@hasDecl(c, "JANET_NO_SYMLINKS")) {
+    if (config.symlinks) {
         // Reading a link that is not one, and linking onto a name that exists.
-        args[0] = c.janet_cstringv(public_dir ++ "/file");
-        std.debug.assert(harness.raised(harness.core("os/readlink"), .{ @as(i32, 1), &args }) != null);
+        args[0] = value.fromBytes(public_dir ++ "/file", .string);
+        std.debug.assert(harness.raised(harness.core("os/readlink"), .{args[0..1]}) != null);
         args[1] = args[0];
-        std.debug.assert(harness.raised(harness.core("os/link"), .{ @as(i32, 2), &args }) != null);
+        std.debug.assert(harness.raised(harness.core("os/link"), .{args[0..2]}) != null);
     }
 }
 
@@ -423,12 +428,12 @@ pub fn run() void {
     theTimestamps();
     if (unix) theRealpath();
 
-    _ = c.janet_init();
-    environment = c.janet_core_env(null);
+    harness.init();
+    environment = harness.coreEnv();
     theCoreFunctions();
     theRefusals();
     tearDown();
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 
     cleanPaths();
 }

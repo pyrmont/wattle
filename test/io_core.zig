@@ -32,20 +32,33 @@
 //! typed as raising -- so the callbacks are called and the error is handled.
 //! `test/ev_loop.c` is the last user of both shims.
 //!
-//! **The public API half still goes through the faces**, deliberately. That
+//! **The public API half still goes through the abis**, deliberately. That
 //! section is about `janet.h`'s entry points, and `janet_getjfile` and
 //! `janet_getfile` are `raise.reported` wrappers whose report is exactly what
-//! a C embedder sees -- so `harness.faceRaised` is the right instrument and
+//! a C embedder sees -- so `harness.abiRaised` is the right instrument and
 //! `harness.raised` would test something else. Rule 15.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const raise = @import("raise");
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
-const io_core = subsystems.io_core;
+const value = @import("subsystems").value;
+const strings = @import("subsystems").value.strings;
+const core_env = @import("subsystems").env;
+const vm_state = @import("subsystems").lifecycle;
+const io_core_mod = @import("subsystems").io;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const buffers = @import("subsystems").value.buffers;
+const abstracts = @import("subsystems").value.abstracts;
+const abstract_type = @import("subsystems").abstract_type;
+const math = @import("subsystems").math;
+const pp_describe = @import("subsystems").pp_describe;
+const io_core = subsystems.io;
 const marsh = subsystems.marsh;
 
 /// The three standard streams, and the only spelling of them a contract in
@@ -95,21 +108,21 @@ fn expectRaise(function: anytype, args: anytype, message: []const u8) void {
         std.debug.print("io_core: expected a raise saying: {s}\n", .{message});
         @panic("io_core: expected a raise, got a return");
     };
-    assert(r.signal == c.JANET_SIGNAL_ERROR);
+    assert(r.signal == constants.JANET_SIGNAL_ERROR);
     if (!r.says(message)) {
         std.debug.print("expected: {s}\n", .{message});
-        std.debug.print("     got: {s}\n", .{c.janet_to_string(r.payload)});
+        std.debug.print("     got: {s}\n", .{pp_describe.toString(r.payload)});
         @panic("io_core: the raise carried another message");
     }
     raises_seen += 1;
 }
 
-/// The same for a `janet.h` face, whose refusal arrives as a report rather
+/// The same for a `janet.h` abi, whose refusal arrives as a report rather
 /// than as an error. `null` for a message that is not checked.
-fn expectFaceRaise(face: anytype, args: anytype, message: ?[]const u8) void {
-    const r = harness.faceRaised(face, args) orelse
-        @panic("io_core: expected a raise from a face, got a return");
-    assert(r.signal == c.JANET_SIGNAL_ERROR);
+fn expectAbiRaise(abi: anytype, args: anytype, message: ?[]const u8) void {
+    const r = harness.abiRaised(abi, args) orelse
+        @panic("io_core: expected a raise from an abi, got a return");
+    assert(r.signal == constants.JANET_SIGNAL_ERROR);
     if (message) |text| assert(r.says(text));
     raises_seen += 1;
 }
@@ -120,7 +133,7 @@ fn expectFaceRaise(face: anytype, args: anytype, message: ?[]const u8) void {
 fn expectRaisePrefix(function: anytype, args: anytype, prefix: []const u8) void {
     const r = harness.raised(function, args) orelse
         @panic("io_core: expected a raise, got a return");
-    assert(r.signal == c.JANET_SIGNAL_ERROR);
+    assert(r.signal == constants.JANET_SIGNAL_ERROR);
     assert(r.beginsWith(prefix));
     raises_seen += 1;
 }
@@ -154,33 +167,33 @@ fn theModeScanning() void {
     // Each leading flag selects one access mode and one permission.
     var r = scan("r");
     assert(r.status == io_core.mode_ok);
-    assert(r.flags == c.JANET_FILE_READ);
-    assert(r.sandbox == c.JANET_SANDBOX_FS_READ);
+    assert(r.flags == constants.JANET_FILE_READ);
+    assert(r.sandbox == constants.JANET_SANDBOX_FS_READ);
 
     r = scan("w");
     assert(r.status == io_core.mode_ok);
-    assert(r.flags == c.JANET_FILE_WRITE);
-    assert(r.sandbox == c.JANET_SANDBOX_FS_WRITE);
+    assert(r.flags == constants.JANET_FILE_WRITE);
+    assert(r.sandbox == constants.JANET_SANDBOX_FS_WRITE);
 
     // Appending asks for the whole filesystem permission, not just write.
     r = scan("a");
     assert(r.status == io_core.mode_ok);
-    assert(r.flags == c.JANET_FILE_APPEND);
-    assert(r.sandbox == c.JANET_SANDBOX_FS);
+    assert(r.flags == constants.JANET_FILE_APPEND);
+    assert(r.sandbox == constants.JANET_SANDBOX_FS);
 
     // Trailing flags accumulate in any order and are independent.
     r = scan("wnb");
     assert(r.status == io_core.mode_ok);
-    assert(r.flags == (c.JANET_FILE_WRITE | c.JANET_FILE_NONIL | c.JANET_FILE_BINARY));
+    assert(r.flags == (constants.JANET_FILE_WRITE | constants.JANET_FILE_NONIL | constants.JANET_FILE_BINARY));
     r = scan("wbn");
     assert(r.status == io_core.mode_ok);
-    assert(r.flags == (c.JANET_FILE_WRITE | c.JANET_FILE_NONIL | c.JANET_FILE_BINARY));
+    assert(r.flags == (constants.JANET_FILE_WRITE | constants.JANET_FILE_NONIL | constants.JANET_FILE_BINARY));
 
     // An update flag adds the write permission even to a read mode.
     r = scan("r+");
     assert(r.status == io_core.mode_ok);
-    assert(r.flags == (c.JANET_FILE_READ | c.JANET_FILE_UPDATE));
-    assert(r.sandbox == (c.JANET_SANDBOX_FS_READ | c.JANET_SANDBOX_FS_WRITE));
+    assert(r.flags == (constants.JANET_FILE_READ | constants.JANET_FILE_UPDATE));
+    assert(r.sandbox == (constants.JANET_SANDBOX_FS_READ | constants.JANET_SANDBOX_FS_WRITE));
 
     // The longest accepted mode is ten bytes; eleven is rejected on length
     // alone, before any byte is classified.
@@ -206,15 +219,15 @@ fn theModeScanning() void {
     r = scan("rq");
     assert(r.status == io_core.mode_bad_later);
     assert(r.index == 1);
-    assert(r.sandbox == c.JANET_SANDBOX_FS_READ);
+    assert(r.sandbox == constants.JANET_SANDBOX_FS_READ);
     r = scan("r+q");
     assert(r.status == io_core.mode_bad_later);
     assert(r.index == 2);
-    assert(r.sandbox == (c.JANET_SANDBOX_FS_READ | c.JANET_SANDBOX_FS_WRITE));
+    assert(r.sandbox == (constants.JANET_SANDBOX_FS_READ | constants.JANET_SANDBOX_FS_WRITE));
     r = scan("rq+");
     assert(r.status == io_core.mode_bad_later);
     assert(r.index == 1);
-    assert(r.sandbox == c.JANET_SANDBOX_FS_READ);
+    assert(r.sandbox == constants.JANET_SANDBOX_FS_READ);
 
     // A repeated flag yields a flag word of -1, which the caller then uses as
     // a flag word; see `FOUND.md`.
@@ -224,7 +237,7 @@ fn theModeScanning() void {
     r = scan("rbb");
     assert(r.status == io_core.mode_repeated);
     assert(r.flags == -1);
-    assert(r.sandbox == c.JANET_SANDBOX_FS_READ);
+    assert(r.sandbox == constants.JANET_SANDBOX_FS_READ);
     r = scan("rnn");
     assert(r.status == io_core.mode_repeated);
     assert(r.flags == -1);
@@ -257,16 +270,16 @@ fn theModeReconstruction() void {
 
     // Reading comes first, and appending replaces writing rather than joining
     // it, because a marshalled descriptor only needs a mode `fdopen` accepts.
-    assert(io_core.modeFromFlags(c.JANET_FILE_READ, &out) == 1);
+    assert(io_core.modeFromFlags(constants.JANET_FILE_READ, &out) == 1);
     assert(std.mem.eql(u8, out[0..2], "r\x00"));
-    assert(io_core.modeFromFlags(c.JANET_FILE_WRITE, &out) == 1);
+    assert(io_core.modeFromFlags(constants.JANET_FILE_WRITE, &out) == 1);
     assert(std.mem.eql(u8, out[0..2], "w\x00"));
-    assert(io_core.modeFromFlags(c.JANET_FILE_APPEND, &out) == 1);
+    assert(io_core.modeFromFlags(constants.JANET_FILE_APPEND, &out) == 1);
     assert(std.mem.eql(u8, out[0..2], "a\x00"));
-    assert(io_core.modeFromFlags(c.JANET_FILE_READ | c.JANET_FILE_WRITE, &out) == 2);
+    assert(io_core.modeFromFlags(constants.JANET_FILE_READ | constants.JANET_FILE_WRITE, &out) == 2);
     assert(std.mem.eql(u8, out[0..3], "rw\x00"));
     assert(io_core.modeFromFlags(
-        c.JANET_FILE_READ | c.JANET_FILE_WRITE | c.JANET_FILE_APPEND,
+        constants.JANET_FILE_READ | constants.JANET_FILE_WRITE | constants.JANET_FILE_APPEND,
         &out,
     ) == 2);
     assert(std.mem.eql(u8, out[0..3], "ra\x00"));
@@ -274,11 +287,11 @@ fn theModeReconstruction() void {
     // The binary, update and no-nil flags are dropped, and an empty result is
     // still terminated.
     assert(io_core.modeFromFlags(
-        c.JANET_FILE_READ | c.JANET_FILE_BINARY | c.JANET_FILE_UPDATE,
+        constants.JANET_FILE_READ | constants.JANET_FILE_BINARY | constants.JANET_FILE_UPDATE,
         &out,
     ) == 1);
     assert(std.mem.eql(u8, out[0..2], "r\x00"));
-    assert(io_core.modeFromFlags(c.JANET_FILE_BINARY, &out) == 0);
+    assert(io_core.modeFromFlags(constants.JANET_FILE_BINARY, &out) == 0);
     assert(out[0] == 0);
 }
 
@@ -365,7 +378,7 @@ fn theAbstractType() void {
     // The callback set is part of the type's contract: `core/file` has a
     // finalizer, a method getter, a marshal pair and a key walker, and nothing
     // else. A `tostring` in particular would change how every file prints.
-    const at = &io_core.janet_file_type;
+    const at = &io_core.fileType;
     assert(std.mem.eql(u8, std.mem.span(at.name), "core/file"));
     assert(at.gc != null);
     assert(at.gcmark == null);
@@ -386,25 +399,25 @@ fn theAbstractType() void {
 /// observable through `next` and is part of the contract rather than a
 /// tidiness; Phase 11 Part 7 found the same thing about the parser's table.
 fn theMethodOrder() raise.Raising(void) {
-    const at = &io_core.janet_file_type;
+    const at = &io_core.fileType;
     const expected = [_][*:0]const u8{ "close", "flush", "read", "seek", "tell", "write" };
 
-    var key = c.janet_wrap_nil();
+    var key = wrap.fromNil();
     var i: usize = 0;
     while (true) : (i += 1) {
         key = try at.next.?(null, key);
-        if (harness.isType(key, c.JANET_NIL)) break;
+        if (harness.isType(key, constants.JANET_NIL)) break;
         assert(i < expected.len);
         assert(harness.keywordIs(key, expected[i]));
     }
     assert(i == expected.len);
 
     // The getter answers only keywords, and only names in the table.
-    var out = c.janet_wrap_nil();
-    assert(try at.get.?(null, c.janet_ckeywordv("read"), &out) == 1);
-    assert(harness.isType(out, c.JANET_CFUNCTION));
-    assert(try at.get.?(null, c.janet_ckeywordv("open"), &out) == 0);
-    assert(try at.get.?(null, c.janet_cstringv("read"), &out) == 0);
+    var out = wrap.fromNil();
+    assert(try at.get.?(null, value.fromBytes("read", .keyword), &out) == 1);
+    assert(harness.isType(out, constants.JANET_CFUNCTION));
+    assert(try at.get.?(null, value.fromBytes("open", .keyword), &out) == 0);
+    assert(try at.get.?(null, value.fromBytes("read", .string), &out) == 0);
 }
 
 // ==========================================================================
@@ -417,48 +430,48 @@ fn thePublicApi() void {
     // `janet_makejfile` hands back the payload; `janet_makefile` wraps it. The
     // buffer size is the C library's default, which is what `file/open`
     // compares against to decide whether a caller asked for another one.
-    const jf = c.janet_makejfile(@ptrCast(@alignCast(raw)), c.JANET_FILE_WRITE);
+    const jf = io_core_mod.makejfile(@ptrCast(@alignCast(raw)), constants.JANET_FILE_WRITE);
     assert(@as(?*anyopaque, @ptrCast(jf.*.file)) == @as(?*anyopaque, raw));
-    assert(jf.*.flags == c.JANET_FILE_WRITE);
+    assert(jf.*.flags == constants.JANET_FILE_WRITE);
     assert(jf.*.vbufsize == c.BUFSIZ);
 
-    const wrapped = c.janet_wrap_abstract(jf);
-    assert(c.janet_checkfile(wrapped) == @as(?*anyopaque, jf));
-    assert(c.janet_checkfile(c.janet_wrap_nil()) == null);
-    assert(c.janet_checkfile(harness.wrapInteger(3)) == null);
+    const wrapped = wrap.fromAbstract(jf);
+    assert(io_core_mod.checkfile(wrapped) == @as(?*anyopaque, jf));
+    assert(io_core_mod.checkfile(wrap.fromNil()) == null);
+    assert(io_core_mod.checkfile(harness.wrapInteger(3)) == null);
 
     var flags: i32 = 0;
-    assert(@as(?*anyopaque, @ptrCast(c.janet_unwrapfile(wrapped, &flags))) == @as(?*anyopaque, raw));
-    assert(flags == c.JANET_FILE_WRITE);
-    assert(@as(?*anyopaque, @ptrCast(c.janet_unwrapfile(wrapped, null))) == @as(?*anyopaque, raw));
+    assert(@as(?*anyopaque, @ptrCast(io_core_mod.unwrapfile(wrapped, &flags))) == @as(?*anyopaque, raw));
+    assert(flags == constants.JANET_FILE_WRITE);
+    assert(@as(?*anyopaque, @ptrCast(io_core_mod.unwrapfile(wrapped, null))) == @as(?*anyopaque, raw));
 
-    var argv = [_]c.Janet{wrapped};
-    assert(c.janet_getjfile(&argv, 0) == jf);
+    var argv = [_]types.Janet{wrapped};
+    assert(io_core_mod.getjfile(&argv, 0) == jf);
     flags = 0;
-    assert(@as(?*anyopaque, @ptrCast(c.janet_getfile(&argv, 0, &flags))) == @as(?*anyopaque, raw));
-    assert(flags == c.JANET_FILE_WRITE);
-    assert(@as(?*anyopaque, @ptrCast(c.janet_getfile(&argv, 0, null))) == @as(?*anyopaque, raw));
+    assert(@as(?*anyopaque, @ptrCast(io_core_mod.getfile(&argv, 0, &flags))) == @as(?*anyopaque, raw));
+    assert(flags == constants.JANET_FILE_WRITE);
+    assert(@as(?*anyopaque, @ptrCast(io_core_mod.getfile(&argv, 0, null))) == @as(?*anyopaque, raw));
 
     // Closing marks the payload and clears the stream, so a later use is a
     // null dereference rather than a use-after-free. A second close is a
     // no-op, and so is closing a file this runtime only borrowed.
-    assert(c.janet_file_close(jf) == 0);
-    assert(jf.*.flags & c.JANET_FILE_CLOSED != 0);
+    assert(io_core_mod.fileClose(jf) == 0);
+    assert(jf.*.flags & constants.JANET_FILE_CLOSED != 0);
     assert(jf.*.file == null);
-    assert(c.janet_file_close(jf) == 0);
+    assert(io_core_mod.fileClose(jf) == 0);
 
-    const borrowed = c.janet_makejfile(
+    const borrowed = io_core_mod.makejfile(
         @ptrCast(@alignCast(stdio.out())),
-        c.JANET_FILE_APPEND | c.JANET_FILE_NOT_CLOSEABLE,
+        constants.JANET_FILE_APPEND | constants.JANET_FILE_NOT_CLOSEABLE,
     );
-    assert(c.janet_file_close(borrowed) == 0);
-    assert(borrowed.*.flags & c.JANET_FILE_CLOSED == 0);
+    assert(io_core_mod.fileClose(borrowed) == 0);
+    assert(borrowed.*.flags & constants.JANET_FILE_CLOSED == 0);
     assert(asHandle(borrowed.*.file) == stdio.out());
 
     // A value of the wrong type is an argument fault rather than a null.
-    var bad = [_]c.Janet{harness.wrapInteger(3)};
-    expectFaceRaise(c.janet_getjfile, .{ &bad, @as(i32, 0) }, null);
-    expectFaceRaise(c.janet_getfile, .{ &bad, @as(i32, 0), null }, null);
+    var bad = [_]types.Janet{harness.wrapInteger(3)};
+    expectAbiRaise(io_core_mod.getjfile, .{ &bad, @as(i32, 0) }, null);
+    expectAbiRaise(io_core_mod.getfile, .{ &bad, @as(i32, 0), null }, null);
 
     _ = c.remove(scratch);
 }
@@ -466,69 +479,69 @@ fn thePublicApi() void {
 fn theDynamicFile() void {
     // Outside a fiber the dynamic bindings live in the VM's top-level table,
     // which is what lets this run without one.
-    assert(asHandle(c.janet_dynfile("io-core-out", @ptrCast(@alignCast(stdio.out())))) == stdio.out());
-    assert(asHandle(c.janet_dynfile("io-core-out", null)) == null);
+    assert(asHandle(io_core_mod.dynfile("io-core-out", @ptrCast(@alignCast(stdio.out())))) == stdio.out());
+    assert(asHandle(io_core_mod.dynfile("io-core-out", null)) == null);
 
     // Anything that is not a `core/file` falls back to the default, including
     // another abstract type.
-    c.janet_setdyn("io-core-out", harness.wrapInteger(3));
-    assert(asHandle(c.janet_dynfile("io-core-out", @ptrCast(@alignCast(stdio.err())))) == stdio.err());
-    c.janet_setdyn("io-core-out", c.janet_wrap_abstract(
-        c.janet_abstract(&c.janet_rng_type, @sizeOf(c.JanetRNG)),
+    vm_state.setdyn("io-core-out", harness.wrapInteger(3));
+    assert(asHandle(io_core_mod.dynfile("io-core-out", @ptrCast(@alignCast(stdio.err())))) == stdio.err());
+    vm_state.setdyn("io-core-out", wrap.fromAbstract(
+        abstracts.new(abstract_type.stored(&math.rngType), @sizeOf(types.JanetRNG)),
     ));
-    assert(asHandle(c.janet_dynfile("io-core-out", @ptrCast(@alignCast(stdio.err())))) == stdio.err());
+    assert(asHandle(io_core_mod.dynfile("io-core-out", @ptrCast(@alignCast(stdio.err())))) == stdio.err());
 
-    const jf = c.janet_makejfile(
+    const jf = io_core_mod.makejfile(
         @ptrCast(@alignCast(stdio.out())),
-        c.JANET_FILE_APPEND | c.JANET_FILE_NOT_CLOSEABLE,
+        constants.JANET_FILE_APPEND | constants.JANET_FILE_NOT_CLOSEABLE,
     );
-    c.janet_setdyn("io-core-out", c.janet_wrap_abstract(jf));
-    assert(asHandle(c.janet_dynfile("io-core-out", @ptrCast(@alignCast(stdio.err())))) == stdio.out());
-    c.janet_setdyn("io-core-out", c.janet_wrap_nil());
+    vm_state.setdyn("io-core-out", wrap.fromAbstract(jf));
+    assert(asHandle(io_core_mod.dynfile("io-core-out", @ptrCast(@alignCast(stdio.err())))) == stdio.out());
+    vm_state.setdyn("io-core-out", wrap.fromNil());
 }
 
 // ==========================================================================
 // Marshalling
 // ==========================================================================
 
-fn marshalled(buffer: *c.JanetBuffer, value: c.Janet, flags: c_int) raise.Raising(void) {
-    return marsh.marshal(buffer, value, null, flags);
+fn marshalled(buffer: *types.JanetBuffer, val: types.Janet, flags: c_int) raise.Raising(void) {
+    return marsh.marshal(buffer, val, null, flags);
 }
 
-fn unmarshalled(buffer: *c.JanetBuffer, flags: c_int) raise.Raising(c.Janet) {
-    return marsh.unmarshal(buffer.data, @intCast(buffer.count), flags, null, null);
+fn unmarshalled(buffer: *types.JanetBuffer, flags: c_int) raise.Raising(types.Janet) {
+    return marsh.unmarshal(buffer.data.?[0..@intCast(buffer.count)], flags, null, null);
 }
 
 /// A file marshals only under `JANET_MARSHAL_UNSAFE`, which no Janet caller
 /// can ask for, so the whole callback pair is unreachable from the language.
 fn theMarshalling() raise.Raising(void) {
     const raw = io_core.open(scratch, "wb").?;
-    const file = c.janet_wrap_abstract(c.janet_makejfile(@ptrCast(@alignCast(raw)), c.JANET_FILE_WRITE));
+    const file = wrap.fromAbstract(io_core_mod.makejfile(@ptrCast(@alignCast(raw)), constants.JANET_FILE_WRITE));
 
-    const buffer = c.janet_buffer(0);
+    const buffer = buffers.new(0);
     expectRaise(marshalled, .{ buffer, file, @as(c_int, 0) }, "cannot marshal file in safe mode");
 
     buffer.*.count = 0;
-    try marshalled(buffer, file, c.JANET_MARSHAL_UNSAFE);
+    try marshalled(buffer, file, constants.JANET_MARSHAL_UNSAFE);
     assert(buffer.*.count > 0);
 
     // Reading it back in safe mode is refused by the other half of the pair.
     expectRaise(unmarshalled, .{ buffer, @as(c_int, 0) }, "cannot unmarshal file in safe mode");
 
-    const back = try unmarshalled(buffer, c.JANET_MARSHAL_UNSAFE);
-    const copy = c.janet_checkfile(back);
+    const back = try unmarshalled(buffer, constants.JANET_MARSHAL_UNSAFE);
+    const copy = io_core_mod.checkfile(back);
     assert(copy != null);
-    const copyf: *c.JanetFile = @ptrCast(@alignCast(copy));
-    assert(copyf.flags == c.JANET_FILE_WRITE);
+    const copyf: *types.JanetFile = @ptrCast(@alignCast(copy));
+    assert(copyf.flags == constants.JANET_FILE_WRITE);
     assert(copyf.vbufsize == c.BUFSIZ);
 
     // The descriptor was duplicated, because the original owns its stream, so
     // the copy is a different stream on the same file and closing one leaves
     // the other usable.
     assert(@as(?*anyopaque, @ptrCast(copyf.file)) != @as(?*anyopaque, raw));
-    assert(c.janet_file_close(copyf) == 0);
+    assert(io_core_mod.fileClose(copyf) == 0);
     assert(io_core.write(raw, "kept", 4) == 1);
-    assert(c.janet_file_close(@ptrCast(@alignCast(c.janet_checkfile(file)))) == 0);
+    assert(io_core_mod.fileClose(@ptrCast(@alignCast(io_core_mod.checkfile(file)))) == 0);
     _ = c.remove(scratch);
 }
 
@@ -537,15 +550,15 @@ fn theMarshalling() raise.Raising(void) {
 /// reaches the filesystem with no flush and a buffered one does not.
 fn theMarshalledBufferSize() raise.Raising(void) {
     const stream = io_core.open(scratch, "wb").?;
-    const jf = c.janet_makejfile(@ptrCast(@alignCast(stream)), c.JANET_FILE_WRITE);
+    const jf = io_core_mod.makejfile(@ptrCast(@alignCast(stream)), constants.JANET_FILE_WRITE);
     jf.*.vbufsize = 0;
-    const file = c.janet_wrap_abstract(jf);
+    const file = wrap.fromAbstract(jf);
 
-    const buffer = c.janet_buffer(0);
-    try marshalled(buffer, file, c.JANET_MARSHAL_UNSAFE);
-    const copy = c.janet_checkfile(try unmarshalled(buffer, c.JANET_MARSHAL_UNSAFE));
+    const buffer = buffers.new(0);
+    try marshalled(buffer, file, constants.JANET_MARSHAL_UNSAFE);
+    const copy = io_core_mod.checkfile(try unmarshalled(buffer, constants.JANET_MARSHAL_UNSAFE));
     assert(copy != null);
-    const copyf: *c.JanetFile = @ptrCast(@alignCast(copy));
+    const copyf: *types.JanetFile = @ptrCast(@alignCast(copy));
     assert(copyf.vbufsize == 0);
 
     assert(io_core.write(@ptrCast(copyf.file), "now", 3) == 1);
@@ -556,8 +569,8 @@ fn theMarshalledBufferSize() raise.Raising(void) {
         assert(std.mem.eql(u8, seen[0..3], "now"));
         assert(io_core.close(check) == 0);
     }
-    assert(c.janet_file_close(copyf) == 0);
-    assert(c.janet_file_close(jf) == 0);
+    assert(io_core_mod.fileClose(copyf) == 0);
+    assert(io_core_mod.fileClose(jf) == 0);
     _ = c.remove(scratch);
 }
 
@@ -571,33 +584,33 @@ fn theMarshalledBufferSize() raise.Raising(void) {
 /// from its caller and never consults the stream.
 fn theMismatchedHandles() void {
     const writer = io_core.open(scratch, "wb").?;
-    const claims_readable = c.janet_wrap_abstract(
-        c.janet_makejfile(@ptrCast(@alignCast(writer)), c.JANET_FILE_READ),
+    const claims_readable = wrap.fromAbstract(
+        io_core_mod.makejfile(@ptrCast(@alignCast(writer)), constants.JANET_FILE_READ),
     );
 
     // The readability check passes on the flags and the read then fails, which
     // is the branch that separates a short read from a broken one.
-    var read_args = [_]c.Janet{ claims_readable, harness.wrapInteger(10) };
-    expectRaise(harness.core("file/read"), .{ @as(i32, 2), &read_args }, "could not read file");
-    assert(c.janet_file_close(@ptrCast(@alignCast(c.janet_checkfile(claims_readable)))) == 0);
+    var read_args = [_]types.Janet{ claims_readable, harness.wrapInteger(10) };
+    expectRaise(harness.core("file/read"), .{read_args[0..2]}, "could not read file");
+    assert(io_core_mod.fileClose(@ptrCast(@alignCast(io_core_mod.checkfile(claims_readable)))) == 0);
 
     const reader = io_core.open(scratch, "rb").?;
-    const claims_writeable = c.janet_wrap_abstract(
-        c.janet_makejfile(@ptrCast(@alignCast(reader)), c.JANET_FILE_WRITE),
+    const claims_writeable = wrap.fromAbstract(
+        io_core_mod.makejfile(@ptrCast(@alignCast(reader)), constants.JANET_FILE_WRITE),
     );
 
     // `xprint` has no default handle, so a failed write names the destination
     // rather than reporting a bare byte count.
-    var print_args = [_]c.Janet{
+    var print_args = [_]types.Janet{
         claims_writeable,
-        c.janet_wrap_string(c.janet_cstring("text")),
+        wrap.fromString(strings.cstring("text")),
     };
     expectRaisePrefix(
         harness.core("xprint"),
-        .{ @as(i32, 2), &print_args },
+        .{print_args[0..2]},
         "cannot print 4 bytes to ",
     );
-    assert(c.janet_file_close(@ptrCast(@alignCast(c.janet_checkfile(claims_writeable)))) == 0);
+    assert(io_core_mod.fileClose(@ptrCast(@alignCast(io_core_mod.checkfile(claims_writeable)))) == 0);
 
     _ = c.remove(scratch);
 }
@@ -606,16 +619,16 @@ fn theMismatchedHandles() void {
 // What a Janet caller sees
 // ==========================================================================
 
-fn doString(environment: *c.JanetTable, source: [*:0]const u8) void {
-    var result = c.janet_wrap_nil();
-    if (c.janet_dostring(environment, source, "io-core-contract", &result) != 0) {
-        std.debug.print("io_core: {s}\n", .{c.janet_to_string(result)});
+fn doString(environment: *types.JanetTable, source: [*:0]const u8) void {
+    var result = wrap.fromNil();
+    if (core_env.dostring(environment, source, "io-core-contract", &result) != 0) {
+        std.debug.print("io_core: {s}\n", .{pp_describe.toString(result)});
         @panic("io_core: a contract form failed");
     }
 }
 
 fn theCoreFunctions() void {
-    const env = c.janet_core_env(null).?;
+    const env = harness.coreEnv();
 
     // A file opens, round-trips its contents, and reports positions.
     doString(env,
@@ -770,12 +783,12 @@ pub fn run() void {
     theModeReconstruction();
     theStreamOperations();
 
-    _ = c.janet_init();
+    harness.init();
     // The abstract type has to be in the registry before anything marshals a
     // file, and the registration is `janet_lib_io`'s. Building the core
     // environment first is also what the public section needs, and it is
     // memoized, so the two share one.
-    _ = c.janet_core_env(null);
+    _ = harness.coreEnv();
 
     theAbstractType();
     theMethodOrder() catch @panic("io_core: the method table raised");
@@ -787,7 +800,7 @@ pub fn run() void {
     theCoreFunctions();
 
     assert(raises_seen == expected_raises);
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 
     cleanPaths();
     std.debug.print("io_core contract ok ({d} raises)\n", .{raises_seen});

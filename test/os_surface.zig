@@ -53,24 +53,34 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
+const value = @import("subsystems").value;
+const config = @import("config");
+const structs = @import("subsystems").value.structs;
+const tables = @import("subsystems").value.tables;
+const strings = @import("subsystems").value.strings;
+const utils = @import("subsystems").utils;
+const wrap = @import("subsystems").value.wrap;
+const args_core = @import("subsystems").args;
+const vm_lifecycle = @import("subsystems").lifecycle;
 const host_stat = subsystems.host_stat;
-const os_stat = subsystems.os_stat;
+const os_stat = subsystems.stat;
 const os_files = subsystems.os_files;
 
 const assert = std.debug.assert;
 
 const windows = builtin.os.tag == .windows;
-const reduced_os = @hasDecl(c, "JANET_REDUCED_OS");
-const no_processes = @hasDecl(c, "JANET_NO_PROCESSES");
-const no_locales = @hasDecl(c, "JANET_NO_LOCALES");
-const no_sourcemaps = @hasDecl(c, "JANET_NO_SOURCEMAPS");
-const no_docstrings = @hasDecl(c, "JANET_NO_DOCSTRINGS");
-const no_cryptorand = @hasDecl(c, "JANET_NO_CRYPTORAND");
+const reduced_os = config.reduced_os;
+const no_processes = !config.processes;
+const no_locales = !config.locales;
+const no_sourcemaps = !config.sourcemaps;
+const no_docstrings = !config.docstrings;
+const no_cryptorand = !config.cryptorand;
 
 /// The two the surface itself reads, so that this file cannot disagree with
 /// its subject about which entry points exist.
@@ -152,15 +162,15 @@ const expected_bindings: []const [*:0]const u8 = blk: {
     break :blk list;
 };
 
-fn bindingField(env: *c.JanetTable, name: [*:0]const u8, field: [*:0]const u8) c.Janet {
-    const binding = c.janet_table_get(env, c.janet_csymbolv(name));
-    if (harness.isType(binding, c.JANET_TABLE)) {
-        return c.janet_table_get(c.janet_unwrap_table(binding), c.janet_ckeywordv(field));
+fn bindingField(env: *types.JanetTable, name: [*:0]const u8, field: [*:0]const u8) types.Janet {
+    const binding = tables.get(env, value.fromBytes(std.mem.span(name), .symbol));
+    if (harness.isType(binding, constants.JANET_TABLE)) {
+        return tables.get(wrap.toTable(binding), value.fromBytes(std.mem.span(field), .keyword));
     }
-    if (harness.isType(binding, c.JANET_STRUCT)) {
-        return c.janet_struct_get(c.janet_unwrap_struct(binding), c.janet_ckeywordv(field));
+    if (harness.isType(binding, constants.JANET_STRUCT)) {
+        return structs.get(wrap.toStruct(binding), value.fromBytes(std.mem.span(field), .keyword));
     }
-    return c.janet_wrap_nil();
+    return wrap.fromNil();
 }
 
 /// Registration *order* is not observable, and finding that out is worth
@@ -182,16 +192,16 @@ fn bindingField(env: *c.JanetTable, name: [*:0]const u8, field: [*:0]const u8) c
 /// lines only where two consecutive names come from the same `src/zig/` file,
 /// so it catches two rows exchanged within one file and nothing across files.
 fn theRegistration() void {
-    const env: *c.JanetTable = c.janet_core_env(null);
+    const env: *types.JanetTable = harness.coreEnv();
     var count: i32 = 0;
 
-    var previous_file: c.JanetString = null;
+    var previous_file: ?types.JanetString = null;
     var previous_line: i32 = -1;
 
     for (expected_bindings) |name| {
-        const binding = c.janet_table_get(env, c.janet_csymbolv(name));
-        assert(!harness.isType(binding, c.JANET_NIL));
-        assert(harness.isType(binding, c.JANET_TABLE) or harness.isType(binding, c.JANET_STRUCT));
+        const binding = tables.get(env, value.fromBytes(std.mem.span(name), .symbol));
+        assert(!harness.isType(binding, constants.JANET_NIL));
+        assert(harness.isType(binding, constants.JANET_TABLE) or harness.isType(binding, constants.JANET_STRUCT));
         count += 1;
 
         // `corefn.reg` and `JANET_CORE_FN` both drop the source map when the
@@ -202,18 +212,18 @@ fn theRegistration() void {
         // entry, and this is what it found.
         if (!no_sourcemaps) {
             const smap = bindingField(env, name, "source-map");
-            assert(harness.isType(smap, c.JANET_TUPLE));
-            const tuple = c.janet_unwrap_tuple(smap);
-            assert(c.janet_tuple_length(tuple) >= 2);
-            assert(harness.isType(tuple[0], c.JANET_STRING));
-            assert(c.janet_checkint(tuple[1]) != 0);
+            assert(harness.isType(smap, constants.JANET_TUPLE));
+            const tuple = wrap.toTuple(smap);
+            assert(types.tupleHead(tuple).length >= 2);
+            assert(harness.isType(tuple[0], constants.JANET_STRING));
+            assert(args_core.checkint(tuple[1]) != 0);
 
-            const file = c.janet_unwrap_string(tuple[0]);
-            const line = c.janet_unwrap_integer(tuple[1]);
-            const length: usize = @intCast(c.janet_string_length(file));
+            const file = wrap.toString(tuple[0]);
+            const line = wrap.toInteger(tuple[1]);
+            const length: usize = @intCast(types.stringHead(file).length);
             const from_zig = length > 8 and std.mem.eql(u8, file[0..8], "src/zig/");
             if (from_zig and previous_file != null and
-                c.janet_string_equal(previous_file, file) != 0)
+                strings.equal(previous_file.?, file) != 0)
             {
                 assert(line > previous_line);
             }
@@ -229,15 +239,15 @@ fn theRegistration() void {
     var found: i32 = 0;
     var i: i32 = 0;
     while (i < env.capacity) : (i += 1) {
-        const key = env.data[@intCast(i)].key;
-        if (!harness.isType(key, c.JANET_SYMBOL)) continue;
-        const symbol = c.janet_unwrap_symbol(key);
-        if (c.janet_string_length(symbol) < 3) continue;
+        const key = env.data.?[@intCast(i)].key;
+        if (!harness.isType(key, constants.JANET_SYMBOL)) continue;
+        const symbol = wrap.toSymbol(key);
+        if (types.stringHead(symbol).length < 3) continue;
         if (!std.mem.eql(u8, symbol[0..3], "os/")) continue;
         found += 1;
         var matched = false;
         for (expected_bindings) |name| {
-            if (c.janet_cstrcmp(symbol, name) == 0) matched = true;
+            if (utils.cstrcmp(symbol, name) == 0) matched = true;
         }
         assert(matched);
     }
@@ -309,9 +319,12 @@ fn theStatRead() void {
     // 5's lesson asks for: "a descriptor's unwritten fields are part of its
     // contract and nothing about the type says so".
     //
-    // Any file this repository certainly has. It was `src/core/os.c` until
-    // Phase 10 Part 18 deleted every `.c` under `src/`.
-    assert(host_stat.statRead("src/include/janet.h", false, &mode, &numbers) == 0);
+    // Any file this repository certainly has, and the third one asked: it was
+    // `src/core/os.c` until Phase 10 Part 18 deleted every `.c` under `src/`,
+    // and `src/include/janet.h` until Phase 12 increment 5f retired the
+    // header. `build.zig` is the one file whose absence stops this contract
+    // from being built at all, which is what the fixture wanted both times.
+    assert(host_stat.statRead("build.zig", false, &mode, &numbers) == 0);
     assert(mode != 0);
     assert(numbers[Field.mode] == 0.0);
     assert(numbers[Field.int_permissions] == 0.0);
@@ -346,7 +359,7 @@ fn theStatRead() void {
 /// abstract rendering. A port that filled one of those in by accident would
 /// pass every suite.
 fn theProcessType() void {
-    const env: *c.JanetTable = c.janet_core_env(null);
+    const env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(def null (file/open "/dev/null" :w))
         \\# `/usr/bin/true` stood here and at one site below. Alpine is busybox
@@ -383,7 +396,7 @@ fn theProcessType() void {
 /// SIGHUP, and the sweep launches `mutate.py` with `nohup`. SIGKILL is the one
 /// signal that cannot be caught or ignored.
 fn theSignalTable() void {
-    const env: *c.JanetTable = c.janet_core_env(null);
+    const env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(def null (file/open "/dev/null" :w))
         \\(defn sleeper [] (os/spawn ["/bin/sleep" "30"] :p {:out null :err null}))
@@ -418,7 +431,7 @@ fn theSignalTable() void {
 /// timestamps rather than the current time, because the current time agrees
 /// with itself whatever it computes.
 fn theCalendar() void {
-    const env: *c.JanetTable = c.janet_core_env(null);
+    const env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(def d (os/date 0))
         \\(assert (= 1970 (d :year)))
@@ -451,7 +464,7 @@ fn theCalendar() void {
 /// number is part of it. `args_core.zig`'s layer builds most of Janet's
 /// argument messages; these two are the surface's own.
 fn thePermissions() void {
-    const env: *c.JanetTable = c.janet_core_env(null);
+    const env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(assert (= "rwxr-xr-x" (os/perm-string 8r755)))
         \\(assert (= "---------" (os/perm-string 0)))
@@ -469,7 +482,7 @@ fn thePermissions() void {
 /// which `suite-os.janet` exercises none: a clock cannot be pinned to a value,
 /// so the assertions are about the relationships between the formats instead.
 fn theClock() void {
-    const env: *c.JanetTable = c.janet_core_env(null);
+    const env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(each source [:realtime :monotonic :cputime]
         \\  (def d (os/clock source))
@@ -496,7 +509,7 @@ fn theClock() void {
 /// preserve a value holding `=`, and an empty value is a value rather than an
 /// absence.
 fn theEnvironment() void {
-    const env: *c.JanetTable = c.janet_core_env(null);
+    const env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(os/setenv "JANET_OS_SURFACE_A" "x=y=z")
         \\(assert (= "x=y=z" (os/getenv "JANET_OS_SURFACE_A")))
@@ -518,7 +531,7 @@ fn theEnvironment() void {
 /// about the shape of the answer and about `os/which`'s two modes, which no
 /// suite exercises.
 fn thePlatform() void {
-    const env: *c.JanetTable = c.janet_core_env(null);
+    const env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(assert (keyword? (os/which)))
         \\(assert (keyword? (os/arch)))
@@ -561,7 +574,7 @@ fn thePlatform() void {
 
 fn theOpenFlags() void {
     if (!harness.has_ev) return;
-    var env: *c.JanetTable = c.janet_core_env(null);
+    var env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(os/mkdir "/tmp/janet-os-surface-contract")
         \\(defn p [n] (string "/tmp/janet-os-surface-contract/" n))
@@ -584,10 +597,10 @@ fn theOpenFlags() void {
         \\(:close s3)
         \\(assert (= "Qbc" (string (slurp (p "rw")))))
     );
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 
-    _ = c.janet_init();
-    env = c.janet_core_env(null);
+    harness.init();
+    env = harness.coreEnv();
     harness.inFiber(env,
         \\(defn p [n] (string "/tmp/janet-os-surface-contract/" n))
         \\(def s (os/open (p "rw") :rN))
@@ -613,7 +626,7 @@ fn theOpenFlags() void {
 /// at the argument at all.
 fn theLinks() void {
     if (windows) return;
-    const env: *c.JanetTable = c.janet_core_env(null);
+    const env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(protect (os/mkdir "/tmp/janet-os-surface-contract"))
         \\(defn p [n] (string "/tmp/janet-os-surface-contract/" n))
@@ -652,7 +665,7 @@ fn theLinks() void {
 /// behind is cleaned by `theLinks`, which runs after it and removes the whole
 /// scratch directory.
 fn theRemoveSandbox() void {
-    var env: *c.JanetTable = c.janet_core_env(null);
+    var env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(protect (os/mkdir "/tmp/janet-os-surface-contract"))
         \\(def victim (string "/tmp/janet-os-surface-contract/victim"))
@@ -667,13 +680,13 @@ fn theRemoveSandbox() void {
         \\(assert (= "operation forbidden by sandbox"
         \\           (in (protect (os/rmdir "/tmp/janet-os-surface-contract")) 1)))
     );
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 
     // A fresh VM, because the one above can never leave its sandbox. Without a
     // sandbox the delete still works, which is the half of the behaviour that
     // must not have changed.
-    _ = c.janet_init();
-    env = c.janet_core_env(null);
+    harness.init();
+    env = harness.coreEnv();
     harness.inFiber(env,
         \\(def victim (string "/tmp/janet-os-surface-contract/victim"))
         \\(assert (os/stat victim))
@@ -689,7 +702,7 @@ fn theRemoveSandbox() void {
 /// `argc ==` that decides whether a slot is read at all, and a mutation that
 /// inverts one reads a slot that is not there or ignores one that is.
 fn theOptionalArguments() void {
-    const env: *c.JanetTable = c.janet_core_env(null);
+    const env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(assert (number? ((os/date) :year)))
         \\(assert (= (os/date) (os/date nil)))
@@ -784,7 +797,7 @@ fn theOptionalArguments() void {
 /// reachable from the type-shape test above.
 fn theSpawnRedirection() void {
     if (!harness.has_ev) return;
-    var env: *c.JanetTable = c.janet_core_env(null);
+    var env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(def p (os/spawn ["/bin/sh" "-c" "exit 7"] :p))
         \\(assert (int? (p :pid)))
@@ -810,10 +823,10 @@ fn theSpawnRedirection() void {
         \\(os/proc-wait t)
         \\(assert (= "zz" to))
     );
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 
-    _ = c.janet_init();
-    env = c.janet_core_env(null);
+    harness.init();
+    env = harness.coreEnv();
     harness.inFiber(env,
         \\(def f (file/temp))
         \\(def p (os/spawn ["/bin/echo" "ff"] :p {:out f}))
@@ -838,7 +851,7 @@ fn theSpawnRedirection() void {
 /// key holding `=` or NUL and keeps everything else, which is a rule
 /// `os_process.zig` owns and this is the only thing that runs it end to end.
 fn theExecuteEnvironment() void {
-    const env: *c.JanetTable = c.janet_core_env(null);
+    const env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(assert (= 0 (os/execute ["/bin/sh" "-c" "test \"$JP\" = v"] :pe {"JP" "v"})))
         \\(os/setenv "JP_PARENT" "set")
@@ -859,7 +872,7 @@ fn theExecuteEnvironment() void {
 /// that the signal table is consulted first.
 fn theSigaction() void {
     if (!harness.has_ev) return;
-    const env: *c.JanetTable = c.janet_core_env(null);
+    const env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(os/sigaction :usr1 (fn [] nil))
         \\(os/sigaction :usr1 (fn [] nil))
@@ -870,6 +883,16 @@ fn theSigaction() void {
         \\(os/sigaction :usr2)
         \\(assert (= "undefined signal :nosuchsignal"
         \\           (in (protect (os/sigaction :nosuchsignal (fn [] nil))) 1)))
+        \\# A handler is entered with no arguments, so one that cannot accept
+        \\# zero can never run. The C registered it and dereferenced null when
+        \\# the signal arrived; `port/FOUND.md` records that, and the refusal
+        \\# below is the agreed fix -- at registration, where the mistake is.
+        \\(assert (string/has-prefix?
+        \\           "signal handler must accept zero arguments"
+        \\           (in (protect (os/sigaction :usr1 (fn [x] nil))) 1)))
+        \\# A handler with an optional parameter still accepts zero.
+        \\(os/sigaction :usr1 (fn [&opt x] nil))
+        \\(os/sigaction :usr1 nil)
     );
 }
 
@@ -878,7 +901,7 @@ fn theSigaction() void {
 /// output the parent has already queued -- which is what makes this safe to
 /// run inside a contract at all.
 fn thePosixFork() void {
-    const env: *c.JanetTable = c.janet_core_env(null);
+    const env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(def p (os/posix-fork))
         \\(if p
@@ -892,7 +915,7 @@ fn thePosixFork() void {
 /// `os/pipe` and its two flag letters.
 fn thePipe() void {
     if (!harness.has_ev) return;
-    const env: *c.JanetTable = c.janet_core_env(null);
+    const env: *types.JanetTable = harness.coreEnv();
     harness.inFiber(env,
         \\(def [r w] (os/pipe))
         \\(:write w "abc")
@@ -929,9 +952,9 @@ fn thePipe() void {
 /// One section, each in a VM of its own so that none inherits another's heap
 /// -- or, for the two that sandbox themselves, another's sandbox.
 fn section(comptime body: fn () void) void {
-    _ = c.janet_init();
+    harness.init();
     body();
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }
 
 pub fn run() void {

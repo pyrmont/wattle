@@ -32,20 +32,27 @@
 //! 25, so `26r1p` is 51.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const options = @import("options");
 const harness = @import("harness.zig");
+const buffers = @import("subsystems").value.buffers;
+const numscan = @import("subsystems").scan;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const inttypes = @import("subsystems").inttypes;
+const raise = @import("raise");
 
-/// `janet_buffer_dtostr` is declared in `src/core/util.h`, which `abi.zig`
-/// deliberately does not translate — its dynamic-library section breaks the
-/// Windows cross-compile for every subsystem at once. Its rule is that a
-/// caller declares what it needs directly; `JanetBuffer` still comes from the
-/// one translation, so nothing is duplicated.
-extern fn janet_buffer_dtostr(buffer: *c.JanetBuffer, x: f64) callconv(.c) void;
+/// `janet_buffer_dtostr` is declared in `src/core/util.h`, which no
+/// translation ever carried — its dynamic-library section broke the Windows
+/// cross-compile for every subsystem at once. Its rule outlived it: a caller
+/// declares what it needs directly. `JanetBuffer` is `types.zig`'s, which
+/// every file shares, so nothing is duplicated.
+extern fn janet_buffer_dtostr(buffer: *types.JanetBuffer, x: f64) callconv(.c) void;
 
 fn scan(text: []const u8, out: *f64) bool {
-    return c.janet_scan_number(text.ptr, @intCast(text.len), out) == 0;
+    return numscan.scanNumber(text, out) == 0;
 }
 
 /// Bit-for-bit, for the reason in the header comment.
@@ -56,14 +63,14 @@ fn sameDouble(a: f64, b: f64) bool {
 fn scansTo(text: []const u8, expected: f64) bool {
     // Seeded with a value nothing below scans to, so a scanner that reports
     // success without writing is caught rather than accidentally right.
-    var value: f64 = 12345.0;
-    if (!scan(text, &value)) return false;
-    return sameDouble(value, expected);
+    var val: f64 = 12345.0;
+    if (!scan(text, &val)) return false;
+    return sameDouble(val, expected);
 }
 
 fn rejects(text: []const u8) bool {
-    var value: f64 = 12345.0;
-    return !scan(text, &value);
+    var val: f64 = 12345.0;
+    return !scan(text, &val);
 }
 
 const inf = std.math.inf(f64);
@@ -176,26 +183,26 @@ fn theHexFloats() void {
 }
 
 fn theExplicitBase() void {
-    var value: f64 = 0.0;
+    var val: f64 = 0.0;
     const scanBase = struct {
         fn f(text: []const u8, base: i32, out: *f64) bool {
-            return c.janet_scan_number_base(text.ptr, @intCast(text.len), base, out) == 0;
+            return numscan.scanNumberBase(text.ptr, @intCast(text.len), base, out) == 0;
         }
     }.f;
 
-    std.debug.assert(scanBase("ff", 16, &value) and sameDouble(value, 255.0));
-    std.debug.assert(scanBase("1010", 2, &value) and sameDouble(value, 10.0));
-    std.debug.assert(scanBase("z", 36, &value) and sameDouble(value, 35.0));
-    std.debug.assert(scanBase("10", 10, &value) and sameDouble(value, 10.0));
-    std.debug.assert(scanBase("1e2", 10, &value) and sameDouble(value, 100.0));
+    std.debug.assert(scanBase("ff", 16, &val) and sameDouble(val, 255.0));
+    std.debug.assert(scanBase("1010", 2, &val) and sameDouble(val, 10.0));
+    std.debug.assert(scanBase("z", 36, &val) and sameDouble(val, 35.0));
+    std.debug.assert(scanBase("10", 10, &val) and sameDouble(val, 10.0));
+    std.debug.assert(scanBase("1e2", 10, &val) and sameDouble(val, 100.0));
 
     // An explicit base suppresses prefix detection: `0x` is not special, and
     // `x` is not a digit in base 16.
-    std.debug.assert(!scanBase("0xff", 16, &value));
-    std.debug.assert(!scanBase("2r10", 10, &value));
+    std.debug.assert(!scanBase("0xff", 16, &val));
+    std.debug.assert(!scanBase("2r10", 10, &val));
 
     // Base 0 means "detect".
-    std.debug.assert(scanBase("0xff", 0, &value) and sameDouble(value, 255.0));
+    std.debug.assert(scanBase("0xff", 0, &val) and sameDouble(val, 255.0));
 }
 
 fn theRejections() void {
@@ -218,9 +225,16 @@ fn theRejections() void {
     std.debug.assert(scansTo("1__0", 10.0));
 
     // A zero and a negative length both fail rather than reading the pointer.
-    var value: f64 = 0.0;
-    std.debug.assert(c.janet_scan_number("1", 0, &value) == 1);
-    std.debug.assert(c.janet_scan_number("1", -1, &value) == 1);
+    //
+    // The two halves are asserted at different levels since increment 5h. The
+    // Zig function takes a `[]const u8`, so an empty range is the only one of
+    // the pair it can still be handed; the negative one is a state the type
+    // forbids. But `janet_scan_number` publishes an `int32_t` and a C caller
+    // can still pass -1, so the refusal moved to `capi.zig`'s `cbytes` and is
+    // asserted here through the C entry point rather than dropped.
+    var val: f64 = 0.0;
+    std.debug.assert(numscan.scanNumber("1"[0..0], &val) == 1);
+    std.debug.assert(c.janet_scan_number("1", -1, &val) == 1);
 }
 
 /// 0xFFFF bytes is the documented cutoff, and the two sides of it are the
@@ -229,24 +243,24 @@ fn theRejections() void {
 var digits: [0x10002]u8 = undefined;
 
 fn theLongInput() void {
-    var value: f64 = 0.0;
+    var val: f64 = 0.0;
 
     @memset(&digits, '0');
     digits[0] = '1';
 
     // At the cutoff: accepted, and overflows to infinity.
-    std.debug.assert(c.janet_scan_number(&digits, 0xFFFF, &value) == 0);
-    std.debug.assert(std.math.isInf(value) and value > 0);
+    std.debug.assert(numscan.scanNumber(digits[0..@intCast(0xFFFF)], &val) == 0);
+    std.debug.assert(std.math.isInf(val) and val > 0);
     // One past it: refused rather than truncated.
-    std.debug.assert(c.janet_scan_number(&digits, 0x10000, &value) == 1);
+    std.debug.assert(numscan.scanNumber(digits[0..@intCast(0x10000)], &val) == 1);
 
     // A long fractional tail drives the exponent very negative without
     // wrapping it.
     digits[0] = '0';
     digits[1] = '.';
     digits[0xFFFE] = '1';
-    std.debug.assert(c.janet_scan_number(&digits, 0xFFFF, &value) == 0);
-    std.debug.assert(sameDouble(value, 0.0));
+    std.debug.assert(numscan.scanNumber(digits[0..@intCast(0xFFFF)], &val) == 0);
+    std.debug.assert(sameDouble(val, 0.0));
 }
 
 /// Enough significant digits to force multi-digit BigNat arithmetic in both
@@ -272,71 +286,71 @@ fn theWideMantissa() void {
 /// do. A suffix is exactly the last two bytes, so a colon anywhere else is not
 /// one.
 fn theNumericSuffixes() void {
-    var value: c.Janet = undefined;
+    var val: types.Janet = undefined;
 
-    std.debug.assert(c.janet_scan_numeric("12", 2, &value) == 0);
-    std.debug.assert(harness.isType(value, c.JANET_NUMBER));
-    std.debug.assert(c.janet_unwrap_number(value) == 12.0);
+    std.debug.assert(numscan.scanNumeric("12", &val) == 0);
+    std.debug.assert(harness.isType(val, constants.JANET_NUMBER));
+    std.debug.assert(wrap.toNumber(val) == 12.0);
 
-    std.debug.assert(c.janet_scan_numeric("12:n", 4, &value) == 0);
-    std.debug.assert(harness.isType(value, c.JANET_NUMBER));
-    std.debug.assert(c.janet_unwrap_number(value) == 12.0);
+    std.debug.assert(numscan.scanNumeric("12:n", &val) == 0);
+    std.debug.assert(harness.isType(val, constants.JANET_NUMBER));
+    std.debug.assert(wrap.toNumber(val) == 12.0);
 
     // Both extremes, which are exactly the values a double cannot hold.
-    std.debug.assert(c.janet_scan_numeric("-9223372036854775808:s", 22, &value) == 0);
-    std.debug.assert(c.janet_is_int(value) == c.JANET_INT_S64);
-    std.debug.assert(c.janet_unwrap_s64(value) == std.math.minInt(i64));
+    std.debug.assert(numscan.scanNumeric("-9223372036854775808:s", &val) == 0);
+    std.debug.assert(inttypes.isInt(val) == constants.JANET_INT_S64);
+    std.debug.assert(raise.reported(inttypes.unwrapS64(val)) == std.math.minInt(i64));
 
-    std.debug.assert(c.janet_scan_numeric("18446744073709551615:u", 22, &value) == 0);
-    std.debug.assert(c.janet_is_int(value) == c.JANET_INT_U64);
-    std.debug.assert(c.janet_unwrap_u64(value) == std.math.maxInt(u64));
+    std.debug.assert(numscan.scanNumeric("18446744073709551615:u", &val) == 0);
+    std.debug.assert(inttypes.isInt(val) == constants.JANET_INT_U64);
+    std.debug.assert(raise.reported(inttypes.unwrapU64(val)) == std.math.maxInt(u64));
 
     // Out of range for the requested width, a sign the width cannot hold, an
     // unknown suffix, and a bad mantissa all report failure.
-    std.debug.assert(c.janet_scan_numeric("18446744073709551616:u", 22, &value) == 1);
-    std.debug.assert(c.janet_scan_numeric("-1:u", 4, &value) == 1);
-    std.debug.assert(c.janet_scan_numeric("1:q", 3, &value) == 1);
-    std.debug.assert(c.janet_scan_numeric("x:n", 3, &value) == 1);
+    std.debug.assert(numscan.scanNumeric("18446744073709551616:u", &val) == 1);
+    std.debug.assert(numscan.scanNumeric("-1:u", &val) == 1);
+    std.debug.assert(numscan.scanNumeric("1:q", &val) == 1);
+    std.debug.assert(numscan.scanNumeric("x:n", &val) == 1);
 
     // A colon anywhere but the second-to-last byte is not a suffix.
-    std.debug.assert(c.janet_scan_numeric("1:", 2, &value) == 1);
-    std.debug.assert(c.janet_scan_numeric(":s", 2, &value) == 1);
+    std.debug.assert(numscan.scanNumeric("1:", &val) == 1);
+    std.debug.assert(numscan.scanNumeric(":s", &val) == 1);
 }
 
 /// `janet_buffer_dtostr` is the inverse and appends rather than replacing.
 fn theDoubleToString() void {
-    const b: *c.JanetBuffer = c.janet_buffer(0);
+    const b: *types.JanetBuffer = buffers.new(0);
 
     janet_buffer_dtostr(b, 1.0);
-    std.debug.assert(b.count == 1 and b.data[0] == '1');
+    std.debug.assert(b.count == 1 and b.data.?[0] == '1');
 
     // Seventeen significant digits, which is what round-trips.
     b.count = 0;
     janet_buffer_dtostr(b, 0.1);
     std.debug.assert(b.count == 19);
-    std.debug.assert(std.mem.eql(u8, b.data[0..19], "0.10000000000000001"));
+    std.debug.assert(std.mem.eql(u8, b.data.?[0..19], "0.10000000000000001"));
 
     // Negative zero keeps its sign here, unlike in the printer.
     b.count = 0;
     janet_buffer_dtostr(b, -0.0);
-    std.debug.assert(b.count == 2 and std.mem.eql(u8, b.data[0..2], "-0"));
+    std.debug.assert(b.count == 2 and std.mem.eql(u8, b.data.?[0..2], "-0"));
 
     // Appending preserves the existing contents.
     b.count = 0;
-    _ = c.janet_buffer_push_cstring(b, "x=");
+    _ = buffers.pushCstringAbi(b, "x=");
     janet_buffer_dtostr(b, 2.5);
-    std.debug.assert(b.count == 5 and std.mem.eql(u8, b.data[0..5], "x=2.5"));
+    std.debug.assert(b.count == 5 and std.mem.eql(u8, b.data.?[0..5], "x=2.5"));
 
     // No comma survives regardless of locale, which is the one thing about
     // this function that depends on the host.
     b.count = 0;
     janet_buffer_dtostr(b, 1234.5678);
     const count: usize = @intCast(b.count);
-    std.debug.assert(std.mem.indexOfScalar(u8, b.data[0..count], ',') == null);
+    std.debug.assert(std.mem.indexOfScalar(u8, b.data.?[0..count], ',') == null);
 }
 
 pub fn run() void {
-    _ = c.janet_init();
+    harness.init();
 
     theIntegers();
     theFractions();
@@ -350,5 +364,5 @@ pub fn run() void {
     if (options.int_types_core) theNumericSuffixes();
     theDoubleToString();
 
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }

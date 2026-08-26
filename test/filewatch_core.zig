@@ -55,20 +55,32 @@
 //!
 //! **The backend is derived from Zig's target rather than from the subject.**
 //! The C contract picked its platform with `#if defined(JANET_LINUX)` and the
-//! same cascade `filewatch_abi.h` uses, which is two descriptions of one fact.
+//! same cascade `filewatch/abi.h` uses, which is two descriptions of one fact.
 //! Asking `filewatch_core.zig` which backend it compiled would be one -- rule
 //! 8's circularity -- so this file reads `builtin.os.tag` instead and lets the
 //! two disagree if they ever do.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
-const filewatch_core = subsystems.filewatch_core;
-const flags = subsystems.filewatch_flags;
+const value = @import("subsystems").value;
+const gc_alloc = @import("subsystems").gc_alloc;
+const order = @import("subsystems").value.order;
+const core_env = @import("subsystems").env;
+const wrap = @import("subsystems").value.wrap;
+const args_core = @import("subsystems").args;
+const abstract_type = @import("subsystems").abstract_type;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const abstracts = @import("subsystems").value.abstracts;
+const pp_describe = @import("subsystems").pp_describe;
+const ev_channel = @import("subsystems").ev_channel;
+const filewatch_core = subsystems.filewatch;
+const flags = subsystems.filewatch;
 const Platform = flags.Platform;
 
 const assert = std.debug.assert;
@@ -91,15 +103,15 @@ var raises_seen: u32 = 0;
 // Refusals
 // ==========================================================================
 
-fn expectRaise(name: [*:0]const u8, argv: []c.Janet, message: []const u8) void {
+fn expectRaise(name: [*:0]const u8, argv: []types.Janet, message: []const u8) void {
     const r = harness.coreRaised(name, argv) orelse {
         std.debug.print("filewatch_core: expected a raise saying: {s}\n", .{message});
         @panic("filewatch_core: expected a raise, got a return");
     };
-    assert(r.signal == c.JANET_SIGNAL_ERROR);
+    assert(r.signal == constants.JANET_SIGNAL_ERROR);
     if (!r.says(message)) {
         std.debug.print("expected: {s}\n", .{message});
-        std.debug.print("     got: {s}\n", .{c.janet_to_string(r.payload)});
+        std.debug.print("     got: {s}\n", .{pp_describe.toString(r.payload)});
         @panic("filewatch_core: the raise carried another message");
     }
     raises_seen += 1;
@@ -109,15 +121,15 @@ fn expectRaise(name: [*:0]const u8, argv: []c.Janet, message: []const u8) void {
 /// renders `strerror`, which differs by platform and by libc, and pinning it
 /// would make this contract a test of the C library. An abstract rendered by
 /// `%v` carries an address, which is the other reason.
-fn expectRaisePrefix(name: [*:0]const u8, argv: []c.Janet, prefix: []const u8) void {
+fn expectRaisePrefix(name: [*:0]const u8, argv: []types.Janet, prefix: []const u8) void {
     const r = harness.coreRaised(name, argv) orelse {
         std.debug.print("filewatch_core: expected a raise starting: {s}\n", .{prefix});
         @panic("filewatch_core: expected a raise, got a return");
     };
-    assert(r.signal == c.JANET_SIGNAL_ERROR);
+    assert(r.signal == constants.JANET_SIGNAL_ERROR);
     if (!r.beginsWith(prefix)) {
         std.debug.print("expected prefix: {s}\n", .{prefix});
-        std.debug.print("            got: {s}\n", .{c.janet_to_string(r.payload)});
+        std.debug.print("            got: {s}\n", .{pp_describe.toString(r.payload)});
         @panic("filewatch_core: the raise carried another message");
     }
     raises_seen += 1;
@@ -125,15 +137,15 @@ fn expectRaisePrefix(name: [*:0]const u8, argv: []c.Janet, prefix: []const u8) v
 
 /// Where the message is the host's from end to end, or where the case is a
 /// recorded defect whose wording is not the subject.
-fn expectAnyRaise(name: [*:0]const u8, argv: []c.Janet) void {
+fn expectAnyRaise(name: [*:0]const u8, argv: []types.Janet) void {
     const r = harness.coreRaised(name, argv) orelse
         @panic("filewatch_core: expected a raise, got a return");
-    assert(r.signal == c.JANET_SIGNAL_ERROR);
+    assert(r.signal == constants.JANET_SIGNAL_ERROR);
     raises_seen += 1;
 }
 
 /// A cfunction that is expected to return, by the name the registry knows.
-fn callCore(name: [*:0]const u8, argv: []c.Janet) c.Janet {
+fn callCore(name: [*:0]const u8, argv: []types.Janet) types.Janet {
     return harness.callCore(name, argv) catch
         @panic("filewatch_core: a call that should have returned raised");
 }
@@ -148,7 +160,7 @@ fn callCore(name: [*:0]const u8, argv: []c.Janet) c.Janet {
 /// recorded that a registration table is the one place a cfunction can go
 /// missing without a link error.
 const filewatch_bindings = [_][*:0]const u8{
-    "filewatch/new", "filewatch/add", "filewatch/remove",
+    "filewatch/new",    "filewatch/add",      "filewatch/remove",
     "filewatch/listen", "filewatch/unlisten",
 };
 
@@ -164,12 +176,12 @@ fn theRegistration() void {
 
 /// `filewatch/new` takes a channel and there is no entry point that makes one,
 /// so it comes from the language. Nothing else in this file does.
-fn makeChannel() c.Janet {
-    var chan = c.janet_wrap_nil();
-    const env = c.janet_core_env(null);
-    const status = c.janet_dostring(env, "(ev/chan 16)", "filewatch_core", &chan);
+fn makeChannel() types.Janet {
+    var chan = wrap.fromNil();
+    const env = harness.coreEnv();
+    const status = core_env.dostring(env, "(ev/chan 16)", "filewatch_core", &chan);
     assert(status == 0);
-    assert(c.janet_checkabstract(chan, &c.janet_channel_type) != null);
+    assert(args_core.checkabstract(chan, abstract_type.stored(&ev_channel.channelType)) != null);
     return chan;
 }
 
@@ -177,12 +189,12 @@ fn makeChannel() c.Janet {
 // Arguments and flags
 // ==========================================================================
 
-fn theArgumentFaults(chan: c.Janet) void {
-    var one = [_]c.Janet{chan};
-    var none = [_]c.Janet{};
+fn theArgumentFaults(chan: types.Janet) void {
+    var one = [_]types.Janet{chan};
+    var none = [_]types.Janet{};
 
     expectRaise("filewatch/new", &none, "arity mismatch, expected at least 1, got 0");
-    var bad = [_]c.Janet{harness.wrapInteger(7)};
+    var bad = [_]types.Janet{harness.wrapInteger(7)};
     expectRaise("filewatch/new", &bad, "bad slot #0, expected core/channel, got 7");
     expectRaise("filewatch/add", &one, "arity mismatch, expected at least 2, got 1");
     expectRaise("filewatch/remove", &one, "arity mismatch, expected 2, got 1");
@@ -197,24 +209,24 @@ fn theArgumentFaults(chan: c.Janet) void {
 
 /// The message names the backend, and that word is the only part of it that
 /// ever differed between them.
-fn theFlagFaults(chan: c.Janet, word: []const u8) void {
+fn theFlagFaults(chan: types.Janet, word: []const u8) void {
     var buffer: [64]u8 = undefined;
     const unknown = std.fmt.bufPrint(&buffer, "unknown {s} flag ", .{word}) catch unreachable;
 
     {
-        var argv = [_]c.Janet{ chan, c.janet_ckeywordv("not-a-flag") };
+        var argv = [_]types.Janet{ chan, value.fromBytes("not-a-flag", .keyword) };
         expectRaisePrefix("filewatch/new", &argv, unknown);
     }
     {
         // A non-keyword is refused before the vocabulary is consulted, so this
         // message has no backend word in it.
-        var argv = [_]c.Janet{ chan, c.janet_cstringv("all") };
+        var argv = [_]types.Janet{ chan, value.fromBytes("all", .string) };
         expectRaise("filewatch/new", &argv, "expected keyword, got \"all\"");
     }
     {
         // The first flag is good and the second is not: the decoder folds left
         // and reports the one that failed rather than the first argument.
-        var argv = [_]c.Janet{ chan, c.janet_ckeywordv("all"), c.janet_ckeywordv("nope") };
+        var argv = [_]types.Janet{ chan, value.fromBytes("all", .keyword), value.fromBytes("nope", .keyword) };
         var full: [80]u8 = undefined;
         const message = std.fmt.bufPrint(&full, "{s}:nope", .{unknown}) catch unreachable;
         expectRaise("filewatch/new", &argv, message);
@@ -224,7 +236,7 @@ fn theFlagFaults(chan: c.Janet, word: []const u8) void {
         // name lookup compares by length for, and it is unreachable from a
         // source literal.
         const bytes = [_]u8{ 'a', 'l', 'l', 0 };
-        var argv = [_]c.Janet{ chan, c.janet_wrap_keyword(c.janet_keyword(&bytes, bytes.len)) };
+        var argv = [_]types.Janet{ chan, value.fromBytes(&bytes, .keyword) };
         expectRaisePrefix("filewatch/new", &argv, unknown);
     }
 }
@@ -237,7 +249,7 @@ fn theFlagFaults(chan: c.Janet, word: []const u8) void {
 ///
 /// `:all` is index zero on every backend and is the union of the rest, so it is
 /// the one row that must always be accepted.
-fn theFlagTableHalves(chan: c.Janet, platform: Platform, word: []const u8) void {
+fn theFlagTableHalves(chan: types.Janet, platform: Platform, word: []const u8) void {
     var buffer: [64]u8 = undefined;
     const unknown = std.fmt.bufPrint(&buffer, "unknown {s} flag :", .{word}) catch unreachable;
 
@@ -247,13 +259,13 @@ fn theFlagTableHalves(chan: c.Janet, platform: Platform, word: []const u8) void 
     var accepted: u32 = 0;
     for (0..count) |i| {
         const name = flags.flagName(platform, i).?;
-        var argv = [_]c.Janet{ chan, c.janet_ckeywordv(name.ptr) };
+        var argv = [_]types.Janet{ chan, value.fromBytes(name, .keyword) };
         if (harness.coreRaised("filewatch/new", &argv)) |r| {
             // The only reason a name from this platform's own vocabulary is
             // refused is that the host's headers do not define the constant,
             // which the value table records as a zero. The message still names
             // the flag.
-            assert(r.signal == c.JANET_SIGNAL_ERROR);
+            assert(r.signal == constants.JANET_SIGNAL_ERROR);
             assert(r.beginsWith(unknown));
         } else {
             accepted += 1;
@@ -279,7 +291,7 @@ fn theFlagTableHalves(chan: c.Janet, platform: Platform, word: []const u8) void 
         if (std.mem.eql(u8, name, "all")) continue;
         // Names shared with this platform's vocabulary are not the test.
         if (flags.flagIndex(platform, name) != null) continue;
-        var argv = [_]c.Janet{ chan, c.janet_ckeywordv(name.ptr) };
+        var argv = [_]types.Janet{ chan, value.fromBytes(name, .keyword) };
         expectRaisePrefix("filewatch/new", &argv, unknown);
         refused += 1;
     }
@@ -293,10 +305,10 @@ fn theFlagTableHalves(chan: c.Janet, platform: Platform, word: []const u8) void 
 /// `JANET_ATEND_GCMARK`: a mark callback and nothing else. Every later slot
 /// being null is what makes a watcher opaque to `get`, `put`, `next`, `compare`
 /// and the rest, and none of that is visible from Janet.
-fn theAbstractType(chan: c.Janet) void {
-    var argv = [_]c.Janet{chan};
+fn theAbstractType(chan: types.Janet) void {
+    var argv = [_]types.Janet{chan};
     const watcher = callCore("filewatch/new", &argv);
-    assert(harness.isType(watcher, c.JANET_ABSTRACT));
+    assert(harness.isType(watcher, constants.JANET_ABSTRACT));
 
     // A `Janet` in a local is not a root: the collector scans the VM and the
     // fiber stacks, and a cfunction's arguments are on one of those. Nothing
@@ -304,10 +316,10 @@ fn theAbstractType(chan: c.Janet) void {
     // rooted by hand -- and a watcher that is collected closes its stream, so
     // the symptom is a later call failing on a descriptor the test still
     // believes it owns.
-    c.janet_gcroot(watcher);
-    defer _ = c.janet_gcunroot(watcher);
+    gc_alloc.gcroot(watcher);
+    defer _ = gc_alloc.gcunroot(watcher);
 
-    const abst = c.janet_unwrap_abstract(watcher);
+    const abst = wrap.toAbstract(watcher);
     const at = &filewatch_core.janet_filewatch_at;
     assert(std.mem.eql(u8, std.mem.span(at.name), "filewatch/watcher"));
     assert(at.gc == null);
@@ -327,19 +339,19 @@ fn theAbstractType(chan: c.Janet) void {
 
     // The registered type is this one: `janet_abstract` stored the mirror, and
     // a watcher answers with the same address.
-    assert(c.janet_abstract_type(abst) == @as([*c]const c.JanetAbstractType, @ptrCast(at)));
+    assert(types.abstractHead(abst).type == @as(*const types.JanetAbstractType, @ptrCast(at)));
 
     // The live watcher marks without complaint, and reports zero as every
     // `gcmark` in the tree does.
-    assert(at.gcmark.?(abst, c.janet_abstract_size(abst)) == 0);
+    assert(at.gcmark.?(abst, types.abstractHead(abst).size) == 0);
 
     // And a watcher that never reached its backend's `init`. `janet_abstract`
     // does not zero, so the guard is a read of whatever was there; a zeroed one
     // is the case it exists for, and the collector reaching a watcher in that
     // state is what a raise between the allocation and the initialisation would
     // leave behind.
-    const size = c.janet_abstract_size(abst);
-    const blank = c.janet_abstract(@ptrCast(at), size).?;
+    const size = types.abstractHead(abst).size;
+    const blank = abstracts.new(@ptrCast(at), size).?;
     const bytes: [*]u8 = @ptrCast(blank);
     @memset(bytes[0..size], 0);
     assert(at.gcmark.?(blank, size) == 0);
@@ -351,29 +363,29 @@ fn theAbstractType(chan: c.Janet) void {
 
 const probe_dir = "/tmp/janet-filewatch-contract";
 
-fn theLifecycle(chan: c.Janet) void {
-    var new_argv = [_]c.Janet{chan};
-    const dir = c.janet_cstringv(probe_dir);
+fn theLifecycle(chan: types.Janet) void {
+    var new_argv = [_]types.Janet{chan};
+    const dir = value.fromBytes(probe_dir, .string);
 
-    // `std.posix` has neither of these in 0.16 and `abi.zig` does not
-    // translate <sys/stat.h>, so they are the libc entry points by name. An
+    // `std.posix` has neither of these in 0.16 and nothing in the tree
+    // translates <sys/stat.h>, so they are the libc entry points by name. An
     // existing directory is fine; anything else fails the `add` below.
     _ = std.c.rmdir(probe_dir);
     _ = std.c.mkdir(probe_dir, 0o755);
 
     const watcher = callCore("filewatch/new", &new_argv);
-    assert(harness.isType(watcher, c.JANET_ABSTRACT));
-    c.janet_gcroot(watcher);
-    defer _ = c.janet_gcunroot(watcher);
+    assert(harness.isType(watcher, constants.JANET_ABSTRACT));
+    gc_alloc.gcroot(watcher);
+    defer _ = gc_alloc.gcunroot(watcher);
 
     // A path the host cannot open. The two backends word this differently --
     // inotify reports `janet_ev_lasterr` bare and kqueue prefixes it -- and
     // both are the host's `strerror` after that.
     {
-        var argv = [_]c.Janet{
+        var argv = [_]types.Janet{
             watcher,
-            c.janet_cstringv(probe_dir ++ "/no-such-entry"),
-            c.janet_ckeywordv("all"),
+            value.fromBytes(probe_dir ++ "/no-such-entry", .string),
+            value.fromBytes("all", .keyword),
         };
         expectAnyRaise("filewatch/add", &argv);
     }
@@ -381,13 +393,13 @@ fn theLifecycle(chan: c.Janet) void {
     // Adding returns the watcher itself rather than a descriptor, which is
     // what lets `(-> w (filewatch/add p) (filewatch/add q))` thread.
     {
-        var argv = [_]c.Janet{ watcher, dir, c.janet_ckeywordv("all") };
-        assert(c.janet_equals(callCore("filewatch/add", &argv), watcher) != 0);
+        var argv = [_]types.Janet{ watcher, dir, value.fromBytes("all", .keyword) };
+        assert(order.equals(callCore("filewatch/add", &argv), watcher) != 0);
     }
 
     // A path that was never added has no descriptor to look up.
     {
-        var argv = [_]c.Janet{ watcher, c.janet_cstringv(probe_dir ++ "/never-added") };
+        var argv = [_]types.Janet{ watcher, value.fromBytes(probe_dir ++ "/never-added", .string) };
         expectRaise("filewatch/remove", &argv, "bad watch descriptor");
     }
 
@@ -399,7 +411,7 @@ fn theLifecycle(chan: c.Janet) void {
     // away, on Phase 8's rule: the behaviour is defined, so the port reproduces
     // it and the assertion holds.
     {
-        var argv = [_]c.Janet{ watcher, dir };
+        var argv = [_]types.Janet{ watcher, dir };
         std.c._errno().* = @intFromEnum(std.posix.E.INTR);
         expectAnyRaise("filewatch/remove", &argv);
     }
@@ -408,24 +420,24 @@ fn theLifecycle(chan: c.Janet) void {
     // with the watcher. The descriptor above is gone, so this needs a fresh
     // watch first.
     {
-        var add_argv = [_]c.Janet{ watcher, dir, c.janet_ckeywordv("all") };
-        var rm_argv = [_]c.Janet{ watcher, dir };
+        var add_argv = [_]types.Janet{ watcher, dir, value.fromBytes("all", .keyword) };
+        var rm_argv = [_]types.Janet{ watcher, dir };
         _ = callCore("filewatch/add", &add_argv);
         std.c._errno().* = 0;
-        assert(c.janet_equals(callCore("filewatch/remove", &rm_argv), watcher) != 0);
+        assert(order.equals(callCore("filewatch/remove", &rm_argv), watcher) != 0);
     }
 
     // Listening twice is refused, and that refusal is the only thing outside
     // the event loop that reads `is_watching`. Unlistening twice is *not*
     // refused: the second call returns without touching the stream.
     {
-        var argv = [_]c.Janet{ watcher, dir, c.janet_ckeywordv("all") };
-        var one = [_]c.Janet{watcher};
+        var argv = [_]types.Janet{ watcher, dir, value.fromBytes("all", .keyword) };
+        var one = [_]types.Janet{watcher};
         _ = callCore("filewatch/add", &argv);
-        assert(harness.isType(callCore("filewatch/listen", &one), c.JANET_NIL));
+        assert(harness.isType(callCore("filewatch/listen", &one), constants.JANET_NIL));
         expectRaise("filewatch/listen", &one, "already watching");
-        assert(harness.isType(callCore("filewatch/unlisten", &one), c.JANET_NIL));
-        assert(harness.isType(callCore("filewatch/unlisten", &one), c.JANET_NIL));
+        assert(harness.isType(callCore("filewatch/unlisten", &one), constants.JANET_NIL));
+        assert(harness.isType(callCore("filewatch/unlisten", &one), constants.JANET_NIL));
     }
 
     // And the watcher is dead after that, which is why this is the last thing
@@ -436,7 +448,7 @@ fn theLifecycle(chan: c.Janet) void {
     // because a Janet program that hit it would see the failure several calls
     // away from the call that caused it.
     {
-        var argv = [_]c.Janet{ watcher, dir, c.janet_ckeywordv("all") };
+        var argv = [_]types.Janet{ watcher, dir, value.fromBytes("all", .keyword) };
         expectAnyRaise("filewatch/add", &argv);
     }
 
@@ -444,12 +456,12 @@ fn theLifecycle(chan: c.Janet) void {
 }
 
 pub fn run() void {
-    _ = c.janet_init();
-    defer c.janet_deinit();
+    harness.init();
+    defer vm_lifecycle.deinit();
 
     const chan = makeChannel();
-    c.janet_gcroot(chan);
-    defer _ = c.janet_gcunroot(chan);
+    gc_alloc.gcroot(chan);
+    defer _ = gc_alloc.gcunroot(chan);
 
     theRegistration();
     theArgumentFaults(chan);

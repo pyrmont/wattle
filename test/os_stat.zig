@@ -29,9 +29,13 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const c = @import("cabi");
 const harness = @import("harness.zig");
+const value = @import("subsystems").value;
+const config = @import("config");
+const core_env = @import("subsystems").env;
+const vm_lifecycle = @import("subsystems").lifecycle;
 
 /// The kernels, by symbol; `janet.h` does not declare them.
 extern fn janet_os_mode_name(mode: u32) callconv(.c) [*:0]const u8;
@@ -41,7 +45,7 @@ extern fn janet_os_perm_from_unix(permissions: i32) callconv(.c) u32;
 /// The field registry, by import. Phase 11 Part 20 retired the three symbols
 /// this file used to declare: `os_files.zig` was reaching its own subsystem
 /// through the linker and `test/os_surface.c` was the only other reader.
-const os_stat = @import("subsystems").os_stat;
+const os_stat = @import("subsystems").stat;
 
 /// The registry, in order. See the header comment on why the order matters.
 const expected_fields = [_][]const u8{
@@ -90,7 +94,7 @@ fn theModeNames() void {
     std.debug.assert(modeNameIs(0o777, "other"));
 
     // Plan 9 has none of these four.
-    if (!@hasDecl(c, "JANET_PLAN9")) {
+    if (!(builtin.os.tag == .plan9)) {
         std.debug.assert(modeNameIs(S.IFIFO | 0o644, "fifo"));
         std.debug.assert(modeNameIs(S.IFBLK | 0o644, "block"));
         std.debug.assert(modeNameIs(S.IFSOCK | 0o644, "socket"));
@@ -151,11 +155,11 @@ fn theFieldRegistry() void {
 
 // -------------------------------------------------------- the Janet surface
 
-var environment: [*c]c.JanetTable = undefined;
+var environment: *types.JanetTable = undefined;
 
 fn eval(source: [*:0]const u8) void {
-    var result: c.Janet = undefined;
-    std.debug.assert(c.janet_dostring(environment, source, "os-stat-contract", &result) == 0);
+    var result: types.Janet = undefined;
+    std.debug.assert(core_env.dostring(environment, source, "os-stat-contract", &result) == 0);
 }
 
 /// Written in Janet because every assertion here is about a *keyword-keyed
@@ -212,7 +216,7 @@ fn theCoreFunctions() void {
     // file" from "the call failed".
     eval("(assert (nil? (os/stat \"janet-zig-os-stat-4d71/missing\")))");
 
-    if (!@hasDecl(c, "JANET_NO_SYMLINKS")) {
+    if (config.symlinks) {
         // `os/lstat` reports the link, `os/stat` its target.
         eval(
             \\(os/symlink "file" "janet-zig-os-stat-4d71/link")
@@ -228,15 +232,15 @@ fn theCoreFunctions() void {
 /// inside a Janet string; here they are values.
 fn theRefusals() void {
     const stat = harness.core("os/stat");
-    var args: [2]c.Janet = undefined;
+    var args: [2]types.Janet = undefined;
 
-    args[0] = c.janet_cstringv(work_file);
-    args[1] = c.janet_ckeywordv("nope");
-    std.debug.assert(harness.raised(stat, .{ @as(i32, 2), &args }) != null);
+    args[0] = value.fromBytes(work_file, .string);
+    args[1] = value.fromBytes("nope", .keyword);
+    std.debug.assert(harness.raised(stat, .{args[0..2]}) != null);
 
     // `:de` is a prefix of `:dev`, and the lookup matches whole names.
-    args[1] = c.janet_ckeywordv("de");
-    std.debug.assert(harness.raised(stat, .{ @as(i32, 2), &args }) != null);
+    args[1] = value.fromBytes("de", .keyword);
+    std.debug.assert(harness.raised(stat, .{args[0..2]}) != null);
 }
 
 /// Cleaned before as well as after: a previous run that aborted mid-way leaves
@@ -259,10 +263,10 @@ pub fn run() void {
     theFieldRegistry();
 
     cleanPaths();
-    _ = c.janet_init();
-    environment = c.janet_core_env(null);
+    harness.init();
+    environment = harness.coreEnv();
     theCoreFunctions();
     theRefusals();
-    c.janet_deinit();
+    vm_lifecycle.deinit();
     cleanPaths();
 }

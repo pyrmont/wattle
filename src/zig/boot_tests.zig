@@ -12,13 +12,41 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const abi = @import("abi.zig");
-const c = abi.c;
+const config = @import("config");
+const types = @import("types");
+const constants = @import("constants");
+
+/// `janet_cstringv` and its two siblings, which `cabi.zig` stopped carrying at
+/// increment 5e.
+///
+/// **This program is an embedder.** `build.zig` gives its module only `config`,
+/// `types`, `constants` and `cabi`, because it *links* the runtime object
+/// rather than importing it. `value.fromBytes` is therefore out of reach here,
+/// and should be: importing `value.zig` would compile a second copy of the
+/// whole value layer into an executable that already links one. So these spell
+/// the two C calls the macro composed, which is what any embedder writes.
+///
+/// They take a slice for the same reason `value.fromBytes` does -- a literal
+/// knows its own length, and `janet_cstring`'s `strlen` was rediscovering it.
+inline fn stringv(bytes: []const u8) types.Janet {
+    return c.janet_wrap_string(c.janet_string(bytes.ptr, @intCast(bytes.len)));
+}
+
+inline fn symbolv(bytes: []const u8) types.Janet {
+    return c.janet_wrap_symbol(c.janet_symbol(bytes.ptr, @intCast(bytes.len)));
+}
+
+/// A keyword is a symbol under a different tag; `janet.h:1844` is
+/// `#define janet_keyword janet_symbol`.
+inline fn keywordv(bytes: []const u8) types.Janet {
+    return c.janet_wrap_keyword(c.janet_symbol(bytes.ptr, @intCast(bytes.len)));
+}
+const c = @import("cabi");
 
 /// `janet_wrap_integer`, written out. `janet.h` declares it beside its macro
 /// and `wrap.c` defined it only for the two nanbox layouts, so a Zig caller
 /// reaching the declaration does not link against `-Dnanbox=false`.
-inline fn int(x: i32) c.Janet {
+inline fn int(x: i32) types.Janet {
     return c.janet_wrap_number(@floatFromInt(x));
 }
 
@@ -31,16 +59,16 @@ pub fn arrayTest() void {
     const array2 = c.janet_array(0);
 
     const words = [_][*:0]const u8{ "one", "two", "three", "four", "five", "six", "seven" };
-    for (words) |w| c.janet_array_push(array1, c.janet_cstringv(w));
+    for (words) |w| c.janet_array_push(array1, stringv(std.mem.span(w)));
     expect(array1.*.count == 7, "array1 count");
     expect(array1.*.capacity >= 7, "array1 capacity");
-    expect(c.janet_equals(array1.*.data[0], c.janet_cstringv("one")) != 0, "array1 first");
+    expect(c.janet_equals(array1.*.data.?[0], stringv("one")) != 0, "array1 first");
 
-    for (words) |w| c.janet_array_push(array2, c.janet_cstringv(w));
+    for (words) |w| c.janet_array_push(array2, stringv(std.mem.span(w)));
     var i: i32 = 0;
     while (i < array2.*.count) : (i += 1) {
         expect(
-            c.janet_equals(array1.*.data[@intCast(i)], array2.*.data[@intCast(i)]) != 0,
+            c.janet_equals(array1.*.data.?[@intCast(i)], array2.*.data.?[@intCast(i)]) != 0,
             "arrays agree elementwise",
         );
     }
@@ -63,7 +91,7 @@ pub fn bufferTest() void {
     var i: i32 = 0;
     while (i < buffer1.*.count) : (i += 1) {
         expect(
-            buffer1.*.data[@intCast(i)] == buffer2.*.data[@intCast(i)],
+            buffer1.*.data.?[@intCast(i)] == buffer2.*.data.?[@intCast(i)],
             "buffers agree bytewise",
         );
     }
@@ -99,17 +127,25 @@ pub fn numberTest() void {
 }
 
 pub fn systemTest() void {
-    expect(@sizeOf(*anyopaque) == if (@hasDecl(c, "JANET_32")) 4 else 8, "pointer width");
+    expect(@sizeOf(*anyopaque) == if (!config.bits64) 4 else 8, "pointer width");
 
-    // The version defines are self-consistent.
-    var combined: [256]u8 = undefined;
-    const printed = std.fmt.bufPrint(&combined, "{d}.{d}.{d}{s}", .{
-        c.JANET_VERSION_MAJOR,
-        c.JANET_VERSION_MINOR,
-        c.JANET_VERSION_PATCH,
-        @as([*:0]const u8, c.JANET_VERSION_EXTRA),
-    }) catch unreachable;
-    expect(std.mem.eql(u8, printed, std.mem.span(@as([*:0]const u8, c.JANET_VERSION))), "version string");
+    // "The version defines are self-consistent" stood here, comparing
+    // `JANET_VERSION` against `{MAJOR}.{MINOR}.{PATCH}{EXTRA}` rebuilt from
+    // the parts. It was checking that two hand-maintained lines of
+    // `janetconf.h` agreed.
+    //
+    // Increment 4 gave `build.zig` one `version`, and `version_string` is
+    // `comptimePrint`ed from `major`, `minor`, `patch` and `version_extra` --
+    // the same values `makeConfigHeader` emits. So the header's whole is
+    // built from the header's parts and the comparison became a tautology at
+    // that moment, not at the header's removal. `DESIGN.md` §3's phrase for
+    // exactly this: the property "stops being an agreement and becomes a
+    // construction".
+    //
+    // What is worth checking is `Config` against the header, and
+    // `constants_check.zig` does it -- `version_major` and its four
+    // neighbours, every build, every configuration. That one dies with the
+    // header; this one was already dead.
 
     // Reflexive equality, which is also the nanbox test.
     expect(c.janet_equals(c.janet_wrap_nil(), c.janet_wrap_nil()) != 0, "nil");
@@ -128,23 +164,23 @@ pub fn systemTest() void {
     // A NaN is still a number. The C reached for `NAN` and fell back to
     // `0.0 / 0.0` where the macro was absent; Zig has the value directly.
     expect(
-        c.janet_checktype(c.janet_wrap_number(std.math.nan(f64)), c.JANET_NUMBER) != 0,
+        c.janet_checktype(c.janet_wrap_number(std.math.nan(f64)), constants.JANET_NUMBER) != 0,
         "NaN is a number",
     );
 
-    expect(c.janet_equals(c.janet_cstringv("a string."), c.janet_cstringv("a string.")) != 0, "string");
-    expect(c.janet_equals(c.janet_csymbolv("sym"), c.janet_csymbolv("sym")) != 0, "symbol");
+    expect(c.janet_equals(stringv("a string."), stringv("a string.")) != 0, "string");
+    expect(c.janet_equals(symbolv("sym"), symbolv("sym")) != 0, "symbol");
 
     const t1 = c.janet_tuple_begin(3);
     t1[0] = c.janet_wrap_nil();
     t1[1] = int(4);
-    t1[2] = c.janet_cstringv("hi");
+    t1[2] = stringv("hi");
     const tuple1 = c.janet_wrap_tuple(c.janet_tuple_end(t1));
 
     const t2 = c.janet_tuple_begin(3);
     t2[0] = c.janet_wrap_nil();
     t2[1] = int(4);
-    t2[2] = c.janet_cstringv("hi");
+    t2[2] = stringv("hi");
     const tuple2 = c.janet_wrap_tuple(c.janet_tuple_end(t2));
 
     expect(c.janet_equals(tuple1, tuple2) != 0, "structurally equal tuples");
@@ -154,48 +190,48 @@ pub fn tableTest() void {
     const t1 = c.janet_table(10);
     const t2 = c.janet_table(0);
 
-    c.janet_table_put(t1, c.janet_cstringv("hello"), int(2));
-    c.janet_table_put(t1, c.janet_cstringv("akey"), int(5));
-    c.janet_table_put(t1, c.janet_cstringv("box"), c.janet_wrap_boolean(0));
-    c.janet_table_put(t1, c.janet_cstringv("square"), c.janet_cstringv("avalue"));
+    c.janet_table_put(t1, stringv("hello"), int(2));
+    c.janet_table_put(t1, stringv("akey"), int(5));
+    c.janet_table_put(t1, stringv("box"), c.janet_wrap_boolean(0));
+    c.janet_table_put(t1, stringv("square"), stringv("avalue"));
 
     expect(t1.*.count == 4, "t1 count");
     expect(t1.*.capacity >= t1.*.count, "t1 capacity");
-    expect(c.janet_equals(c.janet_table_get(t1, c.janet_cstringv("hello")), int(2)) != 0, "t1 hello");
-    expect(c.janet_equals(c.janet_table_get(t1, c.janet_cstringv("akey")), int(5)) != 0, "t1 akey");
+    expect(c.janet_equals(c.janet_table_get(t1, stringv("hello")), int(2)) != 0, "t1 hello");
+    expect(c.janet_equals(c.janet_table_get(t1, stringv("akey")), int(5)) != 0, "t1 akey");
     expect(
-        c.janet_equals(c.janet_table_get(t1, c.janet_cstringv("box")), c.janet_wrap_boolean(0)) != 0,
+        c.janet_equals(c.janet_table_get(t1, stringv("box")), c.janet_wrap_boolean(0)) != 0,
         "t1 box",
     );
     expect(
-        c.janet_equals(c.janet_table_get(t1, c.janet_cstringv("square")), c.janet_cstringv("avalue")) != 0,
+        c.janet_equals(c.janet_table_get(t1, stringv("square")), stringv("avalue")) != 0,
         "t1 square",
     );
 
     // Removing a key and putting nil are the same thing, and both shrink it.
-    _ = c.janet_table_remove(t1, c.janet_cstringv("hello"));
-    c.janet_table_put(t1, c.janet_cstringv("box"), c.janet_wrap_nil());
+    _ = c.janet_table_remove(t1, stringv("hello"));
+    c.janet_table_put(t1, stringv("box"), c.janet_wrap_nil());
     expect(t1.*.count == 2, "t1 count after removals");
     expect(
-        c.janet_equals(c.janet_table_get(t1, c.janet_cstringv("hello")), c.janet_wrap_nil()) != 0,
+        c.janet_equals(c.janet_table_get(t1, stringv("hello")), c.janet_wrap_nil()) != 0,
         "t1 hello gone",
     );
     expect(
-        c.janet_equals(c.janet_table_get(t1, c.janet_cstringv("box")), c.janet_wrap_nil()) != 0,
+        c.janet_equals(c.janet_table_get(t1, stringv("box")), c.janet_wrap_nil()) != 0,
         "t1 box gone",
     );
 
-    c.janet_table_put(t2, c.janet_csymbolv("t2key1"), int(10));
-    c.janet_table_put(t2, c.janet_csymbolv("t2key2"), int(100));
-    c.janet_table_put(t2, c.janet_csymbolv("some key "), int(-2));
-    c.janet_table_put(t2, c.janet_csymbolv("a thing"), int(10));
+    c.janet_table_put(t2, symbolv("t2key1"), int(10));
+    c.janet_table_put(t2, symbolv("t2key2"), int(100));
+    c.janet_table_put(t2, symbolv("some key "), int(-2));
+    c.janet_table_put(t2, symbolv("a thing"), int(10));
 
-    expect(c.janet_equals(c.janet_table_get(t2, c.janet_csymbolv("t2key1")), int(10)) != 0, "t2key1");
-    expect(c.janet_equals(c.janet_table_get(t2, c.janet_csymbolv("t2key2")), int(100)) != 0, "t2key2");
+    expect(c.janet_equals(c.janet_table_get(t2, symbolv("t2key1")), int(10)) != 0, "t2key1");
+    expect(c.janet_equals(c.janet_table_get(t2, symbolv("t2key2")), int(100)) != 0, "t2key2");
     expect(t2.*.count == 4, "t2 count");
-    expect(c.janet_equals(c.janet_table_remove(t2, c.janet_csymbolv("t2key1")), int(10)) != 0, "remove t2key1");
+    expect(c.janet_equals(c.janet_table_remove(t2, symbolv("t2key1")), int(10)) != 0, "remove t2key1");
     expect(t2.*.count == 3, "t2 count after one removal");
-    expect(c.janet_equals(c.janet_table_remove(t2, c.janet_csymbolv("t2key2")), int(100)) != 0, "remove t2key2");
+    expect(c.janet_equals(c.janet_table_remove(t2, symbolv("t2key2")), int(100)) != 0, "remove t2key2");
     expect(t2.*.count == 2, "t2 count after two removals");
 }
 

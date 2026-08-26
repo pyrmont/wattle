@@ -28,9 +28,12 @@
 //! says which argument was rejected.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const c = @import("cabi");
+const value = @import("subsystems").value;
 const harness = @import("harness.zig");
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
 
 /// The kernels, by symbol. `janet.h` does not declare them; they are
 /// `os_permissions.zig`'s internal surface, reached here the same way the C
@@ -81,23 +84,23 @@ fn everyPortableModeRoundTrips() void {
 fn theCoreFunctions() !void {
     const permInt = harness.core("os/perm-int");
     const permString = harness.core("os/perm-string");
-    var args: [1]c.Janet = undefined;
+    var args: [1]types.Janet = undefined;
 
-    args[0] = c.janet_cstringv("rw-r-----");
-    std.debug.assert(c.janet_unwrap_integer(try permInt(1, &args)) == 0o640);
+    args[0] = value.fromBytes("rw-r-----", .string);
+    std.debug.assert(wrap.toInteger(try permInt(args[0..1])) == 0o640);
 
     args[0] = harness.wrapInteger(0o640);
-    const rendered = try permString(1, &args);
-    std.debug.assert(harness.stringIs(c.janet_unwrap_string(rendered), "rw-r-----"));
+    const rendered = try permString(args[0..1]);
+    std.debug.assert(harness.stringIs(wrap.toString(rendered), "rw-r-----"));
 
     // `os/perm-string` accepts a string as well as an integer and answers it
     // back, so that a caller can pass either through without asking which.
-    args[0] = c.janet_cstringv("rwxrwxrwx");
-    std.debug.assert(harness.stringIs(c.janet_unwrap_string(try permString(1, &args)), "rwxrwxrwx"));
+    args[0] = value.fromBytes("rwxrwxrwx", .string);
+    std.debug.assert(harness.stringIs(wrap.toString(try permString(args[0..1])), "rwxrwxrwx"));
 
     // The permissive parse survives the public function too.
-    args[0] = c.janet_cstringv("xxxxxxxxx");
-    std.debug.assert(c.janet_unwrap_integer(try permInt(1, &args)) == 0o111);
+    args[0] = value.fromBytes("xxxxxxxxx", .string);
+    std.debug.assert(wrap.toInteger(try permInt(args[0..1])) == 0o111);
 }
 
 /// Validation happens before either kernel is entered, and this is where it is
@@ -106,13 +109,13 @@ fn theCoreFunctions() !void {
 fn theRefusals() void {
     const permInt = harness.core("os/perm-int");
     const permString = harness.core("os/perm-string");
-    var args: [1]c.Janet = undefined;
+    var args: [1]types.Janet = undefined;
 
-    args[0] = c.janet_cstringv("rwx");
-    std.debug.assert(harness.raised(permInt, .{ @as(i32, 1), &args }) != null);
+    args[0] = value.fromBytes("rwx", .string);
+    std.debug.assert(harness.raised(permInt, .{args[0..1]}) != null);
 
     args[0] = harness.wrapInteger(0o1000);
-    std.debug.assert(harness.raised(permString, .{ @as(i32, 1), &args }) != null);
+    std.debug.assert(harness.raised(permString, .{args[0..1]}) != null);
 
     // And the kernels are still reachable and still correct afterwards, which
     // is what says the refusal happened above them rather than inside one.
@@ -120,10 +123,10 @@ fn theRefusals() void {
 }
 
 pub fn run() void {
-    _ = c.janet_init();
+    harness.init();
     theKernels();
     everyPortableModeRoundTrips();
     theCoreFunctions() catch @panic("os_permissions: a core function raised unexpectedly");
     theRefusals();
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }

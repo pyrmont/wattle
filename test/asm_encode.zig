@@ -32,35 +32,40 @@
 //! assembly.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
+const core_env = @import("subsystems").env;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const bytecode = @import("subsystems").bytecode;
 
-var environment: [*c]c.JanetTable = undefined;
+var environment: *types.JanetTable = undefined;
 
 /// Evaluate an assembly source and assemble the value it answers.
 ///
 /// `janet_dostring` is a protected entry point -- it answers a status rather
 /// than raising -- so the quoted structure arrives here without a scope.
-fn assemble(source: [*:0]const u8) c.JanetAssembleResult {
-    var value: c.Janet = undefined;
-    std.debug.assert(c.janet_dostring(environment, source, "asm-encode-test", &value) == 0);
-    return c.janet_asm(value, 0);
+fn assemble(source: [*:0]const u8) types.JanetAssembleResult {
+    var val: types.Janet = undefined;
+    std.debug.assert(core_env.dostring(environment, source, "asm-encode-test", &val) == 0);
+    return bytecode.assembleValue(val, 0);
 }
 
 /// Assemble, and assert it was refused with exactly this message.
 fn refused(source: [*:0]const u8, message: [*:0]const u8) void {
     const result = assemble(source);
-    std.debug.assert(result.status == c.JANET_ASSEMBLE_ERROR);
+    std.debug.assert(result.status == constants.JANET_ASSEMBLE_ERROR);
     std.debug.assert(result.@"error" != null);
-    std.debug.assert(harness.stringIs(result.@"error", message));
+    std.debug.assert(harness.stringIs(result.@"error".?, message));
 }
 
-fn accepted(source: [*:0]const u8) *c.JanetFuncDef {
+fn accepted(source: [*:0]const u8) *types.JanetFuncDef {
     const result = assemble(source);
-    std.debug.assert(result.status == c.JANET_ASSEMBLE_OK);
+    std.debug.assert(result.status == constants.JANET_ASSEMBLE_OK);
     std.debug.assert(result.@"error" == null);
-    return result.funcdef;
+    return result.funcdef.?;
 }
 
 /// Five operand encodings in one function; see the header comment.
@@ -82,25 +87,25 @@ fn theOperandEncodings() void {
     std.debug.assert(definition.bytecode_length == 6);
 
     // -12 as a signed 16-bit field.
-    std.debug.assert(definition.bytecode[0] ==
-        harness.op(c.JOP_LOAD_INTEGER) | (@as(u32, 0) << 8) | (@as(u32, 0xFFF4) << 16));
+    std.debug.assert(definition.bytecode.?[0] ==
+        harness.op(constants.JOP_LOAD_INTEGER) | (@as(u32, 0) << 8) | (@as(u32, 0xFFF4) << 16));
     // -3 as a signed 8-bit field, and `first-alias` resolving to slot 0.
-    std.debug.assert(definition.bytecode[1] ==
-        harness.op(c.JOP_ADD_IMMEDIATE) | (@as(u32, 1) << 8) | (@as(u32, 0) << 16) | (@as(u32, 0xFD) << 24));
+    std.debug.assert(definition.bytecode.?[1] ==
+        harness.op(constants.JOP_ADD_IMMEDIATE) | (@as(u32, 1) << 8) | (@as(u32, 0) << 16) | (@as(u32, 0xFD) << 24));
     // Two keywords folded into one type mask.
-    const mask: u32 = c.JANET_TFLAG_NIL | c.JANET_TFLAG_NUMBER;
-    std.debug.assert(definition.bytecode[2] == harness.op(c.JOP_TYPECHECK) | (mask << 16));
-    std.debug.assert(definition.bytecode[3] == harness.op(c.JOP_LOAD_CONSTANT) | (@as(u32, 1) << 8));
+    const mask: u32 = constants.JANET_TFLAG_NIL | constants.JANET_TFLAG_NUMBER;
+    std.debug.assert(definition.bytecode.?[2] == harness.op(constants.JOP_TYPECHECK) | (mask << 16));
+    std.debug.assert(definition.bytecode.?[3] == harness.op(constants.JOP_LOAD_CONSTANT) | (@as(u32, 1) << 8));
     // The label resolved to a relative displacement of one.
-    std.debug.assert(definition.bytecode[4] == harness.op(c.JOP_JUMP) | (@as(u32, 1) << 8));
-    std.debug.assert(definition.bytecode[5] == c.JOP_RETURN_NIL);
+    std.debug.assert(definition.bytecode.?[4] == harness.op(constants.JOP_JUMP) | (@as(u32, 1) << 8));
+    std.debug.assert(definition.bytecode.?[5] == constants.JOP_RETURN_NIL);
 
     // Two names, two slots -- the alias did not create a third.
     std.debug.assert(definition.slotcount == 2);
 
     std.debug.assert(definition.constants_length == 1);
-    std.debug.assert(harness.isType(definition.constants[0], c.JANET_STRING));
-    std.debug.assert(harness.stringIs(c.janet_unwrap_string(definition.constants[0]), "constant"));
+    std.debug.assert(harness.isType(definition.constants.?[0], constants.JANET_STRING));
+    std.debug.assert(harness.stringIs(wrap.toString(definition.constants.?[0]), "constant"));
 }
 
 fn theTwoSpellingsOfAChildDefinition() void {
@@ -109,15 +114,15 @@ fn theTwoSpellingsOfAChildDefinition() void {
         \\  :bytecode [(clo 0 child) (retn)]}
     );
     std.debug.assert(closures.defs_length == 1);
-    std.debug.assert(harness.stringIs(closures.defs[0].*.name, "child"));
-    std.debug.assert(closures.bytecode[0] == c.JOP_CLOSURE);
+    std.debug.assert(harness.stringIs(closures.defs.?[0].*.name.?, "child"));
+    std.debug.assert(closures.bytecode.?[0] == constants.JOP_CLOSURE);
 
     const defs = accepted(
         \\'{:defs [{:name legacy-child :bytecode [(retn)]}]
         \\  :bytecode [(clo 0 legacy-child) (retn)]}
     );
     std.debug.assert(defs.defs_length == 1);
-    std.debug.assert(harness.stringIs(defs.defs[0].*.name, "legacy-child"));
+    std.debug.assert(harness.stringIs(defs.defs.?[0].*.name.?, "legacy-child"));
 }
 
 fn theMetadataFields() void {
@@ -132,17 +137,17 @@ fn theMetadataFields() void {
     // Derived rather than declared: `max-arity` 3 needs three slots.
     std.debug.assert(definition.slotcount == 3);
     std.debug.assert(definition.named_args_count == 2);
-    std.debug.assert(definition.flags & c.JANET_FUNCDEF_FLAG_VARARG != 0);
-    std.debug.assert(definition.flags & c.JANET_FUNCDEF_FLAG_STRUCTARG != 0);
-    std.debug.assert(definition.flags & c.JANET_FUNCDEF_FLAG_NAMEDARGS != 0);
-    std.debug.assert(harness.stringIs(definition.name, "metadata-fn"));
-    std.debug.assert(harness.stringIs(definition.source, "metadata-source"));
+    std.debug.assert(definition.flags & constants.JANET_FUNCDEF_FLAG_VARARG != 0);
+    std.debug.assert(definition.flags & constants.JANET_FUNCDEF_FLAG_STRUCTARG != 0);
+    std.debug.assert(definition.flags & constants.JANET_FUNCDEF_FLAG_NAMEDARGS != 0);
+    std.debug.assert(harness.stringIs(definition.name.?, "metadata-fn"));
+    std.debug.assert(harness.stringIs(definition.source.?, "metadata-source"));
 }
 
 fn theSourceMapAndSymbolMap() void {
     const mapped = accepted("'{:bytecode [(retn)] :sourcemap [[12 34]]}");
-    std.debug.assert(mapped.sourcemap[0].line == 12);
-    std.debug.assert(mapped.sourcemap[0].column == 34);
+    std.debug.assert(mapped.sourcemap.?[0].line == 12);
+    std.debug.assert(mapped.sourcemap.?[0].column == 34);
 
     const symbols = accepted(
         \\'{:arity 1 :bytecode [(noop) (retn)]
@@ -150,9 +155,9 @@ fn theSourceMapAndSymbolMap() void {
     );
     std.debug.assert(symbols.symbolmap_length == 1);
     // Present in the flags as well as in the table.
-    std.debug.assert(symbols.flags & c.JANET_FUNCDEF_FLAG_HASSYMBOLMAP != 0);
-    std.debug.assert(symbols.symbolmap[0].birth_pc == 0);
-    std.debug.assert(harness.stringIs(symbols.symbolmap[0].symbol, "local"));
+    std.debug.assert(symbols.flags & constants.JANET_FUNCDEF_FLAG_HASSYMBOLMAP != 0);
+    std.debug.assert(symbols.symbolmap.?[0].birth_pc == 0);
+    std.debug.assert(harness.stringIs(symbols.symbolmap.?[0].symbol.?, "local"));
 
     // An empty environment list is accepted; an ill-typed one is not.
     const empty = accepted("'{:bytecode [(retn)] :environments []}");
@@ -214,8 +219,8 @@ fn theRefusals() void {
 }
 
 pub fn run() void {
-    _ = c.janet_init();
-    environment = c.janet_core_env(null);
+    harness.init();
+    environment = harness.coreEnv();
 
     theOperandEncodings();
     theTwoSpellingsOfAChildDefinition();
@@ -223,5 +228,5 @@ pub fn run() void {
     theSourceMapAndSymbolMap();
     theRefusals();
 
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }

@@ -30,23 +30,79 @@
 //! expect would only replace that message with a less informative assertion.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const raise = @import("raise");
+const debug = @import("subsystems").debug;
+const value = @import("subsystems").value;
+const config = @import("config");
+const structs = @import("subsystems").value.structs;
+const gc_alloc = @import("subsystems").gc_alloc;
+const utils = @import("subsystems").utils;
+const order = @import("subsystems").value.order;
+const vector_mod = @import("subsystems").stretchy;
+const core_env = @import("subsystems").env;
+const signal_core = @import("subsystems").signal;
+const registry = @import("subsystems").registry;
+const kind = @import("subsystems").value.kind;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const arrays = @import("subsystems").value.arrays;
+const fibers = @import("subsystems").value.fibers;
+const vm_entry = @import("subsystems").vm_entry;
+const pp_describe = @import("subsystems").pp_describe;
+const ev = @import("subsystems").ev;
+
+/// `janet_init`, reached by import rather than through the symbol.
+///
+/// Sixty-four contracts opened with `_ = c.janet_init();` before Phase 12
+/// increment 5d. `vm_lifecycle.init` **raises** -- the core image can fail to
+/// unmarshal, which is what a broken bootstrap looks like from here -- and
+/// through the C ABI that raise became a report with nothing to consume it,
+/// so the process died at the next protected scope naming neither the
+/// contract nor the cause. Here it is an error, and the `@panic` names both.
+///
+/// A contract that means to *observe* an init failure should call
+/// `vm_lifecycle.init` itself under `raised`; this is for the sixty-four that
+/// only need a VM.
+pub fn init() void {
+    _ = vm_lifecycle.init() catch @panic("harness: janet_init raised");
+}
+
+/// `janet_array_push`, on the same rule and for the same reason.
+///
+/// Thirty-nine sites across the contracts, every one of them pushing onto an
+/// array it has just made, where the raise `buffer_array.arrayPush` carries is
+/// a capacity overflow no contract is arranging. A contract that means to test
+/// *that* should call `arrayPush` itself under `raised`.
+pub fn arrayPush(array: *types.JanetArray, val: types.Janet) void {
+    arrays.push(array, val) catch @panic("harness: janet_array_push raised");
+}
+
+/// `janet_core_env(null)`, likewise, and the same reasoning.
+///
+/// Answers a non-null table. The implementation returns `*c.JanetTable` where
+/// `janet.h` declared `[*c]JanetTable`, which is the looseness increment 5c
+/// measured across 139 declarations; a single-item pointer still coerces to
+/// `[*c]` at the call sites that want one.
+pub fn coreEnv() *types.JanetTable {
+    return core_env.coreEnv(null) catch @panic("harness: janet_core_env raised");
+}
 
 /// What a raise carried: the signal it raised with, and the value it left in
 /// the enclosing scope's return register.
 pub const Raise = struct {
-    signal: c.JanetSignal,
-    payload: c.Janet,
+    signal: types.JanetSignal,
+    payload: types.Janet,
 
     /// Whether the payload is the string `expected`. Most panics carry one,
     /// and asserting on the message is what distinguishes "it refused" from
     /// "it refused for the reason this contract is about".
     pub fn says(self: Raise, expected: []const u8) bool {
-        if (!isType(self.payload, c.JANET_STRING)) return false;
-        const message = c.janet_unwrap_string(self.payload);
-        const length: usize = @intCast(c.janet_string_length(message));
+        if (!isType(self.payload, constants.JANET_STRING)) return false;
+        const message = wrap.toString(self.payload);
+        const length: usize = @intCast(types.stringHead(message).length);
         return std.mem.eql(u8, message[0..length], expected);
     }
 
@@ -59,9 +115,9 @@ pub const Raise = struct {
     /// always ends where the rendering begins and nothing after it is dropped
     /// silently.
     pub fn beginsWith(self: Raise, expected: []const u8) bool {
-        if (!isType(self.payload, c.JANET_STRING)) return false;
-        const message = c.janet_unwrap_string(self.payload);
-        const length: usize = @intCast(c.janet_string_length(message));
+        if (!isType(self.payload, constants.JANET_STRING)) return false;
+        const message = wrap.toString(self.payload);
+        const length: usize = @intCast(types.stringHead(message).length);
         return std.mem.startsWith(u8, message[0..length], expected);
     }
 
@@ -74,9 +130,9 @@ pub const Raise = struct {
     /// thousand rules. The C contract spelled this as a third
     /// `EXPECT_PANIC_SUFFIX` macro beside the other two.
     pub fn endsWith(self: Raise, expected: []const u8) bool {
-        if (!isType(self.payload, c.JANET_STRING)) return false;
-        const message = c.janet_unwrap_string(self.payload);
-        const length: usize = @intCast(c.janet_string_length(message));
+        if (!isType(self.payload, constants.JANET_STRING)) return false;
+        const message = wrap.toString(self.payload);
+        const length: usize = @intCast(types.stringHead(message).length);
         return std.mem.endsWith(u8, message[0..length], expected);
     }
 };
@@ -88,23 +144,23 @@ pub const Raise = struct {
 /// value calls the function directly with `try`; this one is for the cases
 /// where the refusal *is* the behaviour under test.
 ///
-///     const r = harness.raised(subsystems.args_core.getBytes, .{ argv, 0 }).?;
+///     const r = harness.raised(subsystems.args.getBytes, .{ argv, 0 }).?;
 ///     std.debug.assert(r.says("bad slot #0, expected bytes, got nil"));
 ///
 /// The payload is read before `janet_restore` runs, because restoring is what
 /// puts the outer scope's return register back.
 pub fn raised(function: anytype, args: anytype) ?Raise {
-    var state: c.JanetTryState = undefined;
-    c.janet_try_init(&state);
-    defer c.janet_restore(&state);
+    var state: types.JanetTryState = undefined;
+    signal_core.tryInit(&state);
+    defer signal_core.restore(&state);
     if (@call(.auto, function, args)) |_| {
         return null;
     } else |_| {
-        return .{ .signal = c.janet_vm.pending_signal, .payload = state.payload };
+        return .{ .signal = c.vm().pending_signal, .payload = state.payload };
     }
 }
 
-/// A C face called and its report consumed, which is what a Zig contract does
+/// An abi called and its report consumed, which is what a Zig contract does
 /// with a `janet.h` entry point that is still a `raise.reported` wrapper.
 ///
 /// This is the C contracts' `janet_contract_arm`/`janet_contract_raised` pair
@@ -118,20 +174,20 @@ pub fn raised(function: anytype, args: anytype) ?Raise {
 /// would fire here rather than answering the question asked.
 ///
 /// Phase 11 Part 11 put it here because two contracts in one increment needed
-/// it: `signal_core` for the four public faces of the panic family and the two
-/// slot diagnostics, `fiber_core` for the one surviving push face. Reach for
+/// it: `signal_core` for the four public abis of the panic family and the two
+/// slot diagnostics, `fiber_core` for the one surviving push abi. Reach for
 /// `raised` instead wherever the subject is a Zig function — see rule 15.
-pub fn faceRaised(face: anytype, args: anytype) ?Raise {
-    var state: c.JanetTryState = undefined;
-    c.janet_try_init(&state);
-    defer c.janet_restore(&state);
-    // Discarded rather than called bare, because a face need not return void:
+pub fn abiRaised(abi: anytype, args: anytype) ?Raise {
+    var state: types.JanetTryState = undefined;
+    signal_core.tryInit(&state);
+    defer signal_core.restore(&state);
+    // Discarded rather than called bare, because an abi need not return void:
     // Phase 11 Part 13's `janet_native` answers a `JanetModule`, and on the
     // raising path what it answers is `reportToC`'s zero value rather than
     // anything a contract should read.
-    _ = @call(.auto, face, args);
+    _ = @call(.auto, abi, args);
     if (!raise.tookCRaise()) return null;
-    return .{ .signal = c.janet_vm.pending_signal, .payload = state.payload };
+    return .{ .signal = c.vm().pending_signal, .payload = state.payload };
 }
 
 /// A core cfunction by name, with the calling convention it actually has.
@@ -144,9 +200,9 @@ pub fn faceRaised(face: anytype, args: anytype) ?Raise {
 /// error back into a report. Phase 11 Part 21 took the last two of those and
 /// the shim with them.
 pub fn core(name: [*:0]const u8) raise.CFunction {
-    const value = c.janet_resolve_core(name);
-    std.debug.assert(isType(value, c.JANET_CFUNCTION));
-    return raise.cfunction(c.janet_unwrap_cfunction(value));
+    const val = registry.resolveCore(name);
+    std.debug.assert(isType(val, constants.JANET_CFUNCTION));
+    return raise.cfunction(wrap.toCfunction(val));
 }
 
 /// Call a core cfunction by name over a slice of arguments.
@@ -160,21 +216,21 @@ pub fn core(name: [*:0]const u8) raise.CFunction {
 /// `net_sockets` and `filewatch_core` both drive their whole surface this way,
 /// and `ev_loop` will. A contract that wants the *value* uses this with `try`;
 /// one whose subject is the refusal uses `coreRaised`.
-pub fn callCore(name: [*:0]const u8, argv: []c.Janet) raise.Error!c.Janet {
-    return core(name)(@intCast(argv.len), argv.ptr);
+pub fn callCore(name: [*:0]const u8, argv: []types.Janet) raise.Error!types.Janet {
+    return core(name)(argv);
 }
 
 /// The same call under a protected scope, answering the raise it made -- or
 /// null if it returned. `raised` with the resolution and the split folded in.
-pub fn coreRaised(name: [*:0]const u8, argv: []c.Janet) ?Raise {
-    return raised(core(name), .{ @as(i32, @intCast(argv.len)), argv.ptr });
+pub fn coreRaised(name: [*:0]const u8, argv: []types.Janet) ?Raise {
+    return raised(core(name), .{argv});
 }
 
 /// Whether this build compiled the event loop, which decides how a form that
 /// waits gets driven. `janet.h` guards `janet_schedule` and `janet_loop` with
 /// `#ifdef JANET_EV`, so this is the same input the declarations are behind
 /// rather than a second belief about the configuration.
-pub const has_ev = @hasDecl(c, "JANET_EV");
+pub const has_ev = config.ev;
 
 /// One Janet form, run in a fiber of its own and driven to completion.
 ///
@@ -195,37 +251,37 @@ pub const has_ev = @hasDecl(c, "JANET_EV");
 /// scheduler while it is queued, but not between `janet_fiber` and
 /// `janet_schedule`, and the compile of the *next* contract's source is an
 /// allocation that can collect.
-pub fn inFiber(environment: *c.JanetTable, source: []const u8) void {
+pub fn inFiber(environment: *types.JanetTable, source: []const u8) void {
     var buffer: [16384]u8 = undefined;
     const wrapped = std.fmt.bufPrintZ(&buffer, "(fn [] {s})", .{source}) catch
         @panic("harness.inFiber: source does not fit");
 
-    var value = c.janet_wrap_nil();
-    if (c.janet_dostring(environment, wrapped, "contract", &value) != 0) {
+    var val = wrap.fromNil();
+    if (core_env.dostring(environment, wrapped, "contract", &val) != 0) {
         std.debug.print("harness.inFiber: could not compile\n{s}\n", .{source});
-        std.debug.print("             got: {s}\n", .{c.janet_to_string(value)});
+        std.debug.print("             got: {s}\n", .{pp_describe.toString(val)});
         @panic("harness.inFiber: compile failed");
     }
-    std.debug.assert(isType(value, c.JANET_FUNCTION));
+    std.debug.assert(isType(val, constants.JANET_FUNCTION));
 
-    const fiber = c.janet_fiber(c.janet_unwrap_function(value), 64, 0, null).?;
+    const fiber = fibers.new(wrap.toFunction(val), 64, 0, null).?;
     fiber.*.env = environment;
 
     if (has_ev) {
-        const wrapped_fiber = c.janet_wrap_fiber(fiber);
-        c.janet_gcroot(wrapped_fiber);
-        defer _ = c.janet_gcunroot(wrapped_fiber);
-        c.janet_schedule(fiber, c.janet_wrap_nil());
-        c.janet_loop();
-        if (c.janet_fiber_status(fiber) != c.JANET_STATUS_DEAD) {
+        const wrapped_fiber = wrap.fromFiber(fiber);
+        gc_alloc.gcroot(wrapped_fiber);
+        defer _ = gc_alloc.gcunroot(wrapped_fiber);
+        ev.schedule(fiber, wrap.fromNil());
+        raise.reported(ev.loop());
+        if (fibers.status(fiber) != constants.JANET_STATUS_DEAD) {
             std.debug.print("harness.inFiber: did not finish\n{s}\n", .{source});
             @panic("harness.inFiber: fiber is not dead");
         }
     } else {
-        var result = c.janet_wrap_nil();
-        const signal = c.janet_continue(fiber, c.janet_wrap_nil(), &result);
-        if (signal != c.JANET_SIGNAL_OK) {
-            c.janet_stacktrace_ext(fiber, result, "");
+        var result = wrap.fromNil();
+        const signal = vm_entry.continueFiber(fiber, wrap.fromNil(), &result);
+        if (signal != constants.JANET_SIGNAL_OK) {
+            raise.reported(debug.stacktraceExt(fiber, result, ""));
             std.debug.print("harness.inFiber: raised\n{s}\n", .{source});
             @panic("harness.inFiber: unexpected signal");
         }
@@ -237,13 +293,13 @@ pub fn inFiber(environment: *c.JanetTable, source: []const u8) void {
 /// It answers `c_int` because `janet.h` declares it for C, and every contract
 /// in the tree uses it as a condition. One `!= 0` here rather than several
 /// hundred at the sites.
-pub inline fn isType(value: c.Janet, want: anytype) bool {
-    return c.janet_checktype(value, want) != 0;
+pub inline fn isType(val: types.Janet, want: anytype) bool {
+    return kind.checkType(val, want) != 0;
 }
 
 /// `janet_equals` as a predicate, for the same reason as `isType`.
-pub inline fn equals(left: c.Janet, right: c.Janet) bool {
-    return c.janet_equals(left, right) != 0;
+pub inline fn equals(left: types.Janet, right: types.Janet) bool {
+    return order.equals(left, right) != 0;
 }
 
 /// `janet_u64(x)`: the sixty-four bits of payload, which is the one `janet.h`
@@ -258,11 +314,12 @@ pub inline fn equals(left: c.Janet, right: c.Janet) bool {
 /// for "same value" and for its bit-layout section, `value_order` for the
 /// pointer hash — so it goes here rather than in each.
 ///
-/// The layout is read off the translated type rather than from a `JANET_NANBOX_*`
-/// macro, for `abi.zig`'s standing reason: a macro derived from the compiler's
-/// predefines is not reliable through `@cImport`.
-pub inline fn u64Of(x: c.Janet) u64 {
-    return if (comptime @hasField(c.Janet, "u64")) @field(x, "u64") else @field(x.as, "u64");
+/// The layout is read off `types.Janet` rather than from a `JANET_NANBOX_*`
+/// macro, for the tree's standing reason: a macro derived from the compiler's
+/// predefines is not reliable through a translation, and since Phase 12
+/// increment 1 the build states the representation outright.
+pub inline fn u64Of(x: types.Janet) u64 {
+    return if (comptime config.value_repr != .tagged) @field(x, "u64") else @field(x.as, "u64");
 }
 
 /// An opcode widened to the `u32` a bytecode word is.
@@ -297,29 +354,29 @@ pub inline fn opcode(operation: anytype) u8 {
 /// a value of the wrong *type* unwraps to something arbitrary rather than
 /// failing, so checking the type first is what makes the comparison mean
 /// anything.
-pub fn integerIs(value: c.Janet, expected: i32) bool {
-    return isType(value, c.JANET_NUMBER) and c.janet_unwrap_integer(value) == expected;
+pub fn integerIs(val: types.Janet, expected: i32) bool {
+    return isType(val, constants.JANET_NUMBER) and wrap.toInteger(val) == expected;
 }
 
 /// The same for the three string-like types, which a contract has to tell
 /// apart: `janet_unwrap_string` will happily read a keyword.
-pub fn stringValueIs(value: c.Janet, expected: [*:0]const u8) bool {
-    return isType(value, c.JANET_STRING) and stringIs(c.janet_unwrap_string(value), expected);
+pub fn stringValueIs(val: types.Janet, expected: [*:0]const u8) bool {
+    return isType(val, constants.JANET_STRING) and stringIs(wrap.toString(val), expected);
 }
 
-pub fn symbolIs(value: c.Janet, expected: [*:0]const u8) bool {
-    return isType(value, c.JANET_SYMBOL) and stringIs(c.janet_unwrap_symbol(value), expected);
+pub fn symbolIs(val: types.Janet, expected: [*:0]const u8) bool {
+    return isType(val, constants.JANET_SYMBOL) and stringIs(wrap.toSymbol(val), expected);
 }
 
-pub fn keywordIs(value: c.Janet, expected: [*:0]const u8) bool {
-    return isType(value, c.JANET_KEYWORD) and stringIs(c.janet_unwrap_keyword(value), expected);
+pub fn keywordIs(val: types.Janet, expected: [*:0]const u8) bool {
+    return isType(val, constants.JANET_KEYWORD) and stringIs(wrap.toKeyword(val), expected);
 }
 
 /// A struct's field by keyword name. Every contract that reads a structure the
 /// runtime built spells this, and spelling it once keeps the `ckeywordv` out
 /// of the assertions.
-pub fn field(structure: c.JanetStruct, name: [*:0]const u8) c.Janet {
-    return c.janet_struct_get(structure, c.janet_ckeywordv(name));
+pub fn field(structure: types.JanetStruct, name: [*:0]const u8) types.Janet {
+    return structs.get(structure, value.fromBytes(std.mem.span(name), .keyword));
 }
 
 /// `janet_wrap_integer`, written out rather than called.
@@ -338,8 +395,8 @@ pub fn field(structure: c.JanetStruct, name: [*:0]const u8) c.Janet {
 /// entry. Phase 11 Part 1's build-only sweep caught the sixth and seventh --
 /// `os_environ` and `os_permissions`, on the day they were written -- which is
 /// what moved it here.
-pub inline fn wrapInteger(x: i32) c.Janet {
-    return c.janet_wrap_number(@floatFromInt(x));
+pub inline fn wrapInteger(x: i32) types.Janet {
+    return wrap.fromNumber(@floatFromInt(x));
 }
 
 /// The same, for a function a reduced build may not register at all.
@@ -352,14 +409,14 @@ pub inline fn wrapInteger(x: i32) c.Janet {
 /// `os_platform` itself is compiled either way, so no field of `Selection`
 /// answers the question directly.
 pub fn coreOptional(name: [*:0]const u8) ?raise.CFunction {
-    const value = c.janet_resolve_core(name);
-    if (!isType(value, c.JANET_CFUNCTION)) return null;
-    return raise.cfunction(c.janet_unwrap_cfunction(value));
+    const val = registry.resolveCore(name);
+    if (!isType(val, constants.JANET_CFUNCTION)) return null;
+    return raise.cfunction(wrap.toCfunction(val));
 }
 
 /// `janet_cstrcmp` as a predicate, which is how every contract wants it.
-pub fn stringIs(string: c.JanetString, expected: [*:0]const u8) bool {
-    return c.janet_cstrcmp(string, expected) == 0;
+pub fn stringIs(string: types.JanetString, expected: [*:0]const u8) bool {
+    return utils.cstrcmp(string, expected) == 0;
 }
 
 /// The compiler's growable vector, which `vector.h` provides only as macros.
@@ -374,7 +431,7 @@ pub fn stringIs(string: c.JanetString, expected: [*:0]const u8) bool {
 /// rather than three times in the assertions.
 ///
 /// The prefix is `janet_v__raw`'s: capacity at `[-2]`, count at `[-1]`. A
-/// vector is `[*c]Element` and may be null, which is what an empty one is.
+/// vector is `?[*]Element` and may be null, which is what an empty one is.
 pub const vector = struct {
     const prefix = 2 * @sizeOf(i32);
 
@@ -383,7 +440,9 @@ pub const vector = struct {
     }
 
     fn Element(comptime Pointer: type) type {
-        return @typeInfo(Pointer).pointer.child;
+        const info = @typeInfo(Pointer);
+        const target = if (info == .optional) info.optional.child else Pointer;
+        return @typeInfo(target).pointer.child;
     }
 
     pub fn count(v: anytype) i32 {
@@ -396,13 +455,13 @@ pub const vector = struct {
 
     /// `janet_v_push`. Takes the vector *variable* rather than its value,
     /// because growing it moves the allocation.
-    pub fn push(v: anytype, value: Element(@TypeOf(v.*))) void {
-        const size = @sizeOf(@TypeOf(value));
+    pub fn push(v: anytype, val: Element(@TypeOf(v.*))) void {
+        const size = @sizeOf(@TypeOf(val));
         if (v.* == null or count(v.*) + 1 >= capacity(v.*)) {
-            v.* = @ptrCast(@alignCast(c.janet_v_grow(v.*, 1, size)));
+            v.* = @ptrCast(@alignCast(vector_mod.vGrow(v.*, 1, size)));
         }
         const at = count(v.*);
-        v.*[@intCast(at)] = value;
+        v.*.?[@intCast(at)] = val;
         header(v.*)[1] = at + 1;
     }
 
@@ -421,18 +480,20 @@ pub const vector = struct {
     /// `janet_v_free`, which is `janet_sfree` on the raw prefix. A vector
     /// belongs to the scratch allocator rather than to the collector.
     pub fn free(v: anytype) void {
-        if (v != null) c.janet_sfree(@ptrCast(header(v)));
+        if (v != null) gc_alloc.sfree(@ptrCast(header(v)));
     }
 };
 
-/// Declarations from the internal headers `abi.zig` deliberately does not
-/// translate.
+/// Declarations from the internal headers, written out here.
 ///
-/// `abi.zig`'s own comment says why `util.h` is outside the single
-/// translation: its dynamic-library section falls through to `<dlfcn.h>`
-/// unless `JANET_WINDOWS` is defined, and that macro is not set there, so
-/// including it breaks the Windows cross-compile for every subsystem at once.
-/// `symcache.h` is outside it for no reason beyond nothing having needed it.
+/// `util.h` was the header the shared translation deliberately left out: its
+/// dynamic-library section falls through to `<dlfcn.h>` unless
+/// `JANET_WINDOWS` is defined, and that macro was not set there, so including
+/// it broke the Windows cross-compile for every subsystem at once.
+/// `symcache.h` was outside it for no reason beyond nothing having needed it.
+/// Phase 12 increment 5f retired the translation and both headers with it;
+/// what survives is the arrangement, which is that a caller declares what it
+/// needs.
 ///
 /// Six subsystems already write the declaration they need at the head of their
 /// own file — `struct_table.zig` carries five — and Phase 11 Part 9 is the
@@ -441,20 +502,19 @@ pub const vector = struct {
 /// once, so that the next contract adds a line instead of re-deriving it.
 ///
 /// Two of these take a `Janet` or a `JanetKV *`, which the usual justification
-/// ("no Janet type crosses, so the single-translation rule is not at stake")
-/// does not cover. It still holds, for `struct_table.zig`'s reason: the
-/// `c.JanetKV` in these signatures **is** the shared translation's type rather
-/// than a second one.
+/// ("no Janet type crosses, so there is no second spelling of one") does not
+/// cover. It still holds, for `struct_table.zig`'s reason: the `types.JanetKV`
+/// in these signatures **is** the tree's one spelling rather than a second.
 pub const internal = struct {
     // util.h
     pub extern fn janet_tablen(n: i32) callconv(.c) i32;
-    pub extern fn janet_string_calchash(str: [*c]const u8, len: i32) callconv(.c) i32;
-    pub extern fn janet_array_calchash(array: [*c]const c.Janet, len: i32) callconv(.c) i32;
-    pub extern fn janet_kv_calchash(kvs: [*c]const c.JanetKV, len: i32) callconv(.c) i32;
-    pub extern fn janet_struct_put_ext(st: [*c]c.JanetKV, key: c.Janet, value: c.Janet, replace: c_int) callconv(.c) void;
-    pub extern fn janet_table_get_keyword(t: *c.JanetTable, keyword: [*c]const u8) callconv(.c) c.Janet;
-    pub extern fn janet_table_proto_flatten(t: *c.JanetTable) callconv(.c) *c.JanetTable;
-    pub extern fn janet_registry_get(key: c.JanetCFunction) callconv(.c) [*c]c.JanetCFunRegistry;
+    pub extern fn janet_string_calchash(str: ?[*]const u8, len: i32) callconv(.c) i32;
+    pub extern fn janet_array_calchash(array: ?[*]const types.Janet, len: i32) callconv(.c) i32;
+    pub extern fn janet_kv_calchash(kvs: ?[*]const types.JanetKV, len: i32) callconv(.c) i32;
+    pub extern fn janet_struct_put_ext(st: [*]types.JanetKV, key: types.Janet, val: types.Janet, replace: c_int) callconv(.c) void;
+    pub extern fn janet_table_get_keyword(t: *types.JanetTable, keyword: [*:0]const u8) callconv(.c) types.Janet;
+    pub extern fn janet_table_proto_flatten(t: *types.JanetTable) callconv(.c) *types.JanetTable;
+    pub extern fn janet_registry_get(key: types.JanetCFunction) callconv(.c) ?*types.JanetCFunRegistry;
     // util.h, again: Phase 11 Part 13's group. `janet_hash_mix`,
     // `safe_memcpy`, `janet_strbinsearch` and the two dictionary probes are
     // declared in `util.h` alone, so `test/utils.zig` is their only caller
@@ -466,27 +526,27 @@ pub const internal = struct {
         tab: ?*const anyopaque,
         tabcount: usize,
         itemsize: usize,
-        key: [*c]const u8,
+        key: [*:0]const u8,
     ) callconv(.c) ?*const anyopaque;
     pub extern fn janet_dict_find(
-        buckets: [*c]const c.JanetKV,
+        buckets: [*]const types.JanetKV,
         cap: i32,
-        key: c.Janet,
-    ) callconv(.c) [*c]const c.JanetKV;
+        key: types.Janet,
+    ) callconv(.c) ?*const types.JanetKV;
     pub extern fn janet_dict_find_keyword(
-        buckets: [*c]const c.JanetKV,
+        buckets: [*]const types.JanetKV,
         cap: i32,
-        cstr: [*c]const u8,
+        cstr: [*]const u8,
         cstr_len: i32,
-    ) callconv(.c) [*c]const c.JanetKV;
-    pub extern fn janet_binding_from_entry(entry: c.Janet) callconv(.c) c.JanetBinding;
-    pub extern fn janet_get_core_table(name: [*c]const u8) callconv(.c) [*c]c.JanetTable;
+    ) callconv(.c) ?*const types.JanetKV;
+    pub extern fn janet_binding_from_entry(entry: types.Janet) callconv(.c) types.JanetBinding;
+    pub extern fn janet_get_core_table(name: [*:0]const u8) callconv(.c) ?*types.JanetTable;
 
     pub extern fn janet_registry_put(
-        key: c.JanetCFunction,
-        name: [*c]const u8,
-        name_prefix: [*c]const u8,
-        source_file: [*c]const u8,
+        key: types.JanetCFunction,
+        name: ?[*:0]const u8,
+        name_prefix: ?[*:0]const u8,
+        source_file: ?[*:0]const u8,
         source_line: i32,
     ) callconv(.c) void;
 
@@ -494,10 +554,10 @@ pub const internal = struct {
     // from. `value_wrap.zig` defines them and `test/value_wrap.zig` is the only
     // caller outside the containers.
     pub extern fn janet_memalloc_empty(count: i32) callconv(.c) ?*anyopaque;
-    pub extern fn janet_memempty(mem: [*c]c.JanetKV, count: i32) callconv(.c) void;
+    pub extern fn janet_memempty(mem: [*]types.JanetKV, count: i32) callconv(.c) void;
 
     // symcache.h
-    pub extern fn janet_symbol_deinit(sym: [*c]const u8) callconv(.c) void;
+    pub extern fn janet_symbol_deinit(sym: [*:0]const u8) callconv(.c) void;
 };
 
 /// `fiber.h`'s frame macros, which `@cImport` does not translate.
@@ -515,13 +575,13 @@ pub const internal = struct {
 /// change nothing, which is the same call `heap` records one declaration up.
 pub const frame = struct {
     /// `janet_stack_frame(fiber->data + index)`.
-    pub fn at(fiber: *c.JanetFiber, index: i32) *c.JanetStackFrame {
-        const base = fiber.data + @as(usize, @intCast(index));
-        return @ptrCast(@alignCast(base - @as(usize, @intCast(c.JANET_FRAME_SIZE))));
+    pub fn at(fiber: *types.JanetFiber, index: i32) *types.JanetStackFrame {
+        const base = fiber.data.? + @as(usize, @intCast(index));
+        return @ptrCast(@alignCast(base - @as(usize, @intCast(constants.JANET_FRAME_SIZE))));
     }
 
     /// `janet_fiber_frame(fiber)`: the frame the fiber is stopped in.
-    pub fn current(fiber: *c.JanetFiber) *c.JanetStackFrame {
+    pub fn current(fiber: *types.JanetFiber) *types.JanetStackFrame {
         return at(fiber, fiber.frame);
     }
 };
@@ -529,9 +589,9 @@ pub const frame = struct {
 /// The collector's two heap lists, as a contract reads them.
 ///
 /// `gc.h` defines `janet_gc_header`, `janet_gc_type` and their kin as
-/// function-like macros over `JanetGCObject`, which `@cImport` does not
-/// translate — `abi.zig`'s header comment says so and every subsystem that
-/// needs one writes it out. Four contracts in Phase 11 Part 9 need the same
+/// function-like macros over `JanetGCObject`, which `@cImport` did not
+/// translate — every subsystem that needed one wrote it out, and since Phase
+/// 12 increment 5e `types.zig` owns the head arithmetic for all of them. Four contracts in Phase 11 Part 9 need the same
 /// three lines to answer the same two questions: what memory type did the
 /// constructor stamp, and which list did that put the block on. Those two
 /// questions are how a container contract sees the collector at all.
@@ -544,7 +604,7 @@ pub const heap = struct {
     /// Every collectable block begins with its `JanetGCObject`, so the block
     /// pointer *is* the header. `janet_gc_header` is that cast and nothing
     /// else.
-    pub fn headerOf(block: ?*anyopaque) *c.JanetGCObject {
+    pub fn headerOf(block: ?*anyopaque) *types.JanetGCObject {
         return @ptrCast(@alignCast(block.?));
     }
 
@@ -552,14 +612,14 @@ pub const heap = struct {
     /// which of `janet_deinit_block`'s cases will eventually free the block
     /// and which of the two lists it is on.
     pub fn memoryType(block: ?*anyopaque) i32 {
-        return headerOf(block).flags & c.JANET_MEM_TYPEBITS;
+        return headerOf(block).flags & constants.JANET_MEM_TYPEBITS;
     }
 
     /// `janet_gc_reachable`: the mark bit, which the sweep reads and which a
     /// freshly allocated block must not have set — an allocation that arrived
     /// pre-marked would survive one collection it had no right to.
     pub fn reachable(block: ?*anyopaque) bool {
-        return (headerOf(block).flags & c.JANET_MEM_REACHABLE) != 0;
+        return (headerOf(block).flags & constants.JANET_MEM_REACHABLE) != 0;
     }
 
     /// Whether `block` is on the list headed by `list`. Only ever called for a

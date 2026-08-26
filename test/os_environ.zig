@@ -29,17 +29,23 @@
 //! and the argument layer.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
+const value = @import("subsystems").value;
+const builtin = @import("builtin");
+const tables = @import("subsystems").value.tables;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
 
 /// The kernels, by symbol. `os_environ.zig` exports them with C's calling
 /// convention and `janet.h` does not declare them, so this is the same
 /// hand-written block the C contract carried, in Zig.
-extern fn janet_os_environ_count(environ: [*c]const ?[*:0]const u8) callconv(.c) i32;
+extern fn janet_os_environ_count(environ: [*]const ?[*:0]const u8) callconv(.c) i32;
 extern fn janet_os_environ_separator(entry: [*:0]const u8) callconv(.c) i32;
 extern fn janet_os_getenv(name: [*:0]const u8) callconv(.c) ?[*:0]const u8;
-extern fn janet_os_setenv(name: [*:0]const u8, value: ?[*:0]const u8) callconv(.c) i32;
+extern fn janet_os_setenv(name: [*:0]const u8, val: ?[*:0]const u8) callconv(.c) i32;
 
 /// Unlikely to collide with a real variable, which matters because this
 /// contract writes to the process's own environment and does not restore it.
@@ -80,62 +86,63 @@ fn theHostOperations() void {
 fn theCoreFunctions() !void {
     const setenv = harness.core("os/setenv");
     const getenv = harness.core("os/getenv");
-    var args: [2]c.Janet = undefined;
+    var args: [2]types.Janet = undefined;
 
-    args[0] = c.janet_cstringv(test_name);
-    args[1] = c.janet_cstringv("public-value");
-    std.debug.assert(harness.isType(try setenv(2, &args), c.JANET_NIL));
+    args[0] = value.fromBytes(test_name, .string);
+    args[1] = value.fromBytes("public-value", .string);
+    std.debug.assert(harness.isType(try setenv(args[0..2]), constants.JANET_NIL));
 
-    const found = try getenv(1, &args);
-    std.debug.assert(harness.isType(found, c.JANET_STRING));
-    std.debug.assert(harness.stringIs(c.janet_unwrap_string(found), "public-value"));
+    const found = try getenv(args[0..1]);
+    std.debug.assert(harness.isType(found, constants.JANET_STRING));
+    std.debug.assert(harness.stringIs(wrap.toString(found), "public-value"));
 
     // `os/environ` is absent on Plan 9, where there is no `environ` to walk.
-    if (!@hasDecl(c, "JANET_PLAN9")) {
+    if (!(builtin.os.tag == .plan9)) {
         const environ = harness.core("os/environ");
-        const snapshot = c.janet_unwrap_table(try environ(0, null));
-        const captured = c.janet_table_get(snapshot, args[0]);
-        std.debug.assert(harness.isType(captured, c.JANET_STRING));
-        std.debug.assert(harness.stringIs(c.janet_unwrap_string(captured), "public-value"));
+        const snapshot = wrap.toTable(try environ(&.{}));
+        const captured = tables.get(snapshot, args[0]);
+        std.debug.assert(harness.isType(captured, constants.JANET_STRING));
+        std.debug.assert(harness.stringIs(wrap.toString(captured), "public-value"));
     }
 
     // A second argument to `os/getenv` is the value answered when the variable
     // is unset, and it is answered as-is rather than coerced to a string.
-    args[0] = c.janet_cstringv(missing_name);
-    args[1] = c.janet_ckeywordv("fallback");
-    std.debug.assert(harness.equals(try getenv(2, &args), args[1]));
+    args[0] = value.fromBytes(missing_name, .string);
+    args[1] = value.fromBytes("fallback", .keyword);
+    std.debug.assert(harness.equals(try getenv(args[0..2]), args[1]));
 
     // One argument to `os/setenv` unsets, which is the same path
     // `janet_os_setenv(name, NULL)` takes above and a different caller of it.
-    args[0] = c.janet_cstringv(test_name);
-    std.debug.assert(harness.isType(try setenv(1, &args), c.JANET_NIL));
-    std.debug.assert(harness.isType(try getenv(1, &args), c.JANET_NIL));
+    args[0] = value.fromBytes(test_name, .string);
+    std.debug.assert(harness.isType(try setenv(args[0..1]), constants.JANET_NIL));
+    std.debug.assert(harness.isType(try getenv(args[0..1]), constants.JANET_NIL));
 }
 
 /// What the two functions refuse, which the C contract could not ask.
 fn theRefusals() void {
     const setenv = harness.core("os/setenv");
     const getenv = harness.core("os/getenv");
-    var args: [2]c.Janet = undefined;
+    var args: [2]types.Janet = undefined;
 
     // Arity. `os/setenv` takes one or two, `os/getenv` one or two.
-    std.debug.assert(harness.raised(setenv, .{ @as(i32, 0), &args }) != null);
-    std.debug.assert(harness.raised(getenv, .{ @as(i32, 0), &args }) != null);
-    args[0] = c.janet_cstringv(test_name);
-    args[1] = c.janet_cstringv("value");
-    std.debug.assert(harness.raised(setenv, .{ @as(i32, 3), &args }) != null);
+    std.debug.assert(harness.raised(setenv, .{args[0..0]}) != null);
+    std.debug.assert(harness.raised(getenv, .{args[0..0]}) != null);
+    args[0] = value.fromBytes(test_name, .string);
+    args[1] = value.fromBytes("value", .string);
+    var three = [_]types.Janet{ args[0], args[1], args[1] };
+    std.debug.assert(harness.raised(setenv, .{&three}) != null);
 
     // Type. A keyword is not a string, and the refusal comes from the argument
     // layer with the slot number in it.
-    args[0] = c.janet_ckeywordv("not-a-string");
-    const bad_name = harness.raised(setenv, .{ @as(i32, 1), &args }).?;
-    std.debug.assert(bad_name.signal == c.JANET_SIGNAL_ERROR);
-    std.debug.assert(harness.isType(bad_name.payload, c.JANET_STRING));
+    args[0] = value.fromBytes("not-a-string", .keyword);
+    const bad_name = harness.raised(setenv, .{args[0..1]}).?;
+    std.debug.assert(bad_name.signal == constants.JANET_SIGNAL_ERROR);
+    std.debug.assert(harness.isType(bad_name.payload, constants.JANET_STRING));
 
     // The second argument is checked too, and only when it is present.
-    args[0] = c.janet_cstringv(test_name);
+    args[0] = value.fromBytes(test_name, .string);
     args[1] = harness.wrapInteger(7);
-    std.debug.assert(harness.raised(setenv, .{ @as(i32, 2), &args }) != null);
+    std.debug.assert(harness.raised(setenv, .{args[0..2]}) != null);
 
     // And the variable is not set as a side effect of the refusal.
     std.debug.assert(janet_os_getenv(test_name) == null);
@@ -145,8 +152,8 @@ pub fn run() void {
     theScanning();
     theHostOperations();
 
-    _ = c.janet_init();
+    harness.init();
     theCoreFunctions() catch @panic("os_environ: a core function raised unexpectedly");
     theRefusals();
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }

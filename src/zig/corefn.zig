@@ -2,7 +2,7 @@
 //!
 //! Phase 10 Part 6 is the first increment in which a Zig subsystem owns a
 //! cfunction rather than a kernel one calls, and this is the layer that made
-//! that possible. It is shared like `abi.zig` and `raise.zig` rather than
+//! that possible. It is shared like `cabi.zig` and `raise.zig` rather than
 //! selected like a subsystem, and for the same reason: it holds no `export` at
 //! all, so every subsystem can import it without the definitions appearing
 //! once per object.
@@ -53,65 +53,59 @@
 //! the number into each object. Over-aligning costs padding measured in bytes.
 
 const std = @import("std");
-const abi = @import("abi");
 const raise = @import("raise");
-const c = abi.c;
+const config = @import("config");
+const types = @import("types");
+const c = @import("cabi");
 
 /// Compiled into the bootstrap image generator rather than into the runtime.
 /// `build.zig` adds the macro to the Zig subsystem objects it builds for
 /// `-Dboot=zig`; before Part 6 no Zig object had any reason to care.
-pub const bootstrap = @hasDecl(c, "JANET_BOOTSTRAP");
+pub const bootstrap = config.bootstrap;
 
-const with_docstrings = bootstrap and !@hasDecl(c, "JANET_NO_DOCSTRINGS");
-const with_sourcemaps = !bootstrap or !@hasDecl(c, "JANET_NO_SOURCEMAPS");
+const with_docstrings = bootstrap and config.docstrings;
+const with_sourcemaps = !bootstrap or config.sourcemaps;
 
 /// The alignment every core cfunction is declared with. See the note above:
 /// `-Dnanbox-pointer-shift` accepts 0 through 4, and 1 << 4 satisfies all of
 /// them.
 pub const alignment = 16;
 
-/// Every module `corefn` is attached to is a subsystem object rooted at one
-/// file in this directory, so `@src().file` -- which Zig reports relative to
-/// the module root, and which is therefore a bare basename here -- is one
-/// concatenation away from a path that means something. `sourcePath` checks
-/// the assumption rather than trusting it: a subsystem that grew a second
-/// source file would report a subpath and fail to compile here instead of
-/// quietly recording a location nobody can find.
+/// Every module `corefn` is attached to is a subsystem object rooted in this
+/// directory, so `@src().file` -- which Zig reports relative to the module
+/// root -- is one concatenation away from a path that means something.
+///
+/// It used to reject a *subpath* as well, on the reasoning that a subsystem of
+/// more than one file could not be reconstructed from a basename. That guard
+/// was stricter than its own justification: `@src().file` is module-relative,
+/// so `source_root ++ where.file` is correct for `value/bytes/frames.zig`
+/// exactly as it is for `frames.zig`. `port/NAMESPACES.md`'s first file move
+/// found it, which is the guard doing its job -- it just had the wrong reason
+/// written on it. What remains is the check that actually matters: a path that
+/// climbs out of the module cannot be reconstructed by concatenation.
 ///
 /// The result is repo-relative where C's `__FILE__` is absolute, because
 /// `build.zig` passes absolute paths to the C compiler. That is an improvement
 /// and a small one: `PLAN.md` records that the image embeds twenty-two
 /// absolute host paths, which is why it is not yet reproducible across
 /// checkouts, and this removes them one subsystem at a time.
-const subsystem_dir = "src/zig/subsystems/";
+const source_root = "src/zig/";
 
 inline fn sourcePath(comptime where: std.builtin.SourceLocation) [:0]const u8 {
-    if (comptime std.mem.indexOfScalar(u8, where.file, '/') != null) {
-        @compileError("corefn: @src().file is a subpath ('" ++ where.file ++
-            "'), so this subsystem is no longer one file and " ++
-            "subsystem_dir no longer reconstructs its path");
+    if (comptime std.mem.startsWith(u8, where.file, "..")) {
+        @compileError("corefn: @src().file escapes the module ('" ++ where.file ++
+            "'), so source_root no longer reconstructs its path");
     }
-    return subsystem_dir ++ where.file;
+    return source_root ++ where.file;
 }
 
-pub const Entry = c.JanetRegExt;
+pub const Entry = types.JanetRegExt;
 
-/// `JanetMethod`, with the cfunction typed as Phase 10 Part 17g types it.
-///
-/// The layout is `janet.h`'s exactly -- a name and a pointer -- and the
-/// pointer is the same pointer. What differs is the *declared* type of the
-/// function it points at, which since 17g is `raise.CFunction` rather than
-/// `JanetCFunction`, so that a method table is checked the way a registration
-/// table is. Where one of these arrays meets a signature C still declares --
-/// `janet_getmethod`, `janet_nextmethod`, `JanetStream.methods` -- it is cast,
-/// because a layout is all those need.
-pub const Method = extern struct {
-    name: [*c]const u8,
-    cfun: ?raise.CFunction,
-};
-
-/// `JANET_REG_END` for a method table.
-pub const method_end: Method = .{ .name = null, .cfun = null };
+// `Method` stood here until Phase 12 increment 6h, with `method_end` beside
+// it. This file registers core cfunctions and used neither: the nine
+// subsystems that declare a method table reached the type through the
+// registration layer only because that is where it happened to be written.
+// It is `method_type.zig` now, beside the other three retyped tables.
 
 /// `JANET_REG_END`. A table is terminated by a null name, not by its length.
 pub const end: Entry = .{
@@ -152,7 +146,7 @@ pub fn reg(
 /// value and the registry entry, because the binding arrived with the image.
 /// `util.h` spells that as a `#define` of one name onto the other, which is
 /// why there is a choice to make here at all.
-pub fn install(env: *c.JanetTable, entries: []const Entry) void {
+pub fn install(env: *types.JanetTable, entries: []const Entry) void {
     if (bootstrap) {
         c.janet_cfuns_ext(env, null, entries.ptr);
     } else {
@@ -160,12 +154,12 @@ pub fn install(env: *c.JanetTable, entries: []const Entry) void {
     }
 }
 
-/// `src/core/util.h`, which `abi.zig` does not translate, and which does not
-/// exist in a bootstrap build at all.
+/// `src/core/util.h`, declared here rather than in `cabi.zig`, and absent
+/// from a bootstrap build altogether.
 extern fn janet_core_cfuns_ext(
-    env: *c.JanetTable,
-    regprefix: [*c]const u8,
-    cfuns: [*c]const Entry,
+    env: *types.JanetTable,
+    regprefix: ?[*:0]const u8,
+    cfuns: [*]const Entry,
 ) callconv(.c) void;
 
 /// `JANET_CORE_DEF`: a plain value binding rather than a cfunction.
@@ -186,9 +180,9 @@ extern fn janet_core_cfuns_ext(
 /// refers to them by name. Phase 10 Part 11 is the increment that needed the
 /// other half.
 pub fn def(
-    env: *c.JanetTable,
+    env: *types.JanetTable,
     comptime name: [:0]const u8,
-    value: c.Janet,
+    value: types.Janet,
     comptime where: std.builtin.SourceLocation,
     comptime doc: [:0]const u8,
 ) void {
@@ -209,9 +203,9 @@ pub fn def(
 /// `src/core/util.h`, like `janet_core_cfuns_ext` above: declared directly
 /// rather than translated, and absent from a bootstrap build.
 extern fn janet_core_def_sm(
-    env: *c.JanetTable,
-    name: [*c]const u8,
-    x: c.Janet,
+    env: *types.JanetTable,
+    name: [*]const u8,
+    x: types.Janet,
     p: ?*const anyopaque,
     sf: ?*const anyopaque,
     sl: i32,

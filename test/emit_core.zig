@@ -33,16 +33,24 @@
 //! side; this is the case where the answer is the plain call.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
+const value = @import("subsystems").value;
+const compiler_primitives = @import("subsystems").compiler_primitives;
+const vector_mod = @import("subsystems").stretchy;
+const regalloc = @import("subsystems").regalloc;
+const emit_core = @import("subsystems").emit_core;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
 const vector = harness.vector;
 
-var compiler: c.JanetCompiler = undefined;
-var scope: c.JanetScope = undefined;
+var compiler: types.JanetCompiler = undefined;
+var scope: types.JanetScope = undefined;
 
 /// A slot built by hand, which is the whole reason this file exists.
-fn slot(index: i32, envindex: i32, flags: u32, constant: c.Janet) c.JanetSlot {
+fn slot(index: i32, envindex: i32, flags: u32, constant: types.Janet) types.JanetSlot {
     return .{
         .constant = constant,
         .index = index,
@@ -52,16 +60,16 @@ fn slot(index: i32, envindex: i32, flags: u32, constant: c.Janet) c.JanetSlot {
 }
 
 /// A plain near register holding nothing in particular.
-fn near(index: i32) c.JanetSlot {
-    return slot(index, -1, 0, c.janet_wrap_nil());
+fn near(index: i32) types.JanetSlot {
+    return slot(index, -1, 0, wrap.fromNil());
 }
 
-fn constantSlot(value: c.Janet) c.JanetSlot {
-    return slot(-1, 0, c.JANET_SLOT_CONSTANT, value);
+fn constantSlot(val: types.Janet) types.JanetSlot {
+    return slot(-1, 0, constants.JANET_SLOT_CONSTANT, val);
 }
 
 fn clearError() void {
-    compiler.result.status = c.JANET_COMPILE_OK;
+    compiler.result.status = constants.JANET_COMPILE_OK;
     compiler.result.@"error" = null;
 }
 
@@ -71,7 +79,7 @@ fn clearEmission() void {
 }
 
 fn emitted(index: usize) u32 {
-    return compiler.buffer[index];
+    return compiler.buffer.?[index];
 }
 
 fn emittedCount() i32 {
@@ -79,18 +87,18 @@ fn emittedCount() i32 {
 }
 
 fn failedWith(message: [*:0]const u8) bool {
-    return compiler.result.status == c.JANET_COMPILE_ERROR and
-        harness.stringIs(compiler.result.@"error", message);
+    return compiler.result.status == constants.JANET_COMPILE_ERROR and
+        harness.stringIs(compiler.result.@"error".?, message);
 }
 
 /// The two allocators the emitter draws from. A far register comes off the
 /// scope's own allocator and a near one off the eight temporaries, so the
 /// first far register is 0 and the first temporary is 1.
 fn theTwoAllocators() void {
-    std.debug.assert(c.janetc_allocfar(&compiler) == 0);
-    const temporary = c.janetc_allocnear(&compiler, c.JANETC_REGTEMP_2);
+    std.debug.assert(emit_core.allocfar(&compiler) == 0);
+    const temporary = emit_core.allocnear(&compiler, constants.JANETC_REGTEMP_2);
     std.debug.assert(temporary == 1);
-    c.janetc_regalloc_freetemp(&scope.ra, temporary, c.JANETC_REGTEMP_2);
+    regalloc.regallocFreetemp(&scope.ra, temporary, constants.JANETC_REGTEMP_2);
 }
 
 /// Slot equality, which decides whether a copy emits anything at all.
@@ -99,7 +107,7 @@ fn theTwoAllocators() void {
 /// first pair equal despite differing flags — and the constant is compared
 /// only for the two slot kinds that have one.
 fn slotEquality() void {
-    const equal = c.janetc_sequal;
+    const equal = emit_core.sequal;
 
     std.debug.assert(equal(
         slot(3, -1, 1, harness.wrapInteger(10)),
@@ -108,11 +116,11 @@ fn slotEquality() void {
 
     // A non-type flag is not masked off, so mutability distinguishes.
     std.debug.assert(equal(
-        slot(3, -1, c.JANET_SLOT_MUTABLE, c.janet_wrap_nil()),
-        slot(3, -1, 0, c.janet_wrap_nil()),
+        slot(3, -1, constants.JANET_SLOT_MUTABLE, wrap.fromNil()),
+        slot(3, -1, 0, wrap.fromNil()),
     ) == 0);
     std.debug.assert(equal(near(3), near(4)) == 0);
-    std.debug.assert(equal(near(3), slot(3, 0, 0, c.janet_wrap_nil())) == 0);
+    std.debug.assert(equal(near(3), slot(3, 0, 0, wrap.fromNil())) == 0);
 
     // A constant slot compares its value, and so does a reference cell.
     std.debug.assert(equal(
@@ -124,12 +132,12 @@ fn slotEquality() void {
         constantSlot(harness.wrapInteger(20)),
     ) == 0);
     std.debug.assert(equal(
-        slot(5, -1, c.JANET_SLOT_REF, harness.wrapInteger(10)),
-        slot(5, -1, c.JANET_SLOT_REF, harness.wrapInteger(10)),
+        slot(5, -1, constants.JANET_SLOT_REF, harness.wrapInteger(10)),
+        slot(5, -1, constants.JANET_SLOT_REF, harness.wrapInteger(10)),
     ) != 0);
     std.debug.assert(equal(
-        slot(5, -1, c.JANET_SLOT_REF, harness.wrapInteger(10)),
-        slot(5, -1, c.JANET_SLOT_REF, harness.wrapInteger(20)),
+        slot(5, -1, constants.JANET_SLOT_REF, harness.wrapInteger(10)),
+        slot(5, -1, constants.JANET_SLOT_REF, harness.wrapInteger(20)),
     ) == 0);
 }
 
@@ -141,7 +149,7 @@ fn theSourceMapKeepsPace() void {
     while (index < 100) : (index += 1) {
         compiler.current_mapping.line = index + 1;
         compiler.current_mapping.column = index * 2;
-        c.janetc_emit(&compiler, 0x1000 + @as(u32, @intCast(index)));
+        emit_core.emit(&compiler, 0x1000 + @as(u32, @intCast(index)));
     }
 
     std.debug.assert(emittedCount() == 100);
@@ -150,8 +158,8 @@ fn theSourceMapKeepsPace() void {
     while (index < 100) : (index += 1) {
         const at: usize = @intCast(index);
         std.debug.assert(emitted(at) == 0x1000 + @as(u32, @intCast(index)));
-        std.debug.assert(compiler.mapbuffer[at].line == index + 1);
-        std.debug.assert(compiler.mapbuffer[at].column == index * 2);
+        std.debug.assert(compiler.mapbuffer.?[at].line == index + 1);
+        std.debug.assert(compiler.mapbuffer.?[at].column == index * 2);
     }
 }
 
@@ -160,60 +168,60 @@ fn theSourceMapKeepsPace() void {
 /// Which one it picks is decided entirely by the two slots: whether each is
 /// near (an index that fits in eight bits), far, an upvalue, a constant, or a
 /// reference cell. A source program cannot ask for any particular one.
-fn theCopies(reference: c.Janet) void {
+fn theCopies(reference: types.Janet) void {
     // Near to near is a single move.
     clearEmission();
-    c.janetc_copy(&compiler, near(3), near(7));
+    emit_core.copy(&compiler, near(3), near(7));
     std.debug.assert(emittedCount() == 1);
-    std.debug.assert(emitted(0) == harness.op(c.JOP_MOVE_NEAR) | (3 << 8) | (7 << 16));
+    std.debug.assert(emitted(0) == harness.op(constants.JOP_MOVE_NEAR) | (3 << 8) | (7 << 16));
 
     // A small integer constant is loaded as an immediate rather than interned.
     clearEmission();
-    c.janetc_copy(&compiler, near(4), constantSlot(c.janet_wrap_number(-12)));
-    std.debug.assert(emitted(0) == harness.op(c.JOP_LOAD_INTEGER) | (4 << 8) | (0xFFF4 << 16));
+    emit_core.copy(&compiler, near(4), constantSlot(wrap.fromNumber(-12)));
+    std.debug.assert(emitted(0) == harness.op(constants.JOP_LOAD_INTEGER) | (4 << 8) | (0xFFF4 << 16));
 
     // Anything else goes into the constant pool, and the same value twice
     // interns once.
     clearEmission();
-    c.janetc_copy(&compiler, near(5), constantSlot(c.janet_wrap_number(1.5)));
-    c.janetc_copy(&compiler, near(6), constantSlot(c.janet_wrap_number(1.5)));
+    emit_core.copy(&compiler, near(5), constantSlot(wrap.fromNumber(1.5)));
+    emit_core.copy(&compiler, near(6), constantSlot(wrap.fromNumber(1.5)));
     std.debug.assert(vector.count(scope.consts) == 1);
-    std.debug.assert(emitted(0) == harness.op(c.JOP_LOAD_CONSTANT) | (5 << 8));
-    std.debug.assert(emitted(1) == harness.op(c.JOP_LOAD_CONSTANT) | (6 << 8));
+    std.debug.assert(emitted(0) == harness.op(constants.JOP_LOAD_CONSTANT) | (5 << 8));
+    std.debug.assert(emitted(1) == harness.op(constants.JOP_LOAD_CONSTANT) | (6 << 8));
 
     // An upvalue names the environment and the slot within it.
     clearEmission();
-    c.janetc_copy(&compiler, near(4), slot(2, 1, 0, c.janet_wrap_nil()));
+    emit_core.copy(&compiler, near(4), slot(2, 1, 0, wrap.fromNil()));
     std.debug.assert(emitted(0) ==
-        harness.op(c.JOP_LOAD_UPVALUE) | (4 << 8) | (1 << 16) | (2 << 24));
+        harness.op(constants.JOP_LOAD_UPVALUE) | (4 << 8) | (1 << 16) | (2 << 24));
 
     // A far destination reverses the operand order.
     clearEmission();
-    c.janetc_copy(&compiler, near(300), near(4));
-    std.debug.assert(emitted(0) == harness.op(c.JOP_MOVE_FAR) | (4 << 8) | (300 << 16));
+    emit_core.copy(&compiler, near(300), near(4));
+    std.debug.assert(emitted(0) == harness.op(constants.JOP_MOVE_FAR) | (4 << 8) | (300 << 16));
 
     // Far to upvalue needs a temporary in between, so it is two instructions.
     clearEmission();
-    c.janetc_copy(&compiler, slot(2, 1, 0, c.janet_wrap_nil()), near(300));
+    emit_core.copy(&compiler, slot(2, 1, 0, wrap.fromNil()), near(300));
     std.debug.assert(emittedCount() == 2);
-    std.debug.assert(emitted(0) == harness.op(c.JOP_MOVE_NEAR) | (1 << 8) | (300 << 16));
+    std.debug.assert(emitted(0) == harness.op(constants.JOP_MOVE_NEAR) | (1 << 8) | (300 << 16));
     std.debug.assert(emitted(1) ==
-        harness.op(c.JOP_SET_UPVALUE) | (1 << 8) | (1 << 16) | (2 << 24));
+        harness.op(constants.JOP_SET_UPVALUE) | (1 << 8) | (1 << 16) | (2 << 24));
 
     // A reference cell is a one-element array in the constant pool, so
     // reading one loads the cell and then indexes it.
     clearEmission();
-    c.janetc_copy(&compiler, near(4), slot(-1, 0, c.JANET_SLOT_REF, reference));
+    emit_core.copy(&compiler, near(4), slot(-1, 0, constants.JANET_SLOT_REF, reference));
     std.debug.assert(emittedCount() == 2);
-    std.debug.assert(emitted(0) == harness.op(c.JOP_LOAD_CONSTANT) | (4 << 8) | (1 << 16));
-    std.debug.assert(emitted(1) == harness.op(c.JOP_GET_INDEX) | (4 << 8) | (4 << 16));
+    std.debug.assert(emitted(0) == harness.op(constants.JOP_LOAD_CONSTANT) | (4 << 8) | (1 << 16));
+    std.debug.assert(emitted(1) == harness.op(constants.JOP_GET_INDEX) | (4 << 8) | (4 << 16));
 
     // Writing one is the same shape with a put.
     clearEmission();
-    c.janetc_copy(&compiler, slot(-1, 0, c.JANET_SLOT_REF, reference), near(4));
+    emit_core.copy(&compiler, slot(-1, 0, constants.JANET_SLOT_REF, reference), near(4));
     std.debug.assert(emittedCount() == 2);
-    std.debug.assert(emitted(0) == harness.op(c.JOP_LOAD_CONSTANT) | (1 << 8) | (1 << 16));
-    std.debug.assert(emitted(1) == harness.op(c.JOP_PUT_INDEX) | (1 << 8) | (4 << 16));
+    std.debug.assert(emitted(0) == harness.op(constants.JOP_LOAD_CONSTANT) | (1 << 8) | (1 << 16));
+    std.debug.assert(emitted(1) == harness.op(constants.JOP_PUT_INDEX) | (1 << 8) | (4 << 16));
 }
 
 /// The ten emit entry points, one per operand shape, each asserted on the
@@ -227,35 +235,35 @@ fn theEmitShapes() void {
     const three = near(3);
     const seven = near(7);
 
-    std.debug.assert(c.janetc_emit_s(&compiler, harness.opcode(c.JOP_RETURN), three, 0) == 0);
-    std.debug.assert(emitted(0) == harness.op(c.JOP_RETURN) | (3 << 8));
+    std.debug.assert(emit_core.emitSlot(&compiler, harness.opcode(constants.JOP_RETURN), three, 0) == 0);
+    std.debug.assert(emitted(0) == harness.op(constants.JOP_RETURN) | (3 << 8));
 
     // A jump is a displacement from the instruction *after* the jump, so -2
     // from index 1 encodes as 0xFFFE.
-    std.debug.assert(c.janetc_emit_sl(&compiler, harness.opcode(c.JOP_JUMP_IF), three, -2) == 1);
-    std.debug.assert(emitted(1) == harness.op(c.JOP_JUMP_IF) | (3 << 8) | (0xFFFE << 16));
+    std.debug.assert(emit_core.emitSl(&compiler, harness.opcode(constants.JOP_JUMP_IF), three, -2) == 1);
+    std.debug.assert(emitted(1) == harness.op(constants.JOP_JUMP_IF) | (3 << 8) | (0xFFFE << 16));
 
-    std.debug.assert(c.janetc_emit_st(&compiler, harness.opcode(c.JOP_PUSH_ARRAY), three, 0x1234) == 2);
-    std.debug.assert(emitted(2) == harness.op(c.JOP_PUSH_ARRAY) | (3 << 8) | (0x1234 << 16));
+    std.debug.assert(emit_core.emitSt(&compiler, harness.opcode(constants.JOP_PUSH_ARRAY), three, 0x1234) == 2);
+    std.debug.assert(emitted(2) == harness.op(constants.JOP_PUSH_ARRAY) | (3 << 8) | (0x1234 << 16));
 
-    std.debug.assert(c.janetc_emit_si(&compiler, harness.opcode(c.JOP_ADD_IMMEDIATE), three, -12, 0) == 3);
-    std.debug.assert(emitted(3) == harness.op(c.JOP_ADD_IMMEDIATE) | (3 << 8) | (0xFFF4 << 16));
+    std.debug.assert(emit_core.emitSi(&compiler, harness.opcode(constants.JOP_ADD_IMMEDIATE), three, -12, 0) == 3);
+    std.debug.assert(emitted(3) == harness.op(constants.JOP_ADD_IMMEDIATE) | (3 << 8) | (0xFFF4 << 16));
 
-    std.debug.assert(c.janetc_emit_su(&compiler, harness.opcode(c.JOP_GET_INDEX), three, 0xABCD, 0) == 4);
-    std.debug.assert(emitted(4) == harness.op(c.JOP_GET_INDEX) | (3 << 8) | (0xABCD << 16));
+    std.debug.assert(emit_core.emitSu(&compiler, harness.opcode(constants.JOP_GET_INDEX), three, 0xABCD, 0) == 4);
+    std.debug.assert(emitted(4) == harness.op(constants.JOP_GET_INDEX) | (3 << 8) | (0xABCD << 16));
 
-    std.debug.assert(c.janetc_emit_ss(&compiler, harness.opcode(c.JOP_MOVE_FAR), three, near(300), 0) == 5);
-    std.debug.assert(emitted(5) == harness.op(c.JOP_MOVE_FAR) | (3 << 8) | (300 << 16));
+    std.debug.assert(emit_core.emitSs(&compiler, harness.opcode(constants.JOP_MOVE_FAR), three, near(300), 0) == 5);
+    std.debug.assert(emitted(5) == harness.op(constants.JOP_MOVE_FAR) | (3 << 8) | (300 << 16));
 
-    std.debug.assert(c.janetc_emit_ssi(&compiler, harness.opcode(c.JOP_ADD_IMMEDIATE), three, seven, -3, 0) == 6);
+    std.debug.assert(emit_core.emitSsi(&compiler, harness.opcode(constants.JOP_ADD_IMMEDIATE), three, seven, -3, 0) == 6);
     std.debug.assert(emitted(6) ==
-        harness.op(c.JOP_ADD_IMMEDIATE) | (3 << 8) | (7 << 16) | (0xFD << 24));
+        harness.op(constants.JOP_ADD_IMMEDIATE) | (3 << 8) | (7 << 16) | (0xFD << 24));
 
-    std.debug.assert(c.janetc_emit_ssu(&compiler, harness.opcode(c.JOP_GET), three, seven, 250, 0) == 7);
-    std.debug.assert(emitted(7) == harness.op(c.JOP_GET) | (3 << 8) | (7 << 16) | (250 << 24));
+    std.debug.assert(emit_core.emitSsu(&compiler, harness.opcode(constants.JOP_GET), three, seven, 250, 0) == 7);
+    std.debug.assert(emitted(7) == harness.op(constants.JOP_GET) | (3 << 8) | (7 << 16) | (250 << 24));
 
-    std.debug.assert(c.janetc_emit_sss(&compiler, harness.opcode(c.JOP_ADD), three, seven, near(9), 0) == 8);
-    std.debug.assert(emitted(8) == harness.op(c.JOP_ADD) | (3 << 8) | (7 << 16) | (9 << 24));
+    std.debug.assert(emit_core.emitSss(&compiler, harness.opcode(constants.JOP_ADD), three, seven, near(9), 0) == 8);
+    std.debug.assert(emitted(8) == harness.op(constants.JOP_ADD) | (3 << 8) | (7 << 16) | (9 << 24));
 }
 
 /// A far slot in an instruction that has only eight bits for it is moved into
@@ -263,32 +271,32 @@ fn theEmitShapes() void {
 /// moved out again. Three instructions where the caller wrote one.
 fn theWriteBack() void {
     clearEmission();
-    std.debug.assert(c.janetc_emit_si(
+    std.debug.assert(emit_core.emitSi(
         &compiler,
-        harness.opcode(c.JOP_ADD_IMMEDIATE),
+        harness.opcode(constants.JOP_ADD_IMMEDIATE),
         near(300),
         7,
         1,
     ) == 1);
     std.debug.assert(emittedCount() == 3);
-    std.debug.assert(emitted(0) == harness.op(c.JOP_MOVE_NEAR) | (1 << 8) | (300 << 16));
-    std.debug.assert(emitted(1) == harness.op(c.JOP_ADD_IMMEDIATE) | (1 << 8) | (7 << 16));
-    std.debug.assert(emitted(2) == harness.op(c.JOP_MOVE_FAR) | (1 << 8) | (300 << 16));
+    std.debug.assert(emitted(0) == harness.op(constants.JOP_MOVE_NEAR) | (1 << 8) | (300 << 16));
+    std.debug.assert(emitted(1) == harness.op(constants.JOP_ADD_IMMEDIATE) | (1 << 8) | (7 << 16));
+    std.debug.assert(emitted(2) == harness.op(constants.JOP_MOVE_FAR) | (1 << 8) | (300 << 16));
 }
 
 /// The same for a constant operand: it is loaded into a register first, so the
 /// answered index is the second instruction rather than the first.
 fn aConstantOperandIsLoadedFirst() void {
     clearEmission();
-    std.debug.assert(c.janetc_emit_s(
+    std.debug.assert(emit_core.emitSlot(
         &compiler,
-        harness.opcode(c.JOP_RETURN),
-        constantSlot(c.janet_wrap_number(1.5)),
+        harness.opcode(constants.JOP_RETURN),
+        constantSlot(wrap.fromNumber(1.5)),
         0,
     ) == 1);
     std.debug.assert(emittedCount() == 2);
-    std.debug.assert(emitted(0) == harness.op(c.JOP_LOAD_CONSTANT) | (1 << 8));
-    std.debug.assert(emitted(1) == harness.op(c.JOP_RETURN) | (1 << 8));
+    std.debug.assert(emitted(0) == harness.op(constants.JOP_LOAD_CONSTANT) | (1 << 8));
+    std.debug.assert(emitted(1) == harness.op(constants.JOP_RETURN) | (1 << 8));
 
     std.debug.assert(emittedCount() == vector.count(compiler.mapbuffer));
 }
@@ -296,9 +304,9 @@ fn aConstantOperandIsLoadedFirst() void {
 /// Writing to a constant slot, which is the emitter's own type error.
 fn aConstantCannotBeWritten() void {
     clearError();
-    c.janetc_copy(
+    emit_core.copy(
         &compiler,
-        slot(-1, -1, c.JANET_SLOT_CONSTANT, harness.wrapInteger(7)),
+        slot(-1, -1, constants.JANET_SLOT_CONSTANT, harness.wrapInteger(7)),
         near(0),
     );
     std.debug.assert(failedWith("cannot write to constant"));
@@ -309,25 +317,25 @@ fn aConstantCannotBeWritten() void {
 fn aJumpMayBeTooFar() void {
     clearError();
     clearEmission();
-    c.janetc_emit(&compiler, harness.op(c.JOP_NOOP));
-    _ = c.janetc_emit_sl(&compiler, harness.opcode(c.JOP_JUMP_IF), near(0), 0x7FFFF);
+    emit_core.emit(&compiler, harness.op(constants.JOP_NOOP));
+    _ = emit_core.emitSl(&compiler, harness.opcode(constants.JOP_JUMP_IF), near(0), 0x7FFFF);
     std.debug.assert(failedWith("jump is too far"));
     // Emitted anyway: the compile has failed and the bytecode is never run.
     std.debug.assert(emittedCount() == 2);
 
     clearError();
     clearEmission();
-    c.janetc_emit(&compiler, harness.op(c.JOP_NOOP));
-    _ = c.janetc_emit_sl(&compiler, harness.opcode(c.JOP_JUMP_IF), near(0), -0x7FFFF);
+    emit_core.emit(&compiler, harness.op(constants.JOP_NOOP));
+    _ = emit_core.emitSl(&compiler, harness.opcode(constants.JOP_JUMP_IF), near(0), -0x7FFFF);
     std.debug.assert(failedWith("jump is too far"));
 
     // A displacement that only just fits reports nothing. It is measured from
     // the instruction after the jump, which is why the NOOP matters.
     clearError();
     clearEmission();
-    c.janetc_emit(&compiler, harness.op(c.JOP_NOOP));
-    _ = c.janetc_emit_sl(&compiler, harness.opcode(c.JOP_JUMP_IF), near(0), std.math.maxInt(i16));
-    std.debug.assert(compiler.result.status == c.JANET_COMPILE_OK);
+    emit_core.emit(&compiler, harness.op(constants.JOP_NOOP));
+    _ = emit_core.emitSl(&compiler, harness.opcode(constants.JOP_JUMP_IF), near(0), std.math.maxInt(i16));
+    std.debug.assert(compiler.result.status == constants.JANET_COMPILE_OK);
 }
 
 /// Far registers past the sixteen bits an instruction has for one.
@@ -336,27 +344,27 @@ fn aJumpMayBeTooFar() void {
 /// free bit, so the ceiling is the emitter's to enforce and reaching it means
 /// marking everything below it as taken.
 fn theRegisterCeiling() void {
-    var full: c.JanetScope = std.mem.zeroes(c.JanetScope);
-    full.flags = c.JANET_SCOPE_FUNCTION;
-    c.janetc_regalloc_init(&full.ra);
-    defer c.janetc_regalloc_deinit(&full.ra);
+    var full: types.JanetScope = std.mem.zeroes(types.JanetScope);
+    full.flags = constants.JANET_SCOPE_FUNCTION;
+    regalloc.regallocInit(&full.ra);
+    defer regalloc.regallocDeinit(&full.ra);
 
-    c.janetc_regalloc_touch(&full.ra, 0xFFFF);
+    regalloc.regallocTouch(&full.ra, 0xFFFF);
     var chunk: i32 = 0;
     while (chunk < full.ra.count) : (chunk += 1) {
-        full.ra.chunks[@intCast(chunk)] = 0xFFFFFFFF;
+        full.ra.chunks.?[@intCast(chunk)] = 0xFFFFFFFF;
     }
     compiler.scope = &full;
     defer compiler.scope = &scope;
 
     clearError();
-    std.debug.assert(c.janetc_allocfar(&compiler) > 0xFFFF);
+    std.debug.assert(emit_core.allocfar(&compiler) > 0xFFFF);
     std.debug.assert(failedWith("ran out of internal registers"));
 
     // The same ceiling through `janetc_farslot`, which lives in
     // `compiler_primitives` and reports the same message.
     clearError();
-    _ = c.janetc_farslot(&compiler);
+    _ = compiler_primitives.farslot(&compiler);
     std.debug.assert(failedWith("ran out of internal registers"));
 }
 
@@ -368,19 +376,19 @@ fn theRegisterCeiling() void {
 /// entry a distinct value so that the search finds no match and tries to
 /// append.
 fn theConstantPoolFills() void {
-    var full: c.JanetScope = std.mem.zeroes(c.JanetScope);
-    full.flags = c.JANET_SCOPE_FUNCTION;
-    c.janetc_regalloc_init(&full.ra);
-    defer c.janetc_regalloc_deinit(&full.ra);
+    var full: types.JanetScope = std.mem.zeroes(types.JanetScope);
+    full.flags = constants.JANET_SCOPE_FUNCTION;
+    regalloc.regallocInit(&full.ra);
+    defer regalloc.regallocDeinit(&full.ra);
 
     var index: i32 = 0;
     while (index < 8) : (index += 1) {
-        vector.push(&full.consts, c.janet_wrap_number(1000.0 + @as(f64, @floatFromInt(index))));
+        vector.push(&full.consts, wrap.fromNumber(1000.0 + @as(f64, @floatFromInt(index))));
     }
-    full.consts = @ptrCast(@alignCast(c.janet_v_grow(full.consts, 0xFFFF, @sizeOf(c.Janet))));
+    full.consts = @ptrCast(@alignCast(vector_mod.vGrow(full.consts, 0xFFFF, @sizeOf(types.Janet))));
     index = 0;
     while (index < 0xFFFF) : (index += 1) {
-        full.consts[@intCast(index)] = c.janet_wrap_number(1000.0 + @as(f64, @floatFromInt(index)));
+        full.consts.?[@intCast(index)] = wrap.fromNumber(1000.0 + @as(f64, @floatFromInt(index)));
     }
     vector.setCount(full.consts, 0xFFFF);
     defer vector.free(full.consts);
@@ -390,25 +398,25 @@ fn theConstantPoolFills() void {
 
     clearError();
     clearEmission();
-    _ = c.janetc_emit_s(
+    _ = emit_core.emitSlot(
         &compiler,
-        harness.opcode(c.JOP_RETURN),
-        constantSlot(c.janet_wrap_number(2.5)),
+        harness.opcode(constants.JOP_RETURN),
+        constantSlot(wrap.fromNumber(2.5)),
         0,
     );
     std.debug.assert(failedWith("too many constants"));
 }
 
 pub fn run() void {
-    _ = c.janet_init();
+    harness.init();
 
-    compiler = std.mem.zeroes(c.JanetCompiler);
-    scope = std.mem.zeroes(c.JanetScope);
+    compiler = std.mem.zeroes(types.JanetCompiler);
+    scope = std.mem.zeroes(types.JanetScope);
     compiler.scope = &scope;
-    scope.flags = c.JANET_SCOPE_FUNCTION;
-    c.janetc_regalloc_init(&scope.ra);
+    scope.flags = constants.JANET_SCOPE_FUNCTION;
+    regalloc.regallocInit(&scope.ra);
 
-    const reference = c.janet_cstringv("reference-cell");
+    const reference = value.fromBytes("reference-cell", .string);
 
     theTwoAllocators();
     slotEquality();
@@ -425,6 +433,6 @@ pub fn run() void {
     vector.free(compiler.buffer);
     vector.free(compiler.mapbuffer);
     vector.free(scope.consts);
-    c.janetc_regalloc_deinit(&scope.ra);
-    c.janet_deinit();
+    regalloc.regallocDeinit(&scope.ra);
+    vm_lifecycle.deinit();
 }

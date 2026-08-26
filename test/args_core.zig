@@ -21,11 +21,11 @@
 //!
 //! ## What the migration changed, and the defect it found
 //!
-//! **Every getter here is called by import.** This is the largest face family
+//! **Every getter here is called by import.** This is the largest abi family
 //! in the tree — seventy-odd `janet_get*` and `janet_opt*` exports, each a
 //! `raise.panicking` wrapper — and *none of them may be retired*, because they
 //! are exactly what `janet.h` promises an embedder. So this migration retires
-//! no face at all and instead adds seventy names to the exported-symbol-surface
+//! no abi at all and instead adds seventy names to the exported-symbol-surface
 //! bullet's list of public exports with no in-tree caller: the runtime reaches
 //! the layer through `arglayer.zig`, and the only Zig callers left are
 //! `interop.zig` and `native_module.zig`, which wrap each in `raise.crossing`
@@ -38,7 +38,7 @@
 //! those two do not fill in a fault at all: they delegate to
 //! `janet_unwrap_s64`, which raises its own message. Translating that skip
 //! into Zig is what raised the question of *how* it raises, and the answer was
-//! that `args_core.zig` called the **C face**, so a refusal became a report
+//! that `args_core.zig` called the **abi**, so a refusal became a report
 //! nobody consumed. `(string/format "%d" "x")` aborted the process with
 //! `janet abort: a raise was reported to a C caller and never consumed`
 //! instead of raising a catchable error. The fix is in `args_core.zig`'s
@@ -52,13 +52,26 @@
 //! job is done by the type.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const config = @import("config");
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const raise = @import("raise");
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
-const args = subsystems.args_core;
+const value = @import("subsystems").value;
+const tables = @import("subsystems").value.tables;
+const gc_alloc = @import("subsystems").gc_alloc;
+const arrays = @import("subsystems").value.arrays;
+const buffers = @import("subsystems").value.buffers;
+const strings = @import("subsystems").value.strings;
+const tuples = @import("subsystems").value.tuples;
+const wrap = @import("subsystems").value.wrap;
+const args_core = @import("subsystems").args;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const abstracts = @import("subsystems").value.abstracts;
+const args = subsystems.args;
 const abstract_type = subsystems.abstract_type;
 const AbstractType = abstract_type.AbstractType;
 
@@ -72,16 +85,16 @@ const assert = std.debug.assert;
 fn refusal(function: anytype, arguments: anytype) harness.Raise {
     const r = harness.raised(function, arguments) orelse
         @panic("expected a refusal, got a return");
-    assert(r.signal == c.JANET_SIGNAL_ERROR);
-    assert(harness.isType(r.payload, c.JANET_STRING));
+    assert(r.signal == constants.JANET_SIGNAL_ERROR);
+    assert(harness.isType(r.payload, constants.JANET_STRING));
     return r;
 }
 
 fn refuses(function: anytype, arguments: anytype, message: []const u8) void {
     const r = refusal(function, arguments);
     if (!r.says(message)) {
-        const got = c.janet_unwrap_string(r.payload);
-        const length: usize = @intCast(c.janet_string_length(got));
+        const got = wrap.toString(r.payload);
+        const length: usize = @intCast(types.stringHead(got).length);
         std.debug.print("expected: {s}\n     got: {s}\n", .{ message, got[0..length] });
         @panic("message mismatch");
     }
@@ -92,43 +105,48 @@ fn refuses(function: anytype, arguments: anytype, message: []const u8) void {
 fn refusesWithPrefix(function: anytype, arguments: anytype, prefix: []const u8) void {
     const r = refusal(function, arguments);
     if (!r.beginsWith(prefix)) {
-        const got = c.janet_unwrap_string(r.payload);
-        const length: usize = @intCast(c.janet_string_length(got));
+        const got = wrap.toString(r.payload);
+        const length: usize = @intCast(types.stringHead(got).length);
         std.debug.print("expected prefix: {s}\n            got: {s}\n", .{ prefix, got[0..length] });
         @panic("message prefix mismatch");
     }
 }
 
-fn slots(argv: []const c.Janet) [*c]const c.Janet {
-    return argv.ptr;
+/// Was a conversion, and is the identity since Phase 12 increment 5h: the
+/// argument layer takes a slice, so a contract hands it the slice it built.
+/// Kept as a name because sixty call sites read `slots(&.{ ... })` and the
+/// word is what says "an argument vector" at each of them.
+fn slots(argv: []const types.Janet) []const types.Janet {
+    return argv;
 }
 
 // ------------------------------------------------------------------ arity
 
 fn arityIsCheckedAtBothBounds() raise.Raising(void) {
-    try args.fixarity(2, 2);
-    try args.arity(2, 1, 3);
-    try args.arity(2, -1, -1);
-    try args.arity(0, -1, 0);
-    try args.arity(99, 1, -1);
+    const two = slots(&.{ wrap.fromNil(), wrap.fromNil() });
+    try args.fixarity(two, 2);
+    try args.arity(two, 1, 3);
+    try args.arity(two, -1, -1);
+    try args.arity(slots(&.{}), -1, 0);
+    try args.arityCount(99, 1, -1);
 
-    refuses(args.fixarity, .{ 1, 2 }, "arity mismatch, expected 2, got 1");
-    refuses(args.fixarity, .{ 3, 2 }, "arity mismatch, expected 2, got 3");
-    refuses(args.arity, .{ 0, 1, 3 }, "arity mismatch, expected at least 1, got 0");
-    refuses(args.arity, .{ 4, 1, 3 }, "arity mismatch, expected at most 3, got 4");
+    refuses(args.fixarityCount, .{ 1, 2 }, "arity mismatch, expected 2, got 1");
+    refuses(args.fixarityCount, .{ 3, 2 }, "arity mismatch, expected 2, got 3");
+    refuses(args.arityCount, .{ 0, 1, 3 }, "arity mismatch, expected at least 1, got 0");
+    refuses(args.arityCount, .{ 4, 1, 3 }, "arity mismatch, expected at most 3, got 4");
     // A negative bound is unbounded, so only the other side can fault.
-    refuses(args.arity, .{ 4, -1, 3 }, "arity mismatch, expected at most 3, got 4");
-    refuses(args.arity, .{ 0, 1, -1 }, "arity mismatch, expected at least 1, got 0");
+    refuses(args.arityCount, .{ 4, -1, 3 }, "arity mismatch, expected at most 3, got 4");
+    refuses(args.arityCount, .{ 0, 1, -1 }, "arity mismatch, expected at least 1, got 0");
 }
 
 // ------------------------------------------------------------- type faults
 
 fn everyTypeGetterNamesItsSlotAndItsType() raise.Raising(void) {
-    var argv = [_]c.Janet{
-        c.janet_wrap_nil(),
+    var argv = [_]types.Janet{
+        wrap.fromNil(),
         harness.wrapInteger(7),
-        c.janet_cstringv("hello"),
-        c.janet_wrap_true(),
+        value.fromBytes("hello", .string),
+        wrap.fromTrue(),
     };
     const a = slots(&argv);
 
@@ -168,10 +186,10 @@ fn everyTypeGetterNamesItsSlotAndItsType() raise.Raising(void) {
 // --------------------------------------------------------- numeric getters
 
 fn everyExpectationCodeHasItsOwnNoun() raise.Raising(void) {
-    var argv = [_]c.Janet{
-        c.janet_wrap_nil(),
-        c.janet_wrap_number(1.5),
-        c.janet_wrap_number(-1.0),
+    var argv = [_]types.Janet{
+        wrap.fromNil(),
+        wrap.fromNumber(1.5),
+        wrap.fromNumber(-1.0),
     };
     const a = slots(&argv);
 
@@ -194,7 +212,7 @@ fn everyExpectationCodeHasItsOwnNoun() raise.Raising(void) {
     // rest. **Both arms are asserted**: the C contract could only assert the
     // second, because in the first the refusal reached it as a report rather
     // than as a value and it skipped the cases entirely.
-    if (comptime @hasDecl(c, "janet_unwrap_s64")) {
+    if (comptime config.int_types) {
         refuses(
             args.getInteger64,
             .{ a, 0 },
@@ -218,7 +236,7 @@ fn everyExpectationCodeHasItsOwnNoun() raise.Raising(void) {
 /// The boundaries of each width, taken from both sides, because an off-by-one
 /// in a range test is invisible to every other test here.
 fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
-    var argv = [_]c.Janet{c.janet_wrap_nil()};
+    var argv = [_]types.Janet{wrap.fromNil()};
 
     // `ACCEPTS` and `REJECTS`, which the C original spelled as two macros over
     // a getter name. A Zig contract cannot pass a generic function as a value
@@ -226,17 +244,17 @@ fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
     // these take it as an `anytype` parameter instead, which is the same thing
     // one indirection later.
     const Case = struct {
-        fn accepts(argv_slot: *c.Janet, getter: anytype, value: f64, expected: anytype) void {
-            argv_slot.* = c.janet_wrap_number(value);
-            const got = getter(slots(@as(*const [1]c.Janet, argv_slot)), 0) catch
+        fn accepts(argv_slot: *types.Janet, getter: anytype, val: f64, expected: anytype) void {
+            argv_slot.* = wrap.fromNumber(val);
+            const got = getter(slots(@as(*const [1]types.Janet, argv_slot)), 0) catch
                 @panic("expected a value, got a refusal");
             assert(got == expected);
         }
 
-        fn rejects(argv_slot: *c.Janet, getter: anytype, value: f64) void {
-            argv_slot.* = c.janet_wrap_number(value);
-            const a2 = slots(@as(*const [1]c.Janet, argv_slot));
-            assert(harness.raised(getter, .{ a2, @as(i32, 0) }) != null);
+        fn rejects(argv_slot: *types.Janet, getter: anytype, val: f64) void {
+            argv_slot.* = wrap.fromNumber(val);
+            const a2 = slots(@as(*const [1]types.Janet, argv_slot));
+            assert(harness.raised(getter, .{ a2[0..1], @as(i32, 0) }) != null);
         }
     };
     const slot = &argv[0];
@@ -282,7 +300,7 @@ fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
     Case.accepts(slot, args.getSize, 1, 1);
     Case.rejects(slot, args.getSize, 1.5);
 
-    if (comptime !@hasDecl(c, "janet_unwrap_s64")) {
+    if (comptime !config.int_types) {
         Case.accepts(slot, args.getInteger64, 9007199254740992.0, 9007199254740992);
         Case.accepts(slot, args.getInteger64, -9007199254740992.0, -9007199254740992);
         // The ceiling is 2^53, not `maxInt(i64)`: past it a double cannot name
@@ -310,35 +328,35 @@ fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
 /// pinned rather than asserted as correct: the port reproduces it, and a later
 /// fix has to be a deliberate change to this test.
 fn getFloatRejectsZeroAndNegatives() raise.Raising(void) {
-    var argv = [_]c.Janet{c.janet_wrap_number(1.5)};
+    var argv = [_]types.Janet{wrap.fromNumber(1.5)};
     const a = slots(&argv);
     assert(try args.getFloat(a, 0) == 1.5);
 
-    argv[0] = c.janet_wrap_number(0.0);
+    argv[0] = wrap.fromNumber(0.0);
     refuses(args.getFloat, .{ a, 0 }, "bad slot #0, expected float number, got 0");
-    argv[0] = c.janet_wrap_number(-1.5);
+    argv[0] = wrap.fromNumber(-1.5);
     refuses(args.getFloat, .{ a, 0 }, "bad slot #0, expected float number, got -1.5");
 
     const flt_min = std.math.floatMin(f32);
     const flt_max = std.math.floatMax(f32);
-    assert(c.janet_checkfloat(c.janet_wrap_number(0.0)) == 0);
-    assert(c.janet_checkfloat(c.janet_wrap_number(-1.0)) == 0);
-    assert(c.janet_checkfloat(c.janet_wrap_number(@as(f64, flt_min) / 2.0)) == 0);
-    assert(c.janet_checkfloat(c.janet_wrap_number(flt_min)) != 0);
-    assert(c.janet_checkfloat(c.janet_wrap_number(flt_max)) != 0);
-    assert(c.janet_checkfloat(c.janet_wrap_number(@as(f64, flt_max) * 2.0)) == 0);
+    assert(args_core.checkfloat(wrap.fromNumber(0.0)) == 0);
+    assert(args_core.checkfloat(wrap.fromNumber(-1.0)) == 0);
+    assert(args_core.checkfloat(wrap.fromNumber(@as(f64, flt_min) / 2.0)) == 0);
+    assert(args_core.checkfloat(wrap.fromNumber(flt_min)) != 0);
+    assert(args_core.checkfloat(wrap.fromNumber(flt_max)) != 0);
+    assert(args_core.checkfloat(wrap.fromNumber(@as(f64, flt_max) * 2.0)) == 0);
     // A double with more precision than a float holds fails the round trip.
-    assert(c.janet_checkfloat(c.janet_wrap_number(1.0000000000000002)) == 0);
+    assert(args_core.checkfloat(wrap.fromNumber(1.0000000000000002)) == 0);
 }
 
 // ----------------------------------------------------------------- ranges
 
 fn theTwoFoldingsDifferInOneEnd() raise.Raising(void) {
-    var argv = [_]c.Janet{
+    var argv = [_]types.Janet{
         harness.wrapInteger(0),
         harness.wrapInteger(3),
         harness.wrapInteger(-1),
-        c.janet_wrap_nil(),
+        wrap.fromNil(),
     };
     const a = slots(&argv);
 
@@ -373,7 +391,7 @@ fn theTwoFoldingsDifferInOneEnd() raise.Raising(void) {
 
     // A non-integer faults as an integer before any folding happens, so the
     // message names the type rather than the range.
-    argv[0] = c.janet_cstringv("x");
+    argv[0] = value.fromBytes("x", .string);
     refuses(
         args.getHalfRange,
         .{ a, 0, 10, "start" },
@@ -383,66 +401,70 @@ fn theTwoFoldingsDifferInOneEnd() raise.Raising(void) {
     // The start and end forms supply a default when the slot is absent or nil,
     // and the defaults are the two ends of the sequence.
     argv[0] = harness.wrapInteger(4);
-    assert(try args.getStartRange(a, 1, 3, 10) == 0);
-    assert(try args.getEndRange(a, 1, 3, 10) == 10);
-    argv[3] = c.janet_wrap_nil();
-    assert(try args.getStartRange(a, 4, 3, 10) == 0);
-    assert(try args.getEndRange(a, 4, 3, 10) == 10);
-    assert(try args.getStartRange(a, 4, 0, 10) == 4);
+    assert(try args.getStartRange(a, 3, 10) == 0);
+    assert(try args.getEndRange(a, 3, 10) == 10);
+    argv[3] = wrap.fromNil();
+    assert(try args.getStartRange(a, 3, 10) == 0);
+    assert(try args.getEndRange(a, 3, 10) == 10);
+    assert(try args.getStartRange(a, 0, 10) == 4);
 }
 
 fn getSliceCollapsesAnInvertedRange() raise.Raising(void) {
-    var argv = [_]c.Janet{ c.janet_wrap_nil(), c.janet_wrap_nil(), c.janet_wrap_nil() };
-    const array = c.janet_array(0);
-    c.janet_array_push(array, harness.wrapInteger(1));
-    c.janet_array_push(array, harness.wrapInteger(2));
-    c.janet_array_push(array, harness.wrapInteger(3));
-    argv[0] = c.janet_wrap_array(array);
+    var argv = [_]types.Janet{ wrap.fromNil(), wrap.fromNil(), wrap.fromNil() };
+    const array = arrays.new(0);
+    harness.arrayPush(array, harness.wrapInteger(1));
+    harness.arrayPush(array, harness.wrapInteger(2));
+    harness.arrayPush(array, harness.wrapInteger(3));
+    argv[0] = wrap.fromArray(array);
     const a = slots(&argv);
 
-    var r = try args.getSlice(1, a);
+    var r = try args.getSlice(a);
     assert(r.start == 0 and r.end == 3);
 
     argv[1] = harness.wrapInteger(1);
-    r = try args.getSlice(2, a);
+    r = try args.getSlice(a);
     assert(r.start == 1 and r.end == 3);
 
     argv[2] = harness.wrapInteger(2);
-    r = try args.getSlice(3, a);
+    r = try args.getSlice(a);
     assert(r.start == 1 and r.end == 2);
 
     // An end before the start collapses to an empty range rather than
     // faulting, which is the one piece of arithmetic `getSlice` does itself.
     argv[1] = harness.wrapInteger(3);
     argv[2] = harness.wrapInteger(1);
-    r = try args.getSlice(3, a);
+    r = try args.getSlice(a);
     assert(r.start == 3 and r.end == 3);
 
-    refuses(args.getSlice, .{ 0, a }, "arity mismatch, expected at least 1, got 0");
-    refuses(args.getSlice, .{ 4, a }, "arity mismatch, expected at most 3, got 4");
+    refuses(args.getSlice, .{a[0..0]}, "arity mismatch, expected at least 1, got 0");
+    refuses(
+        args.getSlice,
+        .{slots(&[_]types.Janet{ argv[0], argv[1], argv[2], argv[2] })},
+        "arity mismatch, expected at most 3, got 4",
+    );
 }
 
 // ------------------------------------------------------------------ flags
 
 fn eachCharacterContributesTheBitAtItsPosition() raise.Raising(void) {
-    var argv = [_]c.Janet{ c.janet_ckeywordv("acb"), c.janet_ckeywordv("z") };
+    var argv = [_]types.Janet{ value.fromBytes("acb", .keyword), value.fromBytes("z", .keyword) };
     const a = slots(&argv);
 
     // Each character contributes the bit at its position in the permitted set,
     // and the order of the keyword does not matter.
     assert(try args.getFlags(a, 0, "abc") == 0x7);
-    argv[0] = c.janet_ckeywordv("");
+    argv[0] = value.fromBytes("", .keyword);
     assert(try args.getFlags(a, 0, "abc") == 0);
-    argv[0] = c.janet_ckeywordv("c");
+    argv[0] = value.fromBytes("c", .keyword);
     assert(try args.getFlags(a, 0, "abc") == 0x4);
     // A repeated character sets the same bit twice, which is not an error.
-    argv[0] = c.janet_ckeywordv("aa");
+    argv[0] = value.fromBytes("aa", .keyword);
     assert(try args.getFlags(a, 0, "abc") == 0x1);
 
     refuses(args.getFlags, .{ a, 1, "abc" }, "unexpected flag z, expected one of \"abc\"");
 
     // Not a keyword at all faults before any scanning.
-    argv[0] = c.janet_cstringv("a");
+    argv[0] = value.fromBytes("a", .string);
     refuses(args.getFlags, .{ a, 0, "abc" }, "bad slot #0, expected keyword, got \"a\"");
 
     // A permitted set longer than 64 characters has its tail silently ignored,
@@ -452,10 +474,10 @@ fn eachCharacterContributesTheBitAtItsPosition() raise.Raising(void) {
     for (0..70) |i| wide[i] = '0' + @as(u8, @intCast(i % 10));
     wide[64] = 'Z';
     wide[70] = 0;
-    argv[0] = c.janet_ckeywordv("Z");
+    argv[0] = value.fromBytes("Z", .keyword);
     refuses(
         args.getFlags,
-        .{ a, 0, @as([*c]const u8, &wide) },
+        .{ a, 0, @as([*:0]const u8, @ptrCast(&wide)) },
         "unexpected flag Z, expected one of " ++
             "\"0123456789012345678901234567890123456789012345678901234567890123Z56789\"",
     );
@@ -464,27 +486,27 @@ fn eachCharacterContributesTheBitAtItsPosition() raise.Raising(void) {
 // ------------------------------------------------------------- byte access
 
 fn theByteAndCstringShapes() raise.Raising(void) {
-    var argv = [_]c.Janet{
-        c.janet_cstringv("hi"),
-        c.janet_wrap_buffer(c.janet_buffer(8)),
-        c.janet_ckeywordv("kw"),
-        c.janet_wrap_nil(),
+    var argv = [_]types.Janet{
+        value.fromBytes("hi", .string),
+        wrap.fromBuffer(buffers.new(8)),
+        value.fromBytes("kw", .keyword),
+        wrap.fromNil(),
     };
-    c.janet_buffer_push_cstring(c.janet_unwrap_buffer(argv[1]), "buf");
+    buffers.pushCstringAbi(wrap.toBuffer(argv[1]), "buf");
     const a = slots(&argv);
 
     var v = try args.getBytes(a, 0);
-    assert(v.len == 2 and std.mem.eql(u8, v.bytes[0..2], "hi"));
+    assert(v.len == 2 and std.mem.eql(u8, v.bytes.?[0..2], "hi"));
     v = try args.getBytes(a, 1);
-    assert(v.len == 3 and std.mem.eql(u8, v.bytes[0..3], "buf"));
+    assert(v.len == 3 and std.mem.eql(u8, v.bytes.?[0..3], "buf"));
     v = try args.getBytes(a, 2);
-    assert(v.len == 2 and std.mem.eql(u8, v.bytes[0..2], "kw"));
+    assert(v.len == 2 and std.mem.eql(u8, v.bytes.?[0..2], "kw"));
 
     assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.getCString(a, 0)))), "hi"));
     assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.getCBytes(a, 1)))), "buf"));
     // The terminating shape leaves the buffer's visible count alone: the zero
     // is written past the end and the count is put back.
-    assert(c.janet_unwrap_buffer(argv[1]).*.count == 3);
+    assert(wrap.toBuffer(argv[1]).*.count == 3);
 
     refuses(args.getCString, .{ a, 1 }, "bad slot #1, expected string, got @\"buf\"");
     refuses(args.getCString, .{ a, 3 }, "bad slot #3, expected string, got nil");
@@ -496,15 +518,15 @@ fn theByteAndCstringShapes() raise.Raising(void) {
 
     // An embedded zero is rejected for every shape that can carry one.
     {
-        const b = c.janet_buffer(8);
-        c.janet_buffer_push_u8(b, 'a');
-        c.janet_buffer_push_u8(b, 0);
-        c.janet_buffer_push_u8(b, 'b');
-        argv[0] = c.janet_wrap_buffer(b);
+        const b = buffers.new(8);
+        buffers.pushU8(b, 'a') catch @panic("args_core: buffer push raised");
+        buffers.pushU8(b, 0) catch @panic("args_core: buffer push raised");
+        buffers.pushU8(b, 'b') catch @panic("args_core: buffer push raised");
+        argv[0] = wrap.fromBuffer(b);
         refuses(args.getCBytes, .{ a, 0 }, "bytes contain embedded 0s");
     }
     {
-        argv[0] = c.janet_wrap_string(c.janet_string("a\x00b", 3));
+        argv[0] = wrap.fromString(strings.new("a\x00b"));
         refuses(args.getCString, .{ a, 0 }, "bytes contain embedded 0s");
     }
 }
@@ -514,7 +536,7 @@ fn theByteAndCstringShapes() raise.Raising(void) {
 /// allocator instead, which the suites never reach because a no-realloc buffer
 /// only comes from `janet_buffer_init_custom` paths.
 fn cbytesCopiesAFullNoReallocBuffer() raise.Raising(void) {
-    const b = c.janet_buffer(0);
+    const b = buffers.new(0);
     var backing = [_]u8{ 'a', 'b', 'c' };
 
     // **Not `janet_buffer_init`.** That is for a buffer the caller owns: it
@@ -526,20 +548,20 @@ fn cbytesCopiesAFullNoReallocBuffer() raise.Raising(void) {
     //
     // `janet_buffer_deinit` alone is what this needs: it frees the payload and
     // nulls the pointer, leaving the block on the list and its type intact.
-    c.janet_buffer_deinit(b);
+    buffers.deinit(b);
     b.*.data = &backing;
     b.*.count = 3;
     b.*.capacity = 3;
-    b.*.gc.flags |= c.JANET_BUFFER_FLAG_NO_REALLOC;
+    b.*.gc.flags |= constants.JANET_BUFFER_FLAG_NO_REALLOC;
 
     // The block is on the heap list now, and nothing on the Zig stack roots
     // it -- `AGENTS.md`'s rule about a `Janet` in a local. Nothing between
     // here and the restore allocates a collectable block today; the root is
     // what keeps that from being load-bearing.
-    c.janet_gcroot(c.janet_wrap_buffer(b));
-    defer _ = c.janet_gcunroot(c.janet_wrap_buffer(b));
+    gc_alloc.gcroot(wrap.fromBuffer(b));
+    defer _ = gc_alloc.gcunroot(wrap.fromBuffer(b));
 
-    var argv = [_]c.Janet{c.janet_wrap_buffer(b)};
+    var argv = [_]types.Janet{wrap.fromBuffer(b)};
     const s = try args.getCBytes(slots(&argv), 0);
     assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(s))), "abc"));
     // The copy is a separate allocation, not the buffer's own storage.
@@ -551,7 +573,7 @@ fn cbytesCopiesAFullNoReallocBuffer() raise.Raising(void) {
     b.*.data = null;
     b.*.count = 0;
     b.*.capacity = 0;
-    b.*.gc.flags &= ~@as(i32, c.JANET_BUFFER_FLAG_NO_REALLOC);
+    b.*.gc.flags &= ~@as(i32, constants.JANET_BUFFER_FLAG_NO_REALLOC);
 }
 
 // ---------------------------------------------------------------- abstract
@@ -563,7 +585,7 @@ const other_at: AbstractType = .{ .name = "args-core/other" };
 /// from paths that cannot act on a refusal. So this is an ordinary
 /// `callconv(.c)` function and the C contract's `CONTRACT_AT` pool is not
 /// needed to install it.
-fn probeBytes(p: ?*anyopaque, len: usize) callconv(.c) c.JanetByteView {
+fn probeBytes(p: ?*anyopaque, len: usize) callconv(.c) types.JanetByteView {
     _ = len;
     return .{ .bytes = @ptrCast(p), .len = 3 };
 }
@@ -571,23 +593,23 @@ fn probeBytes(p: ?*anyopaque, len: usize) callconv(.c) c.JanetByteView {
 const probe_bytes_at: AbstractType = .{ .name = "args-core/bytes-probe", .bytes = probeBytes };
 
 fn theAbstractGettersAndTheBytesCallback() raise.Raising(void) {
-    const p = c.janet_abstract(abstract_type.stored(&probe_at), 4);
-    const q = c.janet_abstract(abstract_type.stored(&probe_bytes_at), 4);
+    const p = abstracts.new(abstract_type.stored(&probe_at), 4);
+    const q = abstracts.new(abstract_type.stored(&probe_bytes_at), 4);
     @memcpy(@as([*]u8, @ptrCast(q))[0..3], "xyz");
 
-    var argv = [_]c.Janet{
-        c.janet_wrap_abstract(p),
-        c.janet_wrap_abstract(q),
-        c.janet_wrap_nil(),
+    var argv = [_]types.Janet{
+        wrap.fromAbstract(p),
+        wrap.fromAbstract(q),
+        wrap.fromNil(),
     };
     const a = slots(&argv);
 
     assert(try args.getAbstract(a, 0, abstract_type.stored(&probe_at)) == p);
-    assert(c.janet_checkabstract(argv[0], abstract_type.stored(&probe_at)) == p);
+    assert(args_core.checkabstract(argv[0], abstract_type.stored(&probe_at)) == p);
     // `checkabstract` reports the mismatch by returning null rather than by
     // raising: it is the same decision with the other half discarded.
-    assert(c.janet_checkabstract(argv[0], abstract_type.stored(&other_at)) == null);
-    assert(c.janet_checkabstract(argv[2], abstract_type.stored(&probe_at)) == null);
+    assert(args_core.checkabstract(argv[0], abstract_type.stored(&other_at)) == null);
+    assert(args_core.checkabstract(argv[2], abstract_type.stored(&probe_at)) == null);
 
     refusesWithPrefix(
         args.getAbstract,
@@ -603,8 +625,8 @@ fn theAbstractGettersAndTheBytesCallback() raise.Raising(void) {
     // An abstract with a `bytes` callback is byte-viewable. One without is
     // not, and faults as an ordinary type mismatch.
     var v = try args.getBytes(a, 1);
-    assert(v.len == 3 and std.mem.eql(u8, v.bytes[0..3], "xyz"));
-    assert(c.janet_bytes_view(argv[1], &v.bytes, &v.len) != 0);
+    assert(v.len == 3 and std.mem.eql(u8, v.bytes.?[0..3], "xyz"));
+    assert(args_core.bytesView(argv[1], &v.bytes, &v.len) != 0);
     assert(v.len == 3);
     refusesWithPrefix(
         args.getBytes,
@@ -612,125 +634,125 @@ fn theAbstractGettersAndTheBytesCallback() raise.Raising(void) {
         "bad slot #0, expected string, symbol, keyword or buffer, got <args-core/probe 0x",
     );
 
-    assert(try args.optAbstract(a, 3, 0, abstract_type.stored(&probe_at), null) == p);
-    assert(try args.optAbstract(a, 3, 2, abstract_type.stored(&probe_at), p) == p);
-    assert(try args.optAbstract(a, 1, 2, abstract_type.stored(&probe_at), p) == p);
+    assert(try args.optAbstract(a, 0, abstract_type.stored(&probe_at), null) == p);
+    assert(try args.optAbstract(a, 2, abstract_type.stored(&probe_at), p) == p);
+    assert(try args.optAbstract(a[0..1], 2, abstract_type.stored(&probe_at), p) == p);
 }
 
 // -------------------------------------------------------------- defaulting
 
 fn pastTheEndAndAnExplicitNilBothMeanTheDefault() raise.Raising(void) {
-    var argv = [_]c.Janet{
+    var argv = [_]types.Janet{
         harness.wrapInteger(5),
-        c.janet_wrap_nil(),
-        c.janet_cstringv("s"),
+        wrap.fromNil(),
+        value.fromBytes("s", .string),
     };
     const a = slots(&argv);
 
-    assert(try args.optInteger(a, 3, 0, 99) == 5);
-    assert(try args.optInteger(a, 3, 1, 99) == 99);
-    assert(try args.optInteger(a, 3, 7, 99) == 99);
-    assert(try args.optNat(a, 3, 1, 4) == 4);
-    assert(try args.optSize(a, 3, 1, 8) == 8);
-    assert(try args.optUInteger(a, 3, 1, 8) == 8);
-    assert(try args.optUInteger64(a, 3, 1, 8) == 8);
-    assert(try args.optInteger64(a, 3, 1, 8) == 8);
-    assert(try args.optNumber(a, 3, 0, 0.0) == 5.0);
-    assert(harness.stringIs(try args.optString(a, 3, 2, null), "s"));
-    assert(try args.optString(a, 3, 1, null) == null);
-    assert(harness.stringIs(@ptrCast(try args.optCString(a, 3, 2, "d")), "s"));
-    assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.optCString(a, 3, 1, "d")))), "d"));
-    assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.optCBytes(a, 3, 1, "d")))), "d"));
-    assert(try args.optBoolean(a, 3, 1, 1) == 1);
-    assert(try args.optPointer(a, 3, 1, null) == null);
-    assert(try args.optCFunction(a, 3, 1, null) == null);
-    assert(try args.optFiber(a, 3, 1, null) == null);
-    assert(try args.optFunction(a, 3, 1, null) == null);
-    assert(try args.optTuple(a, 3, 1, null) == null);
-    assert(try args.optStruct(a, 3, 1, null) == null);
-    assert(try args.optKeyword(a, 3, 1, null) == null);
-    assert(try args.optSymbol(a, 3, 1, null) == null);
+    assert(try args.optInteger(a, 0, 99) == 5);
+    assert(try args.optInteger(a, 1, 99) == 99);
+    assert(try args.optInteger(a, 7, 99) == 99);
+    assert(try args.optNat(a, 1, 4) == 4);
+    assert(try args.optSize(a, 1, 8) == 8);
+    assert(try args.optUInteger(a, 1, 8) == 8);
+    assert(try args.optUInteger64(a, 1, 8) == 8);
+    assert(try args.optInteger64(a, 1, 8) == 8);
+    assert(try args.optNumber(a, 0, 0.0) == 5.0);
+    assert(harness.stringIs((try args.optString(a, 2, null)).?, "s"));
+    assert(try args.optString(a, 1, null) == null);
+    assert(harness.stringIs(@ptrCast(try args.optCString(a, 2, "d")), "s"));
+    assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.optCString(a, 1, "d")))), "d"));
+    assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.optCBytes(a, 1, "d")))), "d"));
+    assert(try args.optBoolean(a, 1, 1) == 1);
+    assert(try args.optPointer(a, 1, null) == null);
+    assert(try args.optCFunction(a, 1, null) == null);
+    assert(try args.optFiber(a, 1, null) == null);
+    assert(try args.optFunction(a, 1, null) == null);
+    assert(try args.optTuple(a, 1, null) == null);
+    assert(try args.optStruct(a, 1, null) == null);
+    assert(try args.optKeyword(a, 1, null) == null);
+    assert(try args.optSymbol(a, 1, null) == null);
 
     // Anything else is delegated to the strict getter, faults included.
     refuses(
         args.optInteger,
-        .{ a, 3, 2, 99 },
+        .{ a, 2, 99 },
         "bad slot #2, expected 32 bit signed integer, got \"s\"",
     );
 
     // The three length-defaulted getters build an empty collection instead of
     // taking one, so the default is a capacity rather than a value.
-    const b = try args.optBuffer(a, 3, 1, 16);
-    const t = try args.optTable(a, 3, 1, 4);
-    const array = try args.optArray(a, 3, 1, 4);
-    assert(b != null and b.*.count == 0 and b.*.capacity >= 16);
-    assert(t != null and t.*.count == 0);
-    assert(array != null and array.*.count == 0);
-    argv[1] = c.janet_wrap_buffer(b);
-    assert(try args.optBuffer(a, 3, 1, 16) == b);
-    argv[1] = c.janet_wrap_nil();
+    const b = try args.optBuffer(a, 1, 16);
+    const t = try args.optTable(a, 1, 4);
+    const array = try args.optArray(a, 1, 4);
+    assert(b.count == 0 and b.capacity >= 16);
+    assert(t.count == 0);
+    assert(array.count == 0);
+    argv[1] = wrap.fromBuffer(b);
+    assert(try args.optBuffer(a, 1, 16) == b);
+    argv[1] = wrap.fromNil();
 }
 
 // ---------------------------------------------------------------- strlike
 
 fn theThreeStrlikeComparisonsCheckTheTypeToo() void {
-    assert(c.janet_keyeq(c.janet_ckeywordv("a"), "a") != 0);
-    assert(c.janet_keyeq(c.janet_ckeywordv("a"), "b") == 0);
+    assert(args_core.keyeq(value.fromBytes("a", .keyword), "a") != 0);
+    assert(args_core.keyeq(value.fromBytes("a", .keyword), "b") == 0);
     // The type has to match as well as the bytes, which is the whole reason
     // there are three of these rather than one.
-    assert(c.janet_keyeq(c.janet_cstringv("a"), "a") == 0);
-    assert(c.janet_keyeq(c.janet_csymbolv("a"), "a") == 0);
-    assert(c.janet_streq(c.janet_cstringv("a"), "a") != 0);
-    assert(c.janet_streq(c.janet_ckeywordv("a"), "a") == 0);
-    assert(c.janet_symeq(c.janet_csymbolv("a"), "a") != 0);
-    assert(c.janet_symeq(c.janet_cstringv("a"), "a") == 0);
-    assert(c.janet_streq(c.janet_wrap_nil(), "a") == 0);
-    assert(c.janet_streq(c.janet_cstringv(""), "") != 0);
+    assert(args_core.keyeq(value.fromBytes("a", .string), "a") == 0);
+    assert(args_core.keyeq(value.fromBytes("a", .symbol), "a") == 0);
+    assert(args_core.streq(value.fromBytes("a", .string), "a") != 0);
+    assert(args_core.streq(value.fromBytes("a", .keyword), "a") == 0);
+    assert(args_core.symeq(value.fromBytes("a", .symbol), "a") != 0);
+    assert(args_core.symeq(value.fromBytes("a", .string), "a") == 0);
+    assert(args_core.streq(wrap.fromNil(), "a") == 0);
+    assert(args_core.streq(value.fromBytes("", .string), "") != 0);
 }
 
 // ---------------------------------------------------------------- methods
 
-fn methodOne(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
-    _ = argc;
-    _ = argv;
+fn methodOne(argv: []types.Janet) raise.Raising(types.Janet) {
+    _ = @as(i32, @intCast(argv.len));
+
     return harness.wrapInteger(1);
 }
 
-fn methodTwo(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
-    _ = argc;
-    _ = argv;
+fn methodTwo(argv: []types.Janet) raise.Raising(types.Janet) {
+    _ = @as(i32, @intCast(argv.len));
+
     return harness.wrapInteger(2);
 }
 
 const method_one = raise.stored(&methodOne);
 const method_two = raise.stored(&methodTwo);
 
-const methods = [_]c.JanetMethod{
+const methods = [_]types.JanetMethod{
     .{ .name = "one", .cfun = method_one },
     .{ .name = "two", .cfun = method_two },
     .{ .name = null, .cfun = null },
 };
 
 fn nextmethodIsAnIterator() void {
-    var out = c.janet_wrap_nil();
+    var out = wrap.fromNil();
 
-    assert(c.janet_getmethod(c.janet_cstring("one"), &methods, &out) != 0);
-    assert(c.janet_unwrap_cfunction(out) == method_one);
-    assert(c.janet_getmethod(c.janet_cstring("two"), &methods, &out) != 0);
-    assert(c.janet_unwrap_cfunction(out) == method_two);
-    assert(c.janet_getmethod(c.janet_cstring("three"), &methods, &out) == 0);
+    assert(args_core.getmethod(strings.cstring("one"), &methods, &out) != 0);
+    assert(wrap.toCfunction(out) == method_one);
+    assert(args_core.getmethod(strings.cstring("two"), &methods, &out) != 0);
+    assert(wrap.toCfunction(out) == method_two);
+    assert(args_core.getmethod(strings.cstring("three"), &methods, &out) == 0);
 
     // `nextmethod` is an iterator: nil starts at the head, and any other key
     // resumes after the entry it names. Running off the end yields nil, and so
     // does a key that is not in the table at all — it walks to the end looking
     // for it.
-    var k = c.janet_nextmethod(&methods, c.janet_wrap_nil());
-    assert(c.janet_keyeq(k, "one") != 0);
-    k = c.janet_nextmethod(&methods, k);
-    assert(c.janet_keyeq(k, "two") != 0);
-    k = c.janet_nextmethod(&methods, k);
-    assert(harness.isType(k, c.JANET_NIL));
-    assert(harness.isType(c.janet_nextmethod(&methods, c.janet_ckeywordv("nope")), c.JANET_NIL));
+    var k = args_core.nextmethod(&methods, wrap.fromNil());
+    assert(args_core.keyeq(k, "one") != 0);
+    k = args_core.nextmethod(&methods, k);
+    assert(args_core.keyeq(k, "two") != 0);
+    k = args_core.nextmethod(&methods, k);
+    assert(harness.isType(k, constants.JANET_NIL));
+    assert(harness.isType(args_core.nextmethod(&methods, value.fromBytes("nope", .keyword)), constants.JANET_NIL));
 }
 
 // ------------------------------------------------------------- predicates
@@ -741,28 +763,28 @@ fn nextmethodIsAnIterator() void {
 /// undefined for a negative or enormous double; the port tests before casting.
 /// Every input either language defines has to reach the same answer.
 fn thePredicatesAgreeWithTheGetters() void {
-    assert(c.janet_checkint(harness.wrapInteger(0)) != 0);
-    assert(c.janet_checkint(c.janet_wrap_nil()) == 0);
-    assert(c.janet_checkint(c.janet_cstringv("1")) == 0);
-    assert(c.janet_checkuint(c.janet_wrap_number(-0.0001)) == 0);
-    assert(c.janet_checkuint(c.janet_wrap_number(0.0)) != 0);
+    assert(args_core.checkint(harness.wrapInteger(0)) != 0);
+    assert(args_core.checkint(wrap.fromNil()) == 0);
+    assert(args_core.checkint(value.fromBytes("1", .string)) == 0);
+    assert(args_core.checkuint(wrap.fromNumber(-0.0001)) == 0);
+    assert(args_core.checkuint(wrap.fromNumber(0.0)) != 0);
 
-    assert(c.janet_checksize(c.janet_wrap_number(0.5)) == 0);
-    assert(c.janet_checksize(c.janet_wrap_number(0.0)) != 0);
-    assert(c.janet_checksize(c.janet_wrap_number(1.0)) != 0);
-    assert(c.janet_checksize(c.janet_wrap_number(9007199254740992.0)) != 0);
-    assert(c.janet_checksize(c.janet_wrap_number(9007199254740994.0)) == 0);
+    assert(args_core.checksize(wrap.fromNumber(0.5)) == 0);
+    assert(args_core.checksize(wrap.fromNumber(0.0)) != 0);
+    assert(args_core.checksize(wrap.fromNumber(1.0)) != 0);
+    assert(args_core.checksize(wrap.fromNumber(9007199254740992.0)) != 0);
+    assert(args_core.checksize(wrap.fromNumber(9007199254740994.0)) == 0);
 
     // NaN and the infinities fail the first comparison at every width rather
     // than reaching a conversion.
     const nan = std.math.nan(f64);
     const inf = std.math.inf(f64);
-    assert(c.janet_checkint(c.janet_wrap_number(nan)) == 0);
-    assert(c.janet_checkuint(c.janet_wrap_number(nan)) == 0);
-    assert(c.janet_checkfloat(c.janet_wrap_number(nan)) == 0);
-    assert(c.janet_checkint(c.janet_wrap_number(inf)) == 0);
-    assert(c.janet_checkint(c.janet_wrap_number(-inf)) == 0);
-    assert(c.janet_checkfloat(c.janet_wrap_number(inf)) == 0);
+    assert(args_core.checkint(wrap.fromNumber(nan)) == 0);
+    assert(args_core.checkuint(wrap.fromNumber(nan)) == 0);
+    assert(args_core.checkfloat(wrap.fromNumber(nan)) == 0);
+    assert(args_core.checkint(wrap.fromNumber(inf)) == 0);
+    assert(args_core.checkint(wrap.fromNumber(-inf)) == 0);
+    assert(args_core.checkfloat(wrap.fromNumber(inf)) == 0);
     // `janet_checksize` is absent here for the reason given above.
 }
 
@@ -771,32 +793,32 @@ fn thePredicatesAgreeWithTheGetters() void {
 // them. Their failure is a return value rather than a fault.
 
 fn theViewHelpersAnswerFalseRatherThanRefusing() void {
-    var items: [*c]const c.Janet = undefined;
-    var bytes: [*c]const u8 = undefined;
-    var kvs: [*c]const c.JanetKV = undefined;
+    var items: ?[*]const types.Janet = undefined;
+    var bytes: ?[*]const u8 = undefined;
+    var kvs: ?[*]const types.JanetKV = undefined;
     var len: i32 = 0;
     var cap: i32 = 0;
 
-    const array = c.janet_array(0);
-    c.janet_array_push(array, harness.wrapInteger(1));
-    assert(c.janet_indexed_view(c.janet_wrap_array(array), &items, &len) != 0);
+    const array = arrays.new(0);
+    harness.arrayPush(array, harness.wrapInteger(1));
+    assert(args_core.indexedView(wrap.fromArray(array), &items, &len) != 0);
     assert(len == 1);
-    const tuple = c.janet_wrap_tuple(c.janet_tuple_n(items, 1));
-    assert(c.janet_indexed_view(tuple, &items, &len) != 0);
+    const tuple = wrap.fromTuple(tuples.newFrom(items, 1));
+    assert(args_core.indexedView(tuple, &items, &len) != 0);
     assert(len == 1);
-    assert(c.janet_indexed_view(c.janet_wrap_nil(), &items, &len) == 0);
+    assert(args_core.indexedView(wrap.fromNil(), &items, &len) == 0);
 
-    assert(c.janet_bytes_view(c.janet_cstringv("ab"), &bytes, &len) != 0);
+    assert(args_core.bytesView(value.fromBytes("ab", .string), &bytes, &len) != 0);
     assert(len == 2);
-    assert(c.janet_bytes_view(c.janet_csymbolv("ab"), &bytes, &len) != 0);
+    assert(args_core.bytesView(value.fromBytes("ab", .symbol), &bytes, &len) != 0);
     assert(len == 2);
-    assert(c.janet_bytes_view(harness.wrapInteger(1), &bytes, &len) == 0);
+    assert(args_core.bytesView(harness.wrapInteger(1), &bytes, &len) == 0);
 
-    const t = c.janet_table(1);
-    c.janet_table_put(t, c.janet_ckeywordv("k"), harness.wrapInteger(1));
-    assert(c.janet_dictionary_view(c.janet_wrap_table(t), &kvs, &len, &cap) != 0);
+    const t = tables.new(1);
+    tables.put(t, value.fromBytes("k", .keyword), harness.wrapInteger(1));
+    assert(args_core.dictionaryView(wrap.fromTable(t), &kvs, &len, &cap) != 0);
     assert(len == 1 and cap == t.*.capacity);
-    assert(c.janet_dictionary_view(c.janet_wrap_nil(), &kvs, &len, &cap) == 0);
+    assert(args_core.dictionaryView(wrap.fromNil(), &kvs, &len, &cap) == 0);
 }
 
 // ------------------------------------------------------------------ entry
@@ -821,9 +843,9 @@ fn body() raise.Raising(void) {
 }
 
 pub fn run() void {
-    _ = c.janet_init();
+    harness.init();
     body() catch @panic("args_core: a getter raised unexpectedly");
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 
     std.debug.print("args core contract ok\n", .{});
 }

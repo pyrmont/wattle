@@ -32,8 +32,12 @@
 //! none of them re-establishes.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const gc_alloc = @import("subsystems").gc_alloc;
+const utils = @import("subsystems").utils;
+const vector_mod = @import("subsystems").stretchy;
+const harness = @import("harness.zig");
+const vm_lifecycle = @import("subsystems").lifecycle;
+const c = @import("cabi");
 
 /// The header `vector.h` keeps behind the elements: capacity, then count.
 const header_words = 2;
@@ -60,7 +64,7 @@ fn push(vector: *?[*]i32, value: i32) void {
     else
         true;
     if (needs_growth) {
-        vector.* = @ptrCast(@alignCast(c.janet_v_grow(
+        vector.* = @ptrCast(@alignCast(vector_mod.vGrow(
             if (vector.*) |v| @ptrCast(v) else null,
             1,
             @sizeOf(i32),
@@ -73,13 +77,13 @@ fn push(vector: *?[*]i32, value: i32) void {
 
 /// `janet_v_free`, which is a no-op on a vector that was never grown.
 fn free(vector: ?[*]i32) void {
-    if (vector) |v| c.janet_sfree(@ptrCast(raw(v)));
+    if (vector) |v| gc_alloc.sfree(@ptrCast(raw(v)));
 }
 
 pub fn run() void {
     var vector: ?[*]i32 = null;
 
-    _ = c.janet_init();
+    harness.init();
     std.debug.assert(count(vector) == 0);
 
     for (0..1024) |i| push(&vector, @as(i32, @intCast(i)) * 3);
@@ -94,20 +98,20 @@ pub fn run() void {
     for (0..1024) |i| std.debug.assert(grown[i] == @as(i32, @intCast(i)) * 3);
 
     {
-        const flattened: [*]i32 = @ptrCast(@alignCast(c.janet_v_flattenmem(
+        const flattened: [*]i32 = @ptrCast(@alignCast(vector_mod.vFlattenmem(
             @ptrCast(grown),
             @sizeOf(i32),
         ).?));
         for (0..1024) |i| std.debug.assert(flattened[i] == grown[i]);
-        c.janet_free(@ptrCast(flattened));
+        utils.free(@ptrCast(flattened));
     }
 
     // A null vector flattens to null rather than to an empty allocation. The C
     // contract never asked, because `janet_v_flatten(NULL)` reads
     // `sizeof(*(v))` off a null pointer expression and is only well defined
     // because `sizeof` does not evaluate it.
-    std.debug.assert(c.janet_v_flattenmem(null, @sizeOf(i32)) == null);
+    std.debug.assert(vector_mod.vFlattenmem(null, @sizeOf(i32)) == null);
 
     free(grown);
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }

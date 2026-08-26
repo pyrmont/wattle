@@ -35,12 +35,12 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const abi = @import("abi");
-const c = abi.c;
+const c = @import("cabi");
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
-const os_process = subsystems.os_process;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const os_process = subsystems.process;
 
 const assert = std.debug.assert;
 
@@ -52,7 +52,7 @@ const windows = builtin.os.tag == .windows;
 const posix = struct {
     extern fn write(fd: c_int, buffer: [*]const u8, count: usize) callconv(.c) isize;
     extern fn read(fd: c_int, buffer: [*]u8, count: usize) callconv(.c) isize;
-    extern fn @"raise"(sig: c_int) callconv(.c) c_int;
+    extern fn raise(sig: c_int) callconv(.c) c_int;
 
     /// `std.c.SIG` is an enum on some targets and a plain integer on others,
     /// so a signal number is narrowed once here rather than at each site.
@@ -277,7 +277,7 @@ fn theHostOperations() void {
 // ==========================================================================
 
 fn theCoreFunctions() void {
-    const env = c.janet_core_env(null).?;
+    const env = harness.coreEnv();
 
     // An exit code reaches the caller unchanged, whether the program is named
     // by path or found on it.
@@ -356,9 +356,9 @@ pub fn run() void {
         theSignalLookup();
         theHostOperations();
 
-        _ = c.janet_init();
+        harness.init();
         theCoreFunctions();
-        c.janet_deinit();
+        vm_lifecycle.deinit();
     }
 
     std.debug.print("os_process contract ok\n", .{});

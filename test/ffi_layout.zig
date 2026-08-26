@@ -28,7 +28,7 @@
 //!
 //! **The ordinals are still written out here rather than imported.** That is
 //! deliberate and it is the file's only real oracle question. `ffi_layout.zig`
-//! spells them as a `PrimType` enumeration; asserting `decodePrim("void") ==
+//! spells them as a `PrimType` enumeration; asserting `lookupPrim("void") ==
 //! @intFromEnum(PrimType.void)` would be an assertion that cannot fail. The C
 //! contract's independent copy of the enumeration *was* the oracle, so the
 //! copy survives the migration — the numbers below are the wire between this
@@ -47,7 +47,8 @@
 
 const std = @import("std");
 const subsystems = @import("subsystems");
-const ffi_layout = subsystems.ffi_layout;
+const config = @import("config");
+const ffi_layout = subsystems.ffi_types;
 const Layout = ffi_layout.Layout;
 
 const assert = std.debug.assert;
@@ -74,8 +75,8 @@ const cc_sysv64: i32 = 1;
 const cc_win64: i32 = 2;
 const cc_aapcs64: i32 = 3;
 
-const prim = ffi_layout.decodePrim;
-const cc = ffi_layout.decodeCc;
+const prim = ffi_layout.lookupPrim;
+const cc = ffi_layout.lookupCc;
 
 // ------------------------------------------------------------- name tables
 
@@ -121,12 +122,14 @@ fn machineTypeAliases() void {
 
 /// The only two names whose meaning depends on the word size.
 ///
-/// The condition is `janet.h`'s `JANET_64` — the same input the subject reads,
-/// rather than the subject's answer, and rather than `@sizeOf(usize)`, which
-/// is a different question that happens to agree here.
+/// The condition is `config.bits64` — the same input the subject reads, rather
+/// than the subject's answer, and rather than `@sizeOf(usize)`, which is a
+/// different question that happens to agree here. It was `janet.h`'s
+/// `JANET_64` until Phase 12 increment 1 moved the answer to `build.zig`; the
+/// property this asserts is unchanged, and so is the reason it is asked this
+/// way rather than the obvious way.
 fn wordSizedMachineTypes() void {
-    const c = @import("abi").c;
-    if (comptime @hasDecl(c, "JANET_64")) {
+    if (comptime config.bits64) {
         assert(prim("size") == prim_uint64);
         assert(prim("ssize") == prim_int64);
     } else {

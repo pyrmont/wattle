@@ -1,6 +1,18 @@
 const std = @import("std");
 
+/// Janet's version, in one place.
+///
+/// The three numbers were spelled here *and* in `makeConfigHeader`'s format
+/// string, kept in step by hand. Phase 12 increment 4 needed the same values in
+/// `Config` -- the runtime had been reading them back out of the *translated*
+/// `janetconf.h`, which is configuration arriving through the `@cImport` as a
+/// value rather than as a predicate -- and a third spelling was one too many.
 const version = std.SemanticVersion{ .major = 1, .minor = 41, .patch = 3 };
+const version_extra = "-dev";
+const version_string = std.fmt.comptimePrint("{d}.{d}.{d}{s}", .{
+    version.major, version.minor, version.patch, version_extra,
+});
+const build_name = "zig";
 
 // `core_sources` -- the forty-four files of `src/core` -- stood here. Phase 10
 // Part 18 removed the last symbol any of them defined, and then the twenty-nine
@@ -48,31 +60,19 @@ const test_suites = &.{
     "test/regalloc-bytecode.janet",
 };
 
-// `common_c_flags` -- `-std=c99 -Wall -Wextra -fvisibility=hidden` -- stood
-// here. It was the flag set for C compiled *into the product*, and Phase 11
-// Part 19 left it with no user: the generated `janet-image.c` was its last one,
-// and the two `src/core/*.c` swaps below it had been unreachable since Phase 10
-// Part 18. Nothing announced that either, because an unreferenced container
-// declaration in `build.zig` is as silent as one in a subsystem.
+// **This file compiles no C, and holds no C flags.** `common_c_flags` was the
+// flag set for C compiled into the product and lost its last user at Phase 11
+// Part 19; `test_c_flags` was `test/abi.c` and `test/embed.c`'s and lost its
+// two at Phase 12 increment 5f. Neither removal was announced by anything,
+// because an unreferenced container declaration in `build.zig` is as silent as
+// one in a subsystem -- which is the standing reason to write the removal down
+// where the declaration was.
 //
-// `test_c_flags` below is what remains, and the name is now the whole
-// distinction: every C flag in this file is a flag for something under `test/`.
-// Since Phase 11 Part 22 that means `test/abi.c` and `test/embed.c` alone --
-// the two files that exist to prove a *C* program can see `janet.h`'s layout
-// and link against the library, which is the question the endgame has to
-// answer rather than a contract.
-
-// Test translation units must keep assert() active in every optimize mode. Zig
-// defines NDEBUG for C sources in ReleaseFast and ReleaseSmall, which would
-// otherwise delete the contract checks along with the calls nested inside them,
-// leaving the tests silently vacuous and their call sequences incomplete.
-const test_c_flags = &.{
-    "-std=c99",
-    "-Wall",
-    "-Wextra",
-    "-fvisibility=hidden",
-    "-UNDEBUG",
-};
+// `src/` has held no `.c` since Phase 10 Part 18 and `test/` holds none now.
+// What remains of C in this tree is four hand-written headers under `src/zig`
+// -- `janet_features.h` and the three host translations -- and libc itself,
+// which Phase 10's decision 4 keeps deliberately: "no C in the tree" and "no
+// libc" are different claims, and only the first is a goal.
 
 // `SubsystemImplementation` -- the `c or zig` enum behind twenty-nine `-D`
 // options -- stood here. Phase 10 Part 18 spent the last of those arms: there
@@ -121,87 +121,83 @@ const BuildOptions = struct {
     max_proto_depth: i32,
     max_macro_expand: i32,
     stack_max: i32,
+    os_name: ?[]const u8 = null,
+    arch_name: ?[]const u8 = null,
 };
 
 /// Which subsystems this configuration answers in Zig.
 ///
-/// One bool per selector, computed once by `zigSelection` and read twice: by
-/// `addRuntimeSources`, which defines the matching `JANET_ZIG_*` macro so the C
-/// original guards itself off, and by `src/zig/subsystems/root.zig`, which
-/// imports the file that replaces it. Before Phase 10 Part 17a those were two
-/// lists — a condition here and an `addObject` there — and a subsystem could be
-/// compiled without being guarded off, or guarded off without being compiled.
-/// The two readers now cannot disagree, because there is one list.
+/// One bool per selector, computed once by `zigSelection` and read **once**, by
+/// `src/zig/root.zig`, which imports the file each one selects.
+///
+/// It was read twice until Phase 12 increment 6f. The second reader was
+/// `addRuntimeSources`, which defined a matching `JANET_ZIG_*` macro so the C
+/// original would guard itself off — and there has been no C original since
+/// Phase 10 Part 18, so all sixty-seven macros were being defined for nobody.
+/// Before Phase 10 Part 17a the two readers were two separate lists, and a
+/// subsystem could be compiled without being guarded off; unifying them was
+/// that part's subject, and deleting the C half is what finishes it.
 const Selection = struct {
-    vector: bool,
+    stretchy: bool,
     utilities: bool,
     registry: bool,
-    int_scan: bool,
-    text_scan: bool,
     regalloc: bool,
     verify: bool,
-    remove_noops: bool,
-    movopt: bool,
     emit_core: bool,
-    asm_encode: bool,
-    asm_decode: bool,
     disasm: bool,
-    asm_core: bool,
+    bytecode: bool,
     compiler_primitives: bool,
-    parser_core: bool,
+    parser: bool,
     specials_core: bool,
-    builtin_optimizers: bool,
-    number_scan: bool,
+    optimize: bool,
+    scan: bool,
     math_core: bool,
     int_types_core: bool,
-    os_permissions: bool,
-    os_platform: bool,
+    /// Kept past increment 6f's merge although no `root.zig` import reads it:
+    /// `os.zig` guards the four `janet_os_*env*` exports on it, so a
+    /// reduced-OS build exports what it always did. Same for `os_time`.
     os_environ: bool,
     os_fs: bool,
-    os_stat: bool,
     os_time: bool,
-    os_fs_paths: bool,
-    io_core: bool,
+    io: bool,
     os_process: bool,
-    os_surface: bool,
-    ev_core: bool,
-    ev_loop: bool,
-    net_sockets: bool,
-    ffi_layout: bool,
-    ffi_classify: bool,
-    ffi_core: bool,
-    filewatch_flags: bool,
-    filewatch_core: bool,
-    args_core: bool,
+    os: bool,
+    ev: bool,
+    net: bool,
+    ffi_zig: bool,
+    filewatch: bool,
+    args: bool,
     gc_alloc: bool,
     gc_mark: bool,
     gc_sweep: bool,
-    buffer_array: bool,
-    string_symbol: bool,
-    struct_table: bool,
-    value_order: bool,
-    value_access: bool,
-    abstract_core: bool,
-    value_alloc: bool,
-    value_wrap: bool,
+    arrays: bool,
+    buffers: bool,
+    strings: bool,
+    symbols: bool,
+    tuples: bool,
+    tables: bool,
+    structs: bool,
+    order: bool,
+    access: bool,
+    abstracts: bool,
+    functions: bool,
+    wrap: bool,
+    kind: bool,
     pp: bool,
     marsh: bool,
     peg_engine: bool,
-    core_env: bool,
-    vm_state: bool,
-    fiber_core: bool,
-    signal_core: bool,
-    trace_frames: bool,
-    debug_frames: bool,
-    vm_calls: bool,
-    vm_run: bool,
+    env: bool,
+    fibers: bool,
+    signal: bool,
+    debug: bool,
+    vm: bool,
     vm_entry: bool,
-    vm_lifecycle: bool,
+    lifecycle: bool,
 
     /// Whether any subsystem at all is answered by Zig, computed by reflection
     /// over the fields rather than from a list.
     ///
-    /// `src/zig/subsystems/fatal.zig` provides `janet_zig_out_of_memory` and
+    /// `src/zig/fatal.zig` provides `janet_zig_out_of_memory` and
     /// `janet_zig_fatal`, and nineteen subsystems call one of them. This
     /// condition used to name the ones that did, and the list went stale the
     /// moment an increment added a twentieth: ten of the nineteen were missing
@@ -267,7 +263,6 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     configureCModule(b, boot_module, boot_host, config_header, options);
-    addAbiIncludePath(b, boot_module);
     // The bootstrap compiler is a build-time tool that runs on the host, not a
     // thing under test, and it is built for the host even when -Dtarget names
     // something else. ThreadSanitizer is dropped from it for that reason and
@@ -297,16 +292,35 @@ pub fn build(b: *std.Build) void {
         o.bootstrap = true;
         break :blk o;
     };
+    // The generator's own configuration, for the host it runs on rather than
+    // for `-Dtarget`, and carrying the same `bootstrap = true` as the macro
+    // above. The module compiles with `JANET_BOOTSTRAP` defined, so `Config`
+    // must say so too, or the two halves of one build disagree about which
+    // registration shape `corefn.zig` is emitting.
+    // The graph already built one for `boot_host` from the same inputs;
+    // a second instance puts the generated file in two modules at once.
+
     // `-Dboot=c` went with the cfunction arms in Part 17g. The image generator
     // registers the whole core environment, so it needed every C cfunction
     // there is; a C body cannot be a cfunction any more, and neither can the
     // generator be C. What goes with it is the byte-equality check between the
     // two generators, which was the last differential above the subsystems.
+    // The graph is kept rather than discarded into `makeZigRuntimeObject`,
+    // because `boot_tests.zig` spells Janet types and a module reaches
+    // `types.zig` only through a named import. This one is built for
+    // `boot_host`, so it needs its own instance for the same reason it
+    // already gets its own `config`.
+    const boot_graph = makeRuntimeGraph(b, boot_host, .Debug, config_header, boot_options, null);
     addRuntimeSources(
         boot_module,
-        boot_options,
-        makeZigRuntimeObject(b, boot_host, .Debug, config_header, boot_options, null),
+        if (boot_graph) |g| b.addObject(.{ .name = "janet-zig-boot", .root_module = g.subsystems }) else null,
     );
+    if (boot_graph) |g| {
+        boot_module.addImport("config", g.config);
+        boot_module.addImport("types", g.types);
+        boot_module.addImport("constants", g.constants);
+        boot_module.addImport("cabi", g.cabi);
+    }
     const boot = b.addExecutable(.{ .name = "janet-boot", .root_module = boot_module });
 
     // The generator writes the image to a path it is handed rather than to
@@ -329,7 +343,11 @@ pub fn build(b: *std.Build) void {
     image_step.dependOn(&b.addInstallFile(image_source, "janet-image.bin").step);
 
     // Now the runtime object, which embeds what the generator just produced.
-    const zig_runtime = makeZigRuntimeObject(b, target, optimize, config_header, options, image_source);
+    const runtime_graph = makeRuntimeGraph(b, target, optimize, config_header, options, image_source);
+    const zig_runtime = if (runtime_graph) |g|
+        b.addObject(.{ .name = "janet-zig", .root_module = g.subsystems })
+    else
+        null;
 
     const static_module = makeRuntimeModule(b, target, optimize, config_header, options, zig_runtime);
     const static_library = b.addLibrary(.{
@@ -338,8 +356,12 @@ pub fn build(b: *std.Build) void {
         .version = version,
         .root_module = static_module,
     });
-    static_library.installHeader(b.path("src/include/janet.h"), "janet/janet.h");
-    static_library.installHeader(config_header, "janet/janetconf.h");
+    // **No header is installed, and that is Phase 12 increment 5f's deliberate
+    // gap.** `janet.h` and the generated `janetconf.h` were installed here, and
+    // `janet.h` is gone: what a C caller sees is Phase 13's subject, written as
+    // `capi.zig` and generated from it, so installing the retired header --
+    // the one whose declarations nothing checked against their definitions --
+    // would have shipped the migration's scaffold as the interface.
     b.installArtifact(static_library);
 
     const shared_module = makeRuntimeModule(b, target, optimize, config_header, options, zig_runtime);
@@ -367,8 +389,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     configureCModule(b, client_module, target, config_header, options);
-    addAbiIncludePath(b, client_module);
-    addRuntimeSources(client_module, options, zig_runtime);
+    addRuntimeSources(client_module, zig_runtime);
+    if (runtime_graph) |g| {
+        client_module.addImport("types", g.types);
+        client_module.addImport("constants", g.constants);
+        client_module.addImport("cabi", g.cabi);
+    }
     const client = b.addExecutable(.{ .name = "janet", .root_module = client_module });
     if (target.result.os.tag != .windows) client.rdynamic = true;
     b.installArtifact(client);
@@ -386,7 +412,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     configureCModule(b, native_module_root, target, config_header, options);
-    addAbiIncludePath(b, native_module_root);
+    if (runtime_graph) |g| {
+        native_module_root.addImport("types", g.types);
+        native_module_root.addImport("constants", g.constants);
+        native_module_root.addImport("cabi", g.cabi);
+        // Phase 12 increment 5e: `janet_config_current` was a `janet.h` macro
+        // that `cabi.zig` carried as translate-c's rendering. It is written
+        // out at the one call site now, and the version quintet it reads is
+        // `config`'s -- which this module had no reason to name until then.
+        native_module_root.addImport("config", g.config);
+    }
     const native_module = b.addLibrary(.{
         .name = "janet-zig-native",
         .linkage = .dynamic,
@@ -397,29 +432,43 @@ pub fn build(b: *std.Build) void {
     // test executables for cross-platform runs.
     installTest(b, options, native_module);
 
+    // `zig build translate` stood here. It ran the same headers `abi.zig`
+    // translated through the same include paths and installed the result as
+    // `zig-out/translated.zig`, because a `@cImport` leaves no artefact a
+    // script can read -- which is how `src/zig/types.zig` and
+    // `src/zig/constants.zig` came to hold the compiler's reading of the C
+    // rather than a person's, per configuration. Phase 12 increment 5f deleted
+    // the headers it ran, so the step has nothing to translate.
+    //
+    // The three host translations that remain -- `os/abi.h`, `net/abi.h`,
+    // `filewatch/abi.h` -- had no oracle and needed none: each keeps what it
+    // declares inside one subsystem, and every name it publishes has a Zig
+    // caller that fails to compile when the translation stops providing it.
+
     const run_step = b.step("run", "Run Janet");
     const run_client = b.addRunArtifact(client);
     run_client.setCwd(b.path("."));
     if (b.args) |args| run_client.addArgs(args);
     run_step.dependOn(&run_client.step);
 
-    const abi_step = b.step("abi-test", "Verify Janet C and Zig ABI assumptions");
-    const subsystem_step = b.step("subsystem-test", "Run mixed-runtime subsystem contract tests");
+    // The name is Phase 3's and outlived its subject: there is no mixed runtime
+    // and no `subsystems/` directory. It is an alias of `zig-contract-test`,
+    // kept because `port/testing.md` and `port/phase_4.md` cite it.
+    const subsystem_step = b.step("subsystem-test", "Run the contracts (alias of zig-contract-test)");
 
-    const c_abi_module = makeCModule(b, target, optimize, config_header, options);
-    c_abi_module.addCSourceFiles(.{ .files = &.{"test/abi.c"}, .flags = test_c_flags });
-    const c_abi_test = b.addExecutable(.{ .name = "janet-c-abi-test", .root_module = c_abi_module });
-    installTest(b, options, c_abi_test);
-    const run_c_abi_test = b.addRunArtifact(c_abi_test);
-    abi_step.dependOn(&run_c_abi_test.step);
-
-    const embed_module = makeCModule(b, target, optimize, config_header, options);
-    embed_module.addCSourceFiles(.{ .files = &.{"test/embed.c"}, .flags = test_c_flags });
-    embed_module.linkLibrary(static_library);
-    const embed_test = b.addExecutable(.{ .name = "janet-embed-test", .root_module = embed_module });
-    installTest(b, options, embed_test);
-    const run_embed_test = b.addRunArtifact(embed_test);
-    abi_step.dependOn(&run_embed_test.step);
+    // **`zig build abi-test` is gone, and so are its three binaries.** Phase 12
+    // increment 5f. `janet-c-abi-test` (`test/abi.c`) and `janet-embed-test`
+    // (`test/embed.c`) were the two C programs that proved a C caller could see
+    // `janet.h`'s layout and link against the library, and `janet-zig-abi-test`
+    // (`src/zig/abi_test.zig`) compared hand-written Zig layouts against the
+    // translation of the same header. All three ask a question about a header
+    // that no longer exists.
+    //
+    // The question they asked is a real one and Phase 13 is where it comes
+    // back: `capi.zig` is what a C caller sees, and a C program that includes
+    // the generated header and links the library is how that gets checked.
+    // Restoring it here against the retired header would have checked the
+    // migration's own scaffold.
 
     // There is no C contract driver any more. Phase 11 Part 22 took the last
     // `test/*.c` contract, and `test/contracts.c`, `test/contracts.h`,
@@ -462,16 +511,17 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         configureCModule(b, module, target, config_header, options);
-        addAbiIncludePath(b, module);
-        module.addIncludePath(b.path("src/core"));
         // The image needs no mention here since Part 19. It used to be a C
         // translation unit this module compiled for itself, for the same
         // reason the library compiled one: a runtime without an image cannot
         // `janet_init`. It is inside `graph.subsystems` now.
-        module.addImport("abi", graph.abi);
+        module.addImport("cabi", graph.cabi);
         module.addImport("raise", graph.raise);
         module.addImport("corefn", graph.corefn);
         module.addImport("options", graph.selection);
+        module.addImport("config", graph.config);
+        module.addImport("types", graph.types);
+        module.addImport("constants", graph.constants);
         module.addImport("subsystems", graph.subsystems);
         const exe = b.addExecutable(.{ .name = "janet-zig-contract-test", .root_module = module });
         // A contract may load the native-module fixture, and a contract that
@@ -514,12 +564,13 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         configureCModule(b, module, target, config_header, options);
-        addAbiIncludePath(b, module);
-        module.addIncludePath(b.path("src/core"));
-        module.addImport("abi", graph.abi);
+        module.addImport("cabi", graph.cabi);
         module.addImport("raise", graph.raise);
         module.addImport("corefn", graph.corefn);
         module.addImport("options", graph.selection);
+        module.addImport("config", graph.config);
+        module.addImport("types", graph.types);
+        module.addImport("constants", graph.constants);
         module.addImport("subsystems", graph.subsystems);
         const exe = b.addTest(.{ .name = "janet-fuzz-test", .root_module = module });
         if (target.result.os.tag != .windows) exe.rdynamic = true;
@@ -530,23 +581,7 @@ pub fn build(b: *std.Build) void {
         fuzz_step.dependOn(&run.step);
     }
 
-    const zig_abi_module = b.createModule(.{
-        .root_source_file = b.path("src/zig/abi_test.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    zig_abi_module.addIncludePath(b.path("src/include"));
-    zig_abi_module.addIncludePath(b.path("src/zig"));
-    addAbiIncludePath(b, zig_abi_module);
-    zig_abi_module.addIncludePath(config_header.dirname());
-    zig_abi_module.linkSystemLibrary("c", .{});
-    const zig_abi_test = b.addTest(.{ .name = "janet-zig-abi-test", .root_module = zig_abi_module });
-    installTest(b, options, zig_abi_test);
-    const run_zig_abi_test = b.addRunArtifact(zig_abi_test);
-    abi_step.dependOn(&run_zig_abi_test.step);
-
-    const test_step = b.step("test", "Run ABI checks and Janet's test suites");
-    test_step.dependOn(abi_step);
+    const test_step = b.step("test", "Run Janet's contracts and test suites");
     test_step.dependOn(subsystem_step);
     test_step.dependOn(fuzz_step);
     addCliChecks(b, test_step, client);
@@ -723,6 +758,14 @@ fn readOptions(b: *std.Build) BuildOptions {
         .max_proto_depth = b.option(i32, "max-proto-depth", "Maximum prototype lookup depth") orelse 200,
         .max_macro_expand = b.option(i32, "max-macro-expand", "Maximum macro expansion depth") orelse 200,
         .stack_max = b.option(i32, "stack-max", "Maximum Janet stack size") orelse 0x7fffffff,
+        // `os/which` and `os/arch` overrides. Until Phase 12 increment 1 these
+        // were `JANET_OS_NAME` and `JANET_ARCH_NAME`, bare tokens a user set in
+        // a hand-written `janetconf.h` and `src/zig/state_abi.h` stringified
+        // because translate-c cannot recover an identifier's text. A build
+        // option is where they have to come from once the header is not
+        // installed, and it removes the stringify dance with them.
+        .os_name = b.option([]const u8, "os-name", "Override the keyword os/which reports"),
+        .arch_name = b.option([]const u8, "arch-name", "Override the keyword os/arch reports"),
     };
 
     if (options.recursion_guard < 10 or options.recursion_guard > 8000)
@@ -738,16 +781,21 @@ fn readOptions(b: *std.Build) BuildOptions {
 }
 
 fn makeConfigHeader(b: *std.Build, options: BuildOptions) std.Build.LazyPath {
+    // Its own `b.fmt` because the main one is at Zig's 32-argument limit for a
+    // format call, and six more would exceed it.
+    const version_block = std.fmt.comptimePrint(
+        \\#define JANET_VERSION_MAJOR {d}
+        \\#define JANET_VERSION_MINOR {d}
+        \\#define JANET_VERSION_PATCH {d}
+        \\#define JANET_VERSION_EXTRA "{s}"
+        \\#define JANET_VERSION "{s}"
+        \\#define JANET_BUILD "{s}"
+        \\
+    , .{ version.major, version.minor, version.patch, version_extra, version_string, build_name });
     const header = b.fmt(
         \\#ifndef JANETCONF_H
         \\#define JANETCONF_H
-        \\#define JANET_VERSION_MAJOR 1
-        \\#define JANET_VERSION_MINOR 41
-        \\#define JANET_VERSION_PATCH 3
-        \\#define JANET_VERSION_EXTRA "-dev"
-        \\#define JANET_VERSION "1.41.3-dev"
-        \\#define JANET_BUILD "zig"
-        \\{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}
+        \\{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}
         \\#define JANET_RECURSION_GUARD {d}
         \\#define JANET_MAX_PROTO_DEPTH {d}
         \\#define JANET_MAX_MACRO_EXPAND {d}
@@ -755,6 +803,7 @@ fn makeConfigHeader(b: *std.Build, options: BuildOptions) std.Build.LazyPath {
         \\{s}{s}#endif
         \\
     , .{
+        version_block,
         defineIf(options.single_threaded, "JANET_SINGLE_THREADED"),
         defineIf(!options.nanbox, "JANET_NO_NANBOX"),
         if (options.nanbox_pointer_shift) |shift| b.fmt("#define JANET_NANBOX_64_POINTER_SHIFT {d}\n", .{shift}) else "",
@@ -794,13 +843,239 @@ fn defineIf(enabled: bool, comptime name: []const u8) []const u8 {
     return if (enabled) "#define " ++ name ++ "\n" else "";
 }
 
-/// `src/zig/abi.zig` translates `src/zig/state_abi.h`, which reaches Janet's
-/// internal `src/core/state.h`. Every module that imports abi.zig — directly or
-/// through cli.zig, interop.zig, or native_module.zig — therefore needs the
-/// core include path as well as the public one. Contract tests deliberately do
-/// not get it unless they exercise an internal header themselves.
-fn addAbiIncludePath(b: *std.Build, module: *std.Build.Module) void {
-    module.addIncludePath(b.path("src/core"));
+/// What the build decided, as comptime facts for `@import("config")`.
+///
+/// **Phase 12 increment 1.** Until here the Zig runtime learned its own
+/// configuration by asking the `@cImport` — `@hasDecl(c, "JANET_PEG")` and 53
+/// more like it — which made `janet.h` not merely the declaration surface but
+/// the place the configuration was *resolved*. The header cannot be retired
+/// while that is true, so this struct is where the resolution moves.
+///
+/// **The positives are computed here because the preprocessor could not
+/// compute them.** `makeConfigHeader` emits negatives (`JANET_NO_PEG`,
+/// `JANET_EV_NO_EPOLL`) because `#ifndef` is the only tool a config header
+/// has, and `janet.h` then derives the positive form from the absence of the
+/// negative, with the platform folded in. That derivation is reproduced below,
+/// clause for clause, against `src/include/janet.h`'s "Enable or disable"
+/// block. It has to be exact: the C types this runtime still uses are declared
+/// inside those same `#ifdef`s, so a `Config` that disagrees with the header
+/// would compile Zig against a struct the header did not declare.
+///
+/// Four facts that were macros are *not* fields here — `JANET_32`/`JANET_64`,
+/// `JANET_BIG_ENDIAN`, `JANET_WINDOWS` and `JANET_PLAN9`. Those are properties
+/// of the target, and `janet.h` recovers them by testing a hand-maintained
+/// list of architecture macros with a fallback (its endianness check *assumes
+/// big-endian* when it recognises nothing). `@import("builtin")` knows them
+/// exactly, so the call sites read `builtin` and the guesswork goes.
+/// Which of the three value representations this build compiles.
+///
+/// `value_wrap.zig` used to recover this by asking whether the *translated*
+/// `Janet` had an `as` or a `tagged` field — reading the layout off the shape
+/// of a C type, which is the sharpest form of the problem increment 1 exists
+/// to fix: it made `janet.h` the place the value representation was decided.
+///
+/// `DESIGN.md` §7 drops `nanbox_32` and renames the option to `-Dvalue-repr`.
+/// Neither is done here: this increment moves where the answer comes from and
+/// changes no answer.
+const ValueRepr = enum { nanbox_64, nanbox_32, tagged };
+
+const Config = struct {
+    bootstrap: bool,
+    docstrings: bool,
+    sourcemaps: bool,
+    dynamic_modules: bool,
+    assembler: bool,
+    peg: bool,
+    int_types: bool,
+    prf: bool,
+    ev: bool,
+    net: bool,
+    ffi: bool,
+    ffi_jit: bool,
+    filewatch: bool,
+    cryptorand: bool,
+    reduced_os: bool,
+    processes: bool,
+    realpath: bool,
+    umask: bool,
+    ev_epoll: bool,
+    ev_kqueue: bool,
+    ev_poll: bool,
+    ipv6: bool,
+
+    /// The two `src/zig/state_abi.h` restates that had no `Config` field.
+    ///
+    /// **Phase 12 increment 4, and they are increment 1's clause unmet.** That
+    /// increment swept for `@hasDecl(c, "JANET_*")` and `@hasField(c.Janet,
+    /// ...)` — the forms in which the runtime asked the `@cImport` a
+    /// *question*. Configuration also reached Zig as an *answer*:
+    /// `state_abi.h` exists to turn `#ifdef JANET_EV` into `#define
+    /// JANET_VM_HAS_EV 1`, precisely because "translate-c does not surface a
+    /// macro defined with no value", and `vm_state.zig` and eleven others
+    /// then read `c.JANET_VM_HAS_EV != 0`. A grep for `@hasDecl` cannot see
+    /// that. See `phase_12.md`'s rule 16.
+    single_threaded: bool,
+    interpreter_interrupt: bool,
+
+    /// `janetconf.h`'s, for the same reason: the runtime read every one of
+    /// these back out of the translated header. `boot_tests.zig` compares the
+    /// version quintet, `core_env.zig` publishes `janet/build`, and the four
+    /// limits are read at nineteen, eleven, one and two sites.
+    version_major: i32,
+    version_minor: i32,
+    version_patch: i32,
+    version_extra: []const u8,
+    version: []const u8,
+    build_name: []const u8,
+    recursion_guard: i32,
+    max_proto_depth: i32,
+    max_macro_expand: i32,
+    stack_max: i32,
+
+    /// `janet.h`'s `JANET_64`/`JANET_32`, which it recovers by testing a
+    /// hand-maintained list of architecture macros. A field rather than
+    /// `@sizeOf(usize)` at the call site because `test/ffi_layout.zig` says
+    /// why: a contract wants "the same input the subject reads, rather than
+    /// the subject's answer, and rather than `@sizeOf(usize)`, which is a
+    /// different question that happens to agree here".
+    bits64: bool,
+    value_repr: ValueRepr,
+    nanbox_pointer_shift: i32,
+    os_name: ?[]const u8,
+    arch_name: ?[]const u8,
+
+    /// Five predicates the Zig runtime reads that **nothing in this tree ever
+    /// defines**, carried as constants so the migration changes no behaviour.
+    /// Found by this increment, and they are rule 72's class: a comptime-false
+    /// condition means the branch behind it has never been analysed.
+    ///
+    ///   - `spawn`/`symlinks`/`locales` are upstream `janetconf.h` options
+    ///     `build.zig` has no `-D` for, so they have been pinned on since the
+    ///     port began.
+    ///   - `debug` is `JANET_DEBUG`, which `value/fibers.zig` documents as
+    ///     "edited in by hand to shake out use-after-free by moving the stack
+    ///     on every frame push". It must **not** be wired to
+    ///     `builtin.mode == .Debug`: that would reallocate the fiber stack on
+    ///     every frame push in every Debug build.
+    ///
+    /// `JANET_PLAN9` was the sixth and is the one that improves by moving:
+    /// it becomes `builtin.os.tag == .plan9` at the call site, false for every
+    /// target built here and correct for the one it names.
+    spawn: bool = true,
+    symlinks: bool = true,
+    locales: bool = true,
+    debug: bool = false,
+};
+
+/// Reproduces `src/include/janet.h`'s derivation with the target folded in.
+///
+/// Each line cites the header clause it mirrors. Changing one without changing
+/// the header is how the two come to disagree, and the disagreement is silent
+/// until a C type declared inside the matching `#ifdef` fails to resolve.
+fn janetConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config {
+    const os = target.result.os.tag;
+    const emscripten = os == .emscripten;
+    const linux = os == .linux;
+    const bsd = switch (os) {
+        .freebsd, .openbsd, .netbsd, .dragonfly => true,
+        else => false,
+    };
+    const apple = switch (os) {
+        .macos, .ios, .tvos, .watchos, .visionos => true,
+        else => false,
+    };
+    const windows = os == .windows;
+
+    // `#if !defined(JANET_NO_EV) && !defined(__EMSCRIPTEN__)`, plus
+    // `makeConfigHeader`'s own extra clause: it emits JANET_NO_EV when the
+    // build is single-threaded, so the event loop is off there too.
+    const ev = options.ev and !options.single_threaded and !emscripten;
+    // `#ifndef JANET_NO_FFI` / `#if !defined(__EMSCRIPTEN__)`
+    const ffi = options.ffi and !emscripten;
+    // `#if defined(JANET_LINUX) && !defined(JANET_EV_NO_EPOLL)`
+    const ev_epoll = linux and options.epoll;
+    // the JANET_BSD and JANET_APPLE clauses, which define the same macro
+    const ev_kqueue = (bsd or apple) and options.kqueue;
+
+    return .{
+        .bootstrap = options.bootstrap,
+        .docstrings = options.docstrings,
+        .sourcemaps = options.sourcemaps,
+        .dynamic_modules = options.dynamic_modules,
+        .assembler = options.assembler,
+        .peg = options.peg,
+        .int_types = options.int_types,
+        .prf = options.prf,
+        .ev = ev,
+        // `#if defined(JANET_EV) && !defined(JANET_NO_NET) && !defined(__EMSCRIPTEN__)`
+        .net = ev and options.net and !emscripten,
+        .ffi = ffi,
+        // `#ifdef JANET_FFI` / `#ifndef JANET_NO_FFI_JIT`
+        .ffi_jit = ffi and options.ffi_jit,
+        .filewatch = options.filewatch,
+        .cryptorand = options.cryptorand,
+        .reduced_os = options.reduced_os,
+        .processes = options.processes,
+        .realpath = options.realpath,
+        .umask = options.umask,
+        .ev_epoll = ev_epoll,
+        .ev_kqueue = ev_kqueue,
+        // `#if !defined(JANET_WINDOWS) && !defined(JANET_EV_EPOLL) && !defined(JANET_EV_KQUEUE)`
+        .ev_poll = !windows and !ev_epoll and !ev_kqueue,
+        .ipv6 = options.ipv6,
+        .bits64 = target.result.ptrBitWidth() == 64,
+        // `janet.h`: JANET_NO_NANBOX gives the tagged struct; otherwise the
+        // pointer width picks between the two NaN-boxed unions.
+        .value_repr = if (!options.nanbox)
+            .tagged
+        else if (target.result.ptrBitWidth() == 64)
+            .nanbox_64
+        else
+            .nanbox_32,
+        // `#if (defined(_M_ARM64) || defined(__aarch64__)) && !defined(JANET_APPLE)`
+        // — aarch64 that is **not** Apple, because aarch64 macOS uses the same
+        // 47-bit userland address space as amd64 and so needs no shift. The
+        // option overrides it either way. Carried as a number rather than a
+        // predicate because `registry.zig` compares it to zero.
+        //
+        // **This clause was written inverted in increment 1** — `apple and
+        // aarch64` — and increment 4 found it by comparing `Config` against the
+        // translated header per configuration. `checkPointerAlign` guarded on
+        // this field while masking with `c.JANET_NANBOX_64_POINTER_SHIFT`, so
+        // on aarch64 Linux the guard returned early and the alignment check was
+        // off on the only targets that shift, while on aarch64 macOS it ran
+        // with a zero mask and checked nothing. `constants_check.zig` now holds
+        // the two together.
+        .nanbox_pointer_shift = options.nanbox_pointer_shift orelse
+            if (!apple and target.result.cpu.arch == .aarch64) 2 else 0,
+        .os_name = options.os_name,
+        .arch_name = options.arch_name,
+        .single_threaded = options.single_threaded,
+        .interpreter_interrupt = options.interpreter_interrupt,
+        .version_major = version.major,
+        .version_minor = version.minor,
+        .version_patch = version.patch,
+        .version_extra = version_extra,
+        .version = version_string,
+        .build_name = build_name,
+        .recursion_guard = options.recursion_guard,
+        .max_proto_depth = options.max_proto_depth,
+        .max_macro_expand = options.max_macro_expand,
+        .stack_max = options.stack_max,
+    };
+}
+
+/// `@import("config")`: `Config` as comptime constants.
+///
+/// Built by reflection for the reason `makeSelectionModule` is: a hand-written
+/// list acquires a stale entry the first time a field is added and nothing
+/// announces it.
+fn makeConfigModule(b: *std.Build, cfg: Config) *std.Build.Module {
+    const step = b.addOptions();
+    inline for (@typeInfo(Config).@"struct".fields) |field| {
+        step.addOption(field.type, field.name, @field(cfg, field.name));
+    }
+    return step.createModule();
 }
 
 fn makeCModule(
@@ -822,7 +1097,13 @@ fn configureCModule(
     config_header: std.Build.LazyPath,
     options: BuildOptions,
 ) void {
-    module.addIncludePath(b.path("src/include"));
+    // `src/zig` alone since Phase 12 increment 5f. It was `src/include` for
+    // `janet.h`, `src/core` for the internal headers `state_abi.h` reached
+    // (added separately, by `addAbiIncludePath`), and `src/zig` for the
+    // hand-written translation headers. Only the last of those still exists:
+    // `os/abi.h`, `net/abi.h`, `filewatch/abi.h` and the `janet_features.h`
+    // the four of them open with, which moved up from `src/core` when that
+    // directory emptied.
     module.addIncludePath(b.path("src/zig"));
     module.addIncludePath(config_header.dirname());
     if (options.bootstrap) module.addCMacro("JANET_BOOTSTRAP", "1");
@@ -873,16 +1154,14 @@ fn makeRuntimeModule(
     zig_runtime: ?*std.Build.Step.Compile,
 ) *std.Build.Module {
     const module = makeCModule(b, target, optimize, config_header, options);
-    addRuntimeSources(module, options, zig_runtime);
+    addRuntimeSources(module, zig_runtime);
     return module;
 }
 
 fn addRuntimeSources(
     module: *std.Build.Module,
-    options: BuildOptions,
     zig_runtime: ?*std.Build.Step.Compile,
 ) void {
-    const sel = zigSelection(options);
     // The image used to be added here, as the generated `janet-image.c`. It is
     // inside `zig_runtime` now -- an `@embedFile` in `core_env.zig` reached
     // through `makeRuntimeGraph`'s anonymous import -- so a module that takes
@@ -902,72 +1181,22 @@ fn addRuntimeSources(
     // The `Selection` fields stay: `makeSelectionModule` publishes them and
     // `containers.zig` and its neighbours read them to pick an import.
 
-    // Everything else guards its C original off. The condition that decided
-    // each of these is in `zigSelection`, with the import in
-    // `src/zig/subsystems/root.zig` that answers it; all this does is name the
-    // macro, which is a static fact about the C source rather than a decision.
-    if (sel.utilities) module.addCMacro("JANET_ZIG_UTILS", "1");
-    if (sel.registry) module.addCMacro("JANET_ZIG_REGISTRY", "1");
-    if (sel.int_scan) module.addCMacro("JANET_ZIG_INTSCAN", "1");
-    if (sel.text_scan) module.addCMacro("JANET_ZIG_TEXTSCAN", "1");
-    if (sel.verify) module.addCMacro("JANET_ZIG_VERIFY", "1");
-    if (sel.remove_noops) module.addCMacro("JANET_ZIG_REMOVE_NOOPS", "1");
-    if (sel.movopt) module.addCMacro("JANET_ZIG_MOVOPT", "1");
-    if (sel.emit_core) module.addCMacro("JANET_ZIG_EMIT_CORE", "1");
-    if (sel.asm_encode) module.addCMacro("JANET_ZIG_ASM_ENCODE", "1");
-    if (sel.asm_decode) module.addCMacro("JANET_ZIG_ASM_DECODE", "1");
-    if (sel.disasm) module.addCMacro("JANET_ZIG_DISASM", "1");
-    if (sel.asm_core) module.addCMacro("JANET_ZIG_ASM_CORE", "1");
-    if (sel.compiler_primitives) module.addCMacro("JANET_ZIG_COMPILER_PRIMITIVES", "1");
-    if (sel.parser_core) module.addCMacro("JANET_ZIG_PARSER_CORE", "1");
-    if (sel.specials_core) module.addCMacro("JANET_ZIG_SPECIALS_CORE", "1");
-    if (sel.builtin_optimizers) module.addCMacro("JANET_ZIG_BUILTIN_OPTIMIZERS", "1");
-    if (sel.number_scan) module.addCMacro("JANET_ZIG_NUMSCAN", "1");
-    if (sel.math_core) module.addCMacro("JANET_ZIG_MATH_CORE", "1");
-    if (sel.int_types_core) module.addCMacro("JANET_ZIG_INT_TYPES_CORE", "1");
-    if (sel.os_permissions) module.addCMacro("JANET_ZIG_OS_PERMISSIONS", "1");
-    if (sel.os_platform) module.addCMacro("JANET_ZIG_OS_PLATFORM", "1");
-    if (sel.os_environ) module.addCMacro("JANET_ZIG_OS_ENVIRON", "1");
-    if (sel.os_fs) module.addCMacro("JANET_ZIG_OS_FS", "1");
-    if (sel.os_stat) module.addCMacro("JANET_ZIG_OS_STAT", "1");
-    if (sel.os_time) module.addCMacro("JANET_ZIG_OS_TIME", "1");
-    if (sel.os_fs_paths) module.addCMacro("JANET_ZIG_OS_FS_PATHS", "1");
-    if (sel.io_core) module.addCMacro("JANET_ZIG_IO_CORE", "1");
-    if (sel.os_process) module.addCMacro("JANET_ZIG_OS_PROCESS", "1");
-    if (sel.os_surface) module.addCMacro("JANET_ZIG_OS_SURFACE", "1");
-    if (sel.ev_core) module.addCMacro("JANET_ZIG_EV_CORE", "1");
-    if (sel.ev_loop) module.addCMacro("JANET_ZIG_EV_LOOP", "1");
-    if (sel.net_sockets) module.addCMacro("JANET_ZIG_NET_SOCKETS", "1");
-    if (sel.ffi_layout) module.addCMacro("JANET_ZIG_FFI_LAYOUT", "1");
-    if (sel.ffi_classify) module.addCMacro("JANET_ZIG_FFI_CLASSIFY", "1");
-    if (sel.ffi_core) module.addCMacro("JANET_ZIG_FFI_CORE", "1");
-    if (sel.filewatch_flags) module.addCMacro("JANET_ZIG_FILEWATCH_FLAGS", "1");
-    if (sel.filewatch_core) module.addCMacro("JANET_ZIG_FILEWATCH_CORE", "1");
-    if (sel.args_core) module.addCMacro("JANET_ZIG_ARGS_CORE", "1");
-    if (sel.gc_alloc) module.addCMacro("JANET_ZIG_GC_ALLOC", "1");
-    if (sel.gc_mark) module.addCMacro("JANET_ZIG_GC_MARK", "1");
-    if (sel.gc_sweep) module.addCMacro("JANET_ZIG_GC_SWEEP", "1");
-    if (sel.buffer_array) module.addCMacro("JANET_ZIG_BUFFER_ARRAY", "1");
-    if (sel.string_symbol) module.addCMacro("JANET_ZIG_STRING_SYMBOL", "1");
-    if (sel.struct_table) module.addCMacro("JANET_ZIG_STRUCT_TABLE", "1");
-    if (sel.value_order) module.addCMacro("JANET_ZIG_VALUE_ORDER", "1");
-    if (sel.value_access) module.addCMacro("JANET_ZIG_VALUE_ACCESS", "1");
-    if (sel.abstract_core) module.addCMacro("JANET_ZIG_ABSTRACT_CORE", "1");
-    if (sel.value_alloc) module.addCMacro("JANET_ZIG_VALUE_ALLOC", "1");
-    if (sel.value_wrap) module.addCMacro("JANET_ZIG_VALUE_WRAP", "1");
-    if (sel.pp) module.addCMacro("JANET_ZIG_PP", "1");
-    if (sel.marsh) module.addCMacro("JANET_ZIG_MARSH", "1");
-    if (sel.peg_engine) module.addCMacro("JANET_ZIG_PEG_ENGINE", "1");
-    if (sel.core_env) module.addCMacro("JANET_ZIG_CORE_ENV", "1");
-    if (sel.vm_state) module.addCMacro("JANET_ZIG_VM_STATE", "1");
-    if (sel.fiber_core) module.addCMacro("JANET_ZIG_FIBER_CORE", "1");
-    if (sel.signal_core) module.addCMacro("JANET_ZIG_SIGNAL_CORE", "1");
-    if (sel.trace_frames) module.addCMacro("JANET_ZIG_TRACE_FRAMES", "1");
-    if (sel.debug_frames) module.addCMacro("JANET_ZIG_DEBUG_FRAMES", "1");
-    if (sel.vm_calls) module.addCMacro("JANET_ZIG_VM_CALLS", "1");
-    if (sel.vm_run) module.addCMacro("JANET_ZIG_VM_RUN", "1");
-    if (sel.vm_entry) module.addCMacro("JANET_ZIG_VM_ENTRY", "1");
-    if (sel.vm_lifecycle) module.addCMacro("JANET_ZIG_VM_LIFECYCLE", "1");
+    // **The sixty-seven `JANET_ZIG_*` macros stood here until Phase 12
+    // increment 6f.** Each guarded a C original off, and there is no C original
+    // left: `src/` has held zero `.c` files since Phase 10 Part 18, and nothing
+    // in `src/include`, `src/core`, `test/` or the generated config header ever
+    // read one. (`os/abi.h` and `net/abi.h` define names with the same prefix --
+    // include guards, `JANET_ZIG_PATH_MAX`, `JANET_ZIG_MSG_NOSIGNAL` -- and
+    // those are unrelated and live.)
+    //
+    // They were found on the way into 6f's first merge, which would otherwise
+    // have had to decide what becomes of `JANET_ZIG_ASM_CORE` when `asm_core`
+    // and `asm_encode` become `bytecode.zig`. The answer is that the question
+    // was already void, and every merge in the increment is free of it.
+    //
+    // **The `Selection` fields stay.** They are what `makeSelectionModule`
+    // publishes and what `src/zig/root.zig` reads as `options.<name>` to decide
+    // which subsystems to import; only the C half of each selector is gone.
 
     // One object rather than sixty-three, which is Part 17a's whole subject.
     if (zig_runtime) |object| module.addObject(object);
@@ -986,70 +1215,58 @@ fn addRuntimeSources(
 ///  - a reduced-OS gate, where `os.c` does not compile the region either.
 fn zigSelection(options: BuildOptions) Selection {
     return .{
-        .vector = true,
+        .stretchy = true,
         .utilities = true,
         .registry = true,
-        .int_scan = options.int_types,
-        .text_scan = true,
         .regalloc = true,
         .verify = true,
-        .remove_noops = true,
-        .movopt = true,
         .emit_core = true,
-        .asm_encode = options.assembler,
-        .asm_decode = options.assembler,
         .disasm = options.assembler,
-        .asm_core = options.assembler,
+        .bytecode = options.assembler,
         .compiler_primitives = true,
-        .parser_core = true,
+        .parser = true,
         .specials_core = true,
-        .builtin_optimizers = true,
-        .number_scan = true,
+        .optimize = true,
+        .scan = true,
         .math_core = true,
         .int_types_core = options.int_types,
-        .os_permissions = !options.reduced_os,
-        .os_platform = true,
         .os_environ = !options.reduced_os,
         .os_fs = !options.reduced_os,
-        .os_stat = !options.reduced_os,
         .os_time = hasGettime(options),
-        .os_fs_paths = !options.reduced_os,
-        .io_core = true,
+        .io = true,
         .os_process = hasProcesses(options),
-        .os_surface = true,
-        .ev_core = hasEv(options),
-        .ev_loop = hasEv(options),
-        .net_sockets = hasNet(options),
-        .ffi_layout = options.ffi,
-        .ffi_classify = options.ffi,
-        .ffi_core = options.ffi,
-        .filewatch_flags = hasFilewatch(options),
-        .filewatch_core = hasFilewatch(options),
-        .args_core = true,
+        .os = true,
+        .ev = hasEv(options),
+        .net = hasNet(options),
+        .ffi_zig = options.ffi,
+        .filewatch = hasFilewatch(options),
+        .args = true,
         .gc_alloc = true,
         .gc_mark = true,
         .gc_sweep = true,
-        .buffer_array = true,
-        .string_symbol = true,
-        .struct_table = true,
-        .value_order = true,
-        .value_access = true,
-        .abstract_core = true,
-        .value_alloc = true,
-        .value_wrap = true,
+        .arrays = true,
+        .buffers = true,
+        .strings = true,
+        .symbols = true,
+        .tuples = true,
+        .tables = true,
+        .structs = true,
+        .order = true,
+        .access = true,
+        .abstracts = true,
+        .functions = true,
+        .wrap = true,
+        .kind = true,
         .pp = true,
         .marsh = true,
         .peg_engine = options.peg,
-        .core_env = true,
-        .vm_state = true,
-        .fiber_core = true,
-        .signal_core = true,
-        .trace_frames = true,
-        .debug_frames = true,
-        .vm_calls = true,
-        .vm_run = true,
+        .env = true,
+        .fibers = true,
+        .signal = true,
+        .debug = true,
+        .vm = true,
         .vm_entry = true,
-        .vm_lifecycle = true,
+        .lifecycle = true,
     };
 }
 
@@ -1065,9 +1282,9 @@ fn hasProcesses(options: BuildOptions) bool {
 }
 
 /// `src/core/janet_features.h` defines JANET_EV unless JANET_NO_EV is set, which
-/// `addRuntimeSources` does for a build that disables the event loop or is
-/// single-threaded. Everything in `ev.c` — the subsystem included — is compiled
-/// only when it is defined.
+/// `makeConfigHeader` does for a build that disables the event loop or is
+/// single-threaded. `janet.h` gates its whole event-loop surface on it, so the
+/// header and the subsystem agree about whether there is one.
 fn hasEv(options: BuildOptions) bool {
     return options.ev and !options.single_threaded;
 }
@@ -1103,7 +1320,7 @@ fn hasFilewatch(options: BuildOptions) bool {
 /// a call between two objects is resolved by the linker, which is to say across
 /// the C ABI, and Zig will not put an error union on a C-ABI function. So every
 /// raise that crossed a selector boundary had to be a `longjmp`, and the third
-/// `setjmp` could not go while any remained. `src/zig/subsystems/root.zig` has
+/// `setjmp` could not go while any remained. `src/zig/root.zig` has
 /// the fuller statement.
 ///
 /// What that removes here is the six special constructors this file used to
@@ -1159,10 +1376,19 @@ fn makeZigRuntimeObject(
 /// second translation's `Janet` could not pass it to the subsystem at all.
 const RuntimeGraph = struct {
     subsystems: *std.Build.Module,
-    abi: *std.Build.Module,
     raise: *std.Build.Module,
     corefn: *std.Build.Module,
     selection: *std.Build.Module,
+    config: *std.Build.Module,
+    /// Phase 12 increments 3 and 4. A contract reaches these the same way the
+    /// runtime does, for Phase 11 Part 1's reason: it is compiled *into* a
+    /// second copy of the runtime, so `test/` spells the same types and the
+    /// same constants and holds 5,143 of the 8,795 seam references. A module
+    /// the runtime has and the contracts do not is a call-site rewrite that
+    /// stops at the `src/` boundary.
+    types: *std.Build.Module,
+    constants: *std.Build.Module,
+    cabi: *std.Build.Module,
 };
 
 fn makeRuntimeGraph(
@@ -1176,23 +1402,67 @@ fn makeRuntimeGraph(
     const sel = zigSelection(options);
     if (!sel.any()) return null;
 
-    // One `abi` translation for the whole object, which is the rule `abi.zig`
-    // states: two `@cImport` blocks over the same header produce distinct,
-    // incompatible types, so a `JanetFiber` from one is not the `JanetFiber` the
-    // other holds. It mattered per-object before and it matters here for the
-    // same reason -- `os_abi`, `net_abi` and `filewatch_abi` are second
-    // translations by design, and each keeps what it declares inside one file.
-    const abi_module = b.createModule(.{
-        .root_source_file = b.path("src/zig/abi.zig"),
+    // Phase 12 increment 1: what the build decided, as comptime constants
+    // rather than as macros a `@cImport` is asked about. Created first because
+    // `types.zig` selects the value representation and the event-loop backend
+    // from it.
+    //
+    // **The shared `abi` translation stood here until increment 5f.** It was
+    // one `@cImport` of `janet.h` and seven internal headers for the whole
+    // object, on the rule that two `@cImport` blocks over the same header
+    // produce distinct, incompatible types -- so a `JanetFiber` from one is not
+    // the `JanetFiber` the other holds. `types.zig` is that single owner now
+    // and it is Zig, which is the stronger form of the same rule. The three
+    // host translations under `os/`, `net/` and `filewatch/` remain, and each
+    // still keeps what it declares inside one subsystem.
+    const config_module = makeConfigModule(b, janetConfig(options, target));
+
+    // Phase 12: the Janet types, owned by Zig rather than translated out of
+    // `janet.h`. Its own module because `src/zig/root.zig` is a
+    // module root and cannot reach a file above itself.
+    const types_module = b.createModule(.{
+        .root_source_file = b.path("src/zig/types.zig"),
         .target = target,
         .optimize = optimize,
         .pic = true,
     });
-    configureCModule(b, abi_module, target, config_header, options);
-    addAbiIncludePath(b, abi_module);
+    types_module.addImport("config", config_module);
+    // `types.zig` takes the pthread types from libc: `std.c` carries glibc's
+    // `pthread_attr_t` and musl's is a different size, which `JanetVM` embeds.
+    types_module.link_libc = true;
+
+    // Phase 12 increment 4: the constants, opcodes and flags, owned by Zig
+    // rather than translated. Its own module for the same reason `types.zig`
+    // is one.
+    const constants_module = b.createModule(.{
+        .root_source_file = b.path("src/zig/constants.zig"),
+        .target = target,
+        .optimize = optimize,
+        .pic = true,
+    });
+    constants_module.addImport("config", config_module);
+    // Phase 12 increment 5b: what the runtime calls itself through, in Zig.
+    // Increment 6g spent the re-export `abi.zig` carried, so a subsystem now
+    // writes `const c = @import("cabi");` and every module that has a `c`
+    // needs this import by name.
+    const cabi_module = b.createModule(.{
+        .root_source_file = b.path("src/zig/cabi.zig"),
+        .target = target,
+        .optimize = optimize,
+        .pic = true,
+    });
+    configureCModule(b, cabi_module, target, config_header, options);
+    cabi_module.addImport("config", config_module);
+    cabi_module.addImport("types", types_module);
+    cabi_module.addImport("constants", constants_module);
+
+    // The two oracles stood here -- `types_check.zig` against the translated
+    // types, `constants_check.zig` against the translated constants and
+    // `Config` against `janet.h`'s own derivation. Increment 5f spent both
+    // with the header they compared against.
 
     const module = b.createModule(.{
-        .root_source_file = b.path("src/zig/subsystems/root.zig"),
+        .root_source_file = b.path("src/zig/root.zig"),
         .target = target,
         .optimize = optimize,
         // Linked into the shared library as well as the static one, and ELF
@@ -1201,10 +1471,12 @@ fn makeRuntimeGraph(
         .pic = true,
     });
     configureCModule(b, module, target, config_header, options);
-    module.addIncludePath(b.path("src/core"));
-    module.addImport("abi", abi_module);
+    module.addImport("cabi", cabi_module);
+    module.addImport("types", types_module);
+    module.addImport("constants", constants_module);
     const selection_module = makeSelectionModule(b, sel);
     module.addImport("options", selection_module);
+    module.addImport("config", config_module);
 
     // The core image, which `core_env.zig` reads with `@embedFile` since Part
     // 19. It arrives as an import rather than as a linked-in `janet-image.c`,
@@ -1231,9 +1503,9 @@ fn makeRuntimeGraph(
         .pic = true,
     });
     configureCModule(b, raise_module, target, config_header, options);
-    addAbiIncludePath(b, raise_module);
-    raise_module.addIncludePath(b.path("src/core"));
-    raise_module.addImport("abi", abi_module);
+    raise_module.addImport("cabi", cabi_module);
+    raise_module.addImport("types", types_module);
+    raise_module.addImport("constants", constants_module);
     module.addImport("raise", raise_module);
 
     const corefn_module = b.createModule(.{
@@ -1243,49 +1515,51 @@ fn makeRuntimeGraph(
         .pic = true,
     });
     configureCModule(b, corefn_module, target, config_header, options);
-    addAbiIncludePath(b, corefn_module);
-    corefn_module.addIncludePath(b.path("src/core"));
-    corefn_module.addImport("abi", abi_module);
+    corefn_module.addImport("cabi", cabi_module);
     // Since Part 17g `corefn` names `raise.CFunction`: a registration table
     // row and a method table row are both typed by what a cfunction is.
     corefn_module.addImport("raise", raise_module);
+    corefn_module.addImport("config", config_module);
+    corefn_module.addImport("types", types_module);
+    corefn_module.addImport("constants", constants_module);
     module.addImport("corefn", corefn_module);
 
-    // The three second translations of host headers. Each is attached
-    // unconditionally: an import the configuration does not reach is not
-    // analysed, so a `-Dnet=false` build pays nothing for `net_abi`.
-    for ([_]struct { name: []const u8, source: []const u8 }{
-        .{ .name = "os_abi", .source = "src/zig/os_abi.zig" },
-        .{ .name = "net_abi", .source = "src/zig/net_abi.zig" },
-        .{ .name = "filewatch_abi", .source = "src/zig/filewatch_abi.zig" },
-    }) |entry| {
-        const host = b.createModule(.{
-            .root_source_file = b.path(entry.source),
-            .target = target,
-            .optimize = optimize,
-            .pic = true,
-        });
-        configureCModule(b, host, target, config_header, options);
-        addAbiIncludePath(b, host);
-        module.addImport(entry.name, host);
-    }
+    // **The three host translations stopped being modules at Phase 12
+    // increment 6f.** They are `os/abi.zig`, `net/abi.zig` and
+    // `filewatch/abi.zig` now, each beside the hand-written `.h` it translates,
+    // and each reached by path from inside the subsystem that owns it -- one
+    // importer for `filewatch`, two for `net`, six for `os`, all within the
+    // subtree. A module name bought nothing once the file sat where its callers
+    // are.
+    //
+    // The loop that made them set `.pic = true`, because they link into the
+    // shared library and ELF requires position-independent code where Mach-O is
+    // always position independent. A path import inherits the importing
+    // module's settings, so the subsystems module's `.pic` now covers them --
+    // **checked on `x86_64-linux-gnu` rather than inferred**, since that is
+    // where getting it wrong fails, and it fails at link rather than at
+    // compile.
 
     return .{
         .subsystems = module,
-        .abi = abi_module,
         .raise = raise_module,
         .corefn = corefn_module,
         .selection = selection_module,
+        .config = config_module,
+        .types = types_module,
+        .constants = constants_module,
+        .cabi = cabi_module,
     };
 }
 
 /// `@import("options")`: the `Selection` as comptime booleans.
 ///
-/// The root imports what this says is selected, and `addRuntimeSources` guards
-/// off the C original for the same fields, so the two cannot disagree. Written
-/// by reflection rather than as a list for the reason `Selection.any` is: a
-/// list acquires a stale entry the first time an increment adds a selector and
-/// nothing announces it.
+/// The root imports what this says is selected, and since Phase 12 increment 6f
+/// that is the only reader: `addRuntimeSources` used to guard off the C original
+/// for the same fields, and there is no C original left. Written by reflection
+/// rather than as a list for the reason `Selection.any` is: a list acquires a
+/// stale entry the first time an increment adds a selector and nothing
+/// announces it.
 fn makeSelectionModule(b: *std.Build, sel: Selection) *std.Build.Module {
     const step = b.addOptions();
     inline for (@typeInfo(Selection).@"struct".fields) |field| {

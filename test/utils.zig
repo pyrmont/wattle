@@ -51,11 +51,23 @@
 //! after all — just not the two the C file compared.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
+const config = @import("config");
 
 const abstract_type = @import("subsystems").abstract_type;
+const structs = @import("subsystems").value.structs;
+const tables = @import("subsystems").value.tables;
+const strings = @import("subsystems").value.strings;
+const tuples = @import("subsystems").value.tuples;
+const utils = @import("subsystems").utils;
+const value = @import("subsystems").value;
+const order = @import("subsystems").value.order;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const abstracts = @import("subsystems").value.abstracts;
 const AbstractType = abstract_type.AbstractType;
 const assert = std.debug.assert;
 
@@ -68,37 +80,41 @@ const head_probe_at: AbstractType = .{ .name = "utils/head-probe" };
 /// The distance from a head to the payload Janet hands around, which is what
 /// each accessor subtracts.
 ///
-/// `janet.h`'s macros write `offsetof(Head, data)` and `utils.zig` writes
-/// `@sizeOf(Head)`, because translate-c drops the flexible array member. This
-/// asserts the accessor really did move by `@sizeOf` — the Zig side of the
-/// equality `test/abi.c` pins from the C side.
+/// **`@sizeOf` here is the oracle and must stay `@sizeOf`.** Since increment
+/// 5e the runtime subtracts `types.<kind>_payload`, which is
+/// `@offsetOf(Head, "_data")`; this file asserts that what the accessor
+/// actually moved by equals the *other* spelling. Rewriting these four to the
+/// constant would compare it with itself and the check would pass forever --
+/// increment 5d's rule 39 at a third pair of spellings. It is also the Zig
+/// replacement for `test/abi.c`'s five `_Static_assert`s, which asked the same
+/// question in C back when C was the only language that could.
 fn payloadOffset(head: anytype, payload: anytype) usize {
     return @intFromPtr(payload) - @intFromPtr(head);
 }
 
 fn theHeadAccessorsRecoverWhatTheConstructorsWrote() void {
-    const s = c.janet_cstring("hello");
-    const string_head = c.janet_string_head(s);
+    const s = strings.cstring("hello");
+    const string_head = utils.stringHead(s);
     assert(string_head.*.length == 5);
-    assert(payloadOffset(string_head, s) == @sizeOf(c.JanetStringHead));
+    assert(payloadOffset(string_head, s) == @sizeOf(types.JanetStringHead));
 
-    var items: [2]c.Janet = .{ harness.wrapInteger(1), harness.wrapInteger(2) };
-    const tup = c.janet_tuple_n(&items, 2);
-    const tuple_head = c.janet_tuple_head(tup);
+    var items: [2]types.Janet = .{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const tup = tuples.newFrom(&items, 2);
+    const tuple_head = utils.tupleHead(tup);
     assert(tuple_head.*.length == 2);
-    assert(payloadOffset(tuple_head, tup) == @sizeOf(c.JanetTupleHead));
+    assert(payloadOffset(tuple_head, tup) == @sizeOf(types.JanetTupleHead));
 
-    const kvs = c.janet_struct_begin(1);
-    c.janet_struct_put(kvs, c.janet_ckeywordv("k"), harness.wrapInteger(3));
-    const st = c.janet_struct_end(kvs);
-    const struct_head = c.janet_struct_head(st);
+    const kvs = structs.begin(1);
+    structs.put(kvs, value.fromBytes("k", .keyword), harness.wrapInteger(3));
+    const st = structs.end(kvs);
+    const struct_head = utils.structHead(st);
     assert(struct_head.*.length == 1);
-    assert(payloadOffset(struct_head, st) == @sizeOf(c.JanetStructHead));
+    assert(payloadOffset(struct_head, st) == @sizeOf(types.JanetStructHead));
 
-    const abst = c.janet_abstract(abstract_type.stored(&head_probe_at), 8);
-    const abstract_head = c.janet_abstract_head(abst);
+    const abst = abstracts.new(abstract_type.stored(&head_probe_at), 8);
+    const abstract_head = utils.abstractHead(abst);
     assert(abstract_head.*.size == 8);
-    assert(payloadOffset(abstract_head, abst) == @sizeOf(c.JanetAbstractHead));
+    assert(payloadOffset(abstract_head, abst) == @sizeOf(types.JanetAbstractHead));
 }
 
 // -------------------------------------------------------------------- hashes
@@ -106,10 +122,10 @@ fn theHeadAccessorsRecoverWhatTheConstructorsWrote() void {
 /// The three hash helpers, which need no heap and run before `janet_init`.
 ///
 /// `janet_string_calchash` has two implementations and the configuration picks
-/// one. The condition is `@hasDecl(c, "JANET_PRF")` rather than a field of
-/// `options`, for rule 35's reason and `utils.zig`'s own: the subsystem is
-/// compiled either way and what changes is which body it compiles, so no
-/// `Selection` field answers the question. `JANET_HASH_KEY_SIZE` exists only
+/// one. The condition is `config.prf` rather than a field of `options`, for
+/// rule 35's reason and `utils.zig`'s own: the subsystem is compiled either
+/// way and what changes is which body it compiles, so no `Selection` field
+/// answers the question. `JANET_HASH_KEY_SIZE` exists only
 /// under the same macro, which is why the key is declared inside the branch.
 fn theHashesAreTheOnesTheirCallersExpect() void {
     assert(internal.janet_hash_mix(0, 0) == 0x53a3c667);
@@ -123,15 +139,15 @@ fn theHashesAreTheOnesTheirCallersExpect() void {
     const hello = "hello";
     const embedded_nul = "Janet\x00Z";
 
-    if (comptime !@hasDecl(c, "JANET_PRF")) {
+    if (comptime !config.prf) {
         assert(internal.janet_string_calchash(null, 0) == 5381);
         assert(internal.janet_string_calchash(a, a.len) == 2136581281);
         assert(internal.janet_string_calchash(hello, hello.len) == 1719582043);
         assert(internal.janet_string_calchash(embedded_nul, embedded_nul.len) == -1777808027);
     } else {
-        var key: [c.JANET_HASH_KEY_SIZE]u8 = @splat(0);
+        var key: [constants.JANET_HASH_KEY_SIZE]u8 = @splat(0);
         for (0..8) |i| key[i] = @intCast(i);
-        c.janet_init_hash_key(&key);
+        value.initHashKey(&key);
         assert(internal.janet_string_calchash(a, a.len) == 1520149057);
         assert(internal.janet_string_calchash(hello, hello.len) == 1601058579);
         assert(internal.janet_string_calchash(embedded_nul, embedded_nul.len) == -1601329231);
@@ -155,36 +171,36 @@ fn cstrcmpStopsAtWhicheverEndComesFirst() void {
     // A Janet string knows its length; the C string ends at a NUL. So the
     // comparison stops at whichever comes first, and equality needs both to
     // end together.
-    assert(c.janet_cstrcmp(c.janet_cstring("abc"), "abc") == 0);
-    assert(c.janet_cstrcmp(c.janet_cstring(""), "") == 0);
-    assert(c.janet_cstrcmp(c.janet_cstring("abc"), "abd") == -1);
-    assert(c.janet_cstrcmp(c.janet_cstring("abd"), "abc") == 1);
+    assert(utils.cstrcmp(strings.cstring("abc"), "abc") == 0);
+    assert(utils.cstrcmp(strings.cstring(""), "") == 0);
+    assert(utils.cstrcmp(strings.cstring("abc"), "abd") == -1);
+    assert(utils.cstrcmp(strings.cstring("abd"), "abc") == 1);
 
     // A prefix on either side. The shorter Janet string runs out first and the
     // result is decided after the loop; the shorter C string is found by the
     // NUL test inside it.
-    assert(c.janet_cstrcmp(c.janet_cstring("ab"), "abc") == -1);
-    assert(c.janet_cstrcmp(c.janet_cstring("abc"), "ab") == 1);
+    assert(utils.cstrcmp(strings.cstring("ab"), "abc") == -1);
+    assert(utils.cstrcmp(strings.cstring("abc"), "ab") == 1);
 
     // A Janet string may contain a NUL, and then it compares *equal* to the C
     // string that stops there: the loop breaks with both bytes zero, and
     // nothing follows in the C string to decide otherwise.
-    const embedded = c.janet_string("a\x00b", 3);
-    assert(c.janet_string_head(embedded).*.length == 3);
-    assert(c.janet_cstrcmp(embedded, "a") == 0);
-    assert(c.janet_cstrcmp(embedded, "a\x00b") == 0);
+    const embedded = strings.new("a\x00b");
+    assert(utils.stringHead(embedded).*.length == 3);
+    assert(utils.cstrcmp(embedded, "a") == 0);
+    assert(utils.cstrcmp(embedded, "a\x00b") == 0);
 }
 
 // `janet_strbinsearch` wants an array of structs whose first member is a
 // `char *`, sorted by it. Two shapes, to prove the item size is respected
 // rather than assumed.
 const SearchSmall = extern struct {
-    name: [*c]const u8,
+    name: [*]const u8,
     value: c_int,
 };
 
 const SearchBig = extern struct {
-    name: [*c]const u8,
+    name: [*]const u8,
     a: f64,
     b: f64,
     d: f64,
@@ -209,7 +225,7 @@ fn findSmall(count: usize, key: [*:0]const u8) ?*const SearchSmall {
         &small_table,
         count,
         @sizeOf(SearchSmall),
-        c.janet_cstring(key),
+        strings.cstring(key),
     );
     return @ptrCast(@alignCast(hit));
 }
@@ -228,7 +244,7 @@ fn strbinsearchRespectsTheItemSize() void {
         &big_table,
         3,
         @sizeOf(SearchBig),
-        c.janet_cstring("gamma"),
+        strings.cstring("gamma"),
     )));
     assert(bighit == &big_table[2]);
 }
@@ -249,145 +265,145 @@ fn safeMemcpyToleratesAZeroLengthNullCopy() void {
 /// The probe's three answers: the key's own bucket, the first tombstone, and a
 /// never-used bucket. Only a caller inside the runtime sees which one it got.
 fn theProbeDistinguishesATombstoneFromAnEmptyBucket() void {
-    const t = c.janet_table(8);
-    const present = c.janet_ckeywordv("present");
-    const absent = c.janet_ckeywordv("absent");
+    const t = tables.new(8);
+    const present = value.fromBytes("present", .keyword);
+    const absent = value.fromBytes("absent", .keyword);
 
-    c.janet_table_put(t, present, harness.wrapInteger(1));
+    tables.put(t, present, harness.wrapInteger(1));
 
-    var kv = internal.janet_dict_find(t.*.data, t.*.capacity, present);
+    var kv = internal.janet_dict_find(t.*.data.?, t.*.capacity, present);
     assert(kv != null);
-    assert(harness.equals(kv.*.key, present));
-    assert(c.janet_unwrap_integer(kv.*.value) == 1);
+    assert(harness.equals(kv.?.key, present));
+    assert(wrap.toInteger(kv.?.value) == 1);
 
     // An absent key lands on a bucket whose key is nil -- that is what makes
     // it a place to put one.
-    kv = internal.janet_dict_find(t.*.data, t.*.capacity, absent);
+    kv = internal.janet_dict_find(t.*.data.?, t.*.capacity, absent);
     assert(kv != null);
-    assert(harness.isType(kv.*.key, c.JANET_NIL));
+    assert(harness.isType(kv.?.key, constants.JANET_NIL));
 
     // Deleting leaves a tombstone: key nil, value not nil. The probe must scan
     // *past* it to find a key that hashed to the same bucket, which is what
     // this checks by filling the table and deleting from the middle.
     var i: i32 = 0;
     while (i < 16) : (i += 1) {
-        c.janet_table_put(t, harness.wrapInteger(i), harness.wrapInteger(i * 10));
+        tables.put(t, harness.wrapInteger(i), harness.wrapInteger(i * 10));
     }
     i = 0;
     while (i < 16) : (i += 2) {
-        c.janet_table_put(t, harness.wrapInteger(i), c.janet_wrap_nil());
+        tables.put(t, harness.wrapInteger(i), wrap.fromNil());
     }
     i = 1;
     while (i < 16) : (i += 2) {
-        kv = internal.janet_dict_find(t.*.data, t.*.capacity, harness.wrapInteger(i));
+        kv = internal.janet_dict_find(t.*.data.?, t.*.capacity, harness.wrapInteger(i));
         assert(kv != null);
-        assert(harness.equals(kv.*.key, harness.wrapInteger(i)));
-        assert(c.janet_unwrap_integer(kv.*.value) == i * 10);
+        assert(harness.equals(kv.?.key, harness.wrapInteger(i)));
+        assert(wrap.toInteger(kv.?.value) == i * 10);
     }
 }
 
 /// A struct takes the same probe, and `janet_dictionary_get` is the wrapper
 /// that turns "found a nil key" into nil.
 fn dictionaryGetTurnsAMissIntoNil() void {
-    const kvs = c.janet_struct_begin(2);
-    c.janet_struct_put(kvs, c.janet_ckeywordv("a"), harness.wrapInteger(1));
-    c.janet_struct_put(kvs, c.janet_ckeywordv("b"), harness.wrapInteger(2));
-    const st = c.janet_struct_end(kvs);
-    const capacity = c.janet_struct_head(st).*.capacity;
+    const kvs = structs.begin(2);
+    structs.put(kvs, value.fromBytes("a", .keyword), harness.wrapInteger(1));
+    structs.put(kvs, value.fromBytes("b", .keyword), harness.wrapInteger(2));
+    const st = structs.end(kvs);
+    const capacity = utils.structHead(st).*.capacity;
 
-    assert(c.janet_unwrap_integer(
-        c.janet_dictionary_get(st, capacity, c.janet_ckeywordv("a")),
+    assert(wrap.toInteger(
+        value.dictionaryGet(st, capacity, value.fromBytes("a", .keyword)),
     ) == 1);
     assert(harness.isType(
-        c.janet_dictionary_get(st, capacity, c.janet_ckeywordv("z")),
-        c.JANET_NIL,
+        value.dictionaryGet(st, capacity, value.fromBytes("z", .keyword)),
+        constants.JANET_NIL,
     ));
 }
 
 /// `janet_dict_find_keyword` matches by bytes without interning, so a lookup
 /// needs neither a `Janet` nor a symbol table entry.
 fn theKeywordProbeComparesLengthBeforeBytes() void {
-    const kt = c.janet_table(4);
-    c.janet_table_put(kt, c.janet_ckeywordv("kw"), harness.wrapInteger(9));
+    const kt = tables.new(4);
+    tables.put(kt, value.fromBytes("kw", .keyword), harness.wrapInteger(9));
 
-    var kv = internal.janet_dict_find_keyword(kt.*.data, kt.*.capacity, "kw", 2);
+    var kv = internal.janet_dict_find_keyword(kt.*.data.?, kt.*.capacity, "kw", 2);
     assert(kv != null);
-    assert(c.janet_unwrap_integer(kv.*.value) == 9);
+    assert(wrap.toInteger(kv.?.value) == 9);
 
-    kv = internal.janet_dict_find_keyword(kt.*.data, kt.*.capacity, "nope", 4);
+    kv = internal.janet_dict_find_keyword(kt.*.data.?, kt.*.capacity, "nope", 4);
     assert(kv != null);
-    assert(harness.isType(kv.*.key, c.JANET_NIL));
+    assert(harness.isType(kv.?.key, constants.JANET_NIL));
 
     // A prefix of a stored key must miss: the length is compared before the
     // bytes.
-    kv = internal.janet_dict_find_keyword(kt.*.data, kt.*.capacity, "k", 1);
+    kv = internal.janet_dict_find_keyword(kt.*.data.?, kt.*.capacity, "k", 1);
     assert(kv != null);
-    assert(harness.isType(kv.*.key, c.JANET_NIL));
+    assert(harness.isType(kv.?.key, constants.JANET_NIL));
 }
 
 fn dictionaryNextSkipsTombstones() void {
-    const t = c.janet_table(8);
-    var kv: [*c]const c.JanetKV = null;
+    const t = tables.new(8);
+    var kv: ?*const types.JanetKV = null;
 
     // An empty dictionary ends immediately.
-    assert(c.janet_dictionary_next(t.*.data, t.*.capacity, null) == null);
+    assert(value.dictionaryNext(t.*.data.?, t.*.capacity, null) == null);
 
-    c.janet_table_put(t, c.janet_ckeywordv("a"), harness.wrapInteger(1));
-    c.janet_table_put(t, c.janet_ckeywordv("b"), harness.wrapInteger(2));
-    c.janet_table_put(t, c.janet_ckeywordv("c"), harness.wrapInteger(3));
+    tables.put(t, value.fromBytes("a", .keyword), harness.wrapInteger(1));
+    tables.put(t, value.fromBytes("b", .keyword), harness.wrapInteger(2));
+    tables.put(t, value.fromBytes("c", .keyword), harness.wrapInteger(3));
 
     var seen: i32 = 0;
-    kv = c.janet_dictionary_next(t.*.data, t.*.capacity, null);
-    while (kv != null) : (kv = c.janet_dictionary_next(t.*.data, t.*.capacity, kv)) {
-        assert(!harness.isType(kv.*.key, c.JANET_NIL));
+    kv = value.dictionaryNext(t.*.data.?, t.*.capacity, null);
+    while (kv != null) : (kv = value.dictionaryNext(t.*.data.?, t.*.capacity, kv)) {
+        assert(!harness.isType(kv.?.key, constants.JANET_NIL));
         seen += 1;
     }
     assert(seen == 3);
 
     // A deleted entry is skipped: its key is nil even though its value is not.
-    c.janet_table_put(t, c.janet_ckeywordv("b"), c.janet_wrap_nil());
+    tables.put(t, value.fromBytes("b", .keyword), wrap.fromNil());
     seen = 0;
-    kv = c.janet_dictionary_next(t.*.data, t.*.capacity, null);
-    while (kv != null) : (kv = c.janet_dictionary_next(t.*.data, t.*.capacity, kv)) {
+    kv = value.dictionaryNext(t.*.data.?, t.*.capacity, null);
+    while (kv != null) : (kv = value.dictionaryNext(t.*.data.?, t.*.capacity, kv)) {
         seen += 1;
     }
     assert(seen == 2);
 }
 
 fn sortedKeysAnswersBucketIndicesInKeyOrder() void {
-    const t = c.janet_table(8);
+    const t = tables.new(8);
     var buffer: [32]i32 = undefined;
 
     // An empty dictionary sorts to nothing and writes nothing.
-    assert(c.janet_sorted_keys(t.*.data, t.*.capacity, &buffer) == 0);
+    assert(utils.sortedKeys(t.*.data.?, t.*.capacity, &buffer) == 0);
 
     var i: i32 = 5;
     while (i >= 0) : (i -= 1) {
-        c.janet_table_put(t, harness.wrapInteger(i), harness.wrapInteger(i));
+        tables.put(t, harness.wrapInteger(i), harness.wrapInteger(i));
     }
-    var n = c.janet_sorted_keys(t.*.data, t.*.capacity, &buffer);
+    var n = utils.sortedKeys(t.*.data.?, t.*.capacity, &buffer);
     assert(n == 6);
     // The answer is bucket *indices*, in key order.
     i = 0;
     while (i < n) : (i += 1) {
-        const key = t.*.data[@intCast(buffer[@intCast(i)])].key;
-        assert(c.janet_unwrap_integer(key) == i);
+        const key = t.*.data.?[@intCast(buffer[@intCast(i)])].key;
+        assert(wrap.toInteger(key) == i);
     }
 
     // Deleted entries are not counted.
-    c.janet_table_put(t, harness.wrapInteger(3), c.janet_wrap_nil());
-    n = c.janet_sorted_keys(t.*.data, t.*.capacity, &buffer);
+    tables.put(t, harness.wrapInteger(3), wrap.fromNil());
+    n = utils.sortedKeys(t.*.data.?, t.*.capacity, &buffer);
     assert(n == 5);
     i = 1;
     while (i < n) : (i += 1) {
-        const previous = t.*.data[@intCast(buffer[@intCast(i - 1)])].key;
-        const current = t.*.data[@intCast(buffer[@intCast(i)])].key;
-        assert(c.janet_compare(previous, current) < 0);
+        const previous = t.*.data.?[@intCast(buffer[@intCast(i - 1)])].key;
+        const current = t.*.data.?[@intCast(buffer[@intCast(i)])].key;
+        assert(order.compare(previous, current) < 0);
     }
 }
 
 fn theCollectionHashesAreWhatTheHeadsStore() void {
-    var items: [3]c.Janet = .{
+    var items: [3]types.Janet = .{
         harness.wrapInteger(1),
         harness.wrapInteger(2),
         harness.wrapInteger(3),
@@ -400,13 +416,13 @@ fn theCollectionHashesAreWhatTheHeadsStore() void {
 
     // A tuple's stored hash is what `janet_array_calchash` computed, and the
     // head it is stored in is recovered by the accessor above.
-    const tup = c.janet_tuple_n(&items, 3);
-    assert(c.janet_tuple_head(tup).*.hash == internal.janet_array_calchash(tup, 3));
+    const tup = tuples.newFrom(&items, 3);
+    assert(utils.tupleHead(tup).*.hash == internal.janet_array_calchash(tup, 3));
 
-    const kvs = c.janet_struct_begin(1);
-    c.janet_struct_put(kvs, c.janet_ckeywordv("k"), harness.wrapInteger(1));
-    const st = c.janet_struct_end(kvs);
-    const head = c.janet_struct_head(st);
+    const kvs = structs.begin(1);
+    structs.put(kvs, value.fromBytes("k", .keyword), harness.wrapInteger(1));
+    const st = structs.end(kvs);
+    const head = utils.structHead(st);
     assert(head.*.hash == internal.janet_kv_calchash(st, head.*.capacity));
 }
 
@@ -417,7 +433,7 @@ pub fn run() void {
     theHashesAreTheOnesTheirCallersExpect();
     tablenRoundsUpToAPowerOfTwo();
 
-    _ = c.janet_init();
+    harness.init();
 
     theHeadAccessorsRecoverWhatTheConstructorsWrote();
     cstrcmpStopsAtWhicheverEndComesFirst();
@@ -430,7 +446,7 @@ pub fn run() void {
     sortedKeysAnswersBucketIndicesInKeyOrder();
     theCollectionHashesAreWhatTheHeadsStore();
 
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 
     std.debug.print("utils contract ok\n", .{});
 }

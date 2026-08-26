@@ -45,9 +45,15 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
+const config = @import("config");
+const value = @import("subsystems").value;
+const wrap = @import("subsystems").value.wrap;
+const args_core = @import("subsystems").args;
+const vm_lifecycle = @import("subsystems").lifecycle;
 
 /// The kernels, by symbol; `janet.h` does not declare them.
 extern fn janet_os_name() callconv(.c) [*:0]const u8;
@@ -120,7 +126,7 @@ fn theClassificationAgreesWithTheMachine() void {
     // `janetconf.h` may pin either name, in which case the kernel is answering
     // the build's choice rather than describing the machine and there is
     // nothing here to check. `@hasDecl` is how `AGENTS.md` says to ask.
-    if (!@hasDecl(c, "JANET_OS_NAME")) {
+    if (config.os_name == null) {
         if (unameSysname(&buffer)) |sysname| {
             if (janetNameForSysname(sysname)) |expected| {
                 std.debug.assert(std.mem.eql(u8, cstr(janet_os_name()), expected));
@@ -128,7 +134,7 @@ fn theClassificationAgreesWithTheMachine() void {
         }
     }
 
-    if (!@hasDecl(c, "JANET_ARCH_NAME")) {
+    if (config.arch_name == null) {
         if (unameMachine(&buffer)) |machine| {
             if (janetArchForMachine(machine)) |expected| {
                 std.debug.assert(std.mem.eql(u8, cstr(janet_os_arch()), expected));
@@ -166,25 +172,25 @@ fn theSurfaceAgreesWithTheKernels() !void {
     const arch = harness.core("os/arch");
     const compiler = harness.core("os/compiler");
 
-    std.debug.assert(harness.keywordIs(try which(0, null), janet_os_name()));
-    std.debug.assert(harness.keywordIs(try arch(0, null), janet_os_arch()));
-    std.debug.assert(harness.keywordIs(try compiler(0, null), janet_os_compiler()));
+    std.debug.assert(harness.keywordIs(try which(&.{}), janet_os_name()));
+    std.debug.assert(harness.keywordIs(try arch(&.{}), janet_os_arch()));
+    std.debug.assert(harness.keywordIs(try compiler(&.{}), janet_os_compiler()));
 }
 
 /// `os/which`'s three behaviours; see the header comment.
 fn theThreeReadingsOfWhich() !void {
     const which = harness.core("os/which");
-    var argument: [1]c.Janet = undefined;
+    var argument: [1]types.Janet = undefined;
 
-    argument[0] = c.janet_ckeywordv(janet_os_name());
-    std.debug.assert(c.janet_unwrap_boolean(try which(1, &argument)) != 0);
+    argument[0] = value.fromBytes(std.mem.span(janet_os_name()), .keyword);
+    std.debug.assert(wrap.toBoolean(try which(argument[0..1])) != 0);
 
-    argument[0] = c.janet_ckeywordv("not-a-platform");
-    std.debug.assert(c.janet_unwrap_boolean(try which(1, &argument)) == 0);
+    argument[0] = value.fromBytes("not-a-platform", .keyword);
+    std.debug.assert(wrap.toBoolean(try which(argument[0..1])) == 0);
 
     // `nil` is not a platform to test against; it is the same as no argument.
-    argument[0] = c.janet_wrap_nil();
-    std.debug.assert(harness.keywordIs(try which(1, &argument), janet_os_name()));
+    argument[0] = wrap.fromNil();
+    std.debug.assert(harness.keywordIs(try which(argument[0..1]), janet_os_name()));
 }
 
 /// `os/cpu-count` answers the kernel's number, or the caller's fallback when
@@ -196,18 +202,18 @@ fn theCpuCount() !void {
     // missing is a registration and no `Selection` field names it.
     const cpuCount = harness.coreOptional("os/cpu-count") orelse return;
     const direct = janet_os_cpu_count();
-    var fallback = [1]c.Janet{c.janet_ckeywordv("fallback")};
+    var fallback = [1]types.Janet{value.fromBytes("fallback", .keyword)};
 
-    const answered = try cpuCount(1, &fallback);
+    const answered = try cpuCount(fallback[0..1]);
     if (direct < 0) {
         std.debug.assert(harness.equals(answered, fallback[0]));
         // With no fallback to give, the answer is nil rather than an error.
-        std.debug.assert(harness.isType(try cpuCount(0, null), c.JANET_NIL));
+        std.debug.assert(harness.isType(try cpuCount(&.{}), constants.JANET_NIL));
     } else {
-        std.debug.assert(c.janet_checkint(answered) != 0);
-        std.debug.assert(c.janet_unwrap_integer(answered) == direct);
+        std.debug.assert(args_core.checkint(answered) != 0);
+        std.debug.assert(wrap.toInteger(answered) == direct);
         // The fallback is not consulted when there is a real answer.
-        std.debug.assert(c.janet_unwrap_integer(try cpuCount(0, null)) == direct);
+        std.debug.assert(wrap.toInteger(try cpuCount(&.{})) == direct);
     }
 }
 
@@ -215,9 +221,9 @@ pub fn run() void {
     theClassificationsAreNamed();
     theClassificationAgreesWithTheMachine();
 
-    _ = c.janet_init();
+    harness.init();
     theSurfaceAgreesWithTheKernels() catch @panic("os_platform: a core function raised");
     theThreeReadingsOfWhich() catch @panic("os_platform: os/which raised");
     theCpuCount() catch @panic("os_platform: os/cpu-count raised");
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 }

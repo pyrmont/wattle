@@ -43,43 +43,55 @@
 //! an assertion.
 //!
 //! **The decoder is reached by import.** The C contract called
-//! `janet_debug_frame`, the C-ABI face; this calls `debug_frames.debugFrameImpl`,
+//! `janet_debug_frame`, the abi; this calls `debug_frames.debugFrameImpl`,
 //! so a raise from a `tostring` callback reached through the trace decoding
 //! arrives as `error.JanetSignal` rather than as a report nobody consumes.
-//! That face had no other caller — `debug/stack` already used the
+//! That abi had no other caller — `debug/stack` already used the
 //! implementation — so it goes with this file. It is `state.h`'s, not
 //! `janet.h`'s.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const raise = @import("raise");
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
-const vm_lifecycle = subsystems.vm_lifecycle;
-const debug_frames = subsystems.debug_frames;
+const value = @import("subsystems").value;
+const tables = @import("subsystems").value.tables;
+const gc_alloc = @import("subsystems").gc_alloc;
+const tuples = @import("subsystems").value.tuples;
+const order = @import("subsystems").value.order;
+const core_env = @import("subsystems").env;
+const wrap = @import("subsystems").value.wrap;
+const fibers = @import("subsystems").value.fibers;
+const vm_entry = @import("subsystems").vm_entry;
+const pp_describe = @import("subsystems").pp_describe;
+const registry = @import("subsystems").registry;
+const vm_lifecycle = subsystems.lifecycle;
+const debug_frames = subsystems.debug;
 
 const assert = std.debug.assert;
 
-fn vm() *c.JanetVM {
-    return &c.janet_vm;
+fn vm() *types.JanetVM {
+    return c.vm();
 }
 
-var test_env: ?*c.JanetTable = null;
+var test_env: ?*types.JanetTable = null;
 
 /// Roots whatever it produces and never unroots it: a Janet value in a Zig
 /// local is not a root, and these live across calls that compile source and
 /// intern keywords.
-fn eval(source: [*:0]const u8) c.Janet {
-    var out = c.janet_wrap_nil();
-    const status = c.janet_dostring(test_env, source, "vm-lifecycle-test", &out);
+fn eval(source: [*:0]const u8) types.Janet {
+    var out = wrap.fromNil();
+    const status = core_env.dostring(test_env.?, source, "vm-lifecycle-test", &out);
     if (status != 0) {
         std.debug.print("unexpected error from: {s}\n", .{source});
-        std.debug.print("                  got: {s}\n", .{c.janet_to_string(out)});
+        std.debug.print("                  got: {s}\n", .{pp_describe.toString(out)});
         assert(false);
     }
-    c.janet_gcroot(out);
+    gc_alloc.gcroot(out);
     return out;
 }
 
@@ -91,40 +103,40 @@ fn expectSandboxRefusal(source: []const u8) void {
     var buffer: [512]u8 = undefined;
     const wrapped = std.fmt.bufPrintZ(&buffer, "(fiber/new (fn [] {s}) :ye)", .{source}) catch unreachable;
     const fiberv = eval(wrapped);
-    var out = c.janet_wrap_nil();
-    const sig = c.janet_continue(c.janet_unwrap_fiber(fiberv), c.janet_wrap_nil(), &out);
-    assert(sig == c.JANET_SIGNAL_ERROR);
+    var out = wrap.fromNil();
+    const sig = vm_entry.continueFiber(wrap.toFiber(fiberv), wrap.fromNil(), &out);
+    assert(sig == constants.JANET_SIGNAL_ERROR);
     assert(harness.stringValueIs(out, "operation forbidden by sandbox"));
 }
 
 // ---------------------------------------------------------- frame readers
 
 /// A key of the table the decoder builds.
-fn frameGet(built: c.Janet, key: [*:0]const u8) c.Janet {
-    assert(harness.isType(built, c.JANET_TABLE));
-    return c.janet_table_get(c.janet_unwrap_table(built), c.janet_ckeywordv(key));
+fn frameGet(built: types.Janet, key: [*:0]const u8) types.Janet {
+    assert(harness.isType(built, constants.JANET_TABLE));
+    return tables.get(wrap.toTable(built), value.fromBytes(std.mem.span(key), .keyword));
 }
 
-fn expectString(built: c.Janet, key: [*:0]const u8, expected: [*:0]const u8) void {
+fn expectString(built: types.Janet, key: [*:0]const u8, expected: [*:0]const u8) void {
     const v = frameGet(built, key);
     if (!harness.stringValueIs(v, expected)) {
-        std.debug.print("key {s}: expected {s}, got {s}\n", .{ key, expected, c.janet_to_string(v) });
+        std.debug.print("key {s}: expected {s}, got {s}\n", .{ key, expected, pp_describe.toString(v) });
         assert(false);
     }
 }
 
-fn expectInteger(built: c.Janet, key: [*:0]const u8, expected: i32) void {
+fn expectInteger(built: types.Janet, key: [*:0]const u8, expected: i32) void {
     const v = frameGet(built, key);
     if (!harness.integerIs(v, expected)) {
-        std.debug.print("key {s}: expected {d}, got {s}\n", .{ key, expected, c.janet_to_string(v) });
+        std.debug.print("key {s}: expected {d}, got {s}\n", .{ key, expected, pp_describe.toString(v) });
         assert(false);
     }
 }
 
-fn expectAbsent(built: c.Janet, key: [*:0]const u8) void {
+fn expectAbsent(built: types.Janet, key: [*:0]const u8) void {
     const v = frameGet(built, key);
-    if (!harness.isType(v, c.JANET_NIL)) {
-        std.debug.print("key {s}: expected nil, got {s}\n", .{ key, c.janet_to_string(v) });
+    if (!harness.isType(v, constants.JANET_NIL)) {
+        std.debug.print("key {s}: expected nil, got {s}\n", .{ key, pp_describe.toString(v) });
         assert(false);
     }
 }
@@ -133,7 +145,7 @@ fn expectAbsent(built: c.Janet, key: [*:0]const u8) void {
 /// the trace decoding under it can reach an abstract's `tostring`; nothing in
 /// this file builds such a frame, so a raise here would be a defect rather
 /// than a case.
-fn decode(f: *c.JanetStackFrame) c.Janet {
+fn decode(f: *types.JanetStackFrame) types.Janet {
     return debug_frames.debugFrameImpl(f) catch @panic("vm_lifecycle: decoding a frame raised");
 }
 
@@ -145,7 +157,7 @@ fn decode(f: *c.JanetStackFrame) c.Janet {
 // assertions below are about what init wrote rather than about what a freshly
 // zeroed `janet_vm` already held.
 
-var scribble_roots: [4]c.Janet = undefined;
+var scribble_roots: [4]types.Janet = undefined;
 var scribble_bytes: [64]u8 = undefined;
 
 fn scribbleOverTheVm() void {
@@ -163,7 +175,7 @@ fn scribbleOverTheVm() void {
     vm().scratch_mem = @ptrCast(@alignCast(bytes));
     vm().scratch_len = 5;
     vm().scratch_cap = 6;
-    vm().sandbox_flags = c.JANET_SANDBOX_ASM;
+    vm().sandbox_flags = constants.JANET_SANDBOX_ASM;
     vm().registry = @ptrCast(@alignCast(bytes));
     vm().registry_cap = 7;
     vm().registry_count = 8;
@@ -207,7 +219,7 @@ fn theStateInitLeaves() raise.Raising(void) {
     assert(vm().roots != null);
     assert(vm().root_count == 1);
     assert(vm().abstract_registry != null);
-    assert(harness.equals(vm().roots[0], c.janet_wrap_table(vm().abstract_registry)));
+    assert(harness.equals(vm().roots.?[0], wrap.fromTable(vm().abstract_registry.?)));
 
     // Scratch memory.
     assert(vm().user == null);
@@ -265,29 +277,29 @@ fn theStateInitLeaves() raise.Raising(void) {
 /// One level of nesting, so that `janet_equals` has to descend and therefore
 /// has to push a traversal node. A flat pair is compared without ever growing
 /// the stack.
-fn deepen(inner: c.Janet) c.Janet {
-    const t = c.janet_tuple_begin(1);
+fn deepen(inner: types.Janet) types.Janet {
+    const t = tuples.begin(1);
     t[0] = inner;
-    return c.janet_wrap_tuple(c.janet_tuple_end(t));
+    return wrap.fromTuple(tuples.end(t));
 }
 
 fn whatDeinitClears() raise.Raising(void) {
     var dummy: i32 = 0;
     assert(try vm_lifecycle.init() == 0);
-    _ = c.janet_core_env(null);
+    _ = harness.coreEnv();
     vm().user = &dummy;
 
     // The scratch table and the traversal stack are both allocated lazily, so
     // each needs something to have used it before the teardown can be asked
     // whether it cleaned up. Without these two the assertions below hold
     // vacuously, which is exactly how the omission survived.
-    const scratch = c.janet_smalloc(16) orelse unreachable;
-    c.janet_sfree(scratch);
-    var nested_l = c.janet_wrap_tuple(c.janet_tuple_end(c.janet_tuple_begin(0)));
-    var nested_r = c.janet_wrap_tuple(c.janet_tuple_end(c.janet_tuple_begin(0)));
+    const scratch = gc_alloc.smalloc(16) orelse unreachable;
+    gc_alloc.sfree(scratch);
+    var nested_l = wrap.fromTuple(tuples.end(tuples.begin(0)));
+    var nested_r = wrap.fromTuple(tuples.end(tuples.begin(0)));
     nested_l = deepen(nested_l);
     nested_r = deepen(nested_r);
-    _ = c.janet_equals(nested_l, nested_r);
+    _ = order.equals(nested_l, nested_r);
 
     // Preconditions, so that the assertions below are about the teardown.
     assert(vm().core_env != null);
@@ -329,11 +341,11 @@ fn whatDeinitClears() raise.Raising(void) {
 /// reuses the runtime. Two full cycles, each doing real work.
 fn aSecondCycle() raise.Raising(void) {
     for (0..2) |_| {
-        var out = c.janet_wrap_nil();
+        var out = wrap.fromNil();
         assert(try vm_lifecycle.init() == 0);
-        test_env = c.janet_core_env(null);
-        assert(c.janet_dostring(test_env, "(+ 1 2)", "cycle", &out) == 0);
-        assert(c.janet_unwrap_integer(out) == 3);
+        test_env = harness.coreEnv();
+        assert(core_env.dostring(test_env.?, "(+ 1 2)", "cycle", &out) == 0);
+        assert(wrap.toInteger(out) == 3);
         vm_lifecycle.deinit();
     }
     test_env = null;
@@ -345,28 +357,27 @@ fn aSecondCycle() raise.Raising(void) {
 /// thing that reads it. Run in its own cycle, because nothing can undo it.
 fn theSandboxIsOneWay() raise.Raising(void) {
     assert(try vm_lifecycle.init() == 0);
-    test_env = c.janet_core_env(null);
+    test_env = harness.coreEnv();
 
     // Nothing forbidden yet.
-    try vm_lifecycle.sandboxAssert(c.JANET_SANDBOX_ALL);
+    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_ALL);
     assert(vm().sandbox_flags == 0);
 
-    try vm_lifecycle.sandbox(c.JANET_SANDBOX_ASM);
-    assert(vm().sandbox_flags == c.JANET_SANDBOX_ASM);
-    assert(harness.raised(vm_lifecycle.sandboxAssert, .{@as(u32, c.JANET_SANDBOX_ASM)})
-        .?.says("operation forbidden by sandbox"));
+    try vm_lifecycle.sandbox(constants.JANET_SANDBOX_ASM);
+    assert(vm().sandbox_flags == constants.JANET_SANDBOX_ASM);
+    assert(harness.raised(vm_lifecycle.sandboxAssert, .{@as(u32, constants.JANET_SANDBOX_ASM)}).?.says("operation forbidden by sandbox"));
 
     // A flag that was not set is still allowed, and the assert takes a mask
     // rather than a single flag.
-    try vm_lifecycle.sandboxAssert(c.JANET_SANDBOX_HRTIME);
+    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_HRTIME);
     assert(harness.raised(
         vm_lifecycle.sandboxAssert,
-        .{@as(u32, c.JANET_SANDBOX_ASM | c.JANET_SANDBOX_HRTIME)},
+        .{@as(u32, constants.JANET_SANDBOX_ASM | constants.JANET_SANDBOX_HRTIME)},
     ).?.says("operation forbidden by sandbox"));
 
     // Flags accumulate rather than replace.
-    try vm_lifecycle.sandbox(c.JANET_SANDBOX_HRTIME);
-    assert(vm().sandbox_flags == (c.JANET_SANDBOX_ASM | c.JANET_SANDBOX_HRTIME));
+    try vm_lifecycle.sandbox(constants.JANET_SANDBOX_HRTIME);
+    assert(vm().sandbox_flags == (constants.JANET_SANDBOX_ASM | constants.JANET_SANDBOX_HRTIME));
 
     // Reached through the standard library, which is how it is used. `asm` is
     // absent from a build without the assembler, and an absent binding is a
@@ -379,11 +390,10 @@ fn theSandboxIsOneWay() raise.Raising(void) {
 
     // And the lock: once the sandbox itself is forbidden, nothing more can be
     // added, including nothing.
-    try vm_lifecycle.sandbox(c.JANET_SANDBOX_SANDBOX);
-    assert(harness.raised(vm_lifecycle.sandbox, .{@as(u32, 0)})
-        .?.says("operation forbidden by sandbox"));
+    try vm_lifecycle.sandbox(constants.JANET_SANDBOX_SANDBOX);
+    assert(harness.raised(vm_lifecycle.sandbox, .{@as(u32, 0)}).?.says("operation forbidden by sandbox"));
     assert(vm().sandbox_flags ==
-        (c.JANET_SANDBOX_ASM | c.JANET_SANDBOX_HRTIME | c.JANET_SANDBOX_SANDBOX));
+        (constants.JANET_SANDBOX_ASM | constants.JANET_SANDBOX_HRTIME | constants.JANET_SANDBOX_SANDBOX));
 
     vm_lifecycle.deinit();
     test_env = null;
@@ -419,21 +429,21 @@ fn aJanetFrame() void {
         \\  (if (= total 7) st st))
         \\(probe 3 4)
     );
-    assert(harness.isType(frames, c.JANET_ARRAY));
+    assert(harness.isType(frames, constants.JANET_ARRAY));
     // [0] is the `debug/stack` cframe itself; [1] is `probe`.
-    assert(c.janet_unwrap_array(frames).*.count >= 2);
-    const built = c.janet_unwrap_array(frames).*.data[1];
+    assert(wrap.toArray(frames).*.count >= 2);
+    const built = wrap.toArray(frames).*.data.?[1];
 
     expectString(built, "name", "probe");
     expectString(built, "source", "vm-lifecycle-test");
-    assert(harness.isType(frameGet(built, "function"), c.JANET_FUNCTION));
-    assert(harness.isType(frameGet(built, "pc"), c.JANET_NUMBER));
+    assert(harness.isType(frameGet(built, "function"), constants.JANET_FUNCTION));
+    assert(harness.isType(frameGet(built, "pc"), constants.JANET_NUMBER));
     expectAbsent(built, "c");
 
     // The source map, not the program counter, supplies the location for a
     // funcdef that has one.
-    const function = c.janet_unwrap_function(frameGet(built, "function"));
-    if (function.*.def.*.sourcemap != null) {
+    const function = wrap.toFunction(frameGet(built, "function"));
+    if (function.*.def.?.sourcemap != null) {
         expectInteger(built, "source-line", 4);
         expectInteger(built, "source-column", 11);
     }
@@ -441,19 +451,19 @@ fn aJanetFrame() void {
     // The register file is copied whole, its length is the funcdef's, and its
     // contents are the frame's — the first two registers hold the arguments.
     const slots = frameGet(built, "slots");
-    assert(harness.isType(slots, c.JANET_ARRAY));
-    assert(c.janet_unwrap_array(slots).*.count == function.*.def.*.slotcount);
-    assert(c.janet_unwrap_array(slots).*.count >= 2);
-    assert(harness.integerIs(c.janet_unwrap_array(slots).*.data[0], 3));
-    assert(harness.integerIs(c.janet_unwrap_array(slots).*.data[1], 4));
+    assert(harness.isType(slots, constants.JANET_ARRAY));
+    assert(wrap.toArray(slots).*.count == function.*.def.?.slotcount);
+    assert(wrap.toArray(slots).*.count >= 2);
+    assert(harness.integerIs(wrap.toArray(slots).*.data.?[0], 3));
+    assert(harness.integerIs(wrap.toArray(slots).*.data.?[1], 4));
 
     // Local bindings, by name, live at the point the frame stopped.
     const locals = frameGet(built, "locals");
-    assert(harness.isType(locals, c.JANET_TABLE));
-    const bindings = c.janet_unwrap_table(locals);
-    assert(harness.integerIs(c.janet_table_get(bindings, c.janet_csymbolv("a")), 3));
-    assert(harness.integerIs(c.janet_table_get(bindings, c.janet_csymbolv("b")), 4));
-    assert(harness.integerIs(c.janet_table_get(bindings, c.janet_csymbolv("total")), 7));
+    assert(harness.isType(locals, constants.JANET_TABLE));
+    const bindings = wrap.toTable(locals);
+    assert(harness.integerIs(tables.get(bindings, value.fromBytes("a", .symbol)), 3));
+    assert(harness.integerIs(tables.get(bindings, value.fromBytes("b", .symbol)), 4));
+    assert(harness.integerIs(tables.get(bindings, value.fromBytes("total", .symbol)), 7));
 
     // And a binding that is not live there is absent. Two of them, for two
     // different reasons: `st` is written by the call this frame is stopped at
@@ -462,8 +472,8 @@ fn aJanetFrame() void {
     // missing death bound from a working one — a table with a nil value is a
     // table without the key, so a binding reported live but holding nil looks
     // exactly like one correctly left out.
-    assert(harness.isType(c.janet_table_get(bindings, c.janet_csymbolv("st")), c.JANET_NIL));
-    assert(harness.isType(c.janet_table_get(bindings, c.janet_csymbolv("scoped")), c.JANET_NIL));
+    assert(harness.isType(tables.get(bindings, value.fromBytes("st", .symbol)), constants.JANET_NIL));
+    assert(harness.isType(tables.get(bindings, value.fromBytes("scoped", .symbol)), constants.JANET_NIL));
 }
 
 /// An anonymous function reports no name and still reports everything else,
@@ -471,9 +481,9 @@ fn aJanetFrame() void {
 /// which this consumer renders as the absence of a key.
 fn anAnonymousJanetFrame() void {
     const frames = eval("((fn [] (debug/stack (fiber/current))))");
-    const built = c.janet_unwrap_array(frames).*.data[1];
+    const built = wrap.toArray(frames).*.data.?[1];
     expectAbsent(built, "name");
-    assert(harness.isType(frameGet(built, "function"), c.JANET_FUNCTION));
+    assert(harness.isType(frameGet(built, "function"), constants.JANET_FUNCTION));
     expectString(built, "source", "vm-lifecycle-test");
 }
 
@@ -494,12 +504,12 @@ fn aCapturedBinding() void {
             "      (if (= captured 11) r r))" ++
             "    (outer 11))",
     );
-    const built = c.janet_unwrap_array(frames).*.data[1];
+    const built = wrap.toArray(frames).*.data.?[1];
     const locals = frameGet(built, "locals");
-    assert(harness.isType(locals, c.JANET_TABLE));
+    assert(harness.isType(locals, constants.JANET_TABLE));
     expectAbsent(built, "name");
     assert(harness.integerIs(
-        c.janet_table_get(c.janet_unwrap_table(locals), c.janet_csymbolv("captured")),
+        tables.get(wrap.toTable(locals), value.fromBytes("captured", .symbol)),
         11,
     ));
 }
@@ -514,11 +524,11 @@ fn aCapturedBindingOffTheStack() void {
             "      (f))" ++
             "    (outer2 12))",
     );
-    const built = c.janet_unwrap_array(frames).*.data[1];
+    const built = wrap.toArray(frames).*.data.?[1];
     const locals = frameGet(built, "locals");
-    assert(harness.isType(locals, c.JANET_TABLE));
+    assert(harness.isType(locals, constants.JANET_TABLE));
     assert(harness.integerIs(
-        c.janet_table_get(c.janet_unwrap_table(locals), c.janet_csymbolv("captured")),
+        tables.get(wrap.toTable(locals), value.fromBytes("captured", .symbol)),
         12,
     ));
 }
@@ -530,9 +540,9 @@ fn aCapturedBindingOffTheStack() void {
 /// column to give.
 fn aRegisteredCfunctionFrame() void {
     const frames = eval("(debug/stack (fiber/current))");
-    const built = c.janet_unwrap_array(frames).*.data[0];
+    const built = wrap.toArray(frames).*.data.?[0];
 
-    assert(harness.equals(frameGet(built, "c"), c.janet_wrap_true()));
+    assert(harness.equals(frameGet(built, "c"), wrap.fromTrue()));
     expectAbsent(built, "function");
     expectAbsent(built, "slots");
     expectAbsent(built, "pc");
@@ -540,8 +550,8 @@ fn aRegisteredCfunctionFrame() void {
     // A registered cfunction reports prefix/name.
     expectString(built, "name", "debug/stack");
 
-    assert(harness.isType(frameGet(built, "source"), c.JANET_STRING));
-    assert(harness.isType(frameGet(built, "source-line"), c.JANET_NUMBER));
+    assert(harness.isType(frameGet(built, "source"), constants.JANET_STRING));
+    assert(harness.isType(frameGet(built, "source-line"), constants.JANET_NUMBER));
     expectInteger(built, "source-column", 1);
 }
 
@@ -555,9 +565,9 @@ fn aTailCallFrame() void {
     );
     // `inner` was entered by a tail call from `outer`, so `outer`'s frame is
     // gone and `inner`'s carries the flag.
-    const built = c.janet_unwrap_array(frames).*.data[1];
+    const built = wrap.toArray(frames).*.data.?[1];
     expectString(built, "name", "inner");
-    assert(harness.equals(frameGet(built, "tail"), c.janet_wrap_true()));
+    assert(harness.equals(frameGet(built, "tail"), wrap.fromTrue()));
 }
 
 /// A cfunction registered with a prefix, which the core's own are not: every
@@ -569,20 +579,19 @@ fn aTailCallFrame() void {
 ///
 /// It reports its own frame, which is the only way to see a cframe that is not
 /// `debug/stack` itself.
-fn cfunSelfframe(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
-    _ = argv;
-    try subsystems.args_core.fixarity(argc, 0);
-    return decode(harness.frame.current(c.janet_vm.fiber));
+fn cfunSelfframe(argv: []types.Janet) raise.Raising(types.Janet) {
+    try subsystems.args.fixarity(argv, 0);
+    return decode(harness.frame.current(c.vm().fiber.?));
 }
 
-const cfuns = [_]c.JanetReg{
+const cfuns = [_]types.JanetReg{
     .{ .name = "selfframe", .cfun = raise.stored(&cfunSelfframe), .documentation = "(selfframe)\n\nIts own stack frame." },
     .{ .name = null, .cfun = null, .documentation = null },
 };
 
 fn aPrefixedCfunctionFrame() void {
     const built = eval("(selfframe)");
-    assert(harness.equals(frameGet(built, "c"), c.janet_wrap_true()));
+    assert(harness.equals(frameGet(built, "c"), wrap.fromTrue()));
     expectString(built, "name", "vmlife/selfframe");
     expectAbsent(built, "source");
     expectAbsent(built, "source-line");
@@ -597,16 +606,15 @@ fn aPrefixedCfunctionFrame() void {
 /// the decoding.
 fn aFrameWithNoProgramCounter() void {
     const fnv = eval("(do (defn named [] nil) named)");
-    const fiber = c.janet_fiber(c.janet_unwrap_function(fnv), 64, 0, null);
-    assert(fiber != null);
-    c.janet_gcroot(c.janet_wrap_fiber(fiber));
+    const fiber = fibers.new(wrap.toFunction(fnv), 64, 0, null).?;
+    gc_alloc.gcroot(wrap.fromFiber(fiber));
     const fr = harness.frame.current(fiber);
     assert(fr.func != null and fr.pc != null);
     fr.pc = null;
 
     const built = decode(fr);
     expectString(built, "name", "named");
-    assert(harness.isType(frameGet(built, "function"), c.JANET_FUNCTION));
+    assert(harness.isType(frameGet(built, "function"), constants.JANET_FUNCTION));
     expectAbsent(built, "pc");
     expectAbsent(built, "slots");
     expectAbsent(built, "locals");
@@ -617,21 +625,20 @@ fn aFrameWithNoProgramCounter() void {
 /// A cfunction that was never passed through `janet_cfuns` has no registry
 /// entry. The C implementation read the entry anyway; this one asks
 /// `janet_trace_frame`, which checks. See the header.
-fn unregisteredCfunction(argc: i32, argv: [*c]c.Janet) raise.Raising(c.Janet) {
-    _ = argc;
-    _ = argv;
-    return c.janet_wrap_nil();
+fn unregisteredCfunction(argv: []types.Janet) raise.Raising(types.Janet) {
+    _ = @as(i32, @intCast(argv.len));
+
+    return wrap.fromNil();
 }
 
 fn anUnregisteredCfunctionFrame() void {
     const fnv = eval("(fn [] nil)");
-    const fiber = c.janet_fiber(c.janet_unwrap_function(fnv), 64, 0, null);
-    assert(fiber != null);
-    c.janet_gcroot(c.janet_wrap_fiber(fiber));
-    c.janet_fiber_cframe(fiber, raise.stored(&unregisteredCfunction));
+    const fiber = fibers.new(wrap.toFunction(fnv), 64, 0, null).?;
+    gc_alloc.gcroot(wrap.fromFiber(fiber));
+    fibers.cframe(fiber, raise.stored(&unregisteredCfunction));
 
     const built = decode(harness.frame.current(fiber));
-    assert(harness.equals(frameGet(built, "c"), c.janet_wrap_true()));
+    assert(harness.equals(frameGet(built, "c"), wrap.fromTrue()));
     expectAbsent(built, "name");
     expectAbsent(built, "source");
     expectAbsent(built, "source-line");
@@ -647,8 +654,8 @@ fn body() raise.Raising(void) {
     try aSecondCycle();
 
     _ = try vm_lifecycle.init();
-    test_env = c.janet_core_env(null);
-    c.janet_cfuns(test_env, "vmlife", &cfuns);
+    test_env = harness.coreEnv();
+    registry.cfuns(test_env, "vmlife", &cfuns);
 
     aJanetFrame();
     anAnonymousJanetFrame();

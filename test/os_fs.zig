@@ -22,9 +22,13 @@
 //! have them deleting each other's.
 
 const std = @import("std");
-const abi = @import("abi");
-const c = abi.c;
+const types = @import("types");
+const constants = @import("constants");
+const c = @import("cabi");
 const harness = @import("harness.zig");
+const value = @import("subsystems").value;
+const wrap = @import("subsystems").value.wrap;
+const vm_lifecycle = @import("subsystems").lifecycle;
 
 /// The kernels, by symbol; `janet.h` does not declare them.
 extern fn janet_os_getcwd(buffer: [*]u8, size: i32) callconv(.c) i32;
@@ -108,31 +112,31 @@ fn theCoreFunctions(original: [:0]const u8) !void {
     const cd = harness.core("os/cd");
     const rename = harness.core("os/rename");
     const remove = harness.core("os/rm");
-    var args: [2]c.Janet = undefined;
+    var args: [2]types.Janet = undefined;
 
-    const here = try getcwd(0, null);
-    std.debug.assert(harness.isType(here, c.JANET_STRING));
-    std.debug.assert(harness.stringIs(c.janet_unwrap_string(here), original.ptr));
+    const here = try getcwd(&.{});
+    std.debug.assert(harness.isType(here, constants.JANET_STRING));
+    std.debug.assert(harness.stringIs(wrap.toString(here), original.ptr));
 
-    args[0] = c.janet_cstringv(public_dir);
+    args[0] = value.fromBytes(public_dir, .string);
     // True the first time, false the second -- not a raise.
-    std.debug.assert(c.janet_unwrap_boolean(try mkdir(1, &args)) != 0);
-    std.debug.assert(c.janet_unwrap_boolean(try mkdir(1, &args)) == 0);
+    std.debug.assert(wrap.toBoolean(try mkdir(args[0..1])) != 0);
+    std.debug.assert(wrap.toBoolean(try mkdir(args[0..1])) == 0);
 
-    std.debug.assert(harness.isType(try cd(1, &args), c.JANET_NIL));
+    std.debug.assert(harness.isType(try cd(args[0..1]), constants.JANET_NIL));
     makeFile("source");
 
-    args[0] = c.janet_cstringv(original.ptr);
-    std.debug.assert(harness.isType(try cd(1, &args), c.JANET_NIL));
+    args[0] = value.fromBytes(original, .string);
+    std.debug.assert(harness.isType(try cd(args[0..1]), constants.JANET_NIL));
 
-    args[0] = c.janet_cstringv(public_source);
-    args[1] = c.janet_cstringv(public_dest);
-    std.debug.assert(harness.isType(try rename(2, &args), c.JANET_NIL));
+    args[0] = value.fromBytes(public_source, .string);
+    args[1] = value.fromBytes(public_dest, .string);
+    std.debug.assert(harness.isType(try rename(args[0..2]), constants.JANET_NIL));
 
     args[0] = args[1];
-    std.debug.assert(harness.isType(try remove(1, &args), c.JANET_NIL));
-    args[0] = c.janet_cstringv(public_dir);
-    std.debug.assert(harness.isType(try rmdir(1, &args), c.JANET_NIL));
+    std.debug.assert(harness.isType(try remove(args[0..1]), constants.JANET_NIL));
+    args[0] = value.fromBytes(public_dir, .string);
+    std.debug.assert(harness.isType(try rmdir(args[0..1]), constants.JANET_NIL));
 }
 
 /// What the Janet surface refuses, which the C contract did not ask. Each is a
@@ -142,16 +146,16 @@ fn theRefusals() void {
     const cd = harness.core("os/cd");
     const rmdir = harness.core("os/rmdir");
     const remove = harness.core("os/rm");
-    var args: [1]c.Janet = undefined;
+    var args: [1]types.Janet = undefined;
 
-    args[0] = c.janet_cstringv("janet-zig-os-fs-absent-0000");
-    std.debug.assert(harness.raised(cd, .{ @as(i32, 1), &args }) != null);
-    std.debug.assert(harness.raised(rmdir, .{ @as(i32, 1), &args }) != null);
-    std.debug.assert(harness.raised(remove, .{ @as(i32, 1), &args }) != null);
+    args[0] = value.fromBytes("janet-zig-os-fs-absent-0000", .string);
+    std.debug.assert(harness.raised(cd, .{args[0..1]}) != null);
+    std.debug.assert(harness.raised(rmdir, .{args[0..1]}) != null);
+    std.debug.assert(harness.raised(remove, .{args[0..1]}) != null);
 
     // A number is not a path, and the refusal comes from the argument layer.
     args[0] = harness.wrapInteger(7);
-    std.debug.assert(harness.raised(cd, .{ @as(i32, 1), &args }) != null);
+    std.debug.assert(harness.raised(cd, .{args[0..1]}) != null);
 }
 
 pub fn run() void {
@@ -161,10 +165,10 @@ pub fn run() void {
     cleanPaths();
     theKernels(original);
 
-    _ = c.janet_init();
+    harness.init();
     theCoreFunctions(original) catch @panic("os_fs: a core function raised");
     theRefusals();
-    c.janet_deinit();
+    vm_lifecycle.deinit();
 
     // Back where we started, whatever the assertions above did.
     std.debug.assert(janet_os_chdir(original.ptr) == 0);
