@@ -31,22 +31,22 @@
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const c = @import("cabi");
 const harness = @import("harness.zig");
 const core_env = @import("subsystems").env;
 const math = @import("subsystems").math;
-const kind = @import("subsystems").value.kind;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 
 /// `janet_rng_longseed`, reached as the C entry point rather than as
 /// `math.rngLongseed`.
 ///
-/// The Zig function takes a `[]const u8` since increment 5h, so the negative
-/// length the contract below pins cannot be handed to it. The published
-/// signature still takes an `int32_t`, `capi.zig`'s `cbytes` is what turns a
-/// negative one into an empty range, and this is the declaration that lets the
-/// assertion reach it. One line here rather than in `harness.internal`,
+/// The Zig function takes a `[]const u8`, so the negative length the contract
+/// below pins cannot be handed to it. The published signature still takes an
+/// `int32_t`, `capi.zig`'s `cbytes` is what turns a negative one into an empty
+/// range, and this is the declaration that lets the assertion reach it. One
+/// line here rather than in `harness.internal`,
 /// because nothing else needs it -- the same call `test/fiber_core.zig`
 /// records about its private copy of the frame macros.
 extern fn janet_rng_longseed(rng: *types.JanetRNG, bytes: [*]const u8, len: i32) callconv(.c) void;
@@ -167,7 +167,7 @@ fn theDefaultRng() void {
 // ------------------------------------------------------------- gcd and lcm
 
 fn call2(fun: anytype, a: f64, b: f64) !f64 {
-    var argv = [2]types.Janet{ wrap.fromNumber(a), wrap.fromNumber(b) };
+    var argv = [2]repr.Value{ wrap.fromNumber(a), wrap.fromNumber(b) };
     return wrap.toNumber(try fun(argv[0..2]));
 }
 
@@ -220,14 +220,14 @@ fn theGcdAndLcm() !void {
 
 var environment: *types.JanetTable = undefined;
 
-fn eval(source: [*:0]const u8) types.Janet {
-    var result: types.Janet = undefined;
+fn eval(source: [*:0]const u8) repr.Value {
+    var result: repr.Value = undefined;
     std.debug.assert(core_env.dostring(environment, source, "math-contract", &result) == 0);
     return result;
 }
 
 fn truthy(source: [*:0]const u8) void {
-    std.debug.assert(kind.truthy(eval(source)) != 0);
+    std.debug.assert(repr.truthy(eval(source)));
 }
 
 fn theRngInt() void {
@@ -270,7 +270,7 @@ fn theRngBuffer() void {
     const buffer = wrap.toBuffer(eval("(math/rng-buffer (math/rng 3) 11)"));
     const expected = [11]u8{ 0x20, 0xf8, 0x5a, 0x58, 0xcc, 0x1f, 0x5f, 0x10, 0x76, 0x3b, 0x1c };
     std.debug.assert(buffer.*.count == 11);
-    std.debug.assert(std.mem.eql(u8, buffer.*.data.?[0..11], &expected));
+    std.debug.assert(std.mem.eql(u8, buffer.*.slice()[0..11], &expected));
 
     // Zero bytes draws nothing and leaves the generator untouched.
     truthy(

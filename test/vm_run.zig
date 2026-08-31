@@ -40,22 +40,20 @@
 //! `JOP_SIGNAL`'s lower clamp is unreachable for the same reason — the
 //! assembler will not encode a negative operand in a one-byte field.
 //!
-//! ## What the migration changed
+//! ## Two things this contract does differently
 //!
-//! **The error counter is gone.** The C original counted the errors it
-//! expected and compared the total at the end, because a case that silently
-//! stopped raising would look exactly like one that passed. `raised` below
-//! asserts the signal at each site and stops there, so a case that stops
-//! raising fails on its own line; the count was scaffolding for a total that
-//! also had to be maintained by hand in two arms of an `#ifdef`.
+//! **There is no error counter.** Counting the expected errors and comparing
+//! the total at the end is what a C contract needs, because a case that
+//! silently stopped raising looks exactly like one that passed. `raised` below
+//! asserts the signal at each site and stops there.
 //!
 //! **The assembler sections ask the environment rather than the
-//! configuration.** They were `#ifdef JANET_ASSEMBLER`; they are
-//! `harness.coreOptional("asm")` now, which is rule 7's distinction — what
+//! configuration.** `harness.coreOptional("asm")` is the distinction: what
 //! these cases need is the `asm` *binding*, and `options` names subsystems.
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const raise = @import("raise");
@@ -85,7 +83,7 @@ var has_assembler = false;
 /// Roots whatever it produces and never unroots it: a Janet value in a Zig
 /// local is not a root, and these live across calls that compile source and
 /// intern keywords.
-fn eval(source: [*:0]const u8) types.Janet {
+fn eval(source: [*:0]const u8) repr.Value {
     var out = wrap.fromNil();
     const status = core_env.dostring(test_env.?, source, "vm-run-test", &out);
     if (status != 0) {
@@ -101,13 +99,13 @@ fn eval(source: [*:0]const u8) types.Janet {
 /// `janet_dostring` prints a stack trace on the way out: this file expects
 /// twenty-five errors and would otherwise bury its own output in them. The
 /// fiber masks error and yield, so `janet_continue` reports the signal instead.
-fn raised(source: []const u8) types.Janet {
+fn raised(source: []const u8) repr.Value {
     var buffer: [2048]u8 = undefined;
     const wrapped = std.fmt.bufPrintZ(&buffer, "(fiber/new (fn [] {s}) :ye)", .{source}) catch unreachable;
     const fiberv = eval(wrapped);
     var out = wrap.fromNil();
     const sig = vm_entry_mod.continueFiber(wrap.toFiber(fiberv), wrap.fromNil(), &out);
-    if (sig != constants.JANET_SIGNAL_ERROR) {
+    if (sig != types.Signal.@"error") {
         std.debug.print("expected an error from: {s}\n", .{source});
         assert(false);
     }
@@ -128,7 +126,7 @@ fn expectError(source: []const u8, message: [*:0]const u8) void {
 /// For the one message whose tail is undefined; see the header.
 fn expectErrorPrefix(source: []const u8, prefix: []const u8) void {
     const payload = raised(source);
-    assert(harness.isType(payload, constants.JANET_STRING));
+    assert(harness.isType(payload, repr.Tag.string));
     const text = wrap.toString(payload);
     const length: usize = @intCast(types.stringHead(text).length);
     if (!std.mem.startsWith(u8, text[0..length], prefix)) {
@@ -158,8 +156,8 @@ fn expectEqual(source: []const u8, expected: []const u8) void {
 /// Resume a fiber built in Janet source and report the signal as well as the
 /// value, which is the whole point of the `JOP_SIGNAL` and `JOP_PROPAGATE`
 /// cases.
-fn resumeFiber(fiberv: types.Janet, in: types.Janet, out: *types.Janet) types.JanetSignal {
-    assert(harness.isType(fiberv, constants.JANET_FIBER));
+fn resumeFiber(fiberv: repr.Value, in: repr.Value, out: *repr.Value) types.Signal {
+    assert(harness.isType(fiberv, repr.Tag.fiber));
     return vm_entry_mod.continueFiber(wrap.toFiber(fiberv), in, out);
 }
 
@@ -183,9 +181,9 @@ fn arithmeticTakesTheNumericPath() void {
     // The left operand of a left shift stays positive and in range: C leaves
     // `int32_t << int32_t` undefined for a negative value, for an overflow into
     // the sign bit, and for a count above 31, and a Debug build aborts on all
-    // three. `FOUND.md` has it; by Phase 8's sixth rule nothing here pins it.
-    // The two right shifts take the negative operand, where C is merely
-    // implementation-defined and both targets agree.
+    // three. `FOUND.md` has it, and nothing here pins it. The two right shifts
+    // take the negative operand, where C is merely implementation-defined and
+    // both targets agree.
     expectEqual("(do (defn f [a b] (blshift a b)) (f 3 4))", "48");
     // The unsigned form narrows its left operand to `uint32_t`, so a negative
     // one raises there rather than shifting; only the signed form takes it.
@@ -325,7 +323,7 @@ fn stackOverflow() void {
     );
     var out = wrap.fromNil();
     const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_ERROR);
+    assert(sig == types.Signal.@"error");
     assert(harness.stringValueIs(out, "stack overflow"));
 }
 
@@ -399,7 +397,7 @@ fn theSignalOpcode() void {
             "  :bytecode [(ldc 0 0) (sig 1 0 30) (ret 1)]}) :i0123456789)",
     );
     var sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_USER9);
+    assert(sig == types.Signal.user9);
     assert(harness.keywordIs(out, "payload"));
 
     fiberv = eval(
@@ -408,7 +406,7 @@ fn theSignalOpcode() void {
     );
     sig = resumeFiber(fiberv, wrap.fromNil(), &out);
     // The operand is the signal number, not the user index: 5 is USER1.
-    assert(sig == constants.JANET_SIGNAL_USER1);
+    assert(sig == types.Signal.user1);
     assert(harness.keywordIs(out, "payload"));
 }
 
@@ -418,8 +416,8 @@ fn theErrorOpcode() void {
     var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (error [1 2])) :e)");
     const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_ERROR);
-    assert(harness.isType(out, constants.JANET_TUPLE));
+    assert(sig == types.Signal.@"error");
+    assert(harness.isType(out, repr.Tag.tuple));
     assert(types.tupleHead(wrap.toTuple(out)).length == 2);
 }
 
@@ -434,7 +432,7 @@ fn thePropagateOpcode() void {
             "    (fiber/new (fn [] (propagate :outer child)) :y))",
     );
     const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_YIELD);
+    assert(sig == types.Signal.yield);
     assert(harness.keywordIs(out, "outer"));
 
     // Only `:new` and `:alive` sit above JANET_STATUS_USER9, so an unstarted
@@ -451,16 +449,16 @@ fn aResumedFiberReceivesItsValue() void {
     const fiberv = eval("(fiber/new (fn [] [(yield 1) (yield 2)]) :y)");
 
     var sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_YIELD);
+    assert(sig == types.Signal.yield);
     assert(harness.integerIs(out, 1));
 
     sig = resumeFiber(fiberv, value.fromBytes("first", .keyword), &out);
-    assert(sig == constants.JANET_SIGNAL_YIELD);
+    assert(sig == types.Signal.yield);
     assert(harness.integerIs(out, 2));
 
     sig = resumeFiber(fiberv, value.fromBytes("second", .keyword), &out);
-    assert(sig == constants.JANET_SIGNAL_OK);
-    assert(harness.isType(out, constants.JANET_TUPLE));
+    assert(sig == types.Signal.ok);
+    assert(harness.isType(out, repr.Tag.tuple));
     assert(harness.keywordIs(wrap.toTuple(out)[0], "first"));
     assert(harness.keywordIs(wrap.toTuple(out)[1], "second"));
 }
@@ -472,7 +470,7 @@ fn aNewFiberReceivesItsValueAsAnArgument() void {
     var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [x] [:got x]) :y)");
     const sig = resumeFiber(fiberv, value.fromBytes("in", .keyword), &out);
-    assert(sig == constants.JANET_SIGNAL_OK);
+    assert(sig == types.Signal.ok);
     assert(harness.keywordIs(wrap.toTuple(out)[1], "in"));
 }
 
@@ -484,7 +482,7 @@ fn aFiberResumedAfterARaise() void {
     var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (error :boom)) :ey)");
     const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_ERROR);
+    assert(sig == types.Signal.@"error");
     assert(harness.keywordIs(out, "boom"));
     // And is refused a second time, by `checkCanResume` rather than by the
     // loop — which is the boundary `vm_entry` owns.
@@ -500,8 +498,8 @@ fn aFiberResumedAfterARaiseInsideACfunction() void {
     var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (yield (length 5))) :ey)");
     const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_ERROR);
-    assert(harness.isType(out, constants.JANET_STRING));
+    assert(sig == types.Signal.@"error");
+    assert(harness.isType(out, repr.Tag.string));
 }
 
 /// An injected signal is delivered instead of resuming, and is read back out
@@ -510,11 +508,11 @@ fn anInjectedSignal() void {
     var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (yield 1) :never) :y)");
     var sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_YIELD);
+    assert(sig == types.Signal.yield);
 
-    signal_core.signalInject(wrap.toFiber(fiberv), constants.JANET_SIGNAL_USER3);
+    signal_core.signalInject(wrap.toFiber(fiberv), types.Signal.user3);
     sig = resumeFiber(fiberv, value.fromBytes("injected", .keyword), &out);
-    assert(sig == constants.JANET_SIGNAL_USER3);
+    assert(sig == types.Signal.user3);
     assert(harness.keywordIs(out, "injected"));
 }
 
@@ -528,16 +526,16 @@ fn aBreakpointReachesTheUnknownOpcodeArm() raise.Raising(void) {
     var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (+ 1 2) (+ 3 4) :done) :dy)");
     const fiber = wrap.toFiber(fiberv);
-    var sig = try vm_entry.stepImpl(fiber, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_DEBUG);
-    assert(fibers.status(fiber) == constants.JANET_STATUS_DEBUG);
+    var sig = try vm_entry.step(fiber, wrap.fromNil(), &out);
+    assert(sig == types.Signal.debug);
+    assert(fibers.status(fiber) == types.FiberStatus.debug);
     // Stepping again makes progress rather than repeating, which is what the
     // RESUME_NO_SKIP and RESUME_NO_USEVAL flags are for.
-    sig = try vm_entry.stepImpl(fiber, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_DEBUG);
+    sig = try vm_entry.step(fiber, wrap.fromNil(), &out);
+    assert(sig == types.Signal.debug);
     // And letting it run finishes.
     sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_OK);
+    assert(sig == types.Signal.ok);
     assert(harness.keywordIs(out, "done"));
 }
 
@@ -554,14 +552,14 @@ fn aPermanentBreakpoint() void {
     );
     const fiber = wrap.toFiber(fiberv);
     var sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_DEBUG);
+    assert(sig == types.Signal.debug);
     // Resuming re-runs the breakpointed instruction with bit 7 masked off, so
     // the second call reaches the same breakpoint rather than the loop
     // reporting the same one forever.
     sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_DEBUG);
+    assert(sig == types.Signal.debug);
     sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_OK);
+    assert(sig == types.Signal.ok);
     assert(harness.keywordIs(out, "done"));
 }
 
@@ -600,9 +598,9 @@ fn theRemainingOpcodes() void {
     // Constants, integers, booleans and nil.
     expectEqual("(do (defn f [] [nil true false 7 :kw]) (f))", "[nil true false 7 :kw]");
     // The two opcodes nothing else in this tree reaches, because the compiler
-    // cannot emit either. Phase 9's gate counted every dispatch made by
-    // thirty-five suites and fifty-five contracts and found exactly these two
-    // at zero; the assembler is the only way to execute them at all.
+    // cannot emit either. A count of every dispatch made by thirty-five suites
+    // and fifty-five contracts found exactly these two at zero; the assembler
+    // is the only way to execute them at all.
     //
     // JOP_NOOP is written by the dead-write optimizer and then deleted by
     // no-op removal before the function is ever run, so no compiled function

@@ -4,8 +4,6 @@ const utils = @import("../utils.zig");
 const fatal = @import("../fatal.zig");
 const types = @import("types");
 const c = @import("cabi");
-
-const chunk_bits = 32;
 const reserved_chunk = 7;
 const reserved_mask: u32 = 0xffff0000;
 const temporary_base = 0xf0;

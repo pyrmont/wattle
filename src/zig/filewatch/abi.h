@@ -19,34 +19,25 @@
 
 #include "janet_features.h"
 
-/* Aro -- the translate-c front end in Zig 0.16 -- predefines `__unix__`,
- * `unix` and `__unix` for the mingw targets and clang does not, so a `@cImport`
- * of this file and a compilation of the same target disagree about the
- * predefine unless it is cleared. `janet.h` was where that first bit, in Phase
- * 10 Part 12 -- it tested its Unix chain before its Windows one, so the
- * translation for `x86_64-windows-gnu` said `JANET_POSIX` where the
- * compilation said `JANET_WINDOWS`, and `JanetHandle` came out `int` rather
- * than `void *`. `FOUND.md` records it.
- *
- * **The header is gone with Phase 12 increment 5f and this stays**, in all
- * three host translations, because what it protects is not `janet.h`: every
- * system header included below is read by translate-c and compiled by clang,
- * and the guard is what makes those two agree. The platform chains in this
- * file put their Windows arm first as well, which is belt to this braces --
- * the two corrections are independent and both are cheap. */
+ /* Aro -- the `translate-c` front end in Zig 0.16 -- predefines `__unix__`,
+  * `unix` and `__unix` for the mingw targets and clang does not, so a `@cImport`
+  * of this file and a compilation of the same target disagree about the
+  * predefine unless it is cleared. That produced a `JanetHandle` of `int`
+  * rather than `void *` on `x86_64-windows-gnu`, from a platform chain that
+  * tested Unix before Windows; `FOUND.md` records it.
+  *
+  * Every system header included below is read by `translate-c` and compiled by
+  * clang, and this guard is what makes those two agree. The platform chains in
+  * this file put their Windows arm first as well, which is belt to this
+  * braces -- the two corrections are independent and both are cheap. */
 #if defined(_WIN32) || defined(WIN32)
 #undef __unix__
 #undef unix
 #undef __unix
 #endif
 
-/* The platform chain, tested against the predefines directly.
- *
- * `janet.h` was included here for its *platform* names alone -- `JANET_LINUX`,
- * `JANET_APPLE`, `JANET_BSD`, `JANET_WINDOWS` -- each of which it defined one
- * line away from the predefine it tested. Phase 12 increment 5f retired the
- * header, so the tests below are `janet.h`'s own, spelled out, with the
- * Windows arm first. */
+ /* The platform chain, tested against the predefines directly, with the
+  * Windows arm first. */
 
 #include <errno.h>
 #include <string.h>

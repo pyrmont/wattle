@@ -3,21 +3,16 @@
 //! They predate every contract in `test/` and they check the things a broken
 //! build breaks first: that an array grows, that a buffer's two ways of filling
 //! it agree, that number scanning matches the system's `atof`, that the version
-//! macros are self-consistent, and that a table round-trips. `PLAN.md`'s exit
-//! gate names them beside the Janet suites.
-//!
-//! They were `src/boot/*_test.c` until Phase 10 Part 18. Nothing about them
-//! needed C; they were the last five files under `src/boot` that were not the
-//! generator itself.
+//! macros are self-consistent, and that a table round-trips. They run before
+//! the generator generates anything, which is the earliest point at which any
+//! of it can be checked at all.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const config = @import("config");
-const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 
-/// `janet_cstringv` and its two siblings, which `cabi.zig` stopped carrying at
-/// increment 5e.
+/// `janet_cstringv` and its two siblings, which `cabi.zig` does not carry.
 ///
 /// **This program is an embedder.** `build.zig` gives its module only `config`,
 /// `types`, `constants` and `cabi`, because it *links* the runtime object
@@ -28,17 +23,17 @@ const constants = @import("constants");
 ///
 /// They take a slice for the same reason `value.fromBytes` does -- a literal
 /// knows its own length, and `janet_cstring`'s `strlen` was rediscovering it.
-inline fn stringv(bytes: []const u8) types.Janet {
+inline fn stringv(bytes: []const u8) repr.Value {
     return c.janet_wrap_string(c.janet_string(bytes.ptr, @intCast(bytes.len)));
 }
 
-inline fn symbolv(bytes: []const u8) types.Janet {
+inline fn symbolv(bytes: []const u8) repr.Value {
     return c.janet_wrap_symbol(c.janet_symbol(bytes.ptr, @intCast(bytes.len)));
 }
 
 /// A keyword is a symbol under a different tag; `janet.h:1844` is
 /// `#define janet_keyword janet_symbol`.
-inline fn keywordv(bytes: []const u8) types.Janet {
+inline fn keywordv(bytes: []const u8) repr.Value {
     return c.janet_wrap_keyword(c.janet_symbol(bytes.ptr, @intCast(bytes.len)));
 }
 const c = @import("cabi");
@@ -46,7 +41,7 @@ const c = @import("cabi");
 /// `janet_wrap_integer`, written out. `janet.h` declares it beside its macro
 /// and `wrap.c` defined it only for the two nanbox layouts, so a Zig caller
 /// reaching the declaration does not link against `-Dnanbox=false`.
-inline fn int(x: i32) types.Janet {
+inline fn int(x: i32) repr.Value {
     return c.janet_wrap_number(@floatFromInt(x));
 }
 
@@ -62,13 +57,13 @@ pub fn arrayTest() void {
     for (words) |w| c.janet_array_push(array1, stringv(std.mem.span(w)));
     expect(array1.*.count == 7, "array1 count");
     expect(array1.*.capacity >= 7, "array1 capacity");
-    expect(c.janet_equals(array1.*.data.?[0], stringv("one")) != 0, "array1 first");
+    expect(c.janet_equals(array1.*.slice()[0], stringv("one")) != 0, "array1 first");
 
     for (words) |w| c.janet_array_push(array2, stringv(std.mem.span(w)));
     var i: i32 = 0;
     while (i < array2.*.count) : (i += 1) {
         expect(
-            c.janet_equals(array1.*.data.?[@intCast(i)], array2.*.data.?[@intCast(i)]) != 0,
+            c.janet_equals(array1.*.slice()[@intCast(i)], array2.*.slice()[@intCast(i)]) != 0,
             "arrays agree elementwise",
         );
     }
@@ -91,7 +86,7 @@ pub fn bufferTest() void {
     var i: i32 = 0;
     while (i < buffer1.*.count) : (i += 1) {
         expect(
-            buffer1.*.data.?[@intCast(i)] == buffer2.*.data.?[@intCast(i)],
+            buffer1.*.slice()[@intCast(i)] == buffer2.*.slice()[@intCast(i)],
             "buffers agree bytewise",
         );
     }
@@ -131,21 +126,14 @@ pub fn systemTest() void {
 
     // "The version defines are self-consistent" stood here, comparing
     // `JANET_VERSION` against `{MAJOR}.{MINOR}.{PATCH}{EXTRA}` rebuilt from
-    // the parts. It was checking that two hand-maintained lines of
-    // `janetconf.h` agreed.
+    // the parts. That was worth checking while the two were hand-maintained
+    // lines of a header.
     //
-    // Increment 4 gave `build.zig` one `version`, and `version_string` is
-    // `comptimePrint`ed from `major`, `minor`, `patch` and `version_extra` --
-    // the same values `makeConfigHeader` emits. So the header's whole is
-    // built from the header's parts and the comparison became a tautology at
-    // that moment, not at the header's removal. `DESIGN.md` §3's phrase for
-    // exactly this: the property "stops being an agreement and becomes a
-    // construction".
-    //
-    // What is worth checking is `Config` against the header, and
-    // `constants_check.zig` does it -- `version_major` and its four
-    // neighbours, every build, every configuration. That one dies with the
-    // header; this one was already dead.
+    // `build.zig` now has one `version`, and `version_string` is
+    // `comptimePrint`ed from `major`, `minor`, `patch` and `version_extra`.
+    // The whole is built from the parts, so the comparison is a tautology --
+    // `DESIGN.md` §3's phrase for exactly this: the property "stops being an
+    // agreement and becomes a construction".
 
     // Reflexive equality, which is also the nanbox test.
     expect(c.janet_equals(c.janet_wrap_nil(), c.janet_wrap_nil()) != 0, "nil");
@@ -164,7 +152,7 @@ pub fn systemTest() void {
     // A NaN is still a number. The C reached for `NAN` and fell back to
     // `0.0 / 0.0` where the macro was absent; Zig has the value directly.
     expect(
-        c.janet_checktype(c.janet_wrap_number(std.math.nan(f64)), constants.JANET_NUMBER) != 0,
+        c.janet_checktype(c.janet_wrap_number(std.math.nan(f64)), @intFromEnum(repr.Tag.number)) != 0,
         "NaN is a number",
     );
 

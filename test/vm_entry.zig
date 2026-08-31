@@ -35,13 +35,13 @@
 //! `%v` renders an unnamed function with its address, and the point of those
 //! three cases is the message, not the pointer.
 //!
-//! ## What the migration changed
+//! ## The mechanism is in the type
 //!
-//! **The two counters are gone, and the compiler holds what they held.** The C
-//! original counted raises and reports separately and compared both totals at
-//! the end, because "the same refusal delivered by the wrong mechanism would
-//! still carry the right message" and an `EXPECT_PANIC` that silently stopped
-//! firing looked like a pass. Here the mechanism is in the *type*:
+//! **There are no counters.** A C contract counts raises and reports
+//! separately and compares both totals at the end, because "the same refusal
+//! delivered by the wrong mechanism would still carry the right message" and
+//! an `EXPECT_PANIC` that silently stopped firing looks like a pass. Here the
+//! mechanism is in the *type*:
 //! `janet_pcall` and `janet_continue` return a `JanetSignal` and cannot raise,
 //! `stepImpl` and `callImpl` return `raise.Error!T` and `harness.raised` will
 //! not compile against anything else. A refusal that changed mechanism would
@@ -57,8 +57,8 @@
 const std = @import("std");
 const config = @import("config");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const raise = @import("raise");
 const harness = @import("harness.zig");
 
@@ -81,16 +81,12 @@ const assert = std.debug.assert;
 /// its root-fiber refusal may name the scheduler's entry points.
 const has_ev = constants.JANET_VM_HAS_EV != 0;
 
-fn vm() *types.JanetVM {
-    return c.vm();
-}
-
 var test_env: ?*types.JanetTable = null;
 
 /// Roots whatever it produces and never unroots it, for the reason
 /// `vm_calls` gives: a Janet value in a Zig local is not a root, and these
 /// live across calls that compile source and intern keywords.
-fn eval(source: [*:0]const u8) types.Janet {
+fn eval(source: [*:0]const u8) repr.Value {
     var out = wrap.fromNil();
     const status = core_env.dostring(test_env.?, source, "vm-entry-test", &out);
     if (status != 0) {
@@ -104,7 +100,7 @@ fn eval(source: [*:0]const u8) types.Janet {
 
 fn evalfn(source: [*:0]const u8) *types.JanetFunction {
     const v = eval(source);
-    assert(harness.isType(v, constants.JANET_FUNCTION));
+    assert(harness.isType(v, repr.Tag.function));
     return wrap.toFunction(v);
 }
 
@@ -118,8 +114,8 @@ fn fiberOver(source: [*:0]const u8) *types.JanetFiber {
 
 /// A refusal that arrives as a value. `sig` and `out` are the caller's,
 /// already filled in; this only checks that the pair says what it should.
-fn expectReport(sig: types.JanetSignal, out: types.Janet, message: [*:0]const u8) void {
-    assert(sig == constants.JANET_SIGNAL_ERROR);
+fn expectReport(sig: types.Signal, out: repr.Value, message: [*:0]const u8) void {
+    assert(sig == types.Signal.@"error");
     if (!harness.stringValueIs(out, message)) {
         std.debug.print("expected: {s}\n     got: {s}\n", .{ message, pp_describe.toString(out) });
         assert(false);
@@ -135,12 +131,12 @@ fn pcallReportsRatherThanRaises() void {
     var out = wrap.fromNil();
 
     var sig = vm_entry_mod.pcall(evalfn("(fn [] (+ 1 2))"), 0, null, &out, null);
-    assert(sig == constants.JANET_SIGNAL_OK);
+    assert(sig == types.Signal.ok);
     assert(harness.integerIs(out, 3));
 
-    var args = [_]types.Janet{ harness.wrapInteger(4), harness.wrapInteger(5) };
+    var args = [_]repr.Value{ harness.wrapInteger(4), harness.wrapInteger(5) };
     sig = vm_entry_mod.pcall(evalfn("(fn [a b] (* a b))"), 2, &args, &out, null);
-    assert(sig == constants.JANET_SIGNAL_OK);
+    assert(sig == types.Signal.ok);
     assert(harness.integerIs(out, 20));
 
     sig = vm_entry_mod.pcall(evalfn("(fn [] (error \"boom\"))"), 0, null, &out, null);
@@ -149,7 +145,7 @@ fn pcallReportsRatherThanRaises() void {
     // The fiber `janet_pcall` builds masks yield, so a yield comes back as a
     // signal rather than propagating past it.
     sig = vm_entry_mod.pcall(evalfn("(fn [] (yield 7) 8)"), 0, null, &out, null);
-    assert(sig == constants.JANET_SIGNAL_YIELD);
+    assert(sig == types.Signal.yield);
     assert(harness.integerIs(out, 7));
 }
 
@@ -161,13 +157,13 @@ fn pcallWithAReusedFiber() void {
     var f: ?*types.JanetFiber = null;
 
     var sig = vm_entry_mod.pcall(evalfn("(fn [] 1)"), 0, null, &out, &f);
-    assert(sig == constants.JANET_SIGNAL_OK);
+    assert(sig == types.Signal.ok);
     assert(f != null);
     const first = f;
     gc_alloc.gcroot(wrap.fromFiber(f.?));
 
     sig = vm_entry_mod.pcall(evalfn("(fn [] 2)"), 0, null, &out, &f);
-    assert(sig == constants.JANET_SIGNAL_OK);
+    assert(sig == types.Signal.ok);
     assert(f == first); // a supplied fiber is reset, not replaced
     assert(harness.integerIs(out, 2));
 
@@ -185,8 +181,8 @@ fn resumingAFiberThatCannotBe() void {
     var fiber = fiberOver("(fn [] 1)");
 
     var sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_OK);
-    assert(fibers.status(fiber) == constants.JANET_STATUS_DEAD);
+    assert(sig == types.Signal.ok);
+    assert(fibers.status(fiber) == types.FiberStatus.dead);
 
     sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
     expectReport(sig, out, "cannot resume fiber with status :dead");
@@ -195,8 +191,8 @@ fn resumingAFiberThatCannotBe() void {
     // is inside the band the gate refuses.
     fiber = fiberOver("(fn [] (signal 0 :stopped))");
     sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_USER0);
-    assert(fibers.status(fiber) == constants.JANET_STATUS_USER0);
+    assert(sig == types.Signal.user0);
+    assert(fibers.status(fiber) == types.FiberStatus.user0);
     sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
     expectReport(sig, out, "cannot resume fiber with status :user0");
 }
@@ -206,15 +202,15 @@ fn resumingAFiberThatCannotBe() void {
 fn theRecursionGuardMarksTheFiber() void {
     var out = wrap.fromNil();
     const fiber = fiberOver("(fn [] 1)");
-    const saved = vm().stackn;
+    const saved = harness.vm().stackn;
 
-    assert(fibers.status(fiber) == constants.JANET_STATUS_NEW);
-    vm().stackn = config.recursion_guard;
+    assert(fibers.status(fiber) == types.FiberStatus.new);
+    harness.vm().stackn = config.recursion_guard;
     const sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    vm().stackn = saved;
+    harness.vm().stackn = saved;
 
     expectReport(sig, out, "C stack recursed too deeply");
-    assert(fibers.status(fiber) == constants.JANET_STATUS_ERROR);
+    assert(fibers.status(fiber) == types.FiberStatus.@"error");
 }
 
 /// `janet_continue_signal` injects the signal into the fiber before resuming
@@ -225,20 +221,20 @@ fn cancellingASuspendedFiber() void {
     var out = wrap.fromNil();
     var fiber = fiberOver("(fn [] (yield 1) :finished)");
     var sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    assert(sig == constants.JANET_SIGNAL_YIELD);
+    assert(sig == types.Signal.yield);
     assert(harness.integerIs(out, 1));
 
-    sig = vm_entry_mod.continueSignal(fiber, value.fromBytes("stop", .string), &out, constants.JANET_SIGNAL_ERROR);
+    sig = vm_entry_mod.continueSignal(fiber, value.fromBytes("stop", .string), &out, types.Signal.@"error");
     expectReport(sig, out, "stop");
-    assert(fibers.status(fiber) == constants.JANET_STATUS_ERROR);
+    assert(fibers.status(fiber) == types.FiberStatus.@"error");
 
     // `JANET_SIGNAL_OK` injects nothing and resumes normally, which is the
     // branch that keeps `janet_continue_signal` from being `janet_continue`
     // with an extra argument.
     fiber = fiberOver("(fn [] (yield 1) :finished)");
-    assert(vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out) == constants.JANET_SIGNAL_YIELD);
-    sig = vm_entry_mod.continueSignal(fiber, wrap.fromNil(), &out, constants.JANET_SIGNAL_OK);
-    assert(sig == constants.JANET_SIGNAL_OK);
+    assert(vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out) == types.Signal.yield);
+    sig = vm_entry_mod.continueSignal(fiber, wrap.fromNil(), &out, types.Signal.ok);
+    assert(sig == types.Signal.ok);
     assert(harness.keywordIs(out, "finished"));
 }
 
@@ -255,19 +251,19 @@ const max_stops = 256;
 /// Steps until the fiber finishes, recording the bytecode offset it stopped at
 /// each time. The offsets are the subject: a step count says only that
 /// stepping happened, while the offsets say which instructions it visited.
-fn stepToCompletion(fiber: *types.JanetFiber, out: *types.Janet, stops: *[max_stops]i32) raise.Raising(usize) {
+fn stepToCompletion(fiber: *types.JanetFiber, out: *repr.Value, stops: *[max_stops]i32) raise.Raising(usize) {
     const def = harness.frame.current(fiber).func.?.def.?;
     var nstops: usize = 0;
-    var sig: types.JanetSignal = undefined;
+    var sig: types.Signal = undefined;
     while (true) {
-        sig = try vm_entry.stepImpl(fiber, wrap.fromNil(), out);
-        if (sig != constants.JANET_SIGNAL_DEBUG) break;
+        sig = try vm_entry.step(fiber, wrap.fromNil(), out);
+        if (sig != types.Signal.debug) break;
         assert(nstops < max_stops); // stepping did not terminate
         const pc = harness.frame.current(fiber).pc;
         stops[nstops] = @intCast((@intFromPtr(pc) - @intFromPtr(def.*.bytecode)) / @sizeOf(u32));
         nstops += 1;
     }
-    assert(sig == constants.JANET_SIGNAL_OK);
+    assert(sig == types.Signal.ok);
     return nstops;
 }
 
@@ -295,7 +291,7 @@ fn steppingStraightLineCode() raise.Raising(void) {
     assert(harness.integerIs(out, 3));
 
     // The same funcdef, run without stepping: every breakpoint was taken out.
-    assert(vm_entry_mod.pcall(fun, 0, null, &out, null) == constants.JANET_SIGNAL_OK);
+    assert(vm_entry_mod.pcall(fun, 0, null, &out, null) == types.Signal.ok);
     assert(harness.integerIs(out, 3));
 }
 
@@ -323,7 +319,7 @@ fn steppingAcrossBranches() raise.Raising(void) {
     var cond: i32 = -1;
     var i: i32 = 0;
     while (i < def.*.bytecode_length) : (i += 1) {
-        const operation = def.*.bytecode.?[@intCast(i)] & 0x7F;
+        const operation = def.*.instructions()[@intCast(i)] & 0x7F;
         if (operation == harness.op(constants.JOP_JUMP_IF) or operation == harness.op(constants.JOP_JUMP_IF_NOT)) {
             cond = i;
             break;
@@ -331,12 +327,12 @@ fn steppingAcrossBranches() raise.Raising(void) {
     }
     assert(cond >= 0); // the loop condition compiles to a conditional jump
     const fallthrough = cond + 1;
-    const target = cond + (@as(i32, @bitCast(def.*.bytecode.?[@intCast(cond)])) >> 16);
+    const target = cond + (@as(i32, @bitCast(def.*.instructions()[@intCast(cond)])) >> 16);
     assert(stoppedAt(stops[0..nstops], fallthrough)); // stepped into the fallthrough
     assert(stoppedAt(stops[0..nstops], target)); // stepped into the branch target
 
     // The same funcdef, run without stepping: every breakpoint was taken out.
-    assert(vm_entry_mod.pcall(fun, 0, null, &out, null) == constants.JANET_SIGNAL_OK);
+    assert(vm_entry_mod.pcall(fun, 0, null, &out, null) == types.Signal.ok);
     assert(harness.keywordIs(out, "yes"));
 }
 
@@ -348,11 +344,11 @@ fn steppingAFiberThatCannotBe() void {
     const dead = fiberOver("(fn [] 1)");
     const errored = fiberOver("(fn [] (error \"boom\"))");
 
-    assert(vm_entry_mod.continueFiber(dead, wrap.fromNil(), &out) == constants.JANET_SIGNAL_OK);
-    assert(harness.raised(vm_entry.stepImpl, .{ dead, wrap.fromNil(), &out }).?.says("cannot step fiber with status :dead"));
+    assert(vm_entry_mod.continueFiber(dead, wrap.fromNil(), &out) == types.Signal.ok);
+    assert(harness.raised(vm_entry.step, .{ dead, wrap.fromNil(), &out }).?.says("cannot step fiber with status :dead"));
 
-    assert(vm_entry_mod.continueFiber(errored, wrap.fromNil(), &out) == constants.JANET_SIGNAL_ERROR);
-    assert(harness.raised(vm_entry.stepImpl, .{ errored, wrap.fromNil(), &out }).?.says("cannot step fiber with status :error"));
+    assert(vm_entry_mod.continueFiber(errored, wrap.fromNil(), &out) == types.Signal.@"error");
+    assert(harness.raised(vm_entry.step, .{ errored, wrap.fromNil(), &out }).?.says("cannot step fiber with status :error"));
 }
 
 // ----------------------------------------------------------- entry checks
@@ -361,19 +357,19 @@ fn steppingAFiberThatCannotBe() void {
 /// running fiber or with the recursion counter already at its limit.
 fn callingWithoutAFiber() void {
     const fun = evalfn("(fn [] 1)");
-    assert(vm().fiber == null); // top level runs outside any fiber
-    assert(harness.raised(vm_entry.callImpl, .{ fun, &.{} }).?.says("janet_call failed because there is no current fiber"));
+    assert(harness.vm().fiber == null); // top level runs outside any fiber
+    assert(harness.raised(vm_entry.call, .{ fun, &.{} }).?.says("janet_call failed because there is no current fiber"));
 }
 
 // ------------------------------------------------- inside a running fiber
 
-/// Five things need `janet_vm.fiber` to be set, and the only honest way to get
+/// Five things need `vm.fiber` to be set, and the only honest way to get
 /// that is to be called by the interpreter.
-fn cfunProbe(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunProbe(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
 
     var out = wrap.fromNil();
-    const self = vm().fiber.?;
+    const self = harness.vm().fiber.?;
 
     // The fiber running this cfunction is alive, and the gate refuses it.
     var sig = vm_entry_mod.continueFiber(self, wrap.fromNil(), &out);
@@ -386,23 +382,23 @@ fn cfunProbe(argv: []types.Janet) raise.Raising(types.Janet) {
         rooted.gc.flags |= constants.JANET_FIBER_FLAG_ROOT;
         sig = vm_entry_mod.continueFiber(rooted, wrap.fromNil(), &out);
         expectReport(sig, out, if (has_ev) "cannot resume root fiber, use ev/go" else "cannot resume root fiber");
-        sig = vm_entry_mod.continueSignal(rooted, wrap.fromNil(), &out, constants.JANET_SIGNAL_ERROR);
+        sig = vm_entry_mod.continueSignal(rooted, wrap.fromNil(), &out, types.Signal.@"error");
         expectReport(sig, out, if (has_ev) "cannot cancel root fiber, use ev/cancel" else "cannot cancel root fiber");
     }
 
     // The three arity messages. The cascade that picks between them tests
     // `min == max` first, then a minimum, and falls through to a maximum, so
     // all three shapes have to be present for any of them to be trusted.
-    var args = [_]types.Janet{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    var args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fun = evalfn("(do (defn exactly-two [a b] a) exactly-two)");
-    assert(harness.raised(vm_entry.callImpl, .{ fun, args[0..1] }).?.says("arity mismatch in <function exactly-two>, expected 2, got 1"));
+    assert(harness.raised(vm_entry.call, .{ fun, args[0..1] }).?.says("arity mismatch in <function exactly-two>, expected 2, got 1"));
 
     // `callImpl` raises on its own entry condition too, and does it before
     // touching the fiber.
-    const saved = vm().stackn;
-    vm().stackn = config.recursion_guard;
-    assert(harness.raised(vm_entry.callImpl, .{ fun, args[0..2] }).?.says("C stack recursed too deeply"));
-    vm().stackn = saved;
+    const saved = harness.vm().stackn;
+    harness.vm().stackn = config.recursion_guard;
+    assert(harness.raised(vm_entry.call, .{ fun, args[0..2] }).?.says("C stack recursed too deeply"));
+    harness.vm().stackn = saved;
 
     // A dirty stack: values pushed above `stackstart` that `callImpl` must not
     // overwrite. It pushes a guard frame to protect them and pops it again, so
@@ -412,7 +408,7 @@ fn cfunProbe(argv: []types.Janet) raise.Raising(types.Janet) {
         const start_before = self.*.stackstart;
         const top_before = self.*.stacktop;
         args[0] = harness.wrapInteger(4);
-        const result = try vm_entry.callImpl(evalfn("(fn [x] (* x 10))"), args[0..1]);
+        const result = try vm_entry.call(evalfn("(fn [x] (* x 10))"), args[0..1]);
         assert(harness.integerIs(result, 40));
         assert(self.*.stackstart == start_before); // stackstart restored
         assert(self.*.stacktop == top_before); // stacktop restored
@@ -422,34 +418,33 @@ fn cfunProbe(argv: []types.Janet) raise.Raising(types.Janet) {
 
     // The gc lock is balanced across a successful call.
     {
-        const before = vm().gc_suspend;
+        const before = harness.vm().gc.suspend_count;
         args[0] = harness.wrapInteger(3);
-        _ = try vm_entry.callImpl(evalfn("(fn [x] (+ x 1))"), args[0..1]);
-        assert(vm().gc_suspend == before); // the gc lock is released
-        assert(vm().stackn == saved); // stackn is restored
+        _ = try vm_entry.call(evalfn("(fn [x] (+ x 1))"), args[0..1]);
+        assert(harness.vm().gc.suspend_count == before); // the gc lock is released
+        assert(harness.vm().stackn == saved); // stackn is restored
     }
 
     return wrap.fromNil();
 }
 
-fn cfunArityVariants(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunArityVariants(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
 
-    const args = [_]types.Janet{ harness.wrapInteger(1), harness.wrapInteger(2), harness.wrapInteger(3) };
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2), harness.wrapInteger(3) };
 
     var fun = evalfn("(do (defn at-least-two [a b & rest] a) at-least-two)");
-    assert(harness.raised(vm_entry.callImpl, .{ fun, args[0..1] }).?.says("arity mismatch in <function at-least-two>, expected at least 2, got 1"));
+    assert(harness.raised(vm_entry.call, .{ fun, args[0..1] }).?.says("arity mismatch in <function at-least-two>, expected at least 2, got 1"));
 
     fun = evalfn("(do (defn at-most-two [&opt a b] a) at-most-two)");
-    assert(harness.raised(vm_entry.callImpl, .{ fun, args[0..3] }).?.says("arity mismatch in <function at-most-two>, expected at most 2, got 3"));
+    assert(harness.raised(vm_entry.call, .{ fun, args[0..3] }).?.says("arity mismatch in <function at-most-two>, expected at most 2, got 3"));
 
     return wrap.fromNil();
 }
 
-const cfuns = [_]types.JanetReg{
+const cfuns = [_]types.Reg{
     .{ .name = "vmentry/probe", .cfun = raise.stored(&cfunProbe), .documentation = null },
     .{ .name = "vmentry/arity", .cfun = raise.stored(&cfunArityVariants), .documentation = null },
-    .{ .name = null, .cfun = null, .documentation = null },
 };
 
 // ------------------------------------------------------- the coercion path

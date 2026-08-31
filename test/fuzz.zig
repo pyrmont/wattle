@@ -1,24 +1,22 @@
-//! The four fuzz targets, and Phase 11 Part 23's migration of
-//! `test/fuzzers/*.c`.
+//! The four fuzz targets.
 //!
-//! ## What they were
+//! ## They had never been built
 //!
-//! Four `LLVMFuzzerTestOneInput` entry points over `janet.h`: the parser, the
-//! compiler, `janet_dobytes` and `janet_unmarshal`. **No build system in this
-//! tree ever named one.** Not `build.zig`, not `Makefile`, not `meson.build`,
-//! and nothing in `port/` — they were built, if at all, by a `clang
-//! -fsanitize=fuzzer` somebody typed elsewhere. So this is not a port of a
-//! working instrument; it is the first time these targets have been reachable
-//! from `zig build`.
+//! Four `LLVMFuzzerTestOneInput` entry points over Janet's public header: the
+//! parser, the compiler, `janet_dobytes` and `janet_unmarshal`. **No build
+//! system in this tree ever named one** -- they were built, if at all, by a
+//! `clang -fsanitize=fuzzer` somebody typed elsewhere. So these are not a port
+//! of a working instrument; `zig build fuzz` is the first thing that has ever
+//! run them.
 //!
 //! ## Why a translation would abort on almost every input
 //!
-//! Each C original opens a `janet_try_init` scope, calls its entry point, and
-//! calls `janet_restore`. That is right for C and wrong here, and the reason
-//! is the whole shape of Phase 10's hinge: three of the four entry points are
-//! `raise.reported` or `raise.panicking(...).abi` wrappers, so a raise leaves
-//! a *report* rather than travelling, and `janet_restore` aborts on an
-//! outstanding one. A fuzzer's inputs are mostly malformed, so a faithful
+//! A C original opens a `janet_try_init` scope, calls its entry point, and
+//! calls `janet_restore`. That is right for C and wrong here: three of the
+//! four entry points are `raise.reported` or `raise.panicking(...).abi`
+//! wrappers, so a raise leaves a *report* rather than travelling, and
+//! `janet_restore` aborts on an outstanding one. A fuzzer's inputs are mostly
+//! malformed, so a faithful translation would die with
 //! translation would die with
 //!
 //!     janet abort: a raise was reported to a C caller and never consumed
@@ -53,8 +51,8 @@
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
@@ -147,7 +145,7 @@ fn compileBody(env: *types.JanetTable, data: []const u8) void {
             // The result carries its own error field for an ordinary compile
             // failure; the scope is for the refusals that are not ordinary.
             _ = harness.raised(
-                compiler_primitives.janet_compile_lintImpl,
+                compiler_primitives.compileLintImpl,
                 .{ form, env, where, null },
             );
         }
@@ -170,8 +168,8 @@ test "compile" {
 ///
 /// The deepest of the four, and the only one that reaches the interpreter.
 fn dobytesBody(env: *types.JanetTable, data: []const u8) void {
-    var out: types.Janet = wrap.fromNil();
-    _ = harness.raised(core_env.janet_dobytesImpl, .{
+    var out: repr.Value = wrap.fromNil();
+    _ = harness.raised(core_env.dobytesImpl, .{
         env,
         data,
         "<fuzz>",

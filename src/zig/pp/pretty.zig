@@ -44,20 +44,20 @@
 const std = @import("std");
 const options = @import("options");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const raise = @import("raise");
 const describe = @import("../pp.zig");
 const structs = @import("../value/structs.zig");
 const tables = @import("../value/tables.zig");
 const gc_alloc = @import("../gc.zig");
 const utils = @import("../utils.zig");
-const kind = @import("../value/helpers/kind.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const args_core = @import("../args.zig");
 const fatal = @import("../fatal.zig");
 const value = @import("../value.zig");
 const buffers = @import("../value/buffers.zig");
+const numscan = @import("../scan.zig");
 
 /// `BUFSIZE`.
 const bufsize = 64;
@@ -75,17 +75,13 @@ const pretty_color: c_int = 1;
 const pretty_oneline: c_int = 2;
 const pretty_notrunc: c_int = 4;
 
-extern fn janet_valid_utf8(str: [*]const u8, len: i32) callconv(.c) c_int;
-extern fn janet_is_symbol_char(byte: u8) callconv(.c) c_int;
-extern fn janet_buffer_dtostr(buffer: *types.JanetBuffer, x: f64) callconv(.c) void;
-
 // ----------------------------------------------------------------- colouring
 
 const cycle_color = "\x1B[36m";
 const class_color = "\x1B[34m";
 const color_reset = "\x1B[0m";
 
-/// One escape per `JanetType`, in `JanetType` order — which starts at
+/// One escape per tag, in `repr.Tag` order — which starts at
 /// `JANET_NUMBER`, not at `JANET_NIL`.
 const type_colors = [16][*:0]const u8{
     "\x1B[32m", // number
@@ -146,7 +142,7 @@ const Pretty = struct {
 /// nanbox layouts, so a tagged build has no such symbol and a Zig caller — which
 /// cannot use the macro — does not link. `value_access.zig` writes it out for
 /// the same reason and `FOUND.md` has the defect.
-inline fn wrapInteger(x: i32) types.Janet {
+inline fn wrapInteger(x: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(x));
 }
 
@@ -206,10 +202,10 @@ fn integerToStringB(buffer: *types.JanetBuffer, val: i32) raise.Raising(i32) {
 fn containsBadChars(sym: types.JanetString, issym: bool) bool {
     const len = types.stringHead(sym).length;
     if (len != 0 and issym and sym[0] >= '0' and sym[0] <= '9') return true;
-    if (janet_valid_utf8(sym, len) == 0) return true;
+    if (numscan.validUtf8(sym[0..@intCast(len)]) == 0) return true;
     var i: i32 = 0;
     while (i < len) : (i += 1) {
-        if (janet_is_symbol_char(sym[@intCast(i)]) == 0) return true;
+        if (numscan.isSymbolChar(sym[@intCast(i)]) == 0) return true;
     }
     return false;
 }
@@ -221,25 +217,25 @@ fn containsBadChars(sym: types.JanetString, issym: bool) bool {
 ///
 /// Depth is a parameter here rather than a field of the record, because JDN
 /// counts down a separate recursion from the pretty printer's.
-fn printJdnOne(S: *Pretty, x: types.Janet, depth: c_int) raise.Raising(bool) {
+fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Raising(bool) {
     if (depth == 0) return true;
-    switch (kind.typeOf(x)) {
-        constants.JANET_NIL, constants.JANET_BOOLEAN, constants.JANET_BUFFER, constants.JANET_STRING => {
+    switch (repr.typeOf(x)) {
+        repr.Tag.nil, repr.Tag.boolean, repr.Tag.buffer, repr.Tag.string => {
             try describe.descriptionB(S.buffer, x);
         },
-        constants.JANET_NUMBER => {
+        repr.Tag.number => {
             try buffers.ensure(S.buffer, S.buffer.count + bufsize, 2);
             const num = wrap.toNumber(x);
             // Neither has a JDN spelling that reads back as itself.
             if (std.math.isNan(num)) return true;
             if (std.math.isInf(num)) return true;
-            janet_buffer_dtostr(S.buffer, num);
+            numscan.bufferDtostrAbi(S.buffer, num);
         },
-        constants.JANET_SYMBOL, constants.JANET_KEYWORD => {
-            if (containsBadChars(wrap.toKeyword(x), kind.typeOf(x) == constants.JANET_SYMBOL)) return true;
+        repr.Tag.symbol, repr.Tag.keyword => {
+            if (containsBadChars(wrap.toKeyword(x), repr.typeOf(x) == repr.Tag.symbol)) return true;
             try describe.descriptionB(S.buffer, x);
         },
-        constants.JANET_TUPLE => {
+        repr.Tag.tuple => {
             const t = wrap.toTuple(x);
             const bracketed = (types.tupleHead(t).gc.flags & constants.JANET_TUPLE_FLAG_BRACKETCTOR) != 0;
             try S.pushByte(if (bracketed) '[' else '(');
@@ -250,28 +246,28 @@ fn printJdnOne(S: *Pretty, x: types.Janet, depth: c_int) raise.Raising(bool) {
             }
             try S.pushByte(if (bracketed) ']' else ')');
         },
-        constants.JANET_ARRAY => {
+        repr.Tag.array => {
             _ = tables.put(&S.seen, x, wrap.fromTrue());
             const a = wrap.toArray(x);
             try S.pushCstring("@[");
             var i: i32 = 0;
             while (i < a.*.count) : (i += 1) {
                 try if (i != 0) S.pushByte(' ');
-                if (try printJdnOne(S, a.*.data.?[@intCast(i)], depth - 1)) return true;
+                if (try printJdnOne(S, a.*.slice()[@intCast(i)], depth - 1)) return true;
             }
             try S.pushByte(']');
         },
-        constants.JANET_TABLE => {
+        repr.Tag.table => {
             _ = tables.put(&S.seen, x, wrap.fromTrue());
             const tab = wrap.toTable(x);
             try S.pushCstring("@{");
-            if (try printJdnKvs(S, tab.*.data.?, tab.*.capacity, depth)) return true;
+            if (try printJdnKvs(S, tab.*.slots(), depth)) return true;
             try S.pushByte('}');
         },
-        constants.JANET_STRUCT => {
+        repr.Tag.@"struct" => {
             const st = wrap.toStruct(x);
             try S.pushByte('{');
-            if (try printJdnKvs(S, st, types.structHead(st).capacity, depth)) return true;
+            if (try printJdnKvs(S, st[0..@intCast(types.structHead(st).capacity)], depth)) return true;
             try S.pushByte('}');
         },
         else => return true,
@@ -282,12 +278,10 @@ fn printJdnOne(S: *Pretty, x: types.Janet, depth: c_int) raise.Raising(bool) {
 /// The body the table and struct cases share. In C it is written out twice
 /// over `tab->data`/`tab->capacity` and `st`/`janet_struct_capacity(st)`; the
 /// two copies are identical once those two expressions are parameters.
-fn printJdnKvs(S: *Pretty, kvs: [*]const types.JanetKV, capacity: i32, depth: c_int) raise.Raising(bool) {
+fn printJdnKvs(S: *Pretty, kvs: []const types.JanetKV, depth: c_int) raise.Raising(bool) {
     var first = true;
-    var i: i32 = 0;
-    while (i < capacity) : (i += 1) {
-        const kv = &kvs[@intCast(i)];
-        if (kind.checkType(kv.key, constants.JANET_NIL) != 0) continue;
+    for (kvs) |*kv| {
+        if (repr.checkType(kv.key, repr.Tag.nil)) continue;
         try if (!first) S.pushByte(' ');
         first = false;
         if (try printJdnOne(S, kv.key, depth - 1)) return true;
@@ -308,7 +302,7 @@ fn printJdnKvs(S: *Pretty, kvs: [*]const types.JanetKV, capacity: i32, depth: c_
 /// what was there before it.
 fn backtrackNewlines(S: *const Pretty) void {
     if (S.has(pretty_oneline) or S.buffer.count <= 0) return;
-    switch (S.buffer.data.?[@intCast(S.buffer.count - 1)]) {
+    switch (S.buffer.slice()[@intCast(S.buffer.count - 1)]) {
         ')', '}', ']' => {},
         else => return,
     }
@@ -356,20 +350,25 @@ fn backtrackNewlines(S: *const Pretty) void {
     if (offset < b0) fatal.fatal("bad buffer index");
 
     S.buffer.count -= removed;
+    // The compaction reads ahead of what it writes, up to `old_count`, which
+    // is past the count just shortened -- so it works over the allocation
+    // rather than over `slice()`. The `read >= old_count` guard below is the
+    // C original's bound and is what keeps it inside this range.
+    const bytes = S.buffer.reserved();
     var i = offset;
     var read = offset;
     while (i < S.buffer.count) : (i += 1) {
-        if (S.buffer.data.?[@intCast(read)] == '\n') {
-            S.buffer.data.?[@intCast(i)] = ' ';
+        if (bytes[@intCast(read)] == '\n') {
+            bytes[@intCast(i)] = ' ';
             // Skip the newline and the indentation that followed it. The
             // single space just written is what the whole run collapses to.
             read += 1;
-            while (S.buffer.data.?[@intCast(read)] == ' ') {
+            while (bytes[@intCast(read)] == ' ') {
                 if (read >= old_count) fatal.fatal("bad replacement of newline");
                 read += 1;
             }
         } else {
-            S.buffer.data.?[@intCast(i)] = S.buffer.data.?[@intCast(read)];
+            bytes[@intCast(i)] = bytes[@intCast(read)];
             read += 1;
         }
     }
@@ -397,14 +396,14 @@ fn pushEllipsis(S: *Pretty) raise.Raising(void) {
 }
 
 /// `janet_pretty_one`.
-fn prettyOne(S: *Pretty, x: types.Janet) raise.Raising(void) {
+fn prettyOne(S: *Pretty, x: repr.Value) raise.Raising(void) {
     // Record the value as seen, unless it is one of the four types that
     // cannot participate in a cycle and so never needs a marker.
-    switch (kind.typeOf(x)) {
-        constants.JANET_NIL, constants.JANET_NUMBER, constants.JANET_SYMBOL, constants.JANET_BOOLEAN => {},
+    switch (repr.typeOf(x)) {
+        repr.Tag.nil, repr.Tag.number, repr.Tag.symbol, repr.Tag.boolean => {},
         else => {
             const seenid = tables.get(&S.seen, x);
-            if (kind.checkType(seenid, constants.JANET_NUMBER) != 0) {
+            if (repr.checkType(seenid, repr.Tag.number)) {
                 try S.pushColor(cycle_color);
                 try S.pushCstring("<cycle ");
                 S.align_col += 8 + try integerToStringB(S.buffer, wrap.toInteger(seenid));
@@ -418,9 +417,9 @@ fn prettyOne(S: *Pretty, x: types.Janet) raise.Raising(void) {
         },
     }
 
-    switch (kind.typeOf(x)) {
-        constants.JANET_ARRAY, constants.JANET_TUPLE => try prettyIndexed(S, x),
-        constants.JANET_STRUCT, constants.JANET_TABLE => try prettyDictionary(S, x),
+    switch (repr.typeOf(x)) {
+        repr.Tag.array, repr.Tag.tuple => try prettyIndexed(S, x),
+        repr.Tag.@"struct", repr.Tag.table => try prettyDictionary(S, x),
         else => try prettyLeaf(S, x),
     }
 
@@ -430,24 +429,21 @@ fn prettyOne(S: *Pretty, x: types.Janet) raise.Raising(void) {
 /// Everything with no structure to walk into, which is what `pp_describe.zig`
 /// renders. The alignment is recovered from how much the buffer grew, since
 /// that layer counts nothing.
-fn prettyLeaf(S: *Pretty, x: types.Janet) raise.Raising(void) {
-    try S.pushColor(type_colors[kind.typeOf(x)]);
-    if (kind.checkType(x, constants.JANET_BUFFER) != 0 and wrap.toBuffer(x) == S.buffer) {
+fn prettyLeaf(S: *Pretty, x: repr.Value) raise.Raising(void) {
+    try S.pushColor(type_colors[@intFromEnum(repr.typeOf(x))]);
+    if (repr.checkType(x, repr.Tag.buffer) and wrap.toBuffer(x) == S.buffer) {
         // Printing a buffer into itself. Reserve the worst case first, then
         // escape only what was there when printing started, so that the loop
         // does not chase its own output.
         try buffers.ensure(S.buffer, S.buffer.count + S.bufstartlen * 4 + 3, 1);
         try S.pushByte('@');
-        // `try`, not the abi. This read `describe.escapeString` -- the
-        // `raise.reported` wrapper -- until Phase 11 Part 5 deleted it, and
-        // that was a crossing rather than a choice: a raise inside the escape
-        // became a report *nobody consumed*, so the blank width was used and
-        // the leak surfaced at the next scope boundary's assertion. Both
-        // functions are in this compilation, `prettyLeaf` is already
-        // `raise.Raising`, and `raise.crossing`'s note says of the whole
-        // family that each is "an ordinary import away from not needing this
-        // at all". This is one of them.
-        S.align_col += 1 + try describe.escapeStringImpl(S.buffer, S.buffer.data.?[0..@intCast(S.bufstartlen)]);
+        // `try`, not an abi. Reading the `raise.reported` wrapper here was a
+        // crossing rather than a choice: a raise inside the escape became a
+        // report *nobody consumed*, so the blank width was used and the leak
+        // surfaced at the next scope boundary's assertion. Both functions are
+        // in this compilation and `prettyLeaf` is already `raise.Raising`, so
+        // an ordinary import is all it takes.
+        S.align_col += 1 + try describe.escapeString(S.buffer, S.buffer.slice()[0..@intCast(S.bufstartlen)]);
     } else {
         S.align_col -= S.buffer.count;
         try describe.descriptionB(S.buffer, x);
@@ -457,10 +453,10 @@ fn prettyLeaf(S: *Pretty, x: types.Janet) raise.Raising(void) {
 }
 
 /// An array or a tuple.
-fn prettyIndexed(S: *Pretty, x: types.Janet) raise.Raising(void) {
-    var arr: ?[*]const types.Janet = null;
+fn prettyIndexed(S: *Pretty, x: repr.Value) raise.Raising(void) {
+    var arr: ?[*]const repr.Value = null;
     var len: i32 = 0;
-    const isarray = kind.checkType(x, constants.JANET_ARRAY) != 0;
+    const isarray = repr.checkType(x, repr.Tag.array);
     _ = args_core.indexedView(x, &arr, &len);
     const bracketed = !isarray and (types.tupleHead(arr.?).gc.flags & constants.JANET_TUPLE_FLAG_BRACKETCTOR) != 0;
 
@@ -503,7 +499,7 @@ fn prettyIndexed(S: *Pretty, x: types.Janet) raise.Raising(void) {
 
 /// The `_name` a prototype may carry, which is what makes an object-like table
 /// print as `@Name{...}` rather than `@{...}`.
-fn pushClassName(S: *Pretty, name: types.Janet) raise.Raising(void) {
+fn pushClassName(S: *Pretty, name: repr.Value) raise.Raising(void) {
     var n: ?[*]const u8 = undefined;
     var len: i32 = 0;
     if (args_core.bytesView(name, &n, &len) == 0) return;
@@ -514,8 +510,8 @@ fn pushClassName(S: *Pretty, name: types.Janet) raise.Raising(void) {
 }
 
 /// A struct or a table.
-fn prettyDictionary(S: *Pretty, x: types.Janet) raise.Raising(void) {
-    if (kind.checkType(x, constants.JANET_TABLE) != 0) {
+fn prettyDictionary(S: *Pretty, x: repr.Value) raise.Raising(void) {
+    if (repr.checkType(x, repr.Tag.table)) {
         const t = wrap.toTable(x);
         S.align_col += 1;
         try S.pushCstring("@");
@@ -547,7 +543,7 @@ fn prettyDictionary(S: *Pretty, x: types.Janet) raise.Raising(void) {
 }
 
 /// The entries of a struct or table, sorted where sorting is affordable.
-fn prettyEntries(S: *Pretty, x: types.Janet, align_col: c_int) raise.Raising(void) {
+fn prettyEntries(S: *Pretty, x: repr.Value, align_col: c_int) raise.Raising(void) {
     var kvs: ?[*]const types.JanetKV = null;
     var len: i32 = 0;
     var cap: i32 = 0;
@@ -565,7 +561,7 @@ fn prettyEntries(S: *Pretty, x: types.Janet, align_col: c_int) raise.Raising(voi
         var j: i32 = 0;
         var i: i32 = 0;
         while (i < len) : (i += 1) {
-            while (kind.checkType(kvs.?[@intCast(j)].key, constants.JANET_NIL) != 0) j += 1;
+            while (repr.checkType(kvs.?[@intCast(j)].key, repr.Tag.nil)) j += 1;
             try if (i != 0) printNewline(S, align_col);
             try prettyEntry(S, kvs.?[@intCast(j)]);
             j += 1;
@@ -655,9 +651,8 @@ fn initState(buffer: ?*types.JanetBuffer, depth: c_int, width: c_int, flags: c_i
 /// `janet_pretty_`, which `pp_format.zig` reaches `%p` and its seven siblings
 /// through -- as an import rather than across the C ABI.
 ///
-/// It *does* raise since Phase 10 Part 17c, and it did before: the buffer
-/// pushes underneath it can overflow. What changed is that the raise is
-/// returned rather than jumped, so the C convention came off the signature —
+/// It raises: the buffer pushes underneath it can overflow. The raise is
+/// returned rather than jumped, so the C convention comes off the signature --
 /// nothing calls this across the ABI, and an error union could not cross it if
 /// anything did.
 pub fn prettyBuffer(
@@ -665,7 +660,7 @@ pub fn prettyBuffer(
     depth: c_int,
     width: c_int,
     flags: c_int,
-    x: types.Janet,
+    x: repr.Value,
     startlen: i32,
     lookback_barrier: i32,
 ) raise.Raising(*types.JanetBuffer) {
@@ -676,7 +671,7 @@ pub fn prettyBuffer(
     return S.buffer;
 }
 
-pub fn prettyPublic(buffer: ?*types.JanetBuffer, depth: c_int, flags: c_int, x: types.Janet) *types.JanetBuffer {
+pub fn prettyPublic(buffer: ?*types.JanetBuffer, depth: c_int, flags: c_int, x: repr.Value) *types.JanetBuffer {
     const start: i32 = if (buffer) |b| b.count else 0;
     return raise.reported(prettyBuffer(buffer, depth, columns_default, flags, x, start, start));
 }
@@ -689,10 +684,10 @@ pub fn prettyPublic(buffer: ?*types.JanetBuffer, depth: c_int, flags: c_int, x: 
 /// seam and a selector's seam is the C ABI; folding them under one selector is
 /// what lets the JDN failure propagate as an error instead of as a jump through
 /// the formatter's frames.
-pub fn jdnImpl(
+pub fn jdn(
     buffer: ?*types.JanetBuffer,
     depth: c_int,
-    x: types.Janet,
+    x: repr.Value,
     startlen: i32,
     lookback_barrier: i32,
 ) raise.Raising(*types.JanetBuffer) {
@@ -704,13 +699,13 @@ pub fn jdnImpl(
 }
 
 // `janet_jdn` and its `raise.panicking` abi stood here, with a comment saying
-// nothing in the tree called it. **That was wrong by one**, and Phase 11 Part 5
-// found out by deleting it: `test/pp_pretty.c` hand-declared the symbol -- no
-// header has ever carried it -- and was its only caller anywhere. The contract
-// is `test/pp_pretty.zig` now, inside this compilation, so it calls `jdnImpl`
-// and takes the error. The wrapper that fixed `startlen` and the lookback
-// barrier to the buffer's current count went with it; the contract passes both
-// explicitly, which is what every real caller does through the formatter.
+// nothing in the tree called it. **That was wrong by one**: a C contract
+// hand-declared the symbol -- no header ever carried it -- and was its only
+// caller anywhere. The contract is `test/pp_pretty.zig` now, inside this
+// compilation, so it calls `jdn` and takes the error. The wrapper that fixed
+// `startlen` and the lookback barrier to the buffer's current count went with
+// it; the contract passes both explicitly, which is what every real caller
+// does through the formatter.
 
 // A subsystem's exports follow its selector, which is what lets a *contract*
 // module root itself at one of these files and compile the generic code under

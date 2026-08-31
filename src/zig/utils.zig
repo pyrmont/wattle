@@ -1,16 +1,11 @@
 //! The runtime's shared substrate: everything in `src/core/util.c` that is not
 //! registration, resolution or the clock.
 //!
-//! Phase 5 took the three hash helpers and `janet_tablen`; Phase 10 Part 5
-//! added the four out-of-line head accessors; Phase 10 Part 17f took the rest
-//! of what `-Dutilities` owns — the collection hashes, the dictionary probe
-//! every table and struct lookup goes through, the two string comparisons, the
-//! key sort, and the four host services `util.c` kept beside them.
+//! The collection hashes, the dictionary probe every table and struct lookup
+//! goes through, the two string comparisons, the key sort, and four host
+//! services.
 //!
-//! Nothing here raises. That is what makes it the part of `util.c` that could
-//! be ported without touching the raise mechanism, and it is why the file has
-//! no jump-transparent marker: there is no frame here a C raise can be thrown
-//! through, so `defer` is legal and used.
+//! Nothing here raises, so `defer` is legal and used.
 //!
 //! `registry.zig` has the half that does own VM state — the cfunction
 //! registry, the registration entry points, the abstract-type registry, and
@@ -20,33 +15,25 @@ const std = @import("std");
 const builtin = @import("builtin");
 const config = @import("config");
 const order = @import("value/helpers/order.zig");
-const kind = @import("value/helpers/kind.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const fatal = @import("fatal.zig");
 const types = @import("types");
-const constants = @import("constants");
-const c = @import("cabi");
+const repr = @import("repr");
+const vm_state = @import("vm/lifecycle.zig");
 
 const windows = builtin.os.tag == .windows;
 
 // ------------------------------------------------------------------- heads
 
-// The out-of-line twins of four macros in `janet.h`, moved out of `capi.c` in
-// Phase 10 Part 5. C spells each `(janet_struct_head)(st)` -- parenthesised so
-// the macro does not eat the definition -- and provides it for an embedder who
-// reaches Janet through the shared library rather than the header.
+// The out-of-line twins of four macros Janet publishes. C spells each
+// `(janet_struct_head)(st)` -- parenthesised so the macro does not eat the
+// definition -- and provides it for an embedder who reaches Janet through the
+// shared library rather than the header.
 //
 // These four are the *published* abi and nothing else. The arithmetic is
-// `types.zig`'s since increment 5e; what is left here is the C signature it
-// wears -- `callconv(.c)` and a `[*c]` return, which is the ABI's shape rather
-// than the accessor's (rule 65). Decision 5 moves this pair of properties to
-// `capi.zig`, at which point these bodies move with them and this section goes
-// away entirely.
-//
-// The arithmetic is not delegated to `c.janet_*_head` either. Each name is
-// both a macro and a prototype in `janet.h`, and which of the two translate-c
-// hands back is not something this file should depend on: if it were the
-// prototype, the body below would be a call to itself.
+// `types.zig`'s; what is left here is the C signature it wears --
+// `callconv(.c)` and a `[*c]` return, which is the ABI's shape rather than the
+// accessor's.
 
 pub fn structHead(st: [*]const types.JanetKV) *types.JanetStructHead {
     return types.structHead(st);
@@ -60,7 +47,7 @@ pub fn stringHead(s: [*]const u8) *types.JanetStringHead {
     return types.stringHead(s);
 }
 
-pub fn tupleHead(tuple: [*]const types.Janet) *types.JanetTupleHead {
+pub fn tupleHead(tuple: [*]const repr.Value) *types.JanetTupleHead {
     return types.tupleHead(tuple);
 }
 
@@ -82,7 +69,9 @@ pub const base64: [65]u8 = ("0123456789" ++
     "abcdefghijklmnopqrstuvwxyz" ++
     "_=" ++ "\x00").*;
 
-/// Indexed by `JanetType`, so the order is `janet.h`'s and not alphabetical.
+/// Indexed by `repr.Tag`, so the order is Janet's and not alphabetical.
+/// A caller writes `typeNames[@intFromEnum(tag)]`: the tag is an `enum(u4)`
+/// and an enum is deliberately not an index.
 pub const typeNames: [16][*:0]const u8 = .{
     "number",
     "nil",
@@ -150,8 +139,8 @@ pub const statusNames: [16][*:0]const u8 = .{
 // `isNil` for `sortedKeys`, which is batch 2's rule: a file may duplicate a
 // private predicate.
 
-inline fn isNil(val: types.Janet) bool {
-    return kind.checkType(val, constants.JANET_NIL) != 0;
+inline fn isNil(val: repr.Value) bool {
+    return repr.checkType(val, repr.Tag.nil);
 }
 
 /// `memcpy` that tolerates a zero length with a null pointer.
@@ -229,9 +218,9 @@ pub fn strbinsearch(
 ///
 /// The caller owns a buffer of at least `cap` entries. The sort is insertion
 /// sort over the indices rather than over the buckets, so nothing in the
-/// dictionary moves; the C original's comment calls it "simple insertion sort
-/// here for now" and the port keeps both the algorithm and the comparison
-/// order, because `janet_compare` decides key order for every printed table.
+/// dictionary moves; Janet's own comment calls it "simple insertion sort here
+/// for now" and both the algorithm and the comparison order are kept, because
+/// `janet_compare` decides key order for every printed table.
 pub fn sortedKeys(
     dict: [*]const types.JanetKV,
     cap: i32,
@@ -276,12 +265,12 @@ pub fn sortedKeys(
 /// all, which is why its result is returned rather than the buffer. Everyone
 /// else has the XSI one, which fills the buffer and returns an `int`.
 ///
-/// The buffer is `janet_vm.strerror_buf`, so the answer is valid until the next
+/// The buffer is `vm.strerror_buf`, so the answer is valid until the next
 /// call on the same thread.
-pub fn janet_strerror(e: c_int) [*:0]const u8 {
+pub fn strerrorSafe(e: c_int) [*:0]const u8 {
     if (windows) return @ptrCast(strerror(e));
-    const buf: [*]u8 = @ptrCast(&c.vm().strerror_buf);
-    const size = @sizeOf(@TypeOf(c.vm().strerror_buf));
+    const buf: [*]u8 = @ptrCast(&vm_state.current().strerror_buf);
+    const size = @sizeOf(@TypeOf(vm_state.current().strerror_buf));
     if (builtin.target.isGnuLibC()) return @ptrCast(gnuStrerrorR(e, buf, size));
     _ = strerror_r(e, buf, size);
     return @ptrCast(buf);
@@ -303,15 +292,14 @@ const gnuStrerrorR: GnuStrerrorR = @ptrCast(&strerror_r);
 
 /// Fill `out` with `n` cryptographically random bytes, answering 0 on success.
 ///
-/// Three implementations, exactly as the C original picks them. Windows draws
-/// from `rand_s` an `unsigned int` at a time; BSD and macOS have
-/// `arc4random_buf`; everywhere else reads `/dev/urandom`, because the C
-/// original's comment records that `getrandom` "doesn't seem to be uniformly
-/// supported on linux distros".
+/// Three implementations, exactly as Janet picks them. Windows draws from
+/// `rand_s` an `unsigned int` at a time; BSD and macOS have `arc4random_buf`;
+/// everywhere else reads `/dev/urandom`, because Janet's comment records that
+/// `getrandom` "doesn't seem to be uniformly supported on linux distros".
 ///
-/// Only one of the three is compiled for any target, which is the shape Phase
-/// 10's rule 5 warns about: the Linux arm is type-checked by the Linux
-/// cross-compile in the acceptance matrix and by nothing on this host.
+/// Only one of the three is compiled for any target: the Linux arm is
+/// type-checked by the Linux cross-compile in the acceptance matrix and by
+/// nothing on this host.
 pub fn cryptorand(out: [*]u8, n: usize) callconv(.c) c_int {
     if (!config.cryptorand) return -1;
 
@@ -391,8 +379,8 @@ const EINTR: c_int = @intFromEnum(std.c.E.INTR);
 /// `dlopen("foo.so")` searches the loader's path; `dlopen("./foo.so")` does
 /// not. A name that already starts with `.` or contains a `/` is left alone
 /// and returned as-is, which is why the caller must not free the result
-/// unconditionally -- it may be the argument. The C original's signature drops
-/// the `const` to say so, and the port keeps that rather than improving it.
+/// unconditionally -- it may be the argument. Janet's signature drops the
+/// `const` to say so, and that is kept rather than improved.
 pub fn getProcessedName(name: [*]const u8) [*]u8 {
     if (name[0] == '.') return @constCast(name);
     var len: usize = 0;
@@ -414,15 +402,11 @@ pub fn getProcessedName(name: [*]const u8) [*]u8 {
 
 // ------------------------------------------------------- allocator wrappers
 
-// `janet.h` declares each of these beside a macro of the same name, the way it
-// does the four head accessors above, and for the same reason: an embedder who
+// Janet declares each of these beside a macro of the same name, the way it does
+// the four head accessors above, and for the same reason: an embedder who
 // reaches Janet through the shared library has no macro. Inside the runtime
-// every call takes the macro, so nothing in the tree calls these four.
-//
-// They are ported rather than deleted. Phase 10's second decision ends the C
-// ABI, which makes them dead weight -- but what the finished runtime exports is
-// Phase 11's question, and deleting an exported symbol here would answer it
-// early.
+// every call takes the macro, so nothing in the tree calls these four. They
+// are published because Janet publishes them.
 
 pub fn malloc(size: usize) ?*anyopaque {
     return std.c.malloc(size);

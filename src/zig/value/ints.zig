@@ -5,16 +5,15 @@
 //! that mix 64-bit integers with doubles and with each other, decimal
 //! formatting, and floored division and modulo.
 //!
-//! The arithmetic cfunctions stayed in C, because their bodies unwrap Janet
-//! values, allocate abstracts and panic on a type mismatch or a division by
-//! zero, and no Janet signal could then unwind across a Zig frame. Phase 10
-//! Part 6 brought them here, at the foot of the file, along with both abstract
-//! types and the conversions; jump transparency is what makes a frame that
-//! raises legal.
+//! The arithmetic cfunctions are at the foot of the file, along with both
+//! abstract types and the conversions. Their bodies unwrap Janet values,
+//! allocate abstracts and raise on a type mismatch or a division by zero,
+//! which is an ordinary returned error here.
 
 const std = @import("std");
 const corefn = @import("corefn");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const raise = @import("raise");
@@ -25,11 +24,11 @@ const abstract_type = @import("../abstract_type.zig");
 const method_type = @import("../method_type.zig");
 const builtin = @import("builtin");
 const utils = @import("../utils.zig");
-const kind = @import("helpers/kind.zig");
 const wrap = @import("helpers/wrap.zig");
 const args_core = @import("../args.zig");
 const buffers = @import("buffers.zig");
 const abstracts = @import("abstracts.zig");
+const numscan = @import("../scan.zig");
 
 extern fn snprintf(buffer: [*]u8, size: usize, format: [*:0]const u8, ...) callconv(.c) c_int;
 
@@ -38,22 +37,41 @@ const intmax_double: f64 = 9007199254740992.0;
 const intmin_double: f64 = -9007199254740992.0;
 
 // The abstract types store a bare 64-bit integer, so both share one hash.
-pub fn zigItHash(p: ?*anyopaque, size: usize) callconv(.c) i32 {
-    _ = size;
-    const words: [*]const i32 = @ptrCast(@alignCast(p.?));
-    return words[0] ^ words[1];
-}
+/// The three callbacks `core/s64` and `core/u64` share.
+///
+/// They were three erased functions bound to both abstract types, which a C
+/// interface allows because every payload is `void *`. A typed payload makes
+/// them two instantiations of one generic family instead -- which is what they
+/// always were, and now says so.
+///
+/// `compare` gets the sharper half of the change. `order.compareAbstract`
+/// only reaches it when *both* abstracts carry this type, so the second
+/// operand really is a `T`; in C both are `void *` and the callback casts
+/// each on faith.
+pub fn Boxed(comptime T: type) type {
+    return struct {
+        pub fn compare(x: *const T, y: *const T) c_int {
+            return compareScalar(T, x.*, y.*);
+        }
 
-pub fn zigItS64CompareAbstract(p1: ?*anyopaque, p2: ?*anyopaque) callconv(.c) c_int {
-    const x: *const i64 = @ptrCast(@alignCast(p1.?));
-    const y: *const i64 = @ptrCast(@alignCast(p2.?));
-    return compareScalar(i64, x.*, y.*);
-}
+        /// Two 32-bit words exclusive-ored, whatever the signedness. The C
+        /// original is one function for both types for the same reason.
+        pub fn hash(box: *const T, _: usize) i32 {
+            const words: *const [2]i32 = @ptrCast(box);
+            return words[0] ^ words[1];
+        }
 
-pub fn zigItU64CompareAbstract(p1: ?*anyopaque, p2: ?*anyopaque) callconv(.c) c_int {
-    const x: *const u64 = @ptrCast(@alignCast(p1.?));
-    const y: *const u64 = @ptrCast(@alignCast(p2.?));
-    return compareScalar(u64, x.*, y.*);
+        pub fn marshal(box: *T, ctx: *types.JanetMarshalContext) raise.Raising(void) {
+            marsh.marshalAbstract(ctx, box);
+            try marsh.marshalInt64(ctx, @bitCast(box.*));
+        }
+
+        pub fn unmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*T) {
+            const box: *T = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(T))));
+            box.* = @bitCast(try marsh.unmarshalInt64(ctx));
+            return box;
+        }
+    };
 }
 
 fn compareScalar(comptime T: type, x: T, y: T) c_int {
@@ -107,7 +125,8 @@ pub fn zigItCompareU64S64(x: u64, y: i64) c_int {
 }
 
 /// Write the decimal form into space the caller reserved, returning its length.
-/// The reservation stays in C because it can panic.
+/// `itS64Tostring` below does the reserving, because that is the half that can
+/// raise; this half cannot, so it stays a plain function.
 pub fn zigItS64Tostring(val: i64, out: [*]u8) i32 {
     return snprintf(out, 32, "%lld", val);
 }
@@ -155,16 +174,11 @@ fn remainderTruncating(numerator: i64, denominator: i64) i64 {
 // ==========================================================================
 // int/s64 and int/u64: the abstract types and their cfunction surface.
 //
-// Phase 10 Part 6. The kernels above were Phase 8's; what arrives here is
-// everything that raises -- the two abstract types, the conversions, and the
-// thirty-odd arithmetic methods.
+// The two abstract types, the conversions, and the thirty-odd arithmetic
+// methods -- everything that raises.
 // ==========================================================================
 
 const intmax_int64: i64 = 9007199254740992;
-
-/// `src/core/util.h`. Provided by `intscan.zig` or `strtod.c`.
-extern fn janet_scan_int64(str: [*]const u8, len: i32, out: *i64) callconv(.c) c_int;
-extern fn janet_scan_uint64(str: [*]const u8, len: i32, out: *u64) callconv(.c) c_int;
 
 fn checkInt64Range(d: f64) bool {
     if (!(d >= intmin_double and d <= intmax_double)) return false;
@@ -178,113 +192,84 @@ fn checkUint64Range(d: f64) bool {
 
 // ------------------------------------------------------- the abstract types
 
-fn itS64Get(p: ?*anyopaque, key: types.Janet, out: *types.Janet) raise.Raising(c_int) {
-    _ = p;
-    if (kind.checkType(key, constants.JANET_KEYWORD) == 0) return 0;
+fn itS64Get(_: *i64, key: repr.Value, out: *repr.Value) raise.Raising(c_int) {
+    if (!repr.checkType(key, repr.Tag.keyword)) return 0;
     return args_core.getmethod(wrap.toKeyword(key), @ptrCast(&s64_methods), out);
 }
 
-fn itU64Get(p: ?*anyopaque, key: types.Janet, out: *types.Janet) raise.Raising(c_int) {
-    _ = p;
-    if (kind.checkType(key, constants.JANET_KEYWORD) == 0) return 0;
+fn itU64Get(_: *u64, key: repr.Value, out: *repr.Value) raise.Raising(c_int) {
+    if (!repr.checkType(key, repr.Tag.keyword)) return 0;
     return args_core.getmethod(wrap.toKeyword(key), @ptrCast(&u64_methods), out);
 }
 
-fn int64Next(p: ?*anyopaque, key: types.Janet) raise.Raising(types.Janet) {
-    _ = p;
+fn int64Next(_: *i64, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(&s64_methods), key);
 }
 
-fn uint64Next(p: ?*anyopaque, key: types.Janet) raise.Raising(types.Janet) {
-    _ = p;
+fn uint64Next(_: *u64, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(&u64_methods), key);
 }
 
 /// Both boxes marshal identically: eight bytes, and the type comes from the
 /// abstract header rather than from the payload.
-fn int64Marshal(p: ?*anyopaque, ctx: *types.JanetMarshalContext) raise.Raising(void) {
-    marsh.marshalAbstract(ctx, p);
-    const box: *i64 = @ptrCast(@alignCast(p));
-    try marsh.marshalInt64(ctx, box.*);
-}
-
-fn int64Unmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
-    const box: *i64 = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(i64))));
-    box.* = try marsh.unmarshalInt64(ctx);
-    return box;
-}
-
 /// The reservation of 32 bytes is the C original's and is what makes writing
 /// straight into `buffer->data + buffer->count` safe: the longest decimal
 /// rendering of a 64-bit integer is 20 characters.
-fn itS64Tostring(p: ?*anyopaque, buffer: *types.JanetBuffer) raise.Raising(void) {
-    const box: *i64 = @ptrCast(@alignCast(p));
+fn itS64Tostring(box: *i64, buffer: *types.JanetBuffer) raise.Raising(void) {
     try buffers.extra(buffer, 32);
     buffer.*.count += zigItS64Tostring(box.*, buffer.*.data.? + @as(usize, @intCast(buffer.*.count)));
 }
 
-fn itU64Tostring(p: ?*anyopaque, buffer: *types.JanetBuffer) raise.Raising(void) {
-    const box: *u64 = @ptrCast(@alignCast(p));
+fn itU64Tostring(box: *u64, buffer: *types.JanetBuffer) raise.Raising(void) {
     try buffers.extra(buffer, 32);
     buffer.*.count += zigItU64Tostring(box.*, buffer.*.data.? + @as(usize, @intCast(buffer.*.count)));
 }
 
-pub const s64Type: abstract_type.AbstractType = .{
-    .name = "core/s64",
-    .gc = null,
-    .gcmark = null,
-    .get = &itS64Get,
-    .put = null,
-    .marshal = &int64Marshal,
-    .unmarshal = &int64Unmarshal,
-    .tostring = &itS64Tostring,
-    .compare = &zigItS64CompareAbstract,
-    .hash = &zigItHash,
-    .next = &int64Next,
-    .call = null,
-    .length = null,
-    .bytes = null,
-    .gcperthread = null,
-};
+pub const BoxedS64 = Boxed(i64);
+pub const BoxedU64 = Boxed(u64);
 
-pub const u64Type: abstract_type.AbstractType = .{
+pub const s64Type = abstract_type.define(i64, .{
+    .name = "core/s64",
+    .get = &itS64Get,
+    .marshal = &BoxedS64.marshal,
+    .unmarshal = &BoxedS64.unmarshal,
+    .tostring = &itS64Tostring,
+    .compare = &BoxedS64.compare,
+    .hash = &BoxedS64.hash,
+    .next = &int64Next,
+});
+
+pub const u64Type = abstract_type.define(u64, .{
     .name = "core/u64",
-    .gc = null,
-    .gcmark = null,
     .get = &itU64Get,
-    .put = null,
-    .marshal = &int64Marshal,
-    .unmarshal = &int64Unmarshal,
+    .marshal = &BoxedU64.marshal,
+    .unmarshal = &BoxedU64.unmarshal,
     .tostring = &itU64Tostring,
-    .compare = &zigItU64CompareAbstract,
-    .hash = &zigItHash,
+    .compare = &BoxedU64.compare,
+    .hash = &BoxedU64.hash,
     .next = &uint64Next,
-    .call = null,
-    .length = null,
-    .bytes = null,
-    .gcperthread = null,
-};
+});
 
 // ------------------------------------------------------- the conversions
 
 /// A boxed value of *either* type converts, and the payload is reinterpreted
 /// rather than range-checked -- so `(int/s64 (int/u64 0xFFFFFFFFFFFFFFFF))` is
 /// -1 rather than an error. That is the C original's behaviour.
-fn janet_unwrap_s64Impl(x: types.Janet) raise.Raising(i64) {
-    switch (kind.typeOf(x)) {
-        constants.JANET_NUMBER => {
+pub fn unwrapS64(x: repr.Value) raise.Raising(i64) {
+    switch (repr.typeOf(x)) {
+        repr.Tag.number => {
             const d = wrap.toNumber(x);
             if (checkInt64Range(d)) return @intFromFloat(d);
         },
-        constants.JANET_STRING => {
+        repr.Tag.string => {
             var val: i64 = undefined;
             const str = wrap.toString(x);
-            if (janet_scan_int64(str, types.stringHead(str).length, &val) != 0) return val;
+            if (numscan.scanInt64(str[0..@intCast(types.stringHead(str).length)], &val) != 0) return val;
         },
-        constants.JANET_ABSTRACT => {
+        repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);
             const at = types.abstractHead(abst).type;
-            if (at == abstract_type.stored(&s64Type) or at == abstract_type.stored(&u64Type)) {
+            if (at == &s64Type or at == &u64Type) {
                 return @as(*i64, @ptrCast(@alignCast(abst))).*;
             }
         },
@@ -293,36 +278,25 @@ fn janet_unwrap_s64Impl(x: types.Janet) raise.Raising(i64) {
     return pp_format.panicf("can not convert %t %q to 64 bit signed integer", .{ x, x });
 }
 
-pub fn janet_unwrap_s64(x: types.Janet) i64 {
-    return raise.reported(janet_unwrap_s64Impl(x));
+pub fn unwrapS64Abi(x: repr.Value) i64 {
+    return raise.reported(unwrapS64(x));
 }
 
-/// The Zig entry points, for a caller inside the compilation.
-///
-/// Phase 11 Part 13. `args_core.zig`'s `getInteger64` and `getUInteger64`
-/// reached these through the `export fn`s above, from inside a
-/// `raise.Raising` function -- so a refusal became a report nobody consumed,
-/// the getter answered `reportToC`'s zero, and the process died at the next
-/// scope boundary. `(string/format "%d" "x")` was enough to reproduce it.
-/// That is rule 32's family, found by a contract's type rather than by a grep.
-pub const unwrapS64 = janet_unwrap_s64Impl;
-pub const unwrapU64 = janet_unwrap_u64Impl;
-
-fn janet_unwrap_u64Impl(x: types.Janet) raise.Raising(u64) {
-    switch (kind.typeOf(x)) {
-        constants.JANET_NUMBER => {
+pub fn unwrapU64(x: repr.Value) raise.Raising(u64) {
+    switch (repr.typeOf(x)) {
+        repr.Tag.number => {
             const d = wrap.toNumber(x);
             if (checkUint64Range(d)) return @intFromFloat(d);
         },
-        constants.JANET_STRING => {
+        repr.Tag.string => {
             var val: u64 = undefined;
             const str = wrap.toString(x);
-            if (janet_scan_uint64(str, types.stringHead(str).length, &val) != 0) return val;
+            if (numscan.scanUint64(str[0..@intCast(types.stringHead(str).length)], &val) != 0) return val;
         },
-        constants.JANET_ABSTRACT => {
+        repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);
             const at = types.abstractHead(abst).type;
-            if (at == abstract_type.stored(&s64Type) or at == abstract_type.stored(&u64Type)) {
+            if (at == &s64Type or at == &u64Type) {
                 return @as(*u64, @ptrCast(@alignCast(abst))).*;
             }
         },
@@ -331,31 +305,31 @@ fn janet_unwrap_u64Impl(x: types.Janet) raise.Raising(u64) {
     return pp_format.panicf("can not convert %t %q to a 64 bit unsigned integer", .{ x, x });
 }
 
-pub fn janet_unwrap_u64(x: types.Janet) u64 {
-    return raise.reported(janet_unwrap_u64Impl(x));
+pub fn unwrapU64Abi(x: repr.Value) u64 {
+    return raise.reported(unwrapU64(x));
 }
 
-pub fn isInt(x: types.Janet) types.JanetIntType {
-    if (kind.checkType(x, constants.JANET_ABSTRACT) == 0) return constants.JANET_INT_NONE;
+pub fn isInt(x: repr.Value) types.JanetIntType {
+    if (!repr.checkType(x, repr.Tag.abstract)) return constants.JANET_INT_NONE;
     const at = types.abstractHead(wrap.toAbstract(x)).type;
-    if (at == abstract_type.stored(&s64Type)) return constants.JANET_INT_S64;
-    if (at == abstract_type.stored(&u64Type)) return constants.JANET_INT_U64;
+    if (at == &s64Type) return constants.JANET_INT_S64;
+    if (at == &u64Type) return constants.JANET_INT_U64;
     return constants.JANET_INT_NONE;
 }
 
 /// Allocate a boxed integer of the given abstract type.
-fn boxed(comptime T: type, at: *const types.JanetAbstractType, val: T) types.Janet {
+fn boxed(comptime T: type, at: *const types.AbstractType, val: T) repr.Value {
     const p: *T = @ptrCast(@alignCast(abstracts.new(at, @sizeOf(T))));
     p.* = val;
     return wrap.fromAbstract(p);
 }
 
-pub fn wrapS64(x: i64) types.Janet {
-    return boxed(i64, abstract_type.stored(&s64Type), x);
+pub fn wrapS64(x: i64) repr.Value {
+    return boxed(i64, &s64Type, x);
 }
 
-pub fn wrapU64(x: u64) types.Janet {
-    return boxed(u64, abstract_type.stored(&u64Type), x);
+pub fn wrapU64(x: u64) repr.Value {
+    return boxed(u64, &u64Type, x);
 }
 
 // ------------------------------------------------------- the arithmetic
@@ -390,23 +364,20 @@ fn applyBin(comptime op: BinOp, lhs: u64, rhs: u64) u64 {
 
 fn Box(comptime T: type) type {
     return struct {
-        const at: *const types.JanetAbstractType = if (T == i64) abstract_type.stored(&s64Type) else abstract_type.stored(&u64Type);
+        const at: *const types.AbstractType = if (T == i64) &s64Type else &u64Type;
         /// The *raising* conversion, not the abi beside it.
         ///
-        /// This was `janet_unwrap_s64` until Phase 11 Part 15, which is Part
-        /// 13's defect in the file Part 13 fixed it for. That part gave
-        /// `args_core.zig`'s `Wide` the `unwrapS64`/`unwrapU64` entry points
-        /// because reaching the abi from a `raise.Raising` caller swallowed
-        /// the refusal; every `call` below is `raise.Raising` too, and this
-        /// binding kept them on the abi. `(+ (int/s64 1) {})` killed the
-        /// process instead of raising a catchable error.
+        /// Reaching the abi from a `raise.Raising` caller swallows the
+        /// refusal: every `call` below is `raise.Raising`, so a binding that
+        /// named the abi made `(+ (int/s64 1) {})` kill the process instead of
+        /// raising a catchable error.
         ///
         /// A comptime alias is why neither the compiler nor a grep for
         /// `c.janet_unwrap_s64` found it: the call sites read
-        /// `Box(T).unwrap(...)`, and the abi is a bare identifier in this
-        /// file rather than a `c.` one. `port/swallowed.py` follows both now.
-        const unwrap = if (T == i64) janet_unwrap_s64Impl else janet_unwrap_u64Impl;
-        inline fn make(val: T) types.Janet {
+        /// `Box(T).unwrap(...)`, and the abi is a bare identifier in this file
+        /// rather than a `c.` one. `tools/check/swallowed.janet` follows both now.
+        const unwrap = if (T == i64) unwrapS64 else unwrapU64;
+        inline fn make(val: T) repr.Value {
             return boxed(T, at, val);
         }
     };
@@ -415,7 +386,7 @@ fn Box(comptime T: type) type {
 /// `OPMETHOD`: variadic, left-folded over the arguments.
 fn OpMethod(comptime T: type, comptime op: BinOp) type {
     return struct {
-        fn call(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+        fn call(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             try args_core.arity(argv, 2, -1);
             var acc: u64 = @bitCast(try Box(T).unwrap(argv[0]));
             var i: i32 = 1;
@@ -431,7 +402,7 @@ fn OpMethod(comptime T: type, comptime op: BinOp) type {
 /// when the boxed integer is the *right* operand, so the arguments swap.
 fn OpMethodInvert(comptime T: type, comptime op: BinOp) type {
     return struct {
-        fn call(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+        fn call(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             try args_core.fixarity(argv, 2);
             const lhs: u64 = @bitCast(try Box(T).unwrap(argv[1]));
             const rhs: u64 = @bitCast(try Box(T).unwrap(argv[0]));
@@ -443,7 +414,7 @@ fn OpMethodInvert(comptime T: type, comptime op: BinOp) type {
 /// `UNARYMETHOD`, of which there is one: bitwise complement.
 fn NotMethod(comptime T: type) type {
     return struct {
-        fn call(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+        fn call(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             try args_core.fixarity(argv, 1);
             return Box(T).make(~try Box(T).unwrap(argv[0]));
         }
@@ -475,7 +446,7 @@ fn DivMethod(comptime T: type, comptime rem: bool, comptime on_zero: DivZero) ty
             acc.* = if (rem) @rem(acc.*, val) else @divTrunc(acc.*, val);
         }
 
-        fn call(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+        fn call(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             try args_core.arity(argv, 2, -1);
             var acc = try Box(T).unwrap(argv[0]);
             var i: i32 = 1;
@@ -483,7 +454,7 @@ fn DivMethod(comptime T: type, comptime rem: bool, comptime on_zero: DivZero) ty
             return Box(T).make(acc);
         }
 
-        fn calli(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+        fn calli(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             try args_core.fixarity(argv, 2);
             var acc = try Box(T).unwrap(argv[1]);
             try apply(&acc, try Box(T).unwrap(argv[0]));
@@ -492,34 +463,34 @@ fn DivMethod(comptime T: type, comptime rem: bool, comptime on_zero: DivZero) ty
     };
 }
 
-fn cfunS64Divf(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunS64Divf(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    const op1 = try janet_unwrap_s64Impl(argv[0]);
-    const op2 = try janet_unwrap_s64Impl(argv[1]);
+    const op1 = try unwrapS64(argv[0]);
+    const op2 = try unwrapS64(argv[1]);
     if (op2 == 0) return raise.panic("division by zero");
-    return boxed(i64, abstract_type.stored(&s64Type), zigItS64Divf(op1, op2));
+    return boxed(i64, &s64Type, zigItS64Divf(op1, op2));
 }
 
-fn cfunS64Divfi(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunS64Divfi(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    const op2 = try janet_unwrap_s64Impl(argv[0]);
-    const op1 = try janet_unwrap_s64Impl(argv[1]);
+    const op2 = try unwrapS64(argv[0]);
+    const op1 = try unwrapS64(argv[1]);
     if (op2 == 0) return raise.panic("division by zero");
-    return boxed(i64, abstract_type.stored(&s64Type), zigItS64Divf(op1, op2));
+    return boxed(i64, &s64Type, zigItS64Divf(op1, op2));
 }
 
-fn cfunS64Mod(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunS64Mod(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    const op1 = try janet_unwrap_s64Impl(argv[0]);
-    const op2 = try janet_unwrap_s64Impl(argv[1]);
-    return boxed(i64, abstract_type.stored(&s64Type), zigItS64Mod(op1, op2));
+    const op1 = try unwrapS64(argv[0]);
+    const op2 = try unwrapS64(argv[1]);
+    return boxed(i64, &s64Type, zigItS64Mod(op1, op2));
 }
 
-fn cfunS64Modi(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunS64Modi(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    const op2 = try janet_unwrap_s64Impl(argv[0]);
-    const op1 = try janet_unwrap_s64Impl(argv[1]);
-    return boxed(i64, abstract_type.stored(&s64Type), zigItS64Mod(op1, op2));
+    const op2 = try unwrapS64(argv[0]);
+    const op1 = try unwrapS64(argv[1]);
+    return boxed(i64, &s64Type, zigItS64Mod(op1, op2));
 }
 
 // ------------------------------------------------------- the comparisons
@@ -532,23 +503,23 @@ fn threeWay(comptime T: type, x: T, y: T) f64 {
     return 0;
 }
 
-fn cfunS64Compare(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunS64Compare(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     if (isInt(argv[0]) != constants.JANET_INT_S64) {
         return raise.panic("compare method requires int/s64 as first argument");
     }
-    const x = try janet_unwrap_s64Impl(argv[0]);
-    switch (kind.typeOf(argv[1])) {
-        constants.JANET_NUMBER => {
+    const x = try unwrapS64(argv[0]);
+    switch (repr.typeOf(argv[1])) {
+        repr.Tag.number => {
             return wrap.fromNumber(@floatFromInt(zigItCompareS64Double(x, wrap.toNumber(argv[1]))));
         },
-        constants.JANET_ABSTRACT => {
+        repr.Tag.abstract => {
             const abst = wrap.toAbstract(argv[1]);
             const at = types.abstractHead(abst).type;
-            if (at == abstract_type.stored(&s64Type)) {
+            if (at == &s64Type) {
                 const y = @as(*i64, @ptrCast(@alignCast(abst))).*;
                 return wrap.fromNumber(threeWay(i64, x, y));
-            } else if (at == abstract_type.stored(&u64Type)) {
+            } else if (at == &u64Type) {
                 const y = @as(*u64, @ptrCast(@alignCast(abst))).*;
                 return wrap.fromNumber(@floatFromInt(zigItCompareS64U64(x, y)));
             }
@@ -558,23 +529,23 @@ fn cfunS64Compare(argv: []types.Janet) align(corefn.alignment) raise.Raising(typ
     return wrap.fromNil();
 }
 
-fn cfunU64Compare(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunU64Compare(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     if (isInt(argv[0]) != constants.JANET_INT_U64) {
         return raise.panic("compare method requires int/u64 as first argument");
     }
-    const x = try janet_unwrap_u64Impl(argv[0]);
-    switch (kind.typeOf(argv[1])) {
-        constants.JANET_NUMBER => {
+    const x = try unwrapU64(argv[0]);
+    switch (repr.typeOf(argv[1])) {
+        repr.Tag.number => {
             return wrap.fromNumber(@floatFromInt(zigItCompareU64Double(x, wrap.toNumber(argv[1]))));
         },
-        constants.JANET_ABSTRACT => {
+        repr.Tag.abstract => {
             const abst = wrap.toAbstract(argv[1]);
             const at = types.abstractHead(abst).type;
-            if (at == abstract_type.stored(&u64Type)) {
+            if (at == &u64Type) {
                 const y = @as(*u64, @ptrCast(@alignCast(abst))).*;
                 return wrap.fromNumber(threeWay(u64, x, y));
-            } else if (at == abstract_type.stored(&s64Type)) {
+            } else if (at == &s64Type) {
                 const y = @as(*i64, @ptrCast(@alignCast(abst))).*;
                 return wrap.fromNumber(@floatFromInt(zigItCompareU64S64(x, y)));
             }
@@ -668,30 +639,30 @@ const u64_methods = [_]method_type.Method{
 
 // ------------------------------------------------------- the cfunctions
 
-fn cfunS64New(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunS64New(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    return wrapS64(try janet_unwrap_s64Impl(argv[0]));
+    return wrapS64(try unwrapS64(argv[0]));
 }
 
-fn cfunU64New(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunU64New(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    return wrapU64(try janet_unwrap_u64Impl(argv[0]));
+    return wrapU64(try unwrapU64(argv[0]));
 }
 
 /// The bound is `JANET_INTMAX_INT64`, 2^53, and not `INT64_MAX`: beyond it a
 /// double cannot tell neighbouring integers apart, so the conversion would
 /// silently round.
-fn cfunToNumber(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunToNumber(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    if (kind.typeOf(argv[0]) == constants.JANET_ABSTRACT) {
+    if (repr.typeOf(argv[0]) == repr.Tag.abstract) {
         const abst = wrap.toAbstract(argv[0]);
         const at = types.abstractHead(abst).type;
-        if (at == abstract_type.stored(&s64Type)) {
+        if (at == &s64Type) {
             const val = @as(*i64, @ptrCast(@alignCast(abst))).*;
             try if (val > intmax_int64 or val < -intmax_int64) outOfRange(argv[0]);
             return wrap.fromNumber(@floatFromInt(val));
         }
-        if (at == abstract_type.stored(&u64Type)) {
+        if (at == &u64Type) {
             const val = @as(*u64, @ptrCast(@alignCast(abst))).*;
             try if (val > intmax_int64) outOfRange(argv[0]);
             return wrap.fromNumber(@floatFromInt(val));
@@ -700,18 +671,18 @@ fn cfunToNumber(argv: []types.Janet) align(corefn.alignment) raise.Raising(types
     return pp_format.panicf("expected int/u64 or int/s64, got %q", .{argv[0]});
 }
 
-fn outOfRange(x: types.Janet) raise.Error {
+fn outOfRange(x: repr.Value) raise.Error {
     return pp_format.panicf("cannot convert %q to a number, must be in the range [%q, %q]", .{ x, wrap.fromNumber(-9007199254740992.0), wrap.fromNumber(9007199254740992.0) });
 }
 
-fn cfunToBytes(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunToBytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
     if (isInt(argv[0]) == constants.JANET_INT_NONE) {
         return pp_format.panicf("int/to-bytes: expected an int/s64 or int/u64, got %q", .{argv[0]});
     }
 
     var reverse = false;
-    if (@as(i32, @intCast(argv.len)) > 1 and kind.checkType(argv[1], constants.JANET_NIL) == 0) {
+    if (@as(i32, @intCast(argv.len)) > 1 and !repr.checkType(argv[1], repr.Tag.nil)) {
         const endianness = try args_core.getKeyword(argv, 1);
         if (utils.cstrcmp(endianness, "le") == 0) {
             reverse = big_endian;
@@ -726,8 +697,8 @@ fn cfunToBytes(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.
     // rather than fetched through `janet_getbuffer`, so the message names this
     // function rather than the slot.
     var buffer: *types.JanetBuffer = undefined;
-    if (@as(i32, @intCast(argv.len)) > 2 and kind.checkType(argv[2], constants.JANET_NIL) == 0) {
-        if (kind.checkType(argv[2], constants.JANET_BUFFER) == 0) {
+    if (@as(i32, @intCast(argv.len)) > 2 and !repr.checkType(argv[2], repr.Tag.nil)) {
+        if (!repr.checkType(argv[2], repr.Tag.buffer)) {
             return pp_format.panicf("int/to-bytes: expected buffer or nil, got %q", .{argv[2]});
         }
         buffer = wrap.toBuffer(argv[2]);
@@ -749,8 +720,8 @@ fn cfunToBytes(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.
 
 const big_endian = (builtin.cpu.arch.endian() == .big);
 
-pub fn janet_lib_inttypesImpl(env: *types.JanetTable) raise.Raising(void) {
-    const entries = [_]corefn.Entry{
+pub fn libInttypes(env: *types.JanetTable) raise.Raising(void) {
+    const entries = comptime [_]corefn.Entry{
         corefn.reg("int/s64", &cfunS64New, @src(), "(int/s64 value)", "Create a boxed signed 64 bit integer from a string value or a number."),
         corefn.reg("int/u64", &cfunU64New, @src(), "(int/u64 value)", "Create a boxed unsigned 64 bit integer from a string value or a number."),
         corefn.reg("int/to-number", &cfunToNumber, @src(), "(int/to-number value)", "Convert an int/u64 or int/s64 to a number. Fails if the number is out of range for an int64."),
@@ -761,13 +732,12 @@ pub fn janet_lib_inttypesImpl(env: *types.JanetTable) raise.Raising(void) {
             "- `nil` (unset): system byte order\n" ++
             "- `:le`: little-endian, least significant byte first\n" ++
             "- `:be`: big-endian, most significant byte first\n"),
-        corefn.end,
     };
-    corefn.install(env, &entries);
-    try registry.registerAbstractType(abstract_type.stored(&s64Type));
-    try registry.registerAbstractType(abstract_type.stored(&u64Type));
+    corefn.install(env, entries);
+    try registry.registerAbstractType(&s64Type);
+    try registry.registerAbstractType(&u64Type);
 }
 
-pub fn libInttypes(env: *types.JanetTable) void {
-    raise.reported(janet_lib_inttypesImpl(env));
+pub fn libInttypesAbi(env: *types.JanetTable) void {
+    raise.reported(libInttypes(env));
 }

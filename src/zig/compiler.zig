@@ -2,8 +2,8 @@ const std = @import("std");
 const config = @import("config");
 const corefn = @import("corefn");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const specials = @import("special_type.zig");
 const vm_lifecycle = @import("vm/lifecycle.zig");
 const arrays = @import("value/arrays.zig");
@@ -18,12 +18,11 @@ const utils = @import("utils.zig");
 const order = @import("value/helpers/order.zig");
 const fibers = @import("value/fibers.zig");
 const functions = @import("value/functions.zig");
-const vector_mod = @import("stretchy.zig");
+const stretchy = @import("stretchy.zig");
 const optimize = @import("compiler/optimize.zig");
 const regalloc = @import("compiler/regalloc.zig");
 const emit_core = @import("compiler/emit.zig");
 const registry = @import("registry.zig");
-const kind = @import("value/helpers/kind.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const args_core = @import("args.zig");
 const value = @import("value.zig");
@@ -31,20 +30,16 @@ const fatal = @import("fatal.zig");
 const specials_core = @import("compiler/specials.zig");
 const vm_entry = @import("vm/entry.zig");
 
-const vector_header_size = 2 * @sizeOf(i32);
-
 /// `janet_wrap_nil`, and `janet_wrap_integer` written out.
 ///
-/// Both were one-line C functions in `compile.c` until Phase 10 Part 7,
-/// because this subsystem translated only `compile.h` and `emit.h`. One shared
-/// set of types removes the detour; `wrapInteger` stays spelled out because
-/// `janet_wrap_integer` is a macro under nanboxing and a symbol `wrap.c`
-/// never defines there.
-inline fn wrapNil() types.Janet {
+/// One shared set of types removes the detour a separate translation needed;
+/// `wrapInteger` stays spelled out because `janet_wrap_integer` is a macro
+/// under nanboxing and a symbol Janet never defines there.
+inline fn wrapNil() repr.Value {
     return wrap.fromNil();
 }
 
-inline fn wrapInteger(val: i32) types.Janet {
+inline fn wrapInteger(val: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(val));
 }
 
@@ -56,16 +51,13 @@ inline fn wrapInteger(val: i32) types.Janet {
 // They go into `c->lints` when the caller asked for them and are dropped
 // otherwise.
 //
-// **The C original is variadic, and this one is not.** Phase 10 Part 4
-// established that a variadic entry point is the one shape that cannot be
-// ported at all, because Zig 0.16 cannot name a `va_list` on `aarch64-linux`.
-// That rule survives, but Part 7 finds its edge: it binds where the variadic
-// *signature* is the contract -- `janet_panicf` and `janet_dynprintf` are
-// public API and an embedder's call has to keep compiling. `janetc_lintf` is
-// declared in `compile.h`, is called from nowhere but the compiler front end,
-// and after this increment every one of those callers is Zig. So it does not
-// have to stay variadic; it just has to stop being called by C, and then the
-// argument list can be an ordinary Zig tuple that the compiler counts and
+// **The C original is variadic and this one is not.** A variadic entry point
+// is the one shape that cannot be written here at all: Zig 0.16 cannot name a
+// `va_list` on `aarch64-linux`, so a variadic *definition* is out of reach.
+// That binds where the variadic signature is the contract -- `janet_panicf`
+// is public API and an embedder's call has to keep compiling. `janetc_lintf`
+// is called from nowhere but the compiler front end and every caller is Zig,
+// so its argument list is an ordinary Zig tuple that the compiler counts and
 // type-checks.
 //
 // Zig can *call* a C variadic perfectly well -- only defining one and
@@ -111,7 +103,7 @@ fn lintf(
 /// `lintf` above however simple the call is. The C string is interned *after*
 /// the test, so a build collecting no lints still allocates nothing -- which
 /// is the behaviour `janetc_lintf` had and the reason its test came first.
-pub fn janetc_lintImpl(
+pub fn lint(
     compiler: *types.JanetCompiler,
     level: c_uint,
     message: [*:0]const u8,
@@ -161,7 +153,7 @@ pub fn shadowcheck(compiler: *types.JanetCompiler, symbol: [*:0]const u8) types.
     var scope = compiler.scope;
     const is_global = compiler.scope.?.flags & constants.JANET_SCOPE_TOP != 0;
     while (scope) |current| : (scope = current.parent) {
-        var index = vectorCount(types.SymPair, current.syms);
+        var index = stretchy.count(types.SymPair, current.syms);
         while (index > 0) {
             index -= 1;
             if (current.syms.?[@intCast(index)].sym == symbol) {
@@ -176,7 +168,7 @@ pub fn shadowcheck(compiler: *types.JanetCompiler, symbol: [*:0]const u8) types.
     return if (is_global) constants.JANETC_SHADOW_GLOBAL_HIDES_GLOBAL else constants.JANETC_SHADOW_LOCAL_HIDES_GLOBAL;
 }
 
-pub fn janetc_nameslotImpl(
+pub fn nameslot(
     compiler: *types.JanetCompiler,
     symbol: [*:0]const u8,
     slot: types.JanetSlot,
@@ -185,10 +177,10 @@ pub fn janetc_nameslotImpl(
     if (flags & constants.JANET_DEFFLAG_NO_SHADOWCHECK == 0 and symbol[0] != '_') {
         try shadowLint(compiler, symbol, shadowcheck(compiler, symbol));
     }
-    const instruction_count = vectorCount(u32, compiler.buffer);
+    const instruction_count = stretchy.count(u32, compiler.buffer);
     var named_slot = slot;
     named_slot.flags |= constants.JANET_SLOT_NAMED;
-    pushVector(types.SymPair, &compiler.scope.?.syms, .{
+    stretchy.push(types.SymPair, &compiler.scope.?.syms, .{
         .slot = named_slot,
         .sym = symbol,
         .sym2 = symbol,
@@ -199,7 +191,7 @@ pub fn janetc_nameslotImpl(
     });
 }
 
-pub fn janetc_resolveImpl(compiler: *types.JanetCompiler, symbol: [*:0]const u8) raise.Raising(types.JanetSlot) {
+pub fn resolve(compiler: *types.JanetCompiler, symbol: [*:0]const u8) raise.Raising(types.JanetSlot) {
     var scope = compiler.scope;
     var found_pair: ?*types.SymPair = null;
     var found_local = true;
@@ -207,7 +199,7 @@ pub fn janetc_resolveImpl(compiler: *types.JanetCompiler, symbol: [*:0]const u8)
 
     search: while (scope) |current| : (scope = current.parent) {
         if (current.flags & constants.JANET_SCOPE_UNUSED != 0) unused = true;
-        var index = vectorCount(types.SymPair, current.syms);
+        var index = stretchy.count(types.SymPair, current.syms);
         while (index > 0) {
             index -= 1;
             const pair = &current.syms.?[@intCast(index)];
@@ -246,7 +238,7 @@ pub fn janetc_resolveImpl(compiler: *types.JanetCompiler, symbol: [*:0]const u8)
     var environment_index: i32 = -1;
     while (scope) |current| : (scope = current.child) {
         if (current.flags & constants.JANET_SCOPE_FUNCTION == 0) continue;
-        const environment_count = vectorCount(types.JanetEnvRef, current.envs);
+        const environment_count = stretchy.count(types.JanetEnvRef, current.envs);
         var index: i32 = 0;
         var found = false;
         while (index < environment_count) : (index += 1) {
@@ -257,7 +249,7 @@ pub fn janetc_resolveImpl(compiler: *types.JanetCompiler, symbol: [*:0]const u8)
             }
         }
         if (!found) {
-            pushVector(types.JanetEnvRef, &current.envs, .{
+            stretchy.push(types.JanetEnvRef, &current.envs, .{
                 .envindex = environment_index,
                 .scope = original_scope,
             });
@@ -268,8 +260,8 @@ pub fn janetc_resolveImpl(compiler: *types.JanetCompiler, symbol: [*:0]const u8)
     return result;
 }
 
-pub fn cslot(val: types.Janet) types.JanetSlot {
-    const value_type: u5 = @intCast(kind.typeOf(val));
+pub fn cslot(val: repr.Value) types.JanetSlot {
+    const value_type: u5 = @intFromEnum(repr.typeOf(val));
     return .{
         .constant = val,
         .index = -1,
@@ -280,12 +272,10 @@ pub fn cslot(val: types.Janet) types.JanetSlot {
 
 /// A fresh far slot, or an error recorded on the compiler.
 ///
-/// Until Phase 10 Part 7 the allocation was here and the error was in
-/// `compile.c`, because an error union cannot cross a subsystem seam and this
-/// one reported through a returned flag. With the callers in Zig there is no
-/// seam left to report across. On failure the slot is returned uninitialised,
-/// exactly as the C original left it: the compile has already failed, and
-/// every caller is on its way out.
+/// The allocation and the error are one function here, and the error is
+/// recorded on the compiler rather than raised. On failure the slot is
+/// returned uninitialised, exactly as Janet leaves it: the compile has already
+/// failed, and every caller is on its way out.
 pub fn farslot(compiler: *types.JanetCompiler) types.JanetSlot {
     const register = regalloc.regalloc1(&compiler.scope.?.ra);
     if (register > 0xffff) {
@@ -333,7 +323,7 @@ pub fn pushScope(
     scope.syms = null;
     scope.defs = null;
     scope.envs = null;
-    scope.bytecode_start = vectorCount(u32, compiler.buffer);
+    scope.bytecode_start = stretchy.count(u32, compiler.buffer);
     scope.flags = flags;
     regalloc.regallocInit(&scope.ua);
     if (flags & constants.JANET_SCOPE_FUNCTION == 0 and compiler.scope != null) {
@@ -346,7 +336,7 @@ pub fn pushScope(
     result.* = scope;
 }
 
-pub fn janetc_popscopeImpl(compiler: *types.JanetCompiler) raise.Raising(void) {
+pub fn popscope(compiler: *types.JanetCompiler) raise.Raising(void) {
     const old_scope = compiler.scope.?;
     const new_scope = old_scope.*.parent;
     if (old_scope.*.flags & (constants.JANET_SCOPE_FUNCTION | constants.JANET_SCOPE_UNUSED) == 0 and new_scope != null) {
@@ -357,7 +347,7 @@ pub fn janetc_popscopeImpl(compiler: *types.JanetCompiler) raise.Raising(void) {
             new_scope.?.ra.max = old_scope.*.ra.max;
         }
 
-        const symbol_count = vectorCount(types.SymPair, old_scope.*.syms);
+        const symbol_count = stretchy.count(types.SymPair, old_scope.*.syms);
         var index: i32 = 0;
         while (index < symbol_count) : (index += 1) {
             var pair = old_scope.*.syms.?[@intCast(index)];
@@ -366,20 +356,20 @@ pub fn janetc_popscopeImpl(compiler: *types.JanetCompiler) raise.Raising(void) {
             }
             pair.sym = null;
             if (pair.death_pc == std_max_u32) {
-                pair.death_pc = @intCast(vectorCount(u32, compiler.buffer));
+                pair.death_pc = @intCast(stretchy.count(u32, compiler.buffer));
             }
             if (pair.keep != 0) {
                 pair.sym2 = null;
                 regalloc.regallocTouch(&new_scope.?.ra, pair.slot.index);
             }
-            pushVector(types.SymPair, &new_scope.?.syms, pair);
+            stretchy.push(types.SymPair, &new_scope.?.syms, pair);
         }
     }
 
-    freeVector(types.Janet, old_scope.*.consts);
-    freeVector(types.SymPair, old_scope.*.syms);
-    freeVector(types.JanetEnvRef, old_scope.*.envs);
-    freeVector(*types.JanetFuncDef, old_scope.*.defs);
+    stretchy.free(repr.Value, old_scope.*.consts);
+    stretchy.free(types.SymPair, old_scope.*.syms);
+    stretchy.free(types.JanetEnvRef, old_scope.*.envs);
+    stretchy.free(*types.JanetFuncDef, old_scope.*.defs);
     regalloc.regallocDeinit(&old_scope.*.ra);
     regalloc.regallocDeinit(&old_scope.*.ua);
     if (new_scope) |parent| parent.child = null;
@@ -388,18 +378,16 @@ pub fn janetc_popscopeImpl(compiler: *types.JanetCompiler) raise.Raising(void) {
 
 /// Pop a scope and reserve the register its result lives in.
 ///
-/// This was an `export fn` that swallowed the pop's raise into a report, and
-/// Phase 11 Part 7 found it by deleting `janetc_popscope` beside it: the one
-/// caller is `specials_core.zig`'s `do`, which is itself raising, so the
-/// report had nobody to consume it and would have surfaced at the next scope
-/// boundary's assertion arbitrarily far from the cause. That is
-/// `raise.crossing`'s documented family, of which it says each is "an
-/// ordinary import away from not needing this at all". This is the import.
-pub fn janetc_popscope_keepslotImpl(
+/// **Raising rather than reporting, and the difference is not cosmetic.** The
+/// one caller is `compiler/specials.zig`'s `do`, which is itself raising, so a
+/// report here would have nobody to consume it and would surface at the next
+/// scope boundary's assertion arbitrarily far from the cause. An ordinary
+/// import is all it takes not to need one.
+pub fn popscopeKeepslot(
     compiler: *types.JanetCompiler,
     return_slot: types.JanetSlot,
 ) raise.Raising(void) {
-    try janetc_popscopeImpl(compiler);
+    try popscope(compiler);
     if (compiler.scope != null and return_slot.envindex < 0 and return_slot.index >= 0) {
         regalloc.regallocTouch(&compiler.scope.?.ra, return_slot.index);
     }
@@ -408,7 +396,7 @@ pub fn janetc_popscope_keepslotImpl(
 pub fn compileReturn(compiler: *types.JanetCompiler, slot_value: types.JanetSlot) types.JanetSlot {
     var result = slot_value;
     if (result.flags & constants.JANET_SLOT_RETURNED == 0) {
-        if (result.flags & constants.JANET_SLOT_CONSTANT != 0 and kind.checkType(result.constant, constants.JANET_NIL) != 0) {
+        if (result.flags & constants.JANET_SLOT_CONSTANT != 0 and repr.checkType(result.constant, repr.Tag.nil)) {
             emit_core.emit(compiler, @intCast(constants.JOP_RETURN_NIL));
         } else {
             _ = emit_core.emitSlot(compiler, @intCast(constants.JOP_RETURN), result, 0);
@@ -434,9 +422,9 @@ pub fn gettarget(options: types.JanetFopts) types.JanetSlot {
     };
 }
 
-pub fn janetc_toslotsImpl(
+pub fn toslots(
     compiler: *types.JanetCompiler,
-    values: ?[*]const types.Janet,
+    values: ?[*]const repr.Value,
     length: i32,
 ) raise.Raising(?[*]types.JanetSlot) {
     var result: ?[*]types.JanetSlot = null;
@@ -444,18 +432,17 @@ pub fn janetc_toslotsImpl(
     options.flags |= constants.JANET_FOPTS_ACCEPT_SPLICE;
     var index: i32 = 0;
     while (index < length) : (index += 1) {
-        pushVector(types.JanetSlot, &result, try janetc_valueImpl(options, values.?[@intCast(index)]));
+        stretchy.push(types.JanetSlot, &result, try valueImpl(options, values.?[@intCast(index)]));
     }
     return result;
 }
 
 /// A dictionary's keys and values, interleaved, in sorted key order.
 ///
-/// The two `janetc_value` calls below raise, and until Part 7 this was an
-/// `export fn` that reported them — with its only caller, `makeDictionary`,
-/// inside `janetc_valueImpl`'s raising chain. Same family as
-/// `janetc_popscope_keepslotImpl` above and found the same way.
-pub fn janetc_toslotskvImpl(compiler: *types.JanetCompiler, dictionary: types.Janet) raise.Raising(?[*]types.JanetSlot) {
+/// The two `janetc_value` calls below raise, and this function is raising so
+/// that its caller decides. Reporting them instead would leave the report to
+/// `makeDictionary`, which is inside a raising chain and would not consume it.
+pub fn toslotskv(compiler: *types.JanetCompiler, dictionary: repr.Value) raise.Raising(?[*]types.JanetSlot) {
     var result: ?[*]types.JanetSlot = null;
     var options = foptsDefault(compiler);
     options.flags |= constants.JANET_FOPTS_ACCEPT_SPLICE;
@@ -479,24 +466,18 @@ pub fn janetc_toslotskvImpl(compiler: *types.JanetCompiler, dictionary: types.Ja
     var index: i32 = 0;
     while (index < length) : (index += 1) {
         const pair = key_values.?[@intCast(indices[@intCast(index)])];
-        pushVector(types.JanetSlot, &result, try janetc_valueImpl(options, pair.key));
-        pushVector(types.JanetSlot, &result, try janetc_valueImpl(options, pair.value));
+        stretchy.push(types.JanetSlot, &result, try valueImpl(options, pair.key));
+        stretchy.push(types.JanetSlot, &result, try valueImpl(options, pair.value));
     }
-    // This was a `defer` until Phase 10 Part 7 gave the file its
-    // `//! jump-transparent` marker, and the marker is what makes the
-    // difference visible rather than what creates it: `janetc_value` above
-    // reaches a lint, an error message and `%v`, and `%v` runs an abstract
-    // type's `tostring`, which can still panic through C. A jump would have
-    // skipped the `defer` then too. Nothing leaks either way -- scratch memory
-    // is reclaimed by the next collection, which is the whole point of
-    // allocating it here rather than with `janet_malloc` -- but there is one
-    // exit and it may as well say so.
+    // One exit rather than a `defer`, and it may as well say so. Nothing leaks
+    // either way: scratch memory is reclaimed by the next collection, which is
+    // the whole point of allocating it here rather than with `janet_malloc`.
     if (heap_indices) |allocated| gc_alloc.sfree(allocated);
     return result;
 }
 
 pub fn pushslots(compiler: *types.JanetCompiler, slots: ?[*]types.JanetSlot) i32 {
-    const count = vectorCount(types.JanetSlot, slots);
+    const count = stretchy.count(types.JanetSlot, slots);
     var index: i32 = 0;
     var minimum_arity: i32 = 0;
     var has_splice = false;
@@ -542,28 +523,28 @@ pub fn pushslots(compiler: *types.JanetCompiler, slots: ?[*]types.JanetSlot) i32
 }
 
 pub fn freeslots(compiler: *types.JanetCompiler, slots: ?[*]types.JanetSlot) void {
-    const count = vectorCount(types.JanetSlot, slots);
+    const count = stretchy.count(types.JanetSlot, slots);
     var index: i32 = 0;
     while (index < count) : (index += 1) freeslot(compiler, slots.?[@intCast(index)]);
-    freeVector(types.JanetSlot, slots);
+    stretchy.free(types.JanetSlot, slots);
 }
 
-pub fn janetc_throwawayImpl(options: types.JanetFopts, val: types.Janet) raise.Raising(void) {
+pub fn throwaway(options: types.JanetFopts, val: repr.Value) raise.Raising(void) {
     const compiler: *types.JanetCompiler = options.compiler;
-    const bytecode_start = vectorCount(u32, compiler.buffer);
-    const source_map_start = vectorCount(types.JanetSourceMapping, compiler.mapbuffer);
+    const bytecode_start = stretchy.count(u32, compiler.buffer);
+    const source_map_start = stretchy.count(types.JanetSourceMapping, compiler.mapbuffer);
     var unused_scope: types.JanetScope = undefined;
     pushScope(&unused_scope, compiler, constants.JANET_SCOPE_UNUSED, "unused");
-    _ = try janetc_valueImpl(options, val);
+    _ = try valueImpl(options, val);
     try lintf(compiler, .strict, "dead code, consider removing %.4q", .{val});
-    try janetc_popscopeImpl(compiler);
+    try popscope(compiler);
     if (compiler.buffer != null) {
-        setVectorCount(u32, compiler.buffer.?, bytecode_start);
-        if (compiler.mapbuffer != null) setVectorCount(types.JanetSourceMapping, compiler.mapbuffer.?, source_map_start);
+        stretchy.setCount(u32, compiler.buffer.?, bytecode_start);
+        if (compiler.mapbuffer != null) stretchy.setCount(types.JanetSourceMapping, compiler.mapbuffer.?, source_map_start);
     }
 }
 
-pub fn janetc_valueImpl(options: types.JanetFopts, original_value: types.Janet) raise.Raising(types.JanetSlot) {
+pub fn valueImpl(options: types.JanetFopts, original_value: repr.Value) raise.Raising(types.JanetSlot) {
     const compiler: *types.JanetCompiler = options.compiler;
     const previous_mapping = compiler.current_mapping;
     compiler.recursion_guard -= 1;
@@ -575,7 +556,7 @@ pub fn janetc_valueImpl(options: types.JanetFopts, original_value: types.Janet) 
 
     var val = original_value;
     var result: types.JanetSlot = undefined;
-    var special: ?*const types.JanetSpecial = null;
+    var special: ?*const specials.Special = null;
     var expansions: i32 = config.max_macro_expand;
     while (expansions != 0 and
         compiler.result.status != constants.JANET_COMPILE_ERROR and
@@ -590,23 +571,31 @@ pub fn janetc_valueImpl(options: types.JanetFopts, original_value: types.Janet) 
 
     if (special) |special_form| {
         const tuple = wrap.toTuple(val);
-        result = try specials.of(special_form).compile.?(options, types.tupleHead(tuple).length - 1, tuple + 1);
+        result = try special_form.compile.?(options, tuple[1..@intCast(types.tupleHead(tuple).length)]);
     } else {
-        switch (kind.typeOf(val)) {
-            constants.JANET_TUPLE => {
+        switch (repr.typeOf(val)) {
+            repr.Tag.tuple => {
                 const tuple = wrap.toTuple(val);
                 const length = types.tupleHead(tuple).length;
                 if (length == 0) {
-                    result = cslot(wrap.fromTuple(tuples.newFrom(null, 0)));
+                    result = cslot(wrap.fromTuple(tuples.newFrom(&.{})));
                 } else if (types.tupleHead(tuple).gc.flags & constants.JANET_TUPLE_FLAG_BRACKETCTOR != 0) {
                     result = try makeTuple(options, val);
                 } else {
                     var suboptions = foptsDefault(compiler);
-                    const function = try janetc_valueImpl(suboptions, tuple[0]);
-                    suboptions.flags = constants.JANET_FUNCTION | constants.JANET_CFUNCTION;
+                    const function = try valueImpl(suboptions, tuple[0]);
+                    // `JANET_FUNCTION | JANET_CFUNCTION`, and the `|` is
+                    // upstream's. `flags`'s low sixteen bits are a *type
+                    // mask* -- `cslot` builds one with `1 << tag` -- so this
+                    // writes 12|13 = 13, the mask {number, boolean, fiber},
+                    // where it means {function, cfunction}. `FOUND.md` has
+                    // it; the typed tag is what made it visible, and the
+                    // value is reproduced rather than repaired.
+                    suboptions.flags = @intFromEnum(repr.Tag.function) |
+                        @intFromEnum(repr.Tag.cfunction);
                     result = try compileCall(
                         options,
-                        try janetc_toslotsImpl(compiler, tuple + 1, length - 1),
+                        try toslots(compiler, tuple + 1, length - 1),
                         function,
                         tuple,
                     );
@@ -614,11 +603,11 @@ pub fn janetc_valueImpl(options: types.JanetFopts, original_value: types.Janet) 
                 }
                 result.flags &= ~@as(u32, constants.JANET_SLOT_SPLICED);
             },
-            constants.JANET_SYMBOL => result = try janetc_resolveImpl(compiler, wrap.toSymbol(val)),
-            constants.JANET_ARRAY => result = try makeArray(options, val),
-            constants.JANET_STRUCT => result = try makeDictionary(options, val, constants.JOP_MAKE_STRUCT),
-            constants.JANET_TABLE => result = try makeDictionary(options, val, constants.JOP_MAKE_TABLE),
-            constants.JANET_BUFFER => result = try makeBuffer(options, val),
+            repr.Tag.symbol => result = try resolve(compiler, wrap.toSymbol(val)),
+            repr.Tag.array => result = try makeArray(options, val),
+            repr.Tag.@"struct" => result = try makeDictionary(options, val, constants.JOP_MAKE_STRUCT),
+            repr.Tag.table => result = try makeDictionary(options, val, constants.JOP_MAKE_TABLE),
+            repr.Tag.buffer => result = try makeBuffer(options, val),
             else => result = cslot(val),
         }
     }
@@ -636,11 +625,11 @@ pub fn janetc_valueImpl(options: types.JanetFopts, original_value: types.Janet) 
 
 fn expandMacroOnce(
     compiler: *types.JanetCompiler,
-    val: types.Janet,
-    result: *types.Janet,
-    special: *?*const types.JanetSpecial,
+    val: repr.Value,
+    result: *repr.Value,
+    special: *?*const specials.Special,
 ) bool {
-    if (kind.checkType(val, constants.JANET_TUPLE) == 0) return false;
+    if (!repr.checkType(val, repr.Tag.tuple)) return false;
     const form = wrap.toTuple(val);
     const length = types.tupleHead(form).length;
     if (length == 0) return false;
@@ -651,16 +640,16 @@ fn expandMacroOnce(
         compiler.current_mapping.column = head.*.sm_column;
     }
     if (head.*.gc.flags & constants.JANET_TUPLE_FLAG_BRACKETCTOR != 0) return false;
-    if (kind.checkType(form[0], constants.JANET_SYMBOL) == 0) return false;
+    if (!repr.checkType(form[0], repr.Tag.symbol)) return false;
 
     const name = wrap.toSymbol(form[0]);
     special.* = specials_core.lookupSpecial(name);
     if (special.* != null) return false;
 
-    var macro_value: types.Janet = undefined;
+    var macro_value: repr.Value = undefined;
     const binding_type = registry.resolve(compiler.env.?, name, &macro_value);
     if ((binding_type != constants.JANET_BINDING_MACRO and binding_type != constants.JANET_BINDING_DYNAMIC_MACRO) or
-        kind.checkType(macro_value, constants.JANET_FUNCTION) == 0)
+        !repr.checkType(macro_value, repr.Tag.function))
     {
         return false;
     }
@@ -671,7 +660,7 @@ fn compileCall(
     options: types.JanetFopts,
     slots: ?[*]types.JanetSlot,
     function: types.JanetSlot,
-    form: [*]const types.Janet,
+    form: [*]const repr.Value,
 ) raise.Raising(types.JanetSlot) {
     const compiler: *types.JanetCompiler = options.compiler;
     var result: types.JanetSlot = undefined;
@@ -698,12 +687,12 @@ fn tryCallOptimizer(
     result: *types.JanetSlot,
 ) bool {
     if (function.flags & constants.JANET_SLOT_CONSTANT == 0) return false;
-    const slot_count = vectorCount(types.JanetSlot, slots);
+    const slot_count = stretchy.count(types.JanetSlot, slots);
     var index: i32 = 0;
     while (index < slot_count) : (index += 1) {
         if (slots.?[@intCast(index)].flags & constants.JANET_SLOT_SPLICED != 0) return false;
     }
-    if (kind.checkType(function.constant, constants.JANET_FUNCTION) == 0) return false;
+    if (!repr.checkType(function.constant, repr.Tag.function)) return false;
     const function_value = wrap.toFunction(function.constant);
     const optimizer = optimize.funopt(@bitCast(function_value.*.def.?.flags)) orelse return false;
     if (optimizer.*.can_optimize) |can_optimize| {
@@ -718,15 +707,10 @@ fn tryCallOptimizer(
 //
 // `lookupMissing` and `runMacro` both suspend the compiler to run a Janet
 // function in a fresh fiber: the first is the `:missing-symbol` handler, the
-// second is a macro expansion. Both were in C until Phase 10 Part 7 for a
-// reason that has expired -- `janet_continue` used to be reachable only from
-// C -- and both keep the same shape they had, including the GC lock that
-// holds the compiler's own structures alive across the call.
+// second is a macro expansion. Both keep the shape Janet gives them,
+// including the GC lock that holds the compiler's own structures alive across
+// the call.
 // ==========================================================================
-
-/// `src/core/util.h`, declared here rather than in `cabi.zig`.
-extern fn janet_table_get_keyword(table: *types.JanetTable, keyword: [*]const u8) callconv(.c) types.Janet;
-extern fn janet_binding_from_entry(entry: types.Janet) callconv(.c) types.JanetBinding;
 
 /// `janet_assert` from `src/core/util.h`, a macro over `JANET_EXIT`. Not a
 /// raise: a broken scope chain is a defect in this file rather than a program
@@ -752,21 +736,21 @@ fn lookupMissing(
         recordError(compiler, strings.cstring("missing symbol lookup handler must take 1 argument"));
         return false;
     }
-    var args = [_]types.Janet{wrap.fromSymbol(symbol)};
+    var args = [_]repr.Value{wrap.fromSymbol(symbol)};
     const fiber = fibers.new(handler, 64, 1, &args) orelse {
         recordError(compiler, strings.cstring("failed to call missing symbol lookup handler"));
         return false;
     };
     fiber.*.env = compiler.env;
     const lock = gc_alloc.gclock();
-    var handler_out: types.Janet = undefined;
+    var handler_out: repr.Value = undefined;
     const status = vm_entry.continueFiber(fiber, wrapNil(), &handler_out);
     gc_alloc.gcunlock(lock);
-    if (status != constants.JANET_SIGNAL_OK) {
+    if (status != types.Signal.ok) {
         recordError(compiler, pp_format.formatcReported("(lookup) %V", .{handler_out}));
         return false;
     }
-    out.* = janet_binding_from_entry(handler_out);
+    out.* = registry.bindingFromEntry(handler_out);
     return true;
 }
 
@@ -774,10 +758,10 @@ fn lookupMissing(
 fn resolveGlobal(compiler: *types.JanetCompiler, symbol: [*:0]const u8, out: *types.JanetSlot) raise.Raising(void) {
     var binding = registry.resolveExt(compiler.env.?, symbol);
     if (binding.type == constants.JANET_BINDING_NONE) {
-        const handler = janet_table_get_keyword(compiler.env.?, "missing-symbol");
-        switch (kind.typeOf(handler)) {
-            constants.JANET_NIL => {},
-            constants.JANET_FUNCTION => {
+        const handler = tables.getKeyword(compiler.env.?, "missing-symbol");
+        switch (repr.typeOf(handler)) {
+            repr.Tag.nil => {},
+            repr.Tag.function => {
                 if (!lookupMissing(compiler, symbol, wrap.toFunction(handler), &binding)) {
                     out.* = cslot(wrapNil());
                     return;
@@ -842,9 +826,9 @@ fn shadowLint(compiler: *types.JanetCompiler, symbol: [*:0]const u8, shadowing: 
 /// which is reproduced here.
 fn runMacro(
     compiler: *types.JanetCompiler,
-    form_value: types.Janet,
-    macro_value: types.Janet,
-    out: *types.Janet,
+    form_value: repr.Value,
+    macro_value: repr.Value,
+    out: *repr.Value,
 ) bool {
     const form = wrap.toTuple(form_value);
     const macro = wrap.toFunction(macro_value);
@@ -870,12 +854,12 @@ fn runMacro(
     if (compiler.lints != null) {
         tables.put(compiler.env.?, lints_keyword, wrap.fromArray(compiler.lints.?));
     }
-    var macro_out: types.Janet = undefined;
+    var macro_out: repr.Value = undefined;
     const status = vm_entry.continueFiber(fiber, wrapNil(), &macro_out);
     tables.put(compiler.env.?, form_keyword, wrapNil());
     tables.put(compiler.env.?, lints_keyword, wrapNil());
     gc_alloc.gcunlock(lock);
-    if (status != constants.JANET_SIGNAL_OK) {
+    if (status != types.Signal.ok) {
         compiler.result.macrofiber = fiber;
         recordError(compiler, pp_format.formatcReported("(macro) %V", .{macro_out}));
         return false;
@@ -891,7 +875,7 @@ fn runMacro(
 fn arityError(
     compiler: *types.JanetCompiler,
     comptime format: [:0]const u8,
-    function: types.Janet,
+    function: repr.Value,
     expected: i32,
     got: i32,
 ) void {
@@ -903,13 +887,13 @@ fn validateCall(
     compiler: *types.JanetCompiler,
     function: types.JanetSlot,
     original_minimum_arity: i32,
-    form: [*]const types.Janet,
+    form: [*]const repr.Value,
 ) raise.Raising(void) {
     if (function.flags & constants.JANET_SLOT_CONSTANT == 0) return;
     var minimum_arity = original_minimum_arity;
 
-    switch (kind.typeOf(function.constant)) {
-        constants.JANET_FUNCTION => {
+    switch (repr.typeOf(function.constant)) {
+        repr.Tag.function => {
             const function_value = wrap.toFunction(function.constant);
             const definition = function_value.*.def.?;
             const minimum = definition.*.min_arity;
@@ -947,17 +931,17 @@ fn validateCall(
                 while (argument_index < form_length) : (argument_index += 2) {
                     const argument_key = form[@intCast(argument_index)];
                     var found = false;
-                    if (kind.checkType(argument_key, constants.JANET_KEYWORD) != 0) {
+                    if (repr.checkType(argument_key, repr.Tag.keyword)) {
                         var named_index: i32 = 0;
                         while (named_index < definition.*.named_args_count and
                             named_index < definition.*.constants_length) : (named_index += 1)
                         {
-                            if (order.equals(argument_key, definition.*.constants.?[@intCast(named_index)]) != 0) {
+                            if (order.equals(argument_key, definition.*.constantValues()[@intCast(named_index)]) != 0) {
                                 found = true;
                                 break;
                             }
                         }
-                    } else if (kind.checkType(argument_key, constants.JANET_TUPLE) != 0) {
+                    } else if (repr.checkType(argument_key, repr.Tag.tuple)) {
                         found = true;
                     }
                     if (!found) {
@@ -971,8 +955,8 @@ fn validateCall(
                 }
             }
         },
-        constants.JANET_CFUNCTION, constants.JANET_ABSTRACT, constants.JANET_NIL => {},
-        constants.JANET_KEYWORD => {
+        repr.Tag.cfunction, repr.Tag.abstract, repr.Tag.nil => {},
+        repr.Tag.keyword => {
             if (minimum_arity == 0) {
                 recordError(compiler, try pp_format.formatc("%v expects at least 1 argument, got 0", .{function.constant}));
             }
@@ -990,7 +974,7 @@ fn validateCall(
 
 fn makeValue(options: types.JanetFopts, slots: ?[*]types.JanetSlot, operation: c_int) types.JanetSlot {
     const compiler: *types.JanetCompiler = options.compiler;
-    const count = vectorCount(types.JanetSlot, slots);
+    const count = stretchy.count(types.JanetSlot, slots);
     var can_inline = true;
     var index: i32 = 0;
     while (index < count) : (index += 1) {
@@ -1028,59 +1012,59 @@ fn makeValue(options: types.JanetFopts, slots: ?[*]types.JanetSlot, operation: c
     return result;
 }
 
-fn makeArray(options: types.JanetFopts, val: types.Janet) raise.Raising(types.JanetSlot) {
+fn makeArray(options: types.JanetFopts, val: repr.Value) raise.Raising(types.JanetSlot) {
     const compiler: *types.JanetCompiler = options.compiler;
     const array = wrap.toArray(val);
-    return makeValue(options, try janetc_toslotsImpl(compiler, array.*.data, array.*.count), constants.JOP_MAKE_ARRAY);
+    return makeValue(options, try toslots(compiler, array.*.data, array.*.count), constants.JOP_MAKE_ARRAY);
 }
 
-fn makeTuple(options: types.JanetFopts, val: types.Janet) raise.Raising(types.JanetSlot) {
+fn makeTuple(options: types.JanetFopts, val: repr.Value) raise.Raising(types.JanetSlot) {
     const compiler: *types.JanetCompiler = options.compiler;
     const tuple = wrap.toTuple(val);
-    return makeValue(options, try janetc_toslotsImpl(compiler, tuple, types.tupleHead(tuple).length), constants.JOP_MAKE_TUPLE);
+    return makeValue(options, try toslots(compiler, tuple, types.tupleHead(tuple).length), constants.JOP_MAKE_TUPLE);
 }
 
-fn makeDictionary(options: types.JanetFopts, val: types.Janet, operation: c_int) raise.Raising(types.JanetSlot) {
+fn makeDictionary(options: types.JanetFopts, val: repr.Value, operation: c_int) raise.Raising(types.JanetSlot) {
     const compiler: *types.JanetCompiler = options.compiler;
-    return makeValue(options, try janetc_toslotskvImpl(compiler, val), operation);
+    return makeValue(options, try toslotskv(compiler, val), operation);
 }
 
-fn makeBuffer(options: types.JanetFopts, val: types.Janet) raise.Raising(types.JanetSlot) {
+fn makeBuffer(options: types.JanetFopts, val: repr.Value) raise.Raising(types.JanetSlot) {
     const compiler: *types.JanetCompiler = options.compiler;
     const buffer = wrap.toBuffer(val);
-    const argument = value.fromBytes(buffer.*.data.?[0..@intCast(buffer.*.count)], .string);
-    return makeValue(options, try janetc_toslotsImpl(compiler, @ptrCast(&argument), 1), constants.JOP_MAKE_BUFFER);
+    const argument = value.fromBytes(buffer.*.slice(), .string);
+    return makeValue(options, try toslots(compiler, @ptrCast(&argument), 1), constants.JOP_MAKE_BUFFER);
 }
 
-pub fn janetc_pop_funcdefImpl(compiler: *types.JanetCompiler) raise.Raising(*types.JanetFuncDef) {
+pub fn popFuncdef(compiler: *types.JanetCompiler) raise.Raising(*types.JanetFuncDef) {
     const scope = compiler.scope.?;
     const definition = functions.defs.new();
     definition.*.slotcount = scope.*.ra.max + 1;
     compilerAssert(@intFromBool(scope.*.flags & constants.JANET_SCOPE_FUNCTION != 0), "expected function scope");
 
-    definition.*.environments_length = vectorCount(types.JanetEnvRef, scope.*.envs);
+    definition.*.environments_length = stretchy.count(types.JanetEnvRef, scope.*.envs);
     definition.*.environments = mallocArray(i32, definition.*.environments_length);
     var index: i32 = 0;
     while (index < definition.*.environments_length) : (index += 1) {
-        definition.*.environments.?[@intCast(index)] = scope.*.envs.?[@intCast(index)].envindex;
+        definition.*.environmentIndices()[@intCast(index)] = scope.*.envs.?[@intCast(index)].envindex;
     }
 
-    definition.*.constants_length = vectorCount(types.Janet, scope.*.consts);
-    definition.*.constants = flattenVector(types.Janet, scope.*.consts);
-    definition.*.defs_length = vectorCount(*types.JanetFuncDef, scope.*.defs);
-    definition.*.defs = flattenVector(*types.JanetFuncDef, scope.*.defs);
+    definition.*.constants_length = stretchy.count(repr.Value, scope.*.consts);
+    definition.*.constants = stretchy.flatten(repr.Value, scope.*.consts);
+    definition.*.defs_length = stretchy.count(*types.JanetFuncDef, scope.*.defs);
+    definition.*.defs = stretchy.flatten(*types.JanetFuncDef, scope.*.defs);
 
-    definition.*.bytecode_length = vectorCount(u32, compiler.buffer) - scope.*.bytecode_start;
+    definition.*.bytecode_length = stretchy.count(u32, compiler.buffer) - scope.*.bytecode_start;
     if (definition.*.bytecode_length != 0) {
         definition.*.bytecode = mallocArray(u32, definition.*.bytecode_length);
         const bytecode_length: usize = @intCast(definition.*.bytecode_length);
-        @memcpy(definition.*.bytecode.?[0..bytecode_length], compiler.buffer.?[@intCast(scope.*.bytecode_start)..][0..bytecode_length]);
-        setVectorCount(u32, compiler.buffer.?, scope.*.bytecode_start);
+        @memcpy(definition.*.instructions(), stretchy.slice(u32, compiler.buffer)[@intCast(scope.*.bytecode_start)..][0..bytecode_length]);
+        stretchy.setCount(u32, compiler.buffer.?, scope.*.bytecode_start);
 
         if (compiler.mapbuffer != null and compiler.source != null) {
             definition.*.sourcemap = mallocArray(types.JanetSourceMapping, definition.*.bytecode_length);
-            @memcpy(definition.*.sourcemap.?[0..bytecode_length], compiler.mapbuffer.?[@intCast(scope.*.bytecode_start)..][0..bytecode_length]);
-            setVectorCount(types.JanetSourceMapping, compiler.mapbuffer.?, scope.*.bytecode_start);
+            @memcpy(definition.*.sourceMappings(), stretchy.slice(types.JanetSourceMapping, compiler.mapbuffer)[@intCast(scope.*.bytecode_start)..][0..bytecode_length]);
+            stretchy.setCount(types.JanetSourceMapping, compiler.mapbuffer.?, scope.*.bytecode_start);
         }
     }
 
@@ -1105,16 +1089,16 @@ pub fn janetc_pop_funcdefImpl(compiler: *types.JanetCompiler) raise.Raising(*typ
     while (top.parent) |parent| top = parent;
     var ancestor: ?*types.JanetScope = top;
     while (ancestor) |current| : (ancestor = current.child) {
-        const environment_count = vectorCount(types.JanetEnvRef, scope.*.envs);
+        const environment_count = stretchy.count(types.JanetEnvRef, scope.*.envs);
         var environment_index: i32 = 0;
         while (environment_index < environment_count) : (environment_index += 1) {
             const reference = scope.*.envs.?[@intCast(environment_index)];
             if (reference.scope != ancestor) continue;
-            const symbol_count = vectorCount(types.SymPair, current.syms);
+            const symbol_count = stretchy.count(types.SymPair, current.syms);
             var symbol_index: i32 = 0;
             while (symbol_index < symbol_count) : (symbol_index += 1) {
                 const pair = current.syms.?[@intCast(symbol_index)];
-                if (pair.sym2 != null) pushVector(types.JanetSymbolMap, &locals, .{
+                if (pair.sym2 != null) stretchy.push(types.JanetSymbolMap, &locals, .{
                     .birth_pc = std_max_u32,
                     .death_pc = @intCast(environment_index),
                     .slot_index = @intCast(pair.slot.index),
@@ -1124,7 +1108,7 @@ pub fn janetc_pop_funcdefImpl(compiler: *types.JanetCompiler) raise.Raising(*typ
         }
     }
 
-    const symbol_count = vectorCount(types.SymPair, scope.*.syms);
+    const symbol_count = stretchy.count(types.SymPair, scope.*.syms);
     index = 0;
     while (index < symbol_count) : (index += 1) {
         const pair = scope.*.syms.?[@intCast(index)];
@@ -1147,34 +1131,34 @@ pub fn janetc_pop_funcdefImpl(compiler: *types.JanetCompiler) raise.Raising(*typ
             @intFromBool(death_pc <= @as(u32, @intCast(definition.*.bytecode_length))),
             "bad death pc",
         );
-        pushVector(types.JanetSymbolMap, &locals, .{
+        stretchy.push(types.JanetSymbolMap, &locals, .{
             .birth_pc = birth_pc,
             .death_pc = death_pc,
             .slot_index = @intCast(pair.slot.index),
             .symbol = pair.sym2,
         });
     }
-    definition.*.symbolmap_length = vectorCount(types.JanetSymbolMap, locals);
-    definition.*.symbolmap = flattenVector(types.JanetSymbolMap, locals);
+    definition.*.symbolmap_length = stretchy.count(types.JanetSymbolMap, locals);
+    definition.*.symbolmap = stretchy.flatten(types.JanetSymbolMap, locals);
     if (definition.*.symbolmap_length != 0) definition.*.flags |= constants.JANET_FUNCDEF_FLAG_HASSYMBOLMAP;
 
-    try janetc_popscopeImpl(compiler);
+    try popscope(compiler);
     optimize.bytecodeMovopt(definition);
     optimize.bytecodeRemoveNoops(definition);
     return definition;
 }
 
 pub fn compileLint(
-    source: types.Janet,
+    source: repr.Value,
     environment: *types.JanetTable,
     where: ?types.JanetString,
     lints: ?*types.JanetArray,
 ) callconv(.c) types.JanetCompileResult {
-    return raise.reported(janet_compile_lintImpl(source, environment, where, lints));
+    return raise.reported(compileLintImpl(source, environment, where, lints));
 }
 
-pub fn janet_compile_lintImpl(
-    source: types.Janet,
+pub fn compileLintImpl(
+    source: repr.Value,
     environment: *types.JanetTable,
     where: ?types.JanetString,
     lints: ?*types.JanetArray,
@@ -1189,23 +1173,23 @@ pub fn janet_compile_lintImpl(
         .hint = cslot(wrapNil()),
         .flags = constants.JANET_FOPTS_TAIL | constants.JANET_SLOTTYPE_ANY,
     };
-    _ = try janetc_valueImpl(options, source);
+    _ = try valueImpl(options, source);
 
     if (compiler.result.status == constants.JANET_COMPILE_OK) {
-        const definition = try janetc_pop_funcdefImpl(&compiler);
+        const definition = try popFuncdef(&compiler);
         definition.*.name = strings.cstring("thunk");
         defAddflags(definition);
         compiler.result.funcdef = definition;
     } else {
         compiler.result.error_mapping = compiler.current_mapping;
-        try janetc_popscopeImpl(&compiler);
+        try popscope(&compiler);
     }
     deinitCompiler(&compiler);
     return compiler.result;
 }
 
 pub fn compile(
-    source: types.Janet,
+    source: repr.Value,
     environment: *types.JanetTable,
     where: ?types.JanetString,
 ) callconv(.c) types.JanetCompileResult {
@@ -1234,36 +1218,14 @@ fn initCompiler(
         .current_mapping = .{ .line = -1, .column = -1 },
         .recursion_guard = config.recursion_guard,
         .lints = lints,
-        .is_redef = @intFromBool(kind.truthy(janet_table_get_keyword(environment, "redef")) != 0),
+        .is_redef = @intFromBool(repr.truthy(tables.getKeyword(environment, "redef"))),
     };
 }
 
 fn deinitCompiler(compiler: *types.JanetCompiler) void {
-    freeVector(u32, compiler.buffer);
-    freeVector(types.JanetSourceMapping, compiler.mapbuffer);
+    stretchy.free(u32, compiler.buffer);
+    stretchy.free(types.JanetSourceMapping, compiler.mapbuffer);
     compiler.env = null;
-}
-
-fn pushVector(comptime Element: type, vector_pointer: *?[*]Element, val: Element) void {
-    var vector = vector_pointer.*;
-    const count = vectorCount(Element, vector);
-    if (vector == null or count + 1 >= vectorCapacity(Element, vector.?)) {
-        const grown = vector_mod.vGrow(if (vector) |v| @ptrCast(v) else null, 1, @sizeOf(Element));
-        vector = @ptrCast(@alignCast(grown));
-        vector_pointer.* = vector;
-    }
-    vector.?[@intCast(count)] = val;
-    vectorHeader(Element, vector.?)[1] = count + 1;
-}
-
-fn freeVector(comptime Element: type, vector: ?[*]Element) void {
-    if (vector) |v| gc_alloc.sfree(vectorHeader(Element, v));
-}
-
-fn flattenVector(comptime Element: type, vector: ?[*]Element) ?[*]Element {
-    const opaque_vector: ?*anyopaque = if (vector) |v| @ptrCast(v) else null;
-    const memory = vector_mod.vFlattenmem(opaque_vector, @sizeOf(Element));
-    return @ptrCast(@alignCast(memory));
 }
 
 fn mallocArray(comptime Element: type, count: i32) ?[*]Element {
@@ -1273,59 +1235,43 @@ fn mallocArray(comptime Element: type, count: i32) ?[*]Element {
     return @ptrCast(@alignCast(memory));
 }
 
-fn setVectorCount(comptime Element: type, vector: [*]Element, count: i32) void {
-    vectorHeader(Element, vector)[1] = count;
-}
-
-fn vectorCount(comptime Element: type, vector: ?[*]Element) i32 {
-    return if (vector) |v| vectorHeader(Element, v)[1] else 0;
-}
-
-fn vectorCapacity(comptime Element: type, vector: [*]Element) i32 {
-    return vectorHeader(Element, vector)[0];
-}
-
-fn vectorHeader(comptime Element: type, vector: [*]Element) [*]i32 {
-    return @ptrFromInt(@intFromPtr(vector) - vector_header_size);
-}
-
 const std_max_u32 = ~@as(u32, 0);
 
 // ==========================================================================
 // The cfunction surface
 // ==========================================================================
 
-fn cfunCompile(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_COMPILE);
+fn cfunCompile(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"compile"}));
     try args_core.arity(argv, 1, 4);
 
-    var env: ?*types.JanetTable = if (@as(i32, @intCast(argv.len)) > 1 and kind.checkType(argv[1], constants.JANET_NIL) == 0)
+    var env: ?*types.JanetTable = if (@as(i32, @intCast(argv.len)) > 1 and !repr.checkType(argv[1], repr.Tag.nil))
         try args_core.getTable(argv, 1)
     else
-        c.vm().fiber.?.env.?;
+        vm_lifecycle.current().fiber.?.env.?;
     if (env == null) {
         env = tables.new(0);
-        c.vm().fiber.?.env = env;
+        vm_lifecycle.current().fiber.?.env = env;
     }
 
     var source: ?[*:0]const u8 = null;
     if (@as(i32, @intCast(argv.len)) >= 3) {
         const x = argv[2];
-        if (kind.checkType(x, constants.JANET_STRING) != 0) {
+        if (repr.checkType(x, repr.Tag.string)) {
             source = wrap.toString(x);
-        } else if (kind.checkType(x, constants.JANET_KEYWORD) != 0) {
+        } else if (repr.checkType(x, repr.Tag.keyword)) {
             source = wrap.toKeyword(x);
-        } else if (kind.checkType(x, constants.JANET_NIL) == 0) {
-            return args_core.panicType(x, 2, constants.JANET_TFLAG_STRING | constants.JANET_TFLAG_KEYWORD);
+        } else if (!repr.checkType(x, repr.Tag.nil)) {
+            return args_core.panicType(x, 2, repr.TagSet.of(&.{ .string, .keyword }));
         }
     }
 
-    const lints: ?*types.JanetArray = if (@as(i32, @intCast(argv.len)) >= 4 and kind.checkType(argv[3], constants.JANET_NIL) == 0)
+    const lints: ?*types.JanetArray = if (@as(i32, @intCast(argv.len)) >= 4 and !repr.checkType(argv[3], repr.Tag.nil))
         try args_core.getArray(argv, 3)
     else
         null;
 
-    const result = try janet_compile_lintImpl(argv[0], env.?, source, lints);
+    const result = try compileLintImpl(argv[0], env.?, source, lints);
     if (result.status == constants.JANET_COMPILE_OK) {
         return wrap.fromFunction(functions.thunk(result.funcdef.?));
     }
@@ -1347,14 +1293,13 @@ fn cfunCompile(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.
 }
 
 pub fn libCompile(env: *types.JanetTable) void {
-    const entries = [_]corefn.Entry{
+    const entries = comptime [_]corefn.Entry{
         corefn.reg("compile", &cfunCompile, @src(), "(compile ast &opt env source lints)", "Compiles an Abstract Syntax Tree (ast) into a function. " ++
             "Pair the compile function with parsing functionality to implement " ++
             "eval. Returns a new function and does not modify ast. Returns an error " ++
             "struct with keys :line, :column, and :error if compilation fails. " ++
             "If a `lints` array is given, linting messages will be appended to the array. " ++
             "Each message will be a tuple of the form `(level line col message)`."),
-        corefn.end,
     };
-    corefn.install(env, &entries);
+    corefn.install(env, entries);
 }

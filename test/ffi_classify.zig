@@ -21,22 +21,20 @@
 //! every case below is a literal description of a type, which also means a case
 //! can describe something `ffi_types.zig` would never build.
 //!
-//! ## What the migration changed
+//! ## Where the oracles come from
 //!
-//! **The three flat structures are the subject's own now, and that is a
-//! strengthening rather than a loss.** `test/ffi_classify.c` declared its own
-//! `JanetFFITypeNode`, `JanetFFIArgSlot` and `JanetFFIAllocResult` "so the
-//! contract depends only on the internal ABI it exercises" — it had no choice,
-//! since the definitions were file-local to the subsystem. What that bought
-//! was a layout mirror nothing compared, and by Part 16 there were three of
-//! them: the subsystem's, `ffi_call.zig`'s, and this file's. A Zig contract
-//! imports the definitions, so there is one description of each and a field
-//! added on one side cannot be missed on the other.
+//! **The three flat structures are the subject's own.** A contract on the far
+//! side of a symbol table has to declare its own `TypeNode`, `ArgSlot` and
+//! `AllocResult`, because the definitions are file-local to the subsystem --
+//! and what that buys is a layout mirror nothing compares. There were three of
+//! them at one point: the subsystem's, the caller's, and the contract's. This
+//! imports the definitions, so a field added on one side cannot be missed on
+//! the other.
 //!
-//! **The ordinals are still written out**, for `test/ffi_layout.zig`'s reason
-//! and it is the same reason: the numbers are the wire between the classifier
-//! and `ffi_call.zig`'s `Spec` enumeration, and reading them out of the
-//! subject would be an assertion that cannot fail.
+//! **The ordinals are written out**, for `test/ffi_layout.zig`'s reason: the
+//! numbers are the wire between the classifier and `ffi/call.zig`'s `Spec`
+//! enumeration, and reading them out of the subject would be an assertion that
+//! cannot fail.
 //!
 //! **The empty-node case is new.** Both classifiers open with a guard for a
 //! zero-length walk and nothing reached it: the C contract always passed at
@@ -288,7 +286,7 @@ fn sysv64DescendsIntoNestedStructs() void {
 /// The two-eightbyte rules look only for integer classes, so a field that
 /// reached memory is dropped instead of carrying the aggregate to memory the
 /// way the merge rule just did. Recorded in `FOUND.md`; asserted here because
-/// it is the behavior the port reproduces.
+/// it is the behaviour this runtime reproduces.
 fn sysv64DropsAMemoryFieldFromAPair() void {
     var nodes = [_]TypeNode{
         structNode(16, 2, 0),
@@ -416,8 +414,8 @@ fn aapcs64UsesTheWholeExtentOfAnArray() void {
     assert(classifyAapcs64(&nodes) == aapcs64_general_ref);
 }
 
-/// `ffi.c` read the first field of a struct with no fields; the port declines
-/// to. A zero-field struct is reachable: a type of `[:pack]` names a member
+/// Janet reads the first field of a struct with no fields; this declines to.
+/// A zero-field struct is reachable: a type of `[:pack]` names a member
 /// that is not there. See `FOUND.md`.
 fn aapcs64HandlesAnEmptyStruct() void {
     const empty = [_]TypeNode{structNode(0, 0, 0)};

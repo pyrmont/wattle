@@ -38,14 +38,12 @@ pub const backend: Backend = switch (builtin.os.tag) {
 // direction and loud in the other: selecting `.none` where the header
 // included `<sys/inotify.h>` compiles cleanly and ships a runtime whose every
 // `filewatch` entry point raises, because a comptime-false branch is never
-// analysed (Phase 11's rule 72). The other direction is a missing
-// declaration, which is a compile error naming its own site.
+// analysed. The other direction is a missing declaration, which is a compile
+// error naming its own site.
 //
-// So the loud direction is left to the compiler and the silent one is
-// asserted here. This is what increment 5f owes: the chain was `janet.h`'s
-// platform names until then, and reordering it -- Windows now leads, because
-// Aro predefines the Unix names for mingw too -- is exactly the kind of edit
-// whose mistake compiles.
+// So the loud direction is left to the compiler and the silent one is asserted
+// here. Reordering the chain -- Windows leads, because Aro predefines the Unix
+// names for mingw too -- is exactly the kind of edit whose mistake compiles.
 comptime {
     const from_header: Backend = switch (h.JANET_ZIG_WATCH_BACKEND) {
         h.JANET_ZIG_WATCH_INOTIFY => .inotify,

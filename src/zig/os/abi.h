@@ -1,27 +1,19 @@
 #ifndef JANET_ZIG_OS_ABI_H
 #define JANET_ZIG_OS_ABI_H
 
-/* The host structures `os.c` works through, prepared for Zig's translate-c.
- *
- * Phase 10's decision 4 overturned a judgment recorded under "Current state"
- * in `PLAN.md`: process control and the calendar were parked as permanently
- * C, on the grounds that `struct tm`, `posix_spawn_file_actions_t` and their
- * kin have layouts only the platform header knows. The decision keeps that
- * reasoning for the *structures* and drops it for the *language* -- they stay
- * libc's, and Zig reaches them here. "No C in the tree" and "no libc" are
- * different claims and only the first is a goal.
- *
- * This is a translation of its own and it is deliberate. Nothing declared here
- * crosses a subsystem boundary: a `struct tm` lives for the length of one
- * cfunction, a `posix_spawn_file_actions_t` for the length of one spawn. Until
- * Phase 12 increment 5f the alternative was adding these headers to
- * `abi.zig`'s shared `@cImport`, which would have put `<windows.h>` into the
- * translation every Zig object in the tree shares, to serve four files. That
- * translation is retired with `janet.h` and no Janet type comes through a
- * `@cImport` any more; the rule survives its subject, because what it was
- * protecting was one header having one Zig type, and it is still met -- this
- * header is included once, by `os/abi.zig`, and the files of the `-Dos-surface`
- * object share it.
+ /* The host structures the `os/` surface works through, prepared for Zig's
+  * `translate-c`.
+  *
+  * `struct tm`, `posix_spawn_file_actions_t` and their kin have layouts only
+  * the platform header knows. They stay libc's, and Zig reaches them here:
+  * "no C in the tree" and "no libc" are different claims and only the first is
+  * a goal.
+  *
+  * This is a translation of its own and it is deliberate. Nothing declared here
+  * crosses a subsystem boundary: a `struct tm` lives for the length of one
+  * cfunction, a `posix_spawn_file_actions_t` for the length of one spawn. One
+  * header, one Zig type: this file is included once, by `os/abi.zig`, and the
+  * files of the `os/` subtree share it.
  *
  * `janet_features.h` comes first, as it must before any system header: it is what
  * sets `_POSIX_C_SOURCE`, and without it `localtime_r`, `gmtime_r` and
@@ -36,21 +28,17 @@
 
 #include "janet_features.h"
 
-/* Aro -- the translate-c front end in Zig 0.16 -- predefines `__unix__`,
- * `unix` and `__unix` for the mingw targets and clang does not, so a `@cImport`
- * of this file and a compilation of the same target disagree about the
- * predefine unless it is cleared. `janet.h` was where that first bit, in Phase
- * 10 Part 12 -- it tested its Unix chain before its Windows one, so the
- * translation for `x86_64-windows-gnu` said `JANET_POSIX` where the
- * compilation said `JANET_WINDOWS`, and `JanetHandle` came out `int` rather
- * than `void *`. `FOUND.md` records it.
- *
- * **The header is gone with Phase 12 increment 5f and this stays**, in all
- * three host translations, because what it protects is not `janet.h`: every
- * system header included below is read by translate-c and compiled by clang,
- * and the guard is what makes those two agree. The platform chains in this
- * file put their Windows arm first as well, which is belt to this braces --
- * the two corrections are independent and both are cheap. */
+ /* Aro -- the `translate-c` front end in Zig 0.16 -- predefines `__unix__`,
+  * `unix` and `__unix` for the mingw targets and clang does not, so a `@cImport`
+  * of this file and a compilation of the same target disagree about the
+  * predefine unless it is cleared. That produced a `JanetHandle` of `int`
+  * rather than `void *` on `x86_64-windows-gnu`, from a platform chain that
+  * tested Unix before Windows; `FOUND.md` records it.
+  *
+  * Every system header included below is read by `translate-c` and compiled by
+  * clang, and this guard is what makes those two agree. The platform chains in
+  * this file put their Windows arm first as well, which is belt to this
+  * braces -- the two corrections are independent and both are cheap. */
 #if defined(_WIN32) || defined(WIN32)
 #undef __unix__
 #undef unix

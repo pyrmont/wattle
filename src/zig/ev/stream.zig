@@ -23,6 +23,7 @@ const ev = @import("../ev.zig");
 const backend = @import("backend.zig");
 
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const vm_lifecycle = @import("../vm/lifecycle.zig");
@@ -35,7 +36,12 @@ const strings = @import("../value/strings.zig");
 const utils = @import("../utils.zig");
 const gc_mark = @import("../gc/mark.zig");
 const io_core = @import("../io.zig");
-const kind = @import("../value/helpers/kind.zig");
+/// The `recvfrom` arm's address abstract. **Reached by import rather than by
+/// symbol**: an `@export` of an `AbstractType` is not legal once that struct
+/// stops being `extern`, which a slice field forces. Both uses sit under
+/// `if (has_net and ...)`, and `has_net` is comptime, so a build without the
+/// net subsystem never analyses the branch that names this.
+const net = @import("../net.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const args_core = @import("../args.zig");
 const abstracts = @import("../value/abstracts.zig");
@@ -83,9 +89,8 @@ const stream_toclose: u32 = @intCast(constants.JANET_STREAM_TOCLOSE);
 const stream_nodups: u32 = @intCast(constants.JANET_STREAM_NODUPS);
 
 /// `INVALID_HANDLE_VALUE`, and the closed marker on POSIX. `JanetHandle` is
-/// `void *` on Windows and `int` elsewhere, which is the type Part 12 found
-/// the translation getting wrong for the mingw targets; `state_abi.h` carries
-/// the correction and this reads the corrected type.
+/// `void *` on Windows and `int` elsewhere, which a translation got wrong for
+/// the mingw targets; `types.zig` carries the corrected declaration.
 inline fn invalidHandle() types.JanetHandle {
     return if (windows) @ptrFromInt(std.math.maxInt(usize)) else -1;
 }
@@ -167,7 +172,7 @@ inline fn nextPipeSerial() u32 {
 // ==========================================================================
 
 /// The last host error, as a Janet string.
-pub fn evLasterr() types.Janet {
+pub fn evLasterr() repr.Value {
     if (windows) {
         const code = GetLastError();
         var msgbuf: [256]u8 = undefined;
@@ -194,7 +199,7 @@ pub fn evLasterr() types.Janet {
         }
         return value.fromBytes(std.mem.sliceTo(&msgbuf, 0), .string);
     }
-    return value.fromBytes(std.mem.span(ev.janet_strerror(ev.errno())), .string);
+    return value.fromBytes(std.mem.span(utils.strerrorSafe(ev.errno())), .string);
 }
 
 // ==========================================================================
@@ -213,9 +218,8 @@ const default_methods = [_]method_type.Method{
 ///
 /// `registerStream` raises when the backend refuses the descriptor -- a failed
 /// `epoll_ctl` or `kevent` -- so this is raise-capable and every caller inside
-/// the runtime reaches it rather than `janet_stream_ext`. Phase 11 Part 15:
-/// four such callers were reaching the abi, and a raise there became a report
-/// nobody consumed.
+/// the runtime reaches it rather than `janet_stream_ext`. Reaching the abi
+/// instead turns that raise into a report nobody consumes.
 pub fn makeStreamExt(
     handle: types.JanetHandle,
     flags: u32,
@@ -223,7 +227,7 @@ pub fn makeStreamExt(
     size: usize,
 ) raise.Raising(*types.JanetStream) {
     ev.assert(@src(), size >= @sizeOf(types.JanetStream), "bad size");
-    const s: *types.JanetStream = @ptrCast(@alignCast(abstracts.new(abstract_type.stored(&streamType), size)));
+    const s: *types.JanetStream = @ptrCast(@alignCast(abstracts.new(&streamType, size)));
     s.handle = handle;
     s.flags = flags;
     s.read_fiber = null;
@@ -252,7 +256,7 @@ pub fn makeStream(
     return makeStreamExt(handle, flags, methods, @sizeOf(types.JanetStream));
 }
 
-pub fn janet_stream(handle: types.JanetHandle, flags: u32, methods: [*]const types.JanetMethod) *types.JanetStream {
+pub fn makeStreamAbi(handle: types.JanetHandle, flags: u32, methods: ?[*]const types.JanetMethod) *types.JanetStream {
     return raise.reported(makeStream(handle, flags, methods));
 }
 
@@ -296,7 +300,7 @@ pub fn streamClose(s: *types.JanetStream) raise.Raising(void) {
     try closeImplHandle(s);
 }
 
-pub fn janet_stream_close(s: *types.JanetStream) void {
+pub fn streamCloseAbi(s: *types.JanetStream) void {
     raise.reported(streamClose(s));
 }
 
@@ -315,35 +319,30 @@ pub fn checkToClose(s: *types.JanetStream) raise.Raising(void) {
 /// there is nobody to report it to: the stream is already unreachable, the
 /// handle is being closed either way, and no caller can retry a close. The
 /// file comment on `abstract_type.AbstractType` has the contract.
-fn streamGC(p: ?*anyopaque, s: usize) callconv(.c) c_int {
-    _ = s;
-    closeImplHandle(@ptrCast(@alignCast(p))) catch {};
+fn streamGC(stream: *types.JanetStream, _: usize) c_int {
+    closeImplHandle(stream) catch {};
     return 0;
 }
 
-fn streamMark(p: ?*anyopaque, s: usize) callconv(.c) c_int {
-    _ = s;
-    const stream: *types.JanetStream = @ptrCast(@alignCast(p));
+fn streamMark(stream: *types.JanetStream, _: usize) c_int {
     if (stream.read_fiber) |rf| gc_mark.mark(wrap.fromFiber(rf));
     if (stream.write_fiber) |wf| gc_mark.mark(wrap.fromFiber(wf));
     return 0;
 }
 
-fn streamGetter(p: ?*anyopaque, key: types.Janet, out: *types.Janet) raise.Raising(c_int) {
-    const stream: *types.JanetStream = @ptrCast(@alignCast(p));
-    if (kind.checkType(key, constants.JANET_KEYWORD) == 0) return 0;
+fn streamGetter(stream: *types.JanetStream, key: repr.Value, out: *repr.Value) raise.Raising(c_int) {
+    if (!repr.checkType(key, repr.Tag.keyword)) return 0;
     return args_core.getmethod(wrap.toKeyword(key), @ptrCast(@alignCast(stream.methods)), out);
 }
 
-fn streamMarshal(p: ?*anyopaque, ctx: *types.JanetMarshalContext) raise.Raising(void) {
-    const s: *types.JanetStream = @ptrCast(@alignCast(p));
+fn streamMarshal(s: *types.JanetStream, ctx: *types.JanetMarshalContext) raise.Raising(void) {
     if (marsh.marshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("can only marshal stream with unsafe flag");
     }
     // This stream might now be duplicated, which invalidates some EV
     // optimizations.
     s.flags &= ~stream_nodups;
-    marsh.marshalAbstract(ctx, p);
+    marsh.marshalAbstract(ctx, s);
     try marsh.marshalInt(ctx, @bitCast(s.flags));
     try marsh.marshalPtr(ctx, s.methods);
     if (windows) {
@@ -374,7 +373,7 @@ fn streamMarshal(p: ?*anyopaque, ctx: *types.JanetMarshalContext) raise.Raising(
     }
 }
 
-fn streamUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
+fn streamUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*types.JanetStream) {
     if (marsh.unmarshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("can only unmarshal stream with unsafe flag");
     }
@@ -391,50 +390,38 @@ fn streamUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
     }
     // Only the poll backend keeps its own table of streams, so only it has to
     // be told about one that arrived by unmarshalling.
-    if (backend.selected == .poll) backend.registerStream(p);
+    if (backend.selected == .poll) try backend.registerStream(p);
     return p;
 }
 
-fn streamNext(p: ?*anyopaque, key: types.Janet) raise.Raising(types.Janet) {
-    const stream: *types.JanetStream = @ptrCast(@alignCast(p));
+fn streamNext(stream: *types.JanetStream, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(@alignCast(stream.methods)), key);
 }
 
 /// `[fd=N]`, so that a user can print the descriptor when debugging.
 ///
-/// The C original hands `janet_formatb` a `JanetHandle` for a `%d`, which
-/// pulls an `int32_t`. That is exact away from Windows and a mismatched
-/// vararg width there, which is undefined; Part 8's rule applies, so the port
-/// truncates explicitly rather than reproducing it. `FOUND.md` has the entry.
-fn streamToString(p: ?*anyopaque, buffer: *types.JanetBuffer) raise.Raising(void) {
-    const stream: *types.JanetStream = @ptrCast(@alignCast(p));
+/// Janet hands `janet_formatb` a `JanetHandle` for a `%d`, which pulls an
+/// `int32_t`. That is exact away from Windows and a mismatched vararg width
+/// there, which is undefined, so this truncates explicitly rather than
+/// reproducing it. `FOUND.md` has the entry.
+fn streamToString(stream: *types.JanetStream, buffer: *types.JanetBuffer) raise.Raising(void) {
     const shown: i32 = if (windows) @truncate(@as(isize, @bitCast(@intFromPtr(stream.handle)))) else stream.handle;
     _ = try pp_format.formatb(buffer, "[fd=%d]", .{shown});
 }
 
 /// `pub` for the three subsystems that used to declare it `extern const` --
-/// `ev_loop.zig`, `net_addr.zig` and `net_sockets.zig` -- and for
-/// `test/ev_loop.zig`, which calls the raising callbacks and therefore needs
-/// the mirror rather than `janet_abstract_type`'s `JanetAbstractType`. The
-/// `export` stays: `janet.h` declares this one, so it is the population rule 44
-/// says cannot go.
-pub const streamType: abstract_type.AbstractType = .{
+/// `ev.zig`, `net/abi.zig` and `net.zig` -- and for `test/ev_loop.zig`, which
+/// calls the raising callbacks directly.
+pub const streamType = abstract_type.define(types.JanetStream, .{
     .name = "core/stream",
     .gc = streamGC,
     .gcmark = streamMark,
     .get = streamGetter,
-    .put = null,
     .marshal = streamMarshal,
     .unmarshal = streamUnmarshal,
     .tostring = streamToString,
-    .compare = null,
-    .hash = null,
     .next = streamNext,
-    .call = null,
-    .length = null,
-    .bytes = null,
-    .gcperthread = null,
-};
+});
 
 /// Check that a stream is open and has every capability the caller needs.
 pub fn streamFlags(s: *types.JanetStream, flags: u32) raise.Raising(void) {
@@ -452,7 +439,7 @@ pub fn streamFlags(s: *types.JanetStream, flags: u32) raise.Raising(void) {
     }
 }
 
-pub fn janet_stream_flags(s: *types.JanetStream, flags: u32) void {
+pub fn streamFlagsAbi(s: *types.JanetStream, flags: u32) void {
     raise.reported(streamFlags(s, flags));
 }
 
@@ -512,9 +499,9 @@ fn readWindows(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateRea
             _ = try buffers.pushBytes(state.buf, state.chunk_buf[0..@intCast(ev_bytes)]);
             state.bytes_left -= @intCast(ev_bytes);
             if (state.bytes_left == 0 or state.is_chunk == 0 or ev_bytes == 0) {
-                var resume_val: types.Janet = undefined;
+                var resume_val: repr.Value = undefined;
                 if (has_net and state.mode == read_mode_recvfrom) {
-                    const abst = abstracts.new(abstract_type.stored(&ev.janet_address_type), @intCast(state.fromlen));
+                    const abst = abstracts.new(&net.addressType, @intCast(state.fromlen));
                     @memcpy(@as([*]u8, @ptrCast(abst))[0..@intCast(state.fromlen)], state.from[0..@intCast(state.fromlen)]);
                     resume_val = wrap.fromAbstract(abst);
                 } else {
@@ -641,9 +628,9 @@ fn readPosix(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateRead,
                 state.bytes_left = bytes_left;
 
                 if (state.is_chunk == 0 or bytes_left == 0 or nread == 0) {
-                    var resume_val: types.Janet = undefined;
+                    var resume_val: repr.Value = undefined;
                     if (has_net and state.mode == read_mode_recvfrom) {
-                        const abst = abstracts.new(abstract_type.stored(&ev.janet_address_type), socklen);
+                        const abst = abstracts.new(&net.addressType, socklen);
                         @memcpy(@as([*]u8, @ptrCast(abst))[0..socklen], saddr[0..socklen]);
                         resume_val = wrap.fromAbstract(abst);
                     } else {
@@ -771,7 +758,7 @@ fn writeWindows(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateWr
                 // If a buffer, convert to a string. The C original's TODO
                 // asking to be more efficient about this stands.
                 const buffer = state.src.buf;
-                const str = strings.new(buffer.*.data.?[0..@intCast(buffer.*.count)]);
+                const str = strings.new(buffer.*.slice());
                 bytes = str;
                 len = buffer.*.count;
                 state.is_buffer = 0;
@@ -951,10 +938,9 @@ pub fn evSendToString(s: *types.JanetStream, str: [*:0]const u8, dest: ?*anyopaq
 /// mode 2: only the write side non-blocking; the read side goes to a subprocess.
 /// mode 3: both sides blocking, for a pipeline between two external processes.
 /// Reached by import. It was `export fn janet_make_pipe`, declared again as an
-/// `extern fn` by `os_procs.zig` and `ev_backend.zig` -- two Zig files calling
-/// a third through the symbol table, which is rule 44's class and which Phase
-/// 11 Part 22 spent. `util.h` declared it and nothing outside the runtime ever
-/// called one, so the symbol went with the seam.
+/// `extern fn` by two other Zig files -- three Zig files calling each other
+/// through the symbol table. Nothing outside the runtime ever called it, so
+/// the symbol went with the seam.
 pub fn makePipe(handles: *[2]types.JanetHandle, mode: c_int) c_int {
     if (windows) {
         // The built-in CreatePipe does not support overlapped IO, so this
@@ -1029,17 +1015,17 @@ pub fn makePipe(handles: *[2]types.JanetHandle, mode: c_int) c_int {
 // The cfunctions
 // ==========================================================================
 
-fn getStream(argv: []const types.Janet, n: i32) raise.Raising(*types.JanetStream) {
-    return @ptrCast(@alignCast(try args_core.getAbstract(argv, n, abstract_type.stored(&streamType))));
+fn getStream(argv: []const repr.Value, n: i32) raise.Raising(*types.JanetStream) {
+    return @ptrCast(@alignCast(try args_core.getAbstract(argv, n, &streamType)));
 }
 
-pub fn cfunStreamClose(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+pub fn cfunStreamClose(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     try streamClose(try getStream(argv, 0));
     return argv[0];
 }
 
-pub fn cfunStreamRead(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+pub fn cfunStreamRead(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 4);
     const s = try getStream(argv, 0);
     try streamFlags(s, stream_readable);
@@ -1054,7 +1040,7 @@ pub fn cfunStreamRead(argv: []types.Janet) align(corefn.alignment) raise.Raising
     return readGeneric(s, buffer, n, false, read_mode_read, 0);
 }
 
-pub fn cfunStreamChunk(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+pub fn cfunStreamChunk(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 4);
     const s = try getStream(argv, 0);
     try streamFlags(s, stream_readable);
@@ -1065,12 +1051,12 @@ pub fn cfunStreamChunk(argv: []types.Janet) align(corefn.alignment) raise.Raisin
     return readGeneric(s, buffer, n, true, read_mode_read, 0);
 }
 
-pub fn cfunStreamWrite(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+pub fn cfunStreamWrite(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 3);
     const s = try getStream(argv, 0);
     try streamFlags(s, stream_writable);
     const to = try args_core.optNumber(argv, 2, std.math.inf(f64));
-    if (kind.checkType(argv[1], constants.JANET_BUFFER) != 0) {
+    if (repr.checkType(argv[1], repr.Tag.buffer)) {
         if (to != std.math.inf(f64)) ev.addtimeout(to);
         return writeGeneric(s, try args_core.getBuffer(argv, 1), null, write_mode_write, true, 0);
     }
@@ -1087,13 +1073,13 @@ fn getFileForStream(s: *types.JanetStream) raise.Raising(?*types.JanetFile) {
     var index: usize = 0;
     if (s.flags & stream_readable != 0) {
         flags |= constants.JANET_FILE_READ;
-        try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_FS_READ);
+        try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_read"}));
         fmt[index] = 'r';
         index += 1;
     }
     if (s.flags & stream_writable != 0) {
         flags |= constants.JANET_FILE_WRITE;
-        try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_FS_WRITE);
+        try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
         fmt[index] = if (index == 0) 'w' else '+';
         index += 1;
     }
@@ -1131,7 +1117,7 @@ fn getFileForStream(s: *types.JanetStream) raise.Raising(?*types.JanetFile) {
     return io_core.makejfile(@ptrCast(@alignCast(f)), flags);
 }
 
-fn toFileImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunToFile(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const s = try getStream(argv, 0);
     const iof = try getFileForStream(s);
@@ -1167,7 +1153,7 @@ pub fn toFileEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("ev/to-file", &toFileImpl, @src(), "(ev/to-file)", "Create core/file copy of the stream. This value can be used " ++
+            corefn.reg("ev/to-file", &cfunToFile, @src(), "(ev/to-file)", "Create core/file copy of the stream. This value can be used " ++
                 "when blocking IO behavior is needed."),
         };
         break :blk acc;

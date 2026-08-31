@@ -1,13 +1,8 @@
 //! Functions: a closure, the funcdef that is its bytecode, and the captured
 //! environments that make the two different things.
 //!
-//! Phase 12's namespace batch 3 built this leaf out of two halves of two
-//! files. `value_alloc.zig` gave it `janet_funcdef_alloc`, `janet_thunk` and
-//! `janet_thunk_delay`; `fiber_core.zig` gave it `janet_env_valid` and
-//! `janet_env_maybe_detach`. `port/NAMESPACES.md` has the scheme, and the
-//! reason `value_alloc.zig` is gone rather than moved: it held fiber
-//! allocation *and* the funcdef machinery, and "alloc" was the only word that
-//! covered both -- it covered them by saying nothing.
+//! Two halves of two files. The name is not `alloc`: that word covered fiber
+//! allocation *and* the funcdef machinery by saying nothing about either.
 //!
 //! **A near-miss worth keeping.** `janet_env_lookup` and
 //! `janet_env_lookup_into` in `marsh.zig` look like they belong here and do
@@ -15,26 +10,15 @@
 //! the *module environment table*, not a closure environment. Same word,
 //! different thing.
 //!
-//! The last three collectable kinds a caller cannot otherwise construct
-//! through Zig: a fiber, a funcdef, and the thunk that wraps one. This is
-//! Part 9 of Phase 8 and it takes `fiber_alloc`, `janet_fiber` and
-//! `janet_fiber_reset` from `src/core/fiber.c` together with
-//! `janet_funcdef_alloc` and `janet_thunk` from `src/core/bytecode.c` -- four
-//! exported symbols and two file-local helpers, and with them the last
-//! `janet_gcalloc` call sites outside `vm.c` and `marsh.c`.
+//! `janet_funcdef_alloc`, `janet_thunk` and `janet_thunk_delay` from the
+//! bytecode side; `janet_env_valid` and `janet_env_maybe_detach` from the
+//! fiber side. They are one leaf because they are one gap: the last
+//! collectable kinds a caller cannot otherwise construct.
 //!
-//! Two files, one increment, because they are one gap rather than two. After
-//! Parts 6 and 8 every other collectable kind can be built from Zig; fiber,
-//! function and funcdef were what remained, and splitting them would have
-//! produced two contracts that each tested half of the same sentence.
+//! ## Why the fiber's frame machinery is not here
 //!
-//! ## Why this is not part of `fiber_core.zig`
-//!
-//! `fiber_alloc` and its two callers sit physically *above* the
-//! `JANET_ZIG_FIBER_CORE` region in `fiber.c`, and Phase 7 left them there on
-//! purpose: the code below that `#ifndef` is the frame machinery, and the code
-//! above it is allocation, which is this phase's subject. The boundary is the
-//! same one the phase has drawn everywhere else -- who owns the memory, not who
+//! This file is allocation: who owns the memory. `value/fibers.zig` is the
+//! frame machinery: what a call does to a stack. The boundary is the same one
 //! uses it -- so the guard `fiber.c` now carries is a second, separate region
 //! rather than an extension of the first.
 //!
@@ -55,7 +39,7 @@
 //!
 //! Nothing is stranded when that jump happens, and the reason is worth stating
 //! rather than assuming. The fiber `janet_fiber` has just allocated is on
-//! `janet_vm.blocks` from the moment `janet_gcalloc` returns, so the collector
+//! `vm.gc.blocks` from the moment `janet_gcalloc` returns, so the collector
 //! owns it whether or not this function ever returns; its `data` array is
 //! reachable from the block and is freed with it. The half-built frame the
 //! signal leaves behind is exactly what C leaves behind, because C runs the
@@ -65,7 +49,7 @@
 //!
 //! `fiber_alloc` makes a `JANET_MEMORY_FIBER` block through `janet_gcalloc`
 //! and then a plain `janet_malloc` array for the value stack, and charges the
-//! second against `janet_vm.next_collection` by hand -- `janet_gcalloc` bills
+//! second against `vm.gc.next_collection` by hand -- `janet_gcalloc` bills
 //! only what it allocated itself. That is the same split
 //! `janet_fiber_setcapacity` maintains in `fiber_core.zig`, and the two have to
 //! agree: a fiber allocated here and grown there must have been charged once
@@ -109,21 +93,17 @@ const fibers = @import("fibers.zig");
 const wrap = @import("helpers/wrap.zig");
 const fatal = @import("../fatal.zig");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
-
-/// `janet_vm`, whose layout is `types.JanetVM`'s and whose address
-/// `cabi.vm()` takes.
-inline fn vm() *types.JanetVM {
-    return c.vm();
-}
+const vm_state = @import("../vm/lifecycle.zig");
+const compiler_primitives = @import("../compiler.zig");
 
 // ------------------------------------------------------------------ funcdefs
 //
 // A funcdef is the bytecode; a function is the bytecode plus its captured
-// environments. Two types in one leaf, so `NAMESPACES.md` rule 4 gives the
 // second a sub-namespace rather than a prefix: `functions.defs.new()` is
 // `janet_funcdef_alloc`, where a bare `functions.new()` would name the wrong
+// type.
 // type.
 
 pub const defs = struct {
@@ -137,7 +117,7 @@ pub const defs = struct {
     /// until the assembler or the compiler narrows it.
     pub fn new() callconv(.c) *types.JanetFuncDef {
         const def: *types.JanetFuncDef = @ptrCast(@alignCast(gc_alloc.gcalloc(
-            constants.JANET_MEMORY_FUNCDEF,
+            types.MemoryType.funcdef,
             @sizeOf(types.JanetFuncDef),
         )));
         def.environments = null;
@@ -169,14 +149,13 @@ pub const defs = struct {
 /// Create a simple closure from a funcdef.
 ///
 /// `sizeof(JanetFunction)` is the size of a function with no environments:
-/// `envs` is a flexible array member, which translate-c drops entirely, so
-/// `types.function_envs` is where the environments begin, and a thunk has
-/// none, so the block is exactly that long. `test/value_alloc.zig` checks the
-/// figure against `@sizeOf` -- the other spelling -- which is what `test/abi.c`
-/// asserted in C until increment 5e made the offset spellable here.
+/// `envs` is a flexible array member, so `types.function_envs` is where the
+/// environments begin, and a thunk has none: the block is exactly that long.
+/// `test/value_alloc.zig` checks the figure against `@sizeOf` -- the other
+/// spelling.
 pub fn thunk(def: *types.JanetFuncDef) *types.JanetFunction {
     const func: *types.JanetFunction = @ptrCast(@alignCast(gc_alloc.gcalloc(
-        constants.JANET_MEMORY_FUNCTION,
+        types.MemoryType.function,
         types.function_envs,
     )));
     func.def = def;
@@ -185,16 +164,13 @@ pub fn thunk(def: *types.JanetFuncDef) *types.JanetFunction {
     return func;
 }
 
-/// `src/core/util.h`, declared here rather than in `cabi.zig`.
-extern fn janet_def_addflags(def: *types.JanetFuncDef) callconv(.c) void;
-
 /// A function that, called, returns `x`. Trivial in Janet, a pain in C, and
 /// here because both allocations it is assembled from are already in this file.
 ///
 /// The two `janet_malloc`s are the C original's and are deliberately not
 /// `janet_gcalloc`: a funcdef owns its bytecode and constants outright, and
 /// the collector frees them through `janet_free` when the funcdef dies.
-pub fn thunkDelay(x: types.Janet) *types.JanetFunction {
+pub fn thunkDelay(x: repr.Value) *types.JanetFunction {
     const bytecode = [_]u32{
         @intCast(constants.JOP_LOAD_CONSTANT),
         @intCast(constants.JOP_RETURN),
@@ -208,37 +184,36 @@ pub fn thunkDelay(x: types.Janet) *types.JanetFunction {
     def.bytecode = @ptrCast(@alignCast(utils.malloc(@sizeOf(@TypeOf(bytecode))) orelse
         fatal.outOfMemory()));
     def.bytecode_length = @intCast(bytecode.len);
-    def.constants = @ptrCast(@alignCast(utils.malloc(@sizeOf(types.Janet)) orelse
+    def.constants = @ptrCast(@alignCast(utils.malloc(@sizeOf(repr.Value)) orelse
         fatal.outOfMemory()));
     def.constants_length = 1;
     def.name = null;
-    def.constants.?[0] = x;
-    @memcpy(def.bytecode.?[0..bytecode.len], &bytecode);
-    janet_def_addflags(def);
+    def.constantValues()[0] = x;
+    @memcpy(def.instructions()[0..bytecode.len], &bytecode);
+    compiler_primitives.defAddflags(def);
     return thunk(def);
 }
 
 // --------------------------------------------------- function environments
 //
 // A `JanetFuncEnv` is a *closure's* captured environment, which is why these
-// three came here rather than staying with the fiber machinery they read.
-// `port/NAMESPACES.md` took that decision; what the doing added is the cost,
-// and it is worth stating because it is the argument against a fourth leaf:
+// three are here rather than with the fiber machinery they read. What that
+// costs is worth stating, because it is the argument against a fourth leaf:
 // validating an environment means walking the frames of the fiber it names, so
 // this file asks `fibers` for the frame geometry -- `fibers.stackFrame`,
-// `fibers.janetBytes`, `fibers.finished` -- rather than keeping a second copy
+// `fibers.stackBytes`, `fibers.finished` -- rather than keeping a second copy
 // of it. It goes the other way too: `envDetach` is what `fibers.popframe` and
 // `fibers.funcframeTail` run over a frame's environment as they drop it, so
 // the two files import each other. That is the second circular pair in
-// `value/` after batch 1's `tables`/`structs`, and Zig is as unbothered by it
+// `value/` after `tables`/`structs`, and Zig is as unbothered by it
 // as it was there.
 //
 // That follows batch 2's line rather than batch 1's. A leaf may duplicate a
 // private *predicate*; it may not duplicate a definition anything else can
 // observe, and a pointer offset can disagree. The merge proved the rule twice
 // over on the way in: `fiber_core.zig` and `value_alloc.zig` each carried a
-// private `janetBytes` and a private `setStatus`, and in both pairs the two
-// copies had drifted apart -- one `janetBytes` traps where the other wraps a
+// private `stackBytes` and a private `setStatus`, and in both pairs the two
+// copies had drifted apart -- one `stackBytes` traps where the other wraps a
 // negative length into an enormous `size_t`, which is the behaviour
 // `janet_fiber_setcapacity` depends on. Neither call site could see the
 // difference; that is exactly how the C original left it, in two files.
@@ -258,13 +233,13 @@ pub fn envDetach(maybe_env: ?*types.JanetFuncEnv) void {
     const env = maybe_env orelse return;
     _ = envValid(env);
     const len = env.*.length;
-    const bytes = fibers.janetBytes(len);
+    const bytes = fibers.stackBytes(len);
     const memory = utils.malloc(bytes);
     // The budget is bumped before the null check, and through a `uint32_t`
     // truncation, in the C original. Both are reproduced.
-    vm().next_collection +%= @as(u32, @truncate(bytes));
+    vm_state.current().gc.next_collection +%= @as(u32, @truncate(bytes));
     if (memory == null) fatal.outOfMemory();
-    const vmem: [*]types.Janet = @ptrCast(@alignCast(memory));
+    const vmem: [*]repr.Value = @ptrCast(@alignCast(memory));
     const values = env.*.as.fiber.?.data.? + @as(usize, @bitCast(@as(isize, env.*.offset)));
     safe_memcpy(vmem, values, bytes);
     const bitset = fibers.stackFrame(values).func.?.def.?.closure_bitset;
@@ -313,14 +288,6 @@ pub fn envValid(env: *types.JanetFuncEnv) c_int {
 /// records its stack offset negated; it is trustworthy only if a live frame of
 /// the fiber it names still matches it exactly.
 ///
-/// The abi takes the suffix rather than the kernel, after the convention
-/// increment 5d's population (c1) established: `envValid` is the name a Zig
-/// caller wants, and the two differ only in the pointer type, which is the
-/// shape where picking the wrong one is quietest.
-pub fn envValidAbi(env: *types.JanetFuncEnv) c_int {
-    return envValid(env);
-}
-
 /// Detach an environment from its fiber once that fiber can no longer mutate
 /// the slots the environment points at.
 pub fn envMaybeDetach(env: *types.JanetFuncEnv) void {

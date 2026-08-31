@@ -13,15 +13,13 @@
 //! an entry that fails the name test can still pass the location test.
 //! Collapsing the two is the mistake this file exists to catch.
 //!
-//! ## What the migration changed
+//! ## The entry points are called by import
 //!
-//! The C original called `janet_trace_frame` and `janet_stacktrace_ext`, which
-//! are the two abis; each is one line of `raise.reported` over the entry
-//! point beside it. This calls `janet_trace_frameImpl` and `stacktraceExt`
-//! directly, so a raise from a `tostring` callback reached through `%v` — the
-//! only raise either can make — arrives as `error.JanetSignal` rather than as
-//! a report nobody consumes. That is rule 13's hazard removed by construction
-//! rather than avoided.
+//! `janet_trace_frame` and `janet_stacktrace_ext` are the two abis; each is
+//! one line of `raise.reported` over the entry point beside it. This calls the
+//! entry points directly, so a raise from a `tostring` callback reached
+//! through `%v` -- the only raise either can make -- arrives as
+//! `error.JanetSignal` rather than as a report nobody consumes.
 //!
 //! The two abis stay. `janet_trace_frame` has three callers in
 //! `debug_frames.zig` and one in `vm_calls.zig`; `janet_stacktrace_ext` has
@@ -29,8 +27,8 @@
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const raise = @import("raise");
 const value = @import("subsystems").value;
 const harness = @import("harness.zig");
@@ -40,7 +38,6 @@ const core_env = @import("subsystems").env;
 const vm_state = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
 const buffers = @import("subsystems").value.buffers;
-const vm_lifecycle = @import("subsystems").lifecycle;
 const fibers = @import("subsystems").value.fibers;
 const vm_entry = @import("subsystems").vm_entry;
 
@@ -56,7 +53,7 @@ var test_env: *types.JanetTable = undefined;
 fn compileFunction(source: [*:0]const u8) *types.JanetFunction {
     var out = wrap.fromNil();
     assert(core_env.dostring(test_env, source, "trace-frames-test", &out) == 0);
-    assert(harness.isType(out, constants.JANET_FUNCTION));
+    assert(harness.isType(out, repr.Tag.function));
     gc_alloc.gcroot(out);
     return wrap.toFunction(out);
 }
@@ -82,16 +79,16 @@ fn decode(frame: *types.JanetStackFrame) types.JanetTraceFrame {
     // `janet_trace_frameImpl` is `raise.Raising(void)` and never raises: it
     // reads a funcdef and the registry and writes a plain structure. The
     // `catch` is what the type asks for, not a case this contract expects.
-    tf.janet_trace_frameImpl(frame, &out) catch unreachable;
+    tf.traceFrame(frame, &out) catch unreachable;
     return out;
 }
 
 // Three cfunctions used only as registry keys. They are never called; what
 // matters is that each is a **distinct address** the registry can be keyed on.
 //
-// In C these were three `static Janet f(int32_t, Janet *)` with identical
-// bodies. Here they have the type a builtin actually has since Phase 10 Part
-// 17g — `raise.Raising(Janet)` over Zig's own calling convention — and
+// In C these would be three `static Janet f(int32_t, Janet *)` with identical
+// bodies. Here they have the type a builtin has --
+// `raise.Raising(repr.Value)` over Zig's own calling convention -- and
 // `raise.stored` is the cast into the `JanetCFunRegistry` key, which is still
 // C's layout.
 //
@@ -106,19 +103,19 @@ fn decode(frame: *types.JanetStackFrame) types.JanetTraceFrame {
 // Distinct returns are the cheapest way to make the folding illegal, and they
 // are free: nothing calls these.
 
-fn probeNamed(argv: []types.Janet) raise.Raising(types.Janet) {
+fn probeNamed(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(1);
 }
 
-fn probeUnnamed(argv: []types.Janet) raise.Raising(types.Janet) {
+fn probeUnnamed(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(2);
 }
 
-fn probeUnregistered(argv: []types.Janet) raise.Raising(types.Janet) {
+fn probeUnregistered(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(3);
@@ -147,8 +144,8 @@ fn aNamedFunctionWithASourcemap(named: *types.JanetFunction) void {
     assert(desc.name_prefix == null);
     assert(desc.source == @as([*]const u8, @ptrCast(named.def.?.source)));
     assert(desc.loc_kind == constants.JANET_TRACE_LOC_SOURCEMAP);
-    assert(desc.line == named.def.?.sourcemap.?[0].line);
-    assert(desc.column == named.def.?.sourcemap.?[0].column);
+    assert(desc.line == named.def.?.sourceMappings()[0].line);
+    assert(desc.column == named.def.?.sourceMappings()[0].column);
     assert(desc.tail == 0);
 
     // The offset the program counter reports is an index into the bytecode,
@@ -157,8 +154,8 @@ fn aNamedFunctionWithASourcemap(named: *types.JanetFunction) void {
         frameOfFunction(&frame, named, 1);
         desc = decode(&frame);
         assert(desc.loc_kind == constants.JANET_TRACE_LOC_SOURCEMAP);
-        assert(desc.line == named.def.?.sourcemap.?[1].line);
-        assert(desc.column == named.def.?.sourcemap.?[1].column);
+        assert(desc.line == named.def.?.sourceMappings()[1].line);
+        assert(desc.column == named.def.?.sourceMappings()[1].column);
     }
 }
 
@@ -347,7 +344,7 @@ fn anEmptyFrame() void {
 // ------------------------------------------------------------ whole traces
 
 fn contents(sink: *types.JanetBuffer) []const u8 {
-    return sink.data.?[0..@intCast(sink.count)];
+    return sink.slice();
 }
 
 /// Run the printer with `:err` bound to a buffer, which is how the rendering
@@ -357,7 +354,7 @@ fn contents(sink: *types.JanetBuffer) []const u8 {
 fn traceInto(
     sink: *types.JanetBuffer,
     fiber: *types.JanetFiber,
-    err: types.Janet,
+    err: repr.Value,
     prefix: ?[*:0]const u8,
 ) raise.Raising(void) {
     buffers.setcount(sink, 0) catch @panic("trace_frames: setcount raised");
@@ -428,7 +425,7 @@ fn aStacktraceOverARealFiber(failing: *types.JanetFunction) raise.Raising(void) 
     defer _ = gc_alloc.gcunroot(wrap.fromBuffer(sink));
 
     var out = wrap.fromNil();
-    assert(vm_entry.continueFiber(fiber, wrap.fromNil(), &out) == constants.JANET_SIGNAL_ERROR);
+    assert(vm_entry.continueFiber(fiber, wrap.fromNil(), &out) == types.Signal.@"error");
 
     vm_state.setdyn("err-color", wrap.fromNil());
     try traceInto(sink, fiber, out, "trace-frames-test");
@@ -476,7 +473,7 @@ fn body() raise.Raising(void) {
 pub fn run() void {
     harness.init();
     body() catch @panic("trace_frames: a trace raised unexpectedly");
-    vm_lifecycle.deinit();
+    vm_state.deinit();
 
     std.debug.print("trace frames contract ok\n", .{});
 }

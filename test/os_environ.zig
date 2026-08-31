@@ -11,14 +11,12 @@
 //! directory, where the separator is at index zero and must not be read as
 //! "missing".
 //!
-//! ## What changed in the migration, and why it is not cosmetic
+//! ## The cfunctions are called directly
 //!
-//! The C original called each core cfunction through
-//! `janet_contract_call_cfunction`, because a cfunction has not been a C
-//! function since Phase 10 Part 17g: it returns `error{JanetSignal}!Janet`
-//! over Zig's calling convention, so C could neither call one nor learn that
-//! one had raised except through the `janet_zig_c_raise_*` report. This file
-//! calls one directly and writes `try`.
+//! A cfunction is not a C function: it returns `error{JanetSignal}!Value` over
+//! Zig's calling convention, so a contract on the far side of a symbol table
+//! can neither call one nor learn that one had raised except through a report.
+//! This file calls one directly and writes `try`.
 //!
 //! That is what makes `theRefusals` below possible at all. The C contract
 //! asserted only the calls that *succeed*; a refusal was reachable only as a
@@ -29,8 +27,8 @@
 //! and the argument layer.
 
 const std = @import("std");
+const repr = @import("repr");
 const types = @import("types");
-const constants = @import("constants");
 const c = @import("cabi");
 const harness = @import("harness.zig");
 const value = @import("subsystems").value;
@@ -86,14 +84,14 @@ fn theHostOperations() void {
 fn theCoreFunctions() !void {
     const setenv = harness.core("os/setenv");
     const getenv = harness.core("os/getenv");
-    var args: [2]types.Janet = undefined;
+    var args: [2]repr.Value = undefined;
 
     args[0] = value.fromBytes(test_name, .string);
     args[1] = value.fromBytes("public-value", .string);
-    std.debug.assert(harness.isType(try setenv(args[0..2]), constants.JANET_NIL));
+    std.debug.assert(harness.isType(try setenv(args[0..2]), repr.Tag.nil));
 
     const found = try getenv(args[0..1]);
-    std.debug.assert(harness.isType(found, constants.JANET_STRING));
+    std.debug.assert(harness.isType(found, repr.Tag.string));
     std.debug.assert(harness.stringIs(wrap.toString(found), "public-value"));
 
     // `os/environ` is absent on Plan 9, where there is no `environ` to walk.
@@ -101,7 +99,7 @@ fn theCoreFunctions() !void {
         const environ = harness.core("os/environ");
         const snapshot = wrap.toTable(try environ(&.{}));
         const captured = tables.get(snapshot, args[0]);
-        std.debug.assert(harness.isType(captured, constants.JANET_STRING));
+        std.debug.assert(harness.isType(captured, repr.Tag.string));
         std.debug.assert(harness.stringIs(wrap.toString(captured), "public-value"));
     }
 
@@ -114,30 +112,30 @@ fn theCoreFunctions() !void {
     // One argument to `os/setenv` unsets, which is the same path
     // `janet_os_setenv(name, NULL)` takes above and a different caller of it.
     args[0] = value.fromBytes(test_name, .string);
-    std.debug.assert(harness.isType(try setenv(args[0..1]), constants.JANET_NIL));
-    std.debug.assert(harness.isType(try getenv(args[0..1]), constants.JANET_NIL));
+    std.debug.assert(harness.isType(try setenv(args[0..1]), repr.Tag.nil));
+    std.debug.assert(harness.isType(try getenv(args[0..1]), repr.Tag.nil));
 }
 
 /// What the two functions refuse, which the C contract could not ask.
 fn theRefusals() void {
     const setenv = harness.core("os/setenv");
     const getenv = harness.core("os/getenv");
-    var args: [2]types.Janet = undefined;
+    var args: [2]repr.Value = undefined;
 
     // Arity. `os/setenv` takes one or two, `os/getenv` one or two.
     std.debug.assert(harness.raised(setenv, .{args[0..0]}) != null);
     std.debug.assert(harness.raised(getenv, .{args[0..0]}) != null);
     args[0] = value.fromBytes(test_name, .string);
     args[1] = value.fromBytes("value", .string);
-    var three = [_]types.Janet{ args[0], args[1], args[1] };
+    var three = [_]repr.Value{ args[0], args[1], args[1] };
     std.debug.assert(harness.raised(setenv, .{&three}) != null);
 
     // Type. A keyword is not a string, and the refusal comes from the argument
     // layer with the slot number in it.
     args[0] = value.fromBytes("not-a-string", .keyword);
     const bad_name = harness.raised(setenv, .{args[0..1]}).?;
-    std.debug.assert(bad_name.signal == constants.JANET_SIGNAL_ERROR);
-    std.debug.assert(harness.isType(bad_name.payload, constants.JANET_STRING));
+    std.debug.assert(bad_name.signal == types.Signal.@"error");
+    std.debug.assert(harness.isType(bad_name.payload, repr.Tag.string));
 
     // The second argument is checked too, and only when it is present.
     args[0] = value.fromBytes(test_name, .string);

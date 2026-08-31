@@ -1,12 +1,11 @@
-//! Parsing expression grammars: `src/core/peg.c` entire. The matcher, the
-//! compiler that feeds it, the bytecode verifier that guards the unmarshalled
-//! form, and the six cfunctions over all three. This is Phase 10 Part 9.
+//! Parsing expression grammars: the matcher, the compiler that feeds it, the
+//! bytecode verifier that guards the unmarshalled form, and the six
+//! cfunctions over all three.
 //!
-//! Part 4's consolidation rule decides the shape without argument, the same way
-//! it did for `marsh.c`: the compiler emits the bytecode the matcher runs and
-//! the verifier accepts, so the three share a private instruction encoding that
-//! appears in no header and has no other consumer. A split would put a C bridge
-//! between two halves of one instruction set.
+//! One file, because the compiler emits the bytecode the matcher runs and the
+//! verifier accepts, so the three share a private instruction encoding that
+//! appears in no header and has no other consumer. A split would put a
+//! boundary between two halves of one instruction set.
 //!
 //! ## The selector could not be called `-Dpeg`
 //!
@@ -63,9 +62,9 @@
 const std = @import("std");
 const corefn = @import("corefn");
 const raise = @import("raise");
-const io_core = @import("io.zig");
 const pp_format = @import("pp/format.zig");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const stdio = @import("stdio.zig");
@@ -82,10 +81,9 @@ const gc_alloc = @import("gc.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
 const gc_mark = @import("gc/mark.zig");
-const vector_mod = @import("stretchy.zig");
+const stretchy = @import("stretchy.zig");
 const numscan = @import("scan.zig");
 const vm_state = @import("vm/lifecycle.zig");
-const kind = @import("value/helpers/kind.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const args_core = @import("args.zig");
 const fatal = @import("fatal.zig");
@@ -118,40 +116,6 @@ inline fn pegAssert(condition: bool, message: [*:0]const u8) void {
     if (!condition) fatal.fatal(message);
 }
 
-// The `janet_v_` vectors of `src/core/vector.h`, whose function-like macros do
-// not survive translation. The two-word `int32_t` prefix is the existing
-// private contract shared with `vector.h`.
-
-const vector_header_size = 2 * @sizeOf(i32);
-
-fn vectorHeader(comptime Element: type, vector: [*]Element) [*]i32 {
-    return @ptrFromInt(@intFromPtr(vector) - vector_header_size);
-}
-
-fn vectorCount(comptime Element: type, vector: ?[*]Element) i32 {
-    return if (vector) |v| vectorHeader(Element, v)[1] else 0;
-}
-
-fn vectorCapacity(comptime Element: type, vector: [*]Element) i32 {
-    return vectorHeader(Element, vector)[0];
-}
-
-fn pushVector(comptime Element: type, vector_pointer: *?[*]Element, val: Element) void {
-    var vector = vector_pointer.*;
-    const count = vectorCount(Element, vector);
-    if (vector == null or count + 1 >= vectorCapacity(Element, vector.?)) {
-        const grown = vector_mod.vGrow(if (vector) |v| @ptrCast(v) else null, 1, @sizeOf(Element));
-        vector = @ptrCast(@alignCast(grown));
-        vector_pointer.* = vector;
-    }
-    vector.?[@intCast(count)] = val;
-    vectorHeader(Element, vector.?)[1] = count + 1;
-}
-
-fn freeVector(comptime Element: type, vector: ?[*]Element) void {
-    if (vector) |v| gc_alloc.sfree(vectorHeader(Element, v));
-}
-
 /// Text positions are compared, not just walked, and Zig has no relational
 /// operator on pointers. Every `text < s->text_end` in the C original becomes
 /// an address comparison through here.
@@ -180,9 +144,9 @@ inline fn shift(pointer: [*]const u8, delta: i32) [*]const u8 {
 /// `@intCast` here would turn a silent out-of-bounds read into a Zig panic in
 /// a safety-checked build and into something worse in a fast one, which is a
 /// change in behaviour rather than a reproduction of it.
-inline fn extraAt(extrav: ?[*]const types.Janet, index: i32) types.Janet {
-    const offset = @as(usize, @bitCast(@as(isize, index))) *% @sizeOf(types.Janet);
-    const element: *align(@alignOf(types.Janet)) const types.Janet = @ptrFromInt(@intFromPtr(extrav.?) +% offset);
+inline fn extraAt(extrav: ?[*]const repr.Value, index: i32) repr.Value {
+    const offset = @as(usize, @bitCast(@as(isize, index))) *% @sizeOf(repr.Value);
+    const element: *align(@alignOf(repr.Value)) const repr.Value = @ptrFromInt(@intFromPtr(extrav.?) +% offset);
     return element.*;
 }
 
@@ -195,7 +159,7 @@ inline fn extraAt(extrav: ?[*]const types.Janet, index: i32) types.Janet {
 /// cannot use the macro -- does not link. `marsh.zig`, `pp_pretty.zig` and
 /// `value_access.zig` write it out for the same reason and `FOUND.md` has the
 /// defect.
-inline fn wrapInteger(x: i32) types.Janet {
+inline fn wrapInteger(x: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(x));
 }
 
@@ -204,10 +168,9 @@ inline fn wrapInteger(x: i32) types.Janet {
 /// writes it out, except that the format is a runtime value: `(??)` picks
 /// between a coloured and a plain rendering per line.
 inline fn eprintf(comptime format: [:0]const u8, args: anytype) void {
-    // `pp_format.dynprintf` can raise: `(dyn :err)` may be a Janet function, and
+    // `pp/format.dynprintf` can raise: `(dyn :err)` may be a Janet function, and
     // calling it can. This position cannot carry one -- it is a trace or a
-    // diagnostic on the way out -- so the raise is reported exactly as the C
-    // abi reported it before Part 18 deleted the variadic.
+    // diagnostic on the way out -- so the raise is reported.
     raise.reported(pp_format.dynprintf("err", @ptrCast(@alignCast(stdio.err())), format, args));
 }
 
@@ -233,12 +196,12 @@ const PegState = struct {
     /// currently says.
     outer_text_end: [*]const u8,
     bytecode: [*]const u32,
-    constants: [*]const types.Janet,
+    constants: [*]const repr.Value,
     captures: *types.JanetArray,
     scratch: *types.JanetBuffer,
     tags: *types.JanetBuffer,
     tagged_captures: *types.JanetArray,
-    extrav: ?[*]const types.Janet,
+    extrav: ?[*]const repr.Value,
     linemap: ?[*]i32,
     extrac: i32,
     depth: i32,
@@ -283,7 +246,7 @@ fn capLoadKeept(s: *PegState, cs: CapState) void {
 
 /// Add a capture, to whichever of the three stacks the current mode and the
 /// grammar's use of backrefs call for.
-fn pushcap(s: *PegState, capture: types.Janet, tag: u32) raise.Raising(void) {
+fn pushcap(s: *PegState, capture: repr.Value, tag: u32) raise.Raising(void) {
     if (s.mode == .accumulate) try pp_describe.toStringB(s.scratch, capture);
     if (s.mode == .normal) try arrays.push(s.captures, capture);
     if (s.has_backref != 0) {
@@ -395,7 +358,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                     @as([*]const u8, &buffer),
                     @as(i32, @intCast(at(text) - at(s.text_start))),
                 });
-                const has_color = kind.truthy(vm_state.dyn("err-color")) != 0;
+                const has_color = repr.truthy(vm_state.dyn("err-color"));
                 if (s.scratch.count != 0) {
                     eprintf("accumulate buffer: %v\n", .{wrap.fromBuffer(s.scratch)});
                 }
@@ -406,7 +369,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                         // Two calls rather than one: the format string is
                         // `comptime` now, so a runtime `has_color` cannot
                         // choose between two of them.
-                        const capture = s.captures.data.?[@intCast(i)];
+                        const capture = s.captures.slice()[@intCast(i)];
                         if (has_color)
                             eprintf("  [%d]: %M\n", .{ i, capture })
                         else
@@ -417,8 +380,8 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                     eprintf("tag stack [%d]:\n", .{s.tagged_captures.count});
                     var i: i32 = 0;
                     while (i < s.tagged_captures.count) : (i += 1) {
-                        const tag = @as(i32, s.tags.data.?[@intCast(i)]);
-                        const capture = s.tagged_captures.data.?[@intCast(i)];
+                        const tag = @as(i32, s.tags.slice()[@intCast(i)]);
+                        const capture = s.tagged_captures.slice()[@intCast(i)];
                         if (has_color)
                             eprintf("  [%d] tag=%d: %M\n", .{ i, tag, capture })
                         else
@@ -595,8 +558,8 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 const tag = rule[2];
                 var i: i32 = s.tags.count - 1;
                 while (i >= 0) : (i -= 1) {
-                    if (@as(u32, s.tags.data.?[@intCast(i)]) == search) {
-                        try pushcap(s, s.tagged_captures.data.?[@intCast(i)], tag);
+                    if (@as(u32, s.tags.slice()[@intCast(i)]) == search) {
+                        try pushcap(s, s.tagged_captures.slice()[@intCast(i)], tag);
                         return text;
                     }
                 }
@@ -678,7 +641,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 up1(s);
                 s.mode = oldmode;
                 const matched = result orelse return null;
-                const cap = value.fromBytes(s.scratch.data.?[@intCast(cs.scratch)..@intCast(s.scratch.count)], .string);
+                const cap = value.fromBytes(s.scratch.slice()[@intCast(cs.scratch)..@intCast(s.scratch.count)], .string);
                 capLoadKeept(s, cs);
                 try pushcap(s, cap, tag);
                 return matched;
@@ -719,7 +682,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 safe_memcpy(
                     sub_captures.*.data,
                     s.captures.data.? + @as(usize, @intCast(cs.cap)),
-                    @sizeOf(types.Janet) * @as(usize, @intCast(num_sub_captures)),
+                    @sizeOf(repr.Value) * @as(usize, @intCast(num_sub_captures)),
                 );
                 sub_captures.*.count = num_sub_captures;
                 capLoadKeept(s, cs);
@@ -741,7 +704,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 const matched = result orelse return null;
                 const num_sub_captures = s.captures.count - cs.cap;
                 if (num_sub_captures <= @as(i32, @intCast(nth))) return null;
-                const cap = s.captures.data.?[@intCast(cs.cap + @as(i32, @intCast(nth)))];
+                const cap = s.captures.slice()[@intCast(cs.cap + @as(i32, @intCast(nth)))];
                 capLoadKeept(s, cs);
                 try pushcap(s, cap, tag);
                 return matched;
@@ -841,33 +804,32 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
 
                 var cap = wrap.fromNil();
                 const constant = s.constants[rule[2]];
-                switch (kind.typeOf(constant)) {
-                    constants.JANET_STRUCT => {
+                switch (repr.typeOf(constant)) {
+                    repr.Tag.@"struct" => {
                         if (s.captures.count != 0) {
                             cap = structs.get(
                                 wrap.toStruct(constant),
-                                s.captures.data.?[@intCast(s.captures.count - 1)],
+                                s.captures.slice()[@intCast(s.captures.count - 1)],
                             );
                         }
                     },
-                    constants.JANET_TABLE => {
+                    repr.Tag.table => {
                         if (s.captures.count != 0) {
                             cap = tables.get(
                                 wrap.toTable(constant),
-                                s.captures.data.?[@intCast(s.captures.count - 1)],
+                                s.captures.slice()[@intCast(s.captures.count - 1)],
                             );
                         }
                     },
                     // Both of these run arbitrary Janet code in the middle of
-                    // the matcher's recursion. The cfunction returns its raise
-                    // since Part 17e; `janet_call` still jumps.
-                    constants.JANET_CFUNCTION => {
+                    // the matcher's recursion.
+                    repr.Tag.cfunction => {
                         cap = try raise.cfunction(wrap.toCfunction(constant))(
                             (s.captures.data.? + @as(usize, @intCast(cs.cap)))[0..@intCast(s.captures.count - cs.cap)],
                         );
                     },
-                    constants.JANET_FUNCTION => {
-                        cap = try vm_entry.callImpl(
+                    repr.Tag.function => {
+                        cap = try vm_entry.call(
                             wrap.toFunction(constant),
                             (s.captures.data.? + @as(usize, @intCast(cs.cap)))[0..@intCast(s.captures.count - cs.cap)],
                         );
@@ -875,8 +837,8 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                     else => cap = constant,
                 }
                 capLoadKeept(s, cs);
-                if (rule[0] != constants.RULE_REPLACE and kind.truthy(cap) == 0) return null;
-                var elements: ?[*]const types.Janet = null;
+                if (rule[0] != constants.RULE_REPLACE and !repr.truthy(cap)) return null;
+                var elements: ?[*]const repr.Value = null;
                 var len: i32 = 0;
                 if (rule[0] == constants.RULE_MATCHSPLICE and args_core.indexedView(cap, &elements, &len) != 0) {
                     var i: i32 = 0;
@@ -897,7 +859,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 s.mode = oldmode;
                 if (result == null) return null;
                 if (s.captures.count > old_cap) {
-                    return raise.panicv(s.captures.data.?[@intCast(s.captures.count - 1)]);
+                    return raise.panicv(s.captures.slice()[@intCast(s.captures.count - 1)]);
                 }
                 const start: i32 = @intCast(at(text) - at(s.text_start));
                 const lc = getLinecolFromPosition(s, start);
@@ -908,9 +870,9 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 const search = rule[1];
                 var i: i32 = s.tags.count - 1;
                 while (i >= 0) : (i -= 1) {
-                    if (@as(u32, s.tags.data.?[@intCast(i)]) != search) continue;
-                    const capture = s.tagged_captures.data.?[@intCast(i)];
-                    if (kind.checkType(capture, constants.JANET_STRING) == 0) return null;
+                    if (@as(u32, s.tags.slice()[@intCast(i)]) != search) continue;
+                    const capture = s.tagged_captures.slice()[@intCast(i)];
+                    if (!repr.checkType(capture, repr.Tag.string)) return null;
                     const bytes = wrap.toString(capture);
                     const len: usize = @intCast(types.stringHead(bytes).length);
                     if (at(text) +% len > at(s.text_end)) return null;
@@ -936,7 +898,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                     capLoad(s, cs);
                     return null;
                 }
-                const lencap = s.captures.data.?[@intCast(cs.cap)];
+                const lencap = s.captures.slice()[@intCast(cs.cap)];
                 if (args_core.checkint(lencap) == 0) {
                     capLoad(s, cs);
                     return null;
@@ -976,7 +938,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 // Above six bytes a `double` capture would lose precision, so
                 // the wider widths need a boxed integer to land in and are
                 // only reachable when `JANET_INT_TYPES` provides one.
-                var capture_value: types.Janet = undefined;
+                var capture_value: repr.Value = undefined;
                 if (config.int_types and width > 6) {
                     capture_value = if (signedness != 0)
                         inttypes.wrapS64(pegConvertU64S64(accum, width))
@@ -1007,9 +969,9 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 if (rule[2] != 0) {
                     var i = tcap;
                     while (i < final_tcap) : (i += 1) {
-                        if (s.tags.data.?[@intCast(i)] != @as(u8, @truncate(rule[2]))) {
-                            s.tags.data.?[@intCast(w)] = s.tags.data.?[@intCast(i)];
-                            s.tagged_captures.data.?[@intCast(w)] = s.tagged_captures.data.?[@intCast(i)];
+                        if (s.tags.slice()[@intCast(i)] != @as(u8, @truncate(rule[2]))) {
+                            s.tags.slice()[@intCast(w)] = s.tags.slice()[@intCast(i)];
+                            s.tagged_captures.slice()[@intCast(w)] = s.tagged_captures.slice()[@intCast(i)];
                             w += 1;
                         }
                     }
@@ -1032,18 +994,18 @@ const Builder = struct {
     grammar: *types.JanetTable,
     default_grammar: ?*types.JanetTable,
     tags: *types.JanetTable,
-    constants: ?[*]types.Janet,
+    constants: ?[*]repr.Value,
     bytecode: ?[*]u32,
     /// The form currently being compiled, named by every grammar error.
-    form: types.Janet,
+    form: repr.Value,
     depth: c_int,
     nexttag: u32,
     has_backref: c_int,
 };
 
 fn builderCleanup(b: *Builder) void {
-    freeVector(types.Janet, b.constants);
-    freeVector(u32, b.bytecode);
+    stretchy.free(repr.Value, b.constants);
+    stretchy.free(u32, b.bytecode);
 }
 
 /// Every grammar error goes through here, and every one of them frees the two
@@ -1081,14 +1043,14 @@ fn pegArity(b: *Builder, arity: i32, min: i32, max: i32) raise.Raising(void) {
         return pegPanicf(b, "arity mismatch, expected at most %d, got %d", .{ max, arity });
 }
 
-fn pegGetset(b: *Builder, x: types.Janet) raise.Raising([*]const u8) {
-    if (kind.checkType(x, constants.JANET_STRING) == 0)
+fn pegGetset(b: *Builder, x: repr.Value) raise.Raising([*]const u8) {
+    if (!repr.checkType(x, repr.Tag.string))
         return pegPanic(b, "expected string for character set");
     return wrap.toString(x);
 }
 
-fn pegGetrange(b: *Builder, x: types.Janet) raise.Raising([*]const u8) {
-    if (kind.checkType(x, constants.JANET_STRING) == 0)
+fn pegGetrange(b: *Builder, x: repr.Value) raise.Raising([*]const u8) {
+    if (!repr.checkType(x, repr.Tag.string))
         return pegPanic(b, "expected string for character range");
     const str = wrap.toString(x);
     if (types.stringHead(str).length != 2)
@@ -1098,13 +1060,13 @@ fn pegGetrange(b: *Builder, x: types.Janet) raise.Raising([*]const u8) {
     return str;
 }
 
-fn pegGetinteger(b: *Builder, x: types.Janet) raise.Raising(i32) {
+fn pegGetinteger(b: *Builder, x: repr.Value) raise.Raising(i32) {
     if (args_core.checkint(x) == 0)
         return pegPanicf(b, "expected integer, got %v", .{x});
     return wrap.toInteger(x);
 }
 
-fn pegGetnat(b: *Builder, x: types.Janet) raise.Raising(i32) {
+fn pegGetnat(b: *Builder, x: repr.Value) raise.Raising(i32) {
     const i = try pegGetinteger(b, x);
     if (i < 0)
         return pegPanicf(b, "expected non-negative integer, got %v", .{x});
@@ -1113,17 +1075,17 @@ fn pegGetnat(b: *Builder, x: types.Janet) raise.Raising(i32) {
 
 // ------------------------------------------------------------------ emission
 
-fn emitConstant(b: *Builder, val: types.Janet) u32 {
-    const cindex: u32 = @intCast(vectorCount(types.Janet, b.constants));
-    pushVector(types.Janet, &b.constants, val);
+fn emitConstant(b: *Builder, val: repr.Value) u32 {
+    const cindex: u32 = @intCast(stretchy.count(repr.Value, b.constants));
+    stretchy.push(repr.Value, &b.constants, val);
     return cindex;
 }
 
-fn emitTag(b: *Builder, t: types.Janet) raise.Raising(u32) {
-    if (kind.checkType(t, constants.JANET_KEYWORD) == 0)
+fn emitTag(b: *Builder, t: repr.Value) raise.Raising(u32) {
+    if (!repr.checkType(t, repr.Tag.keyword))
         return pegPanicf(b, "expected keyword for capture tag, got %v", .{t});
     const check = tables.get(b.tags, t);
-    if (kind.checkType(check, constants.JANET_NIL) != 0) {
+    if (repr.checkType(check, repr.Tag.nil)) {
         const tag = b.nexttag;
         b.nexttag +%= 1;
         // A tag rides in one byte of the tag buffer, so 255 is the ceiling.
@@ -1149,29 +1111,29 @@ const Reserve = struct {
 fn reserve(b: *Builder, size: i32) Reserve {
     const r: Reserve = .{
         .builder = b,
-        .index = @intCast(vectorCount(u32, b.bytecode)),
+        .index = @intCast(stretchy.count(u32, b.bytecode)),
         .size = size,
     };
     var i: i32 = 0;
-    while (i < size) : (i += 1) pushVector(u32, &b.bytecode, 0);
+    while (i < size) : (i += 1) stretchy.push(u32, &b.bytecode, 0);
     return r;
 }
 
 fn emitRule(r: Reserve, op: u32, n: i32, body: [*]const u32) void {
     pegAssert(r.size == n + 1, "bad reserve");
-    r.builder.bytecode.?[r.index] = op;
+    stretchy.slice(u32, r.builder.bytecode)[r.index] = op;
     const count: usize = @intCast(n);
     @memcpy((r.builder.bytecode.? + r.index + 1)[0..count], body[0..count]);
 }
 
 /// For `RULE_LITERAL`, whose body is bytes rather than words.
 fn emitBytes(b: *Builder, op: u32, bytes: []const u8) void {
-    const next_rule: u32 = @intCast(vectorCount(u32, b.bytecode));
-    pushVector(u32, &b.bytecode, op);
-    pushVector(u32, &b.bytecode, @intCast(bytes.len));
+    const next_rule: u32 = @intCast(stretchy.count(u32, b.bytecode));
+    stretchy.push(u32, &b.bytecode, op);
+    stretchy.push(u32, &b.bytecode, @intCast(bytes.len));
     const words = (bytes.len + 3) >> 2;
     var i: usize = 0;
-    while (i < words) : (i += 1) pushVector(u32, &b.bytecode, 0);
+    while (i < words) : (i += 1) stretchy.push(u32, &b.bytecode, 0);
     if (bytes.len != 0) {
         const dest: [*]u8 = @ptrCast(b.bytecode.? + next_rule + 2);
         @memcpy(dest[0..bytes.len], bytes);
@@ -1199,7 +1161,7 @@ fn bitmapSet(bitmap: *[8]u32, ch: u8) void {
     bitmap[ch >> 5] |= @as(u32, 1) << @truncate(ch & 0x1F);
 }
 
-fn specRange(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specRange(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try pegArity(b, @as(i32, @intCast(argv.len)), 1, -1);
     if (@as(i32, @intCast(argv.len)) == 1) {
         const r = reserve(b, 2);
@@ -1219,7 +1181,7 @@ fn specRange(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
     }
 }
 
-fn specSet(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specSet(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try pegFixarity(b, @as(i32, @intCast(argv.len)), 1);
     const r = reserve(b, 9);
     const str = try pegGetset(b, argv[0]);
@@ -1229,7 +1191,7 @@ fn specSet(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
     emitRule(r, constants.RULE_SET, 8, &bitmap);
 }
 
-fn specLook(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specLook(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try pegArity(b, @as(i32, @intCast(argv.len)), 1, 2);
     const r = reserve(b, 3);
     const rulearg: i32 = if (@as(i32, @intCast(argv.len)) == 2) 1 else 0;
@@ -1239,30 +1201,30 @@ fn specLook(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
 }
 
 /// Rule of the form `[len, rules...]`.
-fn specVariadic(b: *Builder, argv: []const types.Janet, op: u32) raise.Raising(void) {
-    const rule: u32 = @intCast(vectorCount(u32, b.bytecode));
-    pushVector(u32, &b.bytecode, op);
-    pushVector(u32, &b.bytecode, @bitCast(@as(i32, @intCast(argv.len))));
+fn specVariadic(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void) {
+    const rule: u32 = @intCast(stretchy.count(u32, b.bytecode));
+    stretchy.push(u32, &b.bytecode, op);
+    stretchy.push(u32, &b.bytecode, @bitCast(@as(i32, @intCast(argv.len))));
     var i: i32 = 0;
-    while (i < @as(i32, @intCast(argv.len))) : (i += 1) pushVector(u32, &b.bytecode, 0);
+    while (i < @as(i32, @intCast(argv.len))) : (i += 1) stretchy.push(u32, &b.bytecode, 0);
     i = 0;
     while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
         const rulei = try pegCompile1(b, argv[@intCast(i)]);
         // Re-read `b.bytecode`: compiling a child grows the vector.
-        b.bytecode.?[rule + 2 + @as(u32, @intCast(i))] = rulei;
+        stretchy.slice(u32, b.bytecode)[rule + 2 + @as(u32, @intCast(i))] = rulei;
     }
 }
 
-fn specChoice(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specChoice(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specVariadic(b, argv, constants.RULE_CHOICE);
 }
 
-fn specSequence(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specSequence(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specVariadic(b, argv, constants.RULE_SEQUENCE);
 }
 
 /// For `(if a b)`, `(if-not a b)` and `(lenprefix a b)`.
-fn specBranch(b: *Builder, argv: []const types.Janet, op: u32) raise.Raising(void) {
+fn specBranch(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void) {
     try pegFixarity(b, @as(i32, @intCast(argv.len)), 2);
     const r = reserve(b, 3);
     const rule_a = try pegCompile1(b, argv[0]);
@@ -1270,19 +1232,19 @@ fn specBranch(b: *Builder, argv: []const types.Janet, op: u32) raise.Raising(voi
     emit2(r, op, rule_a, rule_b);
 }
 
-fn specIf(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specIf(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specBranch(b, argv, constants.RULE_IF);
 }
 
-fn specIfnot(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specIfnot(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specBranch(b, argv, constants.RULE_IFNOT);
 }
 
-fn specLenprefix(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specLenprefix(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specBranch(b, argv, constants.RULE_LENPREFIX);
 }
 
-fn specBetween(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specBetween(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try pegFixarity(b, @as(i32, @intCast(argv.len)), 3);
     const r = reserve(b, 4);
     const lo = try pegGetnat(b, argv[0]);
@@ -1291,22 +1253,22 @@ fn specBetween(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
     emit3(r, constants.RULE_BETWEEN, @bitCast(lo), @bitCast(hi), subrule);
 }
 
-fn specRepeater(b: *Builder, argv: []const types.Janet, min: u32) raise.Raising(void) {
+fn specRepeater(b: *Builder, argv: []const repr.Value, min: u32) raise.Raising(void) {
     try pegFixarity(b, @as(i32, @intCast(argv.len)), 1);
     const r = reserve(b, 4);
     const subrule = try pegCompile1(b, argv[0]);
     emit3(r, constants.RULE_BETWEEN, min, std.math.maxInt(u32), subrule);
 }
 
-fn specSome(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specSome(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specRepeater(b, argv, 1);
 }
 
-fn specAny(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specAny(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specRepeater(b, argv, 0);
 }
 
-fn specAtleast(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specAtleast(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try pegFixarity(b, @as(i32, @intCast(argv.len)), 2);
     const r = reserve(b, 4);
     const n = try pegGetnat(b, argv[0]);
@@ -1314,7 +1276,7 @@ fn specAtleast(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
     emit3(r, constants.RULE_BETWEEN, @bitCast(n), std.math.maxInt(u32), subrule);
 }
 
-fn specAtmost(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specAtmost(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try pegFixarity(b, @as(i32, @intCast(argv.len)), 2);
     const r = reserve(b, 4);
     const n = try pegGetnat(b, argv[0]);
@@ -1322,14 +1284,14 @@ fn specAtmost(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
     emit3(r, constants.RULE_BETWEEN, 0, @bitCast(n), subrule);
 }
 
-fn specOpt(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specOpt(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try pegFixarity(b, @as(i32, @intCast(argv.len)), 1);
     const r = reserve(b, 4);
     const subrule = try pegCompile1(b, argv[0]);
     emit3(r, constants.RULE_BETWEEN, 0, 1, subrule);
 }
 
-fn specRepeat(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specRepeat(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try pegFixarity(b, @as(i32, @intCast(argv.len)), 2);
     const r = reserve(b, 4);
     const n = try pegGetnat(b, argv[0]);
@@ -1338,18 +1300,18 @@ fn specRepeat(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
 }
 
 /// Rule of the form `[rule]`.
-fn specOnerule(b: *Builder, argv: []const types.Janet, op: u32) raise.Raising(void) {
+fn specOnerule(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void) {
     try pegFixarity(b, @as(i32, @intCast(argv.len)), 1);
     const r = reserve(b, 2);
     const rule = try pegCompile1(b, argv[0]);
     emit1(r, op, rule);
 }
 
-fn specNot(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specNot(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specOnerule(b, argv, constants.RULE_NOT);
 }
 
-fn specError(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specError(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     if (@as(i32, @intCast(argv.len)) == 0) {
         const r = reserve(b, 2);
         const rule = try pegCompile1(b, wrap.fromNumber(0));
@@ -1359,24 +1321,24 @@ fn specError(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
     return specOnerule(b, argv, constants.RULE_ERROR);
 }
 
-fn specTo(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specTo(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specOnerule(b, argv, constants.RULE_TO);
 }
 
-fn specThru(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specThru(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specOnerule(b, argv, constants.RULE_THRU);
 }
 
-fn specDrop(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specDrop(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specOnerule(b, argv, constants.RULE_DROP);
 }
 
-fn specOnlyTags(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specOnlyTags(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specOnerule(b, argv, constants.RULE_ONLY_TAGS);
 }
 
 /// Rule of the form `[rule, tag]`.
-fn specCap1(b: *Builder, argv: []const types.Janet, op: u32) raise.Raising(void) {
+fn specCap1(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void) {
     try pegArity(b, @as(i32, @intCast(argv.len)), 1, 2);
     const r = reserve(b, 3);
     const tag: u32 = if (@as(i32, @intCast(argv.len)) == 2) try emitTag(b, argv[1]) else 0;
@@ -1384,23 +1346,23 @@ fn specCap1(b: *Builder, argv: []const types.Janet, op: u32) raise.Raising(void)
     emit2(r, op, rule, tag);
 }
 
-fn specCapture(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specCapture(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specCap1(b, argv, constants.RULE_CAPTURE);
 }
 
-fn specAccumulate(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specAccumulate(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specCap1(b, argv, constants.RULE_ACCUMULATE);
 }
 
-fn specGroup(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specGroup(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specCap1(b, argv, constants.RULE_GROUP);
 }
 
-fn specUnref(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specUnref(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specCap1(b, argv, constants.RULE_UNREF);
 }
 
-fn specNth(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specNth(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try pegArity(b, @as(i32, @intCast(argv.len)), 2, 3);
     const r = reserve(b, 4);
     const nth = try pegGetnat(b, argv[0]);
@@ -1409,11 +1371,11 @@ fn specNth(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
     emit3(r, constants.RULE_NTH, @bitCast(nth), rule, tag);
 }
 
-fn specCaptureNumber(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specCaptureNumber(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try pegArity(b, @as(i32, @intCast(argv.len)), 1, 3);
     const r = reserve(b, 4);
     var base: u32 = 0;
-    if (@as(i32, @intCast(argv.len)) >= 2 and kind.checkType(argv[1], constants.JANET_NIL) == 0) {
+    if (@as(i32, @intCast(argv.len)) >= 2 and !repr.checkType(argv[1], repr.Tag.nil)) {
         if (args_core.checkint(argv[1]) == 0)
             return pegPanicf(b, "expected integer between 2 and 36, got %v", .{argv[1]});
         base = @bitCast(wrap.toInteger(argv[1]));
@@ -1425,7 +1387,7 @@ fn specCaptureNumber(b: *Builder, argv: []const types.Janet) raise.Raising(void)
     emit3(r, constants.RULE_CAPTURE_NUM, rule, base, tag);
 }
 
-fn specReference(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specReference(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try pegArity(b, @as(i32, @intCast(argv.len)), 1, 2);
     const r = reserve(b, 3);
     const search = try emitTag(b, argv[0]);
@@ -1435,31 +1397,31 @@ fn specReference(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
 }
 
 /// Rule of the form `[tag]`.
-fn specTag1(b: *Builder, argv: []const types.Janet, op: u32) raise.Raising(void) {
+fn specTag1(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void) {
     try pegArity(b, @as(i32, @intCast(argv.len)), 0, 1);
     const r = reserve(b, 2);
     const tag: u32 = if (@as(i32, @intCast(argv.len)) != 0) try emitTag(b, argv[0]) else 0;
     emit1(r, op, tag);
 }
 
-fn specPosition(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specPosition(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specTag1(b, argv, constants.RULE_POSITION);
 }
 
-fn specLine(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specLine(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specTag1(b, argv, constants.RULE_LINE);
 }
 
-fn specColumn(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specColumn(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specTag1(b, argv, constants.RULE_COLUMN);
 }
 
-fn specBackmatch(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specBackmatch(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     b.has_backref = 1;
     return specTag1(b, argv, constants.RULE_BACKMATCH);
 }
 
-fn specArgument(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specArgument(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try pegArity(b, @as(i32, @intCast(argv.len)), 1, 2);
     const r = reserve(b, 3);
     const tag: u32 = if (@as(i32, @intCast(argv.len)) == 2) try emitTag(b, argv[1]) else 0;
@@ -1470,21 +1432,21 @@ fn specArgument(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
 /// The one special that checks its arity with `janet_arity` rather than
 /// `peg_arity`, so a wrong count here reports "arity mismatch" and leaves the
 /// builder's two vectors unfreed. Reproduced; see `FOUND.md`.
-fn specConstant(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specConstant(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try args_core.arity(argv, 1, 2);
     const r = reserve(b, 3);
     const tag: u32 = if (@as(i32, @intCast(argv.len)) == 2) try emitTag(b, argv[1]) else 0;
     emit2(r, constants.RULE_CONSTANT, emitConstant(b, argv[0]), tag);
 }
 
-fn specDebug(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specDebug(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try pegArity(b, @as(i32, @intCast(argv.len)), 0, 0);
     const r = reserve(b, 1);
     const empty = [_]u32{0};
     emitRule(r, constants.RULE_DEBUG, 0, &empty);
 }
 
-fn specReplace(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specReplace(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try pegArity(b, @as(i32, @intCast(argv.len)), 2, 3);
     const r = reserve(b, 4);
     const subrule = try pegCompile1(b, argv[0]);
@@ -1493,13 +1455,13 @@ fn specReplace(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
     emit3(r, constants.RULE_REPLACE, subrule, constant, tag);
 }
 
-fn specMatchtimeImpl(b: *Builder, argv: []const types.Janet, op: u32) raise.Raising(void) {
+fn specMatchtimeImpl(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void) {
     try pegArity(b, @as(i32, @intCast(argv.len)), 2, 3);
     const r = reserve(b, 4);
     const subrule = try pegCompile1(b, argv[0]);
     const fun = argv[1];
-    if (kind.checkType(fun, constants.JANET_FUNCTION) == 0 and
-        kind.checkType(fun, constants.JANET_CFUNCTION) == 0)
+    if (!repr.checkType(fun, repr.Tag.function) and
+        !repr.checkType(fun, repr.Tag.cfunction))
     {
         return pegPanicf(b, "expected function or cfunction, got %v", .{fun});
     }
@@ -1508,16 +1470,16 @@ fn specMatchtimeImpl(b: *Builder, argv: []const types.Janet, op: u32) raise.Rais
     emit3(r, op, subrule, cindex, tag);
 }
 
-fn specMatchtime(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specMatchtime(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specMatchtimeImpl(b, argv, constants.RULE_MATCHTIME);
 }
 
-fn specMatchtimeSplice(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specMatchtimeSplice(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specMatchtimeImpl(b, argv, constants.RULE_MATCHSPLICE);
 }
 
 /// Rule of the form `[rule, rule]`.
-fn specTworule(b: *Builder, argv: []const types.Janet, op: u32) raise.Raising(void) {
+fn specTworule(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void) {
     try pegFixarity(b, @as(i32, @intCast(argv.len)), 2);
     const r = reserve(b, 3);
     const subrule1 = try pegCompile1(b, argv[0]);
@@ -1525,19 +1487,19 @@ fn specTworule(b: *Builder, argv: []const types.Janet, op: u32) raise.Raising(vo
     emit2(r, op, subrule1, subrule2);
 }
 
-fn specSub(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specSub(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specTworule(b, argv, constants.RULE_SUB);
 }
 
-fn specTil(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specTil(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specTworule(b, argv, constants.RULE_TIL);
 }
 
-fn specSplit(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specSplit(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specTworule(b, argv, constants.RULE_SPLIT);
 }
 
-fn specReadint(b: *Builder, argv: []const types.Janet, mask: u32) raise.Raising(void) {
+fn specReadint(b: *Builder, argv: []const repr.Value, mask: u32) raise.Raising(void) {
     try pegArity(b, @as(i32, @intCast(argv.len)), 1, 2);
     const r = reserve(b, 3);
     const tag: u32 = if (@as(i32, @intCast(argv.len)) == 2) try emitTag(b, argv[1]) else 0;
@@ -1548,23 +1510,23 @@ fn specReadint(b: *Builder, argv: []const types.Janet, mask: u32) raise.Raising(
     emit2(r, constants.RULE_READINT, mask | @as(u32, @bitCast(width)), tag);
 }
 
-fn specUintLe(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specUintLe(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specReadint(b, argv, 0x0);
 }
 
-fn specIntLe(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specIntLe(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specReadint(b, argv, 0x10);
 }
 
-fn specUintBe(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specUintBe(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specReadint(b, argv, 0x20);
 }
 
-fn specIntBe(b: *Builder, argv: []const types.Janet) raise.Raising(void) {
+fn specIntBe(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     return specReadint(b, argv, 0x30);
 }
 
-const Special = *const fn (*Builder, []const types.Janet) raise.Raising(void);
+const Special = *const fn (*Builder, []const repr.Value) raise.Raising(void);
 
 const SpecialPair = struct {
     name: [:0]const u8,
@@ -1667,7 +1629,7 @@ fn findSpecial(sym: [*:0]const u8) ?Special {
 }
 
 /// Compile a Janet value into a rule, and return its index in the bytecode.
-fn pegCompile1(b: *Builder, peg_in: types.Janet) raise.Raising(u32) {
+fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Raising(u32) {
     var peg = peg_in;
 
     // Keep track of the form being compiled, for error messages.
@@ -1678,14 +1640,14 @@ fn pegCompile1(b: *Builder, peg_in: types.Janet) raise.Raising(u32) {
     // Resolve keyword references.
     var i: i32 = recursion_guard;
     var grammar: ?*types.JanetTable = old_grammar;
-    while (i > 0 and kind.checkType(peg, constants.JANET_KEYWORD) != 0) : (i -= 1) {
+    while (i > 0 and repr.checkType(peg, repr.Tag.keyword)) : (i -= 1) {
         var next_peg = tables.getEx(grammar.?, peg, &grammar);
-        if (grammar == null or kind.checkType(next_peg, constants.JANET_NIL) != 0) {
+        if (grammar == null or repr.checkType(next_peg, repr.Tag.nil)) {
             next_peg = if (b.default_grammar == null)
                 wrap.fromNil()
             else
                 tables.get(b.default_grammar.?, peg);
-            if (kind.checkType(next_peg, constants.JANET_NIL) != 0) return pegPanic(b, "unknown rule");
+            if (repr.checkType(next_peg, repr.Tag.nil)) return pegPanic(b, "unknown rule");
         }
         peg = next_peg;
         b.form = peg;
@@ -1696,11 +1658,11 @@ fn pegCompile1(b: *Builder, peg_in: types.Janet) raise.Raising(u32) {
     // Check the cache. A tuple gets only the local cache: in a different
     // grammar the same tuple can compile to a different rule, because
     // `(+ :a :b)` depends on whatever `:a` and `:b` are bound to there.
-    const check = if (kind.checkType(peg, constants.JANET_TUPLE) != 0)
+    const check = if (repr.checkType(peg, repr.Tag.tuple))
         tables.rawget(grammar.?, peg)
     else
         tables.get(grammar.?, peg);
-    if (kind.checkType(check, constants.JANET_NIL) == 0) {
+    if (!repr.checkType(check, repr.Tag.nil)) {
         b.form = old_form;
         b.grammar = old_grammar;
         return @intFromFloat(wrap.toNumber(check));
@@ -1713,26 +1675,26 @@ fn pegCompile1(b: *Builder, peg_in: types.Janet) raise.Raising(u32) {
     if (depth_before == 0) return pegPanic(b, "peg grammar recursed too deeply");
 
     // The final rule to return.
-    var rule: u32 = @intCast(vectorCount(u32, b.bytecode));
+    var rule: u32 = @intCast(stretchy.count(u32, b.bytecode));
 
     // Add to the cache. Structs are not cached, because we do not yet know
     // what rule they will return -- caching the struct's main rule is just as
     // effective.
-    if (kind.checkType(peg, constants.JANET_STRUCT) == 0) {
+    if (!repr.checkType(peg, repr.Tag.@"struct")) {
         var which_grammar = grammar.?;
         // A primitive pattern goes in the global cache, the root grammar table.
-        if (kind.checkType(peg, constants.JANET_TUPLE) == 0) {
+        if (!repr.checkType(peg, repr.Tag.tuple)) {
             while (which_grammar.proto) |proto| which_grammar = proto;
         }
         tables.put(which_grammar, peg, wrap.fromNumber(@floatFromInt(rule)));
     }
 
-    switch (kind.typeOf(peg)) {
-        constants.JANET_BOOLEAN => {
+    switch (repr.typeOf(peg)) {
+        repr.Tag.boolean => {
             const r = reserve(b, 2);
-            emit1(r, if (wrap.toBoolean(peg) != 0) constants.RULE_NCHAR else constants.RULE_NOTNCHAR, 0);
+            emit1(r, if (wrap.toBoolean(peg)) constants.RULE_NCHAR else constants.RULE_NOTNCHAR, 0);
         },
-        constants.JANET_NUMBER => {
+        repr.Tag.number => {
             const n = try pegGetinteger(b, peg);
             const r = reserve(b, 2);
             if (n < 0) {
@@ -1741,26 +1703,26 @@ fn pegCompile1(b: *Builder, peg_in: types.Janet) raise.Raising(u32) {
                 emit1(r, constants.RULE_NCHAR, @bitCast(n));
             }
         },
-        constants.JANET_STRING => {
+        repr.Tag.string => {
             const str = wrap.toString(peg);
             emitBytes(b, constants.RULE_LITERAL, str[0..@intCast(types.stringHead(str).length)]);
         },
-        constants.JANET_BUFFER => {
+        repr.Tag.buffer => {
             const buf = wrap.toBuffer(peg);
-            emitBytes(b, constants.RULE_LITERAL, buf.*.data.?[0..@intCast(buf.*.count)]);
+            emitBytes(b, constants.RULE_LITERAL, buf.*.slice());
         },
-        constants.JANET_TABLE => {
+        repr.Tag.table => {
             // Build a grammar table.
             const new_grammar = tables.clone(wrap.toTable(peg));
             new_grammar.*.proto = grammar;
             grammar = new_grammar;
             b.grammar = grammar.?;
             const main_rule = tables.rawget(grammar.?, value.fromBytes("main", .keyword));
-            if (kind.checkType(main_rule, constants.JANET_NIL) != 0)
+            if (repr.checkType(main_rule, repr.Tag.nil))
                 return pegPanic(b, "grammar requires :main rule");
             rule = try pegCompile1(b, main_rule);
         },
-        constants.JANET_STRUCT => {
+        repr.Tag.@"struct" => {
             // Build a grammar table.
             const st = wrap.toStruct(peg);
             const capacity = types.structHead(st).capacity;
@@ -1768,7 +1730,7 @@ fn pegCompile1(b: *Builder, peg_in: types.Janet) raise.Raising(u32) {
             var k: i32 = 0;
             while (k < capacity) : (k += 1) {
                 const entry = st[@intCast(k)];
-                if (kind.checkType(entry.key, constants.JANET_KEYWORD) != 0) {
+                if (repr.checkType(entry.key, repr.Tag.keyword)) {
                     tables.put(new_grammar, entry.key, entry.value);
                 }
             }
@@ -1776,11 +1738,11 @@ fn pegCompile1(b: *Builder, peg_in: types.Janet) raise.Raising(u32) {
             grammar = new_grammar;
             b.grammar = grammar.?;
             const main_rule = tables.rawget(grammar.?, value.fromBytes("main", .keyword));
-            if (kind.checkType(main_rule, constants.JANET_NIL) != 0)
+            if (repr.checkType(main_rule, repr.Tag.nil))
                 return pegPanic(b, "grammar requires :main rule");
             rule = try pegCompile1(b, main_rule);
         },
-        constants.JANET_TUPLE => {
+        repr.Tag.tuple => {
             const tup = wrap.toTuple(peg);
             const len = types.tupleHead(tup).length;
             if (len == 0) return pegPanic(b, "tuple in grammar must have non-zero length");
@@ -1788,7 +1750,7 @@ fn pegCompile1(b: *Builder, peg_in: types.Janet) raise.Raising(u32) {
                 const n = wrap.toInteger(tup[0]);
                 if (n < 0) return pegPanicf(b, "expected non-negative integer, got %d", .{n});
                 try specRepeat(b, tup[0..@intCast(len)]);
-            } else if (kind.checkType(tup[0], constants.JANET_SYMBOL) == 0) {
+            } else if (!repr.checkType(tup[0], repr.Tag.symbol)) {
                 return pegPanicf(b, "expected grammar command, found %v", .{tup[0]});
             } else {
                 const sym = wrap.toSymbol(tup[0]);
@@ -1811,25 +1773,17 @@ fn pegCompile1(b: *Builder, peg_in: types.Janet) raise.Raising(u32) {
 // The compiled peg as an abstract type
 // ==========================================================================
 
-fn pegMark(pointer: ?*anyopaque, size: usize) callconv(.c) c_int {
-    _ = size;
-    const peg: *types.JanetPeg = @ptrCast(@alignCast(pointer));
-    if (peg.constants != null) {
-        var i: u32 = 0;
-        while (i < peg.num_constants) : (i += 1) gc_mark.mark(peg.constants.?[i]);
-    }
+fn pegMark(peg: *types.JanetPeg, _: usize) c_int {
+    for (peg.constantValues()) |x| gc_mark.mark(x);
     return 0;
 }
 
-fn pegMarshal(pointer: ?*anyopaque, ctx: *types.JanetMarshalContext) raise.Raising(void) {
-    const peg: *types.JanetPeg = @ptrCast(@alignCast(pointer));
+fn pegMarshal(peg: *types.JanetPeg, ctx: *types.JanetMarshalContext) raise.Raising(void) {
     try marsh.marshalSize(ctx, peg.bytecode_len);
     try marsh.marshalInt(ctx, @bitCast(peg.num_constants));
-    marsh.marshalAbstract(ctx, pointer);
-    var i: usize = 0;
-    while (i < peg.bytecode_len) : (i += 1) try marsh.marshalInt(ctx, @bitCast(peg.bytecode.?[i]));
-    var j: u32 = 0;
-    while (j < peg.num_constants) : (j += 1) try marsh.marshalJanet(ctx, peg.constants.?[j]);
+    marsh.marshalAbstract(ctx, peg);
+    for (peg.instructions()) |instruction| try marsh.marshalInt(ctx, @bitCast(instruction));
+    for (peg.constantValues()) |x| try marsh.marshalJanet(ctx, x);
 }
 
 /// Round `offset` up so that an array of `size`-byte elements placed there is
@@ -2001,7 +1955,7 @@ fn verifyBytecode(
     return true;
 }
 
-fn pegUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
+fn pegUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*types.JanetPeg) {
     const bytecode_len = try marsh.unmarshalSize(ctx);
     const num_constants: u32 = @bitCast(try marsh.unmarshalInt(ctx));
 
@@ -2012,8 +1966,8 @@ fn pegUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
     // `FOUND.md` records where that leads.
     const bytecode_start = sizePadded(@sizeOf(types.JanetPeg), @sizeOf(u32));
     const bytecode_size = bytecode_len *% @sizeOf(u32);
-    const constants_start = sizePadded(bytecode_start +% bytecode_size, @sizeOf(types.Janet));
-    const total_size = constants_start +% @sizeOf(types.Janet) *% @as(usize, num_constants);
+    const constants_start = sizePadded(bytecode_start +% bytecode_size, @sizeOf(repr.Value));
+    const total_size = constants_start +% @sizeOf(repr.Value) *% @as(usize, num_constants);
 
     // No DOS prevention: the bytecode and the constants could be read ahead of
     // the allocation so that short, bad input does not reserve a lot of memory.
@@ -2021,7 +1975,7 @@ fn pegUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
     const mem: [*]u8 = @ptrCast(try marsh.unmarshalAbstract(ctx, total_size));
     const peg: *types.JanetPeg = @ptrCast(@alignCast(mem));
     const bytecode: [*]u32 = @ptrCast(@alignCast(mem + bytecode_start));
-    const consts: [*]types.Janet = @ptrCast(@alignCast(mem + constants_start));
+    const consts: [*]repr.Value = @ptrCast(@alignCast(mem + constants_start));
     peg.bytecode = null;
     peg.constants = null;
     peg.bytecode_len = bytecode_len;
@@ -2053,55 +2007,45 @@ fn pegUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
     return peg;
 }
 
-fn pegGetter(a: types.JanetAbstract, key: types.Janet, out: *types.Janet) raise.Raising(c_int) {
-    _ = a;
-    if (kind.checkType(key, constants.JANET_KEYWORD) == 0) return 0;
+fn pegGetter(_: *types.JanetPeg, key: repr.Value, out: *repr.Value) raise.Raising(c_int) {
+    if (!repr.checkType(key, repr.Tag.keyword)) return 0;
     return args_core.getmethod(wrap.toKeyword(key), @ptrCast(&peg_methods), out);
 }
 
-fn pegNext(pointer: ?*anyopaque, key: types.Janet) raise.Raising(types.Janet) {
-    _ = pointer;
+fn pegNext(_: *types.JanetPeg, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(&peg_methods), key);
 }
 
-pub const janet_peg_type: abstract_type.AbstractType = .{
+pub const pegType = abstract_type.define(types.JanetPeg, .{
     .name = "core/peg",
-    .gc = null,
     .gcmark = pegMark,
     .get = pegGetter,
-    .put = null,
     .marshal = pegMarshal,
     .unmarshal = pegUnmarshal,
-    .tostring = null,
-    .compare = null,
-    .hash = null,
     .next = pegNext,
-    .call = null,
-    .length = null,
-    .bytes = null,
-};
+});
 
 /// Convert a `Builder` into the abstract value the matcher runs.
 fn makePeg(b: *Builder) *types.JanetPeg {
     const bytecode_start = sizePadded(@sizeOf(types.JanetPeg), @sizeOf(u32));
-    const bytecode_size = @as(usize, @intCast(vectorCount(u32, b.bytecode))) * @sizeOf(u32);
-    const constants_start = sizePadded(bytecode_start + bytecode_size, @sizeOf(types.Janet));
-    const constants_size = @as(usize, @intCast(vectorCount(types.Janet, b.constants))) * @sizeOf(types.Janet);
+    const bytecode_size = @as(usize, @intCast(stretchy.count(u32, b.bytecode))) * @sizeOf(u32);
+    const constants_start = sizePadded(bytecode_start + bytecode_size, @sizeOf(repr.Value));
+    const constants_size = @as(usize, @intCast(stretchy.count(repr.Value, b.constants))) * @sizeOf(repr.Value);
     const total_size = constants_start + constants_size;
-    const mem: [*]u8 = @ptrCast(abstracts.new(abstract_type.stored(&janet_peg_type), total_size));
+    const mem: [*]u8 = @ptrCast(abstracts.new(&pegType, total_size));
     const peg: *types.JanetPeg = @ptrCast(@alignCast(mem));
     peg.bytecode = @ptrCast(@alignCast(mem + bytecode_start));
     peg.constants = @ptrCast(@alignCast(mem + constants_start));
-    peg.num_constants = @intCast(vectorCount(types.Janet, b.constants));
+    peg.num_constants = @intCast(stretchy.count(repr.Value, b.constants));
     safe_memcpy(peg.bytecode, b.bytecode, bytecode_size);
     safe_memcpy(peg.constants, b.constants, constants_size);
-    peg.bytecode_len = @intCast(vectorCount(u32, b.bytecode));
+    peg.bytecode_len = @intCast(stretchy.count(u32, b.bytecode));
     peg.has_backref = b.has_backref;
     return peg;
 }
 
 /// The compiler's entry point.
-fn compilePeg(x: types.Janet) raise.Raising(*types.JanetPeg) {
+fn compilePeg(x: repr.Value) raise.Raising(*types.JanetPeg) {
     var builder: Builder = .{
         .grammar = tables.new(0),
         .default_grammar = null,
@@ -2114,7 +2058,7 @@ fn compilePeg(x: types.Janet) raise.Raising(*types.JanetPeg) {
         .has_backref = 0,
     };
     const default_grammarv = vm_state.dyn("peg-grammar");
-    if (kind.checkType(default_grammarv, constants.JANET_TABLE) != 0) {
+    if (repr.checkType(default_grammarv, repr.Tag.table)) {
         builder.default_grammar = wrap.toTable(default_grammarv);
     }
     builder.tags = tables.new(0);
@@ -2133,18 +2077,18 @@ const PegCall = struct {
     peg: *types.JanetPeg,
     s: PegState,
     bytes: types.JanetByteView,
-    subst: types.Janet,
+    subst: repr.Value,
     start: i32,
 };
 
 /// The state every `peg/...` call needs, including compiling the pattern when
 /// it arrives as source rather than as a `<core/peg>`.
-fn pegCfunInit(argv: []types.Janet, get_replace: bool) raise.Raising(PegCall) {
+fn pegCfunInit(argv: []repr.Value, get_replace: bool) raise.Raising(PegCall) {
     var ret: PegCall = undefined;
     const min: i32 = if (get_replace) 3 else 2;
     try args_core.arity(argv, min, -1);
-    if (kind.checkType(argv[0], constants.JANET_ABSTRACT) != 0 and
-        types.abstractHead(wrap.toAbstract(argv[0])).type == abstract_type.stored(&janet_peg_type))
+    if (repr.checkType(argv[0], repr.Tag.abstract) and
+        types.abstractHead(wrap.toAbstract(argv[0])).type == &pegType)
     {
         ret.peg = @ptrCast(@alignCast(wrap.toAbstract(argv[0])));
     } else {
@@ -2159,7 +2103,7 @@ fn pegCfunInit(argv: []types.Janet, get_replace: bool) raise.Raising(PegCall) {
     if (@as(i32, @intCast(argv.len)) > min) {
         ret.start = try args_core.getHalfRange(argv, min, ret.bytes.len, "offset");
         ret.s.extrac = @as(i32, @intCast(argv.len)) - min - 1;
-        ret.s.extrav = tuples.newFrom(argv[@intCast(min + 1)..].ptr, @as(i32, @intCast(argv.len)) - min - 1);
+        ret.s.extrav = tuples.newFrom(argv[@intCast(min + 1)..]);
     } else {
         ret.start = 0;
         ret.s.extrac = 0;
@@ -2192,18 +2136,18 @@ fn pegCallReset(call: *PegCall) void {
     call.s.tags.count = 0;
 }
 
-fn cfunPegCompile(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunPegCompile(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return wrap.fromAbstract(try compilePeg(argv[0]));
 }
 
-fn cfunPegMatch(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunPegMatch(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var call = try pegCfunInit(argv, false);
     const result = try pegRule(&call.s, call.s.bytecode, args_core.viewBytes(call.bytes).ptr + @as(usize, @intCast(call.start)));
     return if (result != null) wrap.fromArray(call.s.captures) else wrap.fromNil();
 }
 
-fn cfunPegFind(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunPegFind(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var call = try pegCfunInit(argv, false);
     var i = call.start;
     while (i < call.bytes.len) : (i += 1) {
@@ -2215,7 +2159,7 @@ fn cfunPegFind(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.
     return wrap.fromNil();
 }
 
-fn cfunPegFindAll(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunPegFindAll(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var call = try pegCfunInit(argv, false);
     const ret = arrays.new(0);
     var i = call.start;
@@ -2228,7 +2172,7 @@ fn cfunPegFindAll(argv: []types.Janet) align(corefn.alignment) raise.Raising(typ
     return wrap.fromArray(ret);
 }
 
-fn pegReplaceGeneric(argv: []types.Janet, only_one: bool) raise.Raising(types.Janet) {
+fn pegReplaceGeneric(argv: []repr.Value, only_one: bool) raise.Raising(repr.Value) {
     var call = try pegCfunInit(argv, true);
     const ret = buffers.new(0);
     var trail: i32 = 0;
@@ -2262,11 +2206,11 @@ fn pegReplaceGeneric(argv: []types.Janet, only_one: bool) raise.Raising(types.Ja
     return wrap.fromBuffer(ret);
 }
 
-fn cfunPegReplace(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunPegReplace(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     return pegReplaceGeneric(argv, true);
 }
 
-fn cfunPegReplaceAll(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunPegReplaceAll(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     return pegReplaceGeneric(argv, false);
 }
 
@@ -2281,8 +2225,8 @@ const peg_methods = [_]method_type.Method{
     .{ .name = null, .cfun = null },
 };
 
-pub fn janet_lib_pegImpl(env: *types.JanetTable) raise.Raising(void) {
-    const entries = [_]corefn.Entry{
+pub fn libPeg(env: *types.JanetTable) raise.Raising(void) {
+    const entries = comptime [_]corefn.Entry{
         corefn.reg("peg/compile", &cfunPegCompile, @src(), "(peg/compile peg)", "Compiles a peg source data structure into a <core/peg>. This will speed up matching " ++
             "if the same peg will be used multiple times. `(dyn :peg-grammar)` replaces " ++
             "`default-peg-grammar` for the grammar of the peg."),
@@ -2299,12 +2243,11 @@ pub fn janet_lib_pegImpl(env: *types.JanetTable) raise.Raising(void) {
             "The peg does not need to make captures to do replacement. " ++
             "If `subst` is a function, it will be called with the " ++
             "matching text followed by any captures."),
-        corefn.end,
     };
-    corefn.install(env, &entries);
-    try registry.registerAbstractType(abstract_type.stored(&janet_peg_type));
+    corefn.install(env, entries);
+    try registry.registerAbstractType(&pegType);
 }
 
-pub fn janet_lib_peg(env: *types.JanetTable) void {
-    raise.reported(janet_lib_pegImpl(env));
+pub fn libPegAbi(env: *types.JanetTable) void {
+    raise.reported(libPeg(env));
 }

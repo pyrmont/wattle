@@ -1,13 +1,8 @@
 //! `os/date`, `os/strftime` and `os/mktime`: the broken-down calendar, and the
-//! second of the two areas Phase 10's decision 4 unparks. This is Part 12.
+//! `os/date`, `os/strftime` and `os/mktime`: the broken-down calendar.
 //!
-//! ## What the decision changed, and what it did not
-//!
-//! `PLAN.md` recorded under "Current state" that these three stay in C
-//! permanently, because they work through `struct tm` and the layout is the
-//! platform header's. Decision 4 keeps that reasoning for the *structure* and
-//! drops it for the *language*: `struct tm` is still libc's, reached through
-//! `os/abi.h`, and no C source file is left behind. It translates completely
+//! `struct tm` has a layout only the platform header knows, so it stays
+//! libc's, reached through `os/abi.h`. It translates completely
 //! on all five of this project's targets, which is what makes the calendar
 //! movable where `struct stat` -- see `os_files.zig` -- is not.
 //!
@@ -35,13 +30,14 @@ const corefn = @import("corefn");
 const raise = @import("raise");
 const pp_format = @import("../pp/format.zig");
 const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
 const structs = @import("../value/structs.zig");
-const kind = @import("../value/helpers/kind.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const args_core = @import("../args.zig");
 const value = @import("../value.zig");
+const utils = @import("../utils.zig");
+const tables = @import("../value/tables.zig");
 const h = oa.h;
 
 const windows = builtin.os.tag == .windows;
@@ -83,12 +79,6 @@ extern fn strftime(buf: [*]u8, size: usize, fmt: [*:0]const u8, t: *const h.stru
 extern fn tzset() callconv(.c) void;
 extern fn _tzset() callconv(.c) void;
 
-/// `src/core/util.h`, declared here rather than in `cabi.zig`. Both
-/// take primitive parameters or a `Janet`, so no type crosses that the
-/// single-translation rule is about.
-extern fn janet_strerror(e: c_int) callconv(.c) [*:0]const u8;
-extern fn janet_table_get_keyword(t: *types.JanetTable, keyword: [*:0]const u8) callconv(.c) types.Janet;
-
 inline fn errno() c_int {
     return std.c._errno().*;
 }
@@ -104,14 +94,14 @@ const time_fmt_size = 250;
 /// arithmetic cannot represent, and both implementations then read the
 /// structure they passed in. Reproduced rather than repaired, and recorded in
 /// `FOUND.md`.
-fn timeToTm(argv: []const types.Janet, n: i32, out: *h.struct_tm) raise.Raising(void) {
+fn timeToTm(argv: []const repr.Value, n: i32, out: *h.struct_tm) raise.Raising(void) {
     var t: h.time_t = undefined;
-    if (@as(i32, @intCast(argv.len)) > n and kind.checkType(argv[@intCast(n)], constants.JANET_NIL) == 0) {
+    if (@as(i32, @intCast(argv.len)) > n and !repr.checkType(argv[@intCast(n)], repr.Tag.nil)) {
         t = @intCast(try args_core.getInteger64(argv, n));
     } else {
         t = time(null);
     }
-    const local = @as(i32, @intCast(argv.len)) > n + 1 and kind.truthy(argv[@intCast(n + 1)]) != 0;
+    const local = @as(i32, @intCast(argv.len)) > n + 1 and repr.truthy(argv[@intCast(n + 1)]);
     if (local) {
         if (windows) {
             _tzset();
@@ -129,7 +119,7 @@ fn timeToTm(argv: []const types.Janet, n: i32, out: *h.struct_tm) raise.Raising(
     }
 }
 
-fn dateImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunDate(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 2);
     var t_info: h.struct_tm = undefined;
     try timeToTm(argv, 0, &t_info);
@@ -142,7 +132,7 @@ fn dateImpl(argv: []types.Janet) raise.Raising(types.Janet) {
     structs.put(st, value.fromBytes("year", .keyword), wrap.fromNumber(@floatFromInt(t_info.tm_year + 1900)));
     structs.put(st, value.fromBytes("week-day", .keyword), wrap.fromNumber(@floatFromInt(t_info.tm_wday)));
     structs.put(st, value.fromBytes("year-day", .keyword), wrap.fromNumber(@floatFromInt(t_info.tm_yday)));
-    structs.put(st, value.fromBytes("dst", .keyword), wrap.fromBoolean(t_info.tm_isdst));
+    structs.put(st, value.fromBytes("dst", .keyword), wrap.fromBoolean(t_info.tm_isdst != 0));
     return wrap.fromStruct(structs.end(st));
 }
 
@@ -151,7 +141,7 @@ fn dateImpl(argv: []types.Janet) raise.Raising(types.Janet) {
 /// time argument is.
 const valid_specifiers = "aAbBcdHIjmMpSUwWxXyYZ%";
 
-fn strftimeImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunStrftime(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
     const fmt = try args_core.getCString(argv, 0);
     var i: usize = 0;
@@ -175,17 +165,19 @@ fn strftimeImpl(argv: []types.Janet) raise.Raising(types.Janet) {
 
 /// `entry_getdst`: -1 where the entry says nothing, which is `tm_isdst`'s
 /// "unknown".
-fn entryGetDst(entry: types.Janet) c_int {
-    var v: types.Janet = undefined;
-    if (kind.checkType(entry, constants.JANET_TABLE) != 0) {
-        v = janet_table_get_keyword(wrap.toTable(entry), "dst");
-    } else if (kind.checkType(entry, constants.JANET_STRUCT) != 0) {
+fn entryGetDst(entry: repr.Value) c_int {
+    var v: repr.Value = undefined;
+    if (repr.checkType(entry, repr.Tag.table)) {
+        v = tables.getKeyword(wrap.toTable(entry), "dst");
+    } else if (repr.checkType(entry, repr.Tag.@"struct")) {
         v = structs.get(wrap.toStruct(entry), value.fromBytes("dst", .keyword));
     } else {
         v = wrap.fromNil();
     }
-    if (kind.checkType(v, constants.JANET_NIL) != 0) return -1;
-    return kind.truthy(v);
+    if (repr.checkType(v, repr.Tag.nil)) return -1;
+    // `tm_isdst` is a tri-state and stays `c_int` for it: -1 is "unknown", not
+    // "false".
+    return @intFromBool(repr.truthy(v));
 }
 
 /// `timeint_t`: the width `os/mktime` accepts for a field, which is 32 bits on
@@ -193,16 +185,16 @@ fn entryGetDst(entry: types.Janet) c_int {
 /// are written out rather than folded.
 const timeint_t = if (windows) i32 else i64;
 
-fn entryGetInt(entry: types.Janet, comptime field: [:0]const u8) raise.Raising(timeint_t) {
-    var i: types.Janet = undefined;
-    if (kind.checkType(entry, constants.JANET_TABLE) != 0) {
-        i = janet_table_get_keyword(wrap.toTable(entry), field);
-    } else if (kind.checkType(entry, constants.JANET_STRUCT) != 0) {
+fn entryGetInt(entry: repr.Value, comptime field: [:0]const u8) raise.Raising(timeint_t) {
+    var i: repr.Value = undefined;
+    if (repr.checkType(entry, repr.Tag.table)) {
+        i = tables.getKeyword(wrap.toTable(entry), field);
+    } else if (repr.checkType(entry, repr.Tag.@"struct")) {
         i = structs.get(wrap.toStruct(entry), value.fromBytes(field, .keyword));
     } else {
         return 0;
     }
-    if (kind.checkType(i, constants.JANET_NIL) != 0) return 0;
+    if (repr.checkType(i, repr.Tag.nil)) return 0;
     if (windows) {
         if (args_core.checkint(i) == 0) {
             return pp_format.panicf(
@@ -221,21 +213,21 @@ fn entryGetInt(entry: types.Janet, comptime field: [:0]const u8) raise.Raising(t
     return @intFromFloat(wrap.toNumber(i));
 }
 
-fn mktimeImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunMktime(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     // `= {0}` draws a paranoid warning from the macOS compiler, which is why
     // the C original zeroes it this way; the Zig equivalent is the same thing
     // said once.
     var t_info: h.struct_tm = std.mem.zeroes(h.struct_tm);
 
-    if (kind.checkType(argv[0], constants.JANET_TABLE) == 0 and
-        kind.checkType(argv[0], constants.JANET_STRUCT) == 0)
+    if (!repr.checkType(argv[0], repr.Tag.table) and
+        !repr.checkType(argv[0], repr.Tag.@"struct"))
     {
         // `-Dargs-core`'s abi, so this raise arrives as a jump through a
         // frame that holds nothing -- the same call and the same reasoning as
         // `core_env.zig`'s `slice`. The message is the fault layer's and has
         // no spelling on this side of the seam.
-        return args_core.panicType(argv[0], 0, constants.JANET_TFLAG_DICTIONARY);
+        return args_core.panicType(argv[0], 0, repr.TagSet.dictionary);
     }
 
     t_info.tm_sec = @intCast(try entryGetInt(argv[0], "seconds"));
@@ -247,7 +239,7 @@ fn mktimeImpl(argv: []types.Janet) raise.Raising(types.Janet) {
     t_info.tm_isdst = entryGetDst(argv[0]);
 
     var t: h.time_t = undefined;
-    if (@as(i32, @intCast(argv.len)) >= 2 and kind.truthy(argv[1]) != 0) {
+    if (@as(i32, @intCast(argv.len)) >= 2 and repr.truthy(argv[1])) {
         t = mktime(&t_info);
     } else if (no_utc_mktime) {
         return raise.panic("os/mktime UTC not supported on this platform");
@@ -255,19 +247,19 @@ fn mktimeImpl(argv: []types.Janet) raise.Raising(types.Janet) {
         t = if (windows) _mkgmtime(&t_info) else timegm(&t_info);
     }
 
-    if (t == @as(h.time_t, -1)) return pp_format.panicf("%s", .{janet_strerror(errno())});
+    if (t == @as(h.time_t, -1)) return pp_format.panicf("%s", .{utils.strerrorSafe(errno())});
     return wrap.fromNumber(@floatFromInt(t));
 }
 
 pub fn entries() []const corefn.Entry {
     const list = comptime [_]corefn.Entry{
-        corefn.reg("os/mktime", &mktimeImpl, @src(), "(os/mktime date-struct &opt local)", "Get the broken down date-struct time expressed as the number " ++
+        corefn.reg("os/mktime", &cfunMktime, @src(), "(os/mktime date-struct &opt local)", "Get the broken down date-struct time expressed as the number " ++
             "of seconds since January 1, 1970, the Unix epoch. " ++
             "Returns a real number. " ++
             "Date is given in UTC unless `local` is truthy, in which case the " ++
             "date is computed for the local timezone.\n\n" ++
             "Inverse function to os/date."),
-        corefn.reg("os/date", &dateImpl, @src(), "(os/date &opt time local)", "Returns the given time as a date struct, or the current time if `time` is not given. " ++
+        corefn.reg("os/date", &cfunDate, @src(), "(os/date &opt time local)", "Returns the given time as a date struct, or the current time if `time` is not given. " ++
             "Date is given in UTC unless `local` is truthy, in which case the date is formatted for " ++
             "the local timezone. Returns a struct with following key values. Note that all numbers are 0-indexed.\n\n" ++
             "* :seconds - number of seconds [0-61]\n\n" ++
@@ -281,7 +273,7 @@ pub fn entries() []const corefn.Entry {
             "* :dst - if Day Light Savings is in effect\n\n" ++
             "You can set local timezone by setting TZ environment variable. " ++
             "See tzset(<time.h>) or _tzset(<time.h>) for further details."),
-        corefn.reg("os/strftime", &strftimeImpl, @src(), "(os/strftime fmt &opt time local)", "Format the given time as a string, or the current time if `time` is not given. " ++
+        corefn.reg("os/strftime", &cfunStrftime, @src(), "(os/strftime fmt &opt time local)", "Format the given time as a string, or the current time if `time` is not given. " ++
             "The time is formatted according to the same rules as the ISO C89 function strftime(). " ++
             "The time is formatted in UTC unless `local` is truthy, in which case the date is formatted for " ++
             "the local timezone. You can set local timezone by setting TZ environment variable. " ++

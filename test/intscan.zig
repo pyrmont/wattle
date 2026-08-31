@@ -12,7 +12,6 @@
 //! argument and the `strlen` the C original needed is gone.
 
 const std = @import("std");
-const c = @import("cabi");
 const scan = @import("subsystems").scan;
 
 fn signed(text: []const u8, out: *i64) bool {

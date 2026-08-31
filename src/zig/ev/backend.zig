@@ -1,19 +1,14 @@
 //! The four polling backends: the Windows completion port, `epoll`, `kqueue`,
-//! and `poll`. Part of the `-Dev-loop` object; `ev_loop.zig` has the reasoning
-//! for why the four files are one module.
+//! and `poll`. Part of the event loop; `ev.zig` has the reasoning for why the
+//! four files are one module.
 //!
 //! Each backend is a `struct` namespace and `selected` picks one. Zig analyses
 //! a container's declarations only when something references them, so exactly
-//! one backend is compiled per target and the other three cost nothing -- the
-//! same arrangement `ev.c` gets from `#elif`, without the property Part 7
-//! warned about, that a file which compiles is not a file that runs.
+//! one backend is compiled per target and the other three cost nothing.
 //!
-//! **The selection follows the translation, not a fresh derivation.** `state.h`
-//! lays `JanetVM` out differently per backend, and which arm it took is
-//! already decided by the time Zig sees the structure; reading
-//! `JANET_EV_EPOLL` and `JANET_EV_KQUEUE` out of the translation is what keeps
-//! the fields this file names and the backend it compiles in agreement. Part
-//! 12's rule -- test the platform with `builtin.os.tag` -- applies to the
+//! **The selection and the VM's layout must agree.** `Vm` carries a different
+//! block per backend, so a build that compiled one arm and laid out another
+//! would read every field at the wrong offset. The `comptime` block below
 //! Windows arm, which is the one the translation used to get wrong, and the
 //! comptime check below asserts the two agree.
 //!
@@ -33,7 +28,7 @@ const stream_mod = @import("stream.zig");
 
 const types = @import("types");
 const constants = @import("constants");
-const c = @import("cabi");
+const vm_state = @import("../vm/lifecycle.zig");
 const ev_callback = @import("../callback_type.zig");
 const config = @import("config");
 const utils = @import("../utils.zig");
@@ -51,12 +46,10 @@ else
     .poll;
 
 comptime {
-    // `janet.h` picks the backend from the platform and two `JANET_EV_NO_*`
-    // switches. If the translation and the compilation ever disagreed about
-    // the platform -- the fault Part 12 found in `janet.h`'s Unix chain --
-    // `JanetVM`'s translated layout would be the wrong arm's, and every field
-    // this file names would be at the wrong offset. Assert the agreement
-    // rather than hope for it.
+    // The backend follows the platform and two `-D` switches, and `Vm` is laid
+    // out differently per backend. If the two ever disagreed, every field this
+    // file names would be at the wrong offset. Assert the agreement rather
+    // than hope for it.
     if (windows != (builtin.os.tag == .windows)) {
         @compileError("ev_backend: the translation and the build disagree about Windows");
     }
@@ -71,13 +64,12 @@ comptime {
 /// `epoll`, `register` on `iocp` and `epoll`, and `kqueue` and `poll` raise
 /// from none of them.
 ///
-/// Phase 10's fourth rule says a function that cannot raise should not pretend
-/// it can, and this is the exception the rule has to make. The dispatch below
-/// picks a backend at comptime and calls it by name; if the signatures differed
-/// per backend, the *call site* would need a `try` on some targets and not on
-/// others, which is not something one source line can be. Part 17d found this
-/// the way it finds everything of the kind -- from a cross-compile, after the
-/// host had been green for an hour.
+/// A function that cannot raise should not pretend it can, and this is the
+/// exception that rule has to make. The dispatch below picks a backend at
+/// comptime and calls it by name; if the signatures differed per backend, the
+/// *call site* would need a `try` on some targets and not on others, which is
+/// not something one source line can be. A cross-compile is what found it,
+/// after the host had been green for an hour.
 const impl = switch (selected) {
     .iocp => Iocp,
     .epoll => Epoll,
@@ -97,7 +89,7 @@ pub inline fn unregisterStream(s: *types.JanetStream) raise.Raising(void) {
     try impl.unregister(s);
 }
 
-pub inline fn loop1Impl(has_timeout: bool, timeout: types.JanetTimestamp) raise.Raising(void) {
+pub inline fn loop1(has_timeout: bool, timeout: types.JanetTimestamp) raise.Raising(void) {
     try impl.loop1(has_timeout, timeout);
 }
 
@@ -106,7 +98,7 @@ pub fn evInit() raise.Raising(void) {
     try impl.init();
 }
 
-pub fn janet_ev_init() void {
+pub fn evInitAbi() void {
     raise.reported(evInit());
 }
 
@@ -131,13 +123,6 @@ pub fn streamLevelTriggered(s: *types.JanetStream) void {
     raise.reported(levelTriggeredStream(s));
 }
 
-/// `janet_loop1_impl`. Not part of the public API, and exported anyway so that
-/// `test/ev_loop.c` can drive one turn of the poll without a fiber -- the two
-/// abis rule, applied to the one entry point whose abi nothing else calls.
-pub fn janet_loop1_impl(has_timeout: c_int, timeout: types.JanetTimestamp) void {
-    raise.reported(loop1Impl(has_timeout != 0, timeout));
-}
-
 // ==========================================================================
 // The self pipe
 // ==========================================================================
@@ -147,7 +132,7 @@ pub fn janet_loop1_impl(has_timeout: c_int, timeout: types.JanetTimestamp) void 
 /// writing to.
 const SelfPipe = struct {
     fn setup() void {
-        if (stream_mod.makePipe(&c.vm().selfpipe, 1) != 0) {
+        if (stream_mod.makePipe(&vm_state.current().ev.backend.selfpipe, 1) != 0) {
             ev.exitWith(@src(), "failed to initialize self pipe in event loop");
         }
     }
@@ -158,7 +143,7 @@ const SelfPipe = struct {
         while (true) {
             var status: isize = undefined;
             while (true) {
-                status = ev.read(c.vm().selfpipe[0], @ptrCast(&response), @sizeOf(ev.SelfPipeEvent));
+                status = ev.read(vm_state.current().ev.backend.selfpipe[0], @ptrCast(&response), @sizeOf(ev.SelfPipeEvent));
                 if (!(status == -1 and ev.errno() == ev.EINTR)) break;
             }
             if (status <= 0) return;
@@ -170,8 +155,9 @@ const SelfPipe = struct {
     }
 
     fn cleanup() void {
-        _ = ev.close(c.vm().selfpipe[0]);
-        _ = ev.close(c.vm().selfpipe[1]);
+        const b = &vm_state.current().ev.backend;
+        _ = ev.close(b.selfpipe[0]);
+        _ = ev.close(b.selfpipe[1]);
     }
 };
 
@@ -218,13 +204,14 @@ const Iocp = struct {
     extern "kernel32" fn GetQueuedCompletionStatus(port: ?*anyopaque, bytes: *u32, key: *usize, overlapped: *?*stream_mod.OVERLAPPED, ms: u32) callconv(.winapi) c_int;
 
     fn init() raise.Raising(void) {
-        c.vm().iocp = @ptrCast(@alignCast(CreateIoCompletionPort(
+        const b = &vm_state.current().ev.backend;
+        b.iocp = @ptrCast(@alignCast(CreateIoCompletionPort(
             @ptrFromInt(std.math.maxInt(usize)),
             null,
             0,
             0,
         )));
-        if (c.vm().iocp == null) return raise.panic("could not create io completion port");
+        if (b.iocp == null) return raise.panic("could not create io completion port");
     }
 
     fn deinit() void {
@@ -345,26 +332,26 @@ const Epoll = struct {
 
     fn init() raise.Raising(void) {
         SelfPipe.setup();
-        const v = c.vm();
-        v.epoll = epoll_create1(EPOLL_CLOEXEC);
-        v.timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-        v.timer_enabled = 0;
-        if (v.epoll != -1 and v.timerfd != -1) {
-            var event: EpollEvent = .{ .events = EPOLLIN | EPOLLET, .data = .{ .ptr = @intFromPtr(&v.timerfd) } };
-            if (epoll_ctl(v.epoll, EPOLL_CTL_ADD, v.timerfd, &event) != -1) {
-                event = .{ .events = EPOLLIN | EPOLLET, .data = .{ .ptr = @intFromPtr(&v.selfpipe) } };
-                if (epoll_ctl(v.epoll, EPOLL_CTL_ADD, v.selfpipe[0], &event) != -1) return;
+        const b = &vm_state.current().ev.backend;
+        b.epoll = epoll_create1(EPOLL_CLOEXEC);
+        b.timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+        b.timer_enabled = false;
+        if (b.epoll != -1 and b.timerfd != -1) {
+            var event: EpollEvent = .{ .events = EPOLLIN | EPOLLET, .data = .{ .ptr = @intFromPtr(&b.timerfd) } };
+            if (epoll_ctl(b.epoll, EPOLL_CTL_ADD, b.timerfd, &event) != -1) {
+                event = .{ .events = EPOLLIN | EPOLLET, .data = .{ .ptr = @intFromPtr(&b.selfpipe) } };
+                if (epoll_ctl(b.epoll, EPOLL_CTL_ADD, b.selfpipe[0], &event) != -1) return;
             }
         }
         ev.exitWith(@src(), "failed to initialize event loop");
     }
 
     fn deinit() void {
-        const v = c.vm();
-        _ = ev.close(v.epoll);
-        _ = ev.close(v.timerfd);
+        const b = &vm_state.current().ev.backend;
+        _ = ev.close(b.epoll);
+        _ = ev.close(b.timerfd);
         SelfPipe.cleanup();
-        v.epoll = 0;
+        b.epoll = 0;
     }
 
     fn registerImpl(s: *types.JanetStream, mod: bool, edge_trigger: bool) raise.Raising(void) {
@@ -378,7 +365,7 @@ const Epoll = struct {
         var status: c_int = undefined;
         while (true) {
             status = epoll_ctl(
-                c.vm().epoll,
+                vm_state.current().ev.backend.epoll,
                 if (mod) EPOLL_CTL_MOD else EPOLL_CTL_ADD,
                 s.handle,
                 &event,
@@ -412,7 +399,7 @@ const Epoll = struct {
         if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) != 0) return;
         var status: c_int = undefined;
         while (true) {
-            status = epoll_ctl(c.vm().epoll, EPOLL_CTL_DEL, s.handle, null);
+            status = epoll_ctl(vm_state.current().ev.backend.epoll, EPOLL_CTL_DEL, s.handle, null);
             if (!(status == -1 and ev.errno() == ev.EINTR)) break;
         }
         if (status == -1) return raise.panicv(stream_mod.evLasterr());
@@ -420,21 +407,21 @@ const Epoll = struct {
     }
 
     fn loop1(has_timeout: bool, timeout: types.JanetTimestamp) raise.Raising(void) {
-        const v = c.vm();
-        if (v.timer_enabled != 0 or has_timeout) {
+        const b = &vm_state.current().ev.backend;
+        if (b.timer_enabled or has_timeout) {
             var its = std.mem.zeroes(ITimerSpec);
             if (has_timeout) {
                 its.it_value.sec = @intCast(@divTrunc(timeout, 1000));
                 its.it_value.nsec = @intCast(@rem(timeout, 1000) * 1000000);
             }
-            _ = timerfd_settime(v.timerfd, TFD_TIMER_ABSTIME, &its, null);
+            _ = timerfd_settime(b.timerfd, TFD_TIMER_ABSTIME, &its, null);
         }
-        v.timer_enabled = @intFromBool(has_timeout);
+        b.timer_enabled = has_timeout;
 
         var events: [max_events]EpollEvent = undefined;
         var ready: c_int = undefined;
         while (true) {
-            ready = epoll_wait(v.epoll, &events, max_events, -1);
+            ready = epoll_wait(b.epoll, &events, max_events, -1);
             if (!(ready == -1 and ev.errno() == ev.EINTR)) break;
         }
         if (ready == -1) ev.exitWith(@src(), "failed to poll events");
@@ -442,9 +429,9 @@ const Epoll = struct {
         var i: usize = 0;
         while (i < @as(usize, @intCast(ready))) : (i += 1) {
             const p = events[i].data.ptr;
-            if (p == @intFromPtr(&v.timerfd)) {
+            if (p == @intFromPtr(&b.timerfd)) {
                 // Timer expired, ignore.
-            } else if (p == @intFromPtr(&v.selfpipe)) {
+            } else if (p == @intFromPtr(&b.selfpipe)) {
                 SelfPipe.handle();
             } else {
                 const s: *types.JanetStream = @ptrFromInt(p);
@@ -507,7 +494,7 @@ const Kqueue = struct {
     fn apply(kevs: []const Kevent) c_int {
         var status: c_int = undefined;
         while (true) {
-            status = std.c.kevent(c.vm().kq, kevs.ptr, @intCast(kevs.len), undefined, 0, null);
+            status = std.c.kevent(vm_state.current().ev.backend.kq, kevs.ptr, @intCast(kevs.len), undefined, 0, null);
             if (!(status == -1 and ev.errno() == ev.EINTR)) break;
         }
         return status;
@@ -552,17 +539,17 @@ const Kqueue = struct {
         // The C original's TODO asking to replace the self pipe with
         // EVFILT_USER stands.
         SelfPipe.setup();
-        const v = c.vm();
-        v.kq = std.c.kqueue();
-        v.timer_enabled = 0;
-        if (v.kq != -1) {
+        const b = &vm_state.current().ev.backend;
+        b.kq = std.c.kqueue();
+        b.timer_enabled = false;
+        if (b.kq != -1) {
             var event: Kevent = undefined;
-            set(&event, v.selfpipe[0], EVFILT_READ, @intCast(std.c.EV.ADD | std.c.EV.ENABLE), @intFromPtr(&v.selfpipe));
+            set(&event, b.selfpipe[0], EVFILT_READ, @intCast(std.c.EV.ADD | std.c.EV.ENABLE), @intFromPtr(&b.selfpipe));
             var status: c_int = undefined;
             // The C original's loop condition is `errno != EINTR`, which
             // retries on every error but that one. Reproduced.
             while (true) {
-                status = std.c.kevent(v.kq, @ptrCast(&event), 1, undefined, 0, null);
+                status = std.c.kevent(b.kq, @ptrCast(&event), 1, undefined, 0, null);
                 if (!(status == -1 and ev.errno() != ev.EINTR)) break;
             }
             if (status != -1) return;
@@ -571,10 +558,10 @@ const Kqueue = struct {
     }
 
     fn deinit() void {
-        const v = c.vm();
-        _ = ev.close(v.kq);
+        const b = &vm_state.current().ev.backend;
+        _ = ev.close(b.kq);
         SelfPipe.cleanup();
-        v.kq = 0;
+        b.kq = 0;
     }
 
     fn loop1(has_timeout: bool, timeout: types.JanetTimestamp) raise.Raising(void) {
@@ -582,30 +569,30 @@ const Kqueue = struct {
         // below the timeout is zero; an infinite timeout would make other
         // fibers miss theirs. `ev_core.kqueueInterval` is what keeps it at
         // or above the minimum the platform accepts.
-        const v = c.vm();
+        const b = &vm_state.current().ev.backend;
         var ts: std.c.timespec = undefined;
         var events: [max_events]Kevent = undefined;
         var status: c_int = undefined;
         while (true) {
-            if (v.timer_enabled != 0 or has_timeout) {
+            if (b.timer_enabled or has_timeout) {
                 var sec: i64 = undefined;
                 var nsec: i64 = undefined;
                 ev_core.tsToParts(ev_core.kqueueInterval(timeout - ev.tsNow()), &sec, &nsec);
                 ts = .{ .sec = @intCast(sec), .nsec = @intCast(nsec) };
-                status = std.c.kevent(v.kq, undefined, 0, &events, max_events, &ts);
+                status = std.c.kevent(b.kq, undefined, 0, &events, max_events, &ts);
             } else {
-                status = std.c.kevent(v.kq, undefined, 0, &events, max_events, null);
+                status = std.c.kevent(b.kq, undefined, 0, &events, max_events, null);
             }
             if (!(status == -1 and ev.errno() == ev.EINTR)) break;
         }
         if (status == -1) ev.exitWith(@src(), "failed to poll events");
 
-        v.timer_enabled = @intFromBool(has_timeout);
+        b.timer_enabled = has_timeout;
 
         var i: usize = 0;
         while (i < @as(usize, @intCast(status))) : (i += 1) {
             const p = events[i].udata;
-            if (p == @intFromPtr(&v.selfpipe)) {
+            if (p == @intFromPtr(&b.selfpipe)) {
                 SelfPipe.handle();
                 continue;
             }
@@ -649,35 +636,42 @@ const Poll = struct {
     const POLLHUP: i16 = @intCast(std.c.POLL.HUP);
 
     inline fn fds() [*]PollFd {
-        return @ptrCast(@alignCast(c.vm().fds));
+        return @ptrCast(@alignCast(vm_state.current().ev.backend.fds));
+    }
+
+    /// The stream table, beside `fds` and for the same reason: both are
+    /// allocated by `register` and read only where `stream_count` says there
+    /// is something to read, so the unwrap is the claim `fds()` already makes.
+    inline fn streams() [*]*types.JanetStream {
+        return @ptrCast(@alignCast(vm_state.current().ev.backend.streams));
     }
 
     fn register(s: *types.JanetStream) raise.Raising(void) {
-        const v = c.vm();
-        s.index = @intCast(v.stream_count);
-        const new_count = v.stream_count + 1;
-        if (new_count > v.stream_capacity) {
+        const b = &vm_state.current().ev.backend;
+        s.index = @intCast(b.stream_count);
+        const new_count = b.stream_count + 1;
+        if (new_count > b.stream_capacity) {
             const new_cap = new_count * 2;
-            v.fds = @ptrCast(@alignCast(utils.realloc(v.fds, (1 + new_cap) * @sizeOf(PollFd))));
-            v.streams = @ptrCast(@alignCast(utils.realloc(@ptrCast(v.streams), new_cap * @sizeOf(*types.JanetStream))));
-            if (v.fds == null or v.streams == null) ev.outOfMemory(@src());
-            v.stream_capacity = new_cap;
+            b.fds = @ptrCast(@alignCast(utils.realloc(b.fds, (1 + new_cap) * @sizeOf(PollFd))));
+            b.streams = @ptrCast(@alignCast(utils.realloc(@ptrCast(b.streams), new_cap * @sizeOf(*types.JanetStream))));
+            if (b.fds == null or b.streams == null) ev.outOfMemory(@src());
+            b.stream_capacity = new_cap;
         }
-        fds()[v.stream_count + 1] = .{ .fd = s.handle, .events = POLLIN | POLLOUT, .revents = 0 };
-        v.streams[v.stream_count] = s;
-        v.stream_count = new_count;
+        fds()[b.stream_count + 1] = .{ .fd = s.handle, .events = POLLIN | POLLOUT, .revents = 0 };
+        streams()[b.stream_count] = s;
+        b.stream_count = new_count;
     }
 
     fn unregister(s: *types.JanetStream) raise.Raising(void) {
-        const v = c.vm();
+        const b = &vm_state.current().ev.backend;
         const i = s.index;
-        const j = v.stream_count - 1;
-        const last = v.streams[j];
+        const j = b.stream_count - 1;
+        const last = streams()[j];
         const lastfd = fds()[j + 1];
         fds()[i + 1] = lastfd;
-        v.streams[i] = last;
+        streams()[i] = last;
         last.*.index = s.index;
-        v.stream_count -= 1;
+        b.stream_count -= 1;
         s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
     }
 
@@ -690,39 +684,41 @@ const Poll = struct {
     }
 
     fn init() raise.Raising(void) {
-        const v = c.vm();
-        v.fds = null;
+        const b = &vm_state.current().ev.backend;
+        b.fds = null;
         SelfPipe.setup();
-        v.fds = @ptrCast(@alignCast(utils.malloc(@sizeOf(PollFd)) orelse ev.outOfMemory(@src())));
-        fds()[0] = .{ .fd = v.selfpipe[0], .events = POLLIN, .revents = 0 };
-        v.streams = null;
-        v.stream_count = 0;
-        v.stream_capacity = 0;
+        b.fds = @ptrCast(@alignCast(utils.malloc(@sizeOf(PollFd)) orelse ev.outOfMemory(@src())));
+        fds()[0] = .{ .fd = b.selfpipe[0], .events = POLLIN, .revents = 0 };
+        b.streams = null;
+        b.stream_count = 0;
+        b.stream_capacity = 0;
     }
 
     fn deinit() void {
-        const v = c.vm();
+        const b = &vm_state.current().ev.backend;
         SelfPipe.cleanup();
-        utils.free(v.fds);
-        utils.free(@ptrCast(v.streams));
-        v.fds = null;
-        v.streams = null;
+        utils.free(b.fds);
+        utils.free(@ptrCast(b.streams));
+        b.fds = null;
+        b.streams = null;
     }
 
     fn loop1(has_timeout: bool, timeout: types.JanetTimestamp) raise.Raising(void) {
-        const v = c.vm();
+        const b = &vm_state.current().ev.backend;
 
         // Set event flags.
         var i: usize = 0;
-        while (i < v.stream_count) : (i += 1) {
-            const s = v.streams[i];
+        while (i < b.stream_count) : (i += 1) {
+            const s = streams()[i];
             const pfd = &fds()[i + 1];
             pfd.events = 0;
             pfd.revents = 0;
-            const rf = s.*.read_fiber;
-            const wf = s.*.write_fiber;
-            if (rf != null and rf.*.ev_callback != null) pfd.events |= POLLIN;
-            if (wf != null and wf.*.ev_callback != null) pfd.events |= POLLOUT;
+            if (s.read_fiber) |f| {
+                if (f.ev_callback != null) pfd.events |= POLLIN;
+            }
+            if (s.write_fiber) |f| {
+                if (f.ev_callback != null) pfd.events |= POLLOUT;
+            }
             // Ignore a descriptor by making it negative, which is what `poll`
             // documents as "skip this entry".
             if (pfd.events == 0) pfd.fd = -pfd.fd;
@@ -735,14 +731,14 @@ const Poll = struct {
                 const now = ev.tsNow();
                 to = if (now > timeout) 0 else @intCast(timeout - now);
             }
-            ready = std.c.poll(fds(), @intCast(v.stream_count + 1), to);
+            ready = std.c.poll(fds(), @intCast(b.stream_count + 1), to);
             if (!(ready == -1 and ev.errno() == ev.EINTR)) break;
         }
         if (ready == -1) ev.exitWith(@src(), "failed to poll events");
 
         // Undo the negative hack.
         i = 0;
-        while (i < v.stream_count) : (i += 1) {
+        while (i < b.stream_count) : (i += 1) {
             const pfd = &fds()[i + 1];
             if (pfd.fd < 0) pfd.fd = -pfd.fd;
         }
@@ -753,9 +749,9 @@ const Poll = struct {
         }
 
         i = 0;
-        while (i < v.stream_count) : (i += 1) {
+        while (i < b.stream_count) : (i += 1) {
             const pfd = &fds()[i + 1];
-            const s = v.streams[i];
+            const s = streams()[i];
             const mask = pfd.revents;
             if (mask == 0) continue;
             try stepMasked(

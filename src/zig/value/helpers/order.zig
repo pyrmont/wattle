@@ -2,63 +2,38 @@
 //! is it equal to this one, what is its hash, and which of the two sorts
 //! first.
 //!
-//! `value_order.zig` until Phase 12's namespace batch 3, `value/ordering.zig`
-//! until increment 6f, and `value/helpers/order.zig` now that the gerund is
-//! retired; `port/NAMESPACES.md` has the scheme. An operation rather than a
-//! type, so the names keep their verbs -- `order.hash(x)`,
-//! `order.equals(a, b)`, `order.compare(a, b)`.
+//! An operation rather than a type, so the names keep their verbs --
+//! `order.hash(x)`, `order.equals(a, b)`, `order.compare(a, b)`.
 //!
-//! `janet_hash` is the one name the namespace was predicted not to fix and
-//! did, at the cost of one rename it could not avoid. It was held off the
-//! seam for two increments because `hash` was taken by a local *inside this
-//! file* -- `var hash: i32 = 0;`, the accumulator the switch below writes --
-//! and a container-level declaration and a local cannot share a name whatever
-//! the file is called. The local is `h` now, which is what
-//! `NAMESPACES.md` said this would cost, and 64 references stopped being
-//! `c.janet_hash`.
+//! `hash` cost one rename to become an ordinary name: the accumulator the
+//! switch below writes was `var hash: i32 = 0;`, and a container-level
+//! declaration and a local cannot share a name whatever the file is called.
+//! The local is `h`.
 //!
-//! Hashing, equality and ordering over an arbitrary Janet value. This is Part
-//! 7a of Phase 8, and it takes the first half of `src/core/value.c`:
+//! Hashing, equality and ordering over an arbitrary Janet value:
 //! `janet_hash`, `janet_equals` and `janet_compare`, together with the
-//! non-recursive traversal stack the last two share and the two file-local
-//! helpers beneath them. The rest of the file -- `janet_next`, and the indexed
-//! and keyed accessors from `getter_checkint` down -- stays in C until 7b.
-//!
-//! The split is where the plan drew it, and it costs nothing to make. Every
-//! helper in the file is `static` and every one of them is used by exactly one
-//! half: `push_traversal_node`, `traversal_next`, `janet_compare_abstract` and
-//! `murmur64` belong here, and `getter_checkint` belongs to the accessors. So
-//! both halves are closed over their own privates and **7a needs no seam at
-//! all** -- the third increment in the phase to need none. `janet_next` sits
-//! physically between the two halves and goes with 7b, which is why `value.c`
-//! carries two `JANET_ZIG_VALUE_ORDER` regions rather than one. Nothing was
-//! moved to make them contiguous; a reordered C file is a diff against
-//! upstream that buys only tidiness.
+//! non-recursive traversal stack the last two share.
 //!
 //! ## Why these three are one increment
 //!
 //! Not because they read alike -- `janet_hash` is a flat switch with no
-//! traversal at all. They are one increment because they are one *contract*.
-//! A hash table needs `janet_hash` and `janet_equals` to agree, and a struct
-//! needs `janet_compare` to totally order whatever `janet_hash` puts in the
-//! same bucket. Part 6c's Robin Hood insert is the proof: it breaks a
-//! displacement tie by full hash and then by `janet_compare` on the keys,
-//! because `janet_hash` reads only the bytes for all three string-like types,
-//! so `:tie` and `"tie"` collide and are not equal. Splitting these three
-//! across increments would mean a configuration in which half of that
-//! agreement is Zig, which is a differential test whose failures point
-//! nowhere.
+//! traversal at all. They are one file because they are one *contract*. A hash
+//! table needs `janet_hash` and `janet_equals` to agree, and a struct needs
+//! `janet_compare` to totally order whatever `janet_hash` puts in the same
+//! bucket. The Robin Hood insert is the proof: it breaks a displacement tie by
+//! full hash and then by `janet_compare` on the keys, because `janet_hash`
+//! reads only the bytes for all three string-like types, so `:tie` and `"tie"`
+//! collide and are not equal.
 //!
 //! ## The traversal stack is the shape, not an optimisation
 //!
 //! `janet_equals` and `janet_compare` are written as a loop over an explicit
-//! stack in `janet_vm`, not as recursion, because a tuple or struct may nest
-//! to any depth a parser will accept and a C stack overflow is not a catchable
-//! error. That constraint applies to the port unchanged, so the port keeps the
-//! shape rather than the meaning: same stack, same growth policy, same node
-//! layout, same four return codes out of `traversalNext`. A Zig rewrite as
-//! recursion with a depth guard would be a different function with different
-//! limits.
+//! stack in the VM state, not as recursion, because a tuple or struct may nest
+//! to any depth a parser will accept and a stack overflow is not a catchable
+//! error. That constraint is unchanged here, so the shape is kept rather than
+//! the meaning: same stack, same growth policy, same node layout, same four
+//! return codes out of `traversalNext`. A rewrite as recursion with a depth
+//! guard would be a different function with different limits.
 //!
 //! Three things about that stack are easy to get wrong when reading it, and
 //! all three are load-bearing:
@@ -127,25 +102,24 @@
 //! `traversalNext`'s key-returning branch is written in the C original as a
 //! `for` loop whose body returns unconditionally on its first iteration, so
 //! the induction variable is read once as a bound and never incremented. It is
-//! an `if` spelled as a `for`. The port writes the `if`, because writing a
-//! loop that cannot iterate would be reproducing a typo rather than a
-//! behaviour -- the two are the same function of the same inputs, which the
-//! contract test pins. Nothing about it is a defect: the slot index advances
-//! in the *value* branch, one slot per key/value pair.
+//! an `if` spelled as a `for`. This writes the `if`, because writing a loop
+//! that cannot iterate would be reproducing a typo rather than a behaviour --
+//! the two are the same function of the same inputs, which the contract pins.
+//! Nothing about it is a defect: the slot index advances in the *value*
+//! branch, one slot per key/value pair.
 //!
 //! That branch also walks every bucket of the struct rather than every
 //! *entry*, so the nil keys of empty buckets are compared alongside real ones.
-//! That is correct rather than sloppy, and it is correct for a reason Part 6c
-//! established: a struct's Robin Hood layout is a function of the set of
-//! pairs, so two structs that compare equal have identical bucket arrays, and
-//! `janet_compare` has already rejected a capacity mismatch before any node is
-//! pushed.
+//! That is correct rather than sloppy: a struct's Robin Hood layout is a
+//! function of the set of pairs, so two structs that compare equal have
+//! identical bucket arrays, and `janet_compare` has already rejected a
+//! capacity mismatch before any node is pushed.
 //!
 //! `janet_hash`'s pointer fallback branches on `sizeOf(double) == sizeOf(void
 //! *)`, which is a comptime condition here, and reads the raw payload word
 //! through `janet_u64`. That macro spells a different field per value
 //! representation -- `x.u64` for both NaN-boxed layouts, `x.as.u64` for the
-//! tagged one -- so `janetU64` below selects on the translated type's shape.
+//! tagged one -- so `asU64` below selects on the translated type's shape.
 //! The `janet_equals` arm for strings is likewise the C original's and not a
 //! tidied one: only `JANET_STRING` uses `janet_string_equal`, and symbols and
 //! keywords fall through to the pointer comparison, which is sound because
@@ -159,21 +133,13 @@ const std = @import("std");
 const config = @import("config");
 const strings = @import("../strings.zig");
 const utils = @import("../../utils.zig");
-const kind = @import("kind.zig");
 const wrap = @import("wrap.zig");
 const fatal = @import("../../fatal.zig");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
+const vm_state = @import("../../vm/lifecycle.zig");
 
-/// `janet_vm`, whose layout is `types.JanetVM`'s and whose address
-/// `cabi.vm()` takes.
-inline fn vm() *types.JanetVM {
-    return c.vm();
-}
-
-const mem_typebits: i32 = constants.JANET_MEM_TYPEBITS;
-const memory_tuple: i32 = constants.JANET_MEMORY_TUPLE;
 const tuple_flag_bracketctor: i32 = constants.JANET_TUPLE_FLAG_BRACKETCTOR;
 
 /// `janet_u64(x)`, which is the only macro in this file whose spelling depends
@@ -182,10 +148,10 @@ const tuple_flag_bracketctor: i32 = constants.JANET_TUPLE_FLAG_BRACKETCTOR;
 /// struct with the payload in a nested union. Selecting on whether the
 /// translated type has the field directly gets both without restating the
 /// three-way `#ifdef` in `janet.h`.
-const janet_is_boxed_union = config.value_repr != .tagged;
+const isBoxedUnion = config.value_repr != .tagged;
 
-inline fn janetU64(x: types.Janet) u64 {
-    return if (comptime janet_is_boxed_union) @field(x, "u64") else @field(x.as, "u64");
+inline fn asU64(x: repr.Value) u64 {
+    return if (comptime isBoxedUnion) @field(x, "u64") else @field(x.as, "u64");
 }
 
 // ------------------------------------------------------------ the traversal
@@ -197,28 +163,47 @@ inline fn janetU64(x: types.Janet) u64 {
 /// never been allocated `traversal` is null, and the `traversal + 1 >=
 /// traversal_top` comparison beside it would be arithmetic on a null pointer.
 /// The C original relies on `||` short-circuiting for that and so does this.
-fn pushTraversalNode(lhs: ?*anyopaque, rhs: ?*anyopaque, index2: i32) void {
+/// The traversal stack starts unallocated; `pushTraversalNode` grows it on the
+/// first push, which is what `base == null` means.
+pub fn traversalInit(t: *types.Traversal) void {
+    t.* = .{};
+}
+
+/// Release the stack and return it to what `traversalInit` starts from.
+///
+/// **All three, not just `base`.** `FOUND.md` has the reason: `push` decides
+/// whether to grow on `base == null`, so a dangling one reaches
+/// `janet_realloc` with a freed pointer -- and clearing only `base` would
+/// leave `at` and `top` pointing into the same freed block, which is the same
+/// inconsistency one field over. A type whose reset is one statement is what
+/// stops the second half being a choice.
+pub fn traversalDeinit(t: *types.Traversal) void {
+    utils.free(t.base);
+    t.* = .{};
+}
+
+fn pushTraversalNode(t: *types.Traversal, lhs: ?*anyopaque, rhs: ?*anyopaque, index2: i32) void {
     var node: types.JanetTraversalNode = undefined;
     node.self = @ptrCast(@alignCast(lhs));
     node.other = @ptrCast(@alignCast(rhs));
     node.index = 0;
     node.index2 = index2;
-    const is_new = vm().traversal_base == null;
-    if (is_new or @intFromPtr(vm().traversal.? + 1) >= @intFromPtr(vm().traversal_top.?)) {
-        const oldsize: usize = if (is_new) 0 else (@intFromPtr(vm().traversal) -%
-            @intFromPtr(vm().traversal_base)) / @sizeOf(types.JanetTraversalNode);
+    const is_new = t.base == null;
+    if (is_new or @intFromPtr(t.at.? + 1) >= @intFromPtr(t.top.?)) {
+        const oldsize: usize = if (is_new) 0 else (@intFromPtr(t.at) -%
+            @intFromPtr(t.base)) / @sizeOf(types.JanetTraversalNode);
         var newsize: usize = 2 *% oldsize +% 1;
         if (newsize < 128) newsize = 128;
         const tn: [*]types.JanetTraversalNode = @ptrCast(@alignCast(utils.realloc(
-            @ptrCast(vm().traversal_base),
+            @ptrCast(t.base),
             newsize *% @sizeOf(types.JanetTraversalNode),
         ) orelse fatal.outOfMemory()));
-        vm().traversal_base = tn;
-        vm().traversal_top = tn + newsize;
-        vm().traversal = tn + oldsize;
+        t.base = tn;
+        t.top = tn + newsize;
+        t.at = tn + oldsize;
     }
-    vm().traversal.? += 1;
-    vm().traversal.?[0] = node;
+    t.at.? += 1;
+    t.at.?[0] = node;
 }
 
 /// `traversal_next`. Advances the traversal of the structs and tuples on the
@@ -233,9 +218,9 @@ fn pushTraversalNode(lhs: ?*anyopaque, rhs: ?*anyopaque, index2: i32) void {
 ///
 /// `janet_compare` returns `status - 2`, which maps 1, 2 and 3 onto -1, 0 and
 /// 1. That is the whole reason for the gap in the middle.
-fn traversalNext(x: *types.Janet, y: *types.Janet) i32 {
-    var t = vm().traversal;
-    while (t != null and @intFromPtr(t.?) > @intFromPtr(vm().traversal_base.?)) : (t = t.? - 1) {
+fn traversalNext(stack: *types.Traversal, x: *repr.Value, y: *repr.Value) i32 {
+    var t = stack.at;
+    while (t != null and @intFromPtr(t.?) > @intFromPtr(stack.base.?)) : (t = t.? - 1) {
         const node = t.?;
         const self = node[0].self.?;
         const tself: *const types.JanetTupleHead = @ptrCast(@alignCast(self));
@@ -243,14 +228,14 @@ fn traversalNext(x: *types.Janet, y: *types.Janet) i32 {
         const other = node[0].other.?;
         const tother: *const types.JanetTupleHead = @ptrCast(@alignCast(other));
         const sother: *const types.JanetStructHead = @ptrCast(@alignCast(other));
-        if ((self.*.flags & mem_typebits) == memory_tuple) {
+        if (self.memoryType() == .tuple) {
             // A tuple node: index is the element to compare next.
             if (node[0].index < tself.length and node[0].index < tother.length) {
                 const index = node[0].index;
                 node[0].index += 1;
                 x.* = types.tupleData(tself)[asSize(index)];
                 y.* = types.tupleData(tother)[asSize(index)];
-                vm().traversal = node;
+                stack.at = node;
                 return 0;
             }
             if (node[0].index2 != 0 and tself.length != tother.length) {
@@ -265,14 +250,14 @@ fn traversalNext(x: *types.Janet, y: *types.Janet) i32 {
                 node[0].index += 1;
                 x.* = types.structData(sself)[asSize(index)].value;
                 y.* = types.structData(sother)[asSize(index)].value;
-                vm().traversal = node;
+                stack.at = node;
                 return 0;
             }
             if (node[0].index < sself.capacity) {
                 node[0].index2 = 1;
                 x.* = types.structData(sself)[asSize(node[0].index)].key;
                 y.* = types.structData(sother)[asSize(node[0].index)].key;
-                vm().traversal = node;
+                stack.at = node;
                 return 0;
             }
             // Buckets exhausted; hop to the prototypes, replacing this node
@@ -284,12 +269,12 @@ fn traversalNext(x: *types.Janet, y: *types.Janet) i32 {
             if (oproto != null and sproto != null) {
                 x.* = wrap.fromStruct(sproto.?);
                 y.* = wrap.fromStruct(oproto.?);
-                vm().traversal = node - 1;
+                stack.at = node - 1;
                 return 0;
             }
         }
     }
-    vm().traversal = t;
+    stack.at = t;
     return 2;
 }
 
@@ -331,27 +316,28 @@ fn compareAbstract(xx: types.JanetAbstract, yy: types.JanetAbstract) i32 {
 /// values that differ essentially always disagree there. The practical
 /// consequence is that the only inputs which reach the traversal are ones that
 /// are *equal*, and the three checks behind the hash are reachable only on a
-/// collision. `test/value_order.c` forges one to get at them.
+/// collision. `test/value_order.zig` forges one to get at them.
 ///
 /// Abstract values are compared by `compareAbstract` rather than by an
 /// `equals` callback, because the abstract type interface has no such
 /// callback: ordering is the only relation a third-party type provides, and
 /// equality is defined as its zero.
-pub fn equals(x_in: types.Janet, y_in: types.Janet) c_int {
+pub fn equals(x_in: repr.Value, y_in: repr.Value) c_int {
     var x = x_in;
     var y = y_in;
-    vm().traversal = vm().traversal_base;
+    const stack = &vm_state.current().traversal;
+    stack.at = stack.base;
     while (true) {
-        if (kind.typeOf(x) != kind.typeOf(y)) return 0;
-        switch (kind.typeOf(x)) {
-            constants.JANET_NIL => {},
-            constants.JANET_BOOLEAN => {
+        if (repr.typeOf(x) != repr.typeOf(y)) return 0;
+        switch (repr.typeOf(x)) {
+            repr.Tag.nil => {},
+            repr.Tag.boolean => {
                 if (wrap.toBoolean(x) != wrap.toBoolean(y)) return 0;
             },
-            constants.JANET_NUMBER => {
+            repr.Tag.number => {
                 if (wrap.toNumber(x) != wrap.toNumber(y)) return 0;
             },
-            constants.JANET_STRING => {
+            repr.Tag.string => {
                 // Only strings. Symbols and keywords reach the pointer
                 // comparison below, which is sound because both are interned
                 // and the string case is not. Kept as the C original has it
@@ -359,10 +345,10 @@ pub fn equals(x_in: types.Janet, y_in: types.Janet) c_int {
                 // function, and it would also be a slower one.
                 if (strings.equal(wrap.toString(x), wrap.toString(y)) == 0) return 0;
             },
-            constants.JANET_ABSTRACT => {
+            repr.Tag.abstract => {
                 if (compareAbstract(wrap.toAbstract(x), wrap.toAbstract(y)) != 0) return 0;
             },
-            constants.JANET_TUPLE => {
+            repr.Tag.tuple => {
                 const t1 = wrap.toTuple(x);
                 const t2 = wrap.toTuple(y);
                 if (t1 != t2) {
@@ -371,10 +357,10 @@ pub fn equals(x_in: types.Janet, y_in: types.Janet) c_int {
                     if ((tuple_flag_bracketctor & (h1.gc.flags ^ h2.gc.flags)) != 0) return 0;
                     if (h1.hash != h2.hash) return 0;
                     if (h1.length != h2.length) return 0;
-                    pushTraversalNode(h1, h2, 0);
+                    pushTraversalNode(stack, h1, h2, 0);
                 }
             },
-            constants.JANET_STRUCT => {
+            repr.Tag.@"struct" => {
                 const s1 = wrap.toStruct(x);
                 const s2 = wrap.toStruct(y);
                 if (s1 != s2) {
@@ -384,14 +370,14 @@ pub fn equals(x_in: types.Janet, y_in: types.Janet) c_int {
                     if (h1.length != h2.length) return 0;
                     if (h1.proto != null and h2.proto == null) return 0;
                     if (h1.proto == null and h2.proto != null) return 0;
-                    pushTraversalNode(h1, h2, 0);
+                    pushTraversalNode(stack, h1, h2, 0);
                 }
             },
             else => {
                 if (wrap.toPointer(x) != wrap.toPointer(y)) return 0;
             },
         }
-        if (traversalNext(&x, &y) != 0) break;
+        if (traversalNext(stack, &x, &y) != 0) break;
     }
     return 1;
 }
@@ -417,22 +403,22 @@ fn murmur64(h_in: u64) u64 {
 ///
 /// The three string-like types share one arm and hash only their *bytes*, so
 /// `:tie`, `'tie` and `"tie"` all hash alike while comparing unequal. That is
-/// deliberate and it is what makes the `janet_compare` tiebreak in Part 6c's
-/// Robin Hood insert load-bearing rather than defensive.
+/// deliberate and it is what makes the `janet_compare` tiebreak in the Robin
+/// Hood insert load-bearing rather than defensive.
 ///
 /// Everything with a stored hash -- strings, symbols, keywords, tuples,
 /// structs -- returns it rather than recomputing, so this function never
 /// traverses anything. A tuple adds one when it was written with brackets,
 /// which is the only place a flag participates in a hash.
-pub fn hash(x: types.Janet) callconv(.c) i32 {
+pub fn hash(x: repr.Value) callconv(.c) i32 {
     var h: i32 = 0;
-    switch (kind.typeOf(x)) {
-        constants.JANET_NIL => h = 0,
-        constants.JANET_BOOLEAN => h = wrap.toBoolean(x),
-        constants.JANET_STRING, constants.JANET_SYMBOL, constants.JANET_KEYWORD => {
+    switch (repr.typeOf(x)) {
+        repr.Tag.nil => h = 0,
+        repr.Tag.boolean => h = @intFromBool(wrap.toBoolean(x)),
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
             h = stringHeadHash(wrap.toString(x));
         },
-        constants.JANET_TUPLE => {
+        repr.Tag.tuple => {
             const t = wrap.toTuple(x);
             const head = types.tupleHead(t);
             h = head.hash;
@@ -440,8 +426,8 @@ pub fn hash(x: types.Janet) callconv(.c) i32 {
             // Through u32 to avoid the signed overflow the C comment names.
             h = @bitCast(@as(u32, @bitCast(h)) +% inc);
         },
-        constants.JANET_STRUCT => h = types.structHead(wrap.toStruct(x)).hash,
-        constants.JANET_NUMBER => {
+        repr.Tag.@"struct" => h = types.structHead(wrap.toStruct(x)).hash,
+        repr.Tag.number => {
             var d = wrap.toNumber(x);
             d += 0.0; // normalize negative zero
             const bits: u64 = murmur64(@bitCast(d));
@@ -451,7 +437,7 @@ pub fn hash(x: types.Janet) callconv(.c) i32 {
             // The abstract arm falls through to the pointer h when the type
             // supplies no `h` callback, which is why it is folded in here
             // rather than written as its own case.
-            if (kind.typeOf(x) == constants.JANET_ABSTRACT) {
+            if (repr.typeOf(x) == repr.Tag.abstract) {
                 const xx = wrap.toAbstract(x);
                 const at = types.abstractHead(xx).type;
                 if (at.*.hash != null) {
@@ -460,7 +446,7 @@ pub fn hash(x: types.Janet) callconv(.c) i32 {
             }
             if (comptime @sizeOf(f64) == @sizeOf(*anyopaque)) {
                 // Assuming 8 byte pointer (8 byte aligned)
-                const i = murmur64(janetU64(x));
+                const i = murmur64(asU64(x));
                 h = @bitCast(@as(u32, @truncate(i >> 32)));
             } else {
                 // Assuming 4 byte pointer (or smaller)
@@ -483,7 +469,7 @@ inline fn stringHeadHash(s: [*]const u8) i32 {
 /// `janet_compare`. A total order over every Janet value except NaN, returning
 /// -1, 0 or 1.
 ///
-/// Values of different types order by their `JanetType` tag, which makes the
+/// Values of different types order by their `repr.Tag`, which makes the
 /// order across types an artifact of the enumeration in `janet.h` rather than
 /// anything meaningful -- and stable, which is all it has to be.
 ///
@@ -497,22 +483,23 @@ inline fn stringHeadHash(s: [*]const u8) i32 {
 /// element-wise until one runs out -- which is what the `index2` flag on a
 /// tuple node means, and why `janet_compare` pushes it as 1 where
 /// `janet_equals` pushes 0.
-pub fn compare(x_in: types.Janet, y_in: types.Janet) callconv(.c) c_int {
+pub fn compare(x_in: repr.Value, y_in: repr.Value) callconv(.c) c_int {
     var x = x_in;
     var y = y_in;
-    vm().traversal = vm().traversal_base;
+    const stack = &vm_state.current().traversal;
+    stack.at = stack.base;
     var status: i32 = 0;
     while (true) {
-        const tx = kind.typeOf(x);
-        const ty = kind.typeOf(y);
-        if (tx != ty) return if (tx < ty) -1 else 1;
+        const tx = repr.typeOf(x);
+        const ty = repr.typeOf(y);
+        if (tx != ty) return if (@intFromEnum(tx) < @intFromEnum(ty)) -1 else 1;
         switch (tx) {
-            constants.JANET_NIL => {},
-            constants.JANET_BOOLEAN => {
-                const diff = wrap.toBoolean(x) - wrap.toBoolean(y);
+            repr.Tag.nil => {},
+            repr.Tag.boolean => {
+                const diff = @as(c_int, @intFromBool(wrap.toBoolean(x))) - @intFromBool(wrap.toBoolean(y));
                 if (diff != 0) return diff;
             },
-            constants.JANET_NUMBER => {
+            repr.Tag.number => {
                 const xx = wrap.toNumber(x);
                 const yy = wrap.toNumber(y);
                 // A NaN on either side makes both `==` and `<` false, so
@@ -525,15 +512,15 @@ pub fn compare(x_in: types.Janet, y_in: types.Janet) callconv(.c) c_int {
                     return if (xx < yy) -1 else 1;
                 }
             },
-            constants.JANET_STRING, constants.JANET_SYMBOL, constants.JANET_KEYWORD => {
+            repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
                 const diff = strings.compare(wrap.toString(x), wrap.toString(y));
                 if (diff != 0) return diff;
             },
-            constants.JANET_ABSTRACT => {
+            repr.Tag.abstract => {
                 const diff = compareAbstract(wrap.toAbstract(x), wrap.toAbstract(y));
                 if (diff != 0) return diff;
             },
-            constants.JANET_TUPLE => {
+            repr.Tag.tuple => {
                 const lhs = wrap.toTuple(x);
                 const rhs = wrap.toTuple(y);
                 const lh = types.tupleHead(lhs);
@@ -541,9 +528,9 @@ pub fn compare(x_in: types.Janet, y_in: types.Janet) callconv(.c) c_int {
                 if ((tuple_flag_bracketctor & (lh.gc.flags ^ rh.gc.flags)) != 0) {
                     return if ((lh.gc.flags & tuple_flag_bracketctor) != 0) 1 else -1;
                 }
-                pushTraversalNode(lh, rh, 1);
+                pushTraversalNode(stack, lh, rh, 1);
             },
-            constants.JANET_STRUCT => {
+            repr.Tag.@"struct" => {
                 const lhs = wrap.toStruct(x);
                 const rhs = wrap.toStruct(y);
                 const lh = types.structHead(lhs);
@@ -552,7 +539,7 @@ pub fn compare(x_in: types.Janet, y_in: types.Janet) callconv(.c) c_int {
                 if (lh.capacity > rh.capacity) return 1;
                 if (lh.hash < rh.hash) return -1;
                 if (lh.hash > rh.hash) return 1;
-                pushTraversalNode(lh, rh, 0);
+                pushTraversalNode(stack, lh, rh, 0);
             },
             else => {
                 if (wrap.toPointer(x) == wrap.toPointer(y)) {
@@ -563,7 +550,7 @@ pub fn compare(x_in: types.Janet, y_in: types.Janet) callconv(.c) c_int {
                 }
             },
         }
-        status = traversalNext(&x, &y);
+        status = traversalNext(stack, &x, &y);
         if (status != 0) break;
     }
     return status - 2;

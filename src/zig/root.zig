@@ -10,44 +10,31 @@
 //! and it can hold several modules — this one holds eight, with `abi`,
 //! `raise`, `corefn` and the three host-header translations beside the root.
 //!
-//! A module boundary was never the problem, and the tree proved it before this
-//! part existed: `raise.Error` is declared in the `raise` module and
-//! `vm_calls.zig` has always written `raise.Error!c.Janet` across the import.
-//! The compiler sees through a module the way it sees through a file.
+//! A module boundary was never a barrier: `raise.Error` is declared in the
+//! `raise` module and a subsystem writes `raise.Error!repr.Value` across the
+//! import. The compiler sees through a module the way it sees through a file.
 //!
-//! What it cannot see through is a *compilation* boundary. Until Part 17a each
-//! selector was its own `b.addObject`, so there were sixty-three compilations,
-//! and the only thing that joins two separately compiled objects is a symbol
-//! in a symbol table — which means a calling convention, which means C's.
-//!
-//! Zig is explicit about what that costs:
+//! What it cannot see through is a *compilation* boundary. The only thing that
+//! joins two separately compiled objects is a symbol in a symbol table --
+//! which means a calling convention, which means C's, and Zig is explicit
+//! about what that costs:
 //!
 //! ```text
 //! error: return type 'error{X}!i32' not allowed in function with calling
 //! convention 'aarch64_aapcs_darwin'
 //! ```
 //!
-//! Part 4's rule followed from it — **an error union cannot cross a subsystem
-//! seam** — and it was read for thirteen increments as a fact about porting
-//! rather than about the build. So `os_surface.zig` calling `janet_getcstring`
-//! raised by `longjmp` even though both sides were Zig, and 729 calls in the
-//! argument layer alone were still jumping when this file was written.
-//!
-//! ## What one compilation buys
-//!
-//! A subsystem imports its neighbour by path, the call is an ordinary Zig
-//! call, and `raise.Error` crosses it. That is what lets Part 17 delete the
-//! third `setjmp` — and, more to the point, it is what makes the conversion
-//! *checked*: a caller that forgets to `try` a raise-capable callee is a
-//! compile error, where under the C ABI it was a silent jump.
+//! With every subsystem in one compilation a neighbour is reached by path, the
+//! call is an ordinary Zig call, and `raise.Error` crosses it. That is what
+//! makes the raise *checked*: a caller that forgets to `try` a raise-capable
+//! callee is a compile error, where across the C ABI it was a silent jump.
 //!
 //! ## Nothing here decides anything
 //!
 //! The conditions are `build.zig`'s, passed in through `@import("options")`,
-//! and they are the same expressions that decide the `JANET_ZIG_*` macro for
-//! the C side. `zigSelection` computes both, so a subsystem cannot be imported
-//! here and left unguarded there, which was the failure mode when the two were
-//! separate lists.
+//! and `zigSelection` is the one place each is written. When there were two
+//! readers of a selection -- an import here and a guard elsewhere -- a
+//! subsystem could be compiled without being guarded off.
 //!
 //! ## Why the imports are discarded rather than bound
 //!
@@ -57,22 +44,19 @@
 //! reads, and no one does. The imports that *are* bound are inside the
 //! subsystems, where one reaches another.
 //!
-//! ## Four files are not named here
+//! ## Some files are not named here
 //!
-//! `vm_calls.zig` and `value_wrap.zig` are imported by `vm_run.zig` as well as
-//! by this file, because the loop inlines them — Part 2 measured 2.4-3.4% on
-//! method dispatch and 89% on arithmetic for reaching them out of line. One
-//! module means one instance either way, so the two importers are not two
-//! copies. Their `_extern.zig` shims were named by `vm_run.zig` alone and only
-//! when the selector said C, which is why Phase 11 Part 26 could delete all
-//! eleven of them without anything here changing: a comptime-`false` branch is
-//! not analysed, so nothing in one was ever diagnosed.
+//! `vm.zig`'s call protocol and `value/helpers/wrap.zig` are imported by the
+//! interpreter as well as by this file, because the loop inlines them --
+//! 2.4-3.4% on method dispatch and 89% on arithmetic for reaching them out of
+//! line, measured. One module means one instance either way, so two importers
+//! are not two copies.
 //!
 //! The other absences are subsystems reached through the file that registers
-//! them: `os_calendar`, `os_files` and `os_procs` through `os_surface.zig`,
-//! `ev_stream`, `ev_channel` and `ev_backend` through `ev_loop.zig`,
-//! `net_addr` through `net_sockets.zig`, `ffi_types`, `ffi_marshal` and
-//! `ffi_call` through `ffi_core.zig`, and `pp_pretty` and `pp_describe`
+//! them: `os/date.zig`, `os/fs.zig` and `os/process.zig` through `os.zig`,
+//! `ev/stream.zig`, `ev/channel.zig` and `ev/backend.zig` through `ev.zig`,
+//! `ffi/types.zig`, `ffi/marshal.zig` and `ffi/call.zig` through `ffi.zig`,
+//! and `pp/pretty.zig` through `pp.zig`.
 //! through `pp_format.zig`. Each of those was already one object with one
 //! selector, and folding the tree did not change what belongs to what.
 
@@ -128,7 +112,6 @@ comptime {
     if (options.abstracts) _ = @import("value/abstracts.zig");
     if (options.functions) _ = @import("value/functions.zig");
     if (options.wrap) _ = @import("value/helpers/wrap.zig");
-    if (options.kind) _ = @import("value/helpers/kind.zig");
     _ = @import("ev/locks.zig");
     _ = @import("os/fs/host_stat.zig");
     _ = @import("fatal.zig");
@@ -148,15 +131,14 @@ comptime {
 
 // ------------------------------------------------------- the same, by name
 
-// Phase 11 Part 1. The block above is what makes a subsystem's `export`s
-// exist; this one is what lets something *call* a subsystem without going
-// through one.
+// The block above is what makes a subsystem's `export`s exist; this one is
+// what lets something *call* a subsystem without going through one.
 //
 // The caller is `test/contracts.zig`, which `build.zig` gives this file as an
 // imported module. A contract that reaches its subject here is inside the
 // compilation, so `raise.Error` crosses to it exactly as it crosses between
-// two subsystems -- which is the whole reason the Zig contracts are built this
-// way rather than linked against `libjanet.a`. `makeRuntimeGraph` has the
+// two subsystems -- which is the whole reason the contracts are built this way
+// rather than linked against `libjanet.a`. `makeRuntimeGraph` has the
 // argument.
 //
 // **These are lazy and must stay lazy.** A `pub const` at container scope is
@@ -216,11 +198,10 @@ pub const args = @import("args.zig");
 pub const gc_alloc = @import("gc.zig");
 pub const gc_mark = @import("gc/mark.zig");
 pub const gc_sweep = @import("gc/sweep.zig");
-/// The value layer's namespace, and the one level `root.zig` gains from the
-/// batch that moved these files into `value/`. `test/` reaches a leaf through
-/// it -- `@import("subsystems").value.tables` -- exactly as it reaches every
-/// other subsystem through the flat declarations above. `port/NAMESPACES.md`
-/// has the taxonomy and why the leaf, not the group, is the import unit.
+/// The value layer's namespace. `test/` reaches a leaf through it --
+/// `@import("subsystems").value.tables` -- exactly as it reaches every other
+/// subsystem through the flat declarations above. The leaf, not the group, is
+/// the import unit.
 pub const value = @import("value.zig");
 pub const abstract_type = @import("abstract_type.zig");
 pub const pp_format = @import("pp/format.zig");
@@ -239,25 +220,17 @@ pub const dynlib = @import("dynlib.zig");
 pub const stdio = @import("stdio.zig");
 pub const fatal = @import("fatal.zig");
 
-// `types_check` and `constants_check` stood here, holding `types.zig` and
-// `constants.zig` against the `@cImport` they replaced. Both were oracles with
-// a fixed lifetime -- they compared Zig against a translation of `janet.h` --
-// and Phase 12 increment 5f spent them with their subject.
-//
-// Phase 12 increment 5c: `cabi.zig`'s declarations against the definitions they
-// name. 5b moved the declarations into Zig but not the checking -- an
-// `extern fn` is a promise the compiler believes -- and this is what closes it.
-// Unlike the other two oracles it does not die with the header: a name leaves
-// when 5d converts its call sites to a direct call.
+// `cabi_check.zig`: `cabi.zig`'s declarations against the definitions they
+// name. An `extern fn` is a promise the compiler believes, and this is what
+// stops it being taken on trust.
 comptime {
     @import("cabi_check.zig").verify();
 }
 
-// Phase 12 increment 5h, decision 5: `capi.zig` is the C ABI, and the
-// only file under `src/zig` that exports. Referencing it here is what
-// makes its `comptime` blocks run -- and those blocks, rather than the
-// list above, are what decides which subsystems a configuration
-// compiles.
+// `capi.zig` is the C ABI, and the only file under `src/zig` that exports.
+// Referencing it here is what makes its `comptime` blocks run -- and those
+// blocks, rather than the list above, are what decides which subsystems a
+// configuration compiles.
 comptime {
     _ = @import("capi.zig");
 }

@@ -1,0 +1,535 @@
+#!/usr/bin/env janet
+# Acceptance matrix for the Zig port, with a worker pool and two entry shapes.
+#
+# Development instrument in `tools/`. See AGENTS.md, "Builds and
+# the Zig cache", for the measurements the design rests on.
+#
+# Each job gets a throwaway cache and prefix of its own, deleted before and after
+# it runs, so concurrency changes nothing about the disk discipline AGENTS.md
+# asks for: the cost there is the number of distinct configurations, not how many
+# are in flight. Results are collated in the order the jobs were declared, so the
+# log does not depend on the scheduling.
+#
+# Three shapes, because what an entry runs matters more than how many entries run
+# at once -- though less than it did. A full `zig build test` was 51 seconds and
+# is 24 since Phase 10 Part 11 put every contract in one executable; 14 of those
+# are the library and the rest is fifty-eight contracts and thirty-four Janet
+# suites, nearly all of which the increment under test did not touch.
+#
+#   full       zig build test. For the entries where a regression *outside* the
+#              increment's own contracts is the point -- a misplaced #endif shows
+#              up as a suite failure, not as a contract failure.
+#   contracts  The library, a startup smoke, and the increment's own contracts
+#              run by name from the driver `zig build` installs. 20 seconds. The
+#              shape the reduced-OS entry has always used, because the suites
+#              cannot run there.
+#   build      The library only. Cross-compiles, which cannot be run here.
+#
+# Set `contracts-default` to the increment's own contract files when a part lands.
+#
+# The worker pool is `ev/go` fibers rather than threads. Every job is dominated
+# by the subprocesses it waits on, and `os/proc-wait` yields, so one thread
+# schedules all of them; what was a `ThreadPoolExecutor` is a channel of jobs and
+# `-j` fibers taking from it.
+
+(import ../common :as tools)
+
+# The `pp` trap is retired. It was three C files behind one selector, which
+# `contract.sh` expanded by hand and this did not, so naming `pp` here failed
+# every `contracts` entry at once with `test/pp.c:1:1: error: CacheCheckFailed`
+# -- a compile error in a file that does not exist. Phase 11 Part 5 moved all
+# three to the Zig driver, so each is an ordinary name in both tools.
+#
+# **A contract that creates files in the working directory may not be named
+# here.** `contracts` jobs are the ones that do *not* take the suites lock --
+# only `full` does, because `zig build test` runs the Janet suites -- so two of
+# them run concurrently in the *same* repository working directory. Naming
+# `os_fs` would have two entries creating, renaming and deleting
+# `janet-zig-os-fs-public-91af` at once, which is exactly the shared-fixture
+# problem the suites lock exists for, one layer down.
+#
+# The same rule one directory out: `os_surface` and `filewatch_core` write
+# nothing to the working tree but each owns a fixture under `/tmp`, which two
+# entries would collide on just as surely. That is rule 53 rather than rule 9.
+#
+# Part 24 is the gate, so this line stopped being an increment's own; every part
+# since Part 1 had set it to the contracts that part migrated. Part 28's own are
+# below -- the leak check's four -- and Part 29 migrated no contract at all, so
+# they stand.
+(def contracts-default
+  # The deferred-nit sweep of 2026-08-31, which closed all 37 findings in
+  # `NITS.md`.
+  #
+  # Unlike 9c-9g this one does change runtime decisions, so the list is chosen
+  # by what each configuration could break rather than by coverage:
+  #
+  #   `signal_core`  the one behavioural change -- the published signal-taking
+  #                  entry points take `c_uint` and clamp through
+  #                  `Signal.fromWire`. A reduced build is where a wrong
+  #                  conversion would show as a wrong signal rather than a
+  #                  compile error.
+  #   `fiber_core`   the exhaustive `switch`es that replaced four `else` arms,
+  #                  and the oracle that now lists every status by name.
+  #   `gc_sweep`     the memory-type dispatch, whose `else` also went; a
+  #                  forgotten arm leaks rather than fails.
+  #   `vm_state`     the field-walk that replaced the raw-byte comparison of a
+  #                  fresh `Vm`, which is layout-sensitive per configuration.
+  #   `vector`       `appendAssumingCapacity`'s new preconditions and the
+  #                  twelve constness-preserving accessors.
+  #   `core_env`     the registration surface, which is what says the 110
+  #                  fused `publish` calls still export what they exported.
+  #   `utils`        the four data exports and the head accessors, which is
+  #                  the harness every other contract rests on.
+  ["signal_core" "fiber_core" "gc_sweep" "vm_state" "vector" "core_env" "utils"])
+
+# Every command gets a bound. Phase 10 Part 16 lost thirty-six minutes to a
+# `zig build test` whose `suite-ev.janet` parked in `kevent` with an empty
+# kqueue: the pool had nothing to time it out, `as_completed` never saw it, and
+# the run produced no output at all because the log is written at the end. A
+# hang is now a FAIL for that entry and the rest of the matrix continues.
+(def build-timeout 900)
+# A `zig build test` whose compiling is already done takes about 25 seconds and
+# its longest suite about 3, so 300 is generous by an order of magnitude and a
+# park is detected in five minutes rather than fifteen.
+(def test-timeout 300)
+(def run-timeout 300)
+
+# Only one entry may *run* the Janet suites at a time.
+#
+# Phase 10 Part 16 traced a wedged matrix to this and found three shared
+# fixtures, not one: `suite-ev.janet` binds a fixed port 8761,
+# `suite-net.janet` binds a fixed `/tmp/janet-suite-net.sock`, and
+# `suite-ev.janet` and `suite-bundle.janet` create `unique.txt` and
+# `tempdir123` **in the repository working directory**, which every concurrent
+# entry shares. Two overlapping `full` entries therefore cross-connect: usually
+# one of them fails in `net/read`, and occasionally one parks in `kevent` and
+# never returns. Measured at 17 failures in 32 two-at-a-time runs -- 8 on one
+# arm of the selector under test and 9 on the other, which is what shows it is
+# the fixtures rather than the code.
+#
+# Setting `JANET_TEST_PORT` per slot fixes only the first of the three; the
+# other two are cwd- and /tmp-relative and cannot be moved without editing the
+# suites. So a `full` entry compiles concurrently -- which is where the time
+# goes -- and then takes this lock to run.
+#
+# **It is a channel and not `ev/lock`, and that is a measurement rather than a
+# preference.** `ev/lock` is the obvious translation of Python's
+# `threading.Lock` and it is the wrong primitive: it is an OS mutex for
+# coordinating *threads*, and its own docstring says it "will block this entire
+# thread ... and will not yield to other fibers on this system thread". This
+# pool is fibers on one thread. Measured, a second fiber acquires it while the
+# first still holds it --
+#
+#     @[:a-acquired :b-trying :b-acquired :a-releasing]
+#
+# -- so it excludes nothing. It does not error and it does not deadlock; it is
+# simply a no-op here, which is why the matrix passed twice with it in place.
+# A channel holding one token is the fiber-level equivalent, and orders the
+# same probe correctly: take is acquire, give is release, and both yield.
+(def suites-lock (ev/chan 1))
+
+# A name somebody will type that is not a file. `pp` was three translation
+# units behind one selector: `contract.sh` expanded it and this did not, so
+# naming it here failed every `contracts` entry at once with
+# `test/pp.c:1:1: error: CacheCheckFailed` -- a compile error in a file that
+# does not exist.
+#
+# Phase 11 Part 5 moved all three to the Zig driver and deleted `contract.sh`'s
+# expansion with them, so `pp` is now wrong in *both* tools rather than in one.
+# The entry stays: the habit outlived the mechanism twice already, and one line
+# here turns it into a sentence before the first build instead of twenty
+# failures seven minutes in.
+(def not-a-file {"pp" ["pp_describe" "pp_pretty" "pp_format"]})
+
+(defn- job [kind name flags &opt skip]
+  # `skip` names contracts that do not apply to this configuration.
+  # `test/inttypes.zig` names types a `-Dint-types=false` build does not define,
+  # and `build.zig` skips it there for the same reason.
+  {:kind kind :name name :flags flags :skip (or skip [])})
+
+(defn- preflight
+  "Every check that needs no build, run before the first one starts.
+
+  Two classes of harness mistake account for every wasted matrix run this
+  phase: a contract entry that is not a `test/*.zig`, and a `-D` option a
+  selector no longer has. Both are visible from `build.zig` and the
+  filesystem, and both used to surface one entry at a time, minutes apart,
+  as what looked like a compile error or a build failure. AGENTS.md warned
+  about both in prose and the prose did not prevent either.
+
+  So they are a check now, they run in about a second, and they report
+  *every* problem at once rather than the first -- because the failure mode
+  being fixed is precisely a slow serial discovery of a list.
+
+  `zig fmt --check` is the third, added in Phase 12 increment 4, and it is
+  here rather than in CI on purpose. Fifteen files had drifted out of the
+  formatter -- eight under `src/zig`, seven under `test/` -- because nothing
+  ran it, and the drift is invisible in review: the diff of a reformat is
+  every line of the hunk. The matrix is the instrument this project actually
+  runs per increment, so it is where a whole-tree property gets enforced. It
+  is *not* a per-configuration question and so is not a job: one run over the
+  tree, before the first build starts, costing about a second."
+  [jobs contracts]
+  (def problems @{})
+
+  # `zig fmt --check` names each unformatted file on stdout and exits
+  # non-zero. Reported as one problem listing all of them rather than one
+  # per file, so the message stays a sentence and still says what to fix.
+  (def fmt (tools/sh "zig fmt --check build.zig src/zig test" :timeout 120))
+  (unless (zero? (or (fmt :code) 1))
+    (def files (filter |(not (empty? $)) (string/split "\n" (string/trim (fmt :out)))))
+    (put problems
+         (if (empty? files)
+           (string/format "`zig fmt --check` failed and named no file: %s"
+                          (tools/head (string/trim (tools/both fmt)) 200))
+           (string/format "%d file%s not `zig fmt` clean -- run `zig fmt build.zig src/zig test`:\n    %s"
+                          (length files) (if (= 1 (length files)) " is" "s are")
+                          (string/join (sort files) "\n    ")))
+         true))
+
+  (each t contracts
+    (if-let [alternatives (not-a-file t)]
+      (put problems (string/format "contracts names %j, which is not a file: use %s"
+                                   t (string/join alternatives ", "))
+           true)
+      (unless (os/stat (string "test/" t ".zig"))
+        (put problems (string/format "contracts names %j but there is no test/%s.zig" t t)
+             true))))
+
+  (def help-text ((tools/sh "zig build -h" :timeout 120) :out))
+  (def known @{})
+  (each line (string/split "\n" help-text)
+    (when-let [flag (peg/match ~(sequence (some (set " \t"))
+                                          (capture (sequence "-D" (some (choice :w "-")))))
+                               line)]
+      (put known (first flag) true)))
+  (if (empty? known)
+    (put problems "could not read the option list from `zig build -h`" true)
+    (each j jobs
+      (each flag (j :flags)
+        (def name (first (string/split "=" flag)))
+        (unless (known name)
+          (put problems (string/format "job %j passes %s, which build.zig no longer has"
+                                       (j :name) name)
+               true)))))
+
+  (unless (empty? problems)
+    (tools/die "matrix.janet: refusing to start --\n  "
+               (string/join (sort (keys problems)) "\n  "))))
+
+(defn- error-lines
+  "The lines of a result worth reading, capped the way the log is."
+  [r]
+  (def text (tools/both r))
+  (def wanted (seq [line :in (string/split "\n" text)
+                    :when (or (string/find "error:" line) (string/find "assert" line))]
+                line))
+  (def joined (string/join wanted "\n"))
+  (if (> (length joined) 1500) (string/slice joined 0 1500) joined))
+
+(defn- run-job [j slot contracts]
+  (def cache (string "/tmp/janet-mx-" slot))
+  (def prefix (string "/tmp/janet-mx-out-" slot))
+  (each p [cache prefix] (tools/rm-rf p))
+  (def started (os/clock))
+  (defn secs [] (- (os/clock) started))
+
+  (defn build-cmd [target]
+    (string "JANET_TEST_PORT=" (+ 8761 slot) " zig build " target
+            " --cache-dir " cache " -p " prefix " "
+            (string/join (j :flags) " ")))
+
+  (defn build [target]
+    (tools/sh (build-cmd target)
+              :timeout (if (= target "") build-timeout test-timeout)))
+
+  # The detail names the command that hung, not the target -- a bound with no
+  # subject tells the reader nothing about which of the two builds it was.
+  (defn hung [target]
+    [j "FAIL" (string/format "hung after %ds: %s"
+                             (if (= target "") build-timeout test-timeout)
+                             (tools/head (build-cmd target) 200))
+     (secs)])
+
+  (defer (each p [cache prefix] (tools/rm-rf p))
+    (label done
+      # Compile first, outside the lock, because that is where the time goes.
+      (def r (build ""))
+      (when (r :timeout) (return done (hung "")))
+      (unless (= 0 (r :code))
+        (return done [j "FAIL" (string "build\n" (error-lines r)) (secs)]))
+
+      (when (= (j :kind) "full")
+        # A hang here is retried once, and the retry's verdict is reported
+        # as FLAKY rather than as PASS. Phase 10 Part 16 found a rare park
+        # in `suite-ev.janet` -- `kevent` with an empty kqueue, twice in
+        # about a hundred runs -- that is nothing to do with the selector
+        # under test. Retrying keeps one such park from costing a whole
+        # matrix; naming it FLAKY keeps the retry from hiding it.
+        (var was-hung false)
+        (var test-result nil)
+        (each attempt [1 2]
+          (when (nil? test-result)
+            (def tr (defer (ev/give suites-lock true)
+                      (do (ev/take suites-lock) (build "test"))))
+            (if (tr :timeout)
+              (if (= attempt 2)
+                (return done (hung "test"))
+                (set was-hung true))
+              (set test-result tr))))
+        (unless (= 0 (test-result :code))
+          (return done [j "FAIL" (string "test\n" (error-lines test-result)) (secs)]))
+        (when was-hung
+          (return done [j "FLAKY" "passed on retry after one hang" (secs)])))
+
+      (when (= (j :kind) "contracts")
+        # A startup smoke first: it costs nothing, needs no helper -- which
+        # is what lets the reduced-OS entry run it -- and separates a
+        # broken link from a broken contract.
+        (def smoke (tools/sh (string prefix "/bin/janet -e '(print (+ 1 2))'")
+                             :timeout run-timeout))
+        (when (or (not (tools/ok? smoke)) (not= "3" (string/trim (smoke :out))))
+          (return done [j "FAIL"
+                        (string "smoke: "
+                                (let [text (if (empty? (smoke :err)) (smoke :out) (smoke :err))]
+                                  (if (> (length text) 400) (string/slice text 0 400) text)))
+                        (secs)]))
+        (each t contracts
+          (unless (has-value? (j :skip) t)
+            # There is nothing to compile and nothing to link. Phase 11
+            # Part 1 put the Zig contracts inside a second compilation of
+            # the runtime -- which is how one reaches a raise-capable
+            # function with no C-ABI abi between them -- and Part 22 took
+            # the last C contract, so every name here is a `test/*.zig`
+            # already inside the driver `build.zig` installs
+            # unconditionally. This runs it by name, which is what
+            # `tools/testing/contract.sh` does too.
+            (def run (tools/sh (string prefix "/bin/janet-zig-contract-test " t)
+                               :timeout run-timeout))
+            (unless (tools/ok? run)
+              (return done [j "FAIL"
+                            (string/format "run %s\n%s" t
+                                           (tools/tail (if (empty? (run :err)) (run :out) (run :err)) 400))
+                            (secs)])))))
+      [j "PASS" "" (secs)])))
+
+(defn- all-jobs []
+  @[
+    # Phase 10 Part 17b converted 656 call sites across twenty-eight
+    # subsystems, so this matrix is asked the same question 17a's was and
+    # for a second reason: every cfunction in the runtime opens with two or
+    # three calls into the layer that changed, so a configuration that
+    # compiles a cfunction nothing else compiles is the only thing that
+    # checks those. Phase 10's fifth rule is the whole argument -- a
+    # comptime-false branch is not analysed, so an arm this host does not
+    # take was never seen by the conversion at all. The Windows
+    # cross-compile found exactly that in `net_sockets.zig`.
+    (job "full" "default" [])
+    # "every selector c" stood here, and so did nine entries naming one
+    # selector each. Phase 10 Part 18 spent the last twenty-nine `c` arms,
+    # so there is no second implementation for a configuration to choose
+    # and there are no `-D<sel>=c` flags left to pass. What replaced the
+    # differential is what was always underneath it: the contracts, and the
+    # Janet suites.
+    (job "full" "ReleaseSafe" ["-Doptimize=ReleaseSafe"])
+    (job "full" "ReleaseFast" ["-Doptimize=ReleaseFast"])
+    (job "full" "ReleaseSmall" ["-Doptimize=ReleaseSmall"])
+
+    # Feature gates, which decide whether a subsystem is imported at all.
+    # `zigSelection` is the single place that answers, and a wrong answer
+    # here is a subsystem compiled with nothing to compile against.
+    (job "full" "no event loop" ["-Dev=false"])
+    # **The poll backend, and this entry is why it exists.** `build.zig`
+    # chooses epoll on Linux, kqueue on the BSDs and macOS, and poll on
+    # anything else -- so poll is reachable only by turning the host's own
+    # backend off, which nothing in this matrix did. Phase 13 increment 3a
+    # built it for the first time and it did not compile: three indexings of
+    # an optional many-pointer that increment 5h's `.?` pass never saw, an
+    # ignored error union, and a fiber dereference. Phase 11's rule 72 is the
+    # class -- a comptime-false arm is not dead code, it is *unchecked* code --
+    # and this entry is what checks it.
+    #
+    # **Both flags, so the name is true on either Unix family.** With
+    # `-Dkqueue=false` alone this job selected poll on macOS and the BSDs and
+    # *epoll* on Linux, where it then reported itself as the poll backend and
+    # left the repaired arm outside the ratchet on the one host most likely to
+    # run it in CI. Turning off a backend a build does not have costs nothing,
+    # so both are passed unconditionally rather than derived from the host.
+    (job "full" "poll backend" ["-Dkqueue=false" "-Depoll=false"])
+    (job "full" "no ffi" ["-Dffi=false"])
+    # `hasFilewatch` is `hasEv and options.filewatch`, so neither of the
+    # watcher's contracts is compiled here. This entry is `full`, so it
+    # runs the whole Zig driver rather than the contract list by name and
+    # needs no skip; the single-threaded entry below is where that bites.
+    (job "full" "no filewatch" ["-Dfilewatch=false"])
+    (job "contracts" "no net" ["-Dnet=false"] ["net_sockets"])
+
+    # `-Dpeg=false` leaves the tree without `JanetPeg` or `janet_peg_type`,
+    # so `test/peg.zig` cannot compile here -- the same shape as the ev
+    # contracts under `-Dsingle-threaded=true`. Part 17e is the first
+    # increment whose own contracts include `peg`, and it found this the
+    # way the ev one was found: by failing. Phase 11 Part 14 moved the
+    # contract to the Zig driver, where `test/contracts.zig` gates it on
+    # `options.peg_engine`; the skip is still needed, because a name in the
+    # contract list is run by name and this build has no `peg` to run.
+    (job "contracts" "no peg" ["-Dpeg=false"] ["peg"])
+    # There is no `JanetAssembleResult` without the assembler.
+    (job "contracts" "no assembler" ["-Dassembler=false"]
+         ["asm_encode" "asm_decode" "disasm"])
+    (job "contracts" "no int types" ["-Dint-types=false"] ["inttypes"])
+    (job "contracts" "no dynamic modules" ["-Ddynamic-modules=false"])
+    # `hasEv` is `options.ev and !options.single_threaded`, so the two ev
+    # contracts cannot be compiled here -- neither the channel API nor
+    # `JanetStream` is declared. The comment above this entry has said
+    # so since Part 16; Part 17d is the first increment whose own contracts
+    # include one, and it had to learn that the skip the comment names
+    # was never actually passed.
+    (job "contracts" "single threaded" ["-Dsingle-threaded=true"]
+         ["ev_core" "ev_loop" "net_sockets" "filewatch_flags" "filewatch_core"])
+    # `build.zig` sets `.os_fs = !options.reduced_os`, so the skip list has to
+    # name all four contracts `test/contracts.zig` gates on `options.os_fs`.
+    # It named only `os_stat` until increment 8b picked `os_fs` as a subject
+    # and the entry failed with `os_fs was not compiled into this binary` --
+    # a harness gap that had simply never been selected for.
+    (job "contracts" "reduced os" ["-Dreduced-os=true"]
+         ["os_fs" "os_stat" "os_fs_paths" "os_permissions"
+          "os_environ" "os_time" "os_process"])
+    (job "contracts" "tagged values" ["-Dnanbox=false"])
+    (job "full" "nanbox pointer shift 2" ["-Dnanbox-pointer-shift=2"])
+
+    # x86_64 macOS, which runs under Rosetta on Apple silicon and is the
+    # only entry that *executes* a second architecture.
+    (job "full" "x86_64-macos" ["-Dtarget=x86_64-macos"])
+
+    # The four cross-compiles. They matter more here than usual: the fold
+    # changed which files are analysed together, and Phase 10's fifth rule
+    # is that a comptime-false branch is not analysed at all.
+    (job "build" "x86_64-linux-musl" ["-Dtarget=x86_64-linux-musl"])
+    (job "build" "aarch64-linux-musl" ["-Dtarget=aarch64-linux-musl"])
+    (job "build" "riscv32-linux-musl" ["-Dtarget=riscv32-linux-musl"])
+    (job "build" "x86_64-windows-gnu" ["-Dtarget=x86_64-windows-gnu"])
+    # The reduced-configuration remainder. The population of configurations is
+    # `zig build -h`'s option list, not this file's job list -- the matrix
+    # samples what is worth *running*, which is a different question from what
+    # is worth *compiling*. A sweep of only what this file already named would
+    # have transcribed `JANET_VM_HAS_INTERRUPT` as a constant, and a set of
+    # `@hasDecl` probes went silently always-true in exactly the builds nothing
+    # here compiled. Build-only, because what they check is that
+    # the configuration compiles at all.
+    (job "build" "prf" ["-Dprf=true"])
+    (job "build" "no docstrings" ["-Ddocstrings=false" "-Dsourcemaps=false"])
+    (job "build" "no ipv6" ["-Dipv6=false"])
+    (job "build" "no cryptorand" ["-Dcryptorand=false"])
+    (job "build" "no interpreter interrupt" ["-Dinterpreter-interrupt=false"])
+    (job "build" "no processes" ["-Dprocesses=false"])
+    (job "build" "no umask" ["-Dumask=false"])
+    (job "build" "no realpath" ["-Drealpath=false"])
+
+    # The four cross-compiles Part 25 added and this file never gained: both
+    # glibc targets, and the two further 32-bit ones. `PLAN.md` records the
+    # 32-bit set as three targets, and only one of them was here.
+    (job "build" "x86_64-linux-gnu" ["-Dtarget=x86_64-linux-gnu"])
+    (job "build" "aarch64-linux-gnu" ["-Dtarget=aarch64-linux-gnu"])
+    (job "build" "x86-linux-musl" ["-Dtarget=x86-linux-musl"])
+    (job "build" "arm-linux-musleabihf" ["-Dtarget=arm-linux-musleabihf"])
+  ])
+
+(defn- option
+  "The value of `--name X` or `--name=X` (or `-jN`), or nil."
+  [argv name]
+  (var found nil)
+  (for i 0 (length argv)
+    (def arg (argv i))
+    (cond
+      (and (= arg name) (< (+ i 1) (length argv))) (set found (argv (+ i 1)))
+      (string/has-prefix? (string name "=") arg) (set found (string/slice arg (+ 1 (length name))))
+      (and (= 2 (length name)) (string/has-prefix? name arg) (> (length arg) 2))
+      (set found (string/slice arg 2))))
+  found)
+
+(defn main [& argv]
+  (os/cd tools/root)
+  (def workers (math/trunc (or (scan-number (or (option argv "-j") "2")) 2)))
+  (def log-path (or (option argv "--log") "/tmp/janet-matrix.log"))
+  (def only (option argv "--only"))
+  (def contracts (filter |(not (empty? $))
+                         (string/split "," (or (option argv "--contracts")
+                                               (string/join contracts-default ",")))))
+
+  (var jobs (all-jobs))
+  (when (has-value? argv "--all-full")
+    # reduced-os stays shallow whatever is asked: test/helper.janet names
+    # seven os/ functions a reduced build does not define, and an unknown
+    # symbol is a compile error, so the suites cannot run there at all.
+    (set jobs (map (fn [j]
+                     (if (and (= (j :kind) "contracts") (not= (j :name) "reduced os"))
+                       (merge j {:kind "full"})
+                       j))
+                   jobs)))
+  (when only
+    (def wanted (string/split "," only))
+    (set jobs (filter (fn [j] (some |(string/find $ (j :name)) wanted)) jobs)))
+
+  (preflight jobs contracts)
+
+  # The suites lock starts held-by-nobody: one token in the channel.
+  (ev/give suites-lock true)
+
+  (def results @{})
+  (def wall-started (os/clock))
+  # The work queue is an index rather than a channel: closing a Janet channel
+  # discards whatever is still buffered in it, so a channel would have to be
+  # kept open and drained by sentinel. Reading and bumping `next-job` cannot
+  # race, because `ev/go` fibers are cooperatively scheduled on one thread and
+  # nothing between those two lines yields.
+  (var next-job 0)
+
+  # The slot is the job index, not `index % j`. A pool hands the next
+  # queued task to whichever worker frees up first, so a slot reused `j`
+  # positions later collides with the job still holding it -- the symptom
+  # is "failed to rename compilation results into local cache:
+  # FileNotFound", which names nothing useful. A directory per job costs
+  # nothing: each is removed as soon as its job ends either way.
+  (def worker-count (min workers (length jobs)))
+  (def finished (ev/chan worker-count))
+  (for _ 0 worker-count
+    (ev/go
+      (fn []
+        (while true
+          (def i next-job)
+          (when (>= i (length jobs)) (break))
+          (++ next-job)
+          (def j (jobs i))
+          (def [_ status detail secs] (run-job j i contracts))
+          (put results (j :name) [status detail secs])
+          # Printed as it lands, not only at the end. A run that is killed --
+          # or wedged -- is then still worth what it had reached.
+          (printf "%-4s %-38s %5.1fs  (%d/%d)"
+                  status (j :name) secs (length results) (length jobs))
+          (when (not (empty? detail))
+            (print "      " (string/replace-all "\n" "\n      " detail)))
+          (:flush stdout))
+        (ev/give finished :done))))
+  (for _ 0 worker-count (ev/take finished))
+
+  (def wall (- (os/clock) wall-started))
+
+  (def kind-label {"build" " (build only)" "contracts" " (library + contracts)" "full" ""})
+  (each j jobs
+    (unless (kind-label (j :kind))
+      (tools/die (string/format "matrix.janet: unknown job kind %j for %j" (j :kind) (j :name)))))
+  (def log @"")
+  (buffer/format log "-j%d, %d contracts\n" workers (length contracts))
+  (each j jobs
+    (def name (string (j :name) (kind-label (j :kind))))
+    (if-let [entry (results (j :name))]
+      (let [[status detail secs] entry]
+        (buffer/format log "%s  %-38s %5.1fs\n" status name secs)
+        (when (not (empty? detail))
+          (buffer/push log "      " (string/replace-all "\n" "\n      " detail) "\n")))
+      (buffer/format log "----  %-38s        did not run\n" name)))
+  (buffer/format log "MATRIX DONE in %.1fs wall (%.1fs of work)\n"
+                 wall (sum (map |($ 2) (values results))))
+  (spit log-path log)
+  (prin log)
+  (os/exit (if (all |(has-value? ["PASS" "FLAKY"] ($ 0)) (values results)) 0 1)))

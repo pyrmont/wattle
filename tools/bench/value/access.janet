@@ -1,0 +1,99 @@
+# Phase 10 Part 17c's benchmark corpus: the seven access opcodes.
+#
+# 17c is the first sub-part to touch the interpreter's hot path. `JOP_IN`,
+# `JOP_GET`, `JOP_GET_INDEX`, `JOP_PUT`, `JOP_PUT_INDEX`, `JOP_LENGTH` and
+# `JOP_NEXT` reached the access layer through `scoped` — a wrapper that is a
+# direct call under the default and a `setjmp` scope under
+# `-Dcall-trampoline` — and now call the Zig implementation with `try`.
+#
+# Two things could move. The call loses the C calling convention, and Part 1
+# measured 1.86x for an `extern union` parameter against a native one; and it
+# loses the face's `catch`. Both are per-opcode, so a workload is an opcode in
+# a loop with as little else in it as possible.
+#
+# The control is arithmetic, which reaches none of these.
+#
+# The loop counts are sized for `ReleaseFast`, which is fifteen times faster
+# than the Debug build they were first written against: at two million
+# iterations every workload here landed between ten and twenty-four
+# milliseconds, which is inside the harness noise Part 17b measured. Twenty
+# million puts them between a tenth of a second and a third of one.
+
+(defn- bench [name f]
+  (def start (os/clock :monotonic))
+  (f)
+  (def stop (os/clock :monotonic))
+  (printf "%s %.6f" name (- stop start)))
+
+# JOP_IN over a tuple: the bounds check plus the unwrap.
+(defn- in-tuple []
+  (def t [1 2 3 4 5 6 7 8])
+  (var acc 0)
+  (for i 0 20000000 (set acc (+ acc (in t 3))))
+  acc)
+
+# JOP_IN over a table: the dictionary arm, which is a hash lookup.
+(defn- in-table []
+  (def t @{:a 1 :b 2 :c 3})
+  (var acc 0)
+  (for i 0 20000000 (set acc (+ acc (in t :b))))
+  acc)
+
+# JOP_GET, which cannot raise and lost its scope entirely.
+(defn- get-table []
+  (def t @{:a 1 :b 2 :c 3})
+  (var acc 0)
+  (for i 0 20000000 (set acc (+ acc (get t :b))))
+  acc)
+
+# JOP_GET_INDEX: a constant index, so the key check is compiled away and what
+# is left is the layer call itself.
+(defn- get-index []
+  (def t [1 2 3 4])
+  (var acc 0)
+  (for i 0 20000000 (set acc (+ acc (t 2))))
+  acc)
+
+# JOP_PUT over a table, which is the mutation path.
+(defn- put-table []
+  (def t @{})
+  (for i 0 20000000 (put t :k i))
+  (get t :k))
+
+# JOP_PUT_INDEX over an array.
+(defn- put-index []
+  (def a @[0 0 0 0])
+  (for i 0 20000000 (put a 2 i))
+  (in a 2))
+
+# JOP_LENGTH.
+(defn- lengths []
+  (def t [1 2 3 4 5])
+  (var acc 0)
+  (for i 0 20000000 (set acc (+ acc (length t))))
+  acc)
+
+# JOP_NEXT, through the iteration protocol rather than a range loop.
+(defn- iterate []
+  (def t @{:a 1 :b 2 :c 3 :d 4})
+  (var acc 0)
+  (for i 0 2000000
+    (var k (next t nil))
+    (while k (set acc (+ acc 1)) (set k (next t k))))
+  acc)
+
+# The control: arithmetic and jumps, which reach none of the seven.
+(defn- control []
+  (var acc 0)
+  (for i 0 20000000 (set acc (+ acc (* i 3) (- i 1))))
+  acc)
+
+(bench "in-tuple" in-tuple)
+(bench "in-table" in-table)
+(bench "get-table" get-table)
+(bench "get-index" get-index)
+(bench "put-table" put-table)
+(bench "put-index" put-index)
+(bench "lengths" lengths)
+(bench "iterate" iterate)
+(bench "control" control)

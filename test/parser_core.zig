@@ -7,9 +7,8 @@
 //! original, an error being *read* and thereby cleared, a partial string
 //! sitting in `buf`. Those are the states this file drives directly.
 //!
-//! ## What the migration adds
+//! ## Two refusals a C contract cannot reach
 //!
-//! Two refusals the C contract could not reach at all.
 //!
 //! `janet_parser_consume` and `janet_parser_eof` are abis over
 //! `consumeChecked` and `eofChecked`, which panic on a parser that has already
@@ -33,8 +32,8 @@
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 const parser_core = @import("subsystems").parser;
 const wrap = @import("subsystems").value.wrap;
@@ -111,7 +110,7 @@ fn aCloneOwnsItsOwnQueue() !void {
     // tuple the parser stores rather than the value inside it — which is where
     // the source mapping lives.
     const wrapped = parser_core.parserProduceWrapped(&clone);
-    std.debug.assert(harness.isType(wrapped, constants.JANET_TUPLE));
+    std.debug.assert(harness.isType(wrapped, repr.Tag.tuple));
     const tuple = wrap.toTuple(wrapped);
     std.debug.assert(types.tupleHead(tuple).length == 1);
     std.debug.assert(harness.integerIs(tuple[0], 1));
@@ -132,7 +131,7 @@ fn theStringEscapes() !void {
 
     try consume(&parser, "\"a\\n\\x42\\u03bb\\U01f600\" ");
     const val = parser_core.parserProduce(&parser);
-    std.debug.assert(harness.isType(val, constants.JANET_STRING));
+    std.debug.assert(harness.isType(val, repr.Tag.string));
 
     const expected = [_]u8{ 'a', '\n', 'B', 0xCE, 0xBB, 0xF0, 0x9F, 0x98, 0x80 };
     const string = wrap.toString(val);
@@ -152,10 +151,10 @@ fn theOtherLiterals() !void {
     parser_core.parserInit(&parser);
     try consume(&parser, "@\"abc\" ");
     const val = parser_core.parserProduce(&parser);
-    std.debug.assert(harness.isType(val, constants.JANET_BUFFER));
+    std.debug.assert(harness.isType(val, repr.Tag.buffer));
     const buffer = wrap.toBuffer(val);
     std.debug.assert(buffer.*.count == 3);
-    std.debug.assert(std.mem.eql(u8, buffer.*.data.?[0..3], "abc"));
+    std.debug.assert(std.mem.eql(u8, buffer.*.slice()[0..3], "abc"));
     parser_core.parserDeinit(&parser);
 }
 
@@ -195,7 +194,7 @@ fn theStateStackGrows() !void {
 
     var val = parser_core.parserProduce(&parser);
     for (0..4) |_| {
-        std.debug.assert(harness.isType(val, constants.JANET_TUPLE));
+        std.debug.assert(harness.isType(val, repr.Tag.tuple));
         val = wrap.toTuple(val)[0];
     }
     std.debug.assert(harness.integerIs(val, 1));
@@ -210,7 +209,7 @@ fn theQuoteShorthand() !void {
 
     try consume(&parser, "'x ");
     const val = parser_core.parserProduce(&parser);
-    std.debug.assert(harness.isType(val, constants.JANET_TUPLE));
+    std.debug.assert(harness.isType(val, repr.Tag.tuple));
     const tuple = wrap.toTuple(val);
     std.debug.assert(types.tupleHead(tuple).length == 2);
     std.debug.assert(harness.symbolIs(tuple[0], "quote"));
@@ -285,15 +284,15 @@ fn theAtoms() !void {
 
     try consume(&parser, ":key nil false true symbol ");
     std.debug.assert(harness.keywordIs(parser_core.parserProduce(&parser), "key"));
-    std.debug.assert(harness.isType(parser_core.parserProduce(&parser), constants.JANET_NIL));
+    std.debug.assert(harness.isType(parser_core.parserProduce(&parser), repr.Tag.nil));
 
     const false_value = parser_core.parserProduce(&parser);
-    std.debug.assert(harness.isType(false_value, constants.JANET_BOOLEAN));
-    std.debug.assert(wrap.toBoolean(false_value) == 0);
+    std.debug.assert(harness.isType(false_value, repr.Tag.boolean));
+    std.debug.assert(!wrap.toBoolean(false_value));
 
     const true_value = parser_core.parserProduce(&parser);
-    std.debug.assert(harness.isType(true_value, constants.JANET_BOOLEAN));
-    std.debug.assert(wrap.toBoolean(true_value) != 0);
+    std.debug.assert(harness.isType(true_value, repr.Tag.boolean));
+    std.debug.assert(wrap.toBoolean(true_value));
 
     std.debug.assert(harness.symbolIs(parser_core.parserProduce(&parser), "symbol"));
 }

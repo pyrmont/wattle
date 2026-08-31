@@ -10,11 +10,10 @@
 //! not be worked around at the call site at all: naming `c.stderr` is a compile
 //! error there whatever is done with the result.
 //!
-//! All three of those are facts about the *translation*, not about the symbols.
-//! Underneath the macro every one of these libcs has an ordinary extern object
-//! or function, and Phase 10's rule 3 is the one that applies — a host
-//! structure stays in C only when translate-c cannot give it to us, and the
-//! answer here is to stop asking translate-c and name the symbol.
+//! All three of those are facts about the *translation*, not about the
+//! symbols. Underneath the macro every one of these libcs has an ordinary
+//! extern object or function, so the answer is to stop asking `translate-c`
+//! and name the symbol.
 //!
 //! | platform | what the macro expands to |
 //! | --- | --- |

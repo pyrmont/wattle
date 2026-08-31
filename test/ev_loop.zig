@@ -20,9 +20,9 @@
 //!  - **`janet_ev_default_threaded_callback`'s nine tags.** `ev/thread` uses
 //!    two of them.
 //!  - **The abis.** `janet_channel_give`, `janet_marshal` and their kin are
-//!    `janet.h`'s, and what an embedder sees when one refuses is a report
-//!    rather than an error. `harness.abiRaised` is the instrument for that
-//!    half and `harness.raised` for the other -- rule 15.
+//!    published, and what an embedder sees when one refuses is a report rather
+//!    than an error. `harness.abiRaised` is the instrument for that half and
+//!    `harness.raised` for the other.
 //!
 //! ## What it deliberately does not do
 //!
@@ -33,42 +33,39 @@
 //! ordering decisions, and the self-pipe round trip, which one turn of the
 //! loop performs without entering the backend at all.
 //!
-//! ## What the migration changed
+//! ## Why a contract inside the compilation matters here
 //!
-//! **This is the last `test/*.c`, and four of the five things it needed from
-//! `test/support.zig` were the reason that file existed.**
+//! Four of the five things a C contract needed from an adapter object were the
+//! reason that object existed:
 //!
-//!  - `janet_contract_protect` opened a protected scope so that a C body could
-//!    raise into it. `harness.raised` is that, and the section that used to
-//!    test the shim now tests `harness.raised` itself -- see below.
-//!  - `janet_contract_at_get`, `janet_contract_at_next` and
-//!    `janet_contract_at_tostring` called an abstract type's raising callbacks
-//!    on C's behalf. `janet_stream_type` is an `abstract_type.AbstractType`
-//!    here, so the callbacks are called and the error is handled.
-//!  - `janet_contract_cfunction` adapted a C cfunction into one the runtime
-//!    could call. A cfunction written in Zig needs no adapter; `raise.stored`
-//!    is the cast that puts one in a `JanetMethod` row or a `janet_def`.
+//!  - a protected scope so that a C body could raise into it. `harness.raised`
+//!    is that, and the section below tests it directly.
+//!  - three shims that called an abstract type's raising callbacks on C's
+//!    behalf. `janet_stream_type` is an `abstract_type.AbstractType` here, so
+//!    the callbacks are called and the error is handled.
+//!  - an adapter that turned a C cfunction into one the runtime could call. A
+//!    cfunction written in Zig needs no adapter; `raise.stored` is the cast
+//!    that puts one in a `JanetMethod` row or a `janet_def`.
 //!
-//! **The section that tested the shim now tests the harness.** `test_protect_
-//! scope` in the C original had `janet_contract_protect` as its subject, which
-//! was test-only code. Deleting it outright would drop the only direct check
-//! of the mechanism sixty-three contracts rest on, so what is kept is the
-//! same three claims pointed at `harness.raised`: a returning call answers
-//! null, a raising call answers the signal and the payload, and the scopes
-//! nest.
+//! **The section that tested the shim tests the harness instead.** Deleting it
+//! outright would drop the only direct check of the mechanism sixty-three
+//! contracts rest on, so the same three claims point at `harness.raised`: a
+//! returning call answers null, a raising call answers the signal and the
+//! payload, and the scopes nest.
 //!
-//! **The Windows arm compiles now, and did not before.** `zig build
+//! **The Windows arm compiles, and its predecessor did not.** `zig build
 //! -Dtarget=x86_64-windows-gnu -Dinstall-tests=true` failed on three
-//! `INVALID_HANDLE_VALUE`s in `test/ev_loop.c`, and nothing standing caught it
-//! because `build.zig` installs the C driver only under `-Dinstall-tests` and
-//! the matrix's four cross-compile entries do not pass it. The Zig driver is
-//! installed unconditionally, so those four entries compile this file --
+//! `INVALID_HANDLE_VALUE`s, and nothing caught it because the driver that held
+//! them was installed only under `-Dinstall-tests` and the matrix's
+//! cross-compile entries do not pass it. This driver is installed
+//! unconditionally, so those entries compile this file --
 //! `phase_11.md` said this was a gap that closes itself, and this is it
 //! closing.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const raise = @import("raise");
@@ -107,25 +104,22 @@ const windows = builtin.os.tag == .windows;
 /// raises ENOENT on Linux and is silently ignored on macOS.
 ///
 /// `FOUND.md` has the entry. It is quarantined here rather than fixed, because
-/// the divergence is inherited from upstream's `ev.c` and a gate is not where a
-/// behavioural change to the event loop belongs -- rule 11's instruction to
-/// assert the part that is common and quarantine the rest.
+/// the divergence is inherited from Janet and a gate is not where a
+/// behavioural change to the event loop belongs: assert the part that is
+/// common and quarantine the rest.
 const unregister_of_an_unregistered_handle_is_quiet = builtin.os.tag != .linux;
 
 /// `INVALID_HANDLE_VALUE`, written out rather than imported.
 ///
-/// `ev_stream.zig` has the same two lines privately. This is the value half of
-/// rule 46: the constant is the *host's*, so a contract that imported the
-/// subject's copy could not notice the subject having the wrong one. It is
-/// also what `test/ev_loop.c` could not spell portably -- the C original
-/// reached for `INVALID_HANDLE_VALUE`, which is why that file never
-/// cross-compiled to Windows.
+/// `ev/stream.zig` has the same two lines privately, and that is deliberate:
+/// the constant is the *host's*, so a contract that imported the subject's
+/// copy could not notice the subject having the wrong one.
 fn invalidHandle() types.JanetHandle {
     return if (windows) @ptrFromInt(std.math.maxInt(usize)) else -1;
 }
 
-fn payloadIs(payload: types.Janet, text: []const u8) bool {
-    if (!harness.isType(payload, constants.JANET_STRING)) return false;
+fn payloadIs(payload: repr.Value, text: []const u8) bool {
+    if (!harness.isType(payload, repr.Tag.string)) return false;
     const s = wrap.toString(payload);
     const length: usize = @intCast(types.stringHead(s).length);
     return std.mem.eql(u8, s[0..length], text);
@@ -134,7 +128,7 @@ fn payloadIs(payload: types.Janet, text: []const u8) bool {
 /// One Janet source string, evaluated for its value. Every use here builds
 /// fibers and channels the C sections then drive by hand, so a failure to
 /// compile is a broken contract rather than a tested refusal.
-fn doString(source: [*:0]const u8) types.Janet {
+fn doString(source: [*:0]const u8) repr.Value {
     var out = wrap.fromNil();
     if (core_env.dostring(harness.coreEnv(), source, "ev_loop", &out) != 0) {
         std.debug.print("ev_loop: {s}\n", .{pp_describe.toString(out)});
@@ -165,12 +159,12 @@ fn theProtectedScope() void {
 
     // The raising arm answers the signal and the payload.
     const r = harness.raised(raisesContractPanic, .{}).?;
-    assert(r.signal == constants.JANET_SIGNAL_ERROR);
+    assert(r.signal == types.Signal.@"error");
     assert(r.says("contract panic"));
 
     // Scopes nest, and the inner one does not swallow the outer's state. This
     // is the claim that is about the scope rather than about the call: an
-    // inner `janet_try_init` moves `janet_vm.return_reg` and `janet_restore`
+    // inner `janet_try_init` moves `vm.return_reg` and `janet_restore`
     // has to put back what was there, not null.
     const outer = harness.raised(struct {
         fn body() raise.Raising(void) {
@@ -197,7 +191,7 @@ fn theEmbedderChannelApi() void {
     // read, so a second take behaves the same as the first.
     var out = value.fromBytes("untouched", .keyword);
     assert(!try_(channel.channelTake(chan, &out)));
-    assert(harness.isType(out, constants.JANET_KEYWORD));
+    assert(harness.isType(out, repr.Tag.keyword));
     assert(!try_(channel.channelTake(chan, &out)));
 
     // Two gives fit under the limit and report "do not block".
@@ -245,16 +239,16 @@ fn theClosedChannel() void {
     const chanv = doString("(def c (ev/chan 4)) (ev/chan-close c) c");
     gc_alloc.gcroot(chanv);
     defer _ = gc_alloc.gcunroot(chanv);
-    var argv = [_]types.Janet{chanv};
+    var argv = [_]repr.Value{chanv};
     const chan = try_(channel.getChannel(&argv, 0)).?;
 
     // Taking from a closed channel succeeds and yields nil.
     var out = harness.wrapInteger(99);
     assert(try_(channel.channelTake(chan, &out)));
-    assert(harness.isType(out, constants.JANET_NIL));
+    assert(harness.isType(out, repr.Tag.nil));
 
     const abi = harness.abiRaised(c.janet_channel_give, .{ chan, harness.wrapInteger(1) }).?;
-    assert(abi.signal == constants.JANET_SIGNAL_ERROR);
+    assert(abi.signal == types.Signal.@"error");
     assert(abi.says("cannot write to closed channel"));
 
     const imported = harness.raised(channel.channelGive, .{ chan, harness.wrapInteger(1) }).?;
@@ -266,23 +260,24 @@ fn theChannelGetters() void {
     gc_alloc.gcroot(chanv);
     defer _ = gc_alloc.gcunroot(chanv);
 
-    var argv = [_]types.Janet{ chanv, wrap.fromNil() };
+    var argv = [_]repr.Value{ chanv, wrap.fromNil() };
     const chan = try_(channel.getChannel(&argv, 0)).?;
     assert(try_(channel.getChannel(&argv, 0)) == chan);
 
-    // `optchannel` takes the default for a missing argument and for nil, and
-    // the channel for anything else. It is an abi and has no raising twin:
-    // `janet.h` declares it and the runtime never calls it.
-    assert(ev_channel.optchannel(&argv, 1, 1, null) == null);
-    assert(ev_channel.optchannel(&argv, 2, 1, null) == null);
-    assert(ev_channel.optchannel(&argv, 2, 0, null) == chan);
+    // `optChannel` takes the default for a missing argument and for nil, and
+    // the channel for anything else. The count travels in the slice: the abi
+    // that took `(argv, argc, n)` is `capi.zig`'s `janet_optchannel`, and what
+    // is left here reads `argv.len`.
+    assert(try_(ev_channel.optChannel(argv[0..1], 1, null)) == null);
+    assert(try_(ev_channel.optChannel(argv[0..2], 1, null)) == null);
+    assert(try_(ev_channel.optChannel(argv[0..2], 0, null)) == chan);
 }
 
 // ==========================================================================
 // Streams
 // ==========================================================================
 
-fn probeMethod(argv: []types.Janet) raise.Raising(types.Janet) {
+fn probeMethod(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return value.fromBytes("probe", .keyword);
@@ -334,20 +329,20 @@ fn theStreamExtension() void {
     // The abstract carries the type this file imports rather than some other
     // registration of the same name. Asserted through `janet_abstract_type`,
     // whose answer is a run-time value: two declarations compared at comptime
-    // are never equal whatever the linker did -- rule 38.
-    assert(types.abstractHead(ps).type == abstract_type.stored(&stream.streamType));
+    // are never equal whatever the linker did.
+    assert(types.abstractHead(ps).type == &stream.streamType);
 
     // The getter reaches the caller's table rather than the default one.
     const at = &stream.streamType;
     var found = wrap.fromNil();
     var out = wrap.fromNil();
     assert(try_(at.get.?(ps, value.fromBytes("probe", .keyword), &found)) == 1);
-    assert(harness.isType(found, constants.JANET_CFUNCTION));
+    assert(harness.isType(found, repr.Tag.cfunction));
     assert(try_(at.get.?(ps, value.fromBytes("close", .keyword), &out)) == 0);
 
     // `next` walks the same table.
     assert(harness.keywordIs(try_(at.next.?(ps, wrap.fromNil())), "probe"));
-    assert(harness.isType(try_(at.next.?(ps, value.fromBytes("probe", .keyword))), constants.JANET_NIL));
+    assert(harness.isType(try_(at.next.?(ps, value.fromBytes("probe", .keyword))), repr.Tag.nil));
 
     assert(ps.marker == 0x0123456789ABCDEF);
     try_(stream.streamClose(s));
@@ -366,15 +361,15 @@ fn theDefaultMethods() void {
 
     // A null method table means the four default stream methods.
     //
-    // Named through the core bindings rather than as symbols. Phase 10 Part
-    // 17g removed `janet_cfun_stream_close` and its three neighbours from
-    // `janet.h`, and a cfunction is no longer a C function -- so what is
+    // Named through the core bindings rather than as symbols: a cfunction is
+    // not a C function, so what is asserted is that the method table and the
+    // `ev/` binding are the same
     // asserted is that the method table and the `ev/` binding are the same
     // function, which is slightly stronger than comparing addresses would be.
     var out = wrap.fromNil();
     inline for (.{ "close", "read", "chunk", "write" }) |name| {
         assert(try_(at.get.?(s, value.fromBytes(name, .keyword), &out)) == 1);
-        assert(harness.isType(out, constants.JANET_CFUNCTION));
+        assert(harness.isType(out, repr.Tag.cfunction));
         assert(wrap.toCfunction(out) ==
             wrap.toCfunction(registry.resolveCore("ev/" ++ name)));
     }
@@ -396,7 +391,7 @@ fn theStreamRendering() void {
         if (windows) @as(i32, @intCast(@intFromPtr(handles[0]))) else handles[0],
     }) catch unreachable;
     assert(buffer.*.count == @as(i32, @intCast(text.len)));
-    assert(std.mem.eql(u8, buffer.*.data.?[0..text.len], text));
+    assert(std.mem.eql(u8, buffer.*.slice()[0..text.len], text));
 
     try_(stream.streamClose(s));
     closeFarEnd(handles);
@@ -462,7 +457,7 @@ fn theNotCloseableStream() void {
 // ==========================================================================
 
 /// The flag values are `std`'s rather than the subject's, which has its own
-/// four constants ten lines from `makePipe`. Rule 46 again: importing them
+/// four constants ten lines from `makePipe`. Importing them
 /// would make this compare the subject with itself, and the question here is
 /// whether the descriptor the *host* handed back carries the flag.
 const fd_cloexec: c_int = std.c.FD_CLOEXEC;
@@ -516,7 +511,7 @@ fn theLastError() void {
     std.c._errno().* = @intFromEnum(std.posix.E.BADF);
     const first = stream.evLasterr();
     const second = stream.evLasterr();
-    assert(harness.isType(first, constants.JANET_STRING));
+    assert(harness.isType(first, repr.Tag.string));
     assert(order.equals(first, second) != 0);
     std.c._errno().* = @intFromEnum(std.posix.E.INVAL);
     assert(order.equals(first, stream.evLasterr()) == 0);
@@ -545,7 +540,7 @@ fn theLoopExitCondition() void {
 const PostRecord = struct {
     calls: u32 = 0,
     tag: i32 = 0,
-    value: types.Janet = undefined,
+    value: repr.Value = undefined,
 };
 
 var post_record: PostRecord = .{};
@@ -647,12 +642,12 @@ fn theOrderedTimeouts() void {
         \\(ev/sleep 0.06)
         \\log
     );
-    assert(harness.isType(out, constants.JANET_ARRAY));
+    assert(harness.isType(out, repr.Tag.array));
     const log = wrap.toArray(out);
     assert(log.*.count == 3);
-    assert(harness.keywordIs(log.*.data.?[0], "a"));
-    assert(harness.keywordIs(log.*.data.?[1], "b"));
-    assert(harness.keywordIs(log.*.data.?[2], "c"));
+    assert(harness.keywordIs(log.*.slice()[0], "a"));
+    assert(harness.keywordIs(log.*.slice()[1], "b"));
+    assert(harness.keywordIs(log.*.slice()[2], "c"));
 }
 
 /// `janet_addtimeout` and `janet_addtimeout_nil` differ in one field of the
@@ -660,15 +655,15 @@ fn theOrderedTimeouts() void {
 /// fiber and an expired nil timeout resumes it with nil.
 ///
 /// Neither can be called from here directly -- both read
-/// `janet_vm.root_fiber`, which is only set while the loop is running a task
+/// `vm.root_fiber`, which is only set while the loop is running a task
 /// -- and `janet_addtimeout_nil` has **no Janet caller at all**: `ev/read`'s
 /// optional timeout uses the error one, and only the socket layer uses the
 /// other. So the contract lends the core environment a cfunction of its own
 /// and drives it from a task, which is the only way to reach the pair.
-fn cfunAddTimeout(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunAddTimeout(argv: []repr.Value) raise.Raising(repr.Value) {
     try subsystems.args.fixarity(argv, 2);
     const sec = try subsystems.args.getNumber(argv, 0);
-    if (try subsystems.args.getBoolean(argv, 1) != 0) {
+    if (try subsystems.args.getBoolean(argv, 1)) {
         ev.addtimeout(sec);
     } else {
         ev.addtimeoutNil(sec);
@@ -700,16 +695,16 @@ fn theTwoTimeoutConstructors() void {
     const results = wrap.toArray(out);
     assert(results.*.count == 2);
     for (0..@intCast(results.*.count)) |i| {
-        const row = wrap.toTuple(results.*.data.?[i]);
+        const row = wrap.toTuple(results.*.slice()[i]);
         if (harness.keywordIs(row[0], "nil")) {
             // `addtimeout_nil` resumes with nil rather than raising.
-            assert(harness.isType(row[1], constants.JANET_NIL));
+            assert(harness.isType(row[1], repr.Tag.nil));
         } else {
             // `addtimeout` cancels the fiber, so `protect` reports a failure
             // carrying the message the loop supplies.
             const pair = wrap.toTuple(row[1]);
-            assert(harness.isType(pair[0], constants.JANET_BOOLEAN));
-            assert(wrap.toBoolean(pair[0]) == 0);
+            assert(harness.isType(pair[0], repr.Tag.boolean));
+            assert(!wrap.toBoolean(pair[0]));
             assert(payloadIs(pair[1], "timeout"));
         }
     }
@@ -754,12 +749,12 @@ fn theCancelOfANonTask() void {
     // stderr, and the fiber's last value is what the cancel carried.
     var event = wrap.fromNil();
     assert(try_(channel.channelTake(sup, &event)));
-    assert(harness.isType(event, constants.JANET_TUPLE));
+    assert(harness.isType(event, repr.Tag.tuple));
     const tup = wrap.toTuple(event);
     assert(types.tupleHead(tup).length == 3);
     assert(harness.keywordIs(tup[0], "error"));
     assert(wrap.toFiber(tup[1]) == fiber);
-    assert(harness.isType(tup[2], constants.JANET_NIL));
+    assert(harness.isType(tup[2], repr.Tag.nil));
     assert(payloadIs(fiber.*.last_value, "nope"));
     // One event, not two: the first schedule was superseded by the cancel.
     assert(!try_(channel.channelTake(sup, &event)));
@@ -780,12 +775,12 @@ fn theScheduleSoonOrder() void {
     const log = wrap.toArray(tup[0]);
 
     ev.schedule(wrap.toFiber(tup[1]), wrap.fromNil());
-    ev.scheduleSoon(wrap.toFiber(tup[2]), wrap.fromNil(), ev.sig_ok);
+    ev.scheduleSoon(wrap.toFiber(tup[2]), wrap.fromNil(), types.Signal.ok);
     raise.reported(ev_mod.loop());
 
     assert(log.*.count == 2);
-    assert(harness.keywordIs(log.*.data.?[0], "b"));
-    assert(harness.keywordIs(log.*.data.?[1], "a"));
+    assert(harness.keywordIs(log.*.slice()[0], "b"));
+    assert(harness.keywordIs(log.*.slice()[1], "a"));
 }
 
 fn theScheduleSignalOrder() void {
@@ -802,13 +797,13 @@ fn theScheduleSignalOrder() void {
 
     // `janet_schedule_signal` appends where `janet_schedule_soon` prepends,
     // and nothing in Janet chooses between the two.
-    ev.scheduleSignal(wrap.toFiber(tup[1]), wrap.fromNil(), ev.sig_ok);
-    ev.scheduleSoon(wrap.toFiber(tup[2]), wrap.fromNil(), ev.sig_ok);
+    ev.scheduleSignal(wrap.toFiber(tup[1]), wrap.fromNil(), types.Signal.ok);
+    ev.scheduleSoon(wrap.toFiber(tup[2]), wrap.fromNil(), types.Signal.ok);
     raise.reported(ev_mod.loop());
 
     assert(log.*.count == 2);
-    assert(harness.keywordIs(log.*.data.?[0], "b"));
-    assert(harness.keywordIs(log.*.data.?[1], "a"));
+    assert(harness.keywordIs(log.*.slice()[0], "b"));
+    assert(harness.keywordIs(log.*.slice()[1], "a"));
 }
 
 /// `theScheduleSignalOrder` pairs an append with a prepend, which cannot tell
@@ -828,14 +823,14 @@ fn theScheduleSignalIsFifo() void {
     const log = wrap.toArray(tup[0]);
 
     for (1..4) |i| {
-        ev.scheduleSignal(wrap.toFiber(tup[@intCast(i)]), wrap.fromNil(), ev.sig_ok);
+        ev.scheduleSignal(wrap.toFiber(tup[@intCast(i)]), wrap.fromNil(), types.Signal.ok);
     }
     raise.reported(ev_mod.loop());
 
     assert(log.*.count == 3);
-    assert(harness.keywordIs(log.*.data.?[0], "a"));
-    assert(harness.keywordIs(log.*.data.?[1], "b"));
-    assert(harness.keywordIs(log.*.data.?[2], "c"));
+    assert(harness.keywordIs(log.*.slice()[0], "a"));
+    assert(harness.keywordIs(log.*.slice()[1], "b"));
+    assert(harness.keywordIs(log.*.slice()[2], "c"));
 }
 
 /// `cancel` appends too, and nothing above distinguishes that from prepending.
@@ -871,7 +866,7 @@ fn theCancelAppends() void {
     // The task queued before the cancel runs first: the cancel appended.
     assert(harness.keywordIs(first, "a"));
     // And b ran once, as an error, rather than twice or as a sleep.
-    assert(harness.isType(second, constants.JANET_TUPLE));
+    assert(harness.isType(second, repr.Tag.tuple));
     assert(harness.keywordIs(wrap.toTuple(second)[0], "error"));
     assert(!try_(channel.channelTake(chan, &first)));
 }
@@ -967,7 +962,7 @@ fn theStreamMarshalling() void {
 
 /// `janet_ev_mark` walks the spawn queue and marks each task's *value* as well
 /// as its fiber. The fiber is redundant -- scheduling also puts it in
-/// `janet_vm.active_tasks`, which is a root -- but the resume value is not held
+/// `vm.ev.active_tasks`, which is a root -- but the resume value is not held
 /// anywhere else, so the queue's walk is the only thing keeping it alive.
 ///
 /// Reaching that needs a value with no other reference, which `ev/go` cannot
@@ -1063,17 +1058,17 @@ fn theThreadedFlag() void {
 
     assert(!try_(channel.channelGive(plain, originalv)));
     assert(try_(channel.channelTake(plain, &item)));
-    assert(harness.isType(item, constants.JANET_BUFFER));
+    assert(harness.isType(item, repr.Tag.buffer));
     assert(wrap.toBuffer(item) == original);
 
     assert(!try_(channel.channelGive(threaded, originalv)));
     assert(try_(channel.channelTake(threaded, &item)));
-    assert(harness.isType(item, constants.JANET_BUFFER));
+    assert(harness.isType(item, repr.Tag.buffer));
     const copy = wrap.toBuffer(item);
     assert(copy != original);
     assert(copy.*.count == original.*.count);
     const length: usize = @intCast(original.*.count);
-    assert(std.mem.eql(u8, copy.*.data.?[0..length], original.*.data.?[0..length]));
+    assert(std.mem.eql(u8, copy.*.slice()[0..length], original.*.slice()[0..length]));
 }
 
 /// `janet_optchannel` takes its default when the argument is absent or nil, and
@@ -1084,17 +1079,45 @@ fn theOptChannelBoundary() void {
     gc_alloc.gcroot(chanv);
     defer _ = gc_alloc.gcunroot(chanv);
 
-    var argv = [_]types.Janet{ chanv, wrap.fromNil() };
+    var argv = [_]repr.Value{ chanv, wrap.fromNil() };
     const chan = try_(channel.getChannel(&argv, 0)).?;
 
     // A channel is there and the count says so.
-    assert(ev_channel.optchannel(&argv, 1, 0, null) == chan);
+    assert(try_(ev_channel.optChannel(argv[0..1], 0, null)) == chan);
     // A channel is there and the count says it is not: the default wins, and
-    // the value at that index is never looked at.
-    assert(ev_channel.optchannel(&argv, 0, 0, null) == null);
-    assert(ev_channel.optchannel(&argv, 0, 0, chan) == chan);
+    // the value at that index is never looked at. An empty slice is the count
+    // saying zero, which a sentinel table cannot express and a slice can.
+    assert(try_(ev_channel.optChannel(argv[0..0], 0, null)) == null);
+    assert(try_(ev_channel.optChannel(argv[0..0], 0, chan)) == chan);
     // Present but nil: the default wins.
-    assert(ev_channel.optchannel(&argv, 2, 1, null) == null);
+    assert(try_(ev_channel.optChannel(argv[0..2], 1, null)) == null);
+}
+
+/// `janet_getchannel`, reached the way a C caller reaches it.
+///
+/// A raising result reported to a foreign caller. The entry point converts
+/// twice: `(argv, n)` becomes the slice
+/// `argv[0..n + 1]` that `getChannel` wants, and a refusal becomes a report
+/// rather than an error union. Both conversions are invisible from the Zig
+/// side, so the subject here is the exported symbol.
+extern fn janet_getchannel(argv: [*]const repr.Value, n: i32) callconv(.c) ?*types.JanetChannel;
+
+fn theGetChannelAbiConvertsBothWays() void {
+    const chanv = doString("(ev/chan 1)");
+    gc_alloc.gcroot(chanv);
+    defer _ = gc_alloc.gcunroot(chanv);
+
+    var argv = [_]repr.Value{ chanv, wrap.fromNil() };
+    const chan = try_(channel.getChannel(&argv, 0)).?;
+
+    // The abi builds the slice from the index it is given, so index 0 has to
+    // reach the same channel the Zig call does.
+    assert(janet_getchannel(&argv, 0) == chan);
+
+    // A nil at index 1 is not a channel: the abi reports rather than returning
+    // an error, and the report is what `harness.abiRaised` collects.
+    const refusal = harness.abiRaised(janet_getchannel, .{ @as([*]const repr.Value, &argv), @as(i32, 1) }).?;
+    assert(refusal.signal == types.Signal.@"error");
 }
 
 pub fn run() void {
@@ -1136,6 +1159,7 @@ pub fn run() void {
     theCancelAppends();
     theThreadedFlag();
     theOptChannelBoundary();
+    theGetChannelAbiConvertsBothWays();
 
     std.debug.print("ev_loop contract ok\n", .{});
 }

@@ -23,13 +23,12 @@
 //!
 //! ## Where the head-layout assertion went
 //!
-//! The C original opened with `sizeof(JanetStructHead) ==
-//! offsetof(JanetStructHead, data)`. `@cImport` drops a flexible array member,
-//! so `@offsetOf` does not compile and `c.janet_struct_head` recovers the
-//! header with `@sizeOf` -- a translation would compare `@sizeOf` with itself.
-//! Phase 11 Part 8 built both replacements: `test/abi.c` keeps the static
-//! assertion, because the claim is about `janet.h`, and `test/gc_mark.zig`'s
-//! `theHeadOffsets` derives the struct head's offset from the allocator.
+//! A C contract can open with `sizeof(JanetStructHead) ==
+//! offsetof(JanetStructHead, data)`. A translated head drops its flexible
+//! array member, so `@offsetOf` does not compile and the header is recovered
+//! with `@sizeOf` -- which would compare `@sizeOf` with itself.
+//! `test/gc_mark.zig`'s `theHeadOffsets` derives the struct head's offset from
+//! the allocator instead.
 //!
 //! ## Three things deliberately not covered
 //!
@@ -44,8 +43,7 @@
 const std = @import("std");
 const config = @import("config");
 const types = @import("types");
-const constants = @import("constants");
-const c = @import("cabi");
+const repr = @import("repr");
 const value = @import("subsystems").value;
 const harness = @import("harness.zig");
 const structs = @import("subsystems").value.structs;
@@ -53,7 +51,6 @@ const tables = @import("subsystems").value.tables;
 const strings = @import("subsystems").value.strings;
 const order = @import("subsystems").value.order;
 const core_env = @import("subsystems").env;
-const kind = @import("subsystems").value.kind;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 
@@ -82,14 +79,14 @@ fn setStructProto(st: [*]types.JanetKV, proto: ?[*]const types.JanetKV) void {
     types.structHead(st).proto = proto;
 }
 
-fn kw(name: [*:0]const u8) types.Janet {
+fn kw(name: [*:0]const u8) repr.Value {
     return value.fromBytes(std.mem.span(name), .keyword);
 }
 
 /// The bucket a key would like to occupy. Spelled out rather than reusing
 /// `janet_maphash`, so that a change to that macro shows up as a failure
 /// rather than being tracked silently.
-fn idealIndex(capacity: i32, key: types.Janet) i32 {
+fn idealIndex(capacity: i32, key: repr.Value) i32 {
     const hash: u32 = @bitCast(order.hash(key));
     const mask: u32 = @bitCast(capacity - 1);
     return @bitCast(hash & mask);
@@ -102,7 +99,7 @@ fn idealIndex(capacity: i32, key: types.Janet) i32 {
 /// different subsystem and changes outright under `-Dprf`, so a fixed pair of
 /// colliding keys would silently stop colliding and every case built on it
 /// would keep passing while testing nothing.
-fn findColliding(capacity: i32, out: []types.Janet) i32 {
+fn findColliding(capacity: i32, out: []repr.Value) i32 {
     var target: i32 = 0;
     while (target < capacity) : (target += 1) {
         var found: usize = 0;
@@ -123,7 +120,7 @@ fn findColliding(capacity: i32, out: []types.Janet) i32 {
 /// *different*, which is the opposite need and has the same reason: so that a
 /// case about accumulating tombstones is not quietly turned into a case about
 /// reusing one.
-fn findDistinctIndices(capacity: i32, out: []types.Janet) void {
+fn findDistinctIndices(capacity: i32, out: []repr.Value) void {
     var used: [64]i32 = undefined;
     var found: usize = 0;
     std.debug.assert(out.len <= capacity and capacity <= 64);
@@ -157,8 +154,8 @@ fn findDistinctIndices(capacity: i32, out: []types.Janet) void {
 fn sameLayout(a: [*]const types.JanetKV, b: [*]const types.JanetKV, capacity: i32) bool {
     var i: usize = 0;
     while (i < capacity) : (i += 1) {
-        if (kind.typeOf(a[i].key) != kind.typeOf(b[i].key)) return false;
-        if (kind.typeOf(a[i].value) != kind.typeOf(b[i].value)) return false;
+        if (repr.typeOf(a[i].key) != repr.typeOf(b[i].key)) return false;
+        if (repr.typeOf(a[i].value) != repr.typeOf(b[i].value)) return false;
         if (!harness.equals(a[i].key, b[i].key)) return false;
         if (!harness.equals(a[i].value, b[i].value)) return false;
     }
@@ -189,12 +186,12 @@ fn structBeginInitialisesTheHead() void {
     std.debug.assert(structProto(st) == null);
     var i: usize = 0;
     while (i < structCapacity(st)) : (i += 1) {
-        std.debug.assert(harness.isType(st[i].key, constants.JANET_NIL));
-        std.debug.assert(harness.isType(st[i].value, constants.JANET_NIL));
+        std.debug.assert(harness.isType(st[i].key, repr.Tag.nil));
+        std.debug.assert(harness.isType(st[i].value, repr.Tag.nil));
     }
-    std.debug.assert(heap.memoryType(types.structHead(st)) == constants.JANET_MEMORY_STRUCT);
-    std.debug.assert(heap.onList(c.vm().blocks, types.structHead(st)));
-    std.debug.assert(!heap.onList(c.vm().weak_blocks, types.structHead(st)));
+    std.debug.assert(heap.memoryType(types.structHead(st)) == types.MemoryType.@"struct");
+    std.debug.assert(heap.onList(harness.vm().gc.blocks, types.structHead(st)));
+    std.debug.assert(!heap.onList(harness.vm().gc.weak_blocks, types.structHead(st)));
 }
 
 // ------------------------------------------------------- struct: insertion
@@ -205,7 +202,7 @@ fn structBeginInitialisesTheHead() void {
 /// first. Compared over the entire array rather than pair by pair, so that a
 /// difference in *position* fails as loudly as a difference in contents.
 fn structLayoutIsOrderIndependent() void {
-    var keys: [6]types.Janet = undefined;
+    var keys: [6]repr.Value = undefined;
     for (&keys, 0..) |*key, i| key.* = harness.wrapInteger(@intCast(i * 37 + 11));
 
     const a = structs.begin(6);
@@ -245,7 +242,7 @@ fn structLayoutIsOrderIndependent() void {
 fn structCollisionRunIsOrderedByHash() void {
     const st = structs.begin(3);
     const capacity = structCapacity(st);
-    var keys: [3]types.Janet = undefined;
+    var keys: [3]repr.Value = undefined;
     const index = findColliding(capacity, &keys);
 
     for (keys, 0..) |key, i| structs.put(st, key, harness.wrapInteger(@intCast(i)));
@@ -255,7 +252,7 @@ fn structCollisionRunIsOrderedByHash() void {
     var n: i32 = 0;
     while (n < 3) : (n += 1) {
         const kv = &s[@intCast(@mod(index + n, capacity))];
-        std.debug.assert(!harness.isType(kv.key, constants.JANET_NIL));
+        std.debug.assert(!harness.isType(kv.key, repr.Tag.nil));
         const hash = order.hash(kv.key);
         if (n > 0) std.debug.assert(hash < previous);
         previous = hash;
@@ -338,7 +335,7 @@ fn structPutDropsTheSurplus() void {
     const s = structs.end(st);
     std.debug.assert(structLength(s) == 1);
     std.debug.assert(harness.equals(structs.rawget(s, kw("a")), harness.wrapInteger(1)));
-    std.debug.assert(harness.isType(structs.rawget(s, kw("b")), constants.JANET_NIL));
+    std.debug.assert(harness.isType(structs.rawget(s, kw("b")), repr.Tag.nil));
 }
 
 /// `replace` is what separates `janet_struct_put` from the flattening path:
@@ -434,8 +431,8 @@ fn structFindReturnsAnEmptyBucketForAnAbsentKey() void {
 
     const miss = structs.find(s, kw("zz"));
     std.debug.assert(miss != null);
-    std.debug.assert(harness.isType(miss.?.key, constants.JANET_NIL));
-    std.debug.assert(harness.isType(structs.rawget(s, kw("zz")), constants.JANET_NIL));
+    std.debug.assert(harness.isType(miss.?.key, repr.Tag.nil));
+    std.debug.assert(harness.isType(structs.rawget(s, kw("zz")), repr.Tag.nil));
 }
 
 /// Build a chain `depth` deep and return the deepest struct. Entry `i` holds
@@ -469,12 +466,12 @@ fn structGetBoundsThePrototypeChain() void {
     ));
     std.debug.assert(harness.isType(
         structs.get(deep, harness.wrapInteger(last - 1)),
-        constants.JANET_NIL,
+        repr.Tag.nil,
     ));
     // rawget never leaves the head at all.
     std.debug.assert(harness.isType(
         structs.rawget(deep, harness.wrapInteger(top - 1)),
-        constants.JANET_NIL,
+        repr.Tag.nil,
     ));
 }
 
@@ -525,7 +522,7 @@ fn structToTable() void {
     std.debug.assert(harness.equals(tables.rawget(t, kw("b")), harness.wrapInteger(2)));
     // The prototype is not carried; `struct/to-table` rebuilds it itself.
     std.debug.assert(t.*.proto == null);
-    std.debug.assert(harness.isType(tables.get(t, kw("p")), constants.JANET_NIL));
+    std.debug.assert(harness.isType(tables.get(t, kw("p")), repr.Tag.nil));
 }
 
 // ------------------------------------------------------- table: allocation
@@ -556,14 +553,14 @@ fn tableCapacityRounding() void {
 fn tableConstructorMarksAndLists() void {
     const Case = struct {
         make: *const @TypeOf(tables.new),
-        memory: i32,
+        memory: types.MemoryType,
         weak: bool,
     };
     const cases = [_]Case{
-        .{ .make = &tables.new, .memory = constants.JANET_MEMORY_TABLE, .weak = false },
-        .{ .make = &tables.weakk, .memory = constants.JANET_MEMORY_TABLE_WEAKK, .weak = true },
-        .{ .make = &tables.weakv, .memory = constants.JANET_MEMORY_TABLE_WEAKV, .weak = true },
-        .{ .make = &tables.weakkv, .memory = constants.JANET_MEMORY_TABLE_WEAKKV, .weak = true },
+        .{ .make = &tables.new, .memory = types.MemoryType.table, .weak = false },
+        .{ .make = &tables.weakk, .memory = types.MemoryType.table_weakk, .weak = true },
+        .{ .make = &tables.weakv, .memory = types.MemoryType.table_weakv, .weak = true },
+        .{ .make = &tables.weakkv, .memory = types.MemoryType.table_weakkv, .weak = true },
     };
     for (cases) |case| {
         const t = case.make(4);
@@ -574,8 +571,8 @@ fn tableConstructorMarksAndLists() void {
         std.debug.assert(t.*.proto == null);
         // The memory type is what decides the heap list, and the two weak
         // variants of that decision are what the sweep depends on.
-        std.debug.assert(heap.onList(c.vm().weak_blocks, t) == case.weak);
-        std.debug.assert(heap.onList(c.vm().blocks, t) == !case.weak);
+        std.debug.assert(heap.onList(harness.vm().gc.weak_blocks, t) == case.weak);
+        std.debug.assert(heap.onList(harness.vm().gc.blocks, t) == !case.weak);
         // All four behave identically as dictionaries.
         tables.put(t, kw("a"), harness.wrapInteger(1));
         std.debug.assert(harness.equals(tables.rawget(t, kw("a")), harness.wrapInteger(1)));
@@ -656,18 +653,18 @@ fn removeLeavesATombstone() void {
     const t = tables.new(4);
     tables.put(t, kw("a"), harness.wrapInteger(1));
     const bucket = tables.find(t, kw("a"));
-    std.debug.assert(!harness.isType(bucket.?.key, constants.JANET_NIL));
+    std.debug.assert(!harness.isType(bucket.?.key, repr.Tag.nil));
 
     const gone = tables.remove(t, kw("a"));
     std.debug.assert(harness.equals(gone, harness.wrapInteger(1)));
     std.debug.assert(t.*.count == 0);
     std.debug.assert(t.*.deleted == 1);
-    std.debug.assert(harness.isType(bucket.?.key, constants.JANET_NIL));
-    std.debug.assert(harness.isType(bucket.?.value, constants.JANET_BOOLEAN));
-    std.debug.assert(kind.truthy(bucket.?.value) == 0);
+    std.debug.assert(harness.isType(bucket.?.key, repr.Tag.nil));
+    std.debug.assert(harness.isType(bucket.?.value, repr.Tag.boolean));
+    std.debug.assert(!repr.truthy(bucket.?.value));
 
     // Removing an absent key changes nothing.
-    std.debug.assert(harness.isType(tables.remove(t, kw("zz")), constants.JANET_NIL));
+    std.debug.assert(harness.isType(tables.remove(t, kw("zz")), repr.Tag.nil));
     std.debug.assert(t.*.count == 0);
     std.debug.assert(t.*.deleted == 1);
 }
@@ -677,7 +674,7 @@ fn removeLeavesATombstone() void {
 fn aTombstoneDoesNotTruncateAProbeRun() void {
     const t = tables.new(4);
     std.debug.assert(t.*.capacity == 8);
-    var keys: [2]types.Janet = undefined;
+    var keys: [2]repr.Value = undefined;
     const index = findColliding(t.*.capacity, &keys);
 
     tables.put(t, keys[0], harness.wrapInteger(10));
@@ -685,11 +682,11 @@ fn aTombstoneDoesNotTruncateAProbeRun() void {
     std.debug.assert(t.*.count == 2);
     std.debug.assert(t.*.capacity == 8);
     // The second key really did displace: it is not in its ideal bucket.
-    std.debug.assert(tables.find(t, keys[1]) != &t.*.data.?[@as(usize, @intCast(index))]);
+    std.debug.assert(tables.find(t, keys[1]) != &t.*.slots()[@as(usize, @intCast(index))]);
 
     _ = tables.remove(t, keys[0]);
     std.debug.assert(harness.equals(tables.rawget(t, keys[1]), harness.wrapInteger(20)));
-    std.debug.assert(harness.isType(tables.rawget(t, keys[0]), constants.JANET_NIL));
+    std.debug.assert(harness.isType(tables.rawget(t, keys[0]), repr.Tag.nil));
 }
 
 /// A rehash is the only thing that reclaims a tombstone.
@@ -712,8 +709,8 @@ fn tombstonesAreReclaimed() void {
     std.debug.assert(t.*.count == 1);
     std.debug.assert(t.*.deleted == 1);
     std.debug.assert(tables.find(t, kw("a")) != first);
-    std.debug.assert(harness.isType(first.?.key, constants.JANET_NIL));
-    std.debug.assert(harness.isType(first.?.value, constants.JANET_BOOLEAN));
+    std.debug.assert(harness.isType(first.?.key, repr.Tag.nil));
+    std.debug.assert(harness.isType(first.?.value, repr.Tag.boolean));
     std.debug.assert(harness.equals(tables.rawget(t, kw("a")), harness.wrapInteger(2)));
 
     // Otherwise a tombstone is reclaimed only by a rehash, and the rehash is
@@ -723,7 +720,7 @@ fn tombstonesAreReclaimed() void {
     // one. Capacity 8 trips at `count + deleted >= 4`.
     const churned = tables.new(4);
     std.debug.assert(churned.*.capacity == 8);
-    var keys: [5]types.Janet = undefined;
+    var keys: [5]repr.Value = undefined;
     findDistinctIndices(churned.*.capacity, &keys);
     for (keys[0..4], 0..) |key, i| {
         tables.put(churned, key, harness.wrapInteger(@intCast(i)));
@@ -766,7 +763,7 @@ fn tablePutNilRemoves() void {
     tables.put(t, kw("a"), wrap.fromNil());
     std.debug.assert(t.*.count == 0);
     std.debug.assert(t.*.deleted == 1);
-    std.debug.assert(harness.isType(tables.rawget(t, kw("a")), constants.JANET_NIL));
+    std.debug.assert(harness.isType(tables.rawget(t, kw("a")), repr.Tag.nil));
 
     // And a nil value for an absent key is not a removal of anything.
     tables.put(t, kw("zz"), wrap.fromNil());
@@ -809,11 +806,11 @@ fn tableGetBoundsThePrototypeChain() void {
     ));
     std.debug.assert(harness.isType(
         tables.get(deep.?, harness.wrapInteger(last - 1)),
-        constants.JANET_NIL,
+        repr.Tag.nil,
     ));
     std.debug.assert(harness.isType(
         tables.rawget(deep.?, harness.wrapInteger(top - 1)),
-        constants.JANET_NIL,
+        repr.Tag.nil,
     ));
 }
 
@@ -855,9 +852,9 @@ fn tableGetKeyword() void {
         internal.janet_table_get_keyword(t, "deep"),
         harness.wrapInteger(2),
     ));
-    std.debug.assert(harness.isType(internal.janet_table_get_keyword(t, "missing"), constants.JANET_NIL));
+    std.debug.assert(harness.isType(internal.janet_table_get_keyword(t, "missing"), repr.Tag.nil));
     // A prefix of a present key is not that key.
-    std.debug.assert(harness.isType(internal.janet_table_get_keyword(t, "hell"), constants.JANET_NIL));
+    std.debug.assert(harness.isType(internal.janet_table_get_keyword(t, "hell"), repr.Tag.nil));
 }
 
 // -------------------------------------------------------- table: wholesale
@@ -882,8 +879,8 @@ fn tableClear() void {
     std.debug.assert(t.*.proto == proto);
     var n: usize = 0;
     while (n < capacity) : (n += 1) {
-        std.debug.assert(harness.isType(data.?[n].key, constants.JANET_NIL));
-        std.debug.assert(harness.isType(data.?[n].value, constants.JANET_NIL));
+        std.debug.assert(harness.isType(data.?[n].key, repr.Tag.nil));
+        std.debug.assert(harness.isType(data.?[n].value, repr.Tag.nil));
     }
 }
 
@@ -906,12 +903,12 @@ fn tableCloneCopiesTheLayout() void {
     std.debug.assert(clone.*.deleted == t.*.deleted);
     // The prototype is shared, not cloned.
     std.debug.assert(clone.*.proto == proto);
-    std.debug.assert(heap.memoryType(clone) == constants.JANET_MEMORY_TABLE);
+    std.debug.assert(heap.memoryType(clone) == types.MemoryType.table);
     std.debug.assert(sameLayout(clone.*.data.?, t.*.data.?, t.*.capacity));
 
     // And the two are independent afterwards.
     tables.put(clone, kw("new"), harness.wrapInteger(9));
-    std.debug.assert(harness.isType(tables.rawget(t, kw("new")), constants.JANET_NIL));
+    std.debug.assert(harness.isType(tables.rawget(t, kw("new")), repr.Tag.nil));
 }
 
 /// Cloning a table with no bucket array. This is the `memcpy(dst, NULL, 0)`
@@ -927,7 +924,7 @@ fn tableCloneOfAnEmptyArray() void {
     std.debug.assert(clone.*.count == 0);
     std.debug.assert(clone.*.capacity == 0);
     std.debug.assert(clone.*.deleted == 0);
-    std.debug.assert(heap.memoryType(clone) == constants.JANET_MEMORY_TABLE);
+    std.debug.assert(heap.memoryType(clone) == types.MemoryType.table);
 }
 
 /// Merging takes the source's own pairs only. Its prototype is not consulted,
@@ -951,7 +948,7 @@ fn tableMerge() void {
         tables.rawget(destination, kw("b")),
         harness.wrapInteger(2),
     ));
-    std.debug.assert(harness.isType(tables.rawget(destination, kw("p")), constants.JANET_NIL));
+    std.debug.assert(harness.isType(tables.rawget(destination, kw("p")), repr.Tag.nil));
 
     const sp = structs.begin(1);
     structs.put(sp, kw("s"), harness.wrapInteger(5));
@@ -966,7 +963,7 @@ fn tableMerge() void {
         tables.rawget(destination, kw("c")),
         harness.wrapInteger(3),
     ));
-    std.debug.assert(harness.isType(tables.rawget(destination, kw("s")), constants.JANET_NIL));
+    std.debug.assert(harness.isType(tables.rawget(destination, kw("s")), repr.Tag.nil));
 }
 
 /// The struct is begun at the table's live count, so tombstones cost nothing.
@@ -988,7 +985,7 @@ fn tableToStructIgnoresTombstones() void {
     ));
     std.debug.assert(harness.isType(
         structs.rawget(s, harness.wrapInteger(2)),
-        constants.JANET_NIL,
+        repr.Tag.nil,
     ));
 
     // Round-tripping a struct through a table and back reproduces it exactly,
@@ -1033,7 +1030,7 @@ fn tableProtoFlatten() void {
 /// them, so that the entry points above are shown to be the ones the language
 /// is actually built on.
 fn fromJanet() void {
-    var out: types.Janet = undefined;
+    var out: repr.Value = undefined;
     const source =
         \\[(= {1 2 3 4} {3 4 1 2})
         \\ (= (hash {1 2 3 4}) (hash {3 4 1 2}))
@@ -1047,10 +1044,10 @@ fn fromJanet() void {
     ;
     std.debug.assert(core_env.dostring(harness.coreEnv(), source, "struct_table", &out) == 0);
     const r = wrap.toTuple(out);
-    std.debug.assert(kind.truthy(r[0]) != 0);
-    std.debug.assert(kind.truthy(r[1]) != 0);
+    std.debug.assert(repr.truthy(r[0]));
+    std.debug.assert(repr.truthy(r[1]));
     std.debug.assert(harness.integerIs(r[2], 1));
-    std.debug.assert(harness.isType(r[3], constants.JANET_NIL));
+    std.debug.assert(harness.isType(r[3], repr.Tag.nil));
     std.debug.assert(harness.integerIs(r[4], 0));
     std.debug.assert(harness.integerIs(r[5], 2));
     const flat = wrap.toTable(r[6]);

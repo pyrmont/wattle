@@ -1,49 +1,37 @@
 //! Janet's constants, opcodes and flags, owned by Zig.
 //!
-//! Phase 12 increment 4, and the companion to `src/zig/types.zig`: that file
-//! took the types out of the `@cImport`, this one takes the values. Together
-//! they are what has to exist before `janet.h` can stop being translated,
-//! because a constant is not a declaration the compiler can re-derive -- a
-//! wrong opcode number is a working program giving a wrong answer rather than
-//! a build failure.
-//!
-//! **These are translate-c's own output**, extracted from the translation of
-//! `janet.h` and the internal headers for **31 configurations** and diffed,
-//! rather than transcribed by hand. `zig build translate` is the step that
-//! produces one; the extraction reads the `pub const` text out of it, so the
-//! right-hand sides below are the compiler's reading of the C and not a
-//! person's. `helpers.promoteIntLiteral` is kept for the same reason `[*c]` is
-//! kept in `types.zig`: it is C's integer-literal promotion, and the type it
-//! yields depends on the target's `long`.
+//! The companion to `src/zig/types.zig`: that file owns the Janet types, this
+//! one owns the values. A constant is not a declaration the compiler can
+//! re-derive -- a wrong opcode number is a working program giving a wrong
+//! answer rather than a build failure -- so these were extracted from a
+//! translation of Janet's headers over 31 configurations and diffed, rather
+//! than transcribed by hand. `helpers.promoteIntLiteral` is kept for that
+//! reason: it is C's integer-literal promotion, and the type it yields depends
+//! on the target's `long`.
 //!
 //! **What is not here, and why each is somewhere better.**
 //!
 //!   - **Ten constants that carry the build's configuration** -- the
 //!     `JANET_VM_HAS_*` family, the nanbox bits and `JANET_CURRENT_CONFIG_BITS`
 //!     -- are computed from `@import("config")` below rather than transcribed,
-//!     because their value follows `-D` flags. Increment 1 moved the
-//!     configuration the runtime read as `@hasDecl(c, "JANET_X")`; it did not
-//!     see the configuration the runtime read as a *value*, which is what
-//!     `src/zig/state_abi.h` exists to provide. See `phase_12.md`'s rule 16.
-//!   - **Ten more that `janetconf.h` sets** -- the version quintet,
+//!     because their value follows `-D` flags.
+//!   - **Ten more that a config header set** -- the version quintet,
 //!     `JANET_BUILD`, and the four limits -- are `Config` fields, for the same
-//!     reason and by the same argument.
+//!     reason.
 //!   - **Six platform predicates** (`JANET_APPLE`, `JANET_64`, ...) are
-//!     `@import("builtin")`'s, which increment 1 settled.
+//!     `@import("builtin")`'s, which knows them exactly.
 //!   - **The code-generating macros** (`JANET_REG_*`, `JANET_FN_*`,
-//!     `JANET_ATEND_*`, `JANET_API`) are not values at all. translate-c renders
-//!     every one of them as `@compileError`, which is the mechanical statement
-//!     of the same thing, and `DESIGN.md` §§5 and 6 retire them rather than
-//!     port them.
+//!     `JANET_ATEND_*`, `JANET_API`) are not values at all. `DESIGN.md`
+//!     sections 5 and 6 retire them rather than reproduce them.
 //!
-//! `src/zig/constants_check.zig` holds this file to the `@cImport` for as long
-//! as both exist -- value, type and signedness, per configuration. Like
-//! `types_check.zig` it is an oracle with a fixed lifetime: it dies with the
-//! header, so its whole value has to be spent before the header goes.
+//! Every value here is invariant across the configurations the build offers,
+//! except the ten below that follow a `-D` flag and are computed from
+//! `@import("config")` rather than written down.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const config = @import("config");
+const repr = @import("repr");
 
 const helpers = std.zig.c_translation.helpers;
 
@@ -74,21 +62,20 @@ pub const JANET_SINGLE_THREADED_BIT: c_int = if (config.single_threaded) 0x2 els
 /// lives now; this constant is `config.nanbox_pointer_shift` and nothing else,
 /// so that the two cannot drift.
 ///
-/// They had drifted. Increment 1 wrote the clause as `apple and aarch64`,
-/// which is the inverse, and left `registry.zig`'s `checkPointerAlign`
-/// guarding on `config` while masking with `c.JANET_NANBOX_64_POINTER_SHIFT`
-/// -- two sources for one fact, in adjacent lines. On aarch64 Linux the guard
-/// then returned early and the alignment check was **off** on the only targets
-/// that shift at all; on aarch64 macOS it ran with a zero mask and so checked
-/// nothing. Fixed in this increment, and it is why the oracle checks `Config`
-/// against the header rather than only the constants.
-pub const JANET_NANBOX_64_POINTER_SHIFT: c_int = config.nanbox_pointer_shift;
+/// The predicate and the shift are one declaration for a reason: they had
+/// drifted. The clause was once written `apple and aarch64`, which is the
+/// inverse, while `registry.zig`'s `checkPointerAlign` guarded on `config` and
+/// masked with a separately spelled shift -- two sources for one fact, in
+/// adjacent lines. On aarch64 Linux the guard returned early and the alignment
+/// check was **off** on the only targets that shift at all; on aarch64 macOS
+/// it ran with a zero mask and checked nothing.
+// The shift itself is `repr.pointer_shift`, in the module that shifts.
 
 /// `janet.h`: `(SHIFT ? (0x4 << SHIFT) : 0)`, and `0` where the shift is not
 /// defined at all -- which is every layout but nanbox-64.
 pub const JANET_NANBOX_POINTER_SHIFT_BITS: c_int =
-    if (config.value_repr == .nanbox_64 and JANET_NANBOX_64_POINTER_SHIFT != 0)
-        @as(c_int, 0x4) << @intCast(JANET_NANBOX_64_POINTER_SHIFT)
+    if (config.value_repr == .nanbox_64 and repr.pointer_shift != 0)
+        @as(c_int, 0x4) << @intCast(repr.pointer_shift)
     else
         0;
 
@@ -97,23 +84,21 @@ pub const JANET_NANBOX_POINTER_SHIFT_BITS: c_int =
 pub const JANET_CURRENT_CONFIG_BITS: c_int =
     JANET_SINGLE_THREADED_BIT | JANET_NANBOX_BIT | JANET_NANBOX_POINTER_SHIFT_BITS;
 
-// The four `src/zig/state_abi.h` defines. That header exists precisely because
-// "translate-c does not surface a macro defined with no value", so it restates
-// `#ifdef JANET_EV` and its neighbours as constants Zig can read -- which made
-// it a configuration channel that increment 1's `@hasDecl` sweep could not
-// see. They are `config` fields now, and `state_abi.h`'s block goes with the
-// header.
+// Four predicates the runtime reads as values rather than as `#ifdef`s. Each
+// restates one `config` field; these are the spellings the rest of the tree
+// uses, and `c_int` because a C caller may read them.
 
-/// `state_abi.h`: `1` unless `JANET_SINGLE_THREADED`.
+/// `1` unless the build is single-threaded.
 pub const JANET_VM_THREAD_LOCAL: c_int = if (config.single_threaded) 0 else 1;
 
-/// `state_abi.h`: `1` under `JANET_EV`.
+/// `1` under the event loop.
 pub const JANET_VM_HAS_EV: c_int = if (config.ev) 1 else 0;
 
-/// `state_abi.h`: `1` under `JANET_NET`.
+/// `1` under networking.
 pub const JANET_VM_HAS_NET: c_int = if (config.net) 1 else 0;
 
-/// `state_abi.h`: `0` under `JANET_NO_INTERPRETER_INTERRUPT`.
+/// `0` when the interpreter does not check for an interrupt between
+/// instructions.
 pub const JANET_VM_HAS_INTERRUPT: c_int = if (config.interpreter_interrupt) 1 else 0;
 
 /// `janet.h`: `NULL` on Windows, where a handle is a pointer, and `(-1)` on
@@ -128,56 +113,14 @@ else
 // The rest, invariant across all 31 configurations swept
 // ---------------------------------------------------------------------------
 
-pub const JANET_SIGNAL_OK: c_int = 0;
-pub const JANET_SIGNAL_ERROR: c_int = 1;
-pub const JANET_SIGNAL_DEBUG: c_int = 2;
-pub const JANET_SIGNAL_YIELD: c_int = 3;
-pub const JANET_SIGNAL_USER0: c_int = 4;
-pub const JANET_SIGNAL_USER1: c_int = 5;
-pub const JANET_SIGNAL_USER2: c_int = 6;
-pub const JANET_SIGNAL_USER3: c_int = 7;
-pub const JANET_SIGNAL_USER4: c_int = 8;
-pub const JANET_SIGNAL_USER5: c_int = 9;
-pub const JANET_SIGNAL_USER6: c_int = 10;
-pub const JANET_SIGNAL_USER7: c_int = 11;
-pub const JANET_SIGNAL_USER8: c_int = 12;
-pub const JANET_SIGNAL_USER9: c_int = 13;
-pub const JANET_SIGNAL_INTERRUPT: c_int = 12;
-pub const JANET_SIGNAL_EVENT: c_int = 13;
+// `JANET_SIGNAL_*` and `JANET_STATUS_*` are `types.Signal` and
+// `types.FiberStatus`, two `enum(c_uint)` declarations -- where Janet's
+// sixteen signal *names* are fourteen members and two aliases, which a list of
+// constants cannot say.
 
-pub const JANET_STATUS_DEAD: c_int = 0;
-pub const JANET_STATUS_ERROR: c_int = 1;
-pub const JANET_STATUS_DEBUG: c_int = 2;
-pub const JANET_STATUS_PENDING: c_int = 3;
-pub const JANET_STATUS_USER0: c_int = 4;
-pub const JANET_STATUS_USER1: c_int = 5;
-pub const JANET_STATUS_USER2: c_int = 6;
-pub const JANET_STATUS_USER3: c_int = 7;
-pub const JANET_STATUS_USER4: c_int = 8;
-pub const JANET_STATUS_USER5: c_int = 9;
-pub const JANET_STATUS_USER6: c_int = 10;
-pub const JANET_STATUS_USER7: c_int = 11;
-pub const JANET_STATUS_USER8: c_int = 12;
-pub const JANET_STATUS_USER9: c_int = 13;
-pub const JANET_STATUS_NEW: c_int = 14;
-pub const JANET_STATUS_ALIVE: c_int = 15;
-
-pub const JANET_NUMBER: c_int = 0;
-pub const JANET_NIL: c_int = 1;
-pub const JANET_BOOLEAN: c_int = 2;
-pub const JANET_FIBER: c_int = 3;
-pub const JANET_STRING: c_int = 4;
-pub const JANET_SYMBOL: c_int = 5;
-pub const JANET_KEYWORD: c_int = 6;
-pub const JANET_ARRAY: c_int = 7;
-pub const JANET_TUPLE: c_int = 8;
-pub const JANET_TABLE: c_int = 9;
-pub const JANET_STRUCT: c_int = 10;
-pub const JANET_BUFFER: c_int = 11;
-pub const JANET_FUNCTION: c_int = 12;
-pub const JANET_CFUNCTION: c_int = 13;
-pub const JANET_ABSTRACT: c_int = 14;
-pub const JANET_POINTER: c_int = 15;
+// The sixteen `JanetType` values are `repr.Tag`'s members, an `enum(u4)` in
+// the module that owns the representation. The masks below are the one thing
+// left that needs their numbering.
 
 pub const JANET_ASYNC_EVENT_INIT: c_int = 0;
 pub const JANET_ASYNC_EVENT_MARK: c_int = 1;
@@ -401,9 +344,9 @@ pub const JANET_INT_NONE: c_int = 0;
 pub const JANET_INT_S64: c_int = 1;
 pub const JANET_INT_U64: c_int = 2;
 
-pub const JANET_SIGNAL_PLAN_TOP_LEVEL: c_int = 0;
-pub const JANET_SIGNAL_PLAN_RAISE: c_int = 1;
-pub const JANET_SIGNAL_PLAN_COERCE: c_int = 2;
+// `JANET_SIGNAL_PLAN_*` are `signal.Plan`, an `enum(c_uint)` in the file that
+// decides a plan, because nothing outside the raise protocol names one and no
+// symbol carries it.
 
 pub const JANET_TRACE_NAME_NONE: c_int = 0;
 pub const JANET_TRACE_NAME_ANONYMOUS: c_int = 1;
@@ -446,24 +389,9 @@ pub const JANET_ARG_CBYTES_COPY: c_int = 1;
 pub const JANET_ARG_CBYTES_TERMINATE: c_int = 2;
 pub const JANET_ARG_CBYTES_VIEW: c_int = 3;
 
-pub const JANET_MEMORY_NONE: c_int = 0;
-pub const JANET_MEMORY_STRING: c_int = 1;
-pub const JANET_MEMORY_SYMBOL: c_int = 2;
-pub const JANET_MEMORY_ARRAY: c_int = 3;
-pub const JANET_MEMORY_TUPLE: c_int = 4;
-pub const JANET_MEMORY_TABLE: c_int = 5;
-pub const JANET_MEMORY_STRUCT: c_int = 6;
-pub const JANET_MEMORY_FIBER: c_int = 7;
-pub const JANET_MEMORY_BUFFER: c_int = 8;
-pub const JANET_MEMORY_FUNCTION: c_int = 9;
-pub const JANET_MEMORY_ABSTRACT: c_int = 10;
-pub const JANET_MEMORY_FUNCENV: c_int = 11;
-pub const JANET_MEMORY_FUNCDEF: c_int = 12;
-pub const JANET_MEMORY_THREADED_ABSTRACT: c_int = 13;
-pub const JANET_MEMORY_TABLE_WEAKK: c_int = 14;
-pub const JANET_MEMORY_TABLE_WEAKV: c_int = 15;
-pub const JANET_MEMORY_TABLE_WEAKKV: c_int = 16;
-pub const JANET_MEMORY_ARRAY_WEAK: c_int = 17;
+// `JANET_MEMORY_*` -- the eighteen heap-block types -- are `types.MemoryType`,
+// an `enum(u8)` because `JANET_MEM_TYPEBITS` is `0xFF`: the stored width and
+// the vocabulary are one declaration, and `JanetGCObject` reads and writes it.
 
 pub const JANETC_REGTEMP_0: c_int = 0;
 pub const JANETC_REGTEMP_1: c_int = 1;
@@ -494,29 +422,11 @@ pub const JANET_INTMAX_INT64 = helpers.promoteIntLiteral(c_int, 9007199254740992
 
 pub const JANET_INTMIN_INT64 = -helpers.promoteIntLiteral(c_int, 9007199254740992, .decimal);
 
-pub const JANET_COUNT_TYPES = JANET_POINTER + @as(c_int, 1);
-
-pub const JANET_TFLAG_NIL = @as(c_int, 1) << JANET_NIL;
-pub const JANET_TFLAG_BOOLEAN = @as(c_int, 1) << JANET_BOOLEAN;
-pub const JANET_TFLAG_FIBER = @as(c_int, 1) << JANET_FIBER;
-pub const JANET_TFLAG_NUMBER = @as(c_int, 1) << JANET_NUMBER;
-pub const JANET_TFLAG_STRING = @as(c_int, 1) << JANET_STRING;
-pub const JANET_TFLAG_SYMBOL = @as(c_int, 1) << JANET_SYMBOL;
-pub const JANET_TFLAG_KEYWORD = @as(c_int, 1) << JANET_KEYWORD;
-pub const JANET_TFLAG_ARRAY = @as(c_int, 1) << JANET_ARRAY;
-pub const JANET_TFLAG_TUPLE = @as(c_int, 1) << JANET_TUPLE;
-pub const JANET_TFLAG_TABLE = @as(c_int, 1) << JANET_TABLE;
-pub const JANET_TFLAG_STRUCT = @as(c_int, 1) << JANET_STRUCT;
-pub const JANET_TFLAG_BUFFER = @as(c_int, 1) << JANET_BUFFER;
-pub const JANET_TFLAG_FUNCTION = @as(c_int, 1) << JANET_FUNCTION;
-pub const JANET_TFLAG_CFUNCTION = @as(c_int, 1) << JANET_CFUNCTION;
-pub const JANET_TFLAG_ABSTRACT = @as(c_int, 1) << JANET_ABSTRACT;
-pub const JANET_TFLAG_POINTER = @as(c_int, 1) << JANET_POINTER;
-pub const JANET_TFLAG_BYTES = ((JANET_TFLAG_STRING | JANET_TFLAG_SYMBOL) | JANET_TFLAG_BUFFER) | JANET_TFLAG_KEYWORD;
-pub const JANET_TFLAG_INDEXED = JANET_TFLAG_ARRAY | JANET_TFLAG_TUPLE;
-pub const JANET_TFLAG_DICTIONARY = JANET_TFLAG_TABLE | JANET_TFLAG_STRUCT;
-pub const JANET_TFLAG_LENGTHABLE = (JANET_TFLAG_BYTES | JANET_TFLAG_INDEXED) | JANET_TFLAG_DICTIONARY;
-pub const JANET_TFLAG_CALLABLE = ((JANET_TFLAG_FUNCTION | JANET_TFLAG_CFUNCTION) | JANET_TFLAG_LENGTHABLE) | JANET_TFLAG_ABSTRACT;
+// `JANET_TFLAG_*` -- the sixteen `1 << type` masks and their five named
+// unions -- are `repr.TagSet`, a `packed struct(u16)` whose bit layout is
+// asserted there against Janet's; the two published symbols that take one as
+// an `int` convert in `capi.zig`, and the bytecode's `JOP_TYPECHECK` operand
+// is the sixteen bits the set already is. `repr.tag_count` is the count.
 
 pub const JANET_STREAM_CLOSED = @as(c_int, 0x1);
 pub const JANET_STREAM_SOCKET = @as(c_int, 0x2);
@@ -528,9 +438,6 @@ pub const JANET_STREAM_UDPSERVER = @as(c_int, 0x1000);
 pub const JANET_STREAM_NOT_CLOSEABLE = @as(c_int, 0x2000);
 pub const JANET_STREAM_TOCLOSE = helpers.promoteIntLiteral(c_int, 0x10000, .hex);
 pub const JANET_STREAM_NODUPS = helpers.promoteIntLiteral(c_int, 0x20000, .hex);
-
-pub const JANET_NANBOX_TAGBITS = @as(c_ulonglong, 0xFFFF800000000000);
-pub const JANET_NANBOX_PAYLOADBITS = @as(c_ulonglong, 0x00007FFFFFFFFFFF);
 
 pub const JANET_STACKFRAME_TAILCALL = @as(c_int, 1);
 pub const JANET_STACKFRAME_ENTRANCE = @as(c_int, 2);
@@ -577,30 +484,10 @@ pub const JANET_PRETTY_COLOR = @as(c_int, 1);
 pub const JANET_PRETTY_ONELINE = @as(c_int, 2);
 pub const JANET_PRETTY_NOTRUNC = @as(c_int, 4);
 
-pub const JANET_SANDBOX_SANDBOX = @as(c_int, 1);
-pub const JANET_SANDBOX_SUBPROCESS = @as(c_int, 2);
-pub const JANET_SANDBOX_NET_CONNECT = @as(c_int, 4);
-pub const JANET_SANDBOX_NET_LISTEN = @as(c_int, 8);
-pub const JANET_SANDBOX_FFI_DEFINE = @as(c_int, 16);
-pub const JANET_SANDBOX_FS_WRITE = @as(c_int, 32);
-pub const JANET_SANDBOX_FS_READ = @as(c_int, 64);
-pub const JANET_SANDBOX_HRTIME = @as(c_int, 128);
-pub const JANET_SANDBOX_ENV = @as(c_int, 256);
-pub const JANET_SANDBOX_DYNAMIC_MODULES = @as(c_int, 512);
-pub const JANET_SANDBOX_FS_TEMP = @as(c_int, 1024);
-pub const JANET_SANDBOX_FFI_USE = @as(c_int, 2048);
-pub const JANET_SANDBOX_FFI_JIT = @as(c_int, 4096);
-pub const JANET_SANDBOX_SIGNAL = @as(c_int, 8192);
-pub const JANET_SANDBOX_CHROOT = @as(c_int, 16384);
-pub const JANET_SANDBOX_FFI = (JANET_SANDBOX_FFI_DEFINE | JANET_SANDBOX_FFI_USE) | JANET_SANDBOX_FFI_JIT;
-pub const JANET_SANDBOX_FS = (JANET_SANDBOX_FS_WRITE | JANET_SANDBOX_FS_READ) | JANET_SANDBOX_FS_TEMP;
-pub const JANET_SANDBOX_NET = JANET_SANDBOX_NET_CONNECT | JANET_SANDBOX_NET_LISTEN;
-pub const JANET_SANDBOX_COMPILE = helpers.promoteIntLiteral(c_int, 32768, .decimal);
-pub const JANET_SANDBOX_ASM = helpers.promoteIntLiteral(c_int, 65536, .decimal);
-pub const JANET_SANDBOX_THREADS = helpers.promoteIntLiteral(c_int, 131072, .decimal);
-pub const JANET_SANDBOX_UNMARSHAL = helpers.promoteIntLiteral(c_int, 262144, .decimal);
-pub const JANET_SANDBOX_EXIT = helpers.promoteIntLiteral(c_int, 524288, .decimal);
-pub const JANET_SANDBOX_ALL = @as(c_uint, 0xFFFFFFFF);
+// `JANET_SANDBOX_*` -- twenty capability bits and four names for unions of
+// them -- are `types.Sandbox`, a `packed struct(u32)` whose twenty bit
+// positions are asserted there; `janet_sandbox` and `janet_sandbox_assert`
+// keep the published `uint32_t` and convert.
 
 pub const JANET_FILE_WRITE = @as(c_int, 1);
 pub const JANET_FILE_READ = @as(c_int, 2);
@@ -704,6 +591,6 @@ pub const JANET_FOPTS_ACCEPT_SPLICE = helpers.promoteIntLiteral(c_int, 0x80000, 
 pub const JANET_DEFFLAG_NO_SHADOWCHECK = @as(c_int, 1);
 pub const JANET_DEFFLAG_NO_UNUSED = @as(c_int, 2);
 
-pub const JANET_DOUBLE_OFFSET = helpers.promoteIntLiteral(c_int, 0xFFFF, .hex);
+// `JANET_DOUBLE_OFFSET` is `repr.double_offset`.
 
 pub const JANET_HASH_KEY_SIZE = @as(c_int, 16);

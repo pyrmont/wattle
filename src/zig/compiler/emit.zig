@@ -1,11 +1,9 @@
 //! Emitting one bytecode instruction, and the register bookkeeping around it.
 //!
-//! Ten entry points, one per operand shape, over five kernels. Phase 10 Part 7
-//! removed the seam between them: until then the kernels returned an error
-//! union, an error union cannot cross a subsystem seam, and so the five shapes
-//! were squeezed through one `int`-returning C-ABI call with an enum to say
-//! which -- and a small C wrapper in `emit.c` turned the code back into a
-//! message. With the callers in Zig there is no seam, no enum, and no wrapper.
+//! Ten entry points, one per operand shape, over five kernels. The kernels
+//! return an error union and the entry points carry it, which is only possible
+//! because there is no C-ABI boundary between them: an error union does not
+//! cross one.
 //!
 //! Nothing here raises. The compiler front end reports by *flag*:
 //! `janetc_error` sets `c->result.status`, keeps the first error, and returns,
@@ -15,27 +13,25 @@
 const std = @import("std");
 const order = @import("../value/helpers/order.zig");
 const compiler_primitives = @import("../compiler.zig");
-const vector_mod = @import("../stretchy.zig");
+const stretchy = @import("../stretchy.zig");
 const regalloc = @import("regalloc.zig");
-const kind = @import("../value/helpers/kind.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const args_core = @import("../args.zig");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 
-const vector_header_size = 2 * @sizeOf(i32);
 const slot_type_mask: u32 = constants.JANET_SLOTTYPE_ANY;
 const EmitError = error{ TooManyConstants, TooManyRegisters };
 
 /// Record an emit failure on the compiler and carry on.
 ///
-/// Until Phase 10 Part 7 this switch was in `emit.c`, because the kernels
-/// below returned an error union and an error union cannot cross a subsystem
-/// seam: the five emit shapes were squeezed through one `int`-returning
-/// C-ABI entry point and a small C wrapper turned the code back into a
-/// message. With the callers in Zig there is no seam, and the mapping from an
-/// error to its text sits next to the code that raises it.
+/// The mapping from an error to its text sits next to the code that raises it.
+/// While the kernels below were on the far side of a C-ABI boundary it could
+/// not: an error union does not cross one, so the five emit shapes were
+/// squeezed through a single `int`-returning call with an enum to say which,
+/// and something on the near side turned the code back into a message.
 ///
 /// This is not a raise. `janetc_error` sets `c->result.status` and returns;
 /// the compiler front end reports by flag, and keeps compiling so that the
@@ -80,8 +76,8 @@ pub fn allocnear(
 }
 
 pub fn emit(compiler: *types.JanetCompiler, instruction: u32) void {
-    pushVector(u32, &compiler.buffer, instruction);
-    pushVector(types.JanetSourceMapping, &compiler.mapbuffer, compiler.current_mapping);
+    stretchy.push(u32, &compiler.buffer, instruction);
+    stretchy.push(types.JanetSourceMapping, &compiler.mapbuffer, compiler.current_mapping);
 }
 
 pub fn sequal(lhs: types.JanetSlot, rhs: types.JanetSlot) c_int {
@@ -164,7 +160,7 @@ pub fn emitSl(
     slot_value: types.JanetSlot,
     label: i32,
 ) callconv(.c) i32 {
-    const current = vectorCount(u32, compiler.buffer) - 1;
+    const current = stretchy.count(u32, compiler.buffer) - 1;
     const jump = label - current;
     if (jump < std.math.minInt(i16) or jump > std.math.maxInt(i16)) {
         compiler_primitives.cerror(compiler, "jump is too far");
@@ -270,7 +266,7 @@ pub fn emitSss(
 
 fn emitS(compiler: *types.JanetCompiler, operation: u8, slot_value: types.JanetSlot, write_back: bool) EmitError!i32 {
     const register = try registerFar(compiler, slot_value, constants.JANETC_REGTEMP_0);
-    const label = vectorCount(u32, compiler.buffer);
+    const label = stretchy.count(u32, compiler.buffer);
     emitInstruction(compiler, operation | (@as(u32, @intCast(register)) << 8));
     if (write_back and !moveBack(compiler, slot_value, register)) return error.TooManyConstants;
     freeRegister(compiler, slot_value, register, constants.JANETC_REGTEMP_0);
@@ -285,7 +281,7 @@ fn emitOneSlot(
     write_back: bool,
 ) EmitError!i32 {
     const register = try registerNear(compiler, slot_value, constants.JANETC_REGTEMP_0);
-    const label = vectorCount(u32, compiler.buffer);
+    const label = stretchy.count(u32, compiler.buffer);
     const rest_bits: u32 = @bitCast(rest);
     emitInstruction(compiler, operation |
         (@as(u32, @intCast(register)) << 8) |
@@ -307,7 +303,7 @@ fn emitSS(
         freeRegister(compiler, slot1, register1, constants.JANETC_REGTEMP_0);
         return emit_error;
     };
-    const label = vectorCount(u32, compiler.buffer);
+    const label = stretchy.count(u32, compiler.buffer);
     emitInstruction(compiler, operation |
         (@as(u32, @intCast(register1)) << 8) |
         (@as(u32, @intCast(register2)) << 16));
@@ -330,7 +326,7 @@ fn emitTwoSlots(
         freeRegister(compiler, slot1, register1, constants.JANETC_REGTEMP_0);
         return emit_error;
     };
-    const label = vectorCount(u32, compiler.buffer);
+    const label = stretchy.count(u32, compiler.buffer);
     const rest_bits: u32 = @bitCast(rest);
     emitInstruction(compiler, operation |
         (@as(u32, @intCast(register1)) << 8) |
@@ -360,7 +356,7 @@ fn emitSSS(
         freeRegister(compiler, slot1, register1, constants.JANETC_REGTEMP_0);
         return emit_error;
     };
-    const label = vectorCount(u32, compiler.buffer);
+    const label = stretchy.count(u32, compiler.buffer);
     emitInstruction(compiler, operation |
         (@as(u32, @intCast(register1)) << 8) |
         (@as(u32, @intCast(register2)) << 16) |
@@ -481,15 +477,15 @@ fn makeNearSource(compiler: *types.JanetCompiler, source_value: i32) i32 {
     return near_source;
 }
 
-fn loadConstant(compiler: *types.JanetCompiler, val: types.Janet, register: i32) bool {
+fn loadConstant(compiler: *types.JanetCompiler, val: repr.Value, register: i32) bool {
     const register_bits = @as(u32, @intCast(register)) << 8;
-    switch (kind.typeOf(val)) {
-        constants.JANET_NIL => emitInstruction(compiler, opcode(constants.JOP_LOAD_NIL) | register_bits),
-        constants.JANET_BOOLEAN => emitInstruction(
+    switch (repr.typeOf(val)) {
+        repr.Tag.nil => emitInstruction(compiler, opcode(constants.JOP_LOAD_NIL) | register_bits),
+        repr.Tag.boolean => emitInstruction(
             compiler,
-            opcode(if (wrap.toBoolean(val) != 0) constants.JOP_LOAD_TRUE else constants.JOP_LOAD_FALSE) | register_bits,
+            opcode(if (wrap.toBoolean(val)) constants.JOP_LOAD_TRUE else constants.JOP_LOAD_FALSE) | register_bits,
         ),
-        constants.JANET_NUMBER => {
+        repr.Tag.number => {
             if (args_core.checkint16(val) != 0) {
                 const integer: i32 = @intFromFloat(wrap.toNumber(val));
                 const integer_bits: u32 = @bitCast(integer);
@@ -503,7 +499,7 @@ fn loadConstant(compiler: *types.JanetCompiler, val: types.Janet, register: i32)
     return true;
 }
 
-fn loadFromConstantPool(compiler: *types.JanetCompiler, val: types.Janet, register_bits: u32) bool {
+fn loadFromConstantPool(compiler: *types.JanetCompiler, val: repr.Value, register_bits: u32) bool {
     const index = internConstant(compiler, val) orelse return false;
     emitInstruction(compiler, opcode(constants.JOP_LOAD_CONSTANT) |
         register_bits |
@@ -511,20 +507,20 @@ fn loadFromConstantPool(compiler: *types.JanetCompiler, val: types.Janet, regist
     return true;
 }
 
-fn internConstant(compiler: *types.JanetCompiler, val: types.Janet) ?i32 {
+fn internConstant(compiler: *types.JanetCompiler, val: repr.Value) ?i32 {
     var scope = compiler.scope;
     while (scope) |current| {
         if (current.flags & constants.JANET_SCOPE_FUNCTION != 0) break;
         scope = current.parent;
     }
 
-    const count = vectorCount(types.Janet, scope.?.consts);
+    const count = stretchy.count(repr.Value, scope.?.consts);
     var index: i32 = 0;
     while (index < count) : (index += 1) {
         if (order.equals(val, scope.?.consts.?[@intCast(index)]) != 0) return index;
     }
     if (count >= 0xffff) return null;
-    pushVector(types.Janet, &scope.?.consts, val);
+    stretchy.push(repr.Value, &scope.?.consts, val);
     return count;
 }
 
@@ -538,28 +534,4 @@ fn emitInstruction(compiler: *types.JanetCompiler, instruction: u32) void {
 
 fn opcode(val: c_int) u32 {
     return @intCast(val);
-}
-
-fn pushVector(comptime Element: type, vector_pointer: *?[*]Element, val: Element) void {
-    var vector = vector_pointer.*;
-    const count = vectorCount(Element, vector);
-    if (vector == null or count + 1 >= vectorCapacity(Element, vector.?)) {
-        const grown = vector_mod.vGrow(if (vector) |v| @ptrCast(v) else null, 1, @sizeOf(Element));
-        vector = @ptrCast(@alignCast(grown));
-        vector_pointer.* = vector;
-    }
-    vector.?[@intCast(count)] = val;
-    vectorHeader(Element, vector.?)[1] = count + 1;
-}
-
-fn vectorCount(comptime Element: type, vector: ?[*]Element) i32 {
-    return if (vector) |v| vectorHeader(Element, v)[1] else 0;
-}
-
-fn vectorCapacity(comptime Element: type, vector: [*]Element) i32 {
-    return vectorHeader(Element, vector)[0];
-}
-
-fn vectorHeader(comptime Element: type, vector: [*]Element) [*]i32 {
-    return @ptrFromInt(@intFromPtr(vector) - vector_header_size);
 }

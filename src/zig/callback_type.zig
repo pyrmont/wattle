@@ -1,8 +1,8 @@
 //! `JanetEVCallback`, typed as raising.
 //!
-//! Phase 10's hinge, and the third table of function pointers this phase has
-//! retyped after `JanetCFunction` in Part 17g and `JanetAbstractType` in the
-//! hinge itself. An event callback is the function the loop calls when a
+//! An event callback is the function the loop calls when a stream becomes
+//! readable, a write completes, a fiber is cancelled or the collector marks --
+//! eight of them in the tree, across `ev/stream.zig`,
 //! stream becomes readable, a write completes, a fiber is cancelled or the
 //! collector marks — eight of them in the tree, across `ev_stream.zig`,
 //! `net_sockets.zig` and `filewatch_core.zig` — and every one of them can
@@ -30,7 +30,6 @@
 const raise = @import("raise");
 const fatal = @import("fatal.zig");
 const types = @import("types");
-const c = @import("cabi");
 
 /// What an event callback is, since the hinge.
 pub const EVCallback = *const fn (*types.JanetFiber, types.JanetAsyncEvent) raise.Error!void;

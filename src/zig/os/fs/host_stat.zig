@@ -3,18 +3,14 @@
 //!
 //! ## Why this file exists
 //!
-//! Phase 10's decision 4 says the host structures stay libc's, reached with
-//! `@cImport`. `struct stat` is the single measured exception, and Part 12
-//! recorded it in `os_files.zig`: **musl declares `struct timespec` with a
+//! Host structures stay libc's, reached with `@cImport`. `struct stat` is the
+//! single measured exception: **musl declares `struct timespec` with a
 //! bitfield** -- zero-width padding, written as
 //! `int :8*(sizeof(time_t)-sizeof(long))*(__BYTE_ORDER==4321)` -- and
-//! translate-c demotes any record holding a bitfield to `opaque {}`.
+//! `translate-c` demotes any record holding a bitfield to `opaque {}`.
 //! `struct stat` embeds three timespecs, so it is demoted in turn and Zig can
 //! neither size it nor place one on the stack. macOS and mingw both translate
 //! it completely, which is exactly what makes it easy to miss.
-//!
-//! So `os.c` kept `janet_zig_os_stat_read` and `io.c` kept `janet_zig_io_isdir`
-//! for six increments. Part 18 is the increment that cannot leave them there.
 //!
 //! ## What replaces it, per platform
 //!
@@ -39,7 +35,7 @@
 //! produce, because all three are describing the same kernel field.
 //!
 //! That is the only value in this file that is computed rather than copied,
-//! and `test/os_stat.c` checks it by the property a Janet program actually
+//! and `test/os_stat.zig` checks it by the property a Janet program actually
 //! relies on rather than by pinning the number: **two files on the same
 //! filesystem report the same `dev`, and a file agrees with its directory.**
 //! A wrong encoding fails that; a different-but-consistent one does not, and
@@ -54,15 +50,13 @@ const windows = builtin.os.tag == .windows;
 
 /// A translation of `<sys/stat.h>` alone, and one of seven in the tree beside
 /// `os/abi.h`, `net/abi.h`, `filewatch/abi.h`, `ev/locks.zig`, `types.zig` and
-/// `cabi.zig`. Phase 10's rule 3 is the test for adding one -- it is right
-/// when nothing it declares crosses a subsystem boundary -- and nothing does:
-/// `struct stat` never leaves this file, and what does leave is a mode word
-/// and an array of doubles.
+/// `cabi.zig`. A translation is right when nothing it declares crosses a
+/// subsystem boundary, and nothing does: `struct stat` never leaves this file,
+/// and what does leave is a mode word and an array of doubles.
 ///
 /// It is translated on every target, including the musl ones where the result
 /// is `opaque {}`. That is harmless because the Linux arm never names it, and
-/// a comptime-false branch is not analysed. `os.c`'s `jstat_t` is a typedef
-/// inside that file rather than a header, so there was never anything for a
+/// a comptime-false branch is not analysed.
 /// shared translation to have picked up.
 const sys = @cImport({
     @cInclude("janet_features.h");
@@ -174,9 +168,8 @@ fn readCStat(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i
         put(numbers, .changed, @floatFromInt(st.st_ctimespec.tv_sec));
     }
     // Two of the fifteen are never written on Windows, which is why the array
-    // is zeroed before any of this: Part 5's rule, that a descriptor's
-    // unwritten fields are part of its contract and nothing about the type
-    // says so.
+    // is zeroed before any of this: a descriptor's unwritten fields are part
+    // of its contract and nothing about the type says so.
     if (!windows) {
         put(numbers, .blocks, @floatFromInt(st.st_blocks));
         put(numbers, .blocksize, @floatFromInt(st.st_blksize));
@@ -218,12 +211,11 @@ inline fn put(numbers: [*]f64, field: Field, value: f64) void {
 /// `io_core.zig` for the reason the whole file exists: it needs `struct stat`,
 /// and naming one is the thing that is per-platform.
 ///
-/// The C ignored `fstat`'s result and read the mode word regardless; that is
+/// Janet ignores `fstat`'s result and reads the mode word regardless; that is
 /// reproduced rather than repaired, because a failure leaves the buffer
-/// uninitialised in C and the answer it then gives is whatever was on the
-/// stack. `FOUND.md` has the entry. Zeroing first makes the Zig answer
-/// determinate without making it *different* on any path where the C's was
-/// defined -- Part 5's rule again.
+/// uninitialised and the answer it then gives is whatever was on the stack.
+/// `FOUND.md` has the entry. Zeroing first makes this answer determinate
+/// without making it *different* on any path where Janet's was defined.
 pub fn isDirectory(file: ?*anyopaque) bool {
     if (windows or builtin.os.tag == .plan9) return false;
     const fd = fileno(file);
@@ -261,14 +253,13 @@ pub fn statRead(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64
 }
 
 /// Zero every slot. Called *after* the syscall succeeds and never before,
-/// which is the C's order and is contract: `test/os_surface.c` asserts that a
-/// path that cannot be stat'ed leaves both `mode` and `numbers` untouched.
+/// which is Janet's order and is contract: `test/os_surface.zig` asserts that
+/// a path that cannot be stat'ed leaves both `mode` and `numbers` untouched.
 /// Zeroing first is the obvious way to write this and is wrong.
 ///
-/// After success it is required, for the reason Part 5 gives: two slots are
-/// never written on Windows and the Linux arm writes a different set again, and
-/// a descriptor's unwritten fields are part of its contract with nothing about
-/// the type to say so.
+/// After success it is required: two slots are never written on Windows and
+/// the Linux arm writes a different set again, and a descriptor's unwritten
+/// fields are part of its contract with nothing about the type to say so.
 inline fn zeroAll(numbers: [*]f64) void {
     var i: usize = 0;
     while (i < Field.count) : (i += 1) numbers[i] = 0;
@@ -280,14 +271,10 @@ pub fn statReadAbiCompat(path: [*:0]const u8, do_lstat: i32, mode: *u32, numbers
     return statRead(path, do_lstat != 0, mode, numbers);
 }
 
-// Nothing here is a symbol any more.
+// Nothing here is a symbol.
 //
-// `janet_zig_os_stat_read` and `janet_zig_io_isdir` were the two functions
-// `os.c` and `io.c` kept when everything else around them moved to Zig, and
-// they were exported so that those two files could call back in. Phase 10 Part
-// 18 deleted both callers; `os_files.zig` was already reaching this file by
-// import, `io_core.zig` was still going through the linker, and
-// `test/os_surface.c` was the last reader of the first name. Phase 11 Part 20
-// spent both, along with the two C-shaped abis that existed only to be
-// exported. `statReadAbiCompat` stays because `os_files.zig`'s call sites
-// pass the `i32` the C signature took.
+// `janet_zig_os_stat_read` and `janet_zig_io_isdir` were the two functions C
+// kept when everything else around them moved to Zig, and they were exported
+// so that those two files could call back in. Both callers are gone.
+// `statReadAbiCompat` stays because `os/fs.zig`'s call sites pass the `i32`
+// the C signature took.

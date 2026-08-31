@@ -33,12 +33,8 @@ pub const multicast_ttl_char = h.JANET_ZIG_MULTICAST_TTL_CHAR != 0;
 
 /// Whether this build has IPv6.
 ///
-/// The build's own answer since Phase 12 increment 5f. It was
-/// `h.JANET_ZIG_HAS_IPV6`, which `net/abi.h` restated from `janet.h`'s
-/// `JANET_NO_IPV6` because translate-c does not surface a macro defined with
-/// no value. `-Dipv6` is where the decision was all along, and with the header
-/// gone there is no reason for it to travel through a C preprocessor to get
-/// here.
+/// The build's own answer, from `-Dipv6`, rather than a `JANET_NO_IPV6` macro
+/// travelling through the C preprocessor to get here.
 pub const has_ipv6 = config.ipv6;
 
 // ==========================================================================
@@ -87,8 +83,8 @@ pub inline fn sockClose(s: JSock) void {
 /// 'cimport.__SOCKADDR_ARG'`.
 ///
 /// musl, the BSDs and macOS declare the plain pointer, so this is glibc-only
-/// in cause. Found in Phase 11 Part 25, when the first native glibc build this
-/// project has ever attempted got as far as these five call sites.
+/// in cause. Found by the first native glibc build this project attempted,
+/// which got as far as these five call sites.
 const transparent_sockaddr = builtin.os.tag == .linux and builtin.abi.isGnu();
 
 /// The four calls, taken by symbol where the declaration is unusable.
@@ -178,10 +174,9 @@ pub const SockAddrUn = if (windows) opaque {} else h.struct_sockaddr_un;
 /// one, and the two this project reads are both inside them. The two asserts
 /// below are what makes that a checked claim rather than a hopeful one.
 ///
-/// This is the same class of fault Part 13 met when `std.os.windows` stopped
-/// declaring `OVERLAPPED`, arriving from the other side: there the
-/// declaration was gone, here it survives translation with its fields
-/// dissolved.
+/// This is the same class of fault as `std.os.windows` no longer declaring
+/// `OVERLAPPED`, arriving from the other side: there the declaration was gone,
+/// here it survives translation with its fields dissolved.
 pub const SockAddrIn6 = if (windows) h.struct_sockaddr_in6_old else h.struct_sockaddr_in6;
 
 comptime {

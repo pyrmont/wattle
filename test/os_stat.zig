@@ -30,6 +30,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types");
+const repr = @import("repr");
 const c = @import("cabi");
 const harness = @import("harness.zig");
 const value = @import("subsystems").value;
@@ -42,9 +43,9 @@ extern fn janet_os_mode_name(mode: u32) callconv(.c) [*:0]const u8;
 extern fn janet_os_decode_permissions(mode: u32) callconv(.c) i32;
 extern fn janet_os_perm_to_unix(mode: u32) callconv(.c) i32;
 extern fn janet_os_perm_from_unix(permissions: i32) callconv(.c) u32;
-/// The field registry, by import. Phase 11 Part 20 retired the three symbols
-/// this file used to declare: `os_files.zig` was reaching its own subsystem
-/// through the linker and `test/os_surface.c` was the only other reader.
+/// The field registry, by import. The three symbols this file used to declare
+/// existed because the subsystem was reaching its own kernels through the
+/// linker and a C contract was the only other reader.
 const os_stat = @import("subsystems").stat;
 
 /// The registry, in order. See the header comment on why the order matters.
@@ -158,7 +159,7 @@ fn theFieldRegistry() void {
 var environment: *types.JanetTable = undefined;
 
 fn eval(source: [*:0]const u8) void {
-    var result: types.Janet = undefined;
+    var result: repr.Value = undefined;
     std.debug.assert(core_env.dostring(environment, source, "os-stat-contract", &result) == 0);
 }
 
@@ -232,7 +233,7 @@ fn theCoreFunctions() void {
 /// inside a Janet string; here they are values.
 fn theRefusals() void {
     const stat = harness.core("os/stat");
-    var args: [2]types.Janet = undefined;
+    var args: [2]repr.Value = undefined;
 
     args[0] = value.fromBytes(work_file, .string);
     args[1] = value.fromBytes("nope", .keyword);

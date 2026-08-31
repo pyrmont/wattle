@@ -15,26 +15,23 @@
 //! a width consistently two too small would show up only as slightly wrong
 //! wrapping in output no test compares.
 //!
-//! ## What the migration retired
+//! ## No abi, and no adapter
 //!
-//! **The abi `janet_zig_pp_escape_string` is gone**, and this file is why.
-//! It existed for `pp.c` under the other selector, outlived it, and had
-//! exactly one caller left: `test/pp_describe.c`, which needed the width and
-//! could not take a `raise.Raising(i32)`. Inside the compilation the width is
-//! just a return value and the error is just an error, so the abi, its
+//! **`janet_zig_pp_escape_string` does not exist**, and this file is why. It
+//! had exactly one caller left: a C contract, which needed the width and could
+//! not take a `raise.Raising(i32)`. Inside the compilation the width is just a
+//! return value and the error is just an error, so the abi, its
 //! `raise.reported` wrapper and its `@export` all went with the `.c` file.
-//! That is Phase 11's "delete the reporting abis with them" landing for the
-//! first time on a real abi rather than on a contract.
 //!
-//! The abstract type below is the other one. The C contract had to build a
-//! `JanetAbstractType` and pass it through `test/support.zig`'s adapter pool,
+//! The abstract type below is the other one. A C contract has to build a
+//! `JanetAbstractType` and pass it through an adapter pool,
 //! because the runtime dispatches raising Zig callbacks and C cannot define
 //! one. Here it is an ordinary `AbstractType` literal with no callbacks at
 //! all.
 
 const std = @import("std");
 const types = @import("types");
-const c = @import("cabi");
+const repr = @import("repr");
 const harness = @import("harness.zig");
 const subsystems = @import("subsystems");
 const value = @import("subsystems").value;
@@ -44,6 +41,7 @@ const core_env = @import("subsystems").env;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const abstracts = @import("subsystems").value.abstracts;
+const abstract_type = @import("subsystems").abstract_type;
 const pp_describe = @import("subsystems").pp_describe;
 
 /// The subject, by import. `toStringB` and `descriptionB` raise — rendering a
@@ -56,8 +54,8 @@ var test_env: *types.JanetTable = undefined;
 
 fn checkBuffer(b: *types.JanetBuffer, expected: []const u8) void {
     const count: usize = @intCast(b.count);
-    if (count != expected.len or !std.mem.eql(u8, b.data.?[0..count], expected)) {
-        std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.data.?[0..count] });
+    if (count != expected.len or !std.mem.eql(u8, b.slice()[0..count], expected)) {
+        std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.slice()[0..count] });
         @panic("buffer mismatch");
     }
 }
@@ -69,8 +67,8 @@ fn checkString(s: types.JanetString, expected: [*:0]const u8) void {
     }
 }
 
-fn eval(source: [*:0]const u8) types.Janet {
-    var out: types.Janet = wrap.fromNil();
+fn eval(source: [*:0]const u8) repr.Value {
+    var out: repr.Value = wrap.fromNil();
     std.debug.assert(core_env.dostring(test_env, source, "pp-describe-test", &out) == 0);
     return out;
 }
@@ -91,7 +89,7 @@ fn bothAppendRatherThanReplace() !void {
     checkBuffer(b, "head:7|\"x\"");
 
     // And again, so that a second append after a first is covered too.
-    try describe.toStringB(b, wrap.fromBoolean(1));
+    try describe.toStringB(b, wrap.fromBoolean(true));
     checkBuffer(b, "head:7|\"x\"true");
 }
 
@@ -127,7 +125,7 @@ fn theWholeEscapeTable() !void {
         '\\', '\t', 31,   32, 126,  127,  255,  'z',
     };
     const b: *types.JanetBuffer = buffers.new(64);
-    const width = try describe.escapeStringImpl(b, &raw);
+    const width = try describe.escapeString(b, &raw);
 
     checkBuffer(b, "\"\\\"\\n\\r\\0\\f\\v\\a\\b\\e\\\\\\t" ++
         "\\x1F \x7E\\x7F\\xFFz\"");
@@ -248,8 +246,8 @@ fn theCfunctionsAndFunctions() !void {
     b.count = 0;
     try describe.descriptionB(b, eval("(fn [] nil)"));
     std.debug.assert(b.count > 11);
-    std.debug.assert(std.mem.eql(u8, b.data.?[0..12], "<function 0x"));
-    std.debug.assert(b.data.?[@intCast(b.count - 1)] == '>');
+    std.debug.assert(std.mem.eql(u8, b.slice()[0..12], "<function 0x"));
+    std.debug.assert(b.slice()[@intCast(b.count - 1)] == '>');
 }
 
 /// A pointer description truncates the type name at 32 bytes, which keeps the
@@ -257,22 +255,30 @@ fn theCfunctionsAndFunctions() !void {
 /// Janet has a name that long, so the bound is never approached in practice
 /// and would never be noticed if it were wrong.
 ///
-/// The abstract type is an ordinary literal here. The C contract had to route
-/// one through `test/support.zig`'s adapter pool, because the runtime
-/// dispatches raising Zig callbacks; this one declares none at all.
+/// A C contract has to route the type through an adapter pool, because the
+/// runtime dispatches raising Zig callbacks; this one declares none at all.
+///
+/// **It is a container declaration and must stay one.** An abstract stores
+/// its type by address and outlives the frame that made it, so a
+/// function-local would leave `janet_clear_memory` dereferencing a dead
+/// pointer at teardown -- a bus error inside `deinitBlock`, nowhere near
+/// here. It was a local while it was a struct literal, which Zig materialises
+/// here. It was a local while it was a struct literal, which Zig materialises
+/// statically; making it a call is what surfaced the crash.
+const long_name = abstract_type.define(anyopaque, .{
+    .name = "abstract/with-an-extremely-long-type-name-here",
+});
+
 fn thePointerDescriptionTruncatesItsTitle() !void {
-    const long_name = AbstractType{
-        .name = "abstract/with-an-extremely-long-type-name-here",
-    };
-    const p = abstracts.new(@ptrCast(&long_name), 8);
+    const p = abstracts.new(&long_name, 8);
     const b: *types.JanetBuffer = buffers.new(64);
 
     try describe.descriptionB(b, wrap.fromAbstract(p));
-    std.debug.assert(b.data.?[0] == '<');
-    std.debug.assert(b.data.?[@intCast(b.count - 1)] == '>');
+    std.debug.assert(b.slice()[0] == '<');
+    std.debug.assert(b.slice()[@intCast(b.count - 1)] == '>');
     // '<' + exactly 32 title bytes + " 0x". The name is 45 bytes long, so the
     // cut lands mid-word and that is the point.
-    std.debug.assert(std.mem.eql(u8, b.data.?[1..36], "abstract/with-an-extremely-long- 0x"));
+    std.debug.assert(std.mem.eql(u8, b.slice()[1..36], "abstract/with-an-extremely-long- 0x"));
 }
 
 /// An abstract type with a `tostring` callback is wrapped in angle brackets

@@ -1,58 +1,47 @@
-//! Abstracts: a value whose payload and lifetime belong to its `JanetAbstractType`.
+//! Abstracts: a value whose payload and lifetime belong to its `AbstractType`.
 //!
 //! Constructing one, and the refcount that decides when a threaded one dies.
-//! Phase 12's namespace batch 3 renamed `abstract_core.zig` to this and
-//! `janet_abstract(t, n)` to `abstracts.new(t, n)`; `port/NAMESPACES.md` has
-//! the scheme. An abstract is a value in none of `janet.h`'s three views, so
-//! it is a leaf in `value/` like `fibers.zig` and `functions.zig` rather than
-//! a member of a group.
+//! An abstract is a value in none of Janet's three views, so it is a leaf in
+//! `value/` like `fibers.zig` and `functions.zig` rather than a member of a
+//! group.
 //!
 //! **The four atomics keep their names and are not abstract operations.**
 //! `abstracts.atomicInc` is `janet_atomic_inc`, a refcount primitive that
-//! lives here because `abstract.c` did and because the threaded refcount is
-//! its only caller in the tree. Stripping `abstract` off a name that never
-//! carried it would have produced `abstracts.inc`, which says the wrong
-//! thing; a fifteenth file in `value/` for four one-line functions would
-//! contradict the layout `NAMESPACES.md` settled, on the same reasoning that
-//! left `asSize` duplicated in batch 1.
+//! lives here because the threaded refcount is its only caller in the tree.
+//! Stripping `abstract` off a name that never carried it would produce
+//! `abstracts.inc`, which says the wrong thing; a separate file for four
+//! one-line functions would say less.
 //!
-//! This is Part 8 of Phase 8 and it takes the whole of
-//! `src/core/abstract.c` except the mutex and rwlock shims: the three plain
-//! constructors `janet_abstract_begin`, `janet_abstract_end` and
-//! `janet_abstract`, their threaded counterparts, and
+//! The three plain constructors `janet_abstract_begin`, `janet_abstract_end`
+//! and `janet_abstract`, their threaded counterparts, and
 //! `janet_abstract_incref`, `janet_abstract_decref` and
-//! `janet_abstract_decref_maybe_free`. Nine exported symbols, and no seam --
-//! every one of them is public API in `janet.h` and the file has no `static`
-//! at all.
+//! `janet_abstract_decref_maybe_free`. Nine exported symbols, all of them
+//! public API.
 //!
-//! ## What stays in C, and why the guard has three regions
+//! ## Why the lock primitives are not here
 //!
-//! `janet_os_mutex_*` and `janet_os_rwlock_*` stay in C by the same rule as
-//! `struct tm` and `jstat_t`: each one is a thin cast onto a host structure --
-//! `pthread_mutex_t`, `pthread_rwlock_t`, `CRITICAL_SECTION`, `SRWLOCK` --
-//! whose layout the platform owns and whose size Janet publishes through
-//! `janet_os_mutex_size`. Porting them would move the cast without moving the
-//! structure, and would make Zig's translation of `<pthread.h>` a build
-//! dependency of the runtime core for no gain.
-//!
-//! Those twelve functions sit physically between the threaded constructors and
-//! the refcount primitives, so `abstract.c` carries three
-//! `JANET_ZIG_ABSTRACT_CORE` regions rather than one. Nothing was moved to
-//! make them contiguous, for the reason Part 7a gives: a reordered C file is a
-//! permanent diff against upstream that buys only tidiness.
+//! `janet_os_mutex_*` and `janet_os_rwlock_*` sit between the threaded
+//! constructors and the refcount primitives in Janet's own file, so a reader
+//! following that file's order expects them here. They are `ev/locks.zig`'s:
+//! each is a thin cast onto a host structure -- `pthread_mutex_t`,
+//! `pthread_rwlock_t`, `CRITICAL_SECTION`, `SRWLOCK` -- whose layout the
+//! platform owns and whose size the runtime publishes through
+//! `janet_os_mutex_size`. That is the event loop's business rather than the
+//! collector's, and keeping it there is what stops this file depending on the
+//! host threading headers.
 //!
 //! ## Two allocators, one head
 //!
 //! A plain abstract and a threaded abstract share `JanetAbstractHead` and
 //! share nothing else. The plain one comes from `janet_gcalloc`, which
-//! prepends it to `janet_vm.blocks` and hands its lifetime to the collector.
+//! prepends it to `vm.gc.blocks` and hands its lifetime to the collector.
 //! The threaded one comes from `janet_malloc` directly, is on neither heap
 //! list, and lives until its refcount reaches zero -- so this file has to do
 //! by hand the three things `janet_gcalloc` would have done for it: write the
 //! type tag into `flags`, clear `data.next` (`gc_alloc.zig` never does, because
 //! the list link overwrites it immediately; here the union holds a refcount and
 //! the C original clears the whole word for the sanitizers), and charge the
-//! block against `janet_vm.next_collection`.
+//! block against `vm.gc.next_collection`.
 //!
 //! That accounting is *not* the same charge `janet_gcalloc` makes, and the
 //! difference is preserved. `janet_gcalloc` adds the size it was asked for,
@@ -66,7 +55,7 @@
 //!
 //! `janet_abstract_begin` allocates with `JANET_MEMORY_NONE` and
 //! `janet_abstract_end` writes `JANET_MEMORY_ABSTRACT` over it. The block is on
-//! `janet_vm.blocks` and visible to the collector from the first call, with its
+//! `vm.gc.blocks` and visible to the collector from the first call, with its
 //! payload still uninitialised, and the tag is what makes that safe --
 //! `janet_deinit_block` has no case for `JANET_MEMORY_NONE`, so a collection in
 //! the window frees the block without calling a finalizer on it and without
@@ -97,20 +86,16 @@
 //! Two calls here reach code this runtime does not own.
 //! `janet_abstract_decref_maybe_free` runs the type's `gc` finalizer, and
 //! `janet_abstract_begin_threaded` calls `janet_table_put`, which hashes an
-//! abstract key and so may run the type's own `hash` callback. Under SPIKE-8
-//! both are called directly, in the shape of the C original, and a signal
-//! raised by either jumps straight through the Zig frame that invoked it. There
-//! is no `defer` in this file and `build.zig` checks that there is not.
+//! abstract key and so may run the type's own `hash` callback. Neither may
+//! raise. There is no `defer` in this file.
 //!
-//! One frame here does hold a raw block across such a call, and it is the
-//! exception to Part 6a's observation that every panic happens before the
-//! allocation it guards. `janet_abstract_begin_threaded` has a `janet_malloc`ed
-//! header in hand when it calls `janet_table_put`; a signal out of that call
-//! leaks the header, because nothing has recorded it yet -- not a heap list,
-//! not the visit table, not the caller. The C original leaks it identically,
-//! and the port does not diverge. It is reachable only by the third-party
-//! `hash` callback SPIKE-8 forbids, so it is stated here rather than in
-//! `FOUND.md`.
+//! One frame here does hold a raw block across such a call.
+//! `janet_abstract_begin_threaded` has a `janet_malloc`ed header in hand when
+//! it calls `janet_table_put`; a raise out of that call leaks the header,
+//! because nothing has recorded it yet -- not a heap list, not the visit
+//! table, not the caller. Janet leaks it identically. It is reachable only
+//! through a third-party `hash` callback that is not allowed to raise, so it
+//! is stated here rather than in `FOUND.md`.
 //!
 //! The finalizer is the other way round: by the time it runs, the refcount is
 //! already zero and no other thread can reach the block, so a signal out of it
@@ -126,25 +111,19 @@ const wrap = @import("helpers/wrap.zig");
 const fatal = @import("../fatal.zig");
 const types = @import("types");
 const constants = @import("constants");
-const c = @import("cabi");
+const vm_state = @import("../vm/lifecycle.zig");
 
-/// `janet_vm`, whose layout is `types.JanetVM`'s and whose address
-/// `cabi.vm()` takes.
-inline fn vm() *types.JanetVM {
-    return c.vm();
-}
-
-/// `JANET_VM_HAS_EV` in `src/zig/state_abi.h`. Six of the nine functions here
+/// `config.ev`. Six of the nine functions here
 /// are inside `#ifdef JANET_EV` in the C original, and they reach
-/// `janet_vm.threaded_abstracts`, a field that only exists in that
+/// `vm.ev.threaded_abstracts`, a field that only exists in that
 /// configuration, so this has to gate compilation rather than merely
 /// behaviour.
 const has_ev = constants.JANET_VM_HAS_EV != 0;
 
 /// `janet_gc_settype` from `src/core/gc.h`. An or, not a store; see the note at
 /// the head of the file.
-inline fn gcSetType(head: *types.JanetAbstractHead, mtype: types.JanetMemoryType) void {
-    head.gc.flags |= @as(i32, @intCast(0xFF & mtype));
+inline fn gcSetType(head: *types.JanetAbstractHead, mtype: types.MemoryType) void {
+    head.gc.flags |= @as(i32, @intFromEnum(mtype));
 }
 
 // ------------------------------------------------------- plain abstracts
@@ -153,9 +132,9 @@ inline fn gcSetType(head: *types.JanetAbstractHead, mtype: types.JanetMemoryType
 /// the collector's heap list when this returns, tagged `JANET_MEMORY_NONE` so
 /// that a collection before `janet_abstract_end` frees it without traversing
 /// or finalizing it.
-pub fn begin(atype: *const types.JanetAbstractType, size: usize) ?*anyopaque {
+pub fn begin(atype: *const types.AbstractType, size: usize) ?*anyopaque {
     const header: *types.JanetAbstractHead = @ptrCast(@alignCast(gc_alloc.gcalloc(
-        constants.JANET_MEMORY_NONE,
+        types.MemoryType.none,
         types.abstract_payload +% size,
     )));
     header.size = size;
@@ -166,13 +145,13 @@ pub fn begin(atype: *const types.JanetAbstractType, size: usize) ?*anyopaque {
 /// Publish an abstract the caller has finished initialising, by writing the
 /// type tag the collector dispatches on.
 pub fn end(x: ?*anyopaque) ?*anyopaque {
-    gcSetType(types.abstractHead(x), constants.JANET_MEMORY_ABSTRACT);
+    gcSetType(types.abstractHead(x), types.MemoryType.abstract);
     return x;
 }
 
 /// `janet_abstract_begin` and `janet_abstract_end` in one call, for a payload
 /// the caller fills in afterwards or not at all.
-pub fn new(atype: *const types.JanetAbstractType, size: usize) ?*anyopaque {
+pub fn new(atype: *const types.AbstractType, size: usize) ?*anyopaque {
     return end(begin(atype, size));
 }
 
@@ -181,22 +160,22 @@ pub fn new(atype: *const types.JanetAbstractType, size: usize) ?*anyopaque {
 // The threaded half of the file exists only with the event loop, exactly as
 // `#ifdef JANET_EV` makes it in the C original. Zig analyses a function only
 // when something references it, so the bodies below are never compiled in a
-// build without `janet_vm.threaded_abstracts` to reach.
+// build without `vm.ev.threaded_abstracts` to reach.
 comptime {
     if (has_ev) {}
 }
 
 /// Allocate a threaded abstract. It is on neither heap list; what keeps it
 /// alive is its refcount, and what lets the collector see it at all is the
-/// entry this makes in `janet_vm.threaded_abstracts`, the per-collection visit
+/// entry this makes in `vm.ev.threaded_abstracts`, the per-collection visit
 /// record `gc_mark.zig` writes into and `gc_sweep.zig` reads.
-pub fn beginThreaded(atype: *const types.JanetAbstractType, size: usize) ?*anyopaque {
+pub fn beginThreaded(atype: *const types.AbstractType, size: usize) ?*anyopaque {
     const header: *types.JanetAbstractHead = @ptrCast(@alignCast(utils.malloc(
         types.abstract_payload +% size,
     ) orelse fatal.outOfMemory()));
 
-    vm().next_collection +%= size +% types.abstract_payload;
-    header.gc.flags = @as(i32, @intCast(constants.JANET_MEMORY_THREADED_ABSTRACT));
+    vm_state.current().gc.next_collection +%= size +% types.abstract_payload;
+    header.gc.flags = @intFromEnum(types.MemoryType.threaded_abstract);
     // Clear the union before storing the refcount into it, exactly as the C
     // original does and for the reason its comment gives: the address
     // sanitizers read the whole word.
@@ -205,19 +184,19 @@ pub fn beginThreaded(atype: *const types.JanetAbstractType, size: usize) ?*anyop
     header.size = size;
     header.type = atype;
     const abstract = types.abstractData(header);
-    tables.put(&vm().threaded_abstracts, wrap.fromAbstract(abstract), wrap.fromFalse());
+    tables.put(&vm_state.current().ev.threaded_abstracts, wrap.fromAbstract(abstract), wrap.fromFalse());
     return abstract;
 }
 
 /// The threaded counterpart of `janet_abstract_end`. `janet_abstract_begin_threaded`
 /// has already written this tag, so this sets bits that are already set.
 pub fn endThreaded(x: ?*anyopaque) ?*anyopaque {
-    gcSetType(types.abstractHead(x), constants.JANET_MEMORY_THREADED_ABSTRACT);
+    gcSetType(types.abstractHead(x), types.MemoryType.threaded_abstract);
     return x;
 }
 
 /// `janet_abstract_begin_threaded` and `janet_abstract_end_threaded` in one call.
-pub fn threaded(atype: *const types.JanetAbstractType, size: usize) ?*anyopaque {
+pub fn threaded(atype: *const types.AbstractType, size: usize) ?*anyopaque {
     return endThreaded(beginThreaded(atype, size));
 }
 
@@ -249,7 +228,7 @@ pub fn decrefMaybeFree(abst: ?*anyopaque) i32 {
     const result = decref(abst);
     if (result == 0) {
         const head = types.abstractHead(abst);
-        if (abstract_type.of(head.type).gc) |finalizer| {
+        if (head.type.gc) |finalizer| {
             // `janet_assert(!head->type->gc(...), "finalizer failed")`. A
             // finalizer that reports failure is not an error to be raised: the
             // C original prints and calls `abort`.
@@ -263,16 +242,16 @@ pub fn decrefMaybeFree(abst: ?*anyopaque) i32 {
 
 // ----------------------------------------------------------- atomic counts
 
-// The primitives under the threaded abstract refcount above, moved out of
-// `capi.c` in Phase 10 Part 5. Two other counters in the runtime use them --
-// the event loop's `listener_count` and the VM's `auto_suspend` -- but this is
-// where the refcount they were written for lives.
+// The primitives under the threaded abstract refcount above. Two other
+// counters in the runtime use them -- the event loop's `listener_count` and
+// the VM's `auto_suspend` -- but this is where the refcount they were written
+// for lives.
 //
-// The C original picks between four spellings by preprocessor: `_MSC_VER`
-// interlocked intrinsics, `stdatomic.h`, Plan 9's `aincl`, and GCC's
-// `__atomic_*` builtins. Zig has one spelling that compiles to the right
-// instruction on every target, so the four collapse to one implementation
-// rather than to a Zig `switch` over the same four cases.
+// Janet picks between four spellings by preprocessor: `_MSC_VER` interlocked
+// intrinsics, `stdatomic.h`, Plan 9's `aincl`, and GCC's `__atomic_*`
+// builtins. Zig has one spelling that compiles to the right instruction on
+// every target, so the four collapse to one implementation rather than to a
+// `switch` over the same four cases.
 //
 // `@atomicRmw` answers with the value *before* the operation and
 // `__atomic_add_fetch` with the value after, so each of the first two adds the

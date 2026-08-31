@@ -10,17 +10,14 @@
 //! printing *into text that is already there* behaves differently from
 //! printing into an empty buffer.
 //!
-//! ## What the migration retired
+//! ## No abi
 //!
-//! **`janet_jdn`'s abi is gone**, and this file is why. `pp_pretty.zig`
-//! said of it: "Nothing in the tree calls it — it is declared in no header and
-//! reached from no C file, and has been dead since it was added. It is ported
-//! anyway, so that the two selectors define the same set of symbols; it goes
-//! with the export surface in Phase 11." Both halves were slightly wrong.
-//! `test/pp_pretty.c` *was* calling it, by hand-declaring the symbol — it was
-//! the only caller in the tree — and it went with this contract rather than
-//! with the export surface. What is left is `jdnImpl`, which raises, and which
-//! this file `try`s.
+//! **`janet_jdn`'s abi does not exist**, and this file is why. A comment on it
+//! said: "Nothing in the tree calls it -- it is declared in no header and
+//! reached from no C file, and has been dead since it was added." That was
+//! wrong by one: a C contract *was* calling it, by hand-declaring the symbol,
+//! and it was the only caller in the tree. What is left is `jdn`, which
+//! raises, and which this file `try`s.
 //!
 //! The panic assertions are the other retirement. The C original spelled each
 //! as a fourteen-line `EXPECT_PANIC` macro over `janet_try_init`,
@@ -32,6 +29,7 @@
 const std = @import("std");
 const config = @import("config");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const harness = @import("harness.zig");
@@ -49,29 +47,29 @@ var test_env: *types.JanetTable = undefined;
 
 fn checkBuffer(b: *types.JanetBuffer, expected: []const u8) void {
     const count: usize = @intCast(b.count);
-    if (count != expected.len or !std.mem.eql(u8, b.data.?[0..count], expected)) {
-        std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.data.?[0..count] });
+    if (count != expected.len or !std.mem.eql(u8, b.slice()[0..count], expected)) {
+        std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.slice()[0..count] });
         @panic("buffer mismatch");
     }
 }
 
 fn contains(b: *types.JanetBuffer, needle: []const u8) bool {
     const count: usize = @intCast(b.count);
-    return std.mem.indexOf(u8, b.data.?[0..count], needle) != null;
+    return std.mem.indexOf(u8, b.slice()[0..count], needle) != null;
 }
 
 fn endsWith(b: *types.JanetBuffer, tail: []const u8) bool {
     const count: usize = @intCast(b.count);
-    return std.mem.endsWith(u8, b.data.?[0..count], tail);
+    return std.mem.endsWith(u8, b.slice()[0..count], tail);
 }
 
 fn newlines(b: *types.JanetBuffer) usize {
     const count: usize = @intCast(b.count);
-    return std.mem.count(u8, b.data.?[0..count], "\n");
+    return std.mem.count(u8, b.slice()[0..count], "\n");
 }
 
-fn eval(source: [*:0]const u8) types.Janet {
-    var out: types.Janet = wrap.fromNil();
+fn eval(source: [*:0]const u8) repr.Value {
+    var out: repr.Value = wrap.fromNil();
     std.debug.assert(core_env.dostring(test_env, source, "pp-pretty-test", &out) == 0);
     gc_alloc.gcroot(out);
     return out;
@@ -93,7 +91,7 @@ const guard = config.recursion_guard;
 ///
 /// Eight conversion characters carry the eight flag combinations, and the
 /// width field holds two digits, which bounds the width at 99.
-fn prettyWidth(b: *types.JanetBuffer, width: u32, flags: c_int, x: types.Janet) !void {
+fn prettyWidth(b: *types.JanetBuffer, width: u32, flags: c_int, x: repr.Value) !void {
     const conv = [8]u8{ 'p', 'P', 'q', 'Q', 'm', 'M', 'n', 'N' };
     const index: usize =
         @as(usize, if (flags & constants.JANET_PRETTY_COLOR != 0) 1 else 0) |
@@ -105,7 +103,7 @@ fn prettyWidth(b: *types.JanetBuffer, width: u32, flags: c_int, x: types.Janet) 
     const written = std.fmt.bufPrint(&spec, "%{d}{c}", .{ width, conv[index] }) catch unreachable;
     spec[written.len] = 0;
 
-    var argv = [1]types.Janet{x};
+    var argv = [1]repr.Value{x};
     try format.bufferFormat(b, &spec, -1, argv[0..1]);
 }
 
@@ -118,7 +116,7 @@ fn aNullBufferIsAllocated() !void {
     const b = try pretty.prettyBuffer(null, guard, 80, 0, eval("[1 2 3]"), 0, 0);
     checkBuffer(b, "(1 2 3)");
 
-    const j = try pretty.jdnImpl(null, guard, eval("[1 2 3]"), 0, 0);
+    const j = try pretty.jdn(null, guard, eval("[1 2 3]"), 0, 0);
     checkBuffer(j, "(1 2 3)");
 }
 
@@ -140,10 +138,10 @@ fn theBarrierProtectsEarlierText() !void {
     // the ')' that would otherwise make the backtracker start here.
     const count: usize = @intCast(b.count);
     std.debug.assert(count > preamble.len);
-    std.debug.assert(std.mem.eql(u8, b.data.?[0..preamble.len], preamble));
+    std.debug.assert(std.mem.eql(u8, b.slice()[0..preamble.len], preamble));
 
     // And what followed it did wrap, so the case is not vacuous.
-    std.debug.assert(std.mem.indexOfScalar(u8, b.data.?[preamble.len..count], '\n') != null);
+    std.debug.assert(std.mem.indexOfScalar(u8, b.slice()[preamble.len..count], '\n') != null);
 }
 
 // ------------------------------------------------------------ the width
@@ -297,9 +295,9 @@ fn keysAreSortedBelowTheLimit() !void {
 
     std.debug.assert(forward.count == backward.count);
     const count: usize = @intCast(forward.count);
-    std.debug.assert(std.mem.eql(u8, forward.data.?[0..count], backward.data.?[0..count]));
+    std.debug.assert(std.mem.eql(u8, forward.slice()[0..count], backward.slice()[0..count]));
     // Sorted, so the first entry is the smallest key.
-    std.debug.assert(std.mem.eql(u8, forward.data.?[0..6], "@{0 0 "));
+    std.debug.assert(std.mem.eql(u8, forward.slice()[0..6], "@{0 0 "));
 }
 
 /// Nested dictionaries share one key-sort scratch allocation, each level
@@ -321,7 +319,7 @@ fn nestedDictionariesShareTheKeySortScratch() !void {
 /// where every real caller puts it.
 fn theDepthLimit() !void {
     const b = buffer(64);
-    var argv = [1]types.Janet{eval("[1 [2 [3 [4]]]]")};
+    var argv = [1]repr.Value{eval("[1 [2 [3 [4]]]]")};
     try format.bufferFormat(b, "%.2q", -1, argv[0..1]);
     checkBuffer(b, "(1 (...))");
 }
@@ -335,7 +333,7 @@ fn whatJdnRefuses() !void {
     // One key, because JDN walks a dictionary in storage order rather than
     // sorted order and two would pin the hash layout rather than the writer.
     const b = buffer(64);
-    _ = try pretty.jdnImpl(b, guard, eval("{:a [1 @[2 \"x\"] 1.5]}"), 0, 0);
+    _ = try pretty.jdn(b, guard, eval("{:a [1 @[2 \"x\"] 1.5]}"), 0, 0);
     checkBuffer(b, "{:a (1 @[2 \"x\"] 1.5)}");
 
     for ([_][*:0]const u8{
@@ -344,8 +342,8 @@ fn whatJdnRefuses() !void {
         "math/inf", // nor infinity
     }) |source| {
         const val = eval(source);
-        const r = harness.raised(pretty.jdnImpl, .{ buffer(16), guard, val, @as(i32, 0), @as(i32, 0) }).?;
-        std.debug.assert(r.signal == constants.JANET_SIGNAL_ERROR);
+        const r = harness.raised(pretty.jdn, .{ buffer(16), guard, val, @as(i32, 0), @as(i32, 0) }).?;
+        std.debug.assert(r.signal == types.Signal.@"error");
         std.debug.assert(r.says("could not print to jdn format"));
     }
 }
@@ -355,12 +353,12 @@ fn whatJdnRefuses() !void {
 /// both are tried.
 fn jdnTreatsSymbolsAndKeywordsDifferently() !void {
     const b = buffer(64);
-    _ = try pretty.jdnImpl(b, guard, eval("(keyword \"1abc\")"), 0, 0);
+    _ = try pretty.jdn(b, guard, eval("(keyword \"1abc\")"), 0, 0);
     checkBuffer(b, ":1abc");
 
     const symbol = eval("(symbol \"1abc\")");
     std.debug.assert(harness.raised(
-        pretty.jdnImpl,
+        pretty.jdn,
         .{ buffer(16), guard, symbol, @as(i32, 0), @as(i32, 0) },
     ) != null);
 }

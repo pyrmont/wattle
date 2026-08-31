@@ -43,7 +43,6 @@ const harness = @import("harness.zig");
 const vm_lifecycle = @import("subsystems").lifecycle;
 const types = @import("types");
 const constants = @import("constants");
-const c = @import("cabi");
 
 /// `JOP_JUMP`'s offset is a signed 24-bit field in the top three bytes, so a
 /// backward jump is written as a wrapped `u32`.
@@ -90,17 +89,17 @@ fn theThreeTablesMoveTogether() void {
     remove_noops.bytecodeRemoveNoops(&definition);
 
     std.debug.assert(definition.bytecode_length == 4);
-    std.debug.assert(definition.bytecode.?[0] == constants.JOP_LOAD_NIL);
-    std.debug.assert(definition.bytecode.?[1] ==
+    std.debug.assert(definition.instructions()[0] == constants.JOP_LOAD_NIL);
+    std.debug.assert(definition.instructions()[1] ==
         (constants.JOP_JUMP_IF | (@as(u32, 2) << 8) | (@as(u32, 2) << 16)));
-    std.debug.assert(definition.bytecode.?[2] == jump(-2));
-    std.debug.assert(definition.bytecode.?[3] == constants.JOP_RETURN_NIL);
+    std.debug.assert(definition.instructions()[2] == jump(-2));
+    std.debug.assert(definition.instructions()[3] == constants.JOP_RETURN_NIL);
 
     // Lines 10 and 13 belonged to the two noops and go with them.
-    std.debug.assert(definition.sourcemap.?[0].line == 11);
-    std.debug.assert(definition.sourcemap.?[1].line == 12);
-    std.debug.assert(definition.sourcemap.?[2].line == 14);
-    std.debug.assert(definition.sourcemap.?[3].line == 15);
+    std.debug.assert(definition.sourceMappings()[0].line == 11);
+    std.debug.assert(definition.sourceMappings()[1].line == 12);
+    std.debug.assert(definition.sourceMappings()[2].line == 14);
+    std.debug.assert(definition.sourceMappings()[3].line == 15);
 
     std.debug.assert(symbols[0].birth_pc == 0);
     std.debug.assert(symbols[0].death_pc == 3);
@@ -125,13 +124,13 @@ fn aFunctionWithNoNoopsIsUntouched() void {
     remove_noops.bytecodeRemoveNoops(&definition);
 
     std.debug.assert(definition.bytecode_length == 1);
-    std.debug.assert(definition.bytecode.?[0] == constants.JOP_RETURN_NIL);
+    std.debug.assert(definition.instructions()[0] == constants.JOP_RETURN_NIL);
 
     utils.free(@ptrCast(definition.bytecode));
 }
 
 /// The runtime is initialised here and by nine sibling contracts it is not,
-/// which is the distinction Phase 11 Part 27 had to make the hard way.
+/// which is a distinction this file had to make the hard way.
 ///
 /// `janet_bytecode_remove_noops` opens with `janet_smalloc` for its pc map, so
 /// this subject reaches VM state even though it looks like pure bytecode

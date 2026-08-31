@@ -1,21 +1,19 @@
 //! Janet's pseudo-random number generator and the numeric kernels behind the
 //! `math/` library.
 //!
-//! The RNG is public C ABI and its state is marshalled, so this port is
-//! bit-exact with the C original by construction rather than by convention.
-//! None of these functions touch Janet values or raise signals.
+//! The RNG is public C ABI and its state is marshalled, so this is bit-exact
+//! with Janet by construction rather than by convention.
 //!
-//! The `math/` cfunctions themselves stayed in C, because their bodies are
-//! argument extraction that panics on a type or arity mismatch and no Janet
-//! signal could then unwind across a Zig frame. Phase 10 Part 6 brought them
-//! here, at the foot of the file, along with the RNG abstract type; jump
-//! transparency is what makes a frame that raises legal.
+//! The `math/` cfunctions are at the foot of the file, along with the RNG
+//! abstract type. Their bodies are argument extraction that raises on a type
+//! or arity mismatch, which is an ordinary returned error here.
 
 const std = @import("std");
 const corefn = @import("corefn");
 const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
+const vm_state = @import("vm/lifecycle.zig");
 const buffers = @import("value/buffers.zig");
 const raise = @import("raise");
 const registry = @import("registry.zig");
@@ -24,7 +22,6 @@ const abstract_type = @import("abstract_type.zig");
 const method_type = @import("method_type.zig");
 const builtin = @import("builtin");
 const tuples = @import("value/tuples.zig");
-const kind = @import("value/helpers/kind.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const args_core = @import("args.zig");
 const abstracts = @import("value/abstracts.zig");
@@ -128,16 +125,14 @@ pub fn zigMathLcm(x: f64, y: f64) f64 {
 // ==========================================================================
 // math/*, `not`, and the RNG abstract type: the cfunction surface.
 //
-// Phase 10 Part 6. `-Dmath-core` already owned the generator and the two
-// kernels above; what arrives here is the standard-library surface over them,
-// which stayed in C because every entry point raises.
+// `math.zig` owns the generator, the two kernels above, and the
+// standard-library surface over them.
 //
-// One consequence is visible in `cfunRngBuffer` below. The C original reserves
-// the buffer space on its side of the seam with a comment saying why -- "a
-// Janet signal must not unwind across a Zig frame" -- and that rule went in
-// Phase 8. The reservation stays where it is because `janet_buffer_extra` is
-// still what grows the buffer, but it is now an ordinary call in an ordinary
-// frame rather than a boundary arrangement.
+// One consequence is visible in `cfunRngBuffer` below. Janet reserves the
+// buffer space on its side of a seam with a comment saying why -- "a Janet
+// signal must not unwind across a Zig frame". The reservation stays where it
+// is because `janet_buffer_extra` is still what grows the buffer, but it is an
+// ordinary call in an ordinary frame rather than a boundary arrangement.
 // ==========================================================================
 
 const plan9 = (builtin.os.tag == .plan9);
@@ -151,7 +146,7 @@ const plan9 = (builtin.os.tag == .plan9);
 /// same implementation.
 fn MathOp(comptime fop: anytype) type {
     return struct {
-        fn call(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+        fn call(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             try args_core.fixarity(argv, 1);
             return wrap.fromNumber(fop(try args_core.getNumber(argv, 0)));
         }
@@ -161,7 +156,7 @@ fn MathOp(comptime fop: anytype) type {
 /// `JANET_DEFINE_MATH2OP`.
 fn Math2Op(comptime fop: anytype) type {
     return struct {
-        fn call(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+        fn call(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             try args_core.fixarity(argv, 2);
             const lhs = try args_core.getNumber(argv, 0);
             const rhs = try args_core.getNumber(argv, 1);
@@ -170,7 +165,7 @@ fn Math2Op(comptime fop: anytype) type {
     };
 }
 
-inline fn wrapInteger(x: i32) types.Janet {
+inline fn wrapInteger(x: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(x));
 }
 
@@ -183,20 +178,17 @@ const rng_methods = [_]method_type.Method{
     .{ .name = null, .cfun = null },
 };
 
-fn rngGet(p: ?*anyopaque, key: types.Janet, out: *types.Janet) raise.Raising(c_int) {
-    _ = p;
-    if (kind.checkType(key, constants.JANET_KEYWORD) == 0) return 0;
+fn rngGet(_: *types.JanetRNG, key: repr.Value, out: *repr.Value) raise.Raising(c_int) {
+    if (!repr.checkType(key, repr.Tag.keyword)) return 0;
     return args_core.getmethod(wrap.toKeyword(key), @ptrCast(&rng_methods), out);
 }
 
-fn rngNext(p: ?*anyopaque, key: types.Janet) raise.Raising(types.Janet) {
-    _ = p;
+fn rngNext(_: *types.JanetRNG, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(&rng_methods), key);
 }
 
-fn rngMarshal(p: ?*anyopaque, ctx: *types.JanetMarshalContext) raise.Raising(void) {
-    const rng: *types.JanetRNG = @ptrCast(@alignCast(p));
-    marsh.marshalAbstract(ctx, p);
+fn rngMarshal(rng: *types.JanetRNG, ctx: *types.JanetMarshalContext) raise.Raising(void) {
+    marsh.marshalAbstract(ctx, rng);
     try marsh.marshalInt(ctx, @bitCast(rng.a));
     try marsh.marshalInt(ctx, @bitCast(rng.b));
     try marsh.marshalInt(ctx, @bitCast(rng.c));
@@ -204,7 +196,7 @@ fn rngMarshal(p: ?*anyopaque, ctx: *types.JanetMarshalContext) raise.Raising(voi
     try marsh.marshalInt(ctx, @bitCast(rng.counter));
 }
 
-fn rngUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
+fn rngUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*types.JanetRNG) {
     const rng: *types.JanetRNG = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(types.JanetRNG))));
     rng.a = @bitCast(try marsh.unmarshalInt(ctx));
     rng.b = @bitCast(try marsh.unmarshalInt(ctx));
@@ -214,33 +206,21 @@ fn rngUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
     return rng;
 }
 
-/// Exported under C's name because `janet.h` declares it and `marsh.c` looks
-/// abstract types up by address. Field order follows the struct definition
-/// rather than the C initialiser's positional list, which is the same thing
-/// said unambiguously.
-pub const rngType: abstract_type.AbstractType = .{
+/// Exported under C's name because `marsh.zig` looks abstract types up by
+/// address and eleven of them are published as data symbols.
+pub const rngType = abstract_type.define(types.JanetRNG, .{
     .name = "core/rng",
-    .gc = null,
-    .gcmark = null,
     .get = &rngGet,
-    .put = null,
     .marshal = &rngMarshal,
     .unmarshal = &rngUnmarshal,
-    .tostring = null,
-    .compare = null,
-    .hash = null,
     .next = &rngNext,
-    .call = null,
-    .length = null,
-    .bytes = null,
-    .gcperthread = null,
-};
+});
 
 // ----------------------------------------------------------- the cfunctions
 
-fn cfunRngMake(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunRngMake(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 1);
-    const rng: *types.JanetRNG = @ptrCast(@alignCast(abstracts.new(abstract_type.stored(&rngType), @sizeOf(types.JanetRNG))));
+    const rng: *types.JanetRNG = @ptrCast(@alignCast(abstracts.new(&rngType, @sizeOf(types.JanetRNG))));
     if (@as(i32, @intCast(argv.len)) == 1) {
         if (args_core.checkint(argv[0]) != 0) {
             rngSeed(rng, @bitCast(try args_core.getInteger(argv, 0)));
@@ -254,24 +234,24 @@ fn cfunRngMake(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.
     return wrap.fromAbstract(rng);
 }
 
-fn cfunRngUniform(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunRngUniform(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const rng: *types.JanetRNG = @ptrCast(@alignCast(try args_core.getAbstract(argv, 0, abstract_type.stored(&rngType))));
+    const rng: *types.JanetRNG = @ptrCast(@alignCast(try args_core.getAbstract(argv, 0, &rngType)));
     return wrap.fromNumber(rngDouble(rng));
 }
 
-fn cfunRngInt(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunRngInt(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
-    const rng: *types.JanetRNG = @ptrCast(@alignCast(try args_core.getAbstract(argv, 0, abstract_type.stored(&rngType))));
+    const rng: *types.JanetRNG = @ptrCast(@alignCast(try args_core.getAbstract(argv, 0, &rngType)));
     if (@as(i32, @intCast(argv.len)) == 1) return wrapInteger(@bitCast(rngU32(rng) >> 1));
     const max = try args_core.optNat(argv, 1, std.math.maxInt(i32));
     if (max == 0) return wrap.fromNumber(0.0);
     return wrapInteger(zigMathRngInt(rng, max));
 }
 
-fn cfunRngBuffer(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunRngBuffer(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 3);
-    const rng: *types.JanetRNG = @ptrCast(@alignCast(try args_core.getAbstract(argv, 0, abstract_type.stored(&rngType))));
+    const rng: *types.JanetRNG = @ptrCast(@alignCast(try args_core.getAbstract(argv, 0, &rngType)));
     const n = try args_core.getNat(argv, 1);
     const buffer = try args_core.optBuffer(argv, 2, n);
     try buffers.extra(buffer, n);
@@ -280,38 +260,38 @@ fn cfunRngBuffer(argv: []types.Janet) align(corefn.alignment) raise.Raising(type
     return wrap.fromBuffer(buffer);
 }
 
-fn cfunRand(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunRand(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
-    return wrap.fromNumber(rngDouble(&c.vm().rng));
+    return wrap.fromNumber(rngDouble(&vm_state.current().rng));
 }
 
-fn cfunSrand(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunSrand(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     if (args_core.checkint(argv[0]) != 0) {
-        rngSeed(&c.vm().rng, @bitCast(try args_core.getInteger(argv, 0)));
+        rngSeed(&vm_state.current().rng, @bitCast(try args_core.getInteger(argv, 0)));
     } else {
         const bytes = try args_core.getBytes(argv, 0);
-        rngLongseed(&c.vm().rng, args_core.viewBytes(bytes));
+        rngLongseed(&vm_state.current().rng, args_core.viewBytes(bytes));
     }
     return wrap.fromNil();
 }
 
-fn cfunNot(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunNot(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    return wrap.fromBoolean(@intFromBool(kind.truthy(argv[0]) == 0));
+    return wrap.fromBoolean(!repr.truthy(argv[0]));
 }
 
-fn cfunGcd(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunGcd(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     return wrap.fromNumber(zigMathGcd(try args_core.getNumber(argv, 0), try args_core.getNumber(argv, 1)));
 }
 
-fn cfunLcm(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunLcm(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     return wrap.fromNumber(zigMathLcm(try args_core.getNumber(argv, 0), try args_core.getNumber(argv, 1)));
 }
 
-fn cfunFrexp(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunFrexp(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     var exp: c_int = undefined;
     const mantissa = c.frexp(try args_core.getNumber(argv, 0), &exp);
@@ -321,7 +301,7 @@ fn cfunFrexp(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Ja
     return wrap.fromTuple(tuples.end(result));
 }
 
-fn cfunLdexp(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunLdexp(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const x = try args_core.getNumber(argv, 0);
     const y = try args_core.getInteger(argv, 1);
@@ -343,7 +323,7 @@ const MathEntry = struct {
     plan9_only_absent: bool = false,
 };
 
-pub fn janet_lib_mathImpl(env: *types.JanetTable) raise.Raising(void) {
+pub fn libMath(env: *types.JanetTable) raise.Raising(void) {
     const ops = [_]MathEntry{
         .{ .janet_name = "acos", .fop = &c.acos, .doc = "Returns the arccosine of x." },
         .{ .janet_name = "asin", .fop = &c.asin, .doc = "Returns the arcsin of x." },
@@ -433,7 +413,7 @@ pub fn janet_lib_mathImpl(env: *types.JanetTable) raise.Raising(void) {
         break :blk list;
     };
 
-    const written = [_]corefn.Entry{
+    const written = comptime [_]corefn.Entry{
         corefn.reg("not", &cfunNot, @src(), "(not x)", "Returns the boolean inverse of x."),
         corefn.reg("math/random", &cfunRand, @src(), "(math/random)", "Returns a uniformly distributed random number between 0 and 1."),
         corefn.reg("math/seedrandom", &cfunSrand, @src(), "(math/seedrandom seed)", "Set the seed for the random number generator. `seed` should be " ++
@@ -452,9 +432,8 @@ pub fn janet_lib_mathImpl(env: *types.JanetTable) raise.Raising(void) {
         corefn.reg("math/ldexp", &cfunLdexp, @src(), "(math/ldexp m e)", "Creates a new number from a mantissa and an exponent."),
     };
 
-    const entries = generated ++ written ++ [_]corefn.Entry{corefn.end};
-    corefn.install(env, entries);
-    try registry.registerAbstractType(abstract_type.stored(&rngType));
+    corefn.install(env, generated ++ written);
+    try registry.registerAbstractType(&rngType);
 
     // Bootstrap-only, exactly as in the C original: the runtime finds these in
     // the image and defining them again would be work with no effect.
@@ -470,8 +449,8 @@ pub fn janet_lib_mathImpl(env: *types.JanetTable) raise.Raising(void) {
     corefn.def(env, "math/nan", wrap.fromNumber(std.math.nan(f64)), @src(), "Not a number (IEEE-754 NaN)");
 }
 
-pub fn libMath(env: *types.JanetTable) void {
-    raise.reported(janet_lib_mathImpl(env));
+pub fn libMathAbi(env: *types.JanetTable) void {
+    raise.reported(libMath(env));
 }
 
 /// `janet_default_rng`. The VM's own generator, which `math/seed` and
@@ -480,5 +459,5 @@ pub fn libMath(env: *types.JanetTable) void {
 /// It was the last symbol `math.c` defined, and it was there only because
 /// `janet_vm` was C's. It is one field access.
 pub fn defaultRng() *types.JanetRNG {
-    return &c.vm().rng;
+    return &vm_state.current().rng;
 }

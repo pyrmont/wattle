@@ -1,17 +1,13 @@
 //! The `os/` module: what the host is, what time it is, and what the
 //! environment holds.
 //!
-//! Four files until Phase 12 increment 6f -- `os_surface.zig` with the
-//! cfunctions, and `os_time.zig`, `os_platform.zig` and `os_environ.zig` behind
-//! the C-ABI seam it reached them through. `port/TREE.md` gives them one name
-//! because Janet publishes one: `os`. The pieces that keep names of their own
-//! are beside this file in `os/`.
+//! Four files once -- the cfunctions in one, and the time, platform and
+//! environment kernels behind the C-ABI seam it reached them through. They
+//! have one name because Janet publishes one: `os`. The pieces that keep names
+//! of their own are beside this file in `os/`.
 //!
-//! ## Seven seam entries, and why the exports are still conditional
-//!
-//! `os_surface.zig` declared seven `extern fn` that `os_time.zig` and
-//! `os_environ.zig` defined as `export fn`. One file cannot hold both, so the
-//! merge converted them; they are ordinary Zig calls now.
+//! Seven `extern fn` here were `export fn` there. One file cannot hold both,
+//! so the merge converted them; they are ordinary Zig calls.
 //!
 //! **The `@export`s kept their gates, and that is the point.** The four sources
 //! did not share one: `os_platform` and `os_surface` were unconditional,
@@ -35,7 +31,7 @@ const os_calendar = @import("os/date.zig");
 const os_files = @import("os/fs.zig");
 const os_procs = @import("os/process.zig");
 const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
 const stdio = @import("stdio.zig");
 const vm_lifecycle = @import("vm/lifecycle.zig");
@@ -45,7 +41,6 @@ const tables = @import("value/tables.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
 const order = @import("value/helpers/order.zig");
-const kind = @import("value/helpers/kind.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const args_core = @import("args.zig");
 const buffers = @import("value/buffers.zig");
@@ -68,15 +63,9 @@ const has_ev = os_files.has_ev;
 // The kernels, and the rest of the C ABI
 // ==========================================================================
 
-extern fn janet_os_name() callconv(.c) [*:0]const u8;
-extern fn janet_os_arch() callconv(.c) [*:0]const u8;
-extern fn janet_os_compiler() callconv(.c) [*:0]const u8;
-extern fn janet_os_cpu_count() callconv(.c) i32;
-
 /// `src/core/util.h`. Reports the clock in parts, because `struct timespec`
 /// cannot be named from Zig; `util.c` supplies it over either arm of
 /// `-Dos-time`, and the note there says why.
-extern fn janet_deinit() callconv(.c) void;
 extern fn exit(status: c_int) callconv(.c) noreturn;
 extern fn _Exit(status: c_int) callconv(.c) noreturn;
 extern fn setlocale(category: c_int, locale: ?[*:0]const u8) callconv(.c) ?[*:0]const u8;
@@ -84,18 +73,16 @@ extern fn isatty(fd: c_int) callconv(.c) c_int;
 extern fn _isatty(fd: c_int) callconv(.c) c_int;
 extern fn fileno(f: ?*anyopaque) callconv(.c) c_int;
 extern fn _fileno(f: ?*anyopaque) callconv(.c) c_int;
-extern fn janet_strerror(e: c_int) callconv(.c) [*:0]const u8;
 
-/// `src/core/io.c`'s `stdout` handle. Part 11 records the three incompatible
-/// shapes translate-c gives the macro across this project's targets, which is
-/// why it is a function rather than a variable.
-/// `janet_wrap_integer`, written out rather than called. `janet.h` declares the
-/// function beside its macro and `wrap.c` defines it only for the two nanbox
-/// layouts, so a tagged build has no such symbol and a Zig caller -- which
-/// cannot use the macro -- does not link. `marsh.zig`, `pp_pretty.zig` and
-/// `value_access.zig` write it out for the same reason, and `FOUND.md` has the
-/// defect. This is the fourth subsystem to meet it.
-inline fn wrapInteger(x: i32) types.Janet {
+/// The `stdout` handle. It is a function rather than a variable because the
+/// macro has three incompatible shapes across this project's targets.
+/// `janet_wrap_integer`, written out rather than called. Janet declares the
+/// function beside its macro and defines it only for the two nanbox layouts,
+/// so a tagged build has no such symbol and a Zig caller -- which cannot use
+/// the macro -- does not link. `marsh.zig`, `pp/pretty.zig` and
+/// `value/helpers/access.zig` write it out for the same reason, and `FOUND.md`
+/// has the defect.
+inline fn wrapInteger(x: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(x));
 }
 
@@ -107,41 +94,41 @@ inline fn errno() c_int {
 // Platform introspection
 // ==========================================================================
 
-/// The `JANET_OS_NAME` and `JANET_ARCH_NAME` build overrides, stringified in
-/// `state_abi.h` because they are bare tokens and translate-c surfaces a
-/// macro's *value*. Where one is set it wins over the derived name, which is
-/// what `os.c` does under `JANET_ZIG_OS_PLATFORM`.
+/// The `JANET_OS_NAME` and `JANET_ARCH_NAME` build overrides. Janet spells
+/// them as bare tokens and stringifies them at the use; `config` carries them
+/// as strings already. Where one is set it wins over the derived name, which
+/// is what `os.c` does under `JANET_ZIG_OS_PLATFORM`.
 const os_name_override: ?[:0]const u8 = if (config.os_name) |n| n ++ "" else null;
 const arch_name_override: ?[:0]const u8 = if (config.arch_name) |n| n ++ "" else null;
 
 fn whichName() [*:0]const u8 {
     if (os_name_override) |name| return name.ptr;
-    return janet_os_name();
+    return osName();
 }
 
-fn whichImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunWhich(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 1);
-    if (@as(i32, @intCast(argv.len)) == 1 and kind.truthy(argv[0]) != 0) {
+    if (@as(i32, @intCast(argv.len)) == 1 and repr.truthy(argv[0])) {
         _ = try args_core.getKeyword(argv, 0); // Constrain to keywords.
-        return wrap.fromBoolean(order.equals(argv[0], value.fromBytes(std.mem.span(whichName()), .keyword)));
+        return wrap.fromBoolean(order.equals(argv[0], value.fromBytes(std.mem.span(whichName()), .keyword)) != 0);
     }
     return value.fromBytes(std.mem.span(whichName()), .keyword);
 }
 
-fn archImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunArch(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
     if (arch_name_override) |name| return value.fromBytes(name, .keyword);
-    return value.fromBytes(std.mem.span(janet_os_arch()), .keyword);
+    return value.fromBytes(std.mem.span(osArch()), .keyword);
 }
 
-fn compilerImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunCompiler(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
-    return value.fromBytes(std.mem.span(janet_os_compiler()), .keyword);
+    return value.fromBytes(std.mem.span(osCompiler()), .keyword);
 }
 
-fn exitImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunExit(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 2);
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_EXIT);
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"exit"}));
     var status: c_int = 0;
     if (@as(i32, @intCast(argv.len)) == 0) {
         status = 0;
@@ -152,15 +139,15 @@ fn exitImpl(argv: []types.Janet) raise.Raising(types.Janet) {
         // has always used EXIT_FAILURE instead. Reproduced.
         status = 1;
     }
-    const force = @as(i32, @intCast(argv.len)) >= 2 and kind.truthy(argv[1]) != 0;
-    janet_deinit();
+    const force = @as(i32, @intCast(argv.len)) >= 2 and repr.truthy(argv[1]);
+    vm_lifecycle.deinitAbi();
     if (force) _Exit(status);
     exit(status);
 }
 
-fn cpuCountImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunCpuCount(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 1);
-    const count = janet_os_cpu_count();
+    const count = osCpuCount();
     if (count < 0) return if (@as(i32, @intCast(argv.len)) > 0) argv[0] else wrap.fromNil();
     return wrapInteger(count);
 }
@@ -176,11 +163,11 @@ const locale_categories = [_]struct { name: [:0]const u8, value: c_int }{
     .{ .name = "time", .value = h.LC_TIME },
 };
 
-fn setlocaleImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunSetlocale(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 2);
     const locale_name = try args_core.optCString(argv, 0, null);
     var category: c_int = h.LC_ALL;
-    if (@as(i32, @intCast(argv.len)) > 1 and kind.checkType(argv[1], constants.JANET_NIL) == 0) {
+    if (@as(i32, @intCast(argv.len)) > 1 and !repr.checkType(argv[1], repr.Tag.nil)) {
         category = for (locale_categories) |entry| {
             if (args_core.keyeq(argv[1], entry.name.ptr) != 0) break entry.value;
         } else return pp_format.panicf(
@@ -192,9 +179,7 @@ fn setlocaleImpl(argv: []types.Janet) raise.Raising(types.Janet) {
     return value.fromBytes(std.mem.span(old), .string);
 }
 
-extern fn janet_cryptorand(out: [*]u8, n: usize) callconv(.c) c_int;
-
-fn cryptorandImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunCryptorand(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const n = try args_core.getInteger(argv, 0);
     if (n < 0) return raise.panic("expected positive integer");
@@ -207,28 +192,26 @@ fn cryptorandImpl(argv: []types.Janet) raise.Raising(types.Janet) {
         buffer = buffers.new(n);
     }
     try buffers.setcount(buffer, offset + n);
-    if (janet_cryptorand(buffer.data.? + @as(usize, @intCast(offset)), @intCast(n)) != 0) {
+    if (utils.cryptorand(buffer.data.? + @as(usize, @intCast(offset)), @intCast(n)) != 0) {
         return raise.panic("unable to get sufficient random data");
     }
     return wrap.fromBuffer(buffer);
 }
 
-extern fn janet_getfile(argv: [*]const types.Janet, n: i32, flags: [*]i32) callconv(.c) ?*anyopaque;
-
-fn isattyImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunIsatty(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 1);
     const f: ?*io_core.FILE = if (@as(i32, @intCast(argv.len)) == 1)
-        try io_core.janet_getfileImpl(argv, 0, null)
+        try io_core.getfile(argv, 0, null)
     else
         @ptrCast(@alignCast(stdio.out()));
     if (windows) {
         const fd = _fileno(f);
         if (fd == -1) return raise.panic("not a valid stream");
-        return wrap.fromBoolean(_isatty(fd));
+        return wrap.fromBoolean(_isatty(fd) != 0);
     }
     const fd = fileno(f);
-    if (fd == -1) return raise.panic(@ptrCast(janet_strerror(errno())));
-    return wrap.fromBoolean(isatty(fd));
+    if (fd == -1) return raise.panic(@ptrCast(utils.strerrorSafe(errno())));
+    return wrap.fromBoolean(isatty(fd) != 0);
 }
 
 // ==========================================================================
@@ -240,8 +223,8 @@ fn isattyImpl(argv: []types.Janet) raise.Raising(types.Janet) {
 // copy of the borrowed `getenv` result rather than only across the call.
 // ==========================================================================
 
-fn environImpl(argv: []types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_ENV);
+fn cfunEnviron(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"env"}));
     try args_core.fixarity(argv, 0);
     oa.lockEnviron();
     const env = oa.getEnviron();
@@ -266,8 +249,8 @@ fn environImpl(argv: []types.Janet) raise.Raising(types.Janet) {
     return wrap.fromTable(t);
 }
 
-fn getenvImpl(argv: []types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_ENV);
+fn cfunGetenv(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"env"}));
     try args_core.arity(argv, 1, 2);
     const cstr = try args_core.getCString(argv, 0);
     oa.lockEnviron();
@@ -285,8 +268,8 @@ fn getenvImpl(argv: []types.Janet) raise.Raising(types.Janet) {
 /// `os/setenv` declares an arity of one to two and reads two arguments, so
 /// `(os/setenv "K")` unsets. The result of the host call is discarded, exactly
 /// as the C original discards it.
-fn setenvImpl(argv: []types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_ENV);
+fn cfunSetenv(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"env"}));
     try args_core.arity(argv, 1, 2);
     const ks = try args_core.getCString(argv, 0);
     const vs = try args_core.optCString(argv, 1, null);
@@ -300,7 +283,7 @@ fn setenvImpl(argv: []types.Janet) raise.Raising(types.Janet) {
 // Clocks
 // ==========================================================================
 
-fn timeImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunTime(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
     return wrap.fromNumber(timeNow());
 }
@@ -314,8 +297,8 @@ const clock_sources = [_]struct { name: [:0]const u8, value: i32 }{
     .{ .name = "cputime", .value = 2 },
 };
 
-fn clockImpl(argv: []types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_HRTIME);
+fn cfunClock(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"hrtime"}));
     try args_core.arity(argv, 0, 2);
 
     const sourcestr = try args_core.optKeyword(argv, 0, null);
@@ -340,16 +323,16 @@ fn clockImpl(argv: []types.Janet) raise.Raising(types.Janet) {
     } else if (utils.cstrcmp(formatstr.?, "int") == 0) {
         return wrap.fromNumber(@floatFromInt(sec));
     } else if (utils.cstrcmp(formatstr.?, "tuple") == 0) {
-        var tup = [2]types.Janet{
+        var tup = [2]repr.Value{
             wrap.fromNumber(@floatFromInt(sec)),
             wrap.fromNumber(@floatFromInt(nsec)),
         };
-        return wrap.fromTuple(tuples.newFrom(&tup, 2));
+        return wrap.fromTuple(tuples.newFrom(&tup));
     }
     return pp_format.panicf("expected :double, :int, or :tuple, got %v", .{argv[1]});
 }
 
-fn sleepImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunSleep(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const delay = try args_core.getNumber(argv, 0);
     if (delay < 0) return raise.panic("invalid argument to sleep");
@@ -362,32 +345,32 @@ fn sleepImpl(argv: []types.Janet) raise.Raising(types.Janet) {
 //
 // The order is `janet_lib_os`'s, and it is preserved rather than tidied:
 // `janet_nextmethod` walks a registration table linearly, so the order of the
-// rows is observable. Part 7 found that the hard way in the parser.
+// rows is observable.
 // ==========================================================================
 
 fn selfEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/exit", &exitImpl, @src(), "(os/exit &opt x force)", "Exit from janet with an exit code equal to x. If x is not an integer, " ++
+            corefn.reg("os/exit", &cfunExit, @src(), "(os/exit &opt x force)", "Exit from janet with an exit code equal to x. If x is not an integer, " ++
                 "the exit with status equal the hash of x. If `force` is truthy will exit immediately and " ++
                 "skip cleanup code."),
-            corefn.reg("os/which", &whichImpl, @src(), "(os/which &opt test)", "Check the current operating system. If `test` is nil or unset, Returns one of:\n\n" ++
+            corefn.reg("os/which", &cfunWhich, @src(), "(os/which &opt test)", "Check the current operating system. If `test` is nil or unset, Returns one of:\n\n" ++
                 "* :windows\n\n* :mingw\n\n* :cygwin\n\n* :macos\n\n" ++
                 "* :web - Web assembly (emscripten)\n\n" ++
                 "* :linux\n\n* :hurd\n\n* :freebsd\n\n* :openbsd\n\n* :netbsd\n\n" ++
                 "* :dragonfly\n\n* :bsd\n\n" ++
                 "* :posix - A POSIX compatible system (default)\n\n" ++
                 "May also return a custom keyword specified at build time. Is `test` is truthy, will check if the current operating system equals `test` and return true if they are the same, false otherwise."),
-            corefn.reg("os/arch", &archImpl, @src(), "(os/arch)", "Check the ISA that janet was compiled for. Returns one of:\n\n" ++
+            corefn.reg("os/arch", &cfunArch, @src(), "(os/arch)", "Check the ISA that janet was compiled for. Returns one of:\n\n" ++
                 "* :x86\n\n* :x64\n\n* :arm\n\n* :aarch64\n\n* :riscv32\n\n* :riscv64\n\n" ++
                 "* :sparc\n\n* :wasm\n\n* :s390\n\n* :s390x\n\n* :unknown\n"),
-            corefn.reg("os/compiler", &compilerImpl, @src(), "(os/compiler)", "Get the compiler used to compile the interpreter. Returns one of:\n\n" ++
+            corefn.reg("os/compiler", &cfunCompiler, @src(), "(os/compiler)", "Get the compiler used to compile the interpreter. Returns one of:\n\n" ++
                 "* :gcc\n\n* :clang\n\n* :msvc\n\n* :kencc\n\n* :unknown\n\n"),
         };
         if (!reduced_os) {
             acc = acc ++ [_]corefn.Entry{
-                corefn.reg("os/cpu-count", &cpuCountImpl, @src(), "(os/cpu-count &opt dflt)", "Get an approximate number of CPUs available on for this process to use. If " ++
+                corefn.reg("os/cpu-count", &cfunCpuCount, @src(), "(os/cpu-count &opt dflt)", "Get an approximate number of CPUs available on for this process to use. If " ++
                     "unable to get an approximation, will return a default value dflt."),
             };
         }
@@ -404,7 +387,7 @@ fn miscEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/cryptorand", &cryptorandImpl, @src(), "(os/cryptorand n &opt buf)", "Get or append `n` bytes of good quality random data provided by the OS. Returns a new buffer or `buf`."),
+            corefn.reg("os/cryptorand", &cfunCryptorand, @src(), "(os/cryptorand n &opt buf)", "Get or append `n` bytes of good quality random data provided by the OS. Returns a new buffer or `buf`."),
         };
         break :blk acc[0..acc.len].*;
     };
@@ -415,7 +398,7 @@ fn clockEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/time", &timeImpl, @src(), "(os/time)", "Get the current time expressed as the number of whole seconds since " ++
+            corefn.reg("os/time", &cfunTime, @src(), "(os/time)", "Get the current time expressed as the number of whole seconds since " ++
                 "January 1, 1970, the Unix epoch. Returns a real number."),
         };
         break :blk acc[0..acc.len].*;
@@ -427,24 +410,24 @@ fn tailEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/sleep", &sleepImpl, @src(), "(os/sleep n)", "Suspend the program for `n` seconds. `n` can be a real number. Returns " ++
+            corefn.reg("os/sleep", &cfunSleep, @src(), "(os/sleep n)", "Suspend the program for `n` seconds. `n` can be a real number. Returns " ++
                 "nil."),
-            corefn.reg("os/isatty", &isattyImpl, @src(), "(os/isatty &opt file)", "Returns true if `file` is a terminal. If `file` is not specified, " ++
+            corefn.reg("os/isatty", &cfunIsatty, @src(), "(os/isatty &opt file)", "Returns true if `file` is a terminal. If `file` is not specified, " ++
                 "it will default to standard output."),
         };
         if (!no_locales) acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/setlocale", &setlocaleImpl, @src(), "(os/setlocale &opt locale category)", "Set the system locale, which affects how dates and numbers are formatted. " ++
+            corefn.reg("os/setlocale", &cfunSetlocale, @src(), "(os/setlocale &opt locale category)", "Set the system locale, which affects how dates and numbers are formatted. " ++
                 "Passing nil to locale will return the current locale. Category can be one of:\n\n" ++
                 " * :all (default)\n * :collate\n * :ctype\n * :monetary\n * :numeric\n * :time\n\n" ++
                 "Returns the new locale if set successfully, otherwise nil. Note that this will affect " ++
                 "other functions such as `os/strftime` and even `printf`."),
         };
         if (!plan9) acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/environ", &environImpl, @src(), "(os/environ)", "Get a copy of the OS environment table."),
+            corefn.reg("os/environ", &cfunEnviron, @src(), "(os/environ)", "Get a copy of the OS environment table."),
         };
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/getenv", &getenvImpl, @src(), "(os/getenv variable &opt dflt)", "Get the string value of an environment variable."),
-            corefn.reg("os/setenv", &setenvImpl, @src(), "(os/setenv variable value)", "Set an environment variable."),
+            corefn.reg("os/getenv", &cfunGetenv, @src(), "(os/getenv variable &opt dflt)", "Get the string value of an environment variable."),
+            corefn.reg("os/setenv", &cfunSetenv, @src(), "(os/setenv variable value)", "Set an environment variable."),
         };
         break :blk acc[0..acc.len].*;
     };
@@ -453,7 +436,7 @@ fn tailEntries() []const corefn.Entry {
 
 fn hrtimeEntries() []const corefn.Entry {
     const list = comptime [_]corefn.Entry{
-        corefn.reg("os/clock", &clockImpl, @src(), "(os/clock &opt source format)", "Return the current time of the requested clock source.\n\n" ++
+        corefn.reg("os/clock", &cfunClock, @src(), "(os/clock &opt source format)", "Return the current time of the requested clock source.\n\n" ++
             "The `source` argument selects the clock source to use, when not specified the default " ++
             "is `:realtime`:\n" ++
             "- :realtime: Return the real (i.e., wall-clock) time. This clock is affected by discontinuous " ++
@@ -469,11 +452,11 @@ fn hrtimeEntries() []const corefn.Entry {
     return &list;
 }
 
-pub fn janet_lib_osImpl(env: *types.JanetTable) raise.Raising(void) {
+pub fn libOs(env: *types.JanetTable) raise.Raising(void) {
     // `janet_lib_os` opens with a Windows critical-section initialisation
     // guarded by `JANET_THREADS`, which `FOUND.md` records is defined nowhere
-    // in this tree. It is recorded here rather than written, on Part 8's rule
-    // about a branch no configuration compiles.
+    // in this tree. It is recorded here rather than written: a branch no
+    // configuration compiles is a branch nothing checks.
     var table: [512]corefn.Entry = undefined;
     var n: usize = 0;
     const push = struct {
@@ -503,11 +486,11 @@ pub fn janet_lib_osImpl(env: *types.JanetTable) raise.Raising(void) {
         }
     }
     table[n] = corefn.end;
-    corefn.install(env, table[0 .. n + 1]);
+    corefn.installTerminated(env, &table);
 }
 
-pub fn libOs(env: *types.JanetTable) void {
-    raise.reported(janet_lib_osImpl(env));
+pub fn libOsAbi(env: *types.JanetTable) void {
+    raise.reported(libOs(env));
 }
 
 // -------------------------------------------------------------------------
@@ -601,11 +584,11 @@ pub fn timeNow() f64 {
 /// Suspend the caller for `seconds`, which C has already checked is not
 /// negative.
 ///
-/// The C implementation zeroes the fractional part above `UINT32_MAX` seconds,
-/// because the subtraction it uses to isolate that part goes through a
-/// `uint32_t`; that is preserved. Converting the whole-second part of a very
-/// large delay is undefined in C, so the port saturates instead. Both cases are
-/// far longer than any process runs.
+/// Janet zeroes the fractional part above `UINT32_MAX` seconds, because the
+/// subtraction it uses to isolate that part goes through a `uint32_t`; that is
+/// preserved. Converting the whole-second part of a very large delay is
+/// undefined in C, so this saturates instead. Both cases are far longer than
+/// any process runs.
 pub fn sleepFor(seconds: f64) void {
     if (windows) {
         Sleep(saturatingCast(u32, seconds * 1000));
@@ -662,8 +645,8 @@ test "saturating conversion clamps rather than trapping" {
 /// the Windows arm spells out.
 ///
 /// The `x86_64-windows-gnu` cross-compile is what found this, by failing with
-/// `expected integer or vector, found 'void'`. Phase 10's rule 5 again: the
-/// arm this host does not select is not merely unreachable but unchecked.
+/// `expected integer or vector, found 'void'`: an arm this host does not
+/// select is not merely unreachable but unchecked.
 pub const Timespec = if (windows) extern struct {
     sec: i64,
     nsec: c_long,
@@ -671,29 +654,24 @@ pub const Timespec = if (windows) extern struct {
 
 /// `janet_gettime`, the `struct timespec` abi over `gettime` above.
 ///
-/// Phase 10 Part 17f. This was the last live code in `src/core/util.c`: four
-/// lines of C that existed because the Zig kernel reports seconds and
-/// nanoseconds separately, and something had to put them into a `timespec`.
+/// The Zig kernel reports seconds and nanoseconds separately, and something
+/// has to put them into a `timespec`.
 ///
-/// The comment it replaces said `struct timespec` "cannot be named from Zig",
-/// and that is true of the *translated* one -- musl declares its padding as a
-/// bitfield and translate-c demotes any structure with one to an opaque type,
-/// which `os_files.zig` measured. It is not true of `std.c.timespec`, which is
-/// Zig's own declaration of the same layout and which this file already uses
-/// for `clock_gettime` and `nanosleep`. Phase 10's rule 3 is the general form:
-/// a host structure stays in C only when translate-c cannot give it to us, and
-/// this one never needed translate-c.
+/// A comment here once said `struct timespec` "cannot be named from Zig", and
+/// that is true of a *translated* one -- musl declares its padding as a
+/// bitfield and `translate-c` demotes any structure with one to an opaque
+/// type. It is not true of `std.c.timespec`, which is Zig's own declaration of
+/// the same layout and which this file already uses for `clock_gettime` and
+/// `nanosleep`.
 ///
 /// `enum JanetTimeSource` is passed as `c_uint`, which is what clang gives an
-/// enumeration whose enumerators are all non-negative. `test/os_time.c` calls
+/// enumeration whose enumerators are all non-negative. `test/os_time.zig` calls
 /// this with the enum directly, including a value outside it, so the width is
 /// checked rather than assumed.
 ///
-/// Nothing in the runtime calls it any more -- every Zig caller uses
-/// `gettime` and takes the parts. It is kept because it is `util.h`'s
-/// interface and deleting an exported symbol is Phase 11's decision, not this
-/// part's.
-pub fn janet_gettime(spec: *Timespec, source: c_uint) c_int {
+/// Nothing in the runtime calls it -- every Zig caller uses `gettime` and takes
+/// the parts. It is kept because it is a published symbol.
+pub fn gettimeAbi(spec: *Timespec, source: c_uint) c_int {
     var sec: i64 = undefined;
     var nsec: i64 = undefined;
     if (gettime(@bitCast(source), &sec, &nsec) != 0) return -1;

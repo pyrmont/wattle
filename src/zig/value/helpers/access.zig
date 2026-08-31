@@ -1,56 +1,28 @@
 //! Access: reaching inside a Janet value by index or by key, and the
 //! iteration protocol beneath `next`.
 //!
-//! `value_access.zig` until Phase 12's namespace batch 3, `value/accessing.zig`
-//! until increment 6f, and `value/helpers/access.zig` now that the gerund is
-//! retired; `port/NAMESPACES.md` has the scheme. An operation rather than a
-//! type, so the verbs stay: `access.in(ds, k)`, `access.get(ds, k)`,
-//! `access.next(ds, k)`.
-//! `getImpl` lost its suffix on the way -- `access.get` says what it is,
-//! where `value_access.getImpl` needed the `Impl` to distinguish it from the
-//! `janet_get` abi beside it, and the abi is spelled by `@export` now.
+//! An operation rather than a type, so the verbs stay: `access.in(ds, k)`,
+//! `access.get(ds, k)`, `access.next(ds, k)`. The abi beside `get` is spelled
+//! by `@export`, so `get` needs no suffix to be distinguished from it.
 //!
-//! **Two abis were renamed rather than left, on batch 2's rule.**
-//! `getindex`/`getIndex` and `putindex`/`putIndex` differed by one letter's
-//! case, one being the `callconv(.c)` abi and the other the raising kernel it
-//! wraps -- the shape `port/swallowed.janet` exists to catch, because picking
-//! the wrong one loses a raise and nothing says so. This predates the
-//! namespace and is not created by it; the abis are `getindexAbi` and
-//! `putindexAbi` now, after the convention increment 5d's population (c1)
-//! established and batch 2 applied to `pushCstringAbi`.
-//!
-//! `access.zig` still stands over this file as nine `pub const` aliases, and
-//! is a facade in exactly the sense `NAMESPACES.md` rejected for the value
-//! layer -- `access.in` is a second, longer spelling of `access.in`. It
-//! had a second arm until Phase 11 Part 26 and has had no reason since. The
-//! batch repointed it and left it, as batch 2 left `containers.zig`: retiring
-//! a facade is an increment, not something to fold into a split.
+//! **Two abis carry the suffix rather than differing by one letter's case.**
+//! `getindex`/`getIndex` and `putindex`/`putIndex` differed only in case, one
+//! being the `callconv(.c)` abi and the other the raising kernel it wraps --
+//! the shape `tools/check/swallowed.janet` exists to catch, because picking the
+//! wrong one loses a raise and nothing says so. They are `getindexAbi` and
+//! `putindexAbi`.
 //!
 //! Indexed and keyed access over an arbitrary Janet value, and the iteration
-//! protocol beneath `next`. This is Part 7b of Phase 8 and it takes the rest
-//! of `src/core/value.c`: `janet_next` and `janet_next_impl`, and the seven
-//! accessors under `getter_checkint` -- `janet_in`, `janet_get`,
-//! `janet_getindex`, `janet_length`, `janet_lengthv`, `janet_putindex` and
-//! `janet_put`. With 7a's `JANET_ZIG_VALUE_ORDER` region beside it, `value.c`
-//! now holds no C the port has not taken.
+//! protocol beneath `next`: `janet_next` and `nextImpl`, and the seven
+//! accessors -- `janet_in`, `janet_get`, `janet_getindex`, `janet_length`,
+//! `janet_lengthv`, `janet_putindex` and `janet_put`.
 //!
-//! Like 7a this needs **no seam**. `getter_checkint` is the file's only
-//! remaining `static` and every one of its callers is here, so the two halves
-//! stay closed over their own privates. `janet_next` sits physically between
-//! 7a's two regions, which is why `value.c` carries two guarded regions per
-//! selector rather than one; nothing was moved to make them contiguous.
+//! ## Panicking is these functions' contract
 //!
-//! ## Zig calls `janet_panicf` through the C variadic ABI
-//!
-//! This is the first subsystem to do that, and it is worth saying why, because
-//! Part 1 went the other way. `capi.c`'s getters report a `JanetArgFault` code
-//! and let C format it, for a reason that does not apply here: a getter must
-//! not raise, so it cannot afford a formatter that allocates. These accessors
-//! are under no such constraint. Panicking *is* their contract -- `janet_in`
-//! panics on a missing key, `janet_length` panics on a value with no length --
-//! and this file is jump-transparent, so a `longjmp` out of `janet_panicf`
-//! strands nothing. A fault-code seam here would add a translation layer to
-//! twelve messages whose only job is to be identical to the C original's.
+//! `janet_in` raises on a missing key, `janet_length` on a value with no
+//! length. A *getter* in the argument layer is under the opposite constraint:
+//! it must not raise, so it cannot afford a formatter that allocates. These
+//! are not, so they format their own messages.
 //!
 //! What the direct call costs is an ABI assumption: `%v` passes a `Janet` by
 //! value through `...`, and `%T` and `%d` pass an `int` where the caller holds
@@ -59,7 +31,7 @@
 //! on every target here -- but "in principle" is not the standard this project
 //! works to, and the layout of `Janet` changes under `-Dnanbox=false` from an
 //! eight-byte union to a sixteen-byte struct, which is exactly the size class
-//! where the classification rules diverge. So `test/value_access.c` asserts
+//! where the classification rules diverge. So `test/value_access.zig` asserts
 //! the *rendered message text*, byte for byte, for every one of the twelve.
 //! That check runs under both selectors, under both value layouts, and on
 //! every platform in the acceptance matrix, which makes the ABI a tested fact
@@ -79,7 +51,7 @@
 //!
 //! One piece of state does have to survive such a jump, and the C original
 //! handles it by hand rather than by scope: `janet_next_impl` parks the child
-//! fiber in `janet_vm.fiber->child` across `janet_continue` and has to clear
+//! fiber in `vm.fiber->child` across `janet_continue` and has to clear
 //! it again. It clears the slot *before* `janet_panicv` on the non-interpreter
 //! path, and deliberately does **not** clear it before `janet_signalv` on the
 //! interpreter path, because the interpreter unwinds through the fiber chain
@@ -158,24 +130,20 @@ const arrays = @import("../arrays.zig");
 const utils = @import("../../utils.zig");
 const order = @import("order.zig");
 const fibers = @import("../fibers.zig");
-const kind = @import("kind.zig");
 const wrap = @import("wrap.zig");
 const args_core = @import("../../args.zig");
 const value = @import("../../value.zig");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
+const vm_state = @import("../../vm/lifecycle.zig");
 const vm_entry = @import("../../vm/entry.zig");
 
 /// From `util.c`, declared here rather than in `cabi.zig`. This is the same
 /// declaration `struct_table.zig` carries, and the same exception to the usual
 /// justification: a `Janet` crosses here, so the reason it is safe is that the
-/// type is `types.Janet`, which every file in the tree shares, not that no
+/// type is `repr.Value`, which every file in the tree shares, not that no
 /// Janet type is involved.
-inline fn vm() *types.JanetVM {
-    return c.vm();
-}
-
 /// A sign-preserving widening, which is what C's `int32_t` to `size_t`
 /// conversion does. Most uses here are indices the callers have already
 /// bounded, but two are not: `janet_putindex`'s `memset` length can wrap
@@ -196,7 +164,7 @@ inline fn asSize(n: i32) usize {
 /// exactly the "language bindings" case the header's own comment names -- does
 /// not link against a tagged build. `FOUND.md` has it. The macro is one line
 /// and this is the whole of it.
-inline fn wrapInteger(x: i32) types.Janet {
+inline fn wrapInteger(x: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(x));
 }
 
@@ -213,11 +181,11 @@ inline fn nextBucket(p: ?*const types.JanetKV) *const types.JanetKV {
 /// rather than being re-raised. Nothing in the tree calls it; `run_vm` always
 /// passes one. It exists for embedders, and `FOUND.md` has what happens when
 /// one uses it on a fiber.
-pub fn next(ds: types.Janet, key: types.Janet) raise.Raising(types.Janet) {
+pub fn next(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
     return nextImpl(ds, key, 0);
 }
 
-pub fn janet_next(ds: types.Janet, key: types.Janet) types.Janet {
+pub fn nextAbi(ds: repr.Value, key: repr.Value) repr.Value {
     return raise.reported(next(ds, key));
 }
 
@@ -246,18 +214,15 @@ pub fn janet_next(ds: types.Janet, key: types.Janet) types.Janet {
 /// resumed answers nil immediately, and one that finishes during the resume
 /// answers nil on the way out.
 ///
-/// `janet_next_impl` is declared in `util.h` rather than in `janet.h`, so the
-/// C build hides it under `-fvisibility=hidden` and this `export` does not.
-/// That widens the shared library's symbol set and changes nothing that
-/// already linked; `src/zig/README.md` has the general form of it, which four
-/// subsystems now share.
-pub fn nextImpl(ds: types.Janet, key: types.Janet, is_interpreter: c_int) raise.Raising(types.Janet) {
-    const t = kind.typeOf(ds);
+/// This is not a published symbol. `next` and `nextImplAbi` are the two
+/// callers outside the interpreter, and both reach it by `@import`.
+pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: c_int) raise.Raising(repr.Value) {
+    const t = repr.typeOf(ds);
     switch (t) {
-        constants.JANET_TABLE, constants.JANET_STRUCT => {
+        repr.Tag.table, repr.Tag.@"struct" => {
             var cap: i32 = undefined;
             var start: [*]const types.JanetKV = undefined;
-            if (t == constants.JANET_TABLE) {
+            if (t == repr.Tag.table) {
                 const tab = wrap.toTable(ds);
                 cap = tab.*.capacity;
                 start = tab.*.data.?;
@@ -267,28 +232,28 @@ pub fn nextImpl(ds: types.Janet, key: types.Janet, is_interpreter: c_int) raise.
                 start = st;
             }
             const end = start + asSize(cap);
-            var kv: [*]const types.JanetKV = if (kind.checkType(key, constants.JANET_NIL) != 0)
+            var kv: [*]const types.JanetKV = if (repr.checkType(key, repr.Tag.nil))
                 start
             else
-                @ptrCast(nextBucket(value.dictionaryFind(start, cap, key)));
+                @ptrCast(nextBucket(value.dictionaryFind(start[0..@intCast(cap)], key)));
             while (@intFromPtr(kv) < @intFromPtr(end)) : (kv += 1) {
-                if (kind.checkType(kv[0].key, constants.JANET_NIL) == 0) return kv[0].key;
+                if (!repr.checkType(kv[0].key, repr.Tag.nil)) return kv[0].key;
             }
         },
-        constants.JANET_STRING, constants.JANET_KEYWORD, constants.JANET_SYMBOL, constants.JANET_BUFFER, constants.JANET_ARRAY, constants.JANET_TUPLE => {
+        repr.Tag.string, repr.Tag.keyword, repr.Tag.symbol, repr.Tag.buffer, repr.Tag.array, repr.Tag.tuple => {
             var i: i32 = undefined;
-            if (kind.checkType(key, constants.JANET_NIL) != 0) {
+            if (repr.checkType(key, repr.Tag.nil)) {
                 i = 0;
             } else if (args_core.checkint(key) != 0) {
                 i = wrap.toInteger(key) +% 1;
             } else {
                 return wrap.fromNil();
             }
-            const len: i32 = if (t == constants.JANET_BUFFER)
+            const len: i32 = if (t == repr.Tag.buffer)
                 wrap.toBuffer(ds).*.count
-            else if (t == constants.JANET_ARRAY)
+            else if (t == repr.Tag.array)
                 wrap.toArray(ds).*.count
-            else if (t == constants.JANET_TUPLE)
+            else if (t == repr.Tag.tuple)
                 types.tupleHead(wrap.toTuple(ds)).length
             else
                 types.stringHead(wrap.toString(ds)).length;
@@ -296,48 +261,48 @@ pub fn nextImpl(ds: types.Janet, key: types.Janet, is_interpreter: c_int) raise.
                 return wrapInteger(i);
             }
         },
-        constants.JANET_ABSTRACT => {
+        repr.Tag.abstract => {
             const abst = wrap.toAbstract(ds);
             const at = abstract_type.ofAbstract(abst);
             if (at.*.next == null) return wrap.fromNil();
             return at.*.next.?(abst, key);
         },
-        constants.JANET_FIBER => {
+        repr.Tag.fiber => {
             const child = wrap.toFiber(ds);
-            var retreg: types.Janet = undefined;
+            var retreg: repr.Value = undefined;
             const status = fibers.status(child);
-            if (status == constants.JANET_STATUS_ALIVE or
-                status == constants.JANET_STATUS_DEAD or
-                status == constants.JANET_STATUS_ERROR or
-                status == constants.JANET_STATUS_USER0 or
-                status == constants.JANET_STATUS_USER1 or
-                status == constants.JANET_STATUS_USER2 or
-                status == constants.JANET_STATUS_USER3 or
-                status == constants.JANET_STATUS_USER4)
+            if (status == types.FiberStatus.alive or
+                status == types.FiberStatus.dead or
+                status == types.FiberStatus.@"error" or
+                status == types.FiberStatus.user0 or
+                status == types.FiberStatus.user1 or
+                status == types.FiberStatus.user2 or
+                status == types.FiberStatus.user3 or
+                status == types.FiberStatus.user4)
             {
                 return wrap.fromNil();
             }
-            vm().fiber.?.child = child;
+            vm_state.current().fiber.?.child = child;
             const sig = vm_entry.continueFiber(child, wrap.fromNil(), &retreg);
-            if (sig != constants.JANET_SIGNAL_OK and (child.*.flags & (@as(i32, 1) << @intCast(sig))) == 0) {
+            if (sig != types.Signal.ok and (child.*.flags & (@as(i32, 1) << @intCast(@intFromEnum(sig)))) == 0) {
                 if (is_interpreter != 0) {
                     // Deliberately without clearing `child` first: the
                     // interpreter unwinds through the fiber chain and the link
                     // has to still be there when it does.
                     return raise.signal(sig, retreg);
                 } else {
-                    vm().fiber.?.child = null;
+                    vm_state.current().fiber.?.child = null;
                     return raise.panicv(retreg);
                 }
             }
-            vm().fiber.?.child = null;
-            if (sig == constants.JANET_SIGNAL_OK or
-                sig == constants.JANET_SIGNAL_ERROR or
-                sig == constants.JANET_SIGNAL_USER0 or
-                sig == constants.JANET_SIGNAL_USER1 or
-                sig == constants.JANET_SIGNAL_USER2 or
-                sig == constants.JANET_SIGNAL_USER3 or
-                sig == constants.JANET_SIGNAL_USER4)
+            vm_state.current().fiber.?.child = null;
+            if (sig == types.Signal.ok or
+                sig == types.Signal.@"error" or
+                sig == types.Signal.user0 or
+                sig == types.Signal.user1 or
+                sig == types.Signal.user2 or
+                sig == types.Signal.user3 or
+                sig == types.Signal.user4)
             {
                 // Fiber cannot be resumed, so discard last value.
                 return wrap.fromNil();
@@ -350,7 +315,7 @@ pub fn nextImpl(ds: types.Janet, key: types.Janet, is_interpreter: c_int) raise.
     return wrap.fromNil();
 }
 
-pub fn janet_next_impl(ds: types.Janet, key: types.Janet, is_interpreter: c_int) types.Janet {
+pub fn nextImplAbi(ds: repr.Value, key: repr.Value, is_interpreter: c_int) repr.Value {
     return raise.reported(nextImpl(ds, key, is_interpreter));
 }
 
@@ -364,7 +329,7 @@ pub fn janet_next_impl(ds: types.Janet, key: types.Janet, is_interpreter: c_int)
 /// past the `return`, which is how it keeps one copy of a format string with
 /// four arguments. Written here as three early panics, which is the same
 /// control flow without the label.
-fn getterCheckInt(vtype: types.JanetType, key: types.Janet, max: i32) raise.Raising(i32) {
+fn getterCheckInt(vtype: repr.Tag, key: repr.Value, max: i32) raise.Raising(i32) {
     if (args_core.checkint(key) == 0) return badKey(vtype, key, max);
     const ret = wrap.toInteger(key);
     if (ret < 0) return badKey(vtype, key, max);
@@ -372,8 +337,8 @@ fn getterCheckInt(vtype: types.JanetType, key: types.Janet, max: i32) raise.Rais
     return ret;
 }
 
-fn badKey(vtype: types.JanetType, key: types.Janet, max: i32) raise.Error {
-    return pp_format.panicf("expected integer key for %s in range [0, %d), got %v", .{ utils.typeNames[@intCast(vtype)], @as(c_int, max), key });
+fn badKey(vtype: repr.Tag, key: repr.Value, max: i32) raise.Error {
+    return pp_format.panicf("expected integer key for %s in range [0, %d), got %v", .{ utils.typeNames[@intFromEnum(vtype)], @as(c_int, max), key });
 }
 
 /// `janet_in`. Keyed access that treats a bad key as an error. This is `(in ds
@@ -389,33 +354,33 @@ fn badKey(vtype: types.JanetType, key: types.Janet, max: i32) raise.Error {
 /// its `get` callback reports presence separately from the value it produces
 /// and the C original chose to treat absence as an error. Note the trailing
 /// space in that message; it is the C original's and is preserved.
-pub fn in(ds: types.Janet, key: types.Janet) raise.Raising(types.Janet) {
-    var val: types.Janet = undefined;
-    const vtype = kind.typeOf(ds);
+pub fn in(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
+    var val: repr.Value = undefined;
+    const vtype = repr.typeOf(ds);
     switch (vtype) {
-        constants.JANET_STRUCT => val = structs.get(wrap.toStruct(ds), key),
-        constants.JANET_TABLE => val = tables.get(wrap.toTable(ds), key),
-        constants.JANET_ARRAY => {
+        repr.Tag.@"struct" => val = structs.get(wrap.toStruct(ds), key),
+        repr.Tag.table => val = tables.get(wrap.toTable(ds), key),
+        repr.Tag.array => {
             const array = wrap.toArray(ds);
             const index = getterCheckInt(vtype, key, array.*.count);
-            val = array.*.data.?[asSize(try index)];
+            val = array.*.slice()[asSize(try index)];
         },
-        constants.JANET_TUPLE => {
+        repr.Tag.tuple => {
             const tuple = wrap.toTuple(ds);
             const len = types.tupleHead(tuple).length;
             val = tuple[asSize(try getterCheckInt(vtype, key, len))];
         },
-        constants.JANET_BUFFER => {
+        repr.Tag.buffer => {
             const buffer = wrap.toBuffer(ds);
             const index = getterCheckInt(vtype, key, buffer.*.count);
-            val = wrapInteger(buffer.*.data.?[asSize(try index)]);
+            val = wrapInteger(buffer.*.slice()[asSize(try index)]);
         },
-        constants.JANET_STRING, constants.JANET_SYMBOL, constants.JANET_KEYWORD => {
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
             const str = wrap.toString(ds);
             const index = getterCheckInt(vtype, key, types.stringHead(str).length);
             val = wrapInteger(str[asSize(try index)]);
         },
-        constants.JANET_ABSTRACT => {
+        repr.Tag.abstract => {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
             if (at.*.get) |getter| {
                 if (try getter(wrap.toAbstract(ds), key, &val) == 0)
@@ -424,7 +389,7 @@ pub fn in(ds: types.Janet, key: types.Janet) raise.Raising(types.Janet) {
                 return pp_format.panicf("no getter for %v", .{ds});
             }
         },
-        constants.JANET_FIBER => {
+        repr.Tag.fiber => {
             // Bit of a hack to allow iterating over fibers.
             if (order.equals(key, wrapInteger(0)) != 0) {
                 return wrap.toFiber(ds).*.last_value;
@@ -432,12 +397,12 @@ pub fn in(ds: types.Janet, key: types.Janet) raise.Raising(types.Janet) {
                 return pp_format.panicf("expected key 0, got %v", .{key});
             }
         },
-        else => return pp_format.panicf("expected %T, got %v", .{ @as(c_int, constants.JANET_TFLAG_LENGTHABLE), ds }),
+        else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.lengthable, ds }),
     }
     return val;
 }
 
-pub fn janet_in(ds: types.Janet, key: types.Janet) types.Janet {
+pub fn inAbi(ds: repr.Value, key: repr.Value) repr.Value {
     return raise.reported(in(ds, key));
 }
 
@@ -448,13 +413,13 @@ pub fn janet_in(ds: types.Janet, key: types.Janet) types.Janet {
 /// The array, tuple and buffer arm shares one integer check across three
 /// containers, which is why it is written as a nested `if` on the type rather
 /// than as three cases. That is the C original's shape and the reason it
-/// shadows `t`: the outer `t` is the `JanetType` and the inner one is the
+/// shadows `t`: the outer `t` is the `repr.Tag` and the inner one is the
 /// tuple. Renamed here, since Zig will not allow the shadowing and the C is no
 /// clearer for it.
-pub fn get(ds: types.Janet, key: types.Janet) raise.Raising(types.Janet) {
-    const t = kind.typeOf(ds);
+pub fn get(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
+    const t = repr.typeOf(ds);
     switch (t) {
-        constants.JANET_STRING, constants.JANET_SYMBOL, constants.JANET_KEYWORD => {
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
             if (args_core.checkint(key) == 0) return wrap.fromNil();
             const index = wrap.toInteger(key);
             if (index < 0) return wrap.fromNil();
@@ -462,40 +427,40 @@ pub fn get(ds: types.Janet, key: types.Janet) raise.Raising(types.Janet) {
             if (index >= types.stringHead(str).length) return wrap.fromNil();
             return wrapInteger(str[asSize(index)]);
         },
-        constants.JANET_ABSTRACT => {
-            var val: types.Janet = undefined;
+        repr.Tag.abstract => {
+            var val: repr.Value = undefined;
             const abst = wrap.toAbstract(ds);
             const at = abstract_type.ofAbstract(abst);
             const getter = at.*.get orelse return wrap.fromNil();
             if ((try getter(abst, key, &val)) != 0) return val;
             return wrap.fromNil();
         },
-        constants.JANET_ARRAY, constants.JANET_TUPLE, constants.JANET_BUFFER => {
+        repr.Tag.array, repr.Tag.tuple, repr.Tag.buffer => {
             if (args_core.checkint(key) == 0) return wrap.fromNil();
             const index = wrap.toInteger(key);
             if (index < 0) return wrap.fromNil();
-            if (t == constants.JANET_ARRAY) {
+            if (t == repr.Tag.array) {
                 const a = wrap.toArray(ds);
                 if (index >= a.*.count) return wrap.fromNil();
-                return a.*.data.?[asSize(index)];
-            } else if (t == constants.JANET_BUFFER) {
+                return a.*.slice()[asSize(index)];
+            } else if (t == repr.Tag.buffer) {
                 const b = wrap.toBuffer(ds);
                 if (index >= b.*.count) return wrap.fromNil();
-                return wrapInteger(b.*.data.?[asSize(index)]);
+                return wrapInteger(b.*.slice()[asSize(index)]);
             } else {
                 const tup = wrap.toTuple(ds);
                 if (index >= types.tupleHead(tup).length) return wrap.fromNil();
                 return tup[asSize(index)];
             }
         },
-        constants.JANET_TABLE => {
+        repr.Tag.table => {
             return tables.get(wrap.toTable(ds), key);
         },
-        constants.JANET_STRUCT => {
+        repr.Tag.@"struct" => {
             const st = wrap.toStruct(ds);
             return structs.get(st, key);
         },
-        constants.JANET_FIBER => {
+        repr.Tag.fiber => {
             // Bit of a hack to allow iterating over fibers.
             if (order.equals(key, wrapInteger(0)) != 0) {
                 return wrap.toFiber(ds).*.last_value;
@@ -507,7 +472,7 @@ pub fn get(ds: types.Janet, key: types.Janet) raise.Raising(types.Janet) {
     }
 }
 
-pub fn janet_get(ds: types.Janet, key: types.Janet) types.Janet {
+pub fn getAbi(ds: repr.Value, key: repr.Value) repr.Value {
     return raise.reported(get(ds, key));
 }
 
@@ -521,41 +486,41 @@ pub fn janet_get(ds: types.Janet, key: types.Janet) types.Janet {
 /// difference between this and `janet_in` on the same value: both panic when
 /// the type has no `get` at all, but a `get` that runs and reports absence is
 /// an error to `janet_in` and a nil to `janet_getindex`.
-pub fn getIndex(ds: types.Janet, index: i32) raise.Raising(types.Janet) {
-    var val: types.Janet = undefined;
+pub fn getIndex(ds: repr.Value, index: i32) raise.Raising(repr.Value) {
+    var val: repr.Value = undefined;
     if (index < 0) return raise.panic("expected non-negative index");
-    switch (kind.typeOf(ds)) {
-        constants.JANET_STRING, constants.JANET_SYMBOL, constants.JANET_KEYWORD => {
+    switch (repr.typeOf(ds)) {
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
             if (index >= types.stringHead(wrap.toString(ds)).length) {
                 val = wrap.fromNil();
             } else {
                 val = wrapInteger(wrap.toString(ds)[asSize(index)]);
             }
         },
-        constants.JANET_ARRAY => {
+        repr.Tag.array => {
             if (index >= wrap.toArray(ds).*.count) {
                 val = wrap.fromNil();
             } else {
-                val = wrap.toArray(ds).*.data.?[asSize(index)];
+                val = wrap.toArray(ds).slice()[asSize(index)];
             }
         },
-        constants.JANET_BUFFER => {
+        repr.Tag.buffer => {
             if (index >= wrap.toBuffer(ds).*.count) {
                 val = wrap.fromNil();
             } else {
-                val = wrapInteger(wrap.toBuffer(ds).*.data.?[asSize(index)]);
+                val = wrapInteger(wrap.toBuffer(ds).slice()[asSize(index)]);
             }
         },
-        constants.JANET_TUPLE => {
+        repr.Tag.tuple => {
             if (index >= types.tupleHead(wrap.toTuple(ds)).length) {
                 val = wrap.fromNil();
             } else {
                 val = wrap.toTuple(ds)[asSize(index)];
             }
         },
-        constants.JANET_TABLE => val = tables.get(wrap.toTable(ds), wrapInteger(index)),
-        constants.JANET_STRUCT => val = structs.get(wrap.toStruct(ds), wrapInteger(index)),
-        constants.JANET_ABSTRACT => {
+        repr.Tag.table => val = tables.get(wrap.toTable(ds), wrapInteger(index)),
+        repr.Tag.@"struct" => val = structs.get(wrap.toStruct(ds), wrapInteger(index)),
+        repr.Tag.abstract => {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
             if (at.*.get) |getter| {
                 if (try getter(wrap.toAbstract(ds), wrapInteger(index), &val) == 0)
@@ -564,19 +529,19 @@ pub fn getIndex(ds: types.Janet, index: i32) raise.Raising(types.Janet) {
                 return pp_format.panicf("no getter for %v", .{ds});
             }
         },
-        constants.JANET_FIBER => {
+        repr.Tag.fiber => {
             if (index == 0) {
                 val = wrap.toFiber(ds).*.last_value;
             } else {
                 val = wrap.fromNil();
             }
         },
-        else => return pp_format.panicf("expected %T, got %v", .{ @as(c_int, constants.JANET_TFLAG_LENGTHABLE), ds }),
+        else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.lengthable, ds }),
     }
     return val;
 }
 
-pub fn getindexAbi(ds: types.Janet, index: i32) types.Janet {
+pub fn getindexAbi(ds: repr.Value, index: i32) repr.Value {
     return raise.reported(getIndex(ds, index));
 }
 
@@ -591,15 +556,15 @@ pub fn getindexAbi(ds: types.Janet, index: i32) types.Janet {
 /// without one is asked for a `length` *method* through `janet_mcall`, which
 /// returns a `Janet` and is rejected when that is not an integer. Two
 /// rejections, two messages, two format specifiers.
-pub fn length(x: types.Janet) raise.Raising(i32) {
-    switch (kind.typeOf(x)) {
-        constants.JANET_STRING, constants.JANET_SYMBOL, constants.JANET_KEYWORD => return types.stringHead(wrap.toString(x)).length,
-        constants.JANET_ARRAY => return wrap.toArray(x).*.count,
-        constants.JANET_BUFFER => return wrap.toBuffer(x).*.count,
-        constants.JANET_TUPLE => return types.tupleHead(wrap.toTuple(x)).length,
-        constants.JANET_STRUCT => return types.structHead(wrap.toStruct(x)).length,
-        constants.JANET_TABLE => return wrap.toTable(x).*.count,
-        constants.JANET_ABSTRACT => {
+pub fn length(x: repr.Value) raise.Raising(i32) {
+    switch (repr.typeOf(x)) {
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return types.stringHead(wrap.toString(x)).length,
+        repr.Tag.array => return wrap.toArray(x).*.count,
+        repr.Tag.buffer => return wrap.toBuffer(x).*.count,
+        repr.Tag.tuple => return types.tupleHead(wrap.toTuple(x)).length,
+        repr.Tag.@"struct" => return types.structHead(wrap.toStruct(x)).length,
+        repr.Tag.table => return wrap.toTable(x).*.count,
+        repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);
             const at = abstract_type.ofAbstract(abst);
             if (at.*.length) |callback| {
@@ -609,17 +574,17 @@ pub fn length(x: types.Janet) raise.Raising(i32) {
                 }
                 return @intCast(len);
             }
-            var argv = [_]types.Janet{x};
+            var argv = [_]repr.Value{x};
             const len = try vm_calls.mcall("length", &argv);
             if (args_core.checkint(len) == 0)
                 return pp_format.panicf("invalid integer length %v", .{len});
             return wrap.toInteger(len);
         },
-        else => return pp_format.panicf("expected %T, got %v", .{ @as(c_int, constants.JANET_TFLAG_LENGTHABLE), x }),
+        else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.lengthable, x }),
     }
 }
 
-pub fn janet_length(x: types.Janet) i32 {
+pub fn lengthAbi(x: repr.Value) i32 {
     return raise.reported(length(x));
 }
 
@@ -633,15 +598,15 @@ pub fn janet_length(x: types.Janet) i32 {
 /// the C original's `#ifdef JANET_32`, kept here as a `comptime` branch on the
 /// same condition rather than dropped, even though no target this project
 /// builds for takes it.
-pub fn lengthv(x: types.Janet) raise.Raising(types.Janet) {
-    switch (kind.typeOf(x)) {
-        constants.JANET_STRING, constants.JANET_SYMBOL, constants.JANET_KEYWORD => return wrapInteger(types.stringHead(wrap.toString(x)).length),
-        constants.JANET_ARRAY => return wrapInteger(wrap.toArray(x).*.count),
-        constants.JANET_BUFFER => return wrapInteger(wrap.toBuffer(x).*.count),
-        constants.JANET_TUPLE => return wrapInteger(types.tupleHead(wrap.toTuple(x)).length),
-        constants.JANET_STRUCT => return wrapInteger(types.structHead(wrap.toStruct(x)).length),
-        constants.JANET_TABLE => return wrapInteger(wrap.toTable(x).*.count),
-        constants.JANET_ABSTRACT => {
+pub fn lengthv(x: repr.Value) raise.Raising(repr.Value) {
+    switch (repr.typeOf(x)) {
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return wrapInteger(types.stringHead(wrap.toString(x)).length),
+        repr.Tag.array => return wrapInteger(wrap.toArray(x).*.count),
+        repr.Tag.buffer => return wrapInteger(wrap.toBuffer(x).*.count),
+        repr.Tag.tuple => return wrapInteger(types.tupleHead(wrap.toTuple(x)).length),
+        repr.Tag.@"struct" => return wrapInteger(types.structHead(wrap.toStruct(x)).length),
+        repr.Tag.table => return wrapInteger(wrap.toTable(x).*.count),
+        repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);
             const at = abstract_type.ofAbstract(abst);
             if (at.*.length) |callback| {
@@ -657,14 +622,14 @@ pub fn lengthv(x: types.Janet) raise.Raising(types.Janet) {
                     }
                 }
             }
-            var argv = [_]types.Janet{x};
+            var argv = [_]repr.Value{x};
             return try vm_calls.mcall("length", &argv);
         },
-        else => return pp_format.panicf("expected %T, got %v", .{ @as(c_int, constants.JANET_TFLAG_LENGTHABLE), x }),
+        else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.lengthable, x }),
     }
 }
 
-pub fn janet_lengthv(x: types.Janet) types.Janet {
+pub fn lengthvAbi(x: repr.Value) repr.Value {
     return raise.reported(lengthv(x));
 }
 
@@ -688,36 +653,33 @@ pub fn janet_lengthv(x: types.Janet) types.Janet {
 /// integer at all, so `(put @"" 0 300)` stores 44 and does not complain. That
 /// is established behaviour, not an oversight, and the same truncation is in
 /// `janet_put`.
-pub fn putIndex(ds: types.Janet, index: i32, val: types.Janet) raise.Raising(void) {
-    switch (kind.typeOf(ds)) {
-        constants.JANET_ARRAY => {
+pub fn putIndex(ds: repr.Value, index: i32, val: repr.Value) raise.Raising(void) {
+    switch (repr.typeOf(ds)) {
+        repr.Tag.array => {
             const array = wrap.toArray(ds);
             if (index >= array.*.count) {
                 arrays.ensure(array, index +% 1, 2);
-                var i = array.*.count;
-                while (i < index +% 1) : (i += 1) {
-                    array.*.data.?[asSize(i)] = wrap.fromNil();
-                }
+                @memset(array.*.reserved()[asSize(array.*.count)..asSize(index +% 1)], wrap.fromNil());
                 array.*.count = index +% 1;
             }
-            array.*.data.?[asSize(index)] = val;
+            array.*.slice()[asSize(index)] = val;
         },
-        constants.JANET_BUFFER => {
+        repr.Tag.buffer => {
             const buffer = wrap.toBuffer(ds);
             if (args_core.checkint(val) == 0)
                 return pp_format.panicf("can only put integers in buffers, got %v", .{val});
             if (index >= buffer.*.count) {
                 try buffers.ensure(buffer, index +% 1, 2);
-                @memset((buffer.*.data.? + asSize(buffer.*.count))[0..asSize(index +% 1 -% buffer.*.count)], 0);
+                @memset(buffer.*.reserved()[asSize(buffer.*.count)..asSize(index +% 1)], 0);
                 buffer.*.count = index +% 1;
             }
-            buffer.*.data.?[asSize(index)] = @truncate(@as(u32, @bitCast(wrap.toInteger(val))));
+            buffer.*.slice()[asSize(index)] = @truncate(@as(u32, @bitCast(wrap.toInteger(val))));
         },
-        constants.JANET_TABLE => {
+        repr.Tag.table => {
             const table = wrap.toTable(ds);
             tables.put(table, wrapInteger(index), val);
         },
-        constants.JANET_ABSTRACT => {
+        repr.Tag.abstract => {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
             if (at.*.put) |callback| {
                 try callback(wrap.toAbstract(ds), wrapInteger(index), val);
@@ -725,11 +687,11 @@ pub fn putIndex(ds: types.Janet, index: i32, val: types.Janet) raise.Raising(voi
                 return pp_format.panicf("no setter for %v ", .{ds});
             }
         },
-        else => return pp_format.panicf("expected %T, got %v", .{ @as(c_int, constants.JANET_TFLAG_ARRAY | constants.JANET_TFLAG_BUFFER | constants.JANET_TFLAG_TABLE), ds }),
+        else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.of(&.{ .array, .buffer, .table }), ds }),
     }
 }
 
-pub fn putindexAbi(ds: types.Janet, index: i32, val: types.Janet) void {
+pub fn putindexAbi(ds: repr.Value, index: i32, val: repr.Value) void {
     _ = raise.reported(putIndex(ds, index, val));
 }
 
@@ -743,36 +705,33 @@ pub fn putindexAbi(ds: types.Janet, index: i32, val: types.Janet) void {
 /// difference in the panic each one raises first is observable: `janet_put` on
 /// a buffer checks the *key* before the value, so `(put @"" :x :y)` complains
 /// about the key and `(put @"" 0 :y)` complains about the value.
-pub fn put(ds: types.Janet, key: types.Janet, val: types.Janet) raise.Raising(void) {
-    const vtype = kind.typeOf(ds);
+pub fn put(ds: repr.Value, key: repr.Value, val: repr.Value) raise.Raising(void) {
+    const vtype = repr.typeOf(ds);
     switch (vtype) {
-        constants.JANET_ARRAY => {
+        repr.Tag.array => {
             const array = wrap.toArray(ds);
             const index = try getterCheckInt(vtype, key, std.math.maxInt(i32) - 1);
             if (index >= array.*.count) {
                 arrays.ensure(array, index + 1, 2);
-                var i = array.*.count;
-                while (i < index + 1) : (i += 1) {
-                    array.*.data.?[asSize(i)] = wrap.fromNil();
-                }
+                @memset(array.*.reserved()[asSize(array.*.count)..asSize(index + 1)], wrap.fromNil());
                 array.*.count = index + 1;
             }
-            array.*.data.?[asSize(index)] = val;
+            array.*.slice()[asSize(index)] = val;
         },
-        constants.JANET_BUFFER => {
+        repr.Tag.buffer => {
             const buffer = wrap.toBuffer(ds);
             const index = try getterCheckInt(vtype, key, std.math.maxInt(i32) - 1);
             if (args_core.checkint(val) == 0)
                 return pp_format.panicf("can only put integers in buffers, got %v", .{val});
             if (index >= buffer.*.count) {
                 try buffers.ensure(buffer, index + 1, 2);
-                @memset((buffer.*.data.? + asSize(buffer.*.count))[0..asSize(index + 1 - buffer.*.count)], 0);
+                @memset(buffer.*.reserved()[asSize(buffer.*.count)..asSize(index + 1)], 0);
                 buffer.*.count = index + 1;
             }
-            buffer.*.data.?[asSize(index)] = @truncate(@as(u32, @bitCast(wrap.toInteger(val))));
+            buffer.*.slice()[asSize(index)] = @truncate(@as(u32, @bitCast(wrap.toInteger(val))));
         },
-        constants.JANET_TABLE => tables.put(wrap.toTable(ds), key, val),
-        constants.JANET_ABSTRACT => {
+        repr.Tag.table => tables.put(wrap.toTable(ds), key, val),
+        repr.Tag.abstract => {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
             if (at.*.put) |callback| {
                 try callback(wrap.toAbstract(ds), key, val);
@@ -780,10 +739,10 @@ pub fn put(ds: types.Janet, key: types.Janet, val: types.Janet) raise.Raising(vo
                 return pp_format.panicf("no setter for %v ", .{ds});
             }
         },
-        else => return pp_format.panicf("expected %T, got %v", .{ @as(c_int, constants.JANET_TFLAG_ARRAY | constants.JANET_TFLAG_BUFFER | constants.JANET_TFLAG_TABLE), ds }),
+        else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.of(&.{ .array, .buffer, .table }), ds }),
     }
 }
 
-pub fn janet_put(ds: types.Janet, key: types.Janet, val: types.Janet) void {
+pub fn putAbi(ds: repr.Value, key: repr.Value, val: repr.Value) void {
     _ = raise.reported(put(ds, key, val));
 }

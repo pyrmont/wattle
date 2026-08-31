@@ -1,12 +1,11 @@
 //! Behavioral contract for the collector's treatment of a fiber entered by
-//! `janet_pcall` from a cfunction, and Phase 11 Part 23's migration of
-//! `test/c/test-gc-pcall.c`.
+//! `janet_pcall` from a cfunction.
 //!
 //! ## What the subject is
 //!
-//! `janet_collect` marks exactly one fiber: `janet_vm.root_fiber`, and then
+//! `janet_collect` marks exactly one fiber: `vm.root_fiber`, and then
 //! whatever chain of `child` pointers hangs off it. Neither reaches a fiber
-//! entered through `janet_pcall` from inside a cfunction. `janet_vm.fiber` is
+//! entered through `janet_pcall` from inside a cfunction. `vm.fiber` is
 //! set to the new fiber and `root_fiber` is not — `continueNoCheck` assigns it
 //! only when it is null — and `janet_pcall` never sets `child`, because
 //! `child` is what `janet_resume` and `JOP_RESUME` maintain for a *Janet*
@@ -16,61 +15,30 @@
 //! stack every frame above it is executing on. `continueNoCheck` roots it by
 //! hand for exactly this reason:
 //!
-//!     const fiber_rooted = c.janet_vm.root_fiber != null;
+//!     const fiber_rooted = c.vm.root_fiber != null;
 //!     if (fiber_rooted) c.janet_gcroot(c.janet_wrap_fiber(fiber));
 //!
 //! This file is that line's regression test.
 //!
-//! ## What the migration changed, and it is the whole reason to do it
+//! ## Why a direct case as well as the stress ones
 //!
-//! **The C original could not run.** `test/c/test-gc-pcall.c` was in no build
-//! step — not `build.zig`, not `Makefile`, not `meson.build` — and would not
-//! have worked if it had been: it registers `call-via-pcall` with
-//! `janet_wrap_cfunction` over a C function, and a `JanetCFunction` has been a
-//! raising Zig function since Phase 10 Part 17g. `janet.h` still declares the C
-//! one, so the registration succeeds and the *call* segfaults. A regression
-//! test for a live fix has therefore been dead for the whole rewrite, which is
-//! rule 22's blindness in its third home: a `.c` file nothing compiles
-//! announces nothing at all.
-//!
-//! **The stress cases are kept and a direct one is added.** The original's two
-//! programs drive 200 rounds each at `(gcsetinterval 1024)` and infer the
-//! fiber's survival from the answers coming back right. That is a real
-//! regression test and it stays. What it cannot do is *name* the mechanism: it
-//! hopes a collection lands while the nested fiber is live. `directCase` below
-//! makes the collection happen at a chosen instant and asserts the survival
-//! itself.
-//!
-//! The difference was measured rather than assumed. Rebuilt with
-//! `continueNoCheck`'s rooting spent — `const fiber_rooted = false;` — **both
-//! halves catch it, and they read nothing like each other**. `directCase`
-//! stops at this file's line 137, `harness.heap.onList` after the collect,
-//! which is the claim in the words it was written in. The stress cases
-//! segfault at `vm_run.zig`'s `self.stack[fA(self.pc)] = value`, a null store
-//! in the interpreter loop, naming neither the collector nor a fiber. So the
-//! direct case is not a stronger check than the stress ones; it is a
-//! diagnosable one, which is rule 36's second half arriving in a file that had
-//! no assertion to attach it to before.
-//!
-//! **And it asserts its own premise**, which is rule 36's lesson arriving at a
-//! pointer rather than at an address. The case is only a case while
-//! `root_fiber` is neither the running fiber nor an ancestor of it through
-//! `child`. If a future `janet_pcall` were to maintain `child`, `markFiber`
-//! would reach the nested fiber on its own, the rooting line could be deleted,
-//! and this contract would still pass — testing nothing. `assertNested` is
+//! **The stress cases are kept and a direct one is added.** Two programs drive
+//! 200 rounds each at `(gcsetinterval 1024)` and infer the fiber's survival
+//! from the answers coming back right. That is a real regression test and it
+//! stays. What it cannot do is *name* the mechanism: it hopes a collection
+//! lands while the nested fiber is live. `directCase` below makes the
+//! collection happen at a chosen instant and asserts the survival
 //! what stops that.
 
 const std = @import("std");
 const types = @import("types");
-const constants = @import("constants");
-const c = @import("cabi");
+const repr = @import("repr");
 const raise = @import("raise");
 const harness = @import("harness.zig");
 
 const gc_mark = @import("subsystems").gc_mark;
 const core_env = @import("subsystems").env;
 const vm_entry = @import("subsystems").vm_entry;
-const kind = @import("subsystems").value.kind;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const args_core = @import("subsystems").args;
@@ -91,18 +59,18 @@ var direct_calls: u32 = 0;
 /// The three facts that make a nested `janet_pcall` a collector hazard, read
 /// from the runtime at the moment one is running.
 ///
-/// Asserted rather than assumed for rule 36's reason: every assertion below is
-/// about a fiber the collector cannot reach, and each of these is a way for it
-/// to become reachable without anybody noticing.
+/// Asserted rather than assumed: every assertion below is about a fiber the
+/// collector cannot reach, and each of these is a way for it to become
+/// reachable without anybody noticing.
 fn assertNested(nested: *types.JanetFiber) void {
-    const root = c.vm().root_fiber;
+    const root = harness.vm().root_fiber;
 
     // There is an outer fiber, and it is not this one.
     assert(root != null);
     assert(root != nested);
 
     // This one is what the interpreter is running.
-    assert(c.vm().fiber == nested);
+    assert(harness.vm().fiber == nested);
 
     // And `markFiber`'s `child` walk does not arrive here. It follows the
     // chain to its end, so the whole chain is checked rather than one link.
@@ -117,11 +85,11 @@ fn assertNested(nested: *types.JanetFiber) void {
 /// by counting, because `janet_gcroot` appends and the position is not a
 /// property anything should depend on.
 fn rooted(fiber: *types.JanetFiber) bool {
-    const v = c.vm();
+    const v = harness.vm();
     var i: u32 = 0;
-    while (i < v.root_count) : (i += 1) {
-        const val = v.roots.?[i];
-        if (kind.checkType(val, constants.JANET_FIBER) == 0) continue;
+    while (i < v.roots.count) : (i += 1) {
+        const val = v.roots.at(i).*;
+        if (!repr.checkType(val, repr.Tag.fiber)) continue;
         if (wrap.toFiber(val) == fiber) return true;
     }
     return false;
@@ -135,32 +103,31 @@ fn rooted(fiber: *types.JanetFiber) bool {
 /// Called from Janet source running on the nested fiber, which is the only
 /// place the situation exists. Everything it needs is read out of `janet_vm`
 /// rather than passed in, because the point is what the *collector* can see.
-fn cfunCollectHere(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunCollectHere(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
 
-    const nested = c.vm().fiber.?;
+    const nested = harness.vm().fiber.?;
     assertNested(nested);
 
     // The block is the header, so the fiber pointer is what the heap list
     // holds. Both reads bracket the collection.
     const block: ?*anyopaque = @ptrCast(nested);
-    assert(harness.heap.onList(c.vm().blocks, block));
+    assert(harness.heap.onList(harness.vm().gc.blocks, block));
 
     gc_mark.collect();
 
     // The claim. Without `continueNoCheck`'s rooting this block is unreachable
     // from every root the mark phase has, so the sweep frees it -- along with
     // `fiber->data`, the stack this cfunction's caller is executing on.
-    assert(harness.heap.onList(c.vm().blocks, block));
+    assert(harness.heap.onList(harness.vm().gc.blocks, block));
 
     // And *why* it survived, which the assertion above cannot say on its own.
     //
     // The obvious second reading is the mark bit, and it is unavailable: the
     // sweep clears `JANET_MEM_REACHABLE` on every survivor so that the next
     // mark phase starts from a clean heap, so `harness.heap.reachable` answers
-    // false here for every live block in the process. Asserting it would be
-    // rule 8's circularity in its other form -- an assertion that cannot
-    // succeed rather than one that cannot fail.
+    // false here for every live block in the process. Asserting it would be an
+    // assertion that cannot succeed.
     //
     // What can be read is the root set, and it is the mechanism itself.
     // `continueNoCheck` roots the fiber precisely because `janet_collect`
@@ -179,21 +146,20 @@ fn cfunCollectHere(argv: []types.Janet) raise.Raising(types.Janet) {
 /// its signal rather than raising, so the refusal is re-raised here — which is
 /// what the C version's `janet_panicv` did and what makes a failure inside the
 /// callback arrive at the Janet caller as an ordinary error.
-fn cfunCallViaPcall(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunCallViaPcall(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const function = try args_core.getFunction(argv, 0);
 
-    var result: types.Janet = wrap.fromNil();
+    var result: repr.Value = wrap.fromNil();
     var fiber: ?*types.JanetFiber = null;
     const sig = vm_entry.pcall(function, 0, null, &result, &fiber);
-    if (sig != constants.JANET_SIGNAL_OK) return raise.panicv(result);
+    if (sig != types.Signal.ok) return raise.panicv(result);
     return result;
 }
 
-const cfuns = [_]types.JanetReg{
+const cfuns = [_]types.Reg{
     .{ .name = "gcpcall/call", .cfun = raise.stored(&cfunCallViaPcall), .documentation = null },
     .{ .name = "gcpcall/collect-here", .cfun = raise.stored(&cfunCollectHere), .documentation = null },
-    .{ .name = null, .cfun = null, .documentation = null },
 };
 
 // ------------------------------------------------------------------ evaluate
@@ -220,7 +186,7 @@ fn directCase() void {
 
 /// Single nesting, under collection pressure.
 ///
-/// `F1 -> gcpcall/call -> janet_pcall -> F2`, where F2 is `janet_vm.fiber` and
+/// `F1 -> gcpcall/call -> janet_pcall -> F2`, where F2 is `vm.fiber` and
 /// not `root_fiber`. Every allocation is made from Janet source on purpose:
 /// `janet_gcalloc` does not itself collect, and the VM loop's `vm_checkgc_next`
 /// is what does — so a C-side allocation would not put the pressure where the
@@ -248,7 +214,7 @@ fn singleNesting() void {
 ///
 /// `F1 -> gcpcall/call -> janet_pcall -> F2 -> gcpcall/call -> janet_pcall ->
 /// F3`. F2 is the one at risk here and it is worse placed than F2 above: it is
-/// neither `root_fiber` (F1 is) nor `janet_vm.fiber` (F3 is), and the only
+/// neither `root_fiber` (F1 is) nor `vm.fiber` (F3 is), and the only
 /// thing holding it is a `JanetTryState` on the C stack, which is not a root.
 fn deepNesting() void {
     eval(
@@ -268,7 +234,7 @@ fn deepNesting() void {
         \\    (def state @{:count 0 :data @["a" "b" "c" "d" "e"]})
         \\    (fn []
         \\      # Runs on F2. Calling gcpcall/call here creates F3, and F2 stops
-        \\      # being janet_vm.fiber without ever having been root_fiber.
+        \\      # being vm.fiber without ever having been root_fiber.
         \\      (def inner-result (gcpcall/call inner-cb))
         \\      # If F2 was collected during F3's execution, `state` is read
         \\      # through freed memory here.

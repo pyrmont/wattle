@@ -16,58 +16,52 @@
 //! `janet_vm_state_size`, `janet_vm_state_align` and `JanetVMAlignProbe`
 //! existed:
 //!
-//!     assert(janet_vm_state_size() == sizeof(JanetVM));
+//!     assert(janet_vm_state_size() == sizeof(Vm));
 //!     assert(janet_vm_state_align() == offsetof(JanetVMAlignProbe, vm));
 //!
-//! The two sides were two *compilers'* views of `src/core/state.h` — the C
-//! build's, and the Zig build's through `@cImport`. `janet_vm_save` copies the
-//! whole structure using the owner's length, so a disagreement would truncate
-//! or overrun a copy and neither would be a compile error. That was a real
-//! oracle for as long as C files read `janet_vm.field`.
+//! The two sides were two *compilers'* views of one C header: a C build's, and
+//! a Zig build's through `@cImport`. `janet_vm_save` copies the whole structure
+//! using the owner's length, so a disagreement would truncate or overrun a copy
+//! and neither would be a compile error. That was a real oracle for as long as
+//! C files read `janet_vm.field`.
 //!
-//! Phase 10 deleted the last of those. There is one view now: `@sizeOf(c.JanetVM)`
-//! is what `janet_vm_alloc` allocates, what `janet_vm_save` copies, and what
-//! `janet_vm_state_size` returned — so a Zig contract asserting the equality
-//! asserts a definition, which is rule 8's assertion that cannot fail. Rules
-//! 20 and 24 say to ask what the two sides were and where the replacement
-//! lives; here the second side was **the C implementation**, and it is not
-//! somewhere else in `test/` but gone.
+//! There is one view now: `@sizeOf(types.Vm)` is what `janet_vm_alloc`
+//! allocates, what `janet_vm_save` copies, and what `janet_vm_state_size`
+//! returned -- so asserting the equality would be asserting a definition. The
+//! second side was **the C implementation**, and it is not somewhere else in
+//! `test/` but gone.
 //!
 //! So the section is dropped rather than translated, and the three
-//! declarations it was the only caller of go with it. The guard-page case —
-//! "a save must copy no further than the end of the structure" — is the same
+//! declarations it was the only caller of go with it. The guard-page case --
+//! "a save must copy no further than the end of the structure" -- is the same
 //! claim from the other end and goes for the same reason: `janet_vm_save` is
-//! `into.* = currentVm().*`, and a whole-struct assignment writing past the
+//! `into.* = current().*`, and a whole-struct assignment writing past the
 //! struct is not a behaviour Zig has.
-//!
-//! What *is* still a fact about two independently produced things, and is
-//! kept: `janet_local_vm()` must answer the address of the object every
-//! translation unit reaches as `c.janet_vm`. One side is the exported symbol
-//! the linker resolved, the other the value the function returns.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 const config = @import("config");
 const gc_alloc = @import("subsystems").gc_alloc;
 const functions = @import("subsystems").value.functions;
 const vm_state = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
 const fibers = @import("subsystems").value.fibers;
 
 const assert = std.debug.assert;
 
-fn vm() *types.JanetVM {
-    return c.vm();
+/// The VM this thread is running, through the owner's accessor, as in every
+/// other contract.
+fn vm() *types.Vm {
+    return vm_state.current();
 }
 
 /// The per-thread half of the contract needs a second thread to say it with.
-/// `JANET_VM_THREAD_LOCAL` is `src/zig/state_abi.h`'s answer to the question
-/// this section asks — it is false only in a single-threaded build, where the
+/// `constants.JANET_VM_THREAD_LOCAL` is the answer to the question this
+/// section asks — it is false only in a single-threaded build, where the
 /// storage is one process-wide object by construction and there is nothing
 /// here to check. Windows is cross-compiled and never executed, so its path is
 /// left out rather than written blind, which is `fiber_core.zig`'s condition
@@ -76,18 +70,19 @@ const has_threads = constants.JANET_VM_THREAD_LOCAL != 0 and builtin.os.tag != .
 
 // ------------------------------------------------------------------ address
 
-/// `janet_local_vm()` must name the same object as `janet_vm`.
+/// `janet_local_vm()` must name the object this thread runs on.
 ///
-/// This is the one layout-adjacent claim the migration keeps, and it is not
-/// circular: the left side is what the function computes and the right side is
-/// where the linker put the symbol `state.h` declares. Through Phase 10 it was
-/// what let Zig define the storage while every core C file went on writing
-/// `janet_vm.field`; what it pins now is that `@import("cabi")`'s view of the
-/// extern and the definition in `vm_state.zig` are one object rather than two.
-fn localVmIsJanetVm() void {
-    assert(vm_state.localVm() == vm());
-    assert(vm_state.localVm() == vm_state.localVm());
-
+/// **The comparison it used to make is gone with its subject.** The left side
+/// was what the function computed and the right side was where the linker put
+/// an exported symbol, which is what let Zig define the storage while C files
+/// wrote `janet_vm.field`. There is no export, so there is no second view, and
+/// asserting `localVm() == current()` would be asserting that a one-line
+/// function calls the function it calls.
+///
+/// What is left is not circular: the exported entry point must answer a VM
+/// that reads and writes as this thread's, which is a claim about behaviour
+/// rather than about two spellings of an address.
+fn localVmAnswersThisThread() void {
     vm().stackn = 1234;
     assert(vm_state.localVm().*.stackn == 1234);
     vm_state.localVm().*.stackn = 4321;
@@ -100,14 +95,13 @@ fn localVmIsJanetVm() void {
 fn allocAndFree() void {
     const a = vm_state.vmAlloc();
     const b = vm_state.vmAlloc();
-    // `assert(a != null)` stood here until Phase 12 increment 5d and cannot
-    // be written now: `janet.h` declared `janet_vm_alloc` as `[*c]JanetVM`,
-    // so through the C ABI the result was "maybe null, maybe many" and the
-    // assertion was a real check. The definition returns `*c.JanetVM` and
-    // either succeeds or reaches `janet_zig_out_of_memory`, which does not
-    // return -- so the property is carried by the type and comparing with
-    // null is a compile error. `DESIGN.md` §3: the property stops being an
-    // agreement between two spellings and becomes a construction from one.
+    // `assert(a != null)` cannot be written: a translated `[*c]Vm` made the
+    // result "maybe null, maybe many" and the assertion a real check. The
+    // definition returns `*types.Vm` and either succeeds or reaches
+    // `janet_zig_out_of_memory`, which does not return -- so the property is
+    // carried by the type and comparing with null is a compile error.
+    // `DESIGN.md` section 3: the property stops being an agreement between two
+    // spellings and becomes a construction from one.
     assert(a != b);
     // A detached VM is a destination for `janet_vm_save` and nothing else, so
     // the only thing to check about a fresh one is that it can hold a save.
@@ -129,23 +123,23 @@ fn saveLoadRoundTrip() void {
     const second = vm_state.vmAlloc();
 
     vm().stackn = 11;
-    vm().coerce_error = 1;
+    vm().coerce_error = true;
     vm_state.vmSave(first);
 
     vm().stackn = 22;
-    vm().coerce_error = 0;
+    vm().coerce_error = false;
     vm_state.vmSave(second);
 
     vm().stackn = 33;
-    vm().coerce_error = 1;
+    vm().coerce_error = true;
 
     vm_state.vmLoad(first);
     assert(vm().stackn == 11);
-    assert(vm().coerce_error == 1);
+    assert(vm().coerce_error);
 
     vm_state.vmLoad(second);
     assert(vm().stackn == 22);
-    assert(vm().coerce_error == 0);
+    assert(vm().coerce_error == false);
 
     // A load is a plain copy: loading the same snapshot twice is idempotent,
     // and the snapshot is not consumed.
@@ -155,7 +149,7 @@ fn saveLoadRoundTrip() void {
     vm_state.vmFree(first);
     vm_state.vmFree(second);
     vm().stackn = 0;
-    vm().coerce_error = 0;
+    vm().coerce_error = false;
 }
 
 /// A save must copy the fields at the very end of the structure as well as the
@@ -172,61 +166,61 @@ fn saveSpansTheStructure() void {
     const snapshot = vm_state.vmAlloc();
 
     vm().user = @ptrFromInt(0x1111);
-    vm().registry_count = 0x2222;
-    vm().root_capacity = 0x3333;
-    vm().sandbox_flags = 0x4444;
+    vm().registry.rows.count = 0x2222;
+    vm().roots.capacity = 0x3333;
+    vm().sandbox_flags = types.Sandbox.fromBits(0x4444);
     // Aligned, unlike the C original's 0x5555: `traversal_base` is a typed
     // pointer and Zig rejects a `@ptrFromInt` that cannot satisfy its
     // alignment. The value is a witness rather than an address, so any
     // distinguishable one does.
-    vm().traversal_base = @ptrFromInt(0x5550);
+    vm().traversal.base = @ptrFromInt(0x5550);
     if (comptime builtin.os.tag != .windows) {
         vm().strerror_buf[0] = 'z';
         vm().strerror_buf[vm().strerror_buf.len - 1] = 'q';
     }
     if (comptime config.ev) {
-        vm().tq_capacity = 0x6666;
-        vm().spawn.capacity = 0x7777;
-        vm().active_tasks.capacity = 0x8888;
+        vm().ev.tq.capacity = 0x6666;
+        vm().ev.spawn.capacity = 0x7777;
+        vm().ev.active_tasks.capacity = 0x8888;
     }
     // Whichever of the four event-loop backends this build has, its last
     // field is the furthest into the structure a save has to reach.
     if (comptime config.ev and builtin.os.tag == .windows) {
-        vm().connect_ex_loaded = 0x9999;
+        vm().ev.backend.connect_ex_loaded = true;
     } else if (comptime config.ev and (config.ev_epoll or config.ev_kqueue)) {
-        vm().timer_enabled = 0x9999;
+        vm().ev.backend.timer_enabled = true;
     } else if (comptime config.ev and config.ev_poll) {
-        vm().stream_capacity = 0x9999;
+        vm().ev.backend.stream_capacity = 0x9999;
     }
 
     vm_state.vmSave(snapshot);
-    vm().* = std.mem.zeroes(types.JanetVM);
+    vm().* = std.mem.zeroes(types.Vm);
     vm_state.vmLoad(snapshot);
 
     assert(@intFromPtr(vm().user) == 0x1111);
-    assert(vm().registry_count == 0x2222);
-    assert(vm().root_capacity == 0x3333);
-    assert(vm().sandbox_flags == 0x4444);
-    assert(@intFromPtr(vm().traversal_base) == 0x5550);
+    assert(vm().registry.rows.count == 0x2222);
+    assert(vm().roots.capacity == 0x3333);
+    assert(vm().sandbox_flags.bits() == 0x4444);
+    assert(@intFromPtr(vm().traversal.base) == 0x5550);
     if (comptime builtin.os.tag != .windows) {
         assert(vm().strerror_buf[0] == 'z');
         assert(vm().strerror_buf[vm().strerror_buf.len - 1] == 'q');
     }
     if (comptime config.ev) {
-        assert(vm().tq_capacity == 0x6666);
-        assert(vm().spawn.capacity == 0x7777);
-        assert(vm().active_tasks.capacity == 0x8888);
+        assert(vm().ev.tq.capacity == 0x6666);
+        assert(vm().ev.spawn.capacity == 0x7777);
+        assert(vm().ev.active_tasks.capacity == 0x8888);
     }
     if (comptime config.ev and builtin.os.tag == .windows) {
-        assert(vm().connect_ex_loaded == 0x9999);
+        assert(vm().ev.backend.connect_ex_loaded == true);
     } else if (comptime config.ev and (config.ev_epoll or config.ev_kqueue)) {
-        assert(vm().timer_enabled == 0x9999);
+        assert(vm().ev.backend.timer_enabled == true);
     } else if (comptime config.ev and config.ev_poll) {
-        assert(vm().stream_capacity == 0x9999);
+        assert(vm().ev.backend.stream_capacity == 0x9999);
     }
 
     vm_state.vmFree(snapshot);
-    vm().* = std.mem.zeroes(types.JanetVM);
+    vm().* = std.mem.zeroes(types.Vm);
 }
 
 // ------------------------------------------------------------- interruption
@@ -261,17 +255,38 @@ fn interruptCounter() void {
 
 // ------------------------------------------------------------------ threads
 
-var main_vm: *types.JanetVM = undefined;
-var child_vm: ?*types.JanetVM = null;
+var main_vm: *types.Vm = undefined;
+var child_vm: ?*types.Vm = null;
 var child_saw_zero = false;
 var child_local_matches = false;
 
+/// Whether every field of `state` is the field a freshly declared `Vm` has.
+///
+/// **Field by field, not byte by byte.** `Vm` has automatic layout, so the
+/// padding between its fields is not part of its value; asserting that all
+/// `@sizeOf(types.Vm)` bytes are zero is a claim about the compiler's field
+/// placement and the TLS section rather than about the VM. A field loop
+/// compares only what the type means.
+///
+/// `std.meta.eql` cannot be used on the whole struct: `Vm` reaches
+/// `JanetGCData`, an untagged union, and Zig refuses to compare one. Each
+/// field's own bytes are compared instead, which is well defined for the
+/// scalars and for the fixed layouts whose padding *is* their ABI.
+fn isFresh(state: *const types.Vm) bool {
+    const fresh = types.Vm{};
+    inline for (@typeInfo(types.Vm).@"struct".fields) |f| {
+        const a = std.mem.asBytes(&@field(state, f.name));
+        const b = std.mem.asBytes(&@field(fresh, f.name));
+        if (!std.mem.eql(u8, a, b)) return false;
+    }
+    return true;
+}
+
 fn child() void {
-    const bytes: [*]const u8 = @ptrCast(c.vm());
-    child_saw_zero = std.mem.allEqual(u8, bytes[0..@sizeOf(types.JanetVM)], 0);
+    child_saw_zero = isFresh(vm_state.current());
     child_vm = vm_state.localVm();
-    child_local_matches = child_vm == c.vm();
-    c.vm().stackn = 99;
+    child_local_matches = child_vm == vm_state.current();
+    vm_state.current().stackn = 99;
 }
 
 /// Each thread gets its own VM, zero-initialised, and writing one leaves the
@@ -304,7 +319,7 @@ fn threadLocalStorage() !void {
 
 /// `janet_dyn` and `janet_setdyn` choose between two tables, and which one is
 /// the VM's business rather than the fiber's: a running fiber's own env when
-/// there is one, `janet_vm.top_dyns` when there is not. Both tables are
+/// there is one, `vm.top_dyns` when there is not. Both tables are
 /// created lazily, and the laziness is the part a port can quietly lose — a
 /// reader that allocated would turn every `(dyn :missing)` into a table.
 ///
@@ -319,13 +334,13 @@ fn dynamicBindings() void {
     vm().top_dyns = null;
 
     // A read finds nothing and creates nothing.
-    assert(harness.isType(vm_state.dyn("nope"), constants.JANET_NIL));
+    assert(harness.isType(vm_state.dyn("nope"), repr.Tag.nil));
     assert(vm().top_dyns == null);
 
     vm_state.setdyn("x", harness.wrapInteger(7));
     assert(vm().top_dyns != null);
     assert(harness.equals(vm_state.dyn("x"), harness.wrapInteger(7)));
-    assert(harness.isType(vm_state.dyn("y"), constants.JANET_NIL));
+    assert(harness.isType(vm_state.dyn("y"), repr.Tag.nil));
 
     // With a fiber, the same names go to the fiber's env instead, and the VM's
     // table is neither read nor written.
@@ -334,7 +349,7 @@ fn dynamicBindings() void {
     assert(fiber.*.env == null);
     vm().fiber = fiber;
 
-    assert(harness.isType(vm_state.dyn("x"), constants.JANET_NIL));
+    assert(harness.isType(vm_state.dyn("x"), repr.Tag.nil));
     assert(fiber.*.env == null);
 
     vm_state.setdyn("x", harness.wrapInteger(9));
@@ -352,7 +367,7 @@ fn dynamicBindings() void {
 // ------------------------------------------------------------------- entry
 
 pub fn run() void {
-    localVmIsJanetVm();
+    localVmAnswersThisThread();
     allocAndFree();
     saveLoadRoundTrip();
     saveSpansTheStructure();
@@ -362,7 +377,7 @@ pub fn run() void {
     // Last, and the only case here that needs a live runtime.
     harness.init();
     dynamicBindings();
-    vm_lifecycle.deinit();
+    vm_state.deinit();
 
     std.debug.print("vm state contract ok\n", .{});
 }

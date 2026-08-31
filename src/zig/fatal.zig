@@ -1,5 +1,5 @@
 //! The two ways this runtime gives up, and the last two symbols
-//! `src/zig/runtime_bridge.c` defined.
+//! a C bridge defined.
 //!
 //! They were C because `JANET_OUT_OF_MEMORY` is a macro an embedder may
 //! override in `janet.h` and because both wanted `stderr`, which nothing in

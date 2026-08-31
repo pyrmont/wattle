@@ -21,14 +21,13 @@
 //! abstract type's `tostring` inside an error message. Each keeps an abi
 //! beside it that flattens the raise into a report.
 //!
-//! A C contract had no choice but the abi. This one calls the raising
-//! function, which is Part 1's whole argument arriving at the compiler: a
-//! raise crosses as `error.JanetSignal`, the compiler checks that this file
-//! handles it, and the abis lose their last caller. That is what lets them
-//! be deleted in the same increment.
+//! A C contract has no choice but the abi. This one calls the raising
+//! function: a raise crosses as `error.JanetSignal`, the compiler checks that
+//! this file handles it, and the abis lose their last caller.
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const harness = @import("harness.zig");
@@ -81,18 +80,18 @@ fn theDefaultFormOptions() void {
     const options = primitives.foptsDefault(&compiler);
     std.debug.assert(options.compiler == &compiler);
     std.debug.assert(options.flags == 0);
-    std.debug.assert(options.hint.flags == (@as(u32, 1) << constants.JANET_NIL) | constants.JANET_SLOT_CONSTANT);
-    std.debug.assert(harness.isType(options.hint.constant, constants.JANET_NIL));
+    std.debug.assert(options.hint.flags == (@as(u32, 1) << @intFromEnum(repr.Tag.nil)) | constants.JANET_SLOT_CONSTANT);
+    std.debug.assert(harness.isType(options.hint.constant, repr.Tag.nil));
 }
 
 /// A constant slot carries the value's type in its low bits, which is what
 /// lets the emitter decide whether an immediate will do.
 fn aConstantSlotRemembersItsType() void {
     const slot = primitives.cslot(wrap.fromTrue());
-    std.debug.assert(slot.flags == (@as(u32, 1) << constants.JANET_BOOLEAN) | constants.JANET_SLOT_CONSTANT);
+    std.debug.assert(slot.flags == (@as(u32, 1) << @intFromEnum(repr.Tag.boolean)) | constants.JANET_SLOT_CONSTANT);
     std.debug.assert(slot.index == -1);
     std.debug.assert(slot.envindex == -1);
-    std.debug.assert(wrap.toBoolean(slot.constant) != 0);
+    std.debug.assert(wrap.toBoolean(slot.constant));
 }
 
 /// A far slot is handed back when it is freed — unless it has been named, in
@@ -103,7 +102,7 @@ fn aNamedSlotIsNotReclaimed() void {
     std.debug.assert(slot.index == 0);
     std.debug.assert(slot.flags == constants.JANET_SLOTTYPE_ANY);
     std.debug.assert(slot.envindex == -1);
-    std.debug.assert(harness.isType(slot.constant, constants.JANET_NIL));
+    std.debug.assert(harness.isType(slot.constant, repr.Tag.nil));
 
     primitives.freeslot(&compiler, slot);
     std.debug.assert(primitives.farslot(&compiler).index == 0);
@@ -188,7 +187,7 @@ fn poppingAScopeHandsUpItsSymbols() !void {
     child.ra.max = 8;
     vector.push(&compiler.buffer, harness.op(constants.JOP_NOOP));
 
-    try primitives.janetc_popscopeImpl(&compiler);
+    try primitives.popscope(&compiler);
     std.debug.assert(compiler.scope == &scope);
     std.debug.assert(scope.child == null);
     // A closure scope marks its parent as one too, so the parent knows it
@@ -211,7 +210,7 @@ fn anUnusedScopeStillKeepsItsResultSlot() !void {
     var slot: types.JanetSlot = std.mem.zeroes(types.JanetSlot);
     slot.index = 10;
     slot.envindex = -1;
-    try primitives.janetc_popscope_keepslotImpl(&compiler, slot);
+    try primitives.popscopeKeepslot(&compiler, slot);
     std.debug.assert(compiler.scope == &scope);
     std.debug.assert(regalloc.regallocCheck(&scope.ra, 10) != 0);
 }
@@ -252,28 +251,28 @@ fn aHintIsHonouredOnlyWhenItIsNear() void {
     const slot = primitives.gettarget(options);
     std.debug.assert(slot.index >= 0 and slot.index != 300);
     std.debug.assert(slot.envindex == -1 and slot.flags == 0);
-    std.debug.assert(harness.isType(slot.constant, constants.JANET_NIL));
+    std.debug.assert(harness.isType(slot.constant, repr.Tag.nil));
 }
 
 /// A list of values becomes a vector of slots, and a dictionary becomes a
 /// flat key-value vector in *sorted key order* — which is what makes a struct
 /// literal compile deterministically whatever order it was written in.
 fn valuesBecomeSlots() !void {
-    var values = [2]types.Janet{ harness.wrapInteger(10), wrap.fromTrue() };
+    var values = [2]repr.Value{ harness.wrapInteger(10), wrap.fromTrue() };
     compiler.recursion_guard = recursion_guard;
-    var slots = try primitives.janetc_toslotsImpl(&compiler, &values, 2);
+    var slots = try primitives.toslots(&compiler, &values, 2);
     std.debug.assert(vector.count(slots) == 2);
     std.debug.assert(slots.?[0].flags & constants.JANET_SLOT_CONSTANT != 0);
     std.debug.assert(harness.integerIs(slots.?[0].constant, 10));
     std.debug.assert(slots.?[1].flags & constants.JANET_SLOT_CONSTANT != 0);
-    std.debug.assert(wrap.toBoolean(slots.?[1].constant) != 0);
+    std.debug.assert(wrap.toBoolean(slots.?[1].constant));
     primitives.freeslots(&compiler, slots);
 
     const dictionary = tables.new(2);
     tables.put(dictionary, value.fromBytes("b", .keyword), harness.wrapInteger(2));
     tables.put(dictionary, value.fromBytes("a", .keyword), harness.wrapInteger(1));
     compiler.recursion_guard = recursion_guard;
-    slots = try primitives.janetc_toslotskvImpl(&compiler, wrap.fromTable(dictionary));
+    slots = try primitives.toslotskv(&compiler, wrap.fromTable(dictionary));
     std.debug.assert(vector.count(slots) == 4);
     std.debug.assert(harness.keywordIs(slots.?[0].constant, "a"));
     std.debug.assert(harness.integerIs(slots.?[1].constant, 1));
@@ -293,7 +292,7 @@ fn theFourKindsOfForm() !void {
 
     // An atom compiles to a constant and disturbs neither the guard nor the
     // source position, which is what makes those two safe to read afterwards.
-    var slot = try primitives.janetc_valueImpl(options, harness.wrapInteger(55));
+    var slot = try primitives.valueImpl(options, harness.wrapInteger(55));
     std.debug.assert(slot.flags & constants.JANET_SLOT_CONSTANT != 0);
     std.debug.assert(harness.integerIs(slot.constant, 55));
     std.debug.assert(compiler.recursion_guard == recursion_guard);
@@ -304,9 +303,9 @@ fn theFourKindsOfForm() !void {
     const constructed = structs.begin(1);
     structs.put(constructed, value.fromBytes("key", .keyword), harness.wrapInteger(9));
     var folded = wrap.fromStruct(structs.end(constructed));
-    slot = try primitives.janetc_valueImpl(options, folded);
+    slot = try primitives.valueImpl(options, folded);
     std.debug.assert(slot.flags & constants.JANET_SLOT_CONSTANT != 0);
-    std.debug.assert(harness.isType(slot.constant, constants.JANET_STRUCT));
+    std.debug.assert(harness.isType(slot.constant, repr.Tag.@"struct"));
     std.debug.assert(emittedCount() == 1);
 
     // A mutable structure cannot fold, so it is pushed and constructed.
@@ -315,7 +314,7 @@ fn theFourKindsOfForm() !void {
     harness.arrayPush(array, harness.wrapInteger(5));
     vector.empty(compiler.buffer);
     compiler.recursion_guard = recursion_guard;
-    slot = try primitives.janetc_valueImpl(options, wrap.fromArray(array));
+    slot = try primitives.valueImpl(options, wrap.fromArray(array));
     std.debug.assert(slot.flags & constants.JANET_SLOT_CONSTANT == 0);
     std.debug.assert(emittedCount() == 4);
     std.debug.assert(operationOf(emitted(2)) == harness.op(constants.JOP_PUSH_2));
@@ -330,7 +329,7 @@ fn theFourKindsOfForm() !void {
     vector.empty(compiler.buffer);
     compiler.recursion_guard = recursion_guard;
     options = primitives.foptsDefault(&compiler);
-    slot = try primitives.janetc_valueImpl(options, folded);
+    slot = try primitives.valueImpl(options, folded);
     std.debug.assert(slot.flags & constants.JANET_SLOT_CONSTANT == 0);
     std.debug.assert(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.JOP_CALL));
     primitives.freeslot(&compiler, slot);
@@ -339,7 +338,7 @@ fn theFourKindsOfForm() !void {
     compiler.recursion_guard = recursion_guard;
     options = primitives.foptsDefault(&compiler);
     options.flags |= constants.JANET_FOPTS_TAIL;
-    slot = try primitives.janetc_valueImpl(options, folded);
+    slot = try primitives.valueImpl(options, folded);
     std.debug.assert(slot.flags & constants.JANET_SLOT_RETURNED != 0);
     std.debug.assert(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.JOP_TAILCALL));
 
@@ -350,9 +349,9 @@ fn theFourKindsOfForm() !void {
     vector.empty(compiler.buffer);
     compiler.recursion_guard = recursion_guard;
     options = primitives.foptsDefault(&compiler);
-    slot = try primitives.janetc_valueImpl(options, wrap.fromTuple(tuples.end(call)));
+    slot = try primitives.valueImpl(options, wrap.fromTuple(tuples.end(call)));
     std.debug.assert(slot.flags & constants.JANET_SLOT_CONSTANT != 0);
-    std.debug.assert(harness.isType(slot.constant, constants.JANET_NIL));
+    std.debug.assert(harness.isType(slot.constant, repr.Tag.nil));
     std.debug.assert(compiler.result.status == constants.JANET_COMPILE_ERROR);
     std.debug.assert(compiler.result.@"error" != null);
     compiler.result.status = constants.JANET_COMPILE_OK;
@@ -399,13 +398,13 @@ fn theGlobalBindings() !void {
     registry.def(compiler.env.?, "global-def", harness.wrapInteger(42), null);
     var symbol = symbols.new("global-def");
     std.debug.assert(primitives.shadowcheck(&compiler, symbol) == constants.JANETC_SHADOW_LOCAL_HIDES_GLOBAL);
-    var slot = try primitives.janetc_resolveImpl(&compiler, symbol);
+    var slot = try primitives.resolve(&compiler, symbol);
     std.debug.assert(slot.flags & constants.JANET_SLOT_CONSTANT != 0);
     std.debug.assert(harness.integerIs(slot.constant, 42));
 
-    registry.defVar(compiler.env.?, "global-var", harness.wrapInteger(7), null);
+    registry.defVarAbi(compiler.env.?, "global-var", harness.wrapInteger(7), null);
     symbol = symbols.new("global-var");
-    slot = try primitives.janetc_resolveImpl(&compiler, symbol);
+    slot = try primitives.resolve(&compiler, symbol);
     std.debug.assert(slot.flags & constants.JANET_SLOT_REF != 0);
     std.debug.assert(slot.flags & constants.JANET_SLOT_NAMED != 0);
     std.debug.assert(slot.flags & constants.JANET_SLOT_MUTABLE != 0);
@@ -427,7 +426,7 @@ fn aLocalIsCaptured() !types.JanetString {
     var slot: types.JanetSlot = std.mem.zeroes(types.JanetSlot);
     slot.index = 4;
     slot.envindex = -1;
-    try primitives.janetc_nameslotImpl(&compiler, symbol, slot, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
+    try primitives.nameslot(&compiler, symbol, slot, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
     std.debug.assert(vector.count(scope.syms) == 2);
     std.debug.assert(scope.syms.?[1].sym == symbol);
     std.debug.assert(scope.syms.?[1].sym2 == symbol);
@@ -437,13 +436,13 @@ fn aLocalIsCaptured() !types.JanetString {
     std.debug.assert(primitives.shadowcheck(&compiler, symbol) == constants.JANETC_SHADOW_LOCAL_HIDES_LOCAL);
 
     // Resolving it in its own scope marks it used and leaves it local.
-    slot = try primitives.janetc_resolveImpl(&compiler, symbol);
+    slot = try primitives.resolve(&compiler, symbol);
     std.debug.assert(slot.index == 4 and slot.envindex == -1);
     std.debug.assert(scope.syms.?[1].referenced != 0);
 
     // Resolving it from inside a function scope captures it.
     primitives.pushScope(&child, &compiler, constants.JANET_SCOPE_FUNCTION, "capture");
-    slot = try primitives.janetc_resolveImpl(&compiler, symbol);
+    slot = try primitives.resolve(&compiler, symbol);
     std.debug.assert(slot.index == 4 and slot.envindex == 0);
     std.debug.assert(scope.flags & constants.JANET_SCOPE_ENV != 0);
     std.debug.assert(scope.syms.?[1].keep != 0);
@@ -452,7 +451,7 @@ fn aLocalIsCaptured() !types.JanetString {
     std.debug.assert(child.envs.?[0].envindex == -1);
     std.debug.assert(child.envs.?[0].scope == &scope);
 
-    try primitives.janetc_popscopeImpl(&compiler);
+    try primitives.popscope(&compiler);
     std.debug.assert(compiler.scope == &scope);
     return symbol;
 }
@@ -462,19 +461,19 @@ fn aLocalIsCaptured() !types.JanetString {
 fn theFinishedFuncdef(captured: types.JanetString) !void {
     const options = primitives.foptsDefault(&compiler);
     compiler.recursion_guard = recursion_guard;
-    try primitives.janetc_throwawayImpl(options, harness.wrapInteger(99));
+    try primitives.throwaway(options, harness.wrapInteger(99));
     // A thrown-away value emits nothing new, and leaves the scope where it
     // found it.
     std.debug.assert(compiler.scope == &scope);
     std.debug.assert(emittedCount() == 3);
 
-    const definition = try primitives.janetc_pop_funcdefImpl(&compiler);
+    const definition = try primitives.popFuncdef(&compiler);
     std.debug.assert(compiler.scope == null);
     std.debug.assert(definition.*.slotcount == scope.ra.max + 1);
     std.debug.assert(definition.*.bytecode_length == 3);
-    std.debug.assert(definition.*.bytecode.?[0] == harness.op(constants.JOP_PUSH) | (1 << 8));
-    std.debug.assert(definition.*.bytecode.?[1] == harness.op(constants.JOP_PUSH_ARRAY) | (2 << 8));
-    std.debug.assert(definition.*.bytecode.?[2] == harness.op(constants.JOP_PUSH) | (3 << 8));
+    std.debug.assert(definition.*.instructions()[0] == harness.op(constants.JOP_PUSH) | (1 << 8));
+    std.debug.assert(definition.*.instructions()[1] == harness.op(constants.JOP_PUSH_ARRAY) | (2 << 8));
+    std.debug.assert(definition.*.instructions()[2] == harness.op(constants.JOP_PUSH) | (3 << 8));
     std.debug.assert(definition.*.constants_length > 0);
     std.debug.assert(definition.*.defs_length == 0);
     std.debug.assert(definition.*.environments_length == 0);
@@ -483,13 +482,13 @@ fn theFinishedFuncdef(captured: types.JanetString) !void {
     std.debug.assert(definition.*.flags & constants.JANET_FUNCDEF_FLAG_NEEDSENV != 0);
     std.debug.assert(definition.*.flags & constants.JANET_FUNCDEF_FLAG_HASSYMBOLMAP != 0);
     std.debug.assert(definition.*.closure_bitset != null);
-    std.debug.assert(definition.*.closure_bitset.?[0] & (@as(u32, 1) << 4) != 0);
+    std.debug.assert(definition.*.closureBits()[0] & (@as(u32, 1) << 4) != 0);
     // The symbol map is what `(debug/stack)` reads.
     std.debug.assert(definition.*.symbolmap_length == 1);
-    std.debug.assert(definition.*.symbolmap.?[0].birth_pc == 2);
-    std.debug.assert(definition.*.symbolmap.?[0].death_pc == 3);
-    std.debug.assert(definition.*.symbolmap.?[0].slot_index == 4);
-    std.debug.assert(definition.*.symbolmap.?[0].symbol == captured);
+    std.debug.assert(definition.*.symbols()[0].birth_pc == 2);
+    std.debug.assert(definition.*.symbols()[0].death_pc == 3);
+    std.debug.assert(definition.*.symbols()[0].slot_index == 4);
+    std.debug.assert(definition.*.symbols()[0].symbol == captured);
     // The compiler's buffer was moved into the funcdef rather than copied.
     std.debug.assert(emittedCount() == 0);
 }
@@ -498,9 +497,9 @@ fn theFinishedFuncdef(captured: types.JanetString) !void {
 /// first error is the one that is kept.
 fn theFirstErrorIsKept() !void {
     const symbol = symbols.new("missing");
-    const slot = try primitives.janetc_resolveImpl(&compiler, symbol);
+    const slot = try primitives.resolve(&compiler, symbol);
     std.debug.assert(slot.flags & constants.JANET_SLOT_CONSTANT != 0);
-    std.debug.assert(harness.isType(slot.constant, constants.JANET_NIL));
+    std.debug.assert(harness.isType(slot.constant, repr.Tag.nil));
     std.debug.assert(compiler.result.status == constants.JANET_COMPILE_ERROR);
     std.debug.assert(compiler.result.@"error" != null);
 

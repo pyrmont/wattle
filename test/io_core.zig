@@ -11,35 +11,28 @@
 //! disagree is a thing only an embedder can build, and is the only way into
 //! two of the failure paths.
 //!
-//! ## What the migration changed
+//! ## How the subjects are reached
 //!
-//! **The kernels are reached by import.** `test/io_core.c` hand-declared
-//! fifteen `janet_io_*` symbols, because none of them is in a header. They
-//! were exported for an `io.c` that Phase 10 Part 18 deleted, and by Part 20
-//! this contract was their only caller -- so fourteen of the fifteen stopped
-//! being symbols at all. `janet_io_write` is the exception and stays: it has
-//! a real caller in `pp_format.zig`, which reaches it by symbol on purpose so
+//! **The kernels are reached by import.** Fifteen `janet_io_*` symbols were
+//! hand-declared once, because none of them is in a header. They were exported
+//! for a C caller that no longer exists, so fourteen of the fifteen stopped
+//! being symbols at all. `janet_io_write` is the exception and stays: it has a
+//! real caller in `pp/format.zig`, which reaches it by symbol on purpose so
 //! that the printer does not depend on the whole io surface.
 //!
 //! **The three mode-scan status codes and the five `JANET_IO_MODE_*` values
-//! are named rather than restated.** The C contract carried its own `#define`
-//! block, a third copy of numbers two files already agreed on.
+//! are named rather than restated.** A third copy of numbers two files already
+//! agree on is a place they can drift.
 //!
-//! **The abstract type is asked directly.** `janet_contract_at_next` and
-//! `janet_contract_at_get` existed to call a raising callback on C's behalf
-//! and flatten the error back into a report. `janet_file_type` is an
-//! `abstract_type.AbstractType` here -- the mirror whose `get` and `next` are
-//! typed as raising -- so the callbacks are called and the error is handled.
-//! `test/ev_loop.c` is the last user of both shims.
-//!
-//! **The public API half still goes through the abis**, deliberately. That
-//! section is about `janet.h`'s entry points, and `janet_getjfile` and
+//! **The public API half goes through the abis**, deliberately. That section
+//! is about the published entry points, and `janet_getjfile` and
 //! `janet_getfile` are `raise.reported` wrappers whose report is exactly what
 //! a C embedder sees -- so `harness.abiRaised` is the right instrument and
-//! `harness.raised` would test something else. Rule 15.
+//! `harness.raised` would test something else.
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const raise = @import("raise");
@@ -52,7 +45,6 @@ const core_env = @import("subsystems").env;
 const vm_state = @import("subsystems").lifecycle;
 const io_core_mod = @import("subsystems").io;
 const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
 const buffers = @import("subsystems").value.buffers;
 const abstracts = @import("subsystems").value.abstracts;
 const abstract_type = @import("subsystems").abstract_type;
@@ -69,9 +61,8 @@ const marsh = subsystems.marsh;
 /// whose initializer calls an extern function, which Zig rejects outright as
 /// "comptime call of extern function". `stdio.zig` exists for exactly that and
 /// names the symbol underneath the macro instead; its header comment has the
-/// table. A C contract could write `stdout` and think nothing of it, so this
-/// is a hazard the migration *acquired*, and the matrix's four cross-compile
-/// entries are the only instrument that says so.
+/// table. A C contract could write `stdout` and think nothing of it, and the
+/// matrix's four cross-compile entries are the only instrument that says so.
 const stdio = subsystems.stdio;
 
 /// A translated `FILE *` as the `?*anyopaque` `stdio.zig` deals in. They are
@@ -85,8 +76,8 @@ fn asHandle(file: anytype) ?*anyopaque {
 
 const assert = std.debug.assert;
 
-/// Six, not seven: `dynprintf`'s "file is not writeable" case moved to
-/// `test/pp_format.zig` with its subject in Phase 10 Part 18.
+/// Six, not seven: `dynprintf`'s "file is not writeable" case is in
+/// `test/pp_format.zig`, with its subject.
 const expected_raises = 6;
 var raises_seen: u32 = 0;
 
@@ -100,15 +91,14 @@ fn cleanPaths() void {
 
 /// A refusal, by the message it carried. Reading the message is what
 /// distinguishes "it refused" from "it refused for the reason this case is
-/// about" -- Phase 11 Part 10 recorded that three mutations inside message
-/// literals survived a whole sweep against a contract that only asked whether
-/// something raised.
+/// about": three mutations inside message literals once survived a whole sweep
+/// against a contract that only asked whether something raised.
 fn expectRaise(function: anytype, args: anytype, message: []const u8) void {
     const r = harness.raised(function, args) orelse {
         std.debug.print("io_core: expected a raise saying: {s}\n", .{message});
         @panic("io_core: expected a raise, got a return");
     };
-    assert(r.signal == constants.JANET_SIGNAL_ERROR);
+    assert(r.signal == types.Signal.@"error");
     if (!r.says(message)) {
         std.debug.print("expected: {s}\n", .{message});
         std.debug.print("     got: {s}\n", .{pp_describe.toString(r.payload)});
@@ -122,7 +112,7 @@ fn expectRaise(function: anytype, args: anytype, message: []const u8) void {
 fn expectAbiRaise(abi: anytype, args: anytype, message: ?[]const u8) void {
     const r = harness.abiRaised(abi, args) orelse
         @panic("io_core: expected a raise from an abi, got a return");
-    assert(r.signal == constants.JANET_SIGNAL_ERROR);
+    assert(r.signal == types.Signal.@"error");
     if (message) |text| assert(r.says(text));
     raises_seen += 1;
 }
@@ -133,7 +123,7 @@ fn expectAbiRaise(abi: anytype, args: anytype, message: ?[]const u8) void {
 fn expectRaisePrefix(function: anytype, args: anytype, prefix: []const u8) void {
     const r = harness.raised(function, args) orelse
         @panic("io_core: expected a raise, got a return");
-    assert(r.signal == constants.JANET_SIGNAL_ERROR);
+    assert(r.signal == types.Signal.@"error");
     assert(r.beginsWith(prefix));
     raises_seen += 1;
 }
@@ -145,14 +135,14 @@ fn expectRaisePrefix(function: anytype, args: anytype, prefix: []const u8) void 
 const Scan = struct {
     status: i32,
     flags: i32,
-    sandbox: u32,
+    sandbox: types.Sandbox,
     index: i32,
 };
 
 /// A mode string is scanned as a whole; the caller reads back the flag word,
 /// the permissions the accepted prefix implies, and where the scan stopped.
 fn scan(mode: []const u8) Scan {
-    var out: Scan = .{ .status = 0, .flags = 0, .sandbox = 0, .index = 0 };
+    var out: Scan = .{ .status = 0, .flags = 0, .sandbox = .{}, .index = 0 };
     out.status = io_core.scanMode(
         mode.ptr,
         @intCast(mode.len),
@@ -168,18 +158,18 @@ fn theModeScanning() void {
     var r = scan("r");
     assert(r.status == io_core.mode_ok);
     assert(r.flags == constants.JANET_FILE_READ);
-    assert(r.sandbox == constants.JANET_SANDBOX_FS_READ);
+    assert(r.sandbox == types.Sandbox.of(&.{"fs_read"}));
 
     r = scan("w");
     assert(r.status == io_core.mode_ok);
     assert(r.flags == constants.JANET_FILE_WRITE);
-    assert(r.sandbox == constants.JANET_SANDBOX_FS_WRITE);
+    assert(r.sandbox == types.Sandbox.of(&.{"fs_write"}));
 
     // Appending asks for the whole filesystem permission, not just write.
     r = scan("a");
     assert(r.status == io_core.mode_ok);
     assert(r.flags == constants.JANET_FILE_APPEND);
-    assert(r.sandbox == constants.JANET_SANDBOX_FS);
+    assert(r.sandbox == types.Sandbox.fs);
 
     // Trailing flags accumulate in any order and are independent.
     r = scan("wnb");
@@ -193,24 +183,24 @@ fn theModeScanning() void {
     r = scan("r+");
     assert(r.status == io_core.mode_ok);
     assert(r.flags == (constants.JANET_FILE_READ | constants.JANET_FILE_UPDATE));
-    assert(r.sandbox == (constants.JANET_SANDBOX_FS_READ | constants.JANET_SANDBOX_FS_WRITE));
+    assert(r.sandbox == types.Sandbox.of(&.{ "fs_read", "fs_write" }));
 
     // The longest accepted mode is ten bytes; eleven is rejected on length
     // alone, before any byte is classified.
     r = scan("");
     assert(r.status == io_core.mode_bad_length);
-    assert(r.sandbox == 0);
+    assert(r.sandbox == types.Sandbox.none);
     assert(scan("rbnbnbnbnb").status == io_core.mode_repeated);
     r = scan("qqqqqqqqqqq");
     assert(r.status == io_core.mode_bad_length);
-    assert(r.sandbox == 0);
+    assert(r.sandbox == types.Sandbox.none);
 
     // An unusable first byte stops the scan before any permission accrues, so
     // the caller reports the bad flag rather than a sandbox violation.
     r = scan("q");
     assert(r.status == io_core.mode_bad_first);
     assert(r.index == 0);
-    assert(r.sandbox == 0);
+    assert(r.sandbox == types.Sandbox.none);
     assert(scan("+").status == io_core.mode_bad_first);
     assert(scan("R").status == io_core.mode_bad_first);
 
@@ -219,15 +209,15 @@ fn theModeScanning() void {
     r = scan("rq");
     assert(r.status == io_core.mode_bad_later);
     assert(r.index == 1);
-    assert(r.sandbox == constants.JANET_SANDBOX_FS_READ);
+    assert(r.sandbox == types.Sandbox.of(&.{"fs_read"}));
     r = scan("r+q");
     assert(r.status == io_core.mode_bad_later);
     assert(r.index == 2);
-    assert(r.sandbox == (constants.JANET_SANDBOX_FS_READ | constants.JANET_SANDBOX_FS_WRITE));
+    assert(r.sandbox == types.Sandbox.of(&.{ "fs_read", "fs_write" }));
     r = scan("rq+");
     assert(r.status == io_core.mode_bad_later);
     assert(r.index == 1);
-    assert(r.sandbox == constants.JANET_SANDBOX_FS_READ);
+    assert(r.sandbox == types.Sandbox.of(&.{"fs_read"}));
 
     // A repeated flag yields a flag word of -1, which the caller then uses as
     // a flag word; see `FOUND.md`.
@@ -237,7 +227,7 @@ fn theModeScanning() void {
     r = scan("rbb");
     assert(r.status == io_core.mode_repeated);
     assert(r.flags == -1);
-    assert(r.sandbox == constants.JANET_SANDBOX_FS_READ);
+    assert(r.sandbox == types.Sandbox.of(&.{"fs_read"}));
     r = scan("rnn");
     assert(r.status == io_core.mode_repeated);
     assert(r.flags == -1);
@@ -379,7 +369,7 @@ fn theAbstractType() void {
     // finalizer, a method getter, a marshal pair and a key walker, and nothing
     // else. A `tostring` in particular would change how every file prints.
     const at = &io_core.fileType;
-    assert(std.mem.eql(u8, std.mem.span(at.name), "core/file"));
+    assert(std.mem.eql(u8, at.name, "core/file"));
     assert(at.gc != null);
     assert(at.gcmark == null);
     assert(at.get != null);
@@ -397,16 +387,24 @@ fn theAbstractType() void {
 
 /// The method table is scanned linearly and walked in order, so its order is
 /// observable through `next` and is part of the contract rather than a
-/// tidiness; Phase 11 Part 7 found the same thing about the parser's table.
+/// tidiness.
 fn theMethodOrder() raise.Raising(void) {
     const at = &io_core.fileType;
     const expected = [_][*:0]const u8{ "close", "flush", "read", "seek", "tell", "write" };
 
+    // `next` and `get` ignore the payload -- they read the method table -- and
+    // a C contract could pass `null` for it, because the slot was `void *`.
+    // The runtime cannot: a dispatch starts from a live abstract's header, so
+    // the payload is always a real `JanetFile`. The typed callback says so and
+    // the erased shim asserts it, so the contract supplies one.
+    var borrowed: types.JanetFile = std.mem.zeroes(types.JanetFile);
+    const payload: ?*anyopaque = &borrowed;
+
     var key = wrap.fromNil();
     var i: usize = 0;
     while (true) : (i += 1) {
-        key = try at.next.?(null, key);
-        if (harness.isType(key, constants.JANET_NIL)) break;
+        key = try at.next.?(payload, key);
+        if (harness.isType(key, repr.Tag.nil)) break;
         assert(i < expected.len);
         assert(harness.keywordIs(key, expected[i]));
     }
@@ -414,17 +412,17 @@ fn theMethodOrder() raise.Raising(void) {
 
     // The getter answers only keywords, and only names in the table.
     var out = wrap.fromNil();
-    assert(try at.get.?(null, value.fromBytes("read", .keyword), &out) == 1);
-    assert(harness.isType(out, constants.JANET_CFUNCTION));
-    assert(try at.get.?(null, value.fromBytes("open", .keyword), &out) == 0);
-    assert(try at.get.?(null, value.fromBytes("read", .string), &out) == 0);
+    assert(try at.get.?(payload, value.fromBytes("read", .keyword), &out) == 1);
+    assert(harness.isType(out, repr.Tag.cfunction));
+    assert(try at.get.?(payload, value.fromBytes("open", .keyword), &out) == 0);
+    assert(try at.get.?(payload, value.fromBytes("read", .string), &out) == 0);
 }
 
 // ==========================================================================
 // The public C API
 // ==========================================================================
 
-fn thePublicApi() void {
+fn thePublicApi() raise.Raising(void) {
     const raw = io_core.open(scratch, "wb").?;
 
     // `janet_makejfile` hands back the payload; `janet_makefile` wraps it. The
@@ -445,12 +443,15 @@ fn thePublicApi() void {
     assert(flags == constants.JANET_FILE_WRITE);
     assert(@as(?*anyopaque, @ptrCast(io_core_mod.unwrapfile(wrapped, null))) == @as(?*anyopaque, raw));
 
-    var argv = [_]types.Janet{wrapped};
-    assert(io_core_mod.getjfile(&argv, 0) == jf);
+    // The reporting halves of these two are `capi.zig`'s, which is where a
+    // boundary that builds a slice out of an index belongs. What is left takes
+    // the slice.
+    var argv = [_]repr.Value{wrapped};
+    assert(try io_core_mod.getjfile(argv[0..1], 0) == jf);
     flags = 0;
-    assert(@as(?*anyopaque, @ptrCast(io_core_mod.getfile(&argv, 0, &flags))) == @as(?*anyopaque, raw));
+    assert(@as(?*anyopaque, @ptrCast(try io_core_mod.getfile(argv[0..1], 0, &flags))) == @as(?*anyopaque, raw));
     assert(flags == constants.JANET_FILE_WRITE);
-    assert(@as(?*anyopaque, @ptrCast(io_core_mod.getfile(&argv, 0, null))) == @as(?*anyopaque, raw));
+    assert(@as(?*anyopaque, @ptrCast(try io_core_mod.getfile(argv[0..1], 0, null))) == @as(?*anyopaque, raw));
 
     // Closing marks the payload and clears the stream, so a later use is a
     // null dereference rather than a use-after-free. A second close is a
@@ -468,10 +469,13 @@ fn thePublicApi() void {
     assert(borrowed.*.flags & constants.JANET_FILE_CLOSED == 0);
     assert(asHandle(borrowed.*.file) == stdio.out());
 
-    // A value of the wrong type is an argument fault rather than a null.
-    var bad = [_]types.Janet{harness.wrapInteger(3)};
-    expectAbiRaise(io_core_mod.getjfile, .{ &bad, @as(i32, 0) }, null);
-    expectAbiRaise(io_core_mod.getfile, .{ &bad, @as(i32, 0), null }, null);
+    // A value of the wrong type is an argument fault rather than a null. It
+    // arrives as an error rather than as a report, because the reporting half
+    // of both getters is in `capi.zig` -- which is where an entry point that
+    // has to build a slice out of an index belongs.
+    var bad = [_]repr.Value{harness.wrapInteger(3)};
+    expectRaisePrefix(io_core_mod.getjfile, .{ bad[0..1], @as(i32, 0) }, "bad slot #0");
+    expectRaisePrefix(io_core_mod.getfile, .{ bad[0..1], @as(i32, 0), null }, "bad slot #0");
 
     _ = c.remove(scratch);
 }
@@ -487,7 +491,7 @@ fn theDynamicFile() void {
     vm_state.setdyn("io-core-out", harness.wrapInteger(3));
     assert(asHandle(io_core_mod.dynfile("io-core-out", @ptrCast(@alignCast(stdio.err())))) == stdio.err());
     vm_state.setdyn("io-core-out", wrap.fromAbstract(
-        abstracts.new(abstract_type.stored(&math.rngType), @sizeOf(types.JanetRNG)),
+        abstracts.new(&math.rngType, @sizeOf(types.JanetRNG)),
     ));
     assert(asHandle(io_core_mod.dynfile("io-core-out", @ptrCast(@alignCast(stdio.err())))) == stdio.err());
 
@@ -504,12 +508,12 @@ fn theDynamicFile() void {
 // Marshalling
 // ==========================================================================
 
-fn marshalled(buffer: *types.JanetBuffer, val: types.Janet, flags: c_int) raise.Raising(void) {
+fn marshalled(buffer: *types.JanetBuffer, val: repr.Value, flags: c_int) raise.Raising(void) {
     return marsh.marshal(buffer, val, null, flags);
 }
 
-fn unmarshalled(buffer: *types.JanetBuffer, flags: c_int) raise.Raising(types.Janet) {
-    return marsh.unmarshal(buffer.data.?[0..@intCast(buffer.count)], flags, null, null);
+fn unmarshalled(buffer: *types.JanetBuffer, flags: c_int) raise.Raising(repr.Value) {
+    return marsh.unmarshal(buffer.slice(), flags, null, null);
 }
 
 /// A file marshals only under `JANET_MARSHAL_UNSAFE`, which no Janet caller
@@ -590,7 +594,7 @@ fn theMismatchedHandles() void {
 
     // The readability check passes on the flags and the read then fails, which
     // is the branch that separates a short read from a broken one.
-    var read_args = [_]types.Janet{ claims_readable, harness.wrapInteger(10) };
+    var read_args = [_]repr.Value{ claims_readable, harness.wrapInteger(10) };
     expectRaise(harness.core("file/read"), .{read_args[0..2]}, "could not read file");
     assert(io_core_mod.fileClose(@ptrCast(@alignCast(io_core_mod.checkfile(claims_readable)))) == 0);
 
@@ -601,7 +605,7 @@ fn theMismatchedHandles() void {
 
     // `xprint` has no default handle, so a failed write names the destination
     // rather than reporting a bare byte count.
-    var print_args = [_]types.Janet{
+    var print_args = [_]repr.Value{
         claims_writeable,
         wrap.fromString(strings.cstring("text")),
     };
@@ -725,7 +729,7 @@ fn theCoreFunctions() void {
 
     // A repeated flag produces a handle with every flag bit set, which reports
     // itself as closed while its descriptor stays open. `FOUND.md` records
-    // this; the port reproduces it rather than fixing it.
+    // this; it is reproduced rather than fixed.
     doString(env,
         \\(def f (file/open "janet-zig-io-core-public-9d24" :r++))
         \\(assert (= :core/file (type f)))
@@ -736,7 +740,7 @@ fn theCoreFunctions() void {
     // Supplying a buffer size replaces the requested mode with read-only and
     // skips the mode scan entirely, so a write mode neither truncates nor
     // writes and a nonsense mode is accepted. `FOUND.md` records this; it is
-    // outside the seam, and the port leaves it alone.
+    // reproduced rather than fixed.
     doString(env,
         \\(spit "janet-zig-io-core-public-9d24" "buffered")
         \\(def f (file/open "janet-zig-io-core-public-9d24" :wb 8192))
@@ -792,7 +796,7 @@ pub fn run() void {
 
     theAbstractType();
     theMethodOrder() catch @panic("io_core: the method table raised");
-    thePublicApi();
+    thePublicApi() catch @panic("io_core: the public API raised");
     theDynamicFile();
     theMarshalling() catch @panic("io_core: marshalling raised");
     theMarshalledBufferSize() catch @panic("io_core: the buffer size raised");
@@ -800,7 +804,7 @@ pub fn run() void {
     theCoreFunctions();
 
     assert(raises_seen == expected_raises);
-    vm_lifecycle.deinit();
+    vm_state.deinit();
 
     cleanPaths();
     std.debug.print("io_core contract ok ({d} raises)\n", .{raises_seen});

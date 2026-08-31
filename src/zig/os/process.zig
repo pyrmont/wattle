@@ -1,23 +1,20 @@
 //! The `os/` process surface: launching, waiting on, signalling and piping to
 //! a child.
 //!
-//! `os_procs.zig` and `os_process.zig` until Phase 12 increment 6f -- the
-//! cfunctions and the portable rules with the scalar host calls beneath them.
-//! The two were already Zig to Zig, reached through an ordinary `@import` at
-//! twenty-eight call sites rather than through the C-ABI seam, so the merge
-//! only drops a qualifier.
+//! Two files once -- the cfunctions in one, the portable rules and the scalar
+//! host calls in the other. Both were Zig, reached through an ordinary
+//! `@import` at twenty-eight call sites, so the merge only drops a qualifier.
 //!
 //! ## Why this is one file and not four
 //!
-//! `port/TREE.md` designed `os/process.zig` with `spawn.zig`, `signals.zig` and
-//! `pipe.zig` beside it, and none of the three earns a name. The heuristic
-//! splits a piece out when it has a name **Janet already publishes** -- a type,
-//! a cfun family, a module -- or when it exists because the platform differs.
-//! This file registers twelve cfunctions and not one of those three names is
-//! among them: there is no `os/spawn` family (there is `os/spawn`, `os/execute`
-//! and `os/shell`, which share no name), `os/sigaction` is a single cfunction,
-//! and so is `os/pipe`. A leaf called `signals` would claim something the tree
-//! cannot point at.
+//! `spawn.zig`, `signals.zig` and `pipe.zig` beside it would each need a name,
+//! and none earns one. A piece splits out when it has a name **Janet already
+//! publishes** -- a type, a cfun family, a module -- or when it exists because
+//! the platform differs. This file registers twelve cfunctions and not one of
+//! those three names is among them: there is no `os/spawn` family (there is
+//! `os/spawn`, `os/execute` and `os/shell`, which share no name),
+//! `os/sigaction` is a single cfunction, and so is `os/pipe`. A leaf called
+//! `signals` would claim something the tree cannot point at.
 //!
 //! `JanetProc` is the one thing here Janet does publish as a type, and it was
 //! the one candidate with a real case. It stays in the bucket because splitting
@@ -32,8 +29,8 @@
 //!
 //! `shell` was declared in both halves and they are not duplicates: the host
 //! call, and the cfunction that checks arguments and calls it. The cfunction is
-//! `shellCfn` now, which is this file's own convention -- `executeCfn`,
-//! `spawnCfn`, `sigactionCfn`, `pipeCfn`. The three `wait_*` constants *were*
+//! `cfunShell` now, which is this file's own convention -- `cfunExecute`,
+//! `cfunSpawn`, `cfunSigaction`, `cfunPipe`. The three `wait_*` constants *were*
 //! duplicates and there is one copy.
 
 const std = @import("std");
@@ -42,10 +39,9 @@ const oa = @import("abi.zig");
 const corefn = @import("corefn");
 const raise = @import("raise");
 const pp_format = @import("../pp/format.zig");
-const os_files = @import("../os/fs.zig");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const stdio = @import("../stdio.zig");
 const ev_loop = @import("../ev.zig");
 const vm_lifecycle = @import("../vm/lifecycle.zig");
@@ -57,8 +53,6 @@ const gc_alloc = @import("../gc.zig");
 const tuples = @import("../value/tuples.zig");
 const utils = @import("../utils.zig");
 const gc_mark = @import("../gc/mark.zig");
-const vm_state = @import("../vm/lifecycle.zig");
-const kind = @import("../value/helpers/kind.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const args_core = @import("../args.zig");
 const buffers = @import("../value/buffers.zig");
@@ -87,30 +81,20 @@ const spawn_chdir = oa.spawn_chdir;
 // `-Dos-process`'s kernels, and the rest of the C ABI this file stands on
 // ==========================================================================
 
-/// `-Dos-process`'s kernels, by import.
+/// The process kernels, by import.
 ///
-/// Each of these was declared here as an `extern fn` under a `janet_os_*`
-/// name and `@export`ed from `zig`, which is the shape `os.c`
-/// needed when they were the first Zig inside it. This file is the only
-/// caller any of them has ever had, and both ends have been Zig since Phase
-/// 10 Part 18 -- so the symbols were fourteen exports that existed to let one
-/// Zig file call another. Phase 11 Part 20 replaced them with the import,
-/// which is rule 44 applied a second time.
-/// `src/core/util.h`, declared here rather than in `cabi.zig`.
-extern fn janet_strerror(e: c_int) callconv(.c) [*:0]const u8;
-
-extern fn janet_smalloc(size: usize) callconv(.c) ?*anyopaque;
-extern fn janet_sfree(ptr: ?*anyopaque) callconv(.c) void;
-extern fn janet_malloc(size: usize) callconv(.c) ?*anyopaque;
-extern fn janet_free(ptr: ?*anyopaque) callconv(.c) void;
-
-/// `janet_wrap_integer`, written out rather than called. `janet.h` declares the
-/// function beside its macro and `wrap.c` defines it only for the two nanbox
-/// layouts, so a tagged build has no such symbol and a Zig caller -- which
-/// cannot use the macro -- does not link. `marsh.zig`, `pp_pretty.zig` and
-/// `value_access.zig` write it out for the same reason, and `FOUND.md` has the
-/// defect. This is the fourth subsystem to meet it.
-inline fn wrapInteger(x: i32) types.Janet {
+/// Each was declared here as an `extern fn` under a `janet_os_*` name and
+/// `@export`ed from the file below, which is the shape C needed when they were
+/// the first Zig inside it. This file is the only caller any of them has ever
+/// had, so the symbols were fourteen exports that existed to let one Zig file
+/// call another.
+/// `janet_wrap_integer`, written out rather than called. Janet declares the
+/// function beside its macro and defines it only for the two nanbox layouts,
+/// so a tagged build has no such symbol and a Zig caller -- which cannot use
+/// the macro -- does not link. `marsh.zig`, `pp/pretty.zig` and
+/// `value/helpers/access.zig` write it out for the same reason, and `FOUND.md`
+/// has the defect.
+inline fn wrapInteger(x: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(x));
 }
 
@@ -157,7 +141,7 @@ const signal_numbers: [signal_number_names.len]i32 = blk: {
 /// `get_signal_kw`. A keyword the name list does not hold and one this
 /// platform's headers left out are both "undefined signal", which is what the
 /// `#ifdef`-gated C table produced by omitting the entry.
-fn getSignalKw(argv: []const types.Janet, n: i32) raise.Raising(c_int) {
+fn getSignalKw(argv: []const repr.Value, n: i32) raise.Raising(c_int) {
     const kw = try args_core.getKeyword(argv, n);
     const index = signalIndex(kw, types.stringHead(kw).length);
     if (index >= 0 and signal_numbers[@intCast(index)] >= 0) {
@@ -252,7 +236,7 @@ const Waiter = struct {
         return out;
     }
 
-    fn callbackImpl(args: types.JanetEVGenericMessage) raise.Raising(void) {
+    fn callback(args: types.JanetEVGenericMessage) raise.Raising(void) {
         const proc: *JanetProc = @ptrCast(@alignCast(args.argp orelse return));
         const status = args.tag;
         proc.return_code = status;
@@ -273,14 +257,12 @@ const Waiter = struct {
 
     // A `JanetCallback`, run by the event loop on the thread that receives
     // the event. Nothing above it can take an error.
-    fn callback(args: types.JanetEVGenericMessage) callconv(.c) void {
-        raise.total(callbackImpl(args), "os/proc's completion callback");
+    fn callbackAbi(args: types.JanetEVGenericMessage) callconv(.c) void {
+        raise.total(callback(args), "os/proc's completion callback");
     }
 };
 
-fn procGc(p: ?*anyopaque, s: usize) callconv(.c) c_int {
-    _ = s;
-    const proc: *JanetProc = @ptrCast(@alignCast(p.?));
+fn procGc(proc: *JanetProc, _: usize) c_int {
     if (windows) {
         if (proc.flags & proc_closed == 0) {
             if (proc.flags & proc_allow_zombie == 0) _ = TerminateProcess(proc.handles.p, 1);
@@ -297,9 +279,7 @@ fn procGc(p: ?*anyopaque, s: usize) callconv(.c) c_int {
     return 0;
 }
 
-fn procMark(p: ?*anyopaque, s: usize) callconv(.c) c_int {
-    _ = s;
-    const proc: *JanetProc = @ptrCast(@alignCast(p.?));
+fn procMark(proc: *JanetProc, _: usize) c_int {
     if (proc.in) |x| gc_mark.mark(wrap.fromAbstract(x));
     if (proc.out) |x| gc_mark.mark(wrap.fromAbstract(x));
     if (proc.err) |x| gc_mark.mark(wrap.fromAbstract(x));
@@ -311,7 +291,7 @@ fn procMark(p: ?*anyopaque, s: usize) callconv(.c) c_int {
 /// code is the result. The C original spells that with two different return
 /// types behind one `#ifdef`; this returns an optional instead, and the two
 /// callers read it the same way.
-fn procWaitImpl(proc: *JanetProc) raise.Raising(types.Janet) {
+fn procWait(proc: *JanetProc) raise.Raising(repr.Value) {
     if (proc.flags & (proc_waited | proc_waiting) != 0) {
         return raise.panic("cannot wait twice on a process");
     }
@@ -326,7 +306,7 @@ fn procWaitImpl(proc: *JanetProc) raise.Raising(types.Janet) {
         targs.argi = @bitCast(targs.fiber.?.sched_id);
         gc_alloc.gcroot(wrap.fromAbstract(proc));
         gc_alloc.gcroot(wrap.fromFiber(targs.fiber.?));
-        try ev_loop.threadedCall(&Waiter.subroutine, targs, &Waiter.callback);
+        try ev_loop.threadedCall(&Waiter.subroutine, targs, &Waiter.callbackAbi);
         return ev_loop.awaitEvent();
     } else {
         proc.flags |= proc_waited;
@@ -353,15 +333,15 @@ fn procWaitImpl(proc: *JanetProc) raise.Raising(types.Janet) {
 // The process cfunctions
 // ==========================================================================
 
-fn procWait(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunProcWait(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const proc: *JanetProc = @ptrCast(@alignCast((try args_core.getAbstract(argv, 0, abstract_type.stored(&proc_type))).?));
-    return procWaitImpl(proc);
+    const proc: *JanetProc = @ptrCast(@alignCast((try args_core.getAbstract(argv, 0, &proc_type)).?));
+    return procWait(proc);
 }
 
-fn procKill(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunProcKill(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
-    const proc: *JanetProc = @ptrCast(@alignCast((try args_core.getAbstract(argv, 0, abstract_type.stored(&proc_type))).?));
+    const proc: *JanetProc = @ptrCast(@alignCast((try args_core.getAbstract(argv, 0, &proc_type)).?));
     if (proc.flags & proc_waited != 0) {
         return raise.panic("cannot kill process that has already finished");
     }
@@ -377,33 +357,30 @@ fn procKill(argv: []types.Janet) raise.Raising(types.Janet) {
         var signal: c_int = -1;
         if (@as(i32, @intCast(argv.len)) == 3) signal = try getSignalKw(argv, 2);
         const status = sendSignal(proc.pid(), if (signal == -1) h.SIGKILL else signal);
-        if (status != 0) return raise.panic(@ptrCast(janet_strerror(errno())));
+        if (status != 0) return raise.panic(@ptrCast(utils.strerrorSafe(errno())));
     }
     // Having killed it, wait on it -- but only if asked.
-    if (@as(i32, @intCast(argv.len)) > 1 and kind.truthy(argv[1]) != 0) return procWaitImpl(proc);
+    if (@as(i32, @intCast(argv.len)) > 1 and repr.truthy(argv[1])) return procWait(proc);
     return argv[0];
 }
 
-extern fn janet_stream_close(stream: *types.JanetStream) callconv(.c) void;
-extern fn janet_file_close(file: *types.JanetFile) callconv(.c) c_int;
-
 inline fn closeStdio(x: *Stdio) raise.Raising(void) {
-    if (has_ev) try ev_stream.streamClose(x) else _ = janet_file_close(x);
+    if (has_ev) try ev_stream.streamClose(x) else _ = io.fileClose(x);
 }
 
-fn procClose(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunProcClose(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const proc: *JanetProc = @ptrCast(@alignCast((try args_core.getAbstract(argv, 0, abstract_type.stored(&proc_type))).?));
+    const proc: *JanetProc = @ptrCast(@alignCast((try args_core.getAbstract(argv, 0, &proc_type)).?));
     if (proc.flags & proc_owns_stdin != 0) try closeStdio(proc.in.?);
     if (proc.flags & proc_owns_stdout != 0) try closeStdio(proc.out.?);
     if (proc.flags & proc_owns_stderr != 0) try closeStdio(proc.err.?);
     proc.flags &= ~(proc_owns_stdin | proc_owns_stdout | proc_owns_stderr);
     if (proc.flags & (proc_waited | proc_waiting) != 0) return wrap.fromNil();
-    return procWaitImpl(proc);
+    return procWait(proc);
 }
 
-fn procGetpid(argv: []types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_SUBPROCESS);
+fn cfunProcGetpid(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"subprocess"}));
     try args_core.fixarity(argv, 0);
     return wrap.fromNumber(@floatFromInt(processId()));
 }
@@ -413,22 +390,21 @@ fn procGetpid(argv: []types.Janet) raise.Raising(types.Janet) {
 //
 // `proc_methods` carries three real methods and three dud entries. The duds
 // are what `janet_nextmethod` walks, so `(keys p)` reports `:in`, `:out` and
-// `:err` as well; Part 7 found that the table's *order* is observable for the
-// same reason, and it is preserved here.
+// `:err` as well; the table's *order* is observable for the same reason, and
+// it is preserved here.
 // ==========================================================================
 
 const proc_methods = [_]method_type.Method{
-    .{ .name = "wait", .cfun = &procWait },
-    .{ .name = "kill", .cfun = &procKill },
-    .{ .name = "close", .cfun = &procClose },
+    .{ .name = "wait", .cfun = &cfunProcWait },
+    .{ .name = "kill", .cfun = &cfunProcKill },
+    .{ .name = "close", .cfun = &cfunProcClose },
     .{ .name = "in", .cfun = null },
     .{ .name = "out", .cfun = null },
     .{ .name = "err", .cfun = null },
     .{ .name = null, .cfun = null },
 };
 
-fn procGet(p: ?*anyopaque, key: types.Janet, out: *types.Janet) raise.Raising(c_int) {
-    const proc: *JanetProc = @ptrCast(@alignCast(p.?));
+fn procGet(proc: *JanetProc, key: repr.Value, out: *repr.Value) raise.Raising(c_int) {
     if (args_core.keyeq(key, "in") != 0) {
         out.* = if (proc.in) |x| wrap.fromAbstract(x) else wrap.fromNil();
         return 1;
@@ -451,32 +427,21 @@ fn procGet(p: ?*anyopaque, key: types.Janet, out: *types.Janet) raise.Raising(c_
         out.* = wrapInteger(proc.return_code);
         return 1;
     }
-    if (kind.checkType(key, constants.JANET_KEYWORD) == 0) return 0;
+    if (!repr.checkType(key, repr.Tag.keyword)) return 0;
     return args_core.getmethod(wrap.toKeyword(key), @ptrCast(&proc_methods), out);
 }
 
-fn procNext(p: ?*anyopaque, key: types.Janet) raise.Raising(types.Janet) {
-    _ = p;
+fn procNext(_: *JanetProc, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(&proc_methods), key);
 }
 
-const proc_type: abstract_type.AbstractType = .{
+const proc_type = abstract_type.define(JanetProc, .{
     .name = "core/process",
     .gc = &procGc,
     .gcmark = &procMark,
     .get = &procGet,
-    .put = null,
-    .marshal = null,
-    .unmarshal = null,
-    .tostring = null,
-    .compare = null,
-    .hash = null,
     .next = &procNext,
-    .call = null,
-    .length = null,
-    .bytes = null,
-    .gcperthread = null,
-};
+});
 
 // ==========================================================================
 // Pipes and stdio redirection
@@ -536,14 +501,12 @@ fn makePipes(handle: *types.JanetHandle, reverse: bool, errflag: *c_int) types.J
     return handles[0];
 }
 
-extern fn janet_stream(handle: types.JanetHandle, flags: u32, methods: ?*const types.JanetMethod) callconv(.c) *types.JanetStream;
-extern fn janet_makejfile(f: ?*anyopaque, flags: i32) callconv(.c) *types.JanetFile;
 extern fn _get_osfhandle(fd: c_int) callconv(.c) isize;
 extern fn _open_osfhandle(handle: isize, flags: c_int) callconv(.c) c_int;
 extern fn _fileno(f: ?*anyopaque) callconv(.c) c_int;
 extern fn fileno(f: ?*anyopaque) callconv(.c) c_int;
-extern fn fdopen(fd: c_int, mode: [*:0]const u8) callconv(.c) ?*anyopaque;
-extern fn _fdopen(fd: c_int, mode: [*:0]const u8) callconv(.c) ?*anyopaque;
+extern fn fdopen(fd: c_int, mode: [*:0]const u8) callconv(.c) ?*types.FILE;
+extern fn _fdopen(fd: c_int, mode: [*:0]const u8) callconv(.c) ?*types.FILE;
 extern fn _close(fd: c_int) callconv(.c) c_int;
 extern fn dup(fd: c_int) callconv(.c) c_int;
 
@@ -556,16 +519,16 @@ const file_closed: i32 = 32;
 
 /// `janet_getjstream`: the OS handle behind a `core/stream` or a `core/file`,
 /// and the abstract it came from.
-fn getJStream(argv: []types.Janet, n: i32, orig: *?*anyopaque) raise.Raising(types.JanetHandle) {
+fn getJStream(argv: []repr.Value, n: i32, orig: *?*anyopaque) raise.Raising(types.JanetHandle) {
     if (has_ev) {
-        if (args_core.checkabstract(argv[@intCast(n)], abstract_type.stored(&ev_stream.streamType))) |p| {
+        if (args_core.checkabstract(argv[@intCast(n)], &ev_stream.streamType)) |p| {
             const stream: *types.JanetStream = @ptrCast(@alignCast(p));
             if (stream.flags & stream_closed != 0) return raise.panic("stream is closed");
             orig.* = stream;
             return stream.handle;
         }
     }
-    if (args_core.checkabstract(argv[@intCast(n)], abstract_type.stored(&io.fileType))) |p| {
+    if (args_core.checkabstract(argv[@intCast(n)], &io.fileType)) |p| {
         const f: *types.JanetFile = @ptrCast(@alignCast(p));
         if (f.flags & file_closed != 0) return raise.panic("file is closed");
         orig.* = f;
@@ -581,8 +544,8 @@ fn getJStream(argv: []types.Janet, n: i32, orig: *?*anyopaque) raise.Raising(typ
 fn getStdioForHandle(handle: types.JanetHandle, orig: ?*anyopaque, iswrite: bool) ?*Stdio {
     if (has_ev) {
         const p = orig orelse
-            return janet_stream(handle, if (iswrite) stream_writable else stream_readable, null);
-        if (types.abstractHead(p).type == abstract_type.stored(&io.fileType)) {
+            return ev_stream.makeStreamAbi(handle, if (iswrite) stream_writable else stream_readable, null);
+        if (types.abstractHead(p).type == &io.fileType) {
             const jf: *types.JanetFile = @ptrCast(@alignCast(p));
             var flags: u32 = 0;
             if (jf.flags & file_write != 0) flags |= stream_writable;
@@ -595,11 +558,11 @@ fn getStdioForHandle(handle: types.JanetHandle, orig: ?*anyopaque, iswrite: bool
                 if (DuplicateHandle(prochandle, handle, prochandle, &new_handle, 0, 0, 0x2) == 0) {
                     return null;
                 }
-                return janet_stream(new_handle, flags, null);
+                return ev_stream.makeStreamAbi(new_handle, flags, null);
             }
             const new_handle = dup(handle);
             if (new_handle < 0) return null;
-            return janet_stream(new_handle, flags, null);
+            return ev_stream.makeStreamAbi(new_handle, flags, null);
         }
         return @ptrCast(@alignCast(p));
     } else {
@@ -611,10 +574,10 @@ fn getStdioForHandle(handle: types.JanetHandle, orig: ?*anyopaque, iswrite: bool
                 _ = _close(fd);
                 return null;
             };
-            return janet_makejfile(f, if (iswrite) file_write else file_read);
+            return io.makejfile(f, if (iswrite) file_write else file_read);
         }
         const f = fdopen(handle, if (iswrite) "w" else "r") orelse return null;
-        return janet_makejfile(f, if (iswrite) file_write else file_read);
+        return io.makejfile(f, if (iswrite) file_write else file_read);
     }
 }
 
@@ -631,7 +594,7 @@ const EnvBlock = if (windows) ?[*]u8 else ?[*:null]?[*:0]u8;
 /// which is `zig`'s note repeated here: the POSIX block drops a key
 /// holding `=` or NUL and the Windows block does not, so `envKeyOk`
 /// is called only where the C original called it.
-fn buildEnv(argv: []types.Janet) raise.Raising(EnvBlock) {
+fn buildEnv(argv: []repr.Value) raise.Raising(EnvBlock) {
     if (@as(i32, @intCast(argv.len)) <= 2) return null;
     const dict = try args_core.getDictionary(argv, 2);
     if (windows) {
@@ -639,8 +602,8 @@ fn buildEnv(argv: []types.Janet) raise.Raising(EnvBlock) {
         var i: i32 = 0;
         while (i < dict.cap) : (i += 1) {
             const kv = &dict.kvs.?[@intCast(i)];
-            if (kind.checkType(kv.key, constants.JANET_STRING) == 0) continue;
-            if (kind.checkType(kv.value, constants.JANET_STRING) == 0) continue;
+            if (!repr.checkType(kv.key, repr.Tag.string)) continue;
+            if (!repr.checkType(kv.value, repr.Tag.string)) continue;
             const keys = wrap.toString(kv.key);
             const vals = wrap.toString(kv.value);
             const klen = types.stringHead(keys).length;
@@ -652,25 +615,25 @@ fn buildEnv(argv: []types.Janet) raise.Raising(EnvBlock) {
         // A Windows environment block is double-NUL terminated.
         if (temp.*.count == 0) try buffers.pushU8(temp, 0);
         try buffers.pushU8(temp, 0);
-        const ret: [*]u8 = @ptrCast(janet_smalloc(@intCast(temp.*.count)).?);
-        @memcpy(ret[0..@intCast(temp.*.count)], temp.*.data.?[0..@intCast(temp.*.count)]);
+        const ret: [*]u8 = @ptrCast(gc_alloc.smalloc(@intCast(temp.*.count)).?);
+        @memcpy(ret[0..@intCast(temp.*.count)], temp.*.slice());
         return ret;
     } else {
         const slots: usize = @intCast(dict.len + 1);
-        const envp: [*]?[*:0]u8 = @ptrCast(@alignCast(janet_smalloc(@sizeOf(?*u8) * slots).?));
+        const envp: [*]?[*:0]u8 = @ptrCast(@alignCast(gc_alloc.smalloc(@sizeOf(?*u8) * slots).?));
         var j: usize = 0;
         var i: i32 = 0;
         while (i < dict.cap) : (i += 1) {
             const kv = &dict.kvs.?[@intCast(i)];
-            if (kind.checkType(kv.key, constants.JANET_STRING) == 0) continue;
-            if (kind.checkType(kv.value, constants.JANET_STRING) == 0) continue;
+            if (!repr.checkType(kv.key, repr.Tag.string)) continue;
+            if (!repr.checkType(kv.value, repr.Tag.string)) continue;
             const keys = wrap.toString(kv.key);
             const vals = wrap.toString(kv.value);
             const klen = types.stringHead(keys).length;
             const vlen = types.stringHead(vals).length;
             // The key must hold no NUL and no `=`.
             if (envKeyOk(keys, klen) == 0) continue;
-            const item: [*]u8 = @ptrCast(janet_smalloc(@as(usize, @intCast(klen)) + @as(usize, @intCast(vlen)) + 2).?);
+            const item: [*]u8 = @ptrCast(gc_alloc.smalloc(@as(usize, @intCast(klen)) + @as(usize, @intCast(vlen)) + 2).?);
             envEntryFill(keys, klen, vals, vlen, item);
             envp[j] = @ptrCast(item);
             j += 1;
@@ -683,13 +646,13 @@ fn buildEnv(argv: []types.Janet) raise.Raising(EnvBlock) {
 /// `os_execute_cleanup`.
 fn cleanupEnv(envp: EnvBlock, child_argv: ?*const anyopaque) void {
     if (windows) {
-        if (envp) |p| janet_sfree(p);
+        if (envp) |p| gc_alloc.sfree(p);
     } else {
-        janet_sfree(@constCast(child_argv));
+        gc_alloc.sfree(@constCast(child_argv));
         if (envp) |p| {
             var i: usize = 0;
-            while (p[i]) |item| : (i += 1) janet_sfree(item);
-            janet_sfree(@ptrCast(p));
+            while (p[i]) |item| : (i += 1) gc_alloc.sfree(item);
+            gc_alloc.sfree(@ptrCast(p));
         }
     }
 }
@@ -783,8 +746,8 @@ const Redirection = struct {
     owner_flags: c_int = 0,
 };
 
-fn executeImpl(argv: []types.Janet, mode: ExecuteMode) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_SUBPROCESS);
+fn execute(argv: []repr.Value, mode: ExecuteMode) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"subprocess"}));
     try args_core.arity(argv, 1, 3);
 
     const is_spawn = mode == .spawn;
@@ -802,21 +765,21 @@ fn executeImpl(argv: []types.Janet, mode: ExecuteMode) raise.Raising(types.Janet
 
     if (@as(i32, @intCast(argv.len)) > 2 and mode != .exec) {
         const tab = try args_core.getDictionary(argv, 2);
-        const maybe_stdin = value.dictionaryGet(tab.kvs.?, tab.cap, value.fromBytes("in", .keyword));
-        const maybe_stdout = value.dictionaryGet(tab.kvs.?, tab.cap, value.fromBytes("out", .keyword));
-        const maybe_stderr = value.dictionaryGet(tab.kvs.?, tab.cap, value.fromBytes("err", .keyword));
+        const maybe_stdin = value.dictionaryGet(tab.kvs.?[0..@intCast(tab.cap)], value.fromBytes("in", .keyword));
+        const maybe_stdout = value.dictionaryGet(tab.kvs.?[0..@intCast(tab.cap)], value.fromBytes("out", .keyword));
+        const maybe_stderr = value.dictionaryGet(tab.kvs.?[0..@intCast(tab.cap)], value.fromBytes("err", .keyword));
         var slot = maybe_stdin;
         if (is_spawn and args_core.keyeq(maybe_stdin, "pipe") != 0) {
             r.new_in = makePipes(&r.pipe_in, true, &r.errflag);
             r.owner_flags |= proc_owns_stdin;
-        } else if (kind.checkType(maybe_stdin, constants.JANET_NIL) == 0) {
+        } else if (!repr.checkType(maybe_stdin, repr.Tag.nil)) {
             r.new_in = try getJStream((&slot)[0..1], 0, &r.orig_in);
         }
         slot = maybe_stdout;
         if (is_spawn and args_core.keyeq(maybe_stdout, "pipe") != 0) {
             r.new_out = makePipes(&r.pipe_out, false, &r.errflag);
             r.owner_flags |= proc_owns_stdout;
-        } else if (kind.checkType(maybe_stdout, constants.JANET_NIL) == 0) {
+        } else if (!repr.checkType(maybe_stdout, repr.Tag.nil)) {
             r.new_out = try getJStream((&slot)[0..1], 0, &r.orig_out);
         }
         slot = maybe_stderr;
@@ -825,7 +788,7 @@ fn executeImpl(argv: []types.Janet, mode: ExecuteMode) raise.Raising(types.Janet
             r.owner_flags |= proc_owns_stderr;
         } else if (args_core.keyeq(maybe_stderr, "out") != 0) {
             r.stderr_is_stdout = true;
-        } else if (kind.checkType(maybe_stderr, constants.JANET_NIL) == 0) {
+        } else if (!repr.checkType(maybe_stderr, repr.Tag.nil)) {
             r.new_err = try getJStream((&slot)[0..1], 0, &r.orig_err);
         }
     }
@@ -834,13 +797,13 @@ fn executeImpl(argv: []types.Janet, mode: ExecuteMode) raise.Raising(types.Janet
     var chdir_path: ?[*:0]const u8 = null;
     if (@as(i32, @intCast(argv.len)) > 2) {
         const tab = try args_core.getDictionary(argv, 2);
-        const workdir = value.dictionaryGet(tab.kvs.?, tab.cap, value.fromBytes("cd", .keyword));
-        if (kind.checkType(workdir, constants.JANET_STRING) != 0) {
+        const workdir = value.dictionaryGet(tab.kvs.?[0..@intCast(tab.cap)], value.fromBytes("cd", .keyword));
+        if (repr.checkType(workdir, repr.Tag.string)) {
             chdir_path = @ptrCast(wrap.toString(workdir));
             if (!spawn_chdir) {
                 return pp_format.panicf(":cd argument not supported on this system - %s", .{chdir_path.?});
             }
-        } else if (kind.checkType(workdir, constants.JANET_NIL) == 0) {
+        } else if (!repr.checkType(workdir, repr.Tag.nil)) {
             // The misspelling in this message is the C original's.
             return pp_format.panicf("expected string for :cd argumnet, got %v", .{workdir});
         }
@@ -876,11 +839,11 @@ fn executeImpl(argv: []types.Janet, mode: ExecuteMode) raise.Raising(types.Janet
         }
         return wrap.fromAbstract(proc);
     }
-    return procWaitImpl(proc);
+    return procWait(proc);
 }
 
 fn newProc() *JanetProc {
-    const proc: *JanetProc = @ptrCast(@alignCast(abstracts.new(abstract_type.stored(&proc_type), @sizeOf(JanetProc))));
+    const proc: *JanetProc = @ptrCast(@alignCast(abstracts.new(&proc_type, @sizeOf(JanetProc))));
     proc.return_code = -1;
     proc.in = null;
     proc.out = null;
@@ -897,7 +860,7 @@ fn newProc() *JanetProc {
 /// in C and jumps past it here, which is the reproduction the marker at the
 /// head of this file is about.
 fn spawnPosix(
-    argv: []types.Janet,
+    argv: []repr.Value,
     exargs: types.JanetView,
     r: *Redirection,
     flags: u64,
@@ -907,7 +870,7 @@ fn spawnPosix(
     mode: ExecuteMode,
 ) raise.Raising(*JanetProc) {
     const slots: usize = @intCast(exargs.len + 1);
-    const child_argv: [*]?[*:0]const u8 = @ptrCast(@alignCast(janet_smalloc(@sizeOf(?*u8) * slots).?));
+    const child_argv: [*]?[*:0]const u8 = @ptrCast(@alignCast(gc_alloc.smalloc(@sizeOf(?*u8) * slots).?));
     var i: i32 = 0;
     while (i < exargs.len) : (i += 1) {
         child_argv[@intCast(i)] = @ptrCast(try args_core.getCString(args_core.viewItems(exargs), i));
@@ -922,15 +885,14 @@ fn spawnPosix(
         // the result, so the result is deliberately discarded.
         if (!use_environ) oa.setEnviron(@ptrCast(envp));
         _ = exec(cargv[0].?, cargv, if (flagAt(flags, 1)) 1 else 0);
-        // `%s`, not the `%p` the C original writes. `%p` pulls a `Janet` and
+        // `%s`, not the `%p` Janet writes. `%p` pulls a `Janet` and
         // `cargv[0]` is a `char *`: a mismatched `va_arg` type, which is
-        // undefined, so Part 8's rule applies rather than Part 9's and this
-        // gets it right instead of reproducing it. The C prints the pointer's
-        // bits as a denormal double; `FOUND.md` has the entry and records this
-        // as a deliberate divergence.
+        // undefined, so this gets it right instead of reproducing it. Janet
+        // prints the pointer's bits as a denormal double; `FOUND.md` has the
+        // entry and records this as a deliberate divergence.
         return pp_format.panicf("%s: %s", .{
             cargv[0].?,
-            janet_strerror(if (errno() != 0) errno() else h.ENOENT),
+            utils.strerrorSafe(if (errno() != 0) errno() else h.ENOENT),
         });
     }
 
@@ -995,7 +957,7 @@ fn spawnPosix(
         // macOS leaves `errno` unset here, which is what the fallback is for.
         return pp_format.panicf("%p: %s", .{
             argv[0],
-            janet_strerror(if (errno() != 0) errno() else h.ENOENT),
+            utils.strerrorSafe(if (errno() != 0) errno() else h.ENOENT),
         });
     }
 
@@ -1008,7 +970,7 @@ fn spawnPosix(
 /// project's tests, which `PLAN.md` records as the platform scope: the
 /// cross-compile is what checks it.
 fn spawnWindows(
-    argv: []types.Janet,
+    argv: []repr.Value,
     exargs: types.JanetView,
     r: *Redirection,
     flags: u64,
@@ -1115,31 +1077,30 @@ fn spawnWindows(
     return proc;
 }
 
-/// `src/core/io.c`'s three handles. `stdin`, `stdout` and `stderr` are macros
-/// that translate-c renders three incompatible ways across this project's
-/// targets, which is why `io.c` keeps a one-line function for each; Part 11
-/// records the three spellings.
-fn executeCfn(argv: []types.Janet) raise.Raising(types.Janet) {
-    return executeImpl(argv, .execute);
+/// The three standard handles. `stdin`, `stdout` and `stderr` are macros with
+/// three incompatible shapes across this project's targets, which is why each
+/// is reached through a one-line function.
+fn cfunExecute(argv: []repr.Value) raise.Raising(repr.Value) {
+    return execute(argv, .execute);
 }
 
-fn spawnCfn(argv: []types.Janet) raise.Raising(types.Janet) {
-    return executeImpl(argv, .spawn);
+fn cfunSpawn(argv: []repr.Value) raise.Raising(repr.Value) {
+    return execute(argv, .spawn);
 }
 
-fn posixExec(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunPosixExec(argv: []repr.Value) raise.Raising(repr.Value) {
     if (windows) return raise.panic("not supported on Windows");
-    return executeImpl(argv, .exec);
+    return execute(argv, .exec);
 }
 
-fn posixFork(argv: []types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_SUBPROCESS);
+fn cfunPosixFork(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"subprocess"}));
     try args_core.fixarity(argv, 0);
     if (windows) return raise.panic("not supported on Windows");
     const result = forkProcess();
-    if (result == -1) return raise.panic(@ptrCast(janet_strerror(errno())));
+    if (result == -1) return raise.panic(@ptrCast(utils.strerrorSafe(errno())));
     if (result != 0) {
-        const proc: *JanetProc = @ptrCast(@alignCast(abstracts.new(abstract_type.stored(&proc_type), @sizeOf(JanetProc))));
+        const proc: *JanetProc = @ptrCast(@alignCast(abstracts.new(&proc_type, @sizeOf(JanetProc))));
         proc.* = std.mem.zeroes(JanetProc);
         proc.handles.pid = @intCast(result);
         proc.flags = proc_allow_zombie;
@@ -1148,13 +1109,13 @@ fn posixFork(argv: []types.Janet) raise.Raising(types.Janet) {
     return wrap.fromNil();
 }
 
-fn posixChroot(argv: []types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_CHROOT);
+fn cfunPosixChroot(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"chroot"}));
     try args_core.fixarity(argv, 1);
     if (windows) return raise.panic("not supported on Windows or Plan 9");
     const root = try args_core.getCString(argv, 0);
     if (changeRoot(@ptrCast(root)) == -1) {
-        return raise.panic(@ptrCast(janet_strerror(errno())));
+        return raise.panic(@ptrCast(utils.strerrorSafe(errno())));
     }
     return wrap.fromNil();
 }
@@ -1169,21 +1130,21 @@ fn posixChroot(argv: []types.Janet) raise.Raising(types.Janet) {
 fn shellSubroutine(args: types.JanetEVGenericMessage) callconv(.c) types.JanetEVGenericMessage {
     var out = args;
     const stat = shell(@ptrCast(@alignCast(args.argp)));
-    janet_free(args.argp);
+    utils.free(args.argp);
     out.tag = if (args.argi != 0) constants.JANET_EV_TCTAG_INTEGER else constants.JANET_EV_TCTAG_BOOLEAN;
     out.argi = stat;
     return out;
 }
 
-fn shellCfn(argv: []types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_SUBPROCESS);
+fn cfunShell(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"subprocess"}));
     try args_core.arity(argv, 0, 1);
     const cmd: ?[*:0]const u8 = if (@as(i32, @intCast(argv.len)) != 0) @ptrCast(try args_core.getCString(argv, 0)) else null;
     if (has_ev) {
         var cmd_copy: ?*anyopaque = null;
         if (cmd) |src| {
             const cmdlen = std.mem.len(src);
-            const dest: [*]u8 = @ptrCast(janet_malloc(cmdlen + 1).?);
+            const dest: [*]u8 = @ptrCast(utils.malloc(cmdlen + 1).?);
             @memcpy(dest[0..cmdlen], src[0..cmdlen]);
             dest[cmdlen] = 0;
             cmd_copy = dest;
@@ -1192,7 +1153,7 @@ fn shellCfn(argv: []types.Janet) raise.Raising(types.Janet) {
         unreachable;
     } else {
         const stat = shell(cmd);
-        return if (@as(i32, @intCast(argv.len)) != 0) wrapInteger(stat) else wrap.fromBoolean(stat);
+        return if (@as(i32, @intCast(argv.len)) != 0) wrapInteger(stat) else wrap.fromBoolean(stat != 0);
     }
 }
 
@@ -1215,23 +1176,23 @@ const Trampolines = struct {
     fn plain(sig: c_int) callconv(.c) void {
         var msg: types.JanetEVGenericMessage = std.mem.zeroes(types.JanetEVGenericMessage);
         msg.tag = sig;
-        ev_loop.evPostEvent(c.vm(), &signalCallback, msg);
+        ev_loop.evPostEvent(vm_lifecycle.current(), &signalCallback, msg);
     }
 
     fn interrupting(sig: c_int) callconv(.c) void {
         var msg: types.JanetEVGenericMessage = std.mem.zeroes(types.JanetEVGenericMessage);
         msg.tag = sig;
         msg.argi = 1;
-        vm_state.interpreterInterrupt(c.vm());
-        ev_loop.evPostEvent(c.vm(), &signalCallback, msg);
+        vm_lifecycle.interpreterInterrupt(vm_lifecycle.current());
+        ev_loop.evPostEvent(vm_lifecycle.current(), &signalCallback, msg);
     }
 };
 
 fn signalCallback(msg: types.JanetEVGenericMessage) callconv(.c) void {
     const sig = msg.tag;
-    if (msg.argi != 0) vm_state.interpreterInterruptHandled(null);
-    const handlerv = tables.get(&c.vm().signal_handlers, wrapInteger(sig));
-    if (kind.checkType(handlerv, constants.JANET_FUNCTION) == 0) {
+    if (msg.argi != 0) vm_lifecycle.interpreterInterruptHandled(null);
+    const handlerv = tables.get(&vm_lifecycle.current().ev.signal_handlers, wrapInteger(sig));
+    if (!repr.checkType(handlerv, repr.Tag.function)) {
         // Nothing here wants it: unblock this signal and re-raise, so that
         // another thread or the default disposition can take it.
         var set: h.sigset_t = undefined;
@@ -1243,28 +1204,28 @@ fn signalCallback(msg: types.JanetEVGenericMessage) callconv(.c) void {
     }
     const handler = wrap.toFunction(handlerv);
     const fiber = fibers.new(handler, 64, 0, null) orelse return;
-    ev_loop.scheduleSoon(fiber, wrap.fromNil(), constants.JANET_SIGNAL_OK);
+    ev_loop.scheduleSoon(fiber, wrap.fromNil(), types.Signal.ok);
 }
 
-fn sigactionCfn(argv: []types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_SIGNAL);
+fn cfunSigaction(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"signal"}));
     try args_core.arity(argv, 1, 3);
     if (windows) return raise.panic("unsupported on this platform");
 
     const sig = try getSignalKw(argv, 0);
     const handler: ?*types.JanetFunction =
-        if (argv.len > 1 and kind.checkType(argv[1], constants.JANET_NIL) == 0)
+        if (argv.len > 1 and !repr.checkType(argv[1], repr.Tag.nil))
             try args_core.getFunction(argv, 1)
         else
             null;
-    const can_interrupt = try args_core.optBoolean(argv, 2, 0) != 0;
-    const oldhandler = tables.get(&c.vm().signal_handlers, wrapInteger(sig));
-    if (kind.checkType(oldhandler, constants.JANET_NIL) == 0) _ = gc_alloc.gcunroot(oldhandler);
+    const can_interrupt = try args_core.optBoolean(argv, 2, false);
+    const oldhandler = tables.get(&vm_lifecycle.current().ev.signal_handlers, wrapInteger(sig));
+    if (!repr.checkType(oldhandler, repr.Tag.nil)) _ = gc_alloc.gcunroot(oldhandler);
     if (handler) |f| {
         // A handler is entered with no arguments, so one that cannot accept
         // zero can never run. `janet_fiber` answers null for it and the C
         // scheduled that null; refusing here names the mistake at the line
-        // that made it. `port/FOUND.md` has the original behaviour.
+        // that made it. `FOUND.md` has the original behaviour.
         if (f.def.?.min_arity > 0) {
             return pp_format.panicf(
                 "signal handler must accept zero arguments, got one of arity %d",
@@ -1273,9 +1234,9 @@ fn sigactionCfn(argv: []types.Janet) raise.Raising(types.Janet) {
         }
         const handlerv = wrap.fromFunction(f);
         gc_alloc.gcroot(handlerv);
-        tables.put(&c.vm().signal_handlers, wrapInteger(sig), handlerv);
+        tables.put(&vm_lifecycle.current().ev.signal_handlers, wrapInteger(sig), handlerv);
     } else {
-        tables.put(&c.vm().signal_handlers, wrapInteger(sig), wrap.fromNil());
+        tables.put(&vm_lifecycle.current().ev.signal_handlers, wrapInteger(sig), wrap.fromNil());
     }
 
     // `mask` is used uninitialised by the C original: `sigaddset` adds to
@@ -1351,18 +1312,18 @@ inline fn setHandler(action: *h.struct_sigaction, f: *const fn (c_int) callconv(
 // `os/pipe`
 // ==========================================================================
 
-fn pipeCfn(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunPipe(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 1);
     var fds: [2]types.JanetHandle = undefined;
     var flags: c_int = 0;
-    if (@as(i32, @intCast(argv.len)) > 0 and kind.checkType(argv[0], constants.JANET_NIL) == 0) {
+    if (@as(i32, @intCast(argv.len)) > 0 and !repr.checkType(argv[0], repr.Tag.nil)) {
         flags = @intCast(try args_core.getFlags(argv, 0, "WR"));
     }
     if (ev_stream.makePipe(&fds, flags) != 0) return raise.panicv(ev_stream.evLasterr());
-    const reader = janet_stream(fds[0], if (flags & 2 != 0) 0 else stream_readable, null);
-    const writer = janet_stream(fds[1], if (flags & 1 != 0) 0 else stream_writable, null);
-    var tup = [2]types.Janet{ wrap.fromAbstract(reader), wrap.fromAbstract(writer) };
-    return wrap.fromTuple(tuples.newFrom(&tup, 2));
+    const reader = ev_stream.makeStreamAbi(fds[0], if (flags & 2 != 0) 0 else stream_readable, null);
+    const writer = ev_stream.makeStreamAbi(fds[1], if (flags & 1 != 0) 0 else stream_writable, null);
+    var tup = [2]repr.Value{ wrap.fromAbstract(reader), wrap.fromAbstract(writer) };
+    return wrap.fromTuple(tuples.newFrom(&tup));
 }
 
 // ==========================================================================
@@ -1373,7 +1334,7 @@ pub fn entries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/execute", &executeCfn, @src(), "(os/execute args &opt flags env)", "Execute a program on the system and return the exit code. `args` is an array/tuple " ++
+            corefn.reg("os/execute", &cfunExecute, @src(), "(os/execute args &opt flags env)", "Execute a program on the system and return the exit code. `args` is an array/tuple " ++
                 "of strings. The first string is the name of the program and the remainder are " ++
                 "arguments passed to the program. `flags` is a keyword made from the following " ++
                 "characters that modifies how the program executes:\n" ++
@@ -1389,7 +1350,7 @@ pub fn entries() []const corefn.Entry {
                 "subprocess. :in, :out, and :err should be core/file or core/stream values. " ++
                 "If core/stream values are used, the caller is responsible for ensuring pipes do not " ++
                 "cause the program to block and deadlock."),
-            corefn.reg("os/spawn", &spawnCfn, @src(), "(os/spawn args &opt flags env)", "Execute a program on the system and return a core/process value representing the " ++
+            corefn.reg("os/spawn", &cfunSpawn, @src(), "(os/spawn args &opt flags env)", "Execute a program on the system and return a core/process value representing the " ++
                 "spawned subprocess. Takes the same arguments as `os/execute` but does not wait for " ++
                 "the subprocess to complete. Unlike `os/execute`, the value `:pipe` can be used for " ++
                 ":in, :out and :err keys in `env`. If used, the returned core/process will have a " ++
@@ -1404,35 +1365,35 @@ pub fn entries() []const corefn.Entry {
                 "`os/proc-close`). Similar to `os/execute`, the caller is responsible for ensuring " ++
                 "pipes do not cause the program to block and deadlock. As a special case, the stream passed to `:err` " ++
                 "can be the keyword `:out` to redirect stderr to stdout in the subprocess."),
-            corefn.reg("os/shell", &shellCfn, @src(), "(os/shell str)", "Pass a command string str directly to the system shell."),
-            corefn.reg("os/posix-fork", &posixFork, @src(), "(os/posix-fork)", "Make a `fork` system call and create a new process. Return nil if in the new process, otherwise a core/process object (as returned by os/spawn). " ++
+            corefn.reg("os/shell", &cfunShell, @src(), "(os/shell str)", "Pass a command string str directly to the system shell."),
+            corefn.reg("os/posix-fork", &cfunPosixFork, @src(), "(os/posix-fork)", "Make a `fork` system call and create a new process. Return nil if in the new process, otherwise a core/process object (as returned by os/spawn). " ++
                 "Not supported on all systems (POSIX and Plan 9 only)."),
-            corefn.reg("os/posix-exec", &posixExec, @src(), "(os/posix-exec args &opt flags env)", "Use the execvpe or execve system calls to replace the current process with an interface similar to os/execute. " ++
+            corefn.reg("os/posix-exec", &cfunPosixExec, @src(), "(os/posix-exec args &opt flags env)", "Use the execvpe or execve system calls to replace the current process with an interface similar to os/execute. " ++
                 "However, instead of creating a subprocess, the current process is replaced. Is not supported on Windows, and " ++
                 "does not allow redirection of stdio."),
-            corefn.reg("os/posix-chroot", &posixChroot, @src(), "(os/posix-chroot dirname)", "Call `chroot` to change the root directory to `dirname`. " ++
+            corefn.reg("os/posix-chroot", &cfunPosixChroot, @src(), "(os/posix-chroot dirname)", "Call `chroot` to change the root directory to `dirname`. " ++
                 "Not supported on all systems (POSIX only)."),
             // Process management is not sandboxed: a build that cannot create
             // processes can still be handed one by an embedder's cfunction.
-            corefn.reg("os/proc-wait", &procWait, @src(), "(os/proc-wait proc)", "Suspend the current fiber until the subprocess `proc` completes. Once `proc` " ++
+            corefn.reg("os/proc-wait", &cfunProcWait, @src(), "(os/proc-wait proc)", "Suspend the current fiber until the subprocess `proc` completes. Once `proc` " ++
                 "completes, return the exit code of `proc`. If called more than once on the same " ++
                 "core/process value, will raise an error. When creating subprocesses using " ++
                 "`os/spawn`, this function should be called on the returned value to avoid zombie " ++
                 "processes."),
-            corefn.reg("os/proc-kill", &procKill, @src(), "(os/proc-kill proc &opt wait signal)", "Kill the subprocess `proc` by sending SIGKILL to it on POSIX systems, or by closing " ++
+            corefn.reg("os/proc-kill", &cfunProcKill, @src(), "(os/proc-kill proc &opt wait signal)", "Kill the subprocess `proc` by sending SIGKILL to it on POSIX systems, or by closing " ++
                 "the process handle on Windows. If `proc` has already completed, raise an error. If " ++
                 "`wait` is truthy, will wait for `proc` to complete and return the exit code (this " ++
                 "will raise an error if `proc` is being waited for). Otherwise, return `proc`. If " ++
                 "`signal` is provided, send it instead of SIGKILL. Signal keywords are named after " ++
                 "their C counterparts but in lowercase with the leading SIG stripped. `signal` is " ++
                 "ignored on Windows."),
-            corefn.reg("os/proc-close", &procClose, @src(), "(os/proc-close proc)", "Close pipes created for subprocess `proc` by `os/spawn` if they have not been " ++
+            corefn.reg("os/proc-close", &cfunProcClose, @src(), "(os/proc-close proc)", "Close pipes created for subprocess `proc` by `os/spawn` if they have not been " ++
                 "closed. Then, if `proc` is not being waited for, wait. If this function waits, when " ++
                 "`proc` completes, return the exit code of `proc`. Otherwise, return nil."),
-            corefn.reg("os/getpid", &procGetpid, @src(), "(os/getpid)", "Get the process ID of the current process."),
+            corefn.reg("os/getpid", &cfunProcGetpid, @src(), "(os/getpid)", "Get the process ID of the current process."),
         };
         if (has_ev) acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/sigaction", &sigactionCfn, @src(), "(os/sigaction which &opt handler interrupt-interpreter)", "Add a signal handler for a given action. Use nil for the `handler` argument to remove a signal handler. " ++
+            corefn.reg("os/sigaction", &cfunSigaction, @src(), "(os/sigaction which &opt handler interrupt-interpreter)", "Add a signal handler for a given action. Use nil for the `handler` argument to remove a signal handler. " ++
                 "All signal handlers are the same as supported by `os/proc-kill`."),
         };
         break :blk acc[0..acc.len].*;
@@ -1446,7 +1407,7 @@ pub fn entries() []const corefn.Entry {
 pub fn evEntries() []const corefn.Entry {
     if (!has_ev) return &.{};
     const list = comptime [_]corefn.Entry{
-        corefn.reg("os/pipe", &pipeCfn, @src(), "(os/pipe &opt flags)", "Create a readable stream and a writable stream that are connected. Returns a two-element " ++
+        corefn.reg("os/pipe", &cfunPipe, @src(), "(os/pipe &opt flags)", "Create a readable stream and a writable stream that are connected. Returns a two-element " ++
             "tuple where the first element is a readable stream and the second element is the writable " ++
             "stream. `flags` is a keyword set of flags to disable non-blocking settings on the ends of the pipe. " ++
             "This may be desired if passing the pipe to a subprocess with `os/spawn`.\n\n" ++
@@ -1488,12 +1449,10 @@ extern fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) callco
 // The fourteen kernels below are reached by import rather than by symbol.
 //
 // Each was `@export`ed under a `janet_os_*` name and declared back as an
-// `extern fn` by `os_procs.zig`, which is the only caller there has ever
-// been. That shape is what `os.c` needed when these were the first Zig inside
-// it; both ends have been Zig since Phase 10 Part 18 and nothing said so,
+// `extern fn` by its only caller, which is the shape C needed when these were
+// the first Zig inside it. Both ends were Zig long before anything said so,
 // because an `extern fn` declaration compiles forever and a symbol that
-// resolves is silent. Phase 11 Part 16 named the class; Part 20 spent this
-// instance of it.
+// resolves is silent.
 
 /// The signal keywords `os/proc-kill` and `os/sigaction` accept, in the order
 /// the C table listed them.

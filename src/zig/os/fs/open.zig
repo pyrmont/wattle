@@ -1,16 +1,15 @@
 //! `os/open`: a file opened as an event-loop stream.
 //!
-//! Split out of `os_files.zig` at Phase 12 increment 6f. It stays out of the
-//! bucket for `port/TREE.md`'s first reason -- `os/open` is a name Janet
-//! publishes, and what it returns is a stream with a type of its own -- and
-//! for its second: the POSIX and Windows halves below exist because the
-//! platforms differ, and both are compiled on every target so the flag rules
-//! stay one subject rather than two.
+//! Out of the bucket for both of the split rule's reasons: `os/open` is a name
+//! Janet publishes, and what it returns is a stream with a type of its own;
+//! and the POSIX and Windows halves below exist because the platforms differ.
+//! Both are compiled on every target so the flag rules stay one subject rather
+//! than two.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
 const raise = @import("raise");
 const args_core = @import("../../args.zig");
@@ -55,21 +54,21 @@ fn openPosix(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(c_int) {
             'r' => {
                 read_flag = true;
                 scan.stream_flags |= stream_readable;
-                try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_FS_READ);
+                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_read"}));
             },
             'w' => {
                 write_flag = true;
                 scan.stream_flags |= stream_writable;
-                try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_FS_WRITE);
+                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
             },
             'c' => {
                 open_flags |= h.O_CREAT;
-                try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_FS_WRITE);
+                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
             },
             'e' => open_flags |= h.O_EXCL,
             't' => {
                 open_flags |= h.O_TRUNC;
-                try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_FS_WRITE);
+                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
             },
             'x' => open_flags |= h.O_SYNC,
             'C' => open_flags |= h.O_NOCTTY,
@@ -114,26 +113,26 @@ fn openWindows(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(WindowsO
             'r' => {
                 w.desired_access |= h.GENERIC_READ;
                 scan.stream_flags |= stream_readable;
-                try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_FS_READ);
+                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_read"}));
             },
             'w' => {
                 w.desired_access |= h.GENERIC_WRITE;
                 scan.stream_flags |= stream_writable;
-                try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_FS_WRITE);
+                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
             },
             'a' => {
                 w.desired_access |= h.FILE_APPEND_DATA;
                 scan.stream_flags |= stream_writable;
-                try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_FS_WRITE);
+                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
             },
             'c' => {
                 creat_unix |= o_creat;
-                try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_FS_WRITE);
+                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
             },
             'e' => creat_unix |= o_excl,
             't' => {
                 creat_unix |= o_trunc;
-                try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_FS_WRITE);
+                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
             },
             'D' => w.share_mode |= h.FILE_SHARE_DELETE,
             'R' => w.share_mode |= h.FILE_SHARE_READ,
@@ -166,7 +165,7 @@ fn openWindows(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(WindowsO
 
 extern fn open(path: [*:0]const u8, flags: c_int, ...) callconv(.c) c_int;
 
-pub fn openImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+pub fn cfunOpen(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
     const path = try args_core.getCString(argv, 0);
     const opt_flags: [*:0]const u8 = @ptrCast(try args_core.optKeyword(argv, 1, "r"));
@@ -202,16 +201,13 @@ pub fn openImpl(argv: []types.Janet) raise.Raising(types.Janet) {
 
 const windows = builtin.os.tag == .windows;
 
-/// `src/core/util.h`, declared here rather than in `cabi.zig`.
-extern fn janet_strerror(e: c_int) callconv(.c) [*:0]const u8;
-
 /// `janet_wrap_integer`, written out rather than called. `janet.h` declares the
 /// function beside its macro and `wrap.c` defines it only for the two nanbox
 /// layouts, so a tagged build has no such symbol and a Zig caller -- which
 /// cannot use the macro -- does not link. `marsh.zig`, `pp_pretty.zig` and
 /// `value_access.zig` write it out for the same reason, and `FOUND.md` has the
 /// defect. This is the fourth subsystem to meet it.
-inline fn wrapInteger(x: i32) types.Janet {
+inline fn wrapInteger(x: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(x));
 }
 

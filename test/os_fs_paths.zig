@@ -39,6 +39,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types");
+const repr = @import("repr");
 const c = @import("cabi");
 const harness = @import("harness.zig");
 const value = @import("subsystems").value;
@@ -49,11 +50,12 @@ const vm_lifecycle = @import("subsystems").lifecycle;
 
 /// The runtime's own stat reader, reached by *import* rather than by symbol.
 ///
-/// This is the first contract in the tree that needs Phase 11 Part 1's
-/// arrangement for something other than a raise. `sys/stat.h` is deliberately
+/// This is the first contract in the tree that needs to be inside the
+/// compilation for something other than a raise. `sys/stat.h` is deliberately
 /// outside the host translations -- `os/abi.h` records why -- so a contract
-/// linking `libjanet.a` had to translate `struct stat` a second time and read
-/// `st_ino`, `st_nlink` and `st_mtimespec` out of its own copy. Inside the
+/// linking `libjanet.a` would have to translate `struct stat` a second time
+/// and read `st_ino`, `st_nlink` and `st_mtimespec` out of its own copy.
+/// Inside the
 /// compilation there is no second copy: `host_stat.statRead` is the same
 /// reader `os/stat` uses, and `Field` is the same index.
 ///
@@ -322,7 +324,7 @@ fn theRealpath() void {
 var environment: *types.JanetTable = undefined;
 
 fn eval(source: [*:0]const u8) void {
-    var result: types.Janet = undefined;
+    var result: repr.Value = undefined;
     std.debug.assert(core_env.dostring(environment, source, "os-fs-paths-contract", &result) == 0);
 }
 
@@ -389,7 +391,7 @@ fn theCoreFunctions() void {
 /// The refusals, which the C contract could only reach through `protect`
 /// inside a Janet string.
 fn theRefusals() void {
-    var args: [2]types.Janet = undefined;
+    var args: [2]repr.Value = undefined;
     args[0] = value.fromBytes(missing, .string);
 
     std.debug.assert(harness.raised(harness.core("os/dir"), .{args[0..1]}) != null);

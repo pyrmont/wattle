@@ -11,16 +11,24 @@
 //! ## What is beside it, and why the four are one level down
 //!
 //! `value/` is two populations. Eleven **type leaves** name a type Janet
-//! publishes -- `tables`, `strings`, `arrays`, `fibers` -- and four
-//! **operations** in `value/helpers/` are defined over an arbitrary `Janet`
+//! publishes -- `tables`, `strings`, `arrays`, `fibers` -- and the
+//! **operations** in `value/helpers/` are defined over an arbitrary value
 //! rather than over one type: `access` reaches inside, `order` compares and
-//! hashes, `kind` inspects, `wrap` crosses the representation boundary.
+//! hashes, `wrap` crosses the representation boundary.
 //!
-//! Decision 3 first put those four in this file, on the grounds that an
-//! operation is not a leaf of a type taxonomy. That landed and was reversed
-//! on 2026-08-28: not being a *type leaf* is a reason not to be their sibling,
-//! and it is not by itself a reason to be in the bucket. `helpers/` says what
-//! they are and keeps the two populations apart without flattening either.
+//! **There were four helpers, and `kind` was the fourth.** It inspected --
+//! three predicates answering a C `int` where `repr` answers `bool` -- and
+//! once those signatures converged every member was a second spelling of
+//! something `repr` already answered. The questions it asked are
+//! `repr.checkType`, `repr.truthy` and `repr.checkTypes`. The floor took them
+//! because a tag and a set of tags name no Janet heap type, which is the same
+//! argument that puts `Value` below `types`.
+//!
+//! Putting the helpers in *this* file was tried, on the grounds that an
+//! operation is not a leaf of a type taxonomy. That was reversed: not being a
+//! *type leaf* is a reason not to be their sibling, and it is not by itself a
+//! reason to be in the bucket. `helpers/` says what they are and keeps the two
+//! populations apart without flattening either.
 //!
 //! **The subdirectory has no bucket of its own, deliberately.** The rule that
 //! every directory has one is about a directory that is a *topic* -- `os/`,
@@ -28,34 +36,32 @@
 //! subdirectory that exists only to group siblings does not need one, because
 //! the parent's bucket is already the way in. This file is that bucket.
 //!
-//! **What the fold cost, and what reversing it bought back**, since the round
-//! trip is the evidence: the four are a strict DAG -- `wrap <- kind <- order
-//! <- access` -- and the compiler checks it on every build. One file dissolves
-//! that into a namespace where anything may call anything. Against it, 61 of
-//! the 107 files that use these names want two or more of them, so a caller
-//! pays in imports for the layering it does not see. Both figures are real;
-//! the layering won.
+//! **What folding them costs**, since the question has been asked twice: they
+//! are a strict DAG -- `repr <- wrap <- order <- access` -- and the compiler
+//! checks it on every build. One file dissolves that into a namespace where
+//! anything may call anything. Against it, 61 of the 107 files that use these
+//! names want two or more of them, so a caller pays in imports for the
+//! layering it does not see. Both figures are real; the layering won.
 //!
-//! **Size was not one of the figures, and this note is here so that it is not
-//! measured a third time.** The folded file was 2,901 lines, which reads as
-//! the largest in the tree; by *code* it was 1,530 -- third, behind `peg.zig`
-//! at 1,833 and `marsh.zig` at 1,603. The value layer is the most heavily
-//! commented part of this tree, so a raw line count says nothing here:
+//! **Size is not one of the figures, and this note is here so that it is not
+//! measured again.** Folded into one file the value layer is 2,901 lines,
+//! which reads as the largest in the tree; by *code* it is 1,530 -- third,
+//! behind `peg.zig` at 1,833 and `marsh.zig` at 1,603. This is the most
+//! heavily commented part of the tree, so a raw line count says nothing here:
 //!
 //!     awk '$0 !~ /^[[:space:]]*\/\// && $0 !~ /^[[:space:]]*$/' f.zig | wc -l
 //!
-//! `port/STRUCTURE.md` recorded the same measurement a week before the fold
-//! and it did not prevent the question being reopened on size, because the
-//! question is asked by someone looking at the file rather than at the design
-//! document. `phase_12.md`'s rule 62 is that lesson; this paragraph is its
-//! repair.
+//! The measurement had been made before and written down elsewhere, and that
+//! did not stop the question being reopened on size, because the question is
+//! asked by someone looking at the file rather than at a design document. So
+//! it is written here, where the file is.
 //!
-//! It was `utils.zig`'s, and `utils.zig` had it because `util.c` did. Seven
-//! `extern fn` declarations across six leaves reached these through the linker;
-//! they are ordinary imports now.
-//!
-//! **The names are not the C names.** Increment 5d's rule -- strip `janet_`,
-//! camelCase the underscores -- transcribes whatever C called a thing, so a bad
+// It was `utils.zig`'s, and `utils.zig` had it because Janet's `util.c` did.
+// Seven `extern fn` declarations across six leaves reached these through the
+// linker; they are ordinary imports now.
+//
+// **The names are not the C names.** Stripping `janet_` and camelCasing the
+// underscores transcribes whatever C called a thing, so a bad
 //! C name arrives intact and green. These six were the ones worth fixing:
 //!
 //!     janet_tablen             capacityFor
@@ -83,9 +89,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const config = @import("config");
 const utils = @import("utils.zig");
+const fatal = @import("fatal.zig");
+const vm_state = @import("vm/lifecycle.zig");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 
 const stringHead = utils.stringHead;
 
@@ -93,9 +101,9 @@ const stringHead = utils.stringHead;
 //
 // The bucket is also the group namespace, which is what `root.zig` reaches:
 // `@import("subsystems").value.tables` is `test/`'s spelling and there are 446
-// sites of that shape. A runtime file still imports the leaf directly -- the
-// leaf is the import unit, per `port/NAMESPACES.md` -- so nothing below is a
-// second spelling for `src/zig`, only the barrel's one level.
+// sites of that shape. A runtime file imports the leaf directly -- the leaf is
+// the import unit -- so nothing below is a second spelling for `src/zig`, only
+// the barrel's one level.
 
 pub const arrays = @import("value/arrays.zig");
 pub const tuples = @import("value/tuples.zig");
@@ -110,7 +118,6 @@ pub const functions = @import("value/functions.zig");
 pub const order = @import("value/helpers/order.zig");
 pub const access = @import("value/helpers/access.zig");
 pub const wrap = @import("value/helpers/wrap.zig");
-pub const kind = @import("value/helpers/kind.zig");
 
 // ------------------------------------------------------- a value from bytes
 
@@ -122,7 +129,7 @@ pub const kind = @import("value/helpers/kind.zig");
 /// on*. C needs six because it has no slice and no enum. Zig needs one.
 ///
 /// Only three of the sixteen types can be built this way, which is what makes
-/// a closed enum honest here rather than a stand-in for `JanetType`:
+/// a closed enum honest here rather than a stand-in for `repr.Tag`:
 /// everything else is built from a pointer to something already allocated.
 /// `DESIGN.md` §2 decided the tag should be an enum rather than a bare
 /// `c_int`; this is that decision at the three sites that force it.
@@ -135,7 +142,7 @@ pub const Bytes = enum { string, symbol, keyword };
 /// -- work the caller usually already knew the answer to and had thrown away.
 /// A literal knows its length at comptime, so the common call site loses the
 /// `strlen` entirely; a caller holding a real C pointer spans it, which puts
-/// the scan where it is visible and where increment 5h can see it.
+/// the scan where it is visible.
 ///
 /// A symbol and a keyword are interned identically -- `janet.h:1844` reads
 /// `#define janet_keyword janet_symbol` -- and differ only in the tag, which
@@ -144,9 +151,9 @@ pub const Bytes = enum { string, symbol, keyword };
 /// This lives in the bucket rather than in a leaf because it is shared by
 /// `strings` and `symbols` and belongs to neither, which is the criterion
 /// stated at the head of this file. It cannot live in `helpers/wrap.zig`: that
-/// file is the bottom of the `wrap <- kind <- order <- access` DAG and every
+/// file is the bottom of the `wrap <- order <- access` DAG and every
 /// leaf imports it, so a wrap that allocates would invert the arrow.
-pub inline fn fromBytes(bytes: []const u8, comptime as: Bytes) types.Janet {
+pub inline fn fromBytes(bytes: []const u8, comptime as: Bytes) repr.Value {
     return switch (as) {
         .string => wrap.fromString(strings.new(bytes)),
         .symbol => wrap.fromSymbol(symbols.new(bytes)),
@@ -266,21 +273,16 @@ fn readU32Little(bytes: *const [4]u8) u32 {
 ///
 /// The seed is 33 rather than the 5381 the string hash starts from; both are
 /// the C original's and neither is explained there.
-pub fn hashIndexed(array: ?[*]const types.Janet, len: i32) i32 {
+pub fn hashIndexed(array: []const repr.Value) i32 {
     var hash: u32 = 33;
-    var i: i32 = 0;
-    while (i < len) : (i += 1) {
-        hash = hashMix(hash, @bitCast(order.hash(array.?[@intCast(i)])));
-    }
+    for (array) |x| hash = hashMix(hash, @bitCast(order.hash(x)));
     return @bitCast(hash);
 }
 
 /// Hash a run of key-value pairs, for `janet_struct_end`.
-pub fn hashDictionary(kvs: ?[*]const types.JanetKV, len: i32) i32 {
+pub fn hashDictionary(kvs: []const types.JanetKV) i32 {
     var hash: u32 = 33;
-    var i: i32 = 0;
-    while (i < len) : (i += 1) {
-        const kv = kvs.?[@intCast(i)];
+    for (kvs) |kv| {
         hash = hashMix(hash, @bitCast(order.hash(kv.key)));
         hash = hashMix(hash, @bitCast(order.hash(kv.value)));
     }
@@ -296,15 +298,15 @@ pub fn hashDictionary(kvs: ?[*]const types.JanetKV, len: i32) i32 {
 /// identity, and the probes below run off the array.
 ///
 /// The subtraction wraps rather than trapping. `cap` is `INT32_MIN` in no
-/// reachable call — `janet_capacityFor` never returns it — and C's own subtraction
-/// would be undefined there, so there is nothing to reproduce and a trap would
-/// be the port inventing a behaviour.
+/// reachable call -- `janet_capacityFor` never returns it -- and C's own
+/// subtraction would be undefined there, so there is nothing to reproduce and
+/// a trap would be inventing a behaviour.
 inline fn mapHash(cap: i32, hash: i32) i32 {
     return @bitCast(@as(u32, @bitCast(hash)) & @as(u32, @bitCast(cap -% 1)));
 }
 
-inline fn isNil(val: types.Janet) bool {
-    return kind.checkType(val, constants.JANET_NIL) != 0;
+inline fn isNil(val: repr.Value) bool {
+    return repr.checkType(val, repr.Tag.nil);
 }
 
 /// Find the bucket holding `key`, or the first bucket it could be put in.
@@ -319,10 +321,10 @@ inline fn isNil(val: types.Janet) bool {
 /// its tombstone-retiring branch is dead code, in `FOUND.md`.
 ///
 /// A capacity of zero sends this off the array; see `mapHash`. That is
-/// undefined in C and the port does not reproduce it: a safety-checked build
-/// traps at the first index rather than reading two gigabytes below the null
-/// page.
-pub fn dictionaryFind(buckets: [*]const types.JanetKV, cap: i32, key: types.Janet) ?*const types.JanetKV {
+/// undefined in C and is not reproduced: a safety-checked build traps at the
+/// first index rather than reading two gigabytes below the null page.
+pub fn dictionaryFind(buckets: []const types.JanetKV, key: repr.Value) ?*const types.JanetKV {
+    const cap: i32 = @intCast(buckets.len);
     const index = mapHash(cap, order.hash(key));
     var first_bucket: ?*const types.JanetKV = null;
 
@@ -359,11 +361,11 @@ pub fn dictionaryFind(buckets: [*]const types.JanetKV, cap: i32, key: types.Jane
 /// `JANET_KEYWORD` alone, and that is not a bug — the three share a
 /// representation and the C original says so in a comment.
 pub fn dictionaryFindKeyword(
-    buckets: [*]const types.JanetKV,
-    cap: i32,
+    buckets: []const types.JanetKV,
     cstr: [*]const u8,
     cstr_len: i32,
-) callconv(.c) ?*const types.JanetKV {
+) ?*const types.JanetKV {
+    const cap: i32 = @intCast(buckets.len);
     const key_bytes = cstr[0..@intCast(cstr_len)];
     const hash = hashBytes(key_bytes);
     const index = mapHash(cap, hash);
@@ -398,8 +400,8 @@ pub fn dictionaryFindKeyword(
 ///
 /// The hash is compared before the bytes, which is what makes the probe cheap:
 /// a string carries its hash in its head, so a mismatch costs one load.
-fn matchesKeyword(key: types.Janet, hash: i32, cstr: []const u8) bool {
-    if (kind.checkType(key, constants.JANET_KEYWORD) == 0) return false;
+fn matchesKeyword(key: repr.Value, hash: i32, cstr: []const u8) bool {
+    if (!repr.checkType(key, repr.Tag.keyword)) return false;
     const str = wrap.toString(key);
     const head = stringHead(str);
     if (head.*.hash != hash or head.*.length != @as(i32, @intCast(cstr.len))) return false;
@@ -407,8 +409,8 @@ fn matchesKeyword(key: types.Janet, hash: i32, cstr: []const u8) bool {
 }
 
 /// Look a key up in a struct or table's buckets, answering nil for absent.
-pub fn dictionaryGet(data: [*]const types.JanetKV, cap: i32, key: types.Janet) types.Janet {
-    const kv = dictionaryFind(data, cap, key) orelse return wrap.fromNil();
+pub fn dictionaryGet(data: []const types.JanetKV, key: repr.Value) repr.Value {
+    const kv = dictionaryFind(data, key) orelse return wrap.fromNil();
     if (!isNil(kv.key)) return kv.value;
     return wrap.fromNil();
 }
@@ -419,14 +421,60 @@ pub fn dictionaryGet(data: [*]const types.JanetKV, cap: i32, key: types.Janet) t
 /// iteration is `while (kv = janet_dictionary_next(...)) != null`. Bucket order
 /// is not insertion order and is not stable across a rehash.
 pub fn dictionaryNext(
-    kvs: [*]const types.JanetKV,
-    cap: i32,
+    kvs: []const types.JanetKV,
     kv: ?*const types.JanetKV,
-) callconv(.c) ?*const types.JanetKV {
-    const end = kvs + @as(usize, @intCast(cap));
-    var cursor: [*]const types.JanetKV = if (kv) |at| @as([*]const types.JanetKV, @ptrCast(at)) + 1 else kvs;
-    while (@intFromPtr(cursor) < @intFromPtr(end)) : (cursor += 1) {
-        if (!isNil(cursor[0].key)) return &cursor[0];
+) ?*const types.JanetKV {
+    const start: usize = if (kv) |at|
+        (@intFromPtr(at) - @intFromPtr(kvs.ptr)) / @sizeOf(types.JanetKV) + 1
+    else
+        0;
+    for (kvs[start..]) |*bucket| {
+        if (!isNil(bucket.key)) return bucket;
     }
     return null;
+}
+
+// -------------------------------------------------------- empty bucket arrays
+//
+// They are allocation rather than representation -- a `janet_malloc`, a
+// collection charge and an out-of-memory exit -- and what they allocate is a
+// bucket array, which is this bucket's subject: `tables.zig` and `structs.zig`
+// are the two callers.
+
+/// `sizeof(JanetKV) * count` as C computes it: the `int32_t` is converted to
+/// `size_t`, which sign-extends a negative count into an enormous size, and the
+/// multiply wraps. Both are reproduced -- the enormous size is what turns a
+/// negative capacity into an out-of-memory exit.
+inline fn kvBytes(count: i32) usize {
+    return @as(usize, @bitCast(@as(isize, count))) *% @sizeOf(types.JanetKV);
+}
+
+/// `janet_memalloc_empty`. A `janet_malloc` block of `count` key/value pairs,
+/// every one of them nil, charged against the collection budget.
+///
+/// The charge happens before the null check, exactly as in C; nothing observes
+/// the difference, because the failure path exits.
+pub fn memallocEmpty(count: i32) ?*anyopaque {
+    const bytes = kvBytes(count);
+    const mem = utils.malloc(bytes);
+    vm_state.current().gc.next_collection +%= bytes;
+    if (mem == null) fatal.outOfMemory();
+    const mmem: [*]types.JanetKV = @ptrCast(@alignCast(mem));
+    var i: i32 = 0;
+    while (i < count) : (i += 1) {
+        const kv = &mmem[@intCast(i)];
+        kv.key = wrap.fromNil();
+        kv.value = wrap.fromNil();
+    }
+    return mem;
+}
+
+/// `janet_memempty`. The same fill over a block the caller already owns, which
+/// is how a table is cleared and how a struct's bucket array is initialised
+/// from the scratch allocator.
+pub fn memempty(mem: []types.JanetKV) void {
+    for (mem) |*kv| {
+        kv.key = wrap.fromNil();
+        kv.value = wrap.fromNil();
+    }
 }

@@ -1,15 +1,13 @@
 //! Argument extraction: deciding whether a cfunction's arguments are what it
 //! asked for, and saying so.
 //!
-//! Phase 7 built the deciding half and left the saying in C. A getter that
-//! formatted its own complaint would allocate, allocation can panic, and
-//! through Phase 9 no Zig frame could be jumped through — so the layer
-//! reported a code plus a slot and `janet_arg_raise` in `capi.c` turned it
-//! into a message. Phase 10 Part 5 removes that constraint twice over: a panic
-//! is a returned error, and a frame that holds nothing may be jumped through
-//! anyway. `-Dargs-core` now selects the whole layer — the kernels, the
-//! wording, `janet_arg_raise`, every exported `janet_get*` and `janet_opt*`,
-//! and the three view constructors that used to sit in `util.c`.
+//! Deciding and saying are one layer here, and were not always: a getter that
+//! formats its own complaint allocates, allocation can raise, and while a raise
+//! was a `longjmp` no frame holding a buffer could be jumped through. So the
+//! layer once reported a code plus a slot and something else turned it into a
+//! message. A raise is a returned error now, so the kernels, the wording, every
+//! `janet_get*` and `janet_opt*`, and the three view constructors are one
+//! subsystem, selected by `-Dargs`.
 //!
 //! ## The fault descriptor outlives the reason it was invented
 //!
@@ -67,13 +65,13 @@ const std = @import("std");
 const raise = @import("raise");
 const pp_format = @import("pp/format.zig");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const access = @import("value/helpers/access.zig");
 const options = @import("options");
 const gc_alloc = @import("gc.zig");
 const utils = @import("utils.zig");
-const kind = @import("value/helpers/kind.zig");
 const wrap = @import("value/helpers/wrap.zig");
 pub const tables = @import("value/tables.zig");
 pub const arrays = @import("value/arrays.zig");
@@ -108,32 +106,32 @@ fn checkRange(comptime T: type, dval: f64) bool {
     return dval == back;
 }
 
-fn checkNumber(comptime T: type, x: types.Janet) c_int {
-    if (kind.checkType(x, constants.JANET_NUMBER) == 0) return 0;
+fn checkNumber(comptime T: type, x: repr.Value) c_int {
+    if (!repr.checkType(x, repr.Tag.number)) return 0;
     return @intFromBool(checkRange(T, wrap.toNumber(x)));
 }
 
-pub fn checkint(x: types.Janet) c_int {
+pub fn checkint(x: repr.Value) c_int {
     return checkNumber(i32, x);
 }
 
-pub fn checkuint(x: types.Janet) callconv(.c) c_int {
+pub fn checkuint(x: repr.Value) callconv(.c) c_int {
     return checkNumber(u32, x);
 }
 
-pub fn checkint16(x: types.Janet) callconv(.c) c_int {
+pub fn checkint16(x: repr.Value) callconv(.c) c_int {
     return checkNumber(i16, x);
 }
 
-pub fn checkuint16(x: types.Janet) callconv(.c) c_int {
+pub fn checkuint16(x: repr.Value) callconv(.c) c_int {
     return checkNumber(u16, x);
 }
 
-pub fn checkint8(x: types.Janet) callconv(.c) c_int {
+pub fn checkint8(x: repr.Value) callconv(.c) c_int {
     return checkNumber(i8, x);
 }
 
-pub fn checkuint8(x: types.Janet) callconv(.c) c_int {
+pub fn checkuint8(x: repr.Value) callconv(.c) c_int {
     return checkNumber(u8, x);
 }
 
@@ -143,8 +141,8 @@ pub fn checkuint8(x: types.Janet) callconv(.c) c_int {
 const intmax_double: f64 = 9007199254740992.0;
 const intmin_double: f64 = -9007199254740992.0;
 
-pub fn checkint64(x: types.Janet) callconv(.c) c_int {
-    if (kind.checkType(x, constants.JANET_NUMBER) == 0) return 0;
+pub fn checkint64(x: repr.Value) callconv(.c) c_int {
+    if (!repr.checkType(x, repr.Tag.number)) return 0;
     const dval = wrap.toNumber(x);
     if (!(dval >= intmin_double and dval <= intmax_double)) return 0;
     const truncated: i64 = @intFromFloat(dval);
@@ -152,8 +150,8 @@ pub fn checkint64(x: types.Janet) callconv(.c) c_int {
     return @intFromBool(dval == back);
 }
 
-pub fn checkuint64(x: types.Janet) callconv(.c) c_int {
-    if (kind.checkType(x, constants.JANET_NUMBER) == 0) return 0;
+pub fn checkuint64(x: repr.Value) callconv(.c) c_int {
+    if (!repr.checkType(x, repr.Tag.number)) return 0;
     const dval = wrap.toNumber(x);
     if (!(dval >= 0 and dval <= intmax_double)) return 0;
     const truncated: u64 = @intFromFloat(dval);
@@ -168,8 +166,8 @@ pub fn checkuint64(x: types.Janet) callconv(.c) c_int {
 /// Recorded in `FOUND.md` and reproduced here: `janet_getfloat` has no caller
 /// in the core, so the behavior belongs to third-party modules and changing it
 /// is not this port's decision to make.
-pub fn checkfloat(x: types.Janet) callconv(.c) c_int {
-    if (kind.checkType(x, constants.JANET_NUMBER) == 0) return 0;
+pub fn checkfloat(x: repr.Value) callconv(.c) c_int {
+    if (!repr.checkType(x, repr.Tag.number)) return 0;
     const dval = wrap.toNumber(x);
     if (!(dval >= std.math.floatMin(f32) and dval <= std.math.floatMax(f32))) return 0;
     const narrowed: f32 = @floatCast(dval);
@@ -183,8 +181,8 @@ pub fn checkfloat(x: types.Janet) callconv(.c) c_int {
 /// every input that is defined in C reaches the same answer, and the ones that
 /// are not — negatives, NaN, 1e300 — reach the same answer too, because
 /// saturation and rejection agree on all of them.
-pub fn checksize(x: types.Janet) callconv(.c) c_int {
-    if (kind.checkType(x, constants.JANET_NUMBER) == 0) return 0;
+pub fn checksize(x: repr.Value) callconv(.c) c_int {
+    if (!repr.checkType(x, repr.Tag.number)) return 0;
     const dval = wrap.toNumber(x);
     const size_hi: f64 = @floatFromInt(std.math.maxInt(usize));
     if (!(dval >= 0 and dval <= size_hi)) return 0;
@@ -205,7 +203,7 @@ fn faultExpect(fault: *types.JanetArgFault, expect: c_int, n: i32) void {
     fault.slot = n;
 }
 
-fn faultType(fault: *types.JanetArgFault, n: i32, typeflags: i32) void {
+fn faultType(fault: *types.JanetArgFault, n: i32, typeflags: repr.TagSet) void {
     fault.kind = @intCast(constants.JANET_ARG_TYPE);
     fault.slot = n;
     fault.typeflags = typeflags;
@@ -214,22 +212,22 @@ fn faultType(fault: *types.JanetArgFault, n: i32, typeflags: i32) void {
 // ----------------------------------------------------------------- getters
 
 pub fn argChecktype(
-    argv: [*]const types.Janet,
+    argv: []const repr.Value,
     n: i32,
-    janet_type: i32,
-    typeflags: i32,
+    janet_type: repr.Tag,
+    typeflags: repr.TagSet,
     fault: *types.JanetArgFault,
-) callconv(.c) c_int {
-    if (kind.checkType(argv[@intCast(n)], @intCast(janet_type)) != 0) return 1;
+) c_int {
+    if (repr.checkType(argv[@intCast(n)], janet_type)) return 1;
     faultType(fault, n, typeflags);
     return 0;
 }
 
 /// The shared head of every `janet_opt*`: an argument past the end of the list,
 /// or an explicit nil, both mean "use the default".
-pub fn argIsdefault(argv: [*]const types.Janet, argc: i32, n: i32) c_int {
-    if (n >= argc) return 1;
-    return @intFromBool(kind.checkType(argv[@intCast(n)], constants.JANET_NIL) != 0);
+pub fn argIsdefault(argv: []const repr.Value, n: i32) c_int {
+    if (n >= argv.len) return 1;
+    return @intFromBool(repr.checkType(argv[@intCast(n)], repr.Tag.nil));
 }
 
 /// Every width except `janet_getinteger` converts the double; that one unwraps
@@ -238,10 +236,10 @@ pub fn argIsdefault(argv: [*]const types.Janet, argc: i32, n: i32) c_int {
 fn numberGetter(
     comptime T: type,
     comptime expect: c_int,
-    comptime check: fn (types.Janet) callconv(.c) c_int,
-) fn ([*]const types.Janet, i32, *T, *types.JanetArgFault) callconv(.c) c_int {
+    comptime check: fn (repr.Value) callconv(.c) c_int,
+) fn ([]const repr.Value, i32, *T, *types.JanetArgFault) c_int {
     return struct {
-        fn get(argv: [*]const types.Janet, n: i32, out: *T, fault: *types.JanetArgFault) callconv(.c) c_int {
+        fn get(argv: []const repr.Value, n: i32, out: *T, fault: *types.JanetArgFault) c_int {
             const x = argv[@intCast(n)];
             if (check(x) == 0) {
                 faultExpect(fault, expect, n);
@@ -257,17 +255,17 @@ fn numberGetter(
     }.get;
 }
 
-pub const janet_arg_uinteger = numberGetter(u32, constants.JANET_ARG_EXPECT_U32, checkuint);
-pub const janet_arg_integer16 = numberGetter(i16, constants.JANET_ARG_EXPECT_S16, checkint16);
-pub const janet_arg_uinteger16 = numberGetter(u16, constants.JANET_ARG_EXPECT_U16, checkuint16);
-pub const janet_arg_integer8 = numberGetter(i8, constants.JANET_ARG_EXPECT_S8, checkint8);
-pub const janet_arg_uinteger8 = numberGetter(u8, constants.JANET_ARG_EXPECT_U8, checkuint8);
-pub const janet_arg_float = numberGetter(f32, constants.JANET_ARG_EXPECT_FLOAT, checkfloat);
-pub const janet_arg_integer64 = numberGetter(i64, constants.JANET_ARG_EXPECT_S64, checkint64);
-pub const janet_arg_uinteger64 = numberGetter(u64, constants.JANET_ARG_EXPECT_U64, checkuint64);
-pub const janet_arg_size = numberGetter(usize, constants.JANET_ARG_EXPECT_SIZE, checksize);
+pub const argUinteger = numberGetter(u32, constants.JANET_ARG_EXPECT_U32, checkuint);
+pub const argInteger16 = numberGetter(i16, constants.JANET_ARG_EXPECT_S16, checkint16);
+pub const argUinteger16 = numberGetter(u16, constants.JANET_ARG_EXPECT_U16, checkuint16);
+pub const argInteger8 = numberGetter(i8, constants.JANET_ARG_EXPECT_S8, checkint8);
+pub const argUinteger8 = numberGetter(u8, constants.JANET_ARG_EXPECT_U8, checkuint8);
+pub const argFloat = numberGetter(f32, constants.JANET_ARG_EXPECT_FLOAT, checkfloat);
+pub const argInteger64 = numberGetter(i64, constants.JANET_ARG_EXPECT_S64, checkint64);
+pub const argUinteger64 = numberGetter(u64, constants.JANET_ARG_EXPECT_U64, checkuint64);
+pub const argSize = numberGetter(usize, constants.JANET_ARG_EXPECT_SIZE, checksize);
 
-pub fn argInteger(argv: [*]const types.Janet, n: i32, out: *i32, fault: *types.JanetArgFault) callconv(.c) c_int {
+pub fn argInteger(argv: []const repr.Value, n: i32, out: *i32, fault: *types.JanetArgFault) c_int {
     const x = argv[@intCast(n)];
     if (checkint(x) == 0) {
         faultExpect(fault, constants.JANET_ARG_EXPECT_S32, n);
@@ -277,7 +275,7 @@ pub fn argInteger(argv: [*]const types.Janet, n: i32, out: *i32, fault: *types.J
     return 1;
 }
 
-pub fn argNat(argv: [*]const types.Janet, n: i32, out: *i32, fault: *types.JanetArgFault) callconv(.c) c_int {
+pub fn argNat(argv: []const repr.Value, n: i32, out: *i32, fault: *types.JanetArgFault) c_int {
     const x = argv[@intCast(n)];
     if (checkint(x) != 0) {
         const ret = wrap.toInteger(x);
@@ -291,14 +289,14 @@ pub fn argNat(argv: [*]const types.Janet, n: i32, out: *i32, fault: *types.Janet
 }
 
 pub fn argAbstract(
-    argv: [*]const types.Janet,
+    argv: []const repr.Value,
     n: i32,
-    at: *const types.JanetAbstractType,
+    at: *const types.AbstractType,
     out: *?*anyopaque,
     fault: *types.JanetArgFault,
-) callconv(.c) c_int {
+) c_int {
     const x = argv[@intCast(n)];
-    if (kind.checkType(x, constants.JANET_ABSTRACT) != 0) {
+    if (repr.checkType(x, repr.Tag.abstract)) {
         const abstractx = wrap.toAbstract(x);
         if (types.abstractHead(abstractx).type == at) {
             out.* = abstractx;
@@ -314,73 +312,73 @@ pub fn argAbstract(
 // ------------------------------------------------------------------- views
 
 pub fn argIndexed(
-    argv: [*]const types.Janet,
+    argv: []const repr.Value,
     n: i32,
     out: *types.JanetView,
     fault: *types.JanetArgFault,
-) callconv(.c) c_int {
+) c_int {
     const x = argv[@intCast(n)];
-    if (kind.checkType(x, constants.JANET_ARRAY) != 0) {
+    if (repr.checkType(x, repr.Tag.array)) {
         const array = wrap.toArray(x);
         out.items = array.*.data;
         out.len = array.*.count;
         return 1;
-    } else if (kind.checkType(x, constants.JANET_TUPLE) != 0) {
+    } else if (repr.checkType(x, repr.Tag.tuple)) {
         const tuple = wrap.toTuple(x);
         out.items = tuple;
         out.len = types.tupleHead(tuple).length;
         return 1;
     }
-    faultType(fault, n, @intCast(constants.JANET_TFLAG_INDEXED));
+    faultType(fault, n, repr.TagSet.indexed);
     return 0;
 }
 
 pub fn argDictionary(
-    argv: [*]const types.Janet,
+    argv: []const repr.Value,
     n: i32,
     out: *types.JanetDictView,
     fault: *types.JanetArgFault,
-) callconv(.c) c_int {
+) c_int {
     const x = argv[@intCast(n)];
-    if (kind.checkType(x, constants.JANET_TABLE) != 0) {
+    if (repr.checkType(x, repr.Tag.table)) {
         const table = wrap.toTable(x);
         out.kvs = table.*.data.?;
         out.cap = table.*.capacity;
         out.len = table.*.count;
         return 1;
-    } else if (kind.checkType(x, constants.JANET_STRUCT) != 0) {
+    } else if (repr.checkType(x, repr.Tag.@"struct")) {
         const structure = wrap.toStruct(x);
         out.kvs = structure;
         out.cap = types.structHead(structure).capacity;
         out.len = types.structHead(structure).length;
         return 1;
     }
-    faultType(fault, n, @intCast(constants.JANET_TFLAG_DICTIONARY));
+    faultType(fault, n, repr.TagSet.dictionary);
     return 0;
 }
 
 /// Classifies, and for the abstract case stops. Running `bytes` here would put
 /// third-party code below a frame that must not be jumped through.
 pub fn argBytes(
-    x: types.Janet,
+    x: repr.Value,
     n: i32,
     out: *types.JanetByteView,
     fault: *types.JanetArgFault,
 ) callconv(.c) c_uint {
-    switch (kind.typeOf(x)) {
-        constants.JANET_STRING, constants.JANET_SYMBOL, constants.JANET_KEYWORD => {
+    switch (repr.typeOf(x)) {
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
             const string = wrap.toString(x);
             out.bytes = string;
             out.len = types.stringHead(string).length;
             return @intCast(constants.JANET_ARG_BYTES_STRING);
         },
-        constants.JANET_BUFFER => {
+        repr.Tag.buffer => {
             const buffer = wrap.toBuffer(x);
             out.bytes = buffer.*.data.?;
             out.len = buffer.*.count;
             return @intCast(constants.JANET_ARG_BYTES_BUFFER);
         },
-        constants.JANET_ABSTRACT => {
+        repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);
             if (types.abstractHead(abst).type.*.bytes != null) {
                 return @intCast(constants.JANET_ARG_BYTES_ABSTRACT);
@@ -388,17 +386,17 @@ pub fn argBytes(
         },
         else => {},
     }
-    faultType(fault, n, @intCast(constants.JANET_TFLAG_BYTES));
+    faultType(fault, n, repr.TagSet.bytes);
     return @intCast(constants.JANET_ARG_BYTES_FAULT);
 }
 
 /// Which shape `janet_getcbytes` must use. Both buffer shapes mutate or
 /// allocate, so neither is carried out here; the third is an ordinary byte
 /// view and its own failure is reported by `janet_arg_bytes`.
-pub fn argCbytes(argv: [*]const types.Janet, n: i32, fault: *types.JanetArgFault) c_uint {
+pub fn argCbytes(argv: []const repr.Value, n: i32, fault: *types.JanetArgFault) c_uint {
     _ = fault;
     const x = argv[@intCast(n)];
-    if (kind.checkType(x, constants.JANET_BUFFER) != 0) {
+    if (repr.checkType(x, repr.Tag.buffer)) {
         const buffer = wrap.toBuffer(x);
         const no_realloc: i32 = @intCast(constants.JANET_BUFFER_FLAG_NO_REALLOC);
         if ((buffer.*.gc.flags & no_realloc) != 0 and buffer.*.count == buffer.*.capacity) {
@@ -422,10 +420,10 @@ pub fn argZeros(bytes: [*:0]const u8, len: i32, fault: *types.JanetArgFault) c_i
 /// `length + 1` and reports a closed interval, the argument index folds against
 /// `length` and reports a half-open one. Both accept `length` itself.
 fn range(
-    argv: [*]const types.Janet,
+    argv: []const repr.Value,
     n: i32,
     length: i32,
-    which: [*]const u8,
+    which: [*:0]const u8,
     out: *i32,
     fault: *types.JanetArgFault,
     comptime inclusive: bool,
@@ -453,24 +451,24 @@ fn range(
 }
 
 pub fn argHalfrange(
-    argv: [*]const types.Janet,
+    argv: []const repr.Value,
     n: i32,
     length: i32,
-    which: [*]const u8,
+    which: [*:0]const u8,
     out: *i32,
     fault: *types.JanetArgFault,
-) callconv(.c) c_int {
+) c_int {
     return range(argv, n, length, which, out, fault, true);
 }
 
 pub fn argArgindex(
-    argv: [*]const types.Janet,
+    argv: []const repr.Value,
     n: i32,
     length: i32,
-    which: [*]const u8,
+    which: [*:0]const u8,
     out: *i32,
     fault: *types.JanetArgFault,
-) callconv(.c) c_int {
+) c_int {
     return range(argv, n, length, which, out, fault, false);
 }
 
@@ -540,8 +538,8 @@ pub fn argArity(count: i32, min: i32, max: i32, fault: *types.JanetArgFault) c_i
 
 // ----------------------------------------------------------------- strlike
 
-pub fn argStrlike(janet_type: i32, x: types.Janet, cstring: [*:0]const u8) c_int {
-    if (kind.typeOf(x) != janet_type) return 0;
+pub fn argStrlike(janet_type: repr.Tag, x: repr.Value, cstring: [*:0]const u8) c_int {
+    if (repr.typeOf(x) != janet_type) return 0;
     return @intFromBool(utils.cstrcmp(wrap.toString(x), cstring) == 0);
 }
 
@@ -571,10 +569,10 @@ pub fn argMethod(
 /// key starts at the head, and any other key resumes after the one it names.
 pub fn argNextmethod(
     methods: [*]const types.JanetMethod,
-    key: types.Janet,
+    key: repr.Value,
 ) callconv(.c) [*]const types.JanetMethod {
     var entry = methods;
-    if (kind.checkType(key, constants.JANET_NIL) == 0) {
+    if (!repr.checkType(key, repr.Tag.nil)) {
         while (entry[0].name) |name| {
             const matched = keyeq(key, name) != 0;
             entry += 1;
@@ -587,10 +585,9 @@ pub fn argNextmethod(
 // ====================================================================
 // The exported surface.
 //
-// Everything below was `capi.c`'s half of the layer until Phase 10 Part 5.
-// Each entry is a kernel call and, on failure, a raise -- which is now a
-// returned error rather than a jump, so `janet_opt*` can propagate what
-// `janet_get*` decided instead of being jumped out of.
+// Each entry is a kernel call and, on failure, a raise -- a returned error
+// rather than a jump, so `janet_opt*` can propagate what `janet_get*` decided
+// instead of being jumped out of.
 // ====================================================================
 
 // ----------------------------------------------------------------- wording
@@ -623,19 +620,22 @@ fn expectName(expect: u8) [*:0]const u8 {
 /// cannot cross the C ABI between two selectable subsystems. Keeping the two
 /// slot diagnostics here keeps their format strings in one place and lets the
 /// fault path return.
-pub fn panicType(x: types.Janet, n: i32, expected: c_int) raise.Error {
+pub fn panicType(x: repr.Value, n: i32, expected: repr.TagSet) raise.Error {
     return pp_format.panicf("bad slot #%d, expected %T, got %v", .{ n, expected, x });
 }
 
-pub fn panicAbstract(x: types.Janet, n: i32, at: *const types.JanetAbstractType) raise.Error {
+pub fn panicAbstract(x: repr.Value, n: i32, at: *const types.AbstractType) raise.Error {
     return pp_format.panicf("bad slot #%d, expected %s, got %v", .{ n, at.name, x });
 }
 
-pub fn janet_panic_type(x: types.Janet, n: i32, expected: c_int) void {
-    raise.report(panicType(x, n, expected));
+/// The abi keeps Janet's `int`. A mask bit above fifteen names no tag, so the
+/// narrowing loses nothing; the internal set is sixteen bits wide and this is
+/// one of the two symbols that convert.
+pub fn panicTypeAbi(x: repr.Value, n: i32, expected: c_int) void {
+    raise.report(panicType(x, n, repr.TagSet.fromBits(@truncate(@as(c_uint, @bitCast(expected))))));
 }
 
-pub fn janet_panic_abstract(x: types.Janet, n: i32, at: *const types.JanetAbstractType) void {
+pub fn panicAbstractAbi(x: repr.Value, n: i32, at: *const types.AbstractType) void {
     raise.report(panicAbstract(x, n, at));
 }
 
@@ -646,8 +646,8 @@ pub fn janet_panic_abstract(x: types.Janet, n: i32, at: *const types.JanetAbstra
 /// fields its message uses -- and the two arity kinds are raised with a null
 /// `argv` besides, having no argument list to name. Reading either at the head
 /// of `raiseFault` instead of inside the branch is the mistake this exists to
-/// make visible; `test/args_core.c` catches it on its first assertion.
-inline fn slotOf(argv: ?[*]const types.Janet, fault: *const types.JanetArgFault) types.Janet {
+/// make visible; `test/args_core.zig` catches it on its first assertion.
+inline fn slotOf(argv: ?[]const repr.Value, fault: *const types.JanetArgFault) repr.Value {
     // The `.?` is the claim the doc comment on `raiseFault` already makes:
     // only the kinds that name a slot reach here.
     return argv.?[@intCast(fault.slot)];
@@ -658,7 +658,7 @@ inline fn slotOf(argv: ?[*]const types.Janet, fault: *const types.JanetArgFault)
 /// `argv` may be null for the kinds that do not name a slot -- the arity
 /// kinds, the range kinds, the flag kind and the embedded-zero kind all render
 /// without touching the argument.
-fn raiseFault(argv: ?[*]const types.Janet, fault: *const types.JanetArgFault) raise.Error {
+fn raiseFault(argv: ?[]const repr.Value, fault: *const types.JanetArgFault) raise.Error {
     return switch (@as(c_uint, fault.kind)) {
         constants.JANET_ARG_TYPE => panicType(slotOf(argv, fault), fault.slot, fault.typeflags),
         constants.JANET_ARG_ABSTRACT => panicAbstract(slotOf(argv, fault), fault.slot, fault.at.?),
@@ -670,10 +670,10 @@ fn raiseFault(argv: ?[*]const types.Janet, fault: *const types.JanetArgFault) ra
         // C's "%d" read an int32_t from the va_list before widening it, which
         // is undefined and is recorded in FOUND.md. It was reproduced here
         // while the other implementation was C and could be compared against.
-        // Part 18 removed the va_list: "%d" renders the 64 bits its rewritten
-        // specifier always asked for, so these are simply correct now. The
-        // digits are unchanged for any index that fits in an int32_t, which
-        // is every index either implementation was ever observed on.
+        // There is no va_list here: "%d" renders the 64 bits its specifier
+        // always asked for, so these are simply correct. The digits are
+        // unchanged for any index that fits in an int32_t, which is every
+        // index either implementation was ever observed on.
         constants.JANET_ARG_RANGE_INCLUSIVE => pp_format.panicf(
             "%s index %d out of range [%d,%d]",
             .{ fault.which, fault.raw, fault.lo, fault.hi },
@@ -713,7 +713,7 @@ fn raiseFault(argv: ?[*]const types.Janet, fault: *const types.JanetArgFault) ra
 /// are usable on their own and a C caller of one needs a way to report what it
 /// found. `janet_arg_raise` never returns, so there is no error to hand back
 /// and `raise.panicking` does not apply.
-pub fn argRaise(argv: ?[*]const types.Janet, fault: *const types.JanetArgFault) void {
+pub fn argRaise(argv: ?[*]const repr.Value, fault: *const types.JanetArgFault) void {
     raise.report(raiseFault(argv, fault));
 }
 
@@ -737,13 +737,13 @@ fn checkArity(count: i32, min: i32, max: i32) raise.Raising(void) {
 /// fourteen times, so a representation change -- `-Dnanbox=false` returns a
 /// different Zig type for several of these -- cannot make the exported
 /// signature disagree with `janet.h`.
-fn TypeGetter(comptime unwrap: anytype, comptime janet_type: anytype, comptime typeflags: anytype) type {
+fn TypeGetter(comptime unwrap: anytype, comptime janet_type: repr.Tag, comptime typeflags: repr.TagSet) type {
     return struct {
         pub const Value = @typeInfo(@TypeOf(unwrap)).@"fn".return_type.?;
-        pub fn get(argv: []const types.Janet, n: i32) raise.Raising(Value) {
+        pub fn get(argv: []const repr.Value, n: i32) raise.Raising(Value) {
             var fault: types.JanetArgFault = undefined;
-            if (argChecktype(argv.ptr, n, @intCast(janet_type), @intCast(typeflags), &fault) == 0) {
-                return raiseFault(argv.ptr, &fault);
+            if (argChecktype(argv, n, janet_type, typeflags, &fault) == 0) {
+                return raiseFault(argv, &fault);
             }
             return unwrap(argv[@intCast(n)]);
         }
@@ -756,10 +756,10 @@ fn TypeGetter(comptime unwrap: anytype, comptime janet_type: anytype, comptime t
 fn ArgGetter(comptime T: type, comptime kernel: anytype) type {
     return struct {
         pub const Value = T;
-        pub fn get(argv: []const types.Janet, n: i32) raise.Raising(T) {
+        pub fn get(argv: []const repr.Value, n: i32) raise.Raising(T) {
             var out: T = undefined;
             var fault: types.JanetArgFault = undefined;
-            if (kernel(argv.ptr, n, &out, &fault) == 0) return raiseFault(argv.ptr, &fault);
+            if (kernel(argv, n, &out, &fault) == 0) return raiseFault(argv, &fault);
             return out;
         }
         pub const abi = IndexAbi(get).abi;
@@ -767,9 +767,8 @@ fn ArgGetter(comptime T: type, comptime kernel: anytype) type {
 }
 
 /// `DEFINE_OPT` and `DEFINE_ARG_OPT`, which differ only in which getter they
-/// fall through to. This is the shape Part 5 exists for: the fall-through is a
-/// `return` of an error union, so a bad argument no longer jumps out of the
-/// frame that decided to look at it.
+/// fall through to. The fall-through is a `return` of an error union, so a bad
+/// argument does not jump out of the frame that decided to look at it.
 pub fn Opt(comptime G: type) type {
     // A pointer default may be absent; a number default may not.  `[*c]` is
     // already nullable and is left alone, or the abi below would want an
@@ -779,8 +778,8 @@ pub fn Opt(comptime G: type) type {
     else
         G.Value;
     return struct {
-        pub fn get(argv: []const types.Janet, n: i32, dflt: D) raise.Raising(D) {
-            if (argIsdefault(argv.ptr, @intCast(argv.len), n) != 0) return dflt;
+        pub fn get(argv: []const repr.Value, n: i32, dflt: D) raise.Raising(D) {
+            if (argIsdefault(argv, n) != 0) return dflt;
             return @as(D, try G.get(argv, n));
         }
         pub const abi = CountAbi(get).abi;
@@ -791,102 +790,101 @@ pub fn Opt(comptime G: type) type {
 /// empty one of the given capacity rather than a value the caller supplies.
 pub fn OptLen(comptime G: type, comptime construct: anytype) type {
     return struct {
-        pub fn get(argv: []const types.Janet, n: i32, dflt_len: i32) raise.Raising(G.Value) {
-            if (argIsdefault(argv.ptr, @intCast(argv.len), n) != 0) return construct(dflt_len);
+        pub fn get(argv: []const repr.Value, n: i32, dflt_len: i32) raise.Raising(G.Value) {
+            if (argIsdefault(argv, n) != 0) return construct(dflt_len);
             return G.get(argv, n);
         }
         pub const abi = CountAbi(get).abi;
     };
 }
 
-pub const GetNumber = TypeGetter(wrap.toNumber, constants.JANET_NUMBER, constants.JANET_TFLAG_NUMBER);
-pub const GetArray = TypeGetter(wrap.toArray, constants.JANET_ARRAY, constants.JANET_TFLAG_ARRAY);
-pub const GetTuple = TypeGetter(wrap.toTuple, constants.JANET_TUPLE, constants.JANET_TFLAG_TUPLE);
-pub const GetTable = TypeGetter(wrap.toTable, constants.JANET_TABLE, constants.JANET_TFLAG_TABLE);
-pub const GetStruct = TypeGetter(wrap.toStruct, constants.JANET_STRUCT, constants.JANET_TFLAG_STRUCT);
-pub const GetString = TypeGetter(wrap.toString, constants.JANET_STRING, constants.JANET_TFLAG_STRING);
-pub const GetKeyword = TypeGetter(wrap.toKeyword, constants.JANET_KEYWORD, constants.JANET_TFLAG_KEYWORD);
-pub const GetSymbol = TypeGetter(wrap.toSymbol, constants.JANET_SYMBOL, constants.JANET_TFLAG_SYMBOL);
-pub const GetBuffer = TypeGetter(wrap.toBuffer, constants.JANET_BUFFER, constants.JANET_TFLAG_BUFFER);
-pub const GetFiber = TypeGetter(wrap.toFiber, constants.JANET_FIBER, constants.JANET_TFLAG_FIBER);
-pub const GetFunction = TypeGetter(wrap.toFunction, constants.JANET_FUNCTION, constants.JANET_TFLAG_FUNCTION);
-pub const GetCFunction = TypeGetter(wrap.toCfunction, constants.JANET_CFUNCTION, constants.JANET_TFLAG_CFUNCTION);
-pub const GetBoolean = TypeGetter(wrap.toBoolean, constants.JANET_BOOLEAN, constants.JANET_TFLAG_BOOLEAN);
-pub const GetPointer = TypeGetter(wrap.toPointer, constants.JANET_POINTER, constants.JANET_TFLAG_POINTER);
+pub const GetNumber = TypeGetter(wrap.toNumber, repr.Tag.number, repr.TagSet.one(.number));
+pub const GetArray = TypeGetter(wrap.toArray, repr.Tag.array, repr.TagSet.one(.array));
+pub const GetTuple = TypeGetter(wrap.toTuple, repr.Tag.tuple, repr.TagSet.one(.tuple));
+pub const GetTable = TypeGetter(wrap.toTable, repr.Tag.table, repr.TagSet.one(.table));
+pub const GetStruct = TypeGetter(wrap.toStruct, repr.Tag.@"struct", repr.TagSet.one(.@"struct"));
+pub const GetString = TypeGetter(wrap.toString, repr.Tag.string, repr.TagSet.one(.string));
+pub const GetKeyword = TypeGetter(wrap.toKeyword, repr.Tag.keyword, repr.TagSet.one(.keyword));
+pub const GetSymbol = TypeGetter(wrap.toSymbol, repr.Tag.symbol, repr.TagSet.one(.symbol));
+pub const GetBuffer = TypeGetter(wrap.toBuffer, repr.Tag.buffer, repr.TagSet.one(.buffer));
+pub const GetFiber = TypeGetter(wrap.toFiber, repr.Tag.fiber, repr.TagSet.one(.fiber));
+pub const GetFunction = TypeGetter(wrap.toFunction, repr.Tag.function, repr.TagSet.one(.function));
+pub const GetCFunction = TypeGetter(wrap.toCfunction, repr.Tag.cfunction, repr.TagSet.one(.cfunction));
+pub const GetBoolean = TypeGetter(wrap.toBoolean, repr.Tag.boolean, repr.TagSet.one(.boolean));
+pub const GetPointer = TypeGetter(wrap.toPointer, repr.Tag.pointer, repr.TagSet.one(.pointer));
 
 pub const GetNat = ArgGetter(i32, argNat);
 pub const GetInteger = ArgGetter(i32, argInteger);
-pub const GetUInteger = ArgGetter(u32, janet_arg_uinteger);
-pub const GetInteger16 = ArgGetter(i16, janet_arg_integer16);
-pub const GetUInteger16 = ArgGetter(u16, janet_arg_uinteger16);
-pub const GetInteger8 = ArgGetter(i8, janet_arg_integer8);
-pub const GetUInteger8 = ArgGetter(u8, janet_arg_uinteger8);
-pub const GetFloat = ArgGetter(f32, janet_arg_float);
-pub const GetSize = ArgGetter(usize, janet_arg_size);
+pub const GetUInteger = ArgGetter(u32, argUinteger);
+pub const GetInteger16 = ArgGetter(i16, argInteger16);
+pub const GetUInteger16 = ArgGetter(u16, argUinteger16);
+pub const GetInteger8 = ArgGetter(i8, argInteger8);
+pub const GetUInteger8 = ArgGetter(u8, argUinteger8);
+pub const GetFloat = ArgGetter(f32, argFloat);
+pub const GetSize = ArgGetter(usize, argSize);
 
 /// With integer types enabled these accept an `int/s64` or `int/u64` abstract
 /// as well as a number, and the conversion raises its own message rather than
 /// filling in a fault, so the whole decision is there and there is nothing for
 /// a kernel to report.
 ///
-/// **The conversion is reached by import, and until Phase 11 Part 13 it was
-/// reached through its abi.** `c.janet_unwrap_s64` is `raise.reported` over
-/// `inttypes.unwrapS64`, so calling it from inside this `raise.Raising`
-/// function turned a refusal into a report nobody consumed: the getter
-/// answered zero, its caller carried on with a value the user never supplied,
-/// and the outstanding report killed the process at the next scope boundary
-/// with a message naming neither the slot nor the builtin.
-/// `(string/format "%d" "x")` reproduced it, because `pp_format.zig` is one of
-/// the seven callers. That is the same defect Part 12 found in
-/// `JOP_MAKE_STRING`, in the layer every cfunction opens with.
+/// **The conversion is reached by import rather than through its abi, and the
+/// difference is not cosmetic.** `janet_unwrap_s64` is `raise.reported` over
+/// `ints.unwrapS64`, so calling *it* from inside a `raise.Raising` function
+/// would turn a refusal into a report nobody consumes: the getter answers
+/// zero, its caller carries on with a value the user never supplied, and the
+/// outstanding report kills the process at the next scope boundary with a
+/// message naming neither the slot nor the builtin. `(string/format "%d" "x")`
+/// reproduced exactly that, because `pp/format.zig` is one of the seven
+/// callers. It is the defect `tools/check/swallowed.janet` exists to find.
 const int_types_enabled = options.int_types_core;
 
 fn Wide(comptime T: type, comptime unwrap: anytype, comptime kernel: anytype) type {
     return struct {
         pub const Value = T;
-        pub fn get(argv: []const types.Janet, n: i32) raise.Raising(T) {
+        pub fn get(argv: []const repr.Value, n: i32) raise.Raising(T) {
             if (int_types_enabled) return unwrap(argv[@intCast(n)]);
             var out: T = undefined;
             var fault: types.JanetArgFault = undefined;
-            if (kernel(argv.ptr, n, &out, &fault) == 0) return raiseFault(argv.ptr, &fault);
+            if (kernel(argv, n, &out, &fault) == 0) return raiseFault(argv, &fault);
             return out;
         }
         pub const abi = IndexAbi(get).abi;
     };
 }
 
-pub const GetInteger64 = Wide(i64, if (int_types_enabled) inttypes.unwrapS64 else {}, janet_arg_integer64);
-pub const GetUInteger64 = Wide(u64, if (int_types_enabled) inttypes.unwrapU64 else {}, janet_arg_uinteger64);
+pub const GetInteger64 = Wide(i64, if (int_types_enabled) inttypes.unwrapS64 else {}, argInteger64);
+pub const GetUInteger64 = Wide(u64, if (int_types_enabled) inttypes.unwrapU64 else {}, argUinteger64);
 
 // ----------------------------------------------------------------- ranges
 
-pub fn halfRange(argv: []const types.Janet, n: i32, length: i32, which: [*]const u8) raise.Raising(i32) {
+pub fn halfRange(argv: []const repr.Value, n: i32, length: i32, which: [*:0]const u8) raise.Raising(i32) {
     var out: i32 = undefined;
     var fault: types.JanetArgFault = undefined;
-    if (argHalfrange(argv.ptr, n, length, which, &out, &fault) == 0) return raiseFault(argv.ptr, &fault);
+    if (argHalfrange(argv, n, length, which, &out, &fault) == 0) return raiseFault(argv, &fault);
     return out;
 }
 
-pub fn argIndex(argv: []const types.Janet, n: i32, length: i32, which: [*]const u8) raise.Raising(i32) {
+pub fn argIndex(argv: []const repr.Value, n: i32, length: i32, which: [*:0]const u8) raise.Raising(i32) {
     var out: i32 = undefined;
     var fault: types.JanetArgFault = undefined;
-    if (argArgindex(argv.ptr, n, length, which, &out, &fault) == 0) return raiseFault(argv.ptr, &fault);
+    if (argArgindex(argv, n, length, which, &out, &fault) == 0) return raiseFault(argv, &fault);
     return out;
 }
 
-pub fn startRange(argv: []const types.Janet, n: i32, length: i32) raise.Raising(i32) {
-    if (argIsdefault(argv.ptr, @intCast(argv.len), n) != 0) return 0;
+pub fn startRange(argv: []const repr.Value, n: i32, length: i32) raise.Raising(i32) {
+    if (argIsdefault(argv, n) != 0) return 0;
     return halfRange(argv, n, length, "start");
 }
 
-pub fn endRange(argv: []const types.Janet, n: i32, length: i32) raise.Raising(i32) {
-    if (argIsdefault(argv.ptr, @intCast(argv.len), n) != 0) return length;
+pub fn endRange(argv: []const repr.Value, n: i32, length: i32) raise.Raising(i32) {
+    if (argIsdefault(argv, n) != 0) return length;
     return halfRange(argv, n, length, "end");
 }
 
 /// `janet_length` is a C-ABI call into `-Dvalue-access` and raises by jumping
 /// through this frame, which holds nothing at that point.
-pub fn getSlice(argv: []const types.Janet) raise.Raising(types.JanetRange) {
+pub fn getSlice(argv: []const repr.Value) raise.Raising(types.JanetRange) {
     try checkArity(@intCast(argv.len), 1, 3);
     var range_out: types.JanetRange = undefined;
     const length = try access.length(argv[0]);
@@ -898,17 +896,17 @@ pub fn getSlice(argv: []const types.Janet) raise.Raising(types.JanetRange) {
 
 // ------------------------------------------------------------------ views
 
-pub fn getIndexed(argv: []const types.Janet, n: i32) raise.Raising(types.JanetView) {
+pub fn getIndexed(argv: []const repr.Value, n: i32) raise.Raising(types.JanetView) {
     var view: types.JanetView = undefined;
     var fault: types.JanetArgFault = undefined;
-    if (argIndexed(argv.ptr, n, &view, &fault) == 0) return raiseFault(argv.ptr, &fault);
+    if (argIndexed(argv, n, &view, &fault) == 0) return raiseFault(argv, &fault);
     return view;
 }
 
-pub fn getDictionary(argv: []const types.Janet, n: i32) raise.Raising(types.JanetDictView) {
+pub fn getDictionary(argv: []const repr.Value, n: i32) raise.Raising(types.JanetDictView) {
     var view: types.JanetDictView = undefined;
     var fault: types.JanetArgFault = undefined;
-    if (argDictionary(argv.ptr, n, &view, &fault) == 0) return raiseFault(argv.ptr, &fault);
+    if (argDictionary(argv, n, &view, &fault) == 0) return raiseFault(argv, &fault);
     return view;
 }
 
@@ -916,7 +914,7 @@ pub fn getDictionary(argv: []const types.Janet, n: i32) raise.Raising(types.Jane
 /// pointer from a native module: third-party code that raises by jumping. It
 /// runs outside the kernel so that a caller which may not raise at all --
 /// `janet_bytes_view` below -- can still use the classification.
-pub fn getBytes(argv: []const types.Janet, n: i32) raise.Raising(types.JanetByteView) {
+pub fn getBytes(argv: []const repr.Value, n: i32) raise.Raising(types.JanetByteView) {
     var view: types.JanetByteView = undefined;
     var fault: types.JanetArgFault = undefined;
     switch (argBytes(argv[@intCast(n)], n, &view, &fault)) {
@@ -925,31 +923,31 @@ pub fn getBytes(argv: []const types.Janet, n: i32) raise.Raising(types.JanetByte
             const abst = wrap.toAbstract(argv[@intCast(n)]);
             return types.abstractHead(abst).type.*.bytes.?(abst, types.abstractHead(abst).size);
         },
-        else => return raiseFault(argv.ptr, &fault),
+        else => return raiseFault(argv, &fault),
     }
 }
 
-pub fn getAbstract(argv: []const types.Janet, n: i32, at: *const types.JanetAbstractType) raise.Raising(?*anyopaque) {
+pub fn getAbstract(argv: []const repr.Value, n: i32, at: *const types.AbstractType) raise.Raising(?*anyopaque) {
     var out: ?*anyopaque = undefined;
     var fault: types.JanetArgFault = undefined;
-    if (argAbstract(argv.ptr, n, at, &out, &fault) == 0) return raiseFault(argv.ptr, &fault);
+    if (argAbstract(argv, n, at, &out, &fault) == 0) return raiseFault(argv, &fault);
     return out;
 }
 
 pub fn optAbstract(
-    argv: []const types.Janet,
+    argv: []const repr.Value,
     n: i32,
-    at: *const types.JanetAbstractType,
+    at: *const types.AbstractType,
     dflt: ?*anyopaque,
 ) raise.Raising(?*anyopaque) {
-    if (argIsdefault(argv.ptr, @intCast(argv.len), n) != 0) return dflt;
+    if (argIsdefault(argv, n) != 0) return dflt;
     return getAbstract(argv, n, at);
 }
 
 /// The public non-raising probe. It is why the kernels report rather than
 /// raise: this one has to answer NULL, not stop the caller.
-pub fn checkabstract(x: types.Janet, at: *const types.JanetAbstractType) ?*anyopaque {
-    var argv = [_]types.Janet{x};
+pub fn checkabstract(x: repr.Value, at: *const types.AbstractType) ?*anyopaque {
+    var argv = [_]repr.Value{x};
     var out: ?*anyopaque = undefined;
     var fault: types.JanetArgFault = undefined;
     if (argAbstract(&argv, 0, at, &out, &fault) == 0) return null;
@@ -960,18 +958,18 @@ pub fn checkabstract(x: types.Janet, at: *const types.JanetAbstractType) ?*anyop
 
 /// The two buffer shapes are carried out here rather than in the kernel: one
 /// pushes a byte and one calls `janet_smalloc`, and both can raise.
-pub fn getCBytes(argv: []const types.Janet, n: i32) raise.Raising([*c]const u8) {
+pub fn getCBytes(argv: []const repr.Value, n: i32) raise.Raising([*c]const u8) {
     var fault: types.JanetArgFault = undefined;
     var cstr: [*c]const u8 = undefined;
     var len: i32 = undefined;
-    switch (argCbytes(argv.ptr, n, &fault)) {
+    switch (argCbytes(argv, n, &fault)) {
         constants.JANET_ARG_CBYTES_COPY => {
             // Make a copy with janet_smalloc in the rare case we have a buffer
             // that cannot be realloced and pushing a 0 byte would raise.
             const buffer = wrap.toBuffer(argv[@intCast(n)]);
             const count: usize = @intCast(buffer.*.count);
             const copy: [*]u8 = @ptrCast(gc_alloc.smalloc(count + 1));
-            @memcpy(copy[0..count], buffer.*.data.?[0..count]);
+            @memcpy(copy[0..count], buffer.*.slice()[0..count]);
             copy[count] = 0;
             cstr = copy;
             len = buffer.*.count;
@@ -990,53 +988,52 @@ pub fn getCBytes(argv: []const types.Janet, n: i32) raise.Raising([*c]const u8) 
             len = view.len;
         },
     }
-    if (argZeros(cstr, len, &fault) == 0) return raiseFault(argv.ptr, &fault);
+    if (argZeros(cstr, len, &fault) == 0) return raiseFault(argv, &fault);
     return cstr;
 }
 
-pub fn getCString(argv: []const types.Janet, n: i32) raise.Raising([*c]const u8) {
+pub fn getCString(argv: []const repr.Value, n: i32) raise.Raising([*c]const u8) {
     var fault: types.JanetArgFault = undefined;
-    const tflag: i32 = @intCast(constants.JANET_TFLAG_STRING);
-    if (argChecktype(argv.ptr, n, @intCast(constants.JANET_STRING), tflag, &fault) == 0) {
-        return raiseFault(argv.ptr, &fault);
+    if (argChecktype(argv, n, repr.Tag.string, repr.TagSet.one(.string), &fault) == 0) {
+        return raiseFault(argv, &fault);
     }
     return getCBytes(argv, n);
 }
 
-pub fn optCString(argv: []const types.Janet, n: i32, dflt: [*c]const u8) raise.Raising([*c]const u8) {
-    if (argIsdefault(argv.ptr, @intCast(argv.len), n) != 0) return dflt;
+pub fn optCString(argv: []const repr.Value, n: i32, dflt: [*c]const u8) raise.Raising([*c]const u8) {
+    if (argIsdefault(argv, n) != 0) return dflt;
     return getCString(argv, n);
 }
 
-pub fn optCBytes(argv: []const types.Janet, n: i32, dflt: [*c]const u8) raise.Raising([*c]const u8) {
-    if (argIsdefault(argv.ptr, @intCast(argv.len), n) != 0) return dflt;
+pub fn optCBytes(argv: []const repr.Value, n: i32, dflt: [*c]const u8) raise.Raising([*c]const u8) {
+    if (argIsdefault(argv, n) != 0) return dflt;
     return getCBytes(argv, n);
 }
 
 // ------------------------------------------------------------------ flags
 
-pub fn getFlags(argv: []const types.Janet, n: i32, flags: [*:0]const u8) raise.Raising(u64) {
+pub fn getFlags(argv: []const repr.Value, n: i32, flags: [*:0]const u8) raise.Raising(u64) {
     const keyw = try GetKeyword.get(argv, n);
     var out: u64 = undefined;
     var fault: types.JanetArgFault = undefined;
     if (argFlags(keyw, types.stringHead(keyw).length, flags, &out, &fault) == 0) {
-        return raiseFault(argv.ptr, &fault);
+        return raiseFault(argv, &fault);
     }
     return out;
 }
 
 // ---------------------------------------------------------------- strlike
 
-pub fn keyeq(x: types.Janet, cstring: [*:0]const u8) c_int {
-    return argStrlike(@intCast(constants.JANET_KEYWORD), x, cstring);
+pub fn keyeq(x: repr.Value, cstring: [*:0]const u8) c_int {
+    return argStrlike(repr.Tag.keyword, x, cstring);
 }
 
-pub fn streq(x: types.Janet, cstring: [*:0]const u8) c_int {
-    return argStrlike(@intCast(constants.JANET_STRING), x, cstring);
+pub fn streq(x: repr.Value, cstring: [*:0]const u8) c_int {
+    return argStrlike(repr.Tag.string, x, cstring);
 }
 
-pub fn symeq(x: types.Janet, cstring: [*:0]const u8) c_int {
-    return argStrlike(@intCast(constants.JANET_SYMBOL), x, cstring);
+pub fn symeq(x: repr.Value, cstring: [*:0]const u8) c_int {
+    return argStrlike(repr.Tag.symbol, x, cstring);
 }
 
 // ---------------------------------------------------------------- methods
@@ -1044,7 +1041,7 @@ pub fn symeq(x: types.Janet, cstring: [*:0]const u8) c_int {
 pub fn getmethod(
     method: [*:0]const u8,
     methods: [*]const types.JanetMethod,
-    out: *types.Janet,
+    out: *repr.Value,
 ) callconv(.c) c_int {
     var found: [*]const types.JanetMethod = undefined;
     if (argMethod(method, methods, &found) == 0) return 0;
@@ -1053,7 +1050,7 @@ pub fn getmethod(
 }
 
 /// Wrapping the name allocates, which is why the kernel stops at the entry.
-pub fn nextmethod(methods: [*]const types.JanetMethod, key: types.Janet) types.Janet {
+pub fn nextmethod(methods: [*]const types.JanetMethod, key: repr.Value) repr.Value {
     const found = argNextmethod(methods, key);
     if (found[0].name) |name| return value.fromBytes(std.mem.span(name), .keyword);
     return wrap.fromNil();
@@ -1079,7 +1076,7 @@ pub inline fn viewBytes(view: types.JanetByteView) []const u8 {
     return &.{};
 }
 
-pub inline fn viewItems(view: types.JanetView) []const types.Janet {
+pub inline fn viewItems(view: types.JanetView) []const repr.Value {
     if (view.items) |p| return p[0..@intCast(view.len)];
     return &.{};
 }
@@ -1089,8 +1086,8 @@ pub inline fn viewKvs(view: types.JanetDictView) []const types.JanetKV {
     return &.{};
 }
 
-pub fn indexedView(seq: types.Janet, data: *?[*]const types.Janet, len: *i32) c_int {
-    var argv = [_]types.Janet{seq};
+pub fn indexedView(seq: repr.Value, data: *?[*]const repr.Value, len: *i32) c_int {
+    var argv = [_]repr.Value{seq};
     var view: types.JanetView = undefined;
     var fault: types.JanetArgFault = undefined;
     if (argIndexed(&argv, 0, &view, &fault) == 0) return 0;
@@ -1099,7 +1096,7 @@ pub fn indexedView(seq: types.Janet, data: *?[*]const types.Janet, len: *i32) c_
     return 1;
 }
 
-pub fn bytesView(str: types.Janet, data: *?[*]const u8, len: *i32) c_int {
+pub fn bytesView(str: repr.Value, data: *?[*]const u8, len: *i32) c_int {
     var view: types.JanetByteView = undefined;
     var fault: types.JanetArgFault = undefined;
     switch (argBytes(str, 0, &view, &fault)) {
@@ -1119,12 +1116,12 @@ pub fn bytesView(str: types.Janet, data: *?[*]const u8, len: *i32) c_int {
 }
 
 pub fn dictionaryView(
-    tab: types.Janet,
+    tab: repr.Value,
     data: *?[*]const types.JanetKV,
     len: *i32,
     cap: *i32,
 ) callconv(.c) c_int {
-    var argv = [_]types.Janet{tab};
+    var argv = [_]repr.Value{tab};
     var view: types.JanetDictView = undefined;
     var fault: types.JanetArgFault = undefined;
     if (argDictionary(&argv, 0, &view, &fault) == 0) return 0;
@@ -1147,12 +1144,26 @@ pub fn dictionaryView(
 // a length the caller never passed. What each bridge does is write down the
 // assertion the caller is already making by calling at all.
 //
-// That argument is about slices, and it survives; it never reached the
-// *spelling*. `argv` is `[*]const types.Janet` since increment 5j -- still a
-// bare pointer, still sliced no further than the `n` the caller passed, and
-// now saying that null is not among the things it accepts. Converting it is
-// what named three call sites passing the address of a scalar, and a
-// `raiseFault` whose own doc comment already said its `argv` may be null.
+// That argument is about slices, and it never reached the *spelling*. `argv`
+// is `[*]const repr.Value` -- still a bare pointer, still sliced no further
+// than the `n` the caller passed, and now saying that null is not among the
+// things it accepts. Tightening it is what named three call sites passing the
+// address of a scalar, and a `raiseFault` whose own doc comment already said
+// its `argv` may be null.
+
+/// The C ABI has no `bool`. Janet declares `janet_getboolean` and
+/// `janet_optboolean` returning `int`, and Zig's `bool` is one byte, so the
+/// two bridges below convert -- once here rather than at each symbol, which is
+/// also what keeps `capi.zig` mechanical rather than hand-patched.
+fn Abi(comptime T: type) type {
+    return if (T == bool) c_int else T;
+}
+inline fn toAbi(comptime T: type, v: T) Abi(T) {
+    return if (T == bool) @intFromBool(v) else v;
+}
+inline fn fromAbi(comptime T: type, v: Abi(T)) T {
+    return if (T == bool) v != 0 else v;
+}
 
 /// The index family: `f(argv, n, ...)` published as `abi(argv, n, ...)`.
 /// Passing `n` asserts that `n` is in range, so the slice is exactly long
@@ -1163,18 +1174,18 @@ fn IndexAbi(comptime f: anytype) type {
     const p = info.params;
     return switch (p.len) {
         2 => struct {
-            pub fn abi(argv: [*]const types.Janet, n: i32) callconv(.c) P {
-                return f(argv[0..@intCast(n + 1)], n) catch raise.reportToC(P);
+            pub fn abi(argv: [*]const repr.Value, n: i32) callconv(.c) Abi(P) {
+                return toAbi(P, f(argv[0..@intCast(n + 1)], n) catch raise.reportToC(P));
             }
         },
         3 => struct {
-            pub fn abi(argv: [*]const types.Janet, n: i32, third: p[2].type.?) callconv(.c) P {
-                return f(argv[0..@intCast(n + 1)], n, third) catch raise.reportToC(P);
+            pub fn abi(argv: [*]const repr.Value, n: i32, third: Abi(p[2].type.?)) callconv(.c) Abi(P) {
+                return toAbi(P, f(argv[0..@intCast(n + 1)], n, fromAbi(p[2].type.?, third)) catch raise.reportToC(P));
             }
         },
         4 => struct {
-            pub fn abi(argv: [*]const types.Janet, n: i32, third: p[2].type.?, fourth: p[3].type.?) callconv(.c) P {
-                return f(argv[0..@intCast(n + 1)], n, third, fourth) catch raise.reportToC(P);
+            pub fn abi(argv: [*]const repr.Value, n: i32, third: Abi(p[2].type.?), fourth: Abi(p[3].type.?)) callconv(.c) Abi(P) {
+                return toAbi(P, f(argv[0..@intCast(n + 1)], n, fromAbi(p[2].type.?, third), fromAbi(p[3].type.?, fourth)) catch raise.reportToC(P));
             }
         },
         else => @compileError("IndexAbi: unhandled arity"),
@@ -1189,18 +1200,18 @@ fn CountAbi(comptime f: anytype) type {
     const p = info.params;
     return switch (p.len) {
         2 => struct {
-            pub fn abi(argv: [*]const types.Janet, argc: i32, n: i32) callconv(.c) P {
-                return f(argv[0..@intCast(argc)], n) catch raise.reportToC(P);
+            pub fn abi(argv: [*]const repr.Value, argc: i32, n: i32) callconv(.c) Abi(P) {
+                return toAbi(P, f(argv[0..@intCast(argc)], n) catch raise.reportToC(P));
             }
         },
         3 => struct {
-            pub fn abi(argv: [*]const types.Janet, argc: i32, n: i32, third: p[2].type.?) callconv(.c) P {
-                return f(argv[0..@intCast(argc)], n, third) catch raise.reportToC(P);
+            pub fn abi(argv: [*]const repr.Value, argc: i32, n: i32, third: Abi(p[2].type.?)) callconv(.c) Abi(P) {
+                return toAbi(P, f(argv[0..@intCast(argc)], n, fromAbi(p[2].type.?, third)) catch raise.reportToC(P));
             }
         },
         4 => struct {
-            pub fn abi(argv: [*]const types.Janet, argc: i32, n: i32, third: p[2].type.?, fourth: p[3].type.?) callconv(.c) P {
-                return f(argv[0..@intCast(argc)], n, third, fourth) catch raise.reportToC(P);
+            pub fn abi(argv: [*]const repr.Value, argc: i32, n: i32, third: Abi(p[2].type.?), fourth: Abi(p[3].type.?)) callconv(.c) Abi(P) {
+                return toAbi(P, f(argv[0..@intCast(argc)], n, fromAbi(p[2].type.?, third), fromAbi(p[3].type.?, fourth)) catch raise.reportToC(P));
             }
         },
         else => @compileError("CountAbi: unhandled arity"),
@@ -1211,41 +1222,34 @@ fn CountAbi(comptime f: anytype) type {
 //
 // Public API, so no hidden visibility: these are the names `janet.h` promises.
 
-pub const janet_fixarity = raise.panicking(fixArity).abi;
-pub const janet_arity = raise.panicking(checkArity).abi;
+pub const fixArityAbi = raise.panicking(fixArity).abi;
+pub const checkArityAbi = raise.panicking(checkArity).abi;
 
-pub const janet_getslice = raise.panickingArgv(getSlice).abi;
-pub const janet_gethalfrange = IndexAbi(halfRange).abi;
-pub const janet_getargindex = IndexAbi(argIndex).abi;
-pub const janet_getstartrange = CountAbi(startRange).abi;
-pub const janet_getendrange = CountAbi(endRange).abi;
+pub const getSliceAbi = raise.panickingArgv(getSlice).abi;
+pub const halfRangeAbi = IndexAbi(halfRange).abi;
+pub const argIndexAbi = IndexAbi(argIndex).abi;
+pub const startRangeAbi = CountAbi(startRange).abi;
+pub const endRangeAbi = CountAbi(endRange).abi;
 
-pub const janet_getindexed = IndexAbi(getIndexed).abi;
-pub const janet_getdictionary = IndexAbi(getDictionary).abi;
-pub const janet_getbytes = IndexAbi(getBytes).abi;
-pub const janet_getabstract = IndexAbi(getAbstract).abi;
-pub const janet_optabstract = CountAbi(optAbstract).abi;
+pub const getIndexedAbi = IndexAbi(getIndexed).abi;
+pub const getDictionaryAbi = IndexAbi(getDictionary).abi;
+pub const getBytesAbi = IndexAbi(getBytes).abi;
+pub const getAbstractAbi = IndexAbi(getAbstract).abi;
+pub const optAbstractAbi = CountAbi(optAbstract).abi;
 
-pub const janet_getcbytes = IndexAbi(getCBytes).abi;
-pub const janet_getcstring = IndexAbi(getCString).abi;
-pub const janet_optcbytes = CountAbi(optCBytes).abi;
-pub const janet_optcstring = CountAbi(optCString).abi;
-pub const janet_getflags = IndexAbi(getFlags).abi;
+pub const getCBytesAbi = IndexAbi(getCBytes).abi;
+pub const getCStringAbi = IndexAbi(getCString).abi;
+pub const optCBytesAbi = CountAbi(optCBytes).abi;
+pub const optCStringAbi = CountAbi(optCString).abi;
+pub const getFlagsAbi = IndexAbi(getFlags).abi;
 
 // ----------------------------------------------- the Zig side of the layer
 //
-// Phase 10 Part 17b. Everything above this line has had two abis since Part 5
-// -- an implementation returning `raise.Raising(T)` and a `raise.panicking`
-// wrapper under the public C name -- and until now only the C one had callers
-// outside this file, because a subsystem in another object could reach it only
-// through the symbol table. Part 17a put every subsystem in one compilation,
-// so the implementation is reachable directly, and these are the names it is
-// reachable by.
-//
-// `subsystems/arglayer.zig` is what a caller imports; it picked between this
-// and `args_core_extern.zig` on the selector until Phase 11 Part 26, and names
-// this file now. Nothing here is `export`ed: these are aliases for a Zig
-// caller, and the exported set is unchanged.
+// Everything above has two faces: an implementation returning
+// `raise.Raising(T)`, and a `raise.panicking` wrapper published under the C
+// name. A Zig caller wants the first, and these are the names it is reachable
+// by. Nothing here is `export`ed -- they are aliases for an importer, and the
+// exported set is unchanged.
 //
 // The names are the C ones with the prefix dropped and the words separated,
 // which is the only liberty taken. `janet_getcstring` reads `getCString` here
@@ -1258,11 +1262,11 @@ pub const janet_getflags = IndexAbi(getFlags).abi;
 /// point handed a count and no `argv` at all -- there is nothing for a slice
 /// to be made of. Two names for one implementation; Zig has no overloading and
 /// this is the shape that would want it.
-pub fn fixarity(argv: []const types.Janet, fix: i32) raise.Raising(void) {
+pub fn fixarity(argv: []const repr.Value, fix: i32) raise.Raising(void) {
     return fixArity(@intCast(argv.len), fix);
 }
 
-pub fn arity(argv: []const types.Janet, min: i32, max: i32) raise.Raising(void) {
+pub fn arity(argv: []const repr.Value, min: i32, max: i32) raise.Raising(void) {
     return checkArity(@intCast(argv.len), min, max);
 }
 

@@ -1,60 +1,34 @@
-//! The core environment: `src/core/corelib.c` and `src/core/run.c` entire.
-//! Thirty-six cfunctions, the native-module loader, the bootstrap's inline
-//! assembler, the environment that every other `janet_lib_*` is registered
-//! into, and the three entry points that run Janet source in one. This is
-//! Phase 10 Part 10.
+//! The core environment. Thirty-six cfunctions, the native-module loader, the
+//! bootstrap's inline assembler, the environment every other `janet_lib_*` is
+//! registered into, and the three entry points that run Janet source.
 //!
-//! ## Two files, one selector
+//! Building the core environment and running code *in* one are the same
+//! subject rather than two that happen to sit together: `janet_dobytes` reads
+//! a `JanetTable *env` and nothing about running source means anything without
+//! it.
 //!
-//! Part 4's consolidation rule asks whether the pieces convert in different
-//! increments, and these do not. They are also one subject rather than two
-//! that happen to land together: `corelib.c` builds the core environment and
-//! `run.c` is the only thing in the tree that runs code *in* one without
-//! being handed a fiber first. `janet_dobytes` reads a `JanetTable *env` and
-//! nothing else in `run.c` means anything without it. Part 5's rule -- a
-//! selector's subject is a subsystem, not a file -- decides the rest.
+//! ## What a raise looks like here
 //!
-//! ## What a raise looks like here, and where it does not appear
-//!
-//! A cfunction that decides to raise returns `raise.Error` from an `Impl`
-//! function and delivers it in a two-line abi, which is the shape Part 9
-//! settled. A cfunction that makes no such decision has no error channel and
-//! is written as the plain `JanetCFunction` it is: `(describe x)` cannot fail
-//! on its own account, and giving it an error union it never returns would be
-//! ceremony rather than shape.
-//!
-//! Neither kind is jump-free, which is why the marker above is still here.
-//! `janet_arity`, `janet_getstring` and their thirty relatives are
-//! `-Dargs-core`'s abis, `janet_panic_type` is another, and a call to one
-//! from this object crosses the C ABI and therefore raises by jumping. That is
-//! Part 4's seam rule -- an error union cannot cross a subsystem seam -- and
-//! not something this increment could have avoided. Every frame between such a
-//! call and the fiber's try scope holds nothing: the scratch allocations these
-//! functions make are `janet_smalloc`'s, which the collector releases on the
-//! unwind.
-//!
+//! A cfunction that decides to raise returns `raise.Error` and its abi
+//! delivers it. A cfunction that makes no such decision has no error channel
+//! and is written as the plain `raise.CFunction` it is: `(describe x)` cannot
+//! fail on its own account, and giving it an error union it never returns
+//! would be ceremony rather than shape.
 //! ## The bootstrap half is compiled only into the image generator
 //!
-//! `janet_core_env` has two implementations in the C original, chosen by
-//! `JANET_BOOTSTRAP`: the generator assembles the environment from scratch,
-//! and the runtime unmarshals it from the image. Both are here, behind
-//! `corefn.bootstrap`, and Zig does not analyse the branch it does not take --
-//! so the inline assembler below is checked by `-Dboot=zig` and by nothing
-//! else. That is the same exposure Part 8 recorded for `JANET_MARSHAL_DEBUG`,
-//! except that here there *is* a configuration that compiles it, and the
-//! acceptance matrix runs it.
+//! `janet_core_env` has two implementations, chosen by `corefn.bootstrap`: the
+//! generator assembles the environment from scratch, and the runtime
+//! unmarshals it from the image. Zig does not analyse the branch it does not
+//! take, so the inline assembler below is checked by a bootstrap build and by
+//! nothing else. The acceptance matrix runs one.
 //!
 //! ## Feature gates are read from the build
 //!
 //! `janet_load_libs` calls seven `janet_lib_*` functions that exist only in
 //! some configurations, and this file asks `config.peg` and its kin.
 //!
-//! Until Phase 12 increment 1 it asked `@hasDecl(c, "JANET_PEG")` — the
-//! `@cImport` — and the paragraph here argued about whether translate-c
-//! surfaces a macro defined with no value. That question is gone with its
-//! subject: `build.zig` decides these and hands them over as comptime
-//! booleans, so a gate is a field rather than a macro's presence, and a
-//! configuration the header would have had to agree about is now stated
+//! `build.zig` decides these and hands them over as comptime booleans, so a
+//! gate is a field rather than a macro's presence.
 //! once.
 
 const std = @import("std");
@@ -65,6 +39,7 @@ const raise = @import("raise");
 const pp_format = @import("pp/format.zig");
 
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const stdio = @import("stdio.zig");
@@ -83,9 +58,7 @@ const gc_mark = @import("gc/mark.zig");
 const fibers = @import("value/fibers.zig");
 const functions = @import("value/functions.zig");
 const numscan = @import("scan.zig");
-const vm_state = @import("vm/lifecycle.zig");
 const registry = @import("registry.zig");
-const kind = @import("value/helpers/kind.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const args_core = @import("args.zig");
 const fatal = @import("fatal.zig");
@@ -96,7 +69,7 @@ const abstract_type = @import("abstract_type.zig");
 const order = @import("value/helpers/order.zig");
 const vm_entry = @import("vm/entry.zig");
 
-/// The fiber's pushes, raise-capable since Part 17a. `(native ...)` roots the
+/// The fiber's pushes, which are raise-capable. `(native ...)` roots the
 /// module's environment on the fiber stack before running third-party code.
 const clib = @import("dynlib.zig");
 const asm_core = @import("bytecode.zig");
@@ -108,6 +81,9 @@ const math = @import("math.zig");
 const os_surface = @import("os.zig");
 const parser_core = @import("parser.zig");
 const peg = @import("peg.zig");
+const net = @import("net.zig");
+const ffi = @import("ffi.zig");
+const filewatch = @import("filewatch.zig");
 const config = @import("config");
 const value = @import("value.zig");
 
@@ -118,7 +94,7 @@ const value = @import("value.zig");
 /// sentinel -- the bytes behind a Zig string literal happen to be
 /// NUL-terminated, but `.ptr` does not say so and nothing would check it.
 /// `comptimePrint` yields `*const [N:0]u8`, which puts the sentinel in the
-/// type. Phase 12 increment 5.
+/// type.
 const version_z = std.fmt.comptimePrint("{s}", .{config.version});
 const build_z = std.fmt.comptimePrint("{s}", .{config.build_name});
 
@@ -126,48 +102,20 @@ const windows = builtin.os.tag == .windows;
 
 /// `src/core/util.h`, declared here rather than in `cabi.zig`.
 extern fn safe_memcpy(dest: ?*anyopaque, src: ?*const anyopaque, len: usize) callconv(.c) void;
-extern fn janet_def_addflags(def: *types.JanetFuncDef) callconv(.c) void;
 extern fn get_processed_name(name: [*:0]const u8) callconv(.c) [*]u8;
 
-extern fn janet_lib_io(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_math(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_array(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_tuple(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_buffer(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_table(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_struct(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_fiber(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_os(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_string(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_marsh(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_parse(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_compile(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_debug(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_asm(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_peg(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_inttypes(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_net(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_ev(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_filewatch(env: *types.JanetTable) callconv(.c) void;
-extern fn janet_lib_ffi(env: *types.JanetTable) callconv(.c) void;
-
-/// `stdin` and `stdout`, which cannot be named from Zig portably. `io.c` keeps
-/// these two beside `stdio.err` for the reason its comment there gives:
-/// translate-c renders the three handles a different way on each of this
-/// project's platforms, and on mingw the rendering is a compile error at the
-/// reference rather than at the use. They are scaffold in the sense "Target"
-/// gives the word -- no C caller has one -- and they go with `janet_dynprintf`
-/// in Part 17.
-/// `janet_eprintf`, which `janet.h` spells as a variadic macro over
-/// `janet_dynprintf` and translate-c therefore cannot render at all. Part 7
-/// established the shape: Zig cannot define a C variadic on every target here,
-/// but calling one is ordinary, so the macro is written out. `trace_frames.zig`
-/// carries the same three lines for the same reason.
+/// `stdin` and `stdout`, which cannot be named from Zig portably: the three
+/// standard handles have a different shape on each of this project's
+/// platforms, and on mingw the shape is a compile error at the reference
+/// rather than at the use.
+/// `janet_eprintf`, which Janet spells as a variadic macro over
+/// `janet_dynprintf`. Zig cannot define a C variadic on every target here, but
+/// calling one is ordinary, so the macro is written out. `debug.zig` carries
+/// the same three lines for the same reason.
 inline fn eprintf(comptime format: [:0]const u8, args: anytype) void {
-    // `pp_format.dynprintf` can raise: `(dyn :err)` may be a Janet function, and
+    // `pp/format.dynprintf` can raise: `(dyn :err)` may be a Janet function, and
     // calling it can. This position cannot carry one -- it is a trace or a
-    // diagnostic on the way out -- so the raise is reported exactly as the C
-    // abi reported it before Part 18 deleted the variadic.
+    // diagnostic on the way out -- so the raise is reported.
     raise.reported(pp_format.dynprintf("err", @ptrCast(@alignCast(stdio.err())), format, args));
 }
 
@@ -178,7 +126,6 @@ const has_peg = config.peg;
 const has_assembler = config.assembler;
 const has_int_types = config.int_types;
 const has_filewatch = config.filewatch;
-const has_dynamic_modules = config.dynamic_modules;
 const bits64 = config.bits64;
 
 /// `JANET_OUT_OF_MEMORY`, which is fatal rather than raising.
@@ -187,7 +134,7 @@ inline fn allocated(pointer: ?*anyopaque) *anyopaque {
     fatal.outOfMemory();
 }
 
-inline fn wrapInteger(x: i32) types.Janet {
+inline fn wrapInteger(x: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(x));
 }
 
@@ -195,8 +142,8 @@ inline fn wrapInteger(x: i32) types.Janet {
 // Loading a native module.
 // ==========================================================================
 
-fn janet_nativeImpl(name: [*:0]const u8, err: *?types.JanetString) raise.Raising(types.JanetModule) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_DYNAMIC_MODULES);
+fn native(name: [*:0]const u8, err: *?types.JanetString) raise.Raising(types.JanetModule) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"dynamic_modules"}));
     const processed_name = get_processed_name(name);
     const lib = clib.load(@ptrCast(processed_name));
     if (name != processed_name) utils.free(processed_name);
@@ -248,8 +195,8 @@ fn janet_nativeImpl(name: [*:0]const u8, err: *?types.JanetString) raise.Raising
     return init;
 }
 
-pub fn native(name: [*:0]const u8, err: *?types.JanetString) types.JanetModule {
-    return raise.reported(janet_nativeImpl(name, err));
+pub fn nativeAbi(name: [*:0]const u8, err: *?types.JanetString) types.JanetModule {
+    return raise.reported(native(name, err));
 }
 
 // ==========================================================================
@@ -257,9 +204,9 @@ pub fn native(name: [*:0]const u8, err: *?types.JanetString) types.JanetModule {
 // ==========================================================================
 
 fn dynCString(name: [*:0]const u8, dflt: [*:0]const u8) raise.Raising([*:0]const u8) {
-    const x = vm_state.dyn(name);
-    if (kind.checkType(x, constants.JANET_NIL) != 0) return dflt;
-    if (kind.checkType(x, constants.JANET_STRING) == 0) {
+    const x = vm_lifecycle.dyn(name);
+    if (repr.checkType(x, repr.Tag.nil)) return dflt;
+    if (!repr.checkType(x, repr.Tag.string)) {
         return pp_format.panicf("expected string, got %v", .{x});
     }
     const jstr = wrap.toString(x);
@@ -283,7 +230,7 @@ inline fn matches(p: [*]const u8, comptime literal: [:0]const u8) bool {
     return c.strncmp(p, literal.ptr, literal.len) == 0;
 }
 
-fn cfunExpandPath(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunExpandPath(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const input: [*:0]const u8 = @ptrCast(try args_core.getCString(argv, 0));
     const template: [*:0]const u8 = @ptrCast(try args_core.getCString(argv, 1));
@@ -331,7 +278,7 @@ fn cfunExpandPath(argv: []types.Janet) align(corefn.alignment) raise.Raising(typ
                 const str: [*]u8 = @ptrCast(allocated(gc_alloc.smalloc(len + 1)));
                 @memcpy(str[0..len], input[1 .. 1 + len]);
                 str[len] = 0;
-                _ = try pp_format.formatb(out, "%V", .{vm_state.dyn(@ptrCast(str))});
+                _ = try pp_format.formatb(out, "%V", .{vm_lifecycle.dyn(@ptrCast(str))});
                 gc_alloc.sfree(str);
                 try buffers.pushCString(out, input + p);
             } else {
@@ -426,53 +373,53 @@ fn normalizePath(out: *types.JanetBuffer) void {
 // The cfunction surface.
 // ==========================================================================
 
-fn cfunDyn(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunDyn(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
-    const env = c.vm().fiber.?.env;
+    const env = vm_lifecycle.current().fiber.?.env;
     const val = if (env) |dyns| tables.get(dyns, argv[0]) else wrap.fromNil();
-    if (@as(i32, @intCast(argv.len)) == 2 and kind.checkType(val, constants.JANET_NIL) != 0) return argv[1];
+    if (@as(i32, @intCast(argv.len)) == 2 and repr.checkType(val, repr.Tag.nil)) return argv[1];
     return val;
 }
 
-fn cfunSetdyn(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunSetdyn(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    if (c.vm().fiber.?.env == null) {
-        c.vm().fiber.?.env = tables.new(2);
+    if (vm_lifecycle.current().fiber.?.env == null) {
+        vm_lifecycle.current().fiber.?.env = tables.new(2);
     }
-    tables.put(c.vm().fiber.?.env.?, argv[0], argv[1]);
+    tables.put(vm_lifecycle.current().fiber.?.env.?, argv[0], argv[1]);
     return argv[1];
 }
 
-fn cfunNative(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunNative(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const argv0 = argv[0];
     const path = try args_core.getString(argv, 0);
     var err: ?types.JanetString = null;
     const env = if (@as(i32, @intCast(argv.len)) == 2) try args_core.getTable(argv, 1) else tables.new(0);
-    const init = try janet_nativeImpl(@ptrCast(path), &err);
+    const init = try native(@ptrCast(path), &err);
     if (init == null) {
         return pp_format.panicf("could not load native %S: %S", .{ path, err });
     }
     // Rooted against a collection triggered from inside the module's entry
     // point, which runs arbitrary third-party code.
-    try fibers.push(c.vm().fiber.?, wrap.fromTable(env));
+    try fibers.push(vm_lifecycle.current().fiber.?, wrap.fromTable(env));
     try raise.crossing(init.?(env));
     tables.put(env, value.fromBytes("native", .keyword), argv0);
     return wrap.fromTable(env);
 }
 
-fn cfunDescribe(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunDescribe(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const b = buffers.new(0);
     var i: i32 = 0;
     while (i < @as(i32, @intCast(argv.len))) : (i += 1) try pp_describe.descriptionB(b, argv[@intCast(i)]);
-    return value.fromBytes(b.*.data.?[0..@intCast(b.*.count)], .string);
+    return value.fromBytes(b.*.slice(), .string);
 }
 
 /// `string`, `symbol`, `keyword` and `buffer` differ only in what they wrap
 /// the concatenation in.
 fn Concat(comptime finish: anytype) type {
     return struct {
-        fn cfun(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+        fn cfun(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             const b = buffers.new(0);
             var i: i32 = 0;
             while (i < @as(i32, @intCast(argv.len))) : (i += 1) try pp_describe.toStringB(b, argv[@intCast(i)]);
@@ -481,28 +428,28 @@ fn Concat(comptime finish: anytype) type {
     };
 }
 
-fn finishString(b: *types.JanetBuffer) types.Janet {
-    return value.fromBytes(b.data.?[0..@intCast(b.count)], .string);
+fn finishString(b: *types.JanetBuffer) repr.Value {
+    return value.fromBytes(b.slice(), .string);
 }
 
-fn finishSymbol(b: *types.JanetBuffer) types.Janet {
-    return value.fromBytes(b.data.?[0..@intCast(b.count)], .symbol);
+fn finishSymbol(b: *types.JanetBuffer) repr.Value {
+    return value.fromBytes(b.slice(), .symbol);
 }
 
-fn finishKeyword(b: *types.JanetBuffer) types.Janet {
-    return value.fromBytes(b.data.?[0..@intCast(b.count)], .keyword);
+fn finishKeyword(b: *types.JanetBuffer) repr.Value {
+    return value.fromBytes(b.slice(), .keyword);
 }
 
-fn finishBuffer(b: *types.JanetBuffer) types.Janet {
+fn finishBuffer(b: *types.JanetBuffer) repr.Value {
     return wrap.fromBuffer(b);
 }
 
-fn cfunIsAbstract(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunIsAbstract(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    return wrap.fromBoolean(kind.checkType(argv[0], constants.JANET_ABSTRACT));
+    return wrap.fromBoolean(repr.checkType(argv[0], repr.Tag.abstract));
 }
 
-fn cfunScanNumber(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunScanNumber(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var number: f64 = undefined;
     try args_core.arity(argv, 1, 2);
     const view = try args_core.getBytes(argv, 0);
@@ -516,36 +463,36 @@ fn cfunScanNumber(argv: []types.Janet) align(corefn.alignment) raise.Raising(typ
     return wrap.fromNumber(number);
 }
 
-fn cfunTuple(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
-    return wrap.fromTuple(tuples.newFrom(argv.ptr, @as(i32, @intCast(argv.len))));
+fn cfunTuple(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    return wrap.fromTuple(tuples.newFrom(argv));
 }
 
-fn cfunArray(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunArray(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const array = arrays.new(@as(i32, @intCast(argv.len)));
     array.*.count = @as(i32, @intCast(argv.len));
-    safe_memcpy(@ptrCast(array.*.data), @ptrCast(argv), @as(usize, @intCast(@as(i32, @intCast(argv.len)))) * @sizeOf(types.Janet));
+    safe_memcpy(@ptrCast(array.*.data), @ptrCast(argv), @as(usize, @intCast(@as(i32, @intCast(argv.len)))) * @sizeOf(repr.Value));
     return wrap.fromArray(array);
 }
 
-fn cfunSlice(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var bytes: ?[*]const u8 = undefined;
     var blen: i32 = undefined;
-    var items: ?[*]const types.Janet = undefined;
+    var items: ?[*]const repr.Value = undefined;
     var ilen: i32 = undefined;
     if (args_core.bytesView(argv[0], &bytes, &blen) != 0) {
         const range = try args_core.getSlice(argv);
         return value.fromBytes(bytes.?[@intCast(range.start)..@intCast(range.end)], .string);
     } else if (args_core.indexedView(argv[0], &items, &ilen) != 0) {
         const range = try args_core.getSlice(argv);
-        return wrap.fromTuple(tuples.newFrom(items.? + @as(usize, @intCast(range.start)), range.end - range.start));
+        return wrap.fromTuple(tuples.newFrom(items.?[@intCast(range.start)..@intCast(range.end)]));
     }
     // `-Dargs-core`'s abi, so this raise arrives as a jump through a frame
     // that holds nothing. The message it builds is the fault layer's and has
     // no spelling on this side of the seam.
-    return args_core.panicType(argv[0], 0, constants.JANET_TFLAG_BYTES | constants.JANET_TFLAG_INDEXED);
+    return args_core.panicType(argv[0], 0, repr.TagSet.bytes.with(repr.TagSet.indexed));
 }
 
-fn cfunRange(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunRange(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
     var start: f64 = 0;
     var stop: f64 = 0;
@@ -566,20 +513,21 @@ fn cfunRange(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Ja
     }
     if (std.math.isInf(step)) return raise.panic("infinite step not allowed");
     count = if (count > 0.0) count else 0.0;
-    janetAssert(count >= 0.0, "bad range code");
+    assert(count >= 0.0, "bad range code");
     if (count > @as(f64, @floatFromInt(std.math.maxInt(i32)))) {
         return pp_format.panicf("range is too large, %f elements", .{count});
     }
     const int_count: i32 = @intFromFloat(@ceil(count));
     if (step > 0.0) {
-        janetAssert(start + @as(f64, @floatFromInt(int_count)) * step >= stop, "bad range code");
+        assert(start + @as(f64, @floatFromInt(int_count)) * step >= stop, "bad range code");
     } else {
-        janetAssert(start + @as(f64, @floatFromInt(int_count)) * step <= stop, "bad range code");
+        assert(start + @as(f64, @floatFromInt(int_count)) * step <= stop, "bad range code");
     }
     const array = arrays.new(int_count);
+    const room = array.*.reserved();
     var i: i32 = 0;
     while (i < int_count) : (i += 1) {
-        array.*.data.?[@intCast(i)] = wrap.fromNumber(start + @as(f64, @floatFromInt(i)) * step);
+        room[@intCast(i)] = wrap.fromNumber(start + @as(f64, @floatFromInt(i)) * step);
     }
     array.*.count = int_count;
     return wrap.fromArray(array);
@@ -588,11 +536,11 @@ fn cfunRange(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Ja
 /// `janet_assert`, which prints and aborts rather than raising. Both call
 /// sites in `range` are checking the arithmetic above them rather than
 /// anything the caller supplied.
-inline fn janetAssert(condition: bool, message: [*:0]const u8) void {
+inline fn assert(condition: bool, message: [*:0]const u8) void {
     if (!condition) fatal.fatal(message);
 }
 
-fn cfunTable(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunTable(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     if (@as(i32, @intCast(argv.len)) & 1 != 0) return raise.panic("expected even number of arguments");
     const table = tables.new(@as(i32, @intCast(argv.len)) >> 1);
     var i: i32 = 0;
@@ -602,13 +550,13 @@ fn cfunTable(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Ja
     return wrap.fromTable(table);
 }
 
-fn cfunGetproto(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunGetproto(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    if (kind.checkType(argv[0], constants.JANET_TABLE) != 0) {
+    if (repr.checkType(argv[0], repr.Tag.table)) {
         const t = wrap.toTable(argv[0]);
         return if (t.*.proto) |proto| wrap.fromTable(proto) else wrap.fromNil();
     }
-    if (kind.checkType(argv[0], constants.JANET_STRUCT) != 0) {
+    if (repr.checkType(argv[0], repr.Tag.@"struct")) {
         const st = wrap.toStruct(argv[0]);
         const proto = types.structHead(st).proto;
         return if (proto) |p| wrap.fromStruct(p) else wrap.fromNil();
@@ -616,7 +564,7 @@ fn cfunGetproto(argv: []types.Janet) align(corefn.alignment) raise.Raising(types
     return pp_format.panicf("expected struct or table, got %v", .{argv[0]});
 }
 
-fn cfunStruct(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStruct(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     if (@as(i32, @intCast(argv.len)) & 1 != 0) return raise.panic("expected even number of arguments");
     const st = structs.begin(@as(i32, @intCast(argv.len)) >> 1);
     var i: i32 = 0;
@@ -626,46 +574,46 @@ fn cfunStruct(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.J
     return wrap.fromStruct(structs.end(st));
 }
 
-fn cfunGensym(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunGensym(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
     return wrap.fromSymbol(symbols.gen());
 }
 
-fn cfunGccollect(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunGccollect(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
     gc_mark.collect();
     return wrap.fromNil();
 }
 
-fn cfunGcsetinterval(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunGcsetinterval(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const s = try args_core.getSize(argv, 0);
     // Limited to 48 bits, and only where a size is wider than that.
     if (bits64 and (s >> 48) != 0) return raise.panic("interval too large");
-    c.vm().gc_interval = s;
+    vm_lifecycle.current().gc.interval = s;
     return wrap.fromNil();
 }
 
-fn cfunGcinterval(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunGcinterval(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
-    return wrap.fromNumber(@floatFromInt(c.vm().gc_interval));
+    return wrap.fromNumber(@floatFromInt(vm_lifecycle.current().gc.interval));
 }
 
-fn cfunType(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunType(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const t = kind.typeOf(argv[0]);
-    if (t == constants.JANET_ABSTRACT) {
-        return value.fromBytes(std.mem.span(types.abstractHead(wrap.toAbstract(argv[0])).type.*.name), .keyword);
+    const t = repr.typeOf(argv[0]);
+    if (t == .abstract) {
+        return value.fromBytes(types.abstractHead(wrap.toAbstract(argv[0])).type.*.name, .keyword);
     }
-    return value.fromBytes(std.mem.span(utils.typeNames[@intCast(t)]), .keyword);
+    return value.fromBytes(std.mem.span(utils.typeNames[@intFromEnum(t)]), .keyword);
 }
 
-fn cfunHash(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunHash(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return wrap.fromNumber(@floatFromInt(order.hash(argv[0])));
 }
 
-fn cfunGetline(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunGetline(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const in = io_core.dynfile("in", @ptrCast(@alignCast(stdio.in())));
     const out = io_core.dynfile("out", @ptrCast(@alignCast(stdio.out())));
     try args_core.arity(argv, 0, 3);
@@ -685,42 +633,42 @@ fn cfunGetline(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.
     return wrap.fromBuffer(buf);
 }
 
-fn cfunTrace(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunTrace(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const func = try args_core.getFunction(argv, 0);
     func.*.gc.flags |= constants.JANET_FUNCFLAG_TRACE;
     return argv[0];
 }
 
-fn cfunUntrace(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunUntrace(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const func = try args_core.getFunction(argv, 0);
     func.*.gc.flags &= ~@as(i32, constants.JANET_FUNCFLAG_TRACE);
     return argv[0];
 }
 
-fn cfunCheckInt(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunCheckInt(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    return wrap.fromBoolean(args_core.checkint(argv[0]));
+    return wrap.fromBoolean(args_core.checkint(argv[0]) != 0);
 }
 
-fn cfunCheckNat(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunCheckNat(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     if (args_core.checkint(argv[0]) == 0) return wrap.fromFalse();
-    return wrap.fromBoolean(@intFromBool(wrap.toInteger(argv[0]) >= 0));
+    return wrap.fromBoolean(wrap.toInteger(argv[0]) >= 0);
 }
 
 /// The four `janet_checktypes` predicates, which differ only in the mask.
-fn TypeFlagPredicate(comptime flags: c_int) type {
+fn TypeFlagPredicate(comptime flags: repr.TagSet) type {
     return struct {
-        fn cfun(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+        fn cfun(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             try args_core.fixarity(argv, 1);
-            return wrap.fromBoolean(kind.checkTypes(argv[0], flags));
+            return wrap.fromBoolean(repr.checkTypes(argv[0], flags));
         }
     };
 }
 
-fn cfunSignal(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunSignal(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const payload = if (@as(i32, @intCast(argv.len)) == 2) argv[1] else wrap.fromNil();
     if (args_core.checkint(argv[0]) != 0) {
@@ -728,18 +676,18 @@ fn cfunSignal(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.J
         if (s < 0 or s > 9) {
             return pp_format.panicf("expected user signal between 0 and 9, got %d", .{s});
         }
-        return raise.signal(@intCast(constants.JANET_SIGNAL_USER0 + s), payload);
+        return raise.signal(@enumFromInt(@intFromEnum(types.Signal.user0) + @as(c_uint, @intCast(s))), payload);
     }
     const kw = try args_core.getKeyword(argv, 0);
     for (utils.signalNames, 0..) |signal_name, i| {
         if (utils.cstrcmp(kw, signal_name) == 0) {
-            return raise.signal(@intCast(i), payload);
+            return raise.signal(@enumFromInt(i), payload);
         }
     }
     return pp_format.panicf("unknown signal %v", .{argv[0]});
 }
 
-fn cfunMemcmp(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunMemcmp(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 5);
     const a = try args_core.getBytes(argv, 0);
     const b = try args_core.getBytes(argv, 1);
@@ -765,48 +713,48 @@ fn cfunMemcmp(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.J
     return wrapInteger(result);
 }
 
-const SandboxOption = struct { name: [:0]const u8, flag: u32 };
+const SandboxOption = struct { name: [:0]const u8, flag: types.Sandbox };
 
 /// The C original terminates this table with a null name and scans to it; the
 /// length is the terminator here, which is the one difference. The order is
 /// the original's and is what `(sandbox ...)` reports on an unknown keyword
 /// only by not finding it, so nothing depends on it.
 const sandbox_options = [_]SandboxOption{
-    .{ .name = "all", .flag = constants.JANET_SANDBOX_ALL },
-    .{ .name = "asm", .flag = constants.JANET_SANDBOX_ASM },
-    .{ .name = "chroot", .flag = constants.JANET_SANDBOX_CHROOT },
-    .{ .name = "compile", .flag = constants.JANET_SANDBOX_COMPILE },
-    .{ .name = "env", .flag = constants.JANET_SANDBOX_ENV },
-    .{ .name = "exit", .flag = constants.JANET_SANDBOX_EXIT },
-    .{ .name = "ffi", .flag = constants.JANET_SANDBOX_FFI },
-    .{ .name = "ffi-define", .flag = constants.JANET_SANDBOX_FFI_DEFINE },
-    .{ .name = "ffi-jit", .flag = constants.JANET_SANDBOX_FFI_JIT },
-    .{ .name = "ffi-use", .flag = constants.JANET_SANDBOX_FFI_USE },
-    .{ .name = "fs", .flag = constants.JANET_SANDBOX_FS },
-    .{ .name = "fs-read", .flag = constants.JANET_SANDBOX_FS_READ },
-    .{ .name = "fs-temp", .flag = constants.JANET_SANDBOX_FS_TEMP },
-    .{ .name = "fs-write", .flag = constants.JANET_SANDBOX_FS_WRITE },
-    .{ .name = "hrtime", .flag = constants.JANET_SANDBOX_HRTIME },
-    .{ .name = "modules", .flag = constants.JANET_SANDBOX_DYNAMIC_MODULES },
-    .{ .name = "net", .flag = constants.JANET_SANDBOX_NET },
-    .{ .name = "net-connect", .flag = constants.JANET_SANDBOX_NET_CONNECT },
-    .{ .name = "net-listen", .flag = constants.JANET_SANDBOX_NET_LISTEN },
-    .{ .name = "sandbox", .flag = constants.JANET_SANDBOX_SANDBOX },
-    .{ .name = "signal", .flag = constants.JANET_SANDBOX_SIGNAL },
-    .{ .name = "subprocess", .flag = constants.JANET_SANDBOX_SUBPROCESS },
-    .{ .name = "threads", .flag = constants.JANET_SANDBOX_THREADS },
-    .{ .name = "unmarshal", .flag = constants.JANET_SANDBOX_UNMARSHAL },
+    .{ .name = "all", .flag = types.Sandbox.all },
+    .{ .name = "asm", .flag = types.Sandbox.of(&.{"asm"}) },
+    .{ .name = "chroot", .flag = types.Sandbox.of(&.{"chroot"}) },
+    .{ .name = "compile", .flag = types.Sandbox.of(&.{"compile"}) },
+    .{ .name = "env", .flag = types.Sandbox.of(&.{"env"}) },
+    .{ .name = "exit", .flag = types.Sandbox.of(&.{"exit"}) },
+    .{ .name = "ffi", .flag = types.Sandbox.ffi },
+    .{ .name = "ffi-define", .flag = types.Sandbox.of(&.{"ffi_define"}) },
+    .{ .name = "ffi-jit", .flag = types.Sandbox.of(&.{"ffi_jit"}) },
+    .{ .name = "ffi-use", .flag = types.Sandbox.of(&.{"ffi_use"}) },
+    .{ .name = "fs", .flag = types.Sandbox.fs },
+    .{ .name = "fs-read", .flag = types.Sandbox.of(&.{"fs_read"}) },
+    .{ .name = "fs-temp", .flag = types.Sandbox.of(&.{"fs_temp"}) },
+    .{ .name = "fs-write", .flag = types.Sandbox.of(&.{"fs_write"}) },
+    .{ .name = "hrtime", .flag = types.Sandbox.of(&.{"hrtime"}) },
+    .{ .name = "modules", .flag = types.Sandbox.of(&.{"dynamic_modules"}) },
+    .{ .name = "net", .flag = types.Sandbox.net },
+    .{ .name = "net-connect", .flag = types.Sandbox.of(&.{"net_connect"}) },
+    .{ .name = "net-listen", .flag = types.Sandbox.of(&.{"net_listen"}) },
+    .{ .name = "sandbox", .flag = types.Sandbox.of(&.{"sandbox"}) },
+    .{ .name = "signal", .flag = types.Sandbox.of(&.{"signal"}) },
+    .{ .name = "subprocess", .flag = types.Sandbox.of(&.{"subprocess"}) },
+    .{ .name = "threads", .flag = types.Sandbox.of(&.{"threads"}) },
+    .{ .name = "unmarshal", .flag = types.Sandbox.of(&.{"unmarshal"}) },
 };
 
-fn cfunSandbox(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
-    var flags: u32 = 0;
+fn cfunSandbox(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    var flags: types.Sandbox = .{};
     var i: i32 = 0;
     while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
         const kw = try args_core.getKeyword(argv, i);
         var found = false;
         for (sandbox_options) |option| {
             if (utils.cstrcmp(kw, option.name.ptr) == 0) {
-                flags |= option.flag;
+                flags = flags.with(option.flag);
                 found = true;
                 break;
             }
@@ -868,8 +816,8 @@ fn quickAsm(
     def.*.bytecode = @ptrCast(@alignCast(allocated(utils.malloc(size))));
     def.*.bytecode_length = @intCast(bytecode.len);
     def.*.name = strings.cstring(name);
-    @memcpy(def.*.bytecode.?[0..bytecode.len], bytecode);
-    janet_def_addflags(def);
+    @memcpy(def.*.instructions()[0..bytecode.len], bytecode);
+    compiler_primitives.defAddflags(def);
     return def;
 }
 
@@ -1038,7 +986,7 @@ fn opOnly(comptime op: anytype) [1]u32 {
 // ==========================================================================
 
 fn loadLibs(env: *types.JanetTable) raise.Raising(void) {
-    const entries = [_]corefn.Entry{
+    const entries = comptime [_]corefn.Entry{
         corefn.reg("native", &cfunNative, @src(), "(native path &opt env)", "Load a native module from the given path. The path " ++
             "must be an absolute or relative path on the file system, and is " ++
             "usually a .so file on Unix systems, and a .dll file on Windows. " ++
@@ -1128,10 +1076,10 @@ fn loadLibs(env: *types.JanetTable) raise.Raising(void) {
             "* :sys: -- the system path, or (dyn :syspath)"),
         corefn.reg("int?", &cfunCheckInt, @src(), "(int? x)", "Check if x can be exactly represented as a 32 bit signed two's complement integer."),
         corefn.reg("nat?", &cfunCheckNat, @src(), "(nat? x)", "Check if x can be exactly represented as a non-negative 32 bit signed two's complement integer."),
-        corefn.reg("bytes?", &TypeFlagPredicate(constants.JANET_TFLAG_BYTES).cfun, @src(), "(bytes? x)", "Check if x is a string, symbol, keyword, or buffer."),
-        corefn.reg("indexed?", &TypeFlagPredicate(constants.JANET_TFLAG_INDEXED).cfun, @src(), "(indexed? x)", "Check if x is an array or tuple."),
-        corefn.reg("dictionary?", &TypeFlagPredicate(constants.JANET_TFLAG_DICTIONARY).cfun, @src(), "(dictionary? x)", "Check if x is a table or struct."),
-        corefn.reg("lengthable?", &TypeFlagPredicate(constants.JANET_TFLAG_LENGTHABLE).cfun, @src(), "(lengthable? x)", "Check if x is a bytes, indexed, or dictionary."),
+        corefn.reg("bytes?", &TypeFlagPredicate(repr.TagSet.bytes).cfun, @src(), "(bytes? x)", "Check if x is a string, symbol, keyword, or buffer."),
+        corefn.reg("indexed?", &TypeFlagPredicate(repr.TagSet.indexed).cfun, @src(), "(indexed? x)", "Check if x is an array or tuple."),
+        corefn.reg("dictionary?", &TypeFlagPredicate(repr.TagSet.dictionary).cfun, @src(), "(dictionary? x)", "Check if x is a table or struct."),
+        corefn.reg("lengthable?", &TypeFlagPredicate(repr.TagSet.lengthable).cfun, @src(), "(lengthable? x)", "Check if x is a bytes, indexed, or dictionary."),
         corefn.reg("slice", &cfunSlice, @src(), "(slice x &opt start end)", "Extract a sub-range of an indexed data structure or byte sequence."),
         corefn.reg("range", &cfunRange, @src(), "(range & args)", "Create an array of values [start, end) with a given step. " ++
             "With one argument, returns a range [0, end). With two arguments, returns " ++
@@ -1176,32 +1124,31 @@ fn loadLibs(env: *types.JanetTable) raise.Raising(void) {
             "* :subprocess - disallow running subprocesses\n" ++
             "* :threads - disallow spawning threads with `ev/thread`. Certain helper threads may still be spawned.\n" ++
             "* :unmarshal - disallow calling the `unmarshal` function.\n"),
-        corefn.end,
     };
-    corefn.install(env, &entries);
-    try io_core.janet_lib_ioImpl(env);
-    try math.janet_lib_mathImpl(env);
-    janet_lib_array(env);
-    janet_lib_tuple(env);
-    janet_lib_buffer(env);
-    janet_lib_table(env);
-    janet_lib_struct(env);
-    try fibers.libImpl(env);
-    try os_surface.janet_lib_osImpl(env);
-    janet_lib_parse(env);
-    janet_lib_compile(env);
-    janet_lib_debug(env);
-    janet_lib_string(env);
-    janet_lib_marsh(env);
-    if (has_peg) try peg.janet_lib_pegImpl(env);
-    if (has_assembler) try asm_core.janet_lib_asmImpl(env);
-    if (has_int_types) try inttypes.janet_lib_inttypesImpl(env);
+    corefn.install(env, entries);
+    try io_core.libIo(env);
+    try math.libMath(env);
+    arrays.lib(env);
+    tuples.lib(env);
+    buffers.lib(env);
+    tables.lib(env);
+    structs.lib(env);
+    try fibers.lib(env);
+    try os_surface.libOs(env);
+    parser_core.libParse(env);
+    compiler_primitives.libCompile(env);
+    trace_frames.libDebug(env);
+    strings.lib(env);
+    marsh.libMarsh(env);
+    if (has_peg) try peg.libPeg(env);
+    if (has_assembler) try asm_core.libAsm(env);
+    if (has_int_types) try inttypes.libInttypes(env);
     if (has_ev) {
-        try ev_loop.janet_lib_evImpl(env);
-        if (has_filewatch) janet_lib_filewatch(env);
+        try ev_loop.libEv(env);
+        if (has_filewatch) filewatch.libFilewatch(env);
     }
-    if (has_net) janet_lib_net(env);
-    if (has_ffi) janet_lib_ffi(env);
+    if (has_net) net.libNet(env);
+    if (has_ffi) ffi.libFfi(env);
 }
 
 /// Assembled from scratch, in the image generator. Everything here ends up in
@@ -1374,11 +1321,10 @@ const get_asm = [_]u32{
 
 /// The core image, generated by `janet-boot` and embedded rather than linked.
 ///
-/// It was `janet-image.c` until Phase 11 Part 19 -- 2,007,197 bytes of hex
-/// literals wrapped in `#include "janet.h"`, carrying 324,310 bytes of image,
-/// and the last C translation unit compiled into anything this tree produces.
-/// `build.zig` hands the generator's output to this module as an anonymous
-/// import; `@embedFile` is what replaces the two `extern const`s.
+/// It is not a linked object: `build.zig` hands the generator's output to this
+/// module as an anonymous import, and `@embedFile` reads it. The alternative
+/// was two megabytes of hex literals in a generated C file, which is where the
+/// last C translation unit in this tree used to come from.
 ///
 /// Referenced only from the runtime branch below, and a container-level
 /// declaration is analysed only when something references it -- so the
@@ -1400,7 +1346,7 @@ pub const core_image = @embedFile("janet_image");
 /// Unmarshalled from the image, in the runtime. Memoized in `janet_vm`, which
 /// is what makes the replacements argument meaningful only on the first call.
 fn imageCoreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.JanetTable) {
-    if (c.vm().core_env) |memoized| return memoized;
+    if (vm_lifecycle.current().core_env) |memoized| return memoized;
 
     const dict = try coreLookupTable(replacements);
 
@@ -1413,7 +1359,7 @@ fn imageCoreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.JanetTabl
 
     gc_alloc.gcroot(marsh_out);
     const env = wrap.toTable(marsh_out);
-    c.vm().core_env = env;
+    vm_lifecycle.current().core_env = env;
 
     // Invert the image dict here rather than in `boot.janet`, where it would
     // break deterministic builds.
@@ -1423,13 +1369,13 @@ fn imageCoreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.JanetTabl
     _ = registry.resolve(env, symbols.csymbol("make-image-dict"), &midv);
 
     // A smaller corelib may not have either, so check rather than assume.
-    if (kind.checkType(lidv, constants.JANET_TABLE) != 0 and kind.checkType(midv, constants.JANET_TABLE) != 0) {
+    if (repr.checkType(lidv, repr.Tag.table) and repr.checkType(midv, repr.Tag.table)) {
         const lid = wrap.toTable(lidv);
         const mid = wrap.toTable(midv);
         var i: i32 = 0;
         while (i < lid.*.capacity) : (i += 1) {
-            const kv = &lid.*.data.?[@intCast(i)];
-            if (kind.checkType(kv.key, constants.JANET_NIL) == 0) {
+            const kv = &lid.*.slots()[@intCast(i)];
+            if (!repr.checkType(kv.key, repr.Tag.nil)) {
                 tables.put(mid, kv.value, kv.key);
             }
         }
@@ -1438,7 +1384,7 @@ fn imageCoreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.JanetTabl
     return env;
 }
 
-pub fn janet_core_env(replacements: ?*types.JanetTable) *types.JanetTable {
+pub fn coreEnvAbi(replacements: ?*types.JanetTable) *types.JanetTable {
     return raise.reported(coreEnv(replacements));
 }
 
@@ -1449,7 +1395,7 @@ pub fn coreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.JanetTable
         imageCoreEnv(replacements);
 }
 
-pub fn janet_core_lookup_table(replacements: *types.JanetTable) *types.JanetTable {
+pub fn coreLookupTableAbi(replacements: *types.JanetTable) *types.JanetTable {
     return raise.reported(coreLookupTable(replacements));
 }
 
@@ -1460,8 +1406,8 @@ pub fn coreLookupTable(replacements: ?*types.JanetTable) raise.Raising(*types.Ja
     if (replacements != null) {
         var i: i32 = 0;
         while (i < replacements.?.capacity) : (i += 1) {
-            const kv = replacements.?.data.?[@intCast(i)];
-            if (kind.checkType(kv.key, constants.JANET_NIL) == 0) {
+            const kv = replacements.?.slots()[@intCast(i)];
+            if (!repr.checkType(kv.key, repr.Tag.nil)) {
                 tables.put(dict, kv.key, kv.value);
             }
         }
@@ -1487,16 +1433,16 @@ pub fn dobytes(
     bytes: ?[*]const u8,
     len: i32,
     source_path: ?[*:0]const u8,
-    out: ?*types.Janet,
+    out: ?*repr.Value,
 ) callconv(.c) c_int {
-    return raise.reported(janet_dobytesImpl(env, if (bytes) |p| (if (len <= 0) &.{} else p[0..@intCast(len)]) else &.{}, source_path, out));
+    return raise.reported(dobytesImpl(env, if (bytes) |p| (if (len <= 0) &.{} else p[0..@intCast(len)]) else &.{}, source_path, out));
 }
 
-pub fn janet_dobytesImpl(
+pub fn dobytesImpl(
     env: *types.JanetTable,
     bytes: []const u8,
     source_path: ?[*:0]const u8,
-    out: ?*types.Janet,
+    out: ?*repr.Value,
 ) raise.Raising(c_int) {
     var errflags: c_int = 0;
     var done = false;
@@ -1508,7 +1454,7 @@ pub fn janet_dobytesImpl(
     if (where) |w| gc_alloc.gcroot(wrap.fromString(w));
     const path: [*:0]const u8 = if (source_path) |p| p else "<unknown>";
     const parser: *types.JanetParser = @ptrCast(@alignCast(abstracts.new(
-        abstract_type.stored(&parser_core.parserType),
+        &parser_core.parserType,
         @sizeOf(types.JanetParser),
     )));
     parser_core.parserInit(parser);
@@ -1523,7 +1469,7 @@ pub fn janet_dobytesImpl(
                 fiber = fibers.new(f, 64, 0, null);
                 fiber.?.env = env;
                 const status = vm_entry.continueFiber(fiber.?, wrap.fromNil(), &ret);
-                if (status != constants.JANET_SIGNAL_OK and status != constants.JANET_SIGNAL_EVENT) {
+                if (status != types.Signal.ok and status != types.Signal.event) {
                     try trace_frames.stacktraceExt(fiber.?, ret, "");
                     errflags |= constants.JANET_DO_ERROR_RUNTIME;
                     done = true;
@@ -1577,7 +1523,7 @@ pub fn janet_dobytesImpl(
     if (where) |w| _ = gc_alloc.gcunroot(wrap.fromString(w));
     if (has_ev) {
         // Enter the event loop if we are not already in it.
-        if (c.vm().stackn == 0) {
+        if (vm_lifecycle.current().stackn == 0) {
             if (fiber) |f| gc_alloc.gcroot(wrap.fromFiber(f));
             try ev_loop.loop();
             if (fiber != null) {
@@ -1594,7 +1540,7 @@ pub fn dostring(
     env: *types.JanetTable,
     str: [*:0]const u8,
     source_path: ?[*:0]const u8,
-    out: ?*types.Janet,
+    out: ?*repr.Value,
 ) callconv(.c) c_int {
     var len: i32 = 0;
     while (str[@intCast(len)] != 0) len += 1;
@@ -1602,7 +1548,7 @@ pub fn dostring(
 }
 
 /// Run a fiber to completion, through the event loop where there is one.
-pub fn janet_loop_fiber(fiber: *types.JanetFiber) c_int {
+pub fn loopFiberAbi(fiber: *types.JanetFiber) c_int {
     return raise.reported(loopFiber(fiber));
 }
 
@@ -1610,12 +1556,12 @@ pub fn loopFiber(fiber: *types.JanetFiber) raise.Raising(c_int) {
     if (has_ev) {
         ev_loop.schedule(fiber, wrap.fromNil());
         try ev_loop.loop();
-        return @intCast(fibers.status(fiber));
+        return @intCast(@intFromEnum(fibers.status(fiber)));
     }
-    var out: types.Janet = undefined;
+    var out: repr.Value = undefined;
     const status = vm_entry.continueFiber(fiber, wrap.fromNil(), &out);
-    if (status != constants.JANET_SIGNAL_OK and status != constants.JANET_SIGNAL_EVENT) {
+    if (status != types.Signal.ok and status != types.Signal.event) {
         try trace_frames.stacktraceExt(fiber, out, "");
     }
-    return @intCast(status);
+    return @intCast(@intFromEnum(status));
 }

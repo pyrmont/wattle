@@ -1,40 +1,30 @@
 //! The assembler: `(asm ...)` from a Janet data structure to a `JanetFuncDef`.
 //!
-//! Two files until Phase 12 increment 6f, and the boundary between them was
-//! **the C-ABI seam itself** rather than anything about the subject.
-//! `asm_core.zig` was the driver -- argument checking, the error paths, the
-//! `JanetFuncDef` it hands back -- and `asm_encode.zig` was the opcode table
-//! and the per-field scan/fill passes over it. `port/TREE.md` puts them
-//! together: one name, `bytecode`, for what Janet publishes as one thing.
+//! Two files once, split along the C-ABI seam rather than along the subject:
+//! a driver -- argument checking, the error paths, the `JanetFuncDef` it hands
+//! back -- and an encoder holding the opcode table and the per-field scan and
+//! fill passes over it. One name, `bytecode`, for what Janet publishes as one
+//! thing.
 //!
-//! ## Merging them spent twenty-eight seam entries, and Zig gave no choice
-//!
-//! Sixteen `janet_zig_asm_*` were `export fn` here and `extern fn` there;
-//! twelve `janet_c_asm_*` went the other way. An `extern fn` declaration and an
+//! **Merging them was forced rather than chosen.** Sixteen `janet_zig_asm_*`
+//! were `export fn` in one half and `extern fn` in the other; twelve
+//! `janet_c_asm_*` went the other way. An `extern fn` declaration and an
 //! `export fn` definition of one name cannot share a file --
 //!
 //!     error: duplicate struct member name 'thing'
 //!
-//! -- so the merge either converts them or does not happen. They are ordinary
-//! Zig functions now, called directly, and **every one of the twenty-eight
-//! linker symbols is still exported** through the `comptime` block below.
-//! That is not tidiness: all twenty-eight are in the library's 690 and in no
-//! header, which is Phase 12 item 3's population. Deciding whether an export
-//! with no header is wanted belongs to that item; this increment only stops
-//! the file calling itself through the C ABI.
+//! -- so the merge either converted them or did not happen. They are ordinary
+//! Zig functions called directly, and **every one of the twenty-eight linker
+//! symbols is still exported**, from `capi.zig`.
 //!
-//! The naming is increment 5d's, unchanged: strip the prefix, camelCase the
-//! underscores, and let `@export` carry the C spelling. One name could not
-//! take it straight -- `janet_c_asm_get_field` is `getFieldByName`, because
-//! `getField` was already a private helper in the driver half.
-//!
-//! `BytecodeResult` and `HeaderResult` were declared identically in both files,
-//! for the same reason the seam existed: neither could see the other's. One
-//! copy now.
+//! One name could not take the obvious spelling: `janet_c_asm_get_field` is
+//! `getFieldByName`, because `getField` was already a private helper in the
+//! driver half.
 
 const std = @import("std");
 
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const raise = @import("raise");
@@ -52,10 +42,10 @@ const order = @import("value/helpers/order.zig");
 const strings = @import("value/strings.zig");
 const structs = @import("value/structs.zig");
 const tables = @import("value/tables.zig");
-const kind = @import("value/helpers/kind.zig");
 const value = @import("value.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const pp_describe = @import("pp.zig");
+const compiler_primitives = @import("compiler.zig");
 
 // ---------------------------------------------------------------------------
 // The driver -- what `asm_core.zig` was.
@@ -88,9 +78,8 @@ pub const BytecodeResult = extern struct {
 
 /// `JanetAssembler`, minus the `jmp_buf`.
 ///
-/// The layout is nobody's business but this file's: `asm_encode.zig` reaches an
-/// assembler through `?*anyopaque` and the fourteen accessors below, which is
-/// the seam Phase 5 drew and which this increment does not move.
+/// The layout is nobody's business but this file's: the encoder reaches an
+/// assembler through `?*anyopaque` and the fourteen accessors below.
 const Assembler = struct {
     parent: ?*Assembler,
     def: *types.JanetFuncDef,
@@ -101,7 +90,7 @@ const Assembler = struct {
     defs_capacity: i32,
     bytecode_count: i32,
 
-    name: types.Janet,
+    name: repr.Value,
     labels: types.JanetTable,
     slots: types.JanetTable,
     envs: types.JanetTable,
@@ -174,10 +163,10 @@ const Assembler = struct {
 /// for "this is the current function's own name", and -2 for "no parent has
 /// it". `doarg_1` in C distinguishes the last from the others by testing
 /// `< -1`, so the two negatives cannot be collapsed.
-fn addEnv(a: *Assembler, envname: types.Janet) i32 {
+fn addEnv(a: *Assembler, envname: repr.Value) i32 {
     if (order.equals(a.name, envname) != 0) return -1;
     const check = tables.get(&a.envs, envname);
-    if (kind.checkType(check, constants.JANET_NUMBER) != 0) {
+    if (repr.checkType(check, repr.Tag.number)) {
         return @intFromFloat(wrap.toNumber(check));
     }
     const parent = a.parent orelse return -2;
@@ -195,6 +184,9 @@ fn addEnv(a: *Assembler, envname: types.Janet) i32 {
         ) orelse fatal.outOfMemory()));
         a.environments_capacity = newcap;
     }
+    // Written before the length is declared, so the accessor is one short
+    // here and the write goes through the allocation. Every *reader* of an
+    // established run below uses `environmentIndices()`.
     def.environments.?[@intCast(envindex)] = res;
     def.environments_length = envindex + 1;
     return envindex;
@@ -203,10 +195,10 @@ fn addEnv(a: *Assembler, envname: types.Janet) i32 {
 /// `janet_get1`. A lookup that answers nil for anything that is not a table or
 /// a struct, which is what lets `janet_asm1` ask for a field of a source it has
 /// not yet validated.
-fn getField(ds: types.Janet, key: types.Janet) types.Janet {
-    return switch (kind.typeOf(ds)) {
-        constants.JANET_TABLE => tables.get(wrap.toTable(ds), key),
-        constants.JANET_STRUCT => structs.get(wrap.toStruct(ds), key),
+fn getField(ds: repr.Value, key: repr.Value) repr.Value {
+    return switch (repr.typeOf(ds)) {
+        repr.Tag.table => tables.get(wrap.toTable(ds), key),
+        repr.Tag.@"struct" => structs.get(wrap.toStruct(ds), key),
         else => wrap.fromNil(),
     };
 }
@@ -236,7 +228,7 @@ pub fn funcdef(context: ?*anyopaque) callconv(.c) *types.JanetFuncDef {
     return asmOf(context).def;
 }
 
-pub fn setName(context: ?*anyopaque, name: types.Janet) void {
+pub fn setName(context: ?*anyopaque, name: repr.Value) void {
     asmOf(context).name = name;
 }
 
@@ -248,7 +240,7 @@ pub fn setBytecodeCount(context: ?*anyopaque, count: i32) void {
     asmOf(context).bytecode_count = count;
 }
 
-pub fn addEnvironment(context: ?*anyopaque, name: types.Janet) i32 {
+pub fn addEnvironment(context: ?*anyopaque, name: repr.Value) i32 {
     return addEnv(asmOf(context), name);
 }
 
@@ -265,7 +257,7 @@ pub fn parentForEnvironment(context: ?*anyopaque, environment: u32) ?*anyopaque 
     return a;
 }
 
-pub fn argumentBoundsError(x: types.Janet, nbytes: i32, too_large: i32) [*:0]const u8 {
+pub fn argumentBoundsError(x: repr.Value, nbytes: i32, too_large: i32) [*:0]const u8 {
     // Through a sentinel pointer rather than a slice, because `%s` renders a
     // NUL-terminated run of bytes and a slice is not one.
     const plural: [*]const u8 = if (nbytes > 1) "s" else "";
@@ -277,11 +269,11 @@ pub fn argumentBoundsError(x: types.Janet, nbytes: i32, too_large: i32) [*:0]con
         pp_format.formatcReported("instruction argument %v is too small, must be %d byte%s", .{ x, nbytes, plural });
 }
 
-pub fn unknownInstruction(val: types.Janet) [*:0]const u8 {
+pub fn unknownInstruction(val: repr.Value) [*:0]const u8 {
     return pp_format.formatcReported("unknown instruction %v", .{val});
 }
 
-pub fn resolutionError(val: types.Janet, failure: i32) [*:0]const u8 {
+pub fn resolutionError(val: repr.Value, failure: i32) [*:0]const u8 {
     return switch (failure) {
         1 => pp_format.formatcReported("unknown type %v", .{val}),
         2 => pp_format.formatcReported("unknown name %v", .{val}),
@@ -290,7 +282,7 @@ pub fn resolutionError(val: types.Janet, failure: i32) [*:0]const u8 {
     };
 }
 
-pub fn getFieldByName(source: types.Janet, name: [*:0]const u8) types.Janet {
+pub fn getFieldByName(source: repr.Value, name: [*:0]const u8) repr.Value {
     return getField(source, value.fromBytes(std.mem.span(name), .keyword));
 }
 
@@ -308,7 +300,7 @@ fn allocate(comptime T: type, count: i32) [*]T {
 /// The body of one assembly, in the C original's order. Every step either
 /// succeeds or returns `error.Assembly` with the message already in the
 /// assembler; the caller releases the tables.
-fn assemble(a: *Assembler, source: types.Janet, flags: c_int) AsmError!void {
+fn assemble(a: *Assembler, source: repr.Value, flags: c_int) AsmError!void {
     const def = a.def;
 
     {
@@ -322,7 +314,7 @@ fn assemble(a: *Assembler, source: types.Janet, flags: c_int) AsmError!void {
         const scanned = scanConstants(a, source);
         def.constants_length = scanned.count;
         if (scanned.count > 0) {
-            def.constants = allocate(types.Janet, scanned.count);
+            def.constants = allocate(repr.Value, scanned.count);
             _ = fillConstants(a, source);
         } else {
             def.constants = null;
@@ -376,7 +368,7 @@ fn assemble(a: *Assembler, source: types.Janet, flags: c_int) AsmError!void {
         if (sourcemap.error_message != null) return a.fail(sourcemap.error_message);
         if (sourcemap.count > 0) {
             def.sourcemap = allocate(types.JanetSourceMapping, sourcemap.count);
-            const filled = janet_zig_asm_fill_sourcemapImpl(a, source);
+            const filled = asmFillSourcemap(a, source);
             if (filled.error_message != null) return a.fail(filled.error_message);
         }
     }
@@ -388,7 +380,7 @@ fn assemble(a: *Assembler, source: types.Janet, flags: c_int) AsmError!void {
         if (symbolmap.count > 0) {
             def.symbolmap_length = symbolmap.count;
             def.symbolmap = allocate(types.JanetSymbolMap, symbolmap.count);
-            const filled = janet_zig_asm_fill_symbolmapImpl(a, source);
+            const filled = asmFillSymbolmap(a, source);
             if (filled.error_message != null) return a.fail(filled.error_message);
         }
     }
@@ -417,7 +409,7 @@ fn assemble(a: *Assembler, source: types.Janet, flags: c_int) AsmError!void {
 
 /// One nested assembly, for a `:defs` entry. Reports its parent's message on
 /// the way out, which is the propagation C did with a jump.
-fn asmNested(parent: *Assembler, source: types.Janet, flags: c_int) AsmError!*types.JanetFuncDef {
+fn asmNested(parent: *Assembler, source: repr.Value, flags: c_int) AsmError!*types.JanetFuncDef {
     const result = asm1(parent, source, flags);
     if (result.status != constants.JANET_ASSEMBLE_OK) return parent.failv(result.@"error");
     return result.funcdef.?;
@@ -425,7 +417,7 @@ fn asmNested(parent: *Assembler, source: types.Janet, flags: c_int) AsmError!*ty
 
 /// `janet_asm1`. Owns one assembler, and is the frame the whole of an assembly
 /// unwinds to.
-fn asm1(parent: ?*Assembler, source: types.Janet, flags: c_int) types.JanetAssembleResult {
+fn asm1(parent: ?*Assembler, source: repr.Value, flags: c_int) types.JanetAssembleResult {
     var a: Assembler = undefined;
     a.init(parent, functions.defs.new());
     defer a.deinit();
@@ -447,7 +439,7 @@ fn asm1(parent: ?*Assembler, source: types.Janet, flags: c_int) types.JanetAssem
 /// `janet_asm`. The public entry, and unchanged in shape: it reports a result
 /// rather than raising, which is why removing the jump underneath it needs no
 /// abi and changes nothing a caller can see.
-pub fn assembleValue(source: types.Janet, flags: c_int) types.JanetAssembleResult {
+pub fn assembleValue(source: repr.Value, flags: c_int) types.JanetAssembleResult {
     return asm1(null, source, flags);
 }
 
@@ -455,19 +447,17 @@ pub fn assembleValue(source: types.Janet, flags: c_int) types.JanetAssembleResul
 // asm and disasm, the cfunction surface
 // ==========================================================================
 //
-// Phase 10 Part 17g. The last two cfunctions written in C, and the reason the
-// cfunction type could not become a Zig one: a registry row holds a single
-// type, and a C body cannot carry an error union.
+// The two cfunctions the assembler publishes.
 //
 // `disasm`'s fifteen-way keyword dispatch is the densest use of
 // `janet_cstrcmp` in the tree. It is kept as a linear chain of comparisons
 // rather than turned into a `std.StaticStringMap`, because the order decides
 // which of two keys that share a prefix wins and because `janet_cstrcmp`
-// compares against the *string head's* length -- the port's job here is to
-// move it, not to improve it.
+// compares against the *string head's* length -- this moves it rather than
+// improving it.
 
-fn cfunAsm(argv: []types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_ASM);
+fn cfunAsm(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"asm"}));
     try args_core.fixarity(argv, 1);
     const res = assembleValue(argv[0], 0);
     if (res.status != constants.JANET_ASSEMBLE_OK) {
@@ -497,8 +487,8 @@ const disasm_fields = [_]struct { name: [*:0]const u8, field: disasm.Field }{
     .{ .name = "defs", .field = .defs },
 };
 
-fn cfunDisasm(argv: []types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_ASM);
+fn cfunDisasm(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"asm"}));
     try args_core.arity(argv, 1, 2);
     const f = try args_core.getFunction(argv, 0);
     if (@as(i32, @intCast(argv.len)) != 2) return disasm.disassembleField(f.*.def.?, .all);
@@ -512,12 +502,12 @@ fn cfunDisasm(argv: []types.Janet) raise.Raising(types.Janet) {
     return pp_format.panicf("unknown disasm key %v", .{argv[1]});
 }
 
-pub fn libAsm(env: *types.JanetTable) void {
-    raise.reported(janet_lib_asmImpl(env));
+pub fn libAsmAbi(env: *types.JanetTable) void {
+    raise.reported(libAsm(env));
 }
 
-pub fn janet_lib_asmImpl(env: *types.JanetTable) raise.Raising(void) {
-    const entries = [_]corefn.Entry{
+pub fn libAsm(env: *types.JanetTable) raise.Raising(void) {
+    const entries = comptime [_]corefn.Entry{
         corefn.reg("asm", &cfunAsm, @src(), "(asm assembly)", "Returns a new function that is the compiled result of the assembly.\n" ++
             "The syntax for the assembly can be found on the Janet website, and should correspond\n" ++
             "to the return value of disasm. Will throw an\n" ++
@@ -541,9 +531,8 @@ pub fn janet_lib_asmImpl(env: *types.JanetTable) raise.Raising(void) {
             "* :sourcemap - a mapping of each bytecode instruction to a line and column in the source file.\n" ++
             "* :environments - an internal mapping of which enclosing functions are referenced for bindings.\n" ++
             "* :defs - other function definitions that this function may instantiate.\n"),
-        corefn.end,
     };
-    corefn.install(env, &entries);
+    corefn.install(env, entries);
 }
 
 // ---------------------------------------------------------------------------
@@ -564,10 +553,9 @@ pub const EncodeResult = extern struct {
 /// `janet_wrap_integer`, written out. `janet.h` declares it beside its macro
 /// and `wrap.c` defines it only for the two nanbox layouts, so a Zig caller
 /// that reaches the declaration does not link against `-Dnanbox=false`.
-inline fn janet_c_asm_wrap_integer(val: i32) types.Janet {
+inline fn asmWrapInteger(val: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(val));
 }
-extern fn janet_def_addflags(definition: *types.JanetFuncDef) callconv(.c) void;
 
 const OpcodeDefinition = struct {
     name: [*:0]const u8,
@@ -576,29 +564,29 @@ const OpcodeDefinition = struct {
 
 const TypeAlias = struct {
     name: [*:0]const u8,
-    mask: i32,
+    mask: repr.TagSet,
 };
 
 const type_aliases = [_]TypeAlias{
-    .{ .name = "abstract", .mask = constants.JANET_TFLAG_ABSTRACT },
-    .{ .name = "array", .mask = constants.JANET_TFLAG_ARRAY },
-    .{ .name = "boolean", .mask = constants.JANET_TFLAG_BOOLEAN },
-    .{ .name = "buffer", .mask = constants.JANET_TFLAG_BUFFER },
-    .{ .name = "callable", .mask = constants.JANET_TFLAG_CALLABLE },
-    .{ .name = "cfunction", .mask = constants.JANET_TFLAG_CFUNCTION },
-    .{ .name = "dictionary", .mask = constants.JANET_TFLAG_DICTIONARY },
-    .{ .name = "fiber", .mask = constants.JANET_TFLAG_FIBER },
-    .{ .name = "function", .mask = constants.JANET_TFLAG_FUNCTION },
-    .{ .name = "indexed", .mask = constants.JANET_TFLAG_INDEXED },
-    .{ .name = "keyword", .mask = constants.JANET_TFLAG_KEYWORD },
-    .{ .name = "nil", .mask = constants.JANET_TFLAG_NIL },
-    .{ .name = "number", .mask = constants.JANET_TFLAG_NUMBER },
-    .{ .name = "pointer", .mask = constants.JANET_TFLAG_POINTER },
-    .{ .name = "string", .mask = constants.JANET_TFLAG_STRING },
-    .{ .name = "struct", .mask = constants.JANET_TFLAG_STRUCT },
-    .{ .name = "symbol", .mask = constants.JANET_TFLAG_SYMBOL },
-    .{ .name = "table", .mask = constants.JANET_TFLAG_TABLE },
-    .{ .name = "tuple", .mask = constants.JANET_TFLAG_TUPLE },
+    .{ .name = "abstract", .mask = repr.TagSet.one(.abstract) },
+    .{ .name = "array", .mask = repr.TagSet.one(.array) },
+    .{ .name = "boolean", .mask = repr.TagSet.one(.boolean) },
+    .{ .name = "buffer", .mask = repr.TagSet.one(.buffer) },
+    .{ .name = "callable", .mask = repr.TagSet.callable },
+    .{ .name = "cfunction", .mask = repr.TagSet.one(.cfunction) },
+    .{ .name = "dictionary", .mask = repr.TagSet.dictionary },
+    .{ .name = "fiber", .mask = repr.TagSet.one(.fiber) },
+    .{ .name = "function", .mask = repr.TagSet.one(.function) },
+    .{ .name = "indexed", .mask = repr.TagSet.indexed },
+    .{ .name = "keyword", .mask = repr.TagSet.one(.keyword) },
+    .{ .name = "nil", .mask = repr.TagSet.one(.nil) },
+    .{ .name = "number", .mask = repr.TagSet.one(.number) },
+    .{ .name = "pointer", .mask = repr.TagSet.one(.pointer) },
+    .{ .name = "string", .mask = repr.TagSet.one(.string) },
+    .{ .name = "struct", .mask = repr.TagSet.one(.@"struct") },
+    .{ .name = "symbol", .mask = repr.TagSet.one(.symbol) },
+    .{ .name = "table", .mask = repr.TagSet.one(.table) },
+    .{ .name = "tuple", .mask = repr.TagSet.one(.tuple) },
 };
 
 pub const opcodes = [_]OpcodeDefinition{
@@ -683,17 +671,17 @@ pub const opcodes = [_]OpcodeDefinition{
 
 pub fn parseHeader(
     assembler: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
 ) callconv(.c) HeaderResult {
-    if (kind.checkType(source, constants.JANET_STRUCT) == 0 and
-        kind.checkType(source, constants.JANET_TABLE) == 0)
+    if (!repr.checkType(source, repr.Tag.@"struct") and
+        !repr.checkType(source, repr.Tag.table))
     {
         return headerFailure("expected struct or table for assembly source");
     }
     const definition = funcdef(assembler);
     var val = getFieldByName(source, "name");
     setName(assembler, val);
-    if (kind.checkType(val, constants.JANET_NIL) == 0) definition.*.name = pp_describe.toString(val);
+    if (!repr.checkType(val, repr.Tag.nil)) definition.*.name = pp_describe.toString(val);
 
     val = getFieldByName(source, "arity");
     definition.*.arity = if (args_core.checkint(val) != 0) integerValue(val) else 0;
@@ -712,11 +700,11 @@ pub fn parseHeader(
     }
 
     val = getFieldByName(source, "vararg");
-    if (kind.truthy(val) != 0) definition.*.flags |= constants.JANET_FUNCDEF_FLAG_VARARG;
+    if (repr.truthy(val)) definition.*.flags |= constants.JANET_FUNCDEF_FLAG_VARARG;
     definition.*.slotcount = definition.*.arity + @intFromBool(definition.*.flags & constants.JANET_FUNCDEF_FLAG_VARARG != 0);
 
     val = getFieldByName(source, "structarg");
-    if (kind.truthy(val) != 0) definition.*.flags |= constants.JANET_FUNCDEF_FLAG_STRUCTARG;
+    if (repr.truthy(val)) definition.*.flags |= constants.JANET_FUNCDEF_FLAG_STRUCTARG;
 
     val = getFieldByName(source, "namedargs");
     if (args_core.checkint(val) != 0) {
@@ -725,34 +713,34 @@ pub fn parseHeader(
     }
 
     val = getFieldByName(source, "source");
-    if (kind.checkType(val, constants.JANET_STRING) != 0) definition.*.source = wrap.toString(val);
+    if (repr.checkType(val, repr.Tag.string)) definition.*.source = wrap.toString(val);
     return .{ .error_message = null, .indexed_error = 0 };
 }
 
 pub fn parseSlots(
     assembler: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
 ) callconv(.c) HeaderResult {
     const slots_value = getFieldByName(source, "slots");
-    var items: ?[*]const types.Janet = null;
+    var items: ?[*]const repr.Value = null;
     var length: i32 = 0;
     if (args_core.indexedView(slots_value, &items, &length) == 0) return headerSuccess();
     const slots = argumentTable(assembler, constants.JANET_OAT_SLOT).?;
     var index: i32 = 0;
     while (index < length) : (index += 1) {
         const val = items.?[@intCast(index)];
-        if (kind.checkType(val, constants.JANET_TUPLE) != 0) {
+        if (repr.checkType(val, repr.Tag.tuple)) {
             const aliases = wrap.toTuple(val);
             var alias_index: i32 = 0;
             while (alias_index < types.tupleHead(aliases).length) : (alias_index += 1) {
                 const alias = aliases[@intCast(alias_index)];
-                if (kind.checkType(alias, constants.JANET_SYMBOL) == 0) {
+                if (!repr.checkType(alias, repr.Tag.symbol)) {
                     return headerFailure("slot names must be symbols");
                 }
-                tables.put(slots, alias, janet_c_asm_wrap_integer(index));
+                tables.put(slots, alias, asmWrapInteger(index));
             }
-        } else if (kind.checkType(val, constants.JANET_SYMBOL) != 0) {
-            tables.put(slots, val, janet_c_asm_wrap_integer(index));
+        } else if (repr.checkType(val, repr.Tag.symbol)) {
+            tables.put(slots, val, asmWrapInteger(index));
         } else {
             return headerFailure("slot names must be symbols or tuple of symbols");
         }
@@ -762,10 +750,10 @@ pub fn parseSlots(
 
 pub fn scanConstants(
     _: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
 ) callconv(.c) BytecodeResult {
     const consts = getFieldByName(source, "constants");
-    var items: ?[*]const types.Janet = null;
+    var items: ?[*]const repr.Value = null;
     var length: i32 = 0;
     if (args_core.indexedView(consts, &items, &length) == 0) return bytecodeSuccess(0);
     return bytecodeSuccess(length);
@@ -773,10 +761,10 @@ pub fn scanConstants(
 
 pub fn fillConstants(
     assembler: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
 ) callconv(.c) void {
     const consts = getFieldByName(source, "constants");
-    var items: ?[*]const types.Janet = null;
+    var items: ?[*]const repr.Value = null;
     var length: i32 = 0;
     if (args_core.indexedView(consts, &items, &length) == 0) unreachable;
     const definition = funcdef(assembler);
@@ -788,10 +776,10 @@ pub fn fillConstants(
 
 pub fn scanSourcemap(
     assembler: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
 ) callconv(.c) BytecodeResult {
     const sourcemap = getFieldByName(source, "sourcemap");
-    var items: ?[*]const types.Janet = null;
+    var items: ?[*]const repr.Value = null;
     var length: i32 = 0;
     if (args_core.indexedView(sourcemap, &items, &length) == 0) return bytecodeSuccess(0);
     if (length != funcdef(assembler).*.bytecode_length) {
@@ -805,19 +793,19 @@ pub fn scanSourcemap(
 /// the hinge and never returned an error, which cost its two callers in
 /// `asm_core.zig` a `catch` they could not do anything with -- the assembler
 /// has its own error set and a `JanetSignal` cannot travel through it.
-pub fn janet_zig_asm_fill_sourcemapImpl(
+pub fn asmFillSourcemap(
     assembler: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
 ) HeaderResult {
     const sourcemap = getFieldByName(source, "sourcemap");
-    var items: ?[*]const types.Janet = null;
+    var items: ?[*]const repr.Value = null;
     var length: i32 = 0;
     if (args_core.indexedView(sourcemap, &items, &length) == 0) unreachable;
     const definition = funcdef(assembler);
     var index: i32 = 0;
     while (index < length) : (index += 1) {
         const entry = items.?[@intCast(index)];
-        if (kind.checkType(entry, constants.JANET_TUPLE) == 0) return headerFailure("expected tuple");
+        if (!repr.checkType(entry, repr.Tag.tuple)) return headerFailure("expected tuple");
         const tuple = wrap.toTuple(entry);
         if (args_core.checkint(tuple[0]) == 0) return headerFailure("expected integer");
         if (args_core.checkint(tuple[1]) == 0) return headerFailure("expected integer");
@@ -831,17 +819,17 @@ pub fn janet_zig_asm_fill_sourcemapImpl(
 
 pub fn fillSourcemap(
     assembler: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
 ) callconv(.c) HeaderResult {
-    return janet_zig_asm_fill_sourcemapImpl(assembler, source);
+    return asmFillSourcemap(assembler, source);
 }
 
 pub fn scanSymbolmap(
     _: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
 ) callconv(.c) BytecodeResult {
     const symbolmap = getFieldByName(source, "symbolmap");
-    var items: ?[*]const types.Janet = null;
+    var items: ?[*]const repr.Value = null;
     var length: i32 = 0;
     if (args_core.indexedView(symbolmap, &items, &length) == 0) return bytecodeSuccess(0);
     return bytecodeSuccess(length);
@@ -852,21 +840,21 @@ pub fn scanSymbolmap(
 /// the hinge and never returned an error, which cost its two callers in
 /// `asm_core.zig` a `catch` they could not do anything with -- the assembler
 /// has its own error set and a `JanetSignal` cannot travel through it.
-pub fn janet_zig_asm_fill_symbolmapImpl(
+pub fn asmFillSymbolmap(
     assembler: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
 ) HeaderResult {
     const symbolmap = getFieldByName(source, "symbolmap");
-    var items: ?[*]const types.Janet = null;
+    var items: ?[*]const repr.Value = null;
     var length: i32 = 0;
     if (args_core.indexedView(symbolmap, &items, &length) == 0) unreachable;
     const definition = funcdef(assembler);
     var index: i32 = 0;
     while (index < length) : (index += 1) {
         const entry = items.?[@intCast(index)];
-        if (kind.checkType(entry, constants.JANET_TUPLE) == 0) return headerFailure("expected tuple");
+        if (!repr.checkType(entry, repr.Tag.tuple)) return headerFailure("expected tuple");
         const tuple = wrap.toTuple(entry);
-        const birth_pc: u32 = if (kind.checkType(tuple[0], constants.JANET_KEYWORD) != 0 and
+        const birth_pc: u32 = if (repr.checkType(tuple[0], repr.Tag.keyword) and
             utils.cstrcmp(wrap.toKeyword(tuple[0]), "upvalue") == 0)
             maximum_u32
         else if (args_core.checkint(tuple[0]) != 0)
@@ -875,7 +863,7 @@ pub fn janet_zig_asm_fill_symbolmapImpl(
             return headerFailure("expected integer");
         if (args_core.checkint(tuple[1]) == 0) return headerFailure("expected integer");
         if (args_core.checkint(tuple[2]) == 0) return headerFailure("expected integer");
-        if (kind.checkType(tuple[3], constants.JANET_SYMBOL) == 0) return headerFailure("expected symbol");
+        if (!repr.checkType(tuple[3], repr.Tag.symbol)) return headerFailure("expected symbol");
         definition.*.symbolmap.?[@intCast(index)] = .{
             .birth_pc = birth_pc,
             .death_pc = @bitCast(integerValue(tuple[1])),
@@ -888,17 +876,17 @@ pub fn janet_zig_asm_fill_symbolmapImpl(
 
 pub fn fillSymbolmap(
     assembler: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
 ) callconv(.c) HeaderResult {
-    return janet_zig_asm_fill_symbolmapImpl(assembler, source);
+    return asmFillSymbolmap(assembler, source);
 }
 
 pub fn scanEnvironments(
     _: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
 ) callconv(.c) BytecodeResult {
     const environments = getFieldByName(source, "environments");
-    var items: ?[*]const types.Janet = null;
+    var items: ?[*]const repr.Value = null;
     var length: i32 = 0;
     if (args_core.indexedView(environments, &items, &length) == 0) {
         return bytecodeSuccess(-1);
@@ -908,10 +896,10 @@ pub fn scanEnvironments(
 
 pub fn fillEnvironments(
     assembler: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
 ) callconv(.c) HeaderResult {
     const environments = getFieldByName(source, "environments");
-    var items: ?[*]const types.Janet = null;
+    var items: ?[*]const repr.Value = null;
     var length: i32 = 0;
     if (args_core.indexedView(environments, &items, &length) == 0) unreachable;
     const definition = funcdef(assembler);
@@ -933,16 +921,16 @@ pub fn finalize(assembler: ?*anyopaque) HeaderResult {
             .indexed_error = 0,
         };
     }
-    janet_def_addflags(definition);
+    compiler_primitives.defAddflags(definition);
     return headerSuccess();
 }
 
-pub fn scanDefs(source: types.Janet) BytecodeResult {
+pub fn scanDefs(source: repr.Value) BytecodeResult {
     var definitions = getFieldByName(source, "closures");
-    if (kind.checkType(definitions, constants.JANET_NIL) != 0) {
+    if (repr.checkType(definitions, repr.Tag.nil)) {
         definitions = getFieldByName(source, "defs");
     }
-    var items: ?[*]const types.Janet = null;
+    var items: ?[*]const repr.Value = null;
     var length: i32 = 0;
     if (args_core.indexedView(definitions, &items, &length) == 0) {
         return bytecodeSuccess(0);
@@ -950,12 +938,12 @@ pub fn scanDefs(source: types.Janet) BytecodeResult {
     return bytecodeSuccess(length);
 }
 
-pub fn defAt(source: types.Janet, index: i32) types.Janet {
+pub fn defAt(source: repr.Value, index: i32) repr.Value {
     var definitions = getFieldByName(source, "closures");
-    if (kind.checkType(definitions, constants.JANET_NIL) != 0) {
+    if (repr.checkType(definitions, repr.Tag.nil)) {
         definitions = getFieldByName(source, "defs");
     }
-    var items: ?[*]const types.Janet = null;
+    var items: ?[*]const repr.Value = null;
     var length: i32 = 0;
     if (args_core.indexedView(definitions, &items, &length) == 0) unreachable;
     return items.?[@intCast(index)];
@@ -963,21 +951,21 @@ pub fn defAt(source: types.Janet, index: i32) types.Janet {
 
 pub fn registerDef(
     assembler: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
     index: i32,
 ) callconv(.c) void {
     const name = getFieldByName(source, "name");
-    if (kind.checkType(name, constants.JANET_NIL) == 0) {
+    if (!repr.checkType(name, repr.Tag.nil)) {
         const definitions = argumentTable(assembler, constants.JANET_OAT_FUNCDEF).?;
-        tables.put(definitions, name, janet_c_asm_wrap_integer(index));
+        tables.put(definitions, name, asmWrapInteger(index));
     }
 }
 
 pub fn scanBytecode(
     assembler: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
 ) callconv(.c) BytecodeResult {
-    var items: ?[*]const types.Janet = null;
+    var items: ?[*]const repr.Value = null;
     var length: i32 = 0;
     if (args_core.indexedView(source, &items, &length) == 0) {
         return bytecodeFailure("bytecode expected", true, 0);
@@ -987,9 +975,9 @@ pub fn scanBytecode(
     var index: i32 = 0;
     while (index < length) : (index += 1) {
         const instruction = items.?[@intCast(index)];
-        if (kind.checkType(instruction, constants.JANET_KEYWORD) != 0) {
-            tables.put(labels, instruction, janet_c_asm_wrap_integer(bytecode_length));
-        } else if (kind.checkType(instruction, constants.JANET_TUPLE) != 0) {
+        if (repr.checkType(instruction, repr.Tag.keyword)) {
+            tables.put(labels, instruction, asmWrapInteger(bytecode_length));
+        } else if (repr.checkType(instruction, repr.Tag.tuple)) {
             bytecode_length += 1;
         } else {
             return bytecodeFailure("expected assembly instruction", true, index);
@@ -1000,9 +988,9 @@ pub fn scanBytecode(
 
 pub fn fillBytecode(
     assembler: ?*anyopaque,
-    source: types.Janet,
+    source: repr.Value,
 ) callconv(.c) BytecodeResult {
-    var items: ?[*]const types.Janet = null;
+    var items: ?[*]const repr.Value = null;
     var length: i32 = 0;
     if (args_core.indexedView(source, &items, &length) == 0) unreachable;
     const definition = funcdef(assembler);
@@ -1010,7 +998,7 @@ pub fn fillBytecode(
     var index: i32 = 0;
     while (index < length) : (index += 1) {
         const instruction = items.?[@intCast(index)];
-        if (kind.checkType(instruction, constants.JANET_KEYWORD) != 0) continue;
+        if (repr.checkType(instruction, repr.Tag.keyword)) continue;
         const tuple = wrap.toTuple(instruction);
         const encoded = if (types.tupleHead(tuple).length == 0) success(0) else zigAsmEncode(assembler, tuple);
         if (encoded.error_message != null) {
@@ -1030,10 +1018,10 @@ pub fn fillBytecode(
 
 pub fn zigAsmEncode(
     assembler: ?*anyopaque,
-    arguments: [*]const types.Janet,
+    arguments: [*]const repr.Value,
 ) callconv(.c) EncodeResult {
     if (!hasLengthAtLeast(arguments, 1)) return success(0);
-    if (kind.checkType(arguments[0], constants.JANET_SYMBOL) == 0) {
+    if (!repr.checkType(arguments[0], repr.Tag.symbol)) {
         return indexedFailure("expected symbol in assembly instruction");
     }
     const opcode = findOpcode(wrap.toSymbol(arguments[0])) orelse
@@ -1161,7 +1149,7 @@ fn packArgument(
     byte_index: u5,
     byte_count: i32,
     signed: bool,
-    val: types.Janet,
+    val: repr.Value,
 ) EncodeResult {
     const resolved = resolveArgument(assembler, argument_type, val);
     if (resolved.error_message != null) return exactFailure(resolved.error_message);
@@ -1178,18 +1166,18 @@ fn packArgument(
     return success(bits << (byte_index * 8));
 }
 
-fn resolveArgument(assembler: ?*anyopaque, argument_type: i32, val: types.Janet) ResolvedArgument {
+fn resolveArgument(assembler: ?*anyopaque, argument_type: i32, val: repr.Value) ResolvedArgument {
     const table = argumentTable(assembler, argument_type);
     var result: i32 = -1;
-    switch (kind.typeOf(val)) {
-        constants.JANET_NUMBER => {
+    switch (repr.typeOf(val)) {
+        repr.Tag.number => {
             const number = wrap.toNumber(val);
             if (number < minimum_i32_float or number > maximum_i32_float or @trunc(number) != number) {
                 return resolutionFailure(val, 0);
             }
             result = @intFromFloat(number);
         },
-        constants.JANET_TUPLE => {
+        repr.Tag.tuple => {
             if (argument_type != constants.JANET_OAT_TYPE) return resolutionFailure(val, 0);
             const tuple = wrap.toTuple(val);
             result = 0;
@@ -1200,22 +1188,25 @@ fn resolveArgument(assembler: ?*anyopaque, argument_type: i32, val: types.Janet)
                 result |= part.value;
             }
         },
-        constants.JANET_KEYWORD => {
+        repr.Tag.keyword => {
             if (table != null and argument_type == constants.JANET_OAT_LABEL) {
                 const found = tables.get(table.?, val);
-                if (kind.checkType(found, constants.JANET_NUMBER) == 0) return resolutionFailure(val, 0);
+                if (!repr.checkType(found, repr.Tag.number)) return resolutionFailure(val, 0);
                 result = @intFromFloat(wrap.toNumber(found));
                 result -= bytecodeCount(assembler);
             } else if (argument_type == constants.JANET_OAT_TYPE or argument_type == constants.JANET_OAT_SIMPLETYPE) {
-                result = findTypeMask(wrap.toKeyword(val)) orelse return resolutionFailure(val, 1);
+                // The instruction operand is sixteen bits and so is the set;
+                // `.bits()` is where the two meet, which is the one place the
+                // assembler spells a type mask as a number.
+                result = (findTypeMask(wrap.toKeyword(val)) orelse return resolutionFailure(val, 1)).bits();
             } else {
                 return resolutionFailure(val, 0);
             }
         },
-        constants.JANET_SYMBOL => {
+        repr.Tag.symbol => {
             const argument_table = table orelse return resolutionFailure(val, 0);
             const found = tables.get(argument_table, val);
-            if (kind.checkType(found, constants.JANET_NUMBER) == 0) return resolutionFailure(val, 2);
+            if (!repr.checkType(found, repr.Tag.number)) return resolutionFailure(val, 2);
             result = @intFromFloat(wrap.toNumber(found));
             if (argument_type == constants.JANET_OAT_ENVIRONMENT and result == -1) {
                 result = addEnvironment(assembler, val);
@@ -1231,15 +1222,15 @@ fn resolveArgument(assembler: ?*anyopaque, argument_type: i32, val: types.Janet)
     return .{ .value = result };
 }
 
-fn resolutionFailure(val: types.Janet, failure: i32) ResolvedArgument {
+fn resolutionFailure(val: repr.Value, failure: i32) ResolvedArgument {
     return .{ .value = -1, .error_message = resolutionError(val, failure) };
 }
 
-fn hasLength(arguments: [*]const types.Janet, expected: i32) bool {
+fn hasLength(arguments: [*]const repr.Value, expected: i32) bool {
     return types.tupleHead(arguments).length == expected;
 }
 
-fn hasLengthAtLeast(arguments: [*]const types.Janet, minimum: i32) bool {
+fn hasLengthAtLeast(arguments: [*]const repr.Value, minimum: i32) bool {
     return types.tupleHead(arguments).length >= minimum;
 }
 
@@ -1259,7 +1250,7 @@ fn findOpcode(name: [*:0]const u8) ?u32 {
     return null;
 }
 
-fn findTypeMask(name: [*:0]const u8) ?i32 {
+fn findTypeMask(name: [*:0]const u8) ?repr.TagSet {
     var lower: usize = 0;
     var upper: usize = type_aliases.len;
     while (lower < upper) {
@@ -1308,7 +1299,7 @@ fn headerSuccess() HeaderResult {
     return .{ .error_message = null, .indexed_error = 0 };
 }
 
-fn integerValue(val: types.Janet) i32 {
+fn integerValue(val: repr.Value) i32 {
     return @intFromFloat(wrap.toNumber(val));
 }
 

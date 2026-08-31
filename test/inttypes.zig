@@ -5,14 +5,10 @@
 //! ## The abstract types are reached as themselves
 //!
 //! `janet_s64_type` and `janet_u64_type` are `AbstractType` values whose
-//! `tostring` raises, so the C contract could not call one: it went through
-//! `test/support.zig`'s `janet_contract_at_tostring`, one of three shims that
-//! exist purely to let C invoke a raising Zig callback. Here the type is
-//! declared `extern` with the runtime's own layout and the callback is called
-//! with `try`.
-//!
-//! **That shim does not die with this file.** `test/ev_loop.c` and
-//! `test/io_core.c` still use it; it goes when the last of the three moves.
+//! `tostring` raises, so a C contract cannot call one: it needs a shim that
+//! exists purely to let C invoke a raising Zig callback. Here the type is
+//! declared with the runtime's own layout and the callback is called with
+//! `try`.
 //!
 //! ## Why comparison goes through a compiled Janet function
 //!
@@ -30,8 +26,8 @@
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 const subsystems = @import("subsystems");
 const gc_alloc = @import("subsystems").gc_alloc;
@@ -44,19 +40,23 @@ const inttypes = @import("subsystems").inttypes;
 
 const AbstractType = subsystems.abstract_type.AbstractType;
 
-/// The runtime's two abstract types, with the runtime's layout. `inttypes.zig`
-/// declares them `export const`, so they have a symbol but no namespace entry.
-extern const janet_s64_type: AbstractType;
-extern const janet_u64_type: AbstractType;
+/// The runtime's two abstract types, by import. They were reached by symbol
+/// while they were `export const` with no namespace entry; both are ordinary
+/// `pub const`s built by `abstract_type.define` now.
+/// **Pointers, not aliases.** An alias of a `const` is a
+/// *copy*, so `&janet_s64_type` would be an address the runtime never handed
+/// out and an abstract built through it would be refused by its own type.
+const janet_s64_type = &inttypes.s64Type;
+const janet_u64_type = &inttypes.u64Type;
 
 var environment: *types.JanetTable = undefined;
 var compare_fn: *types.JanetFunction = undefined;
 
-fn compareValues(a: types.Janet, b: types.Janet) f64 {
-    var argv = [2]types.Janet{ a, b };
-    var out: types.Janet = undefined;
-    std.debug.assert(vm_entry.pcall(compare_fn, 2, &argv, &out, null) == constants.JANET_SIGNAL_OK);
-    std.debug.assert(harness.isType(out, constants.JANET_NUMBER));
+fn compareValues(a: repr.Value, b: repr.Value) f64 {
+    var argv = [2]repr.Value{ a, b };
+    var out: repr.Value = undefined;
+    std.debug.assert(vm_entry.pcall(compare_fn, 2, &argv, &out, null) == types.Signal.ok);
+    std.debug.assert(harness.isType(out, repr.Tag.number));
     return wrap.toNumber(out);
 }
 
@@ -75,7 +75,7 @@ fn render(at: *const AbstractType, p: *const anyopaque, b: *types.JanetBuffer) !
 
 fn bufferIs(b: *types.JanetBuffer, expected: []const u8) bool {
     const count: usize = @intCast(b.count);
-    return count == expected.len and std.mem.eql(u8, b.data.?[0..count], expected);
+    return count == expected.len and std.mem.eql(u8, b.slice()[0..count], expected);
 }
 
 // ------------------------------------------------------------------- hash
@@ -223,30 +223,30 @@ fn theFormatters() !void {
     const b: *types.JanetBuffer = buffers.new(0);
 
     var s: i64 = 0;
-    try render(&janet_s64_type, &s, b);
+    try render(janet_s64_type, &s, b);
     std.debug.assert(bufferIs(b, "0"));
 
     b.count = 0;
     s = std.math.minInt(i64);
-    try render(&janet_s64_type, &s, b);
+    try render(janet_s64_type, &s, b);
     std.debug.assert(bufferIs(b, "-9223372036854775808"));
 
     b.count = 0;
     s = std.math.maxInt(i64);
-    try render(&janet_s64_type, &s, b);
+    try render(janet_s64_type, &s, b);
     std.debug.assert(bufferIs(b, "9223372036854775807"));
 
     // The unsigned formatter must not print the high bit as a sign.
     b.count = 0;
     var u: u64 = std.math.maxInt(u64);
-    try render(&janet_u64_type, &u, b);
+    try render(janet_u64_type, &u, b);
     std.debug.assert(bufferIs(b, "18446744073709551615"));
 
     // Formatting appends rather than replacing.
     b.count = 0;
     _ = buffers.pushCstringAbi(b, "n=");
     u = 42;
-    try render(&janet_u64_type, &u, b);
+    try render(janet_u64_type, &u, b);
     std.debug.assert(bufferIs(b, "n=42"));
 }
 
@@ -287,12 +287,12 @@ fn theFlooredDivision() !void {
     };
 
     for (cases) |case| {
-        var result: types.Janet = undefined;
+        var result: repr.Value = undefined;
         std.debug.assert(core_env.dostring(environment, case[0].ptr, "inttypes-contract", &result) == 0);
         std.debug.assert(inttypes.isInt(result) == constants.JANET_INT_S64);
 
         const b: *types.JanetBuffer = buffers.new(0);
-        try render(&janet_s64_type, wrap.toAbstract(result).?, b);
+        try render(janet_s64_type, wrap.toAbstract(result).?, b);
         std.debug.assert(bufferIs(b, case[1]));
     }
 
@@ -307,29 +307,29 @@ fn theFlooredDivision() !void {
     // instrument for that. `harness.core("div")` fails its type assertion,
     // which is how this was found.
     const closure = eval("(fn [] (div (int/s64 1) (int/s64 0)))");
-    var out: types.Janet = undefined;
+    var out: repr.Value = undefined;
     std.debug.assert(vm_entry.pcall(
         wrap.toFunction(closure),
         0,
         null,
         &out,
         null,
-    ) == constants.JANET_SIGNAL_ERROR);
+    ) == types.Signal.@"error");
 }
 
 /// An operand the boxed types cannot convert refuses *catchably*.
 ///
-/// Phase 11 Part 15, and the reason it is asserted from Janet rather than
-/// through `harness.raised` is the reason above: the operator methods are
+/// The reason it is asserted from Janet rather than through `harness.raised`
+/// is the reason above:
 /// reached by the interpreter's binop fallback, not called directly. What is
 /// under test is not that the conversion refuses — `theSignedAgainstDoubles`
 /// covers that — but that the refusal *arrives*.
 ///
 /// `Box(T).unwrap` was bound to `janet_unwrap_s64`, the abi, from inside
 /// `raise.Raising` methods, so every one of these killed the process with
-/// `a raise was reported to a C caller and never consumed` instead of raising.
-/// That is Part 13's defect in the file Part 13 fixed it for, hidden behind a
-/// comptime alias; `port/swallowed.py` is what now looks for the class.
+/// `a raise was reported to a C caller and never consumed` instead of raising
+/// -- hidden behind a comptime alias, which is what `tools/check/swallowed.janet`
+/// now looks for.
 fn anUnconvertibleOperandRefusesCatchably() void {
     const cases = [_][*:0]const u8{
         "(fn [] (+ (int/s64 1) {}))",
@@ -344,25 +344,25 @@ fn anUnconvertibleOperandRefusesCatchably() void {
     };
     for (cases) |source| {
         const closure = eval(source);
-        var out: types.Janet = undefined;
+        var out: repr.Value = undefined;
         std.debug.assert(vm_entry.pcall(
             wrap.toFunction(closure),
             0,
             null,
             &out,
             null,
-        ) == constants.JANET_SIGNAL_ERROR);
+        ) == types.Signal.@"error");
         // And the payload is the conversion's own message, which is what says
         // the refusal travelled rather than being manufactured downstream.
-        std.debug.assert(harness.isType(out, constants.JANET_STRING));
+        std.debug.assert(harness.isType(out, repr.Tag.string));
         const message = wrap.toString(out);
         const length: usize = @intCast(types.stringHead(message).length);
         std.debug.assert(std.mem.indexOf(u8, message[0..length], "can not convert") != null);
     }
 }
 
-fn eval(source: [*:0]const u8) types.Janet {
-    var out: types.Janet = undefined;
+fn eval(source: [*:0]const u8) repr.Value {
+    var out: repr.Value = undefined;
     std.debug.assert(core_env.dostring(environment, source, "inttypes-contract", &out) == 0);
     return out;
 }

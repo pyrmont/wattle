@@ -1,30 +1,23 @@
 //! The mark phase: the traversal that decides what is reachable, the recursion
 //! guard that stops it running off the stack, and `janet_collect`, which drives
-//! it. This is the second of the three increments `gc.c` is split into.
-//! Allocation and the root set moved in Part 3; sweeping, the weak heap and
-//! finalization stay in C until Part 5.
+//! it.
 //!
-//! **Nothing here frees anything.** The traversal only ever sets one bit —
-//! `JANET_MEM_REACHABLE` — in a header it did not allocate and will not
+//! **Nothing here frees anything.** The traversal only ever sets one bit --
+//! `JANET_MEM_REACHABLE` -- in a header it did not allocate and will not
 //! release. That is what makes the boundary a clean one: the mark phase reads
-//! the object graph and writes one bit per object, and everything else `gc.c`
-//! does is on the other side of it.
+//! the object graph and writes one bit per object, and the sweep is on the
+//! other side of it.
 //!
-//! **`janet_collect` belongs to this increment rather than to sweeping**, which
-//! is worth stating because the plan originally left it for last. It is the
-//! only reader of both thread-locals below, so putting it anywhere else would
-//! have needed a bridge to reach them. Here it needs none: everything it calls
-//! outward — `janet_sweep`, `janet_free_all_scratch`, `janet_ev_mark` — is
-//! already declared for other reasons, so this increment adds no seam at all
-//! and Part 5 will not have to unpick one.
+//! **`janet_collect` belongs here rather than with the sweep.** It is the only
+//! reader of both thread-locals below, so putting it anywhere else would need
+//! a bridge to reach them.
 //!
-//! **The file is jump-transparent**, under the rule SPIKE-8 settled. Two calls
-//! here reach code this runtime does not own: an abstract type's `gcmark`, and
-//! a root fiber's `ev_callback` with `JANET_ASYNC_EVENT_MARK`. Neither may
-//! raise, and if one does the signal jumps straight out through every frame of
-//! the walk. Those frames own nothing — no `defer` in this file, checked by
-//! `build.zig` — so the jump is mechanically harmless and the damage is exactly
-//! what the C original suffers: a half-marked heap, no sweep, and
+//! **Nothing here may hold anything across a raise.** Two calls reach code
+//! this runtime does not own: an abstract type's `gcmark`, and a root fiber's
+//! `ev_callback` with `JANET_ASYNC_EVENT_MARK`. Neither may raise, and if one
+//! does the raise leaves through every frame of the walk. Those frames own
+//! nothing -- no `defer` in this file -- so the damage is exactly what Janet
+//! suffers: a half-marked heap, no sweep, and
 //! `next_collection` left where it was. `SPIKE-8.md` has the measurements.
 //!
 //! Three details of the C original are reproduced rather than repaired, and all
@@ -47,35 +40,24 @@ const config = @import("config");
 const raise = @import("raise");
 const abstract_type = @import("../abstract_type.zig");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
+const vm_state = @import("../vm/lifecycle.zig");
 const ev_callback = @import("../callback_type.zig");
 const tables = @import("../value/tables.zig");
 const gc_alloc = @import("../gc.zig");
 const gc_sweep = @import("sweep.zig");
 const functions = @import("../value/functions.zig");
-const kind = @import("../value/helpers/kind.zig");
 const wrap = @import("../value/helpers/wrap.zig");
+const ev_loop = @import("../ev.zig");
 
-/// `janet_vm`, whose layout is `types.JanetVM`'s and whose address
-/// `cabi.vm()` takes.
-inline fn vm() *types.JanetVM {
-    return c.vm();
-}
-
-/// `JANET_VM_HAS_EV` in `src/zig/state_abi.h`. Three parts of the traversal are
+/// `config.ev`. Three parts of the traversal are
 /// inside `#ifdef JANET_EV` in the C original, and one of them reaches a
 /// `janet_vm` field that only exists in that configuration, so this has to
 /// gate compilation rather than merely behaviour.
 const has_ev = constants.JANET_VM_HAS_EV != 0;
 
-/// `janet_ev_mark` is declared in `src/core/util.h` and here rather than in
-/// `cabi.zig`. It takes no parameters, so no Janet type crosses and nothing
-/// about the declaration can disagree with the definition beyond its name.
-extern fn janet_ev_mark() callconv(.c) void;
-
 const mem_reachable: i32 = constants.JANET_MEM_REACHABLE;
-const mem_typebits: i32 = constants.JANET_MEM_TYPEBITS;
 const frame_size: i32 = constants.JANET_FRAME_SIZE;
 
 /// The recursion guard, and the count of roots that existed when the current
@@ -103,8 +85,8 @@ inline fn gcReachable(mem: anytype) bool {
     return (gcHeader(mem).flags & mem_reachable) != 0;
 }
 
-inline fn gcType(mem: anytype) i32 {
-    return gcHeader(mem).flags & 0xFF;
+inline fn gcType(mem: anytype) types.MemoryType {
+    return gcHeader(mem).memoryType();
 }
 
 // --------------------------------------------------------- janet.h macros
@@ -120,8 +102,8 @@ inline fn funcEnv(func: *types.JanetFunction, i: i32) *types.JanetFuncEnv {
 /// `JANET_FRAME_SIZE`, so an index may be negative on a malformed fiber; C
 /// forms the wild pointer and only faults if it is dereferenced, and this does
 /// the same rather than trapping earlier than the original would.
-inline fn stackAt(data: [*]types.Janet, index: i32) [*]types.Janet {
-    const offset: usize = @bitCast(@as(isize, index) *% @as(isize, @sizeOf(types.Janet)));
+inline fn stackAt(data: [*]repr.Value, index: i32) [*]repr.Value {
+    const offset: usize = @bitCast(@as(isize, index) *% @as(isize, @sizeOf(repr.Value)));
     return @ptrFromInt(@intFromPtr(data) +% offset);
 }
 
@@ -136,19 +118,19 @@ inline fn stackAt(data: [*]types.Janet, index: i32) [*]types.Janet {
 /// loop drains those roots and marks them from a fresh budget — so a graph
 /// deeper than `JANET_RECURSION_GUARD` is marked completely, in slices, rather
 /// than overflowing the stack or being lost.
-pub fn mark(x: types.Janet) void {
+pub fn mark(x: repr.Value) void {
     if (depth != 0) {
         depth -= 1;
-        switch (kind.typeOf(x)) {
-            constants.JANET_STRING, constants.JANET_KEYWORD, constants.JANET_SYMBOL => markString(wrap.toString(x)),
-            constants.JANET_FUNCTION => markFunction(wrap.toFunction(x)),
-            constants.JANET_ARRAY => markArray(wrap.toArray(x)),
-            constants.JANET_TABLE => markTable(wrap.toTable(x)),
-            constants.JANET_STRUCT => markStruct(wrap.toStruct(x)),
-            constants.JANET_TUPLE => markTuple(wrap.toTuple(x)),
-            constants.JANET_BUFFER => markBuffer(wrap.toBuffer(x)),
-            constants.JANET_FIBER => markFiber(wrap.toFiber(x)),
-            constants.JANET_ABSTRACT => markAbstract(wrap.toAbstract(x)),
+        switch (repr.typeOf(x)) {
+            repr.Tag.string, repr.Tag.keyword, repr.Tag.symbol => markString(wrap.toString(x)),
+            repr.Tag.function => markFunction(wrap.toFunction(x)),
+            repr.Tag.array => markArray(wrap.toArray(x)),
+            repr.Tag.table => markTable(wrap.toTable(x)),
+            repr.Tag.@"struct" => markStruct(wrap.toStruct(x)),
+            repr.Tag.tuple => markTuple(wrap.toTuple(x)),
+            repr.Tag.buffer => markBuffer(wrap.toBuffer(x)),
+            repr.Tag.fiber => markFiber(wrap.toFiber(x)),
+            repr.Tag.abstract => markAbstract(wrap.toAbstract(x)),
             else => {},
         }
         depth += 1;
@@ -175,8 +157,8 @@ fn markBuffer(buffer: *types.JanetBuffer) void {
 fn markAbstract(adata: ?*anyopaque) void {
     const head = types.abstractHead(adata);
     if (has_ev) {
-        if ((head.gc.flags & mem_typebits) == constants.JANET_MEMORY_THREADED_ABSTRACT) {
-            tables.put(&vm().threaded_abstracts, wrap.fromAbstract(adata), wrap.fromTrue());
+        if (head.gc.memoryType() == .threaded_abstract) {
+            tables.put(&vm_state.current().ev.threaded_abstracts, wrap.fromAbstract(adata), wrap.fromTrue());
             return;
         }
     }
@@ -186,41 +168,43 @@ fn markAbstract(adata: ?*anyopaque) void {
     // 11's jump for one part of the hinge, which is how it became clear that
     // the collector had nowhere to deliver one to; `abstract_type.zig` has
     // the contract.
-    if (abstract_type.of(head.type).gcmark) |gcmark| {
+    if (head.type.gcmark) |gcmark| {
         _ = gcmark(adata, head.size);
     }
 }
 
-/// Mark `n` values. The null test is the C original's, and it is load-bearing:
-/// a partially constructed array or a detached environment can have a null
-/// data pointer while its count still says otherwise.
-fn markMany(values: ?[*]const types.Janet, n: i32) void {
-    const items = values orelse return;
-    var i: i32 = 0;
-    while (i < n) : (i += 1) {
-        mark(items[@intCast(i)]);
-    }
+/// The run of `n` items at `p`, or nothing.
+///
+/// **Two things a slice cannot hold, and this is where they are held.** A null
+/// pointer with a count that still says otherwise is a partially constructed
+/// array or a detached environment, and the C original's null test is what
+/// stops the walk there; `p.?[0..n]` would trap on exactly that case. And a
+/// *negative* count reaches this from a malformed fiber, where the mark walk
+/// subtracts `JANET_FRAME_SIZE` from a frame address -- C's `while (i < n)`
+/// runs zero times and `@intCast` would trap. Both were implied by the loop
+/// condition and are stated here instead.
+inline fn run(comptime T: type, p: ?[*]const T, n: i32) []const T {
+    if (n <= 0) return &.{};
+    const items = p orelse return &.{};
+    return items[0..@intCast(n)];
 }
 
-fn markKeys(kvs: ?[*]const types.JanetKV, n: i32) void {
-    var i: i32 = 0;
-    while (i < n) : (i += 1) {
-        mark(kvs.?[@intCast(i)].key);
-    }
+fn markMany(values: []const repr.Value) void {
+    for (values) |x| mark(x);
 }
 
-fn markValues(kvs: ?[*]const types.JanetKV, n: i32) void {
-    var i: i32 = 0;
-    while (i < n) : (i += 1) {
-        mark(kvs.?[@intCast(i)].value);
-    }
+fn markKeys(kvs: []const types.JanetKV) void {
+    for (kvs) |kv| mark(kv.key);
 }
 
-fn markKvs(kvs: ?[*]const types.JanetKV, n: i32) void {
-    var i: i32 = 0;
-    while (i < n) : (i += 1) {
-        mark(kvs.?[@intCast(i)].key);
-        mark(kvs.?[@intCast(i)].value);
+fn markValues(kvs: []const types.JanetKV) void {
+    for (kvs) |kv| mark(kv.value);
+}
+
+fn markKvs(kvs: []const types.JanetKV) void {
+    for (kvs) |kv| {
+        mark(kv.key);
+        mark(kv.value);
     }
 }
 
@@ -231,8 +215,8 @@ fn markKvs(kvs: ?[*]const types.JanetKV, n: i32) void {
 fn markArray(array: *types.JanetArray) void {
     if (gcReachable(array)) return;
     gcMark(array);
-    if (gcType(array) == constants.JANET_MEMORY_ARRAY) {
-        markMany(array.*.data, array.*.count);
+    if (gcType(array) == types.MemoryType.array) {
+        markMany(run(repr.Value, array.*.data, array.*.count));
     }
 }
 
@@ -250,12 +234,12 @@ fn markTable(table_in: *types.JanetTable) void {
         if (gcReachable(table)) return;
         gcMark(table);
         const memtype = gcType(table);
-        if (memtype == constants.JANET_MEMORY_TABLE_WEAKK) {
-            markValues(table.*.data, table.*.capacity);
-        } else if (memtype == constants.JANET_MEMORY_TABLE_WEAKV) {
-            markKeys(table.*.data, table.*.capacity);
-        } else if (memtype == constants.JANET_MEMORY_TABLE) {
-            markKvs(table.*.data, table.*.capacity);
+        if (memtype == types.MemoryType.table_weakk) {
+            markValues(run(types.JanetKV, table.*.data, table.*.capacity));
+        } else if (memtype == types.MemoryType.table_weakv) {
+            markKeys(run(types.JanetKV, table.*.data, table.*.capacity));
+        } else if (memtype == types.MemoryType.table) {
+            markKvs(run(types.JanetKV, table.*.data, table.*.capacity));
         }
         // Nothing for JANET_MEMORY_TABLE_WEAKKV.
         if (table.*.proto) |proto| {
@@ -272,16 +256,16 @@ fn markStruct(st_in: [*]const types.JanetKV) void {
         const head = types.structHead(st);
         if (gcReachable(head)) return;
         gcMark(head);
-        markKvs(st, head.capacity);
+        markKvs(run(types.JanetKV, st, head.capacity));
         st = head.proto orelse return;
     }
 }
 
-fn markTuple(tuple: [*]const types.Janet) void {
+fn markTuple(tuple: [*]const repr.Value) void {
     const head = types.tupleHead(tuple);
     if (gcReachable(head)) return;
     gcMark(head);
-    markMany(tuple, head.length);
+    markMany(run(repr.Value, tuple, head.length));
 }
 
 /// Mark a function environment, detaching it from a dead fiber first if it can
@@ -295,24 +279,24 @@ fn markFuncenv(env: *types.JanetFuncEnv) void {
     if (env.*.offset > 0) {
         markFiber(env.*.as.fiber.?);
     } else {
-        markMany(env.*.as.values, env.*.length);
+        markMany(run(repr.Value, env.*.as.values, env.*.length));
     }
 }
 
 fn markFuncdef(def: *types.JanetFuncDef) void {
     if (gcReachable(def)) return;
     gcMark(def);
-    markMany(def.*.constants, def.*.constants_length);
+    markMany(run(repr.Value, def.*.constants, def.*.constants_length));
     var i: i32 = 0;
     while (i < def.*.defs_length) : (i += 1) {
-        markFuncdef(def.*.defs.?[@intCast(i)]);
+        markFuncdef(def.*.subdefs()[@intCast(i)]);
     }
     if (def.*.source) |source| markString(source);
     if (def.*.name) |name| markString(name);
     if (def.*.symbolmap != null) {
         var j: i32 = 0;
         while (j < def.*.symbolmap_length) : (j += 1) {
-            markString(def.*.symbolmap.?[@intCast(j)].symbol.?);
+            markString(def.*.symbols()[@intCast(j)].symbol.?);
         }
     }
 }
@@ -354,7 +338,7 @@ fn markFiber(fiber_in: *types.JanetFiber) void {
         mark(fiber.*.last_value);
 
         // Values on the argument stack.
-        markMany(stackAt(fiber.*.data.?, fiber.*.stackstart), fiber.*.stacktop -% fiber.*.stackstart);
+        markMany(run(repr.Value, stackAt(fiber.*.data.?, fiber.*.stackstart), fiber.*.stacktop -% fiber.*.stackstart));
 
         var i = fiber.*.frame;
         var j = fiber.*.stackstart -% frame_size;
@@ -363,7 +347,7 @@ fn markFiber(fiber_in: *types.JanetFiber) void {
             if (frame.func) |func| markFunction(func);
             if (frame.env) |env| markFuncenv(env);
             // Locals of this frame, up to where the frame above it starts.
-            markMany(stackAt(fiber.*.data.?, i), j -% i);
+            markMany(run(repr.Value, stackAt(fiber.*.data.?, i), j -% i));
             j = i -% frame_size;
             i = frame.prevframe;
         }
@@ -401,21 +385,27 @@ fn markFiber(fiber_in: *types.JanetFiber) void {
 /// removing it. So a root added during a collection is consumed by that
 /// collection, and only roots that predate it survive it.
 pub fn collect() void {
-    const v = vm();
-    if (v.gc_suspend != 0) return;
+    // Three of the VM's aggregates and one ambient field, each named: the
+    // collector's own counters, the root set it walks, the scratch table it
+    // empties at the end, and the root fiber, which is language state rather
+    // than collector state.
+    const v = vm_state.current();
+    const g = &v.gc;
+    const roots = &v.roots;
+    if (g.suspend_count != 0) return;
     depth = config.recursion_guard;
-    v.gc_mark_phase = 1;
+    g.mark_phase = 1;
 
     // Prevent many major collections back to back. A full collection is
     // O(block_count), so a large heap gets a proportionally larger interval;
     // the products wrap rather than trap, as the C original's do.
-    if (v.block_count *% 8 > v.gc_interval) {
-        v.gc_interval = v.block_count *% @sizeOf(types.JanetGCObject);
+    if (g.block_count *% 8 > g.interval) {
+        g.interval = g.block_count *% @sizeOf(types.JanetGCObject);
     }
 
-    orig_rootcount = v.root_count;
+    orig_rootcount = roots.count;
 
-    if (has_ev) janet_ev_mark();
+    if (has_ev) ev_loop.evMark();
 
     // Null outside the interpreter loop, which `janet_collect` may be called from.
     if (v.root_fiber) |root| markFiber(root);
@@ -424,16 +414,15 @@ pub fn collect() void {
     // against is a `size_t`; see the note at the head of this file.
     var i: u32 = 0;
     while (i < orig_rootcount) : (i +%= 1) {
-        mark(v.roots.?[i]);
+        mark(roots.at(i).*);
     }
-    while (orig_rootcount < v.root_count) {
-        v.root_count -= 1;
-        const x = v.roots.?[v.root_count];
+    while (orig_rootcount < roots.count) {
+        const x = roots.pop();
         mark(x);
     }
 
-    v.gc_mark_phase = 0;
+    g.mark_phase = 0;
     gc_sweep.sweep();
-    v.next_collection = 0;
-    gc_alloc.freeAllScratch();
+    g.next_collection = 0;
+    gc_alloc.freeAllScratch(&v.scratch);
 }

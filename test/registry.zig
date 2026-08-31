@@ -1,34 +1,28 @@
-//! Behavioral contract for the half of `src/core/util.c` that owns VM state:
-//! the cfunction registry, the four registration entry points, bindings,
-//! symbol resolution, the abstract-type registry, and text substitution.
+//! Behavioral contract for the half of the runtime substrate that owns VM
+//! state: the cfunction registry, the four registration entry points,
+//! bindings, symbol resolution, the abstract-type registry, and text
+//! substitution.
 //!
-//! Most of this subsystem is reachable from Janet source and is covered by
-//! `port/probe-17/util-remainder.janet`. What is here is what only a caller
+//! Most of this subsystem is reachable from Janet source. What is here is what
 //! inside the runtime can reach: the registry's own ordering and growth, the
 //! four registration entry points as an embedder calls them,
 //! `janet_binding_from_entry` on entries the compiler would never build, and
 //! the two `janet_core_*` forms.
 //!
-//! ## What the migration changed
-//!
-//! Three things, and the first two are the reason the migration is worth
-//! making rather than a cost of it.
+//! ## Two things this contract does that a C one could not
 //!
 //! **The two raise-capable entry points are called by import.**
-//! `registerAbstractType` and `textSubstitution` are `raise.Raising`
-//! functions with a `raise.panicking` abi over each; the C contract could
-//! only reach the abi and read `janet_contract_raised`. Here the refusal is a
-//! value, so each is one `harness.raised` line — and `janet_text_substitution`,
-//! declared in `util.h` alone, loses its last caller and goes with this file.
-//! That is rule 12 again: the way to find a dead abi is to migrate its
-//! contract and then delete it.
+//! `registerAbstractType` and `textSubstitution` are `raise.Raising` functions
+//! with a `raise.panicking` abi over each; a contract on the far side of a
+//! symbol table could only reach the abi and read a report. Here the refusal
+//! is a value, so each is one `harness.raised` line.
 //!
-//! **The registry gets distinct keys.** The C original's growth section says
-//! its own limitation out loud — "every row needs a distinct key, and the key
-//! is a function pointer, so the keys have to come from somewhere. Offsetting
-//! into a table of distinct pointers is not available in portable C" — and
-//! settles for pushing the *same* pointer 513 times. So the array it grew was
-//! one key repeated, and the ordering assertion beside it was very nearly
+//! **The registry gets distinct keys.** Janet's growth section says its own
+//! limitation out loud -- "every row needs a distinct key, and the key is a
+//! function pointer, so the keys have to come from somewhere. Offsetting into
+//! a table of distinct pointers is not available in portable C" -- and settles
+//! for pushing the *same* pointer 513 times. So the array it grew was one key
+//! repeated, and the ordering assertion beside it was very nearly
 //! vacuous: three distinct rows among five hundred identical ones. A comptime
 //! family gives as many distinct probes as are asked for, and `theSortIsTotal`
 //! below runs the sort over sixteen of them.
@@ -39,16 +33,17 @@
 //! the fill below still does that with a repeated pointer, which is all it
 //! ever needed.
 //!
-//! **Each probe returns a different integer**, which is rule 28 and is not
-//! decoration. A registry key is an address, so a contract about the registry
-//! answering differently for different keys has "these are distinct addresses"
-//! as the premise of every assertion in it — and every optimize mode above
-//! Debug folds identical function bodies into one address. Nothing calls these
+//! **Each probe returns a different integer**, and that is not decoration. A
+//! registry key is an address, so a contract about the registry answering
+//! differently for different keys has "these are distinct addresses" as the
+//! premise of every assertion in it -- and every optimize mode above Debug
+//! folds identical function bodies into one address. Nothing calls these
 //! probes, so nothing reads the values; what they buy is that the fold is
 //! illegal.
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const raise = @import("raise");
@@ -95,7 +90,7 @@ fn cstringIs(s: ?[*:0]const u8, expected: []const u8) bool {
 /// `JANET_CFUNCTION_ALIGN`; this is the same requirement spelled in Zig.
 fn Probe(comptime tag: i32) type {
     return struct {
-        fn run(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+        fn run(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             _ = @as(i32, @intCast(argv.len));
 
             return harness.wrapInteger(tag);
@@ -124,17 +119,17 @@ const family: [family_size]types.JanetCFunction = blk: {
 // ------------------------------------------------------------- the registry
 
 fn theRegistryRecordsWhatItWasGiven() void {
-    const before = c.vm().registry_count;
+    const before = harness.vm().registry.rows.count;
 
     registry_mod.register("probe/one", probe_one);
     registry_mod.register("probe/two", probe_two);
     registry_mod.register("probe/three", probe_three);
-    assert(c.vm().registry_count == before + 3);
+    assert(harness.vm().registry.rows.count == before + 3);
 
     // Registration marks the array dirty; the first lookup sorts it.
-    assert(c.vm().registry_dirty != 0);
+    assert(harness.vm().registry.dirty);
     var found = internal.janet_registry_get(probe_two);
-    assert(c.vm().registry_dirty == 0);
+    assert(harness.vm().registry.dirty == false);
     assert(found != null);
     assert(found.?.cfun == probe_two);
     assert(cstringIs(found.?.name, "probe/two"));
@@ -155,9 +150,9 @@ fn theRegistryRecordsWhatItWasGiven() void {
 
     // Registering the same pointer twice appends a second row rather than
     // replacing the first. Reproduced from C: nothing dedupes.
-    const again = c.vm().registry_count;
+    const again = harness.vm().registry.rows.count;
     registry_mod.register("probe/one-again", probe_one);
-    assert(c.vm().registry_count == again + 1);
+    assert(harness.vm().registry.rows.count == again + 1);
     found = internal.janet_registry_get(probe_one);
     assert(found != null and found.?.cfun == probe_one);
 }
@@ -185,11 +180,10 @@ fn theSortIsTotalOverDistinctKeys() void {
         assert(row.?.cfun == key);
     }
 
+    const rows = harness.vm().registry.rows.slice();
     var i: usize = 1;
-    while (i < c.vm().registry_count) : (i += 1) {
-        const previous = @intFromPtr(c.vm().registry.?[i - 1].cfun);
-        const current = @intFromPtr(c.vm().registry.?[i].cfun);
-        assert(previous <= current);
+    while (i < rows.len) : (i += 1) {
+        assert(@intFromPtr(rows[i - 1].cfun) <= @intFromPtr(rows[i].cfun));
     }
 }
 
@@ -199,27 +193,46 @@ fn theSortIsTotalOverDistinctKeys() void {
 /// The key is the same pointer every time, on purpose: what is under test is
 /// the `realloc` and the new capacity, and neither reads the key.
 fn theRegistryGrowsPastItsFloor() void {
-    const cap = c.vm().registry_cap;
-    const count = c.vm().registry_count;
-    while (c.vm().registry_count < cap + 1) {
+    const cap = harness.vm().registry.rows.capacity;
+    const count = harness.vm().registry.rows.count;
+    while (harness.vm().registry.rows.count < cap + 1) {
         internal.janet_registry_put(filler, "probe/filler", null, null, 0);
     }
-    assert(c.vm().registry_cap > cap);
-    assert(c.vm().registry_count > count);
+    assert(harness.vm().registry.rows.capacity > cap);
+    assert(harness.vm().registry.rows.count > count);
     // The new capacity is (count + 1) * 2 at the moment of the growth, with a
     // floor of 512. Whatever it is, it must leave room for what is there.
-    assert(c.vm().registry_cap >= c.vm().registry_count);
+    assert(harness.vm().registry.rows.capacity >= harness.vm().registry.rows.count);
+    // And the view is exactly the live rows, not the allocation.
+    assert(harness.vm().registry.rows.slice().len == harness.vm().registry.rows.count);
 }
 
 // ------------------------------------------------- the registration entries
 
-const probe_reg = [_]types.JanetReg{
-    .{ .name = "one", .cfun = probe_one, .documentation = "the first" },
-    .{ .name = "two", .cfun = probe_two, .documentation = null },
-    .{ .name = null, .cfun = null, .documentation = null },
+/// Janet's narrow `JanetReg`, declared here because a C caller's is what this
+/// contract is testing.
+///
+/// The runtime has one `Reg` -- `DESIGN.md` section 6 -- and the narrow
+/// three-field layout survives only as `capi.zig`'s `CReg`, which no runtime
+/// file spells. So the *subject* of the four published entry points is a
+/// layout the runtime does not use, and a contract on them has to declare it.
+/// That is `test/value_wrap.zig`'s situation exactly: the contract holds the
+/// other spelling on purpose, and collapsing the two would leave it asserting
+/// that one thing equals itself.
+const CReg = extern struct {
+    name: ?[*:0]const u8 = null,
+    cfun: types.JanetCFunction = null,
+    documentation: ?[*:0]const u8 = null,
 };
 
-const probe_reg_ext = [_]types.JanetRegExt{
+/// The tables a C caller passes: null-name-terminated, in both shapes.
+const c_reg = [_]CReg{
+    .{ .name = "one", .cfun = probe_one, .documentation = "the first" },
+    .{ .name = "two", .cfun = probe_two, .documentation = null },
+    .{},
+};
+
+const c_reg_ext = [_]types.Reg{
     .{
         .name = "three",
         .cfun = probe_three,
@@ -227,34 +240,54 @@ const probe_reg_ext = [_]types.JanetRegExt{
         .source_file = "probe.c",
         .source_line = 42,
     },
-    .{ .name = null, .cfun = null, .documentation = null, .source_file = null, .source_line = 0 },
+    .{},
 };
+
+/// The same two rows as a table inside the runtime: one `Reg`, a slice, no
+/// terminator.
+const probe_reg = [_]types.Reg{
+    .{ .name = "one", .cfun = probe_one, .documentation = "the first" },
+    .{ .name = "two", .cfun = probe_two, .documentation = null },
+};
+
+/// The four published entry points, reached by symbol.
+///
+/// They are `capi.zig`'s and nothing exposes that file as a namespace, which
+/// is the point: a C caller reaches them through the symbol table and so does
+/// this. `janet_cfuns_ext` already has a `cabi.zig` declaration, so it is
+/// spelled `c.janet_cfuns_ext` below rather than repeated here.
+extern fn janet_cfuns(env: ?*types.JanetTable, regprefix: ?[*:0]const u8, registrations: [*]const CReg) callconv(.c) void;
+extern fn janet_cfuns_prefix(env: ?*types.JanetTable, regprefix: ?[*:0]const u8, registrations: [*]const CReg) callconv(.c) void;
+extern fn janet_cfuns_ext_prefix(env: ?*types.JanetTable, regprefix: ?[*:0]const u8, registrations: [*]const types.Reg) callconv(.c) void;
 
 /// The entry a def builds: a table with `:value`, and `:doc` and `:source-map`
 /// only when there is something to put in them.
 fn checkEntry(env: *types.JanetTable, name: [*:0]const u8, has_doc: bool, has_map: bool) void {
     const entry = tables.get(env, value.fromBytes(std.mem.span(name), .symbol));
-    assert(harness.isType(entry, constants.JANET_TABLE));
+    assert(harness.isType(entry, repr.Tag.table));
     const t = wrap.toTable(entry);
-    assert(harness.isType(tables.get(t, value.fromBytes("value", .keyword)), constants.JANET_CFUNCTION));
-    assert(harness.isType(tables.get(t, value.fromBytes("doc", .keyword)), constants.JANET_NIL) != has_doc);
-    assert(harness.isType(tables.get(t, value.fromBytes("source-map", .keyword)), constants.JANET_NIL) != has_map);
+    assert(harness.isType(tables.get(t, value.fromBytes("value", .keyword)), repr.Tag.cfunction));
+    assert(harness.isType(tables.get(t, value.fromBytes("doc", .keyword)), repr.Tag.nil) != has_doc);
+    assert(harness.isType(tables.get(t, value.fromBytes("source-map", .keyword)), repr.Tag.nil) != has_map);
 }
 
 fn theFourEntryPointsDefineAndRegister() void {
     const env = tables.new(4);
 
-    registry_mod.cfuns(env, "probe", &probe_reg);
+    // The published entry points, through the symbol table and the sentinel.
+    // The narrow one is where the widening happens: `CReg` has no source file
+    // or line, so the adapter supplies null and 0.
+    janet_cfuns(env, "probe", &c_reg);
     checkEntry(env, "one", true, false);
     // A NULL docstring means no `:doc` key at all rather than a nil value.
     checkEntry(env, "two", false, false);
 
-    registry_mod.cfunsExt(env, "probe", &probe_reg_ext);
+    c.janet_cfuns_ext(env, "probe", &c_reg_ext);
     checkEntry(env, "three", true, true);
 
     const entry = tables.get(env, value.fromBytes("three", .symbol));
     const map = tables.get(wrap.toTable(entry), value.fromBytes("source-map", .keyword));
-    assert(harness.isType(map, constants.JANET_TUPLE));
+    assert(harness.isType(map, repr.Tag.tuple));
     const tup = wrap.toTuple(map);
     assert(utils.tupleHead(tup).*.length == 3);
     assert(harness.stringValueIs(tup[0], "probe.c"));
@@ -271,12 +304,12 @@ fn theFourEntryPointsDefineAndRegister() void {
 fn thePrefixingFormsRewriteOnlyTheName() void {
     const env = tables.new(4);
 
-    registry_mod.cfunsPrefix(env, "pre", &probe_reg);
+    janet_cfuns_prefix(env, "pre", &c_reg);
     checkEntry(env, "pre/one", true, false);
     checkEntry(env, "pre/two", false, false);
-    assert(harness.isType(tables.get(env, value.fromBytes("one", .symbol)), constants.JANET_NIL));
+    assert(harness.isType(tables.get(env, value.fromBytes("one", .symbol)), repr.Tag.nil));
 
-    registry_mod.cfunsExtPrefix(env, "pre", &probe_reg_ext);
+    janet_cfuns_ext_prefix(env, "pre", &c_reg_ext);
     checkEntry(env, "pre/three", true, true);
 
     // A prefix long enough that the name buffer's 256-byte reserve is not what
@@ -286,17 +319,46 @@ fn thePrefixingFormsRewriteOnlyTheName() void {
         big[big.len - 1] = 0;
         var expected: [420]u8 = @splat(0);
         const env2 = tables.new(4);
-        registry_mod.cfunsPrefix(env2, @ptrCast(&big), &probe_reg);
+        janet_cfuns_prefix(env2, @ptrCast(&big), &c_reg);
         _ = std.fmt.bufPrint(&expected, "{s}/one", .{big[0 .. big.len - 1]}) catch unreachable;
         checkEntry(env2, @ptrCast(&expected), true, false);
     }
 
     // A null environment registers without defining, and must not build a name
     // buffer at all. Every entry point takes it.
+    janet_cfuns(null, "probe", &c_reg);
+    c.janet_cfuns_ext(null, "probe", &c_reg_ext);
+    janet_cfuns_prefix(null, "probe", &c_reg);
+    janet_cfuns_ext_prefix(null, "probe", &c_reg_ext);
+}
+
+/// The two entry points a table *inside* the runtime uses, which take a slice
+/// and no terminator.
+///
+/// They are the same installer the four above reach through the sentinel
+/// adapter, so what this adds is the slice path itself: a table with no null
+/// row still stops at the right place, and the prefixing form still rewrites
+/// only the name.
+fn theSliceFormsInstallTheSameRows() void {
+    const env = tables.new(4);
+
+    registry_mod.cfuns(env, "probe", &probe_reg);
+    checkEntry(env, "one", true, false);
+    checkEntry(env, "two", false, false);
+    // Two rows, and nothing past them: the terminator is not what stopped it.
+    assert(probe_reg.len == 2);
+
+    const env2 = tables.new(4);
+    registry_mod.cfunsPrefix(env2, "pre", &probe_reg);
+    checkEntry(env2, "pre/one", true, false);
+    assert(harness.isType(tables.get(env2, value.fromBytes("one", .symbol)), repr.Tag.nil));
+
     registry_mod.cfuns(null, "probe", &probe_reg);
-    registry_mod.cfunsExt(null, "probe", &probe_reg_ext);
     registry_mod.cfunsPrefix(null, "probe", &probe_reg);
-    registry_mod.cfunsExtPrefix(null, "probe", &probe_reg_ext);
+
+    // An empty table is the case a sentinel array cannot express without a
+    // row, and a slice can.
+    registry_mod.cfuns(env2, "probe", &.{});
 }
 
 // ------------------------------------------------------------- def and var
@@ -316,28 +378,28 @@ fn defAndVarBuildDifferentEntries() raise.Raising(void) {
     registry_mod.def(env, "d", harness.wrapInteger(7), "doc for d");
     var t = wrap.toTable(tables.get(env, value.fromBytes("d", .symbol)));
     assert(harness.integerIs(tables.get(t, value.fromBytes("value", .keyword)), 7));
-    assert(harness.isType(tables.get(t, value.fromBytes("ref", .keyword)), constants.JANET_NIL));
+    assert(harness.isType(tables.get(t, value.fromBytes("ref", .keyword)), repr.Tag.nil));
 
-    try registry.janet_var_smImpl(env, "v", harness.wrapInteger(8), null, null, 0);
+    try registry.defVarSm(env, "v", harness.wrapInteger(8), null, null, 0);
     t = wrap.toTable(tables.get(env, value.fromBytes("v", .symbol)));
     // A var's value is in a one-element array under `:ref`, and there is no
     // `:value` key at all.
-    assert(harness.isType(tables.get(t, value.fromBytes("value", .keyword)), constants.JANET_NIL));
+    assert(harness.isType(tables.get(t, value.fromBytes("value", .keyword)), repr.Tag.nil));
     const ref = tables.get(t, value.fromBytes("ref", .keyword));
-    assert(harness.isType(ref, constants.JANET_ARRAY));
+    assert(harness.isType(ref, repr.Tag.array));
     const array = wrap.toArray(ref);
     assert(array.*.count == 1);
-    assert(harness.integerIs(array.*.data.?[0], 8));
+    assert(harness.integerIs(array.*.slice()[0], 8));
 
     // A source line of zero suppresses the map even when the file is given,
     // because the file alone locates nothing.
     registry_mod.defSm(env, "nomap", wrap.fromNil(), null, "f.c", 0);
     t = wrap.toTable(tables.get(env, value.fromBytes("nomap", .symbol)));
-    assert(harness.isType(tables.get(t, value.fromBytes("source-map", .keyword)), constants.JANET_NIL));
+    assert(harness.isType(tables.get(t, value.fromBytes("source-map", .keyword)), repr.Tag.nil));
 
-    try registry.janet_var_smImpl(env, "vmap", wrap.fromNil(), null, "f.c", 9);
+    try registry.defVarSm(env, "vmap", wrap.fromNil(), null, "f.c", 9);
     t = wrap.toTable(tables.get(env, value.fromBytes("vmap", .symbol)));
-    assert(!harness.isType(tables.get(t, value.fromBytes("source-map", .keyword)), constants.JANET_NIL));
+    assert(!harness.isType(tables.get(t, value.fromBytes("source-map", .keyword)), repr.Tag.nil));
 }
 
 // ------------------------------------------------------- reading a binding
@@ -350,7 +412,7 @@ fn theBindingIsASummaryOfFourKeys() void {
     // Anything that is not a table is NONE with a nil value.
     var b = internal.janet_binding_from_entry(wrap.fromNil());
     assert(b.type == constants.JANET_BINDING_NONE);
-    assert(harness.isType(b.value, constants.JANET_NIL));
+    assert(harness.isType(b.value, repr.Tag.nil));
     assert(b.deprecation == constants.JANET_BINDING_DEP_NONE);
     b = internal.janet_binding_from_entry(harness.wrapInteger(3));
     assert(b.type == constants.JANET_BINDING_NONE);
@@ -368,7 +430,7 @@ fn theBindingIsASummaryOfFourKeys() void {
     tables.put(entry, value.fromBytes("ref", .keyword), wrap.fromArray(arrays.new(1)));
     b = bindingOf(entry);
     assert(b.type == constants.JANET_BINDING_VAR);
-    assert(harness.isType(b.value, constants.JANET_ARRAY));
+    assert(harness.isType(b.value, repr.Tag.array));
 
     // `:redef` only means anything with a valid ref.
     entry = tables.new(2);
@@ -398,7 +460,7 @@ fn theBindingIsASummaryOfFourKeys() void {
     tables.put(entry, value.fromBytes("macro", .keyword), wrap.fromTrue());
     b = bindingOf(entry);
     assert(b.type == constants.JANET_BINDING_DYNAMIC_MACRO);
-    assert(harness.isType(b.value, constants.JANET_ARRAY));
+    assert(harness.isType(b.value, repr.Tag.array));
 
     // A macro with a ref but no `:redef` keeps the plain `:value`, which is
     // the one combination where the two keys disagree about which is read.
@@ -451,7 +513,7 @@ fn resolveDereferencesOnlyTheDynamicBindings() raise.Raising(void) {
     // An unbound symbol answers NONE and writes nil, rather than leaving the
     // caller's value alone.
     assert(registry_mod.resolve(env, symbols.csymbol("missing"), &out) == constants.JANET_BINDING_NONE);
-    assert(harness.isType(out, constants.JANET_NIL));
+    assert(harness.isType(out, repr.Tag.nil));
 
     registry_mod.def(env, "d", harness.wrapInteger(3), null);
     assert(registry_mod.resolve(env, symbols.csymbol("d"), &out) == constants.JANET_BINDING_DEF);
@@ -460,11 +522,11 @@ fn resolveDereferencesOnlyTheDynamicBindings() raise.Raising(void) {
     // A plain var resolves to the ref *array*, not to its contents: only the
     // two dynamic types are dereferenced. So `janet_resolve` and
     // `janet_resolve_ext` agree here, and differ only below.
-    try registry.janet_var_smImpl(env, "v", harness.wrapInteger(4), null, null, 0);
+    try registry.defVarSm(env, "v", harness.wrapInteger(4), null, null, 0);
     assert(registry_mod.resolve(env, symbols.csymbol("v"), &out) == constants.JANET_BINDING_VAR);
-    assert(harness.isType(out, constants.JANET_ARRAY));
-    assert(harness.integerIs(wrap.toArray(out).*.data.?[0], 4));
-    assert(harness.isType(registry_mod.resolveExt(env, symbols.csymbol("v")).value, constants.JANET_ARRAY));
+    assert(harness.isType(out, repr.Tag.array));
+    assert(harness.integerIs(wrap.toArray(out).slice()[0], 4));
+    assert(harness.isType(registry_mod.resolveExt(env, symbols.csymbol("v")).value, repr.Tag.array));
 
     // A dynamic def dereferences to the array's last element.
     harness.arrayPush(ref, harness.wrapInteger(5));
@@ -482,8 +544,8 @@ fn resolveDereferencesOnlyTheDynamicBindings() raise.Raising(void) {
 fn theCoreFormsReachTheCoreEnvironment() void {
     // `janet_resolve_core` and `janet_get_core_table` reach the core
     // environment rather than one the caller built.
-    assert(harness.isType(registry_mod.resolveCore("string/find"), constants.JANET_CFUNCTION));
-    assert(harness.isType(registry_mod.resolveCore("no-such-binding-17f"), constants.JANET_NIL));
+    assert(harness.isType(registry_mod.resolveCore("string/find"), repr.Tag.cfunction));
+    assert(harness.isType(registry_mod.resolveCore("no-such-binding-17f"), repr.Tag.nil));
 
     assert(internal.janet_get_core_table("module/cache") != null);
     assert(internal.janet_get_core_table("no-such-binding-17f") == null);
@@ -497,34 +559,35 @@ fn theCoreFormsReachTheCoreEnvironment() void {
 // the whole premise of the section below: the registry keys on the name and
 // refuses a second type under one that is taken.
 //
-// **They are `var` rather than `const`, and that is rule 28 for data.** Written
-// as two `const`s — which is what a transcription of the C original's two
-// `static const JanetAbstractType` gives — their initialisers are identical, so
-// every optimize mode above Debug merges them into one address. Registering the
-// "different" type then registers the same pointer, which is the no-op case
-// asserted just above it, and the refusal never happens: `harness.raised(...).?`
-// unwrapped a null and the contract died with `attempt to use null value` under
-// `ReleaseSafe`, `ReleaseFast` and `ReleaseSmall`. Debug passed.
+// **They are `var` rather than `const`, and that matters.** Written as two
+// `const`s -- which is what a transcription of Janet's two
+// `static const JanetAbstractType` gives -- their initialisers are identical,
+// so every optimize mode above Debug merges them into one address. Registering
+// the "different" type then registers the same pointer, which is the no-op
+// case asserted just above it, and the refusal never happens:
+// `harness.raised(...).?` unwrapped a null and the contract died with `attempt
+// to use null value` under `ReleaseSafe`, `ReleaseFast` and `ReleaseSmall`.
+// Debug passed.
 //
 // Two mutable objects must have distinct addresses, so `var` is the whole fix.
 // Nothing writes to either.
-var probe_at: AbstractType = .{ .name = "registry/probe" };
-var probe_at_same_name: AbstractType = .{ .name = "registry/probe" };
+var probe_at = abstract_type.define(anyopaque, .{ .name = "registry/probe" });
+var probe_at_same_name = abstract_type.define(anyopaque, .{ .name = "registry/probe" });
 
 fn theAbstractRegistryRefusesASecondTypeUnderOneName() raise.Raising(void) {
     // The premise, asserted rather than assumed. Without this the merge above
     // shows up as a null unwrap three assertions later, in a message that
     // names neither the types nor the reason.
-    assert(abstract_type.stored(&probe_at) != abstract_type.stored(&probe_at_same_name));
+    assert(&probe_at != &probe_at_same_name);
 
-    try registry.registerAbstractType(abstract_type.stored(&probe_at));
+    try registry.registerAbstractType(&probe_at);
     assert(registry_mod.getAbstractType(value.fromBytes("registry/probe", .symbol)) ==
-        abstract_type.stored(&probe_at));
+        &probe_at);
 
     // Registering the same type twice is a no-op rather than an error.
-    try registry.registerAbstractType(abstract_type.stored(&probe_at));
+    try registry.registerAbstractType(&probe_at);
     assert(registry_mod.getAbstractType(value.fromBytes("registry/probe", .symbol)) ==
-        abstract_type.stored(&probe_at));
+        &probe_at);
 
     // An unregistered name answers null, which is what `janet_unmarshal` turns
     // into "unknown abstract type".
@@ -536,15 +599,15 @@ fn theAbstractRegistryRefusesASecondTypeUnderOneName() raise.Raising(void) {
     // flag and four lines to observe.
     const refusal = harness.raised(
         registry.registerAbstractType,
-        .{abstract_type.stored(&probe_at_same_name)},
+        .{&probe_at_same_name},
     ).?;
-    assert(refusal.signal == constants.JANET_SIGNAL_ERROR);
+    assert(refusal.signal == types.Signal.@"error");
     assert(refusal.says("cannot register abstract type registry/probe, " ++
         "a type with the same name exists"));
 
     // The failed registration left the first type in place.
     assert(registry_mod.getAbstractType(value.fromBytes("registry/probe", .symbol)) ==
-        abstract_type.stored(&probe_at));
+        &probe_at);
 }
 
 // ------------------------------------------------------ text substitution
@@ -562,7 +625,7 @@ fn substitutionMemoizesAValueAndCallsACallable() raise.Raising(void) {
     var subst = value.fromBytes("X", .string);
     var view = try registry.textSubstitution(&subst, matched[0..@intCast(2)], null);
     assert(bytesAre(view, "X"));
-    assert(harness.isType(subst, constants.JANET_STRING));
+    assert(harness.isType(subst, repr.Tag.string));
 
     // A value that is not bytes is printed once and the caller's slot is
     // *overwritten* with the string, which is what "memoize" means here: the
@@ -570,30 +633,29 @@ fn substitutionMemoizesAValueAndCallsACallable() raise.Raising(void) {
     subst = harness.wrapInteger(42);
     view = try registry.textSubstitution(&subst, matched[0..@intCast(2)], null);
     assert(bytesAre(view, "42"));
-    assert(harness.isType(subst, constants.JANET_STRING));
+    assert(harness.isType(subst, repr.Tag.string));
     view = try registry.textSubstitution(&subst, matched[0..@intCast(2)], null);
     assert(bytesAre(view, "42"));
 
     // A cfunction is called with the matched text.
     subst = registry_mod.resolveCore("string/ascii-upper");
-    assert(harness.isType(subst, constants.JANET_CFUNCTION));
+    assert(harness.isType(subst, repr.Tag.cfunction));
     view = try registry.textSubstitution(&subst, matched[0..@intCast(2)], null);
     assert(bytesAre(view, "AB"));
     // The slot is *not* memoized for a callable: it must be called again for
     // the next match.
-    assert(harness.isType(subst, constants.JANET_CFUNCTION));
+    assert(harness.isType(subst, repr.Tag.cfunction));
 
-    // A raising cfunction. Since Phase 10 Part 17e a builtin records its raise
-    // and returns, and this is the fourth place in the tree that invokes a
-    // cfunction pointer -- the one 17e's count of three missed. The C contract
-    // had to arm a flag to see it; here the substitution is `raise.Raising`
-    // and the refusal is the return value.
+    // A raising cfunction. A builtin returns its raise, and this is the fourth
+    // place in the tree that invokes a cfunction pointer -- the one a count of
+    // three missed. Here the substitution is `raise.Raising` and the refusal is
+    // the return value.
     var finder = registry_mod.resolveCore("string/find");
     const refusal = harness.raised(
         registry.textSubstitution,
         .{ &finder, matched[0..2], @as(?*types.JanetArray, null) },
     ).?;
-    assert(refusal.signal == constants.JANET_SIGNAL_ERROR);
+    assert(refusal.signal == types.Signal.@"error");
     assert(refusal.beginsWith("arity mismatch"));
 
     // Extra captures are appended after the matched text. `string/slice` with
@@ -613,6 +675,7 @@ fn body() raise.Raising(void) {
     theRegistryGrowsPastItsFloor();
     theFourEntryPointsDefineAndRegister();
     thePrefixingFormsRewriteOnlyTheName();
+    theSliceFormsInstallTheSameRows();
     try defAndVarBuildDifferentEntries();
     theBindingIsASummaryOfFourKeys();
     deprecationReadsAKeywordAndFallsBackToNormal();

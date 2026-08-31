@@ -22,8 +22,7 @@
 //! have them deleting each other's.
 
 const std = @import("std");
-const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
 const harness = @import("harness.zig");
 const value = @import("subsystems").value;
@@ -112,31 +111,31 @@ fn theCoreFunctions(original: [:0]const u8) !void {
     const cd = harness.core("os/cd");
     const rename = harness.core("os/rename");
     const remove = harness.core("os/rm");
-    var args: [2]types.Janet = undefined;
+    var args: [2]repr.Value = undefined;
 
     const here = try getcwd(&.{});
-    std.debug.assert(harness.isType(here, constants.JANET_STRING));
+    std.debug.assert(harness.isType(here, repr.Tag.string));
     std.debug.assert(harness.stringIs(wrap.toString(here), original.ptr));
 
     args[0] = value.fromBytes(public_dir, .string);
     // True the first time, false the second -- not a raise.
-    std.debug.assert(wrap.toBoolean(try mkdir(args[0..1])) != 0);
-    std.debug.assert(wrap.toBoolean(try mkdir(args[0..1])) == 0);
+    std.debug.assert(wrap.toBoolean(try mkdir(args[0..1])));
+    std.debug.assert(!wrap.toBoolean(try mkdir(args[0..1])));
 
-    std.debug.assert(harness.isType(try cd(args[0..1]), constants.JANET_NIL));
+    std.debug.assert(harness.isType(try cd(args[0..1]), repr.Tag.nil));
     makeFile("source");
 
     args[0] = value.fromBytes(original, .string);
-    std.debug.assert(harness.isType(try cd(args[0..1]), constants.JANET_NIL));
+    std.debug.assert(harness.isType(try cd(args[0..1]), repr.Tag.nil));
 
     args[0] = value.fromBytes(public_source, .string);
     args[1] = value.fromBytes(public_dest, .string);
-    std.debug.assert(harness.isType(try rename(args[0..2]), constants.JANET_NIL));
+    std.debug.assert(harness.isType(try rename(args[0..2]), repr.Tag.nil));
 
     args[0] = args[1];
-    std.debug.assert(harness.isType(try remove(args[0..1]), constants.JANET_NIL));
+    std.debug.assert(harness.isType(try remove(args[0..1]), repr.Tag.nil));
     args[0] = value.fromBytes(public_dir, .string);
-    std.debug.assert(harness.isType(try rmdir(args[0..1]), constants.JANET_NIL));
+    std.debug.assert(harness.isType(try rmdir(args[0..1]), repr.Tag.nil));
 }
 
 /// What the Janet surface refuses, which the C contract did not ask. Each is a
@@ -146,7 +145,7 @@ fn theRefusals() void {
     const cd = harness.core("os/cd");
     const rmdir = harness.core("os/rmdir");
     const remove = harness.core("os/rm");
-    var args: [1]types.Janet = undefined;
+    var args: [1]repr.Value = undefined;
 
     args[0] = value.fromBytes("janet-zig-os-fs-absent-0000", .string);
     std.debug.assert(harness.raised(cd, .{args[0..1]}) != null);

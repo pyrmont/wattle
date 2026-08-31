@@ -15,35 +15,27 @@
 //! asserting that on every target is the coverage the arch-gated C original
 //! could never have.
 //!
-//! ## What the migration changed
+//! ## Where the oracles come from
 //!
-//! **The subject is reached by import, and that is what killed six exported
-//! symbols.** `test/ffi_layout.c` hand-declared `janet_ffi_decode_prim` and
-//! its five neighbours, because they are in no header — `ffi.c` and this
-//! contract were their only callers, and after Phase 10 Part 18 the caller was
-//! `ffi_types.zig` reaching a Zig function through the C ABI. Moving this file
-//! inside the compilation took the last reason for the symbols to exist, so
-//! Phase 11 Part 16 deleted all six along with the second copy of `Layout`
-//! that lived at the calling end.
+//! **The subject is reached by import.** Six symbols existed because a C
+//! contract and a C caller were the only readers of functions in no header;
+//! with the contract inside the compilation there is no reason for any of them
+//! to be a symbol, and the second copy of `Layout` at the calling end went
+//! with them.
 //!
-//! **The ordinals are still written out here rather than imported.** That is
-//! deliberate and it is the file's only real oracle question. `ffi_layout.zig`
+//! **The ordinals are written out here rather than imported.** That is
+//! deliberate and it is the file's only real oracle question. The subject
 //! spells them as a `PrimType` enumeration; asserting `lookupPrim("void") ==
-//! @intFromEnum(PrimType.void)` would be an assertion that cannot fail. The C
-//! contract's independent copy of the enumeration *was* the oracle, so the
-//! copy survives the migration — the numbers below are the wire between this
-//! table and `ffi_types.zig`'s own enumeration, and either end may be wrong.
+//! @intFromEnum(PrimType.void)` would be an assertion that cannot fail. An
+//! independent copy of the enumeration *is* the oracle, so the numbers below
+//! are the wire between this table and the subject's own enumeration, and
+//! either end may be wrong.
 //!
-//! **The host-ABI section keeps both sides.** `test/ffi_layout.c` laid out the
-//! equivalent of three C structures and compared every offset with what the
-//! host compiler had assigned through `offsetof`. Zig's `extern struct` is the
+//! **The host-ABI section keeps both sides.** Zig's `extern struct` is the
 //! same claim asked of the same C ABI, computed by a different implementation
-//! of it — the compiler's, not this hand-written machine's — so `@offsetOf`
-//! replaces `offsetof` and the comparison stays a comparison of two
-//! descriptions. This is rule 20's question with an answer that happened to be
-//! easy; it was worth asking, because a translation that had reached for
-//! `Layout` to describe the expectation would have compared the machine with
-//! itself.
+//! of it -- the compiler's, not this hand-written machine's -- so `@offsetOf`
+//! is a comparison of two descriptions. Reaching for `Layout` to describe the
+//! expectation would have compared the machine with itself.
 
 const std = @import("std");
 const subsystems = @import("subsystems");
@@ -122,12 +114,9 @@ fn machineTypeAliases() void {
 
 /// The only two names whose meaning depends on the word size.
 ///
-/// The condition is `config.bits64` — the same input the subject reads, rather
+/// The condition is `config.bits64` -- the same input the subject reads, rather
 /// than the subject's answer, and rather than `@sizeOf(usize)`, which is a
-/// different question that happens to agree here. It was `janet.h`'s
-/// `JANET_64` until Phase 12 increment 1 moved the answer to `build.zig`; the
-/// property this asserts is unchanged, and so is the reason it is asked this
-/// way rather than the obvious way.
+/// different question that happens to agree here.
 fn wordSizedMachineTypes() void {
     if (comptime config.bits64) {
         assert(prim("size") == prim_uint64);
@@ -156,7 +145,7 @@ fn unknownMachineTypes() void {
     assert(prim("void\x00x") == -1);
 }
 
-fn callingConventions() void {
+fn cfunCallingConventions() void {
     // Every convention decodes on every target, including the three that this
     // build cannot call through.
     assert(cc("none") == cc_none);
@@ -326,7 +315,7 @@ const HostNested = extern struct {
 /// `extern struct` is Zig's implementation of the platform C ABI, and this
 /// machine is a hand-written one; the two agreeing is what says the machine
 /// reproduces the ABI rather than only its own past output. That is the same
-/// pairing `test/ffi_layout.c` had with `offsetof`, one compiler over.
+/// pairing a C predecessor of this file had with `offsetof`, one compiler over.
 fn layoutMatchesTheCompiler() void {
     var layout = Layout.init();
     assert(layout.place(@sizeOf(u8), @alignOf(u8), false) == @offsetOf(HostCharDouble, "a"));
@@ -436,7 +425,7 @@ pub fn run() void {
     machineTypeAliases();
     wordSizedMachineTypes();
     unknownMachineTypes();
-    callingConventions();
+    cfunCallingConventions();
 
     typeExtents();
 

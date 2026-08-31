@@ -4,23 +4,20 @@
 /* The host socket headers `net.c` works through, prepared for Zig's
  * translate-c.
  *
- * One of the three host translations left in the tree, and it is here for the
- * reason `os/abi.h` gives for the first of them: nothing declared *here*
- * crosses a subsystem boundary. A `struct addrinfo` lives for the length of
- * one cfunction, and the one socket address that outlives its call is
- * `janet_address_type`'s abstract, which is a byte buffer both sides treat as
- * opaque. Nothing Janet's own -- a `JanetStream *`, a `Janet` -- appears in
- * this translation at all; `types.zig` owns those and every Zig file shares
- * it. The rule this used to state against `abi.zig`'s shared `@cImport`
- * survives its subject: Phase 12 increment 5f retired that translation with
- * `janet.h`, so what is left is three host headers with no Janet type between
- * them.
- *
- * Unlike `os/abi.h`, this one *does* include the Windows headers rather than
- * restating what it needs in Zig. `ev_stream.zig` took the other route and
- * declared `WSARecvFrom` and its kin by hand, because what it needed was four
- * calls and one structure. What `net.c` needs from Winsock is forty integer
- * constants whose values differ from the POSIX ones -- `SOL_SOCKET` is
+  * One of the three host translations left in the tree, and it is here for the
+  * reason `os/abi.h` gives for the first of them: nothing declared *here*
+  * crosses a subsystem boundary. A `struct addrinfo` lives for the length of
+  * one cfunction, and the one socket address that outlives its call is
+  * `janet_address_type`'s abstract, which is a byte buffer both sides treat as
+  * opaque. Nothing Janet's own -- a `JanetStream *`, a `Value` -- appears in
+  * this translation at all; `types.zig` owns those and every Zig file shares
+  * it.
+  *
+  * Unlike `os/abi.h`, this one *does* include the Windows headers rather than
+  * restating what it needs in Zig. `ev/stream.zig` took the other route and
+  * declared `WSARecvFrom` and its kin by hand, because what it needed was four
+  * calls and one structure. What the socket layer needs from Winsock is forty
+  * integer constants whose values differ from the POSIX ones -- `SOL_SOCKET` is
  * `0xffff` against Linux's `1`, `AF_INET6` is 23 against 30 on macOS and 10 on
  * Linux -- and forty hand-copied magic numbers on a platform this project
  * builds but does not run is a worse bet than a translation the matrix
@@ -33,21 +30,17 @@
 
 #include "janet_features.h"
 
-/* Aro -- the translate-c front end in Zig 0.16 -- predefines `__unix__`,
- * `unix` and `__unix` for the mingw targets and clang does not, so a `@cImport`
- * of this file and a compilation of the same target disagree about the
- * predefine unless it is cleared. `janet.h` was where that first bit, in Phase
- * 10 Part 12 -- it tested its Unix chain before its Windows one, so the
- * translation for `x86_64-windows-gnu` said `JANET_POSIX` where the
- * compilation said `JANET_WINDOWS`, and `JanetHandle` came out `int` rather
- * than `void *`. `FOUND.md` records it.
- *
- * **The header is gone with Phase 12 increment 5f and this stays**, in all
- * three host translations, because what it protects is not `janet.h`: every
- * system header included below is read by translate-c and compiled by clang,
- * and the guard is what makes those two agree. The platform chains in this
- * file put their Windows arm first as well, which is belt to this braces --
- * the two corrections are independent and both are cheap. */
+ /* Aro -- the `translate-c` front end in Zig 0.16 -- predefines `__unix__`,
+  * `unix` and `__unix` for the mingw targets and clang does not, so a `@cImport`
+  * of this file and a compilation of the same target disagree about the
+  * predefine unless it is cleared. That produced a `JanetHandle` of `int`
+  * rather than `void *` on `x86_64-windows-gnu`, from a platform chain that
+  * tested Unix before Windows; `FOUND.md` records it.
+  *
+  * Every system header included below is read by `translate-c` and compiled by
+  * clang, and this guard is what makes those two agree. The platform chains in
+  * this file put their Windows arm first as well, which is belt to this
+  * braces -- the two corrections are independent and both are cheap. */
 #if defined(_WIN32) || defined(WIN32)
 #undef __unix__
 #undef unix
@@ -90,9 +83,9 @@
  * an `@hasDecl` because it is a platform test rather than a declaration. The
  * enumeration is C's and stays C's; Zig reads the answer.
  *
- * `JANET_GNU_HURD` was `janet.h`'s name for `__gnu_hurd__`, one line above
- * where it defined it. Increment 5f retired the header, so the predefine is
- * tested directly -- which is what `janet.h` did. */
+ * Janet spelled `__gnu_hurd__` as `JANET_GNU_HURD`, one line above where it
+ * used it. With no such header here the predefine is tested directly, which
+ * is what that definition did. */
 #if defined(SO_REUSEPORT) && !defined(__gnu_hurd__)
 #define JANET_ZIG_REUSEPORT 1
 #else

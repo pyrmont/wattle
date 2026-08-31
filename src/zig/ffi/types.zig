@@ -1,13 +1,10 @@
 //! The FFI's type vocabulary: what a primitive is, what a calling convention
 //! is, and how a struct is laid out.
 //!
-//! `zig` and `zig` until Phase 12 increment 6f. One
-//! decides, the other measures, and neither has a name of its own -- every
-//! `ffi/` cfunction is registered in `ffi.zig`. They are a leaf rather than
-//! part of the bucket because **decision 2 settled `ffi/` as designed**: a
-//! 258-line bucket beside its satellites is what `ffi_core.zig` already was,
-//! and taste overrides the heuristic here where it did not for
-//! `os/fs/paths.zig` or `os/process.zig`.
+//! Two files once. One decides, the other measures, and neither has a name of
+//! its own -- every `ffi/` cfunction is registered in `ffi.zig`. They are a
+//! leaf rather than part of the bucket because `ffi/` is designed as a group:
+//! a 258-line bucket beside its satellites is what the root already was.
 //!
 //! **`decodeCc` and `decodePrim` were declared in both halves and are not
 //! duplicates.** `zig`'s raise and are what `ffi/call.zig` reaches;
@@ -20,12 +17,10 @@ const builtin = @import("builtin");
 const raise = @import("raise");
 const pp_format = @import("../pp/format.zig");
 const types = @import("types");
-const constants = @import("constants");
-const c = @import("cabi");
+const repr = @import("repr");
 const abstract_type = @import("../abstract_type.zig");
 const utils = @import("../utils.zig");
 const gc_mark = @import("../gc/mark.zig");
-const kind = @import("../value/helpers/kind.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const args_core = @import("../args.zig");
 const abstracts = @import("../value/abstracts.zig");
@@ -107,11 +102,11 @@ pub const Spec = enum(u32) {
 /// The three `JANET_FFI_*_ENABLED` chains, which are host facts and were three
 /// `#if`s over the compiler's predefines.
 ///
-/// Read from `builtin` rather than through `@cImport`, on Part 12's rule: a
-/// `JANET_*` macro derived from the compiler's own predefines is not reliable
-/// through a translation, because Aro predefines `__unix__` for
-/// `x86_64-windows-gnu` and `janet.h` tests its Unix chain first. `builtin` is
-/// the build's own answer and cannot disagree with itself.
+/// Read from `builtin` rather than through `@cImport`: a `JANET_*` macro
+/// derived from the compiler's own predefines is not reliable through a
+/// translation, because Aro predefines `__unix__` for `x86_64-windows-gnu` and
+/// Janet's header tests its Unix chain first. `builtin` is the build's own
+/// answer and cannot disagree with itself.
 pub const windows = builtin.os.tag == .windows;
 pub const win64_enabled = windows and builtin.cpu.arch == .x86_64;
 pub const sysv64_enabled = !windows and builtin.cpu.arch == .x86_64;
@@ -168,8 +163,8 @@ pub const StructMember = extern struct {
 };
 
 /// `JanetFFIStruct`, which also stores array types. The fields follow the
-/// header as a flexible array member; Phase 8's fourth rule makes `@sizeOf`
-/// stand in for the `offsetof` that would have measured where they start.
+/// header as a flexible array member, so `@sizeOf` stands in for the
+/// `offsetof` that would have measured where they start.
 pub const Struct = extern struct {
     size: u32,
     alignment: u32,
@@ -213,11 +208,10 @@ pub const Mapping = extern struct {
 
 /// `JanetFFISignature`.
 ///
-/// `arg_stack_words` is where C had `word_count`, a field `cfun_ffi_signature`
-/// never wrote and nothing ever read. Part 16 needs the outgoing half of the
-/// frame measured in words -- the rung a call selects -- and this is the slot
-/// it goes in. Nothing outside these files sees this structure: it was
-/// file-local to `ffi.c` and `ffi.c` no longer declares it.
+/// `arg_stack_words` is where Janet has `word_count`, a field
+/// `cfun_ffi_signature` never writes and nothing ever reads. The outgoing half
+/// of the frame measured in words -- the rung a call selects -- goes in that
+/// slot. Nothing outside these files sees this structure.
 pub const Signature = extern struct {
     frame_size: u32,
     arg_count: u32,
@@ -265,10 +259,10 @@ fn primInfo(prim: Prim) PrimInfo {
 // The kernels in `zig`
 // ==========================================================================
 //
-// Reached by import since Phase 11 Part 16. They were `extern fn` declarations
-// against six exported symbols until then -- the shape `ffi.c` needed, kept
-// after both ends had become Zig, with `Layout` written out a second time here
-// and nothing checking either declaration against its definition.
+// Reached by import. They were `extern fn` declarations against six exported
+// symbols -- the shape C needed, kept after both ends had become Zig, with
+// `Layout` written out a second time here and nothing checking either
+// declaration against its definition.
 
 /// A Janet keyword as the name tables read it: length-prefixed bytes, which
 /// may contain a zero, rather than a C string.
@@ -313,9 +307,7 @@ pub fn decodePrim(name: [*]const u8) raise.Raising(Prim) {
 
 /// `signature_mark`. Every argument that is a struct holds an abstract the
 /// collector has to reach.
-fn signatureMark(p: ?*anyopaque, s: usize) callconv(.c) c_int {
-    _ = s;
-    const sig: *Signature = @ptrCast(@alignCast(p));
+fn signatureMark(sig: *Signature, _: usize) c_int {
     var i: u32 = 0;
     while (i < sig.arg_count) : (i += 1) {
         const t = sig.args[i].type;
@@ -325,9 +317,7 @@ fn signatureMark(p: ?*anyopaque, s: usize) callconv(.c) c_int {
 }
 
 /// `struct_mark`. A nested struct type is an abstract of this same type.
-fn structMark(p: ?*anyopaque, s: usize) callconv(.c) c_int {
-    _ = s;
-    const st: *Struct = @ptrCast(@alignCast(p));
+fn structMark(st: *Struct, _: usize) c_int {
     const members = Struct.fields(st);
     var i: u32 = 0;
     while (i < st.field_count) : (i += 1) {
@@ -339,18 +329,16 @@ fn structMark(p: ?*anyopaque, s: usize) callconv(.c) c_int {
 
 /// `janet_signature_type`. `JANET_ATEND_GCMARK` leaves every field after
 /// `gcmark` null, which the translated structure already defaults them to.
-pub const signature_at: abstract_type.AbstractType = .{
+pub const signature_at = abstract_type.define(Signature, .{
     .name = "core/ffi-signature",
-    .gc = null,
     .gcmark = &signatureMark,
-};
+});
 
 /// `janet_struct_type`.
-pub const struct_at: abstract_type.AbstractType = .{
+pub const struct_at = abstract_type.define(Struct, .{
     .name = "core/ffi-struct",
-    .gc = null,
     .gcmark = &structMark,
-};
+});
 
 // ==========================================================================
 // Decoding a type out of a Janet value
@@ -362,7 +350,7 @@ pub const struct_at: abstract_type.AbstractType = .{
 /// zero until the end so a collection triggered by a nested type does not scan
 /// a field that has not been filled in yet, and the totals are copied over once
 /// the last field has been placed.
-pub fn buildStruct(argv: []const types.Janet) raise.Raising(*Struct) {
+pub fn buildStruct(argv: []const repr.Value) raise.Raising(*Struct) {
     // `:pack` marks a single packed member and `:pack-all` packs the rest.
     var member_count = @as(i32, @intCast(argv.len));
     var all_packed = false;
@@ -379,7 +367,7 @@ pub fn buildStruct(argv: []const types.Janet) raise.Raising(*Struct) {
     }
 
     const st: *Struct = @ptrCast(@alignCast(abstracts.new(
-        abstract_type.stored(&struct_at),
+        &struct_at,
         Struct.allocSize(@intCast(@as(i32, @intCast(argv.len)))),
     )));
     st.field_count = 0;
@@ -418,21 +406,21 @@ pub fn buildStruct(argv: []const types.Janet) raise.Raising(*Struct) {
 }
 
 /// `decode_ffi_type`.
-pub fn decodeType(x: types.Janet) raise.Raising(Type) {
-    if (0 != kind.checkType(x, constants.JANET_KEYWORD)) {
+pub fn decodeType(x: repr.Value) raise.Raising(Type) {
+    if (repr.checkType(x, repr.Tag.keyword)) {
         return Type.of(try decodePrim(wrap.toKeyword(x)));
     }
     var ret: Type = .{ .st = null, .prim = .@"struct", .array_count = -1 };
-    if (null != args_core.checkabstract(x, abstract_type.stored(&struct_at))) {
+    if (null != args_core.checkabstract(x, &struct_at)) {
         ret.st = @ptrCast(@alignCast(wrap.toAbstract(x)));
         return ret;
     }
     var len: i32 = undefined;
-    var els: ?[*]const types.Janet = undefined;
+    var els: ?[*]const repr.Value = undefined;
     if (0 == args_core.indexedView(x, &els, &len)) {
         return pp_format.panicf("bad native type %v", .{x});
     }
-    if (0 != kind.checkType(x, constants.JANET_ARRAY)) {
+    if (repr.checkType(x, repr.Tag.array)) {
         if (len != 2 and len != 1) {
             return pp_format.panicf("array type must be of form @[type count], got %v", .{x});
         }
@@ -582,7 +570,7 @@ pub fn lookupCc(name: []const u8) i32 {
 /// The multiplication wraps explicitly. A count comes from `janet_getnat` and a
 /// base size from a completed layout, so Janet's own limits keep the product
 /// well inside the range; but C leaves an overflow of `size_t` defined and Zig
-/// would trap, so the port commits to the C result.
+/// would trap, so this commits to the C result.
 pub fn typeExtent(base_size: usize, array_count: i32) usize {
     const count: usize = if (array_count < 0) 1 else @intCast(array_count);
     return base_size *% count;

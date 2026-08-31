@@ -1,19 +1,18 @@
 //! The interpreter loop, and the call protocol it dispatches through.
 //!
-//! Two files until Phase 12 increment 6f, and `root.zig` already said they
-//! were one object: `vm_calls.zig` is imported by `vm_run.zig` as well as by
-//! the root, because the loop inlines it -- Phase 11 Part 2 measured 2.4-3.4%
-//! on method dispatch for reaching it out of line.  A merge is what that
-//! measurement was describing.
+//! Two files once, and the root already said they were one object: the call
+//! protocol is imported by the loop as well as by the root, because the loop
+//! inlines it -- reaching it out of line cost 2.4-3.4% on method dispatch,
+//! measured. A merge is what that measurement was describing.
 //!
 //! `asSize` was declared identically in both.
 const std = @import("std");
 const raise = @import("raise");
-const io_core = @import("io.zig");
 const pp_format = @import("pp/format.zig");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
+const vm_state = @import("vm/lifecycle.zig");
 const stdio = @import("stdio.zig");
 const options = @import("options");
 const structs = @import("value/structs.zig");
@@ -35,7 +34,6 @@ const vm_entry = @import("vm/entry.zig");
 const pp_describe = @import("pp.zig");
 const abstract_type = @import("abstract_type.zig");
 const value = @import("value.zig");
-const kind = @import("value/helpers/kind.zig");
 const utils = @import("utils.zig");
 
 // -------------------------------------------------------------------------
@@ -43,8 +41,8 @@ const utils = @import("utils.zig");
 // -------------------------------------------------------------------------
 
 /// Whether this build checks for an interpreter interrupt between instructions.
-/// `state_abi.h` restates `JANET_NO_INTERPRETER_INTERRUPT` as a valued macro,
-/// because translate-c does not surface one defined without a value.
+/// The negative spelling is Janet's; `constants` states it positively so the
+/// guards below read forwards.
 const has_interrupt = constants.JANET_VM_HAS_INTERRUPT == 1;
 
 /// `janet.h`'s frame size. The function-like macros over it — `janet_stack_frame`
@@ -58,7 +56,7 @@ inline fn asSize(n: i32) usize {
     return @bitCast(@as(isize, n));
 }
 
-inline fn stackFrame(values: [*]types.Janet) *types.JanetStackFrame {
+inline fn stackFrame(values: [*]repr.Value) *types.JanetStackFrame {
     return @ptrCast(@alignCast(values - frame_size));
 }
 
@@ -71,14 +69,12 @@ inline fn funcEnvSlot(func: *types.JanetFunction, i: i32) *?*types.JanetFuncEnv 
 
 /// The value operations the loop reaches on every instruction.
 ///
-/// In C every one of these is a macro in `janet.h`, so `run_vm` pays a shift
-/// and a compare for a type check rather than a call. Zig sees the *functions*
-/// the same header declares, and reaching them through the symbol table costs
-/// the arithmetic workload 89% -- measured, before this import existed. So the
-/// value layer arrives the same way Part 2's helpers do: as a module, which was
-/// resolved to `value_wrap.zig` or to `value_wrap_extern.zig` on the selector
-/// until Phase 11 Part 26.
-const val = wrap.ops;
+// `val` was this file's private, inlined spelling of twenty-one value
+// operations, and it was here because reaching them through the *symbol
+// table* cost the arithmetic workload 89% -- measured. `wrap`'s own
+// declarations are `pub inline fn`, which answers that for every caller. The
+// ninety sites name `wrap` and `repr` directly; `wrap.zig`'s "the inline
+// surface, and why it is gone" has the argument.
 
 /// `janet_checkintrange` and `janet_checkuintrange` from `janet.h`, which are
 /// macros with no function behind them. Written out the way `args_core.zig`
@@ -131,13 +127,10 @@ inline fn fES(pc: [*]const u32) i32 {
     return @as(i32, @bitCast(pc[0])) >> 16;
 }
 
-// The per-call `setjmp` scope Phase 7 built for this loop was here, and Phase
-// 10 Part 17e removed it. It had thirteen callees when Part 17 began -- the
-// access layer, the callee layer, the fiber pushes, `janet_equals`,
-// `janet_compare`, the three fills and the cfunction call -- and every one of
-// them now returns its raise, so there was nothing left for a scope to catch.
-// `-Dcall-trampoline` selected it, and the hinge spent the selector: by then
-// its C arm was the only configuration in the tree that compiled a `setjmp`.
+// There is no per-call `setjmp` scope around this loop. Its thirteen callees
+// -- the access layer, the callee layer, the fiber pushes, `janet_equals`,
+// `janet_compare`, the three fills and the cfunction call -- each return their
+// raise, so there is nothing left for a scope to catch.
 
 // ------------------------------------------------------- opcode templates
 
@@ -264,7 +257,7 @@ const Cmp = enum {
 /// `scoped` builds, which is a separate object holding copies.
 const Interp = struct {
     fiber: *types.JanetFiber,
-    stack: [*]types.Janet,
+    stack: [*]repr.Value,
     pc: [*]u32,
     func: *types.JanetFunction,
 
@@ -304,22 +297,22 @@ const Interp = struct {
 
     inline fn maybeCollect(self: *const Interp) void {
         _ = self;
-        if (c.vm().next_collection >= c.vm().gc_interval) gc_mark.collect();
+        if (vm_state.current().gc.next_collection >= vm_state.current().gc.interval) gc_mark.collect();
     }
 
     // ---- leaving the loop
 
     /// `vm_return`.
-    inline fn ret(self: *Interp, sig: types.JanetSignal, v: types.Janet) types.JanetSignal {
-        c.vm().return_reg.?.* = v;
+    inline fn ret(self: *Interp, sig: types.Signal, v: repr.Value) types.Signal {
+        vm_state.current().return_reg.?.* = v;
         self.commit();
         return sig;
     }
 
     /// `vm_return_no_restore`.
-    inline fn retNoRestore(self: *Interp, sig: types.JanetSignal, v: types.Janet) types.JanetSignal {
+    inline fn retNoRestore(self: *Interp, sig: types.Signal, v: repr.Value) types.Signal {
         _ = self;
-        c.vm().return_reg.?.* = v;
+        vm_state.current().return_reg.?.* = v;
         return sig;
     }
 
@@ -333,51 +326,50 @@ const Interp = struct {
     /// `JOP_CALL` committed before entering `janet_fiber_funcframe` and its
     /// `stack` is stale afterwards, and `JOP_TAILCALL` commits to a frame it
     /// recomputes.
-    inline fn raiseSignal(self: *Interp, sig: types.JanetSignal, v: types.Janet) raise.Error!types.JanetSignal {
+    inline fn raiseSignal(self: *Interp, sig: types.Signal, v: repr.Value) raise.Error!types.Signal {
         _ = self;
-        // Returned rather than jumped since Phase 10 Part 2. `raise.signal`
-        // reaches the same `janet_zig_signal_record` `janet_signalv` does, so
-        // the plan, the coercion and `JANET_FIBER_DID_RAISE` are unchanged;
-        // only the delivery differs. Since the hinge there is no other
-        // delivery: `continueNoCheck` catches the error one frame up.
+        // Returned rather than jumped. `raise.signal` reaches the same
+        // `signalRecord` a jumping delivery would, so the plan, the
+        // coercion and `JANET_FIBER_DID_RAISE` are unchanged; only the
+        // travel differs. `continueNoCheck` catches the error one frame up.
         return raise.signal(sig, v);
     }
 
     /// `vm_raisev`.
-    inline fn raisev(self: *Interp, v: types.Janet) raise.Error!types.JanetSignal {
-        return try self.raiseSignal(constants.JANET_SIGNAL_ERROR, v);
+    inline fn raisev(self: *Interp, v: repr.Value) raise.Error!types.Signal {
+        return try self.raiseSignal(types.Signal.@"error", v);
     }
 
     /// `vm_raisef`. The message is built by `pp_format.panicf`, which parses
     /// the format string at compile time and indexes the tuple; the specifier
     /// and the value it renders are checked against each other here.
-    inline fn raisef(self: *Interp, comptime format: [:0]const u8, args: anytype) raise.Error!types.JanetSignal {
+    inline fn raisef(self: *Interp, comptime format: [:0]const u8, args: anytype) raise.Error!types.Signal {
         _ = self;
         return pp_format.panicf(format, args);
     }
 
     /// `vm_throw`: commit, then raise a plain string.
-    inline fn throw(self: *Interp, message: [*:0]const u8) raise.Error!types.JanetSignal {
+    inline fn throw(self: *Interp, message: [*:0]const u8) raise.Error!types.Signal {
         self.commit();
         return try self.raisev(value.fromBytes(std.mem.span(message), .string));
     }
 
     /// `vm_assert`.
-    inline fn assert(self: *Interp, condition: bool, message: [*:0]const u8) raise.Error!?types.JanetSignal {
+    inline fn assert(self: *Interp, condition: bool, message: [*:0]const u8) raise.Error!?types.Signal {
         if (condition) return null;
         return try self.throw(message);
     }
 
     /// `vm_assert_type`.
-    inline fn assertType(self: *Interp, x: types.Janet, comptime t: types.JanetType) raise.Error!?types.JanetSignal {
-        if (val.checkType(x, t)) return null;
+    inline fn assertType(self: *Interp, x: repr.Value, comptime t: repr.Tag) raise.Error!?types.Signal {
+        if (repr.checkType(x, t)) return null;
         self.commit();
-        return try self.raisef("expected %T, got %v", .{ @as(c_int, 1) << t, x });
+        return try self.raisef("expected %T, got %v", .{ repr.TagSet.one(t), x });
     }
 
     /// `vm_assert_types`.
-    inline fn assertTypes(self: *Interp, x: types.Janet, typeflags: c_int) raise.Error!?types.JanetSignal {
-        if (val.checkTypes(x, typeflags)) return null;
+    inline fn assertTypes(self: *Interp, x: repr.Value, typeflags: repr.TagSet) raise.Error!?types.Signal {
+        if (repr.checkTypes(x, typeflags)) return null;
         self.commit();
         return try self.raisef("expected %T, got %v", .{ typeflags, x });
     }
@@ -385,11 +377,11 @@ const Interp = struct {
     /// `vm_maybe_auto_suspend`. The condition is only ever a comparison on an
     /// instruction field, so evaluating it in a build without the interrupt —
     /// where C does not evaluate it at all — costs nothing and changes nothing.
-    inline fn maybeAutoSuspend(self: *Interp, condition: bool) raise.Error!?types.JanetSignal {
+    inline fn maybeAutoSuspend(self: *Interp, condition: bool) raise.Error!?types.Signal {
         if (!has_interrupt) return null;
-        if (condition and abstracts.atomicLoadRelaxed(&c.vm().auto_suspend) != 0) {
+        if (condition and abstracts.atomicLoadRelaxed(&vm_state.current().auto_suspend) != 0) {
             self.fiber.*.flags |= (constants.JANET_FIBER_RESUME_NO_USEVAL | constants.JANET_FIBER_RESUME_NO_SKIP);
-            return self.ret(constants.JANET_SIGNAL_INTERRUPT, val.fromNil());
+            return self.ret(types.Signal.interrupt, wrap.fromNil());
         }
         return null;
     }
@@ -405,10 +397,10 @@ const Interp = struct {
 
     /// `JOP_RETURN` and `JOP_RETURN_NIL`, which differ only in where the value
     /// comes from.
-    inline fn doReturn(self: *Interp, retval: types.Janet) raise.Error!?types.JanetSignal {
+    inline fn doReturn(self: *Interp, retval: repr.Value) raise.Error!?types.Signal {
         const entrance_frame = (stackFrame(self.stack).flags & constants.JANET_STACKFRAME_ENTRANCE) != 0;
         fibers.popframe(self.fiber);
-        if (entrance_frame) return self.retNoRestore(constants.JANET_SIGNAL_OK, retval);
+        if (entrance_frame) return self.retNoRestore(types.Signal.ok, retval);
         self.restore();
         self.stack[fA(self.pc)] = retval;
         self.maybeCollect();
@@ -419,14 +411,14 @@ const Interp = struct {
     /// `JOP_LOAD_UPVALUE` and `JOP_SET_UPVALUE`. The three assertions and the
     /// on-stack/off-stack choice are shared; `store` is comptime, so neither
     /// opcode pays a branch to find out which one it is.
-    inline fn upvalue(self: *Interp, comptime store: bool) raise.Error!?types.JanetSignal {
+    inline fn upvalue(self: *Interp, comptime store: bool) raise.Error!?types.Signal {
         const eindex: i32 = @intCast(fB(self.pc));
         const vindex: i32 = @intCast(fC(self.pc));
         if (try self.assert(self.func.*.def.?.environments_length > eindex, "invalid upvalue environment")) |s| return s;
         const env = funcEnvSlot(self.func, eindex).*;
         if (try self.assert(env.?.length > vindex, "invalid upvalue index")) |s| return s;
         if (try self.assert(functions.envValid(env.?) != 0, "invalid upvalue environment")) |s| return s;
-        const slot: [*]types.Janet = if (env.?.offset > 0)
+        const slot: [*]repr.Value = if (env.?.offset > 0)
             env.?.as.fiber.?.data.? + asSize(env.?.offset + vindex)
         else
             env.?.as.values.? + asSize(vindex);
@@ -440,64 +432,64 @@ const Interp = struct {
     }
 
     /// `JOP_EQUALS` and `JOP_NOT_EQUALS`.
-    inline fn equals(self: *Interp, comptime negate: bool) raise.Error!?types.JanetSignal {
+    inline fn equals(self: *Interp, comptime negate: bool) raise.Error!?types.Signal {
         self.commit();
         const eq = order.equals(self.stack[fB(self.pc)], self.stack[fC(self.pc)]) != 0;
-        self.stack[fA(self.pc)] = val.fromBoolean(if (negate) !eq else eq);
+        self.stack[fA(self.pc)] = wrap.fromBoolean(if (negate) !eq else eq);
         self.pc += 1;
         return null;
     }
 
     /// `vm_binop_immediate`.
-    inline fn binopImmediate(self: *Interp, comptime op: Op) raise.Error!?types.JanetSignal {
+    inline fn binopImmediate(self: *Interp, comptime op: Op) raise.Error!?types.Signal {
         const op1 = self.stack[fB(self.pc)];
-        if (!val.isNumber(op1)) {
+        if (!repr.checkType(op1, .number)) {
             self.commit();
-            var argv = [_]types.Janet{ op1, val.fromNumber(@floatFromInt(fCS(self.pc))) };
+            var argv = [_]repr.Value{ op1, wrap.fromNumber(@floatFromInt(fCS(self.pc))) };
             const v = try vm_calls.mcall(op.method(), &argv);
             self.reload();
             self.stack[fA(self.pc)] = v;
             self.maybeCollect();
         } else {
-            const x1 = val.toNumber(op1);
-            self.stack[fA(self.pc)] = val.fromNumber(op.applyNumber(x1, @floatFromInt(fCS(self.pc))));
+            const x1 = wrap.toNumber(op1);
+            self.stack[fA(self.pc)] = wrap.fromNumber(op.applyNumber(x1, @floatFromInt(fCS(self.pc))));
         }
         self.pc += 1;
         return null;
     }
 
     /// `_vm_bitop_immediate`.
-    inline fn bitopImmediate(self: *Interp, comptime op: Op) raise.Error!?types.JanetSignal {
+    inline fn bitopImmediate(self: *Interp, comptime op: Op) raise.Error!?types.Signal {
         const op1 = self.stack[fB(self.pc)];
-        if (!val.isNumber(op1)) {
+        if (!repr.checkType(op1, .number)) {
             self.commit();
-            var argv = [_]types.Janet{ op1, val.fromNumber(@floatFromInt(fCS(self.pc))) };
+            var argv = [_]repr.Value{ op1, wrap.fromNumber(@floatFromInt(fCS(self.pc))) };
             const v = try vm_calls.mcall(op.method(), &argv);
             self.reload();
             self.stack[fA(self.pc)] = v;
             self.maybeCollect();
         } else {
             const T = op.intType();
-            const y1 = val.toNumber(op1);
+            const y1 = wrap.toNumber(op1);
             if (!checkRange(T, y1)) {
                 self.commit();
                 return try self.raisef("value %v out of range for " ++ op.intMessage(), .{op1});
             }
             const x1: T = @intFromFloat(y1);
-            self.stack[fA(self.pc)] = val.fromNumber(intToDouble(T, op.applyBits(x1, fCS(self.pc))));
+            self.stack[fA(self.pc)] = wrap.fromNumber(intToDouble(T, op.applyBits(x1, fCS(self.pc))));
         }
         self.pc += 1;
         return null;
     }
 
     /// `_vm_binop`.
-    inline fn binop(self: *Interp, comptime op: Op) raise.Error!?types.JanetSignal {
+    inline fn binop(self: *Interp, comptime op: Op) raise.Error!?types.Signal {
         const op1 = self.stack[fB(self.pc)];
         const op2 = self.stack[fC(self.pc)];
-        if (val.isNumber(op1) and val.isNumber(op2)) {
-            const x1 = val.toNumber(op1);
-            const x2 = val.toNumber(op2);
-            self.stack[fA(self.pc)] = val.fromNumber(op.applyNumber(x1, x2));
+        if (repr.checkType(op1, .number) and repr.checkType(op2, .number)) {
+            const x1 = wrap.toNumber(op1);
+            const x2 = wrap.toNumber(op2);
+            self.stack[fA(self.pc)] = wrap.fromNumber(op.applyNumber(x1, x2));
             self.pc += 1;
             return null;
         }
@@ -505,33 +497,33 @@ const Interp = struct {
     }
 
     /// `_vm_bitop`.
-    inline fn bitop(self: *Interp, comptime op: Op) raise.Error!?types.JanetSignal {
+    inline fn bitop(self: *Interp, comptime op: Op) raise.Error!?types.Signal {
         const op1 = self.stack[fB(self.pc)];
         const op2 = self.stack[fC(self.pc)];
-        if (val.isNumber(op1) and val.isNumber(op2)) {
+        if (repr.checkType(op1, .number) and repr.checkType(op2, .number)) {
             const T = op.intType();
-            const y1 = val.toNumber(op1);
-            const y2 = val.toNumber(op2);
+            const y1 = wrap.toNumber(op1);
+            const y2 = wrap.toNumber(op2);
             if (!checkRange(T, y1)) {
                 self.commit();
                 return try self.raisef("value %v out of range for " ++ op.intMessage(), .{op1});
             }
             if (!checkRange(i32, y2)) {
                 self.commit();
-                // `y2`, not `op2`. The C passes the `Janet` to a `%f` that
+                // `y2`, not `op2`. Janet passes the `Janet` to a `%f` that
                 // reads a `double` -- undefined, and observed to print
                 // `0.000000` on x86-64 where the System V classification sends
                 // the union through a general-purpose register while
                 // `va_arg(double)` reads the SSE save area. `FOUND.md` has the
                 // measurement and names `y2` as the value the message wants.
-                // Part 8's rule applies: there is no defined behaviour to
-                // reproduce, so the port gets it right. The tuple driver made
-                // it a compile error rather than a choice.
+                // There is no defined behaviour to reproduce, so this gets it
+                // right; the tuple driver made it a compile error rather than
+                // a choice.
                 return try self.raisef("rhs must be valid 32-bit signed integer, got %f", .{y2});
             }
             const x1: T = @intFromFloat(y1);
             const x2: i32 = @intFromFloat(y2);
-            self.stack[fA(self.pc)] = val.fromNumber(intToDouble(T, op.applyBits(x1, x2)));
+            self.stack[fA(self.pc)] = wrap.fromNumber(intToDouble(T, op.applyBits(x1, x2)));
             self.pc += 1;
             return null;
         }
@@ -545,9 +537,9 @@ const Interp = struct {
         self: *Interp,
         lmethod: [*:0]const u8,
         rmethod: [*:0]const u8,
-        op1: types.Janet,
-        op2: types.Janet,
-    ) raise.Error!?types.JanetSignal {
+        op1: repr.Value,
+        op2: repr.Value,
+    ) raise.Error!?types.Signal {
         self.commit();
         const v = try vm_calls.binopCall(lmethod, rmethod, op1, op2);
         self.reload();
@@ -558,13 +550,13 @@ const Interp = struct {
     }
 
     /// `vm_compop`.
-    inline fn compop(self: *Interp, comptime op: Cmp) raise.Error!?types.JanetSignal {
+    inline fn compop(self: *Interp, comptime op: Cmp) raise.Error!?types.Signal {
         const op1 = self.stack[fB(self.pc)];
         const op2 = self.stack[fC(self.pc)];
-        if (val.isNumber(op1) and val.isNumber(op2)) {
-            const x1 = val.toNumber(op1);
-            const x2 = val.toNumber(op2);
-            self.stack[fA(self.pc)] = val.fromBoolean(op.applyNumber(x1, x2));
+        if (repr.checkType(op1, .number) and repr.checkType(op2, .number)) {
+            const x1 = wrap.toNumber(op1);
+            const x2 = wrap.toNumber(op2);
+            self.stack[fA(self.pc)] = wrap.fromBoolean(op.applyNumber(x1, x2));
             self.pc += 1;
             return null;
         }
@@ -572,21 +564,21 @@ const Interp = struct {
     }
 
     /// `vm_compop_imm`.
-    inline fn compopImmediate(self: *Interp, comptime op: Cmp) raise.Error!?types.JanetSignal {
+    inline fn compopImmediate(self: *Interp, comptime op: Cmp) raise.Error!?types.Signal {
         const op1 = self.stack[fB(self.pc)];
-        if (val.isNumber(op1)) {
-            const x1 = val.toNumber(op1);
+        if (repr.checkType(op1, .number)) {
+            const x1 = wrap.toNumber(op1);
             const x2: f64 = @floatFromInt(fCS(self.pc));
-            self.stack[fA(self.pc)] = val.fromBoolean(op.applyNumber(x1, x2));
+            self.stack[fA(self.pc)] = wrap.fromBoolean(op.applyNumber(x1, x2));
             self.pc += 1;
             return null;
         }
-        return self.compareFallback(op, op1, val.fromInteger(fCS(self.pc)));
+        return self.compareFallback(op, op1, wrap.fromInteger(fCS(self.pc)));
     }
 
-    inline fn compareFallback(self: *Interp, comptime op: Cmp, op1: types.Janet, op2: types.Janet) raise.Error!?types.JanetSignal {
+    inline fn compareFallback(self: *Interp, comptime op: Cmp, op1: repr.Value, op2: repr.Value) raise.Error!?types.Signal {
         self.commit();
-        const a = val.fromBoolean(op.applyOrder(order.compare(op1, op2)));
+        const a = wrap.fromBoolean(op.applyOrder(order.compare(op1, op2)));
         self.reload();
         self.stack[fA(self.pc)] = a;
         self.maybeCollect();
@@ -605,10 +597,9 @@ inline fn intToDouble(comptime T: type, x: T) f64 {
 
 // -------------------------------------------------------------- the loop
 
-/// `run_vm`, renamed for the same reason Part 2 renamed five of its callees: a
-/// static's name becomes a library symbol the moment its definition moves to
-/// another translation unit, and `run_vm` is too general a name to put there.
-pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.JanetSignal {
+/// `run_vm`, renamed: a static's name becomes a library symbol the moment its
+/// definition moves, and `run_vm` is too general a name to put there.
+pub fn runVm(fiber_in: *types.JanetFiber, in: repr.Value) raise.Error!types.Signal {
     // Seventy-eight arms, each of which inlines several comptime templates.
     @setEvalBranchQuota(20000);
     var self: Interp = .{
@@ -622,11 +613,17 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
     // A signal injected while the fiber was suspended is delivered instead of
     // resuming. It travels in `gc.flags` rather than in `flags`; `vm.c`'s
     // janet_signal_inject has the reason.
+    //
+    // The `@enumFromInt` below is safe because the six bits can only hold a
+    // value `signalInject` put there, and every caller of that reaches it
+    // through `Signal.fromWire`, which is the clamp. Before that clamp existed
+    // a C caller could inject 14 through 63 and this line was the illegal
+    // operation -- building an out-of-domain value of an exhaustive enum.
     if ((fiber.*.flags & constants.JANET_FIBER_RESUME_SIGNAL) != 0) {
-        const sig: types.JanetSignal = @intCast(@as(u32, @bitCast(fiber.*.gc.flags & constants.JANET_FIBER_STATUS_MASK)) >> constants.JANET_FIBER_STATUS_OFFSET);
+        const sig: types.Signal = @enumFromInt(@as(u32, @bitCast(fiber.*.gc.flags & constants.JANET_FIBER_STATUS_MASK)) >> constants.JANET_FIBER_STATUS_OFFSET);
         fiber.*.gc.flags &= ~@as(i32, constants.JANET_FIBER_STATUS_MASK);
         fiber.*.flags &= ~@as(i32, constants.JANET_FIBER_RESUME_SIGNAL | constants.JANET_FIBER_FLAG_MASK);
-        c.vm().return_reg.?.* = in;
+        vm_state.current().return_reg.?.* = in;
         return sig;
     }
 
@@ -644,7 +641,7 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
             fibers.popframe(fiber);
             if (entrance_frame) {
                 fiber.*.flags &= ~@as(i32, constants.JANET_FIBER_FLAG_MASK);
-                return self.ret(constants.JANET_SIGNAL_OK, in);
+                return self.ret(types.Signal.ok, in);
             }
             self.restore();
         }
@@ -664,10 +661,13 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
             continue :sw self.nextOp();
         },
 
-        constants.JOP_ERROR => return self.ret(constants.JANET_SIGNAL_ERROR, self.stack[fA(self.pc)]),
+        constants.JOP_ERROR => return self.ret(types.Signal.@"error", self.stack[fA(self.pc)]),
 
         constants.JOP_TYPECHECK => {
-            if (try self.assertTypes(self.stack[fA(self.pc)], @intCast(fE(self.pc)))) |s| return s;
+            // The instruction's E field *is* the set: `JOP_TYPECHECK` carries
+            // sixteen bits and `repr.TagSet` is sixteen bits, which is the
+            // bytecode width the exit condition says to keep explicit.
+            if (try self.assertTypes(self.stack[fA(self.pc)], repr.TagSet.fromBits(@intCast(fE(self.pc))))) |s| return s;
             self.pc += 1;
             continue :sw self.nextOp();
         },
@@ -677,7 +677,7 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
             continue :sw self.nextOp();
         },
         constants.JOP_RETURN_NIL => {
-            if (try self.doReturn(val.fromNil())) |s| return s;
+            if (try self.doReturn(wrap.fromNil())) |s| return s;
             continue :sw self.nextOp();
         },
 
@@ -717,10 +717,10 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         constants.JOP_DIVIDE_FLOOR => {
             const op1 = self.stack[fB(self.pc)];
             const op2 = self.stack[fC(self.pc)];
-            if (val.isNumber(op1) and val.isNumber(op2)) {
-                const x1 = val.toNumber(op1);
-                const x2 = val.toNumber(op2);
-                self.stack[fA(self.pc)] = val.fromNumber(@floor(x1 / x2));
+            if (repr.checkType(op1, .number) and repr.checkType(op2, .number)) {
+                const x1 = wrap.toNumber(op1);
+                const x2 = wrap.toNumber(op2);
+                self.stack[fA(self.pc)] = wrap.fromNumber(@floor(x1 / x2));
                 self.pc += 1;
                 continue :sw self.nextOp();
             }
@@ -731,14 +731,14 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         constants.JOP_MODULO => {
             const op1 = self.stack[fB(self.pc)];
             const op2 = self.stack[fC(self.pc)];
-            if (val.isNumber(op1) and val.isNumber(op2)) {
-                const x1 = val.toNumber(op1);
-                const x2 = val.toNumber(op2);
+            if (repr.checkType(op1, .number) and repr.checkType(op2, .number)) {
+                const x1 = wrap.toNumber(op1);
+                const x2 = wrap.toNumber(op2);
                 if (x2 == 0) {
-                    self.stack[fA(self.pc)] = val.fromNumber(x1);
+                    self.stack[fA(self.pc)] = wrap.fromNumber(x1);
                 } else {
                     const intres = x2 * @floor(x1 / x2);
-                    self.stack[fA(self.pc)] = val.fromNumber(x1 - intres);
+                    self.stack[fA(self.pc)] = wrap.fromNumber(x1 - intres);
                 }
                 self.pc += 1;
                 continue :sw self.nextOp();
@@ -750,10 +750,10 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         constants.JOP_REMAINDER => {
             const op1 = self.stack[fB(self.pc)];
             const op2 = self.stack[fC(self.pc)];
-            if (val.isNumber(op1) and val.isNumber(op2)) {
-                const x1 = val.toNumber(op1);
-                const x2 = val.toNumber(op2);
-                self.stack[fA(self.pc)] = val.fromNumber(fmod(x1, x2));
+            if (repr.checkType(op1, .number) and repr.checkType(op2, .number)) {
+                const x1 = wrap.toNumber(op1);
+                const x2 = wrap.toNumber(op2);
+                self.stack[fA(self.pc)] = wrap.fromNumber(fmod(x1, x2));
                 self.pc += 1;
                 continue :sw self.nextOp();
             }
@@ -776,8 +776,8 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
 
         constants.JOP_BNOT => {
             const op = self.stack[fE(self.pc)];
-            if (val.isNumber(op)) {
-                self.stack[fA(self.pc)] = val.fromInteger(~val.toInteger(op));
+            if (repr.checkType(op, .number)) {
+                self.stack[fA(self.pc)] = wrap.fromInteger(~wrap.toInteger(op));
                 self.pc += 1;
                 continue :sw self.nextOp();
             }
@@ -834,7 +834,7 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         },
 
         constants.JOP_JUMP_IF => {
-            if (val.truthy(self.stack[fA(self.pc)])) {
+            if (repr.truthy(self.stack[fA(self.pc)])) {
                 if (try self.maybeAutoSuspend(fES(self.pc) <= 0)) |s| return s;
                 self.pc += asOffset(fES(self.pc));
             } else {
@@ -844,7 +844,7 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         },
 
         constants.JOP_JUMP_IF_NOT => {
-            if (val.truthy(self.stack[fA(self.pc)])) {
+            if (repr.truthy(self.stack[fA(self.pc)])) {
                 self.pc += 1;
             } else {
                 if (try self.maybeAutoSuspend(fES(self.pc) <= 0)) |s| return s;
@@ -854,7 +854,7 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         },
 
         constants.JOP_JUMP_IF_NIL => {
-            if (val.checkType(self.stack[fA(self.pc)], constants.JANET_NIL)) {
+            if (repr.checkType(self.stack[fA(self.pc)], repr.Tag.nil)) {
                 if (try self.maybeAutoSuspend(fES(self.pc) <= 0)) |s| return s;
                 self.pc += asOffset(fES(self.pc));
             } else {
@@ -864,7 +864,7 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         },
 
         constants.JOP_JUMP_IF_NOT_NIL => {
-            if (val.checkType(self.stack[fA(self.pc)], constants.JANET_NIL)) {
+            if (repr.checkType(self.stack[fA(self.pc)], repr.Tag.nil)) {
                 self.pc += 1;
             } else {
                 if (try self.maybeAutoSuspend(fES(self.pc) <= 0)) |s| return s;
@@ -909,23 +909,23 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
 
         constants.JOP_EQUALS_IMMEDIATE => {
             const x = self.stack[fB(self.pc)];
-            const eq = val.isNumber(x) and val.toNumber(x) == @as(f64, @floatFromInt(fCS(self.pc)));
-            self.stack[fA(self.pc)] = val.fromBoolean(eq);
+            const eq = repr.checkType(x, .number) and wrap.toNumber(x) == @as(f64, @floatFromInt(fCS(self.pc)));
+            self.stack[fA(self.pc)] = wrap.fromBoolean(eq);
             self.pc += 1;
             continue :sw self.nextOp();
         },
 
         constants.JOP_NOT_EQUALS_IMMEDIATE => {
             const x = self.stack[fB(self.pc)];
-            const ne = !val.isNumber(x) or val.toNumber(x) != @as(f64, @floatFromInt(fCS(self.pc)));
-            self.stack[fA(self.pc)] = val.fromBoolean(ne);
+            const ne = !repr.checkType(x, .number) or wrap.toNumber(x) != @as(f64, @floatFromInt(fCS(self.pc)));
+            self.stack[fA(self.pc)] = wrap.fromBoolean(ne);
             self.pc += 1;
             continue :sw self.nextOp();
         },
 
         constants.JOP_COMPARE => {
             self.commit();
-            const a = val.fromInteger(order.compare(self.stack[fB(self.pc)], self.stack[fC(self.pc)]));
+            const a = wrap.fromInteger(order.compare(self.stack[fB(self.pc)], self.stack[fC(self.pc)]));
             self.reload();
             self.stack[fA(self.pc)] = a;
             self.pc += 1;
@@ -942,25 +942,25 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         },
 
         constants.JOP_LOAD_NIL => {
-            self.stack[fD(self.pc)] = val.fromNil();
+            self.stack[fD(self.pc)] = wrap.fromNil();
             self.pc += 1;
             continue :sw self.nextOp();
         },
 
         constants.JOP_LOAD_TRUE => {
-            self.stack[fD(self.pc)] = val.fromTrue();
+            self.stack[fD(self.pc)] = wrap.fromTrue();
             self.pc += 1;
             continue :sw self.nextOp();
         },
 
         constants.JOP_LOAD_FALSE => {
-            self.stack[fD(self.pc)] = val.fromFalse();
+            self.stack[fD(self.pc)] = wrap.fromFalse();
             self.pc += 1;
             continue :sw self.nextOp();
         },
 
         constants.JOP_LOAD_INTEGER => {
-            self.stack[fA(self.pc)] = val.fromInteger(fES(self.pc));
+            self.stack[fA(self.pc)] = wrap.fromInteger(fES(self.pc));
             self.pc += 1;
             continue :sw self.nextOp();
         },
@@ -968,13 +968,13 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         constants.JOP_LOAD_CONSTANT => {
             const cindex: i32 = @intCast(fE(self.pc));
             if (try self.assert(cindex < self.func.*.def.?.constants_length, "invalid constant")) |s| return s;
-            self.stack[fA(self.pc)] = self.func.*.def.?.constants.?[asSize(cindex)];
+            self.stack[fA(self.pc)] = self.func.*.def.?.constantValues()[asSize(cindex)];
             self.pc += 1;
             continue :sw self.nextOp();
         },
 
         constants.JOP_LOAD_SELF => {
-            self.stack[fD(self.pc)] = val.fromFunction(self.func);
+            self.stack[fD(self.pc)] = wrap.fromFunction(self.func);
             self.pc += 1;
             continue :sw self.nextOp();
         },
@@ -991,22 +991,22 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         constants.JOP_CLOSURE => {
             const defindex: i32 = @intCast(fE(self.pc));
             if (try self.assert(defindex < self.func.*.def.?.defs_length, "invalid funcdef")) |s| return s;
-            const fd = self.func.*.def.?.defs.?[asSize(defindex)];
+            const fd = self.func.*.def.?.subdefs()[asSize(defindex)];
             const elen = fd.*.environments_length;
             const fn_ptr: *types.JanetFunction = @ptrCast(@alignCast(gc_alloc.gcalloc(
-                constants.JANET_MEMORY_FUNCTION,
+                types.MemoryType.function,
                 types.function_envs + @as(usize, @intCast(elen)) * @sizeOf(*types.JanetFuncEnv),
             )));
             fn_ptr.*.def = fd;
             var i: i32 = 0;
             while (i < elen) : (i += 1) {
-                const inherit = fd.*.environments.?[asSize(i)];
+                const inherit = fd.*.environmentIndices()[asSize(i)];
                 if (inherit == -1 or inherit >= self.func.*.def.?.environments_length) {
                     const frame = stackFrame(self.stack);
                     if (frame.env == null) {
                         // Lazy capture of current stack frame
                         const env: *types.JanetFuncEnv = @ptrCast(@alignCast(gc_alloc.gcalloc(
-                            constants.JANET_MEMORY_FUNCENV,
+                            types.MemoryType.funcenv,
                             @sizeOf(types.JanetFuncEnv),
                         )));
                         env.*.offset = fiber.*.frame;
@@ -1019,7 +1019,7 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
                     funcEnvSlot(fn_ptr, i).* = funcEnvSlot(self.func, inherit).*;
                 }
             }
-            self.stack[fA(self.pc)] = val.fromFunction(fn_ptr);
+            self.stack[fA(self.pc)] = wrap.fromFunction(fn_ptr);
             self.maybeCollect();
             self.pc += 1;
             continue :sw self.nextOp();
@@ -1055,13 +1055,13 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         },
 
         constants.JOP_PUSH_ARRAY => {
-            var vals: ?[*]const types.Janet = undefined;
+            var vals: ?[*]const repr.Value = undefined;
             var len: i32 = undefined;
             if (args_core.indexedView(self.stack[fD(self.pc)], &vals, &len) != 0) {
-                try fibers.pushn(fiber, vals.?, len);
+                try fibers.pushn(fiber, vals.?[0..@intCast(len)]);
             } else {
                 return try self.raisef("expected %T, got %v", .{
-                    @as(c_int, constants.JANET_TFLAG_INDEXED),
+                    repr.TagSet.indexed,
                     self.stack[fD(self.pc)],
                 });
             }
@@ -1075,12 +1075,12 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
             if (try self.maybeAutoSuspend(true)) |s| return s;
             var callee = self.stack[fE(self.pc)];
             if (fiber.*.stacktop > fiber.*.maxstack) return try self.throw("stack overflow");
-            if (val.checkType(callee, constants.JANET_KEYWORD)) {
+            if (repr.checkType(callee, repr.Tag.keyword)) {
                 self.commit();
                 callee = try vm_calls.resolveMethod(callee, fiber);
             }
-            if (val.checkType(callee, constants.JANET_FUNCTION)) {
-                self.func = val.toFunction(callee);
+            if (repr.checkType(callee, repr.Tag.function)) {
+                self.func = wrap.toFunction(callee);
                 if ((self.func.*.gc.flags & constants.JANET_FUNCFLAG_TRACE) != 0) {
                     traceFiber(self.func, fiber.*.stacktop - fiber.*.stackstart, fiber);
                 }
@@ -1098,11 +1098,11 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
                 self.pc = self.func.*.def.?.bytecode.?;
                 self.maybeCollect();
                 continue :sw self.nextOp();
-            } else if (val.checkType(callee, constants.JANET_CFUNCTION)) {
+            } else if (repr.checkType(callee, repr.Tag.cfunction)) {
                 self.commit();
                 const argc = fiber.*.stacktop - fiber.*.stackstart;
-                fibers.cframe(fiber, val.toCFunction(callee));
-                const v = try raise.cfunction(val.toCFunction(callee))(
+                fibers.cframe(fiber, wrap.toCfunction(callee));
+                const v = try raise.cfunction(wrap.toCfunction(callee))(
                     (fiber.*.data.? + asSize(fiber.*.frame))[0..@intCast(argc)],
                 );
                 fibers.popframe(fiber);
@@ -1126,12 +1126,12 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
             if (try self.maybeAutoSuspend(true)) |s| return s;
             var callee = self.stack[fD(self.pc)];
             if (fiber.*.stacktop > fiber.*.maxstack) return try self.throw("stack overflow");
-            if (val.checkType(callee, constants.JANET_KEYWORD)) {
+            if (repr.checkType(callee, repr.Tag.keyword)) {
                 self.commit();
                 callee = try vm_calls.resolveMethod(callee, fiber);
             }
-            if (val.checkType(callee, constants.JANET_FUNCTION)) {
-                self.func = val.toFunction(callee);
+            if (repr.checkType(callee, repr.Tag.function)) {
+                self.func = wrap.toFunction(callee);
                 if ((self.func.*.gc.flags & constants.JANET_FUNCFLAG_TRACE) != 0) {
                     traceFiber(self.func, fiber.*.stacktop - fiber.*.stackstart, fiber);
                 }
@@ -1152,11 +1152,11 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
             }
             const entrance_frame = (stackFrame(self.stack).flags & constants.JANET_STACKFRAME_ENTRANCE) != 0;
             self.commit();
-            var retreg: types.Janet = undefined;
-            if (val.checkType(callee, constants.JANET_CFUNCTION)) {
+            var retreg: repr.Value = undefined;
+            if (repr.checkType(callee, repr.Tag.cfunction)) {
                 const argc = fiber.*.stacktop - fiber.*.stackstart;
-                fibers.cframe(fiber, val.toCFunction(callee));
-                retreg = try raise.cfunction(val.toCFunction(callee))(
+                fibers.cframe(fiber, wrap.toCfunction(callee));
+                retreg = try raise.cfunction(wrap.toCfunction(callee))(
                     (fiber.*.data.? + asSize(fiber.*.frame))[0..@intCast(argc)],
                 );
                 fibers.popframe(fiber);
@@ -1164,7 +1164,7 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
                 retreg = try vm_calls.callNonfn(fiber, callee);
             }
             fibers.popframe(fiber);
-            if (entrance_frame) return self.retNoRestore(constants.JANET_SIGNAL_OK, retreg);
+            if (entrance_frame) return self.retNoRestore(types.Signal.ok, retreg);
             self.restore();
             self.stack[fA(self.pc)] = retreg;
             self.maybeCollect();
@@ -1174,17 +1174,17 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
 
         constants.JOP_RESUME => {
             if (try self.maybeAutoSuspend(true)) |s| return s;
-            if (try self.assertType(self.stack[fB(self.pc)], constants.JANET_FIBER)) |s| return s;
-            var retreg: types.Janet = undefined;
-            const child = val.toFiber(self.stack[fB(self.pc)]);
-            if (vm_entry.checkCanResume(child, &retreg, 0) != 0) {
+            if (try self.assertType(self.stack[fB(self.pc)], repr.Tag.fiber)) |s| return s;
+            var retreg: repr.Value = undefined;
+            const child = wrap.toFiber(self.stack[fB(self.pc)]);
+            if (vm_entry.checkCanResume(child, &retreg, 0) != .ok) {
                 self.commit();
                 return try self.raisev(retreg);
             }
             fiber.*.child = child;
             const sig = vm_entry.continueNoCheck(child, self.stack[fC(self.pc)], &retreg);
             self.reload();
-            if (sig != constants.JANET_SIGNAL_OK and (child.*.flags & (@as(i32, 1) << @intCast(sig))) == 0) {
+            if (sig != types.Signal.ok and (child.*.flags & (@as(i32, 1) << @intCast(@intFromEnum(sig)))) == 0) {
                 return self.ret(sig, retreg);
             }
             fiber.*.child = null;
@@ -1195,38 +1195,43 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         },
 
         constants.JOP_SIGNAL => {
-            var s: i32 = @intCast(fC(self.pc));
-            if (s > constants.JANET_SIGNAL_USER9) s = constants.JANET_SIGNAL_USER9;
-            if (s < 0) s = 0;
-            return self.ret(@intCast(s), self.stack[fB(self.pc)]);
+            // The instruction's C field is a raw number, so it is clamped
+            // into the vocabulary before it becomes one -- upstream's own
+            // bounds, kept. `Signal.fromWire` is that clamp, shared with the
+            // published entry points so the rule is written once.
+            const s: i32 = @intCast(fC(self.pc));
+            const raw: c_uint = if (s < 0) 0 else @intCast(s);
+            return self.ret(types.Signal.fromWire(raw), self.stack[fB(self.pc)]);
         },
 
         constants.JOP_PROPAGATE => {
             const fv = self.stack[fC(self.pc)];
-            if (try self.assertType(fv, constants.JANET_FIBER)) |s| return s;
-            const f = val.toFiber(fv);
+            if (try self.assertType(fv, repr.Tag.fiber)) |s| return s;
+            const f = wrap.toFiber(fv);
             const sub_status = fibers.status(f);
-            if (sub_status > constants.JANET_STATUS_USER9) {
+            if (@intFromEnum(sub_status) > @intFromEnum(types.FiberStatus.user9)) {
                 self.commit();
                 return try self.raisef("cannot propagate from fiber with status :%s", .{
-                    utils.statusNames[@intCast(sub_status)],
+                    utils.statusNames[@intFromEnum(sub_status)],
                 });
             }
             fiber.*.child = f;
-            return self.ret(@intCast(sub_status), self.stack[fB(self.pc)]);
+            // Guarded above to be one of the fourteen the two vocabularies
+            // share.
+            return self.ret(@enumFromInt(@intFromEnum(sub_status)), self.stack[fB(self.pc)]);
         },
 
         constants.JOP_CANCEL => {
-            if (try self.assertType(self.stack[fB(self.pc)], constants.JANET_FIBER)) |s| return s;
-            var retreg: types.Janet = undefined;
-            const child = val.toFiber(self.stack[fB(self.pc)]);
-            if (vm_entry.checkCanResume(child, &retreg, 1) != 0) {
+            if (try self.assertType(self.stack[fB(self.pc)], repr.Tag.fiber)) |s| return s;
+            var retreg: repr.Value = undefined;
+            const child = wrap.toFiber(self.stack[fB(self.pc)]);
+            if (vm_entry.checkCanResume(child, &retreg, 1) != .ok) {
                 self.commit();
                 return try self.raisev(retreg);
             }
             fiber.*.child = child;
-            const sig = vm_entry.continueSignal(child, self.stack[fC(self.pc)], &retreg, constants.JANET_SIGNAL_ERROR);
-            if (sig != constants.JANET_SIGNAL_OK and (child.*.flags & (@as(i32, 1) << @intCast(sig))) == 0) {
+            const sig = vm_entry.continueSignal(child, self.stack[fC(self.pc)], &retreg, types.Signal.@"error");
+            if (sig != types.Signal.ok and (child.*.flags & (@as(i32, 1) << @intCast(@intFromEnum(sig)))) == 0) {
                 return self.ret(sig, retreg);
             }
             fiber.*.child = null;
@@ -1279,7 +1284,7 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         constants.JOP_GET => {
             self.commit();
             // `janet_get` answers nil rather than raising, so it needs no
-            // scope and no `try`; Phase 10's fourth rule.
+            // scope and no `try`.
             const v = try access.get(self.stack[fB(self.pc)], self.stack[fC(self.pc)]);
             self.reload();
             self.stack[fA(self.pc)] = v;
@@ -1308,7 +1313,7 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         constants.JOP_MAKE_ARRAY => {
             const count = fiber.*.stacktop - fiber.*.stackstart;
             const mem = fiber.*.data.? + asSize(fiber.*.stackstart);
-            self.stack[fD(self.pc)] = val.fromArray(arrays.newFrom(mem, count));
+            self.stack[fD(self.pc)] = wrap.fromArray(arrays.newFrom(mem[0..asSize(count)]));
             fiber.*.stacktop = fiber.*.stackstart;
             self.maybeCollect();
             self.pc += 1;
@@ -1318,11 +1323,11 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         constants.JOP_MAKE_TUPLE, constants.JOP_MAKE_BRACKET_TUPLE => |op| {
             const count = fiber.*.stacktop - fiber.*.stackstart;
             const mem = fiber.*.data.? + asSize(fiber.*.stackstart);
-            const tup = tuples.newFrom(mem, count);
+            const tup = tuples.newFrom(mem[0..asSize(count)]);
             if (op == constants.JOP_MAKE_BRACKET_TUPLE) {
                 types.tupleHead(tup).gc.flags |= constants.JANET_TUPLE_FLAG_BRACKETCTOR;
             }
-            self.stack[fD(self.pc)] = val.fromTuple(tup);
+            self.stack[fD(self.pc)] = wrap.fromTuple(tup);
             fiber.*.stacktop = fiber.*.stackstart;
             self.maybeCollect();
             self.pc += 1;
@@ -1338,7 +1343,7 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
             }
             const table = tables.new(@divTrunc(count, 2));
             vm_calls.fillTable(table, mem, count);
-            self.stack[fD(self.pc)] = val.fromTable(table);
+            self.stack[fD(self.pc)] = wrap.fromTable(table);
             fiber.*.stacktop = fiber.*.stackstart;
             self.maybeCollect();
             self.pc += 1;
@@ -1354,7 +1359,7 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
             }
             const st = structs.begin(@divTrunc(count, 2));
             vm_calls.fillStruct(st, mem, count);
-            self.stack[fD(self.pc)] = val.fromStruct(structs.end(st));
+            self.stack[fD(self.pc)] = wrap.fromStruct(structs.end(st));
             fiber.*.stacktop = fiber.*.stackstart;
             self.maybeCollect();
             self.pc += 1;
@@ -1372,8 +1377,8 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
             // scratch buffer when a conversion raises". Reproduced deliberately
             // rather than fixed -- and the reason this arm cannot use `defer`
             // even if the file were not jump-transparent.
-            try vm_calls.fillString(&buffer, mem, count);
-            self.stack[fD(self.pc)] = value.fromBytes(buffer.data.?[0..@intCast(buffer.count)], .string);
+            try vm_calls.fillString(&buffer, mem[0..asSize(count)]);
+            self.stack[fD(self.pc)] = value.fromBytes(buffer.slice(), .string);
             buffers.deinit(&buffer);
             fiber.*.stacktop = fiber.*.stackstart;
             self.maybeCollect();
@@ -1385,8 +1390,8 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
             const count = fiber.*.stacktop - fiber.*.stackstart;
             const mem = fiber.*.data.? + asSize(fiber.*.stackstart);
             const buffer = buffers.new(10 *% count);
-            try vm_calls.fillString(buffer, mem, count);
-            self.stack[fD(self.pc)] = val.fromBuffer(buffer);
+            try vm_calls.fillString(buffer, mem[0..asSize(count)]);
+            self.stack[fD(self.pc)] = wrap.fromBuffer(buffer);
             fiber.*.stacktop = fiber.*.stackstart;
             self.maybeCollect();
             self.pc += 1;
@@ -1397,7 +1402,7 @@ pub fn runVm(fiber_in: *types.JanetFiber, in: types.Janet) raise.Error!types.Jan
         // bit 7 of the instruction word takes it out of the table.
         else => {
             fiber.*.flags |= (constants.JANET_FIBER_BREAKPOINT | constants.JANET_FIBER_RESUME_NO_USEVAL | constants.JANET_FIBER_RESUME_NO_SKIP);
-            return self.ret(constants.JANET_SIGNAL_DEBUG, val.fromNil());
+            return self.ret(types.Signal.debug, wrap.fromNil());
         },
     }
 }
@@ -1447,7 +1452,7 @@ pub fn traceFiber(func: *types.JanetFunction, argc: i32, fiber: *types.JanetFibe
     eprintf(")\n", .{});
 }
 
-pub fn traceArgv(func: *types.JanetFunction, argv: []const types.Janet) void {
+pub fn traceArgv(func: *types.JanetFunction, argv: []const repr.Value) void {
     traceHeader(func);
     var i: i32 = 0;
     while (i < @as(i32, @intCast(argv.len))) : (i += 1) eprintf(" %p", .{argv[@intCast(i)]});
@@ -1470,8 +1475,8 @@ inline fn eprintf(comptime format: [:0]const u8, args: anytype) void {
 // The call protocol -- what `vm_calls.zig` was.
 // -------------------------------------------------------------------------
 
-inline fn isNil(x: types.Janet) bool {
-    return kind.checkType(x, constants.JANET_NIL) != 0;
+inline fn isNil(x: repr.Value) bool {
+    return repr.checkType(x, repr.Tag.nil);
 }
 
 // -------------------------------------------------------------- invocation
@@ -1484,7 +1489,7 @@ inline fn isNil(x: types.Janet) bool {
 /// the C reads `argv[0]` only after the arity check has passed, so a
 /// zero-argument call must not touch it. Reading it eagerly would be a read of
 /// whatever the previous frame left in that stack slot.
-inline fn invokeIndexed(method: types.Janet, argv: []types.Janet, method_is_ds: bool) raise.Error!types.Janet {
+inline fn invokeIndexed(method: repr.Value, argv: []repr.Value, method_is_ds: bool) raise.Error!repr.Value {
     if (@as(i32, @intCast(argv.len)) != 1) {
         return pp_format.panicf("%v called with %d arguments, possibly expected 1", .{ method, @as(i32, @intCast(argv.len)) });
     }
@@ -1504,25 +1509,25 @@ inline fn invokeIndexed(method: types.Janet, argv: []types.Janet, method_is_ds: 
 /// The default arm is the one that reverses the operands: calling a keyword
 /// looks the *keyword* up in its argument, which is what makes `(:key struct)`
 /// work, while calling a table looks the *argument* up in the table.
-pub fn methodInvoke(method: types.Janet, argv: []types.Janet) raise.Error!types.Janet {
-    switch (kind.typeOf(method)) {
-        constants.JANET_CFUNCTION => return raise.cfunction(wrap.toCfunction(method))(argv),
-        constants.JANET_FUNCTION => {
+pub fn methodInvoke(method: repr.Value, argv: []repr.Value) raise.Error!repr.Value {
+    switch (repr.typeOf(method)) {
+        repr.Tag.cfunction => return raise.cfunction(wrap.toCfunction(method))(argv),
+        repr.Tag.function => {
             const fun = wrap.toFunction(method);
-            return try vm_entry.callImpl(fun, argv);
+            return try vm_entry.call(fun, argv);
         },
-        constants.JANET_ABSTRACT => {
+        repr.Tag.abstract => {
             const abst = wrap.toAbstract(method);
             const at = abstract_type.ofAbstract(abst);
             if (at.call) |call| return try call(abst, @intCast(argv.len), argv.ptr);
             return try invokeIndexed(method, argv, true);
         },
-        constants.JANET_STRING,
-        constants.JANET_BUFFER,
-        constants.JANET_TABLE,
-        constants.JANET_STRUCT,
-        constants.JANET_ARRAY,
-        constants.JANET_TUPLE,
+        repr.Tag.string,
+        repr.Tag.buffer,
+        repr.Tag.table,
+        repr.Tag.@"struct",
+        repr.Tag.array,
+        repr.Tag.tuple,
         => return try invokeIndexed(method, argv, true),
         else => return try invokeIndexed(method, argv, false),
     }
@@ -1537,7 +1542,7 @@ pub fn methodInvoke(method: types.Janet, argv: []types.Janet) raise.Error!types.
 /// not tidiness: `janet_method_invoke` can reach `janet_call`, which pushes a
 /// frame of its own, and it would push it over these arguments if the top were
 /// still where the caller left it.
-pub fn callNonfn(fiber: *types.JanetFiber, callee: types.Janet) raise.Error!types.Janet {
+pub fn callNonfn(fiber: *types.JanetFiber, callee: repr.Value) raise.Error!repr.Value {
     const argc = fiber.*.stacktop - fiber.*.stackstart;
     fiber.*.stacktop = fiber.*.stackstart;
     return methodInvoke(callee, (fiber.*.data.? + asSize(fiber.*.stacktop))[0..@intCast(argc)]);
@@ -1546,13 +1551,13 @@ pub fn callNonfn(fiber: *types.JanetFiber, callee: types.Janet) raise.Error!type
 /// `method_to_fun`. Kept as a Zig-private inline rather than a symbol: it is
 /// `janet_get` with its operands swapped, and both of its callers are here.
 ///
-/// Raising, since Phase 11 Part 15. It reached `janet_get` — the abi, which
-/// is `raise.panicking` over `access.get` — from inside a chain every one of
+/// Raising, and it must be. It once reached `janet_get` -- the abi, which is
+/// `raise.panicking` over `access.get` -- from inside a chain every one of
 /// whose callers is `raise.Raising`, so an abstract's `get` callback refusing
 /// became a report nobody consumed. `(+ (int/s64 1) {})` killed the process
 /// instead of raising a catchable error, because the binop fallback looks
 /// `:r+` up on the right operand and that lookup is this function.
-inline fn methodToFun(method: types.Janet, obj: types.Janet) raise.Raising(types.Janet) {
+inline fn methodToFun(method: repr.Value, obj: repr.Value) raise.Raising(repr.Value) {
     return access.get(obj, method);
 }
 
@@ -1562,8 +1567,8 @@ inline fn methodToFun(method: types.Janet, obj: types.Janet) raise.Raising(types
 ///
 /// The zero-argument branch cannot be reached from Janet source — the compiler
 /// rejects a method call with no receiver outright — so `asm` is the only route
-/// to it, and `test/vm_calls.c` takes that route.
-pub fn resolveMethod(name: types.Janet, fiber: *types.JanetFiber) raise.Error!types.Janet {
+/// to it, and `test/vm_calls.zig` takes that route.
+pub fn resolveMethod(name: repr.Value, fiber: *types.JanetFiber) raise.Error!repr.Value {
     const argc = fiber.*.stacktop - fiber.*.stackstart;
     if (argc < 1) {
         return pp_format.panicf("method call (%v) takes at least 1 argument, got 0", .{name});
@@ -1587,18 +1592,18 @@ pub fn resolveMethod(name: types.Janet, fiber: *types.JanetFiber) raise.Error!ty
 /// it and nothing takes its address, so `janet_method_lookup` has not been a
 /// symbol since the seam closed. It went with the conversion above, because a
 /// C calling convention cannot carry an error union.
-pub fn methodLookup(x: types.Janet, name: [*:0]const u8) raise.Raising(types.Janet) {
+pub fn methodLookup(x: repr.Value, name: [*:0]const u8) raise.Raising(repr.Value) {
     return methodToFun(value.fromBytes(std.mem.span(name), .keyword), x);
 }
 
 /// `janet_unary_call`. The operator fallback for a one-operand opcode whose
 /// operand is not a number — `JOP_BNOT` is the only one that reaches it.
-pub fn unaryCall(method: [*:0]const u8, arg: types.Janet) raise.Error!types.Janet {
+pub fn unaryCall(method: [*:0]const u8, arg: repr.Value) raise.Error!repr.Value {
     const m = try methodLookup(arg, method);
     if (isNil(m)) {
         return pp_format.panicf("could not find method :%s for %v", .{ method, arg });
     }
-    var argv = [_]types.Janet{arg};
+    var argv = [_]repr.Value{arg};
     return methodInvoke(m, argv[0..1]);
 }
 
@@ -1609,11 +1614,11 @@ pub fn unaryCall(method: [*:0]const u8, arg: types.Janet) raise.Error!types.Jane
 /// The right-hand attempt swaps the arguments, so a `:r+` method receives its
 /// own receiver first. Both `argv` arrays are built before the nil check the
 /// way the C does, which matters only in that the panic path never reads them.
-pub fn binopCall(lmethod: [*:0]const u8, rmethod: [*:0]const u8, lhs: types.Janet, rhs: types.Janet) raise.Error!types.Janet {
+pub fn binopCall(lmethod: [*:0]const u8, rmethod: [*:0]const u8, lhs: repr.Value, rhs: repr.Value) raise.Error!repr.Value {
     const lm = try methodLookup(lhs, lmethod);
     if (isNil(lm)) {
         const lr = try methodLookup(rhs, rmethod);
-        var argv = [_]types.Janet{ rhs, lhs };
+        var argv = [_]repr.Value{ rhs, lhs };
         if (isNil(lr)) {
             return pp_format.panicf(
                 "could not find method :%s for %v or :%s for %v",
@@ -1622,7 +1627,7 @@ pub fn binopCall(lmethod: [*:0]const u8, rmethod: [*:0]const u8, lhs: types.Jane
         }
         return methodInvoke(lr, argv[0..2]);
     } else {
-        var argv = [_]types.Janet{ lhs, rhs };
+        var argv = [_]repr.Value{ lhs, rhs };
         return methodInvoke(lm, argv[0..2]);
     }
 }
@@ -1631,7 +1636,7 @@ pub fn binopCall(lmethod: [*:0]const u8, rmethod: [*:0]const u8, lhs: types.Jane
 /// function here that was never `static`. `value.c` calls it for `:length` on
 /// an abstract type, and `run_vm` reaches it from the immediate-operand
 /// arithmetic opcodes.
-pub fn mcall(name: [*:0]const u8, argv: []types.Janet) raise.Error!types.Janet {
+pub fn mcall(name: [*:0]const u8, argv: []repr.Value) raise.Error!repr.Value {
     if (@as(i32, @intCast(argv.len)) < 1) {
         return pp_format.panicf("method :%s expected at least 1 argument", .{name});
     }
@@ -1650,9 +1655,8 @@ pub fn mcall(name: [*:0]const u8, argv: []types.Janet) raise.Error!types.Janet {
 /// `janet_table_put` hashes and compares every key on the way in, so an
 /// abstract key with a `hash` or `compare` callback can raise from inside this
 /// loop, or run the collector while the table being filled is unrooted.
-/// `FOUND.md` has the second of those; it predates the port and is unaffected
-/// by it.
-pub fn fillTable(table: *types.JanetTable, mem: ?[*]const types.Janet, count: i32) callconv(.c) void {
+/// `FOUND.md` has the second of those; it is Janet's and is reproduced.
+pub fn fillTable(table: *types.JanetTable, mem: ?[*]const repr.Value, count: i32) callconv(.c) void {
     var i: i32 = 0;
     while (i < count) : (i += 2) {
         tables.put(table, mem.?[asSize(i)], mem.?[asSize(i + 1)]);
@@ -1662,7 +1666,7 @@ pub fn fillTable(table: *types.JanetTable, mem: ?[*]const types.Janet, count: i3
 /// `fill_struct`, renamed. `JOP_MAKE_STRUCT`, over a struct still under
 /// construction: `janet_struct_put` writes into the buckets `janet_struct_begin`
 /// allocated, and the caller calls `janet_struct_end` afterwards.
-pub fn fillStruct(st: [*]types.JanetKV, mem: [*]const types.Janet, count: i32) callconv(.c) void {
+pub fn fillStruct(st: [*]types.JanetKV, mem: [*]const repr.Value, count: i32) callconv(.c) void {
     var i: i32 = 0;
     while (i < count) : (i += 2) {
         structs.put(st, mem[asSize(i)], mem[asSize(i + 1)]);
@@ -1679,35 +1683,26 @@ pub fn fillStruct(st: [*]types.JanetKV, mem: [*]const types.Janet, count: i32) c
 /// it — recorded in `FOUND.md`, reproduced rather than repaired, and the reason
 /// the trampoline build takes one scope around this loop rather than one per
 /// element.
-/// **This raises, and it used to be reached through an abi that did not.**
-/// Phase 11 Part 12: `janet_fill_string` was `raise.reported` over this
-/// implementation, and `vm_run.zig`'s `JOP_MAKE_STRING` and `JOP_MAKE_BUFFER`
-/// arms called the *abi* from inside `runVm`, which is itself raising. A
-/// `tostring` refusal was therefore flattened into a report nobody consumed:
-/// the loop went on to build a string out of a half-filled buffer, and the
-/// outstanding report killed the process at the next scope boundary with
-/// `a raise was reported to a C caller and never consumed` — arbitrarily far
-/// from the cause. Under the C original the same refusal was a `longjmp` and
-/// propagated. The abi is gone and the callers use `try`, which is rule 13's
-/// family: an ordinary import away from not needing the abi at all.
-pub fn fillString(buffer: *types.JanetBuffer, mem: ?[*]const types.Janet, count: i32) raise.Raising(void) {
-    var i: i32 = 0;
-    while (i < count) : (i += 1) {
-        try pp_describe.toStringB(buffer, mem.?[asSize(i)]);
-    }
+/// **This raises, and it must.** It was once reached through an abi that
+/// reported instead, from inside `runVm`, which is itself raising -- so a
+/// `tostring` refusal was flattened into a report nobody consumed: the loop
+/// went on to build a string out of a half-filled buffer, and the outstanding
+/// report killed the process at the next scope boundary with `a raise was
+/// reported to a C caller and never consumed`, arbitrarily far from the cause.
+/// An ordinary import is all it takes not to need the abi at all.
+pub fn fillString(buffer: *types.JanetBuffer, mem: []const repr.Value) raise.Raising(void) {
+    for (mem) |x| try pp_describe.toStringB(buffer, x);
 }
 
 // ------------------------------------------------------------- the one abi
 
-// There were nine abis here, hidden exactly as the C build hid them,
-// because `state.h` declared all nine and C callers cannot consume a Zig
-// error. Phase 11 Part 12 spent eight of them: every remaining caller reaches
-// this file by import, and the last C caller of each was `test/vm_calls.c`.
-// The `state.h` block went with them.
+// There were nine abis here, hidden exactly as a C build hid them, because an
+// internal header declared all nine and a C caller cannot consume a Zig error.
+// Eight are gone: every caller reaches this file by import.
 //
-// `janet_mcall` stays, and the reason is the same one Part 10 and Part 11
-// recorded for eleven other names: it is `janet.h`'s public surface. It has no
-// in-tree caller at all now — `value_access.zig` reaches `mcall` by import —
-// and it is what an embedder calls to invoke a method.
+// `janet_mcall` stays, for the reason eleven other names stay: it is Janet's
+// public surface. It has no in-tree caller at all -- `value/helpers/access.zig`
+// reaches `mcall` by import -- and it is what an embedder calls to invoke a
+// method.
 
 pub const mcallPanicking = raise.panickingArgv(mcall).abi;

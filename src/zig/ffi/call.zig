@@ -1,7 +1,6 @@
 //! `ffi.c`'s calling machinery: building a signature, placing the arguments
 //! and making the call, the callback trampolines, and the JIT's executable
-//! pages. Part 16's top layer, and the part Phase 6 recorded as "assembly by
-//! nature".
+//! pages. Assembly by nature.
 //!
 //! ## How the stack arguments are placed, now that there is no `alloca`
 //!
@@ -41,25 +40,22 @@
 //!
 //! ## The uninitialized register arrays are not reproduced
 //!
-//! `FOUND.md` records that C stores an argument narrower than a register into
-//! an uninitialized array, so every `:s8`, `:u8`, `:s16` and `:u16` argument
-//! reaches its callee with stack residue in the high bits. Reading
-//! uninitialized memory is undefined rather than merely wrong, so this phase's
-//! rule is to record it and get it right -- the same footing as Part 8's `%x`
-//! entry. Every bank and the frame are zeroed here.
+//! `FOUND.md` records that Janet stores an argument narrower than a register
+//! into an uninitialized array, so every `:s8`, `:u8`, `:s16` and `:u16`
+//! argument reaches its callee with stack residue in the high bits. Reading
+//! uninitialized memory is undefined rather than merely wrong, so this records
+//! it and gets it right. Every bank and the frame are zeroed here.
 //!
-//! ## Why this file is jump-transparent
+//! ## Scratch and raising
 //!
-//! Marshalling raises, and so does the argument layer behind `-Dargs-core`. A
-//! raise between `janet_smalloc` and `janet_sfree` leaks the frame until the
-//! next collection, which is what scratch memory is for and what `ffi.c` did
-//! with its own classification scratch. No `defer` may appear until Part 17.
+//! Marshalling raises, and so does the argument layer. A raise between
+//! `janet_smalloc` and `janet_sfree` leaks the frame until the next
+//! collection, which is what scratch memory is for.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const raise = @import("raise");
 const stdio = @import("../stdio.zig");
-const io_core = @import("../io.zig");
 const pp_format = @import("../pp/format.zig");
 const ffi_types = @import("types.zig");
 const marshal = @import("marshal.zig");
@@ -67,14 +63,13 @@ const vm_lifecycle = @import("../vm/lifecycle.zig");
 const vm_entry = @import("../vm/entry.zig");
 const abstract_type = @import("../abstract_type.zig");
 const gc_alloc = @import("../gc.zig");
-const kind = @import("../value/helpers/kind.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const args_core = @import("../args.zig");
 const abstracts = @import("../value/abstracts.zig");
 const arrays = @import("../value/arrays.zig");
 
 const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
 const Type = ffi_types.Type;
 const Struct = ffi_types.Struct;
@@ -91,12 +86,11 @@ const has_jit = config.ffi_jit;
 // The flat forms, which are the conventions' vocabulary
 // ==========================================================================
 //
-// `TypeNode`, `ArgSlot` and `AllocResult` were written out a second time here
-// until Phase 11 Part 16, on this side of five `extern fn` declarations
-// against `ffi_classify.zig`'s exported symbols. Both ends had been Zig since
-// Phase 10 Part 18 and nothing compared the two copies of a layout the C ABI
-// was carrying between them. They are imported now, and the conventions are
-// ordinary calls.
+// `TypeNode`, `ArgSlot` and `AllocResult` were written out a second time here,
+// on this side of five `extern fn` declarations against the classifier's
+// exported symbols. Both ends were Zig and nothing compared the two copies of
+// a layout the C ABI was carrying between them. They are imported now, and the
+// conventions are ordinary calls.
 
 const ffi_classify = @import("classify.zig");
 const value = @import("../value.zig");
@@ -403,8 +397,8 @@ fn checkAlloc(result: *const AllocResult) raise.Error!void {
     }
 }
 
-/// The ceiling check, which is Part 16's own and has no C original: past the
-/// top rung there is no function type to call through.
+/// The ceiling check, which Janet has no equivalent of: past the top rung
+/// there is no function type to call through.
 fn checkStackCeiling(words: u32, comptime ladder: []const usize) raise.Error!void {
     if (words <= comptime ladderTop(ladder)) return;
     return pp_format.panicf(
@@ -434,16 +428,16 @@ fn applySlots(
 // ffi/signature
 // ==========================================================================
 
-pub fn signature(argv: []const types.Janet) raise.Raising(types.Janet) {
-    // The upper bound is `FOUND.md`'s one-line repair, taken in Phase 11 Part
-    // 17 and a deliberate divergence from upstream. C checked only the lower
-    // bound, so `arg_count` was whatever the caller passed and the loop below
-    // filled `mappings` and `slots` past their ends -- into this frame and
-    // then into its caller's, with no native library and no call involved,
-    // since `ffi/signature` only describes one. The bound is on `argc` and the
-    // first two arguments are the convention and the return type, so it admits
-    // exactly `max_args` argument types and refuses a signature the structure
-    // could never have represented.
+pub fn cfunSignature(argv: []const repr.Value) raise.Raising(repr.Value) {
+    // The upper bound is `FOUND.md`'s one-line repair and a deliberate
+    // divergence from Janet. C checks only the lower bound, so `arg_count` is
+    // whatever the caller passed and the loop below fills `mappings` and
+    // `slots` past their ends -- into this frame and then into its caller's,
+    // with no native library and no call involved, since `ffi/signature` only
+    // describes one. The bound is on `argc` and the first two arguments are the
+    // convention and the return type, so it admits exactly `max_args` argument
+    // types and refuses a signature the structure could never have
+    // represented.
     try args_core.arity(argv, 2, @intCast(ffi_types.max_args + 2));
     const arg_count: u32 = @intCast(@as(i32, @intCast(argv.len)) - 2);
     const cc = try ffi_types.decodeCc(try args_core.getKeyword(argv, 0));
@@ -538,7 +532,7 @@ pub fn signature(argv: []const types.Janet) raise.Raising(types.Janet) {
         },
     }
 
-    const abst: *Signature = @ptrCast(@alignCast(abstracts.new(abstract_type.stored(&ffi_types.signature_at), @sizeOf(Signature))));
+    const abst: *Signature = @ptrCast(@alignCast(abstracts.new(&ffi_types.signature_at, @sizeOf(Signature))));
     abst.frame_size = 0;
     abst.cc = cc;
     abst.ret = ret;
@@ -581,7 +575,7 @@ fn returnScratch(ty: Type) [*]u8 {
 
 /// SysV AMD64. Six general registers, eight vector registers, and four
 /// variants that differ only in how the return value comes back.
-fn callSysv64(sig: *Signature, function_pointer: *const anyopaque, argv: []const types.Janet) raise.Raising(types.Janet) {
+fn callSysv64(sig: *Signature, function_pointer: *const anyopaque, argv: []const repr.Value) raise.Raising(repr.Value) {
     var gen: [6]u64 = @splat(0);
     var fp: [8]u64 = @splat(0);
     var pair: [2]u64 = @splat(0);
@@ -668,7 +662,7 @@ fn callSysv64(sig: *Signature, function_pointer: *const anyopaque, argv: []const
 /// Win64. Four register slots that are integer or vector according to the
 /// variant, one register for the return, and everything wider than a word
 /// passed by reference.
-fn callWin64(sig: *Signature, function_pointer: *const anyopaque, argv: []const types.Janet) raise.Raising(types.Janet) {
+fn callWin64(sig: *Signature, function_pointer: *const anyopaque, argv: []const repr.Value) raise.Raising(repr.Value) {
     var regs: [4]u64 = @splat(0);
     var ret_buf: ReturnBuffer align(16) = @splat(0);
 
@@ -742,8 +736,8 @@ fn callWin64(sig: *Signature, function_pointer: *const anyopaque, argv: []const 
 /// move of each word onto itself.
 ///
 /// This half is not in `FOUND.md`'s entry, which describes only the outgoing
-/// direction. It is the same defect read backwards, and Phase 11 Part 18 found
-/// it by asking whether it could be: `ret_hfa2` answered `(1.5 0)`.
+/// direction. It is the same defect read backwards, found by asking whether it
+/// could be: `ret_hfa2` answered `(1.5 0)`.
 fn gatherHfaReturn(buffer: [*]u8, ty: Type) void {
     const members = hfaMembers(ty);
     if (members <= 1) return;
@@ -760,7 +754,7 @@ fn gatherHfaReturn(buffer: [*]u8, ty: Type) void {
 
 /// AAPCS64. Eight general registers, eight vector registers, a stack measured
 /// in bytes rather than words, and three return variants.
-fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: []const types.Janet) raise.Raising(types.Janet) {
+fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: []const repr.Value) raise.Raising(repr.Value) {
     var gen: [8]u64 = @splat(0);
     var fp: [8]u64 = @splat(0);
     var ret_buf: ReturnBuffer align(16) = @splat(0);
@@ -860,9 +854,8 @@ fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: []cons
 /// to looks like, which is the same argument `abstract_type.zig` makes for
 /// typing `gc` and `gcmark` non-raising.
 ///
-/// It was an `export fn` until Phase 11 Part 16 and had no header declaring
-/// it. The three wrappers below hand out *addresses*, never the name, so the
-/// symbol's only reader was `test/ffi_core.c`.
+/// It is not exported. The three wrappers below hand out *addresses*, never
+/// the name.
 pub fn callbackEntry(ctx: ?*anyopaque, userdata: ?*anyopaque) void {
     if (userdata == null) {
         // `janet_eprintf` is a variadic macro and does not survive
@@ -873,7 +866,7 @@ pub fn callbackEntry(ctx: ?*anyopaque, userdata: ?*anyopaque) void {
     }
     var context = wrap.fromPointer(ctx);
     const fun: *types.JanetFunction = @ptrCast(@alignCast(userdata));
-    _ = raise.reported(vm_entry.callImpl(fun, (&context)[0..1]));
+    _ = raise.reported(vm_entry.call(fun, (&context)[0..1]));
 }
 
 /// The three exist so that each convention hands out a pointer of its own,
@@ -890,7 +883,7 @@ fn aapcs64Callback(ctx: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
     callbackEntry(ctx, userdata);
 }
 
-pub fn trampoline(argv: []const types.Janet) raise.Raising(types.Janet) {
+pub fn cfunTrampoline(argv: []const repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 1);
     var cc = ffi_types.default_cc;
     if (@as(i32, @intCast(argv.len)) >= 1) cc = try ffi_types.decodeCc(try args_core.getKeyword(argv, 0));
@@ -930,9 +923,7 @@ const MEM_RELEASE: u32 = 0x8000;
 const PAGE_READWRITE: u32 = 0x04;
 const PAGE_EXECUTE_READ: u32 = 0x20;
 
-fn jitfnGc(p: ?*anyopaque, s: usize) callconv(.c) c_int {
-    _ = s;
-    const fun: *JittedFn = @ptrCast(@alignCast(p));
+fn jitfnGc(fun: *JittedFn, _: usize) c_int {
     const ptr = fun.function_pointer orelse return 0;
     if (has_jit) {
         if (ffi_types.windows) {
@@ -944,31 +935,27 @@ fn jitfnGc(p: ?*anyopaque, s: usize) callconv(.c) c_int {
     return 0;
 }
 
-fn jitfnGetBytes(p: ?*anyopaque, s: usize) callconv(.c) types.JanetByteView {
-    _ = s;
-    const fun: *JittedFn = @ptrCast(@alignCast(p));
+fn jitfnGetBytes(fun: *const JittedFn, _: usize) types.JanetByteView {
     return .{ .bytes = @ptrCast(fun.function_pointer), .len = @intCast(fun.size) };
 }
 
-fn jitfnLength(p: ?*anyopaque, s: usize) raise.Raising(usize) {
-    _ = s;
-    const fun: *JittedFn = @ptrCast(@alignCast(p));
+fn jitfnLength(fun: *JittedFn, _: usize) raise.Raising(usize) {
     return fun.size;
 }
 
 /// `janet_type_ffijit`.
-pub const jit_at: abstract_type.AbstractType = .{
+pub const jit_at = abstract_type.define(JittedFn, .{
     .name = "ffi/jitfn",
     .gc = &jitfnGc,
     .bytes = &jitfnGetBytes,
     .length = &jitfnLength,
-};
+});
 
 /// A quick hack to align to a page boundary; we should query the OS. FIXME
 const page_mask: usize = 0xFFF;
 
-pub fn jitfn(argv: []const types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_FFI_JIT);
+pub fn cfunJitfn(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"ffi_jit"}));
     try args_core.fixarity(argv, 1);
     const bytes = try args_core.getBytes(argv, 0);
 
@@ -976,9 +963,9 @@ pub fn jitfn(argv: []const types.Janet) raise.Raising(types.Janet) {
 
     const alloc_size = (@as(usize, @intCast(bytes.len)) + page_mask) & ~page_mask;
     const fun: *JittedFn = @ptrCast(@alignCast(if (has_ev)
-        abstracts.threaded(abstract_type.stored(&jit_at), @sizeOf(JittedFn))
+        abstracts.threaded(&jit_at, @sizeOf(JittedFn))
     else
-        abstracts.new(abstract_type.stored(&jit_at), @sizeOf(JittedFn))));
+        abstracts.new(&jit_at, @sizeOf(JittedFn))));
     fun.function_pointer = null;
     fun.size = 0;
 
@@ -1023,13 +1010,13 @@ pub fn jitfn(argv: []const types.Janet) raise.Raising(types.Janet) {
 // ==========================================================================
 
 /// `janet_ffi_get_callable_pointer`.
-fn callablePointer(argv: []const types.Janet, n: i32) raise.Raising(*const anyopaque) {
-    switch (kind.typeOf(argv[@intCast(n)])) {
-        constants.JANET_POINTER => {
+fn callablePointer(argv: []const repr.Value, n: i32) raise.Raising(*const anyopaque) {
+    switch (repr.typeOf(argv[@intCast(n)])) {
+        repr.Tag.pointer => {
             if (wrap.toPointer(argv[@intCast(n)])) |p| return p;
         },
-        constants.JANET_ABSTRACT => {
-            if (null != args_core.checkabstract(argv[@intCast(n)], abstract_type.stored(&jit_at))) {
+        repr.Tag.abstract => {
+            if (null != args_core.checkabstract(argv[@intCast(n)], &jit_at)) {
                 const fun: *JittedFn = @ptrCast(@alignCast(wrap.toAbstract(argv[@intCast(n)])));
                 if (fun.function_pointer) |p| return p;
             }
@@ -1042,11 +1029,11 @@ fn callablePointer(argv: []const types.Janet, n: i32) raise.Raising(*const anyop
     );
 }
 
-pub fn call(argv: []const types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_FFI_USE);
+pub fn cfunCall(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, -1);
     const function_pointer = try callablePointer(argv, 0);
-    const sig: *Signature = @ptrCast(@alignCast(try args_core.getAbstract(argv, 1, abstract_type.stored(&ffi_types.signature_at))));
+    const sig: *Signature = @ptrCast(@alignCast(try args_core.getAbstract(argv, 1, &ffi_types.signature_at)));
     try args_core.fixarity(argv[2..], @bitCast(sig.arg_count));
     return switch (sig.cc) {
         .win64 => if (ffi_types.win64_enabled)
@@ -1067,7 +1054,7 @@ pub fn call(argv: []const types.Janet) raise.Raising(types.Janet) {
 
 /// `cfun_ffi_supported_calling_conventions`. Every architecture supports
 /// `:none`, which is a placeholder that cannot be used at runtime.
-pub fn supportedConventions() raise.Raising(types.Janet) {
+pub fn supportedConventions() raise.Raising(repr.Value) {
     const array = arrays.new(4);
     if (ffi_types.win64_enabled) try arrays.push(array, value.fromBytes("win64", .keyword));
     if (ffi_types.sysv64_enabled) try arrays.push(array, value.fromBytes("sysv64", .keyword));

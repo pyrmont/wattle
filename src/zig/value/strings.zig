@@ -4,8 +4,8 @@
 //!
 //! ## One allocation strategy, three files
 //!
-//! `strings.zig`, `symbols.zig` and `tuples.zig` were `string_symbol.zig`
-//! until Phase 12's namespace batch 2. They are still one allocation strategy,
+//! `strings.zig`, `symbols.zig` and `tuples.zig` were one file once. They are
+//! still one allocation strategy,
 //! and that is worth stating rather than assuming: a buffer or an array is a
 //! fixed-size block pointing at a payload that can be reallocated; a string, a
 //! symbol or a tuple is a header and its payload in a *single* `janet_gcalloc`,
@@ -15,27 +15,25 @@
 //!  - **A head recovered by pointer arithmetic.** The value Janet passes
 //!    around is the address of the payload, not of the block, so every
 //!    operation subtracts the header size to get back to the header.
-//!    `gc_sweep.zig` already does this for the free path; `head` below is the
-//!    same shape, `@sizeOf` rather than `@offsetOf` because translate-c drops
-//!    the flexible array member. `test/abi.c` pins the equality with a
-//!    `_Static_assert` — the last place in the tree that can spell `offsetof` —
-//!    and `test/gc_mark.zig` checks the offset the allocator actually used.
+//!    `gc/sweep.zig` already does this for the free path; `head` below is the
+//!    same shape, `@sizeOf` rather than `@offsetOf` because a flexible array
+//!    member does not survive translation. `test/gc_mark.zig` checks the
+//!    offset the allocator actually used.
 //!  - **A hash computed once, at the end of construction.** `begin` leaves
 //!    `hash` uninitialised and `end` fills it in. A value observed between the
 //!    two has an indeterminate hash, which is why nothing may put it in a
-//!    dictionary before `end` runs. Preserved exactly; the port does not
-//!    helpfully zero it.
+//!    dictionary before `end` runs. Preserved exactly; nothing here
+//!    helpfully zeroes it.
 //!
-//! The taxonomy that separates them is Janet's own, and it is what the batch
-//! followed: a string and a symbol are **bytes**, a tuple is **indexed**.
-//! `port/NAMESPACES.md` has it, along with the reason there is no
-//! `keywords.zig` — `janet.h` spells `janet_keyword` as a `#define` onto
-//! `janet_symbol`, so a keyword and a symbol are the same interned bytes under
-//! a different tag, and `helpers/wrap.zig` is where the tag lives.
+//! The taxonomy that separates them is Janet's own: a string and a symbol are
+//! **bytes**, a tuple is **indexed**. There is no `keywords.zig` because Janet
+//! spells `janet_keyword` as a `#define` onto `janet_symbol`, so a keyword and
+//! a symbol are the same interned bytes under a different tag, and
+//! `helpers/wrap.zig` is where the tag lives.
 //!
 //! **This file owns the string head accessors.** `head` and `data` are `pub`
 //! so that `symbols.zig` reaches them rather than keeping a copy: a symbol is
-//! a string with an entry in `janet_vm.cache`, and two copies of a pointer
+//! a string with an entry in `vm.symcache.entries`, and two copies of a pointer
 //! offset can disagree in a way a caller can see. That is the line batch 1
 //! drew — a leaf may duplicate a private predicate, never a definition
 //! anything else can observe — and it is `phase_12.md` item 4a's population,
@@ -51,7 +49,7 @@
 const std = @import("std");
 const corefn = @import("corefn");
 const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
 const raise = @import("raise");
 const registry = @import("../registry.zig");
@@ -101,7 +99,7 @@ pub inline fn bytesOf(s: [*]const u8) []const u8 {
 /// and `wrap.c` defines the declaration only for the NaN-boxed layouts. Same
 /// reasoning, and the same three lines, as `tuples.zig`, `value_access.zig`
 /// and `pp_pretty.zig`.
-inline fn wrapInteger(x: i32) types.Janet {
+inline fn wrapInteger(x: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(x));
 }
 
@@ -112,7 +110,7 @@ inline fn wrapInteger(x: i32) types.Janet {
 /// `janet_string_end` computes the second.
 pub fn begin(length: i32) [*]u8 {
     const hd: *types.JanetStringHead = @ptrCast(@alignCast(gc_alloc.gcalloc(
-        constants.JANET_MEMORY_STRING,
+        types.MemoryType.string,
         types.string_payload +% asSize(length) +% 1,
     )));
     hd.length = length;
@@ -133,7 +131,7 @@ pub fn end(str: [*]u8) callconv(.c) [*:0]const u8 {
 pub fn new(buf: []const u8) [*:0]const u8 {
     const len: i32 = @intCast(buf.len);
     const hd: *types.JanetStringHead = @ptrCast(@alignCast(gc_alloc.gcalloc(
-        constants.JANET_MEMORY_STRING,
+        types.MemoryType.string,
         types.string_payload +% buf.len +% 1,
     )));
     hd.length = len;
@@ -181,32 +179,21 @@ pub fn cstring(str: [*:0]const u8) [*:0]const u8 {
 // string/*, keyword/slice and symbol/slice, the cfunction surface.
 // ==========================================================================
 
-/// `src/core/util.h`, provided by `pp_format.zig` or `pp.c` according to
-/// `-Dpp`.
-extern fn janet_buffer_format(
-    b: *types.JanetBuffer,
-    strfrmt: [*]const u8,
-    argstart: i32,
-    argc: i32,
-    argv: [*]types.Janet,
-) callconv(.c) void;
-
 /// Knuth-Morris-Pratt, and the one piece of this file that owns heap memory
 /// across a call that can raise.
 ///
-/// `lookup` comes from `janet_calloc` and is released by `deinit`. The C
-/// original releases it on every path it can see and misses the ones it
-/// cannot: `janet_text_substitution` runs a Janet function, and a panic from
-/// there skips the `kmp_deinit` below it. That leak is reproduced rather than
+/// `lookup` comes from `janet_calloc` and is released by `deinit`. Janet
+/// releases it on every path it can see and misses the ones it cannot:
+/// `janet_text_substitution` runs a Janet function, and a raise from there
+/// skips the `kmp_deinit` below it. That leak is reproduced rather than
 /// repaired -- `FOUND.md` has it -- and reproducing it is also why nothing
 /// here uses `defer` or `errdefer`.
+/// here uses `defer` or `errdefer`.
 ///
-/// Phase 10 Part 17f changed the *mechanism* of that raise without changing
-/// the leak. A raising builtin now returns an error the `try` on
-/// `registration.textSubstitution` propagates, so the skipped `deinit` is a
-/// plain early return rather than a jump; a raising Janet *function* still
-/// jumps out of `janet_call` inside that call, which is why this file keeps
-/// its jump-transparent marker.
+/// A raising builtin returns an error the `try` on
+/// `registry.textSubstitution` propagates, so the skipped `deinit` is a plain
+/// early return rather than a jump; a raising Janet *function* can still raise
+/// out of `janet_call` inside that call, which is why nothing here is held.
 const KmpState = struct {
     i: i32,
     j: i32,
@@ -266,7 +253,7 @@ const KmpState = struct {
     }
 };
 
-fn findsetup(argv: []types.Janet, extra: i32) raise.Raising(KmpState) {
+fn findsetup(argv: []repr.Value, extra: i32) raise.Raising(KmpState) {
     try args_core.arity(argv, 2, 3 + extra);
     const pat = try args_core.getBytes(argv, 0);
     const text = try args_core.getBytes(argv, 1);
@@ -280,19 +267,19 @@ fn findsetup(argv: []types.Janet, extra: i32) raise.Raising(KmpState) {
     return s;
 }
 
-fn cfunStringSlice(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const view = try args_core.getBytes(argv, 0);
     const range = try args_core.getSlice(argv);
     return wrap.fromString(new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
 }
 
-fn cfunSymbolSlice(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunSymbolSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const view = try args_core.getBytes(argv, 0);
     const range = try args_core.getSlice(argv);
     return wrap.fromSymbol(symbols.new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
 }
 
-fn cfunKeywordSlice(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunKeywordSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const view = try args_core.getBytes(argv, 0);
     const range = try args_core.getSlice(argv);
     // `janet.h` spells `janet_keyword` as a #define onto `janet_symbol`: a
@@ -300,7 +287,7 @@ fn cfunKeywordSlice(argv: []types.Janet) align(corefn.alignment) raise.Raising(t
     return wrap.fromKeyword(symbols.new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
 }
 
-fn cfunStringRepeat(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringRepeat(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const view = try args_core.getBytes(argv, 0);
     const rep = try args_core.getInteger(argv, 1);
@@ -317,7 +304,7 @@ fn cfunStringRepeat(argv: []types.Janet) align(corefn.alignment) raise.Raising(t
     return wrap.fromString(end(newbuf));
 }
 
-fn cfunStringBytes(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringBytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const view = try args_core.getBytes(argv, 0);
     const tup = tuples.begin(view.len);
@@ -326,7 +313,7 @@ fn cfunStringBytes(argv: []types.Janet) align(corefn.alignment) raise.Raising(ty
     return wrap.fromTuple(tuples.end(tup));
 }
 
-fn cfunStringFrombytes(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringFrombytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const buf = begin(@as(i32, @intCast(argv.len)));
     var i: i32 = 0;
     while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
@@ -338,7 +325,7 @@ fn cfunStringFrombytes(argv: []types.Janet) align(corefn.alignment) raise.Raisin
 /// ASCII only, as the docstring says: the two case functions test the byte
 /// ranges directly rather than calling `tolower`, so a locale cannot change
 /// what they do.
-fn mapCase(comptime lo: u8, comptime hi: u8, comptime delta: i8, argv: []types.Janet) raise.Raising(types.Janet) {
+fn mapCase(comptime lo: u8, comptime hi: u8, comptime delta: i8, argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const view = try args_core.getBytes(argv, 0);
     const buf = begin(view.len);
@@ -353,15 +340,15 @@ fn mapCase(comptime lo: u8, comptime hi: u8, comptime delta: i8, argv: []types.J
     return wrap.fromString(end(buf));
 }
 
-fn cfunStringAsciilower(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringAsciilower(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     return try mapCase(65, 90, 32, argv);
 }
 
-fn cfunStringAsciiupper(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringAsciiupper(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     return try mapCase(97, 122, -32, argv);
 }
 
-fn cfunStringReverse(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringReverse(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const view = try args_core.getBytes(argv, 0);
     const buf = begin(view.len);
@@ -370,33 +357,33 @@ fn cfunStringReverse(argv: []types.Janet) align(corefn.alignment) raise.Raising(
     return wrap.fromString(end(buf));
 }
 
-fn cfunStringFind(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringFind(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var state = try findsetup(argv, 0);
     const result = state.next();
     state.deinit();
     return if (result < 0) wrap.fromNil() else wrapInteger(result);
 }
 
-fn cfunStringHasprefix(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringHasprefix(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const prefix = try args_core.getBytes(argv, 0);
     const str = try args_core.getBytes(argv, 1);
     if (str.len < prefix.len) return wrap.fromFalse();
     const n = asSize(prefix.len);
-    return wrap.fromBoolean(@intFromBool(std.mem.eql(u8, prefix.bytes.?[0..n], str.bytes.?[0..n])));
+    return wrap.fromBoolean(std.mem.eql(u8, prefix.bytes.?[0..n], str.bytes.?[0..n]));
 }
 
-fn cfunStringHassuffix(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringHassuffix(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const suffix = try args_core.getBytes(argv, 0);
     const str = try args_core.getBytes(argv, 1);
     if (str.len < suffix.len) return wrap.fromFalse();
     const n = asSize(suffix.len);
     const tail = str.bytes.? + asSize(str.len - suffix.len);
-    return wrap.fromBoolean(@intFromBool(std.mem.eql(u8, suffix.bytes.?[0..n], tail[0..n])));
+    return wrap.fromBoolean(std.mem.eql(u8, suffix.bytes.?[0..n], tail[0..n]));
 }
 
-fn cfunStringFindall(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringFindall(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var state = try findsetup(argv, 0);
     const array = arrays.new(0);
     while (true) {
@@ -408,9 +395,9 @@ fn cfunStringFindall(argv: []types.Janet) align(corefn.alignment) raise.Raising(
     return wrap.fromArray(array);
 }
 
-const ReplaceState = struct { kmp: KmpState, subst: types.Janet };
+const ReplaceState = struct { kmp: KmpState, subst: repr.Value };
 
-fn replacesetup(argv: []types.Janet) raise.Raising(ReplaceState) {
+fn replacesetup(argv: []repr.Value) raise.Raising(ReplaceState) {
     try args_core.arity(argv, 3, 4);
     const pat = try args_core.getBytes(argv, 0);
     const subst = argv[1];
@@ -428,7 +415,7 @@ fn replacesetup(argv: []types.Janet) raise.Raising(ReplaceState) {
     return s;
 }
 
-fn cfunStringReplace(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringReplace(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var s = try replacesetup(argv);
     const result = s.kmp.next();
     if (result < 0) {
@@ -454,7 +441,7 @@ fn cfunStringReplace(argv: []types.Janet) align(corefn.alignment) raise.Raising(
     return wrap.fromString(end(buf));
 }
 
-fn cfunStringReplaceall(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringReplaceall(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var s = try replacesetup(argv);
     var b: types.JanetBuffer = undefined;
     var lastindex: i32 = 0;
@@ -473,7 +460,7 @@ fn cfunStringReplaceall(argv: []types.Janet) align(corefn.alignment) raise.Raisi
         s.kmp.seti(lastindex);
     }
     try buffers.pushBytes(&b, s.kmp.text[@intCast(lastindex)..]);
-    const ret = new(b.data.?[0..@intCast(b.count)]);
+    const ret = new(b.slice());
     buffers.deinit(&b);
     s.kmp.deinit();
     return wrap.fromString(ret);
@@ -482,7 +469,7 @@ fn cfunStringReplaceall(argv: []types.Janet) align(corefn.alignment) raise.Raisi
 /// The limit arithmetic is the C original's, decrement and all: `limit`
 /// defaults to -1, so `--limit` runs away from zero and never stops the loop,
 /// and an explicit limit of 0 behaves like an explicit 1. Reproduced.
-fn cfunStringSplit(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringSplit(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var limit: i32 = -1;
     var lastindex: i32 = 0;
     if (@as(i32, @intCast(argv.len)) == 4) limit = try args_core.getInteger(argv, 3);
@@ -507,7 +494,7 @@ fn cfunStringSplit(argv: []types.Janet) align(corefn.alignment) raise.Raising(ty
 /// A 256-bit set held in eight words, indexed by the top three bits of the
 /// byte and masked by the low five. The same arithmetic as the C original,
 /// which is worth keeping because a `[256]bool` would be clearer and slower.
-fn cfunStringCheckset(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringCheckset(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var bitset: [8]u32 = @splat(0);
     try args_core.fixarity(argv, 2);
     const set = try args_core.getBytes(argv, 0);
@@ -527,7 +514,7 @@ fn cfunStringCheckset(argv: []types.Janet) align(corefn.alignment) raise.Raising
     return wrap.fromTrue();
 }
 
-fn cfunStringJoin(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const parts = try args_core.getIndexed(argv, 0);
     const joiner: types.JanetByteView = if (@as(i32, @intCast(argv.len)) == 2)
@@ -568,17 +555,17 @@ fn cfunStringJoin(argv: []types.Janet) align(corefn.alignment) raise.Raising(typ
     return wrap.fromString(end(buf));
 }
 
-fn cfunStringFormat(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringFormat(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const buffer = buffers.new(0);
     const strfrmt = try args_core.getString(argv, 0);
     try pp_format.bufferFormat(buffer, @ptrCast(strfrmt), 0, argv);
-    return wrap.fromString(new(buffer.*.data.?[0..@intCast(buffer.*.count)]));
+    return wrap.fromString(new(buffer.*.slice()));
 }
 
 const default_trim_set = " \t\r\n\x0b\x0c";
 
-fn trimArgs(argv: []types.Janet, str: *types.JanetByteView, set: *types.JanetByteView) raise.Raising(void) {
+fn trimArgs(argv: []repr.Value, str: *types.JanetByteView, set: *types.JanetByteView) raise.Raising(void) {
     try args_core.arity(argv, 1, 2);
     str.* = try args_core.getBytes(argv, 0);
     if (@as(i32, @intCast(argv.len)) >= 2) {
@@ -606,7 +593,7 @@ fn rightEdge(str: types.JanetByteView, set: types.JanetByteView) i32 {
     return 0;
 }
 
-fn cfunStringTrim(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var str: types.JanetByteView = undefined;
     var set: types.JanetByteView = undefined;
     try trimArgs(argv, &str, &set);
@@ -616,7 +603,7 @@ fn cfunStringTrim(argv: []types.Janet) align(corefn.alignment) raise.Raising(typ
     return wrap.fromString(new(str.bytes.?[@intCast(left)..@intCast(right)]));
 }
 
-fn cfunStringTriml(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringTriml(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var str: types.JanetByteView = undefined;
     var set: types.JanetByteView = undefined;
     try trimArgs(argv, &str, &set);
@@ -624,7 +611,7 @@ fn cfunStringTriml(argv: []types.Janet) align(corefn.alignment) raise.Raising(ty
     return wrap.fromString(new(str.bytes.?[@intCast(left)..@intCast(str.len)]));
 }
 
-fn cfunStringTrimr(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStringTrimr(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var str: types.JanetByteView = undefined;
     var set: types.JanetByteView = undefined;
     try trimArgs(argv, &str, &set);
@@ -640,7 +627,7 @@ pub fn lib(env: *types.JanetTable) void {
         "negative slice range.";
     const trim_doc_tail = "whitespace from a byte sequence. If the argument " ++
         "`set` is provided, consider only characters in `set` to be whitespace.";
-    const entries = [_]corefn.Entry{
+    const entries = comptime [_]corefn.Entry{
         corefn.reg("string/slice", &cfunStringSlice, @src(), "(string/slice bytes &opt start end)", slice_doc),
         corefn.reg("keyword/slice", &cfunKeywordSlice, @src(), "(keyword/slice bytes &opt start end)", "Same as string/slice, but returns a keyword."),
         corefn.reg("symbol/slice", &cfunSymbolSlice, @src(), "(symbol/slice bytes &opt start end)", "Same as string/slice, but returns a symbol."),
@@ -713,7 +700,6 @@ pub fn lib(env: *types.JanetTable) void {
         corefn.reg("string/trim", &cfunStringTrim, @src(), "(string/trim str &opt set)", "Trim leading and trailing " ++ trim_doc_tail),
         corefn.reg("string/triml", &cfunStringTriml, @src(), "(string/triml str &opt set)", "Trim leading " ++ trim_doc_tail),
         corefn.reg("string/trimr", &cfunStringTrimr, @src(), "(string/trimr str &opt set)", "Trim trailing " ++ trim_doc_tail),
-        corefn.end,
     };
-    corefn.install(env, &entries);
+    corefn.install(env, entries);
 }

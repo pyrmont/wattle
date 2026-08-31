@@ -2,7 +2,7 @@
 //! dictionary probe every lookup goes through, the two string comparisons, the
 //! key sort, and the four out-of-line head accessors.
 //!
-//! `port/probe-17/util-remainder.janet` covers what Janet source can reach —
+//! Janet source reaches the probe and the comparisons on the path of every
 //! the probe and the comparisons are on the path of every table lookup and
 //! every printed table. What is here is what only a caller *inside* the
 //! runtime can see: the probe's own return value, which distinguishes a
@@ -11,47 +11,29 @@
 //!
 //! ## Nothing in this subsystem raises, so nothing here opens a scope
 //!
-//! `utils.zig`'s own header says why — it is the half of `src/core/util.c`
-//! that owns no VM state and calls nothing that can refuse. So every call
-//! below is an ordinary call, there is no `harness.raised` in the file, and
-//! `run` needs no `catch`. That is unusual enough among the migrated contracts
-//! to be worth saying once here rather than leaving a reader to notice it.
+//! `utils.zig` owns no VM state and calls nothing that can refuse. So every
+//! call below is an ordinary call, there is no `harness.raised` in the file,
+//! and `run` needs no `catch`.
 //!
-//! ## The oracle this migration lost, and where its two replacements already
-//! live
+//! ## The four accessors recover what four other files wrote
 //!
-//! `test/utils.c` opened by comparing each head accessor with the macro of the
-//! same name — `(janet_string_head)(s) == janet_string_head(s)`, parenthesised
-//! on the left so the macro did not eat it. `janet.h` declares both, C callers
-//! get the macro and an embedder linking the shared library gets the function,
-//! and the port has to keep them the same pointer.
+//! A C contract could open by comparing each head accessor with the macro of
+//! the same name -- `(janet_string_head)(s) == janet_string_head(s)`,
+//! parenthesised on the left so the macro did not eat it. There is one
+//! spelling here, so that comparison would compare a name with itself.
 //!
-//! **There is one spelling here.** `@cImport` prefers the prototype wherever a
-//! header declares both, so a translation of that line would compare
-//! `c.janet_string_head` with itself: rule 25's shape, and the third time this
-//! phase has met it.
-//!
-//! Rule 24 says to ask where the comparison already lives before building a
-//! third one, and both halves of this one are already built:
-//!
-//!   - **`test/abi.c`** carries `sizeof(Head) == offsetof(Head, data)` for all
-//!     five heads, as static assertions, which is C's view of `janet.h`'s
-//!     layout and the only place the flexible array member is visible at all.
-//!     Phase 11 Part 8 put them there for exactly this reason.
-//!   - **`test/gc_mark.zig`** carries the run-time half: that the runtime's
-//!     own `@sizeOf` arithmetic agrees with what the allocator did.
-//!
-//! What is left for this file is the part neither of those asks, and it is a
-//! real question rather than a consolation prize: **the four accessors in
-//! `utils.zig` recover what four *other* files wrote.** A string's length is
-//! written through `string_symbol.zig`'s private `stringHead` and read here
-//! through `utils.zig`'s `headOf`; a struct's through `struct_table.zig`'s. So
+//! What is left is a real question rather than a consolation prize: **the four
+//! accessors in `utils.zig` recover what four *other* files wrote.** A
+//! string's length is written through `value/strings.zig`'s private
+//! `stringHead` and read here through `utils.zig`'s `headOf`; a struct's
+//! through `value/structs.zig`'s. So
 //! each case below builds a value with a constructor and reads its head back
 //! with the accessor, which is two independent spellings of the same offset
 //! after all — just not the two the C file compared.
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const harness = @import("harness.zig");
@@ -75,19 +57,16 @@ const internal = harness.internal;
 
 // ------------------------------------------------------------------- heads
 
-const head_probe_at: AbstractType = .{ .name = "utils/head-probe" };
+const head_probe_at = abstract_type.define(anyopaque, .{ .name = "utils/head-probe" });
 
 /// The distance from a head to the payload Janet hands around, which is what
 /// each accessor subtracts.
 ///
-/// **`@sizeOf` here is the oracle and must stay `@sizeOf`.** Since increment
-/// 5e the runtime subtracts `types.<kind>_payload`, which is
-/// `@offsetOf(Head, "_data")`; this file asserts that what the accessor
-/// actually moved by equals the *other* spelling. Rewriting these four to the
-/// constant would compare it with itself and the check would pass forever --
-/// increment 5d's rule 39 at a third pair of spellings. It is also the Zig
-/// replacement for `test/abi.c`'s five `_Static_assert`s, which asked the same
-/// question in C back when C was the only language that could.
+/// **`@sizeOf` here is the oracle and must stay `@sizeOf`.** The runtime
+/// subtracts `types.<kind>_payload`, which is `@offsetOf(Head, "_data")`; this
+/// file asserts that what the accessor actually moved by equals the *other*
+/// spelling. Rewriting these four to the constant would compare it with itself
+/// and the check would pass forever.
 fn payloadOffset(head: anytype, payload: anytype) usize {
     return @intFromPtr(payload) - @intFromPtr(head);
 }
@@ -98,8 +77,8 @@ fn theHeadAccessorsRecoverWhatTheConstructorsWrote() void {
     assert(string_head.*.length == 5);
     assert(payloadOffset(string_head, s) == @sizeOf(types.JanetStringHead));
 
-    var items: [2]types.Janet = .{ harness.wrapInteger(1), harness.wrapInteger(2) };
-    const tup = tuples.newFrom(&items, 2);
+    var items: [2]repr.Value = .{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const tup = tuples.newFrom(&items);
     const tuple_head = utils.tupleHead(tup);
     assert(tuple_head.*.length == 2);
     assert(payloadOffset(tuple_head, tup) == @sizeOf(types.JanetTupleHead));
@@ -111,7 +90,7 @@ fn theHeadAccessorsRecoverWhatTheConstructorsWrote() void {
     assert(struct_head.*.length == 1);
     assert(payloadOffset(struct_head, st) == @sizeOf(types.JanetStructHead));
 
-    const abst = abstracts.new(abstract_type.stored(&head_probe_at), 8);
+    const abst = abstracts.new(&head_probe_at, 8);
     const abstract_head = utils.abstractHead(abst);
     assert(abstract_head.*.size == 8);
     assert(payloadOffset(abstract_head, abst) == @sizeOf(types.JanetAbstractHead));
@@ -122,11 +101,11 @@ fn theHeadAccessorsRecoverWhatTheConstructorsWrote() void {
 /// The three hash helpers, which need no heap and run before `janet_init`.
 ///
 /// `janet_string_calchash` has two implementations and the configuration picks
-/// one. The condition is `config.prf` rather than a field of `options`, for
-/// rule 35's reason and `utils.zig`'s own: the subsystem is compiled either
-/// way and what changes is which body it compiles, so no `Selection` field
-/// answers the question. `JANET_HASH_KEY_SIZE` exists only
-/// under the same macro, which is why the key is declared inside the branch.
+/// one. The condition is `config.prf` rather than a field of `options`: the
+/// subsystem is compiled either way and what changes is which body it
+/// compiles, so no `Selection` field answers the question.
+/// `JANET_HASH_KEY_SIZE` exists only under the same condition, which is why
+/// the key is declared inside the branch.
 fn theHashesAreTheOnesTheirCallersExpect() void {
     assert(internal.janet_hash_mix(0, 0) == 0x53a3c667);
     assert(internal.janet_hash_mix(1, 2) == 0x53a3d6f6);
@@ -280,7 +259,7 @@ fn theProbeDistinguishesATombstoneFromAnEmptyBucket() void {
     // it a place to put one.
     kv = internal.janet_dict_find(t.*.data.?, t.*.capacity, absent);
     assert(kv != null);
-    assert(harness.isType(kv.?.key, constants.JANET_NIL));
+    assert(harness.isType(kv.?.key, repr.Tag.nil));
 
     // Deleting leaves a tombstone: key nil, value not nil. The probe must scan
     // *past* it to find a key that hashed to the same bucket, which is what
@@ -312,11 +291,11 @@ fn dictionaryGetTurnsAMissIntoNil() void {
     const capacity = utils.structHead(st).*.capacity;
 
     assert(wrap.toInteger(
-        value.dictionaryGet(st, capacity, value.fromBytes("a", .keyword)),
+        value.dictionaryGet(st[0..@intCast(capacity)], value.fromBytes("a", .keyword)),
     ) == 1);
     assert(harness.isType(
-        value.dictionaryGet(st, capacity, value.fromBytes("z", .keyword)),
-        constants.JANET_NIL,
+        value.dictionaryGet(st[0..@intCast(capacity)], value.fromBytes("z", .keyword)),
+        repr.Tag.nil,
     ));
 }
 
@@ -332,13 +311,13 @@ fn theKeywordProbeComparesLengthBeforeBytes() void {
 
     kv = internal.janet_dict_find_keyword(kt.*.data.?, kt.*.capacity, "nope", 4);
     assert(kv != null);
-    assert(harness.isType(kv.?.key, constants.JANET_NIL));
+    assert(harness.isType(kv.?.key, repr.Tag.nil));
 
     // A prefix of a stored key must miss: the length is compared before the
     // bytes.
     kv = internal.janet_dict_find_keyword(kt.*.data.?, kt.*.capacity, "k", 1);
     assert(kv != null);
-    assert(harness.isType(kv.?.key, constants.JANET_NIL));
+    assert(harness.isType(kv.?.key, repr.Tag.nil));
 }
 
 fn dictionaryNextSkipsTombstones() void {
@@ -346,16 +325,16 @@ fn dictionaryNextSkipsTombstones() void {
     var kv: ?*const types.JanetKV = null;
 
     // An empty dictionary ends immediately.
-    assert(value.dictionaryNext(t.*.data.?, t.*.capacity, null) == null);
+    assert(value.dictionaryNext(t.*.slots(), null) == null);
 
     tables.put(t, value.fromBytes("a", .keyword), harness.wrapInteger(1));
     tables.put(t, value.fromBytes("b", .keyword), harness.wrapInteger(2));
     tables.put(t, value.fromBytes("c", .keyword), harness.wrapInteger(3));
 
     var seen: i32 = 0;
-    kv = value.dictionaryNext(t.*.data.?, t.*.capacity, null);
-    while (kv != null) : (kv = value.dictionaryNext(t.*.data.?, t.*.capacity, kv)) {
-        assert(!harness.isType(kv.?.key, constants.JANET_NIL));
+    kv = value.dictionaryNext(t.*.slots(), null);
+    while (kv != null) : (kv = value.dictionaryNext(t.*.slots(), kv)) {
+        assert(!harness.isType(kv.?.key, repr.Tag.nil));
         seen += 1;
     }
     assert(seen == 3);
@@ -363,8 +342,8 @@ fn dictionaryNextSkipsTombstones() void {
     // A deleted entry is skipped: its key is nil even though its value is not.
     tables.put(t, value.fromBytes("b", .keyword), wrap.fromNil());
     seen = 0;
-    kv = value.dictionaryNext(t.*.data.?, t.*.capacity, null);
-    while (kv != null) : (kv = value.dictionaryNext(t.*.data.?, t.*.capacity, kv)) {
+    kv = value.dictionaryNext(t.*.slots(), null);
+    while (kv != null) : (kv = value.dictionaryNext(t.*.slots(), kv)) {
         seen += 1;
     }
     assert(seen == 2);
@@ -386,7 +365,7 @@ fn sortedKeysAnswersBucketIndicesInKeyOrder() void {
     // The answer is bucket *indices*, in key order.
     i = 0;
     while (i < n) : (i += 1) {
-        const key = t.*.data.?[@intCast(buffer[@intCast(i)])].key;
+        const key = t.*.slots()[@intCast(buffer[@intCast(i)])].key;
         assert(wrap.toInteger(key) == i);
     }
 
@@ -396,14 +375,14 @@ fn sortedKeysAnswersBucketIndicesInKeyOrder() void {
     assert(n == 5);
     i = 1;
     while (i < n) : (i += 1) {
-        const previous = t.*.data.?[@intCast(buffer[@intCast(i - 1)])].key;
-        const current = t.*.data.?[@intCast(buffer[@intCast(i)])].key;
+        const previous = t.*.slots()[@intCast(buffer[@intCast(i - 1)])].key;
+        const current = t.*.slots()[@intCast(buffer[@intCast(i)])].key;
         assert(order.compare(previous, current) < 0);
     }
 }
 
 fn theCollectionHashesAreWhatTheHeadsStore() void {
-    var items: [3]types.Janet = .{
+    var items: [3]repr.Value = .{
         harness.wrapInteger(1),
         harness.wrapInteger(2),
         harness.wrapInteger(3),
@@ -416,7 +395,7 @@ fn theCollectionHashesAreWhatTheHeadsStore() void {
 
     // A tuple's stored hash is what `janet_array_calchash` computed, and the
     // head it is stored in is recovered by the accessor above.
-    const tup = tuples.newFrom(&items, 3);
+    const tup = tuples.newFrom(&items);
     assert(utils.tupleHead(tup).*.hash == internal.janet_array_calchash(tup, 3));
 
     const kvs = structs.begin(1);
@@ -424,6 +403,57 @@ fn theCollectionHashesAreWhatTheHeadsStore() void {
     const st = structs.end(kvs);
     const head = utils.structHead(st);
     assert(head.*.hash == internal.janet_kv_calchash(st, head.*.capacity));
+}
+
+// ------------------------------------------ the four exported data symbols
+
+/// `janet_base64`, `janet_type_names`, `janet_status_names` and
+/// `janet_signal_names` reached the way a C caller reaches them.
+///
+/// These four are the manifest's data shape: `capi.zig` `@export`s the array
+/// itself, so there is no entry point and no conversion -- a C caller indexes
+/// the runtime's own storage. Nothing exercised them, in this file or any
+/// other.
+///
+/// The expectations are written out rather than read from `utils.zig`: the
+/// alphabet is the documented one, and the three name tables are indexed by
+/// the numeric tag a C caller has, not by a Zig enum. That is the
+/// independent derivation — this contract fails if the *order* drifts, which
+/// is the way a table indexed by an integer breaks.
+extern const janet_base64: [65]u8;
+extern const janet_type_names: [16][*:0]const u8;
+extern const janet_status_names: [16][*:0]const u8;
+extern const janet_signal_names: [14][*:0]const u8;
+
+fn theExportedTablesAreIndexedByTheNumbersACallerHas() void {
+    // 0-9, A-Z, a-z, `_`, `=`, and the terminator the C original carries.
+    std.debug.assert(janet_base64[0] == '0');
+    std.debug.assert(janet_base64[10] == 'A');
+    std.debug.assert(janet_base64[36] == 'a');
+    std.debug.assert(janet_base64[62] == '_');
+    std.debug.assert(janet_base64[63] == '=');
+    std.debug.assert(janet_base64[64] == 0);
+
+    // `janet.h`'s `JanetType` order, which is not alphabetical and is not the
+    // order `repr.Tag` would produce if it were sorted.
+    const expected_types = [_][:0]const u8{
+        "number",   "nil",       "boolean",  "fiber",   "string", "symbol",
+        "keyword",  "array",     "tuple",    "table",   "struct", "buffer",
+        "function", "cfunction", "abstract", "pointer",
+    };
+    for (expected_types, 0..) |want, i| {
+        std.debug.assert(std.mem.eql(u8, std.mem.span(janet_type_names[i]), want));
+    }
+
+    std.debug.assert(std.mem.eql(u8, std.mem.span(janet_status_names[0]), "dead"));
+    std.debug.assert(std.mem.eql(u8, std.mem.span(janet_status_names[1]), "error"));
+    std.debug.assert(std.mem.eql(u8, std.mem.span(janet_signal_names[0]), "ok"));
+    std.debug.assert(std.mem.eql(u8, std.mem.span(janet_signal_names[1]), "error"));
+
+    // Every entry is a real string in both tables: an array that grew a slot
+    // without a name is the failure this catches.
+    for (0..16) |i| std.debug.assert(std.mem.span(janet_status_names[i]).len > 0);
+    for (0..14) |i| std.debug.assert(std.mem.span(janet_signal_names[i]).len > 0);
 }
 
 pub fn run() void {
@@ -445,6 +475,7 @@ pub fn run() void {
     dictionaryNextSkipsTombstones();
     sortedKeysAnswersBucketIndicesInKeyOrder();
     theCollectionHashesAreWhatTheHeadsStore();
+    theExportedTablesAreIndexedByTheNumbersACallerHas();
 
     vm_lifecycle.deinit();
 

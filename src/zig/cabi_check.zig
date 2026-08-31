@@ -1,28 +1,21 @@
-//! Temporary: `src/zig/cabi.zig`'s declarations against the definitions they name.
+//! `cabi.zig`'s declarations, against the definitions they name.
 //!
-//! Phase 12 increment 5c, and it closes what 5b deliberately left open. `cabi.zig`
-//! replaced `janet.h`'s declarations with Zig ones, which moved the types but not
-//! the *checking*: an `extern fn` declaration is a promise the compiler believes,
-//! so a signature that disagrees with the `export fn` it names is undiagnosed --
-//! exactly the blind spot `AGENTS.md` states as "a `callconv(.c)` signature has
-//! two halves in two languages, and Zig believes the header".
+//! **An `extern fn` is a promise the compiler believes without reading.** A
+//! signature here that disagrees with the definition it names links and runs,
+//! and the disagreement is undiagnosed: a `callconv(.c)` boundary has two
+//! halves and nothing compares them. Both halves are Zig and both are
+//! reachable from one module, so the comparison is a type equality and it runs
+//! on every build.
 //!
-//! Here both halves are Zig and both are reachable from one module, so the check
-//! is a type comparison. It lives inside the runtime module because that is the
-//! only module that can see a subsystem's definitions; the definitions had to
-//! become `pub` for it, which changes Zig visibility and not the symbol table --
-//! 690 exports either side.
-//!
-//! **This one does not die with the header.** Each name leaves when increment 5d
-//! converts its call sites to a direct call, because then there is one text
-//! rather than two and nothing left to compare.
+//! It lives inside the runtime module because that is the only module that can
+//! see a subsystem's definitions. The definitions are `pub` for it, which
+//! changes Zig visibility and not the symbol table.
 //!
 //! **The imports are gated the way `root.zig` gates them**, and they have to
 //! be: an `export fn` is emitted because its file is in the compilation, not
-//! because something calls it, so importing `ev_backend.zig` in a `-Dev=false`
-//! build compiles code whose `janet_vm` has no `selfpipe` field. Forcing
-//! analysis of what a configuration excludes is rule 72 read backwards, and it
-//! is what the first version of this file did.
+//! because something calls it, so importing `ev/backend.zig` in a `-Dev=false`
+//! build compiles code whose VM state has no `selfpipe` field. An instrument
+//! must be gated the way its subject is.
 
 const std = @import("std");
 const c = @import("cabi");
@@ -30,42 +23,31 @@ const options = @import("options");
 const config = @import("config");
 const capi = @import("capi.zig");
 
-/// Whether two pointer-ish types are the same pointer to the same thing.
+/// Whether a declared type and a defined one are the same type.
 ///
-/// `[*c]T`, `*T`, `[*]T` and `?*T` are one machine word pointing at one `T`;
-/// which of them translate-c writes is decided by the C declaration's syntax,
-/// not by anything the C actually said. The definitions carry the sharper
-/// answer -- `*JanetArray` where the header could only say `[*c]JanetArray` --
-/// and **139 of the 294 pairs differ on exactly this and nothing else.**
+/// **Exactly the same.** This was a loose comparison once, exempting pointer
+/// flavour: a `translate-c` rendering of `T *` is `[*c]T`, 139 of the pairs
+/// differed on that and nothing else, and reporting 139 non-findings would
+/// have been worse than reporting none. There is no `translate-c` and no
+/// `[*c]` in `cabi.zig` now, so the exemption protected nothing and hid
+/// something.
 ///
-/// That difference is not a defect and is not this check's business.
-/// `types.zig` records the reason: replacing `[*c]` with `[*]`, `?*` or a
-/// slice is a per-site judgement about nullability and count, and increment 3
-/// deferred it as its own pass. What this check is for is the rest -- a
-/// parameter that is not there, a width that is wrong, a calling convention
-/// that disagrees -- which is what a header could hide and a linker would not
-/// catch.
-fn pointee(comptime T: type) ?std.builtin.Type.Pointer {
-    return switch (@typeInfo(T)) {
-        .pointer => |p| if (p.size == .slice) null else p,
-        .optional => |o| switch (@typeInfo(o.child)) {
-            .pointer => |p| if (p.size == .slice) null else p,
-            else => null,
-        },
-        else => null,
-    };
-}
-
+/// **What it hid.** Tightening this to equality reported two disagreements in
+/// the population it had been checking all along, both nullability:
+/// `janet_buffer_push_cstring` declared `[*]const u8` for a definition that
+/// reads to a sentinel, and `janet_pcall` declared `argv` and `f` non-optional
+/// where the definition accepts null for both. A dropped sentinel and a lost
+/// null are exactly what a linker cannot catch. Keep this exact.
+///
+/// `agrees` below compares every field of `Fn` and of each `Param`: the
+/// convention, varargs, genericity, the return type, and each parameter's type
+/// and `noalias`. Whole-type equality is tried first and is what usually
+/// answers; the field walk exists only to produce a readable diagnostic.
 fn compatible(comptime A: type, comptime B: type) bool {
-    if (A == B) return true;
-    if (pointee(A)) |pa| if (pointee(B)) |pb| {
-        return pa.child == pb.child and pa.is_const == pb.is_const and
-            pa.is_volatile == pb.is_volatile;
-    };
-    return false;
+    return A == B;
 }
 
-/// The declaration against the definition, ignoring pointer flavour alone.
+/// The declaration against the definition.
 fn agrees(comptime Decl: type, comptime Def: type) bool {
     if (Decl == Def) return true;
     const a = switch (@typeInfo(Decl)) {
@@ -80,11 +62,21 @@ fn agrees(comptime Decl: type, comptime Def: type) bool {
     // and payload rather than with `!=`.
     if (!std.meta.eql(a.calling_convention, b.calling_convention)) return false;
     if (a.is_var_args != b.is_var_args) return false;
+    // `is_generic` and each parameter's `is_noalias` complete the comparison.
+    // Neither can differ among the pairs checked today, so this is a hole with
+    // nothing in it -- which is exactly the kind that opens quietly. A
+    // `noalias` on one side and not the other is a real aliasing promise made
+    // to the optimizer by one translation unit and not the other, and the
+    // whole point of this file is that a `callconv(.c)` boundary has two
+    // descriptions and no compiler compares them.
+    if (a.is_generic != b.is_generic) return false;
     if (a.params.len != b.params.len) return false;
     const ra = a.return_type orelse return false;
     const rb = b.return_type orelse return false;
     if (!compatible(ra, rb)) return false;
     for (a.params, b.params) |pa, pb| {
+        if (pa.is_noalias != pb.is_noalias) return false;
+        if (pa.is_generic != pb.is_generic) return false;
         const ta = pa.type orelse return false;
         const tb = pb.type orelse return false;
         if (!compatible(ta, tb)) return false;
@@ -188,10 +180,14 @@ pub fn verify() void {
                 .{ "janet_unwrap_u64", @TypeOf(c.janet_unwrap_u64), @TypeOf(capi.janet_unwrap_u64) },
             });
         }
-        if (options.kind) {
+        {
+            // `repr.zig`'s four predicates, unconditional because the module
+            // below `types` is in every configuration.
             report = report ++ checkFile(.{
                 .{ "janet_checktype", @TypeOf(c.janet_checktype), @TypeOf(capi.janet_checktype) },
                 .{ "janet_checktypes", @TypeOf(c.janet_checktypes), @TypeOf(capi.janet_checktypes) },
+                .{ "janet_truthy", @TypeOf(c.janet_truthy), @TypeOf(capi.janet_truthy) },
+                .{ "janet_unwrap_boolean", @TypeOf(c.janet_unwrap_boolean), @TypeOf(capi.janet_unwrap_boolean) },
                 .{ "janet_type", @TypeOf(c.janet_type), @TypeOf(capi.janet_type) },
             });
         }
@@ -206,6 +202,12 @@ pub fn verify() void {
             report = report ++ checkFile(.{
                 .{ "janet_equals", @TypeOf(c.janet_equals), @TypeOf(capi.janet_equals) },
                 .{ "janet_hash", @TypeOf(c.janet_hash), @TypeOf(capi.janet_hash) },
+            });
+        }
+        if (options.registry and !config.bootstrap) {
+            report = report ++ checkFile(.{
+                .{ "janet_core_cfuns_ext", @TypeOf(c.janet_core_cfuns_ext), @TypeOf(capi.janet_core_cfuns_ext) },
+                .{ "janet_core_def_sm", @TypeOf(c.janet_core_def_sm), @TypeOf(capi.janet_core_def_sm) },
             });
         }
         if (options.registry) {

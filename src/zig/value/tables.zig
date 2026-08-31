@@ -2,13 +2,12 @@
 //! probe that carries tombstones.
 //!
 //! `structs.zig` is the sibling and the other half of the dictionary group.
-//! Phase 12's namespace batch 1 split them out of `struct_table.zig`, whose
-//! name was two nouns because C had two files; `port/NAMESPACES.md` has the
-//! taxonomy the split follows. They still call each other -- `janet_table_to_struct`
-//! calls `structs.begin`, `structs.put` and `structs.end`, `janet_struct_to_table`
-//! calls `put` -- so the two files import each other. Zig has no trouble with
-//! that; the reason the C original could not be split is that C has no such
-//! thing as an import.
+//! They were one file, whose name was two nouns because C had two files. They
+//! still call each other -- `janet_table_to_struct` calls `structs.begin`,
+//! `structs.put` and `structs.end`, `janet_struct_to_table` calls `put` -- so
+//! the two files import each other. Zig has no trouble with that; the reason a
+//! C original cannot be split this way is that C has no such thing as an
+//! import.
 //!
 //! Both files hold `asSize`, `isNilKey` and `isUnstorableKey`, three inline
 //! predicates of two lines each. That is deliberate: neither file is the right
@@ -74,13 +73,12 @@ const std = @import("std");
 const config = @import("config");
 const corefn = @import("corefn");
 const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
 const raise = @import("raise");
 const args_core = @import("../args.zig");
 const gc_alloc = @import("../gc.zig");
 const utils = @import("../utils.zig");
-const kind = @import("helpers/kind.zig");
 const wrap = @import("helpers/wrap.zig");
 const fatal = @import("../fatal.zig");
 const structs = @import("structs.zig");
@@ -112,22 +110,22 @@ inline fn asSize(n: i32) usize {
     return @bitCast(@as(isize, n));
 }
 
-inline fn isNilKey(key: types.Janet) bool {
-    return kind.checkType(key, constants.JANET_NIL) != 0;
+inline fn isNilKey(key: repr.Value) bool {
+    return repr.checkType(key, repr.Tag.nil);
 }
 
 /// The two keys a dictionary refuses to store. Nil is the absent-key sentinel,
 /// and a NaN is refused because it does not compare equal to itself, so a
 /// lookup could never find it again.
-inline fn isUnstorableKey(key: types.Janet) bool {
-    if (kind.checkType(key, constants.JANET_NIL) != 0) return true;
-    return kind.checkType(key, constants.JANET_NUMBER) != 0 and
+inline fn isUnstorableKey(key: repr.Value) bool {
+    if (repr.checkType(key, repr.Tag.nil)) return true;
+    return repr.checkType(key, repr.Tag.number) and
         std.math.isNan(wrap.toNumber(key));
 }
 
 /// Allocate an empty bucket array from the scratch allocator.
 ///
-/// Unlike `wrap.memallocEmpty` this adds no collection pressure and does not
+/// Unlike `value.memallocEmpty` this adds no collection pressure and does not
 /// check for failure: `janet_smalloc` exits the process rather than returning
 /// null. Scratch memory is released wholesale by `janet_free_all_scratch`,
 /// which is also what recovers it if a signal unwinds past a scratch table.
@@ -173,7 +171,7 @@ fn initImpl(table: *types.JanetTable, capacity_in: i32, stackalloc: bool) *types
         const data: [*]types.JanetKV = if (stackalloc)
             memallocEmptyLocal(capacity)
         else
-            @ptrCast(@alignCast(wrap.memallocEmpty(capacity) orelse fatal.outOfMemory()));
+            @ptrCast(@alignCast(value.memallocEmpty(capacity) orelse fatal.outOfMemory()));
         table.data = data;
         table.capacity = capacity;
     } else {
@@ -197,9 +195,9 @@ pub fn initRaw(table: *types.JanetTable, capacity: i32) *types.JanetTable {
 }
 
 /// Release a table's bucket array to whichever allocator produced it. Also
-/// called from `janet_deinit_block` in `gc_sweep.zig`, which is the collectable
-/// table's only route here -- so a table's allocate/release round trip is now
-/// entirely inside Zig, as a buffer's became in Part 6a.
+/// called from `deinitBlock` in `gc/sweep.zig`, which is the collectable
+/// table's only route here -- so a table's allocate/release round trip is
+/// entirely inside Zig.
 pub fn deinit(table: *types.JanetTable) void {
     if ((table.gc.flags & table_flag_stack) != 0) {
         gc_alloc.sfree(@ptrCast(table.data));
@@ -210,32 +208,32 @@ pub fn deinit(table: *types.JanetTable) void {
 
 /// Allocate a collectable table with strong references to keys and values.
 pub fn new(capacity: i32) *types.JanetTable {
-    const table: *types.JanetTable = @ptrCast(@alignCast(gc_alloc.gcalloc(constants.JANET_MEMORY_TABLE, @sizeOf(types.JanetTable))));
+    const table: *types.JanetTable = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.table, @sizeOf(types.JanetTable))));
     return initImpl(table, capacity, false);
 }
 
 /// The three weak variants differ from `janet_table` only in their memory type,
-/// which is what puts them on `janet_vm.weak_blocks` instead of
-/// `janet_vm.blocks` and tells `gc_sweep.zig` which half of each pair to drop
+/// which is what puts them on `vm.gc.weak_blocks` instead of
+/// `vm.gc.blocks` and tells `gc_sweep.zig` which half of each pair to drop
 /// when its referent is unreachable.
 pub fn weakk(capacity: i32) *types.JanetTable {
-    const table: *types.JanetTable = @ptrCast(@alignCast(gc_alloc.gcalloc(constants.JANET_MEMORY_TABLE_WEAKK, @sizeOf(types.JanetTable))));
+    const table: *types.JanetTable = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.table_weakk, @sizeOf(types.JanetTable))));
     return initImpl(table, capacity, false);
 }
 
 pub fn weakv(capacity: i32) *types.JanetTable {
-    const table: *types.JanetTable = @ptrCast(@alignCast(gc_alloc.gcalloc(constants.JANET_MEMORY_TABLE_WEAKV, @sizeOf(types.JanetTable))));
+    const table: *types.JanetTable = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.table_weakv, @sizeOf(types.JanetTable))));
     return initImpl(table, capacity, false);
 }
 
 pub fn weakkv(capacity: i32) *types.JanetTable {
-    const table: *types.JanetTable = @ptrCast(@alignCast(gc_alloc.gcalloc(constants.JANET_MEMORY_TABLE_WEAKKV, @sizeOf(types.JanetTable))));
+    const table: *types.JanetTable = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.table_weakkv, @sizeOf(types.JanetTable))));
     return initImpl(table, capacity, false);
 }
 
 /// Find the bucket holding `key`, or the bucket it should go in.
-pub fn find(t: *types.JanetTable, key: types.Janet) ?*types.JanetKV {
-    return @constCast(value.dictionaryFind(t.data.?, t.capacity, key));
+pub fn find(t: *types.JanetTable, key: repr.Value) ?*types.JanetKV {
+    return @constCast(value.dictionaryFind(t.slots(), key));
 }
 
 /// Move a table's contents into a bucket array of `size` buckets.
@@ -251,7 +249,7 @@ fn rehash(t: *types.JanetTable, size: i32) void {
     const newdata: [*]types.JanetKV = if (islocal)
         memallocEmptyLocal(size)
     else
-        @ptrCast(@alignCast(wrap.memallocEmpty(size) orelse fatal.outOfMemory()));
+        @ptrCast(@alignCast(value.memallocEmpty(size) orelse fatal.outOfMemory()));
     const oldcapacity = t.capacity;
     t.data = newdata;
     t.capacity = size;
@@ -272,7 +270,7 @@ fn rehash(t: *types.JanetTable, size: i32) void {
 }
 
 /// Look up a key, following prototypes to a fixed depth.
-pub fn get(t_in: *types.JanetTable, key: types.Janet) types.Janet {
+pub fn get(t_in: *types.JanetTable, key: repr.Value) repr.Value {
     var t: ?*types.JanetTable = t_in;
     var i: c_int = config.max_proto_depth;
     while (t != null and i != 0) : ({
@@ -291,7 +289,7 @@ pub fn get(t_in: *types.JanetTable, key: types.Janet) types.Janet {
 /// symbol first. `value.dictionaryFindKeyword` hashes the bytes the way a string
 /// is hashed and compares byte-wise, so it finds the same bucket the interned
 /// key would.
-pub fn getKeyword(t_in: *types.JanetTable, keyword: [*:0]const u8) types.Janet {
+pub fn getKeyword(t_in: *types.JanetTable, keyword: [*:0]const u8) repr.Value {
     const keyword_len: i32 = @intCast(c.strlen(keyword));
     var t: ?*types.JanetTable = t_in;
     var i: c_int = config.max_proto_depth;
@@ -299,14 +297,14 @@ pub fn getKeyword(t_in: *types.JanetTable, keyword: [*:0]const u8) types.Janet {
         t = t.?.proto;
         i -= 1;
     }) {
-        const bucket = value.dictionaryFindKeyword(t.?.data.?, t.?.capacity, keyword, keyword_len);
+        const bucket = value.dictionaryFindKeyword(t.?.slots(), keyword, keyword_len);
         if (bucket != null and !isNilKey(bucket.?.key)) return bucket.?.value;
     }
     return wrap.fromNil();
 }
 
 /// Look up a key and report which table in the prototype chain held it.
-pub fn getEx(t_in: *types.JanetTable, key: types.Janet, which: *?*types.JanetTable) types.Janet {
+pub fn getEx(t_in: *types.JanetTable, key: repr.Value, which: *?*types.JanetTable) repr.Value {
     var t: ?*types.JanetTable = t_in;
     var i: c_int = config.max_proto_depth;
     while (t != null and i != 0) : ({
@@ -323,7 +321,7 @@ pub fn getEx(t_in: *types.JanetTable, key: types.Janet, which: *?*types.JanetTab
 }
 
 /// Look up a key in this table only.
-pub fn rawget(t: *types.JanetTable, key: types.Janet) types.Janet {
+pub fn rawget(t: *types.JanetTable, key: repr.Value) repr.Value {
     const bucket = find(t, key);
     if (bucket != null and !isNilKey(bucket.?.key)) return bucket.?.value;
     return wrap.fromNil();
@@ -335,7 +333,7 @@ pub fn rawget(t: *types.JanetTable, key: types.Janet) types.Janet {
 /// tombstone: `value.dictionaryFind` stops only at a bucket whose key and value are
 /// both nil, so the hole does not truncate a probe run through it. `deleted`
 /// counts tombstones and is what eventually forces a rehash.
-pub fn remove(t: *types.JanetTable, key: types.Janet) types.Janet {
+pub fn remove(t: *types.JanetTable, key: repr.Value) repr.Value {
     const bucket = find(t, key);
     if (bucket != null and !isNilKey(bucket.?.key)) {
         const ret = bucket.?.value;
@@ -355,9 +353,9 @@ pub fn remove(t: *types.JanetTable, key: types.Janet) types.Janet {
 /// Growth is triggered when the live pairs *plus the tombstones* would pass
 /// half the capacity, so a table that is churned rather than grown still
 /// rehashes and reclaims its tombstones.
-pub fn put(t: *types.JanetTable, key: types.Janet, val: types.Janet) void {
+pub fn put(t: *types.JanetTable, key: repr.Value, val: repr.Value) void {
     if (isUnstorableKey(key)) return;
-    if (kind.checkType(val, constants.JANET_NIL) != 0) {
+    if (repr.checkType(val, repr.Tag.nil)) {
         _ = remove(t, key);
         return;
     }
@@ -375,9 +373,9 @@ pub fn put(t: *types.JanetTable, key: types.Janet, val: types.Janet) void {
     // a remembered tombstone only when the array holds no empty bucket at all,
     // and the growth test above keeps the array at most half full counting
     // tombstones. So a rehash is the only thing that ever reclaims one, and
-    // this branch is dead. `FOUND.md` records it. Kept, because the port
+    // this branch is dead. `FOUND.md` records it. Kept, because this
     // reproduces rather than tidies.
-    if (kind.checkType(bucket.?.value, constants.JANET_BOOLEAN) != 0) t.deleted -= 1;
+    if (repr.checkType(bucket.?.value, repr.Tag.boolean)) t.deleted -= 1;
     bucket.?.key = key;
     bucket.?.value = val;
     t.count += 1;
@@ -385,14 +383,14 @@ pub fn put(t: *types.JanetTable, key: types.Janet, val: types.Janet) void {
 
 /// Insert only if the key is absent. Internal, so the key is not validated --
 /// every caller is copying pairs that a table or struct already accepted.
-fn putNoOverwrite(t: *types.JanetTable, key: types.Janet, val: types.Janet) void {
+fn putNoOverwrite(t: *types.JanetTable, key: repr.Value, val: repr.Value) void {
     var bucket = find(t, key);
     if (bucket != null and !isNilKey(bucket.?.key)) return;
     if (bucket == null or 2 *% (t.count +% t.deleted +% 1) > t.capacity) {
         rehash(t, value.capacityFor(2 *% t.count +% 2));
     }
     bucket = find(t, key);
-    if (kind.checkType(bucket.?.value, constants.JANET_BOOLEAN) != 0) t.deleted -= 1;
+    if (repr.checkType(bucket.?.value, repr.Tag.boolean)) t.deleted -= 1;
     bucket.?.key = key;
     bucket.?.value = val;
     t.count += 1;
@@ -401,7 +399,7 @@ fn putNoOverwrite(t: *types.JanetTable, key: types.Janet, val: types.Janet) void
 /// Empty a table without releasing its bucket array. The capacity survives, and
 /// so does the prototype.
 pub fn clear(t: *types.JanetTable) void {
-    wrap.memempty(t.data.?, t.capacity);
+    value.memempty(t.slots());
     t.count = 0;
     t.deleted = 0;
 }
@@ -417,7 +415,7 @@ pub fn clear(t: *types.JanetTable) void {
 /// original reaches from `(table/clone @{})`. `FOUND.md` has it. Nothing
 /// observable differs.
 pub fn clone(table: *types.JanetTable) *types.JanetTable {
-    const new_table: *types.JanetTable = @ptrCast(@alignCast(gc_alloc.gcalloc(constants.JANET_MEMORY_TABLE, @sizeOf(types.JanetTable))));
+    const new_table: *types.JanetTable = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.table, @sizeOf(types.JanetTable))));
     new_table.count = table.count;
     new_table.capacity = table.capacity;
     new_table.deleted = table.deleted;
@@ -429,22 +427,20 @@ pub fn clone(table: *types.JanetTable) *types.JanetTable {
 }
 
 /// Copy every live pair out of a bucket array into a table.
-fn mergeKV(table: *types.JanetTable, kvs: [*]const types.JanetKV, cap: i32) void {
-    var i: i32 = 0;
-    while (i < cap) : (i += 1) {
-        const kv = &kvs[@intCast(i)];
+fn mergeKV(table: *types.JanetTable, kvs: []const types.JanetKV) void {
+    for (kvs) |kv| {
         if (!isNilKey(kv.key)) put(table, kv.key, kv.value);
     }
 }
 
 /// Merge another table's own pairs in. Its prototype is not consulted.
 pub fn mergeTable(table: *types.JanetTable, other: *types.JanetTable) void {
-    mergeKV(table, other.data.?, other.capacity);
+    mergeKV(table, other.slots());
 }
 
 /// Merge a struct's own pairs in. Its prototype is not consulted.
 pub fn mergeStruct(table: *types.JanetTable, other: [*]const types.JanetKV) void {
-    mergeKV(table, other, types.structHead(other).capacity);
+    mergeKV(table, other[0..@intCast(types.structHead(other).capacity)]);
 }
 
 /// Freeze a table's own pairs into a struct.
@@ -486,34 +482,32 @@ pub fn protoFlatten(t_in: *types.JanetTable) *types.JanetTable {
 // ==========================================================================
 // The cfunction surface.
 //
-// Phase 10 Part 6, on the same footing as every other cfunction that phase
-// moved: a `JanetCFunction` has no error channel in its signature, so these
-// deliver a raise as the jump their C caller expects whatever language they
-// are written in, and the file's jump-transparent marker is what makes that
-// legal. Nothing below holds anything across a call that can raise.
+// A published `JanetCFunction` has no error channel in its signature, so these
+// deliver a raise through an abi. Nothing below holds anything across a call
+// that can raise.
 // ==========================================================================
 
-fn cfunTableNew(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunTableNew(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(new(try args_core.getNat(argv, 0)));
 }
 
-fn cfunTableWeak(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunTableWeak(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(weakkv(try args_core.getNat(argv, 0)));
 }
 
-fn cfunTableWeakKeys(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunTableWeakKeys(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(weakk(try args_core.getNat(argv, 0)));
 }
 
-fn cfunTableWeakValues(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunTableWeakValues(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(weakv(try args_core.getNat(argv, 0)));
 }
 
-fn cfunTableGetproto(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunTableGetproto(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const t = try args_core.getTable(argv, 0);
     return if (t.*.proto) |proto| wrap.fromTable(proto) else wrap.fromNil();
@@ -522,16 +516,16 @@ fn cfunTableGetproto(argv: []types.Janet) align(corefn.alignment) raise.Raising(
 /// An explicit nil clears the prototype rather than faulting, which is why the
 /// second argument is tested before it is fetched instead of going through
 /// `janet_opttable` -- that would build an empty table for the default.
-fn cfunTableSetproto(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunTableSetproto(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const table = try args_core.getTable(argv, 0);
     var proto: ?*types.JanetTable = null;
-    if (kind.checkType(argv[1], constants.JANET_NIL) == 0) proto = try args_core.getTable(argv, 1);
+    if (!repr.checkType(argv[1], repr.Tag.nil)) proto = try args_core.getTable(argv, 1);
     table.*.proto = proto;
     return argv[0];
 }
 
-fn cfunTableTostruct(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunTableTostruct(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const t = try args_core.getTable(argv, 0);
     const proto = try args_core.optStruct(argv, 1, null);
@@ -540,30 +534,30 @@ fn cfunTableTostruct(argv: []types.Janet) align(corefn.alignment) raise.Raising(
     return wrap.fromStruct(st);
 }
 
-fn cfunTableRawget(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunTableRawget(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     return rawget(try args_core.getTable(argv, 0), argv[1]);
 }
 
-fn cfunTableClone(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunTableClone(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(clone(try args_core.getTable(argv, 0)));
 }
 
-fn cfunTableClear(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunTableClear(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const table = try args_core.getTable(argv, 0);
     clear(table);
     return wrap.fromTable(table);
 }
 
-fn cfunTableProtoFlatten(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunTableProtoFlatten(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(protoFlatten(try args_core.getTable(argv, 0)));
 }
 
 pub fn lib(env: *types.JanetTable) void {
-    const entries = [_]corefn.Entry{
+    const entries = comptime [_]corefn.Entry{
         corefn.reg("table/new", &cfunTableNew, @src(), "(table/new capacity)", "Creates a new empty table with pre-allocated memory " ++
             "for `capacity` entries. This means that if one knows the number of " ++
             "entries going into a table on creation, extra memory allocation " ++
@@ -586,7 +580,6 @@ pub fn lib(env: *types.JanetTable) void {
             "and vice versa."),
         corefn.reg("table/clear", &cfunTableClear, @src(), "(table/clear tab)", "Remove all key-value pairs in a table and return the modified table `tab`."),
         corefn.reg("table/proto-flatten", &cfunTableProtoFlatten, @src(), "(table/proto-flatten tab)", "Create a new table that is the result of merging all prototypes into a new table."),
-        corefn.end,
     };
-    corefn.install(env, &entries);
+    corefn.install(env, entries);
 }

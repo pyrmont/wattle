@@ -5,7 +5,7 @@
 //! organised that way. A hash table needs `janet_hash` and `janet_equals` to
 //! agree; the Robin Hood insert in `struct_table.zig` needs `janet_compare` to
 //! totally order whatever `janet_hash` collides. So the last section runs a
-//! corpus of values that covers every `JanetType` through all three at once and
+//! corpus of values that covers every `repr.Tag` through all three at once and
 //! asserts the relations *between* them, rather than checking each function in
 //! isolation and hoping.
 //!
@@ -25,20 +25,18 @@
 //!
 //! ## The abstract fixtures need no adapter
 //!
-//! The C original reached each of its three abstract types through
-//! `CONTRACT_AT`, which is `test/support.zig`'s pool of pre-built tables: a
-//! `JanetAbstractType`'s callbacks have been Zig-ABI since Phase 10's hinge and
-//! C can define none of them. The two this file supplies are `compare` and
-//! `hash`, which the hinge typed **non**-raising for the reason
-//! `abstract_type.zig` gives -- they are called from inside comparisons that
+//! A `JanetAbstractType`'s callbacks are Zig's, so C can define none of them
+//! and a C contract needs a pool of pre-built tables. The two this file
+//! supplies are `compare` and `hash`, typed **non**-raising for the reason
+//! `abstract_type.zig` gives: they are called from inside comparisons that
 //! must be total, so there is nowhere for a raise to go. They are ordinary
 //! `callconv(.c)` functions here and the table is the runtime's own
 //! `AbstractType`. Fifteen `CONTRACT_AT` uses went for free.
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 const value = @import("subsystems").value;
 
@@ -50,7 +48,6 @@ const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
 const order = @import("subsystems").value.order;
 const core_env = @import("subsystems").env;
-const kind = @import("subsystems").value.kind;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const arrays = @import("subsystems").value.arrays;
@@ -61,28 +58,28 @@ const assert = std.debug.assert;
 
 // ----------------------------------------------------------------- helpers
 
-fn kw(name: [*:0]const u8) types.Janet {
+fn kw(name: [*:0]const u8) repr.Value {
     return value.fromBytes(std.mem.span(name), .keyword);
 }
 
-fn sym(name: [*:0]const u8) types.Janet {
+fn sym(name: [*:0]const u8) repr.Value {
     return value.fromBytes(std.mem.span(name), .symbol);
 }
 
-fn str(s: [*:0]const u8) types.Janet {
+fn str(s: [*:0]const u8) repr.Value {
     return value.fromBytes(std.mem.span(s), .string);
 }
 
-fn num(d: f64) types.Janet {
+fn num(d: f64) repr.Value {
     return wrap.fromNumber(d);
 }
 
-fn intv(i: i32) types.Janet {
+fn intv(i: i32) repr.Value {
     return harness.wrapInteger(i);
 }
 
 /// A tuple from a slice of values, paren-constructed unless `bracket`.
-fn mktuple(items: []const types.Janet, bracket: bool) types.Janet {
+fn mktuple(items: []const repr.Value, bracket: bool) repr.Value {
     const t = tuples.begin(@intCast(items.len));
     for (items, 0..) |item, i| t[i] = item;
     if (bracket) utils.tupleHead(t).*.gc.flags |= constants.JANET_TUPLE_FLAG_BRACKETCTOR;
@@ -90,7 +87,7 @@ fn mktuple(items: []const types.Janet, bracket: bool) types.Janet {
 }
 
 /// A struct from alternating key/value pairs, with an optional prototype.
-fn mkstruct(kvs: []const types.Janet, proto: ?types.JanetStruct) types.Janet {
+fn mkstruct(kvs: []const repr.Value, proto: ?types.JanetStruct) repr.Value {
     const pairs: i32 = @intCast(kvs.len / 2);
     const st = structs.begin(pairs);
     var i: usize = 0;
@@ -114,16 +111,16 @@ fn tupleHash(t: types.JanetTuple) i32 {
 /// Depth of the traversal stack in nodes, as the two entry points see it. Zero
 /// when nothing has ever been pushed, because the base slot is never used.
 fn stackDepth() isize {
-    if (c.vm().traversal_base == null) return 0;
+    if (harness.vm().traversal.base == null) return 0;
     return @divExact(
-        @as(isize, @bitCast(@intFromPtr(c.vm().traversal) -% @intFromPtr(c.vm().traversal_base))),
+        @as(isize, @bitCast(@intFromPtr(harness.vm().traversal.at) -% @intFromPtr(harness.vm().traversal.base))),
         @sizeOf(types.JanetTraversalNode),
     );
 }
 
 fn stackCapacity() isize {
     return @divExact(
-        @as(isize, @bitCast(@intFromPtr(c.vm().traversal_top) -% @intFromPtr(c.vm().traversal_base))),
+        @as(isize, @bitCast(@intFromPtr(harness.vm().traversal.top) -% @intFromPtr(harness.vm().traversal.base))),
         @sizeOf(types.JanetTraversalNode),
     );
 }
@@ -137,51 +134,48 @@ const Cell = extern struct {
     key: i32,
 };
 
-fn cellHash(p: ?*anyopaque, len: usize) callconv(.c) i32 {
-    _ = len;
-    return @as(*Cell, @ptrCast(@alignCast(p))).key;
+fn cellHash(cell: *const Cell, _: usize) i32 {
+    return cell.key;
 }
 
-fn cellCompare(lhs: ?*anyopaque, rhs: ?*anyopaque) callconv(.c) c_int {
-    const a = @as(*Cell, @ptrCast(@alignCast(lhs))).key;
-    const b = @as(*Cell, @ptrCast(@alignCast(rhs))).key;
-    if (a == b) return 0;
-    return if (a < b) -1 else 1;
+fn cellCompare(lhs: *const Cell, rhs: *const Cell) c_int {
+    if (lhs.key == rhs.key) return 0;
+    return if (lhs.key < rhs.key) -1 else 1;
 }
 
 /// Supplies both callbacks.
-const at_cell: AbstractType = .{
+const at_cell = abstract_type.define(Cell, .{
     .name = "value-order/cell",
     .compare = &cellCompare,
     .hash = &cellHash,
-};
+});
 
 /// Supplies neither, so it falls back to pointer identity for both.
-const at_bare: AbstractType = .{ .name = "value-order/bare" };
+const at_bare = abstract_type.define(anyopaque, .{ .name = "value-order/bare" });
 
 /// A second callback-less type, so that two abstracts of *different* types can
 /// be ordered without either type's `compare` being consulted.
-const at_other: AbstractType = .{ .name = "value-order/other" };
+const at_other = abstract_type.define(anyopaque, .{ .name = "value-order/other" });
 
-fn cellType() *const types.JanetAbstractType {
-    return abstract_type.stored(&at_cell);
+fn cellType() *const types.AbstractType {
+    return &at_cell;
 }
 
-fn bareType() *const types.JanetAbstractType {
-    return abstract_type.stored(&at_bare);
+fn bareType() *const types.AbstractType {
+    return &at_bare;
 }
 
-fn otherType() *const types.JanetAbstractType {
-    return abstract_type.stored(&at_other);
+fn otherType() *const types.AbstractType {
+    return &at_other;
 }
 
-fn mkcell(key: i32) types.Janet {
+fn mkcell(key: i32) repr.Value {
     const cell: *Cell = @ptrCast(@alignCast(abstracts.new(cellType(), @sizeOf(Cell))));
     cell.key = key;
     return wrap.fromAbstract(cell);
 }
 
-fn mkbare(at: *const types.JanetAbstractType) types.Janet {
+fn mkbare(at: *const types.AbstractType) repr.Value {
     const cell: *Cell = @ptrCast(@alignCast(abstracts.new(at, @sizeOf(Cell))));
     cell.key = 0;
     return wrap.fromAbstract(cell);
@@ -203,15 +197,15 @@ fn theHashOfTheAtoms() void {
 /// separately built values that are `=` hash alike. The second half is the
 /// property every dictionary in the runtime is built on.
 fn theHashAgreesWithEquality() void {
-    const items = [_]types.Janet{ intv(1), kw("a"), str("s") };
+    const items = [_]repr.Value{ intv(1), kw("a"), str("s") };
     const a = mktuple(&items, false);
     const b = mktuple(&items, false);
     assert(harness.equals(a, b));
     assert(order.hash(a) == order.hash(a));
     assert(order.hash(a) == order.hash(b));
 
-    const kvs = [_]types.Janet{ kw("x"), intv(1), kw("y"), intv(2) };
-    const rev = [_]types.Janet{ kw("y"), intv(2), kw("x"), intv(1) };
+    const kvs = [_]repr.Value{ kw("x"), intv(1), kw("y"), intv(2) };
+    const rev = [_]repr.Value{ kw("y"), intv(2), kw("x"), intv(1) };
     const s1 = mkstruct(&kvs, null);
     const s2 = mkstruct(&rev, null);
     assert(harness.equals(s1, s2));
@@ -277,7 +271,7 @@ fn integersAndDoublesHashAlike() void {
 /// only case in the language where something other than contents participates
 /// in a hash.
 fn bracketTuplesHashAndCompareApart() void {
-    const items = [_]types.Janet{ intv(1), intv(2) };
+    const items = [_]repr.Value{ intv(1), intv(2) };
     const paren = mktuple(&items, false);
     const bracket = mktuple(&items, true);
     assert(!harness.equals(paren, bracket));
@@ -292,12 +286,12 @@ fn bracketTuplesHashAndCompareApart() void {
 /// one. Asserted by mutating the head after construction: a recomputing
 /// implementation would ignore the change.
 fn theHashReadsTheStoredHead() void {
-    const items = [_]types.Janet{intv(1)};
+    const items = [_]repr.Value{intv(1)};
     const t = mktuple(&items, false);
     utils.tupleHead(wrap.toTuple(t)).*.hash = 0x5eed;
     assert(order.hash(t) == 0x5eed);
 
-    const kvs = [_]types.Janet{ kw("k"), intv(1) };
+    const kvs = [_]repr.Value{ kw("k"), intv(1) };
     const s = mkstruct(&kvs, null);
     utils.structHead(wrap.toStruct(s)).*.hash = 0x5eee;
     assert(order.hash(s) == 0x5eee);
@@ -432,8 +426,8 @@ fn theEqualityOfMutableContainers() void {
 /// Tuple equality traverses, and each of the four cheap rejections in front of
 /// the traversal is reached by a case that reaches no other.
 fn theEqualityOfTuples() void {
-    const items = [_]types.Janet{ intv(1), kw("k"), str("s") };
-    const other = [_]types.Janet{ intv(1), kw("k"), str("t") };
+    const items = [_]repr.Value{ intv(1), kw("k"), str("s") };
+    const other = [_]repr.Value{ intv(1), kw("k"), str("t") };
     const a = mktuple(&items, false);
     const b = mktuple(&items, false);
     assert(wrap.toTuple(a) != wrap.toTuple(b));
@@ -456,7 +450,7 @@ fn theEqualityOfTuples() void {
 /// -- for every other value the two routes agree -- and because dropping it
 /// would silently make `(= x x)` false for a value a program is holding.
 fn aTupleHoldingNanEqualsItself() void {
-    const items = [_]types.Janet{num(std.math.nan(f64))};
+    const items = [_]repr.Value{num(std.math.nan(f64))};
     const a = mktuple(&items, false);
     gc_alloc.gcroot(a);
     defer _ = gc_alloc.gcunroot(a);
@@ -476,14 +470,14 @@ fn aTupleHoldingNanEqualsItself() void {
 /// two structs whose prototypes differ are still compared through the
 /// traversal, not rejected up front.
 fn theEqualityOfStructs() void {
-    const kvs = [_]types.Janet{ kw("x"), intv(1), kw("y"), intv(2) };
-    const rev = [_]types.Janet{ kw("y"), intv(2), kw("x"), intv(1) };
-    const diff = [_]types.Janet{ kw("x"), intv(1), kw("y"), intv(3) };
+    const kvs = [_]repr.Value{ kw("x"), intv(1), kw("y"), intv(2) };
+    const rev = [_]repr.Value{ kw("y"), intv(2), kw("x"), intv(1) };
+    const diff = [_]repr.Value{ kw("x"), intv(1), kw("y"), intv(3) };
     assert(harness.equals(mkstruct(&kvs, null), mkstruct(&rev, null)));
     assert(!harness.equals(mkstruct(&kvs, null), mkstruct(&diff, null)));
     assert(!harness.equals(mkstruct(&kvs, null), mkstruct(kvs[0..2], null)));
 
-    const pk = [_]types.Janet{ kw("p"), intv(9) };
+    const pk = [_]repr.Value{ kw("p"), intv(9) };
     const proto = wrap.toStruct(mkstruct(&pk, null));
     const with = mkstruct(&kvs, proto);
     const without = mkstruct(&kvs, null);
@@ -493,7 +487,7 @@ fn theEqualityOfStructs() void {
     // Both have one, and it is the same one.
     assert(harness.equals(with, mkstruct(&rev, proto)));
     // Both have one and they differ, which only the traversal can tell.
-    const qk = [_]types.Janet{ kw("q"), intv(9) };
+    const qk = [_]repr.Value{ kw("q"), intv(9) };
     const other_proto = wrap.toStruct(mkstruct(&qk, null));
     assert(!harness.equals(with, mkstruct(&kvs, other_proto)));
 }
@@ -514,7 +508,7 @@ fn theChecksBehindTheHash() void {
     // element zero, finds it equal, runs out of the shorter side, and -- with
     // `index2` clear, which is what `janet_equals` pushes -- reports that
     // there is nothing more to compare. The answer would be "equal".
-    const pair = [_]types.Janet{ intv(1), intv(2) };
+    const pair = [_]repr.Value{ intv(1), intv(2) };
     const t1 = mktuple(&pair, false);
     gc_alloc.gcroot(t1);
     defer _ = gc_alloc.gcunroot(t1);
@@ -532,7 +526,7 @@ fn theChecksBehindTheHash() void {
     // length therefore have different capacities, and comparing them bucket for
     // bucket would read past the end of the shorter one. The length check is
     // what makes that unreachable.
-    const kvs = [_]types.Janet{ kw("a"), intv(1) };
+    const kvs = [_]repr.Value{ kw("a"), intv(1) };
     const s1 = mkstruct(&kvs, null);
     gc_alloc.gcroot(s1);
     defer _ = gc_alloc.gcunroot(s1);
@@ -551,7 +545,7 @@ fn theChecksBehindTheHash() void {
     // identical, reaches the prototype hop, and the hop's `return 3` ends
     // `janet_equals`'s loop the same way a completed traversal would -- so the
     // answer would be "equal".
-    const pk = [_]types.Janet{ kw("p"), intv(1) };
+    const pk = [_]repr.Value{ kw("p"), intv(1) };
     const proto = mkstruct(&pk, null);
     gc_alloc.gcroot(proto);
     defer _ = gc_alloc.gcunroot(proto);
@@ -576,8 +570,8 @@ fn theChecksBehindTheHash() void {
 /// would still order most structs plausibly and would no longer be reproducing
 /// this one.
 fn theStructOrderingCriteriaAreInOrder() void {
-    const one = [_]types.Janet{ kw("a"), intv(1) };
-    const two = [_]types.Janet{ kw("a"), intv(1), kw("b"), intv(2) };
+    const one = [_]repr.Value{ kw("a"), intv(1) };
+    const two = [_]repr.Value{ kw("a"), intv(1), kw("b"), intv(2) };
     const small = mkstruct(&one, null);
     gc_alloc.gcroot(small);
     defer _ = gc_alloc.gcunroot(small);
@@ -594,8 +588,8 @@ fn theStructOrderingCriteriaAreInOrder() void {
 
     // Hash beats contents: two structs of equal capacity whose hashes are
     // forced to the opposite order from their values.
-    const lo = [_]types.Janet{ kw("a"), intv(1) };
-    const hi = [_]types.Janet{ kw("a"), intv(2) };
+    const lo = [_]repr.Value{ kw("a"), intv(1) };
+    const hi = [_]repr.Value{ kw("a"), intv(2) };
     const a = mkstruct(&lo, null);
     gc_alloc.gcroot(a);
     defer _ = gc_alloc.gcunroot(a);
@@ -655,19 +649,19 @@ fn theEqualityOfAbstracts() void {
 
 // ----------------------------------------------------------------- ordering
 
-/// Across types the order is the `JanetType` enumeration, which makes it
+/// Across types the order is the `repr.Tag` enumeration, which makes it
 /// arbitrary and stable -- both of which the sort in the standard library
 /// depends on.
 fn theOrderAcrossTypes() void {
     // In enumeration order, which is *not* the order a reader would guess:
     // `JANET_NUMBER` is zero and `JANET_NIL` follows it.
-    const ordered = [_]types.Janet{
+    const ordered = [_]repr.Value{
         num(0.0), wrap.fromNil(), wrap.fromFalse(),
         str("s"), sym("s"),       kw("s"),
     };
-    assert(constants.JANET_NUMBER < constants.JANET_NIL);
-    assert(constants.JANET_NIL < constants.JANET_BOOLEAN);
-    assert(constants.JANET_BOOLEAN < constants.JANET_STRING);
+    assert(@intFromEnum(repr.Tag.number) < @intFromEnum(repr.Tag.nil));
+    assert(@intFromEnum(repr.Tag.nil) < @intFromEnum(repr.Tag.boolean));
+    assert(@intFromEnum(repr.Tag.boolean) < @intFromEnum(repr.Tag.string));
     for (ordered, 0..) |left, i| {
         for (ordered, 0..) |right, j| {
             if (i == j) continue;
@@ -715,10 +709,10 @@ fn theOrderOfStringLikes() void {
 /// the traversal decides, not a length check up front. The bracket flag is
 /// checked before any element and outranks all of them.
 fn theOrderOfTuples() void {
-    const a = [_]types.Janet{ intv(1), intv(2) };
-    const b = [_]types.Janet{ intv(1), intv(2), intv(3) };
-    const cc = [_]types.Janet{ intv(1), intv(3) };
-    const big = [_]types.Janet{ intv(9), intv(0) };
+    const a = [_]repr.Value{ intv(1), intv(2) };
+    const b = [_]repr.Value{ intv(1), intv(2), intv(3) };
+    const cc = [_]repr.Value{ intv(1), intv(3) };
+    const big = [_]repr.Value{ intv(9), intv(0) };
     assert(order.compare(mktuple(&a, false), mktuple(&b, false)) == -1);
     assert(order.compare(mktuple(&b, false), mktuple(&a, false)) == 1);
     assert(order.compare(mktuple(&a, false), mktuple(&cc, false)) == -1);
@@ -738,8 +732,8 @@ fn theOrderOfTuples() void {
 /// implementation that dropped either would still order most structs
 /// "correctly" and would silently stop being a total order.
 fn theOrderOfStructs() void {
-    const one = [_]types.Janet{ kw("a"), intv(1) };
-    const two = [_]types.Janet{ kw("a"), intv(1), kw("b"), intv(2) };
+    const one = [_]repr.Value{ kw("a"), intv(1) };
+    const two = [_]repr.Value{ kw("a"), intv(1), kw("b"), intv(2) };
     const s1 = mkstruct(&one, null);
     const s2 = mkstruct(&two, null);
     assert(structCapacity(wrap.toStruct(s1)) < structCapacity(wrap.toStruct(s2)));
@@ -750,7 +744,7 @@ fn theOrderOfStructs() void {
 
     // Same capacity, different contents: the hash decides, and whichever way it
     // decides it must be antisymmetric and it must agree with equality.
-    const alt = [_]types.Janet{ kw("z"), intv(1) };
+    const alt = [_]repr.Value{ kw("z"), intv(1) };
     const s3 = mkstruct(&alt, null);
     assert(structCapacity(wrap.toStruct(s1)) == structCapacity(wrap.toStruct(s3)));
     assert(!harness.equals(s1, s3));
@@ -764,9 +758,9 @@ fn theOrderOfStructs() void {
 /// prototype hop at the bottom of the traversal, which is the only place it
 /// replaces a stack node instead of pushing one.
 fn theOrderOfStructPrototypes() void {
-    const kvs = [_]types.Janet{ kw("a"), intv(1) };
-    const pk = [_]types.Janet{ kw("p"), intv(1) };
-    const qk = [_]types.Janet{ kw("p"), intv(2) };
+    const kvs = [_]repr.Value{ kw("a"), intv(1) };
+    const pk = [_]repr.Value{ kw("p"), intv(1) };
+    const qk = [_]repr.Value{ kw("p"), intv(2) };
     const p = wrap.toStruct(mkstruct(&pk, null));
     const q = wrap.toStruct(mkstruct(&qk, null));
     const bare = mkstruct(&kvs, null);
@@ -844,12 +838,12 @@ fn theOrderOfAbstracts() void {
 /// released, never the other way round.
 ///
 /// The result is left rooted and the caller unroots it.
-fn nestTuples(depth: i32, leaf: types.Janet) types.Janet {
+fn nestTuples(depth: i32, leaf: repr.Value) repr.Value {
     var acc = leaf;
     gc_alloc.gcroot(acc);
     var i: i32 = 0;
     while (i < depth) : (i += 1) {
-        const items = [_]types.Janet{ intv(i), acc };
+        const items = [_]repr.Value{ intv(i), acc };
         const next = mktuple(&items, false);
         gc_alloc.gcroot(next);
         _ = gc_alloc.gcunroot(acc);
@@ -860,12 +854,12 @@ fn nestTuples(depth: i32, leaf: types.Janet) types.Janet {
 
 /// Build a struct nested `depth` levels deep: `{:k {:k {:k leaf}}}`, rooted the
 /// same way and on the same terms.
-fn nestStructs(depth: i32, leaf: types.Janet) types.Janet {
+fn nestStructs(depth: i32, leaf: repr.Value) repr.Value {
     var acc = leaf;
     gc_alloc.gcroot(acc);
     var i: i32 = 0;
     while (i < depth) : (i += 1) {
-        const kvs = [_]types.Janet{ kw("k"), acc };
+        const kvs = [_]repr.Value{ kw("k"), acc };
         const next = mkstruct(&kvs, null);
         gc_alloc.gcroot(next);
         _ = gc_alloc.gcunroot(acc);
@@ -925,7 +919,7 @@ fn deepStructsDoNotRecurse() void {
 /// before the deep ones -- they grow the array past the floor and it is never
 /// given back.
 fn thePrototypeHopReplacesTheNode() void {
-    const kvs = [_]types.Janet{ kw("a"), intv(1) };
+    const kvs = [_]repr.Value{ kw("a"), intv(1) };
     var a = wrap.fromNil();
     var b = wrap.fromNil();
     gc_alloc.gcroot(a);
@@ -937,12 +931,12 @@ fn thePrototypeHopReplacesTheNode() void {
 
     var i: i32 = 0;
     while (i < 500) : (i += 1) {
-        const pa: ?types.JanetStruct = if (harness.isType(a, constants.JANET_NIL)) null else wrap.toStruct(a);
+        const pa: ?types.JanetStruct = if (harness.isType(a, repr.Tag.nil)) null else wrap.toStruct(a);
         const next_a = mkstruct(&kvs, pa);
         gc_alloc.gcroot(next_a);
         _ = gc_alloc.gcunroot(a);
         a = next_a;
-        const pb: ?types.JanetStruct = if (harness.isType(b, constants.JANET_NIL)) null else wrap.toStruct(b);
+        const pb: ?types.JanetStruct = if (harness.isType(b, repr.Tag.nil)) null else wrap.toStruct(b);
         const next_b = mkstruct(&kvs, pb);
         gc_alloc.gcroot(next_b);
         _ = gc_alloc.gcunroot(b);
@@ -953,7 +947,7 @@ fn thePrototypeHopReplacesTheNode() void {
     assert(harness.equals(a, b));
     assert(stackDepth() == 0);
     assert(order.compare(a, b) == 0);
-    assert(c.vm().traversal_base != null);
+    assert(harness.vm().traversal.base != null);
     assert(stackCapacity() == 128);
 
     // And the chains are genuinely five hundred deep, so the walk had that many
@@ -998,7 +992,7 @@ fn theStackIsResetNotUnwound() void {
 /// capacity in nodes, which is the growth policy and nothing else.
 fn theStackGrowthPolicy() void {
     assert(harness.equals(intv(1), intv(1)));
-    if (c.vm().traversal_base != null) assert(stackCapacity() >= 128);
+    if (harness.vm().traversal.base != null) assert(stackCapacity() >= 128);
 
     const a = nestTuples(5000, intv(0));
     const b = nestTuples(5000, intv(0));
@@ -1032,8 +1026,8 @@ fn theStackGrowthPolicy() void {
 /// *equal*, which then run to completion. `janet_compare` has no such exit,
 /// since an ordering cannot stop at "different", so it always pushes.
 fn theBaseSlotIsDead() void {
-    const items = [_]types.Janet{intv(0)};
-    const other = [_]types.Janet{intv(1)};
+    const items = [_]repr.Value{intv(0)};
+    const other = [_]repr.Value{intv(1)};
     const a = mktuple(&items, false);
     const b = mktuple(&items, false);
     const d = mktuple(&other, false);
@@ -1056,7 +1050,7 @@ fn theBaseSlotIsDead() void {
 
 // ------------------------------------------------------------ the contract
 
-/// The three functions against one corpus covering every `JanetType`, checking
+/// The three functions against one corpus covering every `repr.Tag`, checking
 /// the relations that hold *between* them rather than any one in isolation:
 ///
 ///   - `janet_compare` is a total order: reflexive, antisymmetric, and its sign
@@ -1073,9 +1067,9 @@ fn theRelationsHoldOverACorpus() void {
     gc_alloc.gcroot(wrap.fromTable(root));
     defer _ = gc_alloc.gcunroot(wrap.fromTable(root));
 
-    const items = [_]types.Janet{ intv(1), kw("k") };
-    const kvs = [_]types.Janet{ kw("x"), intv(1), kw("y"), intv(2) };
-    const corpus = [_]types.Janet{
+    const items = [_]repr.Value{ intv(1), kw("k") };
+    const kvs = [_]repr.Value{ kw("x"), intv(1), kw("y"), intv(2) };
+    const corpus = [_]repr.Value{
         wrap.fromNil(),
         wrap.fromFalse(),
         wrap.fromTrue(),
@@ -1137,7 +1131,7 @@ fn theRelationsHoldOverACorpus() void {
 /// so that the entry points above are shown to be the ones the language is
 /// actually built on.
 fn fromJanet() void {
-    var out: types.Janet = undefined;
+    var out: repr.Value = undefined;
     const src =
         "[(= [1 2] [1 2]) " ++
         " (= [1 2] (tuple 1 2)) " ++
@@ -1153,16 +1147,16 @@ fn fromJanet() void {
         "    (do (var t nil) (for i 0 5000 (set t [i t])) t))]";
     assert(core_env.dostring(harness.coreEnv(), src, "value_order", &out) == 0);
     const r = wrap.toTuple(out);
-    assert(kind.truthy(r[0]) != 0);
-    assert(kind.truthy(r[1]) != 0);
-    assert(kind.truthy(r[2]) != 0);
-    assert(kind.truthy(r[3]) == 0);
+    assert(repr.truthy(r[0]));
+    assert(repr.truthy(r[1]));
+    assert(repr.truthy(r[2]));
+    assert(!repr.truthy(r[3]));
     assert(wrap.toInteger(r[4]) == -1);
     assert(wrap.toInteger(r[5]) == -1);
     assert(wrap.toInteger(r[6]) == -1);
-    assert(kind.truthy(r[7]) != 0);
-    assert(kind.truthy(r[8]) != 0);
-    // `sorted` puts the types in `JanetType` order, which is the ordering
+    assert(repr.truthy(r[7]));
+    assert(repr.truthy(r[8]));
+    // `sorted` puts the types in `repr.Tag` order, which is the ordering
     // across types this file pins from the outside -- and that order starts
     // with numbers, because `JANET_NUMBER` is zero. It returns an array, not a
     // tuple.
@@ -1170,11 +1164,11 @@ fn fromJanet() void {
     assert(wrap.toInteger(sortd.?[0]) == 1);
     assert(wrap.toInteger(sortd.?[1]) == 2);
     assert(wrap.toInteger(sortd.?[2]) == 3);
-    assert(harness.isType(sortd.?[3], constants.JANET_NIL));
-    assert(harness.isType(sortd.?[4], constants.JANET_BOOLEAN));
-    assert(harness.isType(sortd.?[5], constants.JANET_STRING));
-    assert(harness.isType(sortd.?[6], constants.JANET_KEYWORD));
-    assert(kind.truthy(r[10]) != 0);
+    assert(harness.isType(sortd.?[3], repr.Tag.nil));
+    assert(harness.isType(sortd.?[4], repr.Tag.boolean));
+    assert(harness.isType(sortd.?[5], repr.Tag.string));
+    assert(harness.isType(sortd.?[6], repr.Tag.keyword));
+    assert(repr.truthy(r[10]));
 }
 
 // ------------------------------------------------------------------- main

@@ -1,12 +1,10 @@
-//! The marshalling protocol: `src/core/marsh.c` entire, both directions and
-//! the three cfunctions over them. This is Phase 10 Part 8.
+//! The marshalling protocol: both directions and the three cfunctions over
+//! them.
 //!
-//! One selector for one file, because the file is one subsystem. `marsh.c`
-//! was already self-contained — nothing else in the tree reaches inside it,
-//! and it reaches out only through public API and four internal headers — so
-//! Part 4's consolidation rule decides the shape without argument: the two
-//! directions convert in the same increment, so splitting them would buy three
-//! C bridge functions and eight build combinations and nothing else.
+//! One file, because it is one subsystem: nothing else in the tree reaches
+//! inside it, and it reaches out only through public entry points. The two
+//! directions are one subject; splitting them would buy build combinations and
+//! nothing else.
 //!
 //! ## What the two directions actually share
 //!
@@ -30,21 +28,21 @@
 //!
 //! The vectors are `janet_v_` scratch memory, which the collector releases at
 //! the next `janet_try` unwind rather than on the spot. That is what makes the
-//! C original's missing cleanup on a panic path harmless, and it is why this
-//! file does not try to improve on it — see "Nothing is freed on the way out"
-//! in `src/zig/README.md`.
+//! Janet's missing cleanup on a raising path harmless, and it is why this
+//! file does not try to improve on it: nothing is freed on the way out of a
+//! raise anywhere in this runtime, and a `defer` here would be the only place
+//! that was different.
 //!
-//! ## Why this file is jump-transparent, and will be for a while
+//! ## What can raise through this file
 //!
-//! Every raise this file *decides* returns an error, which is Phase 10's
-//! decision 1 applied as decision 3 requires. But three kinds of call inside
-//! the traversal still jump past these frames whatever this file does:
+//! Every raise this file *decides* returns an error. Three kinds of call
+//! inside the traversal can raise whatever this file does:
 //!
 //!  - `janet_buffer_push_u8` and its kin, which raise on a buffer that cannot
 //!    grow, and are reached from every `push*` below;
 //!  - `janet_table_put`, `janet_string`, `janet_abstract` and the other
 //!    allocators on the unmarshal side;
-//!  - an abstract type's `marshal` and `unmarshal` callbacks, which are C
+//!  - an abstract type's `marshal` and `unmarshal` callbacks, which are
 //!    function pointers supplied by `io.c`, `ev.c`, `peg.c` or a native
 //!    module, and which raise by jumping whatever language surrounds them.
 //!
@@ -68,8 +66,8 @@ const corefn = @import("corefn");
 const raise = @import("raise");
 const pp_format = @import("pp/format.zig");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const vm_lifecycle = @import("vm/lifecycle.zig");
 const abstract_type = @import("abstract_type.zig");
 const builtin = @import("builtin");
@@ -82,12 +80,11 @@ const strings = @import("value/strings.zig");
 const symbols = @import("value/symbols.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
-const vector_mod = @import("stretchy.zig");
+const stretchy = @import("stretchy.zig");
 const verify = @import("bytecode/verify.zig");
 const fibers = @import("value/fibers.zig");
 const functions = @import("value/functions.zig");
 const registry = @import("registry.zig");
-const kind = @import("value/helpers/kind.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const args_core = @import("args.zig");
 const abstracts = @import("value/abstracts.zig");
@@ -97,17 +94,17 @@ const fatal = @import("fatal.zig");
 /// `src/core/util.h`, declared here rather than in `cabi.zig`.
 extern fn safe_memcpy(dest: ?*anyopaque, src: ?*const anyopaque, len: usize) callconv(.c) void;
 
-/// Whether this build has the event loop. `state_abi.h` restates `JANET_EV` as
-/// a valued macro, because translate-c does not surface one defined without a
-/// value.
+/// Whether this build has the event loop, read as a value rather than as a
+/// `comptime` condition so the guards below read the same way the C did.
 const has_ev = constants.JANET_VM_HAS_EV != 0;
 
 /// `JANET_MARSHAL_DECREF` from `src/core/util.h`. A plain integer, so
 /// declaring it here rather than translating the header costs nothing and
 /// keeps the Windows cross-compile intact.
 ///
-/// It has the same value as `janet.h`'s `JANET_MARSHAL_NO_CYCLES`, and that
-/// aliasing is preserved rather than tidied -- see `src/zig/README.md`.
+/// It has the same value as Janet's `JANET_MARSHAL_NO_CYCLES`. The aliasing
+/// is preserved rather than tidied: the two flags are read by different
+/// callers and separating them would change which one a caller gets.
 const marshal_decref: c_int = 0x40000;
 
 /// `janet.h`'s frame size. The function-like macros over it do not survive
@@ -188,14 +185,14 @@ inline fn asSize(n: i32) usize {
 }
 
 /// `janet_stack_frame` from `src/core/fiber.h`.
-inline fn stackFrame(values: [*]types.Janet) *types.JanetStackFrame {
+inline fn stackFrame(values: [*]repr.Value) *types.JanetStackFrame {
     return @ptrCast(@alignCast(values - asSize(frame_size)));
 }
 
 /// `janet_gc_type` from `src/core/gc.h`, for the containers whose collectable
 /// header is their first member.
-inline fn gcType(object: anytype) i32 {
-    return object.*.gc.flags & constants.JANET_MEM_TYPEBITS;
+inline fn gcType(object: anytype) types.MemoryType {
+    return object.*.gc.memoryType();
 }
 
 /// `janet_wrap_integer`, written out rather than called. `janet.h` declares the
@@ -203,7 +200,7 @@ inline fn gcType(object: anytype) i32 {
 /// layouts, so a tagged build has no such symbol and a Zig caller -- which
 /// cannot use the macro -- does not link. `pp_pretty.zig` and `value_access.zig`
 /// write it out for the same reason and `FOUND.md` has the defect.
-inline fn wrapInteger(x: i32) types.Janet {
+inline fn wrapInteger(x: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(x));
 }
 
@@ -221,58 +218,23 @@ inline fn allocated(pointer: ?*anyopaque) ?*anyopaque {
     return pointer;
 }
 
-// The `janet_v_` vectors of `src/core/vector.h`, whose function-like macros do
-// not survive translation. Same three-line shape `compile.c`'s and `emit.c`'s
-// ports already carry; the two-word `int32_t` prefix is the existing private
-// contract shared with `vector.h`.
-
-const vector_header_size = 2 * @sizeOf(i32);
-
-fn vectorHeader(comptime Element: type, vector: [*]Element) [*]i32 {
-    return @ptrFromInt(@intFromPtr(vector) - vector_header_size);
-}
-
-fn vectorCount(comptime Element: type, vector: ?[*]Element) i32 {
-    return if (vector) |v| vectorHeader(Element, v)[1] else 0;
-}
-
-fn vectorCapacity(comptime Element: type, vector: [*]Element) i32 {
-    return vectorHeader(Element, vector)[0];
-}
-
-fn pushVector(comptime Element: type, vector_pointer: *?[*]Element, val: Element) void {
-    var vector = vector_pointer.*;
-    const count = vectorCount(Element, vector);
-    if (vector == null or count + 1 >= vectorCapacity(Element, vector.?)) {
-        const grown = vector_mod.vGrow(if (vector) |v| @ptrCast(v) else null, 1, @sizeOf(Element));
-        vector = @ptrCast(@alignCast(grown));
-        vector_pointer.* = vector;
-    }
-    vector.?[@intCast(count)] = val;
-    vectorHeader(Element, vector.?)[1] = count + 1;
-}
-
-fn freeVector(comptime Element: type, vector: ?[*]Element) void {
-    if (vector) |v| gc_alloc.sfree(vectorHeader(Element, v));
-}
-
 // ==========================================================================
 // Environment lookup tables
 // ==========================================================================
 
 /// Look inside one entry of an environment, preferring `:value` to `:ref`.
-fn entryGetval(env_entry: types.Janet) types.Janet {
-    if (kind.checkType(env_entry, constants.JANET_TABLE) != 0) {
+fn entryGetval(env_entry: repr.Value) repr.Value {
+    if (repr.checkType(env_entry, repr.Tag.table)) {
         const entry = wrap.toTable(env_entry);
         const checkval = tables.get(entry, value.fromBytes("value", .keyword));
-        if (kind.checkType(checkval, constants.JANET_NIL) != 0) {
+        if (repr.checkType(checkval, repr.Tag.nil)) {
             return tables.get(entry, value.fromBytes("ref", .keyword));
         }
         return checkval;
-    } else if (kind.checkType(env_entry, constants.JANET_STRUCT) != 0) {
+    } else if (repr.checkType(env_entry, repr.Tag.@"struct")) {
         const entry = wrap.toStruct(env_entry);
         const checkval = structs.get(entry, value.fromBytes("value", .keyword));
-        if (kind.checkType(checkval, constants.JANET_NIL) != 0) {
+        if (repr.checkType(checkval, repr.Tag.nil)) {
             return structs.get(entry, value.fromBytes("ref", .keyword));
         }
         return checkval;
@@ -295,8 +257,8 @@ pub fn envLookupInto(
     while (env != null) {
         var i: i32 = 0;
         while (i < env.?.capacity) : (i += 1) {
-            const kv = env.?.data.?[@intCast(i)];
-            if (kind.checkType(kv.key, constants.JANET_SYMBOL) == 0) continue;
+            const kv = env.?.slots()[@intCast(i)];
+            if (!repr.checkType(kv.key, repr.Tag.symbol)) continue;
             if (prefix != null) {
                 const prelen: i32 = @intCast(std.mem.len(@as([*:0]const u8, @ptrCast(prefix))));
                 const oldsym = wrap.toSymbol(kv.key);
@@ -402,7 +364,7 @@ inline fn stackCheck(flags: c_int) raise.Raising(void) {
 /// Record `x` as reference number `nextid` so that a later occurrence can be
 /// written as `LB_REFERENCE`. `JANET_MARSHAL_NO_CYCLES` turns this off, at
 /// which point a cyclic structure recurses until the guard above stops it.
-fn markSeen(st: *MarshalState, x: types.Janet) void {
+fn markSeen(st: *MarshalState, x: repr.Value) void {
     if (st.maybe_cycles) {
         tables.put(&st.seen, x, wrapInteger(st.nextid));
         st.nextid += 1;
@@ -412,7 +374,7 @@ fn markSeen(st: *MarshalState, x: types.Janet) void {
 /// A quick check for a fiber that cannot be marshalled. No false positives,
 /// possible false negatives -- the full check happens on the way through.
 fn fiberCannotBeMarshalled(fiber: *types.JanetFiber) bool {
-    if (fibers.status(fiber) == constants.JANET_STATUS_ALIVE) return true;
+    if (fibers.status(fiber) == types.FiberStatus.alive) return true;
     var i = fiber.*.frame;
     while (i > 0) {
         const frame = stackFrame(fiber.*.data.? + asSize(i));
@@ -425,7 +387,7 @@ fn fiberCannotBeMarshalled(fiber: *types.JanetFiber) bool {
 fn marshalOneEnv(st: *MarshalState, env: *types.JanetFuncEnv, flags: c_int) raise.Raising(void) {
     try stackCheck(flags);
     var i: i32 = 0;
-    while (i < vectorCount(*types.JanetFuncEnv, st.seen_envs)) : (i += 1) {
+    while (i < stretchy.count(*types.JanetFuncEnv, st.seen_envs)) : (i += 1) {
         if (st.seen_envs.?[@intCast(i)] == env) {
             try pushByte(st, lb_funcenv_ref);
             try pushInt(st, i);
@@ -433,7 +395,7 @@ fn marshalOneEnv(st: *MarshalState, env: *types.JanetFuncEnv, flags: c_int) rais
         }
     }
     _ = functions.envValid(env);
-    pushVector(*types.JanetFuncEnv, &st.seen_envs, env);
+    stretchy.push(*types.JanetFuncEnv, &st.seen_envs, env);
 
     if (env.*.offset > 0 and fiberCannotBeMarshalled(env.*.as.fiber.?)) {
         // Special case for early detachment: the fiber the values live on is
@@ -469,10 +431,8 @@ fn marshalOneEnv(st: *MarshalState, env: *types.JanetFuncEnv, flags: c_int) rais
     }
 }
 
-fn marshalU32s(st: *MarshalState, u32s: [*]const u32, n: i32) raise.Raising(void) {
-    var i: i32 = 0;
-    while (i < n) : (i += 1) {
-        const word = u32s[@intCast(i)];
+fn marshalU32s(st: *MarshalState, u32s: []const u32) raise.Raising(void) {
+    for (u32s) |word| {
         try pushByte(st, @truncate(word));
         try pushByte(st, @truncate(word >> 8));
         try pushByte(st, @truncate(word >> 16));
@@ -483,14 +443,14 @@ fn marshalU32s(st: *MarshalState, u32s: [*]const u32, n: i32) raise.Raising(void
 fn marshalOneDef(st: *MarshalState, def: *types.JanetFuncDef, flags: c_int) raise.Raising(void) {
     try stackCheck(flags);
     var i: i32 = 0;
-    while (i < vectorCount(*types.JanetFuncDef, st.seen_defs)) : (i += 1) {
+    while (i < stretchy.count(*types.JanetFuncDef, st.seen_defs)) : (i += 1) {
         if (st.seen_defs.?[@intCast(i)] == def) {
             try pushByte(st, lb_funcdef_ref);
             try pushInt(st, i);
             return;
         }
     }
-    pushVector(*types.JanetFuncDef, &st.seen_defs, def);
+    stretchy.push(*types.JanetFuncDef, &st.seen_defs, def);
 
     try pushInt(st, def.*.flags);
     try pushInt(st, def.*.slotcount);
@@ -514,28 +474,28 @@ fn marshalOneDef(st: *MarshalState, def: *types.JanetFuncDef, flags: c_int) rais
 
     i = 0;
     while (i < def.*.constants_length) : (i += 1) {
-        try marshalOne(st, def.*.constants.?[@intCast(i)], flags + 1);
+        try marshalOne(st, def.*.constantValues()[@intCast(i)], flags + 1);
     }
 
     i = 0;
     while (i < def.*.symbolmap_length) : (i += 1) {
-        const entry = def.*.symbolmap.?[@intCast(i)];
+        const entry = def.*.symbols()[@intCast(i)];
         try pushInt(st, @bitCast(entry.birth_pc));
         try pushInt(st, @bitCast(entry.death_pc));
         try pushInt(st, @bitCast(entry.slot_index));
         try marshalOne(st, wrap.fromSymbol(entry.symbol.?), flags + 1);
     }
 
-    try marshalU32s(st, def.*.bytecode.?, def.*.bytecode_length);
+    try marshalU32s(st, def.*.instructions());
 
     i = 0;
     while (i < def.*.environments_length) : (i += 1) {
-        try pushInt(st, def.*.environments.?[@intCast(i)]);
+        try pushInt(st, def.*.environmentIndices()[@intCast(i)]);
     }
 
     i = 0;
     while (i < def.*.defs_length) : (i += 1) {
-        try marshalOneDef(st, def.*.defs.?[@intCast(i)], flags + 1);
+        try marshalOneDef(st, def.*.subdefs()[@intCast(i)], flags + 1);
     }
 
     if (def.*.flags & constants.JANET_FUNCDEF_FLAG_HASSOURCEMAP != 0) {
@@ -543,7 +503,7 @@ fn marshalOneDef(st: *MarshalState, def: *types.JanetFuncDef, flags: c_int) rais
         var current: i32 = 0;
         i = 0;
         while (i < def.*.bytecode_length) : (i += 1) {
-            const map = def.*.sourcemap.?[@intCast(i)];
+            const map = def.*.sourceMappings()[@intCast(i)];
             try pushInt(st, map.line -% current);
             try pushInt(st, map.column);
             current = map.line;
@@ -551,7 +511,7 @@ fn marshalOneDef(st: *MarshalState, def: *types.JanetFuncDef, flags: c_int) rais
     }
 
     if (def.*.flags & constants.JANET_FUNCDEF_FLAG_HASCLOBITSET != 0) {
-        try marshalU32s(st, def.*.closure_bitset.?, (def.*.slotcount + 31) >> 5);
+        try marshalU32s(st, def.*.closureBits());
     }
 }
 
@@ -560,7 +520,7 @@ fn marshalOneFiber(st: *MarshalState, fiber: *types.JanetFiber, flags: c_int) ra
     var fflags = fiber.*.flags;
     if (fiber.*.child != null) fflags |= fiber_flag_haschild;
     if (fiber.*.env != null) fflags |= fiber_flag_hasenv;
-    if (fibers.status(fiber) == constants.JANET_STATUS_ALIVE)
+    if (fibers.status(fiber) == types.FiberStatus.alive)
         return raise.panic("cannot marshal alive fiber");
     try pushInt(st, fflags);
     try pushInt(st, fiber.*.frame);
@@ -606,7 +566,7 @@ fn marshalOneFiber(st: *MarshalState, fiber: *types.JanetFiber, flags: c_int) ra
     try marshalOne(st, fiber.*.last_value, flags + 1);
 }
 
-fn marshalOneAbstract(st: *MarshalState, x: types.Janet, flags: c_int) raise.Raising(void) {
+fn marshalOneAbstract(st: *MarshalState, x: repr.Value, flags: c_int) raise.Raising(void) {
     const abstract = wrap.toAbstract(x);
     if (has_ev) {
         // A threaded abstract crosses a thread boundary as a bare pointer in
@@ -615,7 +575,7 @@ fn marshalOneAbstract(st: *MarshalState, x: types.Janet, flags: c_int) raise.Rai
         // dropping its reference and collecting while the message is still
         // between the two heaps.
         if ((flags & constants.JANET_MARSHAL_UNSAFE) != 0 and
-            gcType(types.abstractHead(abstract)) == constants.JANET_MEMORY_THREADED_ABSTRACT)
+            gcType(types.abstractHead(abstract)) == types.MemoryType.threaded_abstract)
         {
             _ = abstracts.incref(abstract);
             try pushByte(st, lb_threaded_abstract);
@@ -627,13 +587,13 @@ fn marshalOneAbstract(st: *MarshalState, x: types.Janet, flags: c_int) raise.Rai
     const at = abstract_type.ofAbstract(abstract);
     if (at.*.marshal) |marshal_fn| {
         try pushByte(st, lb_abstract);
-        try marshalOne(st, value.fromBytes(std.mem.span(at.*.name), .symbol), flags + 1);
+        try marshalOne(st, value.fromBytes(at.*.name, .symbol), flags + 1);
         var context: types.JanetMarshalContext = .{
             .m_state = st,
             .u_state = null,
             .flags = flags + 1,
             .data = null,
-            .at = abstract_type.stored(at),
+            .at = at,
         };
         try marshal_fn(abstract, &context);
     } else {
@@ -643,21 +603,21 @@ fn marshalOneAbstract(st: *MarshalState, x: types.Janet, flags: c_int) raise.Rai
 
 /// The main body of the marshaller, and the entry point of the mutually
 /// recursive group above.
-fn marshalOne(st: *MarshalState, x: types.Janet, flags: c_int) raise.Raising(void) {
+fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Raising(void) {
     try stackCheck(flags);
-    const vtype = kind.typeOf(x);
+    const vtype = repr.typeOf(x);
 
     // Simple primitives first: no reference type, so nothing to memoize.
     switch (vtype) {
-        constants.JANET_NIL => {
+        repr.Tag.nil => {
             try pushByte(st, lb_nil);
             return;
         },
-        constants.JANET_BOOLEAN => {
-            try pushByte(st, if (wrap.toBoolean(x) != 0) lb_true else lb_false);
+        repr.Tag.boolean => {
+            try pushByte(st, if (wrap.toBoolean(x)) lb_true else lb_false);
             return;
         },
-        constants.JANET_NUMBER => {
+        repr.Tag.number => {
             const xval = wrap.toNumber(x);
             if (xval >= -2147483648.0 and xval <= 2147483647.0 and
                 xval == @as(f64, @floatFromInt(@as(i32, @intFromFloat(xval)))))
@@ -680,7 +640,7 @@ fn marshalOne(st: *MarshalState, x: types.Janet, flags: c_int) raise.Raising(voi
     }
     if (st.rreg != null) {
         const check = tables.get(st.rreg.?, x);
-        if (kind.checkType(check, constants.JANET_SYMBOL) != 0) {
+        if (repr.checkType(check, repr.Tag.symbol)) {
             markSeen(st, x);
             const regname = wrap.toSymbol(check);
             try pushByte(st, lb_registry);
@@ -691,26 +651,26 @@ fn marshalOne(st: *MarshalState, x: types.Janet, flags: c_int) raise.Raising(voi
     }
 
     switch (vtype) {
-        constants.JANET_NUMBER => {
+        repr.Tag.number => {
             var bytes: [8]u8 = @bitCast(wrap.toNumber(x));
             if (big_endian) std.mem.reverse(u8, &bytes);
             try pushByte(st, lb_real);
             try pushBytes(st, &bytes);
             markSeen(st, x);
         },
-        constants.JANET_STRING, constants.JANET_SYMBOL, constants.JANET_KEYWORD => {
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
             const str = wrap.toString(x);
             const length = types.stringHead(str).length;
             markSeen(st, x);
             try pushByte(st, switch (vtype) {
-                constants.JANET_STRING => lb_string,
-                constants.JANET_SYMBOL => lb_symbol,
+                repr.Tag.string => lb_string,
+                repr.Tag.symbol => lb_symbol,
                 else => lb_keyword,
             });
             try pushInt(st, length);
             try pushBytes(st, str[0..@intCast(length)]);
         },
-        constants.JANET_BUFFER => {
+        repr.Tag.buffer => {
             const buffer = wrap.toBuffer(x);
             markSeen(st, x);
             if (has_ev) {
@@ -728,19 +688,19 @@ fn marshalOne(st: *MarshalState, x: types.Janet, flags: c_int) raise.Raising(voi
             }
             try pushByte(st, lb_buffer);
             try pushInt(st, buffer.*.count);
-            try pushBytes(st, buffer.*.data.?[0..@intCast(buffer.*.count)]);
+            try pushBytes(st, buffer.*.slice());
         },
-        constants.JANET_ARRAY => {
+        repr.Tag.array => {
             const a = wrap.toArray(x);
             markSeen(st, x);
-            try pushByte(st, if (gcType(a) == constants.JANET_MEMORY_ARRAY_WEAK) lb_array_weak else lb_array);
+            try pushByte(st, if (gcType(a) == types.MemoryType.array_weak) lb_array_weak else lb_array);
             try pushInt(st, a.*.count);
             var i: i32 = 0;
             while (i < a.*.count) : (i += 1) {
-                try marshalOne(st, a.*.data.?[@intCast(i)], flags + 1);
+                try marshalOne(st, a.*.slice()[@intCast(i)], flags + 1);
             }
         },
-        constants.JANET_TUPLE => {
+        repr.Tag.tuple => {
             const tup = wrap.toTuple(x);
             const count = types.tupleHead(tup).length;
             const flag = types.tupleHead(tup).gc.flags >> 16;
@@ -756,27 +716,27 @@ fn marshalOne(st: *MarshalState, x: types.Janet, flags: c_int) raise.Raising(voi
             // reference the reader could not resolve.
             markSeen(st, x);
         },
-        constants.JANET_TABLE => {
+        repr.Tag.table => {
             const t = wrap.toTable(x);
             markSeen(st, x);
             const has_proto = t.*.proto != null;
             try pushByte(st, switch (gcType(t)) {
-                constants.JANET_MEMORY_TABLE_WEAKK => if (has_proto) lb_table_weakk_proto else lb_table_weakk,
-                constants.JANET_MEMORY_TABLE_WEAKV => if (has_proto) lb_table_weakv_proto else lb_table_weakv,
-                constants.JANET_MEMORY_TABLE_WEAKKV => if (has_proto) lb_table_weakkv_proto else lb_table_weakkv,
+                types.MemoryType.table_weakk => if (has_proto) lb_table_weakk_proto else lb_table_weakk,
+                types.MemoryType.table_weakv => if (has_proto) lb_table_weakv_proto else lb_table_weakv,
+                types.MemoryType.table_weakkv => if (has_proto) lb_table_weakkv_proto else lb_table_weakkv,
                 else => if (has_proto) lb_table_proto else lb_table,
             });
             try pushInt(st, t.*.count);
             if (has_proto) try marshalOne(st, wrap.fromTable(t.*.proto.?), flags + 1);
             var i: i32 = 0;
             while (i < t.*.capacity) : (i += 1) {
-                const kv = t.*.data.?[@intCast(i)];
-                if (kind.checkType(kv.key, constants.JANET_NIL) != 0) continue;
+                const kv = t.*.slots()[@intCast(i)];
+                if (repr.checkType(kv.key, repr.Tag.nil)) continue;
                 try marshalOne(st, kv.key, flags + 1);
                 try marshalOne(st, kv.value, flags + 1);
             }
         },
-        constants.JANET_STRUCT => {
+        repr.Tag.@"struct" => {
             const struct_ = wrap.toStruct(x);
             const head = types.structHead(struct_);
             const count = head.length;
@@ -788,7 +748,7 @@ fn marshalOne(st: *MarshalState, x: types.Janet, flags: c_int) raise.Raising(voi
             var i: i32 = 0;
             while (i < head.capacity) : (i += 1) {
                 const kv = struct_[@intCast(i)];
-                if (kind.checkType(kv.key, constants.JANET_NIL) != 0) continue;
+                if (repr.checkType(kv.key, repr.Tag.nil)) continue;
                 try marshalOne(st, kv.key, flags + 1);
                 try marshalOne(st, kv.value, flags + 1);
             }
@@ -796,10 +756,10 @@ fn marshalOne(st: *MarshalState, x: types.Janet, flags: c_int) raise.Raising(voi
             // gives.
             markSeen(st, x);
         },
-        constants.JANET_ABSTRACT => {
+        repr.Tag.abstract => {
             try marshalOneAbstract(st, x, flags);
         },
-        constants.JANET_FUNCTION => {
+        repr.Tag.function => {
             try pushByte(st, lb_function);
             const func = wrap.toFunction(x);
             try pushInt(st, func.*.def.?.environments_length);
@@ -812,19 +772,19 @@ fn marshalOne(st: *MarshalState, x: types.Janet, flags: c_int) raise.Raising(voi
                 try marshalOneEnv(st, funcEnv(func, i).*.?, flags + 1);
             }
         },
-        constants.JANET_FIBER => {
+        repr.Tag.fiber => {
             markSeen(st, x);
             try pushByte(st, lb_fiber);
             try marshalOneFiber(st, wrap.toFiber(x), flags + 1);
         },
-        constants.JANET_CFUNCTION => {
+        repr.Tag.cfunction => {
             if ((flags & constants.JANET_MARSHAL_UNSAFE) == 0) return noRegistry(x);
             markSeen(st, x);
             try pushByte(st, lb_unsafe_cfunction);
             const cfn = wrap.toCfunction(x);
             try pushBytes(st, std.mem.asBytes(&cfn));
         },
-        constants.JANET_POINTER => {
+        repr.Tag.pointer => {
             if ((flags & constants.JANET_MARSHAL_UNSAFE) == 0) return noRegistry(x);
             markSeen(st, x);
             try pushByte(st, lb_unsafe_pointer);
@@ -837,7 +797,7 @@ fn marshalOne(st: *MarshalState, x: types.Janet, flags: c_int) raise.Raising(voi
     }
 }
 
-fn noRegistry(x: types.Janet) raise.Error {
+fn noRegistry(x: repr.Value) raise.Error {
     return pp_format.panicf("no registry value and cannot marshal %p", .{x});
 }
 
@@ -850,7 +810,7 @@ const big_endian = (builtin.cpu.arch.endian() == .big);
 
 pub fn marshal(
     buf: *types.JanetBuffer,
-    x: types.Janet,
+    x: repr.Value,
     rreg: ?*types.JanetTable,
     flags: c_int,
 ) raise.Raising(void) {
@@ -866,8 +826,8 @@ pub fn marshal(
     _ = tables.init(&st.seen, 0);
     try marshalOne(&st, x, flags);
     tables.deinit(&st.seen);
-    freeVector(*types.JanetFuncEnv, st.seen_envs);
-    freeVector(*types.JanetFuncDef, st.seen_defs);
+    stretchy.free(*types.JanetFuncEnv, st.seen_envs);
+    stretchy.free(*types.JanetFuncDef, st.seen_defs);
 }
 
 pub const marshalAbi = raise.panicking(marshal).abi;
@@ -887,7 +847,7 @@ pub fn marshalSize(ctx: *types.JanetMarshalContext, val: usize) raise.Raising(vo
     return marshalInt64(ctx, @bitCast(@as(u64, val)));
 }
 
-pub fn janet_marshal_size(ctx: *types.JanetMarshalContext, val: usize) void {
+pub fn marshalSizeAbi(ctx: *types.JanetMarshalContext, val: usize) void {
     raise.reported(marshalSize(ctx, val));
 }
 
@@ -895,7 +855,7 @@ pub fn marshalInt64(ctx: *types.JanetMarshalContext, val: i64) raise.Raising(voi
     try push64(marshalState(ctx), @bitCast(val));
 }
 
-pub fn janet_marshal_int64(ctx: *types.JanetMarshalContext, val: i64) void {
+pub fn marshalInt64Abi(ctx: *types.JanetMarshalContext, val: i64) void {
     raise.reported(marshalInt64(ctx, val));
 }
 
@@ -903,7 +863,7 @@ pub fn marshalInt(ctx: *types.JanetMarshalContext, val: i32) raise.Raising(void)
     try pushInt(marshalState(ctx), val);
 }
 
-pub fn janet_marshal_int(ctx: *types.JanetMarshalContext, val: i32) void {
+pub fn marshalIntAbi(ctx: *types.JanetMarshalContext, val: i32) void {
     raise.reported(marshalInt(ctx, val));
 }
 
@@ -919,7 +879,7 @@ pub fn marshalByte(ctx: *types.JanetMarshalContext, val: u8) raise.Raising(void)
     try pushByte(marshalState(ctx), val);
 }
 
-pub fn janet_marshal_byte(ctx: *types.JanetMarshalContext, val: u8) void {
+pub fn marshalByteAbi(ctx: *types.JanetMarshalContext, val: u8) void {
     raise.reported(marshalByte(ctx, val));
 }
 
@@ -929,7 +889,7 @@ pub fn marshalBytes(ctx: *types.JanetMarshalContext, bytes: []const u8) raise.Ra
     try pushBytes(st, bytes);
 }
 
-pub fn marshalJanet(ctx: *types.JanetMarshalContext, x: types.Janet) raise.Raising(void) {
+pub fn marshalJanet(ctx: *types.JanetMarshalContext, x: repr.Value) raise.Raising(void) {
     return marshalOne(marshalState(ctx), x, ctx.*.flags + 1);
 }
 
@@ -965,7 +925,7 @@ pub const marshalJanetAbi = raise.panicking(marshalJanet).abi;
 /// or jumps through: this subsystem reports failure by raising, and always
 /// did. It is dropped rather than transcribed.
 const UnmarshalState = struct {
-    lookup: ?[*]types.Janet,
+    lookup: ?[*]repr.Value,
     reg: ?*types.JanetTable,
     lookup_envs: ?[*]*types.JanetFuncEnv,
     lookup_defs: ?[*]*types.JanetFuncDef,
@@ -1050,9 +1010,9 @@ fn read64(st: *UnmarshalState, atdata: *[*]const u8) raise.Raising(u64) {
     return ret;
 }
 
-fn assertType(x: types.Janet, t: types.JanetType) raise.Raising(void) {
-    if (kind.checkType(x, t) == 0) {
-        return pp_format.panicf("expected type %T, got %v", .{ @as(c_int, 1) << @intCast(t), x });
+fn assertType(x: repr.Value, t: repr.Tag) raise.Raising(void) {
+    if (!repr.checkType(x, t)) {
+        return pp_format.panicf("expected type %T, got %v", .{ repr.TagSet.one(t), x });
     }
 }
 
@@ -1067,27 +1027,27 @@ fn unmarshalOneEnv(
     if (data[0] == lb_funcenv_ref) {
         data += 1;
         const index = try readInt(st, &data);
-        if (index < 0 or index >= vectorCount(*types.JanetFuncEnv, st.lookup_envs))
+        if (index < 0 or index >= stretchy.count(*types.JanetFuncEnv, st.lookup_envs))
             return pp_format.panicf("invalid funcenv reference %d", .{index});
         out.* = st.lookup_envs.?[@intCast(index)];
         return data;
     }
 
     const env: *types.JanetFuncEnv = @ptrCast(@alignCast(gc_alloc.gcalloc(
-        constants.JANET_MEMORY_FUNCENV,
+        types.MemoryType.funcenv,
         @sizeOf(types.JanetFuncEnv),
     )));
     env.*.length = 0;
     env.*.offset = 0;
     env.*.as.values = null;
-    pushVector(*types.JanetFuncEnv, &st.lookup_envs, env);
+    stretchy.push(*types.JanetFuncEnv, &st.lookup_envs, env);
     const offset = try readNat(st, &data);
     const length = try readNat(st, &data);
     if (offset > 0) {
         // On stack variant
-        var fiberv: types.Janet = undefined;
+        var fiberv: repr.Value = undefined;
         data = try unmarshalOne(st, data, &fiberv, flags);
-        try assertType(fiberv, constants.JANET_FIBER);
+        try assertType(fiberv, repr.Tag.fiber);
         env.*.as.fiber = wrap.toFiber(fiberv);
         // A negative offset marks the environment as coming from untrusted
         // input, which is what stops the runtime treating it as live stack.
@@ -1096,7 +1056,7 @@ fn unmarshalOneEnv(
         // Off stack variant
         if (length == 0) return raise.panic("invalid funcenv length");
         env.*.as.values = @ptrCast(@alignCast(allocated(
-            utils.malloc(@sizeOf(types.Janet) * asSize(length)),
+            utils.malloc(@sizeOf(repr.Value) * asSize(length)),
         )));
         env.*.offset = 0;
         var i: i32 = 0;
@@ -1139,7 +1099,7 @@ fn unmarshalOneDef(
     if (data[0] == lb_funcdef_ref) {
         data += 1;
         const index = try readInt(st, &data);
-        if (index < 0 or index >= vectorCount(*types.JanetFuncDef, st.lookup_defs))
+        if (index < 0 or index >= stretchy.count(*types.JanetFuncDef, st.lookup_defs))
             return pp_format.panicf("invalid funcdef reference %d", .{index});
         out.* = st.lookup_defs.?[@intCast(index)];
         return data;
@@ -1148,7 +1108,7 @@ fn unmarshalOneDef(
     // Initialised with values that will not break garbage collection if
     // unmarshalling fails partway.
     const def: *types.JanetFuncDef = @ptrCast(@alignCast(gc_alloc.gcalloc(
-        constants.JANET_MEMORY_FUNCDEF,
+        types.MemoryType.funcdef,
         @sizeOf(types.JanetFuncDef),
     )));
     def.*.environments_length = 0;
@@ -1166,7 +1126,7 @@ fn unmarshalOneDef(
     def.*.symbolmap = null;
     def.*.symbolmap_length = 0;
     def.*.named_args_count = 0;
-    pushVector(*types.JanetFuncDef, &st.lookup_defs, def);
+    stretchy.push(*types.JanetFuncDef, &st.lookup_defs, def);
 
     var environments_length: i32 = 0;
     var defs_length: i32 = 0;
@@ -1190,25 +1150,31 @@ fn unmarshalOneDef(
         symbolmap_length = try readNat(st, &data);
 
     if (def.*.flags & constants.JANET_FUNCDEF_FLAG_HASNAME != 0) {
-        var x: types.Janet = undefined;
+        var x: repr.Value = undefined;
         data = try unmarshalOne(st, data, &x, flags + 1);
-        try assertType(x, constants.JANET_STRING);
+        try assertType(x, repr.Tag.string);
         def.*.name = wrap.toString(x);
     }
     if (def.*.flags & constants.JANET_FUNCDEF_FLAG_HASSOURCE != 0) {
-        var x: types.Janet = undefined;
+        var x: repr.Value = undefined;
         data = try unmarshalOne(st, data, &x, flags + 1);
-        try assertType(x, constants.JANET_STRING);
+        try assertType(x, repr.Tag.string);
         def.*.source = wrap.toString(x);
     }
 
     if (constants_length != 0) {
-        def.*.constants = @ptrCast(@alignCast(allocated(
-            utils.malloc(@sizeOf(types.Janet) * asSize(constants_length)),
+        const pool: [*]repr.Value = @ptrCast(@alignCast(allocated(
+            utils.malloc(@sizeOf(repr.Value) * asSize(constants_length)),
         )));
-        var i: i32 = 0;
-        while (i < constants_length) : (i += 1) {
-            data = try unmarshalOne(st, data, &def.*.constants.?[@intCast(i)], flags + 1);
+        def.*.constants = pool;
+        // The length is declared after the fill, so `constantValues()` is
+        // empty throughout this loop and the writer works over what it just
+        // allocated. That order is not incidental: the def is collectable
+        // and `unmarshalOne` allocates, so a length set early would have the
+        // mark walk read uninitialised memory.
+        const values = pool[0..asSize(constants_length)];
+        for (values) |*slot| {
+            data = try unmarshalOne(st, data, slot, flags + 1);
         }
     } else {
         def.*.constants = null;
@@ -1216,18 +1182,17 @@ fn unmarshalOneDef(
     def.*.constants_length = constants_length;
 
     if (def.*.flags & constants.JANET_FUNCDEF_FLAG_HASSYMBOLMAP != 0) {
-        def.*.symbolmap = @ptrCast(@alignCast(allocated(
+        const map: [*]types.JanetSymbolMap = @ptrCast(@alignCast(allocated(
             utils.malloc(@sizeOf(types.JanetSymbolMap) * asSize(symbolmap_length)),
         )));
-        var i: i32 = 0;
-        while (i < symbolmap_length) : (i += 1) {
-            const entry = &def.*.symbolmap.?[@intCast(i)];
+        def.*.symbolmap = map;
+        for (map[0..asSize(symbolmap_length)]) |*entry| {
             entry.birth_pc = @bitCast(try readInt(st, &data));
             entry.death_pc = @bitCast(try readInt(st, &data));
             entry.slot_index = @bitCast(try readInt(st, &data));
-            var val: types.Janet = undefined;
+            var val: repr.Value = undefined;
             data = try unmarshalOne(st, data, &val, flags + 1);
-            if (kind.checkType(val, constants.JANET_SYMBOL) == 0) {
+            if (!repr.checkType(val, repr.Tag.symbol)) {
                 return pp_format.panicf(
                     "corrupted symbolmap when unmarshalling debug info, got %v",
                     .{val},
@@ -1245,12 +1210,12 @@ fn unmarshalOneDef(
     def.*.bytecode_length = bytecode_length;
 
     if (def.*.flags & constants.JANET_FUNCDEF_FLAG_HASENVS != 0) {
-        def.*.environments = @ptrCast(@alignCast(allocated(
+        const envs: [*]i32 = @ptrCast(@alignCast(allocated(
             utils.calloc(1, @sizeOf(i32) * asSize(environments_length)),
         )));
-        var i: i32 = 0;
-        while (i < environments_length) : (i += 1) {
-            def.*.environments.?[@intCast(i)] = try readInt(st, &data);
+        def.*.environments = envs;
+        for (envs[0..asSize(environments_length)]) |*slot| {
+            slot.* = try readInt(st, &data);
         }
     } else {
         def.*.environments = null;
@@ -1258,12 +1223,12 @@ fn unmarshalOneDef(
     def.*.environments_length = environments_length;
 
     if (def.*.flags & constants.JANET_FUNCDEF_FLAG_HASDEFS != 0) {
-        def.*.defs = @ptrCast(@alignCast(allocated(
+        const nested: [*]*types.JanetFuncDef = @ptrCast(@alignCast(allocated(
             utils.calloc(1, @sizeOf(*types.JanetFuncDef) * asSize(defs_length)),
         )));
-        var i: i32 = 0;
-        while (i < defs_length) : (i += 1) {
-            data = try unmarshalOneDef(st, data, &def.*.defs.?[@intCast(i)], flags + 1);
+        def.*.defs = nested;
+        for (nested[0..asSize(defs_length)]) |*slot| {
+            data = try unmarshalOneDef(st, data, slot, flags + 1);
         }
     } else {
         def.*.defs = null;
@@ -1278,8 +1243,8 @@ fn unmarshalOneDef(
         var i: i32 = 0;
         while (i < bytecode_length) : (i += 1) {
             current +%= try readInt(st, &data);
-            def.*.sourcemap.?[@intCast(i)].line = current;
-            def.*.sourcemap.?[@intCast(i)].column = try readInt(st, &data);
+            def.*.sourceMappings()[@intCast(i)].line = current;
+            def.*.sourceMappings()[@intCast(i)].column = try readInt(st, &data);
         }
     } else {
         def.*.sourcemap = null;
@@ -1311,7 +1276,7 @@ fn unmarshalOneFiber(
     // table before any of its fields are read, so a failure partway leaves
     // something the collector can walk.
     const fiber: *types.JanetFiber = @ptrCast(@alignCast(gc_alloc.gcalloc(
-        constants.JANET_MEMORY_FIBER,
+        types.MemoryType.fiber,
         @sizeOf(types.JanetFiber),
     )));
     fiber.*.flags = 0;
@@ -1332,7 +1297,7 @@ fn unmarshalOneFiber(
         fiber.*.ev_stream = null;
     }
 
-    pushVector(types.Janet, &st.lookup, wrap.fromFiber(fiber));
+    stretchy.push(repr.Value, &st.lookup, wrap.fromFiber(fiber));
 
     var fiber_flags = try readInt(st, &data);
     const frame = try readNat(st, &data);
@@ -1356,7 +1321,7 @@ fn unmarshalOneFiber(
     else
         std.math.maxInt(i32);
     fiber.*.data = @ptrCast(@alignCast(allocated(
-        utils.malloc(@sizeOf(types.Janet) * asSize(fiber.*.capacity)),
+        utils.malloc(@sizeOf(repr.Value) * asSize(fiber.*.capacity)),
     )));
     var i: i32 = 0;
     while (i < fiber.*.capacity) : (i += 1) {
@@ -1374,9 +1339,9 @@ fn unmarshalOneFiber(
         const framestack = fiber.*.data.? + asSize(stack);
         const framep = stackFrame(framestack);
 
-        var funcv: types.Janet = undefined;
+        var funcv: repr.Value = undefined;
         data = try unmarshalOne(st, data, &funcv, flags + 1);
-        try assertType(funcv, constants.JANET_FUNCTION);
+        try assertType(funcv, repr.Tag.function);
         const func = wrap.toFunction(funcv);
         const def = func.*.def.?;
 
@@ -1412,18 +1377,18 @@ fn unmarshalOneFiber(
     if (stack < 0) return raise.panic("fiber has too many stackframes");
 
     if (fiber_flags & fiber_flag_hasenv != 0) {
-        var envv: types.Janet = undefined;
+        var envv: repr.Value = undefined;
         fiber_flags &= ~fiber_flag_hasenv;
         data = try unmarshalOne(st, data, &envv, flags + 1);
-        try assertType(envv, constants.JANET_TABLE);
+        try assertType(envv, repr.Tag.table);
         fiber_env = wrap.toTable(envv);
     }
 
     if (fiber_flags & fiber_flag_haschild != 0) {
-        var fiberv: types.Janet = undefined;
+        var fiberv: repr.Value = undefined;
         fiber_flags &= ~fiber_flag_haschild;
         data = try unmarshalOne(st, data, &fiberv, flags + 1);
-        try assertType(fiberv, constants.JANET_FIBER);
+        try assertType(fiberv, repr.Tag.fiber);
         fiber.*.child = wrap.toFiber(fiberv);
     }
 
@@ -1438,8 +1403,12 @@ fn unmarshalOneFiber(
     fiber.*.maxstack = fiber_maxstack;
     fiber.*.env = fiber_env;
 
-    const status = fibers.status(fiber);
-    if (status < 0 or status > constants.JANET_STATUS_ALIVE) {
+    // The one status that arrives from outside this tree. `statusOf` reads
+    // six bits and the vocabulary is sixteen values, so the bit pattern an
+    // image carries may name none of them -- which is why this is a validation
+    // of the *stored* number rather than of the enum.
+    const stored = (fiber.*.flags & constants.JANET_FIBER_STATUS_MASK) >> constants.JANET_FIBER_STATUS_OFFSET;
+    if (stored < 0 or stored > @intFromEnum(types.FiberStatus.alive)) {
         return raise.panic("invalid fiber status");
     }
 
@@ -1500,8 +1469,8 @@ pub fn unmarshalBytes(ctx: *types.JanetMarshalContext, dest: [*]u8, len: usize) 
     ctx.*.data.? += len;
 }
 
-pub fn unmarshalJanet(ctx: *types.JanetMarshalContext) raise.Raising(types.Janet) {
-    var ret: types.Janet = undefined;
+pub fn unmarshalJanet(ctx: *types.JanetMarshalContext) raise.Raising(repr.Value) {
+    var ret: repr.Value = undefined;
     ctx.*.data = try unmarshalOne(unmarshalState(ctx), ctx.*.data.?, &ret, ctx.*.flags);
     return ret;
 }
@@ -1513,7 +1482,7 @@ pub fn unmarshalAbstractReuse(ctx: *types.JanetMarshalContext, p: ?*anyopaque) r
     if (ctx.*.at == null) {
         return raise.panic("janet_unmarshal_abstract called more than once");
     }
-    pushVector(types.Janet, &unmarshalState(ctx).lookup, wrap.fromAbstract(p));
+    stretchy.push(repr.Value, &unmarshalState(ctx).lookup, wrap.fromAbstract(p));
     ctx.*.at = null;
 }
 
@@ -1550,14 +1519,14 @@ pub const unmarshalAbstractThreadedAbi = raise.panicking(unmarshalAbstractThread
 fn unmarshalOneAbstract(
     st: *UnmarshalState,
     data_in: [*]const u8,
-    out: *types.Janet,
+    out: *repr.Value,
     flags: c_int,
 ) raise.Raising([*]const u8) {
-    var key: types.Janet = undefined;
+    var key: repr.Value = undefined;
     const data = try unmarshalOne(st, data_in, &key, flags + 1);
     const stored_at = registry.getAbstractType(key);
     if (stored_at == null) return raise.panic("unknown abstract type");
-    const at = abstract_type.of(stored_at);
+    const at = stored_at.?;
     if (at.unmarshal) |unmarshal_fn| {
         var context: types.JanetMarshalContext = .{
             .m_state = null,
@@ -1579,7 +1548,7 @@ fn unmarshalOneAbstract(
 fn unmarshalOne(
     st: *UnmarshalState,
     data_in: [*]const u8,
-    out: *types.Janet,
+    out: *repr.Value,
     flags: c_int,
 ) raise.Raising([*]const u8) {
     var data: [*]const u8 = data_in;
@@ -1612,7 +1581,7 @@ fn unmarshalOne(
                 data += @sizeOf(?*anyopaque);
                 const buffer = try buffers.pointerUnsafe(ptr, capacity, count);
                 out.* = wrap.fromBuffer(buffer);
-                pushVector(types.Janet, &st.lookup, out.*);
+                stretchy.push(repr.Value, &st.lookup, out.*);
                 return data;
             },
             lb_threaded_abstract => {
@@ -1634,18 +1603,18 @@ fn unmarshalOne(
                     out.* = wrap.fromNil();
                 } else {
                     out.* = wrap.fromAbstract(ptr);
-                    const check = tables.get(&c.vm().threaded_abstracts, out.*);
-                    if (kind.checkType(check, constants.JANET_NIL) != 0) {
+                    const check = tables.get(&vm_lifecycle.current().ev.threaded_abstracts, out.*);
+                    if (repr.checkType(check, repr.Tag.nil)) {
                         // Transfers the reference from the channel's buffer to
                         // this heap.
-                        tables.put(&c.vm().threaded_abstracts, out.*, wrap.fromFalse());
+                        tables.put(&vm_lifecycle.current().ev.threaded_abstracts, out.*, wrap.fromFalse());
                     } else {
                         // The heap reference is already accounted for, so the
                         // channel's is released.
                         _ = abstracts.decref(ptr);
                     }
                 }
-                pushVector(types.Janet, &st.lookup, out.*);
+                stretchy.push(repr.Value, &st.lookup, out.*);
                 return data;
             },
             else => {},
@@ -1680,7 +1649,7 @@ fn unmarshalOne(
             @memcpy(&bytes, data[1..9]);
             if (big_endian) std.mem.reverse(u8, &bytes);
             out.* = wrap.fromNumberSafe(@bitCast(bytes));
-            pushVector(types.Janet, &st.lookup, out.*);
+            stretchy.push(repr.Value, &st.lookup, out.*);
             return data + 9;
         },
         lb_string, lb_symbol, lb_buffer, lb_keyword, lb_registry => {
@@ -1705,7 +1674,7 @@ fn unmarshalOne(
                     out.* = wrap.fromBuffer(buffer);
                 },
             }
-            pushVector(types.Janet, &st.lookup, out.*);
+            stretchy.push(repr.Value, &st.lookup, out.*);
             return data + asSize(len);
         },
         lb_fiber => {
@@ -1721,14 +1690,14 @@ fn unmarshalOne(
                 return pp_format.panicf("invalid function - too many environments (%d)", .{len});
             }
             const func: *types.JanetFunction = @ptrCast(@alignCast(gc_alloc.gcalloc(
-                constants.JANET_MEMORY_FUNCTION,
+                types.MemoryType.function,
                 types.function_envs + asSize(len) * @sizeOf(*types.JanetFuncEnv),
             )));
             func.*.def = null;
             var i: i32 = 0;
             while (i < len) : (i += 1) funcEnv(func, i).* = null;
             out.* = wrap.fromFunction(func);
-            pushVector(types.Janet, &st.lookup, out.*);
+            stretchy.push(repr.Value, &st.lookup, out.*);
             var def: *types.JanetFuncDef = undefined;
             data = try unmarshalOneDef(st, data, &def, flags + 1);
             func.*.def = def;
@@ -1772,10 +1741,10 @@ fn unmarshalOne(
                     arrays.new(len);
                 array.*.count = len;
                 out.* = wrap.fromArray(array);
-                pushVector(types.Janet, &st.lookup, out.*);
+                stretchy.push(repr.Value, &st.lookup, out.*);
                 var i: i32 = 0;
                 while (i < len) : (i += 1) {
-                    data = try unmarshalOne(st, data, &array.*.data.?[@intCast(i)], flags + 1);
+                    data = try unmarshalOne(st, data, &array.*.slice()[@intCast(i)], flags + 1);
                 }
             } else if (lead == lb_tuple) {
                 const tup = tuples.begin(len);
@@ -1787,27 +1756,27 @@ fn unmarshalOne(
                     data = try unmarshalOne(st, data, &tup[@intCast(i)], flags + 1);
                 }
                 out.* = wrap.fromTuple(tuples.end(tup));
-                pushVector(types.Janet, &st.lookup, out.*);
+                stretchy.push(repr.Value, &st.lookup, out.*);
             } else if (lead == lb_struct or lead == lb_struct_proto) {
                 const struct_ = structs.begin(len);
                 if (lead == lb_struct_proto) {
-                    var proto: types.Janet = undefined;
+                    var proto: repr.Value = undefined;
                     data = try unmarshalOne(st, data, &proto, flags + 1);
-                    try assertType(proto, constants.JANET_STRUCT);
+                    try assertType(proto, repr.Tag.@"struct");
                     types.structHead(struct_).proto = wrap.toStruct(proto);
                 }
                 var i: i32 = 0;
                 while (i < len) : (i += 1) {
-                    var key: types.Janet = undefined;
-                    var val: types.Janet = undefined;
+                    var key: repr.Value = undefined;
+                    var val: repr.Value = undefined;
                     data = try unmarshalOne(st, data, &key, flags + 1);
                     data = try unmarshalOne(st, data, &val, flags + 1);
                     structs.put(struct_, key, val);
                 }
                 out.* = wrap.fromStruct(structs.end(struct_));
-                pushVector(types.Janet, &st.lookup, out.*);
+                stretchy.push(repr.Value, &st.lookup, out.*);
             } else if (lead == lb_reference) {
-                if (len >= vectorCount(types.Janet, st.lookup)) {
+                if (len >= stretchy.count(repr.Value, st.lookup)) {
                     return pp_format.panicf("invalid reference %d", .{len});
                 }
                 out.* = st.lookup.?[@intCast(len)];
@@ -1819,24 +1788,24 @@ fn unmarshalOne(
                     else => tables.new(len),
                 };
                 out.* = wrap.fromTable(t);
-                pushVector(types.Janet, &st.lookup, out.*);
+                stretchy.push(repr.Value, &st.lookup, out.*);
                 switch (lead) {
                     lb_table_proto,
                     lb_table_weakk_proto,
                     lb_table_weakv_proto,
                     lb_table_weakkv_proto,
                     => {
-                        var proto: types.Janet = undefined;
+                        var proto: repr.Value = undefined;
                         data = try unmarshalOne(st, data, &proto, flags + 1);
-                        try assertType(proto, constants.JANET_TABLE);
+                        try assertType(proto, repr.Tag.table);
                         t.*.proto = wrap.toTable(proto);
                     },
                     else => {},
                 }
                 var i: i32 = 0;
                 while (i < len) : (i += 1) {
-                    var key: types.Janet = undefined;
-                    var val: types.Janet = undefined;
+                    var key: repr.Value = undefined;
+                    var val: repr.Value = undefined;
                     data = try unmarshalOne(st, data, &key, flags + 1);
                     data = try unmarshalOne(st, data, &val, flags + 1);
                     tables.put(t, key, val);
@@ -1857,7 +1826,7 @@ fn unmarshalOne(
             @memcpy(@as([*]u8, @ptrCast(&ptr))[0..@sizeOf(?*anyopaque)], data[0..@sizeOf(?*anyopaque)]);
             data += @sizeOf(?*anyopaque);
             out.* = wrap.fromPointer(ptr);
-            pushVector(types.Janet, &st.lookup, out.*);
+            stretchy.push(repr.Value, &st.lookup, out.*);
             return data;
         },
         lb_unsafe_cfunction => {
@@ -1876,7 +1845,7 @@ fn unmarshalOne(
             );
             data += @sizeOf(types.JanetCFunction);
             out.* = wrap.fromCfunction(cfn);
-            pushVector(types.Janet, &st.lookup, out.*);
+            stretchy.push(repr.Value, &st.lookup, out.*);
             return data;
         },
         else => {
@@ -1893,7 +1862,7 @@ pub fn unmarshal(
     flags: c_int,
     reg: ?*types.JanetTable,
     next: ?*[*]const u8,
-) raise.Raising(types.Janet) {
+) raise.Raising(repr.Value) {
     var st: UnmarshalState = .{
         .start = bytes.ptr,
         .end = bytes.ptr + bytes.len,
@@ -1902,12 +1871,12 @@ pub fn unmarshal(
         .lookup = null,
         .reg = reg,
     };
-    var out: types.Janet = undefined;
+    var out: repr.Value = undefined;
     const nextbytes = try unmarshalOne(&st, bytes.ptr, &out, flags);
     if (next) |slot| slot.* = nextbytes;
-    freeVector(*types.JanetFuncDef, st.lookup_defs);
-    freeVector(*types.JanetFuncEnv, st.lookup_envs);
-    freeVector(types.Janet, st.lookup);
+    stretchy.free(*types.JanetFuncDef, st.lookup_defs);
+    stretchy.free(*types.JanetFuncEnv, st.lookup_envs);
+    stretchy.free(repr.Value, st.lookup);
     return out;
 }
 
@@ -1919,33 +1888,33 @@ pub fn unmarshalAbi(
     flags: c_int,
     reg: ?*types.JanetTable,
     next: ?*[*]const u8,
-) callconv(.c) types.Janet {
-    return unmarshal(if (bytes) |p| p[0..len] else &.{}, flags, reg, next) catch raise.reportToC(types.Janet);
+) callconv(.c) repr.Value {
+    return unmarshal(if (bytes) |p| p[0..len] else &.{}, flags, reg, next) catch raise.reportToC(repr.Value);
 }
 
 // ==========================================================================
 // The cfunction surface
 // ==========================================================================
 
-fn cfunEnvLookup(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunEnvLookup(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const env = try args_core.getTable(argv, 0);
     return wrap.fromTable(envLookup(env));
 }
 
-fn cfunMarshal(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunMarshal(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 4);
     var rreg: ?*types.JanetTable = null;
     var flags: c_int = 0;
     if (@as(i32, @intCast(argv.len)) > 1) rreg = try args_core.getTable(argv, 1);
     const buffer = if (@as(i32, @intCast(argv.len)) > 2) try args_core.getBuffer(argv, 2) else buffers.new(10);
-    if (@as(i32, @intCast(argv.len)) > 3 and kind.truthy(argv[3]) != 0) flags |= constants.JANET_MARSHAL_NO_CYCLES;
+    if (@as(i32, @intCast(argv.len)) > 3 and repr.truthy(argv[3])) flags |= constants.JANET_MARSHAL_NO_CYCLES;
     try marshal(buffer, argv[0], rreg, flags);
     return wrap.fromBuffer(buffer);
 }
 
-fn cfunUnmarshal(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_UNMARSHAL);
+fn cfunUnmarshal(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"unmarshal"}));
     try args_core.arity(argv, 1, 2);
     const view = try args_core.getBytes(argv, 0);
     const reg: ?*types.JanetTable = if (@as(i32, @intCast(argv.len)) > 1) try args_core.getTable(argv, 1) else null;
@@ -1953,7 +1922,7 @@ fn cfunUnmarshal(argv: []types.Janet) align(corefn.alignment) raise.Raising(type
 }
 
 pub fn libMarsh(env: *types.JanetTable) void {
-    const entries = [_]corefn.Entry{
+    const entries = comptime [_]corefn.Entry{
         corefn.reg("marshal", &cfunMarshal, @src(), "(marshal x &opt reverse-lookup buffer no-cycles)", "Marshal a value into a buffer and return the buffer. The buffer " ++
             "can then later be unmarshalled to reconstruct the initial value. " ++
             "Optionally, one can pass in a reverse lookup table to not marshal " ++
@@ -1966,7 +1935,6 @@ pub fn libMarsh(env: *types.JanetTable) void {
         corefn.reg("env-lookup", &cfunEnvLookup, @src(), "(env-lookup env)", "Creates a forward lookup table for unmarshalling from an environment. " ++
             "To create a reverse lookup table, use the invert function to swap keys " ++
             "and values in the returned table."),
-        corefn.end,
     };
-    corefn.install(env, &entries);
+    corefn.install(env, entries);
 }

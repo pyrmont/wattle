@@ -15,20 +15,21 @@
 //! position**. So `"xxxxxxxxx"` parses as 0111 — the `x`s in the execute
 //! positions count and the rest do not — and `"rwxgarbage"` parses as 0700.
 //! Neither is a string a person would write, and both are recorded here so
-//! that a port cannot quietly make the parser stricter. `port/FOUND.md` is for
+//! that a port cannot quietly make the parser stricter. `FOUND.md` is for
 //! defects; this is not one, it is a shape.
 //!
-//! ## What changed in the migration
+//! ## The refusals
 //!
-//! The refusals. Validation happens above the kernels, in the argument layer,
-//! and the C original could only observe it by compiling a Janet closure with
-//! `janet_dostring` and calling it under `janet_pcall` — three lines and a
+//! Validation happens above the kernels, in the argument layer, and a contract
+//! on the far side of a symbol table can only observe it by compiling a Janet
+//! closure with `janet_dostring` and calling it under `janet_pcall` -- three
+//! lines and a
 //! wrapper function per case, "so they stay off stderr". Here the cfunction is
 //! called directly and the refusal is a value, so each case is one line and
 //! says which argument was rejected.
 
 const std = @import("std");
-const types = @import("types");
+const repr = @import("repr");
 const c = @import("cabi");
 const value = @import("subsystems").value;
 const harness = @import("harness.zig");
@@ -84,7 +85,7 @@ fn everyPortableModeRoundTrips() void {
 fn theCoreFunctions() !void {
     const permInt = harness.core("os/perm-int");
     const permString = harness.core("os/perm-string");
-    var args: [1]types.Janet = undefined;
+    var args: [1]repr.Value = undefined;
 
     args[0] = value.fromBytes("rw-r-----", .string);
     std.debug.assert(wrap.toInteger(try permInt(args[0..1])) == 0o640);
@@ -109,7 +110,7 @@ fn theCoreFunctions() !void {
 fn theRefusals() void {
     const permInt = harness.core("os/perm-int");
     const permString = harness.core("os/perm-string");
-    var args: [1]types.Janet = undefined;
+    var args: [1]repr.Value = undefined;
 
     args[0] = value.fromBytes("rwx", .string);
     std.debug.assert(harness.raised(permInt, .{args[0..1]}) != null);

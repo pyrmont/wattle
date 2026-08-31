@@ -187,14 +187,14 @@ Janet is built with [Zig](https://ziglang.org). The version is pinned in
 
 ```sh
 cd somewhere/my/projects/janet
-zig build              # the executable, the libraries and the headers
+zig build              # the executable and the libraries
 zig build test         # the contracts and the Janet test suites
 zig build run          # a REPL
 ```
 
-Artifacts are installed under `zig-out`: the executable in `zig-out/bin`,
-static and shared libraries in `zig-out/lib`, and the C headers in
-`zig-out/include/janet`. Pass `-p <prefix>` to install somewhere else, and
+Artifacts are installed under `zig-out`: the executable in `zig-out/bin` and
+the static and shared libraries in `zig-out/lib`. **No header is installed** —
+see "Embedding" below. Pass `-p <prefix>` to install somewhere else, and
 `zig build --help` to see the feature flags — the runtime can be built without
 the event loop, networking, the PEG engine, the assembler, the FFI, integer
 types, dynamic modules or docstrings.
@@ -213,7 +213,7 @@ for every supported target.
 | --- | --- |
 | macOS arm64 and x86-64 | built and fully tested |
 | Linux, musl | built and fully tested; a musl target links statically |
-| Linux, glibc | builds; the test driver is not yet run there, see `port/FOUND.md` |
+| Linux, glibc | built and tested in a container at each phase gate, not in CI |
 | Windows | cross-compiles; binaries have never been executed |
 | 32-bit (riscv32) | compiles only, and is the only target that type-checks the 32-bit paths |
 
@@ -222,11 +222,9 @@ of what is covered.
 
 ### Where the old build systems went
 
-Until Phase 11 Part 25 this file documented `make`, `meson`, `plan9.mk` and
-`build_win.bat`. All four named the fifty C sources under `src/core` that the
-Zig rewrite deleted, so none of them had been able to build anything for some
-time; they have been removed rather than left as instructions that cannot work.
-`port/PLAN.md` has the rewrite's history.
+`make`, `meson`, `plan9.mk` and `build_win.bat` are gone. All four named the
+fifty C sources this runtime replaced, so none of them could build anything;
+they were removed rather than left as instructions that cannot work.
 
 
 ## Development
@@ -235,9 +233,9 @@ Janet can be hacked on with pretty much any environment you like. VSCode, Vim,
 Emacs and Atom each have syntax packages for the Janet language, and any editor
 with Zig support will do for the runtime itself.
 
-`AGENTS.md` at the repository root describes how to work in this tree — the
-build, the Zig cache and its disk behaviour, the acceptance matrix and the
-scripts under `port/`. `port/PLAN.md` is the map of the C-to-Zig rewrite.
+`AGENTS.md` at the repository root describes how to work in this tree, and
+`tools/README.md` the development instruments beside it — the acceptance
+matrix, the leak check and the checked inventories.
 
 ## Installation
 
@@ -292,28 +290,23 @@ If installed, you can also run `man janet` to get usage information.
 ## Embedding
 
 `zig build` produces `zig-out/lib/libjanet.a` and `zig-out/lib/libjanet.so`
-(or `.dylib`) together with the headers in `zig-out/include/janet`. Link
-against either and include `<janet/janet.h>`; on most systems you will also
-want `-lm`, and `-ldl` if dynamic module loading is wanted.
+(or `.dylib`). The library exports 434 C symbols, and `src/zig/capi.zig` is the
+one file that publishes them: every entry point there states the signature it
+publishes, and the compiler checks it.
 
-The amalgamated single-file `janet.c` that older instructions describe no
-longer exists. It was produced by a generator that slurped the fifty C sources
-under `src/core`, and those were deleted by the Zig rewrite.
+**No header is installed, and there is no amalgamated `janet.c`.** Janet's
+`janet.h` declared this surface with nothing comparing a declaration against
+its definition, so shipping it would promise less than the tree keeps. What a C
+caller sees is `capi.zig`; a generated header is not written yet.
 
-**One limitation, and it is worth knowing before you start.** Calling *into*
-Janet from C works: `janet_init`, `janet_dostring`, the unwrap functions and
-the layout of every public structure are exercised by `test/embed.c` and
-`test/abi.c` on every build. **Defining a cfunction in C does not.** A
-cfunction has been a Zig function returning an error union since the rewrite
-removed Janet's non-local jumps, while `janet.h` still declares
-`Janet (*)(int32_t, Janet *)` — so a C program that registers one compiles,
-links, and segfaults at the call. The same applies to a `JanetAbstractType`'s
-callbacks.
+**The native-module interface is Zig.** `src/zig/module.zig` is what a module
+imports, and `examples/numarray/` is the worked example. A C program cannot
+define a cfunction for this runtime: a cfunction returns an error union over
+Zig's own calling convention, so no C body can have that type and no C caller
+can invoke one. The same applies to a `JanetAbstractType`'s callbacks.
 
-Native modules are therefore written in Zig against
-`src/zig/native_module.zig`, where a module's cfunction returns
-`error{JanetSignal}!Janet`. `port/phase_11.md` has the measurement and
-`port/PLAN.md` the reasoning; replacing the header is the next phase's subject.
+Native modules are therefore written in Zig. `examples/numarray/numarray.zig`
+imports `janet` and nothing else, which is the whole of the interface.
 
 ## Discussion
 

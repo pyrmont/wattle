@@ -19,13 +19,12 @@
 //! `va_list` on `aarch64-linux`, where `std.builtin.VaList` is a
 //! `@compileError("disabled due to miscompilations")` under the LLVM backend.
 //!
-//! Part 18 deleted all of it. Every caller was a Zig caller already, and every
-//! one of them was carrying a tuple and flattening it into C's calling
-//! convention on the last line; `formatTuple` below takes the tuple instead.
-//! The walk happens once, at compile time, so the engine *indexes* rather than
-//! pulls, and the specifier and the value it renders are checked against each
-//! other at the call site. `FOUND.md` has four entries that are exactly the
-//! mistake that check now rejects.
+//! None of that is here. Every caller was a Zig caller carrying a tuple and
+//! flattening it into C's calling convention on the last line; `formatTuple`
+//! below takes the tuple instead. The walk happens once, at compile time, so
+//! the engine *indexes* rather than pulls, and the specifier and the value it
+//! renders are checked against each other at the call site. `FOUND.md` has
+//! four entries that are exactly the mistake that check now rejects.
 //!
 //! ## Two loops, not one engine
 //!
@@ -41,7 +40,7 @@
 const std = @import("std");
 const options = @import("options");
 const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
 const stdio = @import("../stdio.zig");
 const pp_describe = @import("../pp.zig");
@@ -51,9 +50,9 @@ const pretty = @import("pretty.zig");
 const buffers = @import("../value/buffers.zig");
 const strings = @import("../value/strings.zig");
 const vm_state = @import("../vm/lifecycle.zig");
-const kind = @import("../value/helpers/kind.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const utils = @import("../utils.zig");
+const io_core = @import("../io.zig");
 
 /// `MAX_ITEM`: the scratch one rendered conversion goes into.
 const max_item = 256;
@@ -262,11 +261,11 @@ const PrettyOpts = struct {
 
 /// The eight pretty conversions and `%j`, which both drivers render the same
 /// way once the value and the barrier are in hand.
-fn renderPretty(b: *types.JanetBuffer, conversion: u8, spec: *const Specifier, x: types.Janet, startlen: i32) raise.Raising(void) {
+fn renderPretty(b: *types.JanetBuffer, conversion: u8, spec: *const Specifier, x: repr.Value, startlen: i32) raise.Raising(void) {
     if (conversion == 'j') {
         var depth = Specifier.number(&spec.precision);
         if (depth < 1) depth = recursion_guard;
-        _ = try pretty.jdnImpl(b, depth, x, startlen, b.count);
+        _ = try pretty.jdn(b, depth, x, startlen, b.count);
         return;
     }
     const opts = PrettyOpts.decode(conversion, spec);
@@ -275,16 +274,16 @@ fn renderPretty(b: *types.JanetBuffer, conversion: u8, spec: *const Specifier, x
 
 /// `typestr`. An abstract value reports its own type's name rather than
 /// `"abstract"`, which is the whole point of `%t` over `%T`.
-fn typestr(x: types.Janet) [*:0]const u8 {
-    const t = kind.typeOf(x);
-    if (t == constants.JANET_ABSTRACT) return types.abstractHead(wrap.toAbstract(x)).type.*.name;
-    return utils.typeNames[@intCast(t)];
+fn typestr(x: repr.Value) []const u8 {
+    const t = repr.typeOf(x);
+    if (t == .abstract) return types.abstractHead(wrap.toAbstract(x)).type.*.name;
+    return std.mem.span(utils.typeNames[@intFromEnum(t)]);
 }
 
 /// `pushtypes`. Renders a type *set* — the bitmask an argument check reports —
 /// as `"a, b or c"`.
-fn pushtypes(b: *types.JanetBuffer, typeflags: c_int) raise.Raising(void) {
-    var remaining = typeflags;
+fn pushtypes(b: *types.JanetBuffer, typeflags: repr.TagSet) raise.Raising(void) {
+    var remaining = typeflags.bits();
     var first = true;
     var i: usize = 0;
     while (remaining != 0) : ({
@@ -452,13 +451,11 @@ inline fn renderConversion(
         // the rewritten set, so `snprintf` reads an `int` back.
         'c' => item.render(&local, @as(c_int, arg)),
         // `%d` and `%i` render 64 bits: `scanFormat` rewrote the specifier to
-        // `%lld`. The variadic driver still pulled an `int32_t` and widened it,
-        // because that is what C's `janet_formatbv` did -- an artifact of the
-        // `va_list`, not of the conversion. Nothing pulls now, so the value the
-        // caller passed is the value that renders, and the three `int64_t`
-        // indices in `args_core.zig` stop being undefined. `FOUND.md` records
-        // both sites under Part 8's rule: a mismatched vararg width has no
-        // defined behaviour to reproduce, so the port gets it right.
+        // `%lld`. A variadic driver pulled an `int32_t` and widened it, which
+        // was an artifact of the `va_list` rather than of the conversion.
+        // Nothing pulls now, so the value the caller passed is the value that
+        // renders. `FOUND.md` records both sites: a mismatched vararg width
+        // has no defined behaviour to reproduce, so this gets it right.
         'd', 'i' => item.render(&local, @as(i64, arg)),
         'D', 'I' => item.render(&local, @as(i64, arg)),
         'x', 'X', 'o', 'u' => item.render(&local, @as(u64, arg)),
@@ -485,16 +482,16 @@ inline fn renderConversion(
             }
         },
 
-        'V' => try pp_describe.toStringB(b, @as(types.Janet, arg)),
-        'v' => try pp_describe.descriptionB(b, @as(types.Janet, arg)),
-        't' => try buffers.pushCString(b, typestr(@as(types.Janet, arg))),
-        'T' => try pushtypes(b, @as(c_int, arg)),
+        'V' => try pp_describe.toStringB(b, @as(repr.Value, arg)),
+        'v' => try pp_describe.descriptionB(b, @as(repr.Value, arg)),
+        't' => try buffers.pushBytes(b, typestr(@as(repr.Value, arg))),
+        'T' => try pushtypes(b, @as(repr.TagSet, arg)),
 
         'M', 'm', 'N', 'n', 'Q', 'q', 'P', 'p', 'j' => try renderPretty(
             b,
             conversion,
             &local,
-            @as(types.Janet, arg),
+            @as(repr.Value, arg),
             startlen,
         ),
 
@@ -572,7 +569,7 @@ pub fn formatc(comptime format: [:0]const u8, args: anytype) raise.Raising(types
     _ = buffers.init(&buffer, @intCast(format.len));
     errdefer buffers.deinit(&buffer);
     try formatTuple(&buffer, format, args);
-    const result = strings.new(buffer.data.?[0..@intCast(buffer.count)]);
+    const result = strings.new(buffer.slice());
     buffers.deinit(&buffer);
     return result;
 }
@@ -610,68 +607,62 @@ pub fn dynprintf(
     comptime format: [:0]const u8,
     args: anytype,
 ) raise.Raising(void) {
-    var x: types.Janet = undefined;
-    var xtype: types.JanetType = undefined;
+    var x: repr.Value = undefined;
+    var xtype: repr.Tag = undefined;
     if (name == null or name.?[0] == 0) {
         x = wrap.fromNil();
-        xtype = constants.JANET_NIL;
+        xtype = .nil;
     } else {
         x = vm_state.dyn(name.?);
-        xtype = kind.typeOf(x);
+        xtype = repr.typeOf(x);
     }
 
     switch (xtype) {
-        constants.JANET_NIL, constants.JANET_ABSTRACT => {
+        repr.Tag.nil, repr.Tag.abstract => {
             var f: ?*anyopaque = dflt_file;
             var buffer: types.JanetBuffer = undefined;
             _ = buffers.init(&buffer, @intCast(format.len));
             defer buffers.deinit(&buffer);
             try formatTuple(&buffer, format, args);
-            if (xtype == constants.JANET_ABSTRACT) {
+            if (xtype == repr.Tag.abstract) {
                 const abstract = wrap.toAbstract(x);
-                if (types.abstractHead(abstract).type != @as(*const types.JanetAbstractType, @ptrCast(&janet_file_type))) return;
+                if (types.abstractHead(abstract).type != &io_core.fileType) return;
                 const iofile: *types.JanetFile = @ptrCast(@alignCast(abstract));
-                janet_zig_io_assert_writeable(iofile);
+                io_core.zigIoAssertWriteable(iofile);
                 _ = try raise.crossing({});
                 f = iofile.file;
             }
-            _ = janet_io_write(f, buffer.data.?, @intCast(buffer.count));
+            _ = io_core.write(f, buffer.data.?, @intCast(buffer.count));
         },
-        constants.JANET_FUNCTION => {
+        repr.Tag.function => {
             const fun = wrap.toFunction(x);
             const buf = buffers.new(@intCast(format.len));
             try formatTuple(buf, format, args);
-            var call_args = [_]types.Janet{wrap.fromBuffer(buf)};
+            var call_args = [_]repr.Value{wrap.fromBuffer(buf)};
             _ = c.janet_call(fun, 1, &call_args);
             _ = try raise.crossing({});
         },
-        constants.JANET_BUFFER => try formatTuple(wrap.toBuffer(x), format, args),
+        repr.Tag.buffer => try formatTuple(wrap.toBuffer(x), format, args),
         // Other values simply do nothing, which is the C original's `default`.
         else => {},
     }
 }
 
-/// The three symbols `dynprintf` takes from `io_core.zig` through the C ABI
-/// rather than by import, because importing would make this file depend on the
-/// whole io surface and would pull that surface into this subsystem's
-/// contract. `janet_file_type` is an `export const` there and is compared by
-/// address, so an extern declaration is the same object.
-extern fn janet_zig_io_assert_writeable(iof: *types.JanetFile) callconv(.c) void;
-extern fn janet_io_write(handle: ?*anyopaque, src: [*]const u8, count: usize) callconv(.c) i32;
-extern const janet_file_type: types.JanetAbstractType;
-
+/// The two symbols `dynprintf` takes from `io.zig` through the C ABI rather
+/// than by import. Both are abis: `janet_zig_io_assert_writeable` *reports*
+/// its raise and the call site consumes it with `raise.crossing`, so pointing
+/// either at the implementation is a decision about this caller's error
+/// handling rather than a rename.
 /// `formatc` at a site that cannot carry a raise.
 ///
 /// Eleven call sites in six files are like this, and they are one population
-/// rather than six problems: an abi, or an internal result type whose
-/// error channel is a message pointer rather than an error union. Rule 11
-/// describes it -- a raise converts as far as the nearest fixed boundary and
-/// stops there -- and rule 19 says what retires it, which is an ordinary
-/// import rather than a report. Part 18 has the rest of that work.
+/// rather than six problems: an abi, or an internal result type whose error
+/// channel is a message pointer rather than an error union. A raise converts
+/// as far as the nearest fixed boundary and stops there, and an ordinary
+/// import is what retires each one.
 ///
-/// Until then this is what the variadic shell already did: `janet_formatc`
-/// reached a panicking abi, which recorded the raise and returned a blank
-/// string. Behaviour is unchanged; what changes is that the site says so.
+/// The abi records the raise and returns a blank string. What the
+/// `raise.crossing` at the site adds is that the site says so.
 pub fn formatcReported(comptime format: [:0]const u8, args: anytype) types.JanetString {
     return raise.reported(formatc(format, args));
 }
@@ -697,7 +688,7 @@ pub fn bufferFormat(
     b: *types.JanetBuffer,
     strfrmt: [*]const u8,
     argstart: i32,
-    argv: []types.Janet,
+    argv: []repr.Value,
 ) raise.Raising(void) {
     const startlen = b.count;
     var arg = argstart;
@@ -742,7 +733,7 @@ pub fn bufferFormat(
 
             'V' => try pp_describe.toStringB(b, argv[@intCast(arg)]),
             'v' => try pp_describe.descriptionB(b, argv[@intCast(arg)]),
-            't' => try buffers.pushCString(b, typestr(argv[@intCast(arg)])),
+            't' => try buffers.pushBytes(b, typestr(argv[@intCast(arg)])),
 
             'M', 'm', 'N', 'n', 'Q', 'q', 'P', 'p', 'j' => try renderPretty(
                 b,

@@ -20,25 +20,18 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const c = @import("cabi");
 const raise = @import("raise");
 
 const windows = builtin.os.tag == .windows;
 
 /// A translation of `<pthread.h>` alone, and one of seven in the tree.
 ///
-/// The shared `janet.h` translation reached these types already — but only
-/// when the header included `<pthread.h>`, which it did for the threaded event
-/// loop and not for `-Dev=false`. Relying on that was the mistake: the host
-/// build compiled and a reduced *configuration* did not, which is rule 13's
-/// shape and what the matrix is for. That translation is gone with the header;
-/// this one stays, because `types.zig` takes only the three types `JanetVM`
-/// embeds and this file needs the mutex calls as well.
+/// `types.zig` takes only the three types `Vm` embeds, and this file needs the
+/// mutex calls as well.
 ///
-/// Phase 10's rule 3 is the test for adding a translation — it is right when
-/// nothing it declares crosses a subsystem boundary — and nothing does. Every
-/// caller passes a `JanetOSMutex *`, which `janet.h` declares opaque; the
-/// `pthread_*` types stay inside this file.
+/// A translation is right when nothing it declares crosses a subsystem
+/// boundary, and nothing does. Every caller passes a `JanetOSMutex *`, which
+/// Janet declares opaque; the `pthread_*` types stay inside this file.
 const sys = if (windows) struct {} else @cImport({
     @cInclude("janet_features.h");
     @cInclude("pthread.h");
@@ -173,9 +166,8 @@ pub fn rwlockWunlock(rwlock: *anyopaque) void {
 // ---------------------------------------------------------------- exports
 
 comptime {
-    // `janet.h` declares all twelve, so they keep their C names until Phase 11
-    // decides the exported surface. Only `janet_os_mutex_unlock` needed an abi:
-    // it is the one that can raise.
+    // Janet declares all twelve, so they keep their C names. Only
+    // `janet_os_mutex_unlock` needs an abi: it is the one that can raise.
 }
 
 pub fn mutexSizeAbi() usize {

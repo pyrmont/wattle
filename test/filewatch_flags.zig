@@ -16,30 +16,22 @@
 //! is a contract and not a convenience. `test/filewatch_core.zig` is where the
 //! halves are compared.
 //!
-//! ## What the migration changed
+//! ## What a type refuses
 //!
-//! **The lookups are reached by import**, and the four `janet_filewatch_flag_*`
-//! symbols the C contract hand-declared are gone with the seam they crossed —
-//! `filewatch_core.zig` was declaring them again as `extern fn`s to reach a
-//! file compiled beside it. Rule 44.
-//!
-//! **Two of the C contract's cases cannot be written any more, and both were
-//! about a value the type now excludes.** `janet_filewatch_flag_count(3)`
-//! answered -1 for a platform ordinal that names no backend, and
-//! `janet_filewatch_flag_name(PLATFORM_LINUX, -1)` answered NULL for a
-//! position below the table. The parameters are `Platform` and `usize` now, so
-//! neither call compiles. Rule 42 — a type refusing a mistake is better than a
-//! contract catching it — but rule 30 applies too, so it is written here
-//! rather than left to be noticed: what survives of the pair is the
-//! *upper*-bound case, which is still reachable and still asserted.
+//! **Two cases cannot be written, and both were about a value the type now
+//! excludes.** A flag count for a platform ordinal that names no backend
+//! answered -1, and a flag name for a position below the table answered NULL.
+//! The parameters are `Platform` and `usize`, so neither call compiles. A type
+//! refusing a mistake is better than a contract catching it, but the loss is
+//! written here rather than left to be noticed: what survives of the pair is
+//! the *upper*-bound case, which is still reachable and still asserted.
 //!
 //! ## `zig build test` runs these tables too, and that is not a duplication to
 //! remove
 //!
-//! `filewatch_flags.zig` carries `test` blocks over the same orderings.
-//! `port/mutate.py` scores contracts and does not run `zig build test`, so a
-//! mutation in the tables is caught by one instrument and not the other —
-//! rule 52.
+//! `filewatch.zig` carries `test` blocks over the same orderings. A mutation
+//! sweep scores contracts and does not run `zig build test`, so a mutation in
+//! the tables is caught by one instrument and not the other.
 
 const std = @import("std");
 
@@ -106,10 +98,10 @@ fn namesHoldTheirPositions() void {
     }
 }
 
-/// The original searched each table with `janet_strbinsearch`, which required
-/// it to be sorted. Neither implementation depends on that now, but a table
-/// that stopped being sorted would mean the port and the original disagreed
-/// about which entries were reachable at all.
+/// Janet searches each table with `janet_strbinsearch`, which requires it to
+/// be sorted. Neither implementation depends on that now, but a table that
+/// stopped being sorted would mean the two disagreed about which entries were
+/// reachable at all.
 fn eachVocabularyIsAscending() void {
     for ([_]Platform{ .linux, .windows, .kqueue }) |platform| {
         const names = namesOf(platform);

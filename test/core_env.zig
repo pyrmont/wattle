@@ -23,41 +23,34 @@
 //! The diagnostics are captured rather than printed. `janet_dynprintf`
 //! resolves `:err` before falling back to the handle, and at the top level —
 //! which is where `janet_dobytes` prints its diagnostics from, after the fiber
-//! has finished — that lookup goes to `janet_vm.top_dyns`. So binding `:err`
+//! has finished — that lookup goes to `vm.top_dyns`. So binding `:err`
 //! to a buffer here both asserts the text and keeps this program's output
 //! clean.
 //!
-//! ## What the migration changed
+//! ## How the subjects are reached
 //!
 //! **Four entry points are called by import rather than through their abis.**
 //! `janet_core_env`, `janet_core_lookup_table`, `janet_dobytes` and
 //! `janet_loop_fiber` are each one line of `raise.reported` over a
-//! `raise.Raising` implementation, and this file calls `coreEnv`,
-//! `coreLookupTable`, `janet_dobytesImpl` and `loopFiber`. Every one of them
-//! can raise — `pp_format.formatc` and `trace_frames.stacktraceExt` are on
-//! `janet_dobytesImpl`'s path — so under the C contract a raise from inside
-//! one arrived as a report the contract had to arm a flag to see, and here it
-//! is an `error.JanetSignal` the compiler will not let the file ignore.
+//! `raise.Raising` implementation. Every one of them can raise, so a contract
+//! on the far side of a symbol table has to arm a flag to see it, where here
+//! it is an `error.JanetSignal` the compiler will not let the file ignore.
 //!
-//! **`janet_native` is still called as an abi**, with `harness.abiRaised`,
-//! and that is deliberate rather than an omission. `janet_nativeImpl` is
-//! private to `core_env.zig`; `cfunNative` calls it directly, so the abi has
-//! no in-tree caller at all and exists for `janet.h` alone. Testing an abi as
-//! an abi is the right shape for a thing whose only users are outside the
-//! tree — Part 12's lesson read from the other end.
+//! **`janet_native` is still called as an abi**, with `harness.abiRaised`, and
+//! that is deliberate: its implementation is private and `cfunNative` calls it
+//! directly, so the abi has no in-tree caller and exists for an embedder
+//! alone. Testing an abi as an abi is the right shape for a thing whose only
+//! users are outside the tree.
 //!
-//! **No panic counter.** The C original counted its one expected panic,
-//! because a case that silently stopped raising would otherwise look like one
-//! that passed. Here every refusal is `harness.abiRaised(...).?`, and the
-//! unwrap of a null is the same failure the counter was there to produce.
+//! **No panic counter.** Every refusal is `harness.abiRaised(...).?`, and the
+//! unwrap of a null is the same failure a counter would produce.
 //!
-//! **`janet_contract_cfunction` is gone with this file.** A cfunction is a Zig
-//! function, and the C contract needed `test/support.zig`'s adapter pool to
-//! define one at all; `replacedGcinterval` below is an ordinary declaration.
-//! Only `test/ev_loop.c` still uses that shim.
+//! **No adapter pool.** A cfunction is a Zig function, so C cannot define one
+//! at all; `replacedGcinterval` below is an ordinary declaration.
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const raise = @import("raise");
@@ -71,9 +64,7 @@ const tables = @import("subsystems").value.tables;
 const gc_alloc = @import("subsystems").gc_alloc;
 const vm_state = @import("subsystems").lifecycle;
 const io_core = @import("subsystems").io;
-const kind = @import("subsystems").value.kind;
 const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
 const buffers = @import("subsystems").value.buffers;
 
 const assert = std.debug.assert;
@@ -88,7 +79,7 @@ fn errReset() void {
 }
 
 fn errText() []const u8 {
-    return errsink.data.?[0..@intCast(errsink.count)];
+    return errsink.slice();
 }
 
 fn expectErr(expected: []const u8) void {
@@ -107,8 +98,8 @@ fn expectErrPrefix(prefix: []const u8) void {
     }
 }
 
-fn expectString(x: types.Janet, expected: []const u8) void {
-    assert(harness.isType(x, constants.JANET_STRING));
+fn expectString(x: repr.Value, expected: []const u8) void {
+    assert(harness.isType(x, repr.Tag.string));
     const s = wrap.toString(x);
     const length: usize = @intCast(types.stringHead(s).length);
     if (!std.mem.eql(u8, s[0..length], expected)) {
@@ -119,8 +110,8 @@ fn expectString(x: types.Janet, expected: []const u8) void {
 
 /// `janet_dostring` on the implementation rather than the abi: the source is
 /// NUL-terminated, so the length is computed the way the export computes it.
-fn doString(source: [:0]const u8, path: ?[*:0]const u8, out: ?*types.Janet) raise.Raising(c_int) {
-    return core_env.janet_dobytesImpl(test_env, source, path, out);
+fn doString(source: [:0]const u8, path: ?[*:0]const u8, out: ?*repr.Value) raise.Raising(c_int) {
+    return core_env.dobytesImpl(test_env, source, path, out);
 }
 
 // ----------------------------------------------------- the replacement cfun
@@ -129,7 +120,7 @@ fn doString(source: [:0]const u8, path: ?[*:0]const u8, out: ?*types.Janet) rais
 // calls it while the image is loading, so replacing it cannot affect anything
 // but the one call this file makes.
 
-fn replacedGcinterval(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn replacedGcinterval(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return value.fromBytes("replaced", .keyword);
@@ -143,7 +134,7 @@ fn aCleanRunReportsNoFlags() raise.Raising(void) {
     var out = wrap.fromTrue();
     errReset();
     assert(try doString("(+ 1 2)", "contract", &out) == 0);
-    assert(harness.isType(out, constants.JANET_NUMBER));
+    assert(harness.isType(out, repr.Tag.number));
     assert(wrap.toNumber(out) == 3.0);
     expectErr("");
 
@@ -153,7 +144,7 @@ fn aCleanRunReportsNoFlags() raise.Raising(void) {
 
     // An empty source runs nothing and answers nil.
     assert(try doString("", "contract", &out) == 0);
-    assert(harness.isType(out, constants.JANET_NIL));
+    assert(harness.isType(out, repr.Tag.nil));
 
     // The out parameter is optional.
     assert(try doString("(+ 1 2)", "contract", null) == 0);
@@ -164,20 +155,20 @@ fn theLengthParameterTruncatesTheSource() raise.Raising(void) {
     var out = wrap.fromNil();
     errReset();
     // Seven bytes is exactly the first form; the second is never seen.
-    assert(try core_env.janet_dobytesImpl(test_env, "(+ 1 2) (+ 3 4)"[0..7], "contract", &out) == 0);
+    assert(try core_env.dobytesImpl(test_env, "(+ 1 2) (+ 3 4)"[0..7], "contract", &out) == 0);
     assert(wrap.toNumber(out) == 3.0);
     expectErr("");
 
     // Cutting a form in half is an EOF in the middle of it, which is a parse
     // error rather than a silent truncation.
-    assert(try core_env.janet_dobytesImpl(test_env, "(+ 1 2)"[0..5], "contract", &out) ==
+    assert(try core_env.dobytesImpl(test_env, "(+ 1 2)"[0..5], "contract", &out) ==
         constants.JANET_DO_ERROR_PARSE);
 
     // The bound is exclusive. `janet_dostring` always passes a length that
     // stops on a NUL, so only a caller of `janet_dobytes` can tell an
     // off-by-one here from correct behaviour: reading one byte too many turns
     // 1 into 12.
-    assert(try core_env.janet_dobytesImpl(test_env, "12"[0..1], "contract", &out) == 0);
+    assert(try core_env.dobytesImpl(test_env, "12"[0..1], "contract", &out) == 0);
     assert(wrap.toNumber(out) == 1.0);
 
     // And the export does compute that length, which is the one thing it adds.
@@ -195,24 +186,24 @@ fn aParseOrCompileFailureStopsTheStream() raise.Raising(void) {
     env.*.proto = test_env;
 
     errReset();
-    var flags = try core_env.janet_dobytesImpl(
+    var flags = try core_env.dobytesImpl(
         env,
         ")\n(setdyn :contract-parse true)",
         "contract",
         &out,
     );
     assert(flags == constants.JANET_DO_ERROR_PARSE);
-    assert(harness.isType(tables.get(env, value.fromBytes("contract-parse", .keyword)), constants.JANET_NIL));
+    assert(harness.isType(tables.get(env, value.fromBytes("contract-parse", .keyword)), repr.Tag.nil));
 
     errReset();
-    flags = try core_env.janet_dobytesImpl(
+    flags = try core_env.dobytesImpl(
         env,
         "(def)\n(setdyn :contract-compile true)",
         "contract",
         &out,
     );
     assert(flags == constants.JANET_DO_ERROR_COMPILE);
-    assert(harness.isType(tables.get(env, value.fromBytes("contract-compile", .keyword)), constants.JANET_NIL));
+    assert(harness.isType(tables.get(env, value.fromBytes("contract-compile", .keyword)), repr.Tag.nil));
 }
 
 /// A compile error reports the *form's* position when the compiler supplies
@@ -239,7 +230,7 @@ fn aCompileErrorNamesAPosition() raise.Raising(void) {
     var out = wrap.fromNil();
     errReset();
     assert(try doString("(def)", "contract", &out) == constants.JANET_DO_ERROR_COMPILE);
-    assert(harness.isType(out, constants.JANET_STRING));
+    assert(harness.isType(out, repr.Tag.string));
     const text = wrap.toString(out);
     const length: usize = @intCast(types.stringHead(text).length);
     assert(std.mem.startsWith(u8, text[0..length], "contract:1:1: compile error: "));
@@ -270,7 +261,7 @@ fn aRuntimeErrorReportsTheValue() raise.Raising(void) {
     var out = wrap.fromNil();
     errReset();
     assert(try doString("(error :thrown)", "contract", &out) == constants.JANET_DO_ERROR_RUNTIME);
-    assert(harness.isType(out, constants.JANET_KEYWORD));
+    assert(harness.isType(out, repr.Tag.keyword));
     assert(harness.stringIs(wrap.toKeyword(out), "thrown"));
     expectErrPrefix("error: thrown\n  in thunk [contract] ");
 }
@@ -283,10 +274,10 @@ fn aFailureStopsTheStream() raise.Raising(void) {
     const env = tables.new(4);
     env.*.proto = test_env;
     const source = "(error :stop) (setdyn :contract-ran true)";
-    const flags = try core_env.janet_dobytesImpl(env, source[0..@intCast(source.len)], "contract", &out);
+    const flags = try core_env.dobytesImpl(env, source[0..@intCast(source.len)], "contract", &out);
     assert(flags == constants.JANET_DO_ERROR_RUNTIME);
     assert(flags == (flags & -flags));
-    assert(harness.isType(tables.get(env, value.fromBytes("contract-ran", .keyword)), constants.JANET_NIL));
+    assert(harness.isType(tables.get(env, value.fromBytes("contract-ran", .keyword)), repr.Tag.nil));
 }
 
 fn aNullSourcePathIsNamedUnknown() raise.Raising(void) {
@@ -302,22 +293,21 @@ fn loopFiberReportsAStatus() raise.Raising(void) {
     var out = wrap.fromNil();
     errReset();
     assert(try doString("(fiber/new (fn [] 42))", "contract", &out) == 0);
-    assert(harness.isType(out, constants.JANET_FIBER));
-    assert(try core_env.loopFiber(wrap.toFiber(out)) == constants.JANET_STATUS_DEAD);
+    assert(harness.isType(out, repr.Tag.fiber));
+    assert(try core_env.loopFiber(wrap.toFiber(out)) == @intFromEnum(types.FiberStatus.dead));
 
     assert(try doString("(fiber/new (fn [] (error :in-fiber)))", "contract", &out) == 0);
     errReset();
-    assert(try core_env.loopFiber(wrap.toFiber(out)) == constants.JANET_STATUS_ERROR);
+    assert(try core_env.loopFiber(wrap.toFiber(out)) == @intFromEnum(types.FiberStatus.@"error"));
 }
 
 // ------------------------------------------------------- the embedded image
 
-/// The image is `@embedFile`d since Phase 11 Part 19, and the length the
-/// runtime hands `unmarshal` is one byte shorter than it was. The generated
-/// `janet-image.c` declared the bytes as a C array with a trailing `0` so it
-/// had a terminator, and `janet_core_image_size` was that array's `sizeof` --
-/// so for eleven phases the runtime described the image as 324,311 bytes when
-/// it was 324,310.
+/// The image is `@embedFile`d, and the length the runtime hands `unmarshal` is
+/// one byte shorter than it was. A generated C array declared the bytes with a
+/// trailing `0` so that it had a terminator, and `janet_core_image_size` was
+/// that array's `sizeof` -- so the runtime described the image as 324,311
+/// bytes when it was 324,310.
 ///
 /// That was harmless because nothing read the extra byte, which is an
 /// assumption rather than an observation. This is the observation: unmarshal
@@ -329,7 +319,7 @@ fn theImageIsConsumedExactly() raise.Raising(void) {
     const image = core_env.core_image;
     var next: [*]const u8 = undefined;
     const out = try marsh.unmarshal(image[0..@intCast(image.len)], 0, try core_env.coreLookupTable(null), &next);
-    assert(harness.isType(out, constants.JANET_TABLE));
+    assert(harness.isType(out, repr.Tag.table));
     assert(@intFromPtr(next) == @intFromPtr(image) + image.len);
 }
 
@@ -337,18 +327,18 @@ fn theImageIsConsumedExactly() raise.Raising(void) {
 
 fn theLookupTableIsKeyedBySymbol() raise.Raising(void) {
     const dict = try core_env.coreLookupTable(null);
-    assert(harness.isType(tables.get(dict, value.fromBytes("gcinterval", .symbol)), constants.JANET_CFUNCTION));
+    assert(harness.isType(tables.get(dict, value.fromBytes("gcinterval", .symbol)), repr.Tag.cfunction));
     // A keyword of the same name is not the key.
-    assert(harness.isType(tables.get(dict, value.fromBytes("gcinterval", .keyword)), constants.JANET_NIL));
+    assert(harness.isType(tables.get(dict, value.fromBytes("gcinterval", .keyword)), repr.Tag.nil));
     // Every `loadLibs` entry the configuration has is in it, not only
     // corelib's.
-    assert(harness.isType(tables.get(dict, value.fromBytes("string/slice", .symbol)), constants.JANET_CFUNCTION));
-    assert(harness.isType(tables.get(dict, value.fromBytes("marshal", .symbol)), constants.JANET_CFUNCTION));
-    // `peg/match` is registered only when the engine is compiled, and rule 7
-    // says to ask the environment rather than `options`: what is missing under
-    // `-Dpeg=false` is a registration.
+    assert(harness.isType(tables.get(dict, value.fromBytes("string/slice", .symbol)), repr.Tag.cfunction));
+    assert(harness.isType(tables.get(dict, value.fromBytes("marshal", .symbol)), repr.Tag.cfunction));
+    // `peg/match` is registered only when the engine is compiled, and the
+    // question to ask is the environment rather than `options`: what is missing
+    // under `-Dpeg=false` is a registration.
     if (harness.coreOptional("peg/match") != null) {
-        assert(harness.isType(tables.get(dict, value.fromBytes("peg/match", .symbol)), constants.JANET_CFUNCTION));
+        assert(harness.isType(tables.get(dict, value.fromBytes("peg/match", .symbol)), repr.Tag.cfunction));
     }
 }
 
@@ -366,7 +356,7 @@ fn theLookupTableTakesReplacements() raise.Raising(void) {
         tables.get(dict, value.fromBytes("gcinterval", .symbol)),
     ) == replacement_key);
     // A key the core does not define is added rather than rejected.
-    assert(harness.isType(tables.get(dict, value.fromBytes("contract/added", .symbol)), constants.JANET_KEYWORD));
+    assert(harness.isType(tables.get(dict, value.fromBytes("contract/added", .symbol)), repr.Tag.keyword));
     // A nil-keyed slot in the replacement table's storage is skipped, which is
     // what the walk over `capacity` rather than `count` is for.
     assert(dict.count > replacements.*.count);
@@ -398,7 +388,7 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
     // Into the environment table rather than through `janet_setdyn`. A dynamic
     // binding is fiber-local, `janet_dobytes` gives each form a fiber whose
     // env is this table, and `janet_setdyn` at the top level -- where there is
-    // no fiber -- writes to `janet_vm.top_dyns` instead, which the cfunction
+    // no fiber -- writes to `vm.top_dyns` instead, which the cfunction
     // never looks at. That split is why `:err` above is set the other way:
     // those diagnostics are printed after the fiber has finished.
     tables.put(test_env, value.fromBytes("in", .keyword), in_handle);
@@ -407,11 +397,11 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
     var result = wrap.fromNil();
     // The newline is part of what is returned.
     assert(try doString("(getline)", "contract", &result) == 0);
-    assert(harness.isType(result, constants.JANET_BUFFER));
+    assert(harness.isType(result, repr.Tag.buffer));
     {
         const b = wrap.toBuffer(result);
         assert(b.*.count == 11);
-        assert(std.mem.eql(u8, b.*.data.?[0..11], "first line\n"));
+        assert(std.mem.eql(u8, b.*.slice()[0..11], "first line\n"));
     }
 
     // A supplied buffer is reused -- the same object comes back, not a copy --
@@ -425,9 +415,9 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
     {
         const pair = wrap.toTuple(result);
         const b = wrap.toBuffer(pair[1]);
-        assert(kind.truthy(pair[0]) != 0);
+        assert(repr.truthy(pair[0]));
         assert(b.*.count == 6);
-        assert(std.mem.eql(u8, b.*.data.?[0..6], "second"));
+        assert(std.mem.eql(u8, b.*.slice()[0..6], "second"));
     }
 
     // At EOF it answers an empty buffer rather than failing.
@@ -438,7 +428,7 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
     // `argc >= 1` and the buffer by `argc >= 2`, and only a call with exactly
     // one argument tells the two guards apart.
     assert(try doString("(getline \"Q>\")", "contract", &result) == 0);
-    assert(harness.isType(result, constants.JANET_BUFFER));
+    assert(harness.isType(result, repr.Tag.buffer));
 
     // Both prompts went to `(dyn :out)`, in order, and nothing else did.
     _ = c.fflush(out_file);
@@ -463,7 +453,7 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
         assert(try doString("(getline)", "contract", &result) == 0);
         const b = wrap.toBuffer(result);
         assert(b.*.count == 4);
-        assert(std.mem.eql(u8, b.*.data.?[0..4], "a\x00b\n"));
+        assert(std.mem.eql(u8, b.*.slice()[0..4], "a\x00b\n"));
         tables.put(test_env, value.fromBytes("in", .keyword), in_handle);
         _ = gc_alloc.gcunroot(nul_handle);
     }
@@ -488,7 +478,7 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
 
 fn nativeReportsALoaderError() void {
     var err: ?types.JanetString = null;
-    const init = core_env.native("./contract-no-such-module.so", &err);
+    const init = core_env.nativeAbi("./contract-no-such-module.so", &err);
     assert(init == null);
     assert(err != null);
     assert(types.stringHead(err.?).length > 0);
@@ -503,43 +493,43 @@ fn nativeReportsALoaderError() void {
 
 fn sandboxAccumulatesEveryCapability() raise.Raising(void) {
     var out = wrap.fromNil();
-    assert(c.vm().sandbox_flags & constants.JANET_SANDBOX_HRTIME == 0);
-    assert(c.vm().sandbox_flags & constants.JANET_SANDBOX_THREADS == 0);
+    assert(!harness.vm().sandbox_flags.intersects(types.Sandbox.of(&.{"hrtime"})));
+    assert(!harness.vm().sandbox_flags.intersects(types.Sandbox.of(&.{"threads"})));
 
     // No arguments changes nothing.
-    var before = c.vm().sandbox_flags;
+    var before = harness.vm().sandbox_flags;
     assert(try doString("(sandbox)", "contract", &out) == 0);
-    assert(c.vm().sandbox_flags == before);
+    assert(harness.vm().sandbox_flags == before);
 
     // Two capabilities in one call set two bits, which is what the walk over
     // `argc` is for; a repeat is idempotent.
     assert(try doString("(sandbox :hrtime :threads :hrtime)", "contract", &out) == 0);
-    assert(c.vm().sandbox_flags & constants.JANET_SANDBOX_HRTIME != 0);
-    assert(c.vm().sandbox_flags & constants.JANET_SANDBOX_THREADS != 0);
+    assert(harness.vm().sandbox_flags.intersects(types.Sandbox.of(&.{"hrtime"})));
+    assert(harness.vm().sandbox_flags.intersects(types.Sandbox.of(&.{"threads"})));
 
     // An unknown capability rejects the whole call, including the ones before
     // it in the same argument list.
-    before = c.vm().sandbox_flags;
+    before = harness.vm().sandbox_flags;
     assert(try doString("(sandbox :env :nope)", "contract", &out) == constants.JANET_DO_ERROR_RUNTIME);
-    assert(c.vm().sandbox_flags == before);
-    assert(c.vm().sandbox_flags & constants.JANET_SANDBOX_ENV == 0);
+    assert(harness.vm().sandbox_flags == before);
+    assert(!harness.vm().sandbox_flags.intersects(types.Sandbox.of(&.{"env"})));
 }
 
 /// Irreversible, so it goes last.
 fn nativeIsBehindTheSandbox() void {
     var err: ?types.JanetString = null;
-    vm_lifecycle.sandbox(constants.JANET_SANDBOX_DYNAMIC_MODULES) catch @panic("core_env: janet_sandbox raised");
+    vm_state.sandbox(types.Sandbox.of(&.{"dynamic_modules"})) catch @panic("core_env: janet_sandbox raised");
     const refusal = harness.abiRaised(
-        core_env.native,
+        core_env.nativeAbi,
         .{ @as([*:0]const u8, "./contract-no-such-module.so"), &err },
     ).?;
-    assert(refusal.signal == constants.JANET_SIGNAL_ERROR);
+    assert(refusal.signal == types.Signal.@"error");
 }
 
 // ------------------------------------------------------------------- entry
 
 fn body() raise.Raising(void) {
-    // `coreEnv` memoizes into `janet_vm.core_env`, so the replacement table
+    // `coreEnv` memoizes into `vm.core_env`, so the replacement table
     // has to arrive on the very first call or it is ignored. That one-shot is
     // itself the contract below.
     const replacements = tables.new(2);
@@ -561,7 +551,7 @@ fn body() raise.Raising(void) {
     {
         var out = wrap.fromNil();
         assert(try doString("(gcinterval)", "contract", &out) == 0);
-        assert(harness.isType(out, constants.JANET_KEYWORD));
+        assert(harness.isType(out, repr.Tag.keyword));
         assert(harness.stringIs(wrap.toKeyword(out), "replaced"));
     }
 
@@ -596,7 +586,7 @@ fn body() raise.Raising(void) {
 pub fn run() void {
     harness.init();
     body() catch @panic("core_env: an entry point raised unexpectedly");
-    vm_lifecycle.deinit();
+    vm_state.deinit();
 
     std.debug.print("core env contract ok\n", .{});
 }

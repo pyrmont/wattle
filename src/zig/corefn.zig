@@ -1,11 +1,9 @@
 //! Registering a core cfunction from Zig.
 //!
-//! Phase 10 Part 6 is the first increment in which a Zig subsystem owns a
-//! cfunction rather than a kernel one calls, and this is the layer that made
-//! that possible. It is shared like `cabi.zig` and `raise.zig` rather than
-//! selected like a subsystem, and for the same reason: it holds no `export` at
-//! all, so every subsystem can import it without the definitions appearing
-//! once per object.
+//! A Zig subsystem owns its cfunctions, and this is the layer that registers
+//! them. It is shared like `cabi.zig` and `raise.zig` rather than selected like
+//! a subsystem, and for the same reason: it holds no `export` at all, so every
+//! subsystem can import it without the definitions appearing twice.
 //!
 //! ## What `JANET_CORE_FN` actually decides
 //!
@@ -39,9 +37,9 @@
 //! declaration cannot name its own line the way `JANET_FN_S` does. The
 //! location recorded here is therefore the row in the registration table
 //! rather than the line of the implementation, which is a real location in a
-//! real file and one screen from the code. `src/zig/README.md` records the
-//! visible consequence: `(doc tuple/join)` names a different line than it did,
-//! and a different file.
+//! real file and one screen from the code. The visible consequence is that
+//! `(doc tuple/join)` names a different line than it did, and a different
+//! file.
 //!
 //! **`JANET_CFUNCTION_ALIGN`.** Under 64-bit nanboxing with a nonzero pointer
 //! shift, `janet_wrap_cfunction` reuses the low bits of the pointer, and
@@ -56,11 +54,12 @@ const std = @import("std");
 const raise = @import("raise");
 const config = @import("config");
 const types = @import("types");
+const repr = @import("repr");
 const c = @import("cabi");
 
-/// Compiled into the bootstrap image generator rather than into the runtime.
-/// `build.zig` adds the macro to the Zig subsystem objects it builds for
-/// `-Dboot=zig`; before Part 6 no Zig object had any reason to care.
+/// Compiled into the bootstrap image generator rather than into the runtime: a
+/// core cfunction table carries docstrings in the generator and not in the
+/// runtime.
 pub const bootstrap = config.bootstrap;
 
 const with_docstrings = bootstrap and config.docstrings;
@@ -75,14 +74,13 @@ pub const alignment = 16;
 /// directory, so `@src().file` -- which Zig reports relative to the module
 /// root -- is one concatenation away from a path that means something.
 ///
-/// It used to reject a *subpath* as well, on the reasoning that a subsystem of
+/// It once rejected a *subpath* as well, on the reasoning that a subsystem of
 /// more than one file could not be reconstructed from a basename. That guard
 /// was stricter than its own justification: `@src().file` is module-relative,
-/// so `source_root ++ where.file` is correct for `value/bytes/frames.zig`
-/// exactly as it is for `frames.zig`. `port/NAMESPACES.md`'s first file move
-/// found it, which is the guard doing its job -- it just had the wrong reason
-/// written on it. What remains is the check that actually matters: a path that
-/// climbs out of the module cannot be reconstructed by concatenation.
+/// so `source_root ++ where.file` is correct for `value/helpers/wrap.zig`
+/// exactly as it is for `wrap.zig`. What remains is the check that matters: a
+/// path that climbs out of the module cannot be reconstructed by
+/// concatenation.
 ///
 /// The result is repo-relative where C's `__FILE__` is absolute, because
 /// `build.zig` passes absolute paths to the C compiler. That is an improvement
@@ -99,22 +97,26 @@ inline fn sourcePath(comptime where: std.builtin.SourceLocation) [:0]const u8 {
     return source_root ++ where.file;
 }
 
-pub const Entry = types.JanetRegExt;
+pub const Entry = types.Reg;
 
-// `Method` stood here until Phase 12 increment 6h, with `method_end` beside
-// it. This file registers core cfunctions and used neither: the nine
+// `Method` is `method_type.zig`'s, beside the other retyped tables. This file
+// registers core cfunctions and uses neither it nor `method_end`; the nine
 // subsystems that declare a method table reached the type through the
 // registration layer only because that is where it happened to be written.
-// It is `method_type.zig` now, beside the other three retyped tables.
 
-/// `JANET_REG_END`. A table is terminated by a null name, not by its length.
-pub const end: Entry = .{
-    .name = null,
-    .cfun = null,
-    .documentation = null,
-    .source_file = null,
-    .source_line = 0,
-};
+/// `JANET_REG_END`.
+///
+/// A registration table whose length the compiler knows is a slice, and
+/// nineteen of the twenty-one do not spell their own terminator: `install`
+/// appends it, because the two entry points it calls are C-ABI symbols that
+/// read a null-name-terminated array. `DESIGN.md` section 6.
+///
+/// It stays `pub` for the two that are *not* comptime. `ev.zig` and `os.zig`
+/// size their tables from the configuration at run time and fill them row by
+/// row, so the terminator is a slot they write rather than one this file can
+/// append -- which is the case section 6 says a sentinel is still right for.
+/// `installTerminated` is their entry point and says so in its name.
+pub const end: Entry = .{};
 
 /// One row of a core cfunction table: `JANET_CORE_FN` and `JANET_CORE_REG`
 /// together, which is what lets the name, the usage, the documentation and the
@@ -141,30 +143,38 @@ pub fn reg(
 
 /// Install a finished table into the core environment.
 ///
+/// The table is the rows the author wrote, with no terminator: `entries` is a
+/// comptime array and the sentinel is appended here, once, where the C-ABI
+/// entry point below actually reads one. `DESIGN.md` section 6.
+///
 /// The bootstrap defines the binding as well as the registry entry, because it
 /// is building the environment the image is made of; the runtime only puts the
 /// value and the registry entry, because the binding arrived with the image.
 /// `util.h` spells that as a `#define` of one name onto the other, which is
 /// why there is a choice to make here at all.
-pub fn install(env: *types.JanetTable, entries: []const Entry) void {
+pub fn install(env: *types.JanetTable, comptime entries: anytype) void {
+    const rows = comptime blk: {
+        var out: [entries.len + 1]Entry = undefined;
+        for (entries, 0..) |row, i| out[i] = row;
+        out[entries.len] = end;
+        break :blk out;
+    };
+    installTerminated(env, &rows);
+}
+
+/// The same, for a table the caller terminated because its length is a
+/// run-time fact. See `end`.
+pub fn installTerminated(env: *types.JanetTable, entries: [*]const Entry) void {
     if (bootstrap) {
-        c.janet_cfuns_ext(env, null, entries.ptr);
+        c.janet_cfuns_ext(env, null, entries);
     } else {
-        janet_core_cfuns_ext(env, null, entries.ptr);
+        c.janet_core_cfuns_ext(env, null, entries);
     }
 }
 
-/// `src/core/util.h`, declared here rather than in `cabi.zig`, and absent
-/// from a bootstrap build altogether.
-extern fn janet_core_cfuns_ext(
-    env: *types.JanetTable,
-    regprefix: ?[*:0]const u8,
-    cfuns: [*]const Entry,
-) callconv(.c) void;
-
 /// `JANET_CORE_DEF`: a plain value binding rather than a cfunction.
 ///
-/// Both arms are real, and Part 6 got that wrong. The bootstrap defines a
+/// Both arms are real.
 /// documented binding in the environment the image is made of; the runtime
 /// calls `janet_core_def_sm`, which throws the documentation and the source map
 /// away and puts the bare value into `janet_core_lookup_table`'s dictionary --
@@ -172,17 +182,16 @@ extern fn janet_core_cfuns_ext(
 /// resolves the image's symbol references against, so a value the runtime
 /// cannot reconstruct has to be in it.
 ///
-/// Part 6 read the runtime arm as redundant and compiled it out, on the
-/// grounds that the image already carries the binding. That held for `math.c`,
-/// whose constants are numbers and marshal inline. It does not hold for
-/// `io.c`: `stdout`, `stderr` and `stdin` are live `FILE *` handles wrapped in
-/// an abstract, they can only come from the running process, and the image
-/// refers to them by name. Phase 10 Part 11 is the increment that needed the
-/// other half.
+/// Reading the runtime arm as redundant is a mistake this file has made: the
+/// image already carries the binding, which holds for `math`'s constants --
+/// numbers, which marshal inline. It does not hold for `io`: `stdout`,
+/// `stderr` and `stdin` are live `FILE *` handles wrapped in an abstract, they
+/// can only come from the running process, and the image refers to them by
+/// name.
 pub fn def(
     env: *types.JanetTable,
     comptime name: [:0]const u8,
-    value: types.Janet,
+    value: repr.Value,
     comptime where: std.builtin.SourceLocation,
     comptime doc: [:0]const u8,
 ) void {
@@ -196,17 +205,6 @@ pub fn def(
             if (with_sourcemaps) @intCast(where.line) else 0,
         );
     } else {
-        janet_core_def_sm(env, name.ptr, value, doc.ptr, null, 0);
+        c.janet_core_def_sm(env, name.ptr, value, doc.ptr, null, 0);
     }
 }
-
-/// `src/core/util.h`, like `janet_core_cfuns_ext` above: declared directly
-/// rather than translated, and absent from a bootstrap build.
-extern fn janet_core_def_sm(
-    env: *types.JanetTable,
-    name: [*]const u8,
-    x: types.Janet,
-    p: ?*const anyopaque,
-    sf: ?*const anyopaque,
-    sl: i32,
-) callconv(.c) void;

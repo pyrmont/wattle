@@ -8,29 +8,23 @@
 //! and the environment validator, whose whole job is to reject input the
 //! suites never produce.
 //!
-//! ## What the migration changed: the four pushes have no abi left
+//! ## The four pushes have no abi left
 //!
-//! The C original tested the four pushes *twice over*, and said why: each
-//! kernel raises "stack overflow" by returning `raise.Error`, and beside each
-//! sat an abi — `janet_fiber_push` and its three siblings — that turned the
-//! raise back into what a C caller expects. "Two mechanisms, one decision, and
-//! the acceptance rule for the phase is that they are tested separately: the C
-//! abi is the one that disappears, so it is the one that rots."
+//! Each kernel raises "stack overflow" by returning `raise.Error`, and beside
+//! each sat an abi -- `janet_fiber_push` and its three siblings -- that turned
+//! the raise back into what a C caller expects. A contract on the far side of
+//! a symbol table has to test both, because they are two mechanisms carrying
+//! one decision.
 //!
-//! They disappeared. `janet_fiber_push2`, `janet_fiber_push3` and
-//! `janet_fiber_pushn` went with this contract in Phase 11 Part 11: `run_vm`
-//! and `janet_call` reach the kernels by import, `fiber.h` is an internal
-//! header, and the C contract was the last caller of all three.
-//! `janet_fiber_push` survived one part longer on `test/vm_calls.c` and
-//! `test/vm_entry.c`, and went when Part 12 migrated both.
+//! All four are gone: the interpreter reaches the kernels by import, and a C
+//! contract was the last caller of each.
 //!
 //! **This file predicted that and had to be edited for it**, which is the
 //! point worth keeping. The abi case here was the last caller of
-//! `janet_fiber_push` in the whole tree — a contract testing an abi that
-//! existed for nobody — so deleting the abi turned it into a compile error
+//! `janet_fiber_push` in the whole tree -- a contract testing an abi that
+//! existed for nobody -- so deleting the abi turned it into a compile error
 //! naming its own line. An abi whose only remaining caller is the contract
 //! that tests it is an abi with no callers; the test is not a use.
-//!
 //! So the overflow section reaches four kernels by import, where the original
 //! reached four of each.
 //!
@@ -46,8 +40,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const options = @import("options");
 const raise = @import("raise");
 const value = @import("subsystems").value;
@@ -74,10 +68,6 @@ const frame_size: i32 = constants.JANET_FRAME_SIZE;
 
 var test_env: *types.JanetTable = undefined;
 
-fn vm() *types.JanetVM {
-    return c.vm();
-}
-
 // `fiber.h`'s three frame macros, which `@cImport` does not translate.
 // `janet_stack_frame` is the cast, `janet_fiber_frame` the composition, and
 // `janet_fiber_set_status` a read-modify-write over the status field. Six
@@ -92,12 +82,12 @@ fn currentFrame(fiber: *types.JanetFiber) *types.JanetStackFrame {
     return frameAt(fiber, fiber.frame);
 }
 
-fn setStatus(fiber: *types.JanetFiber, status: c_int) void {
+fn setStatus(fiber: *types.JanetFiber, status: types.FiberStatus) void {
     fiber.flags &= ~@as(i32, constants.JANET_FIBER_STATUS_MASK);
-    fiber.flags |= status << constants.JANET_FIBER_STATUS_OFFSET;
+    fiber.flags |= @as(i32, @intCast(@intFromEnum(status))) << constants.JANET_FIBER_STATUS_OFFSET;
 }
 
-fn slot(fiber: *types.JanetFiber, index: i32) types.Janet {
+fn slot(fiber: *types.JanetFiber, index: i32) repr.Value {
     return fiber.data.?[@intCast(index)];
 }
 
@@ -109,29 +99,29 @@ fn slot(fiber: *types.JanetFiber, index: i32) types.Janet {
 /// buried under a live heap whose budget is moving for other reasons.
 fn setcapacityChargesTheBudget() void {
     var fiber: types.JanetFiber = std.mem.zeroes(types.JanetFiber);
-    vm().next_collection = 0;
+    harness.vm().gc.next_collection = 0;
 
     fibers.setcapacity(&fiber, 40);
     assert(fiber.capacity == 40);
     assert(fiber.data != null);
-    assert(vm().next_collection == 40 * @sizeOf(types.Janet));
+    assert(harness.vm().gc.next_collection == 40 * @sizeOf(repr.Value));
 
     // Growing charges the difference, not the new total.
     fibers.setcapacity(&fiber, 100);
     assert(fiber.capacity == 100);
-    assert(vm().next_collection == 100 * @sizeOf(types.Janet));
+    assert(harness.vm().gc.next_collection == 100 * @sizeOf(repr.Value));
 
     // Shrinking gives the difference back. The C original writes this as
     // `next_collection += sizeof(Janet) * diff` with a negative `diff`, so the
     // refund is an unsigned wraparound rather than a subtraction; the result is
     // the same and the spelling is what a port could get wrong.
-    const before = vm().next_collection;
+    const before = harness.vm().gc.next_collection;
     fibers.setcapacity(&fiber, 60);
     assert(fiber.capacity == 60);
-    assert(vm().next_collection == before - 40 * @sizeOf(types.Janet));
+    assert(harness.vm().gc.next_collection == before - 40 * @sizeOf(repr.Value));
 
     utils.free(fiber.data);
-    vm().next_collection = 0;
+    harness.vm().gc.next_collection = 0;
 }
 
 var child_charge: usize = 0;
@@ -139,9 +129,9 @@ var child_saw_main: usize = 0;
 
 fn chargeChildBudget() void {
     var fiber: types.JanetFiber = std.mem.zeroes(types.JanetFiber);
-    child_saw_main = vm().next_collection;
+    child_saw_main = harness.vm().gc.next_collection;
     fibers.setcapacity(&fiber, 16);
-    child_charge = vm().next_collection;
+    child_charge = harness.vm().gc.next_collection;
     utils.free(fiber.data);
 }
 
@@ -152,15 +142,15 @@ fn chargeChildBudget() void {
 fn theBudgetIsPerThread() !void {
     if (!has_threads) return;
 
-    vm().next_collection = 4096;
-    const main_before = vm().next_collection;
+    harness.vm().gc.next_collection = 4096;
+    const main_before = harness.vm().gc.next_collection;
     const thread = try std.Thread.spawn(.{}, chargeChildBudget, .{});
     thread.join();
 
     assert(child_saw_main == 0);
-    assert(child_charge == 16 * @sizeOf(types.Janet));
-    assert(vm().next_collection == main_before);
-    vm().next_collection = 0;
+    assert(child_charge == 16 * @sizeOf(repr.Value));
+    assert(harness.vm().gc.next_collection == main_before);
+    harness.vm().gc.next_collection = 0;
 }
 
 // ----------------------------------------------------------------- helpers
@@ -168,12 +158,12 @@ fn theBudgetIsPerThread() !void {
 fn compileFunction(source: [*:0]const u8) *types.JanetFunction {
     var out = wrap.fromNil();
     assert(core_env.dostring(test_env, source, "fiber-core-test", &out) == 0);
-    assert(harness.isType(out, constants.JANET_FUNCTION));
+    assert(harness.isType(out, repr.Tag.function));
     gc_alloc.gcroot(out);
     return wrap.toFunction(out);
 }
 
-fn rootedFiber(func: *types.JanetFunction, argv: []const types.Janet) *types.JanetFiber {
+fn rootedFiber(func: *types.JanetFunction, argv: []const repr.Value) *types.JanetFiber {
     const fiber = fibers.new(func, 32, @intCast(argv.len), argv.ptr).?;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     return fiber;
@@ -181,7 +171,7 @@ fn rootedFiber(func: *types.JanetFunction, argv: []const types.Janet) *types.Jan
 
 fn assertNilFrom(fiber: *types.JanetFiber, first: i32, last: i32) void {
     var i = first;
-    while (i < last) : (i += 1) assert(harness.isType(slot(fiber, i), constants.JANET_NIL));
+    while (i < last) : (i += 1) assert(harness.isType(slot(fiber, i), repr.Tag.nil));
 }
 
 // --------------------------------------------------------------- funcframes
@@ -189,7 +179,7 @@ fn assertNilFrom(fiber: *types.JanetFiber, first: i32, last: i32) void {
 /// A fresh fiber's first frame: base at `JANET_FRAME_SIZE`, arguments at the
 /// frame's slot 0, every remaining slot nil because the collector walks them.
 fn theFuncframeLayout(add: *types.JanetFunction) void {
-    const args = [_]types.Janet{ harness.wrapInteger(11), harness.wrapInteger(22) };
+    const args = [_]repr.Value{ harness.wrapInteger(11), harness.wrapInteger(22) };
     const fiber = rootedFiber(add, args[0..2]);
     const frame = currentFrame(fiber);
 
@@ -215,7 +205,7 @@ fn theFuncframeLayout(add: *types.JanetFunction) void {
 /// use the return value to implement `janet_pcall` rather than to recover from
 /// a partially built frame.
 fn theFuncframeArityRejection(add: *types.JanetFunction) raise.Raising(void) {
-    const args = [_]types.Janet{
+    const args = [_]repr.Value{
         harness.wrapInteger(1),
         harness.wrapInteger(2),
         harness.wrapInteger(3),
@@ -239,7 +229,7 @@ fn theFuncframeArityRejection(add: *types.JanetFunction) raise.Raising(void) {
 /// A variadic tail is a tuple, and an empty one is the empty tuple rather than
 /// a missing slot — the slot is a live local of the callee either way.
 fn theFuncframeVarargs(rest: *types.JanetFunction) void {
-    const args = [_]types.Janet{
+    const args = [_]repr.Value{
         harness.wrapInteger(1),
         harness.wrapInteger(2),
         harness.wrapInteger(3),
@@ -247,7 +237,7 @@ fn theFuncframeVarargs(rest: *types.JanetFunction) void {
 
     var fiber = rootedFiber(rest, args[0..3]);
     var tail = slot(fiber, fiber.frame + rest.def.?.arity);
-    assert(harness.isType(tail, constants.JANET_TUPLE));
+    assert(harness.isType(tail, repr.Tag.tuple));
     const tuple = wrap.toTuple(tail);
     assert(types.tupleHead(tuple).length == 2);
     assert(harness.integerIs(tuple[0], 2));
@@ -255,7 +245,7 @@ fn theFuncframeVarargs(rest: *types.JanetFunction) void {
 
     fiber = rootedFiber(rest, args[0..1]);
     tail = slot(fiber, fiber.frame + rest.def.?.arity);
-    assert(harness.isType(tail, constants.JANET_TUPLE));
+    assert(harness.isType(tail, repr.Tag.tuple));
     assert(types.tupleHead(wrap.toTuple(tail)).length == 0);
 }
 
@@ -265,7 +255,7 @@ fn theFuncframeVarargs(rest: *types.JanetFunction) void {
 /// defect in `makeStructN` recorded in `FOUND.md`, so pinning it would pin an
 /// out-of-range read rather than a behavior.
 fn theFuncframeStructargs(keyed: *types.JanetFunction) void {
-    const args = [_]types.Janet{
+    const args = [_]repr.Value{
         harness.wrapInteger(1),
         value.fromBytes("a", .keyword),
         harness.wrapInteger(7),
@@ -275,7 +265,7 @@ fn theFuncframeStructargs(keyed: *types.JanetFunction) void {
 
     var fiber = rootedFiber(keyed, args[0..5]);
     var tail = slot(fiber, fiber.frame + keyed.def.?.arity);
-    assert(harness.isType(tail, constants.JANET_STRUCT));
+    assert(harness.isType(tail, repr.Tag.@"struct"));
     const structure = wrap.toStruct(tail);
     assert(types.structHead(structure).length == 2);
     assert(harness.integerIs(harness.field(structure, "a"), 7));
@@ -283,7 +273,7 @@ fn theFuncframeStructargs(keyed: *types.JanetFunction) void {
 
     fiber = rootedFiber(keyed, args[0..1]);
     tail = slot(fiber, fiber.frame + keyed.def.?.arity);
-    assert(harness.isType(tail, constants.JANET_STRUCT));
+    assert(harness.isType(tail, repr.Tag.@"struct"));
     assert(types.structHead(wrap.toStruct(tail)).length == 0);
 }
 
@@ -293,7 +283,7 @@ fn theFuncframeStructargs(keyed: *types.JanetFunction) void {
 /// outgoing function's slots, the rest are nil'd, and the frame is repointed
 /// without its base moving.
 fn theFuncframeTail(add: *types.JanetFunction, other: *types.JanetFunction) raise.Raising(void) {
-    const args = [_]types.Janet{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
     const base = fiber.frame;
 
@@ -318,7 +308,7 @@ fn theFuncframeTail(add: *types.JanetFunction, other: *types.JanetFunction) rais
 }
 
 fn theFuncframeTailArityRejection(add: *types.JanetFunction, other: *types.JanetFunction) raise.Raising(void) {
-    const args = [_]types.Janet{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
     try fibers.push(fiber, harness.wrapInteger(9));
 
@@ -336,7 +326,7 @@ fn theFuncframeTailArityRejection(add: *types.JanetFunction, other: *types.Janet
 /// because the move copies the tail's slot along with them. Getting that order
 /// wrong moves an uninitialised slot and loses the tail.
 fn theFuncframeTailVarargs(add: *types.JanetFunction, rest: *types.JanetFunction) raise.Raising(void) {
-    const args = [_]types.Janet{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     var fiber = rootedFiber(add, args[0..2]);
     var base = fiber.frame;
 
@@ -350,7 +340,7 @@ fn theFuncframeTailVarargs(add: *types.JanetFunction, rest: *types.JanetFunction
 
     assert(harness.integerIs(slot(fiber, base), 7));
     var tail = slot(fiber, base + rest.def.?.arity);
-    assert(harness.isType(tail, constants.JANET_TUPLE));
+    assert(harness.isType(tail, repr.Tag.tuple));
     const tuple = wrap.toTuple(tail);
     assert(types.tupleHead(tuple).length == 2);
     assert(harness.integerIs(tuple[0], 8));
@@ -364,13 +354,13 @@ fn theFuncframeTailVarargs(add: *types.JanetFunction, rest: *types.JanetFunction
     assert(fibers.funcframeTail(fiber, rest) == 0);
     assert(harness.integerIs(slot(fiber, base), 5));
     tail = slot(fiber, base + rest.def.?.arity);
-    assert(harness.isType(tail, constants.JANET_TUPLE));
+    assert(harness.isType(tail, repr.Tag.tuple));
     assert(types.tupleHead(wrap.toTuple(tail)).length == 0);
 }
 
 // ----------------------------------------------------------------- c frames
 
-fn aCfunction(argv: []types.Janet) raise.Raising(types.Janet) {
+fn aCfunction(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return wrap.fromNil();
@@ -379,7 +369,7 @@ fn aCfunction(argv: []types.Janet) raise.Raising(types.Janet) {
 /// A C frame carries the function in the slot a Janet frame uses for its
 /// program counter, and is recognised by its null `func`.
 fn theCframeAndPopframe(add: *types.JanetFunction) raise.Raising(void) {
-    const args = [_]types.Janet{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
     const base = fiber.frame;
     var stacktop = fiber.stacktop;
@@ -422,7 +412,7 @@ fn theCframeAndPopframe(add: *types.JanetFunction) raise.Raising(void) {
 // ------------------------------------------------------------------ pushes
 
 fn thePushes(add: *types.JanetFunction) raise.Raising(void) {
-    const args = [_]types.Janet{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
     const start = fiber.stacktop;
 
@@ -437,12 +427,12 @@ fn thePushes(add: *types.JanetFunction) raise.Raising(void) {
         harness.wrapInteger(105),
     );
     assert(fiber.stacktop == start + 6);
-    const values = [_]types.Janet{
+    const values = [_]repr.Value{
         harness.wrapInteger(106),
         harness.wrapInteger(107),
         harness.wrapInteger(108),
     };
-    try fibers.pushn(fiber, &values, 3);
+    try fibers.pushn(fiber, &values);
     assert(fiber.stacktop == start + 9);
     var i: i32 = 0;
     while (i < 9) : (i += 1) assert(harness.integerIs(slot(fiber, start + i), 100 + i));
@@ -450,7 +440,7 @@ fn thePushes(add: *types.JanetFunction) raise.Raising(void) {
     // A zero-length push accepts a null array. That is what `safe_memcpy` is
     // for — `memcpy` with a null source is undefined however long it is told
     // to copy — and `pushn` is called that way.
-    try fibers.pushn(fiber, null, 0);
+    try fibers.pushn(fiber, &.{});
     assert(fiber.stacktop == start + 9);
 
     // Growth doubles what was needed, so a fiber that is exactly full doubles
@@ -481,13 +471,13 @@ fn thePushes(add: *types.JanetFunction) raise.Raising(void) {
 /// The four bounds, one apart, all four reached by import. The header comment
 /// has the argument for why they are no longer eight cases.
 fn thePushBounds(add: *types.JanetFunction) raise.Raising(void) {
-    const args = [_]types.Janet{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
     const saved = fiber.stacktop;
     const zero = harness.wrapInteger(0);
 
-    // `janet_fiber_push`'s abi case stood here until Phase 11 Part 12 spent
-    // the abi; the header says why it could not survive it.
+    // An abi case for `janet_fiber_push` stood here; the header says why it
+    // could not survive the abi.
     fiber.stacktop = std.math.maxInt(i32);
     assert(harness.raised(fibers.push, .{ fiber, zero }).?.says("stack overflow"));
 
@@ -497,9 +487,9 @@ fn thePushBounds(add: *types.JanetFunction) raise.Raising(void) {
     fiber.stacktop = std.math.maxInt(i32) - 2;
     assert(harness.raised(fibers.push3, .{ fiber, zero, zero, zero }).?.says("stack overflow"));
 
-    const values = [_]types.Janet{ zero, zero, zero };
+    const values = [_]repr.Value{ zero, zero, zero };
     fiber.stacktop = std.math.maxInt(i32) - 2;
-    assert(harness.raised(fibers.pushn, .{ fiber, &values, @as(i32, 3) }).?.says("stack overflow"));
+    assert(harness.raised(fibers.pushn, .{ fiber, @as([]const repr.Value, &values) }).?.says("stack overflow"));
 
     // One below each bound still succeeds, so the assertions above are testing
     // a boundary rather than a poisoned fiber. The capacity is raised first
@@ -527,7 +517,7 @@ fn anOverflowThroughTheInterpreter() void {
     const splice = compileFunction("(fn [f xs] (f ;xs))");
     const identity = compileFunction("(fn [& xs] xs)");
     const arr = arrays.new(4);
-    const args = [_]types.Janet{ wrap.fromFunction(identity), wrap.fromArray(arr) };
+    const args = [_]repr.Value{ wrap.fromFunction(identity), wrap.fromArray(arr) };
     var out = wrap.fromNil();
 
     const handle = gc_alloc.gclock();
@@ -536,17 +526,17 @@ fn anOverflowThroughTheInterpreter() void {
     arr.*.count = 0;
     gc_alloc.gcunlock(handle);
 
-    assert(sig == constants.JANET_SIGNAL_ERROR);
+    assert(sig == types.Signal.@"error");
     assert(harness.stringValueIs(out, "stack overflow"));
 
     // And the same call with an honest array returns, so the assertion above
     // is about the count rather than about splicing.
     arr.*.count = 2;
-    arr.*.data.?[0] = harness.wrapInteger(11);
-    arr.*.data.?[1] = harness.wrapInteger(12);
+    arr.*.slice()[0] = harness.wrapInteger(11);
+    arr.*.slice()[1] = harness.wrapInteger(12);
     sig = vm_entry.pcall(splice, 2, &args, &out, null);
-    assert(sig == constants.JANET_SIGNAL_OK);
-    assert(harness.isType(out, constants.JANET_TUPLE));
+    assert(sig == types.Signal.ok);
+    assert(harness.isType(out, repr.Tag.tuple));
     assert(types.tupleHead(wrap.toTuple(out)).length == 2);
 }
 
@@ -558,7 +548,7 @@ fn anOverflowThroughTheInterpreter() void {
 /// three is checked separately, because a validator that ignored one would
 /// pass every test built only from valid input.
 fn theEnvironmentValidator(add: *types.JanetFunction, other: *types.JanetFunction) void {
-    const args = [_]types.Janet{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
     var env: types.JanetFuncEnv = std.mem.zeroes(types.JanetFuncEnv);
     var decoy: types.JanetFuncEnv = std.mem.zeroes(types.JanetFuncEnv);
@@ -607,7 +597,7 @@ fn theEnvironmentValidator(add: *types.JanetFunction, other: *types.JanetFunctio
 /// points at. Until then it must keep sharing them, which is what makes a
 /// closure over a running fiber see that fiber's updates.
 fn anEnvironmentDetachesWhenItsFiberStops(add: *types.JanetFunction) void {
-    const args = [_]types.Janet{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
     // This half wants the unfiltered copy, which is what a function with no
     // inner closure gets.
@@ -618,12 +608,12 @@ fn anEnvironmentDetachesWhenItsFiberStops(add: *types.JanetFunction) void {
     env.length = add.def.?.slotcount;
     env.as.fiber = fiber;
 
-    setStatus(fiber, constants.JANET_STATUS_PENDING);
+    setStatus(fiber, types.FiberStatus.pending);
     functions.envMaybeDetach(&env);
     assert(env.offset == fiber.frame);
     assert(env.as.fiber == fiber);
 
-    setStatus(fiber, constants.JANET_STATUS_DEAD);
+    setStatus(fiber, types.FiberStatus.dead);
     functions.envMaybeDetach(&env);
     assert(env.offset == 0);
     assert(env.length == add.def.?.slotcount);
@@ -643,7 +633,7 @@ fn anEnvironmentDetachesWhenItsFiberStops(add: *types.JanetFunction) void {
 /// The rest are nil'd rather than copied, which is what stops a closure from
 /// rooting every local of the frame it was made in.
 fn detachHonoursTheClosureBitset(capturing: *types.JanetFunction) void {
-    const args = [_]types.Janet{ harness.wrapInteger(41), harness.wrapInteger(42) };
+    const args = [_]repr.Value{ harness.wrapInteger(41), harness.wrapInteger(42) };
     const fiber = rootedFiber(capturing, args[0..2]);
     const bitset = capturing.def.?.closure_bitset;
     assert(bitset != null);
@@ -653,7 +643,7 @@ fn detachHonoursTheClosureBitset(capturing: *types.JanetFunction) void {
     env.length = capturing.def.?.slotcount;
     env.as.fiber = fiber;
 
-    setStatus(fiber, constants.JANET_STATUS_DEAD);
+    setStatus(fiber, types.FiberStatus.dead);
     functions.envMaybeDetach(&env);
     assert(env.offset == 0);
     assert(env.as.values != null);
@@ -666,7 +656,7 @@ fn detachHonoursTheClosureBitset(capturing: *types.JanetFunction) void {
             kept += 1;
             assert(harness.equals(env.as.values.?[@intCast(i)], slot(fiber, fiber.frame + i)));
         } else {
-            assert(harness.isType(env.as.values.?[@intCast(i)], constants.JANET_NIL));
+            assert(harness.isType(env.as.values.?[@intCast(i)], repr.Tag.nil));
         }
     }
     // A bitset that kept nothing, or kept everything, would make the loop
@@ -680,17 +670,23 @@ fn detachHonoursTheClosureBitset(capturing: *types.JanetFunction) void {
 // --------------------------------------------------------------- inspection
 
 fn statusAndResumability(add: *types.JanetFunction) void {
-    const args = [_]types.Janet{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
 
-    var status: c_int = constants.JANET_STATUS_DEAD;
-    while (status <= constants.JANET_STATUS_ALIVE) : (status += 1) {
-        const finished = status == constants.JANET_STATUS_DEAD or
-            status == constants.JANET_STATUS_ERROR or
-            (status >= constants.JANET_STATUS_USER0 and status <= constants.JANET_STATUS_USER4);
+    // Every member of the vocabulary, which an exhaustive walk over the enum
+    // states rather than a numeric range that has to be kept in step with it.
+    inline for (@typeInfo(types.FiberStatus).@"enum".fields) |field| {
+        const status: types.FiberStatus = @enumFromInt(field.value);
+        // The oracle, listed member by member. An `else` here would make the
+        // contract agree with the subject about any status neither of them had
+        // thought about, which is the disagreement worth catching.
+        const finished = switch (status) {
+            .dead, .@"error", .user0, .user1, .user2, .user3, .user4 => true,
+            .debug, .pending, .user5, .user6, .user7, .user8, .user9, .new, .alive => false,
+        };
         fiber.flags = constants.JANET_FIBER_MASK_YIELD | constants.JANET_FIBER_BREAKPOINT;
         setStatus(fiber, status);
-        assert(@as(c_int, @intCast(fibers.status(fiber))) == status);
+        assert(fibers.status(fiber) == status);
         assert((fibers.canResume(fiber) != 0) == !finished);
         // Setting a status must leave the other flag bits alone.
         assert(fiber.flags & constants.JANET_FIBER_MASK_YIELD != 0);
@@ -699,21 +695,21 @@ fn statusAndResumability(add: *types.JanetFunction) void {
 }
 
 fn theCurrentAndRootFiber(add: *types.JanetFunction) void {
-    const args = [_]types.Janet{ harness.wrapInteger(1), harness.wrapInteger(2) };
-    const saved_fiber = vm().fiber;
-    const saved_root = vm().root_fiber;
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const saved_fiber = harness.vm().fiber;
+    const saved_root = harness.vm().root_fiber;
     const fiber = rootedFiber(add, args[0..2]);
 
     assert(fibers.current() == saved_fiber);
     assert(fibers.root() == saved_root);
 
-    vm().fiber = fiber;
-    vm().root_fiber = null;
+    harness.vm().fiber = fiber;
+    harness.vm().root_fiber = null;
     assert(fibers.current() == fiber);
     assert(fibers.root() == null);
 
-    vm().fiber = saved_fiber;
-    vm().root_fiber = saved_root;
+    harness.vm().fiber = saved_fiber;
+    harness.vm().root_fiber = saved_root;
 }
 
 // ------------------------------------------------------------------- main

@@ -2,20 +2,17 @@
 //!
 //! `janet_verify` is the gate every funcdef passes before it can be run: the
 //! assembler's output, and anything `unmarshal` produces. It answers a numbered
-//! reason rather than a message, which is why `test/verify.c` is written
-//! against numbers.
+//! reason rather than a message, so `test/verify.zig` is written against
+//! numbers.
 //!
 //! What each check *is* depends on the opcode's operand shape, and that comes
-//! from `janet_instructions` at the foot of this file -- `bytecode.c`'s last
-//! definition, which Phase 10 Part 7 moved here. It is here rather than with
-//! either `asm_*` subsystem because `-Dverify` is the one selector whose C
-//! original is `bytecode.c`; the assembler's are `asm.c`'s.
+//! from `janet_instructions` at the foot of this file. It is here rather than
+//! with the assembler because `-Dverify` selects this file and nothing else.
 
 const std = @import("std");
 
 const types = @import("types");
 const constants = @import("constants");
-const c = @import("cabi");
 
 pub fn verify(definition: *types.JanetFuncDef) c_int {
     const varargs: i32 = @intFromBool(definition.flags & constants.JANET_FUNCDEF_FLAG_VARARG != 0);
@@ -26,7 +23,7 @@ pub fn verify(definition: *types.JanetFuncDef) c_int {
     if (bytecode_length == 0) return 1;
     if (maximum_argument_slot > slot_count) return 2;
 
-    for (definition.bytecode.?[0..@intCast(bytecode_length)], 0..) |instruction, index| {
+    for (definition.instructions()[0..@intCast(bytecode_length)], 0..) |instruction, index| {
         const opcode = instruction & 0x7f;
         if (opcode >= constants.JOP_INSTRUCTION_COUNT) return 3;
         const instruction_type = instructions[opcode];
@@ -62,7 +59,7 @@ pub fn verify(definition: *types.JanetFuncDef) c_int {
         }
     }
 
-    switch (definition.bytecode.?[@intCast(bytecode_length - 1)] & 0xff) {
+    switch (definition.instructions()[@intCast(bytecode_length - 1)] & 0xff) {
         constants.JOP_RETURN, constants.JOP_RETURN_NIL, constants.JOP_JUMP, constants.JOP_ERROR, constants.JOP_TAILCALL => {},
         else => return 9,
     }
@@ -70,7 +67,7 @@ pub fn verify(definition: *types.JanetFuncDef) c_int {
     var symbol_index = definition.symbolmap_length;
     while (symbol_index > 0) {
         symbol_index -= 1;
-        const symbol = definition.symbolmap.?[@intCast(symbol_index)];
+        const symbol = definition.symbols()[@intCast(symbol_index)];
         if (symbol.birth_pc == std.math.maxInt(u32)) {
             if (symbol.death_pc >= definition.environments_length) return 10;
         } else {

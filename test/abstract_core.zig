@@ -12,12 +12,12 @@
 //!    `gc.flags` word are readable directly. The flags word is where the
 //!    difference between `janet_gc_settype`'s or and a plain store shows up,
 //!    and nothing else observes it.
-//!  - `janet_vm.blocks` and `janet_vm.block_count` say whether the collector
+//!  - `vm.gc.blocks` and `vm.gc.block_count` say whether the collector
 //!    was given the block. A plain abstract must be on the list; a threaded
 //!    one must be on neither list.
-//!  - `janet_vm.next_collection` says what the block was charged, and the two
+//!  - `vm.gc.next_collection` says what the block was charged, and the two
 //!    allocators charge it by different arithmetic to the same total.
-//!  - `janet_vm.threaded_abstracts` is the visit record a threaded abstract is
+//!  - `vm.ev.threaded_abstracts` is the visit record a threaded abstract is
 //!    registered in at birth, and the type's `gc` callback counts its own
 //!    calls on the way out.
 //!
@@ -26,44 +26,31 @@
 //! calls must free the block without traversing or finalizing it, and an
 //! abstract type whose `gcmark` and `gc` count their calls is what proves it.
 //!
-//! ## What the adapter pool stopped being needed for
+//! ## No adapter between the contract and the table
 //!
-//! The C original reached every one of these types through `CONTRACT_AT`,
-//! which is `test/support.zig`'s `janet_contract_abstract_type` — a pool of
-//! pre-built tables that exists because a `JanetAbstractType`'s callbacks have
-//! been Zig-ABI since Phase 10's hinge and C can define none of them.
+//! A `JanetAbstractType`'s callbacks are Zig's, so C can define none of them
+//! and a C contract needs a pool of pre-built tables to reach one. This file
+//! needs `gc`, `gcmark` and `gcperthread`, all three typed **non**-raising for
+//! a reason `abstract_type.zig` sets out: a raise from a finalizer runs
+//! mid-sweep on an object that is already unreachable, so it has nowhere to go
+//! for anybody. They are ordinary `callconv(.c)` functions, and the table
+//! below is the runtime's own `AbstractType`.
 //!
-//! This file needs `gc`, `gcmark` and `gcperthread`, and the hinge typed all
-//! three **non**-raising for a reason `abstract_type.zig` sets out: a raise
-//! from a finalizer runs mid-sweep on an object that is already unreachable,
-//! so it has nowhere to go for anybody. They are ordinary `callconv(.c)`
-//! functions, and the table below is the runtime's own `AbstractType` with no
-//! adapter between.
+//! ## The head offset is measured, not asserted
 //!
-//! ## Two things this file no longer says, and where they went
+//! `sizeof(JanetAbstractHead) == offsetof(JanetAbstractHead, data)` cannot be
+//! translated: a translated head drops its flexible array member, so
+//! `@offsetOf` does not compile and the header is recovered with `@sizeOf` --
+//! which makes the comparison `@sizeOf` against itself.
+//! `test/gc_mark.zig`'s `theHeadOffsets` derives the offset from the allocator
+//! and compares it against `@sizeOf`, which is the claim worth making.
 //!
-//! The C original opened with
-//! `assert(sizeof(JanetAbstractHead) == offsetof(JanetAbstractHead, data))`
-//! and later checked the recovery arithmetic as
-//! `(char *) a == (char *) head + sizeof(JanetAbstractHead)`. Neither can be
-//! translated: `@cImport` drops a flexible array member, so `@offsetOf` does
-//! not compile and `c.janet_abstract_head` recovers the header with `@sizeOf`
-//! — which makes both comparisons `@sizeOf` against itself.
-//!
-//! Both replacements already exist, from Phase 11 Part 8. `test/abi.c` carries
-//! the static assertion unchanged, because that is a claim about `janet.h` and
-//! `abi.c` is C; `test/gc_mark.zig`'s `theHeadOffsets` derives the offset from
-//! the allocator and compares it against `@sizeOf`, which is the runtime claim.
-//! Nothing is dropped here, and nothing is restated.
-//!
-//! Nothing exercises a raising callback. SPIKE-8 settled that an abstract
-//! callback may not raise; `SPIKE-8.md` records what the C runtime did when
-//! one did anyway.
+//! Nothing exercises a raising callback: an abstract callback may not raise.
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const options = @import("options");
 const value = @import("subsystems").value;
 const harness = @import("harness.zig");
@@ -80,8 +67,8 @@ const AbstractType = abstract_type.AbstractType;
 const heap = harness.heap;
 
 /// The threaded half of this subsystem exists only with the event loop.
-/// `options` names **subsystems** rather than features — Part 3's lesson 7 —
-/// so `ev_core` is the field that carries `hasEv(options)`.
+/// `options` names **subsystems** rather than features, so `ev_core` is the
+/// field that carries `hasEv(options)`.
 const has_ev = options.ev;
 
 // --------------------------------------------------------------- helpers
@@ -97,38 +84,38 @@ var mark_calls: i32 = 0;
 var gc_calls: i32 = 0;
 var perthread_calls: i32 = 0;
 
-fn probeGcmark(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+fn probeGcmark(_: *anyopaque, _: usize) c_int {
     mark_calls += 1;
     return 0;
 }
 
-fn probeGc(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+fn probeGc(_: *anyopaque, _: usize) c_int {
     gc_calls += 1;
     return 0;
 }
 
-fn probePerthread(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+fn probePerthread(_: *anyopaque, _: usize) c_int {
     perthread_calls += 1;
     return 0;
 }
 
-const at_counted: AbstractType = .{
+const at_counted = abstract_type.define(anyopaque, .{
     .name = "abstract-core-test/counted",
     .gc = probeGc,
     .gcmark = probeGcmark,
     .gcperthread = probePerthread,
-};
+});
 
 /// The same type with no callbacks at all. Freeing one of these must not reach
 /// for a null function pointer.
-const at_bare: AbstractType = .{ .name = "abstract-core-test/bare" };
+const at_bare = abstract_type.define(anyopaque, .{ .name = "abstract-core-test/bare" });
 
-fn counted() *const types.JanetAbstractType {
-    return abstract_type.stored(&at_counted);
+fn counted() *const types.AbstractType {
+    return &at_counted;
 }
 
-fn bare() *const types.JanetAbstractType {
-    return abstract_type.stored(&at_bare);
+fn bare() *const types.AbstractType {
+    return &at_bare;
 }
 
 fn headOf(abstract: ?*anyopaque) *types.JanetAbstractHead {
@@ -140,24 +127,24 @@ fn headOf(abstract: ?*anyopaque) *types.JanetAbstractHead {
 /// `janet_abstract_begin` writes the two header fields and nothing else, and
 /// hands the block to the collector tagged `JANET_MEMORY_NONE`. The tag is the
 /// whole point: the payload is uninitialised at this moment and the block is
-/// already reachable from `janet_vm.blocks`.
+/// already reachable from `vm.gc.blocks`.
 fn beginPublishesAnUntypedBlock() void {
     settle();
-    const before_count = c.vm().block_count;
-    const before_charge = c.vm().next_collection;
+    const before_count = harness.vm().gc.block_count;
+    const before_charge = harness.vm().gc.next_collection;
 
     const a = abstracts.begin(counted(), 40);
     const head = headOf(a);
 
     std.debug.assert(head.size == 40);
     std.debug.assert(head.type == counted());
-    std.debug.assert(heap.memoryType(head) == constants.JANET_MEMORY_NONE);
+    std.debug.assert(heap.memoryType(head) == types.MemoryType.none);
     std.debug.assert(head.gc.flags & constants.JANET_MEM_REACHABLE == 0);
 
-    std.debug.assert(c.vm().block_count == before_count + 1);
-    std.debug.assert(heap.onList(c.vm().blocks, head));
-    std.debug.assert(!heap.onList(c.vm().weak_blocks, head));
-    std.debug.assert(c.vm().next_collection ==
+    std.debug.assert(harness.vm().gc.block_count == before_count + 1);
+    std.debug.assert(heap.onList(harness.vm().gc.blocks, head));
+    std.debug.assert(!heap.onList(harness.vm().gc.weak_blocks, head));
+    std.debug.assert(harness.vm().gc.next_collection ==
         before_charge + @sizeOf(types.JanetAbstractHead) + 40);
 
     // `long long data[]` is the most general alignment the header can ask for,
@@ -171,11 +158,11 @@ fn beginPublishesAnUntypedBlock() void {
 fn endTypesTheBlock() void {
     const a = abstracts.begin(counted(), 8);
     const head = headOf(a);
-    std.debug.assert(heap.memoryType(head) == constants.JANET_MEMORY_NONE);
+    std.debug.assert(heap.memoryType(head) == types.MemoryType.none);
 
     const b = abstracts.end(a);
     std.debug.assert(b == a);
-    std.debug.assert(heap.memoryType(head) == constants.JANET_MEMORY_ABSTRACT);
+    std.debug.assert(heap.memoryType(head) == types.MemoryType.abstract);
     std.debug.assert(head.size == 8);
     std.debug.assert(head.type == counted());
 }
@@ -193,7 +180,7 @@ fn endPreservesTheOtherFlagBits() void {
     head.gc.flags |= constants.JANET_MEM_DISABLED;
 
     _ = abstracts.end(a);
-    std.debug.assert(heap.memoryType(head) == constants.JANET_MEMORY_ABSTRACT);
+    std.debug.assert(heap.memoryType(head) == types.MemoryType.abstract);
     std.debug.assert(head.gc.flags & constants.JANET_MEM_REACHABLE != 0);
     std.debug.assert(head.gc.flags & constants.JANET_MEM_DISABLED != 0);
 
@@ -205,18 +192,18 @@ fn endPreservesTheOtherFlagBits() void {
 /// as they do separately.
 fn abstractIsBeginThenEnd() void {
     settle();
-    const before_count = c.vm().block_count;
-    const before_charge = c.vm().next_collection;
+    const before_count = harness.vm().gc.block_count;
+    const before_charge = harness.vm().gc.next_collection;
 
     const a = abstracts.new(counted(), 24);
     const head = headOf(a);
 
-    std.debug.assert(heap.memoryType(head) == constants.JANET_MEMORY_ABSTRACT);
+    std.debug.assert(heap.memoryType(head) == types.MemoryType.abstract);
     std.debug.assert(head.size == 24);
     std.debug.assert(head.type == counted());
-    std.debug.assert(c.vm().block_count == before_count + 1);
-    std.debug.assert(heap.onList(c.vm().blocks, head));
-    std.debug.assert(c.vm().next_collection ==
+    std.debug.assert(harness.vm().gc.block_count == before_count + 1);
+    std.debug.assert(heap.onList(harness.vm().gc.blocks, head));
+    std.debug.assert(harness.vm().gc.next_collection ==
         before_charge + @sizeOf(types.JanetAbstractHead) + 24);
 }
 
@@ -225,7 +212,7 @@ fn zeroLengthAbstract() void {
     const a = abstracts.new(bare(), 0);
     const head = headOf(a);
     std.debug.assert(head.size == 0);
-    std.debug.assert(heap.memoryType(head) == constants.JANET_MEMORY_ABSTRACT);
+    std.debug.assert(heap.memoryType(head) == types.MemoryType.abstract);
 }
 
 /// The payload is untouched by construction, so an embedder that writes it
@@ -253,26 +240,26 @@ fn collectionBetweenBeginAndEnd() void {
     gc_calls = 0;
     perthread_calls = 0;
 
-    const counted_before = c.vm().block_count;
+    const counted_before = harness.vm().gc.block_count;
     _ = abstracts.begin(counted(), 32);
-    std.debug.assert(c.vm().block_count == counted_before + 1);
+    std.debug.assert(harness.vm().gc.block_count == counted_before + 1);
 
     // Nothing refers to it, so the collection frees it -- untyped, so neither
     // finalizer runs and the payload is never read.
     gc_mark.collect();
-    std.debug.assert(c.vm().block_count == counted_before);
+    std.debug.assert(harness.vm().gc.block_count == counted_before);
     std.debug.assert(mark_calls == 0);
     std.debug.assert(gc_calls == 0);
     std.debug.assert(perthread_calls == 0);
 }
 
 /// What the tag does *not* do is keep the traversal away. The mark phase
-/// dispatches on the type of the `Janet` it is given, not on the block's
-/// memory tag, so an embedder that wraps and roots the block before filling it
-/// in gets `gcmark` called on an uninitialised payload. That is the C
-/// behaviour and the port reproduces it; the caller's obligation is to root
-/// the value after `janet_abstract_end`, not before. Pinned here so that a
-/// port which "fixed" it by tagging early would be caught.
+/// dispatches on the type of the value it is given, not on the block's memory
+/// tag, so an embedder that wraps and roots the block before filling it in
+/// gets `gcmark` called on an uninitialised payload. That is Janet's behaviour
+/// and it is reproduced; the caller's obligation is to root the value after
+/// `janet_abstract_end`, not before. Pinned here so that a runtime which
+/// "fixed" it by tagging early would be caught.
 fn theWindowDoesNotStopTheTraversal() void {
     settle();
     mark_calls = 0;
@@ -283,19 +270,19 @@ fn theWindowDoesNotStopTheTraversal() void {
     const val = wrap.fromAbstract(a);
     gc_alloc.gcroot(val);
 
-    const counted_before = c.vm().block_count;
+    const counted_before = harness.vm().gc.block_count;
     gc_mark.collect();
 
-    std.debug.assert(c.vm().block_count == counted_before);
+    std.debug.assert(harness.vm().gc.block_count == counted_before);
     std.debug.assert(mark_calls == 1);
     std.debug.assert(gc_calls == 0);
-    std.debug.assert(heap.memoryType(headOf(a)) == constants.JANET_MEMORY_NONE);
+    std.debug.assert(heap.memoryType(headOf(a)) == types.MemoryType.none);
 
     _ = gc_alloc.gcunroot(val);
     gc_mark.collect();
 
     // Freed, and still never finalized: the sweep is where the tag decides.
-    std.debug.assert(c.vm().block_count == counted_before - 1);
+    std.debug.assert(harness.vm().gc.block_count == counted_before - 1);
     std.debug.assert(gc_calls == 0);
     std.debug.assert(perthread_calls == 0);
 }
@@ -334,37 +321,37 @@ var threaded_gc_len: usize = 0;
 /// are easy to get wrong in a way no return value reveals: the header is one
 /// word from the payload, and `size` is the only place the payload's length is
 /// recorded once the caller has let go of it.
-fn probeThreadedGc(data: ?*anyopaque, length: usize) callconv(.c) c_int {
+fn probeThreadedGc(data: *anyopaque, length: usize) c_int {
     threaded_gc_data = data;
     threaded_gc_len = length;
     threaded_gc_calls += 1;
     return 0;
 }
 
-const at_threaded: AbstractType = .{
+const at_threaded = abstract_type.define(anyopaque, .{
     .name = "abstract-core-test/threaded",
     .gc = probeThreadedGc,
     .gcmark = probeGcmark,
-};
+});
 
-const at_threaded_bare: AbstractType = .{ .name = "abstract-core-test/threaded-bare" };
+const at_threaded_bare = abstract_type.define(anyopaque, .{ .name = "abstract-core-test/threaded-bare" });
 
-fn threaded() *const types.JanetAbstractType {
-    return abstract_type.stored(&at_threaded);
+fn threaded() *const types.AbstractType {
+    return &at_threaded;
 }
 
-fn threadedBare() *const types.JanetAbstractType {
-    return abstract_type.stored(&at_threaded_bare);
+fn threadedBare() *const types.AbstractType {
+    return &at_threaded_bare;
 }
 
 /// Drop the reference this interpreter holds, the way the sweep does: take the
 /// entry out of the visit record first, then decrement. That order is not a
-/// tidiness -- freeing the block while `janet_vm.threaded_abstracts` still
+/// tidiness -- freeing the block while `vm.ev.threaded_abstracts` still
 /// keys on it leaves the next collection reading a freed header, which is why
 /// every threaded case here ends this way rather than by calling
 /// `janet_abstract_decref_maybe_free` alone.
 fn drop(a: ?*anyopaque) i32 {
-    _ = tables.remove(&c.vm().threaded_abstracts, wrap.fromAbstract(a));
+    _ = tables.remove(&harness.vm().ev.threaded_abstracts, wrap.fromAbstract(a));
     return abstracts.decrefMaybeFree(a);
 }
 
@@ -372,8 +359,8 @@ fn drop(a: ?*anyopaque) i32 {
 /// for an absent key and the stored boolean for a present one, and the sweep
 /// distinguishes the two, so this does as well.
 fn tracked(a: ?*anyopaque) bool {
-    const entry = tables.get(&c.vm().threaded_abstracts, wrap.fromAbstract(a));
-    return !harness.isType(entry, constants.JANET_NIL);
+    const entry = tables.get(&harness.vm().ev.threaded_abstracts, wrap.fromAbstract(a));
+    return !harness.isType(entry, repr.Tag.nil);
 }
 
 /// A threaded abstract is `janet_malloc`ed, not `janet_gcalloc`ed. It is on
@@ -381,42 +368,42 @@ fn tracked(a: ?*anyopaque) bool {
 /// the visit table, and what keeps it alive is the refcount that starts at one.
 fn beginThreadedRegistersWithoutTheHeap() void {
     settle();
-    const before_count = c.vm().block_count;
-    const before_charge = c.vm().next_collection;
-    const before_tracked = c.vm().threaded_abstracts.count;
-    const before_capacity = c.vm().threaded_abstracts.capacity;
+    const before_count = harness.vm().gc.block_count;
+    const before_charge = harness.vm().gc.next_collection;
+    const before_tracked = harness.vm().ev.threaded_abstracts.count;
+    const before_capacity = harness.vm().ev.threaded_abstracts.capacity;
 
     const a = abstracts.beginThreaded(threadedBare(), 48);
     const head = headOf(a);
 
     std.debug.assert(head.size == 48);
     std.debug.assert(head.type == threadedBare());
-    std.debug.assert(heap.memoryType(head) == constants.JANET_MEMORY_THREADED_ABSTRACT);
+    std.debug.assert(heap.memoryType(head) == types.MemoryType.threaded_abstract);
     std.debug.assert(head.gc.data.refcount == 1);
 
-    std.debug.assert(c.vm().block_count == before_count);
-    std.debug.assert(!heap.onList(c.vm().blocks, head));
-    std.debug.assert(!heap.onList(c.vm().weak_blocks, head));
+    std.debug.assert(harness.vm().gc.block_count == before_count);
+    std.debug.assert(!heap.onList(harness.vm().gc.blocks, head));
+    std.debug.assert(!heap.onList(harness.vm().gc.weak_blocks, head));
 
     // The threaded path adds `size + sizeof(head)` by hand where
     // `janet_gcalloc` adds the size it was asked for. Same total -- plus
     // whatever the visit table charged if this entry made it rehash, since
     // `janet_memalloc_empty` bills its new bucket array to the same counter.
     var table_charge: usize = 0;
-    if (c.vm().threaded_abstracts.capacity != before_capacity) {
-        table_charge = @as(usize, @intCast(c.vm().threaded_abstracts.capacity)) * @sizeOf(types.JanetKV);
+    if (harness.vm().ev.threaded_abstracts.capacity != before_capacity) {
+        table_charge = @as(usize, @intCast(harness.vm().ev.threaded_abstracts.capacity)) * @sizeOf(types.JanetKV);
     }
-    std.debug.assert(c.vm().next_collection ==
+    std.debug.assert(harness.vm().gc.next_collection ==
         before_charge + @sizeOf(types.JanetAbstractHead) + 48 + table_charge);
 
-    std.debug.assert(c.vm().threaded_abstracts.count == before_tracked + 1);
+    std.debug.assert(harness.vm().ev.threaded_abstracts.count == before_tracked + 1);
     std.debug.assert(tracked(a));
 
     // Registered false: the visit record starts unvisited, and a mark phase is
     // what sets it.
-    const entry = tables.get(&c.vm().threaded_abstracts, wrap.fromAbstract(a));
-    std.debug.assert(harness.isType(entry, constants.JANET_BOOLEAN));
-    std.debug.assert(wrap.toBoolean(entry) == 0);
+    const entry = tables.get(&harness.vm().ev.threaded_abstracts, wrap.fromAbstract(a));
+    std.debug.assert(harness.isType(entry, repr.Tag.boolean));
+    std.debug.assert(!wrap.toBoolean(entry));
 
     std.debug.assert(@intFromPtr(a) % @sizeOf(c_longlong) == 0);
 
@@ -437,7 +424,7 @@ fn endThreadedChangesNothing() void {
     const b = abstracts.endThreaded(a);
     std.debug.assert(b == a);
     std.debug.assert(head.gc.flags == flags_before);
-    std.debug.assert(heap.memoryType(head) == constants.JANET_MEMORY_THREADED_ABSTRACT);
+    std.debug.assert(heap.memoryType(head) == types.MemoryType.threaded_abstract);
     std.debug.assert(head.gc.data.refcount == 1);
 
     std.debug.assert(drop(a) == 0);
@@ -445,17 +432,17 @@ fn endThreadedChangesNothing() void {
 
 fn abstractThreadedIsBeginThenEnd() void {
     settle();
-    const before_tracked = c.vm().threaded_abstracts.count;
-    const before_count = c.vm().block_count;
+    const before_tracked = harness.vm().ev.threaded_abstracts.count;
+    const before_count = harness.vm().gc.block_count;
 
     const a = abstracts.threaded(threadedBare(), 16);
     const head = headOf(a);
 
-    std.debug.assert(heap.memoryType(head) == constants.JANET_MEMORY_THREADED_ABSTRACT);
+    std.debug.assert(heap.memoryType(head) == types.MemoryType.threaded_abstract);
     std.debug.assert(head.size == 16);
     std.debug.assert(head.gc.data.refcount == 1);
-    std.debug.assert(c.vm().block_count == before_count);
-    std.debug.assert(c.vm().threaded_abstracts.count == before_tracked + 1);
+    std.debug.assert(harness.vm().gc.block_count == before_count);
+    std.debug.assert(harness.vm().ev.threaded_abstracts.count == before_tracked + 1);
     std.debug.assert(tracked(a));
 
     std.debug.assert(drop(a) == 0);
@@ -488,7 +475,7 @@ fn decrefToZeroDoesNotFree() void {
     threaded_gc_calls = 0;
     const a = abstracts.threaded(threaded(), 8);
     const head = headOf(a);
-    _ = tables.remove(&c.vm().threaded_abstracts, wrap.fromAbstract(a));
+    _ = tables.remove(&harness.vm().ev.threaded_abstracts, wrap.fromAbstract(a));
 
     std.debug.assert(abstracts.decref(a) == 0);
     std.debug.assert(head.gc.data.refcount == 0);
@@ -539,7 +526,7 @@ fn decrefMaybeFreeWithoutAFinalizer() void {
 
 /// The refcount shares a union with the heap-list link every collectable block
 /// uses, and a threaded abstract is on no list, so the two never contend. This
-/// pins the layout the port depends on: writing the refcount must not put a
+/// pins the layout the runtime depends on: writing the refcount must not put a
 /// plausible pointer in `next`, and the sweep must not find the block by
 /// walking.
 fn refcountAndListLinkShareOneWord() void {
@@ -548,8 +535,8 @@ fn refcountAndListLinkShareOneWord() void {
 
     std.debug.assert(@intFromPtr(&head.gc.data.refcount) == @intFromPtr(&head.gc.data.next));
     _ = abstracts.incref(a);
-    std.debug.assert(!heap.onList(c.vm().blocks, head));
-    std.debug.assert(!heap.onList(c.vm().weak_blocks, head));
+    std.debug.assert(!heap.onList(harness.vm().gc.blocks, head));
+    std.debug.assert(!heap.onList(harness.vm().gc.weak_blocks, head));
 
     std.debug.assert(abstracts.decrefMaybeFree(a) == 1);
     std.debug.assert(drop(a) == 0);
@@ -561,12 +548,12 @@ fn refcountAndListLinkShareOneWord() void {
 /// what distinguishes them.
 fn twoThreadedAbstractsAreTwoEntries() void {
     settle();
-    const before = c.vm().threaded_abstracts.count;
+    const before = harness.vm().ev.threaded_abstracts.count;
     const a = abstracts.threaded(threadedBare(), 8);
     const b = abstracts.threaded(threadedBare(), 8);
 
     std.debug.assert(a != b);
-    std.debug.assert(c.vm().threaded_abstracts.count == before + 2);
+    std.debug.assert(harness.vm().ev.threaded_abstracts.count == before + 2);
     std.debug.assert(tracked(a));
     std.debug.assert(tracked(b));
 

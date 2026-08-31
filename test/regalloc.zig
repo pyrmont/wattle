@@ -15,7 +15,6 @@ const std = @import("std");
 const regalloc = @import("subsystems").regalloc;
 const types = @import("types");
 const constants = @import("constants");
-const c = @import("cabi");
 
 /// The last of the eight temporaries, chosen because it is the one whose
 /// register number the allocator computes rather than assigns: 0xf3 is

@@ -1,30 +1,24 @@
 //! Sweeping: the pass that acts on the mark phase's decision. Dropping dead
 //! weak references, unlinking and freeing unreachable blocks, running
-//! finalizers, and tearing the whole heap down at `janet_deinit`. This is the
-//! last of the three increments `gc.c` is split into; allocation and the root
-//! set moved in Part 3, the traversal and `janet_collect` in Part 4.
+//! finalizers, and tearing the whole heap down at `janet_deinit`.
 //!
 //! **Everything here frees, and nothing here traverses.** That is the mirror
-//! of Part 4's boundary and it is what makes the split hold: the mark phase
+//! of the mark phase's boundary and it is what makes the split hold: the mark
 //! reads the object graph and writes one bit per object, and this file reads
 //! that bit and never follows a pointer the bit does not justify. The one
 //! place the two touch is `checkLiveref`, which reads the mark of a value the
 //! weak heap refers to — a read, not a walk, and the reason a weak reference
 //! is dropped in the sweep rather than skipped in the walk.
 //!
-//! **Part 4 left no seam and this increment needs none.** `janet_sweep` and
-//! `janet_clear_memory` are both public API in `janet.h`; `janet_deinit_block`
-//! and `janet_check_liveref` were `static` in `gc.c` with no caller outside the
-//! region that moved with them. Everything this file calls outward is either
-//! public API or `janet_free_all_scratch`, declared in `gc.h` since Part 3. So
-//! `gc.c` is now split three ways without a single declaration added for the
-//! benefit of the split itself.
+//! **There is no seam between the three.** `janet_sweep` and
+//! `janet_clear_memory` are public API; `deinitBlock` and `checkLiveref` have
+//! no caller outside this file. Everything this file calls outward is either
+//! public API or `gc.freeAllScratch`.
 //!
-//! **The file is jump-transparent**, under the rule SPIKE-8 settled, and this
-//! is the increment that rule was written for. `deinitBlock` calls an abstract
-//! type's `gc` and `gcperthread` finalizers, and the threaded-abstract sweep
-//! calls `gcperthread` again; all three are third-party code. Neither may
-//! raise, and if one does the signal jumps straight out through the sweep. The
+//! **Nothing here may hold anything across a raise**, and this is the file
+//! that rule was written for. `deinitBlock` calls an abstract type's `gc` and
+//! `gcperthread` finalizers, and the threaded-abstract sweep calls
+//! `gcperthread` again; all three are third-party code. Neither may
 //! frames it crosses own nothing — no `defer` in this file, checked by
 //! `build.zig` — so the jump is mechanically harmless and the damage is exactly
 //! the C original's, which `SPIKE-8.md` measured: the block is still on its
@@ -33,7 +27,7 @@
 //!
 //! One defect is reproduced rather than repaired, and it is in `FOUND.md`:
 //! `janet_clear_memory` frees the main heap and never touches
-//! `janet_vm.weak_blocks`, so every weak table and weak array still alive at
+//! `vm.gc.weak_blocks`, so every weak table and weak array still alive at
 //! `janet_deinit` leaks its block and its data array — 32KB per cycle for a
 //! 4096-element weak array, measured and recorded in `FOUND.md`. This file walks
 //! the same one list the original does, and `test/gc_sweep.zig` asserts the
@@ -41,37 +35,26 @@
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
+const vm_state = @import("../vm/lifecycle.zig");
 const raise = @import("raise");
 const abstract_type = @import("../abstract_type.zig");
 const gc_alloc = @import("../gc.zig");
 const buffers = @import("../value/buffers.zig");
 const utils = @import("../utils.zig");
-const kind = @import("../value/helpers/kind.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const abstracts = @import("../value/abstracts.zig");
 const fatal = @import("../fatal.zig");
 const ev = @import("../ev.zig");
+const symbols = @import("../value/symbols.zig");
 
-/// `janet_vm`, whose layout is `types.JanetVM`'s and whose address
-/// `cabi.vm()` takes.
-inline fn vm() *types.JanetVM {
-    return c.vm();
-}
-
-/// `JANET_VM_HAS_EV` in `src/zig/state_abi.h`. Both exported functions have an
-/// `#ifdef JANET_EV` region that reaches `janet_vm.threaded_abstracts`, a field
+/// `config.ev`. Both exported functions have an
+/// `#ifdef JANET_EV` region that reaches `vm.ev.threaded_abstracts`, a field
 /// that only exists in that configuration, so this has to gate compilation
 /// rather than merely behaviour.
 const has_ev = constants.JANET_VM_HAS_EV != 0;
 
-/// `janet_symbol_deinit` is declared in `src/core/symcache.h` and here rather
-/// than in `cabi.zig`. It takes a `const uint8_t *`, so no Janet type crosses —
-/// the same case `gc/mark.zig` makes for `janet_ev_mark`.
-extern fn janet_symbol_deinit(sym: [*:0]const u8) callconv(.c) void;
-
-const mem_typebits: i32 = constants.JANET_MEM_TYPEBITS;
 const mem_reachable: i32 = constants.JANET_MEM_REACHABLE;
 const mem_disabled: i32 = constants.JANET_MEM_DISABLED;
 
@@ -99,8 +82,8 @@ inline fn gcReachable(mem: anytype) bool {
     return (gcHeader(mem).flags & mem_reachable) != 0;
 }
 
-inline fn gcType(mem: *types.JanetGCObject) i32 {
-    return mem.*.flags & mem_typebits;
+inline fn gcType(mem: *types.JanetGCObject) types.MemoryType {
+    return mem.memoryType();
 }
 
 // --------------------------------------------------------- janet.h macros
@@ -131,24 +114,24 @@ inline fn assertFinalized(status: c_int, message: [*:0]const u8) void {
 /// freeing the block frees the payload; a symbol is the one immutable type
 /// with an external obligation, because it has to leave the symbol cache.
 fn deinitBlock(mem: *types.JanetGCObject) void {
-    switch (mem.*.flags & mem_typebits) {
-        constants.JANET_MEMORY_SYMBOL => janet_symbol_deinit(stringData(mem)),
+    switch (mem.memoryType()) {
+        types.MemoryType.symbol => symbols.deinit(stringData(mem)),
 
-        constants.JANET_MEMORY_ARRAY, constants.JANET_MEMORY_ARRAY_WEAK => {
+        types.MemoryType.array, types.MemoryType.array_weak => {
             const array: *types.JanetArray = @ptrCast(@alignCast(mem));
             utils.free(@ptrCast(array.*.data));
         },
 
-        constants.JANET_MEMORY_TABLE,
-        constants.JANET_MEMORY_TABLE_WEAKK,
-        constants.JANET_MEMORY_TABLE_WEAKV,
-        constants.JANET_MEMORY_TABLE_WEAKKV,
+        types.MemoryType.table,
+        types.MemoryType.table_weakk,
+        types.MemoryType.table_weakv,
+        types.MemoryType.table_weakkv,
         => {
             const table: *types.JanetTable = @ptrCast(@alignCast(mem));
             utils.free(@ptrCast(table.*.data));
         },
 
-        constants.JANET_MEMORY_FIBER => {
+        types.MemoryType.fiber => {
             const f: *types.JanetFiber = @ptrCast(@alignCast(mem));
             if (has_ev) {
                 // The two flags live in different words, and deliberately:
@@ -165,14 +148,14 @@ fn deinitBlock(mem: *types.JanetGCObject) void {
             utils.free(@ptrCast(f.*.data));
         },
 
-        constants.JANET_MEMORY_BUFFER => buffers.deinit(@ptrCast(@alignCast(mem))),
+        types.MemoryType.buffer => buffers.deinit(@ptrCast(@alignCast(mem))),
 
-        constants.JANET_MEMORY_ABSTRACT => {
+        types.MemoryType.abstract => {
             const head: *types.JanetAbstractHead = @ptrCast(@alignCast(mem));
             if (head.type.*.gcperthread) |gcperthread| {
                 assertFinalized(gcperthread(types.abstractData(head), head.size), "per-thread finalizer failed");
             }
-            if (abstract_type.of(head.type).gc) |gc| {
+            if (head.type.gc) |gc| {
                 // A finalizer cannot raise -- `abstract_type.zig` has the
                 // contract, and `FOUND.md`'s "A panicking finalizer poisons
                 // the heap and kills the process at deinit" is what allowing
@@ -182,14 +165,14 @@ fn deinitBlock(mem: *types.JanetGCObject) void {
             }
         },
 
-        constants.JANET_MEMORY_FUNCENV => {
+        types.MemoryType.funcenv => {
             const env: *types.JanetFuncEnv = @ptrCast(@alignCast(mem));
             // A non-zero offset means the values are still on a fiber's stack
             // and belong to the fiber, not to this environment.
             if (env.*.offset == 0) utils.free(@ptrCast(env.*.as.values));
         },
 
-        constants.JANET_MEMORY_FUNCDEF => {
+        types.MemoryType.funcdef => {
             const def: *types.JanetFuncDef = @ptrCast(@alignCast(mem));
             utils.free(@ptrCast(def.*.defs));
             utils.free(@ptrCast(def.*.environments));
@@ -200,8 +183,17 @@ fn deinitBlock(mem: *types.JanetGCObject) void {
             utils.free(@ptrCast(def.*.symbolmap));
         },
 
-        // JANET_MEMORY_FUNCTION, and the C original's `default`.
-        else => {},
+        // The C original reached these through `default`. Listing them is what
+        // makes a new memory type a compile error here rather than a silent
+        // no-op: a collectable whose deinitialisation was forgotten leaks
+        // whatever it owns, and nothing else would say so.
+        types.MemoryType.none,
+        types.MemoryType.string,
+        types.MemoryType.tuple,
+        types.MemoryType.@"struct",
+        types.MemoryType.function,
+        types.MemoryType.threaded_abstract,
+        => {},
     }
 }
 
@@ -212,18 +204,18 @@ fn deinitBlock(mem: *types.JanetGCObject) void {
 /// Only collectable types can answer no. The immediates and the two number
 /// types have no header to consult and are always live, which is what the
 /// default arm means — a weak table keyed by integers never drops an entry.
-fn checkLiveref(x: types.Janet) bool {
-    return switch (kind.typeOf(x)) {
-        constants.JANET_ARRAY,
-        constants.JANET_TABLE,
-        constants.JANET_FUNCTION,
-        constants.JANET_BUFFER,
-        constants.JANET_FIBER,
+fn checkLiveref(x: repr.Value) bool {
+    return switch (repr.typeOf(x)) {
+        repr.Tag.array,
+        repr.Tag.table,
+        repr.Tag.function,
+        repr.Tag.buffer,
+        repr.Tag.fiber,
         => gcReachable(wrap.toPointer(x)),
-        constants.JANET_STRING, constants.JANET_SYMBOL, constants.JANET_KEYWORD => gcReachable(types.stringHead(wrap.toString(x))),
-        constants.JANET_ABSTRACT => gcReachable(types.abstractHead(wrap.toAbstract(x))),
-        constants.JANET_TUPLE => gcReachable(types.tupleHead(wrap.toTuple(x))),
-        constants.JANET_STRUCT => gcReachable(types.structHead(wrap.toStruct(x))),
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => gcReachable(types.stringHead(wrap.toString(x))),
+        repr.Tag.abstract => gcReachable(types.abstractHead(wrap.toAbstract(x))),
+        repr.Tag.tuple => gcReachable(types.tupleHead(wrap.toTuple(x))),
+        repr.Tag.@"struct" => gcReachable(types.structHead(wrap.toStruct(x))),
         else => true,
     };
 }
@@ -237,8 +229,8 @@ fn dropDeadElements(array: *types.JanetArray) void {
     var i: u32 = 0;
     const count: u32 = @bitCast(array.*.count);
     while (i < count) : (i += 1) {
-        if (!checkLiveref(array.*.data.?[i])) {
-            array.*.data.?[i] = wrap.fromNil();
+        if (!checkLiveref(array.*.slice()[i])) {
+            array.*.slice()[i] = wrap.fromNil();
         }
     }
 }
@@ -251,14 +243,14 @@ fn dropDeadElements(array: *types.JanetArray) void {
 /// skipped, since the entry is already in hand — the count drops, the deleted
 /// count rises, and the slot becomes the (nil, false) tombstone that keeps
 /// later probes walking past it.
-fn dropDeadEntries(table: *types.JanetTable, memtype: i32) void {
-    const check_values = memtype == constants.JANET_MEMORY_TABLE_WEAKV or memtype == constants.JANET_MEMORY_TABLE_WEAKKV;
-    const check_keys = memtype == constants.JANET_MEMORY_TABLE_WEAKK or memtype == constants.JANET_MEMORY_TABLE_WEAKKV;
+fn dropDeadEntries(table: *types.JanetTable, memtype: types.MemoryType) void {
+    const check_values = memtype == .table_weakv or memtype == .table_weakkv;
+    const check_keys = memtype == .table_weakk or memtype == .table_weakkv;
     // The C original walks a pointer to `data + capacity`; an index covers the
     // same slots for any capacity a table can hold, which is never negative.
     var i: i32 = 0;
     while (i < table.*.capacity) : (i += 1) {
-        const kv = &table.*.data.?[@intCast(i)];
+        const kv = &table.*.slots()[@intCast(i)];
         var drop = false;
         if (check_keys and !checkLiveref(kv.key)) drop = true;
         if (check_values and !checkLiveref(kv.value)) drop = true;
@@ -282,7 +274,7 @@ fn dropDeadEntries(table: *types.JanetTable, memtype: i32) void {
 /// time. The list is passed by pointer because the head is a `janet_vm` field
 /// and both lists are swept the same way.
 fn freeUnreachable(list: *?*anyopaque) void {
-    const v = vm();
+    const g = &vm_state.current().gc;
     var previous: ?*types.JanetGCObject = null;
     var current: ?*types.JanetGCObject = @ptrCast(@alignCast(list.*));
     while (current) |block| {
@@ -291,7 +283,7 @@ fn freeUnreachable(list: *?*anyopaque) void {
             previous = current;
             block.flags &= ~mem_reachable;
         } else {
-            v.block_count -%= 1;
+            g.block_count -%= 1;
             deinitBlock(block);
             if (previous != null) {
                 previous.?.data.next = next;
@@ -313,15 +305,15 @@ fn freeUnreachable(list: *?*anyopaque) void {
 /// leave the second pass reading freed memory. So the first pass reads every
 /// surviving weak container and the second frees, and no pass does both.
 pub fn sweep() void {
-    const v = vm();
+    const g = &vm_state.current().gc;
 
     // Sweep weak heap to drop weak refs.
-    var current: ?*types.JanetGCObject = @ptrCast(@alignCast(v.weak_blocks));
+    var current: ?*types.JanetGCObject = @ptrCast(@alignCast(g.weak_blocks));
     while (current) |block| {
         const next = block.data.next;
         if ((block.flags & mem_retained) != 0) {
             const memtype = gcType(current.?);
-            if (memtype == constants.JANET_MEMORY_ARRAY_WEAK) {
+            if (memtype == .array_weak) {
                 dropDeadElements(@ptrCast(@alignCast(current)));
             } else {
                 dropDeadEntries(@ptrCast(@alignCast(current)), memtype);
@@ -331,8 +323,8 @@ pub fn sweep() void {
     }
 
     // Sweep weak heap to free blocks, then the main heap.
-    freeUnreachable(&v.weak_blocks);
-    freeUnreachable(&v.blocks);
+    freeUnreachable(&g.weak_blocks);
+    freeUnreachable(&g.blocks);
 
     if (has_ev) sweepThreadedAbstracts();
 }
@@ -348,13 +340,16 @@ pub fn sweep() void {
 /// whichever interpreter takes the count to zero, which is what makes the
 /// finalizer run exactly once.
 fn sweepThreadedAbstracts() void {
-    const v = vm();
-    const items = v.threaded_abstracts.data;
+    const v = vm_state.current();
+    // The scheduler's visit record, which is the only part of `VmEv` the
+    // collector touches.
+    const threaded = &v.ev.threaded_abstracts;
+    const items = threaded.data;
     var i: i32 = 0;
-    while (i < v.threaded_abstracts.capacity) : (i += 1) {
+    while (i < threaded.capacity) : (i += 1) {
         const kv = &items.?[@intCast(i)];
-        if (kind.checkType(kv.key, constants.JANET_ABSTRACT) != 0) {
-            if (kind.truthy(kv.value) == 0) {
+        if (repr.checkType(kv.key, repr.Tag.abstract)) {
+            if (!repr.truthy(kv.value)) {
                 const abst = wrap.toAbstract(kv.key);
                 const head = types.abstractHead(abst);
                 if (head.type.*.gcperthread) |gcperthread| {
@@ -365,8 +360,8 @@ fn sweepThreadedAbstracts() void {
                 // Mark as tombstone in place.
                 kv.key = wrap.fromNil();
                 kv.value = wrap.fromFalse();
-                v.threaded_abstracts.deleted += 1;
-                v.threaded_abstracts.count -= 1;
+                threaded.deleted += 1;
+                threaded.count -= 1;
             }
 
             // Reset for next sweep. Reached whether or not the entry was just
@@ -385,16 +380,26 @@ fn sweepThreadedAbstracts() void {
 /// list is not unlinked as it goes. Every finalizer runs, in heap order, which
 /// is allocation order reversed.
 pub fn clearMemory() void {
-    const v = vm();
+    // Teardown reaches three aggregates and each is named: the scheduler's
+    // threaded-abstract table, the main heap, and the scratch table. A
+    // function this broad should say so rather than hold one `v`.
+    const v = vm_state.current();
+    const g = &v.gc;
 
     if (has_ev) {
+        // The scheduler's visit record, which is the only part of `VmEv` the
+        // collector touches. **The binding lives inside the guard**, because
+        // `VmEv` is an empty `extern struct` without an event loop and naming
+        // one of its fields above the `if` is a reference a `-Dev=false` build
+        // cannot resolve.
+        const threaded = &v.ev.threaded_abstracts;
         // Every threaded abstract this interpreter still holds loses its
         // reference, whether or not anything still refers to it.
-        const items = v.threaded_abstracts.data;
+        const items = threaded.data;
         var i: i32 = 0;
-        while (i < v.threaded_abstracts.capacity) : (i += 1) {
+        while (i < threaded.capacity) : (i += 1) {
             const kv = &items.?[@intCast(i)];
-            if (kind.checkType(kv.key, constants.JANET_ABSTRACT) != 0) {
+            if (repr.checkType(kv.key, repr.Tag.abstract)) {
                 const abst = wrap.toAbstract(kv.key);
                 const head = types.abstractHead(abst);
                 if (head.type.*.gcperthread) |gcperthread| {
@@ -405,48 +410,35 @@ pub fn clearMemory() void {
         }
     }
 
-    // The main heap only. `weak_blocks` is not walked here and that is the C
-    // original's behaviour, not an omission in the port; see the note at the
-    // head of this file and the entry in `FOUND.md`.
-    var current: ?*types.JanetGCObject = @ptrCast(@alignCast(v.blocks));
+    // The main heap only. `weak_blocks` is not walked here and that is Janet's
+    // behaviour rather than an omission; see the note at the head of this file
+    // and the entry in `FOUND.md`.
+    var current: ?*types.JanetGCObject = @ptrCast(@alignCast(g.blocks));
     while (current) |block| {
         deinitBlock(block);
         const next = block.data.next;
         utils.free(@ptrCast(block));
         current = next;
     }
-    v.blocks = null;
+    g.blocks = null;
 
-    gc_alloc.freeAllScratch();
-    utils.free(@ptrCast(v.scratch_mem));
-
-    // **The three fields go with the block.** `janet_free_all_scratch` sets
-    // `scratch_len` to zero and the line above frees the table, but upstream's
-    // `janet_clear_memory` leaves `scratch_mem` dangling and `scratch_cap` at
-    // its old value -- so a `janet_smalloc` after a `janet_deinit` and before
-    // the next `janet_init` finds `scratch_len != scratch_cap`, takes the
-    // no-growth path, and writes `scratch_mem[0] = s` **through the pointer
-    // just freed**.
-    //
-    // `janet_init` resets all three, so a program that re-initialises never
-    // sees it; what does see it is anything that calls into the runtime
-    // between the two. Phase 11 Part 27 found it as heap corruption that only
-    // glibc's allocator hardening detects -- `FOUND.md` has the entry and the
-    // bisection.
+    // The scratch table, whose three fields go together for the reason
+    // `gc.scratchDeinit` carries: upstream frees the table and leaves
+    // `scratch_mem` dangling with `scratch_cap` at its old value, so a
+    // `janet_smalloc` before the next `janet_init` writes through the pointer
+    // It is heap corruption that only glibc's allocator hardening detects;
+    // `FOUND.md` has the bisection.
     //
     // Nulling here makes that path **correct** rather than loud, and the
-    // difference is worth stating because the first write-up of this got it
-    // backwards: with all three cleared, the next `janet_smalloc` finds
-    // `scratch_len == scratch_cap == 0`, takes the growth path, and allocates
-    // a fresh table. It does not trap. So this removes the corruption and
-    // does not diagnose the caller -- which is why the actual fix for Part
-    // 27's defect is the contract that called in after `janet_deinit`, and
-    // this is defence in depth behind it.
-    v.scratch_mem = null;
-    v.scratch_cap = 0;
-    v.scratch_len = 0;
+    // difference is worth stating: with all three cleared, the next
+    // `janet_smalloc` finds `scratch_len == scratch_cap == 0`, takes the growth
+    // path, and allocates a fresh table. It does not trap. So this removes the
+    // corruption and does not diagnose the caller -- which is why the contract
+    // that calls in after `janet_deinit` is the actual fix, and this is
+    // defence in depth behind it.
+    gc_alloc.scratchDeinit(&v.scratch);
 }
 
-pub fn janet_clear_memory() void {
+pub fn clearMemoryAbi() void {
     clearMemory();
 }

@@ -1,21 +1,12 @@
 //! The Zig contract driver: one executable over every contract that lives
 //! inside the runtime's own compilation.
 //!
-//! ## Why there was a second driver, and why this one has its shape
+//! ## Why it has this shape
 //!
-//! `test/contracts.c` was the other one until Phase 11 Part 22 took the last
-//! `test/*.c` contract and deleted it. The difference between them was never
-//! the language the assertions were written in; it was which side of a symbol
-//! table the contract sat on, and that is what this file's shape is still for.
-//!
-//! A C contract linked `libjanet.a`. Every call it made was therefore resolved
-//! by the linker, which is to say across the C ABI, and Zig will not put an
-//! error union on a C-ABI function. So a raise could not reach it as a value:
-//! it reached it as the out-of-band report `janet_zig_c_raise_record` sets and
-//! `janet_contract_raised` consumed, with `test/support.zig`'s adapter pool
-//! underneath to let C define a cfunction that is no longer a C function.
-//! That whole apparatus was the last of Phase 10's migration scaffold and is
-//! gone with it.
+//! A contract that linked `libjanet.a` would have every call resolved by the
+//! linker, which is to say across the C ABI, and Zig will not put an error
+//! union on a C-ABI function. A raise could not reach it as a value: it would
+//! arrive as an out-of-band report, with an adapter pool underneath to let C
 //!
 //! A contract in *this* binary is on the near side. `build.zig` builds the
 //! runtime's module graph a second time with this file as its root, so a
@@ -35,11 +26,12 @@
 //!
 //! ## What did not change
 //!
-//! Everything `test/contracts.c`'s header comment says about the shape. One
-//! file per subject, each with its own `janet_init`/`janet_deinit` pair so
+//! ## The shape
+//!
+//! One file per subject, each with its own `janet_init`/`janet_deinit` pair so
 //! that none inherits another's heap; they run in the order this file
 //! declares them; with no argument every compiled-in contract runs, and with
-//! one argument only the contract named runs, which is what `port/contract.sh`
+//! one argument only the contract named runs, which is what `tools/testing/contract.sh`
 //! drives.
 //!
 //! ## Adding one
@@ -48,8 +40,8 @@
 //! list below under the same condition `build.zig` applies to its subsystem.
 //! Those conditions are read from `options`, which is the build's own
 //! `Selection` — so a contract exists exactly when its subject does, and the
-//! two cannot drift. The C driver needed the condition written twice, once in
-//! `build.zig` and once in `test/contracts.h`.
+//! two cannot drift. A driver on the far side of a symbol table needs that
+//! condition written twice, once in the build and once in its own list.
 //!
 //! Not every `test/*.zig` belongs here. `harness.zig` is the shared vocabulary
 //! and `fuzz.zig` is the four fuzz targets, which cannot be contracts because
@@ -63,7 +55,7 @@ const options = @import("options");
 
 // The runtime, pulled in for its `export`s rather than for its namespace.
 //
-// This line is what makes the binary a Janet. `src/zig/subsystems/root.zig`
+// This line is what makes the binary a Janet. `src/zig/root.zig`
 // emits every subsystem's `export`s from a container-level `comptime` block,
 // and a module nothing references is never analysed -- so without this,
 // `build.zig` hands the compilation a whole runtime and the link fails on
@@ -86,7 +78,7 @@ const Contract = struct {
 ///
 /// The file is passed as a type rather than derived from the name, because
 /// `@import`'s operand must be a literal and `name ++ ".zig"` is not one. So
-/// the name appears twice on each line; it is the string `port/contract.sh`
+/// the name appears twice on each line; it is the string `tools/testing/contract.sh`
 /// passes on the command line, and the only thing that checks it against the
 /// file is that both are on the same line.
 fn with(
@@ -189,7 +181,7 @@ const contracts: []const Contract = blk: {
 /// `leaks` process is told there is a heap to scan. A `fork()`ed child carries
 /// the dylib in its inherited image, stops itself the same way, and nothing
 /// ever resumes it: `leaks` is watching the parent. The parent's `waitpid`
-/// then never returns, which is the hang `port/phase_11.md`'s rule 65 recorded
+/// then never returns, which is the hang the leak check's own header records
 /// as "never returns under it" and read as *not* a fork.
 ///
 /// An `exec`ed child is safe -- the dylib's initializer strips itself from
@@ -199,7 +191,7 @@ const contracts: []const Contract = blk: {
 ///
 /// Stopping here instead reaches the same heap by a route with no interposer
 /// in it, so a child exits normally and the leak check covers all three.
-/// `port/leaks.sh` drives it.
+/// `tools/testing/leaks.sh` drives it.
 fn pauseForLeakCheck() void {
     if (builtin.os.tag == .windows) return;
     if (std.c.getenv("JANET_CONTRACT_PAUSE") == null) return;
@@ -209,7 +201,7 @@ fn pauseForLeakCheck() void {
 /// No argument runs every contract in list order; one or more names run those,
 /// in the order given, **in one process**.
 ///
-/// The subset form arrived in Phase 11 Part 27 and the reason is worth stating,
+/// The subset form is not convenience.
 /// because it is not convenience. Every contract opens with `janet_init` and
 /// closes with `janet_deinit`, so the no-argument run is sixty-five teardowns
 /// and re-initialisations of the whole runtime — and `FOUND.md` records that

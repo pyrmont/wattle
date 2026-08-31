@@ -10,8 +10,7 @@
 //! ## Two halves
 //!
 //! The first walks the fifteen refusals in order. The second is about the
-//! *instruction table*, which Phase 10 Part 7 moved here from `bytecode.c`,
-//! and it is the more interesting one.
+//! *instruction table*, and it is the more interesting one.
 //!
 //! The table gives each opcode a shape — which of its operand bytes are slots,
 //! which are indices into another table, which are immediates, which are
@@ -34,13 +33,12 @@
 //! an opcode up, and the terminator check masks with `0xFF`. So a breakpoint
 //! on the *last* instruction turns a valid function into refusal 9, and a
 //! breakpoint anywhere else is invisible. That is the C original's behaviour
-//! and `port/FOUND.md` has the entry; it is asserted here so a port cannot
+//! and `FOUND.md` has the entry; it is asserted here so a port cannot
 //! quietly repair it.
 
 const std = @import("std");
 const types = @import("types");
 const constants = @import("constants");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 const verify = @import("subsystems").verify;
 

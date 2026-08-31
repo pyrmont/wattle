@@ -1,55 +1,21 @@
-//! Files: `src/core/io.c` entire, less a variadic and a directory test that
-//! neither could move. The `core/file` abstract type and its five callbacks,
-//! the twenty-two cfunctions of the `file/` and `print`/`printf` families, the
+//! Files: the `core/file` abstract type and its five callbacks, the
+//! twenty-two cfunctions of the `file/` and `print`/`printf` families, the
 //! eight public `JanetFile` entry points, the mode-string kernels, the stream
-//! host operations, and the registration. This is Phase 10 Part 11.
+//! host operations, and the registration.
 //!
-//! ## No new selector
+//! ## The raise shape
 //!
-//! `-Dio-core` already owned this subject. Part 5's rule -- a selector's
-//! subject is a subsystem, not a file -- and Part 6's application of it are
-//! what decide this: the surface goes to the selector that already holds the
-//! kernel it sits on, and the count stays at fifty-eight. The name keeps the
-//! `core` suffix four other selectors carry for "a kernel whose cfunction
-//! surface is still in C", which stops being true here; renaming it would move
-//! every matrix entry and every acceptance table for nothing.
+//! Every `janet_panic` Janet writes is an error return here: a cfunction that
+//! decides to raise returns `raise.Raising(Value)`, and one that makes no such
+//! decision is written as the plain `raise.CFunction` it is. Twenty of the
+//! twenty-two raise; the two that cannot are `flush` and `eflush`, whose three
+//! arms are "flush it", "flush the default handle" and "do nothing".
 //!
-//! ## What is left in C, and why it cannot move
-//!
-//! `janet_dynprintf` is a C variadic and public API, so its signature is the
-//! contract. Part 4's rule binds: Zig can *call* a C variadic but cannot
-//! define one. It stays in `io.c` with the three `janet_zig_std*` handles it
-//! needs -- `stderr`, `stdout` and `stdin` are macros that translate-c renders
-//! three incompatible ways across this project's targets -- and all four go
-//! with `janet_panicf` in Part 17. The one thing that body cannot do for
-//! itself is the writeability check, because that raises; it calls
-//! `janet_zig_io_assert_writeable` below.
-//!
-//! ## The raise shape, and why the marker is here
-//!
-//! Every `janet_panic` in the original is an error return: a cfunction that
-//! decides to raise is an `Impl` returning `raise.Raising(Janet)` behind a
-//! two-line abi, and one that makes no such decision stays the plain
-//! `JanetCFunction` it is. Twenty of the twenty-two raise; the two that cannot
-//! are `flush` and `eflush`, whose three arms are "flush it", "flush the
-//! default handle" and "do nothing". That is Part 10's finding applied rather
-//! than restated.
-//!
-//! The file is nonetheless jump-transparent, and gains the marker in this
-//! increment. It made no raise-capable call at all before: the kernels are
-//! pure and the host operations report failure by returning. The surface
-//! calls `janet_arity`, `janet_getabstract` and nine of their relatives, which
-//! are `-Dargs-core`'s abis; `janet_buffer_format`, which is `-Dpp`'s; and
-//! `janet_sandbox_assert`, which is `-Dvm-lifecycle`'s. Each crosses the C ABI
-//! and therefore raises by jumping. Part 4's seam rule is why that cannot be
-//! avoided here.
-//!
-//! One consequence is visible in `printfImplX`: the C original builds a
-//! scratch buffer, formats into it, and frees its backing store by hand. A
-//! conversion that raises inside `janet_buffer_format` jumps past that free in
-//! C and jumps past it here too, which is the reproduction rather than a
-//! regression -- and is exactly the `defer` the marker forbids.
-//!
+//! One consequence is visible in `printfImplX`: Janet builds a scratch buffer,
+//! formats into it, and frees its backing store by hand, and a raise inside
+//! the formatting skips that free. This reproduces that rather than repairing
+//! it -- nothing leaks either way, because scratch memory is reclaimed by the
+//! next collection.
 //! ## `FILE`, and the two things translate-c will not give this file
 //!
 //! `FILE` is opaque by definition, so a stream crosses the kernel boundary as
@@ -71,17 +37,17 @@
 //! rule prevents, and a hand-written layout per platform is
 //! what `os_stat.zig` declined to do with `jstat_t`. So the test keeps a
 //! test lives in `host_stat.zig`, beside the other reader of a host stat
-//! structure, and this file imports it. It was `io.c`'s `janet_zig_io_isdir`
-//! and was reached back through that symbol until Phase 11 Part 20.
+//! test lives in `os/fs/host_stat.zig`, beside the other reader of a host stat
+//! structure, and this file imports it.
 //!
 //! The marshalling path reaches a descriptor, through `dup` and `fdopen`.
-//! Plan 9 spells `dup` with two arguments, and the C original has a branch for
-//! it; there is no Zig target for Plan 9 in this project, so that branch is
-//! recorded here and not written. A Plan 9 build selects `-Dio-core=c`.
+//! Plan 9 spells `dup` with two arguments; there is no Zig target for Plan 9
+//! in this project, so that branch is recorded here and not written.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types");
+const repr = @import("repr");
 const corefn = @import("corefn");
 const raise = @import("raise");
 const registry = @import("registry.zig");
@@ -96,8 +62,6 @@ const vm_entry = @import("vm/entry.zig");
 const abstract_type = @import("abstract_type.zig");
 const method_type = @import("method_type.zig");
 const utils = @import("utils.zig");
-const vm_state = @import("vm/lifecycle.zig");
-const kind = @import("value/helpers/kind.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const args_core = @import("args.zig");
 const buffers = @import("value/buffers.zig");
@@ -113,13 +77,12 @@ const file_update: i32 = 8;
 const file_binary: i32 = 64;
 const file_nonil: i32 = 512;
 
-/// Mirrors the `JANET_SANDBOX_FS*` flags in `src/include/janet.h`. This
-/// subsystem reports which of them a mode string implies; C performs the
-/// assertion, because a forbidden operation panics.
-const sandbox_fs_write: u32 = 32;
-const sandbox_fs_read: u32 = 64;
-const sandbox_fs_temp: u32 = 1024;
-const sandbox_fs: u32 = sandbox_fs_write | sandbox_fs_read | sandbox_fs_temp;
+// The four `JANET_SANDBOX_FS*` flags this file reports were *restated here as
+// bare numbers* -- 32, 64, 1024 and their or -- with a comment saying they
+// mirror Janet's header. That mirror was invisible to every instrument in the
+// tree and would have survived a change to those values. `types.Sandbox` is
+// the one declaration, and naming a member is the whole of what this file
+// needs.
 
 /// What `scanMode` reports. These were the `JANET_IO_MODE_*` codes in
 /// `src/core/io.c`, and this is now the only place they are written down:
@@ -148,12 +111,12 @@ const fd_cloexec: c_int = 1;
 
 /// libc's `FILE`, from `types.zig` rather than declared again here.
 ///
-/// It was a local `opaque {}` until Phase 12 increment 5c, which is how the
-/// tree came to have **two** `FILE` types: this one and `types.FILE`. Both
-/// are opaque and so ABI-identical, and nothing could go wrong at runtime --
-/// but they are distinct Zig types, so the five `janet_*file` abis declared
-/// one and defined the other. The declaration/definition check is what said
-/// so; nothing before it compared the two halves.
+/// It was a local `opaque {}` once, which is how the tree came to have **two**
+/// `FILE` types. Both are opaque and so ABI-identical, and nothing could go
+/// wrong at runtime -- but they are distinct Zig types, so the five
+/// `janet_*file` abis declared one and defined the other.
+/// `cabi_check.zig` is what said so; nothing before it compared the two
+/// halves.
 pub const FILE = types.FILE;
 
 extern fn fopen(path: [*:0]const u8, mode: [*:0]const u8) callconv(.c) ?*FILE;
@@ -177,15 +140,13 @@ extern fn _fseeki64(file: ?*FILE, offset: i64, whence: c_int) callconv(.c) c_int
 extern fn _ftelli64(file: ?*FILE) callconv(.c) i64;
 
 // The sixteen stream kernels below were `@export`ed under `janet_io_*` names
-// so that `io.c` could reach them, and one of the sixteen still is.
+// so that C could reach them, and one of the sixteen still is.
 //
-// `janet_io_write` keeps its symbol because `pp_format.zig` is a real caller
+// `janet_io_write` keeps its symbol because `pp/format.zig` is a real caller
 // and reaches it deliberately by symbol: importing this file would make the
 // printer depend on the whole io surface, which the note beside that
-// declaration explains and Phase 11 Part 20 did not overrule. The other
-// fifteen had no caller anywhere -- `io.c` went in Phase 10 Part 18 and
-// `test/io_core.c` in Part 20 -- so they are ordinary Zig functions now and
-// the contract reaches them by import.
+// declaration explains. The other fifteen have no caller at all, so they are
+// ordinary Zig functions and the contract reaches them by import.
 
 /// Classify an `file/open` mode string.
 ///
@@ -202,11 +163,11 @@ pub fn scanMode(
     mode: [*]const u8,
     len: i32,
     flags_out: *i32,
-    sandbox_out: *u32,
+    sandbox_out: *types.Sandbox,
     index_out: *i32,
 ) i32 {
     flags_out.* = 0;
-    sandbox_out.* = 0;
+    sandbox_out.* = types.Sandbox.none;
     index_out.* = 0;
     if (len < 1 or len > 10) return mode_bad_length;
 
@@ -214,15 +175,15 @@ pub fn scanMode(
     switch (mode[0]) {
         'w' => {
             flags |= file_write;
-            sandbox_out.* |= sandbox_fs_write;
+            sandbox_out.* = sandbox_out.with(types.Sandbox.of(&.{"fs_write"}));
         },
         'a' => {
             flags |= file_append;
-            sandbox_out.* |= sandbox_fs;
+            sandbox_out.* = sandbox_out.with(types.Sandbox.fs);
         },
         'r' => {
             flags |= file_read;
-            sandbox_out.* |= sandbox_fs_read;
+            sandbox_out.* = sandbox_out.with(types.Sandbox.of(&.{"fs_read"}));
         },
         else => return mode_bad_first,
     }
@@ -233,7 +194,7 @@ pub fn scanMode(
         switch (mode[@intCast(index)]) {
             '+' => {
                 if (flags & file_update != 0) return repeated(flags_out);
-                sandbox_out.* |= sandbox_fs_write;
+                sandbox_out.* = sandbox_out.with(types.Sandbox.of(&.{"fs_write"}));
                 flags |= file_update;
             },
             'b' => {
@@ -373,7 +334,7 @@ fn writeStream(file: ?*FILE, src: [*]const u8, count: usize) i32 {
     return @intCast(fwrite(src, count, 1, file));
 }
 
-pub fn write(handle: *anyopaque, src: [*]const u8, count: usize) i32 {
+pub fn write(handle: ?*anyopaque, src: [*]const u8, count: usize) i32 {
     return writeStream(stream(handle), src, count);
 }
 
@@ -441,17 +402,15 @@ pub fn tell(handle: *anyopaque) i64 {
 }
 
 /// Close the stream's descriptor across an exec. `fopen` has no standard flag
-/// for this, which is why the C implementation set it separately.
+/// for this, which is why Janet sets it separately.
 ///
-/// The handle-taking abi over this -- `janet_io_set_cloexec` -- went in Phase
-/// 11 Part 20. Its only caller was `io.c`, which Phase 10 Part 18 deleted, and
-/// nothing announced that: an `@export` with no caller links forever. This
-/// file's own use is the internal one below.
+/// There is no handle-taking abi over it. There was, with no caller, and an
+/// `@export` with no caller links forever without anything saying so.
 fn setCloexecStream(file: ?*FILE) i32 {
     return std.c.fcntl(fileno(file), std.c.F.SETFD, fd_cloexec);
 }
 
-fn stream(handle: *anyopaque) *FILE {
+fn stream(handle: ?*anyopaque) ?*FILE {
     return @ptrCast(handle);
 }
 
@@ -483,25 +442,8 @@ extern fn fdopen(fd: c_int, mode: [*:0]const u8) callconv(.c) ?*FILE;
 extern fn _dup(fd: c_int) callconv(.c) c_int;
 extern fn _fdopen(fd: c_int, mode: [*:0]const u8) callconv(.c) ?*FILE;
 
-/// `src/core/util.h`, declared here rather than in `cabi.zig`.
-///
-/// `janet_buffer_format` is `-Dpp`'s abi, so a bad conversion inside it
-/// raises by jumping through the frames below; see the seam note at the head
-/// of this file.
-extern fn janet_strerror(e: c_int) callconv(.c) [*:0]const u8;
-extern fn janet_buffer_format(
-    b: *types.JanetBuffer,
-    strfrmt: [*]const u8,
-    argstart: i32,
-    argc: i32,
-    argv: [*]types.Janet,
-) callconv(.c) void;
-
 /// The directory test, which needs `struct stat` and therefore lives with the
-/// other host-structure reader. It was `io.c`'s `janet_zig_io_isdir` and was
-/// reached back through that symbol until Phase 11 Part 20; `host_stat.zig`
-/// has been the definition since Phase 10 Part 18, so the symbol was one Zig
-/// file calling another through the linker.
+/// other host-structure reader, `os/fs/host_stat.zig`. This file imports it.
 const host_stat = @import("os/fs/host_stat.zig");
 
 inline fn errno() c_int {
@@ -535,17 +477,17 @@ inline fn streamOfHandle(handle: *anyopaque) ?*FILE {
     return @ptrCast(handle);
 }
 
-fn getFile(argv: []types.Janet, n: i32) raise.Raising(*types.JanetFile) {
-    return @ptrCast(@alignCast(try args_core.getAbstract(argv, n, abstract_type.stored(&fileType))));
+fn getFile(argv: []repr.Value, n: i32) raise.Raising(*types.JanetFile) {
+    return @ptrCast(@alignCast(try args_core.getAbstract(argv, n, &fileType)));
 }
 
 /// `JANET_EXIT`, which `janet_assert` expands to. A macro, so no translation
 /// ever carried it.
 ///
 /// Two things here are not the C original's. The location reported is this
-/// file's rather than `io.c`'s, and an embedder's own `JANET_EXIT` is a
-/// preprocessor override that no Zig caller can see; `src/zig/README.md`
-/// records both. The message is assembled at compile time and written with
+/// file's rather than the C original's, and an embedder's own `JANET_EXIT` is
+/// a preprocessor override that no Zig caller can see. The message is
+/// assembled at compile time and written with
 /// `fwrite` rather than handed to `fprintf`, because `fprintf` takes the
 /// *translated* `FILE *` and this file deliberately does not name that type.
 fn exitWith(comptime where: std.builtin.SourceLocation, comptime message: []const u8) noreturn {
@@ -557,21 +499,17 @@ fn exitWith(comptime where: std.builtin.SourceLocation, comptime message: []cons
     c.abort();
 }
 
-fn fileGC(pointer: ?*anyopaque, len: usize) callconv(.c) c_int {
-    _ = len;
-    const iof: *types.JanetFile = @ptrCast(@alignCast(pointer));
+fn fileGC(iof: *types.JanetFile, _: usize) c_int {
     _ = closeFile(iof);
     return 0;
 }
 
-fn fileGet(pointer: ?*anyopaque, key: types.Janet, out: *types.Janet) raise.Raising(c_int) {
-    _ = pointer;
-    if (kind.checkType(key, constants.JANET_KEYWORD) == 0) return 0;
+fn fileGet(_: *types.JanetFile, key: repr.Value, out: *repr.Value) raise.Raising(c_int) {
+    if (!repr.checkType(key, repr.Tag.keyword)) return 0;
     return args_core.getmethod(wrap.toKeyword(key), @ptrCast(&file_methods), out);
 }
 
-fn fileNext(pointer: ?*anyopaque, key: types.Janet) raise.Raising(types.Janet) {
-    _ = pointer;
+fn fileNext(_: *types.JanetFile, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(&file_methods), key);
 }
 
@@ -579,12 +517,11 @@ fn fileNext(pointer: ?*anyopaque, key: types.Janet) raise.Raising(types.Janet) {
 /// do. A closeable file is duplicated so that the marshalled copy owns its own
 /// descriptor; a borrowed one -- `stdout` and its kin -- is written as it
 /// stands.
-fn fileMarshal(pointer: ?*anyopaque, ctx: *types.JanetMarshalContext) raise.Raising(void) {
-    const iof: *types.JanetFile = @ptrCast(@alignCast(pointer));
+fn fileMarshal(iof: *types.JanetFile, ctx: *types.JanetMarshalContext) raise.Raising(void) {
     if (marsh.marshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("cannot marshal file in safe mode");
     }
-    marsh.marshalAbstract(ctx, pointer);
+    marsh.marshalAbstract(ctx, iof);
     const borrowed = iof.flags & file_not_closeable != 0;
     const fno: c_int = if (windows)
         (if (borrowed) _fileno(streamOf(iof)) else _dup(_fileno(streamOf(iof))))
@@ -600,7 +537,7 @@ fn fileMarshal(pointer: ?*anyopaque, ctx: *types.JanetMarshalContext) raise.Rais
 /// The mode is rebuilt from the flag word rather than carried, which is why
 /// `modeFromFlags` is not the inverse of `scanMode`: `fdopen` only has to
 /// accept it.
-fn fileUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
+fn fileUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*types.JanetFile) {
     if (marsh.unmarshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("cannot unmarshal file in safe mode");
     }
@@ -621,23 +558,14 @@ fn fileUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(?*anyopaque) {
     return iof;
 }
 
-pub const fileType: abstract_type.AbstractType = .{
+pub const fileType = abstract_type.define(types.JanetFile, .{
     .name = "core/file",
     .gc = fileGC,
-    .gcmark = null,
     .get = fileGet,
-    .put = null,
     .marshal = fileMarshal,
     .unmarshal = fileUnmarshal,
-    .tostring = null,
-    .compare = null,
-    .hash = null,
     .next = fileNext,
-    .call = null,
-    .length = null,
-    .bytes = null,
-    .gcperthread = null,
-};
+});
 
 // ==========================================================================
 // Opening, and the checks around it
@@ -650,7 +578,7 @@ pub const fileType: abstract_type.AbstractType = .{
 /// so a sandboxed build refuses `:wq` for the sandbox rather than for the `q`.
 fn checkFlags(str: types.JanetString) raise.Raising(i32) {
     var flags: i32 = 0;
-    var sandbox_flags: u32 = 0;
+    var sandbox_flags: types.Sandbox = .{};
     var index: i32 = 0;
     const status = scanMode(str, types.stringHead(str).length, &flags, &sandbox_flags, &index);
     if (status == mode_bad_length) {
@@ -672,7 +600,7 @@ fn checkFlags(str: types.JanetString) raise.Raising(i32) {
 /// is a GNU extension -- so a file this runtime will close is marked
 /// separately, and one it only borrows is left alone.
 fn makef(f: ?*FILE, flags: i32, bufsize: usize) *types.JanetFile {
-    const iof: *types.JanetFile = @ptrCast(@alignCast(abstracts.new(abstract_type.stored(&fileType), @sizeOf(types.JanetFile))));
+    const iof: *types.JanetFile = @ptrCast(@alignCast(abstracts.new(&fileType, @sizeOf(types.JanetFile))));
     setStreamOf(iof, f);
     iof.flags = flags;
     iof.vbufsize = bufsize;
@@ -682,18 +610,18 @@ fn makef(f: ?*FILE, flags: i32, bufsize: usize) *types.JanetFile {
     return iof;
 }
 
-fn cfunTemp(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(sandbox_fs_temp);
+fn cfunTemp(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_temp"}));
 
     try args_core.fixarity(argv, 0);
     // XXX use mkostemp when we can to avoid CLOEXEC race.
     const tmp = temp() orelse {
-        return pp_format.panicf("unable to create temporary file - %s", .{janet_strerror(errno())});
+        return pp_format.panicf("unable to create temporary file - %s", .{utils.strerrorSafe(errno())});
     };
     return makefile(@ptrCast(tmp), file_write | file_read | file_binary);
 }
 
-fn cfunFopen(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunFopen(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
     const fname = try args_core.getString(argv, 0);
     var fmode: types.JanetString = undefined;
@@ -705,7 +633,7 @@ fn cfunFopen(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Ja
         flags = try checkFlags(fmode);
     } else {
         fmode = @ptrCast("r");
-        try vm_lifecycle.sandboxAssert(sandbox_fs_read);
+        try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_read"}));
         flags = file_read;
     }
     const f = open(@ptrCast(fname), @ptrCast(fmode));
@@ -727,7 +655,7 @@ fn cfunFopen(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Ja
     }
     if (f) |handle| return wrap.fromAbstract(makef(@ptrCast(handle), flags, bufsize));
     if (flags & file_nonil != 0) {
-        return pp_format.panicf("failed to open file %s: %s", .{ fname, janet_strerror(errno()) });
+        return pp_format.panicf("failed to open file %s: %s", .{ fname, utils.strerrorSafe(errno()) });
     }
     return wrap.fromNil();
 }
@@ -753,13 +681,13 @@ fn readChunk(iof: *types.JanetFile, buffer: *types.JanetBuffer, n_bytes_max: i32
     buffer.count += @intCast(nread);
 }
 
-fn cfunFread(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunFread(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 3);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
     const buffer = if (@as(i32, @intCast(argv.len)) == 2) buffers.new(0) else try args_core.getBuffer(argv, 2);
     const bufstart = buffer.*.count;
-    if (kind.checkType(argv[1], constants.JANET_KEYWORD) != 0) {
+    if (repr.checkType(argv[1], repr.Tag.keyword)) {
         const sym = wrap.toKeyword(argv[1]);
         if (utils.cstrcmp(sym, "all") == 0) {
             var size_before: i32 = undefined;
@@ -788,7 +716,7 @@ fn cfunFread(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Ja
     return wrap.fromBuffer(buffer);
 }
 
-fn cfunFwrite(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunFwrite(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -810,15 +738,12 @@ fn cfunFwrite(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.J
     return argv[0];
 }
 
-// `dynprintf` moved to `pp_format.zig` in Part 18. It is one of the four
-// entry points the C variadic surface used to hold -- `janet_formatc`,
-// `janet_formatb`, `janet_panicf` and this -- and the other three were always
-// in `pp.c`. Its format string is `comptime`, so a caller instantiates it
-// rather than calling it, and a *contract* for it has to be compiled beside
-// the engine; keeping it here would have meant compiling all of `io_core.zig`
-// into that contract's module. What it needs from this file is three symbols
-// it takes through the C ABI: `janet_zig_io_assert_writeable`,
-// `janet_io_write` and `janet_file_type`.
+// `dynprintf` lives in `pp/format.zig`, beside the engine. Its format string
+// is `comptime`, so a caller instantiates it rather than calling it, and a
+// *contract* for it has to be compiled beside the engine; keeping it here
+// would have meant compiling all of this file into that contract's module.
+// What it needs from here is three symbols it takes through the C ABI:
+// `janet_zig_io_assert_writeable`, `janet_io_write` and `janet_file_type`.
 
 fn assertWriteable(iof: *types.JanetFile) raise.Raising(void) {
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -827,14 +752,13 @@ fn assertWriteable(iof: *types.JanetFile) raise.Raising(void) {
     }
 }
 
-/// The abi `janet_dynprintf` calls. It is the only reason this check has
-/// one: every other caller is in this file. It goes with that variadic in
-/// Part 17.
+/// The abi over this check. `janet_dynprintf` is its only caller; every other
+/// caller is in this file.
 pub fn zigIoAssertWriteable(iof: *types.JanetFile) void {
     raise.reported(assertWriteable(iof));
 }
 
-fn cfunFflush(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunFflush(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const iof = try getFile(argv, 0);
     try assertWriteable(iof);
@@ -862,7 +786,7 @@ pub fn fileClose(file: *types.JanetFile) c_int {
     return closeFile(file);
 }
 
-fn cfunFclose(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunFclose(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return wrap.fromNil();
@@ -875,7 +799,7 @@ fn cfunFclose(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.J
     return wrap.fromNil();
 }
 
-fn cfunFseek(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunFseek(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 3);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -891,7 +815,7 @@ fn cfunFseek(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Ja
     return argv[0];
 }
 
-fn cfunFtell(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunFtell(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -903,8 +827,7 @@ fn cfunFtell(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Ja
 /// The method table `(:read f ...)` and `(keys f)` both walk.
 ///
 /// `janet_getmethod` scans it linearly, so the order is what `janet_nextmethod`
-/// reports and is part of the contract rather than a tidiness; Part 7 recorded
-/// the same thing about the parser's table after a mutation survived.
+/// reports and is part of the contract rather than a tidiness.
 const file_methods = [_]method_type.Method{
     .{ .name = "close", .cfun = cfunFclose },
     .{ .name = "flush", .cfun = cfunFflush },
@@ -920,10 +843,10 @@ const file_methods = [_]method_type.Method{
 // ==========================================================================
 
 pub fn dynfile(name: [*:0]const u8, def: ?*FILE) ?*FILE {
-    const x = vm_state.dyn(name);
-    if (kind.checkType(x, constants.JANET_ABSTRACT) == 0) return def;
+    const x = vm_lifecycle.dyn(name);
+    if (!repr.checkType(x, repr.Tag.abstract)) return def;
     const abstract = wrap.toAbstract(x);
-    if (types.abstractHead(abstract).type != abstract_type.stored(&fileType)) return def;
+    if (types.abstractHead(abstract).type != &fileType) return def;
     const iof: *types.JanetFile = @ptrCast(@alignCast(abstract));
     return @ptrCast(iof.file);
 }
@@ -935,15 +858,15 @@ pub fn dynfile(name: [*:0]const u8, def: ?*FILE) ?*FILE {
 /// printed nothing -- which is the C original's and is why the `default` arm
 /// below cannot simply own every non-file case.
 fn printImplX(
-    argv: []types.Janet,
+    argv: []repr.Value,
     newline: bool,
     dflt_file: ?*FILE,
     offset: i32,
-    x: types.Janet,
-) raise.Raising(types.Janet) {
+    x: repr.Value,
+) raise.Raising(repr.Value) {
     var f: ?*FILE = null;
-    switch (kind.typeOf(x)) {
-        constants.JANET_BUFFER => {
+    switch (repr.typeOf(x)) {
+        repr.Tag.buffer => {
             // Special case buffer
             const buf = wrap.toBuffer(x);
             var i: i32 = offset;
@@ -951,24 +874,24 @@ fn printImplX(
             if (newline) try buffers.pushU8(buf, '\n');
             return wrap.fromNil();
         },
-        constants.JANET_FUNCTION => {
+        repr.Tag.function => {
             // Special case function
             const fun = wrap.toFunction(x);
             const buf = buffers.new(0);
             var i: i32 = offset;
             while (i < @as(i32, @intCast(argv.len))) : (i += 1) try pp_describe.toStringB(buf, argv[@intCast(i)]);
             if (newline) try buffers.pushU8(buf, '\n');
-            var args = [_]types.Janet{wrap.fromBuffer(buf)};
-            _ = try vm_entry.callImpl(fun, (&args)[0..1]);
+            var args = [_]repr.Value{wrap.fromBuffer(buf)};
+            _ = try vm_entry.call(fun, (&args)[0..1]);
             return wrap.fromNil();
         },
-        constants.JANET_NIL => {
+        repr.Tag.nil => {
             f = dflt_file;
             if (f == null) return raise.panic("cannot print to nil");
         },
-        constants.JANET_ABSTRACT => {
+        repr.Tag.abstract => {
             const abstract = wrap.toAbstract(x);
-            if (types.abstractHead(abstract).type != abstract_type.stored(&fileType)) return wrap.fromNil();
+            if (types.abstractHead(abstract).type != &fileType) return wrap.fromNil();
             const iofile: *types.JanetFile = @ptrCast(@alignCast(abstract));
             try assertWriteable(iofile);
             f = streamOf(iofile);
@@ -979,7 +902,7 @@ fn printImplX(
     while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
         var len: i32 = undefined;
         var vstr: [*]const u8 = undefined;
-        if (kind.checkType(argv[@intCast(i)], constants.JANET_BUFFER) != 0) {
+        if (repr.checkType(argv[@intCast(i)], repr.Tag.buffer)) {
             const b = wrap.toBuffer(argv[@intCast(i)]);
             vstr = b.*.data.?;
             len = b.*.count;
@@ -1001,13 +924,13 @@ fn printImplX(
     return wrap.fromNil();
 }
 
-fn printImpl(
-    argv: []types.Janet,
+fn print(
+    argv: []repr.Value,
     newline: bool,
     name: [*:0]const u8,
     dflt_file: ?*FILE,
-) raise.Raising(types.Janet) {
-    const x = vm_state.dyn(name);
+) raise.Raising(repr.Value) {
+    const x = vm_lifecycle.dyn(name);
     return printImplX(argv, newline, dflt_file, 0, x);
 }
 
@@ -1015,8 +938,8 @@ fn printImpl(
 /// they read and whether they end with a newline.
 fn Print(comptime newline: bool, comptime name: [:0]const u8, comptime handle: anytype) type {
     return struct {
-        fn cfun(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
-            return printImpl(argv, newline, name.ptr, handle());
+        fn cfun(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+            return print(argv, newline, name.ptr, handle());
         }
     };
 }
@@ -1025,7 +948,7 @@ fn Print(comptime newline: bool, comptime name: [:0]const u8, comptime handle: a
 /// and have no default handle to fall back on.
 fn XPrint(comptime newline: bool) type {
     return struct {
-        fn cfun(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+        fn cfun(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             try args_core.arity(argv, 1, -1);
             return printImplX(argv, newline, null, 1, argv[0]);
         }
@@ -1033,39 +956,39 @@ fn XPrint(comptime newline: bool) type {
 }
 
 fn printfImplX(
-    argv: []types.Janet,
+    argv: []repr.Value,
     newline: bool,
     dflt_file: ?*FILE,
     offset: i32,
-    x: types.Janet,
-) raise.Raising(types.Janet) {
+    x: repr.Value,
+) raise.Raising(repr.Value) {
     var f: ?*FILE = null;
     const fmt = try args_core.getCString(argv, offset);
-    switch (kind.typeOf(x)) {
-        constants.JANET_BUFFER => {
+    switch (repr.typeOf(x)) {
+        repr.Tag.buffer => {
             // Special case buffer
             const buf = wrap.toBuffer(x);
             try pp_format.bufferFormat(buf, fmt, offset, argv);
             if (newline) try buffers.pushU8(buf, '\n');
             return wrap.fromNil();
         },
-        constants.JANET_FUNCTION => {
+        repr.Tag.function => {
             // Special case function
             const fun = wrap.toFunction(x);
             const buf = buffers.new(0);
             try pp_format.bufferFormat(buf, fmt, offset, argv);
             if (newline) try buffers.pushU8(buf, '\n');
-            var args = [_]types.Janet{wrap.fromBuffer(buf)};
-            _ = try vm_entry.callImpl(fun, (&args)[0..1]);
+            var args = [_]repr.Value{wrap.fromBuffer(buf)};
+            _ = try vm_entry.call(fun, (&args)[0..1]);
             return wrap.fromNil();
         },
-        constants.JANET_NIL => {
+        repr.Tag.nil => {
             f = dflt_file;
             if (f == null) return raise.panic("cannot print to nil");
         },
-        constants.JANET_ABSTRACT => {
+        repr.Tag.abstract => {
             const abstract = wrap.toAbstract(x);
-            if (types.abstractHead(abstract).type != abstract_type.stored(&fileType)) return wrap.fromNil();
+            if (types.abstractHead(abstract).type != &fileType) return wrap.fromNil();
             const iofile: *types.JanetFile = @ptrCast(@alignCast(abstract));
             // A closed file is reported differently here than by
             // `assertWriteable`, which would say "file is closed"; the C
@@ -1095,28 +1018,28 @@ fn printfImplX(
     return wrap.fromNil();
 }
 
-fn printfImpl(
-    argv: []types.Janet,
+fn printf(
+    argv: []repr.Value,
     newline: bool,
     name: [*:0]const u8,
     dflt_file: ?*FILE,
-) raise.Raising(types.Janet) {
+) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
-    const x = vm_state.dyn(name);
+    const x = vm_lifecycle.dyn(name);
     return printfImplX(argv, newline, dflt_file, 0, x);
 }
 
 fn Printf(comptime newline: bool, comptime name: [:0]const u8, comptime handle: anytype) type {
     return struct {
-        fn cfun(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
-            return printfImpl(argv, newline, name.ptr, handle());
+        fn cfun(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+            return printf(argv, newline, name.ptr, handle());
         }
     };
 }
 
 fn XPrintf(comptime newline: bool) type {
     return struct {
-        fn cfun(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+        fn cfun(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             try args_core.arity(argv, 2, -1);
             return printfImplX(argv, newline, null, 1, argv[0]);
         }
@@ -1126,12 +1049,12 @@ fn XPrintf(comptime newline: bool) type {
 /// Flush a dynamic binding if it names a file, and do nothing at all if it
 /// names anything else. Neither `flush` nor `eflush` can fail.
 fn flusher(name: [*:0]const u8, dflt_file: ?*FILE) void {
-    const x = vm_state.dyn(name);
-    switch (kind.typeOf(x)) {
-        constants.JANET_NIL => _ = flushStream(dflt_file),
-        constants.JANET_ABSTRACT => {
+    const x = vm_lifecycle.dyn(name);
+    switch (repr.typeOf(x)) {
+        repr.Tag.nil => _ = flushStream(dflt_file),
+        repr.Tag.abstract => {
             const abstract = wrap.toAbstract(x);
-            if (types.abstractHead(abstract).type != abstract_type.stored(&fileType)) return;
+            if (types.abstractHead(abstract).type != &fileType) return;
             const iofile: *types.JanetFile = @ptrCast(@alignCast(abstract));
             _ = flushStream(streamOf(iofile));
         },
@@ -1141,7 +1064,7 @@ fn flusher(name: [*:0]const u8, dflt_file: ?*FILE) void {
 
 fn Flush(comptime name: [:0]const u8, comptime handle: anytype) type {
     return struct {
-        fn cfun(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+        fn cfun(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             try args_core.fixarity(argv, 0);
 
             flusher(name.ptr, handle());
@@ -1154,37 +1077,29 @@ fn Flush(comptime name: [:0]const u8, comptime handle: anytype) type {
 // The public C API
 // ==========================================================================
 
-pub fn janet_getjfileImpl(argv: []const types.Janet, n: i32) raise.Raising(*types.JanetFile) {
-    return @ptrCast(@alignCast(try args_core.getAbstract(argv, n, abstract_type.stored(&fileType))));
+pub fn getjfile(argv: []const repr.Value, n: i32) raise.Raising(*types.JanetFile) {
+    return @ptrCast(@alignCast(try args_core.getAbstract(argv, n, &fileType)));
 }
 
-pub fn getjfile(argv: [*]const types.Janet, n: i32) *types.JanetFile {
-    return raise.reported(janet_getjfileImpl(argv[0..@intCast(n + 1)], n));
-}
-
-pub fn janet_getfileImpl(argv: []const types.Janet, n: i32, flags: ?*i32) raise.Raising(?*FILE) {
-    const iof: *types.JanetFile = @ptrCast(@alignCast(try args_core.getAbstract(argv, n, abstract_type.stored(&fileType))));
+pub fn getfile(argv: []const repr.Value, n: i32, flags: ?*i32) raise.Raising(?*FILE) {
+    const iof: *types.JanetFile = @ptrCast(@alignCast(try args_core.getAbstract(argv, n, &fileType)));
     if (flags) |slot| slot.* = iof.flags;
     return @ptrCast(iof.file);
-}
-
-pub fn getfile(argv: [*]const types.Janet, n: i32, flags: ?*i32) ?*FILE {
-    return raise.reported(janet_getfileImpl(argv[0..@intCast(n + 1)], n, flags));
 }
 
 pub fn makejfile(f: ?*FILE, flags: i32) *types.JanetFile {
     return makef(f, flags, bufsiz);
 }
 
-pub fn makefile(f: ?*FILE, flags: i32) types.Janet {
+pub fn makefile(f: ?*FILE, flags: i32) repr.Value {
     return wrap.fromAbstract(makef(f, flags, bufsiz));
 }
 
-pub fn checkfile(j: types.Janet) types.JanetAbstract {
-    return args_core.checkabstract(j, abstract_type.stored(&fileType));
+pub fn checkfile(j: repr.Value) types.JanetAbstract {
+    return args_core.checkabstract(j, &fileType);
 }
 
-pub fn unwrapfile(j: types.Janet, flags: ?*i32) ?*FILE {
+pub fn unwrapfile(j: repr.Value, flags: ?*i32) ?*FILE {
     const iof: *types.JanetFile = @ptrCast(@alignCast(wrap.toAbstract(j)));
     if (flags) |slot| slot.* = iof.flags;
     return @ptrCast(iof.file);
@@ -1194,8 +1109,8 @@ pub fn unwrapfile(j: types.Janet, flags: ?*i32) ?*FILE {
 // Registration
 // ==========================================================================
 
-pub fn janet_lib_ioImpl(env: *types.JanetTable) raise.Raising(void) {
-    const entries = [_]corefn.Entry{
+pub fn libIo(env: *types.JanetTable) raise.Raising(void) {
+    const entries = comptime [_]corefn.Entry{
         corefn.reg("print", &Print(true, "out", stdoutFile).cfun, @src(), "(print & xs)", "Print values to the console (standard out). Value are converted " ++
             "to strings if they are not already. After printing all values, a " ++
             "newline character is printed. Use the value of `(dyn :out stdout)` to determine " ++
@@ -1255,23 +1170,22 @@ pub fn janet_lib_ioImpl(env: *types.JanetTable) raise.Raising(void) {
             "for the relative number of bytes to seek in the file. `n` may be a real " ++
             "number to handle large files of more than 4GB. Returns the file handle."),
         corefn.reg("file/tell", &cfunFtell, @src(), "(file/tell f)", "Get the current value of the file position for file `f`."),
-        corefn.end,
     };
-    corefn.install(env, &entries);
-    try registry.registerAbstractType(abstract_type.stored(&fileType));
+    corefn.install(env, entries);
+    try registry.registerAbstractType(&fileType);
     const default_flags: i32 = file_not_closeable | file_serializable;
     corefn.def(env, "stdout", makefile(stdoutFile(), file_append | default_flags), @src(), "The standard output file.");
     corefn.def(env, "stderr", makefile(stderrFile(), file_append | default_flags), @src(), "The standard error file.");
     corefn.def(env, "stdin", makefile(stdinFile(), file_read | default_flags), @src(), "The standard input file.");
 }
 
-pub fn libIo(env: *types.JanetTable) void {
-    raise.reported(janet_lib_ioImpl(env));
+pub fn libIoAbi(env: *types.JanetTable) void {
+    raise.reported(libIo(env));
 }
 
-fn scan(mode: []const u8) struct { status: i32, flags: i32, sandbox: u32, index: i32 } {
+fn scan(mode: []const u8) struct { status: i32, flags: i32, sandbox: types.Sandbox, index: i32 } {
     var flags: i32 = 0;
-    var sandbox_flags: u32 = 0;
+    var sandbox_flags: types.Sandbox = .{};
     var index: i32 = 0;
     const status = scanMode(mode.ptr, @intCast(mode.len), &flags, &sandbox_flags, &index);
     return .{ .status = status, .flags = flags, .sandbox = sandbox_flags, .index = index };
@@ -1281,17 +1195,17 @@ test "mode scanning accepts the documented flags" {
     const r = scan("r");
     try std.testing.expectEqual(mode_ok, r.status);
     try std.testing.expectEqual(file_read, r.flags);
-    try std.testing.expectEqual(sandbox_fs_read, r.sandbox);
+    try std.testing.expectEqual(types.Sandbox.of(&.{"fs_read"}), r.sandbox);
 
     const wbn = scan("wbn");
     try std.testing.expectEqual(mode_ok, wbn.status);
     try std.testing.expectEqual(file_write | file_binary | file_nonil, wbn.flags);
-    try std.testing.expectEqual(sandbox_fs_write, wbn.sandbox);
+    try std.testing.expectEqual(types.Sandbox.of(&.{"fs_write"}), wbn.sandbox);
 
     const ap = scan("a+");
     try std.testing.expectEqual(mode_ok, ap.status);
     try std.testing.expectEqual(file_append | file_update, ap.flags);
-    try std.testing.expectEqual(sandbox_fs | sandbox_fs_write, ap.sandbox);
+    try std.testing.expectEqual(types.Sandbox.fs, ap.sandbox);
 }
 
 test "mode scanning reports where it stopped" {
@@ -1303,7 +1217,7 @@ test "mode scanning reports where it stopped" {
     const later = scan("r+q");
     try std.testing.expectEqual(mode_bad_later, later.status);
     try std.testing.expectEqual(@as(i32, 2), later.index);
-    try std.testing.expectEqual(sandbox_fs_read | sandbox_fs_write, later.sandbox);
+    try std.testing.expectEqual(types.Sandbox.of(&.{ "fs_read", "fs_write" }), later.sandbox);
 }
 
 test "a repeated flag yields the flag word the C implementation returned" {
@@ -1314,8 +1228,8 @@ test "a repeated flag yields the flag word the C implementation returned" {
     }
     // The prefix before the repeat still reports its permissions, because the
     // C loop asserted them before reaching the repeated byte.
-    try std.testing.expectEqual(sandbox_fs_read | sandbox_fs_write, scan("r++").sandbox);
-    try std.testing.expectEqual(sandbox_fs_read, scan("rbb").sandbox);
+    try std.testing.expectEqual(types.Sandbox.of(&.{ "fs_read", "fs_write" }), scan("r++").sandbox);
+    try std.testing.expectEqual(types.Sandbox.of(&.{"fs_read"}), scan("rbb").sandbox);
 }
 
 test "seek origins match whole keywords only" {

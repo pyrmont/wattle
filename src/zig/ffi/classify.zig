@@ -29,17 +29,14 @@
 //!
 //! ## Reached by import, not by symbol
 //!
-//! `ffi_layout.zig`'s note applies here and cost more: `TypeNode`, `ArgSlot`
-//! and `AllocResult` were written out twice, once here and once in
-//! `ffi_call.zig`, on either side of five `extern fn` declarations against five
-//! exported symbols that only Zig ever called. Two mirrors of three `extern
-//! struct`s with nothing comparing them — `abstract_type.zig` at least asserts
-//! its mirror field by field. Phase 11 Part 16 spent the seam when
-//! `test/ffi_classify.zig` moved inside the compilation and wanted the same
-//! import; there is one copy of each type now, and the count that used to be a
-//! parameter beside a pointer is a slice's own.
+//! `TypeNode`, `ArgSlot` and `AllocResult` were written out twice, once here
+//! and once in `ffi/call.zig`, on either side of five `extern fn` declarations
+//! against five exported symbols that only Zig ever called. Two mirrors of
+//! three `extern struct`s with nothing comparing them. There is one copy of
+//! each type now, and the count that used to be a parameter beside a pointer
+//! is a slice's own.
 //!
-//! The primitive ordinals mirror the enumerations `ffi.c` kept file-local.
+//! The primitive ordinals mirror enumerations Janet keeps file-local.
 //! `test/ffi_classify.zig` pins them, by writing the numbers out rather than by
 //! importing these declarations.
 
@@ -115,7 +112,7 @@ pub const TypeNode = extern struct {
 /// matching classifier produced and leaves holding the placement, which is not
 /// always the same: an argument that classifies into a register but finds none
 /// free is rewritten to a stack or memory spec.
-pub const ArgSlot = extern struct {
+pub const ArgSlot = struct {
     size: u64,
     prim: u32,
     spec: u32,
@@ -133,14 +130,13 @@ pub const ArgSlot = extern struct {
     ///
     /// It has to be a field because the allocator sees an `ArgSlot` and not a
     /// `Type`, and the member count is a fact about the type. Adding it is a
-    /// one-line change since Phase 11 Part 16 collapsed the three copies of
-    /// this structure into one; before that it was three, with nothing
-    /// comparing them.
+    /// one-line change now that there is one copy of this structure; there
+    /// were three, with nothing comparing them.
     hfa_members: u32,
 };
 
 /// What a convention decided for the signature as a whole.
-pub const AllocResult = extern struct {
+pub const AllocResult = struct {
     stack_count: u32,
     variant: u32,
     error_kind: u32,
@@ -150,9 +146,8 @@ pub const AllocResult = extern struct {
     /// The *outgoing* part of the frame, in words: the stack arguments the
     /// callee will read, without the by-reference payloads that follow them.
     ///
-    /// Appended in Phase 10 Part 16, and appended rather than placed where it
-    /// belongs so that the field order the two arms of this selector already
-    /// agree on is left alone. C never had to draw the distinction: one
+    /// Appended rather than placed where it belongs, so that the field order
+    /// is left alone. C never had to draw the distinction: one
     /// `alloca` served both purposes and neither half was passed as an
     /// argument. A Zig caller declares the outgoing words as parameters, so it
     /// has to know how many there are -- and must not count the payloads,
@@ -595,7 +590,7 @@ pub fn allocAapcs64(
                 // One register per member for an aggregate, one for a scalar.
                 // Sizing this by bytes gave a four-float HFA two registers
                 // where the callee reads four, and wrote its members two to a
-                // register -- `FOUND.md`, fixed in Phase 11 Part 18.
+                // register -- `FOUND.md` has it.
                 const needed_registers = if (arg.hfa_members != 0)
                     arg.hfa_members
                 else
@@ -768,7 +763,7 @@ test "aapcs64 recognises a homogeneous floating-point aggregate" {
 }
 
 test "aapcs64 treats an empty struct as an ordinary aggregate" {
-    // C reads the absent first field here; the port declines to.
+    // C reads the absent first field here; this declines to.
     const empty = [_]TypeNode{structNode(0, 0, 0)};
     try std.testing.expectEqual(aapcs64_general, classifyAapcs64(&empty));
 }

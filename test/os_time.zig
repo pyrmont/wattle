@@ -26,6 +26,7 @@
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const c = @import("cabi");
 const value = @import("subsystems").value;
 const harness = @import("harness.zig");
@@ -136,7 +137,7 @@ fn sleepingAdvancesTheMonotonicClock() void {
 var environment: *types.JanetTable = undefined;
 
 fn eval(source: [*:0]const u8) void {
-    var result: types.Janet = undefined;
+    var result: repr.Value = undefined;
     std.debug.assert(core_env.dostring(environment, source, "os-time-contract", &result) == 0);
 }
 
@@ -195,7 +196,7 @@ fn theSourcesAndFormats() void {
 fn theRefusals() void {
     const clock = harness.coreOptional("os/clock") orelse return;
     const sleep = harness.coreOptional("os/sleep") orelse return;
-    var argument: [2]types.Janet = undefined;
+    var argument: [2]repr.Value = undefined;
 
     argument[0] = value.fromBytes("nope", .keyword);
     std.debug.assert(harness.raised(clock, .{argument[0..1]}) != null);

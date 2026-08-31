@@ -21,35 +21,24 @@
 //! is a cfunction; here the subject is arithmetic, and pinning it with fixed
 //! vectors is both cheaper and stricter.
 //!
-//! ## What the migration changed
+//! ## Two things about how the subjects are reached
 //!
-//! **The kernels are reached by import.** `test/ev_core.c` hand-declared
-//! thirteen `janet_ev_*` symbols and a fourth copy of `JanetQueue`, because
-//! none of them is in a header. They were exported for an `ev.c` that Phase 10
-//! Part 18 deleted, and the only callers left were `ev_loop.zig`,
-//! `ev_channel.zig` and `ev_backend.zig` — three Zig files reaching a fourth
-//! through the symbol table. Phase 11 Part 21 converted the callers, and the
-//! thirteen symbols went with the seam.
-//!
-//! **The heap is still driven through a foreign element type.** That is the
-//! one thing the C contract did that a naive translation would have thrown
-//! away. `heapSiftDown` and `heapSiftUp` take a base pointer, a stride and the
-//! offset of the `when` field *precisely* so that they never need
-//! `JanetTimeout`, which carries a `pthread_t` on POSIX and two `HANDLE`s on
-//! Windows. Exercising them against a local `Entry` is what proves the claim;
-//! passing `c.JanetTimeout` here would assert nothing about it.
+//! **The heap is driven through a foreign element type.** `heapSiftDown` and
+//! `heapSiftUp` take a base pointer, a stride and the offset of the `when`
+//! field *precisely* so that they never need `JanetTimeout`, which carries a
+//! `pthread_t` on POSIX and two `HANDLE`s on Windows. Exercising them against
+//! a local `Entry` is what proves the claim; passing a real `JanetTimeout`
+//! here would assert nothing about it.
 //!
 //! **One assertion could not survive, and the type is why.**
-//! `janet_ev_q_pop(&q, NULL, sizeof(int32_t))` is what the C contract wrote to
+//! `janet_ev_q_pop(&q, NULL, sizeof(int32_t))` is what a C contract writes to
 //! check that an empty queue reports before it writes. `qPop` takes
 //! `*anyopaque`, so there is no null to pass. What is kept is the half that
 //! still has a subject: a pop from an empty queue leaves the caller's variable
-//! as it was. Rule 30 — say which half survived, because the next reader will
-//! look for the other.
+//! as it was -- said here because the next reader will look for the other.
 
 const std = @import("std");
 const types = @import("types");
-const c = @import("cabi");
 
 const subsystems = @import("subsystems");
 const ev_core = subsystems.ev;

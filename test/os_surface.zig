@@ -26,35 +26,26 @@
 //! this platform. Only the pair together produce a signal, and `os/proc-kill`
 //! shows a caller nothing but "it worked" or "undefined signal".
 //!
-//! ## What the migration changed
+//! ## How the subjects are reached
 //!
-//! **The stat reader and the field registry are reached by import.**
-//! `test/os_surface.c` hand-declared `janet_zig_os_stat_read` and the three
-//! `janet_os_stat_field_*` kernels, which is what they were when `os.c` still
-//! called them. `host_stat.zig` and `os_stat.zig` have been their definitions
-//! since Phase 10 Part 18 and `os_files.zig` was reaching both through the
-//! linker; Part 20 spent all four symbols. Rule 44.
+//! **The stat reader and the field registry are reached by import.** Both were
+//! hand-declared symbols while a C caller needed them, and both ends were Zig
+//! long before anything said so.
 //!
-//! **The source-map order check is no longer conditional, and the condition
-//! it carried had stopped existing.** The C contract ran that loop only under
-//! `-Dboot=zig`, because the C bootstrap recorded `src/core/os.c` for every
-//! binding however the surface was compiled. Phase 10 Part 17g deleted the
-//! `-Dboot` option, Part 18 deleted the last C source a registration could
-//! name, and Part 19 measured the image's absolute host paths at zero. Every
-//! source path in the image is `src/zig/`-relative now, so the loop runs in
-//! every configuration -- which is rule 47 arriving from `test/` rather than
-//! from `port/`.
+//! **The source-map order check is unconditional.** It once ran only under a
+//! bootstrap built from Zig, because a C bootstrap recorded a `.c` path for
+//! every binding however the surface was compiled. Every source path in the
+//! image is `src/zig/`-relative, so the loop runs in every configuration.
 //!
-//! **A reduced-OS build is skipped rather than compiled away.** `os.c`'s
-//! contract was one `#ifndef JANET_REDUCED_OS` around the whole file with an
-//! empty stub in the `#else`. The subject is still compiled in that
-//! configuration -- four `os/` functions of the forty-odd below -- so the
-//! skip says which it is rather than pretending the file does not exist.
+//! **A reduced-OS build is skipped rather than compiled away.** The subject is
+//! still compiled in that configuration -- four `os/` functions of the
+//! forty-odd below -- so the skip says which it is rather than pretending the
+//! file does not exist.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
 const harness = @import("harness.zig");
 
@@ -162,12 +153,12 @@ const expected_bindings: []const [*:0]const u8 = blk: {
     break :blk list;
 };
 
-fn bindingField(env: *types.JanetTable, name: [*:0]const u8, field: [*:0]const u8) types.Janet {
+fn bindingField(env: *types.JanetTable, name: [*:0]const u8, field: [*:0]const u8) repr.Value {
     const binding = tables.get(env, value.fromBytes(std.mem.span(name), .symbol));
-    if (harness.isType(binding, constants.JANET_TABLE)) {
+    if (harness.isType(binding, repr.Tag.table)) {
         return tables.get(wrap.toTable(binding), value.fromBytes(std.mem.span(field), .keyword));
     }
-    if (harness.isType(binding, constants.JANET_STRUCT)) {
+    if (harness.isType(binding, repr.Tag.@"struct")) {
         return structs.get(wrap.toStruct(binding), value.fromBytes(std.mem.span(field), .keyword));
     }
     return wrap.fromNil();
@@ -200,8 +191,8 @@ fn theRegistration() void {
 
     for (expected_bindings) |name| {
         const binding = tables.get(env, value.fromBytes(std.mem.span(name), .symbol));
-        assert(!harness.isType(binding, constants.JANET_NIL));
-        assert(harness.isType(binding, constants.JANET_TABLE) or harness.isType(binding, constants.JANET_STRUCT));
+        assert(!harness.isType(binding, repr.Tag.nil));
+        assert(harness.isType(binding, repr.Tag.table) or harness.isType(binding, repr.Tag.@"struct"));
         count += 1;
 
         // `corefn.reg` and `JANET_CORE_FN` both drop the source map when the
@@ -212,10 +203,10 @@ fn theRegistration() void {
         // entry, and this is what it found.
         if (!no_sourcemaps) {
             const smap = bindingField(env, name, "source-map");
-            assert(harness.isType(smap, constants.JANET_TUPLE));
+            assert(harness.isType(smap, repr.Tag.tuple));
             const tuple = wrap.toTuple(smap);
             assert(types.tupleHead(tuple).length >= 2);
-            assert(harness.isType(tuple[0], constants.JANET_STRING));
+            assert(harness.isType(tuple[0], repr.Tag.string));
             assert(args_core.checkint(tuple[1]) != 0);
 
             const file = wrap.toString(tuple[0]);
@@ -239,8 +230,8 @@ fn theRegistration() void {
     var found: i32 = 0;
     var i: i32 = 0;
     while (i < env.capacity) : (i += 1) {
-        const key = env.data.?[@intCast(i)].key;
-        if (!harness.isType(key, constants.JANET_SYMBOL)) continue;
+        const key = env.slots()[@intCast(i)].key;
+        if (!harness.isType(key, repr.Tag.symbol)) continue;
         const symbol = wrap.toSymbol(key);
         if (types.stringHead(symbol).length < 3) continue;
         if (!std.mem.eql(u8, symbol[0..3], "os/")) continue;
@@ -315,15 +306,11 @@ fn theStatRead() void {
 
     // A real path fills every slot. The three the caller never reads through
     // `numbers` -- mode, and the two permission renderings built from it --
-    // are zero rather than indeterminate, which is the contract Phase 10 Part
-    // 5's lesson asks for: "a descriptor's unwritten fields are part of its
-    // contract and nothing about the type says so".
+    // are zero rather than indeterminate: a descriptor's unwritten fields are
+    // part of its contract and nothing about the type says so.
     //
-    // Any file this repository certainly has, and the third one asked: it was
-    // `src/core/os.c` until Phase 10 Part 18 deleted every `.c` under `src/`,
-    // and `src/include/janet.h` until Phase 12 increment 5f retired the
-    // header. `build.zig` is the one file whose absence stops this contract
-    // from being built at all, which is what the fixture wanted both times.
+    // `build.zig` is the file asked for, because it is the one file whose
+    // absence stops this contract from being built at all.
     assert(host_stat.statRead("build.zig", false, &mode, &numbers) == 0);
     assert(mode != 0);
     assert(numbers[Field.mode] == 0.0);
@@ -364,7 +351,7 @@ fn theProcessType() void {
         \\(def null (file/open "/dev/null" :w))
         \\# `/usr/bin/true` stood here and at one site below. Alpine is busybox
         \\# and puts it at `/bin/true`, so both spawns died with ENOENT the first
-        \\# time this contract ran off macOS -- Phase 11 Part 24's gate.
+        \\# time this contract ran off macOS.
         \\# `/bin/sh` is already this file's dependency a dozen lines down and is
         \\# the one path every POSIX host agrees on.
         \\(def p (os/spawn ["/bin/sh" "-c" "exit 0"] :p {:out null :err null}))
@@ -382,14 +369,14 @@ fn theProcessType() void {
 /// reports "undefined signal" with the keyword in the message.
 ///
 /// Two details here are about the *sweep* rather than about signals, and both
-/// were forced by a false-catch channel Phase 10 Part 12 found in its own
-/// mutation run. A child is given an explicit stdout and stderr instead of
-/// inheriting this process's, because `mutate.py` runs a contract with
-/// `capture_output=True` and blocks until every writer to the pipe closes --
-/// including a grandchild that outlived an aborting contract. And the kill is
-/// *asserted* rather than merely performed, so a mutated `os/proc-kill` that
-/// returns without killing fails an assertion here rather than leaking a child
-/// that then holds the harness's pipe for its whole timeout.
+/// were forced by a false-catch channel a mutation run found. A child is given
+/// an explicit stdout and stderr instead of inheriting this process's, because
+/// the sweep runs a contract with its output captured and blocks until every
+/// writer to the pipe closes -- including a grandchild that outlived an
+/// aborting contract. And the kill is *asserted* rather than merely performed,
+/// so a mutated `os/proc-kill` that returns without killing fails an assertion
+/// here rather than leaking a child that then holds the harness's pipe for its
+/// whole timeout.
 ///
 /// SIGKILL is what the death assertion uses, and that is not fastidiousness:
 /// an ignored disposition is inherited across fork and exec, `nohup` ignores
@@ -426,9 +413,9 @@ fn theSignalTable() void {
 // What the suites reach but do not assert
 // ==========================================================================
 
-/// The calendar's three functions are the second area Phase 10's decision 4
-/// unparks, and `suite-os.janet` asserts nothing about any of them. Fixed
-/// timestamps rather than the current time, because the current time agrees
+/// The calendar's three functions, which `suite-os.janet` asserts nothing
+/// about. Fixed timestamps rather than the current time, because the current
+/// time agrees
 /// with itself whatever it computes.
 fn theCalendar() void {
     const env: *types.JanetTable = harness.coreEnv();
@@ -544,13 +531,12 @@ fn thePlatform() void {
         \\(assert (or (nil? (os/cpu-count)) (pos? (os/cpu-count))))
         \\# The argument is a fallback, so the answer is the count where there is
         \\# one and the fallback where there is not -- and `(os/cpu-count)` with
-        \\# no argument is exactly the test for which. This read `(= 7
-        \\# (os/cpu-count 7))` until Phase 11 Part 24, which asserts the fallback
-        \\# as though it were the answer: true on macOS, where
-        \\# `janet_os_cpu_count` has no arm at all and returns -1, and false in a
-        \\# container, where Linux answers a real count. `FOUND.md` recorded it
-        \\# as Darwin-shaped in Part 4 and the gate is where it got fixed. The
-        \\# replacement holds on both and is the stronger claim on each.
+        \\# no argument is exactly the test for which. `(= 7 (os/cpu-count 7))`
+        \\# asserts the fallback as though it were the answer: true on macOS,
+        \\# where `janet_os_cpu_count` has no arm at all and returns -1, and
+        \\# false in a Linux container, where the count is real. `FOUND.md` has
+        \\# the Darwin half. The form below holds on both hosts and is the
+        \\# stronger claim on each.
         \\(assert (= (os/cpu-count 7) (or (os/cpu-count) 7)))
     );
 }
@@ -653,9 +639,9 @@ fn theLinks() void {
 
 /// `os/rm` and the filesystem sandbox.
 ///
-/// This is the one place the port deliberately departs from the C original's
-/// behaviour, by agreement rather than by rule: `os.c` asserted no permission
-/// in `os/rm` while asserting `JANET_SANDBOX_FS_WRITE` in every one of its
+/// This is the one place the runtime deliberately departs from Janet's
+/// behaviour, by agreement rather than by rule: Janet asserts no permission in
+/// `os/rm` while asserting `JANET_SANDBOX_FS_WRITE` in every one of its
 /// neighbours, so a sandboxed program could delete any file the process could
 /// reach. `FOUND.md` keeps the entry for reporting upstream and the fix is
 /// carried here.
@@ -708,12 +694,11 @@ fn theOptionalArguments() void {
         \\(assert (= (os/date) (os/date nil)))
         \\(assert (= (os/date 0) (os/date 0 nil)))
         \\# `(os/date t)` renders UTC and `(os/date t true)` renders local, so the
-        \\# two differ only where the host's zone is not UTC. This asserted
-        \\# `(not= ...)` unconditionally until Phase 11 Part 24's gate ran the
-        \\# container, where the zone *is* UTC and the two coincide -- a claim
-        \\# about the developer's machine wearing the shape of a claim about the
-        \\# argument. Both replacements are portable and each is stronger than
-        \\# what it replaces.
+        \\# two differ only where the host's zone is not UTC. Asserting
+        \\# `(not= ...)` unconditionally is a claim about the developer's machine
+        \\# wearing the shape of a claim about the argument: it fails in a
+        \\# container, where the zone *is* UTC and the two coincide. Both forms
+        \\# below are portable and each is the stronger claim.
         \\#
         \\# The no-flag branch, pinned absolutely: epoch zero is
         \\# 1970-01-01T00:00:00 UTC on every host there is.
@@ -731,11 +716,10 @@ fn theOptionalArguments() void {
         \\(assert (= (os/strftime "%Y" 0) (os/strftime "%Y" 0 nil)))
         \\(def base {:year 1970 :month 0 :month-day 0})
         \\# The `:dst` slot is observable only in a zone that *has* a daylight
-        \\# rule. Both assertions below were `(not= ...)` against whatever zone
-        \\# the host happened to be in, which is a claim about the developer's
-        \\# machine: they passed in JST and failed in the container, where the
-        \\# zone is UTC and forcing DST changes nothing. Phase 11 Part 24's gate
-        \\# is where that ran for the first time.
+        \\# rule. `(not= ...)` against whatever zone the host happened to be in
+        \\# is a claim about the developer's machine: it passes in JST and fails
+        \\# in a container, where the zone is UTC and forcing DST changes
+        \\# nothing.
         \\#
         \\# A POSIX TZ string supplies the rule without tzdata, so it is the same
         \\# zone on every host -- Alpine ships no zoneinfo and musl parses the
@@ -885,7 +869,7 @@ fn theSigaction() void {
         \\           (in (protect (os/sigaction :nosuchsignal (fn [] nil))) 1)))
         \\# A handler is entered with no arguments, so one that cannot accept
         \\# zero can never run. The C registered it and dereferenced null when
-        \\# the signal arrived; `port/FOUND.md` records that, and the refusal
+        \\# the signal arrived; `FOUND.md` records that, and the refusal
         \\# below is the agreed fix -- at registration, where the mistake is.
         \\(assert (string/has-prefix?
         \\           "signal handler must accept zero arguments"
@@ -960,9 +944,10 @@ fn section(comptime body: fn () void) void {
 pub fn run() void {
     if (reduced_os) {
         // A reduced-OS build compiles four `os/` functions and none of this
-        // file's subjects. `src/zig/README.md` records that the Janet suites
-        // cannot run against such a build at all; the library still has to
-        // link, which is what that matrix entry claims.
+        // file's subjects. The Janet suites cannot run against such a build at
+        // all -- `test/helper.janet` itself needs `os/getenv` -- so the
+        // library linking and the contracts passing is the whole of what that
+        // configuration claims.
         std.debug.print("os_surface contract skipped (reduced OS)\n", .{});
         return;
     }

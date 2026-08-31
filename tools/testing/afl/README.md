@@ -8,21 +8,21 @@ launching it and addressing any error messages.
 
 ## Fuzz the parser
 ```
-$ sh ./tools/afl/prepare_to_fuzz.sh
+$ sh ./tools/testing/afl/prepare_to_fuzz.sh
 $ export NFUZZ=1
-$ sh ./tools/afl/fuzz.sh parser
+$ sh ./tools/testing/afl/fuzz.sh parser
 Ctrl+C when done to close all fuzzer terminals.
-$ sh ./tools/afl/aggregate_cases.sh parser
+$ sh ./tools/testing/afl/aggregate_cases.sh parser
 $ ls ./fuzz_out/parser_aggregated/
 ```
 
 ## Fuzz the unmarshaller
 ```
-$ janet ./tools/afl/generate_unmarshal_testcases.janet
-$ sh ./tools/afl/prepare_to_fuzz.sh
+$ janet ./tools/testing/afl/generate_unmarshal_testcases.janet
+$ sh ./tools/testing/afl/prepare_to_fuzz.sh
 $ export NFUZZ=1
-$ sh ./tools/afl/fuzz.sh unmarshal
+$ sh ./tools/testing/afl/fuzz.sh unmarshal
 Ctrl+C when done to close all fuzzer terminals.
-$ sh ./tools/afl/aggregate_cases.sh unmarshal
+$ sh ./tools/testing/afl/aggregate_cases.sh unmarshal
 $ ls ./fuzz_out/unmarshal_aggregated/
 ```

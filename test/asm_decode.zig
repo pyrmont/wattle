@@ -33,17 +33,17 @@
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const disasm = @import("subsystems").disasm;
 
 /// Decode, and assert the instruction is the named one with `length` fields.
-fn decoded(instruction: u32, length: i32, name: [*:0]const u8) [*]const types.Janet {
+fn decoded(instruction: u32, length: i32, name: [*:0]const u8) [*]const repr.Value {
     const val = disasm.asmDecodeInstruction(instruction);
-    std.debug.assert(harness.isType(val, constants.JANET_TUPLE));
+    std.debug.assert(harness.isType(val, repr.Tag.tuple));
     const tuple = wrap.toTuple(val);
     std.debug.assert(types.tupleHead(tuple).length == length);
     std.debug.assert(harness.symbolIs(tuple[0], name));
@@ -53,7 +53,7 @@ fn decoded(instruction: u32, length: i32, name: [*:0]const u8) [*]const types.Ja
 fn anUnknownOpcodeStaysANumber() void {
     // 0x7F is not an opcode, so this word has no row to decode against.
     const val = disasm.asmDecodeInstruction(0x1234567F);
-    std.debug.assert(harness.isType(val, constants.JANET_NUMBER));
+    std.debug.assert(harness.isType(val, repr.Tag.number));
     std.debug.assert(@as(u32, @bitCast(wrap.toInteger(val))) == 0x1234567F);
 }
 

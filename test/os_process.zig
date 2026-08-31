@@ -10,28 +10,26 @@
 //! before Janet sees it. The public section then pins what a caller does see,
 //! including the misspelled signal keyword `FOUND.md` records.
 //!
-//! ## What the migration changed
+//! ## How the subjects are reached
 //!
-//! **Nothing here reaches a symbol any more.** `test/os_process.c`
-//! hand-declared fourteen `janet_os_*` kernels, because none of them is in a
-//! header; they were exported for an `os.c` that no longer exists, and
-//! `os_procs.zig` was declaring the same fourteen back as `extern fn` to call
-//! its own subsystem. All fourteen are ordinary Zig functions now -- Phase 11
-//! Part 16's rule 44, applied from the same direction it was found from.
+//! **Nothing here reaches a symbol.** Fourteen `janet_os_*` kernels were
+//! hand-declared once, because none of them is in a header; they were exported
+//! for a C caller that no longer exists, and the subsystem was declaring the
+//! same fourteen back as `extern fn` to call its own kernels.
 //!
-//! **The four wait codes are named rather than restated.** The C contract
-//! carried its own `#define JANET_OS_WAIT_EXITED 0` block, which is a third
-//! copy of a number two files already agreed on. `os_process.wait_exited` and
-//! its three siblings are the subject's own, so a renumbering fails to compile
-//! here instead of passing against a stale literal.
+//! **The four wait codes are named rather than restated.** A third copy of a
+//! number two files already agree on is a place they can drift;
+//! `os_process.wait_exited` and its three siblings are the subject's own, so a
+//! renumbering fails to compile here instead of passing against a stale
+//! literal.
 //!
 //! ## Some of this is asserted twice, deliberately
 //!
-//! `os_process.zig` carries `test` blocks over the escaping, the signal
-//! lookup and the environment rule, and `zig build test` runs them. They are
-//! not the same instrument: `port/mutate.py` scores *contracts*, so a mutation
-//! in `escapeArgument` is caught by this file and not by that one. The unit
-//! tests are kept where they are and this file does not shrink to avoid them.
+//! `os/process.zig` carries `test` blocks over the escaping, the signal lookup
+//! and the environment rule, and `zig build test` runs them. They are not the
+//! same instrument: a mutation sweep scores *contracts*, so a mutation in
+//! `escapeArgument` is caught by this file and not by that one. The unit tests
+//! are kept where they are and this file does not shrink to avoid them.
 
 const std = @import("std");
 const builtin = @import("builtin");

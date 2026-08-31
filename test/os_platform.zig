@@ -2,11 +2,10 @@
 //! strings behind `os/which`, `os/arch` and `os/compiler`, and the count
 //! behind `os/cpu-count`.
 //!
-//! ## The oracle changed in the migration, and that is worth reading before
-//! ## trusting this file
+//! ## Where the expectations come from
 //!
-//! The C contract computed its expectations from **the C preprocessor's view
-//! of the target** — a seventy-line chain of `#if defined(JANET_APPLE)` and
+//! A C contract computes them from **the C preprocessor's view of the
+//! target** -- a seventy-line chain of `#if defined(JANET_APPLE)` and
 //! its kin — and compared that with what `os_platform.zig` derives from Zig's
 //! `builtin`. Two independent descriptions of the same fact, which is exactly
 //! what a contract wants.
@@ -45,8 +44,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
 const harness = @import("harness.zig");
 const config = @import("config");
@@ -180,13 +178,13 @@ fn theSurfaceAgreesWithTheKernels() !void {
 /// `os/which`'s three behaviours; see the header comment.
 fn theThreeReadingsOfWhich() !void {
     const which = harness.core("os/which");
-    var argument: [1]types.Janet = undefined;
+    var argument: [1]repr.Value = undefined;
 
     argument[0] = value.fromBytes(std.mem.span(janet_os_name()), .keyword);
-    std.debug.assert(wrap.toBoolean(try which(argument[0..1])) != 0);
+    std.debug.assert(wrap.toBoolean(try which(argument[0..1])));
 
     argument[0] = value.fromBytes("not-a-platform", .keyword);
-    std.debug.assert(wrap.toBoolean(try which(argument[0..1])) == 0);
+    std.debug.assert(!wrap.toBoolean(try which(argument[0..1])));
 
     // `nil` is not a platform to test against; it is the same as no argument.
     argument[0] = wrap.fromNil();
@@ -202,13 +200,13 @@ fn theCpuCount() !void {
     // missing is a registration and no `Selection` field names it.
     const cpuCount = harness.coreOptional("os/cpu-count") orelse return;
     const direct = janet_os_cpu_count();
-    var fallback = [1]types.Janet{value.fromBytes("fallback", .keyword)};
+    var fallback = [1]repr.Value{value.fromBytes("fallback", .keyword)};
 
     const answered = try cpuCount(fallback[0..1]);
     if (direct < 0) {
         std.debug.assert(harness.equals(answered, fallback[0]));
         // With no fallback to give, the answer is nil rather than an error.
-        std.debug.assert(harness.isType(try cpuCount(&.{}), constants.JANET_NIL));
+        std.debug.assert(harness.isType(try cpuCount(&.{}), repr.Tag.nil));
     } else {
         std.debug.assert(args_core.checkint(answered) != 0);
         std.debug.assert(wrap.toInteger(answered) == direct);

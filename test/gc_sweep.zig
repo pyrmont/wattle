@@ -12,10 +12,10 @@
 //!
 //! Freeing is mostly invisible: a freed block cannot be read, and a
 //! `janet_free` that does not happen leaves nothing to observe from inside the
-//! process. So three channels stand in for it. `janet_vm.block_count` is
+//! process. So three channels stand in for it. `vm.gc.block_count` is
 //! decremented exactly once per block freed. An abstract type's `gc` and
 //! `gcperthread` callbacks fire on the way out and can count themselves. And
-//! `janet_vm.cache_count` falls when a symbol block leaves the symbol cache,
+//! `vm.symcache.count` falls when a symbol block leaves the symbol cache,
 //! which is the only external obligation any immutable block has.
 //!
 //! What that leaves uncovered is honest to state: the frees inside
@@ -30,7 +30,7 @@
 //!
 //! ## The head-offset check is not repeated here
 //!
-//! `test/gc_sweep.c` carried its own copy of the four
+//! a C predecessor of this file carried its own copy of the four
 //! `sizeof(Head) == offsetof(Head, data)` assertions, because each C contract
 //! was a standalone translation unit and the sweep crosses those headers in
 //! both directions. **`test/gc_mark.zig` now holds the one oracle**, and it is
@@ -42,8 +42,8 @@
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const options = @import("options");
 const value = @import("subsystems").value;
 const harness = @import("harness.zig");
@@ -60,12 +60,12 @@ const vm_lifecycle = @import("subsystems").lifecycle;
 const fibers = @import("subsystems").value.fibers;
 const AbstractType = abstract_type.AbstractType;
 
-/// `janet_vm.threaded_abstracts` and `janet_abstract_threaded` exist only
+/// `vm.ev.threaded_abstracts` and `janet_abstract_threaded` exist only
 /// where the event loop does, and this has to be comptime so that the branch
 /// naming them is not analysed elsewhere.
 ///
 /// `options` is the build's `Selection`, which names **subsystems** rather
-/// than features — Part 3's lesson 7 — so there is no `options.ev` to read.
+/// than features, so there is no `options.ev` to read.
 /// `ev_core` is set to `hasEv(options)` by `build.zig` and is therefore the
 /// same condition spelled in the vocabulary this module has.
 const has_ev = options.ev;
@@ -101,7 +101,7 @@ var gc_calls: i32 = 0;
 var gc_data: ?*anyopaque = null;
 var gc_size: usize = 0;
 
-fn probeGc(data: ?*anyopaque, length: usize) callconv(.c) c_int {
+fn probeGc(data: *anyopaque, length: usize) c_int {
     gc_calls += 1;
     gc_data = data;
     gc_size = length;
@@ -118,30 +118,30 @@ fn logOrder(character: u8) void {
     }
 }
 
-fn probeGcOrdered(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+fn probeGcOrdered(_: *anyopaque, _: usize) c_int {
     logOrder('G');
     return 0;
 }
 
-fn probePerthreadOrdered(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+fn probePerthreadOrdered(_: *anyopaque, _: usize) c_int {
     logOrder('P');
     return 0;
 }
 
-const at_final: AbstractType = .{ .name = "gc-sweep-test/final", .gc = probeGc };
-const at_ordered: AbstractType = .{
+const at_final = abstract_type.define(anyopaque, .{ .name = "gc-sweep-test/final", .gc = probeGc });
+const at_ordered = abstract_type.define(anyopaque, .{
     .name = "gc-sweep-test/ordered",
     .gc = probeGcOrdered,
     .gcperthread = probePerthreadOrdered,
-};
-const at_plain: AbstractType = .{ .name = "gc-sweep-test/plain" };
+});
+const at_plain = abstract_type.define(anyopaque, .{ .name = "gc-sweep-test/plain" });
 
-fn plain() *const types.JanetAbstractType {
-    return abstract_type.stored(&at_plain);
+fn plain() *const types.AbstractType {
+    return &at_plain;
 }
 
-fn final() *const types.JanetAbstractType {
-    return abstract_type.stored(&at_final);
+fn final() *const types.AbstractType {
+    return &at_final;
 }
 
 // --------------------------------------------------------- freeing blocks
@@ -150,13 +150,13 @@ fn final() *const types.JanetAbstractType {
 /// block freed, and no decrement for a block kept.
 fn unreachableBlocksAreFreed() void {
     settle();
-    const before = c.vm().block_count;
+    const before = harness.vm().gc.block_count;
 
     for (0..16) |_| _ = buffers.new(8);
-    std.debug.assert(c.vm().block_count == before + 16);
+    std.debug.assert(harness.vm().gc.block_count == before + 16);
 
     gc_mark.collect();
-    std.debug.assert(c.vm().block_count == before);
+    std.debug.assert(harness.vm().gc.block_count == before);
 }
 
 /// A survivor stays on its list, keeps its payload, and loses its mark. The
@@ -164,7 +164,7 @@ fn unreachableBlocksAreFreed() void {
 /// cleared on the way past, so every mark phase starts from a clean heap.
 fn aSurvivorKeepsItsPayloadAndLosesItsMark() void {
     settle();
-    const before = c.vm().block_count;
+    const before = harness.vm().gc.block_count;
 
     const buffer = buffers.new(8);
     _ = buffers.pushCstringAbi(buffer, "still here");
@@ -172,15 +172,15 @@ fn aSurvivorKeepsItsPayloadAndLosesItsMark() void {
     gc_alloc.gcroot(val);
 
     gc_mark.collect();
-    std.debug.assert(c.vm().block_count == before + 1);
-    std.debug.assert(onList(c.vm().blocks, buffer));
+    std.debug.assert(harness.vm().gc.block_count == before + 1);
+    std.debug.assert(onList(harness.vm().gc.blocks, buffer));
     std.debug.assert(!reachable(buffer));
     std.debug.assert(buffer.*.count == 10);
-    std.debug.assert(std.mem.eql(u8, buffer.*.data.?[0..10], "still here"));
+    std.debug.assert(std.mem.eql(u8, buffer.*.slice()[0..10], "still here"));
 
     _ = gc_alloc.gcunroot(val);
     gc_mark.collect();
-    std.debug.assert(c.vm().block_count == before);
+    std.debug.assert(harness.vm().gc.block_count == before);
 }
 
 /// `JANET_MEM_DISABLED` holds a block through a sweep that never reached it,
@@ -191,23 +191,23 @@ fn aSurvivorKeepsItsPayloadAndLosesItsMark() void {
 /// the flag is defined for.
 fn theDisabledFlagOutlivesASweep() void {
     settle();
-    const before = c.vm().block_count;
+    const before = harness.vm().gc.block_count;
 
     const buffer = buffers.new(8);
     buffer.*.gc.flags |= constants.JANET_MEM_DISABLED;
 
     gc_mark.collect();
-    std.debug.assert(c.vm().block_count == before + 1);
-    std.debug.assert(onList(c.vm().blocks, buffer));
+    std.debug.assert(harness.vm().gc.block_count == before + 1);
+    std.debug.assert(onList(harness.vm().gc.blocks, buffer));
     std.debug.assert(buffer.*.gc.flags & constants.JANET_MEM_DISABLED != 0);
     std.debug.assert(!reachable(buffer));
 
     gc_mark.collect();
-    std.debug.assert(c.vm().block_count == before + 1);
+    std.debug.assert(harness.vm().gc.block_count == before + 1);
 
     buffer.*.gc.flags &= ~@as(i32, constants.JANET_MEM_DISABLED);
     gc_mark.collect();
-    std.debug.assert(c.vm().block_count == before);
+    std.debug.assert(harness.vm().gc.block_count == before);
 }
 
 // ------------------------------------------------------------ finalization
@@ -254,7 +254,7 @@ fn aSurvivorIsNotFinalized() void {
 /// reversing them would let `gc` free memory `gcperthread` still reads.
 fn perthreadRunsBeforeGc() void {
     settle();
-    _ = abstracts.new(abstract_type.stored(&at_ordered), 8);
+    _ = abstracts.new(&at_ordered, 8);
     order_len = 0;
 
     gc_mark.collect();
@@ -267,11 +267,11 @@ fn perthreadRunsBeforeGc() void {
 /// tests each slot before calling it, and a type may fill neither.
 fn anAbstractWithoutFinalizers() void {
     settle();
-    const before = c.vm().block_count;
+    const before = harness.vm().gc.block_count;
     _ = abstracts.new(plain(), 8);
-    std.debug.assert(c.vm().block_count == before + 1);
+    std.debug.assert(harness.vm().gc.block_count == before + 1);
     gc_mark.collect();
-    std.debug.assert(c.vm().block_count == before);
+    std.debug.assert(harness.vm().gc.block_count == before);
 }
 
 /// A symbol is the one immutable block with an obligation outside its own
@@ -280,15 +280,15 @@ fn anAbstractWithoutFinalizers() void {
 /// cache counters are the observation.
 fn aSymbolLeavesTheCache() void {
     settle();
-    const count = c.vm().cache_count;
-    const deleted = c.vm().cache_deleted;
+    const count = harness.vm().symcache.count;
+    const deleted = harness.vm().symcache.deleted;
 
     _ = value.fromBytes("gc-sweep-test-unique-symbol", .symbol);
-    std.debug.assert(c.vm().cache_count == count + 1);
+    std.debug.assert(harness.vm().symcache.count == count + 1);
 
     gc_mark.collect();
-    std.debug.assert(c.vm().cache_count == count);
-    std.debug.assert(c.vm().cache_deleted == deleted + 1);
+    std.debug.assert(harness.vm().symcache.count == count);
+    std.debug.assert(harness.vm().symcache.deleted == deleted + 1);
 }
 
 // -------------------------------------------------------------- weak heap
@@ -313,9 +313,9 @@ fn aWeakArrayDropsDeadElementsInPlace() void {
     gc_mark.collect();
 
     std.debug.assert(weak.*.count == 3);
-    std.debug.assert(wrap.toBuffer(weak.*.data.?[0]) == live);
-    std.debug.assert(harness.isType(weak.*.data.?[1], constants.JANET_NIL));
-    std.debug.assert(harness.integerIs(weak.*.data.?[2], 42));
+    std.debug.assert(wrap.toBuffer(weak.*.slice()[0]) == live);
+    std.debug.assert(harness.isType(weak.*.slice()[1], repr.Tag.nil));
+    std.debug.assert(harness.integerIs(weak.*.slice()[2], 42));
 
     _ = gc_alloc.gcunroot(wrap.fromBuffer(live));
     _ = gc_alloc.gcunroot(wrap.fromArray(weak));
@@ -358,18 +358,18 @@ fn theFourTableKinds() void {
     // a weak-keyed table's values are marked.
     std.debug.assert(weakk.*.count == 1);
     std.debug.assert(weakk.*.deleted == deleted + 1);
-    std.debug.assert(!harness.isType(tables.get(weakk, live_value), constants.JANET_NIL));
+    std.debug.assert(!harness.isType(tables.get(weakk, live_value), repr.Tag.nil));
 
     // Weak values: the mirror image.
     std.debug.assert(weakv.*.count == 1);
-    std.debug.assert(harness.isType(tables.get(weakv, live_value), constants.JANET_NIL));
+    std.debug.assert(harness.isType(tables.get(weakv, live_value), repr.Tag.nil));
 
     // Weak in both halves: neither entry survives.
     std.debug.assert(weakkv.*.count == 0);
 
     // A strong table marks both halves, so nothing in it can die.
     std.debug.assert(strong.*.count == 2);
-    std.debug.assert(!harness.isType(tables.get(strong, live_value), constants.JANET_NIL));
+    std.debug.assert(!harness.isType(tables.get(strong, live_value), repr.Tag.nil));
 
     _ = gc_alloc.gcunroot(wrap.fromBuffer(live));
     _ = gc_alloc.gcunroot(wrap.fromTable(weakk));
@@ -383,16 +383,16 @@ fn theFourTableKinds() void {
 /// separate list, not exempt from collection.
 fn weakContainersAreThemselvesCollected() void {
     settle();
-    const before = c.vm().block_count;
+    const before = harness.vm().gc.block_count;
 
     _ = arrays.weak(4);
     _ = tables.weakk(4);
     _ = tables.weakv(4);
     _ = tables.weakkv(4);
-    std.debug.assert(c.vm().block_count == before + 4);
+    std.debug.assert(harness.vm().gc.block_count == before + 4);
 
     gc_mark.collect();
-    std.debug.assert(c.vm().block_count == before);
+    std.debug.assert(harness.vm().gc.block_count == before);
 }
 
 /// A weak reference to a block that is itself dying is dropped, not read after
@@ -404,7 +404,7 @@ fn weakContainersAreThemselvesCollected() void {
 /// difference.
 fn aWeakEntryAndItsTargetDieTogether() void {
     settle();
-    const before = c.vm().block_count;
+    const before = harness.vm().gc.block_count;
 
     const weak = tables.weakv(4);
     gc_alloc.gcroot(wrap.fromTable(weak));
@@ -414,16 +414,16 @@ fn aWeakEntryAndItsTargetDieTogether() void {
     gc_mark.collect();
 
     std.debug.assert(weak.*.count == 0);
-    std.debug.assert(onList(c.vm().weak_blocks, weak));
+    std.debug.assert(onList(harness.vm().gc.weak_blocks, weak));
 
     // The table and its key survive this collection; the buffer does not. The
     // key is alive because a weak-valued table marks its keys — the entry was
     // dropped by the sweep, after the walk had already reached the keyword
     // through it. The next collection is where the keyword goes, which is the
     // one collection of lag a weak table costs.
-    std.debug.assert(c.vm().block_count == before + 2);
+    std.debug.assert(harness.vm().gc.block_count == before + 2);
     gc_mark.collect();
-    std.debug.assert(c.vm().block_count == before + 1);
+    std.debug.assert(harness.vm().gc.block_count == before + 1);
 
     _ = gc_alloc.gcunroot(wrap.fromTable(weak));
 }
@@ -433,24 +433,24 @@ fn aWeakEntryAndItsTargetDieTogether() void {
 var threaded_gc_calls: i32 = 0;
 var threaded_perthread_calls: i32 = 0;
 
-fn probeThreadedGc(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+fn probeThreadedGc(_: *anyopaque, _: usize) c_int {
     threaded_gc_calls += 1;
     return 0;
 }
 
-fn probeThreadedPerthread(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+fn probeThreadedPerthread(_: *anyopaque, _: usize) c_int {
     threaded_perthread_calls += 1;
     return 0;
 }
 
-const at_threaded: AbstractType = .{
+const at_threaded = abstract_type.define(anyopaque, .{
     .name = "gc-sweep-test/threaded",
     .gc = probeThreadedGc,
     .gcperthread = probeThreadedPerthread,
-};
+});
 
 /// A threaded abstract is not on either heap list, so the sweep decides its
-/// fate through `janet_vm.threaded_abstracts` instead. The table is a visit
+/// fate through `vm.ev.threaded_abstracts` instead. The table is a visit
 /// record: the mark phase writes true for every threaded abstract it reaches,
 /// and the sweep reads the entry and resets it to false for next time. An
 /// entry still false is one this interpreter no longer refers to, so this
@@ -459,23 +459,23 @@ const at_threaded: AbstractType = .{
 /// interpreter that ever held it.
 fn aThreadedAbstractLosesItsReference() void {
     settle();
-    const abstract = abstracts.threaded(abstract_type.stored(&at_threaded), 8);
+    const abstract = abstracts.threaded(&at_threaded, 8);
     const val = wrap.fromAbstract(abstract);
     gc_alloc.gcroot(val);
     threaded_gc_calls = 0;
     threaded_perthread_calls = 0;
 
-    const tracked = c.vm().threaded_abstracts.count;
+    const tracked = harness.vm().ev.threaded_abstracts.count;
     gc_mark.collect();
     std.debug.assert(threaded_perthread_calls == 0);
     std.debug.assert(threaded_gc_calls == 0);
-    std.debug.assert(c.vm().threaded_abstracts.count == tracked);
+    std.debug.assert(harness.vm().ev.threaded_abstracts.count == tracked);
 
     _ = gc_alloc.gcunroot(val);
     gc_mark.collect();
     std.debug.assert(threaded_perthread_calls == 1);
     std.debug.assert(threaded_gc_calls == 1);
-    std.debug.assert(c.vm().threaded_abstracts.count == tracked - 1);
+    std.debug.assert(harness.vm().ev.threaded_abstracts.count == tracked - 1);
 
     // The entry is a tombstone now, so a later sweep must not find it again.
     gc_mark.collect();
@@ -490,14 +490,14 @@ fn aThreadedAbstractLosesItsReference() void {
 /// `janet_deinit` safe to call with live values outstanding.
 ///
 /// The last assertion pins a defect rather than a guarantee, and is written
-/// that way on purpose. `janet_clear_memory` walks `janet_vm.blocks` and never
-/// touches `janet_vm.weak_blocks`, so every weak table and weak array alive at
+/// that way on purpose. `janet_clear_memory` walks `vm.gc.blocks` and never
+/// touches `vm.gc.weak_blocks`, so every weak table and weak array alive at
 /// teardown leaks its block and its data array. The list head still pointing
 /// at them after `janet_deinit` returns is that leak, visible from inside the
-/// process. `FOUND.md` records it; the port reproduces it, so this assertion
+/// `FOUND.md` records it; it is reproduced, so this assertion
 /// will fail for whichever implementation is fixed first.
 ///
-/// It is also visible from outside: `port/leaks.sh` carries
+/// It is also visible from outside: `tools/testing/leaks.sh` carries
 /// `expected_gc_sweep=8`, which is the four weak containers this file leaves
 /// alive across a teardown -- the one here and `repeatedCycles`' three --
 /// times the block and the data array each of them leaks.
@@ -513,16 +513,15 @@ fn clearMemoryFinalizesEverything() void {
     vm_lifecycle.deinit();
 
     std.debug.assert(gc_calls == 2);
-    std.debug.assert(c.vm().blocks == null);
-    std.debug.assert(c.vm().weak_blocks != null);
+    std.debug.assert(harness.vm().gc.blocks == null);
+    std.debug.assert(harness.vm().gc.weak_blocks != null);
 
     harness.init();
 }
 
 /// A second cycle over a heap that has held every block type. Nothing is
 /// asserted beyond arriving here: this is the case that fails by crashing, and
-/// it is the only coverage the port has for the frees inside
-/// `janet_deinit_block` that a leak checker would otherwise have to find.
+/// it is the only coverage there is for the frees inside
 fn repeatedCycles() void {
     for (0..3) |_| {
         const table = tables.new(4);
@@ -536,9 +535,9 @@ fn repeatedCycles() void {
             wrap.fromAbstract(abstracts.new(plain(), 8)),
         );
 
-        var function: types.Janet = wrap.fromNil();
+        var function: repr.Value = wrap.fromNil();
         _ = core_env.dostring(harness.coreEnv(), "(fn [] 1)", "gc-sweep-test", &function);
-        std.debug.assert(harness.isType(function, constants.JANET_FUNCTION));
+        std.debug.assert(harness.isType(function, repr.Tag.function));
         tables.put(
             table,
             value.fromBytes("fiber", .keyword),

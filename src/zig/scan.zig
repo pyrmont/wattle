@@ -1,16 +1,15 @@
 //! Text to number, in the three shapes the runtime needs one.
 //!
-//! Three files until Phase 12 increment 6f -- `numscan.zig` for doubles,
-//! `intscan.zig` for the 64-bit integer types, `textscan.zig` for the
-//! character classification both lean on.  None has a name Janet publishes and
-//! none exists because a platform differs, which is `port/TREE.md`'s heuristic
-//! for the bucket.
+//! Three files once -- doubles, the 64-bit integer types, and the character
+//! classification both lean on. None has a name Janet publishes and none
+//! exists because a platform differs, so they are the bucket.
 //!
 //! `isDecimal` was declared identically in two of the three, for the reason
 //! any duplicate on this tree exists: neither file could see the other's.
 const std = @import("std");
 const config = @import("config");
 const types = @import("types");
+const repr = @import("repr");
 const c = @import("cabi");
 const raise = @import("raise");
 const buffers = @import("value/buffers.zig");
@@ -46,13 +45,13 @@ extern fn snprintf(buffer: [*]u8, size: usize, format: [*:0]const u8, ...) callc
 /// with; `value_wrap.zig` has the same three and `janet_wrap_s64` and
 /// `janet_wrap_u64` are ordinary exported functions rather than macros, so
 /// nothing here needs a shim.
-inline fn janet_c_numscan_wrap_number(val: f64) types.Janet {
+inline fn numscanWrapNumber(val: f64) repr.Value {
     return wrap.fromNumber(val);
 }
-inline fn janet_c_numscan_wrap_s64(val: i64) types.Janet {
+inline fn numscanWrapS64(val: i64) repr.Value {
     return inttypes.wrapS64(val);
 }
-inline fn janet_c_numscan_wrap_u64(val: u64) types.Janet {
+inline fn numscanWrapU64(val: u64) repr.Value {
     return inttypes.wrapU64(val);
 }
 
@@ -385,7 +384,7 @@ pub fn scanNumber(str: []const u8, out: *f64) c_int {
 
 /// Like `janet_scan_number`, but also recognizes the `:s` and `:u` 64-bit
 /// integer suffixes and the explicit `:n` double suffix.
-pub fn scanNumeric(str: []const u8, out: *types.Janet) c_int {
+pub fn scanNumeric(str: []const u8, out: *repr.Value) c_int {
     // The C original leaves `num` indeterminate when scanning fails and still
     // wraps it. Callers only read `*out` on success, so producing a zero here
     // is unobservable. See FOUND.md.
@@ -396,24 +395,24 @@ pub fn scanNumeric(str: []const u8, out: *types.Janet) c_int {
     const len: i32 = @intCast(str.len);
     if (len < 2 or str[str.len - 2] != ':') {
         const result = scanNumberBase(str.ptr, len, 0, &num);
-        out.* = janet_c_numscan_wrap_number(num);
+        out.* = numscanWrapNumber(num);
         return result;
     }
     switch (str[@intCast(len - 1)]) {
         'n' => {
             const result = scanNumberBase(str.ptr, len - 2, 0, &num);
-            out.* = janet_c_numscan_wrap_number(num);
+            out.* = numscanWrapNumber(num);
             return result;
         },
         // The integer scanners return success as 1, so the result is inverted.
         's' => {
             const result = @intFromBool(scanInt64(str[0..@intCast(len - 2)], &i64_value) == 0);
-            out.* = janet_c_numscan_wrap_s64(i64_value);
+            out.* = numscanWrapS64(i64_value);
             return result;
         },
         'u' => {
             const result = @intFromBool(scanUint64(str[0..@intCast(len - 2)], &u64_value) == 0);
-            out.* = janet_c_numscan_wrap_u64(u64_value);
+            out.* = numscanWrapU64(u64_value);
             return result;
         },
         else => return 1,

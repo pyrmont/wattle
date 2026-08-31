@@ -28,26 +28,26 @@
 //! **`janet_next` on a fiber has two error policies and they are chosen by an
 //! argument.** `nextImpl`'s `is_interpreter` flag decides whether a signal from
 //! the resumed fiber is re-raised as that signal or converted to a panic, and
-//! it decides whether `janet_vm.fiber.child` is cleared first. No in-tree
+//! it decides whether `vm.fiber.child` is cleared first. No in-tree
 //! caller passes zero -- the VM always passes one -- so the whole `next` entry
 //! point is reachable only from outside, and it is tested here through a
 //! cfunction registered for the purpose.
 //!
-//! ## What the migration changed, and what it did not
+//! ## No panic counter
 //!
-//! The C original counted its panics: forty-nine `EXPECT_PANIC`s and an
-//! assertion at the foot that all forty-nine had fired, because each was a
-//! twenty-line macro -- open a scope, arm the flag, call the abi, read the
-//! flag, read the signal, restore, compare the payload -- and with a macro that
-//! big it is worth proving every one ran. Here a refusal is a value and each is
+//! A C contract counts its panics: forty-nine `EXPECT_PANIC`s and an assertion
+//! at the foot that all forty-nine fired, because each is a twenty-line macro
+//! -- open a scope, arm the flag, call the abi, read the flag, read the signal,
+//! restore, compare the payload -- and with a macro that big it is worth
+//! proving every one ran. Here a refusal is a value and each is
 //! one line, so a refusal that stops happening fails at the call that expected
 //! it rather than in a count at the end. That is a better failure and not
 //! merely a shorter one; the tally is gone.
 //!
 //! The abstract fixtures need no adapter either. Five of the callbacks used
 //! here -- `get`, `put`, `next`, `length` and the two methods -- are raising in
-//! `abstract_type.zig`, which is exactly why C could not define them and needed
-//! `test/support.zig`'s pool. In Zig they are ordinary functions that return
+//! `abstract_type.zig`, which is exactly why C cannot define them and needs a
+//! pool of pre-built tables. In Zig they are ordinary functions that return
 //! `raise.Error!T`.
 //!
 //! What is deliberately not covered: three undefined-behaviour edges.
@@ -57,8 +57,7 @@
 
 const std = @import("std");
 const types = @import("types");
-const constants = @import("constants");
-const c = @import("cabi");
+const repr = @import("repr");
 const raise = @import("raise");
 const corefn = @import("corefn");
 const harness = @import("harness.zig");
@@ -73,7 +72,6 @@ const buffers = @import("subsystems").value.buffers;
 const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
 const core_env = @import("subsystems").env;
-const kind = @import("subsystems").value.kind;
 const wrap = @import("subsystems").value.wrap;
 const args_core_mod = @import("subsystems").args;
 const vm_lifecycle = @import("subsystems").lifecycle;
@@ -87,16 +85,16 @@ const assert = std.debug.assert;
 
 // ----------------------------------------------------------------- helpers
 
-fn kw(name: [*:0]const u8) types.Janet {
+fn kw(name: [*:0]const u8) repr.Value {
     return value.fromBytes(std.mem.span(name), .keyword);
 }
 
-fn intv(i: i32) types.Janet {
+fn intv(i: i32) repr.Value {
     return harness.wrapInteger(i);
 }
 
-fn isNil(x: types.Janet) bool {
-    return harness.isType(x, constants.JANET_NIL);
+fn isNil(x: repr.Value) bool {
+    return harness.isType(x, repr.Tag.nil);
 }
 
 /// The refusal a call made, which every panic case here reads. Named rather
@@ -118,8 +116,7 @@ const Slots = extern struct {
     slot: [3]i32,
 };
 
-fn slotsGet(p: ?*anyopaque, key: types.Janet, out: *types.Janet) raise.Error!c_int {
-    const s: *Slots = @ptrCast(@alignCast(p));
+fn slotsGet(s: *Slots, key: repr.Value, out: *repr.Value) raise.Error!c_int {
     if (args_core_mod.checkint(key) == 0) return 0;
     const i = wrap.toInteger(key);
     if (i < 0 or i > 2) return 0;
@@ -127,43 +124,37 @@ fn slotsGet(p: ?*anyopaque, key: types.Janet, out: *types.Janet) raise.Error!c_i
     return 1;
 }
 
-fn slotsPut(p: ?*anyopaque, key: types.Janet, val: types.Janet) raise.Error!void {
-    const s: *Slots = @ptrCast(@alignCast(p));
+fn slotsPut(s: *Slots, key: repr.Value, val: repr.Value) raise.Error!void {
     if (args_core_mod.checkint(key) == 0) return raise.panic("slots: bad key");
     const i = wrap.toInteger(key);
     if (i < 0 or i > 2) return raise.panic("slots: key out of range");
     s.slot[@intCast(i)] = wrap.toInteger(val);
 }
 
-fn slotsNext(p: ?*anyopaque, key: types.Janet) raise.Error!types.Janet {
-    _ = p;
-    if (harness.isType(key, constants.JANET_NIL)) return harness.wrapInteger(0);
+fn slotsNext(_: *Slots, key: repr.Value) raise.Error!repr.Value {
+    if (harness.isType(key, repr.Tag.nil)) return harness.wrapInteger(0);
     const i = wrap.toInteger(key) + 1;
     return if (i < 3) harness.wrapInteger(i) else wrap.fromNil();
 }
 
-fn slotsLength(p: ?*anyopaque, len: usize) raise.Error!usize {
-    _ = p;
-    _ = len;
+fn slotsLength(_: *Slots, _: usize) raise.Error!usize {
     return 3;
 }
 
-const at_slots: AbstractType = .{
+const at_slots = abstract_type.define(Slots, .{
     .name = "value-access/slots",
     .get = &slotsGet,
     .put = &slotsPut,
     .next = &slotsNext,
     .length = &slotsLength,
-};
+});
 
 /// No callbacks at all: the type every "no getter", "no setter" and "no next"
 /// arm is written for.
-const at_bare: AbstractType = .{ .name = "value-access/bare" };
+const at_bare = abstract_type.define(anyopaque, .{ .name = "value-access/bare" });
 
 /// Two lengths chosen to straddle the two different bounds.
-fn bigLength(p: ?*anyopaque, len: usize) raise.Error!usize {
-    _ = p;
-    _ = len;
+fn bigLength(_: *anyopaque, _: usize) raise.Error!usize {
     return 2147483648; // INT32_MAX + 1
 }
 
@@ -175,71 +166,67 @@ fn bigLength(p: ?*anyopaque, len: usize) raise.Error!usize {
 /// the constant anyway and let the cast truncate it silently, which on
 /// `riscv32` would have made a case about the 2^53 bound into a case about
 /// 4294967295 that quietly asserts the wrong message. Zig refuses the literal,
-/// which is how this was found -- rule 8's "skip rather than fake", arriving
-/// from the compiler instead of from a reading.
+/// which is how this was found: skip rather than fake, arriving from the
+/// compiler instead of from a reading.
 const intmax_int64_fits_in_a_length = std.math.maxInt(usize) >= 9007199254740992;
 
-fn hugeLength(p: ?*anyopaque, len: usize) raise.Error!usize {
-    _ = p;
-    _ = len;
+fn hugeLength(_: *anyopaque, _: usize) raise.Error!usize {
     return 9007199254740992; // JANET_INTMAX_INT64
 }
 
-const at_big: AbstractType = .{ .name = "value-access/big", .length = &bigLength };
-const at_huge: AbstractType = .{
+const at_big = abstract_type.define(anyopaque, .{ .name = "value-access/big", .length = &bigLength });
+const at_huge = abstract_type.define(anyopaque, .{
     .name = "value-access/huge",
     .length = if (intmax_int64_fits_in_a_length) &hugeLength else null,
-};
+});
 
 /// A type with no `length` callback but a `:length` method, which is the other
 /// half of `length`'s abstract arm. The method is found through `getImpl` --
 /// one of the functions under test -- so this arm re-enters the file it is
 /// testing.
-fn methodSeven(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn methodSeven(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(7);
 }
 
-fn methodKeyword(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn methodKeyword(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return value.fromBytes("not-a-number", .keyword);
 }
 
-fn goodMethodGet(p: ?*anyopaque, key: types.Janet, out: *types.Janet) raise.Error!c_int {
-    _ = p;
+fn goodMethodGet(_: *anyopaque, key: repr.Value, out: *repr.Value) raise.Error!c_int {
     if (args_core_mod.keyeq(key, "length") == 0) return 0;
     out.* = wrap.fromCfunction(raise.stored(&methodSeven));
     return 1;
 }
 
-fn badMethodGet(p: ?*anyopaque, key: types.Janet, out: *types.Janet) raise.Error!c_int {
-    _ = p;
+fn badMethodGet(_: *anyopaque, key: repr.Value, out: *repr.Value) raise.Error!c_int {
     if (args_core_mod.keyeq(key, "length") == 0) return 0;
     out.* = wrap.fromCfunction(raise.stored(&methodKeyword));
     return 1;
 }
 
-const at_good_method: AbstractType = .{
+const at_good_method = abstract_type.define(anyopaque, .{
     .name = "value-access/good-method",
     .get = &goodMethodGet,
-};
+});
 
-const at_bad_method: AbstractType = .{
+const at_bad_method = abstract_type.define(anyopaque, .{
     .name = "value-access/bad-method",
     .get = &badMethodGet,
-};
+});
 
-var slots_value: types.Janet = undefined;
-var bare_value: types.Janet = undefined;
-var big_value: types.Janet = undefined;
-var huge_value: types.Janet = undefined;
-var good_method_value: types.Janet = undefined;
-var bad_method_value: types.Janet = undefined;
+var slots_value: repr.Value = undefined;
+var bare_value: repr.Value = undefined;
+var big_value: repr.Value = undefined;
+var huge_value: repr.Value = undefined;
+var good_method_value: repr.Value = undefined;
+var bad_method_value: repr.Value = undefined;
 
-fn typeOf(at: *const AbstractType) *const types.JanetAbstractType {
-    return abstract_type.stored(at);
+fn typeOf(at: *const AbstractType) *const types.AbstractType {
+    return at;
 }
 
 fn makeAbstracts() void {
@@ -259,7 +246,7 @@ fn makeAbstracts() void {
     gc_alloc.gcroot(bad_method_value);
 }
 
-fn aCFunctionValue() types.Janet {
+fn aCFunctionValue() repr.Value {
     return wrap.fromCfunction(raise.stored(&methodSeven));
 }
 
@@ -382,7 +369,7 @@ fn nextOverEachSequenceType() !void {
     const t = tuples.begin(3);
     for (0..3) |i| t[i] = intv(@intCast(i));
 
-    const seqs = [_]types.Janet{
+    const seqs = [_]repr.Value{
         value.fromBytes("abc", .string),
         value.fromBytes("abc", .symbol),
         kw("abc"),
@@ -459,12 +446,12 @@ fn nextOnANonIterablePanics() void {
 
 // ----------------------------------------------------------- next: fibers
 
-// `next` writes `janet_vm.fiber.child` before resuming, so every fiber case has
+// `next` writes `vm.fiber.child` before resuming, so every fiber case has
 // to run with a fiber on the VM. These cfunctions are how: they are called from
-// Janet source, so `janet_vm.fiber` is the fiber running that source.
+// Janet source, so `vm.fiber` is the fiber running that source.
 // `FOUND.md` has what happens without one.
 
-fn cfunNext(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunNext(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     return access.next(argv[0], argv[1]);
 }
@@ -472,34 +459,33 @@ fn cfunNext(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Jan
 /// Resume through `next` and report whether the caller's `child` slot was put
 /// back to null afterwards. A slot left set keeps the child fiber reachable and
 /// misreports the fiber chain, and nothing else observes it.
-fn cfunNextChildCleared(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunNextChildCleared(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    const self = c.vm().fiber.?;
+    const self = harness.vm().fiber.?;
     _ = try access.next(argv[0], argv[1]);
-    return wrap.fromBoolean(@intFromBool(self.child == null));
+    return wrap.fromBoolean(self.child == null);
 }
 
 /// The same, for the path that leaves through a panic. The runtime clears the
 /// slot before panicking there and deliberately does not on the interpreter's
 /// path, which is the one asymmetry in the function.
-fn cfunNextChildClearedOnPanic(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunNextChildClearedOnPanic(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    const self = c.vm().fiber.?;
+    const self = harness.vm().fiber.?;
     if (harness.raised(access.next, .{ argv[0], argv[1] }) == null) {
         return wrap.fromNil(); // did not panic; the caller asserts
     }
-    return wrap.fromBoolean(@intFromBool(self.child == null));
+    return wrap.fromBoolean(self.child == null);
 }
 
-const cfuns = [_]types.JanetReg{
+const cfuns = [_]types.Reg{
     .{ .name = "va/next", .cfun = raise.stored(&cfunNext), .documentation = null },
     .{ .name = "va/next-child-cleared", .cfun = raise.stored(&cfunNextChildCleared), .documentation = null },
     .{ .name = "va/next-child-cleared-on-panic", .cfun = raise.stored(&cfunNextChildClearedOnPanic), .documentation = null },
-    .{ .name = null, .cfun = null, .documentation = null },
 };
 
-fn run_(src: [*:0]const u8) types.Janet {
-    var out: types.Janet = undefined;
+fn run_(src: [*:0]const u8) repr.Value {
+    var out: repr.Value = undefined;
     const status = core_env.dostring(harness.coreEnv(), src, "value_access", &out);
     if (status != 0) {
         std.debug.print("janet source failed: {s}\n", .{src});
@@ -592,9 +578,9 @@ fn theChildSlotIsCleared() void {
         "[(va/next-child-cleared ok nil)" ++
         " (va/next-child-cleared-on-panic bad nil)]");
     const v = wrap.toTuple(r);
-    assert(kind.truthy(v[0]) != 0); // child not cleared after a successful resume
-    assert(harness.isType(v[1], constants.JANET_BOOLEAN)); // the failing resume did not panic
-    assert(kind.truthy(v[1]) != 0); // child not cleared before the panic
+    assert(repr.truthy(v[0])); // child not cleared after a successful resume
+    assert(harness.isType(v[1], repr.Tag.boolean)); // the failing resume did not panic
+    assert(repr.truthy(v[1])); // child not cleared before the panic
 }
 
 /// Resuming through `next` links the child into the caller's fiber chain before
@@ -614,7 +600,7 @@ fn theResumedFiberJoinsTheLineage() void {
     const log = wrap.toArray(r);
     assert(log.*.count == 1);
     // the resumed fiber was not linked into the caller's chain
-    assert(wrap.toInteger(log.*.data.?[0]) == 2);
+    assert(wrap.toInteger(log.*.slice()[0]) == 2);
 }
 
 // --------------------------------------------------------------- janet_in
@@ -727,7 +713,7 @@ fn inOnAFiber() void {
     assert(isNil(v[2]));
     // `protect` returns [false message] for a caught error.
     const p = wrap.toTuple(v[3]);
-    assert(kind.truthy(p[0]) == 0);
+    assert(!repr.truthy(p[0]));
     assert(harness.equals(p[1], value.fromBytes("expected key 0, got 1", .string)));
 }
 
@@ -779,7 +765,7 @@ fn getAgreesWithInWhereBothSucceed() !void {
     const st = structs.begin(1);
     structs.put(st, kw("k"), intv(4));
 
-    const pairs = [_][2]types.Janet{
+    const pairs = [_][2]repr.Value{
         .{ wrap.fromArray(a), intv(1) },
         .{ wrap.fromTuple(tuples.end(t)), intv(0) },
         .{ wrap.fromBuffer(b), intv(1) },
@@ -861,7 +847,7 @@ fn theLengthOfEveryContainer() !void {
     const st = structs.begin(1);
     structs.put(st, kw("a"), intv(1));
 
-    const cases = [_]struct { value: types.Janet, length: i32 }{
+    const cases = [_]struct { value: repr.Value, length: i32 }{
         .{ .value = value.fromBytes("abc", .string), .length = 3 },
         .{ .value = value.fromBytes("abcd", .symbol), .length = 4 },
         .{ .value = kw("ab"), .length = 2 },
@@ -900,7 +886,7 @@ fn theAbstractLengthCallback() !void {
     assert(harness.equals(try access.lengthv(slots_value), wrap.fromNumber(3.0)));
     // `lengthv` wraps a callback's length as a double rather than as an integer,
     // and the two are equal but not identically represented.
-    assert(harness.isType(try access.lengthv(slots_value), constants.JANET_NUMBER));
+    assert(harness.isType(try access.lengthv(slots_value), repr.Tag.number));
 }
 
 /// The band where the two functions disagree. `length` stops at `INT32_MAX`
@@ -910,7 +896,7 @@ fn theAbstractLengthCallback() !void {
 fn theTwoLengthBoundsAreDifferent() !void {
     assert(refusal(access.length, .{big_value}).says("invalid integer length 2147483648"));
     const lv = try access.lengthv(big_value);
-    assert(harness.isType(lv, constants.JANET_NUMBER));
+    assert(harness.isType(lv, repr.Tag.number));
     assert(wrap.toNumber(lv) == 2147483648.0);
 
     if (intmax_int64_fits_in_a_length) {
@@ -952,14 +938,14 @@ fn putGrowsAnArrayWithNils() !void {
     harness.arrayPush(a, kw("first"));
     try access.put(wrap.fromArray(a), intv(4), kw("fifth"));
     assert(a.*.count == 5);
-    assert(harness.equals(a.*.data.?[0], kw("first")));
-    for (1..4) |i| assert(isNil(a.*.data.?[i]));
-    assert(harness.equals(a.*.data.?[4], kw("fifth")));
+    assert(harness.equals(a.*.slice()[0], kw("first")));
+    for (1..4) |i| assert(isNil(a.*.slice()[i]));
+    assert(harness.equals(a.*.slice()[4], kw("fifth")));
 
     // An in-range write does not shorten it.
     try access.put(wrap.fromArray(a), intv(0), kw("again"));
     assert(a.*.count == 5);
-    assert(harness.equals(a.*.data.?[0], kw("again")));
+    assert(harness.equals(a.*.slice()[0], kw("again")));
 }
 
 /// The growth test is `index >= count`, not `index > count`, so appending at
@@ -970,13 +956,13 @@ fn putIndexAppendsAtTheCount() !void {
     harness.arrayPush(a, kw("a"));
     try access.putIndex(wrap.fromArray(a), 1, kw("b"));
     assert(a.*.count == 2);
-    assert(harness.equals(a.*.data.?[1], kw("b")));
+    assert(harness.equals(a.*.slice()[1], kw("b")));
 
     const b = buffers.new(8);
     buffers.pushCstringAbi(b, "A");
     try access.putIndex(wrap.fromBuffer(b), 1, intv('B'));
     assert(b.*.count == 2);
-    assert(b.*.data.?[1] == 'B');
+    assert(b.*.slice()[1] == 'B');
 }
 
 fn putIndexGrowsABufferWithZeroes() !void {
@@ -984,13 +970,13 @@ fn putIndexGrowsABufferWithZeroes() !void {
     buffers.pushCstringAbi(b, "A");
     try access.putIndex(wrap.fromBuffer(b), 4, intv('E'));
     assert(b.*.count == 5);
-    assert(b.*.data.?[0] == 'A');
-    for (1..4) |i| assert(b.*.data.?[i] == 0);
-    assert(b.*.data.?[4] == 'E');
+    assert(b.*.slice()[0] == 'A');
+    for (1..4) |i| assert(b.*.slice()[i] == 0);
+    assert(b.*.slice()[4] == 'E');
 
     try access.putIndex(wrap.fromBuffer(b), 0, intv('Z'));
     assert(b.*.count == 5);
-    assert(b.*.data.?[0] == 'Z');
+    assert(b.*.slice()[0] == 'Z');
 }
 
 /// A buffer stores bytes, and the value is masked to eight bits after being
@@ -1000,17 +986,17 @@ fn aBufferTruncatesToAByte() !void {
     const b = buffers.new(4);
     buffers.pushBytes(b, "\x00\x00") catch @panic("value_access: buffer push raised");
     try access.put(wrap.fromBuffer(b), intv(0), intv(300));
-    assert(b.*.data.?[0] == 44);
+    assert(b.*.slice()[0] == 44);
     try access.putIndex(wrap.fromBuffer(b), 1, intv(-1));
-    assert(b.*.data.?[1] == 255);
+    assert(b.*.slice()[1] == 255);
     try access.put(wrap.fromBuffer(b), intv(0), intv(256));
-    assert(b.*.data.?[0] == 0);
+    assert(b.*.slice()[0] == 0);
     // Eight bits, not seven: a value whose low byte has the high bit set
     // survives through both entry points.
     try access.put(wrap.fromBuffer(b), intv(0), intv(200));
-    assert(b.*.data.?[0] == 200);
+    assert(b.*.slice()[0] == 200);
     try access.putIndex(wrap.fromBuffer(b), 1, intv(200));
-    assert(b.*.data.?[1] == 200);
+    assert(b.*.slice()[1] == 200);
 }
 
 /// `put` checks the key before the value and `putIndex` has no key to check, so
@@ -1026,7 +1012,7 @@ fn putChecksTheKeyBeforeTheValue() void {
     assert(refusal(access.putIndex, .{ wrap.fromBuffer(b), 0, kw("y") })
         .says("can only put integers in buffers, got :y"));
     // The rejected write left the buffer alone.
-    assert(b.*.count == 2 and b.*.data.?[0] == 'A');
+    assert(b.*.count == 2 and b.*.slice()[0] == 'A');
 }
 
 /// The value check comes before the growth, so a rejected write to a buffer does
@@ -1117,20 +1103,20 @@ fn fromJanet() void {
     assert(isNil(v[6]));
     {
         const p = wrap.toTuple(v[7]);
-        assert(kind.truthy(p[0]) == 0);
+        assert(!repr.truthy(p[0]));
         assert(harness.equals(p[1], value.fromBytes("expected integer key for tuple in range [0, 3), got 9", .string)));
     }
     {
         const a = wrap.toArray(v[8]);
         assert(a.*.count == 4);
-        assert(wrap.toInteger(a.*.data.?[0]) == 1);
-        assert(isNil(a.*.data.?[1]) and isNil(a.*.data.?[2]));
-        assert(harness.equals(a.*.data.?[3], kw("x")));
+        assert(wrap.toInteger(a.*.slice()[0]) == 1);
+        assert(isNil(a.*.slice()[1]) and isNil(a.*.slice()[2]));
+        assert(harness.equals(a.*.slice()[3], kw("x")));
     }
     {
         const b = wrap.toBuffer(v[9]);
         assert(b.*.count == 4);
-        assert(b.*.data.?[0] == 'A' and b.*.data.?[1] == 0 and b.*.data.?[2] == 0 and b.*.data.?[3] == 66);
+        assert(b.*.slice()[0] == 'A' and b.*.slice()[1] == 0 and b.*.slice()[2] == 0 and b.*.slice()[3] == 66);
     }
     assert(wrap.toArray(v[10]).*.count == 2);
     assert(wrap.toArray(v[11]).*.count == 1);

@@ -60,7 +60,7 @@
 #
 # `multi` is passed explicitly everywhere below, including where it is false.
 # `net/address` reads its fourth argument whenever it was given three, which
-# `port/FOUND.md` records; a suite that relied on the three-argument form would
+# `FOUND.md` records; a suite that relied on the three-argument form would
 # be asserting whatever the fiber stack happened to hold.
 (def addr (net/address "127.0.0.1" 8123 :stream false))
 (assert (= :core/socket-address (type addr)) "net/address returns an address")

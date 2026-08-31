@@ -136,7 +136,7 @@
 (assert-no-error "unlisten twice" (filewatch/unlisten probe-watcher))
 
 # And the watcher is dead after that: `filewatch/unlisten` closes the
-# watcher's own descriptor and nothing reopens it. See `port/FOUND.md`,
+# watcher's own descriptor and nothing reopens it. See `FOUND.md`,
 # "filewatch/unlisten leaves the watcher unusable".
 (when (not is-win)
   (assert-error "a watcher cannot be added to after unlisten"

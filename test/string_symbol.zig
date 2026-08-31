@@ -10,8 +10,8 @@
 //! length, hash and source-map position, and the memory type in the GC header
 //! that decides which of `janet_deinit_block`'s cases will eventually free it.
 //!
-//! The symbol cache is checkable through `janet_vm.cache_count` and
-//! `janet_vm.cache_deleted`, and through pointer identity: interning means two
+//! The symbol cache is checkable through `vm.symcache.count` and
+//! `vm.symcache.deleted`, and through pointer identity: interning means two
 //! calls with the same name return the same address, and that is a stronger
 //! statement than equality. It is also the property that makes symbol
 //! comparison a pointer comparison everywhere else in the runtime, so it is
@@ -32,10 +32,7 @@
 //! not compile and `c.janet_string_head` recovers the header with `@sizeOf` —
 //! which makes both comparisons `@sizeOf` against itself.
 //!
-//! Phase 11 Part 8 already built both replacements when the collector's
-//! contracts hit the same wall. `test/abi.c` carries the five static
-//! assertions unchanged, because the claim is about `janet.h` and that file is
-//! C; `test/gc_mark.zig`'s `theHeadOffsets` derives each offset from the
+//! `test/gc_mark.zig`'s `theHeadOffsets` derives each offset from the
 //! address the allocator recorded and compares it against `@sizeOf`, which is
 //! the runtime claim. Both cover the string and tuple heads this file used to.
 //!
@@ -50,8 +47,7 @@
 
 const std = @import("std");
 const types = @import("types");
-const constants = @import("constants");
-const c = @import("cabi");
+const repr = @import("repr");
 const harness = @import("harness.zig");
 const gc_alloc = @import("subsystems").gc_alloc;
 const strings = @import("subsystems").value.strings;
@@ -61,7 +57,6 @@ const utils = @import("subsystems").utils;
 const gc_mark = @import("subsystems").gc_mark;
 const core_env = @import("subsystems").env;
 const registry = @import("subsystems").registry;
-const kind = @import("subsystems").value.kind;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 
@@ -91,8 +86,8 @@ fn calchash(bytes: []const u8) i32 {
 /// lookup the implementation uses".
 fn inCache(symbol: [*:0]const u8) bool {
     var index: u32 = 0;
-    while (index < c.vm().cache_capacity) : (index += 1) {
-        if (c.vm().cache.?[index] == symbol) return true;
+    while (index < harness.vm().symcache.capacity) : (index += 1) {
+        if (harness.vm().symcache.entries.?[index] == symbol) return true;
     }
     return false;
 }
@@ -149,8 +144,8 @@ fn stringBeginAndEnd() void {
     const s = strings.begin(5);
     std.debug.assert(stringLength(s) == 5);
     std.debug.assert(s[5] == 0);
-    std.debug.assert(heap.memoryType(types.stringHead(s)) == constants.JANET_MEMORY_STRING);
-    std.debug.assert(heap.onList(c.vm().blocks, types.stringHead(s)));
+    std.debug.assert(heap.memoryType(types.stringHead(s)) == types.MemoryType.string);
+    std.debug.assert(heap.onList(harness.vm().gc.blocks, types.stringHead(s)));
 
     @memcpy(s[0..5], "hello");
     const done = strings.end(s);
@@ -264,23 +259,23 @@ fn stringEquality() void {
 /// Interning is pointer identity, which is stronger than equality and is what
 /// the rest of the runtime relies on.
 fn symbolInterns() void {
-    const before = c.vm().cache_count;
+    const before = harness.vm().symcache.count;
 
     const s1 = symbols.csymbol("interned-test-symbol");
-    std.debug.assert(c.vm().cache_count == before + 1);
-    std.debug.assert(heap.memoryType(types.stringHead(s1)) == constants.JANET_MEMORY_SYMBOL);
-    std.debug.assert(heap.onList(c.vm().blocks, types.stringHead(s1)));
+    std.debug.assert(harness.vm().symcache.count == before + 1);
+    std.debug.assert(heap.memoryType(types.stringHead(s1)) == types.MemoryType.symbol);
+    std.debug.assert(heap.onList(harness.vm().gc.blocks, types.stringHead(s1)));
     std.debug.assert(inCache(s1));
 
     // The same name returns the same address and allocates nothing.
     const s2 = symbols.csymbol("interned-test-symbol");
     std.debug.assert(s2 == s1);
-    std.debug.assert(c.vm().cache_count == before + 1);
+    std.debug.assert(harness.vm().symcache.count == before + 1);
 
     // A different name is a different address.
     const s3 = symbols.csymbol("interned-test-symbol-2");
     std.debug.assert(s3 != s1);
-    std.debug.assert(c.vm().cache_count == before + 2);
+    std.debug.assert(harness.vm().symcache.count == before + 2);
 
     // Interning is by length as well as by bytes, so an interior zero
     // distinguishes two symbols a C string could not tell apart.
@@ -293,38 +288,38 @@ fn symbolInterns() void {
     // different memory types, and still compare equal as byte strings.
     const str = strings.cstring("interned-test-symbol");
     std.debug.assert(str != s1);
-    std.debug.assert(heap.memoryType(types.stringHead(str)) == constants.JANET_MEMORY_STRING);
+    std.debug.assert(heap.memoryType(types.stringHead(str)) == types.MemoryType.string);
     std.debug.assert(strings.equal(str, s1) != 0);
 }
 
 /// Removing a symbol leaves a tombstone: the count falls, the deleted count
 /// rises, and the name is available again -- at a new address.
 fn symbolDeinitLeavesATombstone() void {
-    var count = c.vm().cache_count;
-    var deleted = c.vm().cache_deleted;
+    var count = harness.vm().symcache.count;
+    var deleted = harness.vm().symcache.deleted;
 
     const s = symbols.csymbol("tombstone-test-symbol");
-    std.debug.assert(c.vm().cache_count == count + 1);
+    std.debug.assert(harness.vm().symcache.count == count + 1);
     std.debug.assert(inCache(s));
 
     internal.janet_symbol_deinit(s);
-    std.debug.assert(c.vm().cache_count == count);
-    std.debug.assert(c.vm().cache_deleted == deleted + 1);
+    std.debug.assert(harness.vm().symcache.count == count);
+    std.debug.assert(harness.vm().symcache.deleted == deleted + 1);
     std.debug.assert(!inCache(s));
 
     // The name interns again, to a different block.
     const again = symbols.csymbol("tombstone-test-symbol");
     std.debug.assert(again != s);
-    std.debug.assert(c.vm().cache_count == count + 1);
+    std.debug.assert(harness.vm().symcache.count == count + 1);
     std.debug.assert(inCache(again));
 
     // Removing something that was never there changes nothing.
-    count = c.vm().cache_count;
-    deleted = c.vm().cache_deleted;
+    count = harness.vm().symcache.count;
+    deleted = harness.vm().symcache.deleted;
     const loose = strings.new("never-interned");
     internal.janet_symbol_deinit(loose);
-    std.debug.assert(c.vm().cache_count == count);
-    std.debug.assert(c.vm().cache_deleted == deleted);
+    std.debug.assert(harness.vm().symcache.count == count);
+    std.debug.assert(harness.vm().symcache.deleted == deleted);
 }
 
 /// Where in the table is `symbol`, and where would a name ideally go? Together
@@ -332,15 +327,15 @@ fn symbolDeinitLeavesATombstone() void {
 /// a lookup does to the table on its way past a tombstone.
 fn cacheIndexOf(symbol: [*:0]const u8) ?u32 {
     var index: u32 = 0;
-    while (index < c.vm().cache_capacity) : (index += 1) {
-        if (c.vm().cache.?[index] == symbol) return index;
+    while (index < harness.vm().symcache.capacity) : (index += 1) {
+        if (harness.vm().symcache.entries.?[index] == symbol) return index;
     }
     return null;
 }
 
 fn idealIndex(name: []const u8) u32 {
     const hash: u32 = @bitCast(calchash(name));
-    return hash & (c.vm().cache_capacity - 1);
+    return hash & (harness.vm().symcache.capacity - 1);
 }
 
 /// A successful lookup is not a pure read: if the key was found *after* a
@@ -373,12 +368,12 @@ fn lookupReclaimsATombstone() void {
     }
     std.debug.assert(found);
 
-    const capacity = c.vm().cache_capacity;
+    const capacity = harness.vm().symcache.capacity;
     const a = symbols.csymbol(first.ptr);
     const b = symbols.csymbol(second.ptr);
     gc_alloc.gcroot(wrap.fromSymbol(a));
     gc_alloc.gcroot(wrap.fromSymbol(b));
-    std.debug.assert(c.vm().cache_capacity == capacity);
+    std.debug.assert(harness.vm().symcache.capacity == capacity);
 
     const pos_a = cacheIndexOf(a).?;
     const pos_b = cacheIndexOf(b).?;
@@ -388,15 +383,15 @@ fn lookupReclaimsATombstone() void {
     // Delete the first, leaving a tombstone directly in the second's path.
     internal.janet_symbol_deinit(a);
     std.debug.assert(cacheIndexOf(a) == null);
-    std.debug.assert(c.vm().cache.?[pos_a] != null);
+    std.debug.assert(harness.vm().symcache.entries.?[pos_a] != null);
 
     // Looking the second one up moves it into that slot. Its address does not
     // change -- interning is still identity -- only its position does.
     std.debug.assert(symbols.csymbol(second.ptr) == b);
     std.debug.assert(cacheIndexOf(b).? == pos_a);
-    std.debug.assert(c.vm().cache.?[pos_b] != null);
-    std.debug.assert(c.vm().cache.?[pos_b] != b);
-    std.debug.assert(c.vm().cache_capacity == capacity);
+    std.debug.assert(harness.vm().symcache.entries.?[pos_b] != null);
+    std.debug.assert(harness.vm().symcache.entries.?[pos_b] != b);
+    std.debug.assert(harness.vm().symcache.capacity == capacity);
 
     _ = gc_alloc.gcunroot(wrap.fromSymbol(a));
     _ = gc_alloc.gcunroot(wrap.fromSymbol(b));
@@ -418,15 +413,15 @@ fn cacheResizesAndKeepsIdentity() void {
     // Delete half, which raises the tombstone count without lowering capacity.
     var i: usize = 0;
     while (i < 400) : (i += 2) internal.janet_symbol_deinit(kept[i]);
-    std.debug.assert(c.vm().cache_deleted >= 200);
+    std.debug.assert(harness.vm().symcache.deleted >= 200);
 
     // Force enough puts to cross the load factor and rehash.
-    const capacity_before = c.vm().cache_capacity;
+    const capacity_before = harness.vm().symcache.capacity;
     for (0..1200) |n| {
         const text = std.fmt.bufPrintZ(&name, "resize-filler-{d}", .{n}) catch unreachable;
         gc_alloc.gcroot(wrap.fromSymbol(symbols.csymbol(text.ptr)));
     }
-    std.debug.assert(c.vm().cache_capacity > capacity_before);
+    std.debug.assert(harness.vm().symcache.capacity > capacity_before);
 
     // Every survivor is still interned, at the address it always had.
     i = 1;
@@ -461,11 +456,11 @@ fn tombstonesForceARehash() void {
         const text = std.fmt.bufPrintZ(&name, "churn-symbol-{d}", .{i}) catch unreachable;
         const s = symbols.csymbol(text.ptr);
 
-        if (c.vm().cache_deleted > high_water) high_water = c.vm().cache_deleted;
+        if (harness.vm().symcache.deleted > high_water) high_water = harness.vm().symcache.deleted;
         // The invariant a live count alone would not maintain.
-        std.debug.assert(c.vm().cache_deleted < c.vm().cache_capacity);
+        std.debug.assert(harness.vm().symcache.deleted < harness.vm().symcache.capacity);
 
-        if (c.vm().cache_deleted == 0 and high_water > 8) {
+        if (harness.vm().symcache.deleted == 0 and high_water > 8) {
             rehashed = true;
             internal.janet_symbol_deinit(s);
             break;
@@ -477,7 +472,7 @@ fn tombstonesForceARehash() void {
 
 /// The length of a generated name, which is the odometer minus its leading
 /// underscore.
-const gensym_length: i32 = @as(i32, @intCast(@typeInfo(@TypeOf(c.vm().gensym_counter)).array.len)) - 1;
+const gensym_length: i32 = @as(i32, @intCast(@typeInfo(@TypeOf(harness.vm().gensym_counter)).array.len)) - 1;
 
 /// The leading underscore comes from `janet_symcache_init` and nothing else
 /// ever writes it, so it is the one part of the counter's initial state that
@@ -496,8 +491,8 @@ fn generatedNamesComeFromTheInitialCounter() void {
 
 /// Reset the odometer to the state `janet_symcache_init` leaves.
 fn resetGensymCounter() void {
-    @memset(&c.vm().gensym_counter, '0');
-    c.vm().gensym_counter[0] = '_';
+    @memset(&harness.vm().gensym_counter, '0');
+    harness.vm().gensym_counter[0] = '_';
 }
 
 /// A generated symbol is interned like any other, and the counter advances
@@ -518,7 +513,7 @@ fn gensymAdvancesTheOdometer() void {
         gc_alloc.gcroot(wrap.fromSymbol(slot.*));
         std.debug.assert(stringLength(slot.*) == gensym_length);
         std.debug.assert(slot.*[0] == '_');
-        std.debug.assert(heap.memoryType(types.stringHead(slot.*)) == constants.JANET_MEMORY_SYMBOL);
+        std.debug.assert(heap.memoryType(types.stringHead(slot.*)) == types.MemoryType.symbol);
         std.debug.assert(inCache(slot.*));
     }
 
@@ -556,7 +551,7 @@ fn gensymCarriesBetweenPositions() void {
     gc_mark.collect();
     const last: usize = @intCast(gensym_length - 1);
     resetGensymCounter();
-    c.vm().gensym_counter[last] = 'Z';
+    harness.vm().gensym_counter[last] = 'Z';
 
     const before = symbols.gen();
     gc_alloc.gcroot(wrap.fromSymbol(before));
@@ -579,17 +574,17 @@ fn gensymCarriesBetweenPositions() void {
 /// subsystem, so the round trip is entirely inside Zig.
 fn collectedSymbolLeavesTheCache() void {
     gc_mark.collect();
-    const before = c.vm().cache_count;
+    const before = harness.vm().symcache.count;
 
     var name: [40]u8 = undefined;
     for (0..50) |i| {
         const text = std.fmt.bufPrintZ(&name, "doomed-symbol-{d}", .{i}) catch unreachable;
         _ = symbols.csymbol(text.ptr);
     }
-    std.debug.assert(c.vm().cache_count == before + 50);
+    std.debug.assert(harness.vm().symcache.count == before + 50);
 
     gc_mark.collect();
-    std.debug.assert(c.vm().cache_count == before);
+    std.debug.assert(harness.vm().symcache.count == before);
 
     // A rooted one survives the same collection and keeps its address.
     const kept = symbols.csymbol("kept-symbol");
@@ -610,8 +605,8 @@ fn tupleBeginAndEnd() void {
     std.debug.assert(types.tupleHead(t).length == 3);
     std.debug.assert(types.tupleHead(t).sm_line == -1);
     std.debug.assert(types.tupleHead(t).sm_column == -1);
-    std.debug.assert(heap.memoryType(types.tupleHead(t)) == constants.JANET_MEMORY_TUPLE);
-    std.debug.assert(heap.onList(c.vm().blocks, types.tupleHead(t)));
+    std.debug.assert(heap.memoryType(types.tupleHead(t)) == types.MemoryType.tuple);
+    std.debug.assert(heap.onList(harness.vm().gc.blocks, types.tupleHead(t)));
 
     t[0] = harness.wrapInteger(1);
     t[1] = wrap.fromNil();
@@ -629,13 +624,13 @@ fn tupleBeginAndEnd() void {
 /// The one-step constructor copies its elements and closes the tuple, so equal
 /// contents give equal hashes -- which is what the dictionaries need.
 fn tupleNCopiesAndHashes() void {
-    var source = [3]types.Janet{
+    var source = [3]repr.Value{
         harness.wrapInteger(10),
         wrap.fromTrue(),
         wrap.fromString(strings.cstring("s")),
     };
 
-    const a = tuples.newFrom(&source, 3);
+    const a = tuples.newFrom(&source);
     std.debug.assert(types.tupleHead(a).length == 3);
     std.debug.assert(harness.equals(a[0], source[0]));
     std.debug.assert(harness.equals(a[1], source[1]));
@@ -647,22 +642,22 @@ fn tupleNCopiesAndHashes() void {
     std.debug.assert(harness.equals(a[0], harness.wrapInteger(10)));
 
     // Equal contents, equal hash; different contents, different tuple.
-    var again = [3]types.Janet{
+    var again = [3]repr.Value{
         harness.wrapInteger(10),
         wrap.fromTrue(),
         wrap.fromString(strings.cstring("s")),
     };
-    const b = tuples.newFrom(&again, 3);
+    const b = tuples.newFrom(&again);
     std.debug.assert(b != a);
     std.debug.assert(types.tupleHead(b).hash == types.tupleHead(a).hash);
     std.debug.assert(harness.equals(wrap.fromTuple(a), wrap.fromTuple(b)));
 
     again[0] = harness.wrapInteger(11);
-    const different = tuples.newFrom(&again, 3);
+    const different = tuples.newFrom(&again);
     std.debug.assert(!harness.equals(wrap.fromTuple(a), wrap.fromTuple(different)));
 
     // Zero elements needs no source at all.
-    const none = tuples.newFrom(null, 0);
+    const none = tuples.newFrom(&.{});
     std.debug.assert(types.tupleHead(none).length == 0);
 }
 
@@ -671,7 +666,7 @@ fn tupleNCopiesAndHashes() void {
 /// The standard library reaches all of this through the core environment, so
 /// the Zig entry points above have to agree with what Janet sees.
 fn fromJanet() void {
-    var out: types.Janet = undefined;
+    var out: repr.Value = undefined;
     const env = harness.coreEnv();
     const source =
         \\(let [s (string "ab" "cd")
@@ -686,10 +681,10 @@ fn fromJanet() void {
     const r = wrap.toTuple(out);
     std.debug.assert(harness.stringValueIs(r[0], "abcd"));
     std.debug.assert(harness.integerIs(r[1], 4));
-    std.debug.assert(kind.truthy(r[2]) != 0);
-    std.debug.assert(kind.truthy(r[3]) != 0);
-    std.debug.assert(kind.truthy(r[4]) != 0);
-    std.debug.assert(kind.truthy(r[5]) != 0);
+    std.debug.assert(repr.truthy(r[2]));
+    std.debug.assert(repr.truthy(r[3]));
+    std.debug.assert(repr.truthy(r[4]));
+    std.debug.assert(repr.truthy(r[5]));
     std.debug.assert(types.tupleHead(wrap.toTuple(r[6])).length == 2);
 }
 
@@ -697,8 +692,7 @@ fn fromJanet() void {
 
 /// Every core cfunction is registered with the file and line it was declared
 /// on, and that pair is what a stack trace prints for a frame that is not a
-/// Janet function. Phase 10 Part 6 moved the registration of every surface in
-/// this subsystem to Zig, where the location comes from `@src()` at the table
+/// Janet function. The location comes from `@src()` at the registration table
 /// row rather than from `__LINE__` at the definition; what has to hold either
 /// way is that there *is* one.
 ///
@@ -715,8 +709,8 @@ fn theRegistryRecordsALocation() void {
     for (names) |name| {
         const binding = registry.resolveCore(name);
         // A build without integer types has no int/ functions to look up.
-        if (harness.isType(binding, constants.JANET_NIL)) continue;
-        std.debug.assert(harness.isType(binding, constants.JANET_CFUNCTION));
+        if (harness.isType(binding, repr.Tag.nil)) continue;
+        std.debug.assert(harness.isType(binding, repr.Tag.cfunction));
         const entry = internal.janet_registry_get(wrap.toCfunction(binding));
         std.debug.assert(entry != null);
         std.debug.assert(entry.?.name != null);

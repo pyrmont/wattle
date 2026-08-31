@@ -10,14 +10,13 @@
 //! "how does a structure of them sit on a page", and only the second has a
 //! width, a depth, a cycle table and a backtracking pass.
 //!
-//! ## Nothing in this file raises, and it is still jump-transparent
+//! ## Nothing in this file raises, and something can raise through it
 //!
-//! Not one of these functions panics in its own body, so none of them returns
-//! `raise.Error` — Phase 10 Part 2's rule is that converting a function which
-//! cannot raise buys a signature and nothing else. What they *do* is call an
-//! abstract type's `tostring` callback, which is a C function pointer supplied
-//! by `abstract.c` or by a native module and which may panic through these
-//! frames. So the marker is here and `build.zig` rejects `defer`.
+//! Not one of these functions raises in its own body, so none of them returns
+//! `raise.Error`: converting a function that cannot raise buys a signature and
+//! nothing else. What they *do* is call an abstract type's `tostring`
+//! callback, which is a function pointer the runtime does not own and which
+//! may raise through these frames. So nothing here holds anything.
 //!
 //! That costs something real and it is reproduced rather than introduced.
 //! `janet_description` and `janet_to_string` initialise a `JanetBuffer` on the
@@ -29,6 +28,7 @@
 const std = @import("std");
 const options = @import("options");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const raise = @import("raise");
@@ -36,9 +36,9 @@ const abstract_type = @import("abstract_type.zig");
 const config = @import("config");
 const buffers = @import("value/buffers.zig");
 const strings = @import("value/strings.zig");
-const kind = @import("value/helpers/kind.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const utils = @import("utils.zig");
+const registry = @import("registry.zig");
 
 /// `BUFSIZE` in `src/core/pp.c`: the scratch a number or a pointer
 /// description is rendered into, and the headroom reserved before rendering.
@@ -53,7 +53,6 @@ extern fn snprintf(buffer: [*]u8, size: usize, format: [*:0]const u8, ...) callc
 
 /// `src/core/util.h`, declared here rather than in `cabi.zig`.
 extern const janet_base64: [65]u8;
-extern fn janet_registry_get(key: types.JanetCFunction) callconv(.c) ?*types.JanetCFunRegistry;
 
 inline fn hex(nibble: u8) u8 {
     return janet_base64[nibble];
@@ -68,22 +67,20 @@ fn numberToStringB(buffer: *types.JanetBuffer, x: f64) raise.Raising(void) {
     try buffers.ensure(buffer, buffer.count + bufsize, 2);
     const integral = x == @floor(x) and x <= constants.JANET_INTMAX_DOUBLE and x >= constants.JANET_INTMIN_DOUBLE;
     const format: [*:0]const u8 = if (integral) "%.0f" else "%.15g";
-    var count: c_int = undefined;
     if (x == 0.0) {
         // Print '0' rather than letting the formatter render '-0'.
-        count = 1;
-        buffer.data.?[@intCast(buffer.count)] = '0';
-    } else {
-        count = snprintf(buffer.data.? + @as(usize, @intCast(buffer.count)), bufsize, format, x);
+        buffer.appendAssumingCapacity('0');
+        return;
     }
-    buffer.count += count;
+    const room = buffer.spare();
+    buffer.count += snprintf(room.ptr, bufsize, format, x);
 }
 
 // ------------------------------------------------------------------ pointers
 
 /// `string_description_b`. `<title 0xHEXHEX...>`, with the title truncated to
 /// 32 bytes so that the whole thing fits the `bufsize` reservation.
-fn stringDescriptionB(buffer: *types.JanetBuffer, title: [*]const u8, pointer: ?*const anyopaque) raise.Raising(void) {
+fn stringDescriptionB(buffer: *types.JanetBuffer, title: []const u8, pointer: ?*const anyopaque) raise.Raising(void) {
     try buffers.ensure(buffer, buffer.count + bufsize, 2);
     const bytes: [@sizeOf(?*const anyopaque)]u8 = @bitCast(@intFromPtr(pointer));
     var at = buffer.data.? + @as(usize, @intCast(buffer.count));
@@ -91,7 +88,7 @@ fn stringDescriptionB(buffer: *types.JanetBuffer, title: [*]const u8, pointer: ?
     at[0] = '<';
     at += 1;
     var i: usize = 0;
-    while (i < 32 and title[i] != 0) : (i += 1) {
+    while (i < 32 and i < title.len) : (i += 1) {
         at[0] = title[i];
         at += 1;
     }
@@ -139,16 +136,14 @@ fn shortEscape(byte: u8) ?*const [2]u8 {
 /// `janet_escape_string_impl`. Returns the number of columns the escaped form
 /// occupies, which is what the pretty printer adds to its alignment.
 ///
-/// `pp_pretty.zig` calls this directly, as an import rather than across the C
-/// ABI, and since Phase 11 Part 5 so does `test/pp_describe.zig`. **The abi
-/// that stood beside this is gone**: `janet_zig_pp_escape_string` existed for
-/// `pp.c` under the other selector and outlived it by one caller, the C
-/// contract, which asserted the returned width because nothing else observes
-/// it — a width consistently two too small would show up only as slightly
-/// wrong wrapping in output no test compares. The Zig contract asserts the
-/// same thing through this function and takes the error, so the abi and its
-/// `@export` have no callers left.
-pub fn escapeStringImpl(buffer: *types.JanetBuffer, str: []const u8) raise.Raising(i32) {
+/// `pp/pretty.zig` calls this directly, as an import, and so does
+/// `test/pp_describe.zig`. **There is no abi beside it**: one existed for a C
+/// caller and outlived it by one contract, which asserted the returned width
+/// because nothing else observes it -- a width consistently two too small
+/// would show up only as slightly wrong wrapping in output no test compares.
+/// The contract asserts the same thing through this function and takes the
+/// error.
+pub fn escapeString(buffer: *types.JanetBuffer, str: []const u8) raise.Raising(i32) {
     try buffers.pushU8(buffer, '"');
     var align_count: i32 = 1;
     for (str) |byte| {
@@ -169,7 +164,7 @@ pub fn escapeStringImpl(buffer: *types.JanetBuffer, str: []const u8) raise.Raisi
 }
 
 fn escapeStringB(buffer: *types.JanetBuffer, str: types.JanetString) raise.Raising(void) {
-    _ = try escapeStringImpl(buffer, str[0..@intCast(types.stringHead(str).length)]);
+    _ = try escapeString(buffer, str[0..@intCast(types.stringHead(str).length)]);
 }
 
 fn escapeBufferB(buffer: *types.JanetBuffer, source: *types.JanetBuffer) raise.Raising(void) {
@@ -179,7 +174,7 @@ fn escapeBufferB(buffer: *types.JanetBuffer, source: *types.JanetBuffer) raise.R
         try buffers.ensure(source, source.count + 5 * source.count + 3, 1);
     }
     try buffers.pushU8(buffer, '@');
-    _ = try escapeStringImpl(buffer, source.data.?[0..@intCast(source.count)]);
+    _ = try escapeString(buffer, source.slice());
 }
 
 // ---------------------------------------------------------------- to_string
@@ -187,30 +182,30 @@ fn escapeBufferB(buffer: *types.JanetBuffer, source: *types.JanetBuffer) raise.R
 /// The `<type 0x...>` fallback, which three cases in `toStringB` reach: an
 /// unregistered cfunction, a function with no name, and everything with no
 /// case of its own. In C the first two arrive by `goto fallthrough`.
-fn genericDescriptionB(buffer: *types.JanetBuffer, x: types.Janet) raise.Raising(void) {
-    try stringDescriptionB(buffer, utils.typeNames[kind.typeOf(x)], wrap.toPointer(x));
+fn genericDescriptionB(buffer: *types.JanetBuffer, x: repr.Value) raise.Raising(void) {
+    try stringDescriptionB(buffer, std.mem.span(utils.typeNames[@intFromEnum(repr.typeOf(x))]), wrap.toPointer(x));
 }
 
-pub fn toStringB(buffer: *types.JanetBuffer, x: types.Janet) raise.Raising(void) {
-    switch (kind.typeOf(x)) {
-        constants.JANET_NIL => try buffers.pushCString(buffer, ""),
-        constants.JANET_BOOLEAN => try buffers.pushCString(
+pub fn toStringB(buffer: *types.JanetBuffer, x: repr.Value) raise.Raising(void) {
+    switch (repr.typeOf(x)) {
+        repr.Tag.nil => try buffers.pushCString(buffer, ""),
+        repr.Tag.boolean => try buffers.pushCString(
             buffer,
-            if (wrap.toBoolean(x) != 0) "true" else "false",
+            if (wrap.toBoolean(x)) "true" else "false",
         ),
-        constants.JANET_NUMBER => try numberToStringB(buffer, wrap.toNumber(x)),
-        constants.JANET_STRING, constants.JANET_SYMBOL, constants.JANET_KEYWORD => {
+        repr.Tag.number => try numberToStringB(buffer, wrap.toNumber(x)),
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
             const str = wrap.toString(x);
             try buffers.pushBytes(buffer, str[0..@intCast(types.stringHead(str).length)]);
         },
-        constants.JANET_BUFFER => {
+        repr.Tag.buffer => {
             const to = wrap.toBuffer(x);
             // Reserve before pushing, so that appending a buffer to itself
             // cannot resize the storage the push is reading from.
             if (buffer == to) try buffers.extra(buffer, to.*.count);
-            try buffers.pushBytes(buffer, to.*.data.?[0..@intCast(to.*.count)]);
+            try buffers.pushBytes(buffer, to.*.slice());
         },
-        constants.JANET_ABSTRACT => {
+        repr.Tag.abstract => {
             const p = wrap.toAbstract(x);
             const t = abstract_type.ofAbstract(p);
             if (t.*.tostring) |tostring| {
@@ -219,8 +214,8 @@ pub fn toStringB(buffer: *types.JanetBuffer, x: types.Janet) raise.Raising(void)
                 try stringDescriptionB(buffer, t.*.name, p);
             }
         },
-        constants.JANET_CFUNCTION => {
-            const reg = janet_registry_get(wrap.toCfunction(x));
+        repr.Tag.cfunction => {
+            const reg = registry.registryGet(wrap.toCfunction(x));
             if (reg == null) return genericDescriptionB(buffer, x);
             try buffers.pushCString(buffer, "<cfunction ");
             if (reg.?.name_prefix != null) {
@@ -230,7 +225,7 @@ pub fn toStringB(buffer: *types.JanetBuffer, x: types.Janet) raise.Raising(void)
             try buffers.pushCString(buffer, reg.?.name.?);
             try buffers.pushU8(buffer, '>');
         },
-        constants.JANET_FUNCTION => {
+        repr.Tag.function => {
             const def = wrap.toFunction(x).*.def orelse
                 return try buffers.pushCString(buffer, "<incomplete function>");
             if (def.name == null) return genericDescriptionB(buffer, x);
@@ -243,24 +238,24 @@ pub fn toStringB(buffer: *types.JanetBuffer, x: types.Janet) raise.Raising(void)
     }
 }
 
-pub fn toStringBAbi(buffer: *types.JanetBuffer, x: types.Janet) void {
+pub fn toStringBAbi(buffer: *types.JanetBuffer, x: repr.Value) void {
     raise.reported(toStringB(buffer, x));
 }
 
 // -------------------------------------------------------------- description
 
-pub fn descriptionB(buffer: *types.JanetBuffer, x: types.Janet) raise.Raising(void) {
-    switch (kind.typeOf(x)) {
-        constants.JANET_NIL => return try buffers.pushCString(buffer, "nil"),
-        constants.JANET_KEYWORD => try buffers.pushU8(buffer, ':'),
-        constants.JANET_STRING => return escapeStringB(buffer, wrap.toString(x)),
-        constants.JANET_BUFFER => return escapeBufferB(buffer, wrap.toBuffer(x)),
-        constants.JANET_ABSTRACT => {
+pub fn descriptionB(buffer: *types.JanetBuffer, x: repr.Value) raise.Raising(void) {
+    switch (repr.typeOf(x)) {
+        repr.Tag.nil => return try buffers.pushCString(buffer, "nil"),
+        repr.Tag.keyword => try buffers.pushU8(buffer, ':'),
+        repr.Tag.string => return escapeStringB(buffer, wrap.toString(x)),
+        repr.Tag.buffer => return escapeBufferB(buffer, wrap.toBuffer(x)),
+        repr.Tag.abstract => {
             const p = wrap.toAbstract(x);
             const t = abstract_type.ofAbstract(p);
             if (t.*.tostring) |tostring| {
                 try buffers.pushCString(buffer, "<");
-                try buffers.pushCString(buffer, t.*.name);
+                try buffers.pushBytes(buffer, t.*.name);
                 try buffers.pushCString(buffer, " ");
                 try tostring(p, buffer);
                 try buffers.pushCString(buffer, ">");
@@ -276,7 +271,7 @@ pub fn descriptionB(buffer: *types.JanetBuffer, x: types.Janet) raise.Raising(vo
     try toStringB(buffer, x);
 }
 
-pub fn descriptionBAbi(buffer: *types.JanetBuffer, x: types.Janet) void {
+pub fn descriptionBAbi(buffer: *types.JanetBuffer, x: repr.Value) void {
     raise.reported(descriptionB(buffer, x));
 }
 
@@ -284,12 +279,12 @@ pub fn descriptionBAbi(buffer: *types.JanetBuffer, x: types.Janet) void {
 /// is deinitialised on the way out and stranded if a `tostring` callback
 /// panics, which is what the C does.
 fn intern(buffer: *types.JanetBuffer) types.JanetString {
-    const ret = strings.new(buffer.data.?[0..@intCast(buffer.count)]);
+    const ret = strings.new(buffer.slice());
     buffers.deinit(buffer);
     return ret;
 }
 
-pub fn description(x: types.Janet) types.JanetString {
+pub fn description(x: repr.Value) types.JanetString {
     var buffer: types.JanetBuffer = undefined;
     _ = buffers.init(&buffer, 10);
     raise.reported(descriptionB(&buffer, x));
@@ -299,13 +294,13 @@ pub fn description(x: types.Janet) types.JanetString {
 /// Like `janet_description`, except that the three byte-sequence types and a
 /// buffer answer with their contents rather than with a printed form — and the
 /// first three of those need no rendering at all.
-pub fn toString(x: types.Janet) types.JanetString {
-    switch (kind.typeOf(x)) {
-        constants.JANET_BUFFER => {
+pub fn toString(x: repr.Value) types.JanetString {
+    switch (repr.typeOf(x)) {
+        repr.Tag.buffer => {
             const b = wrap.toBuffer(x);
-            return strings.new(b.*.data.?[0..@intCast(b.*.count)]);
+            return strings.new(b.*.slice());
         },
-        constants.JANET_STRING, constants.JANET_SYMBOL, constants.JANET_KEYWORD => return wrap.toString(x),
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return wrap.toString(x),
         else => {
             var buffer: types.JanetBuffer = undefined;
             _ = buffers.init(&buffer, 10);

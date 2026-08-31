@@ -1,94 +1,32 @@
-//! A dynamically loaded Janet module written in Zig, and Phase 3's interop
-//! proof that a `.so` outside the runtime can define a builtin.
+//! A dynamically loaded Janet module written in Zig: the proof that a `.so`
+//! outside the runtime can define a builtin.
 //!
-//! Phase 10 Part 17g moved the cfunction here from `src/zig/native_bridge.c`.
-//! A cfunction returns `error{JanetSignal}!Janet` with Zig's own calling
-//! convention now, so a C body cannot be one -- which is decision 2 arriving
-//! at the place it is most visible, the native-module interface itself. The
-//! bridge keeps the module entry point, because `JANET_MODULE_ENTRY` is a
-//! macro and the loader looks the symbol up by name.
+//! It is written against the published interface: it imports `janet` and
+//! nothing else, which is what makes it a proof of the thing a module author
+//! actually uses. Reaching for `types`, `constants`, `config` and the C ABI
+//! and hand-copying `raise.CFunction` -- which is what it did while there was
+//! no module interface -- proves something else.
 //!
-//! `src/zig/interop.zig` has the note on what the link now rests on: Zig's
-//! `.auto` calling convention, deterministic for a compiler version and
-//! target rather than documented.
+//! `examples/numarray/numarray.zig` is the worked example; this is the
+//! smallest possible module and exists to be loaded by a contract.
 
-const types = @import("types");
-const constants = @import("constants");
-const config = @import("config");
-const c = @import("cabi");
+const janet = @import("janet");
 
-/// `raise.CFunction`, spelled out -- this object is not the runtime's module.
-const CFunction = *const fn ([]types.Janet) error{JanetSignal}!types.Janet;
-
-const alignment = 16;
-
-/// `raise.crossing`, spelled out. This object is not the runtime's module, so
-/// it cannot import `raise`; the note on `CFunction` above has the reason.
-extern fn janet_zig_c_raise_take() callconv(.c) c_int;
-
-inline fn crossing(value: anytype) error{JanetSignal}!@TypeOf(value) {
-    if (janet_zig_c_raise_take() != 0) return error.JanetSignal;
-    return value;
+fn identity(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+    try janet.fixarity(argv, 1);
+    return argv[0];
 }
 
-export fn janet_zig_native_identity(argc: i32, argv: [*]types.Janet, out: *types.Janet) callconv(.c) c_int {
-    _ = argc;
-    out.* = argv[0];
-    return 1;
-}
-
-fn nativeIdentity(argv: []types.Janet) align(alignment) error{JanetSignal}!types.Janet {
-    var result: types.Janet = undefined;
-    try crossing(c.janet_fixarity(@as(i32, @intCast(argv.len)), 1));
-    if (janet_zig_native_identity(@intCast(argv.len), argv.ptr, &result) == 0) {
-        try crossing(c.janet_panic("Zig native identity failed"));
-    }
-    return result;
-}
-
-/// The one definition `JANET_MODULE_ENTRY` installs, reached from the C
-/// bridge so that the entry point stays where the loader looks for it.
-export fn janet_zig_native_defs(env: *types.JanetTable) callconv(.c) void {
-    const cfun: CFunction = &nativeIdentity;
-    c.janet_def(
-        env,
-        "identity",
-        c.janet_wrap_cfunction(@ptrCast(cfun)),
-        "Round-trip a Janet value through a dynamically loaded Zig module.",
-    );
-}
-
-// ------------------------------------------------------------ module entry
-
-/// What `JANET_MODULE_ENTRY` spells as a macro: the two symbols the module
-/// loader looks up by name.
-///
-/// `native_bridge.c` held these until Phase 10 Part 18, because the macro is a
-/// preprocessor facility and translate-c cannot render one -- and because the
-/// definitions it called were in this file, which made it a C-ABI crossing
-/// between two Zig files, the shape rule 19 says to convert. Written out, it is
-/// two exports and neither has anything to do with C -- which is the same
-/// finding `stdio.zig` records about `stderr` and `io_core.zig` about
-/// `JANET_EXIT`. Decision 2 ended the C ABI for module *authors*; the loader's
-/// two symbol names are the interface itself and stay exactly as they were.
-/// `janet_config_current`, which `janet.h` spells as a macro building the
-/// struct from four version constants. `cabi.zig` carried translate-c's
-/// rendering of it until increment 5e; the constants are `config`'s since
-/// increment 4, so the struct is written here rather than reached for.
-fn modConfig() callconv(.c) types.JanetBuildConfig {
-    return .{
-        .major = config.version_major,
-        .minor = config.version_minor,
-        .patch = config.version_patch,
-        .bits = constants.JANET_CURRENT_CONFIG_BITS,
-    };
-}
-
-fn modInit(env: *types.JanetTable) callconv(.c) void {
-    janet_zig_native_defs(env);
+fn defs(env: *janet.Env) void {
+    janet.cfuns(env, "zig-native", &.{
+        janet.reg(
+            "identity",
+            &identity,
+            "(identity x)\n\nRound-trip a Janet value through a dynamically loaded Zig module.",
+        ),
+    });
 }
 
 comptime {
-    @export(&modConfig, .{ .name = "_janet_mod_config" });
-    @export(&modInit, .{ .name = "_janet_init" });
+    janet.entry(defs);
 }

@@ -3,8 +3,8 @@
 //!
 //! ## What the Janet suites cannot reach
 //!
-//! `test/suite-ffi.janet` exercises the type system and `port/probe-16/abi/`
-//! drives real calls against real C. Six things have no Janet spelling:
+//! `test/suite-ffi.janet` exercises the type system and a spike corpus drives
+//! real calls against real C. Six things have no Janet spelling:
 //!
 //!  - **The primitive size and alignment table.** `ffi_types.zig`'s `primInfo`
 //!    is a restatement of the host's own numbers, and a restatement is a place
@@ -22,27 +22,23 @@
 //!    program reaches it only through a C library calling back, which always
 //!    passes the pointer it was given, so the null arm is unreachable from the
 //!    language and reachable in one line from here.
-//!  - **The outgoing half of the frame.** Phase 10 Part 16 added
-//!    `arg_stack_count` to `AllocResult` because a Zig caller declares the
-//!    outgoing stack words as function parameters and must not count the
-//!    by-reference payloads that follow them. Nothing in Janet can observe the
-//!    split; the allocators can be asked directly.
+//!  - **The outgoing half of the frame.** `AllocResult` carries
+//!    `arg_stack_count` because a Zig caller declares the outgoing stack words
+//!    as function parameters and must not count the by-reference payloads that
+//!    follow them. Nothing in Janet can observe the split; the allocators can
+//!    be asked directly.
 //!  - **The rung ceiling.** Past 1024 words of outgoing arguments there is no
 //!    function type to call through, and `ffi/signature` reports it. Only
 //!    SysV64 can reach it, so the assertion is on the allocator rather than on
 //!    a call this host could make.
 //!  - **The failure messages.** A raise is asserted here by its *message*,
-//!    which Phase 9 Part 11 recorded as the difference between a test and a
-//!    tautology.
+//!    which is the difference between a test and a tautology.
 //!
-//! ## What the migration changed
-//!
-//! **Nothing here reaches a symbol any more.** `test/ffi_core.c` hand-declared
-//! the three allocators and the callback entry, because none of the four is in
-//! a header; they were exported for a `ffi.c` that no longer exists, and this
-//! contract was the last reader of the names. All four are ordinary Zig
-//! functions now — see `src/zig/README.md`'s entry for the twelve symbols this
-//! increment spent.
+//! **Nothing here reaches a symbol.** Three allocators and the callback entry
+//! were hand-declared once, because none of the four is in a header; they were
+//! exported for a C caller that no longer exists, and this contract was the
+//! last reader of the names. All four are ordinary Zig functions, reached by
+//! `@import` like any other.
 //!
 //! **The alignment oracle is rebuilt rather than translated.** `ffi_core.c`
 //! spelled `ALIGNOF(type)` as `offsetof(struct { char c; type member; },
@@ -56,7 +52,7 @@
 
 const std = @import("std");
 const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
 const harness = @import("harness.zig");
 
@@ -66,7 +62,6 @@ const config = @import("config");
 const gc_alloc = @import("subsystems").gc_alloc;
 const tuples = @import("subsystems").value.tuples;
 const core_env = @import("subsystems").env;
-const kind = @import("subsystems").value.kind;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const buffers = @import("subsystems").value.buffers;
@@ -90,7 +85,7 @@ fn expectRaise(function: anytype, args: anytype, message: []const u8) void {
     const raise = harness.raised(function, args) orelse {
         std.debug.panic("ffi_core: expected a raise, got a return: {s}\n", .{message});
     };
-    assert(raise.signal == constants.JANET_SIGNAL_ERROR);
+    assert(raise.signal == types.Signal.@"error");
     assert(raise.says(message));
     raises_seen += 1;
 }
@@ -101,12 +96,12 @@ fn expectRaisePrefix(function: anytype, args: anytype, prefix: []const u8) void 
     const raise = harness.raised(function, args) orelse {
         std.debug.panic("ffi_core: expected a raise, got a return: {s}\n", .{prefix});
     };
-    assert(raise.signal == constants.JANET_SIGNAL_ERROR);
+    assert(raise.signal == types.Signal.@"error");
     assert(raise.beginsWith(prefix));
     raises_seen += 1;
 }
 
-fn eval(source: [*:0]const u8) types.Janet {
+fn eval(source: [*:0]const u8) repr.Value {
     var out = wrap.fromNil();
     const env = harness.coreEnv();
     assert(core_env.dostring(env, source, "ffi_core", &out) == 0);
@@ -117,30 +112,25 @@ fn eval(source: [*:0]const u8) types.Janet {
 /// from whether the subsystem was compiled.
 ///
 /// `-Ddynamic-modules` answers the second. Zig links musl targets statically
-/// and musl's static `dlopen` is a stub that always fails -- `port/testing.md`
-/// records it as the first of its five limitations -- so on
-/// `aarch64-linux-musl` the subsystem is present, every binding is registered,
-/// and every `ffi/native` raises "Dynamic loading not supported". This is rule
-/// 7 one layer down: there it was a subsystem being compiled against a binding
-/// being registered, here it is a binding being registered against its working.
-/// `options` cannot answer either; the environment answers both.
-///
-/// Found by Phase 11 Part 24's container run, which is the first time this
-/// contract had ever executed anywhere but macOS -- the FFI group migrated in
-/// Part 16 and the container had last run in Part 4.
+/// and musl's static `dlopen` is a stub that always fails -- `test/README.md`
+/// records it as the first of its limitations -- so on `aarch64-linux-musl`
+/// the subsystem is present, every binding is registered, and every
+/// `ffi/native` raises "Dynamic loading not supported". A build option cannot
+/// answer that; the environment can. Found by a container run, which was the
+/// first time this contract had executed anywhere but macOS.
 fn dynamicLoadingWorks() bool {
     if (!has_dynamic_modules) return false;
     var out = wrap.fromNil();
     const env = harness.coreEnv();
     if (core_env.dostring(env, "(first (protect (ffi/native)))", "ffi_core", &out) != 0) return false;
-    return kind.truthy(out) != 0;
+    return repr.truthy(out);
 }
 
 // ------------------------------------------------------------ registration
 
 /// Every name `janet_lib_ffi` registers. A binding that stops being registered
-/// is what this catches, and Phase 9 Part 6 recorded that a registration table
-/// is the one place a cfunction can go missing without a link error.
+/// is what this catches: a registration table is the one place a cfunction can
+/// go missing without a link error.
 const ffi_bindings = [_][*:0]const u8{
     "ffi/native",              "ffi/lookup", "ffi/close",          "ffi/signature",
     "ffi/call",                "ffi/struct", "ffi/write",          "ffi/read",
@@ -242,12 +232,12 @@ fn expectShape(
     has_length: bool,
 ) void {
     const val = eval(expr);
-    assert(harness.isType(val, constants.JANET_ABSTRACT));
+    assert(harness.isType(val, repr.Tag.abstract));
     const at = types.abstractHead(wrap.toAbstract(val)).type;
     // `strcmp`, not `janet_cstrcmp`: an abstract type's `name` is a plain C
     // string rather than a length-prefixed `JanetString`, and the second reads
     // a header that is not there.
-    assert(std.mem.eql(u8, std.mem.span(at.*.name), std.mem.span(name)));
+    assert(std.mem.eql(u8, at.*.name, std.mem.span(name)));
     assert((at.*.gc != null) == has_gc);
     assert((at.*.gcmark != null) == has_gcmark);
     assert((at.*.bytes != null) == has_bytes);
@@ -378,7 +368,7 @@ fn ceilingIsReachableOnlyOnSysv() void {
 // ------------------------------------------------------------- the raises
 
 fn theRaises() void {
-    var argv: [4]types.Janet = undefined;
+    var argv: [4]repr.Value = undefined;
 
     const ffi_struct = harness.core("ffi/struct");
     const ffi_size = harness.core("ffi/size");
@@ -413,7 +403,7 @@ fn theRaises() void {
         argv[0] = value.fromBytes("none", .keyword);
         argv[1] = value.fromBytes("void", .keyword);
         const sig = ffi_signature(argv[0..2]) catch @panic("ffi_core: ffi/signature raised");
-        var call_argv: [2]types.Janet = undefined;
+        var call_argv: [2]repr.Value = undefined;
         call_argv[0] = wrap.fromPointer(@ptrCast(@constCast(&theRaises)));
         call_argv[1] = sig;
         expectRaise(ffi_call_fn, .{call_argv[0..2]}, "calling convention not supported");
@@ -421,7 +411,7 @@ fn theRaises() void {
 
     // A callable pointer is a pointer or a jitfn, and nothing else.
     {
-        var call_argv: [2]types.Janet = undefined;
+        var call_argv: [2]repr.Value = undefined;
         call_argv[0] = harness.wrapInteger(7);
         call_argv[1] = eval("(ffi/signature :none :void)");
         expectRaise(
@@ -460,21 +450,20 @@ fn theRaises() void {
 
     // A native object closed twice, and the running binary refusing to close.
     //
-    // Without dynamic modules there is no native object to have: `util.h`
-    // reduces `Clib` to an `int` and `load_clib` to a no-op that answers zero,
-    // so `ffi/native` always raises. That arm is the whole of this section in
-    // such a build, and it is a real arm — Phase 10 Part 16's matrix caught
-    // this contract assuming the other one.
+    // Without dynamic modules there is no native object to have: `Clib`
+    // reduces to an `int` and `load_clib` to a no-op that answers zero, so
+    // `ffi/native` always raises. That arm is the whole of this section in
+    // such a build, and it is a real arm.
     if (dynamicLoadingWorks()) {
         const self = eval("(ffi/native)");
         gc_alloc.gcroot(self);
-        var self_argv = [_]types.Janet{self};
+        var self_argv = [_]repr.Value{self};
         expectRaise(harness.core("ffi/close"), .{self_argv[0..1]}, "cannot close self");
         {
-            var lookup = [_]types.Janet{ self, value.fromBytes("a_symbol_that_does_not_exist", .string) };
+            var lookup = [_]repr.Value{ self, value.fromBytes("a_symbol_that_does_not_exist", .string) };
             const found = harness.core("ffi/lookup")(lookup[0..2]) catch
                 @panic("ffi_core: ffi/lookup raised");
-            assert(harness.isType(found, constants.JANET_NIL));
+            assert(harness.isType(found, repr.Tag.nil));
         }
         _ = gc_alloc.gcunroot(self);
     } else if (!has_dynamic_modules) {
@@ -494,8 +483,7 @@ fn theRaises() void {
 ///
 /// These are the callee. A Zig contract is compiled into the runtime, so it can
 /// hand `ffi/call` the address of a function in this file and make a real call
-/// with no shared library anywhere — which is what `port/probe-16/abi/` needs a
-/// `zig cc` and a `.dylib` to do.
+/// with no shared library anywhere.
 const Hfa2 = extern struct { a: f32, b: f32 };
 
 fn hfa2Weighted(s: Hfa2) callconv(.c) f64 {
@@ -507,19 +495,18 @@ fn hfa2Build(seed: f32) callconv(.c) Hfa2 {
 }
 
 /// AAPCS64 §6.8.2 passes a homogeneous floating-point aggregate in one vector
-/// register per member. `FOUND.md` records the C implementation sizing it by
-/// bytes instead, which agrees only for a member exactly eight bytes wide — so
-/// an aggregate of `double` was right by coincidence and one of `float` was
-/// given half the registers, with two members packed into the first.
+/// AAPCS64 6.8.2 passes a homogeneous floating-point aggregate in one vector
+/// register per member. `FOUND.md` records Janet sizing it by bytes instead,
+/// which agrees only for a member exactly eight bytes wide -- so an aggregate
+/// of `double` was right by coincidence and one of `float` was given half the
+/// registers, with two members packed into the first.
 ///
 /// The entry describes the outgoing direction only. **The return is the same
-/// defect read backwards** and had no entry until Phase 11 Part 18: each member
-/// comes back in its own register, so a two-float aggregate arrived as
-/// `(1.5 0)`.
+/// defect read backwards**: each member comes back in its own register, so a
+/// two-float aggregate arrived as `(1.5 0)`.
 ///
 /// Gated on the convention rather than on `builtin`, because what matters is
-/// which convention `:default` resolves to — rule 7, and the same question
-/// `harness.coreOptional` asks about a binding.
+/// which convention `:default` resolves to.
 fn homogeneousFloatAggregates() void {
     if (!supports("aapcs64")) return;
 
@@ -527,26 +514,26 @@ fn homogeneousFloatAggregates() void {
     const ffi_signature = harness.core("ffi/signature");
     const ffi_call_fn = harness.core("ffi/call");
 
-    var pair = [_]types.Janet{ value.fromBytes("float", .keyword), value.fromBytes("float", .keyword) };
+    var pair = [_]repr.Value{ value.fromBytes("float", .keyword), value.fromBytes("float", .keyword) };
     const hfa = ffi_struct(pair[0..2]) catch @panic("ffi_core: ffi/struct raised");
 
     // Outgoing: 1.5 in the first vector register and 2.5 in the second, so the
     // callee's weighted sum is 1.5 + 5. Sized by bytes it was one register,
     // the second member was never written, and the sum was 1.5.
     {
-        var argtypes = [_]types.Janet{ value.fromBytes("default", .keyword), value.fromBytes("double", .keyword), hfa };
+        var argtypes = [_]repr.Value{ value.fromBytes("default", .keyword), value.fromBytes("double", .keyword), hfa };
         const sig = ffi_signature(argtypes[0..3]) catch @panic("ffi_core: ffi/signature raised");
 
         const members = tuples.begin(2);
         members[0] = wrap.fromNumber(1.5);
         members[1] = wrap.fromNumber(2.5);
-        var args = [_]types.Janet{
+        var args = [_]repr.Value{
             wrap.fromPointer(@ptrCast(@constCast(&hfa2Weighted))),
             sig,
             wrap.fromTuple(tuples.end(members)),
         };
         const answer = ffi_call_fn(args[0..3]) catch @panic("ffi_core: ffi/call raised");
-        assert(harness.isType(answer, constants.JANET_NUMBER));
+        assert(harness.isType(answer, repr.Tag.number));
         assert(wrap.toNumber(answer) == 6.5);
     }
 
@@ -554,16 +541,16 @@ fn homogeneousFloatAggregates() void {
     // and the type's own layout is four. Read without gathering, the second
     // member is the first register's unused half.
     {
-        var argtypes = [_]types.Janet{ value.fromBytes("default", .keyword), hfa, value.fromBytes("float", .keyword) };
+        var argtypes = [_]repr.Value{ value.fromBytes("default", .keyword), hfa, value.fromBytes("float", .keyword) };
         const sig = ffi_signature(argtypes[0..3]) catch @panic("ffi_core: ffi/signature raised");
 
-        var args = [_]types.Janet{
+        var args = [_]repr.Value{
             wrap.fromPointer(@ptrCast(@constCast(&hfa2Build))),
             sig,
             wrap.fromNumber(1.5),
         };
         const answer = ffi_call_fn(args[0..3]) catch @panic("ffi_core: ffi/call raised");
-        assert(harness.isType(answer, constants.JANET_TUPLE));
+        assert(harness.isType(answer, repr.Tag.tuple));
         const built = wrap.toTuple(answer);
         assert(types.tupleHead(built).length == 2);
         assert(wrap.toNumber(built[0]) == 1.5);
@@ -577,11 +564,11 @@ fn homogeneousFloatAggregates() void {
 fn supports(want: [*:0]const u8) bool {
     const conventions = harness.core("ffi/calling-conventions");
     const listed = conventions(&.{}) catch return false;
-    if (!harness.isType(listed, constants.JANET_ARRAY)) return false;
+    if (!harness.isType(listed, repr.Tag.array)) return false;
     const array = wrap.toArray(listed);
     var i: i32 = 0;
     while (i < array.*.count) : (i += 1) {
-        if (harness.keywordIs(array.*.data.?[@intCast(i)], want)) return true;
+        if (harness.keywordIs(array.*.slice()[@intCast(i)], want)) return true;
     }
     return false;
 }
@@ -632,14 +619,14 @@ fn anAggregateBehindAStackArgument() void {
     const ffi_signature = harness.core("ffi/signature");
     const ffi_call_fn = harness.core("ffi/call");
 
-    var members = [_]types.Janet{
+    var members = [_]repr.Value{
         value.fromBytes("int64", .keyword),
         value.fromBytes("int64", .keyword),
         value.fromBytes("int64", .keyword),
     };
     const large = ffi_struct(members[0..3]) catch @panic("ffi_core: ffi/struct raised");
 
-    var argtypes: [12]types.Janet = undefined;
+    var argtypes: [12]repr.Value = undefined;
     argtypes[0] = value.fromBytes("default", .keyword);
     argtypes[1] = value.fromBytes("double", .keyword);
     for (argtypes[2..11]) |*t| t.* = value.fromBytes("int64", .keyword);
@@ -651,7 +638,7 @@ fn anAggregateBehindAStackArgument() void {
     payload[1] = harness.wrapInteger(22);
     payload[2] = harness.wrapInteger(33);
 
-    var args: [12]types.Janet = undefined;
+    var args: [12]repr.Value = undefined;
     args[0] = wrap.fromPointer(@ptrCast(@constCast(&stackRefWeighted)));
     args[1] = sig;
     for (args[2..11], 1..) |*a, n| a.* = harness.wrapInteger(@intCast(n));
@@ -660,14 +647,14 @@ fn anAggregateBehindAStackArgument() void {
     const answer = ffi_call_fn(args[0..12]) catch @panic("ffi_core: ffi/call raised");
     // The nine integers weighted 1..9 are the sum of the squares, 285; the
     // three members weighted 10..12 are 110 + 242 + 396.
-    assert(harness.isType(answer, constants.JANET_NUMBER));
+    assert(harness.isType(answer, repr.Tag.number));
     assert(wrap.toNumber(answer) == 285 + 748);
 }
 
 // ------------------------------------------------- the signature arity bound
 
 /// The one-line repair `FOUND.md` carried as its only agreed-but-unmade fix,
-/// taken in Phase 11 Part 17 and a deliberate divergence from upstream.
+/// and a deliberate divergence from Janet.
 ///
 /// A `Signature` stores `max_args` mappings and the builder filled them for
 /// every argument passed, with only a lower bound on the arity. Past the
@@ -678,16 +665,16 @@ fn anAggregateBehindAStackArgument() void {
 /// library and no call were needed to reach it: `ffi/signature` only describes
 /// a call.
 ///
-/// **Thirty-two is written out rather than read from `ffi_types.max_args`**, on
-/// rule 46: the limit is a value a Janet program can observe, and asking the
-/// subject how many arguments it accepts would pass whatever it answered.
+/// **Thirty-two is written out rather than read from `ffi/types.zig`**: the
+/// limit is a value a Janet program can observe, and asking the subject how
+/// many arguments it accepts would pass whatever it answered.
 ///
 /// `:none` rather than `:default` because the arity check runs before any
 /// convention is consulted, so this covers the guard on every host — including
 /// one whose only convention is `:none`.
 fn theSignatureArityBound() void {
     const signature = harness.core("ffi/signature");
-    var argv: [42]types.Janet = undefined;
+    var argv: [42]repr.Value = undefined;
     argv[0] = value.fromBytes("none", .keyword);
     argv[1] = value.fromBytes("void", .keyword);
     for (argv[2..]) |*a| a.* = value.fromBytes("s64", .keyword);
@@ -696,7 +683,7 @@ fn theSignatureArityBound() void {
     // bound admits it. The two leading arguments are the convention and the
     // return type, which is why the arity the message names is thirty-four.
     const full = signature(argv[0..34]) catch @panic("ffi_core: 32 arguments were refused");
-    assert(harness.isType(full, constants.JANET_ABSTRACT));
+    assert(harness.isType(full, repr.Tag.abstract));
 
     // One more is refused as an ordinary arity error rather than a corrupted
     // frame, and so is a signature far past the bound.

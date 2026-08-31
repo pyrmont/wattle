@@ -1,21 +1,13 @@
-//! Stress contract for the two collector behaviours Phase 8's exit gate names
-//! and no per-increment contract covers: allocation from inside a GC callback,
-//! and the cross-thread facilities.
+//! Stress contract for the two collector behaviours no per-increment contract
+//! covers: allocation from inside a GC callback, and the cross-thread
+//! facilities.
 //!
-//! This file is not a subsystem contract and never had a selector of its own.
-//! The other five stress bullets are covered where they belong — root
-//! categories by `test/gc_alloc.zig`, deep and cyclic graphs by
-//! `test/gc_mark.zig`, weak references by `test/gc_sweep.zig`, and repeated
-//! init/deinit by the cycle test those files end with. These two are the
-//! remainder, and they are here rather than split across three files because
-//! both are properties of the collector as a whole rather than of any one
-//! function in it.
-//!
-//! The sixth bullet was "mixed C and Zig calls across a collection", and the
-//! migration retires it: every contract used to be a C binary calling Zig, and
-//! none is now. What it was really checking — that a collection is correct
-//! when it interleaves with foreign frames — is covered by the suites, which
-//! collect constantly under the interpreter.
+//! This file is not a subsystem contract. Root categories are covered by
+//! `test/gc_alloc.zig`, deep and cyclic graphs by `test/gc_mark.zig`, weak
+//! references by `test/gc_sweep.zig`, and repeated init/deinit by the cycle
+//! test those files end with. These two are the remainder, and they are here
+//! rather than split across three files because both are properties of the
+//! collector as a whole rather than of any one function in it.
 //!
 //! ## Two of the assertions below pin defects
 //!
@@ -23,7 +15,7 @@
 //! that sentence fail differently:
 //!
 //!  - Allocated from `gcmark`, during the mark phase: the block is prepended
-//!    to `janet_vm.blocks` with its mark bit clear, and the sweep that follows
+//!    to `vm.gc.blocks` with its mark bit clear, and the sweep that follows
 //!    in the same `janet_collect` frees it. The object is created and
 //!    destroyed inside one collection and the caller never sees it live.
 //!
@@ -33,7 +25,7 @@
 //!    is orphaned permanently — the sweep restores the list head from a
 //!    pointer it saved before the callback ran, which discards the prepend.
 //!    The block is then reachable from nothing, is never finalized, is not
-//!    freed by `janet_deinit`, and `janet_vm.block_count` counts it forever.
+//!    freed by `janet_deinit`, and `vm.gc.block_count` counts it forever.
 //!
 //! Both are the C implementation's behaviour and both are in `FOUND.md`. They
 //! are pinned rather than merely described because a leak is deterministic and
@@ -41,26 +33,22 @@
 //! to pin.
 //!
 //! **This contract leaks on purpose and must stay out of the leak-checker
-//! gate.** That was true when it was a C translation unit in
-//! `janet-contract-test` and is true now that it is a Zig one in
-//! `janet-zig-contract-test`; what changed is only which binary it leaks in.
+//! gate.**
 //!
 //! ## The cross-thread half
 //!
-//! Threaded abstracts are the cross-thread facility Phase 8 owns. What is
-//! asserted is the refcount's atomicity under contention, that each thread's
-//! heap is its own, and that the last reference finalizes exactly once no
-//! matter which thread drops it.
+//! Threaded abstracts are the cross-thread facility. What is asserted is the
+//! refcount's atomicity under contention, that each thread's heap is its own,
+//! and that the last reference finalizes exactly once no matter which thread
+//! drops it.
 //!
-//! It needs threads and `janet_vm.threaded_abstracts`, so it is guarded — and
-//! the guard is now `std.Thread` rather than a `#include <pthread.h>` behind
-//! three `#ifdef`s, which is the one place this migration made a contract
-//! *shorter* rather than longer.
+//! It needs threads and `vm.ev.threaded_abstracts`, so it is guarded -- by
+//! `std.Thread` rather than by a `#include <pthread.h>` behind three
+//! `#ifdef`s.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types");
-const c = @import("cabi");
 const options = @import("options");
 const abstract_type = @import("subsystems").abstract_type;
 const tables = @import("subsystems").value.tables;
@@ -90,7 +78,7 @@ fn headerOf(pointer: ?*anyopaque) *types.JanetGCObject {
 /// test.
 fn walkBlocks() usize {
     var count: usize = 0;
-    var current = c.vm().blocks;
+    var current = harness.vm().gc.blocks;
     while (current != null and count < 1_000_000) {
         count += 1;
         current = @ptrCast(headerOf(current).data.next);
@@ -100,7 +88,7 @@ fn walkBlocks() usize {
 
 /// Blocks counted but not reachable from the list. Zero in a healthy runtime.
 fn orphanedBlocks() isize {
-    return @as(isize, @intCast(c.vm().block_count)) - @as(isize, @intCast(walkBlocks()));
+    return @as(isize, @intCast(harness.vm().gc.block_count)) - @as(isize, @intCast(walkBlocks()));
 }
 
 // ------------------------------------------- allocation from callbacks
@@ -109,49 +97,49 @@ var child_finalized: i32 = 0;
 var parent_finalized: i32 = 0;
 var allocations_left: i32 = 0;
 
-fn childGc(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+fn childGc(_: *anyopaque, _: usize) c_int {
     child_finalized += 1;
     return 0;
 }
 
-const at_child: AbstractType = .{ .name = "gc-stress/child", .gc = childGc };
+const at_child = abstract_type.define(anyopaque, .{ .name = "gc-stress/child", .gc = childGc });
 
 /// A `gcmark` that allocates. Bounded by `allocations_left` so that marking
 /// terminates: without the bound each new block would be marked in turn and
 /// the callback would allocate forever.
-fn allocatingGcmark(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+fn allocatingGcmark(_: *anyopaque, _: usize) c_int {
     if (allocations_left > 0) {
         allocations_left -= 1;
-        _ = abstracts.new(abstract_type.stored(&at_child), 8);
+        _ = abstracts.new(&at_child, 8);
     }
     return 0;
 }
 
-fn parentGc(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+fn parentGc(_: *anyopaque, _: usize) c_int {
     parent_finalized += 1;
     return 0;
 }
 
-const at_marking_parent: AbstractType = .{
+const at_marking_parent = abstract_type.define(anyopaque, .{
     .name = "gc-stress/marking-parent",
     .gc = parentGc,
     .gcmark = allocatingGcmark,
-};
+});
 
 /// A finalizer that allocates while the sweep is walking the block list.
-fn allocatingGc(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+fn allocatingGc(_: *anyopaque, _: usize) c_int {
     parent_finalized += 1;
     if (allocations_left > 0) {
         allocations_left -= 1;
-        _ = abstracts.new(abstract_type.stored(&at_child), 8);
+        _ = abstracts.new(&at_child, 8);
     }
     return 0;
 }
 
-const at_finalizing_parent: AbstractType = .{
+const at_finalizing_parent = abstract_type.define(anyopaque, .{
     .name = "gc-stress/finalizing-parent",
     .gc = allocatingGc,
-};
+});
 
 /// An object allocated from `gcmark` is freed by the collection that ran the
 /// callback. The mark phase has already passed the head of the list by the
@@ -169,7 +157,7 @@ fn allocationFromGcmarkDiesInTheSameCollection() void {
     parent_finalized = 0;
     allocations_left = 1;
 
-    const parent = wrap.fromAbstract(abstracts.new(abstract_type.stored(&at_marking_parent), 8));
+    const parent = wrap.fromAbstract(abstracts.new(&at_marking_parent, 8));
     gc_alloc.gcroot(parent);
 
     gc_mark.collect();
@@ -199,8 +187,8 @@ fn finalizerAllocationSurvivesWhenMidList() void {
     parent_finalized = 0;
     allocations_left = 1;
 
-    _ = abstracts.new(abstract_type.stored(&at_finalizing_parent), 8); // unrooted: dies
-    const keeper = wrap.fromAbstract(abstracts.new(abstract_type.stored(&at_child), 8));
+    _ = abstracts.new(&at_finalizing_parent, 8); // unrooted: dies
+    const keeper = wrap.fromAbstract(abstracts.new(&at_child, 8));
     gc_alloc.gcroot(keeper);
 
     gc_mark.collect();
@@ -235,7 +223,7 @@ fn finalizerAllocationIsOrphanedAtTheHead() void {
     allocations_left = 1;
 
     // Allocated last and left unrooted, so it is both the list head and dead.
-    _ = abstracts.new(abstract_type.stored(&at_finalizing_parent), 8);
+    _ = abstracts.new(&at_finalizing_parent, 8);
 
     gc_mark.collect();
     std.debug.assert(parent_finalized == 1);
@@ -258,12 +246,12 @@ const stress_rounds = 2000;
 var threaded_finalized: i32 = 0;
 var shared_abstract: ?*anyopaque = null;
 
-fn threadedGc(_: ?*anyopaque, _: usize) callconv(.c) c_int {
+fn threadedGc(_: *anyopaque, _: usize) c_int {
     threaded_finalized += 1;
     return 0;
 }
 
-const at_shared: AbstractType = .{ .name = "gc-stress/shared", .gc = threadedGc };
+const at_shared = abstract_type.define(anyopaque, .{ .name = "gc-stress/shared", .gc = threadedGc });
 
 /// Each worker runs its own runtime, which is what a real second thread does.
 /// The reference it takes is balanced before it exits, so the count returns to
@@ -283,7 +271,7 @@ fn hammerRefcount() void {
 /// reference two thousand times each; a lost update shows up as a count that
 /// is not one.
 fn theRefcountIsAtomicAcrossThreads() !void {
-    shared_abstract = abstracts.threaded(abstract_type.stored(&at_shared), 16);
+    shared_abstract = abstracts.threaded(&at_shared, 16);
     std.debug.assert(shared_abstract != null);
 
     var threads: [stress_threads]std.Thread = undefined;
@@ -299,10 +287,10 @@ var child_block_count: usize = 0;
 var child_saw_main_blocks: usize = 0;
 
 fn allocateInChild() void {
-    child_saw_main_blocks = c.vm().block_count;
+    child_saw_main_blocks = harness.vm().gc.block_count;
     harness.init();
     for (0..64) |_| _ = arrays.new(8);
-    child_block_count = c.vm().block_count;
+    child_block_count = harness.vm().gc.block_count;
     gc_mark.collect();
     vm_lifecycle.deinit();
 }
@@ -312,7 +300,7 @@ fn allocateInChild() void {
 /// every other test in the tree: the damage is invisible until two runtimes
 /// exist at once, and then it is heap corruption rather than a wrong answer.
 fn eachThreadHasItsOwnHeap() !void {
-    const main_blocks_before = c.vm().block_count;
+    const main_blocks_before = harness.vm().gc.block_count;
     const main_walk_before = walkBlocks();
 
     const thread = try std.Thread.spawn(.{}, allocateInChild, .{});
@@ -322,7 +310,7 @@ fn eachThreadHasItsOwnHeap() !void {
     std.debug.assert(child_saw_main_blocks == 0);
     std.debug.assert(child_block_count >= 64);
     // And nothing it did touched this thread's heap.
-    std.debug.assert(c.vm().block_count == main_blocks_before);
+    std.debug.assert(harness.vm().gc.block_count == main_blocks_before);
     std.debug.assert(walkBlocks() == main_walk_before);
 }
 
@@ -330,7 +318,7 @@ fn eachThreadHasItsOwnHeap() !void {
 /// once. This one drops it on the main thread; the point is the count, not the
 /// thread identity, which no part of the runtime promises.
 fn theLastReferenceFinalizesOnce() !void {
-    const abstract = abstracts.threaded(abstract_type.stored(&at_shared), 16);
+    const abstract = abstracts.threaded(&at_shared, 16);
 
     threaded_finalized = 0;
     shared_abstract = abstract;
@@ -341,14 +329,14 @@ fn theLastReferenceFinalizesOnce() !void {
 
     // This thread still holds the reference it was made with. Dropping it is
     // what frees the block and runs the finalizer.
-    _ = tables.remove(&c.vm().threaded_abstracts, wrap.fromAbstract(abstract));
+    _ = tables.remove(&harness.vm().ev.threaded_abstracts, wrap.fromAbstract(abstract));
     std.debug.assert(abstracts.decrefMaybeFree(abstract) == 0);
     std.debug.assert(threaded_finalized == 1);
 }
 
 // ---------------------------------------------------------------- cycles
 
-/// Every Phase 8 contract ends by cycling the runtime, and this one has more
+/// Every collector contract ends by cycling the runtime, and this one has more
 /// reason than most: the callbacks above run during collection, and a state
 /// they corrupted would show up as a heap that stops being walkable.
 fn repeatedCycles() void {
@@ -360,7 +348,7 @@ fn repeatedCycles() void {
         allocations_left = 1;
 
         const parent = wrap.fromAbstract(
-            abstracts.new(abstract_type.stored(&at_marking_parent), 8),
+            abstracts.new(&at_marking_parent, 8),
         );
         gc_alloc.gcroot(parent);
         gc_mark.collect();

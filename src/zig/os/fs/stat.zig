@@ -1,11 +1,8 @@
 //! `os/stat` and `os/lstat`, the field registry they share, and what a
 //! permission is.
 //!
-//! Split out of `os_files.zig` at Phase 12 increment 6f, together with
-//! `os_stat.zig` and `os_permissions.zig` -- the host wrappers it reached
-//! across the C-ABI seam. `port/TREE.md`'s heuristic keeps this one out of the
-//! bucket because `os/stat` is a name Janet publishes and the fifteen field
-//! keywords are its interface.
+//! Out of the bucket because `os/stat` is a name Janet publishes and the
+//! fifteen field keywords are its interface.
 //!
 //! **The permission helpers live here rather than in `os/fs.zig`, and that is
 //! what keeps the subtree acyclic.** `getUnixMode`, `getMode`, `optMode` and
@@ -22,12 +19,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
 const raise = @import("raise");
 const wrap = @import("../../value/helpers/wrap.zig");
 const tables = @import("../../value/tables.zig");
-const kind = @import("../../value/helpers/kind.zig");
 const args_core = @import("../../args.zig");
 const oa = @import("../abi.zig");
 const h = oa.h;
@@ -36,16 +32,12 @@ const vm_lifecycle = @import("../../vm/lifecycle.zig");
 const host_stat = @import("host_stat.zig");
 const value = @import("../../value.zig");
 
-/// `-Dos-stat`'s field registry, by import. These were `export fn`s reached
-/// back through the linker, which is the shape `os.c` needed; Phase 11 Part 20
-/// spent the three symbols along with `test/os_surface.c`, their last reader
-/// outside this file.
-/// `host_stat.zig` since Phase 10 Part 18. The measurement at the head of this
-/// file still holds -- musl's `struct stat` is `opaque {}` after translation --
-/// and what changed is the answer: `statx` on Linux, whose structure Zig
-/// defines itself, and `@cImport` on macOS and mingw, which translate `struct
-/// stat` completely.
-const janet_zig_os_stat_read = host_stat.statReadAbiCompat;
+/// The field registry, by import.
+/// `host_stat.zig`'s. The measurement at the head of this file still holds --
+/// musl's `struct stat` is `opaque {}` after translation -- and the answer is
+/// `statx` on Linux, whose structure Zig defines itself, and `@cImport` on
+/// macOS and mingw, which translate `struct stat` completely.
+const statRead = host_stat.statReadAbiCompat;
 
 // ==========================================================================
 // Permissions
@@ -53,7 +45,7 @@ const janet_zig_os_stat_read = host_stat.statReadAbiCompat;
 
 /// The field identifiers `-Dos-stat`'s registry fixes, by position. The
 /// registry itself is that subsystem's and is reached by name; these are the
-/// indices into it, and `test/os_stat.c` already pins the order both sides
+/// indices into it, and `test/os_stat.zig` already pins the order both sides
 /// agree on.
 pub const Field = enum(i32) {
     dev,
@@ -76,7 +68,7 @@ pub const Field = enum(i32) {
 pub const field_count = @typeInfo(Field).@"enum".fields.len;
 
 /// `os_make_permstring`.
-pub fn makePermstring(permissions: i32) types.Janet {
+pub fn makePermstring(permissions: i32) repr.Value {
     var bytes: [9]u8 = undefined;
     hostFormatPermissions(permissions, &bytes);
     return value.fromBytes(&bytes, .string);
@@ -86,7 +78,7 @@ pub fn makePermstring(permissions: i32) types.Janet {
 ///
 /// Shared by five cfunctions across three `-Dos-*` subjects. See the head of
 /// this file for why that is an ordinary Zig call rather than a seam.
-pub fn getUnixMode(argv: []const types.Janet, n: i32) raise.Raising(i32) {
+pub fn getUnixMode(argv: []const repr.Value, n: i32) raise.Raising(i32) {
     if (args_core.checkint(argv[@intCast(n)]) != 0) {
         const x = wrap.toInteger(argv[@intCast(n)]);
         if (x < 0 or x > 0o777) {
@@ -113,12 +105,12 @@ pub fn getUnixMode(argv: []const types.Janet, n: i32) raise.Raising(i32) {
 /// scalars, so nothing here depends on a host layout.
 pub const jmode_t = if (windows) c_ushort else h.mode_t;
 
-pub fn getMode(argv: []const types.Janet, n: i32) raise.Raising(jmode_t) {
+pub fn getMode(argv: []const repr.Value, n: i32) raise.Raising(jmode_t) {
     return @intCast(hostPermFromUnix(try getUnixMode(argv, n)));
 }
 
 /// `os_optmode`.
-pub fn optMode(argv: []const types.Janet, n: i32, dflt: i32) raise.Raising(jmode_t) {
+pub fn optMode(argv: []const repr.Value, n: i32, dflt: i32) raise.Raising(jmode_t) {
     if (@as(i32, @intCast(argv.len)) > n) return getMode(argv, n);
     return @intCast(hostPermFromUnix(dflt));
 }
@@ -130,7 +122,7 @@ pub fn optMode(argv: []const types.Janet, n: i32, dflt: i32) raise.Raising(jmode
 /// Build the Janet value for one field out of what `janet_zig_os_stat_read`
 /// copied out. Every one of the fifteen is constructed here; C keeps only the
 /// read.
-pub fn statField(field: Field, mode: u32, numbers: *const [field_count]f64) types.Janet {
+pub fn statField(field: Field, mode: u32, numbers: *const [field_count]f64) repr.Value {
     return switch (field) {
         .mode => value.fromBytes(std.mem.span(hostModeName(mode)), .keyword),
         .int_permissions => wrapInteger(
@@ -143,14 +135,14 @@ pub fn statField(field: Field, mode: u32, numbers: *const [field_count]f64) type
     };
 }
 
-pub fn statOrLstat(do_lstat: bool, argv: []types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_FS_READ);
+pub fn statOrLstat(do_lstat: bool, argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_read"}));
     try args_core.arity(argv, 1, 2);
     const path = try args_core.getCString(argv, 0);
     var tab: ?*types.JanetTable = null;
     var key: ?types.JanetKeyword = null;
     if (@as(i32, @intCast(argv.len)) == 2) {
-        if (kind.checkType(argv[1], constants.JANET_KEYWORD) != 0) {
+        if (repr.checkType(argv[1], repr.Tag.keyword)) {
             key = try args_core.getKeyword(argv, 1);
         } else {
             tab = try args_core.getTable(argv, 1);
@@ -161,7 +153,7 @@ pub fn statOrLstat(do_lstat: bool, argv: []types.Janet) raise.Raising(types.Jane
 
     var mode: u32 = 0;
     var numbers: [field_count]f64 = @splat(0);
-    if (janet_zig_os_stat_read(@ptrCast(path), @intFromBool(do_lstat), &mode, &numbers) == -1) {
+    if (statRead(@ptrCast(path), @intFromBool(do_lstat), &mode, &numbers) == -1) {
         return wrap.fromNil();
     }
 
@@ -187,24 +179,20 @@ pub fn statOrLstat(do_lstat: bool, argv: []types.Janet) raise.Raising(types.Jane
 // ==========================================================================
 // The abis
 //
-// Part 10's finding applied rather than restated: a cfunction that decides to
-// raise is an `Impl` behind a two-line abi, and one that makes no such
-// decision stays a plain `JanetCFunction`. Every cfunction in this file
-// decides, because every one of them reports a host failure.
+// A cfunction that decides to raise is raising, and one that makes no such
+// decision is a plain `raise.CFunction`. Every cfunction in this file decides,
+// because every one of them reports a host failure.
 // ==========================================================================
 
-pub fn statImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+pub fn cfunStat(argv: []repr.Value) raise.Raising(repr.Value) {
     return statOrLstat(false, argv);
 }
 
-pub fn lstatImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+pub fn cfunLstat(argv: []repr.Value) raise.Raising(repr.Value) {
     return statOrLstat(true, argv);
 }
 
 const windows = builtin.os.tag == .windows;
-
-/// `src/core/util.h`, declared here rather than in `cabi.zig`.
-extern fn janet_strerror(e: c_int) callconv(.c) [*:0]const u8;
 
 /// `janet_wrap_integer`, written out rather than called. `janet.h` declares the
 /// function beside its macro and `wrap.c` defines it only for the two nanbox
@@ -212,7 +200,7 @@ extern fn janet_strerror(e: c_int) callconv(.c) [*:0]const u8;
 /// cannot use the macro -- does not link. `marsh.zig`, `pp_pretty.zig` and
 /// `value_access.zig` write it out for the same reason, and `FOUND.md` has the
 /// defect. This is the fourth subsystem to meet it.
-inline fn wrapInteger(x: i32) types.Janet {
+inline fn wrapInteger(x: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(x));
 }
 
@@ -300,7 +288,7 @@ pub fn hostPermFromUnix(permissions: i32) u32 {
 
 /// The `os/stat` field registry, in the order the C implementation inserts
 /// them into the result table. The index of a name is the field identifier the
-/// C getters switch on, so the two orders must stay aligned; `test/os_stat.c`
+/// C getters switch on, so the two orders must stay aligned; `test/os_stat.zig`
 /// pins every name and index.
 const field_names = [_][:0]const u8{
     "dev",

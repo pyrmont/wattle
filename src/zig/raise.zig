@@ -1,64 +1,40 @@
 //! Raising a Janet signal by returning, rather than by jumping.
 //!
-//! This is Phase 10 Part 2's mechanism, and the file every converted subsystem
-//! imports. It is shared like `cabi.zig` rather than selected like a subsystem,
-//! for a reason recorded in `PLAN.md`: a `-Draise=c` would have to be spelled
-//! at every converted call site, and there is nothing for it to select — the
-//! "C implementation" of an error return is the `longjmp`, and the two cannot
-//! coexist inside one function. What replaces the selector is that a converted
-//! symbol keeps **two forms**, so its abi and its Zig implementation are each other's
-//! differential for as long as any C caller remains.
+//! The file every subsystem imports. It is shared like `cabi.zig` rather than
+//! selected like a subsystem, because it holds no `export` at all: every
+//! subsystem can import it without the definitions appearing twice.
 //!
 //! ## One error, and where everything else lives
 //!
 //! `Error` has a single member. Zig errors carry no payload, and both things a
-//! raise carries already have homes: the value goes to `janet_vm.return_reg`,
-//! which is where `janet_try` pointed it, and the signal goes to
-//! `janet_vm.pending_signal`, which Part 2 added beside it. A per-signal error
-//! set was considered and rejected — it would duplicate a decision
-//! `janet_signal_plan` has already made, and `catch` would then have to agree
-//! with the plan or diverge from it silently.
+//! raise carries already have homes: the value goes to the VM's `return_reg`,
+//! which is where the try scope pointed it, and the signal goes to
+//! `pending_signal` beside it. A per-signal error set was considered and
+//! rejected -- it would duplicate a decision `signalPlan` has already made,
+//! and `catch` would then have to agree with the plan or diverge from it
+//! silently.
 //!
 //! ## The decision is shared; only the delivery differs
 //!
-//! `janet_zig_signal_record` does everything a raise does except deliver it:
-//! the plan, the coercion message, the commit into the return register, the
-//! fiber flag. Both deliveries call it, so they cannot drift. It lives with the
-//! rest of the signal decision, under `-Dsignal-core`, rather than here: this
-//! file has no `export` at all, so every subsystem can import it without the
-//! definition appearing once per object.
+//! `signal.signalRecord` does everything a raise does except deliver it: the
+//! plan, the coercion message, the commit into the return register, the fiber
+//! flag. Every delivery calls it, so they cannot drift.
 //!
 //!  - A Zig caller gets `error.JanetSignal` returned, and reads
-//!    `janet_vm.pending_signal` at the `catch`.
-//!  - A C caller gets `janet_signalv`, which calls it and then jumps, exactly
-//!    as before, with the signal taken from the same field. Since Phase 10
-//!    Part 5 `janet_signalv` is itself Zig, under `-Dsignal-core`, and is the
-//!    abi of `signal` below — one line of each.
+//!    `pending_signal` at the `catch`.
+//!  - A C caller gets `janet_signalv`, which calls it and then jumps, with the
+//!    signal taken from the same field.
 //!
-//! ## What makes the jump safe while both are live
+//! ## Unwinding, and why a `defer` is safe
 //!
-//! `SPIKE-10.md` has the demonstration; the claim is that a Zig error is
-//! **fully unwound before any jump happens**. A converted function's abi
-//! catches the error in its own frame and only then calls into the jump, so
-//! every `errdefer` between the raise and that frame has already run and the
-//! frame the jump leaves owns nothing. That is the inverse of the arrangement
-//! Phases 7 to 9 lived with, and it is why `build.zig` can retire the `defer`
-//! ban one file at a time instead of all at once.
-//!
-//! This file is itself jump-transparent and has to be, for one call: rendering
-//! `%v` in a coercion message runs an abstract type's `tostring` callback,
-//! which can still panic through C. It holds nothing, so the jump costs
-//! nothing.
-//!
-//! Part 4 was expected to end that and did not. It moved the formatter to Zig,
-//! but the jump was never the formatter's: the `tostring` callback is a C
-//! function pointer supplied by `abstract.c` or by a native module, and it
-//! jumps whatever language surrounds it. The marker comes off when abstract
-//! callbacks stop jumping.
+//! A Zig error is **fully unwound before any jump happens**. A converted
+//! function's abi catches the error in its own frame and only then calls into
+//! the jump, so every `errdefer` between the raise and that frame has already
+//! run and the stack is settled. `defer` and `errdefer` are legal everywhere.
 
 const std = @import("std");
 const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
 
 /// The one error a raise-capable function can return.
@@ -70,12 +46,6 @@ pub fn Raising(comptime T: type) type {
     return Error!T;
 }
 
-inline fn vm() *types.JanetVM {
-    return c.vm();
-}
-
-const sig_error: types.JanetSignal = @intCast(constants.JANET_SIGNAL_ERROR);
-
 // ---------------------------------------------------------------- raising
 
 /// Raise `sig` with `message`. The Zig delivery: record, then return.
@@ -84,14 +54,17 @@ const sig_error: types.JanetSignal = @intCast(constants.JANET_SIGNAL_ERROR);
 /// signal decision, under `-Dsignal-core`, so that it has a C implementation to
 /// be differential against. It does not return when the plan is `TOP_LEVEL`:
 /// there is no scope to raise into, so the process or the thread ends.
-pub fn signal(sig: types.JanetSignal, message: types.Janet) Error {
-    c.janet_zig_signal_record(sig, message);
+pub fn signal(sig: types.Signal, message: repr.Value) Error {
+    // The entry point takes the wire width, because a C caller may pass any
+    // `c_uint`; an internal caller already holds a member, so it converts the
+    // other way here and the clamp on the far side is a no-op.
+    c.janet_zig_signal_record(@intFromEnum(sig), message);
     return error.JanetSignal;
 }
 
 /// Raise an error carrying `message`, the equivalent of `janet_panicv`.
-pub fn panicv(message: types.Janet) Error {
-    return signal(sig_error, message);
+pub fn panicv(message: repr.Value) Error {
+    return signal(.@"error", message);
 }
 
 /// Raise an error carrying a string, the equivalent of `janet_panic` and
@@ -105,77 +78,52 @@ pub fn panic(message: [*:0]const u8) Error {
 }
 
 /// `panicf` -- a raise whose message Janet's own formatter builds -- is not
-/// here. It lives in `subsystems/pp_format.zig`, beside the engine, because
-/// `%v` and the eight spellings of `%q` run the pretty printer and this file
-/// is the shared mechanism rather than a subsystem. It was here while the
-/// formatter was reached through C's variadic ABI, which needed nothing of
-/// the sort; Part 18 removed that ABI and the dependency became visible.
-/// The signal a raise decided on. Meaningful between a `record` and the
-/// `catch` that answers it, and nowhere else.
-pub inline fn pendingSignal() types.JanetSignal {
-    return vm().pending_signal;
-}
-
-/// The value a raise published. Reads through `return_reg`, which is where the
-/// innermost scope pointed it, so this is the same value `janet_try` would
-/// have left in its `JanetTryState`.
-pub inline fn pendingPayload() types.Janet {
-    return if (vm().return_reg) |reg| reg.* else c.janet_wrap_nil();
-}
-
+/// here. It lives in `pp/format.zig`, beside the engine, because `%v` and the
+/// eight spellings of `%q` run the pretty printer and this file is the shared
+/// mechanism rather than a subsystem.
 // ---------------------------------------------------------- the cfunction
 
-/// What a Janet builtin is, since Phase 10 Part 17g.
+/// What a Janet builtin is.
 ///
-/// A cfunction returns `Error!Janet` and is called with Zig's own calling
-/// convention, so a raise leaves it the way a raise leaves anything else --
-/// as a returned error the caller must `try`. That is the last of the phase's
-/// out-of-band mechanisms to go. Part 17e had a flag instead: `janet.h` fixed
-/// the signature at `Janet (*)(int32_t, Janet *)`, a C function cannot return
-/// an error union, so a raising builtin set `janet_vm.raising`, returned a
-/// zero, and four call sites tested the flag on the next statement. The type
-/// below makes forgetting the test a compile error, which is decision 5's
-/// argument applied to the one interface it could not reach until the
-/// registration tables were Zig.
+/// A cfunction returns `Error!Value` and is called with Zig's own calling
+/// convention, so a raise leaves it the way a raise leaves anything else -- as
+/// a returned error the caller must `try`. Janet's own signature is
+/// `Janet (*)(int32_t, Janet *)`, and a C function cannot return an error
+/// union: the alternative was a flag on the VM that a raising builtin set
+/// before returning a zero, with four call sites testing it on the next
+/// statement. This type makes forgetting the test a compile error.
 ///
 /// **What it costs is every C cfunction.** A C body cannot have this type and
-/// a C caller cannot invoke it, so the `c` arm of every selector that defines
-/// a builtin goes with the change, along with `janet.h`'s four cfunction
-/// declarations. Decision 2 said that, and decision 5 priced it.
+/// a C caller cannot invoke it.
 ///
-/// **The arguments are a slice, since Phase 12 increment 5h.** `janet.h` fixed
-/// them at `int32_t argc, Janet *argv` and translate-c rendered the second
-/// `[*c]`, so every builtin took a pointer with a count beside it and `argv[n]`
+/// **The arguments are a slice.** Janet fixes them at `int32_t argc, Janet
+/// *argv`, so every builtin took a pointer with a count beside it and `argv[n]`
 /// read whatever was there. Both sides of this call are Zig -- the pointer is
-/// reached by `@ptrCast` off the stored slot, with no thunk -- so the type can
-/// say what is true and the index is checked. `DESIGN.md` section 9.
+/// reached by `@ptrCast` off the stored slot, with no thunk -- so the type says
+/// what is true and the index is checked. `DESIGN.md` section 9.
 ///
 /// The alignment is not part of the type. `JANET_CFUNCTION_ALIGN` is a
 /// property of each definition -- `corefn.alignment`, written at the `fn` --
 /// and Zig coerces an over-aligned function pointer to a plain one, so the
 /// type does not have to carry the maximum every `-Dnanbox-pointer-shift`
 /// might ask for.
-pub const CFunction = *const fn ([]types.Janet) Error!types.Janet;
+pub const CFunction = *const fn ([]repr.Value) Error!repr.Value;
 
-/// A cfunction read out of the storage `janet.h` still describes.
+/// A cfunction read out of a stored slot.
 ///
-/// The pointer itself is unchanged and the places that *hold* one are still
-/// typed by C: a `Janet`'s union member, a `JanetRegExt` row, a
-/// `JanetCFunRegistry` key, a C stack frame's `pc`. Those are the C ABI's
-/// layout rather than its calling convention, and Part 18 is where they go.
-/// So the cast is here, in one inline function, and everything downstream of
-/// it is an ordinary Zig call that returns an error.
-///
-/// It replaces `callCFunction`, which existed to make sure the flag test was
-/// not forgotten. There is no test to forget now, so what is left is the cast.
+/// The places that *hold* one are typed by the C ABI's layout: a `Value`'s
+/// union member, a registration row, a registry key, a stack frame's `pc`.
+/// That is a layout rather than a calling convention, so the cast is here, in
+/// one inline function, and everything downstream of it is an ordinary Zig
+/// call that returns an error.
 /// A published entry point whose C signature carries `(..., int32_t argc,
 /// const Janet *argv)` where the Zig one takes a slice in their place.
 ///
-/// Phase 12 increment 5h. `panicking` mirrors its subject's parameter list, so
-/// it cannot build a `callconv(.c)` abi for a function taking a slice -- a
-/// slice has no guaranteed in-memory representation. This expands the last
-/// parameter back into the pair, which is what `janet_getslice`,
-/// `janet_buffer_format`, `janet_call` and `janet_mcall` publish.
+/// `panicking` mirrors its subject's parameter list, so it cannot build a
+/// `callconv(.c)` abi for a function taking a slice -- a slice has no
+/// guaranteed in-memory representation. This expands the last parameter back
+/// into the pair, which is what `janet_getslice`, `janet_buffer_format`,
+/// `janet_call` and `janet_mcall` publish.
 pub fn panickingArgv(comptime f: anytype) type {
     const info = @typeInfo(@TypeOf(f)).@"fn";
     const P = @typeInfo(info.return_type.?).error_union.payload;
@@ -215,10 +163,9 @@ pub inline fn stored(cfun: anytype) types.JanetCFunction {
 
 /// Hand a raise to a C caller by returning, rather than by jumping.
 ///
-/// Phase 10 Part 17h, and the last out-of-band report this phase needs. The
-/// remaining C callers are the contracts and four variadic shells, and neither
-/// can keep the jump: a contract catches one with `janet_try`, which is a
-/// `setjmp`, and the exit gate forbids a `setjmp` anywhere in the tree.
+/// The remaining C callers are the variadic shells, and none can take a jump:
+/// catching one needs a `setjmp`, and there is no `setjmp` anywhere in this
+/// tree.
 ///
 /// So an abi records the raise and returns a zeroed value, and its caller
 /// tests `tookCRaise` on the next statement:
@@ -226,17 +173,12 @@ pub inline fn stored(cfun: anytype) types.JanetCFunction {
 ///     const s = c.janet_formatc("...", args);
 ///     if (raise.tookCRaise()) return error.JanetSignal;
 ///
-/// **This is not Part 17e's flag coming back**, and the difference is the
-/// population rather than the shape. 17e put a branch on the interpreter's hot
-/// path, one per cfunction call, and 17g measured what removing it was worth.
-/// This one is on the C ABI, which since 17g the runtime never crosses: the
-/// only callers are `test/*.c` and the four shells C has to keep because Zig
-/// 0.16 cannot define a variadic. It costs the runtime nothing because the
-/// runtime does not call it, and it dies with the abis in Part 18.
+/// **This is not a flag on the hot path.** It is on the C ABI, which the
+/// runtime never crosses; it costs the runtime nothing because the runtime
+/// does not call it.
 ///
-/// Zeroed rather than `undefined`, for the reason 17e gave and which still
-/// holds: an unspecified value that is determinate keeps a forgotten test
-/// reproducible.
+/// Zeroed rather than `undefined`: an unspecified value that is determinate
+/// keeps a forgotten test reproducible.
 pub inline fn reportToC(comptime T: type) T {
     c.janet_zig_c_raise_record();
     return blank(T);
@@ -290,18 +232,14 @@ pub inline fn report(_: Error) void {
 
 /// The value a call *through the C ABI* produced, or the error it reported.
 ///
-/// Phase 10 Part 17h. A Zig caller that reaches its neighbour by symbol rather
-/// than by import gets that neighbour's abi, which reports instead of
-/// returning an error. This turns the report back:
+/// A Zig caller that reaches its neighbour by symbol rather than by import
+/// gets that neighbour's abi, which reports instead of returning an error.
+/// This turns the report back:
 ///
 ///     const value = try raise.crossing(c.janet_call(fun, argc, argv));
 ///
-/// **140 of these were found by removing the jump**, across twenty-seven
-/// files. Part 17a's fold was meant to end them — a subsystem should reach a
-/// neighbour by import, and then the error crosses as an error — and they
-/// survived it because the jump made them work anyway. Each one is a crossing
-/// the fold did not reach, marked rather than hidden, and each is an ordinary
-/// import away from not needing this at all.
+/// Each one is a crossing an ordinary import would remove, marked rather than
+/// hidden. `tools/check/seam.janet` counts them.
 pub inline fn crossing(value: anytype) Error!@TypeOf(value) {
     if (tookCRaise()) return error.JanetSignal;
     return value;
@@ -320,11 +258,10 @@ pub inline fn tookCRaise() bool {
 /// A raise-capable call at a site that cannot carry a raise, asserted rather
 /// than delivered.
 ///
-/// Phase 10's hinge. Some of what `deliverToC` was doing is not a C caller
-/// waiting for a jump at all -- it is a *position*: a collector traversal, a
-/// finalizer, a teardown, the entry point of a thread. There is no scope above
-/// any of them and nothing that could consume an error, so the jump was going
-/// somewhere arbitrary and the exit gate forbids it regardless.
+/// Some raise-capable calls sit at a *position* rather than under a caller: a
+/// collector traversal, a finalizer, a teardown, the entry point of a thread.
+/// There is no scope above any of them and nothing that could consume an
+/// error.
 ///
 /// The rule this encodes: **where a raise cannot travel, say so at the site
 /// rather than letting it leave.** An abort that names the position is worth
@@ -344,30 +281,11 @@ pub inline fn total(
     );
 }
 
-/// `declared` stood here until Phase 11 Part 26: the inverse of `panicking`,
-/// putting the Zig signature on a C symbol that raised by jumping, so that a
-/// converted caller could `try` it either way.
-///
-///     pub const getString = raise.declared(c.janet_getstring).call;
-///
-/// It was what an `_extern.zig` shim was made of, and what let a `c` selector
-/// go on answering after its callers had converted: the error was **declared
-/// and never returned**, because the C body jumped from the inside. Its last
-/// users were the eleven stranded shims and `dynlib.zig`'s four `util.c`
-/// symbols, and all fifteen went in Part 26.
-///
-/// `panicking` below is the surviving direction and is not its mirror. That one
-/// wraps a Zig function so C can call it; this one wrapped a C function so Zig
-/// could. Nothing left in the tree is a C function.
 /// Build the abi of a raise-capable function: call it, and hand a
 /// returned error to the C caller as a *report* rather than as a jump.
 ///
-/// Phase 10 Part 17h changed the second half. It was `catch deliverToC()`
-/// through six increments; it is now `catch reportToC(P)`, and the comment on
-/// that function has the argument. What did not change is the first half: this
-/// is still the one place a converted subsystem's abi is built, and it is
-/// still built rather than written out, because 177 hand-written abis that
-/// can drift from their implementations is a silent ABI change rather than a
+/// It is built rather than written out, because 177 hand-written abis that can
+/// drift from their implementations is a silent ABI change rather than a
 /// compile error.
 ///
 ///     pub const callNonfnPanicking = raise.panicking(callNonfn).abi;

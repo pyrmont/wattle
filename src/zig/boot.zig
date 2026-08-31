@@ -5,27 +5,22 @@
 //! image to write out. The script `spit`s it to the path `build.zig` names in
 //! `boot/args` as `image-out`.
 //!
-//! It was stdout until Phase 11 Part 19, captured as `janet-image.c` -- the
-//! one generated C file this tree produced and the reason `janet-image.o` was
-//! in the archive. The image is a marshalled byte stream now and
-//! `core_env.zig` reaches it with `@embedFile`, so there is no C to capture
-//! and no reason to route bytes through a stream a host may translate.
+//! The image is a marshalled byte stream and `core_env.zig` reaches it with
+//! `@embedFile`, so nothing routes those bytes through a stream a host may
+//! translate.
 //!
-//! This was `src/boot/boot.c` until Phase 10 Part 18, and it was the last
-//! `main` in C anywhere under `src/`. It lives beside `cli.zig` rather than in
-//! `src/boot/` because a module's imports resolve beside its root, and the
-//! subsystems are here; `src/boot/` holds the bootstrap
-//! *script*, which is what its name was always about.
+//! This file lives beside `cli.zig` rather than in `src/boot/` because a
+//! module's imports resolve beside its root, and the subsystems are here;
+//! `src/boot/` holds the bootstrap *script*, which is what its name is about.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const c = @import("cabi");
-const types = @import("types");
+const repr = @import("repr");
 const tests = @import("boot_tests.zig");
 const stdio = @import("stdio.zig");
 
-/// `janet_cstringv` and its two siblings, which `cabi.zig` stopped carrying at
-/// increment 5e.
+/// `janet_cstringv` and its two siblings, which `cabi.zig` does not carry.
 ///
 /// **This program is an embedder.** `build.zig` gives its module only `config`,
 /// `types`, `constants` and `cabi`, because it *links* the runtime object
@@ -36,17 +31,17 @@ const stdio = @import("stdio.zig");
 ///
 /// They take a slice for the same reason `value.fromBytes` does -- a literal
 /// knows its own length, and `janet_cstring`'s `strlen` was rediscovering it.
-inline fn stringv(bytes: []const u8) types.Janet {
+inline fn stringv(bytes: []const u8) repr.Value {
     return c.janet_wrap_string(c.janet_string(bytes.ptr, @intCast(bytes.len)));
 }
 
-inline fn symbolv(bytes: []const u8) types.Janet {
+inline fn symbolv(bytes: []const u8) repr.Value {
     return c.janet_wrap_symbol(c.janet_symbol(bytes.ptr, @intCast(bytes.len)));
 }
 
 /// A keyword is a symbol under a different tag; `janet.h:1844` is
 /// `#define janet_keyword janet_symbol`.
-inline fn keywordv(bytes: []const u8) types.Janet {
+inline fn keywordv(bytes: []const u8) repr.Value {
     return c.janet_wrap_keyword(c.janet_symbol(bytes.ptr, @intCast(bytes.len)));
 }
 const config = @import("config");

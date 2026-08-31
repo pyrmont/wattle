@@ -1,16 +1,15 @@
 //! The event loop: the scheduler, and the primitives a subsystem suspends on.
 //!
-//! Two files until Phase 12 increment 6f.  `ev_loop.zig` is the loop and the
-//! `ev/` cfunctions; `ev_core.zig` is what a fiber's suspension is made of.
-//! One name, `ev`, for what Janet publishes as one module -- and `ev/` beside
-//! it holds the four pieces that do have names of their own: the stream, the
-//! channel, the backend, and the locks.
+//! Two files once: the loop and the `ev/` cfunctions in one, what a fiber's
+//! suspension is made of in the other. One name, `ev`, for what Janet
+//! publishes as one module -- and `ev/` beside it holds the four pieces that do
+//! have names of their own: the stream, the channel, the backend, and the
+//! locks.
 const std = @import("std");
 const builtin = @import("builtin");
 const corefn = @import("corefn");
 const raise = @import("raise");
 const stdio = @import("stdio.zig");
-const io_core = @import("io.zig");
 const pp_format = @import("pp/format.zig");
 const registry = @import("registry.zig");
 const ev_callback = @import("callback_type.zig");
@@ -26,9 +25,7 @@ const vm_entry = @import("vm/entry.zig");
 const vm_state = @import("vm/lifecycle.zig");
 const math = @import("math.zig");
 const signal_core = @import("signal.zig");
-const kind = @import("value/helpers/kind.zig");
 const wrap = @import("value/helpers/wrap.zig");
-const vm_lifecycle = @import("vm/lifecycle.zig");
 const fibers = @import("value/fibers.zig");
 const trace_frames = @import("debug.zig");
 const args_core = @import("args.zig");
@@ -38,11 +35,10 @@ const ev_core = @import("ev.zig");
 const fatal = @import("fatal.zig");
 const os_locks = @import("ev/locks.zig");
 
-/// The four leaves beside this file, and the members `ev_loop.zig` re-exported
-/// for callers that reach the loop rather than the piece. Increment 6f cut
-/// these out of the merge by accident -- they sat among the plain imports and
-/// the extractor took the body from after the last one -- and `use of
-/// undeclared identifier 'windows'` is what said so.
+/// The four leaves beside this file, re-exported for callers that reach the
+/// loop rather than the piece. They are `pub` where the plain imports above
+/// are not, so a mechanical edit that treats this block as an import list
+/// breaks every dotted reference to them.
 pub const backend = @import("ev/backend.zig");
 pub const channel = @import("ev/channel.zig");
 pub const stream = @import("ev/stream.zig");
@@ -56,14 +52,11 @@ pub const levelTriggeredStream = backend.levelTriggeredStream;
 pub const getChannel = channel.getChannel;
 pub const channelGive = channel.channelGive;
 
-// `c` was `pub` here until increment 5g, re-exporting the C-ABI namespace as
-// `ev.c` -- the facade shape 6d and 6g spent, surviving at one name because
-// it is a single line rather than a file. Nothing in the tree spells `ev.c`;
-// making it private is what proves that, and the build is the proof.
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const value = @import("value.zig");
+const os_surface = @import("os.zig");
 
 pub const windows = builtin.os.tag == .windows;
 pub const android = builtin.abi.isAndroid();
@@ -74,31 +67,9 @@ pub const has_interrupt = constants.JANET_VM_HAS_INTERRUPT != 0;
 // The loop and its cfunctions -- what `ev_loop.zig` was.
 // -------------------------------------------------------------------------
 
-/// `src/core/util.h`. The clock arrives in parts because `struct timespec`
-/// cannot be named portably from Zig; `os_time.zig` records the measurement
-/// and `util.c` supplies this over either arm of `-Dos-time`.
-pub extern fn janet_os_gettime(source: i32, sec: *i64, nsec: *i64) callconv(.c) i32;
-
-/// `src/core/util.h`, declared here rather than in `cabi.zig`.
-pub extern fn janet_strerror(e: c_int) callconv(.c) [*:0]const u8;
-
-/// `src/core/util.h`. Only the read state machine's `recvfrom` arm names it,
-/// and only under `JANET_NET`.
-pub extern const janet_address_type: abstract_type.AbstractType;
-
-pub inline fn vm() *types.JanetVM {
-    return c.vm();
-}
-
 pub inline fn errno() c_int {
     return std.c._errno().*;
 }
-
-pub const sig_ok: types.JanetSignal = @intCast(constants.JANET_SIGNAL_OK);
-pub const sig_error: types.JanetSignal = @intCast(constants.JANET_SIGNAL_ERROR);
-pub const sig_event: types.JanetSignal = @intCast(constants.JANET_SIGNAL_EVENT);
-pub const sig_yield: types.JanetSignal = @intCast(constants.JANET_SIGNAL_YIELD);
-pub const sig_interrupt: types.JanetSignal = @intCast(constants.JANET_SIGNAL_INTERRUPT);
 
 /// `JANET_EXIT`, which `janet_assert` expands to. A macro, so no translation
 /// ever carried it. `io_core.zig` records what differs from the C original: the
@@ -113,11 +84,10 @@ pub fn exitWith(comptime where: std.builtin.SourceLocation, comptime message: []
     abort();
 }
 
-/// `src/core/io.c`'s stderr handle. A function rather than a variable for the
-/// reason Part 11 records: `translate-c` gives `stderr` three incompatible
-/// shapes across this project's targets. The `FILE` is spelled `?*c.FILE` and
-/// never `[*c]c.FILE`, because musl declares it incomplete and Zig will not
-/// index a pointer to an opaque type -- Part 11 met the same difference.
+/// The stderr handle. A function rather than a variable because `stderr` has
+/// three incompatible shapes across this project's targets. The `FILE` is
+/// spelled `?*c.FILE` and never `[*c]c.FILE`, because musl declares it
+/// incomplete and Zig will not index a pointer to an opaque type.
 extern fn fwrite(ptr: [*]const u8, size: usize, n: usize, stream_handle: ?*types.FILE) callconv(.c) usize;
 extern fn abort() callconv(.c) noreturn;
 extern fn exit(status: c_int) callconv(.c) noreturn;
@@ -125,10 +95,9 @@ extern fn exit(status: c_int) callconv(.c) noreturn;
 /// `janet_eprintf`, which is a macro over `janet_dynprintf` and so does not
 /// survive translation. `core_env.zig` writes it out the same way.
 inline fn eprintf(comptime format: [:0]const u8, args: anytype) void {
-    // `pp_format.dynprintf` can raise: `(dyn :err)` may be a Janet function, and
+    // `pp/format.dynprintf` can raise: `(dyn :err)` may be a Janet function, and
     // calling it can. This position cannot carry one -- it is a trace or a
-    // diagnostic on the way out -- so the raise is reported exactly as the C
-    // abi reported it before Part 18 deleted the variadic.
+    // diagnostic on the way out -- so the raise is reported.
     raise.reported(pp_format.dynprintf("err", @ptrCast(@alignCast(stdio.err())), format, args));
 }
 
@@ -152,7 +121,7 @@ pub fn outOfMemory(comptime where: std.builtin.SourceLocation) noreturn {
 /// its macro and `wrap.c` defines it only for the two nanbox layouts, so a
 /// tagged build has no such symbol. This is the fifth subsystem to meet the
 /// defect `FOUND.md` records.
-pub inline fn wrapInteger(x: i32) types.Janet {
+pub inline fn wrapInteger(x: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(x));
 }
 
@@ -160,78 +129,79 @@ pub inline fn wrapInteger(x: i32) types.Janet {
 // The timeout min heap
 // ==========================================================================
 
-/// `ts_now`. Each backend spelled this out after calling `janet_gettime`;
-/// `ev_core.zig` took the arithmetic in Phase 8 and the Windows arm reads a
-/// tick count instead of a clock.
+/// `ts_now`. Each backend spelled this out after calling `janet_gettime`; the
+/// arithmetic is here once, and the Windows arm reads a tick count instead of
+/// a clock.
 pub fn tsNow() types.JanetTimestamp {
     if (windows) return @intCast(GetTickCount64());
     var sec: i64 = undefined;
     var nsec: i64 = undefined;
-    assert(@src(), janet_os_gettime(1, &sec, &nsec) != -1, "failed to get time");
+    assert(@src(), os_surface.gettime(1, &sec, &nsec) != -1, "failed to get time");
     return ev_core.tsFromParts(sec, nsec);
 }
 
 /// Look at the next timeout without removing it.
 pub fn peekTimeout(out: *types.JanetTimeout) bool {
-    if (vm().tq_count == 0) return false;
-    out.* = vm().tq.?[0];
+    const sched = &vm_state.current().ev;
+    if (sched.tq.isEmpty()) return false;
+    out.* = sched.tq.at(0).*;
     return true;
 }
 
 /// Remove one timeout from the min heap and restore the heap property.
 pub fn popTimeout(start: usize) void {
     var index = start;
-    const v = vm();
-    if (v.tq_count <= index) return;
-    v.tq_count -= 1;
-    v.tq.?[index] = v.tq.?[v.tq_count];
+    const sched = &vm_state.current().ev;
+    if (sched.tq.count <= index) return;
+    sched.tq.swapRemove(index);
     while (true) {
         const smallest = ev_core.heapSiftDown(
-            v.tq.?,
+            sched.tq.items.?,
             @sizeOf(types.JanetTimeout),
             @offsetOf(types.JanetTimeout, "when"),
-            v.tq_count,
+            sched.tq.count,
             index,
         );
         if (smallest < 0) return;
         const target: usize = @intCast(smallest);
-        const temp = v.tq.?[index];
-        v.tq.?[index] = v.tq.?[target];
-        v.tq.?[target] = temp;
+        const heap = sched.tq.slice();
+        const temp = heap[index];
+        heap[index] = heap[target];
+        heap[target] = temp;
         index = target;
     }
 }
 
 /// Add a timeout to the min heap, growing it if it is full.
 pub fn addTimeout(to: types.JanetTimeout) void {
-    const v = vm();
-    const oldcount = v.tq_count;
+    const sched = &vm_state.current().ev;
+    const oldcount = sched.tq.count;
     const newcount = oldcount + 1;
-    if (newcount > v.tq_capacity) {
+    if (newcount > sched.tq.capacity) {
         const newcap = 2 * newcount;
         const tq: ?[*]types.JanetTimeout = @ptrCast(@alignCast(utils.realloc(
-            v.tq,
+            sched.tq.items,
             newcap * @sizeOf(types.JanetTimeout),
         )));
         if (tq == null) outOfMemory(@src());
-        v.tq = tq;
-        v.tq_capacity = newcap;
+        sched.tq.items = tq;
+        sched.tq.capacity = newcap;
     }
-    v.tq_count = newcount;
-    v.tq.?[oldcount] = to;
+    sched.tq.appendAssumingCapacity(to);
     var index = oldcount;
     while (true) {
         const parent = ev_core.heapSiftUp(
-            v.tq.?,
+            sched.tq.items.?,
             @sizeOf(types.JanetTimeout),
             @offsetOf(types.JanetTimeout, "when"),
             index,
         );
         if (parent < 0) break;
         const target: usize = @intCast(parent);
-        const tmp = v.tq.?[index];
-        v.tq.?[index] = v.tq.?[target];
-        v.tq.?[target] = tmp;
+        const heap = sched.tq.slice();
+        const tmp = heap[index];
+        heap[index] = heap[target];
+        heap[target] = tmp;
         index = target;
     }
 }
@@ -243,8 +213,8 @@ pub fn addTimeout(to: types.JanetTimeout) void {
 /// Mirrors the anonymous `JanetTask` in `ev.c`.
 pub const Task = extern struct {
     fiber: *types.JanetFiber,
-    value: types.Janet,
-    sig: types.JanetSignal,
+    value: repr.Value,
+    sig: types.Signal,
     /// If the fiber has been rescheduled this loop, don't run first scheduling.
     expected_sched_id: u32,
 };
@@ -254,11 +224,12 @@ const fiber_flag_suspended: i32 = @intCast(constants.JANET_FIBER_EV_FLAG_SUSPEND
 const fiber_flag_root: i32 = @intCast(constants.JANET_FIBER_FLAG_ROOT);
 const fiber_flag_in_flight: i32 = @intCast(constants.JANET_FIBER_EV_FLAG_IN_FLIGHT);
 
-fn scheduleGeneral(fiber: *types.JanetFiber, val: types.Janet, sig: types.JanetSignal, soon: bool) void {
+fn scheduleGeneral(fiber: *types.JanetFiber, val: repr.Value, sig: types.Signal, soon: bool) void {
+    const sched = &vm_state.current().ev;
     if (fiber.*.gc.flags & fiber_flag_canceled != 0) return;
     if (fiber.*.gc.flags & fiber_flag_root == 0) {
         const task_element = wrap.fromFiber(fiber);
-        tables.put(&vm().active_tasks, task_element, wrap.fromTrue());
+        tables.put(&sched.active_tasks, task_element, wrap.fromTrue());
     }
     fiber.*.sched_id +%= 1;
     const t: Task = .{
@@ -268,61 +239,60 @@ fn scheduleGeneral(fiber: *types.JanetFiber, val: types.Janet, sig: types.JanetS
         .expected_sched_id = fiber.*.sched_id,
     };
     fiber.*.gc.flags |= fiber_flag_root;
-    if (sig == sig_error) fiber.*.gc.flags |= fiber_flag_canceled;
+    if (sig == .@"error") fiber.*.gc.flags |= fiber_flag_canceled;
     const pushed = if (soon)
-        ev_core.qPushHead(&vm().spawn, &t, @sizeOf(Task))
+        ev_core.qPushHead(&sched.spawn, &t, @sizeOf(Task))
     else
-        ev_core.qPush(&vm().spawn, &t, @sizeOf(Task));
+        ev_core.qPush(&sched.spawn, &t, @sizeOf(Task));
     assert(@src(), pushed == 0, "schedule queue overflow");
 }
 
-pub fn scheduleSignal(fiber: *types.JanetFiber, val: types.Janet, sig: types.JanetSignal) void {
+pub fn scheduleSignal(fiber: *types.JanetFiber, val: repr.Value, sig: types.Signal) void {
     scheduleGeneral(fiber, val, sig, false);
 }
 
-pub fn scheduleSoon(fiber: *types.JanetFiber, val: types.Janet, sig: types.JanetSignal) void {
+pub fn scheduleSoon(fiber: *types.JanetFiber, val: repr.Value, sig: types.Signal) void {
     scheduleGeneral(fiber, val, sig, true);
 }
 
-pub fn cancel(fiber: *types.JanetFiber, val: types.Janet) raise.Raising(void) {
+pub fn cancel(fiber: *types.JanetFiber, val: repr.Value) raise.Raising(void) {
     if (fiber.*.gc.flags & fiber_flag_root == 0) {
         return raise.panic("cannot cancel non-task fiber");
     }
-    scheduleGeneral(fiber, val, sig_error, false);
+    scheduleGeneral(fiber, val, .@"error", false);
 }
 
-pub fn janet_cancel(fiber: *types.JanetFiber, val: types.Janet) void {
+pub fn cancelAbi(fiber: *types.JanetFiber, val: repr.Value) void {
     raise.reported(cancel(fiber, val));
 }
 
-pub fn schedule(fiber: *types.JanetFiber, val: types.Janet) void {
-    scheduleGeneral(fiber, val, sig_ok, false);
+pub fn schedule(fiber: *types.JanetFiber, val: repr.Value) void {
+    scheduleGeneral(fiber, val, .ok, false);
 }
 
 /// Mark every fiber and value the scheduler is holding on to.
 pub fn evMark() void {
-    const v = vm();
+    const sched = &vm_state.current().ev;
     // The queue allocates lazily, so `data` is null until something is
     // pushed; `head` and `tail` are then both zero and the C original's loops
     // run zero times. Zig will not cast a null pointer to a non-optional one
     // even when nothing dereferences it, so the emptiness is spelled out.
-    if (v.spawn.data) |data| {
+    if (sched.spawn.data) |data| {
         const tasks: [*]Task = @ptrCast(@alignCast(data));
-        if (v.spawn.head <= v.spawn.tail) {
-            var i = v.spawn.head;
-            while (i < v.spawn.tail) : (i += 1) markTask(&tasks[@intCast(i)]);
+        if (sched.spawn.head <= sched.spawn.tail) {
+            var i = sched.spawn.head;
+            while (i < sched.spawn.tail) : (i += 1) markTask(&tasks[@intCast(i)]);
         } else {
-            var i = v.spawn.head;
-            while (i < v.spawn.capacity) : (i += 1) markTask(&tasks[@intCast(i)]);
+            var i = sched.spawn.head;
+            while (i < sched.spawn.capacity) : (i += 1) markTask(&tasks[@intCast(i)]);
             i = 0;
-            while (i < v.spawn.tail) : (i += 1) markTask(&tasks[@intCast(i)]);
+            while (i < sched.spawn.tail) : (i += 1) markTask(&tasks[@intCast(i)]);
         }
     }
 
-    var i: usize = 0;
-    while (i < v.tq_count) : (i += 1) {
-        gc_mark.mark(wrap.fromFiber(v.tq.?[i].fiber.?));
-        if (v.tq.?[i].curr_fiber) |curr| {
+    for (sched.tq.slice()) |timeout| {
+        gc_mark.mark(wrap.fromFiber(timeout.fiber.?));
+        if (timeout.curr_fiber) |curr| {
             gc_mark.mark(wrap.fromFiber(curr));
         }
     }
@@ -355,7 +325,7 @@ pub fn asyncEnd(fiber: *types.JanetFiber) void {
     }
 }
 
-/// Mark a fiber as waiting on a completion the port has not delivered yet.
+/// Mark a fiber as waiting on a completion that has not been delivered yet.
 /// A no-op away from Windows, where there is no in-flight state to track.
 pub fn asyncInFlight(fiber: *types.JanetFiber) void {
     if (windows) fiber.*.flags |= fiber_flag_in_flight;
@@ -379,7 +349,7 @@ pub fn asyncStartFiber(
     try callback(fiber.?, constants.JANET_ASYNC_EVENT_INIT);
 }
 
-pub fn janet_async_start_fiber(
+pub fn asyncStartFiberAbi(
     fiber: *types.JanetFiber,
     s: *types.JanetStream,
     mode: types.JanetAsyncMode,
@@ -395,11 +365,11 @@ pub fn asyncStart(
     callback: ev_callback.EVCallback,
     state: ?*anyopaque,
 ) raise.Error {
-    asyncStartFiber(vm().root_fiber, s, mode, callback, state) catch |err| return err;
+    asyncStartFiber(vm_state.current().root_fiber, s, mode, callback, state) catch |err| return err;
     return awaitEvent();
 }
 
-pub fn janet_async_start(
+pub fn asyncStartAbi(
     s: *types.JanetStream,
     mode: types.JanetAsyncMode,
     callback: types.JanetEVCallback,
@@ -417,42 +387,40 @@ pub fn fiberDidResume(fiber: *types.JanetFiber) void {
 // ==========================================================================
 
 pub fn evIncRefcount() void {
-    _ = abstracts.atomicInc(&vm().listener_count);
+    _ = abstracts.atomicInc(&vm_state.current().ev.listener_count);
 }
 
 pub fn evDecRefcount() void {
-    _ = abstracts.atomicDec(&vm().listener_count);
+    _ = abstracts.atomicDec(&vm_state.current().ev.listener_count);
 }
 
 pub fn evInitCommon() void {
-    const v = vm();
-    ev_core.qInit(&v.spawn);
-    v.tq = null;
-    v.tq_count = 0;
-    v.tq_capacity = 0;
-    _ = tables.initRaw(&v.threaded_abstracts, 0);
-    _ = tables.initRaw(&v.active_tasks, 0);
-    _ = tables.initRaw(&v.signal_handlers, 0);
-    math.rngSeed(&v.ev_rng, 0);
+    const sched = &vm_state.current().ev;
+    ev_core.qInit(&sched.spawn);
+    sched.tq = .{};
+    _ = tables.initRaw(&sched.threaded_abstracts, 0);
+    _ = tables.initRaw(&sched.active_tasks, 0);
+    _ = tables.initRaw(&sched.signal_handlers, 0);
+    math.rngSeed(&sched.ev_rng, 0);
     if (!windows) {
-        _ = pthread_attr_init(&v.new_thread_attr);
-        _ = pthread_attr_setdetachstate(&v.new_thread_attr, PTHREAD_CREATE_DETACHED);
+        _ = pthread_attr_init(&sched.backend.new_thread_attr);
+        _ = pthread_attr_setdetachstate(&sched.backend.new_thread_attr, PTHREAD_CREATE_DETACHED);
     }
 }
 
 pub fn evDeinitCommon() void {
-    const v = vm();
+    const sched = &vm_state.current().ev;
     var to: types.JanetTimeout = undefined;
     while (peekTimeout(&to)) {
         handleTimeoutWorker(to, true);
         popTimeout(0);
     }
-    ev_core.qDeinit(&v.spawn);
-    utils.free(v.tq);
-    tables.deinit(&v.threaded_abstracts);
-    tables.deinit(&v.active_tasks);
-    tables.deinit(&v.signal_handlers);
-    if (!windows) _ = pthread_attr_destroy(&v.new_thread_attr);
+    ev_core.qDeinit(&sched.spawn);
+    utils.free(sched.tq.items);
+    tables.deinit(&sched.threaded_abstracts);
+    tables.deinit(&sched.active_tasks);
+    tables.deinit(&sched.signal_handlers);
+    if (!windows) _ = pthread_attr_destroy(&sched.backend.new_thread_attr);
 }
 
 // ==========================================================================
@@ -463,15 +431,15 @@ pub fn evDeinitCommon() void {
 /// `EVENT` signal, and always has been -- what changes here is that it returns
 /// instead of jumping.
 pub fn awaitEvent() raise.Error {
-    return raise.signal(sig_event, wrap.fromNil());
+    return raise.signal(.event, wrap.fromNil());
 }
 
-pub fn janet_await() void {
+pub fn awaitEventAbi() void {
     raise.report(awaitEvent());
 }
 
 fn addFiberTimeout(sec: f64, is_error: bool) void {
-    const fiber = vm().root_fiber.?;
+    const fiber = vm_state.current().root_fiber.?;
     addTimeout(.{
         .when = ev_core.tsDelta(tsNow(), sec),
         .fiber = fiber,
@@ -492,7 +460,7 @@ pub fn addtimeoutNil(sec: f64) void {
 }
 
 pub fn sleepAwait(sec: f64) raise.Error {
-    const fiber = vm().root_fiber.?;
+    const fiber = vm_state.current().root_fiber.?;
     addTimeout(.{
         .when = ev_core.tsDelta(tsNow(), sec),
         .fiber = fiber,
@@ -505,7 +473,7 @@ pub fn sleepAwait(sec: f64) raise.Error {
     return awaitEvent();
 }
 
-pub fn janet_sleep_await(sec: f64) void {
+pub fn sleepAwaitAbi(sec: f64) void {
     raise.report(sleepAwait(sec));
 }
 
@@ -516,14 +484,14 @@ pub fn janet_sleep_await(sec: f64) void {
 /// Mirrors the anonymous `JanetThreadedTimeout` in `ev.c`.
 const ThreadedTimeout = extern struct {
     sec: f64,
-    vm_ptr: *types.JanetVM,
+    vm_ptr: *types.Vm,
     fiber: *types.JanetFiber,
     cancel_event: if (windows) ?*anyopaque else void = if (windows) null else {},
 };
 
 fn timeoutCallback(msg: types.JanetEVGenericMessage) callconv(.c) void {
     _ = msg;
-    vm_state.interpreterInterruptHandled(vm());
+    vm_state.interpreterInterruptHandled(vm_state.current());
 }
 
 /// Join, and optionally interrupt, the thread a `(ev/deadline ... true)` set
@@ -558,9 +526,9 @@ fn timeoutStop(sig_num: c_int) callconv(.c) void {
 /// `pthread_cancel` does not exist there and `timeoutStop` is what stands in
 /// for it. That installation is *recorded rather than written*: it needs a
 /// `struct sigaction`, which is a host layout, and `android` is comptime-false
-/// for every target this project builds -- so Part 8's rule applies and
-/// carrying it would produce something even less checked than the C it
-/// replaced. `os/abi.zig` makes the same call for `JANET_THREADS`.
+/// for every target this project builds -- so writing it would produce
+/// something even less checked than what it replaced. `os/abi.zig` makes the
+/// same call for `JANET_THREADS`.
 fn timeoutBodyPosix(ptr: ?*anyopaque) callconv(.c) ?*anyopaque {
     const tto: *ThreadedTimeout = @ptrCast(@alignCast(ptr));
     const copy = tto.*;
@@ -605,10 +573,10 @@ fn timeoutBodyWindows(ptr: ?*anyopaque) callconv(.winapi) u32 {
 // ==========================================================================
 
 pub fn loopDone() c_int {
-    const v = vm();
-    const busy = (v.spawn.head != v.spawn.tail) or
-        (v.tq_count != 0) or
-        (abstracts.atomicLoad(&v.listener_count) != 0);
+    const sched = &vm_state.current().ev;
+    const busy = (sched.spawn.head != sched.spawn.tail) or
+        (!sched.tq.isEmpty()) or
+        (abstracts.atomicLoad(&sched.listener_count) != 0);
     return @intFromBool(!busy);
 }
 
@@ -618,7 +586,8 @@ pub fn loopDone() c_int {
 /// stages are preserved exactly, including that the poll is skipped when the
 /// timer scan drained the heap.
 pub fn loop1() raise.Raising(?*types.JanetFiber) {
-    const v = vm();
+    const v = vm_state.current();
+    const sched = &v.ev;
 
     // Schedule expired timers.
     var to: types.JanetTimeout = undefined;
@@ -642,35 +611,35 @@ pub fn loop1() raise.Raising(?*types.JanetFiber) {
     }
 
     // Run scheduled fibers unless interrupts need to be handled.
-    while (v.spawn.head != v.spawn.tail) {
+    while (sched.spawn.head != sched.spawn.tail) {
         if (abstracts.atomicLoadRelaxed(&v.auto_suspend) != 0) break;
         var task: Task = .{
             .fiber = undefined,
             .value = wrap.fromNil(),
-            .sig = sig_ok,
+            .sig = .ok,
             .expected_sched_id = 0,
         };
-        _ = ev_core.qPop(&v.spawn, &task, @sizeOf(Task));
+        _ = ev_core.qPop(&sched.spawn, &task, @sizeOf(Task));
         if (task.fiber.*.gc.flags & fiber_flag_suspended != 0) evDecRefcount();
         task.fiber.*.gc.flags &= ~(fiber_flag_canceled | fiber_flag_suspended);
         if (task.expected_sched_id != task.fiber.*.sched_id) continue;
-        var res: types.Janet = undefined;
+        var res: repr.Value = undefined;
         const sig = vm_entry.continueSignal(task.fiber, task.value, &res, task.sig);
         if (fibers.canResume(task.fiber) == 0) {
-            _ = tables.remove(&v.active_tasks, wrap.fromFiber(task.fiber));
+            _ = tables.remove(&sched.active_tasks, wrap.fromFiber(task.fiber));
         }
         const sv = task.fiber.*.supervisor_channel;
-        const is_suspended = sig == sig_event or sig == sig_yield or sig == sig_interrupt;
+        const is_suspended = sig == types.Signal.event or sig == .yield or sig == types.Signal.interrupt;
         if (is_suspended) {
             task.fiber.*.gc.flags |= fiber_flag_suspended;
             evIncRefcount();
         }
         if (sv == null) {
             if (!is_suspended) try trace_frames.stacktraceExt(task.fiber, res, "");
-        } else if (sig == sig_ok or (task.fiber.*.flags & (@as(i32, 1) << @intCast(sig)) != 0)) {
+        } else if (sig == .ok or (task.fiber.*.flags & (@as(i32, 1) << @intCast(@intFromEnum(sig))) != 0)) {
             const chan = channel.unwrap(sv);
             const event = channel.makeSupervisorEvent(
-                utils.signalNames[@intCast(sig)],
+                utils.signalNames[@intFromEnum(sig)],
                 task.fiber,
                 chan.is_threaded != 0,
             );
@@ -680,11 +649,11 @@ pub fn loop1() raise.Raising(?*types.JanetFiber) {
         } else if (!is_suspended) {
             try trace_frames.stacktraceExt(task.fiber, res, "");
         }
-        if (sig == sig_interrupt) return task.fiber;
+        if (sig == types.Signal.interrupt) return task.fiber;
     }
 
     // Poll for events.
-    if (v.tq_count != 0 or abstracts.atomicLoad(&v.listener_count) != 0) {
+    if (!sched.tq.isEmpty() or abstracts.atomicLoad(&sched.listener_count) != 0) {
         var next: types.JanetTimeout = std.mem.zeroes(types.JanetTimeout);
         var has_timeout = false;
         // Drop timeouts that are no longer needed.
@@ -694,7 +663,7 @@ pub fn loop1() raise.Raising(?*types.JanetFiber) {
             if (next.curr_fiber) |curr| {
                 if (fibers.canResume(curr) == 0) {
                     popTimeout(0);
-                    _ = tables.remove(&v.active_tasks, wrap.fromFiber(curr));
+                    _ = tables.remove(&sched.active_tasks, wrap.fromFiber(curr));
                     handleTimeoutWorker(next, true);
                     continue;
                 }
@@ -705,21 +674,21 @@ pub fn loop1() raise.Raising(?*types.JanetFiber) {
             }
             break;
         }
-        if (v.tq_count != 0 or abstracts.atomicLoad(&v.listener_count) != 0) {
-            try backend.loop1Impl(has_timeout, next.when);
+        if (!sched.tq.isEmpty() or abstracts.atomicLoad(&sched.listener_count) != 0) {
+            try backend.loop1(has_timeout, next.when);
         }
     }
 
     return null;
 }
 
-pub fn janet_loop1() ?*types.JanetFiber {
+pub fn loop1Abi() ?*types.JanetFiber {
     return raise.reported(loop1());
 }
 
 /// `janet_interpreter_interrupt`, plus an empty event so that a loop blocked
 /// in the backend wakes up to see it.
-pub fn loop1Interrupt(v: *types.JanetVM) void {
+pub fn loop1Interrupt(v: *types.Vm) void {
     vm_state.interpreterInterrupt(v);
     const msg = std.mem.zeroes(types.JanetEVGenericMessage);
     evPostEvent(v, null, msg);
@@ -731,7 +700,7 @@ pub fn loop() raise.Raising(void) {
     }
 }
 
-pub fn janet_loop() void {
+pub fn loopAbi() void {
     raise.reported(loop());
 }
 
@@ -757,14 +726,18 @@ const ThreadInit = extern struct {
 };
 
 pub fn evPostEvent(
-    target: ?*types.JanetVM,
+    target: ?*types.Vm,
     cb: types.JanetCallback,
     msg: types.JanetEVGenericMessage,
 ) callconv(.c) void {
-    const v = target orelse vm();
-    _ = abstracts.atomicInc(&v.listener_count);
+    // The one scheduler operation that is not the current thread's: a thread
+    // posting to another interpreter's loop names that interpreter's `VmEv`,
+    // which is what "pass the narrower state" means where the state is not
+    // ambient at all.
+    const sched = &(target orelse vm_state.current()).ev;
+    _ = abstracts.atomicInc(&sched.listener_count);
     if (windows) {
-        const iocp: ?*anyopaque = @ptrCast(v.iocp);
+        const iocp: ?*anyopaque = @ptrCast(sched.backend.iocp);
         const event: *SelfPipeEvent = @ptrCast(@alignCast(utils.malloc(@sizeOf(SelfPipeEvent)) orelse
             outOfMemory(@src())));
         event.msg = msg;
@@ -779,7 +752,7 @@ pub fn evPostEvent(
         var event = std.mem.zeroes(SelfPipeEvent);
         event.msg = msg;
         event.cb = cb;
-        const fd = v.selfpipe[1];
+        const fd = sched.backend.selfpipe[1];
         // Handle a bit of back pressure before giving up.
         var tries: i32 = 20;
         while (tries > 0) {
@@ -844,6 +817,7 @@ pub fn threadedCall(
     arguments: types.JanetEVGenericMessage,
     cb: types.JanetThreadedCallback,
 ) raise.Raising(void) {
+    const sched = &vm_state.current().ev;
     const init: *ThreadInit = @ptrCast(@alignCast(utils.malloc(@sizeOf(ThreadInit)) orelse
         outOfMemory(@src())));
     init.msg = arguments;
@@ -859,12 +833,12 @@ pub fn threadedCall(
         }
         _ = CloseHandle(thread_handle); // detach from thread
     } else {
-        init.write_pipe = vm().selfpipe[1];
+        init.write_pipe = sched.backend.selfpipe[1];
         var waiter_thread: types.pthread_t = undefined;
-        const err = pthread_create(&waiter_thread, &vm().new_thread_attr, threadBodyPosix, init);
+        const err = pthread_create(&waiter_thread, &sched.backend.new_thread_attr, threadBodyPosix, init);
         if (err != 0) {
             utils.free(init);
-            return pp_format.panicf("%s", .{janet_strerror(err)});
+            return pp_format.panicf("%s", .{utils.strerrorSafe(err)});
         }
     }
 
@@ -907,7 +881,7 @@ pub fn evDefaultThreadedCallback(return_value: types.JanetEVGenericMessage) call
             )),
             constants.JANET_EV_TCTAG_BOOLEAN => schedule(
                 fiber,
-                wrap.fromBoolean(return_value.argi),
+                wrap.fromBoolean(return_value.argi != 0),
             ),
             // JANET_EV_TCTAG_NIL, and every tag the C switch sends to
             // `default`, which is the same arm.
@@ -958,7 +932,7 @@ pub fn evThreadedAwait(
 // takes primitive parameters or a type `types.zig` already supplies, so no
 // host layout is at stake and no further translation is needed. `pthread_t`
 // and `pthread_attr_t` are `types.zig`'s, which takes them from libc because
-// `JanetVM` and `JanetTimeout` embed both.
+// `Vm` and `JanetTimeout` embed both.
 
 pub extern fn write(fd: c_int, buf: [*]const u8, count: usize) callconv(.c) isize;
 pub extern fn read(fd: c_int, buf: [*]u8, count: usize) callconv(.c) isize;
@@ -1017,7 +991,7 @@ pub extern "kernel32" fn CreateThread(
 /// `janet_vm.iocp` is declared `void **` in `state.h`, so it is a double
 /// pointer where every Windows call wants the handle itself.
 pub inline fn iocpHandle() ?*anyopaque {
-    return @ptrCast(c.vm().iocp);
+    return @ptrCast(vm_state.current().ev.backend.iocp);
 }
 
 pub extern "kernel32" fn PostQueuedCompletionStatus(
@@ -1048,13 +1022,12 @@ const GoThreadContext = struct {
     end: [*]const u8,
 };
 
-/// The protected scope `ev/thread`'s child interpreter runs under, and until
-/// the hinge the second of Phase 10's three `setjmp` sites.
+/// The protected scope `ev/thread`'s child interpreter runs under.
 ///
-/// `janet_zig_ev_protect` in `ev.c` was the whole of it: nine lines that
-/// opened the scope with `janet_try`, called back into this file through a C
-/// function pointer, and reported the signal `longjmp` had returned. What
-/// makes those nine lines unnecessary is that **the jump was only travel**.
+/// This was nine lines of C: open the scope with `janet_try`, call back
+/// through a function pointer, and report the signal `longjmp` had returned.
+/// What makes those nine lines unnecessary is that **the jump was only
+/// travel**.
 /// `janet_try_init` opens the scope -- it is what points `return_reg` at
 /// `tstate.payload`, and therefore what `janet_signal_plan` reads to answer
 /// `RAISE` rather than `TOP_LEVEL` -- and `janet_restore` closes it. The
@@ -1066,22 +1039,22 @@ const GoThreadContext = struct {
 /// it. A report left by an abi inside the body is consumed at its own
 /// call site by `raise.crossing`; one that is not is what the assertion in
 /// `janet_restore` exists to name.
-fn goThreadProtect(ctx: *GoThreadContext, payload: *types.Janet) types.JanetSignal {
+fn goThreadProtect(ctx: *GoThreadContext, payload: *repr.Value) types.Signal {
     var tstate: types.JanetTryState = undefined;
     signal_core.tryInit(&tstate);
-    var signal: types.JanetSignal = 0;
-    goThreadBodyImpl(ctx) catch {
-        signal = vm().pending_signal;
+    var signal: types.Signal = .ok;
+    goThreadBody(ctx) catch {
+        signal = vm_state.current().pending_signal;
     };
     signal_core.restore(&tstate);
-    if (signal != 0) payload.* = tstate.payload;
+    if (signal != .ok) payload.* = tstate.payload;
     return signal;
 }
 
 /// Everything between `janet_try` and `janet_restore` in the C original's
 /// success arm.
-fn goThreadBodyImpl(ctx: *GoThreadContext) raise.Raising(void) {
-    const v = vm();
+fn goThreadBody(ctx: *GoThreadContext) raise.Raising(void) {
+    const v = vm_state.current();
     const flags = ctx.flags;
 
     // Set abstract registry.
@@ -1092,7 +1065,7 @@ fn goThreadBodyImpl(ctx: *GoThreadContext) raise.Raising(void) {
             null,
             @ptrCast(&ctx.next),
         );
-        assert(@src(), kind.checkType(aregv, constants.JANET_TABLE) != 0, "expected table for abstract registry");
+        assert(@src(), repr.checkType(aregv, repr.Tag.table), "expected table for abstract registry");
         v.abstract_registry = wrap.toTable(aregv);
         gc_alloc.gcroot(wrap.fromTable(v.abstract_registry.?));
     }
@@ -1106,7 +1079,7 @@ fn goThreadBodyImpl(ctx: *GoThreadContext) raise.Raising(void) {
             @ptrCast(&ctx.next),
         );
         // The C original calls this a hack to avoid longjmp clobber. It is
-        // kept because `janet_vm.user` is where the failure arm reads the
+        // kept because `vm.user` is where the failure arm reads the
         // supervisor from, and that arm still runs after a jump.
         v.user = wrap.toPointer(sup);
     }
@@ -1119,14 +1092,14 @@ fn goThreadBodyImpl(ctx: *GoThreadContext) raise.Raising(void) {
         const remaining = @intFromPtr(ctx.end) - @intFromPtr(ctx.next) - @sizeOf(u32);
         // Use division to avoid overflowing size_t.
         assert(@src(), count <= remaining / @sizeOf(types.JanetCFunRegistry), "thread message invalid");
-        v.registry_count = count;
-        v.registry_cap = count;
-        v.registry = @ptrCast(@alignCast(utils.malloc(count * @sizeOf(types.JanetCFunRegistry)) orelse
+        v.registry.rows.count = count;
+        v.registry.rows.capacity = count;
+        v.registry.rows.items = @ptrCast(@alignCast(utils.malloc(count * @sizeOf(types.JanetCFunRegistry)) orelse
             outOfMemory(@src())));
-        v.registry_dirty = 1;
+        v.registry.dirty = true;
         ctx.next += @sizeOf(u32);
         @memcpy(
-            @as([*]u8, @ptrCast(v.registry))[0 .. count * @sizeOf(types.JanetCFunRegistry)],
+            std.mem.sliceAsBytes(v.registry.rows.slice()),
             ctx.next[0 .. count * @sizeOf(types.JanetCFunRegistry)],
         );
         ctx.next += count * @sizeOf(types.JanetCFunRegistry);
@@ -1146,8 +1119,8 @@ fn goThreadBodyImpl(ctx: *GoThreadContext) raise.Raising(void) {
     );
 
     var fiber: ?*types.JanetFiber = undefined;
-    if (kind.checkType(fiberv, constants.JANET_FIBER) == 0) {
-        assert(@src(), kind.checkType(fiberv, constants.JANET_FUNCTION) != 0, "expected function or fiber");
+    if (!repr.checkType(fiberv, repr.Tag.fiber)) {
+        assert(@src(), repr.checkType(fiberv, repr.Tag.function), "expected function or fiber");
         const func = wrap.toFunction(fiberv);
         // The C original notes that an ordinary panic here misbehaves on
         // Wine + Mingw and asserts instead. The assert is kept.
@@ -1176,7 +1149,7 @@ fn goThreadBodyImpl(ctx: *GoThreadContext) raise.Raising(void) {
     schedule(fiber.?, val);
     // `loop`, not the `janet_loop` abi beside it: this function is
     // `raise.Raising` and the abi flattens a raise into a report nobody here
-    // would consume. Phase 11 Part 15; `port/swallowed.py` found it.
+    // would consume. `tools/check/swallowed.janet` is what finds that.
     try loop();
     ctx.args.tag = constants.JANET_EV_TCTAG_NIL;
 }
@@ -1192,8 +1165,8 @@ fn goThreadSubr(args_in: types.JanetEVGenericMessage) callconv(.c) types.JanetEV
     // A thread subroutine's type is the event loop's, and this runs at the
     // very top of a new thread: there is no scope above it and no caller that
     // could act on a failure to initialise a VM.
-    _ = raise.total(vm_lifecycle.init(), "a thread subroutine's VM init");
-    vm().sandbox_flags = @bitCast(args.argi);
+    _ = raise.total(vm_state.init(), "a thread subroutine's VM init");
+    vm_state.current().sandbox_flags = @bitCast(args.argi);
 
     var ctx: GoThreadContext = .{
         .args = args,
@@ -1201,20 +1174,20 @@ fn goThreadSubr(args_in: types.JanetEVGenericMessage) callconv(.c) types.JanetEV
         .next = buffer.data.?,
         .end = buffer.data.? + @as(usize, @intCast(buffer.count)),
     };
-    var payload: types.Janet = wrap.fromNil();
+    var payload: repr.Value = wrap.fromNil();
     const signal = goThreadProtect(&ctx, &payload);
     args = ctx.args;
 
-    if (signal != 0) {
-        const supervisor = vm().user;
+    if (signal != .ok) {
+        const supervisor = vm_state.current().user;
         if (supervisor != null) {
             // Got a supervisor, write the error there.
-            const pair = [2]types.Janet{ value.fromBytes("error", .keyword), payload };
+            const pair = [2]repr.Value{ value.fromBytes("error", .keyword), payload };
             // Reporting the thread's own start failure to its supervisor.
             // A raise here has nowhere left to go -- this *is* the error path.
             _ = raise.total(channel.push(
                 channel.unwrap(supervisor),
-                wrap.fromTuple(tuples.newFrom(&pair, 2)),
+                wrap.fromTuple(tuples.newFrom(&pair)),
                 2,
             ), "a thread subroutine's supervisor report");
         } else if (flags & 0x1 != 0) {
@@ -1222,7 +1195,7 @@ fn goThreadSubr(args_in: types.JanetEVGenericMessage) callconv(.c) types.JanetEV
             eprintf("thread start failure: %v\n", .{payload});
         } else {
             // Make the ev/thread call from the parent thread error.
-            if (kind.checkType(payload, constants.JANET_STRING) != 0) {
+            if (repr.checkType(payload, repr.Tag.string)) {
                 args.tag = constants.JANET_EV_TCTAG_ERR_STRINGF;
                 const msg = wrap.toString(payload);
                 const len: usize = @intCast(types.stringHead(msg).length);
@@ -1237,7 +1210,7 @@ fn goThreadSubr(args_in: types.JanetEVGenericMessage) callconv(.c) types.JanetEV
 
     buffers.deinit(buffer);
     utils.free(buffer);
-    vm_lifecycle.deinit();
+    vm_state.deinit();
     return args;
 }
 
@@ -1245,17 +1218,17 @@ fn goThreadSubr(args_in: types.JanetEVGenericMessage) callconv(.c) types.JanetEV
 // The scheduler's cfunctions
 // ==========================================================================
 
-fn goImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunGo(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
     const val = if (@as(i32, @intCast(argv.len)) >= 2) argv[1] else wrap.fromNil();
     const supervisor = try args_core.optAbstract(
         argv,
         2,
-        abstract_type.stored(&channel.channelType),
-        vm().root_fiber.?.supervisor_channel,
+        &channel.channelType,
+        vm_state.current().root_fiber.?.supervisor_channel,
     );
     var fiber: ?*types.JanetFiber = undefined;
-    if (kind.checkType(argv[0], constants.JANET_FUNCTION) != 0) {
+    if (repr.checkType(argv[0], repr.Tag.function)) {
         // Create a fiber for the user.
         const func = wrap.toFunction(argv[0]);
         if (func.*.def.?.min_arity > 1) {
@@ -1269,12 +1242,12 @@ fn goImpl(argv: []types.Janet) raise.Raising(types.Janet) {
             constants.JANET_FIBER_MASK_USER2 |
             constants.JANET_FIBER_MASK_USER3 |
             constants.JANET_FIBER_MASK_USER4);
-        if (vm().fiber.?.env == null) vm().fiber.?.env = tables.new(0);
+        if (vm_state.current().fiber.?.env == null) vm_state.current().fiber.?.env = tables.new(0);
         fiber.?.env = tables.new(0);
-        fiber.?.env.?.proto = vm().fiber.?.env;
+        fiber.?.env.?.proto = vm_state.current().fiber.?.env;
     } else {
         fiber = try args_core.getFiber(argv, 0);
-        if (fibers.status(fiber.?) != constants.JANET_STATUS_NEW) {
+        if (fibers.status(fiber.?) != types.FiberStatus.new) {
             return raise.panic("can only schedule new fibers where (= (fiber/status f) :new)");
         }
     }
@@ -1283,11 +1256,11 @@ fn goImpl(argv: []types.Janet) raise.Raising(types.Janet) {
     return wrap.fromFiber(fiber.?);
 }
 
-fn threadImpl(argv: []types.Janet) raise.Raising(types.Janet) {
-    try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_THREADS);
+fn cfunThread(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_state.sandboxAssert(types.Sandbox.of(&.{"threads"}));
     try args_core.arity(argv, 1, 4);
     const val = if (@as(i32, @intCast(argv.len)) >= 2) argv[1] else wrap.fromNil();
-    if (kind.checkType(argv[0], constants.JANET_FUNCTION) != 0) {
+    if (repr.checkType(argv[0], repr.Tag.function)) {
         const func = try args_core.getFunction(argv, 0);
         if (func.*.def.?.arity < 0 or func.*.def.?.min_arity > 1) {
             return raise.panic("function must take 0 or 1 arguments");
@@ -1300,8 +1273,8 @@ fn threadImpl(argv: []types.Janet) raise.Raising(types.Janet) {
     const supervisor = try args_core.optAbstract(
         argv,
         3,
-        abstract_type.stored(&channel.channelType),
-        vm().root_fiber.?.supervisor_channel,
+        &channel.channelType,
+        vm_state.current().root_fiber.?.supervisor_channel,
     );
     if (supervisor != null) flags |= thread_supervisor_flag;
 
@@ -1310,18 +1283,18 @@ fn threadImpl(argv: []types.Janet) raise.Raising(types.Janet) {
         outOfMemory(@src())));
     _ = buffers.init(buffer, 0);
     if (flags & 0x2 == 0) {
-        try marsh.marshal(buffer, wrap.fromTable(vm().abstract_registry.?), null, constants.JANET_MARSHAL_UNSAFE);
+        try marsh.marshal(buffer, wrap.fromTable(vm_state.current().abstract_registry.?), null, constants.JANET_MARSHAL_UNSAFE);
     }
     if (flags & thread_supervisor_flag != 0) {
         try marsh.marshal(buffer, wrap.fromAbstract(supervisor), null, constants.JANET_MARSHAL_UNSAFE);
     }
     if (flags & 0x4 == 0) {
-        assert(@src(), vm().registry_count <= std.math.maxInt(i32), "assert failed size check");
-        const temp: u32 = @intCast(vm().registry_count);
+        assert(@src(), vm_state.current().registry.rows.count <= std.math.maxInt(i32), "assert failed size check");
+        const temp: u32 = @intCast(vm_state.current().registry.rows.count);
         _ = try buffers.pushBytes(buffer, std.mem.asBytes(&temp));
         _ = try buffers.pushBytes(
             buffer,
-            @as([*]const u8, @ptrCast(vm().registry))[0 .. vm().registry_count * @sizeOf(types.JanetCFunRegistry)],
+            std.mem.sliceAsBytes(vm_state.current().registry.rows.slice()),
         );
     }
     try marsh.marshal(buffer, argv[0], null, constants.JANET_MARSHAL_UNSAFE);
@@ -1331,7 +1304,7 @@ fn threadImpl(argv: []types.Janet) raise.Raising(types.Janet) {
         // Return immediately.
         var arguments = std.mem.zeroes(types.JanetEVGenericMessage);
         arguments.tag = @bitCast(@as(u32, @truncate(flags)));
-        arguments.argi = @bitCast(vm().sandbox_flags);
+        arguments.argi = @bitCast(vm_state.current().sandbox_flags);
         arguments.argp = buffer;
         arguments.fiber = null;
         try threadedCall(goThreadSubr, arguments, evDefaultThreadedCallback);
@@ -1340,36 +1313,36 @@ fn threadImpl(argv: []types.Janet) raise.Raising(types.Janet) {
     return threadedAwait(
         goThreadSubr,
         @bitCast(@as(u32, @truncate(flags))),
-        @bitCast(vm().sandbox_flags),
+        @bitCast(vm_state.current().sandbox_flags),
         buffer,
     );
 }
 
-fn giveSupervisorImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunGiveSupervisor(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
-    const chanv = vm().root_fiber.?.supervisor_channel;
+    const chanv = vm_state.current().root_fiber.?.supervisor_channel;
     if (chanv != null) {
         const chan = channel.unwrap(chanv);
-        if (try channel.push(chan, wrap.fromTuple(tuples.newFrom(argv.ptr, @as(i32, @intCast(argv.len)))), 0)) {
+        if (try channel.push(chan, wrap.fromTuple(tuples.newFrom(argv)), 0)) {
             return awaitEvent();
         }
     }
     return wrap.fromNil();
 }
 
-fn sleepImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunSleep(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const sec = try args_core.getNumber(argv, 0);
     return sleepAwait(sec);
 }
 
-fn deadlineImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunDeadline(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 4);
     var sec = try args_core.getNumber(argv, 0);
     if (sec < 0) sec = 0;
-    const tocancel = try args_core.optFiber(argv, 1, vm().root_fiber);
-    const tocheck = try args_core.optFiber(argv, 2, vm().fiber);
-    const use_interrupt = try args_core.optBoolean(argv, 3, 0) != 0;
+    const tocancel = try args_core.optFiber(argv, 1, vm_state.current().root_fiber);
+    const tocheck = try args_core.optFiber(argv, 2, vm_state.current().fiber);
+    const use_interrupt = try args_core.optBoolean(argv, 3, false);
     var to: types.JanetTimeout = .{
         .when = ev_core.tsDelta(tsNow(), sec),
         .fiber = tocancel,
@@ -1387,11 +1360,11 @@ fn deadlineImpl(argv: []types.Janet) raise.Raising(types.Janet) {
             // way os/sigaction does, before anything is allocated or started.
             return raise.panic("interpreter interrupt not enabled");
         }
-        if (android) try vm_lifecycle.sandboxAssert(constants.JANET_SANDBOX_SIGNAL);
+        if (android) try vm_state.sandboxAssert(types.Sandbox.of(&.{"signal"}));
         const tto: *ThreadedTimeout = @ptrCast(@alignCast(utils.malloc(@sizeOf(ThreadedTimeout)) orelse
             outOfMemory(@src())));
         tto.sec = sec;
-        tto.vm_ptr = vm();
+        tto.vm_ptr = vm_state.current();
         tto.fiber = tocheck.?;
         if (windows) {
             const cancel_event = CreateEventA(null, 1, 0, null);
@@ -1414,7 +1387,7 @@ fn deadlineImpl(argv: []types.Janet) raise.Raising(types.Janet) {
             const err = pthread_create(&worker, null, timeoutBodyPosix, tto);
             if (err != 0) {
                 utils.free(tto);
-                return pp_format.panicf("%s", .{janet_strerror(err)});
+                return pp_format.panicf("%s", .{utils.strerrorSafe(err)});
             }
             to.has_worker = 1;
             to.worker = worker;
@@ -1424,22 +1397,22 @@ fn deadlineImpl(argv: []types.Janet) raise.Raising(types.Janet) {
     return wrap.fromFiber(tocancel.?);
 }
 
-fn cancelImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunCancel(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const fiber = try args_core.getFiber(argv, 0);
     try cancel(fiber, argv[1]);
     return argv[0];
 }
 
-fn allTasksImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunAllTasks(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
 
-    const v = vm();
-    const array = arrays.new(v.active_tasks.count);
+    const sched = &vm_state.current().ev;
+    const array = arrays.new(sched.active_tasks.count);
     var i: i32 = 0;
-    while (i < v.active_tasks.capacity) : (i += 1) {
-        const key = v.active_tasks.data.?[@intCast(i)].key;
-        if (kind.checkType(key, constants.JANET_NIL) == 0) try arrays.push(array, key);
+    while (i < sched.active_tasks.capacity) : (i += 1) {
+        const key = sched.active_tasks.slots()[@intCast(i)].key;
+        if (!repr.checkType(key, repr.Tag.nil)) try arrays.push(array, key);
     }
     return wrap.fromArray(array);
 }
@@ -1448,108 +1421,80 @@ fn allTasksImpl(argv: []types.Janet) raise.Raising(types.Janet) {
 // The two lock types
 // ==========================================================================
 
-fn mutexGC(p: ?*anyopaque, size: usize) callconv(.c) c_int {
-    _ = size;
-    os_locks.mutexDeinit(@ptrCast(p));
+fn mutexGC(mutex: *anyopaque, _: usize) c_int {
+    os_locks.mutexDeinit(mutex);
     return 0;
 }
 
-pub const mutexType: abstract_type.AbstractType = .{
+pub const mutexType = abstract_type.define(anyopaque, .{
     .name = "core/lock",
     .gc = mutexGC,
-    .gcmark = null,
-    .get = null,
-    .put = null,
-    .marshal = null,
-    .unmarshal = null,
-    .tostring = null,
-    .compare = null,
-    .hash = null,
-    .next = null,
-    .call = null,
-    .length = null,
-    .bytes = null,
-    .gcperthread = null,
-};
+});
 
-fn rwlockGC(p: ?*anyopaque, size: usize) callconv(.c) c_int {
-    _ = size;
-    os_locks.rwlockDeinit(@ptrCast(p));
+fn rwlockGC(rwlock: *anyopaque, _: usize) c_int {
+    os_locks.rwlockDeinit(rwlock);
     return 0;
 }
 
-pub const rwlockType: abstract_type.AbstractType = .{
+pub const rwlockType = abstract_type.define(anyopaque, .{
     .name = "core/rwlock",
     .gc = rwlockGC,
-    .gcmark = null,
-    .get = null,
-    .put = null,
-    .marshal = null,
-    .unmarshal = null,
-    .tostring = null,
-    .compare = null,
-    .hash = null,
-    .next = null,
-    .call = null,
-    .length = null,
-    .bytes = null,
-    .gcperthread = null,
-};
+});
 
-fn mutexImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunMutex(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
 
-    const mutex = abstracts.threaded(abstract_type.stored(&mutexType), os_locks.mutexSize());
+    const mutex = abstracts.threaded(&mutexType, os_locks.mutexSize());
     os_locks.mutexInit(@ptrCast(mutex));
     return wrap.fromAbstract(mutex);
 }
 
-fn mutexAcquireImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunMutexAcquire(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const mutex = try args_core.getAbstract(argv, 0, abstract_type.stored(&mutexType));
+    const mutex = try args_core.getAbstract(argv, 0, &mutexType);
     os_locks.mutexLock(@ptrCast(mutex));
     return argv[0];
 }
 
-fn mutexReleaseImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunMutexRelease(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const mutex = try args_core.getAbstract(argv, 0, abstract_type.stored(&mutexType));
+    const mutex = try args_core.getAbstract(argv, 0, &mutexType);
     try os_locks.mutexUnlock(@ptrCast(mutex));
     return argv[0];
 }
 
-fn rwlockImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunRwlock(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
 
-    const rwlock = abstracts.threaded(abstract_type.stored(&rwlockType), os_locks.rwlockSize());
+    const rwlock = abstracts.threaded(&rwlockType, os_locks.rwlockSize());
     os_locks.rwlockInit(@ptrCast(rwlock));
     return wrap.fromAbstract(rwlock);
 }
 
-fn rwlockReadLockImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunRwlockReadLock(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const rwlock = try args_core.getAbstract(argv, 0, abstract_type.stored(&rwlockType));
+    const rwlock = try args_core.getAbstract(argv, 0, &rwlockType);
     os_locks.rwlockRlock(@ptrCast(rwlock));
     return argv[0];
 }
 
-fn rwlockWriteLockImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunRwlockWriteLock(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const rwlock = try args_core.getAbstract(argv, 0, abstract_type.stored(&rwlockType));
+    const rwlock = try args_core.getAbstract(argv, 0, &rwlockType);
     os_locks.rwlockWlock(@ptrCast(rwlock));
     return argv[0];
 }
 
-fn rwlockReadReleaseImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunRwlockReadRelease(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const rwlock = try args_core.getAbstract(argv, 0, abstract_type.stored(&rwlockType));
+    const rwlock = try args_core.getAbstract(argv, 0, &rwlockType);
     os_locks.rwlockRunlock(@ptrCast(rwlock));
     return argv[0];
 }
 
-fn rwlockWriteReleaseImpl(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunRwlockWriteRelease(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const rwlock = try args_core.getAbstract(argv, 0, abstract_type.stored(&rwlockType));
+    const rwlock = try args_core.getAbstract(argv, 0, &rwlockType);
     os_locks.rwlockWunlock(@ptrCast(rwlock));
     return argv[0];
 }
@@ -1558,24 +1503,23 @@ fn rwlockWriteReleaseImpl(argv: []types.Janet) raise.Raising(types.Janet) {
 // Registration
 // ==========================================================================
 
-// `janet_channel_type` and `janet_stream_type` were declared here as
-// `extern const`s -- while lines 56 and 57 of this file were already importing
-// the two modules that define them. Rule 31's blindness with the alternative in
-// plain sight: an unreferenced declaration is never checked, and a referenced
-// one that resolves says nothing either. Phase 11 Part 22 replaced them with
-// the imports, and each use site names the module.
+// `janet_channel_type` and `janet_stream_type` are reached by import, and each
+// use site names the module. They were `extern const` declarations here while
+// the two modules that define them were already imported three lines above:
+// an unreferenced declaration is never checked, and a referenced one that
+// resolves says nothing either.
 //
 // **Not with a local alias.** `const janet_stream_type =
 // stream.streamType;` compiles and is wrong: an alias of a `const` is a
 // *copy* of the value, so `&janet_stream_type` is the address of this file's
 // copy and an abstract built through it is not the type `getAbstract` compares
-// against. Rule 36 is the same hazard from the other side.
+// against.
 
 fn selfEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("ev/go", &goImpl, @src(), "(ev/go fiber-or-fun &opt value supervisor)", "Put a fiber on the event loop to be resumed later. If a " ++
+            corefn.reg("ev/go", &cfunGo, @src(), "(ev/go fiber-or-fun &opt value supervisor)", "Put a fiber on the event loop to be resumed later. If a " ++
                 "function is used, it is wrapped with `fiber/new` first. " ++
                 "Returns a task fiber. Optionally pass a value to resume " ++
                 "with, otherwise resumes with nil. An optional `core/channel` " ++
@@ -1583,7 +1527,7 @@ fn selfEntries() []const corefn.Entry {
                 "in the newly scheduled fiber, an event will be pushed to the " ++
                 "supervisor. If not provided, the new fiber will inherit the " ++
                 "current supervisor."),
-            corefn.reg("ev/thread", &threadImpl, @src(), "(ev/thread main &opt value flags supervisor)", "Run `main` in a new operating system thread, optionally passing `value` " ++
+            corefn.reg("ev/thread", &cfunThread, @src(), "(ev/thread main &opt value flags supervisor)", "Run `main` in a new operating system thread, optionally passing `value` " ++
                 "to resume with. The parameter `main` can either be a fiber, or a function that accepts " ++
                 "0 or 1 arguments. " ++
                 "Unlike `ev/go`, this function will suspend the current fiber until the thread is complete. " ++
@@ -1593,18 +1537,18 @@ fn selfEntries() []const corefn.Entry {
                 "* `:t` - set the task-id of the new thread to value. The task-id is passed in messages to the supervisor channel.\n" ++
                 "* `:a` - don't copy abstract registry to new thread (performance optimization)\n" ++
                 "* `:c` - don't copy cfunction registry to new thread (performance optimization)"),
-            corefn.reg("ev/give-supervisor", &giveSupervisorImpl, @src(), "(ev/give-supervisor tag & payload)", "Send a message to the current supervisor channel if there is one. The message will be a " ++
+            corefn.reg("ev/give-supervisor", &cfunGiveSupervisor, @src(), "(ev/give-supervisor tag & payload)", "Send a message to the current supervisor channel if there is one. The message will be a " ++
                 "tuple of all of the arguments combined into a single message, where the first element is tag. " ++
                 "By convention, tag should be a keyword indicating the type of message. Returns nil."),
-            corefn.reg("ev/sleep", &sleepImpl, @src(), "(ev/sleep sec)", "Suspend the current fiber for sec seconds without blocking the event loop."),
-            corefn.reg("ev/deadline", &deadlineImpl, @src(), "(ev/deadline sec &opt tocancel tocheck intr?)", "Schedules the event loop to try to cancel the `tocancel` task as with `ev/cancel`. " ++
+            corefn.reg("ev/sleep", &cfunSleep, @src(), "(ev/sleep sec)", "Suspend the current fiber for sec seconds without blocking the event loop."),
+            corefn.reg("ev/deadline", &cfunDeadline, @src(), "(ev/deadline sec &opt tocancel tocheck intr?)", "Schedules the event loop to try to cancel the `tocancel` task as with `ev/cancel`. " ++
                 "After `sec` seconds, the event loop will attempt cancellation of `tocancel` if the " ++
                 "`tocheck` fiber is resumable. `sec` is a number that can have a fractional part. " ++
                 "`tocancel` defaults to `(fiber/root)`, but if specified, must be a task (root " ++
                 "fiber). `tocheck` defaults to `(fiber/current)`, but if specified, must be a fiber. " ++
                 "Returns `tocancel` immediately. If `interrupt?` is set to true, will create a " ++
                 "background thread to try to interrupt the VM if the timeout expires."),
-            corefn.reg("ev/cancel", &cancelImpl, @src(), "(ev/cancel fiber err)", "Cancel a suspended task fiber in the event loop. Differs from " ++
+            corefn.reg("ev/cancel", &cfunCancel, @src(), "(ev/cancel fiber err)", "Cancel a suspended task fiber in the event loop. Differs from " ++
                 "`cancel` in that it returns the canceled fiber immediately."),
         };
         break :blk acc;
@@ -1616,16 +1560,16 @@ fn lockEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("ev/lock", &mutexImpl, @src(), "(ev/lock)", "Create a new lock to coordinate threads."),
-            corefn.reg("ev/acquire-lock", &mutexAcquireImpl, @src(), "(ev/acquire-lock lock)", "Acquire a lock such that this operating system thread is the only thread with access to this resource." ++
+            corefn.reg("ev/lock", &cfunMutex, @src(), "(ev/lock)", "Create a new lock to coordinate threads."),
+            corefn.reg("ev/acquire-lock", &cfunMutexAcquire, @src(), "(ev/acquire-lock lock)", "Acquire a lock such that this operating system thread is the only thread with access to this resource." ++
                 " This will block this entire thread until the lock becomes available, and will not yield to other fibers " ++
                 "on this system thread."),
-            corefn.reg("ev/release-lock", &mutexReleaseImpl, @src(), "(ev/release-lock lock)", "Release a lock such that other threads may acquire it."),
-            corefn.reg("ev/rwlock", &rwlockImpl, @src(), "(ev/rwlock)", "Create a new read-write lock to coordinate threads."),
-            corefn.reg("ev/acquire-rlock", &rwlockReadLockImpl, @src(), "(ev/acquire-rlock rwlock)", "Acquire a read lock an a read-write lock."),
-            corefn.reg("ev/acquire-wlock", &rwlockWriteLockImpl, @src(), "(ev/acquire-wlock rwlock)", "Acquire a write lock on a read-write lock."),
-            corefn.reg("ev/release-rlock", &rwlockReadReleaseImpl, @src(), "(ev/release-rlock rwlock)", "Release a read lock on a read-write lock"),
-            corefn.reg("ev/release-wlock", &rwlockWriteReleaseImpl, @src(), "(ev/release-wlock rwlock)", "Release a write lock on a read-write lock"),
+            corefn.reg("ev/release-lock", &cfunMutexRelease, @src(), "(ev/release-lock lock)", "Release a lock such that other threads may acquire it."),
+            corefn.reg("ev/rwlock", &cfunRwlock, @src(), "(ev/rwlock)", "Create a new read-write lock to coordinate threads."),
+            corefn.reg("ev/acquire-rlock", &cfunRwlockReadLock, @src(), "(ev/acquire-rlock rwlock)", "Acquire a read lock an a read-write lock."),
+            corefn.reg("ev/acquire-wlock", &cfunRwlockWriteLock, @src(), "(ev/acquire-wlock rwlock)", "Acquire a write lock on a read-write lock."),
+            corefn.reg("ev/release-rlock", &cfunRwlockReadRelease, @src(), "(ev/release-rlock rwlock)", "Release a read lock on a read-write lock"),
+            corefn.reg("ev/release-wlock", &cfunRwlockWriteRelease, @src(), "(ev/release-wlock rwlock)", "Release a write lock on a read-write lock"),
         };
         break :blk acc;
     };
@@ -1636,7 +1580,7 @@ fn tailEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("ev/all-tasks", &allTasksImpl, @src(), "(ev/all-tasks)", "Get an array of all active task fibers that are being used by the scheduler."),
+            corefn.reg("ev/all-tasks", &cfunAllTasks, @src(), "(ev/all-tasks)", "Get an array of all active task fibers that are being used by the scheduler."),
         };
         break :blk acc;
     };
@@ -1646,7 +1590,7 @@ fn tailEntries() []const corefn.Entry {
 /// `janet_lib_ev`. The order is the C original's exactly: the ten channel
 /// rows, the six scheduler rows, the four stream rows, the eight lock rows,
 /// `ev/to-file` and `ev/all-tasks`.
-pub fn janet_lib_evImpl(env: *types.JanetTable) raise.Raising(void) {
+pub fn libEv(env: *types.JanetTable) raise.Raising(void) {
     var table: [64]corefn.Entry = undefined;
     var n: usize = 0;
     const push = struct {
@@ -1663,16 +1607,16 @@ pub fn janet_lib_evImpl(env: *types.JanetTable) raise.Raising(void) {
     push(&table, &n, stream.toFileEntries());
     push(&table, &n, tailEntries());
     table[n] = corefn.end;
-    corefn.install(env, table[0 .. n + 1]);
+    corefn.installTerminated(env, &table);
 
-    try registry.registerAbstractType(abstract_type.stored(&stream.streamType));
-    try registry.registerAbstractType(abstract_type.stored(&channel.channelType));
-    try registry.registerAbstractType(abstract_type.stored(&mutexType));
-    try registry.registerAbstractType(abstract_type.stored(&rwlockType));
+    try registry.registerAbstractType(&stream.streamType);
+    try registry.registerAbstractType(&channel.channelType);
+    try registry.registerAbstractType(&mutexType);
+    try registry.registerAbstractType(&rwlockType);
 }
 
-pub fn libEv(env: *types.JanetTable) void {
-    raise.reported(janet_lib_evImpl(env));
+pub fn libEvAbi(env: *types.JanetTable) void {
+    raise.reported(libEv(env));
 }
 
 // -------------------------------------------------------------------------
@@ -1708,7 +1652,7 @@ pub fn qDeinit(q: *types.JanetQueue) void {
 ///
 /// The arithmetic wraps explicitly. Janet's own invariants keep every term well
 /// inside `int32_t` — capacity never exceeds `JANET_MAX_Q_CAPACITY` — but C
-/// leaves a corrupted queue's overflow undefined and Zig may not, so the port
+/// leaves a corrupted queue's overflow undefined and Zig may not, so this
 /// commits to wrapping rather than trapping.
 pub fn qCount(q: *const types.JanetQueue) i32 {
     return if (q.head > q.tail)
@@ -1857,7 +1801,7 @@ pub fn heapSiftUp(
 /// A negative infinity means "already due" and yields the timestamp unchanged; a
 /// positive infinity means "never" and yields `INT64_MAX`. C leaves the
 /// conversion of a NaN or an out-of-range delay undefined, exactly as `os/sleep`
-/// and `os/touch` do; the port saturates for the same reason and with the same
+/// and `os/touch` do; this saturates for the same reason and with the same
 /// result on the development target.
 pub fn tsDelta(ts: i64, delta: f64) i64 {
     if (std.math.isInf(delta)) {

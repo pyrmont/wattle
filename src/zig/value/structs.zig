@@ -2,13 +2,11 @@
 //! two structs built from the same pairs lay out identically.
 //!
 //! `tables.zig` is the sibling and the other half of the dictionary group.
-//! Phase 12's namespace batch 1 split them out of `struct_table.zig`, whose
-//! name was two nouns because C had two files; `port/NAMESPACES.md` has the
-//! taxonomy the split follows. They still call each other -- `janet_struct_to_table`
-//! calls `tables.put`, `janet_table_to_struct` calls `begin`, `put` and `end`
-//! -- so the two files import each other. Zig has no trouble with that; the
-//! reason the C original could not be split is that C has no such thing as
-//! an import.
+//! They were one file, whose name was two nouns because C had two files. They
+//! still call each other -- `janet_struct_to_table` calls `tables.put`,
+//! `janet_table_to_struct` calls `begin`, `put` and `end` -- so the two files
+//! import each other. Zig has no trouble with that; the reason a C original
+//! cannot be split this way is that C has no such thing as an import.
 //!
 //! Both files hold `asSize`, `isNilKey` and `isUnstorableKey`, three inline
 //! predicates of two lines each. That is deliberate: neither file is the right
@@ -45,14 +43,11 @@
 //! silently drops the surplus. Preserved exactly, including the aliasing: a
 //! struct observed between `begin` and `end` has a hash that is a count.
 //!
-//! ## The increment SPIKE-8 was written for
+//! ## A third-party callback runs in the middle of `put`
 //!
-//! Every other Phase 8 increment inherited the spike's decision without
-//! exercising it. This one exercises it directly. `janet_struct_put_ext` calls
-//! `janet_compare` on two keys, which dispatches to a third-party abstract
-//! type's callback for an abstract key. Under SPIKE-8 such a callback may not
-//! raise, and if one does the signal jumps straight through these frames.
-//! There is no `defer` here and `build.zig` checks that there is not.
+//! `janet_struct_put_ext` calls `janet_compare` on two keys, which dispatches
+//! to an abstract type's callback for an abstract key. Such a callback may not
+//! raise. There is no `defer` here.
 //!
 //! ## What is reproduced rather than repaired
 //!
@@ -67,12 +62,11 @@ const std = @import("std");
 const config = @import("config");
 const corefn = @import("corefn");
 const types = @import("types");
-const constants = @import("constants");
+const repr = @import("repr");
 const c = @import("cabi");
 const raise = @import("raise");
 const args_core = @import("../args.zig");
 const gc_alloc = @import("../gc.zig");
-const kind = @import("helpers/kind.zig");
 const wrap = @import("helpers/wrap.zig");
 const tables = @import("tables.zig");
 const order = @import("helpers/order.zig");
@@ -85,7 +79,7 @@ const value = @import("../value.zig");
 /// neither is `pub`, so this still has to reach them by symbol. `memempty`
 /// was a third until batch 4: that batch opened `value_wrap.zig` to split it,
 /// so making its two bucket-array functions `pub` cost nothing, and
-/// `wrap.memempty` is an import now. The remaining two need `utils.zig`
+/// `value.memempty` is an import now. The remaining two need `utils.zig`
 /// opened, which is where the rest of this population is.
 /// C's conversion of a signed count to `size_t`: sign-extend to the pointer
 /// width, then reinterpret. Same helper, and same reason, as `buffer_array.zig`
@@ -101,16 +95,16 @@ inline fn mapHash(cap: i32, hash: i32) i32 {
     return @bitCast(@as(u32, @bitCast(hash)) & @as(u32, @bitCast(cap -% 1)));
 }
 
-inline fn isNilKey(key: types.Janet) bool {
-    return kind.checkType(key, constants.JANET_NIL) != 0;
+inline fn isNilKey(key: repr.Value) bool {
+    return repr.checkType(key, repr.Tag.nil);
 }
 
 /// The two keys a dictionary refuses to store. Nil is the absent-key sentinel,
 /// and a NaN is refused because it does not compare equal to itself, so a
 /// lookup could never find it again.
-inline fn isUnstorableKey(key: types.Janet) bool {
-    if (kind.checkType(key, constants.JANET_NIL) != 0) return true;
-    return kind.checkType(key, constants.JANET_NUMBER) != 0 and
+inline fn isUnstorableKey(key: repr.Value) bool {
+    if (repr.checkType(key, repr.Tag.nil)) return true;
+    return repr.checkType(key, repr.Tag.number) and
         std.math.isNan(wrap.toNumber(key));
 }
 
@@ -134,14 +128,14 @@ pub fn begin(count: i32) [*]types.JanetKV {
     if (capacity < 0) capacity = value.capacityFor(count +% 1);
 
     const size = types.struct_payload +% asSize(capacity) *% @sizeOf(types.JanetKV);
-    const hd: *types.JanetStructHead = @ptrCast(@alignCast(gc_alloc.gcalloc(constants.JANET_MEMORY_STRUCT, size)));
+    const hd: *types.JanetStructHead = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.@"struct", size)));
     hd.length = count;
     hd.capacity = capacity;
     hd.hash = 0;
     hd.proto = null;
 
     const st = types.structData(hd);
-    wrap.memempty(st, capacity);
+    value.memempty(st[0..@intCast(capacity)]);
     return st;
 }
 
@@ -151,7 +145,7 @@ pub fn begin(count: i32) [*]types.JanetKV {
 /// is no reusable-bucket bookkeeping. Returns null only when the array is
 /// entirely full, which `janet_struct_begin`'s capacity policy prevents for any
 /// struct built through the public constructors.
-pub fn find(st: [*]const types.JanetKV, key: types.Janet) ?*const types.JanetKV {
+pub fn find(st: [*]const types.JanetKV, key: repr.Value) ?*const types.JanetKV {
     const cap = types.structHead(st).capacity;
     const index = mapHash(cap, order.hash(key));
     var i = index;
@@ -177,7 +171,7 @@ pub fn find(st: [*]const types.JanetKV, key: types.Janet) ?*const types.JanetKV 
 /// `replace` distinguishes the two entry points. `janet_struct_put` overwrites
 /// a duplicate key's value; `struct/proto-flatten` passes zero so that a
 /// prototype's binding cannot displace the child's.
-pub fn putExt(st: [*]types.JanetKV, key_in: types.Janet, value_in: types.Janet, replace: c_int) void {
+pub fn putExt(st: [*]types.JanetKV, key_in: repr.Value, value_in: repr.Value, replace: c_int) void {
     var key = key_in;
     var val = value_in;
     const hd = types.structHead(st);
@@ -185,7 +179,7 @@ pub fn putExt(st: [*]types.JanetKV, key_in: types.Janet, value_in: types.Janet, 
     var hash = order.hash(key);
     const index = mapHash(cap, hash);
     const bounds = [4]i32{ index, cap, 0, index };
-    if (isUnstorableKey(key) or kind.checkType(val, constants.JANET_NIL) != 0) return;
+    if (isUnstorableKey(key) or repr.checkType(val, repr.Tag.nil)) return;
     // Refuse anything past the declared length.
     if (hd.hash == hd.length) return;
 
@@ -240,7 +234,7 @@ pub fn putExt(st: [*]types.JanetKV, key_in: types.Janet, value_in: types.Janet, 
 }
 
 /// Insert, replacing the value of a duplicate key.
-pub fn put(st: [*]types.JanetKV, key: types.Janet, val: types.Janet) void {
+pub fn put(st: [*]types.JanetKV, key: repr.Value, val: repr.Value) void {
     putExt(st, key, val, 1);
 }
 
@@ -267,7 +261,7 @@ pub fn end(st_in: [*]types.JanetKV) callconv(.c) [*]const types.JanetKV {
         st = newst;
     }
     const hd = types.structHead(st);
-    hd.hash = value.hashDictionary(st, hd.capacity);
+    hd.hash = value.hashDictionary(st[0..@intCast(hd.capacity)]);
     if (hd.proto != null) {
         hd.hash = @bitCast(@as(u32, @bitCast(hd.hash)) +%
             2654435761 *% @as(u32, @bitCast(types.structHead(hd.proto.?).hash)));
@@ -276,13 +270,13 @@ pub fn end(st_in: [*]types.JanetKV) callconv(.c) [*]const types.JanetKV {
 }
 
 /// Look up a key in this struct only.
-pub fn rawget(st: [*]const types.JanetKV, key: types.Janet) types.Janet {
+pub fn rawget(st: [*]const types.JanetKV, key: repr.Value) repr.Value {
     const kv = find(st, key) orelse return wrap.fromNil();
     return kv.value;
 }
 
 /// Look up a key, following prototypes to a fixed depth.
-pub fn get(st_in: [*]const types.JanetKV, key: types.Janet) types.Janet {
+pub fn get(st_in: [*]const types.JanetKV, key: repr.Value) repr.Value {
     var st: ?types.JanetStruct = st_in;
     var i: c_int = config.max_proto_depth;
     while (st != null and i != 0) : ({
@@ -296,7 +290,7 @@ pub fn get(st_in: [*]const types.JanetKV, key: types.Janet) types.Janet {
 }
 
 /// Look up a key and report which struct in the prototype chain held it.
-pub fn getEx(st_in: [*]const types.JanetKV, key: types.Janet, which: *?types.JanetStruct) types.Janet {
+pub fn getEx(st_in: [*]const types.JanetKV, key: repr.Value, which: *?types.JanetStruct) repr.Value {
     var st: ?types.JanetStruct = st_in;
     var i: c_int = config.max_proto_depth;
     while (st != null and i != 0) : ({
@@ -328,14 +322,12 @@ pub fn toTable(st: [*]const types.JanetKV) *types.JanetTable {
 // ==========================================================================
 // The cfunction surface.
 //
-// Phase 10 Part 6, on the same footing as every other cfunction that phase
-// moved: a `JanetCFunction` has no error channel in its signature, so these
-// deliver a raise as the jump their C caller expects whatever language they
-// are written in, and the file's jump-transparent marker is what makes that
-// legal. Nothing below holds anything across a call that can raise.
+// A published `JanetCFunction` has no error channel in its signature, so these
+// deliver a raise through an abi. Nothing below holds anything across a call
+// that can raise.
 // ==========================================================================
 
-fn cfunStructWithProto(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStructWithProto(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const proto = try args_core.optStruct(argv, 0, null);
     if (@as(i32, @intCast(argv.len)) & 1 == 0) return raise.panic("expected odd number of arguments");
@@ -348,7 +340,7 @@ fn cfunStructWithProto(argv: []types.Janet) align(corefn.alignment) raise.Raisin
     return wrap.fromStruct(end(st));
 }
 
-fn cfunStructGetproto(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStructGetproto(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const st = try args_core.getStruct(argv, 0);
     const proto = types.structHead(st).proto;
@@ -358,7 +350,7 @@ fn cfunStructGetproto(argv: []types.Janet) align(corefn.alignment) raise.Raising
 /// The bound is an upper one and deliberately loose: a key that appears in
 /// both a struct and its prototype is counted twice, so the accumulator is
 /// over-allocated rather than resized. `janet_struct_end` compacts it.
-fn cfunStructFlatten(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStructFlatten(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const st = try args_core.getStruct(argv, 0);
 
@@ -376,7 +368,7 @@ fn cfunStructFlatten(argv: []types.Janet) align(corefn.alignment) raise.Raising(
         var i: i32 = 0;
         while (i < types.structHead(current).capacity) : (i += 1) {
             const kv = &current[@intCast(i)];
-            if (kind.checkType(kv.key, constants.JANET_NIL) == 0) {
+            if (!repr.checkType(kv.key, repr.Tag.nil)) {
                 putExt(accum, kv.key, kv.value, 0);
             }
         }
@@ -388,10 +380,10 @@ fn cfunStructFlatten(argv: []types.Janet) align(corefn.alignment) raise.Raising(
 /// The loop is a `do`/`while` in C and the difference matters: a struct with
 /// no prototype still produces one table, and `recursive` only decides whether
 /// the walk continues past the first.
-fn cfunStructToTable(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStructToTable(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const st = try args_core.getStruct(argv, 0);
-    const recursive = @as(i32, @intCast(argv.len)) > 1 and kind.truthy(argv[1]) != 0;
+    const recursive = @as(i32, @intCast(argv.len)) > 1 and repr.truthy(argv[1]);
     var tab: ?*types.JanetTable = null;
     var cursor: types.JanetStruct = st;
     var tab_cursor: ?*types.JanetTable = null;
@@ -406,7 +398,7 @@ fn cfunStructToTable(argv: []types.Janet) align(corefn.alignment) raise.Raising(
         var i: i32 = 0;
         while (i < types.structHead(cursor).capacity) : (i += 1) {
             const kv = &cursor[@intCast(i)];
-            if (kind.checkType(kv.key, constants.JANET_NIL) == 0) {
+            if (!repr.checkType(kv.key, repr.Tag.nil)) {
                 tables.put(tab_cursor.?, kv.key, kv.value);
             }
         }
@@ -416,14 +408,14 @@ fn cfunStructToTable(argv: []types.Janet) align(corefn.alignment) raise.Raising(
     return wrap.fromTable(tab.?);
 }
 
-fn cfunStructRawget(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunStructRawget(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const st = try args_core.getStruct(argv, 0);
     return rawget(st, argv[1]);
 }
 
 pub fn lib(env: *types.JanetTable) void {
-    const entries = [_]corefn.Entry{
+    const entries = comptime [_]corefn.Entry{
         corefn.reg("struct/with-proto", &cfunStructWithProto, @src(), "(struct/with-proto proto & kvs)", "Create a structure, as with the usual struct constructor but set the " ++
             "struct prototype as well."),
         corefn.reg("struct/getproto", &cfunStructGetproto, @src(), "(struct/getproto st)", "Return the prototype of a struct, or nil if it doesn't have one."),
@@ -434,7 +426,6 @@ pub fn lib(env: *types.JanetTable) void {
         corefn.reg("struct/rawget", &cfunStructRawget, @src(), "(struct/rawget st key)", "Gets a value from a struct `st` without looking at the prototype struct. " ++
             "If `st` does not contain the key directly, the function will return " ++
             "nil without checking the prototype. Returns the value in the struct."),
-        corefn.end,
     };
-    corefn.install(env, &entries);
+    corefn.install(env, entries);
 }

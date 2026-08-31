@@ -1,11 +1,11 @@
 //! The three bytecode-to-bytecode passes the compiler runs after emission.
 //!
-//! Three files until Phase 12 increment 6f, one per pass, and the split was
-//! `compile.c`'s rather than the subject's: constant folding over the builtin
-//! table, `mov` elimination, and `noop` removal are three walks over the same
-//! `JanetFuncDef` bytecode, run in sequence by one caller. `port/TREE.md`'s
-//! heuristic puts them together -- no name Janet publishes, no platform
-//! difference -- and the merge is what makes the sequence visible in one place.
+//! Three files once, one per pass, split along the C originals rather than
+//! along the subject: constant folding over the builtin table, `mov`
+//! elimination and `noop` removal are three walks over the same `JanetFuncDef`
+//! bytecode, run in sequence by one caller. None has a name Janet publishes
+//! and none exists because a platform differs, so they are one file, and the
+//! sequence is visible in one place.
 //!
 //! **The merge forced one deduplication and it was a real duplicate.**
 //! `movopt.zig` and `remove_noops.zig` each carried
@@ -26,6 +26,7 @@
 const std = @import("std");
 
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 
@@ -37,6 +38,7 @@ const fatal = @import("../fatal.zig");
 const gc_alloc = @import("../gc.zig");
 const utils = @import("../utils.zig");
 const wrap = @import("../value/helpers/wrap.zig");
+const stretchy = @import("../stretchy.zig");
 
 /// The instruction's opcode. `movopt.zig` and `remove_noops.zig` both had this
 /// and `builtin_optimizers.zig` did not need it; see the header.
@@ -48,37 +50,26 @@ fn opcodeOf(instruction: u32) u32 {
 // Constant folding over the builtin table -- what `builtin_optimizers.zig` was.
 // ---------------------------------------------------------------------------
 
-const vector_header_size = 2 * @sizeOf(i32);
-
 /// The three constants this file builds slots out of.
 ///
-/// Until Phase 10 Part 7 these were three one-line C functions in `cfuns.c`,
-/// because this subsystem translated only `compile.h` and `emit.h` and so had
-/// no `janet_wrap_*` of its own. One shared set of types removes the
-/// detour. `janet_wrap_integer` is still written out rather than called: it is
-/// a macro under nanboxing and a symbol `wrap.c` never defines there, which is
-/// the defect `FOUND.md` records. `value_wrap_extern.zig` worked around it the
-/// same way until Phase 11 Part 26 deleted it.
-inline fn wrapNil() types.Janet {
+/// One shared set of types removes the detour a separate translation needed.
+/// `janet_wrap_integer` is written out rather than called: it is a macro under
+/// nanboxing and a symbol Janet never defines there, which is the defect
+/// `FOUND.md` records.
+inline fn wrapNil() repr.Value {
     return wrap.fromNil();
 }
 
-inline fn wrapBoolean(val: bool) types.Janet {
-    return wrap.fromBoolean(@intFromBool(val));
+inline fn wrapBoolean(val: bool) repr.Value {
+    return wrap.fromBoolean(val);
 }
 
-inline fn wrapInteger(val: i32) types.Janet {
+inline fn wrapInteger(val: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(val));
 }
 
-fn vectorCount(comptime Element: type, vector: ?[*]Element) i32 {
-    const v = vector orelse return 0;
-    const header: [*]i32 = @ptrFromInt(@intFromPtr(v) - vector_header_size);
-    return header[1];
-}
-
 fn argumentCount(args: ?[*]types.JanetSlot) i32 {
-    return vectorCount(types.JanetSlot, args);
+    return stretchy.count(types.JanetSlot, args);
 }
 
 fn nilSlot() types.JanetSlot {
@@ -131,7 +122,7 @@ fn genericSSI(options: types.JanetFopts, opcode: u8, source: types.JanetSlot, im
     return target;
 }
 
-fn opFunction(options: types.JanetFopts, args: ?[*]types.JanetSlot, opcode: u8, default_value: types.Janet) types.JanetSlot {
+fn opFunction(options: types.JanetFopts, args: ?[*]types.JanetSlot, opcode: u8, default_value: repr.Value) types.JanetSlot {
     const target = compiler_primitives.gettarget(options);
     const second = if (argumentCount(args) == 1) compiler_primitives.cslot(default_value) else args.?[1];
     _ = emit_core.emitSss(options.compiler, opcode, target, args.?[0], second, 1);
@@ -150,8 +141,8 @@ fn opReduce(
     args: ?[*]types.JanetSlot,
     opcode: u8,
     immediate_opcode: u8,
-    nullary: types.Janet,
-    unary: types.Janet,
+    nullary: repr.Value,
+    unary: repr.Value,
 ) types.JanetSlot {
     const count = argumentCount(args);
     if (count == 0) return compiler_primitives.cslot(nullary);
@@ -185,7 +176,7 @@ fn compareReduce(options: types.JanetFopts, args: ?[*]types.JanetSlot, opcode: u
     const count = argumentCount(args);
     if (count < 2) return compiler_primitives.cslot(wrapBoolean(!invert));
     const target = compiler_primitives.gettarget(options);
-    const first_instruction = vectorCount(u32, options.compiler.*.buffer);
+    const first_instruction = stretchy.count(u32, options.compiler.*.buffer);
     var index: i32 = 1;
     while (index < count) : (index += 1) {
         const right = args.?[@intCast(index)];
@@ -198,7 +189,7 @@ fn compareReduce(options: types.JanetFopts, args: ?[*]types.JanetSlot, opcode: u
             _ = emit_core.emitSi(options.compiler, if (invert) constants.JOP_JUMP_IF else constants.JOP_JUMP_IF_NOT, target, 0, 1);
         }
     }
-    const end = vectorCount(u32, options.compiler.*.buffer);
+    const end = stretchy.count(u32, options.compiler.*.buffer);
     var instruction = first_instruction;
     while (instruction < end) : (instruction += 1) {
         const opcode_byte = options.compiler.*.buffer.?[@intCast(instruction)] & 0x7f;
@@ -221,7 +212,7 @@ fn doError(options: types.JanetFopts, args: ?[*]types.JanetSlot) callconv(.c) ty
 fn doDebug(options: types.JanetFopts, args: ?[*]types.JanetSlot) callconv(.c) types.JanetSlot {
     const target = compiler_primitives.gettarget(options);
     const source = if (argumentCount(args) == 1) args.?[0] else nilSlot();
-    _ = emit_core.emitSsu(options.compiler, constants.JOP_SIGNAL, target, source, constants.JANET_SIGNAL_DEBUG, 1);
+    _ = emit_core.emitSsu(options.compiler, constants.JOP_SIGNAL, target, source, @intFromEnum(types.Signal.debug), 1);
     return target;
 }
 
@@ -242,7 +233,7 @@ fn doGet(options: types.JanetFopts, args: ?[*]types.JanetSlot) callconv(.c) type
     const label = emit_core.emitSi(options.compiler, constants.JOP_JUMP_IF_NOT_NIL, target, 0, 0);
     emit_core.copy(options.compiler, target, default_slot);
     if (target_is_default) compiler_primitives.freeslot(options.compiler, default_slot);
-    const current = vectorCount(u32, options.compiler.*.buffer);
+    const current = stretchy.count(u32, options.compiler.*.buffer);
     options.compiler.*.buffer.?[@intCast(label)] |= @as(u32, @intCast(current - label)) << 16;
     return target;
 }
@@ -429,18 +420,18 @@ pub fn bytecodeMovopt(definition: *types.JanetFuncDef) void {
             while (slot < definition.slotcount) : (slot += 1) {
                 const index: usize = @intCast(slot >> 5);
                 const bit: u5 = @intCast(slot & 31);
-                if (definition.closure_bitset.?[index] & (@as(u32, 1) << bit) != 0) {
+                if (definition.closureBits()[index] & (@as(u32, 1) << bit) != 0) {
                     regalloc.regallocTouch(&registers, slot);
                 }
             }
         }
 
-        for (definition.bytecode.?[0..@intCast(definition.bytecode_length)]) |instruction| {
+        for (definition.instructions()) |instruction| {
             markReads(&registers, instruction);
         }
 
         repeat = false;
-        for (definition.bytecode.?[0..@intCast(definition.bytecode_length)]) |*instruction| {
+        for (definition.instructions()) |*instruction| {
             const candidate: ?i32 = switch (opcodeOf(instruction.*)) {
                 constants.JOP_LOAD_NIL,
                 constants.JOP_LOAD_TRUE,
@@ -620,7 +611,7 @@ pub fn bytecodeRemoveNoops(definition: *types.JanetFuncDef) void {
     defer gc_alloc.sfree(pc_map);
 
     var new_length: u32 = 0;
-    for (definition.bytecode.?[0..@intCast(old_length)], 0..) |instruction, index| {
+    for (definition.instructions()[0..@intCast(old_length)], 0..) |instruction, index| {
         pc_map[index] = new_length;
         if (opcodeOf(instruction) != constants.JOP_NOOP) new_length += 1;
     }
@@ -629,7 +620,7 @@ pub fn bytecodeRemoveNoops(definition: *types.JanetFuncDef) void {
     var destination_index: i32 = 0;
     var source_index: i32 = 0;
     while (source_index < old_length) : (source_index += 1) {
-        var instruction = definition.bytecode.?[@intCast(source_index)];
+        var instruction = definition.instructions()[@intCast(source_index)];
         const shift: ?u5 = switch (opcodeOf(instruction)) {
             constants.JOP_NOOP => continue,
             constants.JOP_JUMP => 8,
@@ -643,15 +634,15 @@ pub fn bytecodeRemoveNoops(definition: *types.JanetFuncDef) void {
             const adjustment = new_target - old_target + (source_index - destination_index);
             instruction +%= @as(u32, @bitCast(adjustment)) << field_shift;
         }
-        definition.bytecode.?[@intCast(destination_index)] = instruction;
+        definition.instructions()[@intCast(destination_index)] = instruction;
         if (definition.sourcemap != null) {
-            definition.sourcemap.?[@intCast(destination_index)] = definition.sourcemap.?[@intCast(source_index)];
+            definition.sourceMappings()[@intCast(destination_index)] = definition.sourceMappings()[@intCast(source_index)];
         }
         destination_index += 1;
     }
 
     if (definition.symbolmap_length > 0) {
-        for (definition.symbolmap.?[0..@intCast(definition.symbolmap_length)]) |*symbol| {
+        for (definition.symbols()) |*symbol| {
             if (symbol.birth_pc < std.math.maxInt(u32)) {
                 symbol.birth_pc = pc_map[symbol.birth_pc];
                 symbol.death_pc = pc_map[symbol.death_pc];

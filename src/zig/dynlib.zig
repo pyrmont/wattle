@@ -1,22 +1,16 @@
 //! Loading a native module: `Clib` and the four operations over it, for each of
 //! the three cases `src/core/util.h` spells them for.
 //!
-//! Phase 10 Part 17f. Two things happen here at once, and they are separable.
+//! Two things happen in this file, and they are separable.
 //!
-//! **The Win32 loader moves out of `src/core/util.c`.** On POSIX `util.h`
-//! defines `load_clib`, `symbol_clib` and `free_clib` as macros onto `dlopen`,
-//! `dlsym` and `dlclose`, and `error_clib` onto `dlerror`, so there was never
-//! any C to port. On Windows all four are real functions, and they were the
-//! last code in `util.c` — invisible to the live-line measure, which counts
-//! what this host compiles, and visible to the exit gate, which says no C
-//! source file remains.
+//! **The Win32 loader.** On POSIX `load_clib`, `symbol_clib`, `free_clib` and
+//! `error_clib` are macros onto `dlopen`, `dlsym`, `dlclose` and `dlerror`, so
+//! there is nothing to write. On Windows all four are real functions.
 //!
-//! **The two copies become one.** `ffi_core.zig` and `core_env.zig` each had
-//! this block, and the comment on one of them said "the two are not shared
-//! because the objects share no module". That was true when it was written and
-//! Part 17a made it false: there is one module now, so a shared file is an
-//! ordinary import. The duplication had already drifted — one copy's `Handle`
-//! carried a redundant branch, and only one had `free`.
+//! **One copy rather than two.** The FFI and the core environment each carried
+//! this block while they were separate objects, and the duplication had
+//! drifted -- one copy's `Handle` carried a redundant branch, and only one had
+//! `free`.
 //!
 //! ## Why `symbol` raises and the others do not
 //!
@@ -26,19 +20,17 @@
 //! fails. Nothing else reports anything but a null pointer.
 //!
 //! So `symbol` returns `raise.Raising(?*anyopaque)` on every platform while
-//! only the Windows arm can ever return the error. That is Phase 10's rule 12
-//! — a rule against declaring what you cannot do yields where several
-//! implementations share a call site — and it is the same shape as
-//! `ev_backend.zig`'s four backends: one source line, `try dynlib.symbol(...)`,
-//! cannot need a `try` on Windows and not on Linux.
+//! only the Windows arm can ever return the error. Declaring what you cannot
+//! do yields where several implementations share a call site: one source line,
+//! `try dynlib.symbol(...)`, cannot need a `try` on Windows and not on Linux.
+//! `ev/backend.zig`'s four backends are the same shape.
 //!
 //! ## None of this is executed here
 //!
 //! macOS and Linux run the `dlopen` arm, and the Windows arm is compiled by
-//! `x86_64-windows-gnu` and executed by nothing — Phase 10's rule 5 exactly.
-//! What that buys is type-checking and no more, so the port below is written
-//! to be read against `util.c` line by line, and the one place it deliberately
-//! differs says so.
+//! `x86_64-windows-gnu` and executed by nothing. What that buys is type
+//! checking and no more, so the code below is written to be read against
+//! Janet's line by line, and the one place it deliberately differs says so.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -100,24 +92,11 @@ pub fn failed(lib: Handle) bool {
 // The Win32 loader
 // ==========================================================================
 
-// `util.c`'s four symbols stood here until Phase 11 Part 26 -- `error_clib`,
-// `load_clib`, `free_clib` and `symbol_clib`, each reached through
-// `if (use_zig) ... else ...` where `use_zig` was `options.utilities`. That
-// selector has been comptime-`true` since Phase 10 Part 18, which deleted
-// `util.c` along with the symbols; the four `extern fn`s named nothing from
-// that increment onward and no build ever looked at them. Rule 31's class, one
-// directory over from the eleven `_extern.zig` shims Part 26 took.
-
 // `JANET_NO_DYNAMIC_MODULES` gets a real `error_clib` and nothing else, which
 // is `util.h`'s arrangement rather than a choice here.
 
 fn errorClibUnsupported() [*:0]const u8 {
     return "dynamic modules not supported";
-}
-
-comptime {
-    if (!has_dynamic_modules) {}
-    if (has_dynamic_modules and windows) {}
 }
 
 pub fn errorClibUnsupportedAbi() [*]const u8 {
@@ -136,9 +115,8 @@ pub fn errorClibAbi() [*]const u8 {
     return errorClib();
 }
 
-/// The abi under `util.h`'s name. Its C callers went with `ffi.c` and
-/// `corelib.c` in Phase 10 Part 18; what keeps it is `util.h`, which declares
-/// the four Win32 forms, and that is the header question Phase 12 owns.
+/// The abi under Janet's name for it. Nothing in this tree calls it; it is
+/// published because Janet published it.
 pub const symbolClibAbi = raise.panicking(symbolClib).abi;
 
 /// `FormatMessageA`'s buffer. Static in the C original and static here, so the
@@ -165,12 +143,12 @@ fn errorClib() [*:0]const u8 {
         null,
     );
 
-    // The C original is `error_clib_buf[strlen(error_clib_buf) - 1] = '\0'`,
+    // Janet's own line is `error_clib_buf[strlen(error_clib_buf) - 1] = '\0'`,
     // which strips the newline `FormatMessageA` appends. **When the call
     // writes nothing it indexes [-1]**, which is a write outside the array;
-    // `FOUND.md` has it. That is undefined rather than merely wrong, so by
-    // Phase 10's acceptance rule the port records it instead of reproducing
-    // it, and the strip is guarded. Every other input behaves identically.
+    // `FOUND.md` has it. That is undefined rather than merely wrong, so this
+    // records it instead of reproducing it and the strip is guarded. Every
+    // other input behaves identically.
     const len = std.mem.len(@as([*:0]const u8, @ptrCast(&error_clib_buf)));
     if (written != 0 and len != 0) error_clib_buf[len - 1] = 0;
 

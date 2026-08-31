@@ -1,13 +1,14 @@
-//! `JanetSymbol`: a string with an entry in `janet_vm.cache`, the cache
+//! `JanetSymbol`: a string with an entry in `vm.symcache.entries`, the cache
 //! itself, and the gensym counter. Keywords are here too, in the sense that
-//! there is nothing of them to be here: `janet.h` spells `janet_keyword` as a
+//! there is nothing of them to be here: Janet spells `janet_keyword` as a
 //! `#define` onto `janet_symbol`, so a keyword and a symbol are the same
-//! interned bytes under a different tag, and the tag lives in `value_wrap.zig`.
+//! interned bytes under a different tag, and the tag lives in
+//! `helpers/wrap.zig`.
 //!
 //! ## One allocation strategy, three files
 //!
-//! `strings.zig`, `symbols.zig` and `tuples.zig` were `string_symbol.zig`
-//! until Phase 12's namespace batch 2. They are still one allocation strategy,
+//! `strings.zig`, `symbols.zig` and `tuples.zig` were one file once. They are
+//! still one allocation strategy,
 //! and that is worth stating rather than assuming: a buffer or an array is a
 //! fixed-size block pointing at a payload that can be reallocated; a string, a
 //! symbol or a tuple is a header and its payload in a *single* `janet_gcalloc`,
@@ -17,39 +18,32 @@
 //!  - **A head recovered by pointer arithmetic.** The value Janet passes
 //!    around is the address of the payload, not of the block, so every
 //!    operation subtracts the header size to get back to the header.
-//!    `gc_sweep.zig` already does this for the free path; `head` below is the
-//!    same shape, `@sizeOf` rather than `@offsetOf` because translate-c drops
-//!    the flexible array member. `test/abi.c` pins the equality with a
-//!    `_Static_assert` — the last place in the tree that can spell `offsetof` —
-//!    and `test/gc_mark.zig` checks the offset the allocator actually used.
+//!    `gc/sweep.zig` already does this for the free path; `head` below is the
+//!    same shape, `@sizeOf` rather than `@offsetOf` because a flexible array
+//!    member does not survive translation. `test/gc_mark.zig` checks the
+//!    offset the allocator actually used.
 //!  - **A hash computed once, at the end of construction.** `begin` leaves
 //!    `hash` uninitialised and `end` fills it in. A value observed between the
 //!    two has an indeterminate hash, which is why nothing may put it in a
-//!    dictionary before `end` runs. Preserved exactly; the port does not
-//!    helpfully zero it.
+//!    dictionary before `end` runs. Preserved exactly; nothing here
+//!    helpfully zeroes it.
 //!
-//! The taxonomy that separates them is Janet's own, and it is what the batch
-//! followed: a string and a symbol are **bytes**, a tuple is **indexed**.
-//! `port/NAMESPACES.md` has it, along with the reason there is no
-//! `keywords.zig` — `janet.h` spells `janet_keyword` as a `#define` onto
-//! `janet_symbol`, so a keyword and a symbol are the same interned bytes under
-//! a different tag, and `helpers/wrap.zig` is where the tag lives.
+//! The taxonomy that separates them is Janet's own: a string and a symbol are
+//! **bytes**, a tuple is **indexed**.
 //!
 //! **Interning is the whole difference from a string.** `new` is
-//! `strings.new` plus a lookup in `janet_vm.cache`, and the cache is the only
+//! `strings.new` plus a lookup in `vm.symcache.entries`, and the cache is the only
 //! structure in this group that is not itself a Janet value. The string head
-//! accessors are `types.stringHead` and `types.stringData`, which since
-//! increment 5e is the tree's one spelling of them.
+//! accessors are `types.stringHead` and `types.stringData`, which is the
+//! tree's one spelling of them.
 //!
 //! ## The symbol cache is the collector's one external obligation
 //!
 //! Everything else the collector frees is self-contained. A symbol is not: it
-//! is registered in `janet_vm.cache` at construction, and if it were freed
+//! is registered in `vm.symcache.entries` at construction, and if it were freed
 //! without being removed the cache would hold a pointer to released memory and
 //! the next symbol that hashed to that bucket would compare against it. So
-//! `janet_deinit_block` in `gc_sweep.zig` calls `janet_symbol_deinit` from this
-//! file, which is why Part 5 already needed a declaration for it -- and why
-//! that declaration now resolves to Zig on both ends.
+//! `deinitBlock` in `gc/sweep.zig` calls `symbolDeinit` from this file.
 //!
 //! The cache is open-addressed with tombstones, and the tombstone is compared
 //! by address rather than by content. `symcache_deleted` below is declared
@@ -82,18 +76,17 @@
 //! these frames. There is no `defer` here and `build.zig` checks that there is
 //! not.
 //!
-//! One place is worth naming for that reason, because it is the only one in
-//! the group where a raw block is held across a call. `new` allocates the
-//! symbol, fills in its head, and only then calls `cachePut`, which may
-//! allocate a new table -- but the symbol is already on a heap list by then,
-//! so a signal from anywhere in `cachePut` loses the *cache entry* rather than
-//! the block. The result is a live, uninterned symbol: correct as a value, and
-//! a duplicate the next `new` of the same name will not find. That is what the
-//! C does, and the port does not improve on it.
+//! One place is worth naming, because it is the only one in the group where a
+//! raw block is held across a call. `new` allocates the symbol, fills in its
+//! head, and only then calls `cachePut`, which may allocate a new table -- but
+//! the symbol is already on a heap list by then, so a raise from anywhere in
+//! `cachePut` loses the *cache entry* rather than the block. The result is a
+//! live, uninterned symbol: correct as a value, and a duplicate the next `new`
+//! of the same name will not find. That is what Janet does.
 
 const types = @import("types");
-const constants = @import("constants");
 const c = @import("cabi");
+const vm_state = @import("../vm/lifecycle.zig");
 const gc_alloc = @import("../gc.zig");
 const utils = @import("../utils.zig");
 const fatal = @import("../fatal.zig");
@@ -105,12 +98,6 @@ const value = @import("../value.zig");
 /// `strings.zig` and `tuples.zig` carry the declarations they need for the
 /// same reason; `utils.zig` defines all of them without `pub`.
 extern fn safe_memcpy(dest: ?*anyopaque, src: ?*const anyopaque, len: usize) callconv(.c) void;
-
-/// `janet_vm`, whose layout is `types.JanetVM`'s and whose address
-/// `cabi.vm()` takes.
-inline fn vm() *types.JanetVM {
-    return c.vm();
-}
 
 /// C's conversion of a signed count to `size_t`: sign-extend to the pointer
 /// width, then reinterpret. Same helper, and same reason, as `strings.zig`.
@@ -131,27 +118,28 @@ inline fn deleted() [*:0]const u8 {
     return @ptrCast(&symcache_deleted);
 }
 
+/// The cache's starting size. A power of two, because the probe masks with
+/// `capacity - 1`.
+const initial_capacity: u32 = 1024;
+
 /// Allocate the cache. Called from `janet_init` before anything can intern.
 pub fn cacheInit() void {
-    const v = vm();
-    v.cache_capacity = 1024;
-    v.cache = @ptrCast(@alignCast(utils.calloc(1, @as(usize, v.cache_capacity) *% @sizeOf(?*const u8)) orelse
-        fatal.outOfMemory()));
+    const v = vm_state.current();
+    v.symcache = .{
+        .capacity = initial_capacity,
+        .entries = @ptrCast(@alignCast(utils.calloc(1, initial_capacity *% @sizeOf(?*const u8)) orelse
+            fatal.outOfMemory())),
+    };
     @memset(&v.gensym_counter, '0');
     v.gensym_counter[0] = '_';
-    v.cache_count = 0;
-    v.cache_deleted = 0;
 }
 
 /// Release the cache. The symbols it points at are not freed here: they are
 /// ordinary collectable blocks and `janet_clear_memory` deals with them.
 pub fn cacheDeinit() void {
-    const v = vm();
-    utils.free(@ptrCast(@constCast(v.cache)));
-    v.cache = null;
-    v.cache_capacity = 0;
-    v.cache_count = 0;
-    v.cache_deleted = 0;
+    const v = vm_state.current();
+    utils.free(@ptrCast(@constCast(v.symcache.entries)));
+    v.symcache = .{};
 }
 
 /// Find `str` in the cache, or the bucket it belongs in.
@@ -163,35 +151,34 @@ pub fn cacheDeinit() void {
 /// tombstone is moved back into it. That last move is why this function is not
 /// a pure lookup: it rewrites the table on a successful find, which keeps
 /// probe sequences short without a separate compaction pass.
-fn cacheFindmem(str: []const u8, hash: i32, success: *c_int) ?*?[*:0]const u8 {
-    const v = vm();
+fn cacheFindmem(sc: *types.SymbolCache, str: []const u8, hash: i32, success: *c_int) ?*?[*:0]const u8 {
     var first_empty: ?*?[*:0]const u8 = null;
 
-    const index: u32 = @as(u32, @bitCast(hash)) & (v.cache_capacity -% 1);
-    const bounds = [4]u32{ index, v.cache_capacity, 0, index };
+    const index: u32 = @as(u32, @bitCast(hash)) & (sc.capacity -% 1);
+    const bounds = [4]u32{ index, sc.capacity, 0, index };
 
     scan: {
         var j: usize = 0;
         while (j < 4) : (j += 2) {
             var i: u32 = bounds[j];
             while (i < bounds[j + 1]) : (i += 1) {
-                const entry = v.cache.?[i];
+                const entry = sc.entries.?[i];
                 if (entry == null) {
-                    if (first_empty == null) first_empty = &v.cache.?[i];
+                    if (first_empty == null) first_empty = &sc.entries.?[i];
                     break :scan;
                 }
                 if (deleted() == entry) {
-                    if (first_empty == null) first_empty = &v.cache.?[i];
+                    if (first_empty == null) first_empty = &sc.entries.?[i];
                     continue;
                 }
                 if (strings.equalconst(entry.?, str, hash) != 0) {
                     success.* = 1;
                     if (first_empty) |slot| {
                         slot.* = entry;
-                        v.cache.?[i] = deleted();
+                        sc.entries.?[i] = deleted();
                         return slot;
                     }
-                    return &v.cache.?[i];
+                    return &sc.entries.?[i];
                 }
             }
         }
@@ -205,26 +192,25 @@ fn cacheFindmem(str: []const u8, hash: i32, success: *c_int) ?*?[*:0]const u8 {
 }
 
 /// `janet_symcache_find` in `symcache.c`, which is a macro there.
-inline fn cacheFind(str: [*:0]const u8, success: *c_int) ?*?[*:0]const u8 {
-    return cacheFindmem(strings.bytesOf(str), strings.hashOf(str), success);
+inline fn cacheFind(sc: *types.SymbolCache, str: [*:0]const u8, success: *c_int) ?*?[*:0]const u8 {
+    return cacheFindmem(sc, strings.bytesOf(str), strings.hashOf(str), success);
 }
 
 /// Rebuild the table at a new capacity, dropping every tombstone.
-fn cacheResize(new_capacity: u32) void {
-    const v = vm();
-    const old_cache = v.cache;
+fn cacheResize(sc: *types.SymbolCache, new_capacity: u32) void {
+    const old_cache = sc.entries;
     const new_cache: [*]?[*:0]const u8 = @ptrCast(@alignCast(utils.calloc(1, @as(usize, new_capacity) *% @sizeOf(?*const u8)) orelse
         fatal.outOfMemory()));
-    const old_capacity = v.cache_capacity;
-    v.cache = new_cache;
-    v.cache_capacity = new_capacity;
-    v.cache_deleted = 0;
+    const old_capacity = sc.capacity;
+    sc.entries = new_cache;
+    sc.capacity = new_capacity;
+    sc.deleted = 0;
     var i: u32 = 0;
     while (i < old_capacity) : (i += 1) {
         const x = old_cache.?[i];
         if (x != null and deleted() != x) {
             var status: c_int = 0;
-            const bucket = cacheFind(x.?, &status);
+            const bucket = cacheFind(sc, x.?, &status);
             // Neither condition is reachable, and the recovery abandons every
             // remaining entry while still freeing the old table. Preserved.
             if (status != 0 or bucket == null) break;
@@ -237,15 +223,14 @@ fn cacheResize(new_capacity: u32) void {
 /// Install `x` in `bucket`, growing the table first if it is half full.
 /// Counting tombstones toward the load factor is what stops a long run of
 /// create-and-collect from degrading every probe to a full scan.
-fn cachePut(x: [*:0]const u8, bucket_in: ?*?[*:0]const u8) void {
-    const v = vm();
+fn cachePut(sc: *types.SymbolCache, x: [*:0]const u8, bucket_in: ?*?[*:0]const u8) void {
     var bucket = bucket_in;
-    if ((v.cache_count +% v.cache_deleted) *% 2 > v.cache_capacity) {
+    if ((sc.count +% sc.deleted) *% 2 > sc.capacity) {
         var status: c_int = 0;
-        cacheResize(@bitCast(value.capacityFor(@bitCast(2 *% v.cache_count +% 1))));
-        bucket = cacheFind(x, &status);
+        cacheResize(sc, @bitCast(value.capacityFor(@bitCast(2 *% sc.count +% 1))));
+        bucket = cacheFind(sc, x, &status);
     }
-    v.cache_count +%= 1;
+    sc.count +%= 1;
     bucket.?.* = x;
 }
 
@@ -253,12 +238,12 @@ fn cachePut(x: [*:0]const u8, bucket_in: ?*?[*:0]const u8) void {
 /// freeing the block, and it is the collector's one obligation to a structure
 /// outside itself.
 pub fn deinit(sym: [*:0]const u8) void {
-    const v = vm();
+    const sc = &vm_state.current().symcache;
     var status: c_int = 0;
-    const bucket = cacheFind(sym, &status);
+    const bucket = cacheFind(sc, sym, &status);
     if (status != 0) {
-        v.cache_count -%= 1;
-        v.cache_deleted +%= 1;
+        sc.count -%= 1;
+        sc.deleted +%= 1;
         bucket.?.* = deleted();
     }
 }
@@ -267,12 +252,13 @@ pub fn deinit(sym: [*:0]const u8) void {
 /// otherwise build it and register it.
 pub fn new(str: []const u8) [*:0]const u8 {
     const hash = value.hashBytes(str);
+    const sc = &vm_state.current().symcache;
     var success: c_int = 0;
-    const bucket = cacheFindmem(str, hash, &success);
+    const bucket = cacheFindmem(sc, str, hash, &success);
     if (success != 0) return bucket.?.*.?;
 
     const hd: *types.JanetStringHead = @ptrCast(@alignCast(gc_alloc.gcalloc(
-        constants.JANET_MEMORY_SYMBOL,
+        types.MemoryType.symbol,
         types.string_payload +% str.len +% 1,
     )));
     hd.hash = hash;
@@ -281,7 +267,7 @@ pub fn new(str: []const u8) [*:0]const u8 {
     safe_memcpy(@ptrCast(newstr), @ptrCast(str.ptr), str.len);
     newstr[str.len] = 0;
     const interned: [*:0]const u8 = @ptrCast(newstr);
-    cachePut(interned, bucket);
+    cachePut(sc, interned, bucket);
     return interned;
 }
 
@@ -293,7 +279,7 @@ pub fn csymbol(cstr: [*:0]const u8) [*:0]const u8 {
 /// Position 0 holds the leading underscore and is never touched, so the counter
 /// wraps silently after 62^6 names rather than growing.
 fn incGensym() void {
-    const v = vm();
+    const v = vm_state.current();
     var i: usize = v.gensym_counter.len - 2;
     while (i != 0) : (i -= 1) {
         if (v.gensym_counter[i] == '9') {
@@ -315,19 +301,20 @@ fn incGensym() void {
 /// advanced until a name is found that the cache does not already hold, which
 /// matters because a gensym from an earlier cycle may still be alive.
 pub fn gen() [*:0]const u8 {
-    const v = vm();
+    const v = vm_state.current();
+    const sc = &v.symcache;
     const name_len: i32 = @intCast(v.gensym_counter.len - 1);
     var bucket: ?*?[*:0]const u8 = null;
     var hash: i32 = 0;
     var status: c_int = 0;
     while (true) {
         hash = value.hashBytes(v.gensym_counter[0..@intCast(name_len)]);
-        bucket = cacheFindmem(v.gensym_counter[0..@intCast(name_len)], hash, &status);
+        bucket = cacheFindmem(sc, v.gensym_counter[0..@intCast(name_len)], hash, &status);
         if (status == 0) break;
         incGensym();
     }
     const hd: *types.JanetStringHead = @ptrCast(@alignCast(gc_alloc.gcalloc(
-        constants.JANET_MEMORY_SYMBOL,
+        types.MemoryType.symbol,
         types.string_payload +% v.gensym_counter.len,
     )));
     hd.length = name_len;
@@ -338,6 +325,6 @@ pub fn gen() [*:0]const u8 {
     @memcpy(sym[0..v.gensym_counter.len], &v.gensym_counter);
     sym[@intCast(hd.length)] = 0;
     const interned: [*:0]const u8 = @ptrCast(sym);
-    cachePut(interned, bucket);
+    cachePut(sc, interned, bucket);
     return interned;
 }

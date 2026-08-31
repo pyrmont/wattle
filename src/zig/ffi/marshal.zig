@@ -1,14 +1,13 @@
 //! `ffi.c`'s marshalling: a Janet value written into memory as a C value would
-//! appear there, and the same memory read back. Part 16's middle layer, and
-//! the reason the FFI's remaining half was recorded in Phase 6 as blocked --
-//! it holds Janet values and panics on every second line.
+//! appear there, and the same memory read back. It holds Janet values and can
+//! raise on every second line.
 //!
 //! ## Misaligned access is reproduced rather than repaired
 //!
 //! A `:pack`ed struct field lands wherever the previous field ended, so
 //! `((double *) to)[0] = ...` writes through a pointer that may not be aligned
-//! for a `double`. `FOUND.md` records this as a pre-existing defect and Phase 8
-//! agreed to leave it unfixed, so the port has to place the same bytes.
+//! for a `double`. `FOUND.md` records this as a pre-existing defect that is
+//! deliberately left unfixed, so this has to place the same bytes.
 //!
 //! Every access here therefore goes through an `align(1)` pointer. That is the
 //! same store, and it produces the same byte image, but where C's version is
@@ -16,10 +15,10 @@
 //! corpus's byte-image half runs at `ReleaseFast` -- Zig's is defined. The
 //! divergence is entirely in what a sanitizer says about it.
 //!
-//! ## Why this file is jump-transparent
+//! ## Scratch and raising
 //!
-//! The argument layer is behind `-Dargs-core`, so every `janet_get*` here
-//! raises by `longjmp` until Part 17. No `defer` may appear until then.
+//! The argument layer raises, so a raise can cross these frames. Nothing here
+//! holds anything a skipped cleanup would strand.
 
 const std = @import("std");
 const raise = @import("raise");
@@ -29,13 +28,10 @@ const args_core = @import("../args.zig");
 const config = @import("config");
 const gc_alloc = @import("../gc.zig");
 const tuples = @import("../value/tuples.zig");
-const kind = @import("../value/helpers/kind.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const arrays = @import("../value/arrays.zig");
 
-const types = @import("types");
-const constants = @import("constants");
-const c = @import("cabi");
+const repr = @import("repr");
 const value = @import("../value.zig");
 const inttypes = @import("../value/ints.zig");
 const Type = ffi_types.Type;
@@ -56,23 +52,23 @@ inline fn get(comptime T: type, from: [*]const u8) T {
 }
 
 /// `janet_ffi_getpointer`: every Janet type that can stand in for a C pointer.
-pub fn getPointer(argv: []const types.Janet, n: i32) raise.Raising(?*anyopaque) {
-    return switch (kind.typeOf(argv[@intCast(n)])) {
-        constants.JANET_POINTER,
-        constants.JANET_STRING,
-        constants.JANET_KEYWORD,
-        constants.JANET_SYMBOL,
-        constants.JANET_CFUNCTION,
+pub fn getPointer(argv: []const repr.Value, n: i32) raise.Raising(?*anyopaque) {
+    return switch (repr.typeOf(argv[@intCast(n)])) {
+        repr.Tag.pointer,
+        repr.Tag.string,
+        repr.Tag.keyword,
+        repr.Tag.symbol,
+        repr.Tag.cfunction,
         => wrap.toPointer(argv[@intCast(n)]),
-        constants.JANET_ABSTRACT => @ptrCast(@constCast((try args_core.getBytes(argv, n)).bytes)),
-        constants.JANET_BUFFER => wrap.toBuffer(argv[@intCast(n)]).*.data,
-        constants.JANET_FUNCTION => blk: {
+        repr.Tag.abstract => @ptrCast(@constCast((try args_core.getBytes(argv, n)).bytes)),
+        repr.Tag.buffer => wrap.toBuffer(argv[@intCast(n)]).*.data,
+        repr.Tag.function => blk: {
             // A function passed here is almost certainly a callback, so it
             // joins the root set and never leaves it.
             gc_alloc.gcroot(argv[@intCast(n)]);
             break :blk wrap.toPointer(argv[@intCast(n)]);
         },
-        constants.JANET_NIL => null,
+        repr.Tag.nil => null,
         else => pp_format.panicf(
             "bad slot #%d, expected ffi pointer convertible type, got %v",
             .{ n, argv[@intCast(n)] },
@@ -86,7 +82,7 @@ pub fn getPointer(argv: []const types.Janet, n: i32) raise.Raising(?*anyopaque) 
 /// alignment is the assumption the packed-field defect breaks.
 pub fn writeOne(
     to: *anyopaque,
-    argv: []const types.Janet,
+    argv: []const repr.Value,
     n: i32,
     ty: Type,
     recur: c_int,
@@ -112,7 +108,7 @@ pub fn writeOne(
 
     switch (ty.prim) {
         .void => {
-            if (0 == kind.checkType(arg, constants.JANET_NIL)) {
+            if (!repr.checkType(arg, repr.Tag.nil)) {
                 return pp_format.panicf("expected nil, got %v", .{arg});
             }
         },
@@ -137,7 +133,7 @@ pub fn writeOne(
         .float => put(f32, to, @floatCast(try args_core.getNumber(argv, n))),
         .ptr => put(?*anyopaque, to, try getPointer(argv, n)),
         .string => put([*]const u8, to, try args_core.getCString(argv, n)),
-        .bool => put(bool, to, 0 != try args_core.getBoolean(argv, n)),
+        .bool => put(bool, to, try args_core.getBoolean(argv, n)),
         .int8 => put(i8, to, @truncate(try args_core.getInteger(argv, n))),
         .int16 => put(i16, to, @truncate(try args_core.getInteger(argv, n))),
         .int32 => put(i32, to, try args_core.getInteger(argv, n)),
@@ -151,7 +147,7 @@ pub fn writeOne(
 
 /// `janet_ffi_read_one`: the inverse of `writeOne`, assuming the memory holds
 /// what the type says it holds.
-pub fn readOne(from: [*]const u8, ty: Type, recur: c_int) raise.Raising(types.Janet) {
+pub fn readOne(from: [*]const u8, ty: Type, recur: c_int) raise.Raising(repr.Value) {
     if (recur == 0) return raise.panic("recursion too deep");
 
     if (ty.array_count >= 0) {
@@ -191,7 +187,7 @@ pub fn readOne(from: [*]const u8, ty: Type, recur: c_int) raise.Raising(types.Ja
         // is not a valid `bool` in Zig -- where C's `((bool *) from)[0]` is
         // merely nonzero. This is the same answer for every input and a
         // defined one for all of them.
-        .bool => wrap.fromBoolean(@intFromBool(get(u8, from) != 0)),
+        .bool => wrap.fromBoolean(get(u8, from) != 0),
         .int8 => wrap.fromNumber(@floatFromInt(get(i8, from))),
         .int16 => wrap.fromNumber(@floatFromInt(get(i16, from))),
         .int32 => wrap.fromNumber(@floatFromInt(get(i32, from))),

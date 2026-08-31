@@ -12,9 +12,9 @@
 //! Four channels carry it:
 //!
 //!  - The block header. `harness.heap.memoryType` says which of the three
-//!    memory types was written, and `janet_vm.blocks` says the collector was
+//!    memory types was written, and `vm.gc.blocks` says the collector was
 //!    handed the block.
-//!  - `janet_vm.next_collection`, which each of these functions charges. A
+//!  - `vm.gc.next_collection`, which each of these functions charges. A
 //!    fiber is charged twice, once by `janet_gcalloc` for the block and once by
 //!    hand for the value stack, and the second charge is the one only this
 //!    contract sees.
@@ -31,15 +31,10 @@
 //! The C original opened with
 //! `sizeof(JanetFunction) == offsetof(JanetFunction, envs)`, which is what
 //! makes `janet_thunk`'s `@sizeOf(JanetFunction)` the right size for a function
-//! with no environments. `@cImport` drops a flexible array member, so
-//! `@offsetOf` does not compile here and a translation would compare `@sizeOf`
-//! with itself — rules 8 and 20.
-//!
-//! Rule 24 says to ask where the replacement already lives, and it does:
-//! `test/abi.c` has carried this exact assertion since Phase 11 Part 8, beside
-//! the four head-offset ones, because it is a claim about `janet.h` and C is
-//! the only side that can still spell both halves of it. Nothing was written
-//! here.
+//! with no environments. A translated head drops its flexible array member, so
+//! `@offsetOf` does not compile here and a comparison would be `@sizeOf`
+//! against itself. `test/gc_mark.zig` derives the offset from the allocator
+//! instead.
 //!
 //! ## One case needs a child process
 //!
@@ -53,8 +48,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 const config = @import("config");
 const value = @import("subsystems").value;
@@ -73,10 +68,10 @@ const assert = std.debug.assert;
 
 /// `JANET_EV` decides whether a fiber has the five scheduler fields.
 ///
-/// This used to ask the *translated type* — `@hasField(c.JanetFiber,
-/// "sched_id")` — on the stated grounds that "a `JANET_*` macro is not
-/// reliable through `@cImport`". Phase 12 increment 1 removed the premise
-/// rather than working around it: the build says what it compiled.
+/// This used to ask the *translated type* -- `@hasField(c.JanetFiber,
+/// "sched_id")` -- on the stated grounds that "a `JANET_*` macro is not
+/// reliable through `@cImport`". The build says what it compiled, which
+/// removes the premise rather than working around it.
 const with_ev = config.ev;
 
 const frame_size: i32 = constants.JANET_FRAME_SIZE;
@@ -96,7 +91,7 @@ fn compileFunction(source: [*:0]const u8) *types.JanetFunction {
     var out = wrap.fromNil();
     const status = core_env.dostring(test_env, source, "value-alloc-test", &out);
     assert(status == 0);
-    assert(harness.isType(out, constants.JANET_FUNCTION));
+    assert(harness.isType(out, repr.Tag.function));
     gc_alloc.gcroot(out);
     return wrap.toFunction(out);
 }
@@ -120,10 +115,10 @@ fn assertNewborn(fiber: *types.JanetFiber, expect_stacktop: i32) void {
     assert(fiber.stacktop == expect_stacktop);
     assert(fiber.child == null);
     assert(fiber.env == null);
-    assert(harness.isType(fiber.last_value, constants.JANET_NIL));
+    assert(harness.isType(fiber.last_value, repr.Tag.nil));
     assert((fiber.flags & ~@as(i32, constants.JANET_FIBER_STATUS_MASK)) ==
         (constants.JANET_FIBER_MASK_YIELD | constants.JANET_FIBER_RESUME_NO_USEVAL | constants.JANET_FIBER_RESUME_NO_SKIP));
-    assert(statusOf(fiber) == constants.JANET_STATUS_NEW);
+    assert(statusOf(fiber) == @intFromEnum(types.FiberStatus.new));
     if (with_ev) {
         assert(fiber.sched_id == 0);
         assert(fiber.ev_callback == null);
@@ -145,7 +140,7 @@ fn dirty(fiber: *types.JanetFiber, child: *types.JanetFiber, env: *types.JanetTa
     fiber.env = env;
     fiber.last_value = harness.wrapInteger(23);
     fiber.flags = constants.JANET_FIBER_MASK_ERROR | constants.JANET_FIBER_DID_RAISE |
-        (constants.JANET_STATUS_ALIVE << constants.JANET_FIBER_STATUS_OFFSET);
+        (@as(i32, @intFromEnum(types.FiberStatus.alive)) << constants.JANET_FIBER_STATUS_OFFSET);
     if (with_ev) {
         fiber.sched_id = 29;
         fiber.ev_callback = null;
@@ -156,7 +151,7 @@ fn dirty(fiber: *types.JanetFiber, child: *types.JanetFiber, env: *types.JanetTa
 }
 
 fn onBlocks(block: ?*anyopaque) bool {
-    return heap.onList(c.vm().blocks, block);
+    return heap.onList(harness.vm().gc.blocks, block);
 }
 
 // ------------------------------------------------------------ fiber blocks
@@ -169,7 +164,7 @@ fn aFiberIsACollectableBlock(nullary: *types.JanetFunction) void {
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
 
-    assert(heap.memoryType(fiber) == constants.JANET_MEMORY_FIBER);
+    assert(heap.memoryType(fiber) == types.MemoryType.fiber);
     assert(!heap.reachable(fiber));
     assert(onBlocks(fiber));
     assert(fiber.*.data != null);
@@ -194,18 +189,18 @@ fn theCapacityFloor(nullary: *types.JanetFunction) void {
 /// in the capacity asked for.
 fn aFiberChargesBlockAndStack(nullary: *types.JanetFunction) void {
     settle();
-    var before = c.vm().next_collection;
+    var before = harness.vm().gc.next_collection;
     const fiber = fibers.new(nullary, 1024, 0, null).?;
-    var after = c.vm().next_collection;
+    var after = harness.vm().gc.next_collection;
 
     assert(fiber.*.capacity == 1024);
-    assert(after - before == @sizeOf(types.JanetFiber) + 1024 * @sizeOf(types.Janet));
+    assert(after - before == @sizeOf(types.JanetFiber) + 1024 * @sizeOf(repr.Value));
 
     // And the floor is charged, not the request: 32 slots for a request of 1.
-    before = c.vm().next_collection;
+    before = harness.vm().gc.next_collection;
     _ = fibers.new(nullary, 1, 0, null);
-    after = c.vm().next_collection;
-    assert(after - before == @sizeOf(types.JanetFiber) + 32 * @sizeOf(types.Janet));
+    after = harness.vm().gc.next_collection;
+    assert(after - before == @sizeOf(types.JanetFiber) + 32 * @sizeOf(repr.Value));
 }
 
 // -------------------------------------------------------------- fiber_reset
@@ -244,12 +239,12 @@ fn aResetKeepsTheStack(binary: *types.JanetFunction, nullary: *types.JanetFuncti
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
     settle();
-    const before = c.vm().next_collection;
+    const before = harness.vm().gc.next_collection;
 
     assert(fibers.reset(fiber, binary, 0, null) == null);
     assert(fiber.*.capacity == 4096);
     assert(fiber.*.data == data);
-    assert(c.vm().next_collection == before);
+    assert(harness.vm().gc.next_collection == before);
 }
 
 /// Arguments are copied into the slots above the frame base, and a null argv is
@@ -260,7 +255,7 @@ fn argumentsLandAboveTheFrame(binary: *types.JanetFunction, nullary: *types.Jane
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
 
-    var args = [_]types.Janet{
+    var args = [_]repr.Value{
         harness.wrapInteger(101),
         harness.wrapInteger(102),
         harness.wrapInteger(103),
@@ -283,7 +278,7 @@ fn argumentsLandAboveTheFrame(binary: *types.JanetFunction, nullary: *types.Jane
     assert(fibers.reset(fiber, binary, 3, null) == null);
     assert(fiber.*.stacktop == frame_size + 3);
     for (0..3) |i| {
-        assert(harness.isType(fiber.*.data.?[@intCast(frame_size + @as(i32, @intCast(i)))], constants.JANET_NIL));
+        assert(harness.isType(fiber.*.data.?[@intCast(frame_size + @as(i32, @intCast(i)))], repr.Tag.nil));
     }
 
     // Zero arguments touch neither the stack pointer nor the slots.
@@ -305,7 +300,7 @@ fn argumentsLandAboveTheFrame(binary: *types.JanetFunction, nullary: *types.Jane
 /// independent of the vararg function's arity.
 fn theArgumentBlockGrowsOnEquality(variadic: *types.JanetFunction) void {
     const argc: i32 = 32 - frame_size;
-    var args: [28]types.Janet = undefined;
+    var args: [28]repr.Value = undefined;
     for (0..@intCast(argc)) |i| args[i] = harness.wrapInteger(@intCast(i));
     assert(2 * frame_size + variadic.def.?.slotcount < 64);
 
@@ -322,7 +317,7 @@ fn theArgumentBlockGrowsOnEquality(variadic: *types.JanetFunction) void {
 /// marked as an entrance frame, and -- under the event loop -- with no
 /// supervisor.
 fn aFiberIsReadyToRun(binary: *types.JanetFunction) void {
-    var args = [_]types.Janet{ harness.wrapInteger(3), harness.wrapInteger(4) };
+    var args = [_]repr.Value{ harness.wrapInteger(3), harness.wrapInteger(4) };
     const fiber = fibers.new(binary, 32, 2, &args).?;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
@@ -331,7 +326,7 @@ fn aFiberIsReadyToRun(binary: *types.JanetFunction) void {
     assert(fiber.*.frame == frame_size);
     assert(frame.func == binary);
     assert(frame.flags == constants.JANET_STACKFRAME_ENTRANCE);
-    assert(statusOf(fiber) == constants.JANET_STATUS_NEW);
+    assert(statusOf(fiber) == @intFromEnum(types.FiberStatus.new));
     if (with_ev) assert(fiber.*.supervisor_channel == null);
 }
 
@@ -344,15 +339,15 @@ fn aFiberSurvivesACollection(nullary: *types.JanetFunction) void {
 
     gc_alloc.gcroot(root);
     gc_mark.collect();
-    assert(heap.memoryType(fiber) == constants.JANET_MEMORY_FIBER);
+    assert(heap.memoryType(fiber) == types.MemoryType.fiber);
     assert(fiber.*.capacity == 128);
     assert(onBlocks(fiber));
 
     _ = gc_alloc.gcunroot(root);
     settle();
-    const blocks_before = c.vm().block_count;
+    const blocks_before = harness.vm().gc.block_count;
     gc_mark.collect();
-    assert(c.vm().block_count == blocks_before);
+    assert(harness.vm().gc.block_count == blocks_before);
 }
 
 // ----------------------------------------------------------------- funcdefs
@@ -399,7 +394,7 @@ fn aFuncdefStartsEmpty() void {
     gc_alloc.gcroot(root);
     defer _ = gc_alloc.gcunroot(root);
 
-    assert(heap.memoryType(def) == constants.JANET_MEMORY_FUNCDEF);
+    assert(heap.memoryType(def) == types.MemoryType.funcdef);
     assert(!heap.reachable(def));
     assert(onBlocks(def));
     assertEmptyFuncdef(def);
@@ -418,9 +413,9 @@ fn funcdefsAreDistinct() void {
 /// The funcdef block is charged at its own size.
 fn aFuncdefChargesItsBlock() void {
     settle();
-    const before = c.vm().next_collection;
+    const before = harness.vm().gc.next_collection;
     _ = functions.defs.new();
-    const after = c.vm().next_collection;
+    const after = harness.vm().gc.next_collection;
     assert(after - before == @sizeOf(types.JanetFuncDef));
 }
 
@@ -433,14 +428,14 @@ fn anEmptyFuncdefSurvivesACollection() void {
 
     gc_alloc.gcroot(root);
     gc_mark.collect();
-    assert(heap.memoryType(def) == constants.JANET_MEMORY_FUNCDEF);
+    assert(heap.memoryType(def) == types.MemoryType.funcdef);
     assert(def.*.max_arity == std.math.maxInt(i32));
 
     _ = gc_alloc.gcunroot(root);
     settle();
-    const blocks_before = c.vm().block_count;
+    const blocks_before = harness.vm().gc.block_count;
     gc_mark.collect();
-    assert(c.vm().block_count == blocks_before);
+    assert(harness.vm().gc.block_count == blocks_before);
 }
 
 // ------------------------------------------------------------------- thunks
@@ -455,7 +450,7 @@ fn aThunkWrapsTheDef() void {
     gc_alloc.gcroot(root);
     defer _ = gc_alloc.gcunroot(root);
 
-    assert(heap.memoryType(func) == constants.JANET_MEMORY_FUNCTION);
+    assert(heap.memoryType(func) == types.MemoryType.function);
     assert(!heap.reachable(func));
     assert(onBlocks(func));
     assert(func.*.def == def);
@@ -464,9 +459,9 @@ fn aThunkWrapsTheDef() void {
 fn aThunkChargesItsBlock() void {
     const def = functions.defs.new();
     settle();
-    const before = c.vm().next_collection;
+    const before = harness.vm().gc.next_collection;
     _ = functions.thunk(def);
-    const after = c.vm().next_collection;
+    const after = harness.vm().gc.next_collection;
     assert(after - before == @sizeOf(types.JanetFunction));
 }
 
@@ -559,15 +554,15 @@ fn aDelayedThunkReturnsItsValue() void {
     assert(f.*.def.?.slotcount == 1);
     assert(f.*.def.?.bytecode_length == 2);
     assert(f.*.def.?.constants_length == 1);
-    assert(harness.equals(f.*.def.?.constants.?[0], x));
+    assert(harness.equals(f.*.def.?.constantValues()[0], x));
     assert(f.*.def.?.name == null);
     assert(f.*.def.?.environments_length == 0);
 
-    assert(vm_entry.pcall(f, 0, null, &out, null) == constants.JANET_SIGNAL_OK);
+    assert(vm_entry.pcall(f, 0, null, &out, null) == types.Signal.ok);
     assert(harness.equals(out, x));
 
     // Varargs: it ignores whatever it is called with.
-    assert(vm_entry.pcall(f, 1, @ptrCast(&x), &out, null) == constants.JANET_SIGNAL_OK);
+    assert(vm_entry.pcall(f, 1, @ptrCast(&x), &out, null) == types.Signal.ok);
     assert(harness.equals(out, x));
 }
 

@@ -1,36 +1,20 @@
 //! Behavioral contract for the format-string engine.
 //!
-//! This was the first Zig contract in the tree, and it is Zig because its
-//! subject stopped having a C name. Phase 10 Part 18 deleted the variadic
-//! surface -- `janet_formatc`, `janet_formatb`, `janet_formatbv`,
-//! `janet_panicf` and the six `va_arg` accessors -- and what replaced it is
-//! `formatTuple`, whose format string is a `comptime` parameter. A caller does
-//! not call it; a caller *instantiates* it. No C contract can.
+//! Its subject has no C name: `formatTuple`'s format string is a `comptime`
+//! parameter, so a caller does not call it, a caller *instantiates* it. No C
+//! contract could.
 //!
 //! ## What it links against
 //!
-//! The runtime, because it is inside it. Phase 11 Part 1 moved this file onto
-//! `test/contracts.zig`, and `@import("subsystems").pp_format` is the same
-//! `pp_format.zig` the rest of the binary runs.
+//! The runtime, because it is inside it: `@import("subsystems").pp_format` is
+//! the same file the rest of the binary runs.
 //!
-//! **That is a stronger arrangement than the one it replaced, and the
-//! difference is worth recording rather than quietly enjoying.** Part 18 built
-//! this contract as its own module beside `libjanet.a` with every selector
-//! `false`, which resolved the *neighbours* to their `_extern.zig` shims and
-//! suppressed the subject's own `@export`s so they would not collide with the
-//! library's. It worked, but what it tested was a **local copy**: `%q` and its
-//! seven siblings ran a second instance of `pp_pretty.zig`, sharing the
-//! runtime's state through `janet_vm` and its source through the file system,
-//! but not its code. The comment here used to say so and call it "a link, not
-//! a behaviour". There is no copy now.
-//!
-//! Two things follow for anyone adding a contract. The all-`false` shape is
-//! gone along with `build.zig`'s `includeZig`, so nothing here needs its
-//! subject's `export fn`s turned into gated `@export`s -- which was the entry
-//! price of the old mechanism and is why it never spread past this file. And
-//! the `_extern.zig` shims were then unreached by anything -- the C arm of a
-//! selector that no longer had two arms. Phase 11 Part 26 deleted all eleven,
-//! and found that one of them had not compiled since Part 12.
+//! **A contract compiled beside `libjanet.a` would test a local copy**, and
+//! that is worth recording rather than quietly avoiding. With every selector
+//! false the neighbours resolve to shims and the subject's own `@export`s are
+//! suppressed so they do not collide with the library's. It works, and what it
+//! tests is a second instance of the subject, sharing the runtime's state and
+//! its source but not its code.
 //!
 //! ## Why this file exists rather than leaning on the Janet suites
 //!
@@ -57,6 +41,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const raise = @import("raise");
@@ -69,9 +54,7 @@ const strings = @import("subsystems").value.strings;
 const core_env = @import("subsystems").env;
 const vm_state = @import("subsystems").lifecycle;
 const signal_core = @import("subsystems").signal;
-const kind = @import("subsystems").value.kind;
 const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
 
 var test_env: *types.JanetTable = undefined;
 var raises_fired: usize = 0;
@@ -89,8 +72,8 @@ fn checkString(s: types.JanetString, expected: []const u8) void {
 
 fn checkBuffer(b: *types.JanetBuffer, expected: []const u8) void {
     const len: usize = @intCast(b.count);
-    if (len != expected.len or !std.mem.eql(u8, b.data.?[0..len], expected)) {
-        std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.data.?[0..len] });
+    if (len != expected.len or !std.mem.eql(u8, b.slice()[0..len], expected)) {
+        std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.slice()[0..len] });
         @panic("buffer mismatch");
     }
 }
@@ -104,7 +87,7 @@ fn bytes(s: types.JanetString) []const u8 {
     return s[0..@intCast(types.stringHead(s).length)];
 }
 
-fn eval(source: [*:0]const u8) types.Janet {
+fn eval(source: [*:0]const u8) repr.Value {
     var out = wrap.fromNil();
     const status = core_env.dostring(test_env, source, "pp-format-test", &out);
     std.debug.assert(status == 0);
@@ -117,7 +100,7 @@ fn eval(source: [*:0]const u8) types.Janet {
 /// The C original spelled this as a macro over `janet_try_init`,
 /// `janet_contract_arm` and `janet_contract_raised`, because a raise reached it
 /// as a report on a flag. Here it is the error union itself; the scope is still
-/// needed, because `janet_try_init` is what points `janet_vm.return_reg` at a
+/// needed, because `janet_try_init` is what points `vm.return_reg` at a
 /// payload and therefore what makes `janet_signal_plan` answer `RAISE` rather
 /// than ending the process.
 fn expectRaise(comptime message: []const u8, comptime body: anytype, args: anytype) void {
@@ -131,7 +114,7 @@ fn expectRaise(comptime message: []const u8, comptime body: anytype, args: anyty
         @panic("expected a raise, got a return");
     } else |_| {}
 
-    std.debug.assert(kind.checkType(state.payload, constants.JANET_STRING) != 0);
+    std.debug.assert(repr.checkType(state.payload, repr.Tag.string));
     const got = bytes(wrap.toString(state.payload));
     if (!std.mem.eql(u8, got, message)) {
         std.debug.print("expected: {s}\n     got: {s}\n", .{ message, got });
@@ -148,14 +131,14 @@ extern fn janet_buffer_format(
     strfrmt: [*]const u8,
     argstart: i32,
     argc: i32,
-    argv: [*]types.Janet,
+    argv: [*]repr.Value,
 ) callconv(.c) void;
 
-fn formatted(format: [*]const u8, argv: []types.Janet) raise.Raising(types.JanetString) {
+fn formatted(format: [*]const u8, argv: []repr.Value) raise.Raising(types.JanetString) {
     const b = buffers.new(32);
     janet_buffer_format(b, format, -1, @intCast(argv.len), argv.ptr);
     _ = try raise.crossing({});
-    return strings.new(b.*.data.?[0..@intCast(b.*.count)]);
+    return strings.new(b.*.slice());
 }
 
 // ------------------------------------------- the widths that crossed va_arg
@@ -186,15 +169,13 @@ fn everyArgumentWidthInOneCall() void {
 /// `%D` renders whatever the host libc makes of an unrecognised conversion,
 /// and this is the only place that says so.
 ///
-/// **This assertion was `%D` inside `everyArgumentWidthInOneCall` until Phase
-/// 11 Part 4, and it made that contract fail on Linux.** `FOUND.md` records
-/// the defect -- `format_mappings` carries `D` and `I` entries that
-/// `FMT_REPLACE_INTTYPES` never consults, so the specifier reaches `snprintf`
-/// unrewritten -- and says of the C original that it "pins only that the
-/// mapping does *not* happen, which is the part that is the same everywhere".
-/// The Zig rewrite in Part 18 pinned the *rendering* instead, which is macOS's
-/// BSD synonym for `%ld` and is not the same everywhere: musl produces nothing
-/// at all.
+/// **This assertion used to sit inside `everyArgumentWidthInOneCall`, and it
+/// made that contract fail on Linux.** `FOUND.md` records the defect --
+/// `format_mappings` carries `D` and `I` entries that `FMT_REPLACE_INTTYPES`
+/// never consults, so the specifier reaches `snprintf` unrewritten -- and says
+/// of Janet that it "pins only that the mapping does *not* happen, which is
+/// the part that is the same everywhere". Pinning the *rendering* instead is
+/// pinning macOS's BSD synonym for `%ld`, and musl produces nothing at all.
 ///
 /// So the widths above use `%d`, which maps to `PRId64` and is well defined on
 /// every host, and the host-specific behaviour is asserted here and only where
@@ -247,29 +228,26 @@ fn theJanetStringConversion() void {
 
 /// `%T` renders a *set* of types, which is what an argument check reports.
 /// There is no Janet syntax for it: the only callers build the mask from a
-/// `JANET_TFLAG_*` constant.
+/// `repr.TagSet` -- what `JANET_TFLAG_*` used to spell as an `int`.
 fn theTypeSetConversion() void {
     // One member: no separator at all.
     checkString(
-        fmt.formatc("%T", .{@as(c_int, constants.JANET_TFLAG_NUMBER)}) catch @panic("raised"),
+        fmt.formatc("%T", .{repr.TagSet.one(.number)}) catch @panic("raised"),
         "number",
     );
     // Two: joined with " or " rather than a comma, because the last pair always is.
     checkString(
-        fmt.formatc("%T", .{@as(c_int, constants.JANET_TFLAG_NUMBER | constants.JANET_TFLAG_STRING)}) catch @panic("raised"),
+        fmt.formatc("%T", .{repr.TagSet.of(&.{ .number, .string })}) catch @panic("raised"),
         "number or string",
     );
     // Three: commas until the last, then " or ". Getting this backwards reads
     // as English either way and is wrong in every message Janet prints.
     checkString(
-        fmt.formatc("%T", .{@as(
-            c_int,
-            constants.JANET_TFLAG_NUMBER | constants.JANET_TFLAG_STRING | constants.JANET_TFLAG_KEYWORD,
-        )}) catch @panic("raised"),
+        fmt.formatc("%T", .{repr.TagSet.of(&.{ .number, .string, .keyword })}) catch @panic("raised"),
         "number, string or keyword",
     );
     // An empty set renders as nothing rather than as an error.
-    checkString(fmt.formatc("%T", .{@as(c_int, 0)}) catch @panic("raised"), "");
+    checkString(fmt.formatc("%T", .{repr.TagSet.none}) catch @panic("raised"), "");
 }
 
 /// `%t` names one type, and an abstract value names its own type rather than
@@ -354,7 +332,7 @@ fn theRefusals() void {
     );
 
     // Only the Janet-array loop can run out of arguments.
-    var two = [_]types.Janet{ wrapInteger(1), wrapInteger(2) };
+    var two = [_]repr.Value{ wrapInteger(1), wrapInteger(2) };
     expectRaise("not enough values for format", formatted, .{ "%d %d %d", two[0..] });
 
     // `%j` is the one conversion that can refuse the value it was given, and it
@@ -362,7 +340,7 @@ fn theRefusals() void {
     // pretty-printed instead of writing JDN would pass every other assertion
     // here: the two spellings agree on the values that have both forms, and
     // disagree only on the values that have one.
-    var fn_slot = [_]types.Janet{eval("print")};
+    var fn_slot = [_]repr.Value{eval("print")};
     expectRaise("could not print to jdn format", fmt.formatc, .{ "%j", .{fn_slot[0]} });
     expectRaise("could not print to jdn format", formatted, .{ "%j", fn_slot[0..] });
 }
@@ -374,7 +352,7 @@ fn theRefusals() void {
 /// in any case, because a Janet program supplies `string/format`'s format
 /// string and no Janet program supplies `formatTuple`'s.
 fn theGrammarFaults() void {
-    var one = [_]types.Janet{wrapInteger(1)};
+    var one = [_]repr.Value{wrapInteger(1)};
 
     // An unrecognised conversion names the rebuilt specifier, not the original:
     // `%5z` reports as `%5z`, and a mapped one would report its mapping.
@@ -413,7 +391,7 @@ fn anOversizedItemIsRefused() void {
 // -------------------------------------------------------- the two loops
 
 fn theTwoLoopsAgreeWhereTheyOverlap() void {
-    var slot = [_]types.Janet{eval("@{:a [1 2 3] :b \"x\"}")};
+    var slot = [_]repr.Value{eval("@{:a [1 2 3] :b \"x\"}")};
 
     inline for (.{ "%q", "%j", "%t", "%V" }) |spelling| {
         checkString(
@@ -492,7 +470,7 @@ fn aPrettyConversionAfterOtherText() void {
     _ = buffers.pushCstringAbi(b, "prefix)\n");
     _ = fmt.formatb(b, "%12p", .{eval("@[1 2 3 4 5]")}) catch @panic("raised");
     // The prefix, its newline and its bracket are all still there.
-    std.debug.assert(std.mem.eql(u8, b.*.data.?[0..8], "prefix)\n"));
+    std.debug.assert(std.mem.eql(u8, b.*.slice()[0..8], "prefix)\n"));
 }
 
 // ----------------------------------------------- the fourth entry point
@@ -501,9 +479,9 @@ const scratch = "janet-zig-pp-format-9d24";
 
 /// `dynprintf`'s four destinations.
 ///
-/// It was `test/io_core.c`'s `test_dynprintf` until Part 18, and it moved with
-/// its subject: `dynprintf` is one of the four entry points the C variadic
-/// surface held, and it now sits in `pp_format.zig` beside the other three.
+/// It asserts the routing rather than the rendering: `dynprintf` is one of the
+/// four entry points a variadic surface once held, and it sits in
+/// `pp/format.zig` beside the other three.
 /// What it asserts is the routing rather than the rendering -- a bound buffer,
 /// an absent name, an empty name, a null name, a bound value of the wrong
 /// type, and a file that cannot be written.
@@ -557,17 +535,14 @@ extern fn remove(path: [*]const u8) callconv(.c) c_int;
 
 /// The stream operations, by import.
 ///
-/// This contract declared three of them as `extern fn janet_io_*` when it was
-/// written, because that is what they were: `io.c`'s seam, exported so a C
-/// caller could reach them. Phase 11 Part 20 migrated `test/io_core.c` and
-/// found the same names had no caller left anywhere, so fourteen of the
-/// fifteen stopped being symbols -- and this file was one of the two readers
-/// that made the retirement visible. `janet_io_write` is the one that stays,
-/// because `pp_format.zig` itself is a real caller by symbol.
+/// Three of them were `extern fn janet_io_*` declarations here, because that
+/// is what they were: a seam exported so a C caller could reach them. Fourteen
+/// of the fifteen have no caller left anywhere and stopped being symbols.
+/// `janet_io_write` is the one that stays, because `pp/format.zig` itself is a
+/// real caller by symbol.
 const io_core = @import("subsystems").io;
 
-/// A formatted raise, which was the last `janet_panicf` in the C contracts,
-/// asserted by `test/signal_core.c` until Phase 10 Part 18 moved it here.
+/// A formatted raise.
 ///
 /// `panicf` answers with the bare error set rather than an error union --
 /// every call to it raises -- so the thunk gives `expectRaise` the shape it
@@ -610,6 +585,6 @@ pub fn run() void {
 
     std.debug.assert(raises_fired == expected_raises);
 
-    vm_lifecycle.deinit();
+    vm_state.deinit();
     std.debug.print("pp format contract ok\n", .{});
 }

@@ -1,9 +1,9 @@
 
-(os/mkdir "./tools/afl/unmarshal_testcases/")
+(os/mkdir "./tools/testing/afl/unmarshal_testcases/")
 
 (defn spit-case [n v]
   (spit
-    (string "./tools/afl/unmarshal_testcases/" (string n))
+    (string "./tools/testing/afl/unmarshal_testcases/" (string n))
     (marshal v make-image-dict)))
 
 (def cases [

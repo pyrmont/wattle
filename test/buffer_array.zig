@@ -11,7 +11,7 @@
 //! to Janet code.
 //!
 //! GC pressure is the second channel. Both halves charge
-//! `janet_vm.next_collection` for the payloads they allocate, and they do it
+//! `vm.gc.next_collection` for the payloads they allocate, and they do it
 //! inconsistently — the buffer charges before its `janet_realloc` and the
 //! array after, `janet_array_n` charges nothing at all. None of that is a
 //! defect, but all of it is observable, so it is pinned here.
@@ -49,11 +49,12 @@
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 const arrays = @import("subsystems").value.arrays;
 const buffers = @import("subsystems").value.buffers;
+const tables = @import("subsystems").value.tables;
 const gc_alloc = @import("subsystems").gc_alloc;
 const strings = @import("subsystems").value.strings;
 const utils = @import("subsystems").utils;
@@ -88,8 +89,8 @@ fn bufferStartsWithACapacityFloor() void {
     std.debug.assert(b.*.count == 0);
     std.debug.assert(b.*.capacity == 4);
     std.debug.assert(b.*.data != null);
-    std.debug.assert(heap.memoryType(b) == constants.JANET_MEMORY_BUFFER);
-    std.debug.assert(heap.onList(c.vm().blocks, b));
+    std.debug.assert(heap.memoryType(b) == types.MemoryType.buffer);
+    std.debug.assert(heap.onList(harness.vm().gc.blocks, b));
 
     const big = buffers.new(100);
     std.debug.assert(big.*.capacity == 100);
@@ -113,12 +114,12 @@ fn callerOwnedBufferIsDisabled() !void {
     std.debug.assert(b.data != null);
     std.debug.assert(b.gc.flags == constants.JANET_MEM_DISABLED);
     std.debug.assert(b.gc.data.next == null);
-    std.debug.assert(!heap.onList(c.vm().blocks, &b));
+    std.debug.assert(!heap.onList(harness.vm().gc.blocks, &b));
 
     // It still behaves as a buffer, and deinit releases the payload.
     try buffers.pushCString(&b, "hello");
     std.debug.assert(b.count == 5);
-    std.debug.assert(std.mem.eql(u8, b.data.?[0..5], "hello"));
+    std.debug.assert(std.mem.eql(u8, b.slice()[0..5], "hello"));
     buffers.deinit(&b);
     std.debug.assert(b.data == null);
 }
@@ -136,8 +137,8 @@ fn pointerBufferNeverReallocates() !void {
     std.debug.assert(b.capacity == 8);
     std.debug.assert(b.count == 3);
     std.debug.assert(b.gc.flags & constants.JANET_BUFFER_FLAG_NO_REALLOC != 0);
-    std.debug.assert(heap.memoryType(b) == constants.JANET_MEMORY_BUFFER);
-    std.debug.assert(heap.onList(c.vm().blocks, b));
+    std.debug.assert(heap.memoryType(b) == types.MemoryType.buffer);
+    std.debug.assert(heap.onList(harness.vm().gc.blocks, b));
 
     // Growing within the existing capacity is fine -- `bufferEnsure` returns
     // before it consults the flag.
@@ -181,12 +182,12 @@ fn bufferEnsureAppliesTheGrowthFactor() !void {
     const before = b.*.data;
 
     // Already big enough: no reallocation, no change, no pressure.
-    const charge = c.vm().next_collection;
+    const charge = harness.vm().gc.next_collection;
     try buffers.ensure(b, 10, 2);
     try buffers.ensure(b, 4, 8);
     std.debug.assert(b.*.capacity == 10);
     std.debug.assert(b.*.data == before);
-    std.debug.assert(c.vm().next_collection == charge);
+    std.debug.assert(harness.vm().gc.next_collection == charge);
 
     // Past it: the new capacity is the request times the growth.
     try buffers.ensure(b, 11, 3);
@@ -200,7 +201,7 @@ fn bufferEnsureAppliesTheGrowthFactor() !void {
     try buffers.ensure(b, 500, 2);
     std.debug.assert(b.*.capacity == 1000);
     std.debug.assert(b.*.count == 3);
-    std.debug.assert(std.mem.eql(u8, b.*.data.?[0..3], "abc"));
+    std.debug.assert(std.mem.eql(u8, b.*.slice()[0..3], "abc"));
 }
 
 /// Growing the count zero-fills the bytes it newly covers; shrinking keeps the
@@ -213,7 +214,7 @@ fn bufferSetcountZeroFills() !void {
     try buffers.setcount(b, 6);
     std.debug.assert(b.*.count == 6);
     std.debug.assert(b.*.capacity >= 6);
-    std.debug.assert(std.mem.eql(u8, b.*.data.?[0..6], "xy\x00\x00\x00\x00"));
+    std.debug.assert(std.mem.eql(u8, b.*.slice()[0..6], "xy\x00\x00\x00\x00"));
 
     // Shrinking leaves the capacity alone.
     const capacity = b.*.capacity;
@@ -221,11 +222,13 @@ fn bufferSetcountZeroFills() !void {
     std.debug.assert(b.*.count == 1);
     std.debug.assert(b.*.capacity == capacity);
 
-    // And growing again re-zeroes, rather than exposing the old bytes.
-    b.*.data.?[3] = 0xFF;
+    // And growing again re-zeroes, rather than exposing the old bytes. The
+    // scribble is deliberately outside the live range, so it is written
+    // through the allocation rather than through `slice()`.
+    b.*.reserved()[3] = 0xFF;
     try buffers.setcount(b, 4);
     std.debug.assert(b.*.count == 4);
-    std.debug.assert(b.*.data.?[3] == 0);
+    std.debug.assert(b.*.slice()[3] == 0);
 
     // A negative count is a no-op, not a truncation to zero.
     try buffers.setcount(b, -1);
@@ -248,7 +251,7 @@ fn bufferExtraDoubles() !void {
     try buffers.extra(b, 9);
     std.debug.assert(b.*.capacity == 22);
     std.debug.assert(b.*.count == 2);
-    std.debug.assert(std.mem.eql(u8, b.*.data.?[0..2], "ab"));
+    std.debug.assert(std.mem.eql(u8, b.*.slice()[0..2], "ab"));
 
     // The overflow guard runs before any allocation.
     std.debug.assert(harness.raised(
@@ -265,18 +268,18 @@ fn bufferPushesLittleEndian() !void {
     const b = buffers.new(4);
 
     try buffers.pushU8(b, 0xAB);
-    std.debug.assert(b.*.count == 1 and b.*.data.?[0] == 0xAB);
+    std.debug.assert(b.*.count == 1 and b.*.slice()[0] == 0xAB);
 
     try buffers.setcount(b, 0);
     try buffers.pushU16(b, 0x1234);
     std.debug.assert(b.*.count == 2);
-    std.debug.assert(b.*.data.?[0] == 0x34 and b.*.data.?[1] == 0x12);
+    std.debug.assert(b.*.slice()[0] == 0x34 and b.*.slice()[1] == 0x12);
 
     try buffers.setcount(b, 0);
     try buffers.pushU32(b, 0x12345678);
     std.debug.assert(b.*.count == 4);
-    std.debug.assert(b.*.data.?[0] == 0x78 and b.*.data.?[1] == 0x56);
-    std.debug.assert(b.*.data.?[2] == 0x34 and b.*.data.?[3] == 0x12);
+    std.debug.assert(b.*.slice()[0] == 0x78 and b.*.slice()[1] == 0x56);
+    std.debug.assert(b.*.slice()[2] == 0x34 and b.*.slice()[3] == 0x12);
 
     try buffers.setcount(b, 0);
     const wide: u64 = 0x0123456789ABCDEF;
@@ -284,7 +287,7 @@ fn bufferPushesLittleEndian() !void {
     std.debug.assert(b.*.count == 8);
     for (0..8) |i| {
         const byte: u8 = @truncate(wide >> @intCast(8 * i));
-        std.debug.assert(b.*.data.?[i] == byte);
+        std.debug.assert(b.*.slice()[i] == byte);
     }
 
     // Bytes, C strings, and Janet strings. A zero-length push is a no-op that
@@ -298,37 +301,37 @@ fn bufferPushesLittleEndian() !void {
     try buffers.pushCString(b, "two");
     try buffers.pushString(b, strings.cstring("three"));
     std.debug.assert(b.*.count == 11);
-    std.debug.assert(std.mem.eql(u8, b.*.data.?[0..11], "onetwothree"));
+    std.debug.assert(std.mem.eql(u8, b.*.slice()[0..11], "onetwothree"));
 
     // A Janet string may hold an interior zero, and the length comes from its
     // head rather than from the bytes.
     try buffers.setcount(b, 0);
     try buffers.pushString(b, strings.new("a\x00b"));
     std.debug.assert(b.*.count == 3);
-    std.debug.assert(std.mem.eql(u8, b.*.data.?[0..3], "a\x00b"));
+    std.debug.assert(std.mem.eql(u8, b.*.slice()[0..3], "a\x00b"));
 }
 
 /// Every payload the buffer allocates is charged to the collector.
 fn bufferChargesGcPressure() !void {
-    var charge = c.vm().next_collection;
+    var charge = harness.vm().gc.next_collection;
     const b = buffers.new(64);
     // `janet_gcalloc` charges the block, and the payload is charged on top.
-    std.debug.assert(c.vm().next_collection == charge + @sizeOf(types.JanetBuffer) + 64);
+    std.debug.assert(harness.vm().gc.next_collection == charge + @sizeOf(types.JanetBuffer) + 64);
 
-    charge = c.vm().next_collection;
+    charge = harness.vm().gc.next_collection;
     try buffers.ensure(b, 100, 2);
     std.debug.assert(b.*.capacity == 200);
-    std.debug.assert(c.vm().next_collection == charge + (200 - 64));
+    std.debug.assert(harness.vm().gc.next_collection == charge + (200 - 64));
 
-    charge = c.vm().next_collection;
+    charge = harness.vm().gc.next_collection;
     try buffers.setcount(b, 300);
     std.debug.assert(b.*.capacity == 300);
-    std.debug.assert(c.vm().next_collection == charge + (300 - 200));
+    std.debug.assert(harness.vm().gc.next_collection == charge + (300 - 200));
 
     // The floor is charged, not the request.
-    charge = c.vm().next_collection;
+    charge = harness.vm().gc.next_collection;
     _ = buffers.new(1);
-    std.debug.assert(c.vm().next_collection == charge + @sizeOf(types.JanetBuffer) + 4);
+    std.debug.assert(harness.vm().gc.next_collection == charge + @sizeOf(types.JanetBuffer) + 4);
 }
 
 // ----------------------------------------------------------------- array
@@ -340,8 +343,8 @@ fn arrayHasNoCapacityFloor() !void {
     std.debug.assert(a.*.count == 0);
     std.debug.assert(a.*.capacity == 0);
     std.debug.assert(a.*.data == null);
-    std.debug.assert(heap.memoryType(a) == constants.JANET_MEMORY_ARRAY);
-    std.debug.assert(heap.onList(c.vm().blocks, a));
+    std.debug.assert(heap.memoryType(a) == types.MemoryType.array);
+    std.debug.assert(heap.onList(harness.vm().gc.blocks, a));
 
     const b = arrays.new(3);
     std.debug.assert(b.*.capacity == 3);
@@ -352,16 +355,16 @@ fn arrayHasNoCapacityFloor() !void {
     try arrays.push(a, harness.wrapInteger(7));
     std.debug.assert(a.*.count == 1);
     std.debug.assert(a.*.capacity == 2);
-    std.debug.assert(harness.equals(a.*.data.?[0], harness.wrapInteger(7)));
+    std.debug.assert(harness.equals(a.*.slice()[0], harness.wrapInteger(7)));
 }
 
 /// A weak array differs only in its memory type, which puts it on the other
 /// heap list and hands it to the weak half of the sweep.
 fn weakArrayIsANormalArrayElsewhere() !void {
     const a = arrays.weak(4);
-    std.debug.assert(heap.memoryType(a) == constants.JANET_MEMORY_ARRAY_WEAK);
-    std.debug.assert(heap.onList(c.vm().weak_blocks, a));
-    std.debug.assert(!heap.onList(c.vm().blocks, a));
+    std.debug.assert(heap.memoryType(a) == types.MemoryType.array_weak);
+    std.debug.assert(heap.onList(harness.vm().gc.weak_blocks, a));
+    std.debug.assert(!heap.onList(harness.vm().gc.blocks, a));
     std.debug.assert(a.*.capacity == 4);
     std.debug.assert(a.*.count == 0);
 
@@ -371,33 +374,33 @@ fn weakArrayIsANormalArrayElsewhere() !void {
 
     // The strong twin is on the other list, and nothing else differs.
     const s = arrays.new(4);
-    std.debug.assert(heap.onList(c.vm().blocks, s));
-    std.debug.assert(!heap.onList(c.vm().weak_blocks, s));
+    std.debug.assert(heap.onList(harness.vm().gc.blocks, s));
+    std.debug.assert(!heap.onList(harness.vm().gc.weak_blocks, s));
     std.debug.assert(s.*.capacity == a.*.capacity);
 }
 
 /// `janet_array_n` copies its elements and sets count and capacity to the same
 /// value, so the result is exactly full.
 fn arrayNIsExactlyFull() void {
-    var elements = [3]types.Janet{
+    var elements = [3]repr.Value{
         harness.wrapInteger(10),
         wrap.fromKeyword(strings.cstring("k")),
         wrap.fromNil(),
     };
 
-    const a = arrays.newFrom(&elements, 3);
+    const a = arrays.newFrom(&elements);
     std.debug.assert(a.*.count == 3);
     std.debug.assert(a.*.capacity == 3);
-    std.debug.assert(harness.equals(a.*.data.?[0], elements[0]));
-    std.debug.assert(harness.equals(a.*.data.?[1], elements[1]));
-    std.debug.assert(harness.isType(a.*.data.?[2], constants.JANET_NIL));
+    std.debug.assert(harness.equals(a.*.slice()[0], elements[0]));
+    std.debug.assert(harness.equals(a.*.slice()[1], elements[1]));
+    std.debug.assert(harness.isType(a.*.slice()[2], repr.Tag.nil));
 
     // The source is copied, not aliased.
     elements[0] = harness.wrapInteger(99);
-    std.debug.assert(harness.equals(a.*.data.?[0], harness.wrapInteger(10)));
+    std.debug.assert(harness.equals(a.*.slice()[0], harness.wrapInteger(10)));
 
     // Zero elements is legal and allocates nothing to copy into.
-    const empty = arrays.newFrom(&elements, 0);
+    const empty = arrays.newFrom(elements[0..0]);
     std.debug.assert(empty.*.count == 0);
     std.debug.assert(empty.*.capacity == 0);
 }
@@ -408,12 +411,12 @@ fn arrayEnsureAppliesTheGrowthFactor() !void {
     const a = arrays.new(10);
     const before = a.*.data;
 
-    const charge = c.vm().next_collection;
+    const charge = harness.vm().gc.next_collection;
     arrays.ensure(a, 10, 2);
     arrays.ensure(a, 4, 8);
     std.debug.assert(a.*.capacity == 10);
     std.debug.assert(a.*.data == before);
-    std.debug.assert(c.vm().next_collection == charge);
+    std.debug.assert(harness.vm().gc.next_collection == charge);
 
     arrays.ensure(a, 11, 3);
     std.debug.assert(a.*.capacity == 33);
@@ -426,7 +429,7 @@ fn arrayEnsureAppliesTheGrowthFactor() !void {
     arrays.ensure(a, 500, 2);
     std.debug.assert(a.*.capacity == 1000);
     std.debug.assert(a.*.count == 1);
-    std.debug.assert(harness.equals(a.*.data.?[0], harness.wrapInteger(5)));
+    std.debug.assert(harness.equals(a.*.slice()[0], harness.wrapInteger(5)));
 }
 
 /// Growing the count fills with nil, not with zero bytes; a negative count is
@@ -435,20 +438,20 @@ fn arrayEnsureAppliesTheGrowthFactor() !void {
 fn arraySetcountPushPopPeek() !void {
     const a = arrays.new(0);
 
-    std.debug.assert(harness.isType(arrays.pop(a), constants.JANET_NIL));
-    std.debug.assert(harness.isType(arrays.peek(a), constants.JANET_NIL));
+    std.debug.assert(harness.isType(arrays.pop(a), repr.Tag.nil));
+    std.debug.assert(harness.isType(arrays.peek(a), repr.Tag.nil));
     std.debug.assert(a.*.count == 0);
 
     arrays.setcount(a, 3);
     std.debug.assert(a.*.count == 3);
-    for (0..3) |i| std.debug.assert(harness.isType(a.*.data.?[i], constants.JANET_NIL));
+    for (0..3) |i| std.debug.assert(harness.isType(a.*.slice()[i], repr.Tag.nil));
 
-    a.*.data.?[2] = harness.wrapInteger(2);
+    a.*.slice()[2] = harness.wrapInteger(2);
     arrays.setcount(a, 1);
     std.debug.assert(a.*.count == 1);
     arrays.setcount(a, 3);
     // Re-extending fills with nil again rather than exposing the old value.
-    std.debug.assert(harness.isType(a.*.data.?[2], constants.JANET_NIL));
+    std.debug.assert(harness.isType(a.*.slice()[2], repr.Tag.nil));
 
     arrays.setcount(a, -5);
     std.debug.assert(a.*.count == 3);
@@ -463,35 +466,35 @@ fn arraySetcountPushPopPeek() !void {
     std.debug.assert(a.*.count == 1);
     std.debug.assert(harness.equals(arrays.pop(a), harness.wrapInteger(1)));
     std.debug.assert(a.*.count == 0);
-    std.debug.assert(harness.isType(arrays.pop(a), constants.JANET_NIL));
+    std.debug.assert(harness.isType(arrays.pop(a), repr.Tag.nil));
 }
 
 /// The array's GC accounting, including the two asymmetries with the buffer:
 /// `janet_array_n` charges nothing, and `janet_array_ensure` charges after its
 /// allocation rather than before.
 fn arrayChargesGcPressure() void {
-    var charge = c.vm().next_collection;
+    var charge = harness.vm().gc.next_collection;
     const a = arrays.new(64);
-    std.debug.assert(c.vm().next_collection ==
-        charge + @sizeOf(types.JanetArray) + 64 * @sizeOf(types.Janet));
+    std.debug.assert(harness.vm().gc.next_collection ==
+        charge + @sizeOf(types.JanetArray) + 64 * @sizeOf(repr.Value));
 
-    charge = c.vm().next_collection;
+    charge = harness.vm().gc.next_collection;
     arrays.ensure(a, 100, 2);
     std.debug.assert(a.*.capacity == 200);
-    std.debug.assert(c.vm().next_collection == charge + (200 - 64) * @sizeOf(types.Janet));
+    std.debug.assert(harness.vm().gc.next_collection == charge + (200 - 64) * @sizeOf(repr.Value));
 
     // A capacity of zero allocates no payload, so only the block is charged.
-    charge = c.vm().next_collection;
+    charge = harness.vm().gc.next_collection;
     _ = arrays.new(0);
-    std.debug.assert(c.vm().next_collection == charge + @sizeOf(types.JanetArray));
+    std.debug.assert(harness.vm().gc.next_collection == charge + @sizeOf(types.JanetArray));
 
     // `janet_array_n` allocates a payload and charges nothing for it.
-    var elements = [_]types.Janet{wrap.fromNil()} ** 4;
-    charge = c.vm().next_collection;
-    const n = arrays.newFrom(&elements, 4);
+    var elements = [_]repr.Value{wrap.fromNil()} ** 4;
+    charge = harness.vm().gc.next_collection;
+    const n = arrays.newFrom(&elements);
     std.debug.assert(n.*.capacity == 4);
     std.debug.assert(n.*.data != null);
-    std.debug.assert(c.vm().next_collection == charge + @sizeOf(types.JanetArray));
+    std.debug.assert(harness.vm().gc.next_collection == charge + @sizeOf(types.JanetArray));
 }
 
 /// `FOUND.md`: `array/ensure` hands an unchecked growth factor through, and a
@@ -506,7 +509,7 @@ fn zeroGrowthReleasesThePayload() !void {
     std.debug.assert(a.*.count == 5);
     std.debug.assert(a.*.capacity == 6);
 
-    const charge = c.vm().next_collection;
+    const charge = harness.vm().gc.next_collection;
     arrays.ensure(a, 100, 0);
 
     // The capacity is gone and the count is not, so every element the array
@@ -519,7 +522,7 @@ fn zeroGrowthReleasesThePayload() !void {
     // followed by a wrapping multiply; `@bitCast` and `*%` are the same two
     // steps named rather than implied.
     const negative: usize = @bitCast(@as(isize, -6));
-    std.debug.assert(c.vm().next_collection == charge +% negative *% @sizeOf(types.Janet));
+    std.debug.assert(harness.vm().gc.next_collection == charge +% negative *% @sizeOf(repr.Value));
 
     // Make the array safe for the collector again before returning: the mark
     // phase walks `count` elements, and they are not there any more.
@@ -534,7 +537,7 @@ fn zeroGrowthReleasesThePayload() !void {
 /// directions.
 fn theCollectorReclaimsBoth() !void {
     gc_mark.collect();
-    const before = c.vm().block_count;
+    const before = harness.vm().gc.block_count;
 
     for (0..10) |_| {
         const b = buffers.new(1000);
@@ -543,10 +546,10 @@ fn theCollectorReclaimsBoth() !void {
         arrays.setcount(a, 1000);
         _ = arrays.weak(1000);
     }
-    std.debug.assert(c.vm().block_count == before + 30);
+    std.debug.assert(harness.vm().gc.block_count == before + 30);
 
     gc_mark.collect();
-    std.debug.assert(c.vm().block_count == before);
+    std.debug.assert(harness.vm().gc.block_count == before);
 
     // A rooted one survives the same collection, and is still usable -- which
     // is the assertion that its payload was not freed underneath it.
@@ -555,7 +558,7 @@ fn theCollectorReclaimsBoth() !void {
     gc_alloc.gcroot(wrap.fromBuffer(keep));
     gc_mark.collect();
     std.debug.assert(keep.*.count == 4);
-    std.debug.assert(std.mem.eql(u8, keep.*.data.?[0..4], "kept"));
+    std.debug.assert(std.mem.eql(u8, keep.*.slice()[0..4], "kept"));
     _ = gc_alloc.gcunroot(wrap.fromBuffer(keep));
 }
 
@@ -563,7 +566,7 @@ fn theCollectorReclaimsBoth() !void {
 /// two halves have to agree from Janet as well as from Zig. This also
 /// exercises `cfun_buffer_trim`, which calls `canRealloc`.
 fn fromJanet() void {
-    var out: types.Janet = undefined;
+    var out: repr.Value = undefined;
     const env = harness.coreEnv();
     const source =
         \\(let [b (buffer/new 100)
@@ -575,7 +578,7 @@ fn fromJanet() void {
         \\  [(length b) (string b) (length a) (array/pop a) (array/peek a)])
     ;
     std.debug.assert(core_env.dostring(env, source, "buffer-array-test", &out) == 0);
-    std.debug.assert(harness.isType(out, constants.JANET_TUPLE));
+    std.debug.assert(harness.isType(out, repr.Tag.tuple));
     const t = wrap.toTuple(out);
     std.debug.assert(harness.integerIs(t[0], 3));
     std.debug.assert(harness.stringValueIs(t[1], "abc"));
@@ -584,7 +587,60 @@ fn fromJanet() void {
     std.debug.assert(harness.integerIs(t[4], 1));
 }
 
+/// The empty case of the three collection views, which is the case a raw
+/// `data.?[0..count]` cannot express: `janet_buffer_init(b, 0)` and
+/// `janet_array_init(a, 0)` both leave `data` null, and slicing null traps
+/// even for a zero-length range.
+///
+/// Each of the three is checked at zero and then again
+/// after one element, so a view that always answered empty would fail too.
+fn theEmptyViews() !void {
+    // A collection that has never been grown: `data` is null and `count` is
+    // zero, which is what `std.mem.zeroes` and `janet_table_init(t, 0)` both
+    // leave behind. This is the case `data.?[0..count]` traps on.
+    var empty_buffer: types.JanetBuffer = .{};
+    std.debug.assert(empty_buffer.data == null);
+    std.debug.assert(empty_buffer.slice().len == 0);
+    std.debug.assert(empty_buffer.reserved().len == 0);
+    std.debug.assert(empty_buffer.spare().len == 0);
+
+    var empty_array: types.JanetArray = .{};
+    std.debug.assert(empty_array.data == null);
+    std.debug.assert(empty_array.slice().len == 0);
+    std.debug.assert(empty_array.reserved().len == 0);
+
+    var empty_table: types.JanetTable = .{};
+    std.debug.assert(empty_table.data == null);
+    std.debug.assert(empty_table.slots().len == 0);
+
+    // And the non-empty case beside it, so that a view which always answered
+    // the empty slice would fail here rather than pass both halves.
+    const b = buffers.new(0);
+    try buffers.pushU8(b, 'q');
+    std.debug.assert(b.*.slice().len == 1);
+    std.debug.assert(b.*.slice()[0] == 'q');
+    std.debug.assert(b.*.reserved().len == @as(usize, @intCast(b.*.capacity)));
+    std.debug.assert(b.*.spare().len == @as(usize, @intCast(b.*.capacity - 1)));
+
+    const a = arrays.new(0);
+    std.debug.assert(a.*.slice().len == 0);
+    try arrays.push(a, harness.wrapInteger(7));
+    std.debug.assert(a.*.slice().len == 1);
+    std.debug.assert(harness.integerIs(a.*.slice()[0], 7));
+
+    // A table's view is its *slot* array, so it is `capacity` long rather
+    // than `count` long -- which is the reason it is not called `slice`.
+    var table: types.JanetTable = .{};
+    _ = tables.initRaw(&table, 4);
+    tables.put(&table, harness.wrapInteger(1), harness.wrapInteger(2));
+    std.debug.assert(table.count == 1);
+    std.debug.assert(table.slots().len == @as(usize, @intCast(table.capacity)));
+    std.debug.assert(table.slots().len > table.count);
+    tables.deinit(&table);
+}
+
 fn body() !void {
+    try theEmptyViews();
     bufferStartsWithACapacityFloor();
     try callerOwnedBufferIsDisabled();
     try pointerBufferNeverReallocates();

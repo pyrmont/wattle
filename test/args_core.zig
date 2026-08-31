@@ -1,11 +1,11 @@
 //! Behavioral contract for the argument extraction layer.
 //!
 //! What is under test is a set of decisions and a set of messages, and the two
-//! are checked separately because the port separates them. The kernels decide
+//! are checked separately because the layer separates them. The kernels decide
 //! and fill in a `JanetArgFault`; `raiseFault` renders it. So every case below
 //! drives a getter and compares the payload byte for byte, which is the only
 //! way to show that a fault code plus a slot really does reconstruct the
-//! message the C original raised.
+//! message Janet raises.
 //!
 //! The suites reach almost none of this. A Janet program that calls a
 //! cfunction with the wrong argument sees one of these messages and stops, so
@@ -16,22 +16,19 @@
 //! Two behaviors are pinned rather than asserted as correct. `janet_checkfloat`
 //! tests against `FLT_MIN`, so `getFloat` rejects zero and every negative
 //! number; and `getFlags` silently ignores a permitted set longer than 64
-//! characters. Both are in `FOUND.md`, both are reproduced by the port, and
+//! characters. Both are in `FOUND.md`, both are reproduced, and
 //! both are pinned so that a later fix has to be deliberate.
 //!
-//! ## What the migration changed, and the defect it found
+//! ## The largest abi family in the tree
 //!
-//! **Every getter here is called by import.** This is the largest abi family
-//! in the tree — seventy-odd `janet_get*` and `janet_opt*` exports, each a
-//! `raise.panicking` wrapper — and *none of them may be retired*, because they
-//! are exactly what `janet.h` promises an embedder. So this migration retires
-//! no abi at all and instead adds seventy names to the exported-symbol-surface
-//! bullet's list of public exports with no in-tree caller: the runtime reaches
-//! the layer through `arglayer.zig`, and the only Zig callers left are
-//! `interop.zig` and `native_module.zig`, which wrap each in `raise.crossing`
-//! deliberately.
+//! **Every getter here is called by import.** Seventy-odd `janet_get*` and
+//! `janet_opt*` exports are each a `raise.panicking` wrapper, and *none of
+//! them may be retired*, because they are exactly what an embedder is
+//! promised. So the runtime reaches the layer by import and the only Zig
+//! callers of the abis are `interop.zig` and `native_module.zig`, which wrap
+//! each in `raise.crossing` deliberately.
 //!
-//! **Writing the file found a live defect, and it was in a caller.** The C
+//! **Writing this file found a live defect, and it was in a caller.** A C
 //! contract skipped `janet_getinteger64` and `janet_getuinteger64` whenever
 //! `JANET_INT_TYPES` was defined, which is the default — its `EXPECTED_PANICS`
 //! is 70 with integer types and 74 without — because in that configuration
@@ -54,6 +51,7 @@
 const std = @import("std");
 const config = @import("config");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const raise = @import("raise");
@@ -85,8 +83,8 @@ const assert = std.debug.assert;
 fn refusal(function: anytype, arguments: anytype) harness.Raise {
     const r = harness.raised(function, arguments) orelse
         @panic("expected a refusal, got a return");
-    assert(r.signal == constants.JANET_SIGNAL_ERROR);
-    assert(harness.isType(r.payload, constants.JANET_STRING));
+    assert(r.signal == types.Signal.@"error");
+    assert(harness.isType(r.payload, repr.Tag.string));
     return r;
 }
 
@@ -112,11 +110,11 @@ fn refusesWithPrefix(function: anytype, arguments: anytype, prefix: []const u8) 
     }
 }
 
-/// Was a conversion, and is the identity since Phase 12 increment 5h: the
-/// argument layer takes a slice, so a contract hands it the slice it built.
-/// Kept as a name because sixty call sites read `slots(&.{ ... })` and the
-/// word is what says "an argument vector" at each of them.
-fn slots(argv: []const types.Janet) []const types.Janet {
+/// The identity: the argument layer takes a slice, so a contract hands it the
+/// slice it built. Kept as a name because sixty call sites read
+/// `slots(&.{ ... })` and the word is what says "an argument vector" at each
+/// of them.
+fn slots(argv: []const repr.Value) []const repr.Value {
     return argv;
 }
 
@@ -142,7 +140,7 @@ fn arityIsCheckedAtBothBounds() raise.Raising(void) {
 // ------------------------------------------------------------- type faults
 
 fn everyTypeGetterNamesItsSlotAndItsType() raise.Raising(void) {
-    var argv = [_]types.Janet{
+    var argv = [_]repr.Value{
         wrap.fromNil(),
         harness.wrapInteger(7),
         value.fromBytes("hello", .string),
@@ -180,13 +178,13 @@ fn everyTypeGetterNamesItsSlotAndItsType() raise.Raising(void) {
     // where the data and the length come from.
     assert(try args.getNumber(a, 1) == 7.0);
     assert(harness.stringIs(try args.getString(a, 2), "hello"));
-    assert(try args.getBoolean(a, 3) == 1);
+    assert(try args.getBoolean(a, 3));
 }
 
 // --------------------------------------------------------- numeric getters
 
 fn everyExpectationCodeHasItsOwnNoun() raise.Raising(void) {
-    var argv = [_]types.Janet{
+    var argv = [_]repr.Value{
         wrap.fromNil(),
         wrap.fromNumber(1.5),
         wrap.fromNumber(-1.0),
@@ -236,7 +234,7 @@ fn everyExpectationCodeHasItsOwnNoun() raise.Raising(void) {
 /// The boundaries of each width, taken from both sides, because an off-by-one
 /// in a range test is invisible to every other test here.
 fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
-    var argv = [_]types.Janet{wrap.fromNil()};
+    var argv = [_]repr.Value{wrap.fromNil()};
 
     // `ACCEPTS` and `REJECTS`, which the C original spelled as two macros over
     // a getter name. A Zig contract cannot pass a generic function as a value
@@ -244,16 +242,16 @@ fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
     // these take it as an `anytype` parameter instead, which is the same thing
     // one indirection later.
     const Case = struct {
-        fn accepts(argv_slot: *types.Janet, getter: anytype, val: f64, expected: anytype) void {
+        fn accepts(argv_slot: *repr.Value, getter: anytype, val: f64, expected: anytype) void {
             argv_slot.* = wrap.fromNumber(val);
-            const got = getter(slots(@as(*const [1]types.Janet, argv_slot)), 0) catch
+            const got = getter(slots(@as(*const [1]repr.Value, argv_slot)), 0) catch
                 @panic("expected a value, got a refusal");
             assert(got == expected);
         }
 
-        fn rejects(argv_slot: *types.Janet, getter: anytype, val: f64) void {
+        fn rejects(argv_slot: *repr.Value, getter: anytype, val: f64) void {
             argv_slot.* = wrap.fromNumber(val);
-            const a2 = slots(@as(*const [1]types.Janet, argv_slot));
+            const a2 = slots(@as(*const [1]repr.Value, argv_slot));
             assert(harness.raised(getter, .{ a2[0..1], @as(i32, 0) }) != null);
         }
     };
@@ -324,11 +322,11 @@ fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
 /// positive *normal* float rather than the most negative finite one. So
 /// `getFloat` rejects zero, every negative value, and every subnormal, and
 /// accepts only positive normals that survive a round trip through `f32`.
-/// This is a defect in the C implementation, recorded in `FOUND.md`, and it is
-/// pinned rather than asserted as correct: the port reproduces it, and a later
-/// fix has to be a deliberate change to this test.
+/// This is a defect in Janet, recorded in `FOUND.md`, and it is pinned rather
+/// than asserted as correct: the behaviour is reproduced, and a later fix has
+/// to be a deliberate change to this test.
 fn getFloatRejectsZeroAndNegatives() raise.Raising(void) {
-    var argv = [_]types.Janet{wrap.fromNumber(1.5)};
+    var argv = [_]repr.Value{wrap.fromNumber(1.5)};
     const a = slots(&argv);
     assert(try args.getFloat(a, 0) == 1.5);
 
@@ -352,7 +350,7 @@ fn getFloatRejectsZeroAndNegatives() raise.Raising(void) {
 // ----------------------------------------------------------------- ranges
 
 fn theTwoFoldingsDifferInOneEnd() raise.Raising(void) {
-    var argv = [_]types.Janet{
+    var argv = [_]repr.Value{
         harness.wrapInteger(0),
         harness.wrapInteger(3),
         harness.wrapInteger(-1),
@@ -410,7 +408,7 @@ fn theTwoFoldingsDifferInOneEnd() raise.Raising(void) {
 }
 
 fn getSliceCollapsesAnInvertedRange() raise.Raising(void) {
-    var argv = [_]types.Janet{ wrap.fromNil(), wrap.fromNil(), wrap.fromNil() };
+    var argv = [_]repr.Value{ wrap.fromNil(), wrap.fromNil(), wrap.fromNil() };
     const array = arrays.new(0);
     harness.arrayPush(array, harness.wrapInteger(1));
     harness.arrayPush(array, harness.wrapInteger(2));
@@ -439,7 +437,7 @@ fn getSliceCollapsesAnInvertedRange() raise.Raising(void) {
     refuses(args.getSlice, .{a[0..0]}, "arity mismatch, expected at least 1, got 0");
     refuses(
         args.getSlice,
-        .{slots(&[_]types.Janet{ argv[0], argv[1], argv[2], argv[2] })},
+        .{slots(&[_]repr.Value{ argv[0], argv[1], argv[2], argv[2] })},
         "arity mismatch, expected at most 3, got 4",
     );
 }
@@ -447,7 +445,7 @@ fn getSliceCollapsesAnInvertedRange() raise.Raising(void) {
 // ------------------------------------------------------------------ flags
 
 fn eachCharacterContributesTheBitAtItsPosition() raise.Raising(void) {
-    var argv = [_]types.Janet{ value.fromBytes("acb", .keyword), value.fromBytes("z", .keyword) };
+    var argv = [_]repr.Value{ value.fromBytes("acb", .keyword), value.fromBytes("z", .keyword) };
     const a = slots(&argv);
 
     // Each character contributes the bit at its position in the permitted set,
@@ -486,7 +484,7 @@ fn eachCharacterContributesTheBitAtItsPosition() raise.Raising(void) {
 // ------------------------------------------------------------- byte access
 
 fn theByteAndCstringShapes() raise.Raising(void) {
-    var argv = [_]types.Janet{
+    var argv = [_]repr.Value{
         value.fromBytes("hi", .string),
         wrap.fromBuffer(buffers.new(8)),
         value.fromBytes("kw", .keyword),
@@ -541,10 +539,9 @@ fn cbytesCopiesAFullNoReallocBuffer() raise.Raising(void) {
 
     // **Not `janet_buffer_init`.** That is for a buffer the caller owns: it
     // sets `gc.data.next = null` and `gc.flags = JANET_MEM_DISABLED`, which on
-    // a *collectable* buffer writes through the block at the head of
-    // `janet_vm.blocks` and severs the heap list behind it. This contract did
-    // that for the whole of Phase 11 and orphaned eighty-four blocks, which is
-    // the eighty-eight `leaks --atExit` has been reporting since Part 1.
+    // a *collectable* buffer writes through the block at the head of the heap
+    // list and severs it. This contract did that and orphaned eighty-four
+    // blocks, which is what a leak check had been reporting.
     //
     // `janet_buffer_deinit` alone is what this needs: it frees the payload and
     // nulls the pointer, leaving the block on the list and its type intact.
@@ -561,7 +558,7 @@ fn cbytesCopiesAFullNoReallocBuffer() raise.Raising(void) {
     gc_alloc.gcroot(wrap.fromBuffer(b));
     defer _ = gc_alloc.gcunroot(wrap.fromBuffer(b));
 
-    var argv = [_]types.Janet{wrap.fromBuffer(b)};
+    var argv = [_]repr.Value{wrap.fromBuffer(b)};
     const s = try args.getCBytes(slots(&argv), 0);
     assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(s))), "abc"));
     // The copy is a separate allocation, not the buffer's own storage.
@@ -578,47 +575,45 @@ fn cbytesCopiesAFullNoReallocBuffer() raise.Raising(void) {
 
 // ---------------------------------------------------------------- abstract
 
-const probe_at: AbstractType = .{ .name = "args-core/probe" };
-const other_at: AbstractType = .{ .name = "args-core/other" };
+const probe_at = abstract_type.define(anyopaque, .{ .name = "args-core/probe" });
+const other_at = abstract_type.define(anyopaque, .{ .name = "args-core/other" });
 
 /// A `bytes` callback, which the hinge left non-raising because it is reached
-/// from paths that cannot act on a refusal. So this is an ordinary
-/// `callconv(.c)` function and the C contract's `CONTRACT_AT` pool is not
-/// needed to install it.
-fn probeBytes(p: ?*anyopaque, len: usize) callconv(.c) types.JanetByteView {
-    _ = len;
+/// from paths that cannot act on a refusal. So it is an ordinary Zig function
+/// -- `define` supplies the calling convention along with the cast.
+fn probeBytes(p: *const anyopaque, _: usize) types.JanetByteView {
     return .{ .bytes = @ptrCast(p), .len = 3 };
 }
 
-const probe_bytes_at: AbstractType = .{ .name = "args-core/bytes-probe", .bytes = probeBytes };
+const probe_bytes_at = abstract_type.define(anyopaque, .{ .name = "args-core/bytes-probe", .bytes = probeBytes });
 
 fn theAbstractGettersAndTheBytesCallback() raise.Raising(void) {
-    const p = abstracts.new(abstract_type.stored(&probe_at), 4);
-    const q = abstracts.new(abstract_type.stored(&probe_bytes_at), 4);
+    const p = abstracts.new(&probe_at, 4);
+    const q = abstracts.new(&probe_bytes_at, 4);
     @memcpy(@as([*]u8, @ptrCast(q))[0..3], "xyz");
 
-    var argv = [_]types.Janet{
+    var argv = [_]repr.Value{
         wrap.fromAbstract(p),
         wrap.fromAbstract(q),
         wrap.fromNil(),
     };
     const a = slots(&argv);
 
-    assert(try args.getAbstract(a, 0, abstract_type.stored(&probe_at)) == p);
-    assert(args_core.checkabstract(argv[0], abstract_type.stored(&probe_at)) == p);
+    assert(try args.getAbstract(a, 0, &probe_at) == p);
+    assert(args_core.checkabstract(argv[0], &probe_at) == p);
     // `checkabstract` reports the mismatch by returning null rather than by
     // raising: it is the same decision with the other half discarded.
-    assert(args_core.checkabstract(argv[0], abstract_type.stored(&other_at)) == null);
-    assert(args_core.checkabstract(argv[2], abstract_type.stored(&probe_at)) == null);
+    assert(args_core.checkabstract(argv[0], &other_at) == null);
+    assert(args_core.checkabstract(argv[2], &probe_at) == null);
 
     refusesWithPrefix(
         args.getAbstract,
-        .{ a, 0, abstract_type.stored(&other_at) },
+        .{ a, 0, &other_at },
         "bad slot #0, expected args-core/other, got <args-core/probe 0x",
     );
     refuses(
         args.getAbstract,
-        .{ a, 2, abstract_type.stored(&probe_at) },
+        .{ a, 2, &probe_at },
         "bad slot #2, expected args-core/probe, got nil",
     );
 
@@ -634,15 +629,15 @@ fn theAbstractGettersAndTheBytesCallback() raise.Raising(void) {
         "bad slot #0, expected string, symbol, keyword or buffer, got <args-core/probe 0x",
     );
 
-    assert(try args.optAbstract(a, 0, abstract_type.stored(&probe_at), null) == p);
-    assert(try args.optAbstract(a, 2, abstract_type.stored(&probe_at), p) == p);
-    assert(try args.optAbstract(a[0..1], 2, abstract_type.stored(&probe_at), p) == p);
+    assert(try args.optAbstract(a, 0, &probe_at, null) == p);
+    assert(try args.optAbstract(a, 2, &probe_at, p) == p);
+    assert(try args.optAbstract(a[0..1], 2, &probe_at, p) == p);
 }
 
 // -------------------------------------------------------------- defaulting
 
 fn pastTheEndAndAnExplicitNilBothMeanTheDefault() raise.Raising(void) {
-    var argv = [_]types.Janet{
+    var argv = [_]repr.Value{
         harness.wrapInteger(5),
         wrap.fromNil(),
         value.fromBytes("s", .string),
@@ -663,7 +658,7 @@ fn pastTheEndAndAnExplicitNilBothMeanTheDefault() raise.Raising(void) {
     assert(harness.stringIs(@ptrCast(try args.optCString(a, 2, "d")), "s"));
     assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.optCString(a, 1, "d")))), "d"));
     assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.optCBytes(a, 1, "d")))), "d"));
-    assert(try args.optBoolean(a, 1, 1) == 1);
+    assert(try args.optBoolean(a, 1, true));
     assert(try args.optPointer(a, 1, null) == null);
     assert(try args.optCFunction(a, 1, null) == null);
     assert(try args.optFiber(a, 1, null) == null);
@@ -712,13 +707,13 @@ fn theThreeStrlikeComparisonsCheckTheTypeToo() void {
 
 // ---------------------------------------------------------------- methods
 
-fn methodOne(argv: []types.Janet) raise.Raising(types.Janet) {
+fn methodOne(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(1);
 }
 
-fn methodTwo(argv: []types.Janet) raise.Raising(types.Janet) {
+fn methodTwo(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(2);
@@ -751,17 +746,17 @@ fn nextmethodIsAnIterator() void {
     k = args_core.nextmethod(&methods, k);
     assert(args_core.keyeq(k, "two") != 0);
     k = args_core.nextmethod(&methods, k);
-    assert(harness.isType(k, constants.JANET_NIL));
-    assert(harness.isType(args_core.nextmethod(&methods, value.fromBytes("nope", .keyword)), constants.JANET_NIL));
+    assert(harness.isType(k, repr.Tag.nil));
+    assert(harness.isType(args_core.nextmethod(&methods, value.fromBytes("nope", .keyword)), repr.Tag.nil));
 }
 
 // ------------------------------------------------------------- predicates
 
 /// The ten check functions are public API in their own right, and `getSize` is
 /// the only caller of `janet_checksize` that could otherwise show a
-/// disagreement. The C original casts to `size_t` before testing, which is
-/// undefined for a negative or enormous double; the port tests before casting.
-/// Every input either language defines has to reach the same answer.
+/// disagreement. Janet casts to `size_t` before testing, which is undefined
+/// for a negative or enormous double; this tests before casting. Every input
+/// either language defines has to reach the same answer.
 fn thePredicatesAgreeWithTheGetters() void {
     assert(args_core.checkint(harness.wrapInteger(0)) != 0);
     assert(args_core.checkint(wrap.fromNil()) == 0);
@@ -793,7 +788,7 @@ fn thePredicatesAgreeWithTheGetters() void {
 // them. Their failure is a return value rather than a fault.
 
 fn theViewHelpersAnswerFalseRatherThanRefusing() void {
-    var items: ?[*]const types.Janet = undefined;
+    var items: ?[*]const repr.Value = undefined;
     var bytes: ?[*]const u8 = undefined;
     var kvs: ?[*]const types.JanetKV = undefined;
     var len: i32 = 0;
@@ -803,7 +798,7 @@ fn theViewHelpersAnswerFalseRatherThanRefusing() void {
     harness.arrayPush(array, harness.wrapInteger(1));
     assert(args_core.indexedView(wrap.fromArray(array), &items, &len) != 0);
     assert(len == 1);
-    const tuple = wrap.fromTuple(tuples.newFrom(items, 1));
+    const tuple = wrap.fromTuple(tuples.newFrom(items.?[0..1]));
     assert(args_core.indexedView(tuple, &items, &len) != 0);
     assert(len == 1);
     assert(args_core.indexedView(wrap.fromNil(), &items, &len) == 0);

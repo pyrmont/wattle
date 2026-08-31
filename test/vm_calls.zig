@@ -29,31 +29,27 @@
 //! argument by the callee rather than the other way round. Both are invisible
 //! to a test that only checks that something came back.
 //!
-//! ## What the migration changed
+//! ## What only a contract inside the compilation can do
 //!
-//! **The panic counter is gone**, for the reason `vm_lifecycle` gives: it
-//! existed because an `EXPECT_PANIC` macro that silently stopped firing looked
+//! **There is no panic counter**, for the reason `vm_lifecycle` gives: it
+//! exists because an `EXPECT_PANIC` macro that silently stops firing looks
 //! like a pass, and `harness.raised` answers null instead.
 //!
-//! **`CONTRACT_AT` is gone and nothing replaced it.** The C contract needed
-//! `janet_contract_abstract_type` for all three of its abstract types, because
-//! a `JanetAbstractType`'s `call`, `get` and `tostring` callbacks are
-//! Zig-ABI-and-raising since Phase 10 Part 17g and C cannot define one. A Zig
-//! contract writes the callback, which is Part 10's lesson 27 arriving again:
-//! the shims that made this group look expensive are exactly the part that
-//! costs nothing.
+//! **There is no adapter pool.** A `JanetAbstractType`'s `call`, `get` and
+//! `tostring` callbacks are Zig's and raising, so C can define none of them
+//! and a C contract needs a pool of pre-built tables for all three of this
+//! file's abstract types. A Zig contract writes the callback.
 //!
 //! **The last raise-through-a-fill-loop case stays as one and is a raise.**
-//! `loudTostring` panics from inside `fillString`, which under the C driver
-//! was a `longjmp` crossing a Zig frame and is now `error.JanetSignal`
-//! returning through it. The half that drove `fillTable` through a raising
-//! `hash` went at the hinge and is not reinstated: `hash` is typed non-raising
+//! `loudTostring` raises from inside `fillString`, and the raise returns
+//! through the frame rather than jumping past it. The half that drove
+//! `fillTable` through a raising `hash` is not reinstated: `hash` is typed
+//! non-raising
 //! because comparisons must be total, so the callback has no way out.
 
 const std = @import("std");
 const types = @import("types");
-const constants = @import("constants");
-const c = @import("cabi");
+const repr = @import("repr");
 const raise = @import("raise");
 const harness = @import("harness.zig");
 
@@ -82,16 +78,16 @@ const assert = std.debug.assert;
 
 var test_env: ?*types.JanetTable = null;
 
-fn kw(name: [*:0]const u8) types.Janet {
+fn kw(name: [*:0]const u8) repr.Value {
     return value.fromBytes(std.mem.span(name), .keyword);
 }
 
-fn intv(i: i32) types.Janet {
+fn intv(i: i32) repr.Value {
     return harness.wrapInteger(i);
 }
 
-fn isNil(x: types.Janet) bool {
-    return harness.isType(x, constants.JANET_NIL);
+fn isNil(x: repr.Value) bool {
+    return harness.isType(x, repr.Tag.nil);
 }
 
 /// The refusal a call made. Named rather than spelled at each site so that the
@@ -104,7 +100,7 @@ fn refusal(function: anytype, args: anytype) harness.Raise {
 /// hold live across calls that intern keywords and compile source, either of
 /// which can collect, and a Janet value in a Zig local is not a root. The
 /// process is short enough that never releasing them costs nothing.
-fn eval(source: [*:0]const u8) types.Janet {
+fn eval(source: [*:0]const u8) repr.Value {
     var out = wrap.fromNil();
     assert(core_env.dostring(test_env.?, source, "vm-calls-test", &out) == 0);
     gc_alloc.gcroot(out);
@@ -114,7 +110,7 @@ fn eval(source: [*:0]const u8) types.Janet {
 /// A fiber with a run of arguments pushed onto it, in the state `run_vm`
 /// leaves before `JOP_CALL`: `stackstart` marks where the arguments begin and
 /// `stacktop` where they end.
-fn fiberWithArgs(argv: []const types.Janet) raise.Raising(*types.JanetFiber) {
+fn fiberWithArgs(argv: []const repr.Value) raise.Raising(*types.JanetFiber) {
     const fiber = fibers.new(wrap.toFunction(eval("(fn [] nil)")), 32, 0, null).?;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     fiber.*.stackstart = fiber.*.stacktop;
@@ -124,7 +120,7 @@ fn fiberWithArgs(argv: []const types.Janet) raise.Raising(*types.JanetFiber) {
 
 // ------------------------------------------------------- cfunction fixtures
 
-fn cfunSum(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunSum(argv: []repr.Value) raise.Raising(repr.Value) {
     var total: f64 = 0;
     var i: i32 = 0;
     while (i < @as(i32, @intCast(argv.len))) : (i += 1) total += try args_core.getNumber(argv, i);
@@ -132,59 +128,52 @@ fn cfunSum(argv: []types.Janet) raise.Raising(types.Janet) {
 }
 
 /// Returns its arguments as a tuple, so a caller can assert their order.
-fn cfunArgs(argv: []types.Janet) raise.Raising(types.Janet) {
-    return wrap.fromTuple(tuples.newFrom(argv.ptr, @as(i32, @intCast(argv.len))));
+fn cfunArgs(argv: []repr.Value) raise.Raising(repr.Value) {
+    return wrap.fromTuple(tuples.newFrom(argv));
 }
 
-const cfuns = [_]types.JanetReg{
+const cfuns = [_]types.Reg{
     .{ .name = "vmcalls/sum", .cfun = raise.stored(&cfunSum), .documentation = null },
     .{ .name = "vmcalls/args", .cfun = raise.stored(&cfunArgs), .documentation = null },
     .{ .name = "vmcalls/contract", .cfun = raise.stored(&cfunContract), .documentation = null },
-    .{ .name = null, .cfun = null, .documentation = null },
 };
 
 // -------------------------------------------------------- abstract fixtures
 
 /// Callable: its `call` callback answers with its own argument count, so a
 /// test can tell it apart from the indexed fallback.
-fn callableCall(p: ?*anyopaque, argc: i32, argv: [*]types.Janet) raise.Error!types.Janet {
-    _ = p;
-    _ = argv;
-
-    return harness.wrapInteger(argc);
+fn callableCall(_: *anyopaque, argv: []repr.Value) raise.Error!repr.Value {
+    return harness.wrapInteger(@intCast(argv.len));
 }
 
-const at_callable: AbstractType = .{ .name = "vm-calls/callable", .call = &callableCall };
+const at_callable = abstract_type.define(anyopaque, .{ .name = "vm-calls/callable", .call = &callableCall });
 
 /// Indexable: no `call`, so `methodInvoke` falls out of the abstract arm into
 /// the arity check and `janet_in`.
-fn indexableGet(p: ?*anyopaque, key: types.Janet, out: *types.Janet) raise.Error!c_int {
-    _ = p;
+fn indexableGet(_: *anyopaque, key: repr.Value, out: *repr.Value) raise.Error!c_int {
     if (args_core_mod.checkint(key) == 0) return 0;
     out.* = harness.wrapInteger(wrap.toInteger(key) * 10);
     return 1;
 }
 
-const at_indexable: AbstractType = .{ .name = "vm-calls/indexable", .get = &indexableGet };
+const at_indexable = abstract_type.define(anyopaque, .{ .name = "vm-calls/indexable", .get = &indexableGet });
 
 /// Raises from `tostring`, which `fillString` reaches through
 /// `janet_to_string_b`.
-fn loudTostring(p: ?*anyopaque, buffer: *types.JanetBuffer) raise.Error!void {
-    _ = p;
-    _ = buffer;
+fn loudTostring(_: *anyopaque, _: *types.JanetBuffer) raise.Error!void {
     return raise.panic("tostring raised");
 }
 
-const at_loud_string: AbstractType = .{ .name = "vm-calls/loud-string", .tostring = &loudTostring };
+const at_loud_string = abstract_type.define(anyopaque, .{ .name = "vm-calls/loud-string", .tostring = &loudTostring });
 
-var callable_value: types.Janet = undefined;
-var indexable_value: types.Janet = undefined;
-var loud_string_value: types.Janet = undefined;
+var callable_value: repr.Value = undefined;
+var indexable_value: repr.Value = undefined;
+var loud_string_value: repr.Value = undefined;
 
 fn makeAbstracts() void {
-    callable_value = wrap.fromAbstract(abstracts.new(abstract_type.stored(&at_callable), 1));
-    indexable_value = wrap.fromAbstract(abstracts.new(abstract_type.stored(&at_indexable), 1));
-    loud_string_value = wrap.fromAbstract(abstracts.new(abstract_type.stored(&at_loud_string), 1));
+    callable_value = wrap.fromAbstract(abstracts.new(&at_callable, 1));
+    indexable_value = wrap.fromAbstract(abstracts.new(&at_indexable, 1));
+    loud_string_value = wrap.fromAbstract(abstracts.new(&at_loud_string, 1));
     gc_alloc.gcroot(callable_value);
     gc_alloc.gcroot(indexable_value);
     gc_alloc.gcroot(loud_string_value);
@@ -193,9 +182,9 @@ fn makeAbstracts() void {
 // ------------------------------------------------------------ methodInvoke
 
 fn invokeACfunction() raise.Raising(void) {
-    var argv = [_]types.Janet{ intv(1), intv(2), intv(4) };
+    var argv = [_]repr.Value{ intv(1), intv(2), intv(4) };
     const callee = eval("vmcalls/sum");
-    assert(harness.isType(callee, constants.JANET_CFUNCTION));
+    assert(harness.isType(callee, repr.Tag.cfunction));
     assert(wrap.toNumber(try vm_calls.methodInvoke(callee, argv[0..3])) == 7);
     // Arity is the callee's business, not this layer's: zero arguments reach
     // the cfunction rather than the arity check below.
@@ -203,14 +192,14 @@ fn invokeACfunction() raise.Raising(void) {
 }
 
 fn invokeAFunction() raise.Raising(void) {
-    var argv = [_]types.Janet{ intv(3), intv(4) };
+    var argv = [_]repr.Value{ intv(3), intv(4) };
     const callee = eval("(fn [a b] (* a b))");
-    assert(harness.isType(callee, constants.JANET_FUNCTION));
+    assert(harness.isType(callee, repr.Tag.function));
     assert(wrap.toNumber(try vm_calls.methodInvoke(callee, argv[0..2])) == 12);
 }
 
 fn invokeAnAbstractWithACallCallback() raise.Raising(void) {
-    var argv = [_]types.Janet{ intv(1), intv(1), intv(1) };
+    var argv = [_]repr.Value{ intv(1), intv(1), intv(1) };
     // The callback answers with argc, so this also shows that the arity check
     // below is not reached: three arguments would have failed it.
     assert(wrap.toNumber(try vm_calls.methodInvoke(callable_value, argv[0..3])) == 3);
@@ -222,7 +211,7 @@ fn invokeAnAbstractWithACallCallback() raise.Raising(void) {
 }
 
 fn anAbstractWithoutCallFallsThroughToIndexing() raise.Raising(void) {
-    var argv = [_]types.Janet{ intv(4), intv(5) };
+    var argv = [_]repr.Value{ intv(4), intv(5) };
     assert(wrap.toNumber(try vm_calls.methodInvoke(indexable_value, argv[0..1])) == 40);
     // Having fallen through, it is subject to the arity check the six indexed
     // types share. The message renders an abstract with its address, so this
@@ -230,14 +219,14 @@ fn anAbstractWithoutCallFallsThroughToIndexing() raise.Raising(void) {
     // C contract's second `EXPECT_PANIC_PREFIX` macro.
     const r = refusal(vm_calls.methodInvoke, .{ indexable_value, argv[0..2] });
     assert(r.beginsWith("<vm-calls/indexable "));
-    assert(harness.isType(r.payload, constants.JANET_STRING));
+    assert(harness.isType(r.payload, repr.Tag.string));
     const message = wrap.toString(r.payload);
     const length: usize = @intCast(types.stringHead(message).length);
     assert(std.mem.endsWith(u8, message[0..length], " called with 2 arguments, possibly expected 1"));
 }
 
 fn invokeEachIndexedType() raise.Raising(void) {
-    var key = [_]types.Janet{kw("a")};
+    var key = [_]repr.Value{kw("a")};
     assert(wrap.toNumber(try vm_calls.methodInvoke(eval("@{:a 1}"), key[0..1])) == 1);
     assert(wrap.toNumber(try vm_calls.methodInvoke(eval("{:a 2}"), key[0..1])) == 2);
     key[0] = intv(1);
@@ -248,7 +237,7 @@ fn invokeEachIndexedType() raise.Raising(void) {
 }
 
 fn theIndexedArityCheck() void {
-    var argv = [_]types.Janet{ intv(0), intv(0) };
+    var argv = [_]repr.Value{ intv(0), intv(0) };
     assert(refusal(vm_calls.methodInvoke, .{ eval("\"ab\""), argv[0..2] })
         .says("\"ab\" called with 2 arguments, possibly expected 1"));
     assert(refusal(vm_calls.methodInvoke, .{ eval("\"ab\""), &.{} })
@@ -256,29 +245,28 @@ fn theIndexedArityCheck() void {
 }
 
 fn theDefaultArmReversesTheLookup() raise.Raising(void) {
-    var argv = [_]types.Janet{eval("{:a 11}")};
+    var argv = [_]repr.Value{eval("{:a 11}")};
     // A keyword callee indexes its argument, not the other way round: this is
     // what makes `(:a struct)` work.
     assert(wrap.toNumber(try vm_calls.methodInvoke(kw("a"), argv[0..1])) == 11);
     // Any other unlisted type takes the same arm. A number is not a key of
     // that struct, so the answer is nil rather than a refusal.
     assert(isNil(try vm_calls.methodInvoke(intv(5), argv[0..1])));
-    var three = [_]types.Janet{ argv[0], argv[0], argv[0] };
+    var three = [_]repr.Value{ argv[0], argv[0], argv[0] };
     assert(refusal(vm_calls.methodInvoke, .{ kw("a"), &three })
         .says(":a called with 3 arguments, possibly expected 1"));
 }
 
 // ------------------------------------------------------------ methodLookup
 
-/// Raising since Phase 11 Part 15, which is rule 33's corollary arriving from
-/// the runtime side: `methodLookup` reached `janet_get` through the abi,
-/// and every one of its four callers is `raise.Raising`, so an abstract's
-/// `get` refusing became a report nobody consumed. The three cases here answer
-/// rather than raise, so each is a `try`; the refusal that motivated the change
-/// is asserted below.
+/// Raising, and it must be: `methodLookup` reaching `janet_get` through the
+/// abi makes an abstract's `get` refusing into a report nobody consumes, and
+/// every one of its four callers is `raise.Raising`. The three cases here
+/// answer rather than raise, so each is a `try`; the refusal that motivated
+/// the change is asserted below.
 fn methodLookup() raise.Raising(void) {
     const found = try vm_calls.methodLookup(eval("@{:m vmcalls/sum}"), "m");
-    assert(harness.isType(found, constants.JANET_CFUNCTION));
+    assert(harness.isType(found, repr.Tag.cfunction));
     assert(isNil(try vm_calls.methodLookup(eval("@{:m 1}"), "other")));
     // A value with no keys at all answers nil rather than raising, which is
     // what lets the operator fallbacks try the other operand.
@@ -288,7 +276,7 @@ fn methodLookup() raise.Raising(void) {
 // -------------------------------------------------------------------- mcall
 
 fn mcall() raise.Raising(void) {
-    var argv = [_]types.Janet{ eval("@{:sum (fn [self a b] (+ a b))}"), intv(2), intv(3) };
+    var argv = [_]repr.Value{ eval("@{:sum (fn [self a b] (+ a b))}"), intv(2), intv(3) };
     // The receiver is passed to the method as its first argument, which is why
     // the method takes three parameters for a two-argument call.
     assert(wrap.toNumber(try vm_calls.mcall("sum", argv[0..3])) == 5);
@@ -336,10 +324,10 @@ fn binopCallWithNeitherMethod() void {
 // ----------------------------------------------------------- resolveMethod
 
 fn resolveMethod() raise.Raising(void) {
-    var args = [_]types.Janet{ eval("@{:m vmcalls/sum}"), intv(1) };
+    var args = [_]repr.Value{ eval("@{:m vmcalls/sum}"), intv(1) };
     var fiber = try fiberWithArgs(&args);
     const callee = try vm_calls.resolveMethod(kw("m"), fiber);
-    assert(harness.isType(callee, constants.JANET_CFUNCTION));
+    assert(harness.isType(callee, repr.Tag.cfunction));
     // Resolution reads the receiver and leaves the stack alone: the arguments
     // are still pushed when it returns, because `JOP_CALL` consumes them next.
     assert(fiber.stacktop - fiber.stackstart == 2);
@@ -363,7 +351,7 @@ fn resolveMethod() raise.Raising(void) {
 
 fn callNonfn() raise.Raising(void) {
     // A table callee with one argument is an indexed lookup.
-    var args = [_]types.Janet{ kw("a"), intv(6) };
+    var args = [_]repr.Value{ kw("a"), intv(6) };
     var fiber = try fiberWithArgs(args[0..1]);
     assert(wrap.toNumber(try vm_calls.callNonfn(fiber, eval("@{:a 3}"))) == 3);
     // The arguments are consumed: `stacktop` is back at `stackstart`, which is
@@ -389,7 +377,7 @@ fn callNonfn() raise.Raising(void) {
 
 fn fillTable() void {
     const table = tables.new(4);
-    const mem = [_]types.Janet{ kw("a"), intv(1), kw("b"), intv(2) };
+    const mem = [_]repr.Value{ kw("a"), intv(1), kw("b"), intv(2) };
     gc_alloc.gcroot(wrap.fromTable(table));
     vm_calls.fillTable(table, &mem, 4);
     assert(table.*.count == 2);
@@ -403,7 +391,7 @@ fn fillTable() void {
 
 fn fillStruct() void {
     const st = structs.begin(2);
-    const mem = [_]types.Janet{ kw("a"), intv(1), kw("b"), intv(2) };
+    const mem = [_]repr.Value{ kw("a"), intv(1), kw("b"), intv(2) };
     vm_calls.fillStruct(st, &mem, 4);
     const done = structs.end(st);
     assert(types.structHead(done).length == 2);
@@ -413,14 +401,14 @@ fn fillStruct() void {
 
 fn fillString() raise.Raising(void) {
     const buffer = buffers.new(8);
-    const mem = [_]types.Janet{ intv(1), kw("ab"), eval("\"cd\"") };
+    const mem = [_]repr.Value{ intv(1), kw("ab"), eval("\"cd\"") };
     gc_alloc.gcroot(wrap.fromBuffer(buffer));
-    try vm_calls.fillString(buffer, &mem, 3);
+    try vm_calls.fillString(buffer, &mem);
     // Each element is rendered as `string` would render it: a keyword loses
     // its colon and a string loses its quotes.
     assert(buffer.*.count == 5);
-    assert(std.mem.eql(u8, buffer.*.data.?[0..5], "1abcd"));
-    try vm_calls.fillString(buffer, null, 0);
+    assert(std.mem.eql(u8, buffer.*.slice()[0..5], "1abcd"));
+    try vm_calls.fillString(buffer, &.{});
     assert(buffer.*.count == 5);
     _ = gc_alloc.gcunroot(wrap.fromBuffer(buffer));
 }
@@ -434,28 +422,28 @@ fn fillString() raise.Raising(void) {
 /// `janet_panic`, and it worked because `janet_panic` was a `longjmp`: the jump
 /// left `janet_table_put` from inside a callback whose signature had no way to
 /// say it had failed. The hinge typed `hash` non-raising — see
-/// `src/zig/subsystems/abstract_type.zig` — because `hash` is reached from
+/// `src/zig/abstract_type.zig` — because `hash` is reached from
 /// comparisons that must be total, so a raise there has no caller that could
 /// act on it. With the jump gone the callback has no way out, so the case is
 /// not a behaviour this runtime has any more. `tostring` is raising and is what
 /// this keeps.
 fn aRaiseFromInsideAFillLoop() void {
     const buffer = buffers.new(8);
-    const mem = [_]types.Janet{ intv(1), loud_string_value };
+    const mem = [_]repr.Value{ intv(1), loud_string_value };
 
     gc_alloc.gcroot(wrap.fromBuffer(buffer));
-    assert(refusal(vm_calls.fillString, .{ buffer, @as([*]const types.Janet, &mem), 2 })
+    assert(refusal(vm_calls.fillString, .{ buffer, @as([]const repr.Value, mem[0..2]) })
         .says("tostring raised"));
     // The element before the raising one was already written, and the buffer
     // survives the raise.
     assert(buffer.*.count == 1);
-    assert(buffer.*.data.?[0] == '1');
+    assert(buffer.*.slice()[0] == '1');
     _ = gc_alloc.gcunroot(wrap.fromBuffer(buffer));
 }
 
 // ------------------------------------------------------------------- entry
 
-fn cfunContract(argv: []types.Janet) raise.Raising(types.Janet) {
+fn cfunContract(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
 
     try invokeACfunction();

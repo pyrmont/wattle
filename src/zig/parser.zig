@@ -6,10 +6,9 @@
 //! is data -- it goes into `parser->error`, `parser/status` answers `:error`,
 //! and the caller decides what to do. Feeding bytes to a parser that has
 //! already finished, or that is still holding an unread error, is a *panic*,
-//! because there is no value to answer with. Phase 10 Part 7 moved the second
-//! kind here; before it, `janet_parser_consume` was a C function that checked
-//! and panicked before calling this engine, because a Zig frame could not
-//! raise.
+//! because there is no value to answer with. Both kinds are decided here;
+//! while a Zig frame could not raise, the second had to be checked by a C
+//! caller before this engine was reached at all.
 //!
 //! The two panics say different things and reaching the second takes care: a
 //! delimiter error sets the dead flag as well as the message, so it reports
@@ -23,6 +22,7 @@ const corefn = @import("corefn");
 const raise = @import("raise");
 const pp_format = @import("pp/format.zig");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const abstract_type = @import("abstract_type.zig");
@@ -35,7 +35,6 @@ const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
 const gc_mark = @import("gc/mark.zig");
 const numscan = @import("scan.zig");
-const kind = @import("value/helpers/kind.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const args_core = @import("args.zig");
 const fatal = @import("fatal.zig");
@@ -47,7 +46,7 @@ const pp_describe = @import("pp.zig");
 
 /// `janet_wrap_integer` written out: it is a macro under nanboxing and a
 /// symbol `wrap.c` never defines there.
-inline fn wrapInteger(val: i32) types.Janet {
+inline fn wrapInteger(val: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(val));
 }
 
@@ -66,9 +65,6 @@ const comment: c_int = 0x20000;
 const token: c_int = 0x40000;
 const in_string: c_int = 0x100000;
 const end_candidate: c_int = 0x200000;
-
-extern fn janet_is_symbol_char(character: u8) callconv(.c) c_int;
-extern fn janet_valid_utf8(bytes: [*]const u8, length: i32) callconv(.c) c_int;
 
 pub fn zigParserConsume(parser: *types.JanetParser, character: u8) void {
     if (character == '\r') {
@@ -107,8 +103,8 @@ pub fn zigParserPushBuf(parser: *types.JanetParser, val: u8) void {
     growAndPush(u8, &parser.buf, &parser.bufcount, &parser.bufcap, val);
 }
 
-pub fn zigParserPushArg(parser: *types.JanetParser, val: types.Janet) void {
-    growAndPush(types.Janet, &parser.args, &parser.argcount, &parser.argcap, val);
+pub fn zigParserPushArg(parser: *types.JanetParser, val: repr.Value) void {
+    growAndPush(repr.Value, &parser.args, &parser.argcount, &parser.argcap, val);
 }
 
 pub fn zigParserPushState(
@@ -126,7 +122,7 @@ pub fn zigParserPushState(
     });
 }
 
-pub fn zigParserPopState(parser: *types.JanetParser, original_value: types.Janet) void {
+pub fn zigParserPopState(parser: *types.JanetParser, original_value: repr.Value) void {
     var val = original_value;
     while (true) {
         parser.statecount -= 1;
@@ -159,7 +155,7 @@ pub fn zigParserCloseTuple(
     parser: *types.JanetParser,
     state: *types.JanetParseState,
     flag: i32,
-) callconv(.c) types.Janet {
+) callconv(.c) repr.Value {
     const tuple = tuples.begin(state.argn);
     utils.tupleHead(tuple).*.gc.flags |= @intCast(flag);
     var index = state.argn;
@@ -174,13 +170,13 @@ pub fn zigParserCloseTuple(
 pub fn zigParserCloseArray(
     parser: *types.JanetParser,
     state: *types.JanetParseState,
-) callconv(.c) types.Janet {
+) callconv(.c) repr.Value {
     const array = arrays.new(state.argn);
     var index = state.argn;
     while (index > 0) {
         index -= 1;
         parser.argcount -= 1;
-        array.*.data.?[@intCast(index)] = parser.args.?[parser.argcount];
+        array.*.reserved()[@intCast(index)] = parser.args.?[parser.argcount];
     }
     array.*.count = state.argn;
     return wrap.fromArray(array);
@@ -189,7 +185,7 @@ pub fn zigParserCloseArray(
 pub fn zigParserCloseStruct(
     parser: *types.JanetParser,
     state: *types.JanetParseState,
-) callconv(.c) types.Janet {
+) callconv(.c) repr.Value {
     const structure = structs.begin(@divTrunc(state.argn, 2));
     var index = parser.argcount - @as(usize, @intCast(state.argn));
     while (index < parser.argcount) : (index += 2) {
@@ -202,7 +198,7 @@ pub fn zigParserCloseStruct(
 pub fn zigParserCloseTable(
     parser: *types.JanetParser,
     state: *types.JanetParseState,
-) callconv(.c) types.Janet {
+) callconv(.c) repr.Value {
     const table = tables.new(@divTrunc(state.argn, 2));
     var index = parser.argcount - @as(usize, @intCast(state.argn));
     while (index < parser.argcount) : (index += 2) {
@@ -212,13 +208,13 @@ pub fn zigParserCloseTable(
     return wrap.fromTable(table);
 }
 
-fn janet_zig_parser_stringcharImpl(
+fn parserStringchar(
     parser: *types.JanetParser,
     state: *types.JanetParseState,
     character: u8,
 ) raise.Raising(c_int) {
     if (character == '\\') {
-        state.consumer = @ptrCast(&janetZigParserEscape1);
+        state.consumer = @ptrCast(&parserEscape1);
     } else if (character == '"') {
         return try finishString(parser, state);
     } else if (character != '\n' and character != '\r') {
@@ -232,10 +228,10 @@ pub fn zigParserStringchar(
     state: *types.JanetParseState,
     character: u8,
 ) callconv(.c) c_int {
-    return raise.reported(janet_zig_parser_stringcharImpl(parser, state, character));
+    return raise.reported(parserStringchar(parser, state, character));
 }
 
-fn janetZigParserEscape1(
+fn parserEscape1(
     parser: *types.JanetParser,
     state: *types.JanetParseState,
     character: u8,
@@ -246,11 +242,11 @@ fn janetZigParserEscape1(
     } else if (character == 'x') {
         state.counter = 2;
         state.argn = 0;
-        state.consumer = @ptrCast(&janetZigParserEscapeHex);
+        state.consumer = @ptrCast(&parserEscapeHex);
     } else if (character == 'u' or character == 'U') {
         state.counter = if (character == 'u') 4 else 6;
         state.argn = 0;
-        state.consumer = @ptrCast(&janetZigParserEscapeUnicode);
+        state.consumer = @ptrCast(&parserEscapeUnicode);
     } else {
         zigParserPushBuf(parser, @intCast(escaped));
         state.consumer = @ptrCast(&zigParserStringchar);
@@ -258,7 +254,7 @@ fn janetZigParserEscape1(
     return 1;
 }
 
-fn janetZigParserEscapeHex(
+fn parserEscapeHex(
     parser: *types.JanetParser,
     state: *types.JanetParseState,
     character: u8,
@@ -278,7 +274,7 @@ fn janetZigParserEscapeHex(
     return 1;
 }
 
-fn janetZigParserEscapeUnicode(
+fn parserEscapeUnicode(
     parser: *types.JanetParser,
     state: *types.JanetParseState,
     character: u8,
@@ -302,7 +298,7 @@ fn janetZigParserEscapeUnicode(
     return 1;
 }
 
-fn janet_zig_parser_longstringImpl(
+fn parserLongstring(
     parser: *types.JanetParser,
     state: *types.JanetParseState,
     character: u8,
@@ -348,7 +344,7 @@ pub fn zigParserLongstring(
     state: *types.JanetParseState,
     character: u8,
 ) callconv(.c) c_int {
-    return raise.reported(janet_zig_parser_longstringImpl(parser, state, character));
+    return raise.reported(parserLongstring(parser, state, character));
 }
 
 pub fn zigParserTokenchar(
@@ -356,7 +352,7 @@ pub fn zigParserTokenchar(
     state: *types.JanetParseState,
     character: u8,
 ) callconv(.c) c_int {
-    if (janet_is_symbol_char(character) != 0) {
+    if (numscan.isSymbolChar(character) != 0) {
         zigParserPushBuf(parser, character);
         if (character > 127) state.argn = 1;
         return 1;
@@ -366,11 +362,11 @@ pub fn zigParserTokenchar(
     const starts_with_digit = parser.buf.?[0] >= '0' and parser.buf.?[0] <= '9';
     const starts_with_number = starts_with_digit or
         parser.buf.?[0] == '-' or parser.buf.?[0] == '+' or parser.buf.?[0] == '.';
-    var val: types.Janet = undefined;
+    var val: repr.Value = undefined;
     var parsed_number = false;
 
     if (parser.buf.?[0] == ':') {
-        if (state.argn != 0 and janet_valid_utf8(parser.buf.? + 1, length - 1) == 0) {
+        if (state.argn != 0 and numscan.validUtf8(parser.buf.?[1..@intCast(length)]) == 0) {
             parser.@"error" = "invalid utf-8 in keyword";
             return 0;
         }
@@ -400,7 +396,7 @@ pub fn zigParserTokenchar(
                     parser.@"error" = "symbol literal cannot start with a digit";
                     return 0;
                 }
-                if (state.argn != 0 and janet_valid_utf8(parser.buf.?, length) == 0) {
+                if (state.argn != 0 and numscan.validUtf8(parser.buf.?[0..@intCast(length)]) == 0) {
                     parser.@"error" = "invalid utf-8 in symbol";
                     return 0;
                 }
@@ -490,7 +486,7 @@ pub fn zigParserRoot(
         },
         else => {
             if (isWhitespace(character)) return 1;
-            if (janet_is_symbol_char(character) == 0) {
+            if (numscan.isSymbolChar(character) == 0) {
                 parser.@"error" = "unexpected character";
                 return 1;
             }
@@ -506,7 +502,7 @@ fn closeDelimiter(parser: *types.JanetParser, state: *types.JanetParseState, cha
         return 1;
     }
 
-    var val: types.Janet = undefined;
+    var val: repr.Value = undefined;
     if ((character == ')' and state.flags & parens != 0) or
         (character == ']' and state.flags & square_brackets != 0))
     {
@@ -624,9 +620,9 @@ fn finishString(parser: *types.JanetParser, state: *types.JanetParseState) raise
     return 1;
 }
 
-fn setSource(original_value: types.Janet, line: usize, column: usize) types.Janet {
+fn setSource(original_value: repr.Value, line: usize, column: usize) repr.Value {
     const val = original_value;
-    if (kind.checkType(val, constants.JANET_TUPLE) != 0) {
+    if (repr.checkType(val, repr.Tag.tuple)) {
         const head = utils.tupleHead(wrap.toTuple(val));
         head.*.sm_line = @intCast(line);
         head.*.sm_column = @intCast(column);
@@ -634,16 +630,16 @@ fn setSource(original_value: types.Janet, line: usize, column: usize) types.Jane
     return val;
 }
 
-fn wrapRoot(original_value: types.Janet, line: usize, column: usize) types.Janet {
+fn wrapRoot(original_value: repr.Value, line: usize, column: usize) repr.Value {
     var val = original_value;
-    const tuple = tuples.newFrom(@ptrCast(&val), 1);
+    const tuple = tuples.newFrom(@as(*const [1]repr.Value, &val));
     const head = utils.tupleHead(tuple);
     head.*.sm_line = @intCast(line);
     head.*.sm_column = @intCast(column);
     return wrap.fromTuple(tuple);
 }
 
-fn wrapReader(original_value: types.Janet, character: c_int, line: usize, column: usize) types.Janet {
+fn wrapReader(original_value: repr.Value, character: c_int, line: usize, column: usize) repr.Value {
     const tuple = tuples.begin(2);
     const name: [*:0]const u8 = switch (character) {
         '\'' => "quote",
@@ -729,14 +725,14 @@ pub fn parserError(parser: *types.JanetParser) ?[*:0]const u8 {
     return message;
 }
 
-pub fn parserProduce(parser: *types.JanetParser) types.Janet {
+pub fn parserProduce(parser: *types.JanetParser) repr.Value {
     if (parser.pending == 0) return wrap.fromNil();
     const result = wrap.toTuple(parser.args.?[0])[0];
     shiftArguments(parser);
     return result;
 }
 
-pub fn parserProduceWrapped(parser: *types.JanetParser) types.Janet {
+pub fn parserProduceWrapped(parser: *types.JanetParser) repr.Value {
     if (parser.pending == 0) return wrap.fromNil();
     const result = parser.args.?[0];
     shiftArguments(parser);
@@ -804,7 +800,7 @@ pub fn parserClone(source: *const types.JanetParser, destination: *types.JanetPa
         @memcpy(destination.buf.?[0..destination.bufcap], source.buf.?[0..destination.bufcap]);
     }
     if (destination.argcap != 0) {
-        destination.args = allocate(types.Janet, destination.argcap);
+        destination.args = allocate(repr.Value, destination.argcap);
         @memcpy(destination.args.?[0..destination.argcap], source.args.?[0..destination.argcap]);
     }
     if (destination.statecap != 0) {
@@ -854,13 +850,8 @@ fn growAndPush(
 // The parser reports two different ways and the difference matters. A *parse*
 // error is data: it goes into `parser->error`, `parser/status` answers
 // `:error`, and the caller decides what to do. A *use* error -- feeding bytes
-// to a parser that has already finished -- is a panic, because there is no
+// to a parser that has already finished -- is a raise, because there is no
 // sensible value to answer with.
-//
-// Until Phase 10 Part 7 both halves lived in C: `janet_parser_consume` was a
-// C function that checked and panicked before calling the Zig engine, because
-// a Zig frame could not raise. Phase 10's first decision retires that, and
-// `raise.deliver` is what a `JANET_NO_RETURN` entry point uses.
 // ==========================================================================
 
 /// Build the "unexpected closing delimiter" / "mismatched delimiter" /
@@ -897,7 +888,7 @@ fn delimError(
         }
         _ = try pp_format.formatb(text, " opened at line %d, column %d", .{ @as(i32, @intCast(state.line)), @as(i32, @intCast(state.column)) });
     }
-    parser.@"error" = @ptrCast(strings.new(text.*.data.?[0..@intCast(text.*.count)]));
+    parser.@"error" = @ptrCast(strings.new(text.*.slice()));
     parser.flag |= parser_generated_error;
 }
 
@@ -924,9 +915,7 @@ pub fn eofChecked(parser: *types.JanetParser) raise.Raising(void) {
 // The parser as an abstract type
 // ==========================================================================
 
-fn parserMark(pointer: ?*anyopaque, size: usize) callconv(.c) c_int {
-    _ = size;
-    const parser: *types.JanetParser = @ptrCast(@alignCast(pointer));
+fn parserMark(parser: *types.JanetParser, _: usize) c_int {
     var index: usize = 0;
     while (index < parser.argcount) : (index += 1) gc_mark.mark(parser.args.?[index]);
     // Only a generated message is a Janet string; a literal must not be traced.
@@ -936,56 +925,44 @@ fn parserMark(pointer: ?*anyopaque, size: usize) callconv(.c) c_int {
     return 0;
 }
 
-fn parserGC(pointer: ?*anyopaque, size: usize) callconv(.c) c_int {
-    _ = size;
-    parserDeinit(@ptrCast(@alignCast(pointer)));
+fn parserGC(parser: *types.JanetParser, _: usize) c_int {
+    parserDeinit(parser);
     return 0;
 }
 
-fn parserGet(pointer: ?*anyopaque, key: types.Janet, out: *types.Janet) raise.Raising(c_int) {
-    _ = pointer;
-    if (kind.checkType(key, constants.JANET_KEYWORD) == 0) return 0;
+fn parserGet(_: *types.JanetParser, key: repr.Value, out: *repr.Value) raise.Raising(c_int) {
+    if (!repr.checkType(key, repr.Tag.keyword)) return 0;
     return args_core.getmethod(wrap.toKeyword(key), @ptrCast(&methods), out);
 }
 
-fn parserNext(pointer: ?*anyopaque, key: types.Janet) raise.Raising(types.Janet) {
-    _ = pointer;
+fn parserNext(_: *types.JanetParser, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(&methods), key);
 }
 
-pub const parserType: abstract_type.AbstractType = .{
+pub const parserType = abstract_type.define(types.JanetParser, .{
     .name = "core/parser",
     .gc = parserGC,
     .gcmark = parserMark,
     .get = parserGet,
-    .put = null,
-    .marshal = null,
-    .unmarshal = null,
-    .tostring = null,
-    .compare = null,
-    .hash = null,
     .next = parserNext,
-    .call = null,
-    .length = null,
-    .bytes = null,
-};
+});
 
-fn getParser(argv: []types.Janet, n: i32) raise.Raising(*types.JanetParser) {
-    return @ptrCast(@alignCast(try args_core.getAbstract(argv, n, abstract_type.stored(&parserType))));
+fn getParser(argv: []repr.Value, n: i32) raise.Raising(*types.JanetParser) {
+    return @ptrCast(@alignCast(try args_core.getAbstract(argv, n, &parserType)));
 }
 
 // ==========================================================================
 // The cfunction surface
 // ==========================================================================
 
-fn cfunParserNew(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunParserNew(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
-    const parser: *types.JanetParser = @ptrCast(@alignCast(abstracts.new(abstract_type.stored(&parserType), @sizeOf(types.JanetParser))));
+    const parser: *types.JanetParser = @ptrCast(@alignCast(abstracts.new(&parserType, @sizeOf(types.JanetParser))));
     parserInit(parser);
     return wrap.fromAbstract(parser);
 }
 
-fn cfunParserConsume(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunParserConsume(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 3);
     const parser = try getParser(argv, 0);
     var view = try args_core.getBytes(argv, 1);
@@ -1010,13 +987,13 @@ fn cfunParserConsume(argv: []types.Janet) align(corefn.alignment) raise.Raising(
     return wrapInteger(index);
 }
 
-fn cfunParserEof(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunParserEof(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     try eofChecked(try getParser(argv, 0));
     return argv[0];
 }
 
-fn cfunParserInsert(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunParserInsert(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const parser = try getParser(argv, 0);
     var state = &parser.states.?[parser.statecount - 1];
@@ -1032,7 +1009,7 @@ fn cfunParserInsert(argv: []types.Janet) align(corefn.alignment) raise.Raising(t
         state.argn += 1;
         if (parser.statecount == 1) {
             parser.pending += 1;
-            zigParserPushArg(parser, wrap.fromTuple(tuples.newFrom(argv[1..].ptr, 1)));
+            zigParserPushArg(parser, wrap.fromTuple(tuples.newFrom(argv[1..2])));
         } else {
             zigParserPushArg(parser, argv[1]);
         }
@@ -1054,12 +1031,12 @@ fn cfunParserInsert(argv: []types.Janet) align(corefn.alignment) raise.Raising(t
     return argv[0];
 }
 
-fn cfunParserHasMore(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunParserHasMore(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    return wrap.fromBoolean(parserHasMore(try getParser(argv, 0)));
+    return wrap.fromBoolean(parserHasMore(try getParser(argv, 0)) != 0);
 }
 
-fn cfunParserByte(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunParserByte(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const parser = try getParser(argv, 0);
     const val = try args_core.getInteger(argv, 1);
@@ -1067,7 +1044,7 @@ fn cfunParserByte(argv: []types.Janet) align(corefn.alignment) raise.Raising(typ
     return argv[0];
 }
 
-fn cfunParserStatus(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunParserStatus(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const name: [*:0]const u8 = switch (parserStatus(try getParser(argv, 0))) {
         constants.JANET_PARSE_PENDING => "pending",
@@ -1079,7 +1056,7 @@ fn cfunParserStatus(argv: []types.Janet) align(corefn.alignment) raise.Raising(t
     return value.fromBytes(std.mem.span(name), .keyword);
 }
 
-fn cfunParserError(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunParserError(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const parser = try getParser(argv, 0);
     const message = parserError(parser);
@@ -1092,22 +1069,22 @@ fn cfunParserError(argv: []types.Janet) align(corefn.alignment) raise.Raising(ty
         value.fromBytes(std.mem.span(message.?), .string);
 }
 
-fn cfunParserProduce(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunParserProduce(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const parser = try getParser(argv, 0);
-    if (@as(i32, @intCast(argv.len)) == 2 and kind.truthy(argv[1]) != 0) {
+    if (@as(i32, @intCast(argv.len)) == 2 and repr.truthy(argv[1])) {
         return parserProduceWrapped(parser);
     }
     return parserProduce(parser);
 }
 
-fn cfunParserFlush(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunParserFlush(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     parserFlush(try getParser(argv, 0));
     return argv[0];
 }
 
-fn cfunParserWhere(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunParserWhere(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
     const parser = try getParser(argv, 0);
     if (@as(i32, @intCast(argv.len)) > 1) {
@@ -1130,10 +1107,10 @@ fn cfunParserWhere(argv: []types.Janet) align(corefn.alignment) raise.Raising(ty
 /// started, and what has been read into it so far.
 fn wrapParseState(
     state: *allowzero const types.JanetParseState,
-    args: ?[*]types.Janet,
+    args: ?[*]repr.Value,
     buf: ?[*]u8,
     bufcount: u32,
-) raise.Raising(types.Janet) {
+) raise.Raising(repr.Value) {
     const table = tables.new(0);
     var add_buffer = false;
 
@@ -1179,15 +1156,16 @@ fn wrapParseState(
 /// `(parser/state p :delimiters)`: one byte per open form, outermost first.
 ///
 /// The characters are pushed onto the parser's own buffer and the count is put
-/// back afterwards, so this reads as a mutation and is not one. That is the C
-/// original's trick and it is kept: the buffer is the one scratch area the
+/// back afterwards, so this reads as a mutation and is not one. That is
+/// Janet's trick and it is kept: the buffer is the one scratch area the
 /// parser already owns and is already sized for.
-/// Declares an error it never returns, which Phase 10's fourth rule would
-/// normally forbid. The reason it is right here is the table below: two getters
-/// of different shapes need one signature to sit in one array, and
-/// `parserStateFrames` genuinely raises. The alternative is a tagged union over
+/// Declares an error it never returns, which is normally wrong. The reason it
+/// is right here is the table below: two getters of different shapes need one
+/// signature to sit in one array, and `parserStateFrames` genuinely raises.
+/// The alternative is a tagged union over two function types, which is more
+/// machinery than the fact deserves.
 /// two function types, which is more machinery than the fact deserves.
-fn parserStateDelimiters(parser: *types.JanetParser) raise.Raising(types.Janet) {
+fn parserStateDelimiters(parser: *types.JanetParser) raise.Raising(repr.Value) {
     const old_count = parser.bufcount;
     var index: usize = 0;
     while (index < parser.statecount) : (index += 1) {
@@ -1215,25 +1193,25 @@ fn parserStateDelimiters(parser: *types.JanetParser) raise.Raising(types.Janet) 
 /// The walk runs backwards because a container frame's arguments sit at the
 /// end of one shared array and their extent is only known by subtracting each
 /// frame's count in turn.
-fn parserStateFrames(parser: *types.JanetParser) raise.Raising(types.Janet) {
+fn parserStateFrames(parser: *types.JanetParser) raise.Raising(repr.Value) {
     const count: i32 = @intCast(parser.statecount);
     const states = arrays.new(count);
     states.*.count = count;
     // Avoid pointer arithmetic on NULL, which `args` is until something is
     // pushed.
-    var args: ?[*]types.Janet = if (parser.argcount != 0) parser.args.? + parser.argcount else parser.args;
+    var args: ?[*]repr.Value = if (parser.argcount != 0) parser.args.? + parser.argcount else parser.args;
     var index = count - 1;
     while (index >= 0) : (index -= 1) {
         const state = &parser.states.?[@intCast(index)];
         if (state.flags & container != 0 and state.argn != 0) args = args.? - @as(usize, @intCast(state.argn));
-        states.*.data.?[@intCast(index)] = try wrapParseState(state, args, parser.buf, @intCast(parser.bufcount));
+        states.*.reserved()[@intCast(index)] = try wrapParseState(state, args, parser.buf, @intCast(parser.bufcount));
     }
     return wrap.fromArray(states);
 }
 
 const StateGetter = struct {
     name: [:0]const u8,
-    get: *const fn (*types.JanetParser) raise.Raising(types.Janet),
+    get: *const fn (*types.JanetParser) raise.Raising(repr.Value),
 };
 
 const state_getters = [_]StateGetter{
@@ -1241,7 +1219,7 @@ const state_getters = [_]StateGetter{
     .{ .name = "delimiters", .get = parserStateDelimiters },
 };
 
-fn cfunParserState(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunParserState(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const parser = try getParser(argv, 0);
     if (@as(i32, @intCast(argv.len)) == 2) {
@@ -1258,10 +1236,10 @@ fn cfunParserState(argv: []types.Janet) align(corefn.alignment) raise.Raising(ty
     return wrap.fromTable(table);
 }
 
-fn cfunParserClone(argv: []types.Janet) align(corefn.alignment) raise.Raising(types.Janet) {
+fn cfunParserClone(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const source = try getParser(argv, 0);
-    const destination: *types.JanetParser = @ptrCast(@alignCast(abstracts.new(abstract_type.stored(&parserType), @sizeOf(types.JanetParser))));
+    const destination: *types.JanetParser = @ptrCast(@alignCast(abstracts.new(&parserType, @sizeOf(types.JanetParser))));
     parserClone(source, destination);
     return wrap.fromAbstract(destination);
 }
@@ -1287,7 +1265,7 @@ const methods = [_]method_type.Method{
 };
 
 pub fn libParse(env: *types.JanetTable) void {
-    const entries = [_]corefn.Entry{
+    const entries = comptime [_]corefn.Entry{
         corefn.reg("parser/new", &cfunParserNew, @src(), "(parser/new)", "Creates and returns a new parser object. Parsers are state machines " ++
             "that can receive bytes and generate a stream of values."),
         corefn.reg("parser/clone", &cfunParserClone, @src(), "(parser/clone p)", "Creates a deep clone of a parser that is identical to the input parser. " ++
@@ -1330,7 +1308,6 @@ pub fn libParse(env: *types.JanetTable) void {
         corefn.reg("parser/insert", &cfunParserInsert, @src(), "(parser/insert parser value)", "Insert a value into the parser. This means that the parser state can be manipulated " ++
             "in between chunks of bytes. This would allow a user to add extra elements to arrays " ++
             "and tuples, for example. Returns the parser."),
-        corefn.end,
     };
-    corefn.install(env, &entries);
+    corefn.install(env, entries);
 }

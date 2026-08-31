@@ -33,8 +33,8 @@ may require changes before being merged.
   runs.
 * Be consistent with the style. The runtime is Zig: use `zig fmt`, and read the
   surrounding file for how much a comment is expected to explain — this tree
-  documents *why* far more than most, and `src/zig/README.md` is the record of
-  it.
+  documents *why* far more than most. `src/zig/README.md` has the rules the
+  runtime holds itself to, the source tree and the module graph.
 
   For janet code, use lisp indentation with 2 spaces. One can use janet.vim to
   do this indentation, or approximate as close as possible. There is a janet formatter
@@ -46,25 +46,23 @@ to greater scrutiny and code reivew. Automatically generated and filed bug
 reports MAY be ok, if they are of consistent and good quality, such as
 OSSFuzz or well constructed CI pipelines.
 
-## C style
+## Runtime style
 
-For changes to the VM and Core code, you will probably need to know C. Janet is programmed with
-a subset of C99 that works with Microsoft Visual C++. This means most of C99 but with the following
-omissions.
+The runtime is Zig. `src/zig/README.md` has the rules that hold, and the two
+worth knowing before a first change are that only `src/zig/capi.zig` exports a
+C symbol and that a raising function returns `raise.Raising(T)` rather than
+jumping.
 
-* No `restrict`
-* Certain functions in the standard library are not always available
-
-In practice, this means programming for both MSVC on one hand and everything else on the other.
-The code must also build with emscripten, even if some features are not available, although
-this is not a priority.
+The only C left is four hand-written headers under `src/zig` — the three host
+translations and the feature-test macros they open with — and libc, which every
+Zig file reaches through `@cImport`.
 
 Code should compile warning free. Zig's Debug and ReleaseSafe modes carry
 bounds and overflow checks, and `zig build test` runs in Debug — but note that
 Debug does not fold identical functions and does not elide safety checks, so a
-release mode is a genuinely different check; `port/phase_11.md` records three
-defects that only a release mode exposed. `port/matrix.janet` runs the
-configurations, the optimize modes and the cross-compiles together.
+release mode is a genuinely different check, and defects have been found that
+only a release mode exposes. `tools/testing/matrix.janet` runs the configurations, the
+optimize modes and the cross-compiles together.
 
 ### Formatting
 
@@ -73,7 +71,7 @@ there is a formatter in [spork](https://github.com/janet-lang/spork.git).
 
 ## Janet style
 
-All janet code in the project should be formatted similar to the code in src/boot/boot.janet.
+All Janet code in the project should be formatted similarly to `src/boot/boot.janet`.
 The auto formatting from janet.vim will work well.
 
 ## Typo Fixing and One-Line changes

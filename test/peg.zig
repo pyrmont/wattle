@@ -16,32 +16,28 @@
 //!  - **Crafted bytecode.** `pegUnmarshal` is the untrusted entry point, and
 //!    most of what it must reject cannot be produced by the compiler at all.
 //!
-//! `janet_peg_type` is public API, so the shape of its callback table is a
-//! contract too, and one Janet cannot see.
+//! The shape of the peg's callback table is a contract too, and one Janet
+//! cannot see: which callbacks a peg has decides what the runtime will do
+//! with one.
 //!
-//! ## What the migration changed
+//! ## What only a contract inside the compilation can do
 //!
-//! **The callback table has two spellings here, and comparing them is the
-//! oracle the C version could not have.** `janet.h` declares
-//! `janet_peg_type` as a `JanetAbstractType`; `peg.zig` defines it as an
-//! `abstract_type.AbstractType`, which is the same layout with seven of the
-//! fifteen callbacks typed as raising Zig functions. The C contract saw only
-//! the first, so `janet_peg_type.gc == NULL` was a fact about one description.
-//! Reading both and requiring them to agree is rule 25's shape — a duplication
-//! the *port* introduced, wanting the contract the old pair had — and it is
-//! what would catch a field inserted into one mirror and not the other, which
-//! `abstract_type.zig`'s `@sizeOf` assertion cannot.
+//! **The callback table is read once.** A C contract reads it twice and
+//! requires the two readings to agree, because a published declaration and the
+//! definition are two descriptions of one layout. There is one description
+//! here, so a second reading would assert that a thing equals itself.
 //!
-//! **`peg/compile` is still reached as a cfunction rather than by import**,
-//! for the reason the C original gives: a grammar error has to arrive as a
-//! refusal rather than as a status code `janet_dostring` has already caught.
-//! What changed is that no shim is involved — a cfunction *is* a raising Zig
-//! function, so `harness.core` and `harness.raised` are the whole of it and
+//! **`peg/compile` is reached as a cfunction rather than by import**, because
+//! a grammar error has to arrive as a refusal rather than as a status code
+//! `janet_dostring` has already caught. No shim is involved -- a cfunction
+//! *is* a raising Zig function, so `harness.core` and `harness.raised` are the
+//! whole of it and
 //! `janet_contract_call_cfunction` loses a user.
 
 const std = @import("std");
 const config = @import("config");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const raise = @import("raise");
@@ -74,7 +70,7 @@ var test_env: *types.JanetTable = undefined;
 /// a GC root, and compiling one form allocates enough to collect the next.
 var rooted: *types.JanetArray = undefined;
 
-fn keep(val: types.Janet) types.Janet {
+fn keep(val: repr.Value) repr.Value {
     harness.arrayPush(rooted, val);
     return val;
 }
@@ -87,7 +83,7 @@ var compile_cfun: raise.CFunction = undefined;
 /// verifier's move with it, so the assertions that name a width have to as
 /// well.
 ///
-/// Rule 35: read from the translation rather than from a build condition.
+/// Read from the environment rather than from a build condition:
 /// `janet_unwrap_s64` exists exactly when the boxed integer types do, which is
 /// the same test `peg.zig` itself makes.
 const max_readint_width: u32 = if (config.int_types) 8 else 6;
@@ -95,7 +91,7 @@ const max_readint_width_text = if (max_readint_width == 8) "8" else "6";
 
 // ------------------------------------------------------------- evaluation
 
-fn evaluate(source: [*:0]const u8) types.Janet {
+fn evaluate(source: [*:0]const u8) repr.Value {
     var out = wrap.fromNil();
     if (core_env.dostring(test_env, source, "peg-contract", &out) != 0) {
         std.debug.print("evaluating {s} failed\n", .{source});
@@ -109,7 +105,7 @@ fn compiled(pattern: []const u8) *types.JanetPeg {
     const written = std.fmt.bufPrintZ(&source, "(peg/compile {s})", .{pattern}) catch
         @panic("pattern too long");
     const val = evaluate(written.ptr);
-    assert(args_core.checkabstract(val, abstract_type.stored(&peg.janet_peg_type)) != null);
+    assert(args_core.checkabstract(val, &peg.pegType) != null);
     return @ptrCast(@alignCast(wrap.toAbstract(val)));
 }
 
@@ -118,13 +114,13 @@ fn compiled(pattern: []const u8) *types.JanetPeg {
 /// `source` is Janet source for the *pattern*, evaluated before the scope
 /// opens so that only the compilation is inside it.
 fn grammarError(source: [*:0]const u8) harness.Raise {
-    var argv = [_]types.Janet{evaluate(source)};
+    var argv = [_]repr.Value{evaluate(source)};
     return harness.raised(compile_cfun, .{argv[0..1]}).?;
 }
 
 fn bytecodeIs(pattern: []const u8, expected: []const u32) void {
     const p = compiled(pattern);
-    const got = p.bytecode.?[0..p.bytecode_len];
+    const got = p.instructions()[0..p.bytecode_len];
     if (std.mem.eql(u32, got, expected)) return;
     std.debug.print("{s}\n  expected {d} words:", .{ pattern, expected.len });
     for (expected) |word| std.debug.print(" {d}", .{word});
@@ -143,14 +139,11 @@ fn bytecodeIs(pattern: []const u8, expected: []const u32) void {
 /// `hash` because two separately compiled pegs are distinct values even when
 /// they came from the same source.
 ///
-/// Asserted through both descriptions, which is what the C original could not
-/// do — see the header comment.
+/// See the header comment for why this reads the table once rather than twice.
 fn theAbstractTypeIsShapedAsTheRuntimeExpects() void {
-    const zig = &peg.janet_peg_type;
-    const public = &c.janet_peg_type;
+    const zig = &peg.pegType;
 
-    assert(utils.cstrcmp(strings.cstring("core/peg"), zig.name) == 0);
-    assert(utils.cstrcmp(strings.cstring("core/peg"), public.name) == 0);
+    assert(std.mem.eql(u8, "core/peg", zig.name));
 
     // Which callbacks exist, read off the runtime's own table...
     assert(zig.gc == null);
@@ -167,32 +160,13 @@ fn theAbstractTypeIsShapedAsTheRuntimeExpects() void {
     assert(zig.length == null);
     assert(zig.bytes == null);
 
-    // ...and off `janet.h`'s, which is the description a native module reads.
-    // A field that moved in one mirror and not the other shows up here as a
-    // present callback answering absent, or the reverse.
-    assert(public.gc == null);
-    assert(public.gcmark != null);
-    assert(public.get != null);
-    assert(public.put == null);
-    assert(public.marshal != null);
-    assert(public.unmarshal != null);
-    assert(public.tostring == null);
-    assert(public.compare == null);
-    assert(public.hash == null);
-    assert(public.next != null);
-    assert(public.call == null);
-    assert(public.length == null);
-    assert(public.bytes == null);
-
     // Registered under its own name, which is what lets a marshalled peg name
-    // its type on the wire -- and what ties the two descriptions above to one
-    // object. The registry answers with a pointer it was handed at
-    // registration, from the import side; comparing it with the *symbol*
-    // `janet.h` declares is the only spelling of "these are the same table"
-    // that a compiler cannot fold away, because the lookup happens at run time.
+    // its type on the wire. The registry answers with a pointer it was handed
+    // at registration, so this is a run-time comparison of two addresses and
+    // not something the compiler can fold -- which is the half of the retired
+    // two-description check that was always worth keeping.
     const registered = registry.getAbstractType(value.fromBytes("core/peg", .symbol));
-    assert(registered == abstract_type.stored(zig));
-    assert(registered == public);
+    assert(registered == zig);
 }
 
 /// The five methods, in the order `janet_nextmethod` walks them -- which is
@@ -206,12 +180,12 @@ fn theMethodTableAndItsOrder() raise.Raising(void) {
     for (names) |name| {
         key = try access.next(val, key);
         assert(harness.keywordIs(key, name));
-        assert(harness.isType(try access.get(val, key), constants.JANET_CFUNCTION));
+        assert(harness.isType(try access.get(val, key), repr.Tag.cfunction));
     }
-    assert(harness.isType(try access.next(val, key), constants.JANET_NIL));
+    assert(harness.isType(try access.next(val, key), repr.Tag.nil));
 
     // A non-keyword key is not a method lookup at all.
-    assert(harness.isType(try access.get(val, harness.wrapInteger(0)), constants.JANET_NIL));
+    assert(harness.isType(try access.get(val, harness.wrapInteger(0)), repr.Tag.nil));
 }
 
 // ------------------------------------------------------- the one allocation
@@ -231,21 +205,21 @@ fn theHeaderBytecodeAndConstantsShareOneAllocation() void {
     const mem = @intFromPtr(p);
     const bytecode_start = padded(@sizeOf(types.JanetPeg), @sizeOf(u32));
     const constants_start =
-        padded(bytecode_start + p.bytecode_len * @sizeOf(u32), @sizeOf(types.Janet));
+        padded(bytecode_start + p.bytecode_len * @sizeOf(u32), @sizeOf(repr.Value));
 
     assert(@intFromPtr(p.bytecode) == mem + bytecode_start);
     assert(@intFromPtr(p.constants) == mem + constants_start);
     assert(p.num_constants == 1);
-    assert(harness.equals(p.constants.?[0], harness.wrapInteger(7)));
+    assert(harness.equals(p.constantValues()[0], harness.wrapInteger(7)));
 
     // Both arrays are aligned for their element type, which is the whole point
     // of the padding.
     assert(@intFromPtr(p.bytecode) % @sizeOf(u32) == 0);
-    assert(@intFromPtr(p.constants) % @sizeOf(types.Janet) == 0);
+    assert(@intFromPtr(p.constants) % @sizeOf(repr.Value) == 0);
 
     // And the abstract really is one allocation: its size covers both.
     assert(utils.abstractHead(p).*.size ==
-        constants_start + p.num_constants * @sizeOf(types.Janet));
+        constants_start + p.num_constants * @sizeOf(repr.Value));
 }
 
 // --------------------------------------------------------- the instructions
@@ -447,9 +421,9 @@ fn grammarErrorsNameTheForm() void {
 // write the test.
 
 /// The `[status message]` a `(protect ...)` answered.
-fn protectedResult(val: types.Janet) struct { ok: bool, message: types.Janet } {
+fn protectedResult(val: repr.Value) struct { ok: bool, message: repr.Value } {
     const pair = wrap.toTuple(val);
-    return .{ .ok = wrap.toBoolean(pair[0]) != 0, .message = pair[1] };
+    return .{ .ok = wrap.toBoolean(pair[0]), .message = pair[1] };
 }
 
 fn theCompilerBoundsBothOfItsRecursions() void {
@@ -520,7 +494,7 @@ fn theMarshalledFormIsTheBytecode() raise.Raising(void) {
         0, // num_constants
         @intCast(op(constants.RULE_LITERAL)), 1, 0x61, // the three words
     };
-    const got = buffer.*.data.?[0..@intCast(buffer.*.count)];
+    const got = buffer.*.slice();
     if (!std.mem.eql(u8, got, &expected)) {
         std.debug.print("expected {d} bytes:", .{expected.len});
         for (expected) |byte| std.debug.print(" {x:0>2}", .{byte});
@@ -531,14 +505,14 @@ fn theMarshalledFormIsTheBytecode() raise.Raising(void) {
     }
 
     // And back, into an equal but distinct peg.
-    const back = keep(try marsh.unmarshal(buffer.*.data.?[0..@intCast(buffer.*.count)], 0, null, null));
-    assert(args_core.checkabstract(back, abstract_type.stored(&peg.janet_peg_type)) != null);
+    const back = keep(try marsh.unmarshal(buffer.*.slice(), 0, null, null));
+    assert(args_core.checkabstract(back, &peg.pegType) != null);
     const round: *types.JanetPeg = @ptrCast(@alignCast(wrap.toAbstract(back)));
     assert(round != p);
     assert(round.bytecode_len == 3);
     assert(round.num_constants == 0);
     assert(round.has_backref == 0);
-    assert(std.mem.eql(u32, round.bytecode.?[0..3], p.bytecode.?[0..3]));
+    assert(std.mem.eql(u32, round.instructions()[0..3], p.instructions()[0..3]));
     // The unmarshaller reproduces the compiler's layout, not just its words.
     assert(@intFromPtr(round.bytecode) - @intFromPtr(round) ==
         @intFromPtr(p.bytecode) - @intFromPtr(p));
@@ -572,7 +546,7 @@ fn crafted(comptime tail: []const u8) []const u8 {
     return &(peg_header ++ tail[0..tail.len].*);
 }
 
-fn unmarshalStream(bytes: []const u8) raise.Raising(types.Janet) {
+fn unmarshalStream(bytes: []const u8) raise.Raising(repr.Value) {
     return marsh.unmarshal(bytes, 0, null, null);
 }
 
@@ -587,7 +561,7 @@ fn rejected(comptime tail: []const u8) void {
 fn accepted(comptime tail: []const u8) *types.JanetPeg {
     const val = keep(unmarshalStream(crafted(tail)) catch
         @panic("a stream this contract expects to be accepted was refused"));
-    assert(args_core.checkabstract(val, abstract_type.stored(&peg.janet_peg_type)) != null);
+    assert(args_core.checkabstract(val, &peg.pegType) != null);
     return @ptrCast(@alignCast(wrap.toAbstract(val)));
 }
 
@@ -641,15 +615,15 @@ fn anEmptyProgramIsAccepted() raise.Raising(void) {
             lb_real, b(constants.RULE_NCHAR), 0, 0, 0, 3, 0, 0, 0, // little endian
         });
         const val = keep(try unmarshalStream(stream));
-        assert(args_core.checkabstract(val, abstract_type.stored(&peg.janet_peg_type)) != null);
+        assert(args_core.checkabstract(val, &peg.pegType) != null);
         const p: *types.JanetPeg = @ptrCast(@alignCast(wrap.toAbstract(val)));
         assert(p.bytecode_len == 0);
         assert(@intFromPtr(p.bytecode) == @intFromPtr(p.constants));
 
-        var args = [2]types.Janet{ val, value.fromBytes("abc", .string) };
-        assert(harness.isType(try vm_calls.mcall("match", args[0..2]), constants.JANET_ARRAY));
+        var args = [2]repr.Value{ val, value.fromBytes("abc", .string) };
+        assert(harness.isType(try vm_calls.mcall("match", args[0..2]), repr.Tag.array));
         args[1] = value.fromBytes("ab", .string);
-        assert(harness.isType(try vm_calls.mcall("match", args[0..2]), constants.JANET_NIL));
+        assert(harness.isType(try vm_calls.mcall("match", args[0..2]), repr.Tag.nil));
     }
 }
 
@@ -668,7 +642,7 @@ fn aNegativeArgumentIndexIsAccepted() void {
     // encoding, because 0xFFFFFFFF is not a small natural.
     const p = accepted(&.{ 3, 0, b(constants.RULE_ARGUMENT), lb_integer, 255, 255, 255, 255, 0 });
     assert(p.bytecode_len == 3);
-    assert(p.bytecode.?[1] == 0xFFFFFFFF);
+    assert(p.instructions()[1] == 0xFFFFFFFF);
 }
 
 /// `FOUND.md`: `bytecode_len` comes off the wire as a 64-bit count and is
@@ -708,10 +682,10 @@ fn readintPegsDoNotAllSurviveARoundTrip() raise.Raising(void) {
         const buffer = buffers.new(32);
         _ = keep(wrap.fromBuffer(buffer));
         try marsh.marshal(buffer, wrap.fromAbstract(p), null, 0);
-        const bytes = buffer.*.data.?[0..@intCast(buffer.*.count)];
+        const bytes = buffer.*.slice();
         if (case.survives) {
             const back = keep(try unmarshalStream(bytes));
-            assert(args_core.checkabstract(back, abstract_type.stored(&peg.janet_peg_type)) != null);
+            assert(args_core.checkabstract(back, &peg.pegType) != null);
         } else {
             assert(harness.raised(unmarshalStream, .{bytes}).?.says("invalid peg bytecode"));
         }

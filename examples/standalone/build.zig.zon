@@ -1,0 +1,12 @@
+.{
+    .name = .greet,
+    .version = "0.1.0",
+    .fingerprint = 0x2df8175be6bc9289,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // By path, because the package under test is the tree this lives in.
+        // A real consumer writes a URL and a hash here; nothing else changes.
+        .janet = .{ .path = "../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "greet.zig" },
+}

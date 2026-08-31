@@ -13,33 +13,30 @@
 //!
 //! ## The four failures, and why they are here
 //!
-//! Each was a `janetc_cerror` call that Phase 10 Part 7 moved into Zig. None
-//! is reachable from Janet source without a program too large to put in a
-//! suite — sixty-five thousand live registers, or a function with more than
-//! 0xFFFF constants — so the only way to see them is to construct the state.
+//! Each is a `janetc_cerror` call, and none is reachable from Janet source
+//! without a program too large to put in a suite -- sixty-five thousand live
+//! registers, or a function with more than 0xFFFF constants -- so the only way
+//! to see them is to construct the state.
 //!
 //! They are *recorded* rather than raised: `janetc_error` keeps the first
 //! error and returns, so each case clears the status before the next one, and
 //! "jump is too far" deliberately emits the truncated instruction anyway. The
-//! compile has already failed and the bytecode is never run; the C original
-//! behaved the same way and the port reproduces it.
+//! compile has already failed and the bytecode is never run.
 //!
-//! ## What the migration did not change
+//! ## The emit entry points do not raise
 //!
-//! The emit entry points do not raise. They record into `compiler->result`
-//! and return, so this contract reaches them through `c.janetc_*` exactly as
-//! the C one did — the import mechanism is for a raise-capable function and
-//! there is none here. Part 6 established that distinction from the other
-//! side; this is the case where the answer is the plain call.
+//! They record into `compiler->result` and return, so this contract reaches
+//! them through an ordinary call. Reaching a subject by import is for a
+//! raise-capable function and there is none here.
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 const value = @import("subsystems").value;
 const compiler_primitives = @import("subsystems").compiler_primitives;
-const vector_mod = @import("subsystems").stretchy;
+const stretchy = @import("subsystems").stretchy;
 const regalloc = @import("subsystems").regalloc;
 const emit_core = @import("subsystems").emit_core;
 const wrap = @import("subsystems").value.wrap;
@@ -50,7 +47,7 @@ var compiler: types.JanetCompiler = undefined;
 var scope: types.JanetScope = undefined;
 
 /// A slot built by hand, which is the whole reason this file exists.
-fn slot(index: i32, envindex: i32, flags: u32, constant: types.Janet) types.JanetSlot {
+fn slot(index: i32, envindex: i32, flags: u32, constant: repr.Value) types.JanetSlot {
     return .{
         .constant = constant,
         .index = index,
@@ -64,7 +61,7 @@ fn near(index: i32) types.JanetSlot {
     return slot(index, -1, 0, wrap.fromNil());
 }
 
-fn constantSlot(val: types.Janet) types.JanetSlot {
+fn constantSlot(val: repr.Value) types.JanetSlot {
     return slot(-1, 0, constants.JANET_SLOT_CONSTANT, val);
 }
 
@@ -168,7 +165,7 @@ fn theSourceMapKeepsPace() void {
 /// Which one it picks is decided entirely by the two slots: whether each is
 /// near (an index that fits in eight bits), far, an upvalue, a constant, or a
 /// reference cell. A source program cannot ask for any particular one.
-fn theCopies(reference: types.Janet) void {
+fn theCopies(reference: repr.Value) void {
     // Near to near is a single move.
     clearEmission();
     emit_core.copy(&compiler, near(3), near(7));
@@ -385,7 +382,7 @@ fn theConstantPoolFills() void {
     while (index < 8) : (index += 1) {
         vector.push(&full.consts, wrap.fromNumber(1000.0 + @as(f64, @floatFromInt(index))));
     }
-    full.consts = @ptrCast(@alignCast(vector_mod.vGrow(full.consts, 0xFFFF, @sizeOf(types.Janet))));
+    full.consts = @ptrCast(@alignCast(stretchy.vGrow(full.consts, 0xFFFF, @sizeOf(repr.Value))));
     index = 0;
     while (index < 0xFFFF) : (index += 1) {
         full.consts.?[@intCast(index)] = wrap.fromNumber(1000.0 + @as(f64, @floatFromInt(index)));

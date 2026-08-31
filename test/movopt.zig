@@ -16,7 +16,6 @@ const std = @import("std");
 const movopt = @import("subsystems").optimize;
 const types = @import("types");
 const constants = @import("constants");
-const c = @import("cabi");
 
 /// A definition holding nothing but the bytecode under test. Zeroed rather
 /// than partially initialised, because the pass reads `closure_bitset` and a

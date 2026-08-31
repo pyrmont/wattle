@@ -33,6 +33,7 @@
 
 const std = @import("std");
 const types = @import("types");
+const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const options = @import("options");
@@ -226,7 +227,7 @@ fn theRejections() void {
 
     // A zero and a negative length both fail rather than reading the pointer.
     //
-    // The two halves are asserted at different levels since increment 5h. The
+    // The two halves are asserted at different levels. The
     // Zig function takes a `[]const u8`, so an empty range is the only one of
     // the pair it can still be handed; the negative one is a state the type
     // forbids. But `janet_scan_number` publishes an `int32_t` and a C caller
@@ -286,14 +287,14 @@ fn theWideMantissa() void {
 /// do. A suffix is exactly the last two bytes, so a colon anywhere else is not
 /// one.
 fn theNumericSuffixes() void {
-    var val: types.Janet = undefined;
+    var val: repr.Value = undefined;
 
     std.debug.assert(numscan.scanNumeric("12", &val) == 0);
-    std.debug.assert(harness.isType(val, constants.JANET_NUMBER));
+    std.debug.assert(harness.isType(val, repr.Tag.number));
     std.debug.assert(wrap.toNumber(val) == 12.0);
 
     std.debug.assert(numscan.scanNumeric("12:n", &val) == 0);
-    std.debug.assert(harness.isType(val, constants.JANET_NUMBER));
+    std.debug.assert(harness.isType(val, repr.Tag.number));
     std.debug.assert(wrap.toNumber(val) == 12.0);
 
     // Both extremes, which are exactly the values a double cannot hold.
@@ -322,31 +323,31 @@ fn theDoubleToString() void {
     const b: *types.JanetBuffer = buffers.new(0);
 
     janet_buffer_dtostr(b, 1.0);
-    std.debug.assert(b.count == 1 and b.data.?[0] == '1');
+    std.debug.assert(b.count == 1 and b.slice()[0] == '1');
 
     // Seventeen significant digits, which is what round-trips.
     b.count = 0;
     janet_buffer_dtostr(b, 0.1);
     std.debug.assert(b.count == 19);
-    std.debug.assert(std.mem.eql(u8, b.data.?[0..19], "0.10000000000000001"));
+    std.debug.assert(std.mem.eql(u8, b.slice()[0..19], "0.10000000000000001"));
 
     // Negative zero keeps its sign here, unlike in the printer.
     b.count = 0;
     janet_buffer_dtostr(b, -0.0);
-    std.debug.assert(b.count == 2 and std.mem.eql(u8, b.data.?[0..2], "-0"));
+    std.debug.assert(b.count == 2 and std.mem.eql(u8, b.slice()[0..2], "-0"));
 
     // Appending preserves the existing contents.
     b.count = 0;
     _ = buffers.pushCstringAbi(b, "x=");
     janet_buffer_dtostr(b, 2.5);
-    std.debug.assert(b.count == 5 and std.mem.eql(u8, b.data.?[0..5], "x=2.5"));
+    std.debug.assert(b.count == 5 and std.mem.eql(u8, b.slice()[0..5], "x=2.5"));
 
     // No comma survives regardless of locale, which is the one thing about
     // this function that depends on the host.
     b.count = 0;
     janet_buffer_dtostr(b, 1234.5678);
     const count: usize = @intCast(b.count);
-    std.debug.assert(std.mem.indexOfScalar(u8, b.data.?[0..count], ',') == null);
+    std.debug.assert(std.mem.indexOfScalar(u8, b.slice()[0..count], ',') == null);
 }
 
 pub fn run() void {
