@@ -1,8 +1,8 @@
 //! `value.zig` -- the bucket for `value/`.
 //!
 //! Every directory in the tree has a bucket, the file for whatever does not
-//! group neatly into a topic of its own; `phase_12.md` decision 3 gives
-//! `value/` one, and this is it. What it holds is the hashing and dictionary
+//! group neatly into a topic of its own, and this is `value/`'s. What it holds
+//! is the hashing and dictionary
 //! machinery `value/tables.zig`, `value/structs.zig`, `value/strings.zig`,
 //! `value/symbols.zig`, `value/tuples.zig`, `value/helpers/order.zig` and
 //! `value/helpers/access.zig` share -- shared by both dictionary leaves and
@@ -56,42 +56,14 @@
 //! asked by someone looking at the file rather than at a design document. So
 //! it is written here, where the file is.
 //!
-// It was `utils.zig`'s, and `utils.zig` had it because Janet's `util.c` did.
-// Seven `extern fn` declarations across six leaves reached these through the
-// linker; they are ordinary imports now.
-//
-// **The names are not the C names.** Stripping `janet_` and camelCasing the
-// underscores transcribes whatever C called a thing, so a bad
-//! C name arrives intact and green. These six were the ones worth fixing:
-//!
-//!     janet_tablen             capacityFor
-//!         Not a length. The smallest power of two *strictly* greater than the
-//!         argument -- not `std.math.ceilPowerOfTwo`, which differs at every
-//!         exact power of two. Strict is what guarantees `dictionaryFind` an
-//!         empty bucket to stop on.
-//!     janet_string_calchash    hashBytes
-//!     janet_array_calchash     hashIndexed
-//!     janet_kv_calchash        hashDictionary
-//!         "calchash" is not a word. The three names are `janet.h`'s own view
-//!         taxonomy -- `janet_indexed_view`, `janet_bytes_view` and
-//!         `janet_dictionary_view` -- and each of these takes exactly what the
-//!         matching view hands back, so there is no fourth.
-//!     janet_dict_find          dictionaryFind
-//!     janet_dict_find_keyword  dictionaryFindKeyword
-//!         `dict` is `util.h`'s spelling and `dictionary` is `janet.h`'s, so
-//!         the abbreviation was carrying the internal/public boundary and
-//!         nothing said so. `@export` carries it now, where it is legible.
-//!
-//! Every linker symbol below is unchanged. The export block at the foot is
-//! where the C name lives now.
+//! **`hashBytes`, `hashIndexed` and `hashDictionary` are three and not four.**
+//! Each takes exactly what one of the three views -- indexed, bytes,
+//! dictionary -- hands back, so the taxonomy is closed at three.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const config = @import("config");
 const utils = @import("utils.zig");
-const fatal = @import("fatal.zig");
-const vm_state = @import("vm/lifecycle.zig");
-const types = @import("types");
+const vm_state = @import("vm/state.zig");
 const repr = @import("repr");
 const constants = @import("constants");
 
@@ -123,10 +95,8 @@ pub const wrap = @import("value/helpers/wrap.zig");
 
 /// The three Janet types a run of bytes can become.
 ///
-/// `janet.h` spells this two-by-three grid as six macros -- `janet_stringv`
-/// and `janet_cstringv`, and the symbol and keyword pairs beside them -- where
-/// the two halves of the grid are *how the length arrives* and *which tag goes
-/// on*. C needs six because it has no slice and no enum. Zig needs one.
+/// One function over a two-by-three grid -- how the length arrives, and which
+/// tag goes on -- where a language without slices or enums needs six.
 ///
 /// Only three of the sixteen types can be built this way, which is what makes
 /// a closed enum honest here rather than a stand-in for `repr.Tag`:
@@ -137,16 +107,14 @@ pub const Bytes = enum { string, symbol, keyword };
 
 /// A `Janet` holding `bytes`, as the named type.
 ///
-/// **The parameter is a slice, and that is the point.** `janet_cstringv(p)`
-/// took a bare `const char *` and called `strlen` to find out how long it was
-/// -- work the caller usually already knew the answer to and had thrown away.
-/// A literal knows its length at comptime, so the common call site loses the
-/// `strlen` entirely; a caller holding a real C pointer spans it, which puts
-/// the scan where it is visible.
+/// **The parameter is a slice, and that is the point.** A `const char *` and a
+/// `strlen` puts work at every call site that the caller usually already knew
+/// the answer to. A literal knows its length at comptime, so the common call
+/// site loses the scan entirely; a caller holding a real C pointer spans it,
+/// which puts the scan where it is visible.
 ///
-/// A symbol and a keyword are interned identically -- `janet.h:1844` reads
-/// `#define janet_keyword janet_symbol` -- and differ only in the tag, which
-/// is why they share an arm here and why `symbols.zig` serves both.
+/// A symbol and a keyword are interned identically and differ only in the tag,
+/// which is why they share an arm here and why `symbols.zig` serves both.
 ///
 /// This lives in the bucket rather than in a leaf because it is shared by
 /// `strings` and `symbols` and belongs to neither, which is the criterion
@@ -186,6 +154,12 @@ pub fn hashBytes(bytes: []const u8) i32 {
     return @bitCast(hashMix(hash, @bitCast(@as(i32, @intCast(bytes.len)))));
 }
 
+/// The capacity a dictionary needs to hold `val` entries: the smallest power of
+/// two **strictly** greater than it.
+///
+/// Not `std.math.ceilPowerOfTwo`, which differs at every exact power of two.
+/// Strict is what guarantees `dictionaryFind` an empty bucket to stop on, so a
+/// probe that finds none terminates.
 pub fn capacityFor(val: i32) i32 {
     if (val < 0) return 0;
     var result = val;
@@ -280,7 +254,7 @@ pub fn hashIndexed(array: []const repr.Value) i32 {
 }
 
 /// Hash a run of key-value pairs, for `janet_struct_end`.
-pub fn hashDictionary(kvs: []const types.JanetKV) i32 {
+pub fn hashDictionary(kvs: []const tables.KV) i32 {
     var hash: u32 = 33;
     for (kvs) |kv| {
         hash = hashMix(hash, @bitCast(order.hash(kv.key)));
@@ -289,7 +263,7 @@ pub fn hashDictionary(kvs: []const types.JanetKV) i32 {
     return @bitCast(hash);
 }
 
-/// `janet_maphash` from `src/core/util.h`.
+/// A hash folded into a bucket index.
 ///
 /// The mask is `cap - 1` rather than `cap % capacity` because every capacity
 /// the runtime produces is a power of two. It is not written to survive a
@@ -323,10 +297,10 @@ inline fn isNil(val: repr.Value) bool {
 /// A capacity of zero sends this off the array; see `mapHash`. That is
 /// undefined in C and is not reproduced: a safety-checked build traps at the
 /// first index rather than reading two gigabytes below the null page.
-pub fn dictionaryFind(buckets: []const types.JanetKV, key: repr.Value) ?*const types.JanetKV {
+pub fn dictionaryFind(buckets: []const tables.KV, key: repr.Value) ?*const tables.KV {
     const cap: i32 = @intCast(buckets.len);
     const index = mapHash(cap, order.hash(key));
-    var first_bucket: ?*const types.JanetKV = null;
+    var first_bucket: ?*const tables.KV = null;
 
     var i: i32 = index;
     while (i < cap) : (i += 1) {
@@ -334,7 +308,7 @@ pub fn dictionaryFind(buckets: []const types.JanetKV, key: repr.Value) ?*const t
         if (isNil(kv.key)) {
             if (isNil(kv.value)) return kv;
             if (first_bucket == null) first_bucket = kv;
-        } else if (order.equals(kv.key, key) != 0) {
+        } else if (order.equals(kv.key, key)) {
             return kv;
         }
     }
@@ -345,7 +319,7 @@ pub fn dictionaryFind(buckets: []const types.JanetKV, key: repr.Value) ?*const t
         if (isNil(kv.key)) {
             if (isNil(kv.value)) return kv;
             if (first_bucket == null) first_bucket = kv;
-        } else if (order.equals(kv.key, key) != 0) {
+        } else if (order.equals(kv.key, key)) {
             return kv;
         }
     }
@@ -361,15 +335,15 @@ pub fn dictionaryFind(buckets: []const types.JanetKV, key: repr.Value) ?*const t
 /// `JANET_KEYWORD` alone, and that is not a bug — the three share a
 /// representation and the C original says so in a comment.
 pub fn dictionaryFindKeyword(
-    buckets: []const types.JanetKV,
+    buckets: []const tables.KV,
     cstr: [*]const u8,
     cstr_len: i32,
-) ?*const types.JanetKV {
+) ?*const tables.KV {
     const cap: i32 = @intCast(buckets.len);
     const key_bytes = cstr[0..@intCast(cstr_len)];
     const hash = hashBytes(key_bytes);
     const index = mapHash(cap, hash);
-    var first_bucket: ?*const types.JanetKV = null;
+    var first_bucket: ?*const tables.KV = null;
 
     var i: i32 = index;
     while (i < cap) : (i += 1) {
@@ -404,12 +378,12 @@ fn matchesKeyword(key: repr.Value, hash: i32, cstr: []const u8) bool {
     if (!repr.checkType(key, repr.Tag.keyword)) return false;
     const str = wrap.toString(key);
     const head = stringHead(str);
-    if (head.*.hash != hash or head.*.length != @as(i32, @intCast(cstr.len))) return false;
+    if (head.hash != hash or head.length != @as(i32, @intCast(cstr.len))) return false;
     return std.mem.eql(u8, str[0..cstr.len], cstr);
 }
 
 /// Look a key up in a struct or table's buckets, answering nil for absent.
-pub fn dictionaryGet(data: []const types.JanetKV, key: repr.Value) repr.Value {
+pub fn dictionaryGet(data: []const tables.KV, key: repr.Value) repr.Value {
     const kv = dictionaryFind(data, key) orelse return wrap.fromNil();
     if (!isNil(kv.key)) return kv.value;
     return wrap.fromNil();
@@ -421,11 +395,11 @@ pub fn dictionaryGet(data: []const types.JanetKV, key: repr.Value) repr.Value {
 /// iteration is `while (kv = janet_dictionary_next(...)) != null`. Bucket order
 /// is not insertion order and is not stable across a rehash.
 pub fn dictionaryNext(
-    kvs: []const types.JanetKV,
-    kv: ?*const types.JanetKV,
-) ?*const types.JanetKV {
+    kvs: []const tables.KV,
+    kv: ?*const tables.KV,
+) ?*const tables.KV {
     const start: usize = if (kv) |at|
-        (@intFromPtr(at) - @intFromPtr(kvs.ptr)) / @sizeOf(types.JanetKV) + 1
+        (@intFromPtr(at) - @intFromPtr(kvs.ptr)) / @sizeOf(tables.KV) + 1
     else
         0;
     for (kvs[start..]) |*bucket| {
@@ -446,7 +420,7 @@ pub fn dictionaryNext(
 /// multiply wraps. Both are reproduced -- the enormous size is what turns a
 /// negative capacity into an out-of-memory exit.
 inline fn kvBytes(count: i32) usize {
-    return @as(usize, @bitCast(@as(isize, count))) *% @sizeOf(types.JanetKV);
+    return @as(usize, @bitCast(@as(isize, count))) *% @sizeOf(tables.KV);
 }
 
 /// `janet_memalloc_empty`. A `janet_malloc` block of `count` key/value pairs,
@@ -454,25 +428,23 @@ inline fn kvBytes(count: i32) usize {
 ///
 /// The charge happens before the null check, exactly as in C; nothing observes
 /// the difference, because the failure path exits.
-pub fn memallocEmpty(count: i32) ?*anyopaque {
+pub fn memallocEmpty(count: i32) [*]tables.KV {
     const bytes = kvBytes(count);
-    const mem = utils.malloc(bytes);
+    const mmem: [*]tables.KV = @ptrCast(@alignCast(utils.rawAlloc(bytes)));
     vm_state.current().gc.next_collection +%= bytes;
-    if (mem == null) fatal.outOfMemory();
-    const mmem: [*]types.JanetKV = @ptrCast(@alignCast(mem));
-    var i: i32 = 0;
-    while (i < count) : (i += 1) {
-        const kv = &mmem[@intCast(i)];
+    // A negative `count` never reaches here: `kvBytes` sign-extends it into an
+    // enormous size and `rawAlloc` exits on the failed allocation.
+    for (mmem[0..@intCast(count)]) |*kv| {
         kv.key = wrap.fromNil();
         kv.value = wrap.fromNil();
     }
-    return mem;
+    return mmem;
 }
 
 /// `janet_memempty`. The same fill over a block the caller already owns, which
 /// is how a table is cleared and how a struct's bucket array is initialised
 /// from the scratch allocator.
-pub fn memempty(mem: []types.JanetKV) void {
+pub fn memempty(mem: []tables.KV) void {
     for (mem) |*kv| {
         kv.key = wrap.fromNil();
         kv.value = wrap.fromNil();

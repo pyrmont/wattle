@@ -5,25 +5,22 @@
 //! a subsystem, and for the same reason: it holds no `export` at all, so every
 //! subsystem can import it without the definitions appearing twice.
 //!
-//! ## What `JANET_CORE_FN` actually decides
+//! ## What a core registration decides
 //!
-//! The C original spells a core cfunction with one macro that expands
-//! differently in four dimensions, and reproducing the expansion faithfully is
-//! most of what this file is for. `src/core/util.h` picks between
-//! `JANET_FN` and `JANET_FN_S` on `JANET_BOOTSTRAP`, and `janet.h` then picks
-//! between four `JANET_FN*` forms on `JANET_NO_DOCSTRINGS` and
-//! `JANET_NO_SOURCEMAPS`. The table below is what falls out:
+//! Whether a core cfunction carries a docstring and a source map depends on
+//! two things — whether this is the bootstrap or the runtime, and what the
+//! build asked for — and the four combinations are the whole of what this file
+//! is for:
 //!
 //! | build | docstring | source map |
 //! | --- | --- | --- |
-//! | bootstrap | unless `JANET_NO_DOCSTRINGS` | unless `JANET_NO_SOURCEMAPS` |
+//! | bootstrap | unless `-Ddocstrings=false` | unless `-Dsourcemaps=false` |
 //! | runtime | never | always |
 //!
-//! The runtime row is not a simplification. `JANET_CORE_FN` resolves to
-//! `JANET_FN_S` outside the bootstrap whatever the config says, so a
-//! `-Ddocstrings=false` runtime drops nothing here — the docstrings were never
-//! in it — and a `-Dsourcemaps=false` runtime still records a source map for
-//! every core cfunction. Both are reproduced rather than tidied.
+//! The runtime row is not a simplification. A `-Ddocstrings=false` runtime
+//! drops nothing here — the docstrings were never in it — and a
+//! `-Dsourcemaps=false` runtime still records a source map for every core
+//! cfunction.
 //!
 //! The runtime has no docstrings because it does not need them: the core
 //! environment is unmarshalled from the image, which the bootstrap built with
@@ -51,11 +48,13 @@
 //! the number into each object. Over-aligning costs padding measured in bytes.
 
 const std = @import("std");
-const raise = @import("raise");
+const raise = @import("raise.zig");
 const config = @import("config");
-const types = @import("types");
 const repr = @import("repr");
-const c = @import("cabi");
+const registry = @import("registry.zig");
+const capi = @import("capi.zig");
+const abi = @import("abi");
+const tables = @import("value/tables.zig");
 
 /// Compiled into the bootstrap image generator rather than into the runtime: a
 /// core cfunction table carries docstrings in the generator and not in the
@@ -82,11 +81,9 @@ pub const alignment = 16;
 /// path that climbs out of the module cannot be reconstructed by
 /// concatenation.
 ///
-/// The result is repo-relative where C's `__FILE__` is absolute, because
-/// `build.zig` passes absolute paths to the C compiler. That is an improvement
-/// and a small one: `PLAN.md` records that the image embeds twenty-two
-/// absolute host paths, which is why it is not yet reproducible across
-/// checkouts, and this removes them one subsystem at a time.
+/// The path is repo-relative, which is what keeps the build machine's
+/// directory out of the source map and therefore out of the core image.
+/// `tools/check/image-diff.janet` counts what host paths remain.
 const source_root = "src/zig/";
 
 inline fn sourcePath(comptime where: std.builtin.SourceLocation) [:0]const u8 {
@@ -97,7 +94,7 @@ inline fn sourcePath(comptime where: std.builtin.SourceLocation) [:0]const u8 {
     return source_root ++ where.file;
 }
 
-pub const Entry = types.Reg;
+pub const Entry = abi.Reg;
 
 // `Method` is `method_type.zig`'s, beside the other retyped tables. This file
 // registers core cfunctions and uses neither it nor `method_end`; the nine
@@ -150,9 +147,7 @@ pub fn reg(
 /// The bootstrap defines the binding as well as the registry entry, because it
 /// is building the environment the image is made of; the runtime only puts the
 /// value and the registry entry, because the binding arrived with the image.
-/// `util.h` spells that as a `#define` of one name onto the other, which is
-/// why there is a choice to make here at all.
-pub fn install(env: *types.JanetTable, comptime entries: anytype) void {
+pub fn install(env: *tables.Table, comptime entries: anytype) void {
     const rows = comptime blk: {
         var out: [entries.len + 1]Entry = undefined;
         for (entries, 0..) |row, i| out[i] = row;
@@ -164,23 +159,23 @@ pub fn install(env: *types.JanetTable, comptime entries: anytype) void {
 
 /// The same, for a table the caller terminated because its length is a
 /// run-time fact. See `end`.
-pub fn installTerminated(env: *types.JanetTable, entries: [*]const Entry) void {
+pub fn installTerminated(env: *tables.Table, entries: [*]const Entry) void {
     if (bootstrap) {
-        c.janet_cfuns_ext(env, null, entries);
+        capi.janet_cfuns_ext(env, null, entries);
     } else {
-        c.janet_core_cfuns_ext(env, null, entries);
+        registry.coreCfunsExt(env, null, entries);
     }
 }
 
 /// `JANET_CORE_DEF`: a plain value binding rather than a cfunction.
 ///
-/// Both arms are real.
-/// documented binding in the environment the image is made of; the runtime
-/// calls `janet_core_def_sm`, which throws the documentation and the source map
-/// away and puts the bare value into `janet_core_lookup_table`'s dictionary --
-/// which is *not* the environment. That dictionary is what `janet_unmarshal`
-/// resolves the image's symbol references against, so a value the runtime
-/// cannot reconstruct has to be in it.
+/// Both arms are real. The bootstrap defines a documented binding in the
+/// environment the image is made of; the runtime calls `registry.coreDefSm`,
+/// which throws the documentation and the source map away and puts the bare
+/// value into the core lookup dictionary -- which is *not* the environment.
+/// That dictionary is what the unmarshaller resolves the image's symbol
+/// references against, so a value the runtime cannot reconstruct has to be in
+/// it.
 ///
 /// Reading the runtime arm as redundant is a mistake this file has made: the
 /// image already carries the binding, which holds for `math`'s constants --
@@ -189,14 +184,14 @@ pub fn installTerminated(env: *types.JanetTable, entries: [*]const Entry) void {
 /// can only come from the running process, and the image refers to them by
 /// name.
 pub fn def(
-    env: *types.JanetTable,
+    env: *tables.Table,
     comptime name: [:0]const u8,
     value: repr.Value,
     comptime where: std.builtin.SourceLocation,
     comptime doc: [:0]const u8,
 ) void {
     if (bootstrap) {
-        c.janet_def_sm(
+        registry.defSm(
             env,
             name.ptr,
             value,
@@ -205,6 +200,6 @@ pub fn def(
             if (with_sourcemaps) @intCast(where.line) else 0,
         );
     } else {
-        c.janet_core_def_sm(env, name.ptr, value, doc.ptr, null, 0);
+        registry.coreDefSm(env, name.ptr, value, doc.ptr, null, 0);
     }
 }

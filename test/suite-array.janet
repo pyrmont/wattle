@@ -61,6 +61,13 @@
 (assert (deep= (array/insert @[:a :a :a :a] 2 :b :b) @[:a :a :b :b :a :a]) "array/insert 1")
 (assert (deep= (array/insert @[:a :b] -1 :c :d) @[:a :b :c :d]) "array/insert 2")
 
+# Inserting nothing. The array may never have been allocated at all -- a
+# zero-capacity array has a null payload -- so this is the one call that
+# reaches the copy with nothing to copy and no buffer to copy into.
+(assert (deep= (array/insert (array/new 0) 0) @[]) "array/insert nothing into an unallocated array")
+(assert (deep= (array/insert @[] 0) @[]) "array/insert nothing into an empty array")
+(assert (deep= (array/insert @[:a :b] 1) @[:a :b]) "array/insert nothing leaves the array alone")
+
 # array/remove
 (assert-error "removal index 3 out of range [0,2]" (array/remove @[1 2] 3))
 (assert-error "expected non-negative integer for argument n, got -1" (array/remove @[1 2] 1 -1))

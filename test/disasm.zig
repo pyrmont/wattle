@@ -22,7 +22,6 @@
 //! kind of thing a port drops.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const harness = @import("harness.zig");
@@ -32,30 +31,34 @@ const symbols = @import("subsystems").value.symbols;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const disasm = @import("subsystems").disasm;
+const tuples = @import("subsystems").value.tuples;
+const structs = @import("subsystems").value.structs;
+const functions = @import("subsystems").value.functions;
+const expect = @import("expect.zig").expect;
 
 fn theWholeDefinitionRoundTrips() void {
-    var child: types.JanetFuncDef = std.mem.zeroes(types.JanetFuncDef);
+    var child: functions.FuncDef = std.mem.zeroes(functions.FuncDef);
     child.arity = 1;
     child.min_arity = 1;
     child.max_arity = 1;
     child.slotcount = 2;
 
-    var definitions = [_]*types.JanetFuncDef{&child};
+    var definitions = [_]*functions.FuncDef{&child};
     var bytecode = [_]u32{
-        constants.JOP_NOOP,
-        harness.op(constants.JOP_LOAD_INTEGER) | (@as(u32, 2) << 8) | (@as(u32, 0xFFF9) << 16),
+        harness.op(constants.Opcode.noop),
+        harness.op(constants.Opcode.load_integer) | (@as(u32, 2) << 8) | (@as(u32, 0xFFF9) << 16),
     };
     var consts = [_]repr.Value{
         wrap.fromTrue(),
         value.fromBytes("constant", .string),
     };
-    var sourcemap = [_]types.JanetSourceMapping{
+    var sourcemap = [_]functions.SourceMapping{
         .{ .line = 3, .column = 5 },
         .{ .line = 8, .column = 13 },
     };
     var environments = [_]i32{ 4, 1 };
 
-    var symbolmap: [2]types.JanetSymbolMap = @splat(std.mem.zeroes(types.JanetSymbolMap));
+    var symbolmap: [2]functions.SymbolMap = @splat(std.mem.zeroes(functions.SymbolMap));
     symbolmap[0].birth_pc = 0;
     symbolmap[0].death_pc = 2;
     symbolmap[0].slot_index = 3;
@@ -66,14 +69,12 @@ fn theWholeDefinitionRoundTrips() void {
     symbolmap[1].slot_index = 0;
     symbolmap[1].symbol = symbols.new("captured");
 
-    var definition: types.JanetFuncDef = std.mem.zeroes(types.JanetFuncDef);
+    var definition: functions.FuncDef = std.mem.zeroes(functions.FuncDef);
     definition.arity = 2;
     definition.min_arity = 1;
     definition.max_arity = 4;
     definition.slotcount = 9;
-    definition.flags = constants.JANET_FUNCDEF_FLAG_VARARG |
-        constants.JANET_FUNCDEF_FLAG_STRUCTARG |
-        constants.JANET_FUNCDEF_FLAG_NAMEDARGS;
+    definition.flags = .{ .vararg = true, .structarg = true, .namedargs = true };
     definition.named_args_count = 3;
     definition.bytecode = &bytecode;
     definition.bytecode_length = bytecode.len;
@@ -90,7 +91,7 @@ fn theWholeDefinitionRoundTrips() void {
     definition.defs_length = definitions.len;
 
     const val = disasm.disasm(&definition);
-    std.debug.assert(harness.isType(val, repr.Tag.@"struct"));
+    expect(harness.isType(val, repr.Tag.@"struct"));
     const result = wrap.toStruct(val);
 
     theScalarFields(result);
@@ -102,77 +103,77 @@ fn theWholeDefinitionRoundTrips() void {
     theChildDefinition(result);
 }
 
-fn theScalarFields(result: types.JanetStruct) void {
-    std.debug.assert(harness.integerIs(harness.field(result, "arity"), 2));
-    std.debug.assert(harness.integerIs(harness.field(result, "min-arity"), 1));
-    std.debug.assert(harness.integerIs(harness.field(result, "max-arity"), 4));
-    std.debug.assert(harness.integerIs(harness.field(result, "slotcount"), 9));
+fn theScalarFields(result: structs.Struct) void {
+    expect(harness.integerIs(harness.field(result, "arity"), 2));
+    expect(harness.integerIs(harness.field(result, "min-arity"), 1));
+    expect(harness.integerIs(harness.field(result, "max-arity"), 4));
+    expect(harness.integerIs(harness.field(result, "slotcount"), 9));
     // The three flags come back as booleans and a count rather than as bits.
-    std.debug.assert(wrap.toBoolean(harness.field(result, "vararg")));
-    std.debug.assert(wrap.toBoolean(harness.field(result, "structarg")));
-    std.debug.assert(harness.integerIs(harness.field(result, "namedargs"), 3));
-    std.debug.assert(harness.stringValueIs(harness.field(result, "source"), "source.janet"));
-    std.debug.assert(harness.stringValueIs(harness.field(result, "name"), "sample"));
+    expect(wrap.toBoolean(harness.field(result, "vararg")));
+    expect(wrap.toBoolean(harness.field(result, "structarg")));
+    expect(harness.integerIs(harness.field(result, "namedargs"), 3));
+    expect(harness.stringValueIs(harness.field(result, "source"), "source.janet"));
+    expect(harness.stringValueIs(harness.field(result, "name"), "sample"));
 }
 
-fn theBytecode(result: types.JanetStruct) void {
+fn theBytecode(result: structs.Struct) void {
     const array = wrap.toArray(harness.field(result, "bytecode"));
-    std.debug.assert(array.*.count == 2);
+    expect(array.count == 2);
 
-    const noop = wrap.toTuple(array.*.slice()[0]);
-    std.debug.assert(types.tupleHead(noop).length == 1);
-    std.debug.assert(harness.symbolIs(noop[0], "noop"));
+    const noop = wrap.toTuple(array.slice()[0]);
+    expect(tuples.head(noop).length == 1);
+    expect(harness.symbolIs(noop[0], "noop"));
 
     // Decoded rather than copied: -7 was `0xFFF9` in the word.
-    const ldi = wrap.toTuple(array.*.slice()[1]);
-    std.debug.assert(harness.integerIs(ldi[1], 2));
-    std.debug.assert(harness.integerIs(ldi[2], -7));
+    const ldi = wrap.toTuple(array.slice()[1]);
+    expect(harness.integerIs(ldi[1], 2));
+    expect(harness.integerIs(ldi[2], -7));
 }
 
-fn theConstants(result: types.JanetStruct, expected: []const repr.Value) void {
+fn theConstants(result: structs.Struct, expected: []const repr.Value) void {
     const array = wrap.toArray(harness.field(result, "constants"));
-    std.debug.assert(array.*.count == 2);
-    std.debug.assert(harness.equals(array.*.slice()[0], expected[0]));
-    std.debug.assert(harness.equals(array.*.slice()[1], expected[1]));
+    expect(array.count == 2);
+    expect(harness.equals(array.slice()[0], expected[0]));
+    expect(harness.equals(array.slice()[1], expected[1]));
 }
 
-fn theSourceMap(result: types.JanetStruct) void {
+fn theSourceMap(result: structs.Struct) void {
     const array = wrap.toArray(harness.field(result, "sourcemap"));
-    std.debug.assert(array.*.count == 2);
-    const second = wrap.toTuple(array.*.slice()[1]);
-    std.debug.assert(harness.integerIs(second[0], 8));
-    std.debug.assert(harness.integerIs(second[1], 13));
+    expect(array.count == 2);
+    const second = wrap.toTuple(array.slice()[1]);
+    expect(harness.integerIs(second[0], 8));
+    expect(harness.integerIs(second[1], 13));
 }
 
-fn theEnvironments(result: types.JanetStruct) void {
+fn theEnvironments(result: structs.Struct) void {
     const array = wrap.toArray(harness.field(result, "environments"));
-    std.debug.assert(array.*.count == 2);
-    std.debug.assert(harness.integerIs(array.*.slice()[0], 4));
-    std.debug.assert(harness.integerIs(array.*.slice()[1], 1));
+    expect(array.count == 2);
+    expect(harness.integerIs(array.slice()[0], 4));
+    expect(harness.integerIs(array.slice()[1], 1));
 }
 
-fn theSymbolMap(result: types.JanetStruct) void {
+fn theSymbolMap(result: structs.Struct) void {
     const array = wrap.toArray(harness.field(result, "symbolmap"));
-    std.debug.assert(array.*.count == 2);
+    expect(array.count == 2);
 
     // An ordinary local: birth, death, slot, name.
-    const local = wrap.toTuple(array.*.slice()[0]);
-    std.debug.assert(harness.integerIs(local[0], 0));
-    std.debug.assert(harness.integerIs(local[1], 2));
-    std.debug.assert(harness.integerIs(local[2], 3));
-    std.debug.assert(harness.symbolIs(local[3], "local"));
+    const local = wrap.toTuple(array.slice()[0]);
+    expect(harness.integerIs(local[0], 0));
+    expect(harness.integerIs(local[1], 2));
+    expect(harness.integerIs(local[2], 3));
+    expect(harness.symbolIs(local[3], "local"));
 
     // The sentinel row, rendered as a keyword in the first position.
-    const upvalue = wrap.toTuple(array.*.slice()[1]);
-    std.debug.assert(harness.keywordIs(upvalue[0], "upvalue"));
+    const upvalue = wrap.toTuple(array.slice()[1]);
+    expect(harness.keywordIs(upvalue[0], "upvalue"));
 }
 
-fn theChildDefinition(result: types.JanetStruct) void {
+fn theChildDefinition(result: structs.Struct) void {
     const array = wrap.toArray(harness.field(result, "defs"));
-    std.debug.assert(array.*.count == 1);
+    expect(array.count == 1);
     // Disassembled recursively, so the child's own fields are present.
-    const nested = wrap.toStruct(array.*.slice()[0]);
-    std.debug.assert(harness.integerIs(harness.field(nested, "arity"), 1));
+    const nested = wrap.toStruct(array.slice()[0]);
+    expect(harness.integerIs(harness.field(nested, "arity"), 1));
 }
 
 pub fn run() void {

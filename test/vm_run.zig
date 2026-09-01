@@ -52,11 +52,8 @@
 //! these cases need is the `asm` *binding*, and `options` names subsystems.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
-const constants = @import("constants");
-const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("subsystems").raise;
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
@@ -69,11 +66,15 @@ const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const vm_entry_mod = @import("subsystems").vm_entry;
 const pp_describe = @import("subsystems").pp_describe;
+const strings = @import("subsystems").value.strings;
+const tuples = @import("subsystems").value.tuples;
+const abi = @import("abi");
+const tables = @import("subsystems").value.tables;
 const vm_entry = subsystems.vm_entry;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
-var test_env: ?*types.JanetTable = null;
+var test_env: ?*tables.Table = null;
 
 /// Whether this build registered `asm`. Four groups of cases below can only be
 /// expressed in assembled bytecode, and an absent binding is a *compile* error
@@ -89,7 +90,7 @@ fn eval(source: [*:0]const u8) repr.Value {
     if (status != 0) {
         std.debug.print("unexpected error from: {s}\n", .{source});
         std.debug.print("                  got: {s}\n", .{pp_describe.toString(out)});
-        assert(false);
+        expect(false);
     }
     gc_alloc.gcroot(out);
     return out;
@@ -105,9 +106,9 @@ fn raised(source: []const u8) repr.Value {
     const fiberv = eval(wrapped);
     var out = wrap.fromNil();
     const sig = vm_entry_mod.continueFiber(wrap.toFiber(fiberv), wrap.fromNil(), &out);
-    if (sig != types.Signal.@"error") {
+    if (sig != abi.Signal.@"error") {
         std.debug.print("expected an error from: {s}\n", .{source});
-        assert(false);
+        expect(false);
     }
     gc_alloc.gcroot(out);
     return out;
@@ -119,21 +120,21 @@ fn expectError(source: []const u8, message: [*:0]const u8) void {
         std.debug.print("source:   {s}\n", .{source});
         std.debug.print("expected: {s}\n", .{message});
         std.debug.print("     got: {s}\n", .{pp_describe.toString(payload)});
-        assert(false);
+        expect(false);
     }
 }
 
 /// For the one message whose tail is undefined; see the header.
 fn expectErrorPrefix(source: []const u8, prefix: []const u8) void {
     const payload = raised(source);
-    assert(harness.isType(payload, repr.Tag.string));
+    expect(harness.isType(payload, repr.Tag.string));
     const text = wrap.toString(payload);
-    const length: usize = @intCast(types.stringHead(text).length);
+    const length: usize = @intCast(strings.head(text).length);
     if (!std.mem.startsWith(u8, text[0..length], prefix)) {
         std.debug.print("source:   {s}\n", .{source});
         std.debug.print("expected prefix: {s}\n", .{prefix});
         std.debug.print("            got: {s}\n", .{text[0..length]});
-        assert(false);
+        expect(false);
     }
 }
 
@@ -149,15 +150,15 @@ fn expectEqual(source: []const u8, expected: []const u8) void {
         std.debug.print("source:   {s}\n", .{source});
         std.debug.print("expected: {s}\n", .{wrap.toString(want)});
         std.debug.print("     got: {s}\n", .{wrap.toString(got)});
-        assert(false);
+        expect(false);
     }
 }
 
 /// Resume a fiber built in Janet source and report the signal as well as the
 /// value, which is the whole point of the `JOP_SIGNAL` and `JOP_PROPAGATE`
 /// cases.
-fn resumeFiber(fiberv: repr.Value, in: repr.Value, out: *repr.Value) types.Signal {
-    assert(harness.isType(fiberv, repr.Tag.fiber));
+fn resumeFiber(fiberv: repr.Value, in: repr.Value, out: *repr.Value) abi.Signal {
+    expect(harness.isType(fiberv, repr.Tag.fiber));
     return vm_entry_mod.continueFiber(wrap.toFiber(fiberv), in, out);
 }
 
@@ -323,8 +324,8 @@ fn stackOverflow() void {
     );
     var out = wrap.fromNil();
     const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == types.Signal.@"error");
-    assert(harness.stringValueIs(out, "stack overflow"));
+    expect(sig == abi.Signal.@"error");
+    expect(harness.stringValueIs(out, "stack overflow"));
 }
 
 // ------------------------------------------------------------ type assertions
@@ -397,8 +398,8 @@ fn theSignalOpcode() void {
             "  :bytecode [(ldc 0 0) (sig 1 0 30) (ret 1)]}) :i0123456789)",
     );
     var sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == types.Signal.user9);
-    assert(harness.keywordIs(out, "payload"));
+    expect(sig == abi.Signal.user9);
+    expect(harness.keywordIs(out, "payload"));
 
     fiberv = eval(
         "(fiber/new (asm '{:arity 0 :constants [:payload]" ++
@@ -406,8 +407,8 @@ fn theSignalOpcode() void {
     );
     sig = resumeFiber(fiberv, wrap.fromNil(), &out);
     // The operand is the signal number, not the user index: 5 is USER1.
-    assert(sig == types.Signal.user1);
-    assert(harness.keywordIs(out, "payload"));
+    expect(sig == abi.Signal.user1);
+    expect(harness.keywordIs(out, "payload"));
 }
 
 /// `JOP_ERROR` returns the slot as an error signal without formatting it,
@@ -416,9 +417,9 @@ fn theErrorOpcode() void {
     var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (error [1 2])) :e)");
     const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == types.Signal.@"error");
-    assert(harness.isType(out, repr.Tag.tuple));
-    assert(types.tupleHead(wrap.toTuple(out)).length == 2);
+    expect(sig == abi.Signal.@"error");
+    expect(harness.isType(out, repr.Tag.tuple));
+    expect(tuples.head(wrap.toTuple(out)).length == 2);
 }
 
 /// `JOP_PROPAGATE` hands a child's status upward as the parent's signal, and
@@ -432,8 +433,8 @@ fn thePropagateOpcode() void {
             "    (fiber/new (fn [] (propagate :outer child)) :y))",
     );
     const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == types.Signal.yield);
-    assert(harness.keywordIs(out, "outer"));
+    expect(sig == abi.Signal.yield);
+    expect(harness.keywordIs(out, "outer"));
 
     // Only `:new` and `:alive` sit above JANET_STATUS_USER9, so an unstarted
     // child is the reachable half of the check and a dead one propagates fine.
@@ -449,18 +450,18 @@ fn aResumedFiberReceivesItsValue() void {
     const fiberv = eval("(fiber/new (fn [] [(yield 1) (yield 2)]) :y)");
 
     var sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == types.Signal.yield);
-    assert(harness.integerIs(out, 1));
+    expect(sig == abi.Signal.yield);
+    expect(harness.integerIs(out, 1));
 
     sig = resumeFiber(fiberv, value.fromBytes("first", .keyword), &out);
-    assert(sig == types.Signal.yield);
-    assert(harness.integerIs(out, 2));
+    expect(sig == abi.Signal.yield);
+    expect(harness.integerIs(out, 2));
 
     sig = resumeFiber(fiberv, value.fromBytes("second", .keyword), &out);
-    assert(sig == types.Signal.ok);
-    assert(harness.isType(out, repr.Tag.tuple));
-    assert(harness.keywordIs(wrap.toTuple(out)[0], "first"));
-    assert(harness.keywordIs(wrap.toTuple(out)[1], "second"));
+    expect(sig == abi.Signal.ok);
+    expect(harness.isType(out, repr.Tag.tuple));
+    expect(harness.keywordIs(wrap.toTuple(out)[0], "first"));
+    expect(harness.keywordIs(wrap.toTuple(out)[1], "second"));
 }
 
 /// A fiber that has not started yet takes its resume value as its first
@@ -470,8 +471,8 @@ fn aNewFiberReceivesItsValueAsAnArgument() void {
     var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [x] [:got x]) :y)");
     const sig = resumeFiber(fiberv, value.fromBytes("in", .keyword), &out);
-    assert(sig == types.Signal.ok);
-    assert(harness.keywordIs(wrap.toTuple(out)[1], "in"));
+    expect(sig == abi.Signal.ok);
+    expect(harness.keywordIs(wrap.toTuple(out)[1], "in"));
 }
 
 /// After a raise the fiber carries `JANET_FIBER_DID_RAISE`, which the head of
@@ -482,8 +483,8 @@ fn aFiberResumedAfterARaise() void {
     var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (error :boom)) :ey)");
     const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == types.Signal.@"error");
-    assert(harness.keywordIs(out, "boom"));
+    expect(sig == abi.Signal.@"error");
+    expect(harness.keywordIs(out, "boom"));
     // And is refused a second time, by `checkCanResume` rather than by the
     // loop — which is the boundary `vm_entry` owns.
     expectError(
@@ -498,8 +499,8 @@ fn aFiberResumedAfterARaiseInsideACfunction() void {
     var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (yield (length 5))) :ey)");
     const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == types.Signal.@"error");
-    assert(harness.isType(out, repr.Tag.string));
+    expect(sig == abi.Signal.@"error");
+    expect(harness.isType(out, repr.Tag.string));
 }
 
 /// An injected signal is delivered instead of resuming, and is read back out
@@ -508,12 +509,12 @@ fn anInjectedSignal() void {
     var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (yield 1) :never) :y)");
     var sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    assert(sig == types.Signal.yield);
+    expect(sig == abi.Signal.yield);
 
-    signal_core.signalInject(wrap.toFiber(fiberv), types.Signal.user3);
+    signal_core.signalInject(wrap.toFiber(fiberv), abi.Signal.user3);
     sig = resumeFiber(fiberv, value.fromBytes("injected", .keyword), &out);
-    assert(sig == types.Signal.user3);
-    assert(harness.keywordIs(out, "injected"));
+    expect(sig == abi.Signal.user3);
+    expect(harness.keywordIs(out, "injected"));
 }
 
 // -------------------------------------------------------------- breakpoints
@@ -527,16 +528,16 @@ fn aBreakpointReachesTheUnknownOpcodeArm() raise.Raising(void) {
     const fiberv = eval("(fiber/new (fn [] (+ 1 2) (+ 3 4) :done) :dy)");
     const fiber = wrap.toFiber(fiberv);
     var sig = try vm_entry.step(fiber, wrap.fromNil(), &out);
-    assert(sig == types.Signal.debug);
-    assert(fibers.status(fiber) == types.FiberStatus.debug);
+    expect(sig == abi.Signal.debug);
+    expect(fibers.status(fiber) == fibers.FiberStatus.debug);
     // Stepping again makes progress rather than repeating, which is what the
     // RESUME_NO_SKIP and RESUME_NO_USEVAL flags are for.
     sig = try vm_entry.step(fiber, wrap.fromNil(), &out);
-    assert(sig == types.Signal.debug);
+    expect(sig == abi.Signal.debug);
     // And letting it run finishes.
     sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    assert(sig == types.Signal.ok);
-    assert(harness.keywordIs(out, "done"));
+    expect(sig == abi.Signal.ok);
+    expect(harness.keywordIs(out, "done"));
 }
 
 /// `stepImpl`'s breakpoints are temporary: it restores the instruction words
@@ -552,15 +553,15 @@ fn aPermanentBreakpoint() void {
     );
     const fiber = wrap.toFiber(fiberv);
     var sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    assert(sig == types.Signal.debug);
+    expect(sig == abi.Signal.debug);
     // Resuming re-runs the breakpointed instruction with bit 7 masked off, so
     // the second call reaches the same breakpoint rather than the loop
     // reporting the same one forever.
     sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    assert(sig == types.Signal.debug);
+    expect(sig == abi.Signal.debug);
     sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    assert(sig == types.Signal.ok);
-    assert(harness.keywordIs(out, "done"));
+    expect(sig == abi.Signal.ok);
+    expect(harness.keywordIs(out, "done"));
 }
 
 // --------------------------------------------------------- the quieter opcodes

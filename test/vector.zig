@@ -1,172 +1,143 @@
-//! Behavioral contract for the growable vector: `stretchy.zig`'s typed
-//! surface, `janet_v_grow` and `janet_v_flattenmem`, and the header
-//! arithmetic the macros in `src/core/vector.h` do around them.
+//! Behavioral contract for the growable vector: `stretchy.zig`, which is now
+//! `std.ArrayListUnmanaged` over the **scratch** allocator.
 //!
-//! No Janet program can reach any of this. The vector is the compiler's and
-//! the assembler's scratch structure — malloc'd rather than collected, freed
-//! explicitly, and never wrapped in a `Janet` — so the only caller that can
-//! exercise it is a test that pushes onto one by hand.
+//! No Janet program can reach any of this. The vector is the compiler's, the
+//! PEG builder's and the marshaller's scratch structure — never wrapped in a
+//! `Janet`, never traced — so the only caller that can exercise it is a test
+//! that pushes onto one by hand.
 //!
-//! ## The macros are written out, and that is the point of them
+//! ## What this file does not check
 //!
-//! `janet_v_push`, `janet_v_count` and `janet_v_flatten` are function-like C
-//! macros over an lvalue, and translate-c does not carry one across. So this
-//! file restates the four lines of pointer arithmetic they perform — the
-//! two-word header sitting *behind* the elements, the capacity in word 0 and
-//! the count in word 1 — and then checks `janet_v_grow` against that
-//! restatement.
+//! It does not restate the container's layout. `ArrayListUnmanaged` carries its own
+//! length and capacity in the value, `std` has its own tests for it, and a
+//! restatement here would check Zig's standard library rather than this tree.
 //!
-//! Restating is not a loss here, it is closer to what the contract is for. A
-//! contract that asserted the same arithmetic through the subject's own
-//! helpers could only ever have caught a disagreement between the subject and
-//! *itself*. Written out, the two descriptions of the layout come from
-//! different files and a drift in either is a failure.
+//! ## What is left to check, which is the part that is this tree's
 //!
-//! **So this file may never be pointed at `stretchy.zig`'s helpers**, however
-//! mechanical the substitution looks. That file's `count`, `capacity`, `push`,
-//! `setCount`, `free`, `flatten` and `slice` replaced six private copies,
-//! which were duplication; this restatement stays because it is the oracle.
-//! The second half of `run` below is the other subject: the typed surface,
-//! checked against the restatement rather than against itself. Collapsing
-//! exactly this distinction elsewhere left a file green and testing nothing.
+//! The allocator. `stretchy.zig` chooses **scratch** over `utils.heap`, and
+//! that is a correctness decision rather than a preference: the compiler
+//! reaches `deinitCompiler` only if `janetc_value` returns, and a macro that
+//! panics is the ordinary way a compile error is reported from Janet code. So
+//! the properties below are the ones the choice rests on:
+//!
+//!   * growth goes through `janet_srealloc`, which fixes up the block's entry
+//!     in the scratch table rather than adding one — a vector grown a thousand
+//!     times occupies **one** entry, not a thousand;
+//!   * `free` removes the entry;
+//!   * a vector **abandoned** without `free` — which is what a raise does — is
+//!     reclaimed by the next collection.
+//!
+//! The third is the one that matters, and it is the one no other contract in
+//! the tree asserts. If `stretchy.zig` were ever pointed at `utils.heap`, the
+//! first two would still pass and this one would leak.
 
-const std = @import("std");
 const gc_alloc = @import("subsystems").gc_alloc;
+const gc_mark = @import("subsystems").gc_mark;
 const utils = @import("subsystems").utils;
-const vector_mod = @import("subsystems").stretchy;
+const stretchy = @import("subsystems").stretchy;
 const harness = @import("harness.zig");
-const vm_lifecycle = @import("subsystems").lifecycle;
+const vm_state = @import("subsystems").vm_state;
+const compiler = @import("subsystems").compiler_primitives;
+const functions = @import("subsystems").value.functions;
+const expect = @import("expect.zig").expect;
 
-/// The header `vector.h` keeps behind the elements: capacity, then count.
-const header_words = 2;
-const header_size = header_words * @sizeOf(i32);
-
-fn raw(vector: [*]i32) [*]i32 {
-    return @ptrFromInt(@intFromPtr(vector) - header_size);
-}
-
-/// `janet_v_count`, which answers zero for a vector that was never grown.
-fn count(vector: ?[*]i32) i32 {
-    return if (vector) |v| raw(v)[1] else 0;
-}
-
-fn capacity(vector: [*]i32) i32 {
-    return raw(vector)[0];
-}
-
-/// `janet_v_push`, split into the grow test and the store so that each is
-/// visible. The C macro is one expression and does the same two things.
-fn push(vector: *?[*]i32, value: i32) void {
-    const needs_growth = if (vector.*) |v|
-        raw(v)[1] + 1 >= raw(v)[0]
-    else
-        true;
-    if (needs_growth) {
-        vector.* = @ptrCast(@alignCast(vector_mod.vGrow(
-            if (vector.*) |v| @ptrCast(v) else null,
-            1,
-            @sizeOf(i32),
-        )));
-    }
-    const v = vector.*.?;
-    raw(v)[1] += 1;
-    v[@intCast(raw(v)[1] - 1)] = value;
-}
-
-/// `janet_v_free`, which is a no-op on a vector that was never grown.
-fn free(vector: ?[*]i32) void {
-    if (vector) |v| gc_alloc.sfree(@ptrCast(raw(v)));
+/// How many blocks the scratch allocator is holding. Every assertion below is
+/// a statement about this number.
+fn scratchBlocks() usize {
+    return vm_state.current().scratch.count;
 }
 
 pub fn run() void {
-    var vector: ?[*]i32 = null;
-
     harness.init();
-    std.debug.assert(count(vector) == 0);
 
-    for (0..1024) |i| push(&vector, @as(i32, @intCast(i)) * 3);
-
-    const grown = vector.?;
-    std.debug.assert(count(grown) == 1024);
-    // The doubling rule, which the C contract could not see: `janet_v_grow`
-    // takes the larger of twice the capacity and the count plus the
-    // increment, so a vector pushed onto one element at a time never has a
-    // capacity below its count.
-    std.debug.assert(capacity(grown) >= 1024);
-    for (0..1024) |i| std.debug.assert(grown[i] == @as(i32, @intCast(i)) * 3);
-
+    // ------------------------------------------------------------ the empty
+    //
+    // `.empty` has never been grown and owns nothing, which is what lets a
+    // struct field default to it without the VM having to exist yet.
     {
-        const flattened: [*]i32 = @ptrCast(@alignCast(vector_mod.vFlattenmem(
-            @ptrCast(grown),
-            @sizeOf(i32),
-        ).?));
-        for (0..1024) |i| std.debug.assert(flattened[i] == grown[i]);
+        const empty: stretchy.Vector(i32) = .empty;
+        expect(empty.items.len == 0);
+        expect(empty.capacity == 0);
+    }
+    const before = scratchBlocks();
+
+    // ------------------------------------------------ growth is one block
+    //
+    // A thousand pushes cross the growth policy's threshold many times. Each
+    // crossing is a `janet_srealloc`, which finds the block's row in the
+    // scratch table and rewrites it in place. If any of them allocated a new
+    // block instead — an alloc-copy-free `remap`, say — the table would grow
+    // with the vector and this count would not be one.
+    var v: stretchy.Vector(i32) = .empty;
+    for (0..1024) |i| stretchy.push(&v, @as(i32, @intCast(i)) * 3);
+
+    expect(v.items.len == 1024);
+    expect(v.capacity >= 1024);
+    expect(scratchBlocks() == before + 1);
+    for (v.items, 0..) |element, i| expect(element == @as(i32, @intCast(i)) * 3);
+
+    // `pushN` is the reserve-then-overwrite pattern the PEG compiler uses, and
+    // it is one growth rather than `n` of them.
+    stretchy.pushN(&v, -1, 500);
+    expect(v.items.len == 1524);
+    expect(scratchBlocks() == before + 1);
+    for (v.items[1024..]) |element| expect(element == -1);
+
+    // -------------------------------------------------------------- flatten
+    //
+    // `janet_v_flatten`: the elements alone, in `janet_malloc` memory. It is
+    // the one operation with no standard equivalent, and the allocator is the
+    // reason — `toOwnedSlice` would hand back scratch memory, and a funcdef's
+    // constants outlive the collection that would sweep it. So the copy is
+    // *not* a scratch block.
+    {
+        const blocks = scratchBlocks();
+        const flattened = stretchy.flatten(i32, v).?;
+        expect(scratchBlocks() == blocks);
+        for (v.items, 0..) |element, i| expect(flattened[i] == element);
         utils.free(@ptrCast(flattened));
     }
 
-    // A null vector flattens to null rather than to an empty allocation. The C
-    // contract never asked, because `janet_v_flatten(NULL)` reads
-    // `sizeof(*(v))` off a null pointer expression and is only well defined
-    // because `sizeof` does not evaluate it.
-    std.debug.assert(vector_mod.vFlattenmem(null, @sizeOf(i32)) == null);
+    // An empty vector flattens to null rather than to an empty allocation.
+    {
+        const empty: stretchy.Vector(i32) = .empty;
+        expect(stretchy.flatten(i32, empty) == null);
+    }
 
-    free(grown);
+    // ------------------------------------------------- free takes the entry
+    stretchy.free(&v);
+    expect(scratchBlocks() == before);
+    expect(v.items.len == 0);
+    expect(v.capacity == 0);
 
-    // ---------------------------------------------------------------------
-    // The typed surface, against the restatement above
+    // ------------------------------------------- and a collection takes it
     //
-    // Every assertion here reads one side through `stretchy` and the other
-    // through this file's own arithmetic.
-    // ---------------------------------------------------------------------
-
-    std.debug.assert(vector_mod.count(i32, null) == 0);
-    std.debug.assert(vector_mod.capacity(i32, null) == 0);
-    std.debug.assert(vector_mod.slice(i32, null).len == 0);
-
-    var typed: ?[*]i32 = null;
-    for (0..1024) |i| vector_mod.push(i32, &typed, @as(i32, @intCast(i)) * 7);
-
-    const built = typed.?;
-    std.debug.assert(count(built) == 1024);
-    std.debug.assert(vector_mod.count(i32, built) == count(built));
-    std.debug.assert(vector_mod.capacity(i32, built) == capacity(built));
-    for (0..1024) |i| std.debug.assert(built[i] == @as(i32, @intCast(i)) * 7);
-
+    // **The property the allocator choice exists for.** This vector is never
+    // freed; it is abandoned exactly as a raise between `janetc_init` and
+    // `janetc_deinit` abandons the compiler's. Over `utils.heap` the block
+    // would still be live after the collection and this assertion would fail.
     {
-        const view = vector_mod.slice(i32, built);
-        std.debug.assert(view.len == @as(usize, @intCast(count(built))));
-        std.debug.assert(view.ptr == built);
-        for (view, 0..) |x, i| std.debug.assert(x == @as(i32, @intCast(i)) * 7);
+        var abandoned: stretchy.Vector(i32) = .empty;
+        for (0..64) |i| stretchy.push(&abandoned, @intCast(i));
+        expect(scratchBlocks() == before + 1);
     }
+    gc_mark.collect();
+    expect(scratchBlocks() == before);
 
-    // `setCount` writes word 1 and nothing else: the elements and the
-    // capacity are untouched, which is what `janet_v_empty` relies on.
-    const held = capacity(built);
-    vector_mod.setCount(i32, built, 0);
-    std.debug.assert(count(built) == 0);
-    std.debug.assert(capacity(built) == held);
-    std.debug.assert(vector_mod.slice(i32, built).len == 0);
-    std.debug.assert(built[7] == 49);
-
-    // A count driven below zero answers the empty slice rather than trapping
-    // on `@intCast`. The C loop `for (i = 0; i < n; i++)` runs zero times
-    // there, and `gc/mark.zig`'s `run` carries the same case for the mark
-    // walk over a malformed fiber.
-    vector_mod.setCount(i32, built, -1);
-    std.debug.assert(vector_mod.slice(i32, built).len == 0);
-    vector_mod.setCount(i32, built, 1024);
-
-    // `flatten` copies the elements out with no prefix, and answers null for
-    // a vector that was never grown.
+    // -------------------------------------------- the alignment the vtable
+    //                                               will hand out
+    //
+    // `janet_smalloc` puts its payload behind a `JanetScratch` header, so the
+    // alignment it can promise is that header's. The vtable aborts on a
+    // stricter request rather than misaligning silently, which cannot be
+    // tested from here — what can be is that no element type the tree pushes
+    // asks for more.
     {
-        const flat = vector_mod.flatten(i32, built).?;
-        for (0..1024) |i| std.debug.assert(flat[i] == built[i]);
-        utils.free(@ptrCast(flat));
+        const ceiling = @alignOf(gc_alloc.JanetScratch);
+        expect(@alignOf(compiler.JanetSlot) <= ceiling);
+        expect(@alignOf(compiler.SymPair) <= ceiling);
+        expect(@alignOf(compiler.JanetEnvRef) <= ceiling);
+        expect(@alignOf(functions.SourceMapping) <= ceiling);
+        expect(@alignOf(functions.SymbolMap) <= ceiling);
     }
-    std.debug.assert(vector_mod.flatten(i32, null) == null);
-
-    vector_mod.free(i32, typed);
-    vector_mod.free(i32, @as(?[*]i32, null));
-
-    vm_lifecycle.deinit();
 }

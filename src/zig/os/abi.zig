@@ -19,8 +19,8 @@ pub const path_max: usize = h.JANET_ZIG_PATH_MAX;
 pub const spawn_chdir = h.JANET_ZIG_SPAWN_CHDIR != 0;
 pub const spawn_chdir_np = h.JANET_ZIG_SPAWN_CHDIR_NP != 0;
 
-const std = @import("std");
 const builtin = @import("builtin");
+const host = @import("host");
 
 /// The process environment vector.
 ///
@@ -70,3 +70,118 @@ pub inline fn setEnviron(value: EnvironVector) void {
 /// spawn -- and those call sites are what a future threaded build would need.
 pub inline fn lockEnviron() void {}
 pub inline fn unlockEnviron() void {}
+
+// ==========================================================================
+// The host functions whose signatures name a type above
+// ==========================================================================
+//
+// A declaration belongs here rather than in `cabi.zig` when one of its
+// parameters is `h.`-something: `struct tm`, `time_t`, `sigset_t`,
+// `posix_spawn_file_actions_t`, `SECURITY_ATTRIBUTES`. Those types are this
+// translation's, and the rule the tree holds is that a host header stays
+// inside the subsystem that translates it -- so the declaration follows the
+// type rather than the type following the declaration.
+//
+// Everything else `os/` calls is plain libc and is in `cabi.zig`.
+
+pub extern fn time(t: ?*h.time_t) callconv(.c) h.time_t;
+
+pub extern fn mktime(t: *h.struct_tm) callconv(.c) h.time_t;
+
+pub extern fn timegm(t: *h.struct_tm) callconv(.c) h.time_t;
+
+pub extern fn _mkgmtime(t: *h.struct_tm) callconv(.c) h.time_t;
+
+pub extern fn localtime_r(t: *const h.time_t, out: *h.struct_tm) callconv(.c) ?*h.struct_tm;
+
+pub extern fn gmtime_r(t: *const h.time_t, out: *h.struct_tm) callconv(.c) ?*h.struct_tm;
+
+/// The Microsoft reentrant pair. `localtime_s` and `gmtime_s` are declared in
+/// mingw's `<time.h>` but are not symbols its import library exports: the
+/// header maps them onto the CRT's `_localtime64_s` and `_gmtime64_s`, and a
+/// C build links against those. Calling the declared names compiles and fails
+/// to *link*, which is the third thing this increment's cross-compiles caught
+/// and the host could not.
+///
+/// The `64` in those names is the width of the `time_t` they take, so a mingw
+/// configured with `_USE_32BIT_TIME_T` would need the other pair. This project
+/// cross-compiles only `x86_64-windows-gnu`; the assertion below makes a
+/// narrow `time_t` a compile error rather than a silent mismatch.
+pub extern fn _localtime64_s(out: *h.struct_tm, t: *const h.time_t) callconv(.c) c_int;
+
+pub extern fn _gmtime64_s(out: *h.struct_tm, t: *const h.time_t) callconv(.c) c_int;
+
+pub extern fn strftime(buf: [*]u8, size: usize, fmt: [*:0]const u8, t: *const h.struct_tm) callconv(.c) usize;
+
+/// The two Windows APIs whose signatures name a type from this translation.
+///
+/// **`callconv(.winapi)`, not `.c`.** `os/process.zig` declared both `.c`, and
+/// `ev/stream.zig` declared its own `CreatePipe` `extern "kernel32"` with
+/// `.winapi` three files away. The two are the same convention on x86-64
+/// Windows only by accident of the target; `.winapi` is what the header says
+/// and what the other declaration already used.
+pub extern "kernel32" fn CreatePipe(
+    read: *host.Handle,
+    write: *host.Handle,
+    attrs: *h.SECURITY_ATTRIBUTES,
+    size: u32,
+) callconv(.winapi) c_int;
+
+pub extern fn posix_spawn_file_actions_init(actions: *h.posix_spawn_file_actions_t) callconv(.c) c_int;
+
+pub extern fn posix_spawn_file_actions_destroy(actions: *h.posix_spawn_file_actions_t) callconv(.c) c_int;
+
+pub extern fn posix_spawn_file_actions_adddup2(actions: *h.posix_spawn_file_actions_t, fd: c_int, newfd: c_int) callconv(.c) c_int;
+
+pub extern fn posix_spawn_file_actions_addclose(actions: *h.posix_spawn_file_actions_t, fd: c_int) callconv(.c) c_int;
+
+pub extern fn posix_spawn_file_actions_addchdir(actions: *h.posix_spawn_file_actions_t, path: [*:0]const u8) callconv(.c) c_int;
+
+pub extern fn posix_spawn_file_actions_addchdir_np(actions: *h.posix_spawn_file_actions_t, path: [*:0]const u8) callconv(.c) c_int;
+
+pub extern fn posix_spawn(
+    pid: *h.pid_t,
+    path: [*:0]const u8,
+    actions: ?*const h.posix_spawn_file_actions_t,
+    attrp: ?*const anyopaque,
+    argv: [*:null]const ?[*:0]const u8,
+    envp: ?[*]?[*:0]u8,
+) callconv(.c) c_int;
+
+pub extern fn posix_spawnp(
+    pid: *h.pid_t,
+    file: [*:0]const u8,
+    actions: ?*const h.posix_spawn_file_actions_t,
+    attrp: ?*const anyopaque,
+    argv: [*:null]const ?[*:0]const u8,
+    envp: ?[*]?[*:0]u8,
+) callconv(.c) c_int;
+
+pub extern "kernel32" fn CreateProcessA(
+    application: ?[*:0]const u8,
+    command_line: ?[*]u8,
+    proc_attrs: ?*h.SECURITY_ATTRIBUTES,
+    thread_attrs: ?*h.SECURITY_ATTRIBUTES,
+    inherit: c_int,
+    flags: u32,
+    environment: ?*anyopaque,
+    current_directory: ?[*:0]const u8,
+    startup: *h.STARTUPINFOA,
+    info: *h.PROCESS_INFORMATION,
+) callconv(.winapi) c_int;
+
+pub extern fn sigaction(sig: c_int, act: *const h.struct_sigaction, old: ?*h.struct_sigaction) callconv(.c) c_int;
+
+pub extern fn sigemptyset(set: *h.sigset_t) callconv(.c) c_int;
+
+pub extern fn sigaddset(set: *h.sigset_t, sig: c_int) callconv(.c) c_int;
+
+pub extern fn sigprocmask(how: c_int, set: *const h.sigset_t, old: ?*h.sigset_t) callconv(.c) c_int;
+
+/// `mode_t`, which POSIX gets from this translation and Windows spells as an
+/// `unsigned short`. `os/fs/stat.zig` re-exports it as `jmode_t`.
+pub const jmode_t = if (builtin.os.tag == .windows) c_ushort else h.mode_t;
+
+pub extern fn chmod(path: [*:0]const u8, mode: jmode_t) callconv(.c) c_int;
+
+pub extern fn umask(mask: jmode_t) callconv(.c) jmode_t;

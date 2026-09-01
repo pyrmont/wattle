@@ -1,28 +1,21 @@
 //! `core/stream`: the wrapper around a pollable file descriptor or handle, the
 //! read and write state machines every asynchronous transfer runs through, the
-//! pipe constructor, and the five stream cfunctions. Part of the `-Dev-loop`
-//! object; `ev_loop.zig` has the reasoning for why the four files are one
-//! module.
+//! pipe constructor, and the five stream cfunctions.
 //!
-//! Two host structures are named here and neither is reached by translation.
-//! `JanetOverlapped` lives in `src/core/util.h`, which no translation ever
-//! carried, so its Windows body is restated in Zig over
-//! `std.os.windows.OVERLAPPED`; the C original spells it as a union of
-//! `OVERLAPPED` and `WSAOVERLAPPED`, and those two have the same layout, so
-//! one member is enough and the union is not reproduced. The socket calls take
-//! `struct sockaddr *`, which crosses as an opaque pointer over a byte buffer
-//! exactly as `ev.c` treats it -- `janet_address_type`'s abstract carries the
-//! bytes and nothing here reads a field.
+//! Two host structures are named here and neither comes from a system header.
+//! `Overlapped` is restated below, because `WSAOVERLAPPED` and `OVERLAPPED`
+//! have the same layout and one member is enough. And the socket calls take a
+//! `struct sockaddr *`, which crosses as an opaque pointer over a byte buffer:
+//! the address abstract carries the bytes and nothing here reads a field.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const corefn = @import("corefn");
-const raise = @import("raise");
+const corefn = @import("../corefn.zig");
+const raise = @import("../raise.zig");
 const pp_format = @import("../pp/format.zig");
 const ev = @import("../ev.zig");
 const backend = @import("backend.zig");
 
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
@@ -30,13 +23,14 @@ const vm_lifecycle = @import("../vm/lifecycle.zig");
 const buffers = @import("../value/buffers.zig");
 const marsh = @import("../marsh.zig");
 const abstract_type = @import("../abstract_type.zig");
+const abi = @import("abi");
 const method_type = @import("../method_type.zig");
 const ev_callback = @import("../callback_type.zig");
 const strings = @import("../value/strings.zig");
 const utils = @import("../utils.zig");
 const gc_mark = @import("../gc/mark.zig");
 const io_core = @import("../io.zig");
-/// The `recvfrom` arm's address abstract. **Reached by import rather than by
+/// The `c.recvfrom` arm's address abstract. **Reached by import rather than by
 /// symbol**: an `@export` of an `AbstractType` is not legal once that struct
 /// stops being `extern`, which a slice field forces. Both uses sit under
 /// `if (has_net and ...)`, and `has_net` is comptime, so a build without the
@@ -46,34 +40,18 @@ const wrap = @import("../value/helpers/wrap.zig");
 const args_core = @import("../args.zig");
 const abstracts = @import("../value/abstracts.zig");
 const value = @import("../value.zig");
+const fibers = @import("../value/fibers.zig");
+const host = @import("host");
 const windows = ev.windows;
 const has_net = ev.has_net;
 
-/// `OVERLAPPED` and `WSAOVERLAPPED`, which Zig 0.16's `std.os.windows` no
-/// longer declares. The two have the same layout, and the real `OVERLAPPED`
-/// spells its middle eight bytes as a union of `{ Offset, OffsetHigh }` and a
-/// `Pointer`; only the first arm is ever used here, so it is written flat.
-pub const OVERLAPPED = extern struct {
-    Internal: usize,
-    InternalHigh: usize,
-    Offset: u32,
-    OffsetHigh: u32,
-    hEvent: ?*anyopaque,
-};
-
-/// `WSABUF`, for the same reason.
-const WSABUF = extern struct {
-    len: u32,
-    buf: [*]u8,
-};
-
-/// `JANET_EV_CHUNKSIZE`, which `ev.c` defines only on Windows because only the
-/// completion-port arm copies through a fixed buffer.
+/// The fixed buffer an asynchronous transfer copies through. Windows only:
+/// only the completion-port arm copies.
 const chunk_size_windows: i32 = 4096;
 
-/// `JanetOverlapped` from `src/core/util.h`. See the file comment.
+/// An `OVERLAPPED` with the transfer count beside it. See the file comment.
 pub const Overlapped = extern struct {
-    as: OVERLAPPED,
+    as: c.OVERLAPPED,
     bytes_transfered: u32,
 };
 
@@ -90,8 +68,9 @@ const stream_nodups: u32 = @intCast(constants.JANET_STREAM_NODUPS);
 
 /// `INVALID_HANDLE_VALUE`, and the closed marker on POSIX. `JanetHandle` is
 /// `void *` on Windows and `int` elsewhere, which a translation got wrong for
-/// the mingw targets; `types.zig` carries the corrected declaration.
-inline fn invalidHandle() types.JanetHandle {
+/// the mingw targets; `types.zig` carries the corrected declaration beside
+/// the other shapes the host decides.
+inline fn invalidHandle() host.Handle {
     return if (windows) @ptrFromInt(std.math.maxInt(usize)) else -1;
 }
 
@@ -99,40 +78,10 @@ inline fn invalidHandle() types.JanetHandle {
 // The host calls
 // ==========================================================================
 
-extern fn recv(fd: c_int, buf: [*]u8, len: usize, flags: c_int) callconv(.c) isize;
-extern fn recvfrom(fd: c_int, buf: [*]u8, len: usize, flags: c_int, from: ?*anyopaque, fromlen: *c_uint) callconv(.c) isize;
-extern fn send(fd: c_int, buf: [*]const u8, len: usize, flags: c_int) callconv(.c) isize;
-extern fn sendto(fd: c_int, buf: [*]const u8, len: usize, flags: c_int, to: ?*const anyopaque, tolen: c_uint) callconv(.c) isize;
-
 const F_SETFD: c_int = 2;
 const F_SETFL: c_int = 4;
 const FD_CLOEXEC: c_int = 1;
 const O_NONBLOCK: c_int = if (builtin.os.tag == .linux) 0o4000 else 0x0004;
-
-extern "kernel32" fn GetLastError() callconv(.winapi) u32;
-extern "kernel32" fn FormatMessageA(flags: u32, source: ?*const anyopaque, id: u32, lang: u32, buf: [*]u8, size: u32, args: ?*anyopaque) callconv(.winapi) u32;
-extern "kernel32" fn ReadFile(h: ?*anyopaque, buf: [*]u8, count: u32, read_out: ?*u32, ov: ?*OVERLAPPED) callconv(.winapi) c_int;
-extern "kernel32" fn WriteFile(h: ?*anyopaque, buf: [*]const u8, count: u32, written: ?*u32, ov: ?*OVERLAPPED) callconv(.winapi) c_int;
-extern "kernel32" fn DuplicateHandle(src_proc: ?*anyopaque, src: ?*anyopaque, dst_proc: ?*anyopaque, dst: *?*anyopaque, access: u32, inherit: c_int, options: u32) callconv(.winapi) c_int;
-extern "kernel32" fn GetCurrentProcess() callconv(.winapi) ?*anyopaque;
-extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
-extern "kernel32" fn CreatePipe(read: *?*anyopaque, write: *?*anyopaque, attrs: ?*SecurityAttributes, size: u32) callconv(.winapi) c_int;
-extern "kernel32" fn CreateNamedPipeA(name: [*:0]const u8, open_mode: u32, pipe_mode: u32, max_instances: u32, out_size: u32, in_size: u32, timeout: u32, attrs: ?*SecurityAttributes) callconv(.winapi) ?*anyopaque;
-extern "kernel32" fn CreateFileA(name: [*:0]const u8, access: u32, share: u32, attrs: ?*SecurityAttributes, disposition: u32, flags: u32, template: ?*anyopaque) callconv(.winapi) ?*anyopaque;
-extern "ws2_32" fn closesocket(s: usize) callconv(.winapi) c_int;
-extern "ws2_32" fn WSAGetLastError() callconv(.winapi) c_int;
-extern "ws2_32" fn WSARecvFrom(s: usize, bufs: [*]WSABUF, count: u32, received: ?*u32, flags: *u32, from: ?*anyopaque, fromlen: ?*i32, ov: ?*OVERLAPPED, routine: ?*anyopaque) callconv(.winapi) c_int;
-extern "ws2_32" fn WSASendTo(s: usize, bufs: [*]WSABUF, count: u32, sent: ?*u32, flags: u32, to: ?*const anyopaque, tolen: c_int, ov: ?*OVERLAPPED, routine: ?*anyopaque) callconv(.winapi) c_int;
-extern fn _open_osfhandle(h: isize, flags: c_int) callconv(.c) c_int;
-extern fn _dup(fd: c_int) callconv(.c) c_int;
-extern fn _close(fd: c_int) callconv(.c) c_int;
-extern fn _fdopen(fd: c_int, mode: [*:0]const u8) callconv(.c) ?*anyopaque;
-
-const SecurityAttributes = extern struct {
-    nLength: u32,
-    lpSecurityDescriptor: ?*anyopaque,
-    bInheritHandle: c_int,
-};
 
 const FORMAT_MESSAGE_FROM_SYSTEM: u32 = 0x1000;
 const FORMAT_MESSAGE_IGNORE_INSERTS: u32 = 0x200;
@@ -174,10 +123,10 @@ inline fn nextPipeSerial() u32 {
 /// The last host error, as a Janet string.
 pub fn evLasterr() repr.Value {
     if (windows) {
-        const code = GetLastError();
+        const code = c.GetLastError();
         var msgbuf: [256]u8 = undefined;
         msgbuf[0] = 0;
-        _ = FormatMessageA(
+        _ = c.FormatMessageA(
             FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
             null,
             code,
@@ -199,7 +148,7 @@ pub fn evLasterr() repr.Value {
         }
         return value.fromBytes(std.mem.sliceTo(&msgbuf, 0), .string);
     }
-    return value.fromBytes(std.mem.span(utils.strerrorSafe(ev.errno())), .string);
+    return value.fromBytes(std.mem.span(utils.strerrorSafe(c.errno())), .string);
 }
 
 // ==========================================================================
@@ -221,13 +170,13 @@ const default_methods = [_]method_type.Method{
 /// the runtime reaches it rather than `janet_stream_ext`. Reaching the abi
 /// instead turns that raise into a report nobody consumes.
 pub fn makeStreamExt(
-    handle: types.JanetHandle,
+    handle: host.Handle,
     flags: u32,
-    methods: ?[*]const types.JanetMethod,
+    methods: ?[*]const method_type.CMethod,
     size: usize,
-) raise.Raising(*types.JanetStream) {
-    ev.assert(@src(), size >= @sizeOf(types.JanetStream), "bad size");
-    const s: *types.JanetStream = @ptrCast(@alignCast(abstracts.new(&streamType, size)));
+) raise.Raising(*Stream) {
+    ev.assert(@src(), size >= @sizeOf(Stream), "bad size");
+    const s: *Stream = @ptrCast(@alignCast(abstracts.newBytes(&streamType, size)));
     s.handle = handle;
     s.flags = flags;
     s.read_fiber = null;
@@ -238,41 +187,28 @@ pub fn makeStreamExt(
     return s;
 }
 
-pub fn streamExt(
-    handle: types.JanetHandle,
-    flags: u32,
-    methods: ?[*]const types.JanetMethod,
-    size: usize,
-) callconv(.c) *types.JanetStream {
-    return raise.reported(makeStreamExt(handle, flags, methods, size));
-}
-
 /// The same at the default size, which is what every caller in the tree wants.
 pub fn makeStream(
-    handle: types.JanetHandle,
+    handle: host.Handle,
     flags: u32,
-    methods: ?[*]const types.JanetMethod,
-) raise.Raising(*types.JanetStream) {
-    return makeStreamExt(handle, flags, methods, @sizeOf(types.JanetStream));
-}
-
-pub fn makeStreamAbi(handle: types.JanetHandle, flags: u32, methods: ?[*]const types.JanetMethod) *types.JanetStream {
-    return raise.reported(makeStream(handle, flags, methods));
+    methods: ?[*]const method_type.CMethod,
+) raise.Raising(*Stream) {
+    return makeStreamExt(handle, flags, methods, @sizeOf(Stream));
 }
 
 /// Close the underlying handle, unregistering it first where the backend
 /// needs that. The `NODUPS` optimization is what lets the unregister be
 /// skipped: a stream nothing has duplicated is the last reference to its file
 /// description, and closing it removes it from the poll set for free.
-fn closeImplHandle(s: *types.JanetStream) raise.Raising(void) {
+fn closeImplHandle(s: *Stream) raise.Raising(void) {
     s.flags |= stream_closed;
     const canclose = s.flags & stream_not_closeable == 0;
     if (windows) {
         if (s.handle != invalidHandle()) {
             if (has_net and (s.flags & stream_socket != 0)) {
-                if (canclose) _ = closesocket(@intFromPtr(s.handle));
+                if (canclose) _ = c.closesocket(@intFromPtr(s.handle));
             } else {
-                if (canclose) _ = ev.CloseHandle(s.handle);
+                if (canclose) _ = c.CloseHandle(s.handle);
             }
             s.handle = invalidHandle();
         }
@@ -280,13 +216,13 @@ fn closeImplHandle(s: *types.JanetStream) raise.Raising(void) {
         const canunregister = s.flags & stream_unregistered == 0;
         if (s.handle != -1) {
             if (canunregister) try backend.unregisterStream(s);
-            if (canclose) _ = ev.close(s.handle);
+            if (canclose) _ = c.close(s.handle);
             s.handle = -1;
         }
     }
 }
 
-pub fn streamClose(s: *types.JanetStream) raise.Raising(void) {
+pub fn streamClose(s: *Stream) raise.Raising(void) {
     const rf = s.read_fiber;
     const wf = s.write_fiber;
     if (rf != null and rf.?.ev_callback != null) {
@@ -300,12 +236,8 @@ pub fn streamClose(s: *types.JanetStream) raise.Raising(void) {
     try closeImplHandle(s);
 }
 
-pub fn streamCloseAbi(s: *types.JanetStream) void {
-    raise.reported(streamClose(s));
-}
-
 /// Close a stream that was marked `TOCLOSE` once nothing is listening on it.
-pub fn checkToClose(s: *types.JanetStream) raise.Raising(void) {
+pub fn checkToClose(s: *Stream) raise.Raising(void) {
     if ((s.flags & stream_toclose != 0) and s.read_fiber == null and s.write_fiber == null) {
         try streamClose(s);
     }
@@ -319,23 +251,20 @@ pub fn checkToClose(s: *types.JanetStream) raise.Raising(void) {
 /// there is nobody to report it to: the stream is already unreachable, the
 /// handle is being closed either way, and no caller can retry a close. The
 /// file comment on `abstract_type.AbstractType` has the contract.
-fn streamGC(stream: *types.JanetStream, _: usize) c_int {
+fn streamGC(stream: *Stream, _: usize) void {
     closeImplHandle(stream) catch {};
-    return 0;
 }
 
-fn streamMark(stream: *types.JanetStream, _: usize) c_int {
+fn streamMark(stream: *Stream, _: usize) void {
     if (stream.read_fiber) |rf| gc_mark.mark(wrap.fromFiber(rf));
     if (stream.write_fiber) |wf| gc_mark.mark(wrap.fromFiber(wf));
-    return 0;
 }
 
-fn streamGetter(stream: *types.JanetStream, key: repr.Value, out: *repr.Value) raise.Raising(c_int) {
-    if (!repr.checkType(key, repr.Tag.keyword)) return 0;
-    return args_core.getmethod(wrap.toKeyword(key), @ptrCast(@alignCast(stream.methods)), out);
+fn streamGetter(stream: *Stream, key: repr.Value) raise.Raising(?repr.Value) {
+    return args_core.findMethod(key, @ptrCast(@alignCast(stream.methods)));
 }
 
-fn streamMarshal(s: *types.JanetStream, ctx: *types.JanetMarshalContext) raise.Raising(void) {
+fn streamMarshal(s: *Stream, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
     if (marsh.marshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("can only marshal stream with unsafe flag");
     }
@@ -347,16 +276,16 @@ fn streamMarshal(s: *types.JanetStream, ctx: *types.JanetMarshalContext) raise.R
     try marsh.marshalPtr(ctx, s.methods);
     if (windows) {
         // The C original's TODO stands: there is no reference counting to stop
-        // a handle being closed or collected in transit, and `DuplicateHandle`
+        // a handle being closed or collected in transit, and `c.DuplicateHandle`
         // does not work for sockets.
         var duph: ?*anyopaque = invalidHandle();
         if (s.flags & stream_socket != 0) {
             duph = s.handle;
         } else {
-            _ = DuplicateHandle(
-                GetCurrentProcess(),
+            _ = c.DuplicateHandle(
+                c.GetCurrentProcess(),
                 s.handle,
-                GetCurrentProcess(),
+                c.GetCurrentProcess(),
                 &duph,
                 0,
                 0,
@@ -367,17 +296,17 @@ fn streamMarshal(s: *types.JanetStream, ctx: *types.JanetMarshalContext) raise.R
     } else {
         // Marshal after dup because it is easier than maintaining our own
         // reference counting.
-        const duph = ev.dup(s.handle);
+        const duph = c.dup(s.handle);
         if (duph < 0) return pp_format.panicf("failed to duplicate stream handle: %V", .{evLasterr()});
         try marsh.marshalInt(ctx, duph);
     }
 }
 
-fn streamUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*types.JanetStream) {
+fn streamUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*Stream) {
     if (marsh.unmarshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("can only unmarshal stream with unsafe flag");
     }
-    const p: *types.JanetStream = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(types.JanetStream))));
+    const p: *Stream = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(Stream))));
     // Listening state cannot be shared across threads.
     p.read_fiber = null;
     p.write_fiber = null;
@@ -394,7 +323,7 @@ fn streamUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*types.JanetSt
     return p;
 }
 
-fn streamNext(stream: *types.JanetStream, key: repr.Value) raise.Raising(repr.Value) {
+fn streamNext(stream: *Stream, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(@alignCast(stream.methods)), key);
 }
 
@@ -404,15 +333,18 @@ fn streamNext(stream: *types.JanetStream, key: repr.Value) raise.Raising(repr.Va
 /// `int32_t`. That is exact away from Windows and a mismatched vararg width
 /// there, which is undefined, so this truncates explicitly rather than
 /// reproducing it. `FOUND.md` has the entry.
-fn streamToString(stream: *types.JanetStream, buffer: *types.JanetBuffer) raise.Raising(void) {
+fn streamToString(stream: *Stream, buffer: *abi.Buffer) raise.Raising(void) {
     const shown: i32 = if (windows) @truncate(@as(isize, @bitCast(@intFromPtr(stream.handle)))) else stream.handle;
-    _ = try pp_format.formatb(buffer, "[fd=%d]", .{shown});
+    // The callback slot takes the boundary's handle, because a module author
+    // is offered a buffer and not its layout; the runtime owns the layout and
+    // recovers it here. `abi.zig`'s header has the argument.
+    _ = try pp_format.formatb(@ptrCast(@alignCast(buffer)), "[fd=%d]", .{shown});
 }
 
 /// `pub` for the three subsystems that used to declare it `extern const` --
 /// `ev.zig`, `net/abi.zig` and `net.zig` -- and for `test/ev_loop.zig`, which
 /// calls the raising callbacks directly.
-pub const streamType = abstract_type.define(types.JanetStream, .{
+pub const streamType = abstract_type.define(Stream, .{
     .name = "core/stream",
     .gc = streamGC,
     .gcmark = streamMark,
@@ -424,7 +356,7 @@ pub const streamType = abstract_type.define(types.JanetStream, .{
 });
 
 /// Check that a stream is open and has every capability the caller needs.
-pub fn streamFlags(s: *types.JanetStream, flags: u32) raise.Raising(void) {
+pub fn streamFlags(s: *Stream, flags: u32) raise.Raising(void) {
     if (s.flags & stream_closed != 0) return raise.panic("stream is closed");
     if ((s.flags & flags) != flags) {
         const rmsg = if (flags & stream_readable != 0) "readable " else "";
@@ -439,10 +371,6 @@ pub fn streamFlags(s: *types.JanetStream, flags: u32) raise.Raising(void) {
     }
 }
 
-pub fn streamFlagsAbi(s: *types.JanetStream, flags: u32) void {
-    raise.reported(streamFlags(s, flags));
-}
-
 // ==========================================================================
 // The read state machine
 // ==========================================================================
@@ -454,20 +382,20 @@ pub const read_mode_recvfrom: c_int = 2;
 const StateRead = extern struct {
     overlapped: if (windows) Overlapped else void align(if (windows) @alignOf(Overlapped) else 1),
     flags: if (windows) u32 else c_int,
-    wbuf: if (windows and has_net) WSABUF else void,
+    wbuf: if (windows and has_net) c.WSABUF else void,
     from: if (windows and has_net) [128]u8 else void,
     fromlen: if (windows and has_net) i32 else void,
     chunk_buf: if (windows) [chunk_size_windows]u8 else void,
     bytes_left: i32,
     bytes_read: i32,
-    buf: *types.JanetBuffer,
+    buf: *buffers.Buffer,
     is_chunk: c_int,
     mode: c_int,
 };
 
-fn ev_callback_read(fiber: *types.JanetFiber, event: types.JanetAsyncEvent) raise.Raising(void) {
-    const s: *types.JanetStream = fiber.*.ev_stream.?;
-    const state: *StateRead = @ptrCast(@alignCast(fiber.*.ev_state));
+fn ev_callback_read(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Raising(void) {
+    const s: *Stream = fiber.ev_stream.?;
+    const state: *StateRead = @ptrCast(@alignCast(fiber.ev_state));
     switch (event) {
         constants.JANET_ASYNC_EVENT_MARK => gc_mark.mark(wrap.fromBuffer(state.buf)),
         constants.JANET_ASYNC_EVENT_CLOSE => {
@@ -484,7 +412,7 @@ fn ev_callback_read(fiber: *types.JanetFiber, event: types.JanetAsyncEvent) rais
     }
 }
 
-fn readWindows(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateRead, event: types.JanetAsyncEvent) raise.Raising(void) {
+fn readWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Raising(void) {
     var start_transfer = false;
     switch (event) {
         constants.JANET_ASYNC_EVENT_FAILED, constants.JANET_ASYNC_EVENT_COMPLETE => {
@@ -501,7 +429,7 @@ fn readWindows(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateRea
             if (state.bytes_left == 0 or state.is_chunk == 0 or ev_bytes == 0) {
                 var resume_val: repr.Value = undefined;
                 if (has_net and state.mode == read_mode_recvfrom) {
-                    const abst = abstracts.new(&net.addressType, @intCast(state.fromlen));
+                    const abst = abstracts.newBytes(&net.addressType, @intCast(state.fromlen));
                     @memcpy(@as([*]u8, @ptrCast(abst))[0..@intCast(state.fromlen)], state.from[0..@intCast(state.fromlen)]);
                     resume_val = wrap.fromAbstract(abst);
                 } else {
@@ -524,7 +452,7 @@ fn readWindows(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateRea
         state.wbuf.len = @intCast(chunk);
         state.wbuf.buf = &state.chunk_buf;
         state.fromlen = @intCast(state.from.len);
-        const status = WSARecvFrom(
+        const status = c.WSARecvFrom(
             @intFromPtr(s.handle),
             @ptrCast(&state.wbuf),
             1,
@@ -535,7 +463,7 @@ fn readWindows(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateRea
             &state.overlapped.as,
             null,
         );
-        if (status != 0 and WSAGetLastError() != WSA_IO_PENDING) {
+        if (status != 0 and c.WSAGetLastError() != WSA_IO_PENDING) {
             try ev.cancel(fiber, evLasterr());
             ev.asyncEnd(fiber);
             return;
@@ -545,9 +473,9 @@ fn readWindows(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateRea
         // is not set before calling ReadFile those streams always read from
         // offset 0.
         state.overlapped.as.Offset = @bitCast(state.bytes_read);
-        const status = ReadFile(s.handle, &state.chunk_buf, @intCast(chunk), null, &state.overlapped.as);
-        if (status == 0 and GetLastError() != ERROR_IO_PENDING) {
-            if (GetLastError() == ERROR_BROKEN_PIPE) {
+        const status = c.ReadFile(s.handle, &state.chunk_buf, @intCast(chunk), null, &state.overlapped.as);
+        if (status == 0 and c.GetLastError() != ERROR_IO_PENDING) {
+            if (c.GetLastError() == ERROR_BROKEN_PIPE) {
                 if (state.bytes_read != 0) {
                     ev.schedule(fiber, wrap.fromBuffer(state.buf));
                 } else {
@@ -563,7 +491,7 @@ fn readWindows(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateRea
     ev.asyncInFlight(fiber);
 }
 
-fn readPosix(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateRead, event: types.JanetAsyncEvent) raise.Raising(void) {
+fn readPosix(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Raising(void) {
     switch (event) {
         constants.JANET_ASYNC_EVENT_ERR => {
             if (state.bytes_read != 0) {
@@ -589,23 +517,23 @@ fn readPosix(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateRead,
                 var saddr: [256]u8 = undefined;
                 var socklen: c_uint = @intCast(saddr.len);
                 while (true) {
-                    const dest = buffer.*.data.? + @as(usize, @intCast(buffer.*.count));
+                    const dest = buffer.data.? + @as(usize, @intCast(buffer.count));
                     if (has_net and state.mode == read_mode_recvfrom) {
-                        nread = recvfrom(s.handle, dest, @intCast(read_limit), state.flags, &saddr, &socklen);
+                        nread = c.recvfrom(s.handle, dest, @intCast(read_limit), state.flags, &saddr, &socklen);
                     } else if (has_net and state.mode == read_mode_recv) {
-                        nread = recv(s.handle, dest, @intCast(read_limit), state.flags);
+                        nread = c.recv(s.handle, dest, @intCast(read_limit), state.flags);
                     } else {
-                        nread = ev.read(s.handle, dest, @intCast(read_limit));
+                        nread = c.read(s.handle, dest, @intCast(read_limit));
                     }
-                    if (!(nread == -1 and ev.errno() == ev.EINTR)) break;
+                    if (!(nread == -1 and c.errno() == ev.EINTR)) break;
                 }
 
                 // Check for errors, special-casing the ones that can be fixed
                 // by waiting.
                 if (nread == -1) {
-                    if (ev.errno() == ev.EAGAIN or ev.errno() == ev.EWOULDBLOCK) return;
+                    if (c.errno() == ev.EAGAIN or c.errno() == ev.EWOULDBLOCK) return;
                     // In stream protocols, a pipe error is end of stream.
-                    if (ev.errno() == ev.EPIPE and state.mode != read_mode_recvfrom) {
+                    if (c.errno() == ev.EPIPE and state.mode != read_mode_recvfrom) {
                         nread = 0;
                     } else {
                         try ev.cancel(fiber, evLasterr());
@@ -623,14 +551,14 @@ fn readPosix(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateRead,
                     return;
                 }
 
-                buffer.*.count += @intCast(nread);
+                buffer.count += @intCast(nread);
                 bytes_left -= @intCast(nread);
                 state.bytes_left = bytes_left;
 
                 if (state.is_chunk == 0 or bytes_left == 0 or nread == 0) {
                     var resume_val: repr.Value = undefined;
                     if (has_net and state.mode == read_mode_recvfrom) {
-                        const abst = abstracts.new(&net.addressType, socklen);
+                        const abst = abstracts.newBytes(&net.addressType, socklen);
                         @memcpy(@as([*]u8, @ptrCast(abst))[0..socklen], saddr[0..socklen]);
                         resume_val = wrap.fromAbstract(abst);
                     } else {
@@ -648,8 +576,8 @@ fn readPosix(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateRead,
 }
 
 pub fn readGeneric(
-    s: *types.JanetStream,
-    buf: *types.JanetBuffer,
+    s: *Stream,
+    buf: *buffers.Buffer,
     nbytes: i32,
     is_chunked: bool,
     mode: c_int,
@@ -666,28 +594,8 @@ pub fn readGeneric(
     return ev.asyncStart(s, constants.JANET_ASYNC_LISTEN_READ, ev_callback_read, state);
 }
 
-pub fn evRead(s: *types.JanetStream, buf: *types.JanetBuffer, nbytes: i32) void {
-    raise.report(readGeneric(s, buf, nbytes, false, read_mode_read, 0));
-}
-
-pub fn evReadchunk(s: *types.JanetStream, buf: *types.JanetBuffer, nbytes: i32) void {
-    raise.report(readGeneric(s, buf, nbytes, true, read_mode_read, 0));
-}
-
 comptime {
     if (has_net) {}
-}
-
-pub fn evRecv(s: *types.JanetStream, buf: *types.JanetBuffer, nbytes: i32, flags: c_int) void {
-    raise.report(readGeneric(s, buf, nbytes, false, read_mode_recv, flags));
-}
-
-pub fn evRecvChunk(s: *types.JanetStream, buf: *types.JanetBuffer, nbytes: i32, flags: c_int) void {
-    raise.report(readGeneric(s, buf, nbytes, true, read_mode_recv, flags));
-}
-
-pub fn evRecvFrom(s: *types.JanetStream, buf: *types.JanetBuffer, nbytes: i32, flags: c_int) void {
-    raise.report(readGeneric(s, buf, nbytes, false, read_mode_recvfrom, flags));
 }
 
 // ==========================================================================
@@ -701,10 +609,10 @@ pub const write_mode_sendto: c_int = 2;
 const StateWrite = extern struct {
     overlapped: if (windows) Overlapped else void align(if (windows) @alignOf(Overlapped) else 1),
     flags: if (windows) u32 else c_int,
-    wbuf: if (windows and has_net) WSABUF else void,
+    wbuf: if (windows and has_net) c.WSABUF else void,
     start: if (windows) void else i32,
     src: extern union {
-        buf: *types.JanetBuffer,
+        buf: *buffers.Buffer,
         str: [*:0]const u8,
     },
     is_buffer: c_int,
@@ -712,9 +620,9 @@ const StateWrite = extern struct {
     dest_abst: ?*anyopaque,
 };
 
-fn ev_callback_write(fiber: *types.JanetFiber, event: types.JanetAsyncEvent) raise.Raising(void) {
-    const s: *types.JanetStream = fiber.*.ev_stream.?;
-    const state: *StateWrite = @ptrCast(@alignCast(fiber.*.ev_state));
+fn ev_callback_write(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Raising(void) {
+    const s: *Stream = fiber.ev_stream.?;
+    const state: *StateWrite = @ptrCast(@alignCast(fiber.ev_state));
     switch (event) {
         constants.JANET_ASYNC_EVENT_MARK => {
             gc_mark.mark(if (state.is_buffer != 0)
@@ -739,7 +647,7 @@ fn ev_callback_write(fiber: *types.JanetFiber, event: types.JanetAsyncEvent) rai
     }
 }
 
-fn writeWindows(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateWrite, event: types.JanetAsyncEvent) raise.Raising(void) {
+fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.AsyncEvent) raise.Raising(void) {
     switch (event) {
         constants.JANET_ASYNC_EVENT_FAILED, constants.JANET_ASYNC_EVENT_COMPLETE => {
             const ev_bytes: u32 = @truncate(state.overlapped.bytes_transfered);
@@ -758,14 +666,14 @@ fn writeWindows(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateWr
                 // If a buffer, convert to a string. The C original's TODO
                 // asking to be more efficient about this stands.
                 const buffer = state.src.buf;
-                const str = strings.new(buffer.*.slice());
+                const str = strings.new(buffer.slice());
                 bytes = str;
-                len = buffer.*.count;
+                len = @intCast(buffer.count);
                 state.is_buffer = 0;
                 state.src.str = str;
             } else {
                 bytes = state.src.str;
-                len = types.stringHead(bytes).length;
+                len = strings.head(bytes).length;
             }
             state.overlapped = std.mem.zeroes(Overlapped);
 
@@ -773,8 +681,8 @@ fn writeWindows(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateWr
                 state.wbuf.buf = @constCast(bytes);
                 state.wbuf.len = @intCast(len);
                 const to = state.dest_abst;
-                const tolen: c_int = @intCast(types.abstractHead(to).size);
-                const status = WSASendTo(
+                const tolen: c_int = @intCast(abi.abstractHead(to).size);
+                const status = c.WSASendTo(
                     @intFromPtr(s.handle),
                     @ptrCast(&state.wbuf),
                     1,
@@ -786,7 +694,7 @@ fn writeWindows(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateWr
                     null,
                 );
                 if (status != 0) {
-                    if (WSAGetLastError() == WSA_IO_PENDING) {
+                    if (c.WSAGetLastError() == WSA_IO_PENDING) {
                         ev.asyncInFlight(fiber);
                     } else {
                         try ev.cancel(fiber, evLasterr());
@@ -800,9 +708,9 @@ fn writeWindows(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateWr
                 // offsets are ignored.
                 state.overlapped.as.Offset = 0xFFFFFFFF;
                 state.overlapped.as.OffsetHigh = 0xFFFFFFFF;
-                const status = WriteFile(s.handle, bytes, @intCast(len), null, &state.overlapped.as);
+                const status = c.WriteFile(s.handle, bytes, @intCast(len), null, &state.overlapped.as);
                 if (status == 0) {
-                    if (GetLastError() == ERROR_IO_PENDING) {
+                    if (c.GetLastError() == ERROR_IO_PENDING) {
                         ev.asyncInFlight(fiber);
                     } else {
                         try ev.cancel(fiber, evLasterr());
@@ -816,7 +724,7 @@ fn writeWindows(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateWr
     }
 }
 
-fn writePosix(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateWrite, event: types.JanetAsyncEvent) raise.Raising(void) {
+fn writePosix(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.AsyncEvent) raise.Raising(void) {
     switch (event) {
         constants.JANET_ASYNC_EVENT_ERR => {
             try ev.cancel(fiber, value.fromBytes("stream err", .string));
@@ -832,11 +740,11 @@ fn writePosix(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateWrit
             var start = state.start;
             if (state.is_buffer != 0) {
                 const buffer = state.src.buf;
-                bytes = buffer.*.data.?;
-                len = buffer.*.count;
+                bytes = buffer.data.?;
+                len = @intCast(buffer.count);
             } else {
                 bytes = state.src.str;
-                len = types.stringHead(bytes).length;
+                len = strings.head(bytes).length;
             }
             var nwrote: isize = 0;
             if (start < len) {
@@ -845,17 +753,17 @@ fn writePosix(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateWrit
                 while (true) {
                     const from = bytes + @as(usize, @intCast(start));
                     if (has_net and state.mode == write_mode_sendto) {
-                        nwrote = sendto(s.handle, from, @intCast(nbytes), state.flags, dest_abst, @intCast(types.abstractHead(dest_abst).size));
+                        nwrote = c.sendto(s.handle, from, @intCast(nbytes), state.flags, dest_abst, @intCast(abi.abstractHead(dest_abst).size));
                     } else if (has_net and state.mode == write_mode_send) {
-                        nwrote = send(s.handle, from, @intCast(nbytes), state.flags);
+                        nwrote = c.send(s.handle, from, @intCast(nbytes), state.flags);
                     } else {
-                        nwrote = ev.write(s.handle, from, @intCast(nbytes));
+                        nwrote = c.write(s.handle, from, @intCast(nbytes));
                     }
-                    if (!(nwrote == -1 and ev.errno() == ev.EINTR)) break;
+                    if (!(nwrote == -1 and c.errno() == ev.EINTR)) break;
                 }
 
                 if (nwrote == -1) {
-                    if (ev.errno() == ev.EAGAIN or ev.errno() == ev.EWOULDBLOCK) return;
+                    if (c.errno() == ev.EAGAIN or c.errno() == ev.EWOULDBLOCK) return;
                     try ev.cancel(fiber, evLasterr());
                     ev.asyncEnd(fiber);
                     return;
@@ -885,7 +793,7 @@ fn writePosix(fiber: *types.JanetFiber, s: *types.JanetStream, state: *StateWrit
 }
 
 pub fn writeGeneric(
-    s: *types.JanetStream,
+    s: *Stream,
     buf: ?*anyopaque,
     dest_abst: ?*anyopaque,
     mode: c_int,
@@ -903,30 +811,6 @@ pub fn writeGeneric(
     return ev.asyncStart(s, constants.JANET_ASYNC_LISTEN_WRITE, ev_callback_write, state);
 }
 
-pub fn evWriteBuffer(s: *types.JanetStream, buf: *types.JanetBuffer) void {
-    raise.report(writeGeneric(s, buf, null, write_mode_write, true, 0));
-}
-
-pub fn evWriteString(s: *types.JanetStream, str: [*:0]const u8) void {
-    raise.report(writeGeneric(s, @constCast(str), null, write_mode_write, false, 0));
-}
-
-pub fn evSendBuffer(s: *types.JanetStream, buf: *types.JanetBuffer, flags: c_int) void {
-    raise.report(writeGeneric(s, buf, null, write_mode_send, true, flags));
-}
-
-pub fn evSendString(s: *types.JanetStream, str: [*:0]const u8, flags: c_int) void {
-    raise.report(writeGeneric(s, @constCast(str), null, write_mode_send, false, flags));
-}
-
-pub fn evSendToBuffer(s: *types.JanetStream, buf: *types.JanetBuffer, dest: ?*anyopaque, flags: c_int) void {
-    raise.report(writeGeneric(s, buf, dest, write_mode_sendto, true, flags));
-}
-
-pub fn evSendToString(s: *types.JanetStream, str: [*:0]const u8, dest: ?*anyopaque, flags: c_int) void {
-    raise.report(writeGeneric(s, @constCast(str), dest, write_mode_sendto, false, flags));
-}
-
 // ==========================================================================
 // Pipes
 // ==========================================================================
@@ -941,30 +825,30 @@ pub fn evSendToString(s: *types.JanetStream, str: [*:0]const u8, dest: ?*anyopaq
 /// `extern fn` by two other Zig files -- three Zig files calling each other
 /// through the symbol table. Nothing outside the runtime ever called it, so
 /// the symbol went with the seam.
-pub fn makePipe(handles: *[2]types.JanetHandle, mode: c_int) c_int {
+pub fn makePipe(handles: *[2]host.Handle, mode: c_int) c_int {
     if (windows) {
         // The built-in CreatePipe does not support overlapped IO, so this
         // lifts the Windows source and modifies it, exactly as `ev.c` does.
-        var sa_attr = std.mem.zeroes(SecurityAttributes);
-        sa_attr.nLength = @sizeOf(SecurityAttributes);
+        var sa_attr = std.mem.zeroes(c.SecurityAttributes);
+        sa_attr.nLength = @sizeOf(c.SecurityAttributes);
         sa_attr.bInheritHandle = 1;
         if (mode == 3) {
             // No overlapped IO involved, so just call CreatePipe.
             var rd: ?*anyopaque = undefined;
             var wr: ?*anyopaque = undefined;
-            if (CreatePipe(&rd, &wr, &sa_attr, 0) == 0) return -1;
+            if (c.CreatePipe(&rd, &wr, &sa_attr, 0) == 0) return -1;
             handles[0] = rd;
             handles[1] = wr;
             return 0;
         }
         var name_buf: [MAX_PATH]u8 = undefined;
         const name = std.fmt.bufPrintZ(&name_buf, "\\\\.\\Pipe\\JanetPipeFile.{x:0>8}.{x:0>8}", .{
-            GetCurrentProcessId(),
+            c.GetCurrentProcessId(),
             nextPipeSerial(),
         }) catch return -1;
 
         // The server handle goes to the subprocess.
-        const shandle = CreateNamedPipeA(
+        const shandle = c.CreateNamedPipeA(
             name.ptr,
             (if (mode == 2) PIPE_ACCESS_INBOUND else PIPE_ACCESS_OUTBOUND) | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_WAIT,
@@ -977,7 +861,7 @@ pub fn makePipe(handles: *[2]types.JanetHandle, mode: c_int) c_int {
         if (shandle == invalidHandle()) return -1;
 
         // We keep the client handle.
-        const chandle = CreateFileA(
+        const chandle = c.CreateFileA(
             name.ptr,
             if (mode == 2) GENERIC_WRITE else GENERIC_READ,
             0,
@@ -987,7 +871,7 @@ pub fn makePipe(handles: *[2]types.JanetHandle, mode: c_int) c_int {
             null,
         );
         if (chandle == invalidHandle()) {
-            _ = ev.CloseHandle(shandle);
+            _ = c.CloseHandle(shandle);
             return -1;
         }
         if (mode == 2) {
@@ -1000,14 +884,14 @@ pub fn makePipe(handles: *[2]types.JanetHandle, mode: c_int) c_int {
         return 0;
     }
 
-    if (ev.pipe(handles) != 0) return -1;
-    const ok = (mode == 2 or ev.fcntl(handles[0], F_SETFD, FD_CLOEXEC) == 0) and
-        (mode == 1 or ev.fcntl(handles[1], F_SETFD, FD_CLOEXEC) == 0) and
-        (mode == 2 or mode == 3 or ev.fcntl(handles[0], F_SETFL, O_NONBLOCK) == 0) and
-        (mode == 1 or mode == 3 or ev.fcntl(handles[1], F_SETFL, O_NONBLOCK) == 0);
+    if (c.pipe(handles) != 0) return -1;
+    const ok = (mode == 2 or c.fcntl(handles[0], F_SETFD, FD_CLOEXEC) == 0) and
+        (mode == 1 or c.fcntl(handles[1], F_SETFD, FD_CLOEXEC) == 0) and
+        (mode == 2 or mode == 3 or c.fcntl(handles[0], F_SETFL, O_NONBLOCK) == 0) and
+        (mode == 1 or mode == 3 or c.fcntl(handles[1], F_SETFL, O_NONBLOCK) == 0);
     if (ok) return 0;
-    _ = ev.close(handles[0]);
-    _ = ev.close(handles[1]);
+    _ = c.close(handles[0]);
+    _ = c.close(handles[1]);
     return -1;
 }
 
@@ -1015,8 +899,8 @@ pub fn makePipe(handles: *[2]types.JanetHandle, mode: c_int) c_int {
 // The cfunctions
 // ==========================================================================
 
-fn getStream(argv: []const repr.Value, n: i32) raise.Raising(*types.JanetStream) {
-    return @ptrCast(@alignCast(try args_core.getAbstract(argv, n, &streamType)));
+fn getStream(argv: []const repr.Value, n: usize) raise.Raising(*Stream) {
+    return try args_core.getAbstract(Stream, argv, n, &streamType);
 }
 
 pub fn cfunStreamClose(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
@@ -1031,7 +915,7 @@ pub fn cfunStreamRead(argv: []repr.Value) align(corefn.alignment) raise.Raising(
     try streamFlags(s, stream_readable);
     const buffer = try args_core.optBuffer(argv, 2, 10);
     const to = try args_core.optNumber(argv, 3, std.math.inf(f64));
-    if (args_core.keyeq(argv[1], "all") != 0) {
+    if (args_core.keyeq(argv[1], "all")) {
         if (to != std.math.inf(f64)) ev.addtimeout(to);
         return readGeneric(s, buffer, std.math.maxInt(i32), true, read_mode_read, 0);
     }
@@ -1067,19 +951,19 @@ pub fn cfunStreamWrite(argv: []repr.Value) align(corefn.alignment) raise.Raising
 
 /// A blocking `core/file` over the same descriptor, for code that cannot wait
 /// on the event loop. The handle is duplicated, so the two are independent.
-fn getFileForStream(s: *types.JanetStream) raise.Raising(?*types.JanetFile) {
+fn getFileForStream(s: *Stream) raise.Raising(?*io_core.File) {
     var flags: i32 = 0;
     var fmt = [_]u8{ 0, 0, 0, 0 };
     var index: usize = 0;
     if (s.flags & stream_readable != 0) {
         flags |= constants.JANET_FILE_READ;
-        try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_read"}));
+        try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
         fmt[index] = 'r';
         index += 1;
     }
     if (s.flags & stream_writable != 0) {
         flags |= constants.JANET_FILE_WRITE;
-        try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+        try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
         fmt[index] = if (index == 0) 'w' else '+';
         index += 1;
     }
@@ -1096,21 +980,21 @@ fn getFileForStream(s: *types.JanetStream) raise.Raising(?*types.JanetFile) {
         } else if (fmt[0] == 'w') {
             htype = O_WRONLY;
         }
-        const fd = _open_osfhandle(@bitCast(@intFromPtr(s.handle)), htype);
+        const fd = c._open_osfhandle(@bitCast(@intFromPtr(s.handle)), htype);
         if (fd < 0) return null;
-        const fd_dup = _dup(fd);
+        const fd_dup = c._dup(fd);
         if (fd_dup < 0) return null;
-        f = _fdopen(fd_dup, @ptrCast(&fmt));
+        f = c._fdopen(fd_dup, @ptrCast(&fmt));
         if (f == null) {
-            _ = _close(fd_dup);
+            _ = c._close(fd_dup);
             return null;
         }
     } else {
-        const fd_dup = ev.dup(s.handle);
+        const fd_dup = c.dup(s.handle);
         if (fd_dup < 0) return null;
-        f = ev.fdopen(fd_dup, @ptrCast(&fmt));
+        f = c.fdopen(fd_dup, @ptrCast(&fmt));
         if (f == null) {
-            _ = ev.close(fd_dup);
+            _ = c.close(fd_dup);
             return null;
         }
     }
@@ -1160,3 +1044,19 @@ pub fn toFileEntries() []const corefn.Entry {
     };
     return list;
 }
+
+// The host calls this file makes directly. Each names a type this file
+// declares, so it stays with the type rather than moving to `cabi.zig`.
+
+/// `extern` is earned: `ev_stream.makeStreamExt` allocates `@sizeOf(JanetStream)`
+/// plus a caller's payload and hands back the header, so the payload sits at a
+/// fixed offset that both sides compute independently. `test/ev_loop.zig`'s
+/// `ProbeStream` is the other side.
+pub const Stream = extern struct {
+    handle: host.Handle = std.mem.zeroes(host.Handle),
+    flags: u32 = 0,
+    index: u32 = 0,
+    read_fiber: ?*fibers.Fiber = null,
+    write_fiber: ?*fibers.Fiber = null,
+    methods: ?*const anyopaque = null,
+};

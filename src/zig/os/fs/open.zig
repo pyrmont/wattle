@@ -8,10 +8,9 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const types = @import("types");
 const repr = @import("repr");
 const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("../../raise.zig");
 const args_core = @import("../../args.zig");
 const ev_loop = @import("../../ev.zig");
 const vm_lifecycle = @import("../../vm/lifecycle.zig");
@@ -20,6 +19,7 @@ const oa = @import("../abi.zig");
 const h = oa.h;
 const stat = @import("stat.zig");
 const ev_stream = @import("../../ev/stream.zig");
+const host = @import("host");
 
 // ==========================================================================
 // `os/open`
@@ -35,7 +35,7 @@ const stream_writable: u32 = 0x400;
 
 /// The flag letters `os/open` accepts. Both vocabularies are compiled on every
 /// target, and only one is reachable; the rule they implement belongs to the
-/// host's `open` interface rather than to the machine running the build, which
+/// host's `c.open` interface rather than to the machine running the build, which
 /// is the same reason `-Dos-process` compiles the Windows command-line
 /// escaping everywhere.
 const OpenScan = struct {
@@ -54,21 +54,21 @@ fn openPosix(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(c_int) {
             'r' => {
                 read_flag = true;
                 scan.stream_flags |= stream_readable;
-                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_read"}));
+                try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
             },
             'w' => {
                 write_flag = true;
                 scan.stream_flags |= stream_writable;
-                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+                try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
             },
             'c' => {
                 open_flags |= h.O_CREAT;
-                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+                try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
             },
             'e' => open_flags |= h.O_EXCL,
             't' => {
                 open_flags |= h.O_TRUNC;
-                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+                try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
             },
             'x' => open_flags |= h.O_SYNC,
             'C' => open_flags |= h.O_NOCTTY,
@@ -113,26 +113,26 @@ fn openWindows(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(WindowsO
             'r' => {
                 w.desired_access |= h.GENERIC_READ;
                 scan.stream_flags |= stream_readable;
-                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_read"}));
+                try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
             },
             'w' => {
                 w.desired_access |= h.GENERIC_WRITE;
                 scan.stream_flags |= stream_writable;
-                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+                try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
             },
             'a' => {
                 w.desired_access |= h.FILE_APPEND_DATA;
                 scan.stream_flags |= stream_writable;
-                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+                try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
             },
             'c' => {
                 creat_unix |= o_creat;
-                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+                try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
             },
             'e' => creat_unix |= o_excl,
             't' => {
                 creat_unix |= o_trunc;
-                try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+                try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
             },
             'D' => w.share_mode |= h.FILE_SHARE_DELETE,
             'R' => w.share_mode |= h.FILE_SHARE_READ,
@@ -163,15 +163,13 @@ fn openWindows(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(WindowsO
     return w;
 }
 
-extern fn open(path: [*:0]const u8, flags: c_int, ...) callconv(.c) c_int;
-
 pub fn cfunOpen(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
     const path = try args_core.getCString(argv, 0);
     const opt_flags: [*:0]const u8 = @ptrCast(try args_core.optKeyword(argv, 1, "r"));
     const mode = try stat.optMode(argv, 2, 0o666);
     var scan: OpenScan = .{};
-    var fd: types.JanetHandle = undefined;
+    var fd: host.Handle = undefined;
     if (windows) {
         const w = try openWindows(opt_flags, &scan);
         var sa_attr: h.SECURITY_ATTRIBUTES = std.mem.zeroes(h.SECURITY_ATTRIBUTES);
@@ -190,8 +188,8 @@ pub fn cfunOpen(argv: []repr.Value) raise.Raising(repr.Value) {
     } else {
         const open_flags = try openPosix(opt_flags, &scan);
         while (true) {
-            fd = open(@ptrCast(path), open_flags, mode);
-            if (!(fd == -1 and errno() == h.EINTR)) break;
+            fd = c.open(@ptrCast(path), open_flags, mode);
+            if (!(fd == -1 and c.errno() == h.EINTR)) break;
         }
         if (fd == -1) return raise.panicv(ev_stream.evLasterr());
     }
@@ -200,17 +198,3 @@ pub fn cfunOpen(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 const windows = builtin.os.tag == .windows;
-
-/// `janet_wrap_integer`, written out rather than called. `janet.h` declares the
-/// function beside its macro and `wrap.c` defines it only for the two nanbox
-/// layouts, so a tagged build has no such symbol and a Zig caller -- which
-/// cannot use the macro -- does not link. `marsh.zig`, `pp_pretty.zig` and
-/// `value_access.zig` write it out for the same reason, and `FOUND.md` has the
-/// defect. This is the fourth subsystem to meet it.
-inline fn wrapInteger(x: i32) repr.Value {
-    return wrap.fromNumber(@floatFromInt(x));
-}
-
-inline fn errno() c_int {
-    return std.c._errno().*;
-}

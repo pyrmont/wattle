@@ -51,9 +51,7 @@
 //! actually encodes.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
@@ -65,13 +63,14 @@ const core_env = @import("subsystems").env;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const buffers = @import("subsystems").value.buffers;
+const abi = @import("abi");
 const ffi_classify = subsystems.ffi_classify;
 const ffi_call = subsystems.ffi_call;
 
 const ArgSlot = ffi_classify.ArgSlot;
 const AllocResult = ffi_classify.AllocResult;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
 const has_dynamic_modules = config.dynamic_modules;
 
@@ -85,8 +84,8 @@ fn expectRaise(function: anytype, args: anytype, message: []const u8) void {
     const raise = harness.raised(function, args) orelse {
         std.debug.panic("ffi_core: expected a raise, got a return: {s}\n", .{message});
     };
-    assert(raise.signal == types.Signal.@"error");
-    assert(raise.says(message));
+    expect(raise.signal == abi.Signal.@"error");
+    expect(raise.says(message));
     raises_seen += 1;
 }
 
@@ -96,15 +95,15 @@ fn expectRaisePrefix(function: anytype, args: anytype, prefix: []const u8) void 
     const raise = harness.raised(function, args) orelse {
         std.debug.panic("ffi_core: expected a raise, got a return: {s}\n", .{prefix});
     };
-    assert(raise.signal == types.Signal.@"error");
-    assert(raise.beginsWith(prefix));
+    expect(raise.signal == abi.Signal.@"error");
+    expect(raise.beginsWith(prefix));
     raises_seen += 1;
 }
 
 fn eval(source: [*:0]const u8) repr.Value {
     var out = wrap.fromNil();
     const env = harness.coreEnv();
-    assert(core_env.dostring(env, source, "ffi_core", &out) == 0);
+    expect(core_env.dostring(env, source, "ffi_core", &out) == 0);
     return out;
 }
 
@@ -140,7 +139,7 @@ const ffi_bindings = [_][*:0]const u8{
 };
 
 fn registration() void {
-    assert(ffi_bindings.len == 17);
+    expect(ffi_bindings.len == 17);
     // `harness.core` asserts the binding resolves to a cfunction, so reaching
     // the end of the loop is the assertion.
     for (ffi_bindings) |name| _ = harness.core(name);
@@ -201,7 +200,7 @@ fn primTable() void {
         primCase("size", usize),
         primCase("ssize", usize),
     };
-    assert(cases.len == 36);
+    expect(cases.len == 36);
 
     const size_of = harness.core("ffi/size");
     const align_of = harness.core("ffi/align");
@@ -209,8 +208,8 @@ fn primTable() void {
         var arg = value.fromBytes(std.mem.span(case.name), .keyword);
         const size = size_of((&arg)[0..1]) catch @panic("ffi_core: ffi/size raised");
         const alignment = align_of((&arg)[0..1]) catch @panic("ffi_core: ffi/align raised");
-        assert(wrap.toNumber(size) == @as(f64, @floatFromInt(case.size)));
-        assert(wrap.toNumber(alignment) == @as(f64, @floatFromInt(case.alignment)));
+        expect(wrap.toNumber(size) == @as(f64, @floatFromInt(case.size)));
+        expect(wrap.toNumber(alignment) == @as(f64, @floatFromInt(case.alignment)));
     }
 }
 
@@ -232,27 +231,27 @@ fn expectShape(
     has_length: bool,
 ) void {
     const val = eval(expr);
-    assert(harness.isType(val, repr.Tag.abstract));
-    const at = types.abstractHead(wrap.toAbstract(val)).type;
+    expect(harness.isType(val, repr.Tag.abstract));
+    const at = abi.abstractHead(wrap.toAbstract(val)).type;
     // `strcmp`, not `janet_cstrcmp`: an abstract type's `name` is a plain C
     // string rather than a length-prefixed `JanetString`, and the second reads
     // a header that is not there.
-    assert(std.mem.eql(u8, at.*.name, std.mem.span(name)));
-    assert((at.*.gc != null) == has_gc);
-    assert((at.*.gcmark != null) == has_gcmark);
-    assert((at.*.bytes != null) == has_bytes);
-    assert((at.*.length != null) == has_length);
+    expect(std.mem.eql(u8, at.name, std.mem.span(name)));
+    expect((at.gc != null) == has_gc);
+    expect((at.gcmark != null) == has_gcmark);
+    expect((at.bytes != null) == has_bytes);
+    expect((at.length != null) == has_length);
     // Everything else is null in all of these types, which is what makes them
     // opaque: no indexing, no method call, no comparison, no hashing.
-    assert(at.*.get == null);
-    assert(at.*.put == null);
-    assert(at.*.marshal == null);
-    assert(at.*.unmarshal == null);
-    assert(at.*.tostring == null);
-    assert(at.*.compare == null);
-    assert(at.*.hash == null);
-    assert(at.*.next == null);
-    assert(at.*.call == null);
+    expect(at.get == null);
+    expect(at.put == null);
+    expect(at.marshal == null);
+    expect(at.unmarshal == null);
+    expect(at.tostring == null);
+    expect(at.compare == null);
+    expect(at.hash == null);
+    expect(at.next == null);
+    expect(at.call == null);
 }
 
 fn abstractTypes() void {
@@ -309,9 +308,9 @@ fn outgoingSplit() void {
     ret = slot(prim_int64, win64_register, 8, 8);
     for (args[0..10]) |*a| a.* = slot(prim_int64, win64_register, 8, 8);
     ffi_classify.allocWin64(&result, &ret, args[0..10]);
-    assert(result.error_kind == 0);
-    assert(result.arg_stack_count == 6);
-    assert(result.stack_count == 6);
+    expect(result.error_kind == 0);
+    expect(result.arg_stack_count == 6);
+    expect(result.stack_count == 6);
 
     // The same with three oversized aggregates, which Win64 passes by
     // reference: each takes one outgoing word and a payload behind it, so the
@@ -320,9 +319,9 @@ fn outgoingSplit() void {
     for (args[0..10]) |*a| a.* = slot(prim_int64, win64_register, 8, 8);
     for (args[10..13]) |*a| a.* = slot(prim_struct, win64_register, 64, 8);
     ffi_classify.allocWin64(&result, &ret, args[0..13]);
-    assert(result.error_kind == 0);
-    assert(result.arg_stack_count == 9);
-    assert(result.stack_count > result.arg_stack_count);
+    expect(result.error_kind == 0);
+    expect(result.arg_stack_count == 9);
+    expect(result.stack_count > result.arg_stack_count);
 
     // SysV64 has no payload area at all: an aggregate that does not fit in
     // registers goes onto the stack whole.
@@ -330,17 +329,17 @@ fn outgoingSplit() void {
     for (args[0..8]) |*a| a.* = slot(prim_int64, sysv64_integer, 8, 8);
     args[8] = slot(prim_struct, sysv64_memory, 64, 8);
     ffi_classify.allocSysv64(&result, &ret, args[0..9]);
-    assert(result.error_kind == 0);
-    assert(result.stack_count == result.arg_stack_count);
-    assert(result.arg_stack_count == 2 + 8);
+    expect(result.error_kind == 0);
+    expect(result.stack_count == result.arg_stack_count);
+    expect(result.arg_stack_count == 2 + 8);
 
     // AAPCS64 counts its frame in bytes and its outgoing half in words.
     ret = slot(prim_int64, aapcs64_general, 8, 8);
     for (args[0..12]) |*a| a.* = slot(prim_int64, aapcs64_general, 8, 8);
     ffi_classify.allocAapcs64(&result, &ret, args[0..12], false, 128);
-    assert(result.error_kind == 0);
-    assert(result.arg_stack_count == 4);
-    assert(result.stack_count == 32);
+    expect(result.error_kind == 0);
+    expect(result.arg_stack_count == 4);
+    expect(result.stack_count == 32);
 }
 
 /// The ceiling is 1024 outgoing words, and SysV64 is the only convention that
@@ -354,15 +353,15 @@ fn ceilingIsReachableOnlyOnSysv() void {
     ret = slot(prim_int64, sysv64_integer, 8, 8);
     args[0] = slot(prim_struct, sysv64_memory, 16000, 8);
     ffi_classify.allocSysv64(&result, &ret, args[0..1]);
-    assert(result.error_kind == 0);
-    assert(result.arg_stack_count == 2000);
+    expect(result.error_kind == 0);
+    expect(result.arg_stack_count == 2000);
 
     // The same aggregate on AAPCS64 is one word, however large it gets.
     ret = slot(prim_int64, aapcs64_general, 8, 8);
     args[0] = slot(prim_struct, aapcs64_general_ref, 16000, 8);
     ffi_classify.allocAapcs64(&result, &ret, args[0..1], false, 128);
-    assert(result.error_kind == 0);
-    assert(result.arg_stack_count == 0);
+    expect(result.error_kind == 0);
+    expect(result.arg_stack_count == 0);
 }
 
 // ------------------------------------------------------------- the raises
@@ -463,7 +462,7 @@ fn theRaises() void {
             var lookup = [_]repr.Value{ self, value.fromBytes("a_symbol_that_does_not_exist", .string) };
             const found = harness.core("ffi/lookup")(lookup[0..2]) catch
                 @panic("ffi_core: ffi/lookup raised");
-            assert(harness.isType(found, repr.Tag.nil));
+            expect(harness.isType(found, repr.Tag.nil));
         }
         _ = gc_alloc.gcunroot(self);
     } else if (!has_dynamic_modules) {
@@ -471,7 +470,7 @@ fn theRaises() void {
     } else {
         // Compiled, registered, and unable to load: a statically linked musl
         // build. Asserted rather than skipped, so the arm says what it is --
-        // the message comes from `load_clib`, not from the `util.h` reduction
+        // the message comes from the loader, not from the disabled-feature stub
         // the branch above pins, and the two are different refusals.
         expectRaise(harness.core("ffi/native"), .{&.{}}, "Dynamic loading not supported");
     }
@@ -533,8 +532,8 @@ fn homogeneousFloatAggregates() void {
             wrap.fromTuple(tuples.end(members)),
         };
         const answer = ffi_call_fn(args[0..3]) catch @panic("ffi_core: ffi/call raised");
-        assert(harness.isType(answer, repr.Tag.number));
-        assert(wrap.toNumber(answer) == 6.5);
+        expect(harness.isType(answer, repr.Tag.number));
+        expect(wrap.toNumber(answer) == 6.5);
     }
 
     // Returning: each member arrives in its own register, eight bytes apart,
@@ -550,11 +549,11 @@ fn homogeneousFloatAggregates() void {
             wrap.fromNumber(1.5),
         };
         const answer = ffi_call_fn(args[0..3]) catch @panic("ffi_core: ffi/call raised");
-        assert(harness.isType(answer, repr.Tag.tuple));
+        expect(harness.isType(answer, repr.Tag.tuple));
         const built = wrap.toTuple(answer);
-        assert(types.tupleHead(built).length == 2);
-        assert(wrap.toNumber(built[0]) == 1.5);
-        assert(wrap.toNumber(built[1]) == 2.5);
+        expect(tuples.head(built).length == 2);
+        expect(wrap.toNumber(built[0]) == 1.5);
+        expect(wrap.toNumber(built[1]) == 2.5);
     }
 }
 
@@ -567,8 +566,8 @@ fn supports(want: [*:0]const u8) bool {
     if (!harness.isType(listed, repr.Tag.array)) return false;
     const array = wrap.toArray(listed);
     var i: i32 = 0;
-    while (i < array.*.count) : (i += 1) {
-        if (harness.keywordIs(array.*.slice()[@intCast(i)], want)) return true;
+    while (i < array.count) : (i += 1) {
+        if (harness.keywordIs(array.slice()[@intCast(i)], want)) return true;
     }
     return false;
 }
@@ -647,8 +646,8 @@ fn anAggregateBehindAStackArgument() void {
     const answer = ffi_call_fn(args[0..12]) catch @panic("ffi_core: ffi/call raised");
     // The nine integers weighted 1..9 are the sum of the squares, 285; the
     // three members weighted 10..12 are 110 + 242 + 396.
-    assert(harness.isType(answer, repr.Tag.number));
-    assert(wrap.toNumber(answer) == 285 + 748);
+    expect(harness.isType(answer, repr.Tag.number));
+    expect(wrap.toNumber(answer) == 285 + 748);
 }
 
 // ------------------------------------------------- the signature arity bound
@@ -683,7 +682,7 @@ fn theSignatureArityBound() void {
     // bound admits it. The two leading arguments are the convention and the
     // return type, which is why the arity the message names is thirty-four.
     const full = signature(argv[0..34]) catch @panic("ffi_core: 32 arguments were refused");
-    assert(harness.isType(full, repr.Tag.abstract));
+    expect(harness.isType(full, repr.Tag.abstract));
 
     // One more is refused as an ordinary arity error rather than a corrupted
     // frame, and so is a signature far past the bound.

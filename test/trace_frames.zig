@@ -21,39 +21,42 @@
 //! through `%v` -- the only raise either can make -- arrives as
 //! `error.JanetSignal` rather than as a report nobody consumes.
 //!
-//! The two abis stay. `janet_trace_frame` has three callers in
-//! `debug_frames.zig` and one in `vm_calls.zig`; `janet_stacktrace_ext` has
-//! one in `debug_frames.zig` and is `janet.h`'s public surface besides.
+//! The two abis stay: each has callers inside the runtime that cannot carry an
+//! error union.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
-const raise = @import("raise");
+const raise = @import("subsystems").raise;
 const value = @import("subsystems").value;
 const harness = @import("harness.zig");
 const tf = @import("subsystems").debug;
 const gc_alloc = @import("subsystems").gc_alloc;
 const core_env = @import("subsystems").env;
-const vm_state = @import("subsystems").lifecycle;
+const vm_state = @import("subsystems").vm_state;
+const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
 const buffers = @import("subsystems").value.buffers;
 const fibers = @import("subsystems").value.fibers;
 const vm_entry = @import("subsystems").vm_entry;
+const registry = @import("subsystems").registry;
+const abi = @import("abi");
+const functions = @import("subsystems").value.functions;
+const tables = @import("subsystems").value.tables;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
 /// The line the registry is told this contract's probe was defined on. It is
 /// the contract's number rather than the file's — nothing reads the file — and
 /// it is asserted literally below, so it is named once here.
 const probe_line: i32 = 41;
 
-var test_env: *types.JanetTable = undefined;
+var test_env: *tables.Table = undefined;
 
-fn compileFunction(source: [*:0]const u8) *types.JanetFunction {
+fn compileFunction(source: [*:0]const u8) *functions.Function {
     var out = wrap.fromNil();
-    assert(core_env.dostring(test_env, source, "trace-frames-test", &out) == 0);
-    assert(harness.isType(out, repr.Tag.function));
+    expect(core_env.dostring(test_env, source, "trace-frames-test", &out) == 0);
+    expect(harness.isType(out, repr.Tag.function));
     gc_alloc.gcroot(out);
     return wrap.toFunction(out);
 }
@@ -62,20 +65,20 @@ fn compileFunction(source: [*:0]const u8) *types.JanetFunction {
 /// be a plain local rather than four slots carved out of a live fiber's stack.
 /// That keeps every case below constructible, including the ones no fiber
 /// would ever hold.
-fn frameOfFunction(frame: *types.JanetStackFrame, func: *types.JanetFunction, pc_offset: i32) void {
-    frame.* = std.mem.zeroes(types.JanetStackFrame);
+fn frameOfFunction(frame: *vm_state.StackFrame, func: *functions.Function, pc_offset: i32) void {
+    frame.* = std.mem.zeroes(vm_state.StackFrame);
     frame.func = func;
     frame.pc = if (pc_offset < 0) null else func.def.?.bytecode.? + @as(usize, @intCast(pc_offset));
 }
 
-fn frameOfCfunction(frame: *types.JanetStackFrame, cfun: types.JanetCFunction) void {
-    frame.* = std.mem.zeroes(types.JanetStackFrame);
+fn frameOfCfunction(frame: *vm_state.StackFrame, cfun: abi.JanetCFunction) void {
+    frame.* = std.mem.zeroes(vm_state.StackFrame);
     frame.func = null;
     frame.pc = @ptrFromInt(@intFromPtr(cfun));
 }
 
-fn decode(frame: *types.JanetStackFrame) types.JanetTraceFrame {
-    var out: types.JanetTraceFrame = undefined;
+fn decode(frame: *vm_state.StackFrame) tf.JanetTraceFrame {
+    var out: tf.JanetTraceFrame = undefined;
     // `janet_trace_frameImpl` is `raise.Raising(void)` and never raises: it
     // reads a funcdef and the registry and writes a plain structure. The
     // `catch` is what the type asks for, not a case this contract expects.
@@ -121,7 +124,7 @@ fn probeUnregistered(argv: []repr.Value) raise.Raising(repr.Value) {
     return harness.wrapInteger(3);
 }
 
-fn keyOf(probe: raise.CFunction) types.JanetCFunction {
+fn keyOf(probe: raise.CFunction) abi.JanetCFunction {
     return raise.stored(probe);
 }
 
@@ -131,97 +134,97 @@ fn keyOf(probe: raise.CFunction) types.JanetCFunction {
 /// the shape behind almost every line of a real trace. A `-Dsourcemaps=false`
 /// build has no source map to decode and takes the bytecode-offset path below
 /// for every Janet frame in the program instead.
-fn aNamedFunctionWithASourcemap(named: *types.JanetFunction) void {
+fn aNamedFunctionWithASourcemap(named: *functions.Function) void {
     if (named.def.?.sourcemap == null) return;
-    assert(named.def.?.name != null);
+    expect(named.def.?.name != null);
 
-    var frame: types.JanetStackFrame = undefined;
+    var frame: vm_state.StackFrame = undefined;
     frameOfFunction(&frame, named, 0);
     var desc = decode(&frame);
 
-    assert(desc.name_kind == constants.JANET_TRACE_NAME_FUNCTION);
-    assert(desc.name == @as([*]const u8, @ptrCast(named.def.?.name)));
-    assert(desc.name_prefix == null);
-    assert(desc.source == @as([*]const u8, @ptrCast(named.def.?.source)));
-    assert(desc.loc_kind == constants.JANET_TRACE_LOC_SOURCEMAP);
-    assert(desc.line == named.def.?.sourceMappings()[0].line);
-    assert(desc.column == named.def.?.sourceMappings()[0].column);
-    assert(desc.tail == 0);
+    expect(desc.name_kind == constants.JANET_TRACE_NAME_FUNCTION);
+    expect(desc.name == @as([*]const u8, @ptrCast(named.def.?.name)));
+    expect(desc.name_prefix == null);
+    expect(desc.source == @as([*]const u8, @ptrCast(named.def.?.source)));
+    expect(desc.loc_kind == constants.JANET_TRACE_LOC_SOURCEMAP);
+    expect(desc.line == named.def.?.sourceMappings()[0].line);
+    expect(desc.column == named.def.?.sourceMappings()[0].column);
+    expect(desc.tail == 0);
 
     // The offset the program counter reports is an index into the bytecode,
     // not a byte offset, and it selects the mapping.
     if (named.def.?.bytecode_length > 1) {
         frameOfFunction(&frame, named, 1);
         desc = decode(&frame);
-        assert(desc.loc_kind == constants.JANET_TRACE_LOC_SOURCEMAP);
-        assert(desc.line == named.def.?.sourceMappings()[1].line);
-        assert(desc.column == named.def.?.sourceMappings()[1].column);
+        expect(desc.loc_kind == constants.JANET_TRACE_LOC_SOURCEMAP);
+        expect(desc.line == named.def.?.sourceMappings()[1].line);
+        expect(desc.column == named.def.?.sourceMappings()[1].column);
     }
 }
 
 /// A funcdef with no name renders as `<anonymous>`, and the descriptor says so
 /// by kind rather than by handing the caller that string — the caller owns the
 /// wording.
-fn anAnonymousFunction(anonymous: *types.JanetFunction) void {
-    assert(anonymous.def.?.name == null);
+fn anAnonymousFunction(anonymous: *functions.Function) void {
+    expect(anonymous.def.?.name == null);
 
-    var frame: types.JanetStackFrame = undefined;
+    var frame: vm_state.StackFrame = undefined;
     frameOfFunction(&frame, anonymous, 0);
     const desc = decode(&frame);
 
-    assert(desc.name_kind == constants.JANET_TRACE_NAME_ANONYMOUS);
-    assert(desc.name == null);
-    assert(desc.source == @as([*]const u8, @ptrCast(anonymous.def.?.source)));
+    expect(desc.name_kind == constants.JANET_TRACE_NAME_ANONYMOUS);
+    expect(desc.name == null);
+    expect(desc.source == @as([*]const u8, @ptrCast(anonymous.def.?.source)));
 }
 
 /// Without a source map the location degrades to the raw bytecode offset. A
 /// build compiled with `-Dsourcemaps=false` takes this path for every Janet
 /// frame in the program, so it is not an exotic case.
-fn aFunctionWithoutASourcemap(named: *types.JanetFunction) void {
+fn aFunctionWithoutASourcemap(named: *functions.Function) void {
     const saved = named.def.?.sourcemap;
 
     // Already null in a `-Dsourcemaps=false` build; the assignment makes the
     // branch under test the same one in either configuration.
     named.def.?.sourcemap = null;
-    var frame: types.JanetStackFrame = undefined;
+    var frame: vm_state.StackFrame = undefined;
     frameOfFunction(&frame, named, 1);
     const desc = decode(&frame);
     named.def.?.sourcemap = saved;
 
-    assert(desc.name_kind == constants.JANET_TRACE_NAME_FUNCTION);
-    assert(desc.loc_kind == constants.JANET_TRACE_LOC_PC);
-    assert(desc.pc == 1);
-    assert(desc.line == 0);
-    assert(desc.column == 0);
+    expect(desc.name_kind == constants.JANET_TRACE_NAME_FUNCTION);
+    expect(desc.loc_kind == constants.JANET_TRACE_LOC_PC);
+    expect(desc.pc == 1);
+    expect(desc.line == 0);
+    expect(desc.column == 0);
 }
 
 /// A function frame whose program counter is null reports no location at all —
 /// not offset zero, and not the registry line a cfunction would report. The C
 /// original arrives here by falling out of one branch into another that cannot
 /// fire, which is exactly the kind of accident a rewrite tidies away.
-fn aFunctionWithoutAPc(named: *types.JanetFunction) void {
-    var frame: types.JanetStackFrame = undefined;
+fn aFunctionWithoutAPc(named: *functions.Function) void {
+    var frame: vm_state.StackFrame = undefined;
     frameOfFunction(&frame, named, -1);
     const desc = decode(&frame);
 
-    assert(desc.name_kind == constants.JANET_TRACE_NAME_FUNCTION);
-    assert(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
+    expect(desc.name_kind == constants.JANET_TRACE_NAME_FUNCTION);
+    expect(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
 }
 
 /// The tail-call marker is independent of everything else.
-fn theTailCallFlag(named: *types.JanetFunction) void {
-    var frame: types.JanetStackFrame = undefined;
+fn theTailCallFlag(named: *functions.Function) void {
+    var frame: vm_state.StackFrame = undefined;
 
     frameOfFunction(&frame, named, 0);
     frame.flags |= constants.JANET_STACKFRAME_TAILCALL;
     var desc = decode(&frame);
-    assert(desc.tail == 1);
-    assert(desc.name_kind == constants.JANET_TRACE_NAME_FUNCTION);
+    expect(desc.tail == 1);
+    expect(desc.name_kind == constants.JANET_TRACE_NAME_FUNCTION);
 
     frameOfCfunction(&frame, keyOf(&probeNamed));
     frame.flags |= constants.JANET_STACKFRAME_TAILCALL;
     desc = decode(&frame);
-    assert(desc.tail == 1);
+    expect(desc.tail == 1);
 }
 
 // ------------------------------------------------------------- cfunctions
@@ -229,18 +232,18 @@ fn theTailCallFlag(named: *types.JanetFunction) void {
 /// A registered cfunction reports its prefix, its name, its file, and its
 /// line. This is every core function that appears in a trace.
 fn aRegisteredCfunction() void {
-    var frame: types.JanetStackFrame = undefined;
+    var frame: vm_state.StackFrame = undefined;
     frameOfCfunction(&frame, keyOf(&probeNamed));
     const desc = decode(&frame);
 
-    assert(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION);
-    assert(std.mem.orderZ(u8, desc.name.?, "probe") == .eq);
-    assert(std.mem.orderZ(u8, desc.name_prefix.?, "trace") == .eq);
-    assert(std.mem.orderZ(u8, desc.source.?, "trace_frames.zig") == .eq);
-    assert(desc.loc_kind == constants.JANET_TRACE_LOC_CFUN_LINE);
-    assert(desc.line == probe_line);
-    assert(desc.pc == 0);
-    assert(desc.column == 0);
+    expect(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION);
+    expect(std.mem.orderZ(u8, desc.name.?, "probe") == .eq);
+    expect(std.mem.orderZ(u8, desc.name_prefix.?, "trace") == .eq);
+    expect(std.mem.orderZ(u8, desc.source.?, "trace_frames.zig") == .eq);
+    expect(desc.loc_kind == constants.JANET_TRACE_LOC_CFUN_LINE);
+    expect(desc.line == probe_line);
+    expect(desc.pc == 0);
+    expect(desc.column == 0);
 }
 
 /// A cfunction the registry has never heard of renders as a bare
@@ -249,17 +252,17 @@ fn aRegisteredCfunction() void {
 /// core does — and the decoder must not dereference the null the registry
 /// returns.
 fn anUnregisteredCfunction() void {
-    assert(harness.internal.janet_registry_get(keyOf(&probeUnregistered)) == null);
+    expect(registry.registryGet(keyOf(&probeUnregistered)) == null);
 
-    var frame: types.JanetStackFrame = undefined;
+    var frame: vm_state.StackFrame = undefined;
     frameOfCfunction(&frame, keyOf(&probeUnregistered));
     const desc = decode(&frame);
 
-    assert(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION_BARE);
-    assert(desc.name == null);
-    assert(desc.name_prefix == null);
-    assert(desc.source == null);
-    assert(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
+    expect(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION_BARE);
+    expect(desc.name == null);
+    expect(desc.name_prefix == null);
+    expect(desc.source == null);
+    expect(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
 }
 
 /// The case the two-field descriptor exists for. A registry entry with no name
@@ -268,41 +271,41 @@ fn anUnregisteredCfunction() void {
 /// tag covering both would have to choose, and either choice changes a line of
 /// output the runtime prints today.
 fn aRegisteredCfunctionWithoutAName() void {
-    const reg = harness.internal.janet_registry_get(keyOf(&probeUnnamed));
-    assert(reg != null);
-    assert(reg.?.name == null);
-    assert(reg.?.source_line == 99);
+    const reg = registry.registryGet(keyOf(&probeUnnamed));
+    expect(reg != null);
+    expect(reg.?.name == null);
+    expect(reg.?.source_line == 99);
 
-    var frame: types.JanetStackFrame = undefined;
+    var frame: vm_state.StackFrame = undefined;
     frameOfCfunction(&frame, keyOf(&probeUnnamed));
     const desc = decode(&frame);
 
-    assert(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION_BARE);
-    assert(desc.name == null);
+    expect(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION_BARE);
+    expect(desc.name == null);
     // Not reported, even though the entry has one: a source is printed only in
     // the branch that printed a name.
-    assert(desc.source == null);
-    assert(desc.loc_kind == constants.JANET_TRACE_LOC_CFUN_LINE);
-    assert(desc.line == 99);
+    expect(desc.source == null);
+    expect(desc.loc_kind == constants.JANET_TRACE_LOC_CFUN_LINE);
+    expect(desc.line == 99);
 }
 
 /// A registry entry whose source line is zero or negative reports no location.
 /// `janet_cfuns` installs exactly this for every function registered without
 /// source information.
 fn aRegisteredCfunctionWithoutALine() void {
-    const reg = harness.internal.janet_registry_get(keyOf(&probeNamed));
+    const reg = registry.registryGet(keyOf(&probeNamed));
     const saved = reg.?.source_line;
-    var frame: types.JanetStackFrame = undefined;
+    var frame: vm_state.StackFrame = undefined;
 
     reg.?.source_line = 0;
     frameOfCfunction(&frame, keyOf(&probeNamed));
     var desc = decode(&frame);
-    assert(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION);
-    assert(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
+    expect(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION);
+    expect(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
 
     reg.?.source_line = -1;
     desc = decode(&frame);
-    assert(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
+    expect(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
 
     reg.?.source_line = saved;
 }
@@ -311,16 +314,16 @@ fn aRegisteredCfunctionWithoutALine() void {
 /// empty string, because the caller branches on it to choose between `%s/%s`
 /// and `%s`.
 fn aRegisteredCfunctionWithoutAPrefix() void {
-    const reg = harness.internal.janet_registry_get(keyOf(&probeNamed));
+    const reg = registry.registryGet(keyOf(&probeNamed));
     const saved = reg.?.name_prefix;
-    var frame: types.JanetStackFrame = undefined;
+    var frame: vm_state.StackFrame = undefined;
 
     reg.?.name_prefix = null;
     frameOfCfunction(&frame, keyOf(&probeNamed));
     const desc = decode(&frame);
-    assert(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION);
-    assert(desc.name_prefix == null);
-    assert(std.mem.orderZ(u8, desc.name.?, "probe") == .eq);
+    expect(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION);
+    expect(desc.name_prefix == null);
+    expect(std.mem.orderZ(u8, desc.name.?, "probe") == .eq);
 
     reg.?.name_prefix = saved;
 }
@@ -329,21 +332,21 @@ fn aRegisteredCfunctionWithoutAPrefix() void {
 /// line. A cframe pushed with a null cfunction produces this, and `janet_call`
 /// pushes one whenever it has to clear a dirty stack.
 fn anEmptyFrame() void {
-    var frame: types.JanetStackFrame = undefined;
+    var frame: vm_state.StackFrame = undefined;
     frameOfCfunction(&frame, null);
     const desc = decode(&frame);
 
-    assert(desc.name_kind == constants.JANET_TRACE_NAME_NONE);
-    assert(desc.name == null);
-    assert(desc.name_prefix == null);
-    assert(desc.source == null);
-    assert(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
-    assert(desc.tail == 0);
+    expect(desc.name_kind == constants.JANET_TRACE_NAME_NONE);
+    expect(desc.name == null);
+    expect(desc.name_prefix == null);
+    expect(desc.source == null);
+    expect(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
+    expect(desc.tail == 0);
 }
 
 // ------------------------------------------------------------ whole traces
 
-fn contents(sink: *types.JanetBuffer) []const u8 {
+fn contents(sink: *buffers.Buffer) []const u8 {
     return sink.slice();
 }
 
@@ -352,8 +355,8 @@ fn contents(sink: *types.JanetBuffer) []const u8 {
 /// `janet_stacktrace_ext` goes through `janet_dynprintf`, and that is exactly
 /// what the binding redirects.
 fn traceInto(
-    sink: *types.JanetBuffer,
-    fiber: *types.JanetFiber,
+    sink: *buffers.Buffer,
+    fiber: *fibers.Fiber,
     err: repr.Value,
     prefix: ?[*:0]const u8,
 ) raise.Raising(void) {
@@ -378,31 +381,31 @@ fn aPrefixedCfunctionRenders() raise.Raising(void) {
     const fiber = fibers.new(compileFunction("(fn [] nil)"), 32, 0, null).?;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
-    fiber.*.frame = constants.JANET_FRAME_SIZE;
-    fiber.*.stackstart = constants.JANET_FRAME_SIZE;
-    fiber.*.stacktop = constants.JANET_FRAME_SIZE;
-    const frame: *types.JanetStackFrame = @ptrCast(@alignCast(fiber.*.data));
+    fiber.frame = constants.JANET_FRAME_SIZE;
+    fiber.stackstart = constants.JANET_FRAME_SIZE;
+    fiber.stacktop = constants.JANET_FRAME_SIZE;
+    const frame: *vm_state.StackFrame = @ptrCast(@alignCast(fiber.data));
     frameOfCfunction(frame, keyOf(&probeNamed));
     frame.prevframe = 0;
 
     try traceInto(sink, fiber, value.fromBytes("prefixed", .string), "P");
-    assert(std.mem.indexOf(u8, contents(sink), "  in trace/probe [trace_frames.zig] on line 41\n") != null);
+    expect(std.mem.indexOf(u8, contents(sink), "  in trace/probe [trace_frames.zig] on line 41\n") != null);
     // The error line is printed once, above the first frame, as
     // `<prefix><status>: <message>`. The status is the fiber's, which for a
     // frame written by hand rather than reached by running is "new".
-    assert(std.mem.startsWith(u8, contents(sink), "Pnew: prefixed\n"));
+    expect(std.mem.startsWith(u8, contents(sink), "Pnew: prefixed\n"));
 
     // A null prefix suppresses the error line and keeps the frames.
     try traceInto(sink, fiber, value.fromBytes("prefixed", .string), null);
-    assert(std.mem.indexOf(u8, contents(sink), "prefixed") == null);
-    assert(std.mem.indexOf(u8, contents(sink), "  in trace/probe [") != null);
+    expect(std.mem.indexOf(u8, contents(sink), "prefixed") == null);
+    expect(std.mem.indexOf(u8, contents(sink), "  in trace/probe [") != null);
 
     // `:err-color` wraps the whole rendering.
     vm_state.setdyn("err-color", wrap.fromTrue());
     try traceInto(sink, fiber, value.fromBytes("prefixed", .string), "P");
     vm_state.setdyn("err-color", wrap.fromNil());
-    assert(std.mem.startsWith(u8, contents(sink), "\x1b[31m"));
-    assert(std.mem.endsWith(u8, contents(sink), "\x1b[0m"));
+    expect(std.mem.startsWith(u8, contents(sink), "\x1b[31m"));
+    expect(std.mem.endsWith(u8, contents(sink), "\x1b[0m"));
 }
 
 /// The decoder is one half of a printer, so run the printer too — over a real
@@ -415,7 +418,7 @@ fn aPrefixedCfunctionRenders() raise.Raising(void) {
 /// an assertion on the leading bytes then depends on ambient state. It is nil
 /// here because a contract runs no `cli-main`, which is precisely the kind of
 /// thing that is true until it is not.
-fn aStacktraceOverARealFiber(failing: *types.JanetFunction) raise.Raising(void) {
+fn aStacktraceOverARealFiber(failing: *functions.Function) raise.Raising(void) {
     const fiber = fibers.new(failing, 32, 0, null).?;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
@@ -425,17 +428,17 @@ fn aStacktraceOverARealFiber(failing: *types.JanetFunction) raise.Raising(void) 
     defer _ = gc_alloc.gcunroot(wrap.fromBuffer(sink));
 
     var out = wrap.fromNil();
-    assert(vm_entry.continueFiber(fiber, wrap.fromNil(), &out) == types.Signal.@"error");
+    expect(vm_entry.continueFiber(fiber, wrap.fromNil(), &out) == abi.Signal.@"error");
 
     vm_state.setdyn("err-color", wrap.fromNil());
     try traceInto(sink, fiber, out, "trace-frames-test");
-    assert(sink.*.count > 0);
-    assert(std.mem.indexOf(u8, contents(sink), "trace-frames-testerror: from a fiber") != null);
+    expect(sink.count > 0);
+    expect(std.mem.indexOf(u8, contents(sink), "trace-frames-testerror: from a fiber") != null);
 
     // And with no prefix, which suppresses the error line entirely.
     try traceInto(sink, fiber, out, null);
-    assert(sink.*.count > 0);
-    assert(std.mem.indexOf(u8, contents(sink), "error: from a fiber") == null);
+    expect(sink.count > 0);
+    expect(std.mem.indexOf(u8, contents(sink), "error: from a fiber") == null);
 }
 
 // ------------------------------------------------------------------- main
@@ -446,8 +449,8 @@ fn body() raise.Raising(void) {
 
     // The line numbers here are the contract's, not the file's: they are what
     // the registry reports back, and the cases above assert them literally.
-    harness.internal.janet_registry_put(keyOf(&probeNamed), "probe", "trace", "trace_frames.zig", probe_line);
-    harness.internal.janet_registry_put(keyOf(&probeUnnamed), null, null, "unnamed.zig", 99);
+    registry.registryPut(keyOf(&probeNamed), "probe", "trace", "trace_frames.zig", probe_line);
+    registry.registryPut(keyOf(&probeUnnamed), null, null, "unnamed.zig", 99);
 
     const named = compileFunction("(defn traced-function [] nil) traced-function");
     const anonymous = compileFunction("(fn [] nil)");
@@ -473,7 +476,7 @@ fn body() raise.Raising(void) {
 pub fn run() void {
     harness.init();
     body() catch @panic("trace_frames: a trace raised unexpectedly");
-    vm_state.deinit();
+    vm_lifecycle.deinit();
 
     std.debug.print("trace frames contract ok\n", .{});
 }

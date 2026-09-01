@@ -143,8 +143,7 @@
 #
 # A cfunction returns its raise and run_vm propagates it, so a non-error signal
 # is the case that distinguishes carrying the signal unaltered from re-raising
-# it as an error. This was the per-call try scope's job under -Dcall-trampoline,
-# which the hinge spent along with the last setjmp.
+# it as an error.
 (def fs (fiber/new (fn [] (signal 3 :payload)) :i0123456789))
 (assert (= :payload (resume fs)) "user signal from a cfunction carries its value")
 (assert (= :user3 (fiber/status fs)) "user signal from a cfunction keeps its number")
@@ -209,6 +208,68 @@
 (assert-error "expected abstract|array|buffer|dictionary|string|symbol|keyword|tuple, got 7"
               (length 7) "length raises")
 (assert-error "cannot put value in immutable type" (put [1 2 3] 0 :v) "put raises")
+
+# The collector's frame walk, against a collection that really happens.
+#
+# A change to the fiber's frame fields once broke `markFiber`'s walk so that a
+# frame's locals were never marked, and **all 65 contracts passed**; only the
+# bootstrap noticed, and its only symptom was a bare `exit 1`. Nothing in the
+# tree drove a collection with several live frames under it, which is the one
+# state the walk exists for.
+#
+# Each frame holds four locals that exist nowhere else -- freshly built, not
+# interned, not reachable from any global -- so a frame the walk skips has its
+# strings and arrays freed. The churn after the collection is what makes that
+# observable rather than merely undefined: it reallocates the sizes just freed,
+# so a local whose block was released comes back holding something else.
+(defn- frame-locals [n]
+  (def s (string "frame-" n "-string"))
+  (def b (buffer "frame-" n "-buffer"))
+  (def a @[n (string "frame-" n "-elem")])
+  (def tab @{:depth n :name (string "frame-" n "-name")})
+  (if (zero? n)
+    (do
+      (gccollect)
+      # Reallocate the sizes just released, so a freed local is overwritten
+      # rather than left readable.
+      (loop [i :range [0 4000]]
+        (def junk @[(string "junk-" i) (buffer "junk-" i)])
+        junk)
+      (gccollect))
+    (frame-locals (dec n)))
+  # Every local of this frame, checked on the way back out.
+  (assert (= s (string "frame-" n "-string")) (string "frame " n " string local survives"))
+  (assert (= (string b) (string "frame-" n "-buffer")) (string "frame " n " buffer local survives"))
+  (assert (= (a 0) n) (string "frame " n " array local survives"))
+  (assert (= (a 1) (string "frame-" n "-elem")) (string "frame " n " array element survives"))
+  (assert (= (tab :depth) n) (string "frame " n " table local survives"))
+  (assert (= (tab :name) (string "frame-" n "-name")) (string "frame " n " table value survives"))
+  n)
+
+(assert (= 24 (frame-locals 24)) "a collection under 25 live frames keeps every local")
+
+# The same walk over a *suspended* fiber, which is the other arm: those frames
+# are not the collector's caller's, so `markFiber` reaches them through the
+# fiber object rather than through the root set.
+(def suspended
+  (fiber/new (fn []
+               (def held @[(string "held-by-a-suspended-frame")])
+               (defn inner [depth]
+                 (def mine (string "suspended-" depth))
+                 (if (zero? depth)
+                   (yield :ready)
+                   (inner (dec depth)))
+                 (assert (= mine (string "suspended-" depth))
+                         (string "suspended frame " depth " local survives")))
+               (inner 12)
+               (assert (= (held 0) (string "held-by-a-suspended-frame"))
+                       "the outermost suspended frame's local survives")
+               :done)))
+(assert (= :ready (resume suspended)) "the fiber suspends inside its innermost frame")
+(gccollect)
+(loop [i :range [0 4000]] (def junk @[(string "junk-" i) (buffer "junk-" i)]) junk)
+(gccollect)
+(assert (= :done (resume suspended)) "the suspended fiber's frames survive a collection")
 
 (end-suite)
 

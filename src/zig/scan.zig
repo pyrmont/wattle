@@ -8,18 +8,16 @@
 //! any duplicate on this tree exists: neither file could see the other's.
 const std = @import("std");
 const config = @import("config");
-const types = @import("types");
 const repr = @import("repr");
 const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("raise.zig");
 const buffers = @import("value/buffers.zig");
 const utils = @import("utils.zig");
 const wrap = @import("value/helpers/wrap.zig");
-const fatal = @import("fatal.zig");
 const inttypes = @import("value/ints.zig");
 
 // -------------------------------------------------------------------------
-// Doubles -- what `numscan.zig` was.
+// Doubles.
 // -------------------------------------------------------------------------
 
 /// Reject absurd inputs outright rather than auditing every exponent for
@@ -35,10 +33,6 @@ const bignat_base: u64 = 0x80000000;
 const exp2_approx_limit: i64 = 1 << 48;
 
 const int_types_enabled = config.int_types;
-
-extern fn ldexp(val: f64, exponent: c_int) callconv(.c) f64;
-extern fn log2(val: f64) callconv(.c) f64;
-extern fn snprintf(buffer: [*]u8, size: usize, format: [*:0]const u8, ...) callconv(.c) c_int;
 
 /// The three wraps this scanner produces. They were three one-line C functions
 /// in `strtod.c` for as long as `-Dnumber-scan` had a C arm to share them
@@ -95,12 +89,8 @@ const BigNat = struct {
         const new_n = old_n + count;
         if (self.cap < new_n) {
             const new_cap = 2 * new_n;
-            const memory = utils.realloc(
-                @as(?*anyopaque, @ptrCast(self.digits)),
-                @as(usize, @intCast(new_cap)) * @sizeOf(u32),
-            ) orelse fatal.outOfMemory();
             self.cap = new_cap;
-            self.digits = @ptrCast(@alignCast(memory));
+            self.digits = utils.resizeMany(u32, self.digits, @intCast(new_cap));
         }
         self.n = new_n;
         return self.digits.? + @as(usize, @intCast(old_n));
@@ -117,9 +107,9 @@ const BigNat = struct {
         var carry: u64 = @as(u64, self.first_digit) * wide_factor + term;
         self.first_digit = @intCast(carry % bignat_base);
         carry /= bignat_base;
-        var index: i32 = 0;
-        while (index < self.n) : (index += 1) {
-            const slot = &self.digits.?[@intCast(index)];
+        const digit_count: usize = @intCast(self.n);
+        for (0..digit_count) |index| {
+            const slot = &self.digits.?[index];
             carry += @as(u64, slot.*) * wide_factor;
             slot.* = @intCast(carry % bignat_base);
             carry /= bignat_base;
@@ -192,7 +182,7 @@ const BigNat = struct {
         } else {
             top53 = self.first_digit;
         }
-        return ldexp(@floatFromInt(top53), exponent2);
+        return c.ldexp(@floatFromInt(top53), exponent2);
     }
 };
 
@@ -203,7 +193,7 @@ fn convert(negative: bool, mant: *BigNat, base: i32, exponent_in: i32) f64 {
     var exponent2: i32 = 0;
 
     // The C original computes the base-2 size estimate before short-circuiting
-    // zero. That ordering is unobservable, and evaluating `log2` first makes an
+    // zero. That ordering is unobservable, and evaluating `c.log2` first makes an
     // out-of-range radix produce a NaN conversion, so the zero test comes first
     // here. See FOUND.md.
     if (mant.n == 0 and mant.first_digit == 0) return if (negative) -0.0 else 0.0;
@@ -213,7 +203,7 @@ fn convert(negative: bool, mant: *BigNat, base: i32, exponent_in: i32) f64 {
     // healthy buffer for the approximation and for denormals.
     const mant_exp2_approx: i64 = @as(i64, mant.n) * 32 + 16;
     const exp_exp2_approx: i64 = saturatingFloatToInt(
-        @floor(log2(@floatFromInt(base)) * @as(f64, @floatFromInt(exponent))),
+        @floor(c.log2(@floatFromInt(base)) * @as(f64, @floatFromInt(exponent))),
     );
     const exp2_approx = mant_exp2_approx + exp_exp2_approx;
 
@@ -244,21 +234,24 @@ fn convert(negative: bool, mant: *BigNat, base: i32, exponent_in: i32) f64 {
     return if (negative) -mant.extract(exponent2) else mant.extract(exponent2);
 }
 
-/// Scan a double from a string. Returns 0 on success and 1 when the string is
-/// not a number.
+/// Scan a double from a string, or nothing when the string is not a number.
+///
+/// It answered 0 for success and 1 for failure while the 64-bit scanners
+/// below answered the other way round, and `scanNumeric` -- the one caller
+/// that reaches both -- inverted one of them at each of its four arms. One
+/// convention deletes the inversion rather than documenting it.
 pub fn scanNumberBase(
     str: [*]const u8,
     len: i32,
     base_arg: i32,
-    out: *f64,
-) callconv(.c) c_int {
+) ?f64 {
     var mant: BigNat = .{};
     defer mant.deinit();
 
     // Reject ridiculous inputs so the exponent cannot wrap; for example, 2GB of
     // zeros after the decimal point would otherwise drive `ex` positive.
-    if (len > ridiculous_length) return 1;
-    if (len <= 0) return 1;
+    if (len > ridiculous_length) return null;
+    if (len <= 0) return null;
     const bytes = str[0..@intCast(len)];
 
     var index: usize = 0;
@@ -290,7 +283,7 @@ pub fn scanNumberBase(
             isDecimal(bytes[index]) and isDecimal(bytes[index + 1]) and bytes[index + 2] == 'r')
         {
             base = 10 * @as(i32, bytes[index] - '0') + @as(i32, bytes[index + 1] - '0');
-            if (base < 2 or base > 36) return 1;
+            if (base < 2 or base > 36) return null;
             index += 3;
         }
     }
@@ -302,7 +295,7 @@ pub fn scanNumberBase(
     while (index < bytes.len and (bytes[index] == '0' or bytes[index] == '.')) : (index += 1) {
         if (seen_point) ex -= 1;
         if (bytes[index] == '.') {
-            if (seen_point) return 1;
+            if (seen_point) return null;
             seen_point = true;
         } else {
             seen_a_digit = true;
@@ -313,7 +306,7 @@ pub fn scanNumberBase(
     while (index < bytes.len) : (index += 1) {
         const byte = bytes[index];
         if (byte == '.') {
-            if (seen_point) return 1;
+            if (seen_point) return null;
             seen_point = true;
         } else if (byte == '&') {
             found_exp = true;
@@ -330,18 +323,18 @@ pub fn scanNumberBase(
             found_exp = true;
             break;
         } else if (byte == '_') {
-            if (!seen_a_digit) return 1;
+            if (!seen_a_digit) return null;
         } else {
-            if (byte > 127) return 1;
+            if (byte > 127) return null;
             const digit = digit_lookup[byte & 0x7F];
-            if (@as(i32, digit) >= base) return 1;
+            if (@as(i32, digit) >= base) return null;
             if (seen_point) ex -= 1;
             mant.muladd(@bitCast(base), digit);
             seen_a_digit = true;
         }
     }
 
-    if (!seen_a_digit) return 1;
+    if (!seen_a_digit) return null;
 
     // Read the exponent.
     if (index < bytes.len and found_exp) {
@@ -349,7 +342,7 @@ pub fn scanNumberBase(
         var ee: i32 = 0;
         seen_a_digit = false;
         index += 1;
-        if (index >= bytes.len) return 1;
+        if (index >= bytes.len) return null;
         if (bytes[index] == '-') {
             exponent_negative = true;
             index += 1;
@@ -361,9 +354,9 @@ pub fn scanNumberBase(
         }
         while (index < bytes.len) : (index += 1) {
             const byte = bytes[index];
-            if (byte > 127) return 1;
+            if (byte > 127) return null;
             const digit = digit_lookup[byte & 0x7F];
-            if (@as(i32, digit) >= exp_base) return 1;
+            if (@as(i32, digit) >= exp_base) return null;
             if (ee < @divTrunc(std.math.maxInt(i32), 40)) {
                 ee = exp_base *% ee +% digit;
             }
@@ -372,51 +365,34 @@ pub fn scanNumberBase(
         if (exponent_negative) ex -%= ee else ex +%= ee;
     }
 
-    if (!seen_a_digit) return 1;
+    if (!seen_a_digit) return null;
 
-    out.* = convert(negative, &mant, base, ex);
-    return 0;
+    return convert(negative, &mant, base, ex);
 }
 
-pub fn scanNumber(str: []const u8, out: *f64) c_int {
-    return scanNumberBase(str.ptr, @intCast(str.len), 0, out);
+pub fn scanNumber(str: []const u8) ?f64 {
+    return scanNumberBase(str.ptr, @intCast(str.len), 0);
 }
 
 /// Like `janet_scan_number`, but also recognizes the `:s` and `:u` 64-bit
 /// integer suffixes and the explicit `:n` double suffix.
-pub fn scanNumeric(str: []const u8, out: *repr.Value) c_int {
-    // The C original leaves `num` indeterminate when scanning fails and still
-    // wraps it. Callers only read `*out` on success, so producing a zero here
-    // is unobservable. See FOUND.md.
-    var num: f64 = 0.0;
-    var i64_value: i64 = 0;
-    var u64_value: u64 = 0;
-
+/// Like `scanNumber`, but also recognizes the `:s` and `:u` 64-bit integer
+/// suffixes and the explicit `:n` double suffix.
+///
+/// The C original leaves its scratch indeterminate when scanning fails and
+/// wraps it anyway; a caller was expected to know not to read it. An optional
+/// says the same thing and cannot be got wrong. See `FOUND.md`.
+pub fn scanNumeric(str: []const u8) ?repr.Value {
     const len: i32 = @intCast(str.len);
     if (len < 2 or str[str.len - 2] != ':') {
-        const result = scanNumberBase(str.ptr, len, 0, &num);
-        out.* = numscanWrapNumber(num);
-        return result;
+        return numscanWrapNumber(scanNumberBase(str.ptr, len, 0) orelse return null);
     }
-    switch (str[@intCast(len - 1)]) {
-        'n' => {
-            const result = scanNumberBase(str.ptr, len - 2, 0, &num);
-            out.* = numscanWrapNumber(num);
-            return result;
-        },
-        // The integer scanners return success as 1, so the result is inverted.
-        's' => {
-            const result = @intFromBool(scanInt64(str[0..@intCast(len - 2)], &i64_value) == 0);
-            out.* = numscanWrapS64(i64_value);
-            return result;
-        },
-        'u' => {
-            const result = @intFromBool(scanUint64(str[0..@intCast(len - 2)], &u64_value) == 0);
-            out.* = numscanWrapU64(u64_value);
-            return result;
-        },
-        else => return 1,
-    }
+    return switch (str[@intCast(len - 1)]) {
+        'n' => numscanWrapNumber(scanNumberBase(str.ptr, len - 2, 0) orelse return null),
+        's' => numscanWrapS64(scanInt64(str[0..@intCast(len - 2)]) orelse return null),
+        'u' => numscanWrapU64(scanUint64(str[0..@intCast(len - 2)]) orelse return null),
+        else => null,
+    };
 }
 
 /// `janet_buffer_dtostr`. Reserve, then format.
@@ -425,28 +401,29 @@ pub fn scanNumeric(str: []const u8, out: *repr.Value) c_int {
 /// jump: `janet_buffer_extra` can raise, and no Zig frame could be unwound
 /// through, so the reservation stayed in `strtod.c` and only the formatting was
 /// here. A raise is a returned error now, so the split has no reason to exist
-/// and the C half is gone. The abi keeps the C name because `janet.h`
-/// declares it.
-fn bufferDtostr(buffer: *types.JanetBuffer, val: f64) raise.Raising(void) {
+/// and the C half is gone. `bufferDtostrAbi` beside it is the reporting form,
+/// and the pretty printer no longer uses it: `printJdnOne` is raising and
+/// answers the error.
+pub fn bufferDtostr(buffer: *buffers.Buffer, val: f64) raise.Raising(void) {
     try buffers.extra(buffer, 32);
     fill(buffer, val);
 }
 
-pub fn bufferDtostrAbi(buffer: *types.JanetBuffer, val: f64) void {
+pub fn bufferDtostrAbi(buffer: *buffers.Buffer, val: f64) void {
     raise.reported(bufferDtostr(buffer, val));
 }
 
 /// Format `value` into space the caller has already reserved.
-fn fill(buffer: *types.JanetBuffer, val: f64) void {
+fn fill(buffer: *buffers.Buffer, val: f64) void {
     const start: usize = @intCast(buffer.count);
     const target = buffer.data.? + start;
-    const count = snprintf(target, 32, "%.17g", val);
+    const count = c.snprintf(target, 32, "%.17g", val);
     // Repair locale-dependent decimal commas.
     var index: c_int = 0;
     while (index < count) : (index += 1) {
         if (target[@intCast(index)] == ',') target[@intCast(index)] = '.';
     }
-    buffer.count += count;
+    buffer.count += @as(usize, @intCast(count));
 }
 
 fn isDecimal(byte: u8) bool {
@@ -464,32 +441,27 @@ fn saturatingFloatToInt(val: f64) i64 {
 }
 
 // -------------------------------------------------------------------------
-// The 64-bit integer types -- what `intscan.zig` was.
+// The 64-bit integer types.
 // -------------------------------------------------------------------------
 
 const max_literal_length = 0xffff;
 
-pub fn scanInt64(string: []const u8, out: *i64) c_int {
-    const parsed = scanUnsigned(string) orelse return 0;
+pub fn scanInt64(string: []const u8) ?i64 {
+    const parsed = scanUnsigned(string) orelse return null;
     if (parsed.negative) {
         const minimum_magnitude = @as(u64, std.math.maxInt(i64)) + 1;
-        if (parsed.value > minimum_magnitude) return 0;
-        out.* = if (parsed.value == minimum_magnitude)
-            std.math.minInt(i64)
-        else
-            -@as(i64, @intCast(parsed.value));
-        return 1;
+        if (parsed.value > minimum_magnitude) return null;
+        if (parsed.value == minimum_magnitude) return std.math.minInt(i64);
+        return -@as(i64, @intCast(parsed.value));
     }
-    if (parsed.value > std.math.maxInt(i64)) return 0;
-    out.* = @intCast(parsed.value);
-    return 1;
+    if (parsed.value > std.math.maxInt(i64)) return null;
+    return @intCast(parsed.value);
 }
 
-pub fn scanUint64(string: []const u8, out: *u64) c_int {
-    const parsed = scanUnsigned(string) orelse return 0;
-    if (parsed.negative) return 0;
-    out.* = parsed.value;
-    return 1;
+pub fn scanUint64(string: []const u8) ?u64 {
+    const parsed = scanUnsigned(string) orelse return null;
+    if (parsed.negative) return null;
+    return parsed.value;
 }
 
 const ParsedUnsigned = struct {
@@ -559,19 +531,18 @@ fn digitValue(byte: u8) ?u8 {
 }
 
 // -------------------------------------------------------------------------
-// Character classification -- what `textscan.zig` was.
+// Character classification.
 // -------------------------------------------------------------------------
 const symbol_characters = [8]u32{
     0x00000000, 0xf7ffec72, 0xc7ffffff, 0x07fffffe,
     0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
 };
 
-pub fn isSymbolChar(character: u8) c_int {
-    const mask = symbol_characters[character >> 5] & (@as(u32, 1) << @intCast(character & 0x1f));
-    return @bitCast(mask);
+pub fn isSymbolChar(character: u8) bool {
+    return symbol_characters[character >> 5] & (@as(u32, 1) << @intCast(character & 0x1f)) != 0;
 }
 
-pub fn validUtf8(string: []const u8) c_int {
+pub fn validUtf8(string: []const u8) bool {
     const bytes = string;
     var index: usize = 0;
     while (index < bytes.len) {
@@ -585,17 +556,17 @@ pub fn validUtf8(string: []const u8) c_int {
         else if (first >> 3 == 0x1e)
             4
         else
-            return 0;
+            return false;
 
         const next = index + width;
-        if (next > bytes.len) return 0;
+        if (next > bytes.len) return false;
         for (bytes[index + 1 .. next]) |continuation| {
-            if (continuation >> 6 != 2) return 0;
+            if (continuation >> 6 != 2) return false;
         }
-        if (width == 2 and first < 0xc2) return 0;
-        if (first == 0xe0 and bytes[index + 1] < 0xa0) return 0;
-        if (first == 0xf0 and bytes[index + 1] < 0x90) return 0;
+        if (width == 2 and first < 0xc2) return false;
+        if (first == 0xe0 and bytes[index + 1] < 0xa0) return false;
+        if (first == 0xf0 and bytes[index + 1] < 0x90) return false;
         index = next;
     }
-    return 1;
+    return true;
 }

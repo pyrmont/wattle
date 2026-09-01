@@ -705,12 +705,10 @@
   (assert (= d (ev/give d 1)) "give outside janet_call")
   (assert (= 1 (ev/take d)) "take outside janet_call")))
 
-# Phase 10 Part 13 added the block below. Every assertion in it closes a
-# mutation the first sweep over `src/zig/subsystems/ev_loop.zig` and
-# `ev_channel.zig` left alive -- that is, a change to the event loop that the
-# 742 assertions above did not notice. They are here rather than in
-# `test/ev_loop.c` because each needs a *task* -- a root fiber the scheduler
-# owns -- and a C contract has no way to be one.
+# Every assertion below closes a mutation a sweep over the event loop and the
+# channel left alive -- that is, a change the 742 assertions above did not
+# notice. They are here rather than in a contract because each needs a *task*:
+# a root fiber the scheduler owns.
 
 # `janet_ev_mark` is the only thing that keeps a queued task, a pending
 # timeout, or a channel's contents alive across a collection: a fiber sitting
@@ -1010,30 +1008,36 @@
   (ev/thread (fn [] (os/sleep 0.2)) nil)
   (assert (>= (- (os/clock :monotonic) start2) 0.15) "without :n the caller waits"))
 
-# `janet_go_thread_subr`'s failure arm has three exits and no Janet test above
-# reaches any of them. A thread started with `:a` does not receive the abstract
-# registry, so unmarshalling a value carrying an abstract type fails during
-# setup -- before the fiber ever runs.
-(do
-  # No supervisor and no `:n`: the parent's call raises, carrying the child's
-  # message, which the failure arm copies byte for byte.
-  (def [ok err] (protect (ev/thread (fn [x] nil) (int/s64 1) :a)))
-  (assert (not ok) "a thread that fails during setup raises in the parent")
-  (assert (string? err) "and the message arrives as a string")
-  (assert (not (empty? err)) "which is not empty"))
+# A thread's failure arm on the way *in*: a thread started with `:a` does not
+# receive the abstract registry, so unmarshalling a value carrying an abstract
+# type fails during setup, before the fiber ever runs. Nothing else here
+# reaches those exits.
+#
+# `int/s64` is the abstract-carrying value, and `-Dint-types=false` has no such
+# binding to *compile* against, so the region needs `compwhen` and not `when`.
+# Guarded as a region rather than by leaving the suite: everything below it
+# still runs there.
+(compwhen (dyn 'int/s64)
+  (do
+    # No supervisor and no `:n`: the parent's call raises, carrying the child's
+    # message, which the failure arm copies byte for byte.
+    (def [ok err] (protect (ev/thread (fn [x] nil) (int/s64 1) :a)))
+    (assert (not ok) "a thread that fails during setup raises in the parent")
+    (assert (string? err) "and the message arrives as a string")
+    (assert (not (empty? err)) "which is not empty"))
 
-(do
-  # With a supervisor, the failure goes there instead as [:error payload].
-  (def sup (ev/thread-chan 8))
-  (ev/thread (fn [x] nil) (int/s64 1) :a sup)
-  (var found nil)
-  (var tries 0)
-  (while (and (nil? found) (< tries 400))
-    (ev/sleep 0.01)
-    (set tries (+ tries 1))
-    (when (> (ev/count sup) 0) (set found (ev/take sup))))
-  (assert found "a failing thread reports to its supervisor")
-  (assert (= :error (first found)) "as an :error message"))
+  (do
+    # With a supervisor, the failure goes there instead as [:error payload].
+    (def sup (ev/thread-chan 8))
+    (ev/thread (fn [x] nil) (int/s64 1) :a sup)
+    (var found nil)
+    (var tries 0)
+    (while (and (nil? found) (< tries 400))
+      (ev/sleep 0.01)
+      (set tries (+ tries 1))
+      (when (> (ev/count sup) 0) (set found (ev/take sup))))
+    (assert found "a failing thread reports to its supervisor")
+    (assert (= :error (first found)) "as an :error message")))
 
 # A threaded channel shared with a real thread is what drives
 # `janet_thread_chan_cb` and the per-thread cleanup that follows it. Nothing

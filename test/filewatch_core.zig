@@ -48,17 +48,12 @@
 //! armed flag, a call through an adapter and a report read back.
 //!
 //! **The backend is derived from Zig's target rather than from the subject.**
-//! The C contract picked its platform with `#if defined(JANET_LINUX)` and the
-//! same cascade `filewatch/abi.h` uses, which is two descriptions of one fact.
-//! Asking `filewatch_core.zig` which backend it compiled would be one -- rule
-//! 8's circularity -- so this file reads `builtin.os.tag` instead and lets the
-//! two disagree if they ever do.
+//! Asking the subject which backend it compiled would be circular, so this file
+//! reads `builtin.os.tag` instead and lets the two disagree if they ever do.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const types = @import("types");
 const repr = @import("repr");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
@@ -68,16 +63,16 @@ const order = @import("subsystems").value.order;
 const core_env = @import("subsystems").env;
 const wrap = @import("subsystems").value.wrap;
 const args_core = @import("subsystems").args;
-const abstract_type = @import("subsystems").abstract_type;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const abstracts = @import("subsystems").value.abstracts;
 const pp_describe = @import("subsystems").pp_describe;
 const ev_channel = @import("subsystems").ev_channel;
+const abi = @import("abi");
 const filewatch_core = subsystems.filewatch;
 const flags = subsystems.filewatch;
 const Platform = flags.Platform;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
 /// Which vocabulary this target's backend uses, and the word it puts in
 /// "unknown %s flag". Null where the host has no backend at all, in which case
@@ -102,7 +97,7 @@ fn expectRaise(name: [*:0]const u8, argv: []repr.Value, message: []const u8) voi
         std.debug.print("filewatch_core: expected a raise saying: {s}\n", .{message});
         @panic("filewatch_core: expected a raise, got a return");
     };
-    assert(r.signal == types.Signal.@"error");
+    expect(r.signal == abi.Signal.@"error");
     if (!r.says(message)) {
         std.debug.print("expected: {s}\n", .{message});
         std.debug.print("     got: {s}\n", .{pp_describe.toString(r.payload)});
@@ -120,7 +115,7 @@ fn expectRaisePrefix(name: [*:0]const u8, argv: []repr.Value, prefix: []const u8
         std.debug.print("filewatch_core: expected a raise starting: {s}\n", .{prefix});
         @panic("filewatch_core: expected a raise, got a return");
     };
-    assert(r.signal == types.Signal.@"error");
+    expect(r.signal == abi.Signal.@"error");
     if (!r.beginsWith(prefix)) {
         std.debug.print("expected prefix: {s}\n", .{prefix});
         std.debug.print("            got: {s}\n", .{pp_describe.toString(r.payload)});
@@ -134,7 +129,7 @@ fn expectRaisePrefix(name: [*:0]const u8, argv: []repr.Value, prefix: []const u8
 fn expectAnyRaise(name: [*:0]const u8, argv: []repr.Value) void {
     const r = harness.coreRaised(name, argv) orelse
         @panic("filewatch_core: expected a raise, got a return");
-    assert(r.signal == types.Signal.@"error");
+    expect(r.signal == abi.Signal.@"error");
     raises_seen += 1;
 }
 
@@ -159,7 +154,7 @@ const filewatch_bindings = [_][*:0]const u8{
 };
 
 fn theRegistration() void {
-    assert(filewatch_bindings.len == 5);
+    expect(filewatch_bindings.len == 5);
     // `harness.core` asserts the binding resolves to a cfunction.
     for (filewatch_bindings) |name| _ = harness.core(name);
 }
@@ -174,8 +169,8 @@ fn makeChannel() repr.Value {
     var chan = wrap.fromNil();
     const env = harness.coreEnv();
     const status = core_env.dostring(env, "(ev/chan 16)", "filewatch_core", &chan);
-    assert(status == 0);
-    assert(args_core.checkabstract(chan, &ev_channel.channelType) != null);
+    expect(status == 0);
+    expect(args_core.checkabstract(chan, &ev_channel.channelType) != null);
     return chan;
 }
 
@@ -248,7 +243,7 @@ fn theFlagTableHalves(chan: repr.Value, platform: Platform, word: []const u8) vo
     const unknown = std.fmt.bufPrint(&buffer, "unknown {s} flag :", .{word}) catch unreachable;
 
     const count = flags.flagCount(platform);
-    assert(count > 0);
+    expect(count > 0);
 
     var accepted: u32 = 0;
     for (0..count) |i| {
@@ -259,13 +254,13 @@ fn theFlagTableHalves(chan: repr.Value, platform: Platform, word: []const u8) vo
             // refused is that the host's headers do not define the constant,
             // which the value table records as a zero. The message still names
             // the flag.
-            assert(r.signal == types.Signal.@"error");
-            assert(r.beginsWith(unknown));
+            expect(r.signal == abi.Signal.@"error");
+            expect(r.beginsWith(unknown));
         } else {
             accepted += 1;
         }
     }
-    assert(accepted >= 1);
+    expect(accepted >= 1);
 
     // Every vocabulary contains `:all`. Its *index* is a property of the
     // table's own order rather than of the flag, and this asserted index zero
@@ -273,7 +268,7 @@ fn theFlagTableHalves(chan: repr.Value, platform: Platform, word: []const u8) vo
     // and `linux_names` is alphabetical, so `access` sorts ahead. The assertion
     // was true on the two platforms anybody had run it on and false on the
     // third for as long as it existed.
-    assert(flags.flagIndex(platform, "all") != null);
+    expect(flags.flagIndex(platform, "all") != null);
 
     // A name that belongs to a different backend is refused here, which is
     // what makes the split a split rather than one shared vocabulary. The
@@ -289,7 +284,7 @@ fn theFlagTableHalves(chan: repr.Value, platform: Platform, word: []const u8) vo
         expectRaisePrefix("filewatch/new", &argv, unknown);
         refused += 1;
     }
-    assert(refused >= 1);
+    expect(refused >= 1);
 }
 
 // ==========================================================================
@@ -302,7 +297,7 @@ fn theFlagTableHalves(chan: repr.Value, platform: Platform, word: []const u8) vo
 fn theAbstractType(chan: repr.Value) void {
     var argv = [_]repr.Value{chan};
     const watcher = callCore("filewatch/new", &argv);
-    assert(harness.isType(watcher, repr.Tag.abstract));
+    expect(harness.isType(watcher, repr.Tag.abstract));
 
     // A `Janet` in a local is not a root: the collector scans the VM and the
     // fiber stacks, and a cfunction's arguments are on one of those. Nothing
@@ -315,40 +310,39 @@ fn theAbstractType(chan: repr.Value) void {
 
     const abst = wrap.toAbstract(watcher);
     const at = &filewatch_core.watcherType;
-    assert(std.mem.eql(u8, at.name, "filewatch/watcher"));
-    assert(at.gc == null);
-    assert(at.gcmark != null);
-    assert(at.get == null);
-    assert(at.put == null);
-    assert(at.marshal == null);
-    assert(at.unmarshal == null);
-    assert(at.tostring == null);
-    assert(at.compare == null);
-    assert(at.hash == null);
-    assert(at.next == null);
-    assert(at.call == null);
-    assert(at.length == null);
-    assert(at.bytes == null);
-    assert(at.gcperthread == null);
+    expect(std.mem.eql(u8, at.name, "filewatch/watcher"));
+    expect(at.gc == null);
+    expect(at.gcmark != null);
+    expect(at.get == null);
+    expect(at.put == null);
+    expect(at.marshal == null);
+    expect(at.unmarshal == null);
+    expect(at.tostring == null);
+    expect(at.compare == null);
+    expect(at.hash == null);
+    expect(at.next == null);
+    expect(at.call == null);
+    expect(at.length == null);
+    expect(at.bytes == null);
+    expect(at.gcperthread == null);
 
     // The registered type is this one: `janet_abstract` stored this address
     // and a watcher answers with it.
-    assert(types.abstractHead(abst).type == at);
+    expect(abi.abstractHead(abst).type == at);
 
-    // The live watcher marks without complaint, and reports zero as every
-    // `gcmark` in the tree does.
-    assert(at.gcmark.?(abst, types.abstractHead(abst).size) == 0);
+    // The live watcher marks without complaint.
+    at.gcmark.?(abst, abi.abstractHead(abst).size);
 
     // And a watcher that never reached its backend's `init`. `janet_abstract`
     // does not zero, so the guard is a read of whatever was there; a zeroed one
     // is the case it exists for, and the collector reaching a watcher in that
     // state is what a raise between the allocation and the initialisation would
     // leave behind.
-    const size = types.abstractHead(abst).size;
-    const blank = abstracts.new(@ptrCast(at), size).?;
+    const size = abi.abstractHead(abst).size;
+    const blank = abstracts.newBytes(@ptrCast(at), size);
     const bytes: [*]u8 = @ptrCast(blank);
     @memset(bytes[0..size], 0);
-    assert(at.gcmark.?(blank, size) == 0);
+    at.gcmark.?(blank, size);
 }
 
 // ==========================================================================
@@ -368,7 +362,7 @@ fn theLifecycle(chan: repr.Value) void {
     _ = std.c.mkdir(probe_dir, 0o755);
 
     const watcher = callCore("filewatch/new", &new_argv);
-    assert(harness.isType(watcher, repr.Tag.abstract));
+    expect(harness.isType(watcher, repr.Tag.abstract));
     gc_alloc.gcroot(watcher);
     defer _ = gc_alloc.gcunroot(watcher);
 
@@ -388,7 +382,7 @@ fn theLifecycle(chan: repr.Value) void {
     // what lets `(-> w (filewatch/add p) (filewatch/add q))` thread.
     {
         var argv = [_]repr.Value{ watcher, dir, value.fromBytes("all", .keyword) };
-        assert(order.equals(callCore("filewatch/add", &argv), watcher) != 0);
+        expect(order.equals(callCore("filewatch/add", &argv), watcher));
     }
 
     // A path that was never added has no descriptor to look up.
@@ -417,7 +411,7 @@ fn theLifecycle(chan: repr.Value) void {
         var rm_argv = [_]repr.Value{ watcher, dir };
         _ = callCore("filewatch/add", &add_argv);
         std.c._errno().* = 0;
-        assert(order.equals(callCore("filewatch/remove", &rm_argv), watcher) != 0);
+        expect(order.equals(callCore("filewatch/remove", &rm_argv), watcher));
     }
 
     // Listening twice is refused, and that refusal is the only thing outside
@@ -427,10 +421,10 @@ fn theLifecycle(chan: repr.Value) void {
         var argv = [_]repr.Value{ watcher, dir, value.fromBytes("all", .keyword) };
         var one = [_]repr.Value{watcher};
         _ = callCore("filewatch/add", &argv);
-        assert(harness.isType(callCore("filewatch/listen", &one), repr.Tag.nil));
+        expect(harness.isType(callCore("filewatch/listen", &one), repr.Tag.nil));
         expectRaise("filewatch/listen", &one, "already watching");
-        assert(harness.isType(callCore("filewatch/unlisten", &one), repr.Tag.nil));
-        assert(harness.isType(callCore("filewatch/unlisten", &one), repr.Tag.nil));
+        expect(harness.isType(callCore("filewatch/unlisten", &one), repr.Tag.nil));
+        expect(harness.isType(callCore("filewatch/unlisten", &one), repr.Tag.nil));
     }
 
     // And the watcher is dead after that, which is why this is the last thing

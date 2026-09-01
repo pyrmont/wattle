@@ -39,6 +39,29 @@
 #
 # Measured 2026-08-25, at the end of Phase 10: the Zig runtime is **1.14x**
 # upstream C on the Phase 9 corpus, against a stated tolerance of sub-10x.
+#
+# ## What this script gets wrong, and what to do instead
+#
+# **It builds and then measures immediately.** Both binaries therefore run on a
+# machine still settling from `make -j4` and a `zig build`, and both inflate --
+# by roughly 70% when this was measured on 2026-08-31, on an otherwise idle
+# M4 Pro. The *ratio* survives that better than the absolute times do, but not
+# reliably: the run that read 1.37x was a tree whose cold figure was 1.14x.
+#
+# So do not read a number out of one invocation of this script. Build upstream
+# once into a scratch prefix and keep the binary:
+#
+#     git worktree add --detach /tmp/janet-master master
+#     ( cd /tmp/janet-master && make -j4 CC="zig cc" \
+#         CFLAGS="-O3 -std=c99 -Wall -Isrc/include -Isrc/conf" )
+#
+# then build this tree ReleaseFast into another prefix, wait for the machine to
+# go quiet, and run `layout.sh` against each. Interleave with
+# `tools/bench/interpreter/run.sh` when the question is "did this increment
+# cost anything" rather than "how does the tree compare to C".
+#
+# Taken that way on 2026-08-31: **1.141x** at `3584bece` and **1.151x** after
+# Phase 14 increments 2a-2c, with the `pegmatch` control unchanged.
 set -eu
 
 CORPUS="${1:-tools/bench/interpreter/bench.janet}"

@@ -8,23 +8,22 @@
 //!
 //! ## Why this is a module of its own
 //!
-//! It was declared in `types.zig` -- the global type catalogue -- and its
-//! operations were in `value/helpers/wrap.zig`, a subsystem file six modules
-//! up. One foundational module holds the representation and nothing else, and
-//! the module graph decides where that can be: **`types.zig` names `Value` at
-//! 28 code sites across seventeen aggregates**, so the representation has to
-//! be declared at or below `types`.
+//! It was declared in `types.zig` -- the global type catalogue, since
+//! dissolved -- and its operations were in `value/helpers/wrap.zig`, a
+//! subsystem file six modules up. One foundational module holds the
+//! representation and nothing else, and the module graph decides where that
+//! can be: **the heap types name `Value` at 28 code sites across seventeen
+//! aggregates**, so the representation has to be declared below all of them.
 //!
 //! What that admits is exactly the operations that name no Janet heap type:
 //! the three layouts, the tag, and the bit-level construction and extraction
-//! over them. `wrap.fromTable` takes a `*types.JanetTable` and so cannot come
+//! over them. `wrap.fromTable` takes a `*tables.Table` and so cannot come
 //! down here; it stays in `wrap.zig`, which is the *face* of this floor and
 //! where the value DAG already had it. **990 of `wrap.zig`'s 2,382 call sites
 //! name no heap type and could have moved**, and they do not: a call site
 //! writing `repr.fromNil()` beside `wrap.fromTable(t)` has had one question
-//! split in two by an accident of which module declares the payload type, and
-//! `wrap.zig`'s own header records `NAMESPACES.md` refusing that split once
-//! already. The DAG gains a floor rather than losing a layer:
+//! split in two by an accident of which module declares the payload type. The
+//! DAG gains a floor rather than losing a layer:
 //!
 //!     repr <- wrap <- kind <- order <- access
 //!
@@ -84,9 +83,8 @@
 //! ## Nothing here can raise
 //!
 //! No function in this file calls anything that can raise, allocate or
-//! collect, so the file needs no `//! jump-transparent` marker. That is not a
-//! coincidence to be maintained by hand: it is what the import list above
-//! guarantees.
+//! collect. That is not a coincidence to be maintained by hand: it is what the
+//! import list above guarantees.
 
 const std = @import("std");
 const config = @import("config");
@@ -186,9 +184,9 @@ pub const Tag = enum(u4) {
 };
 
 comptime {
-    // `git show 17b3f8c4:src/include/janet.h`, `typedef enum JanetType`.
-    // Sixteen assertions rather than a count, because a transposition keeps
-    // the count and this is the increment that found one in `DESIGN.md`.
+    // The tag numbering, against upstream Janet at `17b3f8c4` -- its
+    // `JanetType`. Sixteen assertions rather than a count, because a
+    // transposition keeps the count.
     const expected = .{
         .{ Tag.number, 0 },    .{ Tag.nil, 1 },        .{ Tag.boolean, 2 },
         .{ Tag.fiber, 3 },     .{ Tag.string, 4 },     .{ Tag.symbol, 5 },
@@ -199,31 +197,28 @@ comptime {
     };
     for (expected) |pair| {
         if (@intFromEnum(pair[0]) != pair[1])
-            @compileError("tag " ++ @tagName(pair[0]) ++ " is not janet.h's value");
+            @compileError("tag " ++ @tagName(pair[0]) ++ " is not upstream's value");
     }
     if (@typeInfo(Tag).@"enum".fields.len != tag_count)
         @compileError("Tag has grown a member; the four-bit budget is §1's");
 }
 
-/// `JANET_COUNT_TYPES`. Sixteen, and the representation cannot hold a
+/// How many tags there are. Sixteen, and the representation cannot hold a
 /// seventeenth: `DESIGN.md` §1's bit budget gives the tag four bits.
 pub const tag_count = 16;
 
-/// A set of tags: `janet.h`'s `JANET_TFLAG_*`, which are `1 << type` and are
-/// or'd together, given the type that arithmetic was standing in for.
+/// A set of tags. The wire and the messages spell it as `1 << tag` or'd
+/// together; this is the type that arithmetic was standing in for.
 ///
 /// **The bit layout is the declaration order**, because a `packed struct`'s
 /// first field is its least significant bit, and the order here is `Tag`'s.
 /// The `comptime` block below asserts all sixteen positions and the five
-/// composites against the values `17b3f8c4:src/include/janet.h` computes, so
-/// a reordering of either declaration is a build failure rather than a set
-/// that quietly means something else.
+/// composites against the values upstream Janet computes, so a reordering of
+/// either declaration is a build failure rather than a set that quietly means
+/// something else.
 ///
-/// It is sixteen bits where `janet.h` used an `int`, and the two published
-/// symbols that take a mask -- `janet_checktypes` and `janet_panic_type` --
-/// keep the `int` and convert in `capi.zig`. A bit above fifteen names no tag,
-/// so truncating one loses nothing: that is what makes the narrowing safe and
-/// it is asserted at the boundary rather than assumed.
+/// It is sixteen bits. A bit above fifteen names no tag, so nothing is lost
+/// where a wider word arrives and is narrowed.
 pub const TagSet = packed struct(u16) {
     number: bool = false,
     nil: bool = false,
@@ -245,8 +240,7 @@ pub const TagSet = packed struct(u16) {
     pub const none: TagSet = .{};
     pub const all = fromBits(std.math.maxInt(u16));
 
-    /// `JANET_TFLAG_BYTES` and its four neighbours, which are the only named
-    /// unions `janet.h` had.
+    /// The five named unions: the ones a message or a check asks for by name.
     pub const bytes = of(&.{ .string, .symbol, .buffer, .keyword });
     pub const indexed = of(&.{ .array, .tuple });
     pub const dictionary = of(&.{ .table, .@"struct" });
@@ -277,8 +271,7 @@ pub const TagSet = packed struct(u16) {
         return self.bits() == 0;
     }
 
-    /// The two conversions the C boundary needs, and the only place the set is
-    /// spelled as a number.
+    /// The only place the set is spelled as a number.
     pub fn bits(self: TagSet) u16 {
         return @bitCast(self);
     }
@@ -288,9 +281,9 @@ pub const TagSet = packed struct(u16) {
 };
 
 comptime {
-    // Sixteen positions and five composites, against
-    // `17b3f8c4:src/include/janet.h` lines 589-611. Reordering `Tag` or the
-    // fields above fails here rather than in a program.
+    // Sixteen positions and five composites, against the values upstream Janet
+    // computes at `17b3f8c4`. Reordering `Tag` or the fields above fails here
+    // rather than in a program.
     std.debug.assert(@sizeOf(TagSet) == 2);
     std.debug.assert(TagSet.one(.number).bits() == 0x0001);
     std.debug.assert(TagSet.one(.nil).bits() == 0x0002);
@@ -341,16 +334,16 @@ pub fn checkTypes(x: Value, set: TagSet) bool {
 // `test/value_wrap.zig`, which is the contract on the bit layout.
 // the contract on the bit layout.
 
-/// `JANET_NANBOX_TAGBITS`: the NaN marker and the four tag bits together.
+/// The NaN marker and the four tag bits together.
 pub const tagbits: u64 = 0xFFFF800000000000;
 
-/// `JANET_NANBOX_PAYLOADBITS`: the low 47 bits a value carries.
+/// The low 47 bits a value carries.
 pub const payloadbits: u64 = 0x00007FFFFFFFFFFF;
 
-/// `JANET_NANBOX_64_POINTER_SHIFT`, which exists so that a target with more
-/// than 47 bits of address space still fits a pointer in the payload. It is
-/// `config.nanbox_pointer_shift` and nothing else, so the two cannot drift --
-/// they had, once, and `constants.zig`'s note on the retired name has it.
+/// The shift that lets a target with more than 47 bits of address space still
+/// fit a pointer in the payload. It is `config.nanbox_pointer_shift` and
+/// nothing else, so the two cannot drift -- they had, once, and
+/// `constants.zig` records what that cost.
 pub const pointer_shift: c_int = config.nanbox_pointer_shift;
 
 /// `JANET_DOUBLE_OFFSET`: the bias nanbox-32 adds to a double's high word so
@@ -430,8 +423,7 @@ pub const nanbox64 = struct {
         return nanbox64.fromPointer(@constCast(p), tagmask);
     }
 
-    // Qualified because batch 4 renamed the container's `wrapPointer` to
-    // `fromPointer`, and a struct member does not shadow a container
+    // Qualified because a struct member does not shadow a container
     // declaration -- it makes the unqualified name ambiguous. Same reason
     // `abi` and `ops` say `outer.`, pointing the other way.
     inline fn wrapPointer(p: ?*anyopaque, comptime t: Tag) Value {

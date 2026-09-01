@@ -42,7 +42,9 @@
 
 const std = @import("std");
 
-/// `JanetFFIPrimType` in `src/core/ffi.c`.
+/// The machine types, numbered as `ffi/types.zig`'s `PrimType` numbers them.
+/// Restated here rather than imported so that this file has no dependency on
+/// the FFI's own types: it is pure arithmetic over integers.
 const prim_void: u32 = 0;
 const prim_bool: u32 = 1;
 const prim_ptr: u32 = 2;
@@ -59,7 +61,8 @@ const prim_int64: u32 = 12;
 const prim_uint64: u32 = 13;
 const prim_struct: u32 = 14;
 
-/// `JanetFFIWordSpec` in `src/core/ffi.c`.
+/// Where one argument goes, per convention. Each convention has its own block
+/// and the numbers are only compared within one.
 const sysv64_integer: u32 = 0;
 const sysv64_sse: u32 = 1;
 const sysv64_sseup: u32 = 2;
@@ -769,10 +772,10 @@ test "aapcs64 treats an empty struct as an ordinary aggregate" {
 }
 
 test "win64 passes the first four arguments in registers" {
-    var ret = ArgSlot{ .size = 8, .prim = prim_int64, .spec = 0, .alignment = 8, .offset = 0, .offset2 = 0 };
+    var ret = ArgSlot{ .size = 8, .prim = prim_int64, .spec = 0, .alignment = 8, .offset = 0, .offset2 = 0, .hfa_members = 0 };
     var args = [_]ArgSlot{
-        .{ .size = 8, .prim = prim_int64, .spec = 0, .alignment = 8, .offset = 0, .offset2 = 0 },
-        .{ .size = 8, .prim = prim_double, .spec = 0, .alignment = 8, .offset = 0, .offset2 = 0 },
+        .{ .size = 8, .prim = prim_int64, .spec = 0, .alignment = 8, .offset = 0, .offset2 = 0, .hfa_members = 0 },
+        .{ .size = 8, .prim = prim_double, .spec = 0, .alignment = 8, .offset = 0, .offset2 = 0, .hfa_members = 0 },
     };
     var result: AllocResult = undefined;
     allocWin64(&result, &ret, &args);
@@ -787,10 +790,10 @@ test "win64 passes the first four arguments in registers" {
 }
 
 test "sysv64 spills past the sixth integer register" {
-    var ret = ArgSlot{ .size = 0, .prim = prim_void, .spec = sysv64_no_class, .alignment = 1, .offset = 0, .offset2 = 0 };
+    var ret = ArgSlot{ .size = 0, .prim = prim_void, .spec = sysv64_no_class, .alignment = 1, .offset = 0, .offset2 = 0, .hfa_members = 0 };
     var args: [8]ArgSlot = undefined;
     for (&args) |*a| {
-        a.* = .{ .size = 8, .prim = prim_int64, .spec = sysv64_integer, .alignment = 8, .offset = 0, .offset2 = 0 };
+        a.* = .{ .size = 8, .prim = prim_int64, .spec = sysv64_integer, .alignment = 8, .offset = 0, .offset2 = 0, .hfa_members = 0 };
     }
     var result: AllocResult = undefined;
     allocSysv64(&result, &ret, &args);
@@ -810,10 +813,10 @@ test "aapcs64 packs the stack differently on Apple platforms" {
     // Nine one-byte arguments: the first eight take the general registers and
     // the ninth goes to the stack, where the two variants disagree on width.
     for ([_]bool{ false, true }) |apple| {
-        var ret = ArgSlot{ .size = 0, .prim = prim_void, .spec = aapcs64_none, .alignment = 1, .offset = 0, .offset2 = 0 };
+        var ret = ArgSlot{ .size = 0, .prim = prim_void, .spec = aapcs64_none, .alignment = 1, .offset = 0, .offset2 = 0, .hfa_members = 0 };
         var args: [9]ArgSlot = undefined;
         for (&args) |*a| {
-            a.* = .{ .size = 1, .prim = prim_uint8, .spec = aapcs64_general, .alignment = 1, .offset = 0, .offset2 = 0 };
+            a.* = .{ .size = 1, .prim = prim_uint8, .spec = aapcs64_general, .alignment = 1, .offset = 0, .offset2 = 0, .hfa_members = 0 };
         }
         var result: AllocResult = undefined;
         allocAapcs64(&result, &ret, &args, apple, 128);
@@ -827,7 +830,7 @@ test "aapcs64 packs the stack differently on Apple platforms" {
 }
 
 test "aapcs64 refuses a return value wider than the trampoline buffer" {
-    var ret = ArgSlot{ .size = 256, .prim = prim_struct, .spec = aapcs64_general_ref, .alignment = 8, .offset = 0, .offset2 = 0 };
+    var ret = ArgSlot{ .size = 256, .prim = prim_struct, .spec = aapcs64_general_ref, .alignment = 8, .offset = 0, .offset2 = 0, .hfa_members = 0 };
     var args: [0]ArgSlot = undefined;
     var result: AllocResult = undefined;
     allocAapcs64(&result, &ret, &args, false, 128);

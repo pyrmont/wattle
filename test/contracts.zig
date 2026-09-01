@@ -5,8 +5,8 @@
 //!
 //! A contract that linked `libjanet.a` would have every call resolved by the
 //! linker, which is to say across the C ABI, and Zig will not put an error
-//! union on a C-ABI function. A raise could not reach it as a value: it would
-//! arrive as an out-of-band report, with an adapter pool underneath to let C
+//! union on a C-ABI function. A raise could not reach it as a value at all: it
+//! would arrive as an out-of-band report.
 //!
 //! A contract in *this* binary is on the near side. `build.zig` builds the
 //! runtime's module graph a second time with this file as its root, so a
@@ -17,14 +17,10 @@
 //! does not compile.
 //!
 //! The cost is one more compilation of the runtime. The alternative — a
-//! contract module compiled beside `libjanet.a` with every selector `false`,
-//! which is what `pp_format.zig` did — needs the subject's `export fn`s to
-//! become gated `@export`s before it can be used at all, and gives a *local
-//! copy* of the subject rather than the one the rest of the binary runs.
-//! `pp_format.zig` could take that because its subject is `comptime`-generic
-//! and has no symbol either way; a collector or an interpreter cannot.
-//!
-//! ## What did not change
+//! contract module compiled beside `libjanet.a` — gives a *local copy* of the
+//! subject rather than the one the rest of the binary runs, which a
+//! `comptime`-generic subject can take and a collector or an interpreter
+//! cannot.
 //!
 //! ## The shape
 //!
@@ -43,11 +39,12 @@
 //! two cannot drift. A driver on the far side of a symbol table needs that
 //! condition written twice, once in the build and once in its own list.
 //!
-//! Not every `test/*.zig` belongs here. `harness.zig` is the shared vocabulary
-//! and `fuzz.zig` is the four fuzz targets, which cannot be contracts because
-//! `std.testing.fuzz` resolves through `@import("root").fuzz` and so needs a
-//! test root of its own. Both are named in `checkContractsListed`'s `exempt`,
-//! which is the list that keeps "not a contract" from meaning "forgotten".
+//! Not every `test/*.zig` belongs here. `harness.zig` is the shared vocabulary,
+//! `expect.zig` is the assertion every contract uses, and `fuzz.zig` is the
+//! four fuzz targets, which cannot be contracts because `std.testing.fuzz`
+//! resolves through `@import("root").fuzz` and so needs a test root of its own.
+//! All three are named in `checkContractsListed`'s `exempt`, which is the list
+//! that keeps "not a contract" from meaning "forgotten".
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -103,8 +100,7 @@ const contracts: []const Contract = blk: {
     // `-Dreduced-os=true` compiles neither the subsystem nor its contract.
     if (options.os_fs) list = with(list, "os_permissions", @import("os_permissions.zig"));
     list = with(list, "verify", @import("verify.zig"));
-    // `-Dassembler=false` leaves `janet.h` without `JanetAssembleResult`, and
-    // the three subsystems these test with nothing to compile.
+    // `-Dassembler=false` compiles none of the three subsystems these test.
     if (options.bytecode) list = with(list, "asm_encode", @import("asm_encode.zig"));
     if (options.disasm) list = with(list, "asm_decode", @import("asm_decode.zig"));
     if (options.disasm) list = with(list, "disasm", @import("disasm.zig"));
@@ -148,8 +144,7 @@ const contracts: []const Contract = blk: {
     if (options.env) list = with(list, "core_env", @import("core_env.zig"));
     if (options.args) list = with(list, "args_core", @import("args_core.zig"));
     if (options.marsh) list = with(list, "marsh", @import("marsh.zig"));
-    // `-Dpeg=false` leaves `janet.h` without `JanetPeg` and the subsystem
-    // without `janet_peg_type`, so neither the subject nor its contract exists.
+    // `-Dpeg=false` compiles neither the subject nor its contract.
     if (options.peg_engine) list = with(list, "peg", @import("peg.zig"));
     // `-Dffi=false` compiles neither the subsystems nor their contracts.
     if (options.ffi_zig) list = with(list, "ffi_layout", @import("ffi_layout.zig"));
@@ -201,9 +196,8 @@ fn pauseForLeakCheck() void {
 /// No argument runs every contract in list order; one or more names run those,
 /// in the order given, **in one process**.
 ///
-/// The subset form is not convenience.
-/// because it is not convenience. Every contract opens with `janet_init` and
-/// closes with `janet_deinit`, so the no-argument run is sixty-five teardowns
+/// **The no-argument form is the interesting one.** Every contract opens with
+/// an init and closes with a deinit, so it is sixty-five teardowns
 /// and re-initialisations of the whole runtime — and `FOUND.md` records that
 /// this binary aborts in glibc's `malloc_consolidate` with no argument while
 /// **every contract passes when run by name**. A defect that needs the sequence

@@ -28,17 +28,14 @@
 //! some configurations, and this file asks `config.peg` and its kin.
 //!
 //! `build.zig` decides these and hands them over as comptime booleans, so a
-//! gate is a field rather than a macro's presence.
-//! once.
+//! gate is a field rather than a macro's presence, answered in one place.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const corefn = @import("corefn");
-const options = @import("options");
-const raise = @import("raise");
+const corefn = @import("corefn.zig");
+const raise = @import("raise.zig");
 const pp_format = @import("pp/format.zig");
 
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
@@ -46,6 +43,7 @@ const stdio = @import("stdio.zig");
 const trace_frames = @import("debug.zig");
 const pp_describe = @import("pp.zig");
 const vm_lifecycle = @import("vm/lifecycle.zig");
+const vm_state = @import("vm/state.zig");
 const structs = @import("value/structs.zig");
 const tables = @import("value/tables.zig");
 const gc_alloc = @import("gc.zig");
@@ -65,7 +63,6 @@ const fatal = @import("fatal.zig");
 const arrays = @import("value/arrays.zig");
 const buffers = @import("value/buffers.zig");
 const abstracts = @import("value/abstracts.zig");
-const abstract_type = @import("abstract_type.zig");
 const order = @import("value/helpers/order.zig");
 const vm_entry = @import("vm/entry.zig");
 
@@ -86,9 +83,12 @@ const ffi = @import("ffi.zig");
 const filewatch = @import("filewatch.zig");
 const config = @import("config");
 const value = @import("value.zig");
+const abi = @import("abi");
 
-/// `janetconf.h`'s two version strings, as pointers `janet_cstring` can
-/// `strlen`.
+pub const JanetModule = ?*const fn ([*c]tables.Table) callconv(.c) void;
+pub const JanetModconf = ?*const fn () callconv(.c) abi.JanetBuildConfig;
+
+/// The two version strings, as pointers `janet_cstring` can `strlen`.
 ///
 /// `config` carries them as `[]const u8`, and a slice is not a pointer with a
 /// sentinel -- the bytes behind a Zig string literal happen to be
@@ -100,10 +100,6 @@ const build_z = std.fmt.comptimePrint("{s}", .{config.build_name});
 
 const windows = builtin.os.tag == .windows;
 
-/// `src/core/util.h`, declared here rather than in `cabi.zig`.
-extern fn safe_memcpy(dest: ?*anyopaque, src: ?*const anyopaque, len: usize) callconv(.c) void;
-extern fn get_processed_name(name: [*:0]const u8) callconv(.c) [*]u8;
-
 /// `stdin` and `stdout`, which cannot be named from Zig portably: the three
 /// standard handles have a different shape on each of this project's
 /// platforms, and on mingw the shape is a compile error at the reference
@@ -112,11 +108,10 @@ extern fn get_processed_name(name: [*:0]const u8) callconv(.c) [*]u8;
 /// `janet_dynprintf`. Zig cannot define a C variadic on every target here, but
 /// calling one is ordinary, so the macro is written out. `debug.zig` carries
 /// the same three lines for the same reason.
-inline fn eprintf(comptime format: [:0]const u8, args: anytype) void {
+inline fn eprintf(comptime format: [:0]const u8, args: anytype) raise.Raising(void) {
     // `pp/format.dynprintf` can raise: `(dyn :err)` may be a Janet function, and
-    // calling it can. This position cannot carry one -- it is a trace or a
-    // diagnostic on the way out -- so the raise is reported.
-    raise.reported(pp_format.dynprintf("err", @ptrCast(@alignCast(stdio.err())), format, args));
+    // calling it can. Every caller here is raising, so the raise is returned.
+    return pp_format.dynprintf("err", stdio.err(), format, args);
 }
 
 const has_ev = config.ev;
@@ -134,35 +129,31 @@ inline fn allocated(pointer: ?*anyopaque) *anyopaque {
     fatal.outOfMemory();
 }
 
-inline fn wrapInteger(x: i32) repr.Value {
-    return wrap.fromNumber(@floatFromInt(x));
-}
-
 // ==========================================================================
 // Loading a native module.
 // ==========================================================================
 
-fn native(name: [*:0]const u8, err: *?types.JanetString) raise.Raising(types.JanetModule) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"dynamic_modules"}));
-    const processed_name = get_processed_name(name);
+fn native(name: [*:0]const u8, err: *?strings.String) raise.Raising(JanetModule) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"dynamic_modules"}));
+    const processed_name = utils.getProcessedName(name);
     const lib = clib.load(@ptrCast(processed_name));
     if (name != processed_name) utils.free(processed_name);
     if (clib.failed(lib)) {
         err.* = strings.cstring(clib.lastError());
         return null;
     }
-    const init: types.JanetModule = @ptrCast(@alignCast(try clib.symbol(lib, "_janet_init")));
+    const init: JanetModule = @ptrCast(@alignCast(try clib.symbol(lib, "_janet_init")));
     if (init == null) {
         err.* = strings.cstring("could not find the _janet_init symbol");
         return null;
     }
-    const getter: types.JanetModconf = @ptrCast(@alignCast(try clib.symbol(lib, "_janet_mod_config")));
+    const getter: JanetModconf = @ptrCast(@alignCast(try clib.symbol(lib, "_janet_mod_config")));
     if (getter == null) {
         err.* = strings.cstring("could not find the _janet_mod_config symbol");
         return null;
     }
     const modconf = getter.?();
-    const host: types.JanetBuildConfig = .{
+    const host: abi.JanetBuildConfig = .{
         .major = config.version_major,
         .minor = config.version_minor,
         .patch = config.version_patch,
@@ -195,7 +186,7 @@ fn native(name: [*:0]const u8, err: *?types.JanetString) raise.Raising(types.Jan
     return init;
 }
 
-pub fn nativeAbi(name: [*:0]const u8, err: *?types.JanetString) types.JanetModule {
+pub fn nativeAbi(name: [*:0]const u8, err: *?strings.String) JanetModule {
     return raise.reported(native(name, err));
 }
 
@@ -204,14 +195,14 @@ pub fn nativeAbi(name: [*:0]const u8, err: *?types.JanetString) types.JanetModul
 // ==========================================================================
 
 fn dynCString(name: [*:0]const u8, dflt: [*:0]const u8) raise.Raising([*:0]const u8) {
-    const x = vm_lifecycle.dyn(name);
+    const x = vm_state.dyn(name);
     if (repr.checkType(x, repr.Tag.nil)) return dflt;
     if (!repr.checkType(x, repr.Tag.string)) {
         return pp_format.panicf("expected string, got %v", .{x});
     }
     const jstr = wrap.toString(x);
     const cstr: [*:0]const u8 = @ptrCast(jstr);
-    if (std.mem.len(cstr) != @as(usize, @intCast(types.stringHead(jstr).length))) {
+    if (std.mem.len(cstr) != @as(usize, @intCast(strings.head(jstr).length))) {
         return pp_format.panicf("string %v contains embedded 0s", .{x});
     }
     return cstr;
@@ -278,7 +269,7 @@ fn cfunExpandPath(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
                 const str: [*]u8 = @ptrCast(allocated(gc_alloc.smalloc(len + 1)));
                 @memcpy(str[0..len], input[1 .. 1 + len]);
                 str[len] = 0;
-                _ = try pp_format.formatb(out, "%V", .{vm_lifecycle.dyn(@ptrCast(str))});
+                _ = try pp_format.formatb(out, "%V", .{vm_state.dyn(@ptrCast(str))});
                 gc_alloc.sfree(str);
                 try buffers.pushCString(out, input + p);
             } else {
@@ -316,7 +307,7 @@ fn cfunExpandPath(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 /// `dot_count` carries three states rather than a count: non-negative is a run
 /// of leading dots in the current segment, and -1 means the segment has a
 /// non-dot character in it and the dots are no longer leading.
-fn normalizePath(out: *types.JanetBuffer) void {
+fn normalizePath(out: *buffers.Buffer) void {
     const data = out.data;
     const end: usize = @intCast(out.count);
     var scan: usize = 0;
@@ -375,18 +366,18 @@ fn normalizePath(out: *types.JanetBuffer) void {
 
 fn cfunDyn(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
-    const env = vm_lifecycle.current().fiber.?.env;
+    const env = vm_state.current().fiber.?.env;
     const val = if (env) |dyns| tables.get(dyns, argv[0]) else wrap.fromNil();
-    if (@as(i32, @intCast(argv.len)) == 2 and repr.checkType(val, repr.Tag.nil)) return argv[1];
+    if (argv.len == 2 and repr.checkType(val, repr.Tag.nil)) return argv[1];
     return val;
 }
 
 fn cfunSetdyn(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    if (vm_lifecycle.current().fiber.?.env == null) {
-        vm_lifecycle.current().fiber.?.env = tables.new(2);
+    if (vm_state.current().fiber.?.env == null) {
+        vm_state.current().fiber.?.env = tables.new(2);
     }
-    tables.put(vm_lifecycle.current().fiber.?.env.?, argv[0], argv[1]);
+    tables.put(vm_state.current().fiber.?.env.?, argv[0], argv[1]);
     return argv[1];
 }
 
@@ -394,15 +385,15 @@ fn cfunNative(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
     try args_core.arity(argv, 1, 2);
     const argv0 = argv[0];
     const path = try args_core.getString(argv, 0);
-    var err: ?types.JanetString = null;
-    const env = if (@as(i32, @intCast(argv.len)) == 2) try args_core.getTable(argv, 1) else tables.new(0);
+    var err: ?strings.String = null;
+    const env = if (argv.len == 2) try args_core.getTable(argv, 1) else tables.new(0);
     const init = try native(@ptrCast(path), &err);
     if (init == null) {
         return pp_format.panicf("could not load native %S: %S", .{ path, err });
     }
     // Rooted against a collection triggered from inside the module's entry
     // point, which runs arbitrary third-party code.
-    try fibers.push(vm_lifecycle.current().fiber.?, wrap.fromTable(env));
+    try fibers.push(vm_state.current().fiber.?, wrap.fromTable(env));
     try raise.crossing(init.?(env));
     tables.put(env, value.fromBytes("native", .keyword), argv0);
     return wrap.fromTable(env);
@@ -410,9 +401,8 @@ fn cfunNative(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
 
 fn cfunDescribe(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const b = buffers.new(0);
-    var i: i32 = 0;
-    while (i < @as(i32, @intCast(argv.len))) : (i += 1) try pp_describe.descriptionB(b, argv[@intCast(i)]);
-    return value.fromBytes(b.*.slice(), .string);
+    for (argv) |a| try pp_describe.descriptionB(b, a);
+    return value.fromBytes(b.slice(), .string);
 }
 
 /// `string`, `symbol`, `keyword` and `buffer` differ only in what they wrap
@@ -421,26 +411,25 @@ fn Concat(comptime finish: anytype) type {
     return struct {
         fn cfun(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             const b = buffers.new(0);
-            var i: i32 = 0;
-            while (i < @as(i32, @intCast(argv.len))) : (i += 1) try pp_describe.toStringB(b, argv[@intCast(i)]);
+            for (argv) |a| try pp_describe.toStringB(b, a);
             return finish(b);
         }
     };
 }
 
-fn finishString(b: *types.JanetBuffer) repr.Value {
+fn finishString(b: *buffers.Buffer) repr.Value {
     return value.fromBytes(b.slice(), .string);
 }
 
-fn finishSymbol(b: *types.JanetBuffer) repr.Value {
+fn finishSymbol(b: *buffers.Buffer) repr.Value {
     return value.fromBytes(b.slice(), .symbol);
 }
 
-fn finishKeyword(b: *types.JanetBuffer) repr.Value {
+fn finishKeyword(b: *buffers.Buffer) repr.Value {
     return value.fromBytes(b.slice(), .keyword);
 }
 
-fn finishBuffer(b: *types.JanetBuffer) repr.Value {
+fn finishBuffer(b: *buffers.Buffer) repr.Value {
     return wrap.fromBuffer(b);
 }
 
@@ -450,16 +439,14 @@ fn cfunIsAbstract(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 }
 
 fn cfunScanNumber(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var number: f64 = undefined;
     try args_core.arity(argv, 1, 2);
     const view = try args_core.getBytes(argv, 0);
     const base = try args_core.optInteger(argv, 1, 0);
     if (!(base == 0 or (base >= 2 and base <= 36))) {
         return pp_format.panicf("expected base between 2 and 36, got %d", .{base});
     }
-    if (numscan.scanNumberBase(args_core.viewBytes(view).ptr, view.len, base, &number) != 0) {
+    const number = numscan.scanNumberBase(args_core.viewBytes(view).ptr, @intCast(view.len), base) orelse
         return wrap.fromNil();
-    }
     return wrap.fromNumber(number);
 }
 
@@ -469,26 +456,20 @@ fn cfunTuple(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
 
 fn cfunArray(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const array = arrays.new(@as(i32, @intCast(argv.len)));
-    array.*.count = @as(i32, @intCast(argv.len));
-    safe_memcpy(@ptrCast(array.*.data), @ptrCast(argv), @as(usize, @intCast(@as(i32, @intCast(argv.len)))) * @sizeOf(repr.Value));
+    array.count = argv.len;
+    utils.safeMemcpy(@ptrCast(array.data), @ptrCast(argv), @as(usize, @intCast(@as(i32, @intCast(argv.len)))) * @sizeOf(repr.Value));
     return wrap.fromArray(array);
 }
 
 fn cfunSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var bytes: ?[*]const u8 = undefined;
-    var blen: i32 = undefined;
-    var items: ?[*]const repr.Value = undefined;
-    var ilen: i32 = undefined;
-    if (args_core.bytesView(argv[0], &bytes, &blen) != 0) {
+    if (args_core.bytesView(argv[0])) |bytes| {
         const range = try args_core.getSlice(argv);
-        return value.fromBytes(bytes.?[@intCast(range.start)..@intCast(range.end)], .string);
-    } else if (args_core.indexedView(argv[0], &items, &ilen) != 0) {
+        return value.fromBytes(bytes[@intCast(range.start)..@intCast(range.end)], .string);
+    } else if (args_core.indexedView(argv[0])) |items| {
         const range = try args_core.getSlice(argv);
-        return wrap.fromTuple(tuples.newFrom(items.?[@intCast(range.start)..@intCast(range.end)]));
+        return wrap.fromTuple(tuples.newFrom(items[@intCast(range.start)..@intCast(range.end)]));
     }
-    // `-Dargs-core`'s abi, so this raise arrives as a jump through a frame
-    // that holds nothing. The message it builds is the fault layer's and has
-    // no spelling on this side of the seam.
+    // The message is the fault layer's and has no spelling on this side.
     return args_core.panicType(argv[0], 0, repr.TagSet.bytes.with(repr.TagSet.indexed));
 }
 
@@ -498,12 +479,12 @@ fn cfunRange(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
     var stop: f64 = 0;
     var step: f64 = 1;
     var count: f64 = 0;
-    if (@as(i32, @intCast(argv.len)) == 3) {
+    if (argv.len == 3) {
         start = try args_core.getNumber(argv, 0);
         stop = try args_core.getNumber(argv, 1);
         step = try args_core.getNumber(argv, 2);
         count = if (step != 0.0) (stop - start) / step else 0.0;
-    } else if (@as(i32, @intCast(argv.len)) == 2) {
+    } else if (argv.len == 2) {
         start = try args_core.getNumber(argv, 0);
         stop = try args_core.getNumber(argv, 1);
         count = stop - start;
@@ -524,12 +505,11 @@ fn cfunRange(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
         assert(start + @as(f64, @floatFromInt(int_count)) * step <= stop, "bad range code");
     }
     const array = arrays.new(int_count);
-    const room = array.*.reserved();
-    var i: i32 = 0;
-    while (i < int_count) : (i += 1) {
-        room[@intCast(i)] = wrap.fromNumber(start + @as(f64, @floatFromInt(i)) * step);
+    const room = array.reserved();
+    for (0..@as(usize, @intCast(int_count))) |i| {
+        room[i] = wrap.fromNumber(start + @as(f64, @floatFromInt(i)) * step);
     }
-    array.*.count = int_count;
+    array.count = @intCast(int_count);
     return wrap.fromArray(array);
 }
 
@@ -543,9 +523,9 @@ inline fn assert(condition: bool, message: [*:0]const u8) void {
 fn cfunTable(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     if (@as(i32, @intCast(argv.len)) & 1 != 0) return raise.panic("expected even number of arguments");
     const table = tables.new(@as(i32, @intCast(argv.len)) >> 1);
-    var i: i32 = 0;
-    while (i < @as(i32, @intCast(argv.len))) : (i += 2) {
-        tables.put(table, argv[@intCast(i)], argv[@intCast(i + 1)]);
+    var i: usize = 0;
+    while (i + 1 < argv.len) : (i += 2) {
+        tables.put(table, argv[i], argv[i + 1]);
     }
     return wrap.fromTable(table);
 }
@@ -554,11 +534,11 @@ fn cfunGetproto(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.V
     try args_core.fixarity(argv, 1);
     if (repr.checkType(argv[0], repr.Tag.table)) {
         const t = wrap.toTable(argv[0]);
-        return if (t.*.proto) |proto| wrap.fromTable(proto) else wrap.fromNil();
+        return if (t.proto) |proto| wrap.fromTable(proto) else wrap.fromNil();
     }
     if (repr.checkType(argv[0], repr.Tag.@"struct")) {
         const st = wrap.toStruct(argv[0]);
-        const proto = types.structHead(st).proto;
+        const proto = structs.head(st).proto;
         return if (proto) |p| wrap.fromStruct(p) else wrap.fromNil();
     }
     return pp_format.panicf("expected struct or table, got %v", .{argv[0]});
@@ -567,9 +547,9 @@ fn cfunGetproto(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.V
 fn cfunStruct(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     if (@as(i32, @intCast(argv.len)) & 1 != 0) return raise.panic("expected even number of arguments");
     const st = structs.begin(@as(i32, @intCast(argv.len)) >> 1);
-    var i: i32 = 0;
-    while (i < @as(i32, @intCast(argv.len))) : (i += 2) {
-        structs.put(st, argv[@intCast(i)], argv[@intCast(i + 1)]);
+    var i: usize = 0;
+    while (i + 1 < argv.len) : (i += 2) {
+        structs.put(st, argv[i], argv[i + 1]);
     }
     return wrap.fromStruct(structs.end(st));
 }
@@ -580,7 +560,7 @@ fn cfunGensym(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
 }
 
 fn cfunGccollect(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    _ = @as(i32, @intCast(argv.len));
+    _ = argv;
     gc_mark.collect();
     return wrap.fromNil();
 }
@@ -590,20 +570,20 @@ fn cfunGcsetinterval(argv: []repr.Value) align(corefn.alignment) raise.Raising(r
     const s = try args_core.getSize(argv, 0);
     // Limited to 48 bits, and only where a size is wider than that.
     if (bits64 and (s >> 48) != 0) return raise.panic("interval too large");
-    vm_lifecycle.current().gc.interval = s;
+    vm_state.current().gc.interval = s;
     return wrap.fromNil();
 }
 
 fn cfunGcinterval(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
-    return wrap.fromNumber(@floatFromInt(vm_lifecycle.current().gc.interval));
+    return wrap.fromNumber(@floatFromInt(vm_state.current().gc.interval));
 }
 
 fn cfunType(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const t = repr.typeOf(argv[0]);
     if (t == .abstract) {
-        return value.fromBytes(types.abstractHead(wrap.toAbstract(argv[0])).type.*.name, .keyword);
+        return value.fromBytes(abi.abstractHead(wrap.toAbstract(argv[0])).type.name, .keyword);
     }
     return value.fromBytes(std.mem.span(utils.typeNames[@intFromEnum(t)]), .keyword);
 }
@@ -614,16 +594,16 @@ fn cfunHash(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value
 }
 
 fn cfunGetline(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    const in = io_core.dynfile("in", @ptrCast(@alignCast(stdio.in())));
-    const out = io_core.dynfile("out", @ptrCast(@alignCast(stdio.out())));
+    const in = io_core.dynfile("in", stdio.in());
+    const out = io_core.dynfile("out", stdio.out());
     try args_core.arity(argv, 0, 3);
-    const buf = if (@as(i32, @intCast(argv.len)) >= 2) try args_core.getBuffer(argv, 1) else buffers.new(10);
-    if (@as(i32, @intCast(argv.len)) >= 1) {
+    const buf = if (argv.len >= 2) try args_core.getBuffer(argv, 1) else buffers.new(10);
+    if (argv.len >= 1) {
         const prompt = try args_core.getString(argv, 0);
         _ = c.fprintf(out, "%s", prompt);
         _ = c.fflush(out);
     }
-    buf.*.count = 0;
+    buf.count = 0;
     while (true) {
         const ch = c.fgetc(in);
         if (c.feof(in) != 0 or ch < 0) break;
@@ -636,25 +616,25 @@ fn cfunGetline(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
 fn cfunTrace(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const func = try args_core.getFunction(argv, 0);
-    func.*.gc.flags |= constants.JANET_FUNCFLAG_TRACE;
+    func.gc.flags |= constants.JANET_FUNCFLAG_TRACE;
     return argv[0];
 }
 
 fn cfunUntrace(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const func = try args_core.getFunction(argv, 0);
-    func.*.gc.flags &= ~@as(i32, constants.JANET_FUNCFLAG_TRACE);
+    func.gc.flags &= ~@as(i32, constants.JANET_FUNCFLAG_TRACE);
     return argv[0];
 }
 
 fn cfunCheckInt(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    return wrap.fromBoolean(args_core.checkint(argv[0]) != 0);
+    return wrap.fromBoolean(args_core.checkint(argv[0]));
 }
 
 fn cfunCheckNat(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    if (args_core.checkint(argv[0]) == 0) return wrap.fromFalse();
+    if (!args_core.checkint(argv[0])) return wrap.fromFalse();
     return wrap.fromBoolean(wrap.toInteger(argv[0]) >= 0);
 }
 
@@ -670,13 +650,13 @@ fn TypeFlagPredicate(comptime flags: repr.TagSet) type {
 
 fn cfunSignal(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
-    const payload = if (@as(i32, @intCast(argv.len)) == 2) argv[1] else wrap.fromNil();
-    if (args_core.checkint(argv[0]) != 0) {
+    const payload = if (argv.len == 2) argv[1] else wrap.fromNil();
+    if (args_core.checkint(argv[0])) {
         const s = wrap.toInteger(argv[0]);
         if (s < 0 or s > 9) {
             return pp_format.panicf("expected user signal between 0 and 9, got %d", .{s});
         }
-        return raise.signal(@enumFromInt(@intFromEnum(types.Signal.user0) + @as(c_uint, @intCast(s))), payload);
+        return raise.signal(@enumFromInt(@intFromEnum(abi.Signal.user0) + @as(c_uint, @intCast(s))), payload);
     }
     const kw = try args_core.getKeyword(argv, 0);
     for (utils.signalNames, 0..) |signal_name, i| {
@@ -691,7 +671,7 @@ fn cfunMemcmp(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
     try args_core.arity(argv, 2, 5);
     const a = try args_core.getBytes(argv, 0);
     const b = try args_core.getBytes(argv, 1);
-    const len = try args_core.optNat(argv, 2, if (a.len < b.len) a.len else b.len);
+    const len = try args_core.optNat(argv, 2, @intCast(if (a.len < b.len) a.len else b.len));
     const offset_a = try args_core.optNat(argv, 3, 0);
     const offset_b = try args_core.optNat(argv, 4, 0);
     // The C original adds these as `int32_t`, which overflows for a large
@@ -710,46 +690,46 @@ fn cfunMemcmp(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
         b.bytes.? + @as(usize, @intCast(offset_b)),
         @intCast(len),
     );
-    return wrapInteger(result);
+    return wrap.fromInteger(result);
 }
 
-const SandboxOption = struct { name: [:0]const u8, flag: types.Sandbox };
+const SandboxOption = struct { name: [:0]const u8, flag: vm_lifecycle.Sandbox };
 
 /// The C original terminates this table with a null name and scans to it; the
 /// length is the terminator here, which is the one difference. The order is
 /// the original's and is what `(sandbox ...)` reports on an unknown keyword
 /// only by not finding it, so nothing depends on it.
 const sandbox_options = [_]SandboxOption{
-    .{ .name = "all", .flag = types.Sandbox.all },
-    .{ .name = "asm", .flag = types.Sandbox.of(&.{"asm"}) },
-    .{ .name = "chroot", .flag = types.Sandbox.of(&.{"chroot"}) },
-    .{ .name = "compile", .flag = types.Sandbox.of(&.{"compile"}) },
-    .{ .name = "env", .flag = types.Sandbox.of(&.{"env"}) },
-    .{ .name = "exit", .flag = types.Sandbox.of(&.{"exit"}) },
-    .{ .name = "ffi", .flag = types.Sandbox.ffi },
-    .{ .name = "ffi-define", .flag = types.Sandbox.of(&.{"ffi_define"}) },
-    .{ .name = "ffi-jit", .flag = types.Sandbox.of(&.{"ffi_jit"}) },
-    .{ .name = "ffi-use", .flag = types.Sandbox.of(&.{"ffi_use"}) },
-    .{ .name = "fs", .flag = types.Sandbox.fs },
-    .{ .name = "fs-read", .flag = types.Sandbox.of(&.{"fs_read"}) },
-    .{ .name = "fs-temp", .flag = types.Sandbox.of(&.{"fs_temp"}) },
-    .{ .name = "fs-write", .flag = types.Sandbox.of(&.{"fs_write"}) },
-    .{ .name = "hrtime", .flag = types.Sandbox.of(&.{"hrtime"}) },
-    .{ .name = "modules", .flag = types.Sandbox.of(&.{"dynamic_modules"}) },
-    .{ .name = "net", .flag = types.Sandbox.net },
-    .{ .name = "net-connect", .flag = types.Sandbox.of(&.{"net_connect"}) },
-    .{ .name = "net-listen", .flag = types.Sandbox.of(&.{"net_listen"}) },
-    .{ .name = "sandbox", .flag = types.Sandbox.of(&.{"sandbox"}) },
-    .{ .name = "signal", .flag = types.Sandbox.of(&.{"signal"}) },
-    .{ .name = "subprocess", .flag = types.Sandbox.of(&.{"subprocess"}) },
-    .{ .name = "threads", .flag = types.Sandbox.of(&.{"threads"}) },
-    .{ .name = "unmarshal", .flag = types.Sandbox.of(&.{"unmarshal"}) },
+    .{ .name = "all", .flag = vm_lifecycle.Sandbox.all },
+    .{ .name = "asm", .flag = vm_lifecycle.Sandbox.of(&.{"asm"}) },
+    .{ .name = "chroot", .flag = vm_lifecycle.Sandbox.of(&.{"chroot"}) },
+    .{ .name = "compile", .flag = vm_lifecycle.Sandbox.of(&.{"compile"}) },
+    .{ .name = "env", .flag = vm_lifecycle.Sandbox.of(&.{"env"}) },
+    .{ .name = "exit", .flag = vm_lifecycle.Sandbox.of(&.{"exit"}) },
+    .{ .name = "ffi", .flag = vm_lifecycle.Sandbox.ffi },
+    .{ .name = "ffi-define", .flag = vm_lifecycle.Sandbox.of(&.{"ffi_define"}) },
+    .{ .name = "ffi-jit", .flag = vm_lifecycle.Sandbox.of(&.{"ffi_jit"}) },
+    .{ .name = "ffi-use", .flag = vm_lifecycle.Sandbox.of(&.{"ffi_use"}) },
+    .{ .name = "fs", .flag = vm_lifecycle.Sandbox.fs },
+    .{ .name = "fs-read", .flag = vm_lifecycle.Sandbox.of(&.{"fs_read"}) },
+    .{ .name = "fs-temp", .flag = vm_lifecycle.Sandbox.of(&.{"fs_temp"}) },
+    .{ .name = "fs-write", .flag = vm_lifecycle.Sandbox.of(&.{"fs_write"}) },
+    .{ .name = "hrtime", .flag = vm_lifecycle.Sandbox.of(&.{"hrtime"}) },
+    .{ .name = "modules", .flag = vm_lifecycle.Sandbox.of(&.{"dynamic_modules"}) },
+    .{ .name = "net", .flag = vm_lifecycle.Sandbox.net },
+    .{ .name = "net-connect", .flag = vm_lifecycle.Sandbox.of(&.{"net_connect"}) },
+    .{ .name = "net-listen", .flag = vm_lifecycle.Sandbox.of(&.{"net_listen"}) },
+    .{ .name = "sandbox", .flag = vm_lifecycle.Sandbox.of(&.{"sandbox"}) },
+    .{ .name = "signal", .flag = vm_lifecycle.Sandbox.of(&.{"signal"}) },
+    .{ .name = "subprocess", .flag = vm_lifecycle.Sandbox.of(&.{"subprocess"}) },
+    .{ .name = "threads", .flag = vm_lifecycle.Sandbox.of(&.{"threads"}) },
+    .{ .name = "unmarshal", .flag = vm_lifecycle.Sandbox.of(&.{"unmarshal"}) },
 };
 
 fn cfunSandbox(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var flags: types.Sandbox = .{};
-    var i: i32 = 0;
-    while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
+    var flags: vm_lifecycle.Sandbox = .{};
+    var i: usize = 0;
+    while (i < argv.len) : (i += 1) {
         const kw = try args_core.getKeyword(argv, i);
         var found = false;
         for (sandbox_options) |option| {
@@ -774,7 +754,7 @@ fn cfunSandbox(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
 // ==========================================================================
 
 inline fn opword(op: anytype) u32 {
-    return @intCast(op);
+    return if (@TypeOf(op) == constants.Opcode) op.number() else @intCast(op);
 }
 
 inline fn opSSS(op: anytype, a: u32, b: u32, d: u32) u32 {
@@ -797,33 +777,41 @@ inline fn opSI(op: anytype, a: u32, i: i32) u32 {
     return opword(op) | (a << 8) | (@as(u32, @bitCast(i)) << 16);
 }
 
+/// The same flags with `vararg` set, which is the only bit the two templates
+/// add to what their caller passed.
+fn varargOf(flags: functions.FuncDefFlags) functions.FuncDefFlags {
+    var out = flags;
+    out.vararg = true;
+    return out;
+}
+
 fn quickAsm(
-    flags: i32,
+    flags: functions.FuncDefFlags,
     name: [*:0]const u8,
     arity: i32,
     min_arity: i32,
     max_arity: i32,
     slots: i32,
     bytecode: []const u32,
-) *types.JanetFuncDef {
+) *functions.FuncDef {
     const def = functions.defs.new();
-    def.*.arity = arity;
-    def.*.min_arity = min_arity;
-    def.*.max_arity = max_arity;
-    def.*.flags = flags;
-    def.*.slotcount = slots;
+    def.arity = arity;
+    def.min_arity = min_arity;
+    def.max_arity = max_arity;
+    def.flags = flags;
+    def.slotcount = slots;
     const size = bytecode.len * @sizeOf(u32);
-    def.*.bytecode = @ptrCast(@alignCast(allocated(utils.malloc(size))));
-    def.*.bytecode_length = @intCast(bytecode.len);
-    def.*.name = strings.cstring(name);
-    @memcpy(def.*.instructions()[0..bytecode.len], bytecode);
+    def.bytecode = @ptrCast(@alignCast(allocated(utils.malloc(size))));
+    def.bytecode_length = @intCast(bytecode.len);
+    def.name = strings.cstring(name);
+    @memcpy(def.instructions()[0..bytecode.len], bytecode);
     compiler_primitives.defAddflags(def);
     return def;
 }
 
 fn quickAsmDef(
-    env: *types.JanetTable,
-    flags: i32,
+    env: *tables.Table,
+    flags: functions.FuncDefFlags,
     name: [*:0]const u8,
     arity: i32,
     min_arity: i32,
@@ -839,8 +827,8 @@ fn quickAsmDef(
 /// The variadic operators. Registers: 0 args, 1 argn, 2 jump flag,
 /// 3 accumulator, 4 operand, 5 loop iterator.
 fn templatizeVarop(
-    env: *types.JanetTable,
-    flags: i32,
+    env: *tables.Table,
+    flags: functions.FuncDefFlags,
     name: [*:0]const u8,
     nullary: i32,
     unary: i32,
@@ -848,37 +836,37 @@ fn templatizeVarop(
     doc: [*:0]const u8,
 ) void {
     const varop_asm = [_]u32{
-        opSS(constants.JOP_LENGTH, 1, 0), // argn = count(args)
+        opSS(constants.Opcode.length, 1, 0), // argn = count(args)
 
         // Check nullary
-        opSSS(constants.JOP_EQUALS_IMMEDIATE, 2, 1, 0),
-        opSI(constants.JOP_JUMP_IF_NOT, 2, 3),
-        opSI(constants.JOP_LOAD_INTEGER, 3, nullary),
-        opS(constants.JOP_RETURN, 3),
+        opSSS(constants.Opcode.equals_immediate, 2, 1, 0),
+        opSI(constants.Opcode.jump_if_not, 2, 3),
+        opSI(constants.Opcode.load_integer, 3, nullary),
+        opS(constants.Opcode.@"return", 3),
 
         // Check unary
-        opSSI(constants.JOP_EQUALS_IMMEDIATE, 2, 1, 1),
-        opSI(constants.JOP_JUMP_IF_NOT, 2, 5),
-        opSI(constants.JOP_LOAD_INTEGER, 3, unary),
-        opSSI(constants.JOP_GET_INDEX, 4, 0, 0),
+        opSSI(constants.Opcode.equals_immediate, 2, 1, 1),
+        opSI(constants.Opcode.jump_if_not, 2, 5),
+        opSI(constants.Opcode.load_integer, 3, unary),
+        opSSI(constants.Opcode.get_index, 4, 0, 0),
         opSSS(op, 3, 3, 4),
-        opS(constants.JOP_RETURN, 3),
+        opS(constants.Opcode.@"return", 3),
 
         // Two or more arguments: prime the loop
-        opSSI(constants.JOP_GET_INDEX, 3, 0, 0),
-        opSI(constants.JOP_LOAD_INTEGER, 5, 1),
+        opSSI(constants.Opcode.get_index, 3, 0, 0),
+        opSI(constants.Opcode.load_integer, 5, 1),
         // Main loop
-        opSSS(constants.JOP_IN, 4, 0, 5),
+        opSSS(constants.Opcode.in, 4, 0, 5),
         opSSS(op, 3, 3, 4),
-        opSSI(constants.JOP_ADD_IMMEDIATE, 5, 5, 1),
-        opSSI(constants.JOP_EQUALS, 2, 5, 1),
-        opSI(constants.JOP_JUMP_IF_NOT, 2, -4),
+        opSSI(constants.Opcode.add_immediate, 5, 5, 1),
+        opSSI(constants.Opcode.equals, 2, 5, 1),
+        opSI(constants.Opcode.jump_if_not, 2, -4),
 
-        opS(constants.JOP_RETURN, 3),
+        opS(constants.Opcode.@"return", 3),
     };
     quickAsmDef(
         env,
-        flags | constants.JANET_FUNCDEF_FLAG_VARARG,
+        varargOf(flags),
         name,
         0,
         0,
@@ -892,42 +880,42 @@ fn templatizeVarop(
 /// The variadic comparators. Registers: 0 args, 1 argn, 2 jump flag, 3 last
 /// value, 4 next operand, 5 loop iterator.
 fn templatizeComparator(
-    env: *types.JanetTable,
-    flags: i32,
+    env: *tables.Table,
+    flags: functions.FuncDefFlags,
     name: [*:0]const u8,
     invert: bool,
     op: anytype,
     doc: [*:0]const u8,
 ) void {
     const comparator_asm = [_]u32{
-        opSS(constants.JOP_LENGTH, 1, 0),
-        opSSS(constants.JOP_LESS_THAN_IMMEDIATE, 2, 1, 2),
-        opSI(constants.JOP_JUMP_IF, 2, 10),
+        opSS(constants.Opcode.length, 1, 0),
+        opSSS(constants.Opcode.less_than_immediate, 2, 1, 2),
+        opSI(constants.Opcode.jump_if, 2, 10),
 
         // Prime the loop
-        opSSI(constants.JOP_GET_INDEX, 3, 0, 0),
-        opSI(constants.JOP_LOAD_INTEGER, 5, 1),
+        opSSI(constants.Opcode.get_index, 3, 0, 0),
+        opSI(constants.Opcode.load_integer, 5, 1),
 
         // Main loop
-        opSSS(constants.JOP_IN, 4, 0, 5),
+        opSSS(constants.Opcode.in, 4, 0, 5),
         opSSS(op, 2, 3, 4),
-        opSI(constants.JOP_JUMP_IF_NOT, 2, 7),
-        opSSI(constants.JOP_ADD_IMMEDIATE, 5, 5, 1),
-        opSS(constants.JOP_MOVE_NEAR, 3, 4),
-        opSSI(constants.JOP_EQUALS, 2, 5, 1),
-        opSI(constants.JOP_JUMP_IF_NOT, 2, -6),
+        opSI(constants.Opcode.jump_if_not, 2, 7),
+        opSSI(constants.Opcode.add_immediate, 5, 5, 1),
+        opSS(constants.Opcode.move_near, 3, 4),
+        opSSI(constants.Opcode.equals, 2, 5, 1),
+        opSI(constants.Opcode.jump_if_not, 2, -6),
 
         // Done
-        opS(if (invert) constants.JOP_LOAD_FALSE else constants.JOP_LOAD_TRUE, 3),
-        opS(constants.JOP_RETURN, 3),
+        opS(if (invert) constants.Opcode.load_false else constants.Opcode.load_true, 3),
+        opS(constants.Opcode.@"return", 3),
 
         // Failed
-        opS(if (invert) constants.JOP_LOAD_TRUE else constants.JOP_LOAD_FALSE, 3),
-        opS(constants.JOP_RETURN, 3),
+        opS(if (invert) constants.Opcode.load_true else constants.Opcode.load_false, 3),
+        opS(constants.Opcode.@"return", 3),
     };
     quickAsmDef(
         env,
-        flags | constants.JANET_FUNCDEF_FLAG_VARARG,
+        varargOf(flags),
         name,
         0,
         0,
@@ -940,28 +928,28 @@ fn templatizeComparator(
 
 /// `apply`. Registers: 0 function, 1 args, 2 argn, 3 jump flag, 4 iterator,
 /// 5 loop value.
-fn makeApply(env: *types.JanetTable) void {
+fn makeApply(env: *tables.Table) void {
     const apply_asm = [_]u32{
-        opSS(constants.JOP_LENGTH, 2, 1),
-        opSSS(constants.JOP_EQUALS_IMMEDIATE, 3, 2, 0), // immediate tail call if no args
-        opSI(constants.JOP_JUMP_IF, 3, 9),
+        opSS(constants.Opcode.length, 2, 1),
+        opSSS(constants.Opcode.equals_immediate, 3, 2, 0), // immediate tail call if no args
+        opSI(constants.Opcode.jump_if, 3, 9),
 
-        opSI(constants.JOP_LOAD_INTEGER, 4, 0),
+        opSI(constants.Opcode.load_integer, 4, 0),
 
-        opSSS(constants.JOP_IN, 5, 1, 4),
-        opSSI(constants.JOP_ADD_IMMEDIATE, 4, 4, 1),
-        opSSI(constants.JOP_EQUALS, 3, 4, 2),
-        opSI(constants.JOP_JUMP_IF, 3, 3),
-        opS(constants.JOP_PUSH, 5),
-        opword(constants.JOP_JUMP) | (@as(u32, @bitCast(@as(i32, -5))) << 8),
+        opSSS(constants.Opcode.in, 5, 1, 4),
+        opSSI(constants.Opcode.add_immediate, 4, 4, 1),
+        opSSI(constants.Opcode.equals, 3, 4, 2),
+        opSI(constants.Opcode.jump_if, 3, 3),
+        opS(constants.Opcode.push, 5),
+        opword(constants.Opcode.jump) | (@as(u32, @bitCast(@as(i32, -5))) << 8),
 
-        opS(constants.JOP_PUSH_ARRAY, 5),
+        opS(constants.Opcode.push_array, 5),
 
-        opS(constants.JOP_TAILCALL, 0),
+        opS(constants.Opcode.tailcall, 0),
     };
     quickAsmDef(
         env,
-        constants.JANET_FUN_APPLY | constants.JANET_FUNCDEF_FLAG_VARARG,
+        .{ .tag = constants.JANET_FUN_APPLY, .vararg = true },
         "apply",
         1,
         1,
@@ -985,7 +973,7 @@ fn opOnly(comptime op: anytype) [1]u32 {
 // Setting up the environment.
 // ==========================================================================
 
-fn loadLibs(env: *types.JanetTable) raise.Raising(void) {
+fn loadLibs(env: *tables.Table) raise.Raising(void) {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("native", &cfunNative, @src(), "(native path &opt env)", "Load a native module from the given path. The path " ++
             "must be an absolute or relative path on the file system, and is " ++
@@ -1153,13 +1141,13 @@ fn loadLibs(env: *types.JanetTable) raise.Raising(void) {
 
 /// Assembled from scratch, in the image generator. Everything here ends up in
 /// the image, so this is the only place these thirty-odd bindings exist.
-fn bootstrapCoreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.JanetTable) {
-    const env: *types.JanetTable = replacements orelse tables.new(0);
+fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Raising(*tables.Table) {
+    const env: *tables.Table = replacements orelse tables.new(0);
 
-    quickAsmDef(env, constants.JANET_FUN_CMP, "cmp", 2, 2, 2, 2, &opOnly(constants.JOP_COMPARE | (1 << 24)) ++ opOnly(constants.JOP_RETURN), "(cmp x y)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.JANET_FUN_CMP }, "cmp", 2, 2, 2, 2, &opOnly(constants.Opcode.compare.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(cmp x y)\n\n" ++
         "Returns -1 if x is strictly less than y, 1 if y is strictly greater " ++
         "than x, and 0 otherwise. To return 0, x and y must be the exact same type.");
-    quickAsmDef(env, constants.JANET_FUN_NEXT, "next", 2, 1, 2, 2, &opOnly(constants.JOP_NEXT | (1 << 24)) ++ opOnly(constants.JOP_RETURN), "(next x &opt key)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.JANET_FUN_NEXT }, "next", 2, 1, 2, 2, &opOnly(constants.Opcode.next.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(next x &opt key)\n\n" ++
         "Gets the next key in `x`. Can be used to iterate through " ++
         "the keys of `x` in an unspecified order. Keys are guaranteed " ++
         "to be seen only once per iteration if `x` is not mutated " ++
@@ -1169,7 +1157,7 @@ fn bootstrapCoreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.Janet
         "\n" ++
         "`x` can be a bytes, indexed, dictionary, fiber, or abstract " ++
         "type with a suitable `next` method.");
-    quickAsmDef(env, constants.JANET_FUN_PROP, "propagate", 2, 2, 2, 2, &opOnly(constants.JOP_PROPAGATE | (1 << 24)) ++ opOnly(constants.JOP_RETURN), "(propagate x fiber)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.JANET_FUN_PROP }, "propagate", 2, 2, 2, 2, &opOnly(constants.Opcode.propagate.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(propagate x fiber)\n\n" ++
         "Propagate a signal from a fiber to the current fiber and " ++
         "set the last value of the current fiber to `x`.  The signal " ++
         "value is then available as the status of the current fiber. " ++
@@ -1178,24 +1166,24 @@ fn bootstrapCoreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.Janet
         "resuming the current fiber will first resume `fiber`. " ++
         "This function can be used to re-raise an error without losing " ++
         "the original stack trace.");
-    quickAsmDef(env, constants.JANET_FUN_DEBUG, "debug", 1, 0, 1, 1, &opOnly(constants.JOP_SIGNAL | (2 << 24)) ++ opOnly(constants.JOP_RETURN), "(debug &opt x)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.JANET_FUN_DEBUG }, "debug", 1, 0, 1, 1, &opOnly(constants.Opcode.signal.number() | @as(u32, 2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(debug &opt x)\n\n" ++
         "Throws a debug signal that can be caught by a parent fiber and used to inspect " ++
         "the running state of the current fiber. Returns the value passed in by resume.");
-    quickAsmDef(env, constants.JANET_FUN_ERROR, "error", 1, 1, 1, 1, &opOnly(constants.JOP_ERROR), "(error e)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.JANET_FUN_ERROR }, "error", 1, 1, 1, 1, &opOnly(constants.Opcode.@"error"), "(error e)\n\n" ++
         "Throws an error e that can be caught and handled by a parent fiber.");
-    quickAsmDef(env, constants.JANET_FUN_YIELD, "yield", 1, 0, 1, 2, &opOnly(constants.JOP_SIGNAL | (3 << 24)) ++ opOnly(constants.JOP_RETURN), "(yield &opt x)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.JANET_FUN_YIELD }, "yield", 1, 0, 1, 2, &opOnly(constants.Opcode.signal.number() | @as(u32, 3 << 24)) ++ opOnly(constants.Opcode.@"return"), "(yield &opt x)\n\n" ++
         "Yield a value to a parent fiber. When a fiber yields, its execution is paused until " ++
         "another thread resumes it. The fiber will then resume, and the last yield call will " ++
         "return the value that was passed to resume.");
-    quickAsmDef(env, constants.JANET_FUN_CANCEL, "cancel", 2, 2, 2, 2, &opOnly(constants.JOP_CANCEL | (1 << 24)) ++ opOnly(constants.JOP_RETURN), "(cancel fiber err)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.JANET_FUN_CANCEL }, "cancel", 2, 2, 2, 2, &opOnly(constants.Opcode.cancel.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(cancel fiber err)\n\n" ++
         "Resume a fiber but have it immediately raise an error. This lets a programmer unwind a pending fiber. " ++
         "Returns the same result as resume.");
-    quickAsmDef(env, constants.JANET_FUN_RESUME, "resume", 2, 1, 2, 2, &opOnly(constants.JOP_RESUME | (1 << 24)) ++ opOnly(constants.JOP_RETURN), "(resume fiber &opt x)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.JANET_FUN_RESUME }, "resume", 2, 1, 2, 2, &opOnly(constants.Opcode.@"resume".number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(resume fiber &opt x)\n\n" ++
         "Resume a new or suspended fiber and optionally pass in a value to the fiber that " ++
         "will be returned to the last yield in the case of a pending fiber, or the argument to " ++
         "the dispatch function in the case of a new fiber. Returns either the return result of " ++
         "the fiber's dispatch function, or the value from the next yield call in fiber.");
-    quickAsmDef(env, constants.JANET_FUN_IN, "in", 3, 2, 3, 4, &in_asm, "(in x key &opt dflt)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.JANET_FUN_IN }, "in", 3, 2, 3, 4, &in_asm, "(in x key &opt dflt)\n\n" ++
         "Get value in `x` at `key`. For bytes and indexed " ++
         "types, `key` must be a non-negative interger in " ++
         "bounds or an error is raised. For dictionaries " ++
@@ -1207,7 +1195,7 @@ fn bootstrapCoreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.Janet
     // The C original passes `sizeof(in_asm)` here rather than `sizeof(get_asm)`.
     // The two arrays are the same length, so it is a copy-paste slip with no
     // effect; the slice below is `get_asm`'s own, which is what the C meant.
-    quickAsmDef(env, constants.JANET_FUN_GET, "get", 3, 2, 3, 4, &get_asm, "(get x key &opt dflt)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.JANET_FUN_GET }, "get", 3, 2, 3, 4, &get_asm, "(get x key &opt dflt)\n\n" ++
         "Get the value mapped to `key` in `x`. Returns `dflt` " ++
         "or `nil` if `key` is not found. Similar to `in`, but " ++
         "will not throw an error if `key` is invalid for `x`. " ++
@@ -1216,7 +1204,7 @@ fn bootstrapCoreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.Janet
         "\n" ++
         "`x` can be a bytes, indexed, dictionary, fiber, or " ++
         "abstract type with a suitable `get` method.");
-    quickAsmDef(env, constants.JANET_FUN_PUT, "put", 3, 3, 3, 3, &opOnly(constants.JOP_PUT | (1 << 16) | (2 << 24)) ++ opOnly(constants.JOP_RETURN), "(put x key val)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.JANET_FUN_PUT }, "put", 3, 3, 3, 3, &opOnly(constants.Opcode.put.number() | @as(u32, 1 << 16) | (2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(put x key val)\n\n" ++
         "Associate `key` with `val` for mutable `x`. Arrays " ++
         "and buffers only accept non-negative integer keys, " ++
         "and will expand if an out of bounds value is " ++
@@ -1228,69 +1216,72 @@ fn bootstrapCoreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.Janet
         "table. Putting a `nil` value into a table will " ++
         "remove the table's corresponding association. " ++
         "Returns `x`.");
-    quickAsmDef(env, constants.JANET_FUN_LENGTH, "length", 1, 1, 1, 1, &opOnly(constants.JOP_LENGTH) ++ opOnly(constants.JOP_RETURN), "(length ds)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.JANET_FUN_LENGTH }, "length", 1, 1, 1, 1, &opOnly(constants.Opcode.length) ++ opOnly(constants.Opcode.@"return"), "(length ds)\n\n" ++
         "Returns the length or count of a data structure in constant time as an integer. For " ++
         "structs and tables, returns the number of key-value pairs in the data structure.");
-    quickAsmDef(env, constants.JANET_FUN_BNOT, "bnot", 1, 1, 1, 1, &opOnly(constants.JOP_BNOT) ++ opOnly(constants.JOP_RETURN), "(bnot x)\n\nReturns the bit-wise inverse of integer x.");
+    quickAsmDef(env, .{ .tag = constants.JANET_FUN_BNOT }, "bnot", 1, 1, 1, 1, &opOnly(constants.Opcode.bnot) ++ opOnly(constants.Opcode.@"return"), "(bnot x)\n\nReturns the bit-wise inverse of integer x.");
     makeApply(env);
 
     // Variadic operators
-    templatizeVarop(env, constants.JANET_FUN_ADD, "+", 0, 0, constants.JOP_ADD, "(+ & xs)\n\n" ++
+    templatizeVarop(env, .{ .tag = constants.JANET_FUN_ADD }, "+", 0, 0, constants.Opcode.add, "(+ & xs)\n\n" ++
         "Returns the sum of all xs. If xs is empty, return 0.");
-    templatizeVarop(env, constants.JANET_FUN_SUBTRACT, "-", 0, 0, constants.JOP_SUBTRACT, "(- & xs)\n\n" ++
+    templatizeVarop(env, .{ .tag = constants.JANET_FUN_SUBTRACT }, "-", 0, 0, constants.Opcode.subtract, "(- & xs)\n\n" ++
         "Returns the difference of xs. If xs is empty, returns 0. If xs has one element, returns the " ++
         "negative value of that element. Otherwise, returns the first element in xs minus the sum of " ++
         "the rest of the elements.");
-    templatizeVarop(env, constants.JANET_FUN_MULTIPLY, "*", 1, 1, constants.JOP_MULTIPLY, "(* & xs)\n\n" ++
+    templatizeVarop(env, .{ .tag = constants.JANET_FUN_MULTIPLY }, "*", 1, 1, constants.Opcode.multiply, "(* & xs)\n\n" ++
         "Returns the product of all elements in xs. If xs is empty, returns 1.");
-    templatizeVarop(env, constants.JANET_FUN_DIVIDE, "/", 1, 1, constants.JOP_DIVIDE, "(/ & xs)\n\n" ++
+    templatizeVarop(env, .{ .tag = constants.JANET_FUN_DIVIDE }, "/", 1, 1, constants.Opcode.divide, "(/ & xs)\n\n" ++
         "Returns the quotient of xs. If xs is empty, returns 1. If xs has one value x, returns " ++
         "the reciprocal of x. Otherwise return the first value of xs repeatedly divided by the remaining " ++
         "values.");
-    templatizeVarop(env, constants.JANET_FUN_DIVIDE_FLOOR, "div", 1, 1, constants.JOP_DIVIDE_FLOOR, "(div & xs)\n\n" ++
+    templatizeVarop(env, .{ .tag = constants.JANET_FUN_DIVIDE_FLOOR }, "div", 1, 1, constants.Opcode.divide_floor, "(div & xs)\n\n" ++
         "Returns the floored division of xs. If xs is empty, returns 1. If xs has one value x, returns " ++
         "the reciprocal of x. Otherwise return the first value of xs repeatedly divided by the remaining " ++
         "values.");
-    templatizeVarop(env, constants.JANET_FUN_MODULO, "mod", 0, 1, constants.JOP_MODULO, "(mod & xs)\n\n" ++
+    templatizeVarop(env, .{ .tag = constants.JANET_FUN_MODULO }, "mod", 0, 1, constants.Opcode.modulo, "(mod & xs)\n\n" ++
         "Returns the result of applying the modulo operator on the first value of xs with each remaining value. " ++
         "`(mod x 0)` is defined to be `x`.");
-    templatizeVarop(env, constants.JANET_FUN_REMAINDER, "%", 0, 1, constants.JOP_REMAINDER, "(% & xs)\n\n" ++
+    templatizeVarop(env, .{ .tag = constants.JANET_FUN_REMAINDER }, "%", 0, 1, constants.Opcode.remainder, "(% & xs)\n\n" ++
         "Returns the remainder of dividing the first value of xs by each remaining value.");
-    templatizeVarop(env, constants.JANET_FUN_BAND, "band", -1, -1, constants.JOP_BAND, "(band & xs)\n\n" ++
+    templatizeVarop(env, .{ .tag = constants.JANET_FUN_BAND }, "band", -1, -1, constants.Opcode.band, "(band & xs)\n\n" ++
         "Returns the bit-wise and of all values in xs. Each x in xs must be an integer.");
-    templatizeVarop(env, constants.JANET_FUN_BOR, "bor", 0, 0, constants.JOP_BOR, "(bor & xs)\n\n" ++
+    templatizeVarop(env, .{ .tag = constants.JANET_FUN_BOR }, "bor", 0, 0, constants.Opcode.bor, "(bor & xs)\n\n" ++
         "Returns the bit-wise or of all values in xs. Each x in xs must be an integer.");
-    templatizeVarop(env, constants.JANET_FUN_BXOR, "bxor", 0, 0, constants.JOP_BXOR, "(bxor & xs)\n\n" ++
+    templatizeVarop(env, .{ .tag = constants.JANET_FUN_BXOR }, "bxor", 0, 0, constants.Opcode.bxor, "(bxor & xs)\n\n" ++
         "Returns the bit-wise xor of all values in xs. Each x in xs must be an integer.");
-    templatizeVarop(env, constants.JANET_FUN_LSHIFT, "blshift", 1, 1, constants.JOP_SHIFT_LEFT, "(blshift x & shifts)\n\n" ++
+    templatizeVarop(env, .{ .tag = constants.JANET_FUN_LSHIFT }, "blshift", 1, 1, constants.Opcode.shift_left, "(blshift x & shifts)\n\n" ++
         "Returns the value of x bit shifted left by the sum of all values in shifts. x " ++
         "and each element in shift must be an integer.");
-    templatizeVarop(env, constants.JANET_FUN_RSHIFT, "brshift", 1, 1, constants.JOP_SHIFT_RIGHT, "(brshift x & shifts)\n\n" ++
+    templatizeVarop(env, .{ .tag = constants.JANET_FUN_RSHIFT }, "brshift", 1, 1, constants.Opcode.shift_right, "(brshift x & shifts)\n\n" ++
         "Returns the value of x bit shifted right by the sum of all values in shifts. x " ++
         "and each element in shift must be an integer.");
-    templatizeVarop(env, constants.JANET_FUN_RSHIFTU, "brushift", 1, 1, constants.JOP_SHIFT_RIGHT_UNSIGNED, "(brushift x & shifts)\n\n" ++
+    templatizeVarop(env, .{ .tag = constants.JANET_FUN_RSHIFTU }, "brushift", 1, 1, constants.Opcode.shift_right_unsigned, "(brushift x & shifts)\n\n" ++
         "Returns the value of x bit shifted right by the sum of all values in shifts. x " ++
         "and each element in shift must be an integer. The sign of x is not preserved, so " ++
         "for positive shifts the return value will always be positive.");
 
     // Variadic comparators
-    templatizeComparator(env, constants.JANET_FUN_GT, ">", false, constants.JOP_GREATER_THAN, "(> & xs)\n\n" ++
+    templatizeComparator(env, .{ .tag = constants.JANET_FUN_GT }, ">", false, constants.Opcode.greater_than, "(> & xs)\n\n" ++
         "Check if xs is in descending order. Returns a boolean.");
-    templatizeComparator(env, constants.JANET_FUN_LT, "<", false, constants.JOP_LESS_THAN, "(< & xs)\n\n" ++
+    templatizeComparator(env, .{ .tag = constants.JANET_FUN_LT }, "<", false, constants.Opcode.less_than, "(< & xs)\n\n" ++
         "Check if xs is in ascending order. Returns a boolean.");
-    templatizeComparator(env, constants.JANET_FUN_GTE, ">=", false, constants.JOP_GREATER_THAN_EQUAL, "(>= & xs)\n\n" ++
+    templatizeComparator(env, .{ .tag = constants.JANET_FUN_GTE }, ">=", false, constants.Opcode.greater_than_equal, "(>= & xs)\n\n" ++
         "Check if xs is in non-ascending order. Returns a boolean.");
-    templatizeComparator(env, constants.JANET_FUN_LTE, "<=", false, constants.JOP_LESS_THAN_EQUAL, "(<= & xs)\n\n" ++
+    templatizeComparator(env, .{ .tag = constants.JANET_FUN_LTE }, "<=", false, constants.Opcode.less_than_equal, "(<= & xs)\n\n" ++
         "Check if xs is in non-descending order. Returns a boolean.");
-    templatizeComparator(env, constants.JANET_FUN_EQ, "=", false, constants.JOP_EQUALS, "(= & xs)\n\n" ++
+    templatizeComparator(env, .{ .tag = constants.JANET_FUN_EQ }, "=", false, constants.Opcode.equals, "(= & xs)\n\n" ++
         "Check if all values in xs are equal. Returns a boolean.");
-    templatizeComparator(env, constants.JANET_FUN_NEQ, "not=", true, constants.JOP_EQUALS, "(not= & xs)\n\n" ++
+    templatizeComparator(env, .{ .tag = constants.JANET_FUN_NEQ }, "not=", true, constants.Opcode.equals, "(not= & xs)\n\n" ++
         "Check if any values in xs are not equal. Returns a boolean.");
 
     // Platform detection
     registry.def(env, "janet/version", value.fromBytes(version_z, .string), "The version number of the running janet program.");
     registry.def(env, "janet/build", value.fromBytes(build_z, .string), "The build identifier of the running janet program.");
-    registry.def(env, "janet/config-bits", wrapInteger(constants.JANET_CURRENT_CONFIG_BITS), "The flag set of config options from janetconf.h which is used to check " ++
+    // The docstring is upstream's, `janetconf.h` and all: it is text a Janet
+    // program reads with `(doc janet/config-bits)`, so it is behaviour rather
+    // than prose and is preserved exactly.
+    registry.def(env, "janet/config-bits", wrap.fromInteger(constants.JANET_CURRENT_CONFIG_BITS), "The flag set of config options from janetconf.h which is used to check " ++
         "if native modules are compatible with the host program.");
 
     // Allow references to the environment
@@ -1302,21 +1293,21 @@ fn bootstrapCoreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.Janet
 }
 
 const in_asm = [_]u32{
-    opword(constants.JOP_IN) | (1 << 24),
-    opword(constants.JOP_LOAD_NIL) | (3 << 8),
-    opword(constants.JOP_EQUALS) | (3 << 8) | (3 << 24),
-    opword(constants.JOP_JUMP_IF) | (3 << 8) | (2 << 16),
-    opword(constants.JOP_RETURN),
-    opword(constants.JOP_RETURN) | (2 << 8),
+    opword(constants.Opcode.in) | (1 << 24),
+    opword(constants.Opcode.load_nil) | (3 << 8),
+    opword(constants.Opcode.equals) | (3 << 8) | (3 << 24),
+    opword(constants.Opcode.jump_if) | (3 << 8) | (2 << 16),
+    opword(constants.Opcode.@"return"),
+    opword(constants.Opcode.@"return") | (2 << 8),
 };
 
 const get_asm = [_]u32{
-    opword(constants.JOP_GET) | (1 << 24),
-    opword(constants.JOP_LOAD_NIL) | (3 << 8),
-    opword(constants.JOP_EQUALS) | (3 << 8) | (3 << 24),
-    opword(constants.JOP_JUMP_IF) | (3 << 8) | (2 << 16),
-    opword(constants.JOP_RETURN),
-    opword(constants.JOP_RETURN) | (2 << 8),
+    opword(constants.Opcode.get) | (1 << 24),
+    opword(constants.Opcode.load_nil) | (3 << 8),
+    opword(constants.Opcode.equals) | (3 << 8) | (3 << 24),
+    opword(constants.Opcode.jump_if) | (3 << 8) | (2 << 16),
+    opword(constants.Opcode.@"return"),
+    opword(constants.Opcode.@"return") | (2 << 8),
 };
 
 /// The core image, generated by `janet-boot` and embedded rather than linked.
@@ -1345,36 +1336,33 @@ pub const core_image = @embedFile("janet_image");
 
 /// Unmarshalled from the image, in the runtime. Memoized in `janet_vm`, which
 /// is what makes the replacements argument meaningful only on the first call.
-fn imageCoreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.JanetTable) {
-    if (vm_lifecycle.current().core_env) |memoized| return memoized;
+fn imageCoreEnv(replacements: ?*tables.Table) raise.Raising(*tables.Table) {
+    if (vm_state.current().core_env) |memoized| return memoized;
 
     const dict = try coreLookupTable(replacements);
 
-    const marsh_out = try raise.crossing(try marsh.unmarshal(
+    const marsh_out = try marsh.unmarshal(
         core_image[0..@intCast(core_image.len)],
         0,
         dict,
         null,
-    ));
+    );
 
     gc_alloc.gcroot(marsh_out);
     const env = wrap.toTable(marsh_out);
-    vm_lifecycle.current().core_env = env;
+    vm_state.current().core_env = env;
 
     // Invert the image dict here rather than in `boot.janet`, where it would
     // break deterministic builds.
-    var lidv = wrap.fromNil();
-    var midv = wrap.fromNil();
-    _ = registry.resolve(env, symbols.csymbol("load-image-dict"), &lidv);
-    _ = registry.resolve(env, symbols.csymbol("make-image-dict"), &midv);
+    const lidv = registry.resolve(env, symbols.csymbol("load-image-dict")).value;
+    const midv = registry.resolve(env, symbols.csymbol("make-image-dict")).value;
 
     // A smaller corelib may not have either, so check rather than assume.
     if (repr.checkType(lidv, repr.Tag.table) and repr.checkType(midv, repr.Tag.table)) {
         const lid = wrap.toTable(lidv);
         const mid = wrap.toTable(midv);
-        var i: i32 = 0;
-        while (i < lid.*.capacity) : (i += 1) {
-            const kv = &lid.*.slots()[@intCast(i)];
+        for (0..lid.capacity) |i| {
+            const kv = &lid.slots()[i];
             if (!repr.checkType(kv.key, repr.Tag.nil)) {
                 tables.put(mid, kv.value, kv.key);
             }
@@ -1384,29 +1372,24 @@ fn imageCoreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.JanetTabl
     return env;
 }
 
-pub fn coreEnvAbi(replacements: ?*types.JanetTable) *types.JanetTable {
+pub fn coreEnvAbi(replacements: ?*tables.Table) *tables.Table {
     return raise.reported(coreEnv(replacements));
 }
 
-pub fn coreEnv(replacements: ?*types.JanetTable) raise.Raising(*types.JanetTable) {
+pub fn coreEnv(replacements: ?*tables.Table) raise.Raising(*tables.Table) {
     return if (corefn.bootstrap)
         bootstrapCoreEnv(replacements)
     else
         imageCoreEnv(replacements);
 }
 
-pub fn coreLookupTableAbi(replacements: *types.JanetTable) *types.JanetTable {
-    return raise.reported(coreLookupTable(replacements));
-}
-
-pub fn coreLookupTable(replacements: ?*types.JanetTable) raise.Raising(*types.JanetTable) {
+pub fn coreLookupTable(replacements: ?*tables.Table) raise.Raising(*tables.Table) {
     const dict = tables.new(512);
     try loadLibs(dict);
 
     if (replacements != null) {
-        var i: i32 = 0;
-        while (i < replacements.?.capacity) : (i += 1) {
-            const kv = replacements.?.slots()[@intCast(i)];
+        for (0..replacements.?.capacity) |i| {
+            const kv = replacements.?.slots()[i];
             if (!repr.checkType(kv.key, repr.Tag.nil)) {
                 tables.put(dict, kv.key, kv.value);
             }
@@ -1417,29 +1400,33 @@ pub fn coreLookupTable(replacements: ?*types.JanetTable) raise.Raising(*types.Ja
 }
 
 // ==========================================================================
-// src/core/run.c: running source in an environment.
+// Running source in an environment.
 // ==========================================================================
 
 /// Parse, compile and run `bytes`, one top-level form at a time.
 ///
 /// The return value is a set of `JANET_DO_ERROR_*` flags rather than a signal,
-/// and diagnostics go to stderr, because this is the entry point an embedder
-/// calls before there is anything to catch a raise. Nothing here returns
-/// `raise.Error`: `janet_continue` reports a `JanetSignal` and the compiler
-/// reports a status, so the failures this function handles arrive as values
-/// already.
+/// and diagnostics go to stderr: `janet_continue` answers a `JanetSignal` and
+/// the compiler answers a status, so the failures this function *handles*
+/// arrive as values already.
+///
+/// The error union is the other kind of failure -- the diagnostic machinery
+/// itself raising, from `(dyn :err)` or from a `tostring` callback inside a
+/// trace. `boot.zig`, the one caller, cannot ignore that and used to: the abi
+/// reported the raise, `boot` read the zeroed status as success and exited 0
+/// in silence.
 pub fn dobytes(
-    env: *types.JanetTable,
+    env: *tables.Table,
     bytes: ?[*]const u8,
     len: i32,
     source_path: ?[*:0]const u8,
     out: ?*repr.Value,
-) callconv(.c) c_int {
-    return raise.reported(dobytesImpl(env, if (bytes) |p| (if (len <= 0) &.{} else p[0..@intCast(len)]) else &.{}, source_path, out));
+) raise.Raising(c_int) {
+    return dobytesImpl(env, if (bytes) |p| (if (len <= 0) &.{} else p[0..@intCast(len)]) else &.{}, source_path, out);
 }
 
 pub fn dobytesImpl(
-    env: *types.JanetTable,
+    env: *tables.Table,
     bytes: []const u8,
     source_path: ?[*:0]const u8,
     out: ?*repr.Value,
@@ -1448,28 +1435,28 @@ pub fn dobytesImpl(
     var done = false;
     var index: i32 = 0;
     var ret = wrap.fromNil();
-    var fiber: ?*types.JanetFiber = null;
-    const where: ?types.JanetString = if (source_path) |p| strings.cstring(p) else null;
+    var fiber: ?*fibers.Fiber = null;
+    const where: ?strings.String = if (source_path) |p| strings.cstring(p) else null;
 
     if (where) |w| gc_alloc.gcroot(wrap.fromString(w));
     const path: [*:0]const u8 = if (source_path) |p| p else "<unknown>";
-    const parser: *types.JanetParser = @ptrCast(@alignCast(abstracts.new(
+    const parser: *parser_core.JanetParser = @ptrCast(@alignCast(abstracts.newBytes(
         &parser_core.parserType,
-        @sizeOf(types.JanetParser),
+        @sizeOf(parser_core.JanetParser),
     )));
     parser_core.parserInit(parser);
     gc_alloc.gcroot(wrap.fromAbstract(parser));
 
     while (!done) {
-        while (parser_core.parserHasMore(parser) != 0) {
+        while (parser_core.parserHasMore(parser)) {
             const form = parser_core.parserProduce(parser);
-            const cres = compiler_primitives.compile(form, env, where);
+            const cres = try compiler_primitives.compile(form, env, where);
             if (cres.status == constants.JANET_COMPILE_OK) {
                 const f = functions.thunk(cres.funcdef.?);
                 fiber = fibers.new(f, 64, 0, null);
                 fiber.?.env = env;
                 const status = vm_entry.continueFiber(fiber.?, wrap.fromNil(), &ret);
-                if (status != types.Signal.ok and status != types.Signal.event) {
+                if (status != abi.Signal.ok and status != abi.Signal.event) {
                     try trace_frames.stacktraceExt(fiber.?, ret, "");
                     errflags |= constants.JANET_DO_ERROR_RUNTIME;
                     done = true;
@@ -1485,10 +1472,10 @@ pub fn dobytesImpl(
                 const errstr = try pp_format.formatc("%s: %s", .{ ctx, cres.@"error" });
                 ret = wrap.fromString(errstr);
                 if (cres.macrofiber != null) {
-                    eprintf("%s", .{ctx});
+                    try eprintf("%s", .{ctx});
                     try trace_frames.stacktraceExt(cres.macrofiber, ret, "");
                 } else {
-                    eprintf("%s\n", .{errstr});
+                    try eprintf("%s\n", .{errstr});
                 }
                 errflags |= constants.JANET_DO_ERROR_COMPILE;
                 done = true;
@@ -1505,7 +1492,7 @@ pub fn dobytesImpl(
                 const col: i32 = @intCast(parser.column);
                 const errstr = try pp_format.formatc("%s:%d:%d: parse error: %s", .{ path, line, col, parser_core.parserError(parser) });
                 ret = wrap.fromString(errstr);
-                eprintf("%s\n", .{errstr});
+                try eprintf("%s\n", .{errstr});
                 done = true;
             },
             else => {
@@ -1523,7 +1510,7 @@ pub fn dobytesImpl(
     if (where) |w| _ = gc_alloc.gcunroot(wrap.fromString(w));
     if (has_ev) {
         // Enter the event loop if we are not already in it.
-        if (vm_lifecycle.current().stackn == 0) {
+        if (vm_state.current().stackn == 0) {
             if (fiber) |f| gc_alloc.gcroot(wrap.fromFiber(f));
             try ev_loop.loop();
             if (fiber != null) {
@@ -1536,23 +1523,21 @@ pub fn dobytesImpl(
     return errflags;
 }
 
+/// The same over a NUL-terminated string, and the one abi left in this file's
+/// run entry points: `test/core_env.zig` pins the length it computes by
+/// calling it as an abi. Nothing in the runtime calls it.
 pub fn dostring(
-    env: *types.JanetTable,
+    env: *tables.Table,
     str: [*:0]const u8,
     source_path: ?[*:0]const u8,
     out: ?*repr.Value,
 ) callconv(.c) c_int {
     var len: i32 = 0;
     while (str[@intCast(len)] != 0) len += 1;
-    return dobytes(env, str, len, source_path, out);
+    return raise.reported(dobytes(env, str, len, source_path, out));
 }
 
-/// Run a fiber to completion, through the event loop where there is one.
-pub fn loopFiberAbi(fiber: *types.JanetFiber) c_int {
-    return raise.reported(loopFiber(fiber));
-}
-
-pub fn loopFiber(fiber: *types.JanetFiber) raise.Raising(c_int) {
+pub fn loopFiber(fiber: *fibers.Fiber) raise.Raising(c_int) {
     if (has_ev) {
         ev_loop.schedule(fiber, wrap.fromNil());
         try ev_loop.loop();
@@ -1560,7 +1545,7 @@ pub fn loopFiber(fiber: *types.JanetFiber) raise.Raising(c_int) {
     }
     var out: repr.Value = undefined;
     const status = vm_entry.continueFiber(fiber, wrap.fromNil(), &out);
-    if (status != types.Signal.ok and status != types.Signal.event) {
+    if (status != abi.Signal.ok and status != abi.Signal.event) {
         try trace_frames.stacktraceExt(fiber, out, "");
     }
     return @intCast(@intFromEnum(status));

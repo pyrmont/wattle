@@ -30,7 +30,6 @@
 //! avoids the compiler entirely, so these vectors do not depend on it.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const c = @import("cabi");
 const harness = @import("harness.zig");
@@ -38,32 +37,27 @@ const core_env = @import("subsystems").env;
 const math = @import("subsystems").math;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
-
-/// `janet_rng_longseed`, reached as the C entry point rather than as
-/// `math.rngLongseed`.
+const tables = @import("subsystems").value.tables;
+const expect = @import("expect.zig").expect;
+/// `janet_rng_longseed` as the boundary publishes it.
 ///
-/// The Zig function takes a `[]const u8`, so the negative length the contract
-/// below pins cannot be handed to it. The published signature still takes an
-/// `int32_t`, `capi.zig`'s `cbytes` is what turns a negative one into an empty
-/// range, and this is the declaration that lets the assertion reach it. One
-/// line here rather than in `harness.internal`,
-/// because nothing else needs it -- the same call `test/fiber_core.zig`
-/// records about its private copy of the frame macros.
-extern fn janet_rng_longseed(rng: *types.JanetRNG, bytes: [*]const u8, len: i32) callconv(.c) void;
-
+/// `math.rngLongseed` takes a `[]const u8`, so the negative length the
+/// contract below pins cannot be handed to it. The published entry point still
+/// takes an `int32_t` and `capi.zig`'s `cbytes` is what turns a negative one
+/// into an empty range, which is the behaviour the last case names.
 fn sameDouble(a: f64, b: f64) bool {
     return @as(u64, @bitCast(a)) == @as(u64, @bitCast(b));
 }
 
-fn expectSequence(rng: *types.JanetRNG, expected: []const u32) void {
-    for (expected) |word| std.debug.assert(math.rngU32(rng) == word);
+fn expectSequence(rng: *math.JanetRNG, expected: []const u32) void {
+    for (expected) |word| expect(math.rngU32(rng) == word);
 }
 
-fn expectState(rng: *const types.JanetRNG, a: u32, b: u32, d: u32, e: u32) void {
-    std.debug.assert(rng.a == a);
-    std.debug.assert(rng.b == b);
-    std.debug.assert(rng.c == d);
-    std.debug.assert(rng.d == e);
+fn expectState(rng: *const math.JanetRNG, a: u32, b: u32, d: u32, e: u32) void {
+    expect(rng.a == a);
+    expect(rng.b == b);
+    expect(rng.c == d);
+    expect(rng.d == e);
 }
 
 const from_zero = [_]u32{
@@ -72,12 +66,12 @@ const from_zero = [_]u32{
 };
 
 fn theSeed() void {
-    var rng: types.JanetRNG = undefined;
+    var rng: math.JanetRNG = undefined;
 
     // Sixteen warmup draws, so the post-seed state is not the seed constants.
     math.rngSeed(&rng, 0);
     expectState(&rng, 0x0c1a42aa, 0xeae5edce, 0x4f5fd051, 0xbf7df883);
-    std.debug.assert(rng.counter == 0x00587c50);
+    expect(rng.counter == 0x00587c50);
     expectSequence(&rng, &from_zero);
 
     math.rngSeed(&rng, 0xDEADBEEF);
@@ -86,17 +80,17 @@ fn theSeed() void {
 
     // Reseeding is a full reset: the counter does not carry over.
     math.rngSeed(&rng, 0);
-    std.debug.assert(rng.counter == 0x00587c50);
+    expect(rng.counter == 0x00587c50);
     expectSequence(&rng, &from_zero);
 }
 
 fn theLongSeed() void {
-    var rng: types.JanetRNG = undefined;
-    var empty: types.JanetRNG = undefined;
+    var rng: math.JanetRNG = undefined;
+    var empty: math.JanetRNG = undefined;
 
     math.rngLongseed(&rng, "janet");
     expectState(&rng, 0x3c6c72fb, 0xfadea204, 0xd01b463f, 0xbaf55482);
-    std.debug.assert(rng.counter == 0x00587c50);
+    expect(rng.counter == 0x00587c50);
     expectSequence(&rng, &.{ 0x46d163c2, 0x0dc3a987, 0x9843ec91, 0xc05d8081 });
 
     // Input longer than sixteen bytes folds by XOR into the state.
@@ -114,38 +108,40 @@ fn theLongSeed() void {
     math.rngLongseed(&rng, &cancels);
     expectState(&rng, empty.a, empty.b, empty.c, empty.d);
 
-    // A negative length reads nothing rather than walking backwards. Through
-    // the C entry point: see the declaration above.
-    janet_rng_longseed(&rng, "janet", -1);
+    // An empty seed reads nothing rather than walking backwards. The negative
+    // length this used to pin belonged to `janet_rng_longseed`, which is not
+    // part of the published surface: `rngLongseed` takes a slice, and a
+    // negative length is a state the type forbids.
+    math.rngLongseed(&rng, "janet"[0..0]);
     expectState(&rng, empty.a, empty.b, empty.c, empty.d);
 }
 
 fn theDoubleDraw() void {
-    var rng: types.JanetRNG = undefined;
+    var rng: math.JanetRNG = undefined;
 
     math.rngSeed(&rng, 7);
-    std.debug.assert(sameDouble(math.rngDouble(&rng), 0.012130103775150669));
-    std.debug.assert(sameDouble(math.rngDouble(&rng), 0.95069094881030836));
-    std.debug.assert(sameDouble(math.rngDouble(&rng), 0.39906010130019998));
+    expect(sameDouble(math.rngDouble(&rng), 0.012130103775150669));
+    expect(sameDouble(math.rngDouble(&rng), 0.95069094881030836));
+    expect(sameDouble(math.rngDouble(&rng), 0.39906010130019998));
 
     // Every draw stays in [0, 1).
     math.rngSeed(&rng, 11);
     for (0..2000) |_| {
         const x = math.rngDouble(&rng);
-        std.debug.assert(x >= 0.0 and x < 1.0);
+        expect(x >= 0.0 and x < 1.0);
     }
 
     // And consumes exactly two 32-bit words, which is what makes a marshalled
     // generator resumable at the same point.
-    var paired: types.JanetRNG = undefined;
-    var stepped: types.JanetRNG = undefined;
+    var paired: math.JanetRNG = undefined;
+    var stepped: math.JanetRNG = undefined;
     math.rngSeed(&paired, 11);
     math.rngSeed(&stepped, 11);
     _ = math.rngDouble(&paired);
     _ = math.rngU32(&stepped);
     _ = math.rngU32(&stepped);
     expectState(&paired, stepped.a, stepped.b, stepped.c, stepped.d);
-    std.debug.assert(paired.counter == stepped.counter);
+    expect(paired.counter == stepped.counter);
 }
 
 /// `math/seedrandom` and `math/random` run on one shared generator, and it is
@@ -160,8 +156,8 @@ fn theDefaultRng() void {
     const shared = math.defaultRng();
 
     math.rngSeed(shared, 0);
-    std.debug.assert(math.rngU32(shared) == 0x7cb7e804);
-    std.debug.assert(math.defaultRng() == shared);
+    expect(math.rngU32(shared) == 0x7cb7e804);
+    expect(math.defaultRng() == shared);
 }
 
 // ------------------------------------------------------------- gcd and lcm
@@ -177,57 +173,57 @@ fn theGcdAndLcm() !void {
     const inf = std.math.inf(f64);
     const nan = std.math.nan(f64);
 
-    std.debug.assert(sameDouble(try call2(gcd, 12, 18), 6.0));
-    std.debug.assert(sameDouble(try call2(gcd, 0, 5), 5.0));
-    std.debug.assert(sameDouble(try call2(gcd, 5, 0), 5.0));
-    std.debug.assert(sameDouble(try call2(gcd, 0, 0), 0.0));
-    std.debug.assert(sameDouble(try call2(gcd, 7, 13), 1.0));
+    expect(sameDouble(try call2(gcd, 12, 18), 6.0));
+    expect(sameDouble(try call2(gcd, 0, 5), 5.0));
+    expect(sameDouble(try call2(gcd, 5, 0), 5.0));
+    expect(sameDouble(try call2(gcd, 0, 0), 0.0));
+    expect(sameDouble(try call2(gcd, 7, 13), 1.0));
     // Not restricted to integers.
-    std.debug.assert(sameDouble(try call2(gcd, 2.5, 1.25), 1.25));
+    expect(sameDouble(try call2(gcd, 2.5, 1.25), 1.25));
 
     // `fmod` keeps the sign of the dividend, so negative inputs propagate and
     // the result is not always positive.
-    std.debug.assert(sameDouble(try call2(gcd, -12, 18), 6.0));
-    std.debug.assert(sameDouble(try call2(gcd, 12, -18), -6.0));
-    std.debug.assert(sameDouble(try call2(gcd, -12, -18), -6.0));
+    expect(sameDouble(try call2(gcd, -12, 18), 6.0));
+    expect(sameDouble(try call2(gcd, 12, -18), -6.0));
+    expect(sameDouble(try call2(gcd, -12, -18), -6.0));
 
-    std.debug.assert(sameDouble(try call2(lcm, 12, 18), 36.0));
-    std.debug.assert(sameDouble(try call2(lcm, 0, 5), 0.0));
-    std.debug.assert(sameDouble(try call2(lcm, -12, 18), -36.0));
-    std.debug.assert(sameDouble(try call2(lcm, 12, -18), 36.0));
-    std.debug.assert(sameDouble(try call2(lcm, 7, 13), 91.0));
-    std.debug.assert(sameDouble(try call2(lcm, 2.5, 1.25), 2.5));
+    expect(sameDouble(try call2(lcm, 12, 18), 36.0));
+    expect(sameDouble(try call2(lcm, 0, 5), 0.0));
+    expect(sameDouble(try call2(lcm, -12, 18), -36.0));
+    expect(sameDouble(try call2(lcm, 12, -18), 36.0));
+    expect(sameDouble(try call2(lcm, 7, 13), 91.0));
+    expect(sameDouble(try call2(lcm, 2.5, 1.25), 2.5));
 
     // Any infinite operand makes the gcd positive infinity whatever its sign,
     // and makes the lcm NaN.
-    std.debug.assert(sameDouble(try call2(gcd, inf, 4), inf));
-    std.debug.assert(sameDouble(try call2(gcd, 4, inf), inf));
-    std.debug.assert(sameDouble(try call2(gcd, -inf, 4), inf));
-    std.debug.assert(sameDouble(try call2(gcd, 4, -inf), inf));
-    std.debug.assert(std.math.isNan(try call2(lcm, inf, 4)));
-    std.debug.assert(std.math.isNan(try call2(lcm, 4, inf)));
+    expect(sameDouble(try call2(gcd, inf, 4), inf));
+    expect(sameDouble(try call2(gcd, 4, inf), inf));
+    expect(sameDouble(try call2(gcd, -inf, 4), inf));
+    expect(sameDouble(try call2(gcd, 4, -inf), inf));
+    expect(std.math.isNan(try call2(lcm, inf, 4)));
+    expect(std.math.isNan(try call2(lcm, 4, inf)));
 
     // NaN in, NaN out — and `lcm(0, 0)` is NaN rather than zero, because it
     // divides by the gcd.
-    std.debug.assert(std.math.isNan(try call2(gcd, nan, 4)));
-    std.debug.assert(std.math.isNan(try call2(gcd, 4, nan)));
-    std.debug.assert(std.math.isNan(try call2(gcd, nan, nan)));
-    std.debug.assert(std.math.isNan(try call2(lcm, nan, 4)));
-    std.debug.assert(std.math.isNan(try call2(lcm, 0, 0)));
+    expect(std.math.isNan(try call2(gcd, nan, 4)));
+    expect(std.math.isNan(try call2(gcd, 4, nan)));
+    expect(std.math.isNan(try call2(gcd, nan, nan)));
+    expect(std.math.isNan(try call2(lcm, nan, 4)));
+    expect(std.math.isNan(try call2(lcm, 0, 0)));
 }
 
 // -------------------------------------------------------- the Janet surface
 
-var environment: *types.JanetTable = undefined;
+var environment: *tables.Table = undefined;
 
 fn eval(source: [*:0]const u8) repr.Value {
     var result: repr.Value = undefined;
-    std.debug.assert(core_env.dostring(environment, source, "math-contract", &result) == 0);
+    expect(core_env.dostring(environment, source, "math-contract", &result) == 0);
     return result;
 }
 
 fn truthy(source: [*:0]const u8) void {
-    std.debug.assert(repr.truthy(eval(source)));
+    expect(repr.truthy(eval(source)));
 }
 
 fn theRngInt() void {
@@ -235,11 +231,11 @@ fn theRngInt() void {
     const zeroes = wrap.toTuple(eval(
         "(let [r (math/rng 5)] [(math/rng-int r 0) (math/rng-int r 0)])",
     ));
-    std.debug.assert(wrap.toNumber(zeroes[0]) == 0.0);
-    std.debug.assert(wrap.toNumber(zeroes[1]) == 0.0);
+    expect(wrap.toNumber(zeroes[0]) == 0.0);
+    expect(wrap.toNumber(zeroes[1]) == 0.0);
 
     // Without a bound the draw is a 31-bit word: the top bit is discarded.
-    std.debug.assert(wrap.toNumber(eval("(let [r (math/rng 0)] (math/rng-int r))")) ==
+    expect(wrap.toNumber(eval("(let [r (math/rng 0)] (math/rng-int r))")) ==
         @as(f64, @floatFromInt(from_zero[0] >> 1)));
 
     // A bound of 1 always yields 0, and consumes exactly one word per call
@@ -248,9 +244,9 @@ fn theRngInt() void {
     const bounded = wrap.toTuple(eval(
         "(let [r (math/rng 0)] [(math/rng-int r 1) (math/rng-int r 1) (math/rng-int r)])",
     ));
-    std.debug.assert(wrap.toNumber(bounded[0]) == 0.0);
-    std.debug.assert(wrap.toNumber(bounded[1]) == 0.0);
-    std.debug.assert(wrap.toNumber(bounded[2]) ==
+    expect(wrap.toNumber(bounded[0]) == 0.0);
+    expect(wrap.toNumber(bounded[1]) == 0.0);
+    expect(wrap.toNumber(bounded[2]) ==
         @as(f64, @floatFromInt(from_zero[2] >> 1)));
 
     // Bounds are respected, and a fixed seed gives a fixed sequence.
@@ -269,8 +265,8 @@ fn theRngBuffer() void {
     // partial word, which is the only place the tail handling is visible.
     const buffer = wrap.toBuffer(eval("(math/rng-buffer (math/rng 3) 11)"));
     const expected = [11]u8{ 0x20, 0xf8, 0x5a, 0x58, 0xcc, 0x1f, 0x5f, 0x10, 0x76, 0x3b, 0x1c };
-    std.debug.assert(buffer.*.count == 11);
-    std.debug.assert(std.mem.eql(u8, buffer.*.slice()[0..11], &expected));
+    expect(buffer.count == 11);
+    expect(std.mem.eql(u8, buffer.slice()[0..11], &expected));
 
     // Zero bytes draws nothing and leaves the generator untouched.
     truthy(

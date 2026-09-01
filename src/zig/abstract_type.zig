@@ -1,7 +1,7 @@
 //! The abstract-type interface: what an abstract type is, and how a module
 //! author declares one.
 //!
-//! The description itself is `types.AbstractType` -- see its comment for why
+//! The description itself is `abi.AbstractType` -- see its comment for why
 //! it is declared there and not here. This file owns the *interface*: the
 //! payload contract, the callback shapes, and the dispatch helper the runtime
 //! reaches an object's type through.
@@ -45,8 +45,8 @@
 //!
 //! Typing them non-raising is what turns that into a **compile error at the
 //! callback's own definition**, which is the only place the diagnosis is
-//! cheap. It takes nothing away: both already return `c_int`, and the
-//! runtime's own call site treats a nonzero return as the failure channel.
+//! cheap. It takes nothing away: `gc`, `gcmark` and `gcperthread` answer
+//! `void`, because a status a caller can only abort on is not a channel.
 //!
 //! Measured before deciding: of the sixteen `gc` and `gcmark` implementations
 //! in the tree, **fifteen never raised**, and the one that did -- `streamGC`,
@@ -58,21 +58,21 @@
 //! them, and a module author reporting an error from one is ordinary.
 
 const std = @import("std");
-const raise = @import("raise");
-const types = @import("types");
+const raise = @import("raise.zig");
+const abi = @import("abi");
 const repr = @import("repr");
 
 /// The dispatch description, re-exported under the name this file's callers
-/// use. It is one type, not a second description: `types.AbstractType` is
+/// use. It is one type, not a second description: `abi.AbstractType` is
 /// where it has to be declared and this is where it is documented.
-pub const AbstractType = types.AbstractType;
+pub const AbstractType = abi.AbstractType;
 
 /// The abstract type of a live abstract, which is where a dispatch starts.
 ///
 /// This is a read of the object's header rather than a conversion between two
 /// descriptions -- the last of the three helpers that did that.
 pub inline fn ofAbstract(abst: ?*anyopaque) *const AbstractType {
-    return types.abstractHead(abst).type;
+    return abi.abstractHead(abst).type;
 }
 
 // ==========================================================================
@@ -100,20 +100,20 @@ pub inline fn ofAbstract(abst: ?*anyopaque) *const AbstractType {
 pub fn Spec(comptime T: type) type {
     return struct {
         name: []const u8,
-        gc: ?*const fn (*T, usize) c_int = null,
-        gcmark: ?*const fn (*T, usize) c_int = null,
-        get: ?*const fn (*T, repr.Value, *repr.Value) raise.Error!c_int = null,
+        gc: ?*const fn (*T, usize) void = null,
+        gcmark: ?*const fn (*T, usize) void = null,
+        get: ?*const fn (*T, repr.Value) raise.Error!?repr.Value = null,
         put: ?*const fn (*T, repr.Value, repr.Value) raise.Error!void = null,
-        marshal: ?*const fn (*T, *types.JanetMarshalContext) raise.Error!void = null,
-        unmarshal: ?*const fn (*types.JanetMarshalContext) raise.Error!*T = null,
-        tostring: ?*const fn (*T, *types.JanetBuffer) raise.Error!void = null,
-        compare: ?*const fn (*const T, *const T) c_int = null,
+        marshal: ?*const fn (*T, *abi.JanetMarshalContext) raise.Error!void = null,
+        unmarshal: ?*const fn (*abi.JanetMarshalContext) raise.Error!*T = null,
+        tostring: ?*const fn (*T, *abi.Buffer) raise.Error!void = null,
+        compare: ?*const fn (*const T, *const T) i32 = null,
         hash: ?*const fn (*const T, usize) i32 = null,
         next: ?*const fn (*T, repr.Value) raise.Error!repr.Value = null,
         call: ?*const fn (*T, []repr.Value) raise.Error!repr.Value = null,
         length: ?*const fn (*T, usize) raise.Error!usize = null,
-        bytes: ?*const fn (*const T, usize) types.JanetByteView = null,
-        gcperthread: ?*const fn (*T, usize) c_int = null,
+        bytes: ?*const fn (*const T, usize) abi.JanetByteView = null,
+        gcperthread: ?*const fn (*T, usize) void = null,
     };
 }
 
@@ -146,28 +146,28 @@ fn Erased(comptime T: type, comptime spec: Spec(T)) type {
             return @ptrCast(@alignCast(p.?));
         }
 
-        fn gc(p: ?*anyopaque, len: usize) callconv(.c) c_int {
+        fn gc(p: ?*anyopaque, len: usize) callconv(.c) void {
             return spec.gc.?(mut(p), len);
         }
-        fn gcmark(p: ?*anyopaque, len: usize) callconv(.c) c_int {
+        fn gcmark(p: ?*anyopaque, len: usize) callconv(.c) void {
             return spec.gcmark.?(mut(p), len);
         }
-        fn get(p: ?*anyopaque, key: repr.Value, out: *repr.Value) raise.Error!c_int {
-            return spec.get.?(mut(p), key, out);
+        fn get(p: ?*anyopaque, key: repr.Value) raise.Error!?repr.Value {
+            return spec.get.?(mut(p), key);
         }
         fn put(p: ?*anyopaque, key: repr.Value, value: repr.Value) raise.Error!void {
             return spec.put.?(mut(p), key, value);
         }
-        fn marshal(p: ?*anyopaque, ctx: *types.JanetMarshalContext) raise.Error!void {
+        fn marshal(p: ?*anyopaque, ctx: *abi.JanetMarshalContext) raise.Error!void {
             return spec.marshal.?(mut(p), ctx);
         }
-        fn unmarshal(ctx: *types.JanetMarshalContext) raise.Error!?*anyopaque {
+        fn unmarshal(ctx: *abi.JanetMarshalContext) raise.Error!?*anyopaque {
             return try spec.unmarshal.?(ctx);
         }
-        fn tostring(p: ?*anyopaque, buffer: *types.JanetBuffer) raise.Error!void {
+        fn tostring(p: ?*anyopaque, buffer: *abi.Buffer) raise.Error!void {
             return spec.tostring.?(mut(p), buffer);
         }
-        fn compare(lhs: ?*anyopaque, rhs: ?*anyopaque) callconv(.c) c_int {
+        fn compare(lhs: ?*anyopaque, rhs: ?*anyopaque) callconv(.c) i32 {
             return spec.compare.?(ro(lhs), ro(rhs));
         }
         fn hash(p: ?*anyopaque, len: usize) callconv(.c) i32 {
@@ -186,10 +186,10 @@ fn Erased(comptime T: type, comptime spec: Spec(T)) type {
         fn length(p: ?*anyopaque, len: usize) raise.Error!usize {
             return spec.length.?(mut(p), len);
         }
-        fn bytes(p: ?*anyopaque, len: usize) callconv(.c) types.JanetByteView {
+        fn bytes(p: ?*anyopaque, len: usize) callconv(.c) abi.JanetByteView {
             return spec.bytes.?(ro(p), len);
         }
-        fn gcperthread(p: ?*anyopaque, len: usize) callconv(.c) c_int {
+        fn gcperthread(p: ?*anyopaque, len: usize) callconv(.c) void {
             return spec.gcperthread.?(mut(p), len);
         }
     };
@@ -200,8 +200,8 @@ fn Erased(comptime T: type, comptime spec: Spec(T)) type {
 /// ```zig
 /// const num_array_type = abstract_type.define(NumArray, .{
 ///     .name = "numarray",
-///     .gc = numArrayGc,   // fn (*NumArray, usize) c_int
-///     .get = numArrayGet, // fn (*NumArray, Value, *Value) raise.Error!c_int
+///     .gc = numArrayGc,   // fn (*NumArray, usize) void
+///     .get = numArrayGet, // fn (*NumArray, Value) raise.Error!?Value
 ///     .put = numArrayPut,
 /// });
 /// ```
@@ -277,8 +277,8 @@ fn collect(comptime T: type, comptime spec: anytype) Spec(T) {
 /// Reject a wrong `spec` with a message about the contract rather than about
 /// the type.
 ///
-/// `PLAN.md`'s "Target" is the reason this exists: **a decision about a
-/// callback type is a decision about somebody else's compile error.** Zig's
+/// **A decision about a callback type is a decision about somebody else's
+/// compile error**, and that is the reason this exists. Zig's
 /// own coercion failure names two function types and leaves the author to
 /// diff them, and for the two mistakes an author actually makes -- the wrong
 /// payload, and a `gc` that raises -- the diff is not the point. The reason
@@ -350,7 +350,8 @@ fn checkSlot(comptime T: type, comptime name: []const u8, comptime slot: []const
             "on an object that is already unreachable, a mark mid-traversal -- and " ++
             "`compare`, `hash`, `bytes` and `gcperthread` run inside operations that must " ++
             "be total. There is no scope above any of them and nothing to retry, so a " ++
-            "raise would have nowhere to go. Report failure with the return value instead.");
+            "raise would have nowhere to go, and none of the six has a return value to " ++
+            "report one through either.");
     }
     if (!returns_error and comptime raises(slot)) {
         @compileError(where ++ "this callback may raise and its return type must say so: " ++
@@ -375,7 +376,7 @@ fn checkSlot(comptime T: type, comptime name: []const u8, comptime slot: []const
 /// The return payload named in the "may raise" message, so it reads as the
 /// signature the author should write rather than as a lecture.
 fn payloadName(comptime T: type, comptime slot: []const u8) []const u8 {
-    if (std.mem.eql(u8, slot, "get")) return "c_int";
+    if (std.mem.eql(u8, slot, "get")) return "?Value";
     if (std.mem.eql(u8, slot, "put")) return "void";
     if (std.mem.eql(u8, slot, "marshal")) return "void";
     if (std.mem.eql(u8, slot, "unmarshal")) return "*" ++ @typeName(T);

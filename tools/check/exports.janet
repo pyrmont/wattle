@@ -237,7 +237,16 @@
   (def names (exported))
   (def [api where] (header-sets))
   (def needed (native-needs))
-  (def pub-set (merge (tabseq [n :in (keys (decl-names ["src/zig/module.zig"]))] n true)
+  # Two declaration files, because `module.zig` is not the whole boundary.
+  # `raise.zig` compiles into a native module as well as into the runtime, and
+  # its `config.native_module` arm reaches six symbols through `cabi.zig` --
+  # which since Part 1 holds libc and those six and nothing else, so reading it
+  # is reading the boundary rather than guessing at it. `native-needs` sees only
+  # the ones the sample module's own code path takes: `janet_zig_fatal` and
+  # `janet_zig_c_raise_record` are on the `raise.total` and abi paths, which
+  # `numarray` never reaches.
+  (def pub-set (merge (tabseq [n :in (keys (decl-names ["src/zig/module.zig"
+                                                       "src/zig/cabi.zig"]))] n true)
                       needed))
   (def aud (audiences))
   (eachp [n _] needed

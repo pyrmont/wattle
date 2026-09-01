@@ -11,9 +11,7 @@ const Greeting = struct {
     count: i32,
 };
 
-fn greetingGc(_: *Greeting, _: usize) c_int {
-    return 0;
-}
+fn greetingGc(_: *Greeting, _: usize) void {}
 
 /// Declared at container level, which `define`'s documentation requires: the
 /// runtime keeps this address and reads it again at teardown.

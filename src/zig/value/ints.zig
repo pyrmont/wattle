@@ -1,6 +1,6 @@
 //! Numeric kernels behind Janet's `int/s64` and `int/u64` abstract types.
 //!
-//! These are the parts of `src/core/inttypes.c` that are pure arithmetic: the
+//! The pure arithmetic: the
 //! abstract-type hash and comparison callbacks, the polymorphic comparisons
 //! that mix 64-bit integers with doubles and with each other, decimal
 //! formatting, and floored division and modulo.
@@ -11,16 +11,16 @@
 //! which is an ordinary returned error here.
 
 const std = @import("std");
-const corefn = @import("corefn");
-const types = @import("types");
+const corefn = @import("../corefn.zig");
 const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("../raise.zig");
 const pp_format = @import("../pp/format.zig");
 const registry = @import("../registry.zig");
 const marsh = @import("../marsh.zig");
 const abstract_type = @import("../abstract_type.zig");
+const abi = @import("abi");
 const method_type = @import("../method_type.zig");
 const builtin = @import("builtin");
 const utils = @import("../utils.zig");
@@ -29,8 +29,10 @@ const args_core = @import("../args.zig");
 const buffers = @import("buffers.zig");
 const abstracts = @import("abstracts.zig");
 const numscan = @import("../scan.zig");
+const strings = @import("strings.zig");
+const tables = @import("tables.zig");
 
-extern fn snprintf(buffer: [*]u8, size: usize, format: [*:0]const u8, ...) callconv(.c) c_int;
+pub const JanetIntType = c_uint;
 
 /// The contiguous integer range of a double, matching `JANET_INTMAX_DOUBLE`.
 const intmax_double: f64 = 9007199254740992.0;
@@ -61,12 +63,12 @@ pub fn Boxed(comptime T: type) type {
             return words[0] ^ words[1];
         }
 
-        pub fn marshal(box: *T, ctx: *types.JanetMarshalContext) raise.Raising(void) {
+        pub fn marshal(box: *T, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
             marsh.marshalAbstract(ctx, box);
             try marsh.marshalInt64(ctx, @bitCast(box.*));
         }
 
-        pub fn unmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*T) {
+        pub fn unmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*T) {
             const box: *T = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(T))));
             box.* = @bitCast(try marsh.unmarshalInt64(ctx));
             return box;
@@ -128,11 +130,11 @@ pub fn zigItCompareU64S64(x: u64, y: i64) c_int {
 /// `itS64Tostring` below does the reserving, because that is the half that can
 /// raise; this half cannot, so it stays a plain function.
 pub fn zigItS64Tostring(val: i64, out: [*]u8) i32 {
-    return snprintf(out, 32, "%lld", val);
+    return c.snprintf(out, 32, "%lld", val);
 }
 
 pub fn zigItU64Tostring(val: u64, out: [*]u8) i32 {
-    return snprintf(out, 32, "%llu", val);
+    return c.snprintf(out, 32, "%llu", val);
 }
 
 /// Floored division. The caller rejects a zero divisor first.
@@ -192,14 +194,12 @@ fn checkUint64Range(d: f64) bool {
 
 // ------------------------------------------------------- the abstract types
 
-fn itS64Get(_: *i64, key: repr.Value, out: *repr.Value) raise.Raising(c_int) {
-    if (!repr.checkType(key, repr.Tag.keyword)) return 0;
-    return args_core.getmethod(wrap.toKeyword(key), @ptrCast(&s64_methods), out);
+fn itS64Get(_: *i64, key: repr.Value) raise.Raising(?repr.Value) {
+    return args_core.findMethod(key, @ptrCast(&s64_methods));
 }
 
-fn itU64Get(_: *u64, key: repr.Value, out: *repr.Value) raise.Raising(c_int) {
-    if (!repr.checkType(key, repr.Tag.keyword)) return 0;
-    return args_core.getmethod(wrap.toKeyword(key), @ptrCast(&u64_methods), out);
+fn itU64Get(_: *u64, key: repr.Value) raise.Raising(?repr.Value) {
+    return args_core.findMethod(key, @ptrCast(&u64_methods));
 }
 
 fn int64Next(_: *i64, key: repr.Value) raise.Raising(repr.Value) {
@@ -215,14 +215,19 @@ fn uint64Next(_: *u64, key: repr.Value) raise.Raising(repr.Value) {
 /// The reservation of 32 bytes is the C original's and is what makes writing
 /// straight into `buffer->data + buffer->count` safe: the longest decimal
 /// rendering of a 64-bit integer is 20 characters.
-fn itS64Tostring(box: *i64, buffer: *types.JanetBuffer) raise.Raising(void) {
+// The two `tostring` slots take `abi.Buffer`, the handle a module author is
+// offered, and the runtime recovers its own layout on the first line. See
+// `abi.zig`'s header.
+fn itS64Tostring(box: *i64, handle: *abi.Buffer) raise.Raising(void) {
+    const buffer: *buffers.Buffer = @ptrCast(@alignCast(handle));
     try buffers.extra(buffer, 32);
-    buffer.*.count += zigItS64Tostring(box.*, buffer.*.data.? + @as(usize, @intCast(buffer.*.count)));
+    buffer.count += @intCast(zigItS64Tostring(box.*, buffer.data.? + @as(usize, @intCast(buffer.count))));
 }
 
-fn itU64Tostring(box: *u64, buffer: *types.JanetBuffer) raise.Raising(void) {
+fn itU64Tostring(box: *u64, handle: *abi.Buffer) raise.Raising(void) {
+    const buffer: *buffers.Buffer = @ptrCast(@alignCast(handle));
     try buffers.extra(buffer, 32);
-    buffer.*.count += zigItU64Tostring(box.*, buffer.*.data.? + @as(usize, @intCast(buffer.*.count)));
+    buffer.count += @intCast(zigItU64Tostring(box.*, buffer.data.? + @as(usize, @intCast(buffer.count))));
 }
 
 pub const BoxedS64 = Boxed(i64);
@@ -262,13 +267,12 @@ pub fn unwrapS64(x: repr.Value) raise.Raising(i64) {
             if (checkInt64Range(d)) return @intFromFloat(d);
         },
         repr.Tag.string => {
-            var val: i64 = undefined;
             const str = wrap.toString(x);
-            if (numscan.scanInt64(str[0..@intCast(types.stringHead(str).length)], &val) != 0) return val;
+            if (numscan.scanInt64(str[0..@intCast(strings.head(str).length)])) |val| return val;
         },
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);
-            const at = types.abstractHead(abst).type;
+            const at = abi.abstractHead(abst).type;
             if (at == &s64Type or at == &u64Type) {
                 return @as(*i64, @ptrCast(@alignCast(abst))).*;
             }
@@ -278,10 +282,6 @@ pub fn unwrapS64(x: repr.Value) raise.Raising(i64) {
     return pp_format.panicf("can not convert %t %q to 64 bit signed integer", .{ x, x });
 }
 
-pub fn unwrapS64Abi(x: repr.Value) i64 {
-    return raise.reported(unwrapS64(x));
-}
-
 pub fn unwrapU64(x: repr.Value) raise.Raising(u64) {
     switch (repr.typeOf(x)) {
         repr.Tag.number => {
@@ -289,13 +289,12 @@ pub fn unwrapU64(x: repr.Value) raise.Raising(u64) {
             if (checkUint64Range(d)) return @intFromFloat(d);
         },
         repr.Tag.string => {
-            var val: u64 = undefined;
             const str = wrap.toString(x);
-            if (numscan.scanUint64(str[0..@intCast(types.stringHead(str).length)], &val) != 0) return val;
+            if (numscan.scanUint64(str[0..@intCast(strings.head(str).length)])) |val| return val;
         },
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);
-            const at = types.abstractHead(abst).type;
+            const at = abi.abstractHead(abst).type;
             if (at == &s64Type or at == &u64Type) {
                 return @as(*u64, @ptrCast(@alignCast(abst))).*;
             }
@@ -305,21 +304,17 @@ pub fn unwrapU64(x: repr.Value) raise.Raising(u64) {
     return pp_format.panicf("can not convert %t %q to a 64 bit unsigned integer", .{ x, x });
 }
 
-pub fn unwrapU64Abi(x: repr.Value) u64 {
-    return raise.reported(unwrapU64(x));
-}
-
-pub fn isInt(x: repr.Value) types.JanetIntType {
+pub fn isInt(x: repr.Value) JanetIntType {
     if (!repr.checkType(x, repr.Tag.abstract)) return constants.JANET_INT_NONE;
-    const at = types.abstractHead(wrap.toAbstract(x)).type;
+    const at = abi.abstractHead(wrap.toAbstract(x)).type;
     if (at == &s64Type) return constants.JANET_INT_S64;
     if (at == &u64Type) return constants.JANET_INT_U64;
     return constants.JANET_INT_NONE;
 }
 
 /// Allocate a boxed integer of the given abstract type.
-fn boxed(comptime T: type, at: *const types.AbstractType, val: T) repr.Value {
-    const p: *T = @ptrCast(@alignCast(abstracts.new(at, @sizeOf(T))));
+fn boxed(comptime T: type, at: *const abi.AbstractType, val: T) repr.Value {
+    const p: *T = abstracts.newFor(T, at);
     p.* = val;
     return wrap.fromAbstract(p);
 }
@@ -364,7 +359,7 @@ fn applyBin(comptime op: BinOp, lhs: u64, rhs: u64) u64 {
 
 fn Box(comptime T: type) type {
     return struct {
-        const at: *const types.AbstractType = if (T == i64) &s64Type else &u64Type;
+        const at: *const abi.AbstractType = if (T == i64) &s64Type else &u64Type;
         /// The *raising* conversion, not the abi beside it.
         ///
         /// Reaching the abi from a `raise.Raising` caller swallows the
@@ -515,7 +510,7 @@ fn cfunS64Compare(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
         },
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(argv[1]);
-            const at = types.abstractHead(abst).type;
+            const at = abi.abstractHead(abst).type;
             if (at == &s64Type) {
                 const y = @as(*i64, @ptrCast(@alignCast(abst))).*;
                 return wrap.fromNumber(threeWay(i64, x, y));
@@ -541,7 +536,7 @@ fn cfunU64Compare(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
         },
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(argv[1]);
-            const at = types.abstractHead(abst).type;
+            const at = abi.abstractHead(abst).type;
             if (at == &u64Type) {
                 const y = @as(*u64, @ptrCast(@alignCast(abst))).*;
                 return wrap.fromNumber(threeWay(u64, x, y));
@@ -656,7 +651,7 @@ fn cfunToNumber(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.V
     try args_core.fixarity(argv, 1);
     if (repr.typeOf(argv[0]) == repr.Tag.abstract) {
         const abst = wrap.toAbstract(argv[0]);
-        const at = types.abstractHead(abst).type;
+        const at = abi.abstractHead(abst).type;
         if (at == &s64Type) {
             const val = @as(*i64, @ptrCast(@alignCast(abst))).*;
             try if (val > intmax_int64 or val < -intmax_int64) outOfRange(argv[0]);
@@ -682,7 +677,7 @@ fn cfunToBytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
     }
 
     var reverse = false;
-    if (@as(i32, @intCast(argv.len)) > 1 and !repr.checkType(argv[1], repr.Tag.nil)) {
+    if (argv.len > 1 and !repr.checkType(argv[1], repr.Tag.nil)) {
         const endianness = try args_core.getKeyword(argv, 1);
         if (utils.cstrcmp(endianness, "le") == 0) {
             reverse = big_endian;
@@ -696,8 +691,8 @@ fn cfunToBytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
     // Unlike `buffer/*`, an explicit buffer here is required to be a buffer
     // rather than fetched through `janet_getbuffer`, so the message names this
     // function rather than the slot.
-    var buffer: *types.JanetBuffer = undefined;
-    if (@as(i32, @intCast(argv.len)) > 2 and !repr.checkType(argv[2], repr.Tag.nil)) {
+    var buffer: *buffers.Buffer = undefined;
+    if (argv.len > 2 and !repr.checkType(argv[2], repr.Tag.nil)) {
         if (!repr.checkType(argv[2], repr.Tag.buffer)) {
             return pp_format.panicf("int/to-bytes: expected buffer or nil, got %q", .{argv[2]});
         }
@@ -708,19 +703,19 @@ fn cfunToBytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
     }
 
     const bytes: [*]const u8 = @ptrCast(wrap.toAbstract(argv[0]));
-    const out = buffer.*.data.? + @as(usize, @intCast(buffer.*.count));
+    const out = buffer.data.? + @as(usize, @intCast(buffer.count));
     if (reverse) {
         for (0..8) |i| out[7 - i] = bytes[i];
     } else {
         @memcpy(out[0..8], bytes[0..8]);
     }
-    buffer.*.count += 8;
+    buffer.count += 8;
     return wrap.fromBuffer(buffer);
 }
 
 const big_endian = (builtin.cpu.arch.endian() == .big);
 
-pub fn libInttypes(env: *types.JanetTable) raise.Raising(void) {
+pub fn libInttypes(env: *tables.Table) raise.Raising(void) {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("int/s64", &cfunS64New, @src(), "(int/s64 value)", "Create a boxed signed 64 bit integer from a string value or a number."),
         corefn.reg("int/u64", &cfunU64New, @src(), "(int/u64 value)", "Create a boxed unsigned 64 bit integer from a string value or a number."),
@@ -736,8 +731,4 @@ pub fn libInttypes(env: *types.JanetTable) raise.Raising(void) {
     corefn.install(env, entries);
     try registry.registerAbstractType(&s64Type);
     try registry.registerAbstractType(&u64Type);
-}
-
-pub fn libInttypesAbi(env: *types.JanetTable) void {
-    raise.reported(libInttypes(env));
 }

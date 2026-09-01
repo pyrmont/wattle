@@ -42,18 +42,16 @@
 //! user in the tree.
 //!
 //! **And writing the callback as the runtime types it found a live defect in
-//! the runtime**, one directory over. `janet_marshal_size` was a
-//! `raise.reported` abi with no raising twin, and `peg.zig`'s `pegMarshal`
-//! and `io_core.zig`'s `fileMarshal` were both calling *the abi* from inside
-//! a raising callback -- so a buffer that refused to grow at exactly that call
-//! became a report nobody consumed. `marsh.marshalSize` is the twin, and the
-//! `marshalSize` assertions below are the reproduction.
+//! the runtime**, one directory over. `marshalSize` had only a `raise.reported`
+//! form, and `peg.zig`'s and `io.zig`'s marshal callbacks were both calling it
+//! from inside a raising callback -- so a buffer that refused to grow at
+//! exactly that call became a report nobody consumed. The raising twin is what
+//! closed it, and the `marshalSize` assertions below are the reproduction.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
-const raise = @import("raise");
+const raise = @import("subsystems").raise;
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
@@ -69,18 +67,20 @@ const marsh_mod = @import("subsystems").marsh;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const abstracts = @import("subsystems").value.abstracts;
+const abi = @import("abi");
+const fibers = @import("subsystems").value.fibers;
 const marsh = subsystems.marsh;
 const registry = subsystems.registry;
 const abstract_type = subsystems.abstract_type;
 const AbstractType = abstract_type.AbstractType;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
-var test_env: *types.JanetTable = undefined;
+var test_env: *tables.Table = undefined;
 
 /// Values a `Janet` local would not keep alive. The probe types have no
 /// `gcmark`, so nothing an abstract holds is a root either.
-var rooted: *types.JanetArray = undefined;
+var rooted: *arrays.Array = undefined;
 
 fn keep(val: repr.Value) repr.Value {
     harness.arrayPush(rooted, val);
@@ -92,9 +92,9 @@ fn keep(val: repr.Value) repr.Value {
 /// A buffer's contents against a literal, with both rendered on a mismatch.
 ///
 /// The C original's `check_bytes` printed the two byte strings and then
-/// `assert(0)`. Kept, because a wire-format failure is unreadable without
+/// `expect(0)`. Kept, because a wire-format failure is unreadable without
 /// them: the assertion that fires says only that two buffers differ.
-fn wireIs(b: *types.JanetBuffer, expected: []const u8) void {
+fn wireIs(b: *buffers.Buffer, expected: []const u8) void {
     const got = b.slice();
     if (std.mem.eql(u8, got, expected)) return;
     std.debug.print("expected {d} bytes:", .{expected.len});
@@ -105,13 +105,13 @@ fn wireIs(b: *types.JanetBuffer, expected: []const u8) void {
     @panic("wire format mismatch");
 }
 
-fn marshalled(x: repr.Value, rreg: ?*types.JanetTable, flags: c_int) raise.Raising(*types.JanetBuffer) {
+fn marshalled(x: repr.Value, rreg: ?*tables.Table, flags: c_int) raise.Raising(*buffers.Buffer) {
     const b = buffers.new(16);
     try marsh.marshal(b, x, rreg, flags);
     return b;
 }
 
-fn unmarshalled(b: *types.JanetBuffer, flags: c_int) raise.Raising(repr.Value) {
+fn unmarshalled(b: *buffers.Buffer, flags: c_int) raise.Raising(repr.Value) {
     return marsh.unmarshal(b.slice(), flags, null, null);
 }
 
@@ -145,7 +145,7 @@ const Probe = extern struct {
     ptr: ?*anyopaque,
 };
 
-fn probeMarshal(probe: *Probe, ctx: *types.JanetMarshalContext) raise.Raising(void) {
+fn probeMarshal(probe: *Probe, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
     marsh_mod.marshalAbstract(ctx, probe);
     try marsh.marshalInt(ctx, probe.i32_field);
     try marsh.marshalInt64(ctx, probe.i64_field);
@@ -160,7 +160,7 @@ fn probeMarshal(probe: *Probe, ctx: *types.JanetMarshalContext) raise.Raising(vo
 
 /// Every read is a `try`, which is the whole of what the C original spelled as
 /// a `BAIL_IF_RAISING` after each one -- see the header comment.
-fn probeUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*Probe) {
+fn probeUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*Probe) {
     const probe: *Probe = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(Probe))));
     probe.i32_field = try marsh.unmarshalInt(ctx);
     probe.i64_field = try marsh.unmarshalInt64(ctx);
@@ -172,7 +172,7 @@ fn probeUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*Probe) {
     probe.ptr = null;
     const unsafe = try marsh.unmarshalByte(ctx);
     if (unsafe != 0) {
-        assert((marsh_mod.unmarshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE) != 0);
+        expect((marsh_mod.unmarshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE) != 0);
         probe.ptr = try marsh.unmarshalPtr(ctx);
     }
     return probe;
@@ -186,12 +186,12 @@ const probe_at = abstract_type.define(Probe, .{
 
 /// A type that always reaches for a pointer, so that the safe-mode refusal has
 /// something to refuse.
-fn refuserMarshal(p: *anyopaque, ctx: *types.JanetMarshalContext) raise.Raising(void) {
+fn refuserMarshal(p: *anyopaque, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
     marsh_mod.marshalAbstract(ctx, p);
     try marsh.marshalPtr(ctx, p);
 }
 
-fn refuserUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*anyopaque) {
+fn refuserUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*anyopaque) {
     const p = (try marsh.unmarshalAbstract(ctx, @sizeOf(i32))).?;
     _ = try marsh.unmarshalPtr(ctx);
     return p;
@@ -204,7 +204,7 @@ const refuser_at = abstract_type.define(anyopaque, .{
 });
 
 /// A type that writes more bytes than a Janet buffer can index.
-fn toobigMarshal(p: *anyopaque, ctx: *types.JanetMarshalContext) raise.Raising(void) {
+fn toobigMarshal(p: *anyopaque, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
     marsh_mod.marshalAbstract(ctx, p);
     const bytes: [*]const u8 = @ptrCast(p);
     try marsh.marshalBytes(ctx, bytes[0 .. @as(usize, std.math.maxInt(i32)) + 1]);
@@ -217,13 +217,13 @@ const toobig_at = abstract_type.define(anyopaque, .{
 
 /// The marshal half of the three types whose *unmarshal* half breaks the
 /// abstract protocol.
-fn protocolMarshal(p: *anyopaque, ctx: *types.JanetMarshalContext) raise.Raising(void) {
+fn protocolMarshal(p: *anyopaque, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
     marsh_mod.marshalAbstract(ctx, p);
     try marsh.marshalByte(ctx, @as(*u8, @ptrCast(p)).*);
 }
 
 /// Registers itself twice.
-fn twiceUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*anyopaque) {
+fn twiceUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*anyopaque) {
     const p = (try marsh.unmarshalAbstract(ctx, 1)).?;
     try marsh.unmarshalAbstractReuse(ctx, p);
     return p;
@@ -236,9 +236,9 @@ const twice_at = abstract_type.define(anyopaque, .{
 });
 
 /// Never registers at all.
-fn neverUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*anyopaque) {
+fn neverUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*anyopaque) {
     _ = try marsh.unmarshalByte(ctx);
-    return abstracts.new(&probe_at, @sizeOf(Probe)).?;
+    return abstracts.newFor(Probe, &probe_at);
 }
 
 const never_at = abstract_type.define(anyopaque, .{
@@ -247,7 +247,7 @@ const never_at = abstract_type.define(anyopaque, .{
     .unmarshal = neverUnmarshal,
 });
 
-fn threadedUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*anyopaque) {
+fn threadedUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*anyopaque) {
     return (try marsh.unmarshalAbstractThreaded(ctx, 1)).?;
 }
 
@@ -261,7 +261,7 @@ const threaded_at = abstract_type.define(anyopaque, .{
 /// unmarshallable rather than merely unregistered.
 const inert_at = abstract_type.define(anyopaque, .{ .name = "test/marsh-inert" });
 
-fn stored(at: *const AbstractType) *const types.AbstractType {
+fn stored(at: *const AbstractType) *const abi.AbstractType {
     return at;
 }
 
@@ -296,7 +296,7 @@ fn theThreeIntegerEncodings() raise.Raising(void) {
         .{ .bytes = "\xcd\x7f\xff\xff\xff", .value = std.math.maxInt(i32) },
     };
     for (cases) |case| {
-        assert(harness.integerIs(try unmarshalBytes(case.bytes, 0), case.value));
+        expect(harness.integerIs(try unmarshalBytes(case.bytes, 0), case.value));
     }
 }
 
@@ -304,16 +304,16 @@ fn theThreeIntegerEncodings() raise.Raising(void) {
 /// recorded as a reference; an integral one never is.
 fn realsAndIntegralDoublesDiffer() raise.Raising(void) {
     var b = try marshalled(wrap.fromNumber(0.5), null, 0);
-    assert(b.count == 9);
-    assert(b.slice()[0] == lb_real);
-    assert(wrap.toNumber(try unmarshalled(b, 0)) == 0.5);
+    expect(b.count == 9);
+    expect(b.slice()[0] == lb_real);
+    expect(wrap.toNumber(try unmarshalled(b, 0)) == 0.5);
 
     wireIs(try marshalled(wrap.fromNumber(3.0), null, 0), "\x03");
 
     // 2^31 is integral and outside int32, so it is a real.
     b = try marshalled(wrap.fromNumber(2147483648.0), null, 0);
-    assert(b.count == 9 and b.slice()[0] == lb_real);
-    assert(wrap.toNumber(try unmarshalled(b, 0)) == 2147483648.0);
+    expect(b.count == 9 and b.slice()[0] == lb_real);
+    expect(wrap.toNumber(try unmarshalled(b, 0)) == 2147483648.0);
 }
 
 // -------------------------------------------------------- the 64-bit codec
@@ -326,19 +326,19 @@ fn theSizeEncodingBoundaries() raise.Raising(void) {
         0x01020304, 0x05060708, 0xFFFFFFFFFFFFFFFF,
     };
     for (values) |val| {
-        const probe: *Probe = @ptrCast(@alignCast(abstracts.new(stored(&probe_at), @sizeOf(Probe))));
+        const probe: *Probe = @ptrCast(@alignCast(abstracts.newBytes(stored(&probe_at), @sizeOf(Probe))));
         probe.* = std.mem.zeroes(Probe);
         probe.i64_field = @bitCast(val);
         probe.sz = @truncate(val);
         probe.value = wrap.fromNil();
         const b = try marshalled(keep(wrap.fromAbstract(probe)), null, 0);
         const back: *Probe = @ptrCast(@alignCast(wrap.toAbstract(try unmarshalled(b, 0))));
-        assert(@as(u64, @bitCast(back.i64_field)) == val);
-        assert(back.sz == @as(usize, @truncate(val)));
+        expect(@as(u64, @bitCast(back.i64_field)) == val);
+        expect(back.sz == @as(usize, @truncate(val)));
     }
 
     // The prefix byte counts the bytes that follow, little endian.
-    const probe: *Probe = @ptrCast(@alignCast(abstracts.new(stored(&probe_at), @sizeOf(Probe))));
+    const probe: *Probe = @ptrCast(@alignCast(abstracts.newBytes(stored(&probe_at), @sizeOf(Probe))));
     probe.* = std.mem.zeroes(Probe);
     probe.i64_field = 0x0102;
     probe.value = wrap.fromNil();
@@ -351,16 +351,16 @@ fn theSizeEncodingBoundaries() raise.Raising(void) {
         + 1 // value: nil
         + 1; // the unsafe marker
     const at = b.data.? + @as(usize, @intCast(b.count)) - tail;
-    assert(at[0] == 0xF2 and at[1] == 0x02 and at[2] == 0x01);
+    expect(at[0] == 0xF2 and at[1] == 0x02 and at[2] == 0x01);
 
     // Nine bytes of length is not a 64-bit integer.
-    assert(refusedBy("\xf9\x00\x00\x00\x00\x00\x00\x00\x00\x00").?.says("unknown byte f9 at index 0"));
+    expect(refusedBy("\xf9\x00\x00\x00\x00\x00\x00\x00\x00\x00").?.says("unknown byte f9 at index 0"));
 }
 
 // ---------------------------------------------------------- the context API
 
 fn makeProbe() *Probe {
-    const probe: *Probe = @ptrCast(@alignCast(abstracts.new(stored(&probe_at), @sizeOf(Probe))));
+    const probe: *Probe = @ptrCast(@alignCast(abstracts.newBytes(stored(&probe_at), @sizeOf(Probe))));
     probe.i32_field = -12345;
     probe.i64_field = -0x0102030405060708;
     probe.sz = 0x1234;
@@ -376,32 +376,32 @@ fn theContextApiRoundTrips() raise.Raising(void) {
     const probe = makeProbe();
     var b = try marshalled(wrap.fromAbstract(probe), null, 0);
     const out = keep(try unmarshalled(b, 0));
-    assert(harness.isType(out, repr.Tag.abstract));
-    assert(types.abstractHead(wrap.toAbstract(out)).type == stored(&probe_at));
+    expect(harness.isType(out, repr.Tag.abstract));
+    expect(abi.abstractHead(wrap.toAbstract(out)).type == stored(&probe_at));
     var back: *Probe = @ptrCast(@alignCast(wrap.toAbstract(out)));
-    assert(back != probe);
-    assert(back.i32_field == probe.i32_field);
-    assert(back.i64_field == probe.i64_field);
-    assert(back.sz == probe.sz);
-    assert(back.byte == probe.byte);
-    assert(std.mem.eql(u8, &back.bytes, "wxyz"));
-    assert(harness.equals(back.value, probe.value));
+    expect(back != probe);
+    expect(back.i32_field == probe.i32_field);
+    expect(back.i64_field == probe.i64_field);
+    expect(back.sz == probe.sz);
+    expect(back.byte == probe.byte);
+    expect(std.mem.eql(u8, &back.bytes, "wxyz"));
+    expect(harness.equals(back.value, probe.value));
     // Safe mode: the pointer was not written, so it does not come back.
-    assert(back.ptr == null);
+    expect(back.ptr == null);
 
     // Unsafe mode carries it.
     b = try marshalled(wrap.fromAbstract(probe), null, constants.JANET_MARSHAL_UNSAFE);
     back = @ptrCast(@alignCast(wrap.toAbstract(
         keep(try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE)),
     )));
-    assert(back.ptr == @as(?*anyopaque, @ptrCast(@constCast(stored(&probe_at)))));
+    expect(back.ptr == @as(?*anyopaque, @ptrCast(@constCast(stored(&probe_at)))));
 
     // The stream opens with LB_ABSTRACT and the type's name as a symbol.
     const name = probe_at.name;
-    assert(b.slice()[0] == lb_abstract);
-    assert(b.slice()[1] == lb_symbol);
-    assert(b.slice()[2] == name.len);
-    assert(std.mem.eql(u8, b.slice()[3 .. 3 + name.len], name));
+    expect(b.slice()[0] == lb_abstract);
+    expect(b.slice()[1] == lb_symbol);
+    expect(b.slice()[2] == name.len);
+    expect(std.mem.eql(u8, b.slice()[3 .. 3 + name.len], name));
 }
 
 /// The abstract is entered into the reference table before its fields are
@@ -415,60 +415,60 @@ fn anAbstractCanContainItself() raise.Raising(void) {
 
     const b = try marshalled(self, null, 0);
     const back: *Probe = @ptrCast(@alignCast(wrap.toAbstract(keep(try unmarshalled(b, 0)))));
-    assert(harness.isType(back.value, repr.Tag.array));
+    expect(harness.isType(back.value, repr.Tag.array));
     const back_holder = wrap.toArray(back.value);
-    assert(back_holder.*.count == 1);
-    assert(wrap.toAbstract(back_holder.*.slice()[0]) == @as(?*anyopaque, back));
+    expect(back_holder.count == 1);
+    expect(wrap.toAbstract(back_holder.slice()[0]) == @as(?*anyopaque, back));
 }
 
 fn theAbstractProtocolIsEnforced() raise.Raising(void) {
-    const twice: *u8 = @ptrCast(abstracts.new(stored(&twice_at), 1));
+    const twice: *u8 = @ptrCast(abstracts.newBytes(stored(&twice_at), 1));
     twice.* = 7;
     var b = try marshalled(keep(wrap.fromAbstract(twice)), null, 0);
-    assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
+    expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("janet_unmarshal_abstract called more than once"));
 
-    const never: *u8 = @ptrCast(abstracts.new(stored(&never_at), 1));
+    const never: *u8 = @ptrCast(abstracts.newBytes(stored(&never_at), 1));
     never.* = 7;
     b = try marshalled(keep(wrap.fromAbstract(never)), null, 0);
-    assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
+    expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("janet_unmarshal_abstract not called"));
 
-    const threaded: *u8 = @ptrCast(abstracts.new(stored(&threaded_at), 1));
+    const threaded: *u8 = @ptrCast(abstracts.newBytes(stored(&threaded_at), 1));
     threaded.* = 7;
     b = try marshalled(keep(wrap.fromAbstract(threaded)), null, 0);
     // `JANET_THREADS` is defined by no build in this tree, so this arm is the
     // only one that has ever been compiled. See `FOUND.md`.
-    assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
+    expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("threaded abstracts not supported"));
 
-    const inert: *i32 = @ptrCast(@alignCast(abstracts.new(stored(&inert_at), @sizeOf(i32))));
+    const inert: *i32 = @ptrCast(@alignCast(abstracts.newBytes(stored(&inert_at), @sizeOf(i32))));
     inert.* = 7;
-    assert(harness.raised(
+    expect(harness.raised(
         marshalled,
-        .{ keep(wrap.fromAbstract(inert)), @as(?*types.JanetTable, null), @as(c_int, 0) },
+        .{ keep(wrap.fromAbstract(inert)), @as(?*tables.Table, null), @as(c_int, 0) },
     ).?.beginsWith("cannot marshal <test/marsh-inert 0x"));
 }
 
 fn theUnsafeGateOnTheContextApi() raise.Raising(void) {
-    const refuser = keep(wrap.fromAbstract(abstracts.new(stored(&refuser_at), @sizeOf(i32))));
-    assert(harness.raised(
+    const refuser = keep(wrap.fromAbstract(abstracts.newBytes(stored(&refuser_at), @sizeOf(i32))));
+    expect(harness.raised(
         marshalled,
-        .{ refuser, @as(?*types.JanetTable, null), @as(c_int, 0) },
+        .{ refuser, @as(?*tables.Table, null), @as(c_int, 0) },
     ).?.says("can only marshal pointers in unsafe mode"));
 
     const b = try marshalled(refuser, null, constants.JANET_MARSHAL_UNSAFE);
-    assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
+    expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("can only unmarshal pointers in unsafe mode"));
     // And succeeds when the flag is given.
-    assert(harness.isType(try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE), repr.Tag.abstract));
+    expect(harness.isType(try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE), repr.Tag.abstract));
 
     // A length that cannot be a buffer index is refused before anything is
     // read from it.
-    const toobig = keep(wrap.fromAbstract(abstracts.new(stored(&toobig_at), @sizeOf(i32))));
-    assert(harness.raised(
+    const toobig = keep(wrap.fromAbstract(abstracts.newBytes(stored(&toobig_at), @sizeOf(i32))));
+    expect(harness.raised(
         marshalled,
-        .{ toobig, @as(?*types.JanetTable, null), @as(c_int, 0) },
+        .{ toobig, @as(?*tables.Table, null), @as(c_int, 0) },
     ).?.says("size_t too large to fit in buffer"));
 }
 
@@ -480,7 +480,7 @@ fn theUnsafeGateOnTheContextApi() raise.Raising(void) {
 /// a pointer shift steals the low bits of a cfunction pointer, and
 /// `-Dnanbox-pointer-shift=2` is a matrix entry. The C original got the same
 /// requirement from `JANET_CFUNCTION_ALIGN`.
-fn aCfunction(argv: []repr.Value) align(@import("corefn").alignment) raise.Raising(repr.Value) {
+fn aCfunction(argv: []repr.Value) align(@import("subsystems").corefn.alignment) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(1729);
@@ -490,24 +490,24 @@ fn pointersAndCfunctionsNeedTheUnsafeFlag() raise.Raising(void) {
     const ptr = wrap.fromPointer(@ptrCast(@constCast(stored(&probe_at))));
     const cfun = wrap.fromCfunction(raise.stored(&aCfunction));
 
-    assert(harness.raised(marshalled, .{ ptr, @as(?*types.JanetTable, null), @as(c_int, 0) }).?
+    expect(harness.raised(marshalled, .{ ptr, @as(?*tables.Table, null), @as(c_int, 0) }).?
         .beginsWith("no registry value and cannot marshal <pointer 0x"));
-    assert(harness.raised(marshalled, .{ cfun, @as(?*types.JanetTable, null), @as(c_int, 0) }).?
+    expect(harness.raised(marshalled, .{ cfun, @as(?*tables.Table, null), @as(c_int, 0) }).?
         .beginsWith("no registry value and cannot marshal <cfunction 0x"));
 
     var b = try marshalled(ptr, null, constants.JANET_MARSHAL_UNSAFE);
-    assert(b.slice()[0] == lb_unsafe_pointer);
-    assert(b.count == 1 + @sizeOf(*anyopaque));
-    assert(wrap.toPointer(try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE)) ==
+    expect(b.slice()[0] == lb_unsafe_pointer);
+    expect(b.count == 1 + @sizeOf(*anyopaque));
+    expect(wrap.toPointer(try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE)) ==
         @as(?*anyopaque, @ptrCast(@constCast(stored(&probe_at)))));
-    assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
+    expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("unsafe flag not given, will not unmarshal raw pointer at index 1"));
 
     b = try marshalled(cfun, null, constants.JANET_MARSHAL_UNSAFE);
-    assert(b.slice()[0] == lb_unsafe_cfunction);
+    expect(b.slice()[0] == lb_unsafe_cfunction);
     const back = try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE);
-    assert(wrap.toCfunction(back) == raise.stored(&aCfunction));
-    assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
+    expect(wrap.toCfunction(back) == raise.stored(&aCfunction));
+    expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("unsafe flag not given, will not unmarshal function pointer at index 1"));
 }
 
@@ -529,8 +529,8 @@ fn pointersAndCfunctionsNeedTheUnsafeFlag() raise.Raising(void) {
 const lb_weak_base: u8 = if (constants.JANET_VM_HAS_EV != 0) 226 else 224;
 
 // The lead bytes this file names by number, so that the numbers appear once.
-// Every one is a wire-format constant: `janet.h` does not export the enum and
-// a renumbering would silently invalidate every stored image.
+// Every one is a wire-format constant, and a renumbering would silently
+// invalidate every stored image.
 const lb_real: u8 = 200;
 const lb_fiber: u8 = 204;
 const lb_symbol: u8 = 207;
@@ -546,26 +546,26 @@ fn theWeakLeadBytesMoveWithTheEventLoop() raise.Raising(void) {
     const weakkv = tables.weakkv(1);
     const weak_array = arrays.weak(0);
 
-    assert((try marshalled(wrap.fromTable(weakk), null, 0)).slice()[0] == lb_weak_base + 0);
-    assert((try marshalled(wrap.fromTable(weakv), null, 0)).slice()[0] == lb_weak_base + 1);
-    assert((try marshalled(wrap.fromTable(weakkv), null, 0)).slice()[0] == lb_weak_base + 2);
-    assert((try marshalled(wrap.fromArray(weak_array), null, 0)).slice()[0] == lb_weak_base + 6);
+    expect((try marshalled(wrap.fromTable(weakk), null, 0)).slice()[0] == lb_weak_base + 0);
+    expect((try marshalled(wrap.fromTable(weakv), null, 0)).slice()[0] == lb_weak_base + 1);
+    expect((try marshalled(wrap.fromTable(weakkv), null, 0)).slice()[0] == lb_weak_base + 2);
+    expect((try marshalled(wrap.fromArray(weak_array), null, 0)).slice()[0] == lb_weak_base + 6);
 
-    weakk.*.proto = tables.new(0);
-    weakv.*.proto = tables.new(0);
-    weakkv.*.proto = tables.new(0);
-    assert((try marshalled(wrap.fromTable(weakk), null, 0)).slice()[0] == lb_weak_base + 3);
-    assert((try marshalled(wrap.fromTable(weakv), null, 0)).slice()[0] == lb_weak_base + 4);
-    assert((try marshalled(wrap.fromTable(weakkv), null, 0)).slice()[0] == lb_weak_base + 5);
+    weakk.proto = tables.new(0);
+    weakv.proto = tables.new(0);
+    weakkv.proto = tables.new(0);
+    expect((try marshalled(wrap.fromTable(weakk), null, 0)).slice()[0] == lb_weak_base + 3);
+    expect((try marshalled(wrap.fromTable(weakv), null, 0)).slice()[0] == lb_weak_base + 4);
+    expect((try marshalled(wrap.fromTable(weakkv), null, 0)).slice()[0] == lb_weak_base + 5);
 
     // And each comes back as the same flavour of weak container.
     var b = try marshalled(wrap.fromArray(weak_array), null, 0);
     var back = try unmarshalled(b, 0);
-    assert(harness.isType(back, repr.Tag.array));
+    expect(harness.isType(back, repr.Tag.array));
     b = try marshalled(wrap.fromTable(weakkv), null, 0);
     back = try unmarshalled(b, 0);
-    assert(harness.isType(back, repr.Tag.table));
-    assert(wrap.toTable(back).*.proto != null);
+    expect(harness.isType(back, repr.Tag.table));
+    expect(wrap.toTable(back).proto != null);
 }
 
 // ------------------------------------------------------- the reference table
@@ -580,7 +580,7 @@ fn whenAValueBecomesAReference() raise.Raising(void) {
     // LB_ARRAY, count 1, then LB_REFERENCE 0.
     wireIs(b, "\xd1\x01\xda\x00");
     var back_a = wrap.toArray(keep(try unmarshalled(b, 0)));
-    assert(back_a.*.count == 1 and wrap.toArray(back_a.*.slice()[0]) == back_a);
+    expect(back_a.count == 1 and wrap.toArray(back_a.slice()[0]) == back_a);
 
     // The same array twice is one reference and one back-reference.
     const outer = arrays.new(2);
@@ -590,60 +590,60 @@ fn whenAValueBecomesAReference() raise.Raising(void) {
     b = try marshalled(keep(wrap.fromArray(outer)), null, 0);
     wireIs(b, "\xd1\x02\xd1\x00\xda\x01");
     back_a = wrap.toArray(keep(try unmarshalled(b, 0)));
-    assert(wrap.toArray(back_a.*.slice()[0]) == wrap.toArray(back_a.*.slice()[1]));
+    expect(wrap.toArray(back_a.slice()[0]) == wrap.toArray(back_a.slice()[1]));
 
     // With cycles switched off nothing is recorded, so the same array is
     // written twice and the copies come back distinct.
     b = try marshalled(wrap.fromArray(outer), null, constants.JANET_MARSHAL_NO_CYCLES);
     wireIs(b, "\xd1\x02\xd1\x00\xd1\x00");
     back_a = wrap.toArray(keep(try unmarshalled(b, 0)));
-    assert(wrap.toArray(back_a.*.slice()[0]) != wrap.toArray(back_a.*.slice()[1]));
+    expect(wrap.toArray(back_a.slice()[0]) != wrap.toArray(back_a.slice()[1]));
 
     // And a cyclic value has nothing to stop it but the recursion guard.
-    assert(harness.raised(marshalled, .{
+    expect(harness.raised(marshalled, .{
         wrap.fromArray(a),
-        @as(?*types.JanetTable, null),
+        @as(?*tables.Table, null),
         @as(c_int, constants.JANET_MARSHAL_NO_CYCLES),
     }).?.says("stack overflow"));
 }
 
 fn aReferenceIndexIsBoundsChecked() void {
-    assert(refusedBy("\xda\x00").?.says("invalid reference 0"));
+    expect(refusedBy("\xda\x00").?.says("invalid reference 0"));
     // Neither of the other two reference bytes is a lead byte: a funcenv
     // reference is only read where a funcenv is expected, and a funcdef
     // reference where a funcdef is.
-    assert(refusedBy("\xdb\x00").?.says("unknown byte db at index 0"));
-    assert(refusedBy("\xdc\x00").?.says("unknown byte dc at index 0"));
+    expect(refusedBy("\xdb\x00").?.says("unknown byte db at index 0"));
+    expect(refusedBy("\xdc\x00").?.says("unknown byte dc at index 0"));
     // A function with no environments, whose funcdef is a reference into an
     // empty table.
-    assert(refusedBy("\xd7\x00\xdc\x00").?.says("invalid funcdef reference 0"));
+    expect(refusedBy("\xd7\x00\xdc\x00").?.says("invalid funcdef reference 0"));
 }
 
 // -------------------------------------------------- functions and closures
 
-fn onlyIndexOf(b: *types.JanetBuffer, lead: u8) i32 {
+fn onlyIndexOf(b: *buffers.Buffer, lead: u8) i32 {
     var found: i32 = -1;
     var i: i32 = 0;
     while (i < b.count) : (i += 1) {
         if (b.slice()[@intCast(i)] != lead) continue;
-        assert(found < 0); // expected exactly one occurrence of this lead byte
+        expect(found < 0); // expected exactly one occurrence of this lead byte
         found = i;
     }
-    assert(found >= 0); // expected this lead byte to appear
+    expect(found >= 0); // expected this lead byte to appear
     return found;
 }
 
 fn callThunk(f: repr.Value) i32 {
     var result = wrap.fromNil();
-    var fiber: ?*types.JanetFiber = null;
+    var fiber: ?*fibers.Fiber = null;
     const sig = vm_entry.pcall(wrap.toFunction(f), 0, null, &result, &fiber);
-    assert(sig == types.Signal.ok);
+    expect(sig == abi.Signal.ok);
     return wrap.toInteger(result);
 }
 
 fn evaluate(source: [*:0]const u8) repr.Value {
     var out: repr.Value = undefined;
-    assert(core_env.dostring(test_env, source, "marsh-test", &out) == 0);
+    expect(core_env.dostring(test_env, source, "marsh-test", &out) == 0);
     return keep(out);
 }
 
@@ -659,10 +659,10 @@ fn functionStreamsAndTheirBackReferences() raise.Raising(void) {
     var at = onlyIndexOf(b, lb_funcenv_ref);
     var closures = keep(try unmarshalled(b, 0));
     var back = wrap.toTuple(closures);
-    assert(callThunk(back[0]) == 41);
-    assert(callThunk(back[1]) == 42);
+    expect(callThunk(back[0]) == 41);
+    expect(callThunk(back[1]) == 42);
     b.slice()[@intCast(at + 1)] = 0x7f;
-    assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
+    expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("invalid funcenv reference 127"));
 
     // Two instances of one `fn` share a funcdef, and only the second is a back
@@ -673,20 +673,20 @@ fn functionStreamsAndTheirBackReferences() raise.Raising(void) {
     at = onlyIndexOf(b, lb_funcdef_ref);
     closures = keep(try unmarshalled(b, 0));
     back = wrap.toTuple(closures);
-    assert(callThunk(back[0]) == 7);
-    assert(callThunk(back[1]) == 8);
+    expect(callThunk(back[0]) == 7);
+    expect(callThunk(back[1]) == 8);
     b.slice()[@intCast(at + 1)] = 0x7f;
-    assert(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
+    expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("invalid funcdef reference 127"));
 
     // A function carries at most 255 environments on the wire.
-    assert(refusedBy("\xd7\xcd\x00\x00\x01\x00").?
+    expect(refusedBy("\xd7\xcd\x00\x00\x01\x00").?
         .says("invalid function - too many environments (256)"));
 
     // A funcdef is verified before it is handed back. This one declares no
     // flags, no slots, no constants and no bytecode, which is the smallest
     // well-formed header a stream can carry and still not be a function.
-    assert(refusedBy("\xd7\x00\x00\x00\x00\x00\x00\x00\x00").?
+    expect(refusedBy("\xd7\x00\x00\x00\x00\x00\x00\x00\x00").?
         .says("funcdef has invalid bytecode"));
 }
 
@@ -702,12 +702,12 @@ fn theReverseRegistryShortCircuits() raise.Raising(void) {
     wireIs(b, "\xd8\x08an-array");
 
     // Without a forward table the name resolves to nil.
-    assert(harness.isType(try unmarshalled(b, 0), repr.Tag.nil));
+    expect(harness.isType(try unmarshalled(b, 0), repr.Tag.nil));
 
     const reg = tables.new(1);
     tables.put(reg, value.fromBytes("an-array", .symbol), wrap.fromArray(a));
     const back = try marsh.unmarshal(b.slice(), 0, reg, null);
-    assert(wrap.toArray(back) == a);
+    expect(wrap.toArray(back) == a);
 
     // A registry hit is still recorded as a reference, so a second occurrence
     // is a back-reference rather than a second name.
@@ -732,7 +732,7 @@ fn envLookupIntoPrefixesAndRecurses() void {
     tables.put(proto, value.fromBytes("inherited", .symbol), anEntry("value", w(1)));
 
     const env = tables.new(4);
-    env.*.proto = proto;
+    env.proto = proto;
     tables.put(env, value.fromBytes("plain", .symbol), anEntry("value", w(2)));
     tables.put(env, value.fromBytes("by-ref", .symbol), anEntry("ref", w(3)));
     // A struct entry is read the same way a table entry is.
@@ -745,35 +745,35 @@ fn envLookupIntoPrefixesAndRecurses() void {
 
     const flat = tables.new(0);
     marsh_mod.envLookupInto(flat, env, null, 1);
-    assert(harness.integerIs(tables.get(flat, value.fromBytes("plain", .symbol)), 2));
-    assert(harness.integerIs(tables.get(flat, value.fromBytes("by-ref", .symbol)), 3));
-    assert(harness.integerIs(tables.get(flat, value.fromBytes("from-struct", .symbol)), 4));
-    assert(harness.integerIs(tables.get(flat, value.fromBytes("inherited", .symbol)), 1));
-    assert(harness.isType(tables.get(flat, value.fromBytes("opaque", .symbol)), repr.Tag.nil));
-    assert(harness.isType(tables.get(flat, value.fromBytes("not-a-symbol", .keyword)), repr.Tag.nil));
+    expect(harness.integerIs(tables.get(flat, value.fromBytes("plain", .symbol)), 2));
+    expect(harness.integerIs(tables.get(flat, value.fromBytes("by-ref", .symbol)), 3));
+    expect(harness.integerIs(tables.get(flat, value.fromBytes("from-struct", .symbol)), 4));
+    expect(harness.integerIs(tables.get(flat, value.fromBytes("inherited", .symbol)), 1));
+    expect(harness.isType(tables.get(flat, value.fromBytes("opaque", .symbol)), repr.Tag.nil));
+    expect(harness.isType(tables.get(flat, value.fromBytes("not-a-symbol", .keyword)), repr.Tag.nil));
 
     // Without recursion the prototype is not walked.
     const shallow = tables.new(0);
     marsh_mod.envLookupInto(shallow, env, null, 0);
-    assert(harness.integerIs(tables.get(shallow, value.fromBytes("plain", .symbol)), 2));
-    assert(harness.isType(tables.get(shallow, value.fromBytes("inherited", .symbol)), repr.Tag.nil));
+    expect(harness.integerIs(tables.get(shallow, value.fromBytes("plain", .symbol)), 2));
+    expect(harness.isType(tables.get(shallow, value.fromBytes("inherited", .symbol)), repr.Tag.nil));
 
     // A prefix is prepended to the symbol, not to the entry.
     const prefixed = tables.new(0);
     marsh_mod.envLookupInto(prefixed, env, "mod/", 1);
-    assert(harness.integerIs(tables.get(prefixed, value.fromBytes("mod/plain", .symbol)), 2));
-    assert(harness.integerIs(tables.get(prefixed, value.fromBytes("mod/inherited", .symbol)), 1));
-    assert(harness.isType(tables.get(prefixed, value.fromBytes("plain", .symbol)), repr.Tag.nil));
+    expect(harness.integerIs(tables.get(prefixed, value.fromBytes("mod/plain", .symbol)), 2));
+    expect(harness.integerIs(tables.get(prefixed, value.fromBytes("mod/inherited", .symbol)), 1));
+    expect(harness.isType(tables.get(prefixed, value.fromBytes("plain", .symbol)), repr.Tag.nil));
 
     // An empty prefix is not the same code path as a null one, and gives the
     // same answer.
     const empty = tables.new(0);
     marsh_mod.envLookupInto(empty, env, "", 1);
-    assert(harness.integerIs(tables.get(empty, value.fromBytes("plain", .symbol)), 2));
+    expect(harness.integerIs(tables.get(empty, value.fromBytes("plain", .symbol)), 2));
 
     // `janet_env_lookup` is the recursive, unprefixed case with a fresh table.
     const made = marsh_mod.envLookup(env);
-    assert(harness.integerIs(tables.get(made, value.fromBytes("inherited", .symbol)), 1));
+    expect(harness.integerIs(tables.get(made, value.fromBytes("inherited", .symbol)), 1));
 }
 
 // -------------------------------------------------------------- truncation
@@ -800,29 +800,29 @@ fn aTruncatedStreamIsRefusedAtEveryLength() raise.Raising(void) {
             std.debug.print("prefix of {d} bytes unmarshalled without error\n", .{len});
             @panic("a truncated stream was accepted");
         }
-        assert(refusal.?.signal == types.Signal.@"error");
+        expect(refusal.?.signal == abi.Signal.@"error");
     }
     // The whole thing is fine.
-    assert(harness.isType(try unmarshalled(whole, 0), repr.Tag.array));
+    expect(harness.isType(try unmarshalled(whole, 0), repr.Tag.array));
 }
 
 fn theDiagnosticsNameAByteAndAnOffset() void {
     // The byte is rendered by `%x`, which reads a 64-bit argument from a call
     // that passes a 32-bit one in the C original -- see `FOUND.md`.
-    assert(refusedBy("\xff").?.says("unknown byte ff at index 0"));
-    assert(refusedBy("\xd1\x01\xff").?.says("unknown byte ff at index 2"));
+    expect(refusedBy("\xff").?.says("unknown byte ff at index 0"));
+    expect(refusedBy("\xd1\x01\xff").?.says("unknown byte ff at index 2"));
     // A lead byte in [192, 200) is not an integer encoding.
-    assert(refusedBy("\xd1\xc0").?.says("expected integer, got byte c0 at index 1"));
+    expect(refusedBy("\xd1\xc0").?.says("expected integer, got byte c0 at index 1"));
     // A count has to be a natural number.
-    assert(refusedBy("\xd1\xbf\xff").?.says("expected integer >= 0, got -1"));
-    assert(refusedBy("").?.says("unexpected end of source"));
+    expect(refusedBy("\xd1\xbf\xff").?.says("expected integer >= 0, got -1"));
+    expect(refusedBy("").?.says("unexpected end of source"));
 }
 
 /// A struct's prototype has to be a struct and a table's a table, and the
 /// message names the type set rather than the type.
 fn aPrototypeIsTypeChecked() void {
-    assert(refusedBy("\xdf\x00\x00").?.says("expected type struct, got 0"));
-    assert(refusedBy("\xd4\x00\x00").?.says("expected type table, got 0"));
+    expect(refusedBy("\xdf\x00\x00").?.says("expected type struct, got 0"));
+    expect(refusedBy("\xd4\x00\x00").?.says("expected type table, got 0"));
 }
 
 // ------------------------------------------------------------------- fibers
@@ -832,22 +832,22 @@ fn aPrototypeIsTypeChecked() void {
 fn aLiveFiberCannotBeMarshalled() raise.Raising(void) {
     var out = evaluate("(fn [] (marshal (fiber/current)))");
     var result = wrap.fromNil();
-    var fiber: ?*types.JanetFiber = null;
+    var fiber: ?*fibers.Fiber = null;
     const sig = vm_entry.pcall(wrap.toFunction(out), 0, null, &result, &fiber);
-    assert(sig == types.Signal.@"error");
-    assert(harness.stringValueIs(result, "cannot marshal alive fiber"));
+    expect(sig == abi.Signal.@"error");
+    expect(harness.stringValueIs(result, "cannot marshal alive fiber"));
 
     // A suspended one round-trips, and the reader checks the frame arithmetic
     // the writer produced.
     out = evaluate("(fiber/new (fn [] (yield 1) 2))");
     const b = try marshalled(out, null, 0);
-    assert(b.slice()[0] == lb_fiber);
-    assert(harness.isType(try unmarshalled(b, 0), repr.Tag.fiber));
+    expect(b.slice()[0] == lb_fiber);
+    expect(harness.isType(try unmarshalled(b, 0), repr.Tag.fiber));
 
-    assert(refusedBy("\xcc\x00\x01\x00\x00\x00").?.says("fiber has incorrect stack setup"));
+    expect(refusedBy("\xcc\x00\x01\x00\x00\x00").?.says("fiber has incorrect stack setup"));
     // A status field of 16 is one past `JANET_STATUS_ALIVE` and still inside
     // the six-bit status mask, so it survives every other check.
-    assert(refusedBy("\xcc\xcd\x00\x10\x00\x00\x00\x04\x04\x04\xc9").?
+    expect(refusedBy("\xcc\xcd\x00\x10\x00\x00\x00\x04\x04\x04\xc9").?
         .says("invalid fiber status"));
 }
 
@@ -859,17 +859,17 @@ fn aLiveFiberCannotBeMarshalled() raise.Raising(void) {
 fn nextPointsPastTheValue() raise.Raising(void) {
     const b = buffers.new(16);
     try marsh.marshal(b, harness.wrapInteger(1), null, 0);
-    const first: usize = @intCast(b.*.count);
+    const first: usize = @intCast(b.count);
     try marsh.marshal(b, value.fromBytes("second", .string), null, 0);
 
     var next: [*]const u8 = undefined;
-    const one = try marsh.unmarshal(b.*.slice(), 0, null, &next);
-    assert(harness.integerIs(one, 1));
-    assert(next == b.*.data.? + first);
+    const one = try marsh.unmarshal(b.slice(), 0, null, &next);
+    expect(harness.integerIs(one, 1));
+    expect(next == b.data.? + first);
 
-    const two = try marsh.unmarshal(next[0..@intCast(@as(usize, @intCast(b.*.count)) - first)], 0, null, &next);
-    assert(harness.stringValueIs(two, "second"));
-    assert(next == b.*.data.? + @as(usize, @intCast(b.*.count)));
+    const two = try marsh.unmarshal(next[0..@intCast(@as(usize, @intCast(b.count)) - first)], 0, null, &next);
+    expect(harness.stringValueIs(two, "second"));
+    expect(next == b.data.? + @as(usize, @intCast(b.count)));
 }
 
 // -------------------------------------------------------------------- entry

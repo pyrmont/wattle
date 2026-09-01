@@ -7,15 +7,15 @@
 //! `build.zig`'s `module-errors` step compiles this and requires the failure.
 
 const repr = @import("repr");
-const abstract_type = @import("abstract_type");
+const janet = @import("janet");
 
 const Payload = struct { n: i32 };
 
-fn plainGet(_: *Payload, _: repr.Value, _: *repr.Value) c_int {
-    return 0;
+fn plainGet(_: *Payload, _: repr.Value) ?repr.Value {
+    return null;
 }
 
-pub const at = abstract_type.define(Payload, .{
+pub const at = janet.define(Payload, .{
     .name = "module-errors/nonraising-get",
     .get = plainGet,
 });

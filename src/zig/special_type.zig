@@ -17,13 +17,13 @@
 //! The callback takes a slice, because the count and the pointer were always
 //! one tuple's tail.
 
-const raise = @import("raise");
-const types = @import("types");
+const raise = @import("raise.zig");
 const repr = @import("repr");
+const compiler = @import("compiler.zig");
 
 /// What a compiler special is: a name and the raising function that compiles
 /// the form's arguments.
 pub const Special = struct {
     name: [*:0]const u8,
-    compile: ?*const fn (types.JanetFopts, []const repr.Value) raise.Error!types.JanetSlot = null,
+    compile: ?*const fn (compiler.JanetFopts, []const repr.Value) raise.Error!compiler.JanetSlot = null,
 };

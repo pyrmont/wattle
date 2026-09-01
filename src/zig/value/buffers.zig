@@ -1,4 +1,4 @@
-//! `JanetBuffer`: the growable byte container, its capacity policy, its push
+//! `Buffer`: the growable byte container, its capacity policy, its push
 //! primitives and the `buffer/*` surface.
 //!
 //! `arrays.zig` is the sibling, and the two were one file: they are one data
@@ -16,21 +16,15 @@
 //! skips a buffer's bytes; nothing below marks, and nothing below frees a
 //! collectable block.
 //!
-//! **The file is jump-transparent**, under the rule SPIKE-8 settled, and it is
-//! the first subsystem where the reason is ordinary rather than exotic. Three
-//! functions here call `janet_panic` directly — `janet_buffer_can_realloc`,
-//! `janet_pointer_buffer_unsafe` and `janet_buffer_extra` — and `janet_gcalloc`
-//! can trigger a collection, which runs finalizers, which SPIKE-8 permits to
-//! raise. A signal from any of them unwinds straight through these frames, so
-//! there is no `defer` in this file and `build.zig` checks that there is not.
-//!
-//! Every frame here is safe to leave that way, and it is worth saying why
-//! rather than assuming it. The panics all happen *before* the allocation they
-//! guard: `canRealloc` is called before the `janet_realloc` it protects, and
-//! `extra`'s overflow check is the first statement in the function. So no path
-//! below holds a raw block between acquiring it and storing it in a structure
-//! the collector can see — the one shape that a skipped cleanup would turn
-//! into a leak.
+//! **Nothing here holds anything across a raise.** Three functions raise
+//! directly — `canRealloc`, `pointerBufferUnsafe` and `extra` — and
+//! `janet_gcalloc` can trigger a collection, which runs finalizers, which may
+//! raise. Every one of those raises happens *before* the allocation it guards:
+//! `canRealloc` is called before the `janet_realloc` it protects, and `extra`'s
+//! overflow check is the first statement in the function. So no path below
+//! holds a raw block between acquiring it and storing it in a structure the
+//! collector can see — the one shape that a skipped cleanup would turn into a
+//! leak.
 //!
 //! ## Arithmetic reproduced rather than repaired
 //!
@@ -58,12 +52,11 @@
 //! after the tree's own convention for an abi over a raising implementation.
 
 const std = @import("std");
-const corefn = @import("corefn");
-const types = @import("types");
+const corefn = @import("../corefn.zig");
 const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("../raise.zig");
 const args_core = @import("../args.zig");
 const pp_format = @import("../pp/format.zig");
 const builtin = @import("builtin");
@@ -71,28 +64,54 @@ const gc_alloc = @import("../gc.zig");
 const utils = @import("../utils.zig");
 const wrap = @import("helpers/wrap.zig");
 const fatal = @import("../fatal.zig");
-
-/// `safe_memcpy` from `src/core/util.c`. Declared here rather than imported:
-/// `util.h` was never in a translation, and this function's parameters are
-/// primitive, so no Janet type crosses. `arrays.zig` has
-/// the same declaration for the same reason; `utils.zig` defines it without
-/// `pub`, and making it `pub` is what deletes both.
-extern fn safe_memcpy(dest: ?*anyopaque, src: ?*const anyopaque, len: usize) callconv(.c) void;
+const strings = @import("strings.zig");
+const abi = @import("abi");
+const tables = @import("tables.zig");
 
 const buffer_flag_no_realloc: i32 = constants.JANET_BUFFER_FLAG_NO_REALLOC;
 const mem_disabled: i32 = constants.JANET_MEM_DISABLED;
 
-/// C's conversion of a signed count to `size_t`: sign-extend to the pointer
-/// width, then reinterpret. For a negative count that yields a very large
-/// size, which is exactly what the C code does and what `FOUND.md` records for
-/// `array/ensure`. Written out because Zig has no implicit signed-to-unsigned
-/// conversion and `@intCast` would trap on the values this reaches.
-inline fn asSize(n: i32) usize {
-    return @bitCast(@as(isize, n));
-}
+pub const Buffer = struct {
+    gc: abi.JanetGCObject = .{},
+    count: usize = 0,
+    capacity: usize = 0,
+    data: ?[*]u8 = null,
+
+    /// The bytes written so far. Empty rather than a trap for a buffer that
+    /// has never been grown: `janet_buffer_init(b, 0)` leaves `data` null,
+    /// and `@"" ` is the commonest value in the suites.
+    pub inline fn slice(self: anytype) utils.View(@TypeOf(self), u8) {
+        if (self.count == 0) return &.{};
+        return self.data.?[0..self.count];
+    }
+
+    /// Store one byte at the end and advance the count. **The caller has
+    /// already made room** -- `buffers.extra` or `buffers.ensure`.
+    pub inline fn appendAssumingCapacity(self: *Buffer, byte: u8) void {
+        std.debug.assert(self.count < self.capacity);
+        self.data.?[self.count] = byte;
+        self.count += 1;
+    }
+
+    /// The allocation, `capacity` long, for the two callers that read or
+    /// write outside the live range on purpose: `snprintf` fills past the
+    /// end and then says how much it wrote, and the pretty-printer's
+    /// newline compaction shortens the count first and then compacts what
+    /// is still there into the space that leaves.
+    pub inline fn reserved(self: *Buffer) []u8 {
+        if (self.capacity == 0) return &.{};
+        return self.data.?[0..self.capacity];
+    }
+
+    /// The room past the end, `capacity - count` bytes of it.
+    pub inline fn spare(self: *Buffer) []u8 {
+        if (self.capacity <= self.count) return &.{};
+        return self.reserved()[self.count..];
+    }
+};
 
 inline fn stringLength(s: [*]const u8) i32 {
-    return types.stringHead(s).length;
+    return strings.head(s).length;
 }
 
 // ------------------------------------------------------------------ buffer
@@ -100,9 +119,9 @@ inline fn stringLength(s: [*]const u8) i32 {
 /// Refuse to reallocate a buffer that does not own its memory. Called before
 /// every `janet_realloc` of a buffer payload, never after one.
 ///
-/// It is not exported and not declared anywhere: `cfunBufferTrim` below is the
-/// only caller in the tree, and `test/buffer_array.zig` reaches it by import.
-pub fn canRealloc(buffer: *types.JanetBuffer) raise.Raising(void) {
+/// Three callers below -- `ensure`, `extra` and `cfunBufferTrim` -- and
+/// `test/buffer_array.zig`, which reaches it by import.
+pub fn canRealloc(buffer: *Buffer) raise.Raising(void) {
     if ((buffer.gc.flags & buffer_flag_no_realloc) != 0) {
         return raise.panic("buffer cannot reallocate foreign memory");
     }
@@ -111,20 +130,19 @@ pub fn canRealloc(buffer: *types.JanetBuffer) raise.Raising(void) {
 /// Give a buffer its initial payload. Shared by the collectable and the
 /// caller-owned constructors, and it touches no field of `gc` — which is why
 /// `janet_buffer_init` can set those afterwards.
-fn initImpl(buffer: *types.JanetBuffer, capacity_in: i32) *types.JanetBuffer {
+fn initImpl(buffer: *Buffer, capacity_in: i32) *Buffer {
     var capacity = capacity_in;
     if (capacity < 4) capacity = 4;
-    gc_alloc.gcpressure(asSize(capacity));
-    const data = utils.malloc(asSize(capacity)) orelse fatal.outOfMemory();
+    gc_alloc.gcpressure(utils.asSize(capacity));
     buffer.count = 0;
-    buffer.capacity = capacity;
-    buffer.data = @ptrCast(data);
+    buffer.capacity = @intCast(capacity);
+    buffer.data = utils.allocMany(u8, utils.asSize(capacity));
     return buffer;
 }
 
 /// Initialise a buffer the caller owns. The block is not on a heap list, so it
 /// is marked `JANET_MEM_DISABLED` and the collector leaves it alone.
-pub fn init(buffer: *types.JanetBuffer, capacity: i32) *types.JanetBuffer {
+pub fn init(buffer: *Buffer, capacity: i32) *Buffer {
     _ = initImpl(buffer, capacity);
     buffer.gc.data.next = null;
     buffer.gc.flags = mem_disabled;
@@ -134,20 +152,20 @@ pub fn init(buffer: *types.JanetBuffer, capacity: i32) *types.JanetBuffer {
 /// Wrap memory the runtime did not allocate. The result is collectable but its
 /// payload is not: `JANET_BUFFER_FLAG_NO_REALLOC` makes both `janet_buffer_deinit`
 /// and every growth path leave the foreign pointer alone.
-pub fn pointerUnsafe(memory: ?*anyopaque, capacity: i32, count: i32) raise.Raising(*types.JanetBuffer) {
+pub fn pointerUnsafe(memory: ?*anyopaque, capacity: i32, count: i32) raise.Raising(*Buffer) {
     if (count < 0) return raise.panic("count < 0");
     if (capacity < count) return raise.panic("capacity < count");
-    const buffer: *types.JanetBuffer = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.buffer, @sizeOf(types.JanetBuffer))));
+    const buffer = gc_alloc.gcalloc(Buffer, .buffer);
     buffer.gc.flags |= buffer_flag_no_realloc;
-    buffer.capacity = capacity;
-    buffer.count = count;
+    buffer.capacity = @intCast(capacity);
+    buffer.count = @intCast(count);
     buffer.data = @ptrCast(memory);
     return buffer;
 }
 
 /// Release a buffer's payload. Also called from `janet_deinit_block` in
 /// `gc_sweep.zig`, which is the collectable buffer's only route here.
-pub fn deinit(buffer: *types.JanetBuffer) void {
+pub fn deinit(buffer: *Buffer) void {
     if ((buffer.gc.flags & buffer_flag_no_realloc) == 0) {
         utils.free(buffer.data);
         buffer.data = null;
@@ -155,123 +173,98 @@ pub fn deinit(buffer: *types.JanetBuffer) void {
 }
 
 /// Allocate a collectable buffer.
-pub fn new(capacity: i32) *types.JanetBuffer {
-    const buffer: *types.JanetBuffer = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.buffer, @sizeOf(types.JanetBuffer))));
+pub fn new(capacity: i32) *Buffer {
+    const buffer = gc_alloc.gcalloc(Buffer, .buffer);
     return initImpl(buffer, capacity);
 }
 
 /// Grow a buffer to at least `capacity`, overshooting by `growth`.
 ///
-/// The product is computed in 64 bits and clamped at the top only; a growth of
-/// zero or less passes through as a zero or negative capacity, and the
-/// conversions below reproduce what C then does with it. No caller inside the
-/// tree reaches that — every one passes 1 or 2 — but the C API is public.
-pub fn ensure(buffer: *types.JanetBuffer, capacity_in: i32, growth: i32) raise.Raising(void) {
-    var capacity = capacity_in;
+/// The product is computed in 64 bits and clamped at `INT32_MAX`, which is the
+/// C original's clamp and the width a marshalled buffer carries. A growth of
+/// zero or less produced a zero or negative capacity there; **no caller can
+/// reach that any more** -- every one in the tree passes 1 or 2, and
+/// `DESIGN.md` section 11 ended the C API that was the other way in -- so the
+/// conversion that reproduced it is gone with the count's signedness.
+pub fn ensure(buffer: *Buffer, capacity_in: usize, growth: i32) raise.Raising(void) {
     const old = buffer.data;
-    if (capacity <= buffer.capacity) return;
+    if (capacity_in <= buffer.capacity) return;
     try canRealloc(buffer);
-    // Cannot overflow: both factors fit in 32 bits, so the product fits in 62.
-    const big_capacity: i64 = @as(i64, capacity) * @as(i64, growth);
-    capacity = if (big_capacity > std.math.maxInt(i32)) std.math.maxInt(i32) else @truncate(big_capacity);
-    gc_alloc.gcpressure(asSize(capacity -% buffer.capacity));
-    const new_data = utils.realloc(old, asSize(capacity)) orelse fatal.outOfMemory();
-    buffer.data = @ptrCast(new_data);
+    std.debug.assert(growth > 0);
+    // Cannot overflow: the capacity fits in 32 bits and so does the growth,
+    // so the product fits in 62.
+    const big_capacity: i64 = @as(i64, @intCast(capacity_in)) * @as(i64, growth);
+    const capacity: usize = @intCast(@min(big_capacity, std.math.maxInt(i32)));
+    gc_alloc.gcpressure(capacity -% buffer.capacity);
+    buffer.data = utils.resizeMany(u8, @ptrCast(old), capacity);
     buffer.capacity = capacity;
 }
 
-pub fn ensureAbi(buffer: *types.JanetBuffer, capacity_in: i32, growth: i32) void {
-    raise.reported(ensure(buffer, capacity_in, growth));
-}
-
 /// Set a buffer's length, zero-filling any bytes the count newly covers.
-pub fn setcount(buffer: *types.JanetBuffer, count: i32) raise.Raising(void) {
+pub fn setcount(buffer: *Buffer, count: i32) raise.Raising(void) {
     if (count < 0) return;
-    if (count > buffer.count) {
+    const want: usize = @intCast(count);
+    if (want > buffer.count) {
         const oldcount = buffer.count;
-        try ensure(buffer, count, 1);
-        _ = c.memset(buffer.data.? + @as(usize, @intCast(oldcount)), 0, @intCast(count - oldcount));
+        try ensure(buffer, want, 1);
+        _ = c.memset(buffer.data.? + oldcount, 0, want - oldcount);
     }
-    buffer.count = count;
-}
-
-pub fn setcountAbi(buffer: *types.JanetBuffer, count: i32) void {
-    raise.reported(setcount(buffer, count));
-}
-
-pub fn extraAbi(buffer: *types.JanetBuffer, n: i32) void {
-    raise.reported(extra(buffer, n));
-}
-
-pub fn pointerUnsafeAbi(memory: ?*anyopaque, capacity: i32, count: i32) *types.JanetBuffer {
-    return raise.reported(pointerUnsafe(memory, capacity, count));
+    buffer.count = want;
 }
 
 /// Reserve room for `n` more bytes, so that the next `n` pushes cannot
 /// reallocate. The overflow check is the first statement, before any
 /// allocation, which is what makes the panic safe to raise through this frame.
-pub fn extra(buffer: *types.JanetBuffer, n: i32) raise.Raising(void) {
-    if (@as(i64, n) + @as(i64, buffer.count) > std.math.maxInt(i32)) {
-        return raise.panic("buffer overflow");
-    }
-    // Cannot overflow for a positive `n`: the check above bounds the sum. A
-    // negative `n` only shrinks it, and `count` is never negative.
-    const new_size = buffer.count +% n;
+pub fn extra(buffer: *Buffer, n: i32) raise.Raising(void) {
+    const sum = @as(i64, n) + @as(i64, @intCast(buffer.count));
+    if (sum > std.math.maxInt(i32)) return raise.panic("buffer overflow");
+    // `n` may be negative -- it only shrinks the request, and a request below
+    // the current capacity does nothing below. The clamp at zero is what the
+    // signed `count` used to give for free.
+    const new_size: usize = if (sum < 0) 0 else @intCast(sum);
     if (new_size > buffer.capacity) {
         try canRealloc(buffer);
-        const new_capacity: i32 = if (new_size > @divTrunc(std.math.maxInt(i32), 2))
+        const new_capacity: usize = if (new_size > @divTrunc(std.math.maxInt(i32), 2))
             std.math.maxInt(i32)
         else
             new_size *% 2;
-        const new_data = utils.realloc(buffer.data, asSize(new_capacity));
+        const new_data = utils.realloc(buffer.data, new_capacity);
         // The C original charges the pressure between the allocation and the
         // null test, so a failed growth is accounted for on the way out. Kept.
-        gc_alloc.gcpressure(asSize(new_capacity -% buffer.capacity));
+        gc_alloc.gcpressure(new_capacity -% buffer.capacity);
         if (new_data == null) fatal.outOfMemory();
         buffer.data = @ptrCast(new_data);
         buffer.capacity = new_capacity;
     }
 }
 
-pub fn pushCString(buffer: *types.JanetBuffer, cstring: [*:0]const u8) raise.Raising(void) {
+pub fn pushCString(buffer: *Buffer, cstring: [*:0]const u8) raise.Raising(void) {
     return pushBytes(buffer, cstring[0..c.strlen(cstring)]);
 }
 
-pub fn pushCstringAbi(buffer: *types.JanetBuffer, cstring: [*:0]const u8) void {
+pub fn pushCstringAbi(buffer: *Buffer, cstring: [*:0]const u8) void {
     raise.reported(pushCString(buffer, cstring));
 }
 
-pub fn pushBytes(buffer: *types.JanetBuffer, bytes: []const u8) raise.Raising(void) {
+pub fn pushBytes(buffer: *Buffer, bytes: []const u8) raise.Raising(void) {
     if (0 == bytes.len) return;
     try extra(buffer, @intCast(bytes.len));
     _ = c.memcpy(buffer.data.? + @as(usize, @intCast(buffer.count)), bytes.ptr, bytes.len);
     buffer.count += @intCast(bytes.len);
 }
 
-pub fn pushBytesAbi(buffer: *types.JanetBuffer, bytes: []const u8) void {
-    _ = raise.reported(pushBytes(buffer, bytes));
-}
-
-pub fn pushString(buffer: *types.JanetBuffer, string: [*]const u8) raise.Raising(void) {
+pub fn pushString(buffer: *Buffer, string: [*]const u8) raise.Raising(void) {
     return pushBytes(buffer, string[0..@intCast(stringLength(string))]);
 }
 
-pub fn pushStringAbi(buffer: *types.JanetBuffer, string: [*]const u8) void {
-    raise.reported(pushString(buffer, string));
-}
-
-pub fn pushU8(buffer: *types.JanetBuffer, byte: u8) raise.Raising(void) {
+pub fn pushU8(buffer: *Buffer, byte: u8) raise.Raising(void) {
     try extra(buffer, 1);
     buffer.appendAssumingCapacity(byte);
 }
 
-pub fn pushU8Abi(buffer: *types.JanetBuffer, byte: u8) void {
-    _ = raise.reported(pushU8(buffer, byte));
-}
-
 /// The three multi-byte pushes write little-endian regardless of host order,
 /// which is what the C original does by shifting rather than by copying.
-pub fn pushU16(buffer: *types.JanetBuffer, x: u16) raise.Raising(void) {
+pub fn pushU16(buffer: *Buffer, x: u16) raise.Raising(void) {
     try extra(buffer, 2);
     const room = buffer.spare();
     room[0] = @truncate(x);
@@ -279,11 +272,7 @@ pub fn pushU16(buffer: *types.JanetBuffer, x: u16) raise.Raising(void) {
     buffer.count += 2;
 }
 
-pub fn pushU16Abi(buffer: *types.JanetBuffer, x: u16) void {
-    _ = raise.reported(pushU16(buffer, x));
-}
-
-pub fn pushU32(buffer: *types.JanetBuffer, x: u32) raise.Raising(void) {
+pub fn pushU32(buffer: *Buffer, x: u32) raise.Raising(void) {
     try extra(buffer, 4);
     const room = buffer.spare();
     inline for (0..4) |i| {
@@ -292,21 +281,13 @@ pub fn pushU32(buffer: *types.JanetBuffer, x: u32) raise.Raising(void) {
     buffer.count += 4;
 }
 
-pub fn pushU32Abi(buffer: *types.JanetBuffer, x: u32) void {
-    _ = raise.reported(pushU32(buffer, x));
-}
-
-pub fn pushU64(buffer: *types.JanetBuffer, x: u64) raise.Raising(void) {
+pub fn pushU64(buffer: *Buffer, x: u64) raise.Raising(void) {
     try extra(buffer, 8);
     const room = buffer.spare();
     inline for (0..8) |i| {
         room[i] = @truncate(x >> (8 * i));
     }
     buffer.count += 8;
-}
-
-pub fn pushU64Abi(buffer: *types.JanetBuffer, x: u64) void {
-    _ = raise.reported(pushU64(buffer, x));
 }
 
 // ==========================================================================
@@ -321,17 +302,12 @@ pub fn pushU64Abi(buffer: *types.JanetBuffer, x: u64) void {
 
 // ---------------------------------------------------------------- buffer/*
 
-/// `should_reverse_bytes`. The keyword names the byte order the caller wants,
-/// and the answer is whether it differs from the host's -- so `:native` is
-/// always false and the other two are decided at compile time.
-///
-/// `janet.h` picks `JANET_LITTLE_ENDIAN` or `JANET_BIG_ENDIAN` from the
-/// target, and the check below reads the same macros rather than Zig's own
-/// `@import("builtin")`, so a configuration that overrides them is honoured on
-/// both sides of the selector.
+/// The keyword names the byte order the caller wants, and the answer is whether
+/// it differs from the host's -- so `:native` is always false and the other two
+/// are decided at compile time.
 const big_endian = (builtin.cpu.arch.endian() == .big);
 
-fn shouldReverseBytes(argv: []repr.Value, n: i32) raise.Raising(bool) {
+fn shouldReverseBytes(argv: []repr.Value, n: usize) raise.Raising(bool) {
     const order = try args_core.getKeyword(argv, n);
     if (utils.cstrcmp(order, "le") == 0) return big_endian;
     if (utils.cstrcmp(order, "be") == 0) return !big_endian;
@@ -344,7 +320,7 @@ fn shouldReverseBytes(argv: []repr.Value, n: i32) raise.Raising(bool) {
 /// Push `data`'s bytes, reversed if the caller asked for the other order.
 /// `janet_getuinteger16` and friends have already rejected anything that does
 /// not fit, so the only thing left is the byte order.
-fn pushScalar(comptime T: type, buffer: *types.JanetBuffer, data: T, reverse: bool) raise.Raising(void) {
+fn pushScalar(comptime T: type, buffer: *Buffer, data: T, reverse: bool) raise.Raising(void) {
     var bytes: [@sizeOf(T)]u8 = @bitCast(data);
     if (reverse) std.mem.reverse(u8, &bytes);
     try pushBytes(buffer, &bytes);
@@ -359,29 +335,29 @@ fn cfunBufferNewFilled(argv: []repr.Value) align(corefn.alignment) raise.Raising
     try args_core.arity(argv, 1, 2);
     var count = try args_core.getInteger(argv, 0);
     if (count < 0) count = 0;
-    const byte: u8 = if (@as(i32, @intCast(argv.len)) == 2) @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, 1)))) else 0;
+    const byte: u8 = if (argv.len == 2) @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, 1)))) else 0;
     const buffer = new(count);
     if (count > 0) @memset(buffer.reserved()[0..@intCast(count)], byte);
-    buffer.count = count;
+    buffer.count = @intCast(count);
     return wrap.fromBuffer(buffer);
 }
 
 fn cfunBufferFrombytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const buffer = new(@as(i32, @intCast(argv.len)));
-    var i: i32 = 0;
-    while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
+    var i: usize = 0;
+    while (i < argv.len) : (i += 1) {
         const byte = try args_core.getInteger(argv, i);
-        buffer.reserved()[@intCast(i)] = @truncate(@as(u32, @bitCast(byte)));
+        buffer.reserved()[i] = @truncate(@as(u32, @bitCast(byte)));
     }
-    buffer.count = @as(i32, @intCast(argv.len));
+    buffer.count = argv.len;
     return wrap.fromBuffer(buffer);
 }
 
 fn cfunBufferFill(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const buffer = try args_core.getBuffer(argv, 0);
-    const byte: u8 = if (@as(i32, @intCast(argv.len)) == 2) @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, 1)))) else 0;
-    if (buffer.*.count != 0) @memset(buffer.*.slice(), byte);
+    const byte: u8 = if (argv.len == 2) @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, 1)))) else 0;
+    if (buffer.count != 0) @memset(buffer.slice(), byte);
     return argv[0];
 }
 
@@ -392,12 +368,12 @@ fn cfunBufferTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
     try args_core.fixarity(argv, 1);
     const buffer = try args_core.getBuffer(argv, 0);
     try canRealloc(buffer);
-    if (buffer.*.count < buffer.*.capacity) {
-        const newcap = if (buffer.*.count > 4) buffer.*.count else 4;
-        const new_data = utils.realloc(@ptrCast(buffer.*.data), @intCast(newcap)) orelse
+    if (buffer.count < buffer.capacity) {
+        const newcap = if (buffer.count > 4) buffer.count else 4;
+        const new_data = utils.realloc(@ptrCast(buffer.data), @intCast(newcap)) orelse
             fatal.outOfMemory();
-        buffer.*.data = @ptrCast(new_data);
-        buffer.*.capacity = newcap;
+        buffer.data = @ptrCast(new_data);
+        buffer.capacity = newcap;
     }
     return argv[0];
 }
@@ -405,9 +381,9 @@ fn cfunBufferTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 fn cfunBufferU8(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const buffer = try args_core.getBuffer(argv, 0);
-    var i: i32 = 1;
-    while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
-        try raise.crossing(pushU8Abi(buffer, @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, i))))));
+    var i: usize = 1;
+    while (i < argv.len) : (i += 1) {
+        try pushU8(buffer, @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, i)))));
     }
     return argv[0];
 }
@@ -415,14 +391,14 @@ fn cfunBufferU8(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.V
 fn cfunBufferWord(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const buffer = try args_core.getBuffer(argv, 0);
-    var i: i32 = 1;
-    while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
+    var i: usize = 1;
+    while (i < argv.len) : (i += 1) {
         const number = try args_core.getNumber(argv, i);
         const word: u32 = @intFromFloat(number);
         if (@as(f64, @floatFromInt(word)) != number) {
             return pp_format.panicf("cannot convert %v to machine word", .{argv[@intCast(i)]});
         }
-        try raise.crossing(pushU32Abi(buffer, word));
+        try pushU32(buffer, word);
     }
     return argv[0];
 }
@@ -430,10 +406,10 @@ fn cfunBufferWord(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 /// Pushing a buffer onto itself grows it, and the growth may move the payload,
 /// so the space is reserved first and the view retaken. The C original writes
 /// this out at both of its call sites and so does this.
-fn pushBytesAliasSafe(buffer: *types.JanetBuffer, view_in: types.JanetByteView) raise.Raising(void) {
+fn pushBytesAliasSafe(buffer: *Buffer, view_in: abi.JanetByteView) raise.Raising(void) {
     var view = view_in;
     if (view.bytes == buffer.data) {
-        try ensure(buffer, buffer.count + view.len, 2);
+        try ensure(buffer, buffer.count + @as(usize, @intCast(view.len)), 2);
         view.bytes = buffer.data.?;
     }
     try pushBytes(buffer, args_core.viewBytes(view));
@@ -442,8 +418,8 @@ fn pushBytesAliasSafe(buffer: *types.JanetBuffer, view_in: types.JanetByteView) 
 fn cfunBufferChars(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const buffer = try args_core.getBuffer(argv, 0);
-    var i: i32 = 1;
-    while (i < @as(i32, @intCast(argv.len))) : (i += 1) try pushBytesAliasSafe(buffer, try args_core.getBytes(argv, i));
+    var i: usize = 1;
+    while (i < argv.len) : (i += 1) try pushBytesAliasSafe(buffer, try args_core.getBytes(argv, i));
     return argv[0];
 }
 
@@ -490,11 +466,11 @@ fn cfunBufferPushFloat64(argv: []repr.Value) align(corefn.alignment) raise.Raisi
 /// A number is a byte and anything else is a byte sequence, which is what
 /// makes `buffer/push` the union of `buffer/push-byte` and
 /// `buffer/push-string`.
-fn push(buffer: *types.JanetBuffer, argv: []repr.Value, start: i32, argc: i32) raise.Raising(void) {
-    var i: i32 = start;
+fn push(buffer: *Buffer, argv: []repr.Value, start: usize, argc: usize) raise.Raising(void) {
+    var i: usize = start;
     while (i < argc) : (i += 1) {
         if (repr.checkType(argv[@intCast(i)], repr.Tag.number)) {
-            try raise.crossing(pushU8Abi(buffer, @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, i))))));
+            try pushU8(buffer, @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, i)))));
         } else {
             try pushBytesAliasSafe(buffer, try args_core.getBytes(argv, i));
         }
@@ -508,23 +484,23 @@ fn cfunBufferPushAt(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
     try args_core.arity(argv, 2, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     const index = try args_core.getInteger(argv, 1);
-    const old_count = buffer.*.count;
+    const old_count: i32 = @intCast(buffer.count);
     if (index < 0 or index > old_count) return pp_format.panicf("index out of range [0, %d)", .{old_count});
-    buffer.*.count = index;
-    try push(buffer, argv, 2, @as(i32, @intCast(argv.len)));
-    if (buffer.*.count < old_count) buffer.*.count = old_count;
+    buffer.count = @intCast(index);
+    try push(buffer, argv, 2, argv.len);
+    if (buffer.count < old_count) buffer.count = @intCast(old_count);
     return argv[0];
 }
 
 fn cfunBufferPush(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
-    try push(try args_core.getBuffer(argv, 0), argv, 1, @as(i32, @intCast(argv.len)));
+    try push(try args_core.getBuffer(argv, 0), argv, 1, argv.len);
     return argv[0];
 }
 
 fn cfunBufferClear(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    (try args_core.getBuffer(argv, 0)).*.count = 0;
+    (try args_core.getBuffer(argv, 0)).count = 0;
     return argv[0];
 }
 
@@ -533,7 +509,8 @@ fn cfunBufferPopn(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
     const buffer = try args_core.getBuffer(argv, 0);
     const n = try args_core.getInteger(argv, 1);
     if (n < 0) return raise.panic("n must be non-negative");
-    buffer.*.count = if (buffer.*.count < n) 0 else buffer.*.count - n;
+    const drop: usize = @intCast(n);
+    buffer.count = if (buffer.count < drop) 0 else buffer.count - drop;
     return argv[0];
 }
 
@@ -543,17 +520,17 @@ fn cfunBufferSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
     const len = range.end - range.start;
     const buffer = new(len);
     if (buffer.data != null) {
-        safe_memcpy(
+        utils.safeMemcpy(
             @ptrCast(buffer.data),
             @ptrCast(view.bytes.? + @as(usize, @intCast(range.start))),
             @intCast(len),
         );
     }
-    buffer.count = len;
+    buffer.count = @intCast(len);
     return wrap.fromBuffer(buffer);
 }
 
-const BitLoc = struct { buffer: *types.JanetBuffer, index: i32, bit: u3 };
+const BitLoc = struct { buffer: *Buffer, index: i32, bit: u3 };
 
 /// `bitloc`. The index is a bit index rather than a byte index, and the test
 /// `bitindex != x` is what rejects a fractional one -- a check the argument
@@ -565,7 +542,7 @@ fn bitloc(argv: []repr.Value) raise.Raising(BitLoc) {
     const x = try args_core.getNumber(argv, 1);
     const bitindex: i64 = @intFromFloat(x);
     const byteindex = bitindex >> 3;
-    if (@as(f64, @floatFromInt(bitindex)) != x or bitindex < 0 or byteindex >= buffer.*.count) {
+    if (@as(f64, @floatFromInt(bitindex)) != x or bitindex < 0 or byteindex >= buffer.count) {
         return pp_format.panicf("invalid bit index %v", .{argv[1]});
     }
     return .{ .buffer = buffer, .index = @intCast(byteindex), .bit = @intCast(bitindex & 7) };
@@ -599,36 +576,36 @@ fn cfunBufferBlit(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
     try args_core.arity(argv, 2, 5);
     const dest = try args_core.getBuffer(argv, 0);
     var src = try args_core.getBytes(argv, 1);
-    const same_buf = src.bytes == dest.*.data;
+    const same_buf = src.bytes == dest.data;
     var offset_dest: i32 = 0;
     var offset_src: i32 = 0;
-    if (@as(i32, @intCast(argv.len)) > 2 and !repr.checkType(argv[2], repr.Tag.nil)) {
-        offset_dest = try args_core.getHalfRange(argv, 2, dest.*.count, "dest-start");
+    if (argv.len > 2 and !repr.checkType(argv[2], repr.Tag.nil)) {
+        offset_dest = try args_core.getHalfRange(argv, 2, @intCast(dest.count), "dest-start");
     }
-    if (@as(i32, @intCast(argv.len)) > 3 and !repr.checkType(argv[3], repr.Tag.nil)) {
-        offset_src = try args_core.getHalfRange(argv, 3, src.len, "src-start");
+    if (argv.len > 3 and !repr.checkType(argv[3], repr.Tag.nil)) {
+        offset_src = try args_core.getHalfRange(argv, 3, @intCast(src.len), "src-start");
     }
     var length_src: i32 = undefined;
-    if (@as(i32, @intCast(argv.len)) > 4) {
-        var src_end = src.len;
+    if (argv.len > 4) {
+        var src_end: i32 = @intCast(src.len);
         if (!repr.checkType(argv[4], repr.Tag.nil)) {
-            src_end = try args_core.getHalfRange(argv, 4, src.len, "src-end");
+            src_end = try args_core.getHalfRange(argv, 4, @intCast(src.len), "src-end");
         }
         length_src = src_end - offset_src;
         if (length_src < 0) length_src = 0;
     } else {
-        length_src = src.len - offset_src;
+        length_src = @as(i32, @intCast(src.len)) - offset_src;
     }
     const last: i64 = @as(i64, offset_dest) + length_src;
     if (last > std.math.maxInt(i32)) return raise.panic("buffer blit out of range");
     const last32: i32 = @intCast(last);
-    try ensure(dest, last32, 2);
-    if (last32 > dest.*.count) dest.*.count = last32;
+    try ensure(dest, @intCast(last32), 2);
+    if (last32 > dest.count) dest.count = @intCast(last32);
     if (length_src != 0) {
         const n: usize = @intCast(length_src);
         // janet_buffer_ensure may have invalidated src.
-        if (same_buf) src.bytes = dest.*.data.?;
-        const to = dest.*.data.? + @as(usize, @intCast(offset_dest));
+        if (same_buf) src.bytes = dest.data.?;
+        const to = dest.data.? + @as(usize, @intCast(offset_dest));
         const from = src.bytes.? + @as(usize, @intCast(offset_src));
         if (same_buf) {
             if (@intFromPtr(to) < @intFromPtr(from)) {
@@ -647,7 +624,7 @@ fn cfunBufferFormat(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
     try args_core.arity(argv, 2, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     const strfrmt = try args_core.getString(argv, 1);
-    try pp_format.bufferFormat(buffer, @ptrCast(strfrmt), 1, argv);
+    try pp_format.bufferFormat(buffer, @ptrCast(strfrmt), 2, argv);
     return argv[0];
 }
 
@@ -655,19 +632,19 @@ fn cfunBufferFormatAt(argv: []repr.Value) align(corefn.alignment) raise.Raising(
     try args_core.arity(argv, 2, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     var at = try args_core.getInteger(argv, 1);
-    if (at < 0) at += buffer.*.count + 1;
-    if (at > buffer.*.count or at < 0) {
-        return pp_format.panicf("expected index at to be in range [0, %d), got %d", .{ buffer.*.count, at });
+    if (at < 0) at += @as(i32, @intCast(buffer.count)) + 1;
+    if (at > buffer.count or at < 0) {
+        return pp_format.panicf("expected index at to be in range [0, %d), got %d", .{ @as(i64, @intCast(buffer.count)), at });
     }
-    const oldcount = buffer.*.count;
-    buffer.*.count = at;
+    const oldcount = buffer.count;
+    buffer.count = @intCast(at);
     const strfrmt = try args_core.getString(argv, 2);
-    try pp_format.bufferFormat(buffer, @ptrCast(strfrmt), 2, argv);
-    if (buffer.*.count < oldcount) buffer.*.count = oldcount;
+    try pp_format.bufferFormat(buffer, @ptrCast(strfrmt), 3, argv);
+    if (buffer.count < oldcount) buffer.count = oldcount;
     return argv[0];
 }
 
-pub fn lib(env: *types.JanetTable) void {
+pub fn lib(env: *tables.Table) void {
     const push_tail = "Returns the modified buffer." ++
         "Expands the buffer as necessary. Throws an error if size limit is exceeded.";
     const entries = comptime [_]corefn.Entry{

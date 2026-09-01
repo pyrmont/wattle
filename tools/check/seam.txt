@@ -12,98 +12,16 @@
 # The `macro` mechanism and the `header` column went with `janet.h` at
 # increment 5f; `seam.janet` records what they were for.
 #
-# names             88  across   401 references
+# names              6  across     6 references
 #
-# references       191  in src/zig
-#                  210  in test/
+# references         6  in src/zig
+#                    0  in test/
 #
 # columns: refs  src/zig  test/  mechanism  name  definition
 
-   27     0    27  @export     janet_type                               src/zig/capi.zig:1881
-   24    24     0  @export     janet_equals                             src/zig/value/helpers/order.zig:351
-   24    10    14  @export     janet_wrap_nil                           src/zig/value/helpers/wrap.zig:305
-   19     4    15  @export     janet_wrap_true                          src/zig/value/helpers/wrap.zig:321
-   18     2    16  @export     janet_wrap_boolean                       src/zig/value/helpers/wrap.zig:317
-   15     3    12  @export     janet_wrap_array                         src/zig/value/helpers/wrap.zig:352
-   14     2    12  @export     janet_wrap_false                         src/zig/value/helpers/wrap.zig:325
-   13    13     0  @export     janet_table_put                          src/zig/value/tables.zig:357
-   11     5     6  @export     janet_wrap_string                        src/zig/value/helpers/wrap.zig:340
-   10     0    10  @export     janet_wrap_pointer                       src/zig/value/helpers/wrap.zig:391
-    9     1     8  @export     janet_checktypes                         src/zig/capi.zig:1883
-    8     5     3  @export     janet_array                              src/zig/value/arrays.zig:106
-    8     8     0  @export     janet_table_get                          src/zig/value/tables.zig:274
-    8     0     8  @export     janet_unwrap_integer                     src/zig/value/helpers/wrap.zig:282
-    8     3     5  @export     janet_wrap_symbol                        src/zig/value/helpers/wrap.zig:344
-    7     3     4  @export     janet_wrap_keyword                       src/zig/value/helpers/wrap.zig:348
-    7     7     0  @export     janet_wrap_number                        src/zig/value/helpers/wrap.zig:336
-    7     1     6  @export     janet_wrap_table                         src/zig/value/helpers/wrap.zig:383
-    6     6     0  @export     janet_symbol                             src/zig/value/symbols.zig:260
-    6     4     2  @export     janet_table                              src/zig/value/tables.zig:211
-    6     1     5  @export     janet_wrap_buffer                        src/zig/value/helpers/wrap.zig:371
-    6     1     5  @export     janet_wrap_fiber                         src/zig/value/helpers/wrap.zig:367
-    6     2     4  @export     janet_wrap_tuple                         src/zig/value/helpers/wrap.zig:356
-    6     6     0  @export     janet_zig_c_raise_take                   src/zig/signal.zig:148
-    5     5     0  @export     janet_array_push                         src/zig/value/arrays.zig:205
-    5     3     2  @export     janet_buffer                             src/zig/value/buffers.zig:169
-    5     5     0  @export     janet_fixarity                           src/zig/args.zig:1231
-    5     2     3  @export     janet_wrap_cfunction                     src/zig/value/helpers/wrap.zig:379
-    4     4     0  @export     janet_core_env                           src/zig/env.zig:1420
-    4     0     4  @export     janet_wrap_abstract                      src/zig/value/helpers/wrap.zig:387
-    4     0     4  @export     janet_wrap_function                      src/zig/value/helpers/wrap.zig:375
-    4     0     4  @export     janet_wrap_struct                        src/zig/value/helpers/wrap.zig:360
-    3     1     2  @export     janet_cfuns_ext                          src/zig/capi.zig:1342
-    3     2     1  @export     janet_checktype                          src/zig/capi.zig:1882
-    3     3     0  @export     janet_def                                src/zig/registry.zig:111
-    3     2     1  @export     janet_deinit                             src/zig/vm/lifecycle.zig:153
-    3     2     1  @export     janet_panic_type                         src/zig/args.zig:637
-    3     3     0  @export     janet_string                             src/zig/value/strings.zig:133
-    3     3     0  @export     janet_table_remove                       src/zig/value/tables.zig:337
-    3     2     1  @export     janet_unwrap_function                    src/zig/value/helpers/wrap.zig:261
-    3     0     3  @export     janet_wrap_integer                       src/zig/value/helpers/wrap.zig:332
-    2     2     0  @export     janet_array_pop                          src/zig/value/arrays.zig:193
-    2     2     0  @export     janet_cstring                            src/zig/value/strings.zig:176
-    2     2     0  @export     janet_gcroot                             src/zig/gc.zig:166
-    2     2     0  @export     janet_init                               src/zig/vm/lifecycle.zig:95
-    2     0     2  @export     janet_marshal                            src/zig/marsh.zig:835
-    2     0     2  @export     janet_nanbox32_from_tagp                 src/zig/value/helpers/wrap.zig:550
-    2     0     2  @export     janet_nanbox_from_pointer                src/zig/value/helpers/wrap.zig:530
-    2     0     2  @export     janet_nanbox_to_pointer                  src/zig/value/helpers/wrap.zig:526
-    2     2     0  @export     janet_restore                            src/zig/signal.zig:126
-    2     1     1  @export     janet_scan_number                        src/zig/scan.zig:383
-    2     0     2  @export     janet_truthy                             src/zig/capi.zig:1884
-    2     2     0  @export     janet_try_init                           src/zig/signal.zig:103
-    2     2     0  @export     janet_tuple_begin                        src/zig/value/tuples.zig:81
-    2     2     0  @export     janet_tuple_end                          src/zig/value/tuples.zig:92
-    2     0     2  @export     janet_unmarshal                          src/zig/marsh.zig:1887
-    2     0     2  @export     janet_unwrap_pointer                     src/zig/value/helpers/wrap.zig:257
-    2     2     0  @export     janet_zig_c_raise_clear                  src/zig/signal.zig:158
-    2     2     0  @export     janet_zig_c_raise_record                 src/zig/signal.zig:142
-    1     1     0  @export     janet_arity                              src/zig/args.zig:1232
-    1     1     0  @export     janet_buffer_push_bytes                  src/zig/value/buffers.zig:262
-    1     1     0  @export     janet_buffer_push_cstring                src/zig/value/buffers.zig:251
-    1     1     0  @export     janet_buffer_push_u8                     src/zig/value/buffers.zig:279
-    1     1     0  @export     janet_call                               src/zig/vm/entry.zig:500
-    1     0     1  @export     janet_channel_give                       src/zig/ev/channel.zig:584
-    1     1     0  @export     janet_collect                            src/zig/gc/mark.zig:394
-    1     1     0  @export     janet_core_cfuns_ext                     src/zig/registry.zig:447
-    1     1     0  @export     janet_core_def_sm                        src/zig/registry.zig:429
-    1     1     0  @export     janet_csymbol                            src/zig/value/symbols.zig:281
-    1     1     0  @export     janet_def_sm                             src/zig/registry.zig:97
-    1     1     0  @export     janet_dobytes                            src/zig/env.zig:1464
-    1     1     0  @export     janet_fiber                              src/zig/value/fibers.zig:256
-    1     1     0  @export     janet_gcunroot                           src/zig/gc.zig:194
-    1     1     0  @export     janet_getbuffer                          src/zig/args.zig:813
-    1     1     0  @export     janet_getstring                          src/zig/args.zig:810
-    1     1     0  @export     janet_length                             src/zig/value/helpers/access.zig:618
-    1     1     0  @export     janet_loop_fiber                         src/zig/env.zig:1584
-    1     0     1  @export     janet_nanbox32_from_tagi                 src/zig/value/helpers/wrap.zig:546
-    1     0     1  @export     janet_nanbox_from_bits                   src/zig/value/helpers/wrap.zig:542
-    1     0     1  @export     janet_nanbox_from_cpointer               src/zig/value/helpers/wrap.zig:534
-    1     0     1  @export     janet_nanbox_from_double                 src/zig/value/helpers/wrap.zig:538
-    1     0     1  @export     janet_panic_abstract                     src/zig/args.zig:641
-    1     1     0  @export     janet_panicv                             src/zig/signal.zig:314
-    1     1     0  @export     janet_pcall                              src/zig/vm/entry.zig:465
-    1     1     0  @export     janet_resolve                            src/zig/registry.zig:575
-    1     0     1  @export     janet_unwrap_boolean                     src/zig/capi.zig:2024
-    1     1     0  @export     janet_zig_fatal                          src/zig/fatal.zig:35
-    1     1     0  @export     janet_zig_signal_record                  src/zig/signal.zig:275
+    1     1     0  @export     janet_cstring                            src/zig/value/strings.zig:165
+    1     1     0  @export     janet_wrap_string                        src/zig/value/helpers/wrap.zig:228
+    1     1     0  @export     janet_zig_c_raise_record                 src/zig/signal.zig:111
+    1     1     0  @export     janet_zig_c_raise_take                   src/zig/signal.zig:117
+    1     1     0  @export     janet_zig_fatal                          src/zig/fatal.zig:33
+    1     1     0  @export     janet_zig_signal_record                  src/zig/signal.zig:237

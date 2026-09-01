@@ -1,14 +1,11 @@
-//! The single translation of the host socket headers `net.c` worked through.
+//! The single translation of the host socket headers `net.zig` works through.
 //!
-//! `net/abi.h` carries the reasoning, including why this is a third
-//! translation rather than ten lines added to `abi.zig`, and why the Windows
-//! arm is translated where `ev_stream.zig` declared its Winsock calls by hand.
-//! The two files of the `-Dnet-sockets` object share this module, so a
-//! `struct addrinfo` filled by one is the same Zig type as a `struct addrinfo`
-//! read by the other.
+//! `net/abi.h` carries the reasoning, including why this subsystem translates
+//! its own headers rather than sharing another's. One translation, so a
+//! `struct addrinfo` filled in one place is the same Zig type as one read in
+//! another.
 //!
-//! What is here beyond the translation is the handful of spellings `net.c`
-//! made with the preprocessor and that a translation therefore cannot carry: a
+//! What is here beyond the translation is what a translation cannot carry: a
 //! socket handle's type and its invalid value, and one GUID that is a brace
 //! initializer.
 
@@ -224,10 +221,9 @@ pub const wsaid_connectex = if (windows) h.GUID{
 // on the other, `inet_ntop` sizes its buffer with a `size_t` rather than a
 // `socklen_t`, `gai_strerror` is a macro over an ANSI/wide pair, and
 // `struct in_addr` hides its four bytes behind a union whose accessor is a
-// macro. Normalising them here is what keeps `net_addr.zig` and
-// `net_sockets.zig` free of `if (windows)` at every host call -- and each of
-// these is the same *call*, so this is not the kind of platform arm the
-// backends in `ev_backend.zig` are.
+// macro. Normalising them here is what keeps `net.zig` free of `if (windows)`
+// at every host call -- and each of these is the same *call*, so this is not
+// the kind of platform arm `ev/backend.zig` holds.
 
 /// `socklen_t`: `c_uint` on Linux, `__darwin_socklen_t` on macOS and `c_int`
 /// on Windows.

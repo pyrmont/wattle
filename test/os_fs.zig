@@ -12,10 +12,9 @@
 //!
 //! Once before the run and once after. Before, because a previous run that
 //! aborted mid-way leaves the tree behind and every assertion after that fails
-//! for the wrong reason; `AGENTS.md` has the same lesson from the mutation
-//! sweep, where one suite's leftover file made fifty-seven mutants look
-//! caught. After, because `matrix.py` runs entries concurrently in the
-//! repository working directory.
+//! for the wrong reason -- one suite's leftover file once made fifty-seven
+//! mutants look caught. After, because `tools/testing/matrix.janet` runs
+//! entries concurrently in the repository working directory.
 //!
 //! The names carry a random-looking suffix for the same reason: two matrix
 //! entries share a working directory, and a fixture named `test-dir` would
@@ -28,14 +27,8 @@ const harness = @import("harness.zig");
 const value = @import("subsystems").value;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
-
-/// The kernels, by symbol; `janet.h` does not declare them.
-extern fn janet_os_getcwd(buffer: [*]u8, size: i32) callconv(.c) i32;
-extern fn janet_os_mkdir(path: [*:0]const u8) callconv(.c) i32;
-extern fn janet_os_rmdir(path: [*:0]const u8) callconv(.c) i32;
-extern fn janet_os_chdir(path: [*:0]const u8) callconv(.c) i32;
-extern fn janet_os_remove(path: [*:0]const u8) callconv(.c) i32;
-extern fn janet_os_rename(old: [*:0]const u8, new: [*:0]const u8) callconv(.c) i32;
+const fs = @import("subsystems").fs;
+const expect = @import("expect.zig").expect;
 
 const direct_dir = "janet-zig-os-fs-direct-83c2";
 const direct_source = "janet-zig-os-fs-direct-83c2/source";
@@ -50,7 +43,7 @@ const path_max = 4096;
 /// rather than plain, because every kernel below takes a C string and a plain
 /// slice would need re-terminating at each call.
 fn cwd(buffer: *[path_max]u8) [:0]const u8 {
-    std.debug.assert(janet_os_getcwd(buffer, path_max) == 0);
+    expect(fs.hostGetcwd(buffer, path_max) == 0);
     return std.mem.span(@as([*:0]const u8, @ptrCast(buffer)));
 }
 
@@ -58,50 +51,50 @@ fn cwd(buffer: *[path_max]u8) [:0]const u8 {
 /// is used to build the fixture for the things under test.
 fn makeFile(path: [*:0]const u8) void {
     const file = c.fopen(path, "wb");
-    std.debug.assert(file != null);
-    std.debug.assert(c.fputs("filesystem-contract", file) >= 0);
-    std.debug.assert(c.fclose(file) == 0);
+    expect(file != null);
+    expect(c.fputs("filesystem-contract", file) >= 0);
+    expect(c.fclose(file) == 0);
 }
 
 /// Best-effort: every one of these may legitimately fail because the path is
 /// already absent, which is the state this is trying to reach.
 fn cleanPaths() void {
-    _ = janet_os_remove(direct_source);
-    _ = janet_os_remove(direct_dest);
-    _ = janet_os_rmdir(direct_dir);
-    _ = janet_os_remove(public_source);
-    _ = janet_os_remove(public_dest);
-    _ = janet_os_rmdir(public_dir);
+    _ = fs.hostRemove(direct_source);
+    _ = fs.hostRemove(direct_dest);
+    _ = fs.hostRmdir(direct_dir);
+    _ = fs.hostRemove(public_source);
+    _ = fs.hostRemove(public_dest);
+    _ = fs.hostRmdir(public_dir);
 }
 
 fn theKernels(original: [:0]const u8) void {
-    std.debug.assert(janet_os_mkdir(direct_dir) == 0);
+    expect(fs.hostMkdir(direct_dir) == 0);
 
     // The second `mkdir` fails and says why. This is the distinction the Janet
     // surface flattens into `false`.
     //
     // `errno` is a macro over a per-thread location, so it does not survive
-    // translation as a variable; `std.c._errno` is the accessor Zig provides
+    // translation as a variable; `std._errno` is the accessor Zig provides
     // for the same location.
     std.c._errno().* = 0;
-    std.debug.assert(janet_os_mkdir(direct_dir) == -1);
-    std.debug.assert(std.c._errno().* == @intFromEnum(std.c.E.EXIST));
+    expect(fs.hostMkdir(direct_dir) == -1);
+    expect(std.c._errno().* == @intFromEnum(std.c.E.EXIST));
 
     // `chdir` moves, `getcwd` reports where.
     var inside: [path_max]u8 = undefined;
-    std.debug.assert(janet_os_chdir(direct_dir) == 0);
-    std.debug.assert(!std.mem.eql(u8, cwd(&inside), original));
+    expect(fs.hostChdir(direct_dir) == 0);
+    expect(!std.mem.eql(u8, cwd(&inside), original));
     makeFile("source");
 
     var back: [path_max]u8 = undefined;
-    std.debug.assert(janet_os_chdir(original.ptr) == 0);
-    std.debug.assert(std.mem.eql(u8, cwd(&back), original));
+    expect(fs.hostChdir(original.ptr) == 0);
+    expect(std.mem.eql(u8, cwd(&back), original));
 
-    std.debug.assert(janet_os_rename(direct_source, direct_dest) == 0);
+    expect(fs.hostRename(direct_source, direct_dest) == 0);
     // Renamed rather than copied: the old name is gone.
-    std.debug.assert(janet_os_remove(direct_source) == -1);
-    std.debug.assert(janet_os_remove(direct_dest) == 0);
-    std.debug.assert(janet_os_rmdir(direct_dir) == 0);
+    expect(fs.hostRemove(direct_source) == -1);
+    expect(fs.hostRemove(direct_dest) == 0);
+    expect(fs.hostRmdir(direct_dir) == 0);
 }
 
 fn theCoreFunctions(original: [:0]const u8) !void {
@@ -114,28 +107,28 @@ fn theCoreFunctions(original: [:0]const u8) !void {
     var args: [2]repr.Value = undefined;
 
     const here = try getcwd(&.{});
-    std.debug.assert(harness.isType(here, repr.Tag.string));
-    std.debug.assert(harness.stringIs(wrap.toString(here), original.ptr));
+    expect(harness.isType(here, repr.Tag.string));
+    expect(harness.stringIs(wrap.toString(here), original.ptr));
 
     args[0] = value.fromBytes(public_dir, .string);
     // True the first time, false the second -- not a raise.
-    std.debug.assert(wrap.toBoolean(try mkdir(args[0..1])));
-    std.debug.assert(!wrap.toBoolean(try mkdir(args[0..1])));
+    expect(wrap.toBoolean(try mkdir(args[0..1])));
+    expect(!wrap.toBoolean(try mkdir(args[0..1])));
 
-    std.debug.assert(harness.isType(try cd(args[0..1]), repr.Tag.nil));
+    expect(harness.isType(try cd(args[0..1]), repr.Tag.nil));
     makeFile("source");
 
     args[0] = value.fromBytes(original, .string);
-    std.debug.assert(harness.isType(try cd(args[0..1]), repr.Tag.nil));
+    expect(harness.isType(try cd(args[0..1]), repr.Tag.nil));
 
     args[0] = value.fromBytes(public_source, .string);
     args[1] = value.fromBytes(public_dest, .string);
-    std.debug.assert(harness.isType(try rename(args[0..2]), repr.Tag.nil));
+    expect(harness.isType(try rename(args[0..2]), repr.Tag.nil));
 
     args[0] = args[1];
-    std.debug.assert(harness.isType(try remove(args[0..1]), repr.Tag.nil));
+    expect(harness.isType(try remove(args[0..1]), repr.Tag.nil));
     args[0] = value.fromBytes(public_dir, .string);
-    std.debug.assert(harness.isType(try rmdir(args[0..1]), repr.Tag.nil));
+    expect(harness.isType(try rmdir(args[0..1]), repr.Tag.nil));
 }
 
 /// What the Janet surface refuses, which the C contract did not ask. Each is a
@@ -148,13 +141,13 @@ fn theRefusals() void {
     var args: [1]repr.Value = undefined;
 
     args[0] = value.fromBytes("janet-zig-os-fs-absent-0000", .string);
-    std.debug.assert(harness.raised(cd, .{args[0..1]}) != null);
-    std.debug.assert(harness.raised(rmdir, .{args[0..1]}) != null);
-    std.debug.assert(harness.raised(remove, .{args[0..1]}) != null);
+    expect(harness.raised(cd, .{args[0..1]}) != null);
+    expect(harness.raised(rmdir, .{args[0..1]}) != null);
+    expect(harness.raised(remove, .{args[0..1]}) != null);
 
     // A number is not a path, and the refusal comes from the argument layer.
     args[0] = harness.wrapInteger(7);
-    std.debug.assert(harness.raised(cd, .{args[0..1]}) != null);
+    expect(harness.raised(cd, .{args[0..1]}) != null);
 }
 
 pub fn run() void {
@@ -170,6 +163,6 @@ pub fn run() void {
     vm_lifecycle.deinit();
 
     // Back where we started, whatever the assertions above did.
-    std.debug.assert(janet_os_chdir(original.ptr) == 0);
+    expect(fs.hostChdir(original.ptr) == 0);
     cleanPaths();
 }

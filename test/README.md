@@ -6,34 +6,40 @@
 itself to; [../tools/README.md](../tools/README.md) the instruments named
 below.*
 
-Every phase should use several layers of validation:
+Six layers, and a change is believed when the ones it touches pass:
 
-- Existing Janet suite and examples.
-- Existing C boot tests.
-- ABI/layout tests compiled from both C and Zig.
-- A C embedding test linked against the mixed or Zig library.
-- Representative C native modules.
-- Differential C-versus-Zig tests.
-- Parser, compiler, marshaling, and bytecode fuzzing.
-- Debug, optimized, and sanitizer builds. Optimized builds must keep the C
-  contract tests' assertions live: Zig defines `NDEBUG` for C sources in
-  `ReleaseFast` and `ReleaseSmall`, and because those tests call the code under
-  test from inside `assert`, a compiled-out assertion removes the call as well
-  as the check. `build.zig` compiles every C test with `-UNDEBUG` for this
-  reason.
-- Cross-platform CI.
-- Performance and binary-size tracking for central runtime changes.
+- **The Janet suites**, `test/suite-*.janet`, run by `zig build test`. What a
+  Janet program can observe, asserted the way a Janet program would.
+- **The contracts**, `test/*.zig`, one per subject, run by the driver
+  `zig build` installs. What no Janet program can reach: an argument fault's
+  exact message, a flag table's order, a collector's block list. Each is
+  compiled *into* a second copy of the runtime, so it calls its subject by
+  import and a raise arrives as a value.
+- **The in-file `test` blocks** under `src/zig`, run by `zig build test` as
+  `janet-runtime-test`. Interior facts with no runtime under them — a
+  classification table, a mode-string parser.
+- **The fuzz targets**, `test/fuzz.zig`: parser, compiler, marshalling and
+  bytecode, run once over their corpora by `zig build test` and as a campaign
+  by `zig build fuzz --fuzz`.
+- **Debug, optimized and sanitizer builds**, through
+  `tools/testing/matrix.janet`. Optimized builds must keep the contracts'
+  assertions live, which is what `test/expect.zig` is for: `std.debug.assert`
+  is `unreachable`, and in `ReleaseFast` and `ReleaseSmall` that is undefined
+  behaviour the optimizer may delete along with the condition.
+- **Cross-platform builds and container runs**, below, plus performance and
+  binary-size tracking for central runtime changes.
 
-Compatibility failures should be reduced to focused regression tests before
-they are fixed.
+A compatibility failure should be reduced to a focused regression test before
+it is fixed.
 
 ### Cross-platform validation without CI
 
 A second platform can be exercised locally, before any public CI exists.  `zig
 build test` cannot do this on its own: it runs what it builds, which is
 impossible when the target is not the host. Build with `-Dinstall-tests=true`
-instead, which installs the C contract executables and the dynamic native
-module into `<prefix>/test`, then run them on the target machine.
+instead, which installs the contract, fuzz and runtime test executables and the
+dynamic native module into `<prefix>/test`, then run them on the target
+machine.
 
 The development recipe uses a container for the target userland:
 
@@ -53,10 +59,9 @@ podman run --rm --platform linux/arm64 --tmpfs /work:size=256m \
 rm -rf xbuild/arm
 ```
 
-**The glibc recipe, which was not written down until Phase 11 Part 27.** Part
-25 opened `aarch64-linux-gnu` and ran it ad hoc; Part 27 needed it again to
-diagnose a defect only that libc detects, and had to reconstruct it. It is the
-musl recipe with two substitutions — `-gnu` for `-musl`, `debian:trixie` for
+**The glibc recipe.** It was run ad hoc and not written down once, and had to
+be reconstructed to diagnose a defect only that libc detects. It is the musl
+recipe with two substitutions — `-gnu` for `-musl`, `debian:trixie` for
 `alpine:latest`:
 
 ```sh
@@ -80,9 +85,9 @@ rm -rf xbuild/gnu /tmp/janet-xc-gnu
 
 **Run both libcs, not one.** They are not interchangeable and each has found
 something the other cannot see. glibc's allocator checks fastbin chunk
-alignment and musl's does not, which is the whole reason Part 25 found the heap
-corruption Part 27 diagnosed; musl is what CI tests, because that corruption
-made the glibc driver run abort. The contract driver with **no argument** is
+alignment and musl's does not, which is the whole reason a heap corruption
+surfaced there first; musl is what CI tests, because that corruption made the
+glibc driver run abort. The contract driver with **no argument** is
 the interesting invocation on either — it is the only thing in the tree that
 initialises and tears the runtime down sixty-five times in one process, and
 that is a workload nothing else here has.
@@ -98,12 +103,11 @@ Two practical traps, both cost a cycle to rediscover:
   the image is multi-arch, or the userland and the cross-built binary disagree.
 
 **Three 32-bit targets are reachable, and glibc is too. The paragraph below
-said one and none, and it was wrong for two phases.** Phase 11 Part 25 found
-the cause: `build.zig` put `src/core` on the `-I` path, `-I` beats the system
-search path, and `src/core/features.h` therefore answered `#include <features.h>`
-for **every libc header that asked**. (The directory is `src/zig` since Phase 12
-increment 5f, which emptied `src/core` and moved `janet_features.h` up; the
-hazard is the same one and the renamed file is still what closes it.) glibc's `features.h` is what defines
+said one and none, and it was wrong for two phases.** The cause was our own
+include path: a `features.h` of ours sat on the `-I` path, `-I` beats the system
+search path, and it therefore answered `#include <features.h>` for **every libc
+header that asked**. (It is `src/zig/janet_features.h` now, and the rename is
+what closes the hazard.) glibc's `features.h` is what defines
 `__GLIBC_USE`, so `#if __GLIBC_USE (IEC_60559_BFP_EXT)` became `0 (...)` and the
 translation failed 6,662 times; musl's 32-bit headers lost their own feature
 macros the same way, and the `__REDIR` declarations named below were the
@@ -123,7 +127,7 @@ The eight targets `.github/workflows/test.yml` builds are the current set. A
 paragraph gave: Zig analyses only the branches it selects, so nothing else
 type-checks `JANET_NANBOX_32`.
 
-*The original text follows, because the measurement in it is what made the
+*The superseded text follows, because the measurement in it is what made the
 wrong diagnosis plausible.*
 
 **A 32-bit target is reachable, only one is, and it belongs in the set as a
@@ -143,51 +147,27 @@ zig build -Dtarget=riscv32-linux-musl -Dcpu=baseline \
 rm -rf /tmp/janet-xc-rv /tmp/janet-out-rv
 ```
 
-That is not a formality. It is the only target that selects `JANET_NANBOX_32`
-and the 32-bit arm of every pointer-width branch, and Zig analyses only the
-branches it selects — so this build is the only thing anywhere that type-checks
-that code.
+That is not a formality. It is the only target that selects the 32-bit
+NaN-boxed layout and the 32-bit arm of every pointer-width branch, and Zig
+analyses only the branches it selects — so this build is the only thing anywhere
+that type-checks that code.
 
-The binaries *can* be run: Alpine ships `qemu-riscv32`, and with every selector
-set to `c` the contracts pass under it, which is how the nanbox-32 arm of
-`test/value_wrap.zig` was validated on 2026-08-20. **That is deliberately not part
-of the per-increment set.** It costs a `-Dinstall-tests=true` prefix, a
-container and an emulator, and it cannot pass with Zig subsystems anyway for the
-reason below — so it is a thing to do once, when the reason below is fixed,
-rather than every increment. The recipe, for when that day comes, is the
-`-Dinstall-tests=true` one above under the aarch64 example, with
+The binaries *can* be run: Alpine ships `qemu-riscv32`, and the contracts passed
+under it on 2026-08-20, which is how the 32-bit NaN-boxing arm of
+`test/value_wrap.zig` was validated. **That is deliberately not part of the
+per-increment set.** It costs a `-Dinstall-tests=true` prefix, a container and
+an emulator, and what it buys over the compile is one arm of one contract. The
+recipe is the `-Dinstall-tests=true` one above under the aarch64 example, with
 `apk add qemu-riscv32` and `qemu-riscv32` in front of each binary.
 
-With Zig subsystems the contracts do not pass there, and the reason is the
-toolchain rather than the port:
-Zig 0.16 and clang disagree about how many argument registers an eight-byte
-union consumes under riscv32 ILP32D, so a lone `Janet` parameter survives the
-C-to-Zig boundary and every argument *behind* a by-value `Janet` arrives
-displaced. `janet_equals` consequently reads a garbage second value, reports two
-identical arguments as unequal, and an all-Zig build dies inside `janet_init`.
-A probe measured it in isolation. Found during Phase 8 Part 10; it constrains
-every Zig subsystem equally and predates that increment.
-
-**Phase 10 dissolves this, and how it does is worth stating.** What breaks is a
-disagreement between *two* compilers, not an inconsistency inside Zig. Removing
-the transitional C removes clang from the boundary, after which every call is
-Zig-to-Zig and both sides agree with each other — whether or not they agree with
-the psABI, and even if the subsystems keep their `callconv(.c)` declarations.
-
-That conclusion depends on a premise this document does not otherwise assume, so
-it is named here rather than buried: it holds only where preserving the public C
-API and native-module compatibility is treated as a *migration scaffold* that
-Phase 10 may remove, not as an end-state guarantee. Under that reading the C
-embedding test and the native-module fixture are compatibility fixtures that go
-with compatibility, and the `test/*.c` contracts are differential scaffold whose
-purpose ends with the C implementation they compare against.
-
-If C compatibility is instead kept permanently, the opposite holds and the wall
-gets *worse* at Phase 10: `janet.h` is then a permanent C boundary, twenty-two
-`JANET_API` functions take a `Janet` by value followed by another parameter —
-`janet_checktype`, `janet_equals`, `janet_compare`, `janet_in`, `janet_get`,
-`janet_put`, `janet_next` and the rest of the access layer — and the `c`
-selectors that make a 32-bit build work today would be gone with no fallback.
+*One riscv32 hazard is closed rather than open, and it is worth not
+rediscovering.* Zig 0.16 and clang disagree about how many argument registers an
+eight-byte union consumes under riscv32 ILP32D, so a value passed by value
+across a Zig-to-C call displaced every argument behind it. That was measured in
+isolation and it constrained every such call. **Removing the C dissolved it:**
+what breaks is a disagreement between *two* compilers, not an inconsistency
+inside Zig, and with no clang at the boundary every call is Zig-to-Zig and both
+sides agree with each other — whether or not they agree with the psABI.
 
 **A 32-bit target is a deferred goal rather than a non-goal**, so the deferral
 is split deliberately rather than taken wholesale. Two costs behave differently
@@ -196,13 +176,13 @@ and only one of them grows while nothing is done:
 - **Code that is never analysed grows, and that is checked continuously.** Zig
   analyses only the comptime branches it selects, so on a 64-bit host every
   32-bit path in the tree is not merely untested but *never compiled* — a typo
-  in one builds clean forever. Three exist today, all first type-checked on
-  2026-08-20 by the first riscv32 build ever run against this tree:
-  `value_wrap.zig`'s 73-line `nanbox32` branch, the `@hasDecl(c, "JANET_32")`
-  arm of `janet_lengthv` in `value_access.zig`, and the pointer-hash else-branch
-  in `value_order.zig`. All three were correct, and nobody knew. Phase 9 adds
-  more, so **`riscv32-linux-musl` joins the per-increment cross-compile set** —
-  a compile, on the same footing and for the same reason as the Windows one.
+  in one builds clean forever. Three were first type-checked on 2026-08-20 by
+  the first riscv32 build ever run against this tree: the 32-bit NaN-boxing
+  branch in the representation, the 32-bit arm of `lengthv` in the access layer,
+  and the pointer-hash else-branch in the comparison layer. All three were
+  correct, and nobody knew. That is why **`riscv32-linux-musl` is in the
+  per-increment cross-compile set** — a compile, on the same footing and for
+  the same reason as the Windows one.
 - **Behavioural verification does not grow, so it waits.** Running anything
   there needs the ABI disagreement resolved, which no amount of work in this
   tree achieves, so deferring it costs nothing that doing it later would not
@@ -252,13 +232,29 @@ Current coverage:
 
 | Platform             | Method                            | Coverage                                                                                                                                                |
 |----------------------|-----------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
-| macOS ARM64          | native                            | Full: four optimize modes, Zig and all-C selectors, every feature flag                                                                                  |
-| Linux aarch64 musl   | cross-compile, native container   | **All 65 contracts and 32 of 34 suites**, NaN-boxed default. Also the second host for the image comparison, and the only thing that has ever executed a Zig contract off macOS   |
-| Linux x86-64 musl    | cross-compile, emulated container | Tagged representation only; `janet-asm-decode-test` segfaults under emulation for both selectors, so individual contracts are run rather than the sweep |
-| Windows x86-64 MinGW | cross-compile                     | **Builds**, and is a matrix entry. Binaries have never been executed. Limitation (6) below described it as blocked and was stale for an unknown number of parts                                       |
-| Linux riscv32 musl   | cross-compile                     | Builds only. One of **three** 32-bit targets since Part 25 -- `x86-linux-musl` and `arm-linux-musleabihf` build too -- which are what compile the `JANET_NANBOX_32` and 32-bit branches; binaries deliberately unexecuted, see below            |
-| Linux glibc, x86-64 and aarch64 | cross-compile, native container | **Builds and runs**: the driver at exit 0 with no argument *and* 65 of 65 by name, 32 of 34 suites. The no-argument abort in `malloc_consolidate` that this row carried for two phases was diagnosed and fixed -- `FOUND.md` has the mechanism. Run at a phase gate rather than in CI, which tests Linux against musl |
+| macOS ARM64          | native                            | Full: four optimize modes, every feature flag, both value layouts                                                                                       |
+| Linux aarch64 musl   | cross-compile, native container   | **All 65 contracts, all 42 in-file tests, and 32 of 34 suites**, NaN-boxed default -- the two are named below. Also the second host for the image comparison, and the only thing that has ever executed a Zig contract off macOS   |
+| Linux x86-64 musl    | cross-compile, emulated container | Tagged representation only; `asm_decode` segfaults under emulation, so individual contracts are run rather than the sweep                               |
+| Windows x86-64 MinGW | cross-compile                     | **Builds**, and is a matrix entry. Binaries have never been executed                                                                                    |
+| Linux riscv32 musl   | cross-compile                     | Builds only. One of **three** 32-bit targets -- `x86-linux-musl` and `arm-linux-musleabihf` build too -- which are what compile the 32-bit NaN-boxing and pointer-width branches; binaries deliberately unexecuted, see below |
+| Linux glibc, x86-64 and aarch64 | cross-compile, native container | **Builds and runs**: the driver at exit 0 with no argument *and* 65 of 65 by name, all 42 in-file tests, 32 of 34 suites -- the same two as musl. The no-argument abort in `malloc_consolidate` this row carried for two phases was diagnosed and fixed -- `FOUND.md` has the mechanism. Run at a phase gate rather than in CI, which tests Linux against musl |
 
+
+**The two suites that do not pass on Linux, and why they are not a gap.** They
+are the same two under musl and under glibc, so neither is a libc difference:
+
+- `suite-io.janet:236`, one assertion of 85. It asserts that `file/open` with a
+  buffer size of `2^53 - 1` raises `failed to set buffer size for file`. Linux's
+  `setvbuf` accepts the size where macOS refuses it, so the suite is asserting a
+  refusal only one platform makes.
+- `suite-filewatch.janet`, six assertions of 77, all of them inotify event
+  *ordering*: the suite asserts `:create` and `:close-write` as separate events
+  in order, and under the container's filesystem they coalesce and the previous
+  subtest's events are still queued when the next reads them. The 71 covering
+  argument handling, flag decoding and the watcher's life cycle pass.
+
+Fixing either means deciding what the suite should assert on a host that behaves
+differently, which is a change to a test's subject rather than to the runtime.
 
 Five limitations constrain this, none of which are Janet defects:
 
@@ -271,24 +267,21 @@ Five limitations constrain this, none of which are Janet defects:
    while hashing its first symbol. A tagged build (`-Dnanbox=false`) runs
    normally. NaN-boxed x86-64 needs real hardware.
 
-   Measured on 2026-08-20, because Phase 9 Part 3 hit it again and the note
-   above was not specific enough to recognise it from a stack trace. QEMU hands
-   the x86-64 guest the ARM64 host's address space: the static image loads low,
-   every allocation lands at `0xffff8…` with bit 47 set, and
-   `JANET_NANBOX_PAYLOADBITS` is `0x00007FFFFFFFFFFF`, so every unwrap discards
-   that bit. The *tag* survives — `janet_type` still answers `JANET_SYMBOL` —
+   Measured on 2026-08-20, after the note above proved too vague to recognise
+   from a stack trace. QEMU hands the x86-64 guest the ARM64 host's address
+   space: the static image loads low, every allocation lands at `0xffff8…` with
+   bit 47 set, and the payload mask is `0x00007FFFFFFFFFFF`, so every unwrap
+   discards that bit. The *tag* survives — the type test still answers "symbol" —
    so nothing detects the loss and the first dereference faults. A probe printed
    `in=0xffff88d00010 out=0x7fff88d00010`, and the faulting address has the same
    shape every run, differing only where the mmap region moves.
 
-   **Two controls make this the emulator rather than the port, and they are the
-   part worth keeping.** The all-C build — every selector `c`, and `janet-c`,
-   which has no Zig object in the process at all — crashes identically, with an
-   all-C stack through `janet_hash` and `janet_dict_find`. And a full
-   Zig-selector `-Dnanbox=false` build runs Janet code correctly under the same
-   emulator, printing a live pointer with bit 47 set. So this is *not* an
-   x86-64 twin of the riscv32 ABI disagreement in the section below; that
-   reading is closed rather than open.
+   **Two controls make this the emulator rather than the port.** A build with
+   no Zig object in the process at all crashed identically, through the same
+   hash and dictionary lookup. And a `-Dnanbox=false` build runs Janet code
+   correctly under the same emulator, printing a live pointer with bit 47 set.
+   So this is *not* an x86-64 twin of the riscv32 ABI disagreement in the
+   section below; that reading is closed rather than open.
 
    Two things stay unmeasured. Whether the NaN-boxed binary is sound on real
    x86-64 is inferred from Linux keeping user mappings below 2^47 under 4-level
@@ -311,9 +304,9 @@ Five limitations constrain this, none of which are Janet defects:
    Treat Windows as compile-checked and untested.
 
    This item used to say the opposite — that the Windows cross-compile could
-   not build at all, because `translate-c` failed on MinGW's bounds-checked
-   `wchar.h` inlines — and it stayed on the list after some Zig release fixed
-   it and after two increments had recorded an `.exe` coming out. **A
+   not build at all, because the translation failed on MinGW's bounds-checked
+   `wchar.h` inlines — and it stayed on the list after a Zig release fixed it
+   and after two increments had recorded an `.exe` coming out. **A
    limitation that has quietly stopped being one is silent in exactly the way a
    broken instrument is**, and the tell is the same: an answer nobody re-read
    is not an answer that stopped moving.
@@ -342,13 +335,12 @@ of them is a non-zero exit rather than a number for a person to compare.
     ./tools/testing/leaks.sh                  # all 65, about 42 seconds
     ./tools/testing/leaks.sh args_core marsh  # just these
 
-**64 of the 65 are measured**, which was 61 until Phase 11 Part 28. macOS only:
-`leaks` is Apple's, and the container checks below are what the second platform
-gets instead.
+**64 of the 65 are measured.** macOS only: `leaks` is Apple's, and the
+container checks below are what the second platform gets instead.
 
-*This section said until Part 28 that the hang was "not a fork", on the
-evidence of a process count. The count is three rather than two, and the third
-process is in state `T`. `phase_11.md`'s rule 78 is what that cost.*
+*This section said for a while that the hang was "not a fork", on the evidence
+of a process count. The count is three rather than two, and the third process is
+in state `T`.*
 
 Because of (2), the x86-64 predictions recorded in `FOUND.md` — the SIGFPE from
 `INT64_MIN` divided by -1 in particular — remain inferred rather than observed.

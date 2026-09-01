@@ -218,10 +218,10 @@
 (assert-error "limit short-fn parameters 6" (macex1 '|$8888888888888888888888888888888888888888888888888888888888888888888888888888888))
 (assert-error "limit short-fn parameters 7" (macex1 '|$8.8))
 
-# Phase 10 Part 10: the core environment.
+# The core environment.
 #
-# The cfunctions `corelib.c` owned, asserted here because every one of them has
-# a Janet spelling. What has none -- `janet_core_env`'s replacements, the flag
+# The cfunctions it owns, asserted here because every one of them has a Janet
+# spelling. What has none -- the environment builder's replacements, the flag
 # words `janet_dobytes` answers with, `janet_native`'s failure paths -- is in
 # `test/core_env.c` instead.
 
@@ -551,5 +551,22 @@
 (assert (deep= {:a 1 :b 2} (struct :a 1 :b 2)) "struct with two pairs")
 (assert (deep= {} (struct)) "struct with no pairs")
 (assert (deep= @{:a 1} (table :a 1)) "table with one pair")
+
+# `array/ensure` validates both its arguments.
+#
+# `FOUND.md`'s "`array/ensure` does not validate its growth factor" was
+# reachable from here: a growth of zero freed the array's backing store and
+# left `count` claiming the elements, and a negative one asked for most of the
+# address space and ended the process. The boundary now rejects a growth below
+# one, the way it already rejected a count below one.
+(assert-error "expected positive integer" (array/ensure @[1 2 3] 100 0))
+(assert-error "expected positive integer" (array/ensure @[1 2 3] 100 -1))
+(assert-error "expected positive integer" (array/ensure @[1 2 3] 0 2))
+
+# And a valid growth still grows, leaving the elements alone.
+(def ensured @[1 2 3])
+(array/ensure ensured 100 2)
+(assert (= 3 (length ensured)) "array/ensure keeps the count")
+(assert (deep= @[1 2 3] ensured) "array/ensure keeps the elements")
 
 (end-suite)

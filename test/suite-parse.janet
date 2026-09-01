@@ -221,9 +221,8 @@
 (assert (= -2 -0x1p1))
 (assert (= -0.5 -0x1p-1))
 
-# Phase 10 Part 7 moved the parser's abstract type and its whole cfunction
-# surface to Zig. `parser/state` in particular was called for its side effects
-# above and never for its content.
+# `parser/state` is called for its side effects above and never for its content;
+# what follows asks about the content.
 
 # :delimiters, one byte per open form, outermost first. The characters are
 # built on the parser's own buffer and the count put back, so a second call
@@ -282,8 +281,7 @@
 (parser/eof pp3)
 (assert (= :dead (parser/status pp3)) "status dead")
 
-# A dead or unread-error parser refuses more input. Part 7 moved this raise
-# out of C, so it is the first panic a Zig parser frame delivers.
+# A dead or unread-error parser refuses more input.
 (assert-error "parser is dead, cannot consume" (parser/consume pp3 "x"))
 (assert-error "parser is dead, cannot consume" (parser/eof pp3))
 (assert-error "parser is dead, cannot consume" (parser/consume pp2 "x"))

@@ -10,25 +10,21 @@
 //!
 //! ## The kernels raise by returning
 //!
-//! Four `janet_panic("stack overflow")` calls once sat in C wrapping four
-//! kernels here, for one reason: a kernel that raised would have had to do it
-//! by jumping, and it could not jump out of its own Zig frame. The kernels
-//! raise by returning `raise.Error`, their callers `try` them, and the abis
-//! beside them -- `janet_fiber_push` and its three siblings -- are
-//! `raise.panicking` wrappers for a C caller.
+//! The four pushes raise by returning `raise.Error` and their callers `try`
+//! them; one abi survives beside them, for a caller that cannot.
 //!
-//! `make_struct_n` and the varargs fill are here too, so
-//! `janet_fiber_funcframe` and `janet_fiber_funcframe_tail` are whole instead
-//! of being a kernel in two halves with a packing step between them. Neither
+//! The struct packing and the varargs fill are here too, so that `funcframe`
+//! and `funcframeTail` are whole instead of being a kernel in two halves with
+//! a packing step between them. Neither
 //! *raises* -- an arity mismatch is reported as 1, which is what the loop
 //! branches on -- but both can raise *through*, because `janet_struct_put`
 //! hashes the caller's keys and an abstract type's `hash` callback is a
 //! function pointer the runtime does not own.
 
 const std = @import("std");
-const raise = @import("raise");
+const raise = @import("../raise.zig");
 const pp_format = @import("../pp/format.zig");
-const corefn = @import("corefn");
+const corefn = @import("../corefn.zig");
 const args_core = @import("../args.zig");
 const config = @import("config");
 const structs = @import("structs.zig");
@@ -39,36 +35,91 @@ const wrap = @import("helpers/wrap.zig");
 const fatal = @import("../fatal.zig");
 const gc_alloc = @import("../gc.zig");
 const functions = @import("functions.zig");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const value = @import("../value.zig");
-const vm_state = @import("../vm/lifecycle.zig");
+const vm_state = @import("../vm/state.zig");
+const abi = @import("abi");
+const signal = @import("../signal.zig");
+const ev_stream = @import("../ev/stream.zig");
+const ev_loop = @import("../ev.zig");
 
-/// `src/core/util.h`, declared here rather than translated: that header pulls
-/// in `dlfcn.h` on any target it does not recognise as Windows, which breaks
-/// the Windows cross-compile of every Zig object at once. This is `memcpy` with
-/// a zero length permitted to carry a null source, which several
-/// `janet_fiber_pushn` callers rely on.
-extern fn safe_memcpy(dest: ?*anyopaque, src: ?*const anyopaque, len: usize) void;
-
-/// `janet.h`'s frame size, named locally so the arithmetic below reads like
-/// the C it replaces. The function-like macros that go with it —
-/// `janet_stack_frame` and `janet_fiber_frame` in `fiber.h` — translate-c does
-/// not surface, so those are the two helpers below.
+/// A stack frame's size in `Value` slots, named locally so the arithmetic below
+/// reads as arithmetic. The two helpers under it are the only places that do
+/// it.
 const frame_size: i32 = constants.JANET_FRAME_SIZE;
 
-inline fn dataAt(fiber: *types.JanetFiber, index: i32) [*]repr.Value {
+/// `JanetFiberStatus`. Stored in six bits of the fiber's flag word, which
+/// `statusOf` below reads and whose width it asserts.
+///
+/// **The first fourteen are the signal's**, which is why `utils.zig` carries
+/// two name tables rather than one and why `vm.zig` can read a status out of
+/// the flag word and use it as a signal. `new` and `alive` are the two a
+/// signal has no name for.
+pub const FiberStatus = enum(c_uint) {
+    dead = 0,
+    @"error" = 1,
+    debug = 2,
+    pending = 3,
+    user0 = 4,
+    user1 = 5,
+    user2 = 6,
+    user3 = 7,
+    user4 = 8,
+    user5 = 9,
+    user6 = 10,
+    user7 = 11,
+    user8 = 12,
+    user9 = 13,
+    new = 14,
+    alive = 15,
+};
+
+comptime {
+    // Against upstream Janet at `17b3f8c4`. The values are marshalled -- a
+    // fiber's status travels in an image -- so a shift here is a wrong answer
+    // from a working program rather than a build failure.
+    // **One expected-value table per vocabulary, in that order.** A
+    // sample of four values and a count cannot catch a transposition: swapping
+    // two unasserted members leaves both the count and every sampled value
+    // correct. The table is the whole population, and the length assertion
+    // beside it is what stops a member being added without a row.
+    //
+    // `Signal`'s own table is in `abi.zig`, beside the enum; the cross-check
+    // below is here because it is a claim about this file's vocabulary.
+    const expected_status = [_]struct { FiberStatus, comptime_int }{
+        .{ .dead, 0 },   .{ .@"error", 1 }, .{ .debug, 2 },  .{ .pending, 3 },
+        .{ .user0, 4 },  .{ .user1, 5 },    .{ .user2, 6 },  .{ .user3, 7 },
+        .{ .user4, 8 },  .{ .user5, 9 },    .{ .user6, 10 }, .{ .user7, 11 },
+        .{ .user8, 12 }, .{ .user9, 13 },   .{ .new, 14 },   .{ .alive, 15 },
+    };
+    std.debug.assert(expected_status.len == @typeInfo(FiberStatus).@"enum".fields.len);
+    for (expected_status) |row| std.debug.assert(@intFromEnum(row[0]) == row[1]);
+    // Every signal value is also a status value, which is what lets `vm.zig`
+    // read six bits out of a fiber's flag word and hand the result on as a
+    // signal. It is a claim about *values* and not about names: `ok` is
+    // `dead` at 0 and `yield` is `pending` at 3, and ten of the fourteen names
+    // do coincide, which is why `utils.zig` carries two tables.
+    for (@typeInfo(abi.Signal).@"enum".fields) |f| {
+        var found = false;
+        for (@typeInfo(FiberStatus).@"enum".fields) |g| {
+            if (g.value == f.value) found = true;
+        }
+        std.debug.assert(found);
+    }
+}
+
+inline fn dataAt(fiber: *Fiber, index: i32) [*]repr.Value {
     return fiber.data.? + @as(usize, @bitCast(@as(isize, index)));
 }
 
 /// `janet_stack_frame` from `fiber.h`: a frame lives in the four `Janet` slots
 /// immediately below the frame's stack base.
-pub inline fn stackFrame(values: [*]repr.Value) *types.JanetStackFrame {
+pub inline fn stackFrame(values: [*]repr.Value) *vm_state.StackFrame {
     return @ptrCast(@alignCast(values - frame_size));
 }
 
-inline fn fiberFrame(fiber: *types.JanetFiber) *types.JanetStackFrame {
+inline fn fiberFrame(fiber: *Fiber) *vm_state.StackFrame {
     return stackFrame(dataAt(fiber, fiber.frame));
 }
 
@@ -81,17 +132,16 @@ pub inline fn stackBytes(n: i32) usize {
     return @bitCast(@as(isize, n) *% @as(isize, @sizeOf(repr.Value)));
 }
 
-/// Only compiled when `janetconf.h` defines JANET_DEBUG, which no build option
-/// does; it is edited in by hand to shake out use-after-free by moving the
-/// stack on every frame push.
+/// Move every fiber's stack on every frame push, so that a pointer kept across
+/// one is a use-after-free the allocator can see. `-Dfiber-stack-shuffle=true`
+/// turns it on; it is off by default because it reallocates on every call.
 const debug_build = config.debug;
 
-fn refreshMemory(fiber: *types.JanetFiber) void {
+fn refreshMemory(fiber: *Fiber) void {
     const n = fiber.capacity;
     if (n != 0) {
-        const new_data = utils.malloc(stackBytes(n)) orelse fatal.outOfMemory();
-        const dest: [*]repr.Value = @ptrCast(@alignCast(new_data));
-        @memcpy(dest[0..@intCast(n)], fiber.data[0..@intCast(n)]);
+        const dest = utils.allocMany(repr.Value, @intCast(n));
+        @memcpy(dest[0..@intCast(n)], fiber.data.?[0..@intCast(n)]);
         utils.free(fiber.data);
         fiber.data = dest;
     }
@@ -99,7 +149,7 @@ fn refreshMemory(fiber: *types.JanetFiber) void {
 
 /// The shape shared by every frame push: grow if the frame will not fit, and
 /// otherwise shuffle the allocation in a debug build.
-inline fn reserve(fiber: *types.JanetFiber, nextstacktop: i32) void {
+inline fn reserve(fiber: *Fiber, nextstacktop: i32) void {
     if (fiber.capacity < nextstacktop) {
         setcapacity(fiber, 2 *% nextstacktop);
     } else if (debug_build) {
@@ -107,7 +157,7 @@ inline fn reserve(fiber: *types.JanetFiber, nextstacktop: i32) void {
     }
 }
 
-inline fn fillNil(fiber: *types.JanetFiber, from: i32, to: i32) void {
+inline fn fillNil(fiber: *Fiber, from: i32, to: i32) void {
     var i = from;
     while (i < to) : (i += 1) {
         dataAt(fiber, i)[0] = wrap.fromNil();
@@ -137,15 +187,17 @@ const has_ev = constants.JANET_VM_HAS_EV != 0;
 /// C called this `fiber_reset` and the public entry point below
 /// `janet_fiber_reset`; stripping the prefix collapses both onto `reset`, so
 /// the one that takes only a fiber says what it resets instead.
-fn resetState(fiber: *types.JanetFiber) void {
+fn resetState(fiber: *Fiber) void {
     fiber.maxstack = config.stack_max;
     fiber.frame = 0;
     fiber.stackstart = frame_size;
     fiber.stacktop = frame_size;
     fiber.child = null;
-    fiber.flags = constants.JANET_FIBER_MASK_YIELD |
-        constants.JANET_FIBER_RESUME_NO_USEVAL |
-        constants.JANET_FIBER_RESUME_NO_SKIP;
+    fiber.flags = .{
+        .traps = .of(&.{.yield}),
+        .resume_no_useval = true,
+        .resume_no_skip = true,
+    };
     fiber.env = null;
     fiber.last_value = wrap.fromNil();
     if (has_ev) {
@@ -155,7 +207,7 @@ fn resetState(fiber: *types.JanetFiber) void {
         fiber.ev_stream = null;
         fiber.supervisor_channel = null;
     }
-    setStatus(fiber, types.FiberStatus.new);
+    setStatus(fiber, FiberStatus.new);
 }
 
 /// Allocate a fiber and its value stack. The block is collectable and on
@@ -167,16 +219,12 @@ fn resetState(fiber: *types.JanetFiber) void {
 /// initialised, exactly as in C. Both callers run `resetState` over it
 /// immediately. A collection cannot intervene: no allocation happens between
 /// the two, because `janet_malloc` does not collect.
-fn alloc(requested: i32) *types.JanetFiber {
-    const fiber: *types.JanetFiber = @ptrCast(@alignCast(gc_alloc.gcalloc(
-        types.MemoryType.fiber,
-        @sizeOf(types.JanetFiber),
-    )));
+fn alloc(requested: i32) *Fiber {
+    const fiber = gc_alloc.gcalloc(Fiber, .fiber);
     const capacity: i32 = if (requested < 32) 32 else requested;
     fiber.capacity = capacity;
-    const data = utils.malloc(stackBytes(capacity)) orelse fatal.outOfMemory();
     vm_state.current().gc.next_collection +%= stackBytes(capacity);
-    fiber.data = @ptrCast(@alignCast(data));
+    fiber.data = utils.allocMany(repr.Value, @intCast(capacity));
     return fiber;
 }
 
@@ -188,11 +236,11 @@ fn alloc(requested: i32) *types.JanetFiber {
 /// written by then, so the rejected fiber is reset but frameless -- again, what
 /// C leaves.
 pub fn reset(
-    fiber: *types.JanetFiber,
-    callee: *types.JanetFunction,
+    fiber: *Fiber,
+    callee: *functions.Function,
     argc: i32,
     argv: ?[*]const repr.Value,
-) callconv(.c) ?*types.JanetFiber {
+) callconv(.c) ?*Fiber {
     resetState(fiber);
     if (argc != 0) {
         const newstacktop = fiber.stacktop +% argc;
@@ -207,13 +255,12 @@ pub fn reset(
             );
         } else {
             // If argv not given, fill with nil
-            var i: i32 = 0;
-            while (i < argc) : (i += 1) dest[@intCast(i)] = wrap.fromNil();
+            for (dest[0..@intCast(argc)]) |*slot| slot.* = wrap.fromNil();
         }
         fiber.stacktop = newstacktop;
     }
     // Don't panic on failure since we use this to implement janet_pcall
-    if (funcframe(fiber, callee) != 0) return null;
+    funcframe(fiber, callee) catch return null;
     fiberFrame(fiber).flags |= constants.JANET_STACKFRAME_ENTRANCE;
     if (has_ev) fiber.supervisor_channel = null;
     return fiber;
@@ -221,17 +268,17 @@ pub fn reset(
 
 /// Create a new fiber with `argc` values on the stack.
 pub fn new(
-    callee: *types.JanetFunction,
+    callee: *functions.Function,
     capacity: i32,
     argc: i32,
     argv: ?[*]const repr.Value,
-) callconv(.c) ?*types.JanetFiber {
+) callconv(.c) ?*Fiber {
     return reset(alloc(capacity), callee, argc, argv);
 }
 
 // ------------------------------------------------------------------ growth
 
-pub fn setcapacity(fiber: *types.JanetFiber, n: i32) void {
+pub fn setcapacity(fiber: *Fiber, n: i32) void {
     const old_size = fiber.capacity;
     const diff = n -% old_size;
     const new_data = utils.realloc(fiber.data, stackBytes(n)) orelse
@@ -243,7 +290,7 @@ pub fn setcapacity(fiber: *types.JanetFiber, n: i32) void {
     vm_state.current().gc.next_collection +%= stackBytes(diff);
 }
 
-fn grow(fiber: *types.JanetFiber, needed: i32) void {
+fn grow(fiber: *Fiber, needed: i32) void {
     const cap: i32 = if (needed > @divTrunc(std.math.maxInt(i32), 2))
         std.math.maxInt(i32)
     else
@@ -265,14 +312,14 @@ fn grow(fiber: *types.JanetFiber, needed: i32) void {
 // it already holds. `pushn` keeps its pointer, because a run of values is what
 // it takes.
 
-pub fn push(fiber: *types.JanetFiber, x: repr.Value) raise.Error!void {
+pub fn push(fiber: *Fiber, x: repr.Value) raise.Error!void {
     if (fiber.stacktop == std.math.maxInt(i32)) return raise.panic("stack overflow");
     if (fiber.stacktop >= fiber.capacity) grow(fiber, fiber.stacktop);
     dataAt(fiber, fiber.stacktop)[0] = x;
     fiber.stacktop += 1;
 }
 
-pub fn push2(fiber: *types.JanetFiber, x: repr.Value, y: repr.Value) raise.Error!void {
+pub fn push2(fiber: *Fiber, x: repr.Value, y: repr.Value) raise.Error!void {
     if (fiber.stacktop >= std.math.maxInt(i32) - 1) return raise.panic("stack overflow");
     const newtop = fiber.stacktop + 2;
     if (newtop > fiber.capacity) grow(fiber, newtop);
@@ -282,7 +329,7 @@ pub fn push2(fiber: *types.JanetFiber, x: repr.Value, y: repr.Value) raise.Error
     fiber.stacktop = newtop;
 }
 
-pub fn push3(fiber: *types.JanetFiber, x: repr.Value, y: repr.Value, z: repr.Value) raise.Error!void {
+pub fn push3(fiber: *Fiber, x: repr.Value, y: repr.Value, z: repr.Value) raise.Error!void {
     if (fiber.stacktop >= std.math.maxInt(i32) - 2) return raise.panic("stack overflow");
     const newtop = fiber.stacktop + 3;
     if (newtop > fiber.capacity) grow(fiber, newtop);
@@ -294,7 +341,7 @@ pub fn push3(fiber: *types.JanetFiber, x: repr.Value, y: repr.Value, z: repr.Val
 }
 
 pub fn pushn(
-    fiber: *types.JanetFiber,
+    fiber: *Fiber,
     arr: []const repr.Value,
 ) raise.Error!void {
     const n: i32 = @intCast(arr.len);
@@ -303,7 +350,7 @@ pub fn pushn(
     if (newtop > fiber.capacity) grow(fiber, newtop);
     // safe_memcpy rather than @memcpy: `arr` is null when `n` is zero at
     // several call sites, and a null source is what that helper exists for.
-    safe_memcpy(dataAt(fiber, fiber.stacktop), arr.ptr, stackBytes(n));
+    utils.safeMemcpy(dataAt(fiber, fiber.stacktop), arr.ptr, stackBytes(n));
     fiber.stacktop = newtop;
 }
 
@@ -331,8 +378,8 @@ fn makeStructN(args: []const repr.Value) repr.Value {
 /// A count of zero is an empty tail rather than an empty range, which is why
 /// the source pointer is null there -- that is the distinction the C original
 /// drew with its `tuplehead >= oldtop` branch.
-fn fillVarargs(fiber: *types.JanetFiber, func: *types.JanetFunction, slot: i32, count: i32) void {
-    const structarg = (func.def.?.flags & constants.JANET_FUNCDEF_FLAG_STRUCTARG) != 0;
+fn fillVarargs(fiber: *Fiber, func: *functions.Function, slot: i32, count: i32) void {
+    const structarg = func.def.?.flags.structarg;
     // The empty tail is an empty *slice* rather than a null pointer with a
     // zero count. `values.?[0..count]` here traps on the first varargs call
     // with no arguments -- `DESIGN.md` section 9's "a `.?` is a claim about
@@ -348,55 +395,64 @@ fn fillVarargs(fiber: *types.JanetFiber, func: *types.JanetFunction, slot: i32, 
         wrap.fromTuple(tuples.newFrom(values));
 }
 
-// The abi of the pushes, and there is one of it.
-//
-// There were four, written out rather than generated by `raise.panicking`,
-// which builds an abi for a function that returns a payload and has nothing to
-// wrap where the return is `void`. Three had no caller left once the
-// interpreter reached `push2`, `push3` and `pushn` by import.
+// The one abi of the pushes. It is written out rather than generated by
+// `raise.panicking`, which builds an abi for a function that returns a payload
+// and has nothing to wrap where the return is `void`.
 
 // ------------------------------------------------------------------- frames
 
-/// Push a call frame for `func`. Returns 1 without touching the fiber if the
-/// argument count is outside the function's arity, and otherwise reports
-/// through `slot_out` where a variadic tail has to be packed: -1 for none, or
-/// the slot index with `count_out` values to gather from it. C does the
-/// packing, because building a tuple or a struct can raise.
-pub fn funcframe(fiber: *types.JanetFiber, func: *types.JanetFunction) c_int {
-    var slot: i32 = undefined;
-    var count: i32 = undefined;
-    if (funcframeBegin(fiber, func, &slot, &count) != 0) return 1;
-    if (slot >= 0) fillVarargs(fiber, func, slot, count);
-    return 0;
+/// A variadic tail waiting to be packed: the slot to pack it into, and how
+/// many values to gather from there.
+///
+/// It travels out of the two `Begin` halves rather than being used inside them
+/// because the tail-call path needs the packing to happen at a different point
+/// in the sequence -- see `funcframeTailBegin`.
+const Varargs = struct { slot: i32, count: i32 };
+
+/// What pushing half a frame decided: the frame is pushed and a variadic tail
+/// may still want packing, or the arity refused the arguments and the fiber was
+/// not touched.
+///
+/// It was a `c_int` where 1 meant *failure* beside two `*i32` out-parameters
+/// carrying a `-1` sentinel for "no tail". Three states, two of them the same
+/// state at different sentinel values, is what a union says once.
+const FrameBegin = union(enum) {
+    pushed: ?Varargs,
+    arity_mismatch,
+};
+
+/// Refusal from a frame push: the argument count was outside the callee's
+/// arity. Not a raise -- every caller decides for itself what to say, and two
+/// of them say nothing.
+pub const ArityError = error{Arity};
+
+/// Push a call frame for `func`, packing its variadic tail if it has one.
+///
+/// `error.Arity` without touching the fiber if the argument count is outside
+/// the function's arity.
+pub fn funcframe(fiber: *Fiber, func: *functions.Function) ArityError!void {
+    switch (funcframeBegin(fiber, func)) {
+        .arity_mismatch => return error.Arity,
+        .pushed => |tail| if (tail) |t| fillVarargs(fiber, func, t.slot, t.count),
+    }
 }
 
-/// Everything up to the point where a variadic tail's value is needed:
-/// `slot_out` reports where to pack one, or -1 for none, and `count_out` how
-/// many values to gather. Returns 1 without touching the fiber if the argument
-/// count is outside the function's arity.
+/// Everything up to the point where a variadic tail's value is needed.
 ///
 /// Split from the fill above rather than folded into it because the tail-call
 /// path needs the two halves in a different order -- the tail's value has to
 /// exist before the arguments are moved down over the outgoing frame.
-fn funcframeBegin(
-    fiber: *types.JanetFiber,
-    func: *types.JanetFunction,
-    slot_out: *i32,
-    count_out: *i32,
-) c_int {
+fn funcframeBegin(fiber: *Fiber, func: *functions.Function) FrameBegin {
     const def = func.def.?;
     const oldtop = fiber.stacktop;
     const oldframe = fiber.frame;
     const nextframe = fiber.stackstart;
-    const nextstacktop = nextframe +% def.*.slotcount +% frame_size;
+    const nextstacktop = nextframe +% def.slotcount +% frame_size;
     const next_arity = fiber.stacktop -% fiber.stackstart;
 
-    slot_out.* = -1;
-    count_out.* = 0;
-
     // Check strict arity before messing with state
-    if (next_arity < def.*.min_arity) return 1;
-    if (next_arity > def.*.max_arity) return 1;
+    if (next_arity < def.min_arity) return .arity_mismatch;
+    if (next_arity > def.max_arity) return .arity_mismatch;
 
     reserve(fiber, nextstacktop);
 
@@ -409,52 +465,48 @@ fn funcframeBegin(
     fiber.stackstart = nextstacktop;
     const newframe = fiberFrame(fiber);
     newframe.prevframe = oldframe;
-    newframe.pc = def.*.bytecode;
+    newframe.pc = def.bytecode;
     newframe.func = func;
     newframe.env = null;
     newframe.flags = 0;
 
     // Check varargs
-    if (def.*.flags & constants.JANET_FUNCDEF_FLAG_VARARG != 0) {
-        const tuplehead = fiber.frame +% def.*.arity;
-        slot_out.* = tuplehead;
-        count_out.* = if (tuplehead >= oldtop) 0 else oldtop -% tuplehead;
-    }
-
-    return 0;
+    if (!def.flags.vararg) return .{ .pushed = null };
+    const tuplehead = fiber.frame +% def.arity;
+    return .{ .pushed = .{
+        .slot = tuplehead,
+        .count = if (tuplehead >= oldtop) 0 else oldtop -% tuplehead,
+    } };
 }
 
 /// The first half of a tail call. Everything up to the point where the
 /// variadic tail's value is needed: arity, capacity, detaching the outgoing
 /// frame's environment, and the gap fill an empty tail requires. `stacksize` is
 /// how many slots the finishing half has to move down.
-pub fn funcframeTail(fiber: *types.JanetFiber, func: *types.JanetFunction) c_int {
-    var slot: i32 = undefined;
-    var count: i32 = undefined;
-    var stacksize: i32 = 0;
-    if (funcframeTailBegin(fiber, func, &slot, &count, &stacksize) != 0) return 1;
-    if (slot >= 0) fillVarargs(fiber, func, slot, count);
-    funcframeTailFinish(fiber, func, stacksize);
-    return 0;
+pub fn funcframeTail(fiber: *Fiber, func: *functions.Function) ArityError!void {
+    const begun = switch (funcframeTailBegin(fiber, func)) {
+        .arity_mismatch => return error.Arity,
+        .pushed => |begun| begun,
+    };
+    if (begun.tail) |t| fillVarargs(fiber, func, t.slot, t.count);
+    funcframeTailFinish(fiber, func, begun.stacksize);
 }
 
-fn funcframeTailBegin(
-    fiber: *types.JanetFiber,
-    func: *types.JanetFunction,
-    slot_out: *i32,
-    count_out: *i32,
-    stacksize_out: *i32,
-) c_int {
+/// The tail-call half's answer: the variadic tail to pack, if any, and how
+/// many slots the finishing half has to move down.
+const TailBegin = union(enum) {
+    pushed: struct { tail: ?Varargs, stacksize: i32 },
+    arity_mismatch,
+};
+
+fn funcframeTailBegin(fiber: *Fiber, func: *functions.Function) TailBegin {
     const def = func.def.?;
-    const nextstacktop = fiber.frame +% def.*.slotcount +% frame_size;
+    const nextstacktop = fiber.frame +% def.slotcount +% frame_size;
     const next_arity = fiber.stacktop -% fiber.stackstart;
 
-    slot_out.* = -1;
-    count_out.* = 0;
-
     // Check strict arity before messing with state
-    if (next_arity < def.*.min_arity) return 1;
-    if (next_arity > def.*.max_arity) return 1;
+    if (next_arity < def.min_arity) return .arity_mismatch;
+    if (next_arity > def.max_arity) return .arity_mismatch;
 
     reserve(fiber, nextstacktop);
 
@@ -464,36 +516,38 @@ fn funcframeTailBegin(
     frame.env = null;
 
     // Check varargs
-    if (def.*.flags & constants.JANET_FUNCDEF_FLAG_VARARG != 0) {
-        const tuplehead = fiber.stackstart +% def.*.arity;
-        if (tuplehead >= fiber.stacktop) {
-            if (tuplehead >= fiber.capacity) {
-                setcapacity(fiber, 2 *% (tuplehead +% 1));
-            }
-            fillNil(fiber, fiber.stacktop, tuplehead);
-            count_out.* = 0;
-        } else {
-            count_out.* = fiber.stacktop -% tuplehead;
-        }
-        slot_out.* = tuplehead;
-        stacksize_out.* = tuplehead -% fiber.stackstart +% 1;
-    } else {
-        stacksize_out.* = fiber.stacktop -% fiber.stackstart;
-    }
+    if (!def.flags.vararg) return .{ .pushed = .{
+        .tail = null,
+        .stacksize = fiber.stacktop -% fiber.stackstart,
+    } };
 
-    return 0;
+    const tuplehead = fiber.stackstart +% def.arity;
+    var count: i32 = undefined;
+    if (tuplehead >= fiber.stacktop) {
+        if (tuplehead >= fiber.capacity) {
+            setcapacity(fiber, 2 *% (tuplehead +% 1));
+        }
+        fillNil(fiber, fiber.stacktop, tuplehead);
+        count = 0;
+    } else {
+        count = fiber.stacktop -% tuplehead;
+    }
+    return .{ .pushed = .{
+        .tail = .{ .slot = tuplehead, .count = count },
+        .stacksize = tuplehead -% fiber.stackstart +% 1,
+    } };
 }
 
 /// The second half: move the arguments down over the outgoing frame's slots,
 /// nil the rest, and repoint the frame at `func`. Runs after C has stored the
 /// variadic tail, because the move copies that slot too.
 fn funcframeTailFinish(
-    fiber: *types.JanetFiber,
-    func: *types.JanetFunction,
+    fiber: *Fiber,
+    func: *functions.Function,
     stacksize: i32,
 ) void {
     const def = func.def.?;
-    const nextframetop = fiber.frame +% def.*.slotcount;
+    const nextframetop = fiber.frame +% def.slotcount;
     const nextstacktop = nextframetop +% frame_size;
 
     if (stacksize != 0) {
@@ -513,11 +567,11 @@ fn funcframeTailFinish(
     // Set frame stuff
     const frame = fiberFrame(fiber);
     frame.func = func;
-    frame.pc = def.*.bytecode;
+    frame.pc = def.bytecode;
     frame.flags |= constants.JANET_STACKFRAME_TAILCALL;
 }
 
-pub fn cframe(fiber: *types.JanetFiber, cfun: types.JanetCFunction) void {
+pub fn cframe(fiber: *Fiber, cfun: abi.JanetCFunction) void {
     const oldframe = fiber.frame;
     const nextframe = fiber.stackstart;
     const nextstacktop = fiber.stacktop +% frame_size;
@@ -541,7 +595,7 @@ pub fn cframe(fiber: *types.JanetFiber, cfun: types.JanetCFunction) void {
     newframe.flags = 0;
 }
 
-pub fn popframe(fiber: *types.JanetFiber) void {
+pub fn popframe(fiber: *Fiber) void {
     const frame = fiberFrame(fiber);
     if (fiber.frame == 0) return;
 
@@ -562,7 +616,7 @@ pub fn popframe(fiber: *types.JanetFiber) void {
 /// `janet_fiber_can_resume`. It is a fiber predicate here and
 /// `functions.envMaybeDetach` asks it rather than carrying the list a third
 /// time.
-pub fn finished(f: *types.JanetFiber) bool {
+pub fn finished(f: *Fiber) bool {
     return switch (statusOf(f)) {
         .dead, .@"error", .user0, .user1, .user2, .user3, .user4 => true,
         // Listed rather than `else`, so a status added later has to be
@@ -575,31 +629,31 @@ pub fn finished(f: *types.JanetFiber) bool {
 /// hold. The field is wider than the vocabulary -- six bits for sixteen
 /// values -- and the assertion below is what says so; every writer is in this
 /// tree and `marsh.zig` validates the one value that arrives from outside it.
-inline fn statusOf(f: *types.JanetFiber) types.FiberStatus {
-    return @enumFromInt((f.*.flags & constants.JANET_FIBER_STATUS_MASK) >> constants.JANET_FIBER_STATUS_OFFSET);
+inline fn statusOf(f: *Fiber) FiberStatus {
+    return @enumFromInt(f.flags.status);
 }
 
 comptime {
     // The stored width, which is the fiber flag word's and not the enum's.
-    const stored = constants.JANET_FIBER_STATUS_MASK >> constants.JANET_FIBER_STATUS_OFFSET;
-    for (@typeInfo(types.FiberStatus).@"enum".fields) |f| {
+    const stored = std.math.maxInt(@FieldType(FiberFlags, "status"));
+    for (@typeInfo(FiberStatus).@"enum".fields) |f| {
         std.debug.assert(f.value <= stored);
     }
 }
 
-pub fn status(f: *types.JanetFiber) types.FiberStatus {
+pub fn status(f: *Fiber) FiberStatus {
     return statusOf(f);
 }
 
-pub fn canResume(fiber: *types.JanetFiber) c_int {
-    return @intFromBool(!finished(fiber));
+pub fn canResume(fiber: *Fiber) bool {
+    return !finished(fiber);
 }
 
-pub fn current() ?*types.JanetFiber {
+pub fn current() ?*Fiber {
     return vm_state.current().fiber;
 }
 
-pub fn root() ?*types.JanetFiber {
+pub fn root() ?*Fiber {
     return vm_state.current().root_fiber;
 }
 
@@ -619,7 +673,7 @@ pub fn root() ?*types.JanetFiber {
 fn cfunFiberGetenv(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
-    return if (fiber.*.env) |env|
+    return if (fiber.env) |env|
         wrap.fromTable(env)
     else
         wrap.fromNil();
@@ -629,74 +683,71 @@ fn cfunFiberSetenv(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const fiber = try args_core.getFiber(argv, 0);
     if (repr.checkType(argv[1], repr.Tag.nil)) {
-        fiber.*.env = null;
+        fiber.env = null;
     } else {
-        fiber.*.env = try args_core.getTable(argv, 1);
+        fiber.env = try args_core.getTable(argv, 1);
     }
     return argv[0];
 }
 
-/// `janet_fiber_set_status` from `src/core/fiber.h`, a macro that does not
-/// survive translation.
-inline fn setStatus(fiber: *types.JanetFiber, to: types.FiberStatus) void {
-    fiber.flags &= ~@as(i32, constants.JANET_FIBER_STATUS_MASK);
-    fiber.flags |= @as(i32, @intFromEnum(to)) << constants.JANET_FIBER_STATUS_OFFSET;
+/// Write a fiber's status into its flag word.
+inline fn setStatus(fiber: *Fiber, to: FiberStatus) void {
+    fiber.flags.status = @intCast(@intFromEnum(to));
 }
 
-/// `JANET_FIBER_MASK_USERN(n)`, likewise: a function-like macro, written out.
-inline fn maskUserN(n: u5) i32 {
-    return @as(i32, 16) << n;
+/// The `n`th user signal, for the digits `0`-`9` in a fiber's flag string.
+inline fn userSignal(n: u8) abi.Signal {
+    return @enumFromInt(@intFromEnum(abi.Signal.user0) + @as(c_uint, n));
+}
+
+/// Union `more` into a fiber's trap set. The flag string names overlapping
+/// groups, so every one of these is an addition rather than an assignment.
+inline fn addTraps(fiber: *Fiber, more: u14) void {
+    fiber.flags.traps = signal.SignalSet.fromBits(fiber.flags.traps.bits() | more);
 }
 
 fn cfunFiberNew(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
     const func = try args_core.getFunction(argv, 0);
-    if (func.*.def.?.min_arity > 1) {
+    if (func.def.?.min_arity > 1) {
         return pp_format.panicf("fiber function must accept 0 or 1 arguments", .{});
     }
-    const fiber = new(func, 64, func.*.def.?.min_arity, null) orelse
+    const fiber = new(func, 64, func.def.?.min_arity, null) orelse
         fatal.fatal("bad fiber arity check");
 
-    if (@as(i32, @intCast(argv.len)) == 3 and !repr.checkType(argv[2], repr.Tag.nil)) {
-        fiber.*.env = try args_core.getTable(argv, 2);
+    if (argv.len == 3 and !repr.checkType(argv[2], repr.Tag.nil)) {
+        fiber.env = try args_core.getTable(argv, 2);
     }
 
-    if (@as(i32, @intCast(argv.len)) >= 2) {
+    if (argv.len >= 2) {
         const view = try args_core.getBytes(argv, 1);
-        fiber.*.flags = constants.JANET_FIBER_RESUME_NO_USEVAL | constants.JANET_FIBER_RESUME_NO_SKIP;
-        setStatus(fiber, types.FiberStatus.new);
-        var i: i32 = 0;
+        fiber.flags = .{ .resume_no_useval = true, .resume_no_skip = true };
+        setStatus(fiber, FiberStatus.new);
+        var i: usize = 0;
         while (i < view.len) : (i += 1) {
-            const ch = view.bytes.?[@intCast(i)];
+            const ch = view.bytes.?[i];
             if (ch >= '0' and ch <= '9') {
-                fiber.*.flags |= maskUserN(@intCast(ch - '0'));
+                fiber.flags.traps = fiber.flags.traps.with(userSignal(ch - '0'));
                 continue;
             }
             switch (ch) {
-                'a' => fiber.*.flags |= constants.JANET_FIBER_MASK_DEBUG |
-                    constants.JANET_FIBER_MASK_ERROR |
-                    constants.JANET_FIBER_MASK_USER |
-                    constants.JANET_FIBER_MASK_YIELD,
-                't' => fiber.*.flags |= constants.JANET_FIBER_MASK_ERROR |
-                    constants.JANET_FIBER_MASK_USER0 |
-                    constants.JANET_FIBER_MASK_USER1 |
-                    constants.JANET_FIBER_MASK_USER2 |
-                    constants.JANET_FIBER_MASK_USER3 |
-                    constants.JANET_FIBER_MASK_USER4,
-                'd' => fiber.*.flags |= constants.JANET_FIBER_MASK_DEBUG,
-                'e' => fiber.*.flags |= constants.JANET_FIBER_MASK_ERROR,
-                'u' => fiber.*.flags |= constants.JANET_FIBER_MASK_USER,
-                'y' => fiber.*.flags |= constants.JANET_FIBER_MASK_YIELD,
-                'w' => fiber.*.flags |= constants.JANET_FIBER_MASK_USER9,
-                'r' => fiber.*.flags |= constants.JANET_FIBER_MASK_USER8,
+                'a' => addTraps(fiber, signal.SignalSet.of(&.{ .debug, .@"error", .yield }).bits() |
+                    signal.SignalSet.user.bits()),
+                't' => addTraps(fiber, signal.SignalSet.of(&.{ .@"error", .user0, .user1, .user2, .user3, .user4 }).bits()),
+                'd' => addTraps(fiber, signal.SignalSet.of(&.{.debug}).bits()),
+                'e' => addTraps(fiber, signal.SignalSet.of(&.{.@"error"}).bits()),
+                'u' => addTraps(fiber, signal.SignalSet.user.bits()),
+                'y' => addTraps(fiber, signal.SignalSet.of(&.{.yield}).bits()),
+                'w' => addTraps(fiber, signal.SignalSet.of(&.{.user9}).bits()),
+                'r' => addTraps(fiber, signal.SignalSet.of(&.{.user8}).bits()),
                 'i' => {
                     if (vm_state.current().fiber.?.env == null) vm_state.current().fiber.?.env = tables.new(0);
-                    fiber.*.env = vm_state.current().fiber.?.env;
+                    fiber.env = vm_state.current().fiber.?.env;
                 },
                 'p' => {
                     if (vm_state.current().fiber.?.env == null) vm_state.current().fiber.?.env = tables.new(0);
-                    fiber.*.env = tables.new(0);
-                    fiber.*.env.?.proto = vm_state.current().fiber.?.env;
+                    fiber.env = tables.new(0);
+                    fiber.env.?.proto = vm_state.current().fiber.?.env;
                 },
                 // Janet's `default` raises and then `break`s, which is dead
                 // code after a `janet_panicf`; this drops the break and
@@ -731,7 +782,7 @@ fn cfunFiberRoot(argv: []repr.Value) raise.Raising(repr.Value) {
 fn cfunFiberMaxstack(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
-    return wrap.fromNumber(@floatFromInt(fiber.*.maxstack));
+    return wrap.fromNumber(@floatFromInt(fiber.maxstack));
 }
 
 fn cfunFiberSetmaxstack(argv: []repr.Value) raise.Raising(repr.Value) {
@@ -739,27 +790,23 @@ fn cfunFiberSetmaxstack(argv: []repr.Value) raise.Raising(repr.Value) {
     const fiber = try args_core.getFiber(argv, 0);
     const maxs = try args_core.getInteger(argv, 1);
     if (maxs < 0) return raise.panic("expected positive integer");
-    fiber.*.maxstack = maxs;
+    fiber.maxstack = maxs;
     return argv[0];
 }
 
 fn cfunFiberCanResume(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
-    return wrap.fromBoolean(canResume(fiber) != 0);
+    return wrap.fromBoolean(canResume(fiber));
 }
 
 fn cfunFiberLastValue(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
-    return fiber.*.last_value;
+    return fiber.last_value;
 }
 
-pub fn libAbi(env: *types.JanetTable) void {
-    raise.reported(lib(env));
-}
-
-pub fn lib(env: *types.JanetTable) raise.Raising(void) {
+pub fn lib(env: *tables.Table) raise.Raising(void) {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("fiber/new", &cfunFiberNew, @src(), "(fiber/new func &opt sigmask env)",
             \\Create a new fiber with function body func. Can optionally take a set of signals `sigmask` to capture from child fibers, and an environment table `env`. The mask is specified as a keyword where each character is used to indicate a signal to block. If the ev module is enabled, and this fiber is used as an argument to `ev/go`, these "blocked" signals will result in messages being sent to the supervisor channel. The default sigmask is :y. For example,
@@ -814,3 +861,106 @@ pub fn lib(env: *types.JanetTable) raise.Raising(void) {
     };
     corefn.install(env, entries);
 }
+
+/// **`extern` for the field order, not for an ABI.** The collector writes a
+/// block's memory type through a `*JanetGCObject` at the *start* of the
+/// allocation and the sweep frees the block at that same address, so `gc` has
+/// to be the first field -- `gc.zig`'s `assertHeaderFirst` is what says so. On
+/// a 32-bit target Zig's automatic layout puts `last_value` first, because a
+/// `Value` is eight-byte aligned there and the header is not, and the header
+/// lands at offset 8. `extern` fixes the declaration order and the assertion
+/// then holds on every target rather than on the ones that happen to agree.
+pub const Fiber = if (config.ev) extern struct {
+    gc: abi.JanetGCObject = .{},
+    flags: FiberFlags = .{},
+    frame: i32 = 0,
+    stackstart: i32 = 0,
+    stacktop: i32 = 0,
+    capacity: i32 = 0,
+    maxstack: i32 = 0,
+    env: ?*tables.Table = null,
+    data: ?[*]repr.Value = null,
+    child: ?*Fiber = null,
+    last_value: repr.Value = std.mem.zeroes(repr.Value),
+    sched_id: u32 = 0,
+    ev_callback: ev_loop.EVCallback = null,
+    ev_stream: ?*ev_stream.Stream = null,
+    ev_state: ?*anyopaque = null,
+    supervisor_channel: ?*anyopaque = null,
+} else extern struct {
+    gc: abi.JanetGCObject = .{},
+    flags: FiberFlags = .{},
+    frame: i32 = 0,
+    stackstart: i32 = 0,
+    stacktop: i32 = 0,
+    capacity: i32 = 0,
+    maxstack: i32 = 0,
+    env: ?*tables.Table = null,
+    data: ?[*]repr.Value = null,
+    child: ?*Fiber = null,
+    last_value: repr.Value = std.mem.zeroes(repr.Value),
+};
+/// A fiber's flag word.
+///
+/// **It is marshalled**, so the layout is the format, and two more bits live in
+/// it on the wire only: `marsh.zig` sets bits 29 and 30 to say the fiber has a
+/// child and an environment. They are in `_wire` here, always zero in memory,
+/// and `marsh.zig` is where they are put in and taken out.
+///
+/// `status` is six bits for a sixteen-value vocabulary, which is why it is a
+/// number here and `fibers.statusOf` is what reads it as `FiberStatus`.
+pub const FiberFlags = packed struct(u32) {
+    /// The signals this fiber traps instead of propagating.
+    traps: signal.SignalSet = .{},
+    _reserved14: u2 = 0,
+    /// `JANET_FIBER_STATUS_MASK`, at `JANET_FIBER_STATUS_OFFSET`.
+    status: u6 = 0,
+    resume_signal: bool = false,
+    _reserved23: u1 = 0,
+    breakpoint: bool = false,
+    resume_no_useval: bool = false,
+    resume_no_skip: bool = false,
+    did_raise: bool = false,
+    /// Bits 28-31. Bits 29 and 30 are `marsh.zig`'s wire-only overlay.
+    _wire: u4 = 0,
+
+    /// `JANET_FIBER_EV_FLAG_IN_FLIGHT`, which is bit 0 -- **the bit a signal
+    /// set spends on `ok`**. `ok` is not a signal a fiber traps, so the event
+    /// loop uses that bit for its own purpose and the two alias deliberately.
+    /// These two accessors are the only correct readers of it; reading it as a
+    /// trap would be a category error, and naming it here is what stops one.
+    pub inline fn evInFlight(self: FiberFlags) bool {
+        return self.traps.ok;
+    }
+
+    pub inline fn setEvInFlight(self: *FiberFlags, in_flight: bool) void {
+        self.traps.ok = in_flight;
+    }
+
+    /// The four bits `JANET_FIBER_FLAG_MASK` covered.
+    ///
+    /// Derived from the fields rather than written as a literal, so it cannot
+    /// drift from them, and applied as one `and` rather than four stores --
+    /// which is what the C did and what the interpreter's entry path measured
+    /// as the difference.
+    const resume_state: u32 = @bitCast(FiberFlags{
+        .breakpoint = true,
+        .resume_no_useval = true,
+        .resume_no_skip = true,
+        .did_raise = true,
+    });
+
+    /// The same four bits with `JANET_FIBER_RESUME_SIGNAL` beside them, which
+    /// is the single mask `runVm` clears on entry.
+    const resume_state_and_signal: u32 = resume_state | @as(u32, @bitCast(FiberFlags{ .resume_signal = true }));
+
+    /// `flags &= ~JANET_FIBER_FLAG_MASK`.
+    pub inline fn withoutResumeState(self: FiberFlags) FiberFlags {
+        return @bitCast(@as(u32, @bitCast(self)) & ~resume_state);
+    }
+
+    /// `flags &= ~(JANET_FIBER_RESUME_SIGNAL | JANET_FIBER_FLAG_MASK)`.
+    pub inline fn withoutResumeStateAndSignal(self: FiberFlags) FiberFlags {
+        return @bitCast(@as(u32, @bitCast(self)) & ~resume_state_and_signal);
+    }
+};

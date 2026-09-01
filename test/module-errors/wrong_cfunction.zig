@@ -11,7 +11,7 @@
 const janet = @import("janet");
 
 /// The C shape: a count and a pointer, answering a value with no way to
-/// refuse. It is what a module author coming from `janet.h` writes first.
+/// refuse. It is what a module author coming from a C API writes first.
 fn oldShape(argc: i32, argv: [*]janet.Value) janet.Value {
     _ = argc;
     return argv[0];

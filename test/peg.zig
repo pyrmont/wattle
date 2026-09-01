@@ -36,17 +36,15 @@
 
 const std = @import("std");
 const config = @import("config");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("subsystems").raise;
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
 const value = @import("subsystems").value;
 const gc_alloc = @import("subsystems").gc_alloc;
-const strings = @import("subsystems").value.strings;
 const utils = @import("subsystems").utils;
 const core_env = @import("subsystems").env;
 const registry = @import("subsystems").registry;
@@ -58,17 +56,18 @@ const buffers = @import("subsystems").value.buffers;
 const peg = subsystems.peg;
 const marsh = subsystems.marsh;
 const access = @import("subsystems").value.access;
+const strings = @import("subsystems").value.strings;
+const tables = @import("subsystems").value.tables;
 const vm_calls = subsystems.vm;
-const abstract_type = subsystems.abstract_type;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 const op = harness.op;
 
-var test_env: *types.JanetTable = undefined;
+var test_env: *tables.Table = undefined;
 
 /// Compiled pegs and the forms they came from. A `Janet` in a Zig local is not
 /// a GC root, and compiling one form allocates enough to collect the next.
-var rooted: *types.JanetArray = undefined;
+var rooted: *arrays.Array = undefined;
 
 fn keep(val: repr.Value) repr.Value {
     harness.arrayPush(rooted, val);
@@ -100,12 +99,12 @@ fn evaluate(source: [*:0]const u8) repr.Value {
     return keep(out);
 }
 
-fn compiled(pattern: []const u8) *types.JanetPeg {
+fn compiled(pattern: []const u8) *peg.JanetPeg {
     var source: [1024]u8 = undefined;
     const written = std.fmt.bufPrintZ(&source, "(peg/compile {s})", .{pattern}) catch
         @panic("pattern too long");
     const val = evaluate(written.ptr);
-    assert(args_core.checkabstract(val, &peg.pegType) != null);
+    expect(args_core.checkabstract(val, &peg.pegType) != null);
     return @ptrCast(@alignCast(wrap.toAbstract(val)));
 }
 
@@ -132,8 +131,8 @@ fn bytecodeIs(pattern: []const u8, expected: []const u32) void {
 
 // -------------------------------------------------------- the abstract type
 
-/// `janet_peg_type` is exported from `janet.h`, so an embedder sees which
-/// callbacks a peg has and which it does not. A peg has no `gc` because it
+/// Which callbacks a peg's abstract type has, and which it does not. A peg has
+/// no `gc` because it
 /// owns no memory outside its own allocation, no `tostring` because the
 /// default `<core/peg 0x...>` is the intended rendering, and no `compare` or
 /// `hash` because two separately compiled pegs are distinct values even when
@@ -143,22 +142,22 @@ fn bytecodeIs(pattern: []const u8, expected: []const u32) void {
 fn theAbstractTypeIsShapedAsTheRuntimeExpects() void {
     const zig = &peg.pegType;
 
-    assert(std.mem.eql(u8, "core/peg", zig.name));
+    expect(std.mem.eql(u8, "core/peg", zig.name));
 
     // Which callbacks exist, read off the runtime's own table...
-    assert(zig.gc == null);
-    assert(zig.gcmark != null);
-    assert(zig.get != null);
-    assert(zig.put == null);
-    assert(zig.marshal != null);
-    assert(zig.unmarshal != null);
-    assert(zig.tostring == null);
-    assert(zig.compare == null);
-    assert(zig.hash == null);
-    assert(zig.next != null);
-    assert(zig.call == null);
-    assert(zig.length == null);
-    assert(zig.bytes == null);
+    expect(zig.gc == null);
+    expect(zig.gcmark != null);
+    expect(zig.get != null);
+    expect(zig.put == null);
+    expect(zig.marshal != null);
+    expect(zig.unmarshal != null);
+    expect(zig.tostring == null);
+    expect(zig.compare == null);
+    expect(zig.hash == null);
+    expect(zig.next != null);
+    expect(zig.call == null);
+    expect(zig.length == null);
+    expect(zig.bytes == null);
 
     // Registered under its own name, which is what lets a marshalled peg name
     // its type on the wire. The registry answers with a pointer it was handed
@@ -166,7 +165,7 @@ fn theAbstractTypeIsShapedAsTheRuntimeExpects() void {
     // not something the compiler can fold -- which is the half of the retired
     // two-description check that was always worth keeping.
     const registered = registry.getAbstractType(value.fromBytes("core/peg", .symbol));
-    assert(registered == zig);
+    expect(registered == zig);
 }
 
 /// The five methods, in the order `janet_nextmethod` walks them -- which is
@@ -179,13 +178,13 @@ fn theMethodTableAndItsOrder() raise.Raising(void) {
     var key = wrap.fromNil();
     for (names) |name| {
         key = try access.next(val, key);
-        assert(harness.keywordIs(key, name));
-        assert(harness.isType(try access.get(val, key), repr.Tag.cfunction));
+        expect(harness.keywordIs(key, name));
+        expect(harness.isType(try access.get(val, key), repr.Tag.cfunction));
     }
-    assert(harness.isType(try access.next(val, key), repr.Tag.nil));
+    expect(harness.isType(try access.next(val, key), repr.Tag.nil));
 
     // A non-keyword key is not a method lookup at all.
-    assert(harness.isType(try access.get(val, harness.wrapInteger(0)), repr.Tag.nil));
+    expect(harness.isType(try access.get(val, harness.wrapInteger(0)), repr.Tag.nil));
 }
 
 // ------------------------------------------------------- the one allocation
@@ -203,22 +202,22 @@ fn padded(offset: usize, size: usize) usize {
 fn theHeaderBytecodeAndConstantsShareOneAllocation() void {
     const p = compiled("'(* (<- \"ab\") (constant 7))");
     const mem = @intFromPtr(p);
-    const bytecode_start = padded(@sizeOf(types.JanetPeg), @sizeOf(u32));
+    const bytecode_start = padded(@sizeOf(peg.JanetPeg), @sizeOf(u32));
     const constants_start =
         padded(bytecode_start + p.bytecode_len * @sizeOf(u32), @sizeOf(repr.Value));
 
-    assert(@intFromPtr(p.bytecode) == mem + bytecode_start);
-    assert(@intFromPtr(p.constants) == mem + constants_start);
-    assert(p.num_constants == 1);
-    assert(harness.equals(p.constantValues()[0], harness.wrapInteger(7)));
+    expect(@intFromPtr(p.bytecode) == mem + bytecode_start);
+    expect(@intFromPtr(p.constants) == mem + constants_start);
+    expect(p.num_constants == 1);
+    expect(harness.equals(p.constantValues()[0], harness.wrapInteger(7)));
 
     // Both arrays are aligned for their element type, which is the whole point
     // of the padding.
-    assert(@intFromPtr(p.bytecode) % @sizeOf(u32) == 0);
-    assert(@intFromPtr(p.constants) % @sizeOf(repr.Value) == 0);
+    expect(@intFromPtr(p.bytecode) % @sizeOf(u32) == 0);
+    expect(@intFromPtr(p.constants) % @sizeOf(repr.Value) == 0);
 
     // And the abstract really is one allocation: its size covers both.
-    assert(utils.abstractHead(p).*.size ==
+    expect(utils.abstractHead(p).size ==
         constants_start + p.num_constants * @sizeOf(repr.Value));
 }
 
@@ -231,97 +230,97 @@ fn theHeaderBytecodeAndConstantsShareOneAllocation() void {
 
 fn everySpecialEmitsItsInstruction() void {
     // Primitives, which are not tuples at all.
-    bytecodeIs("true", &.{ op(constants.RULE_NCHAR), 0 });
-    bytecodeIs("false", &.{ op(constants.RULE_NOTNCHAR), 0 });
-    bytecodeIs("3", &.{ op(constants.RULE_NCHAR), 3 });
-    bytecodeIs("-3", &.{ op(constants.RULE_NOTNCHAR), 3 });
+    bytecodeIs("true", &.{ op(constants.PegRule.nchar), 0 });
+    bytecodeIs("false", &.{ op(constants.PegRule.notnchar), 0 });
+    bytecodeIs("3", &.{ op(constants.PegRule.nchar), 3 });
+    bytecodeIs("-3", &.{ op(constants.PegRule.notnchar), 3 });
     // A literal's bytes are packed four to a word, rounded up.
-    bytecodeIs("\"abc\"", &.{ op(constants.RULE_LITERAL), 3, 0x00636261 });
-    bytecodeIs("\"abcde\"", &.{ op(constants.RULE_LITERAL), 5, 0x64636261, 0x00000065 });
-    bytecodeIs("\"\"", &.{ op(constants.RULE_LITERAL), 0 });
-    bytecodeIs("@\"ab\"", &.{ op(constants.RULE_LITERAL), 2, 0x00006261 });
+    bytecodeIs("\"abc\"", &.{ op(constants.PegRule.literal), 3, 0x00636261 });
+    bytecodeIs("\"abcde\"", &.{ op(constants.PegRule.literal), 5, 0x64636261, 0x00000065 });
+    bytecodeIs("\"\"", &.{ op(constants.PegRule.literal), 0 });
+    bytecodeIs("@\"ab\"", &.{ op(constants.PegRule.literal), 2, 0x00006261 });
 
     // A single range is its own opcode; two or more compile to a set.
-    bytecodeIs("'(range \"az\")", &.{ op(constants.RULE_RANGE), 0x007A0061 });
-    bytecodeIs("'(set \"ab\")", &.{ op(constants.RULE_SET), 0, 0, 0, 0x00000006, 0, 0, 0, 0 });
-    bytecodeIs("'(range \"ab\" \"yz\")", &.{ op(constants.RULE_SET), 0, 0, 0, 0x06000006, 0, 0, 0, 0 });
+    bytecodeIs("'(range \"az\")", &.{ op(constants.PegRule.range), 0x007A0061 });
+    bytecodeIs("'(set \"ab\")", &.{ op(constants.PegRule.set), 0, 0, 0, 0x00000006, 0, 0, 0, 0 });
+    bytecodeIs("'(range \"ab\" \"yz\")", &.{ op(constants.PegRule.set), 0, 0, 0, 0x06000006, 0, 0, 0, 0 });
 
-    bytecodeIs("'(> 2 \"a\")", &.{ op(constants.RULE_LOOK), 2, 3, op(constants.RULE_LITERAL), 1, 0x61 });
+    bytecodeIs("'(> 2 \"a\")", &.{ op(constants.PegRule.look), 2, 3, op(constants.PegRule.literal), 1, 0x61 });
     // The offset is signed and rides in the word as its two's complement.
-    bytecodeIs("'(> -2 \"a\")", &.{ op(constants.RULE_LOOK), 0xFFFFFFFE, 3, op(constants.RULE_LITERAL), 1, 0x61 });
+    bytecodeIs("'(> -2 \"a\")", &.{ op(constants.PegRule.look), 0xFFFFFFFE, 3, op(constants.PegRule.literal), 1, 0x61 });
     // One argument means an offset of zero.
-    bytecodeIs("'(look \"a\")", &.{ op(constants.RULE_LOOK), 0, 3, op(constants.RULE_LITERAL), 1, 0x61 });
+    bytecodeIs("'(look \"a\")", &.{ op(constants.PegRule.look), 0, 3, op(constants.PegRule.literal), 1, 0x61 });
 
     // A variadic rule reserves its operand slots before compiling into them.
-    bytecodeIs("'(+ 1 2)", &.{ op(constants.RULE_CHOICE), 2, 4, 6, op(constants.RULE_NCHAR), 1, op(constants.RULE_NCHAR), 2 });
-    bytecodeIs("'(* 1 2)", &.{ op(constants.RULE_SEQUENCE), 2, 4, 6, op(constants.RULE_NCHAR), 1, op(constants.RULE_NCHAR), 2 });
-    bytecodeIs("'(+)", &.{ op(constants.RULE_CHOICE), 0 });
-    bytecodeIs("'(*)", &.{ op(constants.RULE_SEQUENCE), 0 });
+    bytecodeIs("'(+ 1 2)", &.{ op(constants.PegRule.choice), 2, 4, 6, op(constants.PegRule.nchar), 1, op(constants.PegRule.nchar), 2 });
+    bytecodeIs("'(* 1 2)", &.{ op(constants.PegRule.sequence), 2, 4, 6, op(constants.PegRule.nchar), 1, op(constants.PegRule.nchar), 2 });
+    bytecodeIs("'(+)", &.{ op(constants.PegRule.choice), 0 });
+    bytecodeIs("'(*)", &.{ op(constants.PegRule.sequence), 0 });
 
-    bytecodeIs("'(if 1 2)", &.{ op(constants.RULE_IF), 3, 5, op(constants.RULE_NCHAR), 1, op(constants.RULE_NCHAR), 2 });
-    bytecodeIs("'(if-not 1 2)", &.{ op(constants.RULE_IFNOT), 3, 5, op(constants.RULE_NCHAR), 1, op(constants.RULE_NCHAR), 2 });
-    bytecodeIs("'(lenprefix 1 2)", &.{ op(constants.RULE_LENPREFIX), 3, 5, op(constants.RULE_NCHAR), 1, op(constants.RULE_NCHAR), 2 });
-    bytecodeIs("'(! 1)", &.{ op(constants.RULE_NOT), 2, op(constants.RULE_NCHAR), 1 });
+    bytecodeIs("'(if 1 2)", &.{ op(constants.PegRule.@"if"), 3, 5, op(constants.PegRule.nchar), 1, op(constants.PegRule.nchar), 2 });
+    bytecodeIs("'(if-not 1 2)", &.{ op(constants.PegRule.ifnot), 3, 5, op(constants.PegRule.nchar), 1, op(constants.PegRule.nchar), 2 });
+    bytecodeIs("'(lenprefix 1 2)", &.{ op(constants.PegRule.lenprefix), 3, 5, op(constants.PegRule.nchar), 1, op(constants.PegRule.nchar), 2 });
+    bytecodeIs("'(! 1)", &.{ op(constants.PegRule.not), 2, op(constants.PegRule.nchar), 1 });
 
     // Every repetition is one `RULE_BETWEEN` with different bounds.
     const max = std.math.maxInt(u32);
-    bytecodeIs("'(between 2 4 1)", &.{ op(constants.RULE_BETWEEN), 2, 4, 4, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(some 1)", &.{ op(constants.RULE_BETWEEN), 1, max, 4, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(any 1)", &.{ op(constants.RULE_BETWEEN), 0, max, 4, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(at-least 3 1)", &.{ op(constants.RULE_BETWEEN), 3, max, 4, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(at-most 3 1)", &.{ op(constants.RULE_BETWEEN), 0, 3, 4, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(? 1)", &.{ op(constants.RULE_BETWEEN), 0, 1, 4, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(repeat 3 1)", &.{ op(constants.RULE_BETWEEN), 3, 3, 4, op(constants.RULE_NCHAR), 1 });
+    bytecodeIs("'(between 2 4 1)", &.{ op(constants.PegRule.between), 2, 4, 4, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(some 1)", &.{ op(constants.PegRule.between), 1, max, 4, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(any 1)", &.{ op(constants.PegRule.between), 0, max, 4, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(at-least 3 1)", &.{ op(constants.PegRule.between), 3, max, 4, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(at-most 3 1)", &.{ op(constants.PegRule.between), 0, 3, 4, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(? 1)", &.{ op(constants.PegRule.between), 0, 1, 4, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(repeat 3 1)", &.{ op(constants.PegRule.between), 3, 3, 4, op(constants.PegRule.nchar), 1 });
     // A leading integer is `repeat` spelled without the word.
-    bytecodeIs("'(3 1)", &.{ op(constants.RULE_BETWEEN), 3, 3, 4, op(constants.RULE_NCHAR), 1 });
+    bytecodeIs("'(3 1)", &.{ op(constants.PegRule.between), 3, 3, 4, op(constants.PegRule.nchar), 1 });
 
-    bytecodeIs("'(<- 1)", &.{ op(constants.RULE_CAPTURE), 3, 0, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(% 1)", &.{ op(constants.RULE_ACCUMULATE), 3, 0, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(group 1)", &.{ op(constants.RULE_GROUP), 3, 0, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(unref 1)", &.{ op(constants.RULE_UNREF), 3, 0, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(drop 1)", &.{ op(constants.RULE_DROP), 2, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(only-tags 1)", &.{ op(constants.RULE_ONLY_TAGS), 2, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(to 1)", &.{ op(constants.RULE_TO), 2, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(thru 1)", &.{ op(constants.RULE_THRU), 2, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(error 1)", &.{ op(constants.RULE_ERROR), 2, op(constants.RULE_NCHAR), 1 });
+    bytecodeIs("'(<- 1)", &.{ op(constants.PegRule.capture), 3, 0, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(% 1)", &.{ op(constants.PegRule.accumulate), 3, 0, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(group 1)", &.{ op(constants.PegRule.group), 3, 0, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(unref 1)", &.{ op(constants.PegRule.unref), 3, 0, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(drop 1)", &.{ op(constants.PegRule.drop), 2, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(only-tags 1)", &.{ op(constants.PegRule.only_tags), 2, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(to 1)", &.{ op(constants.PegRule.to), 2, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(thru 1)", &.{ op(constants.PegRule.thru), 2, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(error 1)", &.{ op(constants.PegRule.@"error"), 2, op(constants.PegRule.nchar), 1 });
     // `(error)` with no argument errors on the empty match.
-    bytecodeIs("'(error)", &.{ op(constants.RULE_ERROR), 2, op(constants.RULE_NCHAR), 0 });
+    bytecodeIs("'(error)", &.{ op(constants.PegRule.@"error"), 2, op(constants.PegRule.nchar), 0 });
 
-    bytecodeIs("'($)", &.{ op(constants.RULE_POSITION), 0 });
-    bytecodeIs("'(line)", &.{ op(constants.RULE_LINE), 0 });
-    bytecodeIs("'(column)", &.{ op(constants.RULE_COLUMN), 0 });
-    bytecodeIs("'(backmatch)", &.{ op(constants.RULE_BACKMATCH), 0 });
-    bytecodeIs("'(??)", &.{op(constants.RULE_DEBUG)});
-    bytecodeIs("'(argument 2)", &.{ op(constants.RULE_ARGUMENT), 2, 0 });
-    bytecodeIs("'(constant :x)", &.{ op(constants.RULE_CONSTANT), 0, 0 });
-    bytecodeIs("'(nth 2 1)", &.{ op(constants.RULE_NTH), 2, 4, 0, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(number 1)", &.{ op(constants.RULE_CAPTURE_NUM), 4, 0, 0, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(number 1 16)", &.{ op(constants.RULE_CAPTURE_NUM), 4, 16, 0, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(number 1 nil)", &.{ op(constants.RULE_CAPTURE_NUM), 4, 0, 0, op(constants.RULE_NCHAR), 1 });
+    bytecodeIs("'($)", &.{ op(constants.PegRule.position), 0 });
+    bytecodeIs("'(line)", &.{ op(constants.PegRule.line), 0 });
+    bytecodeIs("'(column)", &.{ op(constants.PegRule.column), 0 });
+    bytecodeIs("'(backmatch)", &.{ op(constants.PegRule.backmatch), 0 });
+    bytecodeIs("'(??)", &.{op(constants.PegRule.debug)});
+    bytecodeIs("'(argument 2)", &.{ op(constants.PegRule.argument), 2, 0 });
+    bytecodeIs("'(constant :x)", &.{ op(constants.PegRule.constant), 0, 0 });
+    bytecodeIs("'(nth 2 1)", &.{ op(constants.PegRule.nth), 2, 4, 0, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(number 1)", &.{ op(constants.PegRule.capture_num), 4, 0, 0, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(number 1 16)", &.{ op(constants.PegRule.capture_num), 4, 16, 0, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(number 1 nil)", &.{ op(constants.PegRule.capture_num), 4, 0, 0, op(constants.PegRule.nchar), 1 });
 
-    bytecodeIs("'(sub 1 2)", &.{ op(constants.RULE_SUB), 3, 5, op(constants.RULE_NCHAR), 1, op(constants.RULE_NCHAR), 2 });
-    bytecodeIs("'(til 1 2)", &.{ op(constants.RULE_TIL), 3, 5, op(constants.RULE_NCHAR), 1, op(constants.RULE_NCHAR), 2 });
-    bytecodeIs("'(split 1 2)", &.{ op(constants.RULE_SPLIT), 3, 5, op(constants.RULE_NCHAR), 1, op(constants.RULE_NCHAR), 2 });
-    bytecodeIs("'(/ 1 :x)", &.{ op(constants.RULE_REPLACE), 4, 0, 0, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("~(cmt 1 ,identity)", &.{ op(constants.RULE_MATCHTIME), 4, 0, 0, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("~(cms 1 ,identity)", &.{ op(constants.RULE_MATCHSPLICE), 4, 0, 0, op(constants.RULE_NCHAR), 1 });
+    bytecodeIs("'(sub 1 2)", &.{ op(constants.PegRule.sub), 3, 5, op(constants.PegRule.nchar), 1, op(constants.PegRule.nchar), 2 });
+    bytecodeIs("'(til 1 2)", &.{ op(constants.PegRule.til), 3, 5, op(constants.PegRule.nchar), 1, op(constants.PegRule.nchar), 2 });
+    bytecodeIs("'(split 1 2)", &.{ op(constants.PegRule.split), 3, 5, op(constants.PegRule.nchar), 1, op(constants.PegRule.nchar), 2 });
+    bytecodeIs("'(/ 1 :x)", &.{ op(constants.PegRule.replace), 4, 0, 0, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("~(cmt 1 ,identity)", &.{ op(constants.PegRule.matchtime), 4, 0, 0, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("~(cms 1 ,identity)", &.{ op(constants.PegRule.matchsplice), 4, 0, 0, op(constants.PegRule.nchar), 1 });
 
     // The width and the two flag bits share one operand word.
-    bytecodeIs("'(uint 4)", &.{ op(constants.RULE_READINT), 0x04, 0 });
-    bytecodeIs("'(int 4)", &.{ op(constants.RULE_READINT), 0x14, 0 });
-    bytecodeIs("'(uint-be 4)", &.{ op(constants.RULE_READINT), 0x24, 0 });
-    bytecodeIs("'(int-be 4)", &.{ op(constants.RULE_READINT), 0x34, 0 });
+    bytecodeIs("'(uint 4)", &.{ op(constants.PegRule.readint), 0x04, 0 });
+    bytecodeIs("'(int 4)", &.{ op(constants.PegRule.readint), 0x14, 0 });
+    bytecodeIs("'(uint-be 4)", &.{ op(constants.PegRule.readint), 0x24, 0 });
+    bytecodeIs("'(int-be 4)", &.{ op(constants.PegRule.readint), 0x34, 0 });
 
     // Every alias emits what the symbol it aliases emits.
-    bytecodeIs("'(not 1)", &.{ op(constants.RULE_NOT), 2, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(quote 1)", &.{ op(constants.RULE_CAPTURE), 3, 0, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(capture 1)", &.{ op(constants.RULE_CAPTURE), 3, 0, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(accumulate 1)", &.{ op(constants.RULE_ACCUMULATE), 3, 0, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(choice 1)", &.{ op(constants.RULE_CHOICE), 1, 3, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(sequence 1)", &.{ op(constants.RULE_SEQUENCE), 1, 3, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(opt 1)", &.{ op(constants.RULE_BETWEEN), 0, 1, 4, op(constants.RULE_NCHAR), 1 });
-    bytecodeIs("'(position)", &.{ op(constants.RULE_POSITION), 0 });
-    bytecodeIs("'(debug)", &.{op(constants.RULE_DEBUG)});
+    bytecodeIs("'(not 1)", &.{ op(constants.PegRule.not), 2, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(quote 1)", &.{ op(constants.PegRule.capture), 3, 0, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(capture 1)", &.{ op(constants.PegRule.capture), 3, 0, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(accumulate 1)", &.{ op(constants.PegRule.accumulate), 3, 0, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(choice 1)", &.{ op(constants.PegRule.choice), 1, 3, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(sequence 1)", &.{ op(constants.PegRule.sequence), 1, 3, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(opt 1)", &.{ op(constants.PegRule.between), 0, 1, 4, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("'(position)", &.{ op(constants.PegRule.position), 0 });
+    bytecodeIs("'(debug)", &.{op(constants.PegRule.debug)});
 }
 
 /// Tags are numbered from one, because zero is the "no tag" sentinel, and the
@@ -329,22 +328,22 @@ fn everySpecialEmitsItsInstruction() void {
 /// only two specials that set `has_backref`, which is what makes the matcher
 /// maintain the third capture stack at all.
 fn tagsAreNumberedAndBackrefsAreFlagged() void {
-    bytecodeIs("'(<- 1 :a)", &.{ op(constants.RULE_CAPTURE), 3, 1, op(constants.RULE_NCHAR), 1 });
+    bytecodeIs("'(<- 1 :a)", &.{ op(constants.PegRule.capture), 3, 1, op(constants.PegRule.nchar), 1 });
     // The third capture is the first one again -- same tuple, same grammar --
     // so it is cached rather than emitted, and its tag is reused too.
     bytecodeIs("'(* (<- 1 :a) (<- 1 :b) (<- 1 :a))", &.{
-        op(constants.RULE_SEQUENCE), 3, 5, 10,                       5,
-        op(constants.RULE_CAPTURE),  8, 1, op(constants.RULE_NCHAR), 1,
-        op(constants.RULE_CAPTURE),  8, 2,
+        op(constants.PegRule.sequence), 3, 5, 10,                          5,
+        op(constants.PegRule.capture),  8, 1, op(constants.PegRule.nchar), 1,
+        op(constants.PegRule.capture),  8, 2,
     });
 
-    assert(compiled("\"a\"").has_backref == 0);
-    assert(compiled("'(<- 1 :a)").has_backref == 0);
-    assert(compiled("'(-> :a)").has_backref == 1);
-    assert(compiled("'(backmatch :a)").has_backref == 1);
-    assert(compiled("'(backref :a)").has_backref == 1);
+    expect(compiled("\"a\"").has_backref == false);
+    expect(compiled("'(<- 1 :a)").has_backref == false);
+    expect(compiled("'(-> :a)").has_backref == true);
+    expect(compiled("'(backmatch :a)").has_backref == true);
+    expect(compiled("'(backref :a)").has_backref == true);
     // `unref` names a tag without needing the tagged stack.
-    assert(compiled("'(unref 1 :a)").has_backref == 0);
+    expect(compiled("'(unref 1 :a)").has_backref == false);
 }
 
 /// A pattern already compiled in this grammar is reused rather than emitted
@@ -353,12 +352,12 @@ fn tagsAreNumberedAndBackrefsAreFlagged() void {
 /// things under different bindings; anything else goes to the root table.
 fn theCompilerCachesRules() void {
     // Two references to the same primitive share one rule.
-    bytecodeIs("'(* 1 1)", &.{ op(constants.RULE_SEQUENCE), 2, 4, 4, op(constants.RULE_NCHAR), 1 });
+    bytecodeIs("'(* 1 1)", &.{ op(constants.PegRule.sequence), 2, 4, 4, op(constants.PegRule.nchar), 1 });
     // A recursive grammar refers back to a rule still being built.
     bytecodeIs("'{:main (* \"a\" (? :main))}", &.{
-        op(constants.RULE_SEQUENCE), 2, 4,    7,
-        op(constants.RULE_LITERAL),  1, 0x61, op(constants.RULE_BETWEEN),
-        0,                           1, 0,
+        op(constants.PegRule.sequence), 2, 4,    7,
+        op(constants.PegRule.literal),  1, 0x61, op(constants.PegRule.between),
+        0,                              1, 0,
     });
 }
 
@@ -369,41 +368,41 @@ fn theCompilerCachesRules() void {
 // defect; see `FOUND.md`.
 
 fn grammarErrorsNameTheForm() void {
-    assert(grammarError("'(unknown-special)").endsWith(", unknown special unknown-special"));
-    assert(grammarError("'()").endsWith(", tuple in grammar must have non-zero length"));
-    assert(grammarError("'(\"a\")").endsWith(", expected grammar command, found \"a\""));
-    assert(grammarError(":nope").endsWith(", unknown rule"));
-    assert(grammarError("{:notmain 1}").endsWith(", grammar requires :main rule"));
-    assert(grammarError("@{:notmain 1}").endsWith(", grammar requires :main rule"));
-    assert(grammarError("print").endsWith(", unexpected peg source"));
+    expect(grammarError("'(unknown-special)").endsWith(", unknown special unknown-special"));
+    expect(grammarError("'()").endsWith(", tuple in grammar must have non-zero length"));
+    expect(grammarError("'(\"a\")").endsWith(", expected grammar command, found \"a\""));
+    expect(grammarError(":nope").endsWith(", unknown rule"));
+    expect(grammarError("{:notmain 1}").endsWith(", grammar requires :main rule"));
+    expect(grammarError("@{:notmain 1}").endsWith(", grammar requires :main rule"));
+    expect(grammarError("print").endsWith(", unexpected peg source"));
 
-    assert(grammarError("'(! 1 2)").endsWith(", expected 1 argument, got 2"));
-    assert(grammarError("'(sub 1)").endsWith(", expected 2 arguments, got 1"));
-    assert(grammarError("'(nth 1)").endsWith(", arity mismatch, expected at least 2, got 1"));
-    assert(grammarError("'(?? 1)").endsWith(", arity mismatch, expected at most 0, got 1"));
+    expect(grammarError("'(! 1 2)").endsWith(", expected 1 argument, got 2"));
+    expect(grammarError("'(sub 1)").endsWith(", expected 2 arguments, got 1"));
+    expect(grammarError("'(nth 1)").endsWith(", arity mismatch, expected at least 2, got 1"));
+    expect(grammarError("'(?? 1)").endsWith(", arity mismatch, expected at most 0, got 1"));
 
-    assert(grammarError("'(set 1)").endsWith(", expected string for character set"));
-    assert(grammarError("'(range 1)").endsWith(", expected string for character range"));
-    assert(grammarError("'(range \"abc\")").endsWith(", expected string to have length 2, got \"abc\""));
-    assert(grammarError("'(range \"ba\")").endsWith(", range \"ba\" is empty"));
-    assert(grammarError("'(> \"x\" 1)").endsWith(", expected integer, got \"x\""));
-    assert(grammarError("'(repeat -1 1)").endsWith(", expected non-negative integer, got -1"));
-    assert(grammarError("'(-1 1)").endsWith(", expected non-negative integer, got -1"));
-    assert(grammarError("'(<- 1 \"a\")").endsWith(", expected keyword for capture tag, got \"a\""));
-    assert(grammarError("'(number 1 40)").endsWith(", expected integer between 2 and 36, got 40"));
-    assert(grammarError("'(cmt 1 2)").endsWith(", expected function or cfunction, got 2"));
-    assert(grammarError("'(uint " ++ max_readint_width_text ++ "1)")
+    expect(grammarError("'(set 1)").endsWith(", expected string for character set"));
+    expect(grammarError("'(range 1)").endsWith(", expected string for character range"));
+    expect(grammarError("'(range \"abc\")").endsWith(", expected string to have length 2, got \"abc\""));
+    expect(grammarError("'(range \"ba\")").endsWith(", range \"ba\" is empty"));
+    expect(grammarError("'(> \"x\" 1)").endsWith(", expected integer, got \"x\""));
+    expect(grammarError("'(repeat -1 1)").endsWith(", expected non-negative integer, got -1"));
+    expect(grammarError("'(-1 1)").endsWith(", expected non-negative integer, got -1"));
+    expect(grammarError("'(<- 1 \"a\")").endsWith(", expected keyword for capture tag, got \"a\""));
+    expect(grammarError("'(number 1 40)").endsWith(", expected integer between 2 and 36, got 40"));
+    expect(grammarError("'(cmt 1 2)").endsWith(", expected function or cfunction, got 2"));
+    expect(grammarError("'(uint " ++ max_readint_width_text ++ "1)")
         .endsWith(", width must be between 0 and " ++ max_readint_width_text ++
         ", got " ++ max_readint_width_text ++ "1"));
 
     // Two hundred and fifty-five tags fit in the byte the tag stack uses; the
     // two hundred and fifty-sixth does not.
-    assert(grammarError("(tuple '* ;(map (fn [i] ~(<- 1 ,(keyword \"t\" i))) (range 256)))")
+    expect(grammarError("(tuple '* ;(map (fn [i] ~(<- 1 ,(keyword \"t\" i))) (range 256)))")
         .endsWith(", too many tags - up to 255 tags are supported per peg"));
 
     // `FOUND.md`: every special above checks its arity with `pegArity`, which
     // renders the form. `(constant)` uses `janet_arity` and does not.
-    assert(grammarError("'(constant)").says("arity mismatch, expected at least 1, got 0"));
+    expect(grammarError("'(constant)").says("arity mismatch, expected at least 1, got 0"));
 }
 
 // ------------------------------------------------------------ the two guards
@@ -436,8 +435,8 @@ fn theCompilerBoundsBothOfItsRecursions() void {
         \\    (put g (keyword "r" 1100) 1)
         \\    (protect (peg/compile g)))
     ));
-    assert(!chained.ok);
-    assert(harness.stringValueIs(chained.message, "grammar error in :r1024, reference chain too deep"));
+    expect(!chained.ok);
+    expect(harness.stringValueIs(chained.message, "grammar error in :r1024, reference chain too deep"));
 
     // Nesting rather than chaining spends the other counter, and that one is
     // real recursion through `pegCompile1`.
@@ -446,13 +445,13 @@ fn theCompilerBoundsBothOfItsRecursions() void {
         \\    (loop [_ :range [0 1100]] (set p ~(! ,p)))
         \\    (protect (peg/compile p)))
     ));
-    assert(!nested.ok);
+    expect(!nested.ok);
     {
         // The form this one names is a thousand rules deep, so only the tail
         // of the message is a contract.
         const message = wrap.toString(nested.message);
-        const length: usize = @intCast(types.stringHead(message).length);
-        assert(std.mem.endsWith(u8, message[0..length], ", peg grammar recursed too deeply"));
+        const length: usize = @intCast(strings.head(message).length);
+        expect(std.mem.endsWith(u8, message[0..length], ", peg grammar recursed too deeply"));
     }
 
     // One below the budget still compiles, which is what makes the number
@@ -462,7 +461,7 @@ fn theCompilerBoundsBothOfItsRecursions() void {
         \\    (loop [_ :range [0 1022]] (set p ~(! ,p)))
         \\    (protect (peg/compile p)))
     ));
-    assert(just_inside.ok);
+    expect(just_inside.ok);
 }
 
 // --------------------------------------------------------------- the wire
@@ -492,9 +491,9 @@ fn theMarshalledFormIsTheBytecode() raise.Raising(void) {
         'g',
         3, // bytecode_len
         0, // num_constants
-        @intCast(op(constants.RULE_LITERAL)), 1, 0x61, // the three words
+        @intCast(op(constants.PegRule.literal)), 1, 0x61, // the three words
     };
-    const got = buffer.*.slice();
+    const got = buffer.slice();
     if (!std.mem.eql(u8, got, &expected)) {
         std.debug.print("expected {d} bytes:", .{expected.len});
         for (expected) |byte| std.debug.print(" {x:0>2}", .{byte});
@@ -505,16 +504,16 @@ fn theMarshalledFormIsTheBytecode() raise.Raising(void) {
     }
 
     // And back, into an equal but distinct peg.
-    const back = keep(try marsh.unmarshal(buffer.*.slice(), 0, null, null));
-    assert(args_core.checkabstract(back, &peg.pegType) != null);
-    const round: *types.JanetPeg = @ptrCast(@alignCast(wrap.toAbstract(back)));
-    assert(round != p);
-    assert(round.bytecode_len == 3);
-    assert(round.num_constants == 0);
-    assert(round.has_backref == 0);
-    assert(std.mem.eql(u32, round.instructions()[0..3], p.instructions()[0..3]));
+    const back = keep(try marsh.unmarshal(buffer.slice(), 0, null, null));
+    expect(args_core.checkabstract(back, &peg.pegType) != null);
+    const round: *peg.JanetPeg = @ptrCast(@alignCast(wrap.toAbstract(back)));
+    expect(round != p);
+    expect(round.bytecode_len == 3);
+    expect(round.num_constants == 0);
+    expect(round.has_backref == false);
+    expect(std.mem.eql(u32, round.instructions()[0..3], p.instructions()[0..3]));
     // The unmarshaller reproduces the compiler's layout, not just its words.
-    assert(@intFromPtr(round.bytecode) - @intFromPtr(round) ==
+    expect(@intFromPtr(round.bytecode) - @intFromPtr(round) ==
         @intFromPtr(p.bytecode) - @intFromPtr(p));
 }
 
@@ -539,7 +538,7 @@ const peg_header = [_]u8{ 217, 207, 8 } ++ "core/peg".*;
 /// rather than as `10` is what keeps a renumbering of the enum from silently
 /// changing what each case tests.
 inline fn b(opcode: anytype) u8 {
-    return @intCast(opcode);
+    return if (@TypeOf(opcode) == constants.PegRule) @intCast(opcode.number()) else @intCast(opcode);
 }
 
 fn crafted(comptime tail: []const u8) []const u8 {
@@ -553,44 +552,44 @@ fn unmarshalStream(bytes: []const u8) raise.Raising(repr.Value) {
 /// A crafted stream the verifier must reject, asserted by its message.
 fn rejected(comptime tail: []const u8) void {
     const refusal = harness.raised(unmarshalStream, .{crafted(tail)});
-    assert(refusal != null);
-    assert(refusal.?.says("invalid peg bytecode"));
+    expect(refusal != null);
+    expect(refusal.?.says("invalid peg bytecode"));
 }
 
 /// A crafted stream the verifier must accept.
-fn accepted(comptime tail: []const u8) *types.JanetPeg {
+fn accepted(comptime tail: []const u8) *peg.JanetPeg {
     const val = keep(unmarshalStream(crafted(tail)) catch
         @panic("a stream this contract expects to be accepted was refused"));
-    assert(args_core.checkabstract(val, &peg.pegType) != null);
+    expect(args_core.checkabstract(val, &peg.pegType) != null);
     return @ptrCast(@alignCast(wrap.toAbstract(val)));
 }
 
 fn theVerifierWalksEveryInstruction() void {
     // The shortest valid program, and the shape everything below varies.
-    const ok = accepted(&.{ 2, 0, b(constants.RULE_NCHAR), 1 });
-    assert(ok.bytecode_len == 2);
-    assert(ok.has_backref == 0);
+    const ok = accepted(&.{ 2, 0, b(constants.PegRule.nchar), 1 });
+    expect(ok.bytecode_len == 2);
+    expect(ok.has_backref == false);
 
     // An opcode past the end of the vocabulary. Kept under 128 so that it is
     // one byte in the marshal integer encoding, like every other word here.
     rejected(&.{ 2, 0, 100, 0 });
     // A rule operand past the end of the bytecode.
-    rejected(&.{ 2, 0, b(constants.RULE_NOT), 9 });
+    rejected(&.{ 2, 0, b(constants.PegRule.not), 9 });
     // A constant operand past the end of the constants.
-    rejected(&.{ 3, 0, b(constants.RULE_CONSTANT), 0, 0 });
+    rejected(&.{ 3, 0, b(constants.PegRule.constant), 0, 0 });
     // An instruction that runs off the end.
-    rejected(&.{ 3, 0, b(constants.RULE_NCHAR), 1, b(constants.RULE_NCHAR) });
+    rejected(&.{ 3, 0, b(constants.PegRule.nchar), 1, b(constants.PegRule.nchar) });
     // A rule operand that points into the middle of another instruction:
     // word 1 is referenced but is not an instruction start.
-    rejected(&.{ 4, 0, b(constants.RULE_NOT), 1, b(constants.RULE_NCHAR), 1 });
+    rejected(&.{ 4, 0, b(constants.PegRule.not), 1, b(constants.PegRule.nchar), 1 });
     // Unreachable bytecode is rejected too, which is stricter than a
     // depth-first walk would be: word 2 is an instruction nothing refers to,
     // and that is fine -- only the reverse is an error.
-    _ = accepted(&.{ 4, 0, b(constants.RULE_NCHAR), 1, b(constants.RULE_NCHAR), 1 });
+    _ = accepted(&.{ 4, 0, b(constants.PegRule.nchar), 1, b(constants.PegRule.nchar), 1 });
 
     // `has_backref` is recovered from the bytecode rather than marshalled.
-    assert(accepted(&.{ 3, 0, b(constants.RULE_GETTAG), 1, 0 }).has_backref == 1);
-    assert(accepted(&.{ 2, 0, b(constants.RULE_BACKMATCH), 1 }).has_backref == 1);
+    expect(accepted(&.{ 3, 0, b(constants.PegRule.gettag), 1, 0 }).has_backref == true);
+    expect(accepted(&.{ 2, 0, b(constants.PegRule.backmatch), 1 }).has_backref == true);
 }
 
 /// `FOUND.md`: the verifier accepts a program with no instructions in it, and
@@ -600,36 +599,36 @@ fn theVerifierWalksEveryInstruction() void {
 /// constant is executed as an instruction.
 fn anEmptyProgramIsAccepted() raise.Raising(void) {
     const empty = accepted(&.{ 0, 0 });
-    assert(empty.bytecode_len == 0);
-    assert(empty.num_constants == 0);
+    expect(empty.bytecode_len == 0);
+    expect(empty.num_constants == 0);
 
     // The array the matcher will read from starts at or past the end of the
     // bytecode array, because the bytecode array has no elements.
-    assert(@intFromPtr(empty.bytecode) <= @intFromPtr(empty.constants));
+    expect(@intFromPtr(empty.bytecode) <= @intFromPtr(empty.constants));
 
     if (@intFromPtr(empty.bytecode) == @intFromPtr(empty.constants)) {
         // One constant, a double whose low word is `RULE_NCHAR` and whose high
         // word is 3. `peg/match` on it consumes exactly three bytes.
         const stream = crafted(&.{
             0, 1, // no bytecode, one constant
-            lb_real, b(constants.RULE_NCHAR), 0, 0, 0, 3, 0, 0, 0, // little endian
+            lb_real, b(constants.PegRule.nchar), 0, 0, 0, 3, 0, 0, 0, // little endian
         });
         const val = keep(try unmarshalStream(stream));
-        assert(args_core.checkabstract(val, &peg.pegType) != null);
-        const p: *types.JanetPeg = @ptrCast(@alignCast(wrap.toAbstract(val)));
-        assert(p.bytecode_len == 0);
-        assert(@intFromPtr(p.bytecode) == @intFromPtr(p.constants));
+        expect(args_core.checkabstract(val, &peg.pegType) != null);
+        const p: *peg.JanetPeg = @ptrCast(@alignCast(wrap.toAbstract(val)));
+        expect(p.bytecode_len == 0);
+        expect(@intFromPtr(p.bytecode) == @intFromPtr(p.constants));
 
         var args = [2]repr.Value{ val, value.fromBytes("abc", .string) };
-        assert(harness.isType(try vm_calls.mcall("match", args[0..2]), repr.Tag.array));
+        expect(harness.isType(try vm_calls.mcall("match", args[0..2]), repr.Tag.array));
         args[1] = value.fromBytes("ab", .string);
-        assert(harness.isType(try vm_calls.mcall("match", args[0..2]), repr.Tag.nil));
+        expect(harness.isType(try vm_calls.mcall("match", args[0..2]), repr.Tag.nil));
     }
 }
 
 /// The two marshal lead bytes these streams spell by number, for the reason
-/// `test/marsh.zig` gives: the enumeration is a file format and `janet.h` does
-/// not export it.
+/// `test/marsh.zig` gives: the enumeration is a file format and the subject's
+/// own is not the oracle for it.
 const lb_real: u8 = 200;
 const lb_integer: u8 = 205;
 
@@ -640,9 +639,9 @@ const lb_integer: u8 = 205;
 fn aNegativeArgumentIndexIsAccepted() void {
     // The operand is the one word here that needs the five-byte integer
     // encoding, because 0xFFFFFFFF is not a small natural.
-    const p = accepted(&.{ 3, 0, b(constants.RULE_ARGUMENT), lb_integer, 255, 255, 255, 255, 0 });
-    assert(p.bytecode_len == 3);
-    assert(p.instructions()[1] == 0xFFFFFFFF);
+    const p = accepted(&.{ 3, 0, b(constants.PegRule.argument), lb_integer, 255, 255, 255, 255, 0 });
+    expect(p.bytecode_len == 3);
+    expect(p.instructions()[1] == 0xFFFFFFFF);
 }
 
 /// `FOUND.md`: `bytecode_len` comes off the wire as a 64-bit count and is
@@ -663,7 +662,7 @@ fn theBytecodeLengthIsMultipliedWithoutACheck() void {
         0xF0 + 8, 0, 0, 0, 0, 0, 0, 0, 0x40, // bytecode_len = 1 << 62
         0, // num_constants
     });
-    assert(harness.raised(unmarshalStream, .{stream}).?.says("unexpected end of source"));
+    expect(harness.raised(unmarshalStream, .{stream}).?.says("unexpected end of source"));
 }
 
 /// `FOUND.md`: the readint width check tests the whole packed operand, which
@@ -682,18 +681,18 @@ fn readintPegsDoNotAllSurviveARoundTrip() raise.Raising(void) {
         const buffer = buffers.new(32);
         _ = keep(wrap.fromBuffer(buffer));
         try marsh.marshal(buffer, wrap.fromAbstract(p), null, 0);
-        const bytes = buffer.*.slice();
+        const bytes = buffer.slice();
         if (case.survives) {
             const back = keep(try unmarshalStream(bytes));
-            assert(args_core.checkabstract(back, &peg.pegType) != null);
+            expect(args_core.checkabstract(back, &peg.pegType) != null);
         } else {
-            assert(harness.raised(unmarshalStream, .{bytes}).?.says("invalid peg bytecode"));
+            expect(harness.raised(unmarshalStream, .{bytes}).?.says("invalid peg bytecode"));
         }
     }
     // The width alone is what the check should have looked at, and a bare
     // width still passes.
-    _ = accepted(&.{ 3, 0, b(constants.RULE_READINT), @intCast(max_readint_width), 0 });
-    rejected(&.{ 3, 0, b(constants.RULE_READINT), @intCast(max_readint_width + 1), 0 });
+    _ = accepted(&.{ 3, 0, b(constants.PegRule.readint), @intCast(max_readint_width), 0 });
+    rejected(&.{ 3, 0, b(constants.PegRule.readint), @intCast(max_readint_width + 1), 0 });
 }
 
 // -------------------------------------------------------------------- entry

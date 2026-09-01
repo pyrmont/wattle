@@ -50,7 +50,6 @@
 //! instrument.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const harness = @import("harness.zig");
@@ -61,6 +60,7 @@ const marsh_mod = @import("subsystems").marsh;
 const parser_core_mod = @import("subsystems").parser;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
+const tables = @import("subsystems").value.tables;
 const parser_core = subsystems.parser;
 const compiler_primitives = subsystems.compiler_primitives;
 const core_env = subsystems.env;
@@ -81,7 +81,7 @@ const max_input = 4096;
 /// carried across inputs makes a crash depend on the inputs before it, and a
 /// reproducer that needs a history is not a reproducer. `janet_deinit` also
 /// frees the heap, so a leak this finds is attributable to the one input.
-fn session(comptime body: fn (env: *types.JanetTable, data: []const u8) void, data: []const u8) void {
+fn session(comptime body: fn (env: *tables.Table, data: []const u8) void, data: []const u8) void {
     harness.init();
     defer vm_lifecycle.deinit();
     body(harness.coreEnv(), data);
@@ -95,9 +95,9 @@ fn session(comptime body: fn (env: *types.JanetTable, data: []const u8) void, da
 /// body and comment both say parser. The name is not carried across: what it
 /// does is what it is called here, and `dobytes` below is the target the old
 /// name suggests.
-fn parserBody(env: *types.JanetTable, data: []const u8) void {
+fn parserBody(env: *tables.Table, data: []const u8) void {
     _ = env;
-    var parser: types.JanetParser = undefined;
+    var parser: parser_core_mod.JanetParser = undefined;
     parser_core_mod.parserInit(&parser);
     defer parser_core_mod.parserDeinit(&parser);
 
@@ -111,7 +111,7 @@ fn parserBody(env: *types.JanetTable, data: []const u8) void {
         // Drain, so that a form that parses is also *built*. The C original
         // left them in the parser, which meant the value constructors were
         // never reached for this target at all.
-        while (parser_core_mod.parserHasMore(&parser) != 0) _ = parser_core_mod.parserProduce(&parser);
+        while (parser_core_mod.parserHasMore(&parser)) _ = parser_core_mod.parserProduce(&parser);
     }
 
     _ = harness.raised(parser_core.eofChecked, .{&parser});
@@ -130,8 +130,8 @@ test "parser" {
 // ------------------------------------------------------------------ compile
 
 /// Parse untrusted bytes and compile every form they produce.
-fn compileBody(env: *types.JanetTable, data: []const u8) void {
-    var parser: types.JanetParser = undefined;
+fn compileBody(env: *tables.Table, data: []const u8) void {
+    var parser: parser_core_mod.JanetParser = undefined;
     parser_core_mod.parserInit(&parser);
     defer parser_core_mod.parserDeinit(&parser);
 
@@ -140,7 +140,7 @@ fn compileBody(env: *types.JanetTable, data: []const u8) void {
     for (data) |byte| {
         if (parser_core_mod.parserStatus(&parser) == constants.JANET_PARSE_ERROR) return;
         _ = harness.raised(parser_core.consumeChecked, .{ &parser, byte });
-        while (parser_core_mod.parserHasMore(&parser) != 0) {
+        while (parser_core_mod.parserHasMore(&parser)) {
             const form = parser_core_mod.parserProduce(&parser);
             // The result carries its own error field for an ordinary compile
             // failure; the scope is for the refusals that are not ordinary.
@@ -167,7 +167,7 @@ test "compile" {
 /// Parse, compile and *run* untrusted bytes.
 ///
 /// The deepest of the four, and the only one that reaches the interpreter.
-fn dobytesBody(env: *types.JanetTable, data: []const u8) void {
+fn dobytesBody(env: *tables.Table, data: []const u8) void {
     var out: repr.Value = wrap.fromNil();
     _ = harness.raised(core_env.dobytesImpl, .{
         env,
@@ -195,7 +195,7 @@ test "dobytes" {
 /// and fibers from a byte stream, and `FOUND.md` already carries three defects
 /// found by reading it. A registry is looked up because the C original did —
 /// it is what lets a stream name an abstract type or a cfunction.
-fn unmarshalBody(env: *types.JanetTable, data: []const u8) void {
+fn unmarshalBody(env: *tables.Table, data: []const u8) void {
     const registry = marsh_mod.envLookup(env);
     var next: [*]const u8 = undefined;
     _ = harness.raised(marsh.unmarshal, .{ data, 0, registry, &next });

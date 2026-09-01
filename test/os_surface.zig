@@ -44,9 +44,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const types = @import("types");
 const repr = @import("repr");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
@@ -59,11 +57,12 @@ const utils = @import("subsystems").utils;
 const wrap = @import("subsystems").value.wrap;
 const args_core = @import("subsystems").args;
 const vm_lifecycle = @import("subsystems").lifecycle;
+const tuples = @import("subsystems").value.tuples;
 const host_stat = subsystems.host_stat;
 const os_stat = subsystems.stat;
 const os_files = subsystems.os_files;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
 const windows = builtin.os.tag == .windows;
 const reduced_os = config.reduced_os;
@@ -153,7 +152,7 @@ const expected_bindings: []const [*:0]const u8 = blk: {
     break :blk list;
 };
 
-fn bindingField(env: *types.JanetTable, name: [*:0]const u8, field: [*:0]const u8) repr.Value {
+fn bindingField(env: *tables.Table, name: [*:0]const u8, field: [*:0]const u8) repr.Value {
     const binding = tables.get(env, value.fromBytes(std.mem.span(name), .symbol));
     if (harness.isType(binding, repr.Tag.table)) {
         return tables.get(wrap.toTable(binding), value.fromBytes(std.mem.span(field), .keyword));
@@ -183,16 +182,16 @@ fn bindingField(env: *types.JanetTable, name: [*:0]const u8, field: [*:0]const u
 /// lines only where two consecutive names come from the same `src/zig/` file,
 /// so it catches two rows exchanged within one file and nothing across files.
 fn theRegistration() void {
-    const env: *types.JanetTable = harness.coreEnv();
+    const env: *tables.Table = harness.coreEnv();
     var count: i32 = 0;
 
-    var previous_file: ?types.JanetString = null;
+    var previous_file: ?strings.String = null;
     var previous_line: i32 = -1;
 
     for (expected_bindings) |name| {
         const binding = tables.get(env, value.fromBytes(std.mem.span(name), .symbol));
-        assert(!harness.isType(binding, repr.Tag.nil));
-        assert(harness.isType(binding, repr.Tag.table) or harness.isType(binding, repr.Tag.@"struct"));
+        expect(!harness.isType(binding, repr.Tag.nil));
+        expect(harness.isType(binding, repr.Tag.table) or harness.isType(binding, repr.Tag.@"struct"));
         count += 1;
 
         // `corefn.reg` and `JANET_CORE_FN` both drop the source map when the
@@ -203,20 +202,20 @@ fn theRegistration() void {
         // entry, and this is what it found.
         if (!no_sourcemaps) {
             const smap = bindingField(env, name, "source-map");
-            assert(harness.isType(smap, repr.Tag.tuple));
+            expect(harness.isType(smap, repr.Tag.tuple));
             const tuple = wrap.toTuple(smap);
-            assert(types.tupleHead(tuple).length >= 2);
-            assert(harness.isType(tuple[0], repr.Tag.string));
-            assert(args_core.checkint(tuple[1]) != 0);
+            expect(tuples.head(tuple).length >= 2);
+            expect(harness.isType(tuple[0], repr.Tag.string));
+            expect(args_core.checkint(tuple[1]));
 
             const file = wrap.toString(tuple[0]);
             const line = wrap.toInteger(tuple[1]);
-            const length: usize = @intCast(types.stringHead(file).length);
+            const length: usize = @intCast(strings.head(file).length);
             const from_zig = length > 8 and std.mem.eql(u8, file[0..8], "src/zig/");
             if (from_zig and previous_file != null and
-                strings.equal(previous_file.?, file) != 0)
+                strings.equal(previous_file.?, file))
             {
-                assert(line > previous_line);
+                expect(line > previous_line);
             }
             previous_file = file;
             previous_line = line;
@@ -233,16 +232,16 @@ fn theRegistration() void {
         const key = env.slots()[@intCast(i)].key;
         if (!harness.isType(key, repr.Tag.symbol)) continue;
         const symbol = wrap.toSymbol(key);
-        if (types.stringHead(symbol).length < 3) continue;
+        if (strings.head(symbol).length < 3) continue;
         if (!std.mem.eql(u8, symbol[0..3], "os/")) continue;
         found += 1;
         var matched = false;
         for (expected_bindings) |name| {
             if (utils.cstrcmp(symbol, name) == 0) matched = true;
         }
-        assert(matched);
+        expect(matched);
     }
-    assert(found == count);
+    expect(found == count);
 
     // The docstring is `corefn.reg`'s other column, and a row that lost it
     // still registers a working function. The generator drops it under
@@ -266,9 +265,9 @@ fn theRegistration() void {
 // ==========================================================================
 
 /// The field identifiers, restated here so that a renumbering on either side
-/// fails against a third copy rather than agreeing with itself. `os_stat.zig`
-/// lists the same names in the same order and `test/os_stat.zig` pins that;
-/// this pins the *numbers* the stat reader writes at.
+/// fails against a third copy rather than agreeing with itself.
+/// `test/os_stat.zig` pins the *names* in their order; this pins the *numbers*
+/// the stat reader writes at.
 const Field = struct {
     const dev = 0;
     const inode = 1;
@@ -289,20 +288,20 @@ const Field = struct {
 };
 
 fn theStatRead() void {
-    assert(os_stat.fieldCount() == Field.count);
-    assert(std.mem.eql(u8, std.mem.span(os_stat.fieldName(Field.dev).?), "dev"));
-    assert(std.mem.eql(u8, std.mem.span(os_stat.fieldName(Field.size).?), "size"));
-    assert(std.mem.eql(u8, std.mem.span(os_stat.fieldName(Field.changed).?), "changed"));
+    expect(os_stat.fieldCount() == Field.count);
+    expect(std.mem.eql(u8, std.mem.span(os_stat.fieldName(Field.dev).?), "dev"));
+    expect(std.mem.eql(u8, std.mem.span(os_stat.fieldName(Field.size).?), "size"));
+    expect(std.mem.eql(u8, std.mem.span(os_stat.fieldName(Field.changed).?), "changed"));
 
     // A path that cannot be stat'ed reports -1 and is the only failure this
     // reports at all; `errno` is not consulted by the caller.
     var mode: u32 = 0xABCD;
     var numbers: [Field.count]f64 = undefined;
     for (&numbers) |*n| n.* = -12345.0;
-    assert(host_stat.statRead("no/such/path/xyz", false, &mode, &numbers) == -1);
+    expect(host_stat.statRead("no/such/path/xyz", false, &mode, &numbers) == -1);
     // Nothing is written on failure, including the mode.
-    assert(mode == 0xABCD);
-    assert(numbers[Field.size] == -12345.0);
+    expect(mode == 0xABCD);
+    expect(numbers[Field.size] == -12345.0);
 
     // A real path fills every slot. The three the caller never reads through
     // `numbers` -- mode, and the two permission renderings built from it --
@@ -311,29 +310,29 @@ fn theStatRead() void {
     //
     // `build.zig` is the file asked for, because it is the one file whose
     // absence stops this contract from being built at all.
-    assert(host_stat.statRead("build.zig", false, &mode, &numbers) == 0);
-    assert(mode != 0);
-    assert(numbers[Field.mode] == 0.0);
-    assert(numbers[Field.int_permissions] == 0.0);
-    assert(numbers[Field.permissions] == 0.0);
-    assert(numbers[Field.size] > 0.0);
-    assert(numbers[Field.nlink] >= 1.0);
-    assert(numbers[Field.inode] > 0.0);
-    assert(numbers[Field.modified] > 0.0);
+    expect(host_stat.statRead("build.zig", false, &mode, &numbers) == 0);
+    expect(mode != 0);
+    expect(numbers[Field.mode] == 0.0);
+    expect(numbers[Field.int_permissions] == 0.0);
+    expect(numbers[Field.permissions] == 0.0);
+    expect(numbers[Field.size] > 0.0);
+    expect(numbers[Field.nlink] >= 1.0);
+    expect(numbers[Field.inode] > 0.0);
+    expect(numbers[Field.modified] > 0.0);
     if (!windows) {
-        assert(numbers[Field.blocksize] > 0.0);
+        expect(numbers[Field.blocksize] > 0.0);
     } else {
         // The two slots no Windows stat has. They are zero because the array
         // is zeroed, not because anything wrote them.
-        assert(numbers[Field.blocks] == 0.0);
-        assert(numbers[Field.blocksize] == 0.0);
+        expect(numbers[Field.blocks] == 0.0);
+        expect(numbers[Field.blocksize] == 0.0);
     }
 
     // A directory and a file differ in the mode word and in nothing this
-    // function decides: the classification is `os_stat.zig`'s.
+    // function decides: the classification is the caller's.
     var directory_mode: u32 = 0;
-    assert(host_stat.statRead("src/zig", false, &directory_mode, &numbers) == 0);
-    assert(directory_mode != mode);
+    expect(host_stat.statRead("src/zig", false, &directory_mode, &numbers) == 0);
+    expect(directory_mode != mode);
 }
 
 // ==========================================================================
@@ -346,7 +345,7 @@ fn theStatRead() void {
 /// abstract rendering. A port that filled one of those in by accident would
 /// pass every suite.
 fn theProcessType() void {
-    const env: *types.JanetTable = harness.coreEnv();
+    const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(def null (file/open "/dev/null" :w))
         \\# `/usr/bin/true` stood here and at one site below. Alpine is busybox
@@ -383,7 +382,7 @@ fn theProcessType() void {
 /// SIGHUP, and the sweep launches `mutate.py` with `nohup`. SIGKILL is the one
 /// signal that cannot be caught or ignored.
 fn theSignalTable() void {
-    const env: *types.JanetTable = harness.coreEnv();
+    const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(def null (file/open "/dev/null" :w))
         \\(defn sleeper [] (os/spawn ["/bin/sleep" "30"] :p {:out null :err null}))
@@ -418,7 +417,7 @@ fn theSignalTable() void {
 /// time agrees
 /// with itself whatever it computes.
 fn theCalendar() void {
-    const env: *types.JanetTable = harness.coreEnv();
+    const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(def d (os/date 0))
         \\(assert (= 1970 (d :year)))
@@ -448,10 +447,10 @@ fn theCalendar() void {
 }
 
 /// The permission conversions have a fault message per slot, and the slot
-/// number is part of it. `args_core.zig`'s layer builds most of Janet's
-/// argument messages; these two are the surface's own.
+/// number is part of it. The argument layer builds most of Janet's argument
+/// messages; these two are the surface's own.
 fn thePermissions() void {
-    const env: *types.JanetTable = harness.coreEnv();
+    const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(assert (= "rwxr-xr-x" (os/perm-string 8r755)))
         \\(assert (= "---------" (os/perm-string 0)))
@@ -469,7 +468,7 @@ fn thePermissions() void {
 /// which `suite-os.janet` exercises none: a clock cannot be pinned to a value,
 /// so the assertions are about the relationships between the formats instead.
 fn theClock() void {
-    const env: *types.JanetTable = harness.coreEnv();
+    const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(each source [:realtime :monotonic :cputime]
         \\  (def d (os/clock source))
@@ -496,7 +495,7 @@ fn theClock() void {
 /// preserve a value holding `=`, and an empty value is a value rather than an
 /// absence.
 fn theEnvironment() void {
-    const env: *types.JanetTable = harness.coreEnv();
+    const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(os/setenv "JANET_OS_SURFACE_A" "x=y=z")
         \\(assert (= "x=y=z" (os/getenv "JANET_OS_SURFACE_A")))
@@ -518,7 +517,7 @@ fn theEnvironment() void {
 /// about the shape of the answer and about `os/which`'s two modes, which no
 /// suite exercises.
 fn thePlatform() void {
-    const env: *types.JanetTable = harness.coreEnv();
+    const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(assert (keyword? (os/which)))
         \\(assert (keyword? (os/arch)))
@@ -560,7 +559,7 @@ fn thePlatform() void {
 
 fn theOpenFlags() void {
     if (!harness.has_ev) return;
-    var env: *types.JanetTable = harness.coreEnv();
+    var env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(os/mkdir "/tmp/janet-os-surface-contract")
         \\(defn p [n] (string "/tmp/janet-os-surface-contract/" n))
@@ -612,7 +611,7 @@ fn theOpenFlags() void {
 /// at the argument at all.
 fn theLinks() void {
     if (windows) return;
-    const env: *types.JanetTable = harness.coreEnv();
+    const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(protect (os/mkdir "/tmp/janet-os-surface-contract"))
         \\(defn p [n] (string "/tmp/janet-os-surface-contract/" n))
@@ -651,7 +650,7 @@ fn theLinks() void {
 /// behind is cleaned by `theLinks`, which runs after it and removes the whole
 /// scratch directory.
 fn theRemoveSandbox() void {
-    var env: *types.JanetTable = harness.coreEnv();
+    var env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(protect (os/mkdir "/tmp/janet-os-surface-contract"))
         \\(def victim (string "/tmp/janet-os-surface-contract/victim"))
@@ -688,7 +687,7 @@ fn theRemoveSandbox() void {
 /// `argc ==` that decides whether a slot is read at all, and a mutation that
 /// inverts one reads a slot that is not there or ignores one that is.
 fn theOptionalArguments() void {
-    const env: *types.JanetTable = harness.coreEnv();
+    const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(assert (number? ((os/date) :year)))
         \\(assert (= (os/date) (os/date nil)))
@@ -781,7 +780,7 @@ fn theOptionalArguments() void {
 /// reachable from the type-shape test above.
 fn theSpawnRedirection() void {
     if (!harness.has_ev) return;
-    var env: *types.JanetTable = harness.coreEnv();
+    var env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(def p (os/spawn ["/bin/sh" "-c" "exit 7"] :p))
         \\(assert (int? (p :pid)))
@@ -835,7 +834,7 @@ fn theSpawnRedirection() void {
 /// key holding `=` or NUL and keeps everything else, which is a rule
 /// `os_process.zig` owns and this is the only thing that runs it end to end.
 fn theExecuteEnvironment() void {
-    const env: *types.JanetTable = harness.coreEnv();
+    const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(assert (= 0 (os/execute ["/bin/sh" "-c" "test \"$JP\" = v"] :pe {"JP" "v"})))
         \\(os/setenv "JP_PARENT" "set")
@@ -856,7 +855,7 @@ fn theExecuteEnvironment() void {
 /// that the signal table is consulted first.
 fn theSigaction() void {
     if (!harness.has_ev) return;
-    const env: *types.JanetTable = harness.coreEnv();
+    const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(os/sigaction :usr1 (fn [] nil))
         \\(os/sigaction :usr1 (fn [] nil))
@@ -885,7 +884,7 @@ fn theSigaction() void {
 /// output the parent has already queued -- which is what makes this safe to
 /// run inside a contract at all.
 fn thePosixFork() void {
-    const env: *types.JanetTable = harness.coreEnv();
+    const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(def p (os/posix-fork))
         \\(if p
@@ -899,7 +898,7 @@ fn thePosixFork() void {
 /// `os/pipe` and its two flag letters.
 fn thePipe() void {
     if (!harness.has_ev) return;
-    const env: *types.JanetTable = harness.coreEnv();
+    const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(def [r w] (os/pipe))
         \\(:write w "abc")

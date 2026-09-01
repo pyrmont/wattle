@@ -38,7 +38,6 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const types = @import("types");
 const repr = @import("repr");
 const c = @import("cabi");
 const harness = @import("harness.zig");
@@ -59,29 +58,16 @@ const vm_lifecycle = @import("subsystems").lifecycle;
 /// compilation there is no second copy: `host_stat.statRead` is the same
 /// reader `os/stat` uses, and `Field` is the same index.
 ///
-/// Using it to observe `janet_os_touch` and `janet_os_link` is not circular.
+/// Using it to observe `fs.touch` and `fs.hardLink` is not circular.
 /// Reading metadata and writing it are different kernels; what would be
-/// circular is using `statRead` to check `statRead`, which `os_stat.zig` does
-/// not do either.
+/// circular is using `statRead` to check `statRead`, and nothing here does.
 const host_stat = @import("subsystems").host_stat;
+const fs = @import("subsystems").fs;
+const tables = @import("subsystems").value.tables;
+const expect = @import("expect.zig").expect;
 const Field = host_stat.Field;
 
 const unix = builtin.os.tag != .windows;
-
-/// The kernels, by symbol; `janet.h` declares none of them.
-extern fn janet_os_dir_open(path: [*:0]const u8) callconv(.c) ?*anyopaque;
-extern fn janet_os_dir_next(handle: *anyopaque, name: *?[*:0]const u8) callconv(.c) i32;
-extern fn janet_os_dir_close(handle: *anyopaque) callconv(.c) void;
-extern fn janet_os_link(old: [*:0]const u8, new: [*:0]const u8) callconv(.c) i32;
-extern fn janet_os_symlink(old: [*:0]const u8, new: [*:0]const u8) callconv(.c) i32;
-extern fn janet_os_readlink(path: [*:0]const u8, buffer: [*]u8, size: usize) callconv(.c) i64;
-extern fn janet_os_touch(path: [*:0]const u8, has_times: i32, access: f64, modify: f64) callconv(.c) i32;
-extern fn janet_os_realpath(path: [*:0]const u8) callconv(.c) ?[*:0]u8;
-
-/// Borrowed from `os_fs`, which is compiled under the same condition.
-extern fn janet_os_remove(path: [*:0]const u8) callconv(.c) i32;
-extern fn janet_os_rmdir(path: [*:0]const u8) callconv(.c) i32;
-extern fn janet_os_mkdir(path: [*:0]const u8) callconv(.c) i32;
 
 const dir = "janet-zig-os-paths-direct-6b1d";
 const file = "janet-zig-os-paths-direct-6b1d/first";
@@ -94,24 +80,24 @@ const public_dir = "janet-zig-os-paths-public-4f70";
 
 fn makeFile(path: [*:0]const u8) void {
     const handle = c.fopen(path, "wb");
-    std.debug.assert(handle != null);
-    std.debug.assert(c.fputs("path-contract", handle) >= 0);
-    std.debug.assert(c.fclose(handle) == 0);
+    expect(handle != null);
+    expect(c.fputs("path-contract", handle) >= 0);
+    expect(c.fclose(handle) == 0);
 }
 
 /// Best effort: every one of these may fail because the path is already gone,
 /// which is the state this is reaching for.
 fn cleanPaths() void {
-    _ = janet_os_remove(hard);
-    _ = janet_os_remove(soft);
-    _ = janet_os_remove(file);
-    _ = janet_os_remove(other);
-    _ = janet_os_rmdir(sub);
-    _ = janet_os_rmdir(dir);
-    _ = janet_os_remove(public_dir ++ "/link");
-    _ = janet_os_remove(public_dir ++ "/soft");
-    _ = janet_os_remove(public_dir ++ "/file");
-    _ = janet_os_rmdir(public_dir);
+    _ = fs.hostRemove(hard);
+    _ = fs.hostRemove(soft);
+    _ = fs.hostRemove(file);
+    _ = fs.hostRemove(other);
+    _ = fs.hostRmdir(sub);
+    _ = fs.hostRmdir(dir);
+    _ = fs.hostRemove(public_dir ++ "/link");
+    _ = fs.hostRemove(public_dir ++ "/soft");
+    _ = fs.hostRemove(public_dir ++ "/file");
+    _ = fs.hostRmdir(public_dir);
 }
 
 fn errnoValue() c_int {
@@ -140,21 +126,21 @@ const Listing = struct {
 /// `.` and `..` never appear.
 fn collect(path: [*:0]const u8) Listing {
     var listing: Listing = .{};
-    const handle = janet_os_dir_open(path).?;
-    defer janet_os_dir_close(handle);
+    const handle = fs.dirOpen(path).?;
+    defer fs.dirClose(handle);
 
     while (true) {
-        var name: ?[*:0]const u8 = null;
-        const status = janet_os_dir_next(handle, &name);
-        std.debug.assert(status >= 0);
+        var name: [*:0]const u8 = undefined;
+        const status = fs.dirNextAbi(handle, &name);
+        expect(status >= 0);
         if (status == 0) break;
 
-        const entry = std.mem.span(name.?);
-        std.debug.assert(!std.mem.eql(u8, entry, "."));
-        std.debug.assert(!std.mem.eql(u8, entry, ".."));
-        std.debug.assert(entry.len < 256);
-        std.debug.assert(listing.count < 16);
-        std.debug.assert(!listing.has(entry));
+        const entry = std.mem.span(name);
+        expect(!std.mem.eql(u8, entry, "."));
+        expect(!std.mem.eql(u8, entry, ".."));
+        expect(entry.len < 256);
+        expect(listing.count < 16);
+        expect(!listing.has(entry));
 
         @memset(&listing.names[listing.count], 0);
         @memcpy(listing.names[listing.count][0..entry.len], entry);
@@ -164,41 +150,41 @@ fn collect(path: [*:0]const u8) Listing {
 }
 
 fn theDirectories() void {
-    std.debug.assert(janet_os_mkdir(dir) == 0);
+    expect(fs.hostMkdir(dir) == 0);
 
     // An empty directory yields nothing, which is the assertion that says
     // `.` and `..` are skipped by the kernel rather than by the caller.
-    std.debug.assert(collect(dir).count == 0);
+    expect(collect(dir).count == 0);
 
     makeFile(file);
     makeFile(other);
-    std.debug.assert(janet_os_mkdir(sub) == 0);
+    expect(fs.hostMkdir(sub) == 0);
 
     var listing = collect(dir);
-    std.debug.assert(listing.count == 3);
-    std.debug.assert(listing.has("first"));
-    std.debug.assert(listing.has("second"));
-    std.debug.assert(listing.has("inner"));
+    expect(listing.count == 3);
+    expect(listing.has("first"));
+    expect(listing.has("second"));
+    expect(listing.has("inner"));
     // Entry names, not paths.
-    std.debug.assert(!listing.has(file));
+    expect(!listing.has(file));
 
     // A second pass gives the same set, so no state survives `close`.
     listing = collect(dir);
-    std.debug.assert(listing.count == 3);
+    expect(listing.count == 3);
 
     // A missing directory reports through errno.
     setErrno(0);
-    std.debug.assert(janet_os_dir_open(missing) == null);
-    std.debug.assert(errnoValue() == @intFromEnum(std.c.E.NOENT));
+    expect(fs.dirOpen(missing) == null);
+    expect(errnoValue() == @intFromEnum(std.c.E.NOENT));
 
     // So does a path that exists but is not a directory. Which error is the
     // host's choice, so only the failure is pinned.
     setErrno(0);
-    std.debug.assert(janet_os_dir_open(file) == null);
-    std.debug.assert(errnoValue() != 0);
+    expect(fs.dirOpen(file) == null);
+    expect(errnoValue() != 0);
 
-    std.debug.assert(janet_os_rmdir(sub) == 0);
-    std.debug.assert(janet_os_remove(other) == 0);
+    expect(fs.hostRmdir(sub) == 0);
+    expect(fs.hostRemove(other) == 0);
 }
 
 // ------------------------------------------------------------------ links
@@ -215,7 +201,7 @@ const Metadata = struct {
 
 fn metadataOf(path: [*:0]const u8, follow: bool) Metadata {
     var result: Metadata = undefined;
-    std.debug.assert(host_stat.statRead(path, !follow, &result.mode, &result.numbers) == 0);
+    expect(host_stat.statRead(path, !follow, &result.mode, &result.numbers) == 0);
     return result;
 }
 
@@ -225,71 +211,71 @@ fn statOf(path: [*:0]const u8) Metadata {
 
 fn theLinks() void {
     // A hard link is a second name for one inode, and the link count says so.
-    std.debug.assert(janet_os_link(file, hard) == 0);
-    std.debug.assert(statOf(file).get(.inode) == statOf(hard).get(.inode));
-    std.debug.assert(statOf(hard).get(.nlink) == 2);
+    expect(fs.hardLink(file, hard) == 0);
+    expect(statOf(file).get(.inode) == statOf(hard).get(.inode));
+    expect(statOf(hard).get(.nlink) == 2);
 
     setErrno(0);
-    std.debug.assert(janet_os_link(file, hard) == -1);
-    std.debug.assert(errnoValue() == @intFromEnum(std.c.E.EXIST));
+    expect(fs.hardLink(file, hard) == -1);
+    expect(errnoValue() == @intFromEnum(std.c.E.EXIST));
 
     setErrno(0);
-    std.debug.assert(janet_os_link(missing, soft) == -1);
-    std.debug.assert(errnoValue() == @intFromEnum(std.c.E.NOENT));
+    expect(fs.hardLink(missing, soft) == -1);
+    expect(errnoValue() == @intFromEnum(std.c.E.NOENT));
 
-    std.debug.assert(janet_os_remove(hard) == 0);
+    expect(fs.hostRemove(hard) == 0);
 
     if (!config.symlinks) return;
 
-    std.debug.assert(janet_os_symlink("first", soft) == 0);
+    expect(fs.symbolicLink("first", soft) == 0);
 
     // `readlink` writes the stored target without a terminator and without
     // resolving it. The buffer is poisoned so a missing terminator is visible.
     var buffer: [256]u8 = @splat('@');
-    std.debug.assert(janet_os_readlink(soft, &buffer, buffer.len) == 5);
-    std.debug.assert(std.mem.eql(u8, buffer[0..5], "first"));
-    std.debug.assert(buffer[5] == '@');
+    expect(fs.readLink(soft, &buffer, buffer.len) == 5);
+    expect(std.mem.eql(u8, buffer[0..5], "first"));
+    expect(buffer[5] == '@');
 
     // Too short a buffer truncates and reports what it wrote; see the header.
-    std.debug.assert(janet_os_readlink(soft, &buffer, 3) == 3);
-    std.debug.assert(std.mem.eql(u8, buffer[0..3], "fir"));
+    expect(fs.readLink(soft, &buffer, 3) == 3);
+    expect(std.mem.eql(u8, buffer[0..3], "fir"));
 
     // The link resolves for `stat` and does not for `lstat`.
-    std.debug.assert(statOf(soft).get(.inode) != metadataOf(soft, false).get(.inode));
+    expect(statOf(soft).get(.inode) != metadataOf(soft, false).get(.inode));
 
     // Reading something that is not a link fails.
     setErrno(0);
-    std.debug.assert(janet_os_readlink(file, &buffer, buffer.len) == -1);
-    std.debug.assert(errnoValue() == @intFromEnum(std.c.E.INVAL));
+    expect(fs.readLink(file, &buffer, buffer.len) == -1);
+    expect(errnoValue() == @intFromEnum(std.c.E.INVAL));
 
     setErrno(0);
-    std.debug.assert(janet_os_symlink("first", soft) == -1);
-    std.debug.assert(errnoValue() == @intFromEnum(std.c.E.EXIST));
+    expect(fs.symbolicLink("first", soft) == -1);
+    expect(errnoValue() == @intFromEnum(std.c.E.EXIST));
 
-    std.debug.assert(janet_os_remove(soft) == 0);
+    expect(fs.hostRemove(soft) == 0);
 }
 
 // ------------------------------------------------------------- timestamps
 
 fn theTimestamps() void {
-    std.debug.assert(janet_os_touch(file, 1, 1000000000.0, 1000000123.0) == 0);
+    expect(fs.touch(file, true, 1000000000.0, 1000000123.0) == 0);
     var info = statOf(file);
-    std.debug.assert(info.get(.accessed) == 1000000000);
-    std.debug.assert(info.get(.modified) == 1000000123);
+    expect(info.get(.accessed) == 1000000000);
+    expect(info.get(.modified) == 1000000123);
 
     // Truncated, not rounded; see the header comment.
-    std.debug.assert(janet_os_touch(file, 1, 1000000200.75, 1000000200.75) == 0);
+    expect(fs.touch(file, true, 1000000200.75, 1000000200.75) == 0);
     info = statOf(file);
-    std.debug.assert(info.get(.modified) == 1000000200);
+    expect(info.get(.modified) == 1000000200);
 
     // With no times the host supplies the current one.
-    std.debug.assert(janet_os_touch(file, 0, 0, 0) == 0);
+    expect(fs.touch(file, false, 0, 0) == 0);
     info = statOf(file);
-    std.debug.assert(info.get(.modified) > 1672531200);
+    expect(info.get(.modified) > 1672531200);
 
     setErrno(0);
-    std.debug.assert(janet_os_touch(missing, 1, 1000000000.0, 1000000000.0) == -1);
-    std.debug.assert(errnoValue() == @intFromEnum(std.c.E.NOENT));
+    expect(fs.touch(missing, true, 1000000000.0, 1000000000.0) == -1);
+    expect(errnoValue() == @intFromEnum(std.c.E.NOENT));
 }
 
 // --------------------------------------------------------------- realpath
@@ -297,35 +283,35 @@ fn theTimestamps() void {
 fn theRealpath() void {
     if (!config.realpath) return;
 
-    const resolved = janet_os_realpath(dir).?;
+    const resolved = fs.canonicalPath(dir).?;
     defer utils.free(@ptrCast(resolved));
     const absolute = std.mem.span(resolved);
 
     // Absolute, and ending in the directory's own name.
-    std.debug.assert(absolute.len > dir.len);
-    std.debug.assert(std.mem.endsWith(u8, absolute, dir));
-    std.debug.assert(absolute[0] == '/');
+    expect(absolute.len > dir.len);
+    expect(std.mem.endsWith(u8, absolute, dir));
+    expect(absolute[0] == '/');
 
     // Redundant segments are removed, so two spellings of one path agree.
     const indirect = "./" ++ dir ++ "/../" ++ dir ++ "/.";
-    const again = janet_os_realpath(indirect).?;
+    const again = fs.canonicalPath(indirect).?;
     defer utils.free(@ptrCast(again));
-    std.debug.assert(std.mem.eql(u8, absolute, std.mem.span(again)));
+    expect(std.mem.eql(u8, absolute, std.mem.span(again)));
 
     // A missing path fails on POSIX. Windows' `_fullpath` succeeds instead and
     // the public function checks separately, which is why this is Unix-only.
     setErrno(0);
-    std.debug.assert(janet_os_realpath(missing) == null);
-    std.debug.assert(errnoValue() == @intFromEnum(std.c.E.NOENT));
+    expect(fs.canonicalPath(missing) == null);
+    expect(errnoValue() == @intFromEnum(std.c.E.NOENT));
 }
 
 // -------------------------------------------------------- the Janet surface
 
-var environment: *types.JanetTable = undefined;
+var environment: *tables.Table = undefined;
 
 fn eval(source: [*:0]const u8) void {
     var result: repr.Value = undefined;
-    std.debug.assert(core_env.dostring(environment, source, "os-fs-paths-contract", &result) == 0);
+    expect(core_env.dostring(environment, source, "os-fs-paths-contract", &result) == 0);
 }
 
 fn theCoreFunctions() void {
@@ -394,19 +380,19 @@ fn theRefusals() void {
     var args: [2]repr.Value = undefined;
     args[0] = value.fromBytes(missing, .string);
 
-    std.debug.assert(harness.raised(harness.core("os/dir"), .{args[0..1]}) != null);
-    std.debug.assert(harness.raised(harness.core("os/touch"), .{args[0..1]}) != null);
+    expect(harness.raised(harness.core("os/dir"), .{args[0..1]}) != null);
+    expect(harness.raised(harness.core("os/touch"), .{args[0..1]}) != null);
 
     if (config.realpath) {
-        std.debug.assert(harness.raised(harness.core("os/realpath"), .{args[0..1]}) != null);
+        expect(harness.raised(harness.core("os/realpath"), .{args[0..1]}) != null);
     }
 
     if (config.symlinks) {
         // Reading a link that is not one, and linking onto a name that exists.
         args[0] = value.fromBytes(public_dir ++ "/file", .string);
-        std.debug.assert(harness.raised(harness.core("os/readlink"), .{args[0..1]}) != null);
+        expect(harness.raised(harness.core("os/readlink"), .{args[0..1]}) != null);
         args[1] = args[0];
-        std.debug.assert(harness.raised(harness.core("os/link"), .{args[0..2]}) != null);
+        expect(harness.raised(harness.core("os/link"), .{args[0..2]}) != null);
     }
 }
 
@@ -424,7 +410,7 @@ pub fn run() void {
         theDirectories();
         theLinks();
     } else {
-        std.debug.assert(janet_os_mkdir(dir) == 0);
+        expect(fs.hostMkdir(dir) == 0);
         makeFile(file);
     }
     theTimestamps();

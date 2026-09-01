@@ -1,22 +1,18 @@
 //! The FFI's type vocabulary: what a primitive is, what a calling convention
 //! is, and how a struct is laid out.
 //!
-//! Two files once. One decides, the other measures, and neither has a name of
-//! its own -- every `ffi/` cfunction is registered in `ffi.zig`. They are a
-//! leaf rather than part of the bucket because `ffi/` is designed as a group:
-//! a 258-line bucket beside its satellites is what the root already was.
+//! One half decides, the other measures, and neither has a name of its own --
+//! every `ffi/` cfunction is registered in `ffi.zig`. They are a leaf rather
+//! than part of the bucket because `ffi/` is designed as a group.
 //!
-//! **`decodeCc` and `decodePrim` were declared in both halves and are not
-//! duplicates.** `zig`'s raise and are what `ffi/call.zig` reaches;
-//! `zig`'s return an index or -1 and are used only by the tests
-//! below. The second pair is `lookupCc` and `lookupPrim` now, which is what
-//! they do.
+//! **`decodeCc`/`decodePrim` and `lookupCc`/`lookupPrim` are not duplicates.**
+//! The first pair raises and is what `ffi/call.zig` reaches; the second answers
+//! an index or -1 and is used only by the tests below.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const raise = @import("raise");
+const raise = @import("../raise.zig");
 const pp_format = @import("../pp/format.zig");
-const types = @import("types");
 const repr = @import("repr");
 const abstract_type = @import("../abstract_type.zig");
 const utils = @import("../utils.zig");
@@ -25,9 +21,10 @@ const wrap = @import("../value/helpers/wrap.zig");
 const args_core = @import("../args.zig");
 const abstracts = @import("../value/abstracts.zig");
 const config = @import("config");
+const strings = @import("../value/strings.zig");
 
 // -------------------------------------------------------------------------
-// The type vocabulary -- what `zig` was.
+// The type vocabulary.
 // -------------------------------------------------------------------------
 
 /// How deep a type may nest before `ffi/read` and `ffi/write` give up.
@@ -267,7 +264,7 @@ fn primInfo(prim: Prim) PrimInfo {
 /// A Janet keyword as the name tables read it: length-prefixed bytes, which
 /// may contain a zero, rather than a C string.
 fn keywordBytes(name: [*]const u8) []const u8 {
-    return name[0..@intCast(types.stringHead(name).length)];
+    return name[0..@intCast(strings.head(name).length)];
 }
 
 /// `type_size`. The array count is multiplied in by the kernel, which is where
@@ -307,24 +304,22 @@ pub fn decodePrim(name: [*]const u8) raise.Raising(Prim) {
 
 /// `signature_mark`. Every argument that is a struct holds an abstract the
 /// collector has to reach.
-fn signatureMark(sig: *Signature, _: usize) c_int {
+fn signatureMark(sig: *Signature, _: usize) void {
     var i: u32 = 0;
     while (i < sig.arg_count) : (i += 1) {
         const t = sig.args[i].type;
         if (t.prim == .@"struct") gc_mark.mark(wrap.fromAbstract(t.st));
     }
-    return 0;
 }
 
 /// `struct_mark`. A nested struct type is an abstract of this same type.
-fn structMark(st: *Struct, _: usize) c_int {
+fn structMark(st: *Struct, _: usize) void {
     const members = Struct.fields(st);
     var i: u32 = 0;
     while (i < st.field_count) : (i += 1) {
         const t = members[i].type;
         if (t.prim == .@"struct") gc_mark.mark(wrap.fromAbstract(t.st));
     }
-    return 0;
 }
 
 /// `janet_signature_type`. `JANET_ATEND_GCMARK` leaves every field after
@@ -357,23 +352,23 @@ pub fn buildStruct(argv: []const repr.Value) raise.Raising(*Struct) {
     {
         var i: i32 = 0;
         while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
-            if (0 != args_core.keyeq(argv[@intCast(i)], "pack")) {
+            if (args_core.keyeq(argv[@intCast(i)], "pack")) {
                 member_count -= 1;
-            } else if (0 != args_core.keyeq(argv[@intCast(i)], "pack-all")) {
+            } else if (args_core.keyeq(argv[@intCast(i)], "pack-all")) {
                 member_count -= 1;
                 all_packed = true;
             }
         }
     }
 
-    const st: *Struct = @ptrCast(@alignCast(abstracts.new(
+    const st: *Struct = @ptrCast(@alignCast(abstracts.newBytes(
         &struct_at,
         Struct.allocSize(@intCast(@as(i32, @intCast(argv.len)))),
     )));
     st.field_count = 0;
     st.size = 0;
     st.alignment = 1;
-    if (@as(i32, @intCast(argv.len)) == 0) return raise.panic("invalid empty struct");
+    if (argv.len == 0) return raise.panic("invalid empty struct");
 
     var layout = Layout.init();
     const members = Struct.fields(st);
@@ -381,8 +376,8 @@ pub fn buildStruct(argv: []const repr.Value) raise.Raising(*Struct) {
     var j: i32 = 0;
     while (j < @as(i32, @intCast(argv.len))) : (j += 1) {
         var pack_one: bool = false;
-        if (0 != args_core.keyeq(argv[@intCast(j)], "pack") or
-            0 != args_core.keyeq(argv[@intCast(j)], "pack-all"))
+        if (args_core.keyeq(argv[@intCast(j)], "pack") or
+            args_core.keyeq(argv[@intCast(j)], "pack-all"))
         {
             pack_one = true;
             j += 1;
@@ -415,28 +410,27 @@ pub fn decodeType(x: repr.Value) raise.Raising(Type) {
         ret.st = @ptrCast(@alignCast(wrap.toAbstract(x)));
         return ret;
     }
-    var len: i32 = undefined;
-    var els: ?[*]const repr.Value = undefined;
-    if (0 == args_core.indexedView(x, &els, &len)) {
+    const els = args_core.indexedView(x) orelse {
         return pp_format.panicf("bad native type %v", .{x});
-    }
+    };
     if (repr.checkType(x, repr.Tag.array)) {
-        if (len != 2 and len != 1) {
+        if (els.len != 2 and els.len != 1) {
             return pp_format.panicf("array type must be of form @[type count], got %v", .{x});
         }
-        ret = try decodeType(els.?[0]);
-        ret.array_count = if (len == 1) 0 else try args_core.getNat(els.?[0..@intCast(len)], 1);
+        ret = try decodeType(els[0]);
+        ret.array_count = if (els.len == 1) 0 else try args_core.getNat(els, 1);
     } else {
-        ret.st = try buildStruct(els.?[0..@intCast(len)]);
+        ret.st = try buildStruct(els);
     }
     return ret;
 }
 
 // -------------------------------------------------------------------------
-// Layout and the raw lookups -- what `zig` was.
+// Layout and the raw lookups.
 // -------------------------------------------------------------------------
 
-/// `JanetFFIPrimType` in `src/core/ffi.c`.
+/// The machine types an FFI signature can name. The ordinals are pinned:
+/// `classify.zig` restates them and `test/ffi_layout.zig` writes them out.
 const PrimType = enum(i32) {
     void = 0,
     bool = 1,
@@ -455,7 +449,7 @@ const PrimType = enum(i32) {
     @"struct" = 14,
 };
 
-/// `JanetFFICallingConvention` in `src/core/ffi.c`.
+/// The calling conventions the trampolines implement.
 const CallingConvention = enum(i32) {
     none = 0,
     sysv64 = 1,
@@ -463,14 +457,14 @@ const CallingConvention = enum(i32) {
     aapcs64 = 3,
 };
 
-/// `JANET_64` in `src/include/janet.h`, which selects the width of the `size`
-/// and `ssize` machine types. It is read from the header rather than inferred
-/// from the target so that the two cannot disagree.
+/// Selects the width of the `size` and `ssize` machine types. Read from the
+/// build's configuration rather than inferred from the target, so that the two
+/// cannot disagree.
 const is_64_bit = config.bits64;
 
 const NamedPrim = struct { []const u8, PrimType };
 
-/// Every machine-type name `ffi.c` accepts, in its order: the primary names,
+/// Every machine-type name a signature may use, in order: the primary names,
 /// the word-size-dependent pair, then the aliases. `struct` has no name of its
 /// own — a struct type is written as a tuple rather than a keyword.
 const prim_names = [_]NamedPrim{

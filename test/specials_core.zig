@@ -26,9 +26,7 @@
 //! The shim's comment said it existed for a C contract, and it did, and it was
 //! the last thing standing between the build and one fewer module.
 
-const std = @import("std");
 const config = @import("config");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const harness = @import("harness.zig");
@@ -43,11 +41,12 @@ const core_env = @import("subsystems").env;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const specials_core = @import("subsystems").specials_core;
+const expect = @import("expect.zig").expect;
 const primitives = subsystems.compiler_primitives;
 const special_type = subsystems.special;
 
-var compiler: types.JanetCompiler = undefined;
-var scope: types.JanetScope = undefined;
+var compiler: compiler_primitives.JanetCompiler = undefined;
+var scope: compiler_primitives.JanetScope = undefined;
 
 /// A special by name, with the raising signature it actually has.
 ///
@@ -55,14 +54,14 @@ var scope: types.JanetScope = undefined;
 /// it. There is one description, so the lookup answers what the callback is.
 fn special(name: [*:0]const u8) *const special_type.Special {
     const found = specials_core.lookupSpecial(symbols.csymbol(name));
-    std.debug.assert(found != null);
+    expect(found != null);
     return found.?;
 }
 
 /// Compile one form through a special, the way `janetc_value` would. The count
 /// and the pointer were separate parameters until 2d; the slice carries both,
 /// which is what lets a caller pass fewer arguments than the array holds.
-fn compile(name: [*:0]const u8, options: types.JanetFopts, count: i32, arguments: []const repr.Value) !types.JanetSlot {
+fn compile(name: [*:0]const u8, options: compiler_primitives.JanetFopts, count: i32, arguments: []const repr.Value) !compiler_primitives.JanetSlot {
     return special(name).compile.?(options, arguments[0..@intCast(count)]);
 }
 
@@ -78,11 +77,11 @@ fn failedWith(message: [*:0]const u8) bool {
 }
 
 fn emitted(index: usize) u32 {
-    return compiler.buffer.?[index];
+    return compiler.buffer.items[index];
 }
 
 fn emittedCount() i32 {
-    return vector.count(compiler.buffer);
+    return @intCast(vector.count(compiler.buffer));
 }
 
 fn operationOf(word: u32) u32 {
@@ -92,7 +91,7 @@ fn operationOf(word: u32) u32 {
 /// The lookup itself: an unknown name is not a special, which is what lets
 /// `janetc_value` fall through to a function call.
 fn anUnknownNameIsNotASpecial() void {
-    std.debug.assert(specials_core.lookupSpecial(symbols.csymbol("not-a-special")) == null);
+    expect(specials_core.lookupSpecial(symbols.csymbol("not-a-special")) == null);
 }
 
 /// `quote` answers its argument untouched, and `splice` answers its argument
@@ -103,33 +102,33 @@ fn theQuotingForms(arguments: []const repr.Value) !void {
     var options = compiler_primitives.foptsDefault(&compiler);
 
     var result = try compile("quote", options, 1, arguments);
-    std.debug.assert(result.flags & constants.JANET_SLOT_CONSTANT != 0);
-    std.debug.assert(harness.integerIs(result.constant, 1));
+    expect(result.flags.constant);
+    expect(harness.integerIs(result.constant, 1));
 
     result = try compile("quote", options, 0, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(failedWith("expected 1 argument to quote"));
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(failedWith("expected 1 argument to quote"));
     clearError();
 
     result = try compile("splice", options, 1, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(failedWith(
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(failedWith(
         "splice can only be used in function parameters and data constructors, it has no effect here",
     ));
     clearError();
 
-    options.flags |= constants.JANET_FOPTS_ACCEPT_SPLICE;
+    options.flags.accept_splice = true;
     result = try compile("splice", options, 1, arguments);
-    std.debug.assert(result.flags & constants.JANET_SLOT_CONSTANT != 0);
-    std.debug.assert(result.flags & constants.JANET_SLOT_SPLICED != 0);
-    std.debug.assert(harness.integerIs(result.constant, 1));
-    options.flags = 0;
+    expect(result.flags.constant);
+    expect(result.flags.spliced);
+    expect(harness.integerIs(result.constant, 1));
+    options.flags = .{};
 
     // `unquote` is only meaningful inside a quasiquote, and the special is
     // registered so that it can say so rather than resolve as a function.
     result = try compile("unquote", options, 0, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(failedWith("cannot use unquote here"));
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(failedWith("cannot use unquote here"));
     clearError();
 }
 
@@ -139,20 +138,20 @@ fn theSequencingForms(arguments: []const repr.Value) !void {
     const options = compiler_primitives.foptsDefault(&compiler);
 
     var result = try compile("do", options, 2, arguments);
-    std.debug.assert(result.flags & constants.JANET_SLOT_CONSTANT != 0);
-    std.debug.assert(harness.integerIs(result.constant, 2));
-    std.debug.assert(compiler.scope == null);
+    expect(result.flags.constant);
+    expect(harness.integerIs(result.constant, 2));
+    expect(compiler.scope == null);
 
     // An empty body is nil rather than an error.
     result = try compile("do", options, 0, arguments);
-    std.debug.assert(result.flags & constants.JANET_SLOT_CONSTANT != 0);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(compiler.scope == null);
+    expect(result.flags.constant);
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(compiler.scope == null);
 
     result = try compile("upscope", options, 2, arguments);
-    std.debug.assert(result.flags & constants.JANET_SLOT_CONSTANT != 0);
-    std.debug.assert(harness.integerIs(result.constant, 2));
-    std.debug.assert(compiler.scope == null);
+    expect(result.flags.constant);
+    expect(harness.integerIs(result.constant, 2));
+    expect(compiler.scope == null);
 }
 
 /// `break` emits a different instruction depending on what encloses it, and
@@ -161,26 +160,26 @@ fn theBreakForm(arguments: []const repr.Value) !void {
     const options = compiler_primitives.foptsDefault(&compiler);
 
     var result = try compile("break", options, 0, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(failedWith("break must occur in while loop or closure"));
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(failedWith("break must occur in while loop or closure"));
     clearError();
 
     // In a function it returns.
-    compiler_primitives.pushScope(&scope, &compiler, constants.JANET_SCOPE_FUNCTION, "function");
+    compiler_primitives.pushScope(&scope, &compiler, .{ .function = true }, "function");
     result = try compile("break", options, 0, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(emittedCount() == 1);
-    std.debug.assert(emitted(0) == harness.op(constants.JOP_RETURN_NIL));
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(emittedCount() == 1);
+    expect(emitted(0) == harness.op(constants.Opcode.return_nil));
     try primitives.popscope(&compiler);
 
     // In a while loop it jumps, and the displacement is patched later — so
     // the word carries the placeholder the loop will overwrite.
-    vector.empty(compiler.buffer);
-    compiler_primitives.pushScope(&scope, &compiler, constants.JANET_SCOPE_WHILE, "while");
+    vector.empty(&compiler.buffer);
+    compiler_primitives.pushScope(&scope, &compiler, .{ .while_body = true }, "while");
     result = try compile("break", options, 0, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(emittedCount() == 1);
-    std.debug.assert(emitted(0) == 0x80 | harness.op(constants.JOP_JUMP));
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(emittedCount() == 1);
+    expect(emitted(0) == 0x80 | harness.op(constants.Opcode.jump));
     try primitives.popscope(&compiler);
 }
 
@@ -190,39 +189,39 @@ fn theIfForm(arguments: []repr.Value) !void {
     const options = compiler_primitives.foptsDefault(&compiler);
 
     var result = try compile("if", options, 1, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(failedWith("expected 2 or 3 arguments to if"));
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(failedWith("expected 2 or 3 arguments to if"));
     clearError();
 
     // A constant-true condition compiles only the true arm, which here is one
     // instruction rather than a jump, an arm, a jump and an arm.
-    vector.empty(compiler.buffer);
-    compiler_primitives.pushScope(&scope, &compiler, constants.JANET_SCOPE_FUNCTION, "if-root");
+    vector.empty(&compiler.buffer);
+    compiler_primitives.pushScope(&scope, &compiler, .{ .function = true }, "if-root");
     arguments[0] = wrap.fromTrue();
     arguments[1] = harness.wrapInteger(11);
     arguments[2] = harness.wrapInteger(22);
     result = try compile("if", options, 3, arguments);
-    std.debug.assert(compiler.result.status == constants.JANET_COMPILE_OK);
-    std.debug.assert(result.flags & constants.JANET_SLOT_CONSTANT == 0);
-    std.debug.assert(emittedCount() == 1);
+    expect(compiler.result.status == constants.JANET_COMPILE_OK);
+    expect(!result.flags.constant);
+    expect(emittedCount() == 1);
     try primitives.popscope(&compiler);
 
     // A condition the compiler cannot see through emits a real branch, and
     // the jump displacement is patched to a nonzero value.
-    vector.empty(compiler.buffer);
-    compiler_primitives.pushScope(&scope, &compiler, constants.JANET_SCOPE_FUNCTION, "if-root");
+    vector.empty(&compiler.buffer);
+    compiler_primitives.pushScope(&scope, &compiler, .{ .function = true }, "if-root");
     {
         const symbol = symbols.csymbol("condition");
-        const condition = compiler_primitives.farslot(&compiler);
+        const condition = compiler_primitives.farslot(&compiler).?;
         try primitives.nameslot(&compiler, symbol, condition, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
         arguments[0] = wrap.fromSymbol(symbol);
     }
     result = try compile("if", options, 3, arguments);
-    std.debug.assert(compiler.result.status == constants.JANET_COMPILE_OK);
-    std.debug.assert(result.flags & constants.JANET_SLOT_CONSTANT == 0);
-    std.debug.assert(emittedCount() >= 4);
-    std.debug.assert(operationOf(emitted(0)) == harness.op(constants.JOP_JUMP_IF_NOT));
-    std.debug.assert(emitted(0) >> 16 != 0);
+    expect(compiler.result.status == constants.JANET_COMPILE_OK);
+    expect(!result.flags.constant);
+    expect(emittedCount() >= 4);
+    expect(operationOf(emitted(0)) == harness.op(constants.Opcode.jump_if_not));
+    expect(emitted(0) >> 16 != 0);
     try primitives.popscope(&compiler);
 }
 
@@ -233,35 +232,35 @@ fn theQuasiquoteForm(arguments: []repr.Value) !void {
     const options = compiler_primitives.foptsDefault(&compiler);
 
     var result = try compile("quasiquote", options, 0, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(failedWith("expected 1 argument to quasiquote"));
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(failedWith("expected 1 argument to quasiquote"));
     clearError();
 
     arguments[0] = harness.wrapInteger(42);
     result = try compile("quasiquote", options, 1, arguments);
-    std.debug.assert(result.flags & constants.JANET_SLOT_CONSTANT != 0);
-    std.debug.assert(harness.integerIs(result.constant, 42));
+    expect(result.flags.constant);
+    expect(harness.integerIs(result.constant, 42));
 
     var tuple = tuples.begin(2);
     tuple[0] = value.fromBytes("unquote", .symbol);
     tuple[1] = harness.wrapInteger(43);
     arguments[0] = wrap.fromTuple(tuples.end(tuple));
     result = try compile("quasiquote", options, 1, arguments);
-    std.debug.assert(result.flags & constants.JANET_SLOT_CONSTANT != 0);
-    std.debug.assert(harness.integerIs(result.constant, 43));
+    expect(result.flags.constant);
+    expect(harness.integerIs(result.constant, 43));
 
     // A quoted tuple is not a constant, because a tuple is built rather than
     // interned — so the last instruction constructs it.
-    vector.empty(compiler.buffer);
-    compiler_primitives.pushScope(&scope, &compiler, constants.JANET_SCOPE_FUNCTION, "quasiquote-root");
+    vector.empty(&compiler.buffer);
+    compiler_primitives.pushScope(&scope, &compiler, .{ .function = true }, "quasiquote-root");
     tuple = tuples.begin(2);
     tuple[0] = harness.wrapInteger(1);
     tuple[1] = harness.wrapInteger(2);
     arguments[0] = wrap.fromTuple(tuples.end(tuple));
     result = try compile("quasiquote", options, 1, arguments);
-    std.debug.assert(result.flags & constants.JANET_SLOT_CONSTANT == 0);
-    std.debug.assert(emittedCount() == 4);
-    std.debug.assert(operationOf(emitted(3)) == harness.op(constants.JOP_MAKE_TUPLE));
+    expect(!result.flags.constant);
+    expect(emittedCount() == 4);
+    expect(operationOf(emitted(3)) == harness.op(constants.Opcode.make_tuple));
     try primitives.popscope(&compiler);
 }
 
@@ -273,33 +272,33 @@ fn theWhileForm(arguments: []repr.Value) !void {
     const options = compiler_primitives.foptsDefault(&compiler);
 
     var result = try compile("while", options, 0, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(failedWith("expected at least 1 argument to while"));
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(failedWith("expected at least 1 argument to while"));
     clearError();
 
     // A constant-false condition emits nothing.
-    vector.empty(compiler.buffer);
+    vector.empty(&compiler.buffer);
     arguments[0] = wrap.fromFalse();
     result = try compile("while", options, 1, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(emittedCount() == 0);
-    std.debug.assert(compiler.scope == null);
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(emittedCount() == 0);
+    expect(compiler.scope == null);
 
     // A constant-true one emits the back-jump and nothing else.
     arguments[0] = wrap.fromTrue();
     result = try compile("while", options, 1, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(emittedCount() == 1);
-    std.debug.assert(operationOf(emitted(0)) == harness.op(constants.JOP_JUMP));
-    std.debug.assert(compiler.scope == null);
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(emittedCount() == 1);
+    expect(operationOf(emitted(0)) == harness.op(constants.Opcode.jump));
+    expect(compiler.scope == null);
 
     // A real condition with a `break` in the body: test, break-jump,
     // back-jump. The break jumps two forward, past the back-jump.
-    vector.empty(compiler.buffer);
-    compiler_primitives.pushScope(&scope, &compiler, constants.JANET_SCOPE_FUNCTION, "while-root");
+    vector.empty(&compiler.buffer);
+    compiler_primitives.pushScope(&scope, &compiler, .{ .function = true }, "while-root");
     {
         const symbol = symbols.csymbol("while-condition");
-        const condition = compiler_primitives.farslot(&compiler);
+        const condition = compiler_primitives.farslot(&compiler).?;
         try primitives.nameslot(&compiler, symbol, condition, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
         arguments[0] = wrap.fromSymbol(symbol);
         const tuple = tuples.begin(1);
@@ -307,13 +306,13 @@ fn theWhileForm(arguments: []repr.Value) !void {
         arguments[1] = wrap.fromTuple(tuples.end(tuple));
     }
     result = try compile("while", options, 2, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(emittedCount() == 3);
-    std.debug.assert(operationOf(emitted(0)) == harness.op(constants.JOP_JUMP_IF_NOT));
-    std.debug.assert(emitted(0) >> 16 == 3);
-    std.debug.assert(operationOf(emitted(1)) == harness.op(constants.JOP_JUMP));
-    std.debug.assert(emitted(1) >> 8 == 2);
-    std.debug.assert(operationOf(emitted(2)) == harness.op(constants.JOP_JUMP));
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(emittedCount() == 3);
+    expect(operationOf(emitted(0)) == harness.op(constants.Opcode.jump_if_not));
+    expect(emitted(0) >> 16 == 3);
+    expect(operationOf(emitted(1)) == harness.op(constants.Opcode.jump));
+    expect(emitted(1) >> 8 == 2);
+    expect(operationOf(emitted(2)) == harness.op(constants.Opcode.jump));
     try primitives.popscope(&compiler);
 }
 
@@ -323,35 +322,35 @@ fn theSetForm(arguments: []repr.Value) !void {
     const options = compiler_primitives.foptsDefault(&compiler);
 
     var result = try compile("set", options, 1, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(failedWith("expected 2 arguments to set"));
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(failedWith("expected 2 arguments to set"));
     clearError();
 
     arguments[0] = harness.wrapInteger(1);
     result = try compile("set", options, 2, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(failedWith("expected symbol or tuple for l-value to set"));
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(failedWith("expected symbol or tuple for l-value to set"));
     clearError();
 
     // A mutable local is written in place, so the result is the same slot.
-    vector.empty(compiler.buffer);
-    compiler_primitives.pushScope(&scope, &compiler, constants.JANET_SCOPE_FUNCTION, "set-root");
+    vector.empty(&compiler.buffer);
+    compiler_primitives.pushScope(&scope, &compiler, .{ .function = true }, "set-root");
     {
         const symbol = symbols.csymbol("mutable");
-        var slot = compiler_primitives.farslot(&compiler);
-        slot.flags |= constants.JANET_SLOT_MUTABLE;
+        var slot = compiler_primitives.farslot(&compiler).?;
+        slot.flags.mutable = true;
         try primitives.nameslot(&compiler, symbol, slot, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
         arguments[0] = wrap.fromSymbol(symbol);
         arguments[1] = harness.wrapInteger(7);
         result = try compile("set", options, 2, arguments);
-        std.debug.assert(compiler.result.status == constants.JANET_COMPILE_OK);
-        std.debug.assert(result.index == slot.index);
+        expect(compiler.result.status == constants.JANET_COMPILE_OK);
+        expect(result.index == slot.index);
     }
     try primitives.popscope(&compiler);
 
     // A tuple l-value is a field write.
-    vector.empty(compiler.buffer);
-    compiler_primitives.pushScope(&scope, &compiler, constants.JANET_SCOPE_FUNCTION, "set-field-root");
+    vector.empty(&compiler.buffer);
+    compiler_primitives.pushScope(&scope, &compiler, .{ .function = true }, "set-field-root");
     {
         const table = tables.new(1);
         const tuple = tuples.begin(2);
@@ -360,9 +359,9 @@ fn theSetForm(arguments: []repr.Value) !void {
         arguments[0] = wrap.fromTuple(tuples.end(tuple));
         arguments[1] = harness.wrapInteger(8);
         result = try compile("set", options, 2, arguments);
-        std.debug.assert(compiler.result.status == constants.JANET_COMPILE_OK);
-        std.debug.assert(emittedCount() > 0);
-        std.debug.assert(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.JOP_PUT));
+        expect(compiler.result.status == constants.JANET_COMPILE_OK);
+        expect(emittedCount() > 0);
+        expect(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.Opcode.put));
     }
     try primitives.popscope(&compiler);
 }
@@ -378,28 +377,28 @@ fn theBindingForms(arguments: []repr.Value) !void {
     const options = compiler_primitives.foptsDefault(&compiler);
 
     var result = try compile("var", options, 1, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(failedWith("expected at least 2 arguments to var"));
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(failedWith("expected at least 2 arguments to var"));
     clearError();
 
     result = try compile("def", options, 1, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(failedWith("expected at least 2 arguments to def"));
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(failedWith("expected at least 2 arguments to def"));
     clearError();
 
-    vector.empty(compiler.buffer);
-    compiler_primitives.pushScope(&scope, &compiler, constants.JANET_SCOPE_FUNCTION, "fn-root");
+    vector.empty(&compiler.buffer);
+    compiler_primitives.pushScope(&scope, &compiler, .{ .function = true }, "fn-root");
     result = try compile("fn", options, 0, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(failedWith("expected at least 1 argument to function literal"));
-    std.debug.assert(compiler.scope == &scope);
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(failedWith("expected at least 1 argument to function literal"));
+    expect(compiler.scope == &scope);
     clearError();
 
     arguments[0] = harness.wrapInteger(1);
     result = try compile("fn", options, 1, arguments);
-    std.debug.assert(harness.isType(result.constant, repr.Tag.nil));
-    std.debug.assert(failedWith("expected function parameters"));
-    std.debug.assert(compiler.scope == &scope);
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(failedWith("expected function parameters"));
+    expect(compiler.scope == &scope);
     clearError();
 
     // An empty parameter list is a whole function: one funcdef on the parent
@@ -407,15 +406,15 @@ fn theBindingForms(arguments: []repr.Value) !void {
     const tuple = tuples.begin(0);
     arguments[0] = wrap.fromTuple(tuples.end(tuple));
     result = try compile("fn", options, 1, arguments);
-    std.debug.assert(compiler.result.status == constants.JANET_COMPILE_OK);
-    std.debug.assert(result.flags & constants.JANET_SLOT_CONSTANT == 0);
-    std.debug.assert(vector.count(scope.defs) == 1);
-    std.debug.assert(scope.defs.?[0].*.arity == 0);
-    std.debug.assert(scope.defs.?[0].*.min_arity == 0);
-    std.debug.assert(scope.defs.?[0].*.max_arity == 0);
-    std.debug.assert(scope.defs.?[0].*.bytecode_length == 1);
-    std.debug.assert(operationOf(scope.defs.?[0].*.instructions()[0]) == harness.op(constants.JOP_RETURN_NIL));
-    std.debug.assert(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.JOP_CLOSURE));
+    expect(compiler.result.status == constants.JANET_COMPILE_OK);
+    expect(!result.flags.constant);
+    expect(vector.count(scope.defs) == 1);
+    expect(scope.defs.items[0].arity == 0);
+    expect(scope.defs.items[0].min_arity == 0);
+    expect(scope.defs.items[0].max_arity == 0);
+    expect(scope.defs.items[0].bytecode_length == 1);
+    expect(operationOf(scope.defs.items[0].instructions()[0]) == harness.op(constants.Opcode.return_nil));
+    expect(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.Opcode.closure));
     try primitives.popscope(&compiler);
 }
 
@@ -433,16 +432,16 @@ fn theWholeCompilations() void {
 
     // A `while` whose body closes over the condition: the loop variable has
     // to be kept alive across iterations rather than reused.
-    std.debug.assert(core_env.dostring(
+    expect(core_env.dostring(
         environment,
         "(fn [condition] (while condition (fn [] condition) (break)))",
         "specials-core-test",
         &output,
     ) == 0);
-    std.debug.assert(harness.isType(output, repr.Tag.function));
+    expect(harness.isType(output, repr.Tag.function));
 
     // The same shape, run rather than only compiled, with a `set` in it.
-    std.debug.assert(core_env.dostring(
+    expect(core_env.dostring(
         environment,
         "(do (var while-result 0) " ++
             "((fn [condition] " ++
@@ -454,11 +453,11 @@ fn theWholeCompilations() void {
         "specials-core-test",
         &output,
     ) == 0);
-    std.debug.assert(harness.integerIs(output, 1));
+    expect(harness.integerIs(output, 1));
 
     // Destructuring `var`, including a rest binding, and a `set` on one of
     // the destructured names.
-    std.debug.assert(core_env.dostring(
+    expect(core_env.dostring(
         environment,
         "(do " ++
             "  (var [binding-a binding-b & binding-rest] [1 2 3 4]) " ++
@@ -467,30 +466,30 @@ fn theWholeCompilations() void {
         "specials-core-test",
         &output,
     ) == 0);
-    std.debug.assert(harness.isType(output, repr.Tag.tuple));
+    expect(harness.isType(output, repr.Tag.tuple));
     {
         const result = wrap.toTuple(output);
-        std.debug.assert(types.tupleHead(result).length == 3);
-        std.debug.assert(harness.integerIs(result[0], 5));
-        std.debug.assert(harness.integerIs(result[1], 2));
+        expect(tuples.head(result).length == 3);
+        expect(harness.integerIs(result[0], 5));
+        expect(harness.integerIs(result[1], 2));
         const rest = wrap.toTuple(result[2]);
-        std.debug.assert(types.tupleHead(rest).length == 2);
-        std.debug.assert(harness.integerIs(rest[0], 3));
-        std.debug.assert(harness.integerIs(rest[1], 4));
+        expect(tuples.head(rest).length == 2);
+        expect(harness.integerIs(rest[0], 3));
+        expect(harness.integerIs(rest[1], 4));
     }
 
     // Destructuring a struct by key.
-    std.debug.assert(core_env.dostring(
+    expect(core_env.dostring(
         environment,
         "(do (def {:x binding-x} {:x 9}) binding-x)",
         "specials-core-test",
         &output,
     ) == 0);
-    std.debug.assert(harness.integerIs(output, 9));
+    expect(harness.integerIs(output, 9));
 
     // A docstring between the name and the value, which `def` moves into the
     // binding's table rather than treating as the value.
-    std.debug.assert(core_env.dostring(
+    expect(core_env.dostring(
         environment,
         "(def binding-with-doc \"binding documentation\" 10)",
         "specials-core-test",
@@ -499,12 +498,12 @@ fn theWholeCompilations() void {
     {
         const binding = tables.get(environment, value.fromBytes("binding-with-doc", .symbol));
         const doc = tables.get(wrap.toTable(binding), value.fromBytes("doc", .keyword));
-        std.debug.assert(harness.stringValueIs(doc, "binding documentation"));
+        expect(harness.stringValueIs(doc, "binding documentation"));
     }
 
     // The five parameter forms: destructured, optional, rest, named, and a
     // self-referential name for recursion.
-    std.debug.assert(core_env.dostring(
+    expect(core_env.dostring(
         environment,
         "[ ((fn [[a b]] (+ a b)) [2 3]) " ++
             "  ((fn [a &opt b] [a b]) 1) " ++
@@ -515,33 +514,33 @@ fn theWholeCompilations() void {
         "specials-core-test",
         &output,
     ) == 0);
-    std.debug.assert(harness.isType(output, repr.Tag.tuple));
+    expect(harness.isType(output, repr.Tag.tuple));
     {
         const results = wrap.toTuple(output);
-        std.debug.assert(types.tupleHead(results).length == 5);
-        std.debug.assert(harness.integerIs(results[0], 5));
+        expect(tuples.head(results).length == 5);
+        expect(harness.integerIs(results[0], 5));
 
         const optional = wrap.toTuple(results[1]);
-        std.debug.assert(harness.integerIs(optional[0], 1));
-        std.debug.assert(harness.isType(optional[1], repr.Tag.nil));
+        expect(harness.integerIs(optional[0], 1));
+        expect(harness.isType(optional[1], repr.Tag.nil));
 
         const rest = wrap.toTuple(results[2]);
-        std.debug.assert(types.tupleHead(rest).length == 2);
-        std.debug.assert(harness.integerIs(rest[0], 2));
-        std.debug.assert(harness.integerIs(rest[1], 3));
+        expect(tuples.head(rest).length == 2);
+        expect(harness.integerIs(rest[0], 2));
+        expect(harness.integerIs(rest[1], 3));
 
         const named = wrap.toTuple(results[3]);
-        std.debug.assert(harness.integerIs(named[0], 1));
-        std.debug.assert(harness.integerIs(named[1], 2));
+        expect(harness.integerIs(named[0], 1));
+        expect(harness.integerIs(named[1], 2));
 
-        std.debug.assert(harness.integerIs(results[4], 3));
+        expect(harness.integerIs(results[4], 3));
     }
 }
 
 fn body() !void {
     anUnknownNameIsNotASpecial();
 
-    compiler = std.mem.zeroes(types.JanetCompiler);
+    compiler = .{};
     compiler.recursion_guard = config.recursion_guard;
     var arguments = [3]repr.Value{
         harness.wrapInteger(1),
@@ -558,7 +557,7 @@ fn body() !void {
     try theSetForm(&arguments);
     try theBindingForms(&arguments);
 
-    vector.free(compiler.buffer);
+    vector.free(&compiler.buffer);
     theWholeCompilations();
 }
 

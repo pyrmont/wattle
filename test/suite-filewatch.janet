@@ -50,10 +50,8 @@
 
 #
 # The surface: arities, argument types, flag decoding and the watcher's own
-# life cycle. None of this was reachable from a Janet test before Phase 10
-# Part 15 -- the suite went straight from `(assert true)` to driving real
-# events, so every failure message in the file was untested. Written against
-# `-Dfilewatch-core=c` first, on the rule in `AGENTS.md`.
+# life cycle. Without this the suite goes straight from `(assert true)` to
+# driving real events, leaving every failure message in the file untested.
 #
 
 (defn- errmsg

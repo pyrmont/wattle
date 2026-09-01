@@ -1,5 +1,5 @@
-//! Loading a native module: `Clib` and the four operations over it, for each of
-//! the three cases `src/core/util.h` spells them for.
+//! Loading a native module: a library handle and the four operations over it,
+//! for POSIX, for Windows, and for a build with dynamic modules turned off.
 //!
 //! Two things happen in this file, and they are separable.
 //!
@@ -16,7 +16,7 @@
 //!
 //! Exactly one path here can fail in a way a Janet program should see:
 //! `symbol_clib`, asked for a symbol in the *process* rather than in a loaded
-//! library, walks every loaded module and panics if `EnumProcessModules`
+//! library, walks every loaded module and panics if `c.EnumProcessModules`
 //! fails. Nothing else reports anything but a null pointer.
 //!
 //! So `symbol` returns `raise.Raising(?*anyopaque)` on every platform while
@@ -34,7 +34,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const raise = @import("raise");
+const raise = @import("raise.zig");
 const pp_format = @import("pp/format.zig");
 const config = @import("config");
 const c = @import("cabi");
@@ -42,9 +42,9 @@ const c = @import("cabi");
 const windows = builtin.os.tag == .windows;
 const has_dynamic_modules = config.dynamic_modules;
 
-/// `Clib`. A `HINSTANCE` on Windows and a `void *` elsewhere, which are the
-/// same width; `int` when the feature is off, because `util.h` types it that
-/// way so that the macro forms have something to return.
+/// A loaded library. A `HINSTANCE` on Windows and a `void *` elsewhere, which
+/// are the same width; `c_int` when the feature is off, so the stubs below have
+/// something to return.
 pub const Handle = if (has_dynamic_modules) ?*anyopaque else c_int;
 
 pub fn load(name: ?[*:0]const u8) Handle {
@@ -92,34 +92,15 @@ pub fn failed(lib: Handle) bool {
 // The Win32 loader
 // ==========================================================================
 
-// `JANET_NO_DYNAMIC_MODULES` gets a real `error_clib` and nothing else, which
-// is `util.h`'s arrangement rather than a choice here.
+// With dynamic modules off, only the error string is real; the rest are stubs.
 
 fn errorClibUnsupported() [*:0]const u8 {
     return "dynamic modules not supported";
 }
 
-pub fn errorClibUnsupportedAbi() [*]const u8 {
-    return errorClibUnsupported();
-}
-
-pub fn loadClibAbi(name: ?[*:0]const u8) ?*anyopaque {
-    return loadClib(name);
-}
-
-pub fn freeClibAbi(lib: ?*anyopaque) void {
-    freeClib(lib);
-}
-
-pub fn errorClibAbi() [*]const u8 {
-    return errorClib();
-}
-
 /// The abi under Janet's name for it. Nothing in this tree calls it; it is
 /// published because Janet published it.
-pub const symbolClibAbi = raise.panicking(symbolClib).abi;
-
-/// `FormatMessageA`'s buffer. Static in the C original and static here, so the
+/// `c.FormatMessageA`'s buffer. Static in the C original and static here, so the
 /// answer is valid until the next failure on any thread -- which is a race the
 /// C original also has and which nothing in the tree can reach twice.
 var error_clib_buf: [256]u8 = @splat(0);
@@ -133,10 +114,10 @@ const FORMAT_MESSAGE_IGNORE_INSERTS: u32 = 0x200;
 const LANG_NEUTRAL_SUBLANG_DEFAULT: u32 = (1 << 10) | 0;
 
 fn errorClib() [*:0]const u8 {
-    const written = FormatMessageA(
+    const written = c.FormatMessageA(
         FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
         null,
-        GetLastError(),
+        c.GetLastError(),
         LANG_NEUTRAL_SUBLANG_DEFAULT,
         &error_clib_buf,
         error_clib_buf.len,
@@ -144,7 +125,7 @@ fn errorClib() [*:0]const u8 {
     );
 
     // Janet's own line is `error_clib_buf[strlen(error_clib_buf) - 1] = '\0'`,
-    // which strips the newline `FormatMessageA` appends. **When the call
+    // which strips the newline `c.FormatMessageA` appends. **When the call
     // writes nothing it indexes [-1]**, which is a write outside the array;
     // `FOUND.md` has it. That is undefined rather than merely wrong, so this
     // records it instead of reproducing it and the strip is guarded. Every
@@ -159,13 +140,13 @@ fn errorClib() [*:0]const u8 {
 /// `GetModuleHandle(NULL)` is how Win32 spells that. `free` and `symbol` both
 /// test against it, which is why it is a handle rather than a flag.
 fn loadClib(name: ?[*:0]const u8) ?*anyopaque {
-    if (name == null) return GetModuleHandleA(null);
-    return LoadLibraryA(name.?);
+    if (name == null) return c.GetModuleHandleA(null);
+    return c.LoadLibraryA(name.?);
 }
 
 fn freeClib(lib: ?*anyopaque) void {
-    if (lib != GetModuleHandleA(null)) {
-        _ = FreeLibrary(lib);
+    if (lib != c.GetModuleHandleA(null)) {
+        _ = c.FreeLibrary(lib);
     }
 }
 
@@ -173,51 +154,26 @@ fn freeClib(lib: ?*anyopaque) void {
 /// has loaded.
 ///
 /// The second case is what `(ffi/native)` with no path asks for. The C
-/// original's fixed array of 1024 module handles is kept: `EnumProcessModules`
+/// original's fixed array of 1024 module handles is kept: `c.EnumProcessModules`
 /// reports how much it *wanted* in `needed`, and neither implementation grows
 /// the array or notices the truncation, so a process with more than 1024
 /// modules silently searches the first 1024. Reproduced -- it is defined
 /// behaviour, just a limit nobody documented.
 fn symbolClib(lib: ?*anyopaque, sym: [*:0]const u8) raise.Raising(?*anyopaque) {
-    if (lib != GetModuleHandleA(null)) {
-        return GetProcAddress(lib, sym);
+    if (lib != c.GetModuleHandleA(null)) {
+        return c.GetProcAddress(lib, sym);
     }
 
     var modules: [1024]?*anyopaque = undefined;
     var needed: u32 = 0;
-    if (EnumProcessModules(GetCurrentProcess(), &modules, @sizeOf(@TypeOf(modules)), &needed) == 0) {
+    if (c.EnumProcessModules(c.GetCurrentProcess(), &modules, @sizeOf(@TypeOf(modules)), &needed) == 0) {
         return pp_format.panicf("ffi: %s", .{@as([*]const u8, @ptrCast(errorClib()))});
     }
 
     const count = needed / @sizeOf(?*anyopaque);
     var i: u32 = 0;
     while (i < count and i < modules.len) : (i += 1) {
-        if (GetProcAddress(modules[i], sym)) |address| return address;
+        if (c.GetProcAddress(modules[i], sym)) |address| return address;
     }
     return null;
 }
-
-extern "kernel32" fn GetModuleHandleA(name: ?[*:0]const u8) callconv(.winapi) ?*anyopaque;
-extern "kernel32" fn LoadLibraryA(name: [*:0]const u8) callconv(.winapi) ?*anyopaque;
-extern "kernel32" fn FreeLibrary(module: ?*anyopaque) callconv(.winapi) c_int;
-extern "kernel32" fn GetProcAddress(module: ?*anyopaque, name: [*:0]const u8) callconv(.winapi) ?*anyopaque;
-extern "kernel32" fn GetLastError() callconv(.winapi) u32;
-extern "kernel32" fn GetCurrentProcess() callconv(.winapi) ?*anyopaque;
-extern "kernel32" fn FormatMessageA(
-    flags: u32,
-    source: ?*const anyopaque,
-    message_id: u32,
-    language_id: u32,
-    buffer: [*]u8,
-    size: u32,
-    arguments: ?*anyopaque,
-) callconv(.winapi) u32;
-
-/// `psapi`, which `build.zig` links for Windows and which `util.c` includes
-/// `<psapi.h>` for.
-extern "psapi" fn EnumProcessModules(
-    process: ?*anyopaque,
-    modules: [*]?*anyopaque,
-    size: u32,
-    needed: *u32,
-) callconv(.winapi) c_int;

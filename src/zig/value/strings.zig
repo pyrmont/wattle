@@ -16,42 +16,34 @@
 //!    around is the address of the payload, not of the block, so every
 //!    operation subtracts the header size to get back to the header.
 //!    `gc/sweep.zig` already does this for the free path; `head` below is the
-//!    same shape, `@sizeOf` rather than `@offsetOf` because a flexible array
-//!    member does not survive translation. `test/gc_mark.zig` checks the
-//!    offset the allocator actually used.
+//!    same shape, subtracting `@offsetOf(StringHead, "_data")`.
+//!    `test/gc_mark.zig` checks the offset the allocator actually used.
 //!  - **A hash computed once, at the end of construction.** `begin` leaves
 //!    `hash` uninitialised and `end` fills it in. A value observed between the
 //!    two has an indeterminate hash, which is why nothing may put it in a
 //!    dictionary before `end` runs. Preserved exactly; nothing here
 //!    helpfully zeroes it.
 //!
-//! The taxonomy that separates them is Janet's own: a string and a symbol are
-//! **bytes**, a tuple is **indexed**. There is no `keywords.zig` because Janet
-//! spells `janet_keyword` as a `#define` onto `janet_symbol`, so a keyword and
-//! a symbol are the same interned bytes under a different tag, and
-//! `helpers/wrap.zig` is where the tag lives.
+//! There is no `keywords.zig` because a keyword and a symbol are the same
+//! interned bytes under a different tag, and `helpers/wrap.zig` is where the
+//! tag lives.
 //!
 //! **This file owns the string head accessors.** `head` and `data` are `pub`
 //! so that `symbols.zig` reaches them rather than keeping a copy: a symbol is
 //! a string with an entry in `vm.symcache.entries`, and two copies of a pointer
-//! offset can disagree in a way a caller can see. That is the line batch 1
-//! drew — a leaf may duplicate a private predicate, never a definition
-//! anything else can observe — and it is `phase_12.md` item 4a's population,
-//! which this does not otherwise touch.
+//! offset can disagree in a way a caller can see. **A leaf may duplicate a
+//! private predicate; it may never duplicate a definition anything else can
+//! observe.**
 //!
-//! ## Jump transparency
-//!
-//! Nothing here calls `janet_panic`, but `janet_gcalloc` can trigger a
-//! collection and a finalizer may raise, so a signal can still unwind through
-//! these frames. There is no `defer` in this file and `build.zig` checks that
-//! there is not.
+//! **Nothing here holds anything across a raise.** Nothing here raises
+//! directly, but `gcalloc` can trigger a collection and a finalizer may raise,
+//! so a raise can still pass through these frames.
 
 const std = @import("std");
-const corefn = @import("corefn");
-const types = @import("types");
+const corefn = @import("../corefn.zig");
 const repr = @import("repr");
 const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("../raise.zig");
 const registry = @import("../registry.zig");
 const pp_format = @import("../pp/format.zig");
 const gc_alloc = @import("../gc.zig");
@@ -64,43 +56,59 @@ const buffers = @import("buffers.zig");
 const arrays = @import("arrays.zig");
 const tuples = @import("tuples.zig");
 const value = @import("../value.zig");
+const abi = @import("abi");
+const tables = @import("tables.zig");
 
-/// From `src/core/util.c`, declared here rather than imported: `util.h` is
-/// never in a translation.
-/// `symbols.zig` and `tuples.zig` carry the declarations they need for the
-/// same reason; `utils.zig` defines all of them without `pub`.
-extern fn safe_memcpy(dest: ?*anyopaque, src: ?*const anyopaque, len: usize) callconv(.c) void;
+/// A string's head: the collector's object, the length and the hash, with the
+/// bytes following it in the same allocation.
+pub const StringHead = extern struct {
+    gc: abi.JanetGCObject = .{},
+    length: i32 = 0,
+    hash: i32 = 0,
+    _data: [0]u8 = std.mem.zeroes([0]u8),
+    pub fn data(_self: anytype) @TypeOf(&_self._data[0]) {
+        return @ptrCast(@alignCast(&_self._data));
+    }
+};
 
-/// C's conversion of a signed count to `size_t`: sign-extend to the pointer
-/// width, then reinterpret. Every length here reaches an allocation size, and a
-/// negative length becomes a request C cannot satisfy rather than a trap one
-/// statement earlier. Same helper, and same reason, as `buffers.zig`.
-inline fn asSize(n: i32) usize {
-    return @bitCast(@as(isize, n));
+/// Where the bytes begin within the block. `@offsetOf` and not `@sizeOf`: the
+/// head is Zig's own declaration, so `_data` is an ordinary field whose offset
+/// the compiler takes exactly.
+pub const string_payload = @offsetOf(StringHead, "_data");
+
+/// Recover a string's head from the bytes Janet passes around. Symbols and
+/// keywords are strings and use this too.
+pub inline fn head(s: [*]const u8) *StringHead {
+    return @ptrFromInt(@intFromPtr(s) -% string_payload);
 }
 
+/// The inverse, for a block the allocator has just returned. It takes a
+/// `*const` head and hands back a mutable payload: the allocator's caller has
+/// to write through it, and a const head is what a comparison or a hash holds.
+pub inline fn data(hd: *const StringHead) [*]u8 {
+    return @ptrFromInt(@intFromPtr(hd) +% string_payload);
+}
+
+/// The three interned byte pointers. A symbol and a keyword are the same
+/// interned bytes as a string under a different tag, which is why neither has
+/// a head of its own.
+pub const String = [*:0]const u8;
+pub const Symbol = [*:0]const u8;
+pub const Keyword = [*:0]const u8;
+
 pub inline fn lengthOf(s: [*]const u8) i32 {
-    return types.stringHead(s).length;
+    return head(s).length;
 }
 
 pub inline fn hashOf(s: [*]const u8) i32 {
-    return types.stringHead(s).hash;
+    return head(s).hash;
 }
 
 /// An interned string's bytes, counted from its head. The NUL past the end is
 /// real and is not included, which is what `janet_string_length` has always
 /// meant.
 pub inline fn bytesOf(s: [*]const u8) []const u8 {
-    return s[0..@intCast(types.stringHead(s).length)];
-}
-
-/// `janet_wrap_integer`, written out because the function it would call does
-/// not exist in every configuration: `janet.h` declares it beside its macro,
-/// and `wrap.c` defines the declaration only for the NaN-boxed layouts. Same
-/// reasoning, and the same three lines, as `tuples.zig`, `value_access.zig`
-/// and `pp_pretty.zig`.
-inline fn wrapInteger(x: i32) repr.Value {
-    return wrap.fromNumber(@floatFromInt(x));
+    return s[0..@intCast(head(s).length)];
 }
 
 // ------------------------------------------------------------------ string
@@ -109,12 +117,9 @@ inline fn wrapInteger(x: i32) repr.Value {
 /// are uninitialised and so is the hash: the caller fills the first and
 /// `janet_string_end` computes the second.
 pub fn begin(length: i32) [*]u8 {
-    const hd: *types.JanetStringHead = @ptrCast(@alignCast(gc_alloc.gcalloc(
-        types.MemoryType.string,
-        types.string_payload +% asSize(length) +% 1,
-    )));
+    const hd = gc_alloc.gcallocWithPayload(StringHead, .string, utils.asSize(length) +% 1);
     hd.length = length;
-    const payload = types.stringData(hd);
+    const payload = data(hd);
     payload[@intCast(length)] = 0;
     return payload;
 }
@@ -123,21 +128,18 @@ pub fn begin(length: i32) [*]u8 {
 /// written outside `janet_string`, and until it runs the head holds whatever
 /// the allocator left there.
 pub fn end(str: [*]u8) callconv(.c) [*:0]const u8 {
-    types.stringHead(str).hash = value.hashBytes(str[0..@intCast(lengthOf(str))]);
+    head(str).hash = value.hashBytes(str[0..@intCast(lengthOf(str))]);
     return @ptrCast(str);
 }
 
 /// Allocate a string and fill it from `buf` in one step.
 pub fn new(buf: []const u8) [*:0]const u8 {
     const len: i32 = @intCast(buf.len);
-    const hd: *types.JanetStringHead = @ptrCast(@alignCast(gc_alloc.gcalloc(
-        types.MemoryType.string,
-        types.string_payload +% buf.len +% 1,
-    )));
+    const hd = gc_alloc.gcallocWithPayload(StringHead, .string, buf.len +% 1);
     hd.length = len;
     hd.hash = value.hashBytes(buf);
-    const payload = types.stringData(hd);
-    safe_memcpy(@ptrCast(payload), @ptrCast(buf.ptr), buf.len);
+    const payload = data(hd);
+    utils.safeMemcpy(@ptrCast(payload), @ptrCast(buf.ptr), buf.len);
     payload[buf.len] = 0;
     return @ptrCast(payload);
 }
@@ -159,15 +161,15 @@ pub fn compare(lhs: [*]const u8, rhs: [*]const u8) c_int {
 /// Compare an interned string against a length and hash the caller already has,
 /// which is what makes the symbol cache cheap: an unequal hash rejects without
 /// touching the bytes.
-pub fn equalconst(lhs: [*]const u8, rhs: []const u8, rhash: i32) c_int {
+pub fn equalconst(lhs: [*]const u8, rhs: []const u8, rhash: i32) bool {
     const lhash = hashOf(lhs);
     const llen = lengthOf(lhs);
-    if (lhash != rhash or llen != @as(i32, @intCast(rhs.len))) return 0;
-    if (lhs == rhs.ptr) return 1;
-    return @intFromBool(c.memcmp(lhs, rhs.ptr, rhs.len) == 0);
+    if (lhash != rhash or llen != @as(i32, @intCast(rhs.len))) return false;
+    if (lhs == rhs.ptr) return true;
+    return c.memcmp(lhs, rhs.ptr, rhs.len) == 0;
 }
 
-pub fn equal(lhs: [*]const u8, rhs: [*]const u8) c_int {
+pub fn equal(lhs: [*]const u8, rhs: [*]const u8) bool {
     return equalconst(lhs, bytesOf(rhs), hashOf(rhs));
 }
 
@@ -182,18 +184,13 @@ pub fn cstring(str: [*:0]const u8) [*:0]const u8 {
 /// Knuth-Morris-Pratt, and the one piece of this file that owns heap memory
 /// across a call that can raise.
 ///
-/// `lookup` comes from `janet_calloc` and is released by `deinit`. Janet
-/// releases it on every path it can see and misses the ones it cannot:
-/// `janet_text_substitution` runs a Janet function, and a raise from there
-/// skips the `kmp_deinit` below it. That leak is reproduced rather than
-/// repaired -- `FOUND.md` has it -- and reproducing it is also why nothing
-/// here uses `defer` or `errdefer`.
-/// here uses `defer` or `errdefer`.
-///
-/// A raising builtin returns an error the `try` on
-/// `registry.textSubstitution` propagates, so the skipped `deinit` is a plain
-/// early return rather than a jump; a raising Janet *function* can still raise
-/// out of `janet_call` inside that call, which is why nothing here is held.
+/// `lookup` comes from `utils.calloc` and is released by `deinit`, **which
+/// every user of this state owes a `defer`**. Janet released it on every path
+/// it could see and missed the ones it could not: `janet_text_substitution`
+/// runs a Janet function, and a raise from there skipped the `kmp_deinit`
+/// below it, stranding four bytes per pattern byte. `FOUND.md` has the
+/// measurement; `DESIGN.md` section 12 is why it is fixed here rather than
+/// reproduced.
 const KmpState = struct {
     i: i32,
     j: i32,
@@ -258,7 +255,7 @@ fn findsetup(argv: []repr.Value, extra: i32) raise.Raising(KmpState) {
     const pat = try args_core.getBytes(argv, 0);
     const text = try args_core.getBytes(argv, 1);
     var start: i32 = 0;
-    if (@as(i32, @intCast(argv.len)) >= 3) {
+    if (argv.len >= 3) {
         start = try args_core.getInteger(argv, 2);
         if (start < 0) return raise.panic("expected non-negative start index");
     }
@@ -282,8 +279,7 @@ fn cfunSymbolSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 fn cfunKeywordSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const view = try args_core.getBytes(argv, 0);
     const range = try args_core.getSlice(argv);
-    // `janet.h` spells `janet_keyword` as a #define onto `janet_symbol`: a
-    // keyword and a symbol are the same interned bytes under a different tag.
+    // A keyword and a symbol are the same interned bytes under a different tag.
     return wrap.fromKeyword(symbols.new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
 }
 
@@ -293,13 +289,13 @@ fn cfunStringRepeat(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
     const rep = try args_core.getInteger(argv, 1);
     if (rep < 0) return raise.panic("expected non-negative number of repetitions");
     if (rep == 0) return value.fromBytes("", .string);
-    const mulres = @as(i64, rep) * view.len;
+    const mulres = @as(i64, rep) * @as(i64, @intCast(view.len));
     if (mulres > std.math.maxInt(i32)) return raise.panic("result string is too long");
     const newbuf = begin(@intCast(mulres));
     var offset: usize = 0;
     const total: usize = @intCast(mulres);
-    while (offset < total) : (offset += asSize(view.len)) {
-        safe_memcpy(@ptrCast(newbuf + offset), @ptrCast(view.bytes), asSize(view.len));
+    while (offset < total) : (offset += view.len) {
+        utils.safeMemcpy(@ptrCast(newbuf + offset), @ptrCast(view.bytes), view.len);
     }
     return wrap.fromString(end(newbuf));
 }
@@ -307,17 +303,16 @@ fn cfunStringRepeat(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
 fn cfunStringBytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const view = try args_core.getBytes(argv, 0);
-    const tup = tuples.begin(view.len);
-    var i: i32 = 0;
-    while (i < view.len) : (i += 1) tup[@intCast(i)] = wrapInteger(view.bytes.?[@intCast(i)]);
+    const tup = tuples.begin(@intCast(view.len));
+    for (0..view.len) |i| tup[i] = wrap.fromInteger(view.bytes.?[i]);
     return wrap.fromTuple(tuples.end(tup));
 }
 
 fn cfunStringFrombytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const buf = begin(@as(i32, @intCast(argv.len)));
-    var i: i32 = 0;
-    while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
-        buf[@intCast(i)] = @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, i))));
+    var i: usize = 0;
+    while (i < argv.len) : (i += 1) {
+        buf[i] = @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, i))));
     }
     return wrap.fromString(end(buf));
 }
@@ -328,11 +323,10 @@ fn cfunStringFrombytes(argv: []repr.Value) align(corefn.alignment) raise.Raising
 fn mapCase(comptime lo: u8, comptime hi: u8, comptime delta: i8, argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const view = try args_core.getBytes(argv, 0);
-    const buf = begin(view.len);
-    var i: i32 = 0;
-    while (i < view.len) : (i += 1) {
-        const byte = view.bytes.?[@intCast(i)];
-        buf[@intCast(i)] = if (byte >= lo and byte <= hi)
+    const buf = begin(@intCast(view.len));
+    for (0..view.len) |i| {
+        const byte = view.bytes.?[i];
+        buf[i] = if (byte >= lo and byte <= hi)
             @intCast(@as(i16, byte) + delta)
         else
             byte;
@@ -351,17 +345,16 @@ fn cfunStringAsciiupper(argv: []repr.Value) align(corefn.alignment) raise.Raisin
 fn cfunStringReverse(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const view = try args_core.getBytes(argv, 0);
-    const buf = begin(view.len);
-    var i: i32 = 0;
-    while (i < view.len) : (i += 1) buf[@intCast(i)] = view.bytes.?[@intCast(view.len - 1 - i)];
+    const buf = begin(@intCast(view.len));
+    for (0..view.len) |i| buf[i] = view.bytes.?[view.len - 1 - i];
     return wrap.fromString(end(buf));
 }
 
 fn cfunStringFind(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var state = try findsetup(argv, 0);
+    defer state.deinit();
     const result = state.next();
-    state.deinit();
-    return if (result < 0) wrap.fromNil() else wrapInteger(result);
+    return if (result < 0) wrap.fromNil() else wrap.fromInteger(result);
 }
 
 fn cfunStringHasprefix(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
@@ -369,7 +362,7 @@ fn cfunStringHasprefix(argv: []repr.Value) align(corefn.alignment) raise.Raising
     const prefix = try args_core.getBytes(argv, 0);
     const str = try args_core.getBytes(argv, 1);
     if (str.len < prefix.len) return wrap.fromFalse();
-    const n = asSize(prefix.len);
+    const n = prefix.len;
     return wrap.fromBoolean(std.mem.eql(u8, prefix.bytes.?[0..n], str.bytes.?[0..n]));
 }
 
@@ -378,20 +371,20 @@ fn cfunStringHassuffix(argv: []repr.Value) align(corefn.alignment) raise.Raising
     const suffix = try args_core.getBytes(argv, 0);
     const str = try args_core.getBytes(argv, 1);
     if (str.len < suffix.len) return wrap.fromFalse();
-    const n = asSize(suffix.len);
-    const tail = str.bytes.? + asSize(str.len - suffix.len);
+    const n = suffix.len;
+    const tail = str.bytes.? + (str.len - suffix.len);
     return wrap.fromBoolean(std.mem.eql(u8, suffix.bytes.?[0..n], tail[0..n]));
 }
 
 fn cfunStringFindall(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var state = try findsetup(argv, 0);
+    defer state.deinit();
     const array = arrays.new(0);
     while (true) {
         const result = state.next();
         if (result < 0) break;
-        try arrays.push(array, wrapInteger(result));
+        try arrays.push(array, wrap.fromInteger(result));
     }
-    state.deinit();
     return wrap.fromArray(array);
 }
 
@@ -403,7 +396,7 @@ fn replacesetup(argv: []repr.Value) raise.Raising(ReplaceState) {
     const subst = argv[1];
     const text = try args_core.getBytes(argv, 2);
     var start: i32 = 0;
-    if (@as(i32, @intCast(argv.len)) == 4) {
+    if (argv.len == 4) {
         start = try args_core.getInteger(argv, 3);
         if (start < 0) return raise.panic("expected non-negative start index");
     }
@@ -417,35 +410,36 @@ fn replacesetup(argv: []repr.Value) raise.Raising(ReplaceState) {
 
 fn cfunStringReplace(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var s = try replacesetup(argv);
+    defer s.kmp.deinit();
     const result = s.kmp.next();
-    if (result < 0) {
-        const text = s.kmp.text;
-        s.kmp.deinit();
-        return wrap.fromString(new(text));
-    }
+    if (result < 0) return wrap.fromString(new(s.kmp.text));
     const at: usize = @intCast(result);
     const subst = try registry.textSubstitution(
         &s.subst,
         s.kmp.text[at..][0..s.kmp.pat.len],
         null,
     );
-    const buf = begin(@as(i32, @intCast(s.kmp.text.len - s.kmp.pat.len)) + subst.len);
-    safe_memcpy(@ptrCast(buf), @ptrCast(s.kmp.text.ptr), at);
-    safe_memcpy(@ptrCast(buf + at), @ptrCast(subst.bytes), asSize(subst.len));
-    safe_memcpy(
-        @ptrCast(buf + at + asSize(subst.len)),
+    const buf = begin(@intCast(s.kmp.text.len - s.kmp.pat.len + subst.len));
+    utils.safeMemcpy(@ptrCast(buf), @ptrCast(s.kmp.text.ptr), at);
+    utils.safeMemcpy(@ptrCast(buf + at), @ptrCast(subst.bytes), subst.len);
+    utils.safeMemcpy(
+        @ptrCast(buf + at + subst.len),
         @ptrCast(s.kmp.text.ptr + at + s.kmp.pat.len),
         s.kmp.text.len - at - s.kmp.pat.len,
     );
-    s.kmp.deinit();
     return wrap.fromString(end(buf));
 }
 
 fn cfunStringReplaceall(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var s = try replacesetup(argv);
-    var b: types.JanetBuffer = undefined;
+    defer s.kmp.deinit();
+    var b: buffers.Buffer = undefined;
     var lastindex: i32 = 0;
     _ = buffers.init(&b, @intCast(s.kmp.text.len));
+    // `buffers.init` takes its storage from `utils.malloc` and marks the header
+    // disabled, so the collector never owns it and only this `defer` returns
+    // it. That is the second half of the `FOUND.md` leak.
+    defer buffers.deinit(&b);
     while (true) {
         const result = s.kmp.next();
         if (result < 0) break;
@@ -460,10 +454,7 @@ fn cfunStringReplaceall(argv: []repr.Value) align(corefn.alignment) raise.Raisin
         s.kmp.seti(lastindex);
     }
     try buffers.pushBytes(&b, s.kmp.text[@intCast(lastindex)..]);
-    const ret = new(b.slice());
-    buffers.deinit(&b);
-    s.kmp.deinit();
-    return wrap.fromString(ret);
+    return wrap.fromString(new(b.slice()));
 }
 
 /// The limit arithmetic is the C original's, decrement and all: `limit`
@@ -472,8 +463,9 @@ fn cfunStringReplaceall(argv: []repr.Value) align(corefn.alignment) raise.Raisin
 fn cfunStringSplit(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var limit: i32 = -1;
     var lastindex: i32 = 0;
-    if (@as(i32, @intCast(argv.len)) == 4) limit = try args_core.getInteger(argv, 3);
+    if (argv.len == 4) limit = try args_core.getInteger(argv, 3);
     var state = try findsetup(argv, 1);
+    defer state.deinit();
     const array = arrays.new(0);
     while (true) {
         const result = state.next();
@@ -487,7 +479,6 @@ fn cfunStringSplit(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
     }
     const slice = new(state.text[@intCast(lastindex)..]);
     try arrays.push(array, wrap.fromString(slice));
-    state.deinit();
     return wrap.fromArray(array);
 }
 
@@ -499,14 +490,12 @@ fn cfunStringCheckset(argv: []repr.Value) align(corefn.alignment) raise.Raising(
     try args_core.fixarity(argv, 2);
     const set = try args_core.getBytes(argv, 0);
     const str = try args_core.getBytes(argv, 1);
-    var i: i32 = 0;
-    while (i < set.len) : (i += 1) {
-        const byte = set.bytes.?[@intCast(i)];
+    for (0..set.len) |i| {
+        const byte = set.bytes.?[i];
         bitset[byte >> 5] |= @as(u32, 1) << @intCast(byte & 0x1F);
     }
-    i = 0;
-    while (i < str.len) : (i += 1) {
-        const byte = str.bytes.?[@intCast(i)];
+    for (0..str.len) |i| {
+        const byte = str.bytes.?[i];
         if (bitset[byte >> 5] & (@as(u32, 1) << @intCast(byte & 0x1F)) == 0) {
             return wrap.fromFalse();
         }
@@ -517,7 +506,7 @@ fn cfunStringCheckset(argv: []repr.Value) align(corefn.alignment) raise.Raising(
 fn cfunStringJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const parts = try args_core.getIndexed(argv, 0);
-    const joiner: types.JanetByteView = if (@as(i32, @intCast(argv.len)) == 2)
+    const joiner: abi.JanetByteView = if (argv.len == 2)
         try args_core.getBytes(argv, 1)
     else
         .{ .bytes = "", .len = 0 };
@@ -525,32 +514,26 @@ fn cfunStringJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
     // Two passes, and the first one is what rejects a bad part: nothing is
     // allocated until every item is known to be a byte sequence and the total
     // is known to fit.
-    var i: i32 = 0;
     var finallen: i64 = 0;
-    while (i < parts.len) : (i += 1) {
-        var chunk: ?[*]const u8 = undefined;
-        var chunklen: i32 = 0;
-        if (args_core.bytesView(parts.items.?[@intCast(i)], &chunk, &chunklen) == 0) {
-            return pp_format.panicf("item %d of parts is not a byte sequence, got %v", .{ i, parts.items.?[@intCast(i)] });
-        }
-        if (i != 0) finallen += joiner.len;
-        finallen += chunklen;
+    for (0..parts.len) |i| {
+        const chunk = args_core.bytesView(parts[i]) orelse {
+            return pp_format.panicf("item %d of parts is not a byte sequence, got %v", .{ @as(i64, @intCast(i)), parts[i] });
+        };
+        if (i != 0) finallen += @intCast(joiner.len);
+        finallen += @intCast(chunk.len);
         if (finallen > std.math.maxInt(i32)) return raise.panic("result string too long");
     }
 
     const buf = begin(@intCast(finallen));
     var out: usize = 0;
-    i = 0;
-    while (i < parts.len) : (i += 1) {
-        var chunk: ?[*]const u8 = undefined;
-        var chunklen: i32 = 0;
+    for (0..parts.len) |i| {
         if (i != 0) {
-            safe_memcpy(@ptrCast(buf + out), @ptrCast(joiner.bytes), asSize(joiner.len));
-            out += asSize(joiner.len);
+            utils.safeMemcpy(@ptrCast(buf + out), @ptrCast(joiner.bytes), joiner.len);
+            out += joiner.len;
         }
-        _ = args_core.bytesView(parts.items.?[@intCast(i)], &chunk, &chunklen);
-        safe_memcpy(@ptrCast(buf + out), @ptrCast(chunk), asSize(chunklen));
-        out += asSize(chunklen);
+        const chunk = args_core.bytesView(parts[i]).?;
+        utils.safeMemcpy(@ptrCast(buf + out), @ptrCast(chunk.ptr), chunk.len);
+        out += chunk.len;
     }
     return wrap.fromString(end(buf));
 }
@@ -559,66 +542,71 @@ fn cfunStringFormat(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
     try args_core.arity(argv, 1, -1);
     const buffer = buffers.new(0);
     const strfrmt = try args_core.getString(argv, 0);
-    try pp_format.bufferFormat(buffer, @ptrCast(strfrmt), 0, argv);
-    return wrap.fromString(new(buffer.*.slice()));
+    try pp_format.bufferFormat(buffer, @ptrCast(strfrmt), 1, argv);
+    return wrap.fromString(new(buffer.slice()));
 }
 
 const default_trim_set = " \t\r\n\x0b\x0c";
 
-fn trimArgs(argv: []repr.Value, str: *types.JanetByteView, set: *types.JanetByteView) raise.Raising(void) {
+fn trimArgs(argv: []repr.Value, str: *abi.JanetByteView, set: *abi.JanetByteView) raise.Raising(void) {
     try args_core.arity(argv, 1, 2);
     str.* = try args_core.getBytes(argv, 0);
-    if (@as(i32, @intCast(argv.len)) >= 2) {
+    if (argv.len >= 2) {
         set.* = try args_core.getBytes(argv, 1);
     } else {
         set.* = .{ .bytes = default_trim_set, .len = default_trim_set.len };
     }
 }
 
-fn inSet(set: types.JanetByteView, x: u8) bool {
-    var j: i32 = 0;
-    while (j < set.len) : (j += 1) if (set.bytes.?[@intCast(j)] == x) return true;
+fn inSet(set: abi.JanetByteView, x: u8) bool {
+    for (0..set.len) |j| if (set.bytes.?[j] == x) return true;
     return false;
 }
 
-fn leftEdge(str: types.JanetByteView, set: types.JanetByteView) i32 {
-    var i: i32 = 0;
-    while (i < str.len) : (i += 1) if (!inSet(set, str.bytes.?[@intCast(i)])) return i;
+fn leftEdge(str: abi.JanetByteView, set: abi.JanetByteView) usize {
+    for (0..str.len) |i| if (!inSet(set, str.bytes.?[i])) return i;
     return str.len;
 }
 
-fn rightEdge(str: types.JanetByteView, set: types.JanetByteView) i32 {
-    var i: i32 = str.len - 1;
-    while (i >= 0) : (i -= 1) if (!inSet(set, str.bytes.?[@intCast(i)])) return i + 1;
+/// The walk is backwards and the counter is **unsigned anyway**, because
+/// the decrement is separable from the use: guard, step, then read. The
+/// `i32` form ran to -1 to terminate, which is the shape that cannot be
+/// unsigned; this one stops at zero having read index zero.
+fn rightEdge(str: abi.JanetByteView, set: abi.JanetByteView) usize {
+    var i = str.len;
+    while (i > 0) {
+        i -= 1;
+        if (!inSet(set, str.bytes.?[i])) return i + 1;
+    }
     return 0;
 }
 
 fn cfunStringTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var str: types.JanetByteView = undefined;
-    var set: types.JanetByteView = undefined;
+    var str: abi.JanetByteView = undefined;
+    var set: abi.JanetByteView = undefined;
     try trimArgs(argv, &str, &set);
     const left = leftEdge(str, set);
     const right = rightEdge(str, set);
     if (right < left) return wrap.fromString(new(""));
-    return wrap.fromString(new(str.bytes.?[@intCast(left)..@intCast(right)]));
+    return wrap.fromString(new(str.bytes.?[left..right]));
 }
 
 fn cfunStringTriml(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var str: types.JanetByteView = undefined;
-    var set: types.JanetByteView = undefined;
+    var str: abi.JanetByteView = undefined;
+    var set: abi.JanetByteView = undefined;
     try trimArgs(argv, &str, &set);
     const left = leftEdge(str, set);
-    return wrap.fromString(new(str.bytes.?[@intCast(left)..@intCast(str.len)]));
+    return wrap.fromString(new(str.bytes.?[left..str.len]));
 }
 
 fn cfunStringTrimr(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var str: types.JanetByteView = undefined;
-    var set: types.JanetByteView = undefined;
+    var str: abi.JanetByteView = undefined;
+    var set: abi.JanetByteView = undefined;
     try trimArgs(argv, &str, &set);
-    return wrap.fromString(new(str.bytes.?[0..@intCast(rightEdge(str, set))]));
+    return wrap.fromString(new(str.bytes.?[0..rightEdge(str, set)]));
 }
 
-pub fn lib(env: *types.JanetTable) void {
+pub fn lib(env: *tables.Table) void {
     const slice_doc = "Returns a substring from a byte sequence. The substring is from " ++
         "index `start` inclusive to index `end`, exclusive. All indexing " ++
         "is from 0. `start` and `end` can also be negative to indicate indexing " ++

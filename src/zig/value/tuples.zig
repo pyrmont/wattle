@@ -1,4 +1,4 @@
-//! `JanetTuple`: the immutable indexed sequence, its source map, and the
+//! `Tuple`: the immutable indexed sequence, its source map, and the
 //! `tuple/*` surface.
 //!
 //! ## One allocation strategy, three files
@@ -15,9 +15,8 @@
 //!    around is the address of the payload, not of the block, so every
 //!    operation subtracts the header size to get back to the header.
 //!    `gc/sweep.zig` already does this for the free path; `head` below is the
-//!    same shape, `@sizeOf` rather than `@offsetOf` because a flexible array
-//!    member does not survive translation. `test/gc_mark.zig` checks the
-//!    offset the allocator actually used.
+//!    same shape, subtracting `@offsetOf(TupleHead, "_data")`.
+//!    `test/gc_mark.zig` checks the offset the allocator actually used.
 //!  - **A hash computed once, at the end of construction.** `begin` leaves
 //!    `hash` uninitialised and `end` fills it in. A value observed between the
 //!    two has an indeterminate hash, which is why nothing may put it in a
@@ -25,76 +24,98 @@
 //!    helpfully zeroes it.
 //!
 //! The taxonomy that separates them is Janet's own: a string and a symbol are
-//! **bytes**, a tuple is **indexed**. There is no `keywords.zig` because Janet
-//! spells `janet_keyword` as a `#define` onto
-//! a different tag, and `helpers/wrap.zig` is where the tag lives.
+//! **bytes**, a tuple is **indexed**. There is no `keywords.zig` because a
+//! keyword is a symbol under a different tag, and `helpers/wrap.zig` is where
+//! the tag lives.
 //!
-//! Tuples rode along in `string_symbol.zig` rather than forming a group of
-//! their own, because `tuple.c`'s core is three functions and twenty-five
-//! lines and every one of them is the string pattern with `Janet` in place of
-//! `uint8_t`. The taxonomy is what separated them: a tuple is **indexed**, and
-//! `arrays.zig` is its neighbour there rather than `strings.zig`. Batch 1's
-//! survey found three `tuple*` functions filed under a name with `string` in
+//! A tuple's core is three functions and twenty-five lines, and every one of
+//! them is the string pattern with a `Value` in place of a `u8`. The taxonomy
+//! is what gives it its own file anyway: a tuple is **indexed**, so
+//! `arrays.zig` is its neighbour rather than `strings.zig`. A survey found
+//! three `tuple*` functions filed under a name with `string` in
 //! it, which is how the misfiling was noticed at all.
 //!
 //! The source-map fields are set to -1 by `begin`, which is what marks a tuple
 //! as having no position rather than one at line zero.
 //!
-//! ## Jump transparency
-//!
-//! Nothing here calls `janet_panic`, but `janet_gcalloc` can trigger a
-//! collection and a finalizer may raise, so a signal can still unwind through
-//! these frames. There is no `defer` in this file and `build.zig` checks that
-//! there is not.
+//! **Nothing here holds anything across a raise.** Nothing here raises
+//! directly, but `janet_gcalloc` can trigger a collection and a finalizer may
+//! raise, so a raise can still pass through these frames.
 
 const std = @import("std");
-const corefn = @import("corefn");
-const types = @import("types");
+const corefn = @import("../corefn.zig");
 const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("../raise.zig");
 const pp_format = @import("../pp/format.zig");
 const gc_alloc = @import("../gc.zig");
 const wrap = @import("helpers/wrap.zig");
 const args_core = @import("../args.zig");
 const value = @import("../value.zig");
+const utils = @import("../utils.zig");
+const abi = @import("abi");
+const tables = @import("tables.zig");
 
-/// From `src/core/util.c`, declared here rather than imported: `util.h` is
-/// never in a translation.
-/// `strings.zig` and `symbols.zig` carry the declarations they need for the
-/// same reason; `utils.zig` defines all of them without `pub`.
-extern fn safe_memcpy(dest: ?*anyopaque, src: ?*const anyopaque, len: usize) callconv(.c) void;
+/// A tuple's head: the collector's object, the length, the hash and the two
+/// source-map fields, with the slots following it in the same allocation.
+pub const TupleHead = extern struct {
+    gc: abi.JanetGCObject = .{},
+    length: i32 = 0,
+    hash: i32 = 0,
+    sm_line: i32 = 0,
+    sm_column: i32 = 0,
+    _data: [0]repr.Value = std.mem.zeroes([0]repr.Value),
+    pub fn data(_self: anytype) @TypeOf(&_self._data[0]) {
+        return @ptrCast(@alignCast(&_self._data));
+    }
+};
 
-/// C's conversion of a signed count to `size_t`: sign-extend to the pointer
-/// width, then reinterpret. Same helper, and same reason, as `strings.zig`.
-inline fn asSize(n: i32) usize {
-    return @bitCast(@as(isize, n));
+/// Where the slots begin within the block. `@offsetOf` and not `@sizeOf`: the
+/// head is Zig's own declaration, so `_data` is an ordinary field whose offset
+/// the compiler takes exactly.
+pub const tuple_payload = @offsetOf(TupleHead, "_data");
+
+/// The slot array Janet passes a tuple around as.
+pub const Tuple = [*]const repr.Value;
+
+/// Recover a tuple's head from its slot array.
+pub inline fn head(t: [*]const repr.Value) *TupleHead {
+    return @ptrFromInt(@intFromPtr(t) -% tuple_payload);
+}
+
+/// The inverse, for a block the allocator has just returned. It takes a
+/// `*const` head and hands back a mutable payload: the allocator's caller has
+/// to write through it, and a const head is what a comparison or a hash holds.
+pub inline fn data(hd: *const TupleHead) [*]repr.Value {
+    return @ptrFromInt(@intFromPtr(hd) +% tuple_payload);
 }
 
 /// Allocate a tuple of `length` slots. The slots and the hash are
 /// uninitialised; the source-map fields are set to -1, which is what marks a
 /// tuple as having no position rather than one at line zero.
 pub fn begin(length: i32) [*]repr.Value {
-    const size = types.tuple_payload +% (asSize(length) *% @sizeOf(repr.Value));
-    const hd: *types.JanetTupleHead = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.tuple, size)));
+    const hd = gc_alloc.gcallocWithPayload(
+        TupleHead,
+        .tuple,
+        utils.asSize(length) *% @sizeOf(repr.Value),
+    );
     hd.sm_line = -1;
     hd.sm_column = -1;
     hd.length = length;
-    return types.tupleData(hd);
+    return data(hd);
 }
 
 /// Close a tuple, which is where its hash comes from. Every slot must be
 /// filled before this runs -- the hash covers all of them.
 pub fn end(tuple: [*]repr.Value) callconv(.c) [*]const repr.Value {
-    types.tupleHead(tuple).hash = value.hashIndexed(tuple[0..@intCast(types.tupleHead(tuple).length)]);
+    head(tuple).hash = value.hashIndexed(tuple[0..@intCast(head(tuple).length)]);
     return tuple;
 }
 
 pub fn newFrom(values: []const repr.Value) [*]const repr.Value {
     const n: i32 = @intCast(values.len);
     const t = begin(n);
-    safe_memcpy(@ptrCast(t), @ptrCast(values.ptr), @sizeOf(repr.Value) *% asSize(n));
+    utils.safeMemcpy(@ptrCast(t), @ptrCast(values.ptr), @sizeOf(repr.Value) *% utils.asSize(n));
     return end(t);
 }
 
@@ -104,36 +125,25 @@ pub fn newFrom(values: []const repr.Value) [*]const repr.Value {
 // Everything above this line is value construction. A published
 // `JanetCFunction` has no error channel in its signature, so each of these
 // delivers its raise through an abi. Nothing below holds anything across a
-// call that can raise. That is why this file's
-// `//! jump-transparent` marker matters more than it did -- each of these
-// frames may be jumped out of, and none of them holds anything.
+// call that can raise.
 // ==========================================================================
-
-/// `janet_wrap_integer`, written out because the function it would call does
-/// not exist in every configuration: `janet.h` declares it beside its macro,
-/// and `wrap.c` defines the declaration only for the NaN-boxed layouts. Same
-/// reasoning, and the same three lines, as `value_access.zig` and
-/// `pp_pretty.zig`.
-inline fn wrapInteger(x: i32) repr.Value {
-    return wrap.fromNumber(@floatFromInt(x));
-}
 
 fn cfunTupleBrackets(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const tup = newFrom(argv);
-    types.tupleHead(tup).gc.flags |= @intCast(constants.JANET_TUPLE_FLAG_BRACKETCTOR);
+    head(tup).gc.flags |= @intCast(constants.JANET_TUPLE_FLAG_BRACKETCTOR);
     return wrap.fromTuple(tup);
 }
 
 fn cfunTupleSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const view = try args_core.getIndexed(argv, 0);
     const range = try args_core.getSlice(argv);
-    return wrap.fromTuple(newFrom(view.items.?[@intCast(range.start)..@intCast(range.end)]));
+    return wrap.fromTuple(newFrom(view[@intCast(range.start)..@intCast(range.end)]));
 }
 
 fn cfunTupleType(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const tup = try args_core.getTuple(argv, 0);
-    if (types.tupleHead(tup).gc.flags & @as(i32, @intCast(constants.JANET_TUPLE_FLAG_BRACKETCTOR)) != 0) {
+    if (head(tup).gc.flags & @as(i32, @intCast(constants.JANET_TUPLE_FLAG_BRACKETCTOR)) != 0) {
         return value.fromBytes("brackets", .keyword);
     }
     return value.fromBytes("parens", .keyword);
@@ -143,8 +153,8 @@ fn cfunTupleSourcemap(argv: []repr.Value) align(corefn.alignment) raise.Raising(
     try args_core.fixarity(argv, 1);
     const tup = try args_core.getTuple(argv, 0);
     var contents: [2]repr.Value = .{
-        wrapInteger(types.tupleHead(tup).sm_line),
-        wrapInteger(types.tupleHead(tup).sm_column),
+        wrap.fromInteger(head(tup).sm_line),
+        wrap.fromInteger(head(tup).sm_column),
     };
     return wrap.fromTuple(newFrom(&contents));
 }
@@ -152,8 +162,8 @@ fn cfunTupleSourcemap(argv: []repr.Value) align(corefn.alignment) raise.Raising(
 fn cfunTupleSetmap(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 3);
     const tup = try args_core.getTuple(argv, 0);
-    types.tupleHead(tup).sm_line = try args_core.getInteger(argv, 1);
-    types.tupleHead(tup).sm_column = try args_core.getInteger(argv, 2);
+    head(tup).sm_line = try args_core.getInteger(argv, 1);
+    head(tup).sm_column = try args_core.getInteger(argv, 2);
     return argv[0];
 }
 
@@ -167,28 +177,24 @@ fn cfunTupleJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
     var total_len: i32 = 0;
     var i: i32 = 0;
     while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
-        var len: i32 = 0;
-        var vals: ?[*]const repr.Value = null;
-        if (args_core.indexedView(argv[@intCast(i)], &vals, &len) == 0) {
+        const vals = args_core.indexedView(argv[@intCast(i)]) orelse {
             return pp_format.panicf("expected indexed type for argument %d, got %v", .{ i, argv[@intCast(i)] });
-        }
-        if (std.math.maxInt(i32) - total_len < len) return raise.panic("tuple too large");
-        total_len += len;
+        };
+        if (std.math.maxInt(i32) - total_len < @as(i64, @intCast(vals.len))) return raise.panic("tuple too large");
+        total_len += @intCast(vals.len);
     }
     const tup = begin(total_len);
     var cursor = tup;
     i = 0;
     while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
-        var len: i32 = 0;
-        var vals: ?[*]const repr.Value = null;
-        _ = args_core.indexedView(argv[@intCast(i)], &vals, &len);
-        safe_memcpy(@ptrCast(cursor), @ptrCast(vals), asSize(len) *% @sizeOf(repr.Value));
-        cursor += @intCast(len);
+        const vals = args_core.indexedView(argv[@intCast(i)]).?;
+        utils.safeMemcpy(@ptrCast(cursor), @ptrCast(vals.ptr), vals.len *% @sizeOf(repr.Value));
+        cursor += @intCast(vals.len);
     }
     return wrap.fromTuple(end(tup));
 }
 
-pub fn lib(env: *types.JanetTable) void {
+pub fn lib(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("tuple/brackets", &cfunTupleBrackets, @src(), "(tuple/brackets & xs)", "Creates a new bracketed tuple containing the elements xs."),
         corefn.reg("tuple/slice", &cfunTupleSlice, @src(), "(tuple/slice arrtup [,start=0 [,end=(length arrtup)]])", "Take a sub-sequence of an array or tuple from index `start` " ++

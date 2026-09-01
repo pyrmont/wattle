@@ -1,170 +1,106 @@
-//! The growable vector — `src/core/vector.h`'s `janet_v_*` family — and the
-//! one place its arithmetic is written down.
+//! The growable vector: `std.ArrayListUnmanaged` over the **scratch**
+//! allocator, plus the three conventions the standard container does not
+//! carry.
 //!
-//! A vector is a bare `?[*]T` with a two-word `i32` prefix sitting *behind*
-//! the elements: capacity in word 0, count in word 1. `null` is an empty
-//! vector that has never been grown, which is why every reader here takes the
-//! optional rather than asking its caller to unwrap. The memory is the
-//! scratch allocator's, not the collector's, so a vector is freed explicitly
-//! and is never wrapped in a `Value`.
+//! ## Why scratch, and not `utils.heap`
 //!
-//! ## Why there is a typed surface here
+//! **This is a correctness question, not a preference.** The three users are
+//! the compiler, the PEG builder and the marshaller, and every one of them can
+//! raise between allocating a vector and freeing it — `compiler.zig`'s
+//! `compileLintImpl` reaches `deinitCompiler` only if `valueImpl` returns, and a
+//! macro that panics is the ordinary way a compile error is reported from
+//! Janet code.
 //!
-//! `janet_v_push`, `janet_v_count`, `janet_v_capacity`, `janet_v_empty` and
-//! `janet_v_free` are function-like C macros over an lvalue, which no
-//! translation carries across -- so every caller had to write the four lines
-//! of prefix arithmetic out. Six subsystems did:
-//! prefix arithmetic out. Six subsystems did: `marsh.zig`, `compiler.zig`,
-//! `peg.zig`, `compiler/emit.zig`, `compiler/specials.zig` and
-//! `compiler/optimize.zig` each carried a private copy, twenty-eight function
-//! definitions between them and six separate declarations of the prefix size,
-//! with eleven further sites doing `@intFromPtr(v) - vector_header_size` by
-//! hand. `test/harness.zig` carried a seventh set for the contracts.
+//! So the scratch sweep at the end of a collection is what reclaims a failed
+//! compile's vectors. Over `utils.heap` this would be a leak per compile
+//! error, and `test/vector.zig` is the contract that says so.
 //!
-//! They are one now. `vGrow` and `vFlattenmem` were always shared; what was
-//! copied is the *typing* around them, which is exactly the part a header
-//! cannot express in C and Zig can.
+//! `gc.scratch_heap` is that allocator as the standard interface. The rule for
+//! choosing between the two: **`utils.heap` for memory the runtime owns and
+//! frees, `gc.scratch_heap` for memory a raise may abandon.**
 //!
-//! **`test/vector.zig` restates this arithmetic**, and that is deliberate:
-//! it is the contract on it, so both sides of the comparison have to come
-//! from different files. Converting it would check this file against itself.
+//! ## The conventions this file still carries
 //!
-//! ## The element type is spelled at every call
+//! `push`, `pushN` and `ensure` exist because Janet aborts on allocation
+//! failure and `std`'s containers report it — `catch fatal.outOfMemory()`
+//! written thirty times is worse than written once. `free` exists so the
+//! allocator choice above is made in one place rather than at each `deinit`.
+//! `flatten` has no standard equivalent at all: it copies the elements into
+//! `janet_malloc` memory, which is where a funcdef's payload has to live.
 //!
-//! `count(u32, v)` rather than `count(v)`. The pointer alone does determine
-//! the element, so `anytype` would work and read shorter. Spelling the type
-//! catches an element-type *mismatch* and puts the intended element in front
-//! of the reader at the call site.
+//! Everything else a caller wants is the standard container's own surface:
+//! `.items.len` for the count, `.items` for the slice, `.capacity`, and
+//! `.shrinkRetainingCapacity(n)` for the truncation `janet_v_empty` and the
+//! two assembler paths do.
 //!
-//! **It does not encode provenance, and saying so would be wrong.** An
-//! arbitrary `[*]u32` satisfies `count(u32, ptr)` exactly as a real vector
-//! does, and the function will read the two words before it either way. A
-//! bare many-item pointer cannot carry the fact that something allocated a
-//! hidden prefix behind it; only an owning or branded value could, and none of
-//! these functions takes one.
+//! **`test/vector.zig` is the contract**, and it pins what this file is
+//! actually responsible for: that growth goes through `janet_srealloc` and
+//! occupies one scratch table entry rather than accumulating them, that a
+//! block abandoned by a raise is reclaimed by the next collection, and that
+//! `free` removes the entry.
 
+const std = @import("std");
 const gc_alloc = @import("gc.zig");
 const utils = @import("utils.zig");
 const fatal = @import("fatal.zig");
 
-pub const header_words = 2;
-pub const header_size = header_words * @sizeOf(i32);
-
-// ---------------------------------------------------------------------------
-// The allocation half, which was always shared
-// ---------------------------------------------------------------------------
-
-pub fn vGrow(
-    vector: ?*anyopaque,
-    increment: i32,
-    item_size: i32,
-) callconv(.c) ?*anyopaque {
-    const current_capacity = if (vector) |v| rawWords(v)[0] else 0;
-    const current_count = if (vector) |v| rawWords(v)[1] else 0;
-    const doubled_capacity = current_capacity *% 2;
-    const minimum_capacity = current_count +% increment;
-    const new_capacity = @max(doubled_capacity, minimum_capacity);
-    const allocation_size = @as(usize, @intCast(item_size)) *%
-        @as(usize, @intCast(new_capacity)) +% header_size;
-
-    const allocation = gc_alloc.srealloc(
-        if (vector) |v| @ptrFromInt(@intFromPtr(v) - header_size) else null,
-        allocation_size,
-    ) orelse {
-        fatal.outOfMemory();
-    };
-    const words: [*]i32 = @ptrCast(@alignCast(allocation));
-    words[0] = new_capacity;
-    if (vector == null) words[1] = 0;
-    return @ptrCast(&words[header_words]);
+/// A vector, spelled once so a reader of a struct field knows which allocator
+/// it belongs to without following the pushes.
+pub fn Vector(comptime T: type) type {
+    return std.ArrayListUnmanaged(T);
 }
 
-pub fn vFlattenmem(vector: ?*anyopaque, item_size: i32) ?*anyopaque {
-    const source = vector orelse return null;
-    const count_of = rawWords(source)[1];
-    const size = @as(usize, @intCast(item_size)) *% @as(usize, @intCast(count_of));
-    const allocation = utils.malloc(size) orelse {
-        fatal.outOfMemory();
-    };
-
-    const destination_bytes: [*]u8 = @ptrCast(allocation);
-    const source_bytes: [*]const u8 = @ptrCast(source);
-    @memcpy(destination_bytes[0..size], source_bytes[0..size]);
-    return allocation;
+/// The element type of a `*Vector(T)`, so that `push(&v, .{ ... })` gives the
+/// literal a type to be. `anytype` would leave it an anonymous struct and the
+/// error would name this file rather than the call.
+fn Elem(comptime List: type) type {
+    return std.meta.Elem(@typeInfo(List).pointer.child.Slice);
 }
 
-fn rawWords(vector: *anyopaque) [*]i32 {
-    return @ptrFromInt(@intFromPtr(vector) - header_size);
+/// `janet_v_push`, over the scratch heap, aborting on failure as Janet does.
+pub fn push(list: anytype, value: Elem(@TypeOf(list))) void {
+    list.append(gc_alloc.scratch_heap, value) catch fatal.outOfMemory();
 }
 
-// ---------------------------------------------------------------------------
-// The typed half, which was copied six times
-// ---------------------------------------------------------------------------
-
-/// The prefix behind the elements. Private: a caller that wants word 0 or
-/// word 1 wants `capacity` or `count`, and a caller that wants anything else
-/// is reading a layout this file owns.
-fn header(comptime T: type, vector: [*]T) [*]i32 {
-    return @ptrFromInt(@intFromPtr(vector) - header_size);
+/// `n` copies of one value. The pattern it replaces is a `while` loop pushing
+/// a placeholder that a later pass overwrites — the PEG compiler reserves its
+/// argument slots this way — and one `appendNTimes` grows once where the loop
+/// grew as many times as the policy decided to.
+pub fn pushN(list: anytype, value: Elem(@TypeOf(list)), n: usize) void {
+    list.appendNTimes(gc_alloc.scratch_heap, value, n) catch fatal.outOfMemory();
 }
 
-/// `janet_v_count`, which answers zero for a vector that was never grown.
-pub fn count(comptime T: type, vector: ?[*]T) i32 {
-    return if (vector) |v| header(T, v)[1] else 0;
+/// Room for `n` elements without growing again.
+pub fn ensure(list: anytype, n: usize) void {
+    list.ensureTotalCapacity(gc_alloc.scratch_heap, n) catch fatal.outOfMemory();
 }
 
-/// `janet_v_capacity`, zero for a vector that was never grown.
-pub fn capacity(comptime T: type, vector: ?[*]T) i32 {
-    return if (vector) |v| header(T, v)[0] else 0;
-}
-
-/// The count written directly. `janet_v_empty` is `setCount(T, v, 0)` and the
-/// two assembler paths that truncate a buffer are the other callers; nothing
-/// else has a reason to say a length the elements do not already have.
-pub fn setCount(comptime T: type, vector: ?[*]T, n: i32) void {
-    if (vector) |v| header(T, v)[1] = n;
-}
-
-/// `janet_v_push`: grow if the next element would not fit, then store it and
-/// advance the count.
+/// `janet_v_free`. A no-op on a vector that was never grown.
 ///
-/// It takes the vector *variable*, because growing it moves the allocation.
-/// The growth test is the C macro's — `count + 1 >= capacity`, which leaves
-/// one slot spare rather than filling the last — and is reproduced rather
-/// than tightened.
-pub fn push(comptime T: type, vector: *?[*]T, val: T) void {
-    var items = vector.*;
-    const at = count(T, items);
-    if (items == null or at + 1 >= capacity(T, items)) {
-        const grown = vGrow(if (items) |v| @ptrCast(v) else null, 1, @sizeOf(T));
-        items = @ptrCast(@alignCast(grown));
-        vector.* = items;
-    }
-    items.?[@intCast(at)] = val;
-    header(T, items.?)[1] = at + 1;
-}
-
-/// `janet_v_free`, which is `janet_sfree` on the prefix rather than on the
-/// elements. A no-op on a vector that was never grown.
-pub fn free(comptime T: type, vector: ?[*]T) void {
-    if (vector) |v| gc_alloc.sfree(header(T, v));
+/// **It leaves the vector empty rather than `undefined`.** `deinit` ends with
+/// `self.* = undefined`, and the C original's callers all wrote `v = NULL`
+/// after `janet_v_free(v)` precisely so that a second free was a no-op and a
+/// later read saw an empty vector. `compiler/specials.zig` frees
+/// `named_parameters` on one path and reaches `cleanupFunctionError` -- which
+/// frees it again -- on another. Doing it here keeps that safe by
+/// construction instead of at each of the eight call sites, and `deinit` is
+/// still what releases the block.
+pub fn free(list: anytype) void {
+    list.deinit(gc_alloc.scratch_heap);
+    list.* = .empty;
 }
 
 /// `janet_v_flatten`: the elements alone, in `janet_malloc`ed memory, with no
-/// prefix and no capacity. Answers null for a vector that was never grown.
-pub fn flatten(comptime T: type, vector: ?[*]T) ?[*]T {
-    const opaque_vector: ?*anyopaque = if (vector) |v| @ptrCast(v) else null;
-    return @ptrCast(@alignCast(vFlattenmem(opaque_vector, @sizeOf(T))));
-}
-
-/// The elements as a slice, which is what a reader almost always wants.
+/// capacity and no owner but the caller. Answers null for an empty vector.
 ///
-/// **Two cases answer the empty slice rather than trapping**, and they are
-/// `gc/mark.zig`'s two: a null pointer is an empty vector, and a count that
-/// has been driven below zero — `setCount` is public and the assembler uses
-/// it — would trap on `@intCast` where the C loop simply ran zero times.
-pub fn slice(comptime T: type, vector: ?[*]T) []T {
-    const n = count(T, vector);
-    if (n <= 0) return &.{};
-    return vector.?[0..@intCast(n)];
+/// This is the one operation with no standard equivalent, and the reason is
+/// the allocator: `toOwnedSlice` would hand back scratch memory, and a
+/// funcdef's constants and defs outlive the collection that would sweep it.
+pub fn flatten(comptime T: type, list: std.ArrayListUnmanaged(T)) ?[*]T {
+    if (list.items.len == 0) return null;
+    const size = list.items.len * @sizeOf(T);
+    const allocation = utils.malloc(size) orelse fatal.outOfMemory();
+    const destination: [*]T = @ptrCast(@alignCast(allocation));
+    @memcpy(destination[0..list.items.len], list.items);
+    return destination;
 }

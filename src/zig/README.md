@@ -14,12 +14,12 @@ change owes before it is believed.
 ## The rules that hold
 
 - **There is no C implementation to select, and no Janet C left to call.**
-  `src/` is 89 `.zig` files and four hand-written headers: `janet_features.h`,
+  `src/zig` is 88 `.zig` files and four hand-written headers: `janet_features.h`
   and the host translations `os/abi.h`, `net/abi.h` and `filewatch/abi.h`. Any
-  C a Zig file reaches is libc's, through `@cImport`. "No C in the tree" and
-  "no libc" are different claims and only the first is a goal. Comparison
-  against Janet's C runtime is `tools/bench/upstream.sh`, which builds upstream
-  `master` in a worktree with a matching toolchain.
+  C a Zig file reaches is libc's, through one of seven `@cImport` blocks. "No C
+  in the tree" and "no libc" are different claims and only the first is a goal.
+  Comparison against Janet's C runtime is `tools/bench/upstream.sh`, which
+  builds upstream `master` in a worktree with a matching toolchain.
 
 - **Nothing jumps.** No configuration compiles a `setjmp`, `longjmp` or
   `jmp_buf`; there is not one in the tree. A raise records its signal in the
@@ -39,17 +39,19 @@ change owes before it is believed.
   answers `error{JanetSignal}!Value` over Zig's own calling convention, so
   `argv[n]` is bounds-checked where in C it read whatever was there.
 
-- **One file exports, and it is `capi.zig`.** All 533 `@export`s are there. The
-  only other export in `src/` is `module.zig`'s pair of loader shims, which is
-  a dynamically loaded module rather than the runtime. Everything else a file
-  needs from a neighbour it reaches by `@import`, which keeps the error union,
-  allows inlining, and is checked.
+- **One file exports, and it is `capi.zig`.** 27 published names: 17 `@export`s
+  and 10 `publish(...)` calls. The only other export in `src/zig` is
+  `module.zig`'s pair of loader shims, which belongs to a dynamically loaded
+  module rather than to the runtime. Everything else a file needs from a
+  neighbour it reaches by `@import`, which keeps the error union, allows
+  inlining, and is checked.
 
-- **`cabi.zig` is what is genuinely external**: libc, and the few crossings a
-  caller wants for their behaviour rather than by accident — 163 declarations.
-  `cabi_check.zig` compares every one of them against the definition it names,
-  on every build, because an `extern fn` is otherwise a promise the compiler
-  believes without reading.
+- **`cabi.zig` is what is genuinely external**: libc and the host — 161
+  declarations. `crossings.zig` holds the 27 a separately compiled module
+  reaches by name. `cabi_check.zig` compares every one of `crossings.zig`'s
+  against the definition it names, on every build, because an `extern fn` is
+  otherwise a promise the compiler believes without reading — and an author's
+  `.so` is the one compilation where a disagreement is somebody else's crash.
 
 - **Pointers say what is true.** `DESIGN.md` section 9 has the conventions and
   the exceptions: no `[*c]` outside the boundary, a counted byte range is a
@@ -76,54 +78,73 @@ is no facade layer, and the file tree and the namespace are the same thing, so
 
 | directory | files | what is in it |
 | --- | --- | --- |
-| `src/zig/` | 46 | the roots and the subsystems that have no interior: the parser, the PEG engine, the marshaller, the argument layer, the environment, the pretty printer's entry, `io`, `math`, `scan`, `signal` |
+| `src/zig/` | 44 | the roots and the subsystems that have no interior: the parser, the PEG engine, the marshaller, the argument layer, the environment, the pretty printer's entry, `io`, `math`, `scan`, `signal` |
 | `src/zig/value/` | 11 | one file per Janet value type — arrays, buffers, strings, symbols, tuples, tables, structs, fibers, functions, abstracts, integer types |
 | `src/zig/value/helpers/` | 3 | the operations that are about values in general rather than one type: `wrap`, `access`, `order` |
-| `src/zig/vm/` | 2 | `entry.zig` (the interpreter's entry points) and `lifecycle.zig` (init and teardown) |
+| `src/zig/vm/` | 3 | `entry.zig` (the interpreter's entry points), `lifecycle.zig` (init and teardown) and `state.zig` (the VM type, its storage and the one accessor) |
 | `src/zig/gc/` | 2 | `mark.zig` and `sweep.zig`; the allocator itself is `gc.zig` |
 | `src/zig/compiler/` | 4 | `specials`, `emit`, `optimize`, `regalloc` |
 | `src/zig/bytecode/` | 2 | `verify.zig` and `disasm.zig` |
-| `src/zig/os/`, `os/fs/` | 7 | the host interface, split where the platform differs |
+| `src/zig/os/`, `os/fs/` | 7 | the host interface, split where the platform differs; `os/abi.zig` is the header translation |
 | `src/zig/ev/` | 4 | `backend`, `stream`, `channel`, `locks` |
-| `src/zig/net/`, `filewatch/` | 2 | the two host-header translations and what sits directly on them |
+| `src/zig/net/`, `filewatch/` | 2 | the two host-header translations, `abi.zig` each |
 | `src/zig/ffi/` | 4 | `types`, `classify`, `marshal`, `call` |
 | `src/zig/pp/` | 2 | `format.zig` and `pretty.zig` |
 
-Six files at the top are not subsystems and are worth naming:
+Eight files at the top are not subsystems and are worth naming:
 
 | file | what it is |
 | --- | --- |
 | `root.zig` | the module root: a comptime block naming every file this configuration compiles |
-| `capi.zig` | the export manifest — every published C symbol, and the signature it publishes |
+| `capi.zig` | the export manifest — every published symbol, and the signature it publishes |
 | `cabi.zig` | every `extern` declaration the runtime makes |
 | `cabi_check.zig` | the comparison of each of those against its definition |
-| `types.zig`, `constants.zig`, `repr.zig` | the Janet types, the constants, and the value representation, each its own build module |
+| `crossings.zig` | the 27 runtime symbols a separately compiled module reaches by name, and the only other file allowed to declare one |
+| `host.zig`, `constants.zig`, `repr.zig` | the host's own shapes, the constants, and the value representation, each its own build module |
+| `abi.zig` | the declarations a separately compiled module and the runtime must agree on, and nothing else |
 | `raise.zig` | the error union, the flattening forms, and the cfunction type |
 
 ## The module graph
 
-`build.zig` builds seven modules and the compiler enforces the direction. The
+`build.zig` builds eight modules and the compiler enforces the direction. The
 import list of a module is the whole of what it may reach:
 
 ```
-config  ->  repr  ->  types, constants  ->  cabi  ->  raise, corefn  ->  root
+config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root
 ```
 
 - `config` is what the build decided, as comptime values.
 - `repr` imports `config` and nothing else. That import list is what makes "the
   representation module does not reach allocation, tables, the VM or the
   collector" a build error rather than a review comment.
+- `abi` is what a separately compiled module and the runtime must agree on, and
+  nothing else: the abstract-type vtable, the registration and method rows, the
+  abstract head and the subtraction that recovers it, the signal numbering, the
+  build config, and opaque `Table` and `Buffer` handles. Its import list is
+  `repr` alone. **It is the module an author's package gets** —
+  `build.zig`'s `janetModule` hands out this one — so the runtime and an
+  author's `.so` agree by construction rather than by review.
 - `constants` reaches *up* to `repr` for the tag, and imports nothing else.
-- `types` owns the Janet aggregates and takes the pthread types from libc,
-  because `std.c` carries glibc's `pthread_attr_t` and musl's is a different
-  size, which `JanetVM` embeds.
-- `cabi` is the external declarations; `raise` and `corefn` sit on it.
-- `root` is the runtime.
+- `host` is the six shapes the host decides — `FILE`, the descriptor, the three
+  pthread types and Windows' critical section. It takes the pthread types from
+  libc, because `std.c` carries glibc's `pthread_attr_t` and musl's is a
+  different size, which `Vm` embeds. It is a module rather than a file of `root`
+  because `cabi` names the same six and a file of `root` cannot be imported by
+  `cabi`. Every Janet aggregate lives with the operations over it instead —
+  `tables.Table`, `fibers.Fiber`, `functions.FuncDef`, `ev_stream.Stream` —
+  which is `DESIGN.md` section 14.
+- `cabi` is the external declarations.
+- `options` is the `Selection` as comptime booleans, and `root.zig` is its only
+  reader.
+- `root` is the runtime, and everything else — `raise.zig`, `corefn.zig`, the
+  three host-header translations — is a file of it.
 
-Contracts get the same graph a second time, with `test/contracts.zig` as the
-root, so a contract spells the same types and the same constants the runtime
-does. A module the runtime has and the contracts do not would be a call-site
-rewrite that stops at the `src/` boundary.
+The graph is built six times over: once for the runtime, once for the
+bootstrap generator on the *host*, once each with `test/contracts.zig` and
+`test/fuzz.zig` as the root, once for the module-error fixtures, and once as
+`janet-runtime-test` rooted at `root.zig` itself. Each spells the same types and
+the same constants the runtime does; a module the runtime has and a test root
+does not would be a call-site rewrite that stops at the `src/` boundary.
 
 **A module boundary is not a compile barrier.** `raise.Error` is declared in
 the `raise` module and a subsystem writes `raise.Error!Value` across the
@@ -137,20 +158,24 @@ compilation for that reason.
 
 Three things do, and they are checked differently.
 
-**Published C symbols.** `capi.zig` holds all 533 `@export`s and 417 entry
-points. 423 exports name an entry point declared in that file, so the published
-signature is written there and the compiler checks the forwarding call. The
-other 110 export a target directly and carry a `publishes(symbol, target,
-Signature)` assertion under the same gate as the `@export` — because an
-`@export` states no signature at all, and whatever the target happens to be
-declared as becomes the C ABI.
+**Published symbols.** `capi.zig` holds all 27 of them. 17 are `@export`s of an
+entry point declared in that file, so the published signature is written there
+and the compiler checks the forwarding call. The other 10 export a target
+directly and carry a `publish(symbol, target, Signature)` assertion beside the
+`@export` — because an `@export` states no signature at all, and whatever the
+target happens to be declared as becomes the ABI.
 
-**Declarations of things outside.** `cabi.zig`'s 163 `extern fn`, and nothing
-else: `tools/check/seam.janet --check` fails if an `extern fn janet*` appears
-anywhere else. `cabi_check.zig` compares each declaration against the
-definition it names, by exact type equality — not compatibility. The
-comparison found a `noreturn` declared against a `void` definition, a missing
-sentinel, and two lost nullabilities, none of which any test could reach.
+**Declarations of things outside.** `cabi.zig`'s 161 `extern fn`, and
+`crossings.zig`'s 27 — the module side of the same boundary, which `raise.zig`
+and `module.zig` call. `tools/check/seam.janet --check` fails if an
+`extern fn janet*` appears anywhere else. `cabi_check.zig` compares each of
+`crossings.zig`'s 27 and the twelve libc-side pairs against the definition it
+names, by exact type equality — not compatibility, with one declared exception:
+`abi.Table` and `abi.Buffer` are opaque handles standing for `tables.Table` and
+`buffers.Buffer`, and only the pointee is substituted. The comparison has found
+a `noreturn` declared against a `void` definition, a missing sentinel, four lost
+nullabilities and a method row declared as the wrong one of two layouts, none of
+which any test could reach.
 
 **Host structures.** `os/abi.h`, `net/abi.h` and `filewatch/abi.h`, each
 opening with `janet_features.h`, each keeping what it declares inside one
@@ -197,25 +222,32 @@ unchecked until something builds it:
 zig build -Dtarget=x86_64-linux-musl --cache-dir /tmp/xc -p /tmp/out
 ```
 
-`tools/check/gates.janet --check` builds thirteen configurations and compares their
-symbol tables against `tools/check/gated.txt`. It exists because the question cannot
-be *read*: `root.zig`'s comptime block does not name every file it compiles,
-and its `pub const` block is lazy and compiles nothing.
+`tools/check/gates.janet --check` builds thirteen configurations and compares
+their symbol tables against `tools/check/gated.txt`. It exists because the
+question cannot be *read*: `root.zig`'s comptime block does not name every file
+it compiles, and its `pub const` block is lazy and compiles nothing.
+
+**That laziness is also what decides whether a `test` block runs.** A `test` in
+a file the comptime block names is compiled into `janet-runtime-test`; one in a
+file reached only through the `pub const` block, or only through another file's
+container-level `const`, is not collected. `os/fs/stat.zig` is named there for
+that reason and no other.
 
 ## Build steps
 
 | step | what it runs |
 | --- | --- |
 | `zig build` | the static and shared libraries, the client, the contract driver, the fuzz artifact |
-| `zig build test` | the contracts, the fuzz targets over their corpora, and the 35 Janet suites |
-| `zig build zig-contract-test` | the contracts, which live in a second compilation of the runtime |
+| `zig build test` | the contracts, the in-file `test` blocks, the fuzz targets over their corpora, the module-error fixtures, the CLI checks and the 35 Janet suites |
+| `zig build zig-contract-test` | the 65 contracts, which live in a second compilation of the runtime |
 | `zig build subsystem-test` | the same thing under an older name |
+| `zig build runtime-test` | the in-file `test` blocks, rooted at `root.zig`; it prints `All N tests passed.` |
 | `zig build fuzz` | each fuzz target once over its corpus — add `--fuzz` for the campaign |
 | `zig build image` | the core image, written to `<prefix>/janet-image.bin` |
 | `zig build run` | the client |
 
-No header is installed. What a C caller sees is `capi.zig`, and the retired
-`janet.h` is not it.
+No header is installed. What a native module reaches by symbol is `capi.zig`,
+and nothing else describes it.
 
 The contract driver is installed unconditionally and takes one contract name,
 or none for all 65 in a single process — which is the only thing in the tree
@@ -232,9 +264,10 @@ not name, and a file-scope `const` that its own file never uses.
 **A subsystem.** Write `src/zig/<name>.zig`, or a file under the directory its
 family already has. Add a `Selection` field, answer it in `zigSelection` gated
 on whatever feature flags it depends on, and name it in `root.zig`'s comptime
-block under that field. A subsystem reached only through another one is
-imported by that file instead and does not appear in the root. If it publishes
-C symbols, they go in `capi.zig` and nowhere else.
+block under that field. A subsystem reached only through another one is imported
+by that file instead and does not appear in the root — but if it carries `test`
+blocks it has to be named there anyway, for the reason above. If it publishes a
+symbol, that goes in `capi.zig` and nowhere else.
 
 **A contract.** `test/<name>.zig` with `pub fn run() void`, listed in
 `test/contracts.zig` under the same `options` condition `build.zig` applies to
@@ -302,8 +335,9 @@ Invisible when building only for the development host:
   unusual host can report a model the code generator rejects. It is also why
   cross-compiling works at all: the generator has to run here.
 
-- **`-Dinstall-tests=true`** installs the contract executables and the native
-  module into `<prefix>/test`, which is how a cross-compiled build gets tested:
+- **`-Dinstall-tests=true`** installs the contract, fuzz and runtime test
+  executables and the native module into `<prefix>/test`, which is how a
+  cross-compiled build gets tested:
   `zig build test` runs what it builds, and cannot when the target is not the
   host.
 
@@ -316,13 +350,11 @@ there, and treat NaN-boxed x86-64 as untested until it runs on real hardware.
 
 ## Where the history went
 
-This file was 17,772 lines until 2026-08-31: a record of the C-to-Zig
-migration, written increment by increment, over 101 sections of which its own
-preamble said 97 cited a phase number, a rule number or a working document that
-does not survive the migration. It described selectors that no build offers, a
-`src/core/` that holds nothing, a `janet.h` that was deleted, and a
-`src/zig/subsystems/` directory dissolved a phase before.
+This file was 17,772 lines until 2026-08-31: a record of the migration, written
+increment by increment, over 101 sections of which its own preamble said 97
+cited a working document that does not survive it. It described build options
+no build offers, directories that hold nothing, and a public header that was
+deleted.
 
 The reasoning worth keeping is above, re-derived from the tree rather than
-copied forward. The narrative is in Git, and in the phase records under
-`port/`, which is migration scaffold and is deleted before publication.
+copied forward. The narrative is in Git.

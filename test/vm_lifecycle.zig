@@ -41,15 +41,12 @@
 //!
 //! **The decoder is reached by import**, so a raise from a `tostring` callback
 //! reached through the trace decoding arrives as `error.JanetSignal` rather
-//! than as a report nobody consumes. The abi over it had no other caller --
-//! `debug/stack` already used the
-//! `janet.h`'s.
+//! than as a report nobody consumes.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const config = @import("config");
-const raise = @import("raise");
+const raise = @import("subsystems").raise;
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
@@ -66,10 +63,13 @@ const pp_describe = @import("subsystems").pp_describe;
 const registry = @import("subsystems").registry;
 const vm_lifecycle = subsystems.lifecycle;
 const debug_frames = subsystems.debug;
+const symbols = @import("subsystems").value.symbols;
+const abi = @import("abi");
+const vm_state = @import("subsystems").vm_state;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
-var test_env: ?*types.JanetTable = null;
+var test_env: ?*tables.Table = null;
 
 /// Roots whatever it produces and never unroots it: a Janet value in a Zig
 /// local is not a root, and these live across calls that compile source and
@@ -80,7 +80,7 @@ fn eval(source: [*:0]const u8) repr.Value {
     if (status != 0) {
         std.debug.print("unexpected error from: {s}\n", .{source});
         std.debug.print("                  got: {s}\n", .{pp_describe.toString(out)});
-        assert(false);
+        expect(false);
     }
     gc_alloc.gcroot(out);
     return out;
@@ -96,15 +96,15 @@ fn expectSandboxRefusal(source: []const u8) void {
     const fiberv = eval(wrapped);
     var out = wrap.fromNil();
     const sig = vm_entry.continueFiber(wrap.toFiber(fiberv), wrap.fromNil(), &out);
-    assert(sig == types.Signal.@"error");
-    assert(harness.stringValueIs(out, "operation forbidden by sandbox"));
+    expect(sig == abi.Signal.@"error");
+    expect(harness.stringValueIs(out, "operation forbidden by sandbox"));
 }
 
 // ---------------------------------------------------------- frame readers
 
 /// A key of the table the decoder builds.
 fn frameGet(built: repr.Value, key: [*:0]const u8) repr.Value {
-    assert(harness.isType(built, repr.Tag.table));
+    expect(harness.isType(built, repr.Tag.table));
     return tables.get(wrap.toTable(built), value.fromBytes(std.mem.span(key), .keyword));
 }
 
@@ -112,7 +112,7 @@ fn expectString(built: repr.Value, key: [*:0]const u8, expected: [*:0]const u8) 
     const v = frameGet(built, key);
     if (!harness.stringValueIs(v, expected)) {
         std.debug.print("key {s}: expected {s}, got {s}\n", .{ key, expected, pp_describe.toString(v) });
-        assert(false);
+        expect(false);
     }
 }
 
@@ -120,7 +120,7 @@ fn expectInteger(built: repr.Value, key: [*:0]const u8, expected: i32) void {
     const v = frameGet(built, key);
     if (!harness.integerIs(v, expected)) {
         std.debug.print("key {s}: expected {d}, got {s}\n", .{ key, expected, pp_describe.toString(v) });
-        assert(false);
+        expect(false);
     }
 }
 
@@ -128,7 +128,7 @@ fn expectAbsent(built: repr.Value, key: [*:0]const u8) void {
     const v = frameGet(built, key);
     if (!harness.isType(v, repr.Tag.nil)) {
         std.debug.print("key {s}: expected nil, got {s}\n", .{ key, pp_describe.toString(v) });
-        assert(false);
+        expect(false);
     }
 }
 
@@ -136,7 +136,7 @@ fn expectAbsent(built: repr.Value, key: [*:0]const u8) void {
 /// the trace decoding under it can reach an abstract's `tostring`; nothing in
 /// this file builds such a frame, so a raise here would be a defect rather
 /// than a case.
-fn decode(f: *types.JanetStackFrame) repr.Value {
+fn decode(f: *vm_state.StackFrame) repr.Value {
     return debug_frames.debugFrame(f) catch @panic("vm_lifecycle: decoding a frame raised");
 }
 
@@ -152,13 +152,13 @@ var scribble_roots: [4]repr.Value = undefined;
 var scribble_bytes: [64]u8 = undefined;
 
 fn scribbleOverTheVm() void {
-    const bytes: *anyopaque = @ptrCast(&scribble_bytes);
+    const bytes: *abi.JanetGCObject = @ptrCast(@alignCast(&scribble_bytes));
     harness.vm().gc.blocks = bytes;
     harness.vm().gc.weak_blocks = bytes;
     harness.vm().gc.next_collection = 4242;
     harness.vm().gc.interval = 99;
     harness.vm().gc.block_count = 77;
-    harness.vm().gc.mark_phase = 1;
+    harness.vm().gc.mark_phase = true;
     // `janet_init` never assigned this one and `gc.collectorInit` does.
     // Scribbling it is what makes the assertion in `theStateInitLeaves`
     // capable of failing.
@@ -170,7 +170,7 @@ fn scribbleOverTheVm() void {
     harness.vm().scratch.items = @ptrCast(@alignCast(bytes));
     harness.vm().scratch.count = 5;
     harness.vm().scratch.capacity = 6;
-    harness.vm().sandbox_flags = types.Sandbox.of(&.{"asm"});
+    harness.vm().sandbox_flags = vm_lifecycle.Sandbox.of(&.{"asm"});
     harness.vm().registry.rows.items = @ptrCast(@alignCast(bytes));
     harness.vm().registry.rows.capacity = 7;
     harness.vm().registry.rows.count = 8;
@@ -196,83 +196,83 @@ fn scribbleOverTheVm() void {
 /// what the next line of an embedder's code sees.
 fn theStateInitLeaves() raise.Raising(void) {
     scribbleOverTheVm();
-    assert(try vm_lifecycle.init() == 0);
+    expect(try vm_lifecycle.init() == 0);
 
     // The three that would otherwise be invisible: they are zero in a freshly
     // zeroed `janet_vm`, so only the scribble above can tell an assignment
     // from an assumption.
-    assert(harness.vm().gc.next_collection < 4242);
-    assert(harness.vm().gc.weak_blocks == null);
-    assert(harness.vm().gc.block_count == 1);
+    expect(harness.vm().gc.next_collection < 4242);
+    expect(harness.vm().gc.weak_blocks == null);
+    expect(harness.vm().gc.block_count == 1);
 
     // Collector.
-    assert(harness.vm().gc.interval == 0x400000);
-    assert(harness.vm().gc.mark_phase == 0);
-    assert(harness.vm().gc.blocks != null); // the abstract registry is allocated during init
+    expect(harness.vm().gc.interval == 0x400000);
+    expect(harness.vm().gc.mark_phase == false);
+    expect(harness.vm().gc.blocks != null); // the abstract registry is allocated during init
 
     // Roots: empty except for the abstract registry.
-    assert(harness.vm().roots.items != null);
-    assert(harness.vm().roots.count == 1);
-    assert(harness.vm().abstract_registry != null);
-    assert(harness.equals(harness.vm().roots.at(0).*, wrap.fromTable(harness.vm().abstract_registry.?)));
+    expect(harness.vm().roots.items != null);
+    expect(harness.vm().roots.count == 1);
+    expect(harness.vm().abstract_registry != null);
+    expect(harness.equals(harness.vm().roots.at(0).*, wrap.fromTable(harness.vm().abstract_registry.?)));
 
     // Scratch memory. Asserted as the whole type against what `scratchInit`
-    // starts from rather than field by field: a field added to `types.Scratch`
+    // starts from rather than field by field: a field added to `gc_alloc.Scratch`
     // is covered here without this line being edited, and the omission that
     // `FOUND.md` records could not have been written.
-    assert(harness.vm().user == null);
-    assert(std.meta.eql(harness.vm().scratch, types.Scratch{}));
+    expect(harness.vm().user == null);
+    expect(std.meta.eql(harness.vm().scratch, gc_alloc.Scratch{}));
 
     // The suspension depth, which `janet_init` never assigned and
     // `gc.collectorInit` does. The scribble above set it, so this fails
     // against the old code.
-    assert(harness.vm().gc.suspend_count == 0);
+    expect(harness.vm().gc.suspend_count == 0);
 
     // Sandbox.
-    assert(harness.vm().sandbox_flags == types.Sandbox.none);
+    expect(harness.vm().sandbox_flags == vm_lifecycle.Sandbox.none);
 
     // Cfunction registry: empty, and not yet sorted.
-    assert(std.meta.eql(harness.vm().registry, types.Registry{}));
+    expect(std.meta.eql(harness.vm().registry, registry.Registry{}));
 
-    // The empty case of `types.Vector`, which is the ordinary state of three
+    // The empty case of `vm_state.Vector`, which is the ordinary state of three
     // of the VM's four grown arrays at this point and which the pointer they
     // replaced could not be asked about without unwrapping a null.
     // `scratch`, `registry.rows` and the timer queue have never been grown,
     // so their `items` is null and `slice()` must be empty rather than a
     // trap; `roots` holds the abstract registry and is the non-empty case
     // beside them.
-    assert(harness.vm().scratch.items == null);
-    assert(harness.vm().scratch.isEmpty());
-    assert(harness.vm().scratch.slice().len == 0);
-    assert(harness.vm().registry.rows.items == null);
-    assert(harness.vm().registry.rows.isEmpty());
-    assert(harness.vm().registry.rows.slice().len == 0);
-    assert(!harness.vm().roots.isEmpty());
-    assert(harness.vm().roots.slice().len == 1);
-    assert(harness.equals(harness.vm().roots.at(0).*, wrap.fromTable(harness.vm().abstract_registry.?)));
+    expect(harness.vm().scratch.items == null);
+    expect(harness.vm().scratch.isEmpty());
+    expect(harness.vm().scratch.slice().len == 0);
+    expect(harness.vm().registry.rows.items == null);
+    expect(harness.vm().registry.rows.isEmpty());
+    expect(harness.vm().registry.rows.slice().len == 0);
+    expect(!harness.vm().roots.isEmpty());
+    expect(harness.vm().roots.slice().len == 1);
+    expect(harness.equals(harness.vm().roots.at(0).*, wrap.fromTable(harness.vm().abstract_registry.?)));
     if (comptime config.ev) {
-        assert(harness.vm().ev.tq.items == null);
-        assert(harness.vm().ev.tq.isEmpty());
-        assert(harness.vm().ev.tq.slice().len == 0);
+        expect(harness.vm().ev.tq.items == null);
+        expect(harness.vm().ev.tq.isEmpty());
+        expect(harness.vm().ev.tq.slice().len == 0);
     }
 
     // Traversal, used by marshalling.
-    assert(std.meta.eql(harness.vm().traversal, types.Traversal{}));
+    expect(std.meta.eql(harness.vm().traversal, order.Traversal{}));
 
     // Environments and fibers.
-    assert(harness.vm().core_env == null); // the core env is built lazily
-    assert(harness.vm().top_dyns == null);
-    assert(harness.vm().fiber == null);
-    assert(harness.vm().root_fiber == null);
-    assert(harness.vm().stackn == 0);
-    assert(harness.vm().auto_suspend == 0);
+    expect(harness.vm().core_env == null); // the core env is built lazily
+    expect(harness.vm().top_dyns == null);
+    expect(harness.vm().fiber == null);
+    expect(harness.vm().root_fiber == null);
+    expect(harness.vm().stackn == 0);
+    expect(harness.vm().auto_suspend == 0);
 
     // The symbol cache belongs to `janet_symcache_init`, which `init` calls
     // after the collector's fields and before the first allocation.
-    assert(harness.vm().symcache.entries != null);
-    assert(harness.vm().symcache.count == 0);
-    assert(harness.vm().symcache.deleted == 0);
-    assert(harness.vm().symcache.capacity > 0);
+    expect(harness.vm().symcache.entries != null);
+    expect(harness.vm().symcache.count == 0);
+    expect(harness.vm().symcache.deleted == 0);
+    expect(harness.vm().symcache.capacity > 0);
 
     vm_lifecycle.deinit();
 }
@@ -304,7 +304,7 @@ fn deepen(inner: repr.Value) repr.Value {
 
 fn whatDeinitClears() raise.Raising(void) {
     var dummy: i32 = 0;
-    assert(try vm_lifecycle.init() == 0);
+    expect(try vm_lifecycle.init() == 0);
     _ = harness.coreEnv();
     harness.vm().user = &dummy;
 
@@ -312,7 +312,7 @@ fn whatDeinitClears() raise.Raising(void) {
     // each needs something to have used it before the teardown can be asked
     // whether it cleaned up. Without these two the assertions below hold
     // vacuously, which is exactly how the omission survived.
-    const scratch = gc_alloc.smalloc(16) orelse unreachable;
+    const scratch = gc_alloc.smalloc(16);
     gc_alloc.sfree(scratch);
     var nested_l = wrap.fromTuple(tuples.end(tuples.begin(0)));
     var nested_r = wrap.fromTuple(tuples.end(tuples.begin(0)));
@@ -321,12 +321,12 @@ fn whatDeinitClears() raise.Raising(void) {
     _ = order.equals(nested_l, nested_r);
 
     // Preconditions, so that the assertions below are about the teardown.
-    assert(harness.vm().core_env != null);
-    assert(harness.vm().registry.rows.items != null);
-    assert(harness.vm().roots.items != null);
-    assert(harness.vm().symcache.count > 0);
-    assert(harness.vm().scratch.items != null);
-    assert(harness.vm().traversal.base != null);
+    expect(harness.vm().core_env != null);
+    expect(harness.vm().registry.rows.items != null);
+    expect(harness.vm().roots.items != null);
+    expect(harness.vm().symcache.count > 0);
+    expect(harness.vm().scratch.items != null);
+    expect(harness.vm().traversal.base != null);
 
     vm_lifecycle.deinit();
 
@@ -335,10 +335,10 @@ fn whatDeinitClears() raise.Raising(void) {
     // this is that statement read back -- and a field added to any of the five
     // is covered without this contract being edited, which is what makes the
     // omission below impossible to write.
-    assert(std.meta.eql(harness.vm().scratch, types.Scratch{}));
-    assert(std.meta.eql(harness.vm().roots, types.Roots{}));
-    assert(std.meta.eql(harness.vm().traversal, types.Traversal{}));
-    assert(std.meta.eql(harness.vm().symcache, types.SymbolCache{}));
+    expect(std.meta.eql(harness.vm().scratch, gc_alloc.Scratch{}));
+    expect(std.meta.eql(harness.vm().roots, gc_alloc.Roots{}));
+    expect(std.meta.eql(harness.vm().traversal, order.Traversal{}));
+    expect(std.meta.eql(harness.vm().symcache, symbols.SymbolCache{}));
 
     // **The registry, and this one is `FOUND.md`'s.** Upstream's
     // `janet_deinit` frees the rows and leaves `count`, `capacity` and `dirty`
@@ -346,19 +346,19 @@ fn whatDeinitClears() raise.Raising(void) {
     // window before the next `janet_init`. Comparing the whole `Registry` is
     // what catches that; asserting `rows == null` alone is exactly the
     // assertion that missed it.
-    assert(std.meta.eql(harness.vm().registry, types.Registry{}));
+    expect(std.meta.eql(harness.vm().registry, registry.Registry{}));
 
-    assert(harness.vm().abstract_registry == null);
-    assert(harness.vm().core_env == null);
-    assert(harness.vm().top_dyns == null);
-    assert(harness.vm().user == null); // an embedder's pointer is dropped, not freed
-    assert(harness.vm().fiber == null);
-    assert(harness.vm().root_fiber == null);
+    expect(harness.vm().abstract_registry == null);
+    expect(harness.vm().core_env == null);
+    expect(harness.vm().top_dyns == null);
+    expect(harness.vm().user == null); // an embedder's pointer is dropped, not freed
+    expect(harness.vm().fiber == null);
+    expect(harness.vm().root_fiber == null);
 
     // `clearMemory` ran: it is the one line of teardown whose effect is a heap
     // rather than a field, and this is the only field it leaves behind to say
     // so. It does not reset `block_count`, which is why that is not asserted.
-    assert(harness.vm().gc.blocks == null);
+    expect(harness.vm().gc.blocks == null);
 }
 
 /// A teardown that leaks looks exactly like one that does not until something
@@ -366,10 +366,10 @@ fn whatDeinitClears() raise.Raising(void) {
 fn aSecondCycle() raise.Raising(void) {
     for (0..2) |_| {
         var out = wrap.fromNil();
-        assert(try vm_lifecycle.init() == 0);
+        expect(try vm_lifecycle.init() == 0);
         test_env = harness.coreEnv();
-        assert(core_env.dostring(test_env.?, "(+ 1 2)", "cycle", &out) == 0);
-        assert(wrap.toInteger(out) == 3);
+        expect(core_env.dostring(test_env.?, "(+ 1 2)", "cycle", &out) == 0);
+        expect(wrap.toInteger(out) == 3);
         vm_lifecycle.deinit();
     }
     test_env = null;
@@ -380,28 +380,28 @@ fn aSecondCycle() raise.Raising(void) {
 /// The sandbox accumulates and never narrows, and `sandboxAssert` is the only
 /// thing that reads it. Run in its own cycle, because nothing can undo it.
 fn theSandboxIsOneWay() raise.Raising(void) {
-    assert(try vm_lifecycle.init() == 0);
+    expect(try vm_lifecycle.init() == 0);
     test_env = harness.coreEnv();
 
     // Nothing forbidden yet.
-    try vm_lifecycle.sandboxAssert(types.Sandbox.all);
-    assert(harness.vm().sandbox_flags == types.Sandbox.none);
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.all);
+    expect(harness.vm().sandbox_flags == vm_lifecycle.Sandbox.none);
 
-    try vm_lifecycle.sandbox(types.Sandbox.of(&.{"asm"}));
-    assert(harness.vm().sandbox_flags == types.Sandbox.of(&.{"asm"}));
-    assert(harness.raised(vm_lifecycle.sandboxAssert, .{types.Sandbox.of(&.{"asm"})}).?.says("operation forbidden by sandbox"));
+    try vm_lifecycle.sandbox(vm_lifecycle.Sandbox.of(&.{"asm"}));
+    expect(harness.vm().sandbox_flags == vm_lifecycle.Sandbox.of(&.{"asm"}));
+    expect(harness.raised(vm_lifecycle.sandboxAssert, .{vm_lifecycle.Sandbox.of(&.{"asm"})}).?.says("operation forbidden by sandbox"));
 
     // A flag that was not set is still allowed, and the assert takes a mask
     // rather than a single flag.
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"hrtime"}));
-    assert(harness.raised(
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"hrtime"}));
+    expect(harness.raised(
         vm_lifecycle.sandboxAssert,
-        .{types.Sandbox.of(&.{ "asm", "hrtime" })},
+        .{vm_lifecycle.Sandbox.of(&.{ "asm", "hrtime" })},
     ).?.says("operation forbidden by sandbox"));
 
     // Flags accumulate rather than replace.
-    try vm_lifecycle.sandbox(types.Sandbox.of(&.{"hrtime"}));
-    assert(harness.vm().sandbox_flags == types.Sandbox.of(&.{ "asm", "hrtime" }));
+    try vm_lifecycle.sandbox(vm_lifecycle.Sandbox.of(&.{"hrtime"}));
+    expect(harness.vm().sandbox_flags == vm_lifecycle.Sandbox.of(&.{ "asm", "hrtime" }));
 
     // Reached through the standard library, which is how it is used. `asm` is
     // absent from a build without the assembler, and an absent binding is a
@@ -414,9 +414,9 @@ fn theSandboxIsOneWay() raise.Raising(void) {
 
     // And the lock: once the sandbox itself is forbidden, nothing more can be
     // added, including nothing.
-    try vm_lifecycle.sandbox(types.Sandbox.of(&.{"sandbox"}));
-    assert(harness.raised(vm_lifecycle.sandbox, .{types.Sandbox.none}).?.says("operation forbidden by sandbox"));
-    assert(harness.vm().sandbox_flags == types.Sandbox.of(&.{ "asm", "hrtime", "sandbox" }));
+    try vm_lifecycle.sandbox(vm_lifecycle.Sandbox.of(&.{"sandbox"}));
+    expect(harness.raised(vm_lifecycle.sandbox, .{vm_lifecycle.Sandbox.none}).?.says("operation forbidden by sandbox"));
+    expect(harness.vm().sandbox_flags == vm_lifecycle.Sandbox.of(&.{ "asm", "hrtime", "sandbox" }));
 
     vm_lifecycle.deinit();
     test_env = null;
@@ -452,21 +452,21 @@ fn aJanetFrame() void {
         \\  (if (= total 7) st st))
         \\(probe 3 4)
     );
-    assert(harness.isType(frames, repr.Tag.array));
+    expect(harness.isType(frames, repr.Tag.array));
     // [0] is the `debug/stack` cframe itself; [1] is `probe`.
-    assert(wrap.toArray(frames).*.count >= 2);
+    expect(wrap.toArray(frames).count >= 2);
     const built = wrap.toArray(frames).slice()[1];
 
     expectString(built, "name", "probe");
     expectString(built, "source", "vm-lifecycle-test");
-    assert(harness.isType(frameGet(built, "function"), repr.Tag.function));
-    assert(harness.isType(frameGet(built, "pc"), repr.Tag.number));
+    expect(harness.isType(frameGet(built, "function"), repr.Tag.function));
+    expect(harness.isType(frameGet(built, "pc"), repr.Tag.number));
     expectAbsent(built, "c");
 
     // The source map, not the program counter, supplies the location for a
     // funcdef that has one.
     const function = wrap.toFunction(frameGet(built, "function"));
-    if (function.*.def.?.sourcemap != null) {
+    if (function.def.?.sourcemap != null) {
         expectInteger(built, "source-line", 4);
         expectInteger(built, "source-column", 11);
     }
@@ -474,19 +474,19 @@ fn aJanetFrame() void {
     // The register file is copied whole, its length is the funcdef's, and its
     // contents are the frame's — the first two registers hold the arguments.
     const slots = frameGet(built, "slots");
-    assert(harness.isType(slots, repr.Tag.array));
-    assert(wrap.toArray(slots).*.count == function.*.def.?.slotcount);
-    assert(wrap.toArray(slots).*.count >= 2);
-    assert(harness.integerIs(wrap.toArray(slots).slice()[0], 3));
-    assert(harness.integerIs(wrap.toArray(slots).slice()[1], 4));
+    expect(harness.isType(slots, repr.Tag.array));
+    expect(wrap.toArray(slots).count == function.def.?.slotcount);
+    expect(wrap.toArray(slots).count >= 2);
+    expect(harness.integerIs(wrap.toArray(slots).slice()[0], 3));
+    expect(harness.integerIs(wrap.toArray(slots).slice()[1], 4));
 
     // Local bindings, by name, live at the point the frame stopped.
     const locals = frameGet(built, "locals");
-    assert(harness.isType(locals, repr.Tag.table));
+    expect(harness.isType(locals, repr.Tag.table));
     const bindings = wrap.toTable(locals);
-    assert(harness.integerIs(tables.get(bindings, value.fromBytes("a", .symbol)), 3));
-    assert(harness.integerIs(tables.get(bindings, value.fromBytes("b", .symbol)), 4));
-    assert(harness.integerIs(tables.get(bindings, value.fromBytes("total", .symbol)), 7));
+    expect(harness.integerIs(tables.get(bindings, value.fromBytes("a", .symbol)), 3));
+    expect(harness.integerIs(tables.get(bindings, value.fromBytes("b", .symbol)), 4));
+    expect(harness.integerIs(tables.get(bindings, value.fromBytes("total", .symbol)), 7));
 
     // And a binding that is not live there is absent. Two of them, for two
     // different reasons: `st` is written by the call this frame is stopped at
@@ -495,8 +495,8 @@ fn aJanetFrame() void {
     // missing death bound from a working one — a table with a nil value is a
     // table without the key, so a binding reported live but holding nil looks
     // exactly like one correctly left out.
-    assert(harness.isType(tables.get(bindings, value.fromBytes("st", .symbol)), repr.Tag.nil));
-    assert(harness.isType(tables.get(bindings, value.fromBytes("scoped", .symbol)), repr.Tag.nil));
+    expect(harness.isType(tables.get(bindings, value.fromBytes("st", .symbol)), repr.Tag.nil));
+    expect(harness.isType(tables.get(bindings, value.fromBytes("scoped", .symbol)), repr.Tag.nil));
 }
 
 /// An anonymous function reports no name and still reports everything else,
@@ -506,7 +506,7 @@ fn anAnonymousJanetFrame() void {
     const frames = eval("((fn [] (debug/stack (fiber/current))))");
     const built = wrap.toArray(frames).slice()[1];
     expectAbsent(built, "name");
-    assert(harness.isType(frameGet(built, "function"), repr.Tag.function));
+    expect(harness.isType(frameGet(built, "function"), repr.Tag.function));
     expectString(built, "source", "vm-lifecycle-test");
 }
 
@@ -529,9 +529,9 @@ fn aCapturedBinding() void {
     );
     const built = wrap.toArray(frames).slice()[1];
     const locals = frameGet(built, "locals");
-    assert(harness.isType(locals, repr.Tag.table));
+    expect(harness.isType(locals, repr.Tag.table));
     expectAbsent(built, "name");
-    assert(harness.integerIs(
+    expect(harness.integerIs(
         tables.get(wrap.toTable(locals), value.fromBytes("captured", .symbol)),
         11,
     ));
@@ -549,8 +549,8 @@ fn aCapturedBindingOffTheStack() void {
     );
     const built = wrap.toArray(frames).slice()[1];
     const locals = frameGet(built, "locals");
-    assert(harness.isType(locals, repr.Tag.table));
-    assert(harness.integerIs(
+    expect(harness.isType(locals, repr.Tag.table));
+    expect(harness.integerIs(
         tables.get(wrap.toTable(locals), value.fromBytes("captured", .symbol)),
         12,
     ));
@@ -565,7 +565,7 @@ fn aRegisteredCfunctionFrame() void {
     const frames = eval("(debug/stack (fiber/current))");
     const built = wrap.toArray(frames).slice()[0];
 
-    assert(harness.equals(frameGet(built, "c"), wrap.fromTrue()));
+    expect(harness.equals(frameGet(built, "c"), wrap.fromTrue()));
     expectAbsent(built, "function");
     expectAbsent(built, "slots");
     expectAbsent(built, "pc");
@@ -573,8 +573,8 @@ fn aRegisteredCfunctionFrame() void {
     // A registered cfunction reports prefix/name.
     expectString(built, "name", "debug/stack");
 
-    assert(harness.isType(frameGet(built, "source"), repr.Tag.string));
-    assert(harness.isType(frameGet(built, "source-line"), repr.Tag.number));
+    expect(harness.isType(frameGet(built, "source"), repr.Tag.string));
+    expect(harness.isType(frameGet(built, "source-line"), repr.Tag.number));
     expectInteger(built, "source-column", 1);
 }
 
@@ -590,7 +590,7 @@ fn aTailCallFrame() void {
     // gone and `inner`'s carries the flag.
     const built = wrap.toArray(frames).slice()[1];
     expectString(built, "name", "inner");
-    assert(harness.equals(frameGet(built, "tail"), wrap.fromTrue()));
+    expect(harness.equals(frameGet(built, "tail"), wrap.fromTrue()));
 }
 
 /// A cfunction registered with a prefix, which the core's own are not: every
@@ -607,13 +607,13 @@ fn cfunSelfframe(argv: []repr.Value) raise.Raising(repr.Value) {
     return decode(harness.frame.current(harness.vm().fiber.?));
 }
 
-const cfuns = [_]types.Reg{
+const cfuns = [_]abi.Reg{
     .{ .name = "selfframe", .cfun = raise.stored(&cfunSelfframe), .documentation = "(selfframe)\n\nIts own stack frame." },
 };
 
 fn aPrefixedCfunctionFrame() void {
     const built = eval("(selfframe)");
-    assert(harness.equals(frameGet(built, "c"), wrap.fromTrue()));
+    expect(harness.equals(frameGet(built, "c"), wrap.fromTrue()));
     expectString(built, "name", "vmlife/selfframe");
     expectAbsent(built, "source");
     expectAbsent(built, "source-line");
@@ -631,12 +631,12 @@ fn aFrameWithNoProgramCounter() void {
     const fiber = fibers.new(wrap.toFunction(fnv), 64, 0, null).?;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     const fr = harness.frame.current(fiber);
-    assert(fr.func != null and fr.pc != null);
+    expect(fr.func != null and fr.pc != null);
     fr.pc = null;
 
     const built = decode(fr);
     expectString(built, "name", "named");
-    assert(harness.isType(frameGet(built, "function"), repr.Tag.function));
+    expect(harness.isType(frameGet(built, "function"), repr.Tag.function));
     expectAbsent(built, "pc");
     expectAbsent(built, "slots");
     expectAbsent(built, "locals");
@@ -660,7 +660,7 @@ fn anUnregisteredCfunctionFrame() void {
     fibers.cframe(fiber, raise.stored(&unregisteredCfunction));
 
     const built = decode(harness.frame.current(fiber));
-    assert(harness.equals(frameGet(built, "c"), wrap.fromTrue()));
+    expect(harness.equals(frameGet(built, "c"), wrap.fromTrue()));
     expectAbsent(built, "name");
     expectAbsent(built, "source");
     expectAbsent(built, "source-line");

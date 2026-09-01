@@ -1,14 +1,13 @@
 //! The three standard streams, named the way each libc names them.
 //!
-//! `io.c` kept a one-line accessor for each of these for four increments,
-//! and its comment gave the reason: `stderr` is a *macro*, and
-//! `translate-c` renders it a different way on each of this project's
-//! platforms — an inline function on macOS, a variable of opaque type on musl,
-//! which Zig will not let a many-pointer address, and on mingw a
-//! container-level constant whose initializer calls an extern function, which
-//! Zig rejects outright as "comptime call of extern function". The third could
-//! not be worked around at the call site at all: naming `c.stderr` is a compile
-//! error there whatever is done with the result.
+//! **They are here because `stderr` is a macro**, and the translation renders it
+//! a different way on each of this project's platforms — an inline function on
+//! macOS, a variable of opaque type on musl, which Zig will not let a
+//! many-pointer address, and on mingw a container-level constant whose
+//! initializer calls an extern function, which Zig rejects outright as
+//! "comptime call of extern function". The third cannot be worked around at a
+//! call site at all: naming it is a compile error there whatever is done with
+//! the result.
 //!
 //! All three of those are facts about the *translation*, not about the
 //! symbols. Underneath the macro every one of these libcs has an ordinary
@@ -17,18 +16,23 @@
 //!
 //! | platform | what the macro expands to |
 //! | --- | --- |
-//! | Darwin and the BSDs | `__stdinp`, `__stdoutp`, `__stderrp` |
-//! | glibc and musl | `stdin`, `stdout`, `stderr` |
-//! | mingw / UCRT | `__acrt_iob_func(0 .. 2)` |
+//! | Darwin and the BSDs | `c.__stdinp`, `c.__stdoutp`, `c.__stderrp` |
+//! | glibc and musl | `c.stdin`, `c.stdout`, `c.stderr` |
+//! | mingw / UCRT | `c.__acrt_iob_func(0 .. 2)` |
 //!
 //! Verified by compiling for all six targets this project builds for and by
-//! writing through the resulting handle on the host. The pointer is
-//! `?*anyopaque` rather than a `FILE *`: `io_core.zig` declares `FILE` opaque
-//! on purpose, `@cImport`'s translation is a fourth spelling again, and every
-//! consumer of these either passes the handle straight back to libc or casts it
-//! once. They are the same pointer and not the same Zig type.
+//! writing through the resulting handle on the host.
+//!
+//! Each answers a `*host.FILE` -- not an `?*anyopaque`, which is what the
+//! `cabi` declarations underneath have to be while the six spellings differ.
+//! The three streams are set up before `main` runs and libc offers no way to
+//! clear one, so the unwrap here is where that fact is stated rather than a
+//! null check at each of the twenty-two callers, every one of which used to
+//! write `stdio.err()`.
 
 const builtin = @import("builtin");
+const c = @import("cabi");
+const host = @import("host");
 
 const darwin_or_bsd = switch (builtin.os.tag) {
     .macos, .ios, .tvos, .watchos, .visionos, .driverkit => true,
@@ -37,46 +41,39 @@ const darwin_or_bsd = switch (builtin.os.tag) {
 };
 
 const impl = if (builtin.os.tag == .windows) struct {
-    // The UCRT has no exported `stdin`; the macro calls this and indexes the
+    // The UCRT has no exported `c.stdin`; the macro calls this and indexes the
     // `_iob` table, so the index *is* the interface.
-    extern fn __acrt_iob_func(index: c_uint) callconv(.c) ?*anyopaque;
-    pub fn in() ?*anyopaque {
-        return __acrt_iob_func(0);
+    pub fn in() *host.FILE {
+        return c.__acrt_iob_func(0).?;
     }
-    pub fn out() ?*anyopaque {
-        return __acrt_iob_func(1);
+    pub fn out() *host.FILE {
+        return c.__acrt_iob_func(1).?;
     }
-    pub fn err() ?*anyopaque {
-        return __acrt_iob_func(2);
+    pub fn err() *host.FILE {
+        return c.__acrt_iob_func(2).?;
     }
 } else if (darwin_or_bsd) struct {
-    extern var __stdinp: ?*anyopaque;
-    extern var __stdoutp: ?*anyopaque;
-    extern var __stderrp: ?*anyopaque;
-    pub fn in() ?*anyopaque {
-        return __stdinp;
+    pub fn in() *host.FILE {
+        return c.__stdinp.?;
     }
-    pub fn out() ?*anyopaque {
-        return __stdoutp;
+    pub fn out() *host.FILE {
+        return c.__stdoutp.?;
     }
-    pub fn err() ?*anyopaque {
-        return __stderrp;
+    pub fn err() *host.FILE {
+        return c.__stderrp.?;
     }
 } else struct {
     // musl spells these `FILE *const` and glibc `FILE *`; the difference is in
     // the declaration rather than in the object, and reading one is the same
     // load either way.
-    extern var stdin: ?*anyopaque;
-    extern var stdout: ?*anyopaque;
-    extern var stderr: ?*anyopaque;
-    pub fn in() ?*anyopaque {
-        return stdin;
+    pub fn in() *host.FILE {
+        return c.stdin.?;
     }
-    pub fn out() ?*anyopaque {
-        return stdout;
+    pub fn out() *host.FILE {
+        return c.stdout.?;
     }
-    pub fn err() ?*anyopaque {
-        return stderr;
+    pub fn err() *host.FILE {
+        return c.stderr.?;
     }
 };
 

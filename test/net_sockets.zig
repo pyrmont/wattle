@@ -52,11 +52,10 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const types = @import("types");
 const repr = @import("repr");
 const harness = @import("harness.zig");
 const ev_stream = @import("subsystems").ev_stream;
-const raise = @import("raise");
+const raise = @import("subsystems").raise;
 
 const subsystems = @import("subsystems");
 const value = @import("subsystems").value;
@@ -68,10 +67,13 @@ const args_core = @import("subsystems").args;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const abstracts = @import("subsystems").value.abstracts;
 const pp_describe = @import("subsystems").pp_describe;
+const strings = @import("subsystems").value.strings;
+const tuples = @import("subsystems").value.tuples;
+const abi = @import("abi");
+const method_type = @import("subsystems").method_type;
 const net_addr = subsystems.net;
-const abstract_type = subsystems.abstract_type;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 const posix = std.posix;
 
 const windows = builtin.os.tag == .windows;
@@ -92,7 +94,7 @@ fn expectRaise(name: [*:0]const u8, argv: []repr.Value, message: []const u8) voi
         std.debug.print("net_sockets: expected a raise saying: {s}\n", .{message});
         @panic("net_sockets: expected a raise, got a return");
     };
-    assert(r.signal == types.Signal.@"error");
+    expect(r.signal == abi.Signal.@"error");
     if (!r.says(message)) {
         std.debug.print("expected: {s}\n", .{message});
         std.debug.print("     got: {s}\n", .{pp_describe.toString(r.payload)});
@@ -110,7 +112,7 @@ fn expectRaisePrefix(name: [*:0]const u8, argv: []repr.Value, prefix: []const u8
         std.debug.print("net_sockets: expected a raise starting: {s}\n", .{prefix});
         @panic("net_sockets: expected a raise, got a return");
     };
-    assert(r.signal == types.Signal.@"error");
+    expect(r.signal == abi.Signal.@"error");
     if (!r.beginsWith(prefix)) {
         std.debug.print("expected prefix: {s}\n", .{prefix});
         std.debug.print("            got: {s}\n", .{pp_describe.toString(r.payload)});
@@ -134,10 +136,10 @@ fn callCore(name: [*:0]const u8, argv: []repr.Value) repr.Value {
 /// Wrap `bytes` as a `core/socket-address`, which is what `net/address-unpack`
 /// takes. The abstract has no callbacks, so this is the whole of building one.
 fn addressOf(bytes: []const u8) repr.Value {
-    const abst = abstracts.new(
+    const abst = abstracts.newBytes(
         &net_addr.addressType,
         bytes.len,
-    ).?;
+    );
     const destination: [*]u8 = @ptrCast(abst);
     @memcpy(destination[0..bytes.len], bytes);
     return wrap.fromAbstract(abst);
@@ -156,29 +158,29 @@ fn unpack(address: repr.Value) repr.Value {
 fn tupleIs2(val: repr.Value, host: []const u8, port: i32) bool {
     if (!harness.isType(val, repr.Tag.tuple)) return false;
     const t = wrap.toTuple(val);
-    if (types.tupleHead(t).length != 2) return false;
+    if (tuples.head(t).length != 2) return false;
     if (!harness.isType(t[0], repr.Tag.string)) return false;
     const text = wrap.toString(t[0]);
-    const length: usize = @intCast(types.stringHead(text).length);
+    const length: usize = @intCast(strings.head(text).length);
     if (!std.mem.eql(u8, text[0..length], host)) return false;
-    return args_core.checkint(t[1]) != 0 and wrap.toInteger(t[1]) == port;
+    return args_core.checkint(t[1]) and wrap.toInteger(t[1]) == port;
 }
 
 fn tupleIs1(val: repr.Value, path: []const u8) bool {
     if (!harness.isType(val, repr.Tag.tuple)) return false;
     const t = wrap.toTuple(val);
-    if (types.tupleHead(t).length != 1) return false;
+    if (tuples.head(t).length != 1) return false;
     if (!harness.isType(t[0], repr.Tag.string)) return false;
     const text = wrap.toString(t[0]);
-    const length: usize = @intCast(types.stringHead(text).length);
+    const length: usize = @intCast(strings.head(text).length);
     return std.mem.eql(u8, text[0..length], path);
 }
 
 fn pathLength(val: repr.Value) usize {
-    assert(harness.isType(val, repr.Tag.tuple));
+    expect(harness.isType(val, repr.Tag.tuple));
     const t = wrap.toTuple(val);
-    assert(types.tupleHead(t).length == 1);
-    return @intCast(types.stringHead(wrap.toString(t[0])).length);
+    expect(tuples.head(t).length == 1);
+    return @intCast(strings.head(wrap.toString(t[0])).length);
 }
 
 // ==========================================================================
@@ -199,7 +201,7 @@ const net_bindings = [_][*:0]const u8{
 };
 
 fn theRegistration() void {
-    assert(net_bindings.len == 17);
+    expect(net_bindings.len == 17);
     // `harness.core` asserts the binding resolves to a cfunction.
     for (net_bindings) |name| _ = harness.core(name);
 }
@@ -232,27 +234,27 @@ fn ip6(text: []const u8, port: u16) posix.sockaddr.in6 {
 fn theIpv4Decoding() void {
     {
         var sin = ip4("1.2.3.4", 8080);
-        assert(tupleIs2(unpack(addressOf(asBytes(&sin))), "1.2.3.4", 8080));
+        expect(tupleIs2(unpack(addressOf(asBytes(&sin))), "1.2.3.4", 8080));
     }
 
     // Port 0 and the wildcard address, which is what an unbound socket reports
     // and what `net/localname` returns before a bind.
     {
         var sin = ip4("0.0.0.0", 0);
-        assert(tupleIs2(unpack(addressOf(asBytes(&sin))), "0.0.0.0", 0));
+        expect(tupleIs2(unpack(addressOf(asBytes(&sin))), "0.0.0.0", 0));
     }
 
     // The port is unsigned on the wire: 65535 must not come back negative.
     {
         var sin = ip4("255.255.255.255", 65535);
-        assert(tupleIs2(unpack(addressOf(asBytes(&sin))), "255.255.255.255", 65535));
+        expect(tupleIs2(unpack(addressOf(asBytes(&sin))), "255.255.255.255", 65535));
     }
 }
 
 fn theIpv6Decoding() void {
     {
         var sin6 = ip6("::1", 443);
-        assert(tupleIs2(unpack(addressOf(asBytes(&sin6))), "::1", 443));
+        expect(tupleIs2(unpack(addressOf(asBytes(&sin6))), "::1", 443));
     }
 
     // The longest textual form there is, which is what sizes the decode
@@ -260,7 +262,7 @@ fn theIpv6Decoding() void {
     {
         const text = "2001:db8:85a3:8d3:1319:8a2e:370:7348";
         var sin6 = ip6(text, 1);
-        assert(tupleIs2(unpack(addressOf(asBytes(&sin6))), text, 1));
+        expect(tupleIs2(unpack(addressOf(asBytes(&sin6))), text, 1));
     }
 }
 
@@ -270,7 +272,7 @@ fn theUnixDecoding() void {
         var sun = std.mem.zeroes(posix.sockaddr.un);
         sun.family = posix.AF.UNIX;
         @memcpy(sun.path[0..path.len], path);
-        assert(tupleIs1(unpack(addressOf(asBytes(&sun))), path));
+        expect(tupleIs1(unpack(addressOf(asBytes(&sun))), path));
     }
 
     // Linux's abstract namespace: the name starts at a NUL, and the decoder
@@ -283,7 +285,7 @@ fn theUnixDecoding() void {
         const name = "abstract-name";
         sun.path[0] = 0;
         @memcpy(sun.path[1 .. 1 + name.len], name);
-        assert(tupleIs1(unpack(addressOf(asBytes(&sun))), "@abstract-name"));
+        expect(tupleIs1(unpack(addressOf(asBytes(&sun))), "@abstract-name"));
     }
 
     // A path that fills `sun_path` exactly, with no room for a terminator. The
@@ -292,7 +294,7 @@ fn theUnixDecoding() void {
         var sun = std.mem.zeroes(posix.sockaddr.un);
         sun.family = posix.AF.UNIX;
         @memset(sun.path[0 .. sun.path.len - 1], 'x');
-        assert(pathLength(unpack(addressOf(asBytes(&sun)))) == sun.path.len - 1);
+        expect(pathLength(unpack(addressOf(asBytes(&sun)))) == sun.path.len - 1);
     }
 }
 
@@ -317,12 +319,12 @@ fn theAddressLookup() void {
         wrap.fromNil(),
         wrap.fromNil(),
     };
-    assert(tupleIs2(unpack(callCore("net/address", argv[0..2])), "127.0.0.1", 9999));
+    expect(tupleIs2(unpack(callCore("net/address", argv[0..2])), "127.0.0.1", 9999));
 
     // The port may also be a string, which is the branch `janet_checkint` does
     // not take.
     argv[1] = value.fromBytes("9999", .string);
-    assert(tupleIs2(unpack(callCore("net/address", argv[0..2])), "127.0.0.1", 9999));
+    expect(tupleIs2(unpack(callCore("net/address", argv[0..2])), "127.0.0.1", 9999));
 
     // `multi` truthy returns an array of them, and every element decodes.
     argv[1] = harness.wrapInteger(9999);
@@ -330,18 +332,18 @@ fn theAddressLookup() void {
     argv[3] = wrap.fromTrue();
     {
         const all = callCore("net/address", argv[0..4]);
-        assert(harness.isType(all, repr.Tag.array));
+        expect(harness.isType(all, repr.Tag.array));
         const array = wrap.toArray(all);
-        assert(array.*.count >= 1);
-        for (0..@intCast(array.*.count)) |i| {
-            assert(tupleIs2(unpack(array.*.slice()[i]), "127.0.0.1", 9999));
+        expect(array.count >= 1);
+        for (0..@intCast(array.count)) |i| {
+            expect(tupleIs2(unpack(array.slice()[i]), "127.0.0.1", 9999));
         }
     }
 
     // `:datagram` is the other socket type, and it resolves the same host.
     argv[2] = value.fromBytes("datagram", .keyword);
     argv[3] = wrap.fromFalse();
-    assert(tupleIs2(unpack(callCore("net/address", argv[0..4])), "127.0.0.1", 9999));
+    expect(tupleIs2(unpack(callCore("net/address", argv[0..4])), "127.0.0.1", 9999));
 }
 
 /// **Three calls, three leaks, and they are the subject rather than an
@@ -358,7 +360,7 @@ fn theUnixAddressLookup() void {
         wrap.fromNil(),
         wrap.fromNil(),
     };
-    assert(tupleIs1(unpack(callCore("net/address", argv[0..2])), path));
+    expect(tupleIs1(unpack(callCore("net/address", argv[0..2])), path));
 
     // A name longer than `sun_path` is truncated rather than rejected, and the
     // terminator is kept -- so what comes back is one byte short of the field.
@@ -370,7 +372,7 @@ fn theUnixAddressLookup() void {
         @memset(big[0 .. big.len - 1], 'a');
         argv[1] = value.fromBytes(std.mem.sliceTo(&big, 0), .string);
         const got = unpack(callCore("net/address", argv[0..2]));
-        assert(pathLength(got) == @typeInfo(@FieldType(posix.sockaddr.un, "path")).array.len - 1);
+        expect(pathLength(got) == @typeInfo(@FieldType(posix.sockaddr.un, "path")).array.len - 1);
     }
 
     // `multi` on a unix path is the one-element array branch.
@@ -379,10 +381,10 @@ fn theUnixAddressLookup() void {
         argv[2] = value.fromBytes("stream", .keyword);
         argv[3] = wrap.fromTrue();
         const all = callCore("net/address", argv[0..4]);
-        assert(harness.isType(all, repr.Tag.array));
+        expect(harness.isType(all, repr.Tag.array));
         const array = wrap.toArray(all);
-        assert(array.*.count == 1);
-        assert(tupleIs1(unpack(array.*.slice()[0]), path));
+        expect(array.count == 1);
+        expect(tupleIs1(unpack(array.slice()[0]), path));
     }
 }
 
@@ -445,7 +447,7 @@ fn theStreamFaults() void {
     // loop: `net/listen` returns before anything suspends.
     var listen_argv = [_]repr.Value{ value.fromBytes("127.0.0.1", .string), harness.wrapInteger(0) };
     const listener = callCore("net/listen", &listen_argv);
-    assert(harness.isType(listener, repr.Tag.abstract));
+    expect(harness.isType(listener, repr.Tag.abstract));
     gc_alloc.gcroot(listener);
     defer _ = gc_alloc.gcunroot(listener);
 
@@ -455,11 +457,11 @@ fn theStreamFaults() void {
     {
         var argv = [_]repr.Value{listener};
         const name = callCore("net/localname", &argv);
-        assert(harness.isType(name, repr.Tag.tuple));
+        expect(harness.isType(name, repr.Tag.tuple));
         const t = wrap.toTuple(name);
-        assert(types.tupleHead(t).length == 2);
-        assert(harness.stringIs(wrap.toString(t[0]), "127.0.0.1"));
-        assert(args_core.checkint(t[1]) != 0 and wrap.toInteger(t[1]) > 0);
+        expect(tuples.head(t).length == 2);
+        expect(harness.stringIs(wrap.toString(t[0]), "127.0.0.1"));
+        expect(args_core.checkint(t[1]) and wrap.toInteger(t[1]) > 0);
     }
 
     // A listener has no peer, and the message names the stream it failed on.
@@ -476,15 +478,15 @@ fn theStreamFaults() void {
             "accept",  "accept-loop", "send-to",  "recv-from",  "evread",
             "evchunk", "evwrite",     "shutdown", "setsockopt",
         };
-        const stream: *types.JanetStream = @ptrCast(@alignCast(wrap.toAbstract(listener)));
-        const methods: [*]const types.JanetMethod = @ptrCast(@alignCast(stream.methods));
+        const stream: *ev_stream.Stream = @ptrCast(@alignCast(wrap.toAbstract(listener)));
+        const methods: [*]const method_type.CMethod = @ptrCast(@alignCast(stream.methods));
         for (expected, 0..) |name, i| {
-            assert(methods[i].name != null);
-            assert(std.mem.eql(u8, std.mem.span(methods[i].name.?), name));
-            assert(methods[i].cfun != null);
+            expect(methods[i].name != null);
+            expect(std.mem.eql(u8, std.mem.span(methods[i].name.?), name));
+            expect(methods[i].cfun != null);
         }
-        assert(methods[expected.len].name == null);
-        assert(methods[expected.len].cfun == null);
+        expect(methods[expected.len].name == null);
+        expect(methods[expected.len].cfun == null);
     }
 
     // `net/shutdown`'s vocabulary is three keywords.
@@ -506,7 +508,7 @@ fn theStreamFaults() void {
     // A handler that cannot be given the connection it is handed.
     {
         var handler = wrap.fromNil();
-        assert(core_env.dostring(harness.coreEnv(), "(fn [] nil)", "contract", &handler) == 0);
+        expect(core_env.dostring(harness.coreEnv(), "(fn [] nil)", "contract", &handler) == 0);
         var argv = [_]repr.Value{ listener, handler };
         expectRaise("net/accept-loop", &argv, "handler function must take at least 1 argument");
     }
@@ -515,7 +517,7 @@ fn theStreamFaults() void {
     // name-reading cfunctions check it themselves rather than through
     // `janet_stream_flags`.
     {
-        const stream: *types.JanetStream = @ptrCast(@alignCast(wrap.toAbstract(listener)));
+        const stream: *ev_stream.Stream = @ptrCast(@alignCast(wrap.toAbstract(listener)));
         raise.reported(ev_stream.streamClose(stream));
         var one = [_]repr.Value{listener};
         expectRaise("net/localname", &one, "stream closed");
@@ -537,9 +539,9 @@ fn theUnboundSocket() void {
     {
         var argv = [_]repr.Value{ value.fromBytes("datagram", .keyword), value.fromBytes("ipv4", .keyword) };
         const sock = callCore("net/socket", &argv);
-        assert(harness.isType(sock, repr.Tag.abstract));
+        expect(harness.isType(sock, repr.Tag.abstract));
         var name_argv = [_]repr.Value{sock};
-        assert(tupleIs2(callCore("net/localname", &name_argv), "0.0.0.0", 0));
+        expect(tupleIs2(callCore("net/localname", &name_argv), "0.0.0.0", 0));
         raise.reported(ev_stream.streamClose(@ptrCast(@alignCast(wrap.toAbstract(sock)))));
     }
 
@@ -548,7 +550,7 @@ fn theUnboundSocket() void {
     {
         var none = [_]repr.Value{};
         const sock = callCore("net/socket", &none);
-        assert(harness.isType(sock, repr.Tag.abstract));
+        expect(harness.isType(sock, repr.Tag.abstract));
         raise.reported(ev_stream.streamClose(@ptrCast(@alignCast(wrap.toAbstract(sock)))));
     }
 }
@@ -569,6 +571,6 @@ pub fn run() void {
     theStreamFaults();
     theUnboundSocket();
 
-    assert(raises_seen == expected_raises);
+    expect(raises_seen == expected_raises);
     std.debug.print("net_sockets contract ok ({d} raises)\n", .{raises_seen});
 }

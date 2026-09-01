@@ -41,31 +41,32 @@ const utils = @import("subsystems").utils;
 const remove_noops = @import("subsystems").optimize;
 const harness = @import("harness.zig");
 const vm_lifecycle = @import("subsystems").lifecycle;
-const types = @import("types");
 const constants = @import("constants");
+const functions = @import("subsystems").value.functions;
+const expect = @import("expect.zig").expect;
 
 /// `JOP_JUMP`'s offset is a signed 24-bit field in the top three bytes, so a
 /// backward jump is written as a wrapped `u32`.
 fn jump(offset: i32) u32 {
-    // `JOP_JUMP` translates as a `c_int`, and the offset is the top three
-    // bytes of a `u32`, so both halves are widened before they are joined.
-    const opcode: u32 = constants.JOP_JUMP;
+    // The opcode is a `u8` and the offset the top three bytes of a `u32`, so
+    // both halves are widened before they are joined.
+    const opcode: u32 = harness.op(constants.Opcode.jump);
     return opcode | (@as(u32, @bitCast(offset)) << 8);
 }
 
 fn theThreeTablesMoveTogether() void {
     const count = 6;
     const bytecode: [*]u32 = @ptrCast(@alignCast(utils.malloc(count * @sizeOf(u32)).?));
-    const source_map: [*]types.JanetSourceMapping =
-        @ptrCast(@alignCast(utils.malloc(count * @sizeOf(types.JanetSourceMapping)).?));
-    var symbols: [2]types.JanetSymbolMap = @splat(std.mem.zeroes(types.JanetSymbolMap));
+    const source_map: [*]functions.SourceMapping =
+        @ptrCast(@alignCast(utils.malloc(count * @sizeOf(functions.SourceMapping)).?));
+    var symbols: [2]functions.SymbolMap = @splat(std.mem.zeroes(functions.SymbolMap));
 
-    bytecode[0] = constants.JOP_NOOP;
-    bytecode[1] = constants.JOP_LOAD_NIL;
-    bytecode[2] = constants.JOP_JUMP_IF | (@as(u32, 2) << 8) | (@as(u32, 3) << 16);
-    bytecode[3] = constants.JOP_NOOP;
+    bytecode[0] = harness.op(constants.Opcode.noop);
+    bytecode[1] = harness.op(constants.Opcode.load_nil);
+    bytecode[2] = harness.op(constants.Opcode.jump_if) | (@as(u32, 2) << 8) | (@as(u32, 3) << 16);
+    bytecode[3] = harness.op(constants.Opcode.noop);
     bytecode[4] = jump(-3);
-    bytecode[5] = constants.JOP_RETURN_NIL;
+    bytecode[5] = harness.op(constants.Opcode.return_nil);
 
     // Distinct line and column per instruction, so that a mapping that moved
     // the wrong entry is visible rather than coincidentally right.
@@ -79,7 +80,7 @@ fn theThreeTablesMoveTogether() void {
     symbols[1].birth_pc = std.math.maxInt(u32);
     symbols[1].death_pc = 0;
 
-    var definition: types.JanetFuncDef = std.mem.zeroes(types.JanetFuncDef);
+    var definition: functions.FuncDef = std.mem.zeroes(functions.FuncDef);
     definition.bytecode = bytecode;
     definition.bytecode_length = count;
     definition.sourcemap = source_map;
@@ -88,23 +89,23 @@ fn theThreeTablesMoveTogether() void {
 
     remove_noops.bytecodeRemoveNoops(&definition);
 
-    std.debug.assert(definition.bytecode_length == 4);
-    std.debug.assert(definition.instructions()[0] == constants.JOP_LOAD_NIL);
-    std.debug.assert(definition.instructions()[1] ==
-        (constants.JOP_JUMP_IF | (@as(u32, 2) << 8) | (@as(u32, 2) << 16)));
-    std.debug.assert(definition.instructions()[2] == jump(-2));
-    std.debug.assert(definition.instructions()[3] == constants.JOP_RETURN_NIL);
+    expect(definition.bytecode_length == 4);
+    expect(constants.Opcode.fromWord(definition.instructions()[0]) == constants.Opcode.load_nil);
+    expect(definition.instructions()[1] ==
+        (harness.op(constants.Opcode.jump_if) | (@as(u32, 2) << 8) | (@as(u32, 2) << 16)));
+    expect(definition.instructions()[2] == jump(-2));
+    expect(constants.Opcode.fromWord(definition.instructions()[3]) == constants.Opcode.return_nil);
 
     // Lines 10 and 13 belonged to the two noops and go with them.
-    std.debug.assert(definition.sourceMappings()[0].line == 11);
-    std.debug.assert(definition.sourceMappings()[1].line == 12);
-    std.debug.assert(definition.sourceMappings()[2].line == 14);
-    std.debug.assert(definition.sourceMappings()[3].line == 15);
+    expect(definition.sourceMappings()[0].line == 11);
+    expect(definition.sourceMappings()[1].line == 12);
+    expect(definition.sourceMappings()[2].line == 14);
+    expect(definition.sourceMappings()[3].line == 15);
 
-    std.debug.assert(symbols[0].birth_pc == 0);
-    std.debug.assert(symbols[0].death_pc == 3);
-    std.debug.assert(symbols[1].birth_pc == std.math.maxInt(u32));
-    std.debug.assert(symbols[1].death_pc == 0);
+    expect(symbols[0].birth_pc == 0);
+    expect(symbols[0].death_pc == 3);
+    expect(symbols[1].birth_pc == std.math.maxInt(u32));
+    expect(symbols[1].death_pc == 0);
 
     utils.free(@ptrCast(definition.bytecode));
     utils.free(@ptrCast(source_map));
@@ -115,16 +116,16 @@ fn theThreeTablesMoveTogether() void {
 /// same length it already has.
 fn aFunctionWithNoNoopsIsUntouched() void {
     const bytecode: [*]u32 = @ptrCast(@alignCast(utils.malloc(@sizeOf(u32)).?));
-    bytecode[0] = constants.JOP_RETURN_NIL;
+    bytecode[0] = harness.op(constants.Opcode.return_nil);
 
-    var definition: types.JanetFuncDef = std.mem.zeroes(types.JanetFuncDef);
+    var definition: functions.FuncDef = std.mem.zeroes(functions.FuncDef);
     definition.bytecode = bytecode;
     definition.bytecode_length = 1;
 
     remove_noops.bytecodeRemoveNoops(&definition);
 
-    std.debug.assert(definition.bytecode_length == 1);
-    std.debug.assert(definition.instructions()[0] == constants.JOP_RETURN_NIL);
+    expect(definition.bytecode_length == 1);
+    expect(constants.Opcode.fromWord(definition.instructions()[0]) == constants.Opcode.return_nil);
 
     utils.free(@ptrCast(definition.bytecode));
 }

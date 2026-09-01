@@ -41,11 +41,9 @@
 //! `harness.abiRaised` is what reads one.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("subsystems").raise;
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
@@ -58,39 +56,42 @@ const signal_core_mod = @import("subsystems").signal;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const fibers = @import("subsystems").value.fibers;
+const abi = @import("abi");
+const vm_state = @import("subsystems").vm_state;
+const functions = @import("subsystems").value.functions;
+const tables = @import("subsystems").value.tables;
 const signal_core = subsystems.signal;
 const abstract_type = subsystems.abstract_type;
-const AbstractType = abstract_type.AbstractType;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
 /// Signals run from OK to USER9; INTERRUPT and EVENT are aliases of USER8 and
 /// USER9 rather than values of their own, so counting the enumeration would
 /// overcount.
-const signal_count: c_int = @intFromEnum(types.Signal.user9) + 1;
+const signal_count: c_int = @intFromEnum(abi.Signal.user9) + 1;
 
 /// `config.ev`, which is what `signal.zig` itself gates the `sched_id` bump
 /// on. Reading the same fact rather than a `Selection` field is the point: the
 /// behaviour is compiled in or it is not, and no subsystem name answers that.
 const has_ev = constants.JANET_VM_HAS_EV != 0;
 
-var test_env: *types.JanetTable = undefined;
+var test_env: *tables.Table = undefined;
 
-fn compileFunction(source: [*:0]const u8) *types.JanetFunction {
+fn compileFunction(source: [*:0]const u8) *functions.Function {
     var out = wrap.fromNil();
-    assert(core_env.dostring(test_env, source, "signal-core-test", &out) == 0);
-    assert(harness.isType(out, repr.Tag.function));
+    expect(core_env.dostring(test_env, source, "signal-core-test", &out) == 0);
+    expect(harness.isType(out, repr.Tag.function));
     gc_alloc.gcroot(out);
     return wrap.toFunction(out);
 }
 
-fn rootedFiber(func: *types.JanetFunction) *types.JanetFiber {
+fn rootedFiber(func: *functions.Function) *fibers.Fiber {
     const fiber = fibers.new(func, 32, 0, null).?;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     return fiber;
 }
 
-fn unroot(fiber: *types.JanetFiber) void {
+fn unroot(fiber: *fibers.Fiber) void {
     _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
 }
 
@@ -101,7 +102,7 @@ fn unroot(fiber: *types.JanetFiber) void {
 /// scope, and each field is checked for the value it should hold rather than
 /// for having merely changed.
 fn aTryScopeSavesRedirectsAndRestores() void {
-    var state: types.JanetTryState = undefined;
+    var state: vm_state.TryState = undefined;
     const old_stackn = harness.vm().stackn;
     const old_gc_suspend = harness.vm().gc.suspend_count;
     const old_fiber = harness.vm().fiber;
@@ -113,23 +114,22 @@ fn aTryScopeSavesRedirectsAndRestores() void {
 
     signal_core_mod.tryInit(&state);
 
-    assert(state.stackn == old_stackn);
-    assert(state.gc_handle == old_gc_suspend);
-    assert(state.vm_fiber == old_fiber);
-    assert(state.vm_return_reg == old_return_reg);
-    // `JanetTryState` is a fixed layout, so its copy of the flag stays
-    // `c_int` where the VM's is a `bool`. The crossing is in `signal.zig` and
-    // this is where it is asserted.
-    assert(state.coerce_error == 1);
+    expect(state.stackn == old_stackn);
+    expect(state.gc_handle == old_gc_suspend);
+    expect(state.vm_fiber == old_fiber);
+    expect(state.vm_return_reg == old_return_reg);
+    // The saved copy and the VM's field are both `bool` now; the scope's job
+    // is to carry the old value across, and this is where that is asserted.
+    expect(state.coerce_error);
 
     // The recursion counter advances by exactly one. The state holds the old
     // value and the VM the new one; getting it backwards would leak one
     // `JANET_RECURSION_GUARD` level per scope, which nothing else here would
     // notice.
-    assert(harness.vm().stackn == old_stackn + 1);
+    expect(harness.vm().stackn == old_stackn + 1);
 
-    assert(harness.vm().return_reg == &state.payload);
-    assert(harness.vm().coerce_error == false);
+    expect(harness.vm().return_reg == &state.payload);
+    expect(harness.vm().coerce_error == false);
 
     // Whatever the scope's body did to the saved fields is undone rather than
     // merged. `gc_suspend` is the one that matters in practice: a callee that
@@ -140,11 +140,11 @@ fn aTryScopeSavesRedirectsAndRestores() void {
 
     signal_core_mod.restore(&state);
 
-    assert(harness.vm().stackn == old_stackn);
-    assert(harness.vm().gc.suspend_count == old_gc_suspend);
-    assert(harness.vm().fiber == old_fiber);
-    assert(harness.vm().return_reg == old_return_reg);
-    assert(harness.vm().coerce_error);
+    expect(harness.vm().stackn == old_stackn);
+    expect(harness.vm().gc.suspend_count == old_gc_suspend);
+    expect(harness.vm().fiber == old_fiber);
+    expect(harness.vm().return_reg == old_return_reg);
+    expect(harness.vm().coerce_error);
 
     harness.vm().coerce_error = old_coerce_error;
 }
@@ -154,24 +154,24 @@ fn aTryScopeSavesRedirectsAndRestores() void {
 /// depends on: each resume opens a fresh scope over whatever the last one
 /// left.
 fn tryScopesNest() void {
-    var outer: types.JanetTryState = undefined;
-    var inner: types.JanetTryState = undefined;
+    var outer: vm_state.TryState = undefined;
+    var inner: vm_state.TryState = undefined;
     const base = harness.vm().stackn;
     const old_coerce_error = harness.vm().coerce_error;
 
     signal_core_mod.tryInit(&outer);
-    assert(harness.vm().stackn == base + 1);
+    expect(harness.vm().stackn == base + 1);
 
     signal_core_mod.tryInit(&inner);
-    assert(harness.vm().stackn == base + 2);
-    assert(inner.vm_return_reg == &outer.payload);
+    expect(harness.vm().stackn == base + 2);
+    expect(inner.vm_return_reg == &outer.payload);
 
     signal_core_mod.restore(&inner);
-    assert(harness.vm().stackn == base + 1);
-    assert(harness.vm().return_reg == &outer.payload);
+    expect(harness.vm().stackn == base + 1);
+    expect(harness.vm().return_reg == &outer.payload);
 
     signal_core_mod.restore(&outer);
-    assert(harness.vm().stackn == base);
+    expect(harness.vm().stackn == base);
     harness.vm().coerce_error = old_coerce_error;
 }
 
@@ -185,9 +185,9 @@ fn tryScopesNest() void {
 fn aScopeCatchesAPanic() void {
     const base = harness.vm().stackn;
     const r = harness.raised(panicWith, .{"caught me"}).?;
-    assert(r.signal == types.Signal.@"error");
-    assert(r.says("caught me"));
-    assert(harness.vm().stackn == base);
+    expect(r.signal == abi.Signal.@"error");
+    expect(r.says("caught me"));
+    expect(harness.vm().stackn == base);
 }
 
 // ------------------------------------------------------------ the decision
@@ -197,14 +197,14 @@ fn aScopeCatchesAPanic() void {
 fn thePlanWithoutAReturnRegister() void {
     const old_return_reg = harness.vm().return_reg;
     const old_coerce_error = harness.vm().coerce_error;
-    var out: types.Signal = types.Signal.ok;
+    var out: abi.Signal = abi.Signal.ok;
 
     harness.vm().return_reg = null;
     // Set so that a plan which consulted it before the null test would show.
     harness.vm().coerce_error = true;
 
-    assert(signal_core_mod.signalPlan(types.Signal.yield, &out) == signal_core_mod.Plan.top_level);
-    assert(out == types.Signal.yield);
+    expect(signal_core_mod.signalPlan(abi.Signal.yield, &out) == signal_core_mod.Plan.top_level);
+    expect(out == abi.Signal.yield);
 
     harness.vm().return_reg = old_return_reg;
     harness.vm().coerce_error = old_coerce_error;
@@ -224,10 +224,10 @@ fn thePlanWithoutCoercion() void {
 
     var s: c_int = 0;
     while (s < signal_count) : (s += 1) {
-        const sig: types.Signal = @enumFromInt(@as(c_uint, @intCast(s)));
-        var out: types.Signal = types.Signal.ok;
-        assert(signal_core_mod.signalPlan(sig, &out) == signal_core_mod.Plan.raise);
-        assert(out == sig);
+        const sig: abi.Signal = @enumFromInt(@as(c_uint, @intCast(s)));
+        var out: abi.Signal = abi.Signal.ok;
+        expect(signal_core_mod.signalPlan(sig, &out) == signal_core_mod.Plan.raise);
+        expect(out == sig);
     }
 
     harness.vm().return_reg = old_return_reg;
@@ -242,24 +242,24 @@ fn thePlanCoerces() void {
     var reg = wrap.fromNil();
     const old_return_reg = harness.vm().return_reg;
     const old_coerce_error = harness.vm().coerce_error;
-    var out: types.Signal = undefined;
+    var out: abi.Signal = undefined;
 
     harness.vm().return_reg = &reg;
     harness.vm().coerce_error = true;
 
-    out = types.Signal.yield;
-    assert(signal_core_mod.signalPlan(types.Signal.ok, &out) == signal_core_mod.Plan.raise);
-    assert(out == types.Signal.ok);
+    out = abi.Signal.yield;
+    expect(signal_core_mod.signalPlan(abi.Signal.ok, &out) == signal_core_mod.Plan.raise);
+    expect(out == abi.Signal.ok);
 
-    out = types.Signal.yield;
-    assert(signal_core_mod.signalPlan(types.Signal.@"error", &out) == signal_core_mod.Plan.raise);
-    assert(out == types.Signal.@"error");
+    out = abi.Signal.yield;
+    expect(signal_core_mod.signalPlan(abi.Signal.@"error", &out) == signal_core_mod.Plan.raise);
+    expect(out == abi.Signal.@"error");
 
-    var s: c_int = @intFromEnum(types.Signal.debug);
+    var s: c_int = @intFromEnum(abi.Signal.debug);
     while (s < signal_count) : (s += 1) {
-        out = types.Signal.ok;
-        assert(signal_core_mod.signalPlan(@enumFromInt(@as(c_uint, @intCast(s))), &out) == signal_core_mod.Plan.coerce);
-        assert(out == types.Signal.@"error");
+        out = abi.Signal.ok;
+        expect(signal_core_mod.signalPlan(@enumFromInt(@as(c_uint, @intCast(s))), &out) == signal_core_mod.Plan.coerce);
+        expect(out == abi.Signal.@"error");
     }
 
     harness.vm().return_reg = old_return_reg;
@@ -275,7 +275,7 @@ fn thePlanCoerces() void {
 ///
 /// Three conditions gate it and each is checked separately, since any one of
 /// them dropped would leave the common path working.
-fn thePlanBumpsTheRootFiber(nothing: *types.JanetFunction) void {
+fn thePlanBumpsTheRootFiber(nothing: *functions.Function) void {
     if (!has_ev) return;
 
     var reg = wrap.fromNil();
@@ -284,30 +284,30 @@ fn thePlanBumpsTheRootFiber(nothing: *types.JanetFunction) void {
     const old_root_fiber = harness.vm().root_fiber;
     const fiber = rootedFiber(nothing);
     defer unroot(fiber);
-    var out: types.Signal = undefined;
+    var out: abi.Signal = undefined;
 
     harness.vm().return_reg = &reg;
     harness.vm().coerce_error = true;
     harness.vm().root_fiber = fiber;
     const base = fiber.sched_id;
 
-    assert(signal_core_mod.signalPlan(types.Signal.event, &out) == signal_core_mod.Plan.coerce);
-    assert(fiber.sched_id == base +% 1);
+    expect(signal_core_mod.signalPlan(abi.Signal.event, &out) == signal_core_mod.Plan.coerce);
+    expect(fiber.sched_id == base +% 1);
 
     // Only EVENT.
-    assert(signal_core_mod.signalPlan(types.Signal.yield, &out) == signal_core_mod.Plan.coerce);
-    assert(fiber.sched_id == base +% 1);
+    expect(signal_core_mod.signalPlan(abi.Signal.yield, &out) == signal_core_mod.Plan.coerce);
+    expect(fiber.sched_id == base +% 1);
 
     // Only while coercing.
     harness.vm().coerce_error = false;
-    assert(signal_core_mod.signalPlan(types.Signal.event, &out) == signal_core_mod.Plan.raise);
-    assert(fiber.sched_id == base +% 1);
+    expect(signal_core_mod.signalPlan(abi.Signal.event, &out) == signal_core_mod.Plan.raise);
+    expect(fiber.sched_id == base +% 1);
 
     // Only with a root fiber — and without one it must not dereference null.
     harness.vm().coerce_error = true;
     harness.vm().root_fiber = null;
-    assert(signal_core_mod.signalPlan(types.Signal.event, &out) == signal_core_mod.Plan.coerce);
-    assert(fiber.sched_id == base +% 1);
+    expect(signal_core_mod.signalPlan(abi.Signal.event, &out) == signal_core_mod.Plan.coerce);
+    expect(fiber.sched_id == base +% 1);
 
     harness.vm().root_fiber = old_root_fiber;
     harness.vm().return_reg = old_return_reg;
@@ -323,7 +323,7 @@ fn thePlanBumpsTheRootFiber(nothing: *types.JanetFunction) void {
 /// part changed about it: `janet_signal_commit` was an `export fn` with a
 /// declaration in `state.h` whose only caller outside its own file was this
 /// contract. It is `signalCommit` now.
-fn theCommitPublishesAndMarks(nothing: *types.JanetFunction) void {
+fn theCommitPublishesAndMarks(nothing: *functions.Function) void {
     var reg = wrap.fromNil();
     const message = value.fromBytes("payload", .string);
     const old_return_reg = harness.vm().return_reg;
@@ -334,13 +334,13 @@ fn theCommitPublishesAndMarks(nothing: *types.JanetFunction) void {
     gc_alloc.gcroot(message);
     defer _ = gc_alloc.gcunroot(message);
 
-    fiber.flags &= ~@as(i32, constants.JANET_FIBER_DID_RAISE);
+    fiber.flags.did_raise = false;
     harness.vm().return_reg = &reg;
     harness.vm().fiber = fiber;
 
     signal_core.signalCommit(&message);
-    assert(harness.equals(reg, message));
-    assert(fiber.flags & constants.JANET_FIBER_DID_RAISE != 0);
+    expect(harness.equals(reg, message));
+    expect(fiber.flags.did_raise);
 
     // With no current fiber the register is still written and nothing is
     // dereferenced. `janet_zig_signal_record` reaches this whenever a panic is
@@ -348,7 +348,7 @@ fn theCommitPublishesAndMarks(nothing: *types.JanetFunction) void {
     reg = wrap.fromNil();
     harness.vm().fiber = null;
     signal_core.signalCommit(&message);
-    assert(harness.equals(reg, message));
+    expect(harness.equals(reg, message));
 
     harness.vm().fiber = old_fiber;
     harness.vm().return_reg = old_return_reg;
@@ -358,14 +358,13 @@ fn theCommitPublishesAndMarks(nothing: *types.JanetFunction) void {
 
 // `janet_zig_signal_record` is the whole of a raise except the delivery. Its
 // two observable outputs are the payload in the return register and the signal
-// in `vm.pending_signal`, and the second is the one that carries: a Zig
-// caller reads the signal out of that field, where under the jump it travelled
-// as `longjmp`'s second argument and was never stored anywhere.
+// in `vm.pending_signal`, and the second is the one that carries: a caller
+// reads the signal out of that field.
 
 /// The ordinary case. Nothing coerces, so the message and the signal both
 /// arrive unaltered, and the fiber is marked exactly as `signalCommit` marks
 /// it.
-fn theRecordPublishesSignalAndPayload(nothing: *types.JanetFunction) void {
+fn theRecordPublishesSignalAndPayload(nothing: *functions.Function) void {
     var reg = wrap.fromNil();
     const message = value.fromBytes("recorded", .string);
     const old_return_reg = harness.vm().return_reg;
@@ -377,25 +376,25 @@ fn theRecordPublishesSignalAndPayload(nothing: *types.JanetFunction) void {
     gc_alloc.gcroot(message);
     defer _ = gc_alloc.gcunroot(message);
 
-    fiber.flags &= ~@as(i32, constants.JANET_FIBER_DID_RAISE);
+    fiber.flags.did_raise = false;
     harness.vm().return_reg = &reg;
     harness.vm().fiber = fiber;
     harness.vm().coerce_error = false;
     // Scribbled first, so that a record which never writes it is caught rather
     // than passing because the field already held the value wanted.
-    harness.vm().pending_signal = types.Signal.user9;
+    harness.vm().pending_signal = abi.Signal.user9;
 
-    signal_core_mod.zigSignalRecord(types.Signal.@"error", message);
-    assert(harness.vm().pending_signal == types.Signal.@"error");
-    assert(harness.equals(reg, message));
-    assert(fiber.flags & constants.JANET_FIBER_DID_RAISE != 0);
+    signal_core_mod.zigSignalRecord(abi.Signal.@"error", message);
+    expect(harness.vm().pending_signal == abi.Signal.@"error");
+    expect(harness.equals(reg, message));
+    expect(fiber.flags.did_raise);
 
     // A signal that does not coerce travels unaltered, which is what makes
     // `pending_signal` worth reading rather than assuming.
-    harness.vm().pending_signal = types.Signal.user9;
-    signal_core_mod.zigSignalRecord(types.Signal.yield, message);
-    assert(harness.vm().pending_signal == types.Signal.yield);
-    assert(harness.equals(reg, message));
+    harness.vm().pending_signal = abi.Signal.user9;
+    signal_core_mod.zigSignalRecord(abi.Signal.yield, message);
+    expect(harness.vm().pending_signal == abi.Signal.yield);
+    expect(harness.equals(reg, message));
 
     harness.vm().coerce_error = old_coerce_error;
     harness.vm().fiber = old_fiber;
@@ -407,7 +406,7 @@ fn theRecordPublishesSignalAndPayload(nothing: *types.JanetFunction) void {
 /// original signal — so a port that coerced the signal but forwarded the
 /// message unchanged, which is the plausible slip, fails here rather than in a
 /// suite.
-fn theRecordCoercesMessageAndSignal(nothing: *types.JanetFunction) void {
+fn theRecordCoercesMessageAndSignal(nothing: *functions.Function) void {
     var reg = wrap.fromNil();
     const message = value.fromBytes("original", .string);
     const old_return_reg = harness.vm().return_reg;
@@ -422,22 +421,22 @@ fn theRecordCoercesMessageAndSignal(nothing: *types.JanetFunction) void {
     harness.vm().return_reg = &reg;
     harness.vm().fiber = fiber;
     harness.vm().coerce_error = true;
-    harness.vm().pending_signal = types.Signal.user9;
+    harness.vm().pending_signal = abi.Signal.user9;
 
-    signal_core_mod.zigSignalRecord(types.Signal.yield, message);
-    assert(harness.vm().pending_signal == types.Signal.@"error");
-    assert(harness.isType(reg, repr.Tag.string));
+    signal_core_mod.zigSignalRecord(abi.Signal.yield, message);
+    expect(harness.vm().pending_signal == abi.Signal.@"error");
+    expect(harness.isType(reg, repr.Tag.string));
     const rendered = wrap.toString(reg);
-    const text = rendered[0..@intCast(types.stringHead(rendered).length)];
-    assert(std.mem.indexOf(u8, text, "coerced from") != null);
-    assert(std.mem.indexOf(u8, text, "yield") != null);
+    const text = rendered[0..@intCast(strings.head(rendered).length)];
+    expect(std.mem.indexOf(u8, text, "coerced from") != null);
+    expect(std.mem.indexOf(u8, text, "yield") != null);
 
     // ERROR under coercion is a raise rather than a coercion: the signal is
     // already what it would be coerced to, so the message must survive.
     reg = wrap.fromNil();
-    signal_core_mod.zigSignalRecord(types.Signal.@"error", message);
-    assert(harness.vm().pending_signal == types.Signal.@"error");
-    assert(harness.equals(reg, message));
+    signal_core_mod.zigSignalRecord(abi.Signal.@"error", message);
+    expect(harness.vm().pending_signal == abi.Signal.@"error");
+    expect(harness.equals(reg, message));
 
     harness.vm().coerce_error = old_coerce_error;
     harness.vm().fiber = old_fiber;
@@ -463,7 +462,7 @@ fn panicvWith(message: repr.Value) raise.Error!void {
     return raise.panicv(message);
 }
 
-fn signalWith(sig: types.Signal, message: repr.Value) raise.Error!void {
+fn signalWith(sig: abi.Signal, message: repr.Value) raise.Error!void {
     return raise.signal(sig, message);
 }
 
@@ -472,19 +471,19 @@ fn signalWith(sig: types.Signal, message: repr.Value) raise.Error!void {
 /// any value at all, and `raise.signal` carries a signal that is not an error.
 fn theEntryPoints() void {
     const plain = harness.raised(panicWith, .{"plain"}).?;
-    assert(plain.signal == types.Signal.@"error");
-    assert(plain.says("plain"));
+    expect(plain.signal == abi.Signal.@"error");
+    expect(plain.says("plain"));
 
     // The payload is not coerced to a string: `panicv` takes any value.
     const valued = harness.raised(panicvWith, .{harness.wrapInteger(11)}).?;
-    assert(valued.signal == types.Signal.@"error");
-    assert(harness.equals(valued.payload, harness.wrapInteger(11)));
+    expect(valued.signal == abi.Signal.@"error");
+    expect(harness.equals(valued.payload, harness.wrapInteger(11)));
 
     // A non-error signal reaches `pending_signal` unaltered, which is the
     // field a Zig caller reads instead of the value a `setjmp` returned.
-    const yielded = harness.raised(signalWith, .{ types.Signal.yield, value.fromBytes("suspended", .string) }).?;
-    assert(yielded.signal == types.Signal.yield);
-    assert(yielded.says("suspended"));
+    const yielded = harness.raised(signalWith, .{ abi.Signal.yield, value.fromBytes("suspended", .string) }).?;
+    expect(yielded.signal == abi.Signal.yield);
+    expect(yielded.says("suspended"));
 }
 
 /// The four abis, each `raise.report` over one of the entry points above.
@@ -494,20 +493,20 @@ fn theEntryPoints() void {
 /// calling it, and it sits beside the engine that builds its message.
 fn thePublicAbis() void {
     const plain = harness.abiRaised(signal_core_mod.panic, .{"plain"}).?;
-    assert(plain.signal == types.Signal.@"error");
-    assert(plain.says("plain"));
+    expect(plain.signal == abi.Signal.@"error");
+    expect(plain.says("plain"));
 
     const interned = harness.abiRaised(signal_core_mod.panics, .{strings.cstring("interned")}).?;
-    assert(interned.signal == types.Signal.@"error");
-    assert(interned.says("interned"));
+    expect(interned.signal == abi.Signal.@"error");
+    expect(interned.says("interned"));
 
     const valued = harness.abiRaised(signal_core_mod.panicv, .{harness.wrapInteger(11)}).?;
-    assert(valued.signal == types.Signal.@"error");
-    assert(harness.equals(valued.payload, harness.wrapInteger(11)));
+    expect(valued.signal == abi.Signal.@"error");
+    expect(harness.equals(valued.payload, harness.wrapInteger(11)));
 
-    const signalled = harness.abiRaised(signal_core_mod.signalv, .{ types.Signal.yield, value.fromBytes("suspended", .string) }).?;
-    assert(signalled.signal == types.Signal.yield);
-    assert(signalled.says("suspended"));
+    const signalled = harness.abiRaised(signal_core_mod.signalv, .{ abi.Signal.yield, value.fromBytes("suspended", .string) }).?;
+    expect(signalled.signal == abi.Signal.yield);
+    expect(signalled.says("suspended"));
 
     // `janet_panics` takes a `JanetString`, which carries its own length, and
     // must not re-intern it through a C string. Nothing else in the tree
@@ -519,31 +518,31 @@ fn thePublicAbis() void {
     gc_alloc.gcroot(wrap.fromString(embedded));
     defer _ = gc_alloc.gcunroot(wrap.fromString(embedded));
     const raw = harness.abiRaised(signal_core_mod.panics, .{embedded}).?;
-    assert(raw.signal == types.Signal.@"error");
-    assert(harness.isType(raw.payload, repr.Tag.string));
+    expect(raw.signal == abi.Signal.@"error");
+    expect(harness.isType(raw.payload, repr.Tag.string));
     const payload = wrap.toString(raw.payload);
-    assert(types.stringHead(payload).length == 3);
-    assert(std.mem.eql(u8, payload[0..3], "a\x00b"));
+    expect(strings.head(payload).length == 3);
+    expect(std.mem.eql(u8, payload[0..3], "a\x00b"));
 }
 
-/// The two slot diagnostics live with the argument layer, under
-/// `-Dargs-core`, because the fault path there needs the error and not a
-/// report. Their wording is pinned by `test/args_core.zig` against every fault
-/// kind; what is pinned here is that the two public abis still deliver.
+/// The two slot diagnostics live with the argument layer, because the fault
+/// path there needs the error and not a report. Their wording is pinned by
+/// `test/args_core.zig` against every fault kind; what is pinned here is that
+/// the two abis still deliver.
 fn theSlotDiagnostics() void {
     const at_probe = abstract_type.define(anyopaque, .{ .name = "signal-core/probe" });
 
-    const wrong_type = harness.abiRaised(c.janet_panic_type, .{ wrap.fromNil(), 3, repr.TagSet.one(.number).bits() }).?;
-    assert(wrong_type.signal == types.Signal.@"error");
-    assert(wrong_type.says("bad slot #3, expected number, got nil"));
+    const wrong_type = harness.abiRaised(subsystems.args.panicTypeAbi, .{ wrap.fromNil(), 3, repr.TagSet.one(.number).bits() }).?;
+    expect(wrong_type.signal == abi.Signal.@"error");
+    expect(wrong_type.says("bad slot #3, expected number, got nil"));
 
-    const wrong_abstract = harness.abiRaised(c.janet_panic_abstract, .{
+    const wrong_abstract = harness.abiRaised(subsystems.args.panicAbstractAbi, .{
         wrap.fromNil(),
         @as(i32, 0),
         &at_probe,
     }).?;
-    assert(wrong_abstract.signal == types.Signal.@"error");
-    assert(wrong_abstract.says("bad slot #0, expected signal-core/probe, got nil"));
+    expect(wrong_abstract.signal == abi.Signal.@"error");
+    expect(wrong_abstract.says("bad slot #0, expected signal-core/probe, got nil"));
 }
 
 // ------------------------------------------------------------- injection
@@ -554,7 +553,7 @@ fn theSlotDiagnostics() void {
 /// `gc.flags` and clears it there — and a port that "tidied" it into one word
 /// would compile, pass the suites, and deliver every injected signal as status
 /// NEW.
-fn injectionReachesTheInnermostFiber(nothing: *types.JanetFunction) void {
+fn injectionReachesTheInnermostFiber(nothing: *functions.Function) void {
     const parent = rootedFiber(nothing);
     const child = rootedFiber(nothing);
     const grandchild = rootedFiber(nothing);
@@ -570,109 +569,98 @@ fn injectionReachesTheInnermostFiber(nothing: *types.JanetFunction) void {
     const parent_flags = parent.flags;
     const child_flags = child.flags;
 
-    signal_core_mod.signalInject(parent, types.Signal.user3);
+    signal_core_mod.signalInject(parent, abi.Signal.user3);
 
-    assert(grandchild.flags & constants.JANET_FIBER_RESUME_SIGNAL != 0);
-    assert((grandchild.gc.flags & constants.JANET_FIBER_STATUS_MASK) >> constants.JANET_FIBER_STATUS_OFFSET ==
-        @intFromEnum(types.Signal.user3));
+    expect(grandchild.flags.resume_signal);
+    expect((grandchild.gc.flags & constants.JANET_FIBER_STATUS_MASK) >> constants.JANET_FIBER_STATUS_OFFSET ==
+        @intFromEnum(abi.Signal.user3));
 
     // The fiber's real status lives in `flags` and is untouched.
-    assert(fibers.status(grandchild) == types.FiberStatus.new);
+    expect(fibers.status(grandchild) == fibers.FiberStatus.new);
 
     // Neither of the fibers above it is disturbed.
-    assert(parent.flags == parent_flags);
-    assert(child.flags == child_flags);
+    expect(std.meta.eql(parent.flags, parent_flags));
+    expect(std.meta.eql(child.flags, child_flags));
 
     // A chain of one is its own innermost fiber.
     grandchild.gc.flags &= ~@as(i32, constants.JANET_FIBER_STATUS_MASK);
-    grandchild.flags &= ~@as(i32, constants.JANET_FIBER_RESUME_SIGNAL);
+    grandchild.flags.resume_signal = false;
     parent.child = null;
     child.child = null;
-    signal_core_mod.signalInject(grandchild, types.Signal.user1);
-    assert(grandchild.flags & constants.JANET_FIBER_RESUME_SIGNAL != 0);
-    assert((grandchild.gc.flags & constants.JANET_FIBER_STATUS_MASK) >> constants.JANET_FIBER_STATUS_OFFSET ==
-        @intFromEnum(types.Signal.user1));
+    signal_core_mod.signalInject(grandchild, abi.Signal.user1);
+    expect(grandchild.flags.resume_signal);
+    expect((grandchild.gc.flags & constants.JANET_FIBER_STATUS_MASK) >> constants.JANET_FIBER_STATUS_OFFSET ==
+        @intFromEnum(abi.Signal.user1));
 
     grandchild.gc.flags &= ~@as(i32, constants.JANET_FIBER_STATUS_MASK);
-    grandchild.flags &= ~@as(i32, constants.JANET_FIBER_RESUME_SIGNAL);
+    grandchild.flags.resume_signal = false;
 }
 
 /// The injection and the resume that consumes it, end to end. This is what
 /// `ev/cancel` is built on, and it is the only check here that the carrier the
 /// injection writes is the one `run_vm` reads.
-fn aContinueSignalDeliversAnError(yielder: *types.JanetFunction) void {
+fn aContinueSignalDeliversAnError(yielder: *functions.Function) void {
     const fiber = rootedFiber(yielder);
     defer unroot(fiber);
     var out = wrap.fromNil();
 
-    assert(vm_entry.continueFiber(fiber, wrap.fromNil(), &out) == types.Signal.yield);
+    expect(vm_entry.continueFiber(fiber, wrap.fromNil(), &out) == abi.Signal.yield);
 
-    const sig = vm_entry.continueSignal(fiber, value.fromBytes("cancelled", .string), &out, types.Signal.@"error");
-    assert(sig == types.Signal.@"error");
-    assert(harness.stringValueIs(out, "cancelled"));
+    const sig = vm_entry.continueSignal(fiber, value.fromBytes("cancelled", .string), &out, abi.Signal.@"error");
+    expect(sig == abi.Signal.@"error");
+    expect(harness.stringValueIs(out, "cancelled"));
 }
 
-/// A signal of OK is not injected at all: `janet_continue_signal` resumes
-/// normally, and the fiber sees the value rather than a raise.
-fn aContinueSignalOfOkIsAnOrdinaryResume(yielder: *types.JanetFunction) void {
+/// A signal of OK is not injected at all: `continueSignal` resumes normally,
+/// and the fiber sees the value rather than a raise.
+fn aContinueSignalOfOkIsAnOrdinaryResume(yielder: *functions.Function) void {
     const fiber = rootedFiber(yielder);
     defer unroot(fiber);
     var out = wrap.fromNil();
 
-    assert(vm_entry.continueFiber(fiber, wrap.fromNil(), &out) == types.Signal.yield);
+    expect(vm_entry.continueFiber(fiber, wrap.fromNil(), &out) == abi.Signal.yield);
 
-    const sig = vm_entry.continueSignal(fiber, harness.wrapInteger(7), &out, types.Signal.ok);
-    assert(sig == types.Signal.ok);
-    assert(harness.integerIs(out, 7));
+    const sig = vm_entry.continueSignal(fiber, harness.wrapInteger(7), &out, abi.Signal.ok);
+    expect(sig == abi.Signal.ok);
+    expect(harness.integerIs(out, 7));
 }
 
 /// A signal number a C caller may legally pass but the vocabulary has no
 /// member for.
 ///
-/// **The published boundary takes the wire width, not the enum.** Every
-/// signal-taking entry point is `callconv(.c)`, so its argument is whatever
-/// `c_uint` the caller wrote. `types.Signal` has fourteen members, and
-/// *building* an enum value outside them is the illegal operation -- it is not
-/// deferred to a later `switch`. So 42 arriving at `janet_continue_signal`
-/// used to be illegal behaviour before anything looked at it, and the six bits
-/// it travelled through in the fiber's GC header made the read-back illegal
-/// too.
+/// **A wire number is whatever the caller wrote.** `abi.Signal` has fourteen
+/// members, and *building* an enum value outside them is the illegal operation
+/// -- it is not deferred to a later `switch`. So 42 was illegal behaviour
+/// before anything looked at it, and the six bits it travels through in the
+/// fiber's GC header made the read-back illegal too.
 ///
 /// `Signal.fromWire` clamps, which is what `JOP_SIGNAL` already did with the
 /// raw number in an instruction field. This pins the two ends: the number goes
 /// in as 42 and comes back as `user9`, and neither end traps.
-fn anOutOfDomainSignalClamps(yielder: *types.JanetFunction) void {
+fn anOutOfDomainSignalClamps(yielder: *functions.Function) void {
     const fiber = rootedFiber(yielder);
     defer unroot(fiber);
     var out = wrap.fromNil();
 
-    assert(vm_entry.continueFiber(fiber, wrap.fromNil(), &out) == types.Signal.yield);
+    expect(vm_entry.continueFiber(fiber, wrap.fromNil(), &out) == abi.Signal.yield);
 
-    // Reached through the symbol table rather than by import, because the
-    // published entry point is what owns the conversion -- the internal
-    // `continueSignal` already takes a member and could not be handed 42.
-    const published = struct {
-        extern fn janet_continue_signal(
-            fiber: *types.JanetFiber,
-            in: repr.Value,
-            out: *repr.Value,
-            sig: c_uint,
-        ) callconv(.c) types.Signal;
-    };
-    const sig = published.janet_continue_signal(fiber, wrap.fromNil(), &out, 42);
-    assert(sig == types.Signal.user9);
+    // `continueSignal` takes a member and could not be handed 42, so the
+    // conversion is spelled at the call: this is the whole path a wire number
+    // travels, from `fromWire` through the injection to the read-back.
+    const sig = vm_entry.continueSignal(fiber, wrap.fromNil(), &out, abi.Signal.fromWire(42));
+    expect(sig == abi.Signal.user9);
 
     // The whole six-bit range the GC header can hold, including the value
     // above the enum's largest member and the one at the far end.
-    assert(types.Signal.fromWire(0) == types.Signal.ok);
-    assert(types.Signal.fromWire(13) == types.Signal.user9);
-    assert(types.Signal.fromWire(14) == types.Signal.user9);
-    assert(types.Signal.fromWire(63) == types.Signal.user9);
-    assert(types.Signal.fromWire(std.math.maxInt(c_uint)) == types.Signal.user9);
+    expect(abi.Signal.fromWire(0) == abi.Signal.ok);
+    expect(abi.Signal.fromWire(13) == abi.Signal.user9);
+    expect(abi.Signal.fromWire(14) == abi.Signal.user9);
+    expect(abi.Signal.fromWire(63) == abi.Signal.user9);
+    expect(abi.Signal.fromWire(std.math.maxInt(c_uint)) == abi.Signal.user9);
 
     // A member converts to itself, so an internal caller pays nothing.
-    inline for (@typeInfo(types.Signal).@"enum".fields) |f| {
-        assert(types.Signal.fromWire(f.value) == @as(types.Signal, @enumFromInt(f.value)));
+    inline for (@typeInfo(abi.Signal).@"enum".fields) |f| {
+        expect(abi.Signal.fromWire(f.value) == @as(abi.Signal, @enumFromInt(f.value)));
     }
 }
 

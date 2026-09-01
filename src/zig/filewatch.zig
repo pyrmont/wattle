@@ -1,23 +1,20 @@
 //! `spawn`-based filesystem watching: the cfunctions, and the flag vocabulary
 //! they translate between Janet keywords and the host's own bits.
 //!
-//! Two files once: the cfunctions, and a flag vocabulary that exists because
-//! three platforms describe the same events differently. That vocabulary has
-//! no name Janet publishes and one importer, so it is folded in here.
-//! `filewatch/abi.zig` beside this file is where the platform difference
-//! actually lives.
+//! The flag vocabulary is here rather than beside this file because it has no
+//! name Janet publishes and one importer. `filewatch/abi.zig` is where the
+//! platform difference actually lives.
 const std = @import("std");
-const builtin = @import("builtin");
-const corefn = @import("corefn");
-const raise = @import("raise");
+const corefn = @import("corefn.zig");
+const raise = @import("raise.zig");
 const pp_format = @import("pp/format.zig");
 const fw_abi = @import("filewatch/abi.zig");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
 const stdio = @import("stdio.zig");
 const ev_loop = @import("ev.zig");
+const ev_channel = @import("ev/channel.zig");
 const vm_lifecycle = @import("vm/lifecycle.zig");
 const args_core = @import("args.zig");
 const abstract_type = @import("abstract_type.zig");
@@ -35,17 +32,13 @@ const value = @import("value.zig");
 const ev_stream = @import("ev/stream.zig");
 
 // -------------------------------------------------------------------------
-// The cfunctions -- what `filewatch_core.zig` was.
+// The cfunctions.
 // -------------------------------------------------------------------------
 
 const h = fw_abi.h;
 const backend = fw_abi.backend;
 
 const stream_readable: u32 = @intCast(constants.JANET_STREAM_READABLE);
-
-inline fn errno() c_int {
-    return std.c._errno().*;
-}
 
 /// `janet_assert`, which is a macro and does not survive translation.
 /// `net_addr.zig` has the same five lines and the same reason.
@@ -55,26 +48,15 @@ fn assert(comptime where: std.builtin.SourceLocation, cond: bool, comptime messa
         "janet abort at {s}:{d}: {s}\n",
         .{ where.file, where.line, message },
     );
-    _ = fwrite(line.ptr, 1, line.len, @ptrCast(@alignCast(stdio.err())));
-    abort();
+    _ = c.fwrite(line.ptr, 1, line.len, stdio.err());
+    c.abort();
 }
 
-extern fn fwrite(ptr: [*]const u8, size: usize, n: usize, stream_handle: ?*types.FILE) callconv(.c) usize;
-extern fn abort() callconv(.c) noreturn;
-
 // ==========================================================================
-// The keyword vocabularies, which live behind `-Dfilewatch-flags`
+// The keyword vocabularies
 // ==========================================================================
 
-/// The name half of the flag table, by import.
-///
-/// Its four lookups were `export fn janet_filewatch_flag_*`, declared here as
-/// `extern fn`s, which is what a C caller needed. The
-/// `platform_linux`/`platform_windows`/`platform_kqueue` ordinals went with
-/// them: they were this side's copy of `Platform`, kept because a `u32` was
-/// the only thing that could cross a C-ABI seam, and a direct call names the
-/// tag instead.
-/// for one backend.
+/// Decode a list of keywords into one backend's flag mask.
 ///
 /// `values` is the backend's flag values in the table's own order, so the
 /// index the lookup reports selects one directly. `what` names the backend in
@@ -92,7 +74,7 @@ fn decodeFlags(
             return pp_format.panicf("expected keyword, got %v", .{opt});
         }
         const keyw = wrap.toKeyword(opt);
-        const name = keyw[0..@intCast(types.stringHead(keyw).length)];
+        const name = keyw[0..@intCast(strings.head(keyw).length)];
         const index = flagIndex(platform, name) orelse
             return pp_format.panicf("unknown %s flag %v", .{ what, opt });
         if (index >= values.len or values[index] == 0) {
@@ -113,9 +95,9 @@ fn decodeFlags(
 /// on Windows, where a watch owns a handle each rather than the watcher owning
 /// one. `void` is how that member is spelled away here.
 const JanetWatcher = struct {
-    stream: if (backend == .windows) void else ?*types.JanetStream,
-    watch_descriptors: ?*types.JanetTable,
-    channel: ?*types.JanetChannel,
+    stream: if (backend == .windows) void else ?*ev_stream.Stream,
+    watch_descriptors: ?*tables.Table,
+    channel: ?*ev_channel.Channel,
     default_flags: u32,
     is_watching: c_int,
 };
@@ -124,21 +106,13 @@ fn watcherOf(p: ?*anyopaque) *JanetWatcher {
     return @ptrCast(@alignCast(p));
 }
 
-/// `janet_wrap_integer`, written out. `janet.h` declares the function beside
-/// its macro and `wrap.c` defines it only for the two nanbox layouts, so a
-/// tagged build has no such symbol. This is the tenth subsystem to meet it and
-/// `FOUND.md` records it; `-Dnanbox=false` in the matrix is what catches it.
-inline fn wrapInteger(x: anytype) repr.Value {
-    return wrap.fromNumber(@floatFromInt(x));
-}
-
 // ==========================================================================
 // inotify
 // ==========================================================================
 
 const inotify = struct {
-    /// inotify's flag values, in the order `filewatch_flags.zig`'s
-    /// `linux_names` lists them. The two arrays are one table split in half,
+    /// inotify's flag values, in the order `linux_names` below lists them.
+    /// The two arrays are one table split in half,
     /// so an edit to either has to be an edit to both; the assertion below
     /// pins this half's length and `test/filewatch_flags.zig` pins the other
     /// half's to the same number.
@@ -169,11 +143,11 @@ const inotify = struct {
         return decodeFlags(options, .linux, &values, "linux");
     }
 
-    fn init(watcher: *JanetWatcher, channel: ?*types.JanetChannel, default_flags: u32) raise.Raising(void) {
+    fn init(watcher: *JanetWatcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
         var fd: c_int = undefined;
         while (true) {
             fd = h.inotify_init1(h.IN_NONBLOCK | h.IN_CLOEXEC);
-            if (!(fd == -1 and errno() == h.EINTR)) break;
+            if (!(fd == -1 and c.errno() == h.EINTR)) break;
         }
         if (fd == -1) return raise.panicv(ev_stream.evLasterr());
         watcher.watch_descriptors = tables.new(0);
@@ -188,11 +162,11 @@ const inotify = struct {
         var result: c_int = undefined;
         while (true) {
             result = h.inotify_add_watch(stream.handle, path, flags);
-            if (!(result == -1 and errno() == h.EINTR)) break;
+            if (!(result == -1 and c.errno() == h.EINTR)) break;
         }
         if (result == -1) return raise.panicv(ev_stream.evLasterr());
         const name = value.fromBytes(std.mem.span(path), .string);
-        const wd = wrapInteger(result);
+        const wd = wrap.fromInteger(result);
         tables.put(watcher.watch_descriptors.?, name, wd);
         tables.put(watcher.watch_descriptors.?, wd, name);
     }
@@ -213,7 +187,7 @@ const inotify = struct {
         var result: c_int = undefined;
         while (true) {
             result = h.inotify_rm_watch(stream.handle, watch_handle);
-            if (!(result != -1 and errno() == h.EINTR)) break;
+            if (!(result != -1 and c.errno() == h.EINTR)) break;
         }
         if (result == -1) return raise.panicv(ev_stream.evLasterr());
         // The C original leaves the two table entries in place, commented out
@@ -223,9 +197,9 @@ const inotify = struct {
     /// `watcher_callback_read`. Nothing here raises: the event loop calls it
     /// with no protected scope of its own, and every failure is reported by
     /// scheduling or cancelling the waiting fiber.
-    fn callbackRead(fiber: *types.JanetFiber, event: types.JanetAsyncEvent) raise.Raising(void) {
-        const stream = fiber.*.ev_stream.?;
-        const watcher: *JanetWatcher = watcherOf(@as(*?*anyopaque, @ptrCast(@alignCast(fiber.*.ev_state))).*);
+    fn callbackRead(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Raising(void) {
+        const stream = fiber.ev_stream.?;
+        const watcher: *JanetWatcher = watcherOf(@as(*?*anyopaque, @ptrCast(@alignCast(fiber.ev_state))).*);
         var buf: [1024]u8 = undefined;
         switch (event) {
             constants.JANET_ASYNC_EVENT_MARK => gc_mark.mark(wrap.fromAbstract(watcher)),
@@ -248,14 +222,14 @@ const inotify = struct {
                     // least one event.
                     var nread: isize = undefined;
                     while (true) {
-                        nread = h.read(stream.*.handle, &buf, buf.len);
-                        if (!(nread == -1 and errno() == h.EINTR)) break;
+                        nread = h.read(stream.handle, &buf, buf.len);
+                        if (!(nread == -1 and c.errno() == h.EINTR)) break;
                     }
 
                     if (nread == -1) {
-                        if (errno() == h.EAGAIN or errno() == h.EWOULDBLOCK) break :read_more;
+                        if (c.errno() == h.EAGAIN or c.errno() == h.EWOULDBLOCK) break :read_more;
                         try ev_loop.cancel(fiber, ev_stream.evLasterr());
-                        fiber.*.ev_state = null;
+                        fiber.ev_state = null;
                         ev_loop.asyncEnd(fiber);
                         break :read_more;
                     }
@@ -276,10 +250,10 @@ const inotify = struct {
 
                         const path = tables.get(
                             watcher.watch_descriptors.?,
-                            wrapInteger(inevent.wd),
+                            wrap.fromInteger(inevent.wd),
                         );
                         const kvs = structs.begin(6);
-                        structs.put(kvs, value.fromBytes("wd", .keyword), wrapInteger(inevent.wd));
+                        structs.put(kvs, value.fromBytes("wd", .keyword), wrap.fromInteger(inevent.wd));
                         structs.put(kvs, value.fromBytes("wd-path", .keyword), path);
                         if (repr.checkType(name, repr.Tag.nil)) {
                             // Watching a file directly, so the path is the
@@ -291,7 +265,7 @@ const inotify = struct {
                             structs.put(kvs, value.fromBytes("dir-name", .keyword), path);
                             structs.put(kvs, value.fromBytes("file-name", .keyword), name);
                         }
-                        structs.put(kvs, value.fromBytes("cookie", .keyword), wrapInteger(@as(i32, @bitCast(inevent.cookie))));
+                        structs.put(kvs, value.fromBytes("cookie", .keyword), wrap.fromInteger(@as(i32, @bitCast(inevent.cookie))));
                         // Reported in table order, and `janet_struct_put`
                         // overwrites, so the last matching name wins as it did
                         // before. The zero check is for the absent-constant
@@ -356,8 +330,8 @@ const kqueue = struct {
         }
     };
 
-    /// kqueue's `NOTE_*` values, in the order `filewatch_flags.zig`'s
-    /// `kqueue_names` lists them. See the note on the inotify half.
+    /// kqueue's `NOTE_*` values, in the order `kqueue_names` below lists them.
+    /// See the note on the inotify half.
     const values = [_]u32{
         // `:all` is the union of every `NOTE_*` this host has.
         note.value("NOTE_ATTRIB") | note.value("NOTE_DELETE") | note.value("NOTE_EXTEND") |
@@ -394,20 +368,21 @@ const kqueue = struct {
         cookie: u32,
     };
 
-    /// `janet_wrap_integer(kev.ident)`. `ident` is a `uintptr_t`, and C
-    /// narrows it to `int32_t` on the way in; `@intCast` would trap where C
-    /// wraps, so the truncation is written out. Every value that reaches here
-    /// is a file descriptor and fits, which is why this is fidelity rather
-    /// than a behaviour worth having.
+    /// A kevent identifier as a Janet integer.
+    ///
+    /// `ident` is a `uintptr_t` and the value is narrowed to `i32`. `@intCast`
+    /// would trap where upstream Janet wraps, so the truncation is written out.
+    /// Every value that reaches here is a file descriptor and fits, which is
+    /// why this is fidelity rather than a behaviour worth having.
     fn wrapIdent(ident: usize) repr.Value {
-        return wrapInteger(@as(i32, @bitCast(@as(u32, @truncate(ident)))));
+        return wrap.fromInteger(@as(i32, @bitCast(@as(u32, @truncate(ident)))));
     }
 
     fn decode(options: []const repr.Value) raise.Raising(u32) {
         return decodeFlags(options, .kqueue, &values, "bsd");
     }
 
-    fn init(watcher: *JanetWatcher, channel: ?*types.JanetChannel, default_flags: u32) raise.Raising(void) {
+    fn init(watcher: *JanetWatcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
         // Unchecked, as in the C original: a failed `kqueue()` becomes a
         // stream over descriptor -1 rather than a raise.
         const kq = h.kqueue();
@@ -425,7 +400,7 @@ const kqueue = struct {
         var file_fd: c_int = undefined;
         while (true) {
             file_fd = h.open(path, h.O_RDONLY);
-            if (!(file_fd == -1 and errno() == h.EINTR)) break;
+            if (!(file_fd == -1 and c.errno() == h.EINTR)) break;
         }
         if (file_fd == -1) return pp_format.panicf("failed to open: %v", .{ev_stream.evLasterr()});
         // Watch for EVFILT_VNODE on the file descriptor.
@@ -434,14 +409,14 @@ const kqueue = struct {
         var status: c_int = undefined;
         while (true) {
             status = h.kevent(kq, &kev, 1, null, 0, null);
-            if (!(status == -1 and errno() == h.EINTR)) break;
+            if (!(status == -1 and c.errno() == h.EINTR)) break;
         }
         if (status == -1) {
             _ = h.close(file_fd);
             return pp_format.panicf("failed to listen: %v", .{ev_stream.evLasterr()});
         }
         const name = value.fromBytes(std.mem.span(path), .string);
-        const wd = wrapInteger(file_fd);
+        const wd = wrap.fromInteger(file_fd);
         tables.put(watcher.watch_descriptors.?, name, wd);
         tables.put(watcher.watch_descriptors.?, wd, name);
     }
@@ -462,16 +437,16 @@ const kqueue = struct {
         var result: c_int = undefined;
         while (true) {
             result = h.close(wd);
-            if (!(result != -1 and errno() == h.EINTR)) break;
+            if (!(result != -1 and c.errno() == h.EINTR)) break;
         }
         if (result == -1) return raise.panicv(ev_stream.evLasterr());
         tables.put(watcher.watch_descriptors.?, pathv, wrap.fromNil());
-        tables.put(watcher.watch_descriptors.?, wrapInteger(wd), wrap.fromNil());
+        tables.put(watcher.watch_descriptors.?, wrap.fromInteger(wd), wrap.fromNil());
     }
 
-    fn callbackRead(fiber: *types.JanetFiber, event: types.JanetAsyncEvent) raise.Raising(void) {
-        const stream = fiber.*.ev_stream.?;
-        const state: *State = @ptrCast(@alignCast(fiber.*.ev_state));
+    fn callbackRead(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Raising(void) {
+        const stream = fiber.ev_stream.?;
+        const state: *State = @ptrCast(@alignCast(fiber.ev_state));
         const watcher = state.watcher;
         switch (event) {
             constants.JANET_ASYNC_EVENT_MARK => gc_mark.mark(wrap.fromAbstract(watcher)),
@@ -489,7 +464,7 @@ const kqueue = struct {
                 var status: c_int = undefined;
                 while (true) {
                     status = h.kevent(kq, null, 0, &events, num_events, null);
-                    if (!(status == -1 and errno() == h.EINTR)) break;
+                    if (!(status == -1 and c.errno() == h.EINTR)) break;
                 }
                 if (status == -1) {
                     ev_loop.schedule(fiber, wrap.fromNil());
@@ -506,7 +481,7 @@ const kqueue = struct {
                     var st: c_int = undefined;
                     while (true) {
                         st = h.fstat(@intCast(kev.ident), &stat_buf);
-                        if (!(st == -1 and errno() == h.EINTR)) break;
+                        if (!(st == -1 and c.errno() == h.EINTR)) break;
                     }
                     if (st == -1) continue;
                     const is_dir = fw_abi.isDir(stat_buf.st_mode);
@@ -581,9 +556,8 @@ const win = struct {
     /// as possible.
     const info_padding = 4096 * 4;
 
-    /// The `ReadDirectoryChangesW` filter values, in the order
-    /// `filewatch_flags.zig`'s `windows_names` lists them. See the note on the
-    /// inotify half.
+    /// The `ReadDirectoryChangesW` filter values, in the order `windows_names`
+    /// below lists them. See the note on the inotify half.
     const values = [_]u32{
         h.FILE_NOTIFY_CHANGE_ATTRIBUTES |
             h.FILE_NOTIFY_CHANGE_CREATION |
@@ -614,9 +588,9 @@ const win = struct {
     /// `OVERLAPPED` back out of the completion.
     const OverlappedWatch = extern struct {
         overlapped: fw_abi.JanetOverlapped,
-        stream: ?*types.JanetStream,
+        stream: ?*ev_stream.Stream,
         watcher: *JanetWatcher,
-        fiber: ?*types.JanetFiber,
+        fiber: ?*fibers.Fiber,
         dir_path: [*:0]const u8,
         flags: u32,
         /// `uint64_t` rather than a byte array, to ensure alignment.
@@ -627,7 +601,7 @@ const win = struct {
         return decodeFlags(options, .windows, &values, "windows filewatch");
     }
 
-    fn init(watcher: *JanetWatcher, channel: ?*types.JanetChannel, default_flags: u32) raise.Raising(void) {
+    fn init(watcher: *JanetWatcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
         watcher.watch_descriptors = tables.new(0);
         watcher.channel = channel;
         watcher.default_flags = default_flags;
@@ -648,8 +622,8 @@ const win = struct {
         if (result == 0) return raise.panicv(ev_stream.evLasterr());
     }
 
-    fn callbackRead(fiber: *types.JanetFiber, event: types.JanetAsyncEvent) raise.Raising(void) {
-        const ow: *OverlappedWatch = @ptrCast(@alignCast(fiber.*.ev_state));
+    fn callbackRead(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Raising(void) {
+        const ow: *OverlappedWatch = @ptrCast(@alignCast(fiber.ev_state));
         const watcher = ow.watcher;
         switch (event) {
             constants.JANET_ASYNC_EVENT_INIT => ev_loop.asyncInFlight(fiber),
@@ -720,7 +694,7 @@ const win = struct {
         // `max_arity` INT32_MAX, so the arity check `janet_fiber` returns null
         // from cannot reject zero arguments.
         const fiber = fibers.new(thunk, 64, 0, null).?;
-        fiber.*.supervisor_channel = fibers.root().?.supervisor_channel;
+        fiber.supervisor_channel = fibers.root().?.supervisor_channel;
         ow.fiber = fiber;
         try ev_loop.asyncStartFiber(fiber, stream.?, constants.JANET_ASYNC_LISTEN_READ, &callbackRead, ow);
     }
@@ -769,14 +743,14 @@ const win = struct {
     /// three of this backend's five entry points share.
     /// Two spellings rather than one generic over the body's error set, and
     /// the reason is a rule rather than taste: `mark` is an abstract type's
-    /// `gcmark` callback, and SPIKE-8 says such a callback may not raise. A
+    /// `gcmark` callback, and `abstract_type.zig` says such a callback may not
+    /// raise. A
     /// single raise-capable `eachWatch` would have put an error union on the
     /// mark path, which is exactly the thing that must not be there.
     fn eachWatch(watcher: *JanetWatcher, comptime body: fn (*OverlappedWatch) void) void {
         const table = watcher.watch_descriptors.?;
-        var i: i32 = 0;
-        while (i < table.capacity) : (i += 1) {
-            const kv = &table.slots()[@intCast(i)];
+        for (0..table.capacity) |i| {
+            const kv = &table.slots()[i];
             if (!repr.checkType(kv.value, repr.Tag.pointer)) continue;
             body(@ptrCast(@alignCast(wrap.toPointer(kv.value))));
         }
@@ -786,9 +760,8 @@ const win = struct {
         if (watcher.is_watching != 0) return raise.panic("already watching");
         watcher.is_watching = 1;
         const table = watcher.watch_descriptors.?;
-        var i: i32 = 0;
-        while (i < table.capacity) : (i += 1) {
-            const kv = &table.slots()[@intCast(i)];
+        for (0..table.capacity) |i| {
+            const kv = &table.slots()[i];
             if (!repr.checkType(kv.value, repr.Tag.pointer)) continue;
             try startListening(@ptrCast(@alignCast(wrap.toPointer(kv.value))));
         }
@@ -802,9 +775,8 @@ const win = struct {
         comptime body: fn (*OverlappedWatch) raise.Raising(void),
     ) raise.Raising(void) {
         const table = watcher.watch_descriptors.?;
-        var i: i32 = 0;
-        while (i < table.capacity) : (i += 1) {
-            const kv = &table.slots()[@intCast(i)];
+        for (0..table.capacity) |i| {
+            const kv = &table.slots()[i];
             if (!repr.checkType(kv.value, repr.Tag.pointer)) continue;
             try body(@ptrCast(@alignCast(wrap.toPointer(kv.value))));
         }
@@ -845,7 +817,7 @@ const unsupported = struct {
         return 0;
     }
 
-    fn init(watcher: *JanetWatcher, channel: ?*types.JanetChannel, default_flags: u32) raise.Raising(void) {
+    fn init(watcher: *JanetWatcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
         _ = watcher;
         _ = channel;
         _ = default_flags;
@@ -965,13 +937,13 @@ fn assertTableIsWhole() void {
 /// last byte, which is why a path ending in `/` splits on that one -- is
 /// shared, and was written out twice in C.
 fn splitPath(
-    kvs: [*]types.JanetKV,
+    kvs: [*]tables.KV,
     path: repr.Value,
     no_sep_dir: repr.Value,
     no_sep_file: repr.Value,
 ) void {
     const spath = wrap.toString(path);
-    const len = types.stringHead(spath).length;
+    const len = strings.head(spath).length;
     var cursor: i32 = len;
     while (cursor > 0 and spath[@intCast(cursor)] != '/') cursor -= 1;
     if (cursor == 0) {
@@ -988,12 +960,11 @@ fn splitPath(
 // ==========================================================================
 
 /// `janet_filewatch_mark`.
-fn filewatchMark(watcher: *JanetWatcher, _: usize) c_int {
-    if (watcher.channel == null) return 0; // Incomplete initialization
+fn filewatchMark(watcher: *JanetWatcher, _: usize) void {
+    if (watcher.channel == null) return; // Incomplete initialization
     be.mark(watcher);
     gc_mark.mark(wrap.fromAbstract(watcher.channel));
     gc_mark.mark(wrap.fromTable(watcher.watch_descriptors.?));
-    return 0;
 }
 
 /// `janet_filewatch_at`. `JANET_ATEND_GCMARK` leaves every field after
@@ -1012,10 +983,10 @@ pub const watcherType = abstract_type.define(JanetWatcher, .{
 // ==========================================================================
 
 fn cfunMake(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_read"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.arity(argv, 1, -1);
     const channel = try ev_loop.getChannel(argv, 0);
-    const watcher = watcherOf(abstracts.new(&watcherType, @sizeOf(JanetWatcher)));
+    const watcher = watcherOf(abstracts.newFor(JanetWatcher, &watcherType));
     const default_flags = try be.decode(argv[1..]);
     try be.init(watcher, channel, default_flags);
     return wrap.fromAbstract(watcher);
@@ -1023,7 +994,7 @@ fn cfunMake(argv: []repr.Value) raise.Raising(repr.Value) {
 
 fn cfunAdd(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, -1);
-    const watcher = watcherOf(try args_core.getAbstract(argv, 0, &watcherType));
+    const watcher = try args_core.getAbstract(JanetWatcher, argv, 0, &watcherType);
     const path = try args_core.getCString(argv, 1);
     const flags = watcher.default_flags | try be.decode(argv[2..]);
     try be.add(watcher, path, flags);
@@ -1032,7 +1003,7 @@ fn cfunAdd(argv: []repr.Value) raise.Raising(repr.Value) {
 
 fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    const watcher = watcherOf(try args_core.getAbstract(argv, 0, &watcherType));
+    const watcher = try args_core.getAbstract(JanetWatcher, argv, 0, &watcherType);
     // TODO - pass string in directly to avoid extra allocation
     const path = try args_core.getCString(argv, 1);
     try be.remove(watcher, path);
@@ -1041,14 +1012,14 @@ fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
 
 fn cfunListen(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const watcher = watcherOf(try args_core.getAbstract(argv, 0, &watcherType));
+    const watcher = try args_core.getAbstract(JanetWatcher, argv, 0, &watcherType);
     try be.listen(watcher);
     return wrap.fromNil();
 }
 
 fn cfunUnlisten(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const watcher = watcherOf(try args_core.getAbstract(argv, 0, &watcherType));
+    const watcher = try args_core.getAbstract(JanetWatcher, argv, 0, &watcherType);
     try be.unlisten(watcher);
     return wrap.fromNil();
 }
@@ -1058,7 +1029,7 @@ fn cfunUnlisten(argv: []repr.Value) raise.Raising(repr.Value) {
 // ==========================================================================
 
 /// `janet_lib_filewatch`. The order is the C original's exactly.
-pub fn libFilewatch(env: *types.JanetTable) void {
+pub fn libFilewatch(env: *tables.Table) void {
     assertTableIsWhole();
     const table = comptime [_]corefn.Entry{
         corefn.reg("filewatch/new", &cfunMake, @src(), "(filewatch/new channel & default-flags)", "Create a new filewatcher that will give events to a channel channel. See `filewatch/add` for available flags.\n\n" ++
@@ -1136,7 +1107,7 @@ pub fn libFilewatch(env: *types.JanetTable) void {
 }
 
 // -------------------------------------------------------------------------
-// The flag vocabulary -- what `filewatch_flags.zig` was.
+// The flag vocabulary.
 // -------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -1256,8 +1227,8 @@ pub fn flagIndex(platform: Platform, name: []const u8) ?usize {
     return null;
 }
 
-/// The number of flags a platform names. `filewatch_core.zig` asserts its
-/// value array against this so the two halves cannot drift apart unnoticed.
+/// The number of flags a platform names. Each backend above asserts its value
+/// array against this so the two halves cannot drift apart unnoticed.
 pub fn flagCount(platform: Platform) usize {
     return namesFor(platform).len;
 }

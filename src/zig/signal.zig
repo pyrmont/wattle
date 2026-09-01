@@ -27,18 +27,20 @@
 //!    which is what decides a raise has somewhere to go; the travel is an
 //!    ordinary Zig `return`.
 
-const std = @import("std");
-const raise = @import("raise");
+const raise = @import("raise.zig");
 const pp_format = @import("pp/format.zig");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
-const vm_state = @import("vm/lifecycle.zig");
+const vm_state = @import("vm/state.zig");
 const stdio = @import("stdio.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const fatal = @import("fatal.zig");
 const utils = @import("utils.zig");
+const abi = @import("abi");
+const vm_lifecycle = @import("vm/lifecycle.zig");
+const std = @import("std");
+const fibers = @import("value/fibers.zig");
 
 /// `config.ev`. The `sched_id` bump below is
 /// inside `#ifdef JANET_EV` in the C original; the field itself is
@@ -48,13 +50,11 @@ const has_ev = constants.JANET_VM_HAS_EV != 0;
 // Three `sig_*` locals stood here, and five in `ev.zig`, because a translated
 // `JanetSignal` was `c_uint` while the signal constants were `c_int` -- eight
 // `@intCast`s so that a comparison did not need one at every use site.
-// `types.Signal` is one type with one width and the casts have nothing left to
+// `abi.Signal` is one type with one width and the casts have nothing left to
 // convert.
 
-const did_raise: i32 = @intCast(constants.JANET_FIBER_DID_RAISE);
 const status_mask: i32 = @intCast(constants.JANET_FIBER_STATUS_MASK);
 const status_offset: u5 = @intCast(constants.JANET_FIBER_STATUS_OFFSET);
-const resume_signal: i32 = @intCast(constants.JANET_FIBER_RESUME_SIGNAL);
 
 // ------------------------------------------------------------- try scopes
 
@@ -67,12 +67,9 @@ const resume_signal: i32 = @intCast(constants.JANET_FIBER_RESUME_SIGNAL);
 /// back, so an off-by-one would leak a level of `JANET_RECURSION_GUARD` per
 /// scope.
 ///
-/// This is the wide scope, and since the hinge it is the only one: the
-/// per-call scope `src/core/vm.c` kept under `-Dcall-trampoline=true` saved
-/// two of these six deliberately, and went with the last `setjmp`. It is also
-/// no longer opened by a `janet_try` macro, which was this call followed by a
-/// `setjmp`; a caller opens a scope by calling it.
-pub fn tryInit(state: *types.JanetTryState) void {
+/// This is the only protected scope there is. A caller opens one by calling
+/// this and closes it with `restore`.
+pub fn tryInit(state: *vm_state.TryState) void {
     const v = vm_state.current();
     // A report outstanding when a scope opens was left by whatever ran before
     // it. These two assertions came out of three days spent hunting a raise
@@ -80,13 +77,13 @@ pub fn tryInit(state: *types.JanetTryState) void {
     // from the cause, as a blank value or a jump with no scope. Bracketing the
     // leak to one scope found it in a single run. They cost a branch on a path
     // the runtime rarely takes, and they go with the flag.
-    if (v.c_raised != 0) fatal.fatal("a raise was reported to a C caller and never consumed");
+    if (v.c_raised) fatal.fatal("a raise was reported to a C caller and never consumed");
     state.stackn = @intCast(v.stackn);
     v.stackn += 1;
     state.gc_handle = v.gc.suspend_count;
     state.vm_fiber = v.fiber;
     state.vm_return_reg = v.return_reg;
-    state.coerce_error = @intFromBool(v.coerce_error);
+    state.coerce_error = v.coerce_error;
     v.return_reg = &state.payload;
     v.coerce_error = false;
 }
@@ -95,16 +92,16 @@ pub fn tryInit(state: *types.JanetTryState) void {
 /// is the asymmetric one: `janet_try_init` only records it, so a callee that
 /// locked the collector and then raised has its lock released here rather than
 /// where it was taken.
-pub fn restore(state: *types.JanetTryState) void {
+pub fn restore(state: *vm_state.TryState) void {
     const v = vm_state.current();
     // ...and one outstanding when a scope closes was made inside it. See the
     // note in `janet_try_init`.
-    if (v.c_raised != 0) fatal.fatal("a raise was reported to a C caller and never consumed");
+    if (v.c_raised) fatal.fatal("a raise was reported to a C caller and never consumed");
     v.stackn = @intCast(state.stackn);
     v.gc.suspend_count = state.gc_handle;
     v.fiber = state.vm_fiber;
     v.return_reg = state.vm_return_reg;
-    v.coerce_error = state.coerce_error != 0;
+    v.coerce_error = state.coerce_error;
 }
 
 // ------------------------------------------- a raise handed to a C caller
@@ -112,23 +109,23 @@ pub fn restore(state: *types.JanetTryState) void {
 /// Record that a raise reached an abi, which returned rather than jumping.
 /// `src/zig/raise.zig` has the argument.
 pub fn zigCRaiseRecord() void {
-    vm_state.current().c_raised = 1;
+    vm_state.current().c_raised = true;
 }
 
 /// Whether a raise reached an abi since the last time this was asked.
 /// Clears, because a raise is consumed exactly once.
-pub fn zigCRaiseTake() c_int {
+pub fn zigCRaiseTake() bool {
     const v = vm_state.current();
-    if (v.c_raised == 0) return 0;
-    v.c_raised = 0;
-    return 1;
+    if (!v.c_raised) return false;
+    v.c_raised = false;
+    return true;
 }
 
 /// Discard any record of one, for a caller about to open a window it wants to
 /// measure. `janet_try_init` does not do this: a scope and a report are
 /// different things, and the ev loop opens scopes without caring.
 pub fn zigCRaiseClear() void {
-    vm_state.current().c_raised = 0;
+    vm_state.current().c_raised = false;
 }
 
 // ---------------------------------------------------------------- raising
@@ -142,9 +139,9 @@ pub fn zigCRaiseClear() void {
 /// re-entrant raise must find the counter already advanced. `janet_call` in
 /// `vm/entry.zig` open-codes the same three decisions on its own return path
 /// and has to stay in step; its comment already says so.
-/// What `signalPlan` decides. It is this file's rather than `types.zig`'s
-/// because nothing outside the raise protocol names it and no symbol carries
-/// it: `tools/check/exports.txt` has no `janet_signal_plan`.
+/// What `signalPlan` decides. It is this file's because nothing outside the
+/// raise protocol names it and no symbol carries it:
+/// `tools/check/exports.txt` has no `janet_signal_plan`.
 pub const Plan = enum(c_uint) {
     /// No protected scope above, so the raise ends the process.
     top_level = 0,
@@ -154,14 +151,14 @@ pub const Plan = enum(c_uint) {
     coerce = 2,
 };
 
-pub fn signalPlan(sig: types.Signal, out_sig: *types.Signal) Plan {
+pub fn signalPlan(sig: abi.Signal, out_sig: *abi.Signal) Plan {
     const v = vm_state.current();
     out_sig.* = sig;
     if (v.return_reg == null) return .top_level;
     if (v.coerce_error and sig != .ok) {
         if (has_ev) {
             if (v.root_fiber) |root| {
-                if (sig == types.Signal.event) root.sched_id +%= 1;
+                if (sig == abi.Signal.event) root.sched_id +%= 1;
             }
         }
         out_sig.* = .@"error";
@@ -187,16 +184,16 @@ pub fn signalPlan(sig: types.Signal, out_sig: *types.Signal) Plan {
 pub fn signalCommit(message: *const repr.Value) void {
     const v = vm_state.current();
     v.return_reg.?.* = message.*;
-    if (v.fiber) |fiber| fiber.flags |= did_raise;
+    if (v.fiber) |fiber| fiber.flags.did_raise = true;
 }
 
 /// Arm the innermost live fiber of a chain to raise `sig` the moment it
 /// resumes, for `janet_continue_signal`.
 ///
 /// The signal travels in `gc.flags`, not in `flags`, and that is deliberate
-/// rather than a slip: `run_vm` reads it back out of `gc.flags` and clears it
-/// there (`src/core/vm.c:1026-1029`), so the two halves agree, and the fiber's
-/// real status in `flags` is left untouched meanwhile.
+/// rather than a slip: the interpreter reads it back out of `gc.flags` and
+/// clears it there, so the two halves agree, and the fiber's real status in
+/// `flags` is left untouched meanwhile.
 ///
 /// It is worth knowing what that costs, because a port must not quietly
 /// "improve" it. `JANET_FIBER_STATUS_MASK` covers bits 16 through 21 of
@@ -206,8 +203,8 @@ pub fn signalCommit(message: *const repr.Value) void {
 /// — `janet_schedule_general` re-sets `FLAG_ROOT` on every schedule, and the
 /// fiber is running between the clear and the next schedule, so no other code
 /// can look — but the aliasing is real and is recorded rather than tidied.
-pub fn signalInject(fiber: *types.JanetFiber, sig: types.Signal) void {
-    var child: *types.JanetFiber = fiber;
+pub fn signalInject(fiber: *fibers.Fiber, sig: abi.Signal) void {
+    var child: *fibers.Fiber = fiber;
     while (child.child) |next| child = next;
     // Through u64 so that a caller-supplied signal wide enough to shift bits
     // out cannot trap in a safe build. C wraps here; this wraps identically.
@@ -216,7 +213,7 @@ pub fn signalInject(fiber: *types.JanetFiber, sig: types.Signal) void {
     const shifted: u32 = @truncate(@as(u64, @intFromEnum(sig)) << status_offset);
     child.gc.flags &= ~status_mask;
     child.gc.flags |= @bitCast(shifted);
-    child.flags |= resume_signal;
+    child.flags.resume_signal = true;
 }
 
 // ------------------------------------------ the decision half of a raise
@@ -237,17 +234,25 @@ pub fn signalInject(fiber: *types.JanetFiber, sig: types.Signal) void {
 ///
 /// Does not return when the plan is `TOP_LEVEL`: there is no scope to raise
 /// into, so `janet_top_level_signal` ends the process or the thread.
-pub fn zigSignalRecord(sig: types.Signal, message: repr.Value) void {
+pub fn zigSignalRecord(sig: abi.Signal, message: repr.Value) void {
     const v = vm_state.current();
-    var out_sig: types.Signal = sig;
+    var out_sig: abi.Signal = sig;
     const plan = signalPlan(sig, &out_sig);
+    // Both messages are built by the formatter, and `%v` runs an abstract
+    // type's `tostring`, so both can raise. Neither can carry one: this is the
+    // decision half of a raise, and a second raise recorded from inside it
+    // would overwrite the `pending_signal` and the return register the first
+    // one is in the middle of committing. So a raise here aborts at the site.
     if (plan == .top_level) {
-        const str = pp_format.formatcReported("janet top level signal - %v\n", .{message});
+        const str = raise.total(pp_format.formatc("janet top level signal - %v\n", .{message}), "a top-level signal's message");
         topLevelSignal(@ptrCast(str));
     }
     var payload = message;
     if (plan == .coerce) {
-        payload = wrap.fromString(pp_format.formatcReported("%v coerced from %s to error", .{ message, utils.signalNames[@intFromEnum(sig)] }));
+        payload = wrap.fromString(raise.total(
+            pp_format.formatc("%v coerced from %s to error", .{ message, utils.signalNames[@intFromEnum(sig)] }),
+            "a coerced signal's message",
+        ));
     }
     signalCommit(&payload);
     v.pending_signal = out_sig;
@@ -256,21 +261,16 @@ pub fn zigSignalRecord(sig: types.Signal, message: repr.Value) void {
 // ------------------------------------------------ the public raise perimeter
 
 // Each of these is the abi of an entry point in `raise.zig` and nothing else:
-// record the raise, then deliver it as the jump a C caller is waiting for. A
-// Zig caller skips the abi and calls `raise.signal`, `raise.panicv` or
-// `raise.panic` directly, which returns `error.JanetSignal` instead.
+// record the raise, then report it. A Zig caller skips the abi and calls
+// `raise.signal`, `raise.panicv` or `raise.panic` directly, which returns
+// `error.JanetSignal` instead.
 //
 // `raise.panicking` does not generate these. It builds an abi for a function
 // that *returns* a payload on the way through, and there is no way through
-// here: the C originals are `JANET_NO_RETURN`, and the Zig entry points return
-// the bare error set rather than an error union, so there is nothing to catch.
-//
-// This is also why the file now carries the jump-transparent marker. It always
-// could be jumped through — `janet_zig_signal_record` renders a coercion
-// message with `%v`, which runs an abstract type's `tostring` callback — and
-// four functions whose whole body is a jump make that impossible to overlook.
+// here: the Zig entry points return the bare error set rather than an error
+// union, so there is nothing to catch.
 
-pub fn signalv(sig: types.Signal, message: repr.Value) void {
+pub fn signalv(sig: abi.Signal, message: repr.Value) void {
     raise.report(raise.signal(sig, message));
 }
 
@@ -307,12 +307,74 @@ pub fn panics(message: [*:0]const u8) void {
 /// 159 declarations. The list is generated from `cabi.zig` itself now, and
 /// this disagreement was its first build's output.
 pub fn topLevelSignal(msg: [*]const u8) noreturn {
-    _ = fputs(msg, @ptrCast(@alignCast(stdio.out())));
-    if (!vm_state.current().sandbox_flags.intersects(types.Sandbox.of(&.{"exit"}))) {
+    _ = c.fputs(@ptrCast(msg), stdio.out());
+    if (!vm_state.current().sandbox_flags.intersects(vm_lifecycle.Sandbox.of(&.{"exit"}))) {
         c.exit(1);
     }
-    pthread_exit(null);
+    c.pthread_exit(null);
 }
 
-extern fn fputs(s: [*]const u8, stream: ?*anyopaque) callconv(.c) c_int;
-extern fn pthread_exit(val: ?*anyopaque) callconv(.c) noreturn;
+/// The last five fields are the event loop's, and matter only for a fiber
+/// scheduled on it as a root fiber.
+/// A set of signals, one bit per `abi.Signal`.
+///
+/// A fiber's flag word carries one in its low fourteen bits: the signals it
+/// *traps* rather than propagating to its caller. The bit positions are the
+/// signal numbers -- `JANET_FIBER_MASK_ERROR` was `1 << JANET_SIGNAL_ERROR` --
+/// so the set and the enum cannot drift, and the `comptime` block below is
+/// what says so.
+pub const SignalSet = packed struct(u14) {
+    ok: bool = false,
+    @"error": bool = false,
+    debug: bool = false,
+    yield: bool = false,
+    user0: bool = false,
+    user1: bool = false,
+    user2: bool = false,
+    user3: bool = false,
+    user4: bool = false,
+    user5: bool = false,
+    user6: bool = false,
+    user7: bool = false,
+    user8: bool = false,
+    user9: bool = false,
+
+    pub const none: SignalSet = .{};
+
+    /// The ten user signals, which `JANET_FIBER_MASK_USER` named as `0x3FF0`.
+    pub const user = fromBits(0x3FF0 >> 0);
+
+    pub inline fn fromBits(value: u14) SignalSet {
+        return @bitCast(value);
+    }
+
+    pub inline fn bits(self: SignalSet) u14 {
+        return @bitCast(self);
+    }
+
+    /// Whether this set traps `s`. The five call sites that spelled
+    /// `flags & (1 << @intFromEnum(sig))` are this.
+    pub inline fn has(self: SignalSet, s: abi.Signal) bool {
+        return (self.bits() >> @intCast(@intFromEnum(s))) & 1 != 0;
+    }
+
+    pub inline fn with(self: SignalSet, s: abi.Signal) SignalSet {
+        return fromBits(self.bits() | (@as(u14, 1) << @intCast(@intFromEnum(s))));
+    }
+
+    /// The comptime set constructor, so a mask reads as the signals in it.
+    pub fn of(comptime signals: []const abi.Signal) SignalSet {
+        comptime var m: u14 = 0;
+        inline for (signals) |sig| m |= @as(u14, 1) << @intCast(@intFromEnum(sig));
+        return comptime fromBits(m);
+    }
+};
+
+comptime {
+    // Every member's bit is its signal number, which is what makes `has` a
+    // shift rather than a switch.
+    for (@typeInfo(SignalSet).@"struct".fields, 0..) |f, i| {
+        if (!std.mem.eql(u8, f.name, @typeInfo(abi.Signal).@"enum".fields[i].name))
+            @compileError("SignalSet and abi.Signal disagree at bit " ++ f.name);
+    }
+}

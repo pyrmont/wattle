@@ -17,12 +17,9 @@ const stretchy = @import("../stretchy.zig");
 const regalloc = @import("regalloc.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const args_core = @import("../args.zig");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 
-const slot_type_mask: u32 = constants.JANET_SLOTTYPE_ANY;
 const EmitError = error{ TooManyConstants, TooManyRegisters };
 
 /// Record an emit failure on the compiler and carry on.
@@ -33,12 +30,10 @@ const EmitError = error{ TooManyConstants, TooManyRegisters };
 /// squeezed through a single `int`-returning call with an enum to say which,
 /// and something on the near side turned the code back into a message.
 ///
-/// This is not a raise. `janetc_error` sets `c->result.status` and returns;
-/// the compiler front end reports by flag, and keeps compiling so that the
-/// first error is the one the user sees. `janetc_cerror` is C's or
-/// `compiler_primitives.zig`'s according to `-Dcompiler-primitives`, which is
-/// why it is reached by its C name rather than imported.
-fn report(compiler: *types.JanetCompiler, emit_error: EmitError) void {
+/// This is not a raise. `compiler.cerror` records the message on the compiler
+/// and returns; the front end reports by flag and keeps compiling, so that the
+/// first error is the one the user sees.
+fn report(compiler: *compiler_primitives.JanetCompiler, emit_error: EmitError) void {
     switch (emit_error) {
         error.TooManyConstants => compiler_primitives.cerror(compiler, "too many constants"),
         error.TooManyRegisters => compiler_primitives.cerror(compiler, "ran out of internal registers"),
@@ -50,7 +45,7 @@ fn report(compiler: *types.JanetCompiler, emit_error: EmitError) void {
 /// `janetc_regalloc_1` allocates from the whole 32-bit space and the
 /// instruction encoding has sixteen bits for a far slot, so the ceiling is
 /// checked here rather than in the allocator.
-pub fn allocfar(compiler: *types.JanetCompiler) i32 {
+pub fn allocfar(compiler: *compiler_primitives.JanetCompiler) i32 {
     const register = allocFar(compiler);
     if (register > 0xFFFF) {
         compiler_primitives.cerror(compiler, "ran out of internal registers");
@@ -64,43 +59,43 @@ pub fn allocfar(compiler: *types.JanetCompiler) i32 {
 /// message. The C original reaches `janetc_allocfar` there and lets the
 /// second report be swallowed by "keep the first error"; this says the same
 /// thing once.
-fn allocFar(compiler: *types.JanetCompiler) i32 {
+fn allocFar(compiler: *compiler_primitives.JanetCompiler) i32 {
     return regalloc.regalloc1(&compiler.scope.?.ra);
 }
 
 pub fn allocnear(
-    compiler: *types.JanetCompiler,
-    temporary: types.JanetcRegisterTemp,
-) callconv(.c) i32 {
+    compiler: *compiler_primitives.JanetCompiler,
+    temporary: compiler_primitives.JanetcRegisterTemp,
+) i32 {
     return regalloc.regallocTemp(&compiler.scope.?.ra, temporary);
 }
 
-pub fn emit(compiler: *types.JanetCompiler, instruction: u32) void {
-    stretchy.push(u32, &compiler.buffer, instruction);
-    stretchy.push(types.JanetSourceMapping, &compiler.mapbuffer, compiler.current_mapping);
+pub fn emit(compiler: *compiler_primitives.JanetCompiler, instruction: u32) void {
+    stretchy.push(&compiler.buffer, instruction);
+    stretchy.push(&compiler.mapbuffer, compiler.current_mapping);
 }
 
-pub fn sequal(lhs: types.JanetSlot, rhs: types.JanetSlot) c_int {
-    if ((lhs.flags & ~slot_type_mask) != (rhs.flags & ~slot_type_mask) or
+pub fn sequal(lhs: compiler_primitives.JanetSlot, rhs: compiler_primitives.JanetSlot) bool {
+    if (!std.meta.eql(lhs.flags.withoutTypes(), rhs.flags.withoutTypes()) or
         lhs.index != rhs.index or
         lhs.envindex != rhs.envindex)
     {
-        return 0;
+        return false;
     }
 
-    if (lhs.flags & (constants.JANET_SLOT_REF | constants.JANET_SLOT_CONSTANT) != 0) {
+    if (lhs.flags.ref or lhs.flags.constant) {
         return order.equals(lhs.constant, rhs.constant);
     }
-    return 1;
+    return true;
 }
 
 /// `dest = src`, or an error recorded on the compiler.
 pub fn copy(
-    compiler: *types.JanetCompiler,
-    destination: types.JanetSlot,
-    source: types.JanetSlot,
-) callconv(.c) void {
-    if (destination.flags & constants.JANET_SLOT_CONSTANT != 0) {
+    compiler: *compiler_primitives.JanetCompiler,
+    destination: compiler_primitives.JanetSlot,
+    source: compiler_primitives.JanetSlot,
+) void {
+    if (destination.flags.constant) {
         compiler_primitives.cerror(compiler, "cannot write to constant");
         return;
     }
@@ -109,7 +104,7 @@ pub fn copy(
     }
 }
 
-fn copySlot(compiler: *types.JanetCompiler, destination: types.JanetSlot, source: types.JanetSlot) bool {
+fn copySlot(compiler: *compiler_primitives.JanetCompiler, destination: compiler_primitives.JanetSlot, source: compiler_primitives.JanetSlot) bool {
     if (slotsEqual(destination, source)) return true;
 
     if (destination.envindex < 0 and destination.index >= 0 and destination.index <= 0xff) {
@@ -138,11 +133,11 @@ fn copySlot(compiler: *types.JanetCompiler, destination: types.JanetSlot, source
 /// sentinel a caller may test; the caller tests `c->result.status`, as it did
 /// before.
 pub fn emitSlot(
-    compiler: *types.JanetCompiler,
-    operation: u8,
-    slot_value: types.JanetSlot,
+    compiler: *compiler_primitives.JanetCompiler,
+    operation: constants.Opcode,
+    slot_value: compiler_primitives.JanetSlot,
     write_back: c_int,
-) callconv(.c) i32 {
+) i32 {
     return emitS(compiler, operation, slot_value, write_back != 0) catch |emit_error| {
         report(compiler, emit_error);
         return 0;
@@ -155,12 +150,12 @@ pub fn emitSlot(
 /// does: `janetc_error` keeps only the first error, and the truncated
 /// instruction is never run because the compile has already failed.
 pub fn emitSl(
-    compiler: *types.JanetCompiler,
-    operation: u8,
-    slot_value: types.JanetSlot,
+    compiler: *compiler_primitives.JanetCompiler,
+    operation: constants.Opcode,
+    slot_value: compiler_primitives.JanetSlot,
     label: i32,
-) callconv(.c) i32 {
-    const current = stretchy.count(u32, compiler.buffer) - 1;
+) i32 {
+    const current = compiler.here() - 1;
     const jump = label - current;
     if (jump < std.math.minInt(i16) or jump > std.math.maxInt(i16)) {
         compiler_primitives.cerror(compiler, "jump is too far");
@@ -172,11 +167,11 @@ pub fn emitSl(
 }
 
 pub fn emitSt(
-    compiler: *types.JanetCompiler,
-    operation: u8,
-    slot_value: types.JanetSlot,
+    compiler: *compiler_primitives.JanetCompiler,
+    operation: constants.Opcode,
+    slot_value: compiler_primitives.JanetSlot,
     typeflags: i32,
-) callconv(.c) i32 {
+) i32 {
     return emitOneSlot(compiler, operation, slot_value, typeflags, false) catch |emit_error| {
         report(compiler, emit_error);
         return 0;
@@ -184,12 +179,12 @@ pub fn emitSt(
 }
 
 pub fn emitSi(
-    compiler: *types.JanetCompiler,
-    operation: u8,
-    slot_value: types.JanetSlot,
+    compiler: *compiler_primitives.JanetCompiler,
+    operation: constants.Opcode,
+    slot_value: compiler_primitives.JanetSlot,
     immediate: i16,
     write_back: c_int,
-) callconv(.c) i32 {
+) i32 {
     return emitOneSlot(compiler, operation, slot_value, immediate, write_back != 0) catch |emit_error| {
         report(compiler, emit_error);
         return 0;
@@ -197,12 +192,12 @@ pub fn emitSi(
 }
 
 pub fn emitSu(
-    compiler: *types.JanetCompiler,
-    operation: u8,
-    slot_value: types.JanetSlot,
+    compiler: *compiler_primitives.JanetCompiler,
+    operation: constants.Opcode,
+    slot_value: compiler_primitives.JanetSlot,
     immediate: u16,
     write_back: c_int,
-) callconv(.c) i32 {
+) i32 {
     return emitOneSlot(compiler, operation, slot_value, immediate, write_back != 0) catch |emit_error| {
         report(compiler, emit_error);
         return 0;
@@ -210,12 +205,12 @@ pub fn emitSu(
 }
 
 pub fn emitSs(
-    compiler: *types.JanetCompiler,
-    operation: u8,
-    slot1: types.JanetSlot,
-    slot2: types.JanetSlot,
+    compiler: *compiler_primitives.JanetCompiler,
+    operation: constants.Opcode,
+    slot1: compiler_primitives.JanetSlot,
+    slot2: compiler_primitives.JanetSlot,
     write_back: c_int,
-) callconv(.c) i32 {
+) i32 {
     return emitSS(compiler, operation, slot1, slot2, write_back != 0) catch |emit_error| {
         report(compiler, emit_error);
         return 0;
@@ -223,13 +218,13 @@ pub fn emitSs(
 }
 
 pub fn emitSsi(
-    compiler: *types.JanetCompiler,
-    operation: u8,
-    slot1: types.JanetSlot,
-    slot2: types.JanetSlot,
+    compiler: *compiler_primitives.JanetCompiler,
+    operation: constants.Opcode,
+    slot1: compiler_primitives.JanetSlot,
+    slot2: compiler_primitives.JanetSlot,
     immediate: i8,
     write_back: c_int,
-) callconv(.c) i32 {
+) i32 {
     return emitTwoSlots(compiler, operation, slot1, slot2, immediate, write_back != 0) catch |emit_error| {
         report(compiler, emit_error);
         return 0;
@@ -237,13 +232,13 @@ pub fn emitSsi(
 }
 
 pub fn emitSsu(
-    compiler: *types.JanetCompiler,
-    operation: u8,
-    slot1: types.JanetSlot,
-    slot2: types.JanetSlot,
+    compiler: *compiler_primitives.JanetCompiler,
+    operation: constants.Opcode,
+    slot1: compiler_primitives.JanetSlot,
+    slot2: compiler_primitives.JanetSlot,
     immediate: u8,
     write_back: c_int,
-) callconv(.c) i32 {
+) i32 {
     return emitTwoSlots(compiler, operation, slot1, slot2, immediate, write_back != 0) catch |emit_error| {
         report(compiler, emit_error);
         return 0;
@@ -251,39 +246,39 @@ pub fn emitSsu(
 }
 
 pub fn emitSss(
-    compiler: *types.JanetCompiler,
-    operation: u8,
-    slot1: types.JanetSlot,
-    slot2: types.JanetSlot,
-    slot3: types.JanetSlot,
+    compiler: *compiler_primitives.JanetCompiler,
+    operation: constants.Opcode,
+    slot1: compiler_primitives.JanetSlot,
+    slot2: compiler_primitives.JanetSlot,
+    slot3: compiler_primitives.JanetSlot,
     write_back: c_int,
-) callconv(.c) i32 {
+) i32 {
     return emitSSS(compiler, operation, slot1, slot2, slot3, write_back != 0) catch |emit_error| {
         report(compiler, emit_error);
         return 0;
     };
 }
 
-fn emitS(compiler: *types.JanetCompiler, operation: u8, slot_value: types.JanetSlot, write_back: bool) EmitError!i32 {
+fn emitS(compiler: *compiler_primitives.JanetCompiler, operation: constants.Opcode, slot_value: compiler_primitives.JanetSlot, write_back: bool) EmitError!i32 {
     const register = try registerFar(compiler, slot_value, constants.JANETC_REGTEMP_0);
-    const label = stretchy.count(u32, compiler.buffer);
-    emitInstruction(compiler, operation | (@as(u32, @intCast(register)) << 8));
+    const label = compiler.here();
+    emitInstruction(compiler, opcode(operation) | (@as(u32, @intCast(register)) << 8));
     if (write_back and !moveBack(compiler, slot_value, register)) return error.TooManyConstants;
     freeRegister(compiler, slot_value, register, constants.JANETC_REGTEMP_0);
     return label;
 }
 
 fn emitOneSlot(
-    compiler: *types.JanetCompiler,
-    operation: u8,
-    slot_value: types.JanetSlot,
+    compiler: *compiler_primitives.JanetCompiler,
+    operation: constants.Opcode,
+    slot_value: compiler_primitives.JanetSlot,
     rest: i32,
     write_back: bool,
 ) EmitError!i32 {
     const register = try registerNear(compiler, slot_value, constants.JANETC_REGTEMP_0);
-    const label = stretchy.count(u32, compiler.buffer);
+    const label = compiler.here();
     const rest_bits: u32 = @bitCast(rest);
-    emitInstruction(compiler, operation |
+    emitInstruction(compiler, opcode(operation) |
         (@as(u32, @intCast(register)) << 8) |
         (rest_bits << 16));
     if (write_back and !moveBack(compiler, slot_value, register)) return error.TooManyConstants;
@@ -292,10 +287,10 @@ fn emitOneSlot(
 }
 
 fn emitSS(
-    compiler: *types.JanetCompiler,
-    operation: u8,
-    slot1: types.JanetSlot,
-    slot2: types.JanetSlot,
+    compiler: *compiler_primitives.JanetCompiler,
+    operation: constants.Opcode,
+    slot1: compiler_primitives.JanetSlot,
+    slot2: compiler_primitives.JanetSlot,
     write_back: bool,
 ) EmitError!i32 {
     const register1 = try registerNear(compiler, slot1, constants.JANETC_REGTEMP_0);
@@ -303,8 +298,8 @@ fn emitSS(
         freeRegister(compiler, slot1, register1, constants.JANETC_REGTEMP_0);
         return emit_error;
     };
-    const label = stretchy.count(u32, compiler.buffer);
-    emitInstruction(compiler, operation |
+    const label = compiler.here();
+    emitInstruction(compiler, opcode(operation) |
         (@as(u32, @intCast(register1)) << 8) |
         (@as(u32, @intCast(register2)) << 16));
     freeRegister(compiler, slot2, register2, constants.JANETC_REGTEMP_1);
@@ -314,10 +309,10 @@ fn emitSS(
 }
 
 fn emitTwoSlots(
-    compiler: *types.JanetCompiler,
-    operation: u8,
-    slot1: types.JanetSlot,
-    slot2: types.JanetSlot,
+    compiler: *compiler_primitives.JanetCompiler,
+    operation: constants.Opcode,
+    slot1: compiler_primitives.JanetSlot,
+    slot2: compiler_primitives.JanetSlot,
     rest: i32,
     write_back: bool,
 ) EmitError!i32 {
@@ -326,9 +321,9 @@ fn emitTwoSlots(
         freeRegister(compiler, slot1, register1, constants.JANETC_REGTEMP_0);
         return emit_error;
     };
-    const label = stretchy.count(u32, compiler.buffer);
+    const label = compiler.here();
     const rest_bits: u32 = @bitCast(rest);
-    emitInstruction(compiler, operation |
+    emitInstruction(compiler, opcode(operation) |
         (@as(u32, @intCast(register1)) << 8) |
         (@as(u32, @intCast(register2)) << 16) |
         (rest_bits << 24));
@@ -339,11 +334,11 @@ fn emitTwoSlots(
 }
 
 fn emitSSS(
-    compiler: *types.JanetCompiler,
-    operation: u8,
-    slot1: types.JanetSlot,
-    slot2: types.JanetSlot,
-    slot3: types.JanetSlot,
+    compiler: *compiler_primitives.JanetCompiler,
+    operation: constants.Opcode,
+    slot1: compiler_primitives.JanetSlot,
+    slot2: compiler_primitives.JanetSlot,
+    slot3: compiler_primitives.JanetSlot,
     write_back: bool,
 ) EmitError!i32 {
     const register1 = try registerNear(compiler, slot1, constants.JANETC_REGTEMP_0);
@@ -356,8 +351,8 @@ fn emitSSS(
         freeRegister(compiler, slot1, register1, constants.JANETC_REGTEMP_0);
         return emit_error;
     };
-    const label = stretchy.count(u32, compiler.buffer);
-    emitInstruction(compiler, operation |
+    const label = compiler.here();
+    emitInstruction(compiler, opcode(operation) |
         (@as(u32, @intCast(register1)) << 8) |
         (@as(u32, @intCast(register2)) << 16) |
         (@as(u32, @intCast(register3)) << 24));
@@ -368,7 +363,7 @@ fn emitSSS(
     return label;
 }
 
-fn registerFar(compiler: *types.JanetCompiler, slot_value: types.JanetSlot, temporary: types.JanetcRegisterTemp) EmitError!i32 {
+fn registerFar(compiler: *compiler_primitives.JanetCompiler, slot_value: compiler_primitives.JanetSlot, temporary: compiler_primitives.JanetcRegisterTemp) EmitError!i32 {
     if (slot_value.envindex < 0 and slot_value.index >= 0) return slot_value.index;
 
     const near_register = regalloc.regallocTemp(&compiler.scope.?.ra, temporary);
@@ -382,7 +377,7 @@ fn registerFar(compiler: *types.JanetCompiler, slot_value: types.JanetSlot, temp
             regalloc.regallocFreetemp(&compiler.scope.?.ra, near_register, temporary);
             return error.TooManyRegisters;
         }
-        emitInstruction(compiler, opcode(constants.JOP_MOVE_FAR) |
+        emitInstruction(compiler, opcode(constants.Opcode.move_far) |
             (@as(u32, @intCast(near_register)) << 8) |
             (@as(u32, @intCast(far_register)) << 16));
         regalloc.regallocFreetemp(&compiler.scope.?.ra, near_register, temporary);
@@ -394,7 +389,7 @@ fn registerFar(compiler: *types.JanetCompiler, slot_value: types.JanetSlot, temp
     return near_register;
 }
 
-fn registerNear(compiler: *types.JanetCompiler, slot_value: types.JanetSlot, temporary: types.JanetcRegisterTemp) EmitError!i32 {
+fn registerNear(compiler: *compiler_primitives.JanetCompiler, slot_value: compiler_primitives.JanetSlot, temporary: compiler_primitives.JanetcRegisterTemp) EmitError!i32 {
     if (slot_value.envindex < 0 and slot_value.index >= 0 and slot_value.index <= 0xff) {
         return slot_value.index;
     }
@@ -407,89 +402,89 @@ fn registerNear(compiler: *types.JanetCompiler, slot_value: types.JanetSlot, tem
 }
 
 fn freeRegister(
-    compiler: *types.JanetCompiler,
-    slot_value: types.JanetSlot,
+    compiler: *compiler_primitives.JanetCompiler,
+    slot_value: compiler_primitives.JanetSlot,
     register: i32,
-    temporary: types.JanetcRegisterTemp,
+    temporary: compiler_primitives.JanetcRegisterTemp,
 ) void {
     if (register != slot_value.index or
         slot_value.envindex >= 0 or
-        slot_value.flags & (constants.JANET_SLOT_CONSTANT | constants.JANET_SLOT_REF) != 0)
+        (slot_value.flags.constant or slot_value.flags.ref))
     {
         regalloc.regallocFreetemp(&compiler.scope.?.ra, register, temporary);
     }
 }
 
-fn moveNear(compiler: *types.JanetCompiler, destination: i32, source: types.JanetSlot) bool {
-    if (source.flags & (constants.JANET_SLOT_CONSTANT | constants.JANET_SLOT_REF) != 0) {
+fn moveNear(compiler: *compiler_primitives.JanetCompiler, destination: i32, source: compiler_primitives.JanetSlot) bool {
+    if (source.flags.constant or source.flags.ref) {
         if (!loadConstant(compiler, source.constant, destination)) return false;
-        if (source.flags & constants.JANET_SLOT_REF != 0) {
-            emitInstruction(compiler, opcode(constants.JOP_GET_INDEX) |
+        if (source.flags.ref) {
+            emitInstruction(compiler, opcode(constants.Opcode.get_index) |
                 (@as(u32, @intCast(destination)) << 8) |
                 (@as(u32, @intCast(destination)) << 16));
         }
     } else if (source.envindex >= 0) {
-        emitInstruction(compiler, opcode(constants.JOP_LOAD_UPVALUE) |
+        emitInstruction(compiler, opcode(constants.Opcode.load_upvalue) |
             (@as(u32, @intCast(destination)) << 8) |
             (@as(u32, @intCast(source.envindex)) << 16) |
             (@as(u32, @intCast(source.index)) << 24));
     } else if (source.index != destination) {
-        emitInstruction(compiler, opcode(constants.JOP_MOVE_NEAR) |
+        emitInstruction(compiler, opcode(constants.Opcode.move_near) |
             (@as(u32, @intCast(destination)) << 8) |
             (@as(u32, @intCast(source.index)) << 16));
     }
     return true;
 }
 
-fn moveBack(compiler: *types.JanetCompiler, destination: types.JanetSlot, source_value: i32) bool {
+fn moveBack(compiler: *compiler_primitives.JanetCompiler, destination: compiler_primitives.JanetSlot, source_value: i32) bool {
     var source = source_value;
-    if (destination.flags & constants.JANET_SLOT_REF != 0) {
+    if (destination.flags.ref) {
         const reference = regalloc.regallocTemp(&compiler.scope.?.ra, constants.JANETC_REGTEMP_5);
         if (!loadConstant(compiler, destination.constant, reference)) {
             regalloc.regallocFreetemp(&compiler.scope.?.ra, reference, constants.JANETC_REGTEMP_5);
             return false;
         }
-        emitInstruction(compiler, opcode(constants.JOP_PUT_INDEX) |
+        emitInstruction(compiler, opcode(constants.Opcode.put_index) |
             (@as(u32, @intCast(reference)) << 8) |
             (@as(u32, @intCast(source)) << 16));
         regalloc.regallocFreetemp(&compiler.scope.?.ra, reference, constants.JANETC_REGTEMP_5);
     } else if (destination.envindex >= 0) {
         source = makeNearSource(compiler, source);
-        emitInstruction(compiler, opcode(constants.JOP_SET_UPVALUE) |
+        emitInstruction(compiler, opcode(constants.Opcode.set_upvalue) |
             (@as(u32, @intCast(source)) << 8) |
             (@as(u32, @intCast(destination.envindex)) << 16) |
             (@as(u32, @intCast(destination.index)) << 24));
     } else if (destination.index != source) {
         source = makeNearSource(compiler, source);
-        emitInstruction(compiler, opcode(constants.JOP_MOVE_FAR) |
+        emitInstruction(compiler, opcode(constants.Opcode.move_far) |
             (@as(u32, @intCast(source)) << 8) |
             (@as(u32, @intCast(destination.index)) << 16));
     }
     return true;
 }
 
-fn makeNearSource(compiler: *types.JanetCompiler, source_value: i32) i32 {
+fn makeNearSource(compiler: *compiler_primitives.JanetCompiler, source_value: i32) i32 {
     if (source_value <= 0xff) return source_value;
     const near_source = 0xf0 + @as(i32, @intCast(constants.JANETC_REGTEMP_5));
-    emitInstruction(compiler, opcode(constants.JOP_MOVE_NEAR) |
+    emitInstruction(compiler, opcode(constants.Opcode.move_near) |
         (@as(u32, @intCast(near_source)) << 8) |
         (@as(u32, @intCast(source_value)) << 16));
     return near_source;
 }
 
-fn loadConstant(compiler: *types.JanetCompiler, val: repr.Value, register: i32) bool {
+fn loadConstant(compiler: *compiler_primitives.JanetCompiler, val: repr.Value, register: i32) bool {
     const register_bits = @as(u32, @intCast(register)) << 8;
     switch (repr.typeOf(val)) {
-        repr.Tag.nil => emitInstruction(compiler, opcode(constants.JOP_LOAD_NIL) | register_bits),
+        repr.Tag.nil => emitInstruction(compiler, opcode(constants.Opcode.load_nil) | register_bits),
         repr.Tag.boolean => emitInstruction(
             compiler,
-            opcode(if (wrap.toBoolean(val)) constants.JOP_LOAD_TRUE else constants.JOP_LOAD_FALSE) | register_bits,
+            opcode(if (wrap.toBoolean(val)) constants.Opcode.load_true else constants.Opcode.load_false) | register_bits,
         ),
         repr.Tag.number => {
-            if (args_core.checkint16(val) != 0) {
+            if (args_core.checkint16(val)) {
                 const integer: i32 = @intFromFloat(wrap.toNumber(val));
                 const integer_bits: u32 = @bitCast(integer);
-                emitInstruction(compiler, opcode(constants.JOP_LOAD_INTEGER) | register_bits | (integer_bits << 16));
+                emitInstruction(compiler, opcode(constants.Opcode.load_integer) | register_bits | (integer_bits << 16));
             } else {
                 return loadFromConstantPool(compiler, val, register_bits);
             }
@@ -499,39 +494,40 @@ fn loadConstant(compiler: *types.JanetCompiler, val: repr.Value, register: i32) 
     return true;
 }
 
-fn loadFromConstantPool(compiler: *types.JanetCompiler, val: repr.Value, register_bits: u32) bool {
+fn loadFromConstantPool(compiler: *compiler_primitives.JanetCompiler, val: repr.Value, register_bits: u32) bool {
     const index = internConstant(compiler, val) orelse return false;
-    emitInstruction(compiler, opcode(constants.JOP_LOAD_CONSTANT) |
+    emitInstruction(compiler, opcode(constants.Opcode.load_constant) |
         register_bits |
         (@as(u32, @intCast(index)) << 16));
     return true;
 }
 
-fn internConstant(compiler: *types.JanetCompiler, val: repr.Value) ?i32 {
+fn internConstant(compiler: *compiler_primitives.JanetCompiler, val: repr.Value) ?i32 {
     var scope = compiler.scope;
     while (scope) |current| {
-        if (current.flags & constants.JANET_SCOPE_FUNCTION != 0) break;
+        if (current.flags.function) break;
         scope = current.parent;
     }
 
-    const count = stretchy.count(repr.Value, scope.?.consts);
-    var index: i32 = 0;
-    while (index < count) : (index += 1) {
-        if (order.equals(val, scope.?.consts.?[@intCast(index)]) != 0) return index;
+    for (scope.?.consts.items, 0..) |constant, index| {
+        if (order.equals(val, constant)) return @intCast(index);
     }
+    const count = scope.?.consts.items.len;
     if (count >= 0xffff) return null;
-    stretchy.push(repr.Value, &scope.?.consts, val);
-    return count;
+    stretchy.push(&scope.?.consts, val);
+    return @intCast(count);
 }
 
-fn slotsEqual(lhs: types.JanetSlot, rhs: types.JanetSlot) bool {
-    return sequal(lhs, rhs) != 0;
+fn slotsEqual(lhs: compiler_primitives.JanetSlot, rhs: compiler_primitives.JanetSlot) bool {
+    return sequal(lhs, rhs);
 }
 
-fn emitInstruction(compiler: *types.JanetCompiler, instruction: u32) void {
+fn emitInstruction(compiler: *compiler_primitives.JanetCompiler, instruction: u32) void {
     emit(compiler, instruction);
 }
 
-fn opcode(val: c_int) u32 {
-    return @intCast(val);
+/// An opcode in the low byte of an instruction word, which is where the
+/// bytecode puts it. This is the one place the enum becomes a number.
+fn opcode(op: constants.Opcode) u32 {
+    return op.number();
 }

@@ -158,9 +158,8 @@
 
 (check-lint-compile '(def [xxx [xxx yyy]] [1 [2 3]]) "shadow global-to-global one form")
 
-# The content of a lint, not just its presence. Phase 10 Part 7 moved the lint
-# layer to Zig and made it non-variadic, so the level, the position and the
-# interpolated message are all newly the port's responsibility.
+# The content of a lint, not just its presence: the level, the position and the
+# interpolated message.
 (defn lints-of
   [code]
   (def lints @[])

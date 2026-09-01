@@ -14,15 +14,16 @@
 
 const std = @import("std");
 const movopt = @import("subsystems").optimize;
-const types = @import("types");
 const constants = @import("constants");
+const functions = @import("subsystems").value.functions;
+const expect = @import("expect.zig").expect;
 
 /// A definition holding nothing but the bytecode under test. Zeroed rather
 /// than partially initialised, because the pass reads `closure_bitset` and a
 /// stray pointer there is the difference between a dead store and a captured
 /// one.
-fn definitionFor(bytecode: []u32, slots: i32) types.JanetFuncDef {
-    var definition: types.JanetFuncDef = std.mem.zeroes(types.JanetFuncDef);
+fn definitionFor(bytecode: []u32, slots: i32) functions.FuncDef {
+    var definition: functions.FuncDef = std.mem.zeroes(functions.FuncDef);
     definition.bytecode = bytecode.ptr;
     definition.bytecode_length = @intCast(bytecode.len);
     definition.slotcount = slots;
@@ -31,24 +32,24 @@ fn definitionFor(bytecode: []u32, slots: i32) types.JanetFuncDef {
 
 /// A slot written and never read is a dead store.
 fn aDeadLoadIsRemoved() void {
-    var bytecode = [_]u32{ constants.JOP_LOAD_NIL, constants.JOP_RETURN_NIL };
+    var bytecode = [_]u32{ constants.Opcode.load_nil.number(), constants.Opcode.return_nil.number() };
     var definition = definitionFor(&bytecode, 1);
     movopt.bytecodeMovopt(&definition);
-    std.debug.assert(bytecode[0] == constants.JOP_NOOP);
+    expect(constants.Opcode.fromWord(bytecode[0]) == constants.Opcode.noop);
 }
 
 /// Removing one dead store can make its source dead in turn, so the pass has
 /// to reach a fixed point rather than sweep once.
 fn theRemovalCascades() void {
     var bytecode = [_]u32{
-        constants.JOP_LOAD_NIL,
-        constants.JOP_MOVE_NEAR | (@as(u32, 1) << 8),
-        constants.JOP_RETURN_NIL,
+        constants.Opcode.load_nil.number(),
+        constants.Opcode.move_near.number() | (@as(u32, 1) << 8),
+        constants.Opcode.return_nil.number(),
     };
     var definition = definitionFor(&bytecode, 2);
     movopt.bytecodeMovopt(&definition);
-    std.debug.assert(bytecode[0] == constants.JOP_NOOP);
-    std.debug.assert(bytecode[1] == constants.JOP_NOOP);
+    expect(constants.Opcode.fromWord(bytecode[0]) == constants.Opcode.noop);
+    expect(constants.Opcode.fromWord(bytecode[1]) == constants.Opcode.noop);
 }
 
 /// The three things that make a store live, which matter more than the two
@@ -56,27 +57,27 @@ fn theRemovalCascades() void {
 /// function does.
 fn aLiveLoadIsKept() void {
     // Read by the return.
-    var returned = [_]u32{ constants.JOP_LOAD_NIL, constants.JOP_RETURN };
+    var returned = [_]u32{ constants.Opcode.load_nil.number(), constants.Opcode.@"return".number() };
     var definition = definitionFor(&returned, 1);
     movopt.bytecodeMovopt(&definition);
-    std.debug.assert(returned[0] == constants.JOP_LOAD_NIL);
+    expect(constants.Opcode.fromWord(returned[0]) == constants.Opcode.load_nil);
 
     // Captured by a closure. Nothing in the bytecode reads slot 0, so only
     // `closure_bitset` says this store is live -- and a pass that ignored it
     // would compile a correct program into a wrong one.
-    var captured = [_]u32{ constants.JOP_LOAD_NIL, constants.JOP_RETURN_NIL };
+    var captured = [_]u32{ constants.Opcode.load_nil.number(), constants.Opcode.return_nil.number() };
     var closure_bits = [_]u32{1};
     definition = definitionFor(&captured, 1);
     definition.closure_bitset = &closure_bits;
     movopt.bytecodeMovopt(&definition);
-    std.debug.assert(captured[0] == constants.JOP_LOAD_NIL);
+    expect(constants.Opcode.fromWord(captured[0]) == constants.Opcode.load_nil);
 
     // Allocating. The destination is dead, but the instruction is not: it
     // allocates, and the collector's timing is observable.
-    var effectful = [_]u32{ constants.JOP_MAKE_BUFFER, constants.JOP_RETURN_NIL };
+    var effectful = [_]u32{ constants.Opcode.make_buffer.number(), constants.Opcode.return_nil.number() };
     definition = definitionFor(&effectful, 1);
     movopt.bytecodeMovopt(&definition);
-    std.debug.assert(effectful[0] == constants.JOP_MAKE_BUFFER);
+    expect(constants.Opcode.fromWord(effectful[0]) == constants.Opcode.make_buffer);
 }
 
 pub fn run() void {

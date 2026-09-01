@@ -1,6 +1,6 @@
 .{
     .name = .janet,
-    .version = "1.40.0",
+    .version = "1.41.3",
     .fingerprint = 0x9b91c47a931ff7ed,
     .minimum_zig_version = "0.16.0",
     .paths = .{

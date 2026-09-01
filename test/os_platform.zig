@@ -10,14 +10,12 @@
 //! `builtin`. Two independent descriptions of the same fact, which is exactly
 //! what a contract wants.
 //!
-//! That oracle is not available here, and not merely inconvenient:
-//! `AGENTS.md`'s standing rule is **"test the platform with `builtin.os.tag`;
-//! read only what the build wrote into `janetconf.h` with `@hasDecl`"**,
-//! because a `JANET_*` macro derived from the compiler's own predefines is
-//! unreliable through `@cImport` — Aro predefines `__unix__` for
-//! `x86_64-windows-gnu`, so the *translation* of `janet.h` says `JANET_POSIX`
-//! where the *compilation* of it says `JANET_WINDOWS`. A Zig contract that
-//! read those macros would be checking a description known to be wrong.
+//! That oracle is not available here, and not merely inconvenient: the standing
+//! rule is **test the platform with `builtin.os.tag`**, because a macro derived
+//! from the compiler's own predefines is unreliable through `@cImport` — Aro
+//! predefines `__unix__` for `x86_64-windows-gnu`, so a header's *translation*
+//! can say POSIX where its *compilation* says Windows. A contract that read
+//! such a macro would be checking a description known to be wrong.
 //!
 //! So a naive translation of this file would assert `builtin` against
 //! `builtin` and prove nothing. Two things are done instead.
@@ -32,7 +30,7 @@
 //!
 //! **The kernel and the Janet surface are cross-checked against each other**,
 //! which the C contract also did and which needs no oracle at all: whatever
-//! `janet_os_name` answers, `os/which` must answer the keyword form of it, and
+//! `os.osName` answers, `os/which` must answer the keyword form of it, and
 //! `os/which` given that keyword must answer true.
 //!
 //! ## `os/which` has three behaviours under one name
@@ -45,19 +43,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const repr = @import("repr");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 const config = @import("config");
 const value = @import("subsystems").value;
 const wrap = @import("subsystems").value.wrap;
 const args_core = @import("subsystems").args;
 const vm_lifecycle = @import("subsystems").lifecycle;
-
-/// The kernels, by symbol; `janet.h` does not declare them.
-extern fn janet_os_name() callconv(.c) [*:0]const u8;
-extern fn janet_os_arch() callconv(.c) [*:0]const u8;
-extern fn janet_os_compiler() callconv(.c) [*:0]const u8;
-extern fn janet_os_cpu_count() callconv(.c) i32;
+const os = @import("subsystems").os;
+const expect = @import("expect.zig").expect;
 
 fn cstr(pointer: [*:0]const u8) []const u8 {
     return std.mem.span(pointer);
@@ -121,13 +114,13 @@ fn janetArchForMachine(machine: []const u8) ?[]const u8 {
 fn theClassificationAgreesWithTheMachine() void {
     var buffer: std.c.utsname = undefined;
 
-    // `janetconf.h` may pin either name, in which case the kernel is answering
-    // the build's choice rather than describing the machine and there is
-    // nothing here to check. `@hasDecl` is how `AGENTS.md` says to ask.
+    // `-Dos-name` may pin the name, in which case the kernel is answering the
+    // build's choice rather than describing the machine and there is nothing
+    // here to check.
     if (config.os_name == null) {
         if (unameSysname(&buffer)) |sysname| {
             if (janetNameForSysname(sysname)) |expected| {
-                std.debug.assert(std.mem.eql(u8, cstr(janet_os_name()), expected));
+                expect(std.mem.eql(u8, cstr(os.osName()), expected));
             }
         }
     }
@@ -135,7 +128,7 @@ fn theClassificationAgreesWithTheMachine() void {
     if (config.arch_name == null) {
         if (unameMachine(&buffer)) |machine| {
             if (janetArchForMachine(machine)) |expected| {
-                std.debug.assert(std.mem.eql(u8, cstr(janet_os_arch()), expected));
+                expect(std.mem.eql(u8, cstr(os.osArch()), expected));
             }
         }
     }
@@ -144,8 +137,8 @@ fn theClassificationAgreesWithTheMachine() void {
     // the one classification with no independent oracle. What is left is that
     // it answers one of the names the subsystem can produce -- which would
     // catch an uninitialised or truncated string, and nothing subtler.
-    const compiler = cstr(janet_os_compiler());
-    std.debug.assert(std.mem.eql(u8, compiler, "clang") or
+    const compiler = cstr(os.osCompiler());
+    expect(std.mem.eql(u8, compiler, "clang") or
         std.mem.eql(u8, compiler, "msvc") or
         std.mem.eql(u8, compiler, "gcc") or
         std.mem.eql(u8, compiler, "kencc") or
@@ -155,9 +148,9 @@ fn theClassificationAgreesWithTheMachine() void {
 /// Every classification is a non-empty string. Trivial, and it is the
 /// assertion that fails if a table gained an entry with no name.
 fn theClassificationsAreNamed() void {
-    std.debug.assert(cstr(janet_os_name()).len > 0);
-    std.debug.assert(cstr(janet_os_arch()).len > 0);
-    std.debug.assert(cstr(janet_os_compiler()).len > 0);
+    expect(cstr(os.osName()).len > 0);
+    expect(cstr(os.osArch()).len > 0);
+    expect(cstr(os.osCompiler()).len > 0);
 }
 
 // ------------------------------------------------------ the Janet surface
@@ -170,9 +163,9 @@ fn theSurfaceAgreesWithTheKernels() !void {
     const arch = harness.core("os/arch");
     const compiler = harness.core("os/compiler");
 
-    std.debug.assert(harness.keywordIs(try which(&.{}), janet_os_name()));
-    std.debug.assert(harness.keywordIs(try arch(&.{}), janet_os_arch()));
-    std.debug.assert(harness.keywordIs(try compiler(&.{}), janet_os_compiler()));
+    expect(harness.keywordIs(try which(&.{}), os.osName()));
+    expect(harness.keywordIs(try arch(&.{}), os.osArch()));
+    expect(harness.keywordIs(try compiler(&.{}), os.osCompiler()));
 }
 
 /// `os/which`'s three behaviours; see the header comment.
@@ -180,15 +173,15 @@ fn theThreeReadingsOfWhich() !void {
     const which = harness.core("os/which");
     var argument: [1]repr.Value = undefined;
 
-    argument[0] = value.fromBytes(std.mem.span(janet_os_name()), .keyword);
-    std.debug.assert(wrap.toBoolean(try which(argument[0..1])));
+    argument[0] = value.fromBytes(std.mem.span(os.osName()), .keyword);
+    expect(wrap.toBoolean(try which(argument[0..1])));
 
     argument[0] = value.fromBytes("not-a-platform", .keyword);
-    std.debug.assert(!wrap.toBoolean(try which(argument[0..1])));
+    expect(!wrap.toBoolean(try which(argument[0..1])));
 
     // `nil` is not a platform to test against; it is the same as no argument.
     argument[0] = wrap.fromNil();
-    std.debug.assert(harness.keywordIs(try which(argument[0..1]), janet_os_name()));
+    expect(harness.keywordIs(try which(argument[0..1]), os.osName()));
 }
 
 /// `os/cpu-count` answers the kernel's number, or the caller's fallback when
@@ -199,19 +192,19 @@ fn theCpuCount() !void {
     // of the environment rather than read out of `options`, because what is
     // missing is a registration and no `Selection` field names it.
     const cpuCount = harness.coreOptional("os/cpu-count") orelse return;
-    const direct = janet_os_cpu_count();
+    const direct = os.osCpuCount();
     var fallback = [1]repr.Value{value.fromBytes("fallback", .keyword)};
 
     const answered = try cpuCount(fallback[0..1]);
     if (direct < 0) {
-        std.debug.assert(harness.equals(answered, fallback[0]));
+        expect(harness.equals(answered, fallback[0]));
         // With no fallback to give, the answer is nil rather than an error.
-        std.debug.assert(harness.isType(try cpuCount(&.{}), repr.Tag.nil));
+        expect(harness.isType(try cpuCount(&.{}), repr.Tag.nil));
     } else {
-        std.debug.assert(args_core.checkint(answered) != 0);
-        std.debug.assert(wrap.toInteger(answered) == direct);
+        expect(args_core.checkint(answered));
+        expect(wrap.toInteger(answered) == direct);
         // The fallback is not consulted when there is a real answer.
-        std.debug.assert(wrap.toInteger(try cpuCount(&.{})) == direct);
+        expect(wrap.toInteger(try cpuCount(&.{})) == direct);
     }
 }
 

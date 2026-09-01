@@ -29,9 +29,7 @@
 //! rather than representation and live in `value.zig` with the two dictionary
 //! callers that want them.
 //!
-//! Nothing here calls anything that can raise, so the file carries no
-//! `jump-transparent` marker: that marker records that a Janet signal may pass
-//! *through* a frame, and nothing below these can produce one.
+//! Nothing here calls anything that can raise.
 //!
 //! ## Type punning is the subject, not an accident
 //!
@@ -41,20 +39,10 @@
 //!
 //! ## What is reproduced rather than repaired
 //!
-//! **`janet_wrap_integer` does not exist under `-Dnanbox=false`.** Janet
-//! declares it beside twenty-one siblings and defines it only inside the
-//! nanbox-only block, so a tagged build has no such symbol. No C caller
-//! notices, because they all expand the macro; every Zig subsystem would, which
-//! is why `value/helpers/access.zig` writes the macro out rather than calling
-//! it. The gap is reproduced -- the export below sits inside a `comptime` block
-//! that tests the layout -- and `FOUND.md` records it. Closing it would be a
-//! product decision.
-//!
-//! **`janet_wrap_number_safe` canonicalises a NaN under both NaN-boxed layouts
+//! **`fromNumberSafe` canonicalises a NaN under both NaN-boxed layouts
 //! and not under the tagged one**, where a signalling NaN's payload survives
-//! into the value. The asymmetry is the C original's -- its tagged branch is a
-//! bare call to `janet_wrap_number` -- and it is harmless there, because the
-//! tagged layout does not use the NaN space for anything.
+//! into the value. The asymmetry is upstream Janet's and is harmless, because
+//! the tagged layout does not use the NaN space for anything.
 //!
 //! **`janet_unwrap_integer` is not reproducible at all.** The macro it fills is
 //! `(int32_t) janet_unwrap_number(x)`, a cast C leaves undefined for a NaN or
@@ -66,8 +54,19 @@
 //! divergence, and no contract pins it.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
+const buffers = @import("../buffers.zig");
+const arrays = @import("../arrays.zig");
+const strings = @import("../strings.zig");
+const tuples = @import("../tuples.zig");
+const structs = @import("../structs.zig");
+const abstracts = @import("../abstracts.zig");
+/// `boundary` rather than `abi`: this file already declares a `pub const abi`
+/// for the `callconv(.c)` shims below, and the two names would collide.
+const boundary = @import("abi");
+const functions = @import("../functions.zig");
+const fibers = @import("../fibers.zig");
+const tables = @import("../tables.zig");
 
 /// The file's own struct, so that `abi` can name the declarations it shadows.
 /// A struct member does not shadow a container declaration, but it does make
@@ -107,61 +106,61 @@ pub inline fn toPointer(x: repr.Value) ?*anyopaque {
     return repr.toPointer(x);
 }
 
-pub fn toStruct(x: repr.Value) types.JanetStruct {
+pub fn toStruct(x: repr.Value) structs.Struct {
     return @ptrCast(@alignCast(toPointer(x)));
 }
 
-pub fn toTuple(x: repr.Value) types.JanetTuple {
+pub fn toTuple(x: repr.Value) tuples.Tuple {
     return @ptrCast(@alignCast(toPointer(x)));
 }
 
-pub fn toFiber(x: repr.Value) *types.JanetFiber {
+pub fn toFiber(x: repr.Value) *fibers.Fiber {
     return @ptrCast(@alignCast(toPointer(x)));
 }
 
-pub fn toArray(x: repr.Value) *types.JanetArray {
+pub fn toArray(x: repr.Value) *arrays.Array {
     return @ptrCast(@alignCast(toPointer(x)));
 }
 
-pub fn toTable(x: repr.Value) *types.JanetTable {
+pub fn toTable(x: repr.Value) *tables.Table {
     return @ptrCast(@alignCast(toPointer(x)));
 }
 
-pub fn toBuffer(x: repr.Value) *types.JanetBuffer {
+pub fn toBuffer(x: repr.Value) *buffers.Buffer {
     return @ptrCast(@alignCast(toPointer(x)));
 }
 
-pub fn toString(x: repr.Value) types.JanetString {
+pub fn toString(x: repr.Value) strings.String {
     return @ptrCast(toPointer(x));
 }
 
-pub fn toSymbol(x: repr.Value) types.JanetSymbol {
+pub fn toSymbol(x: repr.Value) strings.Symbol {
     return @ptrCast(toPointer(x));
 }
 
-pub fn toKeyword(x: repr.Value) types.JanetKeyword {
+pub fn toKeyword(x: repr.Value) strings.Keyword {
     return @ptrCast(toPointer(x));
 }
 
-pub fn toAbstract(x: repr.Value) types.JanetAbstract {
+pub fn toAbstract(x: repr.Value) abstracts.Abstract {
     return toPointer(x);
 }
 
-/// The `callconv(.c)` abi over `toPointer`, which is `inline`. The suffix is on
-/// the abi rather than on the operation.
+/// A non-`inline` `toPointer`, so that `@export` has an address to take. The
+/// suffix is on the abi rather than on the operation.
 pub fn toPointerAbi(x: repr.Value) ?*anyopaque {
     return toPointer(x);
 }
 
-pub fn toFunction(x: repr.Value) *types.JanetFunction {
+pub fn toFunction(x: repr.Value) *functions.Function {
     return @ptrCast(@alignCast(toPointer(x)));
 }
 
 /// A function pointer has a stricter alignment than `*anyopaque`, so this is
 /// the one unwrap that goes through the address rather than through
-/// `@ptrCast`. `trace_frames.zig` recovers a cfunction from a frame's `pc` the
-/// same way.
-pub fn toCfunction(x: repr.Value) types.JanetCFunction {
+/// `@ptrCast`. `debug.zig` recovers a cfunction from a frame's `pc` the same
+/// way.
+pub fn toCfunction(x: repr.Value) boundary.JanetCFunction {
     return @ptrFromInt(@intFromPtr(toPointer(x)));
 }
 
@@ -173,7 +172,7 @@ pub fn toNumber(x: repr.Value) f64 {
     return repr.unwrapNumber(x);
 }
 
-/// The `callconv(.c)` abi over `toInteger`. See `toPointerAbi`.
+/// A non-`inline` `toInteger`, for the reason `toPointerAbi` gives.
 pub fn toIntegerAbi(x: repr.Value) i32 {
     return toInteger(x);
 }
@@ -216,9 +215,8 @@ pub inline fn fromFalse() repr.Value {
     return fromBoolean(false);
 }
 
-/// `janet_wrap_integer`, which is `janet_wrap_number((int32_t)(x))` under every
-/// layout. The export it feeds exists only under two of them; see the header
-/// and the `comptime` block at the end of this section.
+/// An `i32` as a Janet number, which is what a Janet integer is under every
+/// layout.
 pub inline fn fromInteger(x: i32) repr.Value {
     return repr.wrapNumber(@floatFromInt(x));
 }
@@ -227,54 +225,54 @@ pub inline fn fromNumber(x: f64) repr.Value {
     return repr.wrapNumber(x);
 }
 
-pub inline fn fromString(x: types.JanetString) repr.Value {
+pub inline fn fromString(x: strings.String) repr.Value {
     return repr.wrapCPointer(x, repr.Tag.string);
 }
 
-pub inline fn fromSymbol(x: types.JanetSymbol) repr.Value {
+pub inline fn fromSymbol(x: strings.Symbol) repr.Value {
     return repr.wrapCPointer(x, repr.Tag.symbol);
 }
 
-pub inline fn fromKeyword(x: types.JanetKeyword) repr.Value {
+pub inline fn fromKeyword(x: strings.Keyword) repr.Value {
     return repr.wrapCPointer(x, repr.Tag.keyword);
 }
 
-pub inline fn fromArray(x: *types.JanetArray) repr.Value {
+pub inline fn fromArray(x: *arrays.Array) repr.Value {
     return repr.wrapPointer(x, repr.Tag.array);
 }
 
-pub inline fn fromTuple(x: types.JanetTuple) repr.Value {
+pub inline fn fromTuple(x: tuples.Tuple) repr.Value {
     return repr.wrapCPointer(x, repr.Tag.tuple);
 }
 
-pub inline fn fromStruct(x: types.JanetStruct) repr.Value {
+pub inline fn fromStruct(x: structs.Struct) repr.Value {
     return repr.wrapCPointer(x, repr.Tag.@"struct");
 }
 
 /// A null fiber is a legal payload, and `test/value_wrap.zig` contracts it:
 /// every fiber with no child wraps one. It must not become nil, and it must
 /// come back null.
-pub inline fn fromFiber(x: ?*types.JanetFiber) repr.Value {
+pub inline fn fromFiber(x: ?*fibers.Fiber) repr.Value {
     return repr.wrapPointer(x, repr.Tag.fiber);
 }
 
-pub inline fn fromBuffer(x: *types.JanetBuffer) repr.Value {
+pub inline fn fromBuffer(x: *buffers.Buffer) repr.Value {
     return repr.wrapPointer(x, repr.Tag.buffer);
 }
 
-pub inline fn fromFunction(x: *types.JanetFunction) repr.Value {
+pub inline fn fromFunction(x: *functions.Function) repr.Value {
     return repr.wrapPointer(x, repr.Tag.function);
 }
 
-pub inline fn fromCfunction(x: types.JanetCFunction) repr.Value {
+pub inline fn fromCfunction(x: boundary.JanetCFunction) repr.Value {
     return repr.wrapPointer(@ptrCast(@constCast(x)), repr.Tag.cfunction);
 }
 
-pub inline fn fromTable(x: *types.JanetTable) repr.Value {
+pub inline fn fromTable(x: *tables.Table) repr.Value {
     return repr.wrapPointer(x, repr.Tag.table);
 }
 
-pub inline fn fromAbstract(x: types.JanetAbstract) repr.Value {
+pub inline fn fromAbstract(x: abstracts.Abstract) repr.Value {
     return repr.wrapPointer(x, repr.Tag.abstract);
 }
 
@@ -282,9 +280,8 @@ pub inline fn fromPointer(x: ?*anyopaque) repr.Value {
     return repr.wrapPointer(x, repr.Tag.pointer);
 }
 
-/// The one wrap that is not a macro anywhere: `janet.h` declares
-/// `janet_wrap_number_safe` as a function under all three layouts, because the
-/// NaN canonicalisation it does has no macro spelling.
+/// A double as a Janet number, with a NaN canonicalised first under either
+/// NaN-boxed layout. See the header for the asymmetry that leaves.
 pub fn fromNumberSafe(d: f64) repr.Value {
     return repr.wrapNumberSafe(d);
 }
@@ -327,51 +324,51 @@ pub const abi = struct {
         return outer.fromNumber(x);
     }
 
-    pub fn fromString(x: types.JanetString) callconv(.c) repr.Value {
+    pub fn fromString(x: strings.String) callconv(.c) repr.Value {
         return outer.fromString(x);
     }
 
-    pub fn fromSymbol(x: types.JanetSymbol) callconv(.c) repr.Value {
+    pub fn fromSymbol(x: strings.Symbol) callconv(.c) repr.Value {
         return outer.fromSymbol(x);
     }
 
-    pub fn fromKeyword(x: types.JanetKeyword) callconv(.c) repr.Value {
+    pub fn fromKeyword(x: strings.Keyword) callconv(.c) repr.Value {
         return outer.fromKeyword(x);
     }
 
-    pub fn fromArray(x: *types.JanetArray) callconv(.c) repr.Value {
+    pub fn fromArray(x: *arrays.Array) callconv(.c) repr.Value {
         return outer.fromArray(x);
     }
 
-    pub fn fromTuple(x: types.JanetTuple) callconv(.c) repr.Value {
+    pub fn fromTuple(x: tuples.Tuple) callconv(.c) repr.Value {
         return outer.fromTuple(x);
     }
 
-    pub fn fromStruct(x: types.JanetStruct) callconv(.c) repr.Value {
+    pub fn fromStruct(x: structs.Struct) callconv(.c) repr.Value {
         return outer.fromStruct(x);
     }
 
-    pub fn fromFiber(x: ?*types.JanetFiber) callconv(.c) repr.Value {
+    pub fn fromFiber(x: ?*fibers.Fiber) callconv(.c) repr.Value {
         return outer.fromFiber(x);
     }
 
-    pub fn fromBuffer(x: *types.JanetBuffer) callconv(.c) repr.Value {
+    pub fn fromBuffer(x: *buffers.Buffer) callconv(.c) repr.Value {
         return outer.fromBuffer(x);
     }
 
-    pub fn fromFunction(x: *types.JanetFunction) callconv(.c) repr.Value {
+    pub fn fromFunction(x: *functions.Function) callconv(.c) repr.Value {
         return outer.fromFunction(x);
     }
 
-    pub fn fromCfunction(x: types.JanetCFunction) callconv(.c) repr.Value {
+    pub fn fromCfunction(x: boundary.JanetCFunction) callconv(.c) repr.Value {
         return outer.fromCfunction(x);
     }
 
-    pub fn fromTable(x: *types.JanetTable) callconv(.c) repr.Value {
+    pub fn fromTable(x: *tables.Table) callconv(.c) repr.Value {
         return outer.fromTable(x);
     }
 
-    pub fn fromAbstract(x: types.JanetAbstract) callconv(.c) repr.Value {
+    pub fn fromAbstract(x: abstracts.Abstract) callconv(.c) repr.Value {
         return outer.fromAbstract(x);
     }
 
@@ -379,15 +376,6 @@ pub const abi = struct {
         return outer.fromPointer(x);
     }
 };
-
-// The eighteen wrappers `wrap.c` provides in one block under either NaN-boxed
-// layout and one by one under the tagged one. They are exported here from a
-// single list because the bodies are identical across the three; only
-// `janet_wrap_integer` varies, and it varies by being absent.
-comptime {
-    // Absent under the tagged layout, reproducing the defect `FOUND.md`
-    // records against `wrap.c`.
-}
 
 // ------------------------------------- the inline surface, and why it is gone
 //
@@ -431,28 +419,16 @@ pub fn nanbox32FromTagP(t: u32, p: ?*anyopaque) repr.Value {
     return repr.nanbox32.fromTagP(t, p);
 }
 
-// `janet.h` declares five helpers under `JANET_NANBOX_64` and two under
-// `JANET_NANBOX_32`, and each set is the expansion target of that layout's wrap
-// and unwrap macros. A build gets exactly one set, which is why these are
-// exported from a `comptime` block rather than declared `export fn`: a body
-// naming `x.tagged` must not be analysed in a build where `Janet` has no such
-// field.
-comptime {
-    switch (repr.layout) {
-        .nanbox64 => {},
-        .nanbox32 => {},
-        .tagged => {},
-    }
-}
+// The five `nanbox64*` and two `nanbox32*` helpers above are each one layout's
+// own, and a build analyses only its own: a body naming `x.tagged` must not be
+// reached in a build where a value has no such field.
 
 // ------------------------------------------------ what is not in this file
 //
-// `janet_memalloc_empty` and `janet_memempty` are allocation rather than
-// representation, and they live in `value.zig`, the bucket the two dictionary
-// leaves already share.
+// The empty-collection allocators are allocation rather than representation and
+// live in `value.zig`, the bucket the two dictionary leaves already share.
 //
-// What that buys is this file's import list. With those two here it was `std`,
-// `config`, `utils`, `fatal`, `types`, `constants` and `vm/lifecycle.zig`;
-// three of those were there for them alone -- a collection budget to charge,
-// an out-of-memory exit to take, a `janet_malloc` to call. It is `std`, `repr`
-// and `types` now, and every declaration in the file is a conversion.
+// What that buys is this file's import list. With those two here it needed a
+// collection budget to charge, an out-of-memory exit to take, and a heap to
+// call; what is left is `repr`, the heap types it wraps, and nothing else, so
+// every declaration in the file is a conversion.

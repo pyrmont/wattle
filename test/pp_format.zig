@@ -9,12 +9,10 @@
 //! The runtime, because it is inside it: `@import("subsystems").pp_format` is
 //! the same file the rest of the binary runs.
 //!
-//! **A contract compiled beside `libjanet.a` would test a local copy**, and
-//! that is worth recording rather than quietly avoiding. With every selector
-//! false the neighbours resolve to shims and the subject's own `@export`s are
-//! suppressed so they do not collide with the library's. It works, and what it
-//! tests is a second instance of the subject, sharing the runtime's state and
-//! its source but not its code.
+//! **A contract compiled beside `libjanet.a` would test a local copy** --
+//! sharing the runtime's state and its source but not its code -- which is the
+//! reason this driver is a second compilation of the runtime rather than a
+//! program linked against it.
 //!
 //! ## Why this file exists rather than leaning on the Janet suites
 //!
@@ -40,11 +38,9 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("subsystems").raise;
 const harness = @import("harness.zig");
 const value = @import("subsystems").value;
 const fmt = @import("subsystems").pp_format;
@@ -52,25 +48,26 @@ const gc_alloc = @import("subsystems").gc_alloc;
 const buffers = @import("subsystems").value.buffers;
 const strings = @import("subsystems").value.strings;
 const core_env = @import("subsystems").env;
-const vm_state = @import("subsystems").lifecycle;
+const vm_state = @import("subsystems").vm_state;
+const vm_lifecycle = @import("subsystems").lifecycle;
 const signal_core = @import("subsystems").signal;
 const wrap = @import("subsystems").value.wrap;
 
-var test_env: *types.JanetTable = undefined;
+var test_env: *tables.Table = undefined;
 var raises_fired: usize = 0;
 const expected_raises = 15;
 
 // ------------------------------------------------------------- assertions
 
-fn checkString(s: types.JanetString, expected: []const u8) void {
-    const len: usize = @intCast(types.stringHead(s).length);
+fn checkString(s: strings.String, expected: []const u8) void {
+    const len: usize = @intCast(strings.head(s).length);
     if (len != expected.len or !std.mem.eql(u8, s[0..len], expected)) {
         std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, s[0..len] });
         @panic("string mismatch");
     }
 }
 
-fn checkBuffer(b: *types.JanetBuffer, expected: []const u8) void {
+fn checkBuffer(b: *buffers.Buffer, expected: []const u8) void {
     const len: usize = @intCast(b.count);
     if (len != expected.len or !std.mem.eql(u8, b.slice()[0..len], expected)) {
         std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.slice()[0..len] });
@@ -83,14 +80,14 @@ fn checkBuffer(b: *types.JanetBuffer, expected: []const u8) void {
 /// the replacement and the argument for it.
 const wrapInteger = harness.wrapInteger;
 
-fn bytes(s: types.JanetString) []const u8 {
-    return s[0..@intCast(types.stringHead(s).length)];
+fn bytes(s: strings.String) []const u8 {
+    return s[0..@intCast(strings.head(s).length)];
 }
 
 fn eval(source: [*:0]const u8) repr.Value {
     var out = wrap.fromNil();
     const status = core_env.dostring(test_env, source, "pp-format-test", &out);
-    std.debug.assert(status == 0);
+    expect(status == 0);
     _ = gc_alloc.gcroot(out);
     return out;
 }
@@ -104,7 +101,7 @@ fn eval(source: [*:0]const u8) repr.Value {
 /// payload and therefore what makes `janet_signal_plan` answer `RAISE` rather
 /// than ending the process.
 fn expectRaise(comptime message: []const u8, comptime body: anytype, args: anytype) void {
-    var state: types.JanetTryState = undefined;
+    var state: vm_state.TryState = undefined;
     signal_core.tryInit(&state);
     const result = @call(.auto, body, args);
     signal_core.restore(&state);
@@ -114,7 +111,7 @@ fn expectRaise(comptime message: []const u8, comptime body: anytype, args: anyty
         @panic("expected a raise, got a return");
     } else |_| {}
 
-    std.debug.assert(repr.checkType(state.payload, repr.Tag.string));
+    expect(repr.checkType(state.payload, repr.Tag.string));
     const got = bytes(wrap.toString(state.payload));
     if (!std.mem.eql(u8, got, message)) {
         std.debug.print("expected: {s}\n     got: {s}\n", .{ message, got });
@@ -123,22 +120,11 @@ fn expectRaise(comptime message: []const u8, comptime body: anytype, args: anyty
     raises_fired += 1;
 }
 
-/// `janet_buffer_format`, which is what `string/format` and `buffer/format`
-/// run, and the only way into the other loop. It is the library's, not this
-/// module's -- a panicking abi, so a raise comes back as a report.
-extern fn janet_buffer_format(
-    b: *types.JanetBuffer,
-    strfrmt: [*]const u8,
-    argstart: i32,
-    argc: i32,
-    argv: [*]repr.Value,
-) callconv(.c) void;
-
-fn formatted(format: [*]const u8, argv: []repr.Value) raise.Raising(types.JanetString) {
+fn formatted(format: [*]const u8, argv: []repr.Value) raise.Raising(strings.String) {
     const b = buffers.new(32);
-    janet_buffer_format(b, format, -1, @intCast(argv.len), argv.ptr);
+    pp_format.bufferFormatPanicking(b, format, 0, @intCast(argv.len), argv.ptr);
     _ = try raise.crossing({});
-    return strings.new(b.*.slice());
+    return strings.new(b.slice());
 }
 
 // ------------------------------------------- the widths that crossed va_arg
@@ -202,7 +188,7 @@ fn formatbAppendsAndReturnsItsBuffer() void {
     _ = buffers.pushCstringAbi(b, "head:");
 
     const returned = fmt.formatb(b, "%d-%d", .{ @as(i32, 1), @as(i32, 2) }) catch @panic("raised");
-    std.debug.assert(returned == b);
+    expect(returned == b);
     checkBuffer(b, "head:1-2");
 
     _ = fmt.formatb(b, "|%s", .{@as([*]const u8, "tail")}) catch @panic("raised");
@@ -219,8 +205,8 @@ fn theJanetStringConversion() void {
     const embedded = strings.new(raw[0..@intCast(3)]);
 
     const s = fmt.formatc("[%S]", .{embedded}) catch @panic("raised");
-    std.debug.assert(types.stringHead(s).length == 5);
-    std.debug.assert(std.mem.eql(u8, bytes(s), "[a\x00b]"));
+    expect(strings.head(s).length == 5);
+    expect(std.mem.eql(u8, bytes(s), "[a\x00b]"));
 
     // The same bytes through `%s` stop at the zero.
     checkString(fmt.formatc("[%s]", .{embedded}) catch @panic("raised"), "[a]");
@@ -272,7 +258,7 @@ fn theUpperCaseIntegerConversionsAreNotMapped() void {
     const i = fmt.formatc("%I", .{@as(i64, 6)}) catch @panic("raised");
 
     // Were the table consulted, these would be "5" and "6".
-    std.debug.assert(!std.mem.eql(u8, bytes(i), "6"));
+    expect(!std.mem.eql(u8, bytes(i), "6"));
     _ = d; // BSD libc happens to accept %D, glibc and musl do not.
 }
 
@@ -306,7 +292,7 @@ fn aBareStringConversionHasNoLengthLimit() void {
     var big: [600]u8 = @splat('x');
     big[big.len - 1] = 0;
     const s = fmt.formatc("%s", .{@as([*]const u8, &big)}) catch @panic("raised");
-    std.debug.assert(types.stringHead(s).length == big.len - 1);
+    expect(strings.head(s).length == big.len - 1);
 }
 
 // -------------------------------------------------------- the raise messages
@@ -385,7 +371,7 @@ fn anOversizedItemIsRefused() void {
 
     // One byte under, which must still be accepted.
     const ok = fmt.formatc("%.99f", .{@as(f64, 1e154)}) catch @panic("raised");
-    std.debug.assert(types.stringHead(ok).length == 255);
+    expect(strings.head(ok).length == 255);
 }
 
 // -------------------------------------------------------- the two loops
@@ -421,37 +407,37 @@ fn theEightPrettySpellings() void {
     const val = eval("@[1 2 3 4 5]");
 
     const has = struct {
-        fn scalar(s: types.JanetString, needle: u8) bool {
+        fn scalar(s: strings.String, needle: u8) bool {
             return std.mem.indexOfScalar(u8, bytes(s), needle) != null;
         }
-        fn sub(s: types.JanetString, needle: []const u8) bool {
+        fn sub(s: strings.String, needle: []const u8) bool {
             return std.mem.indexOf(u8, bytes(s), needle) != null;
         }
     };
 
     // Lower case: no colour. Upper case: colour.
-    std.debug.assert(!has.scalar(fmt.formatc("%p", .{val}) catch @panic("raised"), 0x1B));
-    std.debug.assert(has.scalar(fmt.formatc("%P", .{val}) catch @panic("raised"), 0x1B));
+    expect(!has.scalar(fmt.formatc("%p", .{val}) catch @panic("raised"), 0x1B));
+    expect(has.scalar(fmt.formatc("%P", .{val}) catch @panic("raised"), 0x1B));
 
     // q and Q are one-line; p and P are not, at a width that forces a wrap.
-    std.debug.assert(!has.scalar(fmt.formatc("%12q", .{val}) catch @panic("raised"), '\n'));
-    std.debug.assert(has.scalar(fmt.formatc("%12p", .{val}) catch @panic("raised"), '\n'));
+    expect(!has.scalar(fmt.formatc("%12q", .{val}) catch @panic("raised"), '\n'));
+    expect(has.scalar(fmt.formatc("%12p", .{val}) catch @panic("raised"), '\n'));
 
     // m and M keep everything; p truncates.
     const big = eval("(seq [i :range [0 400]] i)");
-    std.debug.assert(has.sub(fmt.formatc("%p", .{big}) catch @panic("raised"), "..."));
-    std.debug.assert(!has.sub(fmt.formatc("%m", .{big}) catch @panic("raised"), "..."));
+    expect(has.sub(fmt.formatc("%p", .{big}) catch @panic("raised"), "..."));
+    expect(!has.sub(fmt.formatc("%m", .{big}) catch @panic("raised"), "..."));
     // Upper case keeps the flag as well as adding colour, which is the half of
     // the decoding that a table lookup keyed on the lower-case letter alone
     // would drop.
-    std.debug.assert(!has.sub(fmt.formatc("%M", .{big}) catch @panic("raised"), "..."));
-    std.debug.assert(has.scalar(fmt.formatc("%M", .{big}) catch @panic("raised"), 0x1B));
+    expect(!has.sub(fmt.formatc("%M", .{big}) catch @panic("raised"), "..."));
+    expect(has.scalar(fmt.formatc("%M", .{big}) catch @panic("raised"), 0x1B));
     // n and N are one-line *and* untruncated, which is neither of the above
     // alone.
-    std.debug.assert(!has.sub(fmt.formatc("%n", .{big}) catch @panic("raised"), "..."));
-    std.debug.assert(!has.scalar(fmt.formatc("%n", .{big}) catch @panic("raised"), '\n'));
-    std.debug.assert(!has.sub(fmt.formatc("%N", .{big}) catch @panic("raised"), "..."));
-    std.debug.assert(!has.scalar(fmt.formatc("%N", .{big}) catch @panic("raised"), '\n'));
+    expect(!has.sub(fmt.formatc("%n", .{big}) catch @panic("raised"), "..."));
+    expect(!has.scalar(fmt.formatc("%n", .{big}) catch @panic("raised"), '\n'));
+    expect(!has.sub(fmt.formatc("%N", .{big}) catch @panic("raised"), "..."));
+    expect(!has.scalar(fmt.formatc("%N", .{big}) catch @panic("raised"), '\n'));
 
     // The precision is the depth, and it is read from the specifier rather than
     // from an argument.
@@ -470,7 +456,7 @@ fn aPrettyConversionAfterOtherText() void {
     _ = buffers.pushCstringAbi(b, "prefix)\n");
     _ = fmt.formatb(b, "%12p", .{eval("@[1 2 3 4 5]")}) catch @panic("raised");
     // The prefix, its newline and its bracket are all still there.
-    std.debug.assert(std.mem.eql(u8, b.*.slice()[0..8], "prefix)\n"));
+    expect(std.mem.eql(u8, b.slice()[0..8], "prefix)\n"));
 }
 
 // ----------------------------------------------- the fourth entry point
@@ -497,18 +483,18 @@ fn dynprintfReachesItsFourDestinations() void {
     // A name that is not bound, and an empty name, both use the default handle
     // rather than doing nothing.
     var raw = fopen(scratch, "wb");
-    std.debug.assert(raw != null);
+    expect(raw != null);
     fmt.dynprintf("pp-format-absent", raw, "to the default", .{}) catch @panic("raised");
     fmt.dynprintf("", raw, "%d", .{@as(i32, 42)}) catch @panic("raised");
     fmt.dynprintf(null, raw, "!", .{}) catch @panic("raised");
-    std.debug.assert(io_core.close(raw.?) == 0);
+    expect(io_core.close(raw.?) == 0);
 
     const check = buffers.new(0);
     raw = io_core.open(scratch, "rb");
-    std.debug.assert(raw != null);
+    expect(raw != null);
     buffers.extra(check, 64) catch @panic("pp_format: buffer extra raised");
-    check.*.count = @intCast(io_core.read(raw.?, check.*.data.?, 64));
-    std.debug.assert(io_core.close(raw.?) == 0);
+    check.count = @intCast(io_core.read(raw.?, check.data.?, 64));
+    expect(io_core.close(raw.?) == 0);
     checkBuffer(check, "to the default42!");
 
     // A bound value of any other type is ignored entirely.
@@ -524,7 +510,7 @@ fn dynprintfReachesItsFourDestinations() void {
         "not writeable",
         .{},
     });
-    std.debug.assert(io_core.fileClose(jf) == 0);
+    expect(io_core.fileClose(jf) == 0);
 
     vm_state.setdyn("pp-format-out", wrap.fromNil());
     _ = remove(scratch);
@@ -541,6 +527,9 @@ extern fn remove(path: [*]const u8) callconv(.c) c_int;
 /// `janet_io_write` is the one that stays, because `pp/format.zig` itself is a
 /// real caller by symbol.
 const io_core = @import("subsystems").io;
+const pp_format = @import("subsystems").pp_format;
+const tables = @import("subsystems").value.tables;
+const expect = @import("expect.zig").expect;
 
 /// A formatted raise.
 ///
@@ -583,8 +572,8 @@ pub fn run() void {
     dynprintfReachesItsFourDestinations();
     panicfCarriesItsFormattedMessage();
 
-    std.debug.assert(raises_fired == expected_raises);
+    expect(raises_fired == expected_raises);
 
-    vm_state.deinit();
+    vm_lifecycle.deinit();
     std.debug.print("pp format contract ok\n", .{});
 }

@@ -10,8 +10,8 @@
   * one cfunction, and the one socket address that outlives its call is
   * `janet_address_type`'s abstract, which is a byte buffer both sides treat as
   * opaque. Nothing Janet's own -- a `JanetStream *`, a `Value` -- appears in
-  * this translation at all; `types.zig` owns those and every Zig file shares
-  * it.
+  * this translation at all; each is declared in the Zig file that owns what
+  * is done to it, and every Zig file shares that one declaration.
   *
   * Unlike `os/abi.h`, this one *does* include the Windows headers rather than
   * restating what it needs in Zig. `ev/stream.zig` took the other route and
@@ -21,7 +21,7 @@
  * `0xffff` against Linux's `1`, `AF_INET6` is 23 against 30 on macOS and 10 on
  * Linux -- and forty hand-copied magic numbers on a platform this project
  * builds but does not run is a worse bet than a translation the matrix
- * compiles. Measured on 2026-08-23, every declaration `net_sockets.zig` names
+ * compiles. Measured on 2026-08-23, every declaration `net.zig` names
  * survives the translation for `x86_64-windows-gnu` except `WSAID_CONNECTEX`,
  * which is a brace initializer; that one is restated in `net/abi.zig`.
  *
@@ -93,12 +93,9 @@
 #endif
 
 /* Whether an `IP_MULTICAST_TTL` value is passed as `unsigned char` rather than
- * as `int`. `net.c` decides this with `#if defined(JANET_BSD) ||
- * defined(JANET_ILLUMOS)`, and the same rule applies: the enumeration stays in
- * C. Those two were `janet.h`'s names for the four BSD predefines and for
- * `__illumos__`; they are spelled out here for the reason above. Apple is not
- * among them, in `janet.h` or here -- `JANET_APPLE` is its own name and
- * `net.c` does not test it in this clause. */
+ * as `int`: the four BSD predefines and illumos, spelled out because the
+ * enumeration has to stay in C. **Apple is deliberately not among them** --
+ * it is its own predefine and this clause does not test it. */
 #if defined(__FreeBSD__) || defined(__DragonFly__) || defined(__NetBSD__) \
     || defined(__OpenBSD__) || defined(__illumos__)
 #define JANET_ZIG_MULTICAST_TTL_CHAR 1

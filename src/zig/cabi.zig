@@ -21,15 +21,13 @@
 //! **`janet_vm` is not declared here**, and could not be: it is the one symbol
 //! whose storage class follows the build -- `threadlocal` unless
 //! `-Dsingle-threaded` -- and a container-level declaration cannot be
-//! conditional. Every caller reaches the state through `vm/lifecycle.zig`'s
+//! conditional. Every caller reaches the state through `vm/state.zig`'s
 //! `current()`, which takes the address of the variable directly.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const config = @import("config");
-const types = @import("types");
 const repr = @import("repr");
-const constants = @import("constants");
+const host = @import("host");
 
 /// Two constants that are libc's rather than Janet's. libc through `@cImport`
 /// is deliberate: "no C in the tree" and "no libc" are different claims, and
@@ -66,125 +64,20 @@ pub extern fn exp(f64) f64;
 pub extern fn exp2(f64) f64;
 pub extern fn expm1(f64) f64;
 pub extern fn fabs(f64) f64;
-pub extern fn fclose(?*types.FILE) c_int;
-pub extern fn feof(?*types.FILE) c_int;
-pub extern fn fflush(?*types.FILE) c_int;
-pub extern fn fgetc(?*types.FILE) c_int;
+pub extern fn fclose(?*host.FILE) c_int;
+pub extern fn feof(?*host.FILE) c_int;
+pub extern fn fflush(?*host.FILE) c_int;
+pub extern fn fgetc(?*host.FILE) c_int;
 pub extern fn floor(f64) f64;
-pub extern fn fopen(noalias __filename: [*:0]const u8, noalias __mode: [*:0]const u8) ?*types.FILE;
-pub extern fn fprintf(noalias ?*types.FILE, noalias [*:0]const u8, ...) c_int;
-pub extern fn fputs(noalias [*:0]const u8, noalias ?*types.FILE) c_int;
-pub extern fn fread(noalias __ptr: ?*anyopaque, __size: usize, __nitems: usize, noalias __stream: ?*types.FILE) usize;
+pub extern fn fopen(noalias __filename: [*:0]const u8, noalias __mode: [*:0]const u8) ?*host.FILE;
+pub extern fn fprintf(noalias ?*host.FILE, noalias [*:0]const u8, ...) c_int;
+pub extern fn fputs(noalias [*:0]const u8, noalias ?*host.FILE) c_int;
+pub extern fn fread(noalias __ptr: ?*anyopaque, __size: usize, __nitems: usize, noalias __stream: ?*host.FILE) usize;
 pub extern fn frexp(f64, *c_int) f64;
-pub extern fn fwrite(noalias __ptr: ?*const anyopaque, __size: usize, __nitems: usize, noalias __stream: ?*types.FILE) usize;
+pub extern fn fwrite(noalias __ptr: ?*const anyopaque, __size: usize, __nitems: usize, noalias __stream: ?*host.FILE) usize;
 pub extern fn hypot(f64, f64) f64;
-pub extern fn janet_abstract(atype: *const types.AbstractType, size: usize) ?*anyopaque;
-pub extern fn janet_arity(arity: i32, min: i32, max: i32) void;
-pub extern fn janet_array(capacity: i32) *types.JanetArray;
-pub extern fn janet_array_pop(array: *types.JanetArray) repr.Value;
-pub extern fn janet_array_push(array: *types.JanetArray, x: repr.Value) void;
-pub extern fn janet_await() void;
-pub extern fn janet_buffer(capacity: i32) *types.JanetBuffer;
-pub extern fn janet_buffer_extra(buffer: *types.JanetBuffer, n: i32) void;
-pub extern fn janet_buffer_push_bytes(buffer: *types.JanetBuffer, string: ?[*]const u8, length: i32) void;
-pub extern fn janet_buffer_push_cstring(buffer: *types.JanetBuffer, cstring: [*:0]const u8) void;
-pub extern fn janet_buffer_push_u8(buffer: *types.JanetBuffer, byte: u8) void;
-pub extern fn janet_buffer_setcount(buffer: *types.JanetBuffer, count: i32) void;
-pub extern fn janet_call(fun: *types.JanetFunction, argc: i32, argv: [*]const repr.Value) repr.Value;
-pub extern fn janet_cfuns_ext(env: ?*types.JanetTable, regprefix: ?[*:0]const u8, registrations: [*]const types.Reg) void;
-pub extern fn janet_channel_give(channel: ?*types.JanetChannel, x: repr.Value) c_int;
-pub extern fn janet_checktype(x: repr.Value, @"type": c_uint) c_int;
-pub extern fn janet_checktypes(x: repr.Value, typeflags: c_int) c_int;
-pub extern fn janet_truthy(x: repr.Value) c_int;
-pub extern fn janet_unwrap_boolean(x: repr.Value) c_int;
-pub extern fn janet_collect() void;
-pub extern fn janet_core_cfuns_ext(env: *types.JanetTable, regprefix: ?[*:0]const u8, registrations: [*]const types.Reg) void;
-pub extern fn janet_core_def_sm(env: *types.JanetTable, name: [*:0]const u8, x: repr.Value, p: ?*const anyopaque, sf: ?*const anyopaque, sl: i32) void;
-pub extern fn janet_core_env(replacements: ?*types.JanetTable) *types.JanetTable;
 pub extern fn janet_cstring(str: [*:0]const u8) [*:0]const u8;
-pub extern fn janet_csymbol(cstr: [*:0]const u8) [*:0]const u8;
-pub extern fn janet_def(env: *types.JanetTable, name: [*:0]const u8, val: repr.Value, doc: ?[*:0]const u8) void;
-pub extern fn janet_def_sm(env: *types.JanetTable, name: [*:0]const u8, val: repr.Value, doc: ?[*:0]const u8, source_file: ?[*:0]const u8, source_line: i32) void;
-pub extern fn janet_deinit() void;
-pub extern fn janet_dobytes(env: *types.JanetTable, bytes: ?[*]const u8, len: i32, source_path: ?[*:0]const u8, out: ?*repr.Value) c_int;
-pub extern fn janet_equals(x: repr.Value, y: repr.Value) c_int;
-pub extern fn janet_fiber(callee: *types.JanetFunction, capacity: i32, argc: i32, argv: ?[*]const repr.Value) ?*types.JanetFiber;
-pub extern fn janet_fiber_reset(fiber: *types.JanetFiber, callee: *types.JanetFunction, argc: i32, argv: ?[*]const repr.Value) ?*types.JanetFiber;
-pub extern fn janet_fixarity(arity: i32, fix: i32) void;
-pub extern fn janet_gcroot(root: repr.Value) void;
-pub extern fn janet_gcunroot(root: repr.Value) c_int;
-pub extern fn janet_getbuffer(argv: [*]const repr.Value, n: i32) *types.JanetBuffer;
-pub extern fn janet_getstring(argv: [*]const repr.Value, n: i32) types.JanetString;
-pub extern fn janet_hash(x: repr.Value) i32;
-pub extern fn janet_init() c_int;
-pub extern fn janet_length(x: repr.Value) i32;
-pub extern fn janet_loop() void;
-pub extern fn janet_loop1() ?*types.JanetFiber;
-pub extern fn janet_loop_fiber(fiber: *types.JanetFiber) c_int;
-pub extern fn janet_marshal(buf: *types.JanetBuffer, x: repr.Value, rreg: ?*types.JanetTable, flags: c_int) void;
-pub extern fn janet_nanbox32_from_tagi(tag: u32, integer: i32) repr.Value;
-pub extern fn janet_nanbox32_from_tagp(tag: u32, pointer: ?*anyopaque) repr.Value;
-pub extern fn janet_nanbox_from_bits(bits: u64) repr.Value;
-pub extern fn janet_nanbox_from_cpointer(p: ?*const anyopaque, tagmask: u64) repr.Value;
-pub extern fn janet_nanbox_from_double(d: f64) repr.Value;
-pub extern fn janet_nanbox_from_pointer(p: ?*anyopaque, tagmask: u64) repr.Value;
-pub extern fn janet_nanbox_to_pointer(x: repr.Value) ?*anyopaque;
-pub extern fn janet_panic(message: [*:0]const u8) void;
-pub extern fn janet_panic_abstract(x: repr.Value, n: i32, at: *const types.AbstractType) void;
-pub extern fn janet_panic_type(x: repr.Value, n: i32, expected: c_int) void;
-pub extern fn janet_panicv(message: repr.Value) void;
-pub extern fn janet_pcall(fun: *types.JanetFunction, argn: i32, argv: ?[*]const repr.Value, out: *repr.Value, f: ?*?*types.JanetFiber) types.Signal;
-pub extern fn janet_resolve(env: *types.JanetTable, sym: [*:0]const u8, out: *repr.Value) types.JanetBindingType;
-pub extern fn janet_restore(state: *types.JanetTryState) void;
-pub extern fn janet_sandbox(flags: u32) void;
-pub extern fn janet_scan_number(str: ?[*]const u8, len: i32, out: *f64) c_int;
-pub extern fn janet_stacktrace_ext(fiber: *types.JanetFiber, err: repr.Value, prefix: ?[*:0]const u8) void;
-pub extern fn janet_stream_close(s: *types.JanetStream) void;
-pub extern fn janet_string(buf: ?[*]const u8, len: i32) [*:0]const u8;
-pub extern fn janet_symbol(str: ?[*]const u8, len: i32) [*:0]const u8;
-pub extern fn janet_table(capacity: i32) *types.JanetTable;
-pub extern fn janet_type(x: repr.Value) c_uint;
-pub extern fn janet_unwrap_integer(x: repr.Value) i32;
-pub extern fn janet_unwrap_pointer(x: repr.Value) ?*anyopaque;
-pub extern fn janet_abstract_head(abstract: ?*const anyopaque) *types.JanetAbstractHead;
-pub extern fn janet_string_head(s: [*]const u8) *types.JanetStringHead;
-pub extern fn janet_struct_head(st: [*]const types.JanetKV) *types.JanetStructHead;
-pub extern fn janet_tuple_head(tuple: [*]const repr.Value) *types.JanetTupleHead;
-pub extern fn janet_table_get(t_in: *types.JanetTable, key: repr.Value) repr.Value;
-pub extern fn janet_table_put(t: *types.JanetTable, key: repr.Value, val: repr.Value) void;
-pub extern fn janet_table_remove(t: *types.JanetTable, key: repr.Value) repr.Value;
-// Corrected against the definition rather than left as translate-c wrote it:
-// `which` is a pointer to an *optional* table pointer, which is what
-// `struct_table.zig` declares and what the callers pass. The header could
-// only say `JanetTable **`.
-pub extern fn janet_top_level_signal(msg: [*]const u8) noreturn;
-pub extern fn janet_try_init(state: *types.JanetTryState) void;
-pub extern fn janet_tuple_begin(length: i32) [*]repr.Value;
-pub extern fn janet_tuple_end(tuple: [*]repr.Value) [*]const repr.Value;
-pub extern fn janet_unmarshal(bytes: ?[*]const u8, len: usize, flags: c_int, reg: ?*types.JanetTable, next: ?*[*]const u8) repr.Value;
-pub extern fn janet_unwrap_function(x: repr.Value) *types.JanetFunction;
-pub extern fn janet_unwrap_s64(x: repr.Value) i64;
-pub extern fn janet_unwrap_u64(x: repr.Value) u64;
-pub extern fn janet_wrap_abstract(x: types.JanetAbstract) repr.Value;
-pub extern fn janet_wrap_array(x: *types.JanetArray) repr.Value;
-pub extern fn janet_wrap_boolean(x: c_int) repr.Value;
-pub extern fn janet_wrap_buffer(x: *types.JanetBuffer) repr.Value;
-pub extern fn janet_wrap_cfunction(x: types.JanetCFunction) repr.Value;
-pub extern fn janet_wrap_false() repr.Value;
-pub extern fn janet_wrap_fiber(x: ?*types.JanetFiber) repr.Value;
-pub extern fn janet_wrap_function(x: *types.JanetFunction) repr.Value;
-pub extern fn janet_wrap_integer(x: i32) repr.Value;
-pub extern fn janet_wrap_keyword(x: types.JanetKeyword) repr.Value;
-pub extern fn janet_wrap_nil() repr.Value;
-pub extern fn janet_wrap_number(x: f64) repr.Value;
-pub extern fn janet_wrap_pointer(x: ?*anyopaque) repr.Value;
-pub extern fn janet_wrap_string(x: types.JanetString) repr.Value;
-pub extern fn janet_wrap_struct(x: types.JanetStruct) repr.Value;
-pub extern fn janet_wrap_symbol(x: types.JanetSymbol) repr.Value;
-pub extern fn janet_wrap_table(x: *types.JanetTable) repr.Value;
-pub extern fn janet_wrap_true() repr.Value;
-pub extern fn janet_wrap_tuple(x: types.JanetTuple) repr.Value;
-pub extern fn janet_zig_c_raise_clear() void;
+pub extern fn janet_wrap_string(x: [*:0]const u8) repr.Value;
 pub extern fn janet_zig_c_raise_record() void;
 pub extern fn janet_zig_c_raise_take() c_int;
 pub extern fn janet_zig_fatal(message: [*:0]const u8) noreturn;
@@ -201,7 +94,7 @@ pub extern fn memset(__b: ?*anyopaque, __c: c_int, __len: usize) ?*anyopaque;
 pub extern fn nextafter(f64, f64) f64;
 pub extern fn pow(f64, f64) f64;
 pub extern fn remove([*:0]const u8) c_int;
-pub extern fn rewind(?*types.FILE) void;
+pub extern fn rewind(?*host.FILE) void;
 pub extern fn round(f64) f64;
 pub extern fn sin(f64) f64;
 pub extern fn sinh(f64) f64;
@@ -212,5 +105,430 @@ pub extern fn strncmp(__s1: [*]const u8, __s2: [*]const u8, __n: usize) c_int;
 pub extern fn tan(f64) f64;
 pub extern fn tanh(f64) f64;
 pub extern fn tgamma(f64) f64;
-pub extern fn tmpfile() ?*types.FILE;
+pub extern fn tmpfile() ?*host.FILE;
 pub extern fn trunc(f64) f64;
+
+// used by `vm.zig`
+/// `fmod` from `<math.h>`. `@rem` has the same rounding for finite operands but
+/// is not defined over infinities the way the C library function is, and
+/// `JOP_REMAINDER` is reachable with either.
+pub extern fn fmod(x: f64, y: f64) f64;
+
+// used by `signal.zig`
+pub extern fn pthread_exit(val: ?*anyopaque) callconv(.c) noreturn;
+
+// used by `utils.zig`
+pub extern fn strerror(e: c_int) callconv(.c) [*]u8;
+
+/// The XSI signature, which is the one every libc in this project's reach but
+/// glibc actually has.
+pub extern fn strerror_r(e: c_int, buf: [*]u8, len: usize) callconv(.c) c_int;
+
+pub extern fn arc4random_buf(buf: [*]u8, nbytes: usize) callconv(.c) void;
+
+pub extern fn rand_s(v: *c_uint) callconv(.c) c_int;
+
+// used by `ffi/call.zig`
+pub extern fn VirtualAlloc(addr: ?*anyopaque, size: usize, alloc_type: u32, protect: u32) callconv(.c) ?*anyopaque;
+
+pub extern fn VirtualProtect(addr: *anyopaque, size: usize, protect: u32, old: *u32) callconv(.c) c_int;
+
+pub extern fn VirtualFree(addr: *anyopaque, size: usize, free_type: u32) callconv(.c) c_int;
+
+// used by `os/fs/open.zig`
+pub extern fn open(path: [*:0]const u8, flags: c_int, ...) callconv(.c) c_int;
+
+// used by `os/fs/host_stat.zig`
+pub extern fn fileno(stream: ?*anyopaque) callconv(.c) c_int;
+
+// used by `stdio.zig`
+pub extern fn __acrt_iob_func(index: c_uint) callconv(.c) ?*host.FILE;
+
+pub extern var __stdinp: ?*host.FILE;
+
+pub extern var __stdoutp: ?*host.FILE;
+
+pub extern var __stderrp: ?*host.FILE;
+
+pub extern var stdin: ?*host.FILE;
+
+pub extern var stdout: ?*host.FILE;
+
+pub extern var stderr: ?*host.FILE;
+
+// used by `dynlib.zig`
+pub extern "kernel32" fn GetModuleHandleA(name: ?[*:0]const u8) callconv(.winapi) ?*anyopaque;
+
+pub extern "kernel32" fn LoadLibraryA(name: [*:0]const u8) callconv(.winapi) ?*anyopaque;
+
+pub extern "kernel32" fn FreeLibrary(module: ?*anyopaque) callconv(.winapi) c_int;
+
+pub extern "kernel32" fn GetProcAddress(module: ?*anyopaque, name: [*:0]const u8) callconv(.winapi) ?*anyopaque;
+
+pub extern "kernel32" fn GetLastError() callconv(.winapi) u32;
+
+pub extern "kernel32" fn GetCurrentProcess() callconv(.winapi) ?*anyopaque;
+
+pub extern "kernel32" fn FormatMessageA(
+    flags: u32,
+    source: ?*const anyopaque,
+    message_id: u32,
+    language_id: u32,
+    buffer: [*]u8,
+    size: u32,
+    arguments: ?*anyopaque,
+) callconv(.winapi) u32;
+
+/// `psapi`, which `build.zig` links for Windows and which `util.c` includes
+/// `<psapi.h>` for.
+pub extern "psapi" fn EnumProcessModules(
+    process: ?*anyopaque,
+    modules: [*]?*anyopaque,
+    size: u32,
+    needed: *u32,
+) callconv(.winapi) c_int;
+
+// used by `ev/stream.zig`
+pub extern fn recv(fd: c_int, buf: [*]u8, len: usize, flags: c_int) callconv(.c) isize;
+
+pub extern fn recvfrom(fd: c_int, buf: [*]u8, len: usize, flags: c_int, from: ?*anyopaque, fromlen: *c_uint) callconv(.c) isize;
+
+pub extern fn send(fd: c_int, buf: [*]const u8, len: usize, flags: c_int) callconv(.c) isize;
+
+pub extern fn sendto(fd: c_int, buf: [*]const u8, len: usize, flags: c_int, to: ?*const anyopaque, tolen: c_uint) callconv(.c) isize;
+
+pub extern "kernel32" fn DuplicateHandle(src_proc: ?*anyopaque, src: ?*anyopaque, dst_proc: ?*anyopaque, dst: *?*anyopaque, access: u32, inherit: c_int, options: u32) callconv(.winapi) c_int;
+
+pub extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
+
+pub extern fn _open_osfhandle(h: isize, flags: c_int) callconv(.c) c_int;
+
+pub extern fn _dup(fd: c_int) callconv(.c) c_int;
+
+pub extern fn _close(fd: c_int) callconv(.c) c_int;
+
+pub extern fn _fdopen(fd: c_int, mode: [*:0]const u8) callconv(.c) ?*host.FILE;
+
+// used by `os.zig`
+
+pub extern fn setlocale(category: c_int, locale: ?[*:0]const u8) callconv(.c) ?[*:0]const u8;
+
+pub extern fn isatty(fd: c_int) callconv(.c) c_int;
+
+pub extern fn _isatty(fd: c_int) callconv(.c) c_int;
+
+pub extern fn _fileno(f: ?*anyopaque) callconv(.c) c_int;
+
+pub extern "kernel32" fn QueryPerformanceCounter(*i64) callconv(.winapi) c_int;
+
+pub extern "kernel32" fn QueryPerformanceFrequency(*i64) callconv(.winapi) c_int;
+
+pub extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
+
+pub extern fn getenv(name: [*:0]const u8) callconv(.c) ?[*:0]const u8;
+
+pub extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) callconv(.c) c_int;
+
+pub extern fn unsetenv(name: [*:0]const u8) callconv(.c) c_int;
+
+pub extern fn _putenv_s(name: [*:0]const u8, value: [*:0]const u8) callconv(.c) c_int;
+
+// used by `os/fs.zig`
+/// The host allocates the path and this frees it, on the POSIX/Windows split
+/// `FOUND.md` records: `canonicalPath` is `realpath` on POSIX and
+/// `_fullpath` on Windows, and the Windows result is released with the plain
+/// `free` rather than Janet's, because `_fullpath` used the plain `malloc`.
+///
+/// The `janet_cstringv` between the allocation and the release can raise, and
+/// a raise here strands the allocation. That is the C original's behaviour,
+/// reproduced rather than repaired with a `defer`.
+pub extern fn free(ptr: ?*anyopaque) callconv(.c) void;
+
+pub extern fn GetFileAttributesA(name: [*:0]const u8) callconv(.c) u32;
+
+pub extern fn _chmod(path: [*:0]const u8, mode: c_int) callconv(.c) c_int;
+
+pub extern fn _umask(mask: c_int) callconv(.c) c_int;
+
+pub extern fn getcwd(buffer: [*]u8, size: usize) callconv(.c) ?[*]u8;
+
+pub extern fn _getcwd(buffer: [*]u8, size: c_int) callconv(.c) ?[*]u8;
+
+pub extern fn mkdir(path: [*:0]const u8, mode: c_uint) callconv(.c) c_int;
+
+pub extern fn _mkdir(path: [*:0]const u8) callconv(.c) c_int;
+
+pub extern fn rmdir(path: [*:0]const u8) callconv(.c) c_int;
+
+pub extern fn _rmdir(path: [*:0]const u8) callconv(.c) c_int;
+
+pub extern fn chdir(path: [*:0]const u8) callconv(.c) c_int;
+
+pub extern fn _chdir(path: [*:0]const u8) callconv(.c) c_int;
+
+pub extern fn rename(old_path: [*:0]const u8, new_path: [*:0]const u8) callconv(.c) c_int;
+
+pub extern fn link(oldpath: [*:0]const u8, newpath: [*:0]const u8) callconv(.c) c_int;
+
+pub extern fn realpath(path: [*:0]const u8, resolved: ?[*]u8) callconv(.c) ?[*:0]u8;
+
+pub extern fn _fullpath(resolved: ?[*]u8, path: [*:0]const u8, size: c_int) callconv(.c) ?[*:0]u8;
+
+pub extern fn _Exit(status: c_int) callconv(.c) noreturn;
+
+// used by `io.zig`
+pub extern fn dup(fd: c_int) callconv(.c) c_int;
+
+// used by `ev.zig`
+pub extern fn write(fd: c_int, buf: [*]const u8, count: usize) callconv(.c) isize;
+
+pub extern fn read(fd: c_int, buf: [*]u8, count: usize) callconv(.c) isize;
+
+pub extern fn close(fd: c_int) callconv(.c) c_int;
+
+pub extern fn sleep(seconds: c_uint) callconv(.c) c_uint;
+
+pub extern fn pipe(fds: *[2]c_int) callconv(.c) c_int;
+
+pub extern fn fcntl(fd: c_int, cmd: c_int, ...) callconv(.c) c_int;
+
+pub extern fn fdopen(fd: c_int, mode: [*:0]const u8) callconv(.c) ?*host.FILE;
+
+pub extern fn pthread_attr_init(attr: *host.pthread_attr_t) callconv(.c) c_int;
+
+pub extern fn pthread_attr_destroy(attr: *host.pthread_attr_t) callconv(.c) c_int;
+
+pub extern fn pthread_attr_setdetachstate(attr: *host.pthread_attr_t, state: c_int) callconv(.c) c_int;
+
+pub extern fn pthread_create(
+    thread: *host.pthread_t,
+    attr: ?*const host.pthread_attr_t,
+    start: *const fn (?*anyopaque) callconv(.c) ?*anyopaque,
+    arg: ?*anyopaque,
+) callconv(.c) c_int;
+
+pub extern fn pthread_join(thread: host.pthread_t, res: *?*anyopaque) callconv(.c) c_int;
+
+pub extern fn pthread_cancel(thread: host.pthread_t) callconv(.c) c_int;
+
+pub extern fn pthread_kill(thread: host.pthread_t, sig: c_int) callconv(.c) c_int;
+
+pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
+
+pub extern "kernel32" fn CloseHandle(h: ?*anyopaque) callconv(.winapi) c_int;
+
+pub extern "kernel32" fn SetEvent(h: ?*anyopaque) callconv(.winapi) c_int;
+
+pub extern "kernel32" fn CreateEventA(attrs: ?*anyopaque, manual: c_int, initial: c_int, name: ?[*:0]const u8) callconv(.winapi) ?*anyopaque;
+
+pub extern "kernel32" fn WaitForSingleObject(h: ?*anyopaque, ms: u32) callconv(.winapi) u32;
+
+pub extern "kernel32" fn ResumeThread(h: ?*anyopaque) callconv(.winapi) u32;
+
+pub extern "kernel32" fn CreateThread(
+    attrs: ?*anyopaque,
+    stack: usize,
+    start: *const fn (?*anyopaque) callconv(.winapi) u32,
+    arg: ?*anyopaque,
+    flags: u32,
+    id: ?*u32,
+) callconv(.winapi) ?*anyopaque;
+
+pub extern "kernel32" fn PostQueuedCompletionStatus(
+    port: ?*anyopaque,
+    bytes: u32,
+    key: usize,
+    overlapped: ?*anyopaque,
+) callconv(.winapi) c_int;
+
+// used by `os/process.zig`
+pub extern fn GetExitCodeProcess(handle: host.Handle, code: *u32) callconv(.c) c_int;
+
+pub extern fn TerminateProcess(handle: host.Handle, code: c_uint) callconv(.c) c_int;
+
+pub extern fn SetHandleInformation(handle: host.Handle, mask: u32, flags: u32) callconv(.c) c_int;
+
+pub extern fn _get_osfhandle(fd: c_int) callconv(.c) isize;
+
+pub extern fn _getpid() callconv(.c) c_int;
+
+pub extern fn system(command: ?[*:0]const u8) callconv(.c) c_int;
+
+pub extern fn chroot(path: [*:0]const u8) callconv(.c) c_int;
+
+pub extern fn execv(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) callconv(.c) c_int;
+
+pub extern fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) callconv(.c) c_int;
+
+// ==========================================================================
+// The one accessor that is not a declaration
+// ==========================================================================
+
+/// `errno`, which is a macro in every libc and therefore not a symbol.
+///
+/// Eleven files defined this identically -- `os.zig`, `os/fs.zig`,
+/// `os/fs/open.zig`, `os/fs/stat.zig`, `os/date.zig`, `os/process.zig`,
+/// `ev.zig`, `net.zig`, `filewatch.zig`, `io.zig` and `utils.zig` -- because
+/// each needed it and none could reach a neighbour's. It belongs with the rest
+/// of what is genuinely external.
+pub inline fn errno() c_int {
+    return std.c._errno().*;
+}
+
+// used by `io.zig`
+pub extern fn fputc(ch: c_int, file: ?*host.FILE) callconv(.c) c_int;
+
+pub extern fn ferror(file: ?*host.FILE) callconv(.c) c_int;
+
+pub extern fn setvbuf(file: ?*host.FILE, buffer: ?[*]u8, mode: c_int, size: usize) callconv(.c) c_int;
+
+pub extern fn fseek(file: ?*host.FILE, offset: c_long, whence: c_int) callconv(.c) c_int;
+
+pub extern fn ftell(file: ?*host.FILE) callconv(.c) c_long;
+
+/// Janet redirects `fseek` and `ftell` to the 64-bit Microsoft variants, so the
+/// port calls what the C implementation calls rather than the narrow ones.
+pub extern fn _fseeki64(file: ?*host.FILE, offset: i64, whence: c_int) callconv(.c) c_int;
+
+pub extern fn _ftelli64(file: ?*host.FILE) callconv(.c) i64;
+
+// used by `os/date.zig`
+pub extern fn tzset() callconv(.c) void;
+
+pub extern fn _tzset() callconv(.c) void;
+
+// ==========================================================================
+// The host shapes the declarations above name
+// ==========================================================================
+//
+// Four aliases and one struct, here rather than in the subsystem that calls
+// through them, because a declaration and the type in its signature belong
+// together and the declaration belongs here. Each is a fact about the host's
+// interface rather than about what a subsystem does with it.
+//
+// The host *headers* stay where they are: `os/abi.h`, `net/abi.h` and
+// `filewatch/abi.h` are translations, and a translated type is that
+// translation's. What is below is what Zig can state directly.
+
+/// `time_t`, which mingw widens to 64 bits whatever the pointer width is.
+pub const TimeT = if (builtin.os.tag == .windows) i64 else std.c.time_t;
+
+/// `pid_t`. Windows has no such thing; the process subsystem uses a `c_int`
+/// there and never passes it to a host call.
+pub const pid_t = if (builtin.os.tag == .windows) c_int else std.c.pid_t;
+
+/// `FILETIME`, the 64-bit tick count Windows reports times in.
+pub const FILETIME = extern struct {
+    low: u32,
+    high: u32,
+};
+
+/// `CRITICAL_SECTION` and `SRWLOCK`, which `ev/locks.zig` allocates by size.
+pub const CriticalSection = if (builtin.os.tag == .windows) std.os.windows.CRITICAL_SECTION else void;
+pub const SrwLock = if (builtin.os.tag == .windows) ?*anyopaque else void;
+
+// used by `os.zig`
+pub extern "kernel32" fn GetSystemTimeAsFileTime(*FILETIME) callconv(.winapi) void;
+
+pub extern "kernel32" fn GetProcessTimes(?*anyopaque, *FILETIME, *FILETIME, *FILETIME, *FILETIME) callconv(.winapi) c_int;
+
+pub extern fn time(?*TimeT) callconv(.c) TimeT;
+
+// used by `os/process.zig`
+pub extern fn getpid() callconv(.c) pid_t;
+
+pub extern fn waitpid(pid: pid_t, status: *c_int, options: c_int) callconv(.c) pid_t;
+
+pub extern fn kill(pid: pid_t, sig: c_int) callconv(.c) c_int;
+
+pub extern fn fork() callconv(.c) pid_t;
+
+// used by `ev/locks.zig`
+pub extern fn InitializeCriticalSection(cs: *CriticalSection) callconv(.winapi) void;
+
+pub extern fn DeleteCriticalSection(cs: *CriticalSection) callconv(.winapi) void;
+
+pub extern fn EnterCriticalSection(cs: *CriticalSection) callconv(.winapi) void;
+
+pub extern fn LeaveCriticalSection(cs: *CriticalSection) callconv(.winapi) void;
+
+pub extern fn InitializeSRWLock(lock: *SrwLock) callconv(.winapi) void;
+
+pub extern fn AcquireSRWLockShared(lock: *SrwLock) callconv(.winapi) void;
+
+pub extern fn AcquireSRWLockExclusive(lock: *SrwLock) callconv(.winapi) void;
+
+pub extern fn ReleaseSRWLockShared(lock: *SrwLock) callconv(.winapi) void;
+
+pub extern fn ReleaseSRWLockExclusive(lock: *SrwLock) callconv(.winapi) void;
+
+/// `OVERLAPPED`, the asynchronous-I/O record every Windows overlapped call
+/// takes. `ev/stream.zig` embeds one in `JanetStream`'s Windows arm.
+pub const OVERLAPPED = extern struct {
+    Internal: usize,
+    InternalHigh: usize,
+    Offset: u32,
+    OffsetHigh: u32,
+    hEvent: ?*anyopaque,
+};
+
+/// `SECURITY_ATTRIBUTES`, as much of it as the pipe calls need.
+pub const SecurityAttributes = extern struct {
+    nLength: u32,
+    lpSecurityDescriptor: ?*anyopaque,
+    bInheritHandle: c_int,
+};
+
+/// `struct epoll_event` and `struct itimerspec`, the two Linux shapes the
+/// epoll backend passes by pointer.
+pub const EpollEvent = if (builtin.os.tag == .linux) std.os.linux.epoll_event else void;
+pub const ITimerSpec = extern struct {
+    it_interval: std.c.timespec,
+    it_value: std.c.timespec,
+};
+
+/// `struct utimbuf`, which `os/touch` fills.
+pub const utimbuf = extern struct {
+    actime: TimeT,
+    modtime: TimeT,
+};
+
+// used by `ev/stream.zig`
+pub extern "kernel32" fn ReadFile(h: ?*anyopaque, buf: [*]u8, count: u32, read_out: ?*u32, ov: ?*OVERLAPPED) callconv(.winapi) c_int;
+
+pub extern "kernel32" fn WriteFile(h: ?*anyopaque, buf: [*]const u8, count: u32, written: ?*u32, ov: ?*OVERLAPPED) callconv(.winapi) c_int;
+
+pub extern "kernel32" fn CreatePipe(read: *?*anyopaque, write: *?*anyopaque, attrs: ?*SecurityAttributes, size: u32) callconv(.winapi) c_int;
+
+pub extern "kernel32" fn CreateNamedPipeA(name: [*:0]const u8, open_mode: u32, pipe_mode: u32, max_instances: u32, out_size: u32, in_size: u32, timeout: u32, attrs: ?*SecurityAttributes) callconv(.winapi) ?*anyopaque;
+
+pub extern "kernel32" fn CreateFileA(name: [*:0]const u8, access: u32, share: u32, attrs: ?*SecurityAttributes, disposition: u32, flags: u32, template: ?*anyopaque) callconv(.winapi) ?*anyopaque;
+
+// used by `os/fs.zig`
+
+pub extern fn utime(path: [*:0]const u8, times: ?*const utimbuf) callconv(.c) c_int;
+
+/// The MinGW CRT resolves `utime` to the 64-bit variant, which is what Janet's
+/// C implementation calls.
+pub extern fn _utime64(path: [*:0]const u8, times: ?*const utimbuf) callconv(.c) c_int;
+
+// used by `ev/backend.zig`
+pub extern "kernel32" fn CreateIoCompletionPort(file: ?*anyopaque, port: ?*anyopaque, key: usize, threads: u32) callconv(.winapi) ?*anyopaque;
+pub extern "kernel32" fn GetQueuedCompletionStatus(port: ?*anyopaque, bytes: *u32, key: *usize, overlapped: *?*OVERLAPPED, ms: u32) callconv(.winapi) c_int;
+pub extern fn epoll_create1(flags: c_int) callconv(.c) c_int;
+pub extern fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: ?*EpollEvent) callconv(.c) c_int;
+pub extern fn epoll_wait(epfd: c_int, events: [*]EpollEvent, maxevents: c_int, timeout: c_int) callconv(.c) c_int;
+pub extern fn timerfd_create(clockid: c_int, flags: c_int) callconv(.c) c_int;
+pub extern fn timerfd_settime(fd: c_int, flags: c_int, new: *const ITimerSpec, old: ?*ITimerSpec) callconv(.c) c_int;
+
+/// `WSABUF`, the scatter/gather element the two overlapped socket calls take.
+pub const WSABUF = extern struct {
+    len: u32,
+    buf: [*]u8,
+};
+
+// from src/zig/ev/stream.zig -- Winsock, which is its own import library
+pub extern "ws2_32" fn closesocket(s: usize) callconv(.winapi) c_int;
+pub extern "ws2_32" fn WSAGetLastError() callconv(.winapi) c_int;
+pub extern "ws2_32" fn WSARecvFrom(s: usize, bufs: [*]WSABUF, count: u32, received: ?*u32, flags: *u32, from: ?*anyopaque, fromlen: ?*i32, ov: ?*OVERLAPPED, routine: ?*anyopaque) callconv(.winapi) c_int;
+pub extern "ws2_32" fn WSASendTo(s: usize, bufs: [*]WSABUF, count: u32, sent: ?*u32, flags: u32, to: ?*const anyopaque, tolen: c_int, ov: ?*OVERLAPPED, routine: ?*anyopaque) callconv(.winapi) c_int;

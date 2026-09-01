@@ -389,11 +389,21 @@
   # names. `capi.zig` is the export manifest and `module.zig` is the published
   # native-module client, which links against a shipped library rather than
   # against this tree. Anywhere else is a finding.
+  #
+  # `crossings.zig` is the fourth, added at Phase 14 increment 4a, and it is
+  # allowed on the same terms rather than as an exemption: **`cabi_check.zig`
+  # compares its six declarations too**, against the same definitions
+  # `cabi.zig`'s are compared against. It exists so `raise.zig` can be compiled
+  # into a native module without `cabi` -- an author's `.so` was taking 163
+  # libc and runtime declarations to obtain six. If a fifth file ever wants on
+  # this list, the question to ask is not whether it is special but whether
+  # `cabi_check.zig` covers it.
   (def declared-elsewhere @[])
   (eachp [path text] sources
     (unless (or (string/has-prefix? "test/" path)
                 (= path "src/zig/cabi.zig")
                 (= path "src/zig/capi.zig")
+                (= path "src/zig/crossings.zig")
                 (= path "src/zig/module.zig"))
       (each i (string/find-all "extern fn janet" text)
         (array/push declared-elsewhere
@@ -455,7 +465,7 @@
     (eprint "unresolved: c." name " reaches no Zig export"))
 
   (each [path line] declared-elsewhere
-    (eprint "declared outside cabi.zig: " path ":" line
+    (eprint "declared outside the four checked files: " path ":" line
             " -- an unchecked `extern fn janet*`"))
 
   (if check
@@ -477,7 +487,7 @@
       (when (and (empty? arrived) (empty? departed) (empty? moved))
         (print "the tree and " list-path " agree"))
       (when (empty? declared-elsewhere)
-        (print "0 `extern fn janet*` declared outside cabi.zig"))
+        (print "0 `extern fn janet*` declared outside the four checked files"))
       (os/exit (if (and (empty? arrived) (empty? unresolved)
                         (empty? declared-elsewhere)) 0 1)))
     (do

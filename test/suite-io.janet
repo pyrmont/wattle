@@ -78,8 +78,7 @@
 
 (assert-error "cannot print to 3" (xprintf 3 "123"))
 
-# Every destination the print families accept
-# Phase 10 Part 11
+# Every destination the print families accept.
 (def sink @"")
 (defn collected [f] (buffer/clear sink) (f) (string sink))
 
@@ -247,10 +246,9 @@
 #
 # `compwhen` rather than `when`: a `-Dprocesses=false` build has no `os/spawn`
 # to *compile* against, and a runtime guard does not stop the compiler
-# resolving the symbol inside its body. Part 11 added this unguarded; Phase 10
-# Part 12's matrix is the first to run `zig build test -Dprocesses=false` and
-# is what found it. Exactly the shape of the `peg/find` guard in
-# `test/suite-debug.janet`, which Part 9 added for the same reason.
+# resolving the symbol inside its body. Exactly the shape of the `peg/find`
+# guard in `test/suite-debug.janet`, and found the same way: by a matrix entry
+# running `zig build test -Dprocesses=false`.
 (compwhen (dyn 'os/spawn)
  (when (os/stat "/dev/fd")
   (defn open-fds []

@@ -25,7 +25,6 @@
 //! decide to answer something else.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const harness = @import("harness.zig");
@@ -37,6 +36,11 @@ const vm_entry = @import("subsystems").vm_entry;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const inttypes = @import("subsystems").inttypes;
+const strings = @import("subsystems").value.strings;
+const abi = @import("abi");
+const functions = @import("subsystems").value.functions;
+const tables = @import("subsystems").value.tables;
+const expect = @import("expect.zig").expect;
 
 const AbstractType = subsystems.abstract_type.AbstractType;
 
@@ -49,14 +53,14 @@ const AbstractType = subsystems.abstract_type.AbstractType;
 const janet_s64_type = &inttypes.s64Type;
 const janet_u64_type = &inttypes.u64Type;
 
-var environment: *types.JanetTable = undefined;
-var compare_fn: *types.JanetFunction = undefined;
+var environment: *tables.Table = undefined;
+var compare_fn: *functions.Function = undefined;
 
 fn compareValues(a: repr.Value, b: repr.Value) f64 {
     var argv = [2]repr.Value{ a, b };
     var out: repr.Value = undefined;
-    std.debug.assert(vm_entry.pcall(compare_fn, 2, &argv, &out, null) == types.Signal.ok);
-    std.debug.assert(harness.isType(out, repr.Tag.number));
+    expect(vm_entry.pcall(compare_fn, 2, &argv, &out, null) == abi.Signal.ok);
+    expect(harness.isType(out, repr.Tag.number));
     return wrap.toNumber(out);
 }
 
@@ -69,11 +73,11 @@ fn compareU64Double(x: u64, y: f64) f64 {
 }
 
 /// Render through the abstract type's own `tostring`, which raises.
-fn render(at: *const AbstractType, p: *const anyopaque, b: *types.JanetBuffer) !void {
-    try at.tostring.?(@constCast(p), b);
+fn render(at: *const AbstractType, p: *const anyopaque, b: *buffers.Buffer) !void {
+    try at.tostring.?(@constCast(p), @ptrCast(b));
 }
 
-fn bufferIs(b: *types.JanetBuffer, expected: []const u8) bool {
+fn bufferIs(b: *buffers.Buffer, expected: []const u8) bool {
     const count: usize = @intCast(b.count);
     return count == expected.len and std.mem.eql(u8, b.slice()[0..count], expected);
 }
@@ -88,17 +92,17 @@ fn theHash() void {
     var low: i64 = std.math.minInt(i64);
     var u: u64 = 1;
 
-    std.debug.assert(janet_s64_type.hash.?(&a, @sizeOf(i64)) == 0);
-    std.debug.assert(janet_s64_type.hash.?(&b, @sizeOf(i64)) ==
+    expect(janet_s64_type.hash.?(&a, @sizeOf(i64)) == 0);
+    expect(janet_s64_type.hash.?(&b, @sizeOf(i64)) ==
         janet_u64_type.hash.?(&u, @sizeOf(u64)));
-    std.debug.assert(janet_s64_type.hash.?(&low, @sizeOf(i64)) == std.math.minInt(i32));
-    std.debug.assert(janet_s64_type.hash.?(&b, @sizeOf(i64)) !=
+    expect(janet_s64_type.hash.?(&low, @sizeOf(i64)) == std.math.minInt(i32));
+    expect(janet_s64_type.hash.?(&b, @sizeOf(i64)) !=
         janet_s64_type.hash.?(&a, @sizeOf(i64)));
 
     // Values differing only in the high word still separate, which is what the
     // fold is for.
     var high: i64 = @as(i64, 1) << 32;
-    std.debug.assert(janet_s64_type.hash.?(&high, @sizeOf(i64)) == 1);
+    expect(janet_s64_type.hash.?(&high, @sizeOf(i64)) == 1);
 }
 
 // ------------------------------------------------------- abstract compare
@@ -111,20 +115,20 @@ fn theAbstractCompare() void {
     var u_small: u64 = 5;
     var u_big: u64 = std.math.maxInt(u64);
 
-    std.debug.assert(janet_s64_type.compare.?(&s_small, &s_big) == -1);
-    std.debug.assert(janet_s64_type.compare.?(&s_big, &s_small) == 1);
-    std.debug.assert(janet_s64_type.compare.?(&s_big, &s_big) == 0);
-    std.debug.assert(janet_s64_type.compare.?(&s_min, &s_max) == -1);
-    std.debug.assert(janet_s64_type.compare.?(&s_max, &s_min) == 1);
+    expect(janet_s64_type.compare.?(&s_small, &s_big) == -1);
+    expect(janet_s64_type.compare.?(&s_big, &s_small) == 1);
+    expect(janet_s64_type.compare.?(&s_big, &s_big) == 0);
+    expect(janet_s64_type.compare.?(&s_min, &s_max) == -1);
+    expect(janet_s64_type.compare.?(&s_max, &s_min) == 1);
 
     // The unsigned comparison must not borrow the signed ordering.
-    std.debug.assert(janet_u64_type.compare.?(&u_small, &u_big) == -1);
-    std.debug.assert(janet_u64_type.compare.?(&u_big, &u_small) == 1);
-    std.debug.assert(janet_u64_type.compare.?(&u_big, &u_big) == 0);
+    expect(janet_u64_type.compare.?(&u_small, &u_big) == -1);
+    expect(janet_u64_type.compare.?(&u_big, &u_small) == 1);
+    expect(janet_u64_type.compare.?(&u_big, &u_big) == 0);
 
     var high_bit: u64 = @as(u64, 1) << 63;
     var one: u64 = 1;
-    std.debug.assert(janet_u64_type.compare.?(&high_bit, &one) == 1);
+    expect(janet_u64_type.compare.?(&high_bit, &one) == 1);
 }
 
 // ----------------------------------------------------- mixed with doubles
@@ -134,33 +138,33 @@ fn theSignedAgainstDoubles() void {
     const nan = std.math.nan(f64);
 
     // Inside the double's contiguous integer range the comparison is exact.
-    std.debug.assert(compareS64Double(0, 0.0) == 0);
-    std.debug.assert(compareS64Double(5, 5.0) == 0);
-    std.debug.assert(compareS64Double(5, 5.5) == -1);
-    std.debug.assert(compareS64Double(6, 5.5) == 1);
-    std.debug.assert(compareS64Double(-5, -5.0) == 0);
-    std.debug.assert(compareS64Double(-6, -5.5) == -1);
-    std.debug.assert(compareS64Double(-5, -5.5) == 1);
+    expect(compareS64Double(0, 0.0) == 0);
+    expect(compareS64Double(5, 5.0) == 0);
+    expect(compareS64Double(5, 5.5) == -1);
+    expect(compareS64Double(6, 5.5) == 1);
+    expect(compareS64Double(-5, -5.0) == 0);
+    expect(compareS64Double(-6, -5.5) == -1);
+    expect(compareS64Double(-5, -5.5) == 1);
 
     // NaN compares equal to everything; see the header comment.
-    std.debug.assert(compareS64Double(0, nan) == 0);
-    std.debug.assert(compareS64Double(std.math.maxInt(i64), nan) == 0);
+    expect(compareS64Double(0, nan) == 0);
+    expect(compareS64Double(std.math.maxInt(i64), nan) == 0);
 
     // Infinities sit outside every integer.
-    std.debug.assert(compareS64Double(std.math.maxInt(i64), inf) == -1);
-    std.debug.assert(compareS64Double(std.math.minInt(i64), -inf) == 1);
+    expect(compareS64Double(std.math.maxInt(i64), inf) == -1);
+    expect(compareS64Double(std.math.minInt(i64), -inf) == 1);
 
     // Beyond 2^53 the integer cannot be widened without rounding, so the
     // double is narrowed instead.
-    std.debug.assert(compareS64Double(std.math.maxInt(i64), 1e300) == -1);
-    std.debug.assert(compareS64Double(std.math.minInt(i64), -1e300) == 1);
-    std.debug.assert(compareS64Double(std.math.maxInt(i64), 9.3e18) == -1);
-    std.debug.assert(compareS64Double(std.math.minInt(i64), -9.3e18) == 1);
+    expect(compareS64Double(std.math.maxInt(i64), 1e300) == -1);
+    expect(compareS64Double(std.math.minInt(i64), -1e300) == 1);
+    expect(compareS64Double(std.math.maxInt(i64), 9.3e18) == -1);
+    expect(compareS64Double(std.math.minInt(i64), -9.3e18) == 1);
 
     // 2^53 itself is the edge of the exact range.
-    std.debug.assert(compareS64Double(9007199254740992, 9007199254740992.0) == 0);
-    std.debug.assert(compareS64Double(9007199254740993, 9007199254740992.0) == 1);
-    std.debug.assert(compareS64Double(-9007199254740993, -9007199254740992.0) == -1);
+    expect(compareS64Double(9007199254740992, 9007199254740992.0) == 0);
+    expect(compareS64Double(9007199254740993, 9007199254740992.0) == 1);
+    expect(compareS64Double(-9007199254740993, -9007199254740992.0) == -1);
 }
 
 fn theUnsignedAgainstDoubles() void {
@@ -168,24 +172,24 @@ fn theUnsignedAgainstDoubles() void {
     const nan = std.math.nan(f64);
     const max = std.math.maxInt(u64);
 
-    std.debug.assert(compareU64Double(0, 0.0) == 0);
-    std.debug.assert(compareU64Double(5, 5.0) == 0);
-    std.debug.assert(compareU64Double(5, 5.5) == -1);
-    std.debug.assert(compareU64Double(6, 5.5) == 1);
+    expect(compareU64Double(0, 0.0) == 0);
+    expect(compareU64Double(5, 5.0) == 0);
+    expect(compareU64Double(5, 5.5) == -1);
+    expect(compareU64Double(6, 5.5) == 1);
 
     // Every unsigned value is above every negative double, including zero
     // against a small negative — the case a naive cast gets wrong.
-    std.debug.assert(compareU64Double(0, -0.5) == 1);
-    std.debug.assert(compareU64Double(0, -1e300) == 1);
-    std.debug.assert(compareU64Double(max, -1.0) == 1);
+    expect(compareU64Double(0, -0.5) == 1);
+    expect(compareU64Double(0, -1e300) == 1);
+    expect(compareU64Double(max, -1.0) == 1);
 
-    std.debug.assert(compareU64Double(0, nan) == 0);
-    std.debug.assert(compareU64Double(max, nan) == 0);
-    std.debug.assert(compareU64Double(max, inf) == -1);
-    std.debug.assert(compareU64Double(max, 1e300) == -1);
+    expect(compareU64Double(0, nan) == 0);
+    expect(compareU64Double(max, nan) == 0);
+    expect(compareU64Double(max, inf) == -1);
+    expect(compareU64Double(max, 1e300) == -1);
 
-    std.debug.assert(compareU64Double(9007199254740992, 9007199254740992.0) == 0);
-    std.debug.assert(compareU64Double(9007199254740993, 9007199254740992.0) == 1);
+    expect(compareU64Double(9007199254740992, 9007199254740992.0) == 0);
+    expect(compareU64Double(9007199254740993, 9007199254740992.0) == 1);
 }
 
 /// The two 64-bit types against each other, where neither can be widened into
@@ -200,54 +204,54 @@ fn theTwoTypesAgainstEachOther() void {
     const u_max = inttypes.wrapU64(std.math.maxInt(u64));
 
     // A negative signed value is below every unsigned value.
-    std.debug.assert(compareValues(s_neg, u_zero) == -1);
-    std.debug.assert(compareValues(s_neg, u_max) == -1);
-    std.debug.assert(compareValues(u_zero, s_neg) == 1);
-    std.debug.assert(compareValues(u_max, s_neg) == 1);
+    expect(compareValues(s_neg, u_zero) == -1);
+    expect(compareValues(s_neg, u_max) == -1);
+    expect(compareValues(u_zero, s_neg) == 1);
+    expect(compareValues(u_max, s_neg) == 1);
 
     // An unsigned value above INT64_MAX is above every signed value.
-    std.debug.assert(compareValues(s_max, u_huge) == -1);
-    std.debug.assert(compareValues(u_huge, s_max) == 1);
-    std.debug.assert(compareValues(s_max, u_max) == -1);
+    expect(compareValues(s_max, u_huge) == -1);
+    expect(compareValues(u_huge, s_max) == 1);
+    expect(compareValues(s_max, u_max) == -1);
 
     // Inside the overlap the ordering is ordinary.
-    std.debug.assert(compareValues(s_zero, u_zero) == 0);
-    std.debug.assert(compareValues(s_zero, u_small) == -1);
-    std.debug.assert(compareValues(u_small, s_zero) == 1);
-    std.debug.assert(compareValues(s_max, inttypes.wrapU64(std.math.maxInt(i64))) == 0);
+    expect(compareValues(s_zero, u_zero) == 0);
+    expect(compareValues(s_zero, u_small) == -1);
+    expect(compareValues(u_small, s_zero) == 1);
+    expect(compareValues(s_max, inttypes.wrapU64(std.math.maxInt(i64))) == 0);
 }
 
 // ------------------------------------------------------------- formatting
 
 fn theFormatters() !void {
-    const b: *types.JanetBuffer = buffers.new(0);
+    const b: *buffers.Buffer = buffers.new(0);
 
     var s: i64 = 0;
     try render(janet_s64_type, &s, b);
-    std.debug.assert(bufferIs(b, "0"));
+    expect(bufferIs(b, "0"));
 
     b.count = 0;
     s = std.math.minInt(i64);
     try render(janet_s64_type, &s, b);
-    std.debug.assert(bufferIs(b, "-9223372036854775808"));
+    expect(bufferIs(b, "-9223372036854775808"));
 
     b.count = 0;
     s = std.math.maxInt(i64);
     try render(janet_s64_type, &s, b);
-    std.debug.assert(bufferIs(b, "9223372036854775807"));
+    expect(bufferIs(b, "9223372036854775807"));
 
     // The unsigned formatter must not print the high bit as a sign.
     b.count = 0;
     var u: u64 = std.math.maxInt(u64);
     try render(janet_u64_type, &u, b);
-    std.debug.assert(bufferIs(b, "18446744073709551615"));
+    expect(bufferIs(b, "18446744073709551615"));
 
     // Formatting appends rather than replacing.
     b.count = 0;
     _ = buffers.pushCstringAbi(b, "n=");
     u = 42;
     try render(janet_u64_type, &u, b);
-    std.debug.assert(bufferIs(b, "n=42"));
+    expect(bufferIs(b, "n=42"));
 }
 
 // -------------------------------------------------- floored division
@@ -288,12 +292,12 @@ fn theFlooredDivision() !void {
 
     for (cases) |case| {
         var result: repr.Value = undefined;
-        std.debug.assert(core_env.dostring(environment, case[0].ptr, "inttypes-contract", &result) == 0);
-        std.debug.assert(inttypes.isInt(result) == constants.JANET_INT_S64);
+        expect(core_env.dostring(environment, case[0].ptr, "inttypes-contract", &result) == 0);
+        expect(inttypes.isInt(result) == constants.JANET_INT_S64);
 
-        const b: *types.JanetBuffer = buffers.new(0);
+        const b: *buffers.Buffer = buffers.new(0);
         try render(janet_s64_type, wrap.toAbstract(result).?, b);
-        std.debug.assert(bufferIs(b, case[1]));
+        expect(bufferIs(b, case[1]));
     }
 
     // Dividing by zero raises, while the modulo above does not.
@@ -308,13 +312,13 @@ fn theFlooredDivision() !void {
     // which is how this was found.
     const closure = eval("(fn [] (div (int/s64 1) (int/s64 0)))");
     var out: repr.Value = undefined;
-    std.debug.assert(vm_entry.pcall(
+    expect(vm_entry.pcall(
         wrap.toFunction(closure),
         0,
         null,
         &out,
         null,
-    ) == types.Signal.@"error");
+    ) == abi.Signal.@"error");
 }
 
 /// An operand the boxed types cannot convert refuses *catchably*.
@@ -345,25 +349,25 @@ fn anUnconvertibleOperandRefusesCatchably() void {
     for (cases) |source| {
         const closure = eval(source);
         var out: repr.Value = undefined;
-        std.debug.assert(vm_entry.pcall(
+        expect(vm_entry.pcall(
             wrap.toFunction(closure),
             0,
             null,
             &out,
             null,
-        ) == types.Signal.@"error");
+        ) == abi.Signal.@"error");
         // And the payload is the conversion's own message, which is what says
         // the refusal travelled rather than being manufactured downstream.
-        std.debug.assert(harness.isType(out, repr.Tag.string));
+        expect(harness.isType(out, repr.Tag.string));
         const message = wrap.toString(out);
-        const length: usize = @intCast(types.stringHead(message).length);
-        std.debug.assert(std.mem.indexOf(u8, message[0..length], "can not convert") != null);
+        const length: usize = @intCast(strings.head(message).length);
+        expect(std.mem.indexOf(u8, message[0..length], "can not convert") != null);
     }
 }
 
 fn eval(source: [*:0]const u8) repr.Value {
     var out: repr.Value = undefined;
-    std.debug.assert(core_env.dostring(environment, source, "inttypes-contract", &out) == 0);
+    expect(core_env.dostring(environment, source, "inttypes-contract", &out) == 0);
     return out;
 }
 

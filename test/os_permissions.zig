@@ -30,39 +30,34 @@
 
 const std = @import("std");
 const repr = @import("repr");
-const c = @import("cabi");
 const value = @import("subsystems").value;
 const harness = @import("harness.zig");
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
-
-/// The kernels, by symbol. `janet.h` does not declare them; they are
-/// `os_permissions.zig`'s internal surface, reached here the same way the C
-/// contract reached them.
-extern fn janet_os_parse_permissions(permissions: [*]const u8) callconv(.c) i32;
-extern fn janet_os_format_permissions(permissions: i32, out: [*]u8) callconv(.c) void;
+const stat = @import("subsystems").stat;
+const expect = @import("expect.zig").expect;
 
 fn parse(text: []const u8) i32 {
-    return janet_os_parse_permissions(text.ptr);
+    return stat.hostParsePermissions(text.ptr);
 }
 
 fn expectFormat(mode: i32, expected: *const [9]u8) void {
     // Poisoned rather than zeroed, so that a formatter writing fewer than nine
     // bytes fails here instead of passing on leftover zeroes.
     var actual: [9]u8 = @splat(0xA5);
-    janet_os_format_permissions(mode, &actual);
-    std.debug.assert(std.mem.eql(u8, &actual, expected));
+    stat.hostFormatPermissions(mode, &actual);
+    expect(std.mem.eql(u8, &actual, expected));
 }
 
 fn theKernels() void {
-    std.debug.assert(parse("---------") == 0o000);
-    std.debug.assert(parse("rwxrwxrwx") == 0o777);
-    std.debug.assert(parse("rw-r--r--") == 0o644);
-    std.debug.assert(parse("r-x--x--x") == 0o511);
+    expect(parse("---------") == 0o000);
+    expect(parse("rwxrwxrwx") == 0o777);
+    expect(parse("rw-r--r--") == 0o644);
+    expect(parse("r-x--x--x") == 0o511);
 
     // Permissive and position-sensitive; see the header comment.
-    std.debug.assert(parse("xxxxxxxxx") == 0o111);
-    std.debug.assert(parse("rwxgarbage") == 0o700);
+    expect(parse("xxxxxxxxx") == 0o111);
+    expect(parse("rwxgarbage") == 0o700);
 
     expectFormat(0o000, "---------");
     expectFormat(0o777, "rwxrwxrwx");
@@ -77,8 +72,8 @@ fn everyPortableModeRoundTrips() void {
     var formatted: [9]u8 = undefined;
     var mode: i32 = 0;
     while (mode <= 0o777) : (mode += 1) {
-        janet_os_format_permissions(mode, &formatted);
-        std.debug.assert(parse(&formatted) == mode);
+        stat.hostFormatPermissions(mode, &formatted);
+        expect(parse(&formatted) == mode);
     }
 }
 
@@ -88,20 +83,20 @@ fn theCoreFunctions() !void {
     var args: [1]repr.Value = undefined;
 
     args[0] = value.fromBytes("rw-r-----", .string);
-    std.debug.assert(wrap.toInteger(try permInt(args[0..1])) == 0o640);
+    expect(wrap.toInteger(try permInt(args[0..1])) == 0o640);
 
     args[0] = harness.wrapInteger(0o640);
     const rendered = try permString(args[0..1]);
-    std.debug.assert(harness.stringIs(wrap.toString(rendered), "rw-r-----"));
+    expect(harness.stringIs(wrap.toString(rendered), "rw-r-----"));
 
     // `os/perm-string` accepts a string as well as an integer and answers it
     // back, so that a caller can pass either through without asking which.
     args[0] = value.fromBytes("rwxrwxrwx", .string);
-    std.debug.assert(harness.stringIs(wrap.toString(try permString(args[0..1])), "rwxrwxrwx"));
+    expect(harness.stringIs(wrap.toString(try permString(args[0..1])), "rwxrwxrwx"));
 
     // The permissive parse survives the public function too.
     args[0] = value.fromBytes("xxxxxxxxx", .string);
-    std.debug.assert(wrap.toInteger(try permInt(args[0..1])) == 0o111);
+    expect(wrap.toInteger(try permInt(args[0..1])) == 0o111);
 }
 
 /// Validation happens before either kernel is entered, and this is where it is
@@ -113,14 +108,14 @@ fn theRefusals() void {
     var args: [1]repr.Value = undefined;
 
     args[0] = value.fromBytes("rwx", .string);
-    std.debug.assert(harness.raised(permInt, .{args[0..1]}) != null);
+    expect(harness.raised(permInt, .{args[0..1]}) != null);
 
     args[0] = harness.wrapInteger(0o1000);
-    std.debug.assert(harness.raised(permString, .{args[0..1]}) != null);
+    expect(harness.raised(permString, .{args[0..1]}) != null);
 
     // And the kernels are still reachable and still correct afterwards, which
     // is what says the refusal happened above them rather than inside one.
-    std.debug.assert(parse("rwxrwxrwx") == 0o777);
+    expect(parse("rwxrwxrwx") == 0o777);
 }
 
 pub fn run() void {

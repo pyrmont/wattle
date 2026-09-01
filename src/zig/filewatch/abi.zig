@@ -1,13 +1,11 @@
-//! The single translation of the host headers `filewatch.c`'s backends worked
+//! The single translation of the host headers the filewatch backends work
 //! through.
 //!
-//! `filewatch/abi.h` carries the reasoning, including why this is a fourth
-//! translation rather than three includes added to `abi.zig`. What is here
-//! beyond the translation is the handful of spellings `filewatch.c` made with
-//! the preprocessor, and which a translation therefore cannot carry: the
-//! backend selection as an enumeration, `EV_SET`, `S_ISDIR`, and the two
-//! Windows declarations that live in `src/core/util.h` rather than in a system
-//! header.
+//! `filewatch/abi.h` carries the reasoning, including why this subsystem
+//! translates its own headers rather than sharing another subsystem's. What is
+//! here beyond the translation is what a translation cannot carry: the backend
+//! selection as an enumeration, `EV_SET`, `S_ISDIR`, and the two Windows
+//! declarations that are in no system header.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -89,11 +87,9 @@ pub fn evSetVnode(kev: *h.struct_kevent, fd: c_int, flags: u32) void {
 // Two Windows declarations that are not in a system header
 // ==========================================================================
 
-/// `OVERLAPPED`, restated for the reason `net_sockets.zig` and
-/// `ev_stream.zig` restate it: it reaches this file through
-/// `src/core/util.h`'s `JanetOverlapped`, `abi.zig` deliberately does not
-/// translate that header, and Zig 0.16's `std.os.windows` no longer declares
-/// `OVERLAPPED` at all.
+/// `OVERLAPPED`, restated for the reason `net.zig` and `ev/stream.zig` restate
+/// it: Zig 0.16's `std.os.windows` no longer declares it and no system header
+/// this file translates carries it.
 pub const OVERLAPPED = extern struct {
     Internal: usize,
     InternalHigh: usize,
@@ -102,9 +98,9 @@ pub const OVERLAPPED = extern struct {
     hEvent: ?*anyopaque,
 };
 
-/// `JanetOverlapped` from `src/core/util.h`. The C original spells the first
-/// member as a union of `OVERLAPPED` and `WSAOVERLAPPED`, which have the same
-/// layout, so one arm is enough.
+/// An `OVERLAPPED` with the transfer count beside it, which is what an
+/// asynchronous read or write on Windows carries. `WSAOVERLAPPED` has the same
+/// layout, so one member serves the socket calls too.
 pub const JanetOverlapped = extern struct {
     as: OVERLAPPED,
     bytes_transfered: u32,

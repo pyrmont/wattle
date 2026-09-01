@@ -55,19 +55,17 @@
 # their `callconv(.c)` signature from a comptime type, so the layout's name
 # never appears beside the calling convention anywhere -- no grep can see the
 # crossing.  `JanetRange` is the clearest: `raise.zig` returns one from a
-# generated abi and `types.zig` says nothing about it.
+# generated abi and `args.zig` says nothing about it.
 #
-# `./tools/check/layouts.janet --verify` re-runs the experiment against this list.
+# `./tools/check/layouts.janet --verify` re-runs the experiment against this
+# list, and first refuses any entry that no longer names an `extern`
+# declaration -- the strip skips these names, so a stale one is invisible to it.
 (def compiler-fixed
   {"Aapcs64ReturnGeneral" true "Aapcs64ReturnPointer" true
-   "Aapcs64ReturnSse" true "HeaderResult" true "JanetAssembleResult" true
-   "JanetBinding" true "JanetBuildConfig" true "JanetByteView" true
-   "JanetCompileResult" true "JanetEVGenericMessage" true "JanetGCData" true
-   "JanetGCObject" true "JanetRange" true "JanetRNG" true
-   "BytecodeResult" true "JanetFuncEnvRef" true "JanetQueue" true
-   "JanetSourceMapping" true "JanetView" true
-   "EncodeResult" true "JanetDictView" true "JanetFopts" true
-   "JanetSlot" true "JanetTable" true
+   "Aapcs64ReturnSse" true "JanetAssembleResult" true
+   "Binding" true "JanetBuildConfig" true "JanetByteView" true
+   "JanetDictView" true "GenericMessage" true "FuncEnvRef" true
+   "JanetGCData" true "JanetGCObject" true "JanetRange" true
    # `Value` is the one comptime-selected declaration in the list, and it was
    # invisible until the strip learned to reach an arm head. `repr.Value` is a
    # parameter and a return type across the C ABI in every representation, so
@@ -321,6 +319,10 @@
   ``Strip `extern` from every layout this file does *not* list as
   compiler-fixed, and build.
 
+  It first checks the list for **staleness**, which the strip cannot: a name
+  in `compiler-fixed` is skipped, so an entry naming a type that has been
+  deleted or has already lost its `extern` is never exercised again.
+
   Two outcomes and they mean different things.  **No compile diagnostic** means
   `compiler-fixed` is complete: Zig would have refused a non-extern aggregate
   in a `callconv(.c)` signature or as a field of an `extern` one.  A build that
@@ -350,6 +352,22 @@
   (unless (zero? (copy :code))
     (tools/rm-rf workdir)
     (tools/die "could not copy the repository into " workdir))
+  # An entry that no longer names an `extern` declaration is dead weight the
+  # strip below cannot see: it skips names in `compiler-fixed`, so a stale one
+  # is silently "fixed" for ever. Phase 14 Part 4b found eleven at once --
+  # three types that had been deleted and eight whose `extern` had come off
+  # without the compiler objecting -- and `--verify` had passed throughout,
+  # because completeness and staleness are different questions.
+  (def declared (tabseq [d :in (declarations)] (d :name) true))
+  (def stale (sort (seq [name :keys compiler-fixed :when (not (get declared name))] name)))
+  (unless (empty? stale)
+    (tools/rm-rf workdir)
+    (eprint "`compiler-fixed` names " (length stale)
+            " layout(s) that no longer exist or are no longer `extern`:")
+    (each name stale (eprint "  " name))
+    (eprint "drop them from the list in this file; the strip cannot check them.")
+    (os/exit 1))
+
   (var stripped 0)
   (var built nil)
   # No early exit inside this block: a `defer` does not run through `os/exit`,

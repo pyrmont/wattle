@@ -38,9 +38,12 @@ rewrite the file they compare against.
 | `exports.janet` | what the shared library publishes, classified → `exports.txt` |
 | `layouts.janet` | the fixed C-compatible layouts and their residue → `layouts.txt` |
 | `seam.janet` | every `c.janet_*` name the tree spells and what publishes it, plus the sweep for an `extern fn janet*` declared outside `cabi.zig` → `seam.txt` |
+| `counters.janet` | every signed loop counter that indexes a container, classified by what it is signed *for* → `counters.txt`. It exists because Zig catches none of this: a mixed-signedness comparison compiles, `for (0..x)` accepts an `i32` bound, and a same-width `@intCast` is a legal no-op. Class `e` is residue and must be empty |
 | `gates.janet` | which symbols a configuration does not export, by building thirteen of them and reading their symbol tables → `gated.txt`. About two minutes, and it exists because the question cannot be *read*: `root.zig`'s comptime block does not name every file it compiles |
 | `swallowed.janet` | raising functions that reach a raise through an abi, where the report has no consumer. Four seconds, silent on a clean tree |
 | `image-diff.janet` | the core image's size, the absolute host paths it embeds, and its bytes against a saved copy (`--save` on one host, `--against` on the other) |
+| `chronology.sh` | every comment in `src/zig`, `test/` and `build.zig` that cites the migration -- a phase, a part, a retired file name, a `-D` option no build offers -- rather than the code. Silent is clean. Not a build check, deliberately: a prose rule is reviewed, not compiled |
+| `image-semantic.janet` | the same two images compared by what they *mean* — every binding's value, docstring and bytecode, with `:source-map` set aside. The byte diff is the right oracle for a marshal width and the wrong one for a pass that edits files: the image records the line each cfunction was registered on, so any change to a file's length moves it |
 
 `layouts.txt`'s rows carry line numbers, so a deletion above a fixed layout
 moves one and the file is regenerated. The other three are insensitive to where

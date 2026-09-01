@@ -2,7 +2,7 @@
 //! two drivers that walk a format string and render one item per specifier.
 //!
 //! Adapted, like the C it replaces, from Lua's `lstrlib.c`. A specifier is
-//! rewritten into an ordinary C one and handed to `snprintf` for the numeric
+//! rewritten into an ordinary C one and handed to `c.snprintf` for the numeric
 //! and string conversions; the seven Janet-specific ones — `%v`, `%V`, `%t`,
 //! `%T`, `%j`, and the eight spellings of pretty-printing — are rendered here.
 //!
@@ -38,21 +38,20 @@
 //! source parameter.
 //!
 const std = @import("std");
-const options = @import("options");
-const types = @import("types");
 const repr = @import("repr");
 const c = @import("cabi");
-const stdio = @import("../stdio.zig");
 const pp_describe = @import("../pp.zig");
 const args_core = @import("../args.zig");
-const raise = @import("raise");
+const raise = @import("../raise.zig");
 const pretty = @import("pretty.zig");
 const buffers = @import("../value/buffers.zig");
 const strings = @import("../value/strings.zig");
-const vm_state = @import("../vm/lifecycle.zig");
+const vm_state = @import("../vm/state.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const utils = @import("../utils.zig");
 const io_core = @import("../io.zig");
+const vm_entry = @import("../vm/entry.zig");
+const abi = @import("abi");
 
 /// `MAX_ITEM`: the scratch one rendered conversion goes into.
 const max_item = 256;
@@ -67,21 +66,15 @@ const fmt_replace_inttypes = "diouxX";
 const columns_default: c_int = 80;
 const recursion_guard: c_int = 1024;
 
-const pretty_color: c_int = 1;
-const pretty_oneline: c_int = 2;
-const pretty_notrunc: c_int = 4;
-
-extern fn snprintf(buffer: [*]u8, size: usize, format: [*]const u8, ...) callconv(.c) c_int;
-
 // ------------------------------------------------------ the specifier parser
 
 /// One parsed conversion specifier.
 const Specifier = struct {
-    /// The rewritten C specifier, NUL-terminated, ready for `snprintf`.
+    /// The rewritten C specifier, NUL-terminated, ready for `c.snprintf`.
     form: [max_format]u8,
     /// The digits of the field width and of the precision, each NUL-padded.
     /// They are kept as text because the pretty conversions read them with
-    /// `atoi` while `snprintf` reads them out of `form`.
+    /// `atoi` while `c.snprintf` reads them out of `form`.
     width: [3]u8,
     precision: [3]u8,
     /// How far into the format string the parse got: the index of the
@@ -89,13 +82,13 @@ const Specifier = struct {
     at: usize,
 
     /// True when the specifier is a bare `%s` with no flags, width or
-    /// precision, which both drivers special-case to avoid `snprintf`.
+    /// precision, which both drivers special-case to avoid `c.snprintf`.
     inline fn isPlain(self: *const Specifier) bool {
         return self.form[2] == 0;
     }
 
     /// `strchr(form, '.')`: whether a precision was given. Without one,
-    /// `snprintf` will write as many bytes as the argument has.
+    /// `c.snprintf` will write as many bytes as the argument has.
     fn hasPrecision(self: *const Specifier) bool {
         return std.mem.indexOfScalar(u8, std.mem.sliceTo(&self.form, 0), '.') != null;
     }
@@ -125,7 +118,7 @@ const int64_modifier = if (@sizeOf(c_long) == 8) "l" else "ll";
 /// tidying one. C's `format_mappings` table carries entries for both, but
 /// `scanformat` consults it only for characters in `FMT_REPLACE_INTTYPES`,
 /// which are lower case — so the two upper-case entries are dead, `%D` and `%I`
-/// reach `snprintf` unrewritten, and what they print is whatever the host libc
+/// reach `c.snprintf` unrewritten, and what they print is whatever the host libc
 /// makes of an invalid conversion. `FOUND.md` has the measurement.
 fn intMapping(conversion: u8) []const u8 {
     return switch (conversion) {
@@ -201,21 +194,21 @@ inline fn isDigit(byte: u8) bool {
 
 // ------------------------------------------------------- rendering one item
 
-/// The scratch a `snprintf` conversion is rendered into, and the check that
+/// The scratch a `c.snprintf` conversion is rendered into, and the check that
 /// what came back fits. C keeps `item` and `nb` as two locals per loop; making
 /// them one value is what stops a driver from pushing a stale `item`.
 const Item = struct {
     bytes: [max_item]u8 = undefined,
     count: c_int = 0,
 
-    /// Render through `snprintf` with the rebuilt specifier.
+    /// Render through `c.snprintf` with the rebuilt specifier.
     fn render(self: *Item, spec: *const Specifier, arg: anytype) void {
-        self.count = snprintf(&self.bytes, max_item, &spec.form, arg);
+        self.count = c.snprintf(&self.bytes, max_item, @ptrCast(&spec.form), arg);
     }
 
     /// Append what was rendered, if anything. A driver that wrote to the
     /// buffer directly leaves `count` at zero and pushes nothing here.
-    fn flush(self: *const Item, b: *types.JanetBuffer) raise.Raising(void) {
+    fn flush(self: *const Item, b: *buffers.Buffer) raise.Raising(void) {
         if (self.count >= max_item) return raise.panic("format buffer overflow");
         if (self.count > 0) try buffers.pushBytes(b, self.bytes[0..@intCast(self.count)]);
     }
@@ -229,7 +222,7 @@ const Item = struct {
 const PrettyOpts = struct {
     depth: c_int,
     columns: c_int,
-    flags: c_int,
+    flags: pretty.PrettyFlags,
 
     fn decode(conversion: u8, spec: *const Specifier) PrettyOpts {
         var depth = Specifier.number(&spec.precision);
@@ -252,16 +245,14 @@ const PrettyOpts = struct {
         return .{
             .depth = depth,
             .columns = columns,
-            .flags = (if (has_color) pretty_color else 0) |
-                (if (has_oneline) pretty_oneline else 0) |
-                (if (has_notrunc) pretty_notrunc else 0),
+            .flags = .{ .color = has_color, .oneline = has_oneline, .notrunc = has_notrunc },
         };
     }
 };
 
 /// The eight pretty conversions and `%j`, which both drivers render the same
 /// way once the value and the barrier are in hand.
-fn renderPretty(b: *types.JanetBuffer, conversion: u8, spec: *const Specifier, x: repr.Value, startlen: i32) raise.Raising(void) {
+fn renderPretty(b: *buffers.Buffer, conversion: u8, spec: *const Specifier, x: repr.Value, startlen: usize) raise.Raising(void) {
     if (conversion == 'j') {
         var depth = Specifier.number(&spec.precision);
         if (depth < 1) depth = recursion_guard;
@@ -276,13 +267,13 @@ fn renderPretty(b: *types.JanetBuffer, conversion: u8, spec: *const Specifier, x
 /// `"abstract"`, which is the whole point of `%t` over `%T`.
 fn typestr(x: repr.Value) []const u8 {
     const t = repr.typeOf(x);
-    if (t == .abstract) return types.abstractHead(wrap.toAbstract(x)).type.*.name;
+    if (t == .abstract) return abi.abstractHead(wrap.toAbstract(x)).type.name;
     return std.mem.span(utils.typeNames[@intFromEnum(t)]);
 }
 
 /// `pushtypes`. Renders a type *set* — the bitmask an argument check reports —
 /// as `"a, b or c"`.
-fn pushtypes(b: *types.JanetBuffer, typeflags: repr.TagSet) raise.Raising(void) {
+fn pushtypes(b: *buffers.Buffer, typeflags: repr.TagSet) raise.Raising(void) {
     var remaining = typeflags.bits();
     var first = true;
     var i: usize = 0;
@@ -438,17 +429,17 @@ fn compileFormat(comptime format: []const u8) []const Op {
 /// it used to be undefined behaviour. `FOUND.md` has four entries that are
 /// exactly this mistake, three of them in code this runtime still runs.
 inline fn renderConversion(
-    b: *types.JanetBuffer,
+    b: *buffers.Buffer,
     comptime spec: Specifier,
     comptime conversion: u8,
     arg: anytype,
-    startlen: i32,
+    startlen: usize,
 ) raise.Raising(void) {
     const local: Specifier = spec;
     var item = Item{};
     switch (conversion) {
         // `%c` reads an `int` and is rendered as one: its specifier is not in
-        // the rewritten set, so `snprintf` reads an `int` back.
+        // the rewritten set, so `c.snprintf` reads an `int` back.
         'c' => item.render(&local, @as(c_int, arg)),
         // `%d` and `%i` render 64 bits: `scanFormat` rewrote the specifier to
         // `%lld`. A variadic driver pulled an `int32_t` and widened it, which
@@ -468,11 +459,11 @@ inline fn renderConversion(
             const len: i32 = if (conversion == 's')
                 @intCast(std.mem.len(str))
             else
-                types.stringHead(str).length;
+                strings.head(str).length;
             if (local.isPlain()) {
                 try buffers.pushBytes(b, str[0..@intCast(len)]);
             } else if (len != @as(i32, @intCast(std.mem.len(str)))) {
-                // A width or precision means `snprintf`, which stops at the
+                // A width or precision means `c.snprintf`, which stops at the
                 // first NUL and would silently drop the rest.
                 return raise.panic("string contains zeros");
             } else if (!local.hasPrecision() and len >= 100) {
@@ -524,7 +515,7 @@ inline fn asCString(arg: anytype) [*:0]const u8 {
 /// specifier and the value it renders are checked against each other at the
 /// call site.
 pub fn formatTuple(
-    b: *types.JanetBuffer,
+    b: *buffers.Buffer,
     comptime format: [:0]const u8,
     args: anytype,
 ) raise.Raising(void) {
@@ -560,12 +551,11 @@ pub fn formatTuple(
 
 /// `janet_formatc`: render into a scratch buffer and return a Janet string.
 ///
-/// The `errdefer` is new. C could not have one — the raise left through a
-/// `longjmp` and the buffer it had allocated was stranded — and decision 1
-/// bought it back. Nothing observable changes; a raise from `%v`'s `tostring`
-/// callback simply stops leaking the scratch.
-pub fn formatc(comptime format: [:0]const u8, args: anytype) raise.Raising(types.JanetString) {
-    var buffer: types.JanetBuffer = undefined;
+/// The `errdefer` is new: C stranded the buffer it had allocated on the way
+/// out. Nothing observable changes; a raise from `%v`'s `tostring` callback
+/// simply stops leaking the scratch.
+pub fn formatc(comptime format: [:0]const u8, args: anytype) raise.Raising(strings.String) {
+    var buffer: buffers.Buffer = undefined;
     _ = buffers.init(&buffer, @intCast(format.len));
     errdefer buffers.deinit(&buffer);
     try formatTuple(&buffer, format, args);
@@ -576,10 +566,10 @@ pub fn formatc(comptime format: [:0]const u8, args: anytype) raise.Raising(types
 
 /// `janet_formatb`: append to a buffer the caller owns, and hand it back.
 pub fn formatb(
-    buffer: *types.JanetBuffer,
+    buffer: *buffers.Buffer,
     comptime format: [:0]const u8,
     args: anytype,
-) raise.Raising(*types.JanetBuffer) {
+) raise.Raising(*buffers.Buffer) {
     try formatTuple(buffer, format, args);
     return buffer;
 }
@@ -599,10 +589,8 @@ pub fn formatb(
 /// message a non-writeable file raises is unchanged.
 pub fn dynprintf(
     name: ?[*:0]const u8,
-    /// `?*anyopaque` rather than a `FILE *`: `io_core.zig` declares `FILE`
-    /// opaque on purpose and every caller reaches its handle through its own
-    /// `stdio.err` declaration over `@cImport`'s translation. They are
-    /// the same pointer and not the same Zig type.
+    /// `?*anyopaque` rather than a `*host.FILE`, so that this file does not
+    /// depend on `io.zig`. It is the same pointer either way.
     dflt_file: ?*anyopaque,
     comptime format: [:0]const u8,
     args: anytype,
@@ -620,16 +608,15 @@ pub fn dynprintf(
     switch (xtype) {
         repr.Tag.nil, repr.Tag.abstract => {
             var f: ?*anyopaque = dflt_file;
-            var buffer: types.JanetBuffer = undefined;
+            var buffer: buffers.Buffer = undefined;
             _ = buffers.init(&buffer, @intCast(format.len));
             defer buffers.deinit(&buffer);
             try formatTuple(&buffer, format, args);
             if (xtype == repr.Tag.abstract) {
                 const abstract = wrap.toAbstract(x);
-                if (types.abstractHead(abstract).type != &io_core.fileType) return;
-                const iofile: *types.JanetFile = @ptrCast(@alignCast(abstract));
-                io_core.zigIoAssertWriteable(iofile);
-                _ = try raise.crossing({});
+                if (abi.abstractHead(abstract).type != &io_core.fileType) return;
+                const iofile: *io_core.File = @ptrCast(@alignCast(abstract));
+                try io_core.assertWriteable(iofile);
                 f = iofile.file;
             }
             _ = io_core.write(f, buffer.data.?, @intCast(buffer.count));
@@ -639,31 +626,26 @@ pub fn dynprintf(
             const buf = buffers.new(@intCast(format.len));
             try formatTuple(buf, format, args);
             var call_args = [_]repr.Value{wrap.fromBuffer(buf)};
-            _ = c.janet_call(fun, 1, &call_args);
-            _ = try raise.crossing({});
+            _ = try vm_entry.call(fun, &call_args);
         },
         repr.Tag.buffer => try formatTuple(wrap.toBuffer(x), format, args),
-        // Other values simply do nothing, which is the C original's `default`.
+        // Anything else prints nowhere, silently.
         else => {},
     }
 }
 
-/// The two symbols `dynprintf` takes from `io.zig` through the C ABI rather
-/// than by import. Both are abis: `janet_zig_io_assert_writeable` *reports*
-/// its raise and the call site consumes it with `raise.crossing`, so pointing
-/// either at the implementation is a decision about this caller's error
-/// handling rather than a rename.
 /// `formatc` at a site that cannot carry a raise.
 ///
-/// Eleven call sites in six files are like this, and they are one population
-/// rather than six problems: an abi, or an internal result type whose error
-/// channel is a message pointer rather than an error union. A raise converts
-/// as far as the nearest fixed boundary and stops there, and an ordinary
-/// import is what retires each one.
+/// One caller is left: `bytecode.zig`, whose assembler answers a message
+/// pointer rather than an error union, so a raise from the formatter has no
+/// channel to travel in. Every other site was an abi over a raising kernel and
+/// has been retired -- the kernel is reached by `@import` and the error is
+/// returned.
 ///
-/// The abi records the raise and returns a blank string. What the
-/// `raise.crossing` at the site adds is that the site says so.
-pub fn formatcReported(comptime format: [:0]const u8, args: anytype) types.JanetString {
+/// It records the raise and returns a blank string, which nothing consumes:
+/// the process dies at the next protected scope. That is the shape this is
+/// down to one instance of.
+pub fn formatcReported(comptime format: [:0]const u8, args: anytype) strings.String {
     return raise.reported(formatc(format, args));
 }
 
@@ -684,14 +666,23 @@ pub fn panicf(comptime format: [:0]const u8, args: anytype) raise.Error {
 
 /// `janet_buffer_format`, which is what `string/format` and `buffer/format`
 /// run. It needs no C at all: the arguments arrive as a `Janet` array.
+/// `first` is the index of the first value the format string consumes.
+///
+/// It used to be the index of the one *before* it, stepped at the top of each
+/// conversion -- which meant a caller with no format string in `argv` at all
+/// passed -1, and `test/pp_format.zig` did. That is the backwards-walk shape
+/// twice already found in this tree, and an index cannot be unsigned while it
+/// exists. Stepping at the bottom of the conversion instead says the same
+/// thing about the same values: every path between the bounds check and the
+/// step either uses `arg` or returns.
 pub fn bufferFormat(
-    b: *types.JanetBuffer,
+    b: *buffers.Buffer,
     strfrmt: [*]const u8,
-    argstart: i32,
+    first: usize,
     argv: []repr.Value,
 ) raise.Raising(void) {
     const startlen = b.count;
-    var arg = argstart;
+    var arg = first;
     var at: usize = 0;
     while (strfrmt[at] != 0) {
         if (strfrmt[at] != '%') {
@@ -706,8 +697,7 @@ pub fn bufferFormat(
             continue;
         }
 
-        arg += 1;
-        if (arg >= @as(i32, @intCast(argv.len))) return raise.panic("not enough values for format");
+        if (arg >= argv.len) return raise.panic("not enough values for format");
 
         const spec = try scanFormat(strfrmt, at);
         const conversion = strfrmt[spec.at];
@@ -731,35 +721,25 @@ pub fn bufferFormat(
                 }
             },
 
-            'V' => try pp_describe.toStringB(b, argv[@intCast(arg)]),
-            'v' => try pp_describe.descriptionB(b, argv[@intCast(arg)]),
-            't' => try buffers.pushBytes(b, typestr(argv[@intCast(arg)])),
+            'V' => try pp_describe.toStringB(b, argv[arg]),
+            'v' => try pp_describe.descriptionB(b, argv[arg]),
+            't' => try buffers.pushBytes(b, typestr(argv[arg])),
 
             'M', 'm', 'N', 'n', 'Q', 'q', 'P', 'p', 'j' => try renderPretty(
                 b,
                 conversion,
                 &spec,
-                argv[@intCast(arg)],
+                argv[arg],
                 startlen,
             ),
 
             else => return panicf("invalid conversion '%s' to 'format'", .{&spec.form}),
         }
         try item.flush(b);
+        arg += 1;
     }
 }
 
 pub const bufferFormatPanicking = raise.panickingArgv(bufferFormat).abi;
 
 // ----------------------------------------------------------------- exports
-
-comptime {
-    // `janet_buffer_format` is internal and hidden, exactly as the C build
-    // hides it. `janet_zig_formatbv` stood beside it until the variadic
-    // surface went; the tuple driver has no abi, because it has no C
-    // caller and could not have one.
-    // Gated on the selector rather than unconditional, so that a *contract*
-    // module can root itself at this file and instantiate the comptime-generic
-    // drivers without redefining the runtime's symbols. `root.zig` gates the
-    // import on the same flag, so this costs the runtime nothing.
-}

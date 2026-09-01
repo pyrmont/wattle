@@ -1,37 +1,19 @@
 //! The assembler: `(asm ...)` from a Janet data structure to a `JanetFuncDef`.
 //!
-//! Two files once, split along the C-ABI seam rather than along the subject:
-//! a driver -- argument checking, the error paths, the `JanetFuncDef` it hands
-//! back -- and an encoder holding the opcode table and the per-field scan and
-//! fill passes over it. One name, `bytecode`, for what Janet publishes as one
-//! thing.
-//!
-//! **Merging them was forced rather than chosen.** Sixteen `janet_zig_asm_*`
-//! were `export fn` in one half and `extern fn` in the other; twelve
-//! `janet_c_asm_*` went the other way. An `extern fn` declaration and an
-//! `export fn` definition of one name cannot share a file --
-//!
-//!     error: duplicate struct member name 'thing'
-//!
-//! -- so the merge either converted them or did not happen. They are ordinary
-//! Zig functions called directly, and **every one of the twenty-eight linker
-//! symbols is still exported**, from `capi.zig`.
-//!
-//! One name could not take the obvious spelling: `janet_c_asm_get_field` is
-//! `getFieldByName`, because `getField` was already a private helper in the
-//! driver half.
+//! Two halves under one name: a driver -- argument checking, the error paths,
+//! the `JanetFuncDef` it hands back -- and an encoder holding the opcode table
+//! and the per-field scan and fill passes over it. `getFieldByName` is the
+//! encoder's lookup; `getField` is the driver's private helper and is a
+//! different thing.
 
 const std = @import("std");
 
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
-const raise = @import("raise");
-const corefn = @import("corefn");
+const raise = @import("raise.zig");
+const corefn = @import("corefn.zig");
 
 const args_core = @import("args.zig");
-const fatal = @import("fatal.zig");
 const pp_format = @import("pp/format.zig");
 const utils = @import("utils.zig");
 const vm_lifecycle = @import("vm/lifecycle.zig");
@@ -46,33 +28,30 @@ const value = @import("value.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const pp_describe = @import("pp.zig");
 const compiler_primitives = @import("compiler.zig");
+const tuples = @import("value/tuples.zig");
+
+pub const JanetInstructionType = c_uint;
+pub const JanetOpCode = c_uint;
+pub const JanetAssembleStatus = c_uint;
+
+pub const JanetAssembleResult = extern struct {
+    funcdef: ?*functions.FuncDef = null,
+    @"error": ?strings.String = null,
+    status: JanetAssembleStatus = 0,
+};
 
 // ---------------------------------------------------------------------------
-// The driver -- what `asm_core.zig` was.
+// The driver.
 // ---------------------------------------------------------------------------
 
 /// The assembler's own failure, and not a Janet signal. One member, because
 /// the message travels in the assembler rather than in the error.
+///
+/// A failing site picks the channel it wants: `fail` for a fault that names
+/// the instruction it happened at, `failv` for one whose message is already
+/// complete. That choice used to be a flag each result struct carried out to
+/// the caller.
 const AsmError = error{Assembly};
-
-// ------------------------------------------------- the results Zig hands back
-
-/// `JanetAsmHeaderResult` in `src/core/asm.c`, and `HeaderResult` in
-/// `asm_encode.zig`. Declared a third time here rather than shared, because the
-/// three are the same three fields and a header for one struct used by one
-/// caller each way is more machinery than it saves.
-pub const HeaderResult = extern struct {
-    error_message: ?[*:0]const u8,
-    indexed_error: i32,
-};
-
-/// `JanetAsmBytecodeResult`.
-pub const BytecodeResult = extern struct {
-    count: i32,
-    error_message: ?[*:0]const u8,
-    indexed_error: i32,
-    error_index: i32,
-};
 
 // ------------------------------------------------------------ the assembler
 
@@ -82,7 +61,7 @@ pub const BytecodeResult = extern struct {
 /// assembler through `?*anyopaque` and the fourteen accessors below.
 const Assembler = struct {
     parent: ?*Assembler,
-    def: *types.JanetFuncDef,
+    def: *functions.FuncDef,
     errmessage: ?[*:0]const u8,
     errindex: i32,
 
@@ -91,12 +70,12 @@ const Assembler = struct {
     bytecode_count: i32,
 
     name: repr.Value,
-    labels: types.JanetTable,
-    slots: types.JanetTable,
-    envs: types.JanetTable,
-    defs: types.JanetTable,
+    labels: tables.Table,
+    slots: tables.Table,
+    envs: tables.Table,
+    defs: tables.Table,
 
-    fn init(self: *Assembler, parent: ?*Assembler, def: *types.JanetFuncDef) void {
+    fn init(self: *Assembler, parent: ?*Assembler, def: *functions.FuncDef) void {
         self.* = .{
             .parent = parent,
             .def = def,
@@ -145,15 +124,6 @@ const Assembler = struct {
         self.errmessage = message;
         return error.Assembly;
     }
-
-    /// Report whichever way the callee asked for. Every `janet_zig_asm_*` entry
-    /// point answers with a message and a flag saying whether it wants the
-    /// instruction index appended, and every one of `janet_asm1`'s call sites
-    /// spelled the same two-line test out. It is one function here.
-    fn report(self: *Assembler, message: ?[*:0]const u8, indexed: bool) AsmError {
-        if (indexed) return self.fail(message);
-        return self.failv(message);
-    }
 };
 
 /// `janet_asm_addenv`. Resolves a closure environment by name, walking the
@@ -164,7 +134,7 @@ const Assembler = struct {
 /// it". `doarg_1` in C distinguishes the last from the others by testing
 /// `< -1`, so the two negatives cannot be collapsed.
 fn addEnv(a: *Assembler, envname: repr.Value) i32 {
-    if (order.equals(a.name, envname) != 0) return -1;
+    if (order.equals(a.name, envname)) return -1;
     const check = tables.get(&a.envs, envname);
     if (repr.checkType(check, repr.Tag.number)) {
         return @intFromFloat(wrap.toNumber(check));
@@ -176,20 +146,17 @@ fn addEnv(a: *Assembler, envname: repr.Value) i32 {
     const def = a.def;
     const envindex = def.environments_length;
     tables.put(&a.envs, envname, wrap.fromNumber(@floatFromInt(envindex)));
-    if (envindex >= a.environments_capacity) {
+    if (envindex >= @as(usize, @intCast(a.environments_capacity))) {
         const newcap = 2 * envindex;
-        def.environments = @ptrCast(@alignCast(utils.realloc(
-            @ptrCast(def.environments),
-            @as(usize, @intCast(newcap)) * @sizeOf(i32),
-        ) orelse fatal.outOfMemory()));
-        a.environments_capacity = newcap;
+        def.environments = utils.resizeMany(i32, def.environments, @intCast(newcap));
+        a.environments_capacity = @intCast(newcap);
     }
     // Written before the length is declared, so the accessor is one short
     // here and the write goes through the allocation. Every *reader* of an
     // established run below uses `environmentIndices()`.
-    def.environments.?[@intCast(envindex)] = res;
+    def.environments.?[envindex] = res;
     def.environments_length = envindex + 1;
-    return envindex;
+    return @intCast(envindex);
 }
 
 /// `janet_get1`. A lookup that answers nil for anything that is not a table or
@@ -205,15 +172,14 @@ fn getField(ds: repr.Value, key: repr.Value) repr.Value {
 
 // --------------------------------------------------------- the field accessors
 
-// The seam `asm_encode.zig` reaches an assembler through. Fourteen accessors
-// over an opaque pointer, unchanged in name and signature from the C ones they
-// replace, so the encode layer does not learn which side it is talking to.
+// Fourteen accessors over an opaque pointer, so the encoder below reads an
+// assembler's state without naming its type.
 
 inline fn asmOf(context: ?*anyopaque) *Assembler {
     return @ptrCast(@alignCast(context.?));
 }
 
-pub fn argumentTable(context: ?*anyopaque, argument_type: i32) ?*types.JanetTable {
+pub fn argumentTable(context: ?*anyopaque, argument_type: i32) ?*tables.Table {
     const a = asmOf(context);
     return switch (argument_type) {
         constants.JANET_OAT_SLOT => &a.slots,
@@ -224,7 +190,7 @@ pub fn argumentTable(context: ?*anyopaque, argument_type: i32) ?*types.JanetTabl
     };
 }
 
-pub fn funcdef(context: ?*anyopaque) callconv(.c) *types.JanetFuncDef {
+pub fn funcdef(context: ?*anyopaque) *functions.FuncDef {
     return asmOf(context).def;
 }
 
@@ -286,15 +252,16 @@ pub fn getFieldByName(source: repr.Value, name: [*:0]const u8) repr.Value {
     return getField(source, value.fromBytes(std.mem.span(name), .keyword));
 }
 
-pub fn invalidError(status: i32) [*:0]const u8 {
-    return pp_format.formatcReported("invalid assembly (%d)", .{status});
+/// The number is what a Janet program sees, so the verdict becomes one here
+/// and only here.
+pub fn invalidError(status: verify.Verdict) [*:0]const u8 {
+    return pp_format.formatcReported("invalid assembly (%d)", .{status.number()});
 }
 
 // ---------------------------------------------------------------- the driver
 
 fn allocate(comptime T: type, count: i32) [*]T {
-    const bytes = @sizeOf(T) * @as(usize, @intCast(count));
-    return @ptrCast(@alignCast(utils.malloc(bytes) orelse fatal.outOfMemory()));
+    return utils.allocMany(T, @intCast(count));
 }
 
 /// The body of one assembly, in the C original's order. Every step either
@@ -303,19 +270,15 @@ fn allocate(comptime T: type, count: i32) [*]T {
 fn assemble(a: *Assembler, source: repr.Value, flags: c_int) AsmError!void {
     const def = a.def;
 
-    {
-        const header = parseHeader(a, source);
-        if (header.error_message != null) return a.report(header.error_message, header.indexed_error != 0);
-    }
+    try parseHeader(a, source);
 
     {
-        const slots = parseSlots(a, source);
-        if (slots.error_message != null) return a.report(slots.error_message, slots.indexed_error != 0);
+        try parseSlots(a, source);
         const scanned = scanConstants(a, source);
-        def.constants_length = scanned.count;
-        if (scanned.count > 0) {
-            def.constants = allocate(repr.Value, scanned.count);
-            _ = fillConstants(a, source);
+        def.constants_length = @intCast(scanned);
+        if (scanned > 0) {
+            def.constants = allocate(repr.Value, scanned);
+            fillConstants(a, source);
         } else {
             def.constants = null;
         }
@@ -326,90 +289,68 @@ fn assemble(a: *Assembler, source: repr.Value, flags: c_int) AsmError!void {
     // the head of this file about the branch that was unreachable in C.
     {
         const definitions = scanDefs(source);
-        var i: i32 = 0;
-        while (i < definitions.count) : (i += 1) {
+        for (0..definitions) |i| {
             const subsource = defAt(source, i);
             const subdef = try asmNested(a, subsource, flags);
-            registerDef(a, subsource, def.defs_length);
+            registerDef(a, subsource, @intCast(def.defs_length));
             const newlen = def.defs_length + 1;
             if (a.defs_capacity < newlen) {
-                def.defs = @ptrCast(@alignCast(utils.realloc(
-                    @ptrCast(def.defs),
-                    @as(usize, @intCast(newlen)) * @sizeOf(*types.JanetFuncDef),
-                ) orelse fatal.outOfMemory()));
-                a.defs_capacity = newlen;
+                def.defs = utils.resizeMany(*functions.FuncDef, def.defs, @intCast(newlen));
+                a.defs_capacity = @intCast(newlen);
             }
             def.defs.?[@intCast(def.defs_length)] = subdef;
-            def.defs_length = newlen;
+            def.defs_length = @intCast(newlen);
         }
     }
 
     {
         const x = getField(source, value.fromBytes("bytecode", .keyword));
-        var bytecode = scanBytecode(a, x);
-        if (bytecode.error_message != null) {
-            a.errindex = bytecode.error_index;
-            return a.report(bytecode.error_message, bytecode.indexed_error != 0);
-        }
-        def.bytecode_length = bytecode.count;
-        def.bytecode = allocate(u32, bytecode.count);
-        bytecode = fillBytecode(a, x);
-        if (bytecode.error_message != null) {
-            a.errindex = bytecode.error_index;
-            return a.report(bytecode.error_message, bytecode.indexed_error != 0);
-        }
+        const count = try scanBytecode(a, x);
+        def.bytecode_length = @intCast(count);
+        def.bytecode = allocate(u32, count);
+        try fillBytecode(a, x);
     }
 
     // Everything from here reports without an instruction index.
     a.errindex = -1;
 
     {
-        const sourcemap = scanSourcemap(a, source);
-        if (sourcemap.error_message != null) return a.fail(sourcemap.error_message);
-        if (sourcemap.count > 0) {
-            def.sourcemap = allocate(types.JanetSourceMapping, sourcemap.count);
-            const filled = asmFillSourcemap(a, source);
-            if (filled.error_message != null) return a.fail(filled.error_message);
+        const count = try scanSourcemap(a, source);
+        if (count > 0) {
+            def.sourcemap = allocate(functions.SourceMapping, count);
+            try asmFillSourcemap(a, source);
         }
     }
 
     def.symbolmap = null;
     def.symbolmap_length = 0;
     {
-        const symbolmap = scanSymbolmap(a, source);
-        if (symbolmap.count > 0) {
-            def.symbolmap_length = symbolmap.count;
-            def.symbolmap = allocate(types.JanetSymbolMap, symbolmap.count);
-            const filled = asmFillSymbolmap(a, source);
-            if (filled.error_message != null) return a.fail(filled.error_message);
+        const count = scanSymbolmap(a, source);
+        if (count > 0) {
+            def.symbolmap_length = @intCast(count);
+            def.symbolmap = allocate(functions.SymbolMap, count);
+            try asmFillSymbolmap(a, source);
         }
     }
-    if (def.symbolmap_length != 0) def.flags |= constants.JANET_FUNCDEF_FLAG_HASSYMBOLMAP;
+    if (def.symbolmap_length != 0) def.flags.hassymbolmap = true;
 
     {
-        const environments = scanEnvironments(a, source);
-        if (environments.count >= 0) {
-            def.environments_length = environments.count;
-            if (environments.count > 0) {
-                def.environments = @ptrCast(@alignCast(utils.realloc(
-                    @ptrCast(def.environments),
-                    @as(usize, @intCast(environments.count)) * @sizeOf(i32),
-                ) orelse fatal.outOfMemory()));
+        const count = scanEnvironments(a, source);
+        if (count >= 0) {
+            def.environments_length = @intCast(count);
+            if (count > 0) {
+                def.environments = utils.resizeMany(i32, def.environments, @intCast(count));
             }
-            const filled = fillEnvironments(a, source);
-            if (filled.error_message != null) return a.fail(filled.error_message);
+            try fillEnvironments(a, source);
         }
     }
 
-    {
-        const finalized = finalize(a);
-        if (finalized.error_message != null) return a.failv(finalized.error_message);
-    }
+    try finalize(a);
 }
 
 /// One nested assembly, for a `:defs` entry. Reports its parent's message on
 /// the way out, which is the propagation C did with a jump.
-fn asmNested(parent: *Assembler, source: repr.Value, flags: c_int) AsmError!*types.JanetFuncDef {
+fn asmNested(parent: *Assembler, source: repr.Value, flags: c_int) AsmError!*functions.FuncDef {
     const result = asm1(parent, source, flags);
     if (result.status != constants.JANET_ASSEMBLE_OK) return parent.failv(result.@"error");
     return result.funcdef.?;
@@ -417,7 +358,7 @@ fn asmNested(parent: *Assembler, source: repr.Value, flags: c_int) AsmError!*typ
 
 /// `janet_asm1`. Owns one assembler, and is the frame the whole of an assembly
 /// unwinds to.
-fn asm1(parent: ?*Assembler, source: repr.Value, flags: c_int) types.JanetAssembleResult {
+fn asm1(parent: ?*Assembler, source: repr.Value, flags: c_int) JanetAssembleResult {
     var a: Assembler = undefined;
     a.init(parent, functions.defs.new());
     defer a.deinit();
@@ -439,7 +380,7 @@ fn asm1(parent: ?*Assembler, source: repr.Value, flags: c_int) types.JanetAssemb
 /// `janet_asm`. The public entry, and unchanged in shape: it reports a result
 /// rather than raising, which is why removing the jump underneath it needs no
 /// abi and changes nothing a caller can see.
-pub fn assembleValue(source: repr.Value, flags: c_int) types.JanetAssembleResult {
+pub fn assembleValue(source: repr.Value, flags: c_int) JanetAssembleResult {
     return asm1(null, source, flags);
 }
 
@@ -457,7 +398,7 @@ pub fn assembleValue(source: repr.Value, flags: c_int) types.JanetAssembleResult
 // improving it.
 
 fn cfunAsm(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"asm"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"asm"}));
     try args_core.fixarity(argv, 1);
     const res = assembleValue(argv[0], 0);
     if (res.status != constants.JANET_ASSEMBLE_OK) {
@@ -488,25 +429,21 @@ const disasm_fields = [_]struct { name: [*:0]const u8, field: disasm.Field }{
 };
 
 fn cfunDisasm(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"asm"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"asm"}));
     try args_core.arity(argv, 1, 2);
     const f = try args_core.getFunction(argv, 0);
-    if (@as(i32, @intCast(argv.len)) != 2) return disasm.disassembleField(f.*.def.?, .all);
+    if (argv.len != 2) return disasm.disassembleField(f.def.?, .all);
 
     const kw = try args_core.getKeyword(argv, 1);
     for (disasm_fields) |entry| {
         if (utils.cstrcmp(kw, entry.name) == 0) {
-            return disasm.disassembleField(f.*.def.?, entry.field);
+            return disasm.disassembleField(f.def.?, entry.field);
         }
     }
     return pp_format.panicf("unknown disasm key %v", .{argv[1]});
 }
 
-pub fn libAsmAbi(env: *types.JanetTable) void {
-    raise.reported(libAsm(env));
-}
-
-pub fn libAsm(env: *types.JanetTable) raise.Raising(void) {
+pub fn libAsm(env: *tables.Table) raise.Raising(void) {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("asm", &cfunAsm, @src(), "(asm assembly)", "Returns a new function that is the compiled result of the assembly.\n" ++
             "The syntax for the assembly can be found on the Janet website, and should correspond\n" ++
@@ -536,30 +473,12 @@ pub fn libAsm(env: *types.JanetTable) raise.Raising(void) {
 }
 
 // ---------------------------------------------------------------------------
-// The opcode table and the field passes -- what `asm_encode.zig` was.
+// The opcode table and the field passes.
 // ---------------------------------------------------------------------------
-
-const ResolvedArgument = struct {
-    value: i32,
-    error_message: ?[*:0]const u8 = null,
-};
-
-pub const EncodeResult = extern struct {
-    instruction: u32,
-    error_message: ?[*:0]const u8,
-    indexed_error: i32,
-};
-
-/// `janet_wrap_integer`, written out. `janet.h` declares it beside its macro
-/// and `wrap.c` defines it only for the two nanbox layouts, so a Zig caller
-/// that reaches the declaration does not link against `-Dnanbox=false`.
-inline fn asmWrapInteger(val: i32) repr.Value {
-    return wrap.fromNumber(@floatFromInt(val));
-}
 
 const OpcodeDefinition = struct {
     name: [*:0]const u8,
-    opcode: u32,
+    opcode: constants.Opcode,
 };
 
 const TypeAlias = struct {
@@ -590,489 +509,455 @@ const type_aliases = [_]TypeAlias{
 };
 
 pub const opcodes = [_]OpcodeDefinition{
-    .{ .name = "add", .opcode = constants.JOP_ADD },
-    .{ .name = "addim", .opcode = constants.JOP_ADD_IMMEDIATE },
-    .{ .name = "band", .opcode = constants.JOP_BAND },
-    .{ .name = "bnot", .opcode = constants.JOP_BNOT },
-    .{ .name = "bor", .opcode = constants.JOP_BOR },
-    .{ .name = "bxor", .opcode = constants.JOP_BXOR },
-    .{ .name = "call", .opcode = constants.JOP_CALL },
-    .{ .name = "clo", .opcode = constants.JOP_CLOSURE },
-    .{ .name = "cmp", .opcode = constants.JOP_COMPARE },
-    .{ .name = "cncl", .opcode = constants.JOP_CANCEL },
-    .{ .name = "div", .opcode = constants.JOP_DIVIDE },
-    .{ .name = "divf", .opcode = constants.JOP_DIVIDE_FLOOR },
-    .{ .name = "divim", .opcode = constants.JOP_DIVIDE_IMMEDIATE },
-    .{ .name = "eq", .opcode = constants.JOP_EQUALS },
-    .{ .name = "eqim", .opcode = constants.JOP_EQUALS_IMMEDIATE },
-    .{ .name = "err", .opcode = constants.JOP_ERROR },
-    .{ .name = "get", .opcode = constants.JOP_GET },
-    .{ .name = "geti", .opcode = constants.JOP_GET_INDEX },
-    .{ .name = "gt", .opcode = constants.JOP_GREATER_THAN },
-    .{ .name = "gte", .opcode = constants.JOP_GREATER_THAN_EQUAL },
-    .{ .name = "gtim", .opcode = constants.JOP_GREATER_THAN_IMMEDIATE },
-    .{ .name = "in", .opcode = constants.JOP_IN },
-    .{ .name = "jmp", .opcode = constants.JOP_JUMP },
-    .{ .name = "jmpif", .opcode = constants.JOP_JUMP_IF },
-    .{ .name = "jmpni", .opcode = constants.JOP_JUMP_IF_NIL },
-    .{ .name = "jmpnn", .opcode = constants.JOP_JUMP_IF_NOT_NIL },
-    .{ .name = "jmpno", .opcode = constants.JOP_JUMP_IF_NOT },
-    .{ .name = "ldc", .opcode = constants.JOP_LOAD_CONSTANT },
-    .{ .name = "ldf", .opcode = constants.JOP_LOAD_FALSE },
-    .{ .name = "ldi", .opcode = constants.JOP_LOAD_INTEGER },
-    .{ .name = "ldn", .opcode = constants.JOP_LOAD_NIL },
-    .{ .name = "lds", .opcode = constants.JOP_LOAD_SELF },
-    .{ .name = "ldt", .opcode = constants.JOP_LOAD_TRUE },
-    .{ .name = "ldu", .opcode = constants.JOP_LOAD_UPVALUE },
-    .{ .name = "len", .opcode = constants.JOP_LENGTH },
-    .{ .name = "lt", .opcode = constants.JOP_LESS_THAN },
-    .{ .name = "lte", .opcode = constants.JOP_LESS_THAN_EQUAL },
-    .{ .name = "ltim", .opcode = constants.JOP_LESS_THAN_IMMEDIATE },
-    .{ .name = "mkarr", .opcode = constants.JOP_MAKE_ARRAY },
-    .{ .name = "mkbtp", .opcode = constants.JOP_MAKE_BRACKET_TUPLE },
-    .{ .name = "mkbuf", .opcode = constants.JOP_MAKE_BUFFER },
-    .{ .name = "mkstr", .opcode = constants.JOP_MAKE_STRING },
-    .{ .name = "mkstu", .opcode = constants.JOP_MAKE_STRUCT },
-    .{ .name = "mktab", .opcode = constants.JOP_MAKE_TABLE },
-    .{ .name = "mktup", .opcode = constants.JOP_MAKE_TUPLE },
-    .{ .name = "mod", .opcode = constants.JOP_MODULO },
-    .{ .name = "movf", .opcode = constants.JOP_MOVE_FAR },
-    .{ .name = "movn", .opcode = constants.JOP_MOVE_NEAR },
-    .{ .name = "mul", .opcode = constants.JOP_MULTIPLY },
-    .{ .name = "mulim", .opcode = constants.JOP_MULTIPLY_IMMEDIATE },
-    .{ .name = "neq", .opcode = constants.JOP_NOT_EQUALS },
-    .{ .name = "neqim", .opcode = constants.JOP_NOT_EQUALS_IMMEDIATE },
-    .{ .name = "next", .opcode = constants.JOP_NEXT },
-    .{ .name = "noop", .opcode = constants.JOP_NOOP },
-    .{ .name = "prop", .opcode = constants.JOP_PROPAGATE },
-    .{ .name = "push", .opcode = constants.JOP_PUSH },
-    .{ .name = "push2", .opcode = constants.JOP_PUSH_2 },
-    .{ .name = "push3", .opcode = constants.JOP_PUSH_3 },
-    .{ .name = "pusha", .opcode = constants.JOP_PUSH_ARRAY },
-    .{ .name = "put", .opcode = constants.JOP_PUT },
-    .{ .name = "puti", .opcode = constants.JOP_PUT_INDEX },
-    .{ .name = "rem", .opcode = constants.JOP_REMAINDER },
-    .{ .name = "res", .opcode = constants.JOP_RESUME },
-    .{ .name = "ret", .opcode = constants.JOP_RETURN },
-    .{ .name = "retn", .opcode = constants.JOP_RETURN_NIL },
-    .{ .name = "setu", .opcode = constants.JOP_SET_UPVALUE },
-    .{ .name = "sig", .opcode = constants.JOP_SIGNAL },
-    .{ .name = "sl", .opcode = constants.JOP_SHIFT_LEFT },
-    .{ .name = "slim", .opcode = constants.JOP_SHIFT_LEFT_IMMEDIATE },
-    .{ .name = "sr", .opcode = constants.JOP_SHIFT_RIGHT },
-    .{ .name = "srim", .opcode = constants.JOP_SHIFT_RIGHT_IMMEDIATE },
-    .{ .name = "sru", .opcode = constants.JOP_SHIFT_RIGHT_UNSIGNED },
-    .{ .name = "sruim", .opcode = constants.JOP_SHIFT_RIGHT_UNSIGNED_IMMEDIATE },
-    .{ .name = "sub", .opcode = constants.JOP_SUBTRACT },
-    .{ .name = "subim", .opcode = constants.JOP_SUBTRACT_IMMEDIATE },
-    .{ .name = "tcall", .opcode = constants.JOP_TAILCALL },
-    .{ .name = "tchck", .opcode = constants.JOP_TYPECHECK },
+    .{ .name = "add", .opcode = constants.Opcode.add },
+    .{ .name = "addim", .opcode = constants.Opcode.add_immediate },
+    .{ .name = "band", .opcode = constants.Opcode.band },
+    .{ .name = "bnot", .opcode = constants.Opcode.bnot },
+    .{ .name = "bor", .opcode = constants.Opcode.bor },
+    .{ .name = "bxor", .opcode = constants.Opcode.bxor },
+    .{ .name = "call", .opcode = constants.Opcode.call },
+    .{ .name = "clo", .opcode = constants.Opcode.closure },
+    .{ .name = "cmp", .opcode = constants.Opcode.compare },
+    .{ .name = "cncl", .opcode = constants.Opcode.cancel },
+    .{ .name = "div", .opcode = constants.Opcode.divide },
+    .{ .name = "divf", .opcode = constants.Opcode.divide_floor },
+    .{ .name = "divim", .opcode = constants.Opcode.divide_immediate },
+    .{ .name = "eq", .opcode = constants.Opcode.equals },
+    .{ .name = "eqim", .opcode = constants.Opcode.equals_immediate },
+    .{ .name = "err", .opcode = constants.Opcode.@"error" },
+    .{ .name = "get", .opcode = constants.Opcode.get },
+    .{ .name = "geti", .opcode = constants.Opcode.get_index },
+    .{ .name = "gt", .opcode = constants.Opcode.greater_than },
+    .{ .name = "gte", .opcode = constants.Opcode.greater_than_equal },
+    .{ .name = "gtim", .opcode = constants.Opcode.greater_than_immediate },
+    .{ .name = "in", .opcode = constants.Opcode.in },
+    .{ .name = "jmp", .opcode = constants.Opcode.jump },
+    .{ .name = "jmpif", .opcode = constants.Opcode.jump_if },
+    .{ .name = "jmpni", .opcode = constants.Opcode.jump_if_nil },
+    .{ .name = "jmpnn", .opcode = constants.Opcode.jump_if_not_nil },
+    .{ .name = "jmpno", .opcode = constants.Opcode.jump_if_not },
+    .{ .name = "ldc", .opcode = constants.Opcode.load_constant },
+    .{ .name = "ldf", .opcode = constants.Opcode.load_false },
+    .{ .name = "ldi", .opcode = constants.Opcode.load_integer },
+    .{ .name = "ldn", .opcode = constants.Opcode.load_nil },
+    .{ .name = "lds", .opcode = constants.Opcode.load_self },
+    .{ .name = "ldt", .opcode = constants.Opcode.load_true },
+    .{ .name = "ldu", .opcode = constants.Opcode.load_upvalue },
+    .{ .name = "len", .opcode = constants.Opcode.length },
+    .{ .name = "lt", .opcode = constants.Opcode.less_than },
+    .{ .name = "lte", .opcode = constants.Opcode.less_than_equal },
+    .{ .name = "ltim", .opcode = constants.Opcode.less_than_immediate },
+    .{ .name = "mkarr", .opcode = constants.Opcode.make_array },
+    .{ .name = "mkbtp", .opcode = constants.Opcode.make_bracket_tuple },
+    .{ .name = "mkbuf", .opcode = constants.Opcode.make_buffer },
+    .{ .name = "mkstr", .opcode = constants.Opcode.make_string },
+    .{ .name = "mkstu", .opcode = constants.Opcode.make_struct },
+    .{ .name = "mktab", .opcode = constants.Opcode.make_table },
+    .{ .name = "mktup", .opcode = constants.Opcode.make_tuple },
+    .{ .name = "mod", .opcode = constants.Opcode.modulo },
+    .{ .name = "movf", .opcode = constants.Opcode.move_far },
+    .{ .name = "movn", .opcode = constants.Opcode.move_near },
+    .{ .name = "mul", .opcode = constants.Opcode.multiply },
+    .{ .name = "mulim", .opcode = constants.Opcode.multiply_immediate },
+    .{ .name = "neq", .opcode = constants.Opcode.not_equals },
+    .{ .name = "neqim", .opcode = constants.Opcode.not_equals_immediate },
+    .{ .name = "next", .opcode = constants.Opcode.next },
+    .{ .name = "noop", .opcode = constants.Opcode.noop },
+    .{ .name = "prop", .opcode = constants.Opcode.propagate },
+    .{ .name = "push", .opcode = constants.Opcode.push },
+    .{ .name = "push2", .opcode = constants.Opcode.push_2 },
+    .{ .name = "push3", .opcode = constants.Opcode.push_3 },
+    .{ .name = "pusha", .opcode = constants.Opcode.push_array },
+    .{ .name = "put", .opcode = constants.Opcode.put },
+    .{ .name = "puti", .opcode = constants.Opcode.put_index },
+    .{ .name = "rem", .opcode = constants.Opcode.remainder },
+    .{ .name = "res", .opcode = constants.Opcode.@"resume" },
+    .{ .name = "ret", .opcode = constants.Opcode.@"return" },
+    .{ .name = "retn", .opcode = constants.Opcode.return_nil },
+    .{ .name = "setu", .opcode = constants.Opcode.set_upvalue },
+    .{ .name = "sig", .opcode = constants.Opcode.signal },
+    .{ .name = "sl", .opcode = constants.Opcode.shift_left },
+    .{ .name = "slim", .opcode = constants.Opcode.shift_left_immediate },
+    .{ .name = "sr", .opcode = constants.Opcode.shift_right },
+    .{ .name = "srim", .opcode = constants.Opcode.shift_right_immediate },
+    .{ .name = "sru", .opcode = constants.Opcode.shift_right_unsigned },
+    .{ .name = "sruim", .opcode = constants.Opcode.shift_right_unsigned_immediate },
+    .{ .name = "sub", .opcode = constants.Opcode.subtract },
+    .{ .name = "subim", .opcode = constants.Opcode.subtract_immediate },
+    .{ .name = "tcall", .opcode = constants.Opcode.tailcall },
+    .{ .name = "tchck", .opcode = constants.Opcode.typecheck },
 };
 
 pub fn parseHeader(
     assembler: ?*anyopaque,
     source: repr.Value,
-) callconv(.c) HeaderResult {
+) AsmError!void {
+    const a = asmOf(assembler);
     if (!repr.checkType(source, repr.Tag.@"struct") and
         !repr.checkType(source, repr.Tag.table))
     {
-        return headerFailure("expected struct or table for assembly source");
+        return a.fail("expected struct or table for assembly source");
     }
     const definition = funcdef(assembler);
     var val = getFieldByName(source, "name");
     setName(assembler, val);
-    if (!repr.checkType(val, repr.Tag.nil)) definition.*.name = pp_describe.toString(val);
+    if (!repr.checkType(val, repr.Tag.nil)) definition.name = pp_describe.toString(val);
 
     val = getFieldByName(source, "arity");
-    definition.*.arity = if (args_core.checkint(val) != 0) integerValue(val) else 0;
-    if (definition.*.arity < 0) return headerFailure("arity must be non-negative");
+    definition.arity = if (args_core.checkint(val)) integerValue(val) else 0;
+    if (definition.arity < 0) return a.fail("arity must be non-negative");
 
     val = getFieldByName(source, "max-arity");
-    definition.*.max_arity = if (args_core.checkint(val) != 0) integerValue(val) else definition.*.arity;
-    if (definition.*.max_arity < definition.*.arity) {
-        return headerFailure("max-arity must be greater than or equal to arity");
+    definition.max_arity = if (args_core.checkint(val)) integerValue(val) else definition.arity;
+    if (definition.max_arity < definition.arity) {
+        return a.fail("max-arity must be greater than or equal to arity");
     }
 
     val = getFieldByName(source, "min-arity");
-    definition.*.min_arity = if (args_core.checkint(val) != 0) integerValue(val) else definition.*.arity;
-    if (definition.*.min_arity > definition.*.arity) {
-        return headerFailure("min-arity must be less than or equal to arity");
+    definition.min_arity = if (args_core.checkint(val)) integerValue(val) else definition.arity;
+    if (definition.min_arity > definition.arity) {
+        return a.fail("min-arity must be less than or equal to arity");
     }
 
     val = getFieldByName(source, "vararg");
-    if (repr.truthy(val)) definition.*.flags |= constants.JANET_FUNCDEF_FLAG_VARARG;
-    definition.*.slotcount = definition.*.arity + @intFromBool(definition.*.flags & constants.JANET_FUNCDEF_FLAG_VARARG != 0);
+    if (repr.truthy(val)) definition.flags.vararg = true;
+    definition.slotcount = definition.arity + @intFromBool(definition.flags.vararg);
 
     val = getFieldByName(source, "structarg");
-    if (repr.truthy(val)) definition.*.flags |= constants.JANET_FUNCDEF_FLAG_STRUCTARG;
+    if (repr.truthy(val)) definition.flags.structarg = true;
 
     val = getFieldByName(source, "namedargs");
-    if (args_core.checkint(val) != 0) {
-        definition.*.flags |= constants.JANET_FUNCDEF_FLAG_NAMEDARGS;
-        definition.*.named_args_count = integerValue(val);
+    if (args_core.checkint(val)) {
+        definition.flags.namedargs = true;
+        definition.named_args_count = integerValue(val);
     }
 
     val = getFieldByName(source, "source");
-    if (repr.checkType(val, repr.Tag.string)) definition.*.source = wrap.toString(val);
-    return .{ .error_message = null, .indexed_error = 0 };
+    if (repr.checkType(val, repr.Tag.string)) definition.source = wrap.toString(val);
 }
 
 pub fn parseSlots(
     assembler: ?*anyopaque,
     source: repr.Value,
-) callconv(.c) HeaderResult {
+) AsmError!void {
+    const a = asmOf(assembler);
     const slots_value = getFieldByName(source, "slots");
-    var items: ?[*]const repr.Value = null;
-    var length: i32 = 0;
-    if (args_core.indexedView(slots_value, &items, &length) == 0) return headerSuccess();
+    const items = args_core.indexedView(slots_value) orelse return;
     const slots = argumentTable(assembler, constants.JANET_OAT_SLOT).?;
-    var index: i32 = 0;
-    while (index < length) : (index += 1) {
-        const val = items.?[@intCast(index)];
+    // `index` is a position in `items`; the cast is at the seam where it
+    // becomes a Janet integer in the slot table.
+    for (0..items.len) |index| {
+        const val = items[index];
         if (repr.checkType(val, repr.Tag.tuple)) {
             const aliases = wrap.toTuple(val);
             var alias_index: i32 = 0;
-            while (alias_index < types.tupleHead(aliases).length) : (alias_index += 1) {
+            while (alias_index < tuples.head(aliases).length) : (alias_index += 1) {
                 const alias = aliases[@intCast(alias_index)];
                 if (!repr.checkType(alias, repr.Tag.symbol)) {
-                    return headerFailure("slot names must be symbols");
+                    return a.fail("slot names must be symbols");
                 }
-                tables.put(slots, alias, asmWrapInteger(index));
+                tables.put(slots, alias, wrap.fromInteger(@intCast(index)));
             }
         } else if (repr.checkType(val, repr.Tag.symbol)) {
-            tables.put(slots, val, asmWrapInteger(index));
+            tables.put(slots, val, wrap.fromInteger(@intCast(index)));
         } else {
-            return headerFailure("slot names must be symbols or tuple of symbols");
+            return a.fail("slot names must be symbols or tuple of symbols");
         }
     }
-    return headerSuccess();
 }
 
 pub fn scanConstants(
     _: ?*anyopaque,
     source: repr.Value,
-) callconv(.c) BytecodeResult {
+) i32 {
     const consts = getFieldByName(source, "constants");
-    var items: ?[*]const repr.Value = null;
-    var length: i32 = 0;
-    if (args_core.indexedView(consts, &items, &length) == 0) return bytecodeSuccess(0);
-    return bytecodeSuccess(length);
+    const items = args_core.indexedView(consts) orelse return 0;
+    return @intCast(items.len);
 }
 
 pub fn fillConstants(
     assembler: ?*anyopaque,
     source: repr.Value,
-) callconv(.c) void {
+) void {
     const consts = getFieldByName(source, "constants");
-    var items: ?[*]const repr.Value = null;
-    var length: i32 = 0;
-    if (args_core.indexedView(consts, &items, &length) == 0) unreachable;
+    const items = args_core.indexedView(consts) orelse unreachable;
     const definition = funcdef(assembler);
-    var index: i32 = 0;
-    while (index < length) : (index += 1) {
-        definition.*.constants.?[@intCast(index)] = items.?[@intCast(index)];
+    for (items, 0..) |item, index| {
+        definition.constants.?[index] = item;
     }
 }
 
 pub fn scanSourcemap(
     assembler: ?*anyopaque,
     source: repr.Value,
-) callconv(.c) BytecodeResult {
+) AsmError!i32 {
     const sourcemap = getFieldByName(source, "sourcemap");
-    var items: ?[*]const repr.Value = null;
-    var length: i32 = 0;
-    if (args_core.indexedView(sourcemap, &items, &length) == 0) return bytecodeSuccess(0);
-    if (length != funcdef(assembler).*.bytecode_length) {
-        return bytecodeFailure("sourcemap must have the same length as the bytecode", true, -1);
+    const items = args_core.indexedView(sourcemap) orelse return 0;
+    if (items.len != funcdef(assembler).bytecode_length) {
+        return asmOf(assembler).fail("sourcemap must have the same length as the bytecode");
     }
-    return bytecodeSuccess(length);
+    return @intCast(items.len);
 }
 
-/// Cannot raise: every failure is a `HeaderResult` carrying a message, which
-/// is the assembler's own channel. The signature said `raise.Raising` through
-/// the hinge and never returned an error, which cost its two callers in
-/// `asm_core.zig` a `catch` they could not do anything with -- the assembler
-/// has its own error set and a `JanetSignal` cannot travel through it.
+/// Cannot raise: a failure is `error.Assembly` with the message already in the
+/// assembler, which is the assembler's own channel. A `JanetSignal` cannot
+/// travel through that error set, so a `raise.Raising` return here would only
+/// cost the caller a `catch` it could do nothing with.
 pub fn asmFillSourcemap(
     assembler: ?*anyopaque,
     source: repr.Value,
-) HeaderResult {
+) AsmError!void {
+    const a = asmOf(assembler);
     const sourcemap = getFieldByName(source, "sourcemap");
-    var items: ?[*]const repr.Value = null;
-    var length: i32 = 0;
-    if (args_core.indexedView(sourcemap, &items, &length) == 0) unreachable;
+    const items = args_core.indexedView(sourcemap) orelse unreachable;
     const definition = funcdef(assembler);
-    var index: i32 = 0;
-    while (index < length) : (index += 1) {
-        const entry = items.?[@intCast(index)];
-        if (!repr.checkType(entry, repr.Tag.tuple)) return headerFailure("expected tuple");
+    for (items, 0..) |entry, index| {
+        if (!repr.checkType(entry, repr.Tag.tuple)) return a.fail("expected tuple");
         const tuple = wrap.toTuple(entry);
-        if (args_core.checkint(tuple[0]) == 0) return headerFailure("expected integer");
-        if (args_core.checkint(tuple[1]) == 0) return headerFailure("expected integer");
-        definition.*.sourcemap.?[@intCast(index)] = .{
+        if (!args_core.checkint(tuple[0])) return a.fail("expected integer");
+        if (!args_core.checkint(tuple[1])) return a.fail("expected integer");
+        definition.sourcemap.?[index] = .{
             .line = integerValue(tuple[0]),
             .column = integerValue(tuple[1]),
         };
     }
-    return headerSuccess();
 }
 
 pub fn fillSourcemap(
     assembler: ?*anyopaque,
     source: repr.Value,
-) callconv(.c) HeaderResult {
+) AsmError!void {
     return asmFillSourcemap(assembler, source);
 }
 
 pub fn scanSymbolmap(
     _: ?*anyopaque,
     source: repr.Value,
-) callconv(.c) BytecodeResult {
+) i32 {
     const symbolmap = getFieldByName(source, "symbolmap");
-    var items: ?[*]const repr.Value = null;
-    var length: i32 = 0;
-    if (args_core.indexedView(symbolmap, &items, &length) == 0) return bytecodeSuccess(0);
-    return bytecodeSuccess(length);
+    const items = args_core.indexedView(symbolmap) orelse return 0;
+    return @intCast(items.len);
 }
 
-/// Cannot raise: every failure is a `HeaderResult` carrying a message, which
-/// is the assembler's own channel. The signature said `raise.Raising` through
-/// the hinge and never returned an error, which cost its two callers in
-/// `asm_core.zig` a `catch` they could not do anything with -- the assembler
-/// has its own error set and a `JanetSignal` cannot travel through it.
+/// Cannot raise: a failure is `error.Assembly` with the message already in the
+/// assembler, which is the assembler's own channel. A `JanetSignal` cannot
+/// travel through that error set, so a `raise.Raising` return here would only
+/// cost the caller a `catch` it could do nothing with.
 pub fn asmFillSymbolmap(
     assembler: ?*anyopaque,
     source: repr.Value,
-) HeaderResult {
+) AsmError!void {
+    const a = asmOf(assembler);
     const symbolmap = getFieldByName(source, "symbolmap");
-    var items: ?[*]const repr.Value = null;
-    var length: i32 = 0;
-    if (args_core.indexedView(symbolmap, &items, &length) == 0) unreachable;
+    const items = args_core.indexedView(symbolmap) orelse unreachable;
     const definition = funcdef(assembler);
-    var index: i32 = 0;
-    while (index < length) : (index += 1) {
-        const entry = items.?[@intCast(index)];
-        if (!repr.checkType(entry, repr.Tag.tuple)) return headerFailure("expected tuple");
+    for (items, 0..) |entry, index| {
+        if (!repr.checkType(entry, repr.Tag.tuple)) return a.fail("expected tuple");
         const tuple = wrap.toTuple(entry);
         const birth_pc: u32 = if (repr.checkType(tuple[0], repr.Tag.keyword) and
             utils.cstrcmp(wrap.toKeyword(tuple[0]), "upvalue") == 0)
             maximum_u32
-        else if (args_core.checkint(tuple[0]) != 0)
+        else if (args_core.checkint(tuple[0]))
             @bitCast(integerValue(tuple[0]))
         else
-            return headerFailure("expected integer");
-        if (args_core.checkint(tuple[1]) == 0) return headerFailure("expected integer");
-        if (args_core.checkint(tuple[2]) == 0) return headerFailure("expected integer");
-        if (!repr.checkType(tuple[3], repr.Tag.symbol)) return headerFailure("expected symbol");
-        definition.*.symbolmap.?[@intCast(index)] = .{
+            return a.fail("expected integer");
+        if (!args_core.checkint(tuple[1])) return a.fail("expected integer");
+        if (!args_core.checkint(tuple[2])) return a.fail("expected integer");
+        if (!repr.checkType(tuple[3], repr.Tag.symbol)) return a.fail("expected symbol");
+        definition.symbolmap.?[index] = .{
             .birth_pc = birth_pc,
             .death_pc = @bitCast(integerValue(tuple[1])),
             .slot_index = @bitCast(integerValue(tuple[2])),
             .symbol = wrap.toSymbol(tuple[3]),
         };
     }
-    return headerSuccess();
 }
 
 pub fn fillSymbolmap(
     assembler: ?*anyopaque,
     source: repr.Value,
-) callconv(.c) HeaderResult {
+) AsmError!void {
     return asmFillSymbolmap(assembler, source);
 }
 
+/// The count, or -1 for "the source declares no `:environments` at all" --
+/// which is not the same as an empty list, and is why this answers a code
+/// rather than a length.
 pub fn scanEnvironments(
     _: ?*anyopaque,
     source: repr.Value,
-) callconv(.c) BytecodeResult {
+) i32 {
     const environments = getFieldByName(source, "environments");
-    var items: ?[*]const repr.Value = null;
-    var length: i32 = 0;
-    if (args_core.indexedView(environments, &items, &length) == 0) {
-        return bytecodeSuccess(-1);
-    }
-    return bytecodeSuccess(length);
+    const items = args_core.indexedView(environments) orelse return -1;
+    return @intCast(items.len);
 }
 
 pub fn fillEnvironments(
     assembler: ?*anyopaque,
     source: repr.Value,
-) callconv(.c) HeaderResult {
+) AsmError!void {
+    const a = asmOf(assembler);
     const environments = getFieldByName(source, "environments");
-    var items: ?[*]const repr.Value = null;
-    var length: i32 = 0;
-    if (args_core.indexedView(environments, &items, &length) == 0) unreachable;
+    const items = args_core.indexedView(environments) orelse unreachable;
     const definition = funcdef(assembler);
-    var index: i32 = 0;
-    while (index < length) : (index += 1) {
-        const val = items.?[@intCast(index)];
-        if (args_core.checkint(val) == 0) return headerFailure("expected integer");
-        definition.*.environments.?[@intCast(index)] = integerValue(val);
+    for (items, 0..) |val, index| {
+        if (!args_core.checkint(val)) return a.fail("expected integer");
+        definition.environments.?[index] = integerValue(val);
     }
-    return headerSuccess();
 }
 
-pub fn finalize(assembler: ?*anyopaque) HeaderResult {
+/// `failv` rather than `fail`: the verifier's verdict is reported as written,
+/// with no instruction index appended to it.
+pub fn finalize(assembler: ?*anyopaque) AsmError!void {
     const definition = funcdef(assembler);
     const verify_status = verify.verify(definition);
-    if (verify_status != 0) {
-        return .{
-            .error_message = invalidError(verify_status),
-            .indexed_error = 0,
-        };
-    }
+    if (verify_status != .ok) return asmOf(assembler).failv(invalidError(verify_status));
     compiler_primitives.defAddflags(definition);
-    return headerSuccess();
 }
 
-pub fn scanDefs(source: repr.Value) BytecodeResult {
+pub fn scanDefs(source: repr.Value) usize {
     var definitions = getFieldByName(source, "closures");
     if (repr.checkType(definitions, repr.Tag.nil)) {
         definitions = getFieldByName(source, "defs");
     }
-    var items: ?[*]const repr.Value = null;
-    var length: i32 = 0;
-    if (args_core.indexedView(definitions, &items, &length) == 0) {
-        return bytecodeSuccess(0);
-    }
-    return bytecodeSuccess(length);
+    const items = args_core.indexedView(definitions) orelse return 0;
+    return items.len;
 }
 
-pub fn defAt(source: repr.Value, index: i32) repr.Value {
+pub fn defAt(source: repr.Value, index: usize) repr.Value {
     var definitions = getFieldByName(source, "closures");
     if (repr.checkType(definitions, repr.Tag.nil)) {
         definitions = getFieldByName(source, "defs");
     }
-    var items: ?[*]const repr.Value = null;
-    var length: i32 = 0;
-    if (args_core.indexedView(definitions, &items, &length) == 0) unreachable;
-    return items.?[@intCast(index)];
+    const items = args_core.indexedView(definitions) orelse unreachable;
+    return items[index];
 }
 
 pub fn registerDef(
     assembler: ?*anyopaque,
     source: repr.Value,
     index: i32,
-) callconv(.c) void {
+) void {
     const name = getFieldByName(source, "name");
     if (!repr.checkType(name, repr.Tag.nil)) {
         const definitions = argumentTable(assembler, constants.JANET_OAT_FUNCDEF).?;
-        tables.put(definitions, name, asmWrapInteger(index));
+        tables.put(definitions, name, wrap.fromInteger(index));
     }
 }
 
+/// The instruction index is written into the assembler before the message is
+/// formatted, because `fail` appends it: a fault here names the source element
+/// it found, and `errindex` is the only channel that carries it.
 pub fn scanBytecode(
     assembler: ?*anyopaque,
     source: repr.Value,
-) callconv(.c) BytecodeResult {
-    var items: ?[*]const repr.Value = null;
-    var length: i32 = 0;
-    if (args_core.indexedView(source, &items, &length) == 0) {
-        return bytecodeFailure("bytecode expected", true, 0);
-    }
+) AsmError!i32 {
+    const a = asmOf(assembler);
+    const items = args_core.indexedView(source) orelse {
+        a.errindex = 0;
+        return a.fail("bytecode expected");
+    };
     const labels = argumentTable(assembler, constants.JANET_OAT_LABEL).?;
     var bytecode_length: i32 = 0;
-    var index: i32 = 0;
-    while (index < length) : (index += 1) {
-        const instruction = items.?[@intCast(index)];
+    // `index` is a position in `items`; `errindex` stays signed because -1 is
+    // its "no instruction" sentinel, so the cast sits at that assignment.
+    for (0..items.len) |index| {
+        const instruction = items[index];
         if (repr.checkType(instruction, repr.Tag.keyword)) {
-            tables.put(labels, instruction, asmWrapInteger(bytecode_length));
+            tables.put(labels, instruction, wrap.fromInteger(bytecode_length));
         } else if (repr.checkType(instruction, repr.Tag.tuple)) {
             bytecode_length += 1;
         } else {
-            return bytecodeFailure("expected assembly instruction", true, index);
+            a.errindex = @intCast(index);
+            return a.fail("expected assembly instruction");
         }
     }
-    return bytecodeSuccess(bytecode_length);
+    return bytecode_length;
 }
 
+/// The count the caller wants afterwards is `bytecodeCount`, which this leaves
+/// standing; the answer here is only whether the fill completed.
 pub fn fillBytecode(
     assembler: ?*anyopaque,
     source: repr.Value,
-) callconv(.c) BytecodeResult {
-    var items: ?[*]const repr.Value = null;
-    var length: i32 = 0;
-    if (args_core.indexedView(source, &items, &length) == 0) unreachable;
+) AsmError!void {
+    const a = asmOf(assembler);
+    const items = args_core.indexedView(source) orelse unreachable;
     const definition = funcdef(assembler);
     setBytecodeCount(assembler, 0);
-    var index: i32 = 0;
-    while (index < length) : (index += 1) {
-        const instruction = items.?[@intCast(index)];
+    // As in `scanBytecode`: a position in `items`, cast only where it is
+    // handed to the signed `errindex`.
+    for (0..items.len) |index| {
+        const instruction = items[index];
         if (repr.checkType(instruction, repr.Tag.keyword)) continue;
         const tuple = wrap.toTuple(instruction);
-        const encoded = if (types.tupleHead(tuple).length == 0) success(0) else zigAsmEncode(assembler, tuple);
-        if (encoded.error_message != null) {
-            return .{
-                .count = bytecodeCount(assembler),
-                .error_message = encoded.error_message,
-                .indexed_error = encoded.indexed_error,
-                .error_index = index,
-            };
-        }
+        // Set before the encode rather than after it: an indexed failure
+        // downstream formats its own message, and `fail` reads `errindex` to
+        // name the instruction it belongs to.
+        a.errindex = @intCast(index);
+        const encoded = if (tuples.head(tuple).length == 0)
+            @as(u32, 0)
+        else
+            try zigAsmEncode(assembler, tuple);
         const count = bytecodeCount(assembler);
-        definition.*.bytecode.?[@intCast(count)] = encoded.instruction;
+        definition.bytecode.?[@intCast(count)] = encoded;
         setBytecodeCount(assembler, count + 1);
     }
-    return bytecodeSuccess(bytecodeCount(assembler));
 }
 
+/// Encode one instruction tuple into its bytecode word.
+///
+/// `assembler` is the context the operands resolve against; the message of a
+/// failure lands in it too, except that an environment slot resolves against
+/// an ancestor, which is why `packArgument` is told the two separately.
 pub fn zigAsmEncode(
     assembler: ?*anyopaque,
     arguments: [*]const repr.Value,
-) callconv(.c) EncodeResult {
-    if (!hasLengthAtLeast(arguments, 1)) return success(0);
+) AsmError!u32 {
+    const a = asmOf(assembler);
+    if (!hasLengthAtLeast(arguments, 1)) return 0;
     if (!repr.checkType(arguments[0], repr.Tag.symbol)) {
-        return indexedFailure("expected symbol in assembly instruction");
+        return a.fail("expected symbol in assembly instruction");
     }
     const opcode = findOpcode(wrap.toSymbol(arguments[0])) orelse
-        return exactFailure(unknownInstruction(arguments[0]));
-    const instruction_type = verify.instructions[opcode];
-    var instruction = opcode;
+        return a.failv(unknownInstruction(arguments[0]));
+    const instruction_type = verify.instructions[opcode.number()];
+    var instruction: u32 = opcode.number();
     switch (instruction_type) {
         constants.JINT_0 => {
-            if (!hasLength(arguments, 1)) return indexedFailure("expected 0 arguments: (op)");
+            if (!hasLength(arguments, 1)) return a.fail("expected 0 arguments: (op)");
         },
         constants.JINT_S => {
-            if (!hasLength(arguments, 2)) return indexedFailure("expected 1 argument: (op, slot)");
-            const argument = packArgument(assembler, constants.JANET_OAT_SLOT, 1, 2, false, arguments[1]);
-            if (argument.error_message != null) return argument;
-            instruction |= argument.instruction;
+            if (!hasLength(arguments, 2)) return a.fail("expected 1 argument: (op, slot)");
+            instruction |= try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 2, false, arguments[1]);
         },
         constants.JINT_L => {
-            if (!hasLength(arguments, 2)) return indexedFailure("expected 1 argument: (op, label)");
-            const argument = packArgument(assembler, constants.JANET_OAT_LABEL, 1, 3, true, arguments[1]);
-            if (argument.error_message != null) return argument;
-            instruction |= argument.instruction;
+            if (!hasLength(arguments, 2)) return a.fail("expected 1 argument: (op, label)");
+            instruction |= try packArgument(a, assembler, constants.JANET_OAT_LABEL, 1, 3, true, arguments[1]);
         },
         constants.JINT_SS => {
-            if (!hasLength(arguments, 3)) return indexedFailure("expected 2 arguments: (op, slot, slot)");
-            const first = packArgument(assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            if (first.error_message != null) return first;
-            const second = packArgument(assembler, constants.JANET_OAT_SLOT, 2, 2, false, arguments[2]);
-            if (second.error_message != null) return second;
-            instruction |= first.instruction | second.instruction;
+            if (!hasLength(arguments, 3)) return a.fail("expected 2 arguments: (op, slot, slot)");
+            const first = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
+            const second = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 2, 2, false, arguments[2]);
+            instruction |= first | second;
         },
         constants.JINT_SL => {
-            if (!hasLength(arguments, 3)) return indexedFailure("expected 2 arguments: (op, slot, label)");
-            const slot = packArgument(assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            if (slot.error_message != null) return slot;
-            const label = packArgument(assembler, constants.JANET_OAT_LABEL, 2, 2, true, arguments[2]);
-            if (label.error_message != null) return label;
-            instruction |= slot.instruction | label.instruction;
+            if (!hasLength(arguments, 3)) return a.fail("expected 2 arguments: (op, slot, label)");
+            const slot = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
+            const label = try packArgument(a, assembler, constants.JANET_OAT_LABEL, 2, 2, true, arguments[2]);
+            instruction |= slot | label;
         },
         constants.JINT_ST => {
-            if (!hasLength(arguments, 3)) return indexedFailure("expected 2 arguments: (op, slot, type)");
-            const slot = packArgument(assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            if (slot.error_message != null) return slot;
-            const value_type = packArgument(assembler, constants.JANET_OAT_TYPE, 2, 2, false, arguments[2]);
-            if (value_type.error_message != null) return value_type;
-            instruction |= slot.instruction | value_type.instruction;
+            if (!hasLength(arguments, 3)) return a.fail("expected 2 arguments: (op, slot, type)");
+            const slot = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
+            const value_type = try packArgument(a, assembler, constants.JANET_OAT_TYPE, 2, 2, false, arguments[2]);
+            instruction |= slot | value_type;
         },
         constants.JINT_SI, constants.JINT_SU => {
-            if (!hasLength(arguments, 3)) return indexedFailure("expected 2 arguments: (op, slot, integer)");
-            const slot = packArgument(assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            if (slot.error_message != null) return slot;
-            const immediate = packArgument(
+            if (!hasLength(arguments, 3)) return a.fail("expected 2 arguments: (op, slot, integer)");
+            const slot = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
+            const immediate = try packArgument(
+                a,
                 assembler,
                 constants.JANET_OAT_INTEGER,
                 2,
@@ -1080,34 +965,27 @@ pub fn zigAsmEncode(
                 instruction_type == constants.JINT_SI,
                 arguments[2],
             );
-            if (immediate.error_message != null) return immediate;
-            instruction |= slot.instruction | immediate.instruction;
+            instruction |= slot | immediate;
         },
         constants.JINT_SD => {
-            if (!hasLength(arguments, 3)) return indexedFailure("expected 2 arguments: (op, slot, funcdef)");
-            const slot = packArgument(assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            if (slot.error_message != null) return slot;
-            const definition = packArgument(assembler, constants.JANET_OAT_FUNCDEF, 2, 2, false, arguments[2]);
-            if (definition.error_message != null) return definition;
-            instruction |= slot.instruction | definition.instruction;
+            if (!hasLength(arguments, 3)) return a.fail("expected 2 arguments: (op, slot, funcdef)");
+            const slot = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
+            const definition = try packArgument(a, assembler, constants.JANET_OAT_FUNCDEF, 2, 2, false, arguments[2]);
+            instruction |= slot | definition;
         },
         constants.JINT_SSS => {
-            if (!hasLength(arguments, 4)) return indexedFailure("expected 3 arguments: (op, slot, slot, slot)");
-            const first = packArgument(assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            if (first.error_message != null) return first;
-            const second = packArgument(assembler, constants.JANET_OAT_SLOT, 2, 1, false, arguments[2]);
-            if (second.error_message != null) return second;
-            const third = packArgument(assembler, constants.JANET_OAT_SLOT, 3, 1, false, arguments[3]);
-            if (third.error_message != null) return third;
-            instruction |= first.instruction | second.instruction | third.instruction;
+            if (!hasLength(arguments, 4)) return a.fail("expected 3 arguments: (op, slot, slot, slot)");
+            const first = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
+            const second = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 2, 1, false, arguments[2]);
+            const third = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 3, 1, false, arguments[3]);
+            instruction |= first | second | third;
         },
         constants.JINT_SSI, constants.JINT_SSU => {
-            if (!hasLength(arguments, 4)) return indexedFailure("expected 3 arguments: (op, slot, slot, integer)");
-            const first = packArgument(assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            if (first.error_message != null) return first;
-            const second = packArgument(assembler, constants.JANET_OAT_SLOT, 2, 1, false, arguments[2]);
-            if (second.error_message != null) return second;
-            const immediate = packArgument(
+            if (!hasLength(arguments, 4)) return a.fail("expected 3 arguments: (op, slot, slot, integer)");
+            const first = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
+            const second = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 2, 1, false, arguments[2]);
+            const immediate = try packArgument(
+                a,
                 assembler,
                 constants.JANET_OAT_INTEGER,
                 3,
@@ -1115,126 +993,125 @@ pub fn zigAsmEncode(
                 instruction_type == constants.JINT_SSI,
                 arguments[3],
             );
-            if (immediate.error_message != null) return immediate;
-            instruction |= first.instruction | second.instruction | immediate.instruction;
+            instruction |= first | second | immediate;
         },
         constants.JINT_SES => {
-            if (!hasLength(arguments, 4)) return indexedFailure("expected 3 arguments: (op, slot, environment, envslot)");
-            const slot = packArgument(assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            if (slot.error_message != null) return slot;
-            const environment = packArgument(assembler, constants.JANET_OAT_ENVIRONMENT, 0, 1, false, arguments[2]);
-            if (environment.error_message != null) return environment;
-            const parent = parentForEnvironment(assembler, environment.instruction) orelse
-                return indexedFailure("invalid environment index");
-            const environment_slot = packArgument(parent, constants.JANET_OAT_SLOT, 3, 1, false, arguments[3]);
-            if (environment_slot.error_message != null) return environment_slot;
-            instruction |= slot.instruction | (environment.instruction << 16) | environment_slot.instruction;
+            if (!hasLength(arguments, 4)) return a.fail("expected 3 arguments: (op, slot, environment, envslot)");
+            const slot = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
+            const environment = try packArgument(a, assembler, constants.JANET_OAT_ENVIRONMENT, 0, 1, false, arguments[2]);
+            const parent = parentForEnvironment(assembler, environment) orelse
+                return a.fail("invalid environment index");
+            const environment_slot = try packArgument(a, parent, constants.JANET_OAT_SLOT, 3, 1, false, arguments[3]);
+            instruction |= slot | (environment << 16) | environment_slot;
         },
         constants.JINT_SC => {
-            if (!hasLength(arguments, 3)) return indexedFailure("expected 2 arguments: (op, slot, constant)");
-            const slot = packArgument(assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            if (slot.error_message != null) return slot;
-            const constant = packArgument(assembler, constants.JANET_OAT_CONSTANT, 2, 2, false, arguments[2]);
-            if (constant.error_message != null) return constant;
-            instruction |= slot.instruction | constant.instruction;
+            if (!hasLength(arguments, 3)) return a.fail("expected 2 arguments: (op, slot, constant)");
+            const slot = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
+            const constant = try packArgument(a, assembler, constants.JANET_OAT_CONSTANT, 2, 2, false, arguments[2]);
+            instruction |= slot | constant;
         },
-        else => return indexedFailure("unknown instruction layout"),
+        else => return a.fail("unknown instruction layout"),
     }
-    return success(instruction);
+    return instruction;
 }
 
+/// Resolve one operand and shift it into its field.
+///
+/// `a` is where a failure's message lands and `context` is the assembler the
+/// operand resolves against. They are the same assembler everywhere but the
+/// environment slot of a `JINT_SES`, which resolves in an ancestor while the
+/// message still belongs to the assembly being encoded.
 fn packArgument(
-    assembler: ?*anyopaque,
+    a: *Assembler,
+    context: ?*anyopaque,
     argument_type: i32,
     byte_index: u5,
     byte_count: i32,
     signed: bool,
     val: repr.Value,
-) EncodeResult {
-    const resolved = resolveArgument(assembler, argument_type, val);
-    if (resolved.error_message != null) return exactFailure(resolved.error_message);
+) AsmError!u32 {
+    const resolved = try resolveArgument(a, context, argument_type, val);
     const bit_count: u5 = @intCast(byte_count * 8);
     const maximum: i32 = (@as(i32, 1) << (bit_count - @intFromBool(signed))) - 1;
     const minimum: i32 = if (signed) -maximum - 1 else 0;
-    if (resolved.value < minimum) {
-        return exactFailure(argumentBoundsError(val, byte_count, 0));
+    if (resolved < minimum) {
+        return a.failv(argumentBoundsError(val, byte_count, 0));
     }
-    if (resolved.value > maximum) {
-        return exactFailure(argumentBoundsError(val, byte_count, 1));
+    if (resolved > maximum) {
+        return a.failv(argumentBoundsError(val, byte_count, 1));
     }
-    const bits: u32 = @bitCast(resolved.value);
-    return success(bits << (byte_index * 8));
+    const bits: u32 = @bitCast(resolved);
+    return bits << (byte_index * 8);
 }
 
-fn resolveArgument(assembler: ?*anyopaque, argument_type: i32, val: repr.Value) ResolvedArgument {
-    const table = argumentTable(assembler, argument_type);
+fn resolveArgument(
+    a: *Assembler,
+    context: ?*anyopaque,
+    argument_type: i32,
+    val: repr.Value,
+) AsmError!i32 {
+    const table = argumentTable(context, argument_type);
     var result: i32 = -1;
     switch (repr.typeOf(val)) {
         repr.Tag.number => {
             const number = wrap.toNumber(val);
             if (number < minimum_i32_float or number > maximum_i32_float or @trunc(number) != number) {
-                return resolutionFailure(val, 0);
+                return a.failv(resolutionError(val, 0));
             }
             result = @intFromFloat(number);
         },
         repr.Tag.tuple => {
-            if (argument_type != constants.JANET_OAT_TYPE) return resolutionFailure(val, 0);
+            if (argument_type != constants.JANET_OAT_TYPE) return a.failv(resolutionError(val, 0));
             const tuple = wrap.toTuple(val);
             result = 0;
             var index: i32 = 0;
-            while (index < types.tupleHead(tuple).length) : (index += 1) {
-                const part = resolveArgument(assembler, constants.JANET_OAT_SIMPLETYPE, tuple[@intCast(index)]);
-                if (part.error_message != null) return part;
-                result |= part.value;
+            while (index < tuples.head(tuple).length) : (index += 1) {
+                result |= try resolveArgument(a, context, constants.JANET_OAT_SIMPLETYPE, tuple[@intCast(index)]);
             }
         },
         repr.Tag.keyword => {
             if (table != null and argument_type == constants.JANET_OAT_LABEL) {
                 const found = tables.get(table.?, val);
-                if (!repr.checkType(found, repr.Tag.number)) return resolutionFailure(val, 0);
+                if (!repr.checkType(found, repr.Tag.number)) return a.failv(resolutionError(val, 0));
                 result = @intFromFloat(wrap.toNumber(found));
-                result -= bytecodeCount(assembler);
+                result -= bytecodeCount(context);
             } else if (argument_type == constants.JANET_OAT_TYPE or argument_type == constants.JANET_OAT_SIMPLETYPE) {
                 // The instruction operand is sixteen bits and so is the set;
                 // `.bits()` is where the two meet, which is the one place the
                 // assembler spells a type mask as a number.
-                result = (findTypeMask(wrap.toKeyword(val)) orelse return resolutionFailure(val, 1)).bits();
+                result = (findTypeMask(wrap.toKeyword(val)) orelse return a.failv(resolutionError(val, 1))).bits();
             } else {
-                return resolutionFailure(val, 0);
+                return a.failv(resolutionError(val, 0));
             }
         },
         repr.Tag.symbol => {
-            const argument_table = table orelse return resolutionFailure(val, 0);
+            const argument_table = table orelse return a.failv(resolutionError(val, 0));
             const found = tables.get(argument_table, val);
-            if (!repr.checkType(found, repr.Tag.number)) return resolutionFailure(val, 2);
+            if (!repr.checkType(found, repr.Tag.number)) return a.failv(resolutionError(val, 2));
             result = @intFromFloat(wrap.toNumber(found));
             if (argument_type == constants.JANET_OAT_ENVIRONMENT and result == -1) {
-                result = addEnvironment(assembler, val);
-                if (result < -1) return resolutionFailure(val, 3);
+                result = addEnvironment(context, val);
+                if (result < -1) return a.failv(resolutionError(val, 3));
             }
         },
-        else => return resolutionFailure(val, 0),
+        else => return a.failv(resolutionError(val, 0)),
     }
     if (argument_type == constants.JANET_OAT_SLOT) {
-        const definition = funcdef(assembler);
-        if (result >= definition.*.slotcount) definition.*.slotcount = result + 1;
+        const definition = funcdef(context);
+        if (result >= definition.slotcount) definition.slotcount = result + 1;
     }
-    return .{ .value = result };
-}
-
-fn resolutionFailure(val: repr.Value, failure: i32) ResolvedArgument {
-    return .{ .value = -1, .error_message = resolutionError(val, failure) };
+    return result;
 }
 
 fn hasLength(arguments: [*]const repr.Value, expected: i32) bool {
-    return types.tupleHead(arguments).length == expected;
+    return tuples.head(arguments).length == expected;
 }
 
 fn hasLengthAtLeast(arguments: [*]const repr.Value, minimum: i32) bool {
-    return types.tupleHead(arguments).length >= minimum;
+    return tuples.head(arguments).length >= minimum;
 }
 
-fn findOpcode(name: [*:0]const u8) ?u32 {
+fn findOpcode(name: [*:0]const u8) ?constants.Opcode {
     var lower: usize = 0;
     var upper: usize = opcodes.len;
     while (lower < upper) {
@@ -1264,39 +1141,6 @@ fn findTypeMask(name: [*:0]const u8) ?repr.TagSet {
         }
     }
     return null;
-}
-
-fn success(instruction: u32) EncodeResult {
-    return .{ .instruction = instruction, .error_message = null, .indexed_error = 0 };
-}
-
-fn indexedFailure(message: [*:0]const u8) EncodeResult {
-    return .{ .instruction = 0, .error_message = message, .indexed_error = 1 };
-}
-
-fn exactFailure(message: ?[*:0]const u8) EncodeResult {
-    return .{ .instruction = 0, .error_message = message, .indexed_error = 0 };
-}
-
-fn bytecodeSuccess(count: i32) BytecodeResult {
-    return .{ .count = count, .error_message = null, .indexed_error = 0, .error_index = -1 };
-}
-
-fn bytecodeFailure(message: [*:0]const u8, indexed: bool, index: i32) BytecodeResult {
-    return .{
-        .count = 0,
-        .error_message = message,
-        .indexed_error = @intFromBool(indexed),
-        .error_index = index,
-    };
-}
-
-fn headerFailure(message: [*:0]const u8) HeaderResult {
-    return .{ .error_message = message, .indexed_error = 1 };
-}
-
-fn headerSuccess() HeaderResult {
-    return .{ .error_message = null, .indexed_error = 0 };
 }
 
 fn integerValue(val: repr.Value) i32 {

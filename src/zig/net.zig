@@ -1,22 +1,19 @@
 //! The `net/` module: sockets, and the addresses they bind and connect to.
 //!
-//! Two files once: the cfunctions in one, the address vocabulary they hand
-//! around in the other, with the first binding the second at every use --
-//! nineteen names, most of them aliases rather than declarations of its own.
 //! One name, because Janet publishes one module, with `net/abi.zig` beside it
 //! for the host translation.
 const std = @import("std");
 const builtin = @import("builtin");
-const corefn = @import("corefn");
+const corefn = @import("corefn.zig");
 const net_abi = @import("net/abi.zig");
-const raise = @import("raise");
+const raise = @import("raise.zig");
 const pp_format = @import("pp/format.zig");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const ev_loop = @import("ev.zig");
 const ev_stream = @import("ev/stream.zig");
 const vm_lifecycle = @import("vm/lifecycle.zig");
+const vm_state = @import("vm/state.zig");
 const abstract_type = @import("abstract_type.zig");
 const method_type = @import("method_type.zig");
 const utils = @import("utils.zig");
@@ -30,9 +27,16 @@ const tuples = @import("value/tuples.zig");
 const value = @import("value.zig");
 const abstracts = @import("value/abstracts.zig");
 const pp_describe = @import("pp.zig");
+const c = @import("cabi");
+const strings = @import("value/strings.zig");
+const functions = @import("value/functions.zig");
+const tables = @import("value/tables.zig");
+// Aliased `platform` rather than `host` in this one file: `host` is a
+// hostname here, which is the better claim on the name.
+const platform = @import("host");
 
 // -------------------------------------------------------------------------
-// The cfunctions -- what `net_sockets.zig` was.
+// The cfunctions.
 // -------------------------------------------------------------------------
 
 const h = net_abi.h;
@@ -48,16 +52,9 @@ const stream_nodups: u32 = @intCast(constants.JANET_STREAM_NODUPS);
 const stream_closed: u32 = @intCast(constants.JANET_STREAM_CLOSED);
 const stream_toclose: u32 = @intCast(constants.JANET_STREAM_TOCLOSE);
 
-inline fn errno() c_int {
-    return std.c._errno().*;
-}
-
 // ==========================================================================
 // The event loop's C ABI
 // ==========================================================================
-
-/// The four stream methods `net_stream_methods` shares with `ev/`. They are
-/// `-Dev-loop`'s, under both of its arms.
 
 // ==========================================================================
 // Sockets
@@ -74,8 +71,8 @@ inline fn errno() c_int {
 /// the abi until that part, so the refusal became a report nobody consumed
 /// and `raise.reported`'s `blank(*JanetStream)` — a null pointer — was
 /// dereferenced on top of it.
-fn makeStream(handle: JSock, flags: u32) raise.Raising(*types.JanetStream) {
-    const jh: types.JanetHandle = if (windows) @ptrFromInt(handle) else handle;
+fn makeStream(handle: JSock, flags: u32) raise.Raising(*ev_stream.Stream) {
+    const jh: platform.Handle = if (windows) @ptrFromInt(handle) else handle;
     return ev_loop.makeStream(jh, flags | stream_socket | stream_nodups, @ptrCast(&net_stream_methods));
 }
 
@@ -136,11 +133,9 @@ fn openSocket(family: c_int, socktype: c_int, protocol: c_int) JSock {
 // The connect state machine
 // ==========================================================================
 
-/// `JanetOverlapped` from `src/core/util.h`, restated for the same reason
-/// `ev_stream.zig` restates it: nothing translates that header, and
-/// Zig 0.16's `std.os.windows` no longer declares `OVERLAPPED` at all. The C
-/// original spells the first member as a union of `OVERLAPPED` and
-/// `WSAOVERLAPPED`, which have the same layout, so one arm is enough.
+/// Windows' `OVERLAPPED`, declared here because Zig 0.16's `std.os.windows` no
+/// longer does. `WSAOVERLAPPED` has the same layout, so one declaration serves
+/// the socket calls as well as the file ones.
 const OVERLAPPED = extern struct {
     Internal: usize,
     InternalHigh: usize,
@@ -163,7 +158,7 @@ const NetStateConnect = extern struct {
 /// `lazy_get_connectex`. `ConnectEx` is not exported by any import library and
 /// has to be asked for by GUID, once per VM.
 fn lazyGetConnectEx(sock: JSock) h.LPFN_CONNECTEX {
-    if (vm_lifecycle.current().ev.backend.connect_ex_loaded) return @ptrCast(vm_lifecycle.current().ev.backend.connect_ex);
+    if (vm_state.current().ev.backend.connect_ex_loaded) return @ptrCast(vm_state.current().ev.backend.connect_ex);
     var guid = net_abi.wsaid_connectex;
     var connect_ex_ptr: h.LPFN_CONNECTEX = null;
     var byte_len: h.DWORD = 0;
@@ -178,13 +173,13 @@ fn lazyGetConnectEx(sock: JSock) h.LPFN_CONNECTEX {
         null,
         null,
     );
-    vm_lifecycle.current().ev.backend.connect_ex = if (success != 0) null else @ptrCast(@constCast(connect_ex_ptr));
-    vm_lifecycle.current().ev.backend.connect_ex_loaded = true;
-    return @ptrCast(vm_lifecycle.current().ev.backend.connect_ex);
+    vm_state.current().ev.backend.connect_ex = if (success != 0) null else @ptrCast(@constCast(connect_ex_ptr));
+    vm_state.current().ev.backend.connect_ex_loaded = true;
+    return @ptrCast(vm_state.current().ev.backend.connect_ex);
 }
 
-fn net_callback_connect(fiber: *types.JanetFiber, event: types.JanetAsyncEvent) raise.Raising(void) {
-    const stream: *types.JanetStream = fiber.*.ev_stream.?;
+fn net_callback_connect(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Raising(void) {
+    const stream: *ev_stream.Stream = fiber.ev_stream.?;
     switch (event) {
         // Windows does not support an async connect through this path and
         // just tries immediately; everywhere else, wait for a real event
@@ -229,7 +224,7 @@ fn net_callback_connect(fiber: *types.JanetFiber, event: types.JanetAsyncEvent) 
 }
 
 /// `net_sched_connect`.
-fn schedConnect(stream: *types.JanetStream, state: ?*anyopaque) raise.Error {
+fn schedConnect(stream: *ev_stream.Stream, state: ?*anyopaque) raise.Error {
     return ev_loop.asyncStart(stream, constants.JANET_ASYNC_LISTEN_WRITE, net_callback_connect, state);
 }
 
@@ -244,16 +239,16 @@ fn schedConnect(stream: *types.JanetStream, state: ?*anyopaque) raise.Error {
 /// the descriptor says there is something to take.
 const NetStateAccept = if (windows) extern struct {
     overlapped: Overlapped,
-    function: ?*types.JanetFunction,
-    lstream: ?*types.JanetStream,
-    astream: ?*types.JanetStream,
+    function: ?*functions.Function,
+    lstream: ?*ev_stream.Stream,
+    astream: ?*ev_stream.Stream,
     buf: [1024]u8,
 } else extern struct {
-    function: ?*types.JanetFunction,
+    function: ?*functions.Function,
 };
 
-fn net_callback_accept(fiber: *types.JanetFiber, event: types.JanetAsyncEvent) raise.Raising(void) {
-    const state: *NetStateAccept = @ptrCast(@alignCast(fiber.*.ev_state));
+fn net_callback_accept(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Raising(void) {
+    const state: *NetStateAccept = @ptrCast(@alignCast(fiber.ev_state));
     switch (event) {
         constants.JANET_ASYNC_EVENT_MARK => {
             if (windows) {
@@ -276,7 +271,7 @@ fn net_callback_accept(fiber: *types.JanetFiber, event: types.JanetAsyncEvent) r
     }
 }
 
-fn acceptWindows(fiber: *types.JanetFiber, state: *NetStateAccept, event: types.JanetAsyncEvent) raise.Raising(void) {
+fn acceptWindows(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.AsyncEvent) raise.Raising(void) {
     if (event != constants.JANET_ASYNC_EVENT_COMPLETE) return;
     const astream = state.astream.?;
     if (astream.flags & stream_closed != 0) {
@@ -304,7 +299,7 @@ fn acceptWindows(fiber: *types.JanetFiber, state: *NetStateAccept, event: types.
         // dereferences whatever `janet_fiber` answered, and it answers null
         // when the handler's arity rejects one argument. `FOUND.md`.
         const sub_fiber = fibers.new(f, 64, 1, @ptrCast(&streamv)).?;
-        sub_fiber.*.supervisor_channel = fiber.*.supervisor_channel;
+        sub_fiber.supervisor_channel = fiber.supervisor_channel;
         ev_loop.schedule(sub_fiber, wrap.fromNil());
         var err: repr.Value = undefined;
         if (try schedAcceptImpl(state, fiber, &err)) {
@@ -321,9 +316,9 @@ fn acceptWindows(fiber: *types.JanetFiber, state: *NetStateAccept, event: types.
 /// is `raise.Error!void`, so an accept whose stream the backend refuses
 /// reports the way that function's `failed to accept connection` does rather
 /// than carrying on with a null stream.
-fn acceptPosix(fiber: *types.JanetFiber, state: *NetStateAccept, event: types.JanetAsyncEvent) raise.Raising(void) {
+fn acceptPosix(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.AsyncEvent) raise.Raising(void) {
     if (event != constants.JANET_ASYNC_EVENT_INIT and event != constants.JANET_ASYNC_EVENT_READ) return;
-    const stream: *types.JanetStream = fiber.*.ev_stream.?;
+    const stream: *ev_stream.Stream = fiber.ev_stream.?;
     const connfd: JSock = if (builtin.os.tag == .linux)
         net_abi.accept4(sockOf(stream), null, null, h.SOCK_CLOEXEC)
     else
@@ -335,16 +330,16 @@ fn acceptPosix(fiber: *types.JanetFiber, state: *NetStateAccept, event: types.Ja
     const astream = try makeStream(connfd, stream_readable | stream_writable);
     const streamv = wrap.fromAbstract(astream);
     if (state.function) |f| {
-        // `.?` rather than a check, because the C original has none: it
-        // dereferences whatever `janet_fiber` answered. It answers null when
-        // the handler's arity rejects one argument, so a `net/server` given a
-        // handler of the wrong arity segfaults upstream. The unwrap makes that
-        // a named panic instead of a null store, and only on the path C leaves
-        // undefined; `FOUND.md` records the C side. Batch 3 surfaced it
-        // by giving `janet_fiber` a Zig return type -- `[*c]JanetFiber` from
-        // the header let the deref through without a word.
+        // `.?` rather than a check, because upstream has none: it dereferences
+        // whatever the fiber constructor answered, and that is null when the
+        // handler's arity rejects one argument -- so a `net/server` given a
+        // handler of the wrong arity segfaults there. The unwrap makes it a
+        // named panic instead of a null store, and only on the path upstream
+        // leaves undefined; `FOUND.md` records it. **Typing the return is what
+        // surfaced it**: a nullable-and-implicitly-dereferenceable pointer let
+        // the deref through without a word.
         const sub_fiber = fibers.new(f, 64, 1, @ptrCast(&streamv)).?;
-        sub_fiber.*.supervisor_channel = fiber.*.supervisor_channel;
+        sub_fiber.supervisor_channel = fiber.supervisor_channel;
         ev_loop.schedule(sub_fiber, wrap.fromNil());
     } else {
         ev_loop.schedule(fiber, streamv);
@@ -354,7 +349,7 @@ fn acceptPosix(fiber: *types.JanetFiber, state: *NetStateAccept, event: types.Ja
 
 /// `net_sched_accept_impl`, the Windows half: put an accepting socket and a
 /// buffer in flight. True on failure, with `*err` set.
-fn schedAcceptImpl(state: *NetStateAccept, fiber: *types.JanetFiber, err: *repr.Value) raise.Raising(bool) {
+fn schedAcceptImpl(state: *NetStateAccept, fiber: *fibers.Fiber, err: *repr.Value) raise.Raising(bool) {
     const lsock = sockOf(state.lstream.?);
     const asock = h.WSASocketW(h.AF_INET, h.SOCK_STREAM, h.IPPROTO_TCP, null, 0, h.WSA_FLAG_OVERLAPPED);
     if (asock == h.INVALID_SOCKET) {
@@ -379,7 +374,7 @@ fn schedAcceptImpl(state: *NetStateAccept, fiber: *types.JanetFiber, err: *repr.
 }
 
 /// `janet_sched_accept`.
-fn schedAccept(stream: *types.JanetStream, fun: ?*types.JanetFunction) raise.Error {
+fn schedAccept(stream: *ev_stream.Stream, fun: ?*functions.Function) raise.Error {
     const state: *NetStateAccept = @ptrCast(@alignCast(
         utils.malloc(@sizeOf(NetStateAccept)) orelse outOfMemory(@src()),
     ));
@@ -405,8 +400,8 @@ fn schedAccept(stream: *types.JanetStream, fun: ?*types.JanetFunction) raise.Err
 // The cfunctions
 // ==========================================================================
 
-fn getStream(argv: []const repr.Value, n: i32) raise.Raising(*types.JanetStream) {
-    return @ptrCast(@alignCast(try args_core.getAbstract(argv, n, &ev_stream.streamType)));
+fn getStream(argv: []const repr.Value, n: usize) raise.Raising(*ev_stream.Stream) {
+    return try args_core.getAbstract(ev_stream.Stream, argv, n, &ev_stream.streamType);
 }
 
 // The stream type is reached through the `stream` import at the head of this
@@ -415,29 +410,31 @@ fn getStream(argv: []const repr.Value, n: i32) raise.Raising(*types.JanetStream)
 
 /// `cfun_net_connect`, registered as `net/connect`.
 fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"net_connect"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_connect"}));
     try args_core.arity(argv, 2, 5);
 
     // Check arguments.
     const socktype = try socketType(argv, 2);
     const bindhost = try args_core.optCString(argv, 3, null);
-    const bindport = if (@as(i32, @intCast(argv.len)) >= 5 and args_core.checkint(argv[4]) != 0)
+    const bindport = if (argv.len >= 5 and args_core.checkint(argv[4]))
         pp_describe.toString(argv[4])
     else
         try args_core.optCString(argv, 4, null);
 
     // Where we're connecting to.
     var info = try getAddrInfo(argv, 0, socktype, false);
+    // Both of these were released by hand before each of the eleven returns
+    // below, and `makeStream` raises between the last of them and the connect.
+    // `net.c` releases the unix domain address with `freeaddrinfo`, which did
+    // not allocate it; `AddrInfo.free` picks the right one. `FOUND.md`.
+    defer info.free();
     var addrlen: SockLen = info.size;
 
     // Check if we're binding address.
     var binding: ?*h.struct_addrinfo = null;
+    defer if (binding) |b| h.freeaddrinfo(b);
     if (bindhost != null) {
         if (info.isUnix()) {
-            // `net.c` releases this one with `freeaddrinfo`, which did not
-            // allocate it. That is undefined rather than merely wrong, so the
-            // port releases it correctly; `FOUND.md` has the entry.
-            info.free();
             return raise.panic("bindhost not supported for unix domain sockets");
         }
         var hints = std.mem.zeroes(h.struct_addrinfo);
@@ -446,7 +443,6 @@ fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
         hints.ai_flags = 0;
         const status = h.getaddrinfo(bindhost, bindport, &hints, &binding);
         if (status != 0) {
-            info.free();
             return pp_format.panicf(
                 "could not get address info for bindhost: %s",
                 .{net_abi.gaiStrerror(status)},
@@ -464,7 +460,6 @@ fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
             sock = h.socket(h.AF_UNIX, socktype | net_abi.sock_flags, 0);
             if (!net_abi.sockValid(sock)) {
                 const v = ev_stream.evLasterr();
-                info.free();
                 return pp_format.panicf("could not create socket: %V", .{v});
             }
             sa = @ptrCast(@alignCast(un));
@@ -482,8 +477,6 @@ fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
         }
         if (sa == null) {
             const v = ev_stream.evLasterr();
-            if (binding != null) h.freeaddrinfo(binding);
-            info.free();
             return pp_format.panicf("could not create socket: %V", .{v});
         }
     }
@@ -500,12 +493,9 @@ fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
         }
         if (!did_bind) {
             const v = ev_stream.evLasterr();
-            h.freeaddrinfo(binding);
-            info.free();
             net_abi.sockClose(sock);
             return pp_format.panicf("could not bind outgoing address: %V", .{v});
         }
-        h.freeaddrinfo(binding);
     }
 
     // Wrap socket in abstract type JanetStream.
@@ -525,7 +515,6 @@ fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
                 ));
                 state.* = std.mem.zeroes(NetStateConnect);
                 const success = connect_ex(sock, sa, @intCast(addrlen), null, 0, null, @ptrCast(&state.overlapped.as));
-                info.free();
                 if (success == 0 and h.WSAGetLastError() != h.ERROR_IO_PENDING) {
                     utils.free(state);
                     const lasterr = ev_stream.evLasterr();
@@ -537,7 +526,6 @@ fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
         // Default to blocking connect if ConnectEx not available.
         status = h.WSAConnect(sock, sa, @intCast(addrlen), null, null, null, null);
         err = h.WSAGetLastError();
-        info.free();
         // Set up the socket for non-blocking IO after connecting on windows.
         sockNoBlock(sock);
     } else {
@@ -545,10 +533,9 @@ fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
         sockNoBlock(sock);
         while (true) {
             status = net_abi.connect(sock, sa, addrlen);
-            if (!(status == -1 and errno() == h.EINTR)) break;
+            if (!(status == -1 and c.errno() == h.EINTR)) break;
         }
-        err = errno();
-        info.free();
+        err = c.errno();
     }
 
     if (status == 0) {
@@ -589,7 +576,7 @@ fn cfunSocket(argv: []repr.Value) raise.Raising(repr.Value) {
     hints.ai_socktype = socktype;
     // Explicitly prevent name resolution where the platform can say so.
     hints.ai_flags = if (@hasDecl(h, "AI_NUMERICSERV")) h.AI_NUMERICSERV else 0;
-    if (@as(i32, @intCast(argv.len)) >= 2) hints.ai_family = addressFamily(argv[1]);
+    if (argv.len >= 2) hints.ai_family = addressFamily(argv[1]);
     const status = h.getaddrinfo(null, "0", &hints, &ai);
     if (status != 0) {
         return pp_format.panicf("could not get address info: %s", .{net_abi.gaiStrerror(status)});
@@ -627,7 +614,7 @@ fn cfunShutdown(argv: []repr.Value) raise.Raising(repr.Value) {
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_socket);
     var shutdown_type = shutdown_rw;
-    if (@as(i32, @intCast(argv.len)) == 2) {
+    if (argv.len == 2) {
         const kw = try args_core.getKeyword(argv, 1);
         if (utils.cstrcmp(kw, "rw") == 0) {
             shutdown_type = shutdown_rw;
@@ -645,7 +632,7 @@ fn cfunShutdown(argv: []repr.Value) raise.Raising(repr.Value) {
     } else {
         while (true) {
             status = h.shutdown(sockOf(stream), shutdown_type);
-            if (!(status == -1 and errno() == h.EINTR)) break;
+            if (!(status == -1 and c.errno() == h.EINTR)) break;
         }
     }
     if (status != 0) {
@@ -656,13 +643,14 @@ fn cfunShutdown(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `cfun_net_listen`, registered as `net/listen`.
 fn cfunListen(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"net_listen"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_listen"}));
     try args_core.arity(argv, 2, 4);
 
     // Get host, port, and handler.
     const socktype = try socketType(argv, 2);
     const info = try getAddrInfo(argv, 0, socktype, true);
-    const reuse = !(@as(i32, @intCast(argv.len)) >= 4 and repr.truthy(argv[3]));
+    defer info.free();
+    const reuse = !(argv.len >= 4 and repr.truthy(argv[3]));
 
     var sfd: JSock = net_abi.sock_default;
     var bound = false;
@@ -671,17 +659,14 @@ fn cfunListen(argv: []repr.Value) raise.Raising(repr.Value) {
             bound = true;
             sfd = h.socket(h.AF_UNIX, socktype | net_abi.sock_flags, 0);
             if (!net_abi.sockValid(sfd)) {
-                info.free();
                 return pp_format.panicf("could not create socket: %V", .{ev_stream.evLasterr()});
             }
             const serr = serverifySocket(sfd, reuse, false);
             if (serr != null or net_abi.bind(sfd, @ptrCast(un), info.size) != 0) {
                 net_abi.sockClose(sfd);
-                info.free();
                 if (serr) |message| return raise.panic(message);
                 return pp_format.panicf("could not bind socket: %V", .{ev_stream.evLasterr()});
             }
-            info.free();
         }
     }
     if (!bound) {
@@ -697,9 +682,7 @@ fn cfunListen(argv: []repr.Value) raise.Raising(repr.Value) {
             if (net_abi.bind(sfd, rp.?.ai_addr, @intCast(rp.?.ai_addrlen)) == 0) break;
             net_abi.sockClose(sfd);
         }
-        const found = rp != null;
-        info.free();
-        if (!found) return raise.panic("could not bind to any sockets");
+        if (rp == null) return raise.panic("could not bind to any sockets");
     }
 
     if (socktype == h.SOCK_DGRAM) {
@@ -722,7 +705,7 @@ fn cfunAcceptLoop(argv: []repr.Value) raise.Raising(repr.Value) {
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_acceptable | stream_socket);
     const fun = try args_core.getFunction(argv, 1);
-    if (fun.*.def.?.min_arity < 1) return raise.panic("handler function must take at least 1 argument");
+    if (fun.def.?.min_arity < 1) return raise.panic("handler function must take at least 1 argument");
     return schedAccept(stream, fun);
 }
 
@@ -743,7 +726,7 @@ fn cfunRead(argv: []repr.Value) raise.Raising(repr.Value) {
     try ev_loop.streamFlags(stream, stream_readable | stream_socket);
     const buffer = try args_core.optBuffer(argv, 2, 10);
     const to = try args_core.optNumber(argv, 3, std.math.inf(f64));
-    if (args_core.keyeq(argv[1], "all") != 0) {
+    if (args_core.keyeq(argv[1], "all")) {
         if (to != std.math.inf(f64)) ev_loop.addtimeout(to);
         return ev_stream.readGeneric(stream, buffer, std.math.maxInt(i32), true, ev_stream.read_mode_recv, net_abi.msg_nosignal);
     } else {
@@ -798,7 +781,7 @@ fn cfunSendTo(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 3, 4);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_udpserver | stream_socket);
-    const dest = try args_core.getAbstract(argv, 1, &addressType);
+    const dest = try args_core.getAbstract(anyopaque, argv, 1, &addressType);
     const to = try args_core.optNumber(argv, 3, std.math.inf(f64));
     if (repr.checkType(argv[2], repr.Tag.buffer)) {
         if (to != std.math.inf(f64)) ev_loop.addtimeout(to);
@@ -927,7 +910,7 @@ fn cfunSetsockopt(argv: []repr.Value) raise.Raising(repr.Value) {
     assert(@src(), optlen != 0, "invalid socket option value");
 
     if (net_abi.setSockOpt(sockOf(stream), st.level, st.optname, &val, optlen) == -1) {
-        return pp_format.panicf("setsockopt(%q): %s", .{ argv[1], utils.strerrorSafe(errno()) });
+        return pp_format.panicf("setsockopt(%q): %s", .{ argv[1], utils.strerrorSafe(c.errno()) });
     }
 
     return wrap.fromNil();
@@ -959,7 +942,7 @@ const net_stream_methods = [_]method_type.Method{
 };
 
 /// `janet_lib_net`. The order is the C original's exactly.
-pub fn libNet(env: *types.JanetTable) void {
+pub fn libNet(env: *tables.Table) void {
     const table = comptime [_]corefn.Entry{
         corefn.reg("net/address", &cfunSockaddr, @src(), "(net/address host port &opt type multi)", "Look up the connection information for a given hostname, port, and connection type. Returns " ++
             "a handle that can be used to send datagrams over network without establishing a connection. " ++
@@ -1037,8 +1020,8 @@ pub fn netInit() void {
         var wsa_data: h.WSADATA = undefined;
         // `MAKEWORD(2, 2)`, which is a macro and does not survive translation.
         assert(@src(), h.WSAStartup(0x0202, &wsa_data) == 0, "could not start winsock");
-        vm_lifecycle.current().ev.backend.connect_ex_loaded = false;
-        vm_lifecycle.current().ev.backend.connect_ex = null;
+        vm_state.current().ev.backend.connect_ex_loaded = false;
+        vm_state.current().ev.backend.connect_ex = null;
     }
 }
 
@@ -1050,7 +1033,7 @@ pub fn netDeinit() void {
 }
 
 // -------------------------------------------------------------------------
-// Addresses -- what `net_addr.zig` was.
+// Addresses.
 // -------------------------------------------------------------------------
 
 const has_ipv6 = net_abi.has_ipv6;
@@ -1073,20 +1056,20 @@ pub const addressType = abstract_type.define(h.struct_sockaddr, .{
 /// intention.
 pub fn addressFamily(x: repr.Value) c_int {
     if (repr.checkType(x, repr.Tag.nil)) return h.AF_UNSPEC;
-    if (args_core.keyeq(x, "ipv4") != 0) return h.AF_INET;
-    if (args_core.keyeq(x, "ipv6") != 0) return h.AF_INET6;
+    if (args_core.keyeq(x, "ipv4")) return h.AF_INET;
+    if (args_core.keyeq(x, "ipv6")) return h.AF_INET6;
     if (!windows) {
-        if (args_core.keyeq(x, "unix") != 0) return h.AF_UNIX;
+        if (args_core.keyeq(x, "unix")) return h.AF_UNIX;
     }
     return h.AF_UNSPEC;
 }
 
 /// `janet_get_sockettype`.
-pub fn socketType(argv: []repr.Value, n: i32) raise.Raising(c_int) {
+pub fn socketType(argv: []repr.Value, n: usize) raise.Raising(c_int) {
     const stype = try args_core.optKeyword(argv, n, null);
     if (stype == null or utils.cstrcmp(stype.?, "stream") == 0) return h.SOCK_STREAM;
     if (utils.cstrcmp(stype.?, "datagram") != 0) {
-        return pp_format.panicf("expected socket type as :stream or :datagram, got %v", .{argv[@intCast(n)]});
+        return pp_format.panicf("expected socket type as :stream or :datagram, got %v", .{argv[n]});
     }
     return h.SOCK_DGRAM;
 }
@@ -1135,13 +1118,13 @@ pub const AddrInfo = struct {
 /// `janet_get_addrinfo`. Needs `argc >= offset + 2`.
 pub fn getAddrInfo(
     argv: []repr.Value,
-    offset: i32,
+    offset: usize,
     socktype: c_int,
     passive: bool,
 ) raise.Raising(AddrInfo) {
     // Unix socket support - not yet supported on windows.
     if (!windows) {
-        if (args_core.keyeq(argv[@intCast(offset)], "unix") != 0) {
+        if (args_core.keyeq(argv[offset], "unix")) {
             const path = try args_core.getCString(argv, offset + 1);
             const saddr: *net_abi.SockAddrUn = @ptrCast(@alignCast(
                 utils.calloc(1, @sizeOf(net_abi.SockAddrUn)) orelse outOfMemory(@src()),
@@ -1161,7 +1144,7 @@ pub fn getAddrInfo(
                 if (path[0] == '@') {
                     saddr.sun_path[0] = 0;
                     size = @intCast(@offsetOf(net_abi.SockAddrUn, "sun_path") +
-                        @as(usize, @intCast(types.stringHead(path).length)));
+                        @as(usize, @intCast(strings.head(path).length)));
                 }
             }
             return .{ .un = saddr, .size = size };
@@ -1170,7 +1153,7 @@ pub fn getAddrInfo(
 
     // Get host and port.
     const host = try args_core.getCString(argv, offset);
-    const port = if (args_core.checkint(argv[@intCast(offset + 1)]) != 0)
+    const port = if (args_core.checkint(argv[@intCast(offset + 1)]))
         pp_describe.toString(argv[@intCast(offset + 1)])
     else
         try args_core.optCString(argv, offset + 1, null);
@@ -1210,7 +1193,7 @@ pub fn soGetName(sa_any: ?*const anyopaque) raise.Raising(repr.Value) {
         }
         var pair = [2]repr.Value{
             value.fromBytes(std.mem.sliceTo(&buffer, 0), .string),
-            wrapInteger(net_abi.ntohs(sai.sin_port)),
+            wrap.fromInteger(net_abi.ntohs(sai.sin_port)),
         };
         return wrap.fromTuple(tuples.newFrom(&pair));
     }
@@ -1225,7 +1208,7 @@ pub fn soGetName(sa_any: ?*const anyopaque) raise.Raising(repr.Value) {
             }
             var pair = [2]repr.Value{
                 value.fromBytes(std.mem.sliceTo(&buffer, 0), .string),
-                wrapInteger(net_abi.ntohs(sai6.sin6_port)),
+                wrap.fromInteger(net_abi.ntohs(sai6.sin6_port)),
             };
             return wrap.fromTuple(tuples.newFrom(&pair));
         }
@@ -1252,14 +1235,6 @@ pub fn soGetName(sa_any: ?*const anyopaque) raise.Raising(repr.Value) {
     return raise.panic("unknown address family");
 }
 
-/// `janet_wrap_integer`, written out. `janet.h` declares the function beside
-/// its macro and `wrap.c` defines it only for the two nanbox layouts, so a
-/// tagged build has no such symbol. `ev_loop.zig` was the fifth subsystem to
-/// meet this and `FOUND.md` records it.
-inline fn wrapInteger(x: anytype) repr.Value {
-    return wrap.fromNumber(@floatFromInt(x));
-}
-
 // ==========================================================================
 // The four address cfunctions
 // ==========================================================================
@@ -1272,7 +1247,7 @@ inline fn wrapInteger(x: anytype) repr.Value {
 /// copy, and `&copy` is not the address an abstract carries.
 /// Copy `len` bytes of a socket address into a fresh `core/socket-address`.
 fn addressAbstract(from: ?*const anyopaque, len: usize) repr.Value {
-    const abst = abstracts.new(&addressType, len);
+    const abst = abstracts.newBytes(&addressType, len);
     @memcpy(
         @as([*]u8, @ptrCast(abst))[0..len],
         @as([*]const u8, @ptrCast(from))[0..len],
@@ -1282,20 +1257,21 @@ fn addressAbstract(from: ?*const anyopaque, len: usize) repr.Value {
 
 /// `cfun_net_sockaddr`, registered as `net/address`.
 pub fn cfunSockaddr(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"net_connect"})); // connect OR listen
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_connect"})); // connect OR listen
     try args_core.arity(argv, 2, 4);
     const socktype = try socketType(argv, 2);
     // The guard counts to three and the subscript counts to four, so a
     // three-argument call reads a slot it was not given. `FOUND.md` has the
     // entry; the read is inside the fiber's own stack, so it is a wrong answer
     // rather than a fault, and the condition is reproduced as written.
-    const make_arr = @as(i32, @intCast(argv.len)) >= 3 and repr.truthy(argv[3]);
+    const make_arr = argv.len >= 3 and repr.truthy(argv[3]);
     const info = try getAddrInfo(argv, 0, socktype, false);
+    // `net.c` returns from the unix domain arm below without releasing
+    // `info`, and the `janet_array_push` in the loop below it can raise past
+    // its release too. `FOUND.md`; both are closed by this one line.
+    defer info.free();
 
     if (!windows) {
-        // No unix domain socket support on windows yet. `net.c` returns from
-        // here without releasing `info`, which `FOUND.md` records and this
-        // reproduces.
         if (info.un) |saddr| {
             const ret = addressAbstract(saddr, @intCast(info.size));
             if (!make_arr) return ret;
@@ -1311,21 +1287,18 @@ pub fn cfunSockaddr(argv: []repr.Value) raise.Raising(repr.Value) {
         while (iter != null) : (iter = iter.?.ai_next) {
             try arrays.push(arr, addressAbstract(iter.?.ai_addr, @intCast(iter.?.ai_addrlen)));
         }
-        info.free();
         return wrap.fromArray(arr);
     }
 
     // Select first.
     if (info.ai == null) return raise.panic("no data for given address");
-    const ret = addressAbstract(info.ai.?.ai_addr, @intCast(info.ai.?.ai_addrlen));
-    info.free();
-    return ret;
+    return addressAbstract(info.ai.?.ai_addr, @intCast(info.ai.?.ai_addrlen));
 }
 
 /// `cfun_net_address_unpack`, registered as `net/address-unpack`.
 pub fn cfunAddressUnpack(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    return soGetName(try args_core.getAbstract(argv, 0, &addressType));
+    return soGetName(try args_core.getAbstract(anyopaque, argv, 0, &addressType));
 }
 
 /// `cfun_net_getsockname`, registered as `net/localname`.
@@ -1343,7 +1316,7 @@ pub fn cfunGetpeername(argv: []repr.Value) raise.Raising(repr.Value) {
 /// of the behaviour.
 fn endpointName(argv: []repr.Value, comptime peer: bool) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const js: *types.JanetStream = @ptrCast(@alignCast(try args_core.getAbstract(argv, 0, &ev_stream.streamType)));
+    const js: *ev_stream.Stream = try args_core.getAbstract(ev_stream.Stream, argv, 0, &ev_stream.streamType);
     if (js.flags & stream_closed != 0) return raise.panic("stream closed");
     var ss = std.mem.zeroes(h.struct_sockaddr_storage);
     var slen: SockLen = @sizeOf(h.struct_sockaddr_storage);
@@ -1361,7 +1334,7 @@ fn endpointName(argv: []repr.Value, comptime peer: bool) raise.Raising(repr.Valu
 
 /// `(JSock) stream->handle`. A `JanetHandle` is a `void *` on Windows, where a
 /// `SOCKET` is an unsigned integer of the same width, and an `int` elsewhere.
-pub inline fn sockOf(s: *const types.JanetStream) net_abi.JSock {
+pub inline fn sockOf(s: *const ev_stream.Stream) net_abi.JSock {
     return if (windows) @intFromPtr(s.handle) else s.handle;
 }
 
@@ -1376,23 +1349,17 @@ pub fn outOfMemory(comptime where: std.builtin.SourceLocation) noreturn {
         "{s}:{d} - janet out of memory\n",
         .{ where.file, where.line },
     );
-    _ = fwrite(line.ptr, 1, line.len, @ptrCast(@alignCast(stdio.err())));
-    exit(1);
+    _ = c.fwrite(line.ptr, 1, line.len, stdio.err());
+    c.exit(1);
 }
 
-/// `janet_assert`. `io_core.zig` records what differs from the C macro: the
-/// location is this file's, and an embedder's own `JANET_EXIT` override is a
-/// preprocessor substitution no Zig caller can see.
+/// Abort unless `cond`, naming this file's own position.
 pub fn assert(comptime where: std.builtin.SourceLocation, cond: bool, comptime message: []const u8) void {
     if (cond) return;
     const line = std.fmt.comptimePrint(
         "janet abort at {s}:{d}: {s}\n",
         .{ where.file, where.line, message },
     );
-    _ = fwrite(line.ptr, 1, line.len, @ptrCast(@alignCast(stdio.err())));
-    abort();
+    _ = c.fwrite(line.ptr, 1, line.len, stdio.err());
+    c.abort();
 }
-
-extern fn fwrite(ptr: [*]const u8, size: usize, n: usize, stream_handle: ?*types.FILE) callconv(.c) usize;
-extern fn abort() callconv(.c) noreturn;
-extern fn exit(status: c_int) callconv(.c) noreturn;

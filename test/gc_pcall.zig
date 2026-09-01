@@ -15,8 +15,8 @@
 //! stack every frame above it is executing on. `continueNoCheck` roots it by
 //! hand for exactly this reason:
 //!
-//!     const fiber_rooted = c.vm.root_fiber != null;
-//!     if (fiber_rooted) c.janet_gcroot(c.janet_wrap_fiber(fiber));
+//!     const fiber_rooted = vm_state.current().root_fiber != null;
+//!     if (fiber_rooted) gc_alloc.gcroot(wrap.fromFiber(fiber));
 //!
 //! This file is that line's regression test.
 //!
@@ -31,9 +31,8 @@
 //! what stops that.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
-const raise = @import("raise");
+const raise = @import("subsystems").raise;
 const harness = @import("harness.zig");
 
 const gc_mark = @import("subsystems").gc_mark;
@@ -43,10 +42,13 @@ const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const args_core = @import("subsystems").args;
 const registry = @import("subsystems").registry;
+const abi = @import("abi");
+const fibers = @import("subsystems").value.fibers;
+const tables = @import("subsystems").value.tables;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
-var test_env: ?*types.JanetTable = null;
+var test_env: ?*tables.Table = null;
 
 /// How many times `directCase`'s cfunction was reached. Read at the end,
 /// because a cfunction that silently stopped being called would leave every
@@ -62,20 +64,20 @@ var direct_calls: u32 = 0;
 /// Asserted rather than assumed: every assertion below is about a fiber the
 /// collector cannot reach, and each of these is a way for it to become
 /// reachable without anybody noticing.
-fn assertNested(nested: *types.JanetFiber) void {
+fn assertNested(nested: *fibers.Fiber) void {
     const root = harness.vm().root_fiber;
 
     // There is an outer fiber, and it is not this one.
-    assert(root != null);
-    assert(root != nested);
+    expect(root != null);
+    expect(root != nested);
 
     // This one is what the interpreter is running.
-    assert(harness.vm().fiber == nested);
+    expect(harness.vm().fiber == nested);
 
     // And `markFiber`'s `child` walk does not arrive here. It follows the
     // chain to its end, so the whole chain is checked rather than one link.
     var link = root;
-    while (link) |current| : (link = current.child) assert(current != nested);
+    while (link) |current| : (link = current.child) expect(current != nested);
 }
 
 /// Whether `fiber` is in `janet_vm`'s root set.
@@ -84,7 +86,7 @@ fn assertNested(nested: *types.JanetFiber) void {
 /// what makes a `janet_pcall`ed fiber reachable. Read by scanning rather than
 /// by counting, because `janet_gcroot` appends and the position is not a
 /// property anything should depend on.
-fn rooted(fiber: *types.JanetFiber) bool {
+fn rooted(fiber: *fibers.Fiber) bool {
     const v = harness.vm();
     var i: u32 = 0;
     while (i < v.roots.count) : (i += 1) {
@@ -112,14 +114,14 @@ fn cfunCollectHere(argv: []repr.Value) raise.Raising(repr.Value) {
     // The block is the header, so the fiber pointer is what the heap list
     // holds. Both reads bracket the collection.
     const block: ?*anyopaque = @ptrCast(nested);
-    assert(harness.heap.onList(harness.vm().gc.blocks, block));
+    expect(harness.heap.onList(harness.vm().gc.blocks, block));
 
     gc_mark.collect();
 
     // The claim. Without `continueNoCheck`'s rooting this block is unreachable
     // from every root the mark phase has, so the sweep frees it -- along with
     // `fiber->data`, the stack this cfunction's caller is executing on.
-    assert(harness.heap.onList(harness.vm().gc.blocks, block));
+    expect(harness.heap.onList(harness.vm().gc.blocks, block));
 
     // And *why* it survived, which the assertion above cannot say on its own.
     //
@@ -133,7 +135,7 @@ fn cfunCollectHere(argv: []repr.Value) raise.Raising(repr.Value) {
     // `continueNoCheck` roots the fiber precisely because `janet_collect`
     // reaches no other way to it, so a survival with this false would be a
     // survival by accident.
-    assert(rooted(nested));
+    expect(rooted(nested));
 
     direct_calls += 1;
     return wrap.fromNil();
@@ -151,13 +153,13 @@ fn cfunCallViaPcall(argv: []repr.Value) raise.Raising(repr.Value) {
     const function = try args_core.getFunction(argv, 0);
 
     var result: repr.Value = wrap.fromNil();
-    var fiber: ?*types.JanetFiber = null;
+    var fiber: ?*fibers.Fiber = null;
     const sig = vm_entry.pcall(function, 0, null, &result, &fiber);
-    if (sig != types.Signal.ok) return raise.panicv(result);
+    if (sig != abi.Signal.ok) return raise.panicv(result);
     return result;
 }
 
-const cfuns = [_]types.Reg{
+const cfuns = [_]abi.Reg{
     .{ .name = "gcpcall/call", .cfun = raise.stored(&cfunCallViaPcall), .documentation = null },
     .{ .name = "gcpcall/collect-here", .cfun = raise.stored(&cfunCollectHere), .documentation = null },
 };
@@ -166,7 +168,7 @@ const cfuns = [_]types.Reg{
 
 fn eval(source: [*:0]const u8) void {
     var out = wrap.fromNil();
-    assert(core_env.dostring(test_env.?, source, "gc-pcall-test", &out) == 0);
+    expect(core_env.dostring(test_env.?, source, "gc-pcall-test", &out) == 0);
 }
 
 /// The direct case: one nesting, one collection, at a chosen instant.
@@ -181,7 +183,7 @@ fn directCase() void {
         \\  (assert (= :ok (gcpcall/call cb))
         \\    (string "direct round " round)))
     );
-    assert(direct_calls == 2);
+    expect(direct_calls == 2);
 }
 
 /// Single nesting, under collection pressure.

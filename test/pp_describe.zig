@@ -30,7 +30,6 @@
 //! all.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const harness = @import("harness.zig");
 const subsystems = @import("subsystems");
@@ -43,16 +42,18 @@ const vm_lifecycle = @import("subsystems").lifecycle;
 const abstracts = @import("subsystems").value.abstracts;
 const abstract_type = @import("subsystems").abstract_type;
 const pp_describe = @import("subsystems").pp_describe;
+const strings = @import("subsystems").value.strings;
+const tables = @import("subsystems").value.tables;
+const expect = @import("expect.zig").expect;
 
 /// The subject, by import. `toStringB` and `descriptionB` raise — rendering a
 /// value runs an abstract type's `tostring` callback — so a caller outside the
 /// compilation would have to read the report instead of the error.
 const describe = subsystems.pp_describe;
-const AbstractType = subsystems.abstract_type.AbstractType;
 
-var test_env: *types.JanetTable = undefined;
+var test_env: *tables.Table = undefined;
 
-fn checkBuffer(b: *types.JanetBuffer, expected: []const u8) void {
+fn checkBuffer(b: *buffers.Buffer, expected: []const u8) void {
     const count: usize = @intCast(b.count);
     if (count != expected.len or !std.mem.eql(u8, b.slice()[0..count], expected)) {
         std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.slice()[0..count] });
@@ -60,7 +61,7 @@ fn checkBuffer(b: *types.JanetBuffer, expected: []const u8) void {
     }
 }
 
-fn checkString(s: types.JanetString, expected: [*:0]const u8) void {
+fn checkString(s: strings.String, expected: [*:0]const u8) void {
     if (!harness.stringIs(s, expected)) {
         std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, s });
         @panic("string mismatch");
@@ -69,7 +70,7 @@ fn checkString(s: types.JanetString, expected: [*:0]const u8) void {
 
 fn eval(source: [*:0]const u8) repr.Value {
     var out: repr.Value = wrap.fromNil();
-    std.debug.assert(core_env.dostring(test_env, source, "pp-describe-test", &out) == 0);
+    expect(core_env.dostring(test_env, source, "pp-describe-test", &out) == 0);
     return out;
 }
 
@@ -80,7 +81,7 @@ fn eval(source: [*:0]const u8) repr.Value {
 /// buffer first would pass every Janet suite that formats a whole string at
 /// once.
 fn bothAppendRatherThanReplace() !void {
-    const b: *types.JanetBuffer = buffers.new(16);
+    const b: *buffers.Buffer = buffers.new(16);
 
     _ = buffers.pushCstringAbi(b, "head:");
     try describe.toStringB(b, harness.wrapInteger(7));
@@ -99,12 +100,12 @@ fn bothAppendRatherThanReplace() !void {
 /// either reservation is a use-after-free that a sanitizer build would catch
 /// and an ordinary one would not.
 fn aBufferPrintedIntoItself() !void {
-    const b: *types.JanetBuffer = buffers.new(1);
+    const b: *buffers.Buffer = buffers.new(1);
     _ = buffers.pushCstringAbi(b, "ab");
     try describe.toStringB(b, wrap.fromBuffer(b));
     checkBuffer(b, "abab");
 
-    const d: *types.JanetBuffer = buffers.new(1);
+    const d: *buffers.Buffer = buffers.new(1);
     _ = buffers.pushCstringAbi(d, "a\nb");
     try describe.descriptionB(d, wrap.fromBuffer(d));
     // The '@' is pushed before the length is read, so it is escaped as part of
@@ -124,7 +125,7 @@ fn theWholeEscapeTable() !void {
         '"',  '\n', '\r', 0,  0x0C, 0x0B, 0x07, 0x08, 27,
         '\\', '\t', 31,   32, 126,  127,  255,  'z',
     };
-    const b: *types.JanetBuffer = buffers.new(64);
+    const b: *buffers.Buffer = buffers.new(64);
     const width = try describe.escapeString(b, &raw);
 
     checkBuffer(b, "\"\\\"\\n\\r\\0\\f\\v\\a\\b\\e\\\\\\t" ++
@@ -133,8 +134,8 @@ fn theWholeEscapeTable() !void {
     // The width is the column count, which is the byte count here because
     // nothing written is multi-byte: two quotes, eleven two-byte escapes,
     // three four-byte escapes, and three bytes that escape to themselves.
-    std.debug.assert(width == b.count);
-    std.debug.assert(width == 2 + 11 * 2 + 3 * 4 + 3);
+    expect(width == b.count);
+    expect(width == 2 + 11 * 2 + 3 * 4 + 3);
 }
 
 /// A description escapes; a stringification does not. This is the whole
@@ -142,7 +143,7 @@ fn theWholeEscapeTable() !void {
 /// asserted together so a change to one cannot look like a change to both.
 fn descriptionEscapesWhereToStringDoesNot() !void {
     const s = value.fromBytes("a\"b", .string);
-    const b: *types.JanetBuffer = buffers.new(16);
+    const b: *buffers.Buffer = buffers.new(16);
 
     try describe.toStringB(b, s);
     checkBuffer(b, "a\"b");
@@ -164,7 +165,7 @@ fn descriptionEscapesWhereToStringDoesNot() !void {
 
 /// Three properties of the number path, none of which the suites pin.
 fn theNumbers() !void {
-    const b: *types.JanetBuffer = buffers.new(32);
+    const b: *buffers.Buffer = buffers.new(32);
 
     // Negative zero prints without its sign.
     try describe.toStringB(b, wrap.fromNumber(-0.0));
@@ -193,10 +194,8 @@ fn theNumbers() !void {
 /// rendering of everything else; `janet_description` renders in every case.
 /// The three byte types take a path through neither renderer at all, which is
 /// why a change there is invisible to a test that only checks the text.
-/// The two wrappers are reached by *symbol* rather than by import, and
-/// deliberately: `janet_to_string` and `janet_description` are what `janet.h`
-/// declares and what an embedder calls, so the exported abi is the subject
-/// here rather than an obstacle to it. Neither can raise for any value below.
+/// Neither wrapper can raise for any value below, which is why they are called
+/// directly here.
 fn theTwoWrappersDifferWhereTheyShould() void {
     const s = value.fromBytes("a\"b", .string);
     const k = value.fromBytes("kw", .keyword);
@@ -210,7 +209,7 @@ fn theTwoWrappersDifferWhereTheyShould() void {
     checkString(pp_describe.description(n), "12");
 
     // A buffer answers with a copy of its contents rather than with itself.
-    const b: *types.JanetBuffer = buffers.new(4);
+    const b: *buffers.Buffer = buffers.new(4);
     _ = buffers.pushCstringAbi(b, "raw");
     checkString(pp_describe.toString(wrap.fromBuffer(b)), "raw");
     checkString(pp_describe.description(wrap.fromBuffer(b)), "@\"raw\"");
@@ -218,7 +217,7 @@ fn theTwoWrappersDifferWhereTheyShould() void {
     // A symbol is returned as it stands, without a copy: the identity is the
     // point, since symbols are interned.
     const sym = value.fromBytes("sym", .symbol);
-    std.debug.assert(pp_describe.toString(sym) == wrap.toSymbol(sym));
+    expect(pp_describe.toString(sym) == wrap.toSymbol(sym));
 }
 
 // ------------------------------------------------------------ the callables
@@ -227,7 +226,7 @@ fn theTwoWrappersDifferWhereTheyShould() void {
 /// has one. An unregistered one falls through to the pointer description,
 /// which is the same fall-through an anonymous function takes.
 fn theCfunctionsAndFunctions() !void {
-    const b: *types.JanetBuffer = buffers.new(64);
+    const b: *buffers.Buffer = buffers.new(64);
 
     try describe.descriptionB(b, eval("print"));
     checkBuffer(b, "<cfunction print>");
@@ -245,9 +244,9 @@ fn theCfunctionsAndFunctions() !void {
 
     b.count = 0;
     try describe.descriptionB(b, eval("(fn [] nil)"));
-    std.debug.assert(b.count > 11);
-    std.debug.assert(std.mem.eql(u8, b.slice()[0..12], "<function 0x"));
-    std.debug.assert(b.slice()[@intCast(b.count - 1)] == '>');
+    expect(b.count > 11);
+    expect(std.mem.eql(u8, b.slice()[0..12], "<function 0x"));
+    expect(b.slice()[@intCast(b.count - 1)] == '>');
 }
 
 /// A pointer description truncates the type name at 32 bytes, which keeps the
@@ -270,15 +269,15 @@ const long_name = abstract_type.define(anyopaque, .{
 });
 
 fn thePointerDescriptionTruncatesItsTitle() !void {
-    const p = abstracts.new(&long_name, 8);
-    const b: *types.JanetBuffer = buffers.new(64);
+    const p = abstracts.newBytes(&long_name, 8);
+    const b: *buffers.Buffer = buffers.new(64);
 
     try describe.descriptionB(b, wrap.fromAbstract(p));
-    std.debug.assert(b.slice()[0] == '<');
-    std.debug.assert(b.slice()[@intCast(b.count - 1)] == '>');
+    expect(b.slice()[0] == '<');
+    expect(b.slice()[@intCast(b.count - 1)] == '>');
     // '<' + exactly 32 title bytes + " 0x". The name is 45 bytes long, so the
     // cut lands mid-word and that is the point.
-    std.debug.assert(std.mem.eql(u8, b.slice()[1..36], "abstract/with-an-extremely-long- 0x"));
+    expect(std.mem.eql(u8, b.slice()[1..36], "abstract/with-an-extremely-long- 0x"));
 }
 
 /// An abstract type with a `tostring` callback is wrapped in angle brackets
@@ -287,7 +286,7 @@ fn thePointerDescriptionTruncatesItsTitle() !void {
 /// only one of them.
 fn anAbstractWithATostring() !void {
     const val = eval("(int/s64 -5)");
-    const b: *types.JanetBuffer = buffers.new(32);
+    const b: *buffers.Buffer = buffers.new(32);
 
     try describe.toStringB(b, val);
     checkBuffer(b, "-5");

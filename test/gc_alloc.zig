@@ -27,7 +27,6 @@
 //! had to be built to get the same guarantee for the value heads.
 
 const std = @import("std");
-const types = @import("types");
 const constants = @import("constants");
 const harness = @import("harness.zig");
 const gc_alloc = @import("subsystems").gc_alloc;
@@ -36,12 +35,14 @@ const gc_mark = @import("subsystems").gc_mark;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const arrays = @import("subsystems").value.arrays;
+const abi = @import("abi");
+const expect = @import("expect.zig").expect;
 
 /// The scratch header sits exactly one header below the pointer the caller
 /// holds. That relationship is the whole allocator: `janet_srealloc`,
 /// `janet_sfree` and `janet_sfinalizer` all recover it by subtraction.
-fn headerOf(memory: ?*anyopaque) *types.JanetScratch {
-    return @ptrFromInt(@intFromPtr(memory) - @sizeOf(types.JanetScratch));
+fn headerOf(memory: ?*anyopaque) *gc_alloc.JanetScratch {
+    return @ptrFromInt(@intFromPtr(memory) - @sizeOf(gc_alloc.JanetScratch));
 }
 
 /// Where the runtime recorded `memory`'s header, or null if it did not.
@@ -54,14 +55,14 @@ fn scratchIndexOf(memory: ?*anyopaque) ?usize {
     return null;
 }
 
-/// `state.h` types both heap list heads as `void *`, so list identity is
-/// compared as an opaque pointer and cast only where a field is wanted.
-fn asBlock(pointer: ?*anyopaque) *types.JanetGCObject {
-    return @ptrCast(@alignCast(pointer.?));
+/// Both heap list heads are `?*JanetGCObject`, so list identity is an ordinary
+/// pointer comparison and the head's own fields are reachable without a cast.
+fn asBlock(pointer: ?*abi.JanetGCObject) *abi.JanetGCObject {
+    return pointer.?;
 }
 
-fn nextOf(block: *types.JanetGCObject) ?*anyopaque {
-    return @ptrCast(block.data.next);
+fn nextOf(block: *abi.JanetGCObject) ?*abi.JanetGCObject {
+    return block.data.next;
 }
 
 /// Undo one allocation, restoring every field it moved. Only valid for the
@@ -75,14 +76,14 @@ fn unlinkHead(weak: bool, size: usize) void {
     }
     harness.vm().gc.block_count -= 1;
     harness.vm().gc.next_collection -= size;
-    utils.free(head);
+    utils.free(@ptrCast(head));
 }
 
-fn typeOf(block: *types.JanetGCObject) types.MemoryType {
-    return block.memoryType();
+fn typeOf(block: *abi.JanetGCObject) gc_alloc.MemoryType {
+    return gc_alloc.memoryTypeOf(block);
 }
 
-fn isReachable(block: *types.JanetGCObject) bool {
+fn isReachable(block: *abi.JanetGCObject) bool {
     return block.flags & constants.JANET_MEM_REACHABLE != 0;
 }
 
@@ -94,11 +95,11 @@ fn theGcPressure() void {
     const blocks = harness.vm().gc.block_count;
 
     gc_alloc.gcpressure(0);
-    std.debug.assert(harness.vm().gc.next_collection == before);
+    expect(harness.vm().gc.next_collection == before);
 
     gc_alloc.gcpressure(4096);
-    std.debug.assert(harness.vm().gc.next_collection == before + 4096);
-    std.debug.assert(harness.vm().gc.block_count == blocks);
+    expect(harness.vm().gc.next_collection == before + 4096);
+    expect(harness.vm().gc.block_count == blocks);
 
     harness.vm().gc.next_collection = before;
 }
@@ -114,32 +115,32 @@ fn aNewBlockGoesOnTheNormalHeap() void {
     const next = harness.vm().gc.next_collection;
     const weak = harness.vm().gc.weak_blocks;
 
-    const block: *types.JanetGCObject = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.array, size).?));
-    std.debug.assert(harness.vm().gc.blocks == @as(?*anyopaque, block));
-    std.debug.assert(nextOf(block) == previous);
-    std.debug.assert(typeOf(block) == types.MemoryType.array);
+    const block = gc_alloc.gcallocBytes(gc_alloc.MemoryType.array, size);
+    expect(harness.vm().gc.blocks == block);
+    expect(nextOf(block) == previous);
+    expect(typeOf(block) == gc_alloc.MemoryType.array);
     // The whole word, not only the type byte: a fresh block carries no flags.
-    std.debug.assert(block.flags == @intFromEnum(types.MemoryType.array));
-    std.debug.assert(!isReachable(block));
-    std.debug.assert(harness.vm().gc.block_count == count + 1);
-    std.debug.assert(harness.vm().gc.next_collection == next + size);
-    std.debug.assert(harness.vm().gc.weak_blocks == weak);
+    expect(block.flags == @intFromEnum(gc_alloc.MemoryType.array));
+    expect(!isReachable(block));
+    expect(harness.vm().gc.block_count == count + 1);
+    expect(harness.vm().gc.next_collection == next + size);
+    expect(harness.vm().gc.weak_blocks == weak);
 
     unlinkHead(false, size);
-    std.debug.assert(harness.vm().gc.blocks == previous);
-    std.debug.assert(harness.vm().gc.block_count == count);
-    std.debug.assert(harness.vm().gc.next_collection == next);
+    expect(harness.vm().gc.blocks == previous);
+    expect(harness.vm().gc.block_count == count);
+    expect(harness.vm().gc.next_collection == next);
 }
 
 /// The four weak types are the ones at or above `JANET_MEMORY_TABLE_WEAKK`,
 /// and the boundary is exactly that: the split is a numeric comparison against
 /// the first weak constant, not a table of types.
 fn theWeakTypesGoOnTheWeakHeap() void {
-    const weak_types = [_]types.MemoryType{
-        types.MemoryType.table_weakk,
-        types.MemoryType.table_weakv,
-        types.MemoryType.table_weakkv,
-        types.MemoryType.array_weak,
+    const weak_types = [_]gc_alloc.MemoryType{
+        gc_alloc.MemoryType.table_weakk,
+        gc_alloc.MemoryType.table_weakv,
+        gc_alloc.MemoryType.table_weakkv,
+        gc_alloc.MemoryType.array_weak,
     };
 
     for (weak_types) |memory_type| {
@@ -148,16 +149,16 @@ fn theWeakTypesGoOnTheWeakHeap() void {
         const previous = harness.vm().gc.weak_blocks;
         const count = harness.vm().gc.block_count;
 
-        const block: *types.JanetGCObject = @ptrCast(@alignCast(gc_alloc.gcalloc(memory_type, size).?));
-        std.debug.assert(harness.vm().gc.weak_blocks == @as(?*anyopaque, block));
-        std.debug.assert(nextOf(block) == previous);
-        std.debug.assert(typeOf(block) == memory_type);
-        std.debug.assert(harness.vm().gc.blocks == strong);
-        std.debug.assert(harness.vm().gc.block_count == count + 1);
+        const block = gc_alloc.gcallocBytes(memory_type, size);
+        expect(harness.vm().gc.weak_blocks == block);
+        expect(nextOf(block) == previous);
+        expect(typeOf(block) == memory_type);
+        expect(harness.vm().gc.blocks == strong);
+        expect(harness.vm().gc.block_count == count + 1);
 
         unlinkHead(true, size);
-        std.debug.assert(harness.vm().gc.weak_blocks == previous);
-        std.debug.assert(harness.vm().gc.block_count == count);
+        expect(harness.vm().gc.weak_blocks == previous);
+        expect(harness.vm().gc.block_count == count);
     }
 }
 
@@ -165,20 +166,20 @@ fn theWeakTypesGoOnTheWeakHeap() void {
 /// `JANET_MEMORY_NONE` in particular, which is zero and therefore the value a
 /// caller reaches by mistake.
 fn theStrongTypesGoOnTheNormalHeap() void {
-    const strong_types = [_]types.MemoryType{
-        types.MemoryType.none,
-        types.MemoryType.string,
-        types.MemoryType.table,
-        types.MemoryType.funcdef,
-        types.MemoryType.threaded_abstract,
+    const strong_types = [_]gc_alloc.MemoryType{
+        gc_alloc.MemoryType.none,
+        gc_alloc.MemoryType.string,
+        gc_alloc.MemoryType.table,
+        gc_alloc.MemoryType.funcdef,
+        gc_alloc.MemoryType.threaded_abstract,
     };
 
     for (strong_types) |memory_type| {
         const weak = harness.vm().gc.weak_blocks;
-        const block: *types.JanetGCObject = @ptrCast(@alignCast(gc_alloc.gcalloc(memory_type, 64).?));
-        std.debug.assert(harness.vm().gc.blocks == @as(?*anyopaque, block));
-        std.debug.assert(harness.vm().gc.weak_blocks == weak);
-        std.debug.assert(typeOf(block) == memory_type);
+        const block = gc_alloc.gcallocBytes(memory_type, 64);
+        expect(harness.vm().gc.blocks == block);
+        expect(harness.vm().gc.weak_blocks == weak);
+        expect(typeOf(block) == memory_type);
         unlinkHead(false, 64);
     }
 }
@@ -187,19 +188,19 @@ fn theStrongTypesGoOnTheNormalHeap() void {
 /// header's `next`, newest first.
 fn allocationsChainNewestFirst() void {
     const previous = harness.vm().gc.blocks;
-    const first: *types.JanetGCObject = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.none, 32).?));
-    const second: *types.JanetGCObject = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.none, 32).?));
-    const third: *types.JanetGCObject = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.none, 32).?));
+    const first = gc_alloc.gcallocBytes(gc_alloc.MemoryType.none, 32);
+    const second = gc_alloc.gcallocBytes(gc_alloc.MemoryType.none, 32);
+    const third = gc_alloc.gcallocBytes(gc_alloc.MemoryType.none, 32);
 
-    std.debug.assert(harness.vm().gc.blocks == @as(?*anyopaque, third));
-    std.debug.assert(nextOf(third) == @as(?*anyopaque, second));
-    std.debug.assert(nextOf(second) == @as(?*anyopaque, first));
-    std.debug.assert(nextOf(first) == previous);
+    expect(harness.vm().gc.blocks == third);
+    expect(nextOf(third) == second);
+    expect(nextOf(second) == first);
+    expect(nextOf(first) == previous);
 
     unlinkHead(false, 32);
     unlinkHead(false, 32);
     unlinkHead(false, 32);
-    std.debug.assert(harness.vm().gc.blocks == previous);
+    expect(harness.vm().gc.blocks == previous);
 }
 
 /// Rooting appends. The root set is a multiset: n roots need n unroots.
@@ -209,19 +210,19 @@ fn theRootSetIsAMultiset() void {
     const val = wrap.fromArray(array);
 
     gc_alloc.gcroot(val);
-    std.debug.assert(harness.vm().roots.count == base + 1);
-    std.debug.assert(wrap.toArray(harness.vm().roots.at(base).*) == array);
+    expect(harness.vm().roots.count == base + 1);
+    expect(wrap.toArray(harness.vm().roots.at(base).*) == array);
 
     gc_alloc.gcroot(val);
-    std.debug.assert(harness.vm().roots.count == base + 2);
-    std.debug.assert(wrap.toArray(harness.vm().roots.at(base + 1).*) == array);
+    expect(harness.vm().roots.count == base + 2);
+    expect(wrap.toArray(harness.vm().roots.at(base + 1).*) == array);
 
-    std.debug.assert(gc_alloc.gcunroot(val) == 1);
-    std.debug.assert(harness.vm().roots.count == base + 1);
-    std.debug.assert(gc_alloc.gcunroot(val) == 1);
-    std.debug.assert(harness.vm().roots.count == base);
-    std.debug.assert(gc_alloc.gcunroot(val) == 0);
-    std.debug.assert(harness.vm().roots.count == base);
+    expect(gc_alloc.gcunroot(val));
+    expect(harness.vm().roots.count == base + 1);
+    expect(gc_alloc.gcunroot(val));
+    expect(harness.vm().roots.count == base);
+    expect(!gc_alloc.gcunroot(val));
+    expect(harness.vm().roots.count == base);
 }
 
 /// Roots are matched by pointer identity, not by value equality. Two arrays
@@ -232,10 +233,10 @@ fn rootsAreMatchedByPointer() void {
     const b = wrap.fromArray(arrays.new(0));
 
     gc_alloc.gcroot(a);
-    std.debug.assert(gc_alloc.gcunroot(b) == 0);
-    std.debug.assert(harness.vm().roots.count == base + 1);
-    std.debug.assert(gc_alloc.gcunroot(a) == 1);
-    std.debug.assert(harness.vm().roots.count == base);
+    expect(!gc_alloc.gcunroot(b));
+    expect(harness.vm().roots.count == base + 1);
+    expect(gc_alloc.gcunroot(a));
+    expect(harness.vm().roots.count == base);
 }
 
 /// The three types the collector never traces compare equal to any value of
@@ -246,23 +247,23 @@ fn immediatesMatchAnyValueOfTheirType() void {
     const base = harness.vm().roots.count;
 
     gc_alloc.gcroot(wrap.fromNumber(1.0));
-    std.debug.assert(gc_alloc.gcunroot(wrap.fromNumber(9999.0)) == 1);
-    std.debug.assert(harness.vm().roots.count == base);
+    expect(gc_alloc.gcunroot(wrap.fromNumber(9999.0)));
+    expect(harness.vm().roots.count == base);
 
     gc_alloc.gcroot(wrap.fromTrue());
-    std.debug.assert(gc_alloc.gcunroot(wrap.fromFalse()) == 1);
-    std.debug.assert(harness.vm().roots.count == base);
+    expect(gc_alloc.gcunroot(wrap.fromFalse()));
+    expect(harness.vm().roots.count == base);
 
     gc_alloc.gcroot(wrap.fromNil());
-    std.debug.assert(gc_alloc.gcunroot(wrap.fromNil()) == 1);
-    std.debug.assert(harness.vm().roots.count == base);
+    expect(gc_alloc.gcunroot(wrap.fromNil()));
+    expect(harness.vm().roots.count == base);
 
     // Different types never match, immediate or not.
     gc_alloc.gcroot(wrap.fromNumber(1.0));
-    std.debug.assert(gc_alloc.gcunroot(wrap.fromTrue()) == 0);
-    std.debug.assert(gc_alloc.gcunroot(wrap.fromNil()) == 0);
-    std.debug.assert(gc_alloc.gcunroot(wrap.fromNumber(0.0)) == 1);
-    std.debug.assert(harness.vm().roots.count == base);
+    expect(!gc_alloc.gcunroot(wrap.fromTrue()));
+    expect(!gc_alloc.gcunroot(wrap.fromNil()));
+    expect(gc_alloc.gcunroot(wrap.fromNumber(0.0)));
+    expect(harness.vm().roots.count == base);
 }
 
 /// Unrooting fills the vacated slot from the top of the set, so the order of
@@ -277,14 +278,14 @@ fn unrootingSwapsFromTheTop() void {
     gc_alloc.gcroot(wrap.fromArray(b));
     gc_alloc.gcroot(wrap.fromArray(d));
 
-    std.debug.assert(gc_alloc.gcunroot(wrap.fromArray(a)) == 1);
-    std.debug.assert(harness.vm().roots.count == base + 2);
-    std.debug.assert(wrap.toArray(harness.vm().roots.at(base).*) == d);
-    std.debug.assert(wrap.toArray(harness.vm().roots.at(base + 1).*) == b);
+    expect(gc_alloc.gcunroot(wrap.fromArray(a)));
+    expect(harness.vm().roots.count == base + 2);
+    expect(wrap.toArray(harness.vm().roots.at(base).*) == d);
+    expect(wrap.toArray(harness.vm().roots.at(base + 1).*) == b);
 
-    std.debug.assert(gc_alloc.gcunroot(wrap.fromArray(b)) == 1);
-    std.debug.assert(gc_alloc.gcunroot(wrap.fromArray(d)) == 1);
-    std.debug.assert(harness.vm().roots.count == base);
+    expect(gc_alloc.gcunroot(wrap.fromArray(b)));
+    expect(gc_alloc.gcunroot(wrap.fromArray(d)));
+    expect(harness.vm().roots.count == base);
 }
 
 /// `janet_gcunrootall` does not remove every rooting, despite what Janet's
@@ -297,16 +298,16 @@ fn unrootAllHalves() void {
         const val = wrap.fromArray(arrays.new(0));
 
         for (0..n) |_| gc_alloc.gcroot(val);
-        std.debug.assert(harness.vm().roots.count == base + n);
+        expect(harness.vm().roots.count == base + n);
 
-        std.debug.assert(gc_alloc.gcunrootall(val) == 1);
-        std.debug.assert(harness.vm().roots.count == base + n / 2);
+        expect(gc_alloc.gcunrootall(val));
+        expect(harness.vm().roots.count == base + n / 2);
 
         // What survives really is still rooted, and can be removed one at a
         // time.
-        for (0..n / 2) |_| std.debug.assert(gc_alloc.gcunroot(val) == 1);
-        std.debug.assert(harness.vm().roots.count == base);
-        std.debug.assert(gc_alloc.gcunrootall(val) == 0);
+        for (0..n / 2) |_| expect(gc_alloc.gcunroot(val));
+        expect(harness.vm().roots.count == base);
+        expect(!gc_alloc.gcunrootall(val));
     }
 }
 
@@ -317,10 +318,10 @@ fn unrootAllOfAnAbsentValue() void {
     const b = wrap.fromArray(arrays.new(0));
 
     gc_alloc.gcroot(a);
-    std.debug.assert(gc_alloc.gcunrootall(b) == 0);
-    std.debug.assert(harness.vm().roots.count == base + 1);
-    std.debug.assert(gc_alloc.gcunroot(a) == 1);
-    std.debug.assert(harness.vm().roots.count == base);
+    expect(!gc_alloc.gcunrootall(b));
+    expect(harness.vm().roots.count == base + 1);
+    expect(gc_alloc.gcunroot(a));
+    expect(harness.vm().roots.count == base);
 }
 
 /// Growth is by doubling the required count, and the roots survive it.
@@ -337,15 +338,15 @@ fn theRootSetGrows() void {
 
     gc_alloc.gcroot(val);
     added += 1;
-    std.debug.assert(harness.vm().roots.capacity == 2 * (at_capacity + 1));
-    std.debug.assert(harness.vm().roots.count == base + added);
+    expect(harness.vm().roots.capacity == 2 * (at_capacity + 1));
+    expect(harness.vm().roots.count == base + added);
     for (0..added) |index| {
-        std.debug.assert(wrap.toArray(harness.vm().roots.at(base + index).*) ==
+        expect(wrap.toArray(harness.vm().roots.at(base + index).*) ==
             wrap.toArray(val));
     }
 
-    for (0..added) |_| std.debug.assert(gc_alloc.gcunroot(val) == 1);
-    std.debug.assert(harness.vm().roots.count == base);
+    for (0..added) |_| expect(gc_alloc.gcunroot(val));
+    expect(harness.vm().roots.count == base);
 }
 
 /// The handle is the depth to restore, not a token to match. Unlocking with an
@@ -355,24 +356,24 @@ fn theSuspendCounterNests() void {
     const base = harness.vm().gc.suspend_count;
 
     const outer = gc_alloc.gclock();
-    std.debug.assert(outer == base);
-    std.debug.assert(harness.vm().gc.suspend_count == base + 1);
+    expect(outer == base);
+    expect(harness.vm().gc.suspend_count == base + 1);
 
     const inner = gc_alloc.gclock();
-    std.debug.assert(inner == base + 1);
-    std.debug.assert(harness.vm().gc.suspend_count == base + 2);
+    expect(inner == base + 1);
+    expect(harness.vm().gc.suspend_count == base + 2);
 
     gc_alloc.gcunlock(inner);
-    std.debug.assert(harness.vm().gc.suspend_count == base + 1);
+    expect(harness.vm().gc.suspend_count == base + 1);
     gc_alloc.gcunlock(outer);
-    std.debug.assert(harness.vm().gc.suspend_count == base);
+    expect(harness.vm().gc.suspend_count == base);
 
     const held = gc_alloc.gclock();
     _ = gc_alloc.gclock();
     _ = gc_alloc.gclock();
-    std.debug.assert(harness.vm().gc.suspend_count == base + 3);
+    expect(harness.vm().gc.suspend_count == base + 3);
     gc_alloc.gcunlock(held);
-    std.debug.assert(harness.vm().gc.suspend_count == base);
+    expect(harness.vm().gc.suspend_count == base);
 }
 
 /// A suspended collector does not collect. This is the one property the
@@ -382,10 +383,10 @@ fn aSuspendedCollectorDoesNotCollect() void {
     const handle = gc_alloc.gclock();
     harness.vm().gc.next_collection = 12345;
     gc_mark.collect();
-    std.debug.assert(harness.vm().gc.next_collection == 12345);
+    expect(harness.vm().gc.next_collection == 12345);
     gc_alloc.gcunlock(handle);
     gc_mark.collect();
-    std.debug.assert(harness.vm().gc.next_collection == 0);
+    expect(harness.vm().gc.next_collection == 0);
 }
 
 var finalizer_calls: usize = 0;
@@ -405,15 +406,15 @@ fn recordFinalizer(memory: ?*anyopaque) callconv(.c) void {
 fn smallocRegistersItsBlock() void {
     const base = harness.vm().scratch.count;
 
-    const p: [*]u8 = @ptrCast(gc_alloc.smalloc(40).?);
-    std.debug.assert(harness.vm().scratch.count == base + 1);
-    std.debug.assert(harness.vm().scratch.at(base).* == headerOf(p));
-    std.debug.assert(headerOf(p).finalize == null);
-    std.debug.assert(@intFromPtr(p) % @alignOf(c_longlong) == 0);
+    const p: [*]u8 = @ptrCast(gc_alloc.smalloc(40));
+    expect(harness.vm().scratch.count == base + 1);
+    expect(harness.vm().scratch.at(base).* == headerOf(p));
+    expect(headerOf(p).finalize == null);
+    expect(@intFromPtr(p) % @alignOf(c_longlong) == 0);
 
     @memset(p[0..40], 'x');
     gc_alloc.sfree(p);
-    std.debug.assert(harness.vm().scratch.count == base);
+    expect(harness.vm().scratch.count == base);
 }
 
 /// `janet_scalloc` zeroes, and the zero-length cases still produce a
@@ -422,21 +423,21 @@ fn scallocZeroes() void {
     const base = harness.vm().scratch.count;
 
     const p: [*]u8 = @ptrCast(gc_alloc.scalloc(9, 7).?);
-    std.debug.assert(harness.vm().scratch.count == base + 1);
-    for (p[0..63]) |byte| std.debug.assert(byte == 0);
+    expect(harness.vm().scratch.count == base + 1);
+    for (p[0..63]) |byte| expect(byte == 0);
 
     const empty = gc_alloc.scalloc(0, 16);
-    std.debug.assert(empty != null);
-    std.debug.assert(harness.vm().scratch.count == base + 2);
+    expect(empty != null);
+    expect(harness.vm().scratch.count == base + 2);
 
     const empty2 = gc_alloc.scalloc(16, 0);
-    std.debug.assert(empty2 != null);
-    std.debug.assert(harness.vm().scratch.count == base + 3);
+    expect(empty2 != null);
+    expect(harness.vm().scratch.count == base + 3);
 
     gc_alloc.sfree(empty2);
     gc_alloc.sfree(empty);
     gc_alloc.sfree(p);
-    std.debug.assert(harness.vm().scratch.count == base);
+    expect(harness.vm().scratch.count == base);
 }
 
 /// `janet_srealloc` keeps the block in the same table slot, preserves the
@@ -446,32 +447,32 @@ fn sreallocKeepsItsSlot() void {
     const base = harness.vm().scratch.count;
 
     const fresh = gc_alloc.srealloc(null, 24);
-    std.debug.assert(fresh != null);
-    std.debug.assert(harness.vm().scratch.count == base + 1);
-    std.debug.assert(scratchIndexOf(fresh).? == base);
+    expect(fresh != null);
+    expect(harness.vm().scratch.count == base + 1);
+    expect(scratchIndexOf(fresh).? == base);
     gc_alloc.sfree(fresh);
 
-    const p: [*]u8 = @ptrCast(gc_alloc.smalloc(16).?);
+    const p: [*]u8 = @ptrCast(gc_alloc.smalloc(16));
     @memcpy(p[0..16], "0123456789abcde\x00");
     gc_alloc.sfinalizer(p, recordFinalizer);
     const slot = scratchIndexOf(p).?;
 
     const grown: [*]u8 = @ptrCast(gc_alloc.srealloc(p, 4096).?);
-    std.debug.assert(harness.vm().scratch.count == base + 1);
-    std.debug.assert(scratchIndexOf(grown).? == slot);
-    std.debug.assert(std.mem.eql(u8, grown[0..15], "0123456789abcde"));
-    std.debug.assert(headerOf(grown).finalize == recordFinalizer);
+    expect(harness.vm().scratch.count == base + 1);
+    expect(scratchIndexOf(grown).? == slot);
+    expect(std.mem.eql(u8, grown[0..15], "0123456789abcde"));
+    expect(headerOf(grown).finalize == recordFinalizer);
 
     const shrunk: [*]u8 = @ptrCast(gc_alloc.srealloc(grown, 8).?);
-    std.debug.assert(harness.vm().scratch.count == base + 1);
-    std.debug.assert(scratchIndexOf(shrunk).? == slot);
-    std.debug.assert(std.mem.eql(u8, shrunk[0..8], "01234567"));
+    expect(harness.vm().scratch.count == base + 1);
+    expect(scratchIndexOf(shrunk).? == slot);
+    expect(std.mem.eql(u8, shrunk[0..8], "01234567"));
 
     finalizer_calls = 0;
     gc_alloc.sfree(shrunk);
-    std.debug.assert(finalizer_calls == 1);
-    std.debug.assert(finalizer_args[0] == @as(?*anyopaque, @ptrCast(shrunk)));
-    std.debug.assert(harness.vm().scratch.count == base);
+    expect(finalizer_calls == 1);
+    expect(finalizer_args[0] == @as(?*anyopaque, @ptrCast(shrunk)));
+    expect(harness.vm().scratch.count == base);
 }
 
 /// Freeing fills the vacated table slot from the top, the same way the root
@@ -482,19 +483,19 @@ fn sfreeSwapsFromTheTop() void {
     const a = gc_alloc.smalloc(8);
     const b = gc_alloc.smalloc(8);
     const d = gc_alloc.smalloc(8);
-    std.debug.assert(harness.vm().scratch.count == base + 3);
+    expect(harness.vm().scratch.count == base + 3);
 
     gc_alloc.sfree(null);
-    std.debug.assert(harness.vm().scratch.count == base + 3);
+    expect(harness.vm().scratch.count == base + 3);
 
     gc_alloc.sfree(a);
-    std.debug.assert(harness.vm().scratch.count == base + 2);
-    std.debug.assert(scratchIndexOf(d).? == base);
-    std.debug.assert(scratchIndexOf(b).? == base + 1);
+    expect(harness.vm().scratch.count == base + 2);
+    expect(scratchIndexOf(d).? == base);
+    expect(scratchIndexOf(b).? == base + 1);
 
     gc_alloc.sfree(b);
     gc_alloc.sfree(d);
-    std.debug.assert(harness.vm().scratch.count == base);
+    expect(harness.vm().scratch.count == base);
 }
 
 /// A finalizer runs once, with the caller's pointer rather than the header.
@@ -504,15 +505,15 @@ fn aScratchFinalizerRunsOnce() void {
     var p = gc_alloc.smalloc(8);
     finalizer_calls = 0;
     gc_alloc.sfree(p);
-    std.debug.assert(finalizer_calls == 0);
+    expect(finalizer_calls == 0);
 
     p = gc_alloc.smalloc(8);
     gc_alloc.sfinalizer(p, recordFinalizer);
     finalizer_calls = 0;
     gc_alloc.sfree(p);
-    std.debug.assert(finalizer_calls == 1);
-    std.debug.assert(finalizer_args[0] == p);
-    std.debug.assert(harness.vm().scratch.count == base);
+    expect(finalizer_calls == 1);
+    expect(finalizer_args[0] == p);
+    expect(harness.vm().scratch.count == base);
 }
 
 /// The table grows to twice what is needed plus two, and everything already in
@@ -526,23 +527,23 @@ fn theScratchTableGrows() void {
         held[count] = gc_alloc.smalloc(8);
         @memset(@as([*]u8, @ptrCast(held[count].?))[0..8], @intCast(count));
         count += 1;
-        std.debug.assert(count < held.len);
+        expect(count < held.len);
     }
     const at_capacity = harness.vm().scratch.capacity;
 
     held[count] = gc_alloc.smalloc(8);
     @memset(@as([*]u8, @ptrCast(held[count].?))[0..8], @intCast(count));
     count += 1;
-    std.debug.assert(harness.vm().scratch.capacity == 2 * at_capacity + 2);
-    std.debug.assert(harness.vm().scratch.count == base + count);
+    expect(harness.vm().scratch.capacity == 2 * at_capacity + 2);
+    expect(harness.vm().scratch.count == base + count);
 
     for (0..count) |index| {
-        std.debug.assert(scratchIndexOf(held[index]) != null);
+        expect(scratchIndexOf(held[index]) != null);
         const bytes: [*]u8 = @ptrCast(held[index].?);
-        for (bytes[0..8]) |byte| std.debug.assert(byte == @as(u8, @intCast(index)));
+        for (bytes[0..8]) |byte| expect(byte == @as(u8, @intCast(index)));
     }
     for (0..count) |index| gc_alloc.sfree(held[index]);
-    std.debug.assert(harness.vm().scratch.count == base);
+    expect(harness.vm().scratch.count == base);
 }
 
 /// Releasing everything runs each finalizer and empties the table. This is what
@@ -551,7 +552,7 @@ fn theScratchTableGrows() void {
 /// correct.
 fn freeAllScratchRunsEveryFinalizer() void {
     gc_mark.collect();
-    std.debug.assert(harness.vm().scratch.count == 0);
+    expect(harness.vm().scratch.count == 0);
 
     const a = gc_alloc.smalloc(8);
     _ = gc_alloc.smalloc(8);
@@ -561,10 +562,10 @@ fn freeAllScratchRunsEveryFinalizer() void {
 
     finalizer_calls = 0;
     gc_alloc.freeAllScratch(&harness.vm().scratch);
-    std.debug.assert(harness.vm().scratch.count == 0);
-    std.debug.assert(finalizer_calls == 2);
-    std.debug.assert(finalizer_args[0] == a);
-    std.debug.assert(finalizer_args[1] == d);
+    expect(harness.vm().scratch.count == 0);
+    expect(finalizer_calls == 2);
+    expect(finalizer_args[0] == a);
+    expect(finalizer_args[1] == d);
 }
 
 /// And a collection does the same, on its way out.
@@ -573,9 +574,9 @@ fn aCollectionFreesScratch() void {
     gc_alloc.sfinalizer(p, recordFinalizer);
     finalizer_calls = 0;
     gc_mark.collect();
-    std.debug.assert(finalizer_calls == 1);
-    std.debug.assert(finalizer_args[0] == p);
-    std.debug.assert(harness.vm().scratch.count == 0);
+    expect(finalizer_calls == 1);
+    expect(finalizer_args[0] == p);
+    expect(harness.vm().scratch.count == 0);
 }
 
 pub fn run() void {

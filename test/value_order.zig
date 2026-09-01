@@ -2,9 +2,9 @@
 //! value.
 //!
 //! These three functions are one contract rather than three, and the file is
-//! organised that way. A hash table needs `janet_hash` and `janet_equals` to
-//! agree; the Robin Hood insert in `struct_table.zig` needs `janet_compare` to
-//! totally order whatever `janet_hash` collides. So the last section runs a
+//! organised that way. A hash table needs the hash and the equality to agree;
+//! a struct's Robin Hood insert needs the comparison to totally order whatever
+//! the hash collides. So the last section runs a
 //! corpus of values that covers every `repr.Tag` through all three at once and
 //! asserts the relations *between* them, rather than checking each function in
 //! isolation and hoping.
@@ -34,7 +34,6 @@
 //! `AbstractType`. Fifteen `CONTRACT_AT` uses went for free.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const harness = @import("harness.zig");
@@ -53,8 +52,8 @@ const vm_lifecycle = @import("subsystems").lifecycle;
 const arrays = @import("subsystems").value.arrays;
 const buffers = @import("subsystems").value.buffers;
 const abstracts = @import("subsystems").value.abstracts;
-const AbstractType = abstract_type.AbstractType;
-const assert = std.debug.assert;
+const abi = @import("abi");
+const expect = @import("expect.zig").expect;
 
 // ----------------------------------------------------------------- helpers
 
@@ -82,30 +81,30 @@ fn intv(i: i32) repr.Value {
 fn mktuple(items: []const repr.Value, bracket: bool) repr.Value {
     const t = tuples.begin(@intCast(items.len));
     for (items, 0..) |item, i| t[i] = item;
-    if (bracket) utils.tupleHead(t).*.gc.flags |= constants.JANET_TUPLE_FLAG_BRACKETCTOR;
+    if (bracket) utils.tupleHead(t).gc.flags |= constants.JANET_TUPLE_FLAG_BRACKETCTOR;
     return wrap.fromTuple(tuples.end(t));
 }
 
 /// A struct from alternating key/value pairs, with an optional prototype.
-fn mkstruct(kvs: []const repr.Value, proto: ?types.JanetStruct) repr.Value {
+fn mkstruct(kvs: []const repr.Value, proto: ?structs.Struct) repr.Value {
     const pairs: i32 = @intCast(kvs.len / 2);
     const st = structs.begin(pairs);
     var i: usize = 0;
     while (i < kvs.len) : (i += 2) structs.put(st, kvs[i], kvs[i + 1]);
-    if (proto) |p| utils.structHead(st).*.proto = p;
+    if (proto) |p| utils.structHead(st).proto = p;
     return wrap.fromStruct(structs.end(st));
 }
 
-fn structHash(st: types.JanetStruct) i32 {
-    return utils.structHead(st).*.hash;
+fn structHash(st: structs.Struct) i32 {
+    return utils.structHead(st).hash;
 }
 
-fn structCapacity(st: types.JanetStruct) i32 {
-    return utils.structHead(st).*.capacity;
+fn structCapacity(st: structs.Struct) i32 {
+    return utils.structHead(st).capacity;
 }
 
-fn tupleHash(t: types.JanetTuple) i32 {
-    return utils.tupleHead(t).*.hash;
+fn tupleHash(t: tuples.Tuple) i32 {
+    return utils.tupleHead(t).hash;
 }
 
 /// Depth of the traversal stack in nodes, as the two entry points see it. Zero
@@ -114,14 +113,14 @@ fn stackDepth() isize {
     if (harness.vm().traversal.base == null) return 0;
     return @divExact(
         @as(isize, @bitCast(@intFromPtr(harness.vm().traversal.at) -% @intFromPtr(harness.vm().traversal.base))),
-        @sizeOf(types.JanetTraversalNode),
+        @sizeOf(order.JanetTraversalNode),
     );
 }
 
 fn stackCapacity() isize {
     return @divExact(
         @as(isize, @bitCast(@intFromPtr(harness.vm().traversal.top) -% @intFromPtr(harness.vm().traversal.base))),
-        @sizeOf(types.JanetTraversalNode),
+        @sizeOf(order.JanetTraversalNode),
     );
 }
 
@@ -138,7 +137,7 @@ fn cellHash(cell: *const Cell, _: usize) i32 {
     return cell.key;
 }
 
-fn cellCompare(lhs: *const Cell, rhs: *const Cell) c_int {
+fn cellCompare(lhs: *const Cell, rhs: *const Cell) i32 {
     if (lhs.key == rhs.key) return 0;
     return if (lhs.key < rhs.key) -1 else 1;
 }
@@ -157,26 +156,26 @@ const at_bare = abstract_type.define(anyopaque, .{ .name = "value-order/bare" })
 /// be ordered without either type's `compare` being consulted.
 const at_other = abstract_type.define(anyopaque, .{ .name = "value-order/other" });
 
-fn cellType() *const types.AbstractType {
+fn cellType() *const abi.AbstractType {
     return &at_cell;
 }
 
-fn bareType() *const types.AbstractType {
+fn bareType() *const abi.AbstractType {
     return &at_bare;
 }
 
-fn otherType() *const types.AbstractType {
+fn otherType() *const abi.AbstractType {
     return &at_other;
 }
 
 fn mkcell(key: i32) repr.Value {
-    const cell: *Cell = @ptrCast(@alignCast(abstracts.new(cellType(), @sizeOf(Cell))));
+    const cell: *Cell = @ptrCast(@alignCast(abstracts.newBytes(cellType(), @sizeOf(Cell))));
     cell.key = key;
     return wrap.fromAbstract(cell);
 }
 
-fn mkbare(at: *const types.AbstractType) repr.Value {
-    const cell: *Cell = @ptrCast(@alignCast(abstracts.new(at, @sizeOf(Cell))));
+fn mkbare(at: *const abi.AbstractType) repr.Value {
+    const cell: *Cell = abstracts.newFor(Cell, at);
     cell.key = 0;
     return wrap.fromAbstract(cell);
 }
@@ -188,9 +187,9 @@ fn mkbare(at: *const types.AbstractType) repr.Value {
 /// to zero is what makes `false` the one key a zero-capacity table can be
 /// looked up with -- see `FOUND.md`.
 fn theHashOfTheAtoms() void {
-    assert(order.hash(wrap.fromNil()) == 0);
-    assert(order.hash(wrap.fromFalse()) == 0);
-    assert(order.hash(wrap.fromTrue()) == 1);
+    expect(order.hash(wrap.fromNil()) == 0);
+    expect(order.hash(wrap.fromFalse()) == 0);
+    expect(order.hash(wrap.fromTrue()) == 1);
 }
 
 /// Hashing is a function: the same value hashes the same every time, and two
@@ -200,16 +199,16 @@ fn theHashAgreesWithEquality() void {
     const items = [_]repr.Value{ intv(1), kw("a"), str("s") };
     const a = mktuple(&items, false);
     const b = mktuple(&items, false);
-    assert(harness.equals(a, b));
-    assert(order.hash(a) == order.hash(a));
-    assert(order.hash(a) == order.hash(b));
+    expect(harness.equals(a, b));
+    expect(order.hash(a) == order.hash(a));
+    expect(order.hash(a) == order.hash(b));
 
     const kvs = [_]repr.Value{ kw("x"), intv(1), kw("y"), intv(2) };
     const rev = [_]repr.Value{ kw("y"), intv(2), kw("x"), intv(1) };
     const s1 = mkstruct(&kvs, null);
     const s2 = mkstruct(&rev, null);
-    assert(harness.equals(s1, s2));
-    assert(order.hash(s1) == order.hash(s2));
+    expect(harness.equals(s1, s2));
+    expect(order.hash(s1) == order.hash(s2));
 }
 
 /// All three string-like types hash their bytes and nothing else, so a keyword,
@@ -218,24 +217,24 @@ fn theHashAgreesWithEquality() void {
 /// `janet_compare` tiebreak in `janet_struct_put_ext` load-bearing, and
 /// `test/struct_table.zig` has the other half of the story.
 fn theStringLikesShareOneHash() void {
-    assert(order.hash(kw("tie")) == order.hash(str("tie")));
-    assert(order.hash(sym("tie")) == order.hash(str("tie")));
-    assert(!harness.equals(kw("tie"), str("tie")));
-    assert(!harness.equals(sym("tie"), str("tie")));
-    assert(!harness.equals(kw("tie"), sym("tie")));
+    expect(order.hash(kw("tie")) == order.hash(str("tie")));
+    expect(order.hash(sym("tie")) == order.hash(str("tie")));
+    expect(!harness.equals(kw("tie"), str("tie")));
+    expect(!harness.equals(sym("tie"), str("tie")));
+    expect(!harness.equals(kw("tie"), sym("tie")));
 }
 
 /// Negative zero is normalized before the number is mixed, so that `0.0` and
 /// `-0.0` -- which are `=` -- do not land in different buckets. The `+= 0.0`
 /// that does it is one statement and deleting it breaks nothing else.
 fn theHashNormalizesNegativeZero() void {
-    assert(harness.equals(num(0.0), num(-0.0)));
-    assert(order.hash(num(0.0)) == order.hash(num(-0.0)));
+    expect(harness.equals(num(0.0), num(-0.0)));
+    expect(order.hash(num(0.0)) == order.hash(num(-0.0)));
     // And the mixing is not a no-op: neighbouring doubles must not share a
     // hash, or the assertion above would hold for a `return 0`.
-    assert(order.hash(num(0.0)) != order.hash(num(1.0)));
-    assert(order.hash(num(1.0)) != order.hash(num(2.0)));
-    assert(order.hash(num(1.0)) != order.hash(num(1.0000000000000002)));
+    expect(order.hash(num(0.0)) != order.hash(num(1.0)));
+    expect(order.hash(num(1.0)) != order.hash(num(2.0)));
+    expect(order.hash(num(1.0)) != order.hash(num(1.0000000000000002)));
 }
 
 /// The exact numbers, which nothing else pins and which are not free to change.
@@ -247,23 +246,23 @@ fn theHashNormalizesNegativeZero() void {
 /// and the result is the *high* word of the mix. Taking the low word instead
 /// would be just as good a hash and a different language.
 fn theExactNumberHashes() void {
-    assert(order.hash(num(1.0)) == -1365709855);
-    assert(order.hash(num(2.0)) == 1700046601);
-    assert(order.hash(num(-1.0)) == -1784919109);
-    assert(order.hash(num(1.5)) == -2007118713);
-    assert(order.hash(num(1e300)) == -701392662);
+    expect(order.hash(num(1.0)) == -1365709855);
+    expect(order.hash(num(2.0)) == 1700046601);
+    expect(order.hash(num(-1.0)) == -1784919109);
+    expect(order.hash(num(1.5)) == -2007118713);
+    expect(order.hash(num(1e300)) == -701392662);
     // Zero is the fixed point of the mixer -- every step of `murmur64` maps
     // zero to zero -- so `0` hashes to the same 0 that `nil` and `false` do.
     // Not a defect, but it is the reason `janet_hash` of a number cannot be
     // assumed nonzero.
-    assert(order.hash(num(0.0)) == 0);
+    expect(order.hash(num(0.0)) == 0);
 }
 
 /// An integer and the double that equals it are the same Janet number, so they
 /// must hash alike -- there is no separate integer hash to get wrong.
 fn integersAndDoublesHashAlike() void {
-    assert(harness.equals(intv(7), num(7.0)));
-    assert(order.hash(intv(7)) == order.hash(num(7.0)));
+    expect(harness.equals(intv(7), num(7.0)));
+    expect(order.hash(intv(7)) == order.hash(num(7.0)));
 }
 
 /// A bracket-constructed tuple hashes to one more than the paren-constructed
@@ -274,12 +273,12 @@ fn bracketTuplesHashAndCompareApart() void {
     const items = [_]repr.Value{ intv(1), intv(2) };
     const paren = mktuple(&items, false);
     const bracket = mktuple(&items, true);
-    assert(!harness.equals(paren, bracket));
-    assert(@as(u32, @bitCast(order.hash(bracket))) ==
+    expect(!harness.equals(paren, bracket));
+    expect(@as(u32, @bitCast(order.hash(bracket))) ==
         @as(u32, @bitCast(order.hash(paren))) +% 1);
     // And the difference is a *hash* difference, not a length or content one:
     // the stored head hashes are identical.
-    assert(tupleHash(wrap.toTuple(paren)) == tupleHash(wrap.toTuple(bracket)));
+    expect(tupleHash(wrap.toTuple(paren)) == tupleHash(wrap.toTuple(bracket)));
 }
 
 /// The stored hash is returned rather than recomputed, for every type that has
@@ -288,32 +287,32 @@ fn bracketTuplesHashAndCompareApart() void {
 fn theHashReadsTheStoredHead() void {
     const items = [_]repr.Value{intv(1)};
     const t = mktuple(&items, false);
-    utils.tupleHead(wrap.toTuple(t)).*.hash = 0x5eed;
-    assert(order.hash(t) == 0x5eed);
+    utils.tupleHead(wrap.toTuple(t)).hash = 0x5eed;
+    expect(order.hash(t) == 0x5eed);
 
     const kvs = [_]repr.Value{ kw("k"), intv(1) };
     const s = mkstruct(&kvs, null);
-    utils.structHead(wrap.toStruct(s)).*.hash = 0x5eee;
-    assert(order.hash(s) == 0x5eee);
+    utils.structHead(wrap.toStruct(s)).hash = 0x5eee;
+    expect(order.hash(s) == 0x5eee);
 
     const v = str("abc");
-    utils.stringHead(wrap.toString(v)).*.hash = 0x5eef;
-    assert(order.hash(v) == 0x5eef);
+    utils.stringHead(wrap.toString(v)).hash = 0x5eef;
+    expect(order.hash(v) == 0x5eef);
 }
 
 /// An abstract type's `hash` callback is used when it has one, is passed the
 /// abstract's own size, and is not consulted when it does not.
 fn theAbstractHashCallback() void {
-    assert(order.hash(mkcell(1234)) == 1234);
-    assert(order.hash(mkcell(-1)) == -1);
+    expect(order.hash(mkcell(1234)) == 1234);
+    expect(order.hash(mkcell(-1)) == -1);
 
     // Without a callback the pointer is hashed, so the same instance is stable
     // and two instances are (overwhelmingly) not equal. Two draws rather than
     // one, because a constant-returning implementation passes with one.
     const b1 = mkbare(bareType());
     const b2 = mkbare(bareType());
-    assert(order.hash(b1) == order.hash(b1));
-    assert(order.hash(b1) != order.hash(b2));
+    expect(order.hash(b1) == order.hash(b1));
+    expect(order.hash(b1) != order.hash(b2));
 }
 
 /// `murmur64`, restated. Not shared with the implementation on purpose: the
@@ -343,10 +342,10 @@ fn highWordOf(mixed: u64) i32 {
 fn thePointerHashIsTheHighWord() void {
     if (@sizeOf(f64) != @sizeOf(*anyopaque)) return;
     const v = wrap.fromTable(tables.new(4));
-    assert(order.hash(v) == highWordOf(murmur64Ref(harness.u64Of(v))));
+    expect(order.hash(v) == highWordOf(murmur64Ref(harness.u64Of(v))));
 
     const w = wrap.fromArray(arrays.new(4));
-    assert(order.hash(w) == highWordOf(murmur64Ref(harness.u64Of(w))));
+    expect(order.hash(w) == highWordOf(murmur64Ref(harness.u64Of(w))));
 }
 
 /// The pointer fallback is a fallback for every remaining type, not just for
@@ -355,36 +354,36 @@ fn thePointerHashIsStable() void {
     const t = tables.new(4);
     const a = arrays.new(4);
     const b = buffers.new(4);
-    assert(order.hash(wrap.fromTable(t)) == order.hash(wrap.fromTable(t)));
-    assert(order.hash(wrap.fromArray(a)) == order.hash(wrap.fromArray(a)));
-    assert(order.hash(wrap.fromBuffer(b)) == order.hash(wrap.fromBuffer(b)));
-    assert(order.hash(wrap.fromTable(t)) != order.hash(wrap.fromArray(a)));
+    expect(order.hash(wrap.fromTable(t)) == order.hash(wrap.fromTable(t)));
+    expect(order.hash(wrap.fromArray(a)) == order.hash(wrap.fromArray(a)));
+    expect(order.hash(wrap.fromBuffer(b)) == order.hash(wrap.fromBuffer(b)));
+    expect(order.hash(wrap.fromTable(t)) != order.hash(wrap.fromArray(a)));
 }
 
 // ----------------------------------------------------------------- equality
 
 fn theEqualityOfAtoms() void {
-    assert(harness.equals(wrap.fromNil(), wrap.fromNil()));
-    assert(harness.equals(wrap.fromTrue(), wrap.fromTrue()));
-    assert(harness.equals(wrap.fromFalse(), wrap.fromFalse()));
-    assert(!harness.equals(wrap.fromTrue(), wrap.fromFalse()));
+    expect(harness.equals(wrap.fromNil(), wrap.fromNil()));
+    expect(harness.equals(wrap.fromTrue(), wrap.fromTrue()));
+    expect(harness.equals(wrap.fromFalse(), wrap.fromFalse()));
+    expect(!harness.equals(wrap.fromTrue(), wrap.fromFalse()));
     // Different types are never equal, whatever their payloads look like.
-    assert(!harness.equals(wrap.fromNil(), wrap.fromFalse()));
-    assert(!harness.equals(intv(0), wrap.fromFalse()));
-    assert(!harness.equals(kw("a"), str("a")));
+    expect(!harness.equals(wrap.fromNil(), wrap.fromFalse()));
+    expect(!harness.equals(intv(0), wrap.fromFalse()));
+    expect(!harness.equals(kw("a"), str("a")));
 }
 
 fn theEqualityOfNumbers() void {
     const nan = std.math.nan(f64);
     const inf = std.math.inf(f64);
-    assert(harness.equals(num(1.5), num(1.5)));
-    assert(harness.equals(num(0.0), num(-0.0)));
-    assert(!harness.equals(num(1.5), num(2.5)));
+    expect(harness.equals(num(1.5), num(1.5)));
+    expect(harness.equals(num(0.0), num(-0.0)));
+    expect(!harness.equals(num(1.5), num(2.5)));
     // NaN is not equal to itself, which is the one place equality is not
     // reflexive and the reason a NaN cannot be a table key.
-    assert(!harness.equals(num(nan), num(nan)));
-    assert(harness.equals(num(inf), num(inf)));
-    assert(!harness.equals(num(inf), num(-inf)));
+    expect(!harness.equals(num(nan), num(nan)));
+    expect(harness.equals(num(inf), num(inf)));
+    expect(!harness.equals(num(inf), num(-inf)));
 }
 
 /// Strings compare by content and are not interned, so two distinct allocations
@@ -394,16 +393,16 @@ fn theEqualityOfNumbers() void {
 fn theEqualityOfStringLikes() void {
     const s1 = str("hello");
     const s2 = str("hello");
-    assert(wrap.toString(s1) != wrap.toString(s2));
-    assert(harness.equals(s1, s2));
-    assert(!harness.equals(s1, str("hellp")));
-    assert(!harness.equals(s1, str("hell")));
+    expect(wrap.toString(s1) != wrap.toString(s2));
+    expect(harness.equals(s1, s2));
+    expect(!harness.equals(s1, str("hellp")));
+    expect(!harness.equals(s1, str("hell")));
 
-    assert(wrap.toSymbol(sym("q")) == wrap.toSymbol(sym("q")));
-    assert(harness.equals(sym("q"), sym("q")));
-    assert(!harness.equals(sym("q"), sym("r")));
-    assert(harness.equals(kw("q"), kw("q")));
-    assert(!harness.equals(kw("q"), kw("r")));
+    expect(wrap.toSymbol(sym("q")) == wrap.toSymbol(sym("q")));
+    expect(harness.equals(sym("q"), sym("q")));
+    expect(!harness.equals(sym("q"), sym("r")));
+    expect(harness.equals(kw("q"), kw("q")));
+    expect(!harness.equals(kw("q"), kw("r")));
 }
 
 /// Mutable containers are equal only to themselves.
@@ -412,15 +411,15 @@ fn theEqualityOfMutableContainers() void {
     const t2 = tables.new(4);
     tables.put(t1, kw("a"), intv(1));
     tables.put(t2, kw("a"), intv(1));
-    assert(harness.equals(wrap.fromTable(t1), wrap.fromTable(t1)));
-    assert(!harness.equals(wrap.fromTable(t1), wrap.fromTable(t2)));
+    expect(harness.equals(wrap.fromTable(t1), wrap.fromTable(t1)));
+    expect(!harness.equals(wrap.fromTable(t1), wrap.fromTable(t2)));
 
     const a1 = arrays.new(4);
     const a2 = arrays.new(4);
     harness.arrayPush(a1, intv(1));
     harness.arrayPush(a2, intv(1));
-    assert(harness.equals(wrap.fromArray(a1), wrap.fromArray(a1)));
-    assert(!harness.equals(wrap.fromArray(a1), wrap.fromArray(a2)));
+    expect(harness.equals(wrap.fromArray(a1), wrap.fromArray(a1)));
+    expect(!harness.equals(wrap.fromArray(a1), wrap.fromArray(a2)));
 }
 
 /// Tuple equality traverses, and each of the four cheap rejections in front of
@@ -430,15 +429,15 @@ fn theEqualityOfTuples() void {
     const other = [_]repr.Value{ intv(1), kw("k"), str("t") };
     const a = mktuple(&items, false);
     const b = mktuple(&items, false);
-    assert(wrap.toTuple(a) != wrap.toTuple(b));
-    assert(harness.equals(a, b));
-    assert(!harness.equals(a, mktuple(&other, false)));
+    expect(wrap.toTuple(a) != wrap.toTuple(b));
+    expect(harness.equals(a, b));
+    expect(!harness.equals(a, mktuple(&other, false)));
     // Shorter, so the length rejection fires.
-    assert(!harness.equals(a, mktuple(items[0..2], false)));
+    expect(!harness.equals(a, mktuple(items[0..2], false)));
     // Same contents, different constructor, so the flag rejection fires.
-    assert(!harness.equals(a, mktuple(&items, true)));
+    expect(!harness.equals(a, mktuple(&items, true)));
     // Identity short-circuits before any of them.
-    assert(harness.equals(a, a));
+    expect(harness.equals(a, a));
 }
 
 /// A value is equal to itself even when it contains something that is not equal
@@ -458,11 +457,11 @@ fn aTupleHoldingNanEqualsItself() void {
     gc_alloc.gcroot(b);
     defer _ = gc_alloc.gcunroot(b);
 
-    assert(harness.equals(a, a));
+    expect(harness.equals(a, a));
     // Same length, same stored hash -- the NaN bits are the same bits -- so
     // this one reaches the traversal, and the traversal finds a NaN.
-    assert(tupleHash(wrap.toTuple(a)) == tupleHash(wrap.toTuple(b)));
-    assert(!harness.equals(a, b));
+    expect(tupleHash(wrap.toTuple(a)) == tupleHash(wrap.toTuple(b)));
+    expect(!harness.equals(a, b));
 }
 
 /// Struct equality is layout equality, which the Robin Hood insert exists to
@@ -473,23 +472,23 @@ fn theEqualityOfStructs() void {
     const kvs = [_]repr.Value{ kw("x"), intv(1), kw("y"), intv(2) };
     const rev = [_]repr.Value{ kw("y"), intv(2), kw("x"), intv(1) };
     const diff = [_]repr.Value{ kw("x"), intv(1), kw("y"), intv(3) };
-    assert(harness.equals(mkstruct(&kvs, null), mkstruct(&rev, null)));
-    assert(!harness.equals(mkstruct(&kvs, null), mkstruct(&diff, null)));
-    assert(!harness.equals(mkstruct(&kvs, null), mkstruct(kvs[0..2], null)));
+    expect(harness.equals(mkstruct(&kvs, null), mkstruct(&rev, null)));
+    expect(!harness.equals(mkstruct(&kvs, null), mkstruct(&diff, null)));
+    expect(!harness.equals(mkstruct(&kvs, null), mkstruct(kvs[0..2], null)));
 
     const pk = [_]repr.Value{ kw("p"), intv(9) };
     const proto = wrap.toStruct(mkstruct(&pk, null));
     const with = mkstruct(&kvs, proto);
     const without = mkstruct(&kvs, null);
     // One has a prototype and the other does not: rejected before traversing.
-    assert(!harness.equals(with, without));
-    assert(!harness.equals(without, with));
+    expect(!harness.equals(with, without));
+    expect(!harness.equals(without, with));
     // Both have one, and it is the same one.
-    assert(harness.equals(with, mkstruct(&rev, proto)));
+    expect(harness.equals(with, mkstruct(&rev, proto)));
     // Both have one and they differ, which only the traversal can tell.
     const qk = [_]repr.Value{ kw("q"), intv(9) };
     const other_proto = wrap.toStruct(mkstruct(&qk, null));
-    assert(!harness.equals(with, mkstruct(&kvs, other_proto)));
+    expect(!harness.equals(with, mkstruct(&kvs, other_proto)));
 }
 
 /// Three checks in `janet_equals` sit behind the stored-hash comparison and are
@@ -515,10 +514,10 @@ fn theChecksBehindTheHash() void {
     const t2 = mktuple(&pair, false);
     gc_alloc.gcroot(t2);
     defer _ = gc_alloc.gcunroot(t2);
-    assert(harness.equals(t1, t2));
-    utils.tupleHead(wrap.toTuple(t2)).*.length = 1;
-    assert(tupleHash(wrap.toTuple(t1)) == tupleHash(wrap.toTuple(t2)));
-    assert(!harness.equals(t1, t2));
+    expect(harness.equals(t1, t2));
+    utils.tupleHead(wrap.toTuple(t2)).length = 1;
+    expect(tupleHash(wrap.toTuple(t1)) == tupleHash(wrap.toTuple(t2)));
+    expect(!harness.equals(t1, t2));
 
     // Struct length. Same shape, and it matters more here: a struct's capacity
     // is a function of its length, and the traversal bounds the bucket walk by
@@ -533,10 +532,10 @@ fn theChecksBehindTheHash() void {
     const s2 = mkstruct(&kvs, null);
     gc_alloc.gcroot(s2);
     defer _ = gc_alloc.gcunroot(s2);
-    assert(harness.equals(s1, s2));
-    utils.structHead(wrap.toStruct(s2)).*.length = 2;
-    assert(structHash(wrap.toStruct(s1)) == structHash(wrap.toStruct(s2)));
-    assert(!harness.equals(s1, s2));
+    expect(harness.equals(s1, s2));
+    utils.structHead(wrap.toStruct(s2)).length = 2;
+    expect(structHash(wrap.toStruct(s1)) == structHash(wrap.toStruct(s2)));
+    expect(!harness.equals(s1, s2));
 
     // Struct prototype presence. `janet_struct_end` folds the prototype pointer
     // into the hash, so in practice the hash rejects this pair before the
@@ -555,13 +554,13 @@ fn theChecksBehindTheHash() void {
     const without = mkstruct(&kvs, null);
     gc_alloc.gcroot(without);
     defer _ = gc_alloc.gcunroot(without);
-    assert(structHash(wrap.toStruct(with)) != structHash(wrap.toStruct(without)));
-    utils.structHead(wrap.toStruct(without)).*.hash =
+    expect(structHash(wrap.toStruct(with)) != structHash(wrap.toStruct(without)));
+    utils.structHead(wrap.toStruct(without)).hash =
         structHash(wrap.toStruct(with));
-    assert(utils.structHead(wrap.toStruct(with)).*.length ==
-        utils.structHead(wrap.toStruct(without)).*.length);
-    assert(!harness.equals(with, without));
-    assert(!harness.equals(without, with));
+    expect(utils.structHead(wrap.toStruct(with)).length ==
+        utils.structHead(wrap.toStruct(without)).length);
+    expect(!harness.equals(with, without));
+    expect(!harness.equals(without, with));
 }
 
 /// `janet_compare` orders two structs by capacity, then by stored hash, and
@@ -578,13 +577,13 @@ fn theStructOrderingCriteriaAreInOrder() void {
     const large = mkstruct(&two, null);
     gc_alloc.gcroot(large);
     defer _ = gc_alloc.gcunroot(large);
-    assert(structCapacity(wrap.toStruct(small)) < structCapacity(wrap.toStruct(large)));
+    expect(structCapacity(wrap.toStruct(small)) < structCapacity(wrap.toStruct(large)));
 
     // Capacity beats hash: the larger struct is given the smaller hash.
-    utils.structHead(wrap.toStruct(small)).*.hash = 100;
-    utils.structHead(wrap.toStruct(large)).*.hash = 1;
-    assert(order.compare(small, large) == -1);
-    assert(order.compare(large, small) == 1);
+    utils.structHead(wrap.toStruct(small)).hash = 100;
+    utils.structHead(wrap.toStruct(large)).hash = 1;
+    expect(order.compare(small, large) == -1);
+    expect(order.compare(large, small) == 1);
 
     // Hash beats contents: two structs of equal capacity whose hashes are
     // forced to the opposite order from their values.
@@ -596,11 +595,11 @@ fn theStructOrderingCriteriaAreInOrder() void {
     const b = mkstruct(&hi, null);
     gc_alloc.gcroot(b);
     defer _ = gc_alloc.gcunroot(b);
-    assert(structCapacity(wrap.toStruct(a)) == structCapacity(wrap.toStruct(b)));
-    utils.structHead(wrap.toStruct(a)).*.hash = 9;
-    utils.structHead(wrap.toStruct(b)).*.hash = 3;
-    assert(order.compare(a, b) == 1);
-    assert(order.compare(b, a) == -1);
+    expect(structCapacity(wrap.toStruct(a)) == structCapacity(wrap.toStruct(b)));
+    utils.structHead(wrap.toStruct(a)).hash = 9;
+    utils.structHead(wrap.toStruct(b)).hash = 3;
+    expect(order.compare(a, b) == 1);
+    expect(order.compare(b, a) == -1);
 
     // And below both of them, the traversal, which is the only thing that looks
     // at a struct's contents. Reaching it needs everything above it to tie:
@@ -614,13 +613,13 @@ fn theStructOrderingCriteriaAreInOrder() void {
     const c2 = mkstruct(&hi, null);
     gc_alloc.gcroot(c2);
     defer _ = gc_alloc.gcunroot(c2);
-    utils.structHead(wrap.toStruct(c2)).*.hash = structHash(wrap.toStruct(c1));
-    assert(harness.equals(structs.get(wrap.toStruct(c1), kw("a")), intv(1)));
-    assert(harness.equals(structs.get(wrap.toStruct(c2), kw("a")), intv(2)));
-    assert(order.compare(c1, c2) == -1);
-    assert(order.compare(c2, c1) == 1);
+    utils.structHead(wrap.toStruct(c2)).hash = structHash(wrap.toStruct(c1));
+    expect(harness.equals(structs.get(wrap.toStruct(c1), kw("a")), intv(1)));
+    expect(harness.equals(structs.get(wrap.toStruct(c2), kw("a")), intv(2)));
+    expect(order.compare(c1, c2) == -1);
+    expect(order.compare(c2, c1) == 1);
     // `janet_equals` reaches it on the same terms and for the same reason.
-    assert(!harness.equals(c1, c2));
+    expect(!harness.equals(c1, c2));
 }
 
 /// Abstract equality is `compare == 0`, because the abstract type interface has
@@ -632,19 +631,19 @@ fn theEqualityOfAbstracts() void {
     const a = mkcell(5);
     const b = mkcell(5);
     const d = mkcell(6);
-    assert(wrap.toAbstract(a) != wrap.toAbstract(b));
-    assert(harness.equals(a, b));
-    assert(!harness.equals(a, d));
+    expect(wrap.toAbstract(a) != wrap.toAbstract(b));
+    expect(harness.equals(a, b));
+    expect(!harness.equals(a, d));
 
     // Without a callback, only identity.
     const p = mkbare(bareType());
     const q = mkbare(bareType());
-    assert(harness.equals(p, p));
-    assert(!harness.equals(p, q));
+    expect(harness.equals(p, p));
+    expect(!harness.equals(p, q));
 
     // Different abstract types are never equal even with equal payloads.
     const r = mkbare(otherType());
-    assert(!harness.equals(p, r));
+    expect(!harness.equals(p, r));
 }
 
 // ----------------------------------------------------------------- ordering
@@ -659,14 +658,14 @@ fn theOrderAcrossTypes() void {
         num(0.0), wrap.fromNil(), wrap.fromFalse(),
         str("s"), sym("s"),       kw("s"),
     };
-    assert(@intFromEnum(repr.Tag.number) < @intFromEnum(repr.Tag.nil));
-    assert(@intFromEnum(repr.Tag.nil) < @intFromEnum(repr.Tag.boolean));
-    assert(@intFromEnum(repr.Tag.boolean) < @intFromEnum(repr.Tag.string));
+    expect(@intFromEnum(repr.Tag.number) < @intFromEnum(repr.Tag.nil));
+    expect(@intFromEnum(repr.Tag.nil) < @intFromEnum(repr.Tag.boolean));
+    expect(@intFromEnum(repr.Tag.boolean) < @intFromEnum(repr.Tag.string));
     for (ordered, 0..) |left, i| {
         for (ordered, 0..) |right, j| {
             if (i == j) continue;
-            const expect: c_int = if (i < j) -1 else 1;
-            assert(order.compare(left, right) == expect);
+            const expected: c_int = if (i < j) -1 else 1;
+            expect(order.compare(left, right) == expected);
         }
     }
 }
@@ -674,35 +673,35 @@ fn theOrderAcrossTypes() void {
 fn theOrderOfNumbers() void {
     const nan = std.math.nan(f64);
     const inf = std.math.inf(f64);
-    assert(order.compare(num(1.0), num(2.0)) == -1);
-    assert(order.compare(num(2.0), num(1.0)) == 1);
-    assert(order.compare(num(1.0), num(1.0)) == 0);
-    assert(order.compare(num(-0.0), num(0.0)) == 0);
-    assert(order.compare(num(-inf), num(inf)) == -1);
+    expect(order.compare(num(1.0), num(2.0)) == -1);
+    expect(order.compare(num(2.0), num(1.0)) == 1);
+    expect(order.compare(num(1.0), num(1.0)) == 0);
+    expect(order.compare(num(-0.0), num(0.0)) == 0);
+    expect(order.compare(num(-inf), num(inf)) == -1);
     // NaN is not orderable and the C says so in a comment: both directions
     // return 1, so `janet_compare` is not antisymmetric on NaN. Pinned because
     // it is the behaviour, not because it is desirable.
-    assert(order.compare(num(nan), num(1.0)) == 1);
-    assert(order.compare(num(1.0), num(nan)) == 1);
-    assert(order.compare(num(nan), num(nan)) == 1);
+    expect(order.compare(num(nan), num(1.0)) == 1);
+    expect(order.compare(num(1.0), num(nan)) == 1);
+    expect(order.compare(num(nan), num(nan)) == 1);
 }
 
 fn theOrderOfBooleans() void {
-    assert(order.compare(wrap.fromFalse(), wrap.fromTrue()) == -1);
-    assert(order.compare(wrap.fromTrue(), wrap.fromFalse()) == 1);
-    assert(order.compare(wrap.fromTrue(), wrap.fromTrue()) == 0);
+    expect(order.compare(wrap.fromFalse(), wrap.fromTrue()) == -1);
+    expect(order.compare(wrap.fromTrue(), wrap.fromFalse()) == 1);
+    expect(order.compare(wrap.fromTrue(), wrap.fromTrue()) == 0);
 }
 
 /// Strings order lexicographically by byte, with a shorter prefix first, and
 /// the same routine orders symbols and keywords.
 fn theOrderOfStringLikes() void {
-    assert(order.compare(str("a"), str("b")) < 0);
-    assert(order.compare(str("b"), str("a")) > 0);
-    assert(order.compare(str("ab"), str("abc")) < 0);
-    assert(order.compare(str("abc"), str("ab")) > 0);
-    assert(order.compare(str("abc"), str("abc")) == 0);
-    assert(order.compare(sym("a"), sym("b")) < 0);
-    assert(order.compare(kw("a"), kw("b")) < 0);
+    expect(order.compare(str("a"), str("b")) < 0);
+    expect(order.compare(str("b"), str("a")) > 0);
+    expect(order.compare(str("ab"), str("abc")) < 0);
+    expect(order.compare(str("abc"), str("ab")) > 0);
+    expect(order.compare(str("abc"), str("abc")) == 0);
+    expect(order.compare(sym("a"), sym("b")) < 0);
+    expect(order.compare(kw("a"), kw("b")) < 0);
 }
 
 /// Tuples order element-wise, and a prefix sorts before its extension -- which
@@ -713,18 +712,18 @@ fn theOrderOfTuples() void {
     const b = [_]repr.Value{ intv(1), intv(2), intv(3) };
     const cc = [_]repr.Value{ intv(1), intv(3) };
     const big = [_]repr.Value{ intv(9), intv(0) };
-    assert(order.compare(mktuple(&a, false), mktuple(&b, false)) == -1);
-    assert(order.compare(mktuple(&b, false), mktuple(&a, false)) == 1);
-    assert(order.compare(mktuple(&a, false), mktuple(&cc, false)) == -1);
-    assert(order.compare(mktuple(&a, false), mktuple(&a, false)) == 0);
+    expect(order.compare(mktuple(&a, false), mktuple(&b, false)) == -1);
+    expect(order.compare(mktuple(&b, false), mktuple(&a, false)) == 1);
+    expect(order.compare(mktuple(&a, false), mktuple(&cc, false)) == -1);
+    expect(order.compare(mktuple(&a, false), mktuple(&a, false)) == 0);
     // Element-wise beats length: a longer tuple whose first element is larger
     // still sorts after. And a shorter one whose first element is larger sorts
     // after too, which is the same claim from the other side.
-    assert(order.compare(mktuple(&big, false), mktuple(&b, false)) == 1);
+    expect(order.compare(mktuple(&big, false), mktuple(&b, false)) == 1);
 
     // The bracket flag outranks the contents in both directions.
-    assert(order.compare(mktuple(&a, true), mktuple(&b, false)) == 1);
-    assert(order.compare(mktuple(&b, false), mktuple(&a, true)) == -1);
+    expect(order.compare(mktuple(&a, true), mktuple(&b, false)) == 1);
+    expect(order.compare(mktuple(&b, false), mktuple(&a, true)) == -1);
 }
 
 /// Structs order by capacity, then by hash, and only then element-wise. The
@@ -736,21 +735,21 @@ fn theOrderOfStructs() void {
     const two = [_]repr.Value{ kw("a"), intv(1), kw("b"), intv(2) };
     const s1 = mkstruct(&one, null);
     const s2 = mkstruct(&two, null);
-    assert(structCapacity(wrap.toStruct(s1)) < structCapacity(wrap.toStruct(s2)));
-    assert(order.compare(s1, s2) == -1);
-    assert(order.compare(s2, s1) == 1);
-    assert(order.compare(s1, s1) == 0);
-    assert(order.compare(s1, mkstruct(&one, null)) == 0);
+    expect(structCapacity(wrap.toStruct(s1)) < structCapacity(wrap.toStruct(s2)));
+    expect(order.compare(s1, s2) == -1);
+    expect(order.compare(s2, s1) == 1);
+    expect(order.compare(s1, s1) == 0);
+    expect(order.compare(s1, mkstruct(&one, null)) == 0);
 
     // Same capacity, different contents: the hash decides, and whichever way it
     // decides it must be antisymmetric and it must agree with equality.
     const alt = [_]repr.Value{ kw("z"), intv(1) };
     const s3 = mkstruct(&alt, null);
-    assert(structCapacity(wrap.toStruct(s1)) == structCapacity(wrap.toStruct(s3)));
-    assert(!harness.equals(s1, s3));
+    expect(structCapacity(wrap.toStruct(s1)) == structCapacity(wrap.toStruct(s3)));
+    expect(!harness.equals(s1, s3));
     const fwd = order.compare(s1, s3);
     const rev = order.compare(s3, s1);
-    assert(fwd != 0 and fwd == -rev);
+    expect(fwd != 0 and fwd == -rev);
 }
 
 /// A struct with a prototype sorts after one without, and two with different
@@ -767,14 +766,14 @@ fn theOrderOfStructPrototypes() void {
     const with_p = mkstruct(&kvs, p);
     const with_q = mkstruct(&kvs, q);
 
-    assert(order.compare(with_p, bare) == 1);
-    assert(order.compare(bare, with_p) == -1);
-    assert(order.compare(with_p, mkstruct(&kvs, p)) == 0);
+    expect(order.compare(with_p, bare) == 1);
+    expect(order.compare(bare, with_p) == -1);
+    expect(order.compare(with_p, mkstruct(&kvs, p)) == 0);
 
     const fwd = order.compare(with_p, with_q);
     const rev = order.compare(with_q, with_p);
-    assert(fwd != 0 and fwd == -rev);
-    assert(!harness.equals(with_p, with_q));
+    expect(fwd != 0 and fwd == -rev);
+    expect(!harness.equals(with_p, with_q));
 }
 
 /// Mutable containers order by pointer, which is arbitrary but must be a
@@ -784,14 +783,14 @@ fn theOrderOfMutableContainers() void {
     const t2 = tables.new(4);
     const a = wrap.fromTable(t1);
     const b = wrap.fromTable(t2);
-    assert(order.compare(a, a) == 0);
+    expect(order.compare(a, a) == 0);
     const fwd = order.compare(a, b);
-    assert(fwd != 0 and fwd == -order.compare(b, a));
-    assert(order.compare(a, b) == fwd);
+    expect(fwd != 0 and fwd == -order.compare(b, a));
+    expect(order.compare(a, b) == fwd);
     // And the direction, not merely its consistency: the larger address sorts
     // after. Asserted absolutely because "some stable order" is satisfied by
     // the reverse of this one, and the reverse is a different language.
-    assert(fwd == @as(c_int, if (@intFromPtr(t1) > @intFromPtr(t2)) 1 else -1));
+    expect(fwd == @as(c_int, if (@intFromPtr(t1) > @intFromPtr(t2)) 1 else -1));
 }
 
 /// Abstracts: identity first, then the abstract *type* pointer when the types
@@ -801,27 +800,27 @@ fn theOrderOfMutableContainers() void {
 fn theOrderOfAbstracts() void {
     const a = mkcell(1);
     const b = mkcell(2);
-    assert(order.compare(a, b) == -1);
-    assert(order.compare(b, a) == 1);
-    assert(order.compare(a, a) == 0);
-    assert(order.compare(a, mkcell(1)) == 0);
+    expect(order.compare(a, b) == -1);
+    expect(order.compare(b, a) == 1);
+    expect(order.compare(a, a) == 0);
+    expect(order.compare(a, mkcell(1)) == 0);
 
     // No callback: pointer order, consistent both ways and in that direction.
     const p = mkbare(bareType());
     const q = mkbare(bareType());
     const fwd = order.compare(p, q);
-    assert(fwd != 0 and fwd == -order.compare(q, p));
-    assert(fwd == @as(c_int, if (@intFromPtr(wrap.toAbstract(p)) >
+    expect(fwd != 0 and fwd == -order.compare(q, p));
+    expect(fwd == @as(c_int, if (@intFromPtr(wrap.toAbstract(p)) >
         @intFromPtr(wrap.toAbstract(q))) 1 else -1));
 
     // Different types: decided by the type pointers, before either type's
     // callback could be consulted -- the cell type has one and it is not used.
     const r = mkbare(otherType());
     const cross = order.compare(p, r);
-    assert(cross != 0 and cross == -order.compare(r, p));
-    assert(cross == @as(c_int, if (@intFromPtr(bareType()) > @intFromPtr(otherType())) 1 else -1));
+    expect(cross != 0 and cross == -order.compare(r, p));
+    expect(cross == @as(c_int, if (@intFromPtr(bareType()) > @intFromPtr(otherType())) 1 else -1));
 
-    assert(order.compare(a, p) ==
+    expect(order.compare(a, p) ==
         @as(c_int, if (@intFromPtr(cellType()) > @intFromPtr(bareType())) 1 else -1));
 }
 
@@ -885,11 +884,11 @@ fn deepTuplesDoNotRecurse() void {
         _ = gc_alloc.gcunroot(d);
     }
 
-    assert(harness.equals(a, b));
-    assert(!harness.equals(a, d));
-    assert(order.compare(a, b) == 0);
-    assert(order.compare(a, d) == -1);
-    assert(order.compare(d, a) == 1);
+    expect(harness.equals(a, b));
+    expect(!harness.equals(a, d));
+    expect(order.compare(a, b) == 0);
+    expect(order.compare(a, d) == -1);
+    expect(order.compare(d, a) == 1);
 }
 
 fn deepStructsDoNotRecurse() void {
@@ -902,10 +901,10 @@ fn deepStructsDoNotRecurse() void {
         _ = gc_alloc.gcunroot(d);
     }
 
-    assert(harness.equals(a, b));
-    assert(!harness.equals(a, d));
-    assert(order.compare(a, b) == 0);
-    assert(order.compare(a, d) == -1);
+    expect(harness.equals(a, b));
+    expect(!harness.equals(a, d));
+    expect(order.compare(a, b) == 0);
+    expect(order.compare(a, d) == -1);
 }
 
 /// A long prototype chain is walked by the same stack, and the hop at the
@@ -931,12 +930,12 @@ fn thePrototypeHopReplacesTheNode() void {
 
     var i: i32 = 0;
     while (i < 500) : (i += 1) {
-        const pa: ?types.JanetStruct = if (harness.isType(a, repr.Tag.nil)) null else wrap.toStruct(a);
+        const pa: ?structs.Struct = if (harness.isType(a, repr.Tag.nil)) null else wrap.toStruct(a);
         const next_a = mkstruct(&kvs, pa);
         gc_alloc.gcroot(next_a);
         _ = gc_alloc.gcunroot(a);
         a = next_a;
-        const pb: ?types.JanetStruct = if (harness.isType(b, repr.Tag.nil)) null else wrap.toStruct(b);
+        const pb: ?structs.Struct = if (harness.isType(b, repr.Tag.nil)) null else wrap.toStruct(b);
         const next_b = mkstruct(&kvs, pb);
         gc_alloc.gcroot(next_b);
         _ = gc_alloc.gcunroot(b);
@@ -944,18 +943,18 @@ fn thePrototypeHopReplacesTheNode() void {
     }
 
     const chain_a = wrap.toStruct(a);
-    assert(harness.equals(a, b));
-    assert(stackDepth() == 0);
-    assert(order.compare(a, b) == 0);
-    assert(harness.vm().traversal.base != null);
-    assert(stackCapacity() == 128);
+    expect(harness.equals(a, b));
+    expect(stackDepth() == 0);
+    expect(order.compare(a, b) == 0);
+    expect(harness.vm().traversal.base != null);
+    expect(stackCapacity() == 128);
 
     // And the chains are genuinely five hundred deep, so the walk had that many
     // hops to make.
     var levels: i32 = 0;
-    var p: ?types.JanetStruct = chain_a;
-    while (p) |current| : (p = utils.structHead(current).*.proto) levels += 1;
-    assert(levels == 500);
+    var p: ?structs.Struct = chain_a;
+    while (p) |current| : (p = utils.structHead(current).proto) levels += 1;
+    expect(levels == 500);
 }
 
 /// Neither entry point pops what it pushed: an early rejection deep inside a
@@ -969,18 +968,18 @@ fn theStackIsResetNotUnwound() void {
     // `janet_compare`, because it is the one that descends: see
     // `theBaseSlotIsDead`. Two hundred levels down it finds the leaf and
     // returns, leaving two hundred nodes behind it.
-    assert(order.compare(deep_a, deep_b) == -1);
-    assert(stackDepth() == 200);
+    expect(order.compare(deep_a, deep_b) == -1);
+    expect(stackDepth() == 200);
 
     // The next comparison sees a stack with two hundred nodes still on it and
     // must not be affected by any of them.
-    assert(harness.equals(intv(1), intv(1)));
-    assert(stackDepth() == 0);
+    expect(harness.equals(intv(1), intv(1)));
+    expect(stackDepth() == 0);
     const deep_c = nestTuples(200, intv(0));
-    assert(harness.equals(deep_a, deep_c));
-    assert(order.compare(deep_a, deep_b) == -1);
-    assert(order.compare(deep_b, deep_a) == 1);
-    assert(!harness.equals(deep_a, deep_b));
+    expect(harness.equals(deep_a, deep_c));
+    expect(order.compare(deep_a, deep_b) == -1);
+    expect(order.compare(deep_b, deep_a) == 1);
+    expect(!harness.equals(deep_a, deep_b));
 
     _ = gc_alloc.gcunroot(deep_a);
     _ = gc_alloc.gcunroot(deep_b);
@@ -991,8 +990,8 @@ fn theStackIsResetNotUnwound() void {
 /// a deep comparison after a shallow one reuses the array. Asserted on the
 /// capacity in nodes, which is the growth policy and nothing else.
 fn theStackGrowthPolicy() void {
-    assert(harness.equals(intv(1), intv(1)));
-    if (harness.vm().traversal.base != null) assert(stackCapacity() >= 128);
+    expect(harness.equals(intv(1), intv(1)));
+    if (harness.vm().traversal.base != null) expect(stackCapacity() >= 128);
 
     const a = nestTuples(5000, intv(0));
     const b = nestTuples(5000, intv(0));
@@ -1000,17 +999,17 @@ fn theStackGrowthPolicy() void {
         _ = gc_alloc.gcunroot(a);
         _ = gc_alloc.gcunroot(b);
     }
-    assert(harness.equals(a, b));
+    expect(harness.equals(a, b));
 
     const grown = stackCapacity();
-    assert(grown >= 5000);
+    expect(grown >= 5000);
     // Doubling, so never far past what was needed.
-    assert(grown < 4 * 5001);
+    expect(grown < 4 * 5001);
 
     // And the array is not given back: a shallow comparison afterwards leaves
     // the capacity where it was.
-    assert(harness.equals(intv(1), intv(1)));
-    assert(stackCapacity() == grown);
+    expect(harness.equals(intv(1), intv(1)));
+    expect(stackCapacity() == grown);
 }
 
 /// The base slot is never used: the stack pointer is pre-incremented before a
@@ -1032,20 +1031,20 @@ fn theBaseSlotIsDead() void {
     const b = mktuple(&items, false);
     const d = mktuple(&other, false);
 
-    assert(harness.equals(a, b));
-    assert(stackDepth() == 0);
-    assert(order.compare(a, b) == 0);
-    assert(stackDepth() == 0);
+    expect(harness.equals(a, b));
+    expect(stackDepth() == 0);
+    expect(order.compare(a, b) == 0);
+    expect(stackDepth() == 0);
 
     // Stops inside the tuple's node, which is therefore still on the stack.
-    assert(order.compare(a, d) == -1);
-    assert(stackDepth() == 1);
+    expect(order.compare(a, d) == -1);
+    expect(stackDepth() == 1);
 
     // And `janet_equals` settles the same pair on the stored hash, without
     // pushing at all -- which is the claim the comment above makes.
-    assert(tupleHash(wrap.toTuple(a)) != tupleHash(wrap.toTuple(d)));
-    assert(!harness.equals(a, d));
-    assert(stackDepth() == 0);
+    expect(tupleHash(wrap.toTuple(a)) != tupleHash(wrap.toTuple(d)));
+    expect(!harness.equals(a, d));
+    expect(stackDepth() == 0);
 }
 
 // ------------------------------------------------------------ the contract
@@ -1101,15 +1100,15 @@ fn theRelationsHoldOverACorpus() void {
     gc_alloc.gcunlock(lock);
 
     for (corpus) |left| {
-        assert(order.compare(left, left) == 0);
-        assert(harness.equals(left, left));
+        expect(order.compare(left, left) == 0);
+        expect(harness.equals(left, left));
         for (corpus) |right| {
             const fwd = order.compare(left, right);
             const rev = order.compare(right, left);
-            assert(fwd == -rev);
+            expect(fwd == -rev);
             const eq = harness.equals(left, right);
-            assert((fwd == 0) == eq);
-            if (eq) assert(order.hash(left) == order.hash(right));
+            expect((fwd == 0) == eq);
+            if (eq) expect(order.hash(left) == order.hash(right));
         }
     }
 
@@ -1119,7 +1118,7 @@ fn theRelationsHoldOverACorpus() void {
         for (corpus) |y| {
             if (order.compare(x, y) >= 0) continue;
             for (corpus) |z| {
-                if (order.compare(y, z) < 0) assert(order.compare(x, z) < 0);
+                if (order.compare(y, z) < 0) expect(order.compare(x, z) < 0);
             }
         }
     }
@@ -1145,30 +1144,30 @@ fn fromJanet() void {
         " (sorted [3 1 2 :a \"s\" nil true]) " ++
         " (= (do (var t nil) (for i 0 5000 (set t [i t])) t) " ++
         "    (do (var t nil) (for i 0 5000 (set t [i t])) t))]";
-    assert(core_env.dostring(harness.coreEnv(), src, "value_order", &out) == 0);
+    expect(core_env.dostring(harness.coreEnv(), src, "value_order", &out) == 0);
     const r = wrap.toTuple(out);
-    assert(repr.truthy(r[0]));
-    assert(repr.truthy(r[1]));
-    assert(repr.truthy(r[2]));
-    assert(!repr.truthy(r[3]));
-    assert(wrap.toInteger(r[4]) == -1);
-    assert(wrap.toInteger(r[5]) == -1);
-    assert(wrap.toInteger(r[6]) == -1);
-    assert(repr.truthy(r[7]));
-    assert(repr.truthy(r[8]));
+    expect(repr.truthy(r[0]));
+    expect(repr.truthy(r[1]));
+    expect(repr.truthy(r[2]));
+    expect(!repr.truthy(r[3]));
+    expect(wrap.toInteger(r[4]) == -1);
+    expect(wrap.toInteger(r[5]) == -1);
+    expect(wrap.toInteger(r[6]) == -1);
+    expect(repr.truthy(r[7]));
+    expect(repr.truthy(r[8]));
     // `sorted` puts the types in `repr.Tag` order, which is the ordering
     // across types this file pins from the outside -- and that order starts
     // with numbers, because `JANET_NUMBER` is zero. It returns an array, not a
     // tuple.
-    const sortd = wrap.toArray(r[9]).*.data;
-    assert(wrap.toInteger(sortd.?[0]) == 1);
-    assert(wrap.toInteger(sortd.?[1]) == 2);
-    assert(wrap.toInteger(sortd.?[2]) == 3);
-    assert(harness.isType(sortd.?[3], repr.Tag.nil));
-    assert(harness.isType(sortd.?[4], repr.Tag.boolean));
-    assert(harness.isType(sortd.?[5], repr.Tag.string));
-    assert(harness.isType(sortd.?[6], repr.Tag.keyword));
-    assert(repr.truthy(r[10]));
+    const sortd = wrap.toArray(r[9]).data;
+    expect(wrap.toInteger(sortd.?[0]) == 1);
+    expect(wrap.toInteger(sortd.?[1]) == 2);
+    expect(wrap.toInteger(sortd.?[2]) == 3);
+    expect(harness.isType(sortd.?[3], repr.Tag.nil));
+    expect(harness.isType(sortd.?[4], repr.Tag.boolean));
+    expect(harness.isType(sortd.?[5], repr.Tag.string));
+    expect(harness.isType(sortd.?[6], repr.Tag.keyword));
+    expect(repr.truthy(r[10]));
 }
 
 // ------------------------------------------------------------------- main

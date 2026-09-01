@@ -49,7 +49,7 @@ const TypeNode = ffi_classify.TypeNode;
 const ArgSlot = ffi_classify.ArgSlot;
 const AllocResult = ffi_classify.AllocResult;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
 /// `JanetFFIPrimType`, written out rather than imported — see the header.
 const prim_void: u32 = 0;
@@ -166,7 +166,7 @@ fn sysv64ClassifiesScalars() void {
     };
     for (cases) |case| {
         const node = [_]TypeNode{leaf(case.prim, case.size, 0)};
-        assert(classifySysv64(&node) == case.expected);
+        expect(classifySysv64(&node) == case.expected);
     }
 }
 
@@ -177,7 +177,7 @@ fn sysv64SendsWideStructsToMemory() void {
         leaf(prim_int64, 8, 8),
         leaf(prim_int64, 8, 16),
     };
-    assert(classifySysv64(&nodes) == sysv64_memory);
+    expect(classifySysv64(&nodes) == sysv64_memory);
 
     // Exactly sixteen bytes still fits in the register pair.
     const fits = [_]TypeNode{
@@ -185,7 +185,7 @@ fn sysv64SendsWideStructsToMemory() void {
         leaf(prim_int64, 8, 0),
         leaf(prim_int64, 8, 8),
     };
-    assert(classifySysv64(&fits) == sysv64_pair_intint);
+    expect(classifySysv64(&fits) == sysv64_pair_intint);
 }
 
 fn sysv64SendsMisalignedStructsToMemory() void {
@@ -195,7 +195,7 @@ fn sysv64SendsMisalignedStructsToMemory() void {
         leaf(prim_uint64, 8, 1),
     };
     nodes[0].is_aligned = 0;
-    assert(classifySysv64(&nodes) == sysv64_memory);
+    expect(classifySysv64(&nodes) == sysv64_memory);
 }
 
 fn sysv64NamesThePairOfAWideStruct() void {
@@ -211,7 +211,7 @@ fn sysv64NamesThePairOfAWideStruct() void {
             leaf(case.first, 8, 0),
             leaf(case.second, 8, 8),
         };
-        assert(classifySysv64(&nodes) == case.expected);
+        expect(classifySysv64(&nodes) == case.expected);
     }
 }
 
@@ -222,7 +222,7 @@ fn sysv64MergesANarrowStruct() void {
         leaf(prim_float, 4, 0),
         leaf(prim_float, 4, 4),
     };
-    assert(classifySysv64(&floats) == sysv64_sse);
+    expect(classifySysv64(&floats) == sysv64_sse);
 
     // An integer anywhere in the eightbyte makes the whole of it integer.
     const mixed = [_]TypeNode{
@@ -230,11 +230,11 @@ fn sysv64MergesANarrowStruct() void {
         leaf(prim_int32, 4, 0),
         leaf(prim_float, 4, 4),
     };
-    assert(classifySysv64(&mixed) == sysv64_integer);
+    expect(classifySysv64(&mixed) == sysv64_integer);
 
     // An empty struct reaches no class at all.
     const empty = [_]TypeNode{structNode(0, 0, 0)};
-    assert(classifySysv64(&empty) == sysv64_no_class);
+    expect(classifySysv64(&empty) == sysv64_no_class);
 }
 
 fn sysv64UsesTheOffsetToPickTheEightbyte() void {
@@ -247,7 +247,7 @@ fn sysv64UsesTheOffsetToPickTheEightbyte() void {
         leaf(prim_int32, 4, 8),
         leaf(prim_int32, 4, 12),
     };
-    assert(classifySysv64(&nodes) == sysv64_pair_sseint);
+    expect(classifySysv64(&nodes) == sysv64_pair_sseint);
 
     // Moving one integer down into the first eightbyte moves the class with it.
     const swapped = [_]TypeNode{
@@ -257,7 +257,7 @@ fn sysv64UsesTheOffsetToPickTheEightbyte() void {
         leaf(prim_float, 4, 8),
         leaf(prim_float, 4, 12),
     };
-    assert(classifySysv64(&swapped) == sysv64_pair_intsse);
+    expect(classifySysv64(&swapped) == sysv64_pair_intsse);
 }
 
 fn sysv64DescendsIntoNestedStructs() void {
@@ -269,7 +269,7 @@ fn sysv64DescendsIntoNestedStructs() void {
         leaf(prim_double, 8, 0),
         leaf(prim_int64, 8, 8),
     };
-    assert(classifySysv64(&nodes) == sysv64_pair_sseint);
+    expect(classifySysv64(&nodes) == sysv64_pair_sseint);
 
     // A nested struct that reached memory carries the whole enclosing type
     // there with it, when that type fits in a single eightbyte and so goes
@@ -280,7 +280,7 @@ fn sysv64DescendsIntoNestedStructs() void {
         leaf(prim_uint64, 8, 0),
     };
     packed_nodes[1].is_aligned = 0;
-    assert(classifySysv64(&packed_nodes) == sysv64_memory);
+    expect(classifySysv64(&packed_nodes) == sysv64_memory);
 }
 
 /// The two-eightbyte rules look only for integer classes, so a field that
@@ -295,7 +295,7 @@ fn sysv64DropsAMemoryFieldFromAPair() void {
         leaf(prim_double, 8, 8),
     };
     nodes[1].is_aligned = 0;
-    assert(classifySysv64(&nodes) == sysv64_pair_ssesse);
+    expect(classifySysv64(&nodes) == sysv64_pair_ssesse);
 }
 
 /// A struct's fields must be walked in full even when a class is decided
@@ -311,7 +311,7 @@ fn sysv64SkipsADecidedSubtreeCorrectly() void {
         leaf(prim_int64, 8, 16),
         leaf(prim_double, 8, 24),
     };
-    assert(classifySysv64(&nodes) == sysv64_memory);
+    expect(classifySysv64(&nodes) == sysv64_memory);
 
     // { {float; float} ; int64 }: the second field of the outer struct is the
     // trailing integer, and reading one of the nested floats instead would name
@@ -323,7 +323,7 @@ fn sysv64SkipsADecidedSubtreeCorrectly() void {
         leaf(prim_float, 4, 4),
         leaf(prim_int64, 8, 8),
     };
-    assert(classifySysv64(&nested) == sysv64_pair_sseint);
+    expect(classifySysv64(&nested) == sysv64_pair_sseint);
 }
 
 // -- AAPCS64 classification -----------------------------------------------
@@ -341,7 +341,7 @@ fn aapcs64ClassifiesScalars() void {
     };
     for (cases) |case| {
         const node = [_]TypeNode{leaf(case.prim, case.size, 0)};
-        assert(classifyAapcs64(&node) == case.expected);
+        expect(classifyAapcs64(&node) == case.expected);
     }
 }
 
@@ -354,7 +354,7 @@ fn aapcs64RecognisesHomogeneousFloatAggregates() void {
         nodes[0] = structNode(count * 8, count, 0);
         var i: u32 = 0;
         while (i < count) : (i += 1) nodes[1 + i] = leaf(prim_double, 8, i * 8);
-        assert(classifyAapcs64(nodes[0 .. 1 + count]) == aapcs64_sse);
+        expect(classifyAapcs64(nodes[0 .. 1 + count]) == aapcs64_sse);
     }
 
     // A fifth member is one too many, and forty bytes then goes by reference.
@@ -362,7 +362,7 @@ fn aapcs64RecognisesHomogeneousFloatAggregates() void {
     five[0] = structNode(40, 5, 0);
     var i: u32 = 0;
     while (i < 5) : (i += 1) five[1 + i] = leaf(prim_double, 8, i * 8);
-    assert(classifyAapcs64(&five) == aapcs64_general_ref);
+    expect(classifyAapcs64(&five) == aapcs64_general_ref);
 }
 
 fn aapcs64RejectsInhomogeneousAggregates() void {
@@ -372,7 +372,7 @@ fn aapcs64RejectsInhomogeneousAggregates() void {
         leaf(prim_float, 4, 0),
         leaf(prim_double, 8, 8),
     };
-    assert(classifyAapcs64(&mixed) == aapcs64_general);
+    expect(classifyAapcs64(&mixed) == aapcs64_general);
 
     // A leading integer takes it out of the floating-point case at the first
     // test.
@@ -381,7 +381,7 @@ fn aapcs64RejectsInhomogeneousAggregates() void {
         leaf(prim_int64, 8, 0),
         leaf(prim_double, 8, 8),
     };
-    assert(classifyAapcs64(&leading) == aapcs64_general);
+    expect(classifyAapcs64(&leading) == aapcs64_general);
 }
 
 fn aapcs64PassesWideAggregatesByReference() void {
@@ -390,7 +390,7 @@ fn aapcs64PassesWideAggregatesByReference() void {
         leaf(prim_int64, 8, 0),
         leaf(prim_int64, 8, 8),
     };
-    assert(classifyAapcs64(&narrow) == aapcs64_general);
+    expect(classifyAapcs64(&narrow) == aapcs64_general);
 
     const wide = [_]TypeNode{
         structNode(24, 3, 0),
@@ -398,7 +398,7 @@ fn aapcs64PassesWideAggregatesByReference() void {
         leaf(prim_int64, 8, 8),
         leaf(prim_int64, 8, 16),
     };
-    assert(classifyAapcs64(&wide) == aapcs64_general_ref);
+    expect(classifyAapcs64(&wide) == aapcs64_general_ref);
 }
 
 /// An array of a struct measures wider than the struct itself, and it is the
@@ -411,7 +411,7 @@ fn aapcs64UsesTheWholeExtentOfAnArray() void {
     };
     nodes[0].size = 48; // three copies of a sixteen-byte struct
     nodes[0].array_count = 3;
-    assert(classifyAapcs64(&nodes) == aapcs64_general_ref);
+    expect(classifyAapcs64(&nodes) == aapcs64_general_ref);
 }
 
 /// Janet reads the first field of a struct with no fields; this declines to.
@@ -419,7 +419,7 @@ fn aapcs64UsesTheWholeExtentOfAnArray() void {
 /// that is not there. See `FOUND.md`.
 fn aapcs64HandlesAnEmptyStruct() void {
     const empty = [_]TypeNode{structNode(0, 0, 0)};
-    assert(classifyAapcs64(&empty) == aapcs64_general);
+    expect(classifyAapcs64(&empty) == aapcs64_general);
 }
 
 /// Neither classifier is given a node to look at. Both open with a guard for
@@ -428,8 +428,8 @@ fn aapcs64HandlesAnEmptyStruct() void {
 /// root of a type.
 fn bothClassifiersAcceptNoNodes() void {
     const none: []const TypeNode = &.{};
-    assert(classifySysv64(none) == sysv64_no_class);
-    assert(classifyAapcs64(none) == aapcs64_none);
+    expect(classifySysv64(none) == sysv64_no_class);
+    expect(classifyAapcs64(none) == aapcs64_none);
 }
 
 // -- Windows x64 allocation -----------------------------------------------
@@ -441,16 +441,16 @@ fn win64FillsFourRegistersThenTheStack() void {
     var result: AllocResult = undefined;
     ffi_classify.allocWin64(&result, &ret, &args);
 
-    assert(result.error_kind == alloc_ok);
+    expect(result.error_kind == alloc_ok);
     for (0..4) |i| {
-        assert(args[i].spec == win64_register);
-        assert(args[i].offset == i);
+        expect(args[i].spec == win64_register);
+        expect(args[i].offset == i);
     }
-    assert(args[4].spec == win64_stack);
-    assert(args[4].offset == 0);
-    assert(args[5].spec == win64_stack);
-    assert(args[5].offset == 1);
-    assert(result.stack_count == 2);
+    expect(args[4].spec == win64_stack);
+    expect(args[4].offset == 0);
+    expect(args[5].spec == win64_stack);
+    expect(args[5].offset == 1);
+    expect(result.stack_count == 2);
 }
 
 fn win64MarksFloatingRegistersInTheVariant() void {
@@ -462,7 +462,7 @@ fn win64MarksFloatingRegistersInTheVariant() void {
         args[position] = slot(prim_double, 8, 8, 0);
         var result: AllocResult = undefined;
         ffi_classify.allocWin64(&result, &ret, &args);
-        assert(result.variant == (@as(u32, 1) << @intCast(3 - position)));
+        expect(result.variant == (@as(u32, 1) << @intCast(3 - position)));
     }
 
     // A floating-point return adds its own bit above those four.
@@ -470,7 +470,7 @@ fn win64MarksFloatingRegistersInTheVariant() void {
     var args = [_]ArgSlot{slot(prim_float, 4, 4, 0)};
     var result: AllocResult = undefined;
     ffi_classify.allocWin64(&result, &ret, &args);
-    assert(result.variant == 16 + 8);
+    expect(result.variant == 16 + 8);
 }
 
 fn win64PassesOddSizesByReference() void {
@@ -484,14 +484,14 @@ fn win64PassesOddSizesByReference() void {
     var result: AllocResult = undefined;
     ffi_classify.allocWin64(&result, &ret, &args);
 
-    assert(args[0].spec == win64_register_ref);
-    assert(args[0].offset == 0);
-    assert(args[1].spec == win64_register);
-    assert(args[1].offset == 1);
+    expect(args[0].spec == win64_register_ref);
+    expect(args[0].offset == 0);
+    expect(args[1].spec == win64_register);
+    expect(args[1].offset == 1);
     // One sixteen-byte reference slot, so two eight-byte stack words.
-    assert(result.stack_count == 2);
+    expect(result.stack_count == 2);
     // The reference offset is measured down from the top of the stack area.
-    assert(args[0].offset2 == 0);
+    expect(args[0].offset2 == 0);
 }
 
 fn win64ReservesARegisterForAWideReturn() void {
@@ -501,12 +501,12 @@ fn win64ReservesARegisterForAWideReturn() void {
     var result: AllocResult = undefined;
     ffi_classify.allocWin64(&result, &ret, &args);
 
-    assert(ret.spec == win64_register_ref);
+    expect(ret.spec == win64_register_ref);
     // The first register holds the return pointer, so only three arguments fit
     // and the fourth spills.
-    assert(args[0].offset == 1);
-    assert(args[2].spec == win64_register);
-    assert(args[3].spec == win64_stack);
+    expect(args[0].offset == 1);
+    expect(args[2].spec == win64_register);
+    expect(args[3].spec == win64_stack);
 }
 
 fn win64RoundsTheStackToAnEvenNumberOfWords() void {
@@ -516,7 +516,7 @@ fn win64RoundsTheStackToAnEvenNumberOfWords() void {
     var result: AllocResult = undefined;
     ffi_classify.allocWin64(&result, &ret, &args);
     // One argument on the stack, rounded up to a pair.
-    assert(result.stack_count == 2);
+    expect(result.stack_count == 2);
 }
 
 // -- SysV allocation ------------------------------------------------------
@@ -528,16 +528,16 @@ fn sysv64FillsTheIntegerRegisters() void {
     var result: AllocResult = undefined;
     ffi_classify.allocSysv64(&result, &ret, &args);
 
-    assert(result.error_kind == alloc_ok);
+    expect(result.error_kind == alloc_ok);
     for (0..6) |i| {
-        assert(args[i].spec == sysv64_integer);
-        assert(args[i].offset == i);
+        expect(args[i].spec == sysv64_integer);
+        expect(args[i].offset == i);
     }
-    assert(args[6].spec == sysv64_memory);
-    assert(args[6].offset == 0);
-    assert(args[7].spec == sysv64_memory);
-    assert(args[7].offset == 1);
-    assert(result.stack_count == 2);
+    expect(args[6].spec == sysv64_memory);
+    expect(args[6].offset == 0);
+    expect(args[7].spec == sysv64_memory);
+    expect(args[7].offset == 1);
+    expect(result.stack_count == 2);
 }
 
 fn sysv64CountsTheVectorRegistersSeparately() void {
@@ -548,11 +548,11 @@ fn sysv64CountsTheVectorRegistersSeparately() void {
     ffi_classify.allocSysv64(&result, &ret, &args);
 
     for (0..8) |i| {
-        assert(args[i].spec == sysv64_sse);
-        assert(args[i].offset == i);
+        expect(args[i].spec == sysv64_sse);
+        expect(args[i].offset == i);
     }
-    assert(args[8].spec == sysv64_memory);
-    assert(args[9].spec == sysv64_memory);
+    expect(args[8].spec == sysv64_memory);
+    expect(args[9].spec == sysv64_memory);
 }
 
 fn sysv64ReservesARegisterForAMemoryReturn() void {
@@ -563,10 +563,10 @@ fn sysv64ReservesARegisterForAMemoryReturn() void {
     ffi_classify.allocSysv64(&result, &ret, &args);
 
     // The hidden return pointer takes the first register.
-    assert(args[0].offset == 1);
-    assert(args[4].offset == 5);
-    assert(args[5].spec == sysv64_memory);
-    assert(result.stack_count == 1);
+    expect(args[0].offset == 1);
+    expect(args[4].offset == 5);
+    expect(args[5].spec == sysv64_memory);
+    expect(result.stack_count == 1);
 }
 
 fn sysv64PlacesRegisterPairs() void {
@@ -581,14 +581,14 @@ fn sysv64PlacesRegisterPairs() void {
     ffi_classify.allocSysv64(&result, &ret, &args);
 
     // Two integer registers.
-    assert(args[0].offset == 0 and args[0].offset2 == 1);
+    expect(args[0].offset == 0 and args[0].offset2 == 1);
     // One integer then one vector.
-    assert(args[1].offset == 2 and args[1].offset2 == 0);
+    expect(args[1].offset == 2 and args[1].offset2 == 0);
     // A vector first, then an integer — the offsets swap roles.
-    assert(args[2].offset == 1 and args[2].offset2 == 3);
+    expect(args[2].offset == 1 and args[2].offset2 == 3);
     // Two vector registers.
-    assert(args[3].offset == 2 and args[3].offset2 == 3);
-    assert(result.stack_count == 0);
+    expect(args[3].offset == 2 and args[3].offset2 == 3);
+    expect(result.stack_count == 0);
 }
 
 /// An integer pair needs two free registers, and the check is strict: five
@@ -601,9 +601,9 @@ fn sysv64SpillsAPairThatCannotFit() void {
     var result: AllocResult = undefined;
     ffi_classify.allocSysv64(&result, &ret, &args);
 
-    assert(args[5].spec == sysv64_memory);
-    assert(args[5].offset == 0);
-    assert(result.stack_count == 2);
+    expect(args[5].spec == sysv64_memory);
+    expect(args[5].offset == 0);
+    expect(result.stack_count == 2);
 }
 
 fn sysv64NamesTheReturnVariant() void {
@@ -620,7 +620,7 @@ fn sysv64NamesTheReturnVariant() void {
         var args = [_]ArgSlot{slot(prim_int64, 8, 8, sysv64_integer)};
         var result: AllocResult = undefined;
         ffi_classify.allocSysv64(&result, &ret, &args);
-        assert(result.variant == case.expected);
+        expect(result.variant == case.expected);
     }
 }
 
@@ -633,8 +633,8 @@ fn sysv64ReportsASpecItCannotPlace() void {
     var result: AllocResult = undefined;
     ffi_classify.allocSysv64(&result, &ret, &args);
 
-    assert(result.error_kind == alloc_unsupported_spec);
-    assert(result.error_arg == 1);
+    expect(result.error_kind == alloc_unsupported_spec);
+    expect(result.error_arg == 1);
 }
 
 // -- AAPCS64 allocation ---------------------------------------------------
@@ -650,12 +650,12 @@ fn aapcs64FillsBothRegisterBanks() void {
     var result: AllocResult = undefined;
     ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
 
-    assert(result.error_kind == alloc_ok);
-    assert(args[0].offset == 0);
-    assert(args[1].offset == 0);
-    assert(args[2].offset == 1);
-    assert(args[3].offset == 1);
-    assert(result.stack_count == 0);
+    expect(result.error_kind == alloc_ok);
+    expect(args[0].offset == 0);
+    expect(args[1].offset == 0);
+    expect(args[2].offset == 1);
+    expect(args[3].offset == 1);
+    expect(result.stack_count == 0);
 }
 
 /// A general aggregate occupies as many registers as it is words wide, and it
@@ -667,10 +667,10 @@ fn aapcs64TakesSeveralRegistersForAnAggregate() void {
     var result: AllocResult = undefined;
     ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
 
-    assert(args[0].offset == 0);
-    assert(args[1].offset == 2);
-    assert(args[2].offset == 4);
-    assert(result.stack_count == 0);
+    expect(args[0].offset == 0);
+    expect(args[1].offset == 2);
+    expect(args[2].offset == 4);
+    expect(result.stack_count == 0);
 }
 
 fn aapcs64PacksTheStackByPlatform() void {
@@ -684,13 +684,13 @@ fn aapcs64PacksTheStackByPlatform() void {
         var result: AllocResult = undefined;
         ffi_classify.allocAapcs64(&result, &ret, &args, apple, aapcs64_max_ret);
 
-        assert(args[8].spec == aapcs64_stack);
-        assert(args[8].offset == 0);
-        assert(args[9].spec == aapcs64_stack);
+        expect(args[8].spec == aapcs64_stack);
+        expect(args[8].offset == 0);
+        expect(args[9].spec == aapcs64_stack);
         // Apple packs the second byte next to the first; the generic standard
         // gives each a whole word.
-        assert(args[9].offset == @as(u32, if (apple) 1 else 8));
-        assert(result.stack_count == 16);
+        expect(args[9].offset == @as(u32, if (apple) 1 else 8));
+        expect(result.stack_count == 16);
     }
 }
 
@@ -705,8 +705,8 @@ fn aapcs64AlignsStackAggregatesToAWord() void {
         var result: AllocResult = undefined;
         ffi_classify.allocAapcs64(&result, &ret, &args, apple, aapcs64_max_ret);
 
-        assert(args[9].spec == aapcs64_stack);
-        assert(args[9].offset == 8);
+        expect(args[9].spec == aapcs64_stack);
+        expect(args[9].offset == 8);
     }
 }
 
@@ -721,14 +721,14 @@ fn aapcs64PlacesTheReferenceAreaAfterTheStack() void {
 
     // Both pointers fit in registers, so nothing sits in the stack area and the
     // reference area starts at zero.
-    assert(args[0].spec == aapcs64_general_ref);
-    assert(args[0].offset == 0);
-    assert(args[0].offset2 == 0);
-    assert(args[1].offset == 1);
+    expect(args[0].spec == aapcs64_general_ref);
+    expect(args[0].offset == 0);
+    expect(args[0].offset2 == 0);
+    expect(args[1].offset == 1);
     // The first copy is twenty-four bytes, rounded up to the next word.
-    assert(args[1].offset2 == 24);
+    expect(args[1].offset2 == 24);
     // Twenty-four plus thirty-two, rounded up to sixteen.
-    assert(result.stack_count == 64);
+    expect(result.stack_count == 64);
 }
 
 fn aapcs64SpillsAReferencePointer() void {
@@ -739,12 +739,12 @@ fn aapcs64SpillsAReferencePointer() void {
     var result: AllocResult = undefined;
     ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
 
-    assert(args[8].spec == aapcs64_stack_ref);
-    assert(args[8].offset == 0);
+    expect(args[8].spec == aapcs64_stack_ref);
+    expect(args[8].offset == 0);
     // The pointer occupies one stack word, rounded to sixteen, and the copy
     // follows it.
-    assert(args[8].offset2 == 16);
-    assert(result.stack_count == 16 + 32);
+    expect(args[8].offset2 == 16);
+    expect(result.stack_count == 16 + 32);
 }
 
 /// One vector register per member, which is what AAPCS64 §6.8.2 says and what
@@ -762,10 +762,10 @@ fn aapcs64GivesAnHfaOneRegisterPerMember() void {
         var args = [_]ArgSlot{ hfaSlot(8, 2), slot(prim_double, 8, 8, aapcs64_sse) };
         var result: AllocResult = undefined;
         ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
-        assert(args[0].spec == aapcs64_sse);
-        assert(args[0].offset == 0);
+        expect(args[0].spec == aapcs64_sse);
+        expect(args[0].offset == 0);
         // The scalar behind it starts at the third register, not the second.
-        assert(args[1].offset == 2);
+        expect(args[1].offset == 2);
     }
 
     // Four floats: sixteen bytes, four members, four registers.
@@ -774,8 +774,8 @@ fn aapcs64GivesAnHfaOneRegisterPerMember() void {
         var args = [_]ArgSlot{ hfaSlot(16, 4), slot(prim_double, 8, 8, aapcs64_sse) };
         var result: AllocResult = undefined;
         ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
-        assert(args[0].offset == 0);
-        assert(args[1].offset == 4);
+        expect(args[0].offset == 0);
+        expect(args[1].offset == 4);
     }
 
     // Four doubles: thirty-two bytes, four members, four registers either way.
@@ -784,8 +784,8 @@ fn aapcs64GivesAnHfaOneRegisterPerMember() void {
         var args = [_]ArgSlot{ hfaSlot(32, 4), slot(prim_double, 8, 8, aapcs64_sse) };
         var result: AllocResult = undefined;
         ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
-        assert(args[0].offset == 0);
-        assert(args[1].offset == 4);
+        expect(args[0].offset == 0);
+        expect(args[1].offset == 4);
     }
 
     // A member count of zero means the caller could not say -- a scalar, or an
@@ -796,8 +796,8 @@ fn aapcs64GivesAnHfaOneRegisterPerMember() void {
         var args = [_]ArgSlot{ slot(prim_float, 4, 4, aapcs64_sse), slot(prim_double, 8, 8, aapcs64_sse) };
         var result: AllocResult = undefined;
         ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
-        assert(args[0].offset == 0);
-        assert(args[1].offset == 1);
+        expect(args[0].offset == 0);
+        expect(args[1].offset == 1);
     }
 }
 
@@ -812,10 +812,10 @@ fn aapcs64SpillsAnHfaThatNoLongerFits() void {
     var result: AllocResult = undefined;
     ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
 
-    assert(args[6].spec == aapcs64_sse);
-    assert(args[6].offset == 6);
-    assert(args[7].spec == aapcs64_stack);
-    assert(args[7].offset == 0);
+    expect(args[6].spec == aapcs64_sse);
+    expect(args[6].offset == 6);
+    expect(args[7].spec == aapcs64_stack);
+    expect(args[7].offset == 0);
 }
 
 fn aapcs64NamesTheReturnVariant() void {
@@ -830,8 +830,8 @@ fn aapcs64NamesTheReturnVariant() void {
         var args = [_]ArgSlot{slot(prim_int64, 8, 8, aapcs64_general)};
         var result: AllocResult = undefined;
         ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
-        assert(result.error_kind == alloc_ok);
-        assert(result.variant == case.expected);
+        expect(result.error_kind == alloc_ok);
+        expect(result.variant == case.expected);
     }
 }
 
@@ -841,13 +841,13 @@ fn aapcs64ReportsAnOversizedReturn() void {
     var result: AllocResult = undefined;
     ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
 
-    assert(result.error_kind == alloc_return_too_big);
-    assert(result.error_arg == -1);
+    expect(result.error_kind == alloc_return_too_big);
+    expect(result.error_arg == -1);
 
     // Exactly the buffer's width is still allowed.
     var exact = slot(prim_struct, aapcs64_max_ret, 8, aapcs64_general_ref);
     ffi_classify.allocAapcs64(&result, &exact, &args, false, aapcs64_max_ret);
-    assert(result.error_kind == alloc_ok);
+    expect(result.error_kind == alloc_ok);
 }
 
 fn aapcs64ReportsASpecItCannotPlace() void {
@@ -859,8 +859,8 @@ fn aapcs64ReportsASpecItCannotPlace() void {
     var result: AllocResult = undefined;
     ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
 
-    assert(result.error_kind == alloc_unsupported_spec);
-    assert(result.error_arg == 1);
+    expect(result.error_kind == alloc_unsupported_spec);
+    expect(result.error_arg == 1);
 }
 
 // -- Invariants -----------------------------------------------------------
@@ -885,7 +885,7 @@ fn noConventionReusesARegister() void {
         }
         var result: AllocResult = undefined;
         ffi_classify.allocSysv64(&result, &ret, &args);
-        assert(result.error_kind == alloc_ok);
+        expect(result.error_kind == alloc_ok);
 
         var int_used = [_]bool{false} ** 6;
         var fp_used = [_]bool{false} ** 8;
@@ -893,48 +893,48 @@ fn noConventionReusesARegister() void {
         for (args) |arg| {
             switch (arg.spec) {
                 sysv64_integer => {
-                    assert(arg.offset < 6);
-                    assert(!int_used[arg.offset]);
+                    expect(arg.offset < 6);
+                    expect(!int_used[arg.offset]);
                     int_used[arg.offset] = true;
                 },
                 sysv64_sse => {
-                    assert(arg.offset < 8);
-                    assert(!fp_used[arg.offset]);
+                    expect(arg.offset < 8);
+                    expect(!fp_used[arg.offset]);
                     fp_used[arg.offset] = true;
                 },
                 sysv64_pair_intint => {
-                    assert(arg.offset < 6 and arg.offset2 < 6);
-                    assert(!int_used[arg.offset] and !int_used[arg.offset2]);
+                    expect(arg.offset < 6 and arg.offset2 < 6);
+                    expect(!int_used[arg.offset] and !int_used[arg.offset2]);
                     int_used[arg.offset] = true;
                     int_used[arg.offset2] = true;
                 },
                 sysv64_pair_intsse => {
-                    assert(arg.offset < 6 and arg.offset2 < 8);
-                    assert(!int_used[arg.offset] and !fp_used[arg.offset2]);
+                    expect(arg.offset < 6 and arg.offset2 < 8);
+                    expect(!int_used[arg.offset] and !fp_used[arg.offset2]);
                     int_used[arg.offset] = true;
                     fp_used[arg.offset2] = true;
                 },
                 sysv64_pair_sseint => {
-                    assert(arg.offset < 8 and arg.offset2 < 6);
-                    assert(!fp_used[arg.offset] and !int_used[arg.offset2]);
+                    expect(arg.offset < 8 and arg.offset2 < 6);
+                    expect(!fp_used[arg.offset] and !int_used[arg.offset2]);
                     fp_used[arg.offset] = true;
                     int_used[arg.offset2] = true;
                 },
                 sysv64_pair_ssesse => {
-                    assert(arg.offset < 8 and arg.offset2 < 8);
-                    assert(!fp_used[arg.offset] and !fp_used[arg.offset2]);
+                    expect(arg.offset < 8 and arg.offset2 < 8);
+                    expect(!fp_used[arg.offset] and !fp_used[arg.offset2]);
                     fp_used[arg.offset] = true;
                     fp_used[arg.offset2] = true;
                 },
                 sysv64_memory => {
                     // Two words per sixteen-byte argument, laid down in order.
-                    assert(arg.offset == stack_words);
+                    expect(arg.offset == stack_words);
                     stack_words += 2;
                 },
                 else => unreachable,
             }
         }
-        assert(result.stack_count == stack_words);
+        expect(result.stack_count == stack_words);
     }
 }
 
@@ -958,7 +958,7 @@ fn aapcs64NeverReusesARegister() void {
             }
             var result: AllocResult = undefined;
             ffi_classify.allocAapcs64(&result, &ret, &args, apple, aapcs64_max_ret);
-            assert(result.error_kind == alloc_ok);
+            expect(result.error_kind == alloc_ok);
 
             var general_used = [_]bool{false} ** 8;
             var fp_used = [_]bool{false} ** 8;
@@ -967,33 +967,33 @@ fn aapcs64NeverReusesARegister() void {
                 switch (arg.spec) {
                     aapcs64_general => {
                         for (0..words) |w| {
-                            assert(arg.offset + w < 8);
-                            assert(!general_used[arg.offset + w]);
+                            expect(arg.offset + w < 8);
+                            expect(!general_used[arg.offset + w]);
                             general_used[arg.offset + w] = true;
                         }
                     },
                     aapcs64_sse => {
                         for (0..words) |w| {
-                            assert(arg.offset + w < 8);
-                            assert(!fp_used[arg.offset + w]);
+                            expect(arg.offset + w < 8);
+                            expect(!fp_used[arg.offset + w]);
                             fp_used[arg.offset + w] = true;
                         }
                     },
                     aapcs64_general_ref => {
-                        assert(arg.offset < 8);
-                        assert(!general_used[arg.offset]);
+                        expect(arg.offset < 8);
+                        expect(!general_used[arg.offset]);
                         general_used[arg.offset] = true;
                     },
                     // Everything on the stack lies inside the area the
                     // convention reserved for it.
-                    aapcs64_stack, aapcs64_stack_ref => assert(arg.offset < result.stack_count),
+                    aapcs64_stack, aapcs64_stack_ref => expect(arg.offset < result.stack_count),
                     else => unreachable,
                 }
                 if (arg.spec == aapcs64_general_ref or arg.spec == aapcs64_stack_ref) {
-                    assert(arg.offset2 + arg.size <= result.stack_count);
+                    expect(arg.offset2 + arg.size <= result.stack_count);
                 }
             }
-            assert(result.stack_count % 16 == 0);
+            expect(result.stack_count % 16 == 0);
         }
     }
 }
@@ -1011,9 +1011,9 @@ fn aapcs64DoesNotBackfillRegisters() void {
     var result: AllocResult = undefined;
     ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
 
-    assert(args[0].offset == 0);
-    assert(args[1].spec == aapcs64_stack);
-    assert(args[2].spec == aapcs64_stack);
+    expect(args[0].offset == 0);
+    expect(args[1].spec == aapcs64_stack);
+    expect(args[2].spec == aapcs64_stack);
 }
 
 pub fn run() void {

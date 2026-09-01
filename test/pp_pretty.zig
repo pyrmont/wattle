@@ -28,10 +28,8 @@
 
 const std = @import("std");
 const config = @import("config");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 const subsystems = @import("subsystems");
 const gc_alloc = @import("subsystems").gc_alloc;
@@ -39,13 +37,16 @@ const buffers = @import("subsystems").value.buffers;
 const core_env = @import("subsystems").env;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
+const abi = @import("abi");
+const tables = @import("subsystems").value.tables;
+const expect = @import("expect.zig").expect;
 
 const pretty = subsystems.pp_pretty;
 const format = subsystems.pp_format;
 
-var test_env: *types.JanetTable = undefined;
+var test_env: *tables.Table = undefined;
 
-fn checkBuffer(b: *types.JanetBuffer, expected: []const u8) void {
+fn checkBuffer(b: *buffers.Buffer, expected: []const u8) void {
     const count: usize = @intCast(b.count);
     if (count != expected.len or !std.mem.eql(u8, b.slice()[0..count], expected)) {
         std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, b.slice()[0..count] });
@@ -53,29 +54,29 @@ fn checkBuffer(b: *types.JanetBuffer, expected: []const u8) void {
     }
 }
 
-fn contains(b: *types.JanetBuffer, needle: []const u8) bool {
+fn contains(b: *buffers.Buffer, needle: []const u8) bool {
     const count: usize = @intCast(b.count);
     return std.mem.indexOf(u8, b.slice()[0..count], needle) != null;
 }
 
-fn endsWith(b: *types.JanetBuffer, tail: []const u8) bool {
+fn endsWith(b: *buffers.Buffer, tail: []const u8) bool {
     const count: usize = @intCast(b.count);
     return std.mem.endsWith(u8, b.slice()[0..count], tail);
 }
 
-fn newlines(b: *types.JanetBuffer) usize {
+fn newlines(b: *buffers.Buffer) usize {
     const count: usize = @intCast(b.count);
     return std.mem.count(u8, b.slice()[0..count], "\n");
 }
 
 fn eval(source: [*:0]const u8) repr.Value {
     var out: repr.Value = wrap.fromNil();
-    std.debug.assert(core_env.dostring(test_env, source, "pp-pretty-test", &out) == 0);
+    expect(core_env.dostring(test_env, source, "pp-pretty-test", &out) == 0);
     gc_alloc.gcroot(out);
     return out;
 }
 
-fn buffer(capacity: i32) *types.JanetBuffer {
+fn buffer(capacity: i32) *buffers.Buffer {
     return buffers.new(capacity);
 }
 
@@ -91,20 +92,20 @@ const guard = config.recursion_guard;
 ///
 /// Eight conversion characters carry the eight flag combinations, and the
 /// width field holds two digits, which bounds the width at 99.
-fn prettyWidth(b: *types.JanetBuffer, width: u32, flags: c_int, x: repr.Value) !void {
+fn prettyWidth(b: *buffers.Buffer, width: u32, flags: c_int, x: repr.Value) !void {
     const conv = [8]u8{ 'p', 'P', 'q', 'Q', 'm', 'M', 'n', 'N' };
     const index: usize =
         @as(usize, if (flags & constants.JANET_PRETTY_COLOR != 0) 1 else 0) |
         @as(usize, if (flags & constants.JANET_PRETTY_ONELINE != 0) 2 else 0) |
         @as(usize, if (flags & constants.JANET_PRETTY_NOTRUNC != 0) 4 else 0);
 
-    std.debug.assert(width >= 1 and width <= 99);
+    expect(width >= 1 and width <= 99);
     var spec: [8]u8 = undefined;
     const written = std.fmt.bufPrint(&spec, "%{d}{c}", .{ width, conv[index] }) catch unreachable;
     spec[written.len] = 0;
 
     var argv = [1]repr.Value{x};
-    try format.bufferFormat(b, &spec, -1, argv[0..1]);
+    try format.bufferFormat(b, &spec, 0, argv[0..1]);
 }
 
 // ------------------------------------------------------- the null buffer
@@ -113,7 +114,7 @@ fn prettyWidth(b: *types.JanetBuffer, width: u32, flags: c_int, x: repr.Value) !
 /// tree passes null — every one is a format string with a buffer already in
 /// hand — so this branch has never run outside this file.
 fn aNullBufferIsAllocated() !void {
-    const b = try pretty.prettyBuffer(null, guard, 80, 0, eval("[1 2 3]"), 0, 0);
+    const b = try pretty.prettyBuffer(null, guard, 80, .{}, eval("[1 2 3]"), 0, 0);
     checkBuffer(b, "(1 2 3)");
 
     const j = try pretty.jdn(null, guard, eval("[1 2 3]"), 0, 0);
@@ -137,11 +138,11 @@ fn theBarrierProtectsEarlierText() !void {
     // Byte for byte, the preamble is untouched — including its newlines and
     // the ')' that would otherwise make the backtracker start here.
     const count: usize = @intCast(b.count);
-    std.debug.assert(count > preamble.len);
-    std.debug.assert(std.mem.eql(u8, b.slice()[0..preamble.len], preamble));
+    expect(count > preamble.len);
+    expect(std.mem.eql(u8, b.slice()[0..preamble.len], preamble));
 
     // And what followed it did wrap, so the case is not vacuous.
-    std.debug.assert(std.mem.indexOfScalar(u8, b.slice()[preamble.len..count], '\n') != null);
+    expect(std.mem.indexOfScalar(u8, b.slice()[preamble.len..count], '\n') != null);
 }
 
 // ------------------------------------------------------------ the width
@@ -194,17 +195,17 @@ fn colourCostsNoColumns() !void {
     try prettyWidth(plain, 16, 0, val);
     try prettyWidth(colored, 16, constants.JANET_PRETTY_COLOR, val);
 
-    std.debug.assert(colored.count > plain.count);
-    std.debug.assert(newlines(plain) == 0);
-    std.debug.assert(newlines(colored) == 0);
+    expect(colored.count > plain.count);
+    expect(newlines(plain) == 0);
+    expect(newlines(colored) == 0);
 
     // And one column narrower, where both must wrap the same way.
     const narrow_plain = buffer(64);
     const narrow_colored = buffer(64);
     try prettyWidth(narrow_plain, 12, 0, val);
     try prettyWidth(narrow_colored, 12, constants.JANET_PRETTY_COLOR, val);
-    std.debug.assert(newlines(narrow_plain) == 4);
-    std.debug.assert(newlines(narrow_colored) == 4);
+    expect(newlines(narrow_plain) == 4);
+    expect(newlines(narrow_colored) == 4);
 }
 
 // ------------------------------------------------------------ the cycles
@@ -249,8 +250,8 @@ fn theArrayTruncationBoundary() !void {
 
     // 160 elements, whole: no elision anywhere, and the last element is the
     // last one rather than the last one printed before an elision.
-    std.debug.assert(!contains(at_limit, "..."));
-    std.debug.assert(endsWith(at_limit, " 157 158 159]"));
+    expect(!contains(at_limit, "..."));
+    expect(endsWith(at_limit, " 157 158 159]"));
 
     // 161 elements: three, an elision, three.
     checkBuffer(over, "@[0 1 2 ... 158 159 160]");
@@ -265,8 +266,8 @@ fn theDictionaryTruncationBoundary() !void {
     try prettyWidth(at_limit, 99, constants.JANET_PRETTY_ONELINE, eval("(tabseq [i :range [0 30]] i i)"));
     try prettyWidth(over, 99, constants.JANET_PRETTY_ONELINE, eval("(tabseq [i :range [0 31]] i i)"));
 
-    std.debug.assert(!contains(at_limit, "..."));
-    std.debug.assert(endsWith(over, " ...}"));
+    expect(!contains(at_limit, "..."));
+    expect(endsWith(over, " ...}"));
 
     // Truncation is off under NOTRUNC, for both shapes.
     const whole = buffer(4096);
@@ -276,7 +277,7 @@ fn theDictionaryTruncationBoundary() !void {
         constants.JANET_PRETTY_ONELINE | constants.JANET_PRETTY_NOTRUNC,
         eval("(tabseq [i :range [0 31]] i i)"),
     );
-    std.debug.assert(!contains(whole, "..."));
+    expect(!contains(whole, "..."));
 }
 
 /// Keys are sorted, so a table prints the same way twice however it was built.
@@ -293,11 +294,11 @@ fn keysAreSortedBelowTheLimit() !void {
         "(let [t @{}] (var i 39) (while (>= i 0) (put t i i) (-- i)) t)",
     ));
 
-    std.debug.assert(forward.count == backward.count);
+    expect(forward.count == backward.count);
     const count: usize = @intCast(forward.count);
-    std.debug.assert(std.mem.eql(u8, forward.slice()[0..count], backward.slice()[0..count]));
+    expect(std.mem.eql(u8, forward.slice()[0..count], backward.slice()[0..count]));
     // Sorted, so the first entry is the smallest key.
-    std.debug.assert(std.mem.eql(u8, forward.slice()[0..6], "@{0 0 "));
+    expect(std.mem.eql(u8, forward.slice()[0..6], "@{0 0 "));
 }
 
 /// Nested dictionaries share one key-sort scratch allocation, each level
@@ -320,7 +321,7 @@ fn nestedDictionariesShareTheKeySortScratch() !void {
 fn theDepthLimit() !void {
     const b = buffer(64);
     var argv = [1]repr.Value{eval("[1 [2 [3 [4]]]]")};
-    try format.bufferFormat(b, "%.2q", -1, argv[0..1]);
+    try format.bufferFormat(b, "%.2q", 0, argv[0..1]);
     checkBuffer(b, "(1 (...))");
 }
 
@@ -343,8 +344,8 @@ fn whatJdnRefuses() !void {
     }) |source| {
         const val = eval(source);
         const r = harness.raised(pretty.jdn, .{ buffer(16), guard, val, @as(i32, 0), @as(i32, 0) }).?;
-        std.debug.assert(r.signal == types.Signal.@"error");
-        std.debug.assert(r.says("could not print to jdn format"));
+        expect(r.signal == abi.Signal.@"error");
+        expect(r.says("could not print to jdn format"));
     }
 }
 
@@ -357,7 +358,7 @@ fn jdnTreatsSymbolsAndKeywordsDifferently() !void {
     checkBuffer(b, ":1abc");
 
     const symbol = eval("(symbol \"1abc\")");
-    std.debug.assert(harness.raised(
+    expect(harness.raised(
         pretty.jdn,
         .{ buffer(16), guard, symbol, @as(i32, 0), @as(i32, 0) },
     ) != null);

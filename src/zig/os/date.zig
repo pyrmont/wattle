@@ -1,10 +1,9 @@
-//! `os/date`, `os/strftime` and `os/mktime`: the broken-down calendar, and the
 //! `os/date`, `os/strftime` and `os/mktime`: the broken-down calendar.
 //!
-//! `struct tm` has a layout only the platform header knows, so it stays
-//! libc's, reached through `os/abi.h`. It translates completely
-//! on all five of this project's targets, which is what makes the calendar
-//! movable where `struct stat` -- see `os_files.zig` -- is not.
+//! `struct tm` has a layout only the platform header knows, so it stays libc's,
+//! reached through `os/abi.h`. It translates completely on all five of this
+//! project's targets, which is what makes the calendar movable where
+//! `struct stat` -- see `os/fs/host_stat.zig` -- is not.
 //!
 //! A `struct tm` never crosses a boundary here. It is filled and read inside
 //! one cfunction and dies with it, which is the property that made the
@@ -14,22 +13,21 @@
 //!
 //! `localtime` and `gmtime` have a reentrant form on POSIX (`_r`, taking the
 //! caller's structure) and a Microsoft form (`_s`, with the arguments the
-//! other way round). The C original also has a Plan 9 arm that calls the
-//! non-reentrant pair into a static buffer; there is no Zig target for Plan 9
-//! in this project, so that arm is recorded here and not written, exactly as
-//! `io_core.zig` records the Plan 9 `dup`.
+//! other way round). Plan 9 has a third arm, which calls the non-reentrant pair
+//! into a static buffer; there is no Zig target for Plan 9 in this project, so
+//! that arm is recorded here and not written, exactly as `io.zig` records the
+//! Plan 9 `dup`.
 //!
 //! `timegm` is the fourth and is not portable at all: POSIX does not have it,
-//! every Unix but Solaris does, and Windows spells it `_mkgmtime`. `os.c`
-//! declares it by hand for that reason, and so does this file.
+//! every Unix but Solaris does, and Windows spells it `_mkgmtime`, so this file
+//! declares it by hand.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const oa = @import("abi.zig");
-const corefn = @import("corefn");
-const raise = @import("raise");
+const corefn = @import("../corefn.zig");
+const raise = @import("../raise.zig");
 const pp_format = @import("../pp/format.zig");
-const types = @import("types");
 const repr = @import("repr");
 const c = @import("cabi");
 const structs = @import("../value/structs.zig");
@@ -42,45 +40,16 @@ const h = oa.h;
 
 const windows = builtin.os.tag == .windows;
 
-/// `JANET_NO_UTC_MKTIME` is `__sun && !__illumos__` -- Solaris but not
-/// illumos -- and both halves are compiler predefines, so it is not read
-/// through `@hasDecl` for the reason `os_files.zig` records at length. Zig
+/// Whether this platform lacks a UTC `mktime`: Solaris but not illumos. Zig
 /// 0.16 has no Solaris target at all (`std.Target.Os.Tag` carries `illumos`
 /// and nothing else in that family), so the condition cannot be true for
 /// anything this project can build, and saying so is more honest than a
 /// `builtin` test that reads as if it might fire.
 const no_utc_mktime = false;
 
-extern fn time(t: ?*h.time_t) callconv(.c) h.time_t;
-extern fn mktime(t: *h.struct_tm) callconv(.c) h.time_t;
-extern fn timegm(t: *h.struct_tm) callconv(.c) h.time_t;
-extern fn _mkgmtime(t: *h.struct_tm) callconv(.c) h.time_t;
-extern fn localtime_r(t: *const h.time_t, out: *h.struct_tm) callconv(.c) ?*h.struct_tm;
-extern fn gmtime_r(t: *const h.time_t, out: *h.struct_tm) callconv(.c) ?*h.struct_tm;
-/// The Microsoft reentrant pair. `localtime_s` and `gmtime_s` are declared in
-/// mingw's `<time.h>` but are not symbols its import library exports: the
-/// header maps them onto the CRT's `_localtime64_s` and `_gmtime64_s`, and a
-/// C build links against those. Calling the declared names compiles and fails
-/// to *link*, which is the third thing this increment's cross-compiles caught
-/// and the host could not.
-///
-/// The `64` in those names is the width of the `time_t` they take, so a mingw
-/// configured with `_USE_32BIT_TIME_T` would need the other pair. This project
-/// cross-compiles only `x86_64-windows-gnu`; the assertion below makes a
-/// narrow `time_t` a compile error rather than a silent mismatch.
-extern fn _localtime64_s(out: *h.struct_tm, t: *const h.time_t) callconv(.c) c_int;
-extern fn _gmtime64_s(out: *h.struct_tm, t: *const h.time_t) callconv(.c) c_int;
-
 comptime {
     if (windows and @sizeOf(h.time_t) != 8)
         @compileError("this build's time_t is not 64 bits; _localtime64_s is the wrong entry point");
-}
-extern fn strftime(buf: [*]u8, size: usize, fmt: [*:0]const u8, t: *const h.struct_tm) callconv(.c) usize;
-extern fn tzset() callconv(.c) void;
-extern fn _tzset() callconv(.c) void;
-
-inline fn errno() c_int {
-    return std.c._errno().*;
 }
 
 /// `SIZETIMEFMT`.
@@ -94,27 +63,27 @@ const time_fmt_size = 250;
 /// arithmetic cannot represent, and both implementations then read the
 /// structure they passed in. Reproduced rather than repaired, and recorded in
 /// `FOUND.md`.
-fn timeToTm(argv: []const repr.Value, n: i32, out: *h.struct_tm) raise.Raising(void) {
+fn timeToTm(argv: []const repr.Value, n: usize, out: *h.struct_tm) raise.Raising(void) {
     var t: h.time_t = undefined;
-    if (@as(i32, @intCast(argv.len)) > n and !repr.checkType(argv[@intCast(n)], repr.Tag.nil)) {
+    if (@as(i32, @intCast(argv.len)) > n and !repr.checkType(argv[n], repr.Tag.nil)) {
         t = @intCast(try args_core.getInteger64(argv, n));
     } else {
-        t = time(null);
+        t = oa.time(null);
     }
     const local = @as(i32, @intCast(argv.len)) > n + 1 and repr.truthy(argv[@intCast(n + 1)]);
     if (local) {
         if (windows) {
-            _tzset();
-            _ = _localtime64_s(out, &t);
+            c._tzset();
+            _ = oa._localtime64_s(out, &t);
         } else {
-            tzset();
-            _ = localtime_r(&t, out);
+            c.tzset();
+            _ = oa.localtime_r(&t, out);
         }
     } else {
         if (windows) {
-            _ = _gmtime64_s(out, &t);
+            _ = oa._gmtime64_s(out, &t);
         } else {
-            _ = gmtime_r(&t, out);
+            _ = oa.gmtime_r(&t, out);
         }
     }
 }
@@ -159,7 +128,7 @@ fn cfunStrftime(argv: []repr.Value) raise.Raising(repr.Value) {
     // The result is deliberately discarded: `strftime` answers 0 both for an
     // empty result and for one that did not fit, and the C original prints
     // whatever the buffer holds either way.
-    _ = strftime(&buf, buf.len, @ptrCast(fmt), &t_info);
+    _ = oa.strftime(&buf, buf.len, @ptrCast(fmt), &t_info);
     return value.fromBytes(std.mem.sliceTo(&buf, 0), .string);
 }
 
@@ -196,14 +165,14 @@ fn entryGetInt(entry: repr.Value, comptime field: [:0]const u8) raise.Raising(ti
     }
     if (repr.checkType(i, repr.Tag.nil)) return 0;
     if (windows) {
-        if (args_core.checkint(i) == 0) {
+        if (!args_core.checkint(i)) {
             return pp_format.panicf(
                 "bad slot #%s, expected 32 bit signed integer, got %v",
                 .{ field.ptr, i },
             );
         }
     } else {
-        if (args_core.checkint64(i) == 0) {
+        if (!args_core.checkint64(i)) {
             return pp_format.panicf(
                 "bad slot #%s, expected 64 bit signed integer, got %v",
                 .{ field.ptr, i },
@@ -223,10 +192,7 @@ fn cfunMktime(argv: []repr.Value) raise.Raising(repr.Value) {
     if (!repr.checkType(argv[0], repr.Tag.table) and
         !repr.checkType(argv[0], repr.Tag.@"struct"))
     {
-        // `-Dargs-core`'s abi, so this raise arrives as a jump through a
-        // frame that holds nothing -- the same call and the same reasoning as
-        // `core_env.zig`'s `slice`. The message is the fault layer's and has
-        // no spelling on this side of the seam.
+        // The message is the fault layer's and has no spelling on this side.
         return args_core.panicType(argv[0], 0, repr.TagSet.dictionary);
     }
 
@@ -239,15 +205,15 @@ fn cfunMktime(argv: []repr.Value) raise.Raising(repr.Value) {
     t_info.tm_isdst = entryGetDst(argv[0]);
 
     var t: h.time_t = undefined;
-    if (@as(i32, @intCast(argv.len)) >= 2 and repr.truthy(argv[1])) {
-        t = mktime(&t_info);
+    if (argv.len >= 2 and repr.truthy(argv[1])) {
+        t = oa.mktime(&t_info);
     } else if (no_utc_mktime) {
         return raise.panic("os/mktime UTC not supported on this platform");
     } else {
-        t = if (windows) _mkgmtime(&t_info) else timegm(&t_info);
+        t = if (windows) oa._mkgmtime(&t_info) else oa.timegm(&t_info);
     }
 
-    if (t == @as(h.time_t, -1)) return pp_format.panicf("%s", .{utils.strerrorSafe(errno())});
+    if (t == @as(h.time_t, -1)) return pp_format.panicf("%s", .{utils.strerrorSafe(c.errno())});
     return wrap.fromNumber(@floatFromInt(t));
 }
 

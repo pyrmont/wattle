@@ -13,50 +13,53 @@
 
 const std = @import("std");
 const scan = @import("subsystems").scan;
+const expect = @import("expect.zig").expect;
 
 fn signed(text: []const u8, out: *i64) bool {
-    return scan.scanInt64(text, out) != 0;
+    out.* = scan.scanInt64(text) orelse return false;
+    return true;
 }
 
 fn unsigned(text: []const u8, out: *u64) bool {
-    return scan.scanUint64(text, out) != 0;
+    out.* = scan.scanUint64(text) orelse return false;
+    return true;
 }
 
 fn theSignedRange() void {
     var value: i64 = 123;
 
-    std.debug.assert(signed("0", &value) and value == 0);
-    std.debug.assert(signed("-0", &value) and value == 0);
-    std.debug.assert(signed("+42", &value) and value == 42);
-    std.debug.assert(signed("-9223372036854775808", &value) and value == std.math.minInt(i64));
-    std.debug.assert(signed("9223372036854775807", &value) and value == std.math.maxInt(i64));
+    expect(signed("0", &value) and value == 0);
+    expect(signed("-0", &value) and value == 0);
+    expect(signed("+42", &value) and value == 42);
+    expect(signed("-9223372036854775808", &value) and value == std.math.minInt(i64));
+    expect(signed("9223372036854775807", &value) and value == std.math.maxInt(i64));
     // `<radix>r<digits>`, which is Janet's own spelling and not C's.
-    std.debug.assert(signed("16r7fff_ffff_ffff_ffff", &value) and value == std.math.maxInt(i64));
+    expect(signed("16r7fff_ffff_ffff_ffff", &value) and value == std.math.maxInt(i64));
 
     // One past each end. These are the assertions the suites cannot make.
-    std.debug.assert(!signed("9223372036854775808", &value));
-    std.debug.assert(!signed("-9223372036854775809", &value));
+    expect(!signed("9223372036854775808", &value));
+    expect(!signed("-9223372036854775809", &value));
 }
 
 fn theUnsignedRange() void {
     var value: u64 = 123;
 
-    std.debug.assert(unsigned("18446744073709551615", &value) and value == std.math.maxInt(u64));
-    std.debug.assert(unsigned("0xffff_ffff_ffff_ffff", &value) and value == std.math.maxInt(u64));
-    std.debug.assert(unsigned("2r101010", &value) and value == 42);
+    expect(unsigned("18446744073709551615", &value) and value == std.math.maxInt(u64));
+    expect(unsigned("0xffff_ffff_ffff_ffff", &value) and value == std.math.maxInt(u64));
+    expect(unsigned("2r101010", &value) and value == 42);
     // Radix 36 is the largest, and its last digit is `Z`.
-    std.debug.assert(unsigned("36rZ", &value) and value == 35);
-    std.debug.assert(unsigned("1_000_000", &value) and value == 1000000);
+    expect(unsigned("36rZ", &value) and value == 35);
+    expect(unsigned("1_000_000", &value) and value == 1000000);
 
-    std.debug.assert(!unsigned("18446744073709551616", &value));
+    expect(!unsigned("18446744073709551616", &value));
     // Negative is not "out of range" here, it is not a `uint64` at all.
-    std.debug.assert(!unsigned("-1", &value));
+    expect(!unsigned("-1", &value));
     // A separator may not lead, a prefix may not stand alone, radix 37 does
     // not exist, and a trailing non-digit is not ignored.
-    std.debug.assert(!unsigned("_1", &value));
-    std.debug.assert(!unsigned("0x", &value));
-    std.debug.assert(!unsigned("37r1", &value));
-    std.debug.assert(!unsigned("12z", &value));
+    expect(!unsigned("_1", &value));
+    expect(!unsigned("0x", &value));
+    expect(!unsigned("37r1", &value));
+    expect(!unsigned("12z", &value));
 }
 
 pub fn run() void {

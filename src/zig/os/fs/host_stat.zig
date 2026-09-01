@@ -49,15 +49,14 @@ const linux = builtin.os.tag == .linux;
 const windows = builtin.os.tag == .windows;
 
 /// A translation of `<sys/stat.h>` alone, and one of seven in the tree beside
-/// `os/abi.h`, `net/abi.h`, `filewatch/abi.h`, `ev/locks.zig`, `types.zig` and
+/// `os/abi.h`, `net/abi.h`, `filewatch/abi.h`, `ev/locks.zig`, `host.zig` and
 /// `cabi.zig`. A translation is right when nothing it declares crosses a
 /// subsystem boundary, and nothing does: `struct stat` never leaves this file,
 /// and what does leave is a mode word and an array of doubles.
 ///
 /// It is translated on every target, including the musl ones where the result
-/// is `opaque {}`. That is harmless because the Linux arm never names it, and
-/// a comptime-false branch is not analysed.
-/// shared translation to have picked up.
+/// is `opaque {}`. That is harmless because the Linux arm never names it, and a
+/// comptime-false branch is not analysed.
 const sys = @cImport({
     @cInclude("janet_features.h");
     @cInclude("sys/stat.h");
@@ -66,12 +65,11 @@ const sys = @cImport({
 /// mingw and Darwin both translate this completely; only musl does not, and
 /// the Linux arm never names it. On mingw `struct stat` and `struct
 /// _stat64i32` are the same 48 bytes, which is the pairing the header itself
-/// makes -- `os.c` said `struct _stat` and mingw defines that in terms of the
-/// same layout.
+/// makes.
 const Stat = sys.struct_stat;
 
-/// `enum JanetOsStatField` in `os.c`, in its order. `os_stat.zig` holds the
-/// keyword table that indexes it.
+/// The fields `os/stat` reports, in the order the numbers array holds them.
+/// `os/fs/stat.zig` holds the keyword table that indexes it.
 pub const Field = enum(usize) {
     dev = 0,
     inode,
@@ -178,7 +176,7 @@ fn readCStat(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i
 }
 
 // Declared rather than taken from `std.c`, which has no `stat` for
-// `aarch64-macos` in 0.16: `std.c.stat` resolves to `private.stat`, and that
+// `aarch64-macos` in 0.16: `std.stat` resolves to `private.stat`, and that
 // member does not exist for this architecture. The symbol does.
 //
 // The *name* of the symbol is per-target. Darwin renamed these when it widened
@@ -207,18 +205,17 @@ inline fn put(numbers: [*]f64, field: Field, value: f64) void {
 
 /// Whether an open stream is a directory, which `file/open` has to reject.
 ///
-/// This was `io.c`'s `janet_zig_io_isdir` and it is here rather than in
-/// `io_core.zig` for the reason the whole file exists: it needs `struct stat`,
-/// and naming one is the thing that is per-platform.
+/// It is here rather than in `io.zig` for the reason the whole file exists: it
+/// needs `struct stat`, and naming one is the thing that is per-platform.
 ///
-/// Janet ignores `fstat`'s result and reads the mode word regardless; that is
+/// Upstream ignores `fstat`'s result and reads the mode word regardless; that is
 /// reproduced rather than repaired, because a failure leaves the buffer
 /// uninitialised and the answer it then gives is whatever was on the stack.
 /// `FOUND.md` has the entry. Zeroing first makes this answer determinate
 /// without making it *different* on any path where Janet's was defined.
 pub fn isDirectory(file: ?*anyopaque) bool {
     if (windows or builtin.os.tag == .plan9) return false;
-    const fd = fileno(file);
+    const fd = c.fileno(file);
     if (linux) {
         const l = std.os.linux;
         var stx: l.Statx = std.mem.zeroes(l.Statx);
@@ -233,8 +230,6 @@ pub fn isDirectory(file: ?*anyopaque) bool {
 
 const S_IFMT: u32 = 0o170000;
 const S_IFDIR: u32 = 0o040000;
-
-extern fn fileno(stream: ?*anyopaque) callconv(.c) c_int;
 
 const fstat_name = if (darwin_inode64) "fstat$INODE64" else "fstat";
 const c_fstat: *const fn (c_int, *Stat) callconv(.c) c_int =
@@ -264,17 +259,3 @@ inline fn zeroAll(numbers: [*]f64) void {
     var i: usize = 0;
     while (i < Field.count) : (i += 1) numbers[i] = 0;
 }
-
-/// The same signature `os_files.zig` used to reach through the C ABI, so that
-/// its call sites did not have to change with the implementation.
-pub fn statReadAbiCompat(path: [*:0]const u8, do_lstat: i32, mode: *u32, numbers: [*]f64) i32 {
-    return statRead(path, do_lstat != 0, mode, numbers);
-}
-
-// Nothing here is a symbol.
-//
-// `janet_zig_os_stat_read` and `janet_zig_io_isdir` were the two functions C
-// kept when everything else around them moved to Zig, and they were exported
-// so that those two files could call back in. Both callers are gone.
-// `statReadAbiCompat` stays because `os/fs.zig`'s call sites pass the `i32`
-// the C signature took.

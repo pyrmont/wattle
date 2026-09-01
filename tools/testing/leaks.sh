@@ -56,12 +56,18 @@ fi
 
 # `gc_stress` orphans a block on purpose, so it is excluded rather than
 # expected: its whole subject is a heap the collector is not allowed to reach.
-# The two contracts that leak *and are still measured* are `gc_sweep` and
-# `net_sockets`; both pin a defect `FOUND.md` records and both are listed in
-# `expected` below, so a change in either count is a signal rather than noise.
+#
+# **Every other contract is expected to leak nothing, and there are no
+# exceptions left.** There were two. `net_sockets` was expected at 3 until
+# Phase 14 Part 3c closed the `net/address` unix domain leak, and `gc_sweep` at
+# 8 until increment 4g walked the weak heap at teardown; both under
+# `DESIGN.md` §12, both with the `FOUND.md` status line written first.
+#
+# **These expectations tighten and never loosen**: a count that drops is a leak
+# that was fixed and the number comes down with it; a count that rises is a
+# regression, whatever else changed in the same increment. Adding an
+# `expected_` entry back needs a `FOUND.md` entry to point at.
 excluded="gc_stress"
-expected_gc_sweep=8
-expected_net_sockets=3
 
 if [ $# -gt 0 ]; then
     names=$*

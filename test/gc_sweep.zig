@@ -41,7 +41,6 @@
 //! to either subsystem.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const options = @import("options");
@@ -58,7 +57,8 @@ const wrap = @import("subsystems").value.wrap;
 const abstracts = @import("subsystems").value.abstracts;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const fibers = @import("subsystems").value.fibers;
-const AbstractType = abstract_type.AbstractType;
+const abi = @import("abi");
+const expect = @import("expect.zig").expect;
 
 /// `vm.ev.threaded_abstracts` and `janet_abstract_threaded` exist only
 /// where the event loop does, and this has to be comptime so that the branch
@@ -70,7 +70,7 @@ const AbstractType = abstract_type.AbstractType;
 /// same condition spelled in the vocabulary this module has.
 const has_ev = options.ev;
 
-fn headerOf(pointer: ?*anyopaque) *types.JanetGCObject {
+fn headerOf(pointer: ?*anyopaque) *abi.JanetGCObject {
     return @ptrCast(@alignCast(pointer.?));
 }
 
@@ -101,11 +101,10 @@ var gc_calls: i32 = 0;
 var gc_data: ?*anyopaque = null;
 var gc_size: usize = 0;
 
-fn probeGc(data: *anyopaque, length: usize) c_int {
+fn probeGc(data: *anyopaque, length: usize) void {
     gc_calls += 1;
     gc_data = data;
     gc_size = length;
-    return 0;
 }
 
 var order_log: [8]u8 = undefined;
@@ -118,14 +117,12 @@ fn logOrder(character: u8) void {
     }
 }
 
-fn probeGcOrdered(_: *anyopaque, _: usize) c_int {
+fn probeGcOrdered(_: *anyopaque, _: usize) void {
     logOrder('G');
-    return 0;
 }
 
-fn probePerthreadOrdered(_: *anyopaque, _: usize) c_int {
+fn probePerthreadOrdered(_: *anyopaque, _: usize) void {
     logOrder('P');
-    return 0;
 }
 
 const at_final = abstract_type.define(anyopaque, .{ .name = "gc-sweep-test/final", .gc = probeGc });
@@ -136,11 +133,11 @@ const at_ordered = abstract_type.define(anyopaque, .{
 });
 const at_plain = abstract_type.define(anyopaque, .{ .name = "gc-sweep-test/plain" });
 
-fn plain() *const types.AbstractType {
+fn plain() *const abi.AbstractType {
     return &at_plain;
 }
 
-fn final() *const types.AbstractType {
+fn final() *const abi.AbstractType {
     return &at_final;
 }
 
@@ -153,10 +150,10 @@ fn unreachableBlocksAreFreed() void {
     const before = harness.vm().gc.block_count;
 
     for (0..16) |_| _ = buffers.new(8);
-    std.debug.assert(harness.vm().gc.block_count == before + 16);
+    expect(harness.vm().gc.block_count == before + 16);
 
     gc_mark.collect();
-    std.debug.assert(harness.vm().gc.block_count == before);
+    expect(harness.vm().gc.block_count == before);
 }
 
 /// A survivor stays on its list, keeps its payload, and loses its mark. The
@@ -172,15 +169,15 @@ fn aSurvivorKeepsItsPayloadAndLosesItsMark() void {
     gc_alloc.gcroot(val);
 
     gc_mark.collect();
-    std.debug.assert(harness.vm().gc.block_count == before + 1);
-    std.debug.assert(onList(harness.vm().gc.blocks, buffer));
-    std.debug.assert(!reachable(buffer));
-    std.debug.assert(buffer.*.count == 10);
-    std.debug.assert(std.mem.eql(u8, buffer.*.slice()[0..10], "still here"));
+    expect(harness.vm().gc.block_count == before + 1);
+    expect(onList(harness.vm().gc.blocks, buffer));
+    expect(!reachable(buffer));
+    expect(buffer.count == 10);
+    expect(std.mem.eql(u8, buffer.slice()[0..10], "still here"));
 
     _ = gc_alloc.gcunroot(val);
     gc_mark.collect();
-    std.debug.assert(harness.vm().gc.block_count == before);
+    expect(harness.vm().gc.block_count == before);
 }
 
 /// `JANET_MEM_DISABLED` holds a block through a sweep that never reached it,
@@ -194,20 +191,20 @@ fn theDisabledFlagOutlivesASweep() void {
     const before = harness.vm().gc.block_count;
 
     const buffer = buffers.new(8);
-    buffer.*.gc.flags |= constants.JANET_MEM_DISABLED;
+    buffer.gc.flags |= constants.JANET_MEM_DISABLED;
 
     gc_mark.collect();
-    std.debug.assert(harness.vm().gc.block_count == before + 1);
-    std.debug.assert(onList(harness.vm().gc.blocks, buffer));
-    std.debug.assert(buffer.*.gc.flags & constants.JANET_MEM_DISABLED != 0);
-    std.debug.assert(!reachable(buffer));
+    expect(harness.vm().gc.block_count == before + 1);
+    expect(onList(harness.vm().gc.blocks, buffer));
+    expect(buffer.gc.flags & constants.JANET_MEM_DISABLED != 0);
+    expect(!reachable(buffer));
 
     gc_mark.collect();
-    std.debug.assert(harness.vm().gc.block_count == before + 1);
+    expect(harness.vm().gc.block_count == before + 1);
 
-    buffer.*.gc.flags &= ~@as(i32, constants.JANET_MEM_DISABLED);
+    buffer.gc.flags &= ~@as(i32, constants.JANET_MEM_DISABLED);
     gc_mark.collect();
-    std.debug.assert(harness.vm().gc.block_count == before);
+    expect(harness.vm().gc.block_count == before);
 }
 
 // ------------------------------------------------------------ finalization
@@ -216,18 +213,18 @@ fn theDisabledFlagOutlivesASweep() void {
 /// runtime handed the type — not the block address, and not the header size.
 fn aFinalizerRunsOnceWithTheAbstract() void {
     settle();
-    const abstract = abstracts.new(final(), 24);
+    const abstract = abstracts.newBytes(final(), 24);
     gc_calls = 0;
     gc_data = null;
     gc_size = 0;
 
     gc_mark.collect();
-    std.debug.assert(gc_calls == 1);
-    std.debug.assert(gc_data == abstract);
-    std.debug.assert(gc_size == 24);
+    expect(gc_calls == 1);
+    expect(gc_data == abstract);
+    expect(gc_size == 24);
 
     gc_mark.collect();
-    std.debug.assert(gc_calls == 1);
+    expect(gc_calls == 1);
 }
 
 /// A block that survives is not finalized. The pair matters more than either
@@ -235,17 +232,17 @@ fn aFinalizerRunsOnceWithTheAbstract() void {
 /// reachability rather than by the sweep visiting the block.
 fn aSurvivorIsNotFinalized() void {
     settle();
-    const abstract = abstracts.new(final(), 8);
+    const abstract = abstracts.newBytes(final(), 8);
     const val = wrap.fromAbstract(abstract);
     gc_alloc.gcroot(val);
     gc_calls = 0;
 
     gc_mark.collect();
-    std.debug.assert(gc_calls == 0);
+    expect(gc_calls == 0);
 
     _ = gc_alloc.gcunroot(val);
     gc_mark.collect();
-    std.debug.assert(gc_calls == 1);
+    expect(gc_calls == 1);
 }
 
 /// Both finalizers run, and `gcperthread` runs first. The order is not
@@ -254,13 +251,13 @@ fn aSurvivorIsNotFinalized() void {
 /// reversing them would let `gc` free memory `gcperthread` still reads.
 fn perthreadRunsBeforeGc() void {
     settle();
-    _ = abstracts.new(&at_ordered, 8);
+    _ = abstracts.newBytes(&at_ordered, 8);
     order_len = 0;
 
     gc_mark.collect();
-    std.debug.assert(order_len == 2);
-    std.debug.assert(order_log[0] == 'P');
-    std.debug.assert(order_log[1] == 'G');
+    expect(order_len == 2);
+    expect(order_log[0] == 'P');
+    expect(order_log[1] == 'G');
 }
 
 /// An abstract with no callbacks at all is freed without incident. The sweep
@@ -268,10 +265,10 @@ fn perthreadRunsBeforeGc() void {
 fn anAbstractWithoutFinalizers() void {
     settle();
     const before = harness.vm().gc.block_count;
-    _ = abstracts.new(plain(), 8);
-    std.debug.assert(harness.vm().gc.block_count == before + 1);
+    _ = abstracts.newBytes(plain(), 8);
+    expect(harness.vm().gc.block_count == before + 1);
     gc_mark.collect();
-    std.debug.assert(harness.vm().gc.block_count == before);
+    expect(harness.vm().gc.block_count == before);
 }
 
 /// A symbol is the one immutable block with an obligation outside its own
@@ -284,11 +281,11 @@ fn aSymbolLeavesTheCache() void {
     const deleted = harness.vm().symcache.deleted;
 
     _ = value.fromBytes("gc-sweep-test-unique-symbol", .symbol);
-    std.debug.assert(harness.vm().symcache.count == count + 1);
+    expect(harness.vm().symcache.count == count + 1);
 
     gc_mark.collect();
-    std.debug.assert(harness.vm().symcache.count == count);
-    std.debug.assert(harness.vm().symcache.deleted == deleted + 1);
+    expect(harness.vm().symcache.count == count);
+    expect(harness.vm().symcache.deleted == deleted + 1);
 }
 
 // -------------------------------------------------------------- weak heap
@@ -312,10 +309,10 @@ fn aWeakArrayDropsDeadElementsInPlace() void {
 
     gc_mark.collect();
 
-    std.debug.assert(weak.*.count == 3);
-    std.debug.assert(wrap.toBuffer(weak.*.slice()[0]) == live);
-    std.debug.assert(harness.isType(weak.*.slice()[1], repr.Tag.nil));
-    std.debug.assert(harness.integerIs(weak.*.slice()[2], 42));
+    expect(weak.count == 3);
+    expect(wrap.toBuffer(weak.slice()[0]) == live);
+    expect(harness.isType(weak.slice()[1], repr.Tag.nil));
+    expect(harness.integerIs(weak.slice()[2], 42));
 
     _ = gc_alloc.gcunroot(wrap.fromBuffer(live));
     _ = gc_alloc.gcunroot(wrap.fromArray(weak));
@@ -344,32 +341,32 @@ fn theFourTableKinds() void {
     const live_value = wrap.fromBuffer(live);
 
     // One entry per table with a doomed key, one with a doomed value.
-    for ([_]*types.JanetTable{ weakk, weakv, weakkv, strong }) |table| {
+    for ([_]*tables.Table{ weakk, weakv, weakkv, strong }) |table| {
         tables.put(table, wrap.fromBuffer(buffers.new(8)), live_value);
         tables.put(table, live_value, wrap.fromBuffer(buffers.new(8)));
     }
 
-    std.debug.assert(weakk.*.count == 2 and weakv.*.count == 2 and weakkv.*.count == 2);
-    const deleted = weakk.*.deleted;
+    expect(weakk.count == 2 and weakv.count == 2 and weakkv.count == 2);
+    const deleted = weakk.deleted;
 
     gc_mark.collect();
 
     // Weak keys: the doomed-key entry goes, the doomed-value one stays because
     // a weak-keyed table's values are marked.
-    std.debug.assert(weakk.*.count == 1);
-    std.debug.assert(weakk.*.deleted == deleted + 1);
-    std.debug.assert(!harness.isType(tables.get(weakk, live_value), repr.Tag.nil));
+    expect(weakk.count == 1);
+    expect(weakk.deleted == deleted + 1);
+    expect(!harness.isType(tables.get(weakk, live_value), repr.Tag.nil));
 
     // Weak values: the mirror image.
-    std.debug.assert(weakv.*.count == 1);
-    std.debug.assert(harness.isType(tables.get(weakv, live_value), repr.Tag.nil));
+    expect(weakv.count == 1);
+    expect(harness.isType(tables.get(weakv, live_value), repr.Tag.nil));
 
     // Weak in both halves: neither entry survives.
-    std.debug.assert(weakkv.*.count == 0);
+    expect(weakkv.count == 0);
 
     // A strong table marks both halves, so nothing in it can die.
-    std.debug.assert(strong.*.count == 2);
-    std.debug.assert(!harness.isType(tables.get(strong, live_value), repr.Tag.nil));
+    expect(strong.count == 2);
+    expect(!harness.isType(tables.get(strong, live_value), repr.Tag.nil));
 
     _ = gc_alloc.gcunroot(wrap.fromBuffer(live));
     _ = gc_alloc.gcunroot(wrap.fromTable(weakk));
@@ -389,10 +386,10 @@ fn weakContainersAreThemselvesCollected() void {
     _ = tables.weakk(4);
     _ = tables.weakv(4);
     _ = tables.weakkv(4);
-    std.debug.assert(harness.vm().gc.block_count == before + 4);
+    expect(harness.vm().gc.block_count == before + 4);
 
     gc_mark.collect();
-    std.debug.assert(harness.vm().gc.block_count == before);
+    expect(harness.vm().gc.block_count == before);
 }
 
 /// A weak reference to a block that is itself dying is dropped, not read after
@@ -409,21 +406,21 @@ fn aWeakEntryAndItsTargetDieTogether() void {
     const weak = tables.weakv(4);
     gc_alloc.gcroot(wrap.fromTable(weak));
     tables.put(weak, value.fromBytes("doomed", .keyword), wrap.fromBuffer(buffers.new(8)));
-    std.debug.assert(weak.*.count == 1);
+    expect(weak.count == 1);
 
     gc_mark.collect();
 
-    std.debug.assert(weak.*.count == 0);
-    std.debug.assert(onList(harness.vm().gc.weak_blocks, weak));
+    expect(weak.count == 0);
+    expect(onList(harness.vm().gc.weak_blocks, weak));
 
     // The table and its key survive this collection; the buffer does not. The
     // key is alive because a weak-valued table marks its keys — the entry was
     // dropped by the sweep, after the walk had already reached the keyword
     // through it. The next collection is where the keyword goes, which is the
     // one collection of lag a weak table costs.
-    std.debug.assert(harness.vm().gc.block_count == before + 2);
+    expect(harness.vm().gc.block_count == before + 2);
     gc_mark.collect();
-    std.debug.assert(harness.vm().gc.block_count == before + 1);
+    expect(harness.vm().gc.block_count == before + 1);
 
     _ = gc_alloc.gcunroot(wrap.fromTable(weak));
 }
@@ -433,14 +430,12 @@ fn aWeakEntryAndItsTargetDieTogether() void {
 var threaded_gc_calls: i32 = 0;
 var threaded_perthread_calls: i32 = 0;
 
-fn probeThreadedGc(_: *anyopaque, _: usize) c_int {
+fn probeThreadedGc(_: *anyopaque, _: usize) void {
     threaded_gc_calls += 1;
-    return 0;
 }
 
-fn probeThreadedPerthread(_: *anyopaque, _: usize) c_int {
+fn probeThreadedPerthread(_: *anyopaque, _: usize) void {
     threaded_perthread_calls += 1;
-    return 0;
 }
 
 const at_threaded = abstract_type.define(anyopaque, .{
@@ -467,20 +462,20 @@ fn aThreadedAbstractLosesItsReference() void {
 
     const tracked = harness.vm().ev.threaded_abstracts.count;
     gc_mark.collect();
-    std.debug.assert(threaded_perthread_calls == 0);
-    std.debug.assert(threaded_gc_calls == 0);
-    std.debug.assert(harness.vm().ev.threaded_abstracts.count == tracked);
+    expect(threaded_perthread_calls == 0);
+    expect(threaded_gc_calls == 0);
+    expect(harness.vm().ev.threaded_abstracts.count == tracked);
 
     _ = gc_alloc.gcunroot(val);
     gc_mark.collect();
-    std.debug.assert(threaded_perthread_calls == 1);
-    std.debug.assert(threaded_gc_calls == 1);
-    std.debug.assert(harness.vm().ev.threaded_abstracts.count == tracked - 1);
+    expect(threaded_perthread_calls == 1);
+    expect(threaded_gc_calls == 1);
+    expect(harness.vm().ev.threaded_abstracts.count == tracked - 1);
 
     // The entry is a tombstone now, so a later sweep must not find it again.
     gc_mark.collect();
-    std.debug.assert(threaded_perthread_calls == 1);
-    std.debug.assert(threaded_gc_calls == 1);
+    expect(threaded_perthread_calls == 1);
+    expect(threaded_gc_calls == 1);
 }
 
 // --------------------------------------------------------------- teardown
@@ -489,22 +484,22 @@ fn aThreadedAbstractLosesItsReference() void {
 /// block nothing, and every finalizer runs — which is what makes
 /// `janet_deinit` safe to call with live values outstanding.
 ///
-/// The last assertion pins a defect rather than a guarantee, and is written
-/// that way on purpose. `janet_clear_memory` walks `vm.gc.blocks` and never
-/// touches `vm.gc.weak_blocks`, so every weak table and weak array alive at
-/// teardown leaks its block and its data array. The list head still pointing
-/// at them after `janet_deinit` returns is that leak, visible from inside the
-/// `FOUND.md` records it; it is reproduced, so this assertion
-/// will fail for whichever implementation is fixed first.
+/// **The last assertion used to pin a defect and now pins the guarantee.**
+/// Teardown walked `vm.gc.blocks` and never touched `vm.gc.weak_blocks`, so
+/// every weak table and weak array alive at deinit leaked its block and its
+/// data array, and the list head still pointing at them afterwards was that
+/// leak seen from inside. It is fixed here and `FOUND.md` records the
+/// divergence from upstream.
 ///
-/// It is also visible from outside: `tools/testing/leaks.sh` carries
-/// `expected_gc_sweep=8`, which is the four weak containers this file leaves
-/// alive across a teardown -- the one here and `repeatedCycles`' three --
-/// times the block and the data array each of them leaks.
+/// It was visible from outside too: `tools/testing/leaks.sh` carried
+/// `expected_gc_sweep=8` -- the four weak containers this file leaves alive
+/// across a teardown, the one here and `repeatedCycles`' three, times the block
+/// and the data array each of them leaked. That entry is gone and the script
+/// expects zero everywhere.
 fn clearMemoryFinalizesEverything() void {
-    const abstract = abstracts.new(final(), 8);
+    const abstract = abstracts.newBytes(final(), 8);
     gc_alloc.gcroot(wrap.fromAbstract(abstract));
-    _ = abstracts.new(final(), 8);
+    _ = abstracts.newBytes(final(), 8);
     gc_calls = 0;
 
     const weak = tables.weakv(4);
@@ -512,9 +507,9 @@ fn clearMemoryFinalizesEverything() void {
 
     vm_lifecycle.deinit();
 
-    std.debug.assert(gc_calls == 2);
-    std.debug.assert(harness.vm().gc.blocks == null);
-    std.debug.assert(harness.vm().gc.weak_blocks != null);
+    expect(gc_calls == 2);
+    expect(harness.vm().gc.blocks == null);
+    expect(harness.vm().gc.weak_blocks == null);
 
     harness.init();
 }
@@ -532,12 +527,12 @@ fn repeatedCycles() void {
         tables.put(
             table,
             value.fromBytes("abstract", .keyword),
-            wrap.fromAbstract(abstracts.new(plain(), 8)),
+            wrap.fromAbstract(abstracts.newBytes(plain(), 8)),
         );
 
         var function: repr.Value = wrap.fromNil();
         _ = core_env.dostring(harness.coreEnv(), "(fn [] 1)", "gc-sweep-test", &function);
-        std.debug.assert(harness.isType(function, repr.Tag.function));
+        expect(harness.isType(function, repr.Tag.function));
         tables.put(
             table,
             value.fromBytes("fiber", .keyword),

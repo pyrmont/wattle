@@ -1,27 +1,21 @@
-//! `JanetArray`: the growable `Janet` container, its capacity policy, its
+//! `Array`: the growable `Janet` container, its capacity policy, its
 //! push/pop primitives and the `array/*` surface.
 //!
-//! `buffers.zig` is the sibling, and the two were one file: they are one data
-//! structure with two element types -- a `JanetGCObject` header followed by
-//! `count`/`capacity`/`data`, with `data` in a separate `janet_malloc` block
-//! reallocated in place. They are separate because Janet's own taxonomy
-//! separates them: an array is **indexed** and a buffer is **bytes**, which is
-//! the distinction `janet_indexed_view` and `janet_bytes_view` draw.
+//! `buffers.zig` is the sibling: one data structure with two element types -- a
+//! collectable header followed by `count`/`capacity`/`data`, with `data` in a
+//! separate heap block reallocated in place. They are separate files because
+//! Janet's own taxonomy separates them: an array is **indexed** and a buffer is
+//! **bytes**, which is the distinction the indexed and bytes views draw.
+//! Neither calls into the other; the shared layout is a fact about the
+//! structures, not a dependency.
 //!
-//! Nothing here calls into `buffers.zig` and nothing there calls in here. The
-//! shared layout is a fact about the structures, not a dependency.
+//! An array is not traversed here. `gc/mark.zig` walks its elements; nothing
+//! below marks, and nothing below frees a collectable block.
 //!
-//! An array is not traversed here either. `gc/mark.zig` walks its elements;
-//! nothing below marks, and nothing below frees a collectable block.
-//!
-//! **Nothing here holds anything across a raise**, because
-//!
-//! **The file is jump-transparent**, under the rule SPIKE-8 settled:
-//! `janet_gcalloc` can trigger a collection, which runs finalizers, which
-//! SPIKE-8 permits to raise, and `push` raises on overflow. A signal unwinds
-//! straight through these frames, so there is no `defer` in this file and
-//! `build.zig` checks that there is not. Nothing below holds a raw block
-//! between acquiring it and storing it where the collector can see it.
+//! **Nothing here holds anything across a raise.** `gcalloc` can trigger a
+//! collection, which runs finalizers, which may raise, and `push` raises on
+//! overflow — but nothing below holds a raw block between acquiring it and
+//! storing it where the collector can see it.
 //!
 //! ## Arithmetic reproduced rather than repaired
 //!
@@ -57,54 +51,92 @@
 //! asymmetry and also preserved.
 
 const std = @import("std");
-const corefn = @import("corefn");
-const types = @import("types");
+const corefn = @import("../corefn.zig");
 const repr = @import("repr");
-const vm_state = @import("../vm/lifecycle.zig");
-const raise = @import("raise");
+const vm_state = @import("../vm/state.zig");
+const raise = @import("../raise.zig");
 const pp_format = @import("../pp/format.zig");
 const gc_alloc = @import("../gc.zig");
 const utils = @import("../utils.zig");
 const wrap = @import("helpers/wrap.zig");
 const args_core = @import("../args.zig");
 const fatal = @import("../fatal.zig");
+const abi = @import("abi");
+const tables = @import("tables.zig");
 
-/// `safe_memcpy` from `src/core/util.c`. Declared here rather than imported:
-/// `util.h` was never in a translation, and this function's parameters are
-/// primitive, so no Janet type crosses. `buffers.zig` has
-/// the same declaration for the same reason; `utils.zig` defines it without
-/// `pub`, and making it `pub` is what deletes both.
-extern fn safe_memcpy(dest: ?*anyopaque, src: ?*const anyopaque, len: usize) callconv(.c) void;
+pub const Array = struct {
+    gc: abi.JanetGCObject = .{},
+    count: usize = 0,
+    capacity: usize = 0,
+    data: ?[*]repr.Value = null,
 
-/// C's conversion of a signed count to `size_t`: sign-extend to the pointer
-/// width, then reinterpret. For a negative count that yields a very large
-/// size, which is exactly what the C code does and what `FOUND.md` records for
-/// `array/ensure`. Written out because Zig has no implicit signed-to-unsigned
-/// conversion and `@intCast` would trap on the values this reaches.
-inline fn asSize(n: i32) usize {
-    return @bitCast(@as(isize, n));
-}
+    /// The live elements. Empty rather than a trap for an array that has
+    /// never been grown: `janet_array_init(a, 0)` leaves `data` null, which
+    /// is the ordinary state of `(array/new 0)` and of every fresh
+    /// `Array` on a fiber's stack.
+    pub inline fn slice(self: anytype) utils.View(@TypeOf(self), repr.Value) {
+        if (self.count == 0) return &.{};
+        return self.data.?[0..self.count];
+    }
+
+    /// Store one element at the end and advance the count. **The caller has
+    /// already made room** -- `arrays.ensure` -- because growth reads the
+    /// collector's allocator and this type cannot.
+    ///
+    /// The slot it writes is one past `slice()`, which is why it is a method
+    /// rather than an index at the call site. See `vm_state.Vector`: the same
+    /// pair, for the same reason, on the arrays the VM grows for itself.
+    pub inline fn appendAssumingCapacity(self: *Array, x: repr.Value) void {
+        // Non-negativity is the type's now, not a precondition: `count` is
+        // `usize`. Room still is not.
+        std.debug.assert(self.count < self.capacity);
+        self.data.?[self.count] = x;
+        self.count += 1;
+    }
+
+    /// The allocation, `capacity` long, for a caller that fills the elements
+    /// *before* declaring the count.
+    ///
+    /// The parser does that on purpose: it pops its argument stack backwards
+    /// into a fresh array and only then says how long the array is, so that
+    /// a collection in the middle -- there is none, but the order is the C
+    /// original's -- would never see an uninitialised element. `slice()` is
+    /// empty throughout that loop, which is correct and not what the writer
+    /// wants.
+    pub inline fn reserved(self: *Array) []repr.Value {
+        if (self.capacity == 0) return &.{};
+        return self.data.?[0..self.capacity];
+    }
+
+    /// Remove and answer the last element. The caller has checked it is not
+    /// empty.
+    pub inline fn popAssumingAny(self: *Array) repr.Value {
+        const last = self.slice()[self.count - 1];
+        self.count -= 1;
+        return last;
+    }
+};
 
 // ------------------------------------------------------------------- array
 
 /// Give an array its initial payload. A capacity of zero leaves `data` null,
 /// and the growth paths handle that: `janet_realloc(NULL, n)` allocates.
-fn init(array: *types.JanetArray, capacity: i32) void {
+fn init(array: *Array, capacity: i32) void {
     var data: ?[*]repr.Value = null;
     if (capacity > 0) {
-        // Written as the C original writes it, rather than through
-        // `janet_gcpressure`, so the two selectors charge the same term.
-        vm_state.current().gc.next_collection +%= asSize(capacity) *% @sizeOf(repr.Value);
-        data = @ptrCast(@alignCast(utils.malloc(@sizeOf(repr.Value) *% asSize(capacity)) orelse
+        // Charged directly rather than through `gc.gcpressure`, because the
+        // term is the array's own bytes and nothing else.
+        vm_state.current().gc.next_collection +%= utils.asSize(capacity) *% @sizeOf(repr.Value);
+        data = @ptrCast(@alignCast(utils.malloc(@sizeOf(repr.Value) *% utils.asSize(capacity)) orelse
             fatal.outOfMemory()));
     }
     array.count = 0;
-    array.capacity = capacity;
+    array.capacity = @intCast(capacity);
     array.data = data;
 }
 
-pub fn new(capacity: i32) *types.JanetArray {
-    const array: *types.JanetArray = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.array, @sizeOf(types.JanetArray))));
+pub fn new(capacity: i32) *Array {
+    const array = gc_alloc.gcalloc(Array, .array);
     init(array, capacity);
     return array;
 }
@@ -112,8 +144,8 @@ pub fn new(capacity: i32) *types.JanetArray {
 /// An array whose elements do not keep their targets alive. The only
 /// difference is the memory type, which puts the block on the weak heap and
 /// sends it to `dropDeadElements` in `gc_sweep.zig` instead of to the marker.
-pub fn weak(capacity: i32) *types.JanetArray {
-    const array: *types.JanetArray = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.array_weak, @sizeOf(types.JanetArray))));
+pub fn weak(capacity: i32) *Array {
+    const array = gc_alloc.gcalloc(Array, .array_weak);
     init(array, capacity);
     return array;
 }
@@ -139,14 +171,14 @@ pub fn weak(capacity: i32) *types.JanetArray {
 /// `symbols.new(str, len)` have this same shape and are called `new`, because
 /// `janet_string` copies where `janet_array` reserves. The C API is
 /// inconsistent here and the namespace inherits it rather than causing it.
-pub fn newFrom(elements: []const repr.Value) *types.JanetArray {
+pub fn newFrom(elements: []const repr.Value) *Array {
     const count: i32 = @intCast(elements.len);
-    const array: *types.JanetArray = @ptrCast(@alignCast(gc_alloc.gcalloc(types.MemoryType.array, @sizeOf(types.JanetArray))));
-    array.capacity = count;
-    array.count = count;
-    array.data = @ptrCast(@alignCast(utils.malloc(@sizeOf(repr.Value) *% asSize(count))));
+    const array = gc_alloc.gcalloc(Array, .array);
+    array.capacity = elements.len;
+    array.count = elements.len;
+    array.data = @ptrCast(@alignCast(utils.malloc(@sizeOf(repr.Value) *% utils.asSize(count))));
     if (array.data == null) fatal.outOfMemory();
-    safe_memcpy(@ptrCast(array.data), @ptrCast(elements.ptr), @sizeOf(repr.Value) *% asSize(count));
+    utils.safeMemcpy(@ptrCast(array.data), @ptrCast(elements.ptr), @sizeOf(repr.Value) *% utils.asSize(count));
     return array;
 }
 
@@ -156,33 +188,42 @@ pub fn newFrom(elements: []const repr.Value) *types.JanetArray {
 /// script's growth factor straight through, and a factor of zero or less
 /// produces a zero or negative capacity that this passes to `janet_realloc`
 /// while leaving `count` alone. Reproduced exactly, wrapping operators and all.
-pub fn ensure(array: *types.JanetArray, capacity_in: i32, growth: i32) void {
-    var capacity = capacity_in;
+/// Grow an array to hold `capacity_in` elements, multiplied by `growth`.
+///
+/// `growth` is still the caller's signed integer and is still clamped at
+/// `INT32_MAX` rather than at `usize`'s range, because the clamp is the C
+/// original's and the capacity it produces is what a marshalled array carries.
+/// What is no longer possible is a negative product reaching `janet_realloc`:
+/// `cfunArrayEnsure` rejects a growth below one, which is `FOUND.md`'s
+/// "`array/ensure` does not validate its growth factor".
+pub fn ensure(array: *Array, capacity_in: usize, growth: i32) void {
     const old = array.data;
-    if (capacity <= array.capacity) return;
-    // Cannot overflow: both factors fit in 32 bits, so the product fits in 62.
-    var new_capacity: i64 = @as(i64, capacity) * @as(i64, growth);
+    if (capacity_in <= array.capacity) return;
+    // Cannot overflow: the count fits in 32 bits and so does the growth, so
+    // the product fits in 62.
+    var new_capacity: i64 = @as(i64, @intCast(capacity_in)) * @as(i64, growth);
     if (new_capacity > std.math.maxInt(i32)) new_capacity = std.math.maxInt(i32);
-    capacity = @truncate(new_capacity);
-    const new_data = utils.realloc(@ptrCast(old), asSize(capacity) *% @sizeOf(repr.Value)) orelse
+    const capacity: usize = @intCast(new_capacity);
+    const new_data = utils.realloc(@ptrCast(old), capacity *% @sizeOf(repr.Value)) orelse
         fatal.outOfMemory();
     // Charged after the allocation, where the buffer twin charges it before.
-    vm_state.current().gc.next_collection +%= asSize(capacity -% array.capacity) *% @sizeOf(repr.Value);
+    vm_state.current().gc.next_collection +%= (capacity -% array.capacity) *% @sizeOf(repr.Value);
     array.data = @ptrCast(@alignCast(new_data));
     array.capacity = capacity;
 }
 
 /// Set an array's length, filling any newly covered slots with nil.
-pub fn setcount(array: *types.JanetArray, count: i32) void {
+pub fn setcount(array: *Array, count: i32) void {
     if (count < 0) return;
-    if (count > array.count) {
-        ensure(array, count, 1);
-        @memset(array.reserved()[@intCast(array.count)..@intCast(count)], wrap.fromNil());
+    const want: usize = @intCast(count);
+    if (want > array.count) {
+        ensure(array, want, 1);
+        @memset(array.reserved()[array.count..want], wrap.fromNil());
     }
-    array.count = count;
+    array.count = want;
 }
 
-pub fn push(array: *types.JanetArray, x: repr.Value) raise.Raising(void) {
+pub fn push(array: *Array, x: repr.Value) raise.Raising(void) {
     if (array.count == std.math.maxInt(i32)) {
         return raise.panic("array overflow");
     }
@@ -190,20 +231,16 @@ pub fn push(array: *types.JanetArray, x: repr.Value) raise.Raising(void) {
     array.appendAssumingCapacity(x);
 }
 
-pub fn pop(array: *types.JanetArray) repr.Value {
+pub fn pop(array: *Array) repr.Value {
     if (array.count != 0) return array.popAssumingAny();
     return wrap.fromNil();
 }
 
-pub fn peek(array: *types.JanetArray) repr.Value {
+pub fn peek(array: *Array) repr.Value {
     if (array.count != 0) {
         return array.slice()[@intCast(array.count - 1)];
     }
     return wrap.fromNil();
-}
-
-pub fn pushAbi(array: *types.JanetArray, x: repr.Value) void {
-    raise.reported(push(array, x));
 }
 
 // ==========================================================================
@@ -229,18 +266,18 @@ fn cfunArrayWeak(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
 fn cfunArrayNewFilled(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const count = try args_core.getNat(argv, 0);
-    const x = if (@as(i32, @intCast(argv.len)) == 2) argv[1] else wrap.fromNil();
+    const x = if (argv.len == 2) argv[1] else wrap.fromNil();
     const array = new(count);
-    @memset(array.*.reserved()[0..@intCast(count)], x);
-    array.*.count = count;
+    @memset(array.reserved()[0..@intCast(count)], x);
+    array.count = @intCast(count);
     return wrap.fromArray(array);
 }
 
 fn cfunArrayFill(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const array = try args_core.getArray(argv, 0);
-    const x = if (@as(i32, @intCast(argv.len)) == 2) argv[1] else wrap.fromNil();
-    @memset(array.*.slice(), x);
+    const x = if (argv.len == 2) argv[1] else wrap.fromNil();
+    @memset(array.slice(), x);
     return argv[0];
 }
 
@@ -257,17 +294,21 @@ fn cfunArrayPeek(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
 fn cfunArrayPush(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const array = try args_core.getArray(argv, 0);
-    if (std.math.maxInt(i32) - @as(i32, @intCast(argv.len)) + 1 <= array.*.count) return raise.panic("array overflow");
-    const newcount = array.*.count - 1 + @as(i32, @intCast(argv.len));
+    if (std.math.maxInt(i32) - argv.len + 1 <= array.count) return raise.panic("array overflow");
+    // Ordered so it cannot underflow: `argv.len` is at least one (arity is
+    // 1..-1), so `count + len - 1` is never below `count`. The signed form
+    // this replaces computed `count - 1` first, which is -1 for an empty
+    // array and was fine only because it was signed.
+    const newcount = array.count + argv.len - 1;
     ensure(array, newcount, 2);
-    if (@as(i32, @intCast(argv.len)) > 1) {
-        safe_memcpy(
-            @ptrCast(array.*.data.? + @as(usize, @intCast(array.*.count))),
+    if (argv.len > 1) {
+        utils.safeMemcpy(
+            @ptrCast(array.data.? + @as(usize, @intCast(array.count))),
             @ptrCast(argv[1..]),
             @as(usize, @intCast(@as(i32, @intCast(argv.len)) - 1)) *% @sizeOf(repr.Value),
         );
     }
-    array.*.count = newcount;
+    array.count = newcount;
     return argv[0];
 }
 
@@ -276,8 +317,13 @@ fn cfunArrayEnsure(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
     const array = try args_core.getArray(argv, 0);
     const newcount = try args_core.getInteger(argv, 1);
     const growth = try args_core.getInteger(argv, 2);
+    // Both arguments, not just the count. `FOUND.md`'s "`array/ensure` does
+    // not validate its growth factor" is what the second check closes: a
+    // growth of zero freed the backing store and left `count` claiming the
+    // elements, and a negative one asked for most of the address space.
     if (newcount < 1) return raise.panic("expected positive integer");
-    ensure(array, newcount, growth);
+    if (growth < 1) return raise.panic("expected positive integer");
+    ensure(array, @intCast(newcount), growth);
     return argv[0];
 }
 
@@ -286,14 +332,14 @@ fn cfunArraySlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
     const range = try args_core.getSlice(argv);
     const len = range.end - range.start;
     const array = new(len);
-    if (array.*.data != null) {
-        safe_memcpy(
-            @ptrCast(array.*.data),
-            @ptrCast(view.items.? + @as(usize, @intCast(range.start))),
-            @sizeOf(repr.Value) *% asSize(len),
+    if (array.data != null) {
+        utils.safeMemcpy(
+            @ptrCast(array.data),
+            @ptrCast(view.ptr + @as(usize, @intCast(range.start))),
+            @sizeOf(repr.Value) *% utils.asSize(len),
         );
     }
-    array.*.count = len;
+    array.count = @intCast(len);
     return wrap.fromArray(array);
 }
 
@@ -301,15 +347,13 @@ fn cfunArraySlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 /// an array onto itself grows it, and the growth may move the payload, so the
 /// view is reserved first and then taken again. It is done here rather than in
 /// the loop because `janet_array_push` grows one element at a time.
-fn appendIndexed(array: *types.JanetArray, x: repr.Value, vals_in: ?[*]const repr.Value, len_in: i32) raise.Raising(void) {
-    var vals: ?[*]const repr.Value = vals_in;
-    var len = len_in;
-    if (array.*.data == vals) {
-        ensure(array, array.*.count + len, 2);
-        _ = args_core.indexedView(x, &vals, &len);
+fn appendIndexed(array: *Array, x: repr.Value, vals_in: []const repr.Value) raise.Raising(void) {
+    var vals = vals_in;
+    if (array.data == vals.ptr) {
+        ensure(array, array.count + vals.len, 2);
+        vals = args_core.indexedView(x).?;
     }
-    var j: i32 = 0;
-    while (j < len) : (j += 1) try push(array, vals.?[@intCast(j)]);
+    for (vals) |val| try push(array, val);
 }
 
 fn cfunArrayConcat(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
@@ -319,10 +363,8 @@ fn cfunArrayConcat(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
     while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
         switch (repr.typeOf(argv[@intCast(i)])) {
             repr.Tag.array, repr.Tag.tuple => {
-                var len: i32 = 0;
-                var vals: ?[*]const repr.Value = null;
-                _ = args_core.indexedView(argv[@intCast(i)], &vals, &len);
-                try appendIndexed(array, argv[@intCast(i)], vals, len);
+                const vals = args_core.indexedView(argv[@intCast(i)]).?;
+                try appendIndexed(array, argv[@intCast(i)], vals);
             },
             else => try push(array, argv[@intCast(i)]),
         }
@@ -337,12 +379,10 @@ fn cfunArrayJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
     const array = try args_core.getArray(argv, 0);
     var i: i32 = 1;
     while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
-        var len: i32 = 0;
-        var vals: ?[*]const repr.Value = null;
-        if (args_core.indexedView(argv[@intCast(i)], &vals, &len) == 0) {
+        const vals = args_core.indexedView(argv[@intCast(i)]) orelse {
             return pp_format.panicf("expected indexed type for argument %d, got %v", .{ i, argv[@intCast(i)] });
-        }
-        try appendIndexed(array, argv[@intCast(i)], vals, len);
+        };
+        try appendIndexed(array, argv[@intCast(i)], vals);
     }
     return wrap.fromArray(array);
 }
@@ -351,21 +391,28 @@ fn cfunArrayInsert(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
     try args_core.arity(argv, 2, -1);
     const array = try args_core.getArray(argv, 0);
     var at = try args_core.getInteger(argv, 1);
-    if (at < 0) at = array.*.count + at + 1;
-    if (at < 0 or at > array.*.count) {
-        return pp_format.panicf("insertion index %d out of range [0,%d]", .{ at, array.*.count });
+    const count: i32 = @intCast(array.count);
+    if (at < 0) at = count + at + 1;
+    if (at < 0 or at > count) {
+        return pp_format.panicf("insertion index %d out of range [0,%d]", .{ at, count });
     }
-    const chunksize = @as(usize, @intCast(@as(i32, @intCast(argv.len)) - 2)) *% @sizeOf(repr.Value);
-    const restsize = @as(usize, @intCast(array.*.count - at)) *% @sizeOf(repr.Value);
-    if (std.math.maxInt(i32) - (@as(i32, @intCast(argv.len)) - 2) < array.*.count) return raise.panic("array overflow");
-    ensure(array, array.*.count + @as(i32, @intCast(argv.len)) - 2, 2);
+    const inserted = argv.len - 2;
+    const restsize = @as(usize, @intCast(count - at)) *% @sizeOf(repr.Value);
+    if (std.math.maxInt(i32) - @as(i32, @intCast(inserted)) < count) return raise.panic("array overflow");
+    ensure(array, array.count + inserted, 2);
     if (restsize != 0) {
-        const dest = array.*.data.? + @as(usize, @intCast(at + @as(i32, @intCast(argv.len)) - 2));
-        const src = array.*.data.? + @as(usize, @intCast(at));
+        const dest = array.data.? + @as(usize, @intCast(at)) + inserted;
+        const src = array.data.? + @as(usize, @intCast(at));
         std.mem.copyBackwards(u8, @as([*]u8, @ptrCast(dest))[0..restsize], @as([*]const u8, @ptrCast(src))[0..restsize]);
     }
-    safe_memcpy(@ptrCast(array.*.data.? + @as(usize, @intCast(at))), @ptrCast(argv[2..]), chunksize);
-    array.*.count += @as(i32, @intCast(argv.len)) - 2;
+    // **Guarded, because `(array/insert a n)` inserts nothing.** With no values
+    // to copy `ensure` may not have allocated at all, so `data` is still null
+    // and unwrapping it panics -- where C reached `memcpy(NULL, NULL, 0)` and
+    // returned the array unchanged. `test/suite-array.janet` pins the case.
+    if (inserted != 0) {
+        @memcpy(array.data.?[@intCast(at)..][0..inserted], argv[2..]);
+    }
+    array.count += inserted;
     return argv[0];
 }
 
@@ -374,52 +421,49 @@ fn cfunArrayRemove(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
     const array = try args_core.getArray(argv, 0);
     var at = try args_core.getInteger(argv, 1);
     var n: i32 = 1;
-    if (at < 0) at = array.*.count + at;
-    if (at < 0 or at > array.*.count) {
-        return pp_format.panicf("removal index %d out of range [0,%d]", .{ at, array.*.count });
+    const count: i32 = @intCast(array.count);
+    if (at < 0) at = count + at;
+    if (at < 0 or at > count) {
+        return pp_format.panicf("removal index %d out of range [0,%d]", .{ at, count });
     }
-    if (@as(i32, @intCast(argv.len)) == 3) {
+    if (argv.len == 3) {
         n = try args_core.getInteger(argv, 2);
         if (n < 0) return pp_format.panicf("expected non-negative integer for argument n, got %v", .{argv[2]});
     }
-    if (at + n > array.*.count) n = array.*.count - at;
-    const moved = @as(usize, @intCast(array.*.count - at - n)) *% @sizeOf(repr.Value);
+    if (at + n > count) n = count - at;
+    const moved = @as(usize, @intCast(count - at - n)) *% @sizeOf(repr.Value);
     if (moved != 0) {
-        const dest = array.*.data.? + @as(usize, @intCast(at));
-        const src = array.*.data.? + @as(usize, @intCast(at + n));
+        const dest = array.data.? + @as(usize, @intCast(at));
+        const src = array.data.? + @as(usize, @intCast(at + n));
         std.mem.copyForwards(u8, @as([*]u8, @ptrCast(dest))[0..moved], @as([*]const u8, @ptrCast(src))[0..moved]);
     }
-    array.*.count -= n;
+    array.count -= @as(usize, @intCast(n));
     return argv[0];
 }
 
 fn cfunArrayTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const array = try args_core.getArray(argv, 0);
-    if (array.*.count != 0) {
-        if (array.*.count < array.*.capacity) {
-            const new_data = utils.realloc(
-                @ptrCast(array.*.data),
-                @as(usize, @intCast(array.*.count)) *% @sizeOf(repr.Value),
-            ) orelse fatal.outOfMemory();
-            array.*.data = @ptrCast(@alignCast(new_data));
-            array.*.capacity = array.*.count;
+    if (array.count != 0) {
+        if (array.count < array.capacity) {
+            array.data = utils.resizeMany(repr.Value, array.data, @intCast(array.count));
+            array.capacity = array.count;
         }
     } else {
-        array.*.capacity = 0;
-        utils.free(@ptrCast(array.*.data));
-        array.*.data = null;
+        array.capacity = 0;
+        utils.free(@ptrCast(array.data));
+        array.data = null;
     }
     return argv[0];
 }
 
 fn cfunArrayClear(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    (try args_core.getArray(argv, 0)).*.count = 0;
+    (try args_core.getArray(argv, 0)).count = 0;
     return argv[0];
 }
 
-pub fn lib(env: *types.JanetTable) void {
+pub fn lib(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("array/new", &cfunArrayNew, @src(), "(array/new capacity)", "Creates a new empty array with a pre-allocated capacity. The same as " ++
             "`(array)` but can be more efficient if the maximum size of an array is known."),

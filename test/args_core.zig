@@ -2,10 +2,12 @@
 //!
 //! What is under test is a set of decisions and a set of messages, and the two
 //! are checked separately because the layer separates them. The kernels decide
-//! and fill in a `JanetArgFault`; `raiseFault` renders it. So every case below
-//! drives a getter and compares the payload byte for byte, which is the only
-//! way to show that a fault code plus a slot really does reconstruct the
-//! message Janet raises.
+//! and fill in a `Fault`; `raiseFault` renders it. So every case below drives a
+//! getter and compares the payload byte for byte, which is the only way to
+//! show that a fault arm and its payload really do reconstruct the message
+//! Janet raises. **The rendering is the contract, not the union**: the arms can
+//! be exhaustive and right while the formatting drifts, and the formatting is
+//! what a Janet program sees.
 //!
 //! The suites reach almost none of this. A Janet program that calls a
 //! cfunction with the wrong argument sees one of these messages and stops, so
@@ -19,29 +21,19 @@
 //! characters. Both are in `FOUND.md`, both are reproduced, and
 //! both are pinned so that a later fix has to be deliberate.
 //!
-//! ## The largest abi family in the tree
+//! ## Writing this file found a live defect, and it was in a caller
 //!
-//! **Every getter here is called by import.** Seventy-odd `janet_get*` and
-//! `janet_opt*` exports are each a `raise.panicking` wrapper, and *none of
-//! them may be retired*, because they are exactly what an embedder is
-//! promised. So the runtime reaches the layer by import and the only Zig
-//! callers of the abis are `interop.zig` and `native_module.zig`, which wrap
-//! each in `raise.crossing` deliberately.
-//!
-//! **Writing this file found a live defect, and it was in a caller.** A C
-//! contract skipped `janet_getinteger64` and `janet_getuinteger64` whenever
+//! A C contract skipped `janet_getinteger64` and `janet_getuinteger64` whenever
 //! `JANET_INT_TYPES` was defined, which is the default — its `EXPECTED_PANICS`
 //! is 70 with integer types and 74 without — because in that configuration
-//! those two do not fill in a fault at all: they delegate to
-//! `janet_unwrap_s64`, which raises its own message. Translating that skip
-//! into Zig is what raised the question of *how* it raises, and the answer was
-//! that `args_core.zig` called the **abi**, so a refusal became a report
-//! nobody consumed. `(string/format "%d" "x")` aborted the process with
+//! those two do not fill in a fault at all: they delegate to the 64-bit
+//! unwrap, which raises its own message. Asking *how* it raises is what found
+//! that the argument layer was calling the **abi**, so a refusal became a
+//! report nobody consumed: `(string/format "%d" "x")` aborted the process with
 //! `janet abort: a raise was reported to a C caller and never consumed`
-//! instead of raising a catchable error. The fix is in `args_core.zig`'s
-//! `Wide`, and the two cases below are asserted in *both* configurations
-//! rather than skipped in one — which is the assertion the C contract could
-//! not make.
+//! instead of raising a catchable error. The fix is in `args.zig`'s `Wide`,
+//! and the two cases below are asserted in *both* configurations rather than
+//! skipped in one.
 //!
 //! **No panic counter.** The C original counted its seventy, because a case
 //! that silently stopped raising would otherwise look like one that passed.
@@ -50,11 +42,10 @@
 
 const std = @import("std");
 const config = @import("config");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("subsystems").raise;
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
@@ -69,11 +60,12 @@ const wrap = @import("subsystems").value.wrap;
 const args_core = @import("subsystems").args;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const abstracts = @import("subsystems").value.abstracts;
+const abi = @import("abi");
+const method_type = @import("subsystems").method_type;
 const args = subsystems.args;
 const abstract_type = subsystems.abstract_type;
-const AbstractType = abstract_type.AbstractType;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
 // ------------------------------------------------------------- assertions
 
@@ -83,8 +75,8 @@ const assert = std.debug.assert;
 fn refusal(function: anytype, arguments: anytype) harness.Raise {
     const r = harness.raised(function, arguments) orelse
         @panic("expected a refusal, got a return");
-    assert(r.signal == types.Signal.@"error");
-    assert(harness.isType(r.payload, repr.Tag.string));
+    expect(r.signal == abi.Signal.@"error");
+    expect(harness.isType(r.payload, repr.Tag.string));
     return r;
 }
 
@@ -92,7 +84,7 @@ fn refuses(function: anytype, arguments: anytype, message: []const u8) void {
     const r = refusal(function, arguments);
     if (!r.says(message)) {
         const got = wrap.toString(r.payload);
-        const length: usize = @intCast(types.stringHead(got).length);
+        const length: usize = @intCast(strings.head(got).length);
         std.debug.print("expected: {s}\n     got: {s}\n", .{ message, got[0..length] });
         @panic("message mismatch");
     }
@@ -104,7 +96,7 @@ fn refusesWithPrefix(function: anytype, arguments: anytype, prefix: []const u8) 
     const r = refusal(function, arguments);
     if (!r.beginsWith(prefix)) {
         const got = wrap.toString(r.payload);
-        const length: usize = @intCast(types.stringHead(got).length);
+        const length: usize = @intCast(strings.head(got).length);
         std.debug.print("expected prefix: {s}\n            got: {s}\n", .{ prefix, got[0..length] });
         @panic("message prefix mismatch");
     }
@@ -176,9 +168,9 @@ fn everyTypeGetterNamesItsSlotAndItsType() raise.Raising(void) {
 
     // And the success paths, which have to agree with the C original about
     // where the data and the length come from.
-    assert(try args.getNumber(a, 1) == 7.0);
-    assert(harness.stringIs(try args.getString(a, 2), "hello"));
-    assert(try args.getBoolean(a, 3));
+    expect(try args.getNumber(a, 1) == 7.0);
+    expect(harness.stringIs(try args.getString(a, 2), "hello"));
+    expect(try args.getBoolean(a, 3));
 }
 
 // --------------------------------------------------------- numeric getters
@@ -191,8 +183,8 @@ fn everyExpectationCodeHasItsOwnNoun() raise.Raising(void) {
     };
     const a = slots(&argv);
 
-    // Every one of the eleven expectation codes, in the words `expectName`
-    // spells them. A code that mapped to the wrong noun would show here and
+    // Every one of the eleven `Expect` members, in the words `Expect.name`
+    // spells them. A member that mapped to the wrong noun would show here and
     // nowhere else.
     refuses(args.getInteger, .{ a, 0 }, "bad slot #0, expected 32 bit signed integer, got nil");
     refuses(args.getInteger, .{ a, 1 }, "bad slot #1, expected 32 bit signed integer, got 1.5");
@@ -246,13 +238,13 @@ fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
             argv_slot.* = wrap.fromNumber(val);
             const got = getter(slots(@as(*const [1]repr.Value, argv_slot)), 0) catch
                 @panic("expected a value, got a refusal");
-            assert(got == expected);
+            expect(got == expected);
         }
 
         fn rejects(argv_slot: *repr.Value, getter: anytype, val: f64) void {
             argv_slot.* = wrap.fromNumber(val);
             const a2 = slots(@as(*const [1]repr.Value, argv_slot));
-            assert(harness.raised(getter, .{ a2[0..1], @as(i32, 0) }) != null);
+            expect(harness.raised(getter, .{ a2[0..1], @as(i32, 0) }) != null);
         }
     };
     const slot = &argv[0];
@@ -328,7 +320,7 @@ fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
 fn getFloatRejectsZeroAndNegatives() raise.Raising(void) {
     var argv = [_]repr.Value{wrap.fromNumber(1.5)};
     const a = slots(&argv);
-    assert(try args.getFloat(a, 0) == 1.5);
+    expect(try args.getFloat(a, 0) == 1.5);
 
     argv[0] = wrap.fromNumber(0.0);
     refuses(args.getFloat, .{ a, 0 }, "bad slot #0, expected float number, got 0");
@@ -337,14 +329,14 @@ fn getFloatRejectsZeroAndNegatives() raise.Raising(void) {
 
     const flt_min = std.math.floatMin(f32);
     const flt_max = std.math.floatMax(f32);
-    assert(args_core.checkfloat(wrap.fromNumber(0.0)) == 0);
-    assert(args_core.checkfloat(wrap.fromNumber(-1.0)) == 0);
-    assert(args_core.checkfloat(wrap.fromNumber(@as(f64, flt_min) / 2.0)) == 0);
-    assert(args_core.checkfloat(wrap.fromNumber(flt_min)) != 0);
-    assert(args_core.checkfloat(wrap.fromNumber(flt_max)) != 0);
-    assert(args_core.checkfloat(wrap.fromNumber(@as(f64, flt_max) * 2.0)) == 0);
+    expect(!args_core.checkfloat(wrap.fromNumber(0.0)));
+    expect(!args_core.checkfloat(wrap.fromNumber(-1.0)));
+    expect(!args_core.checkfloat(wrap.fromNumber(@as(f64, flt_min) / 2.0)));
+    expect(args_core.checkfloat(wrap.fromNumber(flt_min)));
+    expect(args_core.checkfloat(wrap.fromNumber(flt_max)));
+    expect(!args_core.checkfloat(wrap.fromNumber(@as(f64, flt_max) * 2.0)));
     // A double with more precision than a float holds fails the round trip.
-    assert(args_core.checkfloat(wrap.fromNumber(1.0000000000000002)) == 0);
+    expect(!args_core.checkfloat(wrap.fromNumber(1.0000000000000002)));
 }
 
 // ----------------------------------------------------------------- ranges
@@ -360,13 +352,13 @@ fn theTwoFoldingsDifferInOneEnd() raise.Raising(void) {
 
     // A half range folds a negative index against length + 1 and accepts
     // length itself, because it names a boundary between elements.
-    assert(try args.getHalfRange(a, 0, 10, "start") == 0);
-    assert(try args.getHalfRange(a, 1, 10, "start") == 3);
-    assert(try args.getHalfRange(a, 2, 10, "end") == 10);
+    expect(try args.getHalfRange(a, 0, 10, "start") == 0);
+    expect(try args.getHalfRange(a, 1, 10, "start") == 3);
+    expect(try args.getHalfRange(a, 2, 10, "end") == 10);
     argv[0] = harness.wrapInteger(10);
-    assert(try args.getHalfRange(a, 0, 10, "end") == 10);
+    expect(try args.getHalfRange(a, 0, 10, "end") == 10);
     argv[0] = harness.wrapInteger(-11);
-    assert(try args.getHalfRange(a, 0, 10, "start") == 0);
+    expect(try args.getHalfRange(a, 0, 10, "start") == 0);
 
     argv[0] = harness.wrapInteger(11);
     refuses(args.getHalfRange, .{ a, 0, 10, "start" }, "start index 11 out of range [-11,10]");
@@ -376,11 +368,11 @@ fn theTwoFoldingsDifferInOneEnd() raise.Raising(void) {
     // An argument index folds against length and its interval is half open,
     // yet it still accepts length itself — the one asymmetry between the two.
     argv[0] = harness.wrapInteger(0);
-    assert(try args.getArgIndex(a, 0, 10, "at") == 0);
+    expect(try args.getArgIndex(a, 0, 10, "at") == 0);
     argv[0] = harness.wrapInteger(-1);
-    assert(try args.getArgIndex(a, 0, 10, "at") == 9);
+    expect(try args.getArgIndex(a, 0, 10, "at") == 9);
     argv[0] = harness.wrapInteger(-10);
-    assert(try args.getArgIndex(a, 0, 10, "at") == 0);
+    expect(try args.getArgIndex(a, 0, 10, "at") == 0);
 
     argv[0] = harness.wrapInteger(11);
     refuses(args.getArgIndex, .{ a, 0, 10, "at" }, "at index 11 out of range [-10,10)");
@@ -399,12 +391,12 @@ fn theTwoFoldingsDifferInOneEnd() raise.Raising(void) {
     // The start and end forms supply a default when the slot is absent or nil,
     // and the defaults are the two ends of the sequence.
     argv[0] = harness.wrapInteger(4);
-    assert(try args.getStartRange(a, 3, 10) == 0);
-    assert(try args.getEndRange(a, 3, 10) == 10);
+    expect(try args.getStartRange(a, 3, 10) == 0);
+    expect(try args.getEndRange(a, 3, 10) == 10);
     argv[3] = wrap.fromNil();
-    assert(try args.getStartRange(a, 3, 10) == 0);
-    assert(try args.getEndRange(a, 3, 10) == 10);
-    assert(try args.getStartRange(a, 0, 10) == 4);
+    expect(try args.getStartRange(a, 3, 10) == 0);
+    expect(try args.getEndRange(a, 3, 10) == 10);
+    expect(try args.getStartRange(a, 0, 10) == 4);
 }
 
 fn getSliceCollapsesAnInvertedRange() raise.Raising(void) {
@@ -417,22 +409,22 @@ fn getSliceCollapsesAnInvertedRange() raise.Raising(void) {
     const a = slots(&argv);
 
     var r = try args.getSlice(a);
-    assert(r.start == 0 and r.end == 3);
+    expect(r.start == 0 and r.end == 3);
 
     argv[1] = harness.wrapInteger(1);
     r = try args.getSlice(a);
-    assert(r.start == 1 and r.end == 3);
+    expect(r.start == 1 and r.end == 3);
 
     argv[2] = harness.wrapInteger(2);
     r = try args.getSlice(a);
-    assert(r.start == 1 and r.end == 2);
+    expect(r.start == 1 and r.end == 2);
 
     // An end before the start collapses to an empty range rather than
     // faulting, which is the one piece of arithmetic `getSlice` does itself.
     argv[1] = harness.wrapInteger(3);
     argv[2] = harness.wrapInteger(1);
     r = try args.getSlice(a);
-    assert(r.start == 3 and r.end == 3);
+    expect(r.start == 3 and r.end == 3);
 
     refuses(args.getSlice, .{a[0..0]}, "arity mismatch, expected at least 1, got 0");
     refuses(
@@ -450,14 +442,14 @@ fn eachCharacterContributesTheBitAtItsPosition() raise.Raising(void) {
 
     // Each character contributes the bit at its position in the permitted set,
     // and the order of the keyword does not matter.
-    assert(try args.getFlags(a, 0, "abc") == 0x7);
+    expect(try args.getFlags(a, 0, "abc") == 0x7);
     argv[0] = value.fromBytes("", .keyword);
-    assert(try args.getFlags(a, 0, "abc") == 0);
+    expect(try args.getFlags(a, 0, "abc") == 0);
     argv[0] = value.fromBytes("c", .keyword);
-    assert(try args.getFlags(a, 0, "abc") == 0x4);
+    expect(try args.getFlags(a, 0, "abc") == 0x4);
     // A repeated character sets the same bit twice, which is not an error.
     argv[0] = value.fromBytes("aa", .keyword);
-    assert(try args.getFlags(a, 0, "abc") == 0x1);
+    expect(try args.getFlags(a, 0, "abc") == 0x1);
 
     refuses(args.getFlags, .{ a, 1, "abc" }, "unexpected flag z, expected one of \"abc\"");
 
@@ -494,17 +486,17 @@ fn theByteAndCstringShapes() raise.Raising(void) {
     const a = slots(&argv);
 
     var v = try args.getBytes(a, 0);
-    assert(v.len == 2 and std.mem.eql(u8, v.bytes.?[0..2], "hi"));
+    expect(v.len == 2 and std.mem.eql(u8, v.bytes.?[0..2], "hi"));
     v = try args.getBytes(a, 1);
-    assert(v.len == 3 and std.mem.eql(u8, v.bytes.?[0..3], "buf"));
+    expect(v.len == 3 and std.mem.eql(u8, v.bytes.?[0..3], "buf"));
     v = try args.getBytes(a, 2);
-    assert(v.len == 2 and std.mem.eql(u8, v.bytes.?[0..2], "kw"));
+    expect(v.len == 2 and std.mem.eql(u8, v.bytes.?[0..2], "kw"));
 
-    assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.getCString(a, 0)))), "hi"));
-    assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.getCBytes(a, 1)))), "buf"));
+    expect(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.getCString(a, 0)))), "hi"));
+    expect(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.getCBytes(a, 1)))), "buf"));
     // The terminating shape leaves the buffer's visible count alone: the zero
     // is written past the end and the count is put back.
-    assert(wrap.toBuffer(argv[1]).*.count == 3);
+    expect(wrap.toBuffer(argv[1]).count == 3);
 
     refuses(args.getCString, .{ a, 1 }, "bad slot #1, expected string, got @\"buf\"");
     refuses(args.getCString, .{ a, 3 }, "bad slot #3, expected string, got nil");
@@ -546,31 +538,30 @@ fn cbytesCopiesAFullNoReallocBuffer() raise.Raising(void) {
     // `janet_buffer_deinit` alone is what this needs: it frees the payload and
     // nulls the pointer, leaving the block on the list and its type intact.
     buffers.deinit(b);
-    b.*.data = &backing;
-    b.*.count = 3;
-    b.*.capacity = 3;
-    b.*.gc.flags |= constants.JANET_BUFFER_FLAG_NO_REALLOC;
+    b.data = &backing;
+    b.count = 3;
+    b.capacity = 3;
+    b.gc.flags |= constants.JANET_BUFFER_FLAG_NO_REALLOC;
 
-    // The block is on the heap list now, and nothing on the Zig stack roots
-    // it -- `AGENTS.md`'s rule about a `Janet` in a local. Nothing between
-    // here and the restore allocates a collectable block today; the root is
-    // what keeps that from being load-bearing.
+    // The block is on the heap list now, and a value held only in a local is
+    // not a root. Nothing between here and the restore allocates a collectable
+    // block today; the `gcroot` is what keeps that from being load-bearing.
     gc_alloc.gcroot(wrap.fromBuffer(b));
     defer _ = gc_alloc.gcunroot(wrap.fromBuffer(b));
 
     var argv = [_]repr.Value{wrap.fromBuffer(b)};
     const s = try args.getCBytes(slots(&argv), 0);
-    assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(s))), "abc"));
+    expect(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(s))), "abc"));
     // The copy is a separate allocation, not the buffer's own storage.
-    assert(@intFromPtr(s) != @intFromPtr(&backing));
-    assert(b.*.count == 3);
-    assert(std.mem.eql(u8, &backing, "abc"));
+    expect(@intFromPtr(s) != @intFromPtr(&backing));
+    expect(b.count == 3);
+    expect(std.mem.eql(u8, &backing, "abc"));
 
     // Put it back into a shape `janet_buffer_deinit` can free.
-    b.*.data = null;
-    b.*.count = 0;
-    b.*.capacity = 0;
-    b.*.gc.flags &= ~@as(i32, constants.JANET_BUFFER_FLAG_NO_REALLOC);
+    b.data = null;
+    b.count = 0;
+    b.capacity = 0;
+    b.gc.flags &= ~@as(i32, constants.JANET_BUFFER_FLAG_NO_REALLOC);
 }
 
 // ---------------------------------------------------------------- abstract
@@ -578,18 +569,18 @@ fn cbytesCopiesAFullNoReallocBuffer() raise.Raising(void) {
 const probe_at = abstract_type.define(anyopaque, .{ .name = "args-core/probe" });
 const other_at = abstract_type.define(anyopaque, .{ .name = "args-core/other" });
 
-/// A `bytes` callback, which the hinge left non-raising because it is reached
-/// from paths that cannot act on a refusal. So it is an ordinary Zig function
+/// A `bytes` callback, which is non-raising because it is reached from paths
+/// that cannot act on a refusal. So it is an ordinary Zig function
 /// -- `define` supplies the calling convention along with the cast.
-fn probeBytes(p: *const anyopaque, _: usize) types.JanetByteView {
+fn probeBytes(p: *const anyopaque, _: usize) abi.JanetByteView {
     return .{ .bytes = @ptrCast(p), .len = 3 };
 }
 
 const probe_bytes_at = abstract_type.define(anyopaque, .{ .name = "args-core/bytes-probe", .bytes = probeBytes });
 
 fn theAbstractGettersAndTheBytesCallback() raise.Raising(void) {
-    const p = abstracts.new(&probe_at, 4);
-    const q = abstracts.new(&probe_bytes_at, 4);
+    const p = abstracts.newBytes(&probe_at, 4);
+    const q = abstracts.newBytes(&probe_bytes_at, 4);
     @memcpy(@as([*]u8, @ptrCast(q))[0..3], "xyz");
 
     var argv = [_]repr.Value{
@@ -599,39 +590,38 @@ fn theAbstractGettersAndTheBytesCallback() raise.Raising(void) {
     };
     const a = slots(&argv);
 
-    assert(try args.getAbstract(a, 0, &probe_at) == p);
-    assert(args_core.checkabstract(argv[0], &probe_at) == p);
+    expect(try args.getAbstractPtr(a, 0, &probe_at) == p);
+    expect(args_core.checkabstract(argv[0], &probe_at) == p);
     // `checkabstract` reports the mismatch by returning null rather than by
     // raising: it is the same decision with the other half discarded.
-    assert(args_core.checkabstract(argv[0], &other_at) == null);
-    assert(args_core.checkabstract(argv[2], &probe_at) == null);
+    expect(args_core.checkabstract(argv[0], &other_at) == null);
+    expect(args_core.checkabstract(argv[2], &probe_at) == null);
 
     refusesWithPrefix(
-        args.getAbstract,
+        args.getAbstractPtr,
         .{ a, 0, &other_at },
         "bad slot #0, expected args-core/other, got <args-core/probe 0x",
     );
     refuses(
-        args.getAbstract,
+        args.getAbstractPtr,
         .{ a, 2, &probe_at },
         "bad slot #2, expected args-core/probe, got nil",
     );
 
     // An abstract with a `bytes` callback is byte-viewable. One without is
     // not, and faults as an ordinary type mismatch.
-    var v = try args.getBytes(a, 1);
-    assert(v.len == 3 and std.mem.eql(u8, v.bytes.?[0..3], "xyz"));
-    assert(args_core.bytesView(argv[1], &v.bytes, &v.len) != 0);
-    assert(v.len == 3);
+    const v = try args.getBytes(a, 1);
+    expect(v.len == 3 and std.mem.eql(u8, v.bytes.?[0..3], "xyz"));
+    expect(args_core.bytesView(argv[1]).?.len == 3);
     refusesWithPrefix(
         args.getBytes,
         .{ a, 0 },
         "bad slot #0, expected string, symbol, keyword or buffer, got <args-core/probe 0x",
     );
 
-    assert(try args.optAbstract(a, 0, &probe_at, null) == p);
-    assert(try args.optAbstract(a, 2, &probe_at, p) == p);
-    assert(try args.optAbstract(a[0..1], 2, &probe_at, p) == p);
+    expect(try args.optAbstract(a, 0, &probe_at, null) == p);
+    expect(try args.optAbstract(a, 2, &probe_at, p) == p);
+    expect(try args.optAbstract(a[0..1], 2, &probe_at, p) == p);
 }
 
 // -------------------------------------------------------------- defaulting
@@ -644,29 +634,29 @@ fn pastTheEndAndAnExplicitNilBothMeanTheDefault() raise.Raising(void) {
     };
     const a = slots(&argv);
 
-    assert(try args.optInteger(a, 0, 99) == 5);
-    assert(try args.optInteger(a, 1, 99) == 99);
-    assert(try args.optInteger(a, 7, 99) == 99);
-    assert(try args.optNat(a, 1, 4) == 4);
-    assert(try args.optSize(a, 1, 8) == 8);
-    assert(try args.optUInteger(a, 1, 8) == 8);
-    assert(try args.optUInteger64(a, 1, 8) == 8);
-    assert(try args.optInteger64(a, 1, 8) == 8);
-    assert(try args.optNumber(a, 0, 0.0) == 5.0);
-    assert(harness.stringIs((try args.optString(a, 2, null)).?, "s"));
-    assert(try args.optString(a, 1, null) == null);
-    assert(harness.stringIs(@ptrCast(try args.optCString(a, 2, "d")), "s"));
-    assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.optCString(a, 1, "d")))), "d"));
-    assert(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.optCBytes(a, 1, "d")))), "d"));
-    assert(try args.optBoolean(a, 1, true));
-    assert(try args.optPointer(a, 1, null) == null);
-    assert(try args.optCFunction(a, 1, null) == null);
-    assert(try args.optFiber(a, 1, null) == null);
-    assert(try args.optFunction(a, 1, null) == null);
-    assert(try args.optTuple(a, 1, null) == null);
-    assert(try args.optStruct(a, 1, null) == null);
-    assert(try args.optKeyword(a, 1, null) == null);
-    assert(try args.optSymbol(a, 1, null) == null);
+    expect(try args.optInteger(a, 0, 99) == 5);
+    expect(try args.optInteger(a, 1, 99) == 99);
+    expect(try args.optInteger(a, 7, 99) == 99);
+    expect(try args.optNat(a, 1, 4) == 4);
+    expect(try args.optSize(a, 1, 8) == 8);
+    expect(try args.optUInteger(a, 1, 8) == 8);
+    expect(try args.optUInteger64(a, 1, 8) == 8);
+    expect(try args.optInteger64(a, 1, 8) == 8);
+    expect(try args.optNumber(a, 0, 0.0) == 5.0);
+    expect(harness.stringIs((try args.optString(a, 2, null)).?, "s"));
+    expect(try args.optString(a, 1, null) == null);
+    expect(harness.stringIs(@ptrCast(try args.optCString(a, 2, "d")), "s"));
+    expect(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.optCString(a, 1, "d")))), "d"));
+    expect(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.optCBytes(a, 1, "d")))), "d"));
+    expect(try args.optBoolean(a, 1, true));
+    expect(try args.optPointer(a, 1, null) == null);
+    expect(try args.optCFunction(a, 1, null) == null);
+    expect(try args.optFiber(a, 1, null) == null);
+    expect(try args.optFunction(a, 1, null) == null);
+    expect(try args.optTuple(a, 1, null) == null);
+    expect(try args.optStruct(a, 1, null) == null);
+    expect(try args.optKeyword(a, 1, null) == null);
+    expect(try args.optSymbol(a, 1, null) == null);
 
     // Anything else is delegated to the strict getter, faults included.
     refuses(
@@ -680,29 +670,29 @@ fn pastTheEndAndAnExplicitNilBothMeanTheDefault() raise.Raising(void) {
     const b = try args.optBuffer(a, 1, 16);
     const t = try args.optTable(a, 1, 4);
     const array = try args.optArray(a, 1, 4);
-    assert(b.count == 0 and b.capacity >= 16);
-    assert(t.count == 0);
-    assert(array.count == 0);
+    expect(b.count == 0 and b.capacity >= 16);
+    expect(t.count == 0);
+    expect(array.count == 0);
     argv[1] = wrap.fromBuffer(b);
-    assert(try args.optBuffer(a, 1, 16) == b);
+    expect(try args.optBuffer(a, 1, 16) == b);
     argv[1] = wrap.fromNil();
 }
 
 // ---------------------------------------------------------------- strlike
 
 fn theThreeStrlikeComparisonsCheckTheTypeToo() void {
-    assert(args_core.keyeq(value.fromBytes("a", .keyword), "a") != 0);
-    assert(args_core.keyeq(value.fromBytes("a", .keyword), "b") == 0);
+    expect(args_core.keyeq(value.fromBytes("a", .keyword), "a"));
+    expect(!args_core.keyeq(value.fromBytes("a", .keyword), "b"));
     // The type has to match as well as the bytes, which is the whole reason
     // there are three of these rather than one.
-    assert(args_core.keyeq(value.fromBytes("a", .string), "a") == 0);
-    assert(args_core.keyeq(value.fromBytes("a", .symbol), "a") == 0);
-    assert(args_core.streq(value.fromBytes("a", .string), "a") != 0);
-    assert(args_core.streq(value.fromBytes("a", .keyword), "a") == 0);
-    assert(args_core.symeq(value.fromBytes("a", .symbol), "a") != 0);
-    assert(args_core.symeq(value.fromBytes("a", .string), "a") == 0);
-    assert(args_core.streq(wrap.fromNil(), "a") == 0);
-    assert(args_core.streq(value.fromBytes("", .string), "") != 0);
+    expect(!args_core.keyeq(value.fromBytes("a", .string), "a"));
+    expect(!args_core.keyeq(value.fromBytes("a", .symbol), "a"));
+    expect(args_core.streq(value.fromBytes("a", .string), "a"));
+    expect(!args_core.streq(value.fromBytes("a", .keyword), "a"));
+    expect(args_core.symeq(value.fromBytes("a", .symbol), "a"));
+    expect(!args_core.symeq(value.fromBytes("a", .string), "a"));
+    expect(!args_core.streq(wrap.fromNil(), "a"));
+    expect(args_core.streq(value.fromBytes("", .string), ""));
 }
 
 // ---------------------------------------------------------------- methods
@@ -722,7 +712,7 @@ fn methodTwo(argv: []repr.Value) raise.Raising(repr.Value) {
 const method_one = raise.stored(&methodOne);
 const method_two = raise.stored(&methodTwo);
 
-const methods = [_]types.JanetMethod{
+const methods = [_]method_type.CMethod{
     .{ .name = "one", .cfun = method_one },
     .{ .name = "two", .cfun = method_two },
     .{ .name = null, .cfun = null },
@@ -731,23 +721,23 @@ const methods = [_]types.JanetMethod{
 fn nextmethodIsAnIterator() void {
     var out = wrap.fromNil();
 
-    assert(args_core.getmethod(strings.cstring("one"), &methods, &out) != 0);
-    assert(wrap.toCfunction(out) == method_one);
-    assert(args_core.getmethod(strings.cstring("two"), &methods, &out) != 0);
-    assert(wrap.toCfunction(out) == method_two);
-    assert(args_core.getmethod(strings.cstring("three"), &methods, &out) == 0);
+    expect(args_core.getmethod(strings.cstring("one"), &methods, &out) != 0);
+    expect(wrap.toCfunction(out) == method_one);
+    expect(args_core.getmethod(strings.cstring("two"), &methods, &out) != 0);
+    expect(wrap.toCfunction(out) == method_two);
+    expect(args_core.getmethod(strings.cstring("three"), &methods, &out) == 0);
 
     // `nextmethod` is an iterator: nil starts at the head, and any other key
     // resumes after the entry it names. Running off the end yields nil, and so
     // does a key that is not in the table at all — it walks to the end looking
     // for it.
     var k = args_core.nextmethod(&methods, wrap.fromNil());
-    assert(args_core.keyeq(k, "one") != 0);
+    expect(args_core.keyeq(k, "one"));
     k = args_core.nextmethod(&methods, k);
-    assert(args_core.keyeq(k, "two") != 0);
+    expect(args_core.keyeq(k, "two"));
     k = args_core.nextmethod(&methods, k);
-    assert(harness.isType(k, repr.Tag.nil));
-    assert(harness.isType(args_core.nextmethod(&methods, value.fromBytes("nope", .keyword)), repr.Tag.nil));
+    expect(harness.isType(k, repr.Tag.nil));
+    expect(harness.isType(args_core.nextmethod(&methods, value.fromBytes("nope", .keyword)), repr.Tag.nil));
 }
 
 // ------------------------------------------------------------- predicates
@@ -758,62 +748,53 @@ fn nextmethodIsAnIterator() void {
 /// for a negative or enormous double; this tests before casting. Every input
 /// either language defines has to reach the same answer.
 fn thePredicatesAgreeWithTheGetters() void {
-    assert(args_core.checkint(harness.wrapInteger(0)) != 0);
-    assert(args_core.checkint(wrap.fromNil()) == 0);
-    assert(args_core.checkint(value.fromBytes("1", .string)) == 0);
-    assert(args_core.checkuint(wrap.fromNumber(-0.0001)) == 0);
-    assert(args_core.checkuint(wrap.fromNumber(0.0)) != 0);
+    expect(args_core.checkint(harness.wrapInteger(0)));
+    expect(!args_core.checkint(wrap.fromNil()));
+    expect(!args_core.checkint(value.fromBytes("1", .string)));
+    expect(!args_core.checkuint(wrap.fromNumber(-0.0001)));
+    expect(args_core.checkuint(wrap.fromNumber(0.0)));
 
-    assert(args_core.checksize(wrap.fromNumber(0.5)) == 0);
-    assert(args_core.checksize(wrap.fromNumber(0.0)) != 0);
-    assert(args_core.checksize(wrap.fromNumber(1.0)) != 0);
-    assert(args_core.checksize(wrap.fromNumber(9007199254740992.0)) != 0);
-    assert(args_core.checksize(wrap.fromNumber(9007199254740994.0)) == 0);
+    expect(!args_core.checksize(wrap.fromNumber(0.5)));
+    expect(args_core.checksize(wrap.fromNumber(0.0)));
+    expect(args_core.checksize(wrap.fromNumber(1.0)));
+    expect(args_core.checksize(wrap.fromNumber(9007199254740992.0)));
+    expect(!args_core.checksize(wrap.fromNumber(9007199254740994.0)));
 
     // NaN and the infinities fail the first comparison at every width rather
     // than reaching a conversion.
     const nan = std.math.nan(f64);
     const inf = std.math.inf(f64);
-    assert(args_core.checkint(wrap.fromNumber(nan)) == 0);
-    assert(args_core.checkuint(wrap.fromNumber(nan)) == 0);
-    assert(args_core.checkfloat(wrap.fromNumber(nan)) == 0);
-    assert(args_core.checkint(wrap.fromNumber(inf)) == 0);
-    assert(args_core.checkint(wrap.fromNumber(-inf)) == 0);
-    assert(args_core.checkfloat(wrap.fromNumber(inf)) == 0);
+    expect(!args_core.checkint(wrap.fromNumber(nan)));
+    expect(!args_core.checkuint(wrap.fromNumber(nan)));
+    expect(!args_core.checkfloat(wrap.fromNumber(nan)));
+    expect(!args_core.checkint(wrap.fromNumber(inf)));
+    expect(!args_core.checkint(wrap.fromNumber(-inf)));
+    expect(!args_core.checkfloat(wrap.fromNumber(inf)));
     // `janet_checksize` is absent here for the reason given above.
 }
 
 // ---------------------------------------------------------------- the view
 // helpers, which are the substrate the getters are built on and move with
-// them. Their failure is a return value rather than a fault.
+// them. Their failure is a null rather than a fault.
 
-fn theViewHelpersAnswerFalseRatherThanRefusing() void {
-    var items: ?[*]const repr.Value = undefined;
-    var bytes: ?[*]const u8 = undefined;
-    var kvs: ?[*]const types.JanetKV = undefined;
-    var len: i32 = 0;
-    var cap: i32 = 0;
-
+fn theViewHelpersAnswerNothingRatherThanRefusing() void {
     const array = arrays.new(0);
     harness.arrayPush(array, harness.wrapInteger(1));
-    assert(args_core.indexedView(wrap.fromArray(array), &items, &len) != 0);
-    assert(len == 1);
-    const tuple = wrap.fromTuple(tuples.newFrom(items.?[0..1]));
-    assert(args_core.indexedView(tuple, &items, &len) != 0);
-    assert(len == 1);
-    assert(args_core.indexedView(wrap.fromNil(), &items, &len) == 0);
+    const from_array = args_core.indexedView(wrap.fromArray(array)).?;
+    expect(from_array.len == 1);
+    const tuple = wrap.fromTuple(tuples.newFrom(from_array[0..1]));
+    expect(args_core.indexedView(tuple).?.len == 1);
+    expect(args_core.indexedView(wrap.fromNil()) == null);
 
-    assert(args_core.bytesView(value.fromBytes("ab", .string), &bytes, &len) != 0);
-    assert(len == 2);
-    assert(args_core.bytesView(value.fromBytes("ab", .symbol), &bytes, &len) != 0);
-    assert(len == 2);
-    assert(args_core.bytesView(harness.wrapInteger(1), &bytes, &len) == 0);
+    expect(args_core.bytesView(value.fromBytes("ab", .string)).?.len == 2);
+    expect(args_core.bytesView(value.fromBytes("ab", .symbol)).?.len == 2);
+    expect(args_core.bytesView(harness.wrapInteger(1)) == null);
 
     const t = tables.new(1);
     tables.put(t, value.fromBytes("k", .keyword), harness.wrapInteger(1));
-    assert(args_core.dictionaryView(wrap.fromTable(t), &kvs, &len, &cap) != 0);
-    assert(len == 1 and cap == t.*.capacity);
-    assert(args_core.dictionaryView(wrap.fromNil(), &kvs, &len, &cap) == 0);
+    const dict = args_core.dictionaryView(wrap.fromTable(t)).?;
+    expect(dict.len == 1 and dict.cap == t.capacity);
+    expect(args_core.dictionaryView(wrap.fromNil()) == null);
 }
 
 // ------------------------------------------------------------------ entry
@@ -834,7 +815,7 @@ fn body() raise.Raising(void) {
     theThreeStrlikeComparisonsCheckTheTypeToo();
     nextmethodIsAnIterator();
     thePredicatesAgreeWithTheGetters();
-    theViewHelpersAnswerFalseRatherThanRefusing();
+    theViewHelpersAnswerNothingRatherThanRefusing();
 }
 
 pub fn run() void {

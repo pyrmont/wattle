@@ -6,15 +6,13 @@
 //!
 //! `build.zig`'s `module-errors` step compiles this and requires the failure.
 
-const abstract_type = @import("abstract_type");
+const janet = @import("janet");
 
 const Payload = struct { n: i32 };
 
-fn finalize(_: *Payload, _: usize) c_int {
-    return 0;
-}
+fn finalize(_: *Payload, _: usize) void {}
 
-pub const at = abstract_type.define(Payload, .{
+pub const at = janet.define(Payload, .{
     .name = "module-errors/unknown-slot",
     .finalizer = finalize,
 });

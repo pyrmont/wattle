@@ -18,10 +18,8 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const types = @import("types");
 const repr = @import("repr");
-const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("../../raise.zig");
 const wrap = @import("../../value/helpers/wrap.zig");
 const tables = @import("../../value/tables.zig");
 const args_core = @import("../../args.zig");
@@ -31,13 +29,13 @@ const pp_format = @import("../../pp/format.zig");
 const vm_lifecycle = @import("../../vm/lifecycle.zig");
 const host_stat = @import("host_stat.zig");
 const value = @import("../../value.zig");
+const strings = @import("../../value/strings.zig");
 
-/// The field registry, by import.
-/// `host_stat.zig`'s. The measurement at the head of this file still holds --
-/// musl's `struct stat` is `opaque {}` after translation -- and the answer is
-/// `statx` on Linux, whose structure Zig defines itself, and `@cImport` on
-/// macOS and mingw, which translate `struct stat` completely.
-const statRead = host_stat.statReadAbiCompat;
+/// Reading a `struct stat` is `host_stat.zig`'s, for the reason its header
+/// gives: musl's translates to `opaque {}`, so the answer is `statx` on Linux,
+/// whose structure Zig defines itself, and the translation on macOS and mingw,
+/// which carry `struct stat` completely.
+const statRead = host_stat.statRead;
 
 // ==========================================================================
 // Permissions
@@ -78,13 +76,13 @@ pub fn makePermstring(permissions: i32) repr.Value {
 ///
 /// Shared by five cfunctions across three `-Dos-*` subjects. See the head of
 /// this file for why that is an ordinary Zig call rather than a seam.
-pub fn getUnixMode(argv: []const repr.Value, n: i32) raise.Raising(i32) {
-    if (args_core.checkint(argv[@intCast(n)]) != 0) {
-        const x = wrap.toInteger(argv[@intCast(n)]);
+pub fn getUnixMode(argv: []const repr.Value, n: usize) raise.Raising(i32) {
+    if (args_core.checkint(argv[n])) {
+        const x = wrap.toInteger(argv[n]);
         if (x < 0 or x > 0o777) {
             return pp_format.panicf(
                 "bad slot #%d, expected integer in range [0, 8r777], got %v",
-                .{ n, argv[@intCast(n)] },
+                .{ @as(i64, @intCast(n)), argv[n] },
             );
         }
         return x;
@@ -93,7 +91,7 @@ pub fn getUnixMode(argv: []const repr.Value, n: i32) raise.Raising(i32) {
     if (bytes.len != 9) {
         return pp_format.panicf(
             "bad slot #%d: expected byte sequence of length 9, got %v",
-            .{ n, argv[@intCast(n)] },
+            .{ @as(i64, @intCast(n)), argv[n] },
         );
     }
     return hostParsePermissions(args_core.viewBytes(bytes).ptr);
@@ -105,12 +103,12 @@ pub fn getUnixMode(argv: []const repr.Value, n: i32) raise.Raising(i32) {
 /// scalars, so nothing here depends on a host layout.
 pub const jmode_t = if (windows) c_ushort else h.mode_t;
 
-pub fn getMode(argv: []const repr.Value, n: i32) raise.Raising(jmode_t) {
+pub fn getMode(argv: []const repr.Value, n: usize) raise.Raising(jmode_t) {
     return @intCast(hostPermFromUnix(try getUnixMode(argv, n)));
 }
 
 /// `os_optmode`.
-pub fn optMode(argv: []const repr.Value, n: i32, dflt: i32) raise.Raising(jmode_t) {
+pub fn optMode(argv: []const repr.Value, n: usize, dflt: i32) raise.Raising(jmode_t) {
     if (@as(i32, @intCast(argv.len)) > n) return getMode(argv, n);
     return @intCast(hostPermFromUnix(dflt));
 }
@@ -125,7 +123,7 @@ pub fn optMode(argv: []const repr.Value, n: i32, dflt: i32) raise.Raising(jmode_
 pub fn statField(field: Field, mode: u32, numbers: *const [field_count]f64) repr.Value {
     return switch (field) {
         .mode => value.fromBytes(std.mem.span(hostModeName(mode)), .keyword),
-        .int_permissions => wrapInteger(
+        .int_permissions => wrap.fromInteger(
             hostPermToUnix(@bitCast(hostDecodePermissions(mode))),
         ),
         .permissions => makePermstring(
@@ -136,12 +134,12 @@ pub fn statField(field: Field, mode: u32, numbers: *const [field_count]f64) repr
 }
 
 pub fn statOrLstat(do_lstat: bool, argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_read"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.arity(argv, 1, 2);
     const path = try args_core.getCString(argv, 0);
-    var tab: ?*types.JanetTable = null;
-    var key: ?types.JanetKeyword = null;
-    if (@as(i32, @intCast(argv.len)) == 2) {
+    var tab: ?*tables.Table = null;
+    var key: ?strings.Keyword = null;
+    if (argv.len == 2) {
         if (repr.checkType(argv[1], repr.Tag.keyword)) {
             key = try args_core.getKeyword(argv, 1);
         } else {
@@ -153,23 +151,22 @@ pub fn statOrLstat(do_lstat: bool, argv: []repr.Value) raise.Raising(repr.Value)
 
     var mode: u32 = 0;
     var numbers: [field_count]f64 = @splat(0);
-    if (statRead(@ptrCast(path), @intFromBool(do_lstat), &mode, &numbers) == -1) {
+    if (statRead(@ptrCast(path), do_lstat, &mode, &numbers) == -1) {
         return wrap.fromNil();
     }
 
     if (key) |k| {
-        const field = fieldLookup(k, types.stringHead(k).length);
+        const field = fieldLookup(k, strings.head(k).length);
         if (field < 0) return pp_format.panicf("unexpected keyword %v", .{wrap.fromKeyword(k)});
         return statField(@enumFromInt(field), mode, &numbers);
     }
     // The registry's count is `-Dos-stat`'s, and this walks it rather than
     // `field_count` so that the two cannot silently disagree.
-    const count = fieldCount();
-    var field: i32 = 0;
-    while (field < count) : (field += 1) {
+    const count: usize = @intCast(fieldCount());
+    for (0..count) |field| {
         tables.put(
             tab.?,
-            value.fromBytes(std.mem.span(fieldName(field).?), .keyword),
+            value.fromBytes(std.mem.span(fieldName(@intCast(field)).?), .keyword),
             statField(@enumFromInt(field), mode, &numbers),
         );
     }
@@ -193,20 +190,6 @@ pub fn cfunLstat(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 const windows = builtin.os.tag == .windows;
-
-/// `janet_wrap_integer`, written out rather than called. `janet.h` declares the
-/// function beside its macro and `wrap.c` defines it only for the two nanbox
-/// layouts, so a tagged build has no such symbol and a Zig caller -- which
-/// cannot use the macro -- does not link. `marsh.zig`, `pp_pretty.zig` and
-/// `value_access.zig` write it out for the same reason, and `FOUND.md` has the
-/// defect. This is the fourth subsystem to meet it.
-inline fn wrapInteger(x: i32) repr.Value {
-    return wrap.fromNumber(@floatFromInt(x));
-}
-
-inline fn errno() c_int {
-    return std.c._errno().*;
-}
 
 /// Portable POSIX file type bits. Linux, macOS, and the BSDs agree on these.
 const s_ifmt: u32 = 0o170000;

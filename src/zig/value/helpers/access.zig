@@ -2,15 +2,13 @@
 //! iteration protocol beneath `next`.
 //!
 //! An operation rather than a type, so the verbs stay: `access.in(ds, k)`,
-//! `access.get(ds, k)`, `access.next(ds, k)`. The abi beside `get` is spelled
-//! by `@export`, so `get` needs no suffix to be distinguished from it.
+//! `access.get(ds, k)`, `access.next(ds, k)`.
 //!
-//! **Two abis carry the suffix rather than differing by one letter's case.**
-//! `getindex`/`getIndex` and `putindex`/`putIndex` differed only in case, one
-//! being the `callconv(.c)` abi and the other the raising kernel it wraps --
-//! the shape `tools/check/swallowed.janet` exists to catch, because picking the
-//! wrong one loses a raise and nothing says so. They are `getindexAbi` and
-//! `putindexAbi`.
+//! **The three reporting abis are gone.** `getindexAbi`, `putindexAbi` and
+//! `nextImplAbi` were `callconv(.c)` wrappers over the raising kernels below,
+//! differing from them by one letter's case; every caller reaches the kernel
+//! by `@import` and answers the error, so the wrappers had nothing left to
+//! report to.
 //!
 //! Indexed and keyed access over an arbitrary Janet value, and the iteration
 //! protocol beneath `next`: `janet_next` and `nextImpl`, and the seven
@@ -33,36 +31,29 @@
 //! eight-byte union to a sixteen-byte struct, which is exactly the size class
 //! where the classification rules diverge. So `test/value_access.zig` asserts
 //! the *rendered message text*, byte for byte, for every one of the twelve.
-//! That check runs under both selectors, under both value layouts, and on
-//! every platform in the acceptance matrix, which makes the ABI a tested fact
-//! rather than an assumed one.
+//! That check runs under both value layouts and on every platform in the
+//! acceptance matrix, which makes the ABI a tested fact rather than an assumed
+//! one.
 //!
-//! `janet_panicf` is `JANET_NO_RETURN`, and the translation carries that
-//! through, so the panic arms below need no `unreachable` after them.
+//! Every panic arm below is a `return` of a raising call, so none needs an
+//! `unreachable` after it.
 //!
-//! ## SPIKE-8, and the two callbacks that are allowed to raise
+//! ## The two callbacks that are allowed to raise
 //!
 //! Six of the nine functions here reach a third-party abstract type's `get`,
 //! `put`, `next` or `length` callback, and `janet_next_impl` resumes an
-//! arbitrary fiber through `janet_continue`. Under SPIKE-8 these are called
-//! directly, in the shape of the C original, and a signal raised by one jumps
-//! straight through the Zig frame that invoked it. There is no `defer` here
-//! and `build.zig` checks that there is not.
+//! arbitrary fiber through `janet_continue`. These are called directly, in the
+//! shape of the C original, and a raise from one passes through the Zig frame
+//! that invoked it.
 //!
-//! One piece of state does have to survive such a jump, and the C original
+//! One piece of state does have to survive such a raise, and the C original
 //! handles it by hand rather than by scope: `janet_next_impl` parks the child
 //! fiber in `vm.fiber->child` across `janet_continue` and has to clear
 //! it again. It clears the slot *before* `janet_panicv` on the non-interpreter
 //! path, and deliberately does **not** clear it before `janet_signalv` on the
 //! interpreter path, because the interpreter unwinds through the fiber chain
-//! and needs the link. That asymmetry is reproduced exactly. Writing it as a
-//! `defer` would be both a jump-transparency violation and wrong.
-//!
-//! `janet_in`, `janet_get`, `janet_getindex`, `janet_length`, `janet_lengthv`,
-//! `janet_putindex`, `janet_put` and `janet_next_impl` are all called directly
-//! by `run_vm`. That was the constraint `-Dcall-trampoline` stayed off for;
-//! since the hinge each is an ordinary Zig call that `run_vm` `try`s, and the
-//! selector is gone.
+//! and needs the link. That asymmetry is reproduced exactly, and writing it as
+//! a `defer` would be wrong.
 //!
 //! ## What is reproduced rather than repaired
 //!
@@ -118,7 +109,7 @@
 //! path to save thirty lines.
 
 const std = @import("std");
-const raise = @import("raise");
+const raise = @import("../../raise.zig");
 const pp_format = @import("../../pp/format.zig");
 const vm_calls = @import("../../vm.zig");
 const abstract_type = @import("../../abstract_type.zig");
@@ -133,45 +124,18 @@ const fibers = @import("../fibers.zig");
 const wrap = @import("wrap.zig");
 const args_core = @import("../../args.zig");
 const value = @import("../../value.zig");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
-const vm_state = @import("../../vm/lifecycle.zig");
+const vm_state = @import("../../vm/state.zig");
 const vm_entry = @import("../../vm/entry.zig");
-
-/// From `util.c`, declared here rather than in `cabi.zig`. This is the same
-/// declaration `struct_table.zig` carries, and the same exception to the usual
-/// justification: a `Janet` crosses here, so the reason it is safe is that the
-/// type is `repr.Value`, which every file in the tree shares, not that no
-/// Janet type is involved.
-/// A sign-preserving widening, which is what C's `int32_t` to `size_t`
-/// conversion does. Most uses here are indices the callers have already
-/// bounded, but two are not: `janet_putindex`'s `memset` length can wrap
-/// negative at `INT32_MAX`, and this is what makes it reach `@memset` as the
-/// same enormous value the C hands `memset`. See the note above about what is
-/// reproduced rather than repaired.
-inline fn asSize(n: i32) usize {
-    return @bitCast(@as(isize, n));
-}
-
-/// `janet_wrap_integer`. Written out rather than called, because the function
-/// it would call does not exist in every configuration. `janet.h` declares
-/// `JANET_API Janet janet_wrap_integer(int32_t)` beside its macro, and
-/// `wrap.c` provides that declaration's definition only inside `#if
-/// defined(JANET_NANBOX_32) || defined(JANET_NANBOX_64)`. It is the only one
-/// of the twenty-two declared `janet_wrap_*` functions with no definition
-/// under `-Dnanbox=false`, so a caller that cannot use the macro -- which is
-/// exactly the "language bindings" case the header's own comment names -- does
-/// not link against a tagged build. `FOUND.md` has it. The macro is one line
-/// and this is the whole of it.
-inline fn wrapInteger(x: i32) repr.Value {
-    return wrap.fromNumber(@floatFromInt(x));
-}
+const strings = @import("../strings.zig");
+const tuples = @import("../tuples.zig");
+const abi = @import("abi");
 
 /// One bucket forward from `p`, in address space rather than pointer space.
 /// See the note above about `value.dictionaryFind` returning null.
-inline fn nextBucket(p: ?*const types.JanetKV) *const types.JanetKV {
-    return @ptrFromInt(@intFromPtr(p) +% @sizeOf(types.JanetKV));
+inline fn nextBucket(p: ?*const tables.KV) *const tables.KV {
+    return @ptrFromInt(@intFromPtr(p) +% @sizeOf(tables.KV));
 }
 
 // ------------------------------------------------------------------ next
@@ -182,11 +146,7 @@ inline fn nextBucket(p: ?*const types.JanetKV) *const types.JanetKV {
 /// passes one. It exists for embedders, and `FOUND.md` has what happens when
 /// one uses it on a fiber.
 pub fn next(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
-    return nextImpl(ds, key, 0);
-}
-
-pub fn nextAbi(ds: repr.Value, key: repr.Value) repr.Value {
-    return raise.reported(next(ds, key));
+    return nextImpl(ds, key, false);
 }
 
 /// `janet_next_impl`. Given a data structure and the previous key, produces
@@ -214,25 +174,25 @@ pub fn nextAbi(ds: repr.Value, key: repr.Value) repr.Value {
 /// resumed answers nil immediately, and one that finishes during the resume
 /// answers nil on the way out.
 ///
-/// This is not a published symbol. `next` and `nextImplAbi` are the two
-/// callers outside the interpreter, and both reach it by `@import`.
-pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: c_int) raise.Raising(repr.Value) {
+/// This is not a published symbol. `next` is the one caller outside the
+/// interpreter, and it reaches it by `@import`.
+pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Raising(repr.Value) {
     const t = repr.typeOf(ds);
     switch (t) {
         repr.Tag.table, repr.Tag.@"struct" => {
             var cap: i32 = undefined;
-            var start: [*]const types.JanetKV = undefined;
+            var start: [*]const tables.KV = undefined;
             if (t == repr.Tag.table) {
                 const tab = wrap.toTable(ds);
-                cap = tab.*.capacity;
-                start = tab.*.data.?;
+                cap = @intCast(tab.capacity);
+                start = tab.data.?;
             } else {
                 const st = wrap.toStruct(ds);
-                cap = types.structHead(st).capacity;
+                cap = structs.head(st).capacity;
                 start = st;
             }
-            const end = start + asSize(cap);
-            var kv: [*]const types.JanetKV = if (repr.checkType(key, repr.Tag.nil))
+            const end = start + utils.asSize(cap);
+            var kv: [*]const tables.KV = if (repr.checkType(key, repr.Tag.nil))
                 start
             else
                 @ptrCast(nextBucket(value.dictionaryFind(start[0..@intCast(cap)], key)));
@@ -244,48 +204,48 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: c_int) raise.Ra
             var i: i32 = undefined;
             if (repr.checkType(key, repr.Tag.nil)) {
                 i = 0;
-            } else if (args_core.checkint(key) != 0) {
+            } else if (args_core.checkint(key)) {
                 i = wrap.toInteger(key) +% 1;
             } else {
                 return wrap.fromNil();
             }
             const len: i32 = if (t == repr.Tag.buffer)
-                wrap.toBuffer(ds).*.count
+                @as(i32, @intCast(wrap.toBuffer(ds).count))
             else if (t == repr.Tag.array)
-                wrap.toArray(ds).*.count
+                @as(i32, @intCast(wrap.toArray(ds).count))
             else if (t == repr.Tag.tuple)
-                types.tupleHead(wrap.toTuple(ds)).length
+                tuples.head(wrap.toTuple(ds)).length
             else
-                types.stringHead(wrap.toString(ds)).length;
+                strings.head(wrap.toString(ds)).length;
             if (i < len and i >= 0) {
-                return wrapInteger(i);
+                return wrap.fromInteger(i);
             }
         },
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(ds);
             const at = abstract_type.ofAbstract(abst);
-            if (at.*.next == null) return wrap.fromNil();
-            return at.*.next.?(abst, key);
+            if (at.next == null) return wrap.fromNil();
+            return at.next.?(abst, key);
         },
         repr.Tag.fiber => {
             const child = wrap.toFiber(ds);
             var retreg: repr.Value = undefined;
             const status = fibers.status(child);
-            if (status == types.FiberStatus.alive or
-                status == types.FiberStatus.dead or
-                status == types.FiberStatus.@"error" or
-                status == types.FiberStatus.user0 or
-                status == types.FiberStatus.user1 or
-                status == types.FiberStatus.user2 or
-                status == types.FiberStatus.user3 or
-                status == types.FiberStatus.user4)
+            if (status == fibers.FiberStatus.alive or
+                status == fibers.FiberStatus.dead or
+                status == fibers.FiberStatus.@"error" or
+                status == fibers.FiberStatus.user0 or
+                status == fibers.FiberStatus.user1 or
+                status == fibers.FiberStatus.user2 or
+                status == fibers.FiberStatus.user3 or
+                status == fibers.FiberStatus.user4)
             {
                 return wrap.fromNil();
             }
             vm_state.current().fiber.?.child = child;
             const sig = vm_entry.continueFiber(child, wrap.fromNil(), &retreg);
-            if (sig != types.Signal.ok and (child.*.flags & (@as(i32, 1) << @intCast(@intFromEnum(sig)))) == 0) {
-                if (is_interpreter != 0) {
+            if (sig != abi.Signal.ok and !child.flags.traps.has(sig)) {
+                if (is_interpreter) {
                     // Deliberately without clearing `child` first: the
                     // interpreter unwinds through the fiber chain and the link
                     // has to still be there when it does.
@@ -296,27 +256,23 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: c_int) raise.Ra
                 }
             }
             vm_state.current().fiber.?.child = null;
-            if (sig == types.Signal.ok or
-                sig == types.Signal.@"error" or
-                sig == types.Signal.user0 or
-                sig == types.Signal.user1 or
-                sig == types.Signal.user2 or
-                sig == types.Signal.user3 or
-                sig == types.Signal.user4)
+            if (sig == abi.Signal.ok or
+                sig == abi.Signal.@"error" or
+                sig == abi.Signal.user0 or
+                sig == abi.Signal.user1 or
+                sig == abi.Signal.user2 or
+                sig == abi.Signal.user3 or
+                sig == abi.Signal.user4)
             {
                 // Fiber cannot be resumed, so discard last value.
                 return wrap.fromNil();
             } else {
-                return wrapInteger(0);
+                return wrap.fromInteger(0);
             }
         },
         else => return pp_format.panicf("expected iterable type, got %v", .{ds}),
     }
     return wrap.fromNil();
-}
-
-pub fn nextImplAbi(ds: repr.Value, key: repr.Value, is_interpreter: c_int) repr.Value {
-    return raise.reported(nextImpl(ds, key, is_interpreter));
 }
 
 // ------------------------------------------------------------- the getters
@@ -330,7 +286,7 @@ pub fn nextImplAbi(ds: repr.Value, key: repr.Value, is_interpreter: c_int) repr.
 /// four arguments. Written here as three early panics, which is the same
 /// control flow without the label.
 fn getterCheckInt(vtype: repr.Tag, key: repr.Value, max: i32) raise.Raising(i32) {
-    if (args_core.checkint(key) == 0) return badKey(vtype, key, max);
+    if (!args_core.checkint(key)) return badKey(vtype, key, max);
     const ret = wrap.toInteger(key);
     if (ret < 0) return badKey(vtype, key, max);
     if (ret >= max) return badKey(vtype, key, max);
@@ -362,28 +318,28 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
         repr.Tag.table => val = tables.get(wrap.toTable(ds), key),
         repr.Tag.array => {
             const array = wrap.toArray(ds);
-            const index = getterCheckInt(vtype, key, array.*.count);
-            val = array.*.slice()[asSize(try index)];
+            const index = getterCheckInt(vtype, key, @intCast(array.count));
+            val = array.slice()[utils.asSize(try index)];
         },
         repr.Tag.tuple => {
             const tuple = wrap.toTuple(ds);
-            const len = types.tupleHead(tuple).length;
-            val = tuple[asSize(try getterCheckInt(vtype, key, len))];
+            const len = tuples.head(tuple).length;
+            val = tuple[utils.asSize(try getterCheckInt(vtype, key, len))];
         },
         repr.Tag.buffer => {
             const buffer = wrap.toBuffer(ds);
-            const index = getterCheckInt(vtype, key, buffer.*.count);
-            val = wrapInteger(buffer.*.slice()[asSize(try index)]);
+            const index = getterCheckInt(vtype, key, @intCast(buffer.count));
+            val = wrap.fromInteger(buffer.slice()[utils.asSize(try index)]);
         },
         repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
             const str = wrap.toString(ds);
-            const index = getterCheckInt(vtype, key, types.stringHead(str).length);
-            val = wrapInteger(str[asSize(try index)]);
+            const index = getterCheckInt(vtype, key, strings.head(str).length);
+            val = wrap.fromInteger(str[utils.asSize(try index)]);
         },
         repr.Tag.abstract => {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
-            if (at.*.get) |getter| {
-                if (try getter(wrap.toAbstract(ds), key, &val) == 0)
+            if (at.get) |getter| {
+                val = try getter(wrap.toAbstract(ds), key) orelse
                     return pp_format.panicf("key %v not found in %v ", .{ key, ds });
             } else {
                 return pp_format.panicf("no getter for %v", .{ds});
@@ -391,8 +347,8 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
         },
         repr.Tag.fiber => {
             // Bit of a hack to allow iterating over fibers.
-            if (order.equals(key, wrapInteger(0)) != 0) {
-                return wrap.toFiber(ds).*.last_value;
+            if (order.equals(key, wrap.fromInteger(0))) {
+                return wrap.toFiber(ds).last_value;
             } else {
                 return pp_format.panicf("expected key 0, got %v", .{key});
             }
@@ -400,10 +356,6 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
         else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.lengthable, ds }),
     }
     return val;
-}
-
-pub fn inAbi(ds: repr.Value, key: repr.Value) repr.Value {
-    return raise.reported(in(ds, key));
 }
 
 /// `janet_get`. Keyed access that treats every failure as nil. This is `(get
@@ -420,37 +372,35 @@ pub fn get(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
     const t = repr.typeOf(ds);
     switch (t) {
         repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
-            if (args_core.checkint(key) == 0) return wrap.fromNil();
+            if (!args_core.checkint(key)) return wrap.fromNil();
             const index = wrap.toInteger(key);
             if (index < 0) return wrap.fromNil();
             const str = wrap.toString(ds);
-            if (index >= types.stringHead(str).length) return wrap.fromNil();
-            return wrapInteger(str[asSize(index)]);
+            if (index >= strings.head(str).length) return wrap.fromNil();
+            return wrap.fromInteger(str[utils.asSize(index)]);
         },
         repr.Tag.abstract => {
-            var val: repr.Value = undefined;
             const abst = wrap.toAbstract(ds);
             const at = abstract_type.ofAbstract(abst);
-            const getter = at.*.get orelse return wrap.fromNil();
-            if ((try getter(abst, key, &val)) != 0) return val;
-            return wrap.fromNil();
+            const getter = at.get orelse return wrap.fromNil();
+            return try getter(abst, key) orelse wrap.fromNil();
         },
         repr.Tag.array, repr.Tag.tuple, repr.Tag.buffer => {
-            if (args_core.checkint(key) == 0) return wrap.fromNil();
+            if (!args_core.checkint(key)) return wrap.fromNil();
             const index = wrap.toInteger(key);
             if (index < 0) return wrap.fromNil();
             if (t == repr.Tag.array) {
                 const a = wrap.toArray(ds);
-                if (index >= a.*.count) return wrap.fromNil();
-                return a.*.slice()[asSize(index)];
+                if (index >= a.count) return wrap.fromNil();
+                return a.slice()[utils.asSize(index)];
             } else if (t == repr.Tag.buffer) {
                 const b = wrap.toBuffer(ds);
-                if (index >= b.*.count) return wrap.fromNil();
-                return wrapInteger(b.*.slice()[asSize(index)]);
+                if (index >= b.count) return wrap.fromNil();
+                return wrap.fromInteger(b.slice()[utils.asSize(index)]);
             } else {
                 const tup = wrap.toTuple(ds);
-                if (index >= types.tupleHead(tup).length) return wrap.fromNil();
-                return tup[asSize(index)];
+                if (index >= tuples.head(tup).length) return wrap.fromNil();
+                return tup[utils.asSize(index)];
             }
         },
         repr.Tag.table => {
@@ -462,18 +412,14 @@ pub fn get(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
         },
         repr.Tag.fiber => {
             // Bit of a hack to allow iterating over fibers.
-            if (order.equals(key, wrapInteger(0)) != 0) {
-                return wrap.toFiber(ds).*.last_value;
+            if (order.equals(key, wrap.fromInteger(0))) {
+                return wrap.toFiber(ds).last_value;
             } else {
                 return wrap.fromNil();
             }
         },
         else => return wrap.fromNil(),
     }
-}
-
-pub fn getAbi(ds: repr.Value, key: repr.Value) repr.Value {
-    return raise.reported(get(ds, key));
 }
 
 /// `janet_getindex`. Access by a machine integer rather than a `Janet`, which
@@ -491,47 +437,46 @@ pub fn getIndex(ds: repr.Value, index: i32) raise.Raising(repr.Value) {
     if (index < 0) return raise.panic("expected non-negative index");
     switch (repr.typeOf(ds)) {
         repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
-            if (index >= types.stringHead(wrap.toString(ds)).length) {
+            if (index >= strings.head(wrap.toString(ds)).length) {
                 val = wrap.fromNil();
             } else {
-                val = wrapInteger(wrap.toString(ds)[asSize(index)]);
+                val = wrap.fromInteger(wrap.toString(ds)[utils.asSize(index)]);
             }
         },
         repr.Tag.array => {
-            if (index >= wrap.toArray(ds).*.count) {
+            if (index >= wrap.toArray(ds).count) {
                 val = wrap.fromNil();
             } else {
-                val = wrap.toArray(ds).slice()[asSize(index)];
+                val = wrap.toArray(ds).slice()[utils.asSize(index)];
             }
         },
         repr.Tag.buffer => {
-            if (index >= wrap.toBuffer(ds).*.count) {
+            if (index >= wrap.toBuffer(ds).count) {
                 val = wrap.fromNil();
             } else {
-                val = wrapInteger(wrap.toBuffer(ds).slice()[asSize(index)]);
+                val = wrap.fromInteger(wrap.toBuffer(ds).slice()[utils.asSize(index)]);
             }
         },
         repr.Tag.tuple => {
-            if (index >= types.tupleHead(wrap.toTuple(ds)).length) {
+            if (index >= tuples.head(wrap.toTuple(ds)).length) {
                 val = wrap.fromNil();
             } else {
-                val = wrap.toTuple(ds)[asSize(index)];
+                val = wrap.toTuple(ds)[utils.asSize(index)];
             }
         },
-        repr.Tag.table => val = tables.get(wrap.toTable(ds), wrapInteger(index)),
-        repr.Tag.@"struct" => val = structs.get(wrap.toStruct(ds), wrapInteger(index)),
+        repr.Tag.table => val = tables.get(wrap.toTable(ds), wrap.fromInteger(index)),
+        repr.Tag.@"struct" => val = structs.get(wrap.toStruct(ds), wrap.fromInteger(index)),
         repr.Tag.abstract => {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
-            if (at.*.get) |getter| {
-                if (try getter(wrap.toAbstract(ds), wrapInteger(index), &val) == 0)
-                    val = wrap.fromNil();
+            if (at.get) |getter| {
+                val = try getter(wrap.toAbstract(ds), wrap.fromInteger(index)) orelse wrap.fromNil();
             } else {
                 return pp_format.panicf("no getter for %v", .{ds});
             }
         },
         repr.Tag.fiber => {
             if (index == 0) {
-                val = wrap.toFiber(ds).*.last_value;
+                val = wrap.toFiber(ds).last_value;
             } else {
                 val = wrap.fromNil();
             }
@@ -539,10 +484,6 @@ pub fn getIndex(ds: repr.Value, index: i32) raise.Raising(repr.Value) {
         else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.lengthable, ds }),
     }
     return val;
-}
-
-pub fn getindexAbi(ds: repr.Value, index: i32) repr.Value {
-    return raise.reported(getIndex(ds, index));
 }
 
 // ------------------------------------------------------------- the lengths
@@ -558,17 +499,17 @@ pub fn getindexAbi(ds: repr.Value, index: i32) repr.Value {
 /// rejections, two messages, two format specifiers.
 pub fn length(x: repr.Value) raise.Raising(i32) {
     switch (repr.typeOf(x)) {
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return types.stringHead(wrap.toString(x)).length,
-        repr.Tag.array => return wrap.toArray(x).*.count,
-        repr.Tag.buffer => return wrap.toBuffer(x).*.count,
-        repr.Tag.tuple => return types.tupleHead(wrap.toTuple(x)).length,
-        repr.Tag.@"struct" => return types.structHead(wrap.toStruct(x)).length,
-        repr.Tag.table => return wrap.toTable(x).*.count,
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return strings.head(wrap.toString(x)).length,
+        repr.Tag.array => return @intCast(wrap.toArray(x).count),
+        repr.Tag.buffer => return @intCast(wrap.toBuffer(x).count),
+        repr.Tag.tuple => return tuples.head(wrap.toTuple(x)).length,
+        repr.Tag.@"struct" => return structs.head(wrap.toStruct(x)).length,
+        repr.Tag.table => return @intCast(wrap.toTable(x).count),
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);
             const at = abstract_type.ofAbstract(abst);
-            if (at.*.length) |callback| {
-                const len = try callback(abst, utils.abstractHead(abst).*.size);
+            if (at.length) |callback| {
+                const len = try callback(abst, utils.abstractHead(abst).size);
                 if (len > @as(usize, @intCast(std.math.maxInt(i32)))) {
                     return pp_format.panicf("invalid integer length %u", .{@as(u64, len)});
                 }
@@ -576,16 +517,12 @@ pub fn length(x: repr.Value) raise.Raising(i32) {
             }
             var argv = [_]repr.Value{x};
             const len = try vm_calls.mcall("length", &argv);
-            if (args_core.checkint(len) == 0)
+            if (!args_core.checkint(len))
                 return pp_format.panicf("invalid integer length %v", .{len});
             return wrap.toInteger(len);
         },
         else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.lengthable, x }),
     }
-}
-
-pub fn lengthAbi(x: repr.Value) i32 {
-    return raise.reported(length(x));
 }
 
 /// `janet_lengthv`. The length as a `Janet`, which exists so that an abstract
@@ -600,17 +537,17 @@ pub fn lengthAbi(x: repr.Value) i32 {
 /// builds for takes it.
 pub fn lengthv(x: repr.Value) raise.Raising(repr.Value) {
     switch (repr.typeOf(x)) {
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return wrapInteger(types.stringHead(wrap.toString(x)).length),
-        repr.Tag.array => return wrapInteger(wrap.toArray(x).*.count),
-        repr.Tag.buffer => return wrapInteger(wrap.toBuffer(x).*.count),
-        repr.Tag.tuple => return wrapInteger(types.tupleHead(wrap.toTuple(x)).length),
-        repr.Tag.@"struct" => return wrapInteger(types.structHead(wrap.toStruct(x)).length),
-        repr.Tag.table => return wrapInteger(wrap.toTable(x).*.count),
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return wrap.fromInteger(strings.head(wrap.toString(x)).length),
+        repr.Tag.array => return wrap.fromInteger(@intCast(wrap.toArray(x).count)),
+        repr.Tag.buffer => return wrap.fromInteger(@intCast(wrap.toBuffer(x).count)),
+        repr.Tag.tuple => return wrap.fromInteger(tuples.head(wrap.toTuple(x)).length),
+        repr.Tag.@"struct" => return wrap.fromInteger(structs.head(wrap.toStruct(x)).length),
+        repr.Tag.table => return wrap.fromInteger(@intCast(wrap.toTable(x).count)),
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);
             const at = abstract_type.ofAbstract(abst);
-            if (at.*.length) |callback| {
-                const len = try callback(abst, utils.abstractHead(abst).*.size);
+            if (at.length) |callback| {
+                const len = try callback(abst, utils.abstractHead(abst).size);
                 // If len is always less then double, we can never overflow
                 if (comptime !config.bits64) {
                     return wrap.fromNumber(@floatFromInt(len));
@@ -627,10 +564,6 @@ pub fn lengthv(x: repr.Value) raise.Raising(repr.Value) {
         },
         else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.lengthable, x }),
     }
-}
-
-pub fn lengthvAbi(x: repr.Value) repr.Value {
-    return raise.reported(lengthv(x));
 }
 
 // ------------------------------------------------------------- the setters
@@ -657,42 +590,38 @@ pub fn putIndex(ds: repr.Value, index: i32, val: repr.Value) raise.Raising(void)
     switch (repr.typeOf(ds)) {
         repr.Tag.array => {
             const array = wrap.toArray(ds);
-            if (index >= array.*.count) {
-                arrays.ensure(array, index +% 1, 2);
-                @memset(array.*.reserved()[asSize(array.*.count)..asSize(index +% 1)], wrap.fromNil());
-                array.*.count = index +% 1;
+            if (index >= array.count) {
+                arrays.ensure(array, @intCast(index +% 1), 2);
+                @memset(array.reserved()[array.count..utils.asSize(index +% 1)], wrap.fromNil());
+                array.count = @intCast(index +% 1);
             }
-            array.*.slice()[asSize(index)] = val;
+            array.slice()[utils.asSize(index)] = val;
         },
         repr.Tag.buffer => {
             const buffer = wrap.toBuffer(ds);
-            if (args_core.checkint(val) == 0)
+            if (!args_core.checkint(val))
                 return pp_format.panicf("can only put integers in buffers, got %v", .{val});
-            if (index >= buffer.*.count) {
-                try buffers.ensure(buffer, index +% 1, 2);
-                @memset(buffer.*.reserved()[asSize(buffer.*.count)..asSize(index +% 1)], 0);
-                buffer.*.count = index +% 1;
+            if (index >= buffer.count) {
+                try buffers.ensure(buffer, @intCast(index +% 1), 2);
+                @memset(buffer.reserved()[buffer.count..utils.asSize(index +% 1)], 0);
+                buffer.count = @intCast(index +% 1);
             }
-            buffer.*.slice()[asSize(index)] = @truncate(@as(u32, @bitCast(wrap.toInteger(val))));
+            buffer.slice()[utils.asSize(index)] = @truncate(@as(u32, @bitCast(wrap.toInteger(val))));
         },
         repr.Tag.table => {
             const table = wrap.toTable(ds);
-            tables.put(table, wrapInteger(index), val);
+            tables.put(table, wrap.fromInteger(index), val);
         },
         repr.Tag.abstract => {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
-            if (at.*.put) |callback| {
-                try callback(wrap.toAbstract(ds), wrapInteger(index), val);
+            if (at.put) |callback| {
+                try callback(wrap.toAbstract(ds), wrap.fromInteger(index), val);
             } else {
                 return pp_format.panicf("no setter for %v ", .{ds});
             }
         },
         else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.of(&.{ .array, .buffer, .table }), ds }),
     }
-}
-
-pub fn putindexAbi(ds: repr.Value, index: i32, val: repr.Value) void {
-    _ = raise.reported(putIndex(ds, index, val));
 }
 
 /// `janet_put`. Write by a `Janet` key. The array and buffer arms are
@@ -711,29 +640,29 @@ pub fn put(ds: repr.Value, key: repr.Value, val: repr.Value) raise.Raising(void)
         repr.Tag.array => {
             const array = wrap.toArray(ds);
             const index = try getterCheckInt(vtype, key, std.math.maxInt(i32) - 1);
-            if (index >= array.*.count) {
-                arrays.ensure(array, index + 1, 2);
-                @memset(array.*.reserved()[asSize(array.*.count)..asSize(index + 1)], wrap.fromNil());
-                array.*.count = index + 1;
+            if (index >= array.count) {
+                arrays.ensure(array, @intCast(index + 1), 2);
+                @memset(array.reserved()[array.count..utils.asSize(index + 1)], wrap.fromNil());
+                array.count = @intCast(index + 1);
             }
-            array.*.slice()[asSize(index)] = val;
+            array.slice()[utils.asSize(index)] = val;
         },
         repr.Tag.buffer => {
             const buffer = wrap.toBuffer(ds);
             const index = try getterCheckInt(vtype, key, std.math.maxInt(i32) - 1);
-            if (args_core.checkint(val) == 0)
+            if (!args_core.checkint(val))
                 return pp_format.panicf("can only put integers in buffers, got %v", .{val});
-            if (index >= buffer.*.count) {
-                try buffers.ensure(buffer, index + 1, 2);
-                @memset(buffer.*.reserved()[asSize(buffer.*.count)..asSize(index + 1)], 0);
-                buffer.*.count = index + 1;
+            if (index >= buffer.count) {
+                try buffers.ensure(buffer, @intCast(index + 1), 2);
+                @memset(buffer.reserved()[buffer.count..utils.asSize(index + 1)], 0);
+                buffer.count = @intCast(index + 1);
             }
-            buffer.*.slice()[asSize(index)] = @truncate(@as(u32, @bitCast(wrap.toInteger(val))));
+            buffer.slice()[utils.asSize(index)] = @truncate(@as(u32, @bitCast(wrap.toInteger(val))));
         },
         repr.Tag.table => tables.put(wrap.toTable(ds), key, val),
         repr.Tag.abstract => {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
-            if (at.*.put) |callback| {
+            if (at.put) |callback| {
                 try callback(wrap.toAbstract(ds), key, val);
             } else {
                 return pp_format.panicf("no setter for %v ", .{ds});
@@ -741,8 +670,4 @@ pub fn put(ds: repr.Value, key: repr.Value, val: repr.Value) raise.Raising(void)
         },
         else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.of(&.{ .array, .buffer, .table }), ds }),
     }
-}
-
-pub fn putAbi(ds: repr.Value, key: repr.Value, val: repr.Value) void {
-    _ = raise.reported(put(ds, key, val));
 }

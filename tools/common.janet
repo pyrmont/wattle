@@ -335,14 +335,16 @@
   the three `*_abi.zig` since 6f -- the docstring here said they would leave
   the set at 6f's optional-features batch, and 6f moved the files without
   coming back for the list. A stale key is inert rather than wrong, which is
-  why nothing said so; rule 23's shape in a tool's data."
-  {"src/zig/boot.zig" true
-   "src/zig/boot_tests.zig" true
+  why nothing said so; rule 23's shape in a tool's data.
+
+  **Phase 14 increment 4a put an `abi.zig` back, and it is not that one.** The
+  deleted file translated `janet.h`; this one holds what the runtime and a
+  separately compiled module must agree on, and it is a module root for the
+  same reason `types.zig` is."
+  {"src/zig/abi.zig" true
    "src/zig/cabi.zig" true
-   "src/zig/cli.zig" true
    "src/zig/constants.zig" true
    "src/zig/corefn.zig" true
-   "src/zig/interop.zig" true
    "src/zig/native_module.zig" true
    "src/zig/raise.zig" true
    "src/zig/types.zig" true})

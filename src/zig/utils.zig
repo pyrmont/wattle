@@ -1,7 +1,5 @@
-//! The runtime's shared substrate: everything in `src/core/util.c` that is not
-//! registration, resolution or the clock.
-//!
-//! The collection hashes, the dictionary probe every table and struct lookup
+//! The runtime's shared substrate: the collection hashes, the dictionary probe
+//! every table and struct lookup
 //! goes through, the two string comparisons, the key sort, and four host
 //! services.
 //!
@@ -15,54 +13,45 @@ const std = @import("std");
 const builtin = @import("builtin");
 const config = @import("config");
 const order = @import("value/helpers/order.zig");
-const wrap = @import("value/helpers/wrap.zig");
 const fatal = @import("fatal.zig");
-const types = @import("types");
 const repr = @import("repr");
-const vm_state = @import("vm/lifecycle.zig");
+const vm_state = @import("vm/state.zig");
+const c = @import("cabi");
+const strings = @import("value/strings.zig");
+const tuples = @import("value/tuples.zig");
+const structs = @import("value/structs.zig");
+const abi = @import("abi");
+const tables = @import("value/tables.zig");
 
 const windows = builtin.os.tag == .windows;
 
 // ------------------------------------------------------------------- heads
 
-// The out-of-line twins of four macros Janet publishes. C spells each
-// `(janet_struct_head)(st)` -- parenthesised so the macro does not eat the
-// definition -- and provides it for an embedder who reaches Janet through the
-// shared library rather than the header.
-//
-// These four are the *published* abi and nothing else. The arithmetic is
-// `types.zig`'s; what is left here is the C signature it wears --
-// `callconv(.c)` and a `[*c]` return, which is the ABI's shape rather than the
-// accessor's.
+// Four head accessors, forwarding to the file that owns each head. They are
+// here so that a caller wanting one of the four need not import four files;
+// the arithmetic and the offset are the owner's, in one place each.
 
-pub fn structHead(st: [*]const types.JanetKV) *types.JanetStructHead {
-    return types.structHead(st);
+pub fn structHead(st: [*]const tables.KV) *structs.StructHead {
+    return structs.head(st);
 }
 
-pub fn abstractHead(abstract: ?*const anyopaque) *types.JanetAbstractHead {
-    return types.abstractHead(abstract);
+pub fn abstractHead(abstract: ?*const anyopaque) *abi.JanetAbstractHead {
+    return abi.abstractHead(abstract);
 }
 
-pub fn stringHead(s: [*]const u8) *types.JanetStringHead {
-    return types.stringHead(s);
+pub fn stringHead(s: [*]const u8) *strings.StringHead {
+    return strings.head(s);
 }
 
-pub fn tupleHead(tuple: [*]const repr.Value) *types.JanetTupleHead {
-    return types.tupleHead(tuple);
+pub fn tupleHead(tuple: [*]const repr.Value) *tuples.TupleHead {
+    return tuples.head(tuple);
 }
 
 // ------------------------------------------------------------- name tables
 //
-// Four tables of static strings. `janet.h` exports the three name tables and
-// `util.h` the base64 alphabet, and between them they are read from eleven Zig
-// files and from `fiber.c` and `debug.c` -- every type name a message prints,
-// every fiber status a trace names, and the two hex digits an escape is built
-// from.
-//
-// They are data rather than code, and they move here because they were the
-// last thing in `util.c` and because `-Dutilities` is where the rest of that
-// file's substrate went. The C declarations are unchanged, so a reader of
-// either arm sees the same symbols.
+// Four tables of static strings, read from eleven files: every type name a
+// message prints, every fiber status a trace names, the base64 alphabet, and
+// the two hex digits an escape is built from.
 
 pub const base64: [65]u8 = ("0123456789" ++
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ" ++
@@ -133,11 +122,10 @@ pub const statusNames: [16][*:0]const u8 = .{
 
 // ------------------------------------------------------ the dictionary probe
 //
-// The probe itself, the collection hashes and the whole hashing section moved
-// to `value.zig` -- `phase_12.md` decision 3 and the increment below it. What
-// is left here is the one function that had no dictionary in it, and a private
-// `isNil` for `sortedKeys`, which is batch 2's rule: a file may duplicate a
-// private predicate.
+// The probe itself and the collection hashes are `value.zig`'s, the bucket the
+// two dictionary leaves share. What is left here is the one function with no
+// dictionary in it, and a private `isNil` for `sortedKeys` -- a file may
+// duplicate a private predicate.
 
 inline fn isNil(val: repr.Value) bool {
     return repr.checkType(val, repr.Tag.nil);
@@ -170,7 +158,7 @@ pub fn safeMemcpy(dest: ?*anyopaque, src: ?*const anyopaque, len: usize) void {
 /// is in the C original -- the value it holds when the loop breaks is what
 /// decides the result.
 pub fn cstrcmp(str: [*:0]const u8, other: [*:0]const u8) c_int {
-    const len = stringHead(str).*.length;
+    const len = stringHead(str).length;
     var index: i32 = 0;
     while (index < len) : (index += 1) {
         const at: usize = @intCast(index);
@@ -186,9 +174,10 @@ pub fn cstrcmp(str: [*:0]const u8, other: [*:0]const u8) c_int {
 /// Binary search a sorted array of structs whose first member is a `char *`.
 ///
 /// The item size is a parameter rather than a type because the callers' element
-/// types differ and C has no generics; the one invariant is that the name is
-/// first. Zig could express this properly, and deliberately does not: the
-/// signature is `janet.h`'s and every caller is still reached through it.
+/// types differ; the one invariant is that the name is first. Zig could express
+/// this with a generic, and the tables it searches are built by hand and
+/// compared byte for byte by `test/utils.zig`, so the untyped form is what the
+/// contract tests.
 pub fn strbinsearch(
     tab: ?*const anyopaque,
     tabcount: usize,
@@ -222,20 +211,21 @@ pub fn strbinsearch(
 /// for now" and both the algorithm and the comparison order are kept, because
 /// `janet_compare` decides key order for every printed table.
 pub fn sortedKeys(
-    dict: [*]const types.JanetKV,
+    dict: [*]const tables.KV,
     cap: i32,
     index_buffer: ?[*]i32,
 ) callconv(.c) i32 {
     var next_index: i32 = 0;
-    var i: i32 = 0;
-    while (i < cap) : (i += 1) {
-        if (!isNil(dict[@intCast(i)].key)) {
-            index_buffer.?[@intCast(next_index)] = i;
+    for (0..@as(usize, @intCast(cap))) |i| {
+        if (!isNil(dict[i].key)) {
+            // `index_buffer` is the caller's `i32` array, so the bucket index
+            // is narrowed here, at that boundary.
+            index_buffer.?[@intCast(next_index)] = @intCast(i);
             next_index += 1;
         }
     }
 
-    i = 1;
+    var i: i32 = 1;
     while (i < next_index) : (i += 1) {
         const index_to_insert = index_buffer.?[@intCast(i)];
         const lhs = dict[@intCast(index_to_insert)].key;
@@ -257,10 +247,10 @@ pub fn sortedKeys(
 
 // --------------------------------------------------------------- host services
 
-/// `strerror` that is thread-safe where the host offers it.
+/// `c.strerror` that is thread-safe where the host offers it.
 ///
-/// Three cases, and they are the C original's. Microsoft's `strerror` is
-/// already thread-safe, so Windows calls it directly. glibc's `strerror_r`
+/// Three cases, and they are the C original's. Microsoft's `c.strerror` is
+/// already thread-safe, so Windows calls it directly. glibc's `c.strerror_r`
 /// is the GNU one -- it *returns* the message and may not touch the buffer at
 /// all, which is why its result is returned rather than the buffer. Everyone
 /// else has the XSI one, which fills the buffer and returns an `int`.
@@ -268,32 +258,26 @@ pub fn sortedKeys(
 /// The buffer is `vm.strerror_buf`, so the answer is valid until the next
 /// call on the same thread.
 pub fn strerrorSafe(e: c_int) [*:0]const u8 {
-    if (windows) return @ptrCast(strerror(e));
+    if (windows) return @ptrCast(c.strerror(e));
     const buf: [*]u8 = @ptrCast(&vm_state.current().strerror_buf);
     const size = @sizeOf(@TypeOf(vm_state.current().strerror_buf));
     if (builtin.target.isGnuLibC()) return @ptrCast(gnuStrerrorR(e, buf, size));
-    _ = strerror_r(e, buf, size);
+    _ = c.strerror_r(e, buf, size);
     return @ptrCast(buf);
 }
 
-extern fn strerror(e: c_int) callconv(.c) [*]u8;
-
-/// The XSI signature, which is the one every libc in this project's reach but
-/// glibc actually has.
-extern fn strerror_r(e: c_int, buf: [*]u8, len: usize) callconv(.c) c_int;
-
-/// glibc's `strerror_r` is a different function with the same name: it returns
+/// glibc's `c.strerror_r` is a different function with the same name: it returns
 /// `char *`, and may answer a static string without touching the buffer at all.
 /// One symbol cannot be declared twice, so the second signature is a cast of
 /// the first rather than a second `extern`, and the cast is reached only under
 /// the comptime test above.
 const GnuStrerrorR = *const fn (c_int, [*]u8, usize) callconv(.c) [*]u8;
-const gnuStrerrorR: GnuStrerrorR = @ptrCast(&strerror_r);
+const gnuStrerrorR: GnuStrerrorR = @ptrCast(&c.strerror_r);
 
 /// Fill `out` with `n` cryptographically random bytes, answering 0 on success.
 ///
 /// Three implementations, exactly as Janet picks them. Windows draws from
-/// `rand_s` an `unsigned int` at a time; BSD and macOS have `arc4random_buf`;
+/// `c.rand_s` an `unsigned int` at a time; BSD and macOS have `c.arc4random_buf`;
 /// everywhere else reads `/dev/urandom`, because Janet's comment records that
 /// `getrandom` "doesn't seem to be uniformly supported on linux distros".
 ///
@@ -307,7 +291,7 @@ pub fn cryptorand(out: [*]u8, n: usize) callconv(.c) c_int {
         var i: usize = 0;
         while (i < n) : (i += @sizeOf(c_uint)) {
             var v: c_uint = undefined;
-            if (rand_s(&v) != 0) return -1;
+            if (c.rand_s(&v) != 0) return -1;
             var j: usize = 0;
             while (j < @sizeOf(c_uint) and i + j < n) : (j += 1) {
                 out[i + j] = @truncate(v & 0xff);
@@ -318,14 +302,14 @@ pub fn cryptorand(out: [*]u8, n: usize) callconv(.c) c_int {
     }
 
     if (has_arc4random) {
-        arc4random_buf(out, n);
+        c.arc4random_buf(out, n);
         return 0;
     }
 
     var randfd: c_int = undefined;
     while (true) {
         randfd = std.c.open("/dev/urandom", .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
-        if (!(randfd < 0 and errno() == EINTR)) break;
+        if (!(randfd < 0 and c.errno() == EINTR)) break;
     }
     if (randfd < 0) return -1;
 
@@ -335,7 +319,7 @@ pub fn cryptorand(out: [*]u8, n: usize) callconv(.c) c_int {
         var nread: isize = undefined;
         while (true) {
             nread = std.c.read(randfd, cursor, left);
-            if (!(nread < 0 and errno() == EINTR)) break;
+            if (!(nread < 0 and c.errno() == EINTR)) break;
         }
         if (nread <= 0) {
             closeRetrying(randfd);
@@ -350,7 +334,7 @@ pub fn cryptorand(out: [*]u8, n: usize) callconv(.c) c_int {
 
 fn closeRetrying(fd: c_int) void {
     while (true) {
-        if (!(std.c.close(fd) < 0 and errno() == EINTR)) break;
+        if (!(std.c.close(fd) < 0 and c.errno() == EINTR)) break;
     }
 }
 
@@ -361,13 +345,6 @@ const has_arc4random = switch (builtin.os.tag) {
     .macos, .ios, .tvos, .watchos, .visionos, .freebsd, .netbsd, .openbsd, .dragonfly => true,
     else => false,
 };
-
-extern fn arc4random_buf(buf: [*]u8, nbytes: usize) callconv(.c) void;
-extern fn rand_s(v: *c_uint) callconv(.c) c_int;
-
-inline fn errno() c_int {
-    return std.c._errno().*;
-}
 
 const EINTR: c_int = @intFromEnum(std.c.E.INTR);
 
@@ -394,19 +371,14 @@ pub fn getProcessedName(name: [*]const u8) [*]u8 {
     return ret;
 }
 
-// `error_clib`, `load_clib`, `symbol_clib` and `free_clib` are not here.
-// `get_processed_name` above is the part of `util.c`'s dynamic-module section
-// that is the same on every platform; the rest is per-platform and lives in
-// `dynlib.zig`, under this same selector, because one of the four raises and
-// two callers share all of them.
+// Loading a library is `dynlib.zig`'s. `getProcessedName` above is the part of
+// module loading that is the same on every platform; the rest is per-platform.
 
 // ------------------------------------------------------- allocator wrappers
 
-// Janet declares each of these beside a macro of the same name, the way it does
-// the four head accessors above, and for the same reason: an embedder who
-// reaches Janet through the shared library has no macro. Inside the runtime
-// every call takes the macro, so nothing in the tree calls these four. They
-// are published because Janet publishes them.
+// The four hooks Janet's heap is built on. Every allocation the runtime makes
+// arrives at one of them, which is what makes replacing them a supported thing
+// to do; the typed layer below sits on top rather than beside.
 
 pub fn malloc(size: usize) ?*anyopaque {
     return std.c.malloc(size);
@@ -422,4 +394,140 @@ pub fn calloc(nmemb: usize, size: usize) ?*anyopaque {
 
 pub fn realloc(ptr: ?*anyopaque, size: usize) ?*anyopaque {
     return std.c.realloc(ptr, size);
+}
+
+// ------------------------------------------------------- the typed interface
+//
+// Out of memory is fatal in this runtime and always was: there is no caller
+// anywhere that can carry the failure, and `janet_out_of_memory` aborts. So
+// the check belongs at the hook rather than as `orelse fatal.outOfMemory()`
+// repeated at every allocating line, which is what it had been.
+//
+// `rawAlloc` and `rawRealloc` are the byte-counted forms the collector and the
+// four flexible-array heads want; `alloc`, `allocSlice` and `resizeSlice` are
+// what everything else wants, and each answers a pointer or a slice of the
+// type asked for rather than an `?*anyopaque` for the caller to cast.
+
+/// `size` bytes, suitably aligned for any Janet type, or a fatal abort.
+pub fn rawAlloc(size: usize) *anyopaque {
+    return malloc(size) orelse fatal.outOfMemory();
+}
+
+/// Grow or move `ptr` to `size` bytes, or a fatal abort. A null `ptr` is an
+/// allocation, which is `realloc(3)`'s own rule and the one several growth
+/// paths in the tree rely on.
+pub fn rawRealloc(ptr: ?*anyopaque, size: usize) *anyopaque {
+    return realloc(ptr, size) orelse fatal.outOfMemory();
+}
+
+/// One `T`, uninitialised.
+pub inline fn alloc(comptime T: type) *T {
+    return @ptrCast(@alignCast(rawAlloc(@sizeOf(T))));
+}
+
+/// `n` contiguous `T`, uninitialised.
+///
+/// A many-pointer rather than a slice because the fields these fill are a
+/// pointer and a separate count that the owner grows -- `vm_state.Vector(T)`'s
+/// header says why growth belongs to the owner. `n` reaches `malloc` exactly
+/// as computed, zero included, so this is `malloc(n * @sizeOf(T))` with the
+/// failure already handled and the cast already made.
+pub inline fn allocMany(comptime T: type, n: usize) [*]T {
+    return @ptrCast(@alignCast(rawAlloc(n *% @sizeOf(T))));
+}
+
+/// Grow or move `n` contiguous `T`. A null `old` allocates.
+pub inline fn resizeMany(comptime T: type, old: ?[*]T, n: usize) [*]T {
+    return @ptrCast(@alignCast(rawRealloc(@ptrCast(old), n *% @sizeOf(T))));
+}
+
+/// `n` contiguous zeroed `T`, which is `calloc`'s guarantee and not a
+/// `@memset` after the fact.
+pub inline fn allocManyZeroed(comptime T: type, n: usize) [*]T {
+    return @ptrCast(@alignCast(calloc(n, @sizeOf(T)) orelse fatal.outOfMemory()));
+}
+
+// -------------------------------------------------- Janet's heap as an Allocator
+//
+// `std.ArrayListUnmanaged` and the rest of `std` want a `std.mem.Allocator`,
+// and Janet's hooks are exactly the three functions one needs. The vtable has
+// no state, so `ptr` is `undefined` and must never be read -- which the
+// standard interface already documents as legal for a stateless allocator.
+//
+// The one thing `malloc` cannot promise is an alignment stricter than
+// `max_align_t`. Nothing in the tree asks for one; a request that did would be
+// a silent misalignment, so it aborts instead.
+
+const max_malloc_align: std.mem.Alignment = .fromByteUnits(@alignOf(std.c.max_align_t));
+
+fn allocatorAlloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
+    if (@intFromEnum(alignment) > @intFromEnum(max_malloc_align))
+        fatal.fatal("allocation alignment exceeds what janet_malloc guarantees");
+    return @ptrCast(malloc(len));
+}
+
+fn allocatorResize(_: *anyopaque, memory: []u8, _: std.mem.Alignment, new_len: usize, _: usize) bool {
+    // `realloc` may move, so an in-place resize can only be promised where the
+    // block is not growing.
+    return new_len <= memory.len;
+}
+
+fn allocatorRemap(_: *anyopaque, memory: []u8, _: std.mem.Alignment, new_len: usize, _: usize) ?[*]u8 {
+    return @ptrCast(realloc(@ptrCast(memory.ptr), new_len));
+}
+
+fn allocatorFree(_: *anyopaque, memory: []u8, _: std.mem.Alignment, _: usize) void {
+    free(@ptrCast(memory.ptr));
+}
+
+const allocator_vtable: std.mem.Allocator.VTable = .{
+    .alloc = allocatorAlloc,
+    .resize = allocatorResize,
+    .remap = allocatorRemap,
+    .free = allocatorFree,
+};
+
+/// Janet's heap, as the standard interface. Failure is reported the standard
+/// way -- `error.OutOfMemory` -- rather than aborting, because the containers
+/// that take an `Allocator` are written to that contract; a caller that cannot
+/// carry it writes `catch fatal.outOfMemory()`.
+pub const heap: std.mem.Allocator = .{ .ptr = undefined, .vtable = &allocator_vtable };
+
+/// C's conversion of a signed count to `size_t`: sign-extend to the pointer
+/// width, then reinterpret.
+///
+/// **For a negative count that yields a very large size, and that is the
+/// point.** It is what the C original does, and it is the reproduction
+/// `FOUND.md`'s "`array/ensure` does not validate its growth factor" describes
+/// — the arithmetic that turns an unvalidated negative into an allocation
+/// request nobody meant. `@intCast` would trap on exactly the values this
+/// exists to carry, so the conversion is written out.
+///
+/// **Every call site is a place a program-supplied count that may be negative
+/// still becomes a size**, and under `DESIGN.md` §12 that is an argument error
+/// rather than a wrap. One copy, so the population is countable.
+pub inline fn asSize(n: i32) usize {
+    return @bitCast(@as(isize, n));
+}
+
+/// The element view a fixed-layout accessor returns, carrying the receiver's
+/// constness into the result.
+///
+/// **Zig's constness is shallow, so an accessor has to do this by hand.** A
+/// `*const JanetFuncDef` names a pointer that may not be written *through*,
+/// and the `[*]u32` inside it is a separate pointer with its own constness --
+/// so `fn instructions(self: *const JanetFuncDef) []u32` compiles, and lets a
+/// caller holding a read-only funcdef rewrite its bytecode. Making every
+/// result `[]const T` is not the answer either: there are legitimate writers,
+/// and they hold a mutable receiver already.
+///
+/// Taking `self: anytype` and mapping the pointer's constness onto the result
+/// leaves both call sites alone and makes only the wrong one a compile error.
+/// `reserved` and `spare` deliberately do *not* use this: their whole purpose
+/// is to hand a writer the storage outside the live range, so they keep a
+/// mutable receiver and a mutable result.
+pub fn View(comptime Self: type, comptime T: type) type {
+    const info = @typeInfo(Self);
+    if (info != .pointer) @compileError("a fixed-layout accessor takes a pointer receiver");
+    return if (info.pointer.is_const) []const T else []T;
 }

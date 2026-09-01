@@ -7,37 +7,23 @@
 //! appears in no header and has no other consumer. A split would put a
 //! boundary between two halves of one instruction set.
 //!
-//! ## The selector could not be called `-Dpeg`
+//! `-Dpeg` decides whether this file is compiled at all: it is the whole of
+//! PEG support, types included, so a `-Dpeg=false` build has nothing here to
+//! name.
 //!
-//! `-Dpeg` already exists and is a *feature* flag: it decides whether PEG
-//! support is compiled at all, and `peg.c` is one `#ifdef JANET_PEG` from its
-//! first line to its last. A selector cannot share the name, so this one is
-//! `-Dpeg-engine`. `-Dpeg-core` was the other candidate and was rejected
-//! because `core` means something specific in this tree -- `io-core`,
-//! `ev-core`, `asm-core` and `parser-core` all name a kernel with its
-//! cfunction surface left in C -- and this increment moves the surface too.
+//! ## What can raise through the matcher
 //!
-//! The feature flag also gates the object: `build.zig` builds this file only
-//! when `-Dpeg` is on, because `JanetPeg` and `janet_peg_type` are themselves
-//! declared inside `janet.h`'s `#ifdef JANET_PEG` and a `-Dpeg=false` build has
-//! no types for this file to name.
+//! Every raise this file *decides* returns an error. Three kinds of call
+//! inside the matcher can raise through these frames whatever this file does:
 //!
-//! ## Why this file is jump-transparent
+//!  - the array and buffer pushes, reached from `pushcap` on almost every
+//!    capturing rule;
+//!  - a call into arbitrary Janet code, which `(cmt ...)` and `(/ ...)` make
+//!    with the captures so far, in the middle of the matcher's own recursion;
+//!  - the allocators the compiler reaches.
 //!
-//! Every raise this file *decides* returns an error, as decisions 1 and 3
-//! require. Three kinds of call inside the matcher still jump past these frames
-//! whatever this file does:
-//!
-//!  - `janet_array_push` and `janet_buffer_push_u8`, reached from `pushcap` on
-//!    almost every capturing rule;
-//!  - `janet_call` and a raw `JanetCFunction`, which `(cmt ...)` and
-//!    `(/ ...)` invoke with the captures so far -- arbitrary Janet code in the
-//!    middle of the matcher's own recursion;
-//!  - `janet_abstract`, `janet_table_put` and the other allocators the
-//!    compiler reaches.
-//!
-//! The second is the interesting one and it is not going away with a later
-//! increment: a matchtime function is user code, and user code raises.
+//! The second is the interesting one and it does not go away: a matchtime
+//! function is user code, and user code raises.
 //!
 //! ## Two recursions, two depth counters, and they are not the same counter
 //!
@@ -60,13 +46,11 @@
 //! that walk completely: nothing in `pegRule` bounds-checks a rule index.
 
 const std = @import("std");
-const corefn = @import("corefn");
-const raise = @import("raise");
+const corefn = @import("corefn.zig");
+const raise = @import("raise.zig");
 const pp_format = @import("pp/format.zig");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const stdio = @import("stdio.zig");
 const pp_describe = @import("pp.zig");
 const registry = @import("registry.zig");
@@ -83,7 +67,7 @@ const utils = @import("utils.zig");
 const gc_mark = @import("gc/mark.zig");
 const stretchy = @import("stretchy.zig");
 const numscan = @import("scan.zig");
-const vm_state = @import("vm/lifecycle.zig");
+const vm_state = @import("vm/state.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const args_core = @import("args.zig");
 const fatal = @import("fatal.zig");
@@ -92,9 +76,30 @@ const buffers = @import("value/buffers.zig");
 const value = @import("value.zig");
 const abstracts = @import("value/abstracts.zig");
 const inttypes = @import("value/ints.zig");
+const strings = @import("value/strings.zig");
+const abi = @import("abi");
 
-/// `src/core/util.h`, declared here rather than in `cabi.zig`.
-extern fn safe_memcpy(dest: ?*anyopaque, src: ?*const anyopaque, len: usize) callconv(.c) void;
+pub const JanetPeg = struct {
+    bytecode: ?[*]u32 = null,
+    constants: ?[*]repr.Value = null,
+    bytecode_len: usize = 0,
+    num_constants: u32 = 0,
+    has_backref: bool = false,
+
+    /// The two runs, named as `JanetFuncDef`'s are. A compiled PEG is
+    /// marshalled and unmarshalled, so the widths here are observable and
+    /// stay: `bytecode_len` is a `usize` and `num_constants` a `u32` because
+    /// that is what the serialized form carries.
+    pub inline fn instructions(self: anytype) utils.View(@TypeOf(self), u32) {
+        if (self.bytecode_len == 0) return &.{};
+        return self.bytecode.?[0..self.bytecode_len];
+    }
+
+    pub inline fn constantValues(self: anytype) utils.View(@TypeOf(self), repr.Value) {
+        if (self.num_constants == 0) return &.{};
+        return self.constants.?[0..self.num_constants];
+    }
+};
 
 const recursion_guard: i32 = config.recursion_guard;
 
@@ -150,28 +155,13 @@ inline fn extraAt(extrav: ?[*]const repr.Value, index: i32) repr.Value {
     return element.*;
 }
 
-/// The handle `janet_dynprintf` falls back to when `:err` is unbound.
-/// `trace_frames.zig` records why `stderr` cannot be named from Zig portably
-/// and why `io.c` keeps this one-line accessor.
-/// `janet_wrap_integer`, written out rather than called. `janet.h` declares the
-/// function beside its macro and `wrap.c` defines it only for the two nanbox
-/// layouts, so a tagged build has no such symbol and a Zig caller -- which
-/// cannot use the macro -- does not link. `marsh.zig`, `pp_pretty.zig` and
-/// `value_access.zig` write it out for the same reason and `FOUND.md` has the
-/// defect.
-inline fn wrapInteger(x: i32) repr.Value {
-    return wrap.fromNumber(@floatFromInt(x));
-}
-
-/// `janet_eprintf`, a variadic macro over `janet_dynprintf` that translate-c
-/// cannot bring across. Written out here the same way `trace_frames.zig`
-/// writes it out, except that the format is a runtime value: `(??)` picks
-/// between a coloured and a plain rendering per line.
-inline fn eprintf(comptime format: [:0]const u8, args: anytype) void {
+/// Print to `(dyn :err)`. Written out here the same way `debug.zig` writes it
+/// out, except that the format is a runtime value: `(??)` picks between a
+/// coloured and a plain rendering per line.
+inline fn eprintf(comptime format: [:0]const u8, args: anytype) raise.Raising(void) {
     // `pp/format.dynprintf` can raise: `(dyn :err)` may be a Janet function, and
-    // calling it can. This position cannot carry one -- it is a trace or a
-    // diagnostic on the way out -- so the raise is reported.
-    raise.reported(pp_format.dynprintf("err", @ptrCast(@alignCast(stdio.err())), format, args));
+    // calling it can. Every caller here is raising, so the raise is returned.
+    return pp_format.dynprintf("err", stdio.err(), format, args);
 }
 
 // ==========================================================================
@@ -197,16 +187,16 @@ const PegState = struct {
     outer_text_end: [*]const u8,
     bytecode: [*]const u32,
     constants: [*]const repr.Value,
-    captures: *types.JanetArray,
-    scratch: *types.JanetBuffer,
-    tags: *types.JanetBuffer,
-    tagged_captures: *types.JanetArray,
+    captures: *arrays.Array,
+    scratch: *buffers.Buffer,
+    tags: *buffers.Buffer,
+    tagged_captures: *arrays.Array,
     extrav: ?[*]const repr.Value,
     linemap: ?[*]i32,
     extrac: i32,
     depth: i32,
     linemaplen: i32,
-    has_backref: i32,
+    has_backref: bool,
     mode: Mode,
 
     inline fn ruleAt(s: *const PegState, index: u32) [*]const u32 {
@@ -215,10 +205,13 @@ const PegState = struct {
 };
 
 /// Enough to rewind the three capture stacks when a branch fails.
+/// A capture-stack watermark, saved so a failed alternative can rewind to it.
+///
+/// All three are container counts and carry their type.
 const CapState = struct {
-    cap: i32,
-    tcap: i32,
-    scratch: i32,
+    cap: usize,
+    tcap: usize,
+    scratch: usize,
 };
 
 fn capSave(s: *PegState) CapState {
@@ -233,7 +226,7 @@ fn capSave(s: *PegState) CapState {
 fn capLoad(s: *PegState, cs: CapState) void {
     s.scratch.count = cs.scratch;
     s.captures.count = cs.cap;
-    s.tags.count = cs.tcap;
+    s.tags.count = @intCast(cs.tcap);
     s.tagged_captures.count = cs.tcap;
 }
 
@@ -249,7 +242,7 @@ fn capLoadKeept(s: *PegState, cs: CapState) void {
 fn pushcap(s: *PegState, capture: repr.Value, tag: u32) raise.Raising(void) {
     if (s.mode == .accumulate) try pp_describe.toStringB(s.scratch, capture);
     if (s.mode == .normal) try arrays.push(s.captures, capture);
-    if (s.has_backref != 0) {
+    if (s.has_backref) {
         try arrays.push(s.tagged_captures, capture);
         try buffers.pushU8(s.tags, @truncate(tag));
     }
@@ -340,8 +333,8 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
     var rule = rule_in;
     var text = text_in;
     while (true) {
-        switch (rule[0]) {
-            constants.RULE_LITERAL => {
+        switch (constants.PegRule.fromWord(rule[0])) {
+            .literal => {
                 const len: usize = rule[1];
                 if (at(text) +% len > at(s.text_end)) return null;
                 const bytes: [*]const u8 = @ptrCast(rule + 2);
@@ -349,73 +342,73 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return skip(text, len);
             },
 
-            constants.RULE_DEBUG => {
+            .debug => {
                 var buffer: [32]u8 = @splat(0);
                 const remaining = at(s.outer_text_end) - at(text);
                 const shown = @min(remaining, 31);
                 @memcpy(buffer[0..shown], text[0..shown]);
-                eprintf("?? at [%s] (index %d)\n", .{
+                try eprintf("?? at [%s] (index %d)\n", .{
                     @as([*]const u8, &buffer),
                     @as(i32, @intCast(at(text) - at(s.text_start))),
                 });
                 const has_color = repr.truthy(vm_state.dyn("err-color"));
                 if (s.scratch.count != 0) {
-                    eprintf("accumulate buffer: %v\n", .{wrap.fromBuffer(s.scratch)});
+                    try eprintf("accumulate buffer: %v\n", .{wrap.fromBuffer(s.scratch)});
                 }
                 if (s.captures.count != 0) {
-                    eprintf("stack [%d]:\n", .{s.captures.count});
+                    try eprintf("stack [%d]:\n", .{@as(i64, @intCast(s.captures.count))});
                     var i: i32 = 0;
-                    while (i < s.captures.count) : (i += 1) {
+                    while (i < @as(i32, @intCast(s.captures.count))) : (i += 1) {
                         // Two calls rather than one: the format string is
                         // `comptime` now, so a runtime `has_color` cannot
                         // choose between two of them.
                         const capture = s.captures.slice()[@intCast(i)];
                         if (has_color)
-                            eprintf("  [%d]: %M\n", .{ i, capture })
+                            try eprintf("  [%d]: %M\n", .{ i, capture })
                         else
-                            eprintf("  [%d]: %m\n", .{ i, capture });
+                            try eprintf("  [%d]: %m\n", .{ i, capture });
                     }
                 }
                 if (s.tagged_captures.count != 0) {
-                    eprintf("tag stack [%d]:\n", .{s.tagged_captures.count});
+                    try eprintf("tag stack [%d]:\n", .{@as(i64, @intCast(s.tagged_captures.count))});
                     var i: i32 = 0;
-                    while (i < s.tagged_captures.count) : (i += 1) {
+                    while (i < @as(i32, @intCast(s.tagged_captures.count))) : (i += 1) {
                         const tag = @as(i32, s.tags.slice()[@intCast(i)]);
                         const capture = s.tagged_captures.slice()[@intCast(i)];
                         if (has_color)
-                            eprintf("  [%d] tag=%d: %M\n", .{ i, tag, capture })
+                            try eprintf("  [%d] tag=%d: %M\n", .{ i, tag, capture })
                         else
-                            eprintf("  [%d] tag=%d: %m\n", .{ i, tag, capture });
+                            try eprintf("  [%d] tag=%d: %m\n", .{ i, tag, capture });
                     }
                 }
                 return text;
             },
 
-            constants.RULE_NCHAR => {
+            .nchar => {
                 const n: usize = rule[1];
                 return if (at(text) +% n > at(s.text_end)) null else skip(text, n);
             },
 
-            constants.RULE_NOTNCHAR => {
+            .notnchar => {
                 const n: usize = rule[1];
                 return if (at(text) +% n > at(s.text_end)) text else null;
             },
 
-            constants.RULE_RANGE => {
+            .range => {
                 const lo: u8 = @truncate(rule[1]);
                 const hi: u8 = @truncate(rule[1] >> 16);
                 if (at(text) < at(s.text_end) and text[0] >= lo and text[0] <= hi) return text + 1;
                 return null;
             },
 
-            constants.RULE_SET => {
+            .set => {
                 if (at(text) >= at(s.text_end)) return null;
                 const word = rule[1 + (text[0] >> 5)];
                 const mask = @as(u32, 1) << @truncate(text[0] & 0x1F);
                 return if (word & mask != 0) text + 1 else null;
             },
 
-            constants.RULE_LOOK => {
+            .look => {
                 const offset: i32 = @bitCast(rule[1]);
                 const looked = shift(text, offset);
                 if (at(looked) < at(s.text_start) or at(looked) > at(s.text_end)) return null;
@@ -425,7 +418,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return if (result != null) text else null;
             },
 
-            constants.RULE_CHOICE => {
+            .choice => {
                 const len = rule[1];
                 const args = rule + 2;
                 if (len == 0) return null;
@@ -444,7 +437,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 continue;
             },
 
-            constants.RULE_SEQUENCE => {
+            .sequence => {
                 const len = rule[1];
                 const args = rule + 2;
                 if (len == 0) return text;
@@ -460,7 +453,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 continue;
             },
 
-            constants.RULE_IF => {
+            .@"if" => {
                 const rule_a = s.ruleAt(rule[1]);
                 const rule_b = s.ruleAt(rule[2]);
                 try down1(s);
@@ -471,7 +464,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 continue;
             },
 
-            constants.RULE_IFNOT => {
+            .ifnot => {
                 const rule_a = s.ruleAt(rule[1]);
                 const rule_b = s.ruleAt(rule[2]);
                 try down1(s);
@@ -487,7 +480,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 continue;
             },
 
-            constants.RULE_NOT => {
+            .not => {
                 const rule_a = s.ruleAt(rule[1]);
                 try down1(s);
                 const cs = capSave(s);
@@ -501,7 +494,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return text;
             },
 
-            constants.RULE_THRU, constants.RULE_TO => {
+            .thru, constants.PegRule.to => {
                 const rule_a = s.ruleAt(rule[1]);
                 var next_text: ?[*]const u8 = null;
                 const cs = capSave(s);
@@ -510,7 +503,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                     const cs2 = capSave(s);
                     next_text = try pegRule(s, rule_a, text);
                     if (next_text != null) {
-                        if (rule[0] == constants.RULE_TO) capLoad(s, cs2);
+                        if (constants.PegRule.fromWord(rule[0]) == .to) capLoad(s, cs2);
                         break;
                     }
                     capLoad(s, cs2);
@@ -521,10 +514,10 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                     capLoad(s, cs);
                     return null;
                 }
-                return if (rule[0] == constants.RULE_TO) text else next_text;
+                return if (constants.PegRule.fromWord(rule[0]) == .to) text else next_text;
             },
 
-            constants.RULE_BETWEEN => {
+            .between => {
                 const lo = rule[1];
                 const hi = rule[2];
                 const rule_a = s.ruleAt(rule[3]);
@@ -553,10 +546,10 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
 
             // ---------------------------------------------------- capturing
 
-            constants.RULE_GETTAG => {
+            .gettag => {
                 const search = rule[1];
                 const tag = rule[2];
-                var i: i32 = s.tags.count - 1;
+                var i: i32 = @as(i32, @intCast(s.tags.count)) - 1;
                 while (i >= 0) : (i -= 1) {
                     if (@as(u32, s.tags.slice()[@intCast(i)]) == search) {
                         try pushcap(s, s.tagged_captures.slice()[@intCast(i)], tag);
@@ -566,43 +559,43 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return null;
             },
 
-            constants.RULE_POSITION => {
+            .position => {
                 try pushcap(s, wrap.fromNumber(@floatFromInt(at(text) - at(s.text_start))), rule[1]);
                 return text;
             },
 
-            constants.RULE_LINE => {
+            .line => {
                 const lc = getLinecolFromPosition(s, @intCast(at(text) - at(s.text_start)));
                 try pushcap(s, wrap.fromNumber(@floatFromInt(lc.line)), rule[1]);
                 return text;
             },
 
-            constants.RULE_COLUMN => {
+            .column => {
                 const lc = getLinecolFromPosition(s, @intCast(at(text) - at(s.text_start)));
                 try pushcap(s, wrap.fromNumber(@floatFromInt(lc.col)), rule[1]);
                 return text;
             },
 
-            constants.RULE_ARGUMENT => {
+            .argument => {
                 const index: i32 = @bitCast(rule[1]);
                 const capture = if (index >= s.extrac) wrap.fromNil() else extraAt(s.extrav, index);
                 try pushcap(s, capture, rule[2]);
                 return text;
             },
 
-            constants.RULE_CONSTANT => {
+            .constant => {
                 try pushcap(s, s.constants[rule[1]], rule[2]);
                 return text;
             },
 
-            constants.RULE_CAPTURE => {
+            .capture => {
                 try down1(s);
                 const result = try pegRule(s, s.ruleAt(rule[1]), text);
                 up1(s);
                 const matched = result orelse return null;
                 const len: i32 = @intCast(at(matched) - at(text));
                 // Specialized pushcap - avoid intermediate string creation.
-                if (s.has_backref == 0 and s.mode == .accumulate) {
+                if (!s.has_backref and s.mode == .accumulate) {
                     try buffers.pushBytes(s.scratch, text[0..@intCast(len)]);
                 } else {
                     try pushcap(s, value.fromBytes(text[0..@intCast(len)], .string), rule[2]);
@@ -610,16 +603,15 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return matched;
             },
 
-            constants.RULE_CAPTURE_NUM => {
+            .capture_num => {
                 try down1(s);
                 const result = try pegRule(s, s.ruleAt(rule[1]), text);
                 up1(s);
                 const matched = result orelse return null;
                 const len: i32 = @intCast(at(matched) - at(text));
-                var x: f64 = 0.0;
                 const base: i32 = @bitCast(rule[2]);
-                if (numscan.scanNumberBase(text, len, base, &x) != 0) return null;
-                if (s.has_backref == 0 and s.mode == .accumulate) {
+                const x = numscan.scanNumberBase(text, len, base) orelse return null;
+                if (!s.has_backref and s.mode == .accumulate) {
                     try buffers.pushBytes(s.scratch, text[0..@intCast(len)]);
                 } else {
                     try pushcap(s, wrap.fromNumber(x), rule[3]);
@@ -627,7 +619,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return matched;
             },
 
-            constants.RULE_ACCUMULATE => {
+            .accumulate => {
                 const tag = rule[2];
                 const oldmode = s.mode;
                 if (tag == 0 and oldmode == .accumulate) {
@@ -647,7 +639,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return matched;
             },
 
-            constants.RULE_DROP => {
+            .drop => {
                 const cs = capSave(s);
                 try down1(s);
                 const result = try pegRule(s, s.ruleAt(rule[1]), text);
@@ -657,7 +649,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return matched;
             },
 
-            constants.RULE_ONLY_TAGS => {
+            .only_tags => {
                 const cs = capSave(s);
                 try down1(s);
                 const result = try pegRule(s, s.ruleAt(rule[1]), text);
@@ -667,7 +659,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return matched;
             },
 
-            constants.RULE_GROUP => {
+            .group => {
                 const tag = rule[2];
                 const oldmode = s.mode;
                 const cs = capSave(s);
@@ -677,20 +669,20 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 up1(s);
                 s.mode = oldmode;
                 const matched = result orelse return null;
-                const num_sub_captures = s.captures.count - cs.cap;
+                const num_sub_captures: i32 = @intCast(s.captures.count - cs.cap);
                 const sub_captures = arrays.new(num_sub_captures);
-                safe_memcpy(
-                    sub_captures.*.data,
+                utils.safeMemcpy(
+                    sub_captures.data,
                     s.captures.data.? + @as(usize, @intCast(cs.cap)),
                     @sizeOf(repr.Value) * @as(usize, @intCast(num_sub_captures)),
                 );
-                sub_captures.*.count = num_sub_captures;
+                sub_captures.count = @intCast(num_sub_captures);
                 capLoadKeept(s, cs);
                 try pushcap(s, wrap.fromArray(sub_captures), tag);
                 return matched;
             },
 
-            constants.RULE_NTH => {
+            .nth => {
                 var nth = rule[1];
                 if (nth > std.math.maxInt(i32)) nth = std.math.maxInt(i32);
                 const tag = rule[3];
@@ -702,15 +694,15 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 up1(s);
                 s.mode = oldmode;
                 const matched = result orelse return null;
-                const num_sub_captures = s.captures.count - cs.cap;
+                const num_sub_captures: i32 = @intCast(s.captures.count - cs.cap);
                 if (num_sub_captures <= @as(i32, @intCast(nth))) return null;
-                const cap = s.captures.slice()[@intCast(cs.cap + @as(i32, @intCast(nth)))];
+                const cap = s.captures.slice()[cs.cap + nth];
                 capLoadKeept(s, cs);
                 try pushcap(s, cap, tag);
                 return matched;
             },
 
-            constants.RULE_SUB => {
+            .sub => {
                 const text_start = text;
                 const rule_window = s.ruleAt(rule[1]);
                 const rule_subpattern = s.ruleAt(rule[2]);
@@ -728,7 +720,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return window_end;
             },
 
-            constants.RULE_TIL => {
+            .til => {
                 const rule_terminus = s.ruleAt(rule[1]);
                 const rule_subpattern = s.ruleAt(rule[2]);
                 var terminus_start = text;
@@ -753,7 +745,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return found;
             },
 
-            constants.RULE_SPLIT => {
+            .split => {
                 const saved_end = s.text_end;
                 const rule_separator = s.ruleAt(rule[1]);
                 const rule_subpattern = s.ruleAt(rule[2]);
@@ -791,7 +783,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return s.text_end;
             },
 
-            constants.RULE_REPLACE, constants.RULE_MATCHSPLICE, constants.RULE_MATCHTIME => {
+            .replace, constants.PegRule.matchsplice, constants.PegRule.matchtime => {
                 const tag = rule[3];
                 const oldmode = s.mode;
                 const cs = capSave(s);
@@ -837,19 +829,20 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                     else => cap = constant,
                 }
                 capLoadKeept(s, cs);
-                if (rule[0] != constants.RULE_REPLACE and !repr.truthy(cap)) return null;
-                var elements: ?[*]const repr.Value = null;
-                var len: i32 = 0;
-                if (rule[0] == constants.RULE_MATCHSPLICE and args_core.indexedView(cap, &elements, &len) != 0) {
-                    var i: i32 = 0;
-                    while (i < len) : (i += 1) try pushcap(s, elements.?[@intCast(i)], tag);
+                if (constants.PegRule.fromWord(rule[0]) != .replace and !repr.truthy(cap)) return null;
+                const elements: ?[]const repr.Value = if (constants.PegRule.fromWord(rule[0]) == .matchsplice)
+                    args_core.indexedView(cap)
+                else
+                    null;
+                if (elements) |items| {
+                    for (items) |element| try pushcap(s, element, tag);
                 } else {
                     try pushcap(s, cap, tag);
                 }
                 return matched;
             },
 
-            constants.RULE_ERROR => {
+            .@"error" => {
                 const oldmode = s.mode;
                 s.mode = .normal;
                 const old_cap = s.captures.count;
@@ -866,15 +859,15 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return pp_format.panicf("match error at line %d, column %d", .{ lc.line, lc.col });
             },
 
-            constants.RULE_BACKMATCH => {
+            .backmatch => {
                 const search = rule[1];
-                var i: i32 = s.tags.count - 1;
+                var i: i32 = @as(i32, @intCast(s.tags.count)) - 1;
                 while (i >= 0) : (i -= 1) {
                     if (@as(u32, s.tags.slice()[@intCast(i)]) != search) continue;
                     const capture = s.tagged_captures.slice()[@intCast(i)];
                     if (!repr.checkType(capture, repr.Tag.string)) return null;
                     const bytes = wrap.toString(capture);
-                    const len: usize = @intCast(types.stringHead(bytes).length);
+                    const len: usize = @intCast(strings.head(bytes).length);
                     if (at(text) +% len > at(s.text_end)) return null;
                     if (len != 0 and !std.mem.eql(u8, text[0..len], bytes[0..len])) return null;
                     return skip(text, len);
@@ -882,7 +875,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return null;
             },
 
-            constants.RULE_LENPREFIX => {
+            .lenprefix => {
                 const oldmode = s.mode;
                 s.mode = .normal;
                 const cs = capSave(s);
@@ -893,16 +886,20 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 // that is reproduced rather than fixed: see `FOUND.md`.
                 if (next_text == null) return null;
                 s.mode = oldmode;
-                const num_sub_captures = s.captures.count - cs.cap;
+                const num_sub_captures: i32 = @intCast(s.captures.count - cs.cap);
                 if (num_sub_captures <= 0) {
                     capLoad(s, cs);
                     return null;
                 }
                 const lencap = s.captures.slice()[@intCast(cs.cap)];
-                if (args_core.checkint(lencap) == 0) {
+                if (!args_core.checkint(lencap)) {
                     capLoad(s, cs);
                     return null;
                 }
+                // **Signed on purpose.** A length pattern can capture a
+                // negative, and a negative repeat count runs the body zero
+                // times -- which is what C's `for (i = 0; i < nrep; i++)`
+                // does. Unsigned it would wrap and loop for ever.
                 const nrep = wrap.toInteger(lencap);
                 // Drop the captures the length pattern made.
                 capLoad(s, cs);
@@ -919,7 +916,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return next_text;
             },
 
-            constants.RULE_READINT => {
+            .readint => {
                 const tag = rule[2];
                 const signedness = rule[1] & 0x10;
                 const endianness = rule[1] & 0x20;
@@ -956,7 +953,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 return skip(text, uwidth);
             },
 
-            constants.RULE_UNREF => {
+            .unref => {
                 const tcap = s.tags.count;
                 try down1(s);
                 const result = try pegRule(s, s.ruleAt(rule[1]), text);
@@ -977,7 +974,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                     }
                 }
                 s.tags.count = w;
-                s.tagged_captures.count = w;
+                s.tagged_captures.count = @intCast(w);
                 return matched;
             },
 
@@ -991,29 +988,25 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
 // ==========================================================================
 
 const Builder = struct {
-    grammar: *types.JanetTable,
-    default_grammar: ?*types.JanetTable,
-    tags: *types.JanetTable,
-    constants: ?[*]repr.Value,
-    bytecode: ?[*]u32,
+    grammar: *tables.Table,
+    default_grammar: ?*tables.Table,
+    tags: *tables.Table,
+    constants: stretchy.Vector(repr.Value),
+    bytecode: stretchy.Vector(u32),
     /// The form currently being compiled, named by every grammar error.
     form: repr.Value,
     depth: c_int,
     nexttag: u32,
-    has_backref: c_int,
+    has_backref: bool,
 };
 
 fn builderCleanup(b: *Builder) void {
-    stretchy.free(repr.Value, b.constants);
-    stretchy.free(u32, b.bytecode);
+    stretchy.free(&b.constants);
+    stretchy.free(&b.bytecode);
 }
 
 /// Every grammar error goes through here, and every one of them frees the two
 /// scratch vectors on the way out.
-///
-/// That free is why this file has no `errdefer` even where the jump-transparent
-/// marker would allow one: the C original does it in one place and so does
-/// this, and the raise is the only exit a partially built grammar has.
 fn pegPanic(b: *Builder, msg: [*]const u8) raise.Error {
     builderCleanup(b);
     return pp_format.panicf("grammar error in %p, %s", .{ b.form, msg });
@@ -1021,26 +1014,32 @@ fn pegPanic(b: *Builder, msg: [*]const u8) raise.Error {
 
 fn pegPanicf(b: *Builder, comptime format: [:0]const u8, args: anytype) raise.Error {
     // The formatter can raise -- `%v` runs a `tostring` callback -- and that
-    // raise is the real one, so it wins over the grammar error below.
-    const msg = pp_format.formatc(format, args) catch |err| return err;
+    // raise is the real one, so it wins over the grammar error below. It is
+    // also a second exit from a partially built grammar, which the "the raise
+    // is the only exit" comment that used to stand above `pegPanic` did not
+    // count: the vectors have to come back on this path too.
+    const msg = pp_format.formatc(format, args) catch |err| {
+        builderCleanup(b);
+        return err;
+    };
     return pegPanic(b, msg);
 }
 
-fn pegFixarity(b: *Builder, argc: i32, arity: i32) raise.Raising(void) {
+fn pegFixarity(b: *Builder, argc: usize, arity: i32) raise.Raising(void) {
     if (argc != arity) {
         return pegPanicf(b, "expected %d argument%s, got %d", .{
             arity,
             @as([*]const u8, if (arity == 1) "" else "s"),
-            argc,
+            @as(i64, @intCast(argc)),
         });
     }
 }
 
-fn pegArity(b: *Builder, arity: i32, min: i32, max: i32) raise.Raising(void) {
+fn pegArity(b: *Builder, arity: usize, min: i32, max: i32) raise.Raising(void) {
     if (min >= 0 and arity < min)
-        return pegPanicf(b, "arity mismatch, expected at least %d, got %d", .{ min, arity });
+        return pegPanicf(b, "arity mismatch, expected at least %d, got %d", .{ min, @as(i64, @intCast(arity)) });
     if (max >= 0 and arity > max)
-        return pegPanicf(b, "arity mismatch, expected at most %d, got %d", .{ max, arity });
+        return pegPanicf(b, "arity mismatch, expected at most %d, got %d", .{ max, @as(i64, @intCast(arity)) });
 }
 
 fn pegGetset(b: *Builder, x: repr.Value) raise.Raising([*]const u8) {
@@ -1053,7 +1052,7 @@ fn pegGetrange(b: *Builder, x: repr.Value) raise.Raising([*]const u8) {
     if (!repr.checkType(x, repr.Tag.string))
         return pegPanic(b, "expected string for character range");
     const str = wrap.toString(x);
-    if (types.stringHead(str).length != 2)
+    if (strings.head(str).length != 2)
         return pegPanicf(b, "expected string to have length 2, got %v", .{x});
     if (str[1] < str[0])
         return pegPanicf(b, "range %v is empty", .{x});
@@ -1061,7 +1060,7 @@ fn pegGetrange(b: *Builder, x: repr.Value) raise.Raising([*]const u8) {
 }
 
 fn pegGetinteger(b: *Builder, x: repr.Value) raise.Raising(i32) {
-    if (args_core.checkint(x) == 0)
+    if (!args_core.checkint(x))
         return pegPanicf(b, "expected integer, got %v", .{x});
     return wrap.toInteger(x);
 }
@@ -1076,8 +1075,8 @@ fn pegGetnat(b: *Builder, x: repr.Value) raise.Raising(i32) {
 // ------------------------------------------------------------------ emission
 
 fn emitConstant(b: *Builder, val: repr.Value) u32 {
-    const cindex: u32 = @intCast(stretchy.count(repr.Value, b.constants));
-    stretchy.push(repr.Value, &b.constants, val);
+    const cindex: u32 = @intCast(b.constants.items.len);
+    stretchy.push(&b.constants, val);
     return cindex;
 }
 
@@ -1111,46 +1110,43 @@ const Reserve = struct {
 fn reserve(b: *Builder, size: i32) Reserve {
     const r: Reserve = .{
         .builder = b,
-        .index = @intCast(stretchy.count(u32, b.bytecode)),
+        .index = @intCast(b.bytecode.items.len),
         .size = size,
     };
-    var i: i32 = 0;
-    while (i < size) : (i += 1) stretchy.push(u32, &b.bytecode, 0);
+    stretchy.pushN(&b.bytecode, 0, @intCast(size));
     return r;
 }
 
-fn emitRule(r: Reserve, op: u32, n: i32, body: [*]const u32) void {
+fn emitRule(r: Reserve, op: constants.PegRule, n: i32, body: [*]const u32) void {
     pegAssert(r.size == n + 1, "bad reserve");
-    stretchy.slice(u32, r.builder.bytecode)[r.index] = op;
+    r.builder.bytecode.items[r.index] = op.number();
     const count: usize = @intCast(n);
-    @memcpy((r.builder.bytecode.? + r.index + 1)[0..count], body[0..count]);
+    @memcpy(r.builder.bytecode.items[r.index + 1 ..][0..count], body[0..count]);
 }
 
 /// For `RULE_LITERAL`, whose body is bytes rather than words.
-fn emitBytes(b: *Builder, op: u32, bytes: []const u8) void {
-    const next_rule: u32 = @intCast(stretchy.count(u32, b.bytecode));
-    stretchy.push(u32, &b.bytecode, op);
-    stretchy.push(u32, &b.bytecode, @intCast(bytes.len));
-    const words = (bytes.len + 3) >> 2;
-    var i: usize = 0;
-    while (i < words) : (i += 1) stretchy.push(u32, &b.bytecode, 0);
+fn emitBytes(b: *Builder, op: constants.PegRule, bytes: []const u8) void {
+    const next_rule: u32 = @intCast(b.bytecode.items.len);
+    stretchy.push(&b.bytecode, op.number());
+    stretchy.push(&b.bytecode, @as(u32, @intCast(bytes.len)));
+    stretchy.pushN(&b.bytecode, 0, (bytes.len + 3) >> 2);
     if (bytes.len != 0) {
-        const dest: [*]u8 = @ptrCast(b.bytecode.? + next_rule + 2);
+        const dest: [*]u8 = @ptrCast(b.bytecode.items.ptr + next_rule + 2);
         @memcpy(dest[0..bytes.len], bytes);
     }
 }
 
-fn emit1(r: Reserve, op: u32, arg: u32) void {
+fn emit1(r: Reserve, op: constants.PegRule, arg: u32) void {
     const body = [_]u32{arg};
     emitRule(r, op, 1, &body);
 }
 
-fn emit2(r: Reserve, op: u32, arg1: u32, arg2: u32) void {
+fn emit2(r: Reserve, op: constants.PegRule, arg1: u32, arg2: u32) void {
     const body = [_]u32{ arg1, arg2 };
     emitRule(r, op, 2, &body);
 }
 
-fn emit3(r: Reserve, op: u32, arg1: u32, arg2: u32, arg3: u32) void {
+fn emit3(r: Reserve, op: constants.PegRule, arg1: u32, arg2: u32, arg3: u32) void {
     const body = [_]u32{ arg1, arg2, arg3 };
     emitRule(r, op, 3, &body);
 }
@@ -1162,70 +1158,68 @@ fn bitmapSet(bitmap: *[8]u32, ch: u8) void {
 }
 
 fn specRange(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try pegArity(b, @as(i32, @intCast(argv.len)), 1, -1);
-    if (@as(i32, @intCast(argv.len)) == 1) {
+    try pegArity(b, argv.len, 1, -1);
+    if (argv.len == 1) {
         const r = reserve(b, 2);
         const str = try pegGetrange(b, argv[0]);
-        emit1(r, constants.RULE_RANGE, @as(u32, str[0]) | (@as(u32, str[1]) << 16));
+        emit1(r, constants.PegRule.range, @as(u32, str[0]) | (@as(u32, str[1]) << 16));
     } else {
         // More than one range compiles to a set instead.
         const r = reserve(b, 9);
         var bitmap: [8]u32 = @splat(0);
-        var i: i32 = 0;
-        while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
-            const str = try pegGetrange(b, argv[@intCast(i)]);
+        for (argv) |a| {
+            const str = try pegGetrange(b, a);
             var ch: u32 = str[0];
             while (ch <= str[1]) : (ch += 1) bitmapSet(&bitmap, @truncate(ch));
         }
-        emitRule(r, constants.RULE_SET, 8, &bitmap);
+        emitRule(r, constants.PegRule.set, 8, &bitmap);
     }
 }
 
 fn specSet(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try pegFixarity(b, @as(i32, @intCast(argv.len)), 1);
+    try pegFixarity(b, argv.len, 1);
     const r = reserve(b, 9);
     const str = try pegGetset(b, argv[0]);
     var bitmap: [8]u32 = @splat(0);
     var i: i32 = 0;
-    while (i < types.stringHead(str).length) : (i += 1) bitmapSet(&bitmap, str[@intCast(i)]);
-    emitRule(r, constants.RULE_SET, 8, &bitmap);
+    while (i < strings.head(str).length) : (i += 1) bitmapSet(&bitmap, str[@intCast(i)]);
+    emitRule(r, constants.PegRule.set, 8, &bitmap);
 }
 
 fn specLook(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try pegArity(b, @as(i32, @intCast(argv.len)), 1, 2);
+    try pegArity(b, argv.len, 1, 2);
     const r = reserve(b, 3);
-    const rulearg: i32 = if (@as(i32, @intCast(argv.len)) == 2) 1 else 0;
-    const offset: i32 = if (@as(i32, @intCast(argv.len)) == 2) try pegGetinteger(b, argv[0]) else 0;
+    const rulearg: i32 = if (argv.len == 2) 1 else 0;
+    const offset: i32 = if (argv.len == 2) try pegGetinteger(b, argv[0]) else 0;
     const subrule = try pegCompile1(b, argv[@intCast(rulearg)]);
-    emit2(r, constants.RULE_LOOK, @bitCast(offset), subrule);
+    emit2(r, constants.PegRule.look, @bitCast(offset), subrule);
 }
 
 /// Rule of the form `[len, rules...]`.
-fn specVariadic(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void) {
-    const rule: u32 = @intCast(stretchy.count(u32, b.bytecode));
-    stretchy.push(u32, &b.bytecode, op);
-    stretchy.push(u32, &b.bytecode, @bitCast(@as(i32, @intCast(argv.len))));
-    var i: i32 = 0;
-    while (i < @as(i32, @intCast(argv.len))) : (i += 1) stretchy.push(u32, &b.bytecode, 0);
-    i = 0;
-    while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
-        const rulei = try pegCompile1(b, argv[@intCast(i)]);
-        // Re-read `b.bytecode`: compiling a child grows the vector.
-        stretchy.slice(u32, b.bytecode)[rule + 2 + @as(u32, @intCast(i))] = rulei;
+fn specVariadic(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Raising(void) {
+    const rule: u32 = @intCast(b.bytecode.items.len);
+    stretchy.push(&b.bytecode, op.number());
+    stretchy.push(&b.bytecode, @as(u32, @bitCast(@as(i32, @intCast(argv.len)))));
+    stretchy.pushN(&b.bytecode, 0, argv.len);
+    for (argv, 0..) |arg, i| {
+        const rulei = try pegCompile1(b, arg);
+        // Re-read `b.bytecode.items`: compiling a child grows the vector
+        // and the slice it held is stale.
+        b.bytecode.items[rule + 2 + i] = rulei;
     }
 }
 
 fn specChoice(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specVariadic(b, argv, constants.RULE_CHOICE);
+    return specVariadic(b, argv, constants.PegRule.choice);
 }
 
 fn specSequence(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specVariadic(b, argv, constants.RULE_SEQUENCE);
+    return specVariadic(b, argv, constants.PegRule.sequence);
 }
 
 /// For `(if a b)`, `(if-not a b)` and `(lenprefix a b)`.
-fn specBranch(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void) {
-    try pegFixarity(b, @as(i32, @intCast(argv.len)), 2);
+fn specBranch(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Raising(void) {
+    try pegFixarity(b, argv.len, 2);
     const r = reserve(b, 3);
     const rule_a = try pegCompile1(b, argv[0]);
     const rule_b = try pegCompile1(b, argv[1]);
@@ -1233,31 +1227,31 @@ fn specBranch(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void
 }
 
 fn specIf(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specBranch(b, argv, constants.RULE_IF);
+    return specBranch(b, argv, constants.PegRule.@"if");
 }
 
 fn specIfnot(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specBranch(b, argv, constants.RULE_IFNOT);
+    return specBranch(b, argv, constants.PegRule.ifnot);
 }
 
 fn specLenprefix(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specBranch(b, argv, constants.RULE_LENPREFIX);
+    return specBranch(b, argv, constants.PegRule.lenprefix);
 }
 
 fn specBetween(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try pegFixarity(b, @as(i32, @intCast(argv.len)), 3);
+    try pegFixarity(b, argv.len, 3);
     const r = reserve(b, 4);
     const lo = try pegGetnat(b, argv[0]);
     const hi = try pegGetnat(b, argv[1]);
     const subrule = try pegCompile1(b, argv[2]);
-    emit3(r, constants.RULE_BETWEEN, @bitCast(lo), @bitCast(hi), subrule);
+    emit3(r, constants.PegRule.between, @bitCast(lo), @bitCast(hi), subrule);
 }
 
 fn specRepeater(b: *Builder, argv: []const repr.Value, min: u32) raise.Raising(void) {
-    try pegFixarity(b, @as(i32, @intCast(argv.len)), 1);
+    try pegFixarity(b, argv.len, 1);
     const r = reserve(b, 4);
     const subrule = try pegCompile1(b, argv[0]);
-    emit3(r, constants.RULE_BETWEEN, min, std.math.maxInt(u32), subrule);
+    emit3(r, constants.PegRule.between, min, std.math.maxInt(u32), subrule);
 }
 
 fn specSome(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
@@ -1269,164 +1263,164 @@ fn specAny(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 }
 
 fn specAtleast(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try pegFixarity(b, @as(i32, @intCast(argv.len)), 2);
+    try pegFixarity(b, argv.len, 2);
     const r = reserve(b, 4);
     const n = try pegGetnat(b, argv[0]);
     const subrule = try pegCompile1(b, argv[1]);
-    emit3(r, constants.RULE_BETWEEN, @bitCast(n), std.math.maxInt(u32), subrule);
+    emit3(r, constants.PegRule.between, @bitCast(n), std.math.maxInt(u32), subrule);
 }
 
 fn specAtmost(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try pegFixarity(b, @as(i32, @intCast(argv.len)), 2);
+    try pegFixarity(b, argv.len, 2);
     const r = reserve(b, 4);
     const n = try pegGetnat(b, argv[0]);
     const subrule = try pegCompile1(b, argv[1]);
-    emit3(r, constants.RULE_BETWEEN, 0, @bitCast(n), subrule);
+    emit3(r, constants.PegRule.between, 0, @bitCast(n), subrule);
 }
 
 fn specOpt(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try pegFixarity(b, @as(i32, @intCast(argv.len)), 1);
+    try pegFixarity(b, argv.len, 1);
     const r = reserve(b, 4);
     const subrule = try pegCompile1(b, argv[0]);
-    emit3(r, constants.RULE_BETWEEN, 0, 1, subrule);
+    emit3(r, constants.PegRule.between, 0, 1, subrule);
 }
 
 fn specRepeat(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try pegFixarity(b, @as(i32, @intCast(argv.len)), 2);
+    try pegFixarity(b, argv.len, 2);
     const r = reserve(b, 4);
     const n = try pegGetnat(b, argv[0]);
     const subrule = try pegCompile1(b, argv[1]);
-    emit3(r, constants.RULE_BETWEEN, @bitCast(n), @bitCast(n), subrule);
+    emit3(r, constants.PegRule.between, @bitCast(n), @bitCast(n), subrule);
 }
 
 /// Rule of the form `[rule]`.
-fn specOnerule(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void) {
-    try pegFixarity(b, @as(i32, @intCast(argv.len)), 1);
+fn specOnerule(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Raising(void) {
+    try pegFixarity(b, argv.len, 1);
     const r = reserve(b, 2);
     const rule = try pegCompile1(b, argv[0]);
     emit1(r, op, rule);
 }
 
 fn specNot(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specOnerule(b, argv, constants.RULE_NOT);
+    return specOnerule(b, argv, constants.PegRule.not);
 }
 
 fn specError(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    if (@as(i32, @intCast(argv.len)) == 0) {
+    if (argv.len == 0) {
         const r = reserve(b, 2);
         const rule = try pegCompile1(b, wrap.fromNumber(0));
-        emit1(r, constants.RULE_ERROR, rule);
+        emit1(r, constants.PegRule.@"error", rule);
         return;
     }
-    return specOnerule(b, argv, constants.RULE_ERROR);
+    return specOnerule(b, argv, constants.PegRule.@"error");
 }
 
 fn specTo(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specOnerule(b, argv, constants.RULE_TO);
+    return specOnerule(b, argv, constants.PegRule.to);
 }
 
 fn specThru(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specOnerule(b, argv, constants.RULE_THRU);
+    return specOnerule(b, argv, constants.PegRule.thru);
 }
 
 fn specDrop(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specOnerule(b, argv, constants.RULE_DROP);
+    return specOnerule(b, argv, constants.PegRule.drop);
 }
 
 fn specOnlyTags(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specOnerule(b, argv, constants.RULE_ONLY_TAGS);
+    return specOnerule(b, argv, constants.PegRule.only_tags);
 }
 
 /// Rule of the form `[rule, tag]`.
-fn specCap1(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void) {
-    try pegArity(b, @as(i32, @intCast(argv.len)), 1, 2);
+fn specCap1(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Raising(void) {
+    try pegArity(b, argv.len, 1, 2);
     const r = reserve(b, 3);
-    const tag: u32 = if (@as(i32, @intCast(argv.len)) == 2) try emitTag(b, argv[1]) else 0;
+    const tag: u32 = if (argv.len == 2) try emitTag(b, argv[1]) else 0;
     const rule = try pegCompile1(b, argv[0]);
     emit2(r, op, rule, tag);
 }
 
 fn specCapture(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specCap1(b, argv, constants.RULE_CAPTURE);
+    return specCap1(b, argv, constants.PegRule.capture);
 }
 
 fn specAccumulate(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specCap1(b, argv, constants.RULE_ACCUMULATE);
+    return specCap1(b, argv, constants.PegRule.accumulate);
 }
 
 fn specGroup(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specCap1(b, argv, constants.RULE_GROUP);
+    return specCap1(b, argv, constants.PegRule.group);
 }
 
 fn specUnref(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specCap1(b, argv, constants.RULE_UNREF);
+    return specCap1(b, argv, constants.PegRule.unref);
 }
 
 fn specNth(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try pegArity(b, @as(i32, @intCast(argv.len)), 2, 3);
+    try pegArity(b, argv.len, 2, 3);
     const r = reserve(b, 4);
     const nth = try pegGetnat(b, argv[0]);
     const rule = try pegCompile1(b, argv[1]);
-    const tag: u32 = if (@as(i32, @intCast(argv.len)) == 3) try emitTag(b, argv[2]) else 0;
-    emit3(r, constants.RULE_NTH, @bitCast(nth), rule, tag);
+    const tag: u32 = if (argv.len == 3) try emitTag(b, argv[2]) else 0;
+    emit3(r, constants.PegRule.nth, @bitCast(nth), rule, tag);
 }
 
 fn specCaptureNumber(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try pegArity(b, @as(i32, @intCast(argv.len)), 1, 3);
+    try pegArity(b, argv.len, 1, 3);
     const r = reserve(b, 4);
     var base: u32 = 0;
-    if (@as(i32, @intCast(argv.len)) >= 2 and !repr.checkType(argv[1], repr.Tag.nil)) {
-        if (args_core.checkint(argv[1]) == 0)
+    if (argv.len >= 2 and !repr.checkType(argv[1], repr.Tag.nil)) {
+        if (!args_core.checkint(argv[1]))
             return pegPanicf(b, "expected integer between 2 and 36, got %v", .{argv[1]});
         base = @bitCast(wrap.toInteger(argv[1]));
         if (base < 2 or base > 36)
             return pegPanicf(b, "expected integer between 2 and 36, got %v", .{argv[1]});
     }
-    const tag: u32 = if (@as(i32, @intCast(argv.len)) == 3) try emitTag(b, argv[2]) else 0;
+    const tag: u32 = if (argv.len == 3) try emitTag(b, argv[2]) else 0;
     const rule = try pegCompile1(b, argv[0]);
-    emit3(r, constants.RULE_CAPTURE_NUM, rule, base, tag);
+    emit3(r, constants.PegRule.capture_num, rule, base, tag);
 }
 
 fn specReference(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try pegArity(b, @as(i32, @intCast(argv.len)), 1, 2);
+    try pegArity(b, argv.len, 1, 2);
     const r = reserve(b, 3);
     const search = try emitTag(b, argv[0]);
-    const tag: u32 = if (@as(i32, @intCast(argv.len)) == 2) try emitTag(b, argv[1]) else 0;
-    b.has_backref = 1;
-    emit2(r, constants.RULE_GETTAG, search, tag);
+    const tag: u32 = if (argv.len == 2) try emitTag(b, argv[1]) else 0;
+    b.has_backref = true;
+    emit2(r, constants.PegRule.gettag, search, tag);
 }
 
 /// Rule of the form `[tag]`.
-fn specTag1(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void) {
-    try pegArity(b, @as(i32, @intCast(argv.len)), 0, 1);
+fn specTag1(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Raising(void) {
+    try pegArity(b, argv.len, 0, 1);
     const r = reserve(b, 2);
-    const tag: u32 = if (@as(i32, @intCast(argv.len)) != 0) try emitTag(b, argv[0]) else 0;
+    const tag: u32 = if (argv.len != 0) try emitTag(b, argv[0]) else 0;
     emit1(r, op, tag);
 }
 
 fn specPosition(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specTag1(b, argv, constants.RULE_POSITION);
+    return specTag1(b, argv, constants.PegRule.position);
 }
 
 fn specLine(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specTag1(b, argv, constants.RULE_LINE);
+    return specTag1(b, argv, constants.PegRule.line);
 }
 
 fn specColumn(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specTag1(b, argv, constants.RULE_COLUMN);
+    return specTag1(b, argv, constants.PegRule.column);
 }
 
 fn specBackmatch(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    b.has_backref = 1;
-    return specTag1(b, argv, constants.RULE_BACKMATCH);
+    b.has_backref = true;
+    return specTag1(b, argv, constants.PegRule.backmatch);
 }
 
 fn specArgument(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try pegArity(b, @as(i32, @intCast(argv.len)), 1, 2);
+    try pegArity(b, argv.len, 1, 2);
     const r = reserve(b, 3);
-    const tag: u32 = if (@as(i32, @intCast(argv.len)) == 2) try emitTag(b, argv[1]) else 0;
+    const tag: u32 = if (argv.len == 2) try emitTag(b, argv[1]) else 0;
     const index = try pegGetnat(b, argv[0]);
-    emit2(r, constants.RULE_ARGUMENT, @bitCast(index), tag);
+    emit2(r, constants.PegRule.argument, @bitCast(index), tag);
 }
 
 /// The one special that checks its arity with `janet_arity` rather than
@@ -1435,28 +1429,28 @@ fn specArgument(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 fn specConstant(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     try args_core.arity(argv, 1, 2);
     const r = reserve(b, 3);
-    const tag: u32 = if (@as(i32, @intCast(argv.len)) == 2) try emitTag(b, argv[1]) else 0;
-    emit2(r, constants.RULE_CONSTANT, emitConstant(b, argv[0]), tag);
+    const tag: u32 = if (argv.len == 2) try emitTag(b, argv[1]) else 0;
+    emit2(r, constants.PegRule.constant, emitConstant(b, argv[0]), tag);
 }
 
 fn specDebug(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try pegArity(b, @as(i32, @intCast(argv.len)), 0, 0);
+    try pegArity(b, argv.len, 0, 0);
     const r = reserve(b, 1);
     const empty = [_]u32{0};
-    emitRule(r, constants.RULE_DEBUG, 0, &empty);
+    emitRule(r, constants.PegRule.debug, 0, &empty);
 }
 
 fn specReplace(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try pegArity(b, @as(i32, @intCast(argv.len)), 2, 3);
+    try pegArity(b, argv.len, 2, 3);
     const r = reserve(b, 4);
     const subrule = try pegCompile1(b, argv[0]);
     const constant = emitConstant(b, argv[1]);
-    const tag: u32 = if (@as(i32, @intCast(argv.len)) == 3) try emitTag(b, argv[2]) else 0;
-    emit3(r, constants.RULE_REPLACE, subrule, constant, tag);
+    const tag: u32 = if (argv.len == 3) try emitTag(b, argv[2]) else 0;
+    emit3(r, constants.PegRule.replace, subrule, constant, tag);
 }
 
-fn specMatchtimeImpl(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void) {
-    try pegArity(b, @as(i32, @intCast(argv.len)), 2, 3);
+fn specMatchtimeImpl(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Raising(void) {
+    try pegArity(b, argv.len, 2, 3);
     const r = reserve(b, 4);
     const subrule = try pegCompile1(b, argv[0]);
     const fun = argv[1];
@@ -1465,22 +1459,22 @@ fn specMatchtimeImpl(b: *Builder, argv: []const repr.Value, op: u32) raise.Raisi
     {
         return pegPanicf(b, "expected function or cfunction, got %v", .{fun});
     }
-    const tag: u32 = if (@as(i32, @intCast(argv.len)) == 3) try emitTag(b, argv[2]) else 0;
+    const tag: u32 = if (argv.len == 3) try emitTag(b, argv[2]) else 0;
     const cindex = emitConstant(b, fun);
     emit3(r, op, subrule, cindex, tag);
 }
 
 fn specMatchtime(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specMatchtimeImpl(b, argv, constants.RULE_MATCHTIME);
+    return specMatchtimeImpl(b, argv, constants.PegRule.matchtime);
 }
 
 fn specMatchtimeSplice(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specMatchtimeImpl(b, argv, constants.RULE_MATCHSPLICE);
+    return specMatchtimeImpl(b, argv, constants.PegRule.matchsplice);
 }
 
 /// Rule of the form `[rule, rule]`.
-fn specTworule(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(void) {
-    try pegFixarity(b, @as(i32, @intCast(argv.len)), 2);
+fn specTworule(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Raising(void) {
+    try pegFixarity(b, argv.len, 2);
     const r = reserve(b, 3);
     const subrule1 = try pegCompile1(b, argv[0]);
     const subrule2 = try pegCompile1(b, argv[1]);
@@ -1488,26 +1482,26 @@ fn specTworule(b: *Builder, argv: []const repr.Value, op: u32) raise.Raising(voi
 }
 
 fn specSub(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specTworule(b, argv, constants.RULE_SUB);
+    return specTworule(b, argv, constants.PegRule.sub);
 }
 
 fn specTil(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specTworule(b, argv, constants.RULE_TIL);
+    return specTworule(b, argv, constants.PegRule.til);
 }
 
 fn specSplit(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    return specTworule(b, argv, constants.RULE_SPLIT);
+    return specTworule(b, argv, constants.PegRule.split);
 }
 
 fn specReadint(b: *Builder, argv: []const repr.Value, mask: u32) raise.Raising(void) {
-    try pegArity(b, @as(i32, @intCast(argv.len)), 1, 2);
+    try pegArity(b, argv.len, 1, 2);
     const r = reserve(b, 3);
-    const tag: u32 = if (@as(i32, @intCast(argv.len)) == 2) try emitTag(b, argv[1]) else 0;
+    const tag: u32 = if (argv.len == 2) try emitTag(b, argv[1]) else 0;
     const width = try pegGetnat(b, argv[0]);
     if (width < 0 or width > max_readint_width) {
         return pegPanicf(b, "width must be between 0 and %d, got %d", .{ max_readint_width, width });
     }
-    emit2(r, constants.RULE_READINT, mask | @as(u32, @bitCast(width)), tag);
+    emit2(r, constants.PegRule.readint, mask | @as(u32, @bitCast(width)), tag);
 }
 
 fn specUintLe(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
@@ -1639,7 +1633,7 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Raising(u32) {
 
     // Resolve keyword references.
     var i: i32 = recursion_guard;
-    var grammar: ?*types.JanetTable = old_grammar;
+    var grammar: ?*tables.Table = old_grammar;
     while (i > 0 and repr.checkType(peg, repr.Tag.keyword)) : (i -= 1) {
         var next_peg = tables.getEx(grammar.?, peg, &grammar);
         if (grammar == null or repr.checkType(next_peg, repr.Tag.nil)) {
@@ -1675,7 +1669,7 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Raising(u32) {
     if (depth_before == 0) return pegPanic(b, "peg grammar recursed too deeply");
 
     // The final rule to return.
-    var rule: u32 = @intCast(stretchy.count(u32, b.bytecode));
+    var rule: u32 = @intCast(b.bytecode.items.len);
 
     // Add to the cache. Structs are not cached, because we do not yet know
     // what rule they will return -- caching the struct's main rule is just as
@@ -1692,29 +1686,29 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Raising(u32) {
     switch (repr.typeOf(peg)) {
         repr.Tag.boolean => {
             const r = reserve(b, 2);
-            emit1(r, if (wrap.toBoolean(peg)) constants.RULE_NCHAR else constants.RULE_NOTNCHAR, 0);
+            emit1(r, if (wrap.toBoolean(peg)) constants.PegRule.nchar else constants.PegRule.notnchar, 0);
         },
         repr.Tag.number => {
             const n = try pegGetinteger(b, peg);
             const r = reserve(b, 2);
             if (n < 0) {
-                emit1(r, constants.RULE_NOTNCHAR, @bitCast(-n));
+                emit1(r, constants.PegRule.notnchar, @bitCast(-n));
             } else {
-                emit1(r, constants.RULE_NCHAR, @bitCast(n));
+                emit1(r, constants.PegRule.nchar, @bitCast(n));
             }
         },
         repr.Tag.string => {
             const str = wrap.toString(peg);
-            emitBytes(b, constants.RULE_LITERAL, str[0..@intCast(types.stringHead(str).length)]);
+            emitBytes(b, constants.PegRule.literal, str[0..@intCast(strings.head(str).length)]);
         },
         repr.Tag.buffer => {
             const buf = wrap.toBuffer(peg);
-            emitBytes(b, constants.RULE_LITERAL, buf.*.slice());
+            emitBytes(b, constants.PegRule.literal, buf.slice());
         },
         repr.Tag.table => {
             // Build a grammar table.
             const new_grammar = tables.clone(wrap.toTable(peg));
-            new_grammar.*.proto = grammar;
+            new_grammar.proto = grammar;
             grammar = new_grammar;
             b.grammar = grammar.?;
             const main_rule = tables.rawget(grammar.?, value.fromBytes("main", .keyword));
@@ -1725,16 +1719,16 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Raising(u32) {
         repr.Tag.@"struct" => {
             // Build a grammar table.
             const st = wrap.toStruct(peg);
-            const capacity = types.structHead(st).capacity;
+            const capacity = structs.head(st).capacity;
             const new_grammar = tables.new(2 * capacity);
-            var k: i32 = 0;
+            var k: usize = 0;
             while (k < capacity) : (k += 1) {
-                const entry = st[@intCast(k)];
+                const entry = st[k];
                 if (repr.checkType(entry.key, repr.Tag.keyword)) {
                     tables.put(new_grammar, entry.key, entry.value);
                 }
             }
-            new_grammar.*.proto = grammar;
+            new_grammar.proto = grammar;
             grammar = new_grammar;
             b.grammar = grammar.?;
             const main_rule = tables.rawget(grammar.?, value.fromBytes("main", .keyword));
@@ -1744,9 +1738,9 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Raising(u32) {
         },
         repr.Tag.tuple => {
             const tup = wrap.toTuple(peg);
-            const len = types.tupleHead(tup).length;
+            const len = tuples.head(tup).length;
             if (len == 0) return pegPanic(b, "tuple in grammar must have non-zero length");
-            if (args_core.checkint(tup[0]) != 0) {
+            if (args_core.checkint(tup[0])) {
                 const n = wrap.toInteger(tup[0]);
                 if (n < 0) return pegPanicf(b, "expected non-negative integer, got %d", .{n});
                 try specRepeat(b, tup[0..@intCast(len)]);
@@ -1773,12 +1767,11 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Raising(u32) {
 // The compiled peg as an abstract type
 // ==========================================================================
 
-fn pegMark(peg: *types.JanetPeg, _: usize) c_int {
+fn pegMark(peg: *JanetPeg, _: usize) void {
     for (peg.constantValues()) |x| gc_mark.mark(x);
-    return 0;
 }
 
-fn pegMarshal(peg: *types.JanetPeg, ctx: *types.JanetMarshalContext) raise.Raising(void) {
+fn pegMarshal(peg: *JanetPeg, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
     try marsh.marshalSize(ctx, peg.bytecode_len);
     try marsh.marshalInt(ctx, @bitCast(peg.num_constants));
     marsh.marshalAbstract(ctx, peg);
@@ -1819,7 +1812,7 @@ fn verifyBytecode(
     blen: u32,
     clen: u32,
     op_flags: [*]u8,
-    has_backref: *c_int,
+    has_backref: *bool,
 ) bool {
     var i: u32 = 0;
     while (i < blen) {
@@ -1827,31 +1820,31 @@ fn verifyBytecode(
         const rule = bytecode + i;
         op_flags[i] |= 0x02;
 
-        switch (instr) {
-            constants.RULE_LITERAL => {
+        switch (constants.PegRule.fromWord(instr)) {
+            .literal => {
                 if (overflows(i, blen, 1)) return false; // We only read rule[1].
                 i += 2 +% ((rule[1] +% 3) >> 2);
             },
-            constants.RULE_DEBUG => i += 1, // [0 words]
-            constants.RULE_NCHAR,
-            constants.RULE_NOTNCHAR,
-            constants.RULE_RANGE,
-            constants.RULE_POSITION,
-            constants.RULE_LINE,
-            constants.RULE_COLUMN,
+            .debug => i += 1, // [0 words]
+            .nchar,
+            .notnchar,
+            .range,
+            .position,
+            .line,
+            .column,
             => i += 2, // [1 word]
-            constants.RULE_BACKMATCH => {
+            .backmatch => {
                 i += 2; // [1 word]
-                has_backref.* = 1;
+                has_backref.* = true;
             },
-            constants.RULE_SET => i += 9, // [8 words]
-            constants.RULE_LOOK => { // [offset, rule]
+            .set => i += 9, // [8 words]
+            .look => { // [offset, rule]
                 if (overflows(i, blen, 3)) return false;
                 if (rule[2] >= blen) return false;
                 op_flags[rule[2]] |= 0x01;
                 i += 3;
             },
-            constants.RULE_CHOICE, constants.RULE_SEQUENCE => { // [len, rules...]
+            .choice, constants.PegRule.sequence => { // [len, rules...]
                 if (overflows(i, blen, 2)) return false;
                 const len = rule[1];
                 if (overflows(i, blen, 2 +% len)) return false;
@@ -1862,7 +1855,7 @@ fn verifyBytecode(
                 }
                 i += 2 +% len;
             },
-            constants.RULE_IF, constants.RULE_IFNOT, constants.RULE_LENPREFIX => { // [rule_a, rule_b]
+            .@"if", constants.PegRule.ifnot, constants.PegRule.lenprefix => { // [rule_a, rule_b]
                 if (overflows(i, blen, 3)) return false;
                 if (rule[1] >= blen) return false;
                 if (rule[2] >= blen) return false;
@@ -1870,46 +1863,46 @@ fn verifyBytecode(
                 op_flags[rule[2]] |= 0x01;
                 i += 3;
             },
-            constants.RULE_BETWEEN => { // [lo, hi, rule]
+            .between => { // [lo, hi, rule]
                 if (overflows(i, blen, 4)) return false;
                 if (rule[3] >= blen) return false;
                 op_flags[rule[3]] |= 0x01;
                 i += 4;
             },
-            constants.RULE_ARGUMENT => i += 3, // [argument-index, tag]
-            constants.RULE_GETTAG => { // [searchtag, tag]
+            .argument => i += 3, // [argument-index, tag]
+            .gettag => { // [searchtag, tag]
                 i += 3;
-                has_backref.* = 1;
+                has_backref.* = true;
             },
-            constants.RULE_CONSTANT => { // [constant, tag]
+            .constant => { // [constant, tag]
                 if (overflows(i, blen, 3)) return false;
                 if (rule[1] >= clen) return false;
                 i += 3;
             },
-            constants.RULE_CAPTURE_NUM => { // [rule, base, tag]
+            .capture_num => { // [rule, base, tag]
                 if (overflows(i, blen, 4)) return false;
                 if (rule[1] >= blen) return false;
                 op_flags[rule[1]] |= 0x01;
                 i += 4;
             },
-            constants.RULE_ACCUMULATE,
-            constants.RULE_GROUP,
-            constants.RULE_CAPTURE,
-            constants.RULE_UNREF,
+            .accumulate,
+            .group,
+            .capture,
+            .unref,
             => { // [rule, tag]
                 if (overflows(i, blen, 3)) return false;
                 if (rule[1] >= blen) return false;
                 op_flags[rule[1]] |= 0x01;
                 i += 3;
             },
-            constants.RULE_REPLACE, constants.RULE_MATCHTIME, constants.RULE_MATCHSPLICE => { // [rule, constant, tag]
+            .replace, constants.PegRule.matchtime, constants.PegRule.matchsplice => { // [rule, constant, tag]
                 if (overflows(i, blen, 4)) return false;
                 if (rule[1] >= blen) return false;
                 if (rule[2] >= clen) return false;
                 op_flags[rule[1]] |= 0x01;
                 i += 4;
             },
-            constants.RULE_SUB, constants.RULE_TIL, constants.RULE_SPLIT => { // [rule, rule]
+            .sub, constants.PegRule.til, constants.PegRule.split => { // [rule, rule]
                 if (overflows(i, blen, 3)) return false;
                 if (rule[1] >= blen) return false;
                 if (rule[2] >= blen) return false;
@@ -1917,24 +1910,24 @@ fn verifyBytecode(
                 op_flags[rule[2]] |= 0x01;
                 i += 3;
             },
-            constants.RULE_ERROR,
-            constants.RULE_DROP,
-            constants.RULE_ONLY_TAGS,
-            constants.RULE_NOT,
-            constants.RULE_TO,
-            constants.RULE_THRU,
+            .@"error",
+            .drop,
+            .only_tags,
+            .not,
+            .to,
+            .thru,
             => { // [rule]
                 if (overflows(i, blen, 2)) return false;
                 if (rule[1] >= blen) return false;
                 op_flags[rule[1]] |= 0x01;
                 i += 2;
             },
-            constants.RULE_READINT => { // [width | endianness | signedness, tag]
+            .readint => { // [width | endianness | signedness, tag]
                 if (overflows(i, blen, 3)) return false;
                 if (rule[1] > max_readint_width) return false;
                 i += 3;
             },
-            constants.RULE_NTH => { // [nth, rule, tag]
+            .nth => { // [nth, rule, tag]
                 if (overflows(i, blen, 4)) return false;
                 if (rule[2] >= blen) return false;
                 op_flags[rule[2]] |= 0x01;
@@ -1955,7 +1948,7 @@ fn verifyBytecode(
     return true;
 }
 
-fn pegUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*types.JanetPeg) {
+fn pegUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*JanetPeg) {
     const bytecode_len = try marsh.unmarshalSize(ctx);
     const num_constants: u32 = @bitCast(try marsh.unmarshalInt(ctx));
 
@@ -1964,7 +1957,7 @@ fn pegUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*types.JanetPeg) 
     // does and is not a tidy-up this port may make: `bytecode_len` came off the
     // wire, and a length above 2^62 wraps `bytecode_size` to something small.
     // `FOUND.md` records where that leads.
-    const bytecode_start = sizePadded(@sizeOf(types.JanetPeg), @sizeOf(u32));
+    const bytecode_start = sizePadded(@sizeOf(JanetPeg), @sizeOf(u32));
     const bytecode_size = bytecode_len *% @sizeOf(u32);
     const constants_start = sizePadded(bytecode_start +% bytecode_size, @sizeOf(repr.Value));
     const total_size = constants_start +% @sizeOf(repr.Value) *% @as(usize, num_constants);
@@ -1973,7 +1966,7 @@ fn pegUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*types.JanetPeg) 
     // the allocation so that short, bad input does not reserve a lot of memory.
 
     const mem: [*]u8 = @ptrCast(try marsh.unmarshalAbstract(ctx, total_size));
-    const peg: *types.JanetPeg = @ptrCast(@alignCast(mem));
+    const peg: *JanetPeg = @ptrCast(@alignCast(mem));
     const bytecode: [*]u32 = @ptrCast(@alignCast(mem + bytecode_start));
     const consts: [*]repr.Value = @ptrCast(@alignCast(mem + constants_start));
     peg.bytecode = null;
@@ -1993,30 +1986,28 @@ fn pegUnmarshal(ctx: *types.JanetMarshalContext) raise.Raising(*types.JanetPeg) 
     const blen: u32 = @truncate(peg.bytecode_len);
     const clen: u32 = peg.num_constants;
     const op_flags: [*]u8 = @ptrCast(allocated(utils.calloc(1, blen)).?);
+    defer utils.free(op_flags);
 
-    var has_backref: c_int = 0;
+    var has_backref = false;
     if (!verifyBytecode(bytecode, blen, clen, op_flags, &has_backref)) {
-        utils.free(op_flags);
         return raise.panic("invalid peg bytecode");
     }
 
     peg.bytecode = bytecode;
     peg.constants = consts;
     peg.has_backref = has_backref;
-    utils.free(op_flags);
     return peg;
 }
 
-fn pegGetter(_: *types.JanetPeg, key: repr.Value, out: *repr.Value) raise.Raising(c_int) {
-    if (!repr.checkType(key, repr.Tag.keyword)) return 0;
-    return args_core.getmethod(wrap.toKeyword(key), @ptrCast(&peg_methods), out);
+fn pegGetter(_: *JanetPeg, key: repr.Value) raise.Raising(?repr.Value) {
+    return args_core.findMethod(key, @ptrCast(&peg_methods));
 }
 
-fn pegNext(_: *types.JanetPeg, key: repr.Value) raise.Raising(repr.Value) {
+fn pegNext(_: *JanetPeg, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(&peg_methods), key);
 }
 
-pub const pegType = abstract_type.define(types.JanetPeg, .{
+pub const pegType = abstract_type.define(JanetPeg, .{
     .name = "core/peg",
     .gcmark = pegMark,
     .get = pegGetter,
@@ -2026,36 +2017,36 @@ pub const pegType = abstract_type.define(types.JanetPeg, .{
 });
 
 /// Convert a `Builder` into the abstract value the matcher runs.
-fn makePeg(b: *Builder) *types.JanetPeg {
-    const bytecode_start = sizePadded(@sizeOf(types.JanetPeg), @sizeOf(u32));
-    const bytecode_size = @as(usize, @intCast(stretchy.count(u32, b.bytecode))) * @sizeOf(u32);
+fn makePeg(b: *Builder) *JanetPeg {
+    const bytecode_start = sizePadded(@sizeOf(JanetPeg), @sizeOf(u32));
+    const bytecode_size = b.bytecode.items.len * @sizeOf(u32);
     const constants_start = sizePadded(bytecode_start + bytecode_size, @sizeOf(repr.Value));
-    const constants_size = @as(usize, @intCast(stretchy.count(repr.Value, b.constants))) * @sizeOf(repr.Value);
+    const constants_size = b.constants.items.len * @sizeOf(repr.Value);
     const total_size = constants_start + constants_size;
-    const mem: [*]u8 = @ptrCast(abstracts.new(&pegType, total_size));
-    const peg: *types.JanetPeg = @ptrCast(@alignCast(mem));
+    const mem: [*]u8 = @ptrCast(abstracts.newBytes(&pegType, total_size));
+    const peg: *JanetPeg = @ptrCast(@alignCast(mem));
     peg.bytecode = @ptrCast(@alignCast(mem + bytecode_start));
     peg.constants = @ptrCast(@alignCast(mem + constants_start));
-    peg.num_constants = @intCast(stretchy.count(repr.Value, b.constants));
-    safe_memcpy(peg.bytecode, b.bytecode, bytecode_size);
-    safe_memcpy(peg.constants, b.constants, constants_size);
-    peg.bytecode_len = @intCast(stretchy.count(u32, b.bytecode));
+    peg.num_constants = @intCast(b.constants.items.len);
+    utils.safeMemcpy(peg.bytecode, b.bytecode.items.ptr, bytecode_size);
+    utils.safeMemcpy(peg.constants, b.constants.items.ptr, constants_size);
+    peg.bytecode_len = @intCast(b.bytecode.items.len);
     peg.has_backref = b.has_backref;
     return peg;
 }
 
 /// The compiler's entry point.
-fn compilePeg(x: repr.Value) raise.Raising(*types.JanetPeg) {
+fn compilePeg(x: repr.Value) raise.Raising(*JanetPeg) {
     var builder: Builder = .{
         .grammar = tables.new(0),
         .default_grammar = null,
         .tags = undefined,
-        .constants = null,
-        .bytecode = null,
+        .constants = .empty,
+        .bytecode = .empty,
         .nexttag = 1,
         .form = x,
         .depth = recursion_guard,
-        .has_backref = 0,
+        .has_backref = false,
     };
     const default_grammarv = vm_state.dyn("peg-grammar");
     if (repr.checkType(default_grammarv, repr.Tag.table)) {
@@ -2074,9 +2065,9 @@ fn compilePeg(x: repr.Value) raise.Raising(*types.JanetPeg) {
 
 /// Common data for the five matching cfunctions.
 const PegCall = struct {
-    peg: *types.JanetPeg,
+    peg: *JanetPeg,
     s: PegState,
-    bytes: types.JanetByteView,
+    bytes: abi.JanetByteView,
     subst: repr.Value,
     start: i32,
 };
@@ -2085,10 +2076,10 @@ const PegCall = struct {
 /// it arrives as source rather than as a `<core/peg>`.
 fn pegCfunInit(argv: []repr.Value, get_replace: bool) raise.Raising(PegCall) {
     var ret: PegCall = undefined;
-    const min: i32 = if (get_replace) 3 else 2;
-    try args_core.arity(argv, min, -1);
+    const min: usize = if (get_replace) 3 else 2;
+    try args_core.arity(argv, @intCast(min), -1);
     if (repr.checkType(argv[0], repr.Tag.abstract) and
-        types.abstractHead(wrap.toAbstract(argv[0])).type == &pegType)
+        abi.abstractHead(wrap.toAbstract(argv[0])).type == &pegType)
     {
         ret.peg = @ptrCast(@alignCast(wrap.toAbstract(argv[0])));
     } else {
@@ -2100,10 +2091,10 @@ fn pegCfunInit(argv: []repr.Value, get_replace: bool) raise.Raising(PegCall) {
     } else {
         ret.bytes = try args_core.getBytes(argv, 1);
     }
-    if (@as(i32, @intCast(argv.len)) > min) {
-        ret.start = try args_core.getHalfRange(argv, min, ret.bytes.len, "offset");
-        ret.s.extrac = @as(i32, @intCast(argv.len)) - min - 1;
-        ret.s.extrav = tuples.newFrom(argv[@intCast(min + 1)..]);
+    if (argv.len > min) {
+        ret.start = try args_core.getHalfRange(argv, min, @intCast(ret.bytes.len), "offset");
+        ret.s.extrac = @intCast(argv.len - min - 1);
+        ret.s.extrav = tuples.newFrom(argv[min + 1 ..]);
     } else {
         ret.start = 0;
         ret.s.extrac = 0;
@@ -2153,7 +2144,7 @@ fn cfunPegFind(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
     while (i < call.bytes.len) : (i += 1) {
         pegCallReset(&call);
         if (try pegRule(&call.s, call.s.bytecode, args_core.viewBytes(call.bytes).ptr + @as(usize, @intCast(i))) != null) {
-            return wrapInteger(i);
+            return wrap.fromInteger(i);
         }
     }
     return wrap.fromNil();
@@ -2166,7 +2157,7 @@ fn cfunPegFindAll(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
     while (i < call.bytes.len) : (i += 1) {
         pegCallReset(&call);
         if (try pegRule(&call.s, call.s.bytecode, args_core.viewBytes(call.bytes).ptr + @as(usize, @intCast(i))) != null) {
-            try arrays.push(ret, wrapInteger(i));
+            try arrays.push(ret, wrap.fromInteger(i));
         }
     }
     return wrap.fromArray(ret);
@@ -2225,7 +2216,7 @@ const peg_methods = [_]method_type.Method{
     .{ .name = null, .cfun = null },
 };
 
-pub fn libPeg(env: *types.JanetTable) raise.Raising(void) {
+pub fn libPeg(env: *tables.Table) raise.Raising(void) {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("peg/compile", &cfunPegCompile, @src(), "(peg/compile peg)", "Compiles a peg source data structure into a <core/peg>. This will speed up matching " ++
             "if the same peg will be used multiple times. `(dyn :peg-grammar)` replaces " ++
@@ -2246,8 +2237,4 @@ pub fn libPeg(env: *types.JanetTable) raise.Raising(void) {
     };
     corefn.install(env, entries);
     try registry.registerAbstractType(&pegType);
-}
-
-pub fn libPegAbi(env: *types.JanetTable) void {
-    raise.reported(libPeg(env));
 }

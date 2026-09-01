@@ -5,10 +5,8 @@
 //! marshalling `ffi/marshal.zig`, and the calling machinery `ffi/call.zig`;
 //! this file is arity, sandbox assertions and registration.
 
-const std = @import("std");
-const builtin = @import("builtin");
-const corefn = @import("corefn");
-const raise = @import("raise");
+const corefn = @import("corefn.zig");
+const raise = @import("raise.zig");
 const ffi_types = @import("ffi/types.zig");
 const marshal = @import("ffi/marshal.zig");
 const ffi_call = @import("ffi/call.zig");
@@ -17,16 +15,14 @@ const clib = @import("dynlib.zig");
 const buffers = @import("value/buffers.zig");
 const vm_lifecycle = @import("vm/lifecycle.zig");
 const abstract_type = @import("abstract_type.zig");
-const config = @import("config");
 const utils = @import("utils.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const abstracts = @import("value/abstracts.zig");
 
-const types = @import("types");
 const repr = @import("repr");
 const registry = @import("registry.zig");
-
-const windows = ffi_types.windows;
+const abi = @import("abi");
+const tables = @import("value/tables.zig");
 
 // ==========================================================================
 // The native object
@@ -47,12 +43,12 @@ const native_at = abstract_type.define(AbstractNative, .{ .name = "core/ffi-nati
 // ==========================================================================
 
 fn cfunRawNative(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"ffi_define"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_define"}));
     try args_core.arity(argv, 0, 1);
     const path = try args_core.optCString(argv, 0, null);
     const lib = clib.load(path);
     if (clib.failed(lib)) return raise.panic(clib.lastError());
-    const anative: *AbstractNative = @ptrCast(@alignCast(abstracts.new(&native_at, @sizeOf(AbstractNative))));
+    const anative: *AbstractNative = abstracts.newFor(AbstractNative, &native_at);
     anative.lib = lib;
     anative.closed = 0;
     anative.is_self = @intFromBool(path == null);
@@ -60,9 +56,9 @@ fn cfunRawNative(argv: []const repr.Value) raise.Raising(repr.Value) {
 }
 
 fn cfunNativeLookup(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"ffi_define"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_define"}));
     try args_core.fixarity(argv, 2);
-    const anative: *AbstractNative = @ptrCast(@alignCast(try args_core.getAbstract(argv, 0, &native_at)));
+    const anative: *AbstractNative = try args_core.getAbstract(AbstractNative, argv, 0, &native_at);
     const sym = try args_core.getCString(argv, 1);
     if (anative.closed != 0) return raise.panic("native object already closed");
     const val = try clib.symbol(anative.lib, sym) orelse return wrap.fromNil();
@@ -70,9 +66,9 @@ fn cfunNativeLookup(argv: []const repr.Value) raise.Raising(repr.Value) {
 }
 
 fn cfunNativeClose(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"ffi_define"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_define"}));
     try args_core.fixarity(argv, 1);
-    const anative: *AbstractNative = @ptrCast(@alignCast(try args_core.getAbstract(argv, 0, &native_at)));
+    const anative: *AbstractNative = try args_core.getAbstract(AbstractNative, argv, 0, &native_at);
     if (anative.closed != 0) return raise.panic("native object already closed");
     if (anative.is_self != 0) return raise.panic("cannot close self");
     anative.closed = 1;
@@ -98,28 +94,28 @@ fn cfunFfiAlign(argv: []const repr.Value) raise.Raising(repr.Value) {
 }
 
 fn cfunBufferWrite(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"ffi_use"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, 4);
     const ty = try ffi_types.decodeType(argv[0]);
     const el_size: i32 = @intCast(ffi_types.typeSize(ty));
     const buffer = try args_core.optBuffer(argv, 2, el_size);
-    var index = try args_core.optNat(argv, 3, buffer.*.count);
-    const old_count = buffer.*.count;
+    var index = try args_core.optNat(argv, 3, @intCast(buffer.count));
+    const old_count = buffer.count;
     if (index > old_count) return raise.panic("index out of bounds");
     // The extension is measured from `index` rather than from the end, so the
     // count moves there and back around it.
-    buffer.*.count = index;
+    buffer.count = @intCast(index);
     try buffers.extra(buffer, el_size);
-    buffer.*.count = old_count;
-    @memset(buffer.*.reserved()[@intCast(index)..@intCast(index + el_size)], 0);
-    try marshal.writeOne(buffer.*.data.? + @as(usize, @intCast(index)), argv, 1, ty, ffi_types.max_recur);
+    buffer.count = old_count;
+    @memset(buffer.reserved()[@intCast(index)..@intCast(index + el_size)], 0);
+    try marshal.writeOne(buffer.data.? + @as(usize, @intCast(index)), argv, 1, ty, ffi_types.max_recur);
     index += el_size;
-    if (buffer.*.count < index) buffer.*.count = index;
+    if (buffer.count < index) buffer.count = @intCast(index);
     return wrap.fromBuffer(buffer);
 }
 
 fn cfunBufferRead(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"ffi_use"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, 3);
     const ty = try ffi_types.decodeType(argv[0]);
     const offset: usize = @intCast(try args_core.optNat(argv, 2, 0));
@@ -134,7 +130,7 @@ fn cfunBufferRead(argv: []const repr.Value) raise.Raising(repr.Value) {
 }
 
 fn cfunFfiMalloc(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"ffi_use"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.fixarity(argv, 1);
     const size = try args_core.getSize(argv, 0);
     if (size == 0) return wrap.fromNil();
@@ -142,7 +138,7 @@ fn cfunFfiMalloc(argv: []const repr.Value) raise.Raising(repr.Value) {
 }
 
 fn cfunFfiFree(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"ffi_use"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.fixarity(argv, 1);
     if (repr.checkType(argv[0], repr.Tag.nil)) return wrap.fromNil();
     utils.free(try args_core.getPointer(argv, 0));
@@ -150,7 +146,7 @@ fn cfunFfiFree(argv: []const repr.Value) raise.Raising(repr.Value) {
 }
 
 fn cfunPointerBuffer(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"ffi_use"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, 4);
     const pointer: [*]u8 = @ptrCast(try args_core.getPointer(argv, 0));
     const capacity = try args_core.getNat(argv, 1);
@@ -166,13 +162,13 @@ fn cfunPointerBuffer(argv: []const repr.Value) raise.Raising(repr.Value) {
 }
 
 fn cfunPointerCfunction(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"ffi_use"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 1, 4);
     const pointer = try args_core.getPointer(argv, 0);
     const name = try args_core.optCString(argv, 1, null);
     const source = try args_core.optCString(argv, 2, null);
     const line = try args_core.optInteger(argv, 3, -1);
-    const cfun: types.JanetCFunction = @ptrCast(@alignCast(pointer));
+    const cfun: abi.JanetCFunction = @ptrCast(@alignCast(pointer));
     if (name != null or source != null or line != -1) {
         registry.registryPut(cfun, name, null, source, line);
     }
@@ -189,7 +185,7 @@ fn cfunCallingConventions(argv: []const repr.Value) raise.Raising(repr.Value) {
 // ==========================================================================
 
 /// `janet_lib_ffi`. The order is the C original's exactly.
-pub fn libFfi(env: *types.JanetTable) void {
+pub fn libFfi(env: *tables.Table) void {
     const table = comptime [_]corefn.Entry{
         corefn.reg("ffi/native", &cfunRawNative, @src(), "(ffi/native &opt path)", "Load a shared object or dll from the given path, and do not extract" ++
             " or run any code from it. This is different than `native`, which will " ++

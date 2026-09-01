@@ -6,31 +6,21 @@
 //! have one name because Janet publishes one: `os`. The pieces that keep names
 //! of their own are beside this file in `os/`.
 //!
-//! Seven `extern fn` here were `export fn` there. One file cannot hold both,
-//! so the merge converted them; they are ordinary Zig calls.
-//!
-//! **The `@export`s kept their gates, and that is the point.** The four sources
-//! did not share one: `os_platform` and `os_surface` were unconditional,
-//! `os_environ` was `!reduced_os`, and `os_time` was `hasGettime`. Collapsing
-//! all four to one gate would have been the easy merge and it would have
-//! given `-Dreduced-os=true` seven exported symbols it does not have today --
-//! **a change to a configuration's export surface, made silently by a file
-//! move.** The bodies are compiled unconditionally now, which is harmless
-//! because none of them reads its own gate and `os_surface` guards
-//! *registration* rather than compilation; the symbols stay conditional, so
-//! every configuration exports exactly what it exported before.
+//! **The bodies are compiled unconditionally and the *registration* is what is
+//! gated.** `-Dreduced-os=true` leaves only `os/exit`, `os/which`, `os/arch`,
+//! `os/compiler` and `os/isatty` registered; the kernels behind the rest are
+//! still compiled, which is what keeps them type-checked in a configuration
+//! that does not offer them.
 
-const options = @import("options");
 const std = @import("std");
 const builtin = @import("builtin");
 const oa = @import("os/abi.zig");
-const corefn = @import("corefn");
-const raise = @import("raise");
+const corefn = @import("corefn.zig");
+const raise = @import("raise.zig");
 const pp_format = @import("pp/format.zig");
 const os_calendar = @import("os/date.zig");
 const os_files = @import("os/fs.zig");
 const os_procs = @import("os/process.zig");
-const types = @import("types");
 const repr = @import("repr");
 const c = @import("cabi");
 const stdio = @import("stdio.zig");
@@ -47,7 +37,7 @@ const buffers = @import("value/buffers.zig");
 const value = @import("value.zig");
 
 // -------------------------------------------------------------------------
-// The cfunctions -- what `os_surface.zig` was.
+// The cfunctions.
 // -------------------------------------------------------------------------
 const h = oa.h;
 
@@ -63,41 +53,12 @@ const has_ev = os_files.has_ev;
 // The kernels, and the rest of the C ABI
 // ==========================================================================
 
-/// `src/core/util.h`. Reports the clock in parts, because `struct timespec`
-/// cannot be named from Zig; `util.c` supplies it over either arm of
-/// `-Dos-time`, and the note there says why.
-extern fn exit(status: c_int) callconv(.c) noreturn;
-extern fn _Exit(status: c_int) callconv(.c) noreturn;
-extern fn setlocale(category: c_int, locale: ?[*:0]const u8) callconv(.c) ?[*:0]const u8;
-extern fn isatty(fd: c_int) callconv(.c) c_int;
-extern fn _isatty(fd: c_int) callconv(.c) c_int;
-extern fn fileno(f: ?*anyopaque) callconv(.c) c_int;
-extern fn _fileno(f: ?*anyopaque) callconv(.c) c_int;
-
-/// The `stdout` handle. It is a function rather than a variable because the
-/// macro has three incompatible shapes across this project's targets.
-/// `janet_wrap_integer`, written out rather than called. Janet declares the
-/// function beside its macro and defines it only for the two nanbox layouts,
-/// so a tagged build has no such symbol and a Zig caller -- which cannot use
-/// the macro -- does not link. `marsh.zig`, `pp/pretty.zig` and
-/// `value/helpers/access.zig` write it out for the same reason, and `FOUND.md`
-/// has the defect.
-inline fn wrapInteger(x: i32) repr.Value {
-    return wrap.fromNumber(@floatFromInt(x));
-}
-
-inline fn errno() c_int {
-    return std.c._errno().*;
-}
-
 // ==========================================================================
 // Platform introspection
 // ==========================================================================
 
-/// The `JANET_OS_NAME` and `JANET_ARCH_NAME` build overrides. Janet spells
-/// them as bare tokens and stringifies them at the use; `config` carries them
-/// as strings already. Where one is set it wins over the derived name, which
-/// is what `os.c` does under `JANET_ZIG_OS_PLATFORM`.
+/// The `-Dos-name` and `-Darch-name` build overrides. Where one is set it wins
+/// over the derived name.
 const os_name_override: ?[:0]const u8 = if (config.os_name) |n| n ++ "" else null;
 const arch_name_override: ?[:0]const u8 = if (config.arch_name) |n| n ++ "" else null;
 
@@ -108,9 +69,9 @@ fn whichName() [*:0]const u8 {
 
 fn cfunWhich(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 1);
-    if (@as(i32, @intCast(argv.len)) == 1 and repr.truthy(argv[0])) {
+    if (argv.len == 1 and repr.truthy(argv[0])) {
         _ = try args_core.getKeyword(argv, 0); // Constrain to keywords.
-        return wrap.fromBoolean(order.equals(argv[0], value.fromBytes(std.mem.span(whichName()), .keyword)) != 0);
+        return wrap.fromBoolean(order.equals(argv[0], value.fromBytes(std.mem.span(whichName()), .keyword)));
     }
     return value.fromBytes(std.mem.span(whichName()), .keyword);
 }
@@ -128,28 +89,28 @@ fn cfunCompiler(argv: []repr.Value) raise.Raising(repr.Value) {
 
 fn cfunExit(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 2);
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"exit"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"exit"}));
     var status: c_int = 0;
-    if (@as(i32, @intCast(argv.len)) == 0) {
+    if (argv.len == 0) {
         status = 0;
-    } else if (args_core.checkint(argv[0]) != 0) {
+    } else if (args_core.checkint(argv[0])) {
         status = wrap.toInteger(argv[0]);
     } else {
         // The docstring promises the hash of a non-integer; the C original
         // has always used EXIT_FAILURE instead. Reproduced.
         status = 1;
     }
-    const force = @as(i32, @intCast(argv.len)) >= 2 and repr.truthy(argv[1]);
+    const force = argv.len >= 2 and repr.truthy(argv[1]);
     vm_lifecycle.deinitAbi();
-    if (force) _Exit(status);
-    exit(status);
+    if (force) c._Exit(status);
+    c.exit(status);
 }
 
 fn cfunCpuCount(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 1);
     const count = osCpuCount();
-    if (count < 0) return if (@as(i32, @intCast(argv.len)) > 0) argv[0] else wrap.fromNil();
-    return wrapInteger(count);
+    if (count < 0) return if (argv.len > 0) argv[0] else wrap.fromNil();
+    return wrap.fromInteger(count);
 }
 
 /// The six locale categories `os/setlocale` names. `LC_*` are host constants,
@@ -167,15 +128,15 @@ fn cfunSetlocale(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 2);
     const locale_name = try args_core.optCString(argv, 0, null);
     var category: c_int = h.LC_ALL;
-    if (@as(i32, @intCast(argv.len)) > 1 and !repr.checkType(argv[1], repr.Tag.nil)) {
+    if (argv.len > 1 and !repr.checkType(argv[1], repr.Tag.nil)) {
         category = for (locale_categories) |entry| {
-            if (args_core.keyeq(argv[1], entry.name.ptr) != 0) break entry.value;
+            if (args_core.keyeq(argv[1], entry.name.ptr)) break entry.value;
         } else return pp_format.panicf(
             "expected one of :all, :collate, :ctype, :monetary, :numeric, or :time, got %v",
             .{argv[1]},
         );
     }
-    const old = setlocale(category, @ptrCast(locale_name)) orelse return wrap.fromNil();
+    const old = c.setlocale(category, @ptrCast(locale_name)) orelse return wrap.fromNil();
     return value.fromBytes(std.mem.span(old), .string);
 }
 
@@ -183,11 +144,11 @@ fn cfunCryptorand(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const n = try args_core.getInteger(argv, 0);
     if (n < 0) return raise.panic("expected positive integer");
-    var buffer: *types.JanetBuffer = undefined;
+    var buffer: *buffers.Buffer = undefined;
     var offset: i32 = 0;
-    if (@as(i32, @intCast(argv.len)) == 2) {
+    if (argv.len == 2) {
         buffer = try args_core.getBuffer(argv, 1);
-        offset = buffer.count;
+        offset = @intCast(buffer.count);
     } else {
         buffer = buffers.new(n);
     }
@@ -200,18 +161,18 @@ fn cfunCryptorand(argv: []repr.Value) raise.Raising(repr.Value) {
 
 fn cfunIsatty(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 1);
-    const f: ?*io_core.FILE = if (@as(i32, @intCast(argv.len)) == 1)
+    const f: ?*io_core.FILE = if (argv.len == 1)
         try io_core.getfile(argv, 0, null)
     else
-        @ptrCast(@alignCast(stdio.out()));
+        stdio.out();
     if (windows) {
-        const fd = _fileno(f);
+        const fd = c._fileno(f);
         if (fd == -1) return raise.panic("not a valid stream");
-        return wrap.fromBoolean(_isatty(fd) != 0);
+        return wrap.fromBoolean(c._isatty(fd) != 0);
     }
-    const fd = fileno(f);
-    if (fd == -1) return raise.panic(@ptrCast(utils.strerrorSafe(errno())));
-    return wrap.fromBoolean(isatty(fd) != 0);
+    const fd = c.fileno(f);
+    if (fd == -1) return raise.panic(@ptrCast(utils.strerrorSafe(c.errno())));
+    return wrap.fromBoolean(c.isatty(fd) != 0);
 }
 
 // ==========================================================================
@@ -220,19 +181,18 @@ fn cfunIsatty(argv: []repr.Value) raise.Raising(repr.Value) {
 // The lock is held across each of these, and it is a no-op in every build
 // this tree can produce -- `os/abi.zig` has the reasoning. The *places* it is
 // taken are the contract, and `os/getenv` in particular holds it across the
-// copy of the borrowed `getenv` result rather than only across the call.
+// copy of the borrowed `c.getenv` result rather than only across the call.
 // ==========================================================================
 
 fn cfunEnviron(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"env"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"env"}));
     try args_core.fixarity(argv, 0);
     oa.lockEnviron();
     const env = oa.getEnviron();
-    const nenv = environCount(env);
-    const t = tables.new(nenv);
-    var i: i32 = 0;
-    while (i < nenv) : (i += 1) {
-        const e: [*:0]const u8 = @ptrCast(env.?[@intCast(i)]);
+    const nenv: usize = @intCast(environCount(env));
+    const t = tables.new(@intCast(nenv));
+    for (0..nenv) |i| {
+        const e: [*:0]const u8 = @ptrCast(env.?[i]);
         const separator = environSeparator(e);
         if (separator < 0) {
             oa.unlockEnviron();
@@ -250,14 +210,14 @@ fn cfunEnviron(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 fn cfunGetenv(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"env"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"env"}));
     try args_core.arity(argv, 1, 2);
     const cstr = try args_core.getCString(argv, 0);
     oa.lockEnviron();
     const res = environGet(@ptrCast(cstr));
     const ret = if (res) |val|
         value.fromBytes(std.mem.span(val), .string)
-    else if (@as(i32, @intCast(argv.len)) == 2)
+    else if (argv.len == 2)
         argv[1]
     else
         wrap.fromNil();
@@ -269,7 +229,7 @@ fn cfunGetenv(argv: []repr.Value) raise.Raising(repr.Value) {
 /// `(os/setenv "K")` unsets. The result of the host call is discarded, exactly
 /// as the C original discards it.
 fn cfunSetenv(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"env"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"env"}));
     try args_core.arity(argv, 1, 2);
     const ks = try args_core.getCString(argv, 0);
     const vs = try args_core.optCString(argv, 1, null);
@@ -288,9 +248,8 @@ fn cfunTime(argv: []repr.Value) raise.Raising(repr.Value) {
     return wrap.fromNumber(timeNow());
 }
 
-/// Mirrors `enum JanetTimeSource` in `src/core/util.h`, which no translation
-/// ever carried. `os_time.zig` mirrors the same three values for the same
-/// reason.
+/// The three clocks `os/clock` accepts, with the numbers `os/clock`'s host
+/// arm below switches on.
 const clock_sources = [_]struct { name: [:0]const u8, value: i32 }{
     .{ .name = "realtime", .value = 0 },
     .{ .name = "monotonic", .value = 1 },
@@ -298,7 +257,7 @@ const clock_sources = [_]struct { name: [:0]const u8, value: i32 }{
 };
 
 fn cfunClock(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"hrtime"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"hrtime"}));
     try args_core.arity(argv, 0, 2);
 
     const sourcestr = try args_core.optKeyword(argv, 0, null);
@@ -312,9 +271,9 @@ fn cfunClock(argv: []repr.Value) raise.Raising(repr.Value) {
         );
     }
 
-    var sec: i64 = undefined;
-    var nsec: i64 = undefined;
-    if (gettime(source, &sec, &nsec) != 0) return raise.panic("could not get time");
+    const now = gettime(source) orelse return raise.panic("could not get time");
+    const sec = now.sec;
+    const nsec = now.nsec;
 
     const formatstr = try args_core.optKeyword(argv, 1, null);
     if (formatstr == null or utils.cstrcmp(formatstr.?, "double") == 0) {
@@ -379,10 +338,10 @@ fn selfEntries() []const corefn.Entry {
     return &list;
 }
 
-/// The rows between `os/cpu-count` and the filesystem family, in
-/// `janet_lib_os`'s order. `os/cwd`, `os/perm-string` and `os/perm-int` sit in
-/// the middle of this run and are `os_files.zig`'s, which is why the table is
-/// assembled from pieces rather than concatenated file by file.
+/// The rows between `os/cpu-count` and the filesystem family, in registration
+/// order. `os/cwd`, `os/perm-string` and `os/perm-int` sit in the middle of
+/// this run and are `os/fs.zig`'s, which is why the table is assembled from
+/// pieces rather than concatenated file by file.
 fn miscEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
@@ -452,7 +411,7 @@ fn hrtimeEntries() []const corefn.Entry {
     return &list;
 }
 
-pub fn libOs(env: *types.JanetTable) raise.Raising(void) {
+pub fn libOs(env: *tables.Table) raise.Raising(void) {
     // `janet_lib_os` opens with a Windows critical-section initialisation
     // guarded by `JANET_THREADS`, which `FOUND.md` records is defined nowhere
     // in this tree. It is recorded here rather than written: a branch no
@@ -489,15 +448,11 @@ pub fn libOs(env: *types.JanetTable) raise.Raising(void) {
     corefn.installTerminated(env, &table);
 }
 
-pub fn libOsAbi(env: *types.JanetTable) void {
-    raise.reported(libOs(env));
-}
-
 // -------------------------------------------------------------------------
-// Time -- what `os_time.zig` was.
+// Time.
 // -------------------------------------------------------------------------
 
-/// Mirrors `enum JanetTimeSource` in `src/core/util.h`.
+/// The three clock sources, matching `clock_sources` above.
 const source_realtime: i32 = 0;
 const source_monotonic: i32 = 1;
 const source_cputime: i32 = 2;
@@ -506,62 +461,58 @@ const source_cputime: i32 = 2;
 const windows_epoch_offset: i64 = 116444736000000000;
 const hundred_ns_per_second: i64 = 10000000;
 
-const FILETIME = extern struct {
-    low: u32,
-    high: u32,
-};
-
-extern "kernel32" fn GetSystemTimeAsFileTime(*FILETIME) callconv(.winapi) void;
-extern "kernel32" fn QueryPerformanceCounter(*i64) callconv(.winapi) c_int;
-extern "kernel32" fn QueryPerformanceFrequency(*i64) callconv(.winapi) c_int;
-extern "kernel32" fn GetCurrentProcess() callconv(.winapi) ?*anyopaque;
-extern "kernel32" fn GetProcessTimes(?*anyopaque, *FILETIME, *FILETIME, *FILETIME, *FILETIME) callconv(.winapi) c_int;
-extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
-
-extern fn time(?*TimeT) callconv(.c) TimeT;
-
-const TimeT = if (windows) i64 else std.c.time_t;
-
-fn fileTimeToInt(ft: FILETIME) i64 {
+fn fileTimeToInt(ft: c.FILETIME) i64 {
     return @as(i64, ft.low) | (@as(i64, ft.high) << 32);
 }
 
+/// A clock reading, split the way every caller wants it.
+///
+/// The parts stay separate rather than becoming a `struct timespec` because
+/// that structure's layout varies by platform, libc, and word size; `Timespec`
+/// below is the one place that has to know it.
+pub const TimeParts = struct { sec: i64, nsec: i64 };
+
 /// Read a clock source, reporting seconds and nanoseconds separately.
 ///
-/// Returns 0 on success and -1 on failure, matching the C shim. An unrecognized
-/// source falls back to the real-time clock, as the C implementation's
-/// initialized-then-overwritten clock id does.
-pub fn gettime(source: i32, sec_out: *i64, nsec_out: *i64) i32 {
+/// Answers null where the clock could not be read, which is the -1 the C shim
+/// returned. An unrecognized source falls back to the real-time clock, as the
+/// C implementation's initialized-then-overwritten clock id does.
+pub fn gettime(source: i32) ?TimeParts {
     if (windows) {
         switch (source) {
             source_monotonic => {
                 var count: i64 = undefined;
                 var frequency: i64 = undefined;
-                _ = QueryPerformanceCounter(&count);
-                _ = QueryPerformanceFrequency(&frequency);
-                sec_out.* = @divTrunc(count, frequency);
+                _ = c.QueryPerformanceCounter(&count);
+                _ = c.QueryPerformanceFrequency(&frequency);
                 const remainder = @rem(count, frequency);
-                nsec_out.* = @divTrunc(remainder * 1000000000, frequency);
+                return .{
+                    .sec = @divTrunc(count, frequency),
+                    .nsec = @divTrunc(remainder * 1000000000, frequency),
+                };
             },
             source_cputime => {
-                var creation: FILETIME = undefined;
-                var exit_time: FILETIME = undefined;
-                var kernel: FILETIME = undefined;
-                var user: FILETIME = undefined;
-                _ = GetProcessTimes(GetCurrentProcess(), &creation, &exit_time, &kernel, &user);
+                var creation: c.FILETIME = undefined;
+                var exit_time: c.FILETIME = undefined;
+                var kernel: c.FILETIME = undefined;
+                var user: c.FILETIME = undefined;
+                _ = c.GetProcessTimes(c.GetCurrentProcess(), &creation, &exit_time, &kernel, &user);
                 const ticks = fileTimeToInt(user);
-                sec_out.* = @divTrunc(ticks, hundred_ns_per_second);
-                nsec_out.* = @rem(ticks, hundred_ns_per_second) * 100;
+                return .{
+                    .sec = @divTrunc(ticks, hundred_ns_per_second),
+                    .nsec = @rem(ticks, hundred_ns_per_second) * 100,
+                };
             },
             else => {
-                var ft: FILETIME = undefined;
-                GetSystemTimeAsFileTime(&ft);
+                var ft: c.FILETIME = undefined;
+                c.GetSystemTimeAsFileTime(&ft);
                 const ticks = fileTimeToInt(ft) - windows_epoch_offset;
-                sec_out.* = @divTrunc(ticks, hundred_ns_per_second);
-                nsec_out.* = @rem(ticks, hundred_ns_per_second) * 100;
+                return .{
+                    .sec = @divTrunc(ticks, hundred_ns_per_second),
+                    .nsec = @rem(ticks, hundred_ns_per_second) * 100,
+                };
             },
         }
-        return 0;
     }
 
     const clock_id: std.c.clockid_t = switch (source) {
@@ -570,15 +521,13 @@ pub fn gettime(source: i32, sec_out: *i64, nsec_out: *i64) i32 {
         else => .REALTIME,
     };
     var spec: std.c.timespec = undefined;
-    if (std.c.clock_gettime(clock_id, &spec) != 0) return -1;
-    sec_out.* = @intCast(spec.sec);
-    nsec_out.* = @intCast(spec.nsec);
-    return 0;
+    if (std.c.clock_gettime(clock_id, &spec) != 0) return null;
+    return .{ .sec = @intCast(spec.sec), .nsec = @intCast(spec.nsec) };
 }
 
 /// Whole seconds since the Unix epoch, as `os/time` reports them.
 pub fn timeNow() f64 {
-    return @floatFromInt(time(null));
+    return @floatFromInt(c.time(null));
 }
 
 /// Suspend the caller for `seconds`, which C has already checked is not
@@ -591,7 +540,7 @@ pub fn timeNow() f64 {
 /// any process runs.
 pub fn sleepFor(seconds: f64) void {
     if (windows) {
-        Sleep(saturatingCast(u32, seconds * 1000));
+        c.Sleep(saturatingCast(u32, seconds * 1000));
         return;
     }
 
@@ -635,10 +584,10 @@ test "saturating conversion clamps rather than trapping" {
 
 /// The host's `struct timespec`.
 ///
-/// `std.c.timespec` everywhere it is a real declaration, which is every POSIX
+/// `std.timespec` everywhere it is a real declaration, which is every POSIX
 /// target and is the type `gettime` above already hands to
 /// `clock_gettime` -- so using it here adds no exposure that this file did not
-/// already have. **Windows is not one of those targets**: `std.c.time_t` is
+/// already have. **Windows is not one of those targets**: `std.time_t` is
 /// `void` there, because Zig's `std.c` describes a libc Windows does not have,
 /// and the field types therefore do not exist. mingw-w64's own declaration is
 /// `{ __int64 tv_sec; long tv_nsec; }`, with `long` 32 bits, and that is what
@@ -660,7 +609,7 @@ pub const Timespec = if (windows) extern struct {
 /// A comment here once said `struct timespec` "cannot be named from Zig", and
 /// that is true of a *translated* one -- musl declares its padding as a
 /// bitfield and `translate-c` demotes any structure with one to an opaque
-/// type. It is not true of `std.c.timespec`, which is Zig's own declaration of
+/// type. It is not true of `std.timespec`, which is Zig's own declaration of
 /// the same layout and which this file already uses for `clock_gettime` and
 /// `nanosleep`.
 ///
@@ -672,16 +621,14 @@ pub const Timespec = if (windows) extern struct {
 /// Nothing in the runtime calls it -- every Zig caller uses `gettime` and takes
 /// the parts. It is kept because it is a published symbol.
 pub fn gettimeAbi(spec: *Timespec, source: c_uint) c_int {
-    var sec: i64 = undefined;
-    var nsec: i64 = undefined;
-    if (gettime(@bitCast(source), &sec, &nsec) != 0) return -1;
-    spec.sec = @intCast(sec);
-    spec.nsec = @intCast(nsec);
+    const now = gettime(@bitCast(source)) orelse return -1;
+    spec.sec = @intCast(now.sec);
+    spec.nsec = @intCast(now.nsec);
     return 0;
 }
 
 // -------------------------------------------------------------------------
-// Platform identity -- what `os_platform.zig` was.
+// Platform identity.
 // -------------------------------------------------------------------------
 
 const os_name = switch (builtin.os.tag) {
@@ -750,13 +697,8 @@ pub fn osCpuCount() i32 {
 }
 
 // -------------------------------------------------------------------------
-// The environment -- what `os_environ.zig` was.
+// The environment.
 // -------------------------------------------------------------------------
-
-extern fn getenv(name: [*:0]const u8) callconv(.c) ?[*:0]const u8;
-extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) callconv(.c) c_int;
-extern fn unsetenv(name: [*:0]const u8) callconv(.c) c_int;
-extern fn _putenv_s(name: [*:0]const u8, value: [*:0]const u8) callconv(.c) c_int;
 
 pub fn environCount(environ: ?[*]const ?[*:0]u8) i32 {
     var count: i32 = 0;
@@ -773,12 +715,12 @@ pub fn environSeparator(entry: [*:0]const u8) i32 {
 }
 
 pub fn environGet(name: [*:0]const u8) ?[*:0]const u8 {
-    return getenv(name);
+    return c.getenv(name);
 }
 
 pub fn environSet(name: [*:0]const u8, val: ?[*:0]const u8) i32 {
     if (builtin.os.tag == .windows) {
-        return _putenv_s(name, val orelse "");
+        return c._putenv_s(name, val orelse "");
     }
-    return if (val) |bytes| setenv(name, bytes, 1) else unsetenv(name);
+    return if (val) |bytes| c.setenv(name, bytes, 1) else c.unsetenv(name);
 }

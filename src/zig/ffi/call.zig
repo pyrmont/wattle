@@ -1,15 +1,13 @@
-//! `ffi.c`'s calling machinery: building a signature, placing the arguments
-//! and making the call, the callback trampolines, and the JIT's executable
-//! pages. Assembly by nature.
+//! The calling machinery: building a signature, placing the arguments and
+//! making the call, the callback trampolines, and the JIT's executable pages.
+//! Assembly by nature.
 //!
-//! ## How the stack arguments are placed, now that there is no `alloca`
+//! ## How the stack arguments are placed, without an `alloca`
 //!
-//! `SPIKE-16.md` is the long answer. The short one: C writes the stack-class
-//! arguments into an `alloca` block and calls a function pointer declared with
-//! the *register* arguments only, relying on the block sitting exactly where
-//! the callee will look. `janet_ffi_win64` makes the coupling explicit -- it
-//! shifts the block down two words and admits in a comment to writing "into 16
-//! bytes of unallocated stack memory".
+//! The usual C approach writes the stack-class arguments into an `alloca` block
+//! and calls a function pointer declared with the *register* arguments only,
+//! relying on the block sitting exactly where the callee will look -- which on
+//! Win64 means deliberately writing into unallocated stack memory.
 //!
 //! Zig has no `alloca`, so the placement comes from the ABI's own rules
 //! instead: the stack words are declared as ordinary trailing parameters and
@@ -48,13 +46,15 @@
 //!
 //! ## Scratch and raising
 //!
-//! Marshalling raises, and so does the argument layer. A raise between
-//! `janet_smalloc` and `janet_sfree` leaks the frame until the next
-//! collection, which is what scratch memory is for.
+//! Marshalling raises, and so does the argument layer -- and two `nyi` arms
+//! raise from the middle of the argument walk. The frame is released by a
+//! `defer` on all of them, so a raise returns it immediately instead of
+//! leaving it for the next collection. It is scratch either way, so this is a
+//! change to *when* the memory comes back rather than to whether it does.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const raise = @import("raise");
+const raise = @import("../raise.zig");
 const stdio = @import("../stdio.zig");
 const pp_format = @import("../pp/format.zig");
 const ffi_types = @import("types.zig");
@@ -68,7 +68,6 @@ const args_core = @import("../args.zig");
 const abstracts = @import("../value/abstracts.zig");
 const arrays = @import("../value/arrays.zig");
 
-const types = @import("types");
 const repr = @import("repr");
 const c = @import("cabi");
 const Type = ffi_types.Type;
@@ -77,7 +76,6 @@ const Mapping = ffi_types.Mapping;
 const Signature = ffi_types.Signature;
 const Spec = ffi_types.Spec;
 const Cc = ffi_types.Cc;
-const Prim = ffi_types.Prim;
 
 const has_ev = config.ev;
 const has_jit = config.ffi_jit;
@@ -95,6 +93,8 @@ const has_jit = config.ffi_jit;
 const ffi_classify = @import("classify.zig");
 const value = @import("../value.zig");
 const config = @import("config");
+const abi = @import("abi");
+const functions = @import("../value/functions.zig");
 
 const TypeNode = ffi_classify.TypeNode;
 const ArgSlot = ffi_classify.ArgSlot;
@@ -267,7 +267,7 @@ const Frame = struct {
             @memset(buf[0..bytes], 0);
             return .{ .base = buf, .bytes = bytes, .heap = false };
         }
-        const mem: [*]u8 = @ptrCast(gc_alloc.smalloc(bytes).?);
+        const mem: [*]u8 = @ptrCast(gc_alloc.smalloc(bytes));
         @memset(mem[0..bytes], 0);
         return .{ .base = mem, .bytes = bytes, .heap = true };
     }
@@ -342,7 +342,7 @@ fn classify(cc: Cc, ty: Type) Spec {
     var node_buf: [inline_nodes]TypeNode = undefined;
     const heap = count > inline_nodes;
     const nodes: [*]TypeNode = if (heap)
-        @ptrCast(@alignCast(gc_alloc.smalloc(count * @sizeOf(TypeNode)).?))
+        @ptrCast(@alignCast(gc_alloc.smalloc(count * @sizeOf(TypeNode))))
     else
         &node_buf;
     _ = serializeType(nodes, 0, ty, 0);
@@ -532,7 +532,7 @@ pub fn cfunSignature(argv: []const repr.Value) raise.Raising(repr.Value) {
         },
     }
 
-    const abst: *Signature = @ptrCast(@alignCast(abstracts.new(&ffi_types.signature_at, @sizeOf(Signature))));
+    const abst: *Signature = abstracts.newFor(Signature, &ffi_types.signature_at);
     abst.frame_size = 0;
     abst.cc = cc;
     abst.ret = ret;
@@ -568,7 +568,7 @@ const ReturnBuffer = [aapcs64_return_size]u8;
 /// return type's rather than the signature's.
 fn returnScratch(ty: Type) [*]u8 {
     const size = ffi_types.typeSize(ty);
-    const mem: [*]u8 = @ptrCast(gc_alloc.smalloc(if (size == 0) 1 else size).?);
+    const mem: [*]u8 = @ptrCast(gc_alloc.smalloc(if (size == 0) 1 else size));
     @memset(mem[0..if (size == 0) 1 else size], 0);
     return mem;
 }
@@ -589,10 +589,11 @@ fn callSysv64(sig: *Signature, function_pointer: *const anyopaque, argv: []const
 
     var frame_buf: [inline_frame_bytes]u8 align(16) = undefined;
     const frame = Frame.init(&frame_buf, @as(usize, sig.stack_count) * @sizeOf(u64));
+    defer frame.release();
 
     var i: u32 = 0;
     while (i < sig.arg_count) : (i += 1) {
-        const n: i32 = @intCast(i + 2);
+        const n: usize = @intCast(i + 2);
         const arg = sig.args[i];
         switch (arg.spec) {
             .sysv64_integer => try marshal.writeOne(&gen[arg.offset], argv, n, arg.type, ffi_types.max_recur),
@@ -655,7 +656,6 @@ fn callSysv64(sig: *Signature, function_pointer: *const anyopaque, argv: []const
         else => {},
     }
 
-    frame.release();
     return marshal.readOne(ret_mem, sig.ret.type, ffi_types.max_recur);
 }
 
@@ -674,10 +674,11 @@ fn callWin64(sig: *Signature, function_pointer: *const anyopaque, argv: []const 
 
     var frame_buf: [inline_frame_bytes]u8 align(16) = undefined;
     const frame = Frame.init(&frame_buf, @as(usize, sig.stack_count) * @sizeOf(u64));
+    defer frame.release();
 
     var i: u32 = 0;
     while (i < sig.arg_count) : (i += 1) {
-        const n: i32 = @intCast(i + 2);
+        const n: usize = @intCast(i + 2);
         const arg = sig.args[i];
         switch (arg.spec) {
             .win64_stack => try marshal.writeOne(
@@ -722,7 +723,6 @@ fn callWin64(sig: *Signature, function_pointer: *const anyopaque, argv: []const 
         else => return pp_format.panicf("unknown variant %d", .{@as(i32, @bitCast(sig.variant))}),
     }
 
-    frame.release();
     return marshal.readOne(ret_mem, sig.ret.type, ffi_types.max_recur);
 }
 
@@ -762,6 +762,7 @@ fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: []cons
 
     var frame_buf: [inline_frame_bytes]u8 align(16) = undefined;
     const frame = Frame.init(&frame_buf, sig.stack_count);
+    defer frame.release();
 
     // Where a multi-member HFA is marshalled before being dealt out one member
     // to a register. `max_hfa_members` of the widest member is its bound.
@@ -769,7 +770,7 @@ fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: []cons
 
     var i: u32 = 0;
     while (i < sig.arg_count) : (i += 1) {
-        const n: i32 = @intCast(i + 2);
+        const n: usize = @intCast(i + 2);
         const arg = sig.args[i];
         // An HFA occupies one register per member, and `writeOne` lays a
         // struct out at its natural offsets -- which for members narrower than
@@ -833,7 +834,6 @@ fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: []cons
     // members arrive one to a register.
     if (sig.variant == 1) gatherHfaReturn(ret_mem, sig.ret.type);
 
-    frame.release();
     return marshal.readOne(ret_mem, sig.ret.type, ffi_types.max_recur);
 }
 
@@ -847,12 +847,12 @@ fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: []cons
 /// generation -- which is prohibited on many platforms, often buggy, and
 /// generally complicated. Every callback eventually arrives here.
 ///
-/// A raise is *reported* rather than propagated, and that is not this phase's
-/// swallowed-report family: there is no scope above a callback to raise into.
-/// A C library called us; the frames between here and any Janet scope belong
-/// to it. `raise.reported` is what a boundary with nowhere to return an error
-/// to looks like, which is the same argument `abstract_type.zig` makes for
-/// typing `gc` and `gcmark` non-raising.
+/// **A raise here is fatal at the site.** There is no scope above a callback
+/// to raise into: a C library called us, and the frames between here and any
+/// Janet scope belong to it. Reporting the raise instead would be the same
+/// thing said less usefully -- nothing consumes such a report, so the process
+/// would die at the next protected scope naming neither the callback nor the
+/// function it called. `raise.total` names the position.
 ///
 /// It is not exported. The three wrappers below hand out *addresses*, never
 /// the name.
@@ -861,12 +861,15 @@ pub fn callbackEntry(ctx: ?*anyopaque, userdata: ?*anyopaque) void {
         // `janet_eprintf` is a variadic macro and does not survive
         // translation; `io.c`'s `stdio.err` is how a Zig source names
         // the stream it defaults to.
-        raise.reported(pp_format.dynprintf("err", @ptrCast(@alignCast(stdio.err())), "no userdata found for janet callback", .{}));
+        raise.total(
+            pp_format.dynprintf("err", stdio.err(), "no userdata found for janet callback", .{}),
+            "an ffi callback's diagnostic",
+        );
         return;
     }
     var context = wrap.fromPointer(ctx);
-    const fun: *types.JanetFunction = @ptrCast(@alignCast(userdata));
-    _ = raise.reported(vm_entry.call(fun, (&context)[0..1]));
+    const fun: *functions.Function = @ptrCast(@alignCast(userdata));
+    _ = raise.total(vm_entry.call(fun, (&context)[0..1]), "an ffi callback");
 }
 
 /// The three exist so that each convention hands out a pointer of its own,
@@ -886,7 +889,7 @@ fn aapcs64Callback(ctx: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
 pub fn cfunTrampoline(argv: []const repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 1);
     var cc = ffi_types.default_cc;
-    if (@as(i32, @intCast(argv.len)) >= 1) cc = try ffi_types.decodeCc(try args_core.getKeyword(argv, 0));
+    if (argv.len >= 1) cc = try ffi_types.decodeCc(try args_core.getKeyword(argv, 0));
     return switch (cc) {
         .win64 => if (ffi_types.win64_enabled)
             wrap.fromPointer(@ptrCast(@constCast(&win64Callback)))
@@ -913,29 +916,24 @@ const JittedFn = extern struct {
     size: usize,
 };
 
-extern fn VirtualAlloc(addr: ?*anyopaque, size: usize, alloc_type: u32, protect: u32) callconv(.c) ?*anyopaque;
-extern fn VirtualProtect(addr: *anyopaque, size: usize, protect: u32, old: *u32) callconv(.c) c_int;
-extern fn VirtualFree(addr: *anyopaque, size: usize, free_type: u32) callconv(.c) c_int;
-
 const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
 const MEM_RELEASE: u32 = 0x8000;
 const PAGE_READWRITE: u32 = 0x04;
 const PAGE_EXECUTE_READ: u32 = 0x20;
 
-fn jitfnGc(fun: *JittedFn, _: usize) c_int {
-    const ptr = fun.function_pointer orelse return 0;
+fn jitfnGc(fun: *JittedFn, _: usize) void {
+    const ptr = fun.function_pointer orelse return;
     if (has_jit) {
         if (ffi_types.windows) {
-            _ = VirtualFree(ptr, fun.size, MEM_RELEASE);
+            _ = c.VirtualFree(ptr, fun.size, MEM_RELEASE);
         } else {
             _ = std.c.munmap(@ptrCast(@alignCast(ptr)), fun.size);
         }
     }
-    return 0;
 }
 
-fn jitfnGetBytes(fun: *const JittedFn, _: usize) types.JanetByteView {
+fn jitfnGetBytes(fun: *const JittedFn, _: usize) abi.JanetByteView {
     return .{ .bytes = @ptrCast(fun.function_pointer), .len = @intCast(fun.size) };
 }
 
@@ -955,7 +953,7 @@ pub const jit_at = abstract_type.define(JittedFn, .{
 const page_mask: usize = 0xFFF;
 
 pub fn cfunJitfn(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"ffi_jit"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_jit"}));
     try args_core.fixarity(argv, 1);
     const bytes = try args_core.getBytes(argv, 0);
 
@@ -965,13 +963,13 @@ pub fn cfunJitfn(argv: []const repr.Value) raise.Raising(repr.Value) {
     const fun: *JittedFn = @ptrCast(@alignCast(if (has_ev)
         abstracts.threaded(&jit_at, @sizeOf(JittedFn))
     else
-        abstracts.new(&jit_at, @sizeOf(JittedFn))));
+        abstracts.newFor(JittedFn, &jit_at)));
     fun.function_pointer = null;
     fun.size = 0;
 
     const writable: [*]u8 = blk: {
         if (ffi_types.windows) {
-            const ptr = VirtualAlloc(null, alloc_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) orelse
+            const ptr = c.VirtualAlloc(null, alloc_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) orelse
                 return raise.panic("failed to allocate writable memory");
             break :blk @ptrCast(ptr);
         }
@@ -991,7 +989,7 @@ pub fn cfunJitfn(argv: []const repr.Value) raise.Raising(repr.Value) {
 
     if (ffi_types.windows) {
         var old: u32 = 0;
-        if (0 == VirtualProtect(writable, alloc_size, PAGE_EXECUTE_READ, &old)) {
+        if (0 == c.VirtualProtect(writable, alloc_size, PAGE_EXECUTE_READ, &old)) {
             return raise.panic("failed to make mapped memory executable");
         }
     } else {
@@ -1010,14 +1008,14 @@ pub fn cfunJitfn(argv: []const repr.Value) raise.Raising(repr.Value) {
 // ==========================================================================
 
 /// `janet_ffi_get_callable_pointer`.
-fn callablePointer(argv: []const repr.Value, n: i32) raise.Raising(*const anyopaque) {
-    switch (repr.typeOf(argv[@intCast(n)])) {
+fn callablePointer(argv: []const repr.Value, n: usize) raise.Raising(*const anyopaque) {
+    switch (repr.typeOf(argv[n])) {
         repr.Tag.pointer => {
-            if (wrap.toPointer(argv[@intCast(n)])) |p| return p;
+            if (wrap.toPointer(argv[n])) |p| return p;
         },
         repr.Tag.abstract => {
-            if (null != args_core.checkabstract(argv[@intCast(n)], &jit_at)) {
-                const fun: *JittedFn = @ptrCast(@alignCast(wrap.toAbstract(argv[@intCast(n)])));
+            if (null != args_core.checkabstract(argv[n], &jit_at)) {
+                const fun: *JittedFn = @ptrCast(@alignCast(wrap.toAbstract(argv[n])));
                 if (fun.function_pointer) |p| return p;
             }
         },
@@ -1025,15 +1023,15 @@ fn callablePointer(argv: []const repr.Value, n: i32) raise.Raising(*const anyopa
     }
     return pp_format.panicf(
         "bad slot #%d, expected ffi callable pointer type, got %v",
-        .{ n, argv[@intCast(n)] },
+        .{ @as(i64, @intCast(n)), argv[n] },
     );
 }
 
 pub fn cfunCall(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"ffi_use"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, -1);
     const function_pointer = try callablePointer(argv, 0);
-    const sig: *Signature = @ptrCast(@alignCast(try args_core.getAbstract(argv, 1, &ffi_types.signature_at)));
+    const sig: *Signature = try args_core.getAbstract(Signature, argv, 1, &ffi_types.signature_at);
     try args_core.fixarity(argv[2..], @bitCast(sig.arg_count));
     return switch (sig.cc) {
         .win64 => if (ffi_types.win64_enabled)

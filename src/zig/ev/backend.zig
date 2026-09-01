@@ -14,24 +14,25 @@
 //!
 //! **No host structure is translated.** `struct kevent`, `struct epoll_event`,
 //! `struct itimerspec` and `struct pollfd` come from `std`, which declares
-//! each per target; `os_files.zig` records why `struct timespec` cannot come
-//! from translate-c on musl, and every structure here would inherit that. The
-//! calls themselves are one-line `extern fn`s.
+//! each per target, and `std` is where a structure with a per-target layout
+//! should come from. The calls themselves are one-line `extern fn`s.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const raise = @import("raise");
+const raise = @import("../raise.zig");
 const pp_format = @import("../pp/format.zig");
 const ev = @import("../ev.zig");
 const ev_core = @import("../ev.zig");
 const stream_mod = @import("stream.zig");
 
-const types = @import("types");
 const constants = @import("constants");
-const vm_state = @import("../vm/lifecycle.zig");
+const vm_state = @import("../vm/state.zig");
 const ev_callback = @import("../callback_type.zig");
 const config = @import("config");
 const utils = @import("../utils.zig");
+const c = @import("cabi");
+const fibers = @import("../value/fibers.zig");
+const host = @import("host");
 const windows = ev.windows;
 
 pub const Backend = enum { iocp, epoll, kqueue, poll };
@@ -58,6 +59,44 @@ comptime {
     }
 }
 
+/// The event loop's per-mechanism state. Four arms, chosen the way
+/// `build.zig` chooses the backend, and each holds exactly what its own
+/// arm below reads. `vm/state.zig`'s `Vm` carries one.
+///
+/// `new_thread_attr` and `selfpipe` are in three of the four rather than in
+/// `VmEv`: they are what a POSIX backend needs to start a thread and to wake
+/// itself, and Windows does neither that way.
+pub const VmBackend = if (builtin.os.tag == .windows)
+    struct {
+        iocp: ?[*]?*anyopaque = null,
+        connect_ex: ?*anyopaque = null,
+        connect_ex_loaded: bool = false,
+    }
+else if (config.ev_epoll)
+    struct {
+        new_thread_attr: host.pthread_attr_t = std.mem.zeroes(host.pthread_attr_t),
+        selfpipe: [2]host.Handle = std.mem.zeroes([2]host.Handle),
+        epoll: c_int = 0,
+        timerfd: c_int = 0,
+        timer_enabled: bool = false,
+    }
+else if (config.ev_kqueue)
+    struct {
+        new_thread_attr: host.pthread_attr_t = std.mem.zeroes(host.pthread_attr_t),
+        selfpipe: [2]host.Handle = std.mem.zeroes([2]host.Handle),
+        kq: c_int = 0,
+        timer_enabled: bool = false,
+    }
+else
+    struct {
+        new_thread_attr: host.pthread_attr_t = std.mem.zeroes(host.pthread_attr_t),
+        selfpipe: [2]host.Handle = std.mem.zeroes([2]host.Handle),
+        streams: ?[*]*stream_mod.Stream = null,
+        stream_count: usize = 0,
+        stream_capacity: usize = 0,
+        fds: ?[*]std.c.pollfd = null,
+    };
+
 /// The four backends wear one interface, and several of its entry points
 /// declare an error that only some of them return: `init` raises on `iocp` and
 /// on `epoll`, `edgeTriggered`, `levelTriggered` and `unregister` only on
@@ -81,15 +120,15 @@ const impl = switch (selected) {
 // The seam the rest of the object uses
 // ==========================================================================
 
-pub inline fn registerStream(s: *types.JanetStream) raise.Raising(void) {
+pub inline fn registerStream(s: *stream_mod.Stream) raise.Raising(void) {
     try impl.register(s);
 }
 
-pub inline fn unregisterStream(s: *types.JanetStream) raise.Raising(void) {
+pub inline fn unregisterStream(s: *stream_mod.Stream) raise.Raising(void) {
     try impl.unregister(s);
 }
 
-pub inline fn loop1(has_timeout: bool, timeout: types.JanetTimestamp) raise.Raising(void) {
+pub inline fn loop1(has_timeout: bool, timeout: ev.JanetTimestamp) raise.Raising(void) {
     try impl.loop1(has_timeout, timeout);
 }
 
@@ -98,29 +137,17 @@ pub fn evInit() raise.Raising(void) {
     try impl.init();
 }
 
-pub fn evInitAbi() void {
-    raise.reported(evInit());
-}
-
 pub fn evDeinit() void {
     ev.evDeinitCommon();
     impl.deinit();
 }
 
-pub fn edgeTriggeredStream(s: *types.JanetStream) raise.Raising(void) {
+pub fn edgeTriggeredStream(s: *stream_mod.Stream) raise.Raising(void) {
     try impl.edgeTriggered(s);
 }
 
-pub fn streamEdgeTriggered(s: *types.JanetStream) void {
-    raise.reported(edgeTriggeredStream(s));
-}
-
-pub fn levelTriggeredStream(s: *types.JanetStream) raise.Raising(void) {
+pub fn levelTriggeredStream(s: *stream_mod.Stream) raise.Raising(void) {
     try impl.levelTriggered(s);
-}
-
-pub fn streamLevelTriggered(s: *types.JanetStream) void {
-    raise.reported(levelTriggeredStream(s));
 }
 
 // ==========================================================================
@@ -143,8 +170,8 @@ const SelfPipe = struct {
         while (true) {
             var status: isize = undefined;
             while (true) {
-                status = ev.read(vm_state.current().ev.backend.selfpipe[0], @ptrCast(&response), @sizeOf(ev.SelfPipeEvent));
-                if (!(status == -1 and ev.errno() == ev.EINTR)) break;
+                status = c.read(vm_state.current().ev.backend.selfpipe[0], @ptrCast(&response), @sizeOf(ev.SelfPipeEvent));
+                if (!(status == -1 and c.errno() == ev.EINTR)) break;
             }
             if (status <= 0) return;
             if (response.cb) |cb| {
@@ -156,14 +183,14 @@ const SelfPipe = struct {
 
     fn cleanup() void {
         const b = &vm_state.current().ev.backend;
-        _ = ev.close(b.selfpipe[0]);
-        _ = ev.close(b.selfpipe[1]);
+        _ = c.close(b.selfpipe[0]);
+        _ = c.close(b.selfpipe[1]);
     }
 };
 
 /// Deliver one event to whichever fiber is waiting on `s`, for the two
 /// backends that report a bare readiness mask.
-fn stepMasked(s: *types.JanetStream, readable: bool, writable: bool, has_err: bool, has_hup: bool, comptime else_chain: bool) raise.Raising(void) {
+fn stepMasked(s: *stream_mod.Stream, readable: bool, writable: bool, has_err: bool, has_hup: bool, comptime else_chain: bool) raise.Raising(void) {
     const rf = s.read_fiber;
     const wf = s.write_fiber;
     if (rf) |f| {
@@ -200,12 +227,9 @@ fn stepMasked(s: *types.JanetStream, readable: bool, writable: bool, has_err: bo
 // ==========================================================================
 
 const Iocp = struct {
-    extern "kernel32" fn CreateIoCompletionPort(file: ?*anyopaque, port: ?*anyopaque, key: usize, threads: u32) callconv(.winapi) ?*anyopaque;
-    extern "kernel32" fn GetQueuedCompletionStatus(port: ?*anyopaque, bytes: *u32, key: *usize, overlapped: *?*stream_mod.OVERLAPPED, ms: u32) callconv(.winapi) c_int;
-
     fn init() raise.Raising(void) {
         const b = &vm_state.current().ev.backend;
-        b.iocp = @ptrCast(@alignCast(CreateIoCompletionPort(
+        b.iocp = @ptrCast(@alignCast(c.CreateIoCompletionPort(
             @ptrFromInt(std.math.maxInt(usize)),
             null,
             0,
@@ -215,11 +239,11 @@ const Iocp = struct {
     }
 
     fn deinit() void {
-        _ = ev.CloseHandle(ev.iocpHandle());
+        _ = c.CloseHandle(ev.iocpHandle());
     }
 
-    fn register(s: *types.JanetStream) raise.Raising(void) {
-        if (CreateIoCompletionPort(s.handle, ev.iocpHandle(), @intFromPtr(s), 0) == null) {
+    fn register(s: *stream_mod.Stream) raise.Raising(void) {
+        if (c.CreateIoCompletionPort(s.handle, ev.iocpHandle(), @intFromPtr(s), 0) == null) {
             const listenable: u32 = @intCast(constants.JANET_STREAM_READABLE | constants.JANET_STREAM_WRITABLE | constants.JANET_STREAM_ACCEPTABLE);
             if (s.flags & listenable != 0) {
                 return pp_format.panicf("failed to listen for events: %V", .{stream_mod.evLasterr()});
@@ -229,22 +253,22 @@ const Iocp = struct {
     }
 
     /// The completion port has no per-stream registration to undo.
-    fn unregister(s: *types.JanetStream) raise.Raising(void) {
+    fn unregister(s: *stream_mod.Stream) raise.Raising(void) {
         _ = s;
     }
 
-    fn edgeTriggered(s: *types.JanetStream) raise.Raising(void) {
+    fn edgeTriggered(s: *stream_mod.Stream) raise.Raising(void) {
         _ = s;
     }
 
-    fn levelTriggered(s: *types.JanetStream) raise.Raising(void) {
+    fn levelTriggered(s: *stream_mod.Stream) raise.Raising(void) {
         _ = s;
     }
 
-    fn loop1(has_timeout: bool, to: types.JanetTimestamp) raise.Raising(void) {
+    fn loop1(has_timeout: bool, to: ev.JanetTimestamp) raise.Raising(void) {
         var completion_key: usize = 0;
         var num_bytes_transferred: u32 = 0;
-        var overlapped: ?*stream_mod.OVERLAPPED = null;
+        var overlapped: ?*c.OVERLAPPED = null;
 
         // Calculate how long to wait before timeout.
         var waittime: u32 = ev.INFINITE;
@@ -252,7 +276,7 @@ const Iocp = struct {
             const now = ev.tsNow();
             waittime = if (now > to) 0 else @intCast(to - now);
         }
-        const result = GetQueuedCompletionStatus(
+        const result = c.GetQueuedCompletionStatus(
             ev.iocpHandle(),
             &num_bytes_transferred,
             &completion_key,
@@ -271,15 +295,15 @@ const Iocp = struct {
         }
         // Normal event.
         const jo: *stream_mod.Overlapped = @ptrCast(@alignCast(overlapped));
-        const s: *types.JanetStream = @ptrFromInt(completion_key);
-        var fiber: ?*types.JanetFiber = null;
+        const s: *stream_mod.Stream = @ptrFromInt(completion_key);
+        var fiber: ?*fibers.Fiber = null;
         if (s.read_fiber != null and s.read_fiber.?.ev_state == @as(?*anyopaque, jo)) {
             fiber = s.read_fiber;
         } else if (s.write_fiber != null and s.write_fiber.?.ev_state == @as(?*anyopaque, jo)) {
             fiber = s.write_fiber;
         }
         if (fiber) |waiting| {
-            waiting.flags &= ~@as(i32, @intCast(constants.JANET_FIBER_EV_FLAG_IN_FLIGHT));
+            waiting.flags.setEvInFlight(false);
             jo.bytes_transfered = num_bytes_transferred;
             try ev_callback.of(waiting.ev_callback)(waiting, if (result != 0)
                 constants.JANET_ASYNC_EVENT_COMPLETE
@@ -299,18 +323,6 @@ const Iocp = struct {
 
 const Epoll = struct {
     const linux = std.os.linux;
-    const EpollEvent = linux.epoll_event;
-
-    const ITimerSpec = extern struct {
-        it_interval: std.c.timespec,
-        it_value: std.c.timespec,
-    };
-
-    extern fn epoll_create1(flags: c_int) callconv(.c) c_int;
-    extern fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: ?*EpollEvent) callconv(.c) c_int;
-    extern fn epoll_wait(epfd: c_int, events: [*]EpollEvent, maxevents: c_int, timeout: c_int) callconv(.c) c_int;
-    extern fn timerfd_create(clockid: c_int, flags: c_int) callconv(.c) c_int;
-    extern fn timerfd_settime(fd: c_int, flags: c_int, new: *const ITimerSpec, old: ?*ITimerSpec) callconv(.c) c_int;
 
     const EPOLL_CTL_ADD: c_int = linux.EPOLL.CTL_ADD;
     const EPOLL_CTL_DEL: c_int = linux.EPOLL.CTL_DEL;
@@ -333,14 +345,14 @@ const Epoll = struct {
     fn init() raise.Raising(void) {
         SelfPipe.setup();
         const b = &vm_state.current().ev.backend;
-        b.epoll = epoll_create1(EPOLL_CLOEXEC);
-        b.timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+        b.epoll = c.epoll_create1(EPOLL_CLOEXEC);
+        b.timerfd = c.timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
         b.timer_enabled = false;
         if (b.epoll != -1 and b.timerfd != -1) {
-            var event: EpollEvent = .{ .events = EPOLLIN | EPOLLET, .data = .{ .ptr = @intFromPtr(&b.timerfd) } };
-            if (epoll_ctl(b.epoll, EPOLL_CTL_ADD, b.timerfd, &event) != -1) {
+            var event: c.EpollEvent = .{ .events = EPOLLIN | EPOLLET, .data = .{ .ptr = @intFromPtr(&b.timerfd) } };
+            if (c.epoll_ctl(b.epoll, EPOLL_CTL_ADD, b.timerfd, &event) != -1) {
                 event = .{ .events = EPOLLIN | EPOLLET, .data = .{ .ptr = @intFromPtr(&b.selfpipe) } };
-                if (epoll_ctl(b.epoll, EPOLL_CTL_ADD, b.selfpipe[0], &event) != -1) return;
+                if (c.epoll_ctl(b.epoll, EPOLL_CTL_ADD, b.selfpipe[0], &event) != -1) return;
             }
         }
         ev.exitWith(@src(), "failed to initialize event loop");
@@ -348,14 +360,14 @@ const Epoll = struct {
 
     fn deinit() void {
         const b = &vm_state.current().ev.backend;
-        _ = ev.close(b.epoll);
-        _ = ev.close(b.timerfd);
+        _ = c.close(b.epoll);
+        _ = c.close(b.timerfd);
         SelfPipe.cleanup();
         b.epoll = 0;
     }
 
-    fn registerImpl(s: *types.JanetStream, mod: bool, edge_trigger: bool) raise.Raising(void) {
-        var event: EpollEvent = .{
+    fn registerImpl(s: *stream_mod.Stream, mod: bool, edge_trigger: bool) raise.Raising(void) {
+        var event: c.EpollEvent = .{
             .events = if (edge_trigger) EPOLLET else 0,
             .data = .{ .ptr = @intFromPtr(s) },
         };
@@ -364,16 +376,16 @@ const Epoll = struct {
         if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_WRITABLE)) != 0) event.events |= EPOLLOUT;
         var status: c_int = undefined;
         while (true) {
-            status = epoll_ctl(
+            status = c.epoll_ctl(
                 vm_state.current().ev.backend.epoll,
                 if (mod) EPOLL_CTL_MOD else EPOLL_CTL_ADD,
                 s.handle,
                 &event,
             );
-            if (!(status == -1 and ev.errno() == ev.EINTR)) break;
+            if (!(status == -1 and c.errno() == ev.EINTR)) break;
         }
         if (status == -1) {
-            if (ev.errno() == ev.EPERM) {
+            if (c.errno() == ev.EPERM) {
                 // Couldn't add to the event loop, so assume it completes
                 // synchronously.
                 s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
@@ -383,46 +395,46 @@ const Epoll = struct {
         }
     }
 
-    fn register(s: *types.JanetStream) raise.Raising(void) {
+    fn register(s: *stream_mod.Stream) raise.Raising(void) {
         try registerImpl(s, false, true);
     }
 
-    fn edgeTriggered(s: *types.JanetStream) raise.Raising(void) {
+    fn edgeTriggered(s: *stream_mod.Stream) raise.Raising(void) {
         try registerImpl(s, true, true);
     }
 
-    fn levelTriggered(s: *types.JanetStream) raise.Raising(void) {
+    fn levelTriggered(s: *stream_mod.Stream) raise.Raising(void) {
         try registerImpl(s, true, false);
     }
 
-    fn unregister(s: *types.JanetStream) raise.Raising(void) {
+    fn unregister(s: *stream_mod.Stream) raise.Raising(void) {
         if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) != 0) return;
         var status: c_int = undefined;
         while (true) {
-            status = epoll_ctl(vm_state.current().ev.backend.epoll, EPOLL_CTL_DEL, s.handle, null);
-            if (!(status == -1 and ev.errno() == ev.EINTR)) break;
+            status = c.epoll_ctl(vm_state.current().ev.backend.epoll, EPOLL_CTL_DEL, s.handle, null);
+            if (!(status == -1 and c.errno() == ev.EINTR)) break;
         }
         if (status == -1) return raise.panicv(stream_mod.evLasterr());
         s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
     }
 
-    fn loop1(has_timeout: bool, timeout: types.JanetTimestamp) raise.Raising(void) {
+    fn loop1(has_timeout: bool, timeout: ev.JanetTimestamp) raise.Raising(void) {
         const b = &vm_state.current().ev.backend;
         if (b.timer_enabled or has_timeout) {
-            var its = std.mem.zeroes(ITimerSpec);
+            var its = std.mem.zeroes(c.ITimerSpec);
             if (has_timeout) {
                 its.it_value.sec = @intCast(@divTrunc(timeout, 1000));
                 its.it_value.nsec = @intCast(@rem(timeout, 1000) * 1000000);
             }
-            _ = timerfd_settime(b.timerfd, TFD_TIMER_ABSTIME, &its, null);
+            _ = c.timerfd_settime(b.timerfd, TFD_TIMER_ABSTIME, &its, null);
         }
         b.timer_enabled = has_timeout;
 
-        var events: [max_events]EpollEvent = undefined;
+        var events: [max_events]c.EpollEvent = undefined;
         var ready: c_int = undefined;
         while (true) {
-            ready = epoll_wait(b.epoll, &events, max_events, -1);
-            if (!(ready == -1 and ev.errno() == ev.EINTR)) break;
+            ready = c.epoll_wait(b.epoll, &events, max_events, -1);
+            if (!(ready == -1 and c.errno() == ev.EINTR)) break;
         }
         if (ready == -1) ev.exitWith(@src(), "failed to poll events");
 
@@ -434,7 +446,7 @@ const Epoll = struct {
             } else if (p == @intFromPtr(&b.selfpipe)) {
                 SelfPipe.handle();
             } else {
-                const s: *types.JanetStream = @ptrFromInt(p);
+                const s: *stream_mod.Stream = @ptrFromInt(p);
                 const mask = events[i].events;
                 try stepMasked(
                     s,
@@ -462,9 +474,9 @@ const Kqueue = struct {
 
     /// `EV_SETx` in `ev.c`: NetBSD spells `.udata` as an `intptr_t` and every
     /// other kqueue platform as a `void *`, so the C original casts through
-    /// `__typeof__`. `std.c.Kevent` declares it `usize` everywhere, which is
+    /// `__typeof__`. `std.Kevent` declares it `usize` everywhere, which is
     /// the same width on both.
-    fn set(slot: *Kevent, ident: types.JanetHandle, filter: i16, flags: u16, udata: usize) void {
+    fn set(slot: *Kevent, ident: host.Handle, filter: i16, flags: u16, udata: usize) void {
         slot.* = .{
             .ident = @intCast(ident),
             .filter = @intCast(filter),
@@ -477,7 +489,7 @@ const Kqueue = struct {
 
     /// Fill `kevs` with one change per direction the stream listens in, and
     /// report how many were written.
-    fn changes(kevs: *[2]Kevent, s: *types.JanetStream, flags: u16) usize {
+    fn changes(kevs: *[2]Kevent, s: *stream_mod.Stream, flags: u16) usize {
         var length: usize = 0;
         const readable: u32 = @intCast(constants.JANET_STREAM_READABLE | constants.JANET_STREAM_ACCEPTABLE);
         if (s.flags & readable != 0) {
@@ -495,23 +507,23 @@ const Kqueue = struct {
         var status: c_int = undefined;
         while (true) {
             status = std.c.kevent(vm_state.current().ev.backend.kq, kevs.ptr, @intCast(kevs.len), undefined, 0, null);
-            if (!(status == -1 and ev.errno() == ev.EINTR)) break;
+            if (!(status == -1 and c.errno() == ev.EINTR)) break;
         }
         return status;
     }
 
-    fn registerImpl(s: *types.JanetStream, edge_trigger: bool) void {
+    fn registerImpl(s: *stream_mod.Stream, edge_trigger: bool) void {
         var kevs: [2]Kevent = undefined;
         const clear: u16 = if (edge_trigger) @intCast(std.c.EV.CLEAR) else 0;
         const length = changes(&kevs, s, @as(u16, @intCast(std.c.EV.ADD | std.c.EV.ENABLE)) | clear);
         if (apply(kevs[0..length]) == -1) s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
     }
 
-    fn register(s: *types.JanetStream) raise.Raising(void) {
+    fn register(s: *stream_mod.Stream) raise.Raising(void) {
         registerImpl(s, true);
     }
 
-    fn edgeTriggered(s: *types.JanetStream) raise.Raising(void) {
+    fn edgeTriggered(s: *stream_mod.Stream) raise.Raising(void) {
         registerImpl(s, true);
     }
 
@@ -519,14 +531,14 @@ const Kqueue = struct {
     /// re-registered without `EV_CLEAR`, or the new registration keeps
     /// `EV_CLEAR` set. The C original records this as possibly a kernel bug
     /// and certainly a vague specification.
-    fn levelTriggered(s: *types.JanetStream) raise.Raising(void) {
+    fn levelTriggered(s: *stream_mod.Stream) raise.Raising(void) {
         var kevs: [2]Kevent = undefined;
         const length = changes(&kevs, s, @intCast(std.c.EV.DELETE));
         _ = apply(kevs[0..length]);
         registerImpl(s, false);
     }
 
-    fn unregister(s: *types.JanetStream) raise.Raising(void) {
+    fn unregister(s: *stream_mod.Stream) raise.Raising(void) {
         if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) != 0) return;
         var kevs: [2]Kevent = undefined;
         const length = changes(&kevs, s, @intCast(std.c.EV.DELETE));
@@ -550,7 +562,7 @@ const Kqueue = struct {
             // retries on every error but that one. Reproduced.
             while (true) {
                 status = std.c.kevent(b.kq, @ptrCast(&event), 1, undefined, 0, null);
-                if (!(status == -1 and ev.errno() != ev.EINTR)) break;
+                if (!(status == -1 and c.errno() != ev.EINTR)) break;
             }
             if (status != -1) return;
         }
@@ -559,12 +571,12 @@ const Kqueue = struct {
 
     fn deinit() void {
         const b = &vm_state.current().ev.backend;
-        _ = ev.close(b.kq);
+        _ = c.close(b.kq);
         SelfPipe.cleanup();
         b.kq = 0;
     }
 
-    fn loop1(has_timeout: bool, timeout: types.JanetTimestamp) raise.Raising(void) {
+    fn loop1(has_timeout: bool, timeout: ev.JanetTimestamp) raise.Raising(void) {
         // The interval is calculated per iteration. When it drops to zero or
         // below the timeout is zero; an infinite timeout would make other
         // fibers miss theirs. `ev_core.kqueueInterval` is what keeps it at
@@ -583,7 +595,7 @@ const Kqueue = struct {
             } else {
                 status = std.c.kevent(b.kq, undefined, 0, &events, max_events, null);
             }
-            if (!(status == -1 and ev.errno() == ev.EINTR)) break;
+            if (!(status == -1 and c.errno() == ev.EINTR)) break;
         }
         if (status == -1) ev.exitWith(@src(), "failed to poll events");
 
@@ -596,7 +608,7 @@ const Kqueue = struct {
                 SelfPipe.handle();
                 continue;
             }
-            const s: *types.JanetStream = @ptrFromInt(p);
+            const s: *stream_mod.Stream = @ptrFromInt(p);
             const filt = events[i].filter;
             const has_err = events[i].flags & @as(u16, @intCast(std.c.EV.ERROR)) != 0;
             const has_hup = events[i].flags & @as(u16, @intCast(std.c.EV.EOF)) != 0;
@@ -606,17 +618,17 @@ const Kqueue = struct {
             var j: usize = 0;
             while (j < 2) : (j += 1) {
                 const f = (if (j != 0) s.read_fiber else s.write_fiber) orelse continue;
-                if (f.*.ev_callback != null and has_err) {
-                    try ev_callback.of(f.*.ev_callback)(f, constants.JANET_ASYNC_EVENT_ERR);
+                if (f.ev_callback != null and has_err) {
+                    try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_ERR);
                 }
-                if (f.*.ev_callback != null and filt == EVFILT_READ and f == s.read_fiber) {
-                    try ev_callback.of(f.*.ev_callback)(f, constants.JANET_ASYNC_EVENT_READ);
+                if (f.ev_callback != null and filt == EVFILT_READ and f == s.read_fiber) {
+                    try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_READ);
                 }
-                if (f.*.ev_callback != null and filt == EVFILT_WRITE and f == s.write_fiber) {
-                    try ev_callback.of(f.*.ev_callback)(f, constants.JANET_ASYNC_EVENT_WRITE);
+                if (f.ev_callback != null and filt == EVFILT_WRITE and f == s.write_fiber) {
+                    try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_WRITE);
                 }
-                if (f.*.ev_callback != null and has_hup) {
-                    try ev_callback.of(f.*.ev_callback)(f, constants.JANET_ASYNC_EVENT_HUP);
+                if (f.ev_callback != null and has_hup) {
+                    try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_HUP);
                 }
             }
             try stream_mod.checkToClose(s);
@@ -642,18 +654,18 @@ const Poll = struct {
     /// The stream table, beside `fds` and for the same reason: both are
     /// allocated by `register` and read only where `stream_count` says there
     /// is something to read, so the unwrap is the claim `fds()` already makes.
-    inline fn streams() [*]*types.JanetStream {
+    inline fn streams() [*]*stream_mod.Stream {
         return @ptrCast(@alignCast(vm_state.current().ev.backend.streams));
     }
 
-    fn register(s: *types.JanetStream) raise.Raising(void) {
+    fn register(s: *stream_mod.Stream) raise.Raising(void) {
         const b = &vm_state.current().ev.backend;
         s.index = @intCast(b.stream_count);
         const new_count = b.stream_count + 1;
         if (new_count > b.stream_capacity) {
             const new_cap = new_count * 2;
             b.fds = @ptrCast(@alignCast(utils.realloc(b.fds, (1 + new_cap) * @sizeOf(PollFd))));
-            b.streams = @ptrCast(@alignCast(utils.realloc(@ptrCast(b.streams), new_cap * @sizeOf(*types.JanetStream))));
+            b.streams = @ptrCast(@alignCast(utils.realloc(@ptrCast(b.streams), new_cap * @sizeOf(*stream_mod.Stream))));
             if (b.fds == null or b.streams == null) ev.outOfMemory(@src());
             b.stream_capacity = new_cap;
         }
@@ -662,7 +674,7 @@ const Poll = struct {
         b.stream_count = new_count;
     }
 
-    fn unregister(s: *types.JanetStream) raise.Raising(void) {
+    fn unregister(s: *stream_mod.Stream) raise.Raising(void) {
         const b = &vm_state.current().ev.backend;
         const i = s.index;
         const j = b.stream_count - 1;
@@ -670,16 +682,16 @@ const Poll = struct {
         const lastfd = fds()[j + 1];
         fds()[i + 1] = lastfd;
         streams()[i] = last;
-        last.*.index = s.index;
+        last.index = s.index;
         b.stream_count -= 1;
         s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
     }
 
-    fn edgeTriggered(s: *types.JanetStream) raise.Raising(void) {
+    fn edgeTriggered(s: *stream_mod.Stream) raise.Raising(void) {
         _ = s;
     }
 
-    fn levelTriggered(s: *types.JanetStream) raise.Raising(void) {
+    fn levelTriggered(s: *stream_mod.Stream) raise.Raising(void) {
         _ = s;
     }
 
@@ -703,7 +715,7 @@ const Poll = struct {
         b.streams = null;
     }
 
-    fn loop1(has_timeout: bool, timeout: types.JanetTimestamp) raise.Raising(void) {
+    fn loop1(has_timeout: bool, timeout: ev.JanetTimestamp) raise.Raising(void) {
         const b = &vm_state.current().ev.backend;
 
         // Set event flags.
@@ -732,7 +744,7 @@ const Poll = struct {
                 to = if (now > timeout) 0 else @intCast(timeout - now);
             }
             ready = std.c.poll(fds(), @intCast(b.stream_count + 1), to);
-            if (!(ready == -1 and ev.errno() == ev.EINTR)) break;
+            if (!(ready == -1 and c.errno() == ev.EINTR)) break;
         }
         if (ready == -1) ev.exitWith(@src(), "failed to poll events");
 

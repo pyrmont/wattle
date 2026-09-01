@@ -21,8 +21,8 @@
  *
  * What is *not* here is as much of the point. `struct stat` and `struct
  * timespec` are absent because translate-c cannot give them to us on every
- * target -- see `os_files.zig` for the measurement and what `os.c` keeps as a
- * result. Scalar host calls are not here either; a file that needs `chmod` or
+ * target -- see `os/fs/host_stat.zig` for the measurement and the answer.
+ * Scalar host calls are not here either; a file that needs `chmod` or
  * `isatty` declares it directly, because a one-line `extern fn` has no layout
  * to get wrong and does not grow the translation. */
 

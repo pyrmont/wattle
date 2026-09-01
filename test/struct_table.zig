@@ -42,9 +42,9 @@
 
 const std = @import("std");
 const config = @import("config");
-const types = @import("types");
 const repr = @import("repr");
 const value = @import("subsystems").value;
+const gc_alloc = @import("subsystems").gc_alloc;
 const harness = @import("harness.zig");
 const structs = @import("subsystems").value.structs;
 const tables = @import("subsystems").value.tables;
@@ -53,30 +53,30 @@ const order = @import("subsystems").value.order;
 const core_env = @import("subsystems").env;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
+const expect = @import("expect.zig").expect;
 
 const heap = harness.heap;
-const internal = harness.internal;
 
 // --------------------------------------------------------------- helpers
 
-fn structLength(st: [*]const types.JanetKV) i32 {
-    return types.structHead(st).length;
+fn structLength(st: [*]const tables.KV) i32 {
+    return structs.head(st).length;
 }
 
-fn structCapacity(st: [*]const types.JanetKV) i32 {
-    return types.structHead(st).capacity;
+fn structCapacity(st: [*]const tables.KV) i32 {
+    return structs.head(st).capacity;
 }
 
-fn structHash(st: [*]const types.JanetKV) i32 {
-    return types.structHead(st).hash;
+fn structHash(st: [*]const tables.KV) i32 {
+    return structs.head(st).hash;
 }
 
-fn structProto(st: [*]const types.JanetKV) ?[*]const types.JanetKV {
-    return types.structHead(st).proto;
+fn structProto(st: [*]const tables.KV) ?[*]const tables.KV {
+    return structs.head(st).proto;
 }
 
-fn setStructProto(st: [*]types.JanetKV, proto: ?[*]const types.JanetKV) void {
-    types.structHead(st).proto = proto;
+fn setStructProto(st: [*]tables.KV, proto: ?[*]const tables.KV) void {
+    structs.head(st).proto = proto;
 }
 
 fn kw(name: [*:0]const u8) repr.Value {
@@ -123,7 +123,7 @@ fn findColliding(capacity: i32, out: []repr.Value) i32 {
 fn findDistinctIndices(capacity: i32, out: []repr.Value) void {
     var used: [64]i32 = undefined;
     var found: usize = 0;
-    std.debug.assert(out.len <= capacity and capacity <= 64);
+    expect(out.len <= capacity and capacity <= 64);
 
     var i: i32 = 0;
     while (i < 200000 and found < out.len) : (i += 1) {
@@ -139,7 +139,7 @@ fn findDistinctIndices(capacity: i32, out: []repr.Value) void {
             found += 1;
         }
     }
-    std.debug.assert(found == out.len);
+    expect(found == out.len);
 }
 
 /// Do two bucket arrays hold the same thing in the same place?
@@ -151,7 +151,7 @@ fn findDistinctIndices(capacity: i32, out: []repr.Value) void {
 /// on garbage from the allocator rather than on layout, and passes or fails at
 /// random. The layout claim is about which value sits in which bucket, so it
 /// is asserted that way.
-fn sameLayout(a: [*]const types.JanetKV, b: [*]const types.JanetKV, capacity: i32) bool {
+fn sameLayout(a: [*]const tables.KV, b: [*]const tables.KV, capacity: i32) bool {
     var i: usize = 0;
     while (i < capacity) : (i += 1) {
         if (repr.typeOf(a[i].key) != repr.typeOf(b[i].key)) return false;
@@ -170,28 +170,28 @@ fn sameLayout(a: [*]const types.JanetKV, b: [*]const types.JanetKV, capacity: i3
 /// is what bounds Robin Hood displacement, and an off-by-one-doubling would
 /// still pass every functional case in this file.
 fn structBeginCapacity() void {
-    std.debug.assert(structCapacity(structs.begin(0)) == 1);
-    std.debug.assert(structCapacity(structs.begin(1)) == 4);
-    std.debug.assert(structCapacity(structs.begin(2)) == 8);
-    std.debug.assert(structCapacity(structs.begin(3)) == 8);
-    std.debug.assert(structCapacity(structs.begin(4)) == 16);
+    expect(structCapacity(structs.begin(0)) == 1);
+    expect(structCapacity(structs.begin(1)) == 4);
+    expect(structCapacity(structs.begin(2)) == 8);
+    expect(structCapacity(structs.begin(3)) == 8);
+    expect(structCapacity(structs.begin(4)) == 16);
 }
 
 fn structBeginInitialisesTheHead() void {
     const st = structs.begin(3);
-    std.debug.assert(structLength(st) == 3);
-    std.debug.assert(structCapacity(st) == 8);
+    expect(structLength(st) == 3);
+    expect(structCapacity(st) == 8);
     // The hash field is a running count of filled slots until `end` runs.
-    std.debug.assert(structHash(st) == 0);
-    std.debug.assert(structProto(st) == null);
+    expect(structHash(st) == 0);
+    expect(structProto(st) == null);
     var i: usize = 0;
     while (i < structCapacity(st)) : (i += 1) {
-        std.debug.assert(harness.isType(st[i].key, repr.Tag.nil));
-        std.debug.assert(harness.isType(st[i].value, repr.Tag.nil));
+        expect(harness.isType(st[i].key, repr.Tag.nil));
+        expect(harness.isType(st[i].value, repr.Tag.nil));
     }
-    std.debug.assert(heap.memoryType(types.structHead(st)) == types.MemoryType.@"struct");
-    std.debug.assert(heap.onList(harness.vm().gc.blocks, types.structHead(st)));
-    std.debug.assert(!heap.onList(harness.vm().gc.weak_blocks, types.structHead(st)));
+    expect(heap.memoryType(structs.head(st)) == gc_alloc.MemoryType.@"struct");
+    expect(heap.onList(harness.vm().gc.blocks, structs.head(st)));
+    expect(!heap.onList(harness.vm().gc.weak_blocks, structs.head(st)));
 }
 
 // ------------------------------------------------------- struct: insertion
@@ -220,18 +220,18 @@ fn structLayoutIsOrderIndependent() void {
     }
 
     const capacity = structCapacity(a);
-    std.debug.assert(structCapacity(b) == capacity);
-    std.debug.assert(structCapacity(d) == capacity);
+    expect(structCapacity(b) == capacity);
+    expect(structCapacity(d) == capacity);
 
     const sa = structs.end(a);
     const sb = structs.end(b);
     const sd = structs.end(d);
 
-    std.debug.assert(sameLayout(sa, sb, capacity));
-    std.debug.assert(sameLayout(sa, sd, capacity));
-    std.debug.assert(structHash(sa) == structHash(sb));
-    std.debug.assert(structHash(sa) == structHash(sd));
-    std.debug.assert(harness.equals(wrap.fromStruct(sa), wrap.fromStruct(sb)));
+    expect(sameLayout(sa, sb, capacity));
+    expect(sameLayout(sa, sd, capacity));
+    expect(structHash(sa) == structHash(sb));
+    expect(structHash(sa) == structHash(sd));
+    expect(harness.equals(wrap.fromStruct(sa), wrap.fromStruct(sb)));
 }
 
 /// Order-independence alone does not pin the *direction* of the displacement
@@ -252,9 +252,9 @@ fn structCollisionRunIsOrderedByHash() void {
     var n: i32 = 0;
     while (n < 3) : (n += 1) {
         const kv = &s[@intCast(@mod(index + n, capacity))];
-        std.debug.assert(!harness.isType(kv.key, repr.Tag.nil));
+        expect(!harness.isType(kv.key, repr.Tag.nil));
         const hash = order.hash(kv.key);
-        if (n > 0) std.debug.assert(hash < previous);
+        if (n > 0) expect(hash < previous);
         previous = hash;
     }
 
@@ -265,7 +265,7 @@ fn structCollisionRunIsOrderedByHash() void {
         i -= 1;
         structs.put(st2, keys[i], harness.wrapInteger(@intCast(i)));
     }
-    std.debug.assert(sameLayout(s, structs.end(st2), capacity));
+    expect(sameLayout(s, structs.end(st2), capacity));
 }
 
 /// The last tiebreak, and the only one that reaches outside this subsystem.
@@ -279,51 +279,51 @@ fn structCollisionRunIsOrderedByHash() void {
 fn structHashTieFallsThroughToCompare() void {
     const as_keyword = kw("tie");
     const as_string = wrap.fromString(strings.cstring("tie"));
-    std.debug.assert(order.hash(as_keyword) == order.hash(as_string));
-    std.debug.assert(!harness.equals(as_keyword, as_string));
+    expect(order.hash(as_keyword) == order.hash(as_string));
+    expect(!harness.equals(as_keyword, as_string));
     // JANET_STRING sorts before JANET_KEYWORD, so the order is by type.
-    std.debug.assert(order.compare(as_string, as_keyword) == -1);
+    expect(order.compare(as_string, as_keyword) == -1);
 
     const st = structs.begin(2);
     structs.put(st, as_keyword, harness.wrapInteger(1));
     structs.put(st, as_string, harness.wrapInteger(2));
     // Both landed: neither was mistaken for the other.
-    std.debug.assert(structHash(st) == 2);
+    expect(structHash(st) == 2);
     const s = structs.end(st);
-    std.debug.assert(structLength(s) == 2);
-    std.debug.assert(harness.equals(structs.rawget(s, as_keyword), harness.wrapInteger(1)));
-    std.debug.assert(harness.equals(structs.rawget(s, as_string), harness.wrapInteger(2)));
+    expect(structLength(s) == 2);
+    expect(harness.equals(structs.rawget(s, as_keyword), harness.wrapInteger(1)));
+    expect(harness.equals(structs.rawget(s, as_string), harness.wrapInteger(2)));
 
     const st2 = structs.begin(2);
     structs.put(st2, as_string, harness.wrapInteger(2));
     structs.put(st2, as_keyword, harness.wrapInteger(1));
-    std.debug.assert(sameLayout(s, structs.end(st2), structCapacity(s)));
+    expect(sameLayout(s, structs.end(st2), structCapacity(s)));
 }
 
 /// Every pair that lands moves the running count in the hash field.
 fn structPutCountsInTheHashField() void {
     const st = structs.begin(3);
     structs.put(st, kw("a"), harness.wrapInteger(1));
-    std.debug.assert(structHash(st) == 1);
+    expect(structHash(st) == 1);
     structs.put(st, kw("b"), harness.wrapInteger(2));
-    std.debug.assert(structHash(st) == 2);
+    expect(structHash(st) == 2);
     // A duplicate replaces rather than adds, so the count stands still.
     structs.put(st, kw("a"), harness.wrapInteger(9));
-    std.debug.assert(structHash(st) == 2);
+    expect(structHash(st) == 2);
 }
 
 fn structPutRejectsUnstorablePairs() void {
     const st = structs.begin(4);
     structs.put(st, wrap.fromNil(), harness.wrapInteger(1));
-    std.debug.assert(structHash(st) == 0);
+    expect(structHash(st) == 0);
     structs.put(st, kw("k"), wrap.fromNil());
-    std.debug.assert(structHash(st) == 0);
+    expect(structHash(st) == 0);
     structs.put(st, wrap.fromNumberSafe(std.math.nan(f64)), harness.wrapInteger(1));
-    std.debug.assert(structHash(st) == 0);
+    expect(structHash(st) == 0);
     // And one that is storable, so the three above are shown to be the reason
     // the count stayed at zero rather than the puts not working at all.
     structs.put(st, kw("k"), harness.wrapInteger(1));
-    std.debug.assert(structHash(st) == 1);
+    expect(structHash(st) == 1);
 }
 
 /// Past the declared length, a put is silently dropped.
@@ -331,11 +331,11 @@ fn structPutDropsTheSurplus() void {
     const st = structs.begin(1);
     structs.put(st, kw("a"), harness.wrapInteger(1));
     structs.put(st, kw("b"), harness.wrapInteger(2));
-    std.debug.assert(structHash(st) == 1);
+    expect(structHash(st) == 1);
     const s = structs.end(st);
-    std.debug.assert(structLength(s) == 1);
-    std.debug.assert(harness.equals(structs.rawget(s, kw("a")), harness.wrapInteger(1)));
-    std.debug.assert(harness.isType(structs.rawget(s, kw("b")), repr.Tag.nil));
+    expect(structLength(s) == 1);
+    expect(harness.equals(structs.rawget(s, kw("a")), harness.wrapInteger(1)));
+    expect(harness.isType(structs.rawget(s, kw("b")), repr.Tag.nil));
 }
 
 /// `replace` is what separates `janet_struct_put` from the flattening path:
@@ -343,17 +343,17 @@ fn structPutDropsTheSurplus() void {
 /// binding overwrite the child's.
 fn structPutExtHonoursReplace() void {
     const keep = structs.begin(2);
-    internal.janet_struct_put_ext(keep, kw("a"), harness.wrapInteger(1), 0);
-    internal.janet_struct_put_ext(keep, kw("a"), harness.wrapInteger(2), 0);
-    std.debug.assert(harness.equals(
+    structs.putExt(keep, kw("a"), harness.wrapInteger(1), false);
+    structs.putExt(keep, kw("a"), harness.wrapInteger(2), false);
+    expect(harness.equals(
         structs.rawget(structs.end(keep), kw("a")),
         harness.wrapInteger(1),
     ));
 
     const over = structs.begin(2);
-    internal.janet_struct_put_ext(over, kw("a"), harness.wrapInteger(1), 1);
-    internal.janet_struct_put_ext(over, kw("a"), harness.wrapInteger(2), 1);
-    std.debug.assert(harness.equals(
+    structs.putExt(over, kw("a"), harness.wrapInteger(1), true);
+    structs.putExt(over, kw("a"), harness.wrapInteger(2), true);
+    expect(harness.equals(
         structs.rawget(structs.end(over), kw("a")),
         harness.wrapInteger(2),
     ));
@@ -373,23 +373,23 @@ fn structEndRebuildsOnAShortCount() void {
     structs.put(st, kw("a"), harness.wrapInteger(2));
     structs.put(st, kw("b"), harness.wrapInteger(3));
     setStructProto(st, sproto);
-    std.debug.assert(structCapacity(st) == 8);
+    expect(structCapacity(st) == 8);
 
     const s = structs.end(st);
-    std.debug.assert(s != st);
-    std.debug.assert(structLength(s) == 2);
-    std.debug.assert(structCapacity(s) == 8);
-    std.debug.assert(harness.equals(structs.rawget(s, kw("a")), harness.wrapInteger(2)));
-    std.debug.assert(harness.equals(structs.rawget(s, kw("b")), harness.wrapInteger(3)));
+    expect(s != st);
+    expect(structLength(s) == 2);
+    expect(structCapacity(s) == 8);
+    expect(harness.equals(structs.rawget(s, kw("a")), harness.wrapInteger(2)));
+    expect(harness.equals(structs.rawget(s, kw("b")), harness.wrapInteger(3)));
     // The prototype is not a bucket, so it is carried across by hand.
-    std.debug.assert(structProto(s) == sproto);
+    expect(structProto(s) == sproto);
 }
 
 fn structEndKeepsTheArrayWhenTheCountIsExact() void {
     const st = structs.begin(2);
     structs.put(st, kw("a"), harness.wrapInteger(1));
     structs.put(st, kw("b"), harness.wrapInteger(2));
-    std.debug.assert(structs.end(st) == st);
+    expect(structs.end(st) == st);
 }
 
 /// The prototype contributes to the hash by a multiply, so it costs one read
@@ -409,13 +409,13 @@ fn structEndFoldsThePrototypeIntoTheHash() void {
     setStructProto(with, sp);
     const swith = structs.end(with);
 
-    std.debug.assert(sameLayout(sbare, swith, structCapacity(sbare)));
-    std.debug.assert(structHash(sbare) != structHash(swith));
+    expect(sameLayout(sbare, swith, structCapacity(sbare)));
+    expect(structHash(sbare) != structHash(swith));
 
-    const buckets: u32 = @bitCast(internal.janet_kv_calchash(swith, structCapacity(swith)));
+    const buckets: u32 = @bitCast(value.hashDictionary(swith[0..@intCast(structCapacity(swith))]));
     const proto: u32 = @bitCast(structHash(sp));
     const expected: i32 = @bitCast(buckets +% 2654435761 *% proto);
-    std.debug.assert(structHash(swith) == expected);
+    expect(structHash(swith) == expected);
 }
 
 // ---------------------------------------------------------- struct: lookup
@@ -426,19 +426,19 @@ fn structFindReturnsAnEmptyBucketForAnAbsentKey() void {
     const s = structs.end(st);
 
     const hit = structs.find(s, kw("a"));
-    std.debug.assert(hit != null);
-    std.debug.assert(harness.equals(hit.?.value, harness.wrapInteger(1)));
+    expect(hit != null);
+    expect(harness.equals(hit.?.value, harness.wrapInteger(1)));
 
     const miss = structs.find(s, kw("zz"));
-    std.debug.assert(miss != null);
-    std.debug.assert(harness.isType(miss.?.key, repr.Tag.nil));
-    std.debug.assert(harness.isType(structs.rawget(s, kw("zz")), repr.Tag.nil));
+    expect(miss != null);
+    expect(harness.isType(miss.?.key, repr.Tag.nil));
+    expect(harness.isType(structs.rawget(s, kw("zz")), repr.Tag.nil));
 }
 
 /// Build a chain `depth` deep and return the deepest struct. Entry `i` holds
 /// the key `i` and its prototype is entry `i - 1`.
-fn structChain(depth: i32) [*]const types.JanetKV {
-    var proto: ?[*]const types.JanetKV = null;
+fn structChain(depth: i32) [*]const tables.KV {
+    var proto: ?[*]const tables.KV = null;
     var i: i32 = 0;
     while (i < depth) : (i += 1) {
         const st = structs.begin(1);
@@ -455,21 +455,21 @@ fn structGetBoundsThePrototypeChain() void {
     const deep = structChain(config.max_proto_depth + 5);
     // The head holds the highest key; the walk descends toward key 0.
     const top: i32 = config.max_proto_depth + 4;
-    std.debug.assert(harness.equals(
+    expect(harness.equals(
         structs.get(deep, harness.wrapInteger(top)),
         harness.wrapInteger(top),
     ));
     const last: i32 = top - (config.max_proto_depth - 1);
-    std.debug.assert(harness.equals(
+    expect(harness.equals(
         structs.get(deep, harness.wrapInteger(last)),
         harness.wrapInteger(last),
     ));
-    std.debug.assert(harness.isType(
+    expect(harness.isType(
         structs.get(deep, harness.wrapInteger(last - 1)),
         repr.Tag.nil,
     ));
     // rawget never leaves the head at all.
-    std.debug.assert(harness.isType(
+    expect(harness.isType(
         structs.rawget(deep, harness.wrapInteger(top - 1)),
         repr.Tag.nil,
     ));
@@ -485,18 +485,18 @@ fn structGetExReportsTheOwner() void {
     setStructProto(ch, sp);
     const sch = structs.end(ch);
 
-    var which: ?[*]const types.JanetKV = null;
-    std.debug.assert(harness.equals(
+    var which: ?[*]const tables.KV = null;
+    expect(harness.equals(
         structs.getEx(sch, kw("b"), &which),
         harness.wrapInteger(2),
     ));
-    std.debug.assert(which == sch);
+    expect(which == sch);
     which = null;
-    std.debug.assert(harness.equals(
+    expect(harness.equals(
         structs.getEx(sch, kw("a"), &which),
         harness.wrapInteger(1),
     ));
-    std.debug.assert(which == sp);
+    expect(which == sp);
 }
 
 // ------------------------------------------------------ struct: conversion
@@ -515,14 +515,14 @@ fn structToTable() void {
     const s = structs.end(st);
 
     const t = structs.toTable(s);
-    std.debug.assert(t.*.count == 2);
-    std.debug.assert(t.*.capacity == internal.janet_tablen(structCapacity(s)));
-    std.debug.assert(t.*.capacity == 16);
-    std.debug.assert(harness.equals(tables.rawget(t, kw("a")), harness.wrapInteger(1)));
-    std.debug.assert(harness.equals(tables.rawget(t, kw("b")), harness.wrapInteger(2)));
+    expect(t.count == 2);
+    expect(t.capacity == value.capacityFor(structCapacity(s)));
+    expect(t.capacity == 16);
+    expect(harness.equals(tables.rawget(t, kw("a")), harness.wrapInteger(1)));
+    expect(harness.equals(tables.rawget(t, kw("b")), harness.wrapInteger(2)));
     // The prototype is not carried; `struct/to-table` rebuilds it itself.
-    std.debug.assert(t.*.proto == null);
-    std.debug.assert(harness.isType(tables.get(t, kw("p")), repr.Tag.nil));
+    expect(t.proto == null);
+    expect(harness.isType(tables.get(t, kw("p")), repr.Tag.nil));
 }
 
 // ------------------------------------------------------- table: allocation
@@ -539,43 +539,43 @@ fn structToTable() void {
 /// it, with the reproducer. Nothing below touches such a table beyond its
 /// fields, because the behaviour is undefined and a contract cannot pin it.
 fn tableCapacityRounding() void {
-    std.debug.assert(tables.new(0).*.capacity == 1);
-    std.debug.assert(tables.new(1).*.capacity == 2);
-    std.debug.assert(tables.new(4).*.capacity == 8);
+    expect(tables.new(0).capacity == 1);
+    expect(tables.new(1).capacity == 2);
+    expect(tables.new(4).capacity == 8);
 
     const empty = tables.new(-1);
-    std.debug.assert(empty.*.capacity == 0);
-    std.debug.assert(empty.*.data == null);
-    std.debug.assert(empty.*.count == 0);
-    std.debug.assert(empty.*.deleted == 0);
+    expect(empty.capacity == 0);
+    expect(empty.data == null);
+    expect(empty.count == 0);
+    expect(empty.deleted == 0);
 }
 
 fn tableConstructorMarksAndLists() void {
     const Case = struct {
         make: *const @TypeOf(tables.new),
-        memory: types.MemoryType,
+        memory: gc_alloc.MemoryType,
         weak: bool,
     };
     const cases = [_]Case{
-        .{ .make = &tables.new, .memory = types.MemoryType.table, .weak = false },
-        .{ .make = &tables.weakk, .memory = types.MemoryType.table_weakk, .weak = true },
-        .{ .make = &tables.weakv, .memory = types.MemoryType.table_weakv, .weak = true },
-        .{ .make = &tables.weakkv, .memory = types.MemoryType.table_weakkv, .weak = true },
+        .{ .make = &tables.new, .memory = gc_alloc.MemoryType.table, .weak = false },
+        .{ .make = &tables.weakk, .memory = gc_alloc.MemoryType.table_weakk, .weak = true },
+        .{ .make = &tables.weakv, .memory = gc_alloc.MemoryType.table_weakv, .weak = true },
+        .{ .make = &tables.weakkv, .memory = gc_alloc.MemoryType.table_weakkv, .weak = true },
     };
     for (cases) |case| {
         const t = case.make(4);
-        std.debug.assert(heap.memoryType(t) == case.memory);
-        std.debug.assert(t.*.capacity == 8);
-        std.debug.assert(t.*.count == 0);
-        std.debug.assert(t.*.deleted == 0);
-        std.debug.assert(t.*.proto == null);
+        expect(heap.memoryType(t) == case.memory);
+        expect(t.capacity == 8);
+        expect(t.count == 0);
+        expect(t.deleted == 0);
+        expect(t.proto == null);
         // The memory type is what decides the heap list, and the two weak
         // variants of that decision are what the sweep depends on.
-        std.debug.assert(heap.onList(harness.vm().gc.weak_blocks, t) == case.weak);
-        std.debug.assert(heap.onList(harness.vm().gc.blocks, t) == !case.weak);
+        expect(heap.onList(harness.vm().gc.weak_blocks, t) == case.weak);
+        expect(heap.onList(harness.vm().gc.blocks, t) == !case.weak);
         // All four behave identically as dictionaries.
         tables.put(t, kw("a"), harness.wrapInteger(1));
-        std.debug.assert(harness.equals(tables.rawget(t, kw("a")), harness.wrapInteger(1)));
+        expect(harness.equals(tables.rawget(t, kw("a")), harness.wrapInteger(1)));
     }
 }
 
@@ -584,25 +584,25 @@ fn tableConstructorMarksAndLists() void {
 /// safe only because such a table is never `janet_gcalloc`ed -- so the flag is
 /// asserted as the whole word, not as a bit.
 fn tableInitUsesScratchMemory() void {
-    var local: types.JanetTable = undefined;
+    var local: tables.Table = undefined;
     @memset(std.mem.asBytes(&local), 0xEE);
     _ = tables.init(&local, 4);
-    std.debug.assert(local.gc.flags == 0x10000);
-    std.debug.assert(local.capacity == 8);
-    std.debug.assert(local.count == 0);
-    std.debug.assert(local.deleted == 0);
-    std.debug.assert(local.proto == null);
+    expect(local.gc.flags == 0x10000);
+    expect(local.capacity == 8);
+    expect(local.count == 0);
+    expect(local.deleted == 0);
+    expect(local.proto == null);
 
     // Grow it, so the rehash takes the scratch branch too.
     var i: i32 = 0;
     while (i < 40) : (i += 1) {
         tables.put(&local, harness.wrapInteger(i), harness.wrapInteger(i * 2));
     }
-    std.debug.assert(local.count == 40);
-    std.debug.assert(local.gc.flags == 0x10000);
+    expect(local.count == 40);
+    expect(local.gc.flags == 0x10000);
     i = 0;
     while (i < 40) : (i += 1) {
-        std.debug.assert(harness.equals(
+        expect(harness.equals(
             tables.rawget(&local, harness.wrapInteger(i)),
             harness.wrapInteger(i * 2),
         ));
@@ -611,13 +611,13 @@ fn tableInitUsesScratchMemory() void {
 }
 
 fn tableInitRawLeavesTheFlagClear() void {
-    var local: types.JanetTable = undefined;
+    var local: tables.Table = undefined;
     @memset(std.mem.asBytes(&local), 0);
     _ = tables.initRaw(&local, 4);
-    std.debug.assert(local.gc.flags == 0);
-    std.debug.assert(local.capacity == 8);
+    expect(local.gc.flags == 0);
+    expect(local.capacity == 8);
     tables.put(&local, kw("a"), harness.wrapInteger(1));
-    std.debug.assert(harness.equals(tables.rawget(&local, kw("a")), harness.wrapInteger(1)));
+    expect(harness.equals(tables.rawget(&local, kw("a")), harness.wrapInteger(1)));
     tables.deinit(&local);
 }
 
@@ -632,12 +632,12 @@ fn tableGrowthCapacities() void {
     for (expected, 0..) |capacity, n| {
         const i: i32 = @intCast(n);
         tables.put(t, harness.wrapInteger(i), harness.wrapInteger(i));
-        std.debug.assert(t.*.count == i + 1);
-        std.debug.assert(t.*.capacity == capacity);
+        expect(t.count == i + 1);
+        expect(t.capacity == capacity);
     }
     var i: i32 = 0;
     while (i < 9) : (i += 1) {
-        std.debug.assert(harness.equals(
+        expect(harness.equals(
             tables.rawget(t, harness.wrapInteger(i)),
             harness.wrapInteger(i),
         ));
@@ -653,40 +653,40 @@ fn removeLeavesATombstone() void {
     const t = tables.new(4);
     tables.put(t, kw("a"), harness.wrapInteger(1));
     const bucket = tables.find(t, kw("a"));
-    std.debug.assert(!harness.isType(bucket.?.key, repr.Tag.nil));
+    expect(!harness.isType(bucket.?.key, repr.Tag.nil));
 
     const gone = tables.remove(t, kw("a"));
-    std.debug.assert(harness.equals(gone, harness.wrapInteger(1)));
-    std.debug.assert(t.*.count == 0);
-    std.debug.assert(t.*.deleted == 1);
-    std.debug.assert(harness.isType(bucket.?.key, repr.Tag.nil));
-    std.debug.assert(harness.isType(bucket.?.value, repr.Tag.boolean));
-    std.debug.assert(!repr.truthy(bucket.?.value));
+    expect(harness.equals(gone, harness.wrapInteger(1)));
+    expect(t.count == 0);
+    expect(t.deleted == 1);
+    expect(harness.isType(bucket.?.key, repr.Tag.nil));
+    expect(harness.isType(bucket.?.value, repr.Tag.boolean));
+    expect(!repr.truthy(bucket.?.value));
 
     // Removing an absent key changes nothing.
-    std.debug.assert(harness.isType(tables.remove(t, kw("zz")), repr.Tag.nil));
-    std.debug.assert(t.*.count == 0);
-    std.debug.assert(t.*.deleted == 1);
+    expect(harness.isType(tables.remove(t, kw("zz")), repr.Tag.nil));
+    expect(t.count == 0);
+    expect(t.deleted == 1);
 }
 
 /// The property the tombstone exists for. Two keys that want the same bucket,
 /// the first removed: the second must still be found through the hole.
 fn aTombstoneDoesNotTruncateAProbeRun() void {
     const t = tables.new(4);
-    std.debug.assert(t.*.capacity == 8);
+    expect(t.capacity == 8);
     var keys: [2]repr.Value = undefined;
-    const index = findColliding(t.*.capacity, &keys);
+    const index = findColliding(@intCast(t.capacity), &keys);
 
     tables.put(t, keys[0], harness.wrapInteger(10));
     tables.put(t, keys[1], harness.wrapInteger(20));
-    std.debug.assert(t.*.count == 2);
-    std.debug.assert(t.*.capacity == 8);
+    expect(t.count == 2);
+    expect(t.capacity == 8);
     // The second key really did displace: it is not in its ideal bucket.
-    std.debug.assert(tables.find(t, keys[1]) != &t.*.slots()[@as(usize, @intCast(index))]);
+    expect(tables.find(t, keys[1]) != &t.slots()[@as(usize, @intCast(index))]);
 
     _ = tables.remove(t, keys[0]);
-    std.debug.assert(harness.equals(tables.rawget(t, keys[1]), harness.wrapInteger(20)));
-    std.debug.assert(harness.isType(tables.rawget(t, keys[0]), repr.Tag.nil));
+    expect(harness.equals(tables.rawget(t, keys[1]), harness.wrapInteger(20)));
+    expect(harness.isType(tables.rawget(t, keys[0]), repr.Tag.nil));
 }
 
 /// A rehash is the only thing that reclaims a tombstone.
@@ -704,14 +704,14 @@ fn tombstonesAreReclaimed() void {
     tables.put(t, kw("a"), harness.wrapInteger(1));
     const first = tables.find(t, kw("a"));
     _ = tables.remove(t, kw("a"));
-    std.debug.assert(t.*.deleted == 1);
+    expect(t.deleted == 1);
     tables.put(t, kw("a"), harness.wrapInteger(2));
-    std.debug.assert(t.*.count == 1);
-    std.debug.assert(t.*.deleted == 1);
-    std.debug.assert(tables.find(t, kw("a")) != first);
-    std.debug.assert(harness.isType(first.?.key, repr.Tag.nil));
-    std.debug.assert(harness.isType(first.?.value, repr.Tag.boolean));
-    std.debug.assert(harness.equals(tables.rawget(t, kw("a")), harness.wrapInteger(2)));
+    expect(t.count == 1);
+    expect(t.deleted == 1);
+    expect(tables.find(t, kw("a")) != first);
+    expect(harness.isType(first.?.key, repr.Tag.nil));
+    expect(harness.isType(first.?.value, repr.Tag.boolean));
+    expect(harness.equals(tables.rawget(t, kw("a")), harness.wrapInteger(2)));
 
     // Otherwise a tombstone is reclaimed only by a rehash, and the rehash is
     // driven by the tombstone count alone -- a table with no live pairs at all
@@ -719,24 +719,24 @@ fn tombstonesAreReclaimed() void {
     // removal leaves a tombstone instead of the next insert reusing the last
     // one. Capacity 8 trips at `count + deleted >= 4`.
     const churned = tables.new(4);
-    std.debug.assert(churned.*.capacity == 8);
+    expect(churned.capacity == 8);
     var keys: [5]repr.Value = undefined;
-    findDistinctIndices(churned.*.capacity, &keys);
+    findDistinctIndices(@intCast(churned.capacity), &keys);
     for (keys[0..4], 0..) |key, i| {
         tables.put(churned, key, harness.wrapInteger(@intCast(i)));
         _ = tables.remove(churned, key);
     }
-    std.debug.assert(churned.*.count == 0);
-    std.debug.assert(churned.*.deleted == 4);
-    std.debug.assert(churned.*.capacity == 8);
+    expect(churned.count == 0);
+    expect(churned.deleted == 4);
+    expect(churned.capacity == 8);
 
     tables.put(churned, keys[4], harness.wrapInteger(4));
     // `janet_tablen(2 * 0 + 2)` is 4: the new array is sized from the live
     // count, so a table that was only ever churned shrinks.
-    std.debug.assert(churned.*.capacity == 4);
-    std.debug.assert(churned.*.deleted == 0);
-    std.debug.assert(churned.*.count == 1);
-    std.debug.assert(harness.equals(
+    expect(churned.capacity == 4);
+    expect(churned.deleted == 0);
+    expect(churned.count == 1);
+    expect(harness.equals(
         tables.rawget(churned, keys[4]),
         harness.wrapInteger(4),
     ));
@@ -747,11 +747,11 @@ fn tombstonesAreReclaimed() void {
 fn tablePutRejectsUnstorableKeys() void {
     const t = tables.new(4);
     tables.put(t, wrap.fromNil(), harness.wrapInteger(1));
-    std.debug.assert(t.*.count == 0);
+    expect(t.count == 0);
     tables.put(t, wrap.fromNumberSafe(std.math.nan(f64)), harness.wrapInteger(1));
-    std.debug.assert(t.*.count == 0);
+    expect(t.count == 0);
     tables.put(t, kw("k"), harness.wrapInteger(1));
-    std.debug.assert(t.*.count == 1);
+    expect(t.count == 1);
 }
 
 /// A nil value is a removal, not a stored nil. This is what makes an absent
@@ -759,56 +759,56 @@ fn tablePutRejectsUnstorableKeys() void {
 fn tablePutNilRemoves() void {
     const t = tables.new(4);
     tables.put(t, kw("a"), harness.wrapInteger(1));
-    std.debug.assert(t.*.count == 1);
+    expect(t.count == 1);
     tables.put(t, kw("a"), wrap.fromNil());
-    std.debug.assert(t.*.count == 0);
-    std.debug.assert(t.*.deleted == 1);
-    std.debug.assert(harness.isType(tables.rawget(t, kw("a")), repr.Tag.nil));
+    expect(t.count == 0);
+    expect(t.deleted == 1);
+    expect(harness.isType(tables.rawget(t, kw("a")), repr.Tag.nil));
 
     // And a nil value for an absent key is not a removal of anything.
     tables.put(t, kw("zz"), wrap.fromNil());
-    std.debug.assert(t.*.count == 0);
-    std.debug.assert(t.*.deleted == 1);
+    expect(t.count == 0);
+    expect(t.deleted == 1);
 }
 
 fn tablePutUpdatesInPlace() void {
     const t = tables.new(4);
     tables.put(t, kw("a"), harness.wrapInteger(1));
     const bucket = tables.find(t, kw("a"));
-    const capacity = t.*.capacity;
+    const capacity = t.capacity;
     tables.put(t, kw("a"), harness.wrapInteger(2));
-    std.debug.assert(t.*.count == 1);
-    std.debug.assert(t.*.capacity == capacity);
-    std.debug.assert(tables.find(t, kw("a")) == bucket);
-    std.debug.assert(harness.equals(bucket.?.value, harness.wrapInteger(2)));
+    expect(t.count == 1);
+    expect(t.capacity == capacity);
+    expect(tables.find(t, kw("a")) == bucket);
+    expect(harness.equals(bucket.?.value, harness.wrapInteger(2)));
 }
 
 // ----------------------------------------------------------- table: lookup
 
 fn tableGetBoundsThePrototypeChain() void {
-    var deep: ?*types.JanetTable = null;
+    var deep: ?*tables.Table = null;
     var i: i32 = 0;
     while (i < config.max_proto_depth + 5) : (i += 1) {
         const t = tables.new(1);
         tables.put(t, harness.wrapInteger(i), harness.wrapInteger(i));
-        t.*.proto = deep;
+        t.proto = deep;
         deep = t;
     }
     const top: i32 = config.max_proto_depth + 4;
-    std.debug.assert(harness.equals(
+    expect(harness.equals(
         tables.get(deep.?, harness.wrapInteger(top)),
         harness.wrapInteger(top),
     ));
     const last: i32 = top - (config.max_proto_depth - 1);
-    std.debug.assert(harness.equals(
+    expect(harness.equals(
         tables.get(deep.?, harness.wrapInteger(last)),
         harness.wrapInteger(last),
     ));
-    std.debug.assert(harness.isType(
+    expect(harness.isType(
         tables.get(deep.?, harness.wrapInteger(last - 1)),
         repr.Tag.nil,
     ));
-    std.debug.assert(harness.isType(
+    expect(harness.isType(
         tables.rawget(deep.?, harness.wrapInteger(top - 1)),
         repr.Tag.nil,
     ));
@@ -819,20 +819,20 @@ fn tableGetExReportsTheOwner() void {
     tables.put(proto, kw("a"), harness.wrapInteger(1));
     const child = tables.new(2);
     tables.put(child, kw("b"), harness.wrapInteger(2));
-    child.*.proto = proto;
+    child.proto = proto;
 
-    var which: ?*types.JanetTable = null;
-    std.debug.assert(harness.equals(
+    var which: ?*tables.Table = null;
+    expect(harness.equals(
         tables.getEx(child, kw("b"), &which),
         harness.wrapInteger(2),
     ));
-    std.debug.assert(which == child);
+    expect(which == child);
     which = null;
-    std.debug.assert(harness.equals(
+    expect(harness.equals(
         tables.getEx(child, kw("a"), &which),
         harness.wrapInteger(1),
     ));
-    std.debug.assert(which == proto);
+    expect(which == proto);
 }
 
 /// Looking a key up from raw bytes, without interning it first. Used by the
@@ -842,19 +842,19 @@ fn tableGetKeyword() void {
     tables.put(proto, kw("deep"), harness.wrapInteger(2));
     const t = tables.new(4);
     tables.put(t, kw("hello"), harness.wrapInteger(1));
-    t.*.proto = proto;
+    t.proto = proto;
 
-    std.debug.assert(harness.equals(
-        internal.janet_table_get_keyword(t, "hello"),
+    expect(harness.equals(
+        tables.getKeyword(t, "hello"),
         harness.wrapInteger(1),
     ));
-    std.debug.assert(harness.equals(
-        internal.janet_table_get_keyword(t, "deep"),
+    expect(harness.equals(
+        tables.getKeyword(t, "deep"),
         harness.wrapInteger(2),
     ));
-    std.debug.assert(harness.isType(internal.janet_table_get_keyword(t, "missing"), repr.Tag.nil));
+    expect(harness.isType(tables.getKeyword(t, "missing"), repr.Tag.nil));
     // A prefix of a present key is not that key.
-    std.debug.assert(harness.isType(internal.janet_table_get_keyword(t, "hell"), repr.Tag.nil));
+    expect(harness.isType(tables.getKeyword(t, "hell"), repr.Tag.nil));
 }
 
 // -------------------------------------------------------- table: wholesale
@@ -863,24 +863,24 @@ fn tableGetKeyword() void {
 fn tableClear() void {
     const proto = tables.new(2);
     const t = tables.new(4);
-    t.*.proto = proto;
+    t.proto = proto;
     var i: i32 = 0;
     while (i < 6) : (i += 1) tables.put(t, harness.wrapInteger(i), harness.wrapInteger(i));
     _ = tables.remove(t, harness.wrapInteger(0));
-    const capacity = t.*.capacity;
-    const data = t.*.data;
-    std.debug.assert(t.*.deleted == 1);
+    const capacity = t.capacity;
+    const data = t.data;
+    expect(t.deleted == 1);
 
     tables.clear(t);
-    std.debug.assert(t.*.count == 0);
-    std.debug.assert(t.*.deleted == 0);
-    std.debug.assert(t.*.capacity == capacity);
-    std.debug.assert(t.*.data == data);
-    std.debug.assert(t.*.proto == proto);
+    expect(t.count == 0);
+    expect(t.deleted == 0);
+    expect(t.capacity == capacity);
+    expect(t.data == data);
+    expect(t.proto == proto);
     var n: usize = 0;
     while (n < capacity) : (n += 1) {
-        std.debug.assert(harness.isType(data.?[n].key, repr.Tag.nil));
-        std.debug.assert(harness.isType(data.?[n].value, repr.Tag.nil));
+        expect(harness.isType(data.?[n].key, repr.Tag.nil));
+        expect(harness.isType(data.?[n].value, repr.Tag.nil));
     }
 }
 
@@ -889,26 +889,26 @@ fn tableClear() void {
 fn tableCloneCopiesTheLayout() void {
     const proto = tables.new(2);
     const t = tables.new(4);
-    t.*.proto = proto;
+    t.proto = proto;
     var i: i32 = 0;
     while (i < 4) : (i += 1) tables.put(t, harness.wrapInteger(i), harness.wrapInteger(i));
     _ = tables.remove(t, harness.wrapInteger(1));
-    std.debug.assert(t.*.deleted == 1);
+    expect(t.deleted == 1);
 
     const clone = tables.clone(t);
-    std.debug.assert(clone != t);
-    std.debug.assert(clone.*.data != t.*.data);
-    std.debug.assert(clone.*.count == t.*.count);
-    std.debug.assert(clone.*.capacity == t.*.capacity);
-    std.debug.assert(clone.*.deleted == t.*.deleted);
+    expect(clone != t);
+    expect(clone.data != t.data);
+    expect(clone.count == t.count);
+    expect(clone.capacity == t.capacity);
+    expect(clone.deleted == t.deleted);
     // The prototype is shared, not cloned.
-    std.debug.assert(clone.*.proto == proto);
-    std.debug.assert(heap.memoryType(clone) == types.MemoryType.table);
-    std.debug.assert(sameLayout(clone.*.data.?, t.*.data.?, t.*.capacity));
+    expect(clone.proto == proto);
+    expect(heap.memoryType(clone) == gc_alloc.MemoryType.table);
+    expect(sameLayout(clone.data.?, t.data.?, @intCast(t.capacity)));
 
     // And the two are independent afterwards.
     tables.put(clone, kw("new"), harness.wrapInteger(9));
-    std.debug.assert(harness.isType(tables.rawget(t, kw("new")), repr.Tag.nil));
+    expect(harness.isType(tables.rawget(t, kw("new")), repr.Tag.nil));
 }
 
 /// Cloning a table with no bucket array. This is the `memcpy(dst, NULL, 0)`
@@ -918,13 +918,13 @@ fn tableCloneCopiesTheLayout() void {
 /// a clone of one cannot be either.
 fn tableCloneOfAnEmptyArray() void {
     const empty = tables.new(-1);
-    std.debug.assert(empty.*.data == null);
+    expect(empty.data == null);
     const clone = tables.clone(empty);
-    std.debug.assert(clone != empty);
-    std.debug.assert(clone.*.count == 0);
-    std.debug.assert(clone.*.capacity == 0);
-    std.debug.assert(clone.*.deleted == 0);
-    std.debug.assert(heap.memoryType(clone) == types.MemoryType.table);
+    expect(clone != empty);
+    expect(clone.count == 0);
+    expect(clone.capacity == 0);
+    expect(clone.deleted == 0);
+    expect(heap.memoryType(clone) == gc_alloc.MemoryType.table);
 }
 
 /// Merging takes the source's own pairs only. Its prototype is not consulted,
@@ -934,21 +934,21 @@ fn tableMerge() void {
     tables.put(proto, kw("p"), harness.wrapInteger(9));
     const source = tables.new(2);
     tables.put(source, kw("a"), harness.wrapInteger(1));
-    source.*.proto = proto;
+    source.proto = proto;
 
     const destination = tables.new(2);
     tables.put(destination, kw("a"), harness.wrapInteger(0));
     tables.put(destination, kw("b"), harness.wrapInteger(2));
     tables.mergeTable(destination, source);
-    std.debug.assert(harness.equals(
+    expect(harness.equals(
         tables.rawget(destination, kw("a")),
         harness.wrapInteger(1),
     ));
-    std.debug.assert(harness.equals(
+    expect(harness.equals(
         tables.rawget(destination, kw("b")),
         harness.wrapInteger(2),
     ));
-    std.debug.assert(harness.isType(tables.rawget(destination, kw("p")), repr.Tag.nil));
+    expect(harness.isType(tables.rawget(destination, kw("p")), repr.Tag.nil));
 
     const sp = structs.begin(1);
     structs.put(sp, kw("s"), harness.wrapInteger(5));
@@ -959,11 +959,11 @@ fn tableMerge() void {
     const s = structs.end(ss);
 
     tables.mergeStruct(destination, s);
-    std.debug.assert(harness.equals(
+    expect(harness.equals(
         tables.rawget(destination, kw("c")),
         harness.wrapInteger(3),
     ));
-    std.debug.assert(harness.isType(tables.rawget(destination, kw("s")), repr.Tag.nil));
+    expect(harness.isType(tables.rawget(destination, kw("s")), repr.Tag.nil));
 }
 
 /// The struct is begun at the table's live count, so tombstones cost nothing.
@@ -973,17 +973,17 @@ fn tableToStructIgnoresTombstones() void {
     while (i < 6) : (i += 1) tables.put(t, harness.wrapInteger(i), harness.wrapInteger(i));
     _ = tables.remove(t, harness.wrapInteger(2));
     _ = tables.remove(t, harness.wrapInteger(3));
-    std.debug.assert(t.*.count == 4);
-    std.debug.assert(t.*.deleted == 2);
+    expect(t.count == 4);
+    expect(t.deleted == 2);
 
     const s = tables.toStruct(t);
-    std.debug.assert(structLength(s) == 4);
-    std.debug.assert(structProto(s) == null);
-    std.debug.assert(harness.equals(
+    expect(structLength(s) == 4);
+    expect(structProto(s) == null);
+    expect(harness.equals(
         structs.rawget(s, harness.wrapInteger(0)),
         harness.wrapInteger(0),
     ));
-    std.debug.assert(harness.isType(
+    expect(harness.isType(
         structs.rawget(s, harness.wrapInteger(2)),
         repr.Tag.nil,
     ));
@@ -992,8 +992,8 @@ fn tableToStructIgnoresTombstones() void {
     // which is the order-independence property seen from the other side: the
     // table hands the pairs back in bucket order, not insertion order.
     const back = tables.toStruct(structs.toTable(s));
-    std.debug.assert(structCapacity(back) == structCapacity(s));
-    std.debug.assert(sameLayout(back, s, structCapacity(s)));
+    expect(structCapacity(back) == structCapacity(s));
+    expect(sameLayout(back, s, structCapacity(s)));
 }
 
 /// Flattening walks child first and never overwrites, so a binding nearer the
@@ -1005,23 +1005,23 @@ fn tableProtoFlatten() void {
     const parent = tables.new(2);
     tables.put(parent, kw("a"), harness.wrapInteger(2));
     tables.put(parent, kw("b"), harness.wrapInteger(20));
-    parent.*.proto = grandparent;
+    parent.proto = grandparent;
     const child = tables.new(2);
     tables.put(child, kw("a"), harness.wrapInteger(1));
-    child.*.proto = parent;
+    child.proto = parent;
 
-    const flat = internal.janet_table_proto_flatten(child);
-    std.debug.assert(flat.proto == null);
-    std.debug.assert(flat.count == 3);
-    std.debug.assert(harness.equals(tables.rawget(flat, kw("a")), harness.wrapInteger(1)));
-    std.debug.assert(harness.equals(tables.rawget(flat, kw("b")), harness.wrapInteger(20)));
-    std.debug.assert(harness.equals(tables.rawget(flat, kw("c")), harness.wrapInteger(30)));
+    const flat = tables.protoFlatten(child);
+    expect(flat.proto == null);
+    expect(flat.count == 3);
+    expect(harness.equals(tables.rawget(flat, kw("a")), harness.wrapInteger(1)));
+    expect(harness.equals(tables.rawget(flat, kw("b")), harness.wrapInteger(20)));
+    expect(harness.equals(tables.rawget(flat, kw("c")), harness.wrapInteger(30)));
 
     // A tombstone in a source table is not carried into the result.
     _ = tables.remove(child, kw("a"));
-    const again = internal.janet_table_proto_flatten(child);
-    std.debug.assert(again.deleted == 0);
-    std.debug.assert(harness.equals(tables.rawget(again, kw("a")), harness.wrapInteger(2)));
+    const again = tables.protoFlatten(child);
+    expect(again.deleted == 0);
+    expect(harness.equals(tables.rawget(again, kw("a")), harness.wrapInteger(2)));
 }
 
 // ---------------------------------------------------- through the runtime
@@ -1042,19 +1042,19 @@ fn fromJanet() void {
         \\ (length (table/to-struct (do (def t @{:a 1 :b 2}) (put t :a nil) t)))
         \\ (do (def t @{:a 1}) (table/clear t) (length t))]
     ;
-    std.debug.assert(core_env.dostring(harness.coreEnv(), source, "struct_table", &out) == 0);
+    expect(core_env.dostring(harness.coreEnv(), source, "struct_table", &out) == 0);
     const r = wrap.toTuple(out);
-    std.debug.assert(repr.truthy(r[0]));
-    std.debug.assert(repr.truthy(r[1]));
-    std.debug.assert(harness.integerIs(r[2], 1));
-    std.debug.assert(harness.isType(r[3], repr.Tag.nil));
-    std.debug.assert(harness.integerIs(r[4], 0));
-    std.debug.assert(harness.integerIs(r[5], 2));
+    expect(repr.truthy(r[0]));
+    expect(repr.truthy(r[1]));
+    expect(harness.integerIs(r[2], 1));
+    expect(harness.isType(r[3], repr.Tag.nil));
+    expect(harness.integerIs(r[4], 0));
+    expect(harness.integerIs(r[5], 2));
     const flat = wrap.toTable(r[6]);
-    std.debug.assert(harness.equals(tables.rawget(flat, kw("a")), harness.wrapInteger(1)));
-    std.debug.assert(harness.equals(tables.rawget(flat, kw("b")), harness.wrapInteger(3)));
-    std.debug.assert(harness.integerIs(r[7], 1));
-    std.debug.assert(harness.integerIs(r[8], 0));
+    expect(harness.equals(tables.rawget(flat, kw("a")), harness.wrapInteger(1)));
+    expect(harness.equals(tables.rawget(flat, kw("b")), harness.wrapInteger(3)));
+    expect(harness.integerIs(r[7], 1));
+    expect(harness.integerIs(r[8], 0));
 }
 
 pub fn run() void {

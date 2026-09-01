@@ -39,7 +39,7 @@ const subsystems = @import("subsystems");
 const flags = subsystems.filewatch;
 const Platform = flags.Platform;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
 // ==========================================================================
 // The vocabularies, in the order both halves of the split agree on
@@ -81,9 +81,9 @@ fn namesOf(platform: Platform) []const []const u8 {
 // ==========================================================================
 
 fn eachVocabularyIsComplete() void {
-    assert(flags.flagCount(.linux) == linux_names.len);
-    assert(flags.flagCount(.windows) == windows_names.len);
-    assert(flags.flagCount(.kqueue) == kqueue_names.len);
+    expect(flags.flagCount(.linux) == linux_names.len);
+    expect(flags.flagCount(.windows) == windows_names.len);
+    expect(flags.flagCount(.kqueue) == kqueue_names.len);
 }
 
 /// The index is what selects a flag value in `filewatch_core.zig`, so a name
@@ -92,8 +92,8 @@ fn eachVocabularyIsComplete() void {
 fn namesHoldTheirPositions() void {
     for ([_]Platform{ .linux, .windows, .kqueue }) |platform| {
         for (namesOf(platform), 0..) |name, i| {
-            assert(flags.flagIndex(platform, name).? == i);
-            assert(std.mem.eql(u8, flags.flagName(platform, i).?, name));
+            expect(flags.flagIndex(platform, name).? == i);
+            expect(std.mem.eql(u8, flags.flagName(platform, i).?, name));
         }
     }
 }
@@ -106,31 +106,31 @@ fn eachVocabularyIsAscending() void {
     for ([_]Platform{ .linux, .windows, .kqueue }) |platform| {
         const names = namesOf(platform);
         for (names[1..], 0..) |name, i| {
-            assert(std.mem.order(u8, names[i], name) == .lt);
+            expect(std.mem.order(u8, names[i], name) == .lt);
         }
     }
 }
 
 fn aNameBelongsOnlyToItsOwnBackend() void {
-    assert(flags.flagIndex(.linux, "recursive") == null);
-    assert(flags.flagIndex(.linux, "last-write") == null);
-    assert(flags.flagIndex(.windows, "attrib") == null);
-    assert(flags.flagIndex(.windows, "modify") == null);
-    assert(flags.flagIndex(.kqueue, "modify") == null);
-    assert(flags.flagIndex(.kqueue, "creation") == null);
+    expect(flags.flagIndex(.linux, "recursive") == null);
+    expect(flags.flagIndex(.linux, "last-write") == null);
+    expect(flags.flagIndex(.windows, "attrib") == null);
+    expect(flags.flagIndex(.windows, "modify") == null);
+    expect(flags.flagIndex(.kqueue, "modify") == null);
+    expect(flags.flagIndex(.kqueue, "creation") == null);
 
     // `all` is the one name every backend shares.
-    assert(flags.flagIndex(.linux, "all") != null);
-    assert(flags.flagIndex(.windows, "all") != null);
-    assert(flags.flagIndex(.kqueue, "all") != null);
+    expect(flags.flagIndex(.linux, "all") != null);
+    expect(flags.flagIndex(.windows, "all") != null);
+    expect(flags.flagIndex(.kqueue, "all") != null);
 }
 
 fn aPartialOrExtendedNameMatchesNothing() void {
-    assert(flags.flagIndex(.linux, "acces") == null);
-    assert(flags.flagIndex(.linux, "accessx") == null);
-    assert(flags.flagIndex(.linux, "") == null);
-    assert(flags.flagIndex(.kqueue, "close-writ") == null);
-    assert(flags.flagIndex(.kqueue, "close-writes") == null);
+    expect(flags.flagIndex(.linux, "acces") == null);
+    expect(flags.flagIndex(.linux, "accessx") == null);
+    expect(flags.flagIndex(.linux, "") == null);
+    expect(flags.flagIndex(.kqueue, "close-writ") == null);
+    expect(flags.flagIndex(.kqueue, "close-writes") == null);
 }
 
 /// A Janet keyword may hold a zero byte, so the comparison is by length and
@@ -138,19 +138,19 @@ fn aPartialOrExtendedNameMatchesNothing() void {
 fn aNameContainingAZeroByteMatchesNothing() void {
     const trailing = [_]u8{ 'a', 'l', 'l', 0 };
     const embedded = [_]u8{ 'a', 0, 'l', 'l' };
-    assert(flags.flagIndex(.linux, &trailing) == null);
-    assert(flags.flagIndex(.linux, &embedded) == null);
+    expect(flags.flagIndex(.linux, &trailing) == null);
+    expect(flags.flagIndex(.linux, &embedded) == null);
     // The same bytes without the zero still match.
-    assert(flags.flagIndex(.linux, trailing[0..3]) != null);
+    expect(flags.flagIndex(.linux, trailing[0..3]) != null);
 }
 
 /// The upper half of the C contract's out-of-range pair. The lower half — a
 /// negative position — is what the header comment above records as unwritable:
 /// the parameter is a `usize`.
 fn aPositionPastTheEndHasNoName() void {
-    assert(flags.flagName(.linux, linux_names.len) == null);
-    assert(flags.flagName(.windows, windows_names.len) == null);
-    assert(flags.flagName(.kqueue, kqueue_names.len) == null);
+    expect(flags.flagName(.linux, linux_names.len) == null);
+    expect(flags.flagName(.windows, windows_names.len) == null);
+    expect(flags.flagName(.kqueue, kqueue_names.len) == null);
 }
 
 /// The C original indexed a six-entry array with Windows' `FILE_ACTION_*` code
@@ -159,9 +159,9 @@ fn aPositionPastTheEndHasNoName() void {
 /// fallback explicitly rather than read past the array.
 fn actionNamesCoverTheDocumentedCodes() void {
     for (action_names, 0..) |expected, code| {
-        assert(std.mem.eql(u8, flags.actionName(@intCast(code)).?, expected));
+        expect(std.mem.eql(u8, flags.actionName(@intCast(code)).?, expected));
     }
-    assert(flags.actionName(action_names.len) == null);
+    expect(flags.actionName(action_names.len) == null);
 }
 
 pub fn run() void {

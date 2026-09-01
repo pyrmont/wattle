@@ -23,90 +23,97 @@
 //!
 //! ## Two things about how the subjects are reached
 //!
-//! **The heap is driven through a foreign element type.** `heapSiftDown` and
-//! `heapSiftUp` take a base pointer, a stride and the offset of the `when`
-//! field *precisely* so that they never need `JanetTimeout`, which carries a
-//! `pthread_t` on POSIX and two `HANDLE`s on Windows. Exercising them against
-//! a local `Entry` is what proves the claim; passing a real `JanetTimeout`
-//! here would assert nothing about it.
+//! **The heap is driven through `JanetTimeout` itself.** The kernels used to
+//! take a base pointer, a stride and the offset of the `when` field, and a
+//! local `Entry` with a different layout was what proved they needed none of
+//! `JanetTimeout`'s definition. They take `[]const JanetTimeout` now -- there
+//! is one heap in the runtime and one element type in it -- so the stand-in
+//! would assert nothing that the real element does not. The heap is still
+//! built here, from `when` values alone: `zeroes` fills the `pthread_t` on
+//! POSIX and the two `HANDLE`s on Windows, and nothing in the ordering reads
+//! them.
 //!
 //! **One assertion could not survive, and the type is why.**
 //! `janet_ev_q_pop(&q, NULL, sizeof(int32_t))` is what a C contract writes to
-//! check that an empty queue reports before it writes. `qPop` takes
-//! `*anyopaque`, so there is no null to pass. What is kept is the half that
-//! still has a subject: a pop from an empty queue leaves the caller's variable
-//! as it was -- said here because the next reader will look for the other.
+//! check that an empty queue reports before it writes. `pop` takes a `*T`, so
+//! there is no null to pass. What is kept is the half that still has a
+//! subject: a pop from an empty queue leaves the caller's variable as it was
+//! -- said here because the next reader will look for the other.
+//!
+//! **The queue is a `Queue(T)` rather than a byte ring.** The element type is
+//! the compiler's business, so the `@sizeOf` that used to accompany every call
+//! is gone, and the two element types below -- `i32` and a 40-byte `Big` --
+//! are what stands in for the runtime's `Task`, `Pending` and `Value`.
 
 const std = @import("std");
-const types = @import("types");
 
 const subsystems = @import("subsystems");
 const ev_core = subsystems.ev;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
 // ==========================================================================
 // The generic queue
 // ==========================================================================
 
 fn theEmptyQueue() void {
-    var q: types.JanetQueue = undefined;
-    ev_core.qInit(&q);
-    defer ev_core.qDeinit(&q);
+    var q: ev_core.Queue(i32) = undefined;
+    q.init();
+    defer q.deinit();
 
-    assert(q.data == null);
-    assert(q.capacity == 0);
-    assert(ev_core.qCount(&q) == 0);
+    expect(q.data == null);
+    expect(q.capacity == 0);
+    expect(q.count() == 0);
 
     // Popping an empty queue reports failure and leaves the output alone.
     var out: i32 = 12345;
-    assert(ev_core.qPop(&q, &out, @sizeOf(i32)) == 1);
-    assert(out == 12345);
+    expect(q.pop(&out) == 1);
+    expect(out == 12345);
 }
 
 fn theQueueIsFirstInFirstOut() void {
-    var q: types.JanetQueue = undefined;
-    ev_core.qInit(&q);
-    defer ev_core.qDeinit(&q);
+    var q: ev_core.Queue(i32) = undefined;
+    q.init();
+    defer q.deinit();
 
     var i: i32 = 0;
     while (i < 100) : (i += 1) {
-        assert(ev_core.qPush(&q, &i, @sizeOf(i32)) == 0);
-        assert(ev_core.qCount(&q) == i + 1);
+        expect(q.push(i) == 0);
+        expect(q.count() == i + 1);
     }
     i = 0;
     while (i < 100) : (i += 1) {
         var out: i32 = -1;
-        assert(ev_core.qPop(&q, &out, @sizeOf(i32)) == 0);
-        assert(out == i);
+        expect(q.pop(&out) == 0);
+        expect(out == i);
     }
-    assert(ev_core.qCount(&q) == 0);
+    expect(q.count() == 0);
 }
 
 fn theHeadPushReversesTheOrder() void {
-    var q: types.JanetQueue = undefined;
-    ev_core.qInit(&q);
-    defer ev_core.qDeinit(&q);
+    var q: ev_core.Queue(i32) = undefined;
+    q.init();
+    defer q.deinit();
 
     var i: i32 = 0;
     while (i < 50) : (i += 1) {
-        assert(ev_core.qPushHead(&q, &i, @sizeOf(i32)) == 0);
+        expect(q.pushHead(i) == 0);
     }
-    assert(ev_core.qCount(&q) == 50);
+    expect(q.count() == 50);
     i = 49;
     while (i >= 0) : (i -= 1) {
         var out: i32 = -1;
-        assert(ev_core.qPop(&q, &out, @sizeOf(i32)) == 0);
-        assert(out == i);
+        expect(q.pop(&out) == 0);
+        expect(out == i);
     }
 }
 
 /// Interleaving pushes and pops walks head and tail around the buffer, so the
 /// resize path runs with head > tail and has to move the wrapped segment.
 fn theQueueWrapsAndResizes() void {
-    var q: types.JanetQueue = undefined;
-    ev_core.qInit(&q);
-    defer ev_core.qDeinit(&q);
+    var q: ev_core.Queue(i32) = undefined;
+    q.init();
+    defer q.deinit();
 
     var next_in: i32 = 0;
     var next_out: i32 = 0;
@@ -114,51 +121,52 @@ fn theQueueWrapsAndResizes() void {
     var round: u32 = 0;
     while (round < 200) : (round += 1) {
         for (0..3) |_| {
-            assert(ev_core.qPush(&q, &next_in, @sizeOf(i32)) == 0);
+            expect(q.push(next_in) == 0);
             next_in += 1;
         }
         for (0..2) |_| {
             var out: i32 = -1;
-            assert(ev_core.qPop(&q, &out, @sizeOf(i32)) == 0);
-            assert(out == next_out);
+            expect(q.pop(&out) == 0);
+            expect(out == next_out);
             next_out += 1;
         }
-        assert(ev_core.qCount(&q) == next_in - next_out);
+        expect(q.count() == next_in - next_out);
     }
 
     // Everything still queued comes out in order, unshuffled by any resize.
     while (next_out < next_in) {
         var out: i32 = -1;
-        assert(ev_core.qPop(&q, &out, @sizeOf(i32)) == 0);
-        assert(out == next_out);
+        expect(q.pop(&out) == 0);
+        expect(out == next_out);
         next_out += 1;
     }
-    assert(ev_core.qCount(&q) == 0);
+    expect(q.count() == 0);
 }
 
 /// A head push on a queue that is about to wrap takes the newhead < 0 branch.
 fn theHeadPushWraps() void {
-    var q: types.JanetQueue = undefined;
-    ev_core.qInit(&q);
-    defer ev_core.qDeinit(&q);
+    var q: ev_core.Queue(i32) = undefined;
+    q.init();
+    defer q.deinit();
 
-    var seed: i32 = 0;
-    assert(ev_core.qPush(&q, &seed, @sizeOf(i32)) == 0);
-    assert(q.head == 0);
+    const seed: i32 = 0;
+    expect(q.push(seed) == 0);
+    expect(q.head == 0);
 
-    var value: i32 = 99;
-    assert(ev_core.qPushHead(&q, &value, @sizeOf(i32)) == 0);
-    assert(q.head > 0);
-    assert(ev_core.qCount(&q) == 2);
+    const value: i32 = 99;
+    expect(q.pushHead(value) == 0);
+    expect(q.head > 0);
+    expect(q.count() == 2);
 
     var out: i32 = -1;
-    assert(ev_core.qPop(&q, &out, @sizeOf(i32)) == 0);
-    assert(out == 99);
-    assert(ev_core.qPop(&q, &out, @sizeOf(i32)) == 0);
-    assert(out == 0);
+    expect(q.pop(&out) == 0);
+    expect(out == 99);
+    expect(q.pop(&out) == 0);
+    expect(out == 0);
 }
 
-/// Items larger than a machine word exercise the itemsize arithmetic.
+/// Items larger than a machine word: the element type is what sizes the
+/// buffer, and this is the queue whose stride is not a machine word.
 fn theQueueCarriesLargeItems() void {
     const Big = extern struct {
         a: i64,
@@ -166,9 +174,9 @@ fn theQueueCarriesLargeItems() void {
         tag: [24]u8,
     };
 
-    var q: types.JanetQueue = undefined;
-    ev_core.qInit(&q);
-    defer ev_core.qDeinit(&q);
+    var q: ev_core.Queue(Big) = undefined;
+    q.init();
+    defer q.deinit();
 
     var i: i64 = 0;
     while (i < 40) : (i += 1) {
@@ -176,31 +184,31 @@ fn theQueueCarriesLargeItems() void {
         item.a = i;
         item.b = -i;
         _ = std.fmt.bufPrintZ(&item.tag, "item-{d}", .{i}) catch unreachable;
-        assert(ev_core.qPush(&q, &item, @sizeOf(Big)) == 0);
+        expect(q.push(item) == 0);
     }
     i = 0;
     while (i < 40) : (i += 1) {
         var out = std.mem.zeroes(Big);
-        assert(ev_core.qPop(&q, &out, @sizeOf(Big)) == 0);
-        assert(out.a == i);
-        assert(out.b == -i);
+        expect(q.pop(&out) == 0);
+        expect(out.a == i);
+        expect(out.b == -i);
         var expected: [24]u8 = undefined;
         const text = std.fmt.bufPrintZ(&expected, "item-{d}", .{i}) catch unreachable;
-        assert(std.mem.eql(u8, text, std.mem.sliceTo(&out.tag, 0)));
+        expect(std.mem.eql(u8, text, std.mem.sliceTo(&out.tag, 0)));
     }
 }
 
 /// One slot is always left empty, so a resize happens one item before the
 /// buffer is actually full.
 fn theQueueKeepsASpareSlot() void {
-    var q: types.JanetQueue = undefined;
-    ev_core.qInit(&q);
-    defer ev_core.qDeinit(&q);
+    var q: ev_core.Queue(i32) = undefined;
+    q.init();
+    defer q.deinit();
 
     var i: i32 = 0;
     while (i < 64) : (i += 1) {
-        assert(ev_core.qPush(&q, &i, @sizeOf(i32)) == 0);
-        assert(ev_core.qCount(&q) < q.capacity);
+        expect(q.push(i) == 0);
+        expect(q.count() < q.capacity);
     }
 }
 
@@ -208,18 +216,17 @@ fn theQueueKeepsASpareSlot() void {
 // The timeout min heap
 // ==========================================================================
 
-/// A stand-in for `JanetTimeout`, and the reason the kernels take a stride and
-/// an offset at all. The padding and the trailing field make the `when` offset
-/// something other than zero and the stride something other than the field
-/// size, which is what those parameters exist to describe.
-const Entry = extern struct {
-    marker: i32,
-    when: i64,
-    payload: [12]u8,
-};
+const Entry = ev_core.JanetTimeout;
 
-const entry_stride = @sizeOf(Entry);
-const entry_offset = @offsetOf(Entry, "when");
+/// The heap element carries more than the ordering reads, and `sched_id` is
+/// the one other scalar in it, so it stands in for the marker the sort check
+/// needs to tell two equal `when` values apart.
+fn entry(when: i64, marker: u32) Entry {
+    var e = std.mem.zeroes(Entry);
+    e.when = when;
+    e.sched_id = marker;
+    return e;
+}
 
 fn swapEntries(heap: []Entry, a: usize, b: usize) void {
     const tmp = heap[a];
@@ -228,14 +235,12 @@ fn swapEntries(heap: []Entry, a: usize, b: usize) void {
 }
 
 /// The insertion loop from `addTimeout`, spelled out against the kernel.
-fn heapPush(heap: []Entry, count: *usize, when: i64, marker: i32) void {
+fn heapPush(heap: []Entry, count: *usize, when: i64, marker: u32) void {
     var index = count.*;
-    heap[index] = std.mem.zeroes(Entry);
-    heap[index].when = when;
-    heap[index].marker = marker;
+    heap[index] = entry(when, marker);
     count.* += 1;
     while (true) {
-        const parent = ev_core.heapSiftUp(heap.ptr, entry_stride, entry_offset, index);
+        const parent = ev_core.heapSiftUp(heap[0..count.*], index);
         if (parent < 0) break;
         swapEntries(heap, index, @intCast(parent));
         index = @intCast(parent);
@@ -249,13 +254,7 @@ fn heapPop(heap: []Entry, count: *usize) Entry {
     heap[0] = heap[count.*];
     var index: usize = 0;
     while (true) {
-        const smallest = ev_core.heapSiftDown(
-            heap.ptr,
-            entry_stride,
-            entry_offset,
-            count.*,
-            index,
-        );
+        const smallest = ev_core.heapSiftDown(heap[0..count.*], index);
         if (smallest < 0) break;
         swapEntries(heap, index, @intCast(smallest));
         index = @intCast(smallest);
@@ -271,10 +270,10 @@ fn theOrderedHeapReportsNoSwap() void {
 
     // The root is already smallest, and neither child has a parent to rise
     // above.
-    assert(ev_core.heapSiftDown(&heap, entry_stride, entry_offset, 3, 0) == -1);
-    assert(ev_core.heapSiftUp(&heap, entry_stride, entry_offset, 0) == -1);
-    assert(ev_core.heapSiftUp(&heap, entry_stride, entry_offset, 1) == -1);
-    assert(ev_core.heapSiftUp(&heap, entry_stride, entry_offset, 2) == -1);
+    expect(ev_core.heapSiftDown(&heap, 0) == -1);
+    expect(ev_core.heapSiftUp(&heap, 0) == -1);
+    expect(ev_core.heapSiftUp(&heap, 1) == -1);
+    expect(ev_core.heapSiftUp(&heap, 2) == -1);
 }
 
 fn theHeapSelectsChildren() void {
@@ -284,22 +283,22 @@ fn theHeapSelectsChildren() void {
     heap[0].when = 30;
     heap[1].when = 10;
     heap[2].when = 20;
-    assert(ev_core.heapSiftDown(&heap, entry_stride, entry_offset, 3, 0) == 1);
+    expect(ev_core.heapSiftDown(&heap, 0) == 1);
 
     // Right child smallest.
     heap[1].when = 20;
     heap[2].when = 10;
-    assert(ev_core.heapSiftDown(&heap, entry_stride, entry_offset, 3, 0) == 2);
+    expect(ev_core.heapSiftDown(&heap, 0) == 2);
 
     // A tie between the children keeps the left one, which is what the C
     // implementation's strict comparisons produce.
     heap[1].when = 10;
     heap[2].when = 10;
-    assert(ev_core.heapSiftDown(&heap, entry_stride, entry_offset, 3, 0) == 1);
+    expect(ev_core.heapSiftDown(&heap, 0) == 1);
 
     // A child equal to the parent does not move: the parent wins ties too.
     heap[0].when = 10;
-    assert(ev_core.heapSiftDown(&heap, entry_stride, entry_offset, 3, 0) == -1);
+    expect(ev_core.heapSiftDown(&heap, 0) == -1);
 }
 
 /// Children outside the live count are invisible, which is what makes the
@@ -310,9 +309,9 @@ fn theHeapRespectsTheCount() void {
     heap[1].when = 10;
     heap[2].when = 20;
 
-    assert(ev_core.heapSiftDown(&heap, entry_stride, entry_offset, 1, 0) == -1);
-    assert(ev_core.heapSiftDown(&heap, entry_stride, entry_offset, 2, 0) == 1);
-    assert(ev_core.heapSiftDown(&heap, entry_stride, entry_offset, 3, 0) == 1);
+    expect(ev_core.heapSiftDown(heap[0..1], 0) == -1);
+    expect(ev_core.heapSiftDown(heap[0..2], 0) == 1);
+    expect(ev_core.heapSiftDown(heap[0..3], 0) == 1);
 }
 
 fn theHeapSiftsUpToItsParent() void {
@@ -323,12 +322,12 @@ fn theHeapSiftsUpToItsParent() void {
     heap[3].when = 20;
 
     // Index 3's parent is index 1, and 20 < 50, so it rises.
-    assert(ev_core.heapSiftUp(&heap, entry_stride, entry_offset, 3) == 1);
+    expect(ev_core.heapSiftUp(&heap, 3) == 1);
     // Index 1's parent is the root, and 50 > 10, so it stays.
-    assert(ev_core.heapSiftUp(&heap, entry_stride, entry_offset, 1) == -1);
+    expect(ev_core.heapSiftUp(&heap, 1) == -1);
     // An equal parent also stays: sifting up compares with <=.
     heap[3].when = 50;
-    assert(ev_core.heapSiftUp(&heap, entry_stride, entry_offset, 3) == -1);
+    expect(ev_core.heapSiftUp(&heap, 3) == -1);
 }
 
 /// Driving both kernels through a full heapsort checks the ordering end to end
@@ -341,15 +340,15 @@ fn theHeapOrdersAFullSequence() void {
     var count: usize = 0;
 
     for (input, 0..) |when, i| heapPush(&heap, &count, when, @intCast(i));
-    assert(count == input.len);
+    expect(count == input.len);
 
     var previous: i64 = std.math.minInt(i64);
     for (0..input.len) |_| {
         const got = heapPop(&heap, &count);
-        assert(got.when >= previous);
+        expect(got.when >= previous);
         previous = got.when;
     }
-    assert(count == 0);
+    expect(count == 0);
 }
 
 // ==========================================================================
@@ -357,58 +356,58 @@ fn theHeapOrdersAFullSequence() void {
 // ==========================================================================
 
 fn theDelta() void {
-    assert(ev_core.tsDelta(1000, 0.0) == 1000);
-    assert(ev_core.tsDelta(1000, 1.0) == 2000);
-    assert(ev_core.tsDelta(1000, 0.5) == 1500);
-    assert(ev_core.tsDelta(1000, -0.5) == 500);
+    expect(ev_core.tsDelta(1000, 0.0) == 1000);
+    expect(ev_core.tsDelta(1000, 1.0) == 2000);
+    expect(ev_core.tsDelta(1000, 0.5) == 1500);
+    expect(ev_core.tsDelta(1000, -0.5) == 500);
 
     // Milliseconds are rounded, not truncated.
-    assert(ev_core.tsDelta(0, 0.0004) == 0);
-    assert(ev_core.tsDelta(0, 0.0006) == 1);
-    assert(ev_core.tsDelta(0, 0.0015) == 2);
+    expect(ev_core.tsDelta(0, 0.0004) == 0);
+    expect(ev_core.tsDelta(0, 0.0006) == 1);
+    expect(ev_core.tsDelta(0, 0.0015) == 2);
 
     // A negative infinity is "already due"; a positive one is "never".
-    assert(ev_core.tsDelta(1234, -std.math.inf(f64)) == 1234);
-    assert(ev_core.tsDelta(1234, std.math.inf(f64)) == std.math.maxInt(i64));
+    expect(ev_core.tsDelta(1234, -std.math.inf(f64)) == 1234);
+    expect(ev_core.tsDelta(1234, std.math.inf(f64)) == std.math.maxInt(i64));
 }
 
 fn theParts() void {
-    assert(ev_core.tsFromParts(0, 0) == 0);
-    assert(ev_core.tsFromParts(1, 0) == 1000);
-    assert(ev_core.tsFromParts(0, 1000000) == 1);
+    expect(ev_core.tsFromParts(0, 0) == 0);
+    expect(ev_core.tsFromParts(1, 0) == 1000);
+    expect(ev_core.tsFromParts(0, 1000000) == 1);
     // Sub-millisecond nanoseconds are dropped rather than rounded.
-    assert(ev_core.tsFromParts(0, 999999) == 0);
-    assert(ev_core.tsFromParts(2, 500000000) == 2500);
+    expect(ev_core.tsFromParts(0, 999999) == 0);
+    expect(ev_core.tsFromParts(2, 500000000) == 2500);
 
     var sec: i64 = -1;
     var nsec: i64 = -1;
     ev_core.tsToParts(0, &sec, &nsec);
-    assert(sec == 0 and nsec == 0);
+    expect(sec == 0 and nsec == 0);
 
     ev_core.tsToParts(1500, &sec, &nsec);
-    assert(sec == 1 and nsec == 500000000);
+    expect(sec == 1 and nsec == 500000000);
 
     ev_core.tsToParts(1000, &sec, &nsec);
-    assert(sec == 1 and nsec == 0);
+    expect(sec == 1 and nsec == 0);
 
     ev_core.tsToParts(7, &sec, &nsec);
-    assert(sec == 0 and nsec == 7000000);
+    expect(sec == 0 and nsec == 7000000);
 
     // A round trip through both directions is exact on millisecond values.
     var ts: i64 = 1;
     while (ts < 100000) : (ts += 337) {
         ev_core.tsToParts(ts, &sec, &nsec);
-        assert(ev_core.tsFromParts(sec, nsec) == ts);
+        expect(ev_core.tsFromParts(sec, nsec) == ts);
     }
 }
 
 fn theKqueueInterval() void {
-    assert(ev_core.kqueueInterval(0) == 0);
-    assert(ev_core.kqueueInterval(5) == 5);
-    assert(ev_core.kqueueInterval(std.math.maxInt(i64)) == std.math.maxInt(i64));
+    expect(ev_core.kqueueInterval(0) == 0);
+    expect(ev_core.kqueueInterval(5) == 5);
+    expect(ev_core.kqueueInterval(std.math.maxInt(i64)) == std.math.maxInt(i64));
     // A deadline already in the past clamps to the minimum.
-    assert(ev_core.kqueueInterval(-1) == 0);
-    assert(ev_core.kqueueInterval(std.math.minInt(i64)) == 0);
+    expect(ev_core.kqueueInterval(-1) == 0);
+    expect(ev_core.kqueueInterval(std.math.minInt(i64)) == 0);
 }
 
 pub fn run() void {

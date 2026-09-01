@@ -15,9 +15,9 @@
 //! that sentence fail differently:
 //!
 //!  - Allocated from `gcmark`, during the mark phase: the block is prepended
-//!    to `vm.gc.blocks` with its mark bit clear, and the sweep that follows
-//!    in the same `janet_collect` frees it. The object is created and
-//!    destroyed inside one collection and the caller never sees it live.
+//!    to `vm.gc.blocks` with its mark bit clear, and the sweep that follows in
+//!    the same collection frees it. The object is created and destroyed inside
+//!    one collection and the caller never sees it live.
 //!
 //!  - Allocated from a finalizer, during the sweep: the outcome depends on
 //!    where in the heap list the block being finalized sits. Mid-list it is
@@ -47,8 +47,8 @@
 //! `#ifdef`s.
 
 const std = @import("std");
+const stress_rounds = 2000;
 const builtin = @import("builtin");
-const types = @import("types");
 const options = @import("options");
 const abstract_type = @import("subsystems").abstract_type;
 const tables = @import("subsystems").value.tables;
@@ -59,7 +59,8 @@ const wrap = @import("subsystems").value.wrap;
 const abstracts = @import("subsystems").value.abstracts;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const arrays = @import("subsystems").value.arrays;
-const AbstractType = abstract_type.AbstractType;
+const abi = @import("abi");
+const expect = @import("expect.zig").expect;
 
 /// `options.ev` is `hasEv(options)`, which is already
 /// `ev and !single_threaded`. Windows is cross-compiled and never executed
@@ -67,7 +68,7 @@ const AbstractType = abstract_type.AbstractType;
 /// condition, and the same reason, as `test/fiber_core.zig`.
 const has_threads = options.ev and builtin.os.tag != .windows;
 
-fn headerOf(pointer: ?*anyopaque) *types.JanetGCObject {
+fn headerOf(pointer: ?*anyopaque) *abi.JanetGCObject {
     return @ptrCast(@alignCast(pointer.?));
 }
 
@@ -97,9 +98,8 @@ var child_finalized: i32 = 0;
 var parent_finalized: i32 = 0;
 var allocations_left: i32 = 0;
 
-fn childGc(_: *anyopaque, _: usize) c_int {
+fn childGc(_: *anyopaque, _: usize) void {
     child_finalized += 1;
-    return 0;
 }
 
 const at_child = abstract_type.define(anyopaque, .{ .name = "gc-stress/child", .gc = childGc });
@@ -107,17 +107,15 @@ const at_child = abstract_type.define(anyopaque, .{ .name = "gc-stress/child", .
 /// A `gcmark` that allocates. Bounded by `allocations_left` so that marking
 /// terminates: without the bound each new block would be marked in turn and
 /// the callback would allocate forever.
-fn allocatingGcmark(_: *anyopaque, _: usize) c_int {
+fn allocatingGcmark(_: *anyopaque, _: usize) void {
     if (allocations_left > 0) {
         allocations_left -= 1;
-        _ = abstracts.new(&at_child, 8);
+        _ = abstracts.newBytes(&at_child, 8);
     }
-    return 0;
 }
 
-fn parentGc(_: *anyopaque, _: usize) c_int {
+fn parentGc(_: *anyopaque, _: usize) void {
     parent_finalized += 1;
-    return 0;
 }
 
 const at_marking_parent = abstract_type.define(anyopaque, .{
@@ -127,13 +125,12 @@ const at_marking_parent = abstract_type.define(anyopaque, .{
 });
 
 /// A finalizer that allocates while the sweep is walking the block list.
-fn allocatingGc(_: *anyopaque, _: usize) c_int {
+fn allocatingGc(_: *anyopaque, _: usize) void {
     parent_finalized += 1;
     if (allocations_left > 0) {
         allocations_left -= 1;
-        _ = abstracts.new(&at_child, 8);
+        _ = abstracts.newBytes(&at_child, 8);
     }
-    return 0;
 }
 
 const at_finalizing_parent = abstract_type.define(anyopaque, .{
@@ -157,19 +154,19 @@ fn allocationFromGcmarkDiesInTheSameCollection() void {
     parent_finalized = 0;
     allocations_left = 1;
 
-    const parent = wrap.fromAbstract(abstracts.new(&at_marking_parent, 8));
+    const parent = wrap.fromAbstract(abstracts.newBytes(&at_marking_parent, 8));
     gc_alloc.gcroot(parent);
 
     gc_mark.collect();
-    std.debug.assert(allocations_left == 0); // the callback ran
-    std.debug.assert(child_finalized == 1); // and what it made is already gone
-    std.debug.assert(parent_finalized == 0); // the parent itself is rooted
-    std.debug.assert(orphanedBlocks() == orphans_before);
+    expect(allocations_left == 0); // the callback ran
+    expect(child_finalized == 1); // and what it made is already gone
+    expect(parent_finalized == 0); // the parent itself is rooted
+    expect(orphanedBlocks() == orphans_before);
 
     _ = gc_alloc.gcunroot(parent);
     gc_mark.collect();
-    std.debug.assert(parent_finalized == 1);
-    std.debug.assert(child_finalized == 1); // nothing further to finalize
+    expect(parent_finalized == 1);
+    expect(child_finalized == 1); // nothing further to finalize
 }
 
 /// A finalizer that allocates while its own block is *not* at the head of the
@@ -187,24 +184,24 @@ fn finalizerAllocationSurvivesWhenMidList() void {
     parent_finalized = 0;
     allocations_left = 1;
 
-    _ = abstracts.new(&at_finalizing_parent, 8); // unrooted: dies
-    const keeper = wrap.fromAbstract(abstracts.new(&at_child, 8));
+    _ = abstracts.newBytes(&at_finalizing_parent, 8); // unrooted: dies
+    const keeper = wrap.fromAbstract(abstracts.newBytes(&at_child, 8));
     gc_alloc.gcroot(keeper);
 
     gc_mark.collect();
-    std.debug.assert(parent_finalized == 1);
-    std.debug.assert(allocations_left == 0);
-    std.debug.assert(child_finalized == 0); // survived this cycle
-    std.debug.assert(orphanedBlocks() == orphans_before); // and is on the list
+    expect(parent_finalized == 1);
+    expect(allocations_left == 0);
+    expect(child_finalized == 0); // survived this cycle
+    expect(orphanedBlocks() == orphans_before); // and is on the list
 
     gc_mark.collect();
-    std.debug.assert(child_finalized == 1); // collected on the next
-    std.debug.assert(orphanedBlocks() == orphans_before);
+    expect(child_finalized == 1); // collected on the next
+    expect(orphanedBlocks() == orphans_before);
 
     _ = gc_alloc.gcunroot(keeper);
     gc_mark.collect();
-    std.debug.assert(child_finalized == 2); // the keeper, in turn
-    std.debug.assert(orphanedBlocks() == orphans_before);
+    expect(child_finalized == 2); // the keeper, in turn
+    expect(orphanedBlocks() == orphans_before);
 }
 
 /// The defect. When the block being finalized *is* the head of the heap list,
@@ -223,32 +220,30 @@ fn finalizerAllocationIsOrphanedAtTheHead() void {
     allocations_left = 1;
 
     // Allocated last and left unrooted, so it is both the list head and dead.
-    _ = abstracts.new(&at_finalizing_parent, 8);
+    _ = abstracts.newBytes(&at_finalizing_parent, 8);
 
     gc_mark.collect();
-    std.debug.assert(parent_finalized == 1);
-    std.debug.assert(allocations_left == 0); // the callback allocated
-    std.debug.assert(child_finalized == 0); // and it was never freed
-    std.debug.assert(orphanedBlocks() == orphans_before + 1); // counted, not listed
+    expect(parent_finalized == 1);
+    expect(allocations_left == 0); // the callback allocated
+    expect(child_finalized == 0); // and it was never freed
+    expect(orphanedBlocks() == orphans_before + 1); // counted, not listed
 
     // No number of collections reclaims it, because nothing can reach it.
     gc_mark.collect();
     gc_mark.collect();
-    std.debug.assert(child_finalized == 0);
-    std.debug.assert(orphanedBlocks() == orphans_before + 1);
+    expect(child_finalized == 0);
+    expect(orphanedBlocks() == orphans_before + 1);
 }
 
 // ---------------------------------------------------------- cross-thread
 
 const stress_threads = 4;
-const stress_rounds = 2000;
 
 var threaded_finalized: i32 = 0;
 var shared_abstract: ?*anyopaque = null;
 
-fn threadedGc(_: *anyopaque, _: usize) c_int {
+fn threadedGc(_: *anyopaque, _: usize) void {
     threaded_finalized += 1;
-    return 0;
 }
 
 const at_shared = abstract_type.define(anyopaque, .{ .name = "gc-stress/shared", .gc = threadedGc });
@@ -272,15 +267,15 @@ fn hammerRefcount() void {
 /// is not one.
 fn theRefcountIsAtomicAcrossThreads() !void {
     shared_abstract = abstracts.threaded(&at_shared, 16);
-    std.debug.assert(shared_abstract != null);
+    expect(shared_abstract != null);
 
     var threads: [stress_threads]std.Thread = undefined;
     for (&threads) |*thread| thread.* = try std.Thread.spawn(.{}, hammerRefcount, .{});
     for (threads) |thread| thread.join();
 
     // Back to the single reference this thread made it with.
-    std.debug.assert(abstracts.incref(shared_abstract) == 2);
-    std.debug.assert(abstracts.decref(shared_abstract) == 1);
+    expect(abstracts.incref(shared_abstract) == 2);
+    expect(abstracts.decref(shared_abstract) == 1);
 }
 
 var child_block_count: usize = 0;
@@ -307,11 +302,11 @@ fn eachThreadHasItsOwnHeap() !void {
     thread.join();
 
     // Before its own `janet_init`, the child's VM is zeroed rather than shared.
-    std.debug.assert(child_saw_main_blocks == 0);
-    std.debug.assert(child_block_count >= 64);
+    expect(child_saw_main_blocks == 0);
+    expect(child_block_count >= 64);
     // And nothing it did touched this thread's heap.
-    std.debug.assert(harness.vm().gc.block_count == main_blocks_before);
-    std.debug.assert(walkBlocks() == main_walk_before);
+    expect(harness.vm().gc.block_count == main_blocks_before);
+    expect(walkBlocks() == main_walk_before);
 }
 
 /// The finalizer runs on whichever thread drops the last reference, exactly
@@ -325,13 +320,13 @@ fn theLastReferenceFinalizesOnce() !void {
 
     const thread = try std.Thread.spawn(.{}, hammerRefcount, .{});
     thread.join();
-    std.debug.assert(threaded_finalized == 0);
+    expect(threaded_finalized == 0);
 
     // This thread still holds the reference it was made with. Dropping it is
     // what frees the block and runs the finalizer.
     _ = tables.remove(&harness.vm().ev.threaded_abstracts, wrap.fromAbstract(abstract));
-    std.debug.assert(abstracts.decrefMaybeFree(abstract) == 0);
-    std.debug.assert(threaded_finalized == 1);
+    expect(abstracts.decrefMaybeFree(abstract) == 0);
+    expect(threaded_finalized == 1);
 }
 
 // ---------------------------------------------------------------- cycles
@@ -348,20 +343,20 @@ fn repeatedCycles() void {
         allocations_left = 1;
 
         const parent = wrap.fromAbstract(
-            abstracts.new(&at_marking_parent, 8),
+            abstracts.newBytes(&at_marking_parent, 8),
         );
         gc_alloc.gcroot(parent);
         gc_mark.collect();
-        std.debug.assert(child_finalized == 1);
+        expect(child_finalized == 1);
         _ = gc_alloc.gcunroot(parent);
         gc_mark.collect();
-        std.debug.assert(parent_finalized == 1);
-        std.debug.assert(orphanedBlocks() == orphans_before);
+        expect(parent_finalized == 1);
+        expect(orphanedBlocks() == orphans_before);
     }
 }
 
 fn body() !void {
-    std.debug.assert(orphanedBlocks() == 0);
+    expect(orphanedBlocks() == 0);
 
     allocationFromGcmarkDiesInTheSameCollection();
     finalizerAllocationSurvivesWhenMidList();

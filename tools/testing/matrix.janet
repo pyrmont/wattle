@@ -53,34 +53,36 @@
 # entries would collide on just as surely. That is rule 53 rather than rule 9.
 #
 # Part 24 is the gate, so this line stopped being an increment's own; every part
-# since Part 1 had set it to the contracts that part migrated. Part 28's own are
-# below -- the leak check's four -- and Part 29 migrated no contract at all, so
-# they stand.
 (def contracts-default
-  # The deferred-nit sweep of 2026-08-31, which closed all 37 findings in
-  # `NITS.md`.
+  # The contracts a `contracts` entry runs by name. Set to what the increment
+  # in hand could break, not to a coverage sample; the `full` entries run all
+  # sixty-five.
   #
-  # Unlike 9c-9g this one does change runtime decisions, so the list is chosen
-  # by what each configuration could break rather than by coverage:
+  # These are the assertion conversion's own, because every contract's 5,016
+  # assertions became `test/expect.zig`'s `expect` and a `contracts` entry in a
+  # release mode is where a compiled-out assertion used to hide:
   #
-  #   `signal_core`  the one behavioural change -- the published signal-taking
-  #                  entry points take `c_uint` and clamp through
-  #                  `Signal.fromWire`. A reduced build is where a wrong
-  #                  conversion would show as a wrong signal rather than a
-  #                  compile error.
-  #   `fiber_core`   the exhaustive `switch`es that replaced four `else` arms,
-  #                  and the oracle that now lists every status by name.
-  #   `gc_sweep`     the memory-type dispatch, whose `else` also went; a
-  #                  forgotten arm leaks rather than fails.
-  #   `vm_state`     the field-walk that replaced the raw-byte comparison of a
-  #                  fresh `Vm`, which is layout-sensitive per configuration.
-  #   `vector`       `appendAssumingCapacity`'s new preconditions and the
-  #                  twelve constness-preserving accessors.
-  #   `core_env`     the registration surface, which is what says the 110
-  #                  fused `publish` calls still export what they exported.
-  #   `utils`        the four data exports and the head accessors, which is
-  #                  the harness every other contract rests on.
-  ["signal_core" "fiber_core" "gc_sweep" "vm_state" "vector" "core_env" "utils"])
+  #   `utils`        the contract the gate proof was made in, and the one whose
+  #                  hash and name-table assertions have no Janet spelling.
+  #   `gc_mark`      the collector's frame walk, which the suites now drive as
+  #                  well; a walk defect shows here as an unreachable block.
+  #   `registry`     the published entry point and the sentinel adapter behind
+  #                  it.
+  #   `core_env`     the registration surface, which is what says the core
+  #                  environment still holds what it held.
+  #   `signal_core`  `raise.zig` picks its delivery on `config.native_module`,
+  #                  and a reduced build is where the wrong arm shows as a
+  #                  wrong signal rather than a compile error.
+  #   `args_core`    every fault message, which is the largest single body of
+  #                  assertions in the tree.
+  #   `os_process`   the Windows declarations and the `pid_t` group.
+  #   `value_wrap`   the `abi` namespace and the exact bit layout.
+  #
+  # (`io_core` and `os_fs` cannot be named: each creates files in the working
+  # directory, which two concurrent `contracts` entries share, and `os_surface`
+  # and `filewatch_core` each own a `/tmp` fixture for the same reason. The
+  # suites cover them in every `full` entry instead.)
+  ["utils" "gc_mark" "registry" "core_env" "signal_core" "args_core" "os_process" "value_wrap"])
 
 # Every command gets a bound. Phase 10 Part 16 lost thirty-six minutes to a
 # `zig build test` whose `suite-ev.janet` parked in `kevent` with an empty
@@ -396,6 +398,21 @@
           "os_environ" "os_time" "os_process"])
     (job "contracts" "tagged values" ["-Dnanbox=false"])
     (job "full" "nanbox pointer shift 2" ["-Dnanbox-pointer-shift=2"])
+
+    # Every fiber's stack moved on every frame push, so that a pointer kept
+    # across one is a use-after-free the allocator can see.
+    #
+    # A `full` entry rather than a `build` one because compiling it is not the
+    # question: the arm is four lines and it is what happens to the *rest* of
+    # the runtime when the stack address changes under it that this asks about.
+    # Twenty seconds, and it is the only configuration in the matrix that
+    # invalidates a stack pointer deliberately.
+    #
+    # It exists at all because it was `Config.debug`, pinned false, guarding an
+    # arm that no configuration compiled -- and which had a slice of an optional
+    # many-pointer with no `.?` in it. A comptime-false constant is unchecked
+    # code, and this is the entry that checks it.
+    (job "full" "fiber stack shuffle" ["-Dfiber-stack-shuffle=true"])
 
     # x86_64 macOS, which runs under Rosetta on Apple silicon and is the
     # only entry that *executes* a second architecture.

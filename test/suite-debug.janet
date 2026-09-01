@@ -30,10 +30,6 @@
 (debug/unfbreak map 1)
 (map inc [1 2 3])
 
-# Phase 10 Part 7 moved the breakpoint machinery, the stack-trace printer and
-# the whole `debug/` cfunction surface to Zig. Everything below was reachable
-# before and tested by one assertion.
-
 # debug/fbreak range checking, which janet_debug_break does for both the
 # function form and the source form.
 (defn breakable [x] (+ x 1))
@@ -83,8 +79,8 @@
 # The printer wraps the whole trace in "\e[31m" and "\e[0m" when the binding is
 # truthy, and Janet's CLI turns it on when stderr is a terminal -- so without
 # this every prefix and suffix assertion below passes when the suite's output is
-# redirected and fails when a person runs it in a shell. It was latent from
-# Phase 10 Part 7 until someone ran `zig build test` interactively.
+# redirected and fails when a person runs it in a shell, which is a thing only
+# an interactive run notices.
 #
 # The colour path itself is asserted further down, with `:err-color true` bound
 # just as explicitly.
@@ -114,8 +110,8 @@
 (assert (string/has-prefix? "\e[31m" colored) "color prologue")
 (assert (string/has-suffix? "\e[0m" colored) "color epilogue")
 
-# A nested fiber chain prints innermost first. Part 7 replaced a heap vector
-# walked backwards with a recursion, so the order is newly the port's.
+# A nested fiber chain prints innermost first, which is what the trace walk's
+# recursion into the child produces.
 (defn depth3 [] (error "deep"))
 (def n1 (fiber/new depth3 :ie))
 (def n2 (fiber/new (fn [] (propagate (resume n1) n1)) :ie))
@@ -147,10 +143,9 @@
 (def cf-trace (trace-of cf (fiber/last-value cf) "C"))
 (assert (string/find "  in string/find [" cf-trace) "a cfunction keeps its prefix")
 (assert (not (string/find "  in find [" cf-trace)) "and is not printed without one")
-# Guarded because it is the one assertion in this suite that needs a peg, and
-# a `-Dpeg=false` build has no `peg/find` to compile against. Part 7 added it
-# unguarded; Part 9's matrix is the first to run `zig build test -Dpeg=false`
-# and is what found that.
+# Guarded because it is the one assertion in this suite that needs a peg, and a
+# `-Dpeg=false` build has no `peg/find` to compile against. A matrix entry
+# running `zig build test -Dpeg=false` is what found that.
 (compwhen (dyn 'peg/find)
   (assert (peg/find '(* "  in string/find [" (some (if-not "]" 1)) "] on line " (some :d) "\n")
                     cf-trace)
@@ -173,7 +168,12 @@
 (parser/consume brk-parser "(fn [x] (+ x 1))")
 (parser/eof brk-parser)
 (def brk-fn ((compile (parser/produce brk-parser) (curenv) "brk-src")))
-(assert (deep= @[[1 9] [1 9]] (disasm brk-fn :sourcemap)) "the probe's source map")
+# `disasm` is absent from a `-Dassembler=false` build, and an absent binding is
+# a compile error at its use site rather than a nil value, so it needs
+# `compwhen` and not `when`. Guarded on its own rather than by leaving the
+# suite, so the breakpoint region below it still runs there.
+(compwhen (dyn 'disasm)
+  (assert (deep= @[[1 9] [1 9]] (disasm brk-fn :sourcemap)) "the probe's source map"))
 
 (debug/break "brk-src" 1 9)
 (def brk-fiber (fiber/new (fn [] (brk-fn 5)) :dy))

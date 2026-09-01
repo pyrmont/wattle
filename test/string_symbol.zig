@@ -29,7 +29,7 @@
 //! offsetof(JanetStringHead, data)` for the string and tuple heads, and then
 //! checked the recovery arithmetic in both directions. Neither survives a
 //! translation: `@cImport` drops a flexible array member, so `@offsetOf` does
-//! not compile and `c.janet_string_head` recovers the header with `@sizeOf` —
+//! not compile and `utils.stringHead` recovers the header with `@sizeOf` —
 //! which makes both comparisons `@sizeOf` against itself.
 //!
 //! `test/gc_mark.zig`'s `theHeadOffsets` derives each offset from the
@@ -46,9 +46,9 @@
 //! so cannot be arranged while a core environment is loaded.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const harness = @import("harness.zig");
+const value = @import("subsystems").value;
 const gc_alloc = @import("subsystems").gc_alloc;
 const strings = @import("subsystems").value.strings;
 const symbols = @import("subsystems").value.symbols;
@@ -59,18 +59,18 @@ const core_env = @import("subsystems").env;
 const registry = @import("subsystems").registry;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
+const expect = @import("expect.zig").expect;
 
 const heap = harness.heap;
-const internal = harness.internal;
 
 // --------------------------------------------------------------- helpers
 
 fn stringLength(s: [*]const u8) i32 {
-    return types.stringHead(s).length;
+    return strings.head(s).length;
 }
 
 fn stringHash(s: [*]const u8) i32 {
-    return types.stringHead(s).hash;
+    return strings.head(s).hash;
 }
 
 fn bytesOf(s: [*]const u8) []const u8 {
@@ -78,7 +78,7 @@ fn bytesOf(s: [*]const u8) []const u8 {
 }
 
 fn calchash(bytes: []const u8) i32 {
-    return internal.janet_string_calchash(bytes.ptr, @intCast(bytes.len));
+    return value.hashBytes(bytes);
 }
 
 /// Is `symbol` in the cache? Walks the table rather than calling the finder,
@@ -106,7 +106,7 @@ fn dirtyFreeList(size: usize) bool {
     var junk: [8]?*anyopaque = undefined;
     for (&junk) |*slot| {
         slot.* = utils.malloc(size);
-        std.debug.assert(slot.* != null);
+        expect(slot.* != null);
         @memset(@as([*]u8, @ptrCast(slot.*))[0..size], 0xFF);
     }
     for (junk) |slot| utils.free(slot);
@@ -123,18 +123,18 @@ fn dirtyFreeList(size: usize) bool {
 /// large enough that this allocator does not zero it -- see above.
 fn constructorsWriteTheTerminator() void {
     const n: i32 = 8192;
-    const block = @sizeOf(types.JanetStringHead) + @as(usize, n) + 1;
+    const block = @sizeOf(strings.StringHead) + @as(usize, n) + 1;
     if (!dirtyFreeList(block)) return;
 
     const begun = strings.begin(n);
-    std.debug.assert(begun[@intCast(n)] == 0);
+    expect(begun[@intCast(n)] == 0);
 
     const source: [*]u8 = @ptrCast(utils.malloc(@intCast(n)).?);
     @memset(source[0..@intCast(n)], 'x');
     _ = dirtyFreeList(block);
     const copied = strings.new(source[0..@intCast(n)]);
-    std.debug.assert(copied[@intCast(n)] == 0);
-    std.debug.assert(std.mem.eql(u8, copied[0..@intCast(n)], source[0..@intCast(n)]));
+    expect(copied[@intCast(n)] == 0);
+    expect(std.mem.eql(u8, copied[0..@intCast(n)], source[0..@intCast(n)]));
     utils.free(source);
 }
 
@@ -142,49 +142,49 @@ fn constructorsWriteTheTerminator() void {
 /// is written by `begin`, and the hash is written by `end` and nowhere else.
 fn stringBeginAndEnd() void {
     const s = strings.begin(5);
-    std.debug.assert(stringLength(s) == 5);
-    std.debug.assert(s[5] == 0);
-    std.debug.assert(heap.memoryType(types.stringHead(s)) == types.MemoryType.string);
-    std.debug.assert(heap.onList(harness.vm().gc.blocks, types.stringHead(s)));
+    expect(stringLength(s) == 5);
+    expect(s[5] == 0);
+    expect(heap.memoryType(strings.head(s)) == gc_alloc.MemoryType.string);
+    expect(heap.onList(harness.vm().gc.blocks, strings.head(s)));
 
     @memcpy(s[0..5], "hello");
     const done = strings.end(s);
-    std.debug.assert(done == s);
-    std.debug.assert(stringLength(done) == 5);
-    std.debug.assert(stringHash(done) == calchash("hello"));
+    expect(done == s);
+    expect(stringLength(done) == 5);
+    expect(stringHash(done) == calchash("hello"));
 
     // A zero-length string is legal, terminated, and has the empty hash.
     const e = strings.begin(0);
-    std.debug.assert(stringLength(e) == 0);
-    std.debug.assert(e[0] == 0);
-    std.debug.assert(stringHash(strings.end(e)) == calchash(""));
+    expect(stringLength(e) == 0);
+    expect(e[0] == 0);
+    expect(stringHash(strings.end(e)) == calchash(""));
 }
 
 /// The one-step constructor copies and hashes immediately.
 fn stringCopiesAndHashes() void {
     const s = strings.new("world");
-    std.debug.assert(stringLength(s) == 5);
-    std.debug.assert(std.mem.eql(u8, bytesOf(s), "world"));
-    std.debug.assert(s[5] == 0);
-    std.debug.assert(stringHash(s) == calchash("world"));
+    expect(stringLength(s) == 5);
+    expect(std.mem.eql(u8, bytesOf(s), "world"));
+    expect(s[5] == 0);
+    expect(stringHash(s) == calchash("world"));
 
     // The source is copied, so a caller's buffer may change afterwards.
     var source = [3]u8{ 'a', 'b', 'c' };
     const copy = strings.new(source[0..@intCast(3)]);
     source[0] = 'z';
-    std.debug.assert(std.mem.eql(u8, bytesOf(copy), "abc"));
+    expect(std.mem.eql(u8, bytesOf(copy), "abc"));
 
     // An interior zero is content, not a terminator: the length comes from the
     // head and the bytes past the zero are part of the string.
     const nul = strings.new("a\x00b");
-    std.debug.assert(stringLength(nul) == 3);
-    std.debug.assert(std.mem.eql(u8, bytesOf(nul), "a\x00b"));
-    std.debug.assert(nul[3] == 0);
+    expect(stringLength(nul) == 3);
+    expect(std.mem.eql(u8, bytesOf(nul), "a\x00b"));
+    expect(nul[3] == 0);
 
     // `janet_cstring` takes its length from the bytes instead.
     const cs = strings.cstring("a\x00b");
-    std.debug.assert(stringLength(cs) == 1);
-    std.debug.assert(cs[0] == 'a' and cs[1] == 0);
+    expect(stringLength(cs) == 1);
+    expect(cs[0] == 'a' and cs[1] == 0);
 }
 
 /// Ordering is three-valued and by prefix. The normalisation matters:
@@ -196,25 +196,25 @@ fn stringCompareIsThreeValued() void {
     const prefix = strings.cstring("ab");
     const same = strings.cstring("abc");
 
-    std.debug.assert(strings.compare(a, b) == -1);
-    std.debug.assert(strings.compare(b, a) == 1);
-    std.debug.assert(strings.compare(a, same) == 0);
-    std.debug.assert(strings.compare(a, a) == 0);
+    expect(strings.compare(a, b) == -1);
+    expect(strings.compare(b, a) == 1);
+    expect(strings.compare(a, same) == 0);
+    expect(strings.compare(a, a) == 0);
 
     // A prefix is less than what extends it, whichever side it is on.
-    std.debug.assert(strings.compare(prefix, a) == -1);
-    std.debug.assert(strings.compare(a, prefix) == 1);
+    expect(strings.compare(prefix, a) == -1);
+    expect(strings.compare(a, prefix) == 1);
 
     // A large byte difference still normalises to exactly one.
     const low = strings.new("\x01");
     const high = strings.new("\xFF");
-    std.debug.assert(strings.compare(low, high) == -1);
-    std.debug.assert(strings.compare(high, low) == 1);
+    expect(strings.compare(low, high) == -1);
+    expect(strings.compare(high, low) == 1);
 
     // The empty string is least, and equal to itself.
     const empty = strings.cstring("");
-    std.debug.assert(strings.compare(empty, a) == -1);
-    std.debug.assert(strings.compare(empty, empty) == 0);
+    expect(strings.compare(empty, a) == -1);
+    expect(strings.compare(empty, empty) == 0);
 }
 
 /// Equality rejects on the hash or the length before it touches the bytes, and
@@ -224,16 +224,16 @@ fn stringEquality() void {
     const b = strings.cstring("abc");
     const d = strings.cstring("abd");
 
-    std.debug.assert(strings.equal(a, b) != 0);
-    std.debug.assert(strings.equal(a, a) != 0);
-    std.debug.assert(strings.equal(a, d) == 0);
+    expect(strings.equal(a, b));
+    expect(strings.equal(a, a));
+    expect(!strings.equal(a, d));
 
     // Same bytes, right hash and length: equal.
-    std.debug.assert(strings.equalconst(a, "abc", calchash("abc")) != 0);
+    expect(strings.equalconst(a, "abc", calchash("abc")));
 
     // A wrong hash rejects even when the bytes are identical -- the hash is
     // trusted, not recomputed, which is the whole point of this entry point.
-    std.debug.assert(strings.equalconst(a, "abc", calchash("zzz")) == 0);
+    expect(!strings.equalconst(a, "abc", calchash("zzz")));
 
     // The length and byte checks are harder to reach honestly, because the
     // hash mixes the length in and so rejects almost every mismatched argument
@@ -241,17 +241,17 @@ fn stringEquality() void {
     // which is what these two do: pass the hash `lhs` actually has, and vary
     // only the thing being tested. Without this, the length comparison and the
     // `memcmp` are both dead code that no case distinguishes.
-    std.debug.assert(strings.equalconst(a, "abc"[0..2], stringHash(a)) == 0);
-    std.debug.assert(strings.equalconst(a, "abd", stringHash(a)) == 0);
+    expect(!strings.equalconst(a, "abc"[0..2], stringHash(a)));
+    expect(!strings.equalconst(a, "abd", stringHash(a)));
 
     // And the same arguments with nothing varied still match, so the two above
     // are rejections rather than an entry point that rejects everything.
-    std.debug.assert(strings.equalconst(a, "abc", stringHash(a)) != 0);
+    expect(strings.equalconst(a, "abc", stringHash(a)));
 
     // Interior zeros are compared, not stopped at.
     const n1 = strings.new("a\x00b");
     const n2 = strings.new("a\x00c");
-    std.debug.assert(strings.equal(n1, n2) == 0);
+    expect(!strings.equal(n1, n2));
 }
 
 // ---------------------------------------------------------------- symbol
@@ -262,34 +262,34 @@ fn symbolInterns() void {
     const before = harness.vm().symcache.count;
 
     const s1 = symbols.csymbol("interned-test-symbol");
-    std.debug.assert(harness.vm().symcache.count == before + 1);
-    std.debug.assert(heap.memoryType(types.stringHead(s1)) == types.MemoryType.symbol);
-    std.debug.assert(heap.onList(harness.vm().gc.blocks, types.stringHead(s1)));
-    std.debug.assert(inCache(s1));
+    expect(harness.vm().symcache.count == before + 1);
+    expect(heap.memoryType(strings.head(s1)) == gc_alloc.MemoryType.symbol);
+    expect(heap.onList(harness.vm().gc.blocks, strings.head(s1)));
+    expect(inCache(s1));
 
     // The same name returns the same address and allocates nothing.
     const s2 = symbols.csymbol("interned-test-symbol");
-    std.debug.assert(s2 == s1);
-    std.debug.assert(harness.vm().symcache.count == before + 1);
+    expect(s2 == s1);
+    expect(harness.vm().symcache.count == before + 1);
 
     // A different name is a different address.
     const s3 = symbols.csymbol("interned-test-symbol-2");
-    std.debug.assert(s3 != s1);
-    std.debug.assert(harness.vm().symcache.count == before + 2);
+    expect(s3 != s1);
+    expect(harness.vm().symcache.count == before + 2);
 
     // Interning is by length as well as by bytes, so an interior zero
     // distinguishes two symbols a C string could not tell apart.
     const z1 = symbols.new("zz\x00a");
     const z2 = symbols.new("zz\x00b");
-    std.debug.assert(z1 != z2);
-    std.debug.assert(symbols.new("zz\x00a") == z1);
+    expect(z1 != z2);
+    expect(symbols.new("zz\x00a") == z1);
 
     // A symbol and a string with the same bytes are different objects with
     // different memory types, and still compare equal as byte strings.
     const str = strings.cstring("interned-test-symbol");
-    std.debug.assert(str != s1);
-    std.debug.assert(heap.memoryType(types.stringHead(str)) == types.MemoryType.string);
-    std.debug.assert(strings.equal(str, s1) != 0);
+    expect(str != s1);
+    expect(heap.memoryType(strings.head(str)) == gc_alloc.MemoryType.string);
+    expect(strings.equal(str, s1));
 }
 
 /// Removing a symbol leaves a tombstone: the count falls, the deleted count
@@ -299,27 +299,27 @@ fn symbolDeinitLeavesATombstone() void {
     var deleted = harness.vm().symcache.deleted;
 
     const s = symbols.csymbol("tombstone-test-symbol");
-    std.debug.assert(harness.vm().symcache.count == count + 1);
-    std.debug.assert(inCache(s));
+    expect(harness.vm().symcache.count == count + 1);
+    expect(inCache(s));
 
-    internal.janet_symbol_deinit(s);
-    std.debug.assert(harness.vm().symcache.count == count);
-    std.debug.assert(harness.vm().symcache.deleted == deleted + 1);
-    std.debug.assert(!inCache(s));
+    symbols.deinit(s);
+    expect(harness.vm().symcache.count == count);
+    expect(harness.vm().symcache.deleted == deleted + 1);
+    expect(!inCache(s));
 
     // The name interns again, to a different block.
     const again = symbols.csymbol("tombstone-test-symbol");
-    std.debug.assert(again != s);
-    std.debug.assert(harness.vm().symcache.count == count + 1);
-    std.debug.assert(inCache(again));
+    expect(again != s);
+    expect(harness.vm().symcache.count == count + 1);
+    expect(inCache(again));
 
     // Removing something that was never there changes nothing.
     count = harness.vm().symcache.count;
     deleted = harness.vm().symcache.deleted;
     const loose = strings.new("never-interned");
-    internal.janet_symbol_deinit(loose);
-    std.debug.assert(harness.vm().symcache.count == count);
-    std.debug.assert(harness.vm().symcache.deleted == deleted);
+    symbols.deinit(loose);
+    expect(harness.vm().symcache.count == count);
+    expect(harness.vm().symcache.deleted == deleted);
 }
 
 /// Where in the table is `symbol`, and where would a name ideally go? Together
@@ -366,32 +366,32 @@ fn lookupReclaimsATombstone() void {
             }
         }
     }
-    std.debug.assert(found);
+    expect(found);
 
     const capacity = harness.vm().symcache.capacity;
     const a = symbols.csymbol(first.ptr);
     const b = symbols.csymbol(second.ptr);
     gc_alloc.gcroot(wrap.fromSymbol(a));
     gc_alloc.gcroot(wrap.fromSymbol(b));
-    std.debug.assert(harness.vm().symcache.capacity == capacity);
+    expect(harness.vm().symcache.capacity == capacity);
 
     const pos_a = cacheIndexOf(a).?;
     const pos_b = cacheIndexOf(b).?;
-    std.debug.assert(pos_a != pos_b);
-    std.debug.assert(pos_a == idealIndex(first));
+    expect(pos_a != pos_b);
+    expect(pos_a == idealIndex(first));
 
     // Delete the first, leaving a tombstone directly in the second's path.
-    internal.janet_symbol_deinit(a);
-    std.debug.assert(cacheIndexOf(a) == null);
-    std.debug.assert(harness.vm().symcache.entries.?[pos_a] != null);
+    symbols.deinit(a);
+    expect(cacheIndexOf(a) == null);
+    expect(harness.vm().symcache.entries.?[pos_a] != null);
 
     // Looking the second one up moves it into that slot. Its address does not
     // change -- interning is still identity -- only its position does.
-    std.debug.assert(symbols.csymbol(second.ptr) == b);
-    std.debug.assert(cacheIndexOf(b).? == pos_a);
-    std.debug.assert(harness.vm().symcache.entries.?[pos_b] != null);
-    std.debug.assert(harness.vm().symcache.entries.?[pos_b] != b);
-    std.debug.assert(harness.vm().symcache.capacity == capacity);
+    expect(symbols.csymbol(second.ptr) == b);
+    expect(cacheIndexOf(b).? == pos_a);
+    expect(harness.vm().symcache.entries.?[pos_b] != null);
+    expect(harness.vm().symcache.entries.?[pos_b] != b);
+    expect(harness.vm().symcache.capacity == capacity);
 
     _ = gc_alloc.gcunroot(wrap.fromSymbol(a));
     _ = gc_alloc.gcunroot(wrap.fromSymbol(b));
@@ -412,8 +412,8 @@ fn cacheResizesAndKeepsIdentity() void {
 
     // Delete half, which raises the tombstone count without lowering capacity.
     var i: usize = 0;
-    while (i < 400) : (i += 2) internal.janet_symbol_deinit(kept[i]);
-    std.debug.assert(harness.vm().symcache.deleted >= 200);
+    while (i < 400) : (i += 2) symbols.deinit(kept[i]);
+    expect(harness.vm().symcache.deleted >= 200);
 
     // Force enough puts to cross the load factor and rehash.
     const capacity_before = harness.vm().symcache.capacity;
@@ -421,21 +421,21 @@ fn cacheResizesAndKeepsIdentity() void {
         const text = std.fmt.bufPrintZ(&name, "resize-filler-{d}", .{n}) catch unreachable;
         gc_alloc.gcroot(wrap.fromSymbol(symbols.csymbol(text.ptr)));
     }
-    std.debug.assert(harness.vm().symcache.capacity > capacity_before);
+    expect(harness.vm().symcache.capacity > capacity_before);
 
     // Every survivor is still interned, at the address it always had.
     i = 1;
     while (i < 400) : (i += 2) {
         const text = std.fmt.bufPrintZ(&name, "resize-probe-{d}", .{i}) catch unreachable;
-        std.debug.assert(symbols.csymbol(text.ptr) == kept[i]);
-        std.debug.assert(inCache(kept[i]));
+        expect(symbols.csymbol(text.ptr) == kept[i]);
+        expect(inCache(kept[i]));
     }
 
     // Every deleted one interns fresh rather than coming back.
     i = 0;
     while (i < 400) : (i += 2) {
         const text = std.fmt.bufPrintZ(&name, "resize-probe-{d}", .{i}) catch unreachable;
-        std.debug.assert(symbols.csymbol(text.ptr) != kept[i]);
+        expect(symbols.csymbol(text.ptr) != kept[i]);
     }
 
     for (kept) |symbol| _ = gc_alloc.gcunroot(wrap.fromSymbol(symbol));
@@ -458,16 +458,16 @@ fn tombstonesForceARehash() void {
 
         if (harness.vm().symcache.deleted > high_water) high_water = harness.vm().symcache.deleted;
         // The invariant a live count alone would not maintain.
-        std.debug.assert(harness.vm().symcache.deleted < harness.vm().symcache.capacity);
+        expect(harness.vm().symcache.deleted < harness.vm().symcache.capacity);
 
         if (harness.vm().symcache.deleted == 0 and high_water > 8) {
             rehashed = true;
-            internal.janet_symbol_deinit(s);
+            symbols.deinit(s);
             break;
         }
-        internal.janet_symbol_deinit(s);
+        symbols.deinit(s);
     }
-    std.debug.assert(rehashed);
+    expect(rehashed);
 }
 
 /// The length of a generated name, which is the odometer minus its leading
@@ -481,10 +481,10 @@ const gensym_length: i32 = @as(i32, @intCast(@typeInfo(@TypeOf(harness.vm().gens
 fn generatedNamesComeFromTheInitialCounter() void {
     const g = symbols.gen();
     gc_alloc.gcroot(wrap.fromSymbol(g));
-    std.debug.assert(g[0] == '_');
-    std.debug.assert(stringLength(g) == gensym_length);
+    expect(g[0] == '_');
+    expect(stringLength(g) == gensym_length);
     for (bytesOf(g)[1..]) |byte| {
-        std.debug.assert(std.ascii.isAlphanumeric(byte));
+        expect(std.ascii.isAlphanumeric(byte));
     }
     _ = gc_alloc.gcunroot(wrap.fromSymbol(g));
 }
@@ -511,16 +511,16 @@ fn gensymAdvancesTheOdometer() void {
     for (&seen) |*slot| {
         slot.* = symbols.gen();
         gc_alloc.gcroot(wrap.fromSymbol(slot.*));
-        std.debug.assert(stringLength(slot.*) == gensym_length);
-        std.debug.assert(slot.*[0] == '_');
-        std.debug.assert(heap.memoryType(types.stringHead(slot.*)) == types.MemoryType.symbol);
-        std.debug.assert(inCache(slot.*));
+        expect(stringLength(slot.*) == gensym_length);
+        expect(slot.*[0] == '_');
+        expect(heap.memoryType(strings.head(slot.*)) == gc_alloc.MemoryType.symbol);
+        expect(inCache(slot.*));
     }
 
     // All distinct, and each is the one the cache holds for its own name.
     for (seen, 0..) |symbol, i| {
-        for (seen[i + 1 ..]) |other| std.debug.assert(symbol != other);
-        std.debug.assert(symbols.new(symbol[0..@intCast(gensym_length)]) == symbol);
+        for (seen[i + 1 ..]) |other| expect(symbol != other);
+        expect(symbols.new(symbol[0..@intCast(gensym_length)]) == symbol);
     }
 
     // The last character walks '0'..'9', then 'a'..'z', then 'A'..'Z' -- the
@@ -534,10 +534,10 @@ fn gensymAdvancesTheOdometer() void {
     // whole run by one.
     const alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     const start = std.mem.indexOfScalar(u8, alphabet, seen[0][last]).?;
-    std.debug.assert(start + 40 <= alphabet.len);
+    expect(start + 40 <= alphabet.len);
     for (seen, 0..) |symbol, i| {
-        std.debug.assert(symbol[last] == alphabet[start + i]);
-        for (bytesOf(symbol)[1..last]) |byte| std.debug.assert(byte == '0');
+        expect(symbol[last] == alphabet[start + i]);
+        for (bytesOf(symbol)[1..last]) |byte| expect(byte == '0');
     }
 
     for (seen) |symbol| _ = gc_alloc.gcunroot(wrap.fromSymbol(symbol));
@@ -555,15 +555,15 @@ fn gensymCarriesBetweenPositions() void {
 
     const before = symbols.gen();
     gc_alloc.gcroot(wrap.fromSymbol(before));
-    std.debug.assert(before[last] == 'Z');
-    for (bytesOf(before)[1..last]) |byte| std.debug.assert(byte == '0');
+    expect(before[last] == 'Z');
+    for (bytesOf(before)[1..last]) |byte| expect(byte == '0');
 
     const carried = symbols.gen();
     gc_alloc.gcroot(wrap.fromSymbol(carried));
-    std.debug.assert(carried != before);
-    std.debug.assert(carried[last] == '0');
-    std.debug.assert(carried[last - 1] == '1');
-    for (bytesOf(carried)[1 .. last - 1]) |byte| std.debug.assert(byte == '0');
+    expect(carried != before);
+    expect(carried[last] == '0');
+    expect(carried[last - 1] == '1');
+    for (bytesOf(carried)[1 .. last - 1]) |byte| expect(byte == '0');
 
     _ = gc_alloc.gcunroot(wrap.fromSymbol(before));
     _ = gc_alloc.gcunroot(wrap.fromSymbol(carried));
@@ -581,17 +581,17 @@ fn collectedSymbolLeavesTheCache() void {
         const text = std.fmt.bufPrintZ(&name, "doomed-symbol-{d}", .{i}) catch unreachable;
         _ = symbols.csymbol(text.ptr);
     }
-    std.debug.assert(harness.vm().symcache.count == before + 50);
+    expect(harness.vm().symcache.count == before + 50);
 
     gc_mark.collect();
-    std.debug.assert(harness.vm().symcache.count == before);
+    expect(harness.vm().symcache.count == before);
 
     // A rooted one survives the same collection and keeps its address.
     const kept = symbols.csymbol("kept-symbol");
     gc_alloc.gcroot(wrap.fromSymbol(kept));
     gc_mark.collect();
-    std.debug.assert(symbols.csymbol("kept-symbol") == kept);
-    std.debug.assert(inCache(kept));
+    expect(symbols.csymbol("kept-symbol") == kept);
+    expect(inCache(kept));
     _ = gc_alloc.gcunroot(wrap.fromSymbol(kept));
 }
 
@@ -602,23 +602,23 @@ fn collectedSymbolLeavesTheCache() void {
 /// slot.
 fn tupleBeginAndEnd() void {
     const t = tuples.begin(3);
-    std.debug.assert(types.tupleHead(t).length == 3);
-    std.debug.assert(types.tupleHead(t).sm_line == -1);
-    std.debug.assert(types.tupleHead(t).sm_column == -1);
-    std.debug.assert(heap.memoryType(types.tupleHead(t)) == types.MemoryType.tuple);
-    std.debug.assert(heap.onList(harness.vm().gc.blocks, types.tupleHead(t)));
+    expect(tuples.head(t).length == 3);
+    expect(tuples.head(t).sm_line == -1);
+    expect(tuples.head(t).sm_column == -1);
+    expect(heap.memoryType(tuples.head(t)) == gc_alloc.MemoryType.tuple);
+    expect(heap.onList(harness.vm().gc.blocks, tuples.head(t)));
 
     t[0] = harness.wrapInteger(1);
     t[1] = wrap.fromNil();
     t[2] = wrap.fromKeyword(strings.cstring("k"));
     const done = tuples.end(t);
-    std.debug.assert(done == t);
-    std.debug.assert(types.tupleHead(done).hash == internal.janet_array_calchash(t, 3));
+    expect(done == t);
+    expect(tuples.head(done).hash == value.hashIndexed(t[0..3]));
 
     // A zero-length tuple is legal and hashes as the empty sequence.
     const empty = tuples.end(tuples.begin(0));
-    std.debug.assert(types.tupleHead(empty).length == 0);
-    std.debug.assert(types.tupleHead(empty).hash == internal.janet_array_calchash(empty, 0));
+    expect(tuples.head(empty).length == 0);
+    expect(tuples.head(empty).hash == value.hashIndexed(empty[0..0]));
 }
 
 /// The one-step constructor copies its elements and closes the tuple, so equal
@@ -631,15 +631,15 @@ fn tupleNCopiesAndHashes() void {
     };
 
     const a = tuples.newFrom(&source);
-    std.debug.assert(types.tupleHead(a).length == 3);
-    std.debug.assert(harness.equals(a[0], source[0]));
-    std.debug.assert(harness.equals(a[1], source[1]));
-    std.debug.assert(harness.equals(a[2], source[2]));
-    std.debug.assert(types.tupleHead(a).sm_line == -1);
+    expect(tuples.head(a).length == 3);
+    expect(harness.equals(a[0], source[0]));
+    expect(harness.equals(a[1], source[1]));
+    expect(harness.equals(a[2], source[2]));
+    expect(tuples.head(a).sm_line == -1);
 
     // Copied, not aliased.
     source[0] = harness.wrapInteger(99);
-    std.debug.assert(harness.equals(a[0], harness.wrapInteger(10)));
+    expect(harness.equals(a[0], harness.wrapInteger(10)));
 
     // Equal contents, equal hash; different contents, different tuple.
     var again = [3]repr.Value{
@@ -648,17 +648,17 @@ fn tupleNCopiesAndHashes() void {
         wrap.fromString(strings.cstring("s")),
     };
     const b = tuples.newFrom(&again);
-    std.debug.assert(b != a);
-    std.debug.assert(types.tupleHead(b).hash == types.tupleHead(a).hash);
-    std.debug.assert(harness.equals(wrap.fromTuple(a), wrap.fromTuple(b)));
+    expect(b != a);
+    expect(tuples.head(b).hash == tuples.head(a).hash);
+    expect(harness.equals(wrap.fromTuple(a), wrap.fromTuple(b)));
 
     again[0] = harness.wrapInteger(11);
     const different = tuples.newFrom(&again);
-    std.debug.assert(!harness.equals(wrap.fromTuple(a), wrap.fromTuple(different)));
+    expect(!harness.equals(wrap.fromTuple(a), wrap.fromTuple(different)));
 
     // Zero elements needs no source at all.
     const none = tuples.newFrom(&.{});
-    std.debug.assert(types.tupleHead(none).length == 0);
+    expect(tuples.head(none).length == 0);
 }
 
 // ------------------------------------------------------ across the seam
@@ -677,15 +677,15 @@ fn fromJanet() void {
         \\  [s (length s) (= y (symbol "symb")) (not= g1 g2)
         \\   (= t [1 2 3]) (= (hash [1 2 3]) (hash t)) (tuple/slice t 1)])
     ;
-    std.debug.assert(core_env.dostring(env, source, "string-symbol-test", &out) == 0);
+    expect(core_env.dostring(env, source, "string-symbol-test", &out) == 0);
     const r = wrap.toTuple(out);
-    std.debug.assert(harness.stringValueIs(r[0], "abcd"));
-    std.debug.assert(harness.integerIs(r[1], 4));
-    std.debug.assert(repr.truthy(r[2]));
-    std.debug.assert(repr.truthy(r[3]));
-    std.debug.assert(repr.truthy(r[4]));
-    std.debug.assert(repr.truthy(r[5]));
-    std.debug.assert(types.tupleHead(wrap.toTuple(r[6])).length == 2);
+    expect(harness.stringValueIs(r[0], "abcd"));
+    expect(harness.integerIs(r[1], 4));
+    expect(repr.truthy(r[2]));
+    expect(repr.truthy(r[3]));
+    expect(repr.truthy(r[4]));
+    expect(repr.truthy(r[5]));
+    expect(tuples.head(wrap.toTuple(r[6])).length == 2);
 }
 
 // ------------------------------------------------------ the registration
@@ -710,13 +710,13 @@ fn theRegistryRecordsALocation() void {
         const binding = registry.resolveCore(name);
         // A build without integer types has no int/ functions to look up.
         if (harness.isType(binding, repr.Tag.nil)) continue;
-        std.debug.assert(harness.isType(binding, repr.Tag.cfunction));
-        const entry = internal.janet_registry_get(wrap.toCfunction(binding));
-        std.debug.assert(entry != null);
-        std.debug.assert(entry.?.name != null);
-        std.debug.assert(std.mem.eql(u8, std.mem.span(entry.?.name.?), std.mem.span(name)));
-        std.debug.assert(entry.?.source_file != null);
-        std.debug.assert(entry.?.source_line > 0);
+        expect(harness.isType(binding, repr.Tag.cfunction));
+        const entry = registry.registryGet(wrap.toCfunction(binding));
+        expect(entry != null);
+        expect(entry.?.name != null);
+        expect(std.mem.eql(u8, std.mem.span(entry.?.name.?), std.mem.span(name)));
+        expect(entry.?.source_file != null);
+        expect(entry.?.source_line > 0);
     }
 }
 

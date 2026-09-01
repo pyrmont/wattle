@@ -16,8 +16,8 @@
 //! `janet_vm_state_size`, `janet_vm_state_align` and `JanetVMAlignProbe`
 //! existed:
 //!
-//!     assert(janet_vm_state_size() == sizeof(Vm));
-//!     assert(janet_vm_state_align() == offsetof(JanetVMAlignProbe, vm));
+//!     expect(janet_vm_state_size() == sizeof(Vm));
+//!     expect(janet_vm_state_align() == offsetof(JanetVMAlignProbe, vm));
 //!
 //! The two sides were two *compilers'* views of one C header: a C build's, and
 //! a Zig build's through `@cImport`. `janet_vm_save` copies the whole structure
@@ -25,7 +25,7 @@
 //! and neither would be a compile error. That was a real oracle for as long as
 //! C files read `janet_vm.field`.
 //!
-//! There is one view now: `@sizeOf(types.Vm)` is what `janet_vm_alloc`
+//! There is one view now: `@sizeOf(vm_state.Vm)` is what `janet_vm_alloc`
 //! allocates, what `janet_vm_save` copies, and what `janet_vm_state_size`
 //! returned -- so asserting the equality would be asserting a definition. The
 //! second side was **the C implementation**, and it is not somewhere else in
@@ -40,22 +40,22 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const harness = @import("harness.zig");
 const config = @import("config");
 const gc_alloc = @import("subsystems").gc_alloc;
 const functions = @import("subsystems").value.functions;
-const vm_state = @import("subsystems").lifecycle;
+const vm_state = @import("subsystems").vm_state;
+const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
 const fibers = @import("subsystems").value.fibers;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
 /// The VM this thread is running, through the owner's accessor, as in every
 /// other contract.
-fn vm() *types.Vm {
+fn vm() *vm_state.Vm {
     return vm_state.current();
 }
 
@@ -64,8 +64,8 @@ fn vm() *types.Vm {
 /// section asks — it is false only in a single-threaded build, where the
 /// storage is one process-wide object by construction and there is nothing
 /// here to check. Windows is cross-compiled and never executed, so its path is
-/// left out rather than written blind, which is `fiber_core.zig`'s condition
-/// and its reason.
+/// left out rather than written blind -- `test/fiber_core.zig` guards on the
+/// same condition for the same reason.
 const has_threads = constants.JANET_VM_THREAD_LOCAL != 0 and builtin.os.tag != .windows;
 
 // ------------------------------------------------------------------ address
@@ -84,9 +84,9 @@ const has_threads = constants.JANET_VM_THREAD_LOCAL != 0 and builtin.os.tag != .
 /// rather than about two spellings of an address.
 fn localVmAnswersThisThread() void {
     vm().stackn = 1234;
-    assert(vm_state.localVm().*.stackn == 1234);
-    vm_state.localVm().*.stackn = 4321;
-    assert(vm().stackn == 4321);
+    expect(vm_state.localVm().stackn == 1234);
+    vm_state.localVm().stackn = 4321;
+    expect(vm().stackn == 4321);
     vm().stackn = 0;
 }
 
@@ -95,14 +95,14 @@ fn localVmAnswersThisThread() void {
 fn allocAndFree() void {
     const a = vm_state.vmAlloc();
     const b = vm_state.vmAlloc();
-    // `assert(a != null)` cannot be written: a translated `[*c]Vm` made the
+    // `expect(a != null)` cannot be written: a translated `[*c]Vm` made the
     // result "maybe null, maybe many" and the assertion a real check. The
-    // definition returns `*types.Vm` and either succeeds or reaches
+    // definition returns `*vm_state.Vm` and either succeeds or reaches
     // `janet_zig_out_of_memory`, which does not return -- so the property is
     // carried by the type and comparing with null is a compile error.
     // `DESIGN.md` section 3: the property stops being an agreement between two
     // spellings and becomes a construction from one.
-    assert(a != b);
+    expect(a != b);
     // A detached VM is a destination for `janet_vm_save` and nothing else, so
     // the only thing to check about a fresh one is that it can hold a save.
     vm_state.vmSave(a);
@@ -134,17 +134,17 @@ fn saveLoadRoundTrip() void {
     vm().coerce_error = true;
 
     vm_state.vmLoad(first);
-    assert(vm().stackn == 11);
-    assert(vm().coerce_error);
+    expect(vm().stackn == 11);
+    expect(vm().coerce_error);
 
     vm_state.vmLoad(second);
-    assert(vm().stackn == 22);
-    assert(vm().coerce_error == false);
+    expect(vm().stackn == 22);
+    expect(vm().coerce_error == false);
 
     // A load is a plain copy: loading the same snapshot twice is idempotent,
     // and the snapshot is not consumed.
     vm_state.vmLoad(second);
-    assert(vm().stackn == 22);
+    expect(vm().stackn == 22);
 
     vm_state.vmFree(first);
     vm_state.vmFree(second);
@@ -168,7 +168,7 @@ fn saveSpansTheStructure() void {
     vm().user = @ptrFromInt(0x1111);
     vm().registry.rows.count = 0x2222;
     vm().roots.capacity = 0x3333;
-    vm().sandbox_flags = types.Sandbox.fromBits(0x4444);
+    vm().sandbox_flags = vm_lifecycle.Sandbox.fromBits(0x4444);
     // Aligned, unlike the C original's 0x5555: `traversal_base` is a typed
     // pointer and Zig rejects a `@ptrFromInt` that cannot satisfy its
     // alignment. The value is a witness rather than an address, so any
@@ -194,33 +194,33 @@ fn saveSpansTheStructure() void {
     }
 
     vm_state.vmSave(snapshot);
-    vm().* = std.mem.zeroes(types.Vm);
+    vm().* = std.mem.zeroes(vm_state.Vm);
     vm_state.vmLoad(snapshot);
 
-    assert(@intFromPtr(vm().user) == 0x1111);
-    assert(vm().registry.rows.count == 0x2222);
-    assert(vm().roots.capacity == 0x3333);
-    assert(vm().sandbox_flags.bits() == 0x4444);
-    assert(@intFromPtr(vm().traversal.base) == 0x5550);
+    expect(@intFromPtr(vm().user) == 0x1111);
+    expect(vm().registry.rows.count == 0x2222);
+    expect(vm().roots.capacity == 0x3333);
+    expect(vm().sandbox_flags.bits() == 0x4444);
+    expect(@intFromPtr(vm().traversal.base) == 0x5550);
     if (comptime builtin.os.tag != .windows) {
-        assert(vm().strerror_buf[0] == 'z');
-        assert(vm().strerror_buf[vm().strerror_buf.len - 1] == 'q');
+        expect(vm().strerror_buf[0] == 'z');
+        expect(vm().strerror_buf[vm().strerror_buf.len - 1] == 'q');
     }
     if (comptime config.ev) {
-        assert(vm().ev.tq.capacity == 0x6666);
-        assert(vm().ev.spawn.capacity == 0x7777);
-        assert(vm().ev.active_tasks.capacity == 0x8888);
+        expect(vm().ev.tq.capacity == 0x6666);
+        expect(vm().ev.spawn.capacity == 0x7777);
+        expect(vm().ev.active_tasks.capacity == 0x8888);
     }
     if (comptime config.ev and builtin.os.tag == .windows) {
-        assert(vm().ev.backend.connect_ex_loaded == true);
+        expect(vm().ev.backend.connect_ex_loaded == true);
     } else if (comptime config.ev and (config.ev_epoll or config.ev_kqueue)) {
-        assert(vm().ev.backend.timer_enabled == true);
+        expect(vm().ev.backend.timer_enabled == true);
     } else if (comptime config.ev and config.ev_poll) {
-        assert(vm().ev.backend.stream_capacity == 0x9999);
+        expect(vm().ev.backend.stream_capacity == 0x9999);
     }
 
     vm_state.vmFree(snapshot);
-    vm().* = std.mem.zeroes(types.Vm);
+    vm().* = std.mem.zeroes(vm_state.Vm);
 }
 
 // ------------------------------------------------------------- interruption
@@ -230,33 +230,33 @@ fn saveSpansTheStructure() void {
 /// calling thread's own VM, which is the form `os/sigaction`'s handler uses.
 fn interruptCounter() void {
     const self = vm_state.localVm();
-    const before = self.*.auto_suspend;
+    const before = self.auto_suspend;
 
     vm_state.interpreterInterrupt(null);
-    assert(self.*.auto_suspend == before + 1);
+    expect(self.auto_suspend == before + 1);
     vm_state.interpreterInterrupt(self);
-    assert(self.*.auto_suspend == before + 2);
+    expect(self.auto_suspend == before + 2);
     vm_state.interpreterInterruptHandled(null);
-    assert(self.*.auto_suspend == before + 1);
+    expect(self.auto_suspend == before + 1);
     vm_state.interpreterInterruptHandled(self);
-    assert(self.*.auto_suspend == before);
+    expect(self.auto_suspend == before);
 
     // An explicit VM pointer must reach that VM and no other.
     const other = vm_state.vmAlloc();
     vm_state.vmSave(other);
-    other.*.auto_suspend = 0;
+    other.auto_suspend = 0;
     vm_state.interpreterInterrupt(other);
-    assert(other.*.auto_suspend == 1);
-    assert(self.*.auto_suspend == before);
+    expect(other.auto_suspend == 1);
+    expect(self.auto_suspend == before);
     vm_state.interpreterInterruptHandled(other);
-    assert(other.*.auto_suspend == 0);
+    expect(other.auto_suspend == 0);
     vm_state.vmFree(other);
 }
 
 // ------------------------------------------------------------------ threads
 
-var main_vm: *types.Vm = undefined;
-var child_vm: ?*types.Vm = null;
+var main_vm: *vm_state.Vm = undefined;
+var child_vm: ?*vm_state.Vm = null;
 var child_saw_zero = false;
 var child_local_matches = false;
 
@@ -264,7 +264,7 @@ var child_local_matches = false;
 ///
 /// **Field by field, not byte by byte.** `Vm` has automatic layout, so the
 /// padding between its fields is not part of its value; asserting that all
-/// `@sizeOf(types.Vm)` bytes are zero is a claim about the compiler's field
+/// `@sizeOf(vm_state.Vm)` bytes are zero is a claim about the compiler's field
 /// placement and the TLS section rather than about the VM. A field loop
 /// compares only what the type means.
 ///
@@ -272,9 +272,9 @@ var child_local_matches = false;
 /// `JanetGCData`, an untagged union, and Zig refuses to compare one. Each
 /// field's own bytes are compared instead, which is well defined for the
 /// scalars and for the fixed layouts whose padding *is* their ABI.
-fn isFresh(state: *const types.Vm) bool {
-    const fresh = types.Vm{};
-    inline for (@typeInfo(types.Vm).@"struct".fields) |f| {
+fn isFresh(state: *const vm_state.Vm) bool {
+    const fresh = vm_state.Vm{};
+    inline for (@typeInfo(vm_state.Vm).@"struct".fields) |f| {
         const a = std.mem.asBytes(&@field(state, f.name));
         const b = std.mem.asBytes(&@field(fresh, f.name));
         if (!std.mem.eql(u8, a, b)) return false;
@@ -294,11 +294,10 @@ fn child() void {
 /// rather than merely global, and it is the one thing a Zig `threadlocal var`
 /// could plausibly get wrong while still linking.
 ///
-/// `fiber_core.zig` asserts a neighbouring fact — that the collector's budget
-/// is per-thread — and it is not this one: that reads a field through
-/// `janet_vm` from a second thread, while this reads the *storage*, including
-/// that a fresh thread's copy is zeroed and that `janet_local_vm` answers it
-/// there too. Neither subsumes the other.
+/// `test/fiber_core.zig` asserts a neighbouring fact — that the collector's
+/// budget is per-thread — and it is not this one: that reads a field through
+/// the VM accessor from a second thread, while this reads the *storage*,
+/// including that a fresh thread's copy is zeroed. Neither subsumes the other.
 fn threadLocalStorage() !void {
     if (!has_threads) return;
 
@@ -307,11 +306,11 @@ fn threadLocalStorage() !void {
     const thread = try std.Thread.spawn(.{}, child, .{});
     thread.join();
 
-    assert(child_local_matches);
-    assert(child_saw_zero);
-    assert(child_vm != main_vm);
-    assert(vm().stackn == 7);
-    assert(vm_state.localVm() == main_vm);
+    expect(child_local_matches);
+    expect(child_saw_zero);
+    expect(child_vm != main_vm);
+    expect(vm().stackn == 7);
+    expect(vm_state.localVm() == main_vm);
     vm().stackn = 0;
 }
 
@@ -334,30 +333,30 @@ fn dynamicBindings() void {
     vm().top_dyns = null;
 
     // A read finds nothing and creates nothing.
-    assert(harness.isType(vm_state.dyn("nope"), repr.Tag.nil));
-    assert(vm().top_dyns == null);
+    expect(harness.isType(vm_state.dyn("nope"), repr.Tag.nil));
+    expect(vm().top_dyns == null);
 
     vm_state.setdyn("x", harness.wrapInteger(7));
-    assert(vm().top_dyns != null);
-    assert(harness.equals(vm_state.dyn("x"), harness.wrapInteger(7)));
-    assert(harness.isType(vm_state.dyn("y"), repr.Tag.nil));
+    expect(vm().top_dyns != null);
+    expect(harness.equals(vm_state.dyn("x"), harness.wrapInteger(7)));
+    expect(harness.isType(vm_state.dyn("y"), repr.Tag.nil));
 
     // With a fiber, the same names go to the fiber's env instead, and the VM's
     // table is neither read nor written.
     const fiber = fibers.new(functions.thunkDelay(wrap.fromNil()), 8, 0, null).?;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
-    assert(fiber.*.env == null);
+    expect(fiber.env == null);
     vm().fiber = fiber;
 
-    assert(harness.isType(vm_state.dyn("x"), repr.Tag.nil));
-    assert(fiber.*.env == null);
+    expect(harness.isType(vm_state.dyn("x"), repr.Tag.nil));
+    expect(fiber.env == null);
 
     vm_state.setdyn("x", harness.wrapInteger(9));
-    assert(fiber.*.env != null);
-    assert(harness.equals(vm_state.dyn("x"), harness.wrapInteger(9)));
+    expect(fiber.env != null);
+    expect(harness.equals(vm_state.dyn("x"), harness.wrapInteger(9)));
 
     vm().fiber = null;
-    assert(harness.equals(vm_state.dyn("x"), harness.wrapInteger(7)));
+    expect(harness.equals(vm_state.dyn("x"), harness.wrapInteger(7)));
 
     _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
     vm().fiber = saved_fiber;
@@ -377,7 +376,7 @@ pub fn run() void {
     // Last, and the only case here that needs a live runtime.
     harness.init();
     dynamicBindings();
-    vm_state.deinit();
+    vm_lifecycle.deinit();
 
     std.debug.print("vm state contract ok\n", .{});
 }

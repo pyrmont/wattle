@@ -11,8 +11,8 @@
  * callback, a `struct kevent` is filled and passed to `kevent(2)` in one
  * function, and a `FILE_NOTIFY_INFORMATION` is read out of a buffer that
  * belongs to the watch it arrived for. The only things that outlive a call are
- * a `JanetStream *` and a `JanetChannel *`, and those are `types.zig`'s, which
- * is Zig and which every file shares.
+ * a `Stream *` and a `Channel *`, and those are `ev/stream.zig`'s and
+ * `ev/channel.zig`'s, which are Zig and which every file shares.
  *
  * `janet_features.h` comes first, as it must before any system header.
  */

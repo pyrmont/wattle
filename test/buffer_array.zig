@@ -1,5 +1,5 @@
-//! Behavioral contract for the two growable containers: `JanetBuffer` and
-//! `JanetArray`.
+//! Behavioral contract for the two growable containers: `buffers.Buffer` and
+//! `arrays.Array`.
 //!
 //! These are the easiest containers in the runtime to observe, because almost
 //! everything they do is visible in three `int32_t` fields and a pointer. So
@@ -48,7 +48,6 @@
 //! which is not something a test can arrange.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const harness = @import("harness.zig");
@@ -62,6 +61,7 @@ const gc_mark = @import("subsystems").gc_mark;
 const core_env = @import("subsystems").env;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
+const expect = @import("expect.zig").expect;
 
 const heap = harness.heap;
 
@@ -72,7 +72,7 @@ const heap = harness.heap;
 /// exits, and it is a property of the allocator rather than of Janet.
 fn reallocZeroReturnsABlock() bool {
     const p = utils.malloc(16);
-    std.debug.assert(p != null);
+    expect(p != null);
     const q = utils.realloc(p, 0);
     if (q == null) return false;
     utils.free(q);
@@ -86,42 +86,42 @@ fn reallocZeroReturnsABlock() bool {
 /// floor is the buffer's alone; `janet_array` has no equivalent.
 fn bufferStartsWithACapacityFloor() void {
     const b = buffers.new(0);
-    std.debug.assert(b.*.count == 0);
-    std.debug.assert(b.*.capacity == 4);
-    std.debug.assert(b.*.data != null);
-    std.debug.assert(heap.memoryType(b) == types.MemoryType.buffer);
-    std.debug.assert(heap.onList(harness.vm().gc.blocks, b));
+    expect(b.count == 0);
+    expect(b.capacity == 4);
+    expect(b.data != null);
+    expect(heap.memoryType(b) == gc_alloc.MemoryType.buffer);
+    expect(heap.onList(harness.vm().gc.blocks, b));
 
     const big = buffers.new(100);
-    std.debug.assert(big.*.capacity == 100);
-    std.debug.assert(big.*.count == 0);
+    expect(big.capacity == 100);
+    expect(big.count == 0);
 
     // Exactly at the floor, and one below it.
-    std.debug.assert(buffers.new(4).*.capacity == 4);
-    std.debug.assert(buffers.new(3).*.capacity == 4);
-    std.debug.assert(buffers.new(-1).*.capacity == 4);
+    expect(buffers.new(4).capacity == 4);
+    expect(buffers.new(3).capacity == 4);
+    expect(buffers.new(-1).capacity == 4);
 }
 
 /// A buffer the caller owns is marked disabled and is not linked into a heap
 /// list, so the collector never reaches it and never frees it.
 fn callerOwnedBufferIsDisabled() !void {
-    var b: types.JanetBuffer = undefined;
+    var b: buffers.Buffer = undefined;
     @memset(std.mem.asBytes(&b), 0xAA);
     const returned = buffers.init(&b, 32);
-    std.debug.assert(returned == &b);
-    std.debug.assert(b.count == 0);
-    std.debug.assert(b.capacity == 32);
-    std.debug.assert(b.data != null);
-    std.debug.assert(b.gc.flags == constants.JANET_MEM_DISABLED);
-    std.debug.assert(b.gc.data.next == null);
-    std.debug.assert(!heap.onList(harness.vm().gc.blocks, &b));
+    expect(returned == &b);
+    expect(b.count == 0);
+    expect(b.capacity == 32);
+    expect(b.data != null);
+    expect(b.gc.flags == constants.JANET_MEM_DISABLED);
+    expect(b.gc.data.next == null);
+    expect(!heap.onList(harness.vm().gc.blocks, &b));
 
     // It still behaves as a buffer, and deinit releases the payload.
     try buffers.pushCString(&b, "hello");
-    std.debug.assert(b.count == 5);
-    std.debug.assert(std.mem.eql(u8, b.slice()[0..5], "hello"));
+    expect(b.count == 5);
+    expect(std.mem.eql(u8, b.slice()[0..5], "hello"));
     buffers.deinit(&b);
-    std.debug.assert(b.data == null);
+    expect(b.data == null);
 }
 
 /// The foreign memory a pointer buffer wraps. At file scope because the buffer
@@ -133,43 +133,43 @@ var foreign = [8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 };
 /// path refuse and makes deinit leave the foreign pointer alone.
 fn pointerBufferNeverReallocates() !void {
     const b = try buffers.pointerUnsafe(&foreign, 8, 3);
-    std.debug.assert(b.data == @as([*]u8, &foreign));
-    std.debug.assert(b.capacity == 8);
-    std.debug.assert(b.count == 3);
-    std.debug.assert(b.gc.flags & constants.JANET_BUFFER_FLAG_NO_REALLOC != 0);
-    std.debug.assert(heap.memoryType(b) == types.MemoryType.buffer);
-    std.debug.assert(heap.onList(harness.vm().gc.blocks, b));
+    expect(b.data == @as([*]u8, &foreign));
+    expect(b.capacity == 8);
+    expect(b.count == 3);
+    expect(b.gc.flags & constants.JANET_BUFFER_FLAG_NO_REALLOC != 0);
+    expect(heap.memoryType(b) == gc_alloc.MemoryType.buffer);
+    expect(heap.onList(harness.vm().gc.blocks, b));
 
     // Growing within the existing capacity is fine -- `bufferEnsure` returns
     // before it consults the flag.
     try buffers.ensure(b, 8, 1);
-    std.debug.assert(b.data == @as([*]u8, &foreign));
+    expect(b.data == @as([*]u8, &foreign));
 
     // Growing past it is refused, and so is the guard called directly.
     const refusal = "buffer cannot reallocate foreign memory";
-    std.debug.assert(harness.raised(
+    expect(harness.raised(
         buffers.ensure,
         .{ b, @as(i32, 9), @as(i32, 1) },
     ).?.says(refusal));
-    std.debug.assert(harness.raised(
+    expect(harness.raised(
         buffers.extra,
         .{ b, @as(i32, 100) },
     ).?.says(refusal));
-    std.debug.assert(harness.raised(buffers.canRealloc, .{b}).?.says(refusal));
-    std.debug.assert(b.data == @as([*]u8, &foreign));
-    std.debug.assert(b.capacity == 8);
+    expect(harness.raised(buffers.canRealloc, .{b}).?.says(refusal));
+    expect(b.data == @as([*]u8, &foreign));
+    expect(b.capacity == 8);
 
     // Deinit leaves the foreign memory intact rather than freeing it.
     buffers.deinit(b);
-    std.debug.assert(b.data == @as([*]u8, &foreign));
-    std.debug.assert(foreign[0] == 1 and foreign[7] == 8);
+    expect(b.data == @as([*]u8, &foreign));
+    expect(foreign[0] == 1 and foreign[7] == 8);
 
     // Its arguments are validated before the block is allocated.
-    std.debug.assert(harness.raised(
+    expect(harness.raised(
         buffers.pointerUnsafe,
         .{ @as(?*anyopaque, &foreign), @as(i32, 8), @as(i32, -1) },
     ).?.says("count < 0"));
-    std.debug.assert(harness.raised(
+    expect(harness.raised(
         buffers.pointerUnsafe,
         .{ @as(?*anyopaque, &foreign), @as(i32, 2), @as(i32, 3) },
     ).?.says("capacity < count"));
@@ -179,29 +179,29 @@ fn pointerBufferNeverReallocates() !void {
 /// ignored outright when the buffer is already large enough.
 fn bufferEnsureAppliesTheGrowthFactor() !void {
     const b = buffers.new(10);
-    const before = b.*.data;
+    const before = b.data;
 
     // Already big enough: no reallocation, no change, no pressure.
     const charge = harness.vm().gc.next_collection;
     try buffers.ensure(b, 10, 2);
     try buffers.ensure(b, 4, 8);
-    std.debug.assert(b.*.capacity == 10);
-    std.debug.assert(b.*.data == before);
-    std.debug.assert(harness.vm().gc.next_collection == charge);
+    expect(b.capacity == 10);
+    expect(b.data == before);
+    expect(harness.vm().gc.next_collection == charge);
 
     // Past it: the new capacity is the request times the growth.
     try buffers.ensure(b, 11, 3);
-    std.debug.assert(b.*.capacity == 33);
+    expect(b.capacity == 33);
 
     try buffers.ensure(b, 100, 1);
-    std.debug.assert(b.*.capacity == 100);
+    expect(b.capacity == 100);
 
     // The count is never touched by a capacity change.
     try buffers.pushCString(b, "abc");
     try buffers.ensure(b, 500, 2);
-    std.debug.assert(b.*.capacity == 1000);
-    std.debug.assert(b.*.count == 3);
-    std.debug.assert(std.mem.eql(u8, b.*.slice()[0..3], "abc"));
+    expect(b.capacity == 1000);
+    expect(b.count == 3);
+    expect(std.mem.eql(u8, b.slice()[0..3], "abc"));
 }
 
 /// Growing the count zero-fills the bytes it newly covers; shrinking keeps the
@@ -209,30 +209,30 @@ fn bufferEnsureAppliesTheGrowthFactor() !void {
 fn bufferSetcountZeroFills() !void {
     const b = buffers.new(4);
     try buffers.pushCString(b, "xy");
-    std.debug.assert(b.*.count == 2);
+    expect(b.count == 2);
 
     try buffers.setcount(b, 6);
-    std.debug.assert(b.*.count == 6);
-    std.debug.assert(b.*.capacity >= 6);
-    std.debug.assert(std.mem.eql(u8, b.*.slice()[0..6], "xy\x00\x00\x00\x00"));
+    expect(b.count == 6);
+    expect(b.capacity >= 6);
+    expect(std.mem.eql(u8, b.slice()[0..6], "xy\x00\x00\x00\x00"));
 
     // Shrinking leaves the capacity alone.
-    const capacity = b.*.capacity;
+    const capacity = b.capacity;
     try buffers.setcount(b, 1);
-    std.debug.assert(b.*.count == 1);
-    std.debug.assert(b.*.capacity == capacity);
+    expect(b.count == 1);
+    expect(b.capacity == capacity);
 
     // And growing again re-zeroes, rather than exposing the old bytes. The
     // scribble is deliberately outside the live range, so it is written
     // through the allocation rather than through `slice()`.
-    b.*.reserved()[3] = 0xFF;
+    b.reserved()[3] = 0xFF;
     try buffers.setcount(b, 4);
-    std.debug.assert(b.*.count == 4);
-    std.debug.assert(b.*.slice()[3] == 0);
+    expect(b.count == 4);
+    expect(b.slice()[3] == 0);
 
     // A negative count is a no-op, not a truncation to zero.
     try buffers.setcount(b, -1);
-    std.debug.assert(b.*.count == 4);
+    expect(b.count == 4);
 }
 
 /// `bufferExtra` reserves room without moving the count, and doubles rather
@@ -242,24 +242,24 @@ fn bufferExtraDoubles() !void {
     try buffers.pushCString(b, "ab");
 
     // Room already there: nothing happens.
-    const capacity = b.*.capacity;
+    const capacity = b.capacity;
     try buffers.extra(b, 2);
-    std.debug.assert(b.*.capacity == capacity);
-    std.debug.assert(b.*.count == 2);
+    expect(b.capacity == capacity);
+    expect(b.count == 2);
 
     // Room not there: capacity becomes twice what was needed.
     try buffers.extra(b, 9);
-    std.debug.assert(b.*.capacity == 22);
-    std.debug.assert(b.*.count == 2);
-    std.debug.assert(std.mem.eql(u8, b.*.slice()[0..2], "ab"));
+    expect(b.capacity == 22);
+    expect(b.count == 2);
+    expect(std.mem.eql(u8, b.slice()[0..2], "ab"));
 
     // The overflow guard runs before any allocation.
-    std.debug.assert(harness.raised(
+    expect(harness.raised(
         buffers.extra,
         .{ b, @as(i32, std.math.maxInt(i32)) },
     ).?.says("buffer overflow"));
-    std.debug.assert(b.*.capacity == 22);
-    std.debug.assert(b.*.count == 2);
+    expect(b.capacity == 22);
+    expect(b.count == 2);
 }
 
 /// The push primitives, including the byte order of the multi-byte ones. They
@@ -268,47 +268,47 @@ fn bufferPushesLittleEndian() !void {
     const b = buffers.new(4);
 
     try buffers.pushU8(b, 0xAB);
-    std.debug.assert(b.*.count == 1 and b.*.slice()[0] == 0xAB);
+    expect(b.count == 1 and b.slice()[0] == 0xAB);
 
     try buffers.setcount(b, 0);
     try buffers.pushU16(b, 0x1234);
-    std.debug.assert(b.*.count == 2);
-    std.debug.assert(b.*.slice()[0] == 0x34 and b.*.slice()[1] == 0x12);
+    expect(b.count == 2);
+    expect(b.slice()[0] == 0x34 and b.slice()[1] == 0x12);
 
     try buffers.setcount(b, 0);
     try buffers.pushU32(b, 0x12345678);
-    std.debug.assert(b.*.count == 4);
-    std.debug.assert(b.*.slice()[0] == 0x78 and b.*.slice()[1] == 0x56);
-    std.debug.assert(b.*.slice()[2] == 0x34 and b.*.slice()[3] == 0x12);
+    expect(b.count == 4);
+    expect(b.slice()[0] == 0x78 and b.slice()[1] == 0x56);
+    expect(b.slice()[2] == 0x34 and b.slice()[3] == 0x12);
 
     try buffers.setcount(b, 0);
     const wide: u64 = 0x0123456789ABCDEF;
     try buffers.pushU64(b, wide);
-    std.debug.assert(b.*.count == 8);
+    expect(b.count == 8);
     for (0..8) |i| {
         const byte: u8 = @truncate(wide >> @intCast(8 * i));
-        std.debug.assert(b.*.slice()[i] == byte);
+        expect(b.slice()[i] == byte);
     }
 
     // Bytes, C strings, and Janet strings. A zero-length push is a no-op that
     // does not even reserve, which is why it can be checked by capacity.
     try buffers.setcount(b, 0);
-    const capacity = b.*.capacity;
+    const capacity = b.capacity;
     try buffers.pushBytes(b, "ignored"[0..0]);
-    std.debug.assert(b.*.count == 0 and b.*.capacity == capacity);
+    expect(b.count == 0 and b.capacity == capacity);
 
     try buffers.pushBytes(b, "one");
     try buffers.pushCString(b, "two");
     try buffers.pushString(b, strings.cstring("three"));
-    std.debug.assert(b.*.count == 11);
-    std.debug.assert(std.mem.eql(u8, b.*.slice()[0..11], "onetwothree"));
+    expect(b.count == 11);
+    expect(std.mem.eql(u8, b.slice()[0..11], "onetwothree"));
 
     // A Janet string may hold an interior zero, and the length comes from its
     // head rather than from the bytes.
     try buffers.setcount(b, 0);
     try buffers.pushString(b, strings.new("a\x00b"));
-    std.debug.assert(b.*.count == 3);
-    std.debug.assert(std.mem.eql(u8, b.*.slice()[0..3], "a\x00b"));
+    expect(b.count == 3);
+    expect(std.mem.eql(u8, b.slice()[0..3], "a\x00b"));
 }
 
 /// Every payload the buffer allocates is charged to the collector.
@@ -316,22 +316,22 @@ fn bufferChargesGcPressure() !void {
     var charge = harness.vm().gc.next_collection;
     const b = buffers.new(64);
     // `janet_gcalloc` charges the block, and the payload is charged on top.
-    std.debug.assert(harness.vm().gc.next_collection == charge + @sizeOf(types.JanetBuffer) + 64);
+    expect(harness.vm().gc.next_collection == charge + @sizeOf(buffers.Buffer) + 64);
 
     charge = harness.vm().gc.next_collection;
     try buffers.ensure(b, 100, 2);
-    std.debug.assert(b.*.capacity == 200);
-    std.debug.assert(harness.vm().gc.next_collection == charge + (200 - 64));
+    expect(b.capacity == 200);
+    expect(harness.vm().gc.next_collection == charge + (200 - 64));
 
     charge = harness.vm().gc.next_collection;
     try buffers.setcount(b, 300);
-    std.debug.assert(b.*.capacity == 300);
-    std.debug.assert(harness.vm().gc.next_collection == charge + (300 - 200));
+    expect(b.capacity == 300);
+    expect(harness.vm().gc.next_collection == charge + (300 - 200));
 
     // The floor is charged, not the request.
     charge = harness.vm().gc.next_collection;
     _ = buffers.new(1);
-    std.debug.assert(harness.vm().gc.next_collection == charge + @sizeOf(types.JanetBuffer) + 4);
+    expect(harness.vm().gc.next_collection == charge + @sizeOf(buffers.Buffer) + 4);
 }
 
 // ----------------------------------------------------------------- array
@@ -340,43 +340,43 @@ fn bufferChargesGcPressure() !void {
 /// all rather than an empty one.
 fn arrayHasNoCapacityFloor() !void {
     const a = arrays.new(0);
-    std.debug.assert(a.*.count == 0);
-    std.debug.assert(a.*.capacity == 0);
-    std.debug.assert(a.*.data == null);
-    std.debug.assert(heap.memoryType(a) == types.MemoryType.array);
-    std.debug.assert(heap.onList(harness.vm().gc.blocks, a));
+    expect(a.count == 0);
+    expect(a.capacity == 0);
+    expect(a.data == null);
+    expect(heap.memoryType(a) == gc_alloc.MemoryType.array);
+    expect(heap.onList(harness.vm().gc.blocks, a));
 
     const b = arrays.new(3);
-    std.debug.assert(b.*.capacity == 3);
-    std.debug.assert(b.*.count == 0);
-    std.debug.assert(b.*.data != null);
+    expect(b.capacity == 3);
+    expect(b.count == 0);
+    expect(b.data != null);
 
     // And it grows from nothing without special-casing the null payload.
     try arrays.push(a, harness.wrapInteger(7));
-    std.debug.assert(a.*.count == 1);
-    std.debug.assert(a.*.capacity == 2);
-    std.debug.assert(harness.equals(a.*.slice()[0], harness.wrapInteger(7)));
+    expect(a.count == 1);
+    expect(a.capacity == 2);
+    expect(harness.equals(a.slice()[0], harness.wrapInteger(7)));
 }
 
 /// A weak array differs only in its memory type, which puts it on the other
 /// heap list and hands it to the weak half of the sweep.
 fn weakArrayIsANormalArrayElsewhere() !void {
     const a = arrays.weak(4);
-    std.debug.assert(heap.memoryType(a) == types.MemoryType.array_weak);
-    std.debug.assert(heap.onList(harness.vm().gc.weak_blocks, a));
-    std.debug.assert(!heap.onList(harness.vm().gc.blocks, a));
-    std.debug.assert(a.*.capacity == 4);
-    std.debug.assert(a.*.count == 0);
+    expect(heap.memoryType(a) == gc_alloc.MemoryType.array_weak);
+    expect(heap.onList(harness.vm().gc.weak_blocks, a));
+    expect(!heap.onList(harness.vm().gc.blocks, a));
+    expect(a.capacity == 4);
+    expect(a.count == 0);
 
     try arrays.push(a, harness.wrapInteger(1));
-    std.debug.assert(a.*.count == 1);
-    std.debug.assert(a.*.capacity == 4);
+    expect(a.count == 1);
+    expect(a.capacity == 4);
 
     // The strong twin is on the other list, and nothing else differs.
     const s = arrays.new(4);
-    std.debug.assert(heap.onList(harness.vm().gc.blocks, s));
-    std.debug.assert(!heap.onList(harness.vm().gc.weak_blocks, s));
-    std.debug.assert(s.*.capacity == a.*.capacity);
+    expect(heap.onList(harness.vm().gc.blocks, s));
+    expect(!heap.onList(harness.vm().gc.weak_blocks, s));
+    expect(s.capacity == a.capacity);
 }
 
 /// `janet_array_n` copies its elements and sets count and capacity to the same
@@ -389,47 +389,47 @@ fn arrayNIsExactlyFull() void {
     };
 
     const a = arrays.newFrom(&elements);
-    std.debug.assert(a.*.count == 3);
-    std.debug.assert(a.*.capacity == 3);
-    std.debug.assert(harness.equals(a.*.slice()[0], elements[0]));
-    std.debug.assert(harness.equals(a.*.slice()[1], elements[1]));
-    std.debug.assert(harness.isType(a.*.slice()[2], repr.Tag.nil));
+    expect(a.count == 3);
+    expect(a.capacity == 3);
+    expect(harness.equals(a.slice()[0], elements[0]));
+    expect(harness.equals(a.slice()[1], elements[1]));
+    expect(harness.isType(a.slice()[2], repr.Tag.nil));
 
     // The source is copied, not aliased.
     elements[0] = harness.wrapInteger(99);
-    std.debug.assert(harness.equals(a.*.slice()[0], harness.wrapInteger(10)));
+    expect(harness.equals(a.slice()[0], harness.wrapInteger(10)));
 
     // Zero elements is legal and allocates nothing to copy into.
     const empty = arrays.newFrom(elements[0..0]);
-    std.debug.assert(empty.*.count == 0);
-    std.debug.assert(empty.*.capacity == 0);
+    expect(empty.count == 0);
+    expect(empty.capacity == 0);
 }
 
 /// The array's growth factor behaves as the buffer's does. This is the policy
 /// `array/ensure` exposes to Janet, so the exact capacities are a contract.
 fn arrayEnsureAppliesTheGrowthFactor() !void {
     const a = arrays.new(10);
-    const before = a.*.data;
+    const before = a.data;
 
     const charge = harness.vm().gc.next_collection;
     arrays.ensure(a, 10, 2);
     arrays.ensure(a, 4, 8);
-    std.debug.assert(a.*.capacity == 10);
-    std.debug.assert(a.*.data == before);
-    std.debug.assert(harness.vm().gc.next_collection == charge);
+    expect(a.capacity == 10);
+    expect(a.data == before);
+    expect(harness.vm().gc.next_collection == charge);
 
     arrays.ensure(a, 11, 3);
-    std.debug.assert(a.*.capacity == 33);
+    expect(a.capacity == 33);
 
     arrays.ensure(a, 100, 1);
-    std.debug.assert(a.*.capacity == 100);
+    expect(a.capacity == 100);
 
     // Contents and count survive a reallocation.
     try arrays.push(a, harness.wrapInteger(5));
     arrays.ensure(a, 500, 2);
-    std.debug.assert(a.*.capacity == 1000);
-    std.debug.assert(a.*.count == 1);
-    std.debug.assert(harness.equals(a.*.slice()[0], harness.wrapInteger(5)));
+    expect(a.capacity == 1000);
+    expect(a.count == 1);
+    expect(harness.equals(a.slice()[0], harness.wrapInteger(5)));
 }
 
 /// Growing the count fills with nil, not with zero bytes; a negative count is
@@ -438,35 +438,35 @@ fn arrayEnsureAppliesTheGrowthFactor() !void {
 fn arraySetcountPushPopPeek() !void {
     const a = arrays.new(0);
 
-    std.debug.assert(harness.isType(arrays.pop(a), repr.Tag.nil));
-    std.debug.assert(harness.isType(arrays.peek(a), repr.Tag.nil));
-    std.debug.assert(a.*.count == 0);
+    expect(harness.isType(arrays.pop(a), repr.Tag.nil));
+    expect(harness.isType(arrays.peek(a), repr.Tag.nil));
+    expect(a.count == 0);
 
     arrays.setcount(a, 3);
-    std.debug.assert(a.*.count == 3);
-    for (0..3) |i| std.debug.assert(harness.isType(a.*.slice()[i], repr.Tag.nil));
+    expect(a.count == 3);
+    for (0..3) |i| expect(harness.isType(a.slice()[i], repr.Tag.nil));
 
-    a.*.slice()[2] = harness.wrapInteger(2);
+    a.slice()[2] = harness.wrapInteger(2);
     arrays.setcount(a, 1);
-    std.debug.assert(a.*.count == 1);
+    expect(a.count == 1);
     arrays.setcount(a, 3);
     // Re-extending fills with nil again rather than exposing the old value.
-    std.debug.assert(harness.isType(a.*.slice()[2], repr.Tag.nil));
+    expect(harness.isType(a.slice()[2], repr.Tag.nil));
 
     arrays.setcount(a, -5);
-    std.debug.assert(a.*.count == 3);
+    expect(a.count == 3);
 
     arrays.setcount(a, 0);
     try arrays.push(a, harness.wrapInteger(1));
     try arrays.push(a, harness.wrapInteger(2));
-    std.debug.assert(a.*.count == 2);
-    std.debug.assert(harness.equals(arrays.peek(a), harness.wrapInteger(2)));
-    std.debug.assert(a.*.count == 2);
-    std.debug.assert(harness.equals(arrays.pop(a), harness.wrapInteger(2)));
-    std.debug.assert(a.*.count == 1);
-    std.debug.assert(harness.equals(arrays.pop(a), harness.wrapInteger(1)));
-    std.debug.assert(a.*.count == 0);
-    std.debug.assert(harness.isType(arrays.pop(a), repr.Tag.nil));
+    expect(a.count == 2);
+    expect(harness.equals(arrays.peek(a), harness.wrapInteger(2)));
+    expect(a.count == 2);
+    expect(harness.equals(arrays.pop(a), harness.wrapInteger(2)));
+    expect(a.count == 1);
+    expect(harness.equals(arrays.pop(a), harness.wrapInteger(1)));
+    expect(a.count == 0);
+    expect(harness.isType(arrays.pop(a), repr.Tag.nil));
 }
 
 /// The array's GC accounting, including the two asymmetries with the buffer:
@@ -475,58 +475,65 @@ fn arraySetcountPushPopPeek() !void {
 fn arrayChargesGcPressure() void {
     var charge = harness.vm().gc.next_collection;
     const a = arrays.new(64);
-    std.debug.assert(harness.vm().gc.next_collection ==
-        charge + @sizeOf(types.JanetArray) + 64 * @sizeOf(repr.Value));
+    expect(harness.vm().gc.next_collection ==
+        charge + @sizeOf(arrays.Array) + 64 * @sizeOf(repr.Value));
 
     charge = harness.vm().gc.next_collection;
     arrays.ensure(a, 100, 2);
-    std.debug.assert(a.*.capacity == 200);
-    std.debug.assert(harness.vm().gc.next_collection == charge + (200 - 64) * @sizeOf(repr.Value));
+    expect(a.capacity == 200);
+    expect(harness.vm().gc.next_collection == charge + (200 - 64) * @sizeOf(repr.Value));
 
     // A capacity of zero allocates no payload, so only the block is charged.
     charge = harness.vm().gc.next_collection;
     _ = arrays.new(0);
-    std.debug.assert(harness.vm().gc.next_collection == charge + @sizeOf(types.JanetArray));
+    expect(harness.vm().gc.next_collection == charge + @sizeOf(arrays.Array));
 
     // `janet_array_n` allocates a payload and charges nothing for it.
     var elements = [_]repr.Value{wrap.fromNil()} ** 4;
     charge = harness.vm().gc.next_collection;
     const n = arrays.newFrom(&elements);
-    std.debug.assert(n.*.capacity == 4);
-    std.debug.assert(n.*.data != null);
-    std.debug.assert(harness.vm().gc.next_collection == charge + @sizeOf(types.JanetArray));
+    expect(n.capacity == 4);
+    expect(n.data != null);
+    expect(harness.vm().gc.next_collection == charge + @sizeOf(arrays.Array));
 }
 
-/// `FOUND.md`: `array/ensure` hands an unchecked growth factor through, and a
-/// factor of zero releases the payload while leaving `count` alone. Asserted
-/// deliberately, so that whichever side is fixed first fails here. See the
-/// note at the head of this file about why the allocator is probed first.
+/// `FOUND.md`: a growth factor of zero releases the payload while leaving
+/// `count` alone.
+///
+/// **The function still does this; the boundary no longer lets a Janet program
+/// reach it.** `array/ensure` rejects a growth below one, the way it already
+/// rejected a count below one, because `Array.count` is `usize` and a negative
+/// capacity has nowhere to go. `arrays.ensure` itself is unchanged -- every
+/// in-tree caller passes 1 or 2 -- so this still asserts what it always did, and
+/// `suite-corelib.janet` asserts the refusal on the other side of the wall.
+/// See the note at the head of this file about why the allocator is probed
+/// first.
 fn zeroGrowthReleasesThePayload() !void {
     if (!reallocZeroReturnsABlock()) return;
 
     const a = arrays.new(0);
     for (0..5) |i| try arrays.push(a, harness.wrapInteger(@intCast(i)));
-    std.debug.assert(a.*.count == 5);
-    std.debug.assert(a.*.capacity == 6);
+    expect(a.count == 5);
+    expect(a.capacity == 6);
 
     const charge = harness.vm().gc.next_collection;
     arrays.ensure(a, 100, 0);
 
     // The capacity is gone and the count is not, so every element the array
     // claims to hold is now a read of freed memory. Nothing below reads one.
-    std.debug.assert(a.*.capacity == 0);
-    std.debug.assert(a.*.count == 5);
+    expect(a.capacity == 0);
+    expect(a.count == 5);
 
     // And the accounting term went negative into a `usize`. C spelled this
     // `(size_t)(int32_t)(0 - 6) * sizeof(Janet)`, which is a sign extension
     // followed by a wrapping multiply; `@bitCast` and `*%` are the same two
     // steps named rather than implied.
     const negative: usize = @bitCast(@as(isize, -6));
-    std.debug.assert(harness.vm().gc.next_collection == charge +% negative *% @sizeOf(repr.Value));
+    expect(harness.vm().gc.next_collection == charge +% negative *% @sizeOf(repr.Value));
 
     // Make the array safe for the collector again before returning: the mark
     // phase walks `count` elements, and they are not there any more.
-    a.*.count = 0;
+    a.count = 0;
 }
 
 // ------------------------------------------------------ across the seam
@@ -546,10 +553,10 @@ fn theCollectorReclaimsBoth() !void {
         arrays.setcount(a, 1000);
         _ = arrays.weak(1000);
     }
-    std.debug.assert(harness.vm().gc.block_count == before + 30);
+    expect(harness.vm().gc.block_count == before + 30);
 
     gc_mark.collect();
-    std.debug.assert(harness.vm().gc.block_count == before);
+    expect(harness.vm().gc.block_count == before);
 
     // A rooted one survives the same collection, and is still usable -- which
     // is the assertion that its payload was not freed underneath it.
@@ -557,8 +564,8 @@ fn theCollectorReclaimsBoth() !void {
     try buffers.pushCString(keep, "kept");
     gc_alloc.gcroot(wrap.fromBuffer(keep));
     gc_mark.collect();
-    std.debug.assert(keep.*.count == 4);
-    std.debug.assert(std.mem.eql(u8, keep.*.slice()[0..4], "kept"));
+    expect(keep.count == 4);
+    expect(std.mem.eql(u8, keep.slice()[0..4], "kept"));
     _ = gc_alloc.gcunroot(wrap.fromBuffer(keep));
 }
 
@@ -577,14 +584,14 @@ fn fromJanet() void {
         \\  (array/push a 2)
         \\  [(length b) (string b) (length a) (array/pop a) (array/peek a)])
     ;
-    std.debug.assert(core_env.dostring(env, source, "buffer-array-test", &out) == 0);
-    std.debug.assert(harness.isType(out, repr.Tag.tuple));
+    expect(core_env.dostring(env, source, "buffer-array-test", &out) == 0);
+    expect(harness.isType(out, repr.Tag.tuple));
     const t = wrap.toTuple(out);
-    std.debug.assert(harness.integerIs(t[0], 3));
-    std.debug.assert(harness.stringValueIs(t[1], "abc"));
-    std.debug.assert(harness.integerIs(t[2], 2));
-    std.debug.assert(harness.integerIs(t[3], 2));
-    std.debug.assert(harness.integerIs(t[4], 1));
+    expect(harness.integerIs(t[0], 3));
+    expect(harness.stringValueIs(t[1], "abc"));
+    expect(harness.integerIs(t[2], 2));
+    expect(harness.integerIs(t[3], 2));
+    expect(harness.integerIs(t[4], 1));
 }
 
 /// The empty case of the three collection views, which is the case a raw
@@ -598,44 +605,44 @@ fn theEmptyViews() !void {
     // A collection that has never been grown: `data` is null and `count` is
     // zero, which is what `std.mem.zeroes` and `janet_table_init(t, 0)` both
     // leave behind. This is the case `data.?[0..count]` traps on.
-    var empty_buffer: types.JanetBuffer = .{};
-    std.debug.assert(empty_buffer.data == null);
-    std.debug.assert(empty_buffer.slice().len == 0);
-    std.debug.assert(empty_buffer.reserved().len == 0);
-    std.debug.assert(empty_buffer.spare().len == 0);
+    var empty_buffer: buffers.Buffer = .{};
+    expect(empty_buffer.data == null);
+    expect(empty_buffer.slice().len == 0);
+    expect(empty_buffer.reserved().len == 0);
+    expect(empty_buffer.spare().len == 0);
 
-    var empty_array: types.JanetArray = .{};
-    std.debug.assert(empty_array.data == null);
-    std.debug.assert(empty_array.slice().len == 0);
-    std.debug.assert(empty_array.reserved().len == 0);
+    var empty_array: arrays.Array = .{};
+    expect(empty_array.data == null);
+    expect(empty_array.slice().len == 0);
+    expect(empty_array.reserved().len == 0);
 
-    var empty_table: types.JanetTable = .{};
-    std.debug.assert(empty_table.data == null);
-    std.debug.assert(empty_table.slots().len == 0);
+    var empty_table: tables.Table = .{};
+    expect(empty_table.data == null);
+    expect(empty_table.slots().len == 0);
 
     // And the non-empty case beside it, so that a view which always answered
     // the empty slice would fail here rather than pass both halves.
     const b = buffers.new(0);
     try buffers.pushU8(b, 'q');
-    std.debug.assert(b.*.slice().len == 1);
-    std.debug.assert(b.*.slice()[0] == 'q');
-    std.debug.assert(b.*.reserved().len == @as(usize, @intCast(b.*.capacity)));
-    std.debug.assert(b.*.spare().len == @as(usize, @intCast(b.*.capacity - 1)));
+    expect(b.slice().len == 1);
+    expect(b.slice()[0] == 'q');
+    expect(b.reserved().len == @as(usize, @intCast(b.capacity)));
+    expect(b.spare().len == @as(usize, @intCast(b.capacity - 1)));
 
     const a = arrays.new(0);
-    std.debug.assert(a.*.slice().len == 0);
+    expect(a.slice().len == 0);
     try arrays.push(a, harness.wrapInteger(7));
-    std.debug.assert(a.*.slice().len == 1);
-    std.debug.assert(harness.integerIs(a.*.slice()[0], 7));
+    expect(a.slice().len == 1);
+    expect(harness.integerIs(a.slice()[0], 7));
 
     // A table's view is its *slot* array, so it is `capacity` long rather
     // than `count` long -- which is the reason it is not called `slice`.
-    var table: types.JanetTable = .{};
+    var table: tables.Table = .{};
     _ = tables.initRaw(&table, 4);
     tables.put(&table, harness.wrapInteger(1), harness.wrapInteger(2));
-    std.debug.assert(table.count == 1);
-    std.debug.assert(table.slots().len == @as(usize, @intCast(table.capacity)));
-    std.debug.assert(table.slots().len > table.count);
+    expect(table.count == 1);
+    expect(table.slots().len == @as(usize, @intCast(table.capacity)));
+    expect(table.slots().len > table.count);
     tables.deinit(&table);
 }
 

@@ -57,8 +57,6 @@
 //! `ev/stream.zig`, `ev/channel.zig` and `ev/backend.zig` through `ev.zig`,
 //! `ffi/types.zig`, `ffi/marshal.zig` and `ffi/call.zig` through `ffi.zig`,
 //! and `pp/pretty.zig` through `pp.zig`.
-//! through `pp_format.zig`. Each of those was already one object with one
-//! selector, and folding the tree did not change what belongs to what.
 
 const options = @import("options");
 
@@ -84,6 +82,12 @@ comptime {
 
     // Platform and standard-library services.
     if (options.os_fs) _ = @import("os/fs.zig");
+    // Named here although `os/fs.zig` already reaches it, because a name in
+    // this block is what puts a file's `test` blocks in `janet-runtime-test`.
+    // A file reached only through a lazy container-level `const` is analysed
+    // when something calls into it and its tests are not collected; `stat.zig`
+    // had three that ran nowhere until it was listed.
+    if (options.os_fs) _ = @import("os/fs/stat.zig");
     if (options.io) _ = @import("io.zig");
     if (options.os_process) _ = @import("os/process.zig");
     if (options.os) _ = @import("os.zig");
@@ -204,6 +208,7 @@ pub const gc_sweep = @import("gc/sweep.zig");
 /// the import unit.
 pub const value = @import("value.zig");
 pub const abstract_type = @import("abstract_type.zig");
+pub const method_type = @import("method_type.zig");
 pub const pp_format = @import("pp/format.zig");
 pub const pp_pretty = @import("pp/pretty.zig");
 pub const pp_describe = @import("pp.zig");
@@ -216,9 +221,23 @@ pub const debug = @import("debug.zig");
 pub const vm = @import("vm.zig");
 pub const vm_entry = @import("vm/entry.zig");
 pub const lifecycle = @import("vm/lifecycle.zig");
+pub const vm_state = @import("vm/state.zig");
 pub const dynlib = @import("dynlib.zig");
 pub const stdio = @import("stdio.zig");
 pub const fatal = @import("fatal.zig");
+
+/// The raise vocabulary and the core-cfunction registration layer, named here
+/// so that a caller outside this compilation -- a contract, the client, the
+/// image generator -- reaches them the way a subsystem does.
+pub const raise = @import("raise.zig");
+pub const corefn = @import("corefn.zig");
+
+/// The published entry points, reachable by import rather than by symbol.
+///
+/// A contract that is about what a native module sees -- the registration
+/// surface, the arity checks, the wrappers `module.zig` declares -- names the
+/// entry point here. Everything else a contract needs is the subsystem above.
+pub const capi = @import("capi.zig");
 
 // `cabi_check.zig`: `cabi.zig`'s declarations against the definitions they
 // name. An `extern fn` is a promise the compiler believes, and this is what

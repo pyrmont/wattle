@@ -21,7 +21,7 @@
 //! holds anything a skipped cleanup would strand.
 
 const std = @import("std");
-const raise = @import("raise");
+const raise = @import("../raise.zig");
 const pp_format = @import("../pp/format.zig");
 const ffi_types = @import("types.zig");
 const args_core = @import("../args.zig");
@@ -52,26 +52,26 @@ inline fn get(comptime T: type, from: [*]const u8) T {
 }
 
 /// `janet_ffi_getpointer`: every Janet type that can stand in for a C pointer.
-pub fn getPointer(argv: []const repr.Value, n: i32) raise.Raising(?*anyopaque) {
-    return switch (repr.typeOf(argv[@intCast(n)])) {
+pub fn getPointer(argv: []const repr.Value, n: usize) raise.Raising(?*anyopaque) {
+    return switch (repr.typeOf(argv[n])) {
         repr.Tag.pointer,
         repr.Tag.string,
         repr.Tag.keyword,
         repr.Tag.symbol,
         repr.Tag.cfunction,
-        => wrap.toPointer(argv[@intCast(n)]),
+        => wrap.toPointer(argv[n]),
         repr.Tag.abstract => @ptrCast(@constCast((try args_core.getBytes(argv, n)).bytes)),
-        repr.Tag.buffer => wrap.toBuffer(argv[@intCast(n)]).*.data,
+        repr.Tag.buffer => wrap.toBuffer(argv[n]).data,
         repr.Tag.function => blk: {
             // A function passed here is almost certainly a callback, so it
             // joins the root set and never leaves it.
-            gc_alloc.gcroot(argv[@intCast(n)]);
-            break :blk wrap.toPointer(argv[@intCast(n)]);
+            gc_alloc.gcroot(argv[n]);
+            break :blk wrap.toPointer(argv[n]);
         },
         repr.Tag.nil => null,
         else => pp_format.panicf(
             "bad slot #%d, expected ffi pointer convertible type, got %v",
-            .{ n, argv[@intCast(n)] },
+            .{ @as(i64, @intCast(n)), argv[n] },
         ),
     };
 }
@@ -83,24 +83,24 @@ pub fn getPointer(argv: []const repr.Value, n: i32) raise.Raising(?*anyopaque) {
 pub fn writeOne(
     to: *anyopaque,
     argv: []const repr.Value,
-    n: i32,
+    n: usize,
     ty: Type,
     recur: c_int,
 ) raise.Error!void {
     if (recur == 0) return raise.panic("recursion too deep");
-    const arg = argv[@intCast(n)];
+    const arg = argv[n];
 
     if (ty.array_count >= 0) {
         const el_type = ty.element();
         const el_size = ffi_types.typeSize(el_type);
         const els = try args_core.getIndexed(argv, n);
         if (els.len != ty.array_count) {
-            return pp_format.panicf("bad array length, expected %d, got %d", .{ ty.array_count, els.len });
+            return pp_format.panicf("bad array length, expected %d, got %d", .{ ty.array_count, @as(i64, @intCast(els.len)) });
         }
         var cursor: [*]u8 = @ptrCast(to);
-        var i: i32 = 0;
+        var i: usize = 0;
         while (i < els.len) : (i += 1) {
-            try writeOne(cursor, args_core.viewItems(els), i, el_type, recur - 1);
+            try writeOne(cursor, els, i, el_type, recur - 1);
             cursor += el_size;
         }
         return;
@@ -115,18 +115,18 @@ pub fn writeOne(
         .@"struct" => {
             const els = try args_core.getIndexed(argv, n);
             const st = ty.st.?;
-            if (@as(u32, @bitCast(els.len)) != st.field_count) {
+            if (els.len != st.field_count) {
                 return pp_format.panicf(
                     "wrong number of fields in struct, expected %d, got %d",
-                    .{ @as(i32, @bitCast(st.field_count)), els.len },
+                    .{ @as(i32, @bitCast(st.field_count)), @as(i64, @intCast(els.len)) },
                 );
             }
             const members = Struct.fields(st);
-            var i: i32 = 0;
+            var i: usize = 0;
             while (i < els.len) : (i += 1) {
-                const member = members[@intCast(i)];
+                const member = members[i];
                 const at: [*]u8 = @as([*]u8, @ptrCast(to)) + member.offset;
-                try writeOne(at, args_core.viewItems(els), i, member.type, recur - 1);
+                try writeOne(at, els, i, member.type, recur - 1);
             }
         },
         .double => put(f64, to, try args_core.getNumber(argv, n)),
@@ -155,8 +155,9 @@ pub fn readOne(from: [*]const u8, ty: Type, recur: c_int) raise.Raising(repr.Val
         const el_size = ffi_types.typeSize(el_type);
         const array = arrays.new(ty.array_count);
         var cursor = from;
-        var i: i32 = 0;
-        while (i < ty.array_count) : (i += 1) {
+        // `array_count` stays signed -- -1 is its "not an array" marker, and
+        // the branch above is what rules it out here.
+        for (0..@as(usize, @intCast(ty.array_count))) |_| {
             try arrays.push(array, try readOne(cursor, el_type, recur - 1));
             cursor += el_size;
         }

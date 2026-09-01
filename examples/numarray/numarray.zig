@@ -42,24 +42,20 @@ const NumArray = struct {
 
 // ---------------------------------------------------------- the callbacks
 
-/// A finalizer cannot raise, and the interface says so in its type: this
-/// returns `c_int`, not `Error!c_int`. `DESIGN.md` section 5 has the reason —
-/// a finalizer runs mid-sweep on an object that is already unreachable, so
+/// A finalizer cannot raise and has nothing to report, and the interface says
+/// both in its type: this returns `void`. `DESIGN.md` section 5 has the reason
+/// — a finalizer runs mid-sweep on an object that is already unreachable, so
 /// there is no scope above it and nothing to retry.
-fn numArrayGc(self: *NumArray, _: usize) c_int {
+fn numArrayGc(self: *NumArray, _: usize) void {
     janet.free(@ptrCast(self.data));
-    return 0;
 }
 
-fn numArrayGet(self: *NumArray, key: janet.Value, out: *janet.Value) janet.Error!c_int {
-    if (janet.isKeyword(key)) {
-        return if (try janet.getMethod(key, &methods, out)) 1 else 0;
-    }
+fn numArrayGet(self: *NumArray, key: janet.Value) janet.Error!?janet.Value {
+    if (janet.isKeyword(key)) return janet.getMethod(key, &methods);
     if (!janet.isInteger(key)) return janet.panic("expected integer key");
     // A negative index is out of range, not index zero. See `inRange`.
-    const index = inRange(self, janet.toInteger(key)) orelse return 0;
-    out.* = janet.number(self.slice()[index]);
-    return 1;
+    const index = inRange(self, janet.toInteger(key)) orelse return null;
+    return janet.number(self.slice()[index]);
 }
 
 /// `i` as an index into `self`, or null if it addresses no element.

@@ -71,11 +71,11 @@
 
 # A failed nested assembly reports the child's message at the top level.
 #
-# Until Phase 10 Part 3 this path had two mechanisms and no coverage: the child
-# longjmped into the parent's handler having copied its message across, which
-# made the parent's own check on the child's result unreachable. That check is
-# the live path now, and a mutation sweep found nothing anywhere noticed when it
-# was removed -- the assembler stored a null funcdef instead of failing.
+# This path once had two mechanisms and no coverage: the child raised into the
+# parent's handler having copied its message across, which made the parent's own
+# check on the child's result unreachable. That check is the live path now, and a
+# mutation sweep found nothing anywhere noticed when it was removed -- the
+# assembler stored a null funcdef instead of failing.
 (assert-error "nested assembly failure propagates"
               (asm {:arity 0
                     :bytecode ['(ret 0)]

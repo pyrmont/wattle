@@ -47,8 +47,6 @@
 //!
 //! Nothing exercises a raising callback: an abstract callback may not raise.
 
-const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const options = @import("options");
@@ -62,7 +60,8 @@ const abstracts = @import("subsystems").value.abstracts;
 const gc_mark = @import("subsystems").gc_mark;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
-const AbstractType = abstract_type.AbstractType;
+const abi = @import("abi");
+const expect = @import("expect.zig").expect;
 
 const heap = harness.heap;
 
@@ -84,19 +83,16 @@ var mark_calls: i32 = 0;
 var gc_calls: i32 = 0;
 var perthread_calls: i32 = 0;
 
-fn probeGcmark(_: *anyopaque, _: usize) c_int {
+fn probeGcmark(_: *anyopaque, _: usize) void {
     mark_calls += 1;
-    return 0;
 }
 
-fn probeGc(_: *anyopaque, _: usize) c_int {
+fn probeGc(_: *anyopaque, _: usize) void {
     gc_calls += 1;
-    return 0;
 }
 
-fn probePerthread(_: *anyopaque, _: usize) c_int {
+fn probePerthread(_: *anyopaque, _: usize) void {
     perthread_calls += 1;
-    return 0;
 }
 
 const at_counted = abstract_type.define(anyopaque, .{
@@ -110,15 +106,15 @@ const at_counted = abstract_type.define(anyopaque, .{
 /// for a null function pointer.
 const at_bare = abstract_type.define(anyopaque, .{ .name = "abstract-core-test/bare" });
 
-fn counted() *const types.AbstractType {
+fn counted() *const abi.AbstractType {
     return &at_counted;
 }
 
-fn bare() *const types.AbstractType {
+fn bare() *const abi.AbstractType {
     return &at_bare;
 }
 
-fn headOf(abstract: ?*anyopaque) *types.JanetAbstractHead {
+fn headOf(abstract: ?*anyopaque) *abi.JanetAbstractHead {
     return utils.abstractHead(abstract);
 }
 
@@ -133,38 +129,38 @@ fn beginPublishesAnUntypedBlock() void {
     const before_count = harness.vm().gc.block_count;
     const before_charge = harness.vm().gc.next_collection;
 
-    const a = abstracts.begin(counted(), 40);
+    const a = abstracts.beginBytes(counted(), 40);
     const head = headOf(a);
 
-    std.debug.assert(head.size == 40);
-    std.debug.assert(head.type == counted());
-    std.debug.assert(heap.memoryType(head) == types.MemoryType.none);
-    std.debug.assert(head.gc.flags & constants.JANET_MEM_REACHABLE == 0);
+    expect(head.size == 40);
+    expect(head.type == counted());
+    expect(heap.memoryType(head) == gc_alloc.MemoryType.none);
+    expect(head.gc.flags & constants.JANET_MEM_REACHABLE == 0);
 
-    std.debug.assert(harness.vm().gc.block_count == before_count + 1);
-    std.debug.assert(heap.onList(harness.vm().gc.blocks, head));
-    std.debug.assert(!heap.onList(harness.vm().gc.weak_blocks, head));
-    std.debug.assert(harness.vm().gc.next_collection ==
-        before_charge + @sizeOf(types.JanetAbstractHead) + 40);
+    expect(harness.vm().gc.block_count == before_count + 1);
+    expect(heap.onList(harness.vm().gc.blocks, head));
+    expect(!heap.onList(harness.vm().gc.weak_blocks, head));
+    expect(harness.vm().gc.next_collection ==
+        before_charge + @sizeOf(abi.JanetAbstractHead) + 40);
 
     // `long long data[]` is the most general alignment the header can ask for,
     // so the payload is aligned for anything an embedder puts in it.
-    std.debug.assert(@intFromPtr(a) % @sizeOf(c_longlong) == 0);
+    expect(@intFromPtr(a) % @sizeOf(c_longlong) == 0);
 
     _ = abstracts.end(a);
 }
 
 /// `janet_abstract_end` writes the type tag and returns the same pointer.
 fn endTypesTheBlock() void {
-    const a = abstracts.begin(counted(), 8);
+    const a = abstracts.beginBytes(counted(), 8);
     const head = headOf(a);
-    std.debug.assert(heap.memoryType(head) == types.MemoryType.none);
+    expect(heap.memoryType(head) == gc_alloc.MemoryType.none);
 
     const b = abstracts.end(a);
-    std.debug.assert(b == a);
-    std.debug.assert(heap.memoryType(head) == types.MemoryType.abstract);
-    std.debug.assert(head.size == 8);
-    std.debug.assert(head.type == counted());
+    expect(b == a);
+    expect(heap.memoryType(head) == gc_alloc.MemoryType.abstract);
+    expect(head.size == 8);
+    expect(head.type == counted());
 }
 
 /// `janet_gc_settype` is an or, not a store, and this is the only place the
@@ -173,16 +169,16 @@ fn endTypesTheBlock() void {
 /// clear `JANET_MEM_REACHABLE` and the sweep would then free a block the
 /// caller is about to use.
 fn endPreservesTheOtherFlagBits() void {
-    const a = abstracts.begin(counted(), 8);
+    const a = abstracts.beginBytes(counted(), 8);
     const head = headOf(a);
 
     head.gc.flags |= constants.JANET_MEM_REACHABLE;
     head.gc.flags |= constants.JANET_MEM_DISABLED;
 
     _ = abstracts.end(a);
-    std.debug.assert(heap.memoryType(head) == types.MemoryType.abstract);
-    std.debug.assert(head.gc.flags & constants.JANET_MEM_REACHABLE != 0);
-    std.debug.assert(head.gc.flags & constants.JANET_MEM_DISABLED != 0);
+    expect(heap.memoryType(head) == gc_alloc.MemoryType.abstract);
+    expect(head.gc.flags & constants.JANET_MEM_REACHABLE != 0);
+    expect(head.gc.flags & constants.JANET_MEM_DISABLED != 0);
 
     // Leave nothing marked or disabled behind for the next case.
     head.gc.flags &= ~@as(i32, constants.JANET_MEM_REACHABLE | constants.JANET_MEM_DISABLED);
@@ -195,34 +191,34 @@ fn abstractIsBeginThenEnd() void {
     const before_count = harness.vm().gc.block_count;
     const before_charge = harness.vm().gc.next_collection;
 
-    const a = abstracts.new(counted(), 24);
+    const a = abstracts.newBytes(counted(), 24);
     const head = headOf(a);
 
-    std.debug.assert(heap.memoryType(head) == types.MemoryType.abstract);
-    std.debug.assert(head.size == 24);
-    std.debug.assert(head.type == counted());
-    std.debug.assert(harness.vm().gc.block_count == before_count + 1);
-    std.debug.assert(heap.onList(harness.vm().gc.blocks, head));
-    std.debug.assert(harness.vm().gc.next_collection ==
-        before_charge + @sizeOf(types.JanetAbstractHead) + 24);
+    expect(heap.memoryType(head) == gc_alloc.MemoryType.abstract);
+    expect(head.size == 24);
+    expect(head.type == counted());
+    expect(harness.vm().gc.block_count == before_count + 1);
+    expect(heap.onList(harness.vm().gc.blocks, head));
+    expect(harness.vm().gc.next_collection ==
+        before_charge + @sizeOf(abi.JanetAbstractHead) + 24);
 }
 
 /// A zero-length abstract is a header and nothing else, and is legal.
 fn zeroLengthAbstract() void {
-    const a = abstracts.new(bare(), 0);
+    const a = abstracts.newBytes(bare(), 0);
     const head = headOf(a);
-    std.debug.assert(head.size == 0);
-    std.debug.assert(heap.memoryType(head) == types.MemoryType.abstract);
+    expect(head.size == 0);
+    expect(heap.memoryType(head) == gc_alloc.MemoryType.abstract);
 }
 
 /// The payload is untouched by construction, so an embedder that writes it
 /// before `janet_abstract_end` finds it intact afterwards.
 fn payloadSurvivesEnd() void {
-    const a = abstracts.begin(bare(), 16);
-    const payload: [*]u8 = @ptrCast(a.?);
+    const a = abstracts.beginBytes(bare(), 16);
+    const payload: [*]u8 = @ptrCast(a);
     @memset(payload[0..16], 0x5a);
     _ = abstracts.end(a);
-    for (payload[0..16]) |byte| std.debug.assert(byte == 0x5a);
+    for (payload[0..16]) |byte| expect(byte == 0x5a);
 }
 
 // ------------------------------------------------- the two-step window
@@ -241,16 +237,16 @@ fn collectionBetweenBeginAndEnd() void {
     perthread_calls = 0;
 
     const counted_before = harness.vm().gc.block_count;
-    _ = abstracts.begin(counted(), 32);
-    std.debug.assert(harness.vm().gc.block_count == counted_before + 1);
+    _ = abstracts.beginBytes(counted(), 32);
+    expect(harness.vm().gc.block_count == counted_before + 1);
 
     // Nothing refers to it, so the collection frees it -- untyped, so neither
     // finalizer runs and the payload is never read.
     gc_mark.collect();
-    std.debug.assert(harness.vm().gc.block_count == counted_before);
-    std.debug.assert(mark_calls == 0);
-    std.debug.assert(gc_calls == 0);
-    std.debug.assert(perthread_calls == 0);
+    expect(harness.vm().gc.block_count == counted_before);
+    expect(mark_calls == 0);
+    expect(gc_calls == 0);
+    expect(perthread_calls == 0);
 }
 
 /// What the tag does *not* do is keep the traversal away. The mark phase
@@ -266,25 +262,25 @@ fn theWindowDoesNotStopTheTraversal() void {
     gc_calls = 0;
     perthread_calls = 0;
 
-    const a = abstracts.begin(counted(), 32);
+    const a = abstracts.beginBytes(counted(), 32);
     const val = wrap.fromAbstract(a);
     gc_alloc.gcroot(val);
 
     const counted_before = harness.vm().gc.block_count;
     gc_mark.collect();
 
-    std.debug.assert(harness.vm().gc.block_count == counted_before);
-    std.debug.assert(mark_calls == 1);
-    std.debug.assert(gc_calls == 0);
-    std.debug.assert(heap.memoryType(headOf(a)) == types.MemoryType.none);
+    expect(harness.vm().gc.block_count == counted_before);
+    expect(mark_calls == 1);
+    expect(gc_calls == 0);
+    expect(heap.memoryType(headOf(a)) == gc_alloc.MemoryType.none);
 
     _ = gc_alloc.gcunroot(val);
     gc_mark.collect();
 
     // Freed, and still never finalized: the sweep is where the tag decides.
-    std.debug.assert(harness.vm().gc.block_count == counted_before - 1);
-    std.debug.assert(gc_calls == 0);
-    std.debug.assert(perthread_calls == 0);
+    expect(harness.vm().gc.block_count == counted_before - 1);
+    expect(gc_calls == 0);
+    expect(perthread_calls == 0);
 }
 
 /// Once `janet_abstract_end` has run, the same block is traversed and
@@ -296,18 +292,18 @@ fn aFinishedAbstractIsTraversedAndFinalized() void {
     gc_calls = 0;
     perthread_calls = 0;
 
-    const a = abstracts.new(counted(), 32);
+    const a = abstracts.newBytes(counted(), 32);
     const val = wrap.fromAbstract(a);
     gc_alloc.gcroot(val);
 
     gc_mark.collect();
-    std.debug.assert(mark_calls == 1);
-    std.debug.assert(gc_calls == 0);
+    expect(mark_calls == 1);
+    expect(gc_calls == 0);
 
     _ = gc_alloc.gcunroot(val);
     gc_mark.collect();
-    std.debug.assert(gc_calls == 1);
-    std.debug.assert(perthread_calls == 1);
+    expect(gc_calls == 1);
+    expect(perthread_calls == 1);
 }
 
 // ------------------------------------------------ threaded construction
@@ -321,11 +317,10 @@ var threaded_gc_len: usize = 0;
 /// are easy to get wrong in a way no return value reveals: the header is one
 /// word from the payload, and `size` is the only place the payload's length is
 /// recorded once the caller has let go of it.
-fn probeThreadedGc(data: *anyopaque, length: usize) c_int {
+fn probeThreadedGc(data: *anyopaque, length: usize) void {
     threaded_gc_data = data;
     threaded_gc_len = length;
     threaded_gc_calls += 1;
-    return 0;
 }
 
 const at_threaded = abstract_type.define(anyopaque, .{
@@ -336,11 +331,11 @@ const at_threaded = abstract_type.define(anyopaque, .{
 
 const at_threaded_bare = abstract_type.define(anyopaque, .{ .name = "abstract-core-test/threaded-bare" });
 
-fn threaded() *const types.AbstractType {
+fn threaded() *const abi.AbstractType {
     return &at_threaded;
 }
 
-fn threadedBare() *const types.AbstractType {
+fn threadedBare() *const abi.AbstractType {
     return &at_threaded_bare;
 }
 
@@ -373,17 +368,17 @@ fn beginThreadedRegistersWithoutTheHeap() void {
     const before_tracked = harness.vm().ev.threaded_abstracts.count;
     const before_capacity = harness.vm().ev.threaded_abstracts.capacity;
 
-    const a = abstracts.beginThreaded(threadedBare(), 48);
+    const a = abstracts.beginThreaded(harness.vm(), threadedBare(), 48);
     const head = headOf(a);
 
-    std.debug.assert(head.size == 48);
-    std.debug.assert(head.type == threadedBare());
-    std.debug.assert(heap.memoryType(head) == types.MemoryType.threaded_abstract);
-    std.debug.assert(head.gc.data.refcount == 1);
+    expect(head.size == 48);
+    expect(head.type == threadedBare());
+    expect(heap.memoryType(head) == gc_alloc.MemoryType.threaded_abstract);
+    expect(head.gc.data.refcount == 1);
 
-    std.debug.assert(harness.vm().gc.block_count == before_count);
-    std.debug.assert(!heap.onList(harness.vm().gc.blocks, head));
-    std.debug.assert(!heap.onList(harness.vm().gc.weak_blocks, head));
+    expect(harness.vm().gc.block_count == before_count);
+    expect(!heap.onList(harness.vm().gc.blocks, head));
+    expect(!heap.onList(harness.vm().gc.weak_blocks, head));
 
     // The threaded path adds `size + sizeof(head)` by hand where
     // `janet_gcalloc` adds the size it was asked for. Same total -- plus
@@ -391,24 +386,24 @@ fn beginThreadedRegistersWithoutTheHeap() void {
     // `janet_memalloc_empty` bills its new bucket array to the same counter.
     var table_charge: usize = 0;
     if (harness.vm().ev.threaded_abstracts.capacity != before_capacity) {
-        table_charge = @as(usize, @intCast(harness.vm().ev.threaded_abstracts.capacity)) * @sizeOf(types.JanetKV);
+        table_charge = @as(usize, @intCast(harness.vm().ev.threaded_abstracts.capacity)) * @sizeOf(tables.KV);
     }
-    std.debug.assert(harness.vm().gc.next_collection ==
-        before_charge + @sizeOf(types.JanetAbstractHead) + 48 + table_charge);
+    expect(harness.vm().gc.next_collection ==
+        before_charge + @sizeOf(abi.JanetAbstractHead) + 48 + table_charge);
 
-    std.debug.assert(harness.vm().ev.threaded_abstracts.count == before_tracked + 1);
-    std.debug.assert(tracked(a));
+    expect(harness.vm().ev.threaded_abstracts.count == before_tracked + 1);
+    expect(tracked(a));
 
     // Registered false: the visit record starts unvisited, and a mark phase is
     // what sets it.
     const entry = tables.get(&harness.vm().ev.threaded_abstracts, wrap.fromAbstract(a));
-    std.debug.assert(harness.isType(entry, repr.Tag.boolean));
-    std.debug.assert(!wrap.toBoolean(entry));
+    expect(harness.isType(entry, repr.Tag.boolean));
+    expect(!wrap.toBoolean(entry));
 
-    std.debug.assert(@intFromPtr(a) % @sizeOf(c_longlong) == 0);
+    expect(@intFromPtr(a) % @sizeOf(c_longlong) == 0);
 
     _ = abstracts.endThreaded(a);
-    std.debug.assert(drop(a) == 0);
+    expect(drop(a) == 0);
 }
 
 /// `janet_abstract_end_threaded` sets a tag `begin` has already set, so the
@@ -417,17 +412,17 @@ fn beginThreadedRegistersWithoutTheHeap() void {
 /// would put a malloced block on the collector's abstract path, which is a
 /// double free.
 fn endThreadedChangesNothing() void {
-    const a = abstracts.beginThreaded(threadedBare(), 8);
+    const a = abstracts.beginThreaded(harness.vm(), threadedBare(), 8);
     const head = headOf(a);
     const flags_before = head.gc.flags;
 
     const b = abstracts.endThreaded(a);
-    std.debug.assert(b == a);
-    std.debug.assert(head.gc.flags == flags_before);
-    std.debug.assert(heap.memoryType(head) == types.MemoryType.threaded_abstract);
-    std.debug.assert(head.gc.data.refcount == 1);
+    expect(b == a);
+    expect(head.gc.flags == flags_before);
+    expect(heap.memoryType(head) == gc_alloc.MemoryType.threaded_abstract);
+    expect(head.gc.data.refcount == 1);
 
-    std.debug.assert(drop(a) == 0);
+    expect(drop(a) == 0);
 }
 
 fn abstractThreadedIsBeginThenEnd() void {
@@ -438,14 +433,14 @@ fn abstractThreadedIsBeginThenEnd() void {
     const a = abstracts.threaded(threadedBare(), 16);
     const head = headOf(a);
 
-    std.debug.assert(heap.memoryType(head) == types.MemoryType.threaded_abstract);
-    std.debug.assert(head.size == 16);
-    std.debug.assert(head.gc.data.refcount == 1);
-    std.debug.assert(harness.vm().gc.block_count == before_count);
-    std.debug.assert(harness.vm().ev.threaded_abstracts.count == before_tracked + 1);
-    std.debug.assert(tracked(a));
+    expect(heap.memoryType(head) == gc_alloc.MemoryType.threaded_abstract);
+    expect(head.size == 16);
+    expect(head.gc.data.refcount == 1);
+    expect(harness.vm().gc.block_count == before_count);
+    expect(harness.vm().ev.threaded_abstracts.count == before_tracked + 1);
+    expect(tracked(a));
 
-    std.debug.assert(drop(a) == 0);
+    expect(drop(a) == 0);
 }
 
 // ---------------------------------------------------------- the refcount
@@ -456,16 +451,16 @@ fn increfAndDecrefReturnTheNewCount() void {
     const a = abstracts.threaded(threadedBare(), 8);
     const head = headOf(a);
 
-    std.debug.assert(abstracts.incref(a) == 2);
-    std.debug.assert(head.gc.data.refcount == 2);
-    std.debug.assert(abstracts.incref(a) == 3);
-    std.debug.assert(head.gc.data.refcount == 3);
-    std.debug.assert(abstracts.decref(a) == 2);
-    std.debug.assert(head.gc.data.refcount == 2);
-    std.debug.assert(abstracts.decref(a) == 1);
-    std.debug.assert(head.gc.data.refcount == 1);
+    expect(abstracts.incref(a) == 2);
+    expect(head.gc.data.refcount == 2);
+    expect(abstracts.incref(a) == 3);
+    expect(head.gc.data.refcount == 3);
+    expect(abstracts.decref(a) == 2);
+    expect(head.gc.data.refcount == 2);
+    expect(abstracts.decref(a) == 1);
+    expect(head.gc.data.refcount == 1);
 
-    std.debug.assert(drop(a) == 0);
+    expect(drop(a) == 0);
 }
 
 /// `janet_abstract_decref` does not act on a zero. It is the primitive the
@@ -477,16 +472,16 @@ fn decrefToZeroDoesNotFree() void {
     const head = headOf(a);
     _ = tables.remove(&harness.vm().ev.threaded_abstracts, wrap.fromAbstract(a));
 
-    std.debug.assert(abstracts.decref(a) == 0);
-    std.debug.assert(head.gc.data.refcount == 0);
-    std.debug.assert(threaded_gc_calls == 0);
-    std.debug.assert(head.type == threaded());
+    expect(abstracts.decref(a) == 0);
+    expect(head.gc.data.refcount == 0);
+    expect(threaded_gc_calls == 0);
+    expect(head.type == threaded());
 
     // Drop it properly. The count is zero, so this takes it to -1 and does not
     // free either -- the free is on the transition, and the caller that used
     // the plain primitive owns the block from here.
-    std.debug.assert(abstracts.decrefMaybeFree(a) == -1);
-    std.debug.assert(threaded_gc_calls == 0);
+    expect(abstracts.decrefMaybeFree(a) == -1);
+    expect(threaded_gc_calls == 0);
     utils.free(head);
 }
 
@@ -503,25 +498,25 @@ fn decrefMaybeFreeFinalizesOnce() void {
     const payload: [*]u8 = @ptrCast(a.?);
     @memset(payload[0..24], 0x7e);
 
-    std.debug.assert(abstracts.incref(a) == 2);
-    std.debug.assert(abstracts.decrefMaybeFree(a) == 1);
-    std.debug.assert(threaded_gc_calls == 0);
+    expect(abstracts.incref(a) == 2);
+    expect(abstracts.decrefMaybeFree(a) == 1);
+    expect(threaded_gc_calls == 0);
 
-    std.debug.assert(drop(a) == 0);
-    std.debug.assert(threaded_gc_calls == 1);
-    std.debug.assert(perthread_calls == 0);
+    expect(drop(a) == 0);
+    expect(threaded_gc_calls == 1);
+    expect(perthread_calls == 0);
 
     // The finalizer sees the payload and its recorded length, not the header
     // and not a zero. Both are read out of the header at the moment of the
     // call, which is the last moment either is readable.
-    std.debug.assert(threaded_gc_data == a);
-    std.debug.assert(threaded_gc_len == 24);
+    expect(threaded_gc_data == a);
+    expect(threaded_gc_len == 24);
 }
 
 /// A type with no `gc` callback is freed without one being looked up.
 fn decrefMaybeFreeWithoutAFinalizer() void {
     const a = abstracts.threaded(threadedBare(), 8);
-    std.debug.assert(drop(a) == 0);
+    expect(drop(a) == 0);
 }
 
 /// The refcount shares a union with the heap-list link every collectable block
@@ -533,13 +528,13 @@ fn refcountAndListLinkShareOneWord() void {
     const a = abstracts.threaded(threadedBare(), 8);
     const head = headOf(a);
 
-    std.debug.assert(@intFromPtr(&head.gc.data.refcount) == @intFromPtr(&head.gc.data.next));
+    expect(@intFromPtr(&head.gc.data.refcount) == @intFromPtr(&head.gc.data.next));
     _ = abstracts.incref(a);
-    std.debug.assert(!heap.onList(harness.vm().gc.blocks, head));
-    std.debug.assert(!heap.onList(harness.vm().gc.weak_blocks, head));
+    expect(!heap.onList(harness.vm().gc.blocks, head));
+    expect(!heap.onList(harness.vm().gc.weak_blocks, head));
 
-    std.debug.assert(abstracts.decrefMaybeFree(a) == 1);
-    std.debug.assert(drop(a) == 0);
+    expect(abstracts.decrefMaybeFree(a) == 1);
+    expect(drop(a) == 0);
 }
 
 /// The visit record is keyed by the abstract, so two of them are two entries,
@@ -552,13 +547,13 @@ fn twoThreadedAbstractsAreTwoEntries() void {
     const a = abstracts.threaded(threadedBare(), 8);
     const b = abstracts.threaded(threadedBare(), 8);
 
-    std.debug.assert(a != b);
-    std.debug.assert(harness.vm().ev.threaded_abstracts.count == before + 2);
-    std.debug.assert(tracked(a));
-    std.debug.assert(tracked(b));
+    expect(a != b);
+    expect(harness.vm().ev.threaded_abstracts.count == before + 2);
+    expect(tracked(a));
+    expect(tracked(b));
 
-    std.debug.assert(drop(a) == 0);
-    std.debug.assert(drop(b) == 0);
+    expect(drop(a) == 0);
+    expect(drop(b) == 0);
 }
 
 // ------------------------------------------------------------- teardown
@@ -567,7 +562,7 @@ fn twoThreadedAbstractsAreTwoEntries() void {
 /// charge against `next_collection` and the heap list are both per-VM state.
 fn repeatedCycles() void {
     for (0..3) |_| {
-        const a = abstracts.new(counted(), 16);
+        const a = abstracts.newBytes(counted(), 16);
         const val = wrap.fromAbstract(a);
         gc_alloc.gcroot(val);
         const t = tables.new(4);
@@ -575,7 +570,7 @@ fn repeatedCycles() void {
         gc_mark.collect();
         if (has_ev) {
             const th = abstracts.threaded(threadedBare(), 16);
-            std.debug.assert(drop(th) == 0);
+            expect(drop(th) == 0);
         }
         _ = gc_alloc.gcunroot(val);
         vm_lifecycle.deinit();
@@ -595,24 +590,24 @@ fn repeatedCycles() void {
 /// every refcount case above -- the counts would be consistently shifted, and
 /// only the comparison against zero would notice.
 fn atomicsReturnTheNewValue() void {
-    var x: types.JanetAtomicInt = 0;
+    var x: abi.JanetAtomicInt = 0;
 
-    std.debug.assert(abstracts.atomicInc(&x) == 1);
-    std.debug.assert(abstracts.atomicInc(&x) == 2);
-    std.debug.assert(abstracts.atomicLoad(&x) == 2);
-    std.debug.assert(abstracts.atomicLoadRelaxed(&x) == 2);
+    expect(abstracts.atomicInc(&x) == 1);
+    expect(abstracts.atomicInc(&x) == 2);
+    expect(abstracts.atomicLoad(&x) == 2);
+    expect(abstracts.atomicLoadRelaxed(&x) == 2);
 
-    std.debug.assert(abstracts.atomicDec(&x) == 1);
-    std.debug.assert(abstracts.atomicDec(&x) == 0);
-    std.debug.assert(abstracts.atomicLoad(&x) == 0);
+    expect(abstracts.atomicDec(&x) == 1);
+    expect(abstracts.atomicDec(&x) == 0);
+    expect(abstracts.atomicLoad(&x) == 0);
 
     // Signed, and nothing stops it going below zero. `janet_abstract_decref`
     // relies on reaching exactly 0, not on saturating there.
-    std.debug.assert(abstracts.atomicDec(&x) == -1);
-    std.debug.assert(abstracts.atomicLoadRelaxed(&x) == -1);
+    expect(abstracts.atomicDec(&x) == -1);
+    expect(abstracts.atomicLoadRelaxed(&x) == -1);
 
     x = 41;
-    std.debug.assert(abstracts.atomicInc(&x) == 42);
+    expect(abstracts.atomicInc(&x) == 42);
 }
 
 pub fn run() void {

@@ -27,11 +27,9 @@
 //! expect would only replace that message with a less informative assertion.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("subsystems").raise;
 const debug = @import("subsystems").debug;
 const value = @import("subsystems").value;
 const config = @import("config");
@@ -45,11 +43,17 @@ const signal_core = @import("subsystems").signal;
 const registry = @import("subsystems").registry;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
+const vm_state = @import("subsystems").vm_state;
 const arrays = @import("subsystems").value.arrays;
 const fibers = @import("subsystems").value.fibers;
 const vm_entry = @import("subsystems").vm_entry;
 const pp_describe = @import("subsystems").pp_describe;
 const ev = @import("subsystems").ev;
+const strings = @import("subsystems").value.strings;
+/// `boundary` rather than `abi`, which `abiRaised` takes as a parameter name.
+const boundary = @import("abi");
+const tables = @import("subsystems").value.tables;
+const expect = @import("expect.zig").expect;
 
 /// `janet_init`, reached by import rather than through the symbol.
 ///
@@ -72,21 +76,21 @@ pub fn init() void {
 /// array it has just made, where the raise `buffer_array.arrayPush` carries is
 /// a capacity overflow no contract is arranging. A contract that means to test
 /// *that* should call `arrayPush` itself under `raised`.
-pub fn arrayPush(array: *types.JanetArray, val: repr.Value) void {
+pub fn arrayPush(array: *arrays.Array, val: repr.Value) void {
     arrays.push(array, val) catch @panic("harness: janet_array_push raised");
 }
 
 /// `janet_core_env(null)`, likewise, and the same reasoning.
 ///
 /// Answers a non-null table.
-pub fn coreEnv() *types.JanetTable {
+pub fn coreEnv() *tables.Table {
     return core_env.coreEnv(null) catch @panic("harness: janet_core_env raised");
 }
 
 /// What a raise carried: the signal it raised with, and the value it left in
 /// the enclosing scope's return register.
 pub const Raise = struct {
-    signal: types.Signal,
+    signal: boundary.Signal,
     payload: repr.Value,
 
     /// Whether the payload is the string `expected`. Most panics carry one,
@@ -95,7 +99,7 @@ pub const Raise = struct {
     pub fn says(self: Raise, expected: []const u8) bool {
         if (!isType(self.payload, repr.Tag.string)) return false;
         const message = wrap.toString(self.payload);
-        const length: usize = @intCast(types.stringHead(message).length);
+        const length: usize = @intCast(strings.head(message).length);
         return std.mem.eql(u8, message[0..length], expected);
     }
 
@@ -110,7 +114,7 @@ pub const Raise = struct {
     pub fn beginsWith(self: Raise, expected: []const u8) bool {
         if (!isType(self.payload, repr.Tag.string)) return false;
         const message = wrap.toString(self.payload);
-        const length: usize = @intCast(types.stringHead(message).length);
+        const length: usize = @intCast(strings.head(message).length);
         return std.mem.startsWith(u8, message[0..length], expected);
     }
 
@@ -123,7 +127,7 @@ pub const Raise = struct {
     pub fn endsWith(self: Raise, expected: []const u8) bool {
         if (!isType(self.payload, repr.Tag.string)) return false;
         const message = wrap.toString(self.payload);
-        const length: usize = @intCast(types.stringHead(message).length);
+        const length: usize = @intCast(strings.head(message).length);
         return std.mem.endsWith(u8, message[0..length], expected);
     }
 };
@@ -136,34 +140,34 @@ pub const Raise = struct {
 /// where the refusal *is* the behaviour under test.
 ///
 ///     const r = harness.raised(subsystems.args.getBytes, .{ argv, 0 }).?;
-///     std.debug.assert(r.says("bad slot #0, expected bytes, got nil"));
+///     expect(r.says("bad slot #0, expected bytes, got nil"));
 ///
 /// The payload is read before `janet_restore` runs, because restoring is what
 /// puts the outer scope's return register back.
 pub fn raised(function: anytype, args: anytype) ?Raise {
-    var state: types.JanetTryState = undefined;
+    var state: vm_state.TryState = undefined;
     signal_core.tryInit(&state);
     defer signal_core.restore(&state);
     if (@call(.auto, function, args)) |_| {
         return null;
     } else |_| {
-        return .{ .signal = vm_lifecycle.current().pending_signal, .payload = state.payload };
+        return .{ .signal = vm_state.current().pending_signal, .payload = state.payload };
     }
 }
 
 /// The VM this thread is running.
 ///
-/// `vm/lifecycle.zig`'s `current()` is the owner's accessor, and a contract is
+/// `vm/state.zig`'s `current()` is the owner's accessor, and a contract is
 /// inside the compilation, so it can call it. There is no second view to
 /// compare it against: `janet_vm` is not a symbol, so no file reaches the
 /// storage through the symbol table and no contract can put two spellings of
 /// one address on either side of an `==`.
-pub fn vm() *types.Vm {
-    return vm_lifecycle.current();
+pub fn vm() *vm_state.Vm {
+    return vm_state.current();
 }
 
-/// An abi called and its report consumed, which is what a Zig contract does
-/// with a `janet.h` entry point that is still a `raise.reported` wrapper.
+/// An abi called and its report consumed, which is what a contract does with a
+/// published entry point that is still a `raise.reported` wrapper.
 ///
 /// This is the whole protocol from this side: the flag `raise.tookCRaise`
 /// reads is the VM's `c_raised`, and a contract inside the compilation can
@@ -176,7 +180,7 @@ pub fn vm() *types.Vm {
 ///
 /// Reach for `raised` instead wherever the subject is a Zig function.
 pub fn abiRaised(abi: anytype, args: anytype) ?Raise {
-    var state: types.JanetTryState = undefined;
+    var state: vm_state.TryState = undefined;
     signal_core.tryInit(&state);
     defer signal_core.restore(&state);
     // Discarded rather than called bare, because an abi need not return void:
@@ -184,7 +188,7 @@ pub fn abiRaised(abi: anytype, args: anytype) ?Raise {
     // than anything a contract should read.
     _ = @call(.auto, abi, args);
     if (!raise.tookCRaise()) return null;
-    return .{ .signal = vm_lifecycle.current().pending_signal, .payload = state.payload };
+    return .{ .signal = vm_state.current().pending_signal, .payload = state.payload };
 }
 
 /// A core cfunction by name, with the calling convention it actually has.
@@ -194,7 +198,7 @@ pub fn abiRaised(abi: anytype, args: anytype) ?Raise {
 /// `raise.cfunction` is the cast that says so.
 pub fn core(name: [*:0]const u8) raise.CFunction {
     const val = registry.resolveCore(name);
-    std.debug.assert(isType(val, repr.Tag.cfunction));
+    expect(isType(val, repr.Tag.cfunction));
     return raise.cfunction(wrap.toCfunction(val));
 }
 
@@ -217,9 +221,8 @@ pub fn coreRaised(name: [*:0]const u8, argv: []repr.Value) ?Raise {
 }
 
 /// Whether this build compiled the event loop, which decides how a form that
-/// waits gets driven. `janet.h` guards `janet_schedule` and `janet_loop` with
-/// `#ifdef JANET_EV`, so this is the same input the declarations are behind
-/// rather than a second belief about the configuration.
+/// waits gets driven. Read from `config`, which is the same input the
+/// subsystem is gated on rather than a second belief about it.
 pub const has_ev = config.ev;
 
 /// One Janet form, run in a fiber of its own and driven to completion.
@@ -238,7 +241,7 @@ pub const has_ev = config.ev;
 /// scheduler while it is queued, but not between `janet_fiber` and
 /// `janet_schedule`, and the compile of the *next* contract's source is an
 /// allocation that can collect.
-pub fn inFiber(environment: *types.JanetTable, source: []const u8) void {
+pub fn inFiber(environment: *tables.Table, source: []const u8) void {
     var buffer: [16384]u8 = undefined;
     const wrapped = std.fmt.bufPrintZ(&buffer, "(fn [] {s})", .{source}) catch
         @panic("harness.inFiber: source does not fit");
@@ -249,10 +252,10 @@ pub fn inFiber(environment: *types.JanetTable, source: []const u8) void {
         std.debug.print("             got: {s}\n", .{pp_describe.toString(val)});
         @panic("harness.inFiber: compile failed");
     }
-    std.debug.assert(isType(val, repr.Tag.function));
+    expect(isType(val, repr.Tag.function));
 
     const fiber = fibers.new(wrap.toFunction(val), 64, 0, null).?;
-    fiber.*.env = environment;
+    fiber.env = environment;
 
     if (has_ev) {
         const wrapped_fiber = wrap.fromFiber(fiber);
@@ -260,14 +263,14 @@ pub fn inFiber(environment: *types.JanetTable, source: []const u8) void {
         defer _ = gc_alloc.gcunroot(wrapped_fiber);
         ev.schedule(fiber, wrap.fromNil());
         raise.reported(ev.loop());
-        if (fibers.status(fiber) != types.FiberStatus.dead) {
+        if (fibers.status(fiber) != fibers.FiberStatus.dead) {
             std.debug.print("harness.inFiber: did not finish\n{s}\n", .{source});
             @panic("harness.inFiber: fiber is not dead");
         }
     } else {
         var result = wrap.fromNil();
         const signal = vm_entry.continueFiber(fiber, wrap.fromNil(), &result);
-        if (signal != types.Signal.ok) {
+        if (signal != boundary.Signal.ok) {
             raise.reported(debug.stacktraceExt(fiber, result, ""));
             std.debug.print("harness.inFiber: raised\n{s}\n", .{source});
             @panic("harness.inFiber: unexpected signal");
@@ -275,18 +278,15 @@ pub fn inFiber(environment: *types.JanetTable, source: []const u8) void {
     }
 }
 
-/// `janet_checktype` as a predicate.
-///
-/// It answers `c_int` because `janet.h` declares it for C, and every contract
-/// in the tree uses it as a condition. One `!= 0` here rather than several
-/// hundred at the sites.
+/// A type test as a predicate, so a contract writes `isType(v, .string)`
+/// rather than spelling out the tag comparison at several hundred sites.
 pub inline fn isType(val: repr.Value, want: anytype) bool {
     return repr.checkType(val, want);
 }
 
 /// `janet_equals` as a predicate, for the same reason as `isType`.
 pub inline fn equals(left: repr.Value, right: repr.Value) bool {
-    return order.equals(left, right) != 0;
+    return order.equals(left, right);
 }
 
 /// `janet_u64(x)`: the sixty-four bits of payload, which is the one Janet macro
@@ -308,29 +308,18 @@ pub inline fn u64Of(x: repr.Value) u64 {
 
 /// An opcode widened to the `u32` a bytecode word is.
 ///
-/// `janet.h`'s `JOP_*` are enumeration constants, so translate-c gives them
-/// type `c_int`, and `c.JOP_JUMP | (@as(u32, 0xFFFFFE) << 8)` is a `c_int`
-/// expression that cannot hold its own value:
+/// An opcode as the instruction word a contract compares against.
 ///
-///     error: type 'c_int' cannot represent integer value '4294966784'
-///
-/// Every contract that builds a bytecode word by hand meets this -- five did
-/// on the day this was written -- and the fix is a widening cast that has to
-/// go somewhere. Here, once, rather than at each of the sites.
+/// A contract that builds a bytecode word by hand needs the operation in the
+/// low byte of a `u32`, and `constants.Opcode` is a `u8`, so the widening has
+/// to happen somewhere: here, once, rather than at each of the sites. It still
+/// takes `anytype` because a few contracts build a word from a bare number.
 pub inline fn op(operation: anytype) u32 {
-    return @intCast(operation);
-}
-
-/// The same opcode narrowed to the `u8` an emit entry point takes.
-///
-/// There are two of these because a bytecode word and an emit parameter are
-/// different widths: `janetc_emit_s` and its nine siblings take the operation
-/// as a `u8`, and the word they build carries it in the low byte of a `u32`.
-/// A contract that both emits an instruction and then asserts on the word it
-/// produced needs each in turn, and neither cast reads as obviously correct
-/// at the site, so both are named here.
-pub inline fn opcode(operation: anytype) u8 {
-    return @intCast(operation);
+    return switch (@TypeOf(operation)) {
+        constants.Opcode => operation.number(),
+        constants.PegRule => operation.number(),
+        else => @intCast(operation),
+    };
 }
 
 /// Whether `value` is the number `expected`, which is the assertion a contract
@@ -359,20 +348,14 @@ pub fn keywordIs(val: repr.Value, expected: [*:0]const u8) bool {
 /// A struct's field by keyword name. Every contract that reads a structure the
 /// runtime built spells this, and spelling it once keeps the `ckeywordv` out
 /// of the assertions.
-pub fn field(structure: types.JanetStruct, name: [*:0]const u8) repr.Value {
+pub fn field(structure: structs.Struct, name: [*:0]const u8) repr.Value {
     return structs.get(structure, value.fromBytes(std.mem.span(name), .keyword));
 }
 
-/// `janet_wrap_integer`, written out rather than called.
+/// An `i32` as a Janet number, which is what a Janet integer is.
 ///
-/// **The one `janet_wrap_*` a Zig contract may not call**, and the reason is
-/// worth having in one place because every contract that builds an integer
-/// argument would otherwise meet it. `janet.h` declares
-/// Janet declares `JANET_API Value janet_wrap_integer(int32_t)` beside a macro
-/// of the same name, and defines the *function* only inside
-/// `#if defined(JANET_NANBOX_32) || defined(JANET_NANBOX_64)`. C callers get
-/// the macro; a Zig caller links everywhere except `-Dnanbox=false`, where the
-/// symbol does not exist.
+/// Here rather than at each site because every contract that builds an integer
+/// argument wants it.
 ///
 /// Four subsystems write these three lines out with the reason at the site,
 /// and `FOUND.md` has the entry. It is here so that a contract does not become
@@ -397,124 +380,54 @@ pub fn coreOptional(name: [*:0]const u8) ?raise.CFunction {
 }
 
 /// `janet_cstrcmp` as a predicate, which is how every contract wants it.
-pub fn stringIs(string: types.JanetString, expected: [*:0]const u8) bool {
+pub fn stringIs(string: strings.String, expected: [*:0]const u8) bool {
     return utils.cstrcmp(string, expected) == 0;
 }
 
 /// The compiler's growable vector, spelled the way a contract wants it.
 ///
 /// The arithmetic is `src/zig/stretchy.zig`'s; this is the element type
-/// inferred from the pointer, so that a contract writes
-/// `harness.vector.push(&v, x)` rather than naming the element at every call.
+/// The scratch vector, for a contract that wants one without naming the
+/// allocator at every call.
 ///
 /// **`test/vector.zig` does not use this**, and must not: it is the contract
-/// *on* that arithmetic, so both sides of its comparison have to come from
-/// different files. It restates the prefix itself.
+/// *on* `stretchy.zig`, so both sides of its comparison have to come from
+/// different files. It reaches for `gc.scratch_heap` directly.
 ///
-/// A vector is `?[*]Element` and may be null, which is what an empty one is.
+/// A vector is a `std.ArrayListUnmanaged` over the scratch heap; `.empty` is
+/// the one that has never been grown.
+pub const Vector = stretchy.Vector;
+
 pub const vector = struct {
-    fn Element(comptime Pointer: type) type {
-        const info = @typeInfo(Pointer);
-        const target = if (info == .optional) info.optional.child else Pointer;
-        return @typeInfo(target).pointer.child;
+    pub fn count(v: anytype) usize {
+        return v.items.len;
     }
 
-    pub fn count(v: anytype) i32 {
-        return stretchy.count(Element(@TypeOf(v)), v);
-    }
-
-    pub fn capacity(v: anytype) i32 {
-        return stretchy.capacity(Element(@TypeOf(v)), v);
+    pub fn capacity(v: anytype) usize {
+        return v.capacity;
     }
 
     /// `janet_v_push`. Takes the vector *variable* rather than its value,
     /// because growing it moves the allocation.
-    pub fn push(v: anytype, val: Element(@TypeOf(v.*))) void {
-        stretchy.push(Element(@TypeOf(v.*)), v, val);
-    }
+    pub const push = stretchy.push;
 
     /// `janet_v_empty`: the count goes to zero and the allocation stays.
     pub fn empty(v: anytype) void {
-        stretchy.setCount(Element(@TypeOf(v)), v, 0);
+        v.shrinkRetainingCapacity(0);
     }
 
     /// The count written directly, which `test/emit_core.zig` needs to fill a
     /// constant pool that would take quadratic time to fill honestly. Nothing
-    /// but a contract has a reason to do this.
-    pub fn setCount(v: anytype, n: i32) void {
-        stretchy.setCount(Element(@TypeOf(v)), v, n);
+    /// but a contract has a reason to do this, and it is `resize` rather than
+    /// a bare length write because the memory has to exist first.
+    pub fn setCount(v: anytype, n: usize) void {
+        stretchy.ensure(v, n);
+        v.items.len = n;
     }
 
-    /// `janet_v_free`, which is `janet_sfree` on the raw prefix. A vector
-    /// belongs to the scratch allocator rather than to the collector.
-    pub fn free(v: anytype) void {
-        stretchy.free(Element(@TypeOf(v)), v);
-    }
-};
-
-/// Declarations a contract needs and no module publishes.
-///
-/// A caller declares what it needs. Six subsystems write the declaration they
-/// need at the head of their own file, and a contract does the same; what goes
-/// here is the reason, once, so that the next contract adds a line instead of
-/// re-deriving it.
-///
-/// Two of these take a `Value` or a `JanetKV *`, which the usual justification
-/// ("no Janet type crosses, so there is no second spelling of one") does not
-/// cover. It still holds: the `types.JanetKV` in these signatures **is** the
-/// tree's one spelling rather than a second.
-pub const internal = struct {
-    // util.h
-    pub extern fn janet_tablen(n: i32) callconv(.c) i32;
-    pub extern fn janet_string_calchash(str: ?[*]const u8, len: i32) callconv(.c) i32;
-    pub extern fn janet_array_calchash(array: ?[*]const repr.Value, len: i32) callconv(.c) i32;
-    pub extern fn janet_kv_calchash(kvs: ?[*]const types.JanetKV, len: i32) callconv(.c) i32;
-    pub extern fn janet_struct_put_ext(st: [*]types.JanetKV, key: repr.Value, val: repr.Value, replace: c_int) callconv(.c) void;
-    pub extern fn janet_table_get_keyword(t: *types.JanetTable, keyword: [*:0]const u8) callconv(.c) repr.Value;
-    pub extern fn janet_table_proto_flatten(t: *types.JanetTable) callconv(.c) *types.JanetTable;
-    pub extern fn janet_registry_get(key: types.JanetCFunction) callconv(.c) ?*types.JanetCFunRegistry;
-    // `janet_hash_mix`, `safe_memcpy`, `janet_strbinsearch` and the two
-    // dictionary probes have no published declaration, so `test/utils.zig` is
-    // their only caller outside the runtime and each is one line here rather
-    // than a private block at the head of that file.
-    pub extern fn janet_hash_mix(input: u32, more: u32) callconv(.c) u32;
-    pub extern fn safe_memcpy(dest: ?*anyopaque, src: ?*const anyopaque, len: usize) callconv(.c) void;
-    pub extern fn janet_strbinsearch(
-        tab: ?*const anyopaque,
-        tabcount: usize,
-        itemsize: usize,
-        key: [*:0]const u8,
-    ) callconv(.c) ?*const anyopaque;
-    pub extern fn janet_dict_find(
-        buckets: [*]const types.JanetKV,
-        cap: i32,
-        key: repr.Value,
-    ) callconv(.c) ?*const types.JanetKV;
-    pub extern fn janet_dict_find_keyword(
-        buckets: [*]const types.JanetKV,
-        cap: i32,
-        cstr: [*]const u8,
-        cstr_len: i32,
-    ) callconv(.c) ?*const types.JanetKV;
-    pub extern fn janet_binding_from_entry(entry: repr.Value) callconv(.c) types.JanetBinding;
-    pub extern fn janet_get_core_table(name: [*:0]const u8) callconv(.c) ?*types.JanetTable;
-
-    pub extern fn janet_registry_put(
-        key: types.JanetCFunction,
-        name: ?[*:0]const u8,
-        name_prefix: ?[*:0]const u8,
-        source_file: ?[*:0]const u8,
-        source_line: i32,
-    ) callconv(.c) void;
-
-    // util.h, again: the two allocators every dictionary's bucket array comes
-    // from. `value_wrap.zig` defines them and `test/value_wrap.zig` is the only
-    // caller outside the containers.
-    pub extern fn janet_memalloc_empty(count: i32) callconv(.c) ?*anyopaque;
-    pub extern fn janet_memempty(mem: [*]types.JanetKV, count: i32) callconv(.c) void;
-
-    // symcache.h
-    pub extern fn janet_symbol_deinit(sym: [*:0]const u8) callconv(.c) void;
+    /// `janet_v_free`. A vector belongs to the scratch allocator rather than
+    /// to the collector.
+    pub const free = stretchy.free;
 };
 
 /// `fiber.h`'s frame macros, which `@cImport` does not translate.
@@ -531,13 +444,13 @@ pub const internal = struct {
 /// change nothing, which is the same call `heap` records one declaration up.
 pub const frame = struct {
     /// `janet_stack_frame(fiber->data + index)`.
-    pub fn at(fiber: *types.JanetFiber, index: i32) *types.JanetStackFrame {
+    pub fn at(fiber: *fibers.Fiber, index: i32) *vm_state.StackFrame {
         const base = fiber.data.? + @as(usize, @intCast(index));
         return @ptrCast(@alignCast(base - @as(usize, @intCast(constants.JANET_FRAME_SIZE))));
     }
 
     /// `janet_fiber_frame(fiber)`: the frame the fiber is stopped in.
-    pub fn current(fiber: *types.JanetFiber) *types.JanetStackFrame {
+    pub fn current(fiber: *fibers.Fiber) *vm_state.StackFrame {
         return at(fiber, fiber.frame);
     }
 };
@@ -545,7 +458,7 @@ pub const frame = struct {
 /// The collector's two heap lists, as a contract reads them.
 ///
 /// `janet_gc_header`, `janet_gc_type` and their kin are function-like macros
-/// over `JanetGCObject`, which no translation carries across; `types.zig` owns
+/// over `JanetGCObject`, which no translation carries across; `abi.zig` owns
 /// the head arithmetic for all of them. Four contracts need the same three
 /// lines to answer the same two questions: what memory type did the
 /// constructor stamp, and which list did that put the block on. Those two
@@ -559,15 +472,15 @@ pub const heap = struct {
     /// Every collectable block begins with its `JanetGCObject`, so the block
     /// pointer *is* the header. `janet_gc_header` is that cast and nothing
     /// else.
-    pub fn headerOf(block: ?*anyopaque) *types.JanetGCObject {
+    pub fn headerOf(block: ?*anyopaque) *boundary.JanetGCObject {
         return @ptrCast(@alignCast(block.?));
     }
 
     /// `janet_gc_type`: the low byte of the flags word, which is what decides
     /// which of `janet_deinit_block`'s cases will eventually free the block
     /// and which of the two lists it is on.
-    pub fn memoryType(block: ?*anyopaque) types.MemoryType {
-        return headerOf(block).memoryType();
+    pub fn memoryType(block: ?*anyopaque) gc_alloc.MemoryType {
+        return gc_alloc.memoryTypeOf(headerOf(block));
     }
 
     /// `janet_gc_reachable`: the mark bit, which the sweep reads and which a

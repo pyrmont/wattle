@@ -56,10 +56,9 @@
 //! All three are in `FOUND.md`.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
-const raise = @import("raise");
-const corefn = @import("corefn");
+const raise = @import("subsystems").raise;
+const corefn = @import("subsystems").corefn;
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
@@ -78,10 +77,11 @@ const vm_lifecycle = @import("subsystems").lifecycle;
 const abstracts = @import("subsystems").value.abstracts;
 const access = @import("subsystems").value.access;
 const registry = @import("subsystems").registry;
+const abi = @import("abi");
 const args_core = subsystems.args;
 const abstract_type = subsystems.abstract_type;
 const AbstractType = abstract_type.AbstractType;
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 
 // ----------------------------------------------------------------- helpers
 
@@ -105,7 +105,7 @@ fn refusal(function: anytype, args: anytype) harness.Raise {
 }
 
 fn returns(function: anytype, args: anytype) void {
-    assert(harness.raised(function, args) == null);
+    expect(harness.raised(function, args) == null);
 }
 
 // ------------------------------------------------------- abstract fixtures
@@ -116,16 +116,15 @@ const Slots = extern struct {
     slot: [3]i32,
 };
 
-fn slotsGet(s: *Slots, key: repr.Value, out: *repr.Value) raise.Error!c_int {
-    if (args_core_mod.checkint(key) == 0) return 0;
+fn slotsGet(s: *Slots, key: repr.Value) raise.Error!?repr.Value {
+    if (!args_core_mod.checkint(key)) return null;
     const i = wrap.toInteger(key);
-    if (i < 0 or i > 2) return 0;
-    out.* = harness.wrapInteger(s.slot[@intCast(i)]);
-    return 1;
+    if (i < 0 or i > 2) return null;
+    return harness.wrapInteger(s.slot[@intCast(i)]);
 }
 
 fn slotsPut(s: *Slots, key: repr.Value, val: repr.Value) raise.Error!void {
-    if (args_core_mod.checkint(key) == 0) return raise.panic("slots: bad key");
+    if (!args_core_mod.checkint(key)) return raise.panic("slots: bad key");
     const i = wrap.toInteger(key);
     if (i < 0 or i > 2) return raise.panic("slots: key out of range");
     s.slot[@intCast(i)] = wrap.toInteger(val);
@@ -196,16 +195,14 @@ fn methodKeyword(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
     return value.fromBytes("not-a-number", .keyword);
 }
 
-fn goodMethodGet(_: *anyopaque, key: repr.Value, out: *repr.Value) raise.Error!c_int {
-    if (args_core_mod.keyeq(key, "length") == 0) return 0;
-    out.* = wrap.fromCfunction(raise.stored(&methodSeven));
-    return 1;
+fn goodMethodGet(_: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
+    if (!args_core_mod.keyeq(key, "length")) return null;
+    return wrap.fromCfunction(raise.stored(&methodSeven));
 }
 
-fn badMethodGet(_: *anyopaque, key: repr.Value, out: *repr.Value) raise.Error!c_int {
-    if (args_core_mod.keyeq(key, "length") == 0) return 0;
-    out.* = wrap.fromCfunction(raise.stored(&methodKeyword));
-    return 1;
+fn badMethodGet(_: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
+    if (!args_core_mod.keyeq(key, "length")) return null;
+    return wrap.fromCfunction(raise.stored(&methodKeyword));
 }
 
 const at_good_method = abstract_type.define(anyopaque, .{
@@ -225,19 +222,19 @@ var huge_value: repr.Value = undefined;
 var good_method_value: repr.Value = undefined;
 var bad_method_value: repr.Value = undefined;
 
-fn typeOf(at: *const AbstractType) *const types.AbstractType {
+fn typeOf(at: *const AbstractType) *const abi.AbstractType {
     return at;
 }
 
 fn makeAbstracts() void {
-    const s: *Slots = @ptrCast(@alignCast(abstracts.new(typeOf(&at_slots), @sizeOf(Slots))));
+    const s: *Slots = @ptrCast(@alignCast(abstracts.newBytes(typeOf(&at_slots), @sizeOf(Slots))));
     s.slot = .{ 10, 11, 12 };
     slots_value = wrap.fromAbstract(s);
-    bare_value = wrap.fromAbstract(abstracts.new(typeOf(&at_bare), 8));
-    big_value = wrap.fromAbstract(abstracts.new(typeOf(&at_big), 8));
-    huge_value = wrap.fromAbstract(abstracts.new(typeOf(&at_huge), 8));
-    good_method_value = wrap.fromAbstract(abstracts.new(typeOf(&at_good_method), 8));
-    bad_method_value = wrap.fromAbstract(abstracts.new(typeOf(&at_bad_method), 8));
+    bare_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_bare), 8));
+    big_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_big), 8));
+    huge_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_huge), 8));
+    good_method_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_good_method), 8));
+    bad_method_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_bad_method), 8));
     gc_alloc.gcroot(slots_value);
     gc_alloc.gcroot(bare_value);
     gc_alloc.gcroot(big_value);
@@ -265,15 +262,15 @@ fn nextVisitsEveryTableKeyOnce() !void {
     var count: usize = 0;
     var k = try access.next(wrap.fromTable(t), wrap.fromNil());
     while (!isNil(k)) : (k = try access.next(wrap.fromTable(t), k)) {
-        assert(args_core_mod.checkint(k) != 0);
+        expect(args_core_mod.checkint(k));
         const i = wrap.toInteger(k);
-        assert(i >= 0 and i < n);
-        assert(!seen[@intCast(i)]); // a key was visited twice
+        expect(i >= 0 and i < n);
+        expect(!seen[@intCast(i)]); // a key was visited twice
         seen[@intCast(i)] = true;
         count += 1;
-        assert(count <= n);
+        expect(count <= n);
     }
-    assert(count == n);
+    expect(count == n);
 }
 
 /// Removing a key leaves a tombstone -- a bucket whose key is nil and whose
@@ -288,11 +285,11 @@ fn nextStepsOverTombstones() !void {
     var count: usize = 0;
     var k = try access.next(wrap.fromTable(t), wrap.fromNil());
     while (!isNil(k)) : (k = try access.next(wrap.fromTable(t), k)) {
-        assert(@rem(wrap.toInteger(k), 2) == 1);
+        expect(@rem(wrap.toInteger(k), 2) == 1);
         count += 1;
-        assert(count <= 8);
+        expect(count <= 8);
     }
-    assert(count == 8);
+    expect(count == 8);
 }
 
 fn nextVisitsEveryStructKeyOnce() !void {
@@ -305,13 +302,13 @@ fn nextVisitsEveryStructKeyOnce() !void {
     var k = try access.next(s, wrap.fromNil());
     while (!isNil(k)) : (k = try access.next(s, k)) {
         const i = wrap.toInteger(k);
-        assert(i >= 0 and i < 20);
-        assert(!seen[@intCast(i)]);
+        expect(i >= 0 and i < 20);
+        expect(!seen[@intCast(i)]);
         seen[@intCast(i)] = true;
         count += 1;
-        assert(count <= 20);
+        expect(count <= 20);
     }
-    assert(count == 20);
+    expect(count == 20);
 }
 
 /// Iteration reads the bucket array and nothing else, so a prototype's keys are
@@ -325,16 +322,16 @@ fn nextDoesNotFollowAStructPrototype() !void {
 
     const st = structs.begin(1);
     structs.put(st, kw("own"), intv(2));
-    utils.structHead(st).*.proto = proto;
+    utils.structHead(st).proto = proto;
     const s = wrap.fromStruct(structs.end(st));
 
     const k = try access.next(s, wrap.fromNil());
-    assert(harness.equals(k, kw("own")));
-    assert(isNil(try access.next(s, k)));
+    expect(harness.equals(k, kw("own")));
+    expect(isNil(try access.next(s, k)));
 
     // ...but the key is reachable through every accessor.
-    assert(harness.equals(try access.in(s, kw("inherited")), intv(1)));
-    assert(harness.equals(try access.get(s, kw("inherited")), intv(1)));
+    expect(harness.equals(try access.in(s, kw("inherited")), intv(1)));
+    expect(harness.equals(try access.get(s, kw("inherited")), intv(1)));
 }
 
 /// A table's prototype behaves the same way, and for the same reason.
@@ -343,20 +340,20 @@ fn nextDoesNotFollowATablePrototype() !void {
     tables.put(proto, kw("inherited"), intv(1));
     const t = tables.new(0);
     tables.put(t, kw("own"), intv(2));
-    t.*.proto = proto;
+    t.proto = proto;
 
     const k = try access.next(wrap.fromTable(t), wrap.fromNil());
-    assert(harness.equals(k, kw("own")));
-    assert(isNil(try access.next(wrap.fromTable(t), k)));
-    assert(harness.equals(try access.in(wrap.fromTable(t), kw("inherited")), intv(1)));
+    expect(harness.equals(k, kw("own")));
+    expect(isNil(try access.next(wrap.fromTable(t), k)));
+    expect(harness.equals(try access.in(wrap.fromTable(t), kw("inherited")), intv(1)));
 }
 
 /// An empty dictionary answers nil to the first step rather than walking off the
 /// end of a zero-length bucket array.
 fn nextOverEmptyDictionaries() !void {
-    assert(isNil(try access.next(wrap.fromTable(tables.new(0)), wrap.fromNil())));
+    expect(isNil(try access.next(wrap.fromTable(tables.new(0)), wrap.fromNil())));
     const empty = wrap.fromStruct(structs.end(structs.begin(0)));
-    assert(isNil(try access.next(empty, wrap.fromNil())));
+    expect(isNil(try access.next(empty, wrap.fromNil())));
 }
 
 // -------------------------------------------------------- next: sequences
@@ -380,12 +377,12 @@ fn nextOverEachSequenceType() !void {
 
     for (seqs) |seq| {
         var k = try access.next(seq, wrap.fromNil());
-        assert(harness.equals(k, intv(0)));
+        expect(harness.equals(k, intv(0)));
         k = try access.next(seq, k);
-        assert(harness.equals(k, intv(1)));
+        expect(harness.equals(k, intv(1)));
         k = try access.next(seq, k);
-        assert(harness.equals(k, intv(2)));
-        assert(isNil(try access.next(seq, k)));
+        expect(harness.equals(k, intv(2)));
+        expect(isNil(try access.next(seq, k)));
     }
 }
 
@@ -394,10 +391,10 @@ fn nextOverEachSequenceType() !void {
 /// which is what makes it worth pinning.
 fn nextStopsRatherThanPanickingOnABadKey() !void {
     const s = value.fromBytes("abc", .string);
-    assert(isNil(try access.next(s, kw("x"))));
-    assert(isNil(try access.next(s, wrap.fromNumber(1.5))));
-    assert(isNil(try access.next(s, wrap.fromTrue())));
-    assert(refusal(access.in, .{ s, kw("x") })
+    expect(isNil(try access.next(s, kw("x"))));
+    expect(isNil(try access.next(s, wrap.fromNumber(1.5))));
+    expect(isNil(try access.next(s, wrap.fromTrue())));
+    expect(refusal(access.in, .{ s, kw("x") })
         .says("expected integer key for string in range [0, 3), got :x"));
 }
 
@@ -406,41 +403,41 @@ fn nextStopsRatherThanPanickingOnABadKey() !void {
 /// accept it.
 fn nextFromANegativeKey() !void {
     const s = value.fromBytes("abc", .string);
-    assert(isNil(try access.next(s, intv(-5))));
+    expect(isNil(try access.next(s, intv(-5))));
     // -1 advances to 0, which is in range.
-    assert(harness.equals(try access.next(s, intv(-1)), intv(0)));
+    expect(harness.equals(try access.next(s, intv(-1)), intv(0)));
 }
 
 fn nextPastTheEnd() !void {
     const s = value.fromBytes("abc", .string);
-    assert(isNil(try access.next(s, intv(2))));
-    assert(isNil(try access.next(s, intv(99))));
-    assert(isNil(try access.next(value.fromBytes("", .string), wrap.fromNil())));
+    expect(isNil(try access.next(s, intv(2))));
+    expect(isNil(try access.next(s, intv(99))));
+    expect(isNil(try access.next(value.fromBytes("", .string), wrap.fromNil())));
 }
 
 // --------------------------------------------------------- next: the rest
 
 fn nextOnAnAbstract() !void {
     var k = try access.next(slots_value, wrap.fromNil());
-    assert(harness.equals(k, intv(0)));
+    expect(harness.equals(k, intv(0)));
     k = try access.next(slots_value, k);
-    assert(harness.equals(k, intv(1)));
+    expect(harness.equals(k, intv(1)));
     k = try access.next(slots_value, k);
-    assert(harness.equals(k, intv(2)));
-    assert(isNil(try access.next(slots_value, k)));
+    expect(harness.equals(k, intv(2)));
+    expect(isNil(try access.next(slots_value, k)));
 
     // No `next` callback is not an error, it is an empty iteration.
-    assert(isNil(try access.next(bare_value, wrap.fromNil())));
+    expect(isNil(try access.next(bare_value, wrap.fromNil())));
 }
 
 fn nextOnANonIterablePanics() void {
-    assert(refusal(access.next, .{ intv(5), wrap.fromNil() })
+    expect(refusal(access.next, .{ intv(5), wrap.fromNil() })
         .says("expected iterable type, got 5"));
-    assert(refusal(access.next, .{ wrap.fromNil(), wrap.fromNil() })
+    expect(refusal(access.next, .{ wrap.fromNil(), wrap.fromNil() })
         .says("expected iterable type, got nil"));
-    assert(refusal(access.next, .{ wrap.fromTrue(), wrap.fromNil() })
+    expect(refusal(access.next, .{ wrap.fromTrue(), wrap.fromNil() })
         .says("expected iterable type, got true"));
-    assert(refusal(access.next, .{ aCFunctionValue(), wrap.fromNil() })
+    expect(refusal(access.next, .{ aCFunctionValue(), wrap.fromNil() })
         .beginsWith("expected iterable type, got <cfunction "));
 }
 
@@ -478,7 +475,7 @@ fn cfunNextChildClearedOnPanic(argv: []repr.Value) align(corefn.alignment) raise
     return wrap.fromBoolean(self.child == null);
 }
 
-const cfuns = [_]types.Reg{
+const cfuns = [_]abi.Reg{
     .{ .name = "va/next", .cfun = raise.stored(&cfunNext), .documentation = null },
     .{ .name = "va/next-child-cleared", .cfun = raise.stored(&cfunNextChildCleared), .documentation = null },
     .{ .name = "va/next-child-cleared-on-panic", .cfun = raise.stored(&cfunNextChildClearedOnPanic), .documentation = null },
@@ -489,7 +486,7 @@ fn run_(src: [*:0]const u8) repr.Value {
     const status = core_env.dostring(harness.coreEnv(), src, "value_access", &out);
     if (status != 0) {
         std.debug.print("janet source failed: {s}\n", .{src});
-        assert(false);
+        expect(false);
     }
     return out;
 }
@@ -504,15 +501,15 @@ fn nextResumesAFiber() void {
         " (next f 0)   (fiber/status f)" ++
         " (next f 0)]");
     const v = wrap.toTuple(r);
-    assert(harness.equals(v[0], intv(0)));
-    assert(harness.equals(v[1], kw("a")));
-    assert(harness.equals(v[2], intv(0)));
-    assert(harness.equals(v[3], kw("b")));
+    expect(harness.equals(v[0], intv(0)));
+    expect(harness.equals(v[1], kw("a")));
+    expect(harness.equals(v[2], intv(0)));
+    expect(harness.equals(v[3], kw("b")));
     // The resume that finishes the fiber discards the return value and stops.
-    assert(isNil(v[4]));
-    assert(harness.equals(v[5], kw("dead")));
+    expect(isNil(v[4]));
+    expect(harness.equals(v[5], kw("dead")));
     // A dead fiber answers nil without being resumed.
-    assert(isNil(v[6]));
+    expect(isNil(v[6]));
 }
 
 /// `next` -- the entry point with `is_interpreter` clear -- has no in-tree
@@ -522,10 +519,10 @@ fn theNextEntryPointOnAFiber() void {
     const r = run_("(def f (fiber/new (fn [] (yield :a) :done)))" ++
         "[(va/next f nil) (in f 0) (va/next f 0) (va/next f 0)]");
     const v = wrap.toTuple(r);
-    assert(harness.equals(v[0], intv(0)));
-    assert(harness.equals(v[1], kw("a")));
-    assert(isNil(v[2]));
-    assert(isNil(v[3]));
+    expect(harness.equals(v[0], intv(0)));
+    expect(harness.equals(v[1], kw("a")));
+    expect(isNil(v[2]));
+    expect(isNil(v[3]));
 }
 
 /// Every status that cannot be resumed answers nil without touching the fiber.
@@ -544,14 +541,14 @@ fn nextOnAnUnresumableFiber() void {
         "  (fiber/status alive) (next alive nil)" ++
         "  (fiber/status user)  (next user nil)])");
     const v = wrap.toTuple(r);
-    assert(harness.equals(v[0], kw("dead")));
-    assert(isNil(v[1]));
-    assert(harness.equals(v[2], kw("error")));
-    assert(isNil(v[3]));
-    assert(harness.equals(v[4], kw("alive")));
-    assert(isNil(v[5]));
-    assert(harness.equals(v[6], kw("user3")));
-    assert(isNil(v[7]));
+    expect(harness.equals(v[0], kw("dead")));
+    expect(isNil(v[1]));
+    expect(harness.equals(v[2], kw("error")));
+    expect(isNil(v[3]));
+    expect(harness.equals(v[4], kw("alive")));
+    expect(isNil(v[5]));
+    expect(harness.equals(v[6], kw("user3")));
+    expect(isNil(v[7]));
 }
 
 /// The `is_interpreter` asymmetry, which is the only thing the two entry points
@@ -566,10 +563,10 @@ fn theInterpreterFlagChoosesTheErrorPolicy() void {
         "[(resume viaint)  (fiber/status viaint)" ++
         " (resume viacapi) (fiber/status viacapi)]");
     const v = wrap.toTuple(r);
-    assert(harness.equals(v[0], kw("sig")));
-    assert(harness.equals(v[1], kw("user5")));
-    assert(harness.equals(v[2], kw("sig")));
-    assert(harness.equals(v[3], kw("error")));
+    expect(harness.equals(v[0], kw("sig")));
+    expect(harness.equals(v[1], kw("user5")));
+    expect(harness.equals(v[2], kw("sig")));
+    expect(harness.equals(v[3], kw("error")));
 }
 
 fn theChildSlotIsCleared() void {
@@ -578,9 +575,9 @@ fn theChildSlotIsCleared() void {
         "[(va/next-child-cleared ok nil)" ++
         " (va/next-child-cleared-on-panic bad nil)]");
     const v = wrap.toTuple(r);
-    assert(repr.truthy(v[0])); // child not cleared after a successful resume
-    assert(harness.isType(v[1], repr.Tag.boolean)); // the failing resume did not panic
-    assert(repr.truthy(v[1])); // child not cleared before the panic
+    expect(repr.truthy(v[0])); // child not cleared after a successful resume
+    expect(harness.isType(v[1], repr.Tag.boolean)); // the failing resume did not panic
+    expect(repr.truthy(v[1])); // child not cleared before the panic
 }
 
 /// Resuming through `next` links the child into the caller's fiber chain before
@@ -598,9 +595,9 @@ fn theResumedFiberJoinsTheLineage() void {
         " (resume outer)" ++
         " log)");
     const log = wrap.toArray(r);
-    assert(log.*.count == 1);
+    expect(log.count == 1);
     // the resumed fiber was not linked into the caller's chain
-    assert(wrap.toInteger(log.*.slice()[0]) == 2);
+    expect(wrap.toInteger(log.slice()[0]) == 2);
 }
 
 // --------------------------------------------------------------- janet_in
@@ -609,31 +606,31 @@ fn inReadsEveryContainer() !void {
     const a = arrays.new(2);
     harness.arrayPush(a, kw("x"));
     harness.arrayPush(a, kw("y"));
-    assert(harness.equals(try access.in(wrap.fromArray(a), intv(1)), kw("y")));
+    expect(harness.equals(try access.in(wrap.fromArray(a), intv(1)), kw("y")));
 
     const t = tuples.begin(2);
     t[0] = kw("x");
     t[1] = kw("y");
     const tup = wrap.fromTuple(tuples.end(t));
-    assert(harness.equals(try access.in(tup, intv(0)), kw("x")));
+    expect(harness.equals(try access.in(tup, intv(0)), kw("x")));
 
     const b = buffers.new(4);
     buffers.pushCstringAbi(b, "AB");
-    assert(harness.equals(try access.in(wrap.fromBuffer(b), intv(1)), intv('B')));
+    expect(harness.equals(try access.in(wrap.fromBuffer(b), intv(1)), intv('B')));
 
-    assert(harness.equals(try access.in(value.fromBytes("AB", .string), intv(0)), intv('A')));
-    assert(harness.equals(try access.in(value.fromBytes("AB", .symbol), intv(1)), intv('B')));
-    assert(harness.equals(try access.in(kw("AB"), intv(0)), intv('A')));
+    expect(harness.equals(try access.in(value.fromBytes("AB", .string), intv(0)), intv('A')));
+    expect(harness.equals(try access.in(value.fromBytes("AB", .symbol), intv(1)), intv('B')));
+    expect(harness.equals(try access.in(kw("AB"), intv(0)), intv('A')));
 
     const tab = tables.new(0);
     tables.put(tab, kw("k"), intv(3));
-    assert(harness.equals(try access.in(wrap.fromTable(tab), kw("k")), intv(3)));
+    expect(harness.equals(try access.in(wrap.fromTable(tab), kw("k")), intv(3)));
 
     const st = structs.begin(1);
     structs.put(st, kw("k"), intv(4));
-    assert(harness.equals(try access.in(wrap.fromStruct(structs.end(st)), kw("k")), intv(4)));
+    expect(harness.equals(try access.in(wrap.fromStruct(structs.end(st)), kw("k")), intv(4)));
 
-    assert(harness.equals(try access.in(slots_value, intv(2)), intv(12)));
+    expect(harness.equals(try access.in(slots_value, intv(2)), intv(12)));
 }
 
 /// A key that is merely absent from a dictionary is nil, not an error. The panic
@@ -641,11 +638,11 @@ fn inReadsEveryContainer() !void {
 /// accepts every key.
 fn inOnAMissingDictionaryKeyIsNil() !void {
     const tab = tables.new(0);
-    assert(isNil(try access.in(wrap.fromTable(tab), kw("nope"))));
+    expect(isNil(try access.in(wrap.fromTable(tab), kw("nope"))));
     const st = wrap.fromStruct(structs.end(structs.begin(0)));
-    assert(isNil(try access.in(st, kw("nope"))));
+    expect(isNil(try access.in(st, kw("nope"))));
     // Including keys no sequence would accept.
-    assert(isNil(try access.in(wrap.fromTable(tab), wrap.fromNumber(1.5))));
+    expect(isNil(try access.in(wrap.fromTable(tab), wrap.fromNumber(1.5))));
 }
 
 /// One message, four ways to earn it, and it names the container's type and the
@@ -656,26 +653,26 @@ fn inPanicsOnABadKey() void {
     const a = arrays.new(1);
     harness.arrayPush(a, intv(0));
     const arr = wrap.fromArray(a);
-    assert(refusal(access.in, .{ arr, kw("x") })
+    expect(refusal(access.in, .{ arr, kw("x") })
         .says("expected integer key for array in range [0, 1), got :x"));
-    assert(refusal(access.in, .{ arr, intv(1) })
+    expect(refusal(access.in, .{ arr, intv(1) })
         .says("expected integer key for array in range [0, 1), got 1"));
-    assert(refusal(access.in, .{ arr, intv(-1) })
+    expect(refusal(access.in, .{ arr, intv(-1) })
         .says("expected integer key for array in range [0, 1), got -1"));
-    assert(refusal(access.in, .{ arr, wrap.fromNumber(0.5) })
+    expect(refusal(access.in, .{ arr, wrap.fromNumber(0.5) })
         .says("expected integer key for array in range [0, 1), got 0.5"));
 
     const t = tuples.begin(1);
     t[0] = intv(0);
-    assert(refusal(access.in, .{ wrap.fromTuple(tuples.end(t)), intv(3) })
+    expect(refusal(access.in, .{ wrap.fromTuple(tuples.end(t)), intv(3) })
         .says("expected integer key for tuple in range [0, 1), got 3"));
-    assert(refusal(access.in, .{ wrap.fromBuffer(buffers.new(4)), intv(0) })
+    expect(refusal(access.in, .{ wrap.fromBuffer(buffers.new(4)), intv(0) })
         .says("expected integer key for buffer in range [0, 0), got 0"));
-    assert(refusal(access.in, .{ value.fromBytes("abc", .string), intv(9) })
+    expect(refusal(access.in, .{ value.fromBytes("abc", .string), intv(9) })
         .says("expected integer key for string in range [0, 3), got 9"));
-    assert(refusal(access.in, .{ value.fromBytes("abc", .symbol), intv(9) })
+    expect(refusal(access.in, .{ value.fromBytes("abc", .symbol), intv(9) })
         .says("expected integer key for symbol in range [0, 3), got 9"));
-    assert(refusal(access.in, .{ kw("abc"), intv(9) })
+    expect(refusal(access.in, .{ kw("abc"), intv(9) })
         .says("expected integer key for keyword in range [0, 3), got 9"));
 }
 
@@ -685,21 +682,21 @@ const not_lengthable = "expected string, symbol, keyword, array, tuple, " ++
 /// The `%T` message, which renders a type-flag mask rather than a value. Two
 /// different masks appear in this file and they have to stay different.
 fn inOnANonLengthablePanics() void {
-    assert(refusal(access.in, .{ intv(5), intv(0) }).says(not_lengthable ++ "5"));
-    assert(refusal(access.in, .{ wrap.fromNil(), intv(0) }).says(not_lengthable ++ "nil"));
-    assert(refusal(access.in, .{ wrap.fromTrue(), intv(0) }).says(not_lengthable ++ "true"));
-    assert(refusal(access.in, .{ aCFunctionValue(), intv(0) }).beginsWith(not_lengthable));
+    expect(refusal(access.in, .{ intv(5), intv(0) }).says(not_lengthable ++ "5"));
+    expect(refusal(access.in, .{ wrap.fromNil(), intv(0) }).says(not_lengthable ++ "nil"));
+    expect(refusal(access.in, .{ wrap.fromTrue(), intv(0) }).says(not_lengthable ++ "true"));
+    expect(refusal(access.in, .{ aCFunctionValue(), intv(0) }).beginsWith(not_lengthable));
 }
 
 /// An abstract type is the one place where a key that is simply absent is an
 /// error, because its `get` reports presence separately from the value.
 fn inOnAnAbstract() !void {
-    assert(harness.equals(try access.in(slots_value, intv(0)), intv(10)));
-    assert(refusal(access.in, .{ slots_value, intv(7) })
+    expect(harness.equals(try access.in(slots_value, intv(0)), intv(10)));
+    expect(refusal(access.in, .{ slots_value, intv(7) })
         .beginsWith("key 7 not found in <value-access/slots "));
-    assert(refusal(access.in, .{ slots_value, kw("nope") })
+    expect(refusal(access.in, .{ slots_value, kw("nope") })
         .beginsWith("key :nope not found in <value-access/slots "));
-    assert(refusal(access.in, .{ bare_value, intv(0) })
+    expect(refusal(access.in, .{ bare_value, intv(0) })
         .beginsWith("no getter for <value-access/bare "));
 }
 
@@ -708,13 +705,13 @@ fn inOnAFiber() void {
         "(next f nil)" ++
         "[(in f 0) (get f 0) (get f 1) (protect (in f 1))]");
     const v = wrap.toTuple(r);
-    assert(harness.equals(v[0], kw("a")));
-    assert(harness.equals(v[1], kw("a")));
-    assert(isNil(v[2]));
+    expect(harness.equals(v[0], kw("a")));
+    expect(harness.equals(v[1], kw("a")));
+    expect(isNil(v[2]));
     // `protect` returns [false message] for a caught error.
     const p = wrap.toTuple(v[3]);
-    assert(!repr.truthy(p[0]));
-    assert(harness.equals(p[1], value.fromBytes("expected key 0, got 1", .string)));
+    expect(!repr.truthy(p[0]));
+    expect(harness.equals(p[1], value.fromBytes("expected key 0, got 1", .string)));
 }
 
 // -------------------------------------------------------------- janet_get
@@ -726,29 +723,29 @@ fn getAnswersNilWhereInPanics() !void {
     const a = arrays.new(1);
     harness.arrayPush(a, intv(0));
     const arr = wrap.fromArray(a);
-    assert(isNil(try access.get(arr, kw("x"))));
-    assert(isNil(try access.get(arr, intv(1))));
-    assert(isNil(try access.get(arr, intv(-1))));
-    assert(isNil(try access.get(arr, wrap.fromNumber(0.5))));
-    assert(isNil(try access.get(value.fromBytes("abc", .string), intv(9))));
+    expect(isNil(try access.get(arr, kw("x"))));
+    expect(isNil(try access.get(arr, intv(1))));
+    expect(isNil(try access.get(arr, intv(-1))));
+    expect(isNil(try access.get(arr, wrap.fromNumber(0.5))));
+    expect(isNil(try access.get(value.fromBytes("abc", .string), intv(9))));
     // The string arm has its own negative-index case, separate from the one the
     // array, tuple and buffer arm shares, and both have to be there: an index
     // below zero is not "past the end" and the length test alone lets it
     // through.
-    assert(isNil(try access.get(value.fromBytes("abc", .string), intv(-1))));
-    assert(isNil(try access.get(value.fromBytes("abc", .symbol), intv(-1))));
-    assert(isNil(try access.get(kw("abc"), intv(-1))));
-    assert(isNil(try access.get(
+    expect(isNil(try access.get(value.fromBytes("abc", .string), intv(-1))));
+    expect(isNil(try access.get(value.fromBytes("abc", .symbol), intv(-1))));
+    expect(isNil(try access.get(kw("abc"), intv(-1))));
+    expect(isNil(try access.get(
         wrap.fromTuple(tuples.end(tuples.begin(0))),
         intv(-1),
     )));
-    assert(isNil(try access.get(wrap.fromBuffer(buffers.new(4)), intv(0))));
-    assert(isNil(try access.get(intv(5), intv(0))));
-    assert(isNil(try access.get(wrap.fromNil(), intv(0))));
-    assert(isNil(try access.get(wrap.fromTrue(), kw("x"))));
-    assert(isNil(try access.get(bare_value, intv(0))));
-    assert(isNil(try access.get(slots_value, intv(7))));
-    assert(isNil(try access.get(aCFunctionValue(), intv(0))));
+    expect(isNil(try access.get(wrap.fromBuffer(buffers.new(4)), intv(0))));
+    expect(isNil(try access.get(intv(5), intv(0))));
+    expect(isNil(try access.get(wrap.fromNil(), intv(0))));
+    expect(isNil(try access.get(wrap.fromTrue(), kw("x"))));
+    expect(isNil(try access.get(bare_value, intv(0))));
+    expect(isNil(try access.get(slots_value, intv(7))));
+    expect(isNil(try access.get(aCFunctionValue(), intv(0))));
 }
 
 /// ...and where both succeed they agree.
@@ -775,7 +772,7 @@ fn getAgreesWithInWhereBothSucceed() !void {
         .{ slots_value, intv(2) },
     };
     for (pairs) |pair| {
-        assert(harness.equals(try access.in(pair[0], pair[1]), try access.get(pair[0], pair[1])));
+        expect(harness.equals(try access.in(pair[0], pair[1]), try access.get(pair[0], pair[1])));
     }
 }
 
@@ -788,47 +785,47 @@ fn theGetIndexPolicies() !void {
     const a = arrays.new(1);
     harness.arrayPush(a, kw("x"));
     const arr = wrap.fromArray(a);
-    assert(harness.equals(try access.getIndex(arr, 0), kw("x")));
-    assert(isNil(try access.getIndex(arr, 5)));
-    assert(refusal(access.getIndex, .{ arr, -1 }).says("expected non-negative index"));
-    assert(refusal(access.getIndex, .{ wrap.fromNil(), -1 }).says("expected non-negative index"));
+    expect(harness.equals(try access.getIndex(arr, 0), kw("x")));
+    expect(isNil(try access.getIndex(arr, 5)));
+    expect(refusal(access.getIndex, .{ arr, -1 }).says("expected non-negative index"));
+    expect(refusal(access.getIndex, .{ wrap.fromNil(), -1 }).says("expected non-negative index"));
 
-    assert(isNil(try access.getIndex(value.fromBytes("ab", .string), 9)));
-    assert(harness.equals(try access.getIndex(value.fromBytes("ab", .string), 1), intv('b')));
-    assert(isNil(try access.getIndex(wrap.fromBuffer(buffers.new(4)), 0)));
+    expect(isNil(try access.getIndex(value.fromBytes("ab", .string), 9)));
+    expect(harness.equals(try access.getIndex(value.fromBytes("ab", .string), 1), intv('b')));
+    expect(isNil(try access.getIndex(wrap.fromBuffer(buffers.new(4)), 0)));
 
     const t = tuples.begin(1);
     t[0] = kw("t");
     const tup = wrap.fromTuple(tuples.end(t));
-    assert(harness.equals(try access.getIndex(tup, 0), kw("t")));
-    assert(isNil(try access.getIndex(tup, 1)));
+    expect(harness.equals(try access.getIndex(tup, 0), kw("t")));
+    expect(isNil(try access.getIndex(tup, 1)));
 
     // Dictionaries are keyed by the integer, so an out-of-range index is a
     // missing key rather than an out-of-range one.
     const tab = tables.new(0);
     tables.put(tab, intv(7), kw("seven"));
-    assert(harness.equals(try access.getIndex(wrap.fromTable(tab), 7), kw("seven")));
-    assert(isNil(try access.getIndex(wrap.fromTable(tab), 0)));
+    expect(harness.equals(try access.getIndex(wrap.fromTable(tab), 7), kw("seven")));
+    expect(isNil(try access.getIndex(wrap.fromTable(tab), 0)));
 
     const st = structs.begin(1);
     structs.put(st, intv(7), kw("seven"));
     const s = wrap.fromStruct(structs.end(st));
-    assert(harness.equals(try access.getIndex(s, 7), kw("seven")));
-    assert(isNil(try access.getIndex(s, 0)));
+    expect(harness.equals(try access.getIndex(s, 7), kw("seven")));
+    expect(isNil(try access.getIndex(s, 0)));
 
     // The disagreement with `in`, stated directly.
-    assert(isNil(try access.getIndex(slots_value, 7)));
-    assert(refusal(access.in, .{ slots_value, intv(7) }).beginsWith("key 7 not found in "));
-    assert(refusal(access.getIndex, .{ bare_value, 0 })
+    expect(isNil(try access.getIndex(slots_value, 7)));
+    expect(refusal(access.in, .{ slots_value, intv(7) }).beginsWith("key 7 not found in "));
+    expect(refusal(access.getIndex, .{ bare_value, 0 })
         .beginsWith("no getter for <value-access/bare "));
-    assert(refusal(access.getIndex, .{ intv(5), 0 }).says(not_lengthable ++ "5"));
+    expect(refusal(access.getIndex, .{ intv(5), 0 }).says(not_lengthable ++ "5"));
 }
 
 fn getIndexOnAFiber() !void {
     const r = run_("(def f (fiber/new (fn [] (yield :a) :done)))" ++
         "(next f nil) f");
-    assert(harness.equals(try access.getIndex(r, 0), kw("a")));
-    assert(isNil(try access.getIndex(r, 1)));
+    expect(harness.equals(try access.getIndex(r, 0), kw("a")));
+    expect(isNil(try access.getIndex(r, 1)));
 }
 
 // ---------------------------------------------------------------- lengths
@@ -858,16 +855,16 @@ fn theLengthOfEveryContainer() !void {
         .{ .value = wrap.fromStruct(structs.end(st)), .length = 1 },
     };
     for (cases) |case| {
-        assert(try access.length(case.value) == case.length);
-        assert(harness.equals(try access.lengthv(case.value), intv(case.length)));
+        expect(try access.length(case.value) == case.length);
+        expect(harness.equals(try access.lengthv(case.value), intv(case.length)));
     }
 
     // A struct's length is its pair count, not its bucket count.
     const wide = structs.begin(9);
     for (0..9) |i| structs.put(wide, intv(@intCast(i)), intv(@intCast(i)));
     const w = wrap.fromStruct(structs.end(wide));
-    assert(try access.length(w) == 9);
-    assert(utils.structHead(wrap.toStruct(w)).*.capacity > 9);
+    expect(try access.length(w) == 9);
+    expect(utils.structHead(wrap.toStruct(w)).capacity > 9);
 }
 
 /// A table's length is its live count, so removing a key shortens it even though
@@ -875,18 +872,18 @@ fn theLengthOfEveryContainer() !void {
 fn theLengthOfATableIgnoresTombstones() !void {
     const tab = tables.new(0);
     for (0..8) |i| tables.put(tab, intv(@intCast(i)), intv(@intCast(i)));
-    assert(try access.length(wrap.fromTable(tab)) == 8);
+    expect(try access.length(wrap.fromTable(tab)) == 8);
     _ = tables.remove(tab, intv(0));
-    assert(try access.length(wrap.fromTable(tab)) == 7);
-    assert(tab.*.deleted == 1);
+    expect(try access.length(wrap.fromTable(tab)) == 7);
+    expect(tab.deleted == 1);
 }
 
 fn theAbstractLengthCallback() !void {
-    assert(try access.length(slots_value) == 3);
-    assert(harness.equals(try access.lengthv(slots_value), wrap.fromNumber(3.0)));
+    expect(try access.length(slots_value) == 3);
+    expect(harness.equals(try access.lengthv(slots_value), wrap.fromNumber(3.0)));
     // `lengthv` wraps a callback's length as a double rather than as an integer,
     // and the two are equal but not identically represented.
-    assert(harness.isType(try access.lengthv(slots_value), repr.Tag.number));
+    expect(harness.isType(try access.lengthv(slots_value), repr.Tag.number));
 }
 
 /// The band where the two functions disagree. `length` stops at `INT32_MAX`
@@ -894,14 +891,14 @@ fn theAbstractLengthCallback() !void {
 /// because it returns a double. A length between them panics one and satisfies
 /// the other.
 fn theTwoLengthBoundsAreDifferent() !void {
-    assert(refusal(access.length, .{big_value}).says("invalid integer length 2147483648"));
+    expect(refusal(access.length, .{big_value}).says("invalid integer length 2147483648"));
     const lv = try access.lengthv(big_value);
-    assert(harness.isType(lv, repr.Tag.number));
-    assert(wrap.toNumber(lv) == 2147483648.0);
+    expect(harness.isType(lv, repr.Tag.number));
+    expect(wrap.toNumber(lv) == 2147483648.0);
 
     if (intmax_int64_fits_in_a_length) {
-        assert(refusal(access.length, .{huge_value}).says("invalid integer length 9007199254740992"));
-        assert(refusal(access.lengthv, .{huge_value}).says("integer length 9007199254740992 too large"));
+        expect(refusal(access.length, .{huge_value}).says("invalid integer length 9007199254740992"));
+        expect(refusal(access.lengthv, .{huge_value}).says("integer length 9007199254740992 too large"));
     }
 }
 
@@ -910,23 +907,23 @@ fn theTwoLengthBoundsAreDifferent() !void {
 /// `length` checks the result and `lengthv` does not, which is the second place
 /// the two disagree.
 fn theLengthFallsBackToAMethod() !void {
-    assert(try access.length(good_method_value) == 7);
-    assert(harness.equals(try access.lengthv(good_method_value), intv(7)));
+    expect(try access.length(good_method_value) == 7);
+    expect(harness.equals(try access.lengthv(good_method_value), intv(7)));
 
-    assert(refusal(access.length, .{bad_method_value}).says("invalid integer length :not-a-number"));
-    assert(harness.equals(try access.lengthv(bad_method_value), kw("not-a-number")));
+    expect(refusal(access.length, .{bad_method_value}).says("invalid integer length :not-a-number"));
+    expect(harness.equals(try access.lengthv(bad_method_value), kw("not-a-number")));
 
-    assert(refusal(access.length, .{bare_value})
+    expect(refusal(access.length, .{bare_value})
         .beginsWith("could not find method :length for <value-access/bare "));
-    assert(refusal(access.lengthv, .{bare_value})
+    expect(refusal(access.lengthv, .{bare_value})
         .beginsWith("could not find method :length for <value-access/bare "));
 }
 
 fn theLengthOfANonLengthablePanics() void {
-    assert(refusal(access.length, .{intv(5)}).says(not_lengthable ++ "5"));
-    assert(refusal(access.lengthv, .{intv(5)}).says(not_lengthable ++ "5"));
-    assert(refusal(access.length, .{wrap.fromNil()}).says(not_lengthable ++ "nil"));
-    assert(refusal(access.lengthv, .{wrap.fromNil()}).says(not_lengthable ++ "nil"));
+    expect(refusal(access.length, .{intv(5)}).says(not_lengthable ++ "5"));
+    expect(refusal(access.lengthv, .{intv(5)}).says(not_lengthable ++ "5"));
+    expect(refusal(access.length, .{wrap.fromNil()}).says(not_lengthable ++ "nil"));
+    expect(refusal(access.lengthv, .{wrap.fromNil()}).says(not_lengthable ++ "nil"));
 }
 
 // ---------------------------------------------------------------- setters
@@ -937,15 +934,15 @@ fn putGrowsAnArrayWithNils() !void {
     const a = arrays.new(0);
     harness.arrayPush(a, kw("first"));
     try access.put(wrap.fromArray(a), intv(4), kw("fifth"));
-    assert(a.*.count == 5);
-    assert(harness.equals(a.*.slice()[0], kw("first")));
-    for (1..4) |i| assert(isNil(a.*.slice()[i]));
-    assert(harness.equals(a.*.slice()[4], kw("fifth")));
+    expect(a.count == 5);
+    expect(harness.equals(a.slice()[0], kw("first")));
+    for (1..4) |i| expect(isNil(a.slice()[i]));
+    expect(harness.equals(a.slice()[4], kw("fifth")));
 
     // An in-range write does not shorten it.
     try access.put(wrap.fromArray(a), intv(0), kw("again"));
-    assert(a.*.count == 5);
-    assert(harness.equals(a.*.slice()[0], kw("again")));
+    expect(a.count == 5);
+    expect(harness.equals(a.slice()[0], kw("again")));
 }
 
 /// The growth test is `index >= count`, not `index > count`, so appending at
@@ -955,28 +952,28 @@ fn putIndexAppendsAtTheCount() !void {
     const a = arrays.new(8);
     harness.arrayPush(a, kw("a"));
     try access.putIndex(wrap.fromArray(a), 1, kw("b"));
-    assert(a.*.count == 2);
-    assert(harness.equals(a.*.slice()[1], kw("b")));
+    expect(a.count == 2);
+    expect(harness.equals(a.slice()[1], kw("b")));
 
     const b = buffers.new(8);
     buffers.pushCstringAbi(b, "A");
     try access.putIndex(wrap.fromBuffer(b), 1, intv('B'));
-    assert(b.*.count == 2);
-    assert(b.*.slice()[1] == 'B');
+    expect(b.count == 2);
+    expect(b.slice()[1] == 'B');
 }
 
 fn putIndexGrowsABufferWithZeroes() !void {
     const b = buffers.new(0);
     buffers.pushCstringAbi(b, "A");
     try access.putIndex(wrap.fromBuffer(b), 4, intv('E'));
-    assert(b.*.count == 5);
-    assert(b.*.slice()[0] == 'A');
-    for (1..4) |i| assert(b.*.slice()[i] == 0);
-    assert(b.*.slice()[4] == 'E');
+    expect(b.count == 5);
+    expect(b.slice()[0] == 'A');
+    for (1..4) |i| expect(b.slice()[i] == 0);
+    expect(b.slice()[4] == 'E');
 
     try access.putIndex(wrap.fromBuffer(b), 0, intv('Z'));
-    assert(b.*.count == 5);
-    assert(b.*.slice()[0] == 'Z');
+    expect(b.count == 5);
+    expect(b.slice()[0] == 'Z');
 }
 
 /// A buffer stores bytes, and the value is masked to eight bits after being
@@ -986,17 +983,17 @@ fn aBufferTruncatesToAByte() !void {
     const b = buffers.new(4);
     buffers.pushBytes(b, "\x00\x00") catch @panic("value_access: buffer push raised");
     try access.put(wrap.fromBuffer(b), intv(0), intv(300));
-    assert(b.*.slice()[0] == 44);
+    expect(b.slice()[0] == 44);
     try access.putIndex(wrap.fromBuffer(b), 1, intv(-1));
-    assert(b.*.slice()[1] == 255);
+    expect(b.slice()[1] == 255);
     try access.put(wrap.fromBuffer(b), intv(0), intv(256));
-    assert(b.*.slice()[0] == 0);
+    expect(b.slice()[0] == 0);
     // Eight bits, not seven: a value whose low byte has the high bit set
     // survives through both entry points.
     try access.put(wrap.fromBuffer(b), intv(0), intv(200));
-    assert(b.*.slice()[0] == 200);
+    expect(b.slice()[0] == 200);
     try access.putIndex(wrap.fromBuffer(b), 1, intv(200));
-    assert(b.*.slice()[1] == 200);
+    expect(b.slice()[1] == 200);
 }
 
 /// `put` checks the key before the value and `putIndex` has no key to check, so
@@ -1005,14 +1002,14 @@ fn aBufferTruncatesToAByte() !void {
 fn putChecksTheKeyBeforeTheValue() void {
     const b = buffers.new(4);
     buffers.pushCstringAbi(b, "AB");
-    assert(refusal(access.put, .{ wrap.fromBuffer(b), kw("x"), kw("y") })
+    expect(refusal(access.put, .{ wrap.fromBuffer(b), kw("x"), kw("y") })
         .says("expected integer key for buffer in range [0, 2147483646), got :x"));
-    assert(refusal(access.put, .{ wrap.fromBuffer(b), intv(0), kw("y") })
+    expect(refusal(access.put, .{ wrap.fromBuffer(b), intv(0), kw("y") })
         .says("can only put integers in buffers, got :y"));
-    assert(refusal(access.putIndex, .{ wrap.fromBuffer(b), 0, kw("y") })
+    expect(refusal(access.putIndex, .{ wrap.fromBuffer(b), 0, kw("y") })
         .says("can only put integers in buffers, got :y"));
     // The rejected write left the buffer alone.
-    assert(b.*.count == 2 and b.*.slice()[0] == 'A');
+    expect(b.count == 2 and b.slice()[0] == 'A');
 }
 
 /// The value check comes before the growth, so a rejected write to a buffer does
@@ -1020,33 +1017,33 @@ fn putChecksTheKeyBeforeTheValue() void {
 /// is nothing to reject after the bound.
 fn aRejectedBufferWriteDoesNotGrowIt() void {
     const b = buffers.new(0);
-    assert(refusal(access.putIndex, .{ wrap.fromBuffer(b), 100, kw("y") })
+    expect(refusal(access.putIndex, .{ wrap.fromBuffer(b), 100, kw("y") })
         .says("can only put integers in buffers, got :y"));
-    assert(b.*.count == 0);
+    expect(b.count == 0);
 }
 
 /// `put` bounds its index at `INT32_MAX - 1`, which is the bound `putIndex` does
 /// not have. `FOUND.md` has the other side.
 fn putBoundsTheIndex() void {
     const a = arrays.new(0);
-    assert(refusal(access.put, .{ wrap.fromArray(a), intv(2147483647), intv(1) })
+    expect(refusal(access.put, .{ wrap.fromArray(a), intv(2147483647), intv(1) })
         .says("expected integer key for array in range [0, 2147483646), got 2147483647"));
-    assert(refusal(access.put, .{ wrap.fromArray(a), intv(-1), intv(1) })
+    expect(refusal(access.put, .{ wrap.fromArray(a), intv(-1), intv(1) })
         .says("expected integer key for array in range [0, 2147483646), got -1"));
-    assert(a.*.count == 0);
+    expect(a.count == 0);
 }
 
 fn putOnATableAndAnAbstract() !void {
     const tab = tables.new(0);
     try access.put(wrap.fromTable(tab), kw("k"), intv(1));
-    assert(harness.equals(try access.in(wrap.fromTable(tab), kw("k")), intv(1)));
+    expect(harness.equals(try access.in(wrap.fromTable(tab), kw("k")), intv(1)));
     try access.putIndex(wrap.fromTable(tab), 3, intv(2));
-    assert(harness.equals(try access.in(wrap.fromTable(tab), intv(3)), intv(2)));
+    expect(harness.equals(try access.in(wrap.fromTable(tab), intv(3)), intv(2)));
 
     try access.put(slots_value, intv(0), intv(99));
-    assert(harness.equals(try access.in(slots_value, intv(0)), intv(99)));
+    expect(harness.equals(try access.in(slots_value, intv(0)), intv(99)));
     try access.putIndex(slots_value, 0, intv(10));
-    assert(harness.equals(try access.in(slots_value, intv(0)), intv(10)));
+    expect(harness.equals(try access.in(slots_value, intv(0)), intv(10)));
 }
 
 /// The second `%T` mask, and it is a different one: writing to a tuple is not a
@@ -1059,19 +1056,19 @@ fn putOnANonWritablePanics() void {
     const tup = wrap.fromTuple(tuples.end(t));
     const st = wrap.fromStruct(structs.end(structs.begin(0)));
 
-    assert(refusal(access.put, .{ tup, intv(0), intv(1) })
+    expect(refusal(access.put, .{ tup, intv(0), intv(1) })
         .beginsWith("expected array, table or buffer, got <tuple "));
-    assert(refusal(access.putIndex, .{ st, 0, intv(1) })
+    expect(refusal(access.putIndex, .{ st, 0, intv(1) })
         .beginsWith("expected array, table or buffer, got <struct "));
-    assert(refusal(access.put, .{ value.fromBytes("ab", .string), intv(0), intv(1) })
+    expect(refusal(access.put, .{ value.fromBytes("ab", .string), intv(0), intv(1) })
         .says("expected array, table or buffer, got \"ab\""));
-    assert(refusal(access.putIndex, .{ intv(5), 0, intv(1) })
+    expect(refusal(access.putIndex, .{ intv(5), 0, intv(1) })
         .says("expected array, table or buffer, got 5"));
-    assert(refusal(access.put, .{ wrap.fromNil(), intv(0), intv(1) })
+    expect(refusal(access.put, .{ wrap.fromNil(), intv(0), intv(1) })
         .says("expected array, table or buffer, got nil"));
-    assert(refusal(access.put, .{ bare_value, intv(0), intv(1) })
+    expect(refusal(access.put, .{ bare_value, intv(0), intv(1) })
         .beginsWith("no setter for <value-access/bare "));
-    assert(refusal(access.putIndex, .{ bare_value, 0, intv(1) })
+    expect(refusal(access.putIndex, .{ bare_value, 0, intv(1) })
         .beginsWith("no setter for <value-access/bare "));
 }
 
@@ -1094,38 +1091,38 @@ fn fromJanet() void {
             " (do (def s (table/setproto @{:own 1} @{:up 2})) [(in s :up) (keys s)])]",
     );
     const v = wrap.toTuple(out);
-    assert(wrap.toInteger(v[0]) == 6);
-    assert(wrap.toInteger(v[1]) == 3);
-    assert(wrap.toInteger(v[2]) == 3);
-    assert(wrap.toInteger(v[3]) == 1);
-    assert(wrap.toInteger(v[4]) == 20);
-    assert(isNil(v[5]));
-    assert(isNil(v[6]));
+    expect(wrap.toInteger(v[0]) == 6);
+    expect(wrap.toInteger(v[1]) == 3);
+    expect(wrap.toInteger(v[2]) == 3);
+    expect(wrap.toInteger(v[3]) == 1);
+    expect(wrap.toInteger(v[4]) == 20);
+    expect(isNil(v[5]));
+    expect(isNil(v[6]));
     {
         const p = wrap.toTuple(v[7]);
-        assert(!repr.truthy(p[0]));
-        assert(harness.equals(p[1], value.fromBytes("expected integer key for tuple in range [0, 3), got 9", .string)));
+        expect(!repr.truthy(p[0]));
+        expect(harness.equals(p[1], value.fromBytes("expected integer key for tuple in range [0, 3), got 9", .string)));
     }
     {
         const a = wrap.toArray(v[8]);
-        assert(a.*.count == 4);
-        assert(wrap.toInteger(a.*.slice()[0]) == 1);
-        assert(isNil(a.*.slice()[1]) and isNil(a.*.slice()[2]));
-        assert(harness.equals(a.*.slice()[3], kw("x")));
+        expect(a.count == 4);
+        expect(wrap.toInteger(a.slice()[0]) == 1);
+        expect(isNil(a.slice()[1]) and isNil(a.slice()[2]));
+        expect(harness.equals(a.slice()[3], kw("x")));
     }
     {
         const b = wrap.toBuffer(v[9]);
-        assert(b.*.count == 4);
-        assert(b.*.slice()[0] == 'A' and b.*.slice()[1] == 0 and b.*.slice()[2] == 0 and b.*.slice()[3] == 66);
+        expect(b.count == 4);
+        expect(b.slice()[0] == 'A' and b.slice()[1] == 0 and b.slice()[2] == 0 and b.slice()[3] == 66);
     }
-    assert(wrap.toArray(v[10]).*.count == 2);
-    assert(wrap.toArray(v[11]).*.count == 1);
+    expect(wrap.toArray(v[10]).count == 2);
+    expect(wrap.toArray(v[11]).count == 1);
     {
         const pair = wrap.toTuple(v[12]);
         // The prototype's key reads through `in` and does not appear in `keys`,
         // which walks with `next`.
-        assert(wrap.toInteger(pair[0]) == 2);
-        assert(wrap.toArray(pair[1]).*.count == 1);
+        expect(wrap.toInteger(pair[0]) == 2);
+        expect(wrap.toArray(pair[1]).count == 1);
     }
 }
 

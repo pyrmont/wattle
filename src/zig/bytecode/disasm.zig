@@ -1,24 +1,11 @@
 //! Bytecode as text: one instruction decoded, and a whole `JanetFuncDef`
 //! disassembled.
 //!
-//! Two files once, split along the C originals rather than along the subject:
-//! a decoder -- an encoded word to the tuple `(op arg ...)`, the reverse of the
+//! A decoder -- an encoded word to the tuple `(op arg ...)`, the reverse of the
 //! assembler's table -- and the `JanetFuncDef` walk that calls it once per
 //! instruction. One is the other's inner loop, and neither has a name Janet
 //! publishes or exists because a platform differs, so they are one file.
-//!
-//! While they were two objects, `disassembleBytecode` reached the decoder
-//! through the C ABI, because that is the only thing that joins two
-//! compilations. The call is direct now and the symbol is still exported.
-//!
-//! The two sets of `janet_c_*_wrap_*` helpers are deliberately **not**
-//! collapsed. They look like duplicates and three of them are not --
-//! `janet_c_asm_wrap_symbol` takes a `[*:0]const u8` where
-//! `janet_c_disasm_wrap_symbol` takes a `c.JanetSymbol` -- and folding
-//! near-identical private helpers is a content change, which is not what a
-//! move batch is for.
 
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 
@@ -30,39 +17,33 @@ const tables = @import("../value/tables.zig");
 const tuples = @import("../value/tuples.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const verify = @import("verify.zig");
+const strings = @import("../value/strings.zig");
+const structs = @import("../value/structs.zig");
+const functions = @import("../value/functions.zig");
 
 // ---------------------------------------------------------------------------
-// One instruction, decoded -- what `asm_decode.zig` was.
+// One instruction, decoded.
 // ---------------------------------------------------------------------------
 
 /// The instruction name for an encoded word, or `null` for an opcode this
 /// build does not know.
 ///
-/// `asm.c` kept a second copy of the whole opcode table for this one reverse
-/// lookup. `asm_encode.zig` has the table -- it is what the assembler matches
-/// names against -- so the lookup is a walk over that and the duplicate is
-/// gone.
+/// A walk over the assembler's own table rather than a second copy of it: that
+/// table is what the assembler matches names against, and one table means a
+/// name that assembles is a name that disassembles.
 fn asmOpcodeName(instruction: u32) ?[*:0]const u8 {
-    const opcode = instruction & 0x7F;
+    const opcode = constants.Opcode.fromWord(instruction & 0x7F);
     for (asm_encode.opcodes) |def| {
         if (def.opcode == opcode) return def.name;
     }
     return null;
 }
 
-/// `janet_wrap_integer`, written out. `janet.h` declares it beside its macro
-/// and `wrap.c` defines it only for the two nanbox layouts, so a Zig caller
-/// that reaches the declaration does not link against `-Dnanbox=false`. Four
-/// other files carry the same three lines and the same note.
-inline fn asmWrapInteger(val: i32) repr.Value {
-    return wrap.fromNumber(@floatFromInt(val));
-}
-
 inline fn asmWrapSymbol(val: [*:0]const u8) repr.Value {
     return wrap.fromSymbol(symbols.csymbol(val));
 }
 
-inline fn asmWrapTuple(val: types.JanetTuple) repr.Value {
+inline fn asmWrapTuple(val: tuples.Tuple) repr.Value {
     return wrap.fromTuple(val);
 }
 
@@ -74,13 +55,13 @@ inline fn asmWrapTuple(val: types.JanetTuple) repr.Value {
 /// exported and renaming it here would hide the discrepancy rather than
 /// record it. `FOUND.md` has the entry.
 ///
-inline fn asmSetBreakpoint(val: types.JanetTuple) void {
-    types.tupleHead(val).gc.flags |= constants.JANET_TUPLE_FLAG_BRACKETCTOR;
+inline fn asmSetBreakpoint(val: tuples.Tuple) void {
+    tuples.head(val).gc.flags |= constants.JANET_TUPLE_FLAG_BRACKETCTOR;
 }
 
 pub fn asmDecodeInstruction(instruction: u32) repr.Value {
     const name_bytes = asmOpcodeName(instruction) orelse {
-        return asmWrapInteger(@bitCast(instruction));
+        return wrap.fromInteger(@bitCast(instruction));
     };
 
     const gc_lock = gc_alloc.gclock();
@@ -124,14 +105,14 @@ pub fn asmDecodeInstruction(instruction: u32) repr.Value {
     return asmWrapTuple(result);
 }
 
-fn makeTuple(values: []const repr.Value) types.JanetTuple {
+fn makeTuple(values: []const repr.Value) tuples.Tuple {
     const tuple = tuples.begin(@intCast(values.len));
     for (values, 0..) |val, index| tuple[index] = val;
     return tuples.end(tuple);
 }
 
 fn integer(val: i32) repr.Value {
-    return asmWrapInteger(val);
+    return wrap.fromInteger(val);
 }
 
 fn argument(instruction: u32, byte: u5, mask: u32) i32 {
@@ -144,7 +125,7 @@ fn signedShift(instruction: u32, shift: u5) i32 {
 }
 
 // ---------------------------------------------------------------------------
-// A whole `JanetFuncDef`, disassembled -- what `disasm.zig` was.
+// A whole `JanetFuncDef`, disassembled.
 // ---------------------------------------------------------------------------
 
 pub const Field = enum(c_int) {
@@ -166,33 +147,27 @@ pub const Field = enum(c_int) {
     all,
 };
 
-// The nine wraps this file builds its table from. They were nine one-line C
-// functions in `asm.c`, and they were there because `-Ddisasm` once had a C arm
-// that had to share the runtime's own macros. Every `janet_wrap_*` except
-// `janet_wrap_integer` is an ordinary exported function as well as a macro, so
-// only that one needs writing out; see the note in `asm_decode.zig`.
+// The eight wraps this file builds its table from, named locally so the table
+// below reads as a table.
 inline fn disasmWrapNil() repr.Value {
     return wrap.fromNil();
-}
-inline fn disasmWrapInteger(val: i32) repr.Value {
-    return wrap.fromNumber(@floatFromInt(val));
 }
 inline fn disasmWrapBoolean(val: c_int) repr.Value {
     return wrap.fromBoolean(val != 0);
 }
-inline fn disasmWrapString(val: types.JanetString) repr.Value {
+inline fn disasmWrapString(val: strings.String) repr.Value {
     return wrap.fromString(val);
 }
-inline fn disasmWrapSymbol(val: types.JanetSymbol) repr.Value {
+inline fn disasmWrapSymbol(val: strings.Symbol) repr.Value {
     return wrap.fromSymbol(val);
 }
-inline fn disasmWrapArray(val: *types.JanetArray) repr.Value {
+inline fn disasmWrapArray(val: *arrays.Array) repr.Value {
     return wrap.fromArray(val);
 }
-inline fn disasmWrapTuple(val: types.JanetTuple) repr.Value {
+inline fn disasmWrapTuple(val: tuples.Tuple) repr.Value {
     return wrap.fromTuple(val);
 }
-inline fn disasmWrapStruct(val: types.JanetStruct) repr.Value {
+inline fn disasmWrapStruct(val: structs.Struct) repr.Value {
     return wrap.fromStruct(val);
 }
 inline fn disasmKeyword(val: [*:0]const u8) repr.Value {
@@ -201,31 +176,31 @@ inline fn disasmKeyword(val: [*:0]const u8) repr.Value {
 
 /// `janet_disasm`, the public entry. `asm.c` spelled it as a call into this
 /// file with the `all` field; there is nothing else to it.
-pub fn disasm(definition: *types.JanetFuncDef) repr.Value {
+pub fn disasm(definition: *functions.FuncDef) repr.Value {
     return disassembleFieldExport(definition, @intFromEnum(Field.all));
 }
 
-pub fn disassembleFieldExport(definition: *types.JanetFuncDef, field_value: c_int) repr.Value {
+pub fn disassembleFieldExport(definition: *functions.FuncDef, field_value: c_int) repr.Value {
     const gc_lock = gc_alloc.gclock();
     defer gc_alloc.gcunlock(gc_lock);
     return disassembleField(definition, @enumFromInt(field_value));
 }
 
-pub fn disassembleField(definition: *types.JanetFuncDef, field: Field) repr.Value {
+pub fn disassembleField(definition: *functions.FuncDef, field: Field) repr.Value {
     return switch (field) {
-        .arity => wrapInteger(definition.arity),
-        .min_arity => wrapInteger(definition.min_arity),
-        .max_arity => wrapInteger(definition.max_arity),
+        .arity => wrap.fromInteger(definition.arity),
+        .min_arity => wrap.fromInteger(definition.min_arity),
+        .max_arity => wrap.fromInteger(definition.max_arity),
         .bytecode => disassembleBytecode(definition),
         .source => if (definition.source) |source| disasmWrapString(source) else wrapNil(),
-        .vararg => wrapBoolean(definition.flags & constants.JANET_FUNCDEF_FLAG_VARARG != 0),
-        .structarg => wrapBoolean(definition.flags & constants.JANET_FUNCDEF_FLAG_STRUCTARG != 0),
-        .namedargs => if (definition.flags & constants.JANET_FUNCDEF_FLAG_NAMEDARGS != 0)
-            wrapInteger(definition.named_args_count)
+        .vararg => wrapBoolean(definition.flags.vararg),
+        .structarg => wrapBoolean(definition.flags.structarg),
+        .namedargs => if (definition.flags.namedargs)
+            wrap.fromInteger(definition.named_args_count)
         else
             wrapNil(),
         .name => if (definition.name) |name| disasmWrapString(name) else wrapNil(),
-        .slotcount => wrapInteger(definition.slotcount),
+        .slotcount => wrap.fromInteger(definition.slotcount),
         .symbolmap => disassembleSymbolMap(definition),
         .constants => disassembleConstants(definition),
         .sourcemap => disassembleSourceMap(definition),
@@ -235,13 +210,13 @@ pub fn disassembleField(definition: *types.JanetFuncDef, field: Field) repr.Valu
     };
 }
 
-fn disassembleSymbolMap(definition: *types.JanetFuncDef) repr.Value {
+fn disassembleSymbolMap(definition: *functions.FuncDef) repr.Value {
     if (definition.symbolmap == null) return wrapNil();
-    const result = arrays.new(definition.symbolmap_length);
+    const result = arrays.new(@intCast(definition.symbolmap_length));
     const upvalue = disasmKeyword("upvalue");
-    var index: i32 = 0;
+    var index: usize = 0;
     while (index < definition.symbolmap_length) : (index += 1) {
-        const mapping = definition.symbols()[@intCast(index)];
+        const mapping = definition.symbols()[index];
         const tuple = tuples.begin(4);
         tuple[0] = if (mapping.birth_pc == std_max_u32)
             upvalue
@@ -250,68 +225,68 @@ fn disassembleSymbolMap(definition: *types.JanetFuncDef) repr.Value {
         tuple[1] = wrapUnsigned(mapping.death_pc);
         tuple[2] = wrapUnsigned(mapping.slot_index);
         tuple[3] = disasmWrapSymbol(mapping.symbol.?);
-        result.reserved()[@intCast(index)] = disasmWrapTuple(tuples.end(tuple));
+        result.reserved()[index] = disasmWrapTuple(tuples.end(tuple));
     }
-    result.count = definition.symbolmap_length;
+    result.count = @intCast(definition.symbolmap_length);
     return disasmWrapArray(result);
 }
 
-fn disassembleBytecode(definition: *types.JanetFuncDef) repr.Value {
-    const result = arrays.new(definition.bytecode_length);
-    var index: i32 = 0;
+fn disassembleBytecode(definition: *functions.FuncDef) repr.Value {
+    const result = arrays.new(@intCast(definition.bytecode_length));
+    var index: usize = 0;
     while (index < definition.bytecode_length) : (index += 1) {
-        result.reserved()[@intCast(index)] = asmDecodeInstruction(definition.instructions()[@intCast(index)]);
+        result.reserved()[index] = asmDecodeInstruction(definition.instructions()[index]);
     }
-    result.count = definition.bytecode_length;
+    result.count = @intCast(definition.bytecode_length);
     return disasmWrapArray(result);
 }
 
-fn disassembleConstants(definition: *types.JanetFuncDef) repr.Value {
-    const result = arrays.new(definition.constants_length);
-    var index: i32 = 0;
+fn disassembleConstants(definition: *functions.FuncDef) repr.Value {
+    const result = arrays.new(@intCast(definition.constants_length));
+    var index: usize = 0;
     while (index < definition.constants_length) : (index += 1) {
-        result.reserved()[@intCast(index)] = definition.constantValues()[@intCast(index)];
+        result.reserved()[index] = definition.constantValues()[index];
     }
-    result.count = definition.constants_length;
+    result.count = @intCast(definition.constants_length);
     return disasmWrapArray(result);
 }
 
-fn disassembleSourceMap(definition: *types.JanetFuncDef) repr.Value {
+fn disassembleSourceMap(definition: *functions.FuncDef) repr.Value {
     if (definition.sourcemap == null) return wrapNil();
-    const result = arrays.new(definition.bytecode_length);
-    var index: i32 = 0;
+    const result = arrays.new(@intCast(definition.bytecode_length));
+    var index: usize = 0;
     while (index < definition.bytecode_length) : (index += 1) {
-        const mapping = definition.sourceMappings()[@intCast(index)];
+        const mapping = definition.sourceMappings()[index];
         const tuple = tuples.begin(2);
-        tuple[0] = wrapInteger(mapping.line);
-        tuple[1] = wrapInteger(mapping.column);
-        result.reserved()[@intCast(index)] = disasmWrapTuple(tuples.end(tuple));
+        tuple[0] = wrap.fromInteger(mapping.line);
+        tuple[1] = wrap.fromInteger(mapping.column);
+        result.reserved()[index] = disasmWrapTuple(tuples.end(tuple));
     }
-    result.count = definition.bytecode_length;
+    result.count = @intCast(definition.bytecode_length);
     return disasmWrapArray(result);
 }
 
-fn disassembleEnvironments(definition: *types.JanetFuncDef) repr.Value {
-    const result = arrays.new(definition.environments_length);
-    var index: i32 = 0;
+fn disassembleEnvironments(definition: *functions.FuncDef) repr.Value {
+    const result = arrays.new(@intCast(definition.environments_length));
+    var index: usize = 0;
     while (index < definition.environments_length) : (index += 1) {
-        result.reserved()[@intCast(index)] = wrapInteger(definition.environmentIndices()[@intCast(index)]);
+        result.reserved()[index] = wrap.fromInteger(definition.environmentIndices()[index]);
     }
-    result.count = definition.environments_length;
+    result.count = @intCast(definition.environments_length);
     return disasmWrapArray(result);
 }
 
-fn disassembleDefinitions(definition: *types.JanetFuncDef) repr.Value {
-    const result = arrays.new(definition.defs_length);
-    var index: i32 = 0;
+fn disassembleDefinitions(definition: *functions.FuncDef) repr.Value {
+    const result = arrays.new(@intCast(definition.defs_length));
+    var index: usize = 0;
     while (index < definition.defs_length) : (index += 1) {
-        result.reserved()[@intCast(index)] = disassembleAll(definition.subdefs()[@intCast(index)]);
+        result.reserved()[index] = disassembleAll(definition.subdefs()[index]);
     }
-    result.count = definition.defs_length;
+    result.count = @intCast(definition.defs_length);
     return disasmWrapArray(result);
 }
 
-fn disassembleAll(definition: *types.JanetFuncDef) repr.Value {
+fn disassembleAll(definition: *functions.FuncDef) repr.Value {
     const result = tables.new(10);
     put(result, "arity", disassembleField(definition, .arity));
     put(result, "min-arity", disassembleField(definition, .min_arity));
@@ -331,7 +306,7 @@ fn disassembleAll(definition: *types.JanetFuncDef) repr.Value {
     return disasmWrapStruct(tables.toStruct(result));
 }
 
-fn put(table: *types.JanetTable, key: [*:0]const u8, val: repr.Value) void {
+fn put(table: *tables.Table, key: [*:0]const u8, val: repr.Value) void {
     tables.put(table, disasmKeyword(key), val);
 }
 
@@ -339,12 +314,8 @@ fn wrapNil() repr.Value {
     return disasmWrapNil();
 }
 
-fn wrapInteger(val: i32) repr.Value {
-    return disasmWrapInteger(val);
-}
-
 fn wrapUnsigned(val: u32) repr.Value {
-    return wrapInteger(@bitCast(val));
+    return wrap.fromInteger(@bitCast(val));
 }
 
 fn wrapBoolean(val: bool) repr.Value {

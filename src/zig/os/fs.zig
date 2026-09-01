@@ -17,21 +17,18 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const c = @import("cabi");
-const raise = @import("raise");
-const corefn = @import("corefn");
+const raise = @import("../raise.zig");
+const corefn = @import("../corefn.zig");
 const config = @import("config");
 const oa = @import("abi.zig");
 const args_core = @import("../args.zig");
 const arrays = @import("../value/arrays.zig");
-const tables = @import("../value/tables.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const pp_format = @import("../pp/format.zig");
 const vm_lifecycle = @import("../vm/lifecycle.zig");
-const host_stat = @import("fs/host_stat.zig");
 const stat = @import("fs/stat.zig");
 const value = @import("../value.zig");
 const open_file = @import("fs/open.zig");
@@ -41,18 +38,15 @@ const h = oa.h;
 
 const windows = builtin.os.tag == .windows;
 
-// Janet's platform macros are *not* read through the translation, and this
-// increment found out why. `janet.h` derives `JANET_WINDOWS` from the
-// compiler's own predefined macros, and Aro -- translate-c's front end --
-// predefines `__unix__`, `unix` and `__unix` for `x86_64-windows-gnu` on top
-// of `_WIN32`. `janet.h` tests its Unix chain first, so the *translation* of
-// that header defines `JANET_POSIX` where the *compilation* of the same
-// header for the same target defines `JANET_WINDOWS`. `@hasDecl` is therefore
-// reserved for macros the build writes into `janetconf.h`, and every platform
-// test in this object goes through `builtin.os.tag`.
+// **Every platform test here goes through `builtin.os.tag`, never through a
+// translated macro.** Aro -- the translate-c front end -- predefines
+// `__unix__`, `unix` and `__unix` for `x86_64-windows-gnu` on top of `_WIN32`,
+// so a header whose own chain tests Unix first answers "POSIX" in the
+// *translation* and "Windows" in the *compilation* of the same header for the
+// same target. The assertion below is what would catch a regression.
 comptime {
     if ((builtin.os.tag == .windows) and !windows)
-        @compileError("platform tests must not read janet.h's derived macros");
+        @compileError("platform tests must not read a translated platform macro");
 }
 
 pub const no_symlinks = !config.symlinks;
@@ -65,29 +59,6 @@ comptime {
         @compileError("config.ev disagrees with constants' restatement of it");
 }
 
-// ==========================================================================
-// The kernels this surface sits on, reached across the C ABI
-//
-// Each is `-Dos-*`'s export and may be either implementation, which is what
-// keeps those eight selectors meaningful now that the surface above them is
-// Zig. They are declared here rather than translated because they are
-// declared inside `os.c` rather than in any header.
-// ==========================================================================
-
-/// `janet_wrap_integer`, written out rather than called. `janet.h` declares the
-/// function beside its macro and `wrap.c` defines it only for the two nanbox
-/// layouts, so a tagged build has no such symbol and a Zig caller -- which
-/// cannot use the macro -- does not link. `marsh.zig`, `pp_pretty.zig` and
-/// `value_access.zig` write it out for the same reason, and `FOUND.md` has the
-/// defect. This is the fourth subsystem to meet it.
-inline fn wrapInteger(x: i32) repr.Value {
-    return wrap.fromNumber(@floatFromInt(x));
-}
-
-inline fn errno() c_int {
-    return std.c._errno().*;
-}
-
 pub fn cfunPermissionString(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return stat.makePermstring(try stat.getUnixMode(argv, 0));
@@ -95,7 +66,7 @@ pub fn cfunPermissionString(argv: []repr.Value) align(corefn.alignment) raise.Ra
 
 pub fn cfunPermissionInt(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    return wrapInteger(try stat.getUnixMode(argv, 0));
+    return wrap.fromInteger(try stat.getUnixMode(argv, 0));
 }
 
 // ==========================================================================
@@ -112,31 +83,31 @@ fn cfunCwd(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 fn cfunMkdir(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 1);
     const path = try args_core.getCString(argv, 0);
     const res = hostMkdir(@ptrCast(path));
     if (res == 0) return wrap.fromTrue();
-    if (errno() == h.EEXIST) return wrap.fromFalse();
-    return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(errno()), path });
+    if (c.errno() == h.EEXIST) return wrap.fromFalse();
+    return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
 }
 
 fn cfunRmdir(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 1);
     const path = try args_core.getCString(argv, 0);
     if (hostRmdir(@ptrCast(path)) == -1) {
-        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(errno()), path });
+        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
     }
     return wrap.fromNil();
 }
 
 fn cfunCd(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_read"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.fixarity(argv, 1);
     const path = try args_core.getCString(argv, 0);
     if (hostChdir(@ptrCast(path)) == -1) {
-        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(errno()), path });
+        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
     }
     return wrap.fromNil();
 }
@@ -145,19 +116,17 @@ fn cfunCd(argv: []repr.Value) raise.Raising(repr.Value) {
 /// one place this increment deliberately departs from the C original's
 /// behaviour by agreement rather than by rule.
 ///
-/// `os.c` asserted nothing in `os/rm`, while `os/mkdir`, `os/rmdir`, `os/cd`,
+/// Upstream asserts nothing in `os/rm`, while `os/mkdir`, `os/rmdir`, `os/cd`,
 /// `os/rename`, `os/touch`, `os/chmod`, `os/umask`, `os/link` and `os/symlink`
-/// all assert `JANET_SANDBOX_FS_WRITE` -- so a program under a full filesystem
-/// sandbox could still delete any file the process could reach. `FOUND.md`
-/// keeps the entry for reporting upstream; `src/core/os.c` carries the same
-/// fix, because the two implementations have to stay observationally
-/// identical or the differential testing this project rests on means nothing.
+/// all assert the filesystem-write capability -- so a program under a full
+/// filesystem sandbox could still delete any file the process could reach.
+/// `FOUND.md` keeps the entry for reporting upstream.
 fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 1);
     const path = try args_core.getCString(argv, 0);
     if (hostRemove(@ptrCast(path)) == -1) {
-        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(errno()), path });
+        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
     }
     return wrap.fromNil();
 }
@@ -165,28 +134,28 @@ fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
 /// The one failure message in this family that is a bare `janet_panic` over
 /// `janet_strerror` rather than a `%s: %s` naming the path. Reproduced.
 fn cfunRename(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 2);
     const src = try args_core.getCString(argv, 0);
     const dest = try args_core.getCString(argv, 1);
     if (hostRename(@ptrCast(src), @ptrCast(dest)) != 0) {
-        return raise.panic(@ptrCast(utils.strerrorSafe(errno())));
+        return raise.panic(@ptrCast(utils.strerrorSafe(c.errno())));
     }
     return wrap.fromNil();
 }
 
 fn cfunTouch(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.arity(argv, 1, 3);
     const path = try args_core.getCString(argv, 0);
     var actime: f64 = 0;
     var modtime: f64 = 0;
-    if (@as(i32, @intCast(argv.len)) >= 2) {
+    if (argv.len >= 2) {
         actime = try args_core.getNumber(argv, 1);
-        modtime = if (@as(i32, @intCast(argv.len)) >= 3) try args_core.getNumber(argv, 2) else actime;
+        modtime = if (argv.len >= 3) try args_core.getNumber(argv, 2) else actime;
     }
-    if (touch(@ptrCast(path), @intFromBool(@as(i32, @intCast(argv.len)) >= 2), actime, modtime) == -1) {
-        return raise.panic(@ptrCast(utils.strerrorSafe(errno())));
+    if (touch(@ptrCast(path), argv.len >= 2, actime, modtime) == -1) {
+        return raise.panic(@ptrCast(utils.strerrorSafe(c.errno())));
     }
     return wrap.fromNil();
 }
@@ -205,30 +174,30 @@ inline fn symlinkOrLink(old: [*:0]const u8, new: [*:0]const u8) i32 {
 }
 
 fn cfunLink(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.arity(argv, 2, 3);
     if (windows) return raise.panic("not supported on Windows or Plan 9");
     const oldpath = try args_core.getCString(argv, 0);
     const newpath = try args_core.getCString(argv, 1);
-    const symbolic = @as(i32, @intCast(argv.len)) == 3 and repr.truthy(argv[2]);
+    const symbolic = argv.len == 3 and repr.truthy(argv[2]);
     const res = if (symbolic)
         symlinkOrLink(@ptrCast(oldpath), @ptrCast(newpath))
     else
         hardLink(@ptrCast(oldpath), @ptrCast(newpath));
     if (res == -1) {
-        return pp_format.panicf("%s: %s -> %s", .{ utils.strerrorSafe(errno()), oldpath, newpath });
+        return pp_format.panicf("%s: %s -> %s", .{ utils.strerrorSafe(c.errno()), oldpath, newpath });
     }
     return wrap.fromNil();
 }
 
 fn cfunSymlink(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 2);
     if (windows) return raise.panic("not supported on Windows or Plan 9");
     const oldpath = try args_core.getCString(argv, 0);
     const newpath = try args_core.getCString(argv, 1);
     if (symlinkOrLink(@ptrCast(oldpath), @ptrCast(newpath)) == -1) {
-        return pp_format.panicf("%s: %s -> %s", .{ utils.strerrorSafe(errno()), oldpath, newpath });
+        return pp_format.panicf("%s: %s -> %s", .{ utils.strerrorSafe(c.errno()), oldpath, newpath });
     }
     return wrap.fromNil();
 }
@@ -241,35 +210,23 @@ fn cfunReadlink(argv: []repr.Value) raise.Raising(repr.Value) {
     const path = try args_core.getCString(argv, 0);
     const len = readLink(@ptrCast(path), &buffer, buffer.len);
     if (len < 0 or @as(usize, @intCast(len)) >= buffer.len) {
-        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(errno()), path });
+        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
     }
     return value.fromBytes(buffer[0..@intCast(len)], .string);
 }
 
-/// The host allocates the path and this frees it, on the POSIX/Windows split
-/// `FOUND.md` records: `canonicalPath` is `realpath` on POSIX and
-/// `_fullpath` on Windows, and the Windows result is released with the plain
-/// `free` rather than Janet's, because `_fullpath` used the plain `malloc`.
-///
-/// The `janet_cstringv` between the allocation and the release can raise, and
-/// a raise here strands the allocation. That is the C original's behaviour and
-/// the reason this file carries the jump-transparent marker rather than a
-/// `defer`.
-extern fn free(ptr: ?*anyopaque) callconv(.c) void;
-extern fn GetFileAttributesA(name: [*:0]const u8) callconv(.c) u32;
-
 fn cfunRealpath(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_read"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.fixarity(argv, 1);
     const src = try args_core.getCString(argv, 0);
     if (no_realpath) return raise.panic("os/realpath not enabled for this platform");
     const dest = canonicalPath(@ptrCast(src)) orelse {
-        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(errno()), src });
+        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), src });
     };
     const ret = value.fromBytes(std.mem.span(dest), .string);
     if (windows) {
-        const attrib = GetFileAttributesA(dest);
-        free(dest);
+        const attrib = c.GetFileAttributesA(dest);
+        c.free(dest);
         if (attrib == 0xFFFF_FFFF) return pp_format.panicf("path does not exist: %v", .{ret});
     } else {
         utils.free(dest);
@@ -284,14 +241,14 @@ fn cfunRealpath(argv: []repr.Value) raise.Raising(repr.Value) {
 /// The Windows enumeration, written here rather than left in C. See the head
 /// of this file: `_finddata_t` translates completely on mingw, which the
 /// `-Dos-fs-paths` note assumed it would not.
-fn dirWindows(dir: [*]const u8, paths: *types.JanetArray) raise.Raising(void) {
+fn dirWindows(dir: [*]const u8, paths: *arrays.Array) raise.Raising(void) {
     var afile: h._finddata_t = undefined;
     var pattern: [h.MAX_PATH + 1]u8 = undefined;
     const dirlen = std.mem.len(@as([*:0]const u8, @ptrCast(dir)));
     if (dirlen > pattern.len - 3) return pp_format.panicf("path too long: %s", .{dir});
     _ = std.fmt.bufPrintZ(&pattern, "{s}/*", .{@as([*:0]const u8, @ptrCast(dir))}) catch unreachable;
     const res = h._findfirst(&pattern, &afile);
-    if (res == -1) return raise.panicv(value.fromBytes(std.mem.span(utils.strerrorSafe(errno())), .string));
+    if (res == -1) return raise.panicv(value.fromBytes(std.mem.span(utils.strerrorSafe(c.errno())), .string));
     while (true) {
         const name: [*:0]const u8 = @ptrCast(&afile.name);
         if (!std.mem.eql(u8, std.mem.span(name), ".") and
@@ -307,61 +264,56 @@ fn dirWindows(dir: [*]const u8, paths: *types.JanetArray) raise.Raising(void) {
 /// The POSIX enumeration, through `-Dos-fs-paths`'s explicit iterator. The
 /// close-then-panic on a failed read is the C original's, and the errno is
 /// saved across the close because closing can overwrite it.
-fn dirPosix(dir: [*]const u8, paths: *types.JanetArray) raise.Raising(void) {
+fn dirPosix(dir: [*]const u8, paths: *arrays.Array) raise.Raising(void) {
     const dfd = dirOpen(@ptrCast(dir)) orelse {
-        return pp_format.panicf("cannot open directory %s: %s", .{ dir, utils.strerrorSafe(errno()) });
+        return pp_format.panicf("cannot open directory %s: %s", .{ dir, utils.strerrorSafe(c.errno()) });
     };
     while (true) {
-        var name: [*:0]const u8 = undefined;
-        const status = dirNextAbi(dfd, &name);
-        if (status < 0) {
-            const olderr = errno();
-            dirClose(dfd);
-            return pp_format.panicf("failed to read directory %s: %s", .{ dir, utils.strerrorSafe(olderr) });
+        switch (dirNext(dfd)) {
+            .failed => {
+                const olderr = c.errno();
+                dirClose(dfd);
+                return pp_format.panicf("failed to read directory %s: %s", .{ dir, utils.strerrorSafe(olderr) });
+            },
+            .end => break,
+            .entry => |name| try arrays.push(paths, value.fromBytes(std.mem.span(name), .string)),
         }
-        if (status == 0) break;
-        try arrays.push(paths, value.fromBytes(std.mem.span(name), .string));
     }
     dirClose(dfd);
 }
 
 fn cfunDir(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_read"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.arity(argv, 1, 2);
     const dir = try args_core.getCString(argv, 0);
-    const paths = if (@as(i32, @intCast(argv.len)) == 2) try args_core.getArray(argv, 1) else arrays.new(0);
+    const paths = if (argv.len == 2) try args_core.getArray(argv, 1) else arrays.new(0);
     if (windows) try dirWindows(dir, paths) else try dirPosix(dir, paths);
     return wrap.fromArray(paths);
 }
 
-extern fn chmod(path: [*:0]const u8, mode: stat.jmode_t) callconv(.c) c_int;
-extern fn _chmod(path: [*:0]const u8, mode: c_int) callconv(.c) c_int;
-extern fn umask(mask: stat.jmode_t) callconv(.c) stat.jmode_t;
-extern fn _umask(mask: c_int) callconv(.c) c_int;
-
 fn cfunChmod(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 2);
     const path = try args_core.getCString(argv, 0);
     const mode = try stat.getMode(argv, 1);
-    const res = if (windows) _chmod(@ptrCast(path), mode) else chmod(@ptrCast(path), mode);
-    if (res == -1) return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(errno()), path });
+    const res = if (windows) c._chmod(@ptrCast(path), mode) else oa.chmod(@ptrCast(path), mode);
+    if (res == -1) return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
     return wrap.fromNil();
 }
 
 fn cfunUmask(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(types.Sandbox.of(&.{"fs_write"}));
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 1);
     const mask = try stat.getMode(argv, 0);
-    const res = if (windows) _umask(mask) else umask(mask);
-    return wrapInteger(stat.hostPermToUnix(@intCast(res)));
+    const res = if (windows) c._umask(mask) else oa.umask(mask);
+    return wrap.fromInteger(stat.hostPermToUnix(@intCast(res)));
 }
 
 // ==========================================================================
 // Registration
 //
-// The rows this file contributes to `janet_lib_os`. The root assembles them;
-// see `os_surface.zig` for why the table cannot be split across selectors.
+// The rows this file contributes to the `os/` module. `os.zig` assembles them,
+// because the registration order interleaves this file's with its own.
 // ==========================================================================
 
 /// `@src()` is only valid inside a function, so a table that wants to record
@@ -472,44 +424,33 @@ pub fn evEntries() []const corefn.Entry {
     return &list;
 }
 
-extern fn getcwd(buffer: [*]u8, size: usize) callconv(.c) ?[*]u8;
-extern fn _getcwd(buffer: [*]u8, size: c_int) callconv(.c) ?[*]u8;
-extern fn mkdir(path: [*:0]const u8, mode: c_uint) callconv(.c) c_int;
-extern fn _mkdir(path: [*:0]const u8) callconv(.c) c_int;
-extern fn rmdir(path: [*:0]const u8) callconv(.c) c_int;
-extern fn _rmdir(path: [*:0]const u8) callconv(.c) c_int;
-extern fn chdir(path: [*:0]const u8) callconv(.c) c_int;
-extern fn _chdir(path: [*:0]const u8) callconv(.c) c_int;
-extern fn remove(path: [*:0]const u8) callconv(.c) c_int;
-extern fn rename(old_path: [*:0]const u8, new_path: [*:0]const u8) callconv(.c) c_int;
-
 pub fn hostGetcwd(buffer: [*]u8, size: i32) i32 {
     const result = if (builtin.os.tag == .windows)
-        _getcwd(buffer, size)
+        c._getcwd(buffer, size)
     else
-        getcwd(buffer, @intCast(size));
+        c.getcwd(buffer, @intCast(size));
     return if (result == null) -1 else 0;
 }
 
 pub fn hostMkdir(path: [*:0]const u8) i32 {
-    if (builtin.os.tag == .windows) return _mkdir(path);
-    return mkdir(path, 0o775);
+    if (builtin.os.tag == .windows) return c._mkdir(path);
+    return c.mkdir(path, 0o775);
 }
 
 pub fn hostRmdir(path: [*:0]const u8) i32 {
-    return if (builtin.os.tag == .windows) _rmdir(path) else rmdir(path);
+    return if (builtin.os.tag == .windows) c._rmdir(path) else c.rmdir(path);
 }
 
 pub fn hostChdir(path: [*:0]const u8) i32 {
-    return if (builtin.os.tag == .windows) _chdir(path) else chdir(path);
+    return if (builtin.os.tag == .windows) c._chdir(path) else c.chdir(path);
 }
 
 pub fn hostRemove(path: [*:0]const u8) i32 {
-    return remove(path);
+    return c.remove(path);
 }
 
 pub fn hostRename(old_path: [*:0]const u8, new_path: [*:0]const u8) i32 {
-    return rename(old_path, new_path);
+    return c.rename(old_path, new_path);
 }
 
 /// `struct utimbuf` is two `time_t` values, which is the one host structure
@@ -517,20 +458,6 @@ pub fn hostRename(old_path: [*:0]const u8, new_path: [*:0]const u8) i32 {
 /// boundary: C passes the two times as doubles and the structure lives only for
 /// the duration of the call.
 const TimeT = if (windows) i64 else std.c.time_t;
-const utimbuf = extern struct {
-    actime: TimeT,
-    modtime: TimeT,
-};
-
-extern fn link(oldpath: [*:0]const u8, newpath: [*:0]const u8) callconv(.c) c_int;
-extern fn utime(path: [*:0]const u8, times: ?*const utimbuf) callconv(.c) c_int;
-extern fn realpath(path: [*:0]const u8, resolved: ?[*]u8) callconv(.c) ?[*:0]u8;
-
-/// The MinGW CRT resolves `utime` to the 64-bit variant, which is what Janet's
-/// C implementation calls.
-extern fn _utime64(path: [*:0]const u8, times: ?*const utimbuf) callconv(.c) c_int;
-extern fn _fullpath(resolved: ?[*]u8, path: [*:0]const u8, size: c_int) callconv(.c) ?[*:0]u8;
-
 const MAX_PATH = 260;
 
 comptime {
@@ -543,28 +470,47 @@ pub fn dirOpen(path: [*:0]const u8) ?*anyopaque {
     return @ptrCast(std.c.opendir(path));
 }
 
+/// One read of a directory stream. Three outcomes rather than two, which is
+/// why this is a union and not an optional: the end of the stream and a failed
+/// read are different answers, and only the second leaves `errno` set.
+pub const DirRead = union(enum) {
+    /// The next entry that is neither "." nor "..", borrowed from the stream.
+    entry: [*:0]const u8,
+    /// The stream is exhausted.
+    end,
+    /// The read failed; `errno` describes it.
+    failed,
+};
+
 /// Report the next entry that is neither "." nor "..", borrowing the name from
 /// the directory stream.
 ///
-/// Returns 1 with a name, 0 at the end of the stream, or -1 with `errno` set.
 /// The C loop this replaces cleared `errno` before each read, because a null
 /// result means either the end of the stream or a failure.
-fn dirNext(handle: *anyopaque, name_out: *[*:0]const u8) raise.Raising(i32) {
+fn dirNext(handle: *anyopaque) DirRead {
     const dir: *std.c.DIR = @ptrCast(handle);
     while (true) {
         std.c._errno().* = 0;
         const entry = std.c.readdir(dir) orelse {
-            return if (std.c._errno().* != 0) -1 else 0;
+            return if (std.c._errno().* != 0) .failed else .end;
         };
         const name: [*:0]const u8 = @ptrCast(&entry.name);
         if (isDotEntry(name)) continue;
-        name_out.* = name;
-        return 1;
+        return .{ .entry = name };
     }
 }
 
+/// The `1` / `0` / `-1` spelling of `dirNext`, kept because `test/os_fs_paths`
+/// reaches it. Nothing inside the runtime calls it: `dirPosix` takes the union.
 pub fn dirNextAbi(handle: *anyopaque, name_out: *[*:0]const u8) i32 {
-    return raise.reported(dirNext(handle, name_out));
+    switch (dirNext(handle)) {
+        .entry => |name| {
+            name_out.* = name;
+            return 1;
+        },
+        .end => return 0,
+        .failed => return -1,
+    }
 }
 
 pub fn dirClose(handle: *anyopaque) void {
@@ -578,7 +524,7 @@ fn isDotEntry(name: [*:0]const u8) bool {
 }
 
 pub fn hardLink(oldpath: [*:0]const u8, newpath: [*:0]const u8) i32 {
-    return link(oldpath, newpath);
+    return c.link(oldpath, newpath);
 }
 
 pub fn symbolicLink(oldpath: [*:0]const u8, newpath: [*:0]const u8) i32 {
@@ -597,26 +543,25 @@ pub fn readLink(path: [*:0]const u8, buffer: [*]u8, size: usize) i64 {
 /// when `has_times` is zero.
 ///
 /// The argument defaults are already resolved; the times arrive as doubles
-/// because that is what Janet holds. Converting a double that no `time_t` can
-/// represent is undefined in C, so this saturates instead, as the host wait
-/// in `os_time.zig` does.
-pub fn touch(path: [*:0]const u8, has_times: i32, actime: f64, modtime: f64) i32 {
-    if (has_times == 0) {
-        return if (windows) _utime64(path, null) else utime(path, null);
+/// because that is what Janet holds. A double that no `time_t` can represent
+/// saturates rather than trapping, the same way `os.zig`'s sleep does.
+pub fn touch(path: [*:0]const u8, has_times: bool, actime: f64, modtime: f64) i32 {
+    if (!has_times) {
+        return if (windows) c._utime64(path, null) else c.utime(path, null);
     }
-    const times: utimbuf = .{
+    const times: c.utimbuf = .{
         .actime = saturatingCast(TimeT, actime),
         .modtime = saturatingCast(TimeT, modtime),
     };
-    return if (windows) _utime64(path, &times) else utime(path, &times);
+    return if (windows) c._utime64(path, &times) else c.utime(path, &times);
 }
 
 /// Resolve a path to its canonical absolute form, following `.`, `..`, and
 /// symbolic links. The result is allocated by the host and released by the
 /// caller.
 pub fn canonicalPath(path: [*:0]const u8) ?[*:0]u8 {
-    if (windows) return _fullpath(null, path, MAX_PATH);
-    return realpath(path, null);
+    if (windows) return c._fullpath(null, path, MAX_PATH);
+    return c.realpath(path, null);
 }
 
 /// Convert toward zero, clamping instead of trapping. This reproduces the
@@ -649,3 +594,6 @@ test "saturating conversion clamps rather than trapping" {
     try std.testing.expectEqual(@as(i64, std.math.maxInt(i64)), saturatingCast(i64, 1e300));
     try std.testing.expectEqual(@as(i64, std.math.minInt(i64)), saturatingCast(i64, -1e300));
 }
+
+// The host calls whose signatures name a type this subsystem owns, so they
+// stay with the type rather than moving to `cabi.zig`.

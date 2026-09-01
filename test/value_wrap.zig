@@ -9,21 +9,22 @@
 //!  - The layout-independent ones, which are the bulk. A wrapper's type tag, a
 //!    round trip through the matching unwrapper, the fact that two wrappers
 //!    over the same pointer produce values that are not equal, truthiness, and
-//!    the `janet_checktype`/`janet_checktypes` agreement matrix. These say the
+//!    the `checkType`/`checkTypes` agreement matrix. These say the
 //!    representation is *a* working one.
 //!
 //!  - The layout-dependent ones, which assert absolute bit patterns computed
-//!    from `janet.h`'s own constants. These say it is *the* one. Without them
-//!    a port that shifted every tag by one would pass everything above.
+//!    from the tag numbering and the payload mask. These say it is *the* one.
+//!    Without them a port that shifted every tag by one would pass everything
+//!    above.
 //!
-//! ## `c.janet_*` here is the subject, not a call in arrears
+//! ## The two spellings are compared in one section
 //!
-//! Every `c.janet_*` below is deliberate: this file's job is to compare the
-//! *exported symbol* against the inline surface a Zig caller gets, so pointing
-//! a call site here at the internal spelling puts the same function on both
-//! sides of an `==`. Those references are also what keep the `cabi.zig`
-//! declarations alive, which is what lets `cabi_check.zig` hold a row for
-//! each.
+//! Each constructor has two spellings: `wrap.fromX`, which a Zig caller
+//! inlines, and `wrap.abi.fromX`, the `callconv(.c)` body beside it that the
+//! library exports. Asserting the two agree is `theTwoSpellingsAgree`'s job
+//! and only its. A `wrap.abi.fromX` anywhere else below is a way of building
+//! a value and nothing more; reading one as half of a comparison would credit
+//! its case with a claim it does not make.
 //!
 //! **A Zig contract cannot reach a macro.** Janet declares `janet_checktype`,
 //! `janet_truthy`, `janet_wrap_integer` and their kin as functions *beside*
@@ -55,28 +56,22 @@
 //! `value_order.zig` both do.
 //!
 //! That the subject and the contract read the same source is not a weakening:
-//! the C contract's `#ifdef` chain was `janet.h`'s, and so was `wrap.c`'s.
-//! Neither side ever had an independent opinion about which layout this is.
+//! neither side ever had an independent opinion about which layout this is.
 //! What each side computes *from* it is independent, and that is where the
 //! assertions are.
-//!
-//! ## `janet_wrap_integer` is referenced only under a NaN-boxed layout
-//!
-//! Not tidiness: `value_wrap.zig` exports the symbol only there, reproducing
-//! the defect `FOUND.md` records against `wrap.c`, so a tagged build has no
-//! such symbol and naming it would fail to link. The inline form exists under
-//! all three, which is itself worth asserting -- see `theIntegerConversions`.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
-const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("subsystems").raise;
 const harness = @import("harness.zig");
-const corefn = @import("corefn");
+const corefn = @import("subsystems").corefn;
 const config = @import("config");
 
+const subsystems = @import("subsystems");
 const wrap = @import("subsystems").value.wrap;
+const arrays = @import("subsystems").value.arrays;
+const buffers = @import("subsystems").value.buffers;
+const vm_lifecycle = @import("subsystems").lifecycle;
 const structs = @import("subsystems").value.structs;
 const tables = @import("subsystems").value.tables;
 const gc_alloc = @import("subsystems").gc_alloc;
@@ -85,16 +80,17 @@ const symbols = @import("subsystems").value.symbols;
 const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
 const gc_mark = @import("subsystems").gc_mark;
-const internal = harness.internal;
-const assert = std.debug.assert;
+const abi = @import("abi");
+const functions = @import("subsystems").value.functions;
+const fibers = @import("subsystems").value.fibers;
+const expect = @import("expect.zig").expect;
 
 // ------------------------------------------------------------------ layout
 
 const Layout = enum { nanbox64, nanbox32, tagged };
 
-/// Which of `janet.h`'s three representations this build compiled with, read
-/// off the translated type. See the header for why it is not the `#ifdef`
-/// chain, and `value_wrap.zig` for the same three lines with the same reason.
+/// Which of the three representations this build compiled with, read off the
+/// build's own configuration rather than off the value type.
 const layout: Layout = if (config.value_repr == .tagged)
     .tagged
 else if (config.value_repr == .nanbox_32)
@@ -109,7 +105,7 @@ else
 /// `Janet` is twelve bytes of content in a sixteen-byte structure: neither
 /// implementation writes the padding, and neither is required to.
 fn sameValue(a: repr.Value, b: repr.Value) bool {
-    return harness.u64Of(a) == harness.u64Of(b) and c.janet_type(a) == c.janet_type(b);
+    return harness.u64Of(a) == harness.u64Of(b) and repr.typeOf(a) == repr.typeOf(b);
 }
 
 /// A cfunction to wrap. Its address is the only function pointer in the file,
@@ -118,10 +114,10 @@ fn sameValue(a: repr.Value, b: repr.Value) bool {
 fn aCFunction(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
-    return c.janet_wrap_nil();
+    return wrap.abi.fromNil();
 }
 
-fn theCFunction() types.JanetCFunction {
+fn theCFunction() abi.JanetCFunction {
     return raise.stored(&aCFunction);
 }
 
@@ -160,24 +156,24 @@ fn at(t: repr.Tag) usize {
 /// whether the address points at a real object is the collector's problem.
 fn eachWrapperStampsItsType() void {
     const p = pointerA();
-    assert(c.janet_type(c.janet_wrap_nil()) == @intFromEnum(repr.Tag.nil));
-    assert(c.janet_type(c.janet_wrap_true()) == @intFromEnum(repr.Tag.boolean));
-    assert(c.janet_type(c.janet_wrap_false()) == @intFromEnum(repr.Tag.boolean));
-    assert(c.janet_type(c.janet_wrap_boolean(1)) == @intFromEnum(repr.Tag.boolean));
-    assert(c.janet_type(wrap.fromNumber(1.5)) == @intFromEnum(repr.Tag.number));
-    assert(c.janet_type(c.janet_wrap_string(@ptrCast(p))) == @intFromEnum(repr.Tag.string));
-    assert(c.janet_type(c.janet_wrap_symbol(@ptrCast(p))) == @intFromEnum(repr.Tag.symbol));
-    assert(c.janet_type(c.janet_wrap_keyword(@ptrCast(p))) == @intFromEnum(repr.Tag.keyword));
-    assert(c.janet_type(c.janet_wrap_array(@ptrCast(@alignCast(p)))) == @intFromEnum(repr.Tag.array));
-    assert(c.janet_type(c.janet_wrap_tuple(@ptrCast(@alignCast(p)))) == @intFromEnum(repr.Tag.tuple));
-    assert(c.janet_type(c.janet_wrap_struct(@ptrCast(@alignCast(p)))) == @intFromEnum(repr.Tag.@"struct"));
-    assert(c.janet_type(c.janet_wrap_fiber(@ptrCast(@alignCast(p)))) == @intFromEnum(repr.Tag.fiber));
-    assert(c.janet_type(c.janet_wrap_buffer(@ptrCast(@alignCast(p)))) == @intFromEnum(repr.Tag.buffer));
-    assert(c.janet_type(c.janet_wrap_function(@ptrCast(@alignCast(p)))) == @intFromEnum(repr.Tag.function));
-    assert(c.janet_type(c.janet_wrap_cfunction(theCFunction())) == @intFromEnum(repr.Tag.cfunction));
-    assert(c.janet_type(c.janet_wrap_table(@ptrCast(@alignCast(p)))) == @intFromEnum(repr.Tag.table));
-    assert(c.janet_type(c.janet_wrap_abstract(p)) == @intFromEnum(repr.Tag.abstract));
-    assert(c.janet_type(c.janet_wrap_pointer(p)) == @intFromEnum(repr.Tag.pointer));
+    expect(repr.typeOf(wrap.abi.fromNil()) == repr.Tag.nil);
+    expect(repr.typeOf(wrap.abi.fromTrue()) == repr.Tag.boolean);
+    expect(repr.typeOf(wrap.abi.fromFalse()) == repr.Tag.boolean);
+    expect(repr.typeOf(wrap.abi.fromBoolean(1)) == repr.Tag.boolean);
+    expect(repr.typeOf(wrap.fromNumber(1.5)) == repr.Tag.number);
+    expect(repr.typeOf(wrap.abi.fromString(@ptrCast(p))) == repr.Tag.string);
+    expect(repr.typeOf(wrap.abi.fromSymbol(@ptrCast(p))) == repr.Tag.symbol);
+    expect(repr.typeOf(wrap.abi.fromKeyword(@ptrCast(p))) == repr.Tag.keyword);
+    expect(repr.typeOf(wrap.abi.fromArray(@ptrCast(@alignCast(p)))) == repr.Tag.array);
+    expect(repr.typeOf(wrap.abi.fromTuple(@ptrCast(@alignCast(p)))) == repr.Tag.tuple);
+    expect(repr.typeOf(wrap.abi.fromStruct(@ptrCast(@alignCast(p)))) == repr.Tag.@"struct");
+    expect(repr.typeOf(wrap.abi.fromFiber(@ptrCast(@alignCast(p)))) == repr.Tag.fiber);
+    expect(repr.typeOf(wrap.abi.fromBuffer(@ptrCast(@alignCast(p)))) == repr.Tag.buffer);
+    expect(repr.typeOf(wrap.abi.fromFunction(@ptrCast(@alignCast(p)))) == repr.Tag.function);
+    expect(repr.typeOf(wrap.abi.fromCfunction(theCFunction())) == repr.Tag.cfunction);
+    expect(repr.typeOf(wrap.abi.fromTable(@ptrCast(@alignCast(p)))) == repr.Tag.table);
+    expect(repr.typeOf(wrap.abi.fromAbstract(p)) == repr.Tag.abstract);
+    expect(repr.typeOf(wrap.abi.fromPointer(p)) == repr.Tag.pointer);
 }
 
 /// Every pointer wrapper round trips through its own unwrapper, for three
@@ -187,43 +183,43 @@ fn eachWrapperStampsItsType() void {
 /// low bits on every target that nanboxes.
 fn pointerRoundTrips() void {
     const heap_block = utils.malloc(64);
-    assert(heap_block != null);
+    expect(heap_block != null);
     defer utils.free(heap_block);
 
     for ([_]?*anyopaque{ pointerA(), pointerB(), heap_block }) |p| {
-        assert(wrap.toString(c.janet_wrap_string(@ptrCast(p))) == @as(types.JanetString, @ptrCast(p)));
-        assert(wrap.toSymbol(c.janet_wrap_symbol(@ptrCast(p))) == @as(types.JanetSymbol, @ptrCast(p)));
-        assert(wrap.toKeyword(c.janet_wrap_keyword(@ptrCast(p))) == @as(types.JanetKeyword, @ptrCast(p)));
-        assert(wrap.toArray(c.janet_wrap_array(@ptrCast(@alignCast(p)))) == @as(*types.JanetArray, @ptrCast(@alignCast(p))));
-        assert(wrap.toTuple(c.janet_wrap_tuple(@ptrCast(@alignCast(p)))) == @as(types.JanetTuple, @ptrCast(@alignCast(p))));
-        assert(wrap.toStruct(c.janet_wrap_struct(@ptrCast(@alignCast(p)))) == @as(types.JanetStruct, @ptrCast(@alignCast(p))));
-        assert(wrap.toFiber(c.janet_wrap_fiber(@ptrCast(@alignCast(p)))) == @as(*types.JanetFiber, @ptrCast(@alignCast(p))));
-        assert(wrap.toBuffer(c.janet_wrap_buffer(@ptrCast(@alignCast(p)))) == @as(*types.JanetBuffer, @ptrCast(@alignCast(p))));
-        assert(wrap.toFunction(c.janet_wrap_function(@ptrCast(@alignCast(p)))) == @as(*types.JanetFunction, @ptrCast(@alignCast(p))));
-        assert(wrap.toTable(c.janet_wrap_table(@ptrCast(@alignCast(p)))) == @as(*types.JanetTable, @ptrCast(@alignCast(p))));
-        assert(wrap.toAbstract(c.janet_wrap_abstract(p)) == p);
-        assert(c.janet_unwrap_pointer(c.janet_wrap_pointer(p)) == p);
+        expect(wrap.toString(wrap.abi.fromString(@ptrCast(p))) == @as(strings.String, @ptrCast(p)));
+        expect(wrap.toSymbol(wrap.abi.fromSymbol(@ptrCast(p))) == @as(strings.Symbol, @ptrCast(p)));
+        expect(wrap.toKeyword(wrap.abi.fromKeyword(@ptrCast(p))) == @as(strings.Keyword, @ptrCast(p)));
+        expect(wrap.toArray(wrap.abi.fromArray(@ptrCast(@alignCast(p)))) == @as(*arrays.Array, @ptrCast(@alignCast(p))));
+        expect(wrap.toTuple(wrap.abi.fromTuple(@ptrCast(@alignCast(p)))) == @as(tuples.Tuple, @ptrCast(@alignCast(p))));
+        expect(wrap.toStruct(wrap.abi.fromStruct(@ptrCast(@alignCast(p)))) == @as(structs.Struct, @ptrCast(@alignCast(p))));
+        expect(wrap.toFiber(wrap.abi.fromFiber(@ptrCast(@alignCast(p)))) == @as(*fibers.Fiber, @ptrCast(@alignCast(p))));
+        expect(wrap.toBuffer(wrap.abi.fromBuffer(@ptrCast(@alignCast(p)))) == @as(*buffers.Buffer, @ptrCast(@alignCast(p))));
+        expect(wrap.toFunction(wrap.abi.fromFunction(@ptrCast(@alignCast(p)))) == @as(*functions.Function, @ptrCast(@alignCast(p))));
+        expect(wrap.toTable(wrap.abi.fromTable(@ptrCast(@alignCast(p)))) == @as(*tables.Table, @ptrCast(@alignCast(p))));
+        expect(wrap.toAbstract(wrap.abi.fromAbstract(p)) == p);
+        expect(wrap.toPointerAbi(wrap.abi.fromPointer(p)) == p);
     }
-    assert(wrap.toCfunction(c.janet_wrap_cfunction(theCFunction())) == theCFunction());
+    expect(wrap.toCfunction(wrap.abi.fromCfunction(theCFunction())) == theCFunction());
 }
 
 /// A null payload is a legal value for every pointer type -- `janet_wrap_fiber`
 /// is called with one every time a fiber has no child. It must not be confused
 /// with nil, and it must come back null.
 fn nullPayloadsRoundTrip() void {
-    assert(wrap.toPointer(c.janet_wrap_fiber(null)) == null);
-    assert(c.janet_unwrap_pointer(c.janet_wrap_pointer(null)) == null);
-    assert(wrap.toAbstract(c.janet_wrap_abstract(null)) == null);
-    assert(c.janet_type(c.janet_wrap_fiber(null)) == @intFromEnum(repr.Tag.fiber));
-    assert(!harness.isType(c.janet_wrap_pointer(null), repr.Tag.nil));
+    expect(wrap.toPointer(wrap.abi.fromFiber(null)) == null);
+    expect(wrap.toPointerAbi(wrap.abi.fromPointer(null)) == null);
+    expect(wrap.toAbstract(wrap.abi.fromAbstract(null)) == null);
+    expect(repr.typeOf(wrap.abi.fromFiber(null)) == repr.Tag.fiber);
+    expect(!harness.isType(wrap.abi.fromPointer(null), repr.Tag.nil));
 
-    assert(repr.truthy(c.janet_wrap_pointer(null)));
-    assert(!repr.truthy(c.janet_wrap_nil()));
-    assert(!repr.truthy(c.janet_wrap_false()));
-    assert(!repr.truthy(c.janet_wrap_boolean(0)));
-    assert(repr.truthy(c.janet_wrap_true()));
-    assert(repr.truthy(c.janet_wrap_boolean(1)));
-    assert(repr.truthy(wrap.fromNumber(0.0)));
+    expect(repr.truthy(wrap.abi.fromPointer(null)));
+    expect(!repr.truthy(wrap.abi.fromNil()));
+    expect(!repr.truthy(wrap.abi.fromFalse()));
+    expect(!repr.truthy(wrap.abi.fromBoolean(0)));
+    expect(repr.truthy(wrap.abi.fromTrue()));
+    expect(repr.truthy(wrap.abi.fromBoolean(1)));
+    expect(repr.truthy(wrap.fromNumber(0.0)));
 }
 
 /// The same address under two tags is two different values. This is what a
@@ -232,16 +228,16 @@ fn nullPayloadsRoundTrip() void {
 /// alike.
 fn theTagIsPartOfTheValue() void {
     const p = pointerA();
-    const as_array = c.janet_wrap_array(@ptrCast(@alignCast(p)));
-    const as_table = c.janet_wrap_table(@ptrCast(@alignCast(p)));
-    const as_pointer = c.janet_wrap_pointer(p);
-    assert(!sameValue(as_array, as_table));
-    assert(!sameValue(as_array, as_pointer));
-    assert(!sameValue(as_table, as_pointer));
-    assert(!sameValue(c.janet_wrap_string(@ptrCast(p)), c.janet_wrap_symbol(@ptrCast(p))));
-    assert(!sameValue(c.janet_wrap_symbol(@ptrCast(p)), c.janet_wrap_keyword(@ptrCast(p))));
-    assert(!sameValue(c.janet_wrap_true(), c.janet_wrap_false()));
-    assert(!sameValue(c.janet_wrap_nil(), c.janet_wrap_false()));
+    const as_array = wrap.abi.fromArray(@ptrCast(@alignCast(p)));
+    const as_table = wrap.abi.fromTable(@ptrCast(@alignCast(p)));
+    const as_pointer = wrap.abi.fromPointer(p);
+    expect(!sameValue(as_array, as_table));
+    expect(!sameValue(as_array, as_pointer));
+    expect(!sameValue(as_table, as_pointer));
+    expect(!sameValue(wrap.abi.fromString(@ptrCast(p)), wrap.abi.fromSymbol(@ptrCast(p))));
+    expect(!sameValue(wrap.abi.fromSymbol(@ptrCast(p)), wrap.abi.fromKeyword(@ptrCast(p))));
+    expect(!sameValue(wrap.abi.fromTrue(), wrap.abi.fromFalse()));
+    expect(!sameValue(wrap.abi.fromNil(), wrap.abi.fromFalse()));
 }
 
 // ------------------------------------------------------------------- numbers
@@ -261,36 +257,33 @@ fn numbersRoundTrip() void {
     };
     for (xs) |x| {
         const v = wrap.fromNumber(x);
-        assert(c.janet_type(v) == @intFromEnum(repr.Tag.number));
-        assert(harness.isType(v, repr.Tag.number));
-        assert(wrap.toNumber(v) == x);
+        expect(repr.typeOf(v) == repr.Tag.number);
+        expect(harness.isType(v, repr.Tag.number));
+        expect(wrap.toNumber(v) == x);
     }
     // Negative zero is preserved as a bit pattern, not merely as a value:
     // `janet_hash` normalizes it away and the representation must not.
-    assert(wrap.toNumber(wrap.fromNumber(-0.0)) == 0.0);
-    assert(1.0 / wrap.toNumber(wrap.fromNumber(-0.0)) < 0.0);
+    expect(wrap.toNumber(wrap.fromNumber(-0.0)) == 0.0);
+    expect(1.0 / wrap.toNumber(wrap.fromNumber(-0.0)) < 0.0);
 }
 
 /// A NaN is a number, not a tagged value. Under a NaN-boxed layout this is the
 /// one case where the tag space and the payload space collide, and `janet_type`
 /// has to answer `JANET_NUMBER` for a quiet NaN whose bits look like a tag.
 ///
-/// The C original ran this twice, once through `janet.h`'s macros and once
-/// through the functions, because the second arm of `janet_nanbox_isnumber`
-/// was otherwise reachable only through the macro -- a mutation sweep said so.
-/// Here the pair is the export and the inline surface; see
-/// `theTwoSpellingsAgree`, which covers this value among its awkward ones.
+/// It is checked through both spellings -- the published abi and the inline
+/// surface -- because a mutation sweep found the second arm of the NaN test
+/// reachable through only one of them. See `theTwoSpellingsAgree`, which covers
+/// this value among its awkward ones.
 fn nanIsANumber() void {
     const nan = std.math.nan(f64);
     const v = wrap.fromNumber(nan);
-    assert(c.janet_type(v) == @intFromEnum(repr.Tag.number));
-    assert(harness.isType(v, repr.Tag.number));
-    assert(!harness.isType(v, repr.Tag.nil));
-    assert(std.math.isNan(wrap.toNumber(v)));
-    assert(repr.truthy(v));
-    assert(repr.checkTypes(v, repr.TagSet.one(.number)));
-    assert(c.janet_truthy(v) != 0);
-    assert(c.janet_checktypes(v, repr.TagSet.one(.number).bits()) != 0);
+    expect(repr.typeOf(v) == repr.Tag.number);
+    expect(harness.isType(v, repr.Tag.number));
+    expect(!harness.isType(v, repr.Tag.nil));
+    expect(std.math.isNan(wrap.toNumber(v)));
+    expect(repr.truthy(v));
+    expect(repr.checkTypes(v, repr.TagSet.one(.number)));
 }
 
 /// `janet_wrap_number_safe` is the entry point unmarshalling uses for a double
@@ -301,16 +294,16 @@ fn nanIsANumber() void {
 /// the C original and is reproduced.
 fn wrapNumberSafe() void {
     for ([_]f64{ 0.0, -3.25, std.math.inf(f64) }) |x| {
-        assert(sameValue(wrap.fromNumberSafe(x), wrap.fromNumber(x)));
+        expect(sameValue(wrap.fromNumberSafe(x), wrap.fromNumber(x)));
     }
-    assert(c.janet_type(wrap.fromNumberSafe(std.math.nan(f64))) == @intFromEnum(repr.Tag.number));
+    expect(repr.typeOf(wrap.fromNumberSafe(std.math.nan(f64))) == repr.Tag.number);
 
     if (layout != .tagged) {
         // A signalling NaN with a payload in the low bits, which is what a
         // hostile marshalled double looks like.
         const hostile: f64 = @bitCast(@as(u64, 0x7FF0000000000123));
-        assert(std.math.isNan(hostile));
-        assert(sameValue(
+        expect(std.math.isNan(hostile));
+        expect(sameValue(
             wrap.fromNumberSafe(hostile),
             wrap.fromNumberSafe(std.math.nan(f64)),
         ));
@@ -322,27 +315,29 @@ fn wrapNumberSafe() void {
 /// two behavioural targets already disagree about it, so nothing here can be
 /// asserted for both. `FOUND.md` records what this runtime does instead.
 fn theIntegerConversions() void {
-    assert(c.janet_unwrap_integer(wrap.fromNumber(0.0)) == 0);
-    assert(c.janet_unwrap_integer(wrap.fromNumber(1.9)) == 1);
-    assert(c.janet_unwrap_integer(wrap.fromNumber(-1.9)) == -1);
-    assert(c.janet_unwrap_integer(wrap.fromNumber(2147483647.0)) == std.math.maxInt(i32));
-    assert(c.janet_unwrap_integer(wrap.fromNumber(-2147483648.0)) == std.math.minInt(i32));
+    expect(wrap.toIntegerAbi(wrap.fromNumber(0.0)) == 0);
+    expect(wrap.toIntegerAbi(wrap.fromNumber(1.9)) == 1);
+    expect(wrap.toIntegerAbi(wrap.fromNumber(-1.9)) == -1);
+    expect(wrap.toIntegerAbi(wrap.fromNumber(2147483647.0)) == std.math.maxInt(i32));
+    expect(wrap.toIntegerAbi(wrap.fromNumber(-2147483648.0)) == std.math.minInt(i32));
 
     // The inline form exists under all three layouts; the *symbol* exists
     // under two. Asserting the inline one here is what keeps the tagged build
     // covered at all, and asserting the symbol below is what pins the
     // asymmetry rather than merely tolerating it.
-    assert(sameValue(wrap.fromInteger(7), wrap.fromNumber(7.0)));
-    assert(sameValue(wrap.fromInteger(std.math.minInt(i32)), wrap.fromNumber(-2147483648.0)));
-    assert(wrap.toInteger(wrap.fromInteger(-5)) == -5);
-    assert(sameValue(wrap.fromInteger(-5), harness.wrapInteger(-5)));
+    expect(sameValue(wrap.fromInteger(7), wrap.fromNumber(7.0)));
+    expect(sameValue(wrap.fromInteger(std.math.minInt(i32)), wrap.fromNumber(-2147483648.0)));
+    expect(wrap.toInteger(wrap.fromInteger(-5)) == -5);
+    expect(sameValue(wrap.fromInteger(-5), harness.wrapInteger(-5)));
 
-    if (layout != .tagged) {
-        // Not referenced under the tagged layout, where the symbol does not
-        // exist. See the header and `FOUND.md`.
-        assert(sameValue(c.janet_wrap_integer(7), wrap.fromNumber(7.0)));
-        assert(c.janet_unwrap_integer(c.janet_wrap_integer(-5)) == -5);
-        assert(c.janet_unwrap_integer(c.janet_wrap_integer(std.math.maxInt(i32))) == std.math.maxInt(i32));
+    {
+        // `capi.zig` publishes `janet_wrap_integer` only under a NaN-boxed
+        // layout, reproducing the defect `FOUND.md` records against `wrap.c`.
+        // The `callconv(.c)` body behind it is compiled under all three, so
+        // these run everywhere now that the contract imports rather than links.
+        expect(sameValue(wrap.abi.fromInteger(7), wrap.fromNumber(7.0)));
+        expect(wrap.toIntegerAbi(wrap.abi.fromInteger(-5)) == -5);
+        expect(wrap.toIntegerAbi(wrap.abi.fromInteger(std.math.maxInt(i32))) == std.math.maxInt(i32));
     }
 }
 
@@ -352,29 +347,29 @@ fn theIntegerConversions() void {
 /// as `janet_wrap_true`, and `janet_unwrap_boolean` answers 0 or 1 rather than
 /// whatever went in.
 fn booleansNormalize() void {
-    assert(sameValue(c.janet_wrap_boolean(1), c.janet_wrap_true()));
-    assert(sameValue(c.janet_wrap_boolean(2), c.janet_wrap_true()));
-    assert(sameValue(c.janet_wrap_boolean(-1), c.janet_wrap_true()));
-    assert(sameValue(c.janet_wrap_boolean(0), c.janet_wrap_false()));
-    assert(wrap.toBoolean(c.janet_wrap_true()));
-    assert(!wrap.toBoolean(c.janet_wrap_false()));
-    assert(wrap.toBoolean(c.janet_wrap_boolean(37)));
+    expect(sameValue(wrap.abi.fromBoolean(1), wrap.abi.fromTrue()));
+    expect(sameValue(wrap.abi.fromBoolean(2), wrap.abi.fromTrue()));
+    expect(sameValue(wrap.abi.fromBoolean(-1), wrap.abi.fromTrue()));
+    expect(sameValue(wrap.abi.fromBoolean(0), wrap.abi.fromFalse()));
+    expect(wrap.toBoolean(wrap.abi.fromTrue()));
+    expect(!wrap.toBoolean(wrap.abi.fromFalse()));
+    expect(wrap.toBoolean(wrap.abi.fromBoolean(37)));
 }
 
 /// Exactly two values are false, and everything else is true -- including zero,
 /// the empty string and an empty array, which is the difference between Janet's
 /// truthiness and C's.
 fn truthiness() void {
-    assert(!repr.truthy(c.janet_wrap_nil()));
-    assert(!repr.truthy(c.janet_wrap_false()));
-    assert(!repr.truthy(c.janet_wrap_boolean(0)));
-    assert(repr.truthy(c.janet_wrap_true()));
-    assert(repr.truthy(c.janet_wrap_boolean(1)));
-    assert(repr.truthy(wrap.fromNumber(0.0)));
-    assert(repr.truthy(wrap.fromNumber(std.math.nan(f64))));
-    assert(repr.truthy(c.janet_wrap_string(strings.cstring(""))));
-    assert(repr.truthy(c.janet_wrap_array(c.janet_array(0))));
-    assert(repr.truthy(c.janet_wrap_pointer(null)));
+    expect(!repr.truthy(wrap.abi.fromNil()));
+    expect(!repr.truthy(wrap.abi.fromFalse()));
+    expect(!repr.truthy(wrap.abi.fromBoolean(0)));
+    expect(repr.truthy(wrap.abi.fromTrue()));
+    expect(repr.truthy(wrap.abi.fromBoolean(1)));
+    expect(repr.truthy(wrap.fromNumber(0.0)));
+    expect(repr.truthy(wrap.fromNumber(std.math.nan(f64))));
+    expect(repr.truthy(wrap.abi.fromString(strings.cstring(""))));
+    expect(repr.truthy(wrap.abi.fromArray(arrays.new(0))));
+    expect(repr.truthy(wrap.abi.fromPointer(null)));
 }
 
 // ------------------------------------------------- checktype and checktypes
@@ -383,21 +378,21 @@ fn truthiness() void {
 /// a loop rather than as a hundred and sixty-nine assertions.
 fn buildOneOfEach(out: *[repr.tag_count]repr.Value) void {
     out[at(.number)] = wrap.fromNumber(2.5);
-    out[at(.nil)] = c.janet_wrap_nil();
-    out[at(.boolean)] = c.janet_wrap_true();
-    out[at(.fiber)] = c.janet_wrap_fiber(@ptrCast(@alignCast(pointerA())));
-    out[at(.string)] = c.janet_wrap_string(strings.cstring("s"));
-    out[at(.symbol)] = c.janet_wrap_symbol(symbols.csymbol("s"));
-    out[at(.keyword)] = c.janet_wrap_keyword(symbols.csymbol("s"));
-    out[at(.array)] = c.janet_wrap_array(c.janet_array(0));
-    out[at(.tuple)] = c.janet_wrap_tuple(tuples.newFrom(&.{}));
-    out[at(.table)] = c.janet_wrap_table(c.janet_table(0));
-    out[at(.@"struct")] = c.janet_wrap_struct(structs.end(structs.begin(0)));
-    out[at(.buffer)] = c.janet_wrap_buffer(c.janet_buffer(0));
-    out[at(.function)] = c.janet_wrap_function(@ptrCast(@alignCast(pointerA())));
-    out[at(.cfunction)] = c.janet_wrap_cfunction(theCFunction());
-    out[at(.abstract)] = c.janet_wrap_abstract(pointerB());
-    out[at(.pointer)] = c.janet_wrap_pointer(pointerB());
+    out[at(.nil)] = wrap.abi.fromNil();
+    out[at(.boolean)] = wrap.abi.fromTrue();
+    out[at(.fiber)] = wrap.abi.fromFiber(@ptrCast(@alignCast(pointerA())));
+    out[at(.string)] = wrap.abi.fromString(strings.cstring("s"));
+    out[at(.symbol)] = wrap.abi.fromSymbol(symbols.csymbol("s"));
+    out[at(.keyword)] = wrap.abi.fromKeyword(symbols.csymbol("s"));
+    out[at(.array)] = wrap.abi.fromArray(arrays.new(0));
+    out[at(.tuple)] = wrap.abi.fromTuple(tuples.newFrom(&.{}));
+    out[at(.table)] = wrap.abi.fromTable(tables.new(0));
+    out[at(.@"struct")] = wrap.abi.fromStruct(structs.end(structs.begin(0)));
+    out[at(.buffer)] = wrap.abi.fromBuffer(buffers.new(0));
+    out[at(.function)] = wrap.abi.fromFunction(@ptrCast(@alignCast(pointerA())));
+    out[at(.cfunction)] = wrap.abi.fromCfunction(theCFunction());
+    out[at(.abstract)] = wrap.abi.fromAbstract(pointerB());
+    out[at(.pointer)] = wrap.abi.fromPointer(pointerB());
 }
 
 /// `janet_checktype` agrees with `janet_type` for every value against every
@@ -409,40 +404,35 @@ fn theCheckTypeMatrix() void {
     buildOneOfEach(&values);
     for (values, 0..) |value, i| {
         for (0..repr.tag_count) |j| {
-            assert(harness.isType(value, typeAt(j)) == (i == j));
+            expect(harness.isType(value, typeAt(j)) == (i == j));
         }
-        assert(c.janet_type(value) == @intFromEnum(typeAt(i)));
+        expect(repr.typeOf(value) == typeAt(i));
     }
 }
 
 /// `janet_checktypes` is the type as a bit in a mask, and the *exported* form
 /// answers the masked bit rather than a normalized boolean -- Janet's
 /// contract, kept when the internal one became `bool`, so both halves are
-/// asserted here and the bit is asserted only of the symbol.
+/// asserted here and the bit is asserted only of the abi form.
 fn checkTypes() void {
     var values: [repr.tag_count]repr.Value = undefined;
     buildOneOfEach(&values);
     for (values, 0..) |value, i| {
         const tag: repr.Tag = @enumFromInt(i);
         const set = repr.TagSet.one(tag);
-        const bit = @as(c_int, set.bits());
-        assert(repr.checkTypes(value, set));
-        assert(!repr.checkTypes(value, repr.TagSet.fromBits(~set.bits())));
-        assert(repr.checkTypes(value, repr.TagSet.all));
-        assert(!repr.checkTypes(value, repr.TagSet.none));
-        // The exported symbol still takes and answers an `int`, and answers
-        // the masked bit rather than a boolean. `-1` is a caller's `~0`, whose
-        // bits above fifteen name no tag.
-        assert(c.janet_checktypes(value, bit) == bit);
-        assert(c.janet_checktypes(value, ~bit) == 0);
-        assert(c.janet_checktypes(value, -1) == bit);
-        assert(c.janet_checktypes(value, 0) == 0);
+        expect(repr.checkTypes(value, set));
+        expect(!repr.checkTypes(value, repr.TagSet.fromBits(~set.bits())));
+        expect(repr.checkTypes(value, repr.TagSet.all));
+        expect(!repr.checkTypes(value, repr.TagSet.none));
+        // A set of every bit there is, including the ones above fifteen that
+        // name no tag, still selects this value.
+        expect(repr.checkTypes(value, repr.TagSet.fromBits(~@as(u16, 0))));
     }
-    assert(repr.checkTypes(values[at(.string)], repr.TagSet.bytes));
-    assert(repr.checkTypes(values[at(.symbol)], repr.TagSet.bytes));
-    assert(repr.checkTypes(values[at(.keyword)], repr.TagSet.bytes));
-    assert(repr.checkTypes(values[at(.buffer)], repr.TagSet.bytes));
-    assert(!repr.checkTypes(values[at(.array)], repr.TagSet.bytes));
+    expect(repr.checkTypes(values[at(.string)], repr.TagSet.bytes));
+    expect(repr.checkTypes(values[at(.symbol)], repr.TagSet.bytes));
+    expect(repr.checkTypes(values[at(.keyword)], repr.TagSet.bytes));
+    expect(repr.checkTypes(values[at(.buffer)], repr.TagSet.bytes));
+    expect(!repr.checkTypes(values[at(.array)], repr.TagSet.bytes));
 }
 
 // --------------------------------------------- the two spellings agree
@@ -451,20 +441,22 @@ fn checkTypes() void {
 /// against each other for one value. Factored out because the set of values
 /// that matters is larger than one per type -- see the call site.
 ///
-/// **Both sides are spelled here rather than borrowed.** These read
-/// `c.janet_*` directly instead of `harness.isType`, and that is the whole
+/// **Both sides are spelled here rather than borrowed.** These read the
+/// published form directly instead of `harness.isType`, and that is the whole
 /// point of the function: a harness helper that pointed at the internal
 /// spelling would turn every comparison here into a function against itself.
+///
+/// `janet_checktype` is the only predicate left with two implementations. It
+/// guards the tag against `repr.tag_count` and answers 0 for a number outside
+/// the vocabulary, which `repr.checkType` does not do and cannot -- its
+/// argument is already a `Tag`. So the loop below is the range guard as much
+/// as it is the agreement.
 fn agreeOn(v: repr.Value) void {
-    assert(repr.truthy(v) == (c.janet_truthy(v) != 0));
     for (0..repr.tag_count) |j| {
-        assert(repr.checkType(v, typeAt(j)) == (c.janet_checktype(v, @intCast(j)) != 0));
-        const set = repr.TagSet.one(typeAt(j));
-        const bit = @as(c_int, set.bits());
-        assert(repr.checkTypes(v, set) == (c.janet_checktypes(v, bit) != 0));
+        expect(repr.checkType(v, typeAt(j)) == (subsystems.capi.janet_checktype(v, @intCast(j)) != 0));
     }
-    assert(repr.checkTypes(v, repr.TagSet.all) == (c.janet_checktypes(v, -1) != 0));
-    assert(repr.checkTypes(v, repr.TagSet.none) == (c.janet_checktypes(v, 0) != 0));
+    expect(subsystems.capi.janet_checktype(v, repr.tag_count) == 0);
+    expect(subsystems.capi.janet_checktype(v, std.math.maxInt(c_uint)) == 0);
 }
 
 /// The channel the C original had as macro-against-function, restated as
@@ -479,18 +471,18 @@ fn theTwoSpellingsAgree() void {
     // named export, so a disagreement means one of the two was wired to the
     // wrong helper -- which is exactly what the C channel could catch and no
     // more.
-    assert(sameValue(wrap.fromNil(), c.janet_wrap_nil()));
-    assert(sameValue(wrap.fromTrue(), c.janet_wrap_true()));
-    assert(sameValue(wrap.fromFalse(), c.janet_wrap_false()));
-    assert(sameValue(wrap.fromBoolean(true), c.janet_wrap_boolean(3)));
-    assert(sameValue(wrap.fromBoolean(false), c.janet_wrap_boolean(0)));
-    assert(sameValue(wrap.fromNumber(2.5), wrap.fromNumber(2.5)));
-    assert(sameValue(wrap.fromArray(@ptrCast(@alignCast(p))), c.janet_wrap_array(@ptrCast(@alignCast(p)))));
-    assert(sameValue(wrap.fromTable(@ptrCast(@alignCast(p))), c.janet_wrap_table(@ptrCast(@alignCast(p)))));
-    assert(sameValue(wrap.fromBuffer(@ptrCast(@alignCast(p))), c.janet_wrap_buffer(@ptrCast(@alignCast(p)))));
-    assert(sameValue(wrap.fromFunction(@ptrCast(@alignCast(p))), c.janet_wrap_function(@ptrCast(@alignCast(p)))));
-    assert(sameValue(wrap.fromStruct(@ptrCast(@alignCast(p))), c.janet_wrap_struct(@ptrCast(@alignCast(p)))));
-    assert(sameValue(wrap.fromTuple(@ptrCast(@alignCast(p))), c.janet_wrap_tuple(@ptrCast(@alignCast(p)))));
+    expect(sameValue(wrap.fromNil(), wrap.abi.fromNil()));
+    expect(sameValue(wrap.fromTrue(), wrap.abi.fromTrue()));
+    expect(sameValue(wrap.fromFalse(), wrap.abi.fromFalse()));
+    expect(sameValue(wrap.fromBoolean(true), wrap.abi.fromBoolean(3)));
+    expect(sameValue(wrap.fromBoolean(false), wrap.abi.fromBoolean(0)));
+    expect(sameValue(wrap.fromNumber(2.5), wrap.abi.fromNumber(2.5)));
+    expect(sameValue(wrap.fromArray(@ptrCast(@alignCast(p))), wrap.abi.fromArray(@ptrCast(@alignCast(p)))));
+    expect(sameValue(wrap.fromTable(@ptrCast(@alignCast(p))), wrap.abi.fromTable(@ptrCast(@alignCast(p)))));
+    expect(sameValue(wrap.fromBuffer(@ptrCast(@alignCast(p))), wrap.abi.fromBuffer(@ptrCast(@alignCast(p)))));
+    expect(sameValue(wrap.fromFunction(@ptrCast(@alignCast(p))), wrap.abi.fromFunction(@ptrCast(@alignCast(p)))));
+    expect(sameValue(wrap.fromStruct(@ptrCast(@alignCast(p))), wrap.abi.fromStruct(@ptrCast(@alignCast(p)))));
+    expect(sameValue(wrap.fromTuple(@ptrCast(@alignCast(p))), wrap.abi.fromTuple(@ptrCast(@alignCast(p)))));
 
     // The predicates, over one value per type...
     for (values) |value| agreeOn(value);
@@ -508,29 +500,29 @@ fn theTwoSpellingsAgree() void {
         wrap.fromNumber(-std.math.inf(f64)),
         wrap.fromNumber(0.0),
         wrap.fromNumber(-0.0),
-        c.janet_wrap_false(),
-        c.janet_wrap_boolean(0),
-        c.janet_wrap_boolean(3),
-        c.janet_wrap_pointer(null),
+        wrap.abi.fromFalse(),
+        wrap.abi.fromBoolean(0),
+        wrap.abi.fromBoolean(3),
+        wrap.abi.fromPointer(null),
     };
     for (awkward) |value| agreeOn(value);
 
-    // The accessors.
-    assert(wrap.toInteger(wrap.fromNumber(-9.5)) == c.janet_unwrap_integer(wrap.fromNumber(-9.5)));
-    assert(wrap.toFunction(values[at(.function)]) == c.janet_unwrap_function(values[at(.function)]));
-    assert(wrap.toBoolean(values[at(.boolean)]) == (c.janet_unwrap_boolean(values[at(.boolean)]) != 0));
+    // The one accessor with two implementations. `toIntegerAbi` truncates
+    // toward zero through a `c_int` where `toInteger` reads the payload, which
+    // is the asymmetry `FOUND.md` records; `janet_unwrap_function` and
+    // `janet_unwrap_boolean` had no second body and went with the export.
+    expect(wrap.toInteger(wrap.fromNumber(-9.5)) == wrap.toIntegerAbi(wrap.fromNumber(-9.5)));
 }
 
 // ------------------------------------------------------ the exact bit layout
 
 /// The assertions that say this is *the* representation rather than a working
-/// one. Each is computed from `janet.h`'s own constants and none of them goes
-/// through an implementation of the thing under test.
+/// one. Each is computed from the tag numbering and the payload mask, and none
+/// of them goes through an implementation of the thing under test.
 ///
 /// One per layout, selected below. Zig analyses only the body it is handed, so
 /// the two that do not apply are never compiled -- which they could not be:
-/// `janet.h` declares each layout's nanbox helpers only under that layout's
-/// `#ifdef`, so the symbols the other two name do not exist here.
+/// each layout's helpers exist only in that layout's build.
 fn exactLayoutNanbox64() void {
     const p = pointerA();
     const nil_tag: u64 = (@as(u64, @intFromEnum(repr.Tag.nil)) | 0x1FFF0) << 47;
@@ -538,31 +530,31 @@ fn exactLayoutNanbox64() void {
     const array_tag: u64 = (@as(u64, @intFromEnum(repr.Tag.array)) | 0x1FFF0) << 47;
 
     // The three immediate values are a tag with a one-bit payload.
-    assert(harness.u64Of(c.janet_wrap_nil()) == (nil_tag | 1));
-    assert(harness.u64Of(c.janet_wrap_true()) == (bool_tag | 1));
-    assert(harness.u64Of(c.janet_wrap_false()) == bool_tag);
+    expect(harness.u64Of(wrap.abi.fromNil()) == (nil_tag | 1));
+    expect(harness.u64Of(wrap.abi.fromTrue()) == (bool_tag | 1));
+    expect(harness.u64Of(wrap.abi.fromFalse()) == bool_tag);
 
     // A double is stored unchanged.
     const bits: u64 = @bitCast(@as(f64, 1.5));
-    assert(harness.u64Of(wrap.fromNumber(1.5)) == bits);
-    assert(harness.u64Of(c.janet_nanbox_from_double(1.5)) == bits);
-    assert(harness.u64Of(c.janet_nanbox_from_bits(bits)) == bits);
+    expect(harness.u64Of(wrap.fromNumber(1.5)) == bits);
+    expect(harness.u64Of(wrap.nanboxFromDouble(1.5)) == bits);
+    expect(harness.u64Of(wrap.nanboxFromBits(bits)) == bits);
 
     // A pointer is shifted right by the alignment shift and then tagged, and
     // the payload bits are the only ones it may occupy.
-    const word = harness.u64Of(c.janet_wrap_array(@ptrCast(@alignCast(p))));
-    assert((word & repr.tagbits) == array_tag);
-    assert((word & repr.payloadbits) ==
+    const word = harness.u64Of(wrap.abi.fromArray(@ptrCast(@alignCast(p))));
+    expect((word & repr.tagbits) == array_tag);
+    expect((word & repr.payloadbits) ==
         (@as(u64, @intFromPtr(p)) >> repr.pointer_shift));
-    assert(c.janet_nanbox_to_pointer(c.janet_nanbox_from_pointer(p, array_tag)) == p);
-    assert(c.janet_nanbox_to_pointer(c.janet_nanbox_from_cpointer(p, array_tag)) == p);
-    assert(harness.u64Of(c.janet_nanbox_from_pointer(p, array_tag)) == word);
+    expect(wrap.nanboxToPointer(wrap.nanboxFromPointer(p, array_tag)) == p);
+    expect(wrap.nanboxToPointer(wrap.nanboxFromCPointer(p, array_tag)) == p);
+    expect(harness.u64Of(wrap.nanboxFromPointer(p, array_tag)) == word);
 
     // The canonical NaN is what `janet_wrap_number_safe` stores, and it is not
     // mistaken for a tagged value.
     const canonical: u64 = @bitCast(wrap.toNumber(wrap.fromNumberSafe(std.math.nan(f64))));
-    assert(c.janet_type(wrap.fromNumberSafe(std.math.nan(f64))) == @intFromEnum(repr.Tag.number));
-    assert((canonical & repr.payloadbits) == 0);
+    expect(repr.typeOf(wrap.fromNumberSafe(std.math.nan(f64))) == repr.Tag.number);
+    expect((canonical & repr.payloadbits) == 0);
 }
 
 fn exactLayoutNanbox32() void {
@@ -570,27 +562,27 @@ fn exactLayoutNanbox32() void {
 
     // Every non-number tag is stored raw in the high word, below the offset
     // that biases a double's exponent out of the way.
-    assert(c.janet_wrap_nil().tagged.type == @as(u32, @intFromEnum(repr.Tag.nil)));
-    assert(c.janet_wrap_nil().tagged.payload.integer == 0);
-    assert(c.janet_wrap_true().tagged.type == @as(u32, @intFromEnum(repr.Tag.boolean)));
-    assert(c.janet_wrap_true().tagged.payload.integer == 1);
-    assert(c.janet_wrap_false().tagged.payload.integer == 0);
-    assert(c.janet_wrap_array(@ptrCast(@alignCast(p))).tagged.type == @as(u32, @intFromEnum(repr.Tag.array)));
-    assert(c.janet_wrap_array(@ptrCast(@alignCast(p))).tagged.payload.pointer == p);
-    assert(@as(u32, @intFromEnum(repr.Tag.pointer)) < @as(u32, repr.double_offset));
+    expect(wrap.abi.fromNil().tagged.type == @as(u32, @intFromEnum(repr.Tag.nil)));
+    expect(wrap.abi.fromNil().tagged.payload.integer == 0);
+    expect(wrap.abi.fromTrue().tagged.type == @as(u32, @intFromEnum(repr.Tag.boolean)));
+    expect(wrap.abi.fromTrue().tagged.payload.integer == 1);
+    expect(wrap.abi.fromFalse().tagged.payload.integer == 0);
+    expect(wrap.abi.fromArray(@ptrCast(@alignCast(p))).tagged.type == @as(u32, @intFromEnum(repr.Tag.array)));
+    expect(wrap.abi.fromArray(@ptrCast(@alignCast(p))).tagged.payload.pointer == p);
+    expect(@as(u32, @intFromEnum(repr.Tag.pointer)) < @as(u32, repr.double_offset));
 
     // A double is biased by `repr.double_offset` in its high word, which is
     // what keeps every number above every tag.
     const bits: u64 = @bitCast(@as(f64, 1.5));
-    assert(harness.u64Of(wrap.fromNumber(1.5)) == bits +% (@as(u64, repr.double_offset) << 32));
-    assert(wrap.toNumber(wrap.fromNumber(1.5)) == 1.5);
+    expect(harness.u64Of(wrap.fromNumber(1.5)) == bits +% (@as(u64, repr.double_offset) << 32));
+    expect(wrap.toNumber(wrap.fromNumber(1.5)) == 1.5);
 
-    assert(c.janet_nanbox32_from_tagi(@as(u32, @intFromEnum(repr.Tag.boolean)), 1).tagged.payload.integer == 1);
-    assert(c.janet_nanbox32_from_tagp(@as(u32, @intFromEnum(repr.Tag.array)), p).tagged.payload.pointer == p);
-    assert(c.janet_nanbox32_from_tagp(@as(u32, @intFromEnum(repr.Tag.array)), p).tagged.type == @as(u32, @intFromEnum(repr.Tag.array)));
+    expect(wrap.nanbox32FromTagI(@as(u32, @intFromEnum(repr.Tag.boolean)), 1).tagged.payload.integer == 1);
+    expect(wrap.nanbox32FromTagP(@as(u32, @intFromEnum(repr.Tag.array)), p).tagged.payload.pointer == p);
+    expect(wrap.nanbox32FromTagP(@as(u32, @intFromEnum(repr.Tag.array)), p).tagged.type == @as(u32, @intFromEnum(repr.Tag.array)));
 
     const canonical: u64 = @bitCast(wrap.toNumber(wrap.fromNumberSafe(std.math.nan(f64))));
-    assert((canonical & 0x000FFFFFFFFFFFFF) == 0x0008000000000000);
+    expect((canonical & 0x000FFFFFFFFFFFFF) == 0x0008000000000000);
 }
 
 fn exactLayoutTagged() void {
@@ -600,21 +592,21 @@ fn exactLayoutTagged() void {
     // the narrower member is written -- which is what the `as.u64 = 0` in
     // `JANET_WRAP_DEFINE` is for, and the only way to see it is through a
     // member narrower than the union.
-    assert(c.janet_wrap_nil().type == @intFromEnum(repr.Tag.nil));
-    assert(harness.u64Of(c.janet_wrap_nil()) == 0);
-    assert(c.janet_wrap_true().type == @intFromEnum(repr.Tag.boolean));
-    assert(harness.u64Of(c.janet_wrap_true()) == 1);
-    assert(harness.u64Of(c.janet_wrap_false()) == 0);
-    assert(c.janet_wrap_array(@ptrCast(@alignCast(p))).type == @intFromEnum(repr.Tag.array));
-    assert(harness.u64Of(c.janet_wrap_array(@ptrCast(@alignCast(p)))) == @as(u64, @intFromPtr(p)));
-    assert(harness.u64Of(c.janet_wrap_pointer(null)) == 0);
+    expect(wrap.abi.fromNil().type == @intFromEnum(repr.Tag.nil));
+    expect(harness.u64Of(wrap.abi.fromNil()) == 0);
+    expect(wrap.abi.fromTrue().type == @intFromEnum(repr.Tag.boolean));
+    expect(harness.u64Of(wrap.abi.fromTrue()) == 1);
+    expect(harness.u64Of(wrap.abi.fromFalse()) == 0);
+    expect(wrap.abi.fromArray(@ptrCast(@alignCast(p))).type == @intFromEnum(repr.Tag.array));
+    expect(harness.u64Of(wrap.abi.fromArray(@ptrCast(@alignCast(p)))) == @as(u64, @intFromPtr(p)));
+    expect(harness.u64Of(wrap.abi.fromPointer(null)) == 0);
 
-    assert(harness.u64Of(wrap.fromNumber(1.5)) == @as(u64, @bitCast(@as(f64, 1.5))));
+    expect(harness.u64Of(wrap.fromNumber(1.5)) == @as(u64, @bitCast(@as(f64, 1.5))));
 
     // The one layout that does not canonicalize a NaN, because it has no tag
     // space in the double to protect. `FOUND.md` has the asymmetry.
     const hostile: u64 = 0x7FF0000000000123;
-    assert(harness.u64Of(wrap.fromNumberSafe(@bitCast(hostile))) == hostile);
+    expect(harness.u64Of(wrap.fromNumberSafe(@bitCast(hostile))) == hostile);
 }
 
 const exactLayout = switch (layout) {
@@ -633,14 +625,14 @@ const exactLayout = switch (layout) {
 fn memallocEmpty() void {
     for ([_]i32{ 1, 8, 257 }) |n| {
         const before = harness.vm().gc.next_collection;
-        const kvs: ?[*]types.JanetKV = @ptrCast(@alignCast(internal.janet_memalloc_empty(n)));
+        const kvs: ?[*]tables.KV = @ptrCast(@alignCast(subsystems.value.memallocEmpty(n)));
         // Reaching this line is the null check: the failure path exits.
-        assert(kvs != null);
-        assert(harness.vm().gc.next_collection - before == @as(usize, @intCast(n)) * @sizeOf(types.JanetKV));
+        expect(kvs != null);
+        expect(harness.vm().gc.next_collection - before == @as(usize, @intCast(n)) * @sizeOf(tables.KV));
         var i: i32 = 0;
         while (i < n) : (i += 1) {
-            assert(harness.isType(kvs.?[@intCast(i)].key, repr.Tag.nil));
-            assert(harness.isType(kvs.?[@intCast(i)].value, repr.Tag.nil));
+            expect(harness.isType(kvs.?[@intCast(i)].key, repr.Tag.nil));
+            expect(harness.isType(kvs.?[@intCast(i)].value, repr.Tag.nil));
         }
         utils.free(kvs);
     }
@@ -652,8 +644,8 @@ fn memallocEmpty() void {
 /// call, so the assertion below is about the charge and not about the pointer.
 fn memallocEmptyOfZero() void {
     const before = harness.vm().gc.next_collection;
-    const mem = internal.janet_memalloc_empty(0);
-    assert(harness.vm().gc.next_collection == before);
+    const mem = subsystems.value.memallocEmpty(0);
+    expect(harness.vm().gc.next_collection == before);
     utils.free(mem);
 }
 
@@ -663,28 +655,28 @@ fn memallocEmptyOfZero() void {
 /// the allocator happened to leave.
 fn mememptyClearsADirtyBlock() void {
     const n = 16;
-    const kvs: [*]types.JanetKV = @ptrCast(@alignCast(internal.janet_memalloc_empty(n)));
+    const kvs: [*]tables.KV = @ptrCast(@alignCast(subsystems.value.memallocEmpty(n)));
     defer utils.free(kvs);
 
     for (0..n) |i| {
         kvs[i].key = harness.wrapInteger(@intCast(i + 1));
-        kvs[i].value = c.janet_wrap_boolean(1);
-        assert(!harness.isType(kvs[i].key, repr.Tag.nil));
-        assert(!harness.isType(kvs[i].value, repr.Tag.nil));
+        kvs[i].value = wrap.abi.fromBoolean(1);
+        expect(!harness.isType(kvs[i].key, repr.Tag.nil));
+        expect(!harness.isType(kvs[i].value, repr.Tag.nil));
     }
 
-    internal.janet_memempty(kvs, n);
+    subsystems.value.memempty(kvs[0..n]);
     for (0..n) |i| {
-        assert(harness.isType(kvs[i].key, repr.Tag.nil));
-        assert(harness.isType(kvs[i].value, repr.Tag.nil));
-        assert(sameValue(kvs[i].key, c.janet_wrap_nil()));
-        assert(sameValue(kvs[i].value, c.janet_wrap_nil()));
+        expect(harness.isType(kvs[i].key, repr.Tag.nil));
+        expect(harness.isType(kvs[i].value, repr.Tag.nil));
+        expect(sameValue(kvs[i].key, wrap.abi.fromNil()));
+        expect(sameValue(kvs[i].value, wrap.abi.fromNil()));
     }
 
     // A zero count leaves the block alone rather than clearing one pair.
-    kvs[0].key = c.janet_wrap_boolean(1);
-    internal.janet_memempty(kvs, 0);
-    assert(harness.isType(kvs[0].key, repr.Tag.boolean));
+    kvs[0].key = wrap.abi.fromBoolean(1);
+    subsystems.value.memempty(kvs[0..0]);
+    expect(harness.isType(kvs[0].key, repr.Tag.boolean));
 }
 
 // -------------------------------------------------------------- collection
@@ -695,19 +687,19 @@ fn mememptyClearsADirtyBlock() void {
 fn repeatedCycles() void {
     var i: i32 = 0;
     while (i < 64) : (i += 1) {
-        const array = c.janet_wrap_array(c.janet_array(4));
-        const table = c.janet_wrap_table(c.janet_table(4));
-        const buffer = c.janet_wrap_buffer(c.janet_buffer(4));
-        const string = c.janet_wrap_string(strings.cstring("cycle"));
+        const array = wrap.abi.fromArray(arrays.new(4));
+        const table = wrap.abi.fromTable(tables.new(4));
+        const buffer = wrap.abi.fromBuffer(buffers.new(4));
+        const string = wrap.abi.fromString(strings.cstring("cycle"));
         harness.arrayPush(wrap.toArray(array), string);
         tables.put(wrap.toTable(table), harness.wrapInteger(i), buffer);
         gc_alloc.gcroot(array);
         gc_alloc.gcroot(table);
         gc_mark.collect();
-        assert(c.janet_type(array) == @intFromEnum(repr.Tag.array));
-        assert(wrap.toArray(array).*.count == 1);
-        assert(sameValue(wrap.toArray(array).slice()[0], string));
-        assert(sameValue(
+        expect(repr.typeOf(array) == repr.Tag.array);
+        expect(wrap.toArray(array).count == 1);
+        expect(sameValue(wrap.toArray(array).slice()[0], string));
+        expect(sameValue(
             tables.get(wrap.toTable(table), harness.wrapInteger(i)),
             buffer,
         ));
@@ -721,7 +713,7 @@ fn repeatedCycles() void {
 
 pub fn run() void {
     harness.init();
-    defer c.janet_deinit();
+    defer vm_lifecycle.deinitAbi();
 
     eachWrapperStampsItsType();
     pointerRoundTrips();

@@ -31,8 +31,6 @@
 //! because dropping either is a silent compatibility break for hand-written
 //! assembly.
 
-const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
 const harness = @import("harness.zig");
@@ -40,31 +38,34 @@ const core_env = @import("subsystems").env;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const bytecode = @import("subsystems").bytecode;
+const functions = @import("subsystems").value.functions;
+const tables = @import("subsystems").value.tables;
+const expect = @import("expect.zig").expect;
 
-var environment: *types.JanetTable = undefined;
+var environment: *tables.Table = undefined;
 
 /// Evaluate an assembly source and assemble the value it answers.
 ///
 /// `janet_dostring` is a protected entry point -- it answers a status rather
 /// than raising -- so the quoted structure arrives here without a scope.
-fn assemble(source: [*:0]const u8) types.JanetAssembleResult {
+fn assemble(source: [*:0]const u8) bytecode.JanetAssembleResult {
     var val: repr.Value = undefined;
-    std.debug.assert(core_env.dostring(environment, source, "asm-encode-test", &val) == 0);
+    expect(core_env.dostring(environment, source, "asm-encode-test", &val) == 0);
     return bytecode.assembleValue(val, 0);
 }
 
 /// Assemble, and assert it was refused with exactly this message.
 fn refused(source: [*:0]const u8, message: [*:0]const u8) void {
     const result = assemble(source);
-    std.debug.assert(result.status == constants.JANET_ASSEMBLE_ERROR);
-    std.debug.assert(result.@"error" != null);
-    std.debug.assert(harness.stringIs(result.@"error".?, message));
+    expect(result.status == constants.JANET_ASSEMBLE_ERROR);
+    expect(result.@"error" != null);
+    expect(harness.stringIs(result.@"error".?, message));
 }
 
-fn accepted(source: [*:0]const u8) *types.JanetFuncDef {
+fn accepted(source: [*:0]const u8) *functions.FuncDef {
     const result = assemble(source);
-    std.debug.assert(result.status == constants.JANET_ASSEMBLE_OK);
-    std.debug.assert(result.@"error" == null);
+    expect(result.status == constants.JANET_ASSEMBLE_OK);
+    expect(result.@"error" == null);
     return result.funcdef.?;
 }
 
@@ -84,30 +85,30 @@ fn theOperandEncodings() void {
     );
 
     // A label occupies no instruction, so seven source forms are six words.
-    std.debug.assert(definition.bytecode_length == 6);
+    expect(definition.bytecode_length == 6);
 
     // -12 as a signed 16-bit field.
-    std.debug.assert(definition.instructions()[0] ==
-        harness.op(constants.JOP_LOAD_INTEGER) | (@as(u32, 0) << 8) | (@as(u32, 0xFFF4) << 16));
+    expect(definition.instructions()[0] ==
+        harness.op(constants.Opcode.load_integer) | (@as(u32, 0) << 8) | (@as(u32, 0xFFF4) << 16));
     // -3 as a signed 8-bit field, and `first-alias` resolving to slot 0.
-    std.debug.assert(definition.instructions()[1] ==
-        harness.op(constants.JOP_ADD_IMMEDIATE) | (@as(u32, 1) << 8) | (@as(u32, 0) << 16) | (@as(u32, 0xFD) << 24));
+    expect(definition.instructions()[1] ==
+        harness.op(constants.Opcode.add_immediate) | (@as(u32, 1) << 8) | (@as(u32, 0) << 16) | (@as(u32, 0xFD) << 24));
     // Two keywords folded into one type mask.
     // The instruction's operand is the set's sixteen bits, which is the
     // bytecode width `repr.TagSet` is sized to.
     const mask: u32 = repr.TagSet.of(&.{ .nil, .number }).bits();
-    std.debug.assert(definition.instructions()[2] == harness.op(constants.JOP_TYPECHECK) | (mask << 16));
-    std.debug.assert(definition.instructions()[3] == harness.op(constants.JOP_LOAD_CONSTANT) | (@as(u32, 1) << 8));
+    expect(definition.instructions()[2] == harness.op(constants.Opcode.typecheck) | (mask << 16));
+    expect(definition.instructions()[3] == harness.op(constants.Opcode.load_constant) | (@as(u32, 1) << 8));
     // The label resolved to a relative displacement of one.
-    std.debug.assert(definition.instructions()[4] == harness.op(constants.JOP_JUMP) | (@as(u32, 1) << 8));
-    std.debug.assert(definition.instructions()[5] == constants.JOP_RETURN_NIL);
+    expect(definition.instructions()[4] == harness.op(constants.Opcode.jump) | (@as(u32, 1) << 8));
+    expect(constants.Opcode.fromWord(definition.instructions()[5]) == constants.Opcode.return_nil);
 
     // Two names, two slots -- the alias did not create a third.
-    std.debug.assert(definition.slotcount == 2);
+    expect(definition.slotcount == 2);
 
-    std.debug.assert(definition.constants_length == 1);
-    std.debug.assert(harness.isType(definition.constantValues()[0], repr.Tag.string));
-    std.debug.assert(harness.stringIs(wrap.toString(definition.constantValues()[0]), "constant"));
+    expect(definition.constants_length == 1);
+    expect(harness.isType(definition.constantValues()[0], repr.Tag.string));
+    expect(harness.stringIs(wrap.toString(definition.constantValues()[0]), "constant"));
 }
 
 fn theTwoSpellingsOfAChildDefinition() void {
@@ -115,16 +116,16 @@ fn theTwoSpellingsOfAChildDefinition() void {
         \\'{:closures [{:name child :bytecode [(retn)]}]
         \\  :bytecode [(clo 0 child) (retn)]}
     );
-    std.debug.assert(closures.defs_length == 1);
-    std.debug.assert(harness.stringIs(closures.subdefs()[0].*.name.?, "child"));
-    std.debug.assert(closures.instructions()[0] == constants.JOP_CLOSURE);
+    expect(closures.defs_length == 1);
+    expect(harness.stringIs(closures.subdefs()[0].name.?, "child"));
+    expect(constants.Opcode.fromWord(closures.instructions()[0]) == constants.Opcode.closure);
 
     const defs = accepted(
         \\'{:defs [{:name legacy-child :bytecode [(retn)]}]
         \\  :bytecode [(clo 0 legacy-child) (retn)]}
     );
-    std.debug.assert(defs.defs_length == 1);
-    std.debug.assert(harness.stringIs(defs.subdefs()[0].*.name.?, "legacy-child"));
+    expect(defs.defs_length == 1);
+    expect(harness.stringIs(defs.subdefs()[0].name.?, "legacy-child"));
 }
 
 fn theMetadataFields() void {
@@ -133,37 +134,37 @@ fn theMetadataFields() void {
         \\  :vararg true :structarg true :namedargs 2
         \\  :source "metadata-source" :bytecode [(retn)]}
     );
-    std.debug.assert(definition.arity == 2);
-    std.debug.assert(definition.min_arity == 1);
-    std.debug.assert(definition.max_arity == 3);
+    expect(definition.arity == 2);
+    expect(definition.min_arity == 1);
+    expect(definition.max_arity == 3);
     // Derived rather than declared: `max-arity` 3 needs three slots.
-    std.debug.assert(definition.slotcount == 3);
-    std.debug.assert(definition.named_args_count == 2);
-    std.debug.assert(definition.flags & constants.JANET_FUNCDEF_FLAG_VARARG != 0);
-    std.debug.assert(definition.flags & constants.JANET_FUNCDEF_FLAG_STRUCTARG != 0);
-    std.debug.assert(definition.flags & constants.JANET_FUNCDEF_FLAG_NAMEDARGS != 0);
-    std.debug.assert(harness.stringIs(definition.name.?, "metadata-fn"));
-    std.debug.assert(harness.stringIs(definition.source.?, "metadata-source"));
+    expect(definition.slotcount == 3);
+    expect(definition.named_args_count == 2);
+    expect(definition.flags.vararg);
+    expect(definition.flags.structarg);
+    expect(definition.flags.namedargs);
+    expect(harness.stringIs(definition.name.?, "metadata-fn"));
+    expect(harness.stringIs(definition.source.?, "metadata-source"));
 }
 
 fn theSourceMapAndSymbolMap() void {
     const mapped = accepted("'{:bytecode [(retn)] :sourcemap [[12 34]]}");
-    std.debug.assert(mapped.sourceMappings()[0].line == 12);
-    std.debug.assert(mapped.sourceMappings()[0].column == 34);
+    expect(mapped.sourceMappings()[0].line == 12);
+    expect(mapped.sourceMappings()[0].column == 34);
 
     const symbols = accepted(
         \\'{:arity 1 :bytecode [(noop) (retn)]
         \\  :symbolmap [[0 1 0 local]]}
     );
-    std.debug.assert(symbols.symbolmap_length == 1);
+    expect(symbols.symbolmap_length == 1);
     // Present in the flags as well as in the table.
-    std.debug.assert(symbols.flags & constants.JANET_FUNCDEF_FLAG_HASSYMBOLMAP != 0);
-    std.debug.assert(symbols.symbols()[0].birth_pc == 0);
-    std.debug.assert(harness.stringIs(symbols.symbols()[0].symbol.?, "local"));
+    expect(symbols.flags.hassymbolmap);
+    expect(symbols.symbols()[0].birth_pc == 0);
+    expect(harness.stringIs(symbols.symbols()[0].symbol.?, "local"));
 
     // An empty environment list is accepted; an ill-typed one is not.
     const empty = accepted("'{:bytecode [(retn)] :environments []}");
-    std.debug.assert(empty.environments_length == 0);
+    expect(empty.environments_length == 0);
 }
 
 /// The eighteen refusals, and their exact wording. See the header comment for
@@ -230,43 +231,43 @@ fn theRefusals() void {
 /// reachable -- `unmarshalOneDef` builds one before it fills anything, and the
 /// compiler leaves `bytecode` null for a zero-length body.
 fn theSevenRunsOfAFuncdef() void {
-    var empty: types.JanetFuncDef = .{};
-    std.debug.assert(empty.constantValues().len == 0);
-    std.debug.assert(empty.instructions().len == 0);
-    std.debug.assert(empty.environmentIndices().len == 0);
-    std.debug.assert(empty.subdefs().len == 0);
-    std.debug.assert(empty.symbols().len == 0);
-    std.debug.assert(empty.sourceMappings().len == 0);
-    std.debug.assert(empty.closureBits().len == 0);
+    var empty: functions.FuncDef = .{};
+    expect(empty.constantValues().len == 0);
+    expect(empty.instructions().len == 0);
+    expect(empty.environmentIndices().len == 0);
+    expect(empty.subdefs().len == 0);
+    expect(empty.symbols().len == 0);
+    expect(empty.sourceMappings().len == 0);
+    expect(empty.closureBits().len == 0);
 
     // A real one, so that an accessor which always answered empty would fail.
     const def = accepted("'{:bytecode [(noop) (retn)] :constants [7 :k] :sourcemap [[1 2] [3 4]]}");
-    std.debug.assert(def.instructions().len == 2);
-    std.debug.assert(def.constantValues().len == 2);
+    expect(def.instructions().len == 2);
+    expect(def.constantValues().len == 2);
 
     // The pairing: one source mapping per *instruction*, with no length field
     // of its own anywhere in the structure.
-    std.debug.assert(def.sourceMappings().len == def.instructions().len);
-    std.debug.assert(def.sourceMappings()[0].line == 1);
-    std.debug.assert(def.sourceMappings()[1].column == 4);
+    expect(def.sourceMappings().len == def.instructions().len);
+    expect(def.sourceMappings()[0].line == 1);
+    expect(def.sourceMappings()[1].column == 4);
 
     // A funcdef with a sourcemap pointer but a zero bytecode length answers
     // empty rather than trapping, which is the state `unmarshalOneDef` passes
     // through.
     var truncated = def.*;
     truncated.bytecode_length = 0;
-    std.debug.assert(truncated.sourceMappings().len == 0);
-    std.debug.assert(truncated.instructions().len == 0);
+    expect(truncated.sourceMappings().len == 0);
+    expect(truncated.instructions().len == 0);
 
     // And the bitset is a bit per slot, rounded up: thirty-three slots is two
     // words, not one.
     var bits = [_]u32{ 0, 0 };
-    var closure: types.JanetFuncDef = .{ .closure_bitset = &bits, .slotcount = 33 };
-    std.debug.assert(closure.closureBits().len == 2);
+    var closure: functions.FuncDef = .{ .closure_bitset = &bits, .slotcount = 33 };
+    expect(closure.closureBits().len == 2);
     closure.slotcount = 32;
-    std.debug.assert(closure.closureBits().len == 1);
+    expect(closure.closureBits().len == 1);
     closure.closure_bitset = null;
-    std.debug.assert(closure.closureBits().len == 0);
+    expect(closure.closureBits().len == 0);
 }
 
 pub fn run() void {

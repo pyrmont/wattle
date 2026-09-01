@@ -2,13 +2,12 @@ const std = @import("std");
 
 const utils = @import("../utils.zig");
 const fatal = @import("../fatal.zig");
-const types = @import("types");
-const c = @import("cabi");
+const compiler = @import("../compiler.zig");
 const reserved_chunk = 7;
 const reserved_mask: u32 = 0xffff0000;
 const temporary_base = 0xf0;
 
-pub fn regallocInit(allocator: *types.JanetcRegisterAllocator) void {
+pub fn regallocInit(allocator: *compiler.JanetcRegisterAllocator) void {
     allocator.* = .{
         .chunks = null,
         .count = 0,
@@ -18,14 +17,14 @@ pub fn regallocInit(allocator: *types.JanetcRegisterAllocator) void {
     };
 }
 
-pub fn regallocDeinit(allocator: *types.JanetcRegisterAllocator) void {
+pub fn regallocDeinit(allocator: *compiler.JanetcRegisterAllocator) void {
     utils.free(allocator.chunks);
 }
 
 pub fn regallocClone(
-    destination: *types.JanetcRegisterAllocator,
-    source: *types.JanetcRegisterAllocator,
-) callconv(.c) void {
+    destination: *compiler.JanetcRegisterAllocator,
+    source: *compiler.JanetcRegisterAllocator,
+) void {
     destination.count = source.count;
     destination.capacity = source.capacity;
     destination.max = source.max;
@@ -35,21 +34,20 @@ pub fn regallocClone(
         destination.chunks = null;
         return;
     }
-    const memory = utils.malloc(size) orelse fatal.outOfMemory();
-    destination.chunks = @ptrCast(@alignCast(memory));
+    destination.chunks = utils.allocMany(u32, @intCast(destination.capacity));
     const destination_bytes: [*]u8 = @ptrCast(destination.chunks);
     const source_bytes: [*]const u8 = @ptrCast(source.chunks);
     @memcpy(destination_bytes[0..size], source_bytes[0..size]);
 }
 
-pub fn regallocTouch(allocator: *types.JanetcRegisterAllocator, register: i32) void {
+pub fn regallocTouch(allocator: *compiler.JanetcRegisterAllocator, register: i32) void {
     const chunk: i32 = register >> 5;
     const bit: u5 = @intCast(register & 0x1f);
     while (chunk >= allocator.count) pushChunk(allocator);
     allocator.chunks.?[@intCast(chunk)] |= @as(u32, 1) << bit;
 }
 
-pub fn regalloc1(allocator: *types.JanetcRegisterAllocator) i32 {
+pub fn regalloc1(allocator: *compiler.JanetcRegisterAllocator) i32 {
     const old_chunk_count = allocator.count;
     var chunk: i32 = 0;
     var bit: u5 = 0;
@@ -69,23 +67,23 @@ pub fn regalloc1(allocator: *types.JanetcRegisterAllocator) i32 {
     return register;
 }
 
-pub fn regallocFree(allocator: *types.JanetcRegisterAllocator, register: i32) void {
+pub fn regallocFree(allocator: *compiler.JanetcRegisterAllocator, register: i32) void {
     const chunk: usize = @intCast(register >> 5);
     const bit: u5 = @intCast(register & 0x1f);
     allocator.chunks.?[chunk] &= ~(@as(u32, 1) << bit);
 }
 
-pub fn regallocCheck(allocator: *types.JanetcRegisterAllocator, register: i32) c_int {
+pub fn regallocCheck(allocator: *compiler.JanetcRegisterAllocator, register: i32) bool {
     const chunk: i32 = register >> 5;
     const bit: u5 = @intCast(register & 0x1f);
     while (chunk >= allocator.count) pushChunk(allocator);
-    return @intFromBool(allocator.chunks.?[@intCast(chunk)] & (@as(u32, 1) << bit) != 0);
+    return allocator.chunks.?[@intCast(chunk)] & (@as(u32, 1) << bit) != 0;
 }
 
 pub fn regallocTemp(
-    allocator: *types.JanetcRegisterAllocator,
-    temporary: types.JanetcRegisterTemp,
-) callconv(.c) i32 {
+    allocator: *compiler.JanetcRegisterAllocator,
+    temporary: compiler.JanetcRegisterTemp,
+) i32 {
     const temporary_index: u5 = @intCast(temporary);
     const temporary_mask = @as(i32, 1) << temporary_index;
     if (allocator.regtemps & temporary_mask != 0) {
@@ -102,23 +100,21 @@ pub fn regallocTemp(
 }
 
 pub fn regallocFreetemp(
-    allocator: *types.JanetcRegisterAllocator,
+    allocator: *compiler.JanetcRegisterAllocator,
     register: i32,
-    temporary: types.JanetcRegisterTemp,
-) callconv(.c) void {
+    temporary: compiler.JanetcRegisterTemp,
+) void {
     const temporary_index: u5 = @intCast(temporary);
     allocator.regtemps &= ~(@as(i32, 1) << temporary_index);
     if (register < temporary_base) regallocFree(allocator, register);
 }
 
-fn pushChunk(allocator: *types.JanetcRegisterAllocator) void {
+fn pushChunk(allocator: *compiler.JanetcRegisterAllocator) void {
     const chunk: u32 = if (allocator.count == reserved_chunk) reserved_mask else 0;
     const new_count = allocator.count + 1;
     if (new_count > allocator.capacity) {
         const new_capacity = new_count * 2;
-        const size = @sizeOf(u32) * @as(usize, @intCast(new_capacity));
-        const memory = utils.realloc(allocator.chunks, size) orelse fatal.outOfMemory();
-        allocator.chunks = @ptrCast(@alignCast(memory));
+        allocator.chunks = utils.resizeMany(u32, allocator.chunks, @intCast(new_capacity));
         allocator.capacity = new_capacity;
     }
     allocator.chunks.?[@intCast(allocator.count)] = chunk;

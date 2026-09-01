@@ -24,18 +24,16 @@
 //!
 //! What is left is a real question rather than a consolation prize: **the four
 //! accessors in `utils.zig` recover what four *other* files wrote.** A
-//! string's length is written through `value/strings.zig`'s private
-//! `stringHead` and read here through `utils.zig`'s `headOf`; a struct's
+//! string's length is written through `value/strings.zig`'s own
+//! `head` and read here through `utils.zig`'s `headOf`; a struct's
 //! through `value/structs.zig`'s. So
 //! each case below builds a value with a constructor and reads its head back
 //! with the accessor, which is two independent spellings of the same offset
 //! after all — just not the two the C file compared.
 
 const std = @import("std");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
 const harness = @import("harness.zig");
 const config = @import("config");
 
@@ -50,10 +48,8 @@ const order = @import("subsystems").value.order;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const abstracts = @import("subsystems").value.abstracts;
-const AbstractType = abstract_type.AbstractType;
-const assert = std.debug.assert;
-
-const internal = harness.internal;
+const abi = @import("abi");
+const expect = @import("expect.zig").expect;
 
 // ------------------------------------------------------------------- heads
 
@@ -74,26 +70,26 @@ fn payloadOffset(head: anytype, payload: anytype) usize {
 fn theHeadAccessorsRecoverWhatTheConstructorsWrote() void {
     const s = strings.cstring("hello");
     const string_head = utils.stringHead(s);
-    assert(string_head.*.length == 5);
-    assert(payloadOffset(string_head, s) == @sizeOf(types.JanetStringHead));
+    expect(string_head.length == 5);
+    expect(payloadOffset(string_head, s) == @sizeOf(strings.StringHead));
 
     var items: [2]repr.Value = .{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const tup = tuples.newFrom(&items);
     const tuple_head = utils.tupleHead(tup);
-    assert(tuple_head.*.length == 2);
-    assert(payloadOffset(tuple_head, tup) == @sizeOf(types.JanetTupleHead));
+    expect(tuple_head.length == 2);
+    expect(payloadOffset(tuple_head, tup) == @sizeOf(tuples.TupleHead));
 
     const kvs = structs.begin(1);
     structs.put(kvs, value.fromBytes("k", .keyword), harness.wrapInteger(3));
     const st = structs.end(kvs);
     const struct_head = utils.structHead(st);
-    assert(struct_head.*.length == 1);
-    assert(payloadOffset(struct_head, st) == @sizeOf(types.JanetStructHead));
+    expect(struct_head.length == 1);
+    expect(payloadOffset(struct_head, st) == @sizeOf(structs.StructHead));
 
-    const abst = abstracts.new(&head_probe_at, 8);
+    const abst = abstracts.newBytes(&head_probe_at, 8);
     const abstract_head = utils.abstractHead(abst);
-    assert(abstract_head.*.size == 8);
-    assert(payloadOffset(abstract_head, abst) == @sizeOf(types.JanetAbstractHead));
+    expect(abstract_head.size == 8);
+    expect(payloadOffset(abstract_head, abst) == @sizeOf(abi.JanetAbstractHead));
 }
 
 // -------------------------------------------------------------------- hashes
@@ -107,9 +103,9 @@ fn theHeadAccessorsRecoverWhatTheConstructorsWrote() void {
 /// `JANET_HASH_KEY_SIZE` exists only under the same condition, which is why
 /// the key is declared inside the branch.
 fn theHashesAreTheOnesTheirCallersExpect() void {
-    assert(internal.janet_hash_mix(0, 0) == 0x53a3c667);
-    assert(internal.janet_hash_mix(1, 2) == 0x53a3d6f6);
-    assert(internal.janet_hash_mix(
+    expect(value.hashMix(0, 0) == 0x53a3c667);
+    expect(value.hashMix(1, 2) == 0x53a3d6f6);
+    expect(value.hashMix(
         std.math.maxInt(u32),
         std.math.maxInt(u32),
     ) == 0x9c5c4a29);
@@ -119,29 +115,29 @@ fn theHashesAreTheOnesTheirCallersExpect() void {
     const embedded_nul = "Janet\x00Z";
 
     if (comptime !config.prf) {
-        assert(internal.janet_string_calchash(null, 0) == 5381);
-        assert(internal.janet_string_calchash(a, a.len) == 2136581281);
-        assert(internal.janet_string_calchash(hello, hello.len) == 1719582043);
-        assert(internal.janet_string_calchash(embedded_nul, embedded_nul.len) == -1777808027);
+        expect(value.hashBytes("") == 5381);
+        expect(value.hashBytes(a) == 2136581281);
+        expect(value.hashBytes(hello) == 1719582043);
+        expect(value.hashBytes(embedded_nul) == -1777808027);
     } else {
         var key: [constants.JANET_HASH_KEY_SIZE]u8 = @splat(0);
         for (0..8) |i| key[i] = @intCast(i);
         value.initHashKey(&key);
-        assert(internal.janet_string_calchash(a, a.len) == 1520149057);
-        assert(internal.janet_string_calchash(hello, hello.len) == 1601058579);
-        assert(internal.janet_string_calchash(embedded_nul, embedded_nul.len) == -1601329231);
+        expect(value.hashBytes(a) == 1520149057);
+        expect(value.hashBytes(hello) == 1601058579);
+        expect(value.hashBytes(embedded_nul) == -1601329231);
     }
 }
 
 fn tablenRoundsUpToAPowerOfTwo() void {
-    assert(internal.janet_tablen(-1) == 0);
-    assert(internal.janet_tablen(0) == 1);
-    assert(internal.janet_tablen(1) == 2);
-    assert(internal.janet_tablen(2) == 4);
-    assert(internal.janet_tablen(3) == 4);
-    assert(internal.janet_tablen(1024) == 2048);
+    expect(value.capacityFor(-1) == 0);
+    expect(value.capacityFor(0) == 1);
+    expect(value.capacityFor(1) == 2);
+    expect(value.capacityFor(2) == 4);
+    expect(value.capacityFor(3) == 4);
+    expect(value.capacityFor(1024) == 2048);
     // The one value that cannot be rounded up, and is answered unchanged.
-    assert(internal.janet_tablen(std.math.maxInt(i32)) == std.math.maxInt(i32));
+    expect(value.capacityFor(std.math.maxInt(i32)) == std.math.maxInt(i32));
 }
 
 // -------------------------------------------------------------- comparisons
@@ -150,24 +146,24 @@ fn cstrcmpStopsAtWhicheverEndComesFirst() void {
     // A Janet string knows its length; the C string ends at a NUL. So the
     // comparison stops at whichever comes first, and equality needs both to
     // end together.
-    assert(utils.cstrcmp(strings.cstring("abc"), "abc") == 0);
-    assert(utils.cstrcmp(strings.cstring(""), "") == 0);
-    assert(utils.cstrcmp(strings.cstring("abc"), "abd") == -1);
-    assert(utils.cstrcmp(strings.cstring("abd"), "abc") == 1);
+    expect(utils.cstrcmp(strings.cstring("abc"), "abc") == 0);
+    expect(utils.cstrcmp(strings.cstring(""), "") == 0);
+    expect(utils.cstrcmp(strings.cstring("abc"), "abd") == -1);
+    expect(utils.cstrcmp(strings.cstring("abd"), "abc") == 1);
 
     // A prefix on either side. The shorter Janet string runs out first and the
     // result is decided after the loop; the shorter C string is found by the
     // NUL test inside it.
-    assert(utils.cstrcmp(strings.cstring("ab"), "abc") == -1);
-    assert(utils.cstrcmp(strings.cstring("abc"), "ab") == 1);
+    expect(utils.cstrcmp(strings.cstring("ab"), "abc") == -1);
+    expect(utils.cstrcmp(strings.cstring("abc"), "ab") == 1);
 
     // A Janet string may contain a NUL, and then it compares *equal* to the C
     // string that stops there: the loop breaks with both bytes zero, and
     // nothing follows in the C string to decide otherwise.
     const embedded = strings.new("a\x00b");
-    assert(utils.stringHead(embedded).*.length == 3);
-    assert(utils.cstrcmp(embedded, "a") == 0);
-    assert(utils.cstrcmp(embedded, "a\x00b") == 0);
+    expect(utils.stringHead(embedded).length == 3);
+    expect(utils.cstrcmp(embedded, "a") == 0);
+    expect(utils.cstrcmp(embedded, "a\x00b") == 0);
 }
 
 // `janet_strbinsearch` wants an array of structs whose first member is a
@@ -200,7 +196,7 @@ const big_table = [_]SearchBig{
 };
 
 fn findSmall(count: usize, key: [*:0]const u8) ?*const SearchSmall {
-    const hit = internal.janet_strbinsearch(
+    const hit = utils.strbinsearch(
         &small_table,
         count,
         @sizeOf(SearchSmall),
@@ -210,33 +206,33 @@ fn findSmall(count: usize, key: [*:0]const u8) ?*const SearchSmall {
 }
 
 fn strbinsearchRespectsTheItemSize() void {
-    assert(findSmall(5, "alpha").?.value == 1);
-    assert(findSmall(5, "omega").?.value == 5);
-    assert(findSmall(5, "delta").?.value == 3);
-    assert(findSmall(5, "zeta") == null);
-    assert(findSmall(5, "aa") == null);
-    assert(findSmall(5, "") == null);
+    expect(findSmall(5, "alpha").?.value == 1);
+    expect(findSmall(5, "omega").?.value == 5);
+    expect(findSmall(5, "delta").?.value == 3);
+    expect(findSmall(5, "zeta") == null);
+    expect(findSmall(5, "aa") == null);
+    expect(findSmall(5, "") == null);
     // An empty table finds nothing rather than reading the first element.
-    assert(findSmall(0, "alpha") == null);
+    expect(findSmall(0, "alpha") == null);
 
-    const bighit: ?*const SearchBig = @ptrCast(@alignCast(internal.janet_strbinsearch(
+    const bighit: ?*const SearchBig = @ptrCast(@alignCast(utils.strbinsearch(
         &big_table,
         3,
         @sizeOf(SearchBig),
         strings.cstring("gamma"),
     )));
-    assert(bighit == &big_table[2]);
+    expect(bighit == &big_table[2]);
 }
 
 fn safeMemcpyToleratesAZeroLengthNullCopy() void {
     var dest = [_]u8{ 'w', 'x', 'y', 'z' };
     // The whole point: a zero length with null pointers must not be handed to
     // memcpy, which is undefined even then.
-    internal.safe_memcpy(null, null, 0);
-    internal.safe_memcpy(&dest, null, 0);
-    assert(dest[0] == 'w');
-    internal.safe_memcpy(&dest, "ab", 2);
-    assert(dest[0] == 'a' and dest[1] == 'b' and dest[2] == 'y');
+    utils.safeMemcpy(null, null, 0);
+    utils.safeMemcpy(&dest, null, 0);
+    expect(dest[0] == 'w');
+    utils.safeMemcpy(&dest, "ab", 2);
+    expect(dest[0] == 'a' and dest[1] == 'b' and dest[2] == 'y');
 }
 
 // ------------------------------------------------------------- the probe
@@ -250,16 +246,16 @@ fn theProbeDistinguishesATombstoneFromAnEmptyBucket() void {
 
     tables.put(t, present, harness.wrapInteger(1));
 
-    var kv = internal.janet_dict_find(t.*.data.?, t.*.capacity, present);
-    assert(kv != null);
-    assert(harness.equals(kv.?.key, present));
-    assert(wrap.toInteger(kv.?.value) == 1);
+    var kv = value.dictionaryFind(t.slots(), present);
+    expect(kv != null);
+    expect(harness.equals(kv.?.key, present));
+    expect(wrap.toInteger(kv.?.value) == 1);
 
     // An absent key lands on a bucket whose key is nil -- that is what makes
     // it a place to put one.
-    kv = internal.janet_dict_find(t.*.data.?, t.*.capacity, absent);
-    assert(kv != null);
-    assert(harness.isType(kv.?.key, repr.Tag.nil));
+    kv = value.dictionaryFind(t.slots(), absent);
+    expect(kv != null);
+    expect(harness.isType(kv.?.key, repr.Tag.nil));
 
     // Deleting leaves a tombstone: key nil, value not nil. The probe must scan
     // *past* it to find a key that hashed to the same bucket, which is what
@@ -274,10 +270,10 @@ fn theProbeDistinguishesATombstoneFromAnEmptyBucket() void {
     }
     i = 1;
     while (i < 16) : (i += 2) {
-        kv = internal.janet_dict_find(t.*.data.?, t.*.capacity, harness.wrapInteger(i));
-        assert(kv != null);
-        assert(harness.equals(kv.?.key, harness.wrapInteger(i)));
-        assert(wrap.toInteger(kv.?.value) == i * 10);
+        kv = value.dictionaryFind(t.slots(), harness.wrapInteger(i));
+        expect(kv != null);
+        expect(harness.equals(kv.?.key, harness.wrapInteger(i)));
+        expect(wrap.toInteger(kv.?.value) == i * 10);
     }
 }
 
@@ -288,12 +284,12 @@ fn dictionaryGetTurnsAMissIntoNil() void {
     structs.put(kvs, value.fromBytes("a", .keyword), harness.wrapInteger(1));
     structs.put(kvs, value.fromBytes("b", .keyword), harness.wrapInteger(2));
     const st = structs.end(kvs);
-    const capacity = utils.structHead(st).*.capacity;
+    const capacity = utils.structHead(st).capacity;
 
-    assert(wrap.toInteger(
+    expect(wrap.toInteger(
         value.dictionaryGet(st[0..@intCast(capacity)], value.fromBytes("a", .keyword)),
     ) == 1);
-    assert(harness.isType(
+    expect(harness.isType(
         value.dictionaryGet(st[0..@intCast(capacity)], value.fromBytes("z", .keyword)),
         repr.Tag.nil,
     ));
@@ -305,48 +301,48 @@ fn theKeywordProbeComparesLengthBeforeBytes() void {
     const kt = tables.new(4);
     tables.put(kt, value.fromBytes("kw", .keyword), harness.wrapInteger(9));
 
-    var kv = internal.janet_dict_find_keyword(kt.*.data.?, kt.*.capacity, "kw", 2);
-    assert(kv != null);
-    assert(wrap.toInteger(kv.?.value) == 9);
+    var kv = value.dictionaryFindKeyword(kt.slots(), "kw", 2);
+    expect(kv != null);
+    expect(wrap.toInteger(kv.?.value) == 9);
 
-    kv = internal.janet_dict_find_keyword(kt.*.data.?, kt.*.capacity, "nope", 4);
-    assert(kv != null);
-    assert(harness.isType(kv.?.key, repr.Tag.nil));
+    kv = value.dictionaryFindKeyword(kt.slots(), "nope", 4);
+    expect(kv != null);
+    expect(harness.isType(kv.?.key, repr.Tag.nil));
 
     // A prefix of a stored key must miss: the length is compared before the
     // bytes.
-    kv = internal.janet_dict_find_keyword(kt.*.data.?, kt.*.capacity, "k", 1);
-    assert(kv != null);
-    assert(harness.isType(kv.?.key, repr.Tag.nil));
+    kv = value.dictionaryFindKeyword(kt.slots(), "k", 1);
+    expect(kv != null);
+    expect(harness.isType(kv.?.key, repr.Tag.nil));
 }
 
 fn dictionaryNextSkipsTombstones() void {
     const t = tables.new(8);
-    var kv: ?*const types.JanetKV = null;
+    var kv: ?*const tables.KV = null;
 
     // An empty dictionary ends immediately.
-    assert(value.dictionaryNext(t.*.slots(), null) == null);
+    expect(value.dictionaryNext(t.slots(), null) == null);
 
     tables.put(t, value.fromBytes("a", .keyword), harness.wrapInteger(1));
     tables.put(t, value.fromBytes("b", .keyword), harness.wrapInteger(2));
     tables.put(t, value.fromBytes("c", .keyword), harness.wrapInteger(3));
 
     var seen: i32 = 0;
-    kv = value.dictionaryNext(t.*.slots(), null);
-    while (kv != null) : (kv = value.dictionaryNext(t.*.slots(), kv)) {
-        assert(!harness.isType(kv.?.key, repr.Tag.nil));
+    kv = value.dictionaryNext(t.slots(), null);
+    while (kv != null) : (kv = value.dictionaryNext(t.slots(), kv)) {
+        expect(!harness.isType(kv.?.key, repr.Tag.nil));
         seen += 1;
     }
-    assert(seen == 3);
+    expect(seen == 3);
 
     // A deleted entry is skipped: its key is nil even though its value is not.
     tables.put(t, value.fromBytes("b", .keyword), wrap.fromNil());
     seen = 0;
-    kv = value.dictionaryNext(t.*.slots(), null);
-    while (kv != null) : (kv = value.dictionaryNext(t.*.slots(), kv)) {
+    kv = value.dictionaryNext(t.slots(), null);
+    while (kv != null) : (kv = value.dictionaryNext(t.slots(), kv)) {
         seen += 1;
     }
-    assert(seen == 2);
+    expect(seen == 2);
 }
 
 fn sortedKeysAnswersBucketIndicesInKeyOrder() void {
@@ -354,30 +350,30 @@ fn sortedKeysAnswersBucketIndicesInKeyOrder() void {
     var buffer: [32]i32 = undefined;
 
     // An empty dictionary sorts to nothing and writes nothing.
-    assert(utils.sortedKeys(t.*.data.?, t.*.capacity, &buffer) == 0);
+    expect(utils.sortedKeys(t.data.?, @intCast(t.capacity), &buffer) == 0);
 
     var i: i32 = 5;
     while (i >= 0) : (i -= 1) {
         tables.put(t, harness.wrapInteger(i), harness.wrapInteger(i));
     }
-    var n = utils.sortedKeys(t.*.data.?, t.*.capacity, &buffer);
-    assert(n == 6);
+    var n = utils.sortedKeys(t.data.?, @intCast(t.capacity), &buffer);
+    expect(n == 6);
     // The answer is bucket *indices*, in key order.
     i = 0;
     while (i < n) : (i += 1) {
-        const key = t.*.slots()[@intCast(buffer[@intCast(i)])].key;
-        assert(wrap.toInteger(key) == i);
+        const key = t.slots()[@intCast(buffer[@intCast(i)])].key;
+        expect(wrap.toInteger(key) == i);
     }
 
     // Deleted entries are not counted.
     tables.put(t, harness.wrapInteger(3), wrap.fromNil());
-    n = utils.sortedKeys(t.*.data.?, t.*.capacity, &buffer);
-    assert(n == 5);
+    n = utils.sortedKeys(t.data.?, @intCast(t.capacity), &buffer);
+    expect(n == 5);
     i = 1;
     while (i < n) : (i += 1) {
-        const previous = t.*.slots()[@intCast(buffer[@intCast(i - 1)])].key;
-        const current = t.*.slots()[@intCast(buffer[@intCast(i)])].key;
-        assert(order.compare(previous, current) < 0);
+        const previous = t.slots()[@intCast(buffer[@intCast(i - 1)])].key;
+        const current = t.slots()[@intCast(buffer[@intCast(i)])].key;
+        expect(order.compare(previous, current) < 0);
     }
 }
 
@@ -390,70 +386,59 @@ fn theCollectionHashesAreWhatTheHeadsStore() void {
 
     // The seed is 33, so a zero-length run hashes to it. That is the one value
     // of the two collection hashes a caller can predict.
-    assert(internal.janet_array_calchash(&items, 0) == 33);
-    assert(internal.janet_kv_calchash(null, 0) == 33);
+    expect(value.hashIndexed(items[0..0]) == 33);
+    expect(value.hashDictionary(&.{}) == 33);
 
     // A tuple's stored hash is what `janet_array_calchash` computed, and the
     // head it is stored in is recovered by the accessor above.
     const tup = tuples.newFrom(&items);
-    assert(utils.tupleHead(tup).*.hash == internal.janet_array_calchash(tup, 3));
+    expect(utils.tupleHead(tup).hash == value.hashIndexed(tup[0..3]));
 
     const kvs = structs.begin(1);
     structs.put(kvs, value.fromBytes("k", .keyword), harness.wrapInteger(1));
     const st = structs.end(kvs);
     const head = utils.structHead(st);
-    assert(head.*.hash == internal.janet_kv_calchash(st, head.*.capacity));
+    expect(head.hash == value.hashDictionary(st[0..@intCast(head.capacity)]));
 }
 
-// ------------------------------------------ the four exported data symbols
+// ---------------------------------------------------- the four name tables
 
-/// `janet_base64`, `janet_type_names`, `janet_status_names` and
-/// `janet_signal_names` reached the way a C caller reaches them.
-///
-/// These four are the manifest's data shape: `capi.zig` `@export`s the array
-/// itself, so there is no entry point and no conversion -- a C caller indexes
-/// the runtime's own storage. Nothing exercised them, in this file or any
-/// other.
+/// `utils.base64` and the three name tables, checked by position.
 ///
 /// The expectations are written out rather than read from `utils.zig`: the
-/// alphabet is the documented one, and the three name tables are indexed by
-/// the numeric tag a C caller has, not by a Zig enum. That is the
-/// independent derivation — this contract fails if the *order* drifts, which
-/// is the way a table indexed by an integer breaks.
-extern const janet_base64: [65]u8;
-extern const janet_type_names: [16][*:0]const u8;
-extern const janet_status_names: [16][*:0]const u8;
-extern const janet_signal_names: [14][*:0]const u8;
-
-fn theExportedTablesAreIndexedByTheNumbersACallerHas() void {
+/// alphabet is the documented one, and the three tables are indexed by a
+/// numeric tag rather than by a Zig enum, so nothing checks their *order*
+/// except this. That is the independent derivation, and it is the way a table
+/// indexed by an integer breaks.
+fn theTablesAreIndexedByTheNumbersACallerHas() void {
     // 0-9, A-Z, a-z, `_`, `=`, and the terminator the C original carries.
-    std.debug.assert(janet_base64[0] == '0');
-    std.debug.assert(janet_base64[10] == 'A');
-    std.debug.assert(janet_base64[36] == 'a');
-    std.debug.assert(janet_base64[62] == '_');
-    std.debug.assert(janet_base64[63] == '=');
-    std.debug.assert(janet_base64[64] == 0);
+    expect(utils.base64[0] == '0');
+    expect(utils.base64[10] == 'A');
+    expect(utils.base64[36] == 'a');
+    expect(utils.base64[62] == '_');
+    expect(utils.base64[63] == '=');
+    expect(utils.base64[64] == 0);
 
-    // `janet.h`'s `JanetType` order, which is not alphabetical and is not the
-    // order `repr.Tag` would produce if it were sorted.
+    // The tag order, which is not alphabetical and is not the order `repr.Tag`
+    // would produce if it were sorted.
     const expected_types = [_][:0]const u8{
         "number",   "nil",       "boolean",  "fiber",   "string", "symbol",
         "keyword",  "array",     "tuple",    "table",   "struct", "buffer",
         "function", "cfunction", "abstract", "pointer",
     };
     for (expected_types, 0..) |want, i| {
-        std.debug.assert(std.mem.eql(u8, std.mem.span(janet_type_names[i]), want));
+        expect(std.mem.eql(u8, std.mem.span(utils.typeNames[i]), want));
     }
 
-    std.debug.assert(std.mem.eql(u8, std.mem.span(janet_status_names[0]), "dead"));
-    std.debug.assert(std.mem.eql(u8, std.mem.span(janet_status_names[1]), "error"));
-    std.debug.assert(std.mem.eql(u8, std.mem.span(janet_signal_names[0]), "ok"));
-    std.debug.assert(std.mem.eql(u8, std.mem.span(janet_signal_names[1]), "error"));
+    expect(std.mem.eql(u8, std.mem.span(utils.statusNames[0]), "dead"));
+    expect(std.mem.eql(u8, std.mem.span(utils.statusNames[1]), "error"));
+    expect(std.mem.eql(u8, std.mem.span(utils.signalNames[0]), "ok"));
+    expect(std.mem.eql(u8, std.mem.span(utils.signalNames[1]), "error"));
 
     // Every entry is a real string in both tables: an array that grew a slot
     // without a name is the failure this catches.
-    for (0..16) |i| std.debug.assert(std.mem.span(janet_status_names[i]).len > 0);
-    for (0..14) |i| std.debug.assert(std.mem.span(janet_signal_names[i]).len > 0);
+    for (0..16) |i| expect(std.mem.span(utils.statusNames[i]).len > 0);
+    for (0..14) |i| expect(std.mem.span(utils.signalNames[i]).len > 0);
 }
 
 pub fn run() void {
@@ -475,7 +460,7 @@ pub fn run() void {
     dictionaryNextSkipsTombstones();
     sortedKeysAnswersBucketIndicesInKeyOrder();
     theCollectionHashesAreWhatTheHeadsStore();
-    theExportedTablesAreIndexedByTheNumbersACallerHas();
+    theTablesAreIndexedByTheNumbersACallerHas();
 
     vm_lifecycle.deinit();
 

@@ -12,8 +12,8 @@
 //!    select. Only the supervisor path inside the loop reaches it otherwise,
 //!    and then only on a fiber that has already failed.
 //!  - **`makeStreamExt`.** Type-punning a stream -- a larger allocation and a
-//!    caller-supplied method table -- is what `net_sockets.zig` does and what
-//!    no Janet program can ask for.
+//!    caller-supplied method table -- is what `net.zig` does and what no Janet
+//!    program can ask for.
 //!  - **`makePipe`'s four modes.** Janet reaches mode 1 through `os/spawn` and
 //!    nothing else; the descriptor flags each mode sets are invisible from
 //!    Janet even then.
@@ -58,17 +58,13 @@
 //! `INVALID_HANDLE_VALUE`s, and nothing caught it because the driver that held
 //! them was installed only under `-Dinstall-tests` and the matrix's
 //! cross-compile entries do not pass it. This driver is installed
-//! unconditionally, so those entries compile this file --
-//! `phase_11.md` said this was a gap that closes itself, and this is it
-//! closing.
+//! unconditionally, so those entries compile this file.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const types = @import("types");
 const repr = @import("repr");
 const constants = @import("constants");
-const c = @import("cabi");
-const raise = @import("raise");
+const raise = @import("subsystems").raise;
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
@@ -85,12 +81,18 @@ const vm_lifecycle = @import("subsystems").lifecycle;
 const pp_describe = @import("subsystems").pp_describe;
 const ev_mod = @import("subsystems").ev;
 const ev_channel = @import("subsystems").ev_channel;
+const c = @import("cabi");
+const strings = @import("subsystems").value.strings;
+const tuples = @import("subsystems").value.tuples;
+/// `boundary` rather than `abi`, which a local below binds to a raise report.
+const boundary = @import("abi");
+const method_type = @import("subsystems").method_type;
+const host = @import("host");
 const ev = subsystems.ev;
 const channel = subsystems.ev_channel;
 const stream = subsystems.ev_stream;
-const abstract_type = subsystems.abstract_type;
 
-const assert = std.debug.assert;
+const expect = @import("expect.zig").expect;
 const windows = builtin.os.tag == .windows;
 
 /// Whether closing a stream whose handle was never registered with the backend
@@ -114,14 +116,14 @@ const unregister_of_an_unregistered_handle_is_quiet = builtin.os.tag != .linux;
 /// `ev/stream.zig` has the same two lines privately, and that is deliberate:
 /// the constant is the *host's*, so a contract that imported the subject's
 /// copy could not notice the subject having the wrong one.
-fn invalidHandle() types.JanetHandle {
+fn invalidHandle() host.Handle {
     return if (windows) @ptrFromInt(std.math.maxInt(usize)) else -1;
 }
 
 fn payloadIs(payload: repr.Value, text: []const u8) bool {
     if (!harness.isType(payload, repr.Tag.string)) return false;
     const s = wrap.toString(payload);
-    const length: usize = @intCast(types.stringHead(s).length);
+    const length: usize = @intCast(strings.head(s).length);
     return std.mem.eql(u8, s[0..length], text);
 }
 
@@ -155,12 +157,12 @@ fn returnsQuietly() raise.Raising(void) {
 /// and pointed here.
 fn theProtectedScope() void {
     // The returning arm answers null.
-    assert(harness.raised(returnsQuietly, .{}) == null);
+    expect(harness.raised(returnsQuietly, .{}) == null);
 
     // The raising arm answers the signal and the payload.
     const r = harness.raised(raisesContractPanic, .{}).?;
-    assert(r.signal == types.Signal.@"error");
-    assert(r.says("contract panic"));
+    expect(r.signal == boundary.Signal.@"error");
+    expect(r.says("contract panic"));
 
     // Scopes nest, and the inner one does not swallow the outer's state. This
     // is the claim that is about the scope rather than about the call: an
@@ -168,13 +170,13 @@ fn theProtectedScope() void {
     // has to put back what was there, not null.
     const outer = harness.raised(struct {
         fn body() raise.Raising(void) {
-            assert(harness.raised(returnsQuietly, .{}) == null);
+            expect(harness.raised(returnsQuietly, .{}) == null);
             const inner = harness.raised(raisesContractPanic, .{}).?;
-            assert(inner.says("contract panic"));
+            expect(inner.says("contract panic"));
             return raise.panic("outer panic");
         }
     }.body, .{}).?;
-    assert(outer.says("outer panic"));
+    expect(outer.says("outer panic"));
 }
 
 // ==========================================================================
@@ -190,22 +192,22 @@ fn theEmbedderChannelApi() void {
     // Nothing to take from an empty channel, and mode 2 registers no pending
     // read, so a second take behaves the same as the first.
     var out = value.fromBytes("untouched", .keyword);
-    assert(!try_(channel.channelTake(chan, &out)));
-    assert(harness.isType(out, repr.Tag.keyword));
-    assert(!try_(channel.channelTake(chan, &out)));
+    expect(!try_(channel.channelTake(chan, &out)));
+    expect(harness.isType(out, repr.Tag.keyword));
+    expect(!try_(channel.channelTake(chan, &out)));
 
     // Two gives fit under the limit and report "do not block".
-    assert(!try_(channel.channelGive(chan, harness.wrapInteger(1))));
-    assert(!try_(channel.channelGive(chan, harness.wrapInteger(2))));
+    expect(!try_(channel.channelGive(chan, harness.wrapInteger(1))));
+    expect(!try_(channel.channelGive(chan, harness.wrapInteger(2))));
     // The third exceeds the limit; mode 2 declines to block and says so.
-    assert(try_(channel.channelGive(chan, harness.wrapInteger(3))));
+    expect(try_(channel.channelGive(chan, harness.wrapInteger(3))));
 
     // All three are queued, in order.
     for ([_]i32{ 1, 2, 3 }) |expected| {
-        assert(try_(channel.channelTake(chan, &out)));
-        assert(wrap.toInteger(out) == expected);
+        expect(try_(channel.channelTake(chan, &out)));
+        expect(wrap.toInteger(out) == expected);
     }
-    assert(!try_(channel.channelTake(chan, &out)));
+    expect(!try_(channel.channelTake(chan, &out)));
 }
 
 /// A raising call this contract expects to return. `try` needs an error union
@@ -220,21 +222,21 @@ fn theThreadedChannel() void {
     // GC heap and takes its lock on every operation.
     const chan = channel.channelMakeThreaded(1).?;
     var out = wrap.fromNil();
-    assert(!try_(channel.channelGive(chan, harness.wrapInteger(7))));
-    assert(try_(channel.channelTake(chan, &out)));
-    assert(wrap.toInteger(out) == 7);
+    expect(!try_(channel.channelGive(chan, harness.wrapInteger(7))));
+    expect(try_(channel.channelTake(chan, &out)));
+    expect(wrap.toInteger(out) == 7);
 
     // Packing is what a threaded channel does that an ordinary one does not: a
     // value that is not one of the five self-contained types is marshalled on
     // the way in and unmarshalled on the way out.
-    assert(!try_(channel.channelGive(chan, value.fromBytes("packed", .string))));
-    assert(try_(channel.channelTake(chan, &out)));
-    assert(payloadIs(out, "packed"));
+    expect(!try_(channel.channelGive(chan, value.fromBytes("packed", .string))));
+    expect(try_(channel.channelTake(chan, &out)));
+    expect(payloadIs(out, "packed"));
 }
 
-/// Giving to a closed channel raises, and this asserts the *abi* -- what an
-/// embedder calling `janet.h`'s `janet_channel_give` sees, which is a report.
-/// The import beside it is the same refusal arriving as an error.
+/// Giving to a closed channel raises, and this asserts the *abi* -- what a
+/// caller across a compilation boundary sees, which is a report. The import
+/// beside it is the same refusal arriving as an error.
 fn theClosedChannel() void {
     const chanv = doString("(def c (ev/chan 4)) (ev/chan-close c) c");
     gc_alloc.gcroot(chanv);
@@ -244,15 +246,15 @@ fn theClosedChannel() void {
 
     // Taking from a closed channel succeeds and yields nil.
     var out = harness.wrapInteger(99);
-    assert(try_(channel.channelTake(chan, &out)));
-    assert(harness.isType(out, repr.Tag.nil));
+    expect(try_(channel.channelTake(chan, &out)));
+    expect(harness.isType(out, repr.Tag.nil));
 
-    const abi = harness.abiRaised(c.janet_channel_give, .{ chan, harness.wrapInteger(1) }).?;
-    assert(abi.signal == types.Signal.@"error");
-    assert(abi.says("cannot write to closed channel"));
+    const abi = harness.abiRaised(subsystems.ev_channel.channelGiveAbi, .{ chan, harness.wrapInteger(1) }).?;
+    expect(abi.signal == boundary.Signal.@"error");
+    expect(abi.says("cannot write to closed channel"));
 
     const imported = harness.raised(channel.channelGive, .{ chan, harness.wrapInteger(1) }).?;
-    assert(imported.says("cannot write to closed channel"));
+    expect(imported.says("cannot write to closed channel"));
 }
 
 fn theChannelGetters() void {
@@ -262,15 +264,15 @@ fn theChannelGetters() void {
 
     var argv = [_]repr.Value{ chanv, wrap.fromNil() };
     const chan = try_(channel.getChannel(&argv, 0)).?;
-    assert(try_(channel.getChannel(&argv, 0)) == chan);
+    expect(try_(channel.getChannel(&argv, 0)) == chan);
 
     // `optChannel` takes the default for a missing argument and for nil, and
     // the channel for anything else. The count travels in the slice: the abi
     // that took `(argv, argc, n)` is `capi.zig`'s `janet_optchannel`, and what
     // is left here reads `argv.len`.
-    assert(try_(ev_channel.optChannel(argv[0..1], 1, null)) == null);
-    assert(try_(ev_channel.optChannel(argv[0..2], 1, null)) == null);
-    assert(try_(ev_channel.optChannel(argv[0..2], 0, null)) == chan);
+    expect(try_(ev_channel.optChannel(argv[0..1], 1, null)) == null);
+    expect(try_(ev_channel.optChannel(argv[0..2], 1, null)) == null);
+    expect(try_(ev_channel.optChannel(argv[0..2], 0, null)) == chan);
 }
 
 // ==========================================================================
@@ -283,7 +285,7 @@ fn probeMethod(argv: []repr.Value) raise.Raising(repr.Value) {
     return value.fromBytes("probe", .keyword);
 }
 
-const probe_methods = [_]types.JanetMethod{
+const probe_methods = [_]method_type.CMethod{
     .{ .name = "probe", .cfun = raise.stored(&probeMethod) },
     .{ .name = null, .cfun = null },
 };
@@ -291,20 +293,20 @@ const probe_methods = [_]types.JanetMethod{
 /// A stream with room for a payload after the header, which is what
 /// `makeStreamExt` exists for.
 const ProbeStream = extern struct {
-    stream: types.JanetStream,
+    stream: stream.Stream,
     marker: u64,
 };
 
 /// A pipe, and the pair of handles it answers with. Every stream section needs
 /// one and every one of them closes the far end by hand.
-fn probePipe() [2]types.JanetHandle {
-    var handles: [2]types.JanetHandle = undefined;
-    assert(stream.makePipe(&handles, 0) == 0);
+fn probePipe() [2]host.Handle {
+    var handles: [2]host.Handle = undefined;
+    expect(stream.makePipe(&handles, 0) == 0);
     return handles;
 }
 
-fn closeFarEnd(handles: [2]types.JanetHandle) void {
-    if (!windows) _ = ev.close(handles[1]);
+fn closeFarEnd(handles: [2]host.Handle) void {
+    if (!windows) _ = c.close(handles[1]);
 }
 
 fn theStreamExtension() void {
@@ -318,39 +320,37 @@ fn theStreamExtension() void {
     ps.marker = 0x0123456789ABCDEF;
 
     const s = &ps.stream;
-    assert(s.handle == handles[0]);
-    assert(s.flags == @as(u32, @intCast(constants.JANET_STREAM_READABLE)));
-    assert(s.read_fiber == null and s.write_fiber == null);
-    assert(@intFromPtr(s.methods) == @intFromPtr(&probe_methods));
+    expect(s.handle == handles[0]);
+    expect(s.flags == @as(u32, @intCast(constants.JANET_STREAM_READABLE)));
+    expect(s.read_fiber == null and s.write_fiber == null);
+    expect(@intFromPtr(s.methods) == @intFromPtr(&probe_methods));
 
     // The abstract's size is the caller's, not the header's.
-    assert(types.abstractHead(ps).size == @sizeOf(ProbeStream));
+    expect(boundary.abstractHead(ps).size == @sizeOf(ProbeStream));
 
     // The abstract carries the type this file imports rather than some other
     // registration of the same name. Asserted through `janet_abstract_type`,
     // whose answer is a run-time value: two declarations compared at comptime
     // are never equal whatever the linker did.
-    assert(types.abstractHead(ps).type == &stream.streamType);
+    expect(boundary.abstractHead(ps).type == &stream.streamType);
 
     // The getter reaches the caller's table rather than the default one.
     const at = &stream.streamType;
-    var found = wrap.fromNil();
-    var out = wrap.fromNil();
-    assert(try_(at.get.?(ps, value.fromBytes("probe", .keyword), &found)) == 1);
-    assert(harness.isType(found, repr.Tag.cfunction));
-    assert(try_(at.get.?(ps, value.fromBytes("close", .keyword), &out)) == 0);
+    const found = try_(at.get.?(ps, value.fromBytes("probe", .keyword))).?;
+    expect(harness.isType(found, repr.Tag.cfunction));
+    expect(try_(at.get.?(ps, value.fromBytes("close", .keyword))) == null);
 
     // `next` walks the same table.
-    assert(harness.keywordIs(try_(at.next.?(ps, wrap.fromNil())), "probe"));
-    assert(harness.isType(try_(at.next.?(ps, value.fromBytes("probe", .keyword))), repr.Tag.nil));
+    expect(harness.keywordIs(try_(at.next.?(ps, wrap.fromNil())), "probe"));
+    expect(harness.isType(try_(at.next.?(ps, value.fromBytes("probe", .keyword))), repr.Tag.nil));
 
-    assert(ps.marker == 0x0123456789ABCDEF);
+    expect(ps.marker == 0x0123456789ABCDEF);
     try_(stream.streamClose(s));
-    assert(s.flags & @as(u32, @intCast(constants.JANET_STREAM_CLOSED)) != 0);
-    assert(s.handle == invalidHandle());
+    expect(s.flags & @as(u32, @intCast(constants.JANET_STREAM_CLOSED)) != 0);
+    expect(s.handle == invalidHandle());
     // Closing twice is a no-op rather than a double close.
     try_(stream.streamClose(s));
-    assert(s.handle == invalidHandle());
+    expect(s.handle == invalidHandle());
     closeFarEnd(handles);
 }
 
@@ -366,16 +366,15 @@ fn theDefaultMethods() void {
     // `ev/` binding are the same
     // asserted is that the method table and the `ev/` binding are the same
     // function, which is slightly stronger than comparing addresses would be.
-    var out = wrap.fromNil();
     inline for (.{ "close", "read", "chunk", "write" }) |name| {
-        assert(try_(at.get.?(s, value.fromBytes(name, .keyword), &out)) == 1);
-        assert(harness.isType(out, repr.Tag.cfunction));
-        assert(wrap.toCfunction(out) ==
+        const out = try_(at.get.?(s, value.fromBytes(name, .keyword))).?;
+        expect(harness.isType(out, repr.Tag.cfunction));
+        expect(wrap.toCfunction(out) ==
             wrap.toCfunction(registry.resolveCore("ev/" ++ name)));
     }
 
     // A non-keyword key is not a method lookup.
-    assert(try_(at.get.?(s, harness.wrapInteger(0), &out)) == 0);
+    expect(try_(at.get.?(s, harness.wrapInteger(0))) == null);
     try_(stream.streamClose(s));
     closeFarEnd(handles);
 }
@@ -384,14 +383,14 @@ fn theStreamRendering() void {
     const handles = probePipe();
     const s = try_(stream.makeStream(handles[0], @intCast(constants.JANET_STREAM_READABLE), null));
     const buffer = buffers.new(16);
-    try_(stream.streamType.tostring.?(s, buffer));
+    try_(stream.streamType.tostring.?(s, @ptrCast(buffer)));
 
     var expected: [32]u8 = undefined;
     const text = std.fmt.bufPrint(&expected, "[fd={d}]", .{
         if (windows) @as(i32, @intCast(@intFromPtr(handles[0]))) else handles[0],
     }) catch unreachable;
-    assert(buffer.*.count == @as(i32, @intCast(text.len)));
-    assert(std.mem.eql(u8, buffer.*.slice()[0..text.len], text));
+    expect(buffer.count == @as(i32, @intCast(text.len)));
+    expect(std.mem.eql(u8, buffer.slice()[0..text.len], text));
 
     try_(stream.streamClose(s));
     closeFarEnd(handles);
@@ -408,26 +407,26 @@ fn theStreamFlagMessages() void {
     const s = try_(stream.makeStream(handles[0], readable | socket, null));
 
     // Every flag the caller asks for is present, so nothing is raised.
-    assert(harness.raised(stream.streamFlags, .{ s, readable }) == null);
-    assert(harness.raised(stream.streamFlags, .{ s, readable | socket }) == null);
+    expect(harness.raised(stream.streamFlags, .{ s, readable }) == null);
+    expect(harness.raised(stream.streamFlags, .{ s, readable | socket }) == null);
 
     // The message names every flag that was *asked for*, in a fixed order, and
     // the last word is "socket" only when a socket was asked for.
     {
         const r = harness.raised(stream.streamFlags, .{ s, writable }).?;
-        assert(r.says("bad stream, expected writable stream"));
+        expect(r.says("bad stream, expected writable stream"));
     }
     {
         const all = readable | writable | acceptable | udpserver | socket;
         const r = harness.raised(stream.streamFlags, .{ s, all }).?;
-        assert(r.says("bad stream, expected readable writable server datagram socket"));
+        expect(r.says("bad stream, expected readable writable server datagram socket"));
     }
 
     // A closed stream is refused before its flags are looked at.
     try_(stream.streamClose(s));
     {
         const r = harness.raised(stream.streamFlags, .{ s, readable }).?;
-        assert(r.says("stream is closed"));
+        expect(r.says("stream is closed"));
     }
     closeFarEnd(handles);
 }
@@ -440,15 +439,15 @@ fn theNotCloseableStream() void {
 
     // The handle is forgotten either way; what NOT_CLOSEABLE changes is that
     // the descriptor itself survives, which is why it is still usable here.
-    assert(s.flags & @as(u32, @intCast(constants.JANET_STREAM_CLOSED)) != 0);
-    assert(s.handle == invalidHandle());
+    expect(s.flags & @as(u32, @intCast(constants.JANET_STREAM_CLOSED)) != 0);
+    expect(s.handle == invalidHandle());
 
     if (!windows) {
         var byte: u8 = 'x';
-        assert(ev.write(handles[1], @ptrCast(&byte), 1) == 1);
-        assert(ev.read(handles[0], @ptrCast(&byte), 1) == 1);
-        _ = ev.close(handles[0]);
-        _ = ev.close(handles[1]);
+        expect(c.write(handles[1], @ptrCast(&byte), 1) == 1);
+        expect(c.read(handles[0], @ptrCast(&byte), 1) == 1);
+        _ = c.close(handles[0]);
+        _ = c.close(handles[1]);
     }
 }
 
@@ -464,14 +463,14 @@ const fd_cloexec: c_int = std.c.FD_CLOEXEC;
 const o_nonblock: c_int = @bitCast(@as(u32, @bitCast(std.c.O{ .NONBLOCK = true })));
 
 fn isCloexec(fd: c_int) bool {
-    const flags = ev.fcntl(fd, std.c.F.GETFD);
-    assert(flags != -1);
+    const flags = c.fcntl(fd, std.c.F.GETFD);
+    expect(flags != -1);
     return flags & fd_cloexec != 0;
 }
 
 fn isNonblock(fd: c_int) bool {
-    const flags = ev.fcntl(fd, std.c.F.GETFL);
-    assert(flags != -1);
+    const flags = c.fcntl(fd, std.c.F.GETFL);
+    expect(flags != -1);
     return flags & o_nonblock != 0;
 }
 
@@ -480,28 +479,28 @@ fn isNonblock(fd: c_int) bool {
 /// can observe the result.
 fn thePipeModes() void {
     // mode: cloexec0 cloexec1 nonblock0 nonblock1
-    const expect = [4][4]bool{
+    const expected = [4][4]bool{
         .{ true, true, true, true },
         .{ true, false, true, false },
         .{ false, true, false, true },
         .{ true, true, false, false },
     };
-    for (expect, 0..) |row, mode| {
-        var h: [2]types.JanetHandle = undefined;
-        assert(stream.makePipe(&h, @intCast(mode)) == 0);
-        assert(isCloexec(h[0]) == row[0]);
-        assert(isCloexec(h[1]) == row[1]);
-        assert(isNonblock(h[0]) == row[2]);
-        assert(isNonblock(h[1]) == row[3]);
+    for (expected, 0..) |row, mode| {
+        var h: [2]host.Handle = undefined;
+        expect(stream.makePipe(&h, @intCast(mode)) == 0);
+        expect(isCloexec(h[0]) == row[0]);
+        expect(isCloexec(h[1]) == row[1]);
+        expect(isNonblock(h[0]) == row[2]);
+        expect(isNonblock(h[1]) == row[3]);
 
         // The two ends are a pipe rather than two unrelated descriptors.
         var byte: u8 = @intCast('a' + mode);
         var got: u8 = 0;
-        assert(ev.write(h[1], @ptrCast(&byte), 1) == 1);
-        assert(ev.read(h[0], @ptrCast(&got), 1) == 1);
-        assert(got == byte);
-        _ = ev.close(h[0]);
-        _ = ev.close(h[1]);
+        expect(c.write(h[1], @ptrCast(&byte), 1) == 1);
+        expect(c.read(h[0], @ptrCast(&got), 1) == 1);
+        expect(got == byte);
+        _ = c.close(h[0]);
+        _ = c.close(h[1]);
     }
 }
 
@@ -511,10 +510,10 @@ fn theLastError() void {
     std.c._errno().* = @intFromEnum(std.posix.E.BADF);
     const first = stream.evLasterr();
     const second = stream.evLasterr();
-    assert(harness.isType(first, repr.Tag.string));
-    assert(order.equals(first, second) != 0);
+    expect(harness.isType(first, repr.Tag.string));
+    expect(order.equals(first, second));
     std.c._errno().* = @intFromEnum(std.posix.E.INVAL);
-    assert(order.equals(first, stream.evLasterr()) == 0);
+    expect(!order.equals(first, stream.evLasterr()));
 }
 
 // ==========================================================================
@@ -523,18 +522,18 @@ fn theLastError() void {
 
 fn theLoopExitCondition() void {
     // Nothing scheduled, no timers, no listeners.
-    assert(ev_mod.loopDone() != 0);
+    expect(ev_mod.loopDone());
 
     // A listener is enough to keep the loop alive, and the count is a count
     // rather than a flag.
     ev.evIncRefcount();
-    assert(ev_mod.loopDone() == 0);
+    expect(!ev_mod.loopDone());
     ev.evIncRefcount();
-    assert(ev_mod.loopDone() == 0);
+    expect(!ev_mod.loopDone());
     ev.evDecRefcount();
-    assert(ev_mod.loopDone() == 0);
+    expect(!ev_mod.loopDone());
     ev.evDecRefcount();
-    assert(ev_mod.loopDone() != 0);
+    expect(ev_mod.loopDone());
 }
 
 const PostRecord = struct {
@@ -545,7 +544,7 @@ const PostRecord = struct {
 
 var post_record: PostRecord = .{};
 
-fn postCallback(msg: types.JanetEVGenericMessage) callconv(.c) void {
+fn postCallback(msg: ev_mod.GenericMessage) callconv(.c) void {
     post_record.calls += 1;
     post_record.tag = msg.tag;
     post_record.value = msg.argj;
@@ -556,19 +555,19 @@ fn postCallback(msg: types.JanetEVGenericMessage) callconv(.c) void {
 /// the same round trip goes through the completion port instead.
 fn thePostedEventRoundTrip() void {
     post_record = .{};
-    var msg = std.mem.zeroes(types.JanetEVGenericMessage);
+    var msg = std.mem.zeroes(ev_mod.GenericMessage);
     msg.tag = 41;
     msg.argj = harness.wrapInteger(42);
 
-    assert(ev_mod.loopDone() != 0);
+    expect(ev_mod.loopDone());
     ev.evPostEvent(null, &postCallback, msg);
-    assert(ev_mod.loopDone() == 0);
+    expect(!ev_mod.loopDone());
 
     raise.reported(ev_mod.loop());
-    assert(post_record.calls == 1);
-    assert(post_record.tag == 41);
-    assert(wrap.toInteger(post_record.value) == 42);
-    assert(ev_mod.loopDone() != 0);
+    expect(post_record.calls == 1);
+    expect(post_record.tag == 41);
+    expect(wrap.toInteger(post_record.value) == 42);
+    expect(ev_mod.loopDone());
 }
 
 /// A null callback is what `janet_loop1_interrupt` posts, to wake a loop that
@@ -583,17 +582,17 @@ fn thePostedEventRoundTrip() void {
 /// which is why this drives one turn of the loop rather than calling
 /// `janet_loop`, and why it puts the count back by hand afterwards.
 fn theNullCallback() void {
-    assert(ev_mod.loopDone() != 0);
-    const msg = std.mem.zeroes(types.JanetEVGenericMessage);
+    expect(ev_mod.loopDone());
+    const msg = std.mem.zeroes(ev_mod.GenericMessage);
     ev.evPostEvent(null, null, msg);
-    assert(ev_mod.loopDone() == 0);
+    expect(!ev_mod.loopDone());
     _ = raise.reported(ev_mod.loop1());
     if (windows) {
-        assert(ev_mod.loopDone() != 0);
+        expect(ev_mod.loopDone());
     } else {
-        assert(ev_mod.loopDone() == 0);
+        expect(!ev_mod.loopDone());
         ev.evDecRefcount();
-        assert(ev_mod.loopDone() != 0);
+        expect(ev_mod.loopDone());
     }
 }
 
@@ -611,7 +610,7 @@ fn theThreadedReplyTags() void {
     };
     var freed: u32 = 0;
     for (tags) |tag| {
-        var msg = std.mem.zeroes(types.JanetEVGenericMessage);
+        var msg = std.mem.zeroes(ev_mod.GenericMessage);
         msg.tag = @intCast(tag);
         msg.fiber = null;
         // A heap payload, so that a missing free is a leak a sanitizer sees
@@ -623,9 +622,9 @@ fn theThreadedReplyTags() void {
         ev_mod.evDefaultThreadedCallback(msg);
         freed += 1;
     }
-    assert(freed == 9);
+    expect(freed == 9);
     // The loop is untouched: a null fiber schedules nothing.
-    assert(ev_mod.loopDone() != 0);
+    expect(ev_mod.loopDone());
 }
 
 // ==========================================================================
@@ -642,12 +641,12 @@ fn theOrderedTimeouts() void {
         \\(ev/sleep 0.06)
         \\log
     );
-    assert(harness.isType(out, repr.Tag.array));
+    expect(harness.isType(out, repr.Tag.array));
     const log = wrap.toArray(out);
-    assert(log.*.count == 3);
-    assert(harness.keywordIs(log.*.slice()[0], "a"));
-    assert(harness.keywordIs(log.*.slice()[1], "b"));
-    assert(harness.keywordIs(log.*.slice()[2], "c"));
+    expect(log.count == 3);
+    expect(harness.keywordIs(log.slice()[0], "a"));
+    expect(harness.keywordIs(log.slice()[1], "b"));
+    expect(harness.keywordIs(log.slice()[2], "c"));
 }
 
 /// `janet_addtimeout` and `janet_addtimeout_nil` differ in one field of the
@@ -693,22 +692,22 @@ fn theTwoTimeoutConstructors() void {
         \\results
     );
     const results = wrap.toArray(out);
-    assert(results.*.count == 2);
-    for (0..@intCast(results.*.count)) |i| {
-        const row = wrap.toTuple(results.*.slice()[i]);
+    expect(results.count == 2);
+    for (0..@intCast(results.count)) |i| {
+        const row = wrap.toTuple(results.slice()[i]);
         if (harness.keywordIs(row[0], "nil")) {
             // `addtimeout_nil` resumes with nil rather than raising.
-            assert(harness.isType(row[1], repr.Tag.nil));
+            expect(harness.isType(row[1], repr.Tag.nil));
         } else {
             // `addtimeout` cancels the fiber, so `protect` reports a failure
             // carrying the message the loop supplies.
             const pair = wrap.toTuple(row[1]);
-            assert(harness.isType(pair[0], repr.Tag.boolean));
-            assert(!wrap.toBoolean(pair[0]));
-            assert(payloadIs(pair[1], "timeout"));
+            expect(harness.isType(pair[0], repr.Tag.boolean));
+            expect(!wrap.toBoolean(pair[0]));
+            expect(payloadIs(pair[1], "timeout"));
         }
     }
-    assert(ev_mod.loopDone() != 0);
+    expect(ev_mod.loopDone());
 }
 
 // ==========================================================================
@@ -730,7 +729,7 @@ fn theCancelOfANonTask() void {
 
     {
         const r = harness.raised(ev.cancel, .{ fiber, value.fromBytes("nope", .string) }).?;
-        assert(r.says("cannot cancel non-task fiber"));
+        expect(r.says("cannot cancel non-task fiber"));
     }
 
     // Scheduling it makes it a task, and cancelling then succeeds.
@@ -738,26 +737,26 @@ fn theCancelOfANonTask() void {
     const supv = wrap.fromAbstract(sup);
     gc_alloc.gcroot(supv);
     defer _ = gc_alloc.gcunroot(supv);
-    fiber.*.supervisor_channel = @ptrCast(sup);
+    fiber.supervisor_channel = @ptrCast(sup);
 
     ev.schedule(fiber, wrap.fromNil());
-    assert(harness.raised(ev.cancel, .{ fiber, value.fromBytes("nope", .string) }) == null);
+    expect(harness.raised(ev.cancel, .{ fiber, value.fromBytes("nope", .string) }) == null);
     raise.reported(ev_mod.loop());
-    assert(ev_mod.loopDone() != 0);
+    expect(ev_mod.loopDone());
 
     // The supervisor got `[:error fiber nil]` rather than a stack trace on
     // stderr, and the fiber's last value is what the cancel carried.
     var event = wrap.fromNil();
-    assert(try_(channel.channelTake(sup, &event)));
-    assert(harness.isType(event, repr.Tag.tuple));
+    expect(try_(channel.channelTake(sup, &event)));
+    expect(harness.isType(event, repr.Tag.tuple));
     const tup = wrap.toTuple(event);
-    assert(types.tupleHead(tup).length == 3);
-    assert(harness.keywordIs(tup[0], "error"));
-    assert(wrap.toFiber(tup[1]) == fiber);
-    assert(harness.isType(tup[2], repr.Tag.nil));
-    assert(payloadIs(fiber.*.last_value, "nope"));
+    expect(tuples.head(tup).length == 3);
+    expect(harness.keywordIs(tup[0], "error"));
+    expect(wrap.toFiber(tup[1]) == fiber);
+    expect(harness.isType(tup[2], repr.Tag.nil));
+    expect(payloadIs(fiber.last_value, "nope"));
     // One event, not two: the first schedule was superseded by the cancel.
-    assert(!try_(channel.channelTake(sup, &event)));
+    expect(!try_(channel.channelTake(sup, &event)));
 }
 
 /// `janet_schedule_soon` puts a task at the head of the spawn queue where
@@ -775,12 +774,12 @@ fn theScheduleSoonOrder() void {
     const log = wrap.toArray(tup[0]);
 
     ev.schedule(wrap.toFiber(tup[1]), wrap.fromNil());
-    ev.scheduleSoon(wrap.toFiber(tup[2]), wrap.fromNil(), types.Signal.ok);
+    ev.scheduleSoon(wrap.toFiber(tup[2]), wrap.fromNil(), boundary.Signal.ok);
     raise.reported(ev_mod.loop());
 
-    assert(log.*.count == 2);
-    assert(harness.keywordIs(log.*.slice()[0], "b"));
-    assert(harness.keywordIs(log.*.slice()[1], "a"));
+    expect(log.count == 2);
+    expect(harness.keywordIs(log.slice()[0], "b"));
+    expect(harness.keywordIs(log.slice()[1], "a"));
 }
 
 fn theScheduleSignalOrder() void {
@@ -797,13 +796,13 @@ fn theScheduleSignalOrder() void {
 
     // `janet_schedule_signal` appends where `janet_schedule_soon` prepends,
     // and nothing in Janet chooses between the two.
-    ev.scheduleSignal(wrap.toFiber(tup[1]), wrap.fromNil(), types.Signal.ok);
-    ev.scheduleSoon(wrap.toFiber(tup[2]), wrap.fromNil(), types.Signal.ok);
+    ev.scheduleSignal(wrap.toFiber(tup[1]), wrap.fromNil(), boundary.Signal.ok);
+    ev.scheduleSoon(wrap.toFiber(tup[2]), wrap.fromNil(), boundary.Signal.ok);
     raise.reported(ev_mod.loop());
 
-    assert(log.*.count == 2);
-    assert(harness.keywordIs(log.*.slice()[0], "b"));
-    assert(harness.keywordIs(log.*.slice()[1], "a"));
+    expect(log.count == 2);
+    expect(harness.keywordIs(log.slice()[0], "b"));
+    expect(harness.keywordIs(log.slice()[1], "a"));
 }
 
 /// `theScheduleSignalOrder` pairs an append with a prepend, which cannot tell
@@ -823,14 +822,14 @@ fn theScheduleSignalIsFifo() void {
     const log = wrap.toArray(tup[0]);
 
     for (1..4) |i| {
-        ev.scheduleSignal(wrap.toFiber(tup[@intCast(i)]), wrap.fromNil(), types.Signal.ok);
+        ev.scheduleSignal(wrap.toFiber(tup[@intCast(i)]), wrap.fromNil(), boundary.Signal.ok);
     }
     raise.reported(ev_mod.loop());
 
-    assert(log.*.count == 3);
-    assert(harness.keywordIs(log.*.slice()[0], "a"));
-    assert(harness.keywordIs(log.*.slice()[1], "b"));
-    assert(harness.keywordIs(log.*.slice()[2], "c"));
+    expect(log.count == 3);
+    expect(harness.keywordIs(log.slice()[0], "a"));
+    expect(harness.keywordIs(log.slice()[1], "b"));
+    expect(harness.keywordIs(log.slice()[2], "c"));
 }
 
 /// `cancel` appends too, and nothing above distinguishes that from prepending.
@@ -850,25 +849,25 @@ fn theCancelAppends() void {
     const chan = try_(channel.getChannel(tup[0..1], 0)).?;
     const a = wrap.toFiber(tup[1]);
     const b = wrap.toFiber(tup[2]);
-    b.*.supervisor_channel = @ptrCast(chan);
+    b.supervisor_channel = @ptrCast(chan);
 
     // b is scheduled first, so it is a task and `cancel` will accept it; the
     // cancel then supersedes that schedule.
     ev.schedule(b, wrap.fromNil());
     ev.schedule(a, wrap.fromNil());
-    assert(harness.raised(ev.cancel, .{ b, value.fromBytes("late", .string) }) == null);
+    expect(harness.raised(ev.cancel, .{ b, value.fromBytes("late", .string) }) == null);
     raise.reported(ev_mod.loop());
 
     var first = wrap.fromNil();
     var second = wrap.fromNil();
-    assert(try_(channel.channelTake(chan, &first)));
-    assert(try_(channel.channelTake(chan, &second)));
+    expect(try_(channel.channelTake(chan, &first)));
+    expect(try_(channel.channelTake(chan, &second)));
     // The task queued before the cancel runs first: the cancel appended.
-    assert(harness.keywordIs(first, "a"));
+    expect(harness.keywordIs(first, "a"));
     // And b ran once, as an error, rather than twice or as a sleep.
-    assert(harness.isType(second, repr.Tag.tuple));
-    assert(harness.keywordIs(wrap.toTuple(second)[0], "error"));
-    assert(!try_(channel.channelTake(chan, &first)));
+    expect(harness.isType(second, repr.Tag.tuple));
+    expect(harness.keywordIs(wrap.toTuple(second)[0], "error"));
+    expect(!try_(channel.channelTake(chan, &first)));
 }
 
 // ==========================================================================
@@ -889,51 +888,51 @@ fn theStreamMarshalling() void {
 
     const buffer = buffers.new(32);
     {
-        const r = harness.abiRaised(c.janet_marshal, .{ buffer, streamv, null, 0 }).?;
-        assert(r.says("can only marshal stream with unsafe flag"));
+        const r = harness.abiRaised(subsystems.marsh.marshalAbi, .{ buffer, streamv, null, 0 }).?;
+        expect(r.says("can only marshal stream with unsafe flag"));
     }
 
     // With the flag, it marshals -- and duplicates the descriptor on the way
     // out, which is what makes an unmarshalled stream independent of this one.
-    buffer.*.count = 0;
-    c.janet_marshal(buffer, streamv, null, constants.JANET_MARSHAL_UNSAFE);
-    assert(buffer.*.count > 0);
+    buffer.count = 0;
+    subsystems.marsh.marshalAbi(buffer, streamv, null, constants.JANET_MARSHAL_UNSAFE);
+    expect(buffer.count > 0);
 
     // Marshalling clears NODUPS, because the handle may now have two owners.
-    assert(s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) == 0);
+    expect(s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) == 0);
 
     // The reader refuses without the flag too.
     {
         const r = harness.abiRaised(
-            c.janet_unmarshal,
-            .{ buffer.*.data, @as(usize, @intCast(buffer.*.count)), 0, null, null },
+            subsystems.marsh.unmarshalAbi,
+            .{ buffer.data, @as(usize, @intCast(buffer.count)), 0, null, null },
         ).?;
-        assert(r.says("can only unmarshal stream with unsafe flag"));
+        expect(r.says("can only unmarshal stream with unsafe flag"));
     }
 
-    const backv = c.janet_unmarshal(
-        buffer.*.data,
-        @intCast(buffer.*.count),
+    const backv = subsystems.marsh.unmarshalAbi(
+        buffer.data,
+        @intCast(buffer.count),
         constants.JANET_MARSHAL_UNSAFE,
         null,
         null,
     );
     gc_alloc.gcroot(backv);
     defer _ = gc_alloc.gcunroot(backv);
-    const back: *types.JanetStream = @ptrCast(@alignCast(wrap.toAbstract(backv)));
-    assert(back != s);
+    const back: *stream.Stream = @ptrCast(@alignCast(wrap.toAbstract(backv)));
+    expect(back != s);
     // A different descriptor for the same pipe: `dup` was called.
-    assert(back.handle != s.handle);
-    assert(back.flags == s.flags);
-    assert(back.read_fiber == null and back.write_fiber == null);
+    expect(back.handle != s.handle);
+    expect(back.flags == s.flags);
+    expect(back.read_fiber == null and back.write_fiber == null);
 
     if (!windows) {
         // Both ends really do read the same pipe.
         var byte: u8 = 'z';
         var got: u8 = 0;
-        assert(ev.write(handles[1], @ptrCast(&byte), 1) == 1);
-        assert(ev.read(back.handle, @ptrCast(&got), 1) == 1);
-        assert(got == 'z');
+        expect(c.write(handles[1], @ptrCast(&byte), 1) == 1);
+        expect(c.read(back.handle, @ptrCast(&got), 1) == 1);
+        expect(got == 'z');
     }
     // `back.handle` is the `dup`, and nothing ever registered *it* -- the
     // marshal duplicated the descriptor and cleared NODUPS, so the close takes
@@ -948,7 +947,7 @@ fn theStreamMarshalling() void {
         // the same path, which is where the ENOENT would arrive too -- so the
         // handle is closed directly and the stream marked, rather than routed
         // through the backend.
-        assert(ev.close(back.handle) == 0);
+        expect(c.close(back.handle) == 0);
         back.handle = invalidHandle();
         back.flags |= @intCast(constants.JANET_STREAM_CLOSED);
     }
@@ -993,8 +992,8 @@ fn theMarkedTaskValues() void {
     raise.reported(ev_mod.loop());
 
     var got = wrap.fromNil();
-    assert(try_(channel.channelTake(chan, &got)));
-    assert(payloadIs(got, "only-in-the-queue"));
+    expect(try_(channel.channelTake(chan, &got)));
+    expect(payloadIs(got, "only-in-the-queue"));
 }
 
 /// `janet_loop` returns when `janet_loop_done` says there is nothing left, and
@@ -1004,7 +1003,7 @@ fn theMarkedTaskValues() void {
 /// fiber keeps it alive; only a caller outside can watch `janet_loop` decide
 /// for itself.
 fn theLoopWaitsForASleepingTask() void {
-    assert(ev_mod.loopDone() != 0);
+    expect(ev_mod.loopDone());
     const out = doString(
         \\(def out (ev/chan 8))
         \\(def f (fiber/new (fn [] (ev/sleep 0.05) (ev/give out :done)) :e))
@@ -1016,14 +1015,14 @@ fn theLoopWaitsForASleepingTask() void {
     const chan = try_(channel.getChannel(tup[0..1], 0)).?;
 
     ev.schedule(wrap.toFiber(tup[1]), wrap.fromNil());
-    assert(ev_mod.loopDone() == 0);
+    expect(!ev_mod.loopDone());
     raise.reported(ev_mod.loop());
 
     // It ran to completion rather than being abandoned at its first suspend.
     var got = wrap.fromNil();
-    assert(try_(channel.channelTake(chan, &got)));
-    assert(harness.keywordIs(got, "done"));
-    assert(ev_mod.loopDone() != 0);
+    expect(try_(channel.channelTake(chan, &got)));
+    expect(harness.keywordIs(got, "done"));
+    expect(ev_mod.loopDone());
 }
 
 // ==========================================================================
@@ -1056,19 +1055,19 @@ fn theThreadedFlag() void {
 
     var item = wrap.fromNil();
 
-    assert(!try_(channel.channelGive(plain, originalv)));
-    assert(try_(channel.channelTake(plain, &item)));
-    assert(harness.isType(item, repr.Tag.buffer));
-    assert(wrap.toBuffer(item) == original);
+    expect(!try_(channel.channelGive(plain, originalv)));
+    expect(try_(channel.channelTake(plain, &item)));
+    expect(harness.isType(item, repr.Tag.buffer));
+    expect(wrap.toBuffer(item) == original);
 
-    assert(!try_(channel.channelGive(threaded, originalv)));
-    assert(try_(channel.channelTake(threaded, &item)));
-    assert(harness.isType(item, repr.Tag.buffer));
+    expect(!try_(channel.channelGive(threaded, originalv)));
+    expect(try_(channel.channelTake(threaded, &item)));
+    expect(harness.isType(item, repr.Tag.buffer));
     const copy = wrap.toBuffer(item);
-    assert(copy != original);
-    assert(copy.*.count == original.*.count);
-    const length: usize = @intCast(original.*.count);
-    assert(std.mem.eql(u8, copy.*.slice()[0..length], original.*.slice()[0..length]));
+    expect(copy != original);
+    expect(copy.count == original.count);
+    const length: usize = @intCast(original.count);
+    expect(std.mem.eql(u8, copy.slice()[0..length], original.slice()[0..length]));
 }
 
 /// `janet_optchannel` takes its default when the argument is absent or nil, and
@@ -1083,41 +1082,32 @@ fn theOptChannelBoundary() void {
     const chan = try_(channel.getChannel(&argv, 0)).?;
 
     // A channel is there and the count says so.
-    assert(try_(ev_channel.optChannel(argv[0..1], 0, null)) == chan);
+    expect(try_(ev_channel.optChannel(argv[0..1], 0, null)) == chan);
     // A channel is there and the count says it is not: the default wins, and
     // the value at that index is never looked at. An empty slice is the count
     // saying zero, which a sentinel table cannot express and a slice can.
-    assert(try_(ev_channel.optChannel(argv[0..0], 0, null)) == null);
-    assert(try_(ev_channel.optChannel(argv[0..0], 0, chan)) == chan);
+    expect(try_(ev_channel.optChannel(argv[0..0], 0, null)) == null);
+    expect(try_(ev_channel.optChannel(argv[0..0], 0, chan)) == chan);
     // Present but nil: the default wins.
-    assert(try_(ev_channel.optChannel(argv[0..2], 1, null)) == null);
+    expect(try_(ev_channel.optChannel(argv[0..2], 1, null)) == null);
 }
 
-/// `janet_getchannel`, reached the way a C caller reaches it.
+/// A value at the index that is not a channel is an argument error.
 ///
-/// A raising result reported to a foreign caller. The entry point converts
-/// twice: `(argv, n)` becomes the slice
-/// `argv[0..n + 1]` that `getChannel` wants, and a refusal becomes a report
-/// rather than an error union. Both conversions are invisible from the Zig
-/// side, so the subject here is the exported symbol.
-extern fn janet_getchannel(argv: [*]const repr.Value, n: i32) callconv(.c) ?*types.JanetChannel;
-
-fn theGetChannelAbiConvertsBothWays() void {
+/// Its other half was the `janet_getchannel` shim: the pointer-and-count to
+/// slice conversion and the report it left instead of an error. That entry
+/// point is not part of the published surface, so both went with it; what a
+/// Janet program can still observe is the refusal.
+fn theWrongArgumentIsNotAChannel() void {
     const chanv = doString("(ev/chan 1)");
     gc_alloc.gcroot(chanv);
     defer _ = gc_alloc.gcunroot(chanv);
 
     var argv = [_]repr.Value{ chanv, wrap.fromNil() };
-    const chan = try_(channel.getChannel(&argv, 0)).?;
+    expect(try_(channel.getChannel(&argv, 0)).? == try_(channel.getChannel(argv[0..1], 0)).?);
 
-    // The abi builds the slice from the index it is given, so index 0 has to
-    // reach the same channel the Zig call does.
-    assert(janet_getchannel(&argv, 0) == chan);
-
-    // A nil at index 1 is not a channel: the abi reports rather than returning
-    // an error, and the report is what `harness.abiRaised` collects.
-    const refusal = harness.abiRaised(janet_getchannel, .{ @as([*]const repr.Value, &argv), @as(i32, 1) }).?;
-    assert(refusal.signal == types.Signal.@"error");
+    const refusal = harness.raised(channel.getChannel, .{ @as([]const repr.Value, &argv), @as(i32, 1) }).?;
+    expect(refusal.signal == boundary.Signal.@"error");
 }
 
 pub fn run() void {
@@ -1159,7 +1149,7 @@ pub fn run() void {
     theCancelAppends();
     theThreadedFlag();
     theOptChannelBoundary();
-    theGetChannelAbiConvertsBothWays();
+    theWrongArgumentIsNotAChannel();
 
     std.debug.print("ev_loop contract ok\n", .{});
 }
