@@ -166,7 +166,7 @@ fn saveSpansTheStructure() void {
     const snapshot = vm_state.vmAlloc();
 
     vm().user = @ptrFromInt(0x1111);
-    vm().registry.rows.count = 0x2222;
+    vm().registry.rows.capacity = 0x2222;
     vm().roots.capacity = 0x3333;
     vm().sandbox_flags = vm_lifecycle.Sandbox.fromBits(0x4444);
     // Aligned, unlike the C original's 0x5555: `traversal_base` is a typed
@@ -198,7 +198,7 @@ fn saveSpansTheStructure() void {
     vm_state.vmLoad(snapshot);
 
     expect(@intFromPtr(vm().user) == 0x1111);
-    expect(vm().registry.rows.count == 0x2222);
+    expect(vm().registry.rows.capacity == 0x2222);
     expect(vm().roots.capacity == 0x3333);
     expect(vm().sandbox_flags.bits() == 0x4444);
     expect(@intFromPtr(vm().traversal.base) == 0x5550);
@@ -269,7 +269,7 @@ var child_local_matches = false;
 /// compares only what the type means.
 ///
 /// `std.meta.eql` cannot be used on the whole struct: `Vm` reaches
-/// `JanetGCData`, an untagged union, and Zig refuses to compare one. Each
+/// `GCData`, an untagged union, and Zig refuses to compare one. Each
 /// field's own bytes are compared instead, which is well defined for the
 /// scalars and for the fixed layouts whose padding *is* their ABI.
 fn isFresh(state: *const vm_state.Vm) bool {
@@ -343,7 +343,7 @@ fn dynamicBindings() void {
 
     // With a fiber, the same names go to the fiber's env instead, and the VM's
     // table is neither read nor written.
-    const fiber = fibers.new(functions.thunkDelay(wrap.fromNil()), 8, 0, null).?;
+    const fiber = fibers.new(functions.thunkDelay(wrap.fromNil()), 8, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     expect(fiber.env == null);
     vm().fiber = fiber;

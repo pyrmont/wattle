@@ -5,12 +5,9 @@
 //! `value/` like `fibers.zig` and `functions.zig` rather than a member of a
 //! group.
 //!
-//! **The four atomics keep their names and are not abstract operations.**
+//! **The four atomics are not abstract operations.**
 //! `abstracts.atomicInc` is `janet_atomic_inc`, a refcount primitive that
 //! lives here because the threaded refcount is its only caller in the tree.
-//! Stripping `abstract` off a name that never carried it would produce
-//! `abstracts.inc`, which says the wrong thing; a separate file for four
-//! one-line functions would say less.
 //!
 //! The three plain constructors `janet_abstract_begin`, `janet_abstract_end`
 //! and `janet_abstract`, their threaded counterparts, and
@@ -32,7 +29,7 @@
 //!
 //! ## Two allocators, one head
 //!
-//! A plain abstract and a threaded abstract share `JanetAbstractHead` and
+//! A plain abstract and a threaded abstract share `AbstractHead` and
 //! share nothing else. The plain one comes from `janet_gcalloc`, which
 //! prepends it to `vm.gc.blocks` and hands its lifetime to the collector.
 //! The threaded one comes from `janet_malloc` directly, is on neither heap
@@ -46,8 +43,8 @@
 //! That accounting is *not* the same charge `janet_gcalloc` makes, and the
 //! difference is preserved. `janet_gcalloc` adds the size it was asked for,
 //! which already includes the head, because `janet_abstract_begin` asks for
-//! `sizeof(JanetAbstractHead) + size`. The threaded path adds
-//! `size + sizeof(JanetAbstractHead)` explicitly for the same reason and to
+//! `sizeof(AbstractHead) + size`. The threaded path adds
+//! `size + sizeof(AbstractHead)` explicitly for the same reason and to
 //! the same total. Both wrap on overflow, which is defined for the unsigned
 //! field and only ever delays a collection.
 //!
@@ -125,14 +122,15 @@ pub const Abstract = ?*anyopaque;
 /// `abi.abstractHead`. It takes a `*const` head and hands back a mutable
 /// payload: the allocator's caller has to write through it, and a const head
 /// is what a comparison or a hash holds.
-pub inline fn data(hd: *const abi.JanetAbstractHead) *anyopaque {
+pub inline fn data(hd: *const abi.AbstractHead) *anyopaque {
     return @ptrFromInt(@intFromPtr(hd) +% abi.abstract_payload);
 }
 
 /// Set the memory type in the header's flag word. An or, not a store; see the
-/// note at the head of the file.
-inline fn gcSetType(head: *abi.JanetAbstractHead, mtype: gc_alloc.MemoryType) void {
-    head.gc.flags |= @as(i32, @intFromEnum(mtype));
+/// note at the head of the file. The field is the type's own byte now, so the
+/// or is over that byte rather than over the whole word.
+inline fn gcSetType(head: *abi.AbstractHead, mtype: gc_alloc.MemoryType) void {
+    head.gc.flags.type |= @intFromEnum(mtype);
 }
 
 // ------------------------------------------------------- plain abstracts
@@ -147,7 +145,7 @@ inline fn gcSetType(head: *abi.JanetAbstractHead, mtype: gc_alloc.MemoryType) vo
 /// an unmarshalled abstract. Where the caller does know the type, `newFor`
 /// below says so and answers a `*T`.
 pub fn beginBytes(atype: *const abi.AbstractType, size: usize) *anyopaque {
-    const header = gc_alloc.gcallocWithPayload(abi.JanetAbstractHead, .none, size);
+    const header = gc_alloc.gcallocWithPayload(abi.AbstractHead, .none, size);
     header.size = size;
     header.type = atype;
     return data(header);
@@ -166,10 +164,9 @@ pub fn newBytes(atype: *const abi.AbstractType, size: usize) *anyopaque {
     return @ptrCast(end(beginBytes(atype, size)).?);
 }
 
-/// The same, for a payload that is exactly a `T`. This is what nineteen of the
-/// twenty-eight call sites wanted: they wrote `@sizeOf(T)` on the way in and
-/// `@ptrCast(@alignCast(...))` on the way out, and the two halves could
-/// disagree without anything noticing.
+/// The same, for a payload that is exactly a `T`. A caller of `newBytes` writes
+/// `@sizeOf(T)` on the way in and `@ptrCast(@alignCast(...))` on the way out,
+/// and the two halves can disagree without anything noticing.
 pub inline fn newFor(comptime T: type, atype: *const abi.AbstractType) *T {
     return @ptrCast(@alignCast(newBytes(atype, @sizeOf(T))));
 }
@@ -195,12 +192,12 @@ comptime {
 /// the only parameter that does not hide half of that. `threaded` below is
 /// where the current VM is looked up.
 pub fn beginThreaded(v: *vm_state.Vm, atype: *const abi.AbstractType, size: usize) ?*anyopaque {
-    const header: *abi.JanetAbstractHead = @ptrCast(@alignCast(utils.rawAlloc(
+    const header: *abi.AbstractHead = @ptrCast(@alignCast(utils.rawAlloc(
         abi.abstract_payload +% size,
     )));
 
     v.gc.next_collection +%= size +% abi.abstract_payload;
-    header.gc.flags = @intFromEnum(gc_alloc.MemoryType.threaded_abstract);
+    header.gc.flags = .{ .type = @intFromEnum(gc_alloc.MemoryType.threaded_abstract) };
     // Clear the union before storing the refcount into it, exactly as the C
     // original does and for the reason its comment gives: the address
     // sanitizers read the whole word.
@@ -230,7 +227,7 @@ pub fn threaded(atype: *const abi.AbstractType, size: usize) ?*anyopaque {
 /// The refcount field, which shares the union with the heap-list link a
 /// collectable block uses. A threaded abstract is on no heap list, so the two
 /// never contend.
-inline fn refcount(abst: ?*anyopaque) *volatile abi.JanetAtomicInt {
+inline fn refcount(abst: ?*anyopaque) *volatile abi.AtomicInt {
     return &abi.abstractHead(abst).gc.data.refcount;
 }
 
@@ -253,10 +250,10 @@ pub fn decrefMaybeFree(abst: ?*anyopaque) i32 {
     const result = decref(abst);
     if (result == 0) {
         const head = abi.abstractHead(abst);
-        // A finalizer cannot raise and no longer reports either: it answers
-        // `void`, because every implementation in the tree returned a literal
-        // zero and no caller could act on anything else. `abstract_type.zig`
-        // has the contract.
+        // A finalizer cannot raise and does not report: it answers `void`,
+        // because every implementation in the tree returns a literal zero and
+        // no caller could act on anything else. `abstract_type.zig` has the
+        // contract.
         if (head.type.gc) |finalizer| finalizer(data(head), head.size);
         utils.free(head);
     }
@@ -282,18 +279,18 @@ pub fn decrefMaybeFree(abst: ?*anyopaque) i32 {
 // to increment, acquire-release to decrement -- which is what makes the
 // decrement that reaches zero see every write the other owners made.
 
-pub fn atomicInc(x: *volatile abi.JanetAtomicInt) abi.JanetAtomicInt {
-    return @atomicRmw(abi.JanetAtomicInt, x, .Add, 1, .monotonic) +% 1;
+pub fn atomicInc(x: *volatile abi.AtomicInt) abi.AtomicInt {
+    return @atomicRmw(abi.AtomicInt, x, .Add, 1, .monotonic) +% 1;
 }
 
-pub fn atomicDec(x: *volatile abi.JanetAtomicInt) abi.JanetAtomicInt {
-    return @atomicRmw(abi.JanetAtomicInt, x, .Add, -1, .acq_rel) -% 1;
+pub fn atomicDec(x: *volatile abi.AtomicInt) abi.AtomicInt {
+    return @atomicRmw(abi.AtomicInt, x, .Add, -1, .acq_rel) -% 1;
 }
 
-pub fn atomicLoad(x: *volatile abi.JanetAtomicInt) abi.JanetAtomicInt {
-    return @atomicLoad(abi.JanetAtomicInt, x, .acquire);
+pub fn atomicLoad(x: *volatile abi.AtomicInt) abi.AtomicInt {
+    return @atomicLoad(abi.AtomicInt, x, .acquire);
 }
 
-pub fn atomicLoadRelaxed(x: *volatile abi.JanetAtomicInt) abi.JanetAtomicInt {
-    return @atomicLoad(abi.JanetAtomicInt, x, .monotonic);
+pub fn atomicLoadRelaxed(x: *volatile abi.AtomicInt) abi.AtomicInt {
+    return @atomicLoad(abi.AtomicInt, x, .monotonic);
 }

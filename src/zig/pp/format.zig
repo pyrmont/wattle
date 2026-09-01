@@ -49,6 +49,7 @@ const strings = @import("../value/strings.zig");
 const vm_state = @import("../vm/state.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const utils = @import("../utils.zig");
+const host = @import("host");
 const io_core = @import("../io.zig");
 const vm_entry = @import("../vm/entry.zig");
 const abi = @import("abi");
@@ -456,13 +457,13 @@ inline fn renderConversion(
             const str = asCString(arg);
             // `%s` is a C string and `%S` a Janet one, which is the only
             // difference: the second knows its length without walking.
-            const len: i32 = if (conversion == 's')
-                @intCast(std.mem.len(str))
+            const len: usize = if (conversion == 's')
+                std.mem.len(str)
             else
                 strings.head(str).length;
             if (local.isPlain()) {
-                try buffers.pushBytes(b, str[0..@intCast(len)]);
-            } else if (len != @as(i32, @intCast(std.mem.len(str)))) {
+                try buffers.pushBytes(b, str[0..len]);
+            } else if (len != std.mem.len(str)) {
                 // A width or precision means `c.snprintf`, which stops at the
                 // first NUL and would silently drop the rest.
                 return raise.panic("string contains zeros");
@@ -589,25 +590,27 @@ pub fn formatb(
 /// message a non-writeable file raises is unchanged.
 pub fn dynprintf(
     name: ?[*:0]const u8,
-    /// `?*anyopaque` rather than a `*host.FILE`, so that this file does not
-    /// depend on `io.zig`. It is the same pointer either way.
-    dflt_file: ?*anyopaque,
+    /// `host.FILE` rather than `io.FILE`, which is an alias for it: this file
+    /// already imports `io.zig` for the abstract type, but the *host* is what
+    /// decides what a `FILE` is and naming it there is what makes the
+    /// declaration true on every target.
+    dflt_file: ?*host.FILE,
     comptime format: [:0]const u8,
     args: anytype,
 ) raise.Raising(void) {
-    var x: repr.Value = undefined;
-    var xtype: repr.Tag = undefined;
-    if (name == null or name.?[0] == 0) {
-        x = wrap.fromNil();
-        xtype = .nil;
-    } else {
-        x = vm_state.dyn(name.?);
-        xtype = repr.typeOf(x);
+    var x: repr.Value = wrap.fromNil();
+    var xtype: repr.Tag = .nil;
+    if (name) |dyn_name| {
+        // An empty name is the same as no name: neither is a dynamic binding.
+        if (dyn_name[0] != 0) {
+            x = vm_state.dyn(dyn_name);
+            xtype = repr.typeOf(x);
+        }
     }
 
     switch (xtype) {
         repr.Tag.nil, repr.Tag.abstract => {
-            var f: ?*anyopaque = dflt_file;
+            var f: ?*host.FILE = dflt_file;
             var buffer: buffers.Buffer = undefined;
             _ = buffers.init(&buffer, @intCast(format.len));
             defer buffers.deinit(&buffer);

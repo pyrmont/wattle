@@ -68,8 +68,8 @@ const stream_nodups: u32 = @intCast(constants.JANET_STREAM_NODUPS);
 
 /// `INVALID_HANDLE_VALUE`, and the closed marker on POSIX. `JanetHandle` is
 /// `void *` on Windows and `int` elsewhere, which a translation got wrong for
-/// the mingw targets; `types.zig` carries the corrected declaration beside
-/// the other shapes the host decides.
+/// the mingw targets; `host.zig` carries the corrected declaration beside the
+/// other shapes the host decides.
 inline fn invalidHandle() host.Handle {
     return if (windows) @ptrFromInt(std.math.maxInt(usize)) else -1;
 }
@@ -225,13 +225,17 @@ fn closeImplHandle(s: *Stream) raise.Raising(void) {
 pub fn streamClose(s: *Stream) raise.Raising(void) {
     const rf = s.read_fiber;
     const wf = s.write_fiber;
-    if (rf != null and rf.?.ev_callback != null) {
-        try ev_callback.of(rf.?.ev_callback)(rf.?, constants.JANET_ASYNC_EVENT_CLOSE);
-        s.read_fiber = null;
+    if (rf) |f| {
+        if (f.ev_callback != null) {
+            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.close);
+            s.read_fiber = null;
+        }
     }
-    if (wf != null and wf.?.ev_callback != null) {
-        try ev_callback.of(wf.?.ev_callback)(wf.?, constants.JANET_ASYNC_EVENT_CLOSE);
-        s.write_fiber = null;
+    if (wf) |f| {
+        if (f.ev_callback != null) {
+            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.close);
+            s.write_fiber = null;
+        }
     }
     try closeImplHandle(s);
 }
@@ -264,7 +268,7 @@ fn streamGetter(stream: *Stream, key: repr.Value) raise.Raising(?repr.Value) {
     return args_core.findMethod(key, @ptrCast(@alignCast(stream.methods)));
 }
 
-fn streamMarshal(s: *Stream, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
+fn streamMarshal(s: *Stream, ctx: *abi.MarshalContext) raise.Raising(void) {
     if (marsh.marshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("can only marshal stream with unsafe flag");
     }
@@ -302,7 +306,7 @@ fn streamMarshal(s: *Stream, ctx: *abi.JanetMarshalContext) raise.Raising(void) 
     }
 }
 
-fn streamUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*Stream) {
+fn streamUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Stream) {
     if (marsh.unmarshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("can only unmarshal stream with unsafe flag");
     }
@@ -379,7 +383,7 @@ pub const read_mode_read: c_int = 0;
 pub const read_mode_recv: c_int = 1;
 pub const read_mode_recvfrom: c_int = 2;
 
-const StateRead = extern struct {
+const StateRead = struct {
     overlapped: if (windows) Overlapped else void align(if (windows) @alignOf(Overlapped) else 1),
     flags: if (windows) u32 else c_int,
     wbuf: if (windows and has_net) c.WSABUF else void,
@@ -397,8 +401,8 @@ fn ev_callback_read(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Raising(vo
     const s: *Stream = fiber.ev_stream.?;
     const state: *StateRead = @ptrCast(@alignCast(fiber.ev_state));
     switch (event) {
-        constants.JANET_ASYNC_EVENT_MARK => gc_mark.mark(wrap.fromBuffer(state.buf)),
-        constants.JANET_ASYNC_EVENT_CLOSE => {
+        constants.AsyncEvent.mark => gc_mark.mark(wrap.fromBuffer(state.buf)),
+        constants.AsyncEvent.close => {
             ev.schedule(fiber, wrap.fromNil());
             ev.asyncEnd(fiber);
         },
@@ -415,7 +419,7 @@ fn ev_callback_read(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Raising(vo
 fn readWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Raising(void) {
     var start_transfer = false;
     switch (event) {
-        constants.JANET_ASYNC_EVENT_FAILED, constants.JANET_ASYNC_EVENT_COMPLETE => {
+        constants.AsyncEvent.failed, constants.AsyncEvent.complete => {
             // Called when the read finished.
             const ev_bytes: u32 = @truncate(state.overlapped.bytes_transfered);
             state.bytes_read += @intCast(ev_bytes);
@@ -441,7 +445,7 @@ fn readWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.As
             }
             start_transfer = true;
         },
-        constants.JANET_ASYNC_EVENT_INIT => start_transfer = true,
+        constants.AsyncEvent.init => start_transfer = true,
         else => {},
     }
     if (!start_transfer) return;
@@ -493,7 +497,7 @@ fn readWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.As
 
 fn readPosix(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Raising(void) {
     switch (event) {
-        constants.JANET_ASYNC_EVENT_ERR => {
+        constants.AsyncEvent.err => {
             if (state.bytes_read != 0) {
                 ev.schedule(fiber, wrap.fromBuffer(state.buf));
             } else {
@@ -502,30 +506,31 @@ fn readPosix(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.Asyn
             s.read_fiber = null;
             ev.asyncEnd(fiber);
         },
-        constants.JANET_ASYNC_EVENT_HUP, constants.JANET_ASYNC_EVENT_INIT, constants.JANET_ASYNC_EVENT_READ => {
+        constants.AsyncEvent.hup, constants.AsyncEvent.init, constants.AsyncEvent.read => {
             // The C original's `read_more` label, which the tail of this body
             // jumps back to when a chunked read has more to collect.
             while (true) {
                 const buffer = state.buf;
                 var bytes_left = state.bytes_left;
-                const read_limit: i32 = if (state.is_chunk != 0)
+                // `bytes_left` is a decremented remainder and the three reads
+                // below already narrow it to a `usize`, so a negative one would
+                // trap there whatever this clamp did; the conversion is here,
+                // once, instead.
+                const read_limit: usize = @intCast(if (state.is_chunk != 0)
                     (if (bytes_left > 4096) 4096 else bytes_left)
                 else
-                    bytes_left;
+                    bytes_left);
                 try buffers.extra(buffer, read_limit);
                 var nread: isize = undefined;
                 var saddr: [256]u8 = undefined;
                 var socklen: c_uint = @intCast(saddr.len);
-                while (true) {
-                    const dest = buffer.data.? + @as(usize, @intCast(buffer.count));
-                    if (has_net and state.mode == read_mode_recvfrom) {
-                        nread = c.recvfrom(s.handle, dest, @intCast(read_limit), state.flags, &saddr, &socklen);
-                    } else if (has_net and state.mode == read_mode_recv) {
-                        nread = c.recv(s.handle, dest, @intCast(read_limit), state.flags);
-                    } else {
-                        nread = c.read(s.handle, dest, @intCast(read_limit));
-                    }
-                    if (!(nread == -1 and c.errno() == ev.EINTR)) break;
+                const dest = buffer.data.? + @as(usize, @intCast(buffer.count));
+                if (has_net and state.mode == read_mode_recvfrom) {
+                    nread = c.retryIntr(c.recvfrom, .{ s.handle, dest, @as(usize, @intCast(read_limit)), state.flags, &saddr, &socklen });
+                } else if (has_net and state.mode == read_mode_recv) {
+                    nread = c.retryIntr(c.recv, .{ s.handle, dest, @as(usize, @intCast(read_limit)), state.flags });
+                } else {
+                    nread = c.retryIntr(c.read, .{ s.handle, dest, @as(usize, @intCast(read_limit)) });
                 }
 
                 // Check for errors, special-casing the ones that can be fixed
@@ -591,7 +596,7 @@ pub fn readGeneric(
     state.bytes_read = 0;
     state.mode = mode;
     state.flags = if (windows) @bitCast(flags) else flags;
-    return ev.asyncStart(s, constants.JANET_ASYNC_LISTEN_READ, ev_callback_read, state);
+    return ev.asyncStart(s, constants.AsyncMode.reading, ev_callback_read, state);
 }
 
 comptime {
@@ -606,7 +611,7 @@ pub const write_mode_write: c_int = 0;
 pub const write_mode_send: c_int = 1;
 pub const write_mode_sendto: c_int = 2;
 
-const StateWrite = extern struct {
+const StateWrite = struct {
     overlapped: if (windows) Overlapped else void align(if (windows) @alignOf(Overlapped) else 1),
     flags: if (windows) u32 else c_int,
     wbuf: if (windows and has_net) c.WSABUF else void,
@@ -624,7 +629,7 @@ fn ev_callback_write(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Raising(v
     const s: *Stream = fiber.ev_stream.?;
     const state: *StateWrite = @ptrCast(@alignCast(fiber.ev_state));
     switch (event) {
-        constants.JANET_ASYNC_EVENT_MARK => {
+        constants.AsyncEvent.mark => {
             gc_mark.mark(if (state.is_buffer != 0)
                 wrap.fromBuffer(state.src.buf)
             else
@@ -633,7 +638,7 @@ fn ev_callback_write(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Raising(v
                 gc_mark.mark(wrap.fromAbstract(state.dest_abst));
             }
         },
-        constants.JANET_ASYNC_EVENT_CLOSE => {
+        constants.AsyncEvent.close => {
             try ev.cancel(fiber, value.fromBytes("stream closed", .string));
             ev.asyncEnd(fiber);
         },
@@ -649,7 +654,7 @@ fn ev_callback_write(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Raising(v
 
 fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.AsyncEvent) raise.Raising(void) {
     switch (event) {
-        constants.JANET_ASYNC_EVENT_FAILED, constants.JANET_ASYNC_EVENT_COMPLETE => {
+        constants.AsyncEvent.failed, constants.AsyncEvent.complete => {
             const ev_bytes: u32 = @truncate(state.overlapped.bytes_transfered);
             if (ev_bytes == 0 and state.mode != write_mode_sendto) {
                 try ev.cancel(fiber, value.fromBytes("disconnect", .string));
@@ -659,7 +664,7 @@ fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.
             ev.schedule(fiber, wrap.fromNil());
             ev.asyncEnd(fiber);
         },
-        constants.JANET_ASYNC_EVENT_INIT => {
+        constants.AsyncEvent.init => {
             var len: i32 = undefined;
             var bytes: [*]const u8 = undefined;
             if (state.is_buffer != 0) {
@@ -673,7 +678,7 @@ fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.
                 state.src.str = str;
             } else {
                 bytes = state.src.str;
-                len = strings.head(bytes).length;
+                len = @intCast(strings.head(bytes).length);
             }
             state.overlapped = std.mem.zeroes(Overlapped);
 
@@ -726,15 +731,15 @@ fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.
 
 fn writePosix(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.AsyncEvent) raise.Raising(void) {
     switch (event) {
-        constants.JANET_ASYNC_EVENT_ERR => {
+        constants.AsyncEvent.err => {
             try ev.cancel(fiber, value.fromBytes("stream err", .string));
             ev.asyncEnd(fiber);
         },
-        constants.JANET_ASYNC_EVENT_HUP => {
+        constants.AsyncEvent.hup => {
             try ev.cancel(fiber, value.fromBytes("stream hup", .string));
             ev.asyncEnd(fiber);
         },
-        constants.JANET_ASYNC_EVENT_INIT, constants.JANET_ASYNC_EVENT_WRITE => {
+        constants.AsyncEvent.init, constants.AsyncEvent.write => {
             var len: i32 = undefined;
             var bytes: [*]const u8 = undefined;
             var start = state.start;
@@ -744,22 +749,19 @@ fn writePosix(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.As
                 len = @intCast(buffer.count);
             } else {
                 bytes = state.src.str;
-                len = strings.head(bytes).length;
+                len = @intCast(strings.head(bytes).length);
             }
             var nwrote: isize = 0;
             if (start < len) {
                 const nbytes = len - start;
                 const dest_abst = state.dest_abst;
-                while (true) {
-                    const from = bytes + @as(usize, @intCast(start));
-                    if (has_net and state.mode == write_mode_sendto) {
-                        nwrote = c.sendto(s.handle, from, @intCast(nbytes), state.flags, dest_abst, @intCast(abi.abstractHead(dest_abst).size));
-                    } else if (has_net and state.mode == write_mode_send) {
-                        nwrote = c.send(s.handle, from, @intCast(nbytes), state.flags);
-                    } else {
-                        nwrote = c.write(s.handle, from, @intCast(nbytes));
-                    }
-                    if (!(nwrote == -1 and c.errno() == ev.EINTR)) break;
+                const from = bytes + @as(usize, @intCast(start));
+                if (has_net and state.mode == write_mode_sendto) {
+                    nwrote = c.retryIntr(c.sendto, .{ s.handle, from, @as(usize, @intCast(nbytes)), state.flags, dest_abst, @as(c_uint, @intCast(abi.abstractHead(dest_abst).size)) });
+                } else if (has_net and state.mode == write_mode_send) {
+                    nwrote = c.retryIntr(c.send, .{ s.handle, from, @as(usize, @intCast(nbytes)), state.flags });
+                } else {
+                    nwrote = c.retryIntr(c.write, .{ s.handle, from, @as(usize, @intCast(nbytes)) });
                 }
 
                 if (nwrote == -1) {
@@ -808,7 +810,7 @@ pub fn writeGeneric(
     state.mode = mode;
     state.flags = if (windows) @bitCast(flags) else flags;
     if (!windows) state.start = 0;
-    return ev.asyncStart(s, constants.JANET_ASYNC_LISTEN_WRITE, ev_callback_write, state);
+    return ev.asyncStart(s, constants.AsyncMode.writing, ev_callback_write, state);
 }
 
 // ==========================================================================

@@ -60,7 +60,7 @@ fn anUnknownOpcodeStaysANumber() void {
 fn theOperandShapes() void {
     // No operands.
     const noop = decoded(harness.op(constants.Opcode.noop), 1, "noop");
-    expect((tuples.head(noop).gc.flags & constants.JANET_TUPLE_FLAG_BRACKETCTOR) == 0);
+    expect((harness.gcBits(tuples.head(noop).gc.flags) & constants.JANET_TUPLE_FLAG_BRACKETCTOR) == 0);
 
     // One unsigned 24-bit field.
     const err = decoded(harness.op(constants.Opcode.@"error") | (@as(u32, 0x123456) << 8), 2, "err");
@@ -116,7 +116,7 @@ fn theSignedAndUnsignedImmediatesAgreeOnNothing() void {
 /// the tuple itself.
 fn aBreakpointIsAFlagRatherThanAnOperand() void {
     const tuple = decoded(harness.op(constants.Opcode.noop) | @as(u32, 0x80), 1, "noop");
-    expect((tuples.head(tuple).gc.flags & constants.JANET_TUPLE_FLAG_BRACKETCTOR) != 0);
+    expect((harness.gcBits(tuples.head(tuple).gc.flags) & constants.JANET_TUPLE_FLAG_BRACKETCTOR) != 0);
 }
 
 pub fn run() void {

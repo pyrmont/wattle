@@ -22,7 +22,7 @@
 //! and everything they need from the runtime is a symbol.
 //!
 //! The Zig-side calling convention is `.auto`, which is deterministic for a
-//! compiler version and target rather than documented -- `src/zig/interop.zig`
+//! compiler version and target rather than documented -- `src/client/interop.zig`
 //! has the note. That is the compatibility guarantee this interface makes:
 //! **a module is built with the same Zig version as the runtime it loads
 //! into.** It is a source interface, not a binary one.
@@ -374,7 +374,7 @@ pub fn def(env: *Env, comptime name: [:0]const u8, val: Value, comptime doc: ?[:
 /// where `defs` is `fn (*module.Env) void`.
 pub fn entry(comptime defs: fn (*Env) void) void {
     const Shim = struct {
-        fn modConfig() callconv(.c) abi.JanetBuildConfig {
+        fn modConfig() callconv(.c) abi.BuildConfig {
             return .{
                 .major = config.version_major,
                 .minor = config.version_minor,

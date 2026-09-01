@@ -490,9 +490,9 @@ pub const DirRead = union(enum) {
 fn dirNext(handle: *anyopaque) DirRead {
     const dir: *std.c.DIR = @ptrCast(handle);
     while (true) {
-        std.c._errno().* = 0;
+        c.setErrno(0);
         const entry = std.c.readdir(dir) orelse {
-            return if (std.c._errno().* != 0) .failed else .end;
+            return if (c.errno() != 0) .failed else .end;
         };
         const name: [*:0]const u8 = @ptrCast(&entry.name);
         if (isDotEntry(name)) continue;

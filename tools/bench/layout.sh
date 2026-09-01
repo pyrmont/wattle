@@ -46,6 +46,24 @@
 # saw ±5% move on the dispatch-heavy workloads between builds that differ only
 # in which half of one file is Zig, so treat anything under about 5% on this
 # corpus as unresolved rather than as a finding.
+#
+# ## Discard the first run of a session
+#
+# There is a second effect on top of the layout one, and taking the minimum is
+# what makes it stick. **The first invocation of a session reads low** -- a
+# cold machine, nothing else resident -- and because the answer is a minimum,
+# that one reading becomes the arm's figure for every comparison made after it.
+#
+# Measured at Phase 15 Part 1a: the baseline binary's `arithmetic` read
+# 0.041967 on the session's first run and 0.044670, 0.045246, 0.044848 and
+# 0.045458 on four later runs of the *same binary*. The increment under test
+# had no first run, so it was reported at 1.079x on a workload that allocates
+# nothing and that the increment does not touch. Two further rounds of each arm
+# settled it at 1.00x.
+#
+# So: discard the first round of a session, or measure the second arm cold as
+# well. Two warm rounds per arm is the cheap recipe, and it is what the D4
+# figures in the phase records are taken with.
 set -e
 
 bin=$1

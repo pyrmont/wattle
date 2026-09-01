@@ -23,10 +23,10 @@
 //!
 //! ## Two things about how the subjects are reached
 //!
-//! **The heap is driven through `JanetTimeout` itself.** The kernels used to
+//! **The heap is driven through `Timeout` itself.** The kernels used to
 //! take a base pointer, a stride and the offset of the `when` field, and a
 //! local `Entry` with a different layout was what proved they needed none of
-//! `JanetTimeout`'s definition. They take `[]const JanetTimeout` now -- there
+//! `Timeout`'s definition. They take `[]const Timeout` now -- there
 //! is one heap in the runtime and one element type in it -- so the stand-in
 //! would assert nothing that the real element does not. The heap is still
 //! built here, from `when` values alone: `zeroes` fills the `pthread_t` on
@@ -216,7 +216,7 @@ fn theQueueKeepsASpareSlot() void {
 // The timeout min heap
 // ==========================================================================
 
-const Entry = ev_core.JanetTimeout;
+const Entry = ev_core.Timeout;
 
 /// The heap element carries more than the ordering reads, and `sched_id` is
 /// the one other scalar in it, so it stands in for the marker the sort check

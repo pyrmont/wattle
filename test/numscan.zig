@@ -297,11 +297,11 @@ fn theNumericSuffixes() void {
 
     // Both extremes, which are exactly the values a double cannot hold.
     expect(setScanned(&val, "-9223372036854775808:s"));
-    expect(inttypes.isInt(val) == constants.JANET_INT_S64);
+    expect(inttypes.isInt(val) == constants.IntType.s64);
     expect(raise.reported(inttypes.unwrapS64(val)) == std.math.minInt(i64));
 
     expect(setScanned(&val, "18446744073709551615:u"));
-    expect(inttypes.isInt(val) == constants.JANET_INT_U64);
+    expect(inttypes.isInt(val) == constants.IntType.u64);
     expect(raise.reported(inttypes.unwrapU64(val)) == std.math.maxInt(u64));
 
     // Out of range for the requested width, a sign the width cannot hold, an

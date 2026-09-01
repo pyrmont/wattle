@@ -18,7 +18,7 @@ const utils = @import("utils.zig");
 const order = @import("value/helpers/order.zig");
 const fibers = @import("value/fibers.zig");
 const functions = @import("value/functions.zig");
-const stretchy = @import("stretchy.zig");
+const scratch_vector = @import("scratch_vector.zig");
 const optimize = @import("compiler/optimize.zig");
 const regalloc = @import("compiler/regalloc.zig");
 const emit_core = @import("compiler/emit.zig");
@@ -31,24 +31,20 @@ const specials_core = @import("compiler/specials.zig");
 const vm_entry = @import("vm/entry.zig");
 const abi = @import("abi");
 
-pub const JanetCompileStatus = c_uint;
+/// Whether a compilation produced a definition or a message. Two members, and
+/// nothing outside this runtime supplies one; `compile` answers the keyword a
+/// Janet program sees.
+pub const CompileStatus = enum(u32) {
+    ok = 0,
+    @"error" = 1,
+};
 
-pub const JanetCompileResult = struct {
+pub const CompileResult = struct {
     funcdef: ?*functions.FuncDef = null,
     @"error": ?strings.String = null,
     macrofiber: ?*fibers.Fiber = null,
     error_mapping: functions.SourceMapping = .{},
-    status: JanetCompileStatus = 0,
-};
-
-pub const JanetcRegisterTemp = c_uint;
-
-pub const JanetcRegisterAllocator = struct {
-    chunks: ?[*]u32 = null,
-    count: i32 = 0,
-    capacity: i32 = 0,
-    max: i32 = 0,
-    regtemps: i32 = 0,
+    status: CompileStatus = .ok,
 };
 
 /// A compiled slot's flags: a type mask in the low sixteen bits and nine
@@ -84,16 +80,16 @@ pub const SlotFlags = packed struct(u32) {
     }
 };
 
-pub const JanetSlot = struct {
+pub const Slot = struct {
     constant: repr.Value = std.mem.zeroes(repr.Value),
     index: i32 = 0,
     envindex: i32 = 0,
     flags: SlotFlags = .{},
 };
 
-pub const JanetEnvRef = struct {
+pub const EnvRef = struct {
     envindex: i32 = 0,
-    scope: ?*JanetScope = null,
+    scope: ?*Scope = null,
 };
 
 /// What kind of scope this is. Six independent bits, numbered 1, 2, 4, 8, 16
@@ -114,30 +110,30 @@ pub const ScopeFlags = packed struct(c_uint) {
 /// representation. The `extern` it lost was the C implementation's and
 /// nothing read it -- every use of this type is a local `var` or a pointer.
 ///
-/// The vectors belong to the **scratch** allocator; `stretchy.zig` says why,
+/// The vectors belong to the **scratch** allocator; `scratch_vector.zig` says why,
 /// and is where they are pushed and freed.
-pub const JanetScope = struct {
+pub const Scope = struct {
     name: [*]const u8,
-    parent: ?*JanetScope = null,
-    child: ?*JanetScope = null,
+    parent: ?*Scope = null,
+    child: ?*Scope = null,
     consts: std.ArrayListUnmanaged(repr.Value) = .empty,
     syms: std.ArrayListUnmanaged(SymPair) = .empty,
     defs: std.ArrayListUnmanaged(*functions.FuncDef) = .empty,
-    ra: JanetcRegisterAllocator = .{},
-    ua: JanetcRegisterAllocator = .{},
-    envs: std.ArrayListUnmanaged(JanetEnvRef) = .empty,
+    ra: regalloc.RegisterAllocator = .{},
+    ua: regalloc.RegisterAllocator = .{},
+    envs: std.ArrayListUnmanaged(EnvRef) = .empty,
     bytecode_start: i32 = 0,
     flags: ScopeFlags = .{},
 };
 
-/// The compiler. **Not `extern`**, for the reason `JanetScope` gives.
-pub const JanetCompiler = struct {
-    scope: ?*JanetScope = null,
+/// The compiler. **Not `extern`**, for the reason `Scope` gives.
+pub const Compiler = struct {
+    scope: ?*Scope = null,
     buffer: std.ArrayListUnmanaged(u32) = .empty,
     mapbuffer: std.ArrayListUnmanaged(functions.SourceMapping) = .empty,
     env: ?*tables.Table = null,
     source: ?[*:0]const u8 = null,
-    result: JanetCompileResult = .{},
+    result: CompileResult = .{},
     current_mapping: functions.SourceMapping = .{},
     recursion_guard: c_int = 0,
     lints: ?*arrays.Array = null,
@@ -151,7 +147,7 @@ pub const JanetCompiler = struct {
     /// is negative for a backward jump and reads one below zero on an empty
     /// buffer. The length is unsigned and the label is not; this is the one
     /// place that says so.
-    pub fn here(self: *const JanetCompiler) i32 {
+    pub fn here(self: *const Compiler) i32 {
         return @intCast(self.buffer.items.len);
     }
 };
@@ -159,7 +155,7 @@ pub const JanetCompiler = struct {
 /// What the compiler is being asked for at one form. Same shape as
 /// `SlotFlags` -- a type mask and independent bits -- and a different set of
 /// bits above it.
-pub const FoptsFlags = packed struct(u32) {
+pub const FormFlags = packed struct(u32) {
     /// The types the caller will accept. Written and not read; see
     /// `SlotFlags.types`.
     types: repr.TagSet = .{},
@@ -170,10 +166,10 @@ pub const FoptsFlags = packed struct(u32) {
     _reserved: u12 = 0,
 };
 
-pub const JanetFopts = struct {
-    compiler: *JanetCompiler,
-    hint: JanetSlot = .{},
-    flags: FoptsFlags = .{},
+pub const FormOptions = struct {
+    compiler: *Compiler,
+    hint: Slot = .{},
+    flags: FormFlags = .{},
 };
 
 /// How one core function compiles to bytecode instead of a call.
@@ -183,10 +179,10 @@ pub const JanetFopts = struct {
 /// `optimize` is not optional either -- an entry with no `optimize` would be an
 /// optimizer that does not optimize, and `compiler.zig` wrote `.?` against the
 /// possibility.
-pub const JanetFunOptimizer = struct {
+pub const FunctionOptimizer = struct {
     /// Whether this call has a shape the optimizer handles. Absent means "any".
-    can_optimize: ?*const fn (opts: JanetFopts, args: []const JanetSlot) bool = null,
-    optimize: *const fn (opts: JanetFopts, args: []const JanetSlot) JanetSlot,
+    can_optimize: ?*const fn (opts: FormOptions, args: []const Slot) bool = null,
+    optimize: *const fn (opts: FormOptions, args: []const Slot) Slot,
 };
 
 /// `compile.h`'s shadowing verdict, which `janetc_shadowcheck` returns.
@@ -208,7 +204,7 @@ pub const Shadowing = enum(c_uint) {
 };
 
 pub const SymPair = struct {
-    slot: JanetSlot = .{},
+    slot: Slot = .{},
     sym: ?[*:0]const u8 = null,
     sym2: ?[*:0]const u8 = null,
     keep: bool = false,
@@ -265,7 +261,7 @@ pub const LintLevel = enum(c_uint) {
 /// `janet_formatc` allocates, an allocation can collect, and a build that
 /// asked for no lints should pay for none of that.
 fn lintf(
-    compiler: *JanetCompiler,
+    compiler: *Compiler,
     level: LintLevel,
     comptime format: [:0]const u8,
     args: anytype,
@@ -279,7 +275,7 @@ fn lintf(
 /// The string is interned *after* the level test, so a build collecting no
 /// lints allocates nothing.
 pub fn lint(
-    compiler: *JanetCompiler,
+    compiler: *Compiler,
     level: LintLevel,
     message: [*:0]const u8,
 ) raise.Raising(void) {
@@ -291,7 +287,7 @@ pub fn lint(
 ///
 /// A line or column of -1 means the source had no mapping there, and becomes
 /// nil rather than -1 in the tuple.
-fn record(compiler: *JanetCompiler, level: LintLevel, message: [*:0]const u8) raise.Raising(void) {
+fn record(compiler: *Compiler, level: LintLevel, message: [*:0]const u8) raise.Raising(void) {
     const payload = tuples.begin(4);
     payload[0] = value.fromBytes(std.mem.span(level.keyword()), .keyword);
     payload[1] = if (compiler.current_mapping.line == -1) wrapNil() else wrap.fromInteger(compiler.current_mapping.line);
@@ -300,7 +296,7 @@ fn record(compiler: *JanetCompiler, level: LintLevel, message: [*:0]const u8) ra
     try arrays.push(compiler.lints.?, wrap.fromTuple(tuples.end(payload)));
 }
 
-pub fn foptsDefault(compiler: *JanetCompiler) JanetFopts {
+pub fn foptsDefault(compiler: *Compiler) FormOptions {
     return .{
         .compiler = compiler,
         .hint = cslot(wrapNil()),
@@ -308,25 +304,36 @@ pub fn foptsDefault(compiler: *JanetCompiler) JanetFopts {
     };
 }
 
-pub fn recordError(compiler: *JanetCompiler, message: ?[*:0]const u8) void {
-    if (compiler.result.status == constants.JANET_COMPILE_ERROR) return;
-    compiler.result.status = constants.JANET_COMPILE_ERROR;
+pub fn recordError(compiler: *Compiler, message: ?[*:0]const u8) void {
+    if (compiler.result.status == .@"error") return;
+    compiler.result.status = .@"error";
     compiler.result.@"error" = message;
 }
 
-pub fn cerror(compiler: *JanetCompiler, message: [*:0]const u8) void {
+pub fn cerror(compiler: *Compiler, message: [*:0]const u8) void {
     recordError(compiler, strings.cstring(message));
 }
 
-pub fn freeslot(compiler: *JanetCompiler, slot: JanetSlot) void {
-    if (slot.flags.constant or slot.flags.ref or slot.flags.named) return;
-    if (slot.envindex >= 0) return;
-    regalloc.regallocFree(&compiler.scope.?.ra, slot.index);
+/// The scope being compiled into.
+///
+/// `compiler.scope` is null before `compileLintImpl` pushes the root scope and
+/// again after it pops it, and every step of a compile runs between the two:
+/// nothing that emits, names, allocates a register or reads a scope flag can
+/// be reached with no scope open. Thirty-odd sites asserted that separately;
+/// this is the one place it is written down.
+pub inline fn currentScope(compiler: *Compiler) *Scope {
+    return compiler.scope orelse unreachable;
 }
 
-pub fn shadowcheck(compiler: *JanetCompiler, symbol: [*:0]const u8) Shadowing {
+pub fn freeslot(compiler: *Compiler, slot: Slot) void {
+    if (slot.flags.constant or slot.flags.ref or slot.flags.named) return;
+    if (slot.envindex >= 0) return;
+    currentScope(compiler).ra.free(@intCast(slot.index));
+}
+
+pub fn shadowcheck(compiler: *Compiler, symbol: [*:0]const u8) Shadowing {
     var scope = compiler.scope;
-    const is_global = compiler.scope.?.flags.top;
+    const is_global = currentScope(compiler).flags.top;
     while (scope) |current| : (scope = current.parent) {
         var index = current.syms.items.len;
         while (index > 0) {
@@ -337,16 +344,16 @@ pub fn shadowcheck(compiler: *JanetCompiler, symbol: [*:0]const u8) Shadowing {
         }
     }
     const binding = registry.resolveExt(compiler.env.?, symbol);
-    if (binding.type == constants.JANET_BINDING_MACRO or binding.type == constants.JANET_BINDING_DYNAMIC_MACRO)
+    if (binding.type == .macro or binding.type == .dynamic_macro)
         return .macro;
-    if (binding.type == constants.JANET_BINDING_NONE) return .none;
+    if (binding.type == .none) return .none;
     return if (is_global) .global_hides_global else .local_hides_global;
 }
 
 pub fn nameslot(
-    compiler: *JanetCompiler,
+    compiler: *Compiler,
     symbol: [*:0]const u8,
-    slot: JanetSlot,
+    slot: Slot,
     flags: u32,
 ) raise.Raising(void) {
     if (flags & constants.JANET_DEFFLAG_NO_SHADOWCHECK == 0 and symbol[0] != '_') {
@@ -355,7 +362,7 @@ pub fn nameslot(
     const instruction_count = compiler.buffer.items.len;
     var named_slot = slot;
     named_slot.flags.named = true;
-    stretchy.push(&compiler.scope.?.syms, .{
+    scratch_vector.push(&currentScope(compiler).syms, .{
         .slot = named_slot,
         .sym = symbol,
         .sym2 = symbol,
@@ -366,7 +373,7 @@ pub fn nameslot(
     });
 }
 
-pub fn resolve(compiler: *JanetCompiler, symbol: [*:0]const u8) raise.Raising(JanetSlot) {
+pub fn resolve(compiler: *Compiler, symbol: [*:0]const u8) raise.Raising(Slot) {
     var scope = compiler.scope;
     var found_pair: ?*SymPair = null;
     var found_local = true;
@@ -401,10 +408,10 @@ pub fn resolve(compiler: *JanetCompiler, symbol: [*:0]const u8) raise.Raising(Ja
         if (current.flags.function) break;
         scope = current.parent;
     }
-    compilerAssert(scope != null, "invalid scopes");
-    scope.?.flags.env = true;
-    regalloc.regallocTouch(&scope.?.ua, result.index);
-    scope = scope.?.child;
+    const function_scope = scope orelse fatal.fatal("invalid scopes");
+    function_scope.flags.env = true;
+    function_scope.ua.touch(@intCast(result.index));
+    scope = function_scope.child;
 
     var environment_index: i32 = -1;
     while (scope) |current| : (scope = current.child) {
@@ -419,7 +426,7 @@ pub fn resolve(compiler: *JanetCompiler, symbol: [*:0]const u8) raise.Raising(Ja
             }
         }
         if (!found) {
-            stretchy.push(&current.envs, .{
+            scratch_vector.push(&current.envs, .{
                 .envindex = environment_index,
                 .scope = original_scope,
             });
@@ -430,7 +437,7 @@ pub fn resolve(compiler: *JanetCompiler, symbol: [*:0]const u8) raise.Raising(Ja
     return result;
 }
 
-pub fn cslot(val: repr.Value) JanetSlot {
+pub fn cslot(val: repr.Value) Slot {
     const value_type = repr.typeOf(val);
     return .{
         .constant = val,
@@ -453,15 +460,15 @@ pub fn cslot(val: repr.Value) JanetSlot {
 /// one. The compile error is already recorded on the compiler by then, so
 /// every caller wants the same fallback: `orelse nilSlot()`, which is what the
 /// rest of this file returns after a `cerror`.
-pub fn farslot(compiler: *JanetCompiler) ?JanetSlot {
-    const register = regalloc.regalloc1(&compiler.scope.?.ra);
+pub fn farslot(compiler: *Compiler) ?Slot {
+    const register = currentScope(compiler).ra.allocate();
     if (register > 0xffff) {
         cerror(compiler, "ran out of internal registers");
         return null;
     }
     return .{
         .constant = wrapNil(),
-        .index = register,
+        .index = @intCast(register),
         .envindex = -1,
         .flags = .{ .types = .all },
     };
@@ -483,12 +490,12 @@ pub fn defAddflags(definition: *functions.FuncDef) void {
 }
 
 pub fn pushScope(
-    result: *JanetScope,
-    compiler: *JanetCompiler,
+    result: *Scope,
+    compiler: *Compiler,
     flags: ScopeFlags,
     name: [*]const u8,
 ) void {
-    var scope: JanetScope = undefined;
+    var scope: Scope = undefined;
     scope.name = name;
     scope.parent = compiler.scope;
     scope.child = null;
@@ -498,51 +505,52 @@ pub fn pushScope(
     scope.envs = .empty;
     scope.bytecode_start = compiler.here();
     scope.flags = flags;
-    regalloc.regallocInit(&scope.ua);
-    if (!flags.function and compiler.scope != null) {
-        regalloc.regallocClone(&scope.ra, &compiler.scope.?.ra);
+    scope.ua = .{};
+    const inherited: ?*Scope = if (flags.function) null else compiler.scope;
+    if (inherited) |current| {
+        scope.ra = current.ra.clone();
     } else {
-        regalloc.regallocInit(&scope.ra);
+        scope.ra = .{};
     }
     if (compiler.scope) |current| current.child = result;
     compiler.scope = result;
     result.* = scope;
 }
 
-pub fn popscope(compiler: *JanetCompiler) raise.Raising(void) {
-    const old_scope = compiler.scope.?;
+pub fn popscope(compiler: *Compiler) raise.Raising(void) {
+    const old_scope = currentScope(compiler);
     const new_scope = old_scope.parent;
-    if (!old_scope.flags.function and !old_scope.flags.unused and new_scope != null) {
+    if (!old_scope.flags.function and !old_scope.flags.unused) if (new_scope) |parent| {
         if (old_scope.flags.closure) {
-            new_scope.?.flags.closure = true;
+            parent.flags.closure = true;
         }
-        if (new_scope.?.ra.max < old_scope.ra.max) {
-            new_scope.?.ra.max = old_scope.ra.max;
+        if (parent.ra.max < old_scope.ra.max) {
+            parent.ra.max = old_scope.ra.max;
         }
 
         for (old_scope.syms.items) |original| {
             var pair = original;
-            if (!pair.referenced and pair.sym != null) {
-                try lintf(compiler, .strict, "binding %q is unused", .{wrap.fromSymbol(pair.sym.?)});
-            }
+            if (!pair.referenced) if (pair.sym) |symbol| {
+                try lintf(compiler, .strict, "binding %q is unused", .{wrap.fromSymbol(symbol)});
+            };
             pair.sym = null;
             if (pair.death_pc == std_max_u32) {
                 pair.death_pc = @intCast(compiler.buffer.items.len);
             }
             if (pair.keep) {
                 pair.sym2 = null;
-                regalloc.regallocTouch(&new_scope.?.ra, pair.slot.index);
+                parent.ra.touch(@intCast(pair.slot.index));
             }
-            stretchy.push(&new_scope.?.syms, pair);
+            scratch_vector.push(&parent.syms, pair);
         }
-    }
+    };
 
-    stretchy.free(&old_scope.consts);
-    stretchy.free(&old_scope.syms);
-    stretchy.free(&old_scope.envs);
-    stretchy.free(&old_scope.defs);
-    regalloc.regallocDeinit(&old_scope.ra);
-    regalloc.regallocDeinit(&old_scope.ua);
+    scratch_vector.free(&old_scope.consts);
+    scratch_vector.free(&old_scope.syms);
+    scratch_vector.free(&old_scope.envs);
+    scratch_vector.free(&old_scope.defs);
+    old_scope.ra.deinit();
+    old_scope.ua.deinit();
     if (new_scope) |parent| parent.child = null;
     compiler.scope = new_scope;
 }
@@ -555,16 +563,16 @@ pub fn popscope(compiler: *JanetCompiler) raise.Raising(void) {
 /// scope boundary's assertion arbitrarily far from the cause. An ordinary
 /// import is all it takes not to need one.
 pub fn popscopeKeepslot(
-    compiler: *JanetCompiler,
-    return_slot: JanetSlot,
+    compiler: *Compiler,
+    return_slot: Slot,
 ) raise.Raising(void) {
     try popscope(compiler);
-    if (compiler.scope != null and return_slot.envindex < 0 and return_slot.index >= 0) {
-        regalloc.regallocTouch(&compiler.scope.?.ra, return_slot.index);
-    }
+    if (return_slot.envindex < 0 and return_slot.index >= 0) if (compiler.scope) |current| {
+        current.ra.touch(@intCast(return_slot.index));
+    };
 }
 
-pub fn compileReturn(compiler: *JanetCompiler, slot_value: JanetSlot) JanetSlot {
+pub fn compileReturn(compiler: *Compiler, slot_value: Slot) Slot {
     var result = slot_value;
     if (!result.flags.returned) {
         if (result.flags.constant and repr.checkType(result.constant, repr.Tag.nil)) {
@@ -577,7 +585,7 @@ pub fn compileReturn(compiler: *JanetCompiler, slot_value: JanetSlot) JanetSlot 
     return result;
 }
 
-pub fn gettarget(options: JanetFopts) JanetSlot {
+pub fn gettarget(options: FormOptions) Slot {
     if (options.flags.hint and
         options.hint.envindex < 0 and
         options.hint.index >= 0 and
@@ -594,15 +602,15 @@ pub fn gettarget(options: JanetFopts) JanetSlot {
 }
 
 pub fn toslots(
-    compiler: *JanetCompiler,
+    compiler: *Compiler,
     values: ?[*]const repr.Value,
     length: usize,
-) raise.Raising(stretchy.Vector(JanetSlot)) {
-    var result: stretchy.Vector(JanetSlot) = .empty;
+) raise.Raising(scratch_vector.Vector(Slot)) {
+    var result: scratch_vector.Vector(Slot) = .empty;
     var options = foptsDefault(compiler);
     options.flags.accept_splice = true;
     for (0..length) |index| {
-        stretchy.push(&result, try valueImpl(options, values.?[index]));
+        scratch_vector.push(&result, try valueImpl(options, values.?[index]));
     }
     return result;
 }
@@ -612,8 +620,8 @@ pub fn toslots(
 /// The two `janetc_value` calls below raise, and this function is raising so
 /// that its caller decides. Reporting them instead would leave the report to
 /// `makeDictionary`, which is inside a raising chain and would not consume it.
-pub fn toslotskv(compiler: *JanetCompiler, dictionary: repr.Value) raise.Raising(stretchy.Vector(JanetSlot)) {
-    var result: stretchy.Vector(JanetSlot) = .empty;
+pub fn toslotskv(compiler: *Compiler, dictionary: repr.Value) raise.Raising(scratch_vector.Vector(Slot)) {
+    var result: scratch_vector.Vector(Slot) = .empty;
     var options = foptsDefault(compiler);
     options.flags.accept_splice = true;
     const view = args_core.dictionaryView(dictionary).?;
@@ -630,8 +638,8 @@ pub fn toslotskv(compiler: *JanetCompiler, dictionary: repr.Value) raise.Raising
     if (view.len != 0) _ = utils.sortedKeys(view.kvs.?, @intCast(view.cap), indices);
     for (0..view.len) |index| {
         const pair = view.kvs.?[@intCast(indices[index])];
-        stretchy.push(&result, try valueImpl(options, pair.key));
-        stretchy.push(&result, try valueImpl(options, pair.value));
+        scratch_vector.push(&result, try valueImpl(options, pair.key));
+        scratch_vector.push(&result, try valueImpl(options, pair.value));
     }
     // One exit rather than a `defer`, and it may as well say so. Nothing leaks
     // either way: scratch memory is reclaimed by the next collection, which is
@@ -640,7 +648,7 @@ pub fn toslotskv(compiler: *JanetCompiler, dictionary: repr.Value) raise.Raising
     return result;
 }
 
-pub fn pushslots(compiler: *JanetCompiler, slots: []const JanetSlot) i32 {
+pub fn pushslots(compiler: *Compiler, slots: []const Slot) i32 {
     const count: i32 = @intCast(slots.len);
     var index: i32 = 0;
     var minimum_arity: i32 = 0;
@@ -686,17 +694,17 @@ pub fn pushslots(compiler: *JanetCompiler, slots: []const JanetSlot) i32 {
     return if (has_splice) -1 - minimum_arity else minimum_arity;
 }
 
-pub fn freeslots(compiler: *JanetCompiler, slots: stretchy.Vector(JanetSlot)) void {
+pub fn freeslots(compiler: *Compiler, slots: scratch_vector.Vector(Slot)) void {
     for (slots.items) |slot| freeslot(compiler, slot);
     var owned = slots;
-    stretchy.free(&owned);
+    scratch_vector.free(&owned);
 }
 
-pub fn throwaway(options: JanetFopts, val: repr.Value) raise.Raising(void) {
-    const compiler: *JanetCompiler = options.compiler;
+pub fn throwaway(options: FormOptions, val: repr.Value) raise.Raising(void) {
+    const compiler: *Compiler = options.compiler;
     const bytecode_start = compiler.buffer.items.len;
     const source_map_start = compiler.mapbuffer.items.len;
-    var unused_scope: JanetScope = undefined;
+    var unused_scope: Scope = undefined;
     pushScope(&unused_scope, compiler, .{ .unused = true }, "unused");
     _ = try valueImpl(options, val);
     try lintf(compiler, .strict, "dead code, consider removing %.4q", .{val});
@@ -705,21 +713,21 @@ pub fn throwaway(options: JanetFopts, val: repr.Value) raise.Raising(void) {
     compiler.mapbuffer.shrinkRetainingCapacity(source_map_start);
 }
 
-pub fn valueImpl(options: JanetFopts, original_value: repr.Value) raise.Raising(JanetSlot) {
-    const compiler: *JanetCompiler = options.compiler;
+pub fn valueImpl(options: FormOptions, original_value: repr.Value) raise.Raising(Slot) {
+    const compiler: *Compiler = options.compiler;
     const previous_mapping = compiler.current_mapping;
     compiler.recursion_guard -= 1;
-    if (compiler.result.status == constants.JANET_COMPILE_ERROR) return cslot(wrapNil());
+    if (compiler.result.status == .@"error") return cslot(wrapNil());
     if (compiler.recursion_guard <= 0) {
         cerror(compiler, "recursed too deeply");
         return cslot(wrapNil());
     }
 
     var val = original_value;
-    var result: JanetSlot = undefined;
+    var result: Slot = undefined;
     var special: ?*const specials.Special = null;
     var expansions: i32 = config.max_macro_expand;
-    while (expansions != 0 and compiler.result.status != constants.JANET_COMPILE_ERROR) {
+    while (expansions != 0 and compiler.result.status != .@"error") {
         switch (try expandMacroOnce(compiler, val)) {
             .expanded => |expanded| {
                 val = expanded;
@@ -739,7 +747,7 @@ pub fn valueImpl(options: JanetFopts, original_value: repr.Value) raise.Raising(
 
     if (special) |special_form| {
         const tuple = wrap.toTuple(val);
-        result = try special_form.compile.?(options, tuple[1..@intCast(tuples.head(tuple).length)]);
+        result = try special_form.compile.?(options, tuple[1..tuples.head(tuple).length]);
     } else {
         switch (repr.typeOf(val)) {
             repr.Tag.tuple => {
@@ -747,7 +755,7 @@ pub fn valueImpl(options: JanetFopts, original_value: repr.Value) raise.Raising(
                 const length = tuples.head(tuple).length;
                 if (length == 0) {
                     result = cslot(wrap.fromTuple(tuples.newFrom(&.{})));
-                } else if (tuples.head(tuple).gc.flags & constants.JANET_TUPLE_FLAG_BRACKETCTOR != 0) {
+                } else if (tuples.isBracketed(tuples.head(tuple))) {
                     result = try makeTuple(options, val);
                 } else {
                     var suboptions = foptsDefault(compiler);
@@ -772,7 +780,7 @@ pub fn valueImpl(options: JanetFopts, original_value: repr.Value) raise.Raising(
         }
     }
 
-    if (compiler.result.status == constants.JANET_COMPILE_ERROR) return cslot(wrapNil());
+    if (compiler.result.status == .@"error") return cslot(wrapNil());
     if (options.flags.tail) result = compileReturn(compiler, result);
     if (options.flags.hint) {
         emit_core.copy(compiler, options.hint, result);
@@ -799,7 +807,7 @@ const Expansion = union(enum) {
     done,
 };
 
-fn expandMacroOnce(compiler: *JanetCompiler, val: repr.Value) raise.Raising(Expansion) {
+fn expandMacroOnce(compiler: *Compiler, val: repr.Value) raise.Raising(Expansion) {
     if (!repr.checkType(val, repr.Tag.tuple)) return .done;
     const form = wrap.toTuple(val);
     const length = tuples.head(form).length;
@@ -810,14 +818,14 @@ fn expandMacroOnce(compiler: *JanetCompiler, val: repr.Value) raise.Raising(Expa
         compiler.current_mapping.line = head.sm_line;
         compiler.current_mapping.column = head.sm_column;
     }
-    if (head.gc.flags & constants.JANET_TUPLE_FLAG_BRACKETCTOR != 0) return .done;
+    if (tuples.isBracketed(head)) return .done;
     if (!repr.checkType(form[0], repr.Tag.symbol)) return .done;
 
     const name = wrap.toSymbol(form[0]);
     if (specials_core.lookupSpecial(name)) |special| return .{ .special = special };
 
     const binding = registry.resolve(compiler.env.?, name);
-    if ((binding.type != constants.JANET_BINDING_MACRO and binding.type != constants.JANET_BINDING_DYNAMIC_MACRO) or
+    if ((binding.type != .macro and binding.type != .dynamic_macro) or
         !repr.checkType(binding.value, repr.Tag.function))
     {
         return .done;
@@ -826,17 +834,17 @@ fn expandMacroOnce(compiler: *JanetCompiler, val: repr.Value) raise.Raising(Expa
 }
 
 fn compileCall(
-    options: JanetFopts,
-    slots: stretchy.Vector(JanetSlot),
-    function: JanetSlot,
+    options: FormOptions,
+    slots: scratch_vector.Vector(Slot),
+    function: Slot,
     form: [*]const repr.Value,
-) raise.Raising(JanetSlot) {
-    const compiler: *JanetCompiler = options.compiler;
-    var result: JanetSlot = undefined;
+) raise.Raising(Slot) {
+    const compiler: *Compiler = options.compiler;
+    var result: Slot = undefined;
     if (!tryCallOptimizer(options, slots.items, function, &result)) {
         const minimum_arity = pushslots(compiler, slots.items);
         try validateCall(compiler, function, minimum_arity, form);
-        if (options.flags.tail and !compiler.scope.?.flags.top) {
+        if (options.flags.tail and !currentScope(compiler).flags.top) {
             _ = emit_core.emitSlot(compiler, .tailcall, function, 0);
             result = cslot(wrapNil());
             result.flags = .{ .returned = true };
@@ -850,10 +858,10 @@ fn compileCall(
 }
 
 fn tryCallOptimizer(
-    options: JanetFopts,
-    slots: []const JanetSlot,
-    function: JanetSlot,
-    result: *JanetSlot,
+    options: FormOptions,
+    slots: []const Slot,
+    function: Slot,
+    result: *Slot,
 ) bool {
     if (!function.flags.constant) return false;
     for (slots) |slot| {
@@ -894,7 +902,7 @@ inline fn compilerAssert(condition: bool, message: [*:0]const u8) void {
 /// handler's own failure runs the formatter, which can raise, and
 /// `resolveGlobal` above carries that.
 fn lookupMissing(
-    compiler: *JanetCompiler,
+    compiler: *Compiler,
     symbol: [*:0]const u8,
     handler: *functions.Function,
 ) raise.Raising(?registry.Binding) {
@@ -904,26 +912,25 @@ fn lookupMissing(
         return null;
     }
     var args = [_]repr.Value{wrap.fromSymbol(symbol)};
-    const fiber = fibers.new(handler, 64, 1, &args) orelse {
+    const fiber = fibers.new(handler, 64, &args) catch {
         recordError(compiler, strings.cstring("failed to call missing symbol lookup handler"));
         return null;
     };
     fiber.env = compiler.env;
     const lock = gc_alloc.gclock();
-    var handler_out: repr.Value = undefined;
-    const status = vm_entry.continueFiber(fiber, wrapNil(), &handler_out);
+    const resumed = vm_entry.continueFiber(fiber, wrapNil());
     gc_alloc.gcunlock(lock);
-    if (status != abi.Signal.ok) {
-        recordError(compiler, try pp_format.formatc("(lookup) %V", .{handler_out}));
+    if (resumed.signal != abi.Signal.ok) {
+        recordError(compiler, try pp_format.formatc("(lookup) %V", .{resumed.value}));
         return null;
     }
-    return registry.bindingFromEntry(handler_out);
+    return registry.bindingFromEntry(resumed.value);
 }
 
 /// Resolve a symbol that no lexical scope claimed.
-fn resolveGlobal(compiler: *JanetCompiler, symbol: [*:0]const u8) raise.Raising(JanetSlot) {
+fn resolveGlobal(compiler: *Compiler, symbol: [*:0]const u8) raise.Raising(Slot) {
     var binding = registry.resolveExt(compiler.env.?, symbol);
-    if (binding.type == constants.JANET_BINDING_NONE) {
+    if (binding.type == .none) {
         const handler = tables.getKeyword(compiler.env.?, "missing-symbol");
         switch (repr.typeOf(handler)) {
             repr.Tag.nil => {},
@@ -940,21 +947,21 @@ fn resolveGlobal(compiler: *JanetCompiler, symbol: [*:0]const u8) raise.Raising(
 
     var result = cslot(binding.value);
     switch (binding.type) {
-        constants.JANET_BINDING_DEF, constants.JANET_BINDING_MACRO => {},
-        constants.JANET_BINDING_DYNAMIC_DEF, constants.JANET_BINDING_DYNAMIC_MACRO => {
+        .def, .macro => {},
+        .dynamic_def, .dynamic_macro => {
             result.flags.ref = true;
             result.flags.named = true;
             result.flags.types = .all;
             result.flags.constant = false;
         },
-        constants.JANET_BINDING_VAR => {
+        .@"var" => {
             result.flags.ref = true;
             result.flags.named = true;
             result.flags.mutable = true;
             result.flags.types = .all;
             result.flags.constant = false;
         },
-        // `JANET_BINDING_NONE` and anything unrecognised. The C original
+        // `.none` and anything unrecognised. The C original
         // spells this as `default:` falling into the `NONE` label.
         else => {
             recordError(compiler, try pp_format.formatc("unknown symbol %q", .{wrap.fromSymbol(symbol)}));
@@ -963,17 +970,16 @@ fn resolveGlobal(compiler: *JanetCompiler, symbol: [*:0]const u8) raise.Raising(
     }
 
     switch (binding.deprecation) {
-        constants.JANET_BINDING_DEP_NONE => {},
-        constants.JANET_BINDING_DEP_RELAXED => try lintf(compiler, .relaxed, "%q is deprecated", .{wrap.fromSymbol(symbol)}),
-        constants.JANET_BINDING_DEP_NORMAL => try lintf(compiler, .normal, "%q is deprecated", .{wrap.fromSymbol(symbol)}),
-        constants.JANET_BINDING_DEP_STRICT => try lintf(compiler, .strict, "%q is deprecated", .{wrap.fromSymbol(symbol)}),
-        else => {},
+        .none => {},
+        .relaxed => try lintf(compiler, .relaxed, "%q is deprecated", .{wrap.fromSymbol(symbol)}),
+        .normal => try lintf(compiler, .normal, "%q is deprecated", .{wrap.fromSymbol(symbol)}),
+        .strict => try lintf(compiler, .strict, "%q is deprecated", .{wrap.fromSymbol(symbol)}),
     }
     return result;
 }
 
 /// The four shadowing lints, by what is being shadowed.
-fn shadowLint(compiler: *JanetCompiler, symbol: [*:0]const u8, shadowing: Shadowing) raise.Raising(void) {
+fn shadowLint(compiler: *Compiler, symbol: [*:0]const u8, shadowing: Shadowing) raise.Raising(void) {
     const name = wrap.fromSymbol(symbol);
     switch (shadowing) {
         .macro => try lintf(compiler, .normal, "binding %q is shadowing a macro", .{name}),
@@ -992,14 +998,14 @@ fn shadowLint(compiler: *JanetCompiler, symbol: [*:0]const u8, shadowing: Shadow
 /// in the C original, including the lints key that may never have been set,
 /// which is reproduced here.
 fn runMacro(
-    compiler: *JanetCompiler,
+    compiler: *Compiler,
     form_value: repr.Value,
     macro_value: repr.Value,
 ) raise.Raising(?repr.Value) {
     const form = wrap.toTuple(form_value);
     const macro = wrap.toFunction(macro_value);
     const arity = tuples.head(form).length - 1;
-    const fiber = fibers.new(macro, 64, arity, form + 1) orelse {
+    const fiber = fibers.new(macro, 64, (form + 1)[0..@intCast(arity)]) catch {
         const definition = macro.def.?;
         const minimum = definition.min_arity;
         const maximum = definition.max_arity;
@@ -1017,20 +1023,19 @@ fn runMacro(
     const form_keyword = value.fromBytes("macro-form", .keyword);
     tables.put(compiler.env.?, form_keyword, form_value);
     const lints_keyword = value.fromBytes("macro-lints", .keyword);
-    if (compiler.lints != null) {
-        tables.put(compiler.env.?, lints_keyword, wrap.fromArray(compiler.lints.?));
+    if (compiler.lints) |lints| {
+        tables.put(compiler.env.?, lints_keyword, wrap.fromArray(lints));
     }
-    var macro_out: repr.Value = undefined;
-    const status = vm_entry.continueFiber(fiber, wrapNil(), &macro_out);
+    const resumed = vm_entry.continueFiber(fiber, wrapNil());
     tables.put(compiler.env.?, form_keyword, wrapNil());
     tables.put(compiler.env.?, lints_keyword, wrapNil());
     gc_alloc.gcunlock(lock);
-    if (status != abi.Signal.ok) {
+    if (resumed.signal != abi.Signal.ok) {
         compiler.result.macrofiber = fiber;
-        recordError(compiler, try pp_format.formatc("(macro) %V", .{macro_out}));
+        recordError(compiler, try pp_format.formatc("(macro) %V", .{resumed.value}));
         return null;
     }
-    return macro_out;
+    return resumed.value;
 }
 
 /// The three "wrong number of arguments" errors, which differ only in their
@@ -1038,7 +1043,7 @@ fn runMacro(
 ///
 /// `%s` selects the plural, which is why the count is passed twice.
 fn arityError(
-    compiler: *JanetCompiler,
+    compiler: *Compiler,
     comptime format: [:0]const u8,
     function: repr.Value,
     expected: i32,
@@ -1049,8 +1054,8 @@ fn arityError(
 }
 
 fn validateCall(
-    compiler: *JanetCompiler,
-    function: JanetSlot,
+    compiler: *Compiler,
+    function: Slot,
     original_minimum_arity: i32,
     form: [*]const repr.Value,
 ) raise.Raising(void) {
@@ -1136,8 +1141,8 @@ fn validateCall(
     }
 }
 
-fn makeValue(options: JanetFopts, slots: stretchy.Vector(JanetSlot), operation: constants.Opcode) JanetSlot {
-    const compiler: *JanetCompiler = options.compiler;
+fn makeValue(options: FormOptions, slots: scratch_vector.Vector(Slot), operation: constants.Opcode) Slot {
+    const compiler: *Compiler = options.compiler;
     const count = slots.items.len;
     var can_inline = true;
     for (slots.items) |slot| {
@@ -1172,55 +1177,54 @@ fn makeValue(options: JanetFopts, slots: stretchy.Vector(JanetSlot), operation: 
     return result;
 }
 
-fn makeArray(options: JanetFopts, val: repr.Value) raise.Raising(JanetSlot) {
-    const compiler: *JanetCompiler = options.compiler;
+fn makeArray(options: FormOptions, val: repr.Value) raise.Raising(Slot) {
+    const compiler: *Compiler = options.compiler;
     const array = wrap.toArray(val);
     return makeValue(options, try toslots(compiler, array.data, @intCast(array.count)), constants.Opcode.make_array);
 }
 
-fn makeTuple(options: JanetFopts, val: repr.Value) raise.Raising(JanetSlot) {
-    const compiler: *JanetCompiler = options.compiler;
+fn makeTuple(options: FormOptions, val: repr.Value) raise.Raising(Slot) {
+    const compiler: *Compiler = options.compiler;
     const tuple = wrap.toTuple(val);
-    return makeValue(options, try toslots(compiler, tuple, @intCast(tuples.head(tuple).length)), constants.Opcode.make_tuple);
+    return makeValue(options, try toslots(compiler, tuple, tuples.head(tuple).length), constants.Opcode.make_tuple);
 }
 
-fn makeDictionary(options: JanetFopts, val: repr.Value, operation: constants.Opcode) raise.Raising(JanetSlot) {
-    const compiler: *JanetCompiler = options.compiler;
+fn makeDictionary(options: FormOptions, val: repr.Value, operation: constants.Opcode) raise.Raising(Slot) {
+    const compiler: *Compiler = options.compiler;
     return makeValue(options, try toslotskv(compiler, val), operation);
 }
 
-fn makeBuffer(options: JanetFopts, val: repr.Value) raise.Raising(JanetSlot) {
-    const compiler: *JanetCompiler = options.compiler;
+fn makeBuffer(options: FormOptions, val: repr.Value) raise.Raising(Slot) {
+    const compiler: *Compiler = options.compiler;
     const buffer = wrap.toBuffer(val);
     const argument = value.fromBytes(buffer.slice(), .string);
     return makeValue(options, try toslots(compiler, @ptrCast(&argument), 1), constants.Opcode.make_buffer);
 }
 
-pub fn popFuncdef(compiler: *JanetCompiler) raise.Raising(*functions.FuncDef) {
-    const scope = compiler.scope.?;
+pub fn popFuncdef(compiler: *Compiler) raise.Raising(*functions.FuncDef) {
+    const scope = currentScope(compiler);
     const definition = functions.defs.new();
-    definition.slotcount = scope.ra.max + 1;
+    definition.slotcount = @intCast(scope.ra.max + 1);
     compilerAssert(scope.flags.function, "expected function scope");
 
     definition.environments_length = scope.envs.items.len;
-    definition.environments = mallocArray(i32, @intCast(definition.environments_length));
+    definition.environments = mallocArray(i32, definition.environments_length);
     for (scope.envs.items, definition.environmentIndices()) |ref, *out| out.* = ref.envindex;
 
     definition.constants_length = scope.consts.items.len;
-    definition.constants = stretchy.flatten(repr.Value, scope.consts);
+    definition.constants = scratch_vector.flatten(repr.Value, scope.consts);
     definition.defs_length = scope.defs.items.len;
-    definition.defs = stretchy.flatten(*functions.FuncDef, scope.defs);
+    definition.defs = scratch_vector.flatten(*functions.FuncDef, scope.defs);
 
     definition.bytecode_length = @intCast(compiler.here() - scope.bytecode_start);
     if (definition.bytecode_length != 0) {
-        definition.bytecode = mallocArray(u32, @intCast(definition.bytecode_length));
-        const bytecode_length: usize = @intCast(definition.bytecode_length);
-        @memcpy(definition.instructions(), compiler.buffer.items[@intCast(scope.bytecode_start)..][0..bytecode_length]);
+        definition.bytecode = mallocArray(u32, definition.bytecode_length);
+        @memcpy(definition.instructions(), compiler.buffer.items[@intCast(scope.bytecode_start)..][0..definition.bytecode_length]);
         compiler.buffer.shrinkRetainingCapacity(@intCast(scope.bytecode_start));
 
         if (compiler.mapbuffer.items.len != 0 and compiler.source != null) {
-            definition.sourcemap = mallocArray(functions.SourceMapping, @intCast(definition.bytecode_length));
-            @memcpy(definition.sourceMappings(), compiler.mapbuffer.items[@intCast(scope.bytecode_start)..][0..bytecode_length]);
+            definition.sourcemap = mallocArray(functions.SourceMapping, definition.bytecode_length);
+            @memcpy(definition.sourceMappings(), compiler.mapbuffer.items[@intCast(scope.bytecode_start)..][0..definition.bytecode_length]);
             compiler.mapbuffer.shrinkRetainingCapacity(@intCast(scope.bytecode_start));
         }
     }
@@ -1231,24 +1235,25 @@ pub fn popFuncdef(compiler: *JanetCompiler) raise.Raising(*functions.FuncDef) {
     definition.flags = .{};
     if (scope.flags.env) definition.flags.needsenv = true;
 
-    if (scope.ua.count != 0) {
+    const used_chunks = scope.ua.chunks.items;
+    if (used_chunks.len != 0) {
         const slot_chunks = @divTrunc(definition.slotcount + 31, 32);
-        const chunk_count = @min(slot_chunks, scope.ua.count);
+        const chunk_count = @min(@as(usize, @intCast(slot_chunks)), used_chunks.len);
         const chunks = utils.allocManyZeroed(u32, @intCast(slot_chunks));
-        @memcpy(chunks[0..@intCast(chunk_count)], scope.ua.chunks.?[0..@intCast(chunk_count)]);
-        if (scope.ua.count > 7 and slot_chunks > 7) chunks[7] &= 0xffff;
+        @memcpy(chunks[0..chunk_count], used_chunks[0..chunk_count]);
+        if (used_chunks.len > 7 and slot_chunks > 7) chunks[7] &= 0xffff;
         definition.closure_bitset = chunks;
     }
 
-    var locals: stretchy.Vector(functions.SymbolMap) = .empty;
-    var top = compiler.scope.?;
+    var locals: scratch_vector.Vector(functions.SymbolMap) = .empty;
+    var top = currentScope(compiler);
     while (top.parent) |parent| top = parent;
-    var ancestor: ?*JanetScope = top;
+    var ancestor: ?*Scope = top;
     while (ancestor) |current| : (ancestor = current.child) {
         for (scope.envs.items, 0..) |reference, environment_index| {
             if (reference.scope != ancestor) continue;
             for (current.syms.items) |pair| {
-                if (pair.sym2 != null) stretchy.push(&locals, .{
+                if (pair.sym2 != null) scratch_vector.push(&locals, .{
                     .birth_pc = std_max_u32,
                     .death_pc = @intCast(environment_index),
                     .slot_index = @intCast(pair.slot.index),
@@ -1260,7 +1265,9 @@ pub fn popFuncdef(compiler: *JanetCompiler) raise.Raising(*functions.FuncDef) {
 
     for (scope.syms.items) |pair| {
         if (pair.sym2 == null) continue;
-        try if (!pair.referenced and pair.sym != null) lintf(compiler, .strict, "binding %q is unused", .{wrap.fromSymbol(pair.sym.?)});
+        if (!pair.referenced) if (pair.sym) |symbol| {
+            try lintf(compiler, .strict, "binding %q is unused", .{wrap.fromSymbol(symbol)});
+        };
         const death_pc: u32 = if (pair.death_pc == std_max_u32)
             @intCast(definition.bytecode_length)
         else
@@ -1270,9 +1277,9 @@ pub fn popFuncdef(compiler: *JanetCompiler) raise.Raising(*functions.FuncDef) {
         else
             pair.birth_pc - @as(u32, @intCast(scope.bytecode_start));
         compilerAssert(birth_pc <= death_pc, "birth pc after death pc");
-        compilerAssert(birth_pc < @as(u32, @intCast(definition.bytecode_length)), "bad birth pc");
-        compilerAssert(death_pc <= @as(u32, @intCast(definition.bytecode_length)), "bad death pc");
-        stretchy.push(&locals, .{
+        compilerAssert(birth_pc < definition.bytecode_length, "bad birth pc");
+        compilerAssert(death_pc <= definition.bytecode_length, "bad death pc");
+        scratch_vector.push(&locals, .{
             .birth_pc = birth_pc,
             .death_pc = death_pc,
             .slot_index = @intCast(pair.slot.index),
@@ -1280,7 +1287,7 @@ pub fn popFuncdef(compiler: *JanetCompiler) raise.Raising(*functions.FuncDef) {
         });
     }
     definition.symbolmap_length = locals.items.len;
-    definition.symbolmap = stretchy.flatten(functions.SymbolMap, locals);
+    definition.symbolmap = scratch_vector.flatten(functions.SymbolMap, locals);
     if (definition.symbolmap_length != 0) definition.flags.hassymbolmap = true;
 
     try popscope(compiler);
@@ -1294,20 +1301,20 @@ pub fn compileLintImpl(
     environment: *tables.Table,
     where: ?strings.String,
     lints: ?*arrays.Array,
-) raise.Raising(JanetCompileResult) {
-    var compiler: JanetCompiler = undefined;
+) raise.Raising(CompileResult) {
+    var compiler: Compiler = undefined;
     initCompiler(&compiler, environment, where, lints);
 
-    var root_scope: JanetScope = undefined;
+    var root_scope: Scope = undefined;
     pushScope(&root_scope, &compiler, .{ .function = true, .top = true }, "root");
-    const options = JanetFopts{
+    const options = FormOptions{
         .compiler = &compiler,
         .hint = cslot(wrapNil()),
         .flags = .{ .tail = true, .types = .all },
     };
     _ = try valueImpl(options, source);
 
-    if (compiler.result.status == constants.JANET_COMPILE_OK) {
+    if (compiler.result.status == .ok) {
         const definition = try popFuncdef(&compiler);
         definition.name = strings.cstring("thunk");
         defAddflags(definition);
@@ -1324,12 +1331,12 @@ pub fn compile(
     source: repr.Value,
     environment: *tables.Table,
     where: ?strings.String,
-) raise.Raising(JanetCompileResult) {
+) raise.Raising(CompileResult) {
     return compileLintImpl(source, environment, where, null);
 }
 
 fn initCompiler(
-    compiler: *JanetCompiler,
+    compiler: *Compiler,
     environment: *tables.Table,
     where: ?strings.String,
     lints: ?*arrays.Array,
@@ -1345,7 +1352,7 @@ fn initCompiler(
             .@"error" = null,
             .macrofiber = null,
             .error_mapping = .{ .line = -1, .column = -1 },
-            .status = constants.JANET_COMPILE_OK,
+            .status = .ok,
         },
         .current_mapping = .{ .line = -1, .column = -1 },
         .recursion_guard = config.recursion_guard,
@@ -1354,14 +1361,14 @@ fn initCompiler(
     };
 }
 
-fn deinitCompiler(compiler: *JanetCompiler) void {
-    stretchy.free(&compiler.buffer);
-    stretchy.free(&compiler.mapbuffer);
+fn deinitCompiler(compiler: *Compiler) void {
+    scratch_vector.free(&compiler.buffer);
+    scratch_vector.free(&compiler.mapbuffer);
     compiler.env = null;
 }
 
-fn mallocArray(comptime Element: type, count: i32) ?[*]Element {
-    const size = @sizeOf(Element) * @as(usize, @intCast(count));
+fn mallocArray(comptime Element: type, count: usize) ?[*]Element {
+    const size = @sizeOf(Element) * count;
     const memory = utils.malloc(size);
     if (memory == null and size != 0) fatal.outOfMemory();
     return @ptrCast(@alignCast(memory));
@@ -1377,14 +1384,21 @@ fn cfunCompile(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"compile"}));
     try args_core.arity(argv, 1, 4);
 
-    var env: ?*tables.Table = if (argv.len > 1 and !repr.checkType(argv[1], repr.Tag.nil))
+    // The fiber's environment is created on demand: `.env` is null on a fiber
+    // nobody has given one to. Unwrapping it here trapped instead, and the
+    // `if (env == null)` that followed -- which allocated one and stored it
+    // back on the fiber -- could never fire, both branches above it having
+    // answered non-null.
+    const env: *tables.Table = if (argv.len > 1 and !repr.checkType(argv[1], repr.Tag.nil))
         try args_core.getTable(argv, 1)
-    else
-        vm_state.current().fiber.?.env.?;
-    if (env == null) {
-        env = tables.new(0);
-        vm_state.current().fiber.?.env = env;
-    }
+    else fiber_env: {
+        const fiber = vm_state.current().fiber.?;
+        break :fiber_env fiber.env orelse {
+            const fresh = tables.new(0);
+            fiber.env = fresh;
+            break :fiber_env fresh;
+        };
+    };
 
     var source: ?[*:0]const u8 = null;
     if (argv.len >= 3) {
@@ -1403,8 +1417,8 @@ fn cfunCompile(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
     else
         null;
 
-    const result = try compileLintImpl(argv[0], env.?, source, lints);
-    if (result.status == constants.JANET_COMPILE_OK) {
+    const result = try compileLintImpl(argv[0], env, source, lints);
+    if (result.status == .ok) {
         return wrap.fromFunction(functions.thunk(result.funcdef.?));
     }
 
@@ -1418,8 +1432,8 @@ fn cfunCompile(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
     if (result.error_mapping.column > 0) {
         tables.put(table, value.fromBytes("column", .keyword), wrap.fromInteger(result.error_mapping.column));
     }
-    if (result.macrofiber != null) {
-        tables.put(table, value.fromBytes("fiber", .keyword), wrap.fromFiber(result.macrofiber.?));
+    if (result.macrofiber) |fiber| {
+        tables.put(table, value.fromBytes("fiber", .keyword), wrap.fromFiber(fiber));
     }
     return wrap.fromTable(table);
 }

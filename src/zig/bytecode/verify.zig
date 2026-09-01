@@ -52,39 +52,38 @@ pub fn verify(definition: *functions.FuncDef) Verdict {
     if (bytecode_length == 0) return .no_bytecode;
     if (maximum_argument_slot > slot_count) return .arity_exceeds_slots;
 
-    for (definition.instructions()[0..@intCast(bytecode_length)], 0..) |instruction, index| {
+    for (definition.instructions(), 0..) |instruction, index| {
         const opcode = instruction & 0x7f;
         if (opcode >= constants.Opcode.count) return .unknown_opcode;
         const instruction_type = instructions[opcode];
         switch (instruction_type) {
-            constants.JINT_0 => {},
-            constants.JINT_S => if (@as(i32, @intCast(instruction >> 8)) >= slot_count) return .slot_out_of_range,
-            constants.JINT_SI, constants.JINT_SU, constants.JINT_ST => if (slotA(instruction) >= slot_count) return .slot_out_of_range,
-            constants.JINT_L => {
+            constants.InstructionType.zero => {},
+            constants.InstructionType.s => if (@as(i32, @intCast(instruction >> 8)) >= slot_count) return .slot_out_of_range,
+            constants.InstructionType.si, constants.InstructionType.su, constants.InstructionType.st => if (slotA(instruction) >= slot_count) return .slot_out_of_range,
+            constants.InstructionType.l => {
                 const destination = @as(i32, @intCast(index)) + signedField(instruction, 8);
                 if (destination < 0 or destination >= bytecode_length) return .jump_out_of_range;
             },
-            constants.JINT_SS => if (slotA(instruction) >= slot_count or @as(i32, @intCast(instruction >> 16)) >= slot_count) return .slot_out_of_range,
-            constants.JINT_SSI, constants.JINT_SSU => if (slotA(instruction) >= slot_count or slotB(instruction) >= slot_count) return .slot_out_of_range,
-            constants.JINT_SL => {
+            constants.InstructionType.ss => if (slotA(instruction) >= slot_count or @as(i32, @intCast(instruction >> 16)) >= slot_count) return .slot_out_of_range,
+            constants.InstructionType.ssi, constants.InstructionType.ssu => if (slotA(instruction) >= slot_count or slotB(instruction) >= slot_count) return .slot_out_of_range,
+            constants.InstructionType.sl => {
                 if (slotA(instruction) >= slot_count) return .slot_out_of_range;
                 const destination = @as(i32, @intCast(index)) + signedField(instruction, 16);
                 if (destination < 0 or destination >= bytecode_length) return .jump_out_of_range;
             },
-            constants.JINT_SSS => if (slotA(instruction) >= slot_count or slotB(instruction) >= slot_count or slotC(instruction) >= slot_count) return .slot_out_of_range,
-            constants.JINT_SD => {
+            constants.InstructionType.sss => if (slotA(instruction) >= slot_count or slotB(instruction) >= slot_count or slotC(instruction) >= slot_count) return .slot_out_of_range,
+            constants.InstructionType.sd => {
                 if (slotA(instruction) >= slot_count) return .slot_out_of_range;
                 if (@as(i32, @intCast(instruction >> 16)) >= definition.defs_length) return .no_such_subdef;
             },
-            constants.JINT_SC => {
+            constants.InstructionType.sc => {
                 if (slotA(instruction) >= slot_count) return .slot_out_of_range;
                 if (@as(i32, @intCast(instruction >> 16)) >= definition.constants_length) return .no_such_constant;
             },
-            constants.JINT_SES => {
+            constants.InstructionType.ses => {
                 if (slotA(instruction) >= slot_count) return .slot_out_of_range;
                 if (slotB(instruction) >= definition.environments_length) return .no_such_environment;
             },
-            else => unreachable,
         }
     }
 
@@ -139,92 +138,92 @@ fn signedField(instruction: u32, comptime shift: u5) i32 {
 // built at comptime and lands in read-only data exactly as the C array does.
 // ==========================================================================
 
-const Row = struct { op: constants.Opcode, type: c_uint };
+const Row = struct { op: constants.Opcode, type: constants.InstructionType };
 
 const rows = [_]Row{
-    .{ .op = constants.Opcode.noop, .type = constants.JINT_0 },
-    .{ .op = constants.Opcode.@"error", .type = constants.JINT_S },
-    .{ .op = constants.Opcode.typecheck, .type = constants.JINT_ST },
-    .{ .op = constants.Opcode.@"return", .type = constants.JINT_S },
-    .{ .op = constants.Opcode.return_nil, .type = constants.JINT_0 },
-    .{ .op = constants.Opcode.add_immediate, .type = constants.JINT_SSI },
-    .{ .op = constants.Opcode.add, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.subtract_immediate, .type = constants.JINT_SSI },
-    .{ .op = constants.Opcode.subtract, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.multiply_immediate, .type = constants.JINT_SSI },
-    .{ .op = constants.Opcode.multiply, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.divide_immediate, .type = constants.JINT_SSI },
-    .{ .op = constants.Opcode.divide, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.divide_floor, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.modulo, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.remainder, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.band, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.bor, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.bxor, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.bnot, .type = constants.JINT_SS },
-    .{ .op = constants.Opcode.shift_left, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.shift_left_immediate, .type = constants.JINT_SSI },
-    .{ .op = constants.Opcode.shift_right, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.shift_right_immediate, .type = constants.JINT_SSI },
-    .{ .op = constants.Opcode.shift_right_unsigned, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.shift_right_unsigned_immediate, .type = constants.JINT_SSU },
-    .{ .op = constants.Opcode.move_far, .type = constants.JINT_SS },
-    .{ .op = constants.Opcode.move_near, .type = constants.JINT_SS },
-    .{ .op = constants.Opcode.jump, .type = constants.JINT_L },
-    .{ .op = constants.Opcode.jump_if, .type = constants.JINT_SL },
-    .{ .op = constants.Opcode.jump_if_not, .type = constants.JINT_SL },
-    .{ .op = constants.Opcode.jump_if_nil, .type = constants.JINT_SL },
-    .{ .op = constants.Opcode.jump_if_not_nil, .type = constants.JINT_SL },
-    .{ .op = constants.Opcode.greater_than, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.greater_than_immediate, .type = constants.JINT_SSI },
-    .{ .op = constants.Opcode.less_than, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.less_than_immediate, .type = constants.JINT_SSI },
-    .{ .op = constants.Opcode.equals, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.equals_immediate, .type = constants.JINT_SSI },
-    .{ .op = constants.Opcode.compare, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.load_nil, .type = constants.JINT_S },
-    .{ .op = constants.Opcode.load_true, .type = constants.JINT_S },
-    .{ .op = constants.Opcode.load_false, .type = constants.JINT_S },
-    .{ .op = constants.Opcode.load_integer, .type = constants.JINT_SI },
-    .{ .op = constants.Opcode.load_constant, .type = constants.JINT_SC },
-    .{ .op = constants.Opcode.load_upvalue, .type = constants.JINT_SES },
-    .{ .op = constants.Opcode.load_self, .type = constants.JINT_S },
-    .{ .op = constants.Opcode.set_upvalue, .type = constants.JINT_SES },
-    .{ .op = constants.Opcode.closure, .type = constants.JINT_SD },
-    .{ .op = constants.Opcode.push, .type = constants.JINT_S },
-    .{ .op = constants.Opcode.push_2, .type = constants.JINT_SS },
-    .{ .op = constants.Opcode.push_3, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.push_array, .type = constants.JINT_S },
-    .{ .op = constants.Opcode.call, .type = constants.JINT_SS },
-    .{ .op = constants.Opcode.tailcall, .type = constants.JINT_S },
-    .{ .op = constants.Opcode.@"resume", .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.signal, .type = constants.JINT_SSU },
-    .{ .op = constants.Opcode.propagate, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.in, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.get, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.put, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.get_index, .type = constants.JINT_SSU },
-    .{ .op = constants.Opcode.put_index, .type = constants.JINT_SSU },
-    .{ .op = constants.Opcode.length, .type = constants.JINT_SS },
-    .{ .op = constants.Opcode.make_array, .type = constants.JINT_S },
-    .{ .op = constants.Opcode.make_buffer, .type = constants.JINT_S },
-    .{ .op = constants.Opcode.make_string, .type = constants.JINT_S },
-    .{ .op = constants.Opcode.make_struct, .type = constants.JINT_S },
-    .{ .op = constants.Opcode.make_table, .type = constants.JINT_S },
-    .{ .op = constants.Opcode.make_tuple, .type = constants.JINT_S },
-    .{ .op = constants.Opcode.make_bracket_tuple, .type = constants.JINT_S },
-    .{ .op = constants.Opcode.greater_than_equal, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.less_than_equal, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.next, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.not_equals, .type = constants.JINT_SSS },
-    .{ .op = constants.Opcode.not_equals_immediate, .type = constants.JINT_SSI },
-    .{ .op = constants.Opcode.cancel, .type = constants.JINT_SSS },
+    .{ .op = constants.Opcode.noop, .type = constants.InstructionType.zero },
+    .{ .op = constants.Opcode.@"error", .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.typecheck, .type = constants.InstructionType.st },
+    .{ .op = constants.Opcode.@"return", .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.return_nil, .type = constants.InstructionType.zero },
+    .{ .op = constants.Opcode.add_immediate, .type = constants.InstructionType.ssi },
+    .{ .op = constants.Opcode.add, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.subtract_immediate, .type = constants.InstructionType.ssi },
+    .{ .op = constants.Opcode.subtract, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.multiply_immediate, .type = constants.InstructionType.ssi },
+    .{ .op = constants.Opcode.multiply, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.divide_immediate, .type = constants.InstructionType.ssi },
+    .{ .op = constants.Opcode.divide, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.divide_floor, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.modulo, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.remainder, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.band, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.bor, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.bxor, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.bnot, .type = constants.InstructionType.ss },
+    .{ .op = constants.Opcode.shift_left, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.shift_left_immediate, .type = constants.InstructionType.ssi },
+    .{ .op = constants.Opcode.shift_right, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.shift_right_immediate, .type = constants.InstructionType.ssi },
+    .{ .op = constants.Opcode.shift_right_unsigned, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.shift_right_unsigned_immediate, .type = constants.InstructionType.ssu },
+    .{ .op = constants.Opcode.move_far, .type = constants.InstructionType.ss },
+    .{ .op = constants.Opcode.move_near, .type = constants.InstructionType.ss },
+    .{ .op = constants.Opcode.jump, .type = constants.InstructionType.l },
+    .{ .op = constants.Opcode.jump_if, .type = constants.InstructionType.sl },
+    .{ .op = constants.Opcode.jump_if_not, .type = constants.InstructionType.sl },
+    .{ .op = constants.Opcode.jump_if_nil, .type = constants.InstructionType.sl },
+    .{ .op = constants.Opcode.jump_if_not_nil, .type = constants.InstructionType.sl },
+    .{ .op = constants.Opcode.greater_than, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.greater_than_immediate, .type = constants.InstructionType.ssi },
+    .{ .op = constants.Opcode.less_than, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.less_than_immediate, .type = constants.InstructionType.ssi },
+    .{ .op = constants.Opcode.equals, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.equals_immediate, .type = constants.InstructionType.ssi },
+    .{ .op = constants.Opcode.compare, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.load_nil, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.load_true, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.load_false, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.load_integer, .type = constants.InstructionType.si },
+    .{ .op = constants.Opcode.load_constant, .type = constants.InstructionType.sc },
+    .{ .op = constants.Opcode.load_upvalue, .type = constants.InstructionType.ses },
+    .{ .op = constants.Opcode.load_self, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.set_upvalue, .type = constants.InstructionType.ses },
+    .{ .op = constants.Opcode.closure, .type = constants.InstructionType.sd },
+    .{ .op = constants.Opcode.push, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.push_2, .type = constants.InstructionType.ss },
+    .{ .op = constants.Opcode.push_3, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.push_array, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.call, .type = constants.InstructionType.ss },
+    .{ .op = constants.Opcode.tailcall, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.@"resume", .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.signal, .type = constants.InstructionType.ssu },
+    .{ .op = constants.Opcode.propagate, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.in, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.get, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.put, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.get_index, .type = constants.InstructionType.ssu },
+    .{ .op = constants.Opcode.put_index, .type = constants.InstructionType.ssu },
+    .{ .op = constants.Opcode.length, .type = constants.InstructionType.ss },
+    .{ .op = constants.Opcode.make_array, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.make_buffer, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.make_string, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.make_struct, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.make_table, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.make_tuple, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.make_bracket_tuple, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.greater_than_equal, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.less_than_equal, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.next, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.not_equals, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.not_equals_immediate, .type = constants.InstructionType.ssi },
+    .{ .op = constants.Opcode.cancel, .type = constants.InstructionType.sss },
 };
 
 /// The operand shape of every opcode, read by `verify` above, by both assembler
 /// directions, and by the disassembler.
-pub const instructions: [constants.Opcode.count]c_uint = build: {
-    var table: [constants.Opcode.count]c_uint = undefined;
+pub const instructions: [constants.Opcode.count]constants.InstructionType = build: {
+    var table: [constants.Opcode.count]constants.InstructionType = undefined;
     var filled = [_]bool{false} ** constants.Opcode.count;
     for (rows) |row| {
         if (filled[row.op.number()]) {

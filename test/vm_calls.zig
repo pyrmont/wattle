@@ -111,7 +111,7 @@ fn eval(source: [*:0]const u8) repr.Value {
 /// leaves before `JOP_CALL`: `stackstart` marks where the arguments begin and
 /// `stacktop` where they end.
 fn fiberWithArgs(argv: []const repr.Value) raise.Raising(*fibers.Fiber) {
-    const fiber = fibers.new(wrap.toFunction(eval("(fn [] nil)")), 32, 0, null).?;
+    const fiber = fibers.new(wrap.toFunction(eval("(fn [] nil)")), 32, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     fiber.stackstart = fiber.stacktop;
     for (argv) |arg| try fibers.push(fiber, arg);
@@ -220,7 +220,7 @@ fn anAbstractWithoutCallFallsThroughToIndexing() raise.Raising(void) {
     expect(r.beginsWith("<vm-calls/indexable "));
     expect(harness.isType(r.payload, repr.Tag.string));
     const message = wrap.toString(r.payload);
-    const length: usize = @intCast(strings.head(message).length);
+    const length: usize = strings.head(message).length;
     expect(std.mem.endsWith(u8, message[0..length], " called with 2 arguments, possibly expected 1"));
 }
 

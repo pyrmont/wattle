@@ -157,7 +157,7 @@ pub fn escapeString(buffer: *buffers.Buffer, str: []const u8) raise.Raising(i32)
 }
 
 fn escapeStringB(buffer: *buffers.Buffer, str: strings.String) raise.Raising(void) {
-    _ = try escapeString(buffer, str[0..@intCast(strings.head(str).length)]);
+    _ = try escapeString(buffer, str[0..strings.head(str).length]);
 }
 
 fn escapeBufferB(buffer: *buffers.Buffer, source: *buffers.Buffer) raise.Raising(void) {
@@ -189,7 +189,7 @@ pub fn toStringB(buffer: *buffers.Buffer, x: repr.Value) raise.Raising(void) {
         repr.Tag.number => try numberToStringB(buffer, wrap.toNumber(x)),
         repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
             const str = wrap.toString(x);
-            try buffers.pushBytes(buffer, str[0..@intCast(strings.head(str).length)]);
+            try buffers.pushBytes(buffer, str[0..strings.head(str).length]);
         },
         repr.Tag.buffer => {
             const to = wrap.toBuffer(x);
@@ -209,23 +209,22 @@ pub fn toStringB(buffer: *buffers.Buffer, x: repr.Value) raise.Raising(void) {
             }
         },
         repr.Tag.cfunction => {
-            const reg = registry.registryGet(wrap.toCfunction(x));
-            if (reg == null) return genericDescriptionB(buffer, x);
+            const reg = registry.registryGet(wrap.toCfunction(x)) orelse
+                return genericDescriptionB(buffer, x);
             try buffers.pushCString(buffer, "<cfunction ");
-            if (reg.?.name_prefix != null) {
-                try buffers.pushCString(buffer, reg.?.name_prefix.?);
+            if (reg.name_prefix) |prefix| {
+                try buffers.pushCString(buffer, prefix);
                 try buffers.pushU8(buffer, '/');
             }
-            try buffers.pushCString(buffer, reg.?.name.?);
+            try buffers.pushCString(buffer, reg.name.?);
             try buffers.pushU8(buffer, '>');
         },
         repr.Tag.function => {
             const def = wrap.toFunction(x).def orelse
                 return try buffers.pushCString(buffer, "<incomplete function>");
-            if (def.name == null) return genericDescriptionB(buffer, x);
-            const name = def.name.?;
+            const name = def.name orelse return genericDescriptionB(buffer, x);
             try buffers.pushCString(buffer, "<function ");
-            try buffers.pushBytes(buffer, name[0..@intCast(strings.head(name).length)]);
+            try buffers.pushBytes(buffer, name[0..strings.head(name).length]);
             try buffers.pushU8(buffer, '>');
         },
         else => try genericDescriptionB(buffer, x),

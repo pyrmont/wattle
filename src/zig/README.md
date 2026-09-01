@@ -91,7 +91,7 @@ is no facade layer, and the file tree and the namespace are the same thing, so
 | `src/zig/ffi/` | 4 | `types`, `classify`, `marshal`, `call` |
 | `src/zig/pp/` | 2 | `format.zig` and `pretty.zig` |
 
-Eight files at the top are not subsystems and are worth naming:
+Ten files at the top are not subsystems and are worth naming:
 
 | file | what it is |
 | --- | --- |
@@ -169,7 +169,7 @@ target happens to be declared as becomes the ABI.
 `crossings.zig`'s 27 — the module side of the same boundary, which `raise.zig`
 and `module.zig` call. `tools/check/seam.janet --check` fails if an
 `extern fn janet*` appears anywhere else. `cabi_check.zig` compares each of
-`crossings.zig`'s 27 and the twelve libc-side pairs against the definition it
+`crossings.zig`'s 27 and the six libc-side pairs against the definition it
 names, by exact type equality — not compatibility, with one declared exception:
 `abi.Table` and `abi.Buffer` are opaque handles standing for `tables.Table` and
 `buffers.Buffer`, and only the pointee is substituted. The comparison has found
@@ -280,7 +280,7 @@ anything numeric or with a large input space, add a differential corpus.
 
 **An export.** Declare the entry point in `capi.zig` with the signature you
 intend to publish and `@export` it there. If you export a target directly,
-state its signature with `publishes(...)` under the same gate — an `@export`
+state its signature with `publish(...)` beside it — an `@export`
 without one publishes whatever the target happened to be.
 
 ## Reduced builds

@@ -104,7 +104,7 @@ fn expectErrPrefix(prefix: []const u8) void {
 fn expectString(x: repr.Value, expected: []const u8) void {
     expect(harness.isType(x, repr.Tag.string));
     const s = wrap.toString(x);
-    const length: usize = @intCast(strings.head(s).length);
+    const length: usize = strings.head(s).length;
     if (!std.mem.eql(u8, s[0..length], expected)) {
         std.debug.print("expected value: {s}\n           got: {s}\n", .{ expected, s[0..length] });
         @panic("value mismatch");
@@ -235,7 +235,7 @@ fn aCompileErrorNamesAPosition() raise.Raising(void) {
     expect(try doString("(def)", "contract", &out) == constants.JANET_DO_ERROR_COMPILE);
     expect(harness.isType(out, repr.Tag.string));
     const text = wrap.toString(out);
-    const length: usize = @intCast(strings.head(text).length);
+    const length: usize = strings.head(text).length;
     expect(std.mem.startsWith(u8, text[0..length], "contract:1:1: compile error: "));
     expectErrPrefix("contract:1:1: compile error: ");
 }

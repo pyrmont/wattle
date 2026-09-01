@@ -81,13 +81,13 @@ fn intv(i: i32) repr.Value {
 fn mktuple(items: []const repr.Value, bracket: bool) repr.Value {
     const t = tuples.begin(@intCast(items.len));
     for (items, 0..) |item, i| t[i] = item;
-    if (bracket) utils.tupleHead(t).gc.flags |= constants.JANET_TUPLE_FLAG_BRACKETCTOR;
+    if (bracket) harness.gcSetBits(&utils.tupleHead(t).gc.flags, constants.JANET_TUPLE_FLAG_BRACKETCTOR);
     return wrap.fromTuple(tuples.end(t));
 }
 
 /// A struct from alternating key/value pairs, with an optional prototype.
 fn mkstruct(kvs: []const repr.Value, proto: ?structs.Struct) repr.Value {
-    const pairs: i32 = @intCast(kvs.len / 2);
+    const pairs: usize = kvs.len / 2;
     const st = structs.begin(pairs);
     var i: usize = 0;
     while (i < kvs.len) : (i += 2) structs.put(st, kvs[i], kvs[i + 1]);
@@ -99,7 +99,7 @@ fn structHash(st: structs.Struct) i32 {
     return utils.structHead(st).hash;
 }
 
-fn structCapacity(st: structs.Struct) i32 {
+fn structCapacity(st: structs.Struct) u32 {
     return utils.structHead(st).capacity;
 }
 
@@ -113,14 +113,14 @@ fn stackDepth() isize {
     if (harness.vm().traversal.base == null) return 0;
     return @divExact(
         @as(isize, @bitCast(@intFromPtr(harness.vm().traversal.at) -% @intFromPtr(harness.vm().traversal.base))),
-        @sizeOf(order.JanetTraversalNode),
+        @sizeOf(order.TraversalNode),
     );
 }
 
 fn stackCapacity() isize {
     return @divExact(
         @as(isize, @bitCast(@intFromPtr(harness.vm().traversal.top) -% @intFromPtr(harness.vm().traversal.base))),
-        @sizeOf(order.JanetTraversalNode),
+        @sizeOf(order.TraversalNode),
     );
 }
 

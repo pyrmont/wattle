@@ -98,8 +98,7 @@ pub fn writeOne(
             return pp_format.panicf("bad array length, expected %d, got %d", .{ ty.array_count, @as(i64, @intCast(els.len)) });
         }
         var cursor: [*]u8 = @ptrCast(to);
-        var i: usize = 0;
-        while (i < els.len) : (i += 1) {
+        for (0..els.len) |i| {
             try writeOne(cursor, els, i, el_type, recur - 1);
             cursor += el_size;
         }
@@ -122,9 +121,7 @@ pub fn writeOne(
                 );
             }
             const members = Struct.fields(st);
-            var i: usize = 0;
-            while (i < els.len) : (i += 1) {
-                const member = members[i];
+            for (members[0..els.len], 0..) |member, i| {
                 const at: [*]u8 = @as([*]u8, @ptrCast(to)) + member.offset;
                 try writeOne(at, els, i, member.type, recur - 1);
             }
@@ -153,7 +150,7 @@ pub fn readOne(from: [*]const u8, ty: Type, recur: c_int) raise.Raising(repr.Val
     if (ty.array_count >= 0) {
         const el_type = ty.element();
         const el_size = ffi_types.typeSize(el_type);
-        const array = arrays.new(ty.array_count);
+        const array = arrays.new(@intCast(ty.array_count));
         var cursor = from;
         // `array_count` stays signed -- -1 is its "not an array" marker, and
         // the branch above is what rules it out here.
@@ -169,10 +166,9 @@ pub fn readOne(from: [*]const u8, ty: Type, recur: c_int) raise.Raising(repr.Val
         .@"struct" => blk: {
             const st = ty.st.?;
             const members = Struct.fields(st);
-            const tup = tuples.begin(@bitCast(st.field_count));
-            var i: u32 = 0;
-            while (i < st.field_count) : (i += 1) {
-                tup[i] = try readOne(from + members[i].offset, members[i].type, recur - 1);
+            const tup = tuples.begin(@intCast(st.field_count));
+            for (members[0..st.field_count], 0..) |member, i| {
+                tup[i] = try readOne(from + member.offset, member.type, recur - 1);
             }
             break :blk wrap.fromTuple(tuples.end(tup));
         },

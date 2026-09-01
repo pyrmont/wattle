@@ -82,7 +82,62 @@
   # directory, which two concurrent `contracts` entries share, and `os_surface`
   # and `filewatch_core` each own a `/tmp` fixture for the same reason. The
   # suites cover them in every `full` entry instead.)
-  ["utils" "gc_mark" "registry" "core_env" "signal_core" "args_core" "os_process" "value_wrap"])
+  #
+  # Phase 15 Part 1 replaced these with its own: the constructors and the three
+  # heads (`value_alloc`, `buffer_array`, `struct_table`, `string_symbol`,
+  # `value_order`, `utils`), the compiler's registers (`regalloc`,
+  # `emit_core`), the GC header (`gc_mark`, `gc_sweep`, `signal_core`,
+  # `value_wrap`) and the widths that travel (`marsh`).
+  # Phase 15 Part 3 replaced these with the contracts over the families it
+  # converted: the instruction-shape table and both assembler directions
+  # (`verify`, `asm_encode`, `asm_decode`, `disasm`), the compile and parse
+  # statuses (`compiler_primitives`, `emit_core`, `specials_core`,
+  # `parser_core`), the binding vocabulary (`registry`), the frame flag word
+  # (`fiber_core`, `trace_frames`, `marsh`) and the integer types
+  # (`inttypes`).
+  # Phase 15 Part 5 replaced these with the contracts over the platform seam:
+  # the retry loops and the `errno` accessor (`filewatch_core`, `ev_loop`,
+  # `net_sockets`, `os_process`), the structures that stopped being `extern`
+  # (`ev_core`, `os_surface`), the `callconv(.c)` residue in the value layer
+  # (`value_alloc`, `string_symbol`, `struct_table`), and `io.zig`'s handles
+  # (`pp_format`, `vm_run`). `io_core` and `os_fs` still cannot be named --
+  # each creates files in the working directory two concurrent entries share.
+  # `filewatch_core`, `ev_loop`, `net_sockets` and `ev_core` are the part's
+  # own subjects and none of them can be named here: the first two own a
+  # `/tmp` fixture two concurrent entries would share, and the event-loop pair
+  # is not listed at all under `-Dev=false` or `-Dsingle-threaded`, which is
+  # the trap the header records three times over. The `full` entries run all
+  # 65 and cover them; these twelve are what a `contracts` entry can ask in
+  # every configuration.
+  #
+  # Phase 15 Part 2 replaced these with the contracts over the bodies it
+  # rewrote. The part touched 48 files, so this is not "what it changed" but
+  # what its four *kinds* of change can break: the loops and the copies over
+  # the value types (`value_alloc`, `buffer_array`, `struct_table`,
+  # `string_symbol`), the optionals in the dictionary probe and the ordering
+  # (`value_access`, `value_order`), the compiler's loops and scope unwraps
+  # (`compiler_primitives`, `emit_core`, `specials_core`), the parser and the
+  # marshaller (`parser_core`, `marsh`), and the cast reclassification's own
+  # subject (`utils`). `io_core` and `os_fs` still cannot be named -- each
+  # creates files in the working directory two concurrent entries share -- and
+  # neither can `os_surface` or `filewatch_core`, which own `/tmp` fixtures.
+  #
+  # Phase 15 Parts 6 and 7 replaced these, and the phase gate ran with them.
+  # Part 6 is a rename and Part 7 is prose, so neither has a subject a contract
+  # can aim at -- but both carry a *deletion* that does: 22 definitions lost
+  # their `callconv(.c)` and 48 unreferenced `pub` declarations went. So these
+  # twelve are the contracts over the files those deletions touched: the value
+  # layer's abi shims and the constructors (`value_wrap`, `value_alloc`,
+  # `string_symbol`, `struct_table`), the collector and the scratch table
+  # (`gc_alloc`, `gc_mark`), the register allocator that became a type with
+  # methods (`regalloc`, `emit_core`, `compiler_primitives`), the marshaller
+  # whose abi was rewritten (`marsh`), the signal record whose `cRaiseClear`
+  # went (`signal_core`), and the binding surface (`registry`). `io_core`,
+  # `os_fs`, `os_surface` and `filewatch_core` still cannot be named, for the
+  # reasons above.
+  ["value_wrap" "value_alloc" "string_symbol" "struct_table"
+   "gc_alloc" "gc_mark" "regalloc" "emit_core"
+   "compiler_primitives" "marsh" "signal_core" "registry"])
 
 # Every command gets a bound. Phase 10 Part 16 lost thirty-six minutes to a
 # `zig build test` whose `suite-ev.janet` parked in `kevent` with an empty
@@ -366,7 +421,7 @@
     (job "full" "no filewatch" ["-Dfilewatch=false"])
     (job "contracts" "no net" ["-Dnet=false"] ["net_sockets"])
 
-    # `-Dpeg=false` leaves the tree without `JanetPeg` or `janet_peg_type`,
+    # `-Dpeg=false` leaves the tree without `Peg` or `janet_peg_type`,
     # so `test/peg.zig` cannot compile here -- the same shape as the ev
     # contracts under `-Dsingle-threaded=true`. Part 17e is the first
     # increment whose own contracts include `peg`, and it found this the
@@ -375,7 +430,7 @@
     # `options.peg_engine`; the skip is still needed, because a name in the
     # contract list is run by name and this build has no `peg` to run.
     (job "contracts" "no peg" ["-Dpeg=false"] ["peg"])
-    # There is no `JanetAssembleResult` without the assembler.
+    # There is no `AssembleResult` without the assembler.
     (job "contracts" "no assembler" ["-Dassembler=false"]
          ["asm_encode" "asm_decode" "disasm"])
     (job "contracts" "no int types" ["-Dint-types=false"] ["inttypes"])

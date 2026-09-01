@@ -31,42 +31,19 @@ const fibers = @import("../value/fibers.zig");
 // ---------------------------------------------------------------------------
 // The VM state
 //
-// **This was six `extern struct`s and 312 lines.** A C header guarded two
-// regions -- `strerror_buf`, absent on Windows, and the event-loop block with
-// its four mutually exclusive backend arms -- so six combinations had to be
-// written out in full, because nesting each guarded region pads the inner
-// struct to its own alignment and moves every field after it.
-//
-// Nothing compares this layout against anything now: no host `@cImport` names
-// it, and the only reads of its representation are `@sizeOf` in `vmAlloc` and
-// a `std.mem.zeroes`/`allEqual` pair in `test/vm_state.zig`, each of which
-// holds whatever the padding is. Padding is free, so the regions nest and the
-// six arms are one.
-//
-// **It is not `extern` either**, and that took removing the last reason the
-// storage had to be a linker symbol. `build.zig` gives `cli.zig` and
-// `boot.zig` `types`, `constants` and `cabi` alone and links the runtime as an
-// object, so `cabi.zig` is compiled a second time inside each of those
-// executables; a declaration there that read the VM through a symbol would
-// have given the client a second VM with nothing to say so. Zig 0.16 then
-// refuses to export a variable of an automatic-layout type at all:
-//
-//     error: unable to export type 'Vm'
-//     note: struct with automatic layout has no guaranteed in-memory
-//           representation
-//
-// 4e removed the read rather than the constraint. `interop.register` answered
-// a `JanetSignal` that its only caller compared against `JANET_SIGNAL_OK` and
-// never otherwise looked at, so the field was carrying one bit; it answers a
-// `bool` now, the client reaches no runtime state, `janet_vm` is an ordinary
-// `threadlocal var`, and `Vm` and the seven aggregates it names are ordinary
-// structs. `tools/check/layouts.txt` went from 112 rows to 103 and its residue
-// count is still 0, which is the check that says the eight were `extern` for
-// this reason and no other.
+// Nothing compares this layout against anything: no host `@cImport` names it,
+// and the only reads of its representation are `@sizeOf` in `vmAlloc` and a
+// `std.mem.zeroes`/`allEqual` pair in `test/vm_state.zig`, each of which holds
+// whatever the padding is. That is what lets the two guarded regions --
+// `strerror_buf`, absent on Windows, and the event-loop block with its four
+// mutually exclusive backend arms -- nest as ordinary fields: nesting a
+// guarded region pads the inner struct to its own alignment and moves every
+// field after it, and nothing here minds.
 // ---------------------------------------------------------------------------
 
 /// `strerror_r`'s scratch. Windows has no such field, and a zero-length array
-/// is how a configuration drops one out of an `extern struct`.
+/// is how a configuration drops one out of a struct without a second
+/// declaration of everything around it.
 const strerror_buf_len = if (builtin.os.tag == .windows) 0 else 256;
 
 /// The event loop's own state, empty in a build without one.
@@ -77,9 +54,9 @@ pub const VmEv = if (config.ev)
     struct {
         spawn: ev_loop.Queue(ev_loop.Task) = .{},
         /// The timer queue, a min heap ordered by `when`.
-        tq: Vector(ev_loop.JanetTimeout) = .{},
-        ev_rng: math.JanetRNG = .{},
-        listener_count: abi.JanetAtomicInt = 0,
+        tq: std.ArrayListUnmanaged(ev_loop.Timeout) = .empty,
+        ev_rng: math.Rng = .{},
+        listener_count: abi.AtomicInt = 0,
         threaded_abstracts: tables.Table = .{},
         active_tasks: tables.Table = .{},
         signal_handlers: tables.Table = .{},
@@ -94,8 +71,8 @@ pub const Vm = struct {
     user: ?*anyopaque = null,
     top_dyns: ?*tables.Table = null,
     core_env: ?*tables.Table = null,
-    stackn: c_int = 0,
-    auto_suspend: abi.JanetAtomicInt = 0,
+    stackn: u32 = 0,
+    auto_suspend: abi.AtomicInt = 0,
     fiber: ?*fibers.Fiber = null,
     root_fiber: ?*fibers.Fiber = null,
     return_reg: ?*repr.Value = null,
@@ -106,10 +83,10 @@ pub const Vm = struct {
     symcache: symbols.SymbolCache = .{},
     gensym_counter: symbols.GensymCounter = std.mem.zeroes(symbols.GensymCounter),
     gc: gc_alloc.Collector = .{},
-    roots: gc_alloc.Roots = .{},
-    scratch: gc_alloc.Scratch = .{},
+    roots: gc_alloc.Roots = .empty,
+    scratch: gc_alloc.ScratchTable = .empty,
     sandbox_flags: vm_lifecycle.Sandbox = .{},
-    rng: math.JanetRNG = .{},
+    rng: math.Rng = .{},
     traversal: order.Traversal = .{},
     strerror_buf: [strerror_buf_len]u8 = std.mem.zeroes([strerror_buf_len]u8),
     ev: VmEv = .{},
@@ -124,15 +101,13 @@ const is_thread_local = constants.JANET_VM_THREAD_LOCAL != 0;
 /// applied conditionally to a declaration, and the address of a thread-local
 /// is not comptime-known, so `@export` is not available either.
 ///
-/// **It is not exported**, and the two constraints that made it so are gone.
-/// `build.zig` gives `cli.zig` and `boot.zig` `types`, `constants` and `cabi`
-/// alone and links the runtime as an *object*, so `cabi.zig` is compiled a
-/// second time inside each of those executables; while anything there read the
-/// VM through a symbol, a storage the linker could not merge would have given
-/// the client a second VM, initialised by nobody, with nothing to say so.
-/// Nothing reads it that way now. And Zig 0.16 refuses to export a variable of
-/// an automatic-layout type at all, which `Vm` became when its guarded
-/// regions were allowed to nest.
+/// **It is not exported.** Zig 0.16 refuses to export a variable of an
+/// automatic-layout type at all, and `Vm` has automatic layout. Nor would a
+/// symbol be safe to add: `build.zig` gives `cli.zig` and `boot.zig` `types`,
+/// `constants` and `cabi` alone and links the runtime as an *object*, so
+/// `cabi.zig` is compiled a second time inside each of those executables, and
+/// a declaration there that read the VM through a symbol would give the client
+/// a second VM, initialised by nobody, with nothing to say so.
 const storage = if (is_thread_local) struct {
     pub threadlocal var vm: Vm = std.mem.zeroes(Vm);
 } else struct {
@@ -141,12 +116,6 @@ const storage = if (is_thread_local) struct {
 
 /// The VM this thread is running, and **the one accessor the runtime has**.
 ///
-/// Every subsystem once read the storage below through an `@extern`, so a file
-/// that needed the current fiber imported the C ABI to get it, and the
-/// dependency named the wrong owner. No `@extern` is left: `janet_vm` is not a
-/// symbol in any build, and `cabi.zig` says so where the declaration used to
-/// be.
-///
 /// Inside the runtime this is the address of the variable, taken directly.
 pub inline fn current() *Vm {
     return &storage.vm;
@@ -154,6 +123,19 @@ pub inline fn current() *Vm {
 
 pub fn localVm() *Vm {
     return current();
+}
+
+/// The fiber this thread is running, for the callers that have already
+/// established there is one.
+///
+/// **The invariant is "at or below the interpreter loop".** `continueNoCheck`
+/// assigns `fiber` before it enters the loop and `signal.restore` puts back
+/// whatever was there before, so a cfunction body, an opcode handler, or
+/// `janet_call` after its own entry check cannot observe a null here. A caller
+/// that can also be reached from outside the loop reads `current().fiber` and
+/// handles the null instead.
+pub inline fn currentFiber() *fibers.Fiber {
+    return current().fiber orelse unreachable;
 }
 
 /// The VM pointer, captured once for a hot path, opaque to the optimiser.
@@ -179,7 +161,7 @@ pub fn localVm() *Vm {
 /// executable local-exec TLS is two instructions and rematerialising costs
 /// nothing, so a held pointer would occupy a register for no gain. In a shared
 /// object it is general-dynamic (`__tls_get_addr` per access) and this should
-/// help again -- see the Linux measurement in `port/phase_14/part_02.md`.
+/// help again.
 ///
 /// To check whether this is still earning its place:
 ///
@@ -241,36 +223,59 @@ pub fn interpreterInterruptHandled(vm: ?*Vm) void {
 
 pub fn dyn(name: [*:0]const u8) repr.Value {
     const v = current();
-    if (v.fiber == null) {
-        const dyns = v.top_dyns orelse return wrap.fromNil();
-        return tables.get(dyns, value.fromBytes(std.mem.span(name), .keyword));
+    if (v.fiber) |fiber| {
+        if (fiber.env) |env| return tables.getKeyword(env, name);
+        return wrap.fromNil();
     }
-    if (v.fiber.?.env) |env| return tables.getKeyword(env, name);
-    return wrap.fromNil();
+    const dyns = v.top_dyns orelse return wrap.fromNil();
+    return tables.get(dyns, value.fromBytes(std.mem.span(name), .keyword));
 }
 
 pub fn setdyn(name: [*:0]const u8, val: repr.Value) void {
     const v = current();
-    if (v.fiber == null) {
-        if (v.top_dyns == null) v.top_dyns = tables.new(10);
-        tables.put(v.top_dyns.?, value.fromBytes(std.mem.span(name), .keyword), val);
+    if (v.fiber) |fiber| {
+        const dyns = fiber.env orelse made: {
+            const fresh = tables.new(1);
+            fiber.env = fresh;
+            break :made fresh;
+        };
+        tables.put(dyns, value.fromBytes(std.mem.span(name), .keyword), val);
     } else {
-        if (v.fiber.?.env == null) v.fiber.?.env = tables.new(1);
-        tables.put(v.fiber.?.env.?, value.fromBytes(std.mem.span(name), .keyword), val);
+        const dyns = v.top_dyns orelse made: {
+            const fresh = tables.new(10);
+            v.top_dyns = fresh;
+            break :made fresh;
+        };
+        tables.put(dyns, value.fromBytes(std.mem.span(name), .keyword), val);
     }
 }
+
+/// A stack frame's two live bits, and the one the marshaller borrows.
+///
+/// The word is written to and read from a marshalled fiber as a signed 32-bit
+/// integer, so the width and the bit positions are the contract:
+/// `marsh.zig` asserts them beside the write.
+pub const FrameFlags = packed struct(u32) {
+    tailcall: bool = false,
+    entrance: bool = false,
+    _rest: u29 = 0,
+    /// Set by the marshaller just before it writes the frame, to say that an
+    /// environment follows. It is C's sign bit, it is never set in a live
+    /// frame, and the unmarshaller clears it again.
+    has_env: bool = false,
+};
 
 pub const StackFrame = struct {
     func: ?*functions.Function = null,
     pc: ?[*]u32 = null,
     env: ?*functions.FuncEnv = null,
     prevframe: i32 = 0,
-    flags: i32 = 0,
+    flags: FrameFlags = .{},
 };
 
 pub const TryState = struct {
-    stackn: i32 = 0,
-    gc_handle: c_int = 0,
+    stackn: u32 = 0,
+    gc_handle: u32 = 0,
     vm_fiber: ?*fibers.Fiber = null,
     vm_return_reg: ?*repr.Value = null,
     payload: repr.Value = std.mem.zeroes(repr.Value),
@@ -287,7 +292,7 @@ pub const TryState = struct {
 /// `count + 1 > capacity` and doubles `count + 1`, the registry grows on
 /// `count == capacity` to `(count + 1) * 2` with a floor of 512, the scratch
 /// table to `2 * capacity + 2` and deliberately multiplies by
-/// `@sizeOf(JanetScratch)` where the element is a pointer (`FOUND.md`, and
+/// `@sizeOf(ScratchBlock)` where the element is a pointer (`FOUND.md`, and
 /// `gc.zig`'s header), and the event loop's timer queue reports an allocation
 /// failure with its own source location. Each owner keeps its rule; what they
 /// share is the shape and the reads.
@@ -312,7 +317,7 @@ pub fn Vector(comptime T: type) type {
         }
 
         /// One element, by index. Bounds-checked in the modes that check,
-        /// which the raw `items.?[i]` this replaces was not.
+        /// which a raw `items.?[i]` is not.
         pub fn at(self: Self, index: usize) *T {
             return &self.slice()[index];
         }
@@ -328,8 +333,7 @@ pub fn Vector(comptime T: type) type {
         ///
         /// The slot it writes is one past the live range, which is why this
         /// is a method rather than an `at` at the call site: `at(count)` is
-        /// out of bounds by construction and each of the four owners was
-        /// spelling the raw `items.?[count]` to get round it.
+        /// out of bounds by construction.
         pub fn appendAssumingCapacity(self: *Self, val: T) void {
             // The precondition, asserted. The write goes through a many-item
             // pointer, so a slice bounds check does not stand behind it even
@@ -342,12 +346,10 @@ pub fn Vector(comptime T: type) type {
 
         /// Remove the element at `index`, filling the hole from the end.
         ///
-        /// The C originals shrink first and then read `items[count]` -- the
-        /// same element, and one past the range the count then describes.
-        /// Filling before shrinking is the same operation with every access
-        /// inside the slice, which is what makes it checkable. Neither the
-        /// root set nor the scratch table has an order a caller may depend
-        /// on, which is what licenses the fill in the first place.
+        /// Filling before shrinking keeps every access inside the slice,
+        /// which is what makes it checkable. Neither the root set nor the
+        /// scratch table has an order a caller may depend on, which is what
+        /// licenses the fill in the first place.
         pub fn swapRemove(self: *Self, index: usize) void {
             self.at(index).* = self.at(self.count - 1).*;
             self.count -= 1;

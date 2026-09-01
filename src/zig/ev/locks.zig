@@ -22,12 +22,12 @@ const windows = builtin.os.tag == .windows;
 
 /// A translation of `<pthread.h>` alone, and one of seven in the tree.
 ///
-/// `types.zig` takes only the three types `Vm` embeds, and this file needs the
+/// `host.zig` takes only the three types `Vm` embeds, and this file needs the
 /// mutex calls as well.
 ///
 /// A translation is right when nothing it declares crosses a subsystem
-/// boundary, and nothing does. Every caller passes a `JanetOSMutex *`, which
-/// Janet declares opaque; the `pthread_*` types stay inside this file.
+/// boundary, and nothing does. Every caller passes an opaque mutex pointer;
+/// the `pthread_*` types stay inside this file.
 const sys = if (windows) struct {} else @cImport({
     @cInclude("janet_features.h");
     @cInclude("pthread.h");

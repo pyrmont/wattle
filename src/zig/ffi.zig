@@ -97,20 +97,20 @@ fn cfunBufferWrite(argv: []const repr.Value) raise.Raising(repr.Value) {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, 4);
     const ty = try ffi_types.decodeType(argv[0]);
-    const el_size: i32 = @intCast(ffi_types.typeSize(ty));
-    const buffer = try args_core.optBuffer(argv, 2, el_size);
-    var index = try args_core.optNat(argv, 3, @intCast(buffer.count));
+    const el_size = ffi_types.typeSize(ty);
+    const buffer = try args_core.optBuffer(argv, 2, ffi_types.typeSize(ty));
+    var index: usize = @intCast(try args_core.optNat(argv, 3, @intCast(buffer.count)));
     const old_count = buffer.count;
     if (index > old_count) return raise.panic("index out of bounds");
     // The extension is measured from `index` rather than from the end, so the
     // count moves there and back around it.
-    buffer.count = @intCast(index);
+    buffer.count = index;
     try buffers.extra(buffer, el_size);
     buffer.count = old_count;
-    @memset(buffer.reserved()[@intCast(index)..@intCast(index + el_size)], 0);
-    try marshal.writeOne(buffer.data.? + @as(usize, @intCast(index)), argv, 1, ty, ffi_types.max_recur);
+    @memset(buffer.reserved()[index .. index + el_size], 0);
+    try marshal.writeOne(buffer.data.? + index, argv, 1, ty, ffi_types.max_recur);
     index += el_size;
-    if (buffer.count < index) buffer.count = @intCast(index);
+    if (buffer.count < index) buffer.count = index;
     return wrap.fromBuffer(buffer);
 }
 
@@ -158,7 +158,9 @@ fn cfunPointerBuffer(argv: []const repr.Value) raise.Raising(repr.Value) {
     // `@intCast` would trap on the same input.
     const delta: isize = @truncate(offset);
     const at: [*]u8 = @ptrFromInt(@intFromPtr(pointer) +% @as(usize, @bitCast(delta)));
-    return wrap.fromBuffer(try buffers.pointerUnsafe(at, capacity, count));
+    // Both getters have already refused a negative, which is where the range
+    // check belongs; the widths meet here.
+    return wrap.fromBuffer(try buffers.pointerUnsafe(at, @intCast(capacity), @intCast(count)));
 }
 
 fn cfunPointerCfunction(argv: []const repr.Value) raise.Raising(repr.Value) {
@@ -168,7 +170,7 @@ fn cfunPointerCfunction(argv: []const repr.Value) raise.Raising(repr.Value) {
     const name = try args_core.optCString(argv, 1, null);
     const source = try args_core.optCString(argv, 2, null);
     const line = try args_core.optInteger(argv, 3, -1);
-    const cfun: abi.JanetCFunction = @ptrCast(@alignCast(pointer));
+    const cfun: abi.CFunction = @ptrCast(@alignCast(pointer));
     if (name != null or source != null or line != -1) {
         registry.registryPut(cfun, name, null, source, line);
     }

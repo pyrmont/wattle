@@ -264,7 +264,7 @@ fn primInfo(prim: Prim) PrimInfo {
 /// A Janet keyword as the name tables read it: length-prefixed bytes, which
 /// may contain a zero, rather than a C string.
 fn keywordBytes(name: [*]const u8) []const u8 {
-    return name[0..@intCast(strings.head(name).length)];
+    return name[0..strings.head(name).length];
 }
 
 /// `type_size`. The array count is multiplied in by the kernel, which is where
@@ -305,9 +305,8 @@ pub fn decodePrim(name: [*]const u8) raise.Raising(Prim) {
 /// `signature_mark`. Every argument that is a struct holds an abstract the
 /// collector has to reach.
 fn signatureMark(sig: *Signature, _: usize) void {
-    var i: u32 = 0;
-    while (i < sig.arg_count) : (i += 1) {
-        const t = sig.args[i].type;
+    for (sig.args[0..sig.arg_count]) |arg| {
+        const t = arg.type;
         if (t.prim == .@"struct") gc_mark.mark(wrap.fromAbstract(t.st));
     }
 }
@@ -315,9 +314,8 @@ fn signatureMark(sig: *Signature, _: usize) void {
 /// `struct_mark`. A nested struct type is an abstract of this same type.
 fn structMark(st: *Struct, _: usize) void {
     const members = Struct.fields(st);
-    var i: u32 = 0;
-    while (i < st.field_count) : (i += 1) {
-        const t = members[i].type;
+    for (members[0..st.field_count]) |member| {
+        const t = member.type;
         if (t.prim == .@"struct") gc_mark.mark(wrap.fromAbstract(t.st));
     }
 }
@@ -347,14 +345,13 @@ pub const struct_at = abstract_type.define(Struct, .{
 /// the last field has been placed.
 pub fn buildStruct(argv: []const repr.Value) raise.Raising(*Struct) {
     // `:pack` marks a single packed member and `:pack-all` packs the rest.
-    var member_count = @as(i32, @intCast(argv.len));
+    var member_count = argv.len;
     var all_packed = false;
     {
-        var i: i32 = 0;
-        while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
-            if (args_core.keyeq(argv[@intCast(i)], "pack")) {
+        for (argv) |arg| {
+            if (args_core.keyeq(arg, "pack")) {
                 member_count -= 1;
-            } else if (args_core.keyeq(argv[@intCast(i)], "pack-all")) {
+            } else if (args_core.keyeq(arg, "pack-all")) {
                 member_count -= 1;
                 all_packed = true;
             }
@@ -363,7 +360,7 @@ pub fn buildStruct(argv: []const repr.Value) raise.Raising(*Struct) {
 
     const st: *Struct = @ptrCast(@alignCast(abstracts.newBytes(
         &struct_at,
-        Struct.allocSize(@intCast(@as(i32, @intCast(argv.len)))),
+        Struct.allocSize(argv.len),
     )));
     st.field_count = 0;
     st.size = 0;
@@ -373,22 +370,22 @@ pub fn buildStruct(argv: []const repr.Value) raise.Raising(*Struct) {
     var layout = Layout.init();
     const members = Struct.fields(st);
     var i: usize = 0;
-    var j: i32 = 0;
-    while (j < @as(i32, @intCast(argv.len))) : (j += 1) {
+    var j: usize = 0;
+    while (j < argv.len) : (j += 1) {
         var pack_one: bool = false;
-        if (args_core.keyeq(argv[@intCast(j)], "pack") or
-            args_core.keyeq(argv[@intCast(j)], "pack-all"))
+        if (args_core.keyeq(argv[j], "pack") or
+            args_core.keyeq(argv[j], "pack-all"))
         {
             pack_one = true;
             j += 1;
-            if (j == @as(i32, @intCast(argv.len))) break;
+            if (j == argv.len) break;
         }
-        members[i].type = try decodeType(argv[@intCast(j)]);
+        members[i].type = try decodeType(argv[j]);
         const el_size = typeSize(members[i].type);
         const el_align = typeAlign(members[i].type);
         // `el_align <= 0` in C, on a size_t, which is `el_align == 0` -- the
         // void type is the only entry with no alignment.
-        if (el_align == 0) return pp_format.panicf("bad field type %V", .{argv[@intCast(j)]});
+        if (el_align == 0) return pp_format.panicf("bad field type %V", .{argv[j]});
         members[i].offset = layout.place(el_size, el_align, all_packed or pack_one);
         i += 1;
     }

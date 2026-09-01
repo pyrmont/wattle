@@ -8,12 +8,10 @@
 //!
 //! ## Why this is a module of its own
 //!
-//! It was declared in `types.zig` -- the global type catalogue, since
-//! dissolved -- and its operations were in `value/helpers/wrap.zig`, a
-//! subsystem file six modules up. One foundational module holds the
-//! representation and nothing else, and the module graph decides where that
-//! can be: **the heap types name `Value` at 28 code sites across seventeen
-//! aggregates**, so the representation has to be declared below all of them.
+//! One foundational module holds the representation and nothing else, and the
+//! module graph decides where that can be: **the heap types name `Value` at 28
+//! code sites across seventeen aggregates**, so the representation has to be
+//! declared below all of them.
 //!
 //! What that admits is exactly the operations that name no Janet heap type:
 //! the three layouts, the tag, and the bit-level construction and extraction
@@ -362,8 +360,6 @@ pub const layout: Layout = switch (config.value_repr) {
     .nanbox_32 => .nanbox32,
     .nanbox_64 => .nanbox64,
 };
-
-pub const is_nanbox = layout != .tagged;
 
 // -------------------------------------------------------- the three layouts
 

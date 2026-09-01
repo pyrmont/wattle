@@ -39,7 +39,7 @@
 # detected: `OVERLAPPED` is Win32's whatever file spells it.
 (def foreign
   {"OVERLAPPED" true "Overlapped" true "OverlappedWatch" true
-   "JanetOverlapped" true "WSABUF" true "FILETIME" true
+   "WSABUF" true "FILETIME" true
    "SecurityAttributes" true "ITimerSpec" true "utimbuf" true
    "pthread_attr_t" true "pthread_mutex_t" true
    "Sysv64IntReturn" true "Sysv64SseReturn" true "Sysv64IntSseReturn" true
@@ -54,18 +54,31 @@
 # `raise.panicking(f).abi`, `args.zig`'s `IndexAbi` and `Boxed(T)` generate
 # their `callconv(.c)` signature from a comptime type, so the layout's name
 # never appears beside the calling convention anywhere -- no grep can see the
-# crossing.  `JanetRange` is the clearest: `raise.zig` returns one from a
+# crossing.  `Range` is the clearest: `raise.zig` returns one from a
 # generated abi and `args.zig` says nothing about it.
 #
 # `./tools/check/layouts.janet --verify` re-runs the experiment against this
 # list, and first refuses any entry that no longer names an `extern`
 # declaration -- the strip skips these names, so a stale one is invisible to it.
+#
+# ## What the evidence column cannot see
+#
+# **Evidence is collected per *name*, and four names are declared in more than
+# one file.** `Overlapped` is in `ev/stream.zig`, `net.zig` and
+# `filewatch/abi.zig`; `OVERLAPPED`, `Method` and `CMethod` in two each. A use
+# of the bare identifier anywhere is counted as evidence for every declaration
+# that shares the name, so the column over-attributes across those four and a
+# genuinely unevidenced one could be rescued by a same-named neighbour. None is
+# today: every row involved is fixed by `host` and `field`, which are decided
+# from the declaration's own file and members. It is a hole in the `residue`
+# class and it is named here rather than hidden, because the row it would hide
+# is exactly the row this list exists to show.
 (def compiler-fixed
   {"Aapcs64ReturnGeneral" true "Aapcs64ReturnPointer" true
-   "Aapcs64ReturnSse" true "JanetAssembleResult" true
-   "Binding" true "JanetBuildConfig" true "JanetByteView" true
-   "JanetDictView" true "GenericMessage" true "FuncEnvRef" true
-   "JanetGCData" true "JanetGCObject" true "JanetRange" true
+   "Aapcs64ReturnSse" true "AssembleResult" true
+   "Binding" true "BuildConfig" true "ByteView" true
+   "DictView" true "GenericMessage" true "FuncEnvRef" true
+   "GCData" true "GCObject" true "Range" true
    # `Value` is the one comptime-selected declaration in the list, and it was
    # invisible until the strip learned to reach an arm head. `repr.Value` is a
    # parameter and a return type across the C ABI in every representation, so
@@ -114,7 +127,7 @@
   with a name, in source order.
 
   **A conditional declaration counts once, under its name.**  `Janet`,
-  `JanetFiber`, `JanetTimeout`, `NetStateAccept`, `Vm`'s `VmEv` and its
+  `JanetFiber`, `Timeout`, `NetStateAccept`, `Vm`'s `VmEv` and its
   `VmBackend` each select an `extern` layout with a comptime `if` or `switch`,
   so the arms have no names of their own -- and until Phase 13 increment 3a
   this function saw none of the six, because it required `= extern` on the
@@ -292,9 +305,9 @@
   **Keyed without the line number, and comparing the evidence.** The key was
   `name file:line`, so a comment gaining a line above a declaration retired one
   row and introduced another with the same class -- noise that had to be
-  eyeballed every time, and noise is where a real change hides. Three names
-  (`Method`, `Overlapped`, `OVERLAPPED`) occur in two files each, so the file
-  stays in the key and only the line leaves it.
+  eyeballed every time, and noise is where a real change hides. `Overlapped`
+  is declared in three files and `Method`, `CMethod` and `OVERLAPPED` in two
+  each, so the file stays in the key and only the line leaves it.
 
   The `evidence` column was written and never read back, which is the same hole
   the export inventory's `audience` column had.``

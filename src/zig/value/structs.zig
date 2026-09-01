@@ -61,7 +61,6 @@
 const std = @import("std");
 const config = @import("config");
 const corefn = @import("../corefn.zig");
-const utils = @import("../utils.zig");
 const repr = @import("repr");
 const raise = @import("../raise.zig");
 const args_core = @import("../args.zig");
@@ -76,16 +75,31 @@ const abi = @import("abi");
 /// capacity and the prototype, with the buckets following it in the same
 /// allocation.
 pub const StructHead = extern struct {
-    gc: abi.JanetGCObject = .{},
-    length: i32 = 0,
+    gc: abi.GCObject = .{},
+    length: u32 = 0,
     hash: i32 = 0,
-    capacity: i32 = 0,
+    capacity: u32 = 0,
     proto: ?[*]const tables.KV = null,
     _data: [0]tables.KV = std.mem.zeroes([0]tables.KV),
-    pub fn data(_self: anytype) @TypeOf(&_self._data[0]) {
-        return @ptrCast(@alignCast(&_self._data));
-    }
 };
+
+comptime {
+    // As `StringHead`: same widths, same offsets, and `proto` still sits where
+    // the marshaller and the collector expect it. `hash` stays signed, and
+    // while a struct is being built it holds the running count of filled slots
+    // rather than a hash, which is the one place the two meanings meet.
+    const SignedHead = extern struct {
+        gc: abi.GCObject = .{},
+        length: i32 = 0,
+        hash: i32 = 0,
+        capacity: i32 = 0,
+        proto: ?[*]const tables.KV = null,
+        _data: [0]tables.KV = std.mem.zeroes([0]tables.KV),
+    };
+    std.debug.assert(@offsetOf(StructHead, "_data") == @offsetOf(SignedHead, "_data"));
+    std.debug.assert(@offsetOf(StructHead, "proto") == @offsetOf(SignedHead, "proto"));
+    std.debug.assert(@sizeOf(StructHead) == @sizeOf(SignedHead));
+}
 
 /// Where the buckets begin within the block. `@offsetOf` and not `@sizeOf`:
 /// the head is Zig's own declaration, so `_data` is an ordinary field whose
@@ -109,8 +123,8 @@ pub inline fn data(hd: *const StructHead) [*]tables.KV {
 
 /// A hash folded into a bucket index. The capacity is always a power of two, so
 /// the mask is exact and the result is always in range.
-inline fn mapHash(cap: i32, hash: i32) i32 {
-    return @bitCast(@as(u32, @bitCast(hash)) & @as(u32, @bitCast(cap -% 1)));
+inline fn mapHash(cap: u32, hash: i32) u32 {
+    return @as(u32, @bitCast(hash)) & (cap -% 1);
 }
 
 inline fn isNilKey(key: repr.Value) bool {
@@ -133,30 +147,31 @@ inline fn isUnstorableKey(key: repr.Value) bool {
 /// count of two gets eight buckets rather than four. That keeps the load factor
 /// below one half always and at one quarter whenever `2 * count` is itself a
 /// power of two, which is what bounds the Robin Hood displacement chains.
-/// `2 * count` overflows for a count above
-/// `INT32_MAX / 2` -- undefined in C, wrapping here and on every supported
-/// target -- and the `capacity < 0` retry below is the C author's defence
-/// against a result `value.capacityFor` does not produce, since it clamps at
-/// `INT32_MAX`. Both are kept.
+///
+/// C computed `2 * count` in an `int32_t`, where a count above `INT32_MAX / 2`
+/// overflowed, and guarded the result with a `capacity < 0` retry against a
+/// value `janet_tablen` never returns. Both are gone with the count's
+/// signedness: the doubling is a `usize` and `capacityFor` saturates at
+/// `INT32_MAX`, so a count no allocator could satisfy fails in the allocator
+/// rather than silently building a struct with no buckets.
 ///
 /// `hash` starts at zero and is a running count of filled slots until
 /// `janet_struct_end` replaces it.
-pub fn begin(count: i32) [*]tables.KV {
-    var capacity = value.capacityFor(2 *% count);
-    if (capacity < 0) capacity = value.capacityFor(count +% 1);
+pub fn begin(count: usize) [*]tables.KV {
+    const capacity = value.capacityFor(2 *% count);
 
     const hd = gc_alloc.gcallocWithPayload(
         StructHead,
         .@"struct",
-        utils.asSize(capacity) *% @sizeOf(tables.KV),
+        capacity *% @sizeOf(tables.KV),
     );
-    hd.length = count;
-    hd.capacity = capacity;
+    hd.length = @intCast(count);
+    hd.capacity = @intCast(capacity);
     hd.hash = 0;
     hd.proto = null;
 
     const st = data(hd);
-    value.memempty(st[0..@intCast(capacity)]);
+    value.memempty(st[0..capacity]);
     return st;
 }
 
@@ -169,13 +184,11 @@ pub fn begin(count: i32) [*]tables.KV {
 pub fn find(st: [*]const tables.KV, key: repr.Value) ?*const tables.KV {
     const cap = head(st).capacity;
     const index = mapHash(cap, order.hash(key));
-    var i = index;
-    while (i < cap) : (i += 1) {
-        if (isNilKey(st[@intCast(i)].key) or order.equals(st[@intCast(i)].key, key)) return &st[@intCast(i)];
+    for (st[index..cap]) |*kv| {
+        if (isNilKey(kv.key) or order.equals(kv.key, key)) return kv;
     }
-    i = 0;
-    while (i < index) : (i += 1) {
-        if (isNilKey(st[@intCast(i)].key) or order.equals(st[@intCast(i)].key, key)) return &st[@intCast(i)];
+    for (st[0..index]) |*kv| {
+        if (isNilKey(kv.key) or order.equals(kv.key, key)) return kv;
     }
     return null;
 }
@@ -199,12 +212,12 @@ pub fn putExt(st: [*]tables.KV, key_in: repr.Value, value_in: repr.Value, replac
     const cap = hd.capacity;
     var hash = order.hash(key);
     const index = mapHash(cap, hash);
-    const bounds = [4]i32{ index, cap, 0, index };
+    const bounds = [4]u32{ index, cap, 0, index };
     if (isUnstorableKey(key) or repr.checkType(val, repr.Tag.nil)) return;
     // Refuse anything past the declared length.
     if (hd.hash == hd.length) return;
 
-    var dist: i32 = 0;
+    var dist: u32 = 0;
     var j: usize = 0;
     while (j < 4) : (j += 2) {
         var i = bounds[j];
@@ -212,7 +225,7 @@ pub fn putExt(st: [*]tables.KV, key_in: repr.Value, value_in: repr.Value, replac
             i += 1;
             dist += 1;
         }) {
-            const kv = &st[@intCast(i)];
+            const kv = &st[i];
 
             // An empty slot ends the walk: take it and grow the count.
             if (isNilKey(kv.key)) {
@@ -269,23 +282,21 @@ pub fn put(st: [*]tables.KV, key: repr.Value, val: repr.Value) void {
 ///
 /// The prototype contributes to the hash by a multiply rather than by being
 /// walked, so a struct's hash is O(capacity) and not O(prototype depth).
-pub fn end(st_in: [*]tables.KV) callconv(.c) [*]const tables.KV {
+pub fn end(st_in: [*]tables.KV) [*]const tables.KV {
     var st = st_in;
     if (head(st).hash != head(st).length) {
-        const newst = begin(head(st).hash);
-        var i: i32 = 0;
-        while (i < head(st).capacity) : (i += 1) {
-            const kv = &st[@intCast(i)];
+        const newst = begin(@intCast(head(st).hash));
+        for (st[0..head(st).capacity]) |*kv| {
             if (!isNilKey(kv.key)) put(newst, kv.key, kv.value);
         }
         head(newst).proto = head(st).proto;
         st = newst;
     }
     const hd = head(st);
-    hd.hash = value.hashDictionary(st[0..@intCast(hd.capacity)]);
-    if (hd.proto != null) {
+    hd.hash = value.hashDictionary(st[0..hd.capacity]);
+    if (hd.proto) |proto| {
         hd.hash = @bitCast(@as(u32, @bitCast(hd.hash)) +%
-            2654435761 *% @as(u32, @bitCast(head(hd.proto.?).hash)));
+            2654435761 *% @as(u32, @bitCast(head(proto).hash)));
     }
     return st;
 }
@@ -300,41 +311,43 @@ pub fn rawget(st: [*]const tables.KV, key: repr.Value) repr.Value {
 pub fn get(st_in: [*]const tables.KV, key: repr.Value) repr.Value {
     var st: ?Struct = st_in;
     var i: c_int = config.max_proto_depth;
-    while (st != null and i != 0) : ({
-        i -= 1;
-        st = head(st.?).proto;
-    }) {
-        const kv = find(st.?, key) orelse continue;
+    while (i != 0) : (i -= 1) {
+        const cur = st orelse break;
+        st = head(cur).proto;
+        const kv = find(cur, key) orelse continue;
         if (!isNilKey(kv.key)) return kv.value;
     }
     return wrap.fromNil();
 }
 
 /// Look up a key and report which struct in the prototype chain held it.
-pub fn getEx(st_in: [*]const tables.KV, key: repr.Value, which: *?Struct) repr.Value {
+/// The struct twin of `tables.Found`: the value, and which struct in the
+/// prototype chain held it.
+pub const Found = struct {
+    value: repr.Value,
+    holder: ?Struct,
+};
+
+pub fn getEx(st_in: [*]const tables.KV, key: repr.Value) Found {
     var st: ?Struct = st_in;
     var i: c_int = config.max_proto_depth;
-    while (st != null and i != 0) : ({
-        i -= 1;
-        st = head(st.?).proto;
-    }) {
-        const kv = find(st.?, key) orelse continue;
+    while (i != 0) : (i -= 1) {
+        const cur = st orelse break;
+        st = head(cur).proto;
+        const kv = find(cur, key) orelse continue;
         if (!isNilKey(kv.key)) {
-            which.* = st;
-            return kv.value;
+            return .{ .value = kv.value, .holder = cur };
         }
     }
-    return wrap.fromNil();
+    return .{ .value = wrap.fromNil(), .holder = null };
 }
 
 /// Copy a struct's own pairs into a fresh table. The prototype is not carried;
 /// `struct/to-table` rebuilds the chain itself when asked to.
 pub fn toTable(st: [*]const tables.KV) *tables.Table {
     const cap = head(st).capacity;
-    const table = tables.new(cap);
-    var i: usize = 0;
-    while (i < cap) : (i += 1) {
-        const kv = &st[i];
+    const table = tables.new(@intCast(cap));
+    for (st[0..cap]) |*kv| {
         if (!isNilKey(kv.key)) tables.put(table, kv.key, kv.value);
     }
     return table;
@@ -343,7 +356,7 @@ pub fn toTable(st: [*]const tables.KV) *tables.Table {
 // ==========================================================================
 // The cfunction surface.
 //
-// A published `JanetCFunction` has no error channel in its signature, so these
+// A published `CFunction` has no error channel in its signature, so these
 // deliver a raise through an abi. Nothing below holds anything across a call
 // that can raise.
 // ==========================================================================
@@ -386,9 +399,7 @@ fn cfunStructFlatten(argv: []repr.Value) align(corefn.alignment) raise.Raising(r
     const accum = begin(@intCast(pair_count));
     cursor = st;
     while (cursor) |current| {
-        var i: i32 = 0;
-        while (i < head(current).capacity) : (i += 1) {
-            const kv = &current[@intCast(i)];
+        for (current[0..head(current).capacity]) |*kv| {
             if (!repr.checkType(kv.key, repr.Tag.nil)) {
                 putExt(accum, kv.key, kv.value, false);
             }
@@ -416,9 +427,7 @@ fn cfunStructToTable(argv: []repr.Value) align(corefn.alignment) raise.Raising(r
             tab = tables.new(head(cursor).length);
             tab_cursor = tab;
         }
-        var i: i32 = 0;
-        while (i < head(cursor).capacity) : (i += 1) {
-            const kv = &cursor[@intCast(i)];
+        for (cursor[0..head(cursor).capacity]) |*kv| {
             if (!repr.checkType(kv.key, repr.Tag.nil)) {
                 tables.put(tab_cursor.?, kv.key, kv.value);
             }
@@ -426,7 +435,9 @@ fn cfunStructToTable(argv: []repr.Value) align(corefn.alignment) raise.Raising(r
         if (!recursive) break;
         cursor = head(cursor).proto orelse break;
     }
-    return wrap.fromTable(tab.?);
+    // The loop body runs at least once and its first pass is the branch that
+    // assigns `tab`, so the only way out of the loop is with a table in hand.
+    return wrap.fromTable(tab orelse unreachable);
 }
 
 fn cfunStructRawget(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {

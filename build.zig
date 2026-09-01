@@ -108,7 +108,7 @@ const BuildOptions = struct {
 /// they are two separate lists, and a subsystem can be compiled without being
 /// guarded off.
 const Selection = struct {
-    stretchy: bool,
+    scratch_vector: bool,
     utilities: bool,
     registry: bool,
     regalloc: bool,
@@ -575,10 +575,8 @@ pub fn build(b: *std.Build) void {
         });
         configureCModule(b, module, target, options);
         module.addImport("cabi", graph.cabi);
-        module.addImport("cabi", graph.cabi);
         module.addImport("config", graph.config);
         module.addImport("options", graph.selection);
-        module.addImport("config", graph.config);
         module.addImport("host", graph.host);
         module.addImport("abi", graph.abi);
         module.addImport("repr", graph.repr);
@@ -767,10 +765,8 @@ pub fn build(b: *std.Build) void {
         });
         configureCModule(b, module, target, options);
         module.addImport("cabi", graph.cabi);
-        module.addImport("cabi", graph.cabi);
         module.addImport("config", graph.config);
         module.addImport("options", graph.selection);
-        module.addImport("config", graph.config);
         module.addImport("host", graph.host);
         module.addImport("abi", graph.abi);
         module.addImport("repr", graph.repr);
@@ -1490,7 +1486,7 @@ fn addRuntimeSources(
 ///  - a reduced-OS gate, which drops the region rather than the file.
 fn zigSelection(options: BuildOptions) Selection {
     return .{
-        .stretchy = true,
+        .scratch_vector = true,
         .utilities = true,
         .registry = true,
         .regalloc = true,
@@ -1627,7 +1623,7 @@ const RuntimeGraph = struct {
     host: *std.Build.Module,
     constants: *std.Build.Module,
     cabi: *std.Build.Module,
-    /// The value representation, below `types` because `types.zig` names
+    /// The value representation, below `host` and `constants` because they name
     /// `repr.Value` at 28 code sites across seventeen aggregates, and below
     /// `constants` because the tag numbering is `repr.Tag`'s and `constants`
     /// restates it for a C caller rather than owning it. Its own import list is
@@ -1653,7 +1649,7 @@ fn makeRuntimeGraph(
     //
     // **One owner per type.** Two `@cImport` blocks over the same header
     // produce distinct, incompatible types -- a `pthread_attr_t` from one is
-    // not the one the other holds. `types.zig` is that single owner for the
+    // not the one the other holds. `host.zig` is that single owner for the
     // pthread types and it is Zig, which is the stronger form of the same
     // rule. The three host translations under `os/`, `net/` and `filewatch/`
     // each keep what they declare inside one subsystem for the same reason.
@@ -1692,7 +1688,7 @@ fn makeRuntimeGraph(
         .optimize = optimize,
         .pic = true,
     });
-    // `types.zig` takes the pthread types from libc: `std.c` carries glibc's
+    // `host.zig` takes the pthread types from libc: `std.c` carries glibc's
     // `pthread_attr_t` and musl's is a different size, which `Vm` embeds.
     host_module.link_libc = true;
 

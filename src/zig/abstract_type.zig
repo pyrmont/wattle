@@ -104,15 +104,15 @@ pub fn Spec(comptime T: type) type {
         gcmark: ?*const fn (*T, usize) void = null,
         get: ?*const fn (*T, repr.Value) raise.Error!?repr.Value = null,
         put: ?*const fn (*T, repr.Value, repr.Value) raise.Error!void = null,
-        marshal: ?*const fn (*T, *abi.JanetMarshalContext) raise.Error!void = null,
-        unmarshal: ?*const fn (*abi.JanetMarshalContext) raise.Error!*T = null,
+        marshal: ?*const fn (*T, *abi.MarshalContext) raise.Error!void = null,
+        unmarshal: ?*const fn (*abi.MarshalContext) raise.Error!*T = null,
         tostring: ?*const fn (*T, *abi.Buffer) raise.Error!void = null,
         compare: ?*const fn (*const T, *const T) i32 = null,
         hash: ?*const fn (*const T, usize) i32 = null,
         next: ?*const fn (*T, repr.Value) raise.Error!repr.Value = null,
         call: ?*const fn (*T, []repr.Value) raise.Error!repr.Value = null,
         length: ?*const fn (*T, usize) raise.Error!usize = null,
-        bytes: ?*const fn (*const T, usize) abi.JanetByteView = null,
+        bytes: ?*const fn (*const T, usize) abi.ByteView = null,
         gcperthread: ?*const fn (*T, usize) void = null,
     };
 }
@@ -158,10 +158,10 @@ fn Erased(comptime T: type, comptime spec: Spec(T)) type {
         fn put(p: ?*anyopaque, key: repr.Value, value: repr.Value) raise.Error!void {
             return spec.put.?(mut(p), key, value);
         }
-        fn marshal(p: ?*anyopaque, ctx: *abi.JanetMarshalContext) raise.Error!void {
+        fn marshal(p: ?*anyopaque, ctx: *abi.MarshalContext) raise.Error!void {
             return spec.marshal.?(mut(p), ctx);
         }
-        fn unmarshal(ctx: *abi.JanetMarshalContext) raise.Error!?*anyopaque {
+        fn unmarshal(ctx: *abi.MarshalContext) raise.Error!?*anyopaque {
             return try spec.unmarshal.?(ctx);
         }
         fn tostring(p: ?*anyopaque, buffer: *abi.Buffer) raise.Error!void {
@@ -186,7 +186,7 @@ fn Erased(comptime T: type, comptime spec: Spec(T)) type {
         fn length(p: ?*anyopaque, len: usize) raise.Error!usize {
             return spec.length.?(mut(p), len);
         }
-        fn bytes(p: ?*anyopaque, len: usize) callconv(.c) abi.JanetByteView {
+        fn bytes(p: ?*anyopaque, len: usize) callconv(.c) abi.ByteView {
             return spec.bytes.?(ro(p), len);
         }
         fn gcperthread(p: ?*anyopaque, len: usize) callconv(.c) void {

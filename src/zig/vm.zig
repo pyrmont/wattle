@@ -389,7 +389,7 @@ const Interp = struct {
     /// `JOP_RETURN` and `JOP_RETURN_NIL`, which differ only in where the value
     /// comes from.
     inline fn doReturn(self: *Interp, retval: repr.Value) raise.Error!?abi.Signal {
-        const entrance_frame = (stackFrame(self.stack).flags & constants.JANET_STACKFRAME_ENTRANCE) != 0;
+        const entrance_frame = stackFrame(self.stack).flags.entrance;
         fibers.popframe(self.fiber);
         if (entrance_frame) return self.retNoRestore(abi.Signal.ok, retval);
         self.restore();
@@ -612,8 +612,8 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
     // a C caller could inject 14 through 63 and this line was the illegal
     // operation -- building an out-of-domain value of an exhaustive enum.
     if (fiber.flags.resume_signal) {
-        const sig: abi.Signal = @enumFromInt(@as(u32, @bitCast(fiber.gc.flags & constants.JANET_FIBER_STATUS_MASK)) >> constants.JANET_FIBER_STATUS_OFFSET);
-        fiber.gc.flags &= ~@as(i32, constants.JANET_FIBER_STATUS_MASK);
+        const sig: abi.Signal = @enumFromInt(fiber.gc.flags.own);
+        fiber.gc.flags.own = 0;
         fiber.flags = fiber.flags.withoutResumeStateAndSignal();
         self.vm.return_reg.?.* = in;
         return sig;
@@ -629,7 +629,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
         }
         // Check if we were at a tail call instruction. If so, do implicit return.
         if (constants.Opcode.fromWord(self.pc[0]) == .tailcall) {
-            const entrance_frame = (stackFrame(self.stack).flags & constants.JANET_STACKFRAME_ENTRANCE) != 0;
+            const entrance_frame = stackFrame(self.stack).flags.entrance;
             fibers.popframe(fiber);
             if (entrance_frame) {
                 fiber.flags = fiber.flags.withoutResumeState();
@@ -1071,7 +1071,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             }
             if (repr.checkType(callee, repr.Tag.function)) {
                 self.func = wrap.toFunction(callee);
-                if ((self.func.gc.flags & constants.JANET_FUNCFLAG_TRACE) != 0) {
+                if (functions.isTraced(self.func)) {
                     try traceFiber(self.func, fiber.stacktop - fiber.stackstart, fiber);
                 }
                 self.commit();
@@ -1122,7 +1122,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             }
             if (repr.checkType(callee, repr.Tag.function)) {
                 self.func = wrap.toFunction(callee);
-                if ((self.func.gc.flags & constants.JANET_FUNCFLAG_TRACE) != 0) {
+                if (functions.isTraced(self.func)) {
                     try traceFiber(self.func, fiber.stacktop - fiber.stackstart, fiber);
                 }
                 fibers.funcframeTail(fiber, self.func) catch {
@@ -1140,7 +1140,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
                 self.maybeCollect();
                 continue :sw self.nextOp();
             }
-            const entrance_frame = (stackFrame(self.stack).flags & constants.JANET_STACKFRAME_ENTRANCE) != 0;
+            const entrance_frame = stackFrame(self.stack).flags.entrance;
             self.commit();
             var retreg: repr.Value = undefined;
             if (repr.checkType(callee, repr.Tag.cfunction)) {
@@ -1165,14 +1165,15 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
         .@"resume" => {
             if (try self.maybeAutoSuspend(true)) |s| return s;
             if (try self.assertType(self.stack[fB(self.pc)], repr.Tag.fiber)) |s| return s;
-            var retreg: repr.Value = undefined;
             const child = wrap.toFiber(self.stack[fB(self.pc)]);
-            if (vm_entry.checkCanResume(child, &retreg, false) != .ok) {
+            if (vm_entry.checkCanResume(child, false)) |refusal| {
                 self.commit();
-                return try self.raisev(retreg);
+                return try self.raisev(refusal.value);
             }
             fiber.child = child;
-            const sig = vm_entry.continueNoCheck(child, self.stack[fC(self.pc)], &retreg);
+            const resumed = vm_entry.continueNoCheck(child, self.stack[fC(self.pc)]);
+            const retreg = resumed.value;
+            const sig = resumed.signal;
             self.reload();
             if (sig != abi.Signal.ok and !child.flags.traps.has(sig)) {
                 return self.ret(sig, retreg);
@@ -1213,14 +1214,15 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
 
         .cancel => {
             if (try self.assertType(self.stack[fB(self.pc)], repr.Tag.fiber)) |s| return s;
-            var retreg: repr.Value = undefined;
             const child = wrap.toFiber(self.stack[fB(self.pc)]);
-            if (vm_entry.checkCanResume(child, &retreg, true) != .ok) {
+            if (vm_entry.checkCanResume(child, true)) |refusal| {
                 self.commit();
-                return try self.raisev(retreg);
+                return try self.raisev(refusal.value);
             }
             fiber.child = child;
-            const sig = vm_entry.continueSignal(child, self.stack[fC(self.pc)], &retreg, abi.Signal.@"error");
+            const resumed = vm_entry.continueSignal(child, self.stack[fC(self.pc)], abi.Signal.@"error");
+            const retreg = resumed.value;
+            const sig = resumed.signal;
             if (sig != abi.Signal.ok and !child.flags.traps.has(sig)) {
                 return self.ret(sig, retreg);
             }
@@ -1317,7 +1319,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             const mem = fiber.data.? + utils.asSize(fiber.stackstart);
             const tup = tuples.newFrom(mem[0..utils.asSize(count)]);
             if (op == constants.Opcode.make_bracket_tuple) {
-                tuples.head(tup).gc.flags |= constants.JANET_TUPLE_FLAG_BRACKETCTOR;
+                tuples.setBracketed(tuples.head(tup));
             }
             self.stack[fD(self.pc)] = wrap.fromTuple(tup);
             fiber.stacktop = fiber.stackstart;
@@ -1333,7 +1335,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
                 self.commit();
                 return try self.raisef("expected even number of arguments to table constructor, got %d", .{count});
             }
-            const table = tables.new(@divTrunc(count, 2));
+            const table = tables.new(@intCast(@divTrunc(count, 2)));
             vm_calls.fillTable(table, mem, count);
             self.stack[fD(self.pc)] = wrap.fromTable(table);
             fiber.stacktop = fiber.stackstart;
@@ -1349,7 +1351,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
                 self.commit();
                 return try self.raisef("expected even number of arguments to struct constructor, got %d", .{count});
             }
-            const st = structs.begin(@divTrunc(count, 2));
+            const st = structs.begin(@intCast(@divTrunc(count, 2)));
             vm_calls.fillStruct(st, mem, count);
             self.stack[fD(self.pc)] = wrap.fromStruct(structs.end(st));
             fiber.stacktop = fiber.stackstart;
@@ -1362,7 +1364,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             const count = fiber.stacktop - fiber.stackstart;
             const mem = fiber.data.? + utils.asSize(fiber.stackstart);
             var buffer: buffers.Buffer = undefined;
-            _ = buffers.init(&buffer, 10 *% count);
+            _ = buffers.init(&buffer, 10 *% utils.asSize(count));
             // A raise inside the loop returns without reaching the deinit
             // below, so the buffer's janet_malloc block is leaked. That is what
             // Janet does too; see FOUND.md, "JOP_MAKE_STRING leaks its
@@ -1380,7 +1382,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
         .make_buffer => {
             const count = fiber.stacktop - fiber.stackstart;
             const mem = fiber.data.? + utils.asSize(fiber.stackstart);
-            const buffer = buffers.new(10 *% count);
+            const buffer = buffers.new(10 *% utils.asSize(count));
             try vm_calls.fillString(buffer, mem[0..utils.asSize(count)]);
             self.stack[fD(self.pc)] = wrap.fromBuffer(buffer);
             fiber.stacktop = fiber.stackstart;
@@ -1422,10 +1424,12 @@ inline fn asOffset(n: i32) usize {
 /// raise a traced call's rendering produces is returned rather than reported.
 pub fn traceFiber(func: *functions.Function, argc: i32, fiber: *fibers.Fiber) raise.Raising(void) {
     try traceHeader(func);
-    var i: i32 = 0;
-    while (i < argc) : (i += 1) {
+    // `argv` is re-derived per argument on purpose: `eprintf` reaches
+    // `(dyn :err)`, which may be a Janet function, and running one can grow the
+    // fiber's stack out from under a slice taken once.
+    for (0..@as(usize, @intCast(argc))) |i| {
         const argv = fiber.data.? + @as(usize, @intCast(fiber.stackstart));
-        try eprintf(" %p", .{argv[@intCast(i)]});
+        try eprintf(" %p", .{argv[i]});
     }
     try eprintf(")\n", .{});
 }
@@ -1468,7 +1472,7 @@ inline fn isNil(x: repr.Value) bool {
 /// whatever the previous frame left in that stack slot.
 inline fn invokeIndexed(method: repr.Value, argv: []repr.Value, method_is_ds: bool) raise.Error!repr.Value {
     if (argv.len != 1) {
-        return pp_format.panicf("%v called with %d arguments, possibly expected 1", .{ method, @as(i32, @intCast(argv.len)) });
+        return pp_format.panicf("%v called with %d arguments, possibly expected 1", .{ method, @as(i64, @intCast(argv.len)) });
     }
     return if (method_is_ds) try access.in(method, argv[0]) else try access.in(argv[0], method);
 }
@@ -1633,7 +1637,7 @@ pub fn mcall(name: [*:0]const u8, argv: []repr.Value) raise.Error!repr.Value {
 /// abstract key with a `hash` or `compare` callback can raise from inside this
 /// loop, or run the collector while the table being filled is unrooted.
 /// `FOUND.md` has the second of those; it is Janet's and is reproduced.
-pub fn fillTable(table: *tables.Table, mem: ?[*]const repr.Value, count: i32) callconv(.c) void {
+pub fn fillTable(table: *tables.Table, mem: ?[*]const repr.Value, count: i32) void {
     var i: i32 = 0;
     while (i < count) : (i += 2) {
         tables.put(table, mem.?[utils.asSize(i)], mem.?[utils.asSize(i + 1)]);
@@ -1643,7 +1647,7 @@ pub fn fillTable(table: *tables.Table, mem: ?[*]const repr.Value, count: i32) ca
 /// `fill_struct`, renamed. `JOP_MAKE_STRUCT`, over a struct still under
 /// construction: `janet_struct_put` writes into the buckets `janet_struct_begin`
 /// allocated, and the caller calls `janet_struct_end` afterwards.
-pub fn fillStruct(st: [*]tables.KV, mem: [*]const repr.Value, count: i32) callconv(.c) void {
+pub fn fillStruct(st: [*]tables.KV, mem: [*]const repr.Value, count: i32) void {
     var i: i32 = 0;
     while (i < count) : (i += 2) {
         structs.put(st, mem[utils.asSize(i)], mem[utils.asSize(i + 1)]);
@@ -1670,16 +1674,3 @@ pub fn fillStruct(st: [*]tables.KV, mem: [*]const repr.Value, count: i32) callco
 pub fn fillString(buffer: *buffers.Buffer, mem: []const repr.Value) raise.Raising(void) {
     for (mem) |x| try pp_describe.toStringB(buffer, x);
 }
-
-// ------------------------------------------------------------- the one abi
-
-// There were nine abis here, hidden exactly as a C build hid them, because an
-// internal header declared all nine and a C caller cannot consume a Zig error.
-// Eight are gone: every caller reaches this file by import.
-//
-// `janet_mcall` stays, for the reason eleven other names stay: it is Janet's
-// public surface. It has no in-tree caller at all -- `value/helpers/access.zig`
-// reaches `mcall` by import -- and it is what an embedder calls to invoke a
-// method.
-
-pub const mcallPanicking = raise.panickingArgv(mcall).abi;

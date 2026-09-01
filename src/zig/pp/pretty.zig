@@ -35,7 +35,6 @@
 
 const std = @import("std");
 const repr = @import("repr");
-const constants = @import("constants");
 const raise = @import("../raise.zig");
 const describe = @import("../pp.zig");
 const structs = @import("../value/structs.zig");
@@ -191,9 +190,8 @@ fn containsBadChars(sym: strings.String, issym: bool) bool {
     const len = strings.head(sym).length;
     if (len != 0 and issym and sym[0] >= '0' and sym[0] <= '9') return true;
     if (!numscan.validUtf8(sym[0..@intCast(len)])) return true;
-    var i: usize = 0;
-    while (i < len) : (i += 1) {
-        if (!numscan.isSymbolChar(sym[i])) return true;
+    for (sym[0..len]) |ch| {
+        if (!numscan.isSymbolChar(ch)) return true;
     }
     return false;
 }
@@ -225,12 +223,11 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Raising(bool) {
         },
         repr.Tag.tuple => {
             const t = wrap.toTuple(x);
-            const bracketed = (tuples.head(t).gc.flags & constants.JANET_TUPLE_FLAG_BRACKETCTOR) != 0;
+            const bracketed = tuples.isBracketed(tuples.head(t));
             try S.pushByte(if (bracketed) '[' else '(');
-            var i: i32 = 0;
-            while (i < tuples.head(t).length) : (i += 1) {
+            for (tuples.view(t), 0..) |item, i| {
                 try if (i != 0) S.pushByte(' ');
-                if (try printJdnOne(S, t[@intCast(i)], depth - 1)) return true;
+                if (try printJdnOne(S, item, depth - 1)) return true;
             }
             try S.pushByte(if (bracketed) ']' else ')');
         },
@@ -254,7 +251,7 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Raising(bool) {
         repr.Tag.@"struct" => {
             const st = wrap.toStruct(x);
             try S.pushByte('{');
-            if (try printJdnKvs(S, st[0..@intCast(structs.head(st).capacity)], depth)) return true;
+            if (try printJdnKvs(S, st[0..structs.head(st).capacity], depth)) return true;
             try S.pushByte('}');
         },
         else => return true,
@@ -346,21 +343,24 @@ fn backtrackNewlines(S: *const Pretty) void {
     // is past the count just shortened -- so it works over the allocation
     // rather than over `slice()`. The `read >= old_count` guard below is the
     // C original's bound and is what keeps it inside this range.
+    // Two independent cursors, and `start` is not established as being at or
+    // below the count just shortened -- `for (start..count)` would trap on the
+    // empty case this correctly does nothing for.
     const bytes = S.buffer.reserved();
-    var i = start;
     var read = start;
+    var i = start;
     while (i < S.buffer.count) : (i += 1) {
-        if (bytes[@intCast(read)] == '\n') {
-            bytes[@intCast(i)] = ' ';
+        if (bytes[read] == '\n') {
+            bytes[i] = ' ';
             // Skip the newline and the indentation that followed it. The
             // single space just written is what the whole run collapses to.
             read += 1;
-            while (bytes[@intCast(read)] == ' ') {
+            while (bytes[read] == ' ') {
                 if (read >= old_count) fatal.fatal("bad replacement of newline");
                 read += 1;
             }
         } else {
-            bytes[@intCast(i)] = bytes[@intCast(read)];
+            bytes[i] = bytes[read];
             read += 1;
         }
     }
@@ -377,8 +377,10 @@ fn printNewline(S: *Pretty, align_col: c_int) raise.Raising(void) {
     try S.pushByte('\n');
     S.align_col = align_col;
     S.leaf_align = align_col;
-    var i: c_int = 0;
-    while (i < S.align_col) : (i += 1) try S.pushByte(' ');
+    // The column corrections above can drive `align_col` negative, and C's
+    // `for (i = 0; i < align_col; i++)` simply does not run when they do.
+    const indent: usize = if (S.align_col > 0) @intCast(S.align_col) else 0;
+    for (0..indent) |_| try S.pushByte(' ');
 }
 
 /// The `...` that both truncations and the depth limit write.
@@ -448,7 +450,7 @@ fn prettyLeaf(S: *Pretty, x: repr.Value) raise.Raising(void) {
 fn prettyIndexed(S: *Pretty, x: repr.Value) raise.Raising(void) {
     const isarray = repr.checkType(x, repr.Tag.array);
     const arr = args_core.indexedView(x).?;
-    const bracketed = !isarray and (tuples.head(arr.ptr).gc.flags & constants.JANET_TUPLE_FLAG_BRACKETCTOR) != 0;
+    const bracketed = !isarray and tuples.isBracketed(tuples.head(arr.ptr));
 
     const opener: [*:0]const u8 = if (isarray) "@[" else if (bracketed) "[" else "(";
     const closer: u8 = if (isarray or bracketed) ']' else ')';
@@ -581,7 +583,11 @@ fn prettyEntries(S: *Pretty, x: repr.Value, align_col: c_int) raise.Raising(void
 
         for (0..len) |i| {
             try if (i != 0) printNewline(S, align_col);
-            const j = S.keysort_buffer.?[i + @as(usize, @intCast(ks_start))];
+            // A nonzero `len` forces `mincap` above `keysort_capacity` unless
+            // the capacity is already nonzero, and a nonzero capacity is one
+            // some level allocated and checked -- so the buffer is here.
+            const buf = S.keysort_buffer orelse unreachable;
+            const j = buf[i + @as(usize, @intCast(ks_start))];
             try prettyEntry(S, view.kvs.?[@intCast(j)]);
         }
     }

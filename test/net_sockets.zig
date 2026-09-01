@@ -161,7 +161,7 @@ fn tupleIs2(val: repr.Value, host: []const u8, port: i32) bool {
     if (tuples.head(t).length != 2) return false;
     if (!harness.isType(t[0], repr.Tag.string)) return false;
     const text = wrap.toString(t[0]);
-    const length: usize = @intCast(strings.head(text).length);
+    const length: usize = strings.head(text).length;
     if (!std.mem.eql(u8, text[0..length], host)) return false;
     return args_core.checkint(t[1]) and wrap.toInteger(t[1]) == port;
 }
@@ -172,7 +172,7 @@ fn tupleIs1(val: repr.Value, path: []const u8) bool {
     if (tuples.head(t).length != 1) return false;
     if (!harness.isType(t[0], repr.Tag.string)) return false;
     const text = wrap.toString(t[0]);
-    const length: usize = @intCast(strings.head(text).length);
+    const length: usize = strings.head(text).length;
     return std.mem.eql(u8, text[0..length], path);
 }
 

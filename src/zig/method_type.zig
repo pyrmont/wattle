@@ -1,6 +1,6 @@
 //! A method table row, in the two declared forms it is reached by.
 //!
-//! A method table is a `JanetCFunction` stored somewhere else: a name and a
+//! A method table is an `abi.CFunction` stored somewhere else: a name and a
 //! cfunction, terminated by a null name. Typing the table entry is what makes
 //! a method's `try` a compile error to omit, exactly as `abstract_type.zig`
 //! does for a finalizer and `callback_type.zig` for an event callback.
@@ -8,14 +8,7 @@
 //! The layout is one row in both forms -- a name and a pointer -- and the
 //! pointer is the same pointer. What differs is the *declared* type of the
 //! function it points at: `Method`'s is `raise.CFunction`, and `CMethod`'s is
-//! the C-ABI `JanetCFunction` the published method lookups have to take.
-//!
-//! ## Why this is its own file
-//!
-//! Nine subsystems declare a method table and none of them reaches the type
-//! through the registration layer. Its own file leaves that layer alone and
-//! puts the fourth retyped table beside the other three, where the suffix is
-//! what makes them read as a family.
+//! the C-ABI `CFunction` the published method lookups have to take.
 //!
 //! There is no terminator constant: all twelve tables in the tree spell theirs
 //! inline as `.{ .name = null, .cfun = null }`.
@@ -52,7 +45,7 @@ pub const Method = abi.Method;
 /// is `extern` so that the cast between them is sound by declaration.
 pub const CMethod = extern struct {
     name: ?[*:0]const u8 = null,
-    cfun: abi.JanetCFunction = null,
+    cfun: abi.CFunction = null,
 };
 
 comptime {

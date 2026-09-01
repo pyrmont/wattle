@@ -58,10 +58,10 @@ var compare_fn: *functions.Function = undefined;
 
 fn compareValues(a: repr.Value, b: repr.Value) f64 {
     var argv = [2]repr.Value{ a, b };
-    var out: repr.Value = undefined;
-    expect(vm_entry.pcall(compare_fn, 2, &argv, &out, null) == abi.Signal.ok);
-    expect(harness.isType(out, repr.Tag.number));
-    return wrap.toNumber(out);
+    const resumed = vm_entry.pcall(compare_fn, &argv, null);
+    expect(resumed.signal == abi.Signal.ok);
+    expect(harness.isType(resumed.value, repr.Tag.number));
+    return wrap.toNumber(resumed.value);
 }
 
 fn compareS64Double(x: i64, y: f64) f64 {
@@ -293,7 +293,7 @@ fn theFlooredDivision() !void {
     for (cases) |case| {
         var result: repr.Value = undefined;
         expect(core_env.dostring(environment, case[0].ptr, "inttypes-contract", &result) == 0);
-        expect(inttypes.isInt(result) == constants.JANET_INT_S64);
+        expect(inttypes.isInt(result) == constants.IntType.s64);
 
         const b: *buffers.Buffer = buffers.new(0);
         try render(janet_s64_type, wrap.toAbstract(result).?, b);
@@ -311,14 +311,11 @@ fn theFlooredDivision() !void {
     // instrument for that. `harness.core("div")` fails its type assertion,
     // which is how this was found.
     const closure = eval("(fn [] (div (int/s64 1) (int/s64 0)))");
-    var out: repr.Value = undefined;
     expect(vm_entry.pcall(
         wrap.toFunction(closure),
-        0,
+        &.{},
         null,
-        &out,
-        null,
-    ) == abi.Signal.@"error");
+    ).signal == abi.Signal.@"error");
 }
 
 /// An operand the boxed types cannot convert refuses *catchably*.
@@ -348,19 +345,17 @@ fn anUnconvertibleOperandRefusesCatchably() void {
     };
     for (cases) |source| {
         const closure = eval(source);
-        var out: repr.Value = undefined;
-        expect(vm_entry.pcall(
+        const resumed = vm_entry.pcall(
             wrap.toFunction(closure),
-            0,
+            &.{},
             null,
-            &out,
-            null,
-        ) == abi.Signal.@"error");
+        );
+        expect(resumed.signal == abi.Signal.@"error");
         // And the payload is the conversion's own message, which is what says
         // the refusal travelled rather than being manufactured downstream.
-        expect(harness.isType(out, repr.Tag.string));
-        const message = wrap.toString(out);
-        const length: usize = @intCast(strings.head(message).length);
+        expect(harness.isType(resumed.value, repr.Tag.string));
+        const message = wrap.toString(resumed.value);
+        const length: usize = strings.head(message).length;
         expect(std.mem.indexOf(u8, message[0..length], "can not convert") != null);
     }
 }

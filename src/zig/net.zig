@@ -151,7 +151,7 @@ const Overlapped = extern struct {
 
 /// `NetStateConnect`. Only the `ConnectEx` path uses it; the POSIX path passes
 /// a null state and reads everything it needs off the stream.
-const NetStateConnect = extern struct {
+const NetStateConnect = struct {
     overlapped: Overlapped,
 };
 
@@ -184,9 +184,9 @@ fn net_callback_connect(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.R
         // Windows does not support an async connect through this path and
         // just tries immediately; everywhere else, wait for a real event
         // before looking at the result.
-        constants.JANET_ASYNC_EVENT_INIT => if (!windows) return,
-        constants.JANET_ASYNC_EVENT_DEINIT => return,
-        constants.JANET_ASYNC_EVENT_CLOSE => {
+        constants.AsyncEvent.init => if (!windows) return,
+        constants.AsyncEvent.deinit => return,
+        constants.AsyncEvent.close => {
             try ev_loop.cancel(fiber, value.fromBytes("stream closed", .string));
             ev_loop.asyncEnd(fiber);
             return;
@@ -225,7 +225,7 @@ fn net_callback_connect(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.R
 
 /// `net_sched_connect`.
 fn schedConnect(stream: *ev_stream.Stream, state: ?*anyopaque) raise.Error {
-    return ev_loop.asyncStart(stream, constants.JANET_ASYNC_LISTEN_WRITE, net_callback_connect, state);
+    return ev_loop.asyncStart(stream, constants.AsyncMode.writing, net_callback_connect, state);
 }
 
 // ==========================================================================
@@ -238,26 +238,30 @@ fn schedConnect(stream: *ev_stream.Stream, state: ?*anyopaque) raise.Error {
 /// the POSIX one carries only the handler function and calls `accept(2)` when
 /// the descriptor says there is something to take.
 const NetStateAccept = if (windows) extern struct {
+    // `extern` on the Windows arm only, and for the reason the Win32 API
+    // gives: the `OVERLAPPED` this opens with is handed to `AcceptEx` and read
+    // back by the completion port, so the field must be first and must be
+    // where the ABI says.
     overlapped: Overlapped,
     function: ?*functions.Function,
     lstream: ?*ev_stream.Stream,
     astream: ?*ev_stream.Stream,
     buf: [1024]u8,
-} else extern struct {
+} else struct {
     function: ?*functions.Function,
 };
 
 fn net_callback_accept(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Raising(void) {
     const state: *NetStateAccept = @ptrCast(@alignCast(fiber.ev_state));
     switch (event) {
-        constants.JANET_ASYNC_EVENT_MARK => {
+        constants.AsyncEvent.mark => {
             if (windows) {
                 if (state.lstream) |s| gc_mark.mark(wrap.fromAbstract(s));
                 if (state.astream) |s| gc_mark.mark(wrap.fromAbstract(s));
             }
             if (state.function) |f| gc_mark.mark(wrap.fromFunction(f));
         },
-        constants.JANET_ASYNC_EVENT_CLOSE => {
+        constants.AsyncEvent.close => {
             ev_loop.schedule(fiber, wrap.fromNil());
             ev_loop.asyncEnd(fiber);
         },
@@ -272,7 +276,7 @@ fn net_callback_accept(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Ra
 }
 
 fn acceptWindows(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.AsyncEvent) raise.Raising(void) {
-    if (event != constants.JANET_ASYNC_EVENT_COMPLETE) return;
+    if (event != constants.AsyncEvent.complete) return;
     const astream = state.astream.?;
     if (astream.flags & stream_closed != 0) {
         try ev_loop.cancel(fiber, value.fromBytes("failed to accept connection", .string));
@@ -298,7 +302,7 @@ fn acceptWindows(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.As
         // `.?` for the reason the POSIX arm above gives: the C original
         // dereferences whatever `janet_fiber` answered, and it answers null
         // when the handler's arity rejects one argument. `FOUND.md`.
-        const sub_fiber = fibers.new(f, 64, 1, @ptrCast(&streamv)).?;
+        const sub_fiber = fibers.new(f, 64, (&streamv)[0..1]) catch unreachable;
         sub_fiber.supervisor_channel = fiber.supervisor_channel;
         ev_loop.schedule(sub_fiber, wrap.fromNil());
         var err: repr.Value = undefined;
@@ -317,7 +321,7 @@ fn acceptWindows(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.As
 /// reports the way that function's `failed to accept connection` does rather
 /// than carrying on with a null stream.
 fn acceptPosix(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.AsyncEvent) raise.Raising(void) {
-    if (event != constants.JANET_ASYNC_EVENT_INIT and event != constants.JANET_ASYNC_EVENT_READ) return;
+    if (event != constants.AsyncEvent.init and event != constants.AsyncEvent.read) return;
     const stream: *ev_stream.Stream = fiber.ev_stream.?;
     const connfd: JSock = if (builtin.os.tag == .linux)
         net_abi.accept4(sockOf(stream), null, null, h.SOCK_CLOEXEC)
@@ -338,7 +342,7 @@ fn acceptPosix(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.Asyn
         // leaves undefined; `FOUND.md` records it. **Typing the return is what
         // surfaced it**: a nullable-and-implicitly-dereferenceable pointer let
         // the deref through without a word.
-        const sub_fiber = fibers.new(f, 64, 1, @ptrCast(&streamv)).?;
+        const sub_fiber = fibers.new(f, 64, (&streamv)[0..1]) catch unreachable;
         sub_fiber.supervisor_channel = fiber.supervisor_channel;
         ev_loop.schedule(sub_fiber, wrap.fromNil());
     } else {
@@ -393,7 +397,7 @@ fn schedAccept(stream: *ev_stream.Stream, fun: ?*functions.Function) raise.Error
         // by the edge that reported it.
         if (fun != null) try ev_loop.levelTriggeredStream(stream);
     }
-    return ev_loop.asyncStart(stream, constants.JANET_ASYNC_LISTEN_READ, net_callback_accept, state);
+    return ev_loop.asyncStart(stream, constants.AsyncMode.reading, net_callback_accept, state);
 }
 
 // ==========================================================================
@@ -467,11 +471,11 @@ fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
     }
     if (!is_unix_socket) {
         var rp = info.ai;
-        while (rp != null) : (rp = rp.?.ai_next) {
-            sock = openSocket(rp.?.ai_family, rp.?.ai_socktype, rp.?.ai_protocol);
+        while (rp) |node| : (rp = node.ai_next) {
+            sock = openSocket(node.ai_family, node.ai_socktype, node.ai_protocol);
             if (net_abi.sockValid(sock)) {
-                sa = rp.?.ai_addr;
-                addrlen = @intCast(rp.?.ai_addrlen);
+                sa = node.ai_addr;
+                addrlen = @intCast(node.ai_addrlen);
                 break;
             }
         }
@@ -485,8 +489,8 @@ fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
     if (binding != null) {
         var did_bind = false;
         var rp = binding;
-        while (rp != null) : (rp = rp.?.ai_next) {
-            if (net_abi.bind(sock, rp.?.ai_addr, @intCast(rp.?.ai_addrlen)) == 0) {
+        while (rp) |node| : (rp = node.ai_next) {
+            if (net_abi.bind(sock, node.ai_addr, @intCast(node.ai_addrlen)) == 0) {
                 did_bind = true;
                 break;
             }
@@ -531,10 +535,7 @@ fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
     } else {
         // Set up the socket for non-blocking IO before connecting.
         sockNoBlock(sock);
-        while (true) {
-            status = net_abi.connect(sock, sa, addrlen);
-            if (!(status == -1 and c.errno() == h.EINTR)) break;
-        }
+        status = c.retryIntr(net_abi.connect, .{ sock, sa, addrlen });
         err = c.errno();
     }
 
@@ -583,8 +584,8 @@ fn cfunSocket(argv: []repr.Value) raise.Raising(repr.Value) {
     }
 
     var rp = ai;
-    while (rp != null) : (rp = rp.?.ai_next) {
-        sfd = openSocket(rp.?.ai_family, rp.?.ai_socktype, rp.?.ai_protocol);
+    while (rp) |node| : (rp = node.ai_next) {
+        sfd = openSocket(node.ai_family, node.ai_socktype, node.ai_protocol);
         if (net_abi.sockValid(sfd)) break;
     }
     h.freeaddrinfo(ai);
@@ -630,10 +631,7 @@ fn cfunShutdown(argv: []repr.Value) raise.Raising(repr.Value) {
     if (windows) {
         status = h.shutdown(sockOf(stream), shutdown_type);
     } else {
-        while (true) {
-            status = h.shutdown(sockOf(stream), shutdown_type);
-            if (!(status == -1 and c.errno() == h.EINTR)) break;
-        }
+        status = c.retryIntr(h.shutdown, .{ sockOf(stream), shutdown_type });
     }
     if (status != 0) {
         return pp_format.panicf("could not shutdown socket: %V", .{ev_stream.evLasterr()});
@@ -672,14 +670,14 @@ fn cfunListen(argv: []repr.Value) raise.Raising(repr.Value) {
     if (!bound) {
         // Check all addrinfos in a loop for the first that we can bind to.
         var rp = info.ai;
-        while (rp != null) : (rp = rp.?.ai_next) {
-            sfd = openSocket(rp.?.ai_family, rp.?.ai_socktype, rp.?.ai_protocol);
+        while (rp) |node| : (rp = node.ai_next) {
+            sfd = openSocket(node.ai_family, node.ai_socktype, node.ai_protocol);
             if (!net_abi.sockValid(sfd)) continue;
             if (serverifySocket(sfd, reuse, reuse) != null) {
                 net_abi.sockClose(sfd);
                 continue;
             }
-            if (net_abi.bind(sfd, rp.?.ai_addr, @intCast(rp.?.ai_addrlen)) == 0) break;
+            if (net_abi.bind(sfd, node.ai_addr, @intCast(node.ai_addrlen)) == 0) break;
             net_abi.sockClose(sfd);
         }
         if (rp == null) return raise.panic("could not bind to any sockets");
@@ -1067,11 +1065,17 @@ pub fn addressFamily(x: repr.Value) c_int {
 /// `janet_get_sockettype`.
 pub fn socketType(argv: []repr.Value, n: usize) raise.Raising(c_int) {
     const stype = try args_core.optKeyword(argv, n, null);
-    if (stype == null or utils.cstrcmp(stype.?, "stream") == 0) return h.SOCK_STREAM;
-    if (utils.cstrcmp(stype.?, "datagram") != 0) {
-        return pp_format.panicf("expected socket type as :stream or :datagram, got %v", .{argv[n]});
+    // An absent type is `:stream`, which is why that arm is the fallthrough
+    // below rather than the first test: the comparisons keep C's order.
+    if (stype) |wanted| {
+        if (utils.cstrcmp(wanted, "stream") != 0) {
+            if (utils.cstrcmp(wanted, "datagram") != 0) {
+                return pp_format.panicf("expected socket type as :stream or :datagram, got %v", .{argv[n]});
+            }
+            return h.SOCK_DGRAM;
+        }
     }
-    return h.SOCK_DGRAM;
+    return h.SOCK_STREAM;
 }
 
 // ==========================================================================
@@ -1144,7 +1148,7 @@ pub fn getAddrInfo(
                 if (path[0] == '@') {
                     saddr.sun_path[0] = 0;
                     size = @intCast(@offsetOf(net_abi.SockAddrUn, "sun_path") +
-                        @as(usize, @intCast(strings.head(path).length)));
+                        @as(usize, strings.head(path).length));
                 }
             }
             return .{ .un = saddr, .size = size };
@@ -1153,8 +1157,8 @@ pub fn getAddrInfo(
 
     // Get host and port.
     const host = try args_core.getCString(argv, offset);
-    const port = if (args_core.checkint(argv[@intCast(offset + 1)]))
-        pp_describe.toString(argv[@intCast(offset + 1)])
+    const port = if (args_core.checkint(argv[offset + 1]))
+        pp_describe.toString(argv[offset + 1])
     else
         try args_core.optCString(argv, offset + 1, null);
 
@@ -1284,15 +1288,15 @@ pub fn cfunSockaddr(argv: []repr.Value) raise.Raising(repr.Value) {
         // Select all.
         const arr = arrays.new(10);
         var iter = info.ai;
-        while (iter != null) : (iter = iter.?.ai_next) {
-            try arrays.push(arr, addressAbstract(iter.?.ai_addr, @intCast(iter.?.ai_addrlen)));
+        while (iter) |node| : (iter = node.ai_next) {
+            try arrays.push(arr, addressAbstract(node.ai_addr, @intCast(node.ai_addrlen)));
         }
         return wrap.fromArray(arr);
     }
 
     // Select first.
-    if (info.ai == null) return raise.panic("no data for given address");
-    return addressAbstract(info.ai.?.ai_addr, @intCast(info.ai.?.ai_addrlen));
+    const first = info.ai orelse return raise.panic("no data for given address");
+    return addressAbstract(first.ai_addr, @intCast(first.ai_addrlen));
 }
 
 /// `cfun_net_address_unpack`, registered as `net/address-unpack`.

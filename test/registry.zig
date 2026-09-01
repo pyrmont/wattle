@@ -43,7 +43,6 @@
 
 const std = @import("std");
 const repr = @import("repr");
-const constants = @import("constants");
 const raise = @import("subsystems").raise;
 const corefn = @import("subsystems").corefn;
 const harness = @import("harness.zig");
@@ -70,7 +69,7 @@ const expect = @import("expect.zig").expect;
 ///
 /// `harness.stringIs` is the Janet-string form and is the wrong tool here:
 /// `janet_cstrcmp` reads a length out of the head that precedes its argument,
-/// and `JanetCFunRegistry.name` points into the binary's rodata with no head
+/// and `Row.name` points into the binary's rodata with no head
 /// in front of it.
 fn cstringIs(s: ?[*:0]const u8, expected: []const u8) bool {
     if (s == null) return false;
@@ -96,7 +95,7 @@ fn Probe(comptime tag: i32) type {
     };
 }
 
-fn keyOf(comptime tag: i32) abi.JanetCFunction {
+fn keyOf(comptime tag: i32) abi.CFunction {
     return raise.stored(&Probe(tag).run);
 }
 
@@ -108,8 +107,8 @@ const filler = keyOf(5);
 
 /// Sixteen more, distinct from each other and from the five above.
 const family_size = 16;
-const family: [family_size]abi.JanetCFunction = blk: {
-    var keys: [family_size]abi.JanetCFunction = undefined;
+const family: [family_size]abi.CFunction = blk: {
+    var keys: [family_size]abi.CFunction = undefined;
     for (&keys, 0..) |*slot, i| slot.* = keyOf(100 + @as(i32, @intCast(i)));
     break :blk keys;
 };
@@ -117,12 +116,12 @@ const family: [family_size]abi.JanetCFunction = blk: {
 // ------------------------------------------------------------- the registry
 
 fn theRegistryRecordsWhatItWasGiven() void {
-    const before = harness.vm().registry.rows.count;
+    const before = harness.vm().registry.rows.items.len;
 
     registry_mod.register("probe/one", probe_one);
     registry_mod.register("probe/two", probe_two);
     registry_mod.register("probe/three", probe_three);
-    expect(harness.vm().registry.rows.count == before + 3);
+    expect(harness.vm().registry.rows.items.len == before + 3);
 
     // Registration marks the array dirty; the first lookup sorts it.
     expect(harness.vm().registry.dirty);
@@ -148,9 +147,9 @@ fn theRegistryRecordsWhatItWasGiven() void {
 
     // Registering the same pointer twice appends a second row rather than
     // replacing the first. Reproduced from C: nothing dedupes.
-    const again = harness.vm().registry.rows.count;
+    const again = harness.vm().registry.rows.items.len;
     registry_mod.register("probe/one-again", probe_one);
-    expect(harness.vm().registry.rows.count == again + 1);
+    expect(harness.vm().registry.rows.items.len == again + 1);
     found = registry_mod.registryGet(probe_one);
     expect(found != null and found.?.cfun == probe_one);
 }
@@ -178,7 +177,7 @@ fn theSortIsTotalOverDistinctKeys() void {
         expect(row.?.cfun == key);
     }
 
-    const rows = harness.vm().registry.rows.slice();
+    const rows = harness.vm().registry.rows.items;
     var i: usize = 1;
     while (i < rows.len) : (i += 1) {
         expect(@intFromPtr(rows[i - 1].cfun) <= @intFromPtr(rows[i].cfun));
@@ -192,17 +191,17 @@ fn theSortIsTotalOverDistinctKeys() void {
 /// the `realloc` and the new capacity, and neither reads the key.
 fn theRegistryGrowsPastItsFloor() void {
     const cap = harness.vm().registry.rows.capacity;
-    const count = harness.vm().registry.rows.count;
-    while (harness.vm().registry.rows.count < cap + 1) {
+    const count = harness.vm().registry.rows.items.len;
+    while (harness.vm().registry.rows.items.len < cap + 1) {
         registry_mod.registryPut(filler, "probe/filler", null, null, 0);
     }
     expect(harness.vm().registry.rows.capacity > cap);
-    expect(harness.vm().registry.rows.count > count);
+    expect(harness.vm().registry.rows.items.len > count);
     // The new capacity is (count + 1) * 2 at the moment of the growth, with a
     // floor of 512. Whatever it is, it must leave room for what is there.
-    expect(harness.vm().registry.rows.capacity >= harness.vm().registry.rows.count);
+    expect(harness.vm().registry.rows.capacity >= harness.vm().registry.rows.items.len);
     // And the view is exactly the live rows, not the allocation.
-    expect(harness.vm().registry.rows.slice().len == harness.vm().registry.rows.count);
+    expect(harness.vm().registry.rows.items.len == harness.vm().registry.rows.items.len);
 }
 
 // ------------------------------------------------- the registration entries
@@ -223,7 +222,7 @@ fn theRegistryGrowsPastItsFloor() void {
 /// circular. `@ptrCast` at each call is what says the two agree.
 const CReg = extern struct {
     name: ?[*:0]const u8 = null,
-    cfun: abi.JanetCFunction = null,
+    cfun: abi.CFunction = null,
     documentation: ?[*:0]const u8 = null,
 };
 
@@ -395,17 +394,17 @@ fn bindingOf(entry: *tables.Table) registry_mod.Binding {
 fn theBindingIsASummaryOfFourKeys() void {
     // Anything that is not a table is NONE with a nil value.
     var b = registry_mod.bindingFromEntry(wrap.fromNil());
-    expect(b.type == constants.JANET_BINDING_NONE);
+    expect(b.type == .none);
     expect(harness.isType(b.value, repr.Tag.nil));
-    expect(b.deprecation == constants.JANET_BINDING_DEP_NONE);
+    expect(b.deprecation == .none);
     b = registry_mod.bindingFromEntry(harness.wrapInteger(3));
-    expect(b.type == constants.JANET_BINDING_NONE);
+    expect(b.type == .none);
 
     // A plain def.
     var entry = tables.new(2);
     tables.put(entry, value.fromBytes("value", .keyword), harness.wrapInteger(1));
     b = bindingOf(entry);
-    expect(b.type == constants.JANET_BINDING_DEF);
+    expect(b.type == .def);
     expect(harness.integerIs(b.value, 1));
 
     // A ref makes it a var, and the binding's value is the array rather than
@@ -413,7 +412,7 @@ fn theBindingIsASummaryOfFourKeys() void {
     entry = tables.new(2);
     tables.put(entry, value.fromBytes("ref", .keyword), wrap.fromArray(arrays.new(1)));
     b = bindingOf(entry);
-    expect(b.type == constants.JANET_BINDING_VAR);
+    expect(b.type == .@"var");
     expect(harness.isType(b.value, repr.Tag.array));
 
     // `:redef` only means anything with a valid ref.
@@ -421,20 +420,20 @@ fn theBindingIsASummaryOfFourKeys() void {
     tables.put(entry, value.fromBytes("value", .keyword), harness.wrapInteger(1));
     tables.put(entry, value.fromBytes("redef", .keyword), wrap.fromTrue());
     b = bindingOf(entry);
-    expect(b.type == constants.JANET_BINDING_DEF);
+    expect(b.type == .def);
 
     entry = tables.new(2);
     tables.put(entry, value.fromBytes("ref", .keyword), wrap.fromArray(arrays.new(1)));
     tables.put(entry, value.fromBytes("redef", .keyword), wrap.fromTrue());
     b = bindingOf(entry);
-    expect(b.type == constants.JANET_BINDING_DYNAMIC_DEF);
+    expect(b.type == .dynamic_def);
 
     // A macro, and the dynamic macro the same `:redef` produces.
     entry = tables.new(2);
     tables.put(entry, value.fromBytes("value", .keyword), harness.wrapInteger(1));
     tables.put(entry, value.fromBytes("macro", .keyword), wrap.fromTrue());
     b = bindingOf(entry);
-    expect(b.type == constants.JANET_BINDING_MACRO);
+    expect(b.type == .macro);
     expect(harness.integerIs(b.value, 1));
 
     entry = tables.new(3);
@@ -443,7 +442,7 @@ fn theBindingIsASummaryOfFourKeys() void {
     tables.put(entry, value.fromBytes("redef", .keyword), wrap.fromTrue());
     tables.put(entry, value.fromBytes("macro", .keyword), wrap.fromTrue());
     b = bindingOf(entry);
-    expect(b.type == constants.JANET_BINDING_DYNAMIC_MACRO);
+    expect(b.type == .dynamic_macro);
     expect(harness.isType(b.value, repr.Tag.array));
 
     // A macro with a ref but no `:redef` keeps the plain `:value`, which is
@@ -453,18 +452,18 @@ fn theBindingIsASummaryOfFourKeys() void {
     tables.put(entry, value.fromBytes("ref", .keyword), wrap.fromArray(arrays.new(1)));
     tables.put(entry, value.fromBytes("macro", .keyword), wrap.fromTrue());
     b = bindingOf(entry);
-    expect(b.type == constants.JANET_BINDING_MACRO);
+    expect(b.type == .macro);
     expect(harness.integerIs(b.value, 5));
 }
 
 fn deprecationReadsAKeywordAndFallsBackToNormal() void {
-    const cases = [_]struct { keyword: [*:0]const u8, expect: c_int }{
-        .{ .keyword = "relaxed", .expect = constants.JANET_BINDING_DEP_RELAXED },
-        .{ .keyword = "normal", .expect = constants.JANET_BINDING_DEP_NORMAL },
-        .{ .keyword = "strict", .expect = constants.JANET_BINDING_DEP_STRICT },
+    const cases = [_]struct { keyword: [*:0]const u8, expect: registry.BindingDeprecation }{
+        .{ .keyword = "relaxed", .expect = .relaxed },
+        .{ .keyword = "normal", .expect = .normal },
+        .{ .keyword = "strict", .expect = .strict },
         // An unrecognised keyword is NONE, not NORMAL: the keyword arm runs
         // and matches nothing, and the field keeps its initial value.
-        .{ .keyword = "nonsense", .expect = constants.JANET_BINDING_DEP_NONE },
+        .{ .keyword = "nonsense", .expect = .none },
     };
 
     for (cases) |case| {
@@ -479,12 +478,12 @@ fn deprecationReadsAKeywordAndFallsBackToNormal() void {
     var entry = tables.new(2);
     tables.put(entry, value.fromBytes("value", .keyword), wrap.fromNil());
     tables.put(entry, value.fromBytes("deprecated", .keyword), wrap.fromFalse());
-    expect(bindingOf(entry).deprecation == constants.JANET_BINDING_DEP_NORMAL);
+    expect(bindingOf(entry).deprecation == .normal);
 
     entry = tables.new(2);
     tables.put(entry, value.fromBytes("value", .keyword), wrap.fromNil());
     tables.put(entry, value.fromBytes("deprecated", .keyword), harness.wrapInteger(1));
-    expect(bindingOf(entry).deprecation == constants.JANET_BINDING_DEP_NORMAL);
+    expect(bindingOf(entry).deprecation == .normal);
 }
 
 // ------------------------------------------------------------- resolution
@@ -496,12 +495,12 @@ fn resolveDereferencesOnlyTheDynamicBindings() raise.Raising(void) {
     // An unbound symbol answers NONE with a nil value, rather than a value the
     // caller has to know not to read.
     const missing = registry_mod.resolve(env, symbols.csymbol("missing"));
-    expect(missing.type == constants.JANET_BINDING_NONE);
+    expect(missing.type == .none);
     expect(harness.isType(missing.value, repr.Tag.nil));
 
     registry_mod.def(env, "d", harness.wrapInteger(3), null);
     const d = registry_mod.resolve(env, symbols.csymbol("d"));
-    expect(d.type == constants.JANET_BINDING_DEF);
+    expect(d.type == .def);
     expect(harness.integerIs(d.value, 3));
 
     // A plain var resolves to the ref *array*, not to its contents: only the
@@ -509,7 +508,7 @@ fn resolveDereferencesOnlyTheDynamicBindings() raise.Raising(void) {
     // `janet_resolve_ext` agree here, and differ only below.
     try registry.defVarSm(env, "v", harness.wrapInteger(4), null, null, 0);
     const v = registry_mod.resolve(env, symbols.csymbol("v"));
-    expect(v.type == constants.JANET_BINDING_VAR);
+    expect(v.type == .@"var");
     expect(harness.isType(v.value, repr.Tag.array));
     expect(harness.integerIs(wrap.toArray(v.value).slice()[0], 4));
     expect(harness.isType(registry_mod.resolveExt(env, symbols.csymbol("v")).value, repr.Tag.array));
@@ -521,11 +520,11 @@ fn resolveDereferencesOnlyTheDynamicBindings() raise.Raising(void) {
     tables.put(entry, value.fromBytes("redef", .keyword), wrap.fromTrue());
     tables.put(env, value.fromBytes("dd", .symbol), wrap.fromTable(entry));
     const dd5 = registry_mod.resolve(env, symbols.csymbol("dd"));
-    expect(dd5.type == constants.JANET_BINDING_DYNAMIC_DEF);
+    expect(dd5.type == .dynamic_def);
     expect(harness.integerIs(dd5.value, 5));
     harness.arrayPush(ref, harness.wrapInteger(6));
     const dd6 = registry_mod.resolve(env, symbols.csymbol("dd"));
-    expect(dd6.type == constants.JANET_BINDING_DYNAMIC_DEF);
+    expect(dd6.type == .dynamic_def);
     expect(harness.integerIs(dd6.value, 6));
 }
 
@@ -600,7 +599,7 @@ fn theAbstractRegistryRefusesASecondTypeUnderOneName() raise.Raising(void) {
 
 // ------------------------------------------------------ text substitution
 
-fn bytesAre(view: abi.JanetByteView, expected: []const u8) bool {
+fn bytesAre(view: abi.ByteView, expected: []const u8) bool {
     if (view.len != expected.len) return false;
     return std.mem.eql(u8, args_core.viewBytes(view), expected);
 }

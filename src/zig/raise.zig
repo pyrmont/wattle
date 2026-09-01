@@ -9,10 +9,7 @@
 //! `Error` has a single member. Zig errors carry no payload, and both things a
 //! raise carries already have homes: the value goes to the VM's `return_reg`,
 //! which is where the try scope pointed it, and the signal goes to
-//! `pending_signal` beside it. A per-signal error set was considered and
-//! rejected -- it would duplicate a decision `signalPlan` has already made,
-//! and `catch` would then have to agree with the plan or diverge from it
-//! silently.
+//! `pending_signal` beside it.
 //!
 //! ## The decision is shared; only the delivery differs
 //!
@@ -86,7 +83,7 @@ pub fn signal(sig: abi.Signal, message: repr.Value) Error {
         // converts the other way and the clamp on the far side is a no-op.
         c.janet_zig_signal_record(@intFromEnum(sig), message);
     } else {
-        signal_impl.zigSignalRecord(sig, message);
+        signal_impl.signalRecord(sig, message);
     }
     return error.JanetSignal;
 }
@@ -139,21 +136,13 @@ pub fn panic(message: [*:0]const u8) Error {
 /// might ask for.
 pub const CFunction = *const fn ([]repr.Value) Error!repr.Value;
 
-/// A cfunction read out of a stored slot.
-///
-/// The places that *hold* one are typed by the C ABI's layout: a `Value`'s
-/// union member, a registration row, a registry key, a stack frame's `pc`.
-/// That is a layout rather than a calling convention, so the cast is here, in
-/// one inline function, and everything downstream of it is an ordinary Zig
-/// call that returns an error.
 /// A published entry point whose C signature carries `(..., int32_t argc,
 /// const Janet *argv)` where the Zig one takes a slice in their place.
 ///
 /// `panicking` mirrors its subject's parameter list, so it cannot build a
 /// `callconv(.c)` abi for a function taking a slice -- a slice has no
 /// guaranteed in-memory representation. This expands the last parameter back
-/// into the pair, which is what `janet_getslice`, `janet_buffer_format`,
-/// `janet_call` and `janet_mcall` publish.
+/// into the pair, which is the shape `janet_buffer_format` publishes.
 pub fn panickingArgv(comptime f: anytype) type {
     const info = @typeInfo(@TypeOf(f)).@"fn";
     const P = @typeInfo(info.return_type.?).error_union.payload;
@@ -180,12 +169,19 @@ pub fn panickingArgv(comptime f: anytype) type {
     };
 }
 
-pub inline fn cfunction(slot: abi.JanetCFunction) CFunction {
+/// A cfunction read out of a stored slot.
+///
+/// The places that *hold* one are typed by the C ABI's layout: a `Value`'s
+/// union member, a registration row, a registry key, a stack frame's `pc`.
+/// That is a layout rather than a calling convention, so the cast is here, in
+/// one inline function, and everything downstream of it is an ordinary Zig
+/// call that returns an error.
+pub inline fn cfunction(slot: abi.CFunction) CFunction {
     return @ptrCast(slot.?);
 }
 
 /// The same pointer on its way into that storage, at registration.
-pub inline fn stored(cfun: anytype) abi.JanetCFunction {
+pub inline fn stored(cfun: anytype) abi.CFunction {
     return @ptrCast(cfun);
 }
 
@@ -193,7 +189,7 @@ pub inline fn stored(cfun: anytype) abi.JanetCFunction {
 
 /// Hand a raise to a C caller by returning, rather than by jumping.
 ///
-/// The remaining C callers are the variadic shells, and none can take a jump:
+/// The C callers are the variadic shells, and none can take a jump:
 /// catching one needs a `setjmp`, and there is no `setjmp` anywhere in this
 /// tree.
 ///
@@ -218,8 +214,8 @@ pub inline fn reportToC(comptime T: type) T {
 ///
 /// `std.mem.zeroes` refuses a non-nullable pointer, and it is right to: zero is
 /// not a value of `*JanetTable`. Three abis return one. Writing the bytes
-/// instead keeps 17e's determinacy argument — a caller that forgets the test
-/// gets the same wrong answer every time rather than whatever was in the
+/// instead keeps the determinacy argument above — a caller that forgets the
+/// test gets the same wrong answer every time rather than whatever was in the
 /// register — without asking the type system to agree that the result is
 /// meaningful. It is not meaningful; no caller may look at it.
 inline fn blank(comptime T: type) T {
@@ -232,10 +228,9 @@ inline fn blank(comptime T: type) T {
 /// raised — with the raise recorded for the C caller either way.
 ///
 /// This is what a hand-written abi is made of, and it takes the whole
-/// error-union expression rather than a type so that converting the 122 of
-/// them was a textual change: `X catch raise.deliverToC()` became
-/// `raise.reported(X)`, with no need to name each payload. `panicking` builds
-/// the same thing for the abis that are derived rather than written.
+/// error-union expression rather than a type so that a call site does not have
+/// to name its payload. `panicking` builds the same thing for the abis that
+/// are derived rather than written.
 pub inline fn reported(result: anytype) @typeInfo(@TypeOf(result)).error_union.payload {
     const Payload = @typeInfo(@TypeOf(result)).error_union.payload;
     return result catch reportToC(Payload);
@@ -253,8 +248,8 @@ pub inline fn reported(result: anytype) @typeInfo(@TypeOf(result)).error_union.p
 ///         raise.report(raise.panicv(message));
 ///     }
 ///
-/// The parameter is unused by construction, exactly as the deleted `deliver`'s
-/// was: everything the report needs is already in `janet_vm`.
+/// The parameter is unused by construction: everything the report needs is
+/// already in `janet_vm`.
 pub inline fn report(_: Error) void {
     raiseRecord();
 }
@@ -280,11 +275,11 @@ pub inline fn crossing(value: anytype) Error!@TypeOf(value) {
 /// nowhere else.
 pub inline fn tookCRaise() bool {
     if (comptime in_module) return c.janet_zig_c_raise_take() != 0;
-    return signal_impl.zigCRaiseTake();
+    return signal_impl.cRaiseTake();
 }
 
 inline fn raiseRecord() void {
-    if (comptime in_module) c.janet_zig_c_raise_record() else signal_impl.zigCRaiseRecord();
+    if (comptime in_module) c.janet_zig_c_raise_record() else signal_impl.cRaiseRecord();
 }
 
 // ------------------------------------------- a call that may not raise
@@ -322,12 +317,6 @@ pub inline fn total(
 /// compile error.
 ///
 ///     pub const callNonfnPanicking = raise.panicking(callNonfn).abi;
-///
-/// Here rather than written out per subsystem because this phase applies the
-/// pattern to every exported function that raises, which is most of them. Two
-/// lines each is not much until it is three hundred of them, and an abi that
-/// drifts from the implementation it wraps is a silent ABI change rather than a
-/// compile error.
 ///
 /// The arity cases are unavoidable: a Zig function body cannot be written
 /// generically over an arbitrary parameter list, only over an arbitrary type.

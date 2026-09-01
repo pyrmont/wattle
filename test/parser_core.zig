@@ -24,14 +24,13 @@
 //! ## The error field is read once
 //!
 //! `janet_parser_error` clears what it returns and flushes the parser, which
-//! is why the "unexpected closing delimiter" case asserts `JANET_PARSE_ROOT`
+//! is why the "unexpected closing delimiter" case asserts `:root`
 //! immediately afterwards. A second read answers null. That is deliberate C
 //! behaviour and the reason `consumeChecked` has a second refusal: a parser
 //! whose error has *not* been read cannot be fed.
 
 const std = @import("std");
 const repr = @import("repr");
-const constants = @import("constants");
 const harness = @import("harness.zig");
 const parser_core = @import("subsystems").parser;
 const wrap = @import("subsystems").value.wrap;
@@ -42,60 +41,60 @@ const expect = @import("expect.zig").expect;
 
 /// Feed a whole string, one byte at a time, the way the public entry point is
 /// documented to be used.
-fn consume(parser: *parser_core.JanetParser, source: []const u8) !void {
+fn consume(parser: *parser_core.Parser, source: []const u8) !void {
     for (source) |character| try parser_core.consumeChecked(parser, character);
 }
 
-fn statusOf(parser: *parser_core.JanetParser) parser_core.JanetParserStatus {
+fn statusOf(parser: *parser_core.Parser) parser_core.ParserStatus {
     return parser_core.parserStatus(parser);
 }
 
-fn hasMore(parser: *parser_core.JanetParser) bool {
+fn hasMore(parser: *parser_core.Parser) bool {
     return parser_core.parserHasMore(parser);
 }
 
-fn errorOf(parser: *parser_core.JanetParser) ?[*:0]const u8 {
+fn errorOf(parser: *parser_core.Parser) ?[*:0]const u8 {
     const message = parser_core.parserError(parser);
     return if (message == null) null else @ptrCast(message);
 }
 
-fn errorIs(parser: *parser_core.JanetParser, expected: []const u8) bool {
+fn errorIs(parser: *parser_core.Parser, expected: []const u8) bool {
     const message = errorOf(parser) orelse return false;
     return std.mem.eql(u8, std.mem.span(message), expected);
 }
 
-/// A parser that has just been initialised, and the two counters that describe
-/// its stack. `statecap` is 2 rather than 1 because the root state is pushed
+/// A parser that has just been initialised, and the two numbers that describe
+/// its stack. The capacity is 2 rather than 1 because the root state is pushed
 /// into a freshly grown allocation.
 fn theFreshParser() !void {
-    var parser: parser_core.JanetParser = undefined;
+    var parser: parser_core.Parser = undefined;
     parser_core.parserInit(&parser);
     defer parser_core.parserDeinit(&parser);
 
-    expect(statusOf(&parser) == constants.JANET_PARSE_ROOT);
+    expect(statusOf(&parser) == parser_core.ParserStatus.root);
     expect(parser.line == 1 and parser.column == 0);
-    expect(parser.statecount == 1 and parser.statecap == 2);
-    expect(parser.states.?[0].argn == 0);
+    expect(parser.states.items.len == 1 and parser.states.capacity == 2);
+    expect(parser.states.items[0].argn == 0);
     expect(!hasMore(&parser));
 }
 
 /// A clone owns its own `args` and `states`, so producing from one does not
 /// consume the other's pending values.
 fn aCloneOwnsItsOwnQueue() !void {
-    var parser: parser_core.JanetParser = undefined;
-    var clone: parser_core.JanetParser = undefined;
+    var parser: parser_core.Parser = undefined;
+    var clone: parser_core.Parser = undefined;
     parser_core.parserInit(&parser);
 
     try consume(&parser, "1 2");
     try parser_core.eofChecked(&parser);
-    expect(statusOf(&parser) == constants.JANET_PARSE_DEAD);
+    expect(statusOf(&parser) == parser_core.ParserStatus.dead);
     expect(hasMore(&parser));
     expect(parser.pending == 2);
 
     parser_core.parserClone(&parser, &clone);
     expect(clone.pending == parser.pending);
-    expect(clone.args != parser.args);
-    expect(clone.states != parser.states);
+    expect(clone.args.items.ptr != parser.args.items.ptr);
+    expect(clone.states.items.ptr != parser.states.items.ptr);
 
     expect(harness.integerIs(parser_core.parserProduce(&parser), 1));
     expect(harness.integerIs(parser_core.parserProduce(&parser), 2));
@@ -120,7 +119,7 @@ fn aCloneOwnsItsOwnQueue() !void {
 /// The four string escapes that are not one byte each: a named escape, a hex
 /// pair, and the two Unicode forms, which are encoded as UTF-8.
 fn theStringEscapes() !void {
-    var parser: parser_core.JanetParser = undefined;
+    var parser: parser_core.Parser = undefined;
     parser_core.parserInit(&parser);
     defer parser_core.parserDeinit(&parser);
 
@@ -136,7 +135,7 @@ fn theStringEscapes() !void {
 
 /// The other two literal forms that carry their own delimiters.
 fn theOtherLiterals() !void {
-    var parser: parser_core.JanetParser = undefined;
+    var parser: parser_core.Parser = undefined;
 
     parser_core.parserInit(&parser);
     try consume(&parser, "`hello` ");
@@ -156,17 +155,17 @@ fn theOtherLiterals() !void {
 /// A clone taken mid-token owns its own `buf`, so the two can be finished
 /// differently.
 fn aCloneOwnsItsOwnBuffer() !void {
-    var parser: parser_core.JanetParser = undefined;
-    var clone: parser_core.JanetParser = undefined;
+    var parser: parser_core.Parser = undefined;
+    var clone: parser_core.Parser = undefined;
 
     parser_core.parserInit(&parser);
     try consume(&parser, "\"abc");
-    expect(parser.bufcount == 3);
+    expect(parser.buf.items.len == 3);
 
     parser_core.parserClone(&parser, &clone);
-    expect(clone.bufcount == 3);
-    expect(clone.buf != parser.buf);
-    expect(std.mem.eql(u8, clone.buf.?[0..3], parser.buf.?[0..3]));
+    expect(clone.buf.items.len == 3);
+    expect(clone.buf.items.ptr != parser.buf.items.ptr);
+    expect(std.mem.eql(u8, clone.buf.items, parser.buf.items));
 
     try consume(&parser, "\"");
     try consume(&clone, "d\"");
@@ -180,12 +179,12 @@ fn aCloneOwnsItsOwnBuffer() !void {
 /// The state stack grows past its initial two entries, and nesting unwinds in
 /// the order it was built.
 fn theStateStackGrows() !void {
-    var parser: parser_core.JanetParser = undefined;
+    var parser: parser_core.Parser = undefined;
     parser_core.parserInit(&parser);
     defer parser_core.parserDeinit(&parser);
 
     try consume(&parser, "((((1)))) ");
-    expect(parser.statecap > 2);
+    expect(parser.states.capacity > 2);
 
     var val = parser_core.parserProduce(&parser);
     for (0..4) |_| {
@@ -198,7 +197,7 @@ fn theStateStackGrows() !void {
 /// `'x` is rewritten to `(quote x)` by the parser rather than by a macro, and
 /// the tuple it builds carries the source mapping.
 fn theQuoteShorthand() !void {
-    var parser: parser_core.JanetParser = undefined;
+    var parser: parser_core.Parser = undefined;
     parser_core.parserInit(&parser);
     defer parser_core.parserDeinit(&parser);
 
@@ -214,24 +213,24 @@ fn theQuoteShorthand() !void {
 
 /// `flush` abandons whatever is half-parsed and returns the machine to root.
 fn theFlush() !void {
-    var parser: parser_core.JanetParser = undefined;
+    var parser: parser_core.Parser = undefined;
     parser_core.parserInit(&parser);
     defer parser_core.parserDeinit(&parser);
 
     try consume(&parser, "(");
-    expect(statusOf(&parser) == constants.JANET_PARSE_PENDING);
+    expect(statusOf(&parser) == parser_core.ParserStatus.pending);
     parser_core.parserFlush(&parser);
-    expect(statusOf(&parser) == constants.JANET_PARSE_ROOT);
+    expect(statusOf(&parser) == parser_core.ParserStatus.root);
 }
 
 /// The five parse errors, and the one property that makes reading one an
 /// action rather than an inspection.
 fn theParseErrors() !void {
-    var parser: parser_core.JanetParser = undefined;
+    var parser: parser_core.Parser = undefined;
 
     parser_core.parserInit(&parser);
     try consume(&parser, "\"\\q");
-    expect(statusOf(&parser) == constants.JANET_PARSE_ERROR);
+    expect(statusOf(&parser) == parser_core.ParserStatus.@"error");
     expect(errorIs(&parser, "invalid string escape sequence"));
     parser_core.parserDeinit(&parser);
 
@@ -240,16 +239,16 @@ fn theParseErrors() !void {
     // the unclosed form opened, so it is matched by prefix rather than whole.
     parser_core.parserInit(&parser);
     try consume(&parser, ")");
-    expect(statusOf(&parser) == constants.JANET_PARSE_ERROR);
+    expect(statusOf(&parser) == parser_core.ParserStatus.@"error");
     const message = errorOf(&parser) orelse unreachable;
     expect(std.mem.indexOf(u8, std.mem.span(message), "unexpected closing delimiter") != null);
-    expect(statusOf(&parser) == constants.JANET_PARSE_ROOT);
+    expect(statusOf(&parser) == parser_core.ParserStatus.root);
     expect(errorOf(&parser) == null);
     parser_core.parserDeinit(&parser);
 
     parser_core.parserInit(&parser);
     try consume(&parser, "12abc ");
-    expect(statusOf(&parser) == constants.JANET_PARSE_ERROR);
+    expect(statusOf(&parser) == parser_core.ParserStatus.@"error");
     expect(errorIs(&parser, "symbol literal cannot start with a digit"));
     parser_core.parserDeinit(&parser);
 
@@ -258,7 +257,7 @@ fn theParseErrors() !void {
     parser_core.parserInit(&parser);
     try parser_core.consumeChecked(&parser, 0xC2);
     try parser_core.consumeChecked(&parser, ' ');
-    expect(statusOf(&parser) == constants.JANET_PARSE_ERROR);
+    expect(statusOf(&parser) == parser_core.ParserStatus.@"error");
     expect(errorIs(&parser, "invalid utf-8 in symbol"));
     parser_core.parserDeinit(&parser);
 
@@ -266,14 +265,14 @@ fn theParseErrors() !void {
     try parser_core.consumeChecked(&parser, ':');
     try parser_core.consumeChecked(&parser, 0xC2);
     try parser_core.consumeChecked(&parser, ' ');
-    expect(statusOf(&parser) == constants.JANET_PARSE_ERROR);
+    expect(statusOf(&parser) == parser_core.ParserStatus.@"error");
     expect(errorIs(&parser, "invalid utf-8 in keyword"));
     parser_core.parserDeinit(&parser);
 }
 
 /// The five atoms the root state recognises without a delimiter.
 fn theAtoms() !void {
-    var parser: parser_core.JanetParser = undefined;
+    var parser: parser_core.Parser = undefined;
     parser_core.parserInit(&parser);
     defer parser_core.parserDeinit(&parser);
 
@@ -302,12 +301,12 @@ fn theAtoms() !void {
 /// answer with. Both halves are asserted here because a port could easily
 /// keep one and lose the other.
 fn aFinishedParserRefusesMore() !void {
-    var parser: parser_core.JanetParser = undefined;
+    var parser: parser_core.Parser = undefined;
 
     parser_core.parserInit(&parser);
     try consume(&parser, "1");
     try parser_core.eofChecked(&parser);
-    expect(statusOf(&parser) == constants.JANET_PARSE_DEAD);
+    expect(statusOf(&parser) == parser_core.ParserStatus.dead);
 
     const fed = harness.raised(parser_core.consumeChecked, .{ &parser, ' ' }).?;
     expect(fed.says("parser is dead, cannot consume"));
@@ -320,7 +319,7 @@ fn aFinishedParserRefusesMore() !void {
 
     parser_core.parserInit(&parser);
     try consume(&parser, "\"\\q");
-    expect(statusOf(&parser) == constants.JANET_PARSE_ERROR);
+    expect(statusOf(&parser) == parser_core.ParserStatus.@"error");
 
     const unread = harness.raised(parser_core.consumeChecked, .{ &parser, ' ' }).?;
     expect(unread.says("parser has unchecked error, cannot consume"));

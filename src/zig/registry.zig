@@ -10,7 +10,7 @@
 //!
 //! Two tables and one array, and everything here is a way into one of them.
 //!
-//! `vm.registry.rows` is an array of `JanetCFunRegistry`, one row per builtin,
+//! `vm.registry.rows` is an array of `Row`, one row per builtin,
 //! keyed by the cfunction pointer and holding the name, prefix and source
 //! location that a stack trace prints. It is *not* a Janet table: the key is a
 //! function pointer, the rows are static strings the collector never sees, and
@@ -48,7 +48,6 @@ const wrap = @import("value/helpers/wrap.zig");
 const args_core = @import("args.zig");
 const fatal = @import("fatal.zig");
 const repr = @import("repr");
-const constants = @import("constants");
 const value = @import("value.zig");
 const vm_state = @import("vm/state.zig");
 const pp_describe = @import("pp.zig");
@@ -63,12 +62,12 @@ const abi = @import("abi");
 /// vector rather than a vector: the sortedness is a fourth fact about the
 /// rows, and it is not the vector's.
 pub const Registry = struct {
-    rows: vm_state.Vector(JanetCFunRegistry) = .{},
+    rows: std.ArrayListUnmanaged(Row) = .empty,
     dirty: bool = false,
 };
 
-pub const JanetCFunRegistry = struct {
-    cfun: abi.JanetCFunction = null,
+pub const Row = struct {
+    cfun: abi.CFunction = null,
     name: ?[*:0]const u8 = null,
     name_prefix: ?[*:0]const u8 = null,
     source_file: ?[*:0]const u8 = null,
@@ -86,17 +85,19 @@ pub const JanetCFunRegistry = struct {
 /// number is tested rather than the file name because the file alone locates
 /// nothing.
 fn addMeta(table: *tables.Table, doc: ?[*:0]const u8, source_file: ?[*:0]const u8, source_line: i32) void {
-    if (doc != null) {
-        tables.put(table, value.fromBytes("doc", .keyword), value.fromBytes(std.mem.span(doc.?), .string));
+    if (doc) |text| {
+        tables.put(table, value.fromBytes("doc", .keyword), value.fromBytes(std.mem.span(text), .string));
     }
-    if (source_file != null and source_line != 0) {
-        var triple: [3]repr.Value = .{
-            value.fromBytes(std.mem.span(source_file.?), .string),
-            wrap.fromInteger(source_line),
-            wrap.fromInteger(1),
-        };
-        const val = wrap.fromTuple(tuples.newFrom(&triple));
-        tables.put(table, value.fromBytes("source-map", .keyword), val);
+    if (source_file) |file| {
+        if (source_line != 0) {
+            var triple: [3]repr.Value = .{
+                value.fromBytes(std.mem.span(file), .string),
+                wrap.fromInteger(source_line),
+                wrap.fromInteger(1),
+            };
+            const val = wrap.fromTuple(tuples.newFrom(&triple));
+            tables.put(table, value.fromBytes("source-map", .keyword), val);
+        }
     }
 }
 
@@ -160,7 +161,10 @@ pub fn registryInit(r: *Registry) void {
 /// from. The names the rows carry are static and unmanaged, so there is
 /// nothing else to free.
 pub fn registryDeinit(r: *Registry) void {
-    utils.free(r.rows.items);
+    r.rows.deinit(utils.heap);
+    // `ArrayListUnmanaged.deinit` ends `self.* = undefined`; see
+    // `gc.rootsDeinit` for why this reset is not optional.
+    r.rows = .empty;
     r.* = .{};
 }
 
@@ -175,10 +179,8 @@ pub fn registryDeinit(r: *Registry) void {
 /// is defined. The order does not have to mean anything --
 /// it only has to be consistent with the bisection in `janet_registry_get`.
 fn sortRows(r: *Registry) void {
-    const rows = r.rows.slice();
-    var i: usize = 1;
-    while (i < rows.len) : (i += 1) {
-        const reg = rows[i];
+    const rows = r.rows.items;
+    for (rows[1..], 1..) |reg, i| {
         var j: usize = i;
         while (j > 0) : (j -= 1) {
             if (@intFromPtr(rows[j - 1].cfun) < @intFromPtr(reg.cfun)) break;
@@ -200,32 +202,26 @@ fn sortRows(r: *Registry) void {
 /// pointers into the binary, not into the heap, which is why nothing marks it.
 fn putRow(
     r: *Registry,
-    key: abi.JanetCFunction,
+    key: abi.CFunction,
     name: ?[*:0]const u8,
     name_prefix: ?[*:0]const u8,
     source_file: ?[*:0]const u8,
     source_line: i32,
 ) void {
-    if (r.rows.count == r.rows.capacity) {
-        var newcap = (r.rows.count + 1) * 2;
-        if (newcap < 512) newcap = 512;
-        r.rows.items = utils.resizeMany(JanetCFunRegistry, r.rows.items, newcap);
-        r.rows.capacity = newcap;
-    }
-    r.rows.appendAssumingCapacity(.{
+    r.rows.append(utils.heap, .{
         .cfun = key,
         .name = name,
         .name_prefix = name_prefix,
         .source_file = source_file,
         .source_line = source_line,
-    });
+    }) catch fatal.outOfMemory();
     r.dirty = true;
 }
 
 /// The ambient entry point, which is what `capi.zig` publishes as
 /// `janet_registry_put`. A caller with the table already in hand calls `put`.
 pub fn registryPut(
-    key: abi.JanetCFunction,
+    key: abi.CFunction,
     name: ?[*:0]const u8,
     name_prefix: ?[*:0]const u8,
     source_file: ?[*:0]const u8,
@@ -243,19 +239,19 @@ pub fn registryPut(
 /// entries, and the sort that `registry_dirty` maintains buys nothing. It is
 /// defined behaviour rather than a fault, so it is reproduced and recorded in
 /// `FOUND.md` rather than repaired.
-fn getRow(r: *Registry, key: abi.JanetCFunction) ?*JanetCFunRegistry {
+fn getRow(r: *Registry, key: abi.CFunction) ?*Row {
     if (r.dirty) sortRows(r);
 
-    const rows = r.rows.slice();
+    const rows = r.rows.items;
     for (rows) |*row| {
         if (row.cfun == key) return row;
     }
     if (rows.len == 0) return null;
 
-    var lo: [*]JanetCFunRegistry = rows.ptr;
-    var hi: [*]JanetCFunRegistry = lo + rows.len;
+    var lo: [*]Row = rows.ptr;
+    var hi: [*]Row = lo + rows.len;
     while (@intFromPtr(lo) < @intFromPtr(hi)) {
-        const span = (@intFromPtr(hi) - @intFromPtr(lo)) / @sizeOf(JanetCFunRegistry);
+        const span = (@intFromPtr(hi) - @intFromPtr(lo)) / @sizeOf(Row);
         const mid = lo + span / 2;
         if (mid[0].cfun == key) return &mid[0];
         if (@intFromPtr(mid[0].cfun) > @intFromPtr(key)) {
@@ -269,11 +265,11 @@ fn getRow(r: *Registry, key: abi.JanetCFunction) ?*JanetCFunRegistry {
 
 /// The ambient entry point, which is what `capi.zig` publishes as
 /// `janet_registry_get`.
-pub fn registryGet(key: abi.JanetCFunction) ?*JanetCFunRegistry {
+pub fn registryGet(key: abi.CFunction) ?*Row {
     return getRow(&vm_state.current().registry, key);
 }
 
-pub fn register(name: ?[*:0]const u8, cfun: abi.JanetCFunction) void {
+pub fn register(name: ?[*:0]const u8, cfun: abi.CFunction) void {
     putRow(&vm_state.current().registry, cfun, name, null, null, 0);
 }
 
@@ -497,9 +493,9 @@ pub fn getAbstractType(key: repr.Value) ?*const abi.AbstractType {
 /// error, and an unrecognised keyword is `NONE`. Both are the C original's.
 pub fn bindingFromEntry(entry: repr.Value) Binding {
     var binding: Binding = .{
-        .type = constants.JANET_BINDING_NONE,
+        .type = .none,
         .value = wrap.fromNil(),
-        .deprecation = constants.JANET_BINDING_DEP_NONE,
+        .deprecation = .none,
     };
 
     if (!repr.checkType(entry, repr.Tag.table)) return binding;
@@ -513,14 +509,14 @@ pub fn bindingFromEntry(entry: repr.Value) Binding {
     if (repr.checkType(deprecate, repr.Tag.keyword)) {
         const depkw = wrap.toKeyword(deprecate);
         if (utils.cstrcmp(depkw, "relaxed") == 0) {
-            binding.deprecation = constants.JANET_BINDING_DEP_RELAXED;
+            binding.deprecation = .relaxed;
         } else if (utils.cstrcmp(depkw, "normal") == 0) {
-            binding.deprecation = constants.JANET_BINDING_DEP_NORMAL;
+            binding.deprecation = .normal;
         } else if (utils.cstrcmp(depkw, "strict") == 0) {
-            binding.deprecation = constants.JANET_BINDING_DEP_STRICT;
+            binding.deprecation = .strict;
         }
     } else if (!repr.checkType(deprecate, repr.Tag.nil)) {
-        binding.deprecation = constants.JANET_BINDING_DEP_NORMAL;
+        binding.deprecation = .normal;
     }
 
     const ref_is_valid = repr.checkType(ref, repr.Tag.array);
@@ -528,16 +524,16 @@ pub fn bindingFromEntry(entry: repr.Value) Binding {
 
     if (macro) {
         binding.value = if (redef) ref else val;
-        binding.type = if (redef) constants.JANET_BINDING_DYNAMIC_MACRO else constants.JANET_BINDING_MACRO;
+        binding.type = if (redef) .dynamic_macro else .macro;
         return binding;
     }
 
     if (ref_is_valid) {
         binding.value = ref;
-        binding.type = if (redef) constants.JANET_BINDING_DYNAMIC_DEF else constants.JANET_BINDING_VAR;
+        binding.type = if (redef) .dynamic_def else .@"var";
     } else {
         binding.value = val;
-        binding.type = constants.JANET_BINDING_DEF;
+        binding.type = .def;
     }
 
     return binding;
@@ -555,7 +551,7 @@ pub fn resolveExt(env: *tables.Table, sym: [*:0]const u8) Binding {
 /// the pair this struct already is.
 pub fn resolve(env: *tables.Table, sym: [*:0]const u8) Binding {
     var binding = resolveExt(env, sym);
-    if (binding.type == constants.JANET_BINDING_DYNAMIC_DEF or binding.type == constants.JANET_BINDING_DYNAMIC_MACRO) {
+    if (binding.type == .dynamic_def or binding.type == .dynamic_macro) {
         binding.value = arrays.peek(wrap.toArray(binding.value));
     }
     return binding;
@@ -575,7 +571,7 @@ pub fn resolveCore(name: [*:0]const u8) repr.Value {
 pub fn getCoreTable(name: [*:0]const u8) ?*tables.Table {
     const env = env_core.coreEnvAbi(null);
     const binding = resolve(env, symbols.csymbol(name));
-    if (binding.type == constants.JANET_BINDING_NONE) return null;
+    if (binding.type == .none) return null;
     if (!repr.checkType(binding.value, repr.Tag.table)) return null;
     return wrap.toTable(binding.value);
 }
@@ -590,13 +586,13 @@ pub fn getCoreTable(name: [*:0]const u8) ?*tables.Table {
 /// overwritten with the string, so a substitution used against many matches is
 /// printed once. The returned view points into that string, so the caller's
 /// slot is what keeps it alive.
-fn memoizeByteView(val: *repr.Value) abi.JanetByteView {
+fn memoizeByteView(val: *repr.Value) abi.ByteView {
     if (args_core.bytesView(val.*)) |bytes| {
         return .{ .bytes = bytes.ptr, .len = bytes.len };
     }
     const str = pp_describe.toString(val.*);
     val.* = wrap.fromString(str);
-    return .{ .bytes = str, .len = @intCast(strings.head(str).length) };
+    return .{ .bytes = str, .len = strings.head(str).length };
 }
 
 /// The same, for a value the caller does not own a slot for.
@@ -604,12 +600,12 @@ fn memoizeByteView(val: *repr.Value) abi.JanetByteView {
 /// The view points into a string only the collector holds, which is safe
 /// because the caller copies out of it before the next allocation. That is a
 /// property of the two callers rather than of this function.
-fn toByteView(val: repr.Value) abi.JanetByteView {
+fn toByteView(val: repr.Value) abi.ByteView {
     if (args_core.bytesView(val)) |bytes| {
         return .{ .bytes = bytes.ptr, .len = bytes.len };
     }
     const str = pp_describe.toString(val);
-    return .{ .bytes = str, .len = @intCast(strings.head(str).length) };
+    return .{ .bytes = str, .len = strings.head(str).length };
 }
 
 /// Compute one substitution for `string/replace`, `string/replace-all` and the
@@ -627,16 +623,17 @@ pub fn textSubstitution(
     subst: *repr.Value,
     bytes: []const u8,
     extra_argv: ?*arrays.Array,
-) raise.Raising(abi.JanetByteView) {
-    const extra_argc: i32 = if (extra_argv == null) 0 else @intCast(extra_argv.?.count);
+) raise.Raising(abi.ByteView) {
+    const extra: []const repr.Value = if (extra_argv) |array| array.slice() else &.{};
+    const extra_argc: i32 = @intCast(extra.len);
     const value_type = repr.typeOf(subst.*);
     switch (value_type) {
         repr.Tag.function, repr.Tag.cfunction => {
             const argc = 1 + extra_argc;
-            const argv = tuples.begin(argc);
+            const argv = tuples.begin(@intCast(argc));
             argv[0] = value.fromBytes(bytes, .string);
             for (0..@as(usize, @intCast(extra_argc))) |i| {
-                argv[i + 1] = extra_argv.?.slice()[i];
+                argv[i + 1] = extra[i];
             }
             _ = tuples.end(argv);
             if (value_type == repr.Tag.function) {
@@ -649,12 +646,28 @@ pub fn textSubstitution(
 }
 
 pub const Binding = extern struct {
-    type: BindingType = 0,
+    type: BindingType = .none,
     value: repr.Value = std.mem.zeroes(repr.Value),
-    deprecation: BindingDeprecation = 0,
+    deprecation: BindingDeprecation = .none,
 };
 
-pub const BindingType = c_uint;
+/// What a resolved binding is. `resolve` is the only thing that produces one
+/// -- it reads an environment entry's keys and decides -- so nothing outside
+/// this runtime can supply a value and the enum is exhaustive. The width is
+/// unchanged, because `Binding` is `extern`.
+pub const BindingType = enum(u32) {
+    none = 0,
+    def = 1,
+    @"var" = 2,
+    macro = 3,
+    dynamic_def = 4,
+    dynamic_macro = 5,
+};
 
 /// `Binding.deprecation`: none, relaxed, normal or strict.
-pub const BindingDeprecation = c_uint;
+pub const BindingDeprecation = enum(u32) {
+    none = 0,
+    relaxed = 1,
+    normal = 2,
+    strict = 3,
+};

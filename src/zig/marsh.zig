@@ -55,7 +55,7 @@
 //!
 //! `janet_marshal_janet`, `janet_unmarshal_int` and the eighteen others are
 //! called *from* those callbacks, in the middle of this file's own recursion.
-//! `JanetMarshalContext` is public API, the callbacks are C, and none of the
+//! `MarshalContext` is public API, the callbacks are C, and none of the
 //! signatures has an error channel — so each of these is a `raise.panicking`
 //! abi over an error-returning body, and the jump it delivers unwinds the Zig
 //! traversal frames underneath it exactly as it did when they were C.
@@ -80,7 +80,7 @@ const strings = @import("value/strings.zig");
 const symbols = @import("value/symbols.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
-const stretchy = @import("stretchy.zig");
+const scratch_vector = @import("scratch_vector.zig");
 const verify = @import("bytecode/verify.zig");
 const fibers = @import("value/fibers.zig");
 const functions = @import("value/functions.zig");
@@ -118,6 +118,16 @@ const frame_size: i32 = constants.JANET_FRAME_SIZE;
 const fiber_flag_haschild: u32 = 1 << 29;
 const fiber_flag_hasenv: u32 = 1 << 30;
 const stackframe_hasenv: i32 = std.math.minInt(i32);
+
+comptime {
+    // The frame's flag word travels as a signed 32-bit integer, so its width
+    // and the position of every bit in it are the wire format. `has_env` is
+    // C's sign bit and is what `stackframe_hasenv` names on this side.
+    std.debug.assert(@sizeOf(vm_state.FrameFlags) == @sizeOf(i32));
+    std.debug.assert(@as(i32, @bitCast(vm_state.FrameFlags{ .has_env = true })) == stackframe_hasenv);
+    std.debug.assert(@as(i32, @bitCast(vm_state.FrameFlags{ .tailcall = true })) == 1);
+    std.debug.assert(@as(i32, @bitCast(vm_state.FrameFlags{ .entrance = true })) == 2);
+}
 
 // ==========================================================================
 // The lead bytes
@@ -264,25 +274,25 @@ pub fn envLookupInto(
     recurse: c_int,
 ) void {
     var env = env_in;
-    while (env != null) {
-        for (0..env.?.capacity) |i| {
-            const kv = env.?.slots()[i];
+    while (env) |table| {
+        for (0..table.capacity) |i| {
+            const kv = table.slots()[i];
             if (!repr.checkType(kv.key, repr.Tag.symbol)) continue;
-            if (prefix != null) {
-                const prelen: i32 = @intCast(std.mem.len(@as([*:0]const u8, @ptrCast(prefix))));
+            if (prefix) |pre| {
+                const prelen = std.mem.len(pre);
                 const oldsym = wrap.toSymbol(kv.key);
-                const oldlen = strings.head(oldsym).length;
-                const symbuf: [*]u8 = @ptrCast(gc_alloc.smalloc(utils.asSize(prelen + oldlen)));
-                utils.safeMemcpy(symbuf, prefix, utils.asSize(prelen));
-                utils.safeMemcpy(symbuf + utils.asSize(prelen), oldsym, utils.asSize(oldlen));
-                const s = value.fromBytes(symbuf[0..@intCast(prelen + oldlen)], .symbol);
+                const oldlen: usize = strings.head(oldsym).length;
+                const symbuf: [*]u8 = @ptrCast(gc_alloc.smalloc(prelen + oldlen));
+                @memcpy(symbuf[0..prelen], pre[0..prelen]);
+                @memcpy(symbuf[prelen..][0..oldlen], oldsym[0..oldlen]);
+                const s = value.fromBytes(symbuf[0 .. prelen + oldlen], .symbol);
                 gc_alloc.sfree(symbuf);
                 tables.put(renv, s, entryGetval(kv.value));
             } else {
                 tables.put(renv, kv.key, entryGetval(kv.value));
             }
         }
-        env = if (recurse != 0) env.?.proto else null;
+        env = if (recurse != 0) table.proto else null;
     }
 }
 
@@ -301,8 +311,8 @@ const MarshalState = struct {
     buf: *buffers.Buffer,
     seen: tables.Table,
     rreg: ?*tables.Table,
-    seen_envs: stretchy.Vector(*functions.FuncEnv),
-    seen_defs: stretchy.Vector(*functions.FuncDef),
+    seen_envs: scratch_vector.Vector(*functions.FuncEnv),
+    seen_defs: scratch_vector.Vector(*functions.FuncDef),
     nextid: i32,
     maybe_cycles: bool,
 };
@@ -403,7 +413,7 @@ fn marshalOneEnv(st: *MarshalState, env: *functions.FuncEnv, flags: c_int) raise
         }
     }
     _ = functions.envValid(env);
-    stretchy.push(&st.seen_envs, env);
+    scratch_vector.push(&st.seen_envs, env);
 
     if (env.offset > 0 and fiberCannotBeMarshalled(env.as.fiber.?)) {
         // Special case for early detachment: the fiber the values live on is
@@ -457,9 +467,7 @@ fn marshalOneDef(st: *MarshalState, def: *functions.FuncDef, flags: c_int) raise
             return;
         }
     }
-    stretchy.push(&st.seen_defs, def);
-
-    var i: usize = 0;
+    scratch_vector.push(&st.seen_defs, def);
 
     // The whole flag word is the format. It has always been the `int32_t` a
     // `JanetFuncDef` carried, and it stays one.
@@ -484,14 +492,11 @@ fn marshalOneDef(st: *MarshalState, def: *functions.FuncDef, flags: c_int) raise
     if (def.flags.hassource)
         try marshalOne(st, wrap.fromString(def.source.?), flags);
 
-    i = 0;
-    while (i < def.constants_length) : (i += 1) {
-        try marshalOne(st, def.constantValues()[i], flags + 1);
+    for (def.constantValues()) |constant| {
+        try marshalOne(st, constant, flags + 1);
     }
 
-    i = 0;
-    while (i < def.symbolmap_length) : (i += 1) {
-        const entry = def.symbols()[i];
+    for (def.symbols()) |entry| {
         try pushInt(st, @bitCast(entry.birth_pc));
         try pushInt(st, @bitCast(entry.death_pc));
         try pushInt(st, @bitCast(entry.slot_index));
@@ -500,22 +505,18 @@ fn marshalOneDef(st: *MarshalState, def: *functions.FuncDef, flags: c_int) raise
 
     try marshalU32s(st, def.instructions());
 
-    i = 0;
-    while (i < def.environments_length) : (i += 1) {
-        try pushInt(st, def.environmentIndices()[i]);
+    for (def.environmentIndices()) |env_index| {
+        try pushInt(st, env_index);
     }
 
-    i = 0;
-    while (i < def.defs_length) : (i += 1) {
-        try marshalOneDef(st, def.subdefs()[i], flags + 1);
+    for (def.subdefs()) |subdef| {
+        try marshalOneDef(st, subdef, flags + 1);
     }
 
     if (def.flags.hassourcemap) {
         // Lines are written as deltas, columns absolute.
         var current: i32 = 0;
-        i = 0;
-        while (i < def.bytecode_length) : (i += 1) {
-            const map = def.sourceMappings()[i];
+        for (def.sourceMappings()) |map| {
             try pushInt(st, map.line -% current);
             try pushInt(st, map.column);
             current = map.line;
@@ -546,22 +547,22 @@ fn marshalOneFiber(st: *MarshalState, fiber: *fibers.Fiber, flags: c_int) raise.
     var j = fiber.stackstart - frame_size;
     while (i > 0) {
         const frame = stackFrame(fiber.data.? + utils.asSize(i));
-        if (frame.env != null) frame.flags |= stackframe_hasenv;
-        if (frame.func == null) {
-            const as_cfun: abi.JanetCFunction = @ptrFromInt(@intFromPtr(frame.pc));
+        if (frame.env != null) frame.flags.has_env = true;
+        const func = frame.func orelse {
+            const as_cfun: abi.CFunction = @ptrFromInt(@intFromPtr(frame.pc));
             return pp_format.panicf(
                 "cannot marshal fiber with c stackframe (%v)",
                 .{wrap.fromCfunction(as_cfun)},
             );
-        }
-        try pushInt(st, frame.flags);
+        };
+        try pushInt(st, @bitCast(frame.flags));
         try pushInt(st, frame.prevframe);
         const pcdiff: i32 = @intCast(@divExact(
-            @intFromPtr(frame.pc) - @intFromPtr(frame.func.?.def.?.bytecode),
+            @intFromPtr(frame.pc) - @intFromPtr(func.def.?.bytecode),
             @sizeOf(u32),
         ));
         try pushInt(st, pcdiff);
-        try marshalOne(st, wrap.fromFunction(frame.func.?), flags + 1);
+        try marshalOne(st, wrap.fromFunction(func), flags + 1);
         if (frame.env) |env| try marshalOneEnv(st, env, flags + 1);
         var k = i;
         while (k < j) : (k += 1) {
@@ -601,7 +602,7 @@ fn marshalOneAbstract(st: *MarshalState, x: repr.Value, flags: c_int) raise.Rais
     if (at.marshal) |marshal_fn| {
         try pushByte(st, Lead.abstract.byte());
         try marshalOne(st, value.fromBytes(at.name, .symbol), flags + 1);
-        var context: abi.JanetMarshalContext = .{
+        var context: abi.MarshalContext = .{
             .m_state = st,
             .u_state = null,
             .flags = flags + 1,
@@ -651,13 +652,13 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Raising(void
             return;
         }
     }
-    if (st.rreg != null) {
-        const check = tables.get(st.rreg.?, x);
+    if (st.rreg) |rreg| {
+        const check = tables.get(rreg, x);
         if (repr.checkType(check, repr.Tag.symbol)) {
             markSeen(st, x);
             const regname = wrap.toSymbol(check);
             try pushByte(st, Lead.registry.byte());
-            try pushInt(st, strings.head(regname).length);
+            try pushInt(st, @intCast(strings.head(regname).length));
             try pushBytes(st, strings.bytesOf(regname));
             return;
         }
@@ -680,8 +681,8 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Raising(void
                 repr.Tag.symbol => Lead.symbol,
                 else => Lead.keyword,
             }).byte());
-            try pushInt(st, length);
-            try pushBytes(st, str[0..@intCast(length)]);
+            try pushInt(st, @intCast(length));
+            try pushBytes(st, str[0..length]);
         },
         repr.Tag.buffer => {
             const buffer = wrap.toBuffer(x);
@@ -690,7 +691,7 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Raising(void
                 // A buffer over memory the runtime does not own travels as its
                 // pointer, in unsafe mode only.
                 if ((flags & constants.JANET_MARSHAL_UNSAFE) != 0 and
-                    (buffer.gc.flags & constants.JANET_BUFFER_FLAG_NO_REALLOC) != 0)
+                    buffers.isForeign(buffer))
                 {
                     try pushByte(st, Lead.pointer_buffer.byte());
                     try pushInt(st, @intCast(buffer.count));
@@ -715,13 +716,13 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Raising(void
         repr.Tag.tuple => {
             const tup = wrap.toTuple(x);
             const count = tuples.head(tup).length;
-            const flag = tuples.head(tup).gc.flags >> 16;
+            const flag: i32 = tuples.head(tup).gc.flags.own;
             try pushByte(st, Lead.tuple.byte());
-            try pushInt(st, count);
+            try pushInt(st, @intCast(count));
             try pushInt(st, flag);
-            // `count` keeps its `i32` width: `pushInt` above writes it to the
-            // stream. The walk over it is a position.
-            for (0..@as(usize, @intCast(count))) |i| {
+            // The cast is the wire's, not the walk's: `pushInt` writes a signed
+            // 32-bit integer and the head's count is unsigned.
+            for (0..count) |i| {
                 try marshalOne(st, tup[i], flags + 1);
             }
             // Marked as seen AFTER marshalling: a tuple is immutable and
@@ -740,7 +741,7 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Raising(void
                 else => if (has_proto) Lead.table_proto else Lead.table,
             }).byte());
             try pushInt(st, @intCast(t.count));
-            if (has_proto) try marshalOne(st, wrap.fromTable(t.proto.?), flags + 1);
+            if (t.proto) |proto| try marshalOne(st, wrap.fromTable(proto), flags + 1);
             for (0..t.capacity) |i| {
                 const kv = t.slots()[i];
                 if (repr.checkType(kv.key, repr.Tag.nil)) continue;
@@ -753,14 +754,14 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Raising(void
             const head = structs.head(struct_);
             const count = head.length;
             try pushByte(st, if (head.proto != null) Lead.struct_proto.byte() else Lead.@"struct".byte());
-            try pushInt(st, count);
-            if (head.proto != null) {
-                try marshalOne(st, wrap.fromStruct(head.proto.?), flags + 1);
+            try pushInt(st, @intCast(count));
+            if (head.proto) |proto| {
+                try marshalOne(st, wrap.fromStruct(proto), flags + 1);
             }
-            // `head.capacity` stays `i32` with the rest of `structs.StructHead`;
-            // the walk over the slots it counts is a plain index, as in the
-            // table case above.
-            for (0..@as(usize, @intCast(head.capacity))) |i| {
+            // The capacity is not written to the stream -- the reader rebuilds
+            // it from the count -- so the walk over it is a plain index, as in
+            // the table case above.
+            for (0..head.capacity) |i| {
                 const kv = struct_[i];
                 if (repr.checkType(kv.key, repr.Tag.nil)) continue;
                 try marshalOne(st, kv.key, flags + 1);
@@ -839,15 +840,15 @@ pub fn marshal(
     _ = tables.init(&st.seen, 0);
     try marshalOne(&st, x, flags);
     tables.deinit(&st.seen);
-    stretchy.free(&st.seen_envs);
-    stretchy.free(&st.seen_defs);
+    scratch_vector.free(&st.seen_envs);
+    scratch_vector.free(&st.seen_defs);
 }
 
 pub const marshalAbi = raise.panicking(marshal).abi;
 
 // ------------------------------------------------- the marshal context API
 
-inline fn marshalState(ctx: *abi.JanetMarshalContext) *MarshalState {
+inline fn marshalState(ctx: *abi.MarshalContext) *MarshalState {
     return @ptrCast(@alignCast(ctx.m_state));
 }
 
@@ -856,59 +857,46 @@ inline fn marshalState(ctx: *abi.JanetMarshalContext) *MarshalState {
 /// widens before it reinterprets, and `(size_t)` on the way back truncates.
 /// Zig's `@bitCast` refuses a width change, which is what makes the two steps
 /// visible here and invisible there.
-pub fn marshalSize(ctx: *abi.JanetMarshalContext, val: usize) raise.Raising(void) {
+pub fn marshalSize(ctx: *abi.MarshalContext, val: usize) raise.Raising(void) {
     return marshalInt64(ctx, @bitCast(@as(u64, val)));
 }
 
-pub fn marshalInt64(ctx: *abi.JanetMarshalContext, val: i64) raise.Raising(void) {
+pub fn marshalInt64(ctx: *abi.MarshalContext, val: i64) raise.Raising(void) {
     try push64(marshalState(ctx), @bitCast(val));
 }
 
-pub fn marshalInt(ctx: *abi.JanetMarshalContext, val: i32) raise.Raising(void) {
+pub fn marshalInt(ctx: *abi.MarshalContext, val: i32) raise.Raising(void) {
     try pushInt(marshalState(ctx), val);
 }
 
 /// Only meaningful in unsafe mode; a pointer means nothing to another process.
-pub fn marshalPtr(ctx: *abi.JanetMarshalContext, ptr: ?*const anyopaque) raise.Raising(void) {
+pub fn marshalPtr(ctx: *abi.MarshalContext, ptr: ?*const anyopaque) raise.Raising(void) {
     if ((ctx.flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
         return raise.panic("can only marshal pointers in unsafe mode");
     }
     try pushPointer(marshalState(ctx), ptr);
 }
 
-pub fn marshalByte(ctx: *abi.JanetMarshalContext, val: u8) raise.Raising(void) {
+pub fn marshalByte(ctx: *abi.MarshalContext, val: u8) raise.Raising(void) {
     try pushByte(marshalState(ctx), val);
 }
 
-pub fn marshalBytes(ctx: *abi.JanetMarshalContext, bytes: []const u8) raise.Raising(void) {
+pub fn marshalBytes(ctx: *abi.MarshalContext, bytes: []const u8) raise.Raising(void) {
     const st = marshalState(ctx);
     if (bytes.len > std.math.maxInt(i32)) return raise.panic("size_t too large to fit in buffer");
     try pushBytes(st, bytes);
 }
 
-pub fn marshalJanet(ctx: *abi.JanetMarshalContext, x: repr.Value) raise.Raising(void) {
+pub fn marshalJanet(ctx: *abi.MarshalContext, x: repr.Value) raise.Raising(void) {
     return marshalOne(marshalState(ctx), x, ctx.flags + 1);
 }
 
-pub fn marshalAbstract(ctx: *abi.JanetMarshalContext, abstract: ?*anyopaque) void {
+pub fn marshalAbstract(ctx: *abi.MarshalContext, abstract: ?*anyopaque) void {
     markSeen(marshalState(ctx), wrap.fromAbstract(abstract));
 }
 
-pub fn marshalFlags(ctx: *abi.JanetMarshalContext) c_int {
+pub fn marshalFlags(ctx: *abi.MarshalContext) c_int {
     return ctx.flags;
-}
-
-/// `janet_marshal_bytes(ctx, bytes, len)`, whose C signature spreads one
-/// slice into a pair. `raise.panicking` copies its parameter types into a
-/// `callconv(.c)` abi, and a slice is not allowed in one, so this abi is
-/// written out -- `raise.panickingArgv` is the same accommodation for the
-/// `(argc, argv)` order.
-pub fn marshalBytesAbi(
-    ctx: *abi.JanetMarshalContext,
-    bytes: ?[*]const u8,
-    len: usize,
-) void {
-    return marshalBytes(ctx, if (bytes) |p| p[0..len] else &.{}) catch raise.reportToC(void);
 }
 
 // ==========================================================================
@@ -919,10 +907,10 @@ pub fn marshalBytesAbi(
 /// or jumps through: this subsystem reports failure by raising, and always
 /// did. It is dropped rather than transcribed.
 const UnmarshalState = struct {
-    lookup: stretchy.Vector(repr.Value),
+    lookup: scratch_vector.Vector(repr.Value),
     reg: ?*tables.Table,
-    lookup_envs: stretchy.Vector(*functions.FuncEnv),
-    lookup_defs: stretchy.Vector(*functions.FuncDef),
+    lookup_envs: scratch_vector.Vector(*functions.FuncEnv),
+    lookup_defs: scratch_vector.Vector(*functions.FuncDef),
     start: [*]const u8,
     end: [*]const u8,
 };
@@ -1062,7 +1050,7 @@ fn unmarshalOneEnv(
     env.length = 0;
     env.offset = 0;
     env.as.values = null;
-    stretchy.push(&st.lookup_envs, env);
+    scratch_vector.push(&st.lookup_envs, env);
     const offset = try readNat(st, &data);
     // `readNat`, and the loop below stays signed with it: both land in
     // `JanetFuncEnv`, whose `length` and `offset` the port kept `i32` --
@@ -1146,7 +1134,7 @@ fn unmarshalOneDef(
     def.symbolmap = null;
     def.symbolmap_length = 0;
     def.named_args_count = 0;
-    stretchy.push(&st.lookup_defs, def);
+    scratch_vector.push(&st.lookup_defs, def);
 
     var environments_length: usize = 0;
     var defs_length: usize = 0;
@@ -1265,11 +1253,10 @@ fn unmarshalOneDef(
             utils.malloc(@sizeOf(functions.SourceMapping) * bytecode_length),
         )));
         var current: i32 = 0;
-        var i: usize = 0;
-        while (i < bytecode_length) : (i += 1) {
+        for (def.sourceMappings()) |*map| {
             current +%= try readInt(st, &data);
-            def.sourceMappings()[@intCast(i)].line = current;
-            def.sourceMappings()[@intCast(i)].column = try readInt(st, &data);
+            map.line = current;
+            map.column = try readInt(st, &data);
         }
     } else {
         def.sourcemap = null;
@@ -1317,7 +1304,7 @@ fn unmarshalOneFiber(
         fiber.ev_stream = null;
     }
 
-    stretchy.push(&st.lookup, wrap.fromFiber(fiber));
+    scratch_vector.push(&st.lookup, wrap.fromFiber(fiber));
 
     comptime std.debug.assert(@bitSizeOf(fibers.FiberFlags) == 32);
     var fiber_flags: u32 = @bitCast(try readInt(st, &data));
@@ -1354,7 +1341,7 @@ fn unmarshalOneFiber(
     var stacktop = fiber_stackstart - frame_size;
     while (stack > 0) {
         var env: ?*functions.FuncEnv = null;
-        var frameflags = try readInt(st, &data);
+        var frameflags: vm_state.FrameFlags = @bitCast(try readInt(st, &data));
         const prevframe = try readNat(st, &data);
         const pcdiff = try readNat(st, &data);
 
@@ -1367,8 +1354,8 @@ fn unmarshalOneFiber(
         const func = wrap.toFunction(funcv.value);
         const def = func.def.?;
 
-        if (frameflags & stackframe_hasenv != 0) {
-            frameflags &= ~stackframe_hasenv;
+        if (frameflags.has_env) {
+            frameflags.has_env = false;
             const frame_env = try unmarshalOneEnv(st, data, flags + 1);
             env = frame_env.value;
             data = frame_env.next;
@@ -1447,31 +1434,31 @@ fn unmarshalOneFiber(
 
 // ----------------------------------------------- the unmarshal context API
 
-inline fn unmarshalState(ctx: *abi.JanetMarshalContext) *UnmarshalState {
+inline fn unmarshalState(ctx: *abi.MarshalContext) *UnmarshalState {
     return @ptrCast(@alignCast(ctx.u_state));
 }
 
-pub fn unmarshalEnsure(ctx: *abi.JanetMarshalContext, size: usize) raise.Raising(void) {
+pub fn unmarshalEnsure(ctx: *abi.MarshalContext, size: usize) raise.Raising(void) {
     return eosAddr(unmarshalState(ctx), @intFromPtr(ctx.data) +% size);
 }
 
-pub fn unmarshalInt(ctx: *abi.JanetMarshalContext) raise.Raising(i32) {
+pub fn unmarshalInt(ctx: *abi.MarshalContext) raise.Raising(i32) {
     var cursor = ctx.data.?;
     defer ctx.data = cursor;
     return readInt(unmarshalState(ctx), &cursor);
 }
 
-pub fn unmarshalSize(ctx: *abi.JanetMarshalContext) raise.Raising(usize) {
+pub fn unmarshalSize(ctx: *abi.MarshalContext) raise.Raising(usize) {
     return @truncate(@as(u64, @bitCast(try unmarshalInt64(ctx))));
 }
 
-pub fn unmarshalInt64(ctx: *abi.JanetMarshalContext) raise.Raising(i64) {
+pub fn unmarshalInt64(ctx: *abi.MarshalContext) raise.Raising(i64) {
     var cursor = ctx.data.?;
     defer ctx.data = cursor;
     return @bitCast(try read64(unmarshalState(ctx), &cursor));
 }
 
-pub fn unmarshalPtr(ctx: *abi.JanetMarshalContext) raise.Raising(?*anyopaque) {
+pub fn unmarshalPtr(ctx: *abi.MarshalContext) raise.Raising(?*anyopaque) {
     if ((ctx.flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
         return raise.panic("can only unmarshal pointers in unsafe mode");
     }
@@ -1483,7 +1470,7 @@ pub fn unmarshalPtr(ctx: *abi.JanetMarshalContext) raise.Raising(?*anyopaque) {
     return ptr;
 }
 
-pub fn unmarshalByte(ctx: *abi.JanetMarshalContext) raise.Raising(u8) {
+pub fn unmarshalByte(ctx: *abi.MarshalContext) raise.Raising(u8) {
     const st = unmarshalState(ctx);
     try eos(st, ctx.data.?);
     const val = ctx.data.?[0];
@@ -1491,14 +1478,14 @@ pub fn unmarshalByte(ctx: *abi.JanetMarshalContext) raise.Raising(u8) {
     return val;
 }
 
-pub fn unmarshalBytes(ctx: *abi.JanetMarshalContext, dest: [*]u8, len: usize) raise.Raising(void) {
+pub fn unmarshalBytes(ctx: *abi.MarshalContext, dest: [*]u8, len: usize) raise.Raising(void) {
     const st = unmarshalState(ctx);
     try eosAddr(st, @intFromPtr(ctx.data) +% len -% 1);
-    utils.safeMemcpy(dest, ctx.data.?, len);
+    @memcpy(dest[0..len], ctx.data.?[0..len]);
     ctx.data.? += len;
 }
 
-pub fn unmarshalJanet(ctx: *abi.JanetMarshalContext) raise.Raising(repr.Value) {
+pub fn unmarshalJanet(ctx: *abi.MarshalContext) raise.Raising(repr.Value) {
     const decoded = try unmarshalOne(unmarshalState(ctx), ctx.data.?, ctx.flags);
     ctx.data = decoded.next;
     return decoded.value;
@@ -1507,15 +1494,15 @@ pub fn unmarshalJanet(ctx: *abi.JanetMarshalContext) raise.Raising(repr.Value) {
 /// Enter an already-allocated abstract into the reference table, and mark the
 /// context as having done so. `at` is the flag: `unmarshalOneAbstract` checks
 /// that it was cleared, which is how a callback that forgets is caught.
-pub fn unmarshalAbstractReuse(ctx: *abi.JanetMarshalContext, p: ?*anyopaque) raise.Raising(void) {
+pub fn unmarshalAbstractReuse(ctx: *abi.MarshalContext, p: ?*anyopaque) raise.Raising(void) {
     if (ctx.at == null) {
         return raise.panic("janet_unmarshal_abstract called more than once");
     }
-    stretchy.push(&unmarshalState(ctx).lookup, wrap.fromAbstract(p));
+    scratch_vector.push(&unmarshalState(ctx).lookup, wrap.fromAbstract(p));
     ctx.at = null;
 }
 
-pub fn unmarshalAbstract(ctx: *abi.JanetMarshalContext, size: usize) raise.Raising(?*anyopaque) {
+pub fn unmarshalAbstract(ctx: *abi.MarshalContext, size: usize) raise.Raising(?*anyopaque) {
     const p = abstracts.newBytes(ctx.at.?, size);
     try unmarshalAbstractReuse(ctx, p);
     return p;
@@ -1523,13 +1510,13 @@ pub fn unmarshalAbstract(ctx: *abi.JanetMarshalContext, size: usize) raise.Raisi
 
 /// Always raises. `JANET_THREADS` is defined by nothing in this tree, so the
 /// C original's other arm has never been compiled -- see `FOUND.md`.
-pub fn unmarshalAbstractThreaded(ctx: *abi.JanetMarshalContext, size: usize) raise.Raising(?*anyopaque) {
+pub fn unmarshalAbstractThreaded(ctx: *abi.MarshalContext, size: usize) raise.Raising(?*anyopaque) {
     _ = ctx;
     _ = size;
     return raise.panic("threaded abstracts not supported");
 }
 
-pub fn unmarshalFlags(ctx: *abi.JanetMarshalContext) c_int {
+pub fn unmarshalFlags(ctx: *abi.MarshalContext) c_int {
     return ctx.flags;
 }
 
@@ -1541,10 +1528,9 @@ fn unmarshalOneAbstract(
     const key = try unmarshalOne(st, data_in, flags + 1);
     const data = key.next;
     const stored_at = registry.getAbstractType(key.value);
-    if (stored_at == null) return raise.panic("unknown abstract type");
-    const at = stored_at.?;
+    const at = stored_at orelse return raise.panic("unknown abstract type");
     if (at.unmarshal) |unmarshal_fn| {
-        var context: abi.JanetMarshalContext = .{
+        var context: abi.MarshalContext = .{
             .m_state = null,
             .u_state = st,
             .flags = flags,
@@ -1583,13 +1569,8 @@ fn unmarshalOne(
         switch (lead) {
             Lead.pointer_buffer => {
                 data += 1;
-                // `readNat`, not `readCount`: these two go straight to
-                // `buffers.pointerUnsafe`, whose `i32` is not residue -- its
-                // other caller is the FFI surface, where the values come from
-                // a Janet program and `count < 0` is live and pinned by
-                // `test/buffer_array.zig`.
-                const count = try readNat(st, &data);
-                const capacity = try readNat(st, &data);
+                const count = try readCount(st, &data);
+                const capacity = try readCount(st, &data);
                 try eos(st, data + @sizeOf(?*anyopaque));
                 if ((flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
                     return pp_format.panicf(
@@ -1602,7 +1583,7 @@ fn unmarshalOne(
                 data += @sizeOf(?*anyopaque);
                 const buffer = try buffers.pointerUnsafe(ptr, capacity, count);
                 out = wrap.fromBuffer(buffer);
-                stretchy.push(&st.lookup, out);
+                scratch_vector.push(&st.lookup, out);
                 return .{ .value = out, .next = data };
             },
             Lead.threaded_abstract => {
@@ -1635,7 +1616,7 @@ fn unmarshalOne(
                         _ = abstracts.decref(ptr);
                     }
                 }
-                stretchy.push(&st.lookup, out);
+                scratch_vector.push(&st.lookup, out);
                 return .{ .value = out, .next = data };
             },
             else => {},
@@ -1660,7 +1641,7 @@ fn unmarshalOne(
             @memcpy(&bytes, data[1..9]);
             if (big_endian) std.mem.reverse(u8, &bytes);
             out = wrap.fromNumberSafe(@bitCast(bytes));
-            stretchy.push(&st.lookup, out);
+            scratch_vector.push(&st.lookup, out);
             return .{ .value = out, .next = data + 9 };
         },
         Lead.string, Lead.symbol, Lead.buffer, Lead.keyword, Lead.registry => {
@@ -1672,8 +1653,8 @@ fn unmarshalOne(
                 Lead.symbol => out = wrap.fromSymbol(symbols.new(data[0..len])),
                 Lead.keyword => out = value.fromBytes(data[0..len], .keyword),
                 Lead.registry => {
-                    if (st.reg != null) {
-                        out = tables.get(st.reg.?, value.fromBytes(data[0..len], .symbol));
+                    if (st.reg) |reg| {
+                        out = tables.get(reg, value.fromBytes(data[0..len], .symbol));
                     } else {
                         out = wrap.fromNil();
                     }
@@ -1681,11 +1662,11 @@ fn unmarshalOne(
                 else => {
                     const buffer = buffers.new(@intCast(len));
                     buffer.count = len;
-                    utils.safeMemcpy(buffer.data, data, len);
+                    @memcpy(buffer.reserved()[0..len], data[0..len]);
                     out = wrap.fromBuffer(buffer);
                 },
             }
-            stretchy.push(&st.lookup, out);
+            scratch_vector.push(&st.lookup, out);
             return .{ .value = out, .next = data + len };
         },
         Lead.fiber => {
@@ -1706,7 +1687,7 @@ fn unmarshalOne(
             func.def = null;
             for (0..len) |i| funcEnv(func, i).* = null;
             out = wrap.fromFunction(func);
-            stretchy.push(&st.lookup, out);
+            scratch_vector.push(&st.lookup, out);
             const def = try unmarshalOneDef(st, data, flags + 1);
             data = def.next;
             func.def = def.value;
@@ -1751,7 +1732,7 @@ fn unmarshalOne(
                     arrays.new(@intCast(len));
                 array.count = len;
                 out = wrap.fromArray(array);
-                stretchy.push(&st.lookup, out);
+                scratch_vector.push(&st.lookup, out);
                 for (0..len) |i| {
                     const item = try unmarshalOne(st, data, flags + 1);
                     array.slice()[i] = item.value;
@@ -1761,14 +1742,14 @@ fn unmarshalOne(
                 const tup = tuples.begin(@intCast(len));
                 const flag = try readInt(st, &data);
                 // The cast avoids a left shift of a negative value.
-                tuples.head(tup).gc.flags |= @bitCast(@as(u32, @bitCast(flag)) << 16);
+                tuples.head(tup).gc.flags.own |= @truncate(@as(u32, @bitCast(flag)));
                 for (0..len) |i| {
                     const item = try unmarshalOne(st, data, flags + 1);
                     tup[i] = item.value;
                     data = item.next;
                 }
                 out = wrap.fromTuple(tuples.end(tup));
-                stretchy.push(&st.lookup, out);
+                scratch_vector.push(&st.lookup, out);
             } else if (lead == Lead.@"struct" or lead == Lead.struct_proto) {
                 const struct_ = structs.begin(@intCast(len));
                 if (lead == Lead.struct_proto) {
@@ -1784,7 +1765,7 @@ fn unmarshalOne(
                     structs.put(struct_, key.value, val.value);
                 }
                 out = wrap.fromStruct(structs.end(struct_));
-                stretchy.push(&st.lookup, out);
+                scratch_vector.push(&st.lookup, out);
             } else if (lead == Lead.reference) {
                 // No `len < 0` arm: `readCount` refused a negative at the
                 // seam, which is the whole point of it being a separate
@@ -1801,7 +1782,7 @@ fn unmarshalOne(
                     else => tables.new(@intCast(len)),
                 };
                 out = wrap.fromTable(t);
-                stretchy.push(&st.lookup, out);
+                scratch_vector.push(&st.lookup, out);
                 switch (lead) {
                     Lead.table_proto,
                     Lead.table_weakk_proto,
@@ -1837,11 +1818,11 @@ fn unmarshalOne(
             @memcpy(@as([*]u8, @ptrCast(&ptr))[0..@sizeOf(?*anyopaque)], data[0..@sizeOf(?*anyopaque)]);
             data += @sizeOf(?*anyopaque);
             out = wrap.fromPointer(ptr);
-            stretchy.push(&st.lookup, out);
+            scratch_vector.push(&st.lookup, out);
             return .{ .value = out, .next = data };
         },
         Lead.unsafe_cfunction => {
-            try eos(st, data + @sizeOf(abi.JanetCFunction));
+            try eos(st, data + @sizeOf(abi.CFunction));
             data += 1;
             if ((flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
                 return pp_format.panicf(
@@ -1849,14 +1830,14 @@ fn unmarshalOne(
                     .{indexOf(st, data)},
                 );
             }
-            var cfn: abi.JanetCFunction = undefined;
+            var cfn: abi.CFunction = undefined;
             @memcpy(
-                @as([*]u8, @ptrCast(&cfn))[0..@sizeOf(abi.JanetCFunction)],
-                data[0..@sizeOf(abi.JanetCFunction)],
+                @as([*]u8, @ptrCast(&cfn))[0..@sizeOf(abi.CFunction)],
+                data[0..@sizeOf(abi.CFunction)],
             );
-            data += @sizeOf(abi.JanetCFunction);
+            data += @sizeOf(abi.CFunction);
             out = wrap.fromCfunction(cfn);
-            stretchy.push(&st.lookup, out);
+            scratch_vector.push(&st.lookup, out);
             return .{ .value = out, .next = data };
         },
         else => {
@@ -1884,14 +1865,17 @@ pub fn unmarshal(
     };
     const decoded = try unmarshalOne(&st, bytes.ptr, flags);
     if (next) |slot| slot.* = decoded.next;
-    stretchy.free(&st.lookup_defs);
-    stretchy.free(&st.lookup_envs);
-    stretchy.free(&st.lookup);
+    scratch_vector.free(&st.lookup_defs);
+    scratch_vector.free(&st.lookup_envs);
+    scratch_vector.free(&st.lookup);
     return decoded.value;
 }
 
-/// `janet_unmarshal(bytes, len, flags, reg, next)`. Written out for the same
-/// reason as `marshalBytesAbi` above.
+/// `janet_unmarshal(bytes, len, flags, reg, next)`.
+///
+/// Written out rather than generated: `raise.panicking` copies its parameter
+/// types into a `callconv(.c)` abi, and this signature spreads one slice into a
+/// pointer and a length, which a slice parameter cannot express.
 pub fn unmarshalAbi(
     bytes: ?[*]const u8,
     len: usize,

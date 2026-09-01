@@ -144,14 +144,14 @@ const abi = @import("abi");
 /// `base == null`, so a freed one sends it to `janet_realloc` with a pointer
 /// that is already free.
 pub const Traversal = struct {
-    at: ?[*]JanetTraversalNode = null,
-    top: ?[*]JanetTraversalNode = null,
-    base: ?[*]JanetTraversalNode = null,
+    at: ?[*]TraversalNode = null,
+    top: ?[*]TraversalNode = null,
+    base: ?[*]TraversalNode = null,
 };
 
-pub const JanetTraversalNode = struct {
-    self: ?*abi.JanetGCObject = null,
-    other: ?*abi.JanetGCObject = null,
+pub const TraversalNode = struct {
+    self: ?*abi.GCObject = null,
+    other: ?*abi.GCObject = null,
     index: i32 = 0,
     index2: i32 = 0,
 };
@@ -197,7 +197,7 @@ pub fn traversalDeinit(t: *Traversal) void {
 }
 
 fn pushTraversalNode(t: *Traversal, lhs: ?*anyopaque, rhs: ?*anyopaque, index2: i32) void {
-    var node: JanetTraversalNode = undefined;
+    var node: TraversalNode = undefined;
     node.self = @ptrCast(@alignCast(lhs));
     node.other = @ptrCast(@alignCast(rhs));
     node.index = 0;
@@ -205,10 +205,10 @@ fn pushTraversalNode(t: *Traversal, lhs: ?*anyopaque, rhs: ?*anyopaque, index2: 
     const is_new = t.base == null;
     if (is_new or @intFromPtr(t.at.? + 1) >= @intFromPtr(t.top.?)) {
         const oldsize: usize = if (is_new) 0 else (@intFromPtr(t.at) -%
-            @intFromPtr(t.base)) / @sizeOf(JanetTraversalNode);
+            @intFromPtr(t.base)) / @sizeOf(TraversalNode);
         var newsize: usize = 2 *% oldsize +% 1;
         if (newsize < 128) newsize = 128;
-        const tn = utils.resizeMany(JanetTraversalNode, t.base, newsize);
+        const tn = utils.resizeMany(TraversalNode, t.base, newsize);
         t.base = tn;
         t.top = tn + newsize;
         t.at = tn + oldsize;
@@ -231,8 +231,8 @@ fn pushTraversalNode(t: *Traversal, lhs: ?*anyopaque, rhs: ?*anyopaque, index2: 
 /// 1. That is the whole reason for the gap in the middle.
 fn traversalNext(stack: *Traversal, x: *repr.Value, y: *repr.Value) i32 {
     var t = stack.at;
-    while (t != null and @intFromPtr(t.?) > @intFromPtr(stack.base.?)) : (t = t.? - 1) {
-        const node = t.?;
+    while (t) |node| : (t = node - 1) {
+        if (@intFromPtr(node) <= @intFromPtr(stack.base.?)) break;
         const self = node[0].self.?;
         const tself: *const tuples.TupleHead = @ptrCast(@alignCast(self));
         const sself: *const structs.StructHead = @ptrCast(@alignCast(self));
@@ -277,11 +277,13 @@ fn traversalNext(stack: *Traversal, x: *repr.Value, y: *repr.Value) i32 {
             const oproto = sother.proto;
             if (sproto != null and oproto == null) return 3;
             if (sproto == null and oproto != null) return 1;
-            if (oproto != null and sproto != null) {
-                x.* = wrap.fromStruct(sproto.?);
-                y.* = wrap.fromStruct(oproto.?);
-                stack.at = node - 1;
-                return 0;
+            if (sproto) |sp| {
+                if (oproto) |op| {
+                    x.* = wrap.fromStruct(sp);
+                    y.* = wrap.fromStruct(op);
+                    stack.at = node - 1;
+                    return 0;
+                }
             }
         }
     }
@@ -302,10 +304,10 @@ fn compareAbstract(xx: abstracts.Abstract, yy: abstracts.Abstract) i32 {
     if (xt != yt) {
         return if (@intFromPtr(xt) > @intFromPtr(yt)) 1 else -1;
     }
-    if (xt.compare == null) {
+    const callback = xt.compare orelse {
         return if (@intFromPtr(xx) > @intFromPtr(yy)) 1 else -1;
-    }
-    return xt.compare.?(xx, yy);
+    };
+    return callback(xx, yy);
 }
 
 // ------------------------------------------------------------ equality
@@ -359,7 +361,7 @@ pub fn equals(x_in: repr.Value, y_in: repr.Value) bool {
                 if (t1 != t2) {
                     const h1 = tuples.head(t1);
                     const h2 = tuples.head(t2);
-                    if ((tuple_flag_bracketctor & (h1.gc.flags ^ h2.gc.flags)) != 0) return false;
+                    if (tuples.isBracketed(h1) != tuples.isBracketed(h2)) return false;
                     if (h1.hash != h2.hash) return false;
                     if (h1.length != h2.length) return false;
                     pushTraversalNode(stack, h1, h2, 0);
@@ -427,7 +429,7 @@ pub fn hash(x: repr.Value) i32 {
             const t = wrap.toTuple(x);
             const head = tuples.head(t);
             h = head.hash;
-            const inc: u32 = if ((head.gc.flags & tuple_flag_bracketctor) != 0) 1 else 0;
+            const inc: u32 = if (tuples.isBracketed(head)) 1 else 0;
             // Through u32 to avoid the signed overflow the C comment names.
             h = @bitCast(@as(u32, @bitCast(h)) +% inc);
         },
@@ -445,8 +447,8 @@ pub fn hash(x: repr.Value) i32 {
             if (repr.typeOf(x) == repr.Tag.abstract) {
                 const xx = wrap.toAbstract(x);
                 const at = abi.abstractHead(xx).type;
-                if (at.hash != null) {
-                    return at.hash.?(xx, abi.abstractHead(xx).size);
+                if (at.hash) |callback| {
+                    return callback(xx, abi.abstractHead(xx).size);
                 }
             }
             if (comptime @sizeOf(f64) == @sizeOf(*anyopaque)) {
@@ -487,7 +489,7 @@ inline fn stringHeadHash(s: [*]const u8) i32 {
 /// element-wise until one runs out -- which is what the `index2` flag on a
 /// tuple node means, and why `janet_compare` pushes it as 1 where
 /// `janet_equals` pushes 0.
-pub fn compare(x_in: repr.Value, y_in: repr.Value) c_int {
+pub fn compare(x_in: repr.Value, y_in: repr.Value) i32 {
     var x = x_in;
     var y = y_in;
     const stack = &vm_state.current().traversal;
@@ -529,8 +531,8 @@ pub fn compare(x_in: repr.Value, y_in: repr.Value) c_int {
                 const rhs = wrap.toTuple(y);
                 const lh = tuples.head(lhs);
                 const rh = tuples.head(rhs);
-                if ((tuple_flag_bracketctor & (lh.gc.flags ^ rh.gc.flags)) != 0) {
-                    return if ((lh.gc.flags & tuple_flag_bracketctor) != 0) 1 else -1;
+                if (tuples.isBracketed(lh) != tuples.isBracketed(rh)) {
+                    return if (tuples.isBracketed(lh)) 1 else -1;
                 }
                 pushTraversalNode(stack, lh, rh, 1);
             },

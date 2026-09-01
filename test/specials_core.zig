@@ -45,8 +45,8 @@ const expect = @import("expect.zig").expect;
 const primitives = subsystems.compiler_primitives;
 const special_type = subsystems.special;
 
-var compiler: compiler_primitives.JanetCompiler = undefined;
-var scope: compiler_primitives.JanetScope = undefined;
+var compiler: compiler_primitives.Compiler = undefined;
+var scope: compiler_primitives.Scope = undefined;
 
 /// A special by name, with the raising signature it actually has.
 ///
@@ -61,18 +61,18 @@ fn special(name: [*:0]const u8) *const special_type.Special {
 /// Compile one form through a special, the way `janetc_value` would. The count
 /// and the pointer were separate parameters until 2d; the slice carries both,
 /// which is what lets a caller pass fewer arguments than the array holds.
-fn compile(name: [*:0]const u8, options: compiler_primitives.JanetFopts, count: i32, arguments: []const repr.Value) !compiler_primitives.JanetSlot {
+fn compile(name: [*:0]const u8, options: compiler_primitives.FormOptions, count: i32, arguments: []const repr.Value) !compiler_primitives.Slot {
     return special(name).compile.?(options, arguments[0..@intCast(count)]);
 }
 
 fn clearError() void {
-    compiler.result.status = constants.JANET_COMPILE_OK;
+    compiler.result.status = compiler_primitives.CompileStatus.ok;
     compiler.result.@"error" = null;
     compiler.recursion_guard = config.recursion_guard;
 }
 
 fn failedWith(message: [*:0]const u8) bool {
-    return compiler.result.status == constants.JANET_COMPILE_ERROR and
+    return compiler.result.status == compiler_primitives.CompileStatus.@"error" and
         harness.stringIs(compiler.result.@"error".?, message);
 }
 
@@ -201,7 +201,7 @@ fn theIfForm(arguments: []repr.Value) !void {
     arguments[1] = harness.wrapInteger(11);
     arguments[2] = harness.wrapInteger(22);
     result = try compile("if", options, 3, arguments);
-    expect(compiler.result.status == constants.JANET_COMPILE_OK);
+    expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
     expect(!result.flags.constant);
     expect(emittedCount() == 1);
     try primitives.popscope(&compiler);
@@ -217,7 +217,7 @@ fn theIfForm(arguments: []repr.Value) !void {
         arguments[0] = wrap.fromSymbol(symbol);
     }
     result = try compile("if", options, 3, arguments);
-    expect(compiler.result.status == constants.JANET_COMPILE_OK);
+    expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
     expect(!result.flags.constant);
     expect(emittedCount() >= 4);
     expect(operationOf(emitted(0)) == harness.op(constants.Opcode.jump_if_not));
@@ -343,7 +343,7 @@ fn theSetForm(arguments: []repr.Value) !void {
         arguments[0] = wrap.fromSymbol(symbol);
         arguments[1] = harness.wrapInteger(7);
         result = try compile("set", options, 2, arguments);
-        expect(compiler.result.status == constants.JANET_COMPILE_OK);
+        expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
         expect(result.index == slot.index);
     }
     try primitives.popscope(&compiler);
@@ -359,7 +359,7 @@ fn theSetForm(arguments: []repr.Value) !void {
         arguments[0] = wrap.fromTuple(tuples.end(tuple));
         arguments[1] = harness.wrapInteger(8);
         result = try compile("set", options, 2, arguments);
-        expect(compiler.result.status == constants.JANET_COMPILE_OK);
+        expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
         expect(emittedCount() > 0);
         expect(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.Opcode.put));
     }
@@ -406,7 +406,7 @@ fn theBindingForms(arguments: []repr.Value) !void {
     const tuple = tuples.begin(0);
     arguments[0] = wrap.fromTuple(tuples.end(tuple));
     result = try compile("fn", options, 1, arguments);
-    expect(compiler.result.status == constants.JANET_COMPILE_OK);
+    expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
     expect(!result.flags.constant);
     expect(vector.count(scope.defs) == 1);
     expect(scope.defs.items[0].arity == 0);

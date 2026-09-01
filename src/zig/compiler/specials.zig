@@ -22,8 +22,7 @@ const tables = @import("../value/tables.zig");
 const strings = @import("../value/strings.zig");
 const tuples = @import("../value/tuples.zig");
 const utils = @import("../utils.zig");
-const stretchy = @import("../stretchy.zig");
-const regalloc = @import("regalloc.zig");
+const scratch_vector = @import("../scratch_vector.zig");
 const emit_core = @import("emit.zig");
 const registry = @import("../registry.zig");
 const wrap = @import("../value/helpers/wrap.zig");
@@ -32,6 +31,10 @@ const arrays = @import("../value/arrays.zig");
 const value = @import("../value.zig");
 const functions = @import("../value/functions.zig");
 
+/// `compiler.scope`, with the invariant that it is open named once in
+/// `compiler.zig`.
+const currentScope = compiler_primitives.currentScope;
+
 /// A keyword from a NUL-terminated literal, named so the special forms below
 /// read as one thing.
 inline fn wrapKeyword(val: [*:0]const u8) repr.Value {
@@ -39,9 +42,9 @@ inline fn wrapKeyword(val: [*:0]const u8) repr.Value {
 }
 
 fn specialQuote(
-    options: compiler_primitives.JanetFopts,
+    options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.JanetSlot) {
+) raise.Raising(compiler_primitives.Slot) {
     if (arguments.len != 1) {
         compiler_primitives.cerror(options.compiler, "expected 1 argument to quote");
         return nilSlot();
@@ -50,9 +53,9 @@ fn specialQuote(
 }
 
 fn specialSplice(
-    options: compiler_primitives.JanetFopts,
+    options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.JanetSlot) {
+) raise.Raising(compiler_primitives.Slot) {
     if (!options.flags.accept_splice) {
         compiler_primitives.cerror(options.compiler, "splice can only be used in function parameters and data constructors, it has no effect here");
         return nilSlot();
@@ -67,19 +70,19 @@ fn specialSplice(
 }
 
 fn specialUnquote(
-    options: compiler_primitives.JanetFopts,
+    options: compiler_primitives.FormOptions,
     _: []const repr.Value,
-) raise.Raising(compiler_primitives.JanetSlot) {
+) raise.Raising(compiler_primitives.Slot) {
     compiler_primitives.cerror(options.compiler, "cannot use unquote here");
     return nilSlot();
 }
 
 fn specialDo(
-    options: compiler_primitives.JanetFopts,
+    options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.JanetSlot) {
-    const compiler: *compiler_primitives.JanetCompiler = options.compiler;
-    var scope: compiler_primitives.JanetScope = undefined;
+) raise.Raising(compiler_primitives.Slot) {
+    const compiler: *compiler_primitives.Compiler = options.compiler;
+    var scope: compiler_primitives.Scope = undefined;
     compiler_primitives.pushScope(&scope, compiler, .{}, "do");
     const result = try compileSequence(options, arguments);
     try compiler_primitives.popscopeKeepslot(compiler, result);
@@ -87,17 +90,17 @@ fn specialDo(
 }
 
 fn specialUpscope(
-    options: compiler_primitives.JanetFopts,
+    options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.JanetSlot) {
+) raise.Raising(compiler_primitives.Slot) {
     return compileSequence(options, arguments);
 }
 
 fn specialBreak(
-    options: compiler_primitives.JanetFopts,
+    options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.JanetSlot) {
-    const compiler: *compiler_primitives.JanetCompiler = options.compiler;
+) raise.Raising(compiler_primitives.Slot) {
+    const compiler: *compiler_primitives.Compiler = options.compiler;
     if (arguments.len > 1) {
         compiler_primitives.cerror(compiler, "expected at most 1 argument");
         return nilSlot();
@@ -107,14 +110,14 @@ fn specialBreak(
     while (scope) |current| : (scope = current.parent) {
         if (current.flags.function or current.flags.while_body) break;
     }
-    if (scope == null) {
+    const target_scope = scope orelse {
         compiler_primitives.cerror(compiler, "break must occur in while loop or closure");
         return nilSlot();
-    }
+    };
 
     var suboptions = compiler_primitives.foptsDefault(compiler);
-    if (scope.?.flags.function) {
-        if (!scope.?.flags.while_body and arguments.len != 0) {
+    if (target_scope.flags.function) {
+        if (!target_scope.flags.while_body and arguments.len != 0) {
             suboptions.flags.tail = true;
             _ = try compiler_primitives.valueImpl(suboptions, arguments[0]);
         } else {
@@ -135,10 +138,10 @@ fn specialBreak(
 }
 
 fn specialIf(
-    options: compiler_primitives.JanetFopts,
+    options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.JanetSlot) {
-    const compiler: *compiler_primitives.JanetCompiler = options.compiler;
+) raise.Raising(compiler_primitives.Slot) {
+    const compiler: *compiler_primitives.Compiler = options.compiler;
     if (arguments.len < 2 or arguments.len > 3) {
         compiler_primitives.cerror(compiler, "expected 2 or 3 arguments to if");
         return nilSlot();
@@ -153,7 +156,7 @@ fn specialIf(
     const drop = options.flags.drop;
     var target = if (drop or tail) nilSlot() else compiler_primitives.gettarget(options);
 
-    var condition_scope: compiler_primitives.JanetScope = undefined;
+    var condition_scope: compiler_primitives.Scope = undefined;
     compiler_primitives.pushScope(&condition_scope, compiler, .{}, "if");
     var condition_form = arguments[0];
     var jump_opcode: constants.Opcode = .jump_if_not;
@@ -176,7 +179,7 @@ fn specialIf(
             false_body = true_body;
             true_body = temporary;
         }
-        var body_scope: compiler_primitives.JanetScope = undefined;
+        var body_scope: compiler_primitives.Scope = undefined;
         compiler_primitives.pushScope(&body_scope, compiler, .{}, "if-true");
         const right = try compiler_primitives.valueImpl(body_options, true_body);
         if (!drop and !tail) emit_core.copy(compiler, target, right);
@@ -189,7 +192,7 @@ fn specialIf(
     }
 
     const right_jump = emit_core.emitSi(compiler, jump_opcode, condition, 0, 0);
-    var body_scope: compiler_primitives.JanetScope = undefined;
+    var body_scope: compiler_primitives.Scope = undefined;
     compiler_primitives.pushScope(&body_scope, compiler, .{}, "if-true");
     const left = try compiler_primitives.valueImpl(body_options, true_body);
     if (!drop and !tail) emit_core.copy(compiler, target, left);
@@ -221,9 +224,9 @@ fn specialIf(
 }
 
 fn specialQuasiquote(
-    options: compiler_primitives.JanetFopts,
+    options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.JanetSlot) {
+) raise.Raising(compiler_primitives.Slot) {
     if (arguments.len != 1) {
         compiler_primitives.cerror(options.compiler, "expected 1 argument to quasiquote");
         return nilSlot();
@@ -232,10 +235,10 @@ fn specialQuasiquote(
 }
 
 fn specialWhile(
-    options: compiler_primitives.JanetFopts,
+    options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.JanetSlot) {
-    const compiler: *compiler_primitives.JanetCompiler = options.compiler;
+) raise.Raising(compiler_primitives.Slot) {
+    const compiler: *compiler_primitives.Compiler = options.compiler;
     if (arguments.len < 1) {
         compiler_primitives.cerror(compiler, "expected at least 1 argument to while");
         return nilSlot();
@@ -243,7 +246,7 @@ fn specialWhile(
 
     const while_label = compiler.here();
     var suboptions = compiler_primitives.foptsDefault(compiler);
-    var scope: compiler_primitives.JanetScope = undefined;
+    var scope: compiler_primitives.Scope = undefined;
     compiler_primitives.pushScope(&scope, compiler, .{ .while_body = true }, "while");
 
     var condition_form = arguments[0];
@@ -284,10 +287,9 @@ fn specialWhile(
         0
     else
         emit_core.emitSi(compiler, false_jump, condition, 0, 0);
-    var index: i32 = 1;
-    while (index < @as(i32, @intCast(arguments.len))) : (index += 1) {
+    for (arguments[1..]) |argument| {
         suboptions.flags = .{ .drop = true };
-        compiler_primitives.freeslot(compiler, try compiler_primitives.valueImpl(suboptions, arguments[@intCast(index)]));
+        compiler_primitives.freeslot(compiler, try compiler_primitives.valueImpl(suboptions, argument));
     }
 
     if (scope.flags.closure) {
@@ -303,22 +305,21 @@ fn specialWhile(
             _ = emit_core.emitSi(compiler, true_jump, condition, 2, 0);
             _ = emit_core.emit(compiler, constants.Opcode.return_nil.number());
         }
-        index = 1;
-        while (index < @as(i32, @intCast(arguments.len))) : (index += 1) {
+        for (arguments[1..]) |argument| {
             suboptions.flags = .{ .drop = true };
-            compiler_primitives.freeslot(compiler, try compiler_primitives.valueImpl(suboptions, arguments[@intCast(index)]));
+            compiler_primitives.freeslot(compiler, try compiler_primitives.valueImpl(suboptions, argument));
         }
 
-        const self_register = regalloc.regallocTemp(&scope.ra, constants.JANETC_REGTEMP_0);
+        const self_register = scope.ra.allocateTemp(constants.RegisterTemp.t0);
         emitInstruction(compiler, @as(u32, constants.Opcode.load_self.number()) | (@as(u32, @intCast(self_register)) << 8));
         emitInstruction(compiler, @as(u32, constants.Opcode.tailcall.number()) | (@as(u32, @intCast(self_register)) << 8));
-        regalloc.regallocFreetemp(&compiler.scope.?.ra, self_register, constants.JANETC_REGTEMP_0);
+        currentScope(compiler).ra.freeTemp(self_register, constants.RegisterTemp.t0);
 
         const definition = try compiler_primitives.popFuncdef(compiler);
         definition.name = strings.cstring("while");
         compiler_primitives.defAddflags(definition);
         const definition_index = addFunctionDefinition(compiler, definition);
-        const closure_register = regalloc.regallocTemp(&compiler.scope.?.ra, constants.JANETC_REGTEMP_0);
+        const closure_register = currentScope(compiler).ra.allocateTemp(constants.RegisterTemp.t0);
         emitInstruction(
             compiler,
             @as(u32, constants.Opcode.closure.number()) |
@@ -331,8 +332,8 @@ fn specialWhile(
                 (@as(u32, @intCast(closure_register)) << 8) |
                 (@as(u32, @intCast(closure_register)) << 16),
         );
-        regalloc.regallocFreetemp(&compiler.scope.?.ra, closure_register, constants.JANETC_REGTEMP_0);
-        compiler.scope.?.flags.closure = true;
+        currentScope(compiler).ra.freeTemp(closure_register, constants.RegisterTemp.t0);
+        currentScope(compiler).flags.closure = true;
         return nilSlot();
     }
 
@@ -346,12 +347,15 @@ fn specialWhile(
     checkJump24(compiler, top_jump, while_label);
     compiler.buffer.items[@intCast(top_jump)] |= @as(u32, @bitCast(while_label - top_jump)) << 8;
 
-    index = while_label;
-    while (index < done_label) : (index += 1) {
-        if (compiler.buffer.items[@intCast(index)] == 0x80 | constants.Opcode.jump.number()) {
-            checkJump24(compiler, index, done_label);
-            compiler.buffer.items[@intCast(index)] = @as(u32, constants.Opcode.jump.number()) |
-                (@as(u32, @intCast(done_label - index)) << 8);
+    // Every `break` the body emitted is an unpatched jump waiting for the loop's
+    // exit; `while_label + offset` is the position each one sits at.
+    const region = compiler.buffer.items[@intCast(while_label)..@intCast(done_label)];
+    for (region, 0..) |*instruction, offset| {
+        if (instruction.* == 0x80 | constants.Opcode.jump.number()) {
+            const here = while_label + @as(i32, @intCast(offset));
+            checkJump24(compiler, here, done_label);
+            instruction.* = @as(u32, constants.Opcode.jump.number()) |
+                (@as(u32, @intCast(done_label - here)) << 8);
         }
     }
     try compiler_primitives.popscope(compiler);
@@ -359,10 +363,10 @@ fn specialWhile(
 }
 
 fn specialSet(
-    options: compiler_primitives.JanetFopts,
+    options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.JanetSlot) {
-    const compiler: *compiler_primitives.JanetCompiler = options.compiler;
+) raise.Raising(compiler_primitives.Slot) {
+    const compiler: *compiler_primitives.Compiler = options.compiler;
     if (arguments.len != 2) {
         compiler_primitives.cerror(compiler, "expected 2 arguments to set");
         return nilSlot();
@@ -404,26 +408,26 @@ fn specialSet(
 }
 
 fn specialVar(
-    options: compiler_primitives.JanetFopts,
+    options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.JanetSlot) {
+) raise.Raising(compiler_primitives.Slot) {
     return try compileBinding(options, arguments, .variable);
 }
 
 fn specialDef(
-    options: compiler_primitives.JanetFopts,
+    options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.JanetSlot) {
+) raise.Raising(compiler_primitives.Slot) {
     return try compileBinding(options, arguments, .definition);
 }
 
 fn specialFn(
-    options: compiler_primitives.JanetFopts,
+    options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.JanetSlot) {
-    const compiler: *compiler_primitives.JanetCompiler = options.compiler;
-    compiler.scope.?.flags.closure = true;
-    var function_scope: compiler_primitives.JanetScope = undefined;
+) raise.Raising(compiler_primitives.Slot) {
+    const compiler: *compiler_primitives.Compiler = options.compiler;
+    currentScope(compiler).flags.closure = true;
+    var function_scope: compiler_primitives.Scope = undefined;
     compiler_primitives.pushScope(&function_scope, compiler, .{ .function = true }, "function");
 
     if (arguments.len == 0) {
@@ -435,18 +439,22 @@ fn specialFn(
     const self_reference = repr.checkType(head, repr.Tag.symbol);
     const has_name = self_reference or repr.checkType(head, repr.Tag.keyword);
     if (has_name) parameter_index = 1;
-    if (parameter_index >= @as(i32, @intCast(arguments.len)) or
+    if (parameter_index >= arguments.len or
         !repr.checkType(arguments[@intCast(parameter_index)], repr.Tag.tuple))
     {
         return functionError(compiler, "expected function parameters");
     }
 
     const parameters = wrap.toTuple(arguments[@intCast(parameter_index)]);
-    const parameter_count = tuples.head(parameters).length;
-    var destructured_parameters: stretchy.Vector(compiler_primitives.JanetSlot) = .empty;
-    var named_parameters: stretchy.Vector(compiler_primitives.JanetSlot) = .empty;
+    // The arity arithmetic below subtracts one and two from this and compares
+    // the result with an index, which is a signed question: `parameter_count`
+    // is the tuple's `u32` length narrowed once, here, rather than a `u32` that
+    // would wrap under those subtractions.
+    const parameter_count: i32 = @intCast(tuples.head(parameters).length);
+    var destructured_parameters: scratch_vector.Vector(compiler_primitives.Slot) = .empty;
+    var named_parameters: scratch_vector.Vector(compiler_primitives.Slot) = .empty;
     var named_table: ?*tables.Table = null;
-    var named_slot: compiler_primitives.JanetSlot = undefined;
+    var named_slot: compiler_primitives.Slot = undefined;
     var arity = parameter_count;
     var minimum_arity: i32 = 0;
     var vararg = false;
@@ -454,20 +462,19 @@ fn specialFn(
     var allow_extra = false;
     var seen_amp = false;
     var seen_optional = false;
-    var named_arguments = false;
 
-    var index: usize = 0;
-    while (index < parameter_count) : (index += 1) {
-        const parameter = parameters[index];
-        if (named_arguments) {
+    for (tuples.view(parameters), 0..) |parameter, index| {
+        // `named_table` is the `&named` flag: it is created when the marker is
+        // seen and nothing clears it, so every later parameter is a named one.
+        if (named_table) |named| {
             arity -= 1;
             if (!repr.checkType(parameter, repr.Tag.symbol)) {
-                stretchy.free(&destructured_parameters);
-                stretchy.free(&named_parameters);
+                scratch_vector.free(&destructured_parameters);
+                scratch_vector.free(&named_parameters);
                 return functionError(compiler, "only named arguments can follow &named");
             }
             tables.put(
-                named_table.?,
+                named,
                 wrapKeyword(wrap.toSymbol(parameter)),
                 parameter,
             );
@@ -524,7 +531,6 @@ fn specialFn(
             structarg = true;
             arity -= 1;
             seen_amp = true;
-            named_arguments = true;
             named_table = tables.new(10);
             named_slot = compiler_primitives.farslot(compiler) orelse nilSlot();
         } else {
@@ -532,22 +538,20 @@ fn specialFn(
         }
     }
 
-    if (named_arguments) {
+    if (named_table) |named| {
         _ = try destructure(
             compiler,
-            wrap.fromTable(named_table.?),
+            wrap.fromTable(named),
             named_slot,
             .definition,
             null,
         );
         compiler_primitives.freeslot(compiler, named_slot);
-        stretchy.free(&named_parameters);
+        scratch_vector.free(&named_parameters);
     }
 
     var destructured_index: usize = 0;
-    index = 0;
-    while (index < parameter_count) : (index += 1) {
-        const parameter = parameters[@intCast(index)];
+    for (tuples.view(parameters)) |parameter| {
         if (repr.checkType(parameter, repr.Tag.symbol)) continue;
         if (destructured_index >= destructured_parameters.items.len) unreachable;
         const parameter_slot = destructured_parameters.items[destructured_index];
@@ -555,7 +559,7 @@ fn specialFn(
         _ = try destructure(compiler, parameter, parameter_slot, .definition, null);
         compiler_primitives.freeslot(compiler, parameter_slot);
     }
-    stretchy.free(&destructured_parameters);
+    scratch_vector.free(&destructured_parameters);
 
     const maximum_arity: i32 = if (vararg or allow_extra) std_max_i32 else arity;
     if (!seen_optional) minimum_arity = arity;
@@ -563,8 +567,7 @@ fn specialFn(
     if (self_reference) {
         const symbol = wrap.toSymbol(head);
         var found = false;
-        index = 0;
-        for (compiler.scope.?.syms.items) |pair| {
+        for (currentScope(compiler).syms.items) |pair| {
             if (pair.sym == symbol) found = true;
         }
         if (!found) {
@@ -581,14 +584,13 @@ fn specialFn(
     }
 
     var suboptions = compiler_primitives.foptsDefault(compiler);
-    if (parameter_index + 1 == @as(i32, @intCast(arguments.len))) {
+    if (parameter_index + 1 == arguments.len) {
         _ = emit_core.emit(compiler, constants.Opcode.return_nil.number());
     } else {
-        var argument_index = parameter_index + 1;
-        while (argument_index < @as(i32, @intCast(arguments.len))) : (argument_index += 1) {
-            suboptions.flags = if (argument_index == @as(i32, @intCast(arguments.len)) - 1) .{ .tail = true } else .{ .drop = true };
-            _ = try compiler_primitives.valueImpl(suboptions, arguments[@intCast(argument_index)]);
-            if (compiler.result.status == constants.JANET_COMPILE_ERROR) {
+        for (arguments[@intCast(parameter_index + 1)..], @as(usize, @intCast(parameter_index + 1))..) |argument, argument_index| {
+            suboptions.flags = if (argument_index == arguments.len - 1) .{ .tail = true } else .{ .drop = true };
+            _ = try compiler_primitives.valueImpl(suboptions, argument);
+            if (compiler.result.status == .@"error") {
                 try compiler_primitives.popscope(compiler);
                 return nilSlot();
             }
@@ -599,10 +601,10 @@ fn specialFn(
     definition.arity = arity;
     definition.min_arity = minimum_arity;
     definition.max_arity = maximum_arity;
-    if (named_table != null) definition.named_args_count = @intCast(named_table.?.count);
+    if (named_table) |named| definition.named_args_count = @intCast(named.count);
     if (vararg) definition.flags.vararg = true;
     if (structarg) definition.flags.structarg = true;
-    if (named_arguments) definition.flags.namedargs = true;
+    if (named_table != null) definition.flags.namedargs = true;
     if (has_name) definition.name = wrap.toSymbol(head);
     compiler_primitives.defAddflags(definition);
     const definition_index = addFunctionDefinition(compiler, definition);
@@ -654,20 +656,20 @@ pub fn lookupSpecial(name: [*:0]const u8) ?*const special.Special {
     return lookup(name);
 }
 
-fn functionError(compiler: *compiler_primitives.JanetCompiler, message: [*:0]const u8) raise.Raising(compiler_primitives.JanetSlot) {
+fn functionError(compiler: *compiler_primitives.Compiler, message: [*:0]const u8) raise.Raising(compiler_primitives.Slot) {
     compiler_primitives.cerror(compiler, message);
     try compiler_primitives.popscope(compiler);
     return nilSlot();
 }
 
 fn cleanupFunctionError(
-    compiler: *compiler_primitives.JanetCompiler,
-    destructured_parameters: *stretchy.Vector(compiler_primitives.JanetSlot),
-    named_parameters: *stretchy.Vector(compiler_primitives.JanetSlot),
+    compiler: *compiler_primitives.Compiler,
+    destructured_parameters: *scratch_vector.Vector(compiler_primitives.Slot),
+    named_parameters: *scratch_vector.Vector(compiler_primitives.Slot),
     message: [*:0]const u8,
-) raise.Raising(compiler_primitives.JanetSlot) {
-    stretchy.free(destructured_parameters);
-    stretchy.free(named_parameters);
+) raise.Raising(compiler_primitives.Slot) {
+    scratch_vector.free(destructured_parameters);
+    scratch_vector.free(named_parameters);
     return functionError(compiler, message);
 }
 
@@ -675,29 +677,29 @@ const BindingKind = enum { variable, definition };
 
 const SlotHeadPair = struct {
     lhs: repr.Value,
-    rhs: compiler_primitives.JanetSlot,
+    rhs: compiler_primitives.Slot,
 };
 
 fn compileBinding(
-    original_options: compiler_primitives.JanetFopts,
+    original_options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
     binding_kind: BindingKind,
-) raise.Raising(compiler_primitives.JanetSlot) {
-    const compiler: *compiler_primitives.JanetCompiler = original_options.compiler;
+) raise.Raising(compiler_primitives.Slot) {
+    const compiler: *compiler_primitives.Compiler = original_options.compiler;
     const attributes = try handleAttributes(
         compiler,
         if (binding_kind == .variable) "var" else "def",
         arguments,
     );
-    if (compiler.result.status == constants.JANET_COMPILE_ERROR) return nilSlot();
+    if (compiler.result.status == .@"error") return nilSlot();
     try checkMetadataLint(compiler, attributes);
 
     var options = original_options;
     if (binding_kind == .definition) options.flags.hint = false;
-    var pairs: stretchy.Vector(SlotHeadPair) = .empty;
-    try buildDestructureHeads(&pairs, options, arguments[0], arguments[@intCast(@as(i32, @intCast(arguments.len)) - 1)]);
-    if (compiler.result.status == constants.JANET_COMPILE_ERROR) {
-        stretchy.free(&pairs);
+    var pairs: scratch_vector.Vector(SlotHeadPair) = .empty;
+    try buildDestructureHeads(&pairs, options, arguments[0], arguments[arguments.len - 1]);
+    if (compiler.result.status == .@"error") {
+        scratch_vector.free(&pairs);
         return nilSlot();
     }
 
@@ -707,12 +709,12 @@ fn compileBinding(
         _ = try destructure(compiler, pair.lhs, pair.rhs, binding_kind, attributes);
         result = pair.rhs;
     }
-    stretchy.free(&pairs);
+    scratch_vector.free(&pairs);
     return result;
 }
 
 fn handleAttributes(
-    compiler: *compiler_primitives.JanetCompiler,
+    compiler: *compiler_primitives.Compiler,
     binding_kind: [*:0]const u8,
     arguments: []const repr.Value,
 ) raise.Raising(?*tables.Table) {
@@ -725,9 +727,7 @@ fn handleAttributes(
         @ptrCast(wrap.toSymbol(arguments[0]))
     else
         "<multiple bindings>";
-    var index: i32 = 1;
-    while (index < @as(i32, @intCast(arguments.len)) - 1) : (index += 1) {
-        const attribute = arguments[@intCast(index)];
+    for (arguments[1 .. arguments.len - 1]) |attribute| {
         switch (repr.typeOf(attribute)) {
             repr.Tag.tuple => compiler_primitives.cerror(compiler, "unexpected form - did you intend to use defn?"),
             repr.Tag.keyword => tables.put(table, attribute, wrap.fromTrue()),
@@ -742,25 +742,37 @@ fn handleAttributes(
     return table;
 }
 
-fn checkMetadataLint(compiler: *compiler_primitives.JanetCompiler, attributes: ?*tables.Table) raise.Raising(void) {
-    if (compiler.scope.?.flags.top or attributes == null or attributes.?.count == 0) return;
-    if (repr.truthy(tableGetKeyword(attributes.?, "macro"))) {
+/// The metadata a binding carries, when it carries any.
+///
+/// `handleAttributes` answers a table for every `def` and `var` it accepts,
+/// empty when the form had no metadata, and `specialFn`'s parameter
+/// destructuring passes none at all. Every reader below asks the same two
+/// questions of it in the same order; this asks them once.
+fn metadata(attributes: ?*tables.Table) ?*tables.Table {
+    const table = attributes orelse return null;
+    return if (table.count == 0) null else table;
+}
+
+fn checkMetadataLint(compiler: *compiler_primitives.Compiler, attributes: ?*tables.Table) raise.Raising(void) {
+    if (currentScope(compiler).flags.top) return;
+    const table = metadata(attributes) orelse return;
+    if (repr.truthy(tableGetKeyword(table, "macro"))) {
         try compiler_primitives.lint(compiler, .normal, "macro tag is ignored in inner scopes");
     }
 }
 
 fn buildDestructureHeads(
-    pairs: *stretchy.Vector(SlotHeadPair),
-    options: compiler_primitives.JanetFopts,
+    pairs: *scratch_vector.Vector(SlotHeadPair),
+    options: compiler_primitives.FormOptions,
     lhs: repr.Value,
     rhs: repr.Value,
 ) raise.Raising(void) {
-    const compiler: *compiler_primitives.JanetCompiler = options.compiler;
+    const compiler: *compiler_primitives.Compiler = options.compiler;
     const lhs_indexed = repr.checkType(lhs, repr.Tag.tuple) or
         repr.checkType(lhs, repr.Tag.array);
     const rhs_indexed = repr.checkType(rhs, repr.Tag.array) or
         (repr.checkType(rhs, repr.Tag.tuple) and
-            utils.tupleHead(wrap.toTuple(rhs)).gc.flags & constants.JANET_TUPLE_FLAG_BRACKETCTOR != 0);
+            tuples.isBracketed(utils.tupleHead(wrap.toTuple(rhs))));
     const has_drop = options.flags.drop;
     var suboptions = compiler_primitives.foptsDefault(compiler);
     suboptions.flags = options.flags;
@@ -796,13 +808,13 @@ fn buildDestructureHeads(
     }
 
     suboptions.hint = options.hint;
-    stretchy.push(pairs, .{ .lhs = lhs, .rhs = try compiler_primitives.valueImpl(suboptions, rhs) });
+    scratch_vector.push(pairs, .{ .lhs = lhs, .rhs = try compiler_primitives.valueImpl(suboptions, rhs) });
 }
 
 fn destructure(
-    compiler: *compiler_primitives.JanetCompiler,
+    compiler: *compiler_primitives.Compiler,
     lhs: repr.Value,
-    rhs: compiler_primitives.JanetSlot,
+    rhs: compiler_primitives.Slot,
     binding_kind: BindingKind,
     attributes: ?*tables.Table,
 ) raise.Raising(bool) {
@@ -823,7 +835,7 @@ fn destructure(
                     if (index + 2 < values.len) {
                         const extra_count = values.len - index - 1;
                         const extra = tuples.begin(@intCast(extra_count));
-                        utils.tupleHead(extra).gc.flags |= constants.JANET_TUPLE_FLAG_BRACKETCTOR;
+                        tuples.setBracketed(utils.tupleHead(extra));
                         for (0..extra_count) |extra_index| {
                             extra[extra_index] = values[index + 1 + extra_index];
                         }
@@ -885,7 +897,7 @@ fn destructure(
     }
 }
 
-fn compileRestDestructure(compiler: *compiler_primitives.JanetCompiler, rhs: compiler_primitives.JanetSlot, target: compiler_primitives.JanetSlot, start: i32) void {
+fn compileRestDestructure(compiler: *compiler_primitives.Compiler, rhs: compiler_primitives.Slot, target: compiler_primitives.Slot, start: i32) void {
     const argument_index = compiler_primitives.farslot(compiler) orelse nilSlot();
     const argument = compiler_primitives.farslot(compiler) orelse nilSlot();
     const length = compiler_primitives.farslot(compiler) orelse nilSlot();
@@ -910,9 +922,9 @@ fn compileRestDestructure(compiler: *compiler_primitives.JanetCompiler, rhs: com
 }
 
 fn bindLeaf(
-    compiler: *compiler_primitives.JanetCompiler,
+    compiler: *compiler_primitives.Compiler,
     symbol: [*:0]const u8,
-    slot: compiler_primitives.JanetSlot,
+    slot: compiler_primitives.Slot,
     binding_kind: BindingKind,
     attributes: ?*tables.Table,
 ) raise.Raising(bool) {
@@ -923,10 +935,10 @@ fn bindLeaf(
 }
 
 fn nameLocal(
-    compiler: *compiler_primitives.JanetCompiler,
+    compiler: *compiler_primitives.Compiler,
     symbol: [*:0]const u8,
     binding_flags: compiler_primitives.SlotFlags,
-    original_slot: compiler_primitives.JanetSlot,
+    original_slot: compiler_primitives.Slot,
     original_definition_flags: u32,
 ) raise.Raising(bool) {
     var slot = original_slot;
@@ -947,23 +959,28 @@ fn nameLocal(
     // The only bit `nameLocal`'s two callers set is `mutable`, and it is a
     // union with what the slot already carries rather than a replacement.
     slot.flags.mutable = slot.flags.mutable or binding_flags.mutable;
-    if (compiler.scope.?.flags.top) definition_flags |= constants.JANET_DEFFLAG_NO_UNUSED;
+    if (currentScope(compiler).flags.top) definition_flags |= constants.JANET_DEFFLAG_NO_UNUSED;
     try compiler_primitives.nameslot(compiler, symbol, slot, definition_flags);
     return !unnamed_register;
 }
 
 fn bindVariableLeaf(
-    compiler: *compiler_primitives.JanetCompiler,
+    compiler: *compiler_primitives.Compiler,
     symbol: [*:0]const u8,
-    slot: compiler_primitives.JanetSlot,
+    slot: compiler_primitives.Slot,
     attributes: ?*tables.Table,
 ) raise.Raising(bool) {
-    if (compiler.scope.?.flags.top) {
-        const entry = tables.clone(attributes.?);
+    if (currentScope(compiler).flags.top) {
+        // A top-scope binding is always one `compileBinding` made, and
+        // `compileBinding` has already returned on the single path where
+        // `handleAttributes` answers null. The one caller that passes null --
+        // `specialFn`, destructuring its named parameters -- is inside the
+        // function scope it just pushed, so it never reaches this branch.
+        const entry = tables.clone(attributes orelse unreachable);
         var reference: *arrays.Array = undefined;
         if (compiler.is_redef) {
             const old_binding = registry.resolveExt(compiler.env.?, symbol);
-            if (old_binding.type == constants.JANET_BINDING_VAR) {
+            if (old_binding.type == .@"var") {
                 reference = wrap.toArray(old_binding.value);
             } else {
                 reference = try newReferenceArray();
@@ -985,11 +1002,11 @@ fn bindVariableLeaf(
         return true;
     }
     var definition_flags: u32 = 0;
-    if (attributes != null and attributes.?.count != 0) {
-        if (repr.truthy(tableGetKeyword(attributes.?, "unused"))) {
+    if (metadata(attributes)) |table| {
+        if (repr.truthy(tableGetKeyword(table, "unused"))) {
             definition_flags |= constants.JANET_DEFFLAG_NO_UNUSED;
         }
-        if (repr.truthy(tableGetKeyword(attributes.?, "shadow"))) {
+        if (repr.truthy(tableGetKeyword(table, "shadow"))) {
             definition_flags |= constants.JANET_DEFFLAG_NO_SHADOWCHECK;
         }
     }
@@ -997,26 +1014,32 @@ fn bindVariableLeaf(
 }
 
 fn bindDefinitionLeaf(
-    compiler: *compiler_primitives.JanetCompiler,
+    compiler: *compiler_primitives.Compiler,
     symbol: [*:0]const u8,
-    slot: compiler_primitives.JanetSlot,
+    slot: compiler_primitives.Slot,
     attributes: ?*tables.Table,
 ) raise.Raising(bool) {
     var entry: ?*tables.Table = null;
     var redef = false;
-    if (compiler.scope.?.flags.top) {
-        entry = tables.clone(attributes.?);
-        tables.put(entry.?, value.fromBytes("source-map", .keyword), wrap.fromTuple(makeSourceMap(compiler)));
+    if (currentScope(compiler).flags.top) {
+        // A top-scope binding is always one `compileBinding` made, and
+        // `compileBinding` has already returned on the single path where
+        // `handleAttributes` answers null. The one caller that passes null --
+        // `specialFn`, destructuring its named parameters -- is inside the
+        // function scope it just pushed, so it never reaches this branch.
+        const table = tables.clone(attributes orelse unreachable);
+        entry = table;
+        tables.put(table, value.fromBytes("source-map", .keyword), wrap.fromTuple(makeSourceMap(compiler)));
         redef = compiler.is_redef;
-        if (redef) tables.put(entry.?, value.fromBytes("redef", .keyword), wrap.fromTrue());
+        if (redef) tables.put(table, value.fromBytes("redef", .keyword), wrap.fromTrue());
         if (redef) {
             const binding = registry.resolveExt(compiler.env.?, symbol);
-            const reference = if (binding.type == constants.JANET_BINDING_DYNAMIC_DEF or
-                binding.type == constants.JANET_BINDING_DYNAMIC_MACRO)
+            const reference = if (binding.type == .dynamic_def or
+                binding.type == .dynamic_macro)
                 wrap.toArray(binding.value)
             else
                 newReferenceArray();
-            tables.put(entry.?, value.fromBytes("ref", .keyword), wrap.fromArray(try reference));
+            tables.put(table, value.fromBytes("ref", .keyword), wrap.fromArray(try reference));
             _ = emit_core.emitSsu(
                 compiler,
                 constants.Opcode.put_index,
@@ -1029,7 +1052,7 @@ fn bindDefinitionLeaf(
             _ = emit_core.emitSss(
                 compiler,
                 constants.Opcode.put,
-                compiler_primitives.cslot(wrap.fromTable(entry.?)),
+                compiler_primitives.cslot(wrap.fromTable(table)),
                 compiler_primitives.cslot(value.fromBytes("value", .keyword)),
                 slot,
                 0,
@@ -1037,15 +1060,18 @@ fn bindDefinitionLeaf(
         }
     }
     var definition_flags: u32 = 0;
-    if (attributes != null and attributes.?.count != 0 and
-        repr.truthy(tableGetKeyword(attributes.?, "unused")))
-    {
-        definition_flags |= constants.JANET_DEFFLAG_NO_UNUSED;
+    const attribute_table = metadata(attributes);
+    if (attribute_table) |table| {
+        if (repr.truthy(tableGetKeyword(table, "unused"))) {
+            definition_flags |= constants.JANET_DEFFLAG_NO_UNUSED;
+        }
     }
-    if (redef or (attributes != null and attributes.?.count != 0 and
-        repr.truthy(tableGetKeyword(attributes.?, "shadow"))))
-    {
+    if (redef) {
         definition_flags |= constants.JANET_DEFFLAG_NO_SHADOWCHECK;
+    } else if (attribute_table) |table| {
+        if (repr.truthy(tableGetKeyword(table, "shadow"))) {
+            definition_flags |= constants.JANET_DEFFLAG_NO_SHADOWCHECK;
+        }
     }
     const result = try nameLocal(compiler, symbol, .{}, slot, definition_flags);
     if (entry) |e| {
@@ -1054,7 +1080,7 @@ fn bindDefinitionLeaf(
     return result;
 }
 
-fn makeSourceMap(compiler: *compiler_primitives.JanetCompiler) tuples.Tuple {
+fn makeSourceMap(compiler: *compiler_primitives.Compiler) tuples.Tuple {
     const tuple = tuples.begin(3);
     tuple[0] = if (compiler.source) |source| wrap.fromString(source) else wrap.fromNil();
     tuple[1] = wrap.fromInteger(compiler.current_mapping.line);
@@ -1077,12 +1103,12 @@ fn tableGetKeyword(table: *tables.Table, keyword: [*:0]const u8) repr.Value {
     return tables.get(table, value.fromBytes(std.mem.span(keyword), .keyword));
 }
 
-fn quasiquote(options: compiler_primitives.JanetFopts, val: repr.Value, depth: i32, original_level: i32) raise.Raising(compiler_primitives.JanetSlot) {
+fn quasiquote(options: compiler_primitives.FormOptions, val: repr.Value, depth: i32, original_level: i32) raise.Raising(compiler_primitives.Slot) {
     if (depth == 0) {
         compiler_primitives.cerror(options.compiler, "quasiquote too deeply nested");
         return nilSlot();
     }
-    var slots: stretchy.Vector(compiler_primitives.JanetSlot) = .empty;
+    var slots: scratch_vector.Vector(compiler_primitives.Slot) = .empty;
     var suboptions = options;
     suboptions.flags.hint = false;
     var level = original_level;
@@ -1107,7 +1133,7 @@ fn quasiquote(options: compiler_primitives.JanetFopts, val: repr.Value, depth: i
             for (0..@as(usize, @intCast(length))) |index| {
                 pushSlot(&slots, try quasiquote(suboptions, tuple[index], depth - 1, level));
             }
-            const opcode = if (utils.tupleHead(tuple).gc.flags & constants.JANET_TUPLE_FLAG_BRACKETCTOR != 0)
+            const opcode = if (tuples.isBracketed(utils.tupleHead(tuple)))
                 constants.Opcode.make_bracket_tuple
             else
                 constants.Opcode.make_tuple;
@@ -1122,10 +1148,13 @@ fn quasiquote(options: compiler_primitives.JanetFopts, val: repr.Value, depth: i
         },
         repr.Tag.table, repr.Tag.@"struct" => {
             const view = args_core.dictionaryView(val).?;
-            var pair = if (view.kvs) |kvs| value.dictionaryNext(kvs[0..@intCast(view.cap)], null) else null;
-            while (pair != null) : (pair = value.dictionaryNext(view.kvs.?[0..@intCast(view.cap)], pair)) {
-                var key = try quasiquote(suboptions, pair.?.key, depth - 1, level);
-                var pair_value = try quasiquote(suboptions, pair.?.value, depth - 1, level);
+            // An empty table has no bucket array at all; the walk over no
+            // buckets is the empty walk, which is what the null test spelled.
+            const kvs: []const tables.KV = if (view.kvs) |buckets| buckets[0..@intCast(view.cap)] else &.{};
+            var pair = value.dictionaryNext(kvs, null);
+            while (pair) |current| : (pair = value.dictionaryNext(kvs, current)) {
+                var key = try quasiquote(suboptions, current.key, depth - 1, level);
+                var pair_value = try quasiquote(suboptions, current.value, depth - 1, level);
                 key.flags.spliced = false;
                 pair_value.flags.spliced = false;
                 pushSlot(&slots, key);
@@ -1141,7 +1170,7 @@ fn quasiquote(options: compiler_primitives.JanetFopts, val: repr.Value, depth: i
     }
 }
 
-fn quoteSlots(options: compiler_primitives.JanetFopts, slots: stretchy.Vector(compiler_primitives.JanetSlot), opcode: constants.Opcode) compiler_primitives.JanetSlot {
+fn quoteSlots(options: compiler_primitives.FormOptions, slots: scratch_vector.Vector(compiler_primitives.Slot), opcode: constants.Opcode) compiler_primitives.Slot {
     const target = compiler_primitives.gettarget(options);
     _ = compiler_primitives.pushslots(options.compiler, slots.items);
     compiler_primitives.freeslots(options.compiler, slots);
@@ -1150,31 +1179,30 @@ fn quoteSlots(options: compiler_primitives.JanetFopts, slots: stretchy.Vector(co
 }
 
 fn compileSequence(
-    options: compiler_primitives.JanetFopts,
+    options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.JanetSlot) {
-    const compiler: *compiler_primitives.JanetCompiler = options.compiler;
+) raise.Raising(compiler_primitives.Slot) {
+    const compiler: *compiler_primitives.Compiler = options.compiler;
     var result = nilSlot();
     var suboptions = compiler_primitives.foptsDefault(compiler);
-    var index: i32 = 0;
-    while (index < @as(i32, @intCast(arguments.len))) : (index += 1) {
-        if (index != @as(i32, @intCast(arguments.len)) - 1) {
+    for (arguments, 0..) |argument, index| {
+        if (index != arguments.len - 1) {
             suboptions.flags = .{ .drop = true };
         } else {
             suboptions = options;
             suboptions.flags.accept_splice = false;
         }
-        result = try compiler_primitives.valueImpl(suboptions, arguments[@intCast(index)]);
-        if (index != @as(i32, @intCast(arguments.len)) - 1) compiler_primitives.freeslot(compiler, result);
+        result = try compiler_primitives.valueImpl(suboptions, argument);
+        if (index != arguments.len - 1) compiler_primitives.freeslot(compiler, result);
     }
     return result;
 }
 
-fn nilSlot() compiler_primitives.JanetSlot {
+fn nilSlot() compiler_primitives.Slot {
     return compiler_primitives.cslot(wrap.fromNil());
 }
 
-fn emitInstruction(compiler: *compiler_primitives.JanetCompiler, instruction: u32) void {
+fn emitInstruction(compiler: *compiler_primitives.Compiler, instruction: u32) void {
     _ = emit_core.emit(compiler, @bitCast(instruction));
 }
 
@@ -1192,32 +1220,35 @@ fn checkNilForm(val: repr.Value, function_tag: u32) ?repr.Value {
     return null;
 }
 
-fn checkJump16(compiler: *compiler_primitives.JanetCompiler, from: i32, to: i32) void {
+fn checkJump16(compiler: *compiler_primitives.Compiler, from: i32, to: i32) void {
     const distance = to - from;
     if (distance > std_max_i16 or distance < std_min_i16) {
         compiler_primitives.cerror(compiler, "bad 16-bit jump, too large");
     }
 }
 
-fn checkJump24(compiler: *compiler_primitives.JanetCompiler, from: i32, to: i32) void {
+fn checkJump24(compiler: *compiler_primitives.Compiler, from: i32, to: i32) void {
     const distance = to - from;
     if (distance > 0xffffff or distance < -0x1000000) {
         compiler_primitives.cerror(compiler, "bad 24-bit jump, too large");
     }
 }
 
-fn pushSlot(slots: *stretchy.Vector(compiler_primitives.JanetSlot), val: compiler_primitives.JanetSlot) void {
-    stretchy.push(slots, val);
+fn pushSlot(slots: *scratch_vector.Vector(compiler_primitives.Slot), val: compiler_primitives.Slot) void {
+    scratch_vector.push(slots, val);
 }
 
-fn addFunctionDefinition(compiler: *compiler_primitives.JanetCompiler, definition: *functions.FuncDef) i32 {
+fn addFunctionDefinition(compiler: *compiler_primitives.Compiler, definition: *functions.FuncDef) i32 {
     var scope = compiler.scope;
     while (scope) |current| {
         if (current.flags.function) break;
         scope = current.parent;
     }
+    // The same invariant `emit.internConstant` names: `compileLintImpl` pushes
+    // the root scope with `.function = true` before any form is compiled, so
+    // the walk above stops on a function scope rather than running out.
     const function_scope = scope orelse unreachable;
-    stretchy.push(&function_scope.defs, definition);
+    scratch_vector.push(&function_scope.defs, definition);
     return @intCast(function_scope.defs.items.len - 1);
 }
 

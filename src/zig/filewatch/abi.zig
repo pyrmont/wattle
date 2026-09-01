@@ -101,7 +101,7 @@ pub const OVERLAPPED = extern struct {
 /// An `OVERLAPPED` with the transfer count beside it, which is what an
 /// asynchronous read or write on Windows carries. `WSAOVERLAPPED` has the same
 /// layout, so one member serves the socket calls too.
-pub const JanetOverlapped = extern struct {
+pub const Overlapped = extern struct {
     as: OVERLAPPED,
     bytes_transfered: u32,
 };

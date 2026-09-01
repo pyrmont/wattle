@@ -290,8 +290,7 @@ fn aapcs64Classify(nodes: []const TypeNode, idx: usize) Walk {
                 if (aapcs64Classify(nodes, first).class == aapcs64_sse) {
                     var is_hfa = true;
                     var child = skipSubtree(nodes, first);
-                    var i: u32 = 1;
-                    while (i < node.field_count) : (i += 1) {
+                    for (1..node.field_count) |_| {
                         if (nodes[first].prim != nodes[child].prim) {
                             is_hfa = false;
                             break;
@@ -337,7 +336,6 @@ pub fn allocWin64(
     ret: *ArgSlot,
     args: []ArgSlot,
 ) void {
-    const arg_count: u32 = @intCast(args.len);
     result.* = .{ .stack_count = 0, .variant = 0, .error_kind = err_none, .error_arg = -1, .arg_stack_count = 0 };
 
     var stack_count: u32 = 0;
@@ -353,9 +351,7 @@ pub fn allocWin64(
         result.variant +%= 16;
     }
 
-    var i: u32 = 0;
-    while (i < arg_count) : (i += 1) {
-        const arg = &args[i];
+    for (args) |*arg| {
         const el_size = arg.size;
         const is_register_sized = el_size == 1 or el_size == 2 or el_size == 4 or el_size == 8;
         if (next_register < 4) {
@@ -391,9 +387,7 @@ pub fn allocWin64(
     // The reference area sits above the stack arguments and is addressed from
     // the top, so the offsets recorded above are inverted now that the total is
     // known.
-    i = 0;
-    while (i < arg_count) : (i += 1) {
-        const arg = &args[i];
+    for (args) |*arg| {
         if (arg.spec == win64_stack_ref or arg.spec == win64_register_ref) {
             const size = (arg.size +% 15) & ~@as(u64, 0xF);
             arg.offset2 = stack_count -% arg.offset2 -% @as(u32, @truncate(size / 8));
@@ -410,7 +404,6 @@ pub fn allocSysv64(
     ret: *ArgSlot,
     args: []ArgSlot,
 ) void {
-    const arg_count: u32 = @intCast(args.len);
     result.* = .{ .stack_count = 0, .variant = 0, .error_kind = err_none, .error_arg = -1, .arg_stack_count = 0 };
 
     switch (ret.spec) {
@@ -430,9 +423,7 @@ pub fn allocSysv64(
     // the first integer register, so that register is not available to arguments.
     if (ret.spec == sysv64_memory) next_register = 1;
 
-    var i: u32 = 0;
-    while (i < arg_count) : (i += 1) {
-        const arg = &args[i];
+    for (args, 0..) |*arg, i| {
         arg.offset = 0;
         const el_size: u32 = @truncate((arg.size +% 7) / 8);
 
@@ -532,7 +523,6 @@ pub fn allocAapcs64(
     apple: bool,
     max_ret_size: u64,
 ) void {
-    const arg_count: u32 = @intCast(args.len);
     result.* = .{ .stack_count = 0, .variant = 0, .error_kind = err_none, .error_arg = -1, .arg_stack_count = 0 };
 
     if (ret.spec == aapcs64_sse) {
@@ -553,9 +543,7 @@ pub fn allocAapcs64(
     var stack_offset: u32 = 0;
     var ref_stack_offset: u32 = 0;
 
-    var i: u32 = 0;
-    while (i < arg_count) : (i += 1) {
-        const arg = &args[i];
+    for (args, 0..) |*arg, i| {
         const arg_size: u32 = @truncate(arg.size);
 
         switch (arg.spec) {
@@ -624,9 +612,7 @@ pub fn allocAapcs64(
 
     // The by-reference area follows the stack arguments, so its offsets are
     // relative until the stack area's final size is known.
-    i = 0;
-    while (i < arg_count) : (i += 1) {
-        const arg = &args[i];
+    for (args) |*arg| {
         if (arg.spec == aapcs64_general_ref or arg.spec == aapcs64_stack_ref) {
             arg.offset2 = stack_offset +% arg.offset2;
         }

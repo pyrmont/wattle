@@ -59,11 +59,11 @@ const heap = harness.heap;
 
 // --------------------------------------------------------------- helpers
 
-fn structLength(st: [*]const tables.KV) i32 {
+fn structLength(st: [*]const tables.KV) u32 {
     return structs.head(st).length;
 }
 
-fn structCapacity(st: [*]const tables.KV) i32 {
+fn structCapacity(st: [*]const tables.KV) u32 {
     return structs.head(st).capacity;
 }
 
@@ -86,10 +86,9 @@ fn kw(name: [*:0]const u8) repr.Value {
 /// The bucket a key would like to occupy. Spelled out rather than reusing
 /// `janet_maphash`, so that a change to that macro shows up as a failure
 /// rather than being tracked silently.
-fn idealIndex(capacity: i32, key: repr.Value) i32 {
+fn idealIndex(capacity: u32, key: repr.Value) u32 {
     const hash: u32 = @bitCast(order.hash(key));
-    const mask: u32 = @bitCast(capacity - 1);
-    return @bitCast(hash & mask);
+    return hash & (capacity - 1);
 }
 
 /// Fill `out` with distinct integer keys that all want the same bucket in an
@@ -99,8 +98,8 @@ fn idealIndex(capacity: i32, key: repr.Value) i32 {
 /// different subsystem and changes outright under `-Dprf`, so a fixed pair of
 /// colliding keys would silently stop colliding and every case built on it
 /// would keep passing while testing nothing.
-fn findColliding(capacity: i32, out: []repr.Value) i32 {
-    var target: i32 = 0;
+fn findColliding(capacity: u32, out: []repr.Value) u32 {
+    var target: u32 = 0;
     while (target < capacity) : (target += 1) {
         var found: usize = 0;
         var i: i32 = 0;
@@ -120,8 +119,8 @@ fn findColliding(capacity: i32, out: []repr.Value) i32 {
 /// *different*, which is the opposite need and has the same reason: so that a
 /// case about accumulating tombstones is not quietly turned into a case about
 /// reusing one.
-fn findDistinctIndices(capacity: i32, out: []repr.Value) void {
-    var used: [64]i32 = undefined;
+fn findDistinctIndices(capacity: u32, out: []repr.Value) void {
+    var used: [64]u32 = undefined;
     var found: usize = 0;
     expect(out.len <= capacity and capacity <= 64);
 
@@ -151,7 +150,7 @@ fn findDistinctIndices(capacity: i32, out: []repr.Value) void {
 /// on garbage from the allocator rather than on layout, and passes or fails at
 /// random. The layout claim is about which value sits in which bucket, so it
 /// is asserted that way.
-fn sameLayout(a: [*]const tables.KV, b: [*]const tables.KV, capacity: i32) bool {
+fn sameLayout(a: [*]const tables.KV, b: [*]const tables.KV, capacity: u32) bool {
     var i: usize = 0;
     while (i < capacity) : (i += 1) {
         if (repr.typeOf(a[i].key) != repr.typeOf(b[i].key)) return false;
@@ -249,9 +248,9 @@ fn structCollisionRunIsOrderedByHash() void {
     const s = structs.end(st);
 
     var previous: i32 = 0;
-    var n: i32 = 0;
+    var n: u32 = 0;
     while (n < 3) : (n += 1) {
-        const kv = &s[@intCast(@mod(index + n, capacity))];
+        const kv = &s[@mod(index + n, capacity)];
         expect(!harness.isType(kv.key, repr.Tag.nil));
         const hash = order.hash(kv.key);
         if (n > 0) expect(hash < previous);
@@ -412,7 +411,7 @@ fn structEndFoldsThePrototypeIntoTheHash() void {
     expect(sameLayout(sbare, swith, structCapacity(sbare)));
     expect(structHash(sbare) != structHash(swith));
 
-    const buckets: u32 = @bitCast(value.hashDictionary(swith[0..@intCast(structCapacity(swith))]));
+    const buckets: u32 = @bitCast(value.hashDictionary(swith[0..structCapacity(swith)]));
     const proto: u32 = @bitCast(structHash(sp));
     const expected: i32 = @bitCast(buckets +% 2654435761 *% proto);
     expect(structHash(swith) == expected);
@@ -485,18 +484,12 @@ fn structGetExReportsTheOwner() void {
     setStructProto(ch, sp);
     const sch = structs.end(ch);
 
-    var which: ?[*]const tables.KV = null;
-    expect(harness.equals(
-        structs.getEx(sch, kw("b"), &which),
-        harness.wrapInteger(2),
-    ));
-    expect(which == sch);
-    which = null;
-    expect(harness.equals(
-        structs.getEx(sch, kw("a"), &which),
-        harness.wrapInteger(1),
-    ));
-    expect(which == sp);
+    const own = structs.getEx(sch, kw("b"));
+    expect(harness.equals(own.value, harness.wrapInteger(2)));
+    expect(own.holder == sch);
+    const inherited = structs.getEx(sch, kw("a"));
+    expect(harness.equals(inherited.value, harness.wrapInteger(1)));
+    expect(inherited.holder == sp);
 }
 
 // ------------------------------------------------------ struct: conversion
@@ -528,26 +521,19 @@ fn structToTable() void {
 // ------------------------------------------------------- table: allocation
 
 /// `janet_tablen` rounds strictly up, so a requested capacity of zero still
-/// gets one bucket -- there is no such thing as an empty bucket array reached
-/// from a non-negative request.
+/// gets one bucket -- there is no such thing as an empty bucket array.
 ///
-/// A *negative* request produces one, and the resulting table cannot be looked
-/// up in at all: `janet_maphash` masks the hash with `capacity - 1`, which for
-/// a zero capacity is every bit set, so `janet_dict_find` treats the whole
-/// hash as a bucket number and both of its loops are bounded by it rather than
-/// by the capacity. Only a hash of exactly zero survives. `FOUND.md` records
-/// it, with the reproducer. Nothing below touches such a table beyond its
-/// fields, because the behaviour is undefined and a contract cannot pin it.
+/// C reached one from a *negative* request, and the resulting table could not
+/// be looked up in at all: `janet_maphash` masks the hash with `capacity - 1`,
+/// which for a zero capacity is every bit set, so `janet_dict_find` treats the
+/// whole hash as a bucket number and both of its loops are bounded by it
+/// rather than by the capacity. `FOUND.md` records it, with the reproducer.
+/// A capacity is a `usize` here and that request cannot be made, which is why
+/// nothing below builds one.
 fn tableCapacityRounding() void {
     expect(tables.new(0).capacity == 1);
     expect(tables.new(1).capacity == 2);
     expect(tables.new(4).capacity == 8);
-
-    const empty = tables.new(-1);
-    expect(empty.capacity == 0);
-    expect(empty.data == null);
-    expect(empty.count == 0);
-    expect(empty.deleted == 0);
 }
 
 fn tableConstructorMarksAndLists() void {
@@ -587,7 +573,7 @@ fn tableInitUsesScratchMemory() void {
     var local: tables.Table = undefined;
     @memset(std.mem.asBytes(&local), 0xEE);
     _ = tables.init(&local, 4);
-    expect(local.gc.flags == 0x10000);
+    expect(harness.gcBits(local.gc.flags) == 0x10000);
     expect(local.capacity == 8);
     expect(local.count == 0);
     expect(local.deleted == 0);
@@ -599,7 +585,7 @@ fn tableInitUsesScratchMemory() void {
         tables.put(&local, harness.wrapInteger(i), harness.wrapInteger(i * 2));
     }
     expect(local.count == 40);
-    expect(local.gc.flags == 0x10000);
+    expect(harness.gcBits(local.gc.flags) == 0x10000);
     i = 0;
     while (i < 40) : (i += 1) {
         expect(harness.equals(
@@ -614,7 +600,7 @@ fn tableInitRawLeavesTheFlagClear() void {
     var local: tables.Table = undefined;
     @memset(std.mem.asBytes(&local), 0);
     _ = tables.initRaw(&local, 4);
-    expect(local.gc.flags == 0);
+    expect(harness.gcBits(local.gc.flags) == 0);
     expect(local.capacity == 8);
     tables.put(&local, kw("a"), harness.wrapInteger(1));
     expect(harness.equals(tables.rawget(&local, kw("a")), harness.wrapInteger(1)));
@@ -821,18 +807,12 @@ fn tableGetExReportsTheOwner() void {
     tables.put(child, kw("b"), harness.wrapInteger(2));
     child.proto = proto;
 
-    var which: ?*tables.Table = null;
-    expect(harness.equals(
-        tables.getEx(child, kw("b"), &which),
-        harness.wrapInteger(2),
-    ));
-    expect(which == child);
-    which = null;
-    expect(harness.equals(
-        tables.getEx(child, kw("a"), &which),
-        harness.wrapInteger(1),
-    ));
-    expect(which == proto);
+    const own = tables.getEx(child, kw("b"));
+    expect(harness.equals(own.value, harness.wrapInteger(2)));
+    expect(own.holder == child);
+    const inherited = tables.getEx(child, kw("a"));
+    expect(harness.equals(inherited.value, harness.wrapInteger(1)));
+    expect(inherited.holder == proto);
 }
 
 /// Looking a key up from raw bytes, without interning it first. Used by the
@@ -917,7 +897,11 @@ fn tableCloneCopiesTheLayout() void {
 /// cannot be looked up in on either side -- see `tableCapacityRounding` -- so
 /// a clone of one cannot be either.
 fn tableCloneOfAnEmptyArray() void {
-    const empty = tables.new(-1);
+    // No constructor produces a null bucket array any more -- see
+    // `tableCapacityRounding` -- so the state is built directly, which is what
+    // a caller that zeroed a `Table` and never initialised it would hold.
+    var zeroed: tables.Table = .{};
+    const empty: *tables.Table = &zeroed;
     expect(empty.data == null);
     const clone = tables.clone(empty);
     expect(clone != empty);

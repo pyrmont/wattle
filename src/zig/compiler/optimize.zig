@@ -7,21 +7,9 @@
 //! and none exists because a platform differs, so they are one file, and the
 //! sequence is visible in one place.
 //!
-//! **The merge forced one deduplication and it was a real duplicate.**
-//! `movopt.zig` and `remove_noops.zig` each carried
-//!
-//!     fn opcode(instruction: u32) u32 {
-//!         return instruction & 0x7f;
-//!     }
-//!
-//! byte for byte, because neither could see the other. Zig rejects both in one
-//! file, so there is one now -- **as `opcodeOf`**, because hoisting it to
-//! container level made it shadow four parameters named `opcode` in the
-//! constant-folding half, which is a hard error. A private helper's name is
-//! local to its file until the file grows.
-//!
-//! Nothing else collided: the rest of the overlap between the three was import
-//! aliases, which dedupe into the block below.
+//! The opcode accessor is `opcodeOf` rather than `opcode`, because four
+//! parameters in the constant-folding half are named `opcode` and a
+//! container-level declaration of that name would shadow them.
 
 const std = @import("std");
 
@@ -59,82 +47,101 @@ inline fn wrapBoolean(val: bool) repr.Value {
     return wrap.fromBoolean(val);
 }
 
-fn argumentCount(args: []const compiler_primitives.JanetSlot) i32 {
+fn argumentCount(args: []const compiler_primitives.Slot) i32 {
     return @intCast(args.len);
 }
 
-fn nilSlot() compiler_primitives.JanetSlot {
+fn nilSlot() compiler_primitives.Slot {
     return compiler_primitives.cslot(wrapNil());
 }
 
-fn integerSlot(val: i32) compiler_primitives.JanetSlot {
+fn integerSlot(val: i32) compiler_primitives.Slot {
     return compiler_primitives.cslot(wrap.fromInteger(val));
 }
 
-fn arity1or2(_: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot) bool {
+fn arity1or2(_: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) bool {
     const count = argumentCount(args);
     return count == 1 or count == 2;
 }
 
-fn arity2or3(_: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot) bool {
+fn arity2or3(_: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) bool {
     const count = argumentCount(args);
     return count == 2 or count == 3;
 }
 
-fn fixarity1(_: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot) bool {
+fn fixarity1(_: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) bool {
     return argumentCount(args) == 1;
 }
 
-fn maxarity1(_: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot) bool {
+fn maxarity1(_: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) bool {
     return argumentCount(args) <= 1;
 }
 
-fn minarity2(_: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot) bool {
+fn minarity2(_: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) bool {
     return argumentCount(args) >= 2;
 }
 
-fn fixarity2(_: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot) bool {
+fn fixarity2(_: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) bool {
     return argumentCount(args) == 2;
 }
 
-fn fixarity3(_: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot) bool {
+fn fixarity3(_: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) bool {
     return argumentCount(args) == 3;
 }
 
-fn genericSS(options: compiler_primitives.JanetFopts, opcode: constants.Opcode, source: compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn genericSS(options: compiler_primitives.FormOptions, opcode: constants.Opcode, source: compiler_primitives.Slot) compiler_primitives.Slot {
     const target = compiler_primitives.gettarget(options);
     _ = emit_core.emitSs(options.compiler, opcode, target, source, 1);
     return target;
 }
 
-fn genericSSI(options: compiler_primitives.JanetFopts, opcode: constants.Opcode, source: compiler_primitives.JanetSlot, immediate: i8) compiler_primitives.JanetSlot {
+fn genericSSI(options: compiler_primitives.FormOptions, opcode: constants.Opcode, source: compiler_primitives.Slot, immediate: i8) compiler_primitives.Slot {
     const target = compiler_primitives.gettarget(options);
     _ = emit_core.emitSsi(options.compiler, opcode, target, source, immediate, 1);
     return target;
 }
 
-fn opFunction(options: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot, opcode: constants.Opcode, default_value: repr.Value) compiler_primitives.JanetSlot {
+fn opFunction(options: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot, opcode: constants.Opcode, default_value: repr.Value) compiler_primitives.Slot {
     const target = compiler_primitives.gettarget(options);
     const second = if (argumentCount(args) == 1) compiler_primitives.cslot(default_value) else args[1];
     _ = emit_core.emitSss(options.compiler, opcode, target, args[0], second, 1);
     return target;
 }
 
-fn slotImmediate(slot: compiler_primitives.JanetSlot) ?i8 {
+fn slotImmediate(slot: compiler_primitives.Slot) ?i8 {
     if (!slot.flags.constant or !args_core.checkint(slot.constant)) return null;
     const integer: i32 = @intFromFloat(wrap.toNumber(slot.constant));
     if (integer < -128 or integer > 127) return null;
     return @intCast(integer);
 }
 
+/// The immediate-operand form of one argument, when the opcode has one and the
+/// argument fits in it.
+///
+/// The two questions were asked separately at three sites, each of which then
+/// unwrapped the opcode and called `slotImmediate` a second time to unwrap its
+/// answer. They are one question: an immediate encoding needs both halves.
+const ImmediateForm = struct {
+    opcode: constants.Opcode,
+    operand: i8,
+};
+
+fn immediateForm(
+    immediate_opcode: ?constants.Opcode,
+    slot: compiler_primitives.Slot,
+) ?ImmediateForm {
+    const op = immediate_opcode orelse return null;
+    return .{ .opcode = op, .operand = slotImmediate(slot) orelse return null };
+}
+
 fn opReduce(
-    options: compiler_primitives.JanetFopts,
-    args: []const compiler_primitives.JanetSlot,
+    options: compiler_primitives.FormOptions,
+    args: []const compiler_primitives.Slot,
     opcode: constants.Opcode,
     immediate_opcode: ?constants.Opcode,
     nullary: repr.Value,
     unary: repr.Value,
-) compiler_primitives.JanetSlot {
+) compiler_primitives.Slot {
     const count = argumentCount(args);
     if (count == 0) return compiler_primitives.cslot(nullary);
     if (count == 1) {
@@ -147,71 +154,68 @@ fn opReduce(
         return target;
     }
     const target = compiler_primitives.gettarget(options);
-    if (immediate_opcode != null and slotImmediate(args[1]) != null) {
-        _ = emit_core.emitSsi(options.compiler, immediate_opcode.?, target, args[0], slotImmediate(args[1]).?, 1);
+    if (immediateForm(immediate_opcode, args[1])) |immediate| {
+        _ = emit_core.emitSsi(options.compiler, immediate.opcode, target, args[0], immediate.operand, 1);
     } else {
         _ = emit_core.emitSss(options.compiler, opcode, target, args[0], args[1], 1);
     }
-    var index: i32 = 2;
-    while (index < count) : (index += 1) {
-        if (immediate_opcode != null and slotImmediate(args[@intCast(index)]) != null) {
-            _ = emit_core.emitSsi(options.compiler, immediate_opcode.?, target, target, slotImmediate(args[@intCast(index)]).?, 1);
+    for (args[2..]) |arg| {
+        if (immediateForm(immediate_opcode, arg)) |immediate| {
+            _ = emit_core.emitSsi(options.compiler, immediate.opcode, target, target, immediate.operand, 1);
         } else {
-            _ = emit_core.emitSss(options.compiler, opcode, target, target, args[@intCast(index)], 1);
+            _ = emit_core.emitSss(options.compiler, opcode, target, target, arg, 1);
         }
     }
     return target;
 }
 
-fn compareReduce(options: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot, opcode: constants.Opcode, immediate_opcode: ?constants.Opcode, invert: bool) compiler_primitives.JanetSlot {
+fn compareReduce(options: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot, opcode: constants.Opcode, immediate_opcode: ?constants.Opcode, invert: bool) compiler_primitives.Slot {
     const count = argumentCount(args);
     if (count < 2) return compiler_primitives.cslot(wrapBoolean(!invert));
     const target = compiler_primitives.gettarget(options);
     const first_instruction = options.compiler.here();
-    var index: i32 = 1;
-    while (index < count) : (index += 1) {
-        const right = args[@intCast(index)];
-        if (immediate_opcode != null and slotImmediate(right) != null) {
-            _ = emit_core.emitSsi(options.compiler, immediate_opcode.?, target, args[@intCast(index - 1)], slotImmediate(right).?, 1);
+    for (args[1..], 1..) |right, index| {
+        if (immediateForm(immediate_opcode, right)) |immediate| {
+            _ = emit_core.emitSsi(options.compiler, immediate.opcode, target, args[index - 1], immediate.operand, 1);
         } else {
-            _ = emit_core.emitSss(options.compiler, opcode, target, args[@intCast(index - 1)], right, 1);
+            _ = emit_core.emitSss(options.compiler, opcode, target, args[index - 1], right, 1);
         }
-        if (index != count - 1) {
+        if (index != args.len - 1) {
             _ = emit_core.emitSi(options.compiler, if (invert) constants.Opcode.jump_if else constants.Opcode.jump_if_not, target, 0, 1);
         }
     }
     const end = options.compiler.here();
-    var instruction = first_instruction;
-    while (instruction < end) : (instruction += 1) {
-        const opcode_byte = opcodeOf(options.compiler.buffer.items[@intCast(instruction)]);
+    const region = options.compiler.buffer.items[@intCast(first_instruction)..@intCast(end)];
+    for (region, 0..) |*instruction, offset| {
+        const opcode_byte = opcodeOf(instruction.*);
         if (opcode_byte == .jump_if or opcode_byte == .jump_if_not) {
-            options.compiler.buffer.items[@intCast(instruction)] |= @as(u32, @intCast(end - instruction)) << 16;
+            instruction.* |= @as(u32, @intCast(region.len - offset)) << 16;
         }
     }
     return target;
 }
 
-fn doPropagate(options: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doPropagate(options: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(options, args, constants.Opcode.propagate, null, wrapNil(), wrapNil());
 }
 
-fn doError(options: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doError(options: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) compiler_primitives.Slot {
     _ = emit_core.emitSlot(options.compiler, constants.Opcode.@"error", args[0], 0);
     return nilSlot();
 }
 
-fn doDebug(options: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doDebug(options: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) compiler_primitives.Slot {
     const target = compiler_primitives.gettarget(options);
     const source = if (argumentCount(args) == 1) args[0] else nilSlot();
     _ = emit_core.emitSsu(options.compiler, constants.Opcode.signal, target, source, @intFromEnum(abi.Signal.debug), 1);
     return target;
 }
 
-fn doIn(options: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doIn(options: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(options, args, constants.Opcode.in, null, wrapNil(), wrapNil());
 }
 
-fn doGet(options: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doGet(options: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) compiler_primitives.Slot {
     if (argumentCount(args) != 3) return opReduce(options, args, constants.Opcode.get, null, wrapNil(), wrapNil());
     const target = compiler_primitives.gettarget(options);
     const target_is_default = emit_core.sequal(target, args[2]);
@@ -229,7 +233,7 @@ fn doGet(options: compiler_primitives.JanetFopts, args: []const compiler_primiti
     return target;
 }
 
-fn doPut(options: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doPut(options: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) compiler_primitives.Slot {
     const immediate = slotImmediate(args[1]);
     if (options.flags.drop) {
         if (immediate) |index| {
@@ -249,7 +253,7 @@ fn doPut(options: compiler_primitives.JanetFopts, args: []const compiler_primiti
     return target;
 }
 
-fn doApply(options: compiler_primitives.JanetFopts, args: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doApply(options: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) compiler_primitives.Slot {
     const count = argumentCount(args);
     var index: i32 = 1;
     while (index < count - 3) : (index += 3) {
@@ -272,86 +276,86 @@ fn doApply(options: compiler_primitives.JanetFopts, args: []const compiler_primi
     return target;
 }
 
-fn doAdd(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doAdd(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(o, a, constants.Opcode.add, constants.Opcode.add_immediate, wrap.fromInteger(0), wrap.fromInteger(0));
 }
-fn doSub(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doSub(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(o, a, constants.Opcode.subtract, constants.Opcode.subtract_immediate, wrap.fromInteger(0), wrap.fromInteger(0));
 }
-fn doMul(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doMul(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(o, a, constants.Opcode.multiply, constants.Opcode.multiply_immediate, wrap.fromInteger(1), wrap.fromInteger(1));
 }
-fn doDiv(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doDiv(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(o, a, constants.Opcode.divide, constants.Opcode.divide_immediate, wrap.fromInteger(1), wrap.fromInteger(1));
 }
-fn doDivf(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doDivf(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(o, a, constants.Opcode.divide_floor, null, wrap.fromInteger(1), wrap.fromInteger(1));
 }
-fn doModulo(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doModulo(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(o, a, constants.Opcode.modulo, null, wrap.fromInteger(0), wrap.fromInteger(1));
 }
-fn doRemainder(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doRemainder(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(o, a, constants.Opcode.remainder, null, wrap.fromInteger(0), wrap.fromInteger(1));
 }
-fn doBand(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doBand(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(o, a, constants.Opcode.band, null, wrap.fromInteger(-1), wrap.fromInteger(-1));
 }
-fn doBor(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doBor(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(o, a, constants.Opcode.bor, null, wrap.fromInteger(0), wrap.fromInteger(0));
 }
-fn doBxor(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doBxor(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(o, a, constants.Opcode.bxor, null, wrap.fromInteger(0), wrap.fromInteger(0));
 }
-fn doLshift(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doLshift(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(o, a, constants.Opcode.shift_left, constants.Opcode.shift_left_immediate, wrap.fromInteger(1), wrap.fromInteger(1));
 }
-fn doRshift(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doRshift(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(o, a, constants.Opcode.shift_right, constants.Opcode.shift_right_immediate, wrap.fromInteger(1), wrap.fromInteger(1));
 }
-fn doRshiftu(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doRshiftu(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(o, a, constants.Opcode.shift_right_unsigned, constants.Opcode.shift_right_unsigned_immediate, wrap.fromInteger(1), wrap.fromInteger(1));
 }
-fn doBnot(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doBnot(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return genericSS(o, constants.Opcode.bnot, a[0]);
 }
-fn doGt(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doGt(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return compareReduce(o, a, constants.Opcode.greater_than, constants.Opcode.greater_than_immediate, false);
 }
-fn doLt(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doLt(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return compareReduce(o, a, constants.Opcode.less_than, constants.Opcode.less_than_immediate, false);
 }
-fn doGte(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doGte(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return compareReduce(o, a, constants.Opcode.greater_than_equal, null, false);
 }
-fn doLte(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doLte(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return compareReduce(o, a, constants.Opcode.less_than_equal, null, false);
 }
-fn doEq(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doEq(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return compareReduce(o, a, constants.Opcode.equals, constants.Opcode.equals_immediate, false);
 }
-fn doNeq(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doNeq(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return compareReduce(o, a, constants.Opcode.not_equals, constants.Opcode.not_equals_immediate, true);
 }
-fn doLength(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doLength(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return genericSS(o, constants.Opcode.length, a[0]);
 }
-fn doYield(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doYield(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return genericSSI(o, constants.Opcode.signal, if (argumentCount(a) == 0) nilSlot() else a[0], 3);
 }
-fn doResume(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doResume(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opFunction(o, a, constants.Opcode.@"resume", wrapNil());
 }
-fn doCancel(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doCancel(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opFunction(o, a, constants.Opcode.cancel, wrapNil());
 }
-fn doNext(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doNext(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opFunction(o, a, constants.Opcode.next, wrapNil());
 }
-fn doCmp(o: compiler_primitives.JanetFopts, a: []const compiler_primitives.JanetSlot) compiler_primitives.JanetSlot {
+fn doCmp(o: compiler_primitives.FormOptions, a: []const compiler_primitives.Slot) compiler_primitives.Slot {
     return opReduce(o, a, constants.Opcode.compare, null, wrapNil(), wrapNil());
 }
 
-const optimizers = [_]compiler_primitives.JanetFunOptimizer{
+const optimizers = [_]compiler_primitives.FunctionOptimizer{
     .{ .can_optimize = maxarity1, .optimize = doDebug },
     .{ .can_optimize = fixarity1, .optimize = doError },
     .{ .can_optimize = minarity2, .optimize = doApply },
@@ -387,7 +391,7 @@ const optimizers = [_]compiler_primitives.JanetFunOptimizer{
     .{ .can_optimize = null, .optimize = doDivf },
 };
 
-pub fn funopt(flags: functions.FuncDefFlags) ?*const compiler_primitives.JanetFunOptimizer {
+pub fn funopt(flags: functions.FuncDefFlags) ?*const compiler_primitives.FunctionOptimizer {
     const tag = flags.tag;
     if (tag == 0) return null;
     const index = tag - 1;
@@ -402,16 +406,15 @@ pub fn funopt(flags: functions.FuncDefFlags) ?*const compiler_primitives.JanetFu
 pub fn bytecodeMovopt(definition: *functions.FuncDef) void {
     var repeat = true;
     while (repeat) {
-        var registers: compiler_primitives.JanetcRegisterAllocator = undefined;
-        regalloc.regallocInit(&registers);
-        defer regalloc.regallocDeinit(&registers);
+        var registers: regalloc.RegisterAllocator = .{};
+        defer registers.deinit();
 
         if (definition.closure_bitset != null) {
             for (0..@as(usize, @intCast(definition.slotcount))) |slot| {
                 const index = slot >> 5;
                 const bit: u5 = @intCast(slot & 31);
                 if (definition.closureBits()[index] & (@as(u32, 1) << bit) != 0) {
-                    regalloc.regallocTouch(&registers, @intCast(slot));
+                    registers.touch(@intCast(slot));
                 }
             }
         }
@@ -445,7 +448,7 @@ pub fn bytecodeMovopt(definition: *functions.FuncDef) void {
                 else => null,
             };
             if (candidate) |written_slot| {
-                if (!regalloc.regallocCheck(&registers, written_slot)) {
+                if (!registers.isTaken(@intCast(written_slot))) {
                     instruction.* = constants.Opcode.noop.number();
                     repeat = true;
                 }
@@ -454,7 +457,7 @@ pub fn bytecodeMovopt(definition: *functions.FuncDef) void {
     }
 }
 
-fn markReads(registers: *compiler_primitives.JanetcRegisterAllocator, instruction: u32) void {
+fn markReads(registers: *regalloc.RegisterAllocator, instruction: u32) void {
     switch (opcodeOf(instruction)) {
         constants.Opcode.jump,
         constants.Opcode.noop,
@@ -564,8 +567,8 @@ fn markReads(registers: *compiler_primitives.JanetcRegisterAllocator, instructio
     }
 }
 
-fn touch(registers: *compiler_primitives.JanetcRegisterAllocator, slot: i32) void {
-    regalloc.regallocTouch(registers, slot);
+fn touch(registers: *regalloc.RegisterAllocator, slot: i32) void {
+    registers.touch(@intCast(slot));
 }
 
 fn fieldA(instruction: u32) i32 {

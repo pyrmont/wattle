@@ -117,7 +117,7 @@ fn aCFunction(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
     return wrap.abi.fromNil();
 }
 
-fn theCFunction() abi.JanetCFunction {
+fn theCFunction() abi.CFunction {
     return raise.stored(&aCFunction);
 }
 
@@ -625,7 +625,7 @@ const exactLayout = switch (layout) {
 fn memallocEmpty() void {
     for ([_]i32{ 1, 8, 257 }) |n| {
         const before = harness.vm().gc.next_collection;
-        const kvs: ?[*]tables.KV = @ptrCast(@alignCast(subsystems.value.memallocEmpty(n)));
+        const kvs: ?[*]tables.KV = @ptrCast(@alignCast(subsystems.value.memallocEmpty(@intCast(n))));
         // Reaching this line is the null check: the failure path exits.
         expect(kvs != null);
         expect(harness.vm().gc.next_collection - before == @as(usize, @intCast(n)) * @sizeOf(tables.KV));
@@ -655,7 +655,7 @@ fn memallocEmptyOfZero() void {
 /// the allocator happened to leave.
 fn mememptyClearsADirtyBlock() void {
     const n = 16;
-    const kvs: [*]tables.KV = @ptrCast(@alignCast(subsystems.value.memallocEmpty(n)));
+    const kvs: [*]tables.KV = @ptrCast(@alignCast(subsystems.value.memallocEmpty(@intCast(n))));
     defer utils.free(kvs);
 
     for (0..n) |i| {

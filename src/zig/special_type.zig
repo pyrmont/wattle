@@ -1,18 +1,8 @@
 //! `Special`, the compiler's special-form table row.
 //!
-//! **A compiler special is a second `JanetCFunction`**: thirteen forms behind
+//! **A compiler special is a second `abi.CFunction`**: thirteen forms behind
 //! one signature, dispatched from one place. Typing the callback as raising is
-//! what lets a special return an error at all -- the last of the four fixed
-//! function-pointer tables to be typed, after the cfunction, the abstract type
-//! and the event callback.
-//!
-//! **There were two descriptions of this row**, and the reason for the second
-//! was a C header that fixed the signature at
-//! `JanetSlot (*)(JanetFopts, int32_t, const Janet *)` and made the layout a
-//! contract with a C implementation of the same table. With both gone, what
-//! was left was a second struct, a `@sizeOf` check holding the two together,
-//! and a pair of casts between them. `janetc_special` is not exported, so
-//! nothing outside this tree can hold one either.
+//! what lets a special return an error at all.
 //!
 //! The callback takes a slice, because the count and the pointer were always
 //! one tuple's tail.
@@ -25,5 +15,5 @@ const compiler = @import("compiler.zig");
 /// the form's arguments.
 pub const Special = struct {
     name: [*:0]const u8,
-    compile: ?*const fn (compiler.JanetFopts, []const repr.Value) raise.Error!compiler.JanetSlot = null,
+    compile: ?*const fn (compiler.FormOptions, []const repr.Value) raise.Error!compiler.Slot = null,
 };

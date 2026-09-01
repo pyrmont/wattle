@@ -54,7 +54,6 @@ const std = @import("std");
 const raise = @import("raise.zig");
 const pp_format = @import("pp/format.zig");
 const repr = @import("repr");
-const constants = @import("constants");
 const access = @import("value/helpers/access.zig");
 const options = @import("options");
 const gc_alloc = @import("gc.zig");
@@ -82,13 +81,13 @@ const inttypes = if (options.int_types_core) @import("value/ints.zig") else stru
 /// `janet_dictionary_view`'s answer. `cap` is the *capacity* of the backing
 /// table, which the caller walks to `cap` rather than to `len`; both are
 /// counts.
-pub const JanetDictView = extern struct {
+pub const DictView = extern struct {
     kvs: ?[*]const tables.KV = null,
     len: usize = 0,
     cap: usize = 0,
 };
 
-pub const JanetRange = extern struct {
+pub const Range = extern struct {
     start: i32 = 0,
     end: i32 = 0,
 };
@@ -378,7 +377,7 @@ pub fn argIndexed(
         return items[0..@intCast(array.count)];
     } else if (repr.checkType(x, repr.Tag.tuple)) {
         const tuple = wrap.toTuple(x);
-        return tuple[0..@intCast(tuples.head(tuple).length)];
+        return tuple[0..tuples.head(tuple).length];
     }
     fault.* = .{ .wrong_type = .{ .slot = n, .expected = repr.TagSet.indexed } };
     return null;
@@ -392,7 +391,7 @@ pub fn argDictionary(
     argv: []const repr.Value,
     n: usize,
     fault: *Fault,
-) ?JanetDictView {
+) ?DictView {
     const x = argv[n];
     if (repr.checkType(x, repr.Tag.table)) {
         const table = wrap.toTable(x);
@@ -405,8 +404,8 @@ pub fn argDictionary(
         const structure = wrap.toStruct(x);
         return .{
             .kvs = structure,
-            .cap = @intCast(structs.head(structure).capacity),
-            .len = @intCast(structs.head(structure).length),
+            .cap = structs.head(structure).capacity,
+            .len = structs.head(structure).length,
         };
     }
     fault.* = .{ .wrong_type = .{ .slot = n, .expected = repr.TagSet.dictionary } };
@@ -421,7 +420,7 @@ pub fn argDictionary(
 /// go there. It was three codes and an out-parameter; the string and the
 /// buffer arms had one caller between them that told them apart.
 pub const Bytes = union(enum) {
-    view: abi.JanetByteView,
+    view: abi.ByteView,
     abstract: abstracts.Abstract,
 };
 
@@ -433,7 +432,7 @@ pub fn argBytes(x: repr.Value, n: usize, fault: *Fault) ?Bytes {
             const string = wrap.toString(x);
             return .{ .view = .{
                 .bytes = string,
-                .len = @intCast(strings.head(string).length),
+                .len = strings.head(string).length,
             } };
         },
         repr.Tag.buffer => {
@@ -456,7 +455,7 @@ pub fn argBytes(x: repr.Value, n: usize, fault: *Fault) ?Bytes {
 /// Runs an abstract's `bytes` callback. The one place third-party code is
 /// reached for a byte view, so the two callers that may raise share it and the
 /// two that may not are the ones that never call it.
-inline fn abstractBytes(abst: abstracts.Abstract) abi.JanetByteView {
+inline fn abstractBytes(abst: abstracts.Abstract) abi.ByteView {
     const head = abi.abstractHead(abst);
     return head.type.bytes.?(abst, head.size);
 }
@@ -470,8 +469,7 @@ pub fn argCbytes(argv: []const repr.Value, n: usize) CBytes {
     const x = argv[n];
     if (repr.checkType(x, repr.Tag.buffer)) {
         const buffer = wrap.toBuffer(x);
-        const no_realloc: i32 = @intCast(constants.JANET_BUFFER_FLAG_NO_REALLOC);
-        if ((buffer.gc.flags & no_realloc) != 0 and buffer.count == buffer.capacity) {
+        if (buffers.isForeign(buffer) and buffer.count == buffer.capacity) {
             return .copy;
         }
         return .terminate;
@@ -544,24 +542,23 @@ pub fn argArgindex(
 /// unexpected. Preserved.
 pub fn argFlags(
     keyw: [*]const u8,
-    klen: i32,
+    klen: usize,
     flags: [*:0]const u8,
     fault: *Fault,
 ) ?u64 {
     var ret: u64 = 0;
     var flen: usize = std.mem.len(flags);
     if (flen > 64) flen = 64;
-    var j: usize = 0;
-    while (j < @as(usize, @intCast(klen))) : (j += 1) {
+    for (keyw[0..klen]) |byte| {
         var i: usize = 0;
         while (i < flen) : (i += 1) {
-            if (flags[i] == keyw[j]) {
+            if (flags[i] == byte) {
                 ret |= @as(u64, 1) << @intCast(i);
                 break;
             }
         }
         if (i == flen) {
-            fault.* = .{ .bad_flag = .{ .byte = keyw[j], .permitted = flags } };
+            fault.* = .{ .bad_flag = .{ .byte = byte, .permitted = flags } };
             return null;
         }
     }
@@ -620,7 +617,7 @@ pub fn argMethod(
 pub fn argNextmethod(
     methods: [*]const method_type.CMethod,
     key: repr.Value,
-) callconv(.c) [*]const method_type.CMethod {
+) [*]const method_type.CMethod {
     var entry = methods;
     if (!repr.checkType(key, repr.Tag.nil)) {
         while (entry[0].name) |name| {
@@ -792,7 +789,7 @@ pub fn Opt(comptime G: type) type {
 /// empty one of the given capacity rather than a value the caller supplies.
 pub fn OptLen(comptime G: type, comptime construct: anytype) type {
     return struct {
-        pub fn get(argv: []const repr.Value, n: usize, dflt_len: i32) raise.Raising(G.Value) {
+        pub fn get(argv: []const repr.Value, n: usize, dflt_len: usize) raise.Raising(G.Value) {
             if (argIsdefault(argv, n)) return construct(dflt_len);
             return G.get(argv, n);
         }
@@ -879,9 +876,9 @@ pub fn endRange(argv: []const repr.Value, n: usize, length: i32) raise.Raising(i
 
 /// `access.length` can raise through this frame, which holds nothing at that
 /// point.
-pub fn getSlice(argv: []const repr.Value) raise.Raising(JanetRange) {
+pub fn getSlice(argv: []const repr.Value) raise.Raising(Range) {
     try checkArity(@intCast(argv.len), 1, 3);
-    var range_out: JanetRange = undefined;
+    var range_out: Range = undefined;
     const length = try access.length(argv[0]);
     range_out.start = try startRange(argv, 1, length);
     range_out.end = try endRange(argv, 2, length);
@@ -896,7 +893,7 @@ pub fn getIndexed(argv: []const repr.Value, n: usize) raise.Raising([]const repr
     return argIndexed(argv, n, &fault) orelse raiseFault(argv, fault);
 }
 
-pub fn getDictionary(argv: []const repr.Value, n: usize) raise.Raising(JanetDictView) {
+pub fn getDictionary(argv: []const repr.Value, n: usize) raise.Raising(DictView) {
     var fault: Fault = undefined;
     return argDictionary(argv, n, &fault) orelse raiseFault(argv, fault);
 }
@@ -905,7 +902,7 @@ pub fn getDictionary(argv: []const repr.Value, n: usize) raise.Raising(JanetDict
 /// pointer from a native module: third-party code that may raise. It
 /// runs outside the kernel so that a caller which may not raise at all --
 /// `janet_bytes_view` below -- can still use the classification.
-pub fn getBytes(argv: []const repr.Value, n: usize) raise.Raising(abi.JanetByteView) {
+pub fn getBytes(argv: []const repr.Value, n: usize) raise.Raising(abi.ByteView) {
     var fault: Fault = undefined;
     const bytes = argBytes(argv[n], n, &fault) orelse return raiseFault(argv, fault);
     return switch (bytes) {
@@ -1040,7 +1037,7 @@ pub fn getmethod(
     method: [*:0]const u8,
     methods: [*]const method_type.CMethod,
     out: *repr.Value,
-) callconv(.c) c_int {
+) c_int {
     const found = argMethod(method, methods) orelse return 0;
     out.* = wrap.fromCfunction(found.cfun);
     return 1;
@@ -1080,13 +1077,13 @@ pub fn nextmethod(methods: [*]const method_type.CMethod, key: repr.Value) repr.V
 
 /// A byte view as the range it describes.
 ///
-/// `JanetByteView` is `extern` because an abstract type's `bytes` callback
+/// `ByteView` is `extern` because an abstract type's `bytes` callback
 /// answers one across the module boundary, so its two fields cannot be a
 /// slice -- and its pointer is genuinely null for an empty collection:
 /// `buffers.init(b, 0)` leaves `data` null and the callback may hand that
 /// straight back. Slicing a null pointer traps *even for an empty range*, so
 /// the recovery is here rather than at each of the forty-odd call sites.
-pub inline fn viewBytes(view: abi.JanetByteView) []const u8 {
+pub inline fn viewBytes(view: abi.ByteView) []const u8 {
     if (view.bytes) |p| return p[0..view.len];
     return &.{};
 }
@@ -1114,7 +1111,7 @@ pub fn bytesView(str: repr.Value) ?[]const u8 {
 }
 
 /// The entries of a table or a struct, or nothing.
-pub fn dictionaryView(tab: repr.Value) ?JanetDictView {
+pub fn dictionaryView(tab: repr.Value) ?DictView {
     var argv = [_]repr.Value{tab};
     var fault: Fault = undefined;
     return argDictionary(&argv, 0, &fault);

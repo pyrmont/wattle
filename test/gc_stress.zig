@@ -68,7 +68,7 @@ const expect = @import("expect.zig").expect;
 /// condition, and the same reason, as `test/fiber_core.zig`.
 const has_threads = options.ev and builtin.os.tag != .windows;
 
-fn headerOf(pointer: ?*anyopaque) *abi.JanetGCObject {
+fn headerOf(pointer: ?*anyopaque) *abi.GCObject {
     return @ptrCast(@alignCast(pointer.?));
 }
 

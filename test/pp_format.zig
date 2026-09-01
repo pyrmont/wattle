@@ -60,7 +60,7 @@ const expected_raises = 15;
 // ------------------------------------------------------------- assertions
 
 fn checkString(s: strings.String, expected: []const u8) void {
-    const len: usize = @intCast(strings.head(s).length);
+    const len: usize = strings.head(s).length;
     if (len != expected.len or !std.mem.eql(u8, s[0..len], expected)) {
         std.debug.print("expected: {s}\n     got: {s}\n", .{ expected, s[0..len] });
         @panic("string mismatch");
@@ -81,7 +81,7 @@ fn checkBuffer(b: *buffers.Buffer, expected: []const u8) void {
 const wrapInteger = harness.wrapInteger;
 
 fn bytes(s: strings.String) []const u8 {
-    return s[0..@intCast(strings.head(s).length)];
+    return s[0..strings.head(s).length];
 }
 
 fn eval(source: [*:0]const u8) repr.Value {
@@ -502,11 +502,11 @@ fn dynprintfReachesItsFourDestinations() void {
     fmt.dynprintf("pp-format-out", null, "dropped", .{}) catch @panic("raised");
 
     // A closed file is a raise.
-    const jf = io_core.makejfile(@ptrCast(@alignCast(io_core.open(scratch, "rb"))), constants.JANET_FILE_READ);
+    const jf = io_core.makejfile(io_core.open(scratch, "rb"), constants.JANET_FILE_READ);
     vm_state.setdyn("pp-format-out", wrap.fromAbstract(jf));
     expectRaise("file is not writeable", fmt.dynprintf, .{
         @as(?[*:0]const u8, "pp-format-out"),
-        @as(?*anyopaque, null),
+        @as(?*host.FILE, null),
         "not writeable",
         .{},
     });
@@ -516,7 +516,7 @@ fn dynprintfReachesItsFourDestinations() void {
     _ = remove(scratch);
 }
 
-extern fn fopen(path: [*]const u8, mode: [*]const u8) callconv(.c) ?*anyopaque;
+extern fn fopen(path: [*]const u8, mode: [*]const u8) callconv(.c) ?*host.FILE;
 extern fn remove(path: [*]const u8) callconv(.c) c_int;
 
 /// The stream operations, by import.
@@ -526,6 +526,7 @@ extern fn remove(path: [*]const u8) callconv(.c) c_int;
 /// of the fifteen have no caller left anywhere and stopped being symbols.
 /// `janet_io_write` is the one that stays, because `pp/format.zig` itself is a
 /// real caller by symbol.
+const host = @import("host");
 const io_core = @import("subsystems").io;
 const pp_format = @import("subsystems").pp_format;
 const tables = @import("subsystems").value.tables;

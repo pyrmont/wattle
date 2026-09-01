@@ -210,7 +210,7 @@ fn theRegistration() void {
 
             const file = wrap.toString(tuple[0]);
             const line = wrap.toInteger(tuple[1]);
-            const length: usize = @intCast(strings.head(file).length);
+            const length: usize = strings.head(file).length;
             const from_zig = length > 8 and std.mem.eql(u8, file[0..8], "src/zig/");
             if (from_zig and previous_file != null and
                 strings.equal(previous_file.?, file))

@@ -130,21 +130,23 @@ pub fn step(fiber: *fibers.Fiber, in: repr.Value, out: *repr.Value) raise.Error!
         },
         else => nexta = pc + 1,
     }
-    if (nexta != null) {
-        olda = nexta.?[0];
-        nexta.?[0] |= 0x80;
+    if (nexta) |word| {
+        olda = word[0];
+        word[0] |= 0x80;
     }
-    if (nextb != null) {
-        oldb = nextb.?[0];
-        nextb.?[0] |= 0x80;
+    if (nextb) |word| {
+        oldb = word[0];
+        word[0] |= 0x80;
     }
 
     // Go.
-    const signal = continueFiber(fiber, in, out);
+    const resumed = continueFiber(fiber, in);
+    out.* = resumed.value;
+    const signal = resumed.signal;
 
     // Restore.
-    if (nexta != null) nexta.?[0] = olda;
-    if (nextb != null) nextb.?[0] = oldb;
+    if (nexta) |word| word[0] = olda;
+    if (nextb) |word| word[0] = oldb;
 
     return signal;
 }
@@ -155,7 +157,7 @@ pub fn step(fiber: *fibers.Fiber, in: repr.Value, out: *repr.Value) raise.Error!
 /// frame exists so that the arguments already pushed above `stackstart` are not
 /// overwritten by the call being set up. Its address is not observable — the
 /// frame stores it in `pc` with `func` left null, and an unregistered
-/// `JanetCFunction` renders as `<cfunction>` in a stack trace either way.
+/// `CFunction` renders as `<cfunction>` in a stack trace either way.
 fn voidCFunction(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = argv;
 
@@ -168,6 +170,10 @@ fn voidCFunction(argv: []repr.Value) raise.Raising(repr.Value) {
 /// `vm.fiber` is re-read at every use rather than held in a local, which
 /// is what the C original does through the macro. The last two uses are after
 /// `janet_run_vm` has returned, and the loop can re-enter fibers underneath it.
+/// `vm_state.currentFiber()` is that same re-read: the entry check below
+/// refuses a null fiber, and nothing between there and the return can put the
+/// field back to null -- `signal.restore` writes back the fiber it saved on
+/// the way in.
 pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr.Value {
     // Check entry conditions.
     if (vm_state.current().fiber == null) {
@@ -178,33 +184,36 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
     }
 
     // Dirty stack.
-    const dirty_stack: i32 = vm_state.current().fiber.?.stacktop - vm_state.current().fiber.?.stackstart;
+    const dirty_stack: i32 = vm_state.currentFiber().stacktop - vm_state.currentFiber().stackstart;
     if (dirty_stack != 0) {
-        fibers.cframe(vm_state.current().fiber.?, raise.stored(&voidCFunction));
+        fibers.cframe(vm_state.currentFiber(), raise.stored(&voidCFunction));
     }
 
     // Tracing.
-    if ((fun.gc.flags & constants.JANET_FUNCFLAG_TRACE) != 0) {
+    if (functions.isTraced(fun)) {
         vm_state.current().stackn += 1;
         try vm_run.traceArgv(fun, argv);
         vm_state.current().stackn -= 1;
     }
 
     // Push frame.
-    try fibers.pushn(vm_state.current().fiber.?, argv);
-    fibers.funcframe(vm_state.current().fiber.?, fun) catch {
+    try fibers.pushn(vm_state.currentFiber(), argv);
+    fibers.funcframe(vm_state.currentFiber(), fun) catch {
         const min = fun.def.?.min_arity;
         const max = fun.def.?.max_arity;
         const funv = wrap.fromFunction(fun);
-        if (min == max and min != @as(i32, @intCast(argv.len))) {
-            return pp_format.panicf("arity mismatch in %v, expected %d, got %d", .{ funv, min, @as(i32, @intCast(argv.len)) });
+        // `%d` renders through an `i64`; the arities are the funcdef's own
+        // `i32` and the count is the slice's.
+        const got: i64 = @intCast(argv.len);
+        if (min == max and min != argv.len) {
+            return pp_format.panicf("arity mismatch in %v, expected %d, got %d", .{ funv, min, got });
         }
-        if (min >= 0 and @as(i32, @intCast(argv.len)) < min) {
-            return pp_format.panicf("arity mismatch in %v, expected at least %d, got %d", .{ funv, min, @as(i32, @intCast(argv.len)) });
+        if (min >= 0 and argv.len < min) {
+            return pp_format.panicf("arity mismatch in %v, expected at least %d, got %d", .{ funv, min, got });
         }
-        return pp_format.panicf("arity mismatch in %v, expected at most %d, got %d", .{ funv, max, @as(i32, @intCast(argv.len)) });
+        return pp_format.panicf("arity mismatch in %v, expected at most %d, got %d", .{ funv, max, got });
     };
-    fiberFrame(vm_state.current().fiber.?).flags |= constants.JANET_STACKFRAME_ENTRANCE;
+    fiberFrame(vm_state.currentFiber()).flags.entrance = true;
 
     // Set up.
     const oldn = vm_state.current().stackn;
@@ -212,26 +221,26 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
     const handle = gc_alloc.gclock();
 
     // Run vm.
-    vm_state.current().fiber.?.flags.resume_no_useval = true;
-    vm_state.current().fiber.?.flags.resume_no_skip = true;
+    vm_state.currentFiber().flags.resume_no_useval = true;
+    vm_state.currentFiber().flags.resume_no_skip = true;
     const old_coerce_error = vm_state.current().coerce_error;
     vm_state.current().coerce_error = true;
-    const signal = try vm_run.runVm(vm_state.current().fiber.?, wrap.fromNil());
+    const signal = try vm_run.runVm(vm_state.currentFiber(), wrap.fromNil());
     vm_state.current().coerce_error = old_coerce_error;
 
     // Teardown.
     vm_state.current().stackn = oldn;
     gc_alloc.gcunlock(handle);
     if (dirty_stack != 0) {
-        fibers.popframe(vm_state.current().fiber.?);
-        vm_state.current().fiber.?.stacktop += dirty_stack;
+        fibers.popframe(vm_state.currentFiber());
+        vm_state.currentFiber().stacktop += dirty_stack;
     }
 
     if (signal != abi.Signal.ok) {
         // Should match logic in janet_signalv.
         if (has_ev) {
-            if (vm_state.current().root_fiber != null and signal == abi.Signal.event) {
-                vm_state.current().root_fiber.?.sched_id +%= 1;
+            if (vm_state.current().root_fiber) |root| {
+                if (signal == abi.Signal.event) root.sched_id +%= 1;
             }
         }
         if (signal != abi.Signal.@"error") {
@@ -245,25 +254,47 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
 
 // -------------------------------------------------------------- resuming
 
+/// What a resume answers: the signal it ended on and the value that goes with
+/// it.
+///
+/// **They are always produced together**, which is why this is one type rather
+/// than a signal beside an `out: *repr.Value`. Every path through the resume
+/// family sets both -- a refusal sets the message, an ordinary return sets the
+/// returned value, a raise sets the payload -- and the out-parameter was C's
+/// way of returning two things, not a decision anything here makes.
+pub const Resumed = struct {
+    signal: abi.Signal,
+    value: repr.Value,
+
+    /// A refusal carrying a fixed message. The three in `checkCanResume` and
+    /// `pcall`'s arity rejection are all this shape.
+    fn fail(message: []const u8) Resumed {
+        return .{ .signal = abi.Signal.@"error", .value = value.fromBytes(message, .string) };
+    }
+};
+
 /// Whether `fiber` may be resumed, and the message if not.
+///
+/// **Null means it may.** A refusal is the interesting answer and is the one
+/// that carries a value, so the optional says which of the two happened
+/// without a caller having to compare against `.ok`.
 ///
 /// Answers a signal rather than raising, in all three refusals. The first also marks the
 /// fiber errored, which the other two do not: a fiber refused for recursion
 /// depth has had nothing done to it, while one refused for its status already
 /// carries the status that refused it.
-pub fn checkCanResume(fiber: *fibers.Fiber, out: *repr.Value, is_cancel: bool) abi.Signal {
+pub fn checkCanResume(fiber: *fibers.Fiber, is_cancel: bool) ?Resumed {
     // Check conditions.
     const old_status = fibers.status(fiber);
     if (vm_state.current().stackn >= config.recursion_guard) {
         setStatus(fiber, fibers.FiberStatus.@"error");
-        out.* = value.fromBytes("C stack recursed too deeply", .string);
-        return abi.Signal.@"error";
+        return .fail("C stack recursed too deeply");
     }
     // If a "task" fiber is trying to be used as a normal fiber, detect that.
     // See bug #920. Fibers must be marked as root fibers manually, or by the ev
     // scheduler.
-    if (vm_state.current().fiber != null and (fiber.gc.flags & constants.JANET_FIBER_FLAG_ROOT) != 0) {
-        out.* = value.fromBytes(if (has_ev)
+    if (vm_state.current().fiber != null and fibers.evFlags(fiber).root) {
+        return .fail(if (has_ev)
             (if (is_cancel)
                 "cannot cancel root fiber, use ev/cancel"
             else
@@ -272,8 +303,7 @@ pub fn checkCanResume(fiber: *fibers.Fiber, out: *repr.Value, is_cancel: bool) a
             (if (is_cancel)
                 "cannot cancel root fiber"
             else
-                "cannot resume root fiber"), .string);
-        return abi.Signal.@"error";
+                "cannot resume root fiber"));
     }
     // Listed rather than `else`: a status added later must state whether it
     // can be resumed, and defaulting to "yes" is the dangerous half.
@@ -291,10 +321,9 @@ pub fn checkCanResume(fiber: *fibers.Fiber, out: *repr.Value, is_cancel: bool) a
             pp_format.formatc("cannot resume fiber with status :%s", .{utils.statusNames[@intFromEnum(old_status)]}),
             "a fiber-resume refusal's message",
         );
-        out.* = wrap.fromString(str);
-        return abi.Signal.@"error";
+        return .{ .signal = abi.Signal.@"error", .value = wrap.fromString(str) };
     }
-    return abi.Signal.ok;
+    return null;
 }
 
 /// Resume `fiber`, with the protected scope every resume re-establishes.
@@ -312,7 +341,7 @@ pub fn checkCanResume(fiber: *fibers.Fiber, out: *repr.Value, is_cancel: bool) a
 /// It is not exported and nothing outside this file calls it: `janet_continue`
 /// and `janet_continue_signal` are just above, and `JOP_RESUME` reaches it by
 /// import.
-pub fn continueNoCheck(fiber: *fibers.Fiber, in_init: repr.Value, out: *repr.Value) abi.Signal {
+pub fn continueNoCheck(fiber: *fibers.Fiber, in_init: repr.Value) Resumed {
     var in = in_init;
     const old_status = fibers.status(fiber);
 
@@ -322,22 +351,22 @@ pub fn continueNoCheck(fiber: *fibers.Fiber, in_init: repr.Value, out: *repr.Val
     fiber.last_value = wrap.fromNil();
 
     // Continue child fiber if it exists.
-    if (fiber.child != null) {
+    if (fiber.child) |child| {
         if (vm_state.current().root_fiber == null) vm_state.current().root_fiber = fiber;
-        const child = fiber.child.?;
         const instr = fiberFrame(fiber).pc.?[0];
         vm_state.current().stackn += 1;
-        const sig = continueFiber(child, in, &in);
+        const resumed = continueFiber(child, in);
+        const sig = resumed.signal;
+        in = resumed.value;
         vm_state.current().stackn -= 1;
         if (vm_state.current().root_fiber == fiber) vm_state.current().root_fiber = null;
         if (sig != abi.Signal.ok and !child.flags.traps.has(sig)) {
-            out.* = in;
             // The two vocabularies share their first fourteen values, which is
             // what `signal.zig`'s comptime block asserts and what this line
             // depends on.
             setStatus(fiber, @enumFromInt(@intFromEnum(sig)));
             fiber.last_value = child.last_value;
-            return sig;
+            return .{ .signal = sig, .value = in };
         }
         // Check if we need any special handling for certain opcodes.
         if (constants.Opcode.fromWord(instr & 0x7F) == .next) {
@@ -388,47 +417,44 @@ pub fn continueNoCheck(fiber: *fibers.Fiber, in_init: repr.Value, out: *repr.Val
     signal_core.restore(&tstate);
     if (fiber_rooted) _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
     fiber.last_value = tstate.payload;
-    out.* = tstate.payload;
 
-    return sig;
+    return .{ .signal = sig, .value = tstate.payload };
 }
 
 /// Enter the main vm loop.
-pub fn continueFiber(fiber: *fibers.Fiber, in: repr.Value, out: *repr.Value) abi.Signal {
+pub fn continueFiber(fiber: *fibers.Fiber, in: repr.Value) Resumed {
     // Check conditions.
-    const tmp_signal = checkCanResume(fiber, out, false);
-    if (tmp_signal != .ok) return tmp_signal;
-    return continueNoCheck(fiber, in, out);
+    if (checkCanResume(fiber, false)) |refusal| return refusal;
+    return continueNoCheck(fiber, in);
 }
 
 /// Enter the main vm loop but immediately raise a signal.
-pub fn continueSignal(fiber: *fibers.Fiber, in: repr.Value, out: *repr.Value, sig: abi.Signal) abi.Signal {
-    const tmp_signal = checkCanResume(fiber, out, sig != abi.Signal.ok);
-    if (tmp_signal != .ok) return tmp_signal;
+pub fn continueSignal(fiber: *fibers.Fiber, in: repr.Value, sig: abi.Signal) Resumed {
+    if (checkCanResume(fiber, sig != abi.Signal.ok)) |refusal| return refusal;
     if (sig != abi.Signal.ok) {
         signal_core.signalInject(fiber, sig);
     }
-    return continueNoCheck(fiber, in, out);
+    return continueNoCheck(fiber, in);
 }
 
 /// Call a function on a fresh or recycled fiber, and report rather than raise.
 pub fn pcall(
     fun: *functions.Function,
-    argc: i32,
-    argv: ?[*]const repr.Value,
-    out: *repr.Value,
+    args: []const repr.Value,
     f: ?*?*fibers.Fiber,
-) abi.Signal {
-    var fiber: ?*fibers.Fiber = undefined;
-    if (if (f) |slot| slot.* else null) |existing| {
-        fiber = fibers.reset(existing, fun, argc, argv);
-    } else {
-        fiber = fibers.new(fun, 64, argc, argv);
-    }
-    if (f) |slot| slot.* = fiber;
-    if (fiber == null) {
-        out.* = value.fromBytes("arity mismatch", .string);
-        return abi.Signal.@"error";
-    }
-    return continueFiber(fiber.?, wrap.fromNil(), out);
+) Resumed {
+    const made = if (if (f) |slot| slot.* else null) |existing|
+        fibers.reset(existing, fun, args)
+    else
+        fibers.new(fun, 64, args);
+    const live = made catch {
+        // **The slot is cleared, not left alone.** C assigns the result before
+        // testing it, so a rejection stores null over whatever the caller had
+        // -- including the recycled fiber a rejected `reset` left frameless.
+        // `test/vm_entry.zig` pins it.
+        if (f) |slot| slot.* = null;
+        return .fail("arity mismatch");
+    };
+    if (f) |slot| slot.* = live;
+    return continueFiber(live, wrap.fromNil());
 }

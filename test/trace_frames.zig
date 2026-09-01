@@ -71,14 +71,14 @@ fn frameOfFunction(frame: *vm_state.StackFrame, func: *functions.Function, pc_of
     frame.pc = if (pc_offset < 0) null else func.def.?.bytecode.? + @as(usize, @intCast(pc_offset));
 }
 
-fn frameOfCfunction(frame: *vm_state.StackFrame, cfun: abi.JanetCFunction) void {
+fn frameOfCfunction(frame: *vm_state.StackFrame, cfun: abi.CFunction) void {
     frame.* = std.mem.zeroes(vm_state.StackFrame);
     frame.func = null;
     frame.pc = @ptrFromInt(@intFromPtr(cfun));
 }
 
-fn decode(frame: *vm_state.StackFrame) tf.JanetTraceFrame {
-    var out: tf.JanetTraceFrame = undefined;
+fn decode(frame: *vm_state.StackFrame) tf.TraceFrame {
+    var out: tf.TraceFrame = undefined;
     // `janet_trace_frameImpl` is `raise.Raising(void)` and never raises: it
     // reads a funcdef and the registry and writes a plain structure. The
     // `catch` is what the type asks for, not a case this contract expects.
@@ -92,7 +92,7 @@ fn decode(frame: *vm_state.StackFrame) tf.JanetTraceFrame {
 // In C these would be three `static Janet f(int32_t, Janet *)` with identical
 // bodies. Here they have the type a builtin has --
 // `raise.Raising(repr.Value)` over Zig's own calling convention -- and
-// `raise.stored` is the cast into the `JanetCFunRegistry` key, which is still
+// `raise.stored` is the cast into the `Row` key, which is still
 // C's layout.
 //
 // **Each returns a different value, and that is load-bearing rather than
@@ -124,7 +124,7 @@ fn probeUnregistered(argv: []repr.Value) raise.Raising(repr.Value) {
     return harness.wrapInteger(3);
 }
 
-fn keyOf(probe: raise.CFunction) abi.JanetCFunction {
+fn keyOf(probe: raise.CFunction) abi.CFunction {
     return raise.stored(probe);
 }
 
@@ -216,13 +216,13 @@ fn theTailCallFlag(named: *functions.Function) void {
     var frame: vm_state.StackFrame = undefined;
 
     frameOfFunction(&frame, named, 0);
-    frame.flags |= constants.JANET_STACKFRAME_TAILCALL;
+    frame.flags.tailcall = true;
     var desc = decode(&frame);
     expect(desc.tail == 1);
     expect(desc.name_kind == constants.JANET_TRACE_NAME_FUNCTION);
 
     frameOfCfunction(&frame, keyOf(&probeNamed));
-    frame.flags |= constants.JANET_STACKFRAME_TAILCALL;
+    frame.flags.tailcall = true;
     desc = decode(&frame);
     expect(desc.tail == 1);
 }
@@ -378,7 +378,7 @@ fn aPrefixedCfunctionRenders() raise.Raising(void) {
     // A fiber whose only frame is a cframe for the prefixed cfunction. The
     // frame is written directly because there is no way to stop a real fiber
     // inside a cfunction that does not itself error.
-    const fiber = fibers.new(compileFunction("(fn [] nil)"), 32, 0, null).?;
+    const fiber = fibers.new(compileFunction("(fn [] nil)"), 32, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
     fiber.frame = constants.JANET_FRAME_SIZE;
@@ -419,7 +419,7 @@ fn aPrefixedCfunctionRenders() raise.Raising(void) {
 /// here because a contract runs no `cli-main`, which is precisely the kind of
 /// thing that is true until it is not.
 fn aStacktraceOverARealFiber(failing: *functions.Function) raise.Raising(void) {
-    const fiber = fibers.new(failing, 32, 0, null).?;
+    const fiber = fibers.new(failing, 32, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
 
@@ -427,16 +427,16 @@ fn aStacktraceOverARealFiber(failing: *functions.Function) raise.Raising(void) {
     gc_alloc.gcroot(wrap.fromBuffer(sink));
     defer _ = gc_alloc.gcunroot(wrap.fromBuffer(sink));
 
-    var out = wrap.fromNil();
-    expect(vm_entry.continueFiber(fiber, wrap.fromNil(), &out) == abi.Signal.@"error");
+    const resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.@"error");
 
     vm_state.setdyn("err-color", wrap.fromNil());
-    try traceInto(sink, fiber, out, "trace-frames-test");
+    try traceInto(sink, fiber, resumed.value, "trace-frames-test");
     expect(sink.count > 0);
     expect(std.mem.indexOf(u8, contents(sink), "trace-frames-testerror: from a fiber") != null);
 
     // And with no prefix, which suppresses the error line entirely.
-    try traceInto(sink, fiber, out, null);
+    try traceInto(sink, fiber, resumed.value, null);
     expect(sink.count > 0);
     expect(std.mem.indexOf(u8, contents(sink), "error: from a fiber") == null);
 }

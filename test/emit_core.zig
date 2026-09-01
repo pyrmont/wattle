@@ -35,18 +35,17 @@ const constants = @import("constants");
 const harness = @import("harness.zig");
 const value = @import("subsystems").value;
 const compiler_primitives = @import("subsystems").compiler_primitives;
-const regalloc = @import("subsystems").regalloc;
 const emit_core = @import("subsystems").emit_core;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const expect = @import("expect.zig").expect;
 const vector = harness.vector;
 
-var compiler: compiler_primitives.JanetCompiler = undefined;
-var scope: compiler_primitives.JanetScope = undefined;
+var compiler: compiler_primitives.Compiler = undefined;
+var scope: compiler_primitives.Scope = undefined;
 
 /// A slot built by hand, which is the whole reason this file exists.
-fn slot(index: i32, envindex: i32, flags: compiler_primitives.SlotFlags, constant: repr.Value) compiler_primitives.JanetSlot {
+fn slot(index: i32, envindex: i32, flags: compiler_primitives.SlotFlags, constant: repr.Value) compiler_primitives.Slot {
     return .{
         .constant = constant,
         .index = index,
@@ -56,16 +55,16 @@ fn slot(index: i32, envindex: i32, flags: compiler_primitives.SlotFlags, constan
 }
 
 /// A plain near register holding nothing in particular.
-fn near(index: i32) compiler_primitives.JanetSlot {
+fn near(index: i32) compiler_primitives.Slot {
     return slot(index, -1, .{}, wrap.fromNil());
 }
 
-fn constantSlot(val: repr.Value) compiler_primitives.JanetSlot {
+fn constantSlot(val: repr.Value) compiler_primitives.Slot {
     return slot(-1, 0, .{ .constant = true }, val);
 }
 
 fn clearError() void {
-    compiler.result.status = constants.JANET_COMPILE_OK;
+    compiler.result.status = compiler_primitives.CompileStatus.ok;
     compiler.result.@"error" = null;
 }
 
@@ -83,7 +82,7 @@ fn emittedCount() i32 {
 }
 
 fn failedWith(message: [*:0]const u8) bool {
-    return compiler.result.status == constants.JANET_COMPILE_ERROR and
+    return compiler.result.status == compiler_primitives.CompileStatus.@"error" and
         harness.stringIs(compiler.result.@"error".?, message);
 }
 
@@ -92,9 +91,9 @@ fn failedWith(message: [*:0]const u8) bool {
 /// first far register is 0 and the first temporary is 1.
 fn theTwoAllocators() void {
     expect(emit_core.allocfar(&compiler) == 0);
-    const temporary = emit_core.allocnear(&compiler, constants.JANETC_REGTEMP_2);
+    const temporary = emit_core.allocnear(&compiler, constants.RegisterTemp.t2);
     expect(temporary == 1);
-    regalloc.regallocFreetemp(&scope.ra, temporary, constants.JANETC_REGTEMP_2);
+    scope.ra.freeTemp(temporary, constants.RegisterTemp.t2);
 }
 
 /// Slot equality, which decides whether a copy emits anything at all.
@@ -331,7 +330,7 @@ fn aJumpMayBeTooFar() void {
     clearEmission();
     emit_core.emit(&compiler, harness.op(constants.Opcode.noop));
     _ = emit_core.emitSl(&compiler, constants.Opcode.jump_if, near(0), std.math.maxInt(i16));
-    expect(compiler.result.status == constants.JANET_COMPILE_OK);
+    expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
 }
 
 /// Far registers past the sixteen bits an instruction has for one.
@@ -340,16 +339,13 @@ fn aJumpMayBeTooFar() void {
 /// free bit, so the ceiling is the emitter's to enforce and reaching it means
 /// marking everything below it as taken.
 fn theRegisterCeiling() void {
-    var full: compiler_primitives.JanetScope = .{ .name = "full" };
+    var full: compiler_primitives.Scope = .{ .name = "full" };
     full.flags = compiler_primitives.ScopeFlags{ .function = true };
-    regalloc.regallocInit(&full.ra);
-    defer regalloc.regallocDeinit(&full.ra);
+    full.ra = .{};
+    defer full.ra.deinit();
 
-    regalloc.regallocTouch(&full.ra, 0xFFFF);
-    var chunk: i32 = 0;
-    while (chunk < full.ra.count) : (chunk += 1) {
-        full.ra.chunks.?[@intCast(chunk)] = 0xFFFFFFFF;
-    }
+    full.ra.touch(0xFFFF);
+    for (full.ra.chunks.items) |*chunk| chunk.* = 0xFFFFFFFF;
     compiler.scope = &full;
     defer compiler.scope = &scope;
 
@@ -374,10 +370,10 @@ fn theRegisterCeiling() void {
 /// entry a distinct value so that the search finds no match and tries to
 /// append.
 fn theConstantPoolFills() void {
-    var full: compiler_primitives.JanetScope = .{ .name = "full" };
+    var full: compiler_primitives.Scope = .{ .name = "full" };
     full.flags = compiler_primitives.ScopeFlags{ .function = true };
-    regalloc.regallocInit(&full.ra);
-    defer regalloc.regallocDeinit(&full.ra);
+    full.ra = .{};
+    defer full.ra.deinit();
 
     // `vGrow` is gone with the prefix arithmetic; `setCount` reserves and
     // then claims the room, which is the same two steps in one call.
@@ -408,7 +404,7 @@ pub fn run() void {
     scope = .{ .name = "" };
     compiler.scope = &scope;
     scope.flags = compiler_primitives.ScopeFlags{ .function = true };
-    regalloc.regallocInit(&scope.ra);
+    scope.ra = .{};
 
     const reference = value.fromBytes("reference-cell", .string);
 
@@ -427,6 +423,6 @@ pub fn run() void {
     vector.free(&compiler.buffer);
     vector.free(&compiler.mapbuffer);
     vector.free(&scope.consts);
-    regalloc.regallocDeinit(&scope.ra);
+    scope.ra.deinit();
     vm_lifecycle.deinit();
 }

@@ -62,14 +62,29 @@ const tables = @import("tables.zig");
 /// A string's head: the collector's object, the length and the hash, with the
 /// bytes following it in the same allocation.
 pub const StringHead = extern struct {
-    gc: abi.JanetGCObject = .{},
-    length: i32 = 0,
+    gc: abi.GCObject = .{},
+    length: u32 = 0,
     hash: i32 = 0,
     _data: [0]u8 = std.mem.zeroes([0]u8),
-    pub fn data(_self: anytype) @TypeOf(&_self._data[0]) {
-        return @ptrCast(@alignCast(&_self._data));
-    }
 };
+
+comptime {
+    // The width is the contract -- a marshalled string carries it and the
+    // payload sits behind it -- and the sign is not, so the head is compared
+    // against a re-declaration with the signed field rather than against a
+    // remembered offset, which would be a different number per target.
+    // `hash` stays signed: it is a hash, and `janet_string_calchash` answers
+    // an `int32_t`.
+    const SignedHead = extern struct {
+        gc: abi.GCObject = .{},
+        length: i32 = 0,
+        hash: i32 = 0,
+        _data: [0]u8 = std.mem.zeroes([0]u8),
+    };
+    std.debug.assert(@offsetOf(StringHead, "_data") == @offsetOf(SignedHead, "_data"));
+    std.debug.assert(@offsetOf(StringHead, "hash") == @offsetOf(SignedHead, "hash"));
+    std.debug.assert(@sizeOf(StringHead) == @sizeOf(SignedHead));
+}
 
 /// Where the bytes begin within the block. `@offsetOf` and not `@sizeOf`: the
 /// head is Zig's own declaration, so `_data` is an ordinary field whose offset
@@ -96,7 +111,7 @@ pub const String = [*:0]const u8;
 pub const Symbol = [*:0]const u8;
 pub const Keyword = [*:0]const u8;
 
-pub inline fn lengthOf(s: [*]const u8) i32 {
+pub inline fn lengthOf(s: [*]const u8) u32 {
     return head(s).length;
 }
 
@@ -108,7 +123,7 @@ pub inline fn hashOf(s: [*]const u8) i32 {
 /// real and is not included, which is what `janet_string_length` has always
 /// meant.
 pub inline fn bytesOf(s: [*]const u8) []const u8 {
-    return s[0..@intCast(head(s).length)];
+    return s[0..head(s).length];
 }
 
 // ------------------------------------------------------------------ string
@@ -116,30 +131,29 @@ pub inline fn bytesOf(s: [*]const u8) []const u8 {
 /// Allocate a string of `length` bytes and terminate it. The bytes themselves
 /// are uninitialised and so is the hash: the caller fills the first and
 /// `janet_string_end` computes the second.
-pub fn begin(length: i32) [*]u8 {
-    const hd = gc_alloc.gcallocWithPayload(StringHead, .string, utils.asSize(length) +% 1);
-    hd.length = length;
+pub fn begin(length: usize) [*]u8 {
+    const hd = gc_alloc.gcallocWithPayload(StringHead, .string, length +% 1);
+    hd.length = @intCast(length);
     const payload = data(hd);
-    payload[@intCast(length)] = 0;
+    payload[length] = 0;
     return payload;
 }
 
 /// Close a string built by hand. This is the only place a string's hash is
 /// written outside `janet_string`, and until it runs the head holds whatever
 /// the allocator left there.
-pub fn end(str: [*]u8) callconv(.c) [*:0]const u8 {
-    head(str).hash = value.hashBytes(str[0..@intCast(lengthOf(str))]);
+pub fn end(str: [*]u8) [*:0]const u8 {
+    head(str).hash = value.hashBytes(str[0..lengthOf(str)]);
     return @ptrCast(str);
 }
 
 /// Allocate a string and fill it from `buf` in one step.
 pub fn new(buf: []const u8) [*:0]const u8 {
-    const len: i32 = @intCast(buf.len);
     const hd = gc_alloc.gcallocWithPayload(StringHead, .string, buf.len +% 1);
-    hd.length = len;
+    hd.length = @intCast(buf.len);
     hd.hash = value.hashBytes(buf);
     const payload = data(hd);
-    utils.safeMemcpy(@ptrCast(payload), @ptrCast(buf.ptr), buf.len);
+    @memcpy(payload[0..buf.len], buf);
     payload[buf.len] = 0;
     return @ptrCast(payload);
 }
@@ -209,9 +223,8 @@ const KmpState = struct {
             .pat = pat,
             .lookup = lookup,
         };
-        var i: usize = 1;
         var j: i32 = 0;
-        while (i < pat.len) : (i += 1) {
+        for (1..pat.len) |i| {
             while (j != 0 and pat[@intCast(j)] != pat[i]) j = lookup[@intCast(j - 1)];
             if (pat[@intCast(j)] == pat[i]) j += 1;
             lookup[i] = j;
@@ -295,7 +308,7 @@ fn cfunStringRepeat(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
     var offset: usize = 0;
     const total: usize = @intCast(mulres);
     while (offset < total) : (offset += view.len) {
-        utils.safeMemcpy(@ptrCast(newbuf + offset), @ptrCast(view.bytes), view.len);
+        @memcpy(newbuf[offset..][0..view.len], args_core.viewBytes(view));
     }
     return wrap.fromString(end(newbuf));
 }
@@ -309,9 +322,8 @@ fn cfunStringBytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 }
 
 fn cfunStringFrombytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    const buf = begin(@as(i32, @intCast(argv.len)));
-    var i: usize = 0;
-    while (i < argv.len) : (i += 1) {
+    const buf = begin(argv.len);
+    for (0..argv.len) |i| {
         buf[i] = @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, i))));
     }
     return wrap.fromString(end(buf));
@@ -420,13 +432,10 @@ fn cfunStringReplace(argv: []repr.Value) align(corefn.alignment) raise.Raising(r
         null,
     );
     const buf = begin(@intCast(s.kmp.text.len - s.kmp.pat.len + subst.len));
-    utils.safeMemcpy(@ptrCast(buf), @ptrCast(s.kmp.text.ptr), at);
-    utils.safeMemcpy(@ptrCast(buf + at), @ptrCast(subst.bytes), subst.len);
-    utils.safeMemcpy(
-        @ptrCast(buf + at + subst.len),
-        @ptrCast(s.kmp.text.ptr + at + s.kmp.pat.len),
-        s.kmp.text.len - at - s.kmp.pat.len,
-    );
+    const tail = s.kmp.text[at + s.kmp.pat.len ..];
+    @memcpy(buf[0..at], s.kmp.text[0..at]);
+    @memcpy(buf[at..][0..subst.len], args_core.viewBytes(subst));
+    @memcpy(buf[at + subst.len ..][0..tail.len], tail);
     return wrap.fromString(end(buf));
 }
 
@@ -506,7 +515,7 @@ fn cfunStringCheckset(argv: []repr.Value) align(corefn.alignment) raise.Raising(
 fn cfunStringJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const parts = try args_core.getIndexed(argv, 0);
-    const joiner: abi.JanetByteView = if (argv.len == 2)
+    const joiner: abi.ByteView = if (argv.len == 2)
         try args_core.getBytes(argv, 1)
     else
         .{ .bytes = "", .len = 0 };
@@ -528,11 +537,11 @@ fn cfunStringJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
     var out: usize = 0;
     for (0..parts.len) |i| {
         if (i != 0) {
-            utils.safeMemcpy(@ptrCast(buf + out), @ptrCast(joiner.bytes), joiner.len);
+            @memcpy(buf[out..][0..joiner.len], args_core.viewBytes(joiner));
             out += joiner.len;
         }
         const chunk = args_core.bytesView(parts[i]).?;
-        utils.safeMemcpy(@ptrCast(buf + out), @ptrCast(chunk.ptr), chunk.len);
+        @memcpy(buf[out..][0..chunk.len], chunk);
         out += chunk.len;
     }
     return wrap.fromString(end(buf));
@@ -548,7 +557,7 @@ fn cfunStringFormat(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
 
 const default_trim_set = " \t\r\n\x0b\x0c";
 
-fn trimArgs(argv: []repr.Value, str: *abi.JanetByteView, set: *abi.JanetByteView) raise.Raising(void) {
+fn trimArgs(argv: []repr.Value, str: *abi.ByteView, set: *abi.ByteView) raise.Raising(void) {
     try args_core.arity(argv, 1, 2);
     str.* = try args_core.getBytes(argv, 0);
     if (argv.len >= 2) {
@@ -558,12 +567,12 @@ fn trimArgs(argv: []repr.Value, str: *abi.JanetByteView, set: *abi.JanetByteView
     }
 }
 
-fn inSet(set: abi.JanetByteView, x: u8) bool {
+fn inSet(set: abi.ByteView, x: u8) bool {
     for (0..set.len) |j| if (set.bytes.?[j] == x) return true;
     return false;
 }
 
-fn leftEdge(str: abi.JanetByteView, set: abi.JanetByteView) usize {
+fn leftEdge(str: abi.ByteView, set: abi.ByteView) usize {
     for (0..str.len) |i| if (!inSet(set, str.bytes.?[i])) return i;
     return str.len;
 }
@@ -572,7 +581,7 @@ fn leftEdge(str: abi.JanetByteView, set: abi.JanetByteView) usize {
 /// the decrement is separable from the use: guard, step, then read. The
 /// `i32` form ran to -1 to terminate, which is the shape that cannot be
 /// unsigned; this one stops at zero having read index zero.
-fn rightEdge(str: abi.JanetByteView, set: abi.JanetByteView) usize {
+fn rightEdge(str: abi.ByteView, set: abi.ByteView) usize {
     var i = str.len;
     while (i > 0) {
         i -= 1;
@@ -582,8 +591,8 @@ fn rightEdge(str: abi.JanetByteView, set: abi.JanetByteView) usize {
 }
 
 fn cfunStringTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var str: abi.JanetByteView = undefined;
-    var set: abi.JanetByteView = undefined;
+    var str: abi.ByteView = undefined;
+    var set: abi.ByteView = undefined;
     try trimArgs(argv, &str, &set);
     const left = leftEdge(str, set);
     const right = rightEdge(str, set);
@@ -592,16 +601,16 @@ fn cfunStringTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 }
 
 fn cfunStringTriml(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var str: abi.JanetByteView = undefined;
-    var set: abi.JanetByteView = undefined;
+    var str: abi.ByteView = undefined;
+    var set: abi.ByteView = undefined;
     try trimArgs(argv, &str, &set);
     const left = leftEdge(str, set);
     return wrap.fromString(new(str.bytes.?[left..str.len]));
 }
 
 fn cfunStringTrimr(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var str: abi.JanetByteView = undefined;
-    var set: abi.JanetByteView = undefined;
+    var str: abi.ByteView = undefined;
+    var set: abi.ByteView = undefined;
     try trimArgs(argv, &str, &set);
     return wrap.fromString(new(str.bytes.?[0..rightEdge(str, set)]));
 }

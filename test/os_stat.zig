@@ -137,12 +137,12 @@ fn theFieldRegistry() void {
     expect(os_stat.fieldName(-1) == null);
     expect(os_stat.fieldName(count) == null);
 
-    // Whole names only: no prefix, no extension, no empty key, no negative
-    // length, and no case folding.
+    // Whole names only: no prefix, no extension, no empty key, and no case
+    // folding. The negative length C also had to refuse is not a value this
+    // signature admits: `len` is a byte count and is a `usize`.
     expect(os_stat.fieldLookup("de", 2) == -1);
     expect(os_stat.fieldLookup("device", 6) == -1);
     expect(os_stat.fieldLookup("", 0) == -1);
-    expect(os_stat.fieldLookup("dev", -1) == -1);
     expect(os_stat.fieldLookup("Dev", 3) == -1);
     expect(os_stat.fieldLookup("int-permission", 14) == -1);
 

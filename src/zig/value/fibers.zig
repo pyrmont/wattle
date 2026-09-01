@@ -75,6 +75,22 @@ pub const FiberStatus = enum(c_uint) {
     alive = 15,
 };
 
+/// The GC header's per-type field, as a fiber reads it. `canceled`,
+/// `suspended` and `root` are the event loop's three bits, and the same six
+/// bits carry the signal `signal.signalInject` arms the fiber to raise --
+/// which is why arming one clears all three. That aliasing is the C
+/// original's; `abi.GCFlags` records why it is kept.
+pub const EvFlags = packed struct(u6) {
+    canceled: bool = false,
+    suspended: bool = false,
+    root: bool = false,
+    _rest: u3 = 0,
+};
+
+pub inline fn evFlags(fiber: *const Fiber) EvFlags {
+    return @bitCast(fiber.gc.flags.own);
+}
+
 comptime {
     // Against upstream Janet at `17b3f8c4`. The values are marshalled -- a
     // fiber's status travels in an image -- so a shift here is a wrong answer
@@ -228,52 +244,49 @@ fn alloc(requested: i32) *Fiber {
     return fiber;
 }
 
-/// Create a new fiber with `argc` values on the stack by reusing `fiber`.
+/// Create a new fiber with `args` on the stack by reusing `fiber`.
 ///
-/// Returns null when the callee's arity rejects the argument count, which is
-/// how `janet_pcall` is implemented and is why the failure is a return value
-/// rather than a panic. Everything before the funcframe has already been
-/// written by then, so the rejected fiber is reset but frameless -- again, what
-/// C leaves.
+/// Answers `error.Arity` when the callee's arity rejects the argument count,
+/// which is how `janet_pcall` is implemented and is why the failure is a
+/// return value rather than a panic. Everything before the funcframe has
+/// already been written by then, so the rejected fiber is reset but frameless
+/// -- again, what C leaves.
+///
+/// C took `(argc, argv)` and read a null `argv` as "push `argc` nils". Its one
+/// caller that meant it -- `fiber/new`, seeding a one-argument fiber -- now
+/// passes the nil; every other null came with a zero count, which is an empty
+/// slice.
 pub fn reset(
     fiber: *Fiber,
     callee: *functions.Function,
-    argc: i32,
-    argv: ?[*]const repr.Value,
-) callconv(.c) ?*Fiber {
+    args: []const repr.Value,
+) ArityError!*Fiber {
     resetState(fiber);
-    if (argc != 0) {
-        const newstacktop = fiber.stacktop +% argc;
+    if (args.len != 0) {
+        const newstacktop = fiber.stacktop +% @as(i32, @intCast(args.len));
         if (newstacktop >= fiber.capacity) {
             setcapacity(fiber, 2 *% newstacktop);
         }
         const dest = fiber.data.? + @as(usize, @intCast(fiber.stacktop));
-        if (argv) |items| {
-            @memcpy(
-                @as([*]u8, @ptrCast(dest))[0..stackBytes(argc)],
-                @as([*]const u8, @ptrCast(items))[0..stackBytes(argc)],
-            );
-        } else {
-            // If argv not given, fill with nil
-            for (dest[0..@intCast(argc)]) |*slot| slot.* = wrap.fromNil();
-        }
+        @memcpy(dest[0..args.len], args);
         fiber.stacktop = newstacktop;
     }
-    // Don't panic on failure since we use this to implement janet_pcall
-    funcframe(fiber, callee) catch return null;
-    fiberFrame(fiber).flags |= constants.JANET_STACKFRAME_ENTRANCE;
+    // The rejection travels as an error rather than as a null: `pcall` is the
+    // caller that has to tell "no fiber" from "this fiber refused the
+    // arguments", and only one of the two is a thing a Janet program did.
+    try funcframe(fiber, callee);
+    fiberFrame(fiber).flags.entrance = true;
     if (has_ev) fiber.supervisor_channel = null;
     return fiber;
 }
 
-/// Create a new fiber with `argc` values on the stack.
+/// Create a new fiber with `args` on the stack.
 pub fn new(
     callee: *functions.Function,
     capacity: i32,
-    argc: i32,
-    argv: ?[*]const repr.Value,
-) callconv(.c) ?*Fiber {
-    return reset(alloc(capacity), callee, argc, argv);
+    args: []const repr.Value,
+) ArityError!*Fiber {
+    return reset(alloc(capacity), callee, args);
 }
 
 // ------------------------------------------------------------------ growth
@@ -348,9 +361,10 @@ pub fn pushn(
     if (fiber.stacktop > std.math.maxInt(i32) -% n) return raise.panic("stack overflow");
     const newtop = fiber.stacktop +% n;
     if (newtop > fiber.capacity) grow(fiber, newtop);
-    // safe_memcpy rather than @memcpy: `arr` is null when `n` is zero at
-    // several call sites, and a null source is what that helper exists for.
-    utils.safeMemcpy(dataAt(fiber, fiber.stacktop), arr.ptr, stackBytes(n));
+    // Guarded rather than unconditional: `arr` is an empty slice over a null
+    // pointer at several call sites, which is the case the old `safe_memcpy`
+    // existed for.
+    if (arr.len != 0) @memcpy(dataAt(fiber, fiber.stacktop)[0..arr.len], arr);
     fiber.stacktop = newtop;
 }
 
@@ -364,8 +378,7 @@ pub fn pushn(
 /// and that callback is a function pointer the runtime does not own. It may
 /// not raise; nothing enforces it. This frame holds nothing.
 fn makeStructN(args: []const repr.Value) repr.Value {
-    const n: i32 = @intCast(args.len);
-    const st = structs.begin(n & ~@as(i32, 1));
+    const st = structs.begin(args.len & ~@as(usize, 1));
     var i: usize = 0;
     while (i + 1 < args.len) : (i += 2) {
         structs.put(st, args[i], args[i + 1]);
@@ -468,7 +481,7 @@ fn funcframeBegin(fiber: *Fiber, func: *functions.Function) FrameBegin {
     newframe.pc = def.bytecode;
     newframe.func = func;
     newframe.env = null;
-    newframe.flags = 0;
+    newframe.flags = .{};
 
     // Check varargs
     if (!def.flags.vararg) return .{ .pushed = null };
@@ -568,10 +581,10 @@ fn funcframeTailFinish(
     const frame = fiberFrame(fiber);
     frame.func = func;
     frame.pc = def.bytecode;
-    frame.flags |= constants.JANET_STACKFRAME_TAILCALL;
+    frame.flags.tailcall = true;
 }
 
-pub fn cframe(fiber: *Fiber, cfun: abi.JanetCFunction) void {
+pub fn cframe(fiber: *Fiber, cfun: abi.CFunction) void {
     const oldframe = fiber.frame;
     const nextframe = fiber.stackstart;
     const nextstacktop = fiber.stacktop +% frame_size;
@@ -592,7 +605,7 @@ pub fn cframe(fiber: *Fiber, cfun: abi.JanetCFunction) void {
     newframe.pc = @ptrFromInt(@intFromPtr(cfun));
     newframe.func = null;
     newframe.env = null;
-    newframe.flags = 0;
+    newframe.flags = .{};
 }
 
 pub fn popframe(fiber: *Fiber) void {
@@ -712,7 +725,10 @@ fn cfunFiberNew(argv: []repr.Value) raise.Raising(repr.Value) {
     if (func.def.?.min_arity > 1) {
         return pp_format.panicf("fiber function must accept 0 or 1 arguments", .{});
     }
-    const fiber = new(func, 64, func.def.?.min_arity, null) orelse
+    // `min_arity` is zero or one, checked above. C passed a null `argv` with
+    // that count, which meant "push that many nils"; the slice says it.
+    const seed = [_]repr.Value{wrap.fromNil()};
+    const fiber = new(func, 64, seed[0..@intCast(func.def.?.min_arity)]) catch
         fatal.fatal("bad fiber arity check");
 
     if (argv.len == 3 and !repr.checkType(argv[2], repr.Tag.nil)) {
@@ -723,8 +739,7 @@ fn cfunFiberNew(argv: []repr.Value) raise.Raising(repr.Value) {
         const view = try args_core.getBytes(argv, 1);
         fiber.flags = .{ .resume_no_useval = true, .resume_no_skip = true };
         setStatus(fiber, FiberStatus.new);
-        var i: usize = 0;
-        while (i < view.len) : (i += 1) {
+        for (0..view.len) |i| {
             const ch = view.bytes.?[i];
             if (ch >= '0' and ch <= '9') {
                 fiber.flags.traps = fiber.flags.traps.with(userSignal(ch - '0'));
@@ -863,7 +878,7 @@ pub fn lib(env: *tables.Table) raise.Raising(void) {
 }
 
 /// **`extern` for the field order, not for an ABI.** The collector writes a
-/// block's memory type through a `*JanetGCObject` at the *start* of the
+/// block's memory type through a `*GCObject` at the *start* of the
 /// allocation and the sweep frees the block at that same address, so `gc` has
 /// to be the first field -- `gc.zig`'s `assertHeaderFirst` is what says so. On
 /// a 32-bit target Zig's automatic layout puts `last_value` first, because a
@@ -871,7 +886,7 @@ pub fn lib(env: *tables.Table) raise.Raising(void) {
 /// lands at offset 8. `extern` fixes the declaration order and the assertion
 /// then holds on every target rather than on the ones that happen to agree.
 pub const Fiber = if (config.ev) extern struct {
-    gc: abi.JanetGCObject = .{},
+    gc: abi.GCObject = .{},
     flags: FiberFlags = .{},
     frame: i32 = 0,
     stackstart: i32 = 0,
@@ -888,7 +903,7 @@ pub const Fiber = if (config.ev) extern struct {
     ev_state: ?*anyopaque = null,
     supervisor_channel: ?*anyopaque = null,
 } else extern struct {
-    gc: abi.JanetGCObject = .{},
+    gc: abi.GCObject = .{},
     flags: FiberFlags = .{},
     frame: i32 = 0,
     stackstart: i32 = 0,

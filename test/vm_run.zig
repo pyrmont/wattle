@@ -104,14 +104,13 @@ fn raised(source: []const u8) repr.Value {
     var buffer: [2048]u8 = undefined;
     const wrapped = std.fmt.bufPrintZ(&buffer, "(fiber/new (fn [] {s}) :ye)", .{source}) catch unreachable;
     const fiberv = eval(wrapped);
-    var out = wrap.fromNil();
-    const sig = vm_entry_mod.continueFiber(wrap.toFiber(fiberv), wrap.fromNil(), &out);
-    if (sig != abi.Signal.@"error") {
+    const resumed = vm_entry_mod.continueFiber(wrap.toFiber(fiberv), wrap.fromNil());
+    if (resumed.signal != abi.Signal.@"error") {
         std.debug.print("expected an error from: {s}\n", .{source});
         expect(false);
     }
-    gc_alloc.gcroot(out);
-    return out;
+    gc_alloc.gcroot(resumed.value);
+    return resumed.value;
 }
 
 fn expectError(source: []const u8, message: [*:0]const u8) void {
@@ -129,7 +128,7 @@ fn expectErrorPrefix(source: []const u8, prefix: []const u8) void {
     const payload = raised(source);
     expect(harness.isType(payload, repr.Tag.string));
     const text = wrap.toString(payload);
-    const length: usize = @intCast(strings.head(text).length);
+    const length: usize = strings.head(text).length;
     if (!std.mem.startsWith(u8, text[0..length], prefix)) {
         std.debug.print("source:   {s}\n", .{source});
         std.debug.print("expected prefix: {s}\n", .{prefix});
@@ -157,9 +156,9 @@ fn expectEqual(source: []const u8, expected: []const u8) void {
 /// Resume a fiber built in Janet source and report the signal as well as the
 /// value, which is the whole point of the `JOP_SIGNAL` and `JOP_PROPAGATE`
 /// cases.
-fn resumeFiber(fiberv: repr.Value, in: repr.Value, out: *repr.Value) abi.Signal {
+fn resumeFiber(fiberv: repr.Value, in: repr.Value) vm_entry_mod.Resumed {
     expect(harness.isType(fiberv, repr.Tag.fiber));
-    return vm_entry_mod.continueFiber(wrap.toFiber(fiberv), in, out);
+    return vm_entry_mod.continueFiber(wrap.toFiber(fiberv), in);
 }
 
 // ------------------------------------------ arithmetic and bitwise operands
@@ -322,10 +321,9 @@ fn stackOverflow() void {
             "    (def f (fiber/new (fn [] (deep 0)) :e))" ++
             "    (fiber/setmaxstack f 1000) f)",
     );
-    var out = wrap.fromNil();
-    const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.@"error");
-    expect(harness.stringValueIs(out, "stack overflow"));
+    const resumed = resumeFiber(fiberv, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.@"error");
+    expect(harness.stringValueIs(resumed.value, "stack overflow"));
 }
 
 // ------------------------------------------------------------ type assertions
@@ -392,49 +390,46 @@ fn anOddConstructorArgumentCount() void {
 /// reachable; the lower is not, because the assembler will not encode a
 /// negative one-byte operand.
 fn theSignalOpcode() void {
-    var out = wrap.fromNil();
     var fiberv = eval(
         "(fiber/new (asm '{:arity 0 :constants [:payload]" ++
             "  :bytecode [(ldc 0 0) (sig 1 0 30) (ret 1)]}) :i0123456789)",
     );
-    var sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.user9);
-    expect(harness.keywordIs(out, "payload"));
+    var resumed = resumeFiber(fiberv, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.user9);
+    expect(harness.keywordIs(resumed.value, "payload"));
 
     fiberv = eval(
         "(fiber/new (asm '{:arity 0 :constants [:payload]" ++
             "  :bytecode [(ldc 0 0) (sig 1 0 5) (ret 1)]}) :i0123456789)",
     );
-    sig = resumeFiber(fiberv, wrap.fromNil(), &out);
+    resumed = resumeFiber(fiberv, wrap.fromNil());
     // The operand is the signal number, not the user index: 5 is USER1.
-    expect(sig == abi.Signal.user1);
-    expect(harness.keywordIs(out, "payload"));
+    expect(resumed.signal == abi.Signal.user1);
+    expect(harness.keywordIs(resumed.value, "payload"));
 }
 
 /// `JOP_ERROR` returns the slot as an error signal without formatting it,
 /// which is the precedent the whole return-rather-than-jump path was built on.
 fn theErrorOpcode() void {
-    var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (error [1 2])) :e)");
-    const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.@"error");
-    expect(harness.isType(out, repr.Tag.tuple));
-    expect(tuples.head(wrap.toTuple(out)).length == 2);
+    const resumed = resumeFiber(fiberv, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.@"error");
+    expect(harness.isType(resumed.value, repr.Tag.tuple));
+    expect(tuples.head(wrap.toTuple(resumed.value)).length == 2);
 }
 
 /// `JOP_PROPAGATE` hands a child's status upward as the parent's signal, and
 /// refuses a status above the user range with the only message in the loop
 /// that carries a `%s` from a static table.
 fn thePropagateOpcode() void {
-    var out = wrap.fromNil();
     const fiberv = eval(
         "(do (def child (fiber/new (fn [] (yield :inner)) :y))" ++
             "    (resume child)" ++
             "    (fiber/new (fn [] (propagate :outer child)) :y))",
     );
-    const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.yield);
-    expect(harness.keywordIs(out, "outer"));
+    const resumed = resumeFiber(fiberv, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.yield);
+    expect(harness.keywordIs(resumed.value, "outer"));
 
     // Only `:new` and `:alive` sit above JANET_STATUS_USER9, so an unstarted
     // child is the reachable half of the check and a dead one propagates fine.
@@ -446,33 +441,31 @@ fn thePropagateOpcode() void {
 /// Five flags at the head of the loop decide what a resumed fiber does with
 /// the value it was resumed with. Nothing else in the tree reads them.
 fn aResumedFiberReceivesItsValue() void {
-    var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] [(yield 1) (yield 2)]) :y)");
 
-    var sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.yield);
-    expect(harness.integerIs(out, 1));
+    var resumed = resumeFiber(fiberv, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.yield);
+    expect(harness.integerIs(resumed.value, 1));
 
-    sig = resumeFiber(fiberv, value.fromBytes("first", .keyword), &out);
-    expect(sig == abi.Signal.yield);
-    expect(harness.integerIs(out, 2));
+    resumed = resumeFiber(fiberv, value.fromBytes("first", .keyword));
+    expect(resumed.signal == abi.Signal.yield);
+    expect(harness.integerIs(resumed.value, 2));
 
-    sig = resumeFiber(fiberv, value.fromBytes("second", .keyword), &out);
-    expect(sig == abi.Signal.ok);
-    expect(harness.isType(out, repr.Tag.tuple));
-    expect(harness.keywordIs(wrap.toTuple(out)[0], "first"));
-    expect(harness.keywordIs(wrap.toTuple(out)[1], "second"));
+    resumed = resumeFiber(fiberv, value.fromBytes("second", .keyword));
+    expect(resumed.signal == abi.Signal.ok);
+    expect(harness.isType(resumed.value, repr.Tag.tuple));
+    expect(harness.keywordIs(wrap.toTuple(resumed.value)[0], "first"));
+    expect(harness.keywordIs(wrap.toTuple(resumed.value)[1], "second"));
 }
 
 /// A fiber that has not started yet takes its resume value as its first
 /// argument rather than into a slot, which happens above the loop — but the
 /// loop still has to skip the instruction it would otherwise re-run.
 fn aNewFiberReceivesItsValueAsAnArgument() void {
-    var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [x] [:got x]) :y)");
-    const sig = resumeFiber(fiberv, value.fromBytes("in", .keyword), &out);
-    expect(sig == abi.Signal.ok);
-    expect(harness.keywordIs(wrap.toTuple(out)[1], "in"));
+    const resumed = resumeFiber(fiberv, value.fromBytes("in", .keyword));
+    expect(resumed.signal == abi.Signal.ok);
+    expect(harness.keywordIs(wrap.toTuple(resumed.value)[1], "in"));
 }
 
 /// After a raise the fiber carries `JANET_FIBER_DID_RAISE`, which the head of
@@ -480,11 +473,10 @@ fn aNewFiberReceivesItsValueAsAnArgument() void {
 /// implicit return. The signal-injection path sets it too, and travels in
 /// `gc.flags` rather than in `flags`.
 fn aFiberResumedAfterARaise() void {
-    var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (error :boom)) :ey)");
-    const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.@"error");
-    expect(harness.keywordIs(out, "boom"));
+    const resumed = resumeFiber(fiberv, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.@"error");
+    expect(harness.keywordIs(resumed.value, "boom"));
     // And is refused a second time, by `checkCanResume` rather than by the
     // loop — which is the boundary `vm_entry` owns.
     expectError(
@@ -496,25 +488,23 @@ fn aFiberResumedAfterARaise() void {
 /// A raise inside a cfunction leaves a C frame on the fiber, which the head of
 /// the loop pops before it can restore anything.
 fn aFiberResumedAfterARaiseInsideACfunction() void {
-    var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (yield (length 5))) :ey)");
-    const sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.@"error");
-    expect(harness.isType(out, repr.Tag.string));
+    const resumed = resumeFiber(fiberv, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.@"error");
+    expect(harness.isType(resumed.value, repr.Tag.string));
 }
 
 /// An injected signal is delivered instead of resuming, and is read back out
 /// of `gc.flags` where `janet_signal_inject` put it.
 fn anInjectedSignal() void {
-    var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (yield 1) :never) :y)");
-    var sig = resumeFiber(fiberv, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.yield);
+    var resumed = resumeFiber(fiberv, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.yield);
 
     signal_core.signalInject(wrap.toFiber(fiberv), abi.Signal.user3);
-    sig = resumeFiber(fiberv, value.fromBytes("injected", .keyword), &out);
-    expect(sig == abi.Signal.user3);
-    expect(harness.keywordIs(out, "injected"));
+    resumed = resumeFiber(fiberv, value.fromBytes("injected", .keyword));
+    expect(resumed.signal == abi.Signal.user3);
+    expect(harness.keywordIs(resumed.value, "injected"));
 }
 
 // -------------------------------------------------------------- breakpoints
@@ -535,9 +525,9 @@ fn aBreakpointReachesTheUnknownOpcodeArm() raise.Raising(void) {
     sig = try vm_entry.step(fiber, wrap.fromNil(), &out);
     expect(sig == abi.Signal.debug);
     // And letting it run finishes.
-    sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.ok);
-    expect(harness.keywordIs(out, "done"));
+    const resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.ok);
+    expect(harness.keywordIs(resumed.value, "done"));
 }
 
 /// `stepImpl`'s breakpoints are temporary: it restores the instruction words
@@ -545,23 +535,22 @@ fn aBreakpointReachesTheUnknownOpcodeArm() raise.Raising(void) {
 /// breakpoint set with `debug/fbreak` stays, and resuming from it is the only
 /// state in which the mask the loop applies to its first opcode does anything.
 fn aPermanentBreakpoint() void {
-    var out = wrap.fromNil();
     const fiberv = eval(
         "(do (defn g [x] (+ x 1))" ++
             "    (def f (fiber/new (fn [] (g 1) (g 2) :done) :dy))" ++
             "    (debug/fbreak g 0) f)",
     );
     const fiber = wrap.toFiber(fiberv);
-    var sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.debug);
+    var resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.debug);
     // Resuming re-runs the breakpointed instruction with bit 7 masked off, so
     // the second call reaches the same breakpoint rather than the loop
     // reporting the same one forever.
-    sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.debug);
-    sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.ok);
-    expect(harness.keywordIs(out, "done"));
+    resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.debug);
+    resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.ok);
+    expect(harness.keywordIs(resumed.value, "done"));
 }
 
 // --------------------------------------------------------- the quieter opcodes

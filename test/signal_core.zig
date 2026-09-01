@@ -86,7 +86,7 @@ fn compileFunction(source: [*:0]const u8) *functions.Function {
 }
 
 fn rootedFiber(func: *functions.Function) *fibers.Fiber {
-    const fiber = fibers.new(func, 32, 0, null).?;
+    const fiber = fibers.new(func, 32, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     return fiber;
 }
@@ -197,14 +197,14 @@ fn aScopeCatchesAPanic() void {
 fn thePlanWithoutAReturnRegister() void {
     const old_return_reg = harness.vm().return_reg;
     const old_coerce_error = harness.vm().coerce_error;
-    var out: abi.Signal = abi.Signal.ok;
 
     harness.vm().return_reg = null;
     // Set so that a plan which consulted it before the null test would show.
     harness.vm().coerce_error = true;
 
-    expect(signal_core_mod.signalPlan(abi.Signal.yield, &out) == signal_core_mod.Plan.top_level);
-    expect(out == abi.Signal.yield);
+    const decision = signal_core_mod.signalPlan(abi.Signal.yield);
+    expect(decision.plan == signal_core_mod.Plan.top_level);
+    expect(decision.signal == abi.Signal.yield);
 
     harness.vm().return_reg = old_return_reg;
     harness.vm().coerce_error = old_coerce_error;
@@ -225,9 +225,9 @@ fn thePlanWithoutCoercion() void {
     var s: c_int = 0;
     while (s < signal_count) : (s += 1) {
         const sig: abi.Signal = @enumFromInt(@as(c_uint, @intCast(s)));
-        var out: abi.Signal = abi.Signal.ok;
-        expect(signal_core_mod.signalPlan(sig, &out) == signal_core_mod.Plan.raise);
-        expect(out == sig);
+        const decision = signal_core_mod.signalPlan(sig);
+        expect(decision.plan == signal_core_mod.Plan.raise);
+        expect(decision.signal == sig);
     }
 
     harness.vm().return_reg = old_return_reg;
@@ -242,24 +242,23 @@ fn thePlanCoerces() void {
     var reg = wrap.fromNil();
     const old_return_reg = harness.vm().return_reg;
     const old_coerce_error = harness.vm().coerce_error;
-    var out: abi.Signal = undefined;
 
     harness.vm().return_reg = &reg;
     harness.vm().coerce_error = true;
 
-    out = abi.Signal.yield;
-    expect(signal_core_mod.signalPlan(abi.Signal.ok, &out) == signal_core_mod.Plan.raise);
-    expect(out == abi.Signal.ok);
+    const ok_decision = signal_core_mod.signalPlan(abi.Signal.ok);
+    expect(ok_decision.plan == signal_core_mod.Plan.raise);
+    expect(ok_decision.signal == abi.Signal.ok);
 
-    out = abi.Signal.yield;
-    expect(signal_core_mod.signalPlan(abi.Signal.@"error", &out) == signal_core_mod.Plan.raise);
-    expect(out == abi.Signal.@"error");
+    const error_decision = signal_core_mod.signalPlan(abi.Signal.@"error");
+    expect(error_decision.plan == signal_core_mod.Plan.raise);
+    expect(error_decision.signal == abi.Signal.@"error");
 
     var s: c_int = @intFromEnum(abi.Signal.debug);
     while (s < signal_count) : (s += 1) {
-        out = abi.Signal.ok;
-        expect(signal_core_mod.signalPlan(@enumFromInt(@as(c_uint, @intCast(s))), &out) == signal_core_mod.Plan.coerce);
-        expect(out == abi.Signal.@"error");
+        const decision = signal_core_mod.signalPlan(@enumFromInt(@as(c_uint, @intCast(s))));
+        expect(decision.plan == signal_core_mod.Plan.coerce);
+        expect(decision.signal == abi.Signal.@"error");
     }
 
     harness.vm().return_reg = old_return_reg;
@@ -284,29 +283,28 @@ fn thePlanBumpsTheRootFiber(nothing: *functions.Function) void {
     const old_root_fiber = harness.vm().root_fiber;
     const fiber = rootedFiber(nothing);
     defer unroot(fiber);
-    var out: abi.Signal = undefined;
 
     harness.vm().return_reg = &reg;
     harness.vm().coerce_error = true;
     harness.vm().root_fiber = fiber;
     const base = fiber.sched_id;
 
-    expect(signal_core_mod.signalPlan(abi.Signal.event, &out) == signal_core_mod.Plan.coerce);
+    expect(signal_core_mod.signalPlan(abi.Signal.event).plan == signal_core_mod.Plan.coerce);
     expect(fiber.sched_id == base +% 1);
 
     // Only EVENT.
-    expect(signal_core_mod.signalPlan(abi.Signal.yield, &out) == signal_core_mod.Plan.coerce);
+    expect(signal_core_mod.signalPlan(abi.Signal.yield).plan == signal_core_mod.Plan.coerce);
     expect(fiber.sched_id == base +% 1);
 
     // Only while coercing.
     harness.vm().coerce_error = false;
-    expect(signal_core_mod.signalPlan(abi.Signal.event, &out) == signal_core_mod.Plan.raise);
+    expect(signal_core_mod.signalPlan(abi.Signal.event).plan == signal_core_mod.Plan.raise);
     expect(fiber.sched_id == base +% 1);
 
     // Only with a root fiber — and without one it must not dereference null.
     harness.vm().coerce_error = true;
     harness.vm().root_fiber = null;
-    expect(signal_core_mod.signalPlan(abi.Signal.event, &out) == signal_core_mod.Plan.coerce);
+    expect(signal_core_mod.signalPlan(abi.Signal.event).plan == signal_core_mod.Plan.coerce);
     expect(fiber.sched_id == base +% 1);
 
     harness.vm().root_fiber = old_root_fiber;
@@ -384,7 +382,7 @@ fn theRecordPublishesSignalAndPayload(nothing: *functions.Function) void {
     // than passing because the field already held the value wanted.
     harness.vm().pending_signal = abi.Signal.user9;
 
-    signal_core_mod.zigSignalRecord(abi.Signal.@"error", message);
+    signal_core_mod.signalRecord(abi.Signal.@"error", message);
     expect(harness.vm().pending_signal == abi.Signal.@"error");
     expect(harness.equals(reg, message));
     expect(fiber.flags.did_raise);
@@ -392,7 +390,7 @@ fn theRecordPublishesSignalAndPayload(nothing: *functions.Function) void {
     // A signal that does not coerce travels unaltered, which is what makes
     // `pending_signal` worth reading rather than assuming.
     harness.vm().pending_signal = abi.Signal.user9;
-    signal_core_mod.zigSignalRecord(abi.Signal.yield, message);
+    signal_core_mod.signalRecord(abi.Signal.yield, message);
     expect(harness.vm().pending_signal == abi.Signal.yield);
     expect(harness.equals(reg, message));
 
@@ -423,18 +421,18 @@ fn theRecordCoercesMessageAndSignal(nothing: *functions.Function) void {
     harness.vm().coerce_error = true;
     harness.vm().pending_signal = abi.Signal.user9;
 
-    signal_core_mod.zigSignalRecord(abi.Signal.yield, message);
+    signal_core_mod.signalRecord(abi.Signal.yield, message);
     expect(harness.vm().pending_signal == abi.Signal.@"error");
     expect(harness.isType(reg, repr.Tag.string));
     const rendered = wrap.toString(reg);
-    const text = rendered[0..@intCast(strings.head(rendered).length)];
+    const text = rendered[0..strings.head(rendered).length];
     expect(std.mem.indexOf(u8, text, "coerced from") != null);
     expect(std.mem.indexOf(u8, text, "yield") != null);
 
     // ERROR under coercion is a raise rather than a coercion: the signal is
     // already what it would be coerced to, so the message must survive.
     reg = wrap.fromNil();
-    signal_core_mod.zigSignalRecord(abi.Signal.@"error", message);
+    signal_core_mod.signalRecord(abi.Signal.@"error", message);
     expect(harness.vm().pending_signal == abi.Signal.@"error");
     expect(harness.equals(reg, message));
 
@@ -565,14 +563,14 @@ fn injectionReachesTheInnermostFiber(nothing: *functions.Function) void {
     child.child = grandchild;
 
     // Preload the carrier so that a plan which only ORs shows up.
-    grandchild.gc.flags |= constants.JANET_FIBER_STATUS_MASK;
+    harness.gcSetBits(&grandchild.gc.flags, constants.JANET_FIBER_STATUS_MASK);
     const parent_flags = parent.flags;
     const child_flags = child.flags;
 
     signal_core_mod.signalInject(parent, abi.Signal.user3);
 
     expect(grandchild.flags.resume_signal);
-    expect((grandchild.gc.flags & constants.JANET_FIBER_STATUS_MASK) >> constants.JANET_FIBER_STATUS_OFFSET ==
+    expect((harness.gcBits(grandchild.gc.flags) & constants.JANET_FIBER_STATUS_MASK) >> constants.JANET_FIBER_STATUS_OFFSET ==
         @intFromEnum(abi.Signal.user3));
 
     // The fiber's real status lives in `flags` and is untouched.
@@ -583,16 +581,16 @@ fn injectionReachesTheInnermostFiber(nothing: *functions.Function) void {
     expect(std.meta.eql(child.flags, child_flags));
 
     // A chain of one is its own innermost fiber.
-    grandchild.gc.flags &= ~@as(i32, constants.JANET_FIBER_STATUS_MASK);
+    grandchild.gc.flags = @bitCast(harness.gcBits(grandchild.gc.flags) & ~@as(u32, constants.JANET_FIBER_STATUS_MASK));
     grandchild.flags.resume_signal = false;
     parent.child = null;
     child.child = null;
     signal_core_mod.signalInject(grandchild, abi.Signal.user1);
     expect(grandchild.flags.resume_signal);
-    expect((grandchild.gc.flags & constants.JANET_FIBER_STATUS_MASK) >> constants.JANET_FIBER_STATUS_OFFSET ==
+    expect((harness.gcBits(grandchild.gc.flags) & constants.JANET_FIBER_STATUS_MASK) >> constants.JANET_FIBER_STATUS_OFFSET ==
         @intFromEnum(abi.Signal.user1));
 
-    grandchild.gc.flags &= ~@as(i32, constants.JANET_FIBER_STATUS_MASK);
+    grandchild.gc.flags = @bitCast(harness.gcBits(grandchild.gc.flags) & ~@as(u32, constants.JANET_FIBER_STATUS_MASK));
     grandchild.flags.resume_signal = false;
 }
 
@@ -602,13 +600,11 @@ fn injectionReachesTheInnermostFiber(nothing: *functions.Function) void {
 fn aContinueSignalDeliversAnError(yielder: *functions.Function) void {
     const fiber = rootedFiber(yielder);
     defer unroot(fiber);
-    var out = wrap.fromNil();
+    expect(vm_entry.continueFiber(fiber, wrap.fromNil()).signal == abi.Signal.yield);
 
-    expect(vm_entry.continueFiber(fiber, wrap.fromNil(), &out) == abi.Signal.yield);
-
-    const sig = vm_entry.continueSignal(fiber, value.fromBytes("cancelled", .string), &out, abi.Signal.@"error");
-    expect(sig == abi.Signal.@"error");
-    expect(harness.stringValueIs(out, "cancelled"));
+    const resumed = vm_entry.continueSignal(fiber, value.fromBytes("cancelled", .string), abi.Signal.@"error");
+    expect(resumed.signal == abi.Signal.@"error");
+    expect(harness.stringValueIs(resumed.value, "cancelled"));
 }
 
 /// A signal of OK is not injected at all: `continueSignal` resumes normally,
@@ -616,13 +612,11 @@ fn aContinueSignalDeliversAnError(yielder: *functions.Function) void {
 fn aContinueSignalOfOkIsAnOrdinaryResume(yielder: *functions.Function) void {
     const fiber = rootedFiber(yielder);
     defer unroot(fiber);
-    var out = wrap.fromNil();
+    expect(vm_entry.continueFiber(fiber, wrap.fromNil()).signal == abi.Signal.yield);
 
-    expect(vm_entry.continueFiber(fiber, wrap.fromNil(), &out) == abi.Signal.yield);
-
-    const sig = vm_entry.continueSignal(fiber, harness.wrapInteger(7), &out, abi.Signal.ok);
-    expect(sig == abi.Signal.ok);
-    expect(harness.integerIs(out, 7));
+    const resumed = vm_entry.continueSignal(fiber, harness.wrapInteger(7), abi.Signal.ok);
+    expect(resumed.signal == abi.Signal.ok);
+    expect(harness.integerIs(resumed.value, 7));
 }
 
 /// A signal number a C caller may legally pass but the vocabulary has no
@@ -640,15 +634,13 @@ fn aContinueSignalOfOkIsAnOrdinaryResume(yielder: *functions.Function) void {
 fn anOutOfDomainSignalClamps(yielder: *functions.Function) void {
     const fiber = rootedFiber(yielder);
     defer unroot(fiber);
-    var out = wrap.fromNil();
-
-    expect(vm_entry.continueFiber(fiber, wrap.fromNil(), &out) == abi.Signal.yield);
+    expect(vm_entry.continueFiber(fiber, wrap.fromNil()).signal == abi.Signal.yield);
 
     // `continueSignal` takes a member and could not be handed 42, so the
     // conversion is spelled at the call: this is the whole path a wire number
     // travels, from `fromWire` through the injection to the read-back.
-    const sig = vm_entry.continueSignal(fiber, wrap.fromNil(), &out, abi.Signal.fromWire(42));
-    expect(sig == abi.Signal.user9);
+    const resumed = vm_entry.continueSignal(fiber, wrap.fromNil(), abi.Signal.fromWire(42));
+    expect(resumed.signal == abi.Signal.user9);
 
     // The whole six-bit range the GC header can hold, including the value
     // above the enum's largest member and the one at the far end.

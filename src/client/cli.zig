@@ -12,7 +12,6 @@
 
 const std = @import("std");
 const repr = @import("repr");
-const constants = @import("constants");
 const raise = @import("subsystems").raise;
 const subsystems = @import("subsystems");
 const interop = @import("interop.zig");
@@ -57,14 +56,14 @@ fn runRaising(arguments: []const [:0]const u8) raise.Raising(c_int) {
     tables.put(env, value.fromBytes("executable", .keyword), value.fromBytes(arguments[0], .string));
 
     const cli_main = registry.resolve(env, symbols.csymbol("cli-main"));
-    if (cli_main.type == constants.JANET_BINDING_NONE) return 1;
+    if (cli_main.type == .none) return 1;
     const main_function = cli_main.value;
 
     var main_args = [_]repr.Value{wrap.fromArray(args)};
-    // `fibers.new` answers null when the callee's arity rejects the arguments.
+    // `fibers.new` answers `error.Arity` when the callee rejects the arguments.
     // `cli-main` takes one, and the core image is what guarantees it, so the
-    // `.?` is a claim about the image rather than about this call.
-    const fiber = fibers.new(wrap.toFunction(main_function), 64, 1, &main_args).?;
+    // `catch` is a claim about the image rather than about this call.
+    const fiber = fibers.new(wrap.toFunction(main_function), 64, &main_args) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     fiber.env = env;
     return env_core.loopFiber(fiber);

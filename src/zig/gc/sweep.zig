@@ -57,40 +57,39 @@ const tables = @import("../value/tables.zig");
 /// rather than merely behaviour.
 const has_ev = constants.JANET_VM_HAS_EV != 0;
 
-const mem_reachable: i32 = constants.JANET_MEM_REACHABLE;
-const mem_disabled: i32 = constants.JANET_MEM_DISABLED;
-
-/// The two flags that keep a block through a sweep. `JANET_MEM_DISABLED` is
-/// what an embedder sets to hold a block the collector would otherwise free;
-/// it is never cleared by the sweep, where `JANET_MEM_REACHABLE` is cleared on
-/// every survivor so the next mark phase starts from a clean heap.
-const mem_retained: i32 = mem_reachable | mem_disabled;
+/// The two flags that keep a block through a sweep. `disabled` is what an
+/// embedder sets to hold a block the collector would otherwise free; it is
+/// never cleared by the sweep, where `reachable` is cleared on every survivor
+/// so the next mark phase starts from a clean heap.
+inline fn retained(flags: abi.GCFlags) bool {
+    return flags.reachable or flags.disabled;
+}
 
 // ------------------------------------------------------ the header accessors
 
-/// Every collectable object begins with its `JanetGCObject`, which is what lets
+/// Every collectable object begins with its `GCObject`, which is what lets
 /// these three take any of them.
 ///
 /// The header is recovered through the address rather than with `@ptrCast`,
 /// because `checkLiveref` reaches here with the `?*anyopaque` that
 /// `janet_unwrap_pointer` returns as well as with typed pointers.
-inline fn gcHeader(mem: anytype) *abi.JanetGCObject {
+inline fn gcHeader(mem: anytype) *abi.GCObject {
     return @ptrFromInt(@intFromPtr(mem));
 }
 
 inline fn gcReachable(mem: anytype) bool {
-    return (gcHeader(mem).flags & mem_reachable) != 0;
+    return gcHeader(mem).flags.reachable;
 }
 
-inline fn gcType(mem: *abi.JanetGCObject) gc_alloc.MemoryType {
+inline fn gcType(mem: *abi.GCObject) gc_alloc.MemoryType {
     return gc_alloc.memoryTypeOf(mem);
 }
 
 // ------------------------------------------------------------- string blocks
 
 /// The bytes a string or symbol block holds. The pointer this receives is a
-/// `*JanetGCObject` off the sweep list; see `deinitBlock` for the `@alignCast`.
-inline fn stringData(mem: *abi.JanetGCObject) [*:0]const u8 {
+/// `*GCObject` off the sweep list; see `deinitBlock` for the `@alignCast`.
+inline fn stringData(mem: *abi.GCObject) [*:0]const u8 {
     const head: *strings.StringHead = @alignCast(@fieldParentPtr("gc", mem));
     return @ptrCast(strings.data(head));
 }
@@ -120,7 +119,7 @@ inline fn stringData(mem: *abi.JanetGCObject) [*:0]const u8 {
 /// struct or function stores its payload inside the same allocation, so
 /// freeing the block frees the payload; a symbol is the one immutable type
 /// with an external obligation, because it has to leave the symbol cache.
-fn deinitBlock(mem: *abi.JanetGCObject) void {
+fn deinitBlock(mem: *abi.GCObject) void {
     switch (gc_alloc.memoryTypeOf(mem)) {
         gc_alloc.MemoryType.symbol => symbols.deinit(stringData(mem)),
 
@@ -148,7 +147,7 @@ fn deinitBlock(mem: *abi.JanetGCObject) void {
                 if (f.ev_state != null and !f.flags.evInFlight()) {
                     ev.evDecRefcount();
                     utils.free(f.ev_state);
-                } else if ((f.gc.flags & constants.JANET_FIBER_EV_FLAG_SUSPENDED) != 0) {
+                } else if (fibers.evFlags(f).suspended) {
                     ev.evDecRefcount();
                 }
             }
@@ -158,7 +157,7 @@ fn deinitBlock(mem: *abi.JanetGCObject) void {
         gc_alloc.MemoryType.buffer => buffers.deinit(@alignCast(@fieldParentPtr("gc", mem))),
 
         gc_alloc.MemoryType.abstract => {
-            const head: *abi.JanetAbstractHead = @alignCast(@fieldParentPtr("gc", mem));
+            const head: *abi.AbstractHead = @alignCast(@fieldParentPtr("gc", mem));
             if (head.type.gcperthread) |gcperthread| {
                 gcperthread(abstracts.data(head), head.size);
             }
@@ -229,16 +228,8 @@ fn checkLiveref(x: repr.Value) bool {
 
 /// Nil out the elements of a surviving weak array that nothing else reached.
 fn dropDeadElements(array: *arrays.Array) void {
-    // The C original counts with a `uint32_t` against `(uint32_t) array->count`,
-    // and the cast is kept rather than dropped: a negative count is not
-    // reachable through the API, but if one ever were, dropping the cast would
-    // change which memory the loop touches rather than merely where it stops.
-    var i: u32 = 0;
-    const count: u32 = @intCast(array.count);
-    while (i < count) : (i += 1) {
-        if (!checkLiveref(array.slice()[i])) {
-            array.slice()[i] = wrap.fromNil();
-        }
+    for (array.slice()) |*element| {
+        if (!checkLiveref(element.*)) element.* = wrap.fromNil();
     }
 }
 
@@ -280,20 +271,20 @@ fn dropDeadEntries(table: *tables.Table, memtype: gc_alloc.MemoryType) void {
 /// again next time. The list is passed by pointer because the head is a
 /// `janet_vm` field
 /// and both lists are swept the same way.
-fn freeUnreachable(list: *?*abi.JanetGCObject) void {
+fn freeUnreachable(list: *?*abi.GCObject) void {
     const g = &vm_state.current().gc;
-    var previous: ?*abi.JanetGCObject = null;
+    var previous: ?*abi.GCObject = null;
     var current = list.*;
     while (current) |block| {
         const next = block.data.next;
-        if ((block.flags & mem_retained) != 0) {
+        if (retained(block.flags)) {
             previous = current;
-            block.flags &= ~mem_reachable;
+            block.flags.reachable = false;
         } else {
             g.block_count -%= 1;
             deinitBlock(block);
-            if (previous != null) {
-                previous.?.data.next = next;
+            if (previous) |p| {
+                p.data.next = next;
             } else {
                 list.* = next;
             }
@@ -318,8 +309,8 @@ pub fn sweep() void {
     var current = g.weak_blocks;
     while (current) |block| {
         const next = block.data.next;
-        if ((block.flags & mem_retained) != 0) {
-            const memtype = gcType(current.?);
+        if (retained(block.flags)) {
+            const memtype = gcType(block);
             if (memtype == .array_weak) {
                 dropDeadElements(@alignCast(@fieldParentPtr("gc", block)));
             } else {
@@ -395,7 +386,7 @@ pub fn clearMemory() void {
     if (has_ev) {
         // The scheduler's visit record, which is the only part of `VmEv` the
         // collector touches. **The binding lives inside the guard**, because
-        // `VmEv` is an empty `extern struct` without an event loop and naming
+        // `VmEv` is an empty `struct` without an event loop and naming
         // one of its fields above the `if` is a reference a `-Dev=false` build
         // cannot resolve.
         const threaded = &v.ev.threaded_abstracts;
@@ -427,7 +418,7 @@ pub fn clearMemory() void {
     // Nothing a running program observes moves: the weak heap is reached only
     // at teardown, and everything on it is unreachable by then by
     // construction.
-    for ([_]*?*abi.JanetGCObject{ &g.blocks, &g.weak_blocks }) |head| {
+    for ([_]*?*abi.GCObject{ &g.blocks, &g.weak_blocks }) |head| {
         var current = head.*;
         while (current) |block| {
             deinitBlock(block);

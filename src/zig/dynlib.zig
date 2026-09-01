@@ -140,8 +140,8 @@ fn errorClib() [*:0]const u8 {
 /// `GetModuleHandle(NULL)` is how Win32 spells that. `free` and `symbol` both
 /// test against it, which is why it is a handle rather than a flag.
 fn loadClib(name: ?[*:0]const u8) ?*anyopaque {
-    if (name == null) return c.GetModuleHandleA(null);
-    return c.LoadLibraryA(name.?);
+    const path = name orelse return c.GetModuleHandleA(null);
+    return c.LoadLibraryA(path);
 }
 
 fn freeClib(lib: ?*anyopaque) void {

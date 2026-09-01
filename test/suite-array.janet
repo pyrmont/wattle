@@ -57,6 +57,17 @@
 (def a @[1 2])
 (assert (deep= (array/concat a a) @[1 2 1 2]) "array/concat self")
 
+# array/new takes a signed integer and reserves nothing for a negative one.
+# The capacity is a count internally, so the floor is written down at the
+# cfunction; before it was, a negative request stored a capacity near the top
+# of `size_t` and the first push wrote through a null payload.
+(assert (deep= (array/new -5) @[]) "array/new with a negative capacity is empty")
+(assert (= 0 (length (array/new -5))) "array/new with a negative capacity has no elements")
+(assert (deep= (let [grown (array/new -5)] (array/push grown 1) grown) @[1])
+        "array/new with a negative capacity still grows")
+(assert (deep= (let [grown (array/weak -5)] (array/push grown 1) grown) @[1])
+        "array/weak with a negative capacity still grows")
+
 # array/insert
 (assert (deep= (array/insert @[:a :a :a :a] 2 :b :b) @[:a :a :b :b :a :a]) "array/insert 1")
 (assert (deep= (array/insert @[:a :b] -1 :c :d) @[:a :b :c :d]) "array/insert 2")

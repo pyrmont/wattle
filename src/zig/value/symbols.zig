@@ -171,18 +171,16 @@ fn cacheFindmem(sc: *SymbolCache, str: []const u8, hash: i32) Lookup {
     scan: {
         var j: usize = 0;
         while (j < 4) : (j += 2) {
-            var i: u32 = bounds[j];
-            while (i < bounds[j + 1]) : (i += 1) {
-                const entry = sc.entries.?[i];
-                if (entry == null) {
+            for (bounds[j]..bounds[j + 1]) |i| {
+                const entry = sc.entries.?[i] orelse {
                     if (first_empty == null) first_empty = &sc.entries.?[i];
                     break :scan;
-                }
+                };
                 if (deleted() == entry) {
                     if (first_empty == null) first_empty = &sc.entries.?[i];
                     continue;
                 }
-                if (strings.equalconst(entry.?, str, hash)) {
+                if (strings.equalconst(entry, str, hash)) {
                     if (first_empty) |slot| {
                         slot.* = entry;
                         sc.entries.?[i] = deleted();
@@ -213,16 +211,15 @@ fn cacheResize(sc: *SymbolCache, new_capacity: u32) void {
     sc.entries = new_cache;
     sc.capacity = new_capacity;
     sc.deleted = 0;
-    var i: u32 = 0;
-    while (i < old_capacity) : (i += 1) {
-        const x = old_cache.?[i];
-        if (x != null and deleted() != x) {
+    for (0..old_capacity) |i| {
+        const x = old_cache.?[i] orelse continue;
+        if (deleted() != x) {
             // A name already in the fresh table is not reachable -- it was
             // built from a table that holds no duplicates -- and the recovery
             // abandons every remaining entry while still freeing the old one.
             // Preserved. Its other half, a null slot, is now a state the type
             // forbids.
-            switch (cacheFind(sc, x.?)) {
+            switch (cacheFind(sc, x)) {
                 .found => break,
                 .vacant => |slot| slot.* = x,
             }
@@ -237,7 +234,7 @@ fn cacheResize(sc: *SymbolCache, new_capacity: u32) void {
 fn cachePut(sc: *SymbolCache, x: [*:0]const u8, vacant: *?[*:0]const u8) void {
     var slot = vacant;
     if ((sc.count +% sc.deleted) *% 2 > sc.capacity) {
-        cacheResize(sc, @bitCast(value.capacityFor(@bitCast(2 *% sc.count +% 1))));
+        cacheResize(sc, @intCast(value.capacityFor(2 *% sc.count +% 1)));
         slot = switch (cacheFind(sc, x)) {
             .found, .vacant => |found| found,
         };
@@ -273,7 +270,7 @@ fn intern(sc: *SymbolCache, str: []const u8) [*:0]const u8 {
     hd.hash = hash;
     hd.length = @intCast(str.len);
     const newstr = strings.data(hd);
-    utils.safeMemcpy(@ptrCast(newstr), @ptrCast(str.ptr), str.len);
+    @memcpy(newstr[0..str.len], str);
     newstr[str.len] = 0;
     const interned: [*:0]const u8 = @ptrCast(newstr);
     cachePut(sc, interned, vacant);
@@ -337,7 +334,7 @@ fn gensym(sc: *SymbolCache, counter: *GensymCounter) [*:0]const u8 {
     // The whole counter is copied and the terminator then overwrites its last
     // byte, so the name is the first `len` characters of the odometer.
     @memcpy(sym[0..counter.len], counter);
-    sym[@intCast(hd.length)] = 0;
+    sym[hd.length] = 0;
     const interned: [*:0]const u8 = @ptrCast(sym);
     cachePut(sc, interned, vacant);
     return interned;

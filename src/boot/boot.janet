@@ -5046,16 +5046,15 @@
 
   # Write the core image out, as itself.
   #
-  # It was a C source file until Phase 11 Part 19: an array of hex literals
-  # wrapped in `#include "janet.h"`, 2,007,197 bytes of text carrying 324,310
-  # bytes of image, compiled into the library, the client and both contract
-  # drivers. `core_env.zig` reaches the bytes with `@embedFile` now, so what
-  # goes out is the marshalled stream and nothing here emits C.
+  # **The marshalled stream, not a C source file.** `core_env.zig` reaches
+  # these bytes with `@embedFile`, so nothing here emits C. Janet writes the
+  # image as an array of hex literals inside a `#include` instead, which costs
+  # 2,007,197 bytes of text to carry 324,310 bytes of image and compiles it
+  # into the library, the client and both contract drivers.
   #
-  # The amalgamation shared this code path and went with it. It named the
-  # fifty `src/core/*.c` files Phase 10 Part 18 deleted and slurped each one,
-  # so it had not been able to run for a phase; `Makefile` and `meson.build`
-  # name the same missing sources and are in the same state.
+  # `Makefile` and `meson.build` in this tree still name C sources that are not
+  # here. They are Janet's build files, kept for a comparison rather than for
+  # a build, and neither runs.
   #
   # `spit` defaults to `:wb`, which is what a marshalled stream needs on a
   # host that would otherwise translate a 0x0A.

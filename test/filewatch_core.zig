@@ -17,12 +17,13 @@
 //!    field, so `filewatchMark` opens by asking whether the channel is set.
 //!    Nothing in Janet can hand the collector a watcher in that state; a
 //!    `@memset` and a `janet_abstract` can.
-//!  - **A stale `errno`.** Two of the subject's retry loops repeat on
-//!    *success* -- see `FOUND.md`, "filewatch/remove retries a close that
-//!    succeeded" -- and reaching that needs `EINTR` in `errno` when the
-//!    cfunction is entered, which no Janet program can arrange. It is a
-//!    defect, so the contract pins it rather than asserting the behaviour
-//!    anyone would want.
+//!  - **A stale `errno`.** Two of the subject's retry loops used to repeat on
+//!    *success* -- `FOUND.md`, "filewatch/remove retries a call that
+//!    succeeded", now fixed -- and reaching that needs `EINTR` in `errno` when
+//!    the cfunction is entered, which no Janet program can arrange. The
+//!    assertion stays for the reason it was written: this is the only place
+//!    the removal can be asked with a dirty `errno`, and it now says the
+//!    answer does not depend on one.
 //!  - **The two halves of the flag table.** The names are in
 //!    `filewatch_flags.zig` and the values are in the subject, and only a
 //!    contract can ask the name lookup and the value decoder the same question
@@ -391,16 +392,15 @@ fn theLifecycle(chan: repr.Value) void {
         expectRaise("filewatch/remove", &argv, "bad watch descriptor");
     }
 
-    // `FOUND.md`, "filewatch/remove retries a close that succeeded". The retry
-    // loop repeats while the call *succeeded* and `errno` holds EINTR, so a
-    // stale EINTR turns one successful removal into two attempts and the second
-    // one fails. Nothing in Janet can leave EINTR in `errno` across a cfunction
-    // entry; this is what the contract is for. The behaviour is defined, so it
-    // is reproduced and the assertion holds.
+    // `FOUND.md`, "filewatch/remove retries a call that succeeded". The C
+    // original's loop repeated while the call *succeeded* and `errno` held
+    // EINTR, so a stale EINTR turned one successful removal into two attempts
+    // and the second one failed. The retry is now `c.retryIntr`, which repeats
+    // only a call that failed, so a dirty `errno` changes nothing.
     {
         var argv = [_]repr.Value{ watcher, dir };
         std.c._errno().* = @intFromEnum(std.posix.E.INTR);
-        expectAnyRaise("filewatch/remove", &argv);
+        expect(order.equals(callCore("filewatch/remove", &argv), watcher));
     }
 
     // With a clean `errno` the same call is the ordinary one, and it answers

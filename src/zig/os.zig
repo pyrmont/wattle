@@ -145,15 +145,16 @@ fn cfunCryptorand(argv: []repr.Value) raise.Raising(repr.Value) {
     const n = try args_core.getInteger(argv, 0);
     if (n < 0) return raise.panic("expected positive integer");
     var buffer: *buffers.Buffer = undefined;
-    var offset: i32 = 0;
+    const count: usize = @intCast(n);
+    var offset: usize = 0;
     if (argv.len == 2) {
         buffer = try args_core.getBuffer(argv, 1);
-        offset = @intCast(buffer.count);
+        offset = buffer.count;
     } else {
-        buffer = buffers.new(n);
+        buffer = buffers.new(count);
     }
-    try buffers.setcount(buffer, offset + n);
-    if (utils.cryptorand(buffer.data.? + @as(usize, @intCast(offset)), @intCast(n)) != 0) {
+    try buffers.setcount(buffer, offset + count);
+    if (utils.cryptorand(buffer.data.? + offset, count) != 0) {
         return raise.panic("unable to get sufficient random data");
     }
     return wrap.fromBuffer(buffer);
@@ -262,9 +263,9 @@ fn cfunClock(argv: []repr.Value) raise.Raising(repr.Value) {
 
     const sourcestr = try args_core.optKeyword(argv, 0, null);
     var source: i32 = clock_sources[0].value;
-    if (sourcestr != null) {
+    if (sourcestr) |wanted| {
         source = for (clock_sources) |entry| {
-            if (utils.cstrcmp(sourcestr.?, entry.name.ptr) == 0) break entry.value;
+            if (utils.cstrcmp(wanted, entry.name.ptr) == 0) break entry.value;
         } else return pp_format.panicf(
             "expected :realtime, :monotonic, or :cputime, got %v",
             .{argv[0]},
@@ -276,19 +277,24 @@ fn cfunClock(argv: []repr.Value) raise.Raising(repr.Value) {
     const nsec = now.nsec;
 
     const formatstr = try args_core.optKeyword(argv, 1, null);
-    if (formatstr == null or utils.cstrcmp(formatstr.?, "double") == 0) {
-        const dtime = @as(f64, @floatFromInt(sec)) + (@as(f64, @floatFromInt(nsec)) / 1e9);
-        return wrap.fromNumber(dtime);
-    } else if (utils.cstrcmp(formatstr.?, "int") == 0) {
-        return wrap.fromNumber(@floatFromInt(sec));
-    } else if (utils.cstrcmp(formatstr.?, "tuple") == 0) {
-        var tup = [2]repr.Value{
-            wrap.fromNumber(@floatFromInt(sec)),
-            wrap.fromNumber(@floatFromInt(nsec)),
-        };
-        return wrap.fromTuple(tuples.newFrom(&tup));
+    // An absent format is `:double`, which is why the arm is the fallthrough
+    // below rather than the first test: the comparisons keep C's order.
+    if (formatstr) |wanted| {
+        if (utils.cstrcmp(wanted, "double") != 0) {
+            if (utils.cstrcmp(wanted, "int") == 0) {
+                return wrap.fromNumber(@floatFromInt(sec));
+            } else if (utils.cstrcmp(wanted, "tuple") == 0) {
+                var tup = [2]repr.Value{
+                    wrap.fromNumber(@floatFromInt(sec)),
+                    wrap.fromNumber(@floatFromInt(nsec)),
+                };
+                return wrap.fromTuple(tuples.newFrom(&tup));
+            }
+            return pp_format.panicf("expected :double, :int, or :tuple, got %v", .{argv[1]});
+        }
     }
-    return pp_format.panicf("expected :double, :int, or :tuple, got %v", .{argv[1]});
+    const dtime = @as(f64, @floatFromInt(sec)) + (@as(f64, @floatFromInt(nsec)) / 1e9);
+    return wrap.fromNumber(dtime);
 }
 
 fn cfunSleep(argv: []repr.Value) raise.Raising(repr.Value) {
@@ -553,11 +559,9 @@ pub fn sleepFor(seconds: f64) void {
         .sec = @intCast(whole),
         .nsec = @intFromFloat(fraction),
     };
-    while (true) {
-        const rc = std.c.nanosleep(&spec, &spec);
-        if (rc == 0) return;
-        if (std.c._errno().* != @intFromEnum(std.c.E.INTR)) return;
-    }
+    // `nanosleep` writes what is left of the interval back into `spec`, so a
+    // retry after a signal sleeps the remainder rather than starting again.
+    _ = c.retryIntr(std.c.nanosleep, .{ &spec, &spec });
 }
 
 /// Convert toward zero, clamping instead of trapping. This reproduces the

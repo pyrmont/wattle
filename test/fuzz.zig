@@ -51,7 +51,6 @@
 
 const std = @import("std");
 const repr = @import("repr");
-const constants = @import("constants");
 const harness = @import("harness.zig");
 
 const subsystems = @import("subsystems");
@@ -97,13 +96,13 @@ fn session(comptime body: fn (env: *tables.Table, data: []const u8) void, data: 
 /// name suggests.
 fn parserBody(env: *tables.Table, data: []const u8) void {
     _ = env;
-    var parser: parser_core_mod.JanetParser = undefined;
+    var parser: parser_core_mod.Parser = undefined;
     parser_core_mod.parserInit(&parser);
     defer parser_core_mod.parserDeinit(&parser);
 
     for (data) |byte| {
         switch (parser_core_mod.parserStatus(&parser)) {
-            constants.JANET_PARSE_DEAD, constants.JANET_PARSE_ERROR => return,
+            parser_core_mod.ParserStatus.dead, parser_core_mod.ParserStatus.@"error" => return,
             else => {},
         }
         _ = harness.raised(parser_core.consumeChecked, .{ &parser, byte });
@@ -131,14 +130,14 @@ test "parser" {
 
 /// Parse untrusted bytes and compile every form they produce.
 fn compileBody(env: *tables.Table, data: []const u8) void {
-    var parser: parser_core_mod.JanetParser = undefined;
+    var parser: parser_core_mod.Parser = undefined;
     parser_core_mod.parserInit(&parser);
     defer parser_core_mod.parserDeinit(&parser);
 
     const where = strings.cstring("fuzz");
 
     for (data) |byte| {
-        if (parser_core_mod.parserStatus(&parser) == constants.JANET_PARSE_ERROR) return;
+        if (parser_core_mod.parserStatus(&parser) == parser_core_mod.ParserStatus.@"error") return;
         _ = harness.raised(parser_core.consumeChecked, .{ &parser, byte });
         while (parser_core_mod.parserHasMore(&parser)) {
             const form = parser_core_mod.parserProduce(&parser);

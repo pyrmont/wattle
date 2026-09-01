@@ -187,10 +187,7 @@ pub fn cfunOpen(argv: []repr.Value) raise.Raising(repr.Value) {
         if (fd == h.INVALID_HANDLE_VALUE) return raise.panicv(ev_stream.evLasterr());
     } else {
         const open_flags = try openPosix(opt_flags, &scan);
-        while (true) {
-            fd = c.open(@ptrCast(path), open_flags, mode);
-            if (!(fd == -1 and c.errno() == h.EINTR)) break;
-        }
+        fd = c.retryIntr(c.open, .{ @as([*:0]const u8, @ptrCast(path)), open_flags, mode });
         if (fd == -1) return raise.panicv(ev_stream.evLasterr());
     }
     const flags = if (scan.disable_stream_mode) 0 else scan.stream_flags;

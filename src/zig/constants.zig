@@ -30,7 +30,6 @@
 //! `@import("config")` rather than written down.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const config = @import("config");
 const repr = @import("repr");
 
@@ -90,14 +89,6 @@ pub const JANET_VM_HAS_NET: c_int = if (config.net) 1 else 0;
 /// instructions.
 pub const JANET_VM_HAS_INTERRUPT: c_int = if (config.interpreter_interrupt) 1 else 0;
 
-/// Null on Windows, where a handle is a pointer, and `-1` on POSIX, where it is
-/// a file descriptor. The only constant here whose *type*
-/// changes with the target rather than its value.
-pub const JANET_HANDLE_NONE = if (builtin.os.tag == .windows)
-    @as(?*anyopaque, null)
-else
-    -@as(c_int, 1);
-
 // ---------------------------------------------------------------------------
 // The rest, invariant across all 31 configurations swept
 // ---------------------------------------------------------------------------
@@ -111,48 +102,78 @@ else
 // the module that owns the representation. The masks below are the one thing
 // left that needs their numbering.
 
-pub const JANET_ASYNC_EVENT_INIT: c_int = 0;
-pub const JANET_ASYNC_EVENT_MARK: c_int = 1;
-pub const JANET_ASYNC_EVENT_DEINIT: c_int = 2;
-pub const JANET_ASYNC_EVENT_CLOSE: c_int = 3;
-pub const JANET_ASYNC_EVENT_ERR: c_int = 4;
-pub const JANET_ASYNC_EVENT_HUP: c_int = 5;
-pub const JANET_ASYNC_EVENT_READ: c_int = 6;
-pub const JANET_ASYNC_EVENT_WRITE: c_int = 7;
-pub const JANET_ASYNC_EVENT_COMPLETE: c_int = 8;
-pub const JANET_ASYNC_EVENT_FAILED: c_int = 9;
-pub const JANET_ASYNC_LISTEN_READ: c_int = 1;
-pub const JANET_ASYNC_LISTEN_WRITE: c_int = 2;
-pub const JANET_ASYNC_LISTEN_BOTH: c_int = 3;
+/// What the event loop is telling a listener. The callback in an event-loop
+/// state is the only consumer, and the loop is the only producer, so the
+/// vocabulary is closed.
+pub const AsyncEvent = enum(u32) {
+    init = 0,
+    mark = 1,
+    deinit = 2,
+    close = 3,
+    err = 4,
+    hup = 5,
+    read = 6,
+    write = 7,
+    complete = 8,
+    failed = 9,
+};
+/// Which half of a stream a listener is waiting on. C had three values of
+/// which the third was the other two or-ed together, which is a bit field
+/// wearing an enum's clothes.
+pub const AsyncMode = packed struct(u32) {
+    read: bool = false,
+    write: bool = false,
+    _rest: u30 = 0,
 
-pub const JANET_PARSE_ROOT: c_int = 0;
-pub const JANET_PARSE_ERROR: c_int = 1;
-pub const JANET_PARSE_PENDING: c_int = 2;
-pub const JANET_PARSE_DEAD: c_int = 3;
+    pub const reading: AsyncMode = .{ .read = true };
+    pub const writing: AsyncMode = .{ .write = true };
+    pub const both: AsyncMode = .{ .read = true, .write = true };
+};
 
-pub const JANET_OAT_SLOT: c_int = 0;
-pub const JANET_OAT_ENVIRONMENT: c_int = 1;
-pub const JANET_OAT_CONSTANT: c_int = 2;
-pub const JANET_OAT_INTEGER: c_int = 3;
-pub const JANET_OAT_TYPE: c_int = 4;
-pub const JANET_OAT_SIMPLETYPE: c_int = 5;
-pub const JANET_OAT_LABEL: c_int = 6;
-pub const JANET_OAT_FUNCDEF: c_int = 7;
+/// What an assembly operand names, which decides how the assembler resolves
+/// it and which of the assembler's four tables it is looked up in.
+///
+/// Exhaustive: every value comes from a `verify.instructions` row or from a
+/// literal in `bytecode.zig`, and nothing outside this runtime supplies one.
+pub const OperandKind = enum(u8) {
+    slot = 0,
+    environment = 1,
+    constant = 2,
+    integer = 3,
+    type = 4,
+    simple_type = 5,
+    label = 6,
+    funcdef = 7,
+};
 
-pub const JINT_0: c_int = 0;
-pub const JINT_S: c_int = 1;
-pub const JINT_L: c_int = 2;
-pub const JINT_SS: c_int = 3;
-pub const JINT_SL: c_int = 4;
-pub const JINT_ST: c_int = 5;
-pub const JINT_SI: c_int = 6;
-pub const JINT_SD: c_int = 7;
-pub const JINT_SU: c_int = 8;
-pub const JINT_SSS: c_int = 9;
-pub const JINT_SSI: c_int = 10;
-pub const JINT_SSU: c_int = 11;
-pub const JINT_SES: c_int = 12;
-pub const JINT_SC: c_int = 13;
+/// An instruction's operand shape, which is what the verifier, the two
+/// assembler directions and the disassembler each dispatch on.
+///
+/// The letters are the C names' and are the operands in order: `s` a slot,
+/// `l` a jump label, `t` a type mask, `i` a signed immediate, `u` an unsigned
+/// immediate, `d` a subdefinition index, `c` a constant index, `e` an
+/// environment index. `zero` is `JINT_0`, an instruction with no operands.
+///
+/// Exhaustive: the table in `bytecode/verify.zig` is the only thing that
+/// produces one, it is built at comptime from a row per opcode, and nothing
+/// outside this runtime can supply a value. That is what lets the switches
+/// over it lose their `else => unreachable`.
+pub const InstructionType = enum(u8) {
+    zero = 0,
+    s = 1,
+    l = 2,
+    ss = 3,
+    sl = 4,
+    st = 5,
+    si = 6,
+    sd = 7,
+    su = 8,
+    sss = 9,
+    ssi = 10,
+    ssu = 11,
+    ses = 12,
+    sc = 13,
+};
 
 /// The bytecode's operation, as one type rather than seventy-seven integers.
 ///
@@ -261,23 +282,6 @@ pub const Opcode = enum(u8) {
     }
 };
 
-pub const JANET_ASSEMBLE_OK: c_int = 0;
-pub const JANET_ASSEMBLE_ERROR: c_int = 1;
-
-pub const JANET_COMPILE_OK: c_int = 0;
-pub const JANET_COMPILE_ERROR: c_int = 1;
-
-pub const JANET_BINDING_NONE: c_int = 0;
-pub const JANET_BINDING_DEF: c_int = 1;
-pub const JANET_BINDING_VAR: c_int = 2;
-pub const JANET_BINDING_MACRO: c_int = 3;
-pub const JANET_BINDING_DYNAMIC_DEF: c_int = 4;
-pub const JANET_BINDING_DYNAMIC_MACRO: c_int = 5;
-pub const JANET_BINDING_DEP_NONE: c_int = 0;
-pub const JANET_BINDING_DEP_RELAXED: c_int = 1;
-pub const JANET_BINDING_DEP_NORMAL: c_int = 2;
-pub const JANET_BINDING_DEP_STRICT: c_int = 3;
-
 /// A compiled PEG rule's operation, which is the first word of every rule in
 /// the compiled program.
 ///
@@ -341,9 +345,13 @@ pub const PegRule = enum(u32) {
     }
 };
 
-pub const JANET_INT_NONE: c_int = 0;
-pub const JANET_INT_S64: c_int = 1;
-pub const JANET_INT_U64: c_int = 2;
+/// Which of the two 64-bit integer abstracts a value is, or neither.
+/// `ints.isInt` is the only thing that produces one.
+pub const IntType = enum(u32) {
+    none = 0,
+    s64 = 1,
+    u64 = 2,
+};
 
 // `JANET_SIGNAL_PLAN_*` are `signal.Plan`, an `enum(c_uint)` in the file that
 // decides a plan, because nothing outside the raise protocol names one and no
@@ -359,63 +367,33 @@ pub const JANET_TRACE_LOC_SOURCEMAP: c_int = 1;
 pub const JANET_TRACE_LOC_PC: c_int = 2;
 pub const JANET_TRACE_LOC_CFUN_LINE: c_int = 3;
 
-pub const JANET_ARG_EXPECT_NAT: c_int = 0;
-pub const JANET_ARG_EXPECT_SIZE: c_int = 1;
-pub const JANET_ARG_EXPECT_S32: c_int = 2;
-pub const JANET_ARG_EXPECT_U32: c_int = 3;
-pub const JANET_ARG_EXPECT_S16: c_int = 4;
-pub const JANET_ARG_EXPECT_U16: c_int = 5;
-pub const JANET_ARG_EXPECT_S8: c_int = 6;
-pub const JANET_ARG_EXPECT_U8: c_int = 7;
-pub const JANET_ARG_EXPECT_FLOAT: c_int = 8;
-pub const JANET_ARG_EXPECT_S64: c_int = 9;
-pub const JANET_ARG_EXPECT_U64: c_int = 10;
-pub const JANET_ARG_OK: c_int = 0;
-pub const JANET_ARG_TYPE: c_int = 1;
-pub const JANET_ARG_ABSTRACT: c_int = 2;
-pub const JANET_ARG_EXPECT: c_int = 3;
-pub const JANET_ARG_RANGE_INCLUSIVE: c_int = 4;
-pub const JANET_ARG_RANGE_EXCLUSIVE: c_int = 5;
-pub const JANET_ARG_FLAG: c_int = 6;
-pub const JANET_ARG_ZEROS: c_int = 7;
-pub const JANET_ARG_ARITY_FIX: c_int = 8;
-pub const JANET_ARG_ARITY_MIN: c_int = 9;
-pub const JANET_ARG_ARITY_MAX: c_int = 10;
-pub const JANET_ARG_BYTES_FAULT: c_int = 0;
-pub const JANET_ARG_BYTES_STRING: c_int = 1;
-pub const JANET_ARG_BYTES_BUFFER: c_int = 2;
-pub const JANET_ARG_BYTES_ABSTRACT: c_int = 3;
-pub const JANET_ARG_CBYTES_FAULT: c_int = 0;
-pub const JANET_ARG_CBYTES_COPY: c_int = 1;
-pub const JANET_ARG_CBYTES_TERMINATE: c_int = 2;
-pub const JANET_ARG_CBYTES_VIEW: c_int = 3;
+// `JANET_MEMORY_*` -- the eighteen heap-block types -- are `gc.MemoryType`, an
+// `enum(u8)` because the stored field is eight bits wide: the width and the
+// vocabulary are one declaration, and `GCObject` reads and writes it.
 
-// `JANET_MEMORY_*` -- the eighteen heap-block types -- are `types.MemoryType`,
-// an `enum(u8)` because `JANET_MEM_TYPEBITS` is `0xFF`: the stored width and
-// the vocabulary are one declaration, and `JanetGCObject` reads and writes it.
-
-pub const JANETC_REGTEMP_0: c_int = 0;
-pub const JANETC_REGTEMP_1: c_int = 1;
-pub const JANETC_REGTEMP_2: c_int = 2;
-pub const JANETC_REGTEMP_3: c_int = 3;
-pub const JANETC_REGTEMP_4: c_int = 4;
-pub const JANETC_REGTEMP_5: c_int = 5;
-pub const JANETC_REGTEMP_6: c_int = 6;
-pub const JANETC_REGTEMP_7: c_int = 7;
+/// The eight temporary registers the compiler can hold at once, as a bit in
+/// `RegisterAllocator.regtemps`. Numbered rather than named because the
+/// number is the bit, and the emitter picks one per operand position.
+pub const RegisterTemp = enum(u3) {
+    t0 = 0,
+    t1 = 1,
+    t2 = 2,
+    t3 = 3,
+    t4 = 4,
+    t5 = 5,
+    t6 = 6,
+    t7 = 7,
+};
 
 pub const JANET_C_LINT_RELAXED: c_int = 0;
 pub const JANET_C_LINT_NORMAL: c_int = 1;
 pub const JANET_C_LINT_STRICT: c_int = 2;
-
-pub const JANET_LITTLE_ENDIAN = @as(c_int, 1);
 
 pub const JANET_INTMAX_DOUBLE = @as(f64, 9007199254740992.0);
 
 pub const JANET_INTMIN_DOUBLE = -@as(f64, 9007199254740992.0);
 
 pub const JANET_INTMAX_INT64 = helpers.promoteIntLiteral(c_int, 9007199254740992, .decimal);
-
-pub const JANET_INTMIN_INT64 = -helpers.promoteIntLiteral(c_int, 9007199254740992, .decimal);
 
 // `JANET_TFLAG_*` -- the sixteen `1 << type` masks and their five named
 // unions -- are `repr.TagSet`, a `packed struct(u16)` whose bit layout is
@@ -438,8 +416,6 @@ pub const JANET_STACKFRAME_TAILCALL = @as(c_int, 1);
 pub const JANET_STACKFRAME_ENTRANCE = @as(c_int, 2);
 
 pub const JANET_FRAME_SIZE = @as(c_int, 4);
-
-pub const JANET_FUNCFLAG_TRACE = @as(c_int, 1) << @as(c_int, 16);
 
 pub const JANET_EV_TCTAG_NIL = @as(c_int, 0);
 pub const JANET_EV_TCTAG_INTEGER = @as(c_int, 1);
@@ -478,7 +454,6 @@ pub const JANET_FILE_UPDATE = @as(c_int, 8);
 pub const JANET_FILE_NOT_CLOSEABLE = @as(c_int, 16);
 pub const JANET_FILE_CLOSED = @as(c_int, 32);
 pub const JANET_FILE_BINARY = @as(c_int, 64);
-pub const JANET_FILE_SERIALIZABLE = @as(c_int, 128);
 pub const JANET_FILE_NONIL = @as(c_int, 512);
 
 pub const JANET_FIBER_STATUS_MASK = helpers.promoteIntLiteral(c_int, 0x3F0000, .hex);
@@ -486,9 +461,7 @@ pub const JANET_FIBER_STATUS_OFFSET = @as(c_int, 16);
 pub const JANET_FIBER_EV_FLAG_CANCELED = helpers.promoteIntLiteral(c_int, 0x10000, .hex);
 pub const JANET_FIBER_EV_FLAG_SUSPENDED = helpers.promoteIntLiteral(c_int, 0x20000, .hex);
 pub const JANET_FIBER_FLAG_ROOT = helpers.promoteIntLiteral(c_int, 0x40000, .hex);
-pub const JANET_FIBER_EV_FLAG_IN_FLIGHT = @as(c_int, 0x1);
 
-pub const JANET_MEM_TYPEBITS = @as(c_int, 0xFF);
 pub const JANET_MEM_REACHABLE = @as(c_int, 0x100);
 pub const JANET_MEM_DISABLED = @as(c_int, 0x200);
 

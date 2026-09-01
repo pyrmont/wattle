@@ -12,11 +12,10 @@
 //! `os/sigaction` is a single cfunction, and so is `os/pipe`. A leaf called
 //! `signals` would claim something the tree cannot point at.
 //!
-//! `JanetProc` is the one thing here Janet does publish as a type, and it was
-//! the one candidate with a real case. It stays in the bucket because splitting
-//! it out inverts the file: the type's four methods are 316 lines against the
-//! 1,500 that create and drive it, so the leaf would be the core and the bucket
-//! the periphery.
+//! `Proc` is the one thing here Janet publishes as a type, and it stays in the
+//! bucket because splitting it out would invert the file: the type's four
+//! methods are 316 lines against the 1,500 that create and drive it, so the
+//! leaf would be the core and the bucket the periphery.
 //!
 //! **This is the same ruling as `os/fs/paths.zig`, which also does not exist.**
 //! The cost is a large file -- second only to `ev.zig` -- and the compensation
@@ -135,20 +134,20 @@ const proc_owns_stdout: c_int = 32;
 const proc_owns_stderr: c_int = 64;
 const proc_allow_zombie: c_int = 128;
 
-/// The stdio a `JanetProc` holds is a `JanetStream` under the event loop and a
-/// `JanetFile` without it. Both are abstracts, so the field is a pointer
+/// The stdio a `Proc` holds is an `ev_stream.Stream` under the event loop and
+/// an `io.File` without it. Both are abstracts, so the field is a pointer
 /// either way and the mark callback does not have to know which.
 const Stdio = if (has_ev) ev_stream.Stream else io.File;
 
-const JanetProc = extern struct {
+const Proc = struct {
     flags: c_int,
-    handles: if (windows) extern struct { p: host.Handle, t: host.Handle } else extern struct { pid: h.pid_t },
+    handles: if (windows) struct { p: host.Handle, t: host.Handle } else struct { pid: h.pid_t },
     return_code: c_int,
     in: ?*Stdio,
     out: ?*Stdio,
     err: ?*Stdio,
 
-    inline fn pid(self: *const JanetProc) i64 {
+    inline fn pid(self: *const Proc) i64 {
         return @intCast(self.handles.pid);
     }
 };
@@ -156,7 +155,7 @@ const JanetProc = extern struct {
 /// `proc_get_status`: POSIX shell semantics for a signalled or stopped child.
 /// The 128 offset and the fourth-outcome raise are here rather than in
 /// `-Dos-process` because a raise may not cross that seam.
-fn procGetStatus(proc: *JanetProc) raise.Raising(c_int) {
+fn procGetStatus(proc: *Proc) raise.Raising(c_int) {
     var val: i32 = 0;
     const outcome = wait(proc.pid(), &val);
     if (outcome == wait_exited) return val;
@@ -170,7 +169,7 @@ fn procGetStatus(proc: *JanetProc) raise.Raising(c_int) {
 const Waiter = struct {
     fn subroutine(args: ev_loop.GenericMessage) callconv(.c) ev_loop.GenericMessage {
         var out = args;
-        const proc: *JanetProc = @ptrCast(@alignCast(args.argp.?));
+        const proc: *Proc = @ptrCast(@alignCast(args.argp.?));
         if (windows) {
             _ = c.WaitForSingleObject(proc.handles.p, 0xFFFF_FFFF);
             var exitcode: u32 = 0;
@@ -187,7 +186,7 @@ const Waiter = struct {
     }
 
     fn callback(args: ev_loop.GenericMessage) raise.Raising(void) {
-        const proc: *JanetProc = @ptrCast(@alignCast(args.argp orelse return));
+        const proc: *Proc = @ptrCast(@alignCast(args.argp orelse return));
         const status = args.tag;
         proc.return_code = status;
         proc.flags |= proc_waited;
@@ -212,7 +211,7 @@ const Waiter = struct {
     }
 };
 
-fn procGc(proc: *JanetProc, _: usize) void {
+fn procGc(proc: *Proc, _: usize) void {
     if (windows) {
         if (proc.flags & proc_closed == 0) {
             if (proc.flags & proc_allow_zombie == 0) _ = c.TerminateProcess(proc.handles.p, 1);
@@ -228,7 +227,7 @@ fn procGc(proc: *JanetProc, _: usize) void {
     }
 }
 
-fn procMark(proc: *JanetProc, _: usize) void {
+fn procMark(proc: *Proc, _: usize) void {
     if (proc.in) |x| gc_mark.mark(wrap.fromAbstract(x));
     if (proc.out) |x| gc_mark.mark(wrap.fromAbstract(x));
     if (proc.err) |x| gc_mark.mark(wrap.fromAbstract(x));
@@ -239,7 +238,7 @@ fn procMark(proc: *JanetProc, _: usize) void {
 /// code is the result. The C original spells that with two different return
 /// types behind one `#ifdef`; this returns an optional instead, and the two
 /// callers read it the same way.
-fn procWait(proc: *JanetProc) raise.Raising(repr.Value) {
+fn procWait(proc: *Proc) raise.Raising(repr.Value) {
     if (proc.flags & (proc_waited | proc_waiting) != 0) {
         return raise.panic("cannot wait twice on a process");
     }
@@ -283,13 +282,13 @@ fn procWait(proc: *JanetProc) raise.Raising(repr.Value) {
 
 fn cfunProcWait(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const proc: *JanetProc = try args_core.getAbstract(JanetProc, argv, 0, &proc_type);
+    const proc: *Proc = try args_core.getAbstract(Proc, argv, 0, &proc_type);
     return procWait(proc);
 }
 
 fn cfunProcKill(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
-    const proc: *JanetProc = try args_core.getAbstract(JanetProc, argv, 0, &proc_type);
+    const proc: *Proc = try args_core.getAbstract(Proc, argv, 0, &proc_type);
     if (proc.flags & proc_waited != 0) {
         return raise.panic("cannot kill process that has already finished");
     }
@@ -318,7 +317,7 @@ inline fn closeStdio(x: *Stdio) raise.Raising(void) {
 
 fn cfunProcClose(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const proc: *JanetProc = try args_core.getAbstract(JanetProc, argv, 0, &proc_type);
+    const proc: *Proc = try args_core.getAbstract(Proc, argv, 0, &proc_type);
     if (proc.flags & proc_owns_stdin != 0) try closeStdio(proc.in.?);
     if (proc.flags & proc_owns_stdout != 0) try closeStdio(proc.out.?);
     if (proc.flags & proc_owns_stderr != 0) try closeStdio(proc.err.?);
@@ -352,7 +351,7 @@ const proc_methods = [_]method_type.Method{
     .{ .name = null, .cfun = null },
 };
 
-fn procGet(proc: *JanetProc, key: repr.Value) raise.Raising(?repr.Value) {
+fn procGet(proc: *Proc, key: repr.Value) raise.Raising(?repr.Value) {
     if (args_core.keyeq(key, "in"))
         return if (proc.in) |x| wrap.fromAbstract(x) else wrap.fromNil();
     if (args_core.keyeq(key, "out"))
@@ -368,11 +367,11 @@ fn procGet(proc: *JanetProc, key: repr.Value) raise.Raising(?repr.Value) {
     return args_core.findMethod(key, @ptrCast(&proc_methods));
 }
 
-fn procNext(_: *JanetProc, key: repr.Value) raise.Raising(repr.Value) {
+fn procNext(_: *Proc, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(&proc_methods), key);
 }
 
-const proc_type = abstract_type.define(JanetProc, .{
+const proc_type = abstract_type.define(Proc, .{
     .name = "core/process",
     .gc = &procGc,
     .gcmark = &procMark,
@@ -523,9 +522,9 @@ fn buildEnv(argv: []repr.Value) raise.Raising(EnvBlock) {
             const vals = wrap.toString(kv.value);
             const klen = strings.head(keys).length;
             const vlen = strings.head(vals).length;
-            try buffers.extra(temp, klen + vlen + 2);
+            try buffers.extra(temp, @intCast(klen + vlen + 2));
             envEntryFill(keys, klen, vals, vlen, temp.data.? + temp.count);
-            temp.count += @intCast(klen + vlen + 2);
+            temp.count += klen + vlen + 2;
         }
         // A Windows environment block is double-NUL terminated.
         if (temp.count == 0) try buffers.pushU8(temp, 0);
@@ -577,13 +576,14 @@ fn cleanupEnv(envp: EnvBlock, child_argv: ?*const anyopaque) void {
 /// exists because growing the buffer can raise and the escaping may not.
 fn execEscape(args: []const repr.Value) raise.Raising(*buffers.Buffer) {
     const b = buffers.new(0);
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
+    for (0..args.len) |i| {
         const arg = try args_core.getCString(args, i);
         if (i != 0) try buffers.pushU8(b, ' ');
         const needed = escapeArgument(@ptrCast(arg), null, 0);
         if (needed < 0) return raise.panic("command line string too long (max 8191 characters)");
-        try buffers.extra(b, needed);
+        // The checked conversion: `escapeArgument` answers a signed length and
+        // negative is its overflow report, which the line above has consumed.
+        try buffers.extra(b, @intCast(needed));
         _ = escapeArgument(@ptrCast(arg), b.data.? + b.count, needed);
         b.count += @intCast(needed);
     }
@@ -725,8 +725,8 @@ fn execute(argv: []repr.Value, mode: ExecuteMode) raise.Raising(repr.Value) {
     return procWait(proc);
 }
 
-fn newProc() *JanetProc {
-    const proc: *JanetProc = abstracts.newFor(JanetProc, &proc_type);
+fn newProc() *Proc {
+    const proc: *Proc = abstracts.newFor(Proc, &proc_type);
     proc.return_code = -1;
     proc.in = null;
     proc.out = null;
@@ -751,11 +751,10 @@ fn spawnPosix(
     use_environ: bool,
     chdir_path: ?[*:0]const u8,
     mode: ExecuteMode,
-) raise.Raising(*JanetProc) {
+) raise.Raising(*Proc) {
     const count: usize = exargs.len;
     const child_argv: [*]?[*:0]const u8 = @ptrCast(@alignCast(gc_alloc.smalloc(@sizeOf(?*u8) * (count + 1))));
-    var i: usize = 0;
-    while (i < count) : (i += 1) {
+    for (0..count) |i| {
         child_argv[i] = @ptrCast(try args_core.getCString(exargs, i));
     }
     child_argv[count] = null;
@@ -860,7 +859,7 @@ fn spawnWindows(
     envp: EnvBlock,
     use_environ: bool,
     chdir_path: ?[*:0]const u8,
-) raise.Raising(*JanetProc) {
+) raise.Raising(*Proc) {
     _ = argv;
     var sa_attr: h.SECURITY_ATTRIBUTES = std.mem.zeroes(h.SECURITY_ATTRIBUTES);
     var process_info: h.PROCESS_INFORMATION = std.mem.zeroes(h.PROCESS_INFORMATION);
@@ -983,8 +982,8 @@ fn cfunPosixFork(argv: []repr.Value) raise.Raising(repr.Value) {
     const result = forkProcess();
     if (result == -1) return raise.panic(@ptrCast(utils.strerrorSafe(c.errno())));
     if (result != 0) {
-        const proc: *JanetProc = abstracts.newFor(JanetProc, &proc_type);
-        proc.* = std.mem.zeroes(JanetProc);
+        const proc: *Proc = abstracts.newFor(Proc, &proc_type);
+        proc.* = std.mem.zeroes(Proc);
         proc.handles.pid = @intCast(result);
         proc.flags = proc_allow_zombie;
         return wrap.fromAbstract(proc);
@@ -1081,7 +1080,7 @@ fn signalCallback(msg: ev_loop.GenericMessage) callconv(.c) void {
         return;
     }
     const handler = wrap.toFunction(handlerv);
-    const fiber = fibers.new(handler, 64, 0, null) orelse return;
+    const fiber = fibers.new(handler, 64, &.{}) catch return;
     ev_loop.scheduleSoon(fiber, wrap.fromNil(), abi.Signal.ok);
 }
 
@@ -1133,11 +1132,7 @@ fn cfunSigaction(argv: []repr.Value) raise.Raising(repr.Value) {
         setHandler(&action, &Trampolines.plain);
     }
     action.sa_mask = mask;
-    var rc: c_int = undefined;
-    while (true) {
-        rc = oa.sigaction(sig, &action, null);
-        if (!(rc == -1 and c.errno() == h.EINTR)) break;
-    }
+    _ = c.retryIntr(oa.sigaction, .{ sig, &action, null });
     var set: h.sigset_t = undefined;
     _ = oa.sigemptyset(&set);
     _ = oa.sigaddset(&set, sig);
@@ -1361,10 +1356,9 @@ const signal_names = [_][:0]const u8{
 ///
 /// The comparison reproduces `janet_cstrcmp`, which the C implementation used
 /// here, including its treatment of a key whose own bytes end in NUL.
-pub fn signalIndex(key: [*]const u8, len: i32) i32 {
-    if (len < 0) return -1;
+pub fn signalIndex(key: [*]const u8, len: usize) i32 {
     for (signal_names, 0..) |name, index| {
-        if (cstrequal(key, @intCast(len), name)) return @intCast(index);
+        if (cstrequal(key, len, name)) return @intCast(index);
     }
     return -1;
 }
@@ -1464,10 +1458,8 @@ pub fn escapeArgument(arg: [*:0]const u8, dest: ?[*]u8, cap: i32) i32 {
 /// A key containing `=` would be read back as a shorter name with a longer
 /// value, and one containing NUL would end the entry early, so C drops both
 /// rather than building an entry that means something else.
-pub fn envKeyOk(key: [*]const u8, len: i32) i32 {
-    if (len < 0) return 0;
-    var index: usize = 0;
-    while (index < @as(usize, @intCast(len))) : (index += 1) {
+pub fn envKeyOk(key: [*]const u8, len: usize) i32 {
+    for (0..len) |index| {
         if (key[index] == 0 or key[index] == '=') return 0;
     }
     return 1;
@@ -1477,13 +1469,13 @@ pub fn envKeyOk(key: [*]const u8, len: i32) i32 {
 /// caller sizes the destination as `klen + vlen + 2`.
 pub fn envEntryFill(
     key: [*]const u8,
-    klen: i32,
+    klen: usize,
     val: [*]const u8,
-    vlen: i32,
+    vlen: usize,
     dest: [*]u8,
 ) void {
-    const k: usize = if (klen > 0) @intCast(klen) else 0;
-    const v: usize = if (vlen > 0) @intCast(vlen) else 0;
+    const k = klen;
+    const v = vlen;
     @memcpy(dest[0..k], key[0..k]);
     dest[k] = '=';
     @memcpy(dest[k + 1 ..][0..v], val[0..v]);
@@ -1510,11 +1502,7 @@ pub fn shell(command: ?[*:0]const u8) i32 {
 /// is preserved here.
 pub fn wait(pid: i64, val: *i32) i32 {
     var status: c_int = 0;
-    while (true) {
-        const result = c.waitpid(@intCast(pid), &status, 0);
-        if (result != -1) break;
-        if (std.c._errno().* != @intFromEnum(std.c.E.INTR)) break;
-    }
+    _ = c.retryIntr(c.waitpid, .{ @as(h.pid_t, @intCast(pid)), &status, @as(c_int, 0) });
 
     const bits: u32 = @bitCast(status);
     if (std.c.W.IFEXITED(bits)) {
@@ -1554,11 +1542,7 @@ pub fn closeDescriptor(fd: c_int) i32 {
 }
 
 pub fn forkProcess() i64 {
-    while (true) {
-        const result = c.fork();
-        if (result != -1) return result;
-        if (std.c._errno().* != @intFromEnum(std.c.E.INTR)) return result;
-    }
+    return c.retryIntr(c.fork, .{});
 }
 
 /// Replace the current process. Returns only on failure, with `errno` set.
@@ -1567,19 +1551,14 @@ pub fn exec(
     argv: [*:null]const ?[*:0]const u8,
     search_path: i32,
 ) i32 {
-    while (true) {
-        const status = if (search_path != 0) c.execvp(path, argv) else c.execv(path, argv);
-        if (status != -1) return status;
-        if (std.c._errno().* != @intFromEnum(std.c.E.INTR)) return status;
-    }
+    return if (search_path != 0)
+        c.retryIntr(c.execvp, .{ path, argv })
+    else
+        c.retryIntr(c.execv, .{ path, argv });
 }
 
 pub fn changeRoot(path: [*:0]const u8) i32 {
-    while (true) {
-        const status = c.chroot(path);
-        if (status != -1) return status;
-        if (std.c._errno().* != @intFromEnum(std.c.E.INTR)) return status;
-    }
+    return c.retryIntr(c.chroot, .{path});
 }
 
 fn escape(arg: [:0]const u8) ![]u8 {

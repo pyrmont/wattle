@@ -99,7 +99,7 @@ fn evaluate(source: [*:0]const u8) repr.Value {
     return keep(out);
 }
 
-fn compiled(pattern: []const u8) *peg.JanetPeg {
+fn compiled(pattern: []const u8) *peg.Peg {
     var source: [1024]u8 = undefined;
     const written = std.fmt.bufPrintZ(&source, "(peg/compile {s})", .{pattern}) catch
         @panic("pattern too long");
@@ -202,7 +202,7 @@ fn padded(offset: usize, size: usize) usize {
 fn theHeaderBytecodeAndConstantsShareOneAllocation() void {
     const p = compiled("'(* (<- \"ab\") (constant 7))");
     const mem = @intFromPtr(p);
-    const bytecode_start = padded(@sizeOf(peg.JanetPeg), @sizeOf(u32));
+    const bytecode_start = padded(@sizeOf(peg.Peg), @sizeOf(u32));
     const constants_start =
         padded(bytecode_start + p.bytecode_len * @sizeOf(u32), @sizeOf(repr.Value));
 
@@ -450,7 +450,7 @@ fn theCompilerBoundsBothOfItsRecursions() void {
         // The form this one names is a thousand rules deep, so only the tail
         // of the message is a contract.
         const message = wrap.toString(nested.message);
-        const length: usize = @intCast(strings.head(message).length);
+        const length: usize = strings.head(message).length;
         expect(std.mem.endsWith(u8, message[0..length], ", peg grammar recursed too deeply"));
     }
 
@@ -506,7 +506,7 @@ fn theMarshalledFormIsTheBytecode() raise.Raising(void) {
     // And back, into an equal but distinct peg.
     const back = keep(try marsh.unmarshal(buffer.slice(), 0, null, null));
     expect(args_core.checkabstract(back, &peg.pegType) != null);
-    const round: *peg.JanetPeg = @ptrCast(@alignCast(wrap.toAbstract(back)));
+    const round: *peg.Peg = @ptrCast(@alignCast(wrap.toAbstract(back)));
     expect(round != p);
     expect(round.bytecode_len == 3);
     expect(round.num_constants == 0);
@@ -557,7 +557,7 @@ fn rejected(comptime tail: []const u8) void {
 }
 
 /// A crafted stream the verifier must accept.
-fn accepted(comptime tail: []const u8) *peg.JanetPeg {
+fn accepted(comptime tail: []const u8) *peg.Peg {
     const val = keep(unmarshalStream(crafted(tail)) catch
         @panic("a stream this contract expects to be accepted was refused"));
     expect(args_core.checkabstract(val, &peg.pegType) != null);
@@ -615,7 +615,7 @@ fn anEmptyProgramIsAccepted() raise.Raising(void) {
         });
         const val = keep(try unmarshalStream(stream));
         expect(args_core.checkabstract(val, &peg.pegType) != null);
-        const p: *peg.JanetPeg = @ptrCast(@alignCast(wrap.toAbstract(val)));
+        const p: *peg.Peg = @ptrCast(@alignCast(wrap.toAbstract(val)));
         expect(p.bytecode_len == 0);
         expect(@intFromPtr(p.bytecode) == @intFromPtr(p.constants));
 

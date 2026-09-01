@@ -37,7 +37,7 @@ const structs = @import("subsystems").value.structs;
 const gc_alloc = @import("subsystems").gc_alloc;
 const utils = @import("subsystems").utils;
 const order = @import("subsystems").value.order;
-const stretchy = @import("subsystems").stretchy;
+const scratch_vector = @import("subsystems").scratch_vector;
 const core_env = @import("subsystems").env;
 const signal_core = @import("subsystems").signal;
 const registry = @import("subsystems").registry;
@@ -52,6 +52,21 @@ const ev = @import("subsystems").ev;
 const strings = @import("subsystems").value.strings;
 /// `boundary` rather than `abi`, which `abiRaised` takes as a parameter name.
 const boundary = @import("abi");
+
+/// The GC header's flag word as the thirty-two bits C had.
+///
+/// `abi.GCObject.flags` is a `packed struct(u32)`, and a contract that
+/// asserted through its *fields* would be asserting that the runtime agrees
+/// with itself. The masks in `constants.zig` are the independent statement of
+/// where each bit sits, so the contracts keep using them and these two are the
+/// only conversion.
+pub inline fn gcBits(flags: boundary.GCFlags) u32 {
+    return @bitCast(flags);
+}
+
+pub inline fn gcSetBits(flags: *boundary.GCFlags, bits: anytype) void {
+    flags.* = @bitCast(gcBits(flags.*) | @as(u32, @intCast(bits)));
+}
 const tables = @import("subsystems").value.tables;
 const expect = @import("expect.zig").expect;
 
@@ -99,7 +114,7 @@ pub const Raise = struct {
     pub fn says(self: Raise, expected: []const u8) bool {
         if (!isType(self.payload, repr.Tag.string)) return false;
         const message = wrap.toString(self.payload);
-        const length: usize = @intCast(strings.head(message).length);
+        const length: usize = strings.head(message).length;
         return std.mem.eql(u8, message[0..length], expected);
     }
 
@@ -114,7 +129,7 @@ pub const Raise = struct {
     pub fn beginsWith(self: Raise, expected: []const u8) bool {
         if (!isType(self.payload, repr.Tag.string)) return false;
         const message = wrap.toString(self.payload);
-        const length: usize = @intCast(strings.head(message).length);
+        const length: usize = strings.head(message).length;
         return std.mem.startsWith(u8, message[0..length], expected);
     }
 
@@ -127,7 +142,7 @@ pub const Raise = struct {
     pub fn endsWith(self: Raise, expected: []const u8) bool {
         if (!isType(self.payload, repr.Tag.string)) return false;
         const message = wrap.toString(self.payload);
-        const length: usize = @intCast(strings.head(message).length);
+        const length: usize = strings.head(message).length;
         return std.mem.endsWith(u8, message[0..length], expected);
     }
 };
@@ -193,7 +208,7 @@ pub fn abiRaised(abi: anytype, args: anytype) ?Raise {
 
 /// A core cfunction by name, with the calling convention it actually has.
 ///
-/// `janet_resolve_core` answers a `Value` holding a `JanetCFunction`, which is
+/// `janet_resolve_core` answers a `Value` holding a `CFunction`, which is
 /// a pointer to a raising Zig function rather than to a C one.
 /// `raise.cfunction` is the cast that says so.
 pub fn core(name: [*:0]const u8) raise.CFunction {
@@ -254,7 +269,7 @@ pub fn inFiber(environment: *tables.Table, source: []const u8) void {
     }
     expect(isType(val, repr.Tag.function));
 
-    const fiber = fibers.new(wrap.toFunction(val), 64, 0, null).?;
+    const fiber = fibers.new(wrap.toFunction(val), 64, &.{}) catch unreachable;
     fiber.env = environment;
 
     if (has_ev) {
@@ -268,10 +283,9 @@ pub fn inFiber(environment: *tables.Table, source: []const u8) void {
             @panic("harness.inFiber: fiber is not dead");
         }
     } else {
-        var result = wrap.fromNil();
-        const signal = vm_entry.continueFiber(fiber, wrap.fromNil(), &result);
-        if (signal != boundary.Signal.ok) {
-            raise.reported(debug.stacktraceExt(fiber, result, ""));
+        const resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
+        if (resumed.signal != boundary.Signal.ok) {
+            raise.reported(debug.stacktraceExt(fiber, resumed.value, ""));
             std.debug.print("harness.inFiber: raised\n{s}\n", .{source});
             @panic("harness.inFiber: unexpected signal");
         }
@@ -386,17 +400,17 @@ pub fn stringIs(string: strings.String, expected: [*:0]const u8) bool {
 
 /// The compiler's growable vector, spelled the way a contract wants it.
 ///
-/// The arithmetic is `src/zig/stretchy.zig`'s; this is the element type
+/// The arithmetic is `src/zig/scratch_vector.zig`'s; this is the element type
 /// The scratch vector, for a contract that wants one without naming the
 /// allocator at every call.
 ///
 /// **`test/vector.zig` does not use this**, and must not: it is the contract
-/// *on* `stretchy.zig`, so both sides of its comparison have to come from
+/// *on* `scratch_vector.zig`, so both sides of its comparison have to come from
 /// different files. It reaches for `gc.scratch_heap` directly.
 ///
 /// A vector is a `std.ArrayListUnmanaged` over the scratch heap; `.empty` is
 /// the one that has never been grown.
-pub const Vector = stretchy.Vector;
+pub const Vector = scratch_vector.Vector;
 
 pub const vector = struct {
     pub fn count(v: anytype) usize {
@@ -409,7 +423,7 @@ pub const vector = struct {
 
     /// `janet_v_push`. Takes the vector *variable* rather than its value,
     /// because growing it moves the allocation.
-    pub const push = stretchy.push;
+    pub const push = scratch_vector.push;
 
     /// `janet_v_empty`: the count goes to zero and the allocation stays.
     pub fn empty(v: anytype) void {
@@ -421,13 +435,13 @@ pub const vector = struct {
     /// but a contract has a reason to do this, and it is `resize` rather than
     /// a bare length write because the memory has to exist first.
     pub fn setCount(v: anytype, n: usize) void {
-        stretchy.ensure(v, n);
+        scratch_vector.ensure(v, n);
         v.items.len = n;
     }
 
     /// `janet_v_free`. A vector belongs to the scratch allocator rather than
     /// to the collector.
-    pub const free = stretchy.free;
+    pub const free = scratch_vector.free;
 };
 
 /// `fiber.h`'s frame macros, which `@cImport` does not translate.
@@ -458,7 +472,7 @@ pub const frame = struct {
 /// The collector's two heap lists, as a contract reads them.
 ///
 /// `janet_gc_header`, `janet_gc_type` and their kin are function-like macros
-/// over `JanetGCObject`, which no translation carries across; `abi.zig` owns
+/// over `GCObject`, which no translation carries across; `abi.zig` owns
 /// the head arithmetic for all of them. Four contracts need the same three
 /// lines to answer the same two questions: what memory type did the
 /// constructor stamp, and which list did that put the block on. Those two
@@ -469,10 +483,10 @@ pub const frame = struct {
 /// would change four contracts that are verified capable of failing in order
 /// to change nothing.
 pub const heap = struct {
-    /// Every collectable block begins with its `JanetGCObject`, so the block
+    /// Every collectable block begins with its `GCObject`, so the block
     /// pointer *is* the header. `janet_gc_header` is that cast and nothing
     /// else.
-    pub fn headerOf(block: ?*anyopaque) *boundary.JanetGCObject {
+    pub fn headerOf(block: ?*anyopaque) *boundary.GCObject {
         return @ptrCast(@alignCast(block.?));
     }
 
@@ -487,7 +501,7 @@ pub const heap = struct {
     /// freshly allocated block must not have set — an allocation that arrived
     /// pre-marked would survive one collection it had no right to.
     pub fn reachable(block: ?*anyopaque) bool {
-        return (headerOf(block).flags & constants.JANET_MEM_REACHABLE) != 0;
+        return (gcBits(headerOf(block).flags) & constants.JANET_MEM_REACHABLE) != 0;
     }
 
     /// Whether `block` is on the list headed by `list`. Only ever called for a

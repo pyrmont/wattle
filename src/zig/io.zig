@@ -108,8 +108,8 @@ const fd_cloexec: c_int = 1;
 pub const FILE = host.FILE;
 
 // The sixteen stream kernels below are ordinary Zig functions. Each wraps one
-// libc call so that the twenty-two cfunctions above hold a `?*FILE` and never
-// a `?*anyopaque`, and so that the Windows arm of a call is written once.
+// libc call, so that the twenty-two cfunctions above hold a `?*FILE` and the
+// Windows arm of a call is written once.
 
 /// Classify a `file/open` mode string.
 ///
@@ -123,7 +123,7 @@ pub const FILE = host.FILE;
 /// flag word. `FOUND.md` records that and it is reproduced rather than fixed.
 pub fn scanMode(
     mode: [*]const u8,
-    len: i32,
+    len: usize,
     flags_out: *i32,
     sandbox_out: *vm_lifecycle.Sandbox,
     index_out: *i32,
@@ -150,10 +150,9 @@ pub fn scanMode(
         else => return mode_bad_first,
     }
 
-    var index: i32 = 1;
-    while (index < len) : (index += 1) {
-        index_out.* = index;
-        switch (mode[@intCast(index)]) {
+    for (mode[1..len], 1..) |byte, index| {
+        index_out.* = @intCast(index);
+        switch (byte) {
             '+' => {
                 if (flags & file_update != 0) return repeated(flags_out);
                 sandbox_out.* = sandbox_out.with(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
@@ -186,10 +185,9 @@ const whence_names = [_][:0]const u8{ "cur", "set", "end" };
 ///
 /// The comparison reproduces `janet_cstrcmp`, which the C implementation used
 /// here, including its treatment of a key whose own bytes end in NUL.
-pub fn seekWhence(key: [*]const u8, len: i32) i32 {
-    if (len < 0) return -1;
+pub fn seekWhence(key: [*]const u8, len: usize) i32 {
     for (whence_names, 0..) |name, index| {
-        if (cstrequal(key, @intCast(len), name)) return @intCast(index);
+        if (cstrequal(key, len, name)) return @intCast(index);
     }
     return -1;
 }
@@ -228,12 +226,12 @@ pub fn modeFromFlags(flags: i32, out: *[4]u8) i32 {
     return @intCast(len);
 }
 
-pub fn open(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque {
-    return @ptrCast(c.fopen(path, mode));
+pub fn open(path: [*:0]const u8, mode: [*:0]const u8) ?*FILE {
+    return c.fopen(path, mode);
 }
 
-pub fn temp() ?*anyopaque {
-    return @ptrCast(c.tmpfile());
+pub fn temp() ?*FILE {
+    return c.tmpfile();
 }
 
 /// Each host operation is written once over a stream and exported once over a
@@ -247,41 +245,26 @@ pub fn temp() ?*anyopaque {
 /// Both are recorded in `FOUND.md` and reproduced rather than trapped on,
 /// which is only possible if the null travels as a null instead of through a
 /// checked cast.
-fn closeStream(file: ?*FILE) i32 {
+pub fn close(file: ?*FILE) i32 {
     return c.fclose(file);
 }
 
-pub fn close(handle: *anyopaque) i32 {
-    return closeStream(stream(handle));
-}
-
-fn flushStream(file: ?*FILE) i32 {
+pub fn flush(file: ?*FILE) i32 {
     return c.fflush(file);
-}
-
-pub fn flush(handle: *anyopaque) i32 {
-    return flushStream(stream(handle));
 }
 
 /// Read up to `count` bytes, reporting how many arrived. A short read is not by
 /// itself a failure, which is why a caller consults `err` afterwards.
-fn readStream(file: ?*FILE, dest: [*]u8, count: usize) usize {
+pub fn read(file: ?*FILE, dest: [*]u8, count: usize) usize {
     return c.fread(dest, 1, count, file);
-}
-
-pub fn read(handle: *anyopaque, dest: [*]u8, count: usize) usize {
-    return readStream(stream(handle), dest, count);
 }
 
 /// Write `count` bytes as a single item, so the result is 1 on success and 0 on
 /// failure. Callers compare against 1, as the C original did with `c.fwrite`
 /// directly.
-/// The three standard streams as this file's `FILE`.
-///
-/// `stdio.zig` hands back `?*anyopaque`, because the macro it replaces expands
-/// to a different spelling on every platform and none of them is a type this
-/// file wants to name. One cast, in one place, rather than at each of the
-/// dozen registration rows below.
+/// The three standard streams as this file's `FILE`, which is `host.FILE`
+/// under another name. `stdio.zig` answers the same type; these three exist so
+/// the dozen registration rows below name one thing.
 fn stdinFile() ?*FILE {
     return stdio.in();
 }
@@ -292,52 +275,32 @@ fn stderrFile() ?*FILE {
     return stdio.err();
 }
 
-fn writeStream(file: ?*FILE, src: [*]const u8, count: usize) i32 {
+pub fn write(file: ?*FILE, src: [*]const u8, count: usize) i32 {
     return @intCast(c.fwrite(src, count, 1, file));
 }
 
-pub fn write(handle: ?*anyopaque, src: [*]const u8, count: usize) i32 {
-    return writeStream(stream(handle), src, count);
-}
-
 /// Read one byte, or return `EOF`.
-fn getCharStream(file: ?*FILE) i32 {
+pub fn getChar(file: ?*FILE) i32 {
     return c.fgetc(file);
 }
 
-pub fn getChar(handle: *anyopaque) i32 {
-    return getCharStream(stream(handle));
-}
-
-fn putCharStream(file: ?*FILE, ch: i32) i32 {
+pub fn putChar(file: ?*FILE, ch: i32) i32 {
     return c.fputc(ch, file);
 }
 
-pub fn putChar(handle: *anyopaque, ch: i32) i32 {
-    return putCharStream(stream(handle), ch);
-}
-
-fn errStream(file: ?*FILE) i32 {
+pub fn err(file: ?*FILE) i32 {
     return c.ferror(file);
 }
 
-pub fn err(handle: *anyopaque) i32 {
-    return errStream(stream(handle));
-}
-
 /// Select full buffering of `size` bytes, or no buffering when `size` is zero.
-fn setBufferSizeStream(file: ?*FILE, size: usize) i32 {
+pub fn setBufferSize(file: ?*FILE, size: usize) i32 {
     return c.setvbuf(file, null, if (size != 0) iofbf else ionbf, size);
-}
-
-pub fn setBufferSize(handle: *anyopaque, size: usize) i32 {
-    return setBufferSizeStream(stream(handle), size);
 }
 
 /// Move the file position, with `whence` given as a position in
 /// `whence_names`. An unrecognized origin cannot reach here: a caller rejects
 /// it while it still holds the keyword to name in the panic.
-fn seekStream(file: ?*FILE, offset: i64, whence: i32) i32 {
+pub fn seek(file: ?*FILE, offset: i64, whence: i32) i32 {
     const origin: c_int = switch (whence) {
         0 => seek_cur,
         1 => seek_set,
@@ -350,17 +313,9 @@ fn seekStream(file: ?*FILE, offset: i64, whence: i32) i32 {
     return c.fseek(file, @truncate(offset), origin);
 }
 
-pub fn seek(handle: *anyopaque, offset: i64, whence: i32) i32 {
-    return seekStream(stream(handle), offset, whence);
-}
-
-fn tellStream(file: ?*FILE) i64 {
+pub fn tell(file: ?*FILE) i64 {
     if (windows) return c._ftelli64(file);
     return c.ftell(file);
-}
-
-pub fn tell(handle: *anyopaque) i64 {
-    return tellStream(stream(handle));
 }
 
 /// Close the stream's descriptor across an exec. `c.fopen` has no standard flag
@@ -370,10 +325,6 @@ pub fn tell(handle: *anyopaque) i64 {
 /// `@export` with no caller links forever without anything saying so.
 fn setCloexecStream(file: ?*FILE) i32 {
     return std.c.fcntl(c.fileno(file), std.c.F.SETFD, fd_cloexec);
-}
-
-fn stream(handle: ?*anyopaque) ?*FILE {
-    return @ptrCast(handle);
 }
 
 // ==========================================================================
@@ -445,7 +396,7 @@ fn exitWith(comptime where: std.builtin.SourceLocation, comptime message: []cons
         "janet abort at {s}:{d}: {s}\n",
         .{ where.file, where.line, message },
     );
-    _ = writeStream(stderrFile(), line.ptr, line.len);
+    _ = write(stderrFile(), line.ptr, line.len);
     c.abort();
 }
 
@@ -465,7 +416,7 @@ fn fileNext(_: *File, key: repr.Value) raise.Raising(repr.Value) {
 /// do. A closeable file is duplicated so that the marshalled copy owns its own
 /// descriptor; a borrowed one -- `stdout` and its kin -- is written as it
 /// stands.
-fn fileMarshal(iof: *File, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
+fn fileMarshal(iof: *File, ctx: *abi.MarshalContext) raise.Raising(void) {
     if (marsh.marshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("cannot marshal file in safe mode");
     }
@@ -485,7 +436,7 @@ fn fileMarshal(iof: *File, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
 /// The mode is rebuilt from the flag word rather than carried, which is why
 /// `modeFromFlags` is not the inverse of `scanMode`: `c.fdopen` only has to
 /// accept it.
-fn fileUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*File) {
+fn fileUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*File) {
     if (marsh.unmarshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("cannot unmarshal file in safe mode");
     }
@@ -499,7 +450,7 @@ fn fileUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*File) {
     iof.flags = if (reopened == null) file_closed else flags;
     iof.vbufsize = try marsh.unmarshalSize(ctx);
     if (iof.vbufsize != bufsiz) {
-        if (setBufferSizeStream(reopened, iof.vbufsize) != 0) {
+        if (setBufferSize(reopened, iof.vbufsize) != 0) {
             exitWith(@src(), "unmarshal setvbuf");
         }
     }
@@ -591,12 +542,12 @@ fn cfunFopen(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
         // `host_stat.zig`'s rather than this file's: see the note there for
         // why a `struct stat` is read in one place for all four targets.
         if (host_stat.isDirectory(handle)) {
-            _ = closeStream(streamOfHandle(handle));
+            _ = close(streamOfHandle(handle));
             return pp_format.panicf("cannot open directory: %s", .{fname});
         }
         bufsize = try args_core.optSize(argv, 2, bufsiz);
         if (bufsize != bufsiz) {
-            if (setBufferSizeStream(streamOfHandle(handle), bufsize) != 0) {
+            if (setBufferSize(streamOfHandle(handle), bufsize) != 0) {
                 return raise.panic("failed to set buffer size for file");
             }
         }
@@ -616,14 +567,13 @@ fn cfunFopen(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
 ///
 /// A short read is not by itself a failure -- it is how the end of the file is
 /// reached -- so the error indicator decides.
-fn readChunk(iof: *File, buffer: *buffers.Buffer, n_bytes_max: i32) raise.Raising(void) {
+fn readChunk(iof: *File, buffer: *buffers.Buffer, n_bytes_max: usize) raise.Raising(void) {
     if (iof.flags & (file_read | file_update) == 0) {
         return raise.panic("file is not readable");
     }
     try buffers.extra(buffer, n_bytes_max);
-    const ntoread: usize = @intCast(n_bytes_max);
-    const nread = readStream(streamOf(iof), buffer.data.? + @as(usize, @intCast(buffer.count)), ntoread);
-    if (nread != ntoread and errStream(streamOf(iof)) != 0) {
+    const nread = read(streamOf(iof), buffer.data.? + buffer.count, n_bytes_max);
+    if (nread != n_bytes_max and err(streamOf(iof)) != 0) {
         return raise.panic("could not read file");
     }
     buffer.count += @intCast(nread);
@@ -648,7 +598,7 @@ fn cfunFread(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
             return wrap.fromBuffer(buffer);
         } else if (utils.cstrcmp(sym, "line") == 0) {
             while (true) {
-                const x = getCharStream(streamOf(iof));
+                const x = getChar(streamOf(iof));
                 if (x != eof) try buffers.pushU8(buffer, @intCast(x));
                 if (x == eof or x == '\n') break;
             }
@@ -658,7 +608,7 @@ fn cfunFread(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
     } else {
         const len = try args_core.getInteger(argv, 1);
         if (len < 0) return raise.panic("expected positive integer");
-        try readChunk(iof, buffer, len);
+        try readChunk(iof, buffer, @intCast(len));
     }
     if (bufstart == buffer.count) return wrap.fromNil();
     return wrap.fromBuffer(buffer);
@@ -672,13 +622,11 @@ fn cfunFwrite(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
         return raise.panic("file is not writeable");
     }
     // Verify all arguments before writing to file
-    var i: usize = 1;
-    while (i < argv.len) : (i += 1) _ = try args_core.getBytes(argv, i);
-    i = 1;
-    while (i < argv.len) : (i += 1) {
+    for (1..argv.len) |i| _ = try args_core.getBytes(argv, i);
+    for (1..argv.len) |i| {
         const view = try args_core.getBytes(argv, i);
         if (view.len != 0) {
-            if (writeStream(streamOf(iof), args_core.viewBytes(view).ptr, @intCast(view.len)) == 0) {
+            if (write(streamOf(iof), args_core.viewBytes(view).ptr, @intCast(view.len)) == 0) {
                 return raise.panic("error writing to file");
             }
         }
@@ -704,7 +652,7 @@ fn cfunFflush(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
     try args_core.fixarity(argv, 1);
     const iof = try getFile(argv, 0);
     try assertWriteable(iof);
-    if (flushStream(streamOf(iof)) != 0) return raise.panic("could not flush file");
+    if (flush(streamOf(iof)) != 0) return raise.panic("could not flush file");
     return argv[0];
 }
 
@@ -716,7 +664,7 @@ fn cfunFflush(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
 /// the alternative.
 fn closeFile(file: *File) c_int {
     if (file.flags & (file_not_closeable | file_closed) == 0) {
-        const ret = closeStream(streamOf(file));
+        const ret = close(streamOf(file));
         file.flags |= file_closed;
         file.file = null;
         return ret;
@@ -733,7 +681,7 @@ fn cfunFclose(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return wrap.fromNil();
     if (iof.flags & file_not_closeable != 0) return raise.panic("file not closable");
-    if (closeStream(streamOf(iof)) != 0) {
+    if (close(streamOf(iof)) != 0) {
         iof.flags |= file_not_closeable;
         return raise.panic("could not close file");
     }
@@ -753,7 +701,7 @@ fn cfunFseek(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
         return pp_format.panicf("expected one of :cur, :set, :end, got %v", .{argv[1]});
     }
     if (argv.len == 3) offset = try args_core.getInteger64(argv, 2);
-    if (seekStream(streamOf(iof), offset, whence) != 0) return raise.panic("error seeking file");
+    if (seek(streamOf(iof), offset, whence) != 0) return raise.panic("error seeking file");
     return argv[0];
 }
 
@@ -761,7 +709,7 @@ fn cfunFtell(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
     try args_core.fixarity(argv, 1);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
-    const pos = tellStream(streamOf(iof));
+    const pos = tell(streamOf(iof));
     if (pos == -1) return raise.panic("error getting position in file");
     return wrap.fromNumber(@floatFromInt(pos));
 }
@@ -811,8 +759,7 @@ fn printImplX(
         repr.Tag.buffer => {
             // Special case buffer
             const buf = wrap.toBuffer(x);
-            var i: usize = offset;
-            while (i < argv.len) : (i += 1) try pp_describe.toStringB(buf, argv[i]);
+            for (argv[offset..]) |arg| try pp_describe.toStringB(buf, arg);
             if (newline) try buffers.pushU8(buf, '\n');
             return wrap.fromNil();
         },
@@ -820,8 +767,7 @@ fn printImplX(
             // Special case function
             const fun = wrap.toFunction(x);
             const buf = buffers.new(0);
-            var i: usize = offset;
-            while (i < argv.len) : (i += 1) try pp_describe.toStringB(buf, argv[i]);
+            for (argv[offset..]) |arg| try pp_describe.toStringB(buf, arg);
             if (newline) try buffers.pushU8(buf, '\n');
             var args = [_]repr.Value{wrap.fromBuffer(buf)};
             _ = try vm_entry.call(fun, (&args)[0..1]);
@@ -840,20 +786,21 @@ fn printImplX(
         },
         else => return pp_format.panicf("cannot print to %v", .{x}),
     }
-    var i: usize = offset;
-    while (i < argv.len) : (i += 1) {
+    for (argv[offset..]) |arg| {
         var len: i32 = undefined;
         var vstr: [*]const u8 = undefined;
-        if (repr.checkType(argv[@intCast(i)], repr.Tag.buffer)) {
-            const b = wrap.toBuffer(argv[@intCast(i)]);
+        if (repr.checkType(arg, repr.Tag.buffer)) {
+            const b = wrap.toBuffer(arg);
             vstr = b.data.?;
             len = @intCast(b.count);
         } else {
-            vstr = pp_describe.toString(argv[@intCast(i)]);
-            len = strings.head(vstr).length;
+            vstr = pp_describe.toString(arg);
+            // `len` stays `i32` because the two failure messages below hand it
+            // to `%d`, which reads a 32-bit argument.
+            len = @intCast(strings.head(vstr).length);
         }
         if (len != 0) {
-            if (writeStream(f, vstr, @intCast(len)) != 1) {
+            if (write(f, vstr, @intCast(len)) != 1) {
                 if (f == dflt_file) {
                     return pp_format.panicf("cannot print %d bytes", .{len});
                 } else {
@@ -862,7 +809,7 @@ fn printImplX(
             }
         }
     }
-    if (newline) _ = putCharStream(f, '\n');
+    if (newline) _ = putChar(f, '\n');
     return wrap.fromNil();
 }
 
@@ -948,7 +895,7 @@ fn printfImplX(
     try pp_format.bufferFormat(buf, fmt, offset + 1, argv);
     if (newline) try buffers.pushU8(buf, '\n');
     if (buf.count != 0) {
-        if (writeStream(f, buf.data.?, @intCast(buf.count)) != 1) {
+        if (write(f, buf.data.?, @intCast(buf.count)) != 1) {
             return pp_format.panicf("could not print %d bytes to file", .{@as(i64, @intCast(buf.count))});
         }
     }
@@ -993,12 +940,12 @@ fn XPrintf(comptime newline: bool) type {
 fn flusher(name: [*:0]const u8, dflt_file: ?*FILE) void {
     const x = vm_state.dyn(name);
     switch (repr.typeOf(x)) {
-        repr.Tag.nil => _ = flushStream(dflt_file),
+        repr.Tag.nil => _ = flush(dflt_file),
         repr.Tag.abstract => {
             const abstract = wrap.toAbstract(x);
             if (abi.abstractHead(abstract).type != &fileType) return;
             const iofile: *File = @ptrCast(@alignCast(abstract));
-            _ = flushStream(streamOf(iofile));
+            _ = flush(streamOf(iofile));
         },
         else => {},
     }

@@ -110,17 +110,17 @@ fn evalfn(source: [*:0]const u8) *functions.Function {
 /// A fiber over `source`, rooted. Built with `janet_fiber` rather than
 /// `fiber/new` so the default flags are the ones `janet_pcall` would have used.
 fn fiberOver(source: [*:0]const u8) *fibers.Fiber {
-    const fiber = fibers.new(evalfn(source), 64, 0, null).?;
+    const fiber = fibers.new(evalfn(source), 64, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     return fiber;
 }
 
-/// A refusal that arrives as a value. `sig` and `out` are the caller's,
-/// already filled in; this only checks that the pair says what it should.
-fn expectReport(sig: abi.Signal, out: repr.Value, message: [*:0]const u8) void {
-    expect(sig == abi.Signal.@"error");
-    if (!harness.stringValueIs(out, message)) {
-        std.debug.print("expected: {s}\n     got: {s}\n", .{ message, pp_describe.toString(out) });
+/// A refusal that arrives as a value. `resumed` is the caller's, already
+/// returned; this only checks that the pair says what it should.
+fn expectReport(resumed: vm_entry_mod.Resumed, message: [*:0]const u8) void {
+    expect(resumed.signal == abi.Signal.@"error");
+    if (!harness.stringValueIs(resumed.value, message)) {
+        std.debug.print("expected: {s}\n     got: {s}\n", .{ message, pp_describe.toString(resumed.value) });
         expect(false);
     }
 }
@@ -131,88 +131,83 @@ fn expectReport(sig: abi.Signal, out: repr.Value, message: [*:0]const u8) void {
 /// which is the whole reason `janet_fiber_reset` returns null instead of
 /// panicking the way `janet_fiber_funcframe`'s other caller does.
 fn pcallReportsRatherThanRaises() void {
-    var out = wrap.fromNil();
-
-    var sig = vm_entry_mod.pcall(evalfn("(fn [] (+ 1 2))"), 0, null, &out, null);
-    expect(sig == abi.Signal.ok);
-    expect(harness.integerIs(out, 3));
+    var resumed = vm_entry_mod.pcall(evalfn("(fn [] (+ 1 2))"), &.{}, null);
+    expect(resumed.signal == abi.Signal.ok);
+    expect(harness.integerIs(resumed.value, 3));
 
     var args = [_]repr.Value{ harness.wrapInteger(4), harness.wrapInteger(5) };
-    sig = vm_entry_mod.pcall(evalfn("(fn [a b] (* a b))"), 2, &args, &out, null);
-    expect(sig == abi.Signal.ok);
-    expect(harness.integerIs(out, 20));
+    resumed = vm_entry_mod.pcall(evalfn("(fn [a b] (* a b))"), &args, null);
+    expect(resumed.signal == abi.Signal.ok);
+    expect(harness.integerIs(resumed.value, 20));
 
-    sig = vm_entry_mod.pcall(evalfn("(fn [] (error \"boom\"))"), 0, null, &out, null);
-    expectReport(sig, out, "boom");
+    resumed = vm_entry_mod.pcall(evalfn("(fn [] (error \"boom\"))"), &.{}, null);
+    expectReport(resumed, "boom");
 
     // The fiber `janet_pcall` builds masks yield, so a yield comes back as a
     // signal rather than propagating past it.
-    sig = vm_entry_mod.pcall(evalfn("(fn [] (yield 7) 8)"), 0, null, &out, null);
-    expect(sig == abi.Signal.yield);
-    expect(harness.integerIs(out, 7));
+    resumed = vm_entry_mod.pcall(evalfn("(fn [] (yield 7) 8)"), &.{}, null);
+    expect(resumed.signal == abi.Signal.yield);
+    expect(harness.integerIs(resumed.value, 7));
 }
 
 /// The out-parameter is written before the null check, so a caller that reuses
 /// a fiber across calls sees it cleared by the failure rather than left
 /// pointing at the previous one.
 fn pcallWithAReusedFiber() void {
-    var out = wrap.fromNil();
     var f: ?*fibers.Fiber = null;
 
-    var sig = vm_entry_mod.pcall(evalfn("(fn [] 1)"), 0, null, &out, &f);
-    expect(sig == abi.Signal.ok);
+    var resumed = vm_entry_mod.pcall(evalfn("(fn [] 1)"), &.{}, &f);
+    expect(resumed.signal == abi.Signal.ok);
     expect(f != null);
     const first = f;
     gc_alloc.gcroot(wrap.fromFiber(f.?));
 
-    sig = vm_entry_mod.pcall(evalfn("(fn [] 2)"), 0, null, &out, &f);
-    expect(sig == abi.Signal.ok);
+    resumed = vm_entry_mod.pcall(evalfn("(fn [] 2)"), &.{}, &f);
+    expect(resumed.signal == abi.Signal.ok);
     expect(f == first); // a supplied fiber is reset, not replaced
-    expect(harness.integerIs(out, 2));
+    expect(harness.integerIs(resumed.value, 2));
 
     // Too few arguments for a fixed arity: the frame cannot be built, and the
     // report is a bare "arity mismatch" with no detail, unlike `janet_call`'s.
-    sig = vm_entry_mod.pcall(evalfn("(fn [a b] a)"), 0, null, &out, &f);
-    expectReport(sig, out, "arity mismatch");
+    resumed = vm_entry_mod.pcall(evalfn("(fn [a b] a)"), &.{}, &f);
+    expectReport(resumed, "arity mismatch");
     expect(f == null); // the out-parameter is written before the null check
 }
 
 // --------------------------------------------------------- can-resume gate
 
 fn resumingAFiberThatCannotBe() void {
-    var out = wrap.fromNil();
     var fiber = fiberOver("(fn [] 1)");
 
-    var sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.ok);
+    var resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.ok);
     expect(fibers.status(fiber) == fibers.FiberStatus.dead);
 
-    sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    expectReport(sig, out, "cannot resume fiber with status :dead");
+    resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    expectReport(resumed, "cannot resume fiber with status :dead");
 
     // An unmasked user signal leaves the fiber in the matching status, which
     // is inside the band the gate refuses.
     fiber = fiberOver("(fn [] (signal 0 :stopped))");
-    sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.user0);
+    resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.user0);
     expect(fibers.status(fiber) == fibers.FiberStatus.user0);
-    sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    expectReport(sig, out, "cannot resume fiber with status :user0");
+    resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    expectReport(resumed, "cannot resume fiber with status :user0");
 }
 
 /// The recursion refusal is the only one of the three that marks the fiber,
 /// and the mark is what stops a caller from retrying the same fiber forever.
 fn theRecursionGuardMarksTheFiber() void {
-    var out = wrap.fromNil();
     const fiber = fiberOver("(fn [] 1)");
     const saved = harness.vm().stackn;
 
     expect(fibers.status(fiber) == fibers.FiberStatus.new);
     harness.vm().stackn = config.recursion_guard;
-    const sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
+    const resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
     harness.vm().stackn = saved;
 
-    expectReport(sig, out, "C stack recursed too deeply");
+    expectReport(resumed, "C stack recursed too deeply");
     expect(fibers.status(fiber) == fibers.FiberStatus.@"error");
 }
 
@@ -221,24 +216,23 @@ fn theRecursionGuardMarksTheFiber() void {
 /// receiving a value. Nothing else in the tree reaches `janet_signal_inject`
 /// from outside the loop.
 fn cancellingASuspendedFiber() void {
-    var out = wrap.fromNil();
     var fiber = fiberOver("(fn [] (yield 1) :finished)");
-    var sig = vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out);
-    expect(sig == abi.Signal.yield);
-    expect(harness.integerIs(out, 1));
+    var resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.yield);
+    expect(harness.integerIs(resumed.value, 1));
 
-    sig = vm_entry_mod.continueSignal(fiber, value.fromBytes("stop", .string), &out, abi.Signal.@"error");
-    expectReport(sig, out, "stop");
+    resumed = vm_entry_mod.continueSignal(fiber, value.fromBytes("stop", .string), abi.Signal.@"error");
+    expectReport(resumed, "stop");
     expect(fibers.status(fiber) == fibers.FiberStatus.@"error");
 
     // `JANET_SIGNAL_OK` injects nothing and resumes normally, which is the
     // branch that keeps `janet_continue_signal` from being `janet_continue`
     // with an extra argument.
     fiber = fiberOver("(fn [] (yield 1) :finished)");
-    expect(vm_entry_mod.continueFiber(fiber, wrap.fromNil(), &out) == abi.Signal.yield);
-    sig = vm_entry_mod.continueSignal(fiber, wrap.fromNil(), &out, abi.Signal.ok);
-    expect(sig == abi.Signal.ok);
-    expect(harness.keywordIs(out, "finished"));
+    expect(vm_entry_mod.continueFiber(fiber, wrap.fromNil()).signal == abi.Signal.yield);
+    resumed = vm_entry_mod.continueSignal(fiber, wrap.fromNil(), abi.Signal.ok);
+    expect(resumed.signal == abi.Signal.ok);
+    expect(harness.keywordIs(resumed.value, "finished"));
 }
 
 // ------------------------------------------------------------------- step
@@ -294,8 +288,9 @@ fn steppingStraightLineCode() raise.Raising(void) {
     expect(harness.integerIs(out, 3));
 
     // The same funcdef, run without stepping: every breakpoint was taken out.
-    expect(vm_entry_mod.pcall(fun, 0, null, &out, null) == abi.Signal.ok);
-    expect(harness.integerIs(out, 3));
+    const resumed = vm_entry_mod.pcall(fun, &.{}, null);
+    expect(resumed.signal == abi.Signal.ok);
+    expect(harness.integerIs(resumed.value, 3));
 }
 
 /// A branch has two candidate successors, and both get a breakpoint. That is
@@ -335,8 +330,9 @@ fn steppingAcrossBranches() raise.Raising(void) {
     expect(stoppedAt(stops[0..nstops], target)); // stepped into the branch target
 
     // The same funcdef, run without stepping: every breakpoint was taken out.
-    expect(vm_entry_mod.pcall(fun, 0, null, &out, null) == abi.Signal.ok);
-    expect(harness.keywordIs(out, "yes"));
+    const resumed = vm_entry_mod.pcall(fun, &.{}, null);
+    expect(resumed.signal == abi.Signal.ok);
+    expect(harness.keywordIs(resumed.value, "yes"));
 }
 
 /// Stepping raises, where resuming reports, and it refuses a different set of
@@ -347,10 +343,10 @@ fn steppingAFiberThatCannotBe() void {
     const dead = fiberOver("(fn [] 1)");
     const errored = fiberOver("(fn [] (error \"boom\"))");
 
-    expect(vm_entry_mod.continueFiber(dead, wrap.fromNil(), &out) == abi.Signal.ok);
+    expect(vm_entry_mod.continueFiber(dead, wrap.fromNil()).signal == abi.Signal.ok);
     expect(harness.raised(vm_entry.step, .{ dead, wrap.fromNil(), &out }).?.says("cannot step fiber with status :dead"));
 
-    expect(vm_entry_mod.continueFiber(errored, wrap.fromNil(), &out) == abi.Signal.@"error");
+    expect(vm_entry_mod.continueFiber(errored, wrap.fromNil()).signal == abi.Signal.@"error");
     expect(harness.raised(vm_entry.step, .{ errored, wrap.fromNil(), &out }).?.says("cannot step fiber with status :error"));
 }
 
@@ -371,22 +367,21 @@ fn callingWithoutAFiber() void {
 fn cfunProbe(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
 
-    var out = wrap.fromNil();
     const self = harness.vm().fiber.?;
 
     // The fiber running this cfunction is alive, and the gate refuses it.
-    var sig = vm_entry_mod.continueFiber(self, wrap.fromNil(), &out);
-    expectReport(sig, out, "cannot resume fiber with status :alive");
+    var resumed = vm_entry_mod.continueFiber(self, wrap.fromNil());
+    expectReport(resumed, "cannot resume fiber with status :alive");
 
     // A fiber marked as a task belongs to the scheduler, and the refusal names
     // the scheduler's own entry points when there is one.
     {
         const rooted = fiberOver("(fn [] 1)");
-        rooted.gc.flags |= constants.JANET_FIBER_FLAG_ROOT;
-        sig = vm_entry_mod.continueFiber(rooted, wrap.fromNil(), &out);
-        expectReport(sig, out, if (has_ev) "cannot resume root fiber, use ev/go" else "cannot resume root fiber");
-        sig = vm_entry_mod.continueSignal(rooted, wrap.fromNil(), &out, abi.Signal.@"error");
-        expectReport(sig, out, if (has_ev) "cannot cancel root fiber, use ev/cancel" else "cannot cancel root fiber");
+        harness.gcSetBits(&rooted.gc.flags, constants.JANET_FIBER_FLAG_ROOT);
+        resumed = vm_entry_mod.continueFiber(rooted, wrap.fromNil());
+        expectReport(resumed, if (has_ev) "cannot resume root fiber, use ev/go" else "cannot resume root fiber");
+        resumed = vm_entry_mod.continueSignal(rooted, wrap.fromNil(), abi.Signal.@"error");
+        expectReport(resumed, if (has_ev) "cannot cancel root fiber, use ev/cancel" else "cannot cancel root fiber");
     }
 
     // The three arity messages. The cascade that picks between them tests
@@ -459,15 +454,12 @@ const cfuns = [_]abi.Reg{
 /// invokes it as a method, and `janet_method_invoke` calls `janet_call` for a
 /// Janet function.
 fn aSignalTheLoopReturnsIsCoerced() void {
-    var out = wrap.fromNil();
-    const sig = vm_entry_mod.pcall(
+    const resumed = vm_entry_mod.pcall(
         evalfn("(fn [] (def t @{:+ (fn [self other] (yield 5))}) (+ t 1))"),
-        0,
-        null,
-        &out,
+        &.{},
         null,
     );
-    expectReport(sig, out, "5 coerced from yield to error");
+    expectReport(resumed, "5 coerced from yield to error");
 }
 
 // ------------------------------------------------------------- the tracing
@@ -486,7 +478,7 @@ fn aTracedCall() void {
             "    (string buf))",
     );
     const text = wrap.toString(named);
-    const length: usize = @intCast(strings.head(text).length);
+    const length: usize = strings.head(text).length;
     const line = text[0..length];
     if (!std.mem.startsWith(u8, line, "trace (adder ")) {
         std.debug.print("expected a trace line for a named function, got: {s}\n", .{line});
@@ -502,7 +494,7 @@ fn aTracedCall() void {
             "    (string buf))",
     );
     const anon_text = wrap.toString(anon);
-    const anon_length: usize = @intCast(strings.head(anon_text).length);
+    const anon_length: usize = strings.head(anon_text).length;
     if (!std.mem.startsWith(u8, anon_text[0..anon_length], "trace (<function")) {
         std.debug.print("expected a trace line for an unnamed function, got: {s}\n", .{anon_text[0..anon_length]});
         expect(false);

@@ -38,7 +38,7 @@
 //!
 //! ## The head offset is measured, not asserted
 //!
-//! `sizeof(JanetAbstractHead) == offsetof(JanetAbstractHead, data)` cannot be
+//! `sizeof(AbstractHead) == offsetof(AbstractHead, data)` cannot be
 //! translated: a translated head drops its flexible array member, so
 //! `@offsetOf` does not compile and the header is recovered with `@sizeOf` --
 //! which makes the comparison `@sizeOf` against itself.
@@ -114,7 +114,7 @@ fn bare() *const abi.AbstractType {
     return &at_bare;
 }
 
-fn headOf(abstract: ?*anyopaque) *abi.JanetAbstractHead {
+fn headOf(abstract: ?*anyopaque) *abi.AbstractHead {
     return utils.abstractHead(abstract);
 }
 
@@ -135,13 +135,13 @@ fn beginPublishesAnUntypedBlock() void {
     expect(head.size == 40);
     expect(head.type == counted());
     expect(heap.memoryType(head) == gc_alloc.MemoryType.none);
-    expect(head.gc.flags & constants.JANET_MEM_REACHABLE == 0);
+    expect(harness.gcBits(head.gc.flags) & constants.JANET_MEM_REACHABLE == 0);
 
     expect(harness.vm().gc.block_count == before_count + 1);
     expect(heap.onList(harness.vm().gc.blocks, head));
     expect(!heap.onList(harness.vm().gc.weak_blocks, head));
     expect(harness.vm().gc.next_collection ==
-        before_charge + @sizeOf(abi.JanetAbstractHead) + 40);
+        before_charge + @sizeOf(abi.AbstractHead) + 40);
 
     // `long long data[]` is the most general alignment the header can ask for,
     // so the payload is aligned for anything an embedder puts in it.
@@ -172,16 +172,17 @@ fn endPreservesTheOtherFlagBits() void {
     const a = abstracts.beginBytes(counted(), 8);
     const head = headOf(a);
 
-    head.gc.flags |= constants.JANET_MEM_REACHABLE;
-    head.gc.flags |= constants.JANET_MEM_DISABLED;
+    harness.gcSetBits(&head.gc.flags, constants.JANET_MEM_REACHABLE);
+    harness.gcSetBits(&head.gc.flags, constants.JANET_MEM_DISABLED);
 
     _ = abstracts.end(a);
     expect(heap.memoryType(head) == gc_alloc.MemoryType.abstract);
-    expect(head.gc.flags & constants.JANET_MEM_REACHABLE != 0);
-    expect(head.gc.flags & constants.JANET_MEM_DISABLED != 0);
+    expect(harness.gcBits(head.gc.flags) & constants.JANET_MEM_REACHABLE != 0);
+    expect(harness.gcBits(head.gc.flags) & constants.JANET_MEM_DISABLED != 0);
 
     // Leave nothing marked or disabled behind for the next case.
-    head.gc.flags &= ~@as(i32, constants.JANET_MEM_REACHABLE | constants.JANET_MEM_DISABLED);
+    head.gc.flags = @bitCast(harness.gcBits(head.gc.flags) &
+        ~@as(u32, constants.JANET_MEM_REACHABLE | constants.JANET_MEM_DISABLED));
 }
 
 /// `janet_abstract` is the two calls in one, and must charge and tag exactly
@@ -200,7 +201,7 @@ fn abstractIsBeginThenEnd() void {
     expect(harness.vm().gc.block_count == before_count + 1);
     expect(heap.onList(harness.vm().gc.blocks, head));
     expect(harness.vm().gc.next_collection ==
-        before_charge + @sizeOf(abi.JanetAbstractHead) + 24);
+        before_charge + @sizeOf(abi.AbstractHead) + 24);
 }
 
 /// A zero-length abstract is a header and nothing else, and is legal.
@@ -389,7 +390,7 @@ fn beginThreadedRegistersWithoutTheHeap() void {
         table_charge = @as(usize, @intCast(harness.vm().ev.threaded_abstracts.capacity)) * @sizeOf(tables.KV);
     }
     expect(harness.vm().gc.next_collection ==
-        before_charge + @sizeOf(abi.JanetAbstractHead) + 48 + table_charge);
+        before_charge + @sizeOf(abi.AbstractHead) + 48 + table_charge);
 
     expect(harness.vm().ev.threaded_abstracts.count == before_tracked + 1);
     expect(tracked(a));
@@ -590,7 +591,7 @@ fn repeatedCycles() void {
 /// every refcount case above -- the counts would be consistently shifted, and
 /// only the comparison against zero would notice.
 fn atomicsReturnTheNewValue() void {
-    var x: abi.JanetAtomicInt = 0;
+    var x: abi.AtomicInt = 0;
 
     expect(abstracts.atomicInc(&x) == 1);
     expect(abstracts.atomicInc(&x) == 2);

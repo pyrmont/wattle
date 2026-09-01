@@ -37,7 +37,6 @@ const tables = @import("subsystems").value.tables;
 const strings = @import("subsystems").value.strings;
 const symbols = @import("subsystems").value.symbols;
 const tuples = @import("subsystems").value.tuples;
-const regalloc = @import("subsystems").regalloc;
 const registry = @import("subsystems").registry;
 const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
@@ -46,10 +45,10 @@ const compiler_primitives = @import("subsystems").compiler_primitives;
 const functions = @import("subsystems").value.functions;
 const expect = @import("expect.zig").expect;
 
-var compiler: primitives.JanetCompiler = undefined;
-var scope: primitives.JanetScope = undefined;
-var child: primitives.JanetScope = undefined;
-var unused: primitives.JanetScope = undefined;
+var compiler: primitives.Compiler = undefined;
+var scope: primitives.Scope = undefined;
+var child: primitives.Scope = undefined;
+var unused: primitives.Scope = undefined;
 
 /// The recursion guard is consulted and decremented by `janetc_value`, so
 /// every section that compiles a form resets it the way `janet_compile` does.
@@ -74,7 +73,7 @@ fn operationOf(word: u32) u32 {
 fn theDefaultFormOptions() void {
     const options = primitives.foptsDefault(&compiler);
     expect(options.compiler == &compiler);
-    expect(std.meta.eql(options.flags, primitives.FoptsFlags{}));
+    expect(std.meta.eql(options.flags, primitives.FormFlags{}));
     expect(@as(u32, @bitCast(options.hint.flags)) ==
         (@as(u32, 1) << @intFromEnum(repr.Tag.nil)) | 0x10000);
     expect(harness.isType(options.hint.constant, repr.Tag.nil));
@@ -159,10 +158,10 @@ fn theFuncdefFlagsAreDerived() void {
 /// the pop, which is what a debugger uses to decide a binding is out of
 /// scope. Nothing in Janet can observe it except a stack trace.
 fn poppingAScopeHandsUpItsSymbols() !void {
-    regalloc.regallocDeinit(&scope.ra);
+    scope.ra.deinit();
     compiler.scope = null;
     primitives.pushScope(&scope, &compiler, .{ .function = true }, "root");
-    regalloc.regallocTouch(&scope.ra, 5);
+    scope.ra.touch(5);
     vector.push(&compiler.buffer, harness.op(constants.Opcode.noop));
 
     primitives.pushScope(&child, &compiler, .{ .closure = true }, "child");
@@ -171,7 +170,7 @@ fn poppingAScopeHandsUpItsSymbols() !void {
     expect(child.parent == &scope);
     expect(child.bytecode_start == 1);
     // The child inherits the parent's taken registers, so 5 is still taken.
-    expect(regalloc.regallocCheck(&child.ra, 5));
+    expect(child.ra.isTaken(5));
 
     var pair: primitives.SymPair = std.mem.zeroes(primitives.SymPair);
     pair.slot.index = 3;
@@ -182,7 +181,7 @@ fn poppingAScopeHandsUpItsSymbols() !void {
     pair.keep = true;
     pair.death_pc = std.math.maxInt(u32);
     vector.push(&child.syms, pair);
-    regalloc.regallocTouch(&child.ra, 8);
+    child.ra.touch(8);
     child.ra.max = 8;
     vector.push(&compiler.buffer, harness.op(constants.Opcode.noop));
 
@@ -199,19 +198,19 @@ fn poppingAScopeHandsUpItsSymbols() !void {
     expect(scope.syms.items[0].sym == null);
     expect(scope.syms.items[0].sym2 == null);
     expect(scope.syms.items[0].death_pc == 2);
-    expect(regalloc.regallocCheck(&scope.ra, 3));
+    expect(scope.ra.isTaken(3));
 }
 
 /// An unused scope contributes nothing, but `popscope_keepslot` still touches
 /// the register its result lives in so the parent does not hand it out again.
 fn anUnusedScopeStillKeepsItsResultSlot() !void {
     primitives.pushScope(&unused, &compiler, .{ .unused = true }, "unused");
-    var slot: primitives.JanetSlot = std.mem.zeroes(primitives.JanetSlot);
+    var slot: primitives.Slot = std.mem.zeroes(primitives.Slot);
     slot.index = 10;
     slot.envindex = -1;
     try primitives.popscopeKeepslot(&compiler, slot);
     expect(compiler.scope == &scope);
-    expect(regalloc.regallocCheck(&scope.ra, 10));
+    expect(scope.ra.isTaken(10));
 }
 
 /// `janetc_return` marks the slot returned and emits at most once, so a
@@ -226,7 +225,7 @@ fn returningIsIdempotent() void {
     expect(emittedCount() == 1);
 
     vector.empty(&compiler.buffer);
-    slot = std.mem.zeroes(primitives.JanetSlot);
+    slot = std.mem.zeroes(primitives.Slot);
     slot.index = 3;
     slot.envindex = -1;
     slot = primitives.compileReturn(&compiler, slot);
@@ -241,7 +240,7 @@ fn returningIsIdempotent() void {
 fn aHintIsHonouredOnlyWhenItIsNear() void {
     var options = primitives.foptsDefault(&compiler);
     options.flags = .{ .hint = true };
-    options.hint = std.mem.zeroes(primitives.JanetSlot);
+    options.hint = std.mem.zeroes(primitives.Slot);
     options.hint.index = 7;
     options.hint.envindex = -1;
     expect(primitives.gettarget(options).index == 7);
@@ -351,9 +350,9 @@ fn theFourKindsOfForm() !void {
     slot = try primitives.valueImpl(options, wrap.fromTuple(tuples.end(call)));
     expect(slot.flags.constant);
     expect(harness.isType(slot.constant, repr.Tag.nil));
-    expect(compiler.result.status == constants.JANET_COMPILE_ERROR);
+    expect(compiler.result.status == compiler_primitives.CompileStatus.@"error");
     expect(compiler.result.@"error" != null);
-    compiler.result.status = constants.JANET_COMPILE_OK;
+    compiler.result.status = compiler_primitives.CompileStatus.ok;
     compiler.result.@"error" = null;
     compiler.recursion_guard = recursion_guard;
 }
@@ -361,8 +360,8 @@ fn theFourKindsOfForm() !void {
 /// Pushing arguments picks the widest instruction that fits, and a splice
 /// forces the one-at-a-time form — which is what the negative arity means.
 fn theArgumentPush() void {
-    var slots: harness.Vector(primitives.JanetSlot) = .empty;
-    var slot: primitives.JanetSlot = std.mem.zeroes(primitives.JanetSlot);
+    var slots: harness.Vector(primitives.Slot) = .empty;
+    var slot: primitives.Slot = std.mem.zeroes(primitives.Slot);
     slot.envindex = -1;
     for ([_]i32{ 1, 2, 3 }) |index| {
         slot.index = index;
@@ -422,7 +421,7 @@ fn aLocalIsCaptured() !strings.String {
     const symbol = symbols.new("captured");
     expect(primitives.shadowcheck(&compiler, symbol) == primitives.Shadowing.none);
 
-    var slot: primitives.JanetSlot = std.mem.zeroes(primitives.JanetSlot);
+    var slot: primitives.Slot = std.mem.zeroes(primitives.Slot);
     slot.index = 4;
     slot.envindex = -1;
     try primitives.nameslot(&compiler, symbol, slot, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
@@ -445,7 +444,7 @@ fn aLocalIsCaptured() !strings.String {
     expect(slot.index == 4 and slot.envindex == 0);
     expect(scope.flags.env);
     expect(scope.syms.items[1].keep);
-    expect(regalloc.regallocCheck(&scope.ua, 4));
+    expect(scope.ua.isTaken(4));
     expect(vector.count(child.envs) == 1);
     expect(child.envs.items[0].envindex == -1);
     expect(child.envs.items[0].scope == &scope);
@@ -499,7 +498,7 @@ fn theFirstErrorIsKept() !void {
     const slot = try primitives.resolve(&compiler, symbol);
     expect(slot.flags.constant);
     expect(harness.isType(slot.constant, repr.Tag.nil));
-    expect(compiler.result.status == constants.JANET_COMPILE_ERROR);
+    expect(compiler.result.status == compiler_primitives.CompileStatus.@"error");
     expect(compiler.result.@"error" != null);
 
     const first = compiler.result.@"error";
@@ -532,7 +531,7 @@ pub fn run() void {
     scope = .{ .name = "" };
     compiler.env = tables.new(0);
     compiler.scope = &scope;
-    regalloc.regallocInit(&scope.ra);
+    scope.ra = .{};
 
     body() catch @panic("compiler_primitives: a kernel raised unexpectedly");
 

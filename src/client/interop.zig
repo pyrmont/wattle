@@ -82,8 +82,9 @@ fn dispatch(
         call_operation => {
             var fiber: ?*fibers.Fiber = null;
             const function = unwrapFunction(argv[0]);
-            const signal = vm_entry.pcall(function, 1, argv[1..].ptr, out, &fiber);
-            if (signal != abi.Signal.ok) return 0;
+            const resumed = vm_entry.pcall(function, argv[1..2], &fiber);
+            out.* = resumed.value;
+            if (resumed.signal != abi.Signal.ok) return 0;
         },
         rooted_operation => {
             if (makeRooted(out)) return 0;

@@ -123,7 +123,7 @@ fn invalidHandle() host.Handle {
 fn payloadIs(payload: repr.Value, text: []const u8) bool {
     if (!harness.isType(payload, repr.Tag.string)) return false;
     const s = wrap.toString(payload);
-    const length: usize = @intCast(strings.head(s).length);
+    const length: usize = strings.head(s).length;
     return std.mem.eql(u8, s[0..length], text);
 }
 
@@ -650,7 +650,7 @@ fn theOrderedTimeouts() void {
 }
 
 /// `janet_addtimeout` and `janet_addtimeout_nil` differ in one field of the
-/// `JanetTimeout` they build: `is_error`. An expired error timeout cancels the
+/// `Timeout` they build: `is_error`. An expired error timeout cancels the
 /// fiber and an expired nil timeout resumes it with nil.
 ///
 /// Neither can be called from here directly -- both read

@@ -101,7 +101,12 @@
   (def buf (buffer/new-filled 1))
   (os/cryptorand 1 buf)
   (assert (= (in buf 0) 0) "cryptorand doesn't overwrite buffer")
-  (assert (= (length buf) 2) "cryptorand appends to buffer"))
+  (assert (= (length buf) 2) "cryptorand appends to buffer")
+
+  # The one Janet path that could reach `buffers.setcount` with a negative
+  # count. The check is here now that the parameter is a count.
+  (assert-error-value "negative cryptorand" "expected positive integer"
+                      (os/cryptorand -1)))
 
 (assert-no-error "realtime clock" (os/clock))
 (assert-no-error "realtime clock" (os/clock nil))

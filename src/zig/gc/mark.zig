@@ -28,7 +28,7 @@
 //!    a `size_t`, so a root set above 2^32 entries would loop forever. The
 //!    counter here wraps for the same reason rather than trapping.
 //!  - The collection-interval heuristic multiplies `block_count` by 8 and by
-//!    `sizeof(JanetGCObject)` without a check, so a heap large enough to
+//!    `sizeof(GCObject)` without a check, so a heap large enough to
 //!    overflow `size_t` would compute a nonsense interval. Wrapping arithmetic
 //!    keeps the two implementations bit-identical there.
 //!  - `janet_mark_array` marks elements only for `JANET_MEMORY_ARRAY`, so a
@@ -74,20 +74,20 @@ const frame_size: i32 = constants.JANET_FRAME_SIZE;
 
 // ------------------------------------------------------ the header accessors
 
-/// Every collectable object *has* a `JanetGCObject`, which is what lets these
+/// Every collectable object *has* a `GCObject`, which is what lets these
 /// four take any of them. Taking its address says exactly that, where a
 /// `@ptrCast` would say the stronger and unchecked thing that the header sits
 /// at offset zero.
-inline fn gcHeader(mem: anytype) *abi.JanetGCObject {
+inline fn gcHeader(mem: anytype) *abi.GCObject {
     return &mem.gc;
 }
 
 inline fn gcMark(mem: anytype) void {
-    gcHeader(mem).flags |= mem_reachable;
+    gcHeader(mem).flags.reachable = true;
 }
 
 inline fn gcReachable(mem: anytype) bool {
-    return (gcHeader(mem).flags & mem_reachable) != 0;
+    return gcHeader(mem).flags.reachable;
 }
 
 inline fn gcType(mem: anytype) gc_alloc.MemoryType {
@@ -195,7 +195,10 @@ fn markAbstract(adata: ?*anyopaque) void {
 /// subtracts `JANET_FRAME_SIZE` from a frame address -- C's `while (i < n)`
 /// runs zero times and `@intCast` would trap. Both were implied by the loop
 /// condition and are stated here instead.
-inline fn run(comptime T: type, p: ?[*]const T, n: i32) []const T {
+/// A pointer and a length that may be absent, or -- where the length is one of
+/// the fiber's signed frame offsets -- not positive. The length is `anytype`
+/// so that a `usize` count reaches it without a cast that says nothing.
+inline fn run(comptime T: type, p: ?[*]const T, n: anytype) []const T {
     if (n <= 0) return &.{};
     const items = p orelse return &.{};
     return items[0..@intCast(n)];
@@ -228,7 +231,7 @@ fn markArray(array: *arrays.Array) void {
     if (gcReachable(array)) return;
     gcMark(array);
     if (gcType(array) == gc_alloc.MemoryType.array) {
-        markMany(run(repr.Value, array.data, @intCast(array.count)));
+        markMany(array.slice());
     }
 }
 
@@ -247,11 +250,11 @@ fn markTable(table_in: *tables.Table) void {
         gcMark(table);
         const memtype = gcType(table);
         if (memtype == gc_alloc.MemoryType.table_weakk) {
-            markValues(run(tables.KV, table.data, @intCast(table.capacity)));
+            markValues(table.slots());
         } else if (memtype == gc_alloc.MemoryType.table_weakv) {
-            markKeys(run(tables.KV, table.data, @intCast(table.capacity)));
+            markKeys(table.slots());
         } else if (memtype == gc_alloc.MemoryType.table) {
-            markKvs(run(tables.KV, table.data, @intCast(table.capacity)));
+            markKvs(table.slots());
         }
         // Nothing for JANET_MEMORY_TABLE_WEAKKV.
         if (table.proto) |proto| {
@@ -268,7 +271,7 @@ fn markStruct(st_in: [*]const tables.KV) void {
         const head = structs.head(st);
         if (gcReachable(head)) return;
         gcMark(head);
-        markKvs(run(tables.KV, st, head.capacity));
+        markKvs(st[0..head.capacity]);
         st = head.proto orelse return;
     }
 }
@@ -277,7 +280,7 @@ fn markTuple(tuple: [*]const repr.Value) void {
     const head = tuples.head(tuple);
     if (gcReachable(head)) return;
     gcMark(head);
-    markMany(run(repr.Value, tuple, head.length));
+    markMany(tuple[0..head.length]);
 }
 
 /// Mark a function environment, detaching it from a dead fiber first if it can
@@ -298,18 +301,12 @@ fn markFuncenv(env: *functions.FuncEnv) void {
 fn markFuncdef(def: *functions.FuncDef) void {
     if (gcReachable(def)) return;
     gcMark(def);
-    markMany(run(repr.Value, def.constants, @intCast(def.constants_length)));
-    var i: usize = 0;
-    while (i < def.defs_length) : (i += 1) {
-        markFuncdef(def.subdefs()[i]);
-    }
+    markMany(def.constantValues());
+    for (def.subdefs()) |subdef| markFuncdef(subdef);
     if (def.source) |source| markString(source);
     if (def.name) |name| markString(name);
     if (def.symbolmap != null) {
-        var j: usize = 0;
-        while (j < def.symbolmap_length) : (j += 1) {
-            markString(def.symbols()[j].symbol.?);
-        }
+        for (def.symbols()) |entry| markString(entry.symbol.?);
     }
 }
 
@@ -373,7 +370,7 @@ fn markFiber(fiber_in: *fibers.Fiber) void {
                 markAbstract(fiber.ev_stream);
             }
             if (fiber.ev_callback) |callback| {
-                ev_callback.dispatchTotal(ev_callback.of(callback), fiber, constants.JANET_ASYNC_EVENT_MARK);
+                ev_callback.dispatchTotal(ev_callback.of(callback), fiber, constants.AsyncEvent.mark);
             }
         }
 
@@ -411,10 +408,10 @@ pub fn collect() void {
     // O(block_count), so a large heap gets a proportionally larger interval;
     // the products wrap rather than trap, as the C original's do.
     if (g.block_count *% 8 > g.interval) {
-        g.interval = g.block_count *% @sizeOf(abi.JanetGCObject);
+        g.interval = g.block_count *% @sizeOf(abi.GCObject);
     }
 
-    g.orig_rootcount = roots.count;
+    g.orig_rootcount = roots.items.len;
 
     if (has_ev) ev_loop.evMark();
 
@@ -425,10 +422,10 @@ pub fn collect() void {
     // `usize`; see the note at the head of this file.
     var i: u32 = 0;
     while (i < g.orig_rootcount) : (i +%= 1) {
-        mark(roots.at(i).*);
+        mark(roots.items[i]);
     }
-    while (g.orig_rootcount < roots.count) {
-        const x = roots.pop();
+    while (g.orig_rootcount < roots.items.len) {
+        const x = roots.pop().?;
         mark(x);
     }
 

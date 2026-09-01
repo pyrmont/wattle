@@ -65,7 +65,7 @@ const abi = @import("abi");
 const tables = @import("tables.zig");
 
 pub const Array = struct {
-    gc: abi.JanetGCObject = .{},
+    gc: abi.GCObject = .{},
     count: usize = 0,
     capacity: usize = 0,
     data: ?[*]repr.Value = null,
@@ -121,21 +121,21 @@ pub const Array = struct {
 
 /// Give an array its initial payload. A capacity of zero leaves `data` null,
 /// and the growth paths handle that: `janet_realloc(NULL, n)` allocates.
-fn init(array: *Array, capacity: i32) void {
+fn init(array: *Array, capacity: usize) void {
     var data: ?[*]repr.Value = null;
     if (capacity > 0) {
         // Charged directly rather than through `gc.gcpressure`, because the
         // term is the array's own bytes and nothing else.
-        vm_state.current().gc.next_collection +%= utils.asSize(capacity) *% @sizeOf(repr.Value);
-        data = @ptrCast(@alignCast(utils.malloc(@sizeOf(repr.Value) *% utils.asSize(capacity)) orelse
+        vm_state.current().gc.next_collection +%= capacity *% @sizeOf(repr.Value);
+        data = @ptrCast(@alignCast(utils.malloc(@sizeOf(repr.Value) *% capacity) orelse
             fatal.outOfMemory()));
     }
     array.count = 0;
-    array.capacity = @intCast(capacity);
+    array.capacity = capacity;
     array.data = data;
 }
 
-pub fn new(capacity: i32) *Array {
+pub fn new(capacity: usize) *Array {
     const array = gc_alloc.gcalloc(Array, .array);
     init(array, capacity);
     return array;
@@ -144,7 +144,7 @@ pub fn new(capacity: i32) *Array {
 /// An array whose elements do not keep their targets alive. The only
 /// difference is the memory type, which puts the block on the weak heap and
 /// sends it to `dropDeadElements` in `gc_sweep.zig` instead of to the marker.
-pub fn weak(capacity: i32) *Array {
+pub fn weak(capacity: usize) *Array {
     const array = gc_alloc.gcalloc(Array, .array_weak);
     init(array, capacity);
     return array;
@@ -178,7 +178,7 @@ pub fn newFrom(elements: []const repr.Value) *Array {
     array.count = elements.len;
     array.data = @ptrCast(@alignCast(utils.malloc(@sizeOf(repr.Value) *% utils.asSize(count))));
     if (array.data == null) fatal.outOfMemory();
-    utils.safeMemcpy(@ptrCast(array.data), @ptrCast(elements.ptr), @sizeOf(repr.Value) *% utils.asSize(count));
+    @memcpy(array.slice(), elements);
     return array;
 }
 
@@ -190,20 +190,19 @@ pub fn newFrom(elements: []const repr.Value) *Array {
 /// while leaving `count` alone. Reproduced exactly, wrapping operators and all.
 /// Grow an array to hold `capacity_in` elements, multiplied by `growth`.
 ///
-/// `growth` is still the caller's signed integer and is still clamped at
-/// `INT32_MAX` rather than at `usize`'s range, because the clamp is the C
-/// original's and the capacity it produces is what a marshalled array carries.
-/// What is no longer possible is a negative product reaching `janet_realloc`:
-/// `cfunArrayEnsure` rejects a growth below one, which is `FOUND.md`'s
-/// "`array/ensure` does not validate its growth factor".
-pub fn ensure(array: *Array, capacity_in: usize, growth: i32) void {
+/// `growth` is a multiplier, so it is a count of copies rather than a signed
+/// quantity: `cfunArrayEnsure` rejects a growth below one -- which is
+/// `FOUND.md`'s "`array/ensure` does not validate its growth factor" -- and
+/// every internal caller passes one or two. The clamp at `INT32_MAX` stays,
+/// because the capacity it produces is what a marshalled array carries.
+pub fn ensure(array: *Array, capacity_in: usize, growth: usize) void {
     const old = array.data;
     if (capacity_in <= array.capacity) return;
-    // Cannot overflow: the count fits in 32 bits and so does the growth, so
-    // the product fits in 62.
-    var new_capacity: i64 = @as(i64, @intCast(capacity_in)) * @as(i64, growth);
-    if (new_capacity > std.math.maxInt(i32)) new_capacity = std.math.maxInt(i32);
-    const capacity: usize = @intCast(new_capacity);
+    // Saturating rather than wrapping: `capacity_in` is at most `INT32_MAX`
+    // and so is `growth`, so the product fits, but the clamp is what decides
+    // the result rather than the width.
+    const wanted = std.math.mul(usize, capacity_in, growth) catch std.math.maxInt(usize);
+    const capacity: usize = @min(wanted, std.math.maxInt(i32));
     const new_data = utils.realloc(@ptrCast(old), capacity *% @sizeOf(repr.Value)) orelse
         fatal.outOfMemory();
     // Charged after the allocation, where the buffer twin charges it before.
@@ -213,14 +212,18 @@ pub fn ensure(array: *Array, capacity_in: usize, growth: i32) void {
 }
 
 /// Set an array's length, filling any newly covered slots with nil.
-pub fn setcount(array: *Array, count: i32) void {
-    if (count < 0) return;
-    const want: usize = @intCast(count);
-    if (want > array.count) {
-        ensure(array, want, 1);
-        @memset(array.reserved()[array.count..want], wrap.fromNil());
+///
+/// The count is a count. This took an `i32` and returned on a negative one
+/// while there was a C API whose `int32_t` was the door; there is no such door
+/// now -- no `array/setcount` binding, nothing in `capi.zig` -- so the range
+/// check is the type, and a caller with a Janet integer converts at its own
+/// checked conversion.
+pub fn setcount(array: *Array, count: usize) void {
+    if (count > array.count) {
+        ensure(array, count, 1);
+        @memset(array.reserved()[array.count..count], wrap.fromNil());
     }
-    array.count = want;
+    array.count = count;
 }
 
 pub fn push(array: *Array, x: repr.Value) raise.Raising(void) {
@@ -246,30 +249,36 @@ pub fn peek(array: *Array) repr.Value {
 // ==========================================================================
 // The cfunction surface.
 //
-// These raise, and a published `JanetCFunction` has no error channel, so each
+// These raise, and a published `CFunction` has no error channel, so each
 // delivers its raise through an abi. Nothing below holds anything across a
 // call that can raise -- which for a growable container means in particular
 // that no local caches `data` across an `ensure`, because a reallocation
 // invalidates it whether or not anything raises.
 // ==========================================================================
 
+/// `array/new` takes a signed integer and C reserved nothing for a negative
+/// one: `janet_array(-5)` left `data` null and recorded the negative as the
+/// capacity, and every later operation grew from empty. A capacity is a count
+/// here, so the floor is written down.
 fn cfunArrayNew(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    return wrap.fromArray(new(try args_core.getInteger(argv, 0)));
+    const capacity = try args_core.getInteger(argv, 0);
+    return wrap.fromArray(new(if (capacity < 0) 0 else @intCast(capacity)));
 }
 
 fn cfunArrayWeak(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    return wrap.fromArray(weak(try args_core.getInteger(argv, 0)));
+    const capacity = try args_core.getInteger(argv, 0);
+    return wrap.fromArray(weak(if (capacity < 0) 0 else @intCast(capacity)));
 }
 
 fn cfunArrayNewFilled(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
-    const count = try args_core.getNat(argv, 0);
+    const count: usize = @intCast(try args_core.getNat(argv, 0));
     const x = if (argv.len == 2) argv[1] else wrap.fromNil();
     const array = new(count);
-    @memset(array.reserved()[0..@intCast(count)], x);
-    array.count = @intCast(count);
+    @memset(array.reserved()[0..count], x);
+    array.count = count;
     return wrap.fromArray(array);
 }
 
@@ -302,11 +311,7 @@ fn cfunArrayPush(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
     const newcount = array.count + argv.len - 1;
     ensure(array, newcount, 2);
     if (argv.len > 1) {
-        utils.safeMemcpy(
-            @ptrCast(array.data.? + @as(usize, @intCast(array.count))),
-            @ptrCast(argv[1..]),
-            @as(usize, @intCast(@as(i32, @intCast(argv.len)) - 1)) *% @sizeOf(repr.Value),
-        );
+        @memcpy(array.data.?[array.count..][0 .. argv.len - 1], argv[1..]);
     }
     array.count = newcount;
     return argv[0];
@@ -323,23 +328,17 @@ fn cfunArrayEnsure(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
     // elements, and a negative one asked for most of the address space.
     if (newcount < 1) return raise.panic("expected positive integer");
     if (growth < 1) return raise.panic("expected positive integer");
-    ensure(array, @intCast(newcount), growth);
+    ensure(array, @intCast(newcount), @intCast(growth));
     return argv[0];
 }
 
 fn cfunArraySlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const view = try args_core.getIndexed(argv, 0);
     const range = try args_core.getSlice(argv);
-    const len = range.end - range.start;
+    const len: usize = @intCast(range.end - range.start);
     const array = new(len);
-    if (array.data != null) {
-        utils.safeMemcpy(
-            @ptrCast(array.data),
-            @ptrCast(view.ptr + @as(usize, @intCast(range.start))),
-            @sizeOf(repr.Value) *% utils.asSize(len),
-        );
-    }
-    array.count = @intCast(len);
+    if (len != 0) @memcpy(array.data.?[0..len], view[@intCast(range.start)..][0..len]);
+    array.count = len;
     return wrap.fromArray(array);
 }
 
@@ -359,14 +358,13 @@ fn appendIndexed(array: *Array, x: repr.Value, vals_in: []const repr.Value) rais
 fn cfunArrayConcat(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const array = try args_core.getArray(argv, 0);
-    var i: i32 = 1;
-    while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
-        switch (repr.typeOf(argv[@intCast(i)])) {
+    for (argv[1..]) |part| {
+        switch (repr.typeOf(part)) {
             repr.Tag.array, repr.Tag.tuple => {
-                const vals = args_core.indexedView(argv[@intCast(i)]).?;
-                try appendIndexed(array, argv[@intCast(i)], vals);
+                const vals = args_core.indexedView(part).?;
+                try appendIndexed(array, part, vals);
             },
-            else => try push(array, argv[@intCast(i)]),
+            else => try push(array, part),
         }
     }
     return wrap.fromArray(array);
@@ -377,12 +375,11 @@ fn cfunArrayConcat(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 fn cfunArrayJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const array = try args_core.getArray(argv, 0);
-    var i: i32 = 1;
-    while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
-        const vals = args_core.indexedView(argv[@intCast(i)]) orelse {
-            return pp_format.panicf("expected indexed type for argument %d, got %v", .{ i, argv[@intCast(i)] });
+    for (argv[1..], 1..) |part, i| {
+        const vals = args_core.indexedView(part) orelse {
+            return pp_format.panicf("expected indexed type for argument %d, got %v", .{ @as(i64, @intCast(i)), part });
         };
-        try appendIndexed(array, argv[@intCast(i)], vals);
+        try appendIndexed(array, part, vals);
     }
     return wrap.fromArray(array);
 }
@@ -397,13 +394,13 @@ fn cfunArrayInsert(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
         return pp_format.panicf("insertion index %d out of range [0,%d]", .{ at, count });
     }
     const inserted = argv.len - 2;
-    const restsize = @as(usize, @intCast(count - at)) *% @sizeOf(repr.Value);
+    const rest = @as(usize, @intCast(count - at));
     if (std.math.maxInt(i32) - @as(i32, @intCast(inserted)) < count) return raise.panic("array overflow");
     ensure(array, array.count + inserted, 2);
-    if (restsize != 0) {
-        const dest = array.data.? + @as(usize, @intCast(at)) + inserted;
-        const src = array.data.? + @as(usize, @intCast(at));
-        std.mem.copyBackwards(u8, @as([*]u8, @ptrCast(dest))[0..restsize], @as([*]const u8, @ptrCast(src))[0..restsize]);
+    if (rest != 0) {
+        const from = @as(usize, @intCast(at));
+        const slots = array.reserved();
+        std.mem.copyBackwards(repr.Value, slots[from + inserted ..][0..rest], slots[from..][0..rest]);
     }
     // **Guarded, because `(array/insert a n)` inserts nothing.** With no values
     // to copy `ensure` may not have allocated at all, so `data` is still null

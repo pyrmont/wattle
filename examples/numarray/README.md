@@ -58,9 +58,9 @@ The `janet_mod_config` symbol the module exports is the runtime's own check of
 the second of these at load time, and it covers the representation and the
 threading model rather than every option.
 
-## What was here before
+## Why this is Zig and not C
 
-`numarray.c`, written against `janet.h`, with a `project.janet` for `jpm`. The
-header has not existed since Phase 12 increment 5f and `jpm` is not in this
-tree, so the sample had been unbuildable for a whole phase — which is the
-reason it was rewritten rather than left alone.
+Janet's own sample of this module is `numarray.c`, built against a public
+header with `jpm`. Claret installs no header and ships no `jpm`, so there is
+nothing for a C version of this file to include or be built by; the module
+interface is the Zig one and this is what an author writes against.

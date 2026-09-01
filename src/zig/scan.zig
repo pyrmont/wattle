@@ -7,12 +7,12 @@
 //! `isDecimal` was declared identically in two of the three, for the reason
 //! any duplicate on this tree exists: neither file could see the other's.
 const std = @import("std");
-const config = @import("config");
 const repr = @import("repr");
 const c = @import("cabi");
 const raise = @import("raise.zig");
 const buffers = @import("value/buffers.zig");
 const utils = @import("utils.zig");
+const fatal = @import("fatal.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const inttypes = @import("value/ints.zig");
 
@@ -32,8 +32,6 @@ const bignat_base: u64 = 0x80000000;
 /// away from `i64` overflow.
 const exp2_approx_limit: i64 = 1 << 48;
 
-const int_types_enabled = config.int_types;
-
 /// The three wraps this scanner produces. They were three one-line C functions
 /// in `strtod.c` for as long as `-Dnumber-scan` had a C arm to share them
 /// with; `value_wrap.zig` has the same three and `janet_wrap_s64` and
@@ -47,10 +45,6 @@ inline fn numscanWrapS64(val: i64) repr.Value {
 }
 inline fn numscanWrapU64(val: u64) repr.Value {
     return inttypes.wrapU64(val);
-}
-
-comptime {
-    if (int_types_enabled) {}
 }
 
 /// Values of characters when parsing numbers. Digits 0-9 and a-z (and A-Z),
@@ -75,29 +69,21 @@ const digit_lookup = blk: {
 /// numbers never allocate.
 const BigNat = struct {
     first_digit: u32 = 0,
-    n: i32 = 0,
-    cap: i32 = 0,
-    digits: ?[*]u32 = null,
+    digits: std.ArrayListUnmanaged(u32) = .empty,
 
     fn deinit(self: *BigNat) void {
-        utils.free(@as(?*anyopaque, @ptrCast(self.digits)));
+        self.digits.deinit(utils.heap);
+        self.digits = .empty;
     }
 
-    /// Allocate `count` more digits and return a pointer to them.
-    fn extra(self: *BigNat, count: i32) [*]u32 {
-        const old_n = self.n;
-        const new_n = old_n + count;
-        if (self.cap < new_n) {
-            const new_cap = 2 * new_n;
-            self.cap = new_cap;
-            self.digits = utils.resizeMany(u32, self.digits, @intCast(new_cap));
-        }
-        self.n = new_n;
-        return self.digits.? + @as(usize, @intCast(old_n));
+    /// Make room for `count` more digits and answer them, uninitialised --
+    /// `lshiftN` writes over the whole run and relies on that.
+    fn extra(self: *BigNat, count: usize) []u32 {
+        return self.digits.addManyAsSlice(utils.heap, count) catch fatal.outOfMemory();
     }
 
     fn append(self: *BigNat, digit: u32) void {
-        self.extra(1)[0] = digit;
+        self.digits.append(utils.heap, digit) catch fatal.outOfMemory();
     }
 
     /// Multiply by `factor` and add `term` in one pass. For a valid radix
@@ -107,9 +93,7 @@ const BigNat = struct {
         var carry: u64 = @as(u64, self.first_digit) * wide_factor + term;
         self.first_digit = @intCast(carry % bignat_base);
         carry /= bignat_base;
-        const digit_count: usize = @intCast(self.n);
-        for (0..digit_count) |index| {
-            const slot = &self.digits.?[index];
+        for (self.digits.items) |*slot| {
             carry += @as(u64, slot.*) * wide_factor;
             slot.* = @intCast(carry % bignat_base);
             carry /= bignat_base;
@@ -123,27 +107,29 @@ const BigNat = struct {
         var remainder: u32 = 0;
         var quotient: u32 = 0;
         var dividend: u64 = undefined;
-        var index: i32 = self.n - 1;
-        while (index >= 0) : (index -= 1) {
-            const digits = self.digits.?;
-            dividend = @as(u64, remainder) * bignat_base + digits[@intCast(index)];
-            if (index < self.n - 1) digits[@intCast(index + 1)] = quotient;
+        const digits = self.digits.items;
+        var index = digits.len;
+        while (index > 0) {
+            index -= 1;
+            dividend = @as(u64, remainder) * bignat_base + digits[index];
+            if (index < digits.len - 1) digits[index + 1] = quotient;
             quotient = @truncate(dividend / wide_divisor);
             remainder = @truncate(dividend % wide_divisor);
-            digits[@intCast(index)] = remainder;
+            digits[index] = remainder;
         }
         dividend = @as(u64, remainder) * bignat_base + self.first_digit;
-        if (self.n != 0 and self.digits.?[@intCast(self.n - 1)] == 0) self.n -= 1;
+        if (digits.len != 0 and digits[digits.len - 1] == 0) {
+            self.digits.shrinkRetainingCapacity(digits.len - 1);
+        }
         self.first_digit = @truncate(dividend / wide_divisor);
     }
 
     /// Shift left by `count` whole digits, i.e. by `count * 31` bits.
-    fn lshiftN(self: *BigNat, count: i32) void {
-        if (count == 0) return;
-        const old_n: usize = @intCast(self.n);
-        _ = self.extra(count);
-        const shift: usize = @intCast(count);
-        const digits = self.digits.?;
+    fn lshiftN(self: *BigNat, shift: usize) void {
+        if (shift == 0) return;
+        const old_n = self.digits.items.len;
+        _ = self.extra(shift);
+        const digits = self.digits.items;
         std.mem.copyBackwards(u32, digits[shift .. shift + old_n], digits[0..old_n]);
         @memset(digits[0 .. shift - 1], 0);
         digits[shift - 1] = self.first_digit;
@@ -154,14 +140,14 @@ const BigNat = struct {
     fn extract(self: *BigNat, exponent2_in: i32) f64 {
         var exponent2 = exponent2_in;
         var top53: u64 = undefined;
-        const n = self.n;
+        const n = self.digits.items.len;
         if (n != 0) {
             // Take the most significant 53 bits, which is a large right shift.
-            const digits = self.digits.?;
-            const d1: u64 = digits[@intCast(n - 1)]; // MSD, non-zero
-            const d2: u64 = if (n == 1) self.first_digit else digits[@intCast(n - 2)];
+            const digits = self.digits.items;
+            const d1: u64 = digits[n - 1]; // MSD, non-zero
+            const d2: u64 = if (n == 1) self.first_digit else digits[n - 2];
             const d3: u64 = if (n > 2)
-                digits[@intCast(n - 3)]
+                digits[n - 3]
             else if (n == 2)
                 self.first_digit
             else
@@ -178,7 +164,7 @@ const BigNat = struct {
                 exponent2 += 1;
             }
             // Correct for the large right shift applied to the mantissa.
-            exponent2 += (@as(i32, nbits) - 53) + bignat_nbit * n;
+            exponent2 += (@as(i32, nbits) - 53) + bignat_nbit * @as(i32, @intCast(n));
         } else {
             top53 = self.first_digit;
         }
@@ -196,12 +182,12 @@ fn convert(negative: bool, mant: *BigNat, base: i32, exponent_in: i32) f64 {
     // zero. That ordering is unobservable, and evaluating `c.log2` first makes an
     // out-of-range radix produce a NaN conversion, so the zero test comes first
     // here. See FOUND.md.
-    if (mant.n == 0 and mant.first_digit == 0) return if (negative) -0.0 else 0.0;
+    if (mant.digits.items.len == 0 and mant.first_digit == 0) return if (negative) -0.0 else 0.0;
 
     // Estimate the base-2 exponent of the result to within a factor of about
     // 2^32, then reject values far outside the IEEE-754 exponent range with a
     // healthy buffer for the approximation and for denormals.
-    const mant_exp2_approx: i64 = @as(i64, mant.n) * 32 + 16;
+    const mant_exp2_approx: i64 = @as(i64, @intCast(mant.digits.items.len)) * 32 + 16;
     const exp_exp2_approx: i64 = saturatingFloatToInt(
         @floor(c.log2(@floatFromInt(base)) * @as(f64, @floatFromInt(exponent))),
     );
@@ -224,7 +210,7 @@ fn convert(negative: bool, mant: *BigNat, base: i32, exponent_in: i32) f64 {
     // away significant bits.
     if (exponent < 0) {
         const shamt = 5 - @divTrunc(exponent, 4);
-        mant.lshiftN(shamt);
+        mant.lshiftN(@intCast(shamt));
         exponent2 -= shamt * bignat_nbit;
         while (exponent < -3) : (exponent += 4) mant.div(factor4);
         while (exponent < -1) : (exponent += 2) mant.div(factor2);
@@ -352,8 +338,7 @@ pub fn scanNumberBase(
         while (index < bytes.len and bytes[index] == '0') : (index += 1) {
             seen_a_digit = true;
         }
-        while (index < bytes.len) : (index += 1) {
-            const byte = bytes[index];
+        for (bytes[index..]) |byte| {
             if (byte > 127) return null;
             const digit = digit_lookup[byte & 0x7F];
             if (@as(i32, digit) >= exp_base) return null;
@@ -419,9 +404,8 @@ fn fill(buffer: *buffers.Buffer, val: f64) void {
     const target = buffer.data.? + start;
     const count = c.snprintf(target, 32, "%.17g", val);
     // Repair locale-dependent decimal commas.
-    var index: c_int = 0;
-    while (index < count) : (index += 1) {
-        if (target[@intCast(index)] == ',') target[@intCast(index)] = '.';
+    for (target[0..@intCast(count)]) |*byte| {
+        if (byte.* == ',') byte.* = '.';
     }
     buffer.count += @as(usize, @intCast(count));
 }
@@ -502,8 +486,7 @@ fn scanUnsigned(string: []const u8) ?ParsedUnsigned {
         seen_digit = true;
     }
 
-    while (index < bytes.len) : (index += 1) {
-        const byte = bytes[index];
+    for (bytes[index..]) |byte| {
         if (byte == '_') {
             if (!seen_digit) return null;
             continue;

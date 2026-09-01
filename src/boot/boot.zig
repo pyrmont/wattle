@@ -42,9 +42,9 @@ fn changeDirectory(path: [*:0]const u8) c_int {
 ///
 /// `dobytes` has already printed a message and a trace, and both come out of
 /// the fiber's frame walk -- so a defect in that walk, or in the collector
-/// that feeds it, loses the diagnosis exactly when it is needed. Phase 14
-/// increment 2e broke the mark phase and the entire symptom was this program
-/// exiting 1 in silence, with all 65 contracts passing.
+/// that feeds it, loses the diagnosis exactly when it is needed. A defect in
+/// the mark phase has produced exactly that: the entire symptom was this
+/// program exiting 1 in silence, with all 65 contracts passing.
 ///
 /// So this reads the value directly rather than formatting it: an error is a
 /// string or a keyword nine times in ten, and the type name alone is worth
@@ -125,9 +125,9 @@ pub fn main(init: std.process.Init) !u8 {
     // `dobytes` already prints a message and a trace, but both come out of the
     // fiber's frame walk -- so a defect in that walk, or in the collector that
     // feeds it, loses the diagnosis exactly when it is needed. That is not
-    // hypothetical: Phase 14 increment 2e broke the mark phase and the whole
-    // symptom was this program exiting 1 in silence, with every contract
-    // passing. One `%v` of the value costs nothing and does not depend on a
+    // hypothetical: a defect in the mark phase has produced exactly that, and
+    // the whole symptom was this program exiting 1 in silence, with every
+    // contract passing. One `%v` of the value costs nothing and does not depend on a
     // single frame being walkable.
     var result = wrap.fromNil();
     const status = env_core.dobytes(env, source.ptr, @intCast(source.len), boot_filename, &result) catch

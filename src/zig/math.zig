@@ -27,7 +27,7 @@ const abstracts = @import("value/abstracts.zig");
 const abi = @import("abi");
 const tables = @import("value/tables.zig");
 
-pub const JanetRNG = struct {
+pub const Rng = struct {
     a: u32 = 0,
     b: u32 = 0,
     c: u32 = 0,
@@ -36,7 +36,7 @@ pub const JanetRNG = struct {
 };
 
 /// Algorithm "xorwow" from p. 5 of Marsaglia, "Xorshift RNGs".
-pub fn rngU32(rng: *JanetRNG) u32 {
+pub fn rngU32(rng: *Rng) u32 {
     var t = rng.d;
     const s = rng.a;
     rng.d = rng.c;
@@ -50,7 +50,7 @@ pub fn rngU32(rng: *JanetRNG) u32 {
     return t +% rng.counter;
 }
 
-pub fn rngSeed(rng: *JanetRNG, seed: u32) void {
+pub fn rngSeed(rng: *Rng, seed: u32) void {
     rng.a = seed;
     rng.b = 0x97654321;
     rng.c = 123871873;
@@ -60,7 +60,7 @@ pub fn rngSeed(rng: *JanetRNG, seed: u32) void {
     for (0..16) |_| _ = rngU32(rng);
 }
 
-pub fn rngLongseed(rng: *JanetRNG, bytes: []const u8) void {
+pub fn rngLongseed(rng: *Rng, bytes: []const u8) void {
     var state: [16]u8 = @splat(0);
     for (bytes, 0..) |byte, index| {
         state[index & 0xF] ^= byte;
@@ -75,7 +75,7 @@ pub fn rngLongseed(rng: *JanetRNG, bytes: []const u8) void {
     for (0..16) |_| _ = rngU32(rng);
 }
 
-pub fn rngDouble(rng: *JanetRNG) f64 {
+pub fn rngDouble(rng: *Rng) f64 {
     const hi: u64 = rngU32(rng);
     const lo: u64 = rngU32(rng);
     const big = lo | (hi << 32);
@@ -84,7 +84,7 @@ pub fn rngDouble(rng: *JanetRNG) f64 {
 
 /// Draw a uniform integer in [0, max) for max > 0, rejecting the tail of the
 /// generator's range that would otherwise bias the modulus.
-pub fn zigMathRngInt(rng: *JanetRNG, max: i32) i32 {
+pub fn rngInt(rng: *Rng, max: i32) i32 {
     const modulo: u32 = @bitCast(max);
     const maxgen: u32 = std.math.maxInt(i32);
     const maxword = maxgen - (maxgen % modulo);
@@ -98,7 +98,7 @@ pub fn zigMathRngInt(rng: *JanetRNG, max: i32) i32 {
 
 /// Write `count` random bytes. Callers reserve the space first, because the
 /// reservation can panic.
-pub fn zigMathRngFill(rng: *JanetRNG, out: [*]u8, count: i32) void {
+pub fn rngFill(rng: *Rng, out: [*]u8, count: i32) void {
     const total: usize = @intCast(count);
     var index: usize = 0;
     while (index + 4 <= total) : (index += 4) {
@@ -111,7 +111,7 @@ pub fn zigMathRngFill(rng: *JanetRNG, out: [*]u8, count: i32) void {
     }
 }
 
-pub fn zigMathGcd(x_in: f64, y_in: f64) f64 {
+pub fn gcd(x_in: f64, y_in: f64) f64 {
     var x = x_in;
     var y = y_in;
     if (std.math.isNan(x) or std.math.isNan(y)) return std.math.nan(f64);
@@ -124,8 +124,8 @@ pub fn zigMathGcd(x_in: f64, y_in: f64) f64 {
     return x;
 }
 
-pub fn zigMathLcm(x: f64, y: f64) f64 {
-    return (x / zigMathGcd(x, y)) * y;
+pub fn lcm(x: f64, y: f64) f64 {
+    return (x / gcd(x, y)) * y;
 }
 
 // ==========================================================================
@@ -178,15 +178,15 @@ const rng_methods = [_]method_type.Method{
     .{ .name = null, .cfun = null },
 };
 
-fn rngGet(_: *JanetRNG, key: repr.Value) raise.Raising(?repr.Value) {
+fn rngGet(_: *Rng, key: repr.Value) raise.Raising(?repr.Value) {
     return args_core.findMethod(key, @ptrCast(&rng_methods));
 }
 
-fn rngNext(_: *JanetRNG, key: repr.Value) raise.Raising(repr.Value) {
+fn rngNext(_: *Rng, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(&rng_methods), key);
 }
 
-fn rngMarshal(rng: *JanetRNG, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
+fn rngMarshal(rng: *Rng, ctx: *abi.MarshalContext) raise.Raising(void) {
     marsh.marshalAbstract(ctx, rng);
     try marsh.marshalInt(ctx, @bitCast(rng.a));
     try marsh.marshalInt(ctx, @bitCast(rng.b));
@@ -195,8 +195,8 @@ fn rngMarshal(rng: *JanetRNG, ctx: *abi.JanetMarshalContext) raise.Raising(void)
     try marsh.marshalInt(ctx, @bitCast(rng.counter));
 }
 
-fn rngUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*JanetRNG) {
-    const rng: *JanetRNG = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(JanetRNG))));
+fn rngUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Rng) {
+    const rng: *Rng = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(Rng))));
     rng.a = @bitCast(try marsh.unmarshalInt(ctx));
     rng.b = @bitCast(try marsh.unmarshalInt(ctx));
     rng.c = @bitCast(try marsh.unmarshalInt(ctx));
@@ -207,7 +207,7 @@ fn rngUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*JanetRNG) {
 
 /// Exported under C's name because `marsh.zig` looks abstract types up by
 /// address and eleven of them are published as data symbols.
-pub const rngType = abstract_type.define(JanetRNG, .{
+pub const rngType = abstract_type.define(Rng, .{
     .name = "core/rng",
     .get = &rngGet,
     .marshal = &rngMarshal,
@@ -219,7 +219,7 @@ pub const rngType = abstract_type.define(JanetRNG, .{
 
 fn cfunRngMake(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, 1);
-    const rng: *JanetRNG = abstracts.newFor(JanetRNG, &rngType);
+    const rng: *Rng = abstracts.newFor(Rng, &rngType);
     if (argv.len == 1) {
         if (args_core.checkint(argv[0])) {
             rngSeed(rng, @bitCast(try args_core.getInteger(argv, 0)));
@@ -235,27 +235,27 @@ fn cfunRngMake(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
 
 fn cfunRngUniform(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const rng: *JanetRNG = try args_core.getAbstract(JanetRNG, argv, 0, &rngType);
+    const rng: *Rng = try args_core.getAbstract(Rng, argv, 0, &rngType);
     return wrap.fromNumber(rngDouble(rng));
 }
 
 fn cfunRngInt(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
-    const rng: *JanetRNG = try args_core.getAbstract(JanetRNG, argv, 0, &rngType);
+    const rng: *Rng = try args_core.getAbstract(Rng, argv, 0, &rngType);
     if (argv.len == 1) return wrap.fromInteger(@bitCast(rngU32(rng) >> 1));
     const max = try args_core.optNat(argv, 1, std.math.maxInt(i32));
     if (max == 0) return wrap.fromNumber(0.0);
-    return wrap.fromInteger(zigMathRngInt(rng, max));
+    return wrap.fromInteger(rngInt(rng, max));
 }
 
 fn cfunRngBuffer(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 3);
-    const rng: *JanetRNG = try args_core.getAbstract(JanetRNG, argv, 0, &rngType);
-    const n = try args_core.getNat(argv, 1);
+    const rng: *Rng = try args_core.getAbstract(Rng, argv, 0, &rngType);
+    const n: usize = @intCast(try args_core.getNat(argv, 1));
     const buffer = try args_core.optBuffer(argv, 2, n);
     try buffers.extra(buffer, n);
-    zigMathRngFill(rng, buffer.data.? + @as(usize, @intCast(buffer.count)), n);
-    buffer.count += @as(usize, @intCast(n));
+    rngFill(rng, buffer.data.? + buffer.count, @intCast(n));
+    buffer.count += n;
     return wrap.fromBuffer(buffer);
 }
 
@@ -282,12 +282,12 @@ fn cfunNot(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value)
 
 fn cfunGcd(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    return wrap.fromNumber(zigMathGcd(try args_core.getNumber(argv, 0), try args_core.getNumber(argv, 1)));
+    return wrap.fromNumber(gcd(try args_core.getNumber(argv, 0), try args_core.getNumber(argv, 1)));
 }
 
 fn cfunLcm(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    return wrap.fromNumber(zigMathLcm(try args_core.getNumber(argv, 0), try args_core.getNumber(argv, 1)));
+    return wrap.fromNumber(lcm(try args_core.getNumber(argv, 0), try args_core.getNumber(argv, 1)));
 }
 
 fn cfunFrexp(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
@@ -449,10 +449,10 @@ pub fn libMath(env: *tables.Table) raise.Raising(void) {
 }
 
 /// `janet_default_rng`. The VM's own generator, which `math/seed` and
-/// `math/random` use when no explicit `JanetRNG` is given.
+/// `math/random` use when no explicit `Rng` is given.
 ///
 /// It was the last symbol `math.c` defined, and it was there only because
 /// `janet_vm` was C's. It is one field access.
-pub fn defaultRng() *JanetRNG {
+pub fn defaultRng() *Rng {
     return &vm_state.current().rng;
 }

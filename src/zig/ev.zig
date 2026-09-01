@@ -60,15 +60,11 @@ const abi = @import("abi");
 const ev_stream = @import("ev/stream.zig");
 const host = @import("host");
 
-pub const JanetOSMutex = opaque {};
+pub const ThreadedSubroutine = ?*const fn (arguments: GenericMessage) callconv(.c) GenericMessage;
 
-pub const JanetAsyncMode = c_uint;
+pub const ThreadedCallback = ?*const fn (return_value: GenericMessage) callconv(.c) void;
 
-pub const JanetThreadedSubroutine = ?*const fn (arguments: GenericMessage) callconv(.c) GenericMessage;
-
-pub const JanetThreadedCallback = ?*const fn (return_value: GenericMessage) callconv(.c) void;
-
-pub const JanetTimestamp = i64;
+pub const Timestamp = i64;
 
 /// A ring buffer of `T`, and the runtime's only queue: the scheduler's spawn
 /// list and a channel's items and two pending lists.
@@ -196,8 +192,8 @@ pub fn Queue(comptime T: type) type {
 
 /// `state.h` gives the waiter thread two `HANDLE`s on Windows and one
 /// `pthread_t` elsewhere, so this is 48 bytes there and 40 here.
-pub const JanetTimeout = if (builtin.os.tag == .windows) struct {
-    when: JanetTimestamp = 0,
+pub const Timeout = if (builtin.os.tag == .windows) struct {
+    when: Timestamp = 0,
     fiber: ?*fibers.Fiber = null,
     curr_fiber: ?*fibers.Fiber = null,
     sched_id: u32 = 0,
@@ -206,7 +202,7 @@ pub const JanetTimeout = if (builtin.os.tag == .windows) struct {
     worker: ?*anyopaque = null,
     worker_event: ?*anyopaque = null,
 } else struct {
-    when: JanetTimestamp = 0,
+    when: Timestamp = 0,
     fiber: ?*fibers.Fiber = null,
     curr_fiber: ?*fibers.Fiber = null,
     sched_id: u32 = 0,
@@ -270,28 +266,30 @@ pub fn outOfMemory(comptime where: std.builtin.SourceLocation) noreturn {
 /// `ts_now`. Each backend spelled this out after calling `janet_gettime`; the
 /// arithmetic is here once, and the Windows arm reads a tick count instead of
 /// a clock.
-pub fn tsNow() JanetTimestamp {
+pub fn tsNow() Timestamp {
     if (windows) return @intCast(c.GetTickCount64());
     const now = os_surface.gettime(1);
     assert(@src(), now != null, "failed to get time");
-    return ev_core.tsFromParts(now.?.sec, now.?.nsec);
+    // The assert above aborts on null, so nothing reaches the unwrap with one.
+    const parts = now orelse unreachable;
+    return ev_core.tsFromParts(parts.sec, parts.nsec);
 }
 
 /// Look at the next timeout without removing it, or null when there is none.
-pub fn peekTimeout() ?JanetTimeout {
+pub fn peekTimeout() ?Timeout {
     const sched = &vm_state.current().ev;
-    if (sched.tq.isEmpty()) return null;
-    return sched.tq.at(0).*;
+    if (sched.tq.items.len == 0) return null;
+    return sched.tq.items[0];
 }
 
 /// Remove one timeout from the min heap and restore the heap property.
 pub fn popTimeout(start: usize) void {
     var index = start;
     const sched = &vm_state.current().ev;
-    if (sched.tq.count <= index) return;
-    sched.tq.swapRemove(index);
+    if (sched.tq.items.len <= index) return;
+    _ = sched.tq.swapRemove(index);
     while (true) {
-        const heap = sched.tq.slice();
+        const heap = sched.tq.items;
         const smallest = ev_core.heapSiftDown(heap, index);
         if (smallest < 0) return;
         const target: usize = @intCast(smallest);
@@ -303,24 +301,13 @@ pub fn popTimeout(start: usize) void {
 }
 
 /// Add a timeout to the min heap, growing it if it is full.
-pub fn addTimeout(to: JanetTimeout) void {
+pub fn addTimeout(to: Timeout) void {
     const sched = &vm_state.current().ev;
-    const oldcount = sched.tq.count;
-    const newcount = oldcount + 1;
-    if (newcount > sched.tq.capacity) {
-        const newcap = 2 * newcount;
-        const tq: ?[*]JanetTimeout = @ptrCast(@alignCast(utils.realloc(
-            sched.tq.items,
-            newcap * @sizeOf(JanetTimeout),
-        )));
-        if (tq == null) outOfMemory(@src());
-        sched.tq.items = tq;
-        sched.tq.capacity = newcap;
-    }
-    sched.tq.appendAssumingCapacity(to);
+    const oldcount = sched.tq.items.len;
+    sched.tq.append(utils.heap, to) catch outOfMemory(@src());
     var index = oldcount;
     while (true) {
-        const heap = sched.tq.slice();
+        const heap = sched.tq.items;
         const parent = ev_core.heapSiftUp(heap, index);
         if (parent < 0) break;
         const target: usize = @intCast(parent);
@@ -336,7 +323,7 @@ pub fn addTimeout(to: JanetTimeout) void {
 // ==========================================================================
 
 /// Mirrors the anonymous `JanetTask` in `ev.c`.
-pub const Task = extern struct {
+pub const Task = struct {
     fiber: *fibers.Fiber,
     value: repr.Value,
     sig: abi.Signal,
@@ -350,8 +337,8 @@ const fiber_flag_root: i32 = @intCast(constants.JANET_FIBER_FLAG_ROOT);
 
 fn scheduleGeneral(fiber: *fibers.Fiber, val: repr.Value, sig: abi.Signal, soon: bool) void {
     const sched = &vm_state.current().ev;
-    if (fiber.gc.flags & fiber_flag_canceled != 0) return;
-    if (fiber.gc.flags & fiber_flag_root == 0) {
+    if (fibers.evFlags(fiber).canceled) return;
+    if (!fibers.evFlags(fiber).root) {
         const task_element = wrap.fromFiber(fiber);
         tables.put(&sched.active_tasks, task_element, wrap.fromTrue());
     }
@@ -362,8 +349,8 @@ fn scheduleGeneral(fiber: *fibers.Fiber, val: repr.Value, sig: abi.Signal, soon:
         .sig = sig,
         .expected_sched_id = fiber.sched_id,
     };
-    fiber.gc.flags |= fiber_flag_root;
-    if (sig == .@"error") fiber.gc.flags |= fiber_flag_canceled;
+    fiber.gc.flags.own |= @as(u6, @bitCast(fibers.EvFlags{ .root = true }));
+    if (sig == .@"error") fiber.gc.flags.own |= @as(u6, @bitCast(fibers.EvFlags{ .canceled = true }));
     const pushed = if (soon)
         sched.spawn.pushHead(t)
     else
@@ -380,7 +367,7 @@ pub fn scheduleSoon(fiber: *fibers.Fiber, val: repr.Value, sig: abi.Signal) void
 }
 
 pub fn cancel(fiber: *fibers.Fiber, val: repr.Value) raise.Raising(void) {
-    if (fiber.gc.flags & fiber_flag_root == 0) {
+    if (!fibers.evFlags(fiber).root) {
         return raise.panic("cannot cancel non-task fiber");
     }
     scheduleGeneral(fiber, val, .@"error", false);
@@ -393,24 +380,11 @@ pub fn schedule(fiber: *fibers.Fiber, val: repr.Value) void {
 /// Mark every fiber and value the scheduler is holding on to.
 pub fn evMark() void {
     const sched = &vm_state.current().ev;
-    // The queue allocates lazily, so `data` is null until something is
-    // pushed; `head` and `tail` are then both zero and the C original's loops
-    // run zero times. Zig will not cast a null pointer to a non-optional one
-    // even when nothing dereferences it, so the emptiness is spelled out.
-    if (sched.spawn.data) |data| {
-        const tasks: [*]Task = @ptrCast(@alignCast(data));
-        if (sched.spawn.head <= sched.spawn.tail) {
-            var i = sched.spawn.head;
-            while (i < sched.spawn.tail) : (i += 1) markTask(&tasks[@intCast(i)]);
-        } else {
-            var i = sched.spawn.head;
-            while (i < sched.spawn.capacity) : (i += 1) markTask(&tasks[@intCast(i)]);
-            i = 0;
-            while (i < sched.spawn.tail) : (i += 1) markTask(&tasks[@intCast(i)]);
-        }
+    for (sched.spawn.segments()) |run| {
+        for (run) |*task| markTask(task);
     }
 
-    for (sched.tq.slice()) |timeout| {
+    for (sched.tq.items) |timeout| {
         gc_mark.mark(wrap.fromFiber(timeout.fiber.?));
         if (timeout.curr_fiber) |curr| {
             gc_mark.mark(wrap.fromFiber(curr));
@@ -432,7 +406,7 @@ pub fn asyncEnd(fiber: *fibers.Fiber) void {
     if (fiber.ev_callback) |cb| {
         if (fiber.ev_stream.?.read_fiber == fiber) fiber.ev_stream.?.read_fiber = null;
         if (fiber.ev_stream.?.write_fiber == fiber) fiber.ev_stream.?.write_fiber = null;
-        ev_callback.dispatchTotal(ev_callback.of(cb), fiber, constants.JANET_ASYNC_EVENT_DEINIT);
+        ev_callback.dispatchTotal(ev_callback.of(cb), fiber, constants.AsyncEvent.deinit);
         _ = gc_alloc.gcunroot(wrap.fromAbstract(fiber.ev_stream));
         fiber.ev_callback = null;
         if (!fiber.flags.evInFlight()) {
@@ -454,24 +428,24 @@ pub fn asyncInFlight(fiber: *fibers.Fiber) void {
 pub fn asyncStartFiber(
     fiber: ?*fibers.Fiber,
     s: *ev_stream.Stream,
-    mode: JanetAsyncMode,
+    mode: constants.AsyncMode,
     callback: ev_callback.EVCallback,
     state: ?*anyopaque,
 ) raise.Raising(void) {
     assert(@src(), fiber.?.ev_callback == null, "double async on fiber");
-    if (mode & constants.JANET_ASYNC_LISTEN_READ != 0) s.read_fiber = fiber;
-    if (mode & constants.JANET_ASYNC_LISTEN_WRITE != 0) s.write_fiber = fiber;
+    if (mode.read) s.read_fiber = fiber;
+    if (mode.write) s.write_fiber = fiber;
     fiber.?.ev_callback = ev_callback.stored(callback);
     fiber.?.ev_stream = s;
     evIncRefcount();
     gc_alloc.gcroot(wrap.fromAbstract(s));
     fiber.?.ev_state = state;
-    try callback(fiber.?, constants.JANET_ASYNC_EVENT_INIT);
+    try callback(fiber.?, constants.AsyncEvent.init);
 }
 
 pub fn asyncStart(
     s: *ev_stream.Stream,
-    mode: JanetAsyncMode,
+    mode: constants.AsyncMode,
     callback: ev_callback.EVCallback,
     state: ?*anyopaque,
 ) raise.Error {
@@ -498,7 +472,7 @@ pub fn evDecRefcount() void {
 pub fn evInitCommon() void {
     const sched = &vm_state.current().ev;
     sched.spawn.init();
-    sched.tq = .{};
+    sched.tq = .empty;
     _ = tables.initRaw(&sched.threaded_abstracts, 0);
     _ = tables.initRaw(&sched.active_tasks, 0);
     _ = tables.initRaw(&sched.signal_handlers, 0);
@@ -516,7 +490,8 @@ pub fn evDeinitCommon() void {
         popTimeout(0);
     }
     sched.spawn.deinit();
-    utils.free(sched.tq.items);
+    sched.tq.deinit(utils.heap);
+    sched.tq = .empty;
     tables.deinit(&sched.threaded_abstracts);
     tables.deinit(&sched.active_tasks);
     tables.deinit(&sched.signal_handlers);
@@ -543,7 +518,7 @@ fn addFiberTimeout(sec: f64, is_error: bool) void {
         .sched_id = fiber.sched_id,
         .is_error = is_error,
         .has_worker = false,
-        .worker = std.mem.zeroes(@FieldType(JanetTimeout, "worker")),
+        .worker = std.mem.zeroes(@FieldType(Timeout, "worker")),
     });
 }
 
@@ -564,7 +539,7 @@ pub fn sleepAwait(sec: f64) raise.Error {
         .sched_id = fiber.sched_id,
         .is_error = false,
         .has_worker = false,
-        .worker = std.mem.zeroes(@FieldType(JanetTimeout, "worker")),
+        .worker = std.mem.zeroes(@FieldType(Timeout, "worker")),
     });
     return awaitEvent();
 }
@@ -574,7 +549,7 @@ pub fn sleepAwait(sec: f64) raise.Error {
 // ==========================================================================
 
 /// Mirrors the anonymous `JanetThreadedTimeout` in `ev.c`.
-const ThreadedTimeout = extern struct {
+const ThreadedTimeout = struct {
     sec: f64,
     vm_ptr: *vm_state.Vm,
     fiber: *fibers.Fiber,
@@ -588,7 +563,7 @@ fn timeoutCallback(msg: GenericMessage) callconv(.c) void {
 
 /// Join, and optionally interrupt, the thread a `(ev/deadline ... true)` set
 /// running. `has_worker` is false for every other kind of timeout.
-fn handleTimeoutWorker(to: JanetTimeout, cancel_it: bool) void {
+fn handleTimeoutWorker(to: Timeout, cancel_it: bool) void {
     if (!to.has_worker) return;
     if (windows) {
         if (cancel_it and to.worker_event != null) _ = c.SetEvent(to.worker_event);
@@ -610,7 +585,7 @@ fn handleTimeoutWorker(to: JanetTimeout, cancel_it: bool) void {
 
 /// The Android arm's `SIGUSR1` handler: `c.pthread_cancel` is not available
 /// there, so the worker is asked to exit instead.
-fn timeoutStop(sig_num: c_int) callconv(.c) void {
+fn timeoutStop(sig_num: c_int) void {
     if (sig_num == SIGUSR1) c.pthread_exit(null);
 }
 
@@ -667,7 +642,7 @@ fn timeoutBodyWindows(ptr: ?*anyopaque) callconv(.winapi) u32 {
 pub fn loopDone() bool {
     const sched = &vm_state.current().ev;
     const busy = (sched.spawn.head != sched.spawn.tail) or
-        (!sched.tq.isEmpty()) or
+        (sched.tq.items.len != 0) or
         (abstracts.atomicLoad(&sched.listener_count) != 0);
     return !busy;
 }
@@ -712,18 +687,19 @@ pub fn loop1() raise.Raising(?*fibers.Fiber) {
             .expected_sched_id = 0,
         };
         _ = sched.spawn.pop(&task);
-        if (task.fiber.gc.flags & fiber_flag_suspended != 0) evDecRefcount();
-        task.fiber.gc.flags &= ~(fiber_flag_canceled | fiber_flag_suspended);
+        if (fibers.evFlags(task.fiber).suspended) evDecRefcount();
+        task.fiber.gc.flags.own &= ~@as(u6, @bitCast(fibers.EvFlags{ .canceled = true, .suspended = true }));
         if (task.expected_sched_id != task.fiber.sched_id) continue;
-        var res: repr.Value = undefined;
-        const sig = vm_entry.continueSignal(task.fiber, task.value, &res, task.sig);
+        const resumed = vm_entry.continueSignal(task.fiber, task.value, task.sig);
+        const sig = resumed.signal;
+        const res = resumed.value;
         if (!fibers.canResume(task.fiber)) {
             _ = tables.remove(&sched.active_tasks, wrap.fromFiber(task.fiber));
         }
         const sv = task.fiber.supervisor_channel;
         const is_suspended = sig == abi.Signal.event or sig == .yield or sig == abi.Signal.interrupt;
         if (is_suspended) {
-            task.fiber.gc.flags |= fiber_flag_suspended;
+            task.fiber.gc.flags.own |= @as(u6, @bitCast(fibers.EvFlags{ .suspended = true }));
             evIncRefcount();
         }
         if (sv == null) {
@@ -745,8 +721,8 @@ pub fn loop1() raise.Raising(?*fibers.Fiber) {
     }
 
     // Poll for events.
-    if (!sched.tq.isEmpty() or abstracts.atomicLoad(&sched.listener_count) != 0) {
-        var next: JanetTimeout = std.mem.zeroes(JanetTimeout);
+    if (sched.tq.items.len != 0 or abstracts.atomicLoad(&sched.listener_count) != 0) {
+        var next: Timeout = std.mem.zeroes(Timeout);
         var has_timeout = false;
         // Drop timeouts that are no longer needed.
         while (true) {
@@ -769,20 +745,12 @@ pub fn loop1() raise.Raising(?*fibers.Fiber) {
             }
             break;
         }
-        if (!sched.tq.isEmpty() or abstracts.atomicLoad(&sched.listener_count) != 0) {
+        if (sched.tq.items.len != 0 or abstracts.atomicLoad(&sched.listener_count) != 0) {
             try backend.loop1(has_timeout, next.when);
         }
     }
 
     return null;
-}
-
-/// `janet_interpreter_interrupt`, plus an empty event so that a loop blocked
-/// in the backend wakes up to see it.
-pub fn loop1Interrupt(v: *vm_state.Vm) void {
-    vm_state.interpreterInterrupt(v);
-    const msg = std.mem.zeroes(GenericMessage);
-    evPostEvent(v, null, msg);
 }
 
 pub fn loop() raise.Raising(void) {
@@ -795,28 +763,39 @@ pub fn loop() raise.Raising(void) {
 // Posting an event from another thread, and threaded calls
 // ==========================================================================
 
-/// Mirrors the anonymous `JanetSelfPipeEvent` in `ev.c`, and is the head of
+/// What a thread writes down the self-pipe to wake the loop, and the head of
 /// `ThreadInit` below.
 pub const SelfPipeEvent = extern struct {
     msg: GenericMessage,
-    cb: JanetThreadedCallback,
+    cb: ThreadedCallback,
 };
 
-/// Mirrors the anonymous `JanetEVThreadInit` in `ev.c`. The first two fields
-/// are `SelfPipeEvent`'s, deliberately: the Windows arm reuses the allocation
-/// as the reply.
+/// What a threaded subroutine is started with. Its first two fields are
+/// `SelfPipeEvent`'s, deliberately: the thread reuses this allocation as the
+/// reply it writes back down the pipe, so the reply is read out of the head of
+/// a block that was a `ThreadInit`.
 const ThreadInit = extern struct {
     msg: GenericMessage,
-    cb: JanetThreadedCallback,
-    subr: JanetThreadedSubroutine,
+    cb: ThreadedCallback,
+    subr: ThreadedSubroutine,
     write_pipe: host.Handle,
 };
+
+comptime {
+    // **This is why both are `extern`**, and it is the whole reason: a prefix
+    // pun between two types is a layout claim, and `layouts.txt` records the
+    // pair as fixed with nothing but `repr` evidence to show for it. Stated
+    // here, the claim is checked on every build and on every target instead.
+    std.debug.assert(@offsetOf(ThreadInit, "msg") == @offsetOf(SelfPipeEvent, "msg"));
+    std.debug.assert(@offsetOf(ThreadInit, "cb") == @offsetOf(SelfPipeEvent, "cb"));
+    std.debug.assert(@sizeOf(ThreadInit) >= @sizeOf(SelfPipeEvent));
+}
 
 pub fn evPostEvent(
     target: ?*vm_state.Vm,
     cb: Callback,
     msg: GenericMessage,
-) callconv(.c) void {
+) void {
     // The one scheduler operation that is not the current thread's: a thread
     // posting to another interpreter's loop names that interpreter's `VmEv`,
     // which is what "pass the narrower state" means where the state is not
@@ -843,11 +822,7 @@ pub fn evPostEvent(
         // Handle a bit of back pressure before giving up.
         var tries: i32 = 20;
         while (tries > 0) {
-            var status: isize = undefined;
-            while (true) {
-                status = c.write(fd, @ptrCast(&event), @sizeOf(SelfPipeEvent));
-                if (!(status == -1 and c.errno() == EINTR)) break;
-            }
+            const status = c.retryIntr(c.write, .{ fd, @as([*]const u8, @ptrCast(&event)), @sizeOf(SelfPipeEvent) });
             if (status > 0) break;
             _ = c.sleep(0);
             tries -= 1;
@@ -869,11 +844,7 @@ fn threadBodyPosix(ptr: ?*anyopaque) callconv(.c) ?*anyopaque {
     // Handle a bit of back pressure before giving up.
     var tries: i32 = 4;
     while (tries > 0) {
-        var status: isize = undefined;
-        while (true) {
-            status = c.write(fd, @ptrCast(&response), @sizeOf(SelfPipeEvent));
-            if (!(status == -1 and c.errno() == EINTR)) break;
-        }
+        const status = c.retryIntr(c.write, .{ fd, @as([*]const u8, @ptrCast(&response)), @sizeOf(SelfPipeEvent) });
         if (status > 0) break;
         _ = c.sleep(1);
         tries -= 1;
@@ -900,9 +871,9 @@ fn threadBodyWindows(ptr: ?*anyopaque) callconv(.winapi) u32 {
 }
 
 pub fn threadedCall(
-    fp: JanetThreadedSubroutine,
+    fp: ThreadedSubroutine,
     arguments: GenericMessage,
-    cb: JanetThreadedCallback,
+    cb: ThreadedCallback,
 ) raise.Raising(void) {
     const sched = &vm_state.current().ev;
     const init: *ThreadInit = @ptrCast(@alignCast(utils.malloc(@sizeOf(ThreadInit)) orelse
@@ -935,7 +906,7 @@ pub fn threadedCall(
 
 /// The default reply handler for a threaded call.
 ///
-/// `JanetThreadedCallback` is `callconv(.c)`, so this cannot return an
+/// `ThreadedCallback` is `callconv(.c)`, so this cannot return an
 /// error, and it runs off the self-pipe with no scope above it. `cancel`
 /// raises only when the fiber it is handed is not cancellable, which the
 /// `canResume` above has already established -- so a raise here means the
@@ -990,7 +961,7 @@ inline fn freeThreadedPayload(return_value: GenericMessage) void {
     utils.free(return_value.argp);
 }
 
-pub fn threadedAwait(fp: JanetThreadedSubroutine, tag: c_int, argi: c_int, argp: ?*anyopaque) raise.Error {
+pub fn threadedAwait(fp: ThreadedSubroutine, tag: c_int, argi: c_int, argp: ?*anyopaque) raise.Error {
     var arguments = std.mem.zeroes(GenericMessage);
     arguments.tag = tag;
     arguments.argi = argi;
@@ -1006,15 +977,14 @@ pub fn threadedAwait(fp: JanetThreadedSubroutine, tag: c_int, argi: c_int, argp:
 // ==========================================================================
 //
 // Declared here rather than translated, on the tree's standing rule: each
-// takes primitive parameters or a type `types.zig` already supplies, so no
-// host layout is at stake and no further translation is needed. `pthread_t`
-// and `pthread_attr_t` are `types.zig`'s, which takes them from libc because
-// `Vm` and `JanetTimeout` embed both.
+// takes primitive parameters or a type `host.zig` already supplies, so no host
+// layout is at stake and no further translation is needed. `pthread_t` and
+// `pthread_attr_t` are `host.zig`'s, which takes them from libc because `Vm`
+// and `Timeout` embed both.
 
 /// `PTHREAD_CREATE_DETACHED` is 2 on both glibc and musl and 2 on Darwin.
 const PTHREAD_CREATE_DETACHED: c_int = 2;
 const SIGUSR1: c_int = 30;
-pub const EINTR: c_int = @intFromEnum(std.c.E.INTR);
 pub const EAGAIN: c_int = @intFromEnum(std.c.E.AGAIN);
 /// `EWOULDBLOCK` and `EAGAIN` are the same number on every platform in this
 /// project's reach, and Darwin's `std.E` does not name the first at all.
@@ -1118,18 +1088,17 @@ fn goThreadBody(ctx: *GoThreadContext) raise.Raising(void) {
         const count: usize = count1;
         const remaining = @intFromPtr(ctx.end) - @intFromPtr(ctx.next) - @sizeOf(u32);
         // Use division to avoid overflowing size_t.
-        assert(@src(), count <= remaining / @sizeOf(registry.JanetCFunRegistry), "thread message invalid");
-        v.registry.rows.count = count;
-        v.registry.rows.capacity = count;
-        v.registry.rows.items = @ptrCast(@alignCast(utils.malloc(count * @sizeOf(registry.JanetCFunRegistry)) orelse
-            outOfMemory(@src())));
+        assert(@src(), count <= remaining / @sizeOf(registry.Row), "thread message invalid");
+        v.registry.rows = std.ArrayListUnmanaged(registry.Row)
+            .initCapacity(utils.heap, count) catch outOfMemory(@src());
+        v.registry.rows.items.len = count;
         v.registry.dirty = true;
         ctx.next += @sizeOf(u32);
         @memcpy(
-            std.mem.sliceAsBytes(v.registry.rows.slice()),
-            ctx.next[0 .. count * @sizeOf(registry.JanetCFunRegistry)],
+            std.mem.sliceAsBytes(v.registry.rows.items),
+            ctx.next[0 .. count * @sizeOf(registry.Row)],
         );
-        ctx.next += count * @sizeOf(registry.JanetCFunRegistry);
+        ctx.next += count * @sizeOf(registry.Row);
     }
 
     const fiberv = try marsh.unmarshal(
@@ -1145,7 +1114,7 @@ fn goThreadBody(ctx: *GoThreadContext) raise.Raising(void) {
         @ptrCast(&ctx.next),
     );
 
-    var fiber: ?*fibers.Fiber = undefined;
+    var fiber: *fibers.Fiber = undefined;
     if (!repr.checkType(fiberv, repr.Tag.fiber)) {
         assert(@src(), repr.checkType(fiberv, repr.Tag.function), "expected function or fiber");
         const func = wrap.toFunction(fiberv);
@@ -1157,19 +1126,22 @@ fn goThreadBody(ctx: *GoThreadContext) raise.Raising(void) {
             "thread function must accept 0 or 1 arguments",
         );
         var seed = val;
-        fiber = fibers.new(func, 64, func.def.?.min_arity, @ptrCast(&seed));
-        assert(@src(), fiber != null, "bad fiber in thread setup");
-        fiber.?.flags.traps = signal_core.SignalSet.fromBits(fiber.?.flags.traps.bits() |
+        // The arity was checked just above, so the slice is exactly the length
+        // the callee accepts and the refusal cannot happen.
+        fiber = fibers.new(func, 64, @as([*]const repr.Value, @ptrCast(&seed))[0..@intCast(func.def.?.min_arity)]) catch
+            exitWith(@src(), "bad fiber in thread setup");
+        fiber.flags.traps = signal_core.SignalSet.fromBits(fiber.flags.traps.bits() |
             signal_core.SignalSet.of(&.{ .@"error", .user0, .user1, .user2, .user3, .user4 }).bits());
     } else {
         fiber = wrap.toFiber(fiberv);
     }
     if (flags & 0x8 != 0) {
-        if (fiber.?.env == null) fiber.?.env = tables.new(0);
-        tables.put(fiber.?.env.?, value.fromBytes("task-id", .keyword), val);
+        if (fiber.env == null) fiber.env = tables.new(0);
+        // The line above installs a table when there is none, so there is one.
+        tables.put(fiber.env orelse unreachable, value.fromBytes("task-id", .keyword), val);
     }
-    fiber.?.supervisor_channel = v.user;
-    schedule(fiber.?, val);
+    fiber.supervisor_channel = v.user;
+    schedule(fiber, val);
     // `loop`, not the `janet_loop` abi beside it: this function is
     // `raise.Raising` and the abi flattens a raise into a report nobody here
     // would consume. `tools/check/swallowed.janet` is what finds that.
@@ -1221,7 +1193,7 @@ fn goThreadSubr(args_in: GenericMessage) callconv(.c) GenericMessage {
             if (repr.checkType(payload, repr.Tag.string)) {
                 args.tag = constants.JANET_EV_TCTAG_ERR_STRINGF;
                 const msg = wrap.toString(payload);
-                const len: usize = @intCast(strings.head(msg).length);
+                const len: usize = strings.head(msg).length;
                 args.argp = utils.malloc(len + 1);
                 @memcpy(@as([*]u8, @ptrCast(args.argp))[0 .. len + 1], msg[0 .. len + 1]);
             } else {
@@ -1258,12 +1230,14 @@ fn cfunGo(argv: []repr.Value) raise.Raising(repr.Value) {
             return pp_format.panicf("task function must accept 0 or 1 arguments", .{});
         }
         var seed = val;
-        fiber = fibers.new(func, 64, func.def.?.min_arity, @ptrCast(&seed));
+        // As above: the slice is `min_arity` long by construction.
+        fiber = fibers.new(func, 64, @as([*]const repr.Value, @ptrCast(&seed))[0..@intCast(func.def.?.min_arity)]) catch unreachable;
         fiber.?.flags.traps = signal_core.SignalSet.fromBits(fiber.?.flags.traps.bits() |
             signal_core.SignalSet.of(&.{ .@"error", .user0, .user1, .user2, .user3, .user4 }).bits());
         if (vm_state.current().fiber.?.env == null) vm_state.current().fiber.?.env = tables.new(0);
-        fiber.?.env = tables.new(0);
-        fiber.?.env.?.proto = vm_state.current().fiber.?.env;
+        const env = tables.new(0);
+        fiber.?.env = env;
+        env.proto = vm_state.current().fiber.?.env;
     } else {
         fiber = try args_core.getFiber(argv, 0);
         if (fibers.status(fiber.?) != fibers.FiberStatus.new) {
@@ -1308,12 +1282,12 @@ fn cfunThread(argv: []repr.Value) raise.Raising(repr.Value) {
         try marsh.marshal(buffer, wrap.fromAbstract(supervisor), null, constants.JANET_MARSHAL_UNSAFE);
     }
     if (flags & 0x4 == 0) {
-        assert(@src(), vm_state.current().registry.rows.count <= std.math.maxInt(i32), "assert failed size check");
-        const temp: u32 = @intCast(vm_state.current().registry.rows.count);
+        assert(@src(), vm_state.current().registry.rows.items.len <= std.math.maxInt(i32), "assert failed size check");
+        const temp: u32 = @intCast(vm_state.current().registry.rows.items.len);
         _ = try buffers.pushBytes(buffer, std.mem.asBytes(&temp));
         _ = try buffers.pushBytes(
             buffer,
-            std.mem.sliceAsBytes(vm_state.current().registry.rows.slice()),
+            std.mem.sliceAsBytes(vm_state.current().registry.rows.items),
         );
     }
     try marsh.marshal(buffer, argv[0], null, constants.JANET_MARSHAL_UNSAFE);
@@ -1362,14 +1336,14 @@ fn cfunDeadline(argv: []repr.Value) raise.Raising(repr.Value) {
     const tocancel = try args_core.optFiber(argv, 1, vm_state.current().root_fiber);
     const tocheck = try args_core.optFiber(argv, 2, vm_state.current().fiber);
     const use_interrupt = try args_core.optBoolean(argv, 3, false);
-    var to: JanetTimeout = .{
+    var to: Timeout = .{
         .when = ev_core.tsDelta(tsNow(), sec),
         .fiber = tocancel,
         .curr_fiber = tocheck,
         .is_error = false,
         .sched_id = tocancel.?.sched_id,
         .has_worker = false,
-        .worker = std.mem.zeroes(@FieldType(JanetTimeout, "worker")),
+        .worker = std.mem.zeroes(@FieldType(Timeout, "worker")),
     };
     if (use_interrupt) {
         if (!has_interrupt) {
@@ -1656,7 +1630,7 @@ const milliseconds_per_second: i64 = 1000;
 // The two kernels below took a base pointer, a stride, the byte offset of the
 // `when` field and a live count, and read that field through a `@memcpy`. The
 // C original is written that way because `janet_timeout_heap` is manipulated
-// from a translation unit that does not want `JanetTimeout`'s definition;
+// from a translation unit that does not want `Timeout`'s definition;
 // here there is exactly one heap and one element type, and the slice carries
 // its own length, so the four descriptive parameters collapse into it and the
 // field read is a field read.
@@ -1669,7 +1643,7 @@ const milliseconds_per_second: i64 = 1000;
 ///
 /// The left child is preferred on a tie, which is what the C implementation's
 /// strict `<` comparisons produce.
-pub fn heapSiftDown(heap: []const JanetTimeout, index: usize) isize {
+pub fn heapSiftDown(heap: []const Timeout, index: usize) isize {
     const left = (index << 1) + 1;
     const right = left + 1;
     var smallest = index;
@@ -1684,7 +1658,7 @@ pub fn heapSiftDown(heap: []const JanetTimeout, index: usize) isize {
 
 /// One step of sifting up: report the parent that should take `index`'s place,
 /// or -1 when the heap property already holds there.
-pub fn heapSiftUp(heap: []const JanetTimeout, index: usize) isize {
+pub fn heapSiftUp(heap: []const Timeout, index: usize) isize {
     if (index == 0) return -1;
     const parent = (index - 1) >> 1;
     if (heap[parent].when <= heap[index].when) return -1;
@@ -1780,4 +1754,4 @@ pub const GenericMessage = extern struct {
 };
 
 pub const EVCallback = ?*const fn (fiber: *fibers.Fiber, event: AsyncEvent) callconv(.c) void;
-pub const AsyncEvent = c_uint;
+pub const AsyncEvent = constants.AsyncEvent;

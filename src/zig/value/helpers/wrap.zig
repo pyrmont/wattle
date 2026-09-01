@@ -160,7 +160,7 @@ pub fn toFunction(x: repr.Value) *functions.Function {
 /// the one unwrap that goes through the address rather than through
 /// `@ptrCast`. `debug.zig` recovers a cfunction from a frame's `pc` the same
 /// way.
-pub fn toCfunction(x: repr.Value) boundary.JanetCFunction {
+pub fn toCfunction(x: repr.Value) boundary.CFunction {
     return @ptrFromInt(@intFromPtr(toPointer(x)));
 }
 
@@ -264,7 +264,7 @@ pub inline fn fromFunction(x: *functions.Function) repr.Value {
     return repr.wrapPointer(x, repr.Tag.function);
 }
 
-pub inline fn fromCfunction(x: boundary.JanetCFunction) repr.Value {
+pub inline fn fromCfunction(x: boundary.CFunction) repr.Value {
     return repr.wrapPointer(@ptrCast(@constCast(x)), repr.Tag.cfunction);
 }
 
@@ -286,16 +286,19 @@ pub fn fromNumberSafe(d: f64) repr.Value {
     return repr.wrapNumberSafe(d);
 }
 
-/// The `callconv(.c)` abis for the wraps above.
+/// The out-of-line bodies for the wraps above.
 ///
 /// `@export` needs an address and an `inline fn` has none, so each of these
-/// gives one symbol something to point at and does nothing else. Nothing but
-/// the `comptime` block below and `cabi_check.zig` should name this struct: a
-/// Zig caller wants the `inline` above, which is the whole point of 5d(c).
-/// They are `pub` so that `cabi_check.zig` can compare each against the
-/// declaration `cabi.zig` still holds for it -- nineteen of the pairs 5c named
-/// as uncovered, covered here because splitting the name gave the check
-/// something to reach.
+/// gives one symbol something to point at and does nothing else. **A Zig
+/// caller wants the `inline` above**; nothing but the `comptime` block below,
+/// `capi.zig` and `cabi_check.zig` should name this struct.
+///
+/// **Four carry `callconv(.c)` and the rest do not**, and the four are exactly
+/// the ones `capi.zig` publishes -- `janet_wrap_nil`, `janet_wrap_number`,
+/// `janet_wrap_string`, `janet_wrap_abstract`. A convention on the others
+/// would be an ABI nothing crosses; `tools/check/callconv.janet` is the check
+/// that says so. They stay `pub` because `test/value_wrap.zig` asserts each
+/// against the inline spelling beside it.
 ///
 /// The bodies say `outer.` because a struct member does not shadow a container
 /// declaration but does make the unqualified name ambiguous.
@@ -304,19 +307,19 @@ pub const abi = struct {
         return outer.fromNil();
     }
 
-    pub fn fromBoolean(b: c_int) callconv(.c) repr.Value {
+    pub fn fromBoolean(b: c_int) repr.Value {
         return outer.fromBoolean(b != 0);
     }
 
-    pub fn fromTrue() callconv(.c) repr.Value {
+    pub fn fromTrue() repr.Value {
         return outer.fromTrue();
     }
 
-    pub fn fromFalse() callconv(.c) repr.Value {
+    pub fn fromFalse() repr.Value {
         return outer.fromFalse();
     }
 
-    pub fn fromInteger(x: i32) callconv(.c) repr.Value {
+    pub fn fromInteger(x: i32) repr.Value {
         return outer.fromInteger(x);
     }
 
@@ -328,43 +331,43 @@ pub const abi = struct {
         return outer.fromString(x);
     }
 
-    pub fn fromSymbol(x: strings.Symbol) callconv(.c) repr.Value {
+    pub fn fromSymbol(x: strings.Symbol) repr.Value {
         return outer.fromSymbol(x);
     }
 
-    pub fn fromKeyword(x: strings.Keyword) callconv(.c) repr.Value {
+    pub fn fromKeyword(x: strings.Keyword) repr.Value {
         return outer.fromKeyword(x);
     }
 
-    pub fn fromArray(x: *arrays.Array) callconv(.c) repr.Value {
+    pub fn fromArray(x: *arrays.Array) repr.Value {
         return outer.fromArray(x);
     }
 
-    pub fn fromTuple(x: tuples.Tuple) callconv(.c) repr.Value {
+    pub fn fromTuple(x: tuples.Tuple) repr.Value {
         return outer.fromTuple(x);
     }
 
-    pub fn fromStruct(x: structs.Struct) callconv(.c) repr.Value {
+    pub fn fromStruct(x: structs.Struct) repr.Value {
         return outer.fromStruct(x);
     }
 
-    pub fn fromFiber(x: ?*fibers.Fiber) callconv(.c) repr.Value {
+    pub fn fromFiber(x: ?*fibers.Fiber) repr.Value {
         return outer.fromFiber(x);
     }
 
-    pub fn fromBuffer(x: *buffers.Buffer) callconv(.c) repr.Value {
+    pub fn fromBuffer(x: *buffers.Buffer) repr.Value {
         return outer.fromBuffer(x);
     }
 
-    pub fn fromFunction(x: *functions.Function) callconv(.c) repr.Value {
+    pub fn fromFunction(x: *functions.Function) repr.Value {
         return outer.fromFunction(x);
     }
 
-    pub fn fromCfunction(x: boundary.JanetCFunction) callconv(.c) repr.Value {
+    pub fn fromCfunction(x: boundary.CFunction) repr.Value {
         return outer.fromCfunction(x);
     }
 
-    pub fn fromTable(x: *tables.Table) callconv(.c) repr.Value {
+    pub fn fromTable(x: *tables.Table) repr.Value {
         return outer.fromTable(x);
     }
 

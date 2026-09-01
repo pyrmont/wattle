@@ -32,8 +32,6 @@ const numscan = @import("../scan.zig");
 const strings = @import("strings.zig");
 const tables = @import("tables.zig");
 
-pub const JanetIntType = c_uint;
-
 /// The contiguous integer range of a double, matching `JANET_INTMAX_DOUBLE`.
 const intmax_double: f64 = 9007199254740992.0;
 const intmin_double: f64 = -9007199254740992.0;
@@ -63,12 +61,12 @@ pub fn Boxed(comptime T: type) type {
             return words[0] ^ words[1];
         }
 
-        pub fn marshal(box: *T, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
+        pub fn marshal(box: *T, ctx: *abi.MarshalContext) raise.Raising(void) {
             marsh.marshalAbstract(ctx, box);
             try marsh.marshalInt64(ctx, @bitCast(box.*));
         }
 
-        pub fn unmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*T) {
+        pub fn unmarshal(ctx: *abi.MarshalContext) raise.Raising(*T) {
             const box: *T = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(T))));
             box.* = @bitCast(try marsh.unmarshalInt64(ctx));
             return box;
@@ -92,7 +90,7 @@ fn compareDoubles(x: f64, y: f64) c_int {
 /// the integer is widened. Outside it, widening would round, so the double is
 /// narrowed instead -- which is only safe after the infinite and out-of-range
 /// cases have been separated out.
-pub fn zigItCompareS64Double(x: i64, y: f64) c_int {
+pub fn compareS64Double(x: i64, y: f64) c_int {
     if (std.math.isNan(y)) return 0;
     if (y > intmin_double and y < intmax_double) {
         return compareDoubles(@floatFromInt(x), y);
@@ -102,7 +100,7 @@ pub fn zigItCompareS64Double(x: i64, y: f64) c_int {
     return compareScalar(i64, x, @intFromFloat(y));
 }
 
-pub fn zigItCompareU64Double(x: u64, y: f64) c_int {
+pub fn compareU64Double(x: u64, y: f64) c_int {
     if (std.math.isNan(y)) return 0;
     if (y < 0) return 1;
     if (y < intmax_double) {
@@ -114,13 +112,13 @@ pub fn zigItCompareU64Double(x: u64, y: f64) c_int {
 
 /// Compare across the two integer types, where neither range contains the
 /// other.
-pub fn zigItCompareS64U64(x: i64, y: u64) c_int {
+pub fn compareS64U64(x: i64, y: u64) c_int {
     if (x < 0) return -1;
     if (y > std.math.maxInt(i64)) return -1;
     return compareScalar(i64, x, @intCast(y));
 }
 
-pub fn zigItCompareU64S64(x: u64, y: i64) c_int {
+pub fn compareU64S64(x: u64, y: i64) c_int {
     if (y < 0) return 1;
     if (x > std.math.maxInt(i64)) return 1;
     return compareScalar(i64, @intCast(x), y);
@@ -129,11 +127,11 @@ pub fn zigItCompareU64S64(x: u64, y: i64) c_int {
 /// Write the decimal form into space the caller reserved, returning its length.
 /// `itS64Tostring` below does the reserving, because that is the half that can
 /// raise; this half cannot, so it stays a plain function.
-pub fn zigItS64Tostring(val: i64, out: [*]u8) i32 {
+pub fn formatS64(val: i64, out: [*]u8) i32 {
     return c.snprintf(out, 32, "%lld", val);
 }
 
-pub fn zigItU64Tostring(val: u64, out: [*]u8) i32 {
+pub fn formatU64(val: u64, out: [*]u8) i32 {
     return c.snprintf(out, 32, "%llu", val);
 }
 
@@ -141,7 +139,7 @@ pub fn zigItU64Tostring(val: u64, out: [*]u8) i32 {
 ///
 /// C's division truncates toward zero, so a negative quotient with a remainder
 /// is one step above the floor.
-pub fn zigItS64Divf(op1: i64, op2: i64) i64 {
+pub fn s64Divf(op1: i64, op2: i64) i64 {
     const x = divideTruncating(op1, op2);
     const negative_quotient = (op1 ^ op2) < 0;
     const inexact = x *% op2 != op1;
@@ -150,7 +148,7 @@ pub fn zigItS64Divf(op1: i64, op2: i64) i64 {
 
 /// Floored modulo, which unlike C's remainder takes the sign of the divisor.
 /// A zero divisor yields the dividend unchanged, matching the C original.
-pub fn zigItS64Mod(op1: i64, op2: i64) i64 {
+pub fn s64Mod(op1: i64, op2: i64) i64 {
     if (op2 == 0) return op1;
     const x = remainderTruncating(op1, op2);
     if ((op1 ^ op2) < 0 and x != 0) return x +% op2;
@@ -221,13 +219,13 @@ fn uint64Next(_: *u64, key: repr.Value) raise.Raising(repr.Value) {
 fn itS64Tostring(box: *i64, handle: *abi.Buffer) raise.Raising(void) {
     const buffer: *buffers.Buffer = @ptrCast(@alignCast(handle));
     try buffers.extra(buffer, 32);
-    buffer.count += @intCast(zigItS64Tostring(box.*, buffer.data.? + @as(usize, @intCast(buffer.count))));
+    buffer.count += @intCast(formatS64(box.*, buffer.data.? + @as(usize, @intCast(buffer.count))));
 }
 
 fn itU64Tostring(box: *u64, handle: *abi.Buffer) raise.Raising(void) {
     const buffer: *buffers.Buffer = @ptrCast(@alignCast(handle));
     try buffers.extra(buffer, 32);
-    buffer.count += @intCast(zigItU64Tostring(box.*, buffer.data.? + @as(usize, @intCast(buffer.count))));
+    buffer.count += @intCast(formatU64(box.*, buffer.data.? + @as(usize, @intCast(buffer.count))));
 }
 
 pub const BoxedS64 = Boxed(i64);
@@ -268,7 +266,7 @@ pub fn unwrapS64(x: repr.Value) raise.Raising(i64) {
         },
         repr.Tag.string => {
             const str = wrap.toString(x);
-            if (numscan.scanInt64(str[0..@intCast(strings.head(str).length)])) |val| return val;
+            if (numscan.scanInt64(str[0..strings.head(str).length])) |val| return val;
         },
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);
@@ -290,7 +288,7 @@ pub fn unwrapU64(x: repr.Value) raise.Raising(u64) {
         },
         repr.Tag.string => {
             const str = wrap.toString(x);
-            if (numscan.scanUint64(str[0..@intCast(strings.head(str).length)])) |val| return val;
+            if (numscan.scanUint64(str[0..strings.head(str).length])) |val| return val;
         },
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);
@@ -304,12 +302,12 @@ pub fn unwrapU64(x: repr.Value) raise.Raising(u64) {
     return pp_format.panicf("can not convert %t %q to a 64 bit unsigned integer", .{ x, x });
 }
 
-pub fn isInt(x: repr.Value) JanetIntType {
-    if (!repr.checkType(x, repr.Tag.abstract)) return constants.JANET_INT_NONE;
+pub fn isInt(x: repr.Value) constants.IntType {
+    if (!repr.checkType(x, repr.Tag.abstract)) return .none;
     const at = abi.abstractHead(wrap.toAbstract(x)).type;
-    if (at == &s64Type) return constants.JANET_INT_S64;
-    if (at == &u64Type) return constants.JANET_INT_U64;
-    return constants.JANET_INT_NONE;
+    if (at == &s64Type) return .s64;
+    if (at == &u64Type) return .u64;
+    return .none;
 }
 
 /// Allocate a boxed integer of the given abstract type.
@@ -384,9 +382,8 @@ fn OpMethod(comptime T: type, comptime op: BinOp) type {
         fn call(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             try args_core.arity(argv, 2, -1);
             var acc: u64 = @bitCast(try Box(T).unwrap(argv[0]));
-            var i: i32 = 1;
-            while (i < @as(i32, @intCast(argv.len))) : (i += 1) {
-                acc = applyBin(op, acc, @bitCast(try Box(T).unwrap(argv[@intCast(i)])));
+            for (argv[1..]) |arg| {
+                acc = applyBin(op, acc, @bitCast(try Box(T).unwrap(arg)));
             }
             return Box(T).make(@bitCast(acc));
         }
@@ -444,8 +441,7 @@ fn DivMethod(comptime T: type, comptime rem: bool, comptime on_zero: DivZero) ty
         fn call(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
             try args_core.arity(argv, 2, -1);
             var acc = try Box(T).unwrap(argv[0]);
-            var i: i32 = 1;
-            while (i < @as(i32, @intCast(argv.len))) : (i += 1) try apply(&acc, try Box(T).unwrap(argv[@intCast(i)]));
+            for (argv[1..]) |arg| try apply(&acc, try Box(T).unwrap(arg));
             return Box(T).make(acc);
         }
 
@@ -463,7 +459,7 @@ fn cfunS64Divf(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
     const op1 = try unwrapS64(argv[0]);
     const op2 = try unwrapS64(argv[1]);
     if (op2 == 0) return raise.panic("division by zero");
-    return boxed(i64, &s64Type, zigItS64Divf(op1, op2));
+    return boxed(i64, &s64Type, s64Divf(op1, op2));
 }
 
 fn cfunS64Divfi(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
@@ -471,21 +467,21 @@ fn cfunS64Divfi(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.V
     const op2 = try unwrapS64(argv[0]);
     const op1 = try unwrapS64(argv[1]);
     if (op2 == 0) return raise.panic("division by zero");
-    return boxed(i64, &s64Type, zigItS64Divf(op1, op2));
+    return boxed(i64, &s64Type, s64Divf(op1, op2));
 }
 
 fn cfunS64Mod(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const op1 = try unwrapS64(argv[0]);
     const op2 = try unwrapS64(argv[1]);
-    return boxed(i64, &s64Type, zigItS64Mod(op1, op2));
+    return boxed(i64, &s64Type, s64Mod(op1, op2));
 }
 
 fn cfunS64Modi(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const op2 = try unwrapS64(argv[0]);
     const op1 = try unwrapS64(argv[1]);
-    return boxed(i64, &s64Type, zigItS64Mod(op1, op2));
+    return boxed(i64, &s64Type, s64Mod(op1, op2));
 }
 
 // ------------------------------------------------------- the comparisons
@@ -500,13 +496,13 @@ fn threeWay(comptime T: type, x: T, y: T) f64 {
 
 fn cfunS64Compare(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    if (isInt(argv[0]) != constants.JANET_INT_S64) {
+    if (isInt(argv[0]) != .s64) {
         return raise.panic("compare method requires int/s64 as first argument");
     }
     const x = try unwrapS64(argv[0]);
     switch (repr.typeOf(argv[1])) {
         repr.Tag.number => {
-            return wrap.fromNumber(@floatFromInt(zigItCompareS64Double(x, wrap.toNumber(argv[1]))));
+            return wrap.fromNumber(@floatFromInt(compareS64Double(x, wrap.toNumber(argv[1]))));
         },
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(argv[1]);
@@ -516,7 +512,7 @@ fn cfunS64Compare(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
                 return wrap.fromNumber(threeWay(i64, x, y));
             } else if (at == &u64Type) {
                 const y = @as(*u64, @ptrCast(@alignCast(abst))).*;
-                return wrap.fromNumber(@floatFromInt(zigItCompareS64U64(x, y)));
+                return wrap.fromNumber(@floatFromInt(compareS64U64(x, y)));
             }
         },
         else => {},
@@ -526,13 +522,13 @@ fn cfunS64Compare(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 
 fn cfunU64Compare(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    if (isInt(argv[0]) != constants.JANET_INT_U64) {
+    if (isInt(argv[0]) != .u64) {
         return raise.panic("compare method requires int/u64 as first argument");
     }
     const x = try unwrapU64(argv[0]);
     switch (repr.typeOf(argv[1])) {
         repr.Tag.number => {
-            return wrap.fromNumber(@floatFromInt(zigItCompareU64Double(x, wrap.toNumber(argv[1]))));
+            return wrap.fromNumber(@floatFromInt(compareU64Double(x, wrap.toNumber(argv[1]))));
         },
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(argv[1]);
@@ -542,7 +538,7 @@ fn cfunU64Compare(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
                 return wrap.fromNumber(threeWay(u64, x, y));
             } else if (at == &s64Type) {
                 const y = @as(*i64, @ptrCast(@alignCast(abst))).*;
-                return wrap.fromNumber(@floatFromInt(zigItCompareU64S64(x, y)));
+                return wrap.fromNumber(@floatFromInt(compareU64S64(x, y)));
             }
         },
         else => {},
@@ -672,7 +668,7 @@ fn outOfRange(x: repr.Value) raise.Error {
 
 fn cfunToBytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
-    if (isInt(argv[0]) == constants.JANET_INT_NONE) {
+    if (isInt(argv[0]) == .none) {
         return pp_format.panicf("int/to-bytes: expected an int/s64 or int/u64, got %q", .{argv[0]});
     }
 

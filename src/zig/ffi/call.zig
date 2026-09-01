@@ -295,8 +295,7 @@ fn nodeCount(ty: Type) u32 {
     if (ty.prim == .@"struct") {
         const st = ty.st.?;
         const members = Struct.fields(st);
-        var i: u32 = 0;
-        while (i < st.field_count) : (i += 1) count += nodeCount(members[i].type);
+        for (members[0..st.field_count]) |member| count += nodeCount(member.type);
     }
     return count;
 }
@@ -320,9 +319,8 @@ fn serializeType(nodes: [*]TypeNode, at: u32, ty: Type, offset: u32) u32 {
     node.is_aligned = st.is_aligned;
     const members = Struct.fields(st);
     var next = at + 1;
-    var i: u32 = 0;
-    while (i < st.field_count) : (i += 1) {
-        next = serializeType(nodes, next, members[i].type, @intCast(members[i].offset));
+    for (members[0..st.field_count]) |member| {
+        next = serializeType(nodes, next, member.type, @intCast(member.offset));
     }
     return next;
 }
@@ -416,11 +414,10 @@ fn applySlots(
     slots: [*]const ArgSlot,
 ) void {
     sig_ret.spec = @enumFromInt(ret_slot.spec);
-    var i: u32 = 0;
-    while (i < arg_count) : (i += 1) {
-        mappings[i].spec = @enumFromInt(slots[i].spec);
-        mappings[i].offset = slots[i].offset;
-        mappings[i].offset2 = slots[i].offset2;
+    for (mappings[0..arg_count], slots[0..arg_count]) |*mapping, slot| {
+        mapping.spec = @enumFromInt(slot.spec);
+        mapping.offset = slot.offset;
+        mapping.offset2 = slot.offset2;
     }
 }
 
@@ -439,7 +436,7 @@ pub fn cfunSignature(argv: []const repr.Value) raise.Raising(repr.Value) {
     // types and refuses a signature the structure could never have
     // represented.
     try args_core.arity(argv, 2, @intCast(ffi_types.max_args + 2));
-    const arg_count: u32 = @intCast(@as(i32, @intCast(argv.len)) - 2);
+    const arg_count: u32 = @intCast(argv.len - 2);
     const cc = try ffi_types.decodeCc(try args_core.getKeyword(argv, 0));
     const ret_type = try ffi_types.decodeType(argv[1]);
 
@@ -464,14 +461,12 @@ pub fn cfunSignature(argv: []const repr.Value) raise.Raising(repr.Value) {
             // Unsupported here means "cannot be called", not "cannot be
             // described": the signature is still checked so that the failure
             // arrives at the call.
-            var i: u32 = 0;
-            while (i < arg_count) : (i += 1) _ = try ffi_types.decodeType(argv[i + 2]);
+            for (argv[2..]) |arg| _ = try ffi_types.decodeType(arg);
         },
         .win64 => {
             ret_slot = slotOf(ret.type, .win64_register);
-            var i: u32 = 0;
-            while (i < arg_count) : (i += 1) {
-                mappings[i].type = try ffi_types.decodeType(argv[i + 2]);
+            for (argv[2..], 0..) |arg, i| {
+                mappings[i].type = try ffi_types.decodeType(arg);
                 slots[i] = slotOf(mappings[i].type, .win64_register);
             }
             ffi_classify.allocWin64(&alloc, &ret_slot, slots[0..arg_count]);
@@ -484,9 +479,8 @@ pub fn cfunSignature(argv: []const repr.Value) raise.Raising(repr.Value) {
         },
         .sysv64 => {
             ret_slot = slotOf(ret.type, classify(cc, ret.type));
-            var i: u32 = 0;
-            while (i < arg_count) : (i += 1) {
-                mappings[i].type = try ffi_types.decodeType(argv[i + 2]);
+            for (argv[2..], 0..) |arg, i| {
+                mappings[i].type = try ffi_types.decodeType(arg);
                 const spec = classify(cc, mappings[i].type);
                 // The void check stays in this loop so that it still fires
                 // from the argument that caused it.
@@ -511,9 +505,8 @@ pub fn cfunSignature(argv: []const repr.Value) raise.Raising(repr.Value) {
             {
                 return raise.panic("return value bigger than supported");
             }
-            var i: u32 = 0;
-            while (i < arg_count) : (i += 1) {
-                mappings[i].type = try ffi_types.decodeType(argv[i + 2]);
+            for (argv[2..], 0..) |arg, i| {
+                mappings[i].type = try ffi_types.decodeType(arg);
                 slots[i] = slotOf(mappings[i].type, classify(cc, mappings[i].type));
             }
             ffi_classify.allocAapcs64(
@@ -591,10 +584,7 @@ fn callSysv64(sig: *Signature, function_pointer: *const anyopaque, argv: []const
     const frame = Frame.init(&frame_buf, @as(usize, sig.stack_count) * @sizeOf(u64));
     defer frame.release();
 
-    var i: u32 = 0;
-    while (i < sig.arg_count) : (i += 1) {
-        const n: usize = @intCast(i + 2);
-        const arg = sig.args[i];
+    for (sig.args[0..sig.arg_count], 2..) |arg, n| {
         switch (arg.spec) {
             .sysv64_integer => try marshal.writeOne(&gen[arg.offset], argv, n, arg.type, ffi_types.max_recur),
             .sysv64_sse => try marshal.writeOne(&fp[arg.offset], argv, n, arg.type, ffi_types.max_recur),
@@ -676,10 +666,7 @@ fn callWin64(sig: *Signature, function_pointer: *const anyopaque, argv: []const 
     const frame = Frame.init(&frame_buf, @as(usize, sig.stack_count) * @sizeOf(u64));
     defer frame.release();
 
-    var i: u32 = 0;
-    while (i < sig.arg_count) : (i += 1) {
-        const n: usize = @intCast(i + 2);
-        const arg = sig.args[i];
+    for (sig.args[0..sig.arg_count], 2..) |arg, n| {
         switch (arg.spec) {
             .win64_stack => try marshal.writeOne(
                 frame.at(@as(usize, arg.offset) * @sizeOf(u64)),
@@ -743,10 +730,9 @@ fn gatherHfaReturn(buffer: [*]u8, ty: Type) void {
     if (members <= 1) return;
     const member_size = @as(usize, @intCast(ffi_types.typeSize(ty))) / members;
     var gathered: [max_hfa_members * @sizeOf(f64)]u8 align(8) = undefined;
-    var member: u32 = 0;
-    while (member < members) : (member += 1) {
-        const from = @as(usize, member) * @sizeOf(f64);
-        const to = @as(usize, member) * member_size;
+    for (0..members) |member| {
+        const from = member * @sizeOf(f64);
+        const to = member * member_size;
         @memcpy(gathered[to .. to + member_size], buffer[from .. from + member_size]);
     }
     @memcpy(buffer[0 .. @as(usize, members) * member_size], gathered[0 .. @as(usize, members) * member_size]);
@@ -768,10 +754,7 @@ fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: []cons
     // to a register. `max_hfa_members` of the widest member is its bound.
     var hfa_buf: [max_hfa_members * @sizeOf(f64)]u8 align(8) = undefined;
 
-    var i: u32 = 0;
-    while (i < sig.arg_count) : (i += 1) {
-        const n: usize = @intCast(i + 2);
-        const arg = sig.args[i];
+    for (sig.args[0..sig.arg_count], 2..) |arg, n| {
         // An HFA occupies one register per member, and `writeOne` lays a
         // struct out at its natural offsets -- which for members narrower than
         // a register packs two of them into the first. So it is written to
@@ -802,10 +785,9 @@ fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: []cons
         try marshal.writeOne(to, argv, n, arg.type, ffi_types.max_recur);
         if (scatter > 1) {
             const member_size = @as(usize, @intCast(ffi_types.typeSize(arg.type))) / scatter;
-            var member: u32 = 0;
-            while (member < scatter) : (member += 1) {
+            for (0..scatter) |member| {
                 const register: [*]u8 = @ptrCast(&fp[arg.offset + member]);
-                const from = @as(usize, member) * member_size;
+                const from = member * member_size;
                 @memcpy(register[0..member_size], hfa_buf[from .. from + member_size]);
             }
         }
@@ -933,7 +915,7 @@ fn jitfnGc(fun: *JittedFn, _: usize) void {
     }
 }
 
-fn jitfnGetBytes(fun: *const JittedFn, _: usize) abi.JanetByteView {
+fn jitfnGetBytes(fun: *const JittedFn, _: usize) abi.ByteView {
     return .{ .bytes = @ptrCast(fun.function_pointer), .len = @intCast(fun.size) };
 }
 

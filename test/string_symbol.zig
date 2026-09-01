@@ -65,7 +65,7 @@ const heap = harness.heap;
 
 // --------------------------------------------------------------- helpers
 
-fn stringLength(s: [*]const u8) i32 {
+fn stringLength(s: [*]const u8) u32 {
     return strings.head(s).length;
 }
 
@@ -74,7 +74,7 @@ fn stringHash(s: [*]const u8) i32 {
 }
 
 fn bytesOf(s: [*]const u8) []const u8 {
-    return s[0..@intCast(stringLength(s))];
+    return s[0..stringLength(s)];
 }
 
 fn calchash(bytes: []const u8) i32 {

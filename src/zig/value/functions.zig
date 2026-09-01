@@ -102,7 +102,7 @@ pub const defs = struct {
     /// `max_arity` starts at `INT32_MAX` rather than 0, which is the one value
     /// here that is not simply "empty": an unfinished funcdef accepts any
     /// number of arguments until the assembler or the compiler narrows it.
-    pub fn new() callconv(.c) *FuncDef {
+    pub fn new() *FuncDef {
         const def = gc_alloc.gcalloc(FuncDef, .funcdef);
         def.environments = null;
         def.constants = null;
@@ -210,13 +210,13 @@ pub fn envDetach(maybe_env: ?*FuncEnv) void {
     if (memory == null) fatal.outOfMemory();
     const vmem: [*]repr.Value = @ptrCast(@alignCast(memory));
     const values = env.as.fiber.?.data.? + @as(usize, @bitCast(@as(isize, env.offset)));
-    utils.safeMemcpy(vmem, values, bytes);
+    @memcpy(vmem[0..@intCast(len)], values[0..@intCast(len)]);
     const bitset = fibers.stackFrame(values).func.?.def.?.closure_bitset;
-    if (bitset != null) {
+    if (bitset) |bits| {
         // Clear unneeded references in closure environment
         var i: i32 = 0;
         while (i < len) : (i += 32) {
-            var mask = ~bitset.?[@intCast(i >> 5)];
+            var mask = ~bits[@intCast(i >> 5)];
             const maxj = if (i + 32 > len) len else i + 32;
             var j = i;
             while (j < maxj) : (j += 1) {
@@ -236,13 +236,13 @@ pub fn envValid(env: *FuncEnv) bool {
     var i = fiber.frame;
     while (i > 0) {
         const frame = fibers.stackFrame(fiber.data.? + @as(usize, @bitCast(@as(isize, i))));
-        if (real_offset == i and
-            frame.env == env and
-            frame.func != null and
-            frame.func.?.def.?.slotcount == env.length)
-        {
-            env.offset = real_offset;
-            return true;
+        if (real_offset == i and frame.env == env) {
+            if (frame.func) |func| {
+                if (func.def.?.slotcount == env.length) {
+                    env.offset = real_offset;
+                    return true;
+                }
+            }
         }
         i = frame.prevframe;
     }
@@ -295,16 +295,29 @@ pub const function_envs = @offsetOf(Function, "_envs");
 /// `theHeadOffsets` is the instrument, and it checks this one by reading what
 /// lives at the computed slot rather than by differencing two addresses.
 pub const Function = extern struct {
-    gc: abi.JanetGCObject = .{},
+    gc: abi.GCObject = .{},
     def: ?*FuncDef = null,
     _envs: [0]?*FuncEnv = std.mem.zeroes([0]?*FuncEnv),
-    pub fn envs(_self: anytype) @TypeOf(&_self._envs[0]) {
-        return @ptrCast(@alignCast(&_self._envs));
-    }
 };
 
+/// Bit 0 of the GC header's per-type field: `trace` was called on this
+/// function, and the interpreter prints a line on entry and on return.
+const own_traced: u6 = 1;
+
+pub inline fn isTraced(function: *const Function) bool {
+    return function.gc.flags.own & own_traced != 0;
+}
+
+pub inline fn setTraced(function: *Function, to: bool) void {
+    if (to) {
+        function.gc.flags.own |= own_traced;
+    } else {
+        function.gc.flags.own &= ~own_traced;
+    }
+}
+
 pub const FuncDef = struct {
-    gc: abi.JanetGCObject = .{},
+    gc: abi.GCObject = .{},
     environments: ?[*]i32 = null,
     constants: ?[*]repr.Value = null,
     defs: ?[*]*FuncDef = null,
@@ -335,33 +348,33 @@ pub const FuncDef = struct {
 
     /// The constant pool. `JOP_LOAD_CONSTANT` indexes it.
     pub inline fn constantValues(self: anytype) utils.View(@TypeOf(self), repr.Value) {
-        if (self.constants_length <= 0) return &.{};
-        return self.constants.?[0..@intCast(self.constants_length)];
+        if (self.constants_length == 0) return &.{};
+        return self.constants.?[0..self.constants_length];
     }
 
     /// The bytecode.
     pub inline fn instructions(self: anytype) utils.View(@TypeOf(self), u32) {
-        if (self.bytecode_length <= 0) return &.{};
-        return self.bytecode.?[0..@intCast(self.bytecode_length)];
+        if (self.bytecode_length == 0) return &.{};
+        return self.bytecode.?[0..self.bytecode_length];
     }
 
     /// The captured environments, by index into the enclosing function's.
     pub inline fn environmentIndices(self: anytype) utils.View(@TypeOf(self), i32) {
-        if (self.environments_length <= 0) return &.{};
-        return self.environments.?[0..@intCast(self.environments_length)];
+        if (self.environments_length == 0) return &.{};
+        return self.environments.?[0..self.environments_length];
     }
 
     /// The nested function definitions this one closes over.
     pub inline fn subdefs(self: anytype) utils.View(@TypeOf(self), *FuncDef) {
-        if (self.defs_length <= 0) return &.{};
-        return self.defs.?[0..@intCast(self.defs_length)];
+        if (self.defs_length == 0) return &.{};
+        return self.defs.?[0..self.defs_length];
     }
 
     /// The debug symbol map: one entry per named slot, with the range of
     /// instructions it is live over.
     pub inline fn symbols(self: anytype) utils.View(@TypeOf(self), SymbolMap) {
-        if (self.symbolmap_length <= 0) return &.{};
-        return self.symbolmap.?[0..@intCast(self.symbolmap_length)];
+        if (self.symbolmap_length == 0) return &.{};
+        return self.symbolmap.?[0..self.symbolmap_length];
     }
 
     /// One source position per instruction. **Its length is
@@ -370,9 +383,9 @@ pub const FuncDef = struct {
     /// Null with a non-zero bytecode length under `-Dsourcemaps=false`, which
     /// is why the pointer is tested and not only the count.
     pub inline fn sourceMappings(self: anytype) utils.View(@TypeOf(self), SourceMapping) {
-        if (self.bytecode_length <= 0) return &.{};
+        if (self.bytecode_length == 0) return &.{};
         const map = self.sourcemap orelse return &.{};
-        return map[0..@intCast(self.bytecode_length)];
+        return map[0..self.bytecode_length];
     }
 
     /// One bit per slot, rounded up to a word, saying which slots a closure
@@ -387,7 +400,7 @@ pub const FuncDef = struct {
 };
 
 pub const FuncEnv = struct {
-    gc: abi.JanetGCObject = .{},
+    gc: abi.GCObject = .{},
     as: FuncEnvRef = std.mem.zeroes(FuncEnvRef),
     length: i32 = 0,
     offset: i32 = 0,

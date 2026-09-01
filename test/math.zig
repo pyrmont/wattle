@@ -49,11 +49,11 @@ fn sameDouble(a: f64, b: f64) bool {
     return @as(u64, @bitCast(a)) == @as(u64, @bitCast(b));
 }
 
-fn expectSequence(rng: *math.JanetRNG, expected: []const u32) void {
+fn expectSequence(rng: *math.Rng, expected: []const u32) void {
     for (expected) |word| expect(math.rngU32(rng) == word);
 }
 
-fn expectState(rng: *const math.JanetRNG, a: u32, b: u32, d: u32, e: u32) void {
+fn expectState(rng: *const math.Rng, a: u32, b: u32, d: u32, e: u32) void {
     expect(rng.a == a);
     expect(rng.b == b);
     expect(rng.c == d);
@@ -66,7 +66,7 @@ const from_zero = [_]u32{
 };
 
 fn theSeed() void {
-    var rng: math.JanetRNG = undefined;
+    var rng: math.Rng = undefined;
 
     // Sixteen warmup draws, so the post-seed state is not the seed constants.
     math.rngSeed(&rng, 0);
@@ -85,8 +85,8 @@ fn theSeed() void {
 }
 
 fn theLongSeed() void {
-    var rng: math.JanetRNG = undefined;
-    var empty: math.JanetRNG = undefined;
+    var rng: math.Rng = undefined;
+    var empty: math.Rng = undefined;
 
     math.rngLongseed(&rng, "janet");
     expectState(&rng, 0x3c6c72fb, 0xfadea204, 0xd01b463f, 0xbaf55482);
@@ -117,7 +117,7 @@ fn theLongSeed() void {
 }
 
 fn theDoubleDraw() void {
-    var rng: math.JanetRNG = undefined;
+    var rng: math.Rng = undefined;
 
     math.rngSeed(&rng, 7);
     expect(sameDouble(math.rngDouble(&rng), 0.012130103775150669));
@@ -133,8 +133,8 @@ fn theDoubleDraw() void {
 
     // And consumes exactly two 32-bit words, which is what makes a marshalled
     // generator resumable at the same point.
-    var paired: math.JanetRNG = undefined;
-    var stepped: math.JanetRNG = undefined;
+    var paired: math.Rng = undefined;
+    var stepped: math.Rng = undefined;
     math.rngSeed(&paired, 11);
     math.rngSeed(&stepped, 11);
     _ = math.rngDouble(&paired);
@@ -148,9 +148,9 @@ fn theDoubleDraw() void {
 /// the same object every time it is asked for.
 ///
 /// It used to assert that the generator is not null. That assertion went with
-/// the call: `janet_default_rng` was declared `[*c]JanetRNG`, so the pointer
+/// the call: `janet_default_rng` was declared `[*c]Rng`, so the pointer
 /// arrived maybe-null and the test was the check; `math.defaultRng` returns
-/// `*JanetRNG` and Zig will not let it be null. `DESIGN.md` §3 -- the property
+/// `*Rng` and Zig will not let it be null. `DESIGN.md` §3 -- the property
 /// stopped being an agreement and became a construction.
 fn theDefaultRng() void {
     const shared = math.defaultRng();

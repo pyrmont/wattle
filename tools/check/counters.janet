@@ -62,6 +62,13 @@
 # Only the `var/while/+= 1` shape above. A counter that starts at one, steps by
 # two, or walks backwards is a different shape and is not in this inventory;
 # `part_02.md` records that limit rather than leaving it to be discovered.
+#
+# It also used to miss any bound containing a `)` -- `head(t).length`,
+# `@as(i32, @intCast(argv.len))` -- because the bound was captured with
+# `(to ")")`, which stops at the first one. That was twelve of sixteen loops in
+# the tree, reported as four; the capture runs to `") : ("` since Phase 15
+# Part 1b. A matcher that silently skips a shape reports what it can see and
+# calls it the population.
 
 (import ../common :as tools)
 
@@ -110,7 +117,7 @@
       (def name (first m))
       (def next-eol (or (string/find "\n" text (+ eol 1)) (length text)))
       (def nxt (string/trim (string/slice text (+ eol 1) next-eol)))
-      (def w (peg/match ~(* "while (" ,name " < " (<- (to ")")) ") : (" ,name " += 1)") nxt))
+      (def w (peg/match ~(* "while (" ,name " < " (<- (to (* ") : (" ,name " += 1)"))) ") : (" ,name " += 1)") nxt))
       (when w
         (array/push found
                     {:name name

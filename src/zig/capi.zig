@@ -99,16 +99,16 @@ pub fn janet_def(env: *tables.Table, name: [*:0]const u8, val: repr.Value, doc: 
 // signal.zig
 //
 pub fn janet_zig_c_raise_take() callconv(.c) c_int {
-    return @intFromBool(impl.signal.zigCRaiseTake());
+    return @intFromBool(impl.signal.cRaiseTake());
 }
 pub fn janet_zig_c_raise_record() callconv(.c) void {
-    return impl.signal.zigCRaiseRecord();
+    return impl.signal.cRaiseRecord();
 }
 pub fn janet_zig_fatal(message: [*:0]const u8) callconv(.c) noreturn {
     return impl.fatal.fatal(message);
 }
 pub fn janet_zig_signal_record(sig: c_uint, message: repr.Value) callconv(.c) void {
-    return impl.signal.zigSignalRecord(abi.Signal.fromWire(sig), message);
+    return impl.signal.signalRecord(abi.Signal.fromWire(sig), message);
 }
 
 // utils.zig

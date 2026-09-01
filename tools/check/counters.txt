@@ -8,11 +8,10 @@
 #
 #   a-janet      1
 #   b-seam       1
-#   c-decision   2
+#   c-decision   1
 #
 # columns: class  site  counter  bound
 
-b-seam       src/zig/marsh.zig:1087                   i                length
-a-janet      src/zig/peg.zig:906                      i                nrep
-c-decision   src/zig/utils.zig:162                    index            len
-c-decision   src/zig/vm.zig:1425                      i                argc
+b-seam       src/zig/marsh.zig:1075                   i                length
+a-janet      src/zig/peg.zig:902                      i                nrep
+c-decision   src/zig/utils.zig:147                    index            len

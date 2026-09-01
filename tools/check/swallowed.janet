@@ -87,7 +87,7 @@
 # assumption that an event-loop callback has nowhere to raise to -- which is the
 # argument `abstract_type.zig` makes for `gc` and `gcmark`, and which is *wrong
 # for this table*.  `ev_callback.EVCallback` is `raise.Error!void`: the hinge
-# typed it raising exactly as it typed `JanetCFunction`, and `acceptWindows`
+# typed it raising exactly as it typed `CFunction`, and `acceptWindows`
 # had been propagating all along, ten lines from the site being excused.
 #
 # So the bar for an entry here is high: a callback type that is genuinely

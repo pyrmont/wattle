@@ -78,7 +78,7 @@ pub fn tryInit(state: *vm_state.TryState) void {
     // leak to one scope found it in a single run. They cost a branch on a path
     // the runtime rarely takes, and they go with the flag.
     if (v.c_raised) fatal.fatal("a raise was reported to a C caller and never consumed");
-    state.stackn = @intCast(v.stackn);
+    state.stackn = v.stackn;
     v.stackn += 1;
     state.gc_handle = v.gc.suspend_count;
     state.vm_fiber = v.fiber;
@@ -97,7 +97,7 @@ pub fn restore(state: *vm_state.TryState) void {
     // ...and one outstanding when a scope closes was made inside it. See the
     // note in `janet_try_init`.
     if (v.c_raised) fatal.fatal("a raise was reported to a C caller and never consumed");
-    v.stackn = @intCast(state.stackn);
+    v.stackn = state.stackn;
     v.gc.suspend_count = state.gc_handle;
     v.fiber = state.vm_fiber;
     v.return_reg = state.vm_return_reg;
@@ -108,31 +108,24 @@ pub fn restore(state: *vm_state.TryState) void {
 
 /// Record that a raise reached an abi, which returned rather than jumping.
 /// `src/zig/raise.zig` has the argument.
-pub fn zigCRaiseRecord() void {
+pub fn cRaiseRecord() void {
     vm_state.current().c_raised = true;
 }
 
 /// Whether a raise reached an abi since the last time this was asked.
 /// Clears, because a raise is consumed exactly once.
-pub fn zigCRaiseTake() bool {
+pub fn cRaiseTake() bool {
     const v = vm_state.current();
     if (!v.c_raised) return false;
     v.c_raised = false;
     return true;
 }
 
-/// Discard any record of one, for a caller about to open a window it wants to
-/// measure. `janet_try_init` does not do this: a scope and a report are
-/// different things, and the ev loop opens scopes without caring.
-pub fn zigCRaiseClear() void {
-    vm_state.current().c_raised = false;
-}
-
 // ---------------------------------------------------------------- raising
 
 /// Decide what raising `sig` means here, and perform every part of it that is
-/// not formatting or jumping. `out_sig` receives the signal to jump with, which
-/// differs from `sig` exactly when the scope coerces.
+/// not formatting or jumping. The answer carries the signal to raise with,
+/// which differs from `sig` exactly when the scope coerces.
 ///
 /// The `sched_id` bump happens here rather than in the caller because it must
 /// precede the coercion message: building that message can itself panic, and a
@@ -151,20 +144,28 @@ pub const Plan = enum(c_uint) {
     coerce = 2,
 };
 
-pub fn signalPlan(sig: abi.Signal, out_sig: *abi.Signal) Plan {
+/// The plan and the signal it decides, together. They are always produced
+/// together -- the coercion that answers `.coerce` is the same step that turns
+/// the signal into an `error` -- so the second was an out-parameter for no
+/// reason except that C had nowhere else to put it.
+pub const Decision = struct {
+    plan: Plan,
+    signal: abi.Signal,
+};
+
+pub fn signalPlan(sig: abi.Signal) Decision {
     const v = vm_state.current();
-    out_sig.* = sig;
-    if (v.return_reg == null) return .top_level;
+    if (v.return_reg == null) return .{ .plan = .top_level, .signal = sig };
     if (v.coerce_error and sig != .ok) {
         if (has_ev) {
             if (v.root_fiber) |root| {
                 if (sig == abi.Signal.event) root.sched_id +%= 1;
             }
         }
-        out_sig.* = .@"error";
-        if (sig != .@"error") return .coerce;
+        if (sig != .@"error") return .{ .plan = .coerce, .signal = .@"error" };
+        return .{ .plan = .raise, .signal = .@"error" };
     }
-    return .raise;
+    return .{ .plan = .raise, .signal = sig };
 }
 
 /// Publish the payload and mark the fiber, which is the last thing a raise does
@@ -210,9 +211,7 @@ pub fn signalInject(fiber: *fibers.Fiber, sig: abi.Signal) void {
     // out cannot trap in a safe build. C wraps here; this wraps identically.
     // The signal goes into the *GC header's* copy of the status field, which
     // is `vm.zig`'s reason for reading it back with `@enumFromInt`.
-    const shifted: u32 = @truncate(@as(u64, @intFromEnum(sig)) << status_offset);
-    child.gc.flags &= ~status_mask;
-    child.gc.flags |= @bitCast(shifted);
+    child.gc.flags.own = @truncate(@intFromEnum(sig));
     child.flags.resume_signal = true;
 }
 
@@ -234,10 +233,10 @@ pub fn signalInject(fiber: *fibers.Fiber, sig: abi.Signal) void {
 ///
 /// Does not return when the plan is `TOP_LEVEL`: there is no scope to raise
 /// into, so `janet_top_level_signal` ends the process or the thread.
-pub fn zigSignalRecord(sig: abi.Signal, message: repr.Value) void {
+pub fn signalRecord(sig: abi.Signal, message: repr.Value) void {
     const v = vm_state.current();
-    var out_sig: abi.Signal = sig;
-    const plan = signalPlan(sig, &out_sig);
+    const decision = signalPlan(sig);
+    const plan = decision.plan;
     // Both messages are built by the formatter, and `%v` runs an abstract
     // type's `tostring`, so both can raise. Neither can carry one: this is the
     // decision half of a raise, and a second raise recorded from inside it
@@ -255,7 +254,7 @@ pub fn zigSignalRecord(sig: abi.Signal, message: repr.Value) void {
         ));
     }
     signalCommit(&payload);
-    v.pending_signal = out_sig;
+    v.pending_signal = decision.signal;
 }
 
 // ------------------------------------------------ the public raise perimeter

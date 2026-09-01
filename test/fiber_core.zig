@@ -167,7 +167,7 @@ fn compileFunction(source: [*:0]const u8) *functions.Function {
 }
 
 fn rootedFiber(func: *functions.Function, argv: []const repr.Value) *fibers.Fiber {
-    const fiber = fibers.new(func, 32, @intCast(argv.len), argv.ptr).?;
+    const fiber = fibers.new(func, 32, argv) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     return fiber;
 }
@@ -197,7 +197,7 @@ fn theFuncframeLayout(add: *functions.Function) void {
     expect(frame.prevframe == 0);
     // `janet_fiber_reset` adds ENTRANCE after the frame is pushed, so the
     // frame itself must have been left with no other flags set.
-    expect(frame.flags == constants.JANET_STACKFRAME_ENTRANCE);
+    expect(@as(i32, @bitCast(frame.flags)) == constants.JANET_STACKFRAME_ENTRANCE);
 
     expect(harness.integerIs(slot(fiber, fiber.frame), 11));
     expect(harness.integerIs(slot(fiber, fiber.frame + 1), 22));
@@ -214,8 +214,8 @@ fn theFuncframeArityRejection(add: *functions.Function) raise.Raising(void) {
         harness.wrapInteger(3),
     };
 
-    expect(fibers.new(add, 32, 1, &args) == null);
-    expect(fibers.new(add, 32, 3, &args) == null);
+    if (fibers.new(add, 32, args[0..1])) |_| expect(false) else |_| {}
+    if (fibers.new(add, 32, &args)) |_| expect(false) else |_| {}
 
     const fiber = rootedFiber(add, args[0..2]);
     const frame = fiber.frame;
@@ -298,10 +298,10 @@ fn theFuncframeTail(add: *functions.Function, other: *functions.Function) raise.
     expect(frame.func == other);
     expect(frame.pc == other.def.?.bytecode);
     expect(frame.env == null);
-    expect(frame.flags & constants.JANET_STACKFRAME_TAILCALL != 0);
+    expect(@as(i32, @bitCast(frame.flags)) & constants.JANET_STACKFRAME_TAILCALL != 0);
     // The entrance flag belongs to the frame, not to the function in it, and a
     // tail call must not clear it.
-    expect(frame.flags & constants.JANET_STACKFRAME_ENTRANCE != 0);
+    expect(@as(i32, @bitCast(frame.flags)) & constants.JANET_STACKFRAME_ENTRANCE != 0);
 
     expect(harness.integerIs(slot(fiber, base), 30));
     expect(harness.integerIs(slot(fiber, base + 1), 40));
@@ -386,7 +386,7 @@ fn theCframeAndPopframe(add: *functions.Function) raise.Raising(void) {
     expect(frame.func == null);
     expect(@intFromPtr(frame.pc) == @intFromPtr(cfun));
     expect(frame.env == null);
-    expect(frame.flags == 0);
+    expect(@as(i32, @bitCast(frame.flags)) == 0);
     expect(frame.prevframe == base);
     expect(fiber.stacktop == stacktop + 2 + frame_size);
     expect(fiber.stackstart == fiber.stacktop);
@@ -521,26 +521,25 @@ fn anOverflowThroughTheInterpreter() void {
     const identity = compileFunction("(fn [& xs] xs)");
     const arr = arrays.new(4);
     const args = [_]repr.Value{ wrap.fromFunction(identity), wrap.fromArray(arr) };
-    var out = wrap.fromNil();
 
     const handle = gc_alloc.gclock();
     arr.count = std.math.maxInt(i32);
-    var sig = vm_entry.pcall(splice, 2, &args, &out, null);
+    var resumed = vm_entry.pcall(splice, &args, null);
     arr.count = 0;
     gc_alloc.gcunlock(handle);
 
-    expect(sig == abi.Signal.@"error");
-    expect(harness.stringValueIs(out, "stack overflow"));
+    expect(resumed.signal == abi.Signal.@"error");
+    expect(harness.stringValueIs(resumed.value, "stack overflow"));
 
     // And the same call with an honest array returns, so the assertion above
     // is about the count rather than about splicing.
     arr.count = 2;
     arr.slice()[0] = harness.wrapInteger(11);
     arr.slice()[1] = harness.wrapInteger(12);
-    sig = vm_entry.pcall(splice, 2, &args, &out, null);
-    expect(sig == abi.Signal.ok);
-    expect(harness.isType(out, repr.Tag.tuple));
-    expect(tuples.head(wrap.toTuple(out)).length == 2);
+    resumed = vm_entry.pcall(splice, &args, null);
+    expect(resumed.signal == abi.Signal.ok);
+    expect(harness.isType(resumed.value, repr.Tag.tuple));
+    expect(tuples.head(wrap.toTuple(resumed.value)).length == 2);
 }
 
 // --------------------------------------------------- function environments

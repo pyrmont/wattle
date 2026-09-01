@@ -84,10 +84,6 @@ pub inline fn unwrap(abstract: ?*anyopaque) *Channel {
     return @ptrCast(@alignCast(abstract));
 }
 
-pub fn channelUnwrap(abstract: ?*anyopaque) ?*Channel {
-    return @ptrCast(abstract);
-}
-
 inline fn wrapChannel(chan: *Channel) repr.Value {
     return wrap.fromAbstract(chan);
 }
@@ -229,16 +225,8 @@ fn markFQ(fq: *ev.Queue(Pending)) void {
 fn chanatMark(chan: *Channel, _: usize) void {
     markFQ(&chan.read_pending);
     markFQ(&chan.write_pending);
-    const items = &chan.items;
-    const data: [*]repr.Value = @ptrCast(@alignCast(items.data orelse return));
-    if (items.head <= items.tail) {
-        var i = items.head;
-        while (i < items.tail) : (i += 1) gc_mark.mark(data[@intCast(i)]);
-    } else {
-        var i = items.head;
-        while (i < items.capacity) : (i += 1) gc_mark.mark(data[@intCast(i)]);
-        i = 0;
-        while (i < items.tail) : (i += 1) gc_mark.mark(data[@intCast(i)]);
+    for (chan.items.segments()) |run| {
+        for (run) |item| gc_mark.mark(item);
     }
 }
 
@@ -250,26 +238,18 @@ fn chanatNext(_: *Channel, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(&chanat_methods), key);
 }
 
-fn chanatMarshal(chan: *Channel, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
+fn chanatMarshal(chan: *Channel, ctx: *abi.MarshalContext) raise.Raising(void) {
     try marsh.marshalByte(ctx, @intFromBool(chan.is_threaded));
     marsh.marshalAbstract(ctx, chan);
     try marsh.marshalByte(ctx, @intFromBool(chan.closed));
     try marsh.marshalInt(ctx, chan.limit);
     try marsh.marshalInt(ctx, chan.items.count());
-    const items = &chan.items;
-    const data: [*]repr.Value = @ptrCast(@alignCast(items.data orelse return));
-    if (items.head <= items.tail) {
-        var i = items.head;
-        while (i < items.tail) : (i += 1) try marsh.marshalJanet(ctx, data[@intCast(i)]);
-    } else {
-        var i = items.head;
-        while (i < items.capacity) : (i += 1) try marsh.marshalJanet(ctx, data[@intCast(i)]);
-        i = 0;
-        while (i < items.tail) : (i += 1) try marsh.marshalJanet(ctx, data[@intCast(i)]);
+    for (chan.items.segments()) |run| {
+        for (run) |item| try marsh.marshalJanet(ctx, item);
     }
 }
 
-fn chanatUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*Channel) {
+fn chanatUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Channel) {
     const is_threaded = try marsh.unmarshalByte(ctx);
     const abst: *Channel = unwrap(if (is_threaded != 0)
         try marsh.unmarshalAbstractThreaded(ctx, @sizeOf(Channel))
@@ -633,17 +613,19 @@ fn cfunChoice(argv: []repr.Value) raise.Raising(repr.Value) {
     }
 
     // Check channels for immediate reads and writes.
-    var i: usize = 0;
-    while (i < argv.len) : (i += 1) {
-        const data = args_core.indexedView(argv[i]);
-        if (data != null and data.?.len == 2) {
+    for (argv, 0..) |arg, i| {
+        // An argument that is not indexed reads as an empty view, whose length
+        // is not two, which is the read arm -- the same answer the null test
+        // gave.
+        const data = args_core.indexedView(arg) orelse &[_]repr.Value{};
+        if (data.len == 2) {
             // Write.
-            const chan = try channelArg(data.?, 0);
+            const chan = try channelArg(data, 0);
             lock(chan);
             defer unlock(chan);
             if (chan.closed) return makeCloseResult(chan);
             if (chan.items.count() < chan.limit) {
-                _ = try pushWithLock(chan, data.?[1], .choice);
+                _ = try pushWithLock(chan, data[1], .choice);
                 return makeWriteResult(chan);
             }
         } else {
@@ -661,14 +643,13 @@ fn cfunChoice(argv: []repr.Value) raise.Raising(repr.Value) {
     }
 
     // Wait for all readers or writers.
-    i = 0;
-    while (i < argv.len) : (i += 1) {
-        const data = args_core.indexedView(argv[i]);
-        if (data != null and data.?.len == 2) {
-            const chan = try channelArg(data.?, 0);
+    for (argv, 0..) |arg, i| {
+        const data = args_core.indexedView(arg) orelse &[_]repr.Value{};
+        if (data.len == 2) {
+            const chan = try channelArg(data, 0);
             lock(chan);
             defer unlock(chan);
-            _ = try pushWithLock(chan, data.?[1], .choice);
+            _ = try pushWithLock(chan, data[1], .choice);
         } else {
             var item: repr.Value = undefined;
             const chan = try channelArg(argv, i);
@@ -708,12 +689,12 @@ fn cfunCount(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// Fisher-Yates shuffle of the arguments, so that `ev/rselect` is fair.
 fn fisherYatesArgs(argv: []repr.Value) void {
-    var i = @as(i32, @intCast(argv.len));
+    var i = argv.len;
     while (i > 1) : (i -= 1) {
         const swap_index = math.rngU32(&vm_state.current().ev.ev_rng) % @as(u32, @intCast(i));
         const temp = argv[swap_index];
-        argv[swap_index] = argv[@intCast(i - 1)];
-        argv[@intCast(i - 1)] = temp;
+        argv[swap_index] = argv[i - 1];
+        argv[i - 1] = temp;
     }
 }
 

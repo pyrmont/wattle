@@ -63,16 +63,16 @@ const expect = @import("expect.zig").expect;
 /// The contract uses the runtime's own arithmetic to *find* a header. That is
 /// circular only for the layout question, which `theHeadOffsets` answers from
 /// the allocator instead.
-fn headerOf(pointer: ?*anyopaque) *abi.JanetGCObject {
+fn headerOf(pointer: ?*anyopaque) *abi.GCObject {
     return @ptrCast(@alignCast(pointer.?));
 }
 
 fn reachable(pointer: ?*anyopaque) bool {
-    return headerOf(pointer).flags & constants.JANET_MEM_REACHABLE != 0;
+    return harness.gcBits(headerOf(pointer).flags) & constants.JANET_MEM_REACHABLE != 0;
 }
 
 fn unmark(pointer: ?*anyopaque) void {
-    headerOf(pointer).flags &= ~@as(i32, constants.JANET_MEM_REACHABLE);
+    headerOf(pointer).flags = @bitCast(harness.gcBits(headerOf(pointer).flags) & ~@as(u32, constants.JANET_MEM_REACHABLE));
 }
 
 /// The head of whatever `value` refers to, or null for a value the collector
@@ -142,7 +142,7 @@ fn theHeadOffsets() void {
     _ = structs.end(structure);
 
     const abstract = abstracts.newBytes(&at_plain, 8);
-    expect(@intFromPtr(abstract) - newestBlock() == @sizeOf(abi.JanetAbstractHead));
+    expect(@intFromPtr(abstract) - newestBlock() == @sizeOf(abi.AbstractHead));
 
     // `JanetFunction`'s environments are its own flexible array, and the
     // function *is* its block — so the oracle is what lives at the computed
@@ -208,7 +208,7 @@ const at_plain = abstract_type.define(anyopaque, .{ .name = "gc-mark-test/plain"
 /// must not disturb the guard: the string marked afterwards proves `depth`
 /// came back to where it started.
 fn immediatesAreIgnored() void {
-    const roots = harness.vm().roots.count;
+    const roots = harness.vm().roots.items.len;
     var local: usize = 0;
 
     gc_mark.mark(wrap.fromNil());
@@ -217,7 +217,7 @@ fn immediatesAreIgnored() void {
     gc_mark.mark(harness.wrapInteger(-7));
     gc_mark.mark(wrap.fromPointer(&local));
 
-    expect(harness.vm().roots.count == roots);
+    expect(harness.vm().roots.items.len == roots);
 
     const string = value.fromBytes("after-immediates", .string);
     unmarkValue(string);
@@ -291,7 +291,7 @@ fn aWeakArrayDoesNotMarkItsElements() void {
 /// the case with no branch of its own in the C original.
 fn theFourTableKinds() void {
     const Case = struct {
-        make: *const fn (i32) *tables.Table,
+        make: *const fn (usize) *tables.Table,
         keeps_key: bool,
         keeps_value: bool,
     };
@@ -506,8 +506,7 @@ fn aSuspendedFiberMarksItsFrames() void {
     gc_alloc.gcroot(out);
 
     const fiber = wrap.toFiber(out);
-    var resumed: repr.Value = undefined;
-    _ = vm_entry.continueFiber(fiber, wrap.fromNil(), &resumed);
+    _ = vm_entry.continueFiber(fiber, wrap.fromNil());
     expect(fiber.frame > 0);
 
     const frame: *vm_state.StackFrame = @ptrCast(@alignCast(
@@ -601,19 +600,19 @@ fn theGuardRootsTheOverflow() !void {
     gc_alloc.gcroot(head);
 
     for (chain) |link| unmark(link);
-    const roots = harness.vm().roots.count;
+    const roots = harness.vm().roots.items.len;
 
     gc_mark.mark(head);
 
-    expect(harness.vm().roots.count == roots + 1);
-    expect(wrap.toPointer(harness.vm().roots.at(roots).*) ==
+    expect(harness.vm().roots.items.len == roots + 1);
+    expect(wrap.toPointer(harness.vm().roots.items[roots]) ==
         @as(?*anyopaque, chain[config.recursion_guard]));
     expect(reachable(chain[config.recursion_guard - 1]));
     expect(!reachable(chain[config.recursion_guard]));
     expect(!reachable(chain[config.recursion_guard + 1]));
 
     // Drop the root the guard added, then the chain itself.
-    harness.vm().roots.count = roots;
+    harness.vm().roots.items.len = roots;
     _ = gc_alloc.gcunroot(head);
 }
 
@@ -637,10 +636,10 @@ fn aCollectionFinishesDeepGraphs() !void {
     const tail = wrap.fromArray(chain[n - 1]);
     tables.put(witness, key, tail);
 
-    const roots = harness.vm().roots.count;
+    const roots = harness.vm().roots.items.len;
     gc_mark.collect();
 
-    expect(harness.vm().roots.count == roots);
+    expect(harness.vm().roots.items.len == roots);
     expect(harness.equals(tables.get(witness, key), tail));
 
     _ = gc_alloc.gcunroot(witness_value);
@@ -670,11 +669,11 @@ fn aCollectionDrainsRootsAddedDuringMarking() void {
     const key = value.fromBytes("rooted", .keyword);
     tables.put(witness, key, probe_root_value);
 
-    const roots = harness.vm().roots.count;
+    const roots = harness.vm().roots.items.len;
     gc_mark.collect();
 
     expect(probe_gcmark_calls == 1);
-    expect(harness.vm().roots.count == roots);
+    expect(harness.vm().roots.items.len == roots);
     expect(harness.equals(tables.get(witness, key), probe_root_value));
 
     probe_roots_on_mark = false;
@@ -728,7 +727,7 @@ fn theIntervalHeuristic() void {
     harness.vm().gc.interval = 0;
     const blocks = harness.vm().gc.block_count;
     gc_mark.collect();
-    expect(harness.vm().gc.interval == blocks * @sizeOf(abi.JanetGCObject));
+    expect(harness.vm().gc.interval == blocks * @sizeOf(abi.GCObject));
 
     const high = std.math.maxInt(usize) / 2;
     harness.vm().gc.interval = high;

@@ -89,8 +89,8 @@ fn assertNested(nested: *fibers.Fiber) void {
 fn rooted(fiber: *fibers.Fiber) bool {
     const v = harness.vm();
     var i: u32 = 0;
-    while (i < v.roots.count) : (i += 1) {
-        const val = v.roots.at(i).*;
+    while (i < v.roots.items.len) : (i += 1) {
+        const val = v.roots.items[i];
         if (!repr.checkType(val, repr.Tag.fiber)) continue;
         if (wrap.toFiber(val) == fiber) return true;
     }
@@ -152,11 +152,10 @@ fn cfunCallViaPcall(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const function = try args_core.getFunction(argv, 0);
 
-    var result: repr.Value = wrap.fromNil();
     var fiber: ?*fibers.Fiber = null;
-    const sig = vm_entry.pcall(function, 0, null, &result, &fiber);
-    if (sig != abi.Signal.ok) return raise.panicv(result);
-    return result;
+    const resumed = vm_entry.pcall(function, &.{}, &fiber);
+    if (resumed.signal != abi.Signal.ok) return raise.panicv(resumed.value);
+    return resumed.value;
 }
 
 const cfuns = [_]abi.Reg{

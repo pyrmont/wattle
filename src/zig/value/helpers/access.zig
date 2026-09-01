@@ -188,7 +188,7 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Rai
                 start = tab.data.?;
             } else {
                 const st = wrap.toStruct(ds);
-                cap = structs.head(st).capacity;
+                cap = @intCast(structs.head(st).capacity);
                 start = st;
             }
             const end = start + utils.asSize(cap);
@@ -214,9 +214,9 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Rai
             else if (t == repr.Tag.array)
                 @as(i32, @intCast(wrap.toArray(ds).count))
             else if (t == repr.Tag.tuple)
-                tuples.head(wrap.toTuple(ds)).length
+                @intCast(tuples.head(wrap.toTuple(ds)).length)
             else
-                strings.head(wrap.toString(ds)).length;
+                @intCast(strings.head(wrap.toString(ds)).length);
             if (i < len and i >= 0) {
                 return wrap.fromInteger(i);
             }
@@ -224,8 +224,8 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Rai
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(ds);
             const at = abstract_type.ofAbstract(abst);
-            if (at.next == null) return wrap.fromNil();
-            return at.next.?(abst, key);
+            const callback = at.next orelse return wrap.fromNil();
+            return callback(abst, key);
         },
         repr.Tag.fiber => {
             const child = wrap.toFiber(ds);
@@ -243,7 +243,9 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Rai
                 return wrap.fromNil();
             }
             vm_state.current().fiber.?.child = child;
-            const sig = vm_entry.continueFiber(child, wrap.fromNil(), &retreg);
+            const resumed = vm_entry.continueFiber(child, wrap.fromNil());
+            const sig = resumed.signal;
+            retreg = resumed.value;
             if (sig != abi.Signal.ok and !child.flags.traps.has(sig)) {
                 if (is_interpreter) {
                     // Deliberately without clearing `child` first: the
@@ -324,7 +326,7 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
         repr.Tag.tuple => {
             const tuple = wrap.toTuple(ds);
             const len = tuples.head(tuple).length;
-            val = tuple[utils.asSize(try getterCheckInt(vtype, key, len))];
+            val = tuple[utils.asSize(try getterCheckInt(vtype, key, @intCast(len)))];
         },
         repr.Tag.buffer => {
             const buffer = wrap.toBuffer(ds);
@@ -333,7 +335,7 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
         },
         repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
             const str = wrap.toString(ds);
-            const index = getterCheckInt(vtype, key, strings.head(str).length);
+            const index = getterCheckInt(vtype, key, @intCast(strings.head(str).length));
             val = wrap.fromInteger(str[utils.asSize(try index)]);
         },
         repr.Tag.abstract => {
@@ -499,11 +501,11 @@ pub fn getIndex(ds: repr.Value, index: i32) raise.Raising(repr.Value) {
 /// rejections, two messages, two format specifiers.
 pub fn length(x: repr.Value) raise.Raising(i32) {
     switch (repr.typeOf(x)) {
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return strings.head(wrap.toString(x)).length,
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return @intCast(strings.head(wrap.toString(x)).length),
         repr.Tag.array => return @intCast(wrap.toArray(x).count),
         repr.Tag.buffer => return @intCast(wrap.toBuffer(x).count),
-        repr.Tag.tuple => return tuples.head(wrap.toTuple(x)).length,
-        repr.Tag.@"struct" => return structs.head(wrap.toStruct(x)).length,
+        repr.Tag.tuple => return @intCast(tuples.head(wrap.toTuple(x)).length),
+        repr.Tag.@"struct" => return @intCast(structs.head(wrap.toStruct(x)).length),
         repr.Tag.table => return @intCast(wrap.toTable(x).count),
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);
@@ -537,11 +539,11 @@ pub fn length(x: repr.Value) raise.Raising(i32) {
 /// builds for takes it.
 pub fn lengthv(x: repr.Value) raise.Raising(repr.Value) {
     switch (repr.typeOf(x)) {
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return wrap.fromInteger(strings.head(wrap.toString(x)).length),
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return wrap.fromInteger(@intCast(strings.head(wrap.toString(x)).length)),
         repr.Tag.array => return wrap.fromInteger(@intCast(wrap.toArray(x).count)),
         repr.Tag.buffer => return wrap.fromInteger(@intCast(wrap.toBuffer(x).count)),
-        repr.Tag.tuple => return wrap.fromInteger(tuples.head(wrap.toTuple(x)).length),
-        repr.Tag.@"struct" => return wrap.fromInteger(structs.head(wrap.toStruct(x)).length),
+        repr.Tag.tuple => return wrap.fromInteger(@intCast(tuples.head(wrap.toTuple(x)).length)),
+        repr.Tag.@"struct" => return wrap.fromInteger(@intCast(structs.head(wrap.toStruct(x)).length)),
         repr.Tag.table => return wrap.fromInteger(@intCast(wrap.toTable(x).count)),
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);

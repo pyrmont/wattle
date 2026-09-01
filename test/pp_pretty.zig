@@ -76,7 +76,7 @@ fn eval(source: [*:0]const u8) repr.Value {
     return out;
 }
 
-fn buffer(capacity: i32) *buffers.Buffer {
+fn buffer(capacity: usize) *buffers.Buffer {
     return buffers.new(capacity);
 }
 

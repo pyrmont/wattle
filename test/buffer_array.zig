@@ -96,10 +96,11 @@ fn bufferStartsWithACapacityFloor() void {
     expect(big.capacity == 100);
     expect(big.count == 0);
 
-    // Exactly at the floor, and one below it.
+    // Exactly at the floor, and one below it. A request of zero is what C's
+    // negative one became: `initImpl` floors both at four.
     expect(buffers.new(4).capacity == 4);
     expect(buffers.new(3).capacity == 4);
-    expect(buffers.new(-1).capacity == 4);
+    expect(buffers.new(0).capacity == 4);
 }
 
 /// A buffer the caller owns is marked disabled and is not linked into a heap
@@ -112,7 +113,7 @@ fn callerOwnedBufferIsDisabled() !void {
     expect(b.count == 0);
     expect(b.capacity == 32);
     expect(b.data != null);
-    expect(b.gc.flags == constants.JANET_MEM_DISABLED);
+    expect(harness.gcBits(b.gc.flags) == constants.JANET_MEM_DISABLED);
     expect(b.gc.data.next == null);
     expect(!heap.onList(harness.vm().gc.blocks, &b));
 
@@ -136,7 +137,7 @@ fn pointerBufferNeverReallocates() !void {
     expect(b.data == @as([*]u8, &foreign));
     expect(b.capacity == 8);
     expect(b.count == 3);
-    expect(b.gc.flags & constants.JANET_BUFFER_FLAG_NO_REALLOC != 0);
+    expect(harness.gcBits(b.gc.flags) & constants.JANET_BUFFER_FLAG_NO_REALLOC != 0);
     expect(heap.memoryType(b) == gc_alloc.MemoryType.buffer);
     expect(heap.onList(harness.vm().gc.blocks, b));
 
@@ -164,14 +165,13 @@ fn pointerBufferNeverReallocates() !void {
     expect(b.data == @as([*]u8, &foreign));
     expect(foreign[0] == 1 and foreign[7] == 8);
 
-    // Its arguments are validated before the block is allocated.
+    // Its arguments are validated before the block is allocated. The count is
+    // a `usize`, so the negative C also refused is not a value a caller can
+    // form; `ffi/pointer-buffer` and the unmarshaller both read theirs through
+    // a getter that refuses one first.
     expect(harness.raised(
         buffers.pointerUnsafe,
-        .{ @as(?*anyopaque, &foreign), @as(i32, 8), @as(i32, -1) },
-    ).?.says("count < 0"));
-    expect(harness.raised(
-        buffers.pointerUnsafe,
-        .{ @as(?*anyopaque, &foreign), @as(i32, 2), @as(i32, 3) },
+        .{ @as(?*anyopaque, &foreign), @as(usize, 2), @as(usize, 3) },
     ).?.says("capacity < count"));
 }
 
@@ -205,7 +205,12 @@ fn bufferEnsureAppliesTheGrowthFactor() !void {
 }
 
 /// Growing the count zero-fills the bytes it newly covers; shrinking keeps the
-/// capacity and the bytes above the new count. A negative count does nothing.
+/// capacity and the bytes above the new count.
+///
+/// The negative-count case this used to assert is gone with the `i32`
+/// parameter: `setcount` takes a `usize` and the only Janet path that can
+/// produce a negative -- `os/cryptorand` -- rejects it, which
+/// `test/suite-os.janet` pins.
 fn bufferSetcountZeroFills() !void {
     const b = buffers.new(4);
     try buffers.pushCString(b, "xy");
@@ -229,10 +234,6 @@ fn bufferSetcountZeroFills() !void {
     try buffers.setcount(b, 4);
     expect(b.count == 4);
     expect(b.slice()[3] == 0);
-
-    // A negative count is a no-op, not a truncation to zero.
-    try buffers.setcount(b, -1);
-    expect(b.count == 4);
 }
 
 /// `bufferExtra` reserves room without moving the count, and doubles rather
@@ -453,8 +454,10 @@ fn arraySetcountPushPopPeek() !void {
     // Re-extending fills with nil again rather than exposing the old value.
     expect(harness.isType(a.slice()[2], repr.Tag.nil));
 
-    arrays.setcount(a, -5);
-    expect(a.count == 3);
+    // The negative-count case is gone with the `i32` parameter. `setcount`
+    // takes a `usize`, nothing registers an `array/setcount` binding, and
+    // `capi.zig` does not publish it -- so there is no caller left that could
+    // reach it with a negative, and the range check is the type.
 
     arrays.setcount(a, 0);
     try arrays.push(a, harness.wrapInteger(1));

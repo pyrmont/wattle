@@ -70,12 +70,12 @@ const expect = @import("expect.zig").expect;
 /// same condition spelled in the vocabulary this module has.
 const has_ev = options.ev;
 
-fn headerOf(pointer: ?*anyopaque) *abi.JanetGCObject {
+fn headerOf(pointer: ?*anyopaque) *abi.GCObject {
     return @ptrCast(@alignCast(pointer.?));
 }
 
 fn reachable(pointer: ?*anyopaque) bool {
-    return headerOf(pointer).flags & constants.JANET_MEM_REACHABLE != 0;
+    return harness.gcBits(headerOf(pointer).flags) & constants.JANET_MEM_REACHABLE != 0;
 }
 
 /// Whether a block is still on one of the two heap lists. Only ever called for
@@ -191,18 +191,18 @@ fn theDisabledFlagOutlivesASweep() void {
     const before = harness.vm().gc.block_count;
 
     const buffer = buffers.new(8);
-    buffer.gc.flags |= constants.JANET_MEM_DISABLED;
+    harness.gcSetBits(&buffer.gc.flags, constants.JANET_MEM_DISABLED);
 
     gc_mark.collect();
     expect(harness.vm().gc.block_count == before + 1);
     expect(onList(harness.vm().gc.blocks, buffer));
-    expect(buffer.gc.flags & constants.JANET_MEM_DISABLED != 0);
+    expect(harness.gcBits(buffer.gc.flags) & constants.JANET_MEM_DISABLED != 0);
     expect(!reachable(buffer));
 
     gc_mark.collect();
     expect(harness.vm().gc.block_count == before + 1);
 
-    buffer.gc.flags &= ~@as(i32, constants.JANET_MEM_DISABLED);
+    buffer.gc.flags = @bitCast(harness.gcBits(buffer.gc.flags) & ~@as(u32, constants.JANET_MEM_DISABLED));
     gc_mark.collect();
     expect(harness.vm().gc.block_count == before);
 }
@@ -536,7 +536,7 @@ fn repeatedCycles() void {
         tables.put(
             table,
             value.fromBytes("fiber", .keyword),
-            wrap.fromFiber(fibers.new(wrap.toFunction(function), 8, 0, null).?),
+            wrap.fromFiber(fibers.new(wrap.toFunction(function), 8, &.{}) catch unreachable),
         );
 
         gc_mark.collect();

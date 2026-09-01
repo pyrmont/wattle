@@ -10,13 +10,12 @@
 //! every one of them against its definition, by exact type equality, on every
 //! build; what it cannot reach is named in that file.
 //!
-//! **This file flattens nothing.** It re-exported 565 type and constant
-//! aliases once -- `pub const Janet = types.Janet;` and its kin -- so that a
-//! call site could keep writing `c.Janet`. Those are gone: `types` and
-//! `constants` are imported by the files that name them. The 0.15.1 release
-//! notes give the rationale for removing `usingnamespace` as *"namespacing is
-//! good, actually"*, and the aliases were exactly the flattening that keyword
-//! was removed to discourage.
+//! **This file declares functions and nothing else.** A type or a constant is
+//! imported from the file that owns it, by the file that names it; there are
+//! no re-exported aliases here for a call site to reach a neighbour's
+//! declaration through. Zig 0.15.1's release notes give the rationale for
+//! removing `usingnamespace` as *"namespacing is good, actually"*, and a
+//! flattening alias is what that keyword was removed to discourage.
 //!
 //! **`janet_vm` is not declared here**, and could not be: it is the one symbol
 //! whose storage class follows the build -- `threadlocal` unless
@@ -373,6 +372,43 @@ pub extern fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) ca
 /// of what is genuinely external.
 pub inline fn errno() c_int {
     return std.c._errno().*;
+}
+
+/// Write `errno`. One caller: `os/fs.zig`'s directory walk clears it before
+/// each `readdir`, because a null result there means either the end of the
+/// stream or a failure and only `errno` separates them. It is a setter rather
+/// than a `_errno()` at the call site so that `std.c._errno` has exactly one
+/// mention in the tree, which is what makes "the seam is here" checkable.
+pub inline fn setErrno(value: c_int) void {
+    std.c._errno().* = value;
+}
+
+/// `EINTR`, once. It was spelled four ways -- `h.EINTR` out of three different
+/// translated headers, `ev.EINTR`, `utils.EINTR`, and the bare
+/// `@intFromEnum(std.c.E.INTR)` -- which is three chances for two of them to
+/// mean different numbers on a target nobody built.
+pub const eintr: c_int = @intFromEnum(std.c.E.INTR);
+
+/// Call `f(args)` again for as long as it fails because a signal interrupted
+/// it, and answer whatever it finally returned.
+///
+/// Thirty retry loops were written out, each three lines, and writing them out
+/// is how two of them came to be wrong: `FOUND.md`'s "The kqueue backend's
+/// initialisation retries on every error except `EINTR`" and "`filewatch/remove`
+/// retries a call that succeeded". Both were faithful copies of `ev.c` and
+/// `filewatch.c`, and both are fixed by there being one loop.
+///
+/// The failure test is `< 0`, which is every call this wraps: `close`, `read`,
+/// `write`, `open`, `kevent`, `epoll_wait`, `inotify_rm_watch`, `waitpid` and
+/// the rest all answer a negative on failure and set `errno`. **A call whose
+/// failure is not negative does not belong here** -- it would need its own
+/// predicate, and inventing one for a caller that does not exist is how a
+/// helper starts being wrong.
+pub inline fn retryIntr(comptime f: anytype, args: anytype) @TypeOf(@call(.auto, f, args)) {
+    while (true) {
+        const result = @call(.auto, f, args);
+        if (result >= 0 or errno() != eintr) return result;
+    }
 }
 
 // used by `io.zig`

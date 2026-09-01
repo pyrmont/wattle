@@ -339,15 +339,14 @@
 
   **Phase 14 increment 4a put an `abi.zig` back, and it is not that one.** The
   deleted file translated `janet.h`; this one holds what the runtime and a
-  separately compiled module must agree on, and it is a module root for the
-  same reason `types.zig` is."
+  separately compiled module must agree on, and it is a module root of its own
+  for that reason."
   {"src/zig/abi.zig" true
    "src/zig/cabi.zig" true
    "src/zig/constants.zig" true
    "src/zig/corefn.zig" true
    "src/zig/native_module.zig" true
-   "src/zig/raise.zig" true
-   "src/zig/types.zig" true})
+   "src/zig/raise.zig" true})
 
 (defn runtime-file?
   "Whether `path` is one of the files the `subsystems` module compiles.

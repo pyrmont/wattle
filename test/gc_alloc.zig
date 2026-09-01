@@ -17,7 +17,7 @@
 //!
 //! ## The header arithmetic has a real oracle here
 //!
-//! `JanetScratch` ends in a flexible array, so `@cImport` drops the member and
+//! `ScratchBlock` ends in a flexible array, so `@cImport` drops the member and
 //! Zig recovers the header with `@sizeOf` — the same assumption `gc_mark.zig`
 //! and `gc_sweep.zig` make about the four value heads. In this file the
 //! assumption is *checked* rather than assumed, and by the allocator itself:
@@ -41,27 +41,27 @@ const expect = @import("expect.zig").expect;
 /// The scratch header sits exactly one header below the pointer the caller
 /// holds. That relationship is the whole allocator: `janet_srealloc`,
 /// `janet_sfree` and `janet_sfinalizer` all recover it by subtraction.
-fn headerOf(memory: ?*anyopaque) *gc_alloc.JanetScratch {
-    return @ptrFromInt(@intFromPtr(memory) - @sizeOf(gc_alloc.JanetScratch));
+fn headerOf(memory: ?*anyopaque) *gc_alloc.ScratchBlock {
+    return @ptrFromInt(@intFromPtr(memory) - @sizeOf(gc_alloc.ScratchBlock));
 }
 
 /// Where the runtime recorded `memory`'s header, or null if it did not.
 fn scratchIndexOf(memory: ?*anyopaque) ?usize {
     const want = headerOf(memory);
     var index: usize = 0;
-    while (index < harness.vm().scratch.count) : (index += 1) {
-        if (harness.vm().scratch.at(index).* == want) return index;
+    while (index < harness.vm().scratch.items.len) : (index += 1) {
+        if (harness.vm().scratch.items[index] == want) return index;
     }
     return null;
 }
 
-/// Both heap list heads are `?*JanetGCObject`, so list identity is an ordinary
+/// Both heap list heads are `?*GCObject`, so list identity is an ordinary
 /// pointer comparison and the head's own fields are reachable without a cast.
-fn asBlock(pointer: ?*abi.JanetGCObject) *abi.JanetGCObject {
+fn asBlock(pointer: ?*abi.GCObject) *abi.GCObject {
     return pointer.?;
 }
 
-fn nextOf(block: *abi.JanetGCObject) ?*abi.JanetGCObject {
+fn nextOf(block: *abi.GCObject) ?*abi.GCObject {
     return block.data.next;
 }
 
@@ -79,12 +79,12 @@ fn unlinkHead(weak: bool, size: usize) void {
     utils.free(@ptrCast(head));
 }
 
-fn typeOf(block: *abi.JanetGCObject) gc_alloc.MemoryType {
+fn typeOf(block: *abi.GCObject) gc_alloc.MemoryType {
     return gc_alloc.memoryTypeOf(block);
 }
 
-fn isReachable(block: *abi.JanetGCObject) bool {
-    return block.flags & constants.JANET_MEM_REACHABLE != 0;
+fn isReachable(block: *abi.GCObject) bool {
+    return harness.gcBits(block.flags) & constants.JANET_MEM_REACHABLE != 0;
 }
 
 /// The only thing `janet_gcpressure` does is move the threshold. It must not
@@ -120,7 +120,7 @@ fn aNewBlockGoesOnTheNormalHeap() void {
     expect(nextOf(block) == previous);
     expect(typeOf(block) == gc_alloc.MemoryType.array);
     // The whole word, not only the type byte: a fresh block carries no flags.
-    expect(block.flags == @intFromEnum(gc_alloc.MemoryType.array));
+    expect(harness.gcBits(block.flags) == @intFromEnum(gc_alloc.MemoryType.array));
     expect(!isReachable(block));
     expect(harness.vm().gc.block_count == count + 1);
     expect(harness.vm().gc.next_collection == next + size);
@@ -205,38 +205,38 @@ fn allocationsChainNewestFirst() void {
 
 /// Rooting appends. The root set is a multiset: n roots need n unroots.
 fn theRootSetIsAMultiset() void {
-    const base = harness.vm().roots.count;
+    const base = harness.vm().roots.items.len;
     const array = arrays.new(0);
     const val = wrap.fromArray(array);
 
     gc_alloc.gcroot(val);
-    expect(harness.vm().roots.count == base + 1);
-    expect(wrap.toArray(harness.vm().roots.at(base).*) == array);
+    expect(harness.vm().roots.items.len == base + 1);
+    expect(wrap.toArray(harness.vm().roots.items[base]) == array);
 
     gc_alloc.gcroot(val);
-    expect(harness.vm().roots.count == base + 2);
-    expect(wrap.toArray(harness.vm().roots.at(base + 1).*) == array);
+    expect(harness.vm().roots.items.len == base + 2);
+    expect(wrap.toArray(harness.vm().roots.items[base + 1]) == array);
 
     expect(gc_alloc.gcunroot(val));
-    expect(harness.vm().roots.count == base + 1);
+    expect(harness.vm().roots.items.len == base + 1);
     expect(gc_alloc.gcunroot(val));
-    expect(harness.vm().roots.count == base);
+    expect(harness.vm().roots.items.len == base);
     expect(!gc_alloc.gcunroot(val));
-    expect(harness.vm().roots.count == base);
+    expect(harness.vm().roots.items.len == base);
 }
 
 /// Roots are matched by pointer identity, not by value equality. Two arrays
 /// with the same contents are different roots.
 fn rootsAreMatchedByPointer() void {
-    const base = harness.vm().roots.count;
+    const base = harness.vm().roots.items.len;
     const a = wrap.fromArray(arrays.new(0));
     const b = wrap.fromArray(arrays.new(0));
 
     gc_alloc.gcroot(a);
     expect(!gc_alloc.gcunroot(b));
-    expect(harness.vm().roots.count == base + 1);
+    expect(harness.vm().roots.items.len == base + 1);
     expect(gc_alloc.gcunroot(a));
-    expect(harness.vm().roots.count == base);
+    expect(harness.vm().roots.items.len == base);
 }
 
 /// The three types the collector never traces compare equal to any value of
@@ -244,32 +244,32 @@ fn rootsAreMatchedByPointer() void {
 /// which is harmless — the slot held nothing worth keeping either way — but it
 /// is observable, so it is pinned here.
 fn immediatesMatchAnyValueOfTheirType() void {
-    const base = harness.vm().roots.count;
+    const base = harness.vm().roots.items.len;
 
     gc_alloc.gcroot(wrap.fromNumber(1.0));
     expect(gc_alloc.gcunroot(wrap.fromNumber(9999.0)));
-    expect(harness.vm().roots.count == base);
+    expect(harness.vm().roots.items.len == base);
 
     gc_alloc.gcroot(wrap.fromTrue());
     expect(gc_alloc.gcunroot(wrap.fromFalse()));
-    expect(harness.vm().roots.count == base);
+    expect(harness.vm().roots.items.len == base);
 
     gc_alloc.gcroot(wrap.fromNil());
     expect(gc_alloc.gcunroot(wrap.fromNil()));
-    expect(harness.vm().roots.count == base);
+    expect(harness.vm().roots.items.len == base);
 
     // Different types never match, immediate or not.
     gc_alloc.gcroot(wrap.fromNumber(1.0));
     expect(!gc_alloc.gcunroot(wrap.fromTrue()));
     expect(!gc_alloc.gcunroot(wrap.fromNil()));
     expect(gc_alloc.gcunroot(wrap.fromNumber(0.0)));
-    expect(harness.vm().roots.count == base);
+    expect(harness.vm().roots.items.len == base);
 }
 
 /// Unrooting fills the vacated slot from the top of the set, so the order of
 /// the remaining roots is not the order they were added in.
 fn unrootingSwapsFromTheTop() void {
-    const base = harness.vm().roots.count;
+    const base = harness.vm().roots.items.len;
     const a = arrays.new(0);
     const b = arrays.new(0);
     const d = arrays.new(0);
@@ -279,13 +279,13 @@ fn unrootingSwapsFromTheTop() void {
     gc_alloc.gcroot(wrap.fromArray(d));
 
     expect(gc_alloc.gcunroot(wrap.fromArray(a)));
-    expect(harness.vm().roots.count == base + 2);
-    expect(wrap.toArray(harness.vm().roots.at(base).*) == d);
-    expect(wrap.toArray(harness.vm().roots.at(base + 1).*) == b);
+    expect(harness.vm().roots.items.len == base + 2);
+    expect(wrap.toArray(harness.vm().roots.items[base]) == d);
+    expect(wrap.toArray(harness.vm().roots.items[base + 1]) == b);
 
     expect(gc_alloc.gcunroot(wrap.fromArray(b)));
     expect(gc_alloc.gcunroot(wrap.fromArray(d)));
-    expect(harness.vm().roots.count == base);
+    expect(harness.vm().roots.items.len == base);
 }
 
 /// `janet_gcunrootall` does not remove every rooting, despite what Janet's
@@ -294,43 +294,50 @@ fn unrootingSwapsFromTheTop() void {
 /// floor(n / 2). `FOUND.md` carries the defect; this pins the behaviour.
 fn unrootAllHalves() void {
     for ([_]usize{ 1, 2, 3, 4, 5, 8 }) |n| {
-        const base = harness.vm().roots.count;
+        const base = harness.vm().roots.items.len;
         const val = wrap.fromArray(arrays.new(0));
 
         for (0..n) |_| gc_alloc.gcroot(val);
-        expect(harness.vm().roots.count == base + n);
+        expect(harness.vm().roots.items.len == base + n);
 
         expect(gc_alloc.gcunrootall(val));
-        expect(harness.vm().roots.count == base + n / 2);
+        expect(harness.vm().roots.items.len == base + n / 2);
 
         // What survives really is still rooted, and can be removed one at a
         // time.
         for (0..n / 2) |_| expect(gc_alloc.gcunroot(val));
-        expect(harness.vm().roots.count == base);
+        expect(harness.vm().roots.items.len == base);
         expect(!gc_alloc.gcunrootall(val));
     }
 }
 
 /// An absent value reports absence and changes nothing.
 fn unrootAllOfAnAbsentValue() void {
-    const base = harness.vm().roots.count;
+    const base = harness.vm().roots.items.len;
     const a = wrap.fromArray(arrays.new(0));
     const b = wrap.fromArray(arrays.new(0));
 
     gc_alloc.gcroot(a);
     expect(!gc_alloc.gcunrootall(b));
-    expect(harness.vm().roots.count == base + 1);
+    expect(harness.vm().roots.items.len == base + 1);
     expect(gc_alloc.gcunroot(a));
-    expect(harness.vm().roots.count == base);
+    expect(harness.vm().roots.items.len == base);
 }
 
-/// Growth is by doubling the required count, and the roots survive it.
+/// The root set grows when it fills, and the roots survive the growth.
+///
+/// **Not the growth rule.** This asserted `capacity == 2 * (at_capacity + 1)`
+/// while the root set carried its own doubling; under D6 that rule is
+/// `ArrayListUnmanaged`'s and is not behaviour a program observes -- only
+/// *when* a reallocation happens, which nothing can see. What a caller can see
+/// is that rooting past the capacity keeps every root, at its index, and that
+/// unrooting them all restores the count. That is what is asserted.
 fn theRootSetGrows() void {
-    const base = harness.vm().roots.count;
+    const base = harness.vm().roots.items.len;
     const val = wrap.fromArray(arrays.new(0));
     var added: usize = 0;
 
-    while (harness.vm().roots.count < harness.vm().roots.capacity) {
+    while (harness.vm().roots.items.len < harness.vm().roots.capacity) {
         gc_alloc.gcroot(val);
         added += 1;
     }
@@ -338,15 +345,15 @@ fn theRootSetGrows() void {
 
     gc_alloc.gcroot(val);
     added += 1;
-    expect(harness.vm().roots.capacity == 2 * (at_capacity + 1));
-    expect(harness.vm().roots.count == base + added);
+    expect(harness.vm().roots.capacity > at_capacity);
+    expect(harness.vm().roots.items.len == base + added);
     for (0..added) |index| {
-        expect(wrap.toArray(harness.vm().roots.at(base + index).*) ==
+        expect(wrap.toArray(harness.vm().roots.items[base + index]) ==
             wrap.toArray(val));
     }
 
     for (0..added) |_| expect(gc_alloc.gcunroot(val));
-    expect(harness.vm().roots.count == base);
+    expect(harness.vm().roots.items.len == base);
 }
 
 /// The handle is the depth to restore, not a token to match. Unlocking with an
@@ -404,51 +411,51 @@ fn recordFinalizer(memory: ?*anyopaque) callconv(.c) void {
 /// `headerOf`'s `@sizeOf` arithmetic against the address the *runtime*
 /// recorded, so the flexible-array assumption is checked rather than assumed.
 fn smallocRegistersItsBlock() void {
-    const base = harness.vm().scratch.count;
+    const base = harness.vm().scratch.items.len;
 
     const p: [*]u8 = @ptrCast(gc_alloc.smalloc(40));
-    expect(harness.vm().scratch.count == base + 1);
-    expect(harness.vm().scratch.at(base).* == headerOf(p));
+    expect(harness.vm().scratch.items.len == base + 1);
+    expect(harness.vm().scratch.items[base] == headerOf(p));
     expect(headerOf(p).finalize == null);
     expect(@intFromPtr(p) % @alignOf(c_longlong) == 0);
 
     @memset(p[0..40], 'x');
     gc_alloc.sfree(p);
-    expect(harness.vm().scratch.count == base);
+    expect(harness.vm().scratch.items.len == base);
 }
 
 /// `janet_scalloc` zeroes, and the zero-length cases still produce a
 /// registered block.
 fn scallocZeroes() void {
-    const base = harness.vm().scratch.count;
+    const base = harness.vm().scratch.items.len;
 
     const p: [*]u8 = @ptrCast(gc_alloc.scalloc(9, 7).?);
-    expect(harness.vm().scratch.count == base + 1);
+    expect(harness.vm().scratch.items.len == base + 1);
     for (p[0..63]) |byte| expect(byte == 0);
 
     const empty = gc_alloc.scalloc(0, 16);
     expect(empty != null);
-    expect(harness.vm().scratch.count == base + 2);
+    expect(harness.vm().scratch.items.len == base + 2);
 
     const empty2 = gc_alloc.scalloc(16, 0);
     expect(empty2 != null);
-    expect(harness.vm().scratch.count == base + 3);
+    expect(harness.vm().scratch.items.len == base + 3);
 
     gc_alloc.sfree(empty2);
     gc_alloc.sfree(empty);
     gc_alloc.sfree(p);
-    expect(harness.vm().scratch.count == base);
+    expect(harness.vm().scratch.items.len == base);
 }
 
 /// `janet_srealloc` keeps the block in the same table slot, preserves the
 /// bytes that fit, and carries the finalizer across — the header moves with
 /// the allocation. A null pointer means allocate.
 fn sreallocKeepsItsSlot() void {
-    const base = harness.vm().scratch.count;
+    const base = harness.vm().scratch.items.len;
 
     const fresh = gc_alloc.srealloc(null, 24);
     expect(fresh != null);
-    expect(harness.vm().scratch.count == base + 1);
+    expect(harness.vm().scratch.items.len == base + 1);
     expect(scratchIndexOf(fresh).? == base);
     gc_alloc.sfree(fresh);
 
@@ -458,13 +465,13 @@ fn sreallocKeepsItsSlot() void {
     const slot = scratchIndexOf(p).?;
 
     const grown: [*]u8 = @ptrCast(gc_alloc.srealloc(p, 4096).?);
-    expect(harness.vm().scratch.count == base + 1);
+    expect(harness.vm().scratch.items.len == base + 1);
     expect(scratchIndexOf(grown).? == slot);
     expect(std.mem.eql(u8, grown[0..15], "0123456789abcde"));
     expect(headerOf(grown).finalize == recordFinalizer);
 
     const shrunk: [*]u8 = @ptrCast(gc_alloc.srealloc(grown, 8).?);
-    expect(harness.vm().scratch.count == base + 1);
+    expect(harness.vm().scratch.items.len == base + 1);
     expect(scratchIndexOf(shrunk).? == slot);
     expect(std.mem.eql(u8, shrunk[0..8], "01234567"));
 
@@ -472,35 +479,35 @@ fn sreallocKeepsItsSlot() void {
     gc_alloc.sfree(shrunk);
     expect(finalizer_calls == 1);
     expect(finalizer_args[0] == @as(?*anyopaque, @ptrCast(shrunk)));
-    expect(harness.vm().scratch.count == base);
+    expect(harness.vm().scratch.items.len == base);
 }
 
 /// Freeing fills the vacated table slot from the top, the same way the root
 /// set does, and a null pointer is a no-op.
 fn sfreeSwapsFromTheTop() void {
-    const base = harness.vm().scratch.count;
+    const base = harness.vm().scratch.items.len;
 
     const a = gc_alloc.smalloc(8);
     const b = gc_alloc.smalloc(8);
     const d = gc_alloc.smalloc(8);
-    expect(harness.vm().scratch.count == base + 3);
+    expect(harness.vm().scratch.items.len == base + 3);
 
     gc_alloc.sfree(null);
-    expect(harness.vm().scratch.count == base + 3);
+    expect(harness.vm().scratch.items.len == base + 3);
 
     gc_alloc.sfree(a);
-    expect(harness.vm().scratch.count == base + 2);
+    expect(harness.vm().scratch.items.len == base + 2);
     expect(scratchIndexOf(d).? == base);
     expect(scratchIndexOf(b).? == base + 1);
 
     gc_alloc.sfree(b);
     gc_alloc.sfree(d);
-    expect(harness.vm().scratch.count == base);
+    expect(harness.vm().scratch.items.len == base);
 }
 
 /// A finalizer runs once, with the caller's pointer rather than the header.
 fn aScratchFinalizerRunsOnce() void {
-    const base = harness.vm().scratch.count;
+    const base = harness.vm().scratch.items.len;
 
     var p = gc_alloc.smalloc(8);
     finalizer_calls = 0;
@@ -513,17 +520,17 @@ fn aScratchFinalizerRunsOnce() void {
     gc_alloc.sfree(p);
     expect(finalizer_calls == 1);
     expect(finalizer_args[0] == p);
-    expect(harness.vm().scratch.count == base);
+    expect(harness.vm().scratch.items.len == base);
 }
 
 /// The table grows to twice what is needed plus two, and everything already in
 /// it survives the move.
 fn theScratchTableGrows() void {
     var held: [64]?*anyopaque = undefined;
-    const base = harness.vm().scratch.count;
+    const base = harness.vm().scratch.items.len;
     var count: usize = 0;
 
-    while (harness.vm().scratch.count < harness.vm().scratch.capacity) {
+    while (harness.vm().scratch.items.len < harness.vm().scratch.capacity) {
         held[count] = gc_alloc.smalloc(8);
         @memset(@as([*]u8, @ptrCast(held[count].?))[0..8], @intCast(count));
         count += 1;
@@ -534,8 +541,11 @@ fn theScratchTableGrows() void {
     held[count] = gc_alloc.smalloc(8);
     @memset(@as([*]u8, @ptrCast(held[count].?))[0..8], @intCast(count));
     count += 1;
-    expect(harness.vm().scratch.capacity == 2 * at_capacity + 2);
-    expect(harness.vm().scratch.count == base + count);
+    // Not the growth rule -- see `theRootSetGrows`. What the table owes is
+    // that every live block is still findable in it after the growth, which
+    // the loop below checks.
+    expect(harness.vm().scratch.capacity > at_capacity);
+    expect(harness.vm().scratch.items.len == base + count);
 
     for (0..count) |index| {
         expect(scratchIndexOf(held[index]) != null);
@@ -543,7 +553,7 @@ fn theScratchTableGrows() void {
         for (bytes[0..8]) |byte| expect(byte == @as(u8, @intCast(index)));
     }
     for (0..count) |index| gc_alloc.sfree(held[index]);
-    expect(harness.vm().scratch.count == base);
+    expect(harness.vm().scratch.items.len == base);
 }
 
 /// Releasing everything runs each finalizer and empties the table. This is what
@@ -552,7 +562,7 @@ fn theScratchTableGrows() void {
 /// correct.
 fn freeAllScratchRunsEveryFinalizer() void {
     gc_mark.collect();
-    expect(harness.vm().scratch.count == 0);
+    expect(harness.vm().scratch.items.len == 0);
 
     const a = gc_alloc.smalloc(8);
     _ = gc_alloc.smalloc(8);
@@ -562,7 +572,7 @@ fn freeAllScratchRunsEveryFinalizer() void {
 
     finalizer_calls = 0;
     gc_alloc.freeAllScratch(&harness.vm().scratch);
-    expect(harness.vm().scratch.count == 0);
+    expect(harness.vm().scratch.items.len == 0);
     expect(finalizer_calls == 2);
     expect(finalizer_args[0] == a);
     expect(finalizer_args[1] == d);
@@ -576,7 +586,7 @@ fn aCollectionFreesScratch() void {
     gc_mark.collect();
     expect(finalizer_calls == 1);
     expect(finalizer_args[0] == p);
-    expect(harness.vm().scratch.count == 0);
+    expect(harness.vm().scratch.items.len == 0);
 }
 
 pub fn run() void {

@@ -490,7 +490,7 @@ fn theDynamicFile() void {
     vm_state.setdyn("io-core-out", harness.wrapInteger(3));
     expect(asHandle(io_core_mod.dynfile("io-core-out", stdio.err())) == asHandle(stdio.err()));
     vm_state.setdyn("io-core-out", wrap.fromAbstract(
-        abstracts.newFor(math.JanetRNG, &math.rngType),
+        abstracts.newFor(math.Rng, &math.rngType),
     ));
     expect(asHandle(io_core_mod.dynfile("io-core-out", stdio.err())) == asHandle(stdio.err()));
 

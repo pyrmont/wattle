@@ -89,7 +89,7 @@ fn theHeadAccessorsRecoverWhatTheConstructorsWrote() void {
     const abst = abstracts.newBytes(&head_probe_at, 8);
     const abstract_head = utils.abstractHead(abst);
     expect(abstract_head.size == 8);
-    expect(payloadOffset(abstract_head, abst) == @sizeOf(abi.JanetAbstractHead));
+    expect(payloadOffset(abstract_head, abst) == @sizeOf(abi.AbstractHead));
 }
 
 // -------------------------------------------------------------------- hashes
@@ -129,8 +129,11 @@ fn theHashesAreTheOnesTheirCallersExpect() void {
     }
 }
 
+/// `capacityFor` took an `int32_t` in C and answered zero for a negative one,
+/// which was the only route to a bucket array of no buckets. It takes a
+/// `usize`, so that argument does not exist and the answer is at least one for
+/// everything it can be given.
 fn tablenRoundsUpToAPowerOfTwo() void {
-    expect(value.capacityFor(-1) == 0);
     expect(value.capacityFor(0) == 1);
     expect(value.capacityFor(1) == 2);
     expect(value.capacityFor(2) == 4);
@@ -222,17 +225,6 @@ fn strbinsearchRespectsTheItemSize() void {
         strings.cstring("gamma"),
     )));
     expect(bighit == &big_table[2]);
-}
-
-fn safeMemcpyToleratesAZeroLengthNullCopy() void {
-    var dest = [_]u8{ 'w', 'x', 'y', 'z' };
-    // The whole point: a zero length with null pointers must not be handed to
-    // memcpy, which is undefined even then.
-    utils.safeMemcpy(null, null, 0);
-    utils.safeMemcpy(&dest, null, 0);
-    expect(dest[0] == 'w');
-    utils.safeMemcpy(&dest, "ab", 2);
-    expect(dest[0] == 'a' and dest[1] == 'b' and dest[2] == 'y');
 }
 
 // ------------------------------------------------------------- the probe
@@ -398,7 +390,7 @@ fn theCollectionHashesAreWhatTheHeadsStore() void {
     structs.put(kvs, value.fromBytes("k", .keyword), harness.wrapInteger(1));
     const st = structs.end(kvs);
     const head = utils.structHead(st);
-    expect(head.hash == value.hashDictionary(st[0..@intCast(head.capacity)]));
+    expect(head.hash == value.hashDictionary(st[0..head.capacity]));
 }
 
 // ---------------------------------------------------- the four name tables
@@ -453,7 +445,6 @@ pub fn run() void {
     theHeadAccessorsRecoverWhatTheConstructorsWrote();
     cstrcmpStopsAtWhicheverEndComesFirst();
     strbinsearchRespectsTheItemSize();
-    safeMemcpyToleratesAZeroLengthNullCopy();
     theProbeDistinguishesATombstoneFromAnEmptyBucket();
     dictionaryGetTurnsAMissIntoNil();
     theKeywordProbeComparesLengthBeforeBytes();

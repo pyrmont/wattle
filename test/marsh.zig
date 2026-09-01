@@ -145,7 +145,7 @@ const Probe = extern struct {
     ptr: ?*anyopaque,
 };
 
-fn probeMarshal(probe: *Probe, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
+fn probeMarshal(probe: *Probe, ctx: *abi.MarshalContext) raise.Raising(void) {
     marsh_mod.marshalAbstract(ctx, probe);
     try marsh.marshalInt(ctx, probe.i32_field);
     try marsh.marshalInt64(ctx, probe.i64_field);
@@ -160,7 +160,7 @@ fn probeMarshal(probe: *Probe, ctx: *abi.JanetMarshalContext) raise.Raising(void
 
 /// Every read is a `try`, which is the whole of what the C original spelled as
 /// a `BAIL_IF_RAISING` after each one -- see the header comment.
-fn probeUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*Probe) {
+fn probeUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Probe) {
     const probe: *Probe = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(Probe))));
     probe.i32_field = try marsh.unmarshalInt(ctx);
     probe.i64_field = try marsh.unmarshalInt64(ctx);
@@ -186,12 +186,12 @@ const probe_at = abstract_type.define(Probe, .{
 
 /// A type that always reaches for a pointer, so that the safe-mode refusal has
 /// something to refuse.
-fn refuserMarshal(p: *anyopaque, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
+fn refuserMarshal(p: *anyopaque, ctx: *abi.MarshalContext) raise.Raising(void) {
     marsh_mod.marshalAbstract(ctx, p);
     try marsh.marshalPtr(ctx, p);
 }
 
-fn refuserUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*anyopaque) {
+fn refuserUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*anyopaque) {
     const p = (try marsh.unmarshalAbstract(ctx, @sizeOf(i32))).?;
     _ = try marsh.unmarshalPtr(ctx);
     return p;
@@ -204,7 +204,7 @@ const refuser_at = abstract_type.define(anyopaque, .{
 });
 
 /// A type that writes more bytes than a Janet buffer can index.
-fn toobigMarshal(p: *anyopaque, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
+fn toobigMarshal(p: *anyopaque, ctx: *abi.MarshalContext) raise.Raising(void) {
     marsh_mod.marshalAbstract(ctx, p);
     const bytes: [*]const u8 = @ptrCast(p);
     try marsh.marshalBytes(ctx, bytes[0 .. @as(usize, std.math.maxInt(i32)) + 1]);
@@ -217,13 +217,13 @@ const toobig_at = abstract_type.define(anyopaque, .{
 
 /// The marshal half of the three types whose *unmarshal* half breaks the
 /// abstract protocol.
-fn protocolMarshal(p: *anyopaque, ctx: *abi.JanetMarshalContext) raise.Raising(void) {
+fn protocolMarshal(p: *anyopaque, ctx: *abi.MarshalContext) raise.Raising(void) {
     marsh_mod.marshalAbstract(ctx, p);
     try marsh.marshalByte(ctx, @as(*u8, @ptrCast(p)).*);
 }
 
 /// Registers itself twice.
-fn twiceUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*anyopaque) {
+fn twiceUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*anyopaque) {
     const p = (try marsh.unmarshalAbstract(ctx, 1)).?;
     try marsh.unmarshalAbstractReuse(ctx, p);
     return p;
@@ -236,7 +236,7 @@ const twice_at = abstract_type.define(anyopaque, .{
 });
 
 /// Never registers at all.
-fn neverUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*anyopaque) {
+fn neverUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*anyopaque) {
     _ = try marsh.unmarshalByte(ctx);
     return abstracts.newFor(Probe, &probe_at);
 }
@@ -247,7 +247,7 @@ const never_at = abstract_type.define(anyopaque, .{
     .unmarshal = neverUnmarshal,
 });
 
-fn threadedUnmarshal(ctx: *abi.JanetMarshalContext) raise.Raising(*anyopaque) {
+fn threadedUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*anyopaque) {
     return (try marsh.unmarshalAbstractThreaded(ctx, 1)).?;
 }
 
@@ -634,11 +634,10 @@ fn onlyIndexOf(b: *buffers.Buffer, lead: u8) i32 {
 }
 
 fn callThunk(f: repr.Value) i32 {
-    var result = wrap.fromNil();
     var fiber: ?*fibers.Fiber = null;
-    const sig = vm_entry.pcall(wrap.toFunction(f), 0, null, &result, &fiber);
-    expect(sig == abi.Signal.ok);
-    return wrap.toInteger(result);
+    const resumed = vm_entry.pcall(wrap.toFunction(f), &.{}, &fiber);
+    expect(resumed.signal == abi.Signal.ok);
+    return wrap.toInteger(resumed.value);
 }
 
 fn evaluate(source: [*:0]const u8) repr.Value {
@@ -831,11 +830,10 @@ fn aPrototypeIsTypeChecked() void {
 /// provoked from inside one.
 fn aLiveFiberCannotBeMarshalled() raise.Raising(void) {
     var out = evaluate("(fn [] (marshal (fiber/current)))");
-    var result = wrap.fromNil();
     var fiber: ?*fibers.Fiber = null;
-    const sig = vm_entry.pcall(wrap.toFunction(out), 0, null, &result, &fiber);
-    expect(sig == abi.Signal.@"error");
-    expect(harness.stringValueIs(result, "cannot marshal alive fiber"));
+    const resumed = vm_entry.pcall(wrap.toFunction(out), &.{}, &fiber);
+    expect(resumed.signal == abi.Signal.@"error");
+    expect(harness.stringValueIs(resumed.value, "cannot marshal alive fiber"));
 
     // A suspended one round-trips, and the reader checks the frame arithmetic
     // the writer produced.

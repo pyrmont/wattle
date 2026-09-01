@@ -256,6 +256,5 @@ pub fn statRead(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64
 /// the Linux arm writes a different set again, and a descriptor's unwritten
 /// fields are part of its contract with nothing about the type to say so.
 inline fn zeroAll(numbers: [*]f64) void {
-    var i: usize = 0;
-    while (i < Field.count) : (i += 1) numbers[i] = 0;
+    for (0..Field.count) |i| numbers[i] = 0;
 }

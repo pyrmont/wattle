@@ -8,7 +8,7 @@
 //!
 //! Both are asserted here, and the refusals are the bulk of it. They are worth
 //! the space for a reason particular to this subsystem: `janet_asm` reports by
-//! filling in a `JanetAssembleResult.error` rather than by raising, so **the
+//! filling in an `AssembleResult.error` rather than by raising, so **the
 //! message is a return value and part of the interface**. A port that changed
 //! the wording would be changing observable behaviour, and nothing else in the
 //! tree would notice.
@@ -48,7 +48,7 @@ var environment: *tables.Table = undefined;
 ///
 /// `janet_dostring` is a protected entry point -- it answers a status rather
 /// than raising -- so the quoted structure arrives here without a scope.
-fn assemble(source: [*:0]const u8) bytecode.JanetAssembleResult {
+fn assemble(source: [*:0]const u8) bytecode.AssembleResult {
     var val: repr.Value = undefined;
     expect(core_env.dostring(environment, source, "asm-encode-test", &val) == 0);
     return bytecode.assembleValue(val, 0);
@@ -57,14 +57,14 @@ fn assemble(source: [*:0]const u8) bytecode.JanetAssembleResult {
 /// Assemble, and assert it was refused with exactly this message.
 fn refused(source: [*:0]const u8, message: [*:0]const u8) void {
     const result = assemble(source);
-    expect(result.status == constants.JANET_ASSEMBLE_ERROR);
+    expect(@intFromEnum(result.status) == 1);
     expect(result.@"error" != null);
     expect(harness.stringIs(result.@"error".?, message));
 }
 
 fn accepted(source: [*:0]const u8) *functions.FuncDef {
     const result = assemble(source);
-    expect(result.status == constants.JANET_ASSEMBLE_OK);
+    expect(@intFromEnum(result.status) == 0);
     expect(result.@"error" == null);
     return result.funcdef.?;
 }

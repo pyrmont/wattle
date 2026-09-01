@@ -85,8 +85,8 @@ const config = @import("config");
 const value = @import("value.zig");
 const abi = @import("abi");
 
-pub const JanetModule = ?*const fn ([*c]tables.Table) callconv(.c) void;
-pub const JanetModconf = ?*const fn () callconv(.c) abi.JanetBuildConfig;
+pub const ModuleEntry = ?*const fn ([*c]tables.Table) callconv(.c) void;
+pub const ModuleConfig = ?*const fn () callconv(.c) abi.BuildConfig;
 
 /// The two version strings, as pointers `janet_cstring` can `strlen`.
 ///
@@ -133,7 +133,7 @@ inline fn allocated(pointer: ?*anyopaque) *anyopaque {
 // Loading a native module.
 // ==========================================================================
 
-fn native(name: [*:0]const u8, err: *?strings.String) raise.Raising(JanetModule) {
+fn native(name: [*:0]const u8, err: *?strings.String) raise.Raising(ModuleEntry) {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"dynamic_modules"}));
     const processed_name = utils.getProcessedName(name);
     const lib = clib.load(@ptrCast(processed_name));
@@ -142,18 +142,17 @@ fn native(name: [*:0]const u8, err: *?strings.String) raise.Raising(JanetModule)
         err.* = strings.cstring(clib.lastError());
         return null;
     }
-    const init: JanetModule = @ptrCast(@alignCast(try clib.symbol(lib, "_janet_init")));
+    const init: ModuleEntry = @ptrCast(@alignCast(try clib.symbol(lib, "_janet_init")));
     if (init == null) {
         err.* = strings.cstring("could not find the _janet_init symbol");
         return null;
     }
-    const getter: JanetModconf = @ptrCast(@alignCast(try clib.symbol(lib, "_janet_mod_config")));
-    if (getter == null) {
+    const getter: ModuleConfig = @ptrCast(@alignCast(try clib.symbol(lib, "_janet_mod_config")));
+    const modconf = if (getter) |mod_config| mod_config() else {
         err.* = strings.cstring("could not find the _janet_mod_config symbol");
         return null;
-    }
-    const modconf = getter.?();
-    const host: abi.JanetBuildConfig = .{
+    };
+    const host: abi.BuildConfig = .{
         .major = config.version_major,
         .minor = config.version_minor,
         .patch = config.version_patch,
@@ -186,7 +185,7 @@ fn native(name: [*:0]const u8, err: *?strings.String) raise.Raising(JanetModule)
     return init;
 }
 
-pub fn nativeAbi(name: [*:0]const u8, err: *?strings.String) JanetModule {
+pub fn nativeAbi(name: [*:0]const u8, err: *?strings.String) ModuleEntry {
     return raise.reported(native(name, err));
 }
 
@@ -202,7 +201,7 @@ fn dynCString(name: [*:0]const u8, dflt: [*:0]const u8) raise.Raising([*:0]const
     }
     const jstr = wrap.toString(x);
     const cstr: [*:0]const u8 = @ptrCast(jstr);
-    if (std.mem.len(cstr) != @as(usize, @intCast(strings.head(jstr).length))) {
+    if (std.mem.len(cstr) != strings.head(jstr).length) {
         return pp_format.panicf("string %v contains embedded 0s", .{x});
     }
     return cstr;
@@ -310,11 +309,10 @@ fn cfunExpandPath(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 fn normalizePath(out: *buffers.Buffer) void {
     const data = out.data;
     const end: usize = @intCast(out.count);
-    var scan: usize = 0;
     var print: usize = 0;
     var normal_section_count: i32 = 0;
     var dot_count: i32 = 0;
-    while (scan < end) : (scan += 1) {
+    for (0..end) |scan| {
         const ch = data.?[scan];
         if (ch == '.') {
             if (dot_count >= 0) {
@@ -374,10 +372,13 @@ fn cfunDyn(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value)
 
 fn cfunSetdyn(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    if (vm_state.current().fiber.?.env == null) {
-        vm_state.current().fiber.?.env = tables.new(2);
-    }
-    tables.put(vm_state.current().fiber.?.env.?, argv[0], argv[1]);
+    const fiber = vm_state.currentFiber();
+    const dyns = fiber.env orelse made: {
+        const fresh = tables.new(2);
+        fiber.env = fresh;
+        break :made fresh;
+    };
+    tables.put(dyns, argv[0], argv[1]);
     return argv[1];
 }
 
@@ -387,14 +388,14 @@ fn cfunNative(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
     const path = try args_core.getString(argv, 0);
     var err: ?strings.String = null;
     const env = if (argv.len == 2) try args_core.getTable(argv, 1) else tables.new(0);
-    const init = try native(@ptrCast(path), &err);
-    if (init == null) {
+    const loaded = try native(@ptrCast(path), &err);
+    const init = loaded orelse {
         return pp_format.panicf("could not load native %S: %S", .{ path, err });
-    }
+    };
     // Rooted against a collection triggered from inside the module's entry
     // point, which runs arbitrary third-party code.
-    try fibers.push(vm_state.current().fiber.?, wrap.fromTable(env));
-    try raise.crossing(init.?(env));
+    try fibers.push(vm_state.currentFiber(), wrap.fromTable(env));
+    try raise.crossing(init(env));
     tables.put(env, value.fromBytes("native", .keyword), argv0);
     return wrap.fromTable(env);
 }
@@ -455,9 +456,9 @@ fn cfunTuple(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
 }
 
 fn cfunArray(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    const array = arrays.new(@as(i32, @intCast(argv.len)));
+    const array = arrays.new(argv.len);
     array.count = argv.len;
-    utils.safeMemcpy(@ptrCast(array.data), @ptrCast(argv), @as(usize, @intCast(@as(i32, @intCast(argv.len)))) * @sizeOf(repr.Value));
+    @memcpy(array.reserved()[0..argv.len], argv);
     return wrap.fromArray(array);
 }
 
@@ -504,7 +505,7 @@ fn cfunRange(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
     } else {
         assert(start + @as(f64, @floatFromInt(int_count)) * step <= stop, "bad range code");
     }
-    const array = arrays.new(int_count);
+    const array = arrays.new(@intCast(int_count));
     const room = array.reserved();
     for (0..@as(usize, @intCast(int_count))) |i| {
         room[i] = wrap.fromNumber(start + @as(f64, @floatFromInt(i)) * step);
@@ -521,8 +522,8 @@ inline fn assert(condition: bool, message: [*:0]const u8) void {
 }
 
 fn cfunTable(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    if (@as(i32, @intCast(argv.len)) & 1 != 0) return raise.panic("expected even number of arguments");
-    const table = tables.new(@as(i32, @intCast(argv.len)) >> 1);
+    if (argv.len & 1 != 0) return raise.panic("expected even number of arguments");
+    const table = tables.new(argv.len >> 1);
     var i: usize = 0;
     while (i + 1 < argv.len) : (i += 2) {
         tables.put(table, argv[i], argv[i + 1]);
@@ -545,8 +546,8 @@ fn cfunGetproto(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.V
 }
 
 fn cfunStruct(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    if (@as(i32, @intCast(argv.len)) & 1 != 0) return raise.panic("expected even number of arguments");
-    const st = structs.begin(@as(i32, @intCast(argv.len)) >> 1);
+    if (argv.len & 1 != 0) return raise.panic("expected even number of arguments");
+    const st = structs.begin(argv.len >> 1);
     var i: usize = 0;
     while (i + 1 < argv.len) : (i += 2) {
         structs.put(st, argv[i], argv[i + 1]);
@@ -616,14 +617,14 @@ fn cfunGetline(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
 fn cfunTrace(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const func = try args_core.getFunction(argv, 0);
-    func.gc.flags |= constants.JANET_FUNCFLAG_TRACE;
+    functions.setTraced(func, true);
     return argv[0];
 }
 
 fn cfunUntrace(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const func = try args_core.getFunction(argv, 0);
-    func.gc.flags &= ~@as(i32, constants.JANET_FUNCFLAG_TRACE);
+    functions.setTraced(func, false);
     return argv[0];
 }
 
@@ -728,8 +729,7 @@ const sandbox_options = [_]SandboxOption{
 
 fn cfunSandbox(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     var flags: vm_lifecycle.Sandbox = .{};
-    var i: usize = 0;
-    while (i < argv.len) : (i += 1) {
+    for (0..argv.len) |i| {
         const kw = try args_core.getKeyword(argv, i);
         var found = false;
         for (sandbox_options) |option| {
@@ -739,7 +739,7 @@ fn cfunSandbox(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
                 break;
             }
         }
-        if (!found) return pp_format.panicf("unknown capability %v", .{argv[@intCast(i)]});
+        if (!found) return pp_format.panicf("unknown capability %v", .{argv[i]});
     }
     try vm_lifecycle.sandbox(flags);
     return wrap.fromNil();
@@ -1387,9 +1387,9 @@ pub fn coreLookupTable(replacements: ?*tables.Table) raise.Raising(*tables.Table
     const dict = tables.new(512);
     try loadLibs(dict);
 
-    if (replacements != null) {
-        for (0..replacements.?.capacity) |i| {
-            const kv = replacements.?.slots()[i];
+    if (replacements) |table| {
+        for (0..table.capacity) |i| {
+            const kv = table.slots()[i];
             if (!repr.checkType(kv.key, repr.Tag.nil)) {
                 tables.put(dict, kv.key, kv.value);
             }
@@ -1440,9 +1440,9 @@ pub fn dobytesImpl(
 
     if (where) |w| gc_alloc.gcroot(wrap.fromString(w));
     const path: [*:0]const u8 = if (source_path) |p| p else "<unknown>";
-    const parser: *parser_core.JanetParser = @ptrCast(@alignCast(abstracts.newBytes(
+    const parser: *parser_core.Parser = @ptrCast(@alignCast(abstracts.newBytes(
         &parser_core.parserType,
-        @sizeOf(parser_core.JanetParser),
+        @sizeOf(parser_core.Parser),
     )));
     parser_core.parserInit(parser);
     gc_alloc.gcroot(wrap.fromAbstract(parser));
@@ -1451,13 +1451,17 @@ pub fn dobytesImpl(
         while (parser_core.parserHasMore(parser)) {
             const form = parser_core.parserProduce(parser);
             const cres = try compiler_primitives.compile(form, env, where);
-            if (cres.status == constants.JANET_COMPILE_OK) {
+            if (cres.status == .ok) {
                 const f = functions.thunk(cres.funcdef.?);
-                fiber = fibers.new(f, 64, 0, null);
-                fiber.?.env = env;
-                const status = vm_entry.continueFiber(fiber.?, wrap.fromNil(), &ret);
-                if (status != abi.Signal.ok and status != abi.Signal.event) {
-                    try trace_frames.stacktraceExt(fiber.?, ret, "");
+                // `fibers.new` refuses only on an arity mismatch, and a thunk
+                // takes no arguments and is given none.
+                const thunk_fiber = fibers.new(f, 64, &.{}) catch unreachable;
+                fiber = thunk_fiber;
+                thunk_fiber.env = env;
+                const resumed = vm_entry.continueFiber(thunk_fiber, wrap.fromNil());
+                ret = resumed.value;
+                if (resumed.signal != abi.Signal.ok and resumed.signal != abi.Signal.event) {
+                    try trace_frames.stacktraceExt(thunk_fiber, ret, "");
                     errflags |= constants.JANET_DO_ERROR_RUNTIME;
                     done = true;
                 }
@@ -1485,8 +1489,8 @@ pub fn dobytesImpl(
         if (done) break;
 
         switch (parser_core.parserStatus(parser)) {
-            constants.JANET_PARSE_DEAD => done = true,
-            constants.JANET_PARSE_ERROR => {
+            .dead => done = true,
+            .@"error" => {
                 errflags |= constants.JANET_DO_ERROR_PARSE;
                 const line: i32 = @intCast(parser.line);
                 const col: i32 = @intCast(parser.column);
@@ -1513,9 +1517,9 @@ pub fn dobytesImpl(
         if (vm_state.current().stackn == 0) {
             if (fiber) |f| gc_alloc.gcroot(wrap.fromFiber(f));
             try ev_loop.loop();
-            if (fiber != null) {
-                _ = gc_alloc.gcunroot(wrap.fromFiber(fiber.?));
-                if (errflags == 0) ret = fiber.?.last_value;
+            if (fiber) |f| {
+                _ = gc_alloc.gcunroot(wrap.fromFiber(f));
+                if (errflags == 0) ret = f.last_value;
             }
         }
     }
@@ -1531,7 +1535,7 @@ pub fn dostring(
     str: [*:0]const u8,
     source_path: ?[*:0]const u8,
     out: ?*repr.Value,
-) callconv(.c) c_int {
+) c_int {
     var len: i32 = 0;
     while (str[@intCast(len)] != 0) len += 1;
     return raise.reported(dobytes(env, str, len, source_path, out));
@@ -1543,10 +1547,9 @@ pub fn loopFiber(fiber: *fibers.Fiber) raise.Raising(c_int) {
         try ev_loop.loop();
         return @intCast(@intFromEnum(fibers.status(fiber)));
     }
-    var out: repr.Value = undefined;
-    const status = vm_entry.continueFiber(fiber, wrap.fromNil(), &out);
-    if (status != abi.Signal.ok and status != abi.Signal.event) {
-        try trace_frames.stacktraceExt(fiber, out, "");
+    const resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
+    if (resumed.signal != abi.Signal.ok and resumed.signal != abi.Signal.event) {
+        try trace_frames.stacktraceExt(fiber, resumed.value, "");
     }
-    return @intCast(@intFromEnum(status));
+    return @intCast(@intFromEnum(resumed.signal));
 }

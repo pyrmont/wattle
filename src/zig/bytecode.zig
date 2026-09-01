@@ -30,14 +30,17 @@ const pp_describe = @import("pp.zig");
 const compiler_primitives = @import("compiler.zig");
 const tuples = @import("value/tuples.zig");
 
-pub const JanetInstructionType = c_uint;
-pub const JanetOpCode = c_uint;
-pub const JanetAssembleStatus = c_uint;
+/// Whether an assembly produced a definition or a message. Two members, and
+/// nothing outside this runtime supplies one.
+pub const AssembleStatus = enum(u32) {
+    ok = 0,
+    @"error" = 1,
+};
 
-pub const JanetAssembleResult = extern struct {
+pub const AssembleResult = extern struct {
     funcdef: ?*functions.FuncDef = null,
     @"error": ?strings.String = null,
-    status: JanetAssembleStatus = 0,
+    status: AssembleStatus = .ok,
 };
 
 // ---------------------------------------------------------------------------
@@ -57,8 +60,10 @@ const AsmError = error{Assembly};
 
 /// `JanetAssembler`, minus the `jmp_buf`.
 ///
-/// The layout is nobody's business but this file's: the encoder reaches an
-/// assembler through `?*anyopaque` and the fourteen accessors below.
+/// One assembly's state: the funcdef being built, the parent it resolves
+/// enclosing names against, the pending failure, and the four tables the
+/// operand kinds resolve their names in. The encoder below is in this file and
+/// reaches it directly.
 const Assembler = struct {
     parent: ?*Assembler,
     def: *functions.FuncDef,
@@ -172,49 +177,23 @@ fn getField(ds: repr.Value, key: repr.Value) repr.Value {
 
 // --------------------------------------------------------- the field accessors
 
-// Fourteen accessors over an opaque pointer, so the encoder below reads an
-// assembler's state without naming its type.
+// The table an operand kind resolves in, and the walk up the parent chain.
 
-inline fn asmOf(context: ?*anyopaque) *Assembler {
-    return @ptrCast(@alignCast(context.?));
-}
-
-pub fn argumentTable(context: ?*anyopaque, argument_type: i32) ?*tables.Table {
-    const a = asmOf(context);
+pub fn argumentTable(a: *Assembler, argument_type: constants.OperandKind) ?*tables.Table {
     return switch (argument_type) {
-        constants.JANET_OAT_SLOT => &a.slots,
-        constants.JANET_OAT_ENVIRONMENT => &a.envs,
-        constants.JANET_OAT_LABEL => &a.labels,
-        constants.JANET_OAT_FUNCDEF => &a.defs,
+        .slot => &a.slots,
+        .environment => &a.envs,
+        .label => &a.labels,
+        .funcdef => &a.defs,
         else => null,
     };
-}
-
-pub fn funcdef(context: ?*anyopaque) *functions.FuncDef {
-    return asmOf(context).def;
-}
-
-pub fn setName(context: ?*anyopaque, name: repr.Value) void {
-    asmOf(context).name = name;
-}
-
-pub fn bytecodeCount(context: ?*anyopaque) i32 {
-    return asmOf(context).bytecode_count;
-}
-
-pub fn setBytecodeCount(context: ?*anyopaque, count: i32) void {
-    asmOf(context).bytecode_count = count;
-}
-
-pub fn addEnvironment(context: ?*anyopaque, name: repr.Value) i32 {
-    return addEnv(asmOf(context), name);
 }
 
 /// Walk `environment + 1` links up the parent chain. The `+ 1` is the C
 /// original's and is load-bearing: environment 0 means the immediate parent,
 /// not the assembler itself.
-pub fn parentForEnvironment(context: ?*anyopaque, environment: u32) ?*anyopaque {
-    var a: ?*Assembler = asmOf(context);
+pub fn parentForEnvironment(context: *Assembler, environment: u32) ?*Assembler {
+    var a: ?*Assembler = context;
     var remaining = environment + 1;
     while (remaining > 0) : (remaining -= 1) {
         a = (a orelse return null).parent;
@@ -298,7 +277,7 @@ fn assemble(a: *Assembler, source: repr.Value, flags: c_int) AsmError!void {
                 def.defs = utils.resizeMany(*functions.FuncDef, def.defs, @intCast(newlen));
                 a.defs_capacity = @intCast(newlen);
             }
-            def.defs.?[@intCast(def.defs_length)] = subdef;
+            def.defs.?[def.defs_length] = subdef;
             def.defs_length = @intCast(newlen);
         }
     }
@@ -352,13 +331,13 @@ fn assemble(a: *Assembler, source: repr.Value, flags: c_int) AsmError!void {
 /// the way out, which is the propagation C did with a jump.
 fn asmNested(parent: *Assembler, source: repr.Value, flags: c_int) AsmError!*functions.FuncDef {
     const result = asm1(parent, source, flags);
-    if (result.status != constants.JANET_ASSEMBLE_OK) return parent.failv(result.@"error");
+    if (result.status != .ok) return parent.failv(result.@"error");
     return result.funcdef.?;
 }
 
 /// `janet_asm1`. Owns one assembler, and is the frame the whole of an assembly
 /// unwinds to.
-fn asm1(parent: ?*Assembler, source: repr.Value, flags: c_int) JanetAssembleResult {
+fn asm1(parent: ?*Assembler, source: repr.Value, flags: c_int) AssembleResult {
     var a: Assembler = undefined;
     a.init(parent, functions.defs.new());
     defer a.deinit();
@@ -367,20 +346,20 @@ fn asm1(parent: ?*Assembler, source: repr.Value, flags: c_int) JanetAssembleResu
         return .{
             .funcdef = null,
             .@"error" = a.errmessage,
-            .status = constants.JANET_ASSEMBLE_ERROR,
+            .status = .@"error",
         };
     };
     return .{
         .funcdef = a.def,
         .@"error" = null,
-        .status = constants.JANET_ASSEMBLE_OK,
+        .status = .ok,
     };
 }
 
 /// `janet_asm`. The public entry, and unchanged in shape: it reports a result
 /// rather than raising, which is why removing the jump underneath it needs no
 /// abi and changes nothing a caller can see.
-pub fn assembleValue(source: repr.Value, flags: c_int) JanetAssembleResult {
+pub fn assembleValue(source: repr.Value, flags: c_int) AssembleResult {
     return asm1(null, source, flags);
 }
 
@@ -401,7 +380,7 @@ fn cfunAsm(argv: []repr.Value) raise.Raising(repr.Value) {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"asm"}));
     try args_core.fixarity(argv, 1);
     const res = assembleValue(argv[0], 0);
-    if (res.status != constants.JANET_ASSEMBLE_OK) {
+    if (res.status != .ok) {
         const message = res.@"error" orelse strings.cstring("invalid assembly");
         return raise.panicv(wrap.fromString(message));
     }
@@ -589,18 +568,17 @@ pub const opcodes = [_]OpcodeDefinition{
 };
 
 pub fn parseHeader(
-    assembler: ?*anyopaque,
+    a: *Assembler,
     source: repr.Value,
 ) AsmError!void {
-    const a = asmOf(assembler);
     if (!repr.checkType(source, repr.Tag.@"struct") and
         !repr.checkType(source, repr.Tag.table))
     {
         return a.fail("expected struct or table for assembly source");
     }
-    const definition = funcdef(assembler);
+    const definition = a.def;
     var val = getFieldByName(source, "name");
-    setName(assembler, val);
+    a.name = val;
     if (!repr.checkType(val, repr.Tag.nil)) definition.name = pp_describe.toString(val);
 
     val = getFieldByName(source, "arity");
@@ -637,22 +615,19 @@ pub fn parseHeader(
 }
 
 pub fn parseSlots(
-    assembler: ?*anyopaque,
+    a: *Assembler,
     source: repr.Value,
 ) AsmError!void {
-    const a = asmOf(assembler);
     const slots_value = getFieldByName(source, "slots");
     const items = args_core.indexedView(slots_value) orelse return;
-    const slots = argumentTable(assembler, constants.JANET_OAT_SLOT).?;
+    const slots = argumentTable(a, constants.OperandKind.slot).?;
     // `index` is a position in `items`; the cast is at the seam where it
     // becomes a Janet integer in the slot table.
     for (0..items.len) |index| {
         const val = items[index];
         if (repr.checkType(val, repr.Tag.tuple)) {
             const aliases = wrap.toTuple(val);
-            var alias_index: i32 = 0;
-            while (alias_index < tuples.head(aliases).length) : (alias_index += 1) {
-                const alias = aliases[@intCast(alias_index)];
+            for (tuples.view(aliases)) |alias| {
                 if (!repr.checkType(alias, repr.Tag.symbol)) {
                     return a.fail("slot names must be symbols");
                 }
@@ -667,7 +642,7 @@ pub fn parseSlots(
 }
 
 pub fn scanConstants(
-    _: ?*anyopaque,
+    _: *Assembler,
     source: repr.Value,
 ) i32 {
     const consts = getFieldByName(source, "constants");
@@ -676,25 +651,25 @@ pub fn scanConstants(
 }
 
 pub fn fillConstants(
-    assembler: ?*anyopaque,
+    a: *Assembler,
     source: repr.Value,
 ) void {
     const consts = getFieldByName(source, "constants");
     const items = args_core.indexedView(consts) orelse unreachable;
-    const definition = funcdef(assembler);
+    const definition = a.def;
     for (items, 0..) |item, index| {
         definition.constants.?[index] = item;
     }
 }
 
 pub fn scanSourcemap(
-    assembler: ?*anyopaque,
+    a: *Assembler,
     source: repr.Value,
 ) AsmError!i32 {
     const sourcemap = getFieldByName(source, "sourcemap");
     const items = args_core.indexedView(sourcemap) orelse return 0;
-    if (items.len != funcdef(assembler).bytecode_length) {
-        return asmOf(assembler).fail("sourcemap must have the same length as the bytecode");
+    if (items.len != a.def.bytecode_length) {
+        return a.fail("sourcemap must have the same length as the bytecode");
     }
     return @intCast(items.len);
 }
@@ -704,13 +679,12 @@ pub fn scanSourcemap(
 /// travel through that error set, so a `raise.Raising` return here would only
 /// cost the caller a `catch` it could do nothing with.
 pub fn asmFillSourcemap(
-    assembler: ?*anyopaque,
+    a: *Assembler,
     source: repr.Value,
 ) AsmError!void {
-    const a = asmOf(assembler);
     const sourcemap = getFieldByName(source, "sourcemap");
     const items = args_core.indexedView(sourcemap) orelse unreachable;
-    const definition = funcdef(assembler);
+    const definition = a.def;
     for (items, 0..) |entry, index| {
         if (!repr.checkType(entry, repr.Tag.tuple)) return a.fail("expected tuple");
         const tuple = wrap.toTuple(entry);
@@ -723,15 +697,8 @@ pub fn asmFillSourcemap(
     }
 }
 
-pub fn fillSourcemap(
-    assembler: ?*anyopaque,
-    source: repr.Value,
-) AsmError!void {
-    return asmFillSourcemap(assembler, source);
-}
-
 pub fn scanSymbolmap(
-    _: ?*anyopaque,
+    _: *Assembler,
     source: repr.Value,
 ) i32 {
     const symbolmap = getFieldByName(source, "symbolmap");
@@ -744,13 +711,12 @@ pub fn scanSymbolmap(
 /// travel through that error set, so a `raise.Raising` return here would only
 /// cost the caller a `catch` it could do nothing with.
 pub fn asmFillSymbolmap(
-    assembler: ?*anyopaque,
+    a: *Assembler,
     source: repr.Value,
 ) AsmError!void {
-    const a = asmOf(assembler);
     const symbolmap = getFieldByName(source, "symbolmap");
     const items = args_core.indexedView(symbolmap) orelse unreachable;
-    const definition = funcdef(assembler);
+    const definition = a.def;
     for (items, 0..) |entry, index| {
         if (!repr.checkType(entry, repr.Tag.tuple)) return a.fail("expected tuple");
         const tuple = wrap.toTuple(entry);
@@ -773,18 +739,11 @@ pub fn asmFillSymbolmap(
     }
 }
 
-pub fn fillSymbolmap(
-    assembler: ?*anyopaque,
-    source: repr.Value,
-) AsmError!void {
-    return asmFillSymbolmap(assembler, source);
-}
-
 /// The count, or -1 for "the source declares no `:environments` at all" --
 /// which is not the same as an empty list, and is why this answers a code
 /// rather than a length.
 pub fn scanEnvironments(
-    _: ?*anyopaque,
+    _: *Assembler,
     source: repr.Value,
 ) i32 {
     const environments = getFieldByName(source, "environments");
@@ -793,13 +752,12 @@ pub fn scanEnvironments(
 }
 
 pub fn fillEnvironments(
-    assembler: ?*anyopaque,
+    a: *Assembler,
     source: repr.Value,
 ) AsmError!void {
-    const a = asmOf(assembler);
     const environments = getFieldByName(source, "environments");
     const items = args_core.indexedView(environments) orelse unreachable;
-    const definition = funcdef(assembler);
+    const definition = a.def;
     for (items, 0..) |val, index| {
         if (!args_core.checkint(val)) return a.fail("expected integer");
         definition.environments.?[index] = integerValue(val);
@@ -808,10 +766,10 @@ pub fn fillEnvironments(
 
 /// `failv` rather than `fail`: the verifier's verdict is reported as written,
 /// with no instruction index appended to it.
-pub fn finalize(assembler: ?*anyopaque) AsmError!void {
-    const definition = funcdef(assembler);
+pub fn finalize(a: *Assembler) AsmError!void {
+    const definition = a.def;
     const verify_status = verify.verify(definition);
-    if (verify_status != .ok) return asmOf(assembler).failv(invalidError(verify_status));
+    if (verify_status != .ok) return a.failv(invalidError(verify_status));
     compiler_primitives.defAddflags(definition);
 }
 
@@ -834,13 +792,13 @@ pub fn defAt(source: repr.Value, index: usize) repr.Value {
 }
 
 pub fn registerDef(
-    assembler: ?*anyopaque,
+    a: *Assembler,
     source: repr.Value,
     index: i32,
 ) void {
     const name = getFieldByName(source, "name");
     if (!repr.checkType(name, repr.Tag.nil)) {
-        const definitions = argumentTable(assembler, constants.JANET_OAT_FUNCDEF).?;
+        const definitions = argumentTable(a, constants.OperandKind.funcdef).?;
         tables.put(definitions, name, wrap.fromInteger(index));
     }
 }
@@ -849,15 +807,14 @@ pub fn registerDef(
 /// formatted, because `fail` appends it: a fault here names the source element
 /// it found, and `errindex` is the only channel that carries it.
 pub fn scanBytecode(
-    assembler: ?*anyopaque,
+    a: *Assembler,
     source: repr.Value,
 ) AsmError!i32 {
-    const a = asmOf(assembler);
     const items = args_core.indexedView(source) orelse {
         a.errindex = 0;
         return a.fail("bytecode expected");
     };
-    const labels = argumentTable(assembler, constants.JANET_OAT_LABEL).?;
+    const labels = argumentTable(a, constants.OperandKind.label).?;
     var bytecode_length: i32 = 0;
     // `index` is a position in `items`; `errindex` stays signed because -1 is
     // its "no instruction" sentinel, so the cast sits at that assignment.
@@ -875,16 +832,15 @@ pub fn scanBytecode(
     return bytecode_length;
 }
 
-/// The count the caller wants afterwards is `bytecodeCount`, which this leaves
+/// The count the caller wants afterwards is `bytecode_count`, which this leaves
 /// standing; the answer here is only whether the fill completed.
 pub fn fillBytecode(
-    assembler: ?*anyopaque,
+    a: *Assembler,
     source: repr.Value,
 ) AsmError!void {
-    const a = asmOf(assembler);
     const items = args_core.indexedView(source) orelse unreachable;
-    const definition = funcdef(assembler);
-    setBytecodeCount(assembler, 0);
+    const definition = a.def;
+    a.bytecode_count = 0;
     // As in `scanBytecode`: a position in `items`, cast only where it is
     // handed to the signed `errindex`.
     for (0..items.len) |index| {
@@ -898,23 +854,22 @@ pub fn fillBytecode(
         const encoded = if (tuples.head(tuple).length == 0)
             @as(u32, 0)
         else
-            try zigAsmEncode(assembler, tuple);
-        const count = bytecodeCount(assembler);
+            try asmEncode(a, tuple);
+        const count = a.bytecode_count;
         definition.bytecode.?[@intCast(count)] = encoded;
-        setBytecodeCount(assembler, count + 1);
+        a.bytecode_count = count + 1;
     }
 }
 
 /// Encode one instruction tuple into its bytecode word.
 ///
-/// `assembler` is the context the operands resolve against; the message of a
-/// failure lands in it too, except that an environment slot resolves against
-/// an ancestor, which is why `packArgument` is told the two separately.
-pub fn zigAsmEncode(
-    assembler: ?*anyopaque,
+/// `a` is the context the operands resolve against; the message of a failure
+/// lands in it too, except that an environment slot resolves against an
+/// ancestor, which is why `packArgument` is told the two separately.
+pub fn asmEncode(
+    a: *Assembler,
     arguments: [*]const repr.Value,
 ) AsmError!u32 {
-    const a = asmOf(assembler);
     if (!hasLengthAtLeast(arguments, 1)) return 0;
     if (!repr.checkType(arguments[0], repr.Tag.symbol)) {
         return a.fail("expected symbol in assembly instruction");
@@ -924,93 +879,92 @@ pub fn zigAsmEncode(
     const instruction_type = verify.instructions[opcode.number()];
     var instruction: u32 = opcode.number();
     switch (instruction_type) {
-        constants.JINT_0 => {
+        constants.InstructionType.zero => {
             if (!hasLength(arguments, 1)) return a.fail("expected 0 arguments: (op)");
         },
-        constants.JINT_S => {
+        constants.InstructionType.s => {
             if (!hasLength(arguments, 2)) return a.fail("expected 1 argument: (op, slot)");
-            instruction |= try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 2, false, arguments[1]);
+            instruction |= try packArgument(a, a, constants.OperandKind.slot, 1, 2, false, arguments[1]);
         },
-        constants.JINT_L => {
+        constants.InstructionType.l => {
             if (!hasLength(arguments, 2)) return a.fail("expected 1 argument: (op, label)");
-            instruction |= try packArgument(a, assembler, constants.JANET_OAT_LABEL, 1, 3, true, arguments[1]);
+            instruction |= try packArgument(a, a, constants.OperandKind.label, 1, 3, true, arguments[1]);
         },
-        constants.JINT_SS => {
+        constants.InstructionType.ss => {
             if (!hasLength(arguments, 3)) return a.fail("expected 2 arguments: (op, slot, slot)");
-            const first = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            const second = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 2, 2, false, arguments[2]);
+            const first = try packArgument(a, a, constants.OperandKind.slot, 1, 1, false, arguments[1]);
+            const second = try packArgument(a, a, constants.OperandKind.slot, 2, 2, false, arguments[2]);
             instruction |= first | second;
         },
-        constants.JINT_SL => {
+        constants.InstructionType.sl => {
             if (!hasLength(arguments, 3)) return a.fail("expected 2 arguments: (op, slot, label)");
-            const slot = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            const label = try packArgument(a, assembler, constants.JANET_OAT_LABEL, 2, 2, true, arguments[2]);
+            const slot = try packArgument(a, a, constants.OperandKind.slot, 1, 1, false, arguments[1]);
+            const label = try packArgument(a, a, constants.OperandKind.label, 2, 2, true, arguments[2]);
             instruction |= slot | label;
         },
-        constants.JINT_ST => {
+        constants.InstructionType.st => {
             if (!hasLength(arguments, 3)) return a.fail("expected 2 arguments: (op, slot, type)");
-            const slot = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            const value_type = try packArgument(a, assembler, constants.JANET_OAT_TYPE, 2, 2, false, arguments[2]);
+            const slot = try packArgument(a, a, constants.OperandKind.slot, 1, 1, false, arguments[1]);
+            const value_type = try packArgument(a, a, constants.OperandKind.type, 2, 2, false, arguments[2]);
             instruction |= slot | value_type;
         },
-        constants.JINT_SI, constants.JINT_SU => {
+        constants.InstructionType.si, constants.InstructionType.su => {
             if (!hasLength(arguments, 3)) return a.fail("expected 2 arguments: (op, slot, integer)");
-            const slot = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
+            const slot = try packArgument(a, a, constants.OperandKind.slot, 1, 1, false, arguments[1]);
             const immediate = try packArgument(
                 a,
-                assembler,
-                constants.JANET_OAT_INTEGER,
+                a,
+                constants.OperandKind.integer,
                 2,
                 2,
-                instruction_type == constants.JINT_SI,
+                instruction_type == constants.InstructionType.si,
                 arguments[2],
             );
             instruction |= slot | immediate;
         },
-        constants.JINT_SD => {
+        constants.InstructionType.sd => {
             if (!hasLength(arguments, 3)) return a.fail("expected 2 arguments: (op, slot, funcdef)");
-            const slot = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            const definition = try packArgument(a, assembler, constants.JANET_OAT_FUNCDEF, 2, 2, false, arguments[2]);
+            const slot = try packArgument(a, a, constants.OperandKind.slot, 1, 1, false, arguments[1]);
+            const definition = try packArgument(a, a, constants.OperandKind.funcdef, 2, 2, false, arguments[2]);
             instruction |= slot | definition;
         },
-        constants.JINT_SSS => {
+        constants.InstructionType.sss => {
             if (!hasLength(arguments, 4)) return a.fail("expected 3 arguments: (op, slot, slot, slot)");
-            const first = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            const second = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 2, 1, false, arguments[2]);
-            const third = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 3, 1, false, arguments[3]);
+            const first = try packArgument(a, a, constants.OperandKind.slot, 1, 1, false, arguments[1]);
+            const second = try packArgument(a, a, constants.OperandKind.slot, 2, 1, false, arguments[2]);
+            const third = try packArgument(a, a, constants.OperandKind.slot, 3, 1, false, arguments[3]);
             instruction |= first | second | third;
         },
-        constants.JINT_SSI, constants.JINT_SSU => {
+        constants.InstructionType.ssi, constants.InstructionType.ssu => {
             if (!hasLength(arguments, 4)) return a.fail("expected 3 arguments: (op, slot, slot, integer)");
-            const first = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            const second = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 2, 1, false, arguments[2]);
+            const first = try packArgument(a, a, constants.OperandKind.slot, 1, 1, false, arguments[1]);
+            const second = try packArgument(a, a, constants.OperandKind.slot, 2, 1, false, arguments[2]);
             const immediate = try packArgument(
                 a,
-                assembler,
-                constants.JANET_OAT_INTEGER,
+                a,
+                constants.OperandKind.integer,
                 3,
                 1,
-                instruction_type == constants.JINT_SSI,
+                instruction_type == constants.InstructionType.ssi,
                 arguments[3],
             );
             instruction |= first | second | immediate;
         },
-        constants.JINT_SES => {
+        constants.InstructionType.ses => {
             if (!hasLength(arguments, 4)) return a.fail("expected 3 arguments: (op, slot, environment, envslot)");
-            const slot = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            const environment = try packArgument(a, assembler, constants.JANET_OAT_ENVIRONMENT, 0, 1, false, arguments[2]);
-            const parent = parentForEnvironment(assembler, environment) orelse
+            const slot = try packArgument(a, a, constants.OperandKind.slot, 1, 1, false, arguments[1]);
+            const environment = try packArgument(a, a, constants.OperandKind.environment, 0, 1, false, arguments[2]);
+            const parent = parentForEnvironment(a, environment) orelse
                 return a.fail("invalid environment index");
-            const environment_slot = try packArgument(a, parent, constants.JANET_OAT_SLOT, 3, 1, false, arguments[3]);
+            const environment_slot = try packArgument(a, parent, constants.OperandKind.slot, 3, 1, false, arguments[3]);
             instruction |= slot | (environment << 16) | environment_slot;
         },
-        constants.JINT_SC => {
+        constants.InstructionType.sc => {
             if (!hasLength(arguments, 3)) return a.fail("expected 2 arguments: (op, slot, constant)");
-            const slot = try packArgument(a, assembler, constants.JANET_OAT_SLOT, 1, 1, false, arguments[1]);
-            const constant = try packArgument(a, assembler, constants.JANET_OAT_CONSTANT, 2, 2, false, arguments[2]);
+            const slot = try packArgument(a, a, constants.OperandKind.slot, 1, 1, false, arguments[1]);
+            const constant = try packArgument(a, a, constants.OperandKind.constant, 2, 2, false, arguments[2]);
             instruction |= slot | constant;
         },
-        else => return a.fail("unknown instruction layout"),
     }
     return instruction;
 }
@@ -1023,8 +977,8 @@ pub fn zigAsmEncode(
 /// message still belongs to the assembly being encoded.
 fn packArgument(
     a: *Assembler,
-    context: ?*anyopaque,
-    argument_type: i32,
+    context: *Assembler,
+    argument_type: constants.OperandKind,
     byte_index: u5,
     byte_count: i32,
     signed: bool,
@@ -1046,8 +1000,8 @@ fn packArgument(
 
 fn resolveArgument(
     a: *Assembler,
-    context: ?*anyopaque,
-    argument_type: i32,
+    context: *Assembler,
+    argument_type: constants.OperandKind,
     val: repr.Value,
 ) AsmError!i32 {
     const table = argumentTable(context, argument_type);
@@ -1061,21 +1015,21 @@ fn resolveArgument(
             result = @intFromFloat(number);
         },
         repr.Tag.tuple => {
-            if (argument_type != constants.JANET_OAT_TYPE) return a.failv(resolutionError(val, 0));
+            if (argument_type != constants.OperandKind.type) return a.failv(resolutionError(val, 0));
             const tuple = wrap.toTuple(val);
             result = 0;
-            var index: i32 = 0;
-            while (index < tuples.head(tuple).length) : (index += 1) {
-                result |= try resolveArgument(a, context, constants.JANET_OAT_SIMPLETYPE, tuple[@intCast(index)]);
+            for (tuples.view(tuple)) |element| {
+                result |= try resolveArgument(a, context, constants.OperandKind.simple_type, element);
             }
         },
         repr.Tag.keyword => {
-            if (table != null and argument_type == constants.JANET_OAT_LABEL) {
-                const found = tables.get(table.?, val);
+            const label_table: ?*tables.Table = if (argument_type == constants.OperandKind.label) table else null;
+            if (label_table) |labels| {
+                const found = tables.get(labels, val);
                 if (!repr.checkType(found, repr.Tag.number)) return a.failv(resolutionError(val, 0));
                 result = @intFromFloat(wrap.toNumber(found));
-                result -= bytecodeCount(context);
-            } else if (argument_type == constants.JANET_OAT_TYPE or argument_type == constants.JANET_OAT_SIMPLETYPE) {
+                result -= context.bytecode_count;
+            } else if (argument_type == constants.OperandKind.type or argument_type == constants.OperandKind.simple_type) {
                 // The instruction operand is sixteen bits and so is the set;
                 // `.bits()` is where the two meet, which is the one place the
                 // assembler spells a type mask as a number.
@@ -1089,15 +1043,15 @@ fn resolveArgument(
             const found = tables.get(argument_table, val);
             if (!repr.checkType(found, repr.Tag.number)) return a.failv(resolutionError(val, 2));
             result = @intFromFloat(wrap.toNumber(found));
-            if (argument_type == constants.JANET_OAT_ENVIRONMENT and result == -1) {
-                result = addEnvironment(context, val);
+            if (argument_type == constants.OperandKind.environment and result == -1) {
+                result = addEnv(context, val);
                 if (result < -1) return a.failv(resolutionError(val, 3));
             }
         },
         else => return a.failv(resolutionError(val, 0)),
     }
-    if (argument_type == constants.JANET_OAT_SLOT) {
-        const definition = funcdef(context);
+    if (argument_type == constants.OperandKind.slot) {
+        const definition = context.def;
         if (result >= definition.slotcount) definition.slotcount = result + 1;
     }
     return result;

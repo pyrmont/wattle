@@ -50,13 +50,12 @@ inline fn asmWrapTuple(val: tuples.Tuple) repr.Value {
 /// `janet_tuple_flag(value) |= JANET_TUPLE_FLAG_BRACKETCTOR`, which is what
 /// makes a disassembled instruction print as `[...]` rather than `(...)`.
 ///
-/// The C name says "breakpoint" and the flag it sets does not; the name is
-/// reproduced rather than corrected, because it is the symbol `asm.c`
-/// exported and renaming it here would hide the discrepancy rather than
-/// record it. `FOUND.md` has the entry.
+/// **The name says "breakpoint" and the flag it sets does not.** It is
+/// upstream's, reproduced rather than corrected, because renaming it here would
+/// hide the discrepancy rather than record it. `FOUND.md` has the entry.
 ///
 inline fn asmSetBreakpoint(val: tuples.Tuple) void {
-    tuples.head(val).gc.flags |= constants.JANET_TUPLE_FLAG_BRACKETCTOR;
+    tuples.setBracketed(tuples.head(val));
 }
 
 pub fn asmDecodeInstruction(instruction: u32) repr.Value {
@@ -71,32 +70,31 @@ pub fn asmDecodeInstruction(instruction: u32) repr.Value {
     const opcode = instruction & 0x7f;
     const instruction_type = verify.instructions[opcode];
     const result = switch (instruction_type) {
-        constants.JINT_0 => makeTuple(&.{name}),
-        constants.JINT_S => makeTuple(&.{ name, integer(argument(instruction, 1, 0xffffff)) }),
-        constants.JINT_L => makeTuple(&.{ name, integer(signedShift(instruction, 8)) }),
-        constants.JINT_SS, constants.JINT_ST, constants.JINT_SC, constants.JINT_SU, constants.JINT_SD => makeTuple(&.{
+        constants.InstructionType.zero => makeTuple(&.{name}),
+        constants.InstructionType.s => makeTuple(&.{ name, integer(argument(instruction, 1, 0xffffff)) }),
+        constants.InstructionType.l => makeTuple(&.{ name, integer(signedShift(instruction, 8)) }),
+        constants.InstructionType.ss, constants.InstructionType.st, constants.InstructionType.sc, constants.InstructionType.su, constants.InstructionType.sd => makeTuple(&.{
             name,
             integer(argument(instruction, 1, 0xff)),
             integer(argument(instruction, 2, 0xffff)),
         }),
-        constants.JINT_SI, constants.JINT_SL => makeTuple(&.{
+        constants.InstructionType.si, constants.InstructionType.sl => makeTuple(&.{
             name,
             integer(argument(instruction, 1, 0xff)),
             integer(signedShift(instruction, 16)),
         }),
-        constants.JINT_SSS, constants.JINT_SES, constants.JINT_SSU => makeTuple(&.{
+        constants.InstructionType.sss, constants.InstructionType.ses, constants.InstructionType.ssu => makeTuple(&.{
             name,
             integer(argument(instruction, 1, 0xff)),
             integer(argument(instruction, 2, 0xff)),
             integer(argument(instruction, 3, 0xff)),
         }),
-        constants.JINT_SSI => makeTuple(&.{
+        constants.InstructionType.ssi => makeTuple(&.{
             name,
             integer(argument(instruction, 1, 0xff)),
             integer(argument(instruction, 2, 0xff)),
             integer(signedShift(instruction, 24)),
         }),
-        else => return wrap.fromNil(),
     };
 
     if (instruction & 0x80 != 0) {
@@ -174,8 +172,8 @@ inline fn disasmKeyword(val: [*:0]const u8) repr.Value {
     return wrap.fromKeyword(symbols.csymbol(val));
 }
 
-/// `janet_disasm`, the public entry. `asm.c` spelled it as a call into this
-/// file with the `all` field; there is nothing else to it.
+/// The whole disassembly: `disassembleField` with the `all` field, and there is
+/// nothing else to it.
 pub fn disasm(definition: *functions.FuncDef) repr.Value {
     return disassembleFieldExport(definition, @intFromEnum(Field.all));
 }
@@ -212,11 +210,9 @@ pub fn disassembleField(definition: *functions.FuncDef, field: Field) repr.Value
 
 fn disassembleSymbolMap(definition: *functions.FuncDef) repr.Value {
     if (definition.symbolmap == null) return wrapNil();
-    const result = arrays.new(@intCast(definition.symbolmap_length));
+    const result = arrays.new(definition.symbolmap_length);
     const upvalue = disasmKeyword("upvalue");
-    var index: usize = 0;
-    while (index < definition.symbolmap_length) : (index += 1) {
-        const mapping = definition.symbols()[index];
+    for (definition.symbols(), 0..) |mapping, index| {
         const tuple = tuples.begin(4);
         tuple[0] = if (mapping.birth_pc == std_max_u32)
             upvalue
@@ -227,62 +223,56 @@ fn disassembleSymbolMap(definition: *functions.FuncDef) repr.Value {
         tuple[3] = disasmWrapSymbol(mapping.symbol.?);
         result.reserved()[index] = disasmWrapTuple(tuples.end(tuple));
     }
-    result.count = @intCast(definition.symbolmap_length);
+    result.count = definition.symbolmap_length;
     return disasmWrapArray(result);
 }
 
 fn disassembleBytecode(definition: *functions.FuncDef) repr.Value {
-    const result = arrays.new(@intCast(definition.bytecode_length));
-    var index: usize = 0;
-    while (index < definition.bytecode_length) : (index += 1) {
-        result.reserved()[index] = asmDecodeInstruction(definition.instructions()[index]);
+    const result = arrays.new(definition.bytecode_length);
+    for (definition.instructions(), 0..) |instruction, index| {
+        result.reserved()[index] = asmDecodeInstruction(instruction);
     }
-    result.count = @intCast(definition.bytecode_length);
+    result.count = definition.bytecode_length;
     return disasmWrapArray(result);
 }
 
 fn disassembleConstants(definition: *functions.FuncDef) repr.Value {
-    const result = arrays.new(@intCast(definition.constants_length));
-    var index: usize = 0;
-    while (index < definition.constants_length) : (index += 1) {
-        result.reserved()[index] = definition.constantValues()[index];
+    const result = arrays.new(definition.constants_length);
+    for (definition.constantValues(), 0..) |constant, index| {
+        result.reserved()[index] = constant;
     }
-    result.count = @intCast(definition.constants_length);
+    result.count = definition.constants_length;
     return disasmWrapArray(result);
 }
 
 fn disassembleSourceMap(definition: *functions.FuncDef) repr.Value {
     if (definition.sourcemap == null) return wrapNil();
-    const result = arrays.new(@intCast(definition.bytecode_length));
-    var index: usize = 0;
-    while (index < definition.bytecode_length) : (index += 1) {
-        const mapping = definition.sourceMappings()[index];
+    const result = arrays.new(definition.bytecode_length);
+    for (definition.sourceMappings(), 0..) |mapping, index| {
         const tuple = tuples.begin(2);
         tuple[0] = wrap.fromInteger(mapping.line);
         tuple[1] = wrap.fromInteger(mapping.column);
         result.reserved()[index] = disasmWrapTuple(tuples.end(tuple));
     }
-    result.count = @intCast(definition.bytecode_length);
+    result.count = definition.bytecode_length;
     return disasmWrapArray(result);
 }
 
 fn disassembleEnvironments(definition: *functions.FuncDef) repr.Value {
-    const result = arrays.new(@intCast(definition.environments_length));
-    var index: usize = 0;
-    while (index < definition.environments_length) : (index += 1) {
-        result.reserved()[index] = wrap.fromInteger(definition.environmentIndices()[index]);
+    const result = arrays.new(definition.environments_length);
+    for (definition.environmentIndices(), 0..) |environment, index| {
+        result.reserved()[index] = wrap.fromInteger(environment);
     }
-    result.count = @intCast(definition.environments_length);
+    result.count = definition.environments_length;
     return disasmWrapArray(result);
 }
 
 fn disassembleDefinitions(definition: *functions.FuncDef) repr.Value {
-    const result = arrays.new(@intCast(definition.defs_length));
-    var index: usize = 0;
-    while (index < definition.defs_length) : (index += 1) {
-        result.reserved()[index] = disassembleAll(definition.subdefs()[index]);
+    const result = arrays.new(definition.defs_length);
+    for (definition.subdefs(), 0..) |subdef, index| {
+        result.reserved()[index] = disassembleAll(subdef);
     }
-    result.count = @intCast(definition.defs_length);
+    result.count = definition.defs_length;
     return disasmWrapArray(result);
 }
 

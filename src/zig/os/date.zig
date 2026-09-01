@@ -65,12 +65,12 @@ const time_fmt_size = 250;
 /// `FOUND.md`.
 fn timeToTm(argv: []const repr.Value, n: usize, out: *h.struct_tm) raise.Raising(void) {
     var t: h.time_t = undefined;
-    if (@as(i32, @intCast(argv.len)) > n and !repr.checkType(argv[n], repr.Tag.nil)) {
+    if (argv.len > n and !repr.checkType(argv[n], repr.Tag.nil)) {
         t = @intCast(try args_core.getInteger64(argv, n));
     } else {
         t = oa.time(null);
     }
-    const local = @as(i32, @intCast(argv.len)) > n + 1 and repr.truthy(argv[@intCast(n + 1)]);
+    const local = argv.len > n + 1 and repr.truthy(argv[n + 1]);
     if (local) {
         if (windows) {
             c._tzset();

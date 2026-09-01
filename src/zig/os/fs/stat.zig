@@ -109,7 +109,7 @@ pub fn getMode(argv: []const repr.Value, n: usize) raise.Raising(jmode_t) {
 
 /// `os_optmode`.
 pub fn optMode(argv: []const repr.Value, n: usize, dflt: i32) raise.Raising(jmode_t) {
-    if (@as(i32, @intCast(argv.len)) > n) return getMode(argv, n);
+    if (argv.len > n) return getMode(argv, n);
     return @intCast(hostPermFromUnix(dflt));
 }
 
@@ -304,10 +304,9 @@ pub fn fieldName(index: i32) ?[*:0]const u8 {
 ///
 /// The comparison reproduces `janet_cstrcmp`, which the C implementation used
 /// here, including its treatment of a key whose own bytes end in NUL.
-pub fn fieldLookup(key: [*]const u8, len: i32) i32 {
-    if (len < 0) return -1;
+pub fn fieldLookup(key: [*]const u8, len: usize) i32 {
     for (field_names, 0..) |name, index| {
-        if (cstrequal(key, @intCast(len), name)) return @intCast(index);
+        if (cstrequal(key, len, name)) return @intCast(index);
     }
     return -1;
 }

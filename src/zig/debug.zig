@@ -29,7 +29,7 @@ const registry = @import("registry.zig");
 const abi = @import("abi");
 const functions = @import("value/functions.zig");
 
-pub const JanetTraceFrame = struct {
+pub const TraceFrame = struct {
     name: ?[*:0]const u8 = null,
     name_prefix: ?[*:0]const u8 = null,
     source: ?[*:0]const u8 = null,
@@ -77,7 +77,7 @@ inline fn funcEnv(func: *functions.Function, i: u32) *functions.FuncEnv {
 /// with hidden visibility because Janet declares it in an internal header
 /// rather than in its public one; nothing needs it.
 pub fn debugFrame(frame: *vm_state.StackFrame) raise.Raising(repr.Value) {
-    var desc: JanetTraceFrame = undefined;
+    var desc: TraceFrame = undefined;
     try trace_frames.traceFrame(frame, &desc);
 
     const t = tables.new(3);
@@ -96,8 +96,8 @@ pub fn debugFrame(frame: *vm_state.StackFrame) raise.Raising(repr.Value) {
             } else {
                 put(t, "name", value.fromBytes(std.mem.span(desc.name.?), .string));
             }
-            if (desc.source != null) {
-                put(t, "source", value.fromBytes(std.mem.span(desc.source.?), .string));
+            if (desc.source) |source| {
+                put(t, "source", value.fromBytes(std.mem.span(source), .string));
             }
             // Inside the named branch, which is where doframe has it. The
             // descriptor classifies the location independently of the name; a
@@ -114,7 +114,8 @@ pub fn debugFrame(frame: *vm_state.StackFrame) raise.Raising(repr.Value) {
         put(t, "tail", wrap.fromTrue());
     }
 
-    if (frame.func == null or frame.pc == null) return wrap.fromTable(t);
+    const func = frame.func orelse return wrap.fromTable(t);
+    if (frame.pc == null) return wrap.fromTable(t);
 
     // The registers begin one frame header above the frame itself.
     const stack: [*]repr.Value = @as([*]repr.Value, @ptrCast(@alignCast(frame))) + frame_size;
@@ -133,9 +134,10 @@ pub fn debugFrame(frame: *vm_state.StackFrame) raise.Raising(repr.Value) {
     }
 
     // Add stack arguments.
-    const slots = arrays.new(def.?.slotcount);
-    utils.safeMemcpy(slots.data, stack, @sizeOf(repr.Value) *% @as(usize, @intCast(def.?.slotcount)));
-    slots.count = @intCast(def.?.slotcount);
+    const slotcount: usize = @intCast(def.?.slotcount);
+    const slots = arrays.new(slotcount);
+    if (slotcount != 0) @memcpy(slots.reserved()[0..slotcount], stack[0..slotcount]);
+    slots.count = slotcount;
     put(t, "slots", wrap.fromArray(slots));
 
     // Add local bindings.
@@ -150,7 +152,7 @@ pub fn debugFrame(frame: *vm_state.StackFrame) raise.Raising(repr.Value) {
                 // death_pc has secondary meaning here: it encodes the
                 // environment index.
                 if (jsm.death_pc < @as(u32, @intCast(def.?.environments_length))) {
-                    const env = funcEnv(frame.func.?, jsm.death_pc);
+                    const env = funcEnv(func, jsm.death_pc);
                     if (jsm.slot_index < @as(u32, @intCast(env.length))) {
                         if (env.offset > 0) {
                             // On stack.
@@ -224,11 +226,10 @@ fn debugFindImpl(
     while (current) |block| : (current = block.data.next) {
         if (gc_alloc.memoryTypeOf(block) != .funcdef) continue;
         const definition: *functions.FuncDef = @ptrCast(@alignCast(current));
-        if (definition.sourcemap == null or definition.source == null) continue;
-        if (strings.compare(source, definition.source.?) != 0) continue;
-        var index: usize = 0;
-        while (index < definition.bytecode_length) : (index += 1) {
-            const mapping = definition.sourceMappings()[index];
+        if (definition.sourcemap == null) continue;
+        const definition_source = definition.source orelse continue;
+        if (strings.compare(source, definition_source) != 0) continue;
+        for (definition.sourceMappings(), 0..) |mapping, index| {
             if (mapping.line <= source_line and mapping.line >= best_line) {
                 if (mapping.column <= source_column and
                     (mapping.line > best_line or mapping.column > best_column))
@@ -242,25 +243,8 @@ fn debugFindImpl(
         }
     }
 
-    if (best_definition == null) return raise.panic("could not find breakpoint");
-    return .{ .definition = best_definition.?, .pc = best_index };
-}
-
-/// `janet_debug_find`, whose C signature answers through two out-parameters
-/// and leaves both untouched when the search raises.
-pub fn debugFind(
-    definition_out: *?*functions.FuncDef,
-    pc_out: *i32,
-    source: [*:0]const u8,
-    source_line: i32,
-    source_column: i32,
-) callconv(.c) void {
-    const found = debugFindImpl(source, source_line, source_column) catch {
-        raise.reportToC(void);
-        return;
-    };
-    definition_out.* = found.definition;
-    pc_out.* = found.pc;
+    const found = best_definition orelse return raise.panic("could not find breakpoint");
+    return .{ .definition = found, .pc = best_index };
 }
 
 // ==========================================================================
@@ -344,7 +328,7 @@ fn cfunDebugStacktrace(argv: []repr.Value) align(corefn.alignment) raise.Raising
 fn cfunDebugArgstack(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
-    const array = arrays.new(fiber.stacktop - fiber.stackstart);
+    const array = arrays.new(@intCast(fiber.stacktop - fiber.stackstart));
     const count: usize = @intCast(array.capacity);
     if (count != 0) {
         @memcpy(
@@ -424,7 +408,7 @@ const tailcall: i32 = @intCast(constants.JANET_STACKFRAME_TAILCALL);
 /// Decode `frame` into `out`. Total: every frame produces a descriptor, and a
 /// frame that names nothing produces `NAME_NONE` with `LOC_NONE`, which renders
 /// as a bare `  in` line exactly as the C original does.
-pub fn traceFrame(frame: *vm_state.StackFrame, out: *JanetTraceFrame) raise.Raising(void) {
+pub fn traceFrame(frame: *vm_state.StackFrame, out: *TraceFrame) raise.Raising(void) {
     out.* = .{
         .name = null,
         .name_prefix = null,
@@ -434,7 +418,7 @@ pub fn traceFrame(frame: *vm_state.StackFrame, out: *JanetTraceFrame) raise.Rais
         .column = 0,
         .name_kind = name_none,
         .loc_kind = loc_none,
-        .tail = @intFromBool(frame.flags & tailcall != 0),
+        .tail = @intFromBool(frame.flags.tailcall),
     };
 
     if (frame.func) |func| {
@@ -472,27 +456,30 @@ pub fn traceFrame(frame: *vm_state.StackFrame, out: *JanetTraceFrame) raise.Rais
     // A cframe stores the cfunction in the pc slot. Nothing else in the runtime
     // reads it as a code pointer, which is why the cast is here and not in
     // `fiber.h` beside the frame accessors.
-    const cfun: abi.JanetCFunction = @ptrFromInt(@intFromPtr(frame.pc));
+    const cfun: abi.CFunction = @ptrFromInt(@intFromPtr(frame.pc));
     if (cfun == null) return;
 
-    const reg = registry.registryGet(cfun);
-    if (reg != null and reg.?.name != null) {
+    const reg = registry.registryGet(cfun) orelse {
+        out.name_kind = name_cfunction_bare;
+        return;
+    };
+    if (reg.name) |name| {
         out.name_kind = name_cfunction;
-        out.name = reg.?.name;
-        out.name_prefix = reg.?.name_prefix;
+        out.name = name;
+        out.name_prefix = reg.name_prefix;
         // Only the named branch reports a source. An entry with a source file
         // and no name prints "<cfunction>" and nothing more, and leaving
         // `source` null here is what keeps that true.
-        out.source = reg.?.source_file;
+        out.source = reg.source_file;
     } else {
         out.name_kind = name_cfunction_bare;
     }
 
     // Deliberately outside the branch above: the location comes from the entry
     // existing, the name from the entry having a name. See the header comment.
-    if (reg != null and reg.?.source_line > 0) {
+    if (reg.source_line > 0) {
         out.loc_kind = loc_cfun_line;
-        out.line = reg.?.source_line;
+        out.line = reg.source_line;
     }
 }
 
@@ -552,7 +539,7 @@ fn traceChain(fiber: *fibers.Fiber, state: *TraceState) raise.Raising(void) {
 
     while (index > 0) {
         const frame: *vm_state.StackFrame = @ptrCast(@alignCast(fiber.data.? + @as(usize, @intCast(index)) - @as(usize, constants.JANET_FRAME_SIZE)));
-        var descriptor: JanetTraceFrame = undefined;
+        var descriptor: TraceFrame = undefined;
         index = frame.prevframe;
         try traceFrame(frame, &descriptor);
 

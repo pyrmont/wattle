@@ -122,12 +122,14 @@ fn theSymbolMapRefusals(bytecode: []u32, definition: *functions.FuncDef) void {
 /// Every row names a shape the validator knows. This does not check *which*
 /// shape each opcode has -- the cases below do that -- only that no row is
 /// blank or out of range, which is what a truncated or misaligned table looks
-/// like.
+/// like. Asserted on the stored number rather than on the enum, so that the
+/// table is still checked against the fourteen values C had rather than
+/// against whatever `InstructionType` happens to declare.
 fn everyRowIsAShape() void {
     var op: i32 = 0;
     while (op < constants.Opcode.count) : (op += 1) {
-        const shape = verify.instructions[@intCast(op)];
-        expect(shape >= constants.JINT_0 and shape <= constants.JINT_SC);
+        const shape = @intFromEnum(verify.instructions[@intCast(op)]);
+        expect(shape <= 13);
     }
 }
 

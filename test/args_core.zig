@@ -84,7 +84,7 @@ fn refuses(function: anytype, arguments: anytype, message: []const u8) void {
     const r = refusal(function, arguments);
     if (!r.says(message)) {
         const got = wrap.toString(r.payload);
-        const length: usize = @intCast(strings.head(got).length);
+        const length: usize = strings.head(got).length;
         std.debug.print("expected: {s}\n     got: {s}\n", .{ message, got[0..length] });
         @panic("message mismatch");
     }
@@ -96,7 +96,7 @@ fn refusesWithPrefix(function: anytype, arguments: anytype, prefix: []const u8) 
     const r = refusal(function, arguments);
     if (!r.beginsWith(prefix)) {
         const got = wrap.toString(r.payload);
-        const length: usize = @intCast(strings.head(got).length);
+        const length: usize = strings.head(got).length;
         std.debug.print("expected prefix: {s}\n            got: {s}\n", .{ prefix, got[0..length] });
         @panic("message prefix mismatch");
     }
@@ -541,7 +541,7 @@ fn cbytesCopiesAFullNoReallocBuffer() raise.Raising(void) {
     b.data = &backing;
     b.count = 3;
     b.capacity = 3;
-    b.gc.flags |= constants.JANET_BUFFER_FLAG_NO_REALLOC;
+    harness.gcSetBits(&b.gc.flags, constants.JANET_BUFFER_FLAG_NO_REALLOC);
 
     // The block is on the heap list now, and a value held only in a local is
     // not a root. Nothing between here and the restore allocates a collectable
@@ -561,7 +561,7 @@ fn cbytesCopiesAFullNoReallocBuffer() raise.Raising(void) {
     b.data = null;
     b.count = 0;
     b.capacity = 0;
-    b.gc.flags &= ~@as(i32, constants.JANET_BUFFER_FLAG_NO_REALLOC);
+    b.gc.flags = @bitCast(harness.gcBits(b.gc.flags) & ~@as(u32, constants.JANET_BUFFER_FLAG_NO_REALLOC));
 }
 
 // ---------------------------------------------------------------- abstract
@@ -572,7 +572,7 @@ const other_at = abstract_type.define(anyopaque, .{ .name = "args-core/other" })
 /// A `bytes` callback, which is non-raising because it is reached from paths
 /// that cannot act on a refusal. So it is an ordinary Zig function
 /// -- `define` supplies the calling convention along with the cast.
-fn probeBytes(p: *const anyopaque, _: usize) abi.JanetByteView {
+fn probeBytes(p: *const anyopaque, _: usize) abi.ByteView {
     return .{ .bytes = @ptrCast(p), .len = 3 };
 }
 

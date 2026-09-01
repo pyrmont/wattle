@@ -132,9 +132,6 @@ pub inline fn fromBytes(bytes: []const u8, comptime as: Bytes) repr.Value {
 const hash_seed: u32 = 0x9e3779b9;
 const hash_key_size = constants.JANET_HASH_KEY_SIZE;
 var hash_key: [hash_key_size]u8 = @splat(0);
-comptime {
-    if (config.prf) {}
-}
 
 pub fn hashMix(input: u32, more: u32) u32 {
     const mix = more +% hash_seed +% (input << 6) +% (input >> 2);
@@ -160,9 +157,13 @@ pub fn hashBytes(bytes: []const u8) i32 {
 /// Not `std.math.ceilPowerOfTwo`, which differs at every exact power of two.
 /// Strict is what guarantees `dictionaryFind` an empty bucket to stop on, so a
 /// probe that finds none terminates.
-pub fn capacityFor(val: i32) i32 {
-    if (val < 0) return 0;
-    var result = val;
+///
+/// The rounding runs in 32 bits and saturates at `INT32_MAX`, which is the
+/// largest count any Janet collection carries and therefore the largest
+/// capacity a bucket array is asked for.
+pub fn capacityFor(val: usize) usize {
+    if (val > std.math.maxInt(i32)) return std.math.maxInt(i32);
+    var result: u32 = @intCast(val);
     result |= result >> 1;
     result |= result >> 2;
     result |= result >> 4;
@@ -302,9 +303,19 @@ pub fn dictionaryFind(buckets: []const tables.KV, key: repr.Value) ?*const table
     const index = mapHash(cap, order.hash(key));
     var first_bucket: ?*const tables.KV = null;
 
-    var i: i32 = index;
-    while (i < cap) : (i += 1) {
-        const kv = &buckets[@intCast(i)];
+    // **Index loops, not `for (buckets[start..]) |*kv|`, and this is measured.**
+    // Zig's `for` over a sub-slice with a pointer capture keeps both the
+    // element pointer and the index live, so the probe carries three induction
+    // updates per iteration (`add`, `add`, `subs`) where an index carries two.
+    // On a body this small that is about 10% per iteration, and the probe is
+    // the hottest loop in the tree: `methods` measured 3-5% slower over an
+    // isolated proto-chain benchmark with the `for` form. `DESIGN.md` section
+    // 13 decides it: a measured regression is a reason to choose the faster
+    // shape.
+    const start: usize = @intCast(index);
+    var i: usize = start;
+    while (i < buckets.len) : (i += 1) {
+        const kv = &buckets[i];
         if (isNil(kv.key)) {
             if (isNil(kv.value)) return kv;
             if (first_bucket == null) first_bucket = kv;
@@ -314,8 +325,8 @@ pub fn dictionaryFind(buckets: []const tables.KV, key: repr.Value) ?*const table
     }
 
     i = 0;
-    while (i < index) : (i += 1) {
-        const kv = &buckets[@intCast(i)];
+    while (i < start) : (i += 1) {
+        const kv = &buckets[i];
         if (isNil(kv.key)) {
             if (isNil(kv.value)) return kv;
             if (first_bucket == null) first_bucket = kv;
@@ -345,9 +356,12 @@ pub fn dictionaryFindKeyword(
     const index = mapHash(cap, hash);
     var first_bucket: ?*const tables.KV = null;
 
-    var i: i32 = index;
-    while (i < cap) : (i += 1) {
-        const kv = &buckets[@intCast(i)];
+    // Index loops for the reason `dictionaryFind` states above, and measured
+    // with it: this is the same probe over the same buckets.
+    const start: usize = @intCast(index);
+    var i: usize = start;
+    while (i < buckets.len) : (i += 1) {
+        const kv = &buckets[i];
         if (isNil(kv.key)) {
             if (isNil(kv.value)) return kv;
             if (first_bucket == null) first_bucket = kv;
@@ -357,8 +371,8 @@ pub fn dictionaryFindKeyword(
     }
 
     i = 0;
-    while (i < index) : (i += 1) {
-        const kv = &buckets[@intCast(i)];
+    while (i < start) : (i += 1) {
+        const kv = &buckets[i];
         if (isNil(kv.key)) {
             if (isNil(kv.value)) return kv;
             if (first_bucket == null) first_bucket = kv;
@@ -378,7 +392,7 @@ fn matchesKeyword(key: repr.Value, hash: i32, cstr: []const u8) bool {
     if (!repr.checkType(key, repr.Tag.keyword)) return false;
     const str = wrap.toString(key);
     const head = stringHead(str);
-    if (head.hash != hash or head.length != @as(i32, @intCast(cstr.len))) return false;
+    if (head.hash != hash or head.length != cstr.len) return false;
     return std.mem.eql(u8, str[0..cstr.len], cstr);
 }
 
@@ -415,12 +429,11 @@ pub fn dictionaryNext(
 // bucket array, which is this bucket's subject: `tables.zig` and `structs.zig`
 // are the two callers.
 
-/// `sizeof(JanetKV) * count` as C computes it: the `int32_t` is converted to
-/// `size_t`, which sign-extends a negative count into an enormous size, and the
-/// multiply wraps. Both are reproduced -- the enormous size is what turns a
-/// negative capacity into an out-of-memory exit.
-inline fn kvBytes(count: i32) usize {
-    return @as(usize, @bitCast(@as(isize, count))) *% @sizeOf(tables.KV);
+/// `sizeof(JanetKV) * count`, with C's wrapping multiply. The sign extension
+/// C did on the way here is gone with the count's signedness: a bucket count
+/// is a count, and `capacityFor` is the only thing that produces one.
+inline fn kvBytes(count: usize) usize {
+    return count *% @sizeOf(tables.KV);
 }
 
 /// `janet_memalloc_empty`. A `janet_malloc` block of `count` key/value pairs,
@@ -428,13 +441,11 @@ inline fn kvBytes(count: i32) usize {
 ///
 /// The charge happens before the null check, exactly as in C; nothing observes
 /// the difference, because the failure path exits.
-pub fn memallocEmpty(count: i32) [*]tables.KV {
+pub fn memallocEmpty(count: usize) [*]tables.KV {
     const bytes = kvBytes(count);
     const mmem: [*]tables.KV = @ptrCast(@alignCast(utils.rawAlloc(bytes)));
     vm_state.current().gc.next_collection +%= bytes;
-    // A negative `count` never reaches here: `kvBytes` sign-extends it into an
-    // enormous size and `rawAlloc` exits on the failed allocation.
-    for (mmem[0..@intCast(count)]) |*kv| {
+    for (mmem[0..count]) |*kv| {
         kv.key = wrap.fromNil();
         kv.value = wrap.fromNil();
     }

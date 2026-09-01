@@ -62,7 +62,7 @@ const options = @import("options");
 
 comptime {
     // The compiler front end.
-    if (options.stretchy) _ = @import("stretchy.zig");
+    if (options.scratch_vector) _ = @import("scratch_vector.zig");
     if (options.utilities) _ = @import("utils.zig");
     if (options.registry) _ = @import("registry.zig");
     if (options.regalloc) _ = @import("compiler/regalloc.zig");
@@ -158,7 +158,7 @@ comptime {
 // The list is deliberately flat rather than grouped the way the block above
 // is. A contract spells one name and does not care which layer it came from.
 
-pub const stretchy = @import("stretchy.zig");
+pub const scratch_vector = @import("scratch_vector.zig");
 pub const utils = @import("utils.zig");
 pub const registry = @import("registry.zig");
 pub const regalloc = @import("compiler/regalloc.zig");

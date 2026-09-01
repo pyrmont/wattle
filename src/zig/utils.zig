@@ -35,7 +35,7 @@ pub fn structHead(st: [*]const tables.KV) *structs.StructHead {
     return structs.head(st);
 }
 
-pub fn abstractHead(abstract: ?*const anyopaque) *abi.JanetAbstractHead {
+pub fn abstractHead(abstract: ?*const anyopaque) *abi.AbstractHead {
     return abi.abstractHead(abstract);
 }
 
@@ -131,21 +131,6 @@ inline fn isNil(val: repr.Value) bool {
     return repr.checkType(val, repr.Tag.nil);
 }
 
-/// `memcpy` that tolerates a zero length with a null pointer.
-///
-/// The C original's comment says it exists to "avoid some undefined behavior
-/// that was common in the code base", and the behaviour is C's rule that a
-/// null pointer may not be passed to `memcpy` even for zero bytes. Zig has the
-/// same rule from the other side: a zero-length slice cannot be constructed
-/// from a null pointer, so the early return is load-bearing here rather than
-/// merely careful.
-pub fn safeMemcpy(dest: ?*anyopaque, src: ?*const anyopaque, len: usize) void {
-    if (len == 0) return;
-    const to: [*]u8 = @ptrCast(dest.?);
-    const from: [*]const u8 = @ptrCast(src.?);
-    @memcpy(to[0..len], from[0..len]);
-}
-
 // ------------------------------------------------------ strings and searching
 
 /// Compare a Janet string with a C string, without interning the second.
@@ -183,7 +168,7 @@ pub fn strbinsearch(
     tabcount: usize,
     itemsize: usize,
     key: [*:0]const u8,
-) callconv(.c) ?*const anyopaque {
+) ?*const anyopaque {
     const base: [*]const u8 = @ptrCast(tab.?);
     var low: usize = 0;
     var hi: usize = tabcount;
@@ -214,7 +199,7 @@ pub fn sortedKeys(
     dict: [*]const tables.KV,
     cap: i32,
     index_buffer: ?[*]i32,
-) callconv(.c) i32 {
+) i32 {
     var next_index: i32 = 0;
     for (0..@as(usize, @intCast(cap))) |i| {
         if (!isNil(dict[i].key)) {
@@ -284,7 +269,7 @@ const gnuStrerrorR: GnuStrerrorR = @ptrCast(&c.strerror_r);
 /// Only one of the three is compiled for any target: the Linux arm is
 /// type-checked by the Linux cross-compile in the acceptance matrix and by
 /// nothing on this host.
-pub fn cryptorand(out: [*]u8, n: usize) callconv(.c) c_int {
+pub fn cryptorand(out: [*]u8, n: usize) c_int {
     if (!config.cryptorand) return -1;
 
     if (windows) {
@@ -306,21 +291,13 @@ pub fn cryptorand(out: [*]u8, n: usize) callconv(.c) c_int {
         return 0;
     }
 
-    var randfd: c_int = undefined;
-    while (true) {
-        randfd = std.c.open("/dev/urandom", .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
-        if (!(randfd < 0 and c.errno() == EINTR)) break;
-    }
+    const randfd = c.retryIntr(std.c.open, .{ "/dev/urandom", @as(std.c.O, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }) });
     if (randfd < 0) return -1;
 
     var cursor = out;
     var left = n;
     while (left > 0) {
-        var nread: isize = undefined;
-        while (true) {
-            nread = std.c.read(randfd, cursor, left);
-            if (!(nread < 0 and c.errno() == EINTR)) break;
-        }
+        const nread = c.retryIntr(std.c.read, .{ randfd, cursor, left });
         if (nread <= 0) {
             closeRetrying(randfd);
             return -1;
@@ -333,9 +310,7 @@ pub fn cryptorand(out: [*]u8, n: usize) callconv(.c) c_int {
 }
 
 fn closeRetrying(fd: c_int) void {
-    while (true) {
-        if (!(std.c.close(fd) < 0 and c.errno() == EINTR)) break;
-    }
+    _ = c.retryIntr(std.c.close, .{fd});
 }
 
 /// `JANET_BSD || MAC_OS_X_VERSION_10_7` as the C original spells it. The second
@@ -345,8 +320,6 @@ const has_arc4random = switch (builtin.os.tag) {
     .macos, .ios, .tvos, .watchos, .visionos, .freebsd, .netbsd, .openbsd, .dragonfly => true,
     else => false,
 };
-
-const EINTR: c_int = @intFromEnum(std.c.E.INTR);
 
 // ------------------------------------------------------ dynamic module names
 

@@ -74,7 +74,7 @@ fn decodeFlags(
             return pp_format.panicf("expected keyword, got %v", .{opt});
         }
         const keyw = wrap.toKeyword(opt);
-        const name = keyw[0..@intCast(strings.head(keyw).length)];
+        const name = keyw[0..strings.head(keyw).length];
         const index = flagIndex(platform, name) orelse
             return pp_format.panicf("unknown %s flag %v", .{ what, opt });
         if (index >= values.len or values[index] == 0) {
@@ -89,12 +89,14 @@ fn decodeFlags(
 // The watcher
 // ==========================================================================
 
-/// `JanetWatcher`. A plain Zig struct rather than an `extern` one: nothing
-/// outside this file reads a field, the abstract is sized with `@sizeOf`, and
-/// the C original's own layout is conditional -- there is no `stream` member
-/// on Windows, where a watch owns a handle each rather than the watcher owning
-/// one. `void` is how that member is spelled away here.
-const JanetWatcher = struct {
+/// The watcher an `os/filewatch` value holds.
+///
+/// A plain Zig struct rather than an `extern` one: nothing outside this file
+/// reads a field and the abstract is sized with `@sizeOf`. The layout is
+/// conditional -- there is no `stream` member on Windows, where a watch owns a
+/// handle each rather than the watcher owning one, and `void` is how that
+/// member is spelled away.
+const Watcher = struct {
     stream: if (backend == .windows) void else ?*ev_stream.Stream,
     watch_descriptors: ?*tables.Table,
     channel: ?*ev_channel.Channel,
@@ -102,7 +104,7 @@ const JanetWatcher = struct {
     is_watching: c_int,
 };
 
-fn watcherOf(p: ?*anyopaque) *JanetWatcher {
+fn watcherOf(p: ?*anyopaque) *Watcher {
     return @ptrCast(@alignCast(p));
 }
 
@@ -143,12 +145,8 @@ const inotify = struct {
         return decodeFlags(options, .linux, &values, "linux");
     }
 
-    fn init(watcher: *JanetWatcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
-        var fd: c_int = undefined;
-        while (true) {
-            fd = h.inotify_init1(h.IN_NONBLOCK | h.IN_CLOEXEC);
-            if (!(fd == -1 and c.errno() == h.EINTR)) break;
-        }
+    fn init(watcher: *Watcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
+        const fd = c.retryIntr(h.inotify_init1, .{h.IN_NONBLOCK | h.IN_CLOEXEC});
         if (fd == -1) return raise.panicv(ev_stream.evLasterr());
         watcher.watch_descriptors = tables.new(0);
         watcher.channel = channel;
@@ -157,13 +155,9 @@ const inotify = struct {
         watcher.stream = try ev_loop.makeStream(fd, stream_readable, null);
     }
 
-    fn add(watcher: *JanetWatcher, path: [*:0]const u8, flags: u32) raise.Raising(void) {
+    fn add(watcher: *Watcher, path: [*:0]const u8, flags: u32) raise.Raising(void) {
         const stream = watcher.stream orelse return raise.panic("watcher closed");
-        var result: c_int = undefined;
-        while (true) {
-            result = h.inotify_add_watch(stream.handle, path, flags);
-            if (!(result == -1 and c.errno() == h.EINTR)) break;
-        }
+        const result = c.retryIntr(h.inotify_add_watch, .{ stream.handle, path, flags });
         if (result == -1) return raise.panicv(ev_stream.evLasterr());
         const name = value.fromBytes(std.mem.span(path), .string);
         const wd = wrap.fromInteger(result);
@@ -171,7 +165,7 @@ const inotify = struct {
         tables.put(watcher.watch_descriptors.?, wd, name);
     }
 
-    fn remove(watcher: *JanetWatcher, path: [*:0]const u8) raise.Raising(void) {
+    fn remove(watcher: *Watcher, path: [*:0]const u8) raise.Raising(void) {
         const stream = watcher.stream orelse return raise.panic("watcher closed");
         const pathv = value.fromBytes(std.mem.span(path), .string);
         const check = tables.get(watcher.watch_descriptors.?, pathv);
@@ -179,16 +173,7 @@ const inotify = struct {
             return raise.panic("bad watch descriptor");
         }
         const watch_handle = wrap.toInteger(check);
-        // The condition is `result != -1`, not `result == -1`, and that is
-        // `filewatch.c`'s exactly: a *successful* call is retried whenever
-        // `errno` happens to hold EINTR from something earlier. `FOUND.md` has
-        // the entry; the rule is that defined behaviour is reproduced even
-        // when it is a defect.
-        var result: c_int = undefined;
-        while (true) {
-            result = h.inotify_rm_watch(stream.handle, watch_handle);
-            if (!(result != -1 and c.errno() == h.EINTR)) break;
-        }
+        const result = c.retryIntr(h.inotify_rm_watch, .{ stream.handle, watch_handle });
         if (result == -1) return raise.panicv(ev_stream.evLasterr());
         // The C original leaves the two table entries in place, commented out
         // rather than deleted, so a removed path keeps its descriptor mapping.
@@ -199,15 +184,15 @@ const inotify = struct {
     /// scheduling or cancelling the waiting fiber.
     fn callbackRead(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Raising(void) {
         const stream = fiber.ev_stream.?;
-        const watcher: *JanetWatcher = watcherOf(@as(*?*anyopaque, @ptrCast(@alignCast(fiber.ev_state))).*);
+        const watcher: *Watcher = watcherOf(@as(*?*anyopaque, @ptrCast(@alignCast(fiber.ev_state))).*);
         var buf: [1024]u8 = undefined;
         switch (event) {
-            constants.JANET_ASYNC_EVENT_MARK => gc_mark.mark(wrap.fromAbstract(watcher)),
-            constants.JANET_ASYNC_EVENT_CLOSE, constants.JANET_ASYNC_EVENT_ERR => {
+            constants.AsyncEvent.mark => gc_mark.mark(wrap.fromAbstract(watcher)),
+            constants.AsyncEvent.close, constants.AsyncEvent.err => {
                 ev_loop.schedule(fiber, wrap.fromNil());
                 ev_loop.asyncEnd(fiber);
             },
-            constants.JANET_ASYNC_EVENT_HUP, constants.JANET_ASYNC_EVENT_INIT, constants.JANET_ASYNC_EVENT_READ => {
+            constants.AsyncEvent.hup, constants.AsyncEvent.init, constants.AsyncEvent.read => {
                 // `goto read_more`: the C original re-enters the whole block,
                 // so `name` is reset once per `read(2)` and not once per
                 // event. A second event in the same buffer with no name of its
@@ -220,11 +205,7 @@ const inotify = struct {
                     // the documentation: a buffer of `sizeof(struct
                     // inotify_event) + NAME_MAX + 1` is enough to read at
                     // least one event.
-                    var nread: isize = undefined;
-                    while (true) {
-                        nread = h.read(stream.handle, &buf, buf.len);
-                        if (!(nread == -1 and c.errno() == h.EINTR)) break;
-                    }
+                    const nread = c.retryIntr(h.read, .{ stream.handle, &buf, buf.len });
 
                     if (nread == -1) {
                         if (c.errno() == h.EAGAIN or c.errno() == h.EWOULDBLOCK) break :read_more;
@@ -288,27 +269,29 @@ const inotify = struct {
         }
     }
 
-    fn listen(watcher: *JanetWatcher) raise.Raising(void) {
+    fn listen(watcher: *Watcher) raise.Raising(void) {
         if (watcher.is_watching != 0) return raise.panic("already watching");
         watcher.is_watching = 1;
         const thunk = functions.thunkDelay(wrap.fromNil());
-        const fiber = fibers.new(thunk, 64, 0, null);
+        // A delay thunk takes no arguments and is given none, so the arity
+        // check cannot reject it.
+        const fiber = fibers.new(thunk, 64, &.{}) catch unreachable;
         // Gross, and the C original says so: the state is one pointer, and the
         // runtime frees whatever is handed to it here.
         const state: *?*anyopaque = @ptrCast(@alignCast(utils.malloc(@sizeOf(?*anyopaque))));
         state.* = watcher;
-        try ev_loop.asyncStartFiber(fiber, watcher.stream.?, constants.JANET_ASYNC_LISTEN_READ, &callbackRead, @ptrCast(state));
+        try ev_loop.asyncStartFiber(fiber, watcher.stream.?, constants.AsyncMode.reading, &callbackRead, @ptrCast(state));
         gc_alloc.gcroot(wrap.fromAbstract(watcher));
     }
 
-    fn unlisten(watcher: *JanetWatcher) raise.Raising(void) {
+    fn unlisten(watcher: *Watcher) raise.Raising(void) {
         if (watcher.is_watching == 0) return;
         watcher.is_watching = 0;
         try ev_loop.streamClose(watcher.stream.?);
         _ = gc_alloc.gcunroot(wrap.fromAbstract(watcher));
     }
 
-    fn mark(watcher: *JanetWatcher) void {
+    fn mark(watcher: *Watcher) void {
         gc_mark.mark(wrap.fromAbstract(watcher.stream));
     }
 };
@@ -364,7 +347,7 @@ const kqueue = struct {
     /// so there is nothing to reproduce and this starts from zero;
     /// `FOUND.md` has the entry.
     const State = extern struct {
-        watcher: *JanetWatcher,
+        watcher: *Watcher,
         cookie: u32,
     };
 
@@ -382,7 +365,7 @@ const kqueue = struct {
         return decodeFlags(options, .kqueue, &values, "bsd");
     }
 
-    fn init(watcher: *JanetWatcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
+    fn init(watcher: *Watcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
         // Unchecked, as in the C original: a failed `kqueue()` becomes a
         // stream over descriptor -1 rather than a raise.
         const kq = h.kqueue();
@@ -394,23 +377,15 @@ const kqueue = struct {
         try ev_loop.levelTriggeredStream(watcher.stream.?);
     }
 
-    fn add(watcher: *JanetWatcher, path: [*:0]const u8, flags: u32) raise.Raising(void) {
+    fn add(watcher: *Watcher, path: [*:0]const u8, flags: u32) raise.Raising(void) {
         const stream = watcher.stream orelse return raise.panic("watcher closed");
         const kq = stream.handle;
-        var file_fd: c_int = undefined;
-        while (true) {
-            file_fd = h.open(path, h.O_RDONLY);
-            if (!(file_fd == -1 and c.errno() == h.EINTR)) break;
-        }
+        const file_fd = c.retryIntr(h.open, .{ path, h.O_RDONLY });
         if (file_fd == -1) return pp_format.panicf("failed to open: %v", .{ev_stream.evLasterr()});
         // Watch for EVFILT_VNODE on the file descriptor.
         var kev: h.struct_kevent = undefined;
         fw_abi.evSetVnode(&kev, file_fd, flags);
-        var status: c_int = undefined;
-        while (true) {
-            status = h.kevent(kq, &kev, 1, null, 0, null);
-            if (!(status == -1 and c.errno() == h.EINTR)) break;
-        }
+        const status = c.retryIntr(h.kevent, .{ kq, &kev, 1, null, 0, null });
         if (status == -1) {
             _ = h.close(file_fd);
             return pp_format.panicf("failed to listen: %v", .{ev_stream.evLasterr()});
@@ -421,7 +396,7 @@ const kqueue = struct {
         tables.put(watcher.watch_descriptors.?, wd, name);
     }
 
-    fn remove(watcher: *JanetWatcher, path: [*:0]const u8) raise.Raising(void) {
+    fn remove(watcher: *Watcher, path: [*:0]const u8) raise.Raising(void) {
         if (watcher.stream == null) return raise.panic("watcher closed");
         const pathv = value.fromBytes(std.mem.span(path), .string);
         const check = tables.get(watcher.watch_descriptors.?, pathv);
@@ -430,15 +405,7 @@ const kqueue = struct {
         }
         // Closing the file descriptor also removes it from the kqueue.
         const wd = wrap.toInteger(check);
-        // `result != -1` rather than `result == -1`, which is the C original's
-        // condition: a *successful* `close(2)` is retried whenever `errno`
-        // happens to hold EINTR from something earlier, and the retry closes a
-        // descriptor this watcher no longer owns. `FOUND.md` has the entry.
-        var result: c_int = undefined;
-        while (true) {
-            result = h.close(wd);
-            if (!(result != -1 and c.errno() == h.EINTR)) break;
-        }
+        const result = c.retryIntr(h.close, .{wd});
         if (result == -1) return raise.panicv(ev_stream.evLasterr());
         tables.put(watcher.watch_descriptors.?, pathv, wrap.fromNil());
         tables.put(watcher.watch_descriptors.?, wrap.fromInteger(wd), wrap.fromNil());
@@ -449,40 +416,30 @@ const kqueue = struct {
         const state: *State = @ptrCast(@alignCast(fiber.ev_state));
         const watcher = state.watcher;
         switch (event) {
-            constants.JANET_ASYNC_EVENT_MARK => gc_mark.mark(wrap.fromAbstract(watcher)),
-            constants.JANET_ASYNC_EVENT_CLOSE, constants.JANET_ASYNC_EVENT_ERR => {
+            constants.AsyncEvent.mark => gc_mark.mark(wrap.fromAbstract(watcher)),
+            constants.AsyncEvent.close, constants.AsyncEvent.err => {
                 ev_loop.schedule(fiber, wrap.fromNil());
                 ev_loop.asyncEnd(fiber);
             },
-            constants.JANET_ASYNC_EVENT_HUP, constants.JANET_ASYNC_EVENT_INIT => {},
-            constants.JANET_ASYNC_EVENT_READ => {
+            constants.AsyncEvent.hup, constants.AsyncEvent.init => {},
+            constants.AsyncEvent.read => {
                 // Pump events from the sub kqueue. Extra will be pumped after
                 // another event loop rotation.
                 const num_events = 512;
                 var events: [num_events]h.struct_kevent = undefined;
                 const kq = stream.handle;
-                var status: c_int = undefined;
-                while (true) {
-                    status = h.kevent(kq, null, 0, &events, num_events, null);
-                    if (!(status == -1 and c.errno() == h.EINTR)) break;
-                }
+                const status = c.retryIntr(h.kevent, .{ kq, null, 0, &events, num_events, null });
                 if (status == -1) {
                     ev_loop.schedule(fiber, wrap.fromNil());
                     ev_loop.asyncEnd(fiber);
                     return;
                 }
-                var i: usize = 0;
-                while (i < status) : (i += 1) {
+                for (events[0..@intCast(status)]) |kev| {
                     state.cookie +%= 6700417;
-                    const kev = events[i];
                     // TODO - avoid stat call here, maybe just when adding
                     // listener?
                     var stat_buf: h.struct_stat = std.mem.zeroes(h.struct_stat);
-                    var st: c_int = undefined;
-                    while (true) {
-                        st = h.fstat(@intCast(kev.ident), &stat_buf);
-                        if (!(st == -1 and c.errno() == h.EINTR)) break;
-                    }
+                    const st = c.retryIntr(h.fstat, .{ @as(c_int, @intCast(kev.ident)), &stat_buf });
                     if (st == -1) continue;
                     const is_dir = fw_abi.isDir(stat_buf.st_mode);
                     const ident = wrapIdent(kev.ident);
@@ -515,26 +472,27 @@ const kqueue = struct {
         }
     }
 
-    fn listen(watcher: *JanetWatcher) raise.Raising(void) {
+    fn listen(watcher: *Watcher) raise.Raising(void) {
         if (watcher.is_watching != 0) return raise.panic("already watching");
         watcher.is_watching = 1;
         const thunk = functions.thunkDelay(wrap.fromNil());
-        const fiber = fibers.new(thunk, 64, 0, null);
+        // A delay thunk takes no arguments and is given none.
+        const fiber = fibers.new(thunk, 64, &.{}) catch unreachable;
         const state: *State = @ptrCast(@alignCast(utils.malloc(@sizeOf(State))));
         state.watcher = watcher;
         state.cookie = 0;
-        try ev_loop.asyncStartFiber(fiber, watcher.stream.?, constants.JANET_ASYNC_LISTEN_READ, &callbackRead, state);
+        try ev_loop.asyncStartFiber(fiber, watcher.stream.?, constants.AsyncMode.reading, &callbackRead, state);
         gc_alloc.gcroot(wrap.fromAbstract(watcher));
     }
 
-    fn unlisten(watcher: *JanetWatcher) raise.Raising(void) {
+    fn unlisten(watcher: *Watcher) raise.Raising(void) {
         if (watcher.is_watching == 0) return;
         watcher.is_watching = 0;
         try ev_loop.streamClose(watcher.stream.?);
         _ = gc_alloc.gcunroot(wrap.fromAbstract(watcher));
     }
 
-    fn mark(watcher: *JanetWatcher) void {
+    fn mark(watcher: *Watcher) void {
         gc_mark.mark(wrap.fromAbstract(watcher.stream));
     }
 };
@@ -587,9 +545,9 @@ const win = struct {
     /// hands the address of this structure to the IOCP and reads the
     /// `OVERLAPPED` back out of the completion.
     const OverlappedWatch = extern struct {
-        overlapped: fw_abi.JanetOverlapped,
+        overlapped: fw_abi.Overlapped,
         stream: ?*ev_stream.Stream,
-        watcher: *JanetWatcher,
+        watcher: *Watcher,
         fiber: ?*fibers.Fiber,
         dir_path: [*:0]const u8,
         flags: u32,
@@ -601,7 +559,7 @@ const win = struct {
         return decodeFlags(options, .windows, &values, "windows filewatch");
     }
 
-    fn init(watcher: *JanetWatcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
+    fn init(watcher: *Watcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
         watcher.watch_descriptors = tables.new(0);
         watcher.channel = channel;
         watcher.default_flags = default_flags;
@@ -626,18 +584,18 @@ const win = struct {
         const ow: *OverlappedWatch = @ptrCast(@alignCast(fiber.ev_state));
         const watcher = ow.watcher;
         switch (event) {
-            constants.JANET_ASYNC_EVENT_INIT => ev_loop.asyncInFlight(fiber),
-            constants.JANET_ASYNC_EVENT_MARK => {
+            constants.AsyncEvent.init => ev_loop.asyncInFlight(fiber),
+            constants.AsyncEvent.mark => {
                 gc_mark.mark(wrap.fromAbstract(ow.stream));
                 if (ow.fiber) |f| gc_mark.mark(wrap.fromFiber(f));
                 gc_mark.mark(wrap.fromAbstract(watcher));
                 gc_mark.mark(wrap.fromString(ow.dir_path));
             },
-            constants.JANET_ASYNC_EVENT_CLOSE => {
+            constants.AsyncEvent.close => {
                 _ = tables.remove(ow.watcher.watch_descriptors.?, wrap.fromString(ow.dir_path));
             },
-            constants.JANET_ASYNC_EVENT_ERR, constants.JANET_ASYNC_EVENT_FAILED => try ev_loop.streamClose(ow.stream.?),
-            constants.JANET_ASYNC_EVENT_COMPLETE => {
+            constants.AsyncEvent.err, constants.AsyncEvent.failed => try ev_loop.streamClose(ow.stream.?),
+            constants.AsyncEvent.complete => {
                 if (watcher.is_watching == 0) {
                     try ev_loop.streamClose(ow.stream.?);
                     return;
@@ -651,7 +609,7 @@ const win = struct {
                         const wide_len: c_int = @intCast(fni.FileNameLength / @sizeOf(h.WCHAR));
                         const nbytes = h.WideCharToMultiByte(h.CP_UTF8, 0, wide, wide_len, null, 0, null, null);
                         assert(@src(), nbytes != 0, "bad utf8 path");
-                        const into = strings.begin(nbytes);
+                        const into = strings.begin(@intCast(nbytes));
                         _ = h.WideCharToMultiByte(h.CP_UTF8, 0, wide, wide_len, @ptrCast(into), nbytes, null, null);
                         filename = wrap.fromString(strings.end(into));
                     } else {
@@ -691,15 +649,15 @@ const win = struct {
         const thunk = functions.thunkDelay(wrap.fromNil());
         // `.?` here is provable rather than inherited, unlike `net_sockets`'s
         // two: `thunkDelay` builds a funcdef with `min_arity` 0 and
-        // `max_arity` INT32_MAX, so the arity check `janet_fiber` returns null
-        // from cannot reject zero arguments.
-        const fiber = fibers.new(thunk, 64, 0, null).?;
+        // `max_arity` INT32_MAX, so the arity check cannot reject zero
+        // arguments.
+        const fiber = fibers.new(thunk, 64, &.{}) catch unreachable;
         fiber.supervisor_channel = fibers.root().?.supervisor_channel;
         ow.fiber = fiber;
-        try ev_loop.asyncStartFiber(fiber, stream.?, constants.JANET_ASYNC_LISTEN_READ, &callbackRead, ow);
+        try ev_loop.asyncStartFiber(fiber, stream.?, constants.AsyncMode.reading, &callbackRead, ow);
     }
 
-    fn add(watcher: *JanetWatcher, path: [*:0]const u8, flags: u32) raise.Raising(void) {
+    fn add(watcher: *Watcher, path: [*:0]const u8, flags: u32) raise.Raising(void) {
         const handle = h.CreateFileA(
             path,
             h.FILE_LIST_DIRECTORY | h.GENERIC_READ,
@@ -728,7 +686,7 @@ const win = struct {
         if (watcher.is_watching != 0) try startListening(ow);
     }
 
-    fn remove(watcher: *JanetWatcher, path: [*:0]const u8) raise.Raising(void) {
+    fn remove(watcher: *Watcher, path: [*:0]const u8) raise.Raising(void) {
         const pathv = value.fromBytes(std.mem.span(path), .string);
         const streamv = tables.get(watcher.watch_descriptors.?, pathv);
         if (repr.checkType(streamv, repr.Tag.nil)) {
@@ -747,7 +705,7 @@ const win = struct {
     /// raise. A
     /// single raise-capable `eachWatch` would have put an error union on the
     /// mark path, which is exactly the thing that must not be there.
-    fn eachWatch(watcher: *JanetWatcher, comptime body: fn (*OverlappedWatch) void) void {
+    fn eachWatch(watcher: *Watcher, comptime body: fn (*OverlappedWatch) void) void {
         const table = watcher.watch_descriptors.?;
         for (0..table.capacity) |i| {
             const kv = &table.slots()[i];
@@ -756,7 +714,7 @@ const win = struct {
         }
     }
 
-    fn listen(watcher: *JanetWatcher) raise.Raising(void) {
+    fn listen(watcher: *Watcher) raise.Raising(void) {
         if (watcher.is_watching != 0) return raise.panic("already watching");
         watcher.is_watching = 1;
         const table = watcher.watch_descriptors.?;
@@ -771,7 +729,7 @@ const win = struct {
     /// The same walk for a body that raises, which `unlisten` needs and `mark`
     /// may not have.
     fn eachWatchRaising(
-        watcher: *JanetWatcher,
+        watcher: *Watcher,
         comptime body: fn (*OverlappedWatch) raise.Raising(void),
     ) raise.Raising(void) {
         const table = watcher.watch_descriptors.?;
@@ -786,7 +744,7 @@ const win = struct {
         try ev_loop.streamClose(ow.stream.?);
     }
 
-    fn unlisten(watcher: *JanetWatcher) raise.Raising(void) {
+    fn unlisten(watcher: *Watcher) raise.Raising(void) {
         if (watcher.is_watching == 0) return;
         watcher.is_watching = 0;
         try eachWatchRaising(watcher, closeStream);
@@ -800,7 +758,7 @@ const win = struct {
         gc_mark.mark(wrap.fromString(ow.dir_path));
     }
 
-    fn mark(watcher: *JanetWatcher) void {
+    fn mark(watcher: *Watcher) void {
         eachWatch(watcher, markWatch);
     }
 };
@@ -817,32 +775,32 @@ const unsupported = struct {
         return 0;
     }
 
-    fn init(watcher: *JanetWatcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
+    fn init(watcher: *Watcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
         _ = watcher;
         _ = channel;
         _ = default_flags;
         return raise.panic(message);
     }
 
-    fn add(watcher: *JanetWatcher, path: [*:0]const u8, flags: u32) raise.Raising(void) {
+    fn add(watcher: *Watcher, path: [*:0]const u8, flags: u32) raise.Raising(void) {
         _ = watcher;
         _ = path;
         _ = flags;
         return raise.panic(message);
     }
 
-    fn remove(watcher: *JanetWatcher, path: [*:0]const u8) raise.Raising(void) {
+    fn remove(watcher: *Watcher, path: [*:0]const u8) raise.Raising(void) {
         _ = watcher;
         _ = path;
         return raise.panic(message);
     }
 
-    fn listen(watcher: *JanetWatcher) raise.Raising(void) {
+    fn listen(watcher: *Watcher) raise.Raising(void) {
         _ = watcher;
         return raise.panic(message);
     }
 
-    fn unlisten(watcher: *JanetWatcher) raise.Raising(void) {
+    fn unlisten(watcher: *Watcher) raise.Raising(void) {
         _ = watcher;
         return raise.panic(message);
     }
@@ -857,7 +815,7 @@ const unsupported = struct {
     /// wrong, and this gets it right instead of reproducing it. The path is
     /// unreachable either way: a watcher that never initialised has no root to
     /// be marked from.
-    fn mark(watcher: *JanetWatcher) void {
+    fn mark(watcher: *Watcher) void {
         _ = watcher;
     }
 };
@@ -944,8 +902,8 @@ fn splitPath(
 ) void {
     const spath = wrap.toString(path);
     const len = strings.head(spath).length;
-    var cursor: i32 = len;
-    while (cursor > 0 and spath[@intCast(cursor)] != '/') cursor -= 1;
+    var cursor: u32 = len;
+    while (cursor > 0 and spath[cursor] != '/') cursor -= 1;
     if (cursor == 0) {
         structs.put(kvs, value.fromBytes("dir-name", .keyword), no_sep_dir);
         structs.put(kvs, value.fromBytes("file-name", .keyword), no_sep_file);
@@ -960,7 +918,7 @@ fn splitPath(
 // ==========================================================================
 
 /// `janet_filewatch_mark`.
-fn filewatchMark(watcher: *JanetWatcher, _: usize) void {
+fn filewatchMark(watcher: *Watcher, _: usize) void {
     if (watcher.channel == null) return; // Incomplete initialization
     be.mark(watcher);
     gc_mark.mark(wrap.fromAbstract(watcher.channel));
@@ -973,7 +931,7 @@ fn filewatchMark(watcher: *JanetWatcher, _: usize) void {
 /// `pub` for `test/filewatch_core.zig`, which reads the fields directly:
 /// every field after `gcmark` being null is what makes a watcher opaque.
 /// was a mirror *of* went; there is one now.
-pub const watcherType = abstract_type.define(JanetWatcher, .{
+pub const watcherType = abstract_type.define(Watcher, .{
     .name = "filewatch/watcher",
     .gcmark = &filewatchMark,
 });
@@ -986,7 +944,7 @@ fn cfunMake(argv: []repr.Value) raise.Raising(repr.Value) {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.arity(argv, 1, -1);
     const channel = try ev_loop.getChannel(argv, 0);
-    const watcher = watcherOf(abstracts.newFor(JanetWatcher, &watcherType));
+    const watcher = watcherOf(abstracts.newFor(Watcher, &watcherType));
     const default_flags = try be.decode(argv[1..]);
     try be.init(watcher, channel, default_flags);
     return wrap.fromAbstract(watcher);
@@ -994,7 +952,7 @@ fn cfunMake(argv: []repr.Value) raise.Raising(repr.Value) {
 
 fn cfunAdd(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, -1);
-    const watcher = try args_core.getAbstract(JanetWatcher, argv, 0, &watcherType);
+    const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
     const path = try args_core.getCString(argv, 1);
     const flags = watcher.default_flags | try be.decode(argv[2..]);
     try be.add(watcher, path, flags);
@@ -1003,7 +961,7 @@ fn cfunAdd(argv: []repr.Value) raise.Raising(repr.Value) {
 
 fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
-    const watcher = try args_core.getAbstract(JanetWatcher, argv, 0, &watcherType);
+    const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
     // TODO - pass string in directly to avoid extra allocation
     const path = try args_core.getCString(argv, 1);
     try be.remove(watcher, path);
@@ -1012,14 +970,14 @@ fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
 
 fn cfunListen(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const watcher = try args_core.getAbstract(JanetWatcher, argv, 0, &watcherType);
+    const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
     try be.listen(watcher);
     return wrap.fromNil();
 }
 
 fn cfunUnlisten(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const watcher = try args_core.getAbstract(JanetWatcher, argv, 0, &watcherType);
+    const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
     try be.unlisten(watcher);
     return wrap.fromNil();
 }

@@ -128,7 +128,7 @@ pub inline fn unregisterStream(s: *stream_mod.Stream) raise.Raising(void) {
     try impl.unregister(s);
 }
 
-pub inline fn loop1(has_timeout: bool, timeout: ev.JanetTimestamp) raise.Raising(void) {
+pub inline fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Raising(void) {
     try impl.loop1(has_timeout, timeout);
 }
 
@@ -168,11 +168,7 @@ const SelfPipe = struct {
     fn handle() void {
         var response: ev.SelfPipeEvent = undefined;
         while (true) {
-            var status: isize = undefined;
-            while (true) {
-                status = c.read(vm_state.current().ev.backend.selfpipe[0], @ptrCast(&response), @sizeOf(ev.SelfPipeEvent));
-                if (!(status == -1 and c.errno() == ev.EINTR)) break;
-            }
+            const status = c.retryIntr(c.read, .{ vm_state.current().ev.backend.selfpipe[0], @as([*]u8, @ptrCast(&response)), @sizeOf(ev.SelfPipeEvent) });
             if (status <= 0) return;
             if (response.cb) |cb| {
                 cb(response.msg);
@@ -195,28 +191,28 @@ fn stepMasked(s: *stream_mod.Stream, readable: bool, writable: bool, has_err: bo
     const wf = s.write_fiber;
     if (rf) |f| {
         if (f.ev_callback != null and readable) {
-            try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_READ);
+            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.read);
         } else if (else_chain and f.ev_callback != null and has_hup) {
-            try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_HUP);
+            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
         } else if (else_chain and f.ev_callback != null and has_err) {
-            try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_ERR);
+            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
         }
         if (!else_chain) {
-            if (f.ev_callback != null and has_err) try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_ERR);
-            if (f.ev_callback != null and has_hup) try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_HUP);
+            if (f.ev_callback != null and has_err) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
+            if (f.ev_callback != null and has_hup) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
         }
     }
     if (wf) |f| {
         if (f.ev_callback != null and writable) {
-            try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_WRITE);
+            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.write);
         } else if (else_chain and f.ev_callback != null and has_hup) {
-            try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_HUP);
+            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
         } else if (else_chain and f.ev_callback != null and has_err) {
-            try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_ERR);
+            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
         }
         if (!else_chain) {
-            if (f.ev_callback != null and has_err) try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_ERR);
-            if (f.ev_callback != null and has_hup) try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_HUP);
+            if (f.ev_callback != null and has_err) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
+            if (f.ev_callback != null and has_hup) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
         }
     }
     try stream_mod.checkToClose(s);
@@ -265,7 +261,7 @@ const Iocp = struct {
         _ = s;
     }
 
-    fn loop1(has_timeout: bool, to: ev.JanetTimestamp) raise.Raising(void) {
+    fn loop1(has_timeout: bool, to: ev.Timestamp) raise.Raising(void) {
         var completion_key: usize = 0;
         var num_bytes_transferred: u32 = 0;
         var overlapped: ?*c.OVERLAPPED = null;
@@ -296,19 +292,22 @@ const Iocp = struct {
         // Normal event.
         const jo: *stream_mod.Overlapped = @ptrCast(@alignCast(overlapped));
         const s: *stream_mod.Stream = @ptrFromInt(completion_key);
-        var fiber: ?*fibers.Fiber = null;
-        if (s.read_fiber != null and s.read_fiber.?.ev_state == @as(?*anyopaque, jo)) {
-            fiber = s.read_fiber;
-        } else if (s.write_fiber != null and s.write_fiber.?.ev_state == @as(?*anyopaque, jo)) {
-            fiber = s.write_fiber;
-        }
+        const fiber: ?*fibers.Fiber = blk: {
+            if (s.read_fiber) |f| {
+                if (f.ev_state == @as(?*anyopaque, jo)) break :blk f;
+            }
+            if (s.write_fiber) |f| {
+                if (f.ev_state == @as(?*anyopaque, jo)) break :blk f;
+            }
+            break :blk null;
+        };
         if (fiber) |waiting| {
             waiting.flags.setEvInFlight(false);
             jo.bytes_transfered = num_bytes_transferred;
             try ev_callback.of(waiting.ev_callback)(waiting, if (result != 0)
-                constants.JANET_ASYNC_EVENT_COMPLETE
+                constants.AsyncEvent.complete
             else
-                constants.JANET_ASYNC_EVENT_FAILED);
+                constants.AsyncEvent.failed);
         } else {
             utils.free(jo);
             ev.evDecRefcount();
@@ -374,16 +373,12 @@ const Epoll = struct {
         const readable: u32 = @intCast(constants.JANET_STREAM_READABLE | constants.JANET_STREAM_ACCEPTABLE);
         if (s.flags & readable != 0) event.events |= EPOLLIN;
         if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_WRITABLE)) != 0) event.events |= EPOLLOUT;
-        var status: c_int = undefined;
-        while (true) {
-            status = c.epoll_ctl(
-                vm_state.current().ev.backend.epoll,
-                if (mod) EPOLL_CTL_MOD else EPOLL_CTL_ADD,
-                s.handle,
-                &event,
-            );
-            if (!(status == -1 and c.errno() == ev.EINTR)) break;
-        }
+        const status = c.retryIntr(c.epoll_ctl, .{
+            vm_state.current().ev.backend.epoll,
+            if (mod) EPOLL_CTL_MOD else EPOLL_CTL_ADD,
+            s.handle,
+            &event,
+        });
         if (status == -1) {
             if (c.errno() == ev.EPERM) {
                 // Couldn't add to the event loop, so assume it completes
@@ -409,16 +404,12 @@ const Epoll = struct {
 
     fn unregister(s: *stream_mod.Stream) raise.Raising(void) {
         if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) != 0) return;
-        var status: c_int = undefined;
-        while (true) {
-            status = c.epoll_ctl(vm_state.current().ev.backend.epoll, EPOLL_CTL_DEL, s.handle, null);
-            if (!(status == -1 and c.errno() == ev.EINTR)) break;
-        }
+        const status = c.retryIntr(c.epoll_ctl, .{ vm_state.current().ev.backend.epoll, EPOLL_CTL_DEL, s.handle, null });
         if (status == -1) return raise.panicv(stream_mod.evLasterr());
         s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
     }
 
-    fn loop1(has_timeout: bool, timeout: ev.JanetTimestamp) raise.Raising(void) {
+    fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Raising(void) {
         const b = &vm_state.current().ev.backend;
         if (b.timer_enabled or has_timeout) {
             var its = std.mem.zeroes(c.ITimerSpec);
@@ -431,23 +422,18 @@ const Epoll = struct {
         b.timer_enabled = has_timeout;
 
         var events: [max_events]c.EpollEvent = undefined;
-        var ready: c_int = undefined;
-        while (true) {
-            ready = c.epoll_wait(b.epoll, &events, max_events, -1);
-            if (!(ready == -1 and c.errno() == ev.EINTR)) break;
-        }
+        const ready = c.retryIntr(c.epoll_wait, .{ b.epoll, &events, max_events, -1 });
         if (ready == -1) ev.exitWith(@src(), "failed to poll events");
 
-        var i: usize = 0;
-        while (i < @as(usize, @intCast(ready))) : (i += 1) {
-            const p = events[i].data.ptr;
+        for (events[0..@as(usize, @intCast(ready))]) |event| {
+            const p = event.data.ptr;
             if (p == @intFromPtr(&b.timerfd)) {
                 // Timer expired, ignore.
             } else if (p == @intFromPtr(&b.selfpipe)) {
                 SelfPipe.handle();
             } else {
                 const s: *stream_mod.Stream = @ptrFromInt(p);
-                const mask = events[i].events;
+                const mask = event.events;
                 try stepMasked(
                     s,
                     mask & EPOLLIN != 0,
@@ -504,11 +490,7 @@ const Kqueue = struct {
     }
 
     fn apply(kevs: []const Kevent) c_int {
-        var status: c_int = undefined;
-        while (true) {
-            status = std.c.kevent(vm_state.current().ev.backend.kq, kevs.ptr, @intCast(kevs.len), undefined, 0, null);
-            if (!(status == -1 and c.errno() == ev.EINTR)) break;
-        }
+        const status = c.retryIntr(std.c.kevent, .{ vm_state.current().ev.backend.kq, kevs.ptr, @as(c_int, @intCast(kevs.len)), undefined, 0, null });
         return status;
     }
 
@@ -557,13 +539,7 @@ const Kqueue = struct {
         if (b.kq != -1) {
             var event: Kevent = undefined;
             set(&event, b.selfpipe[0], EVFILT_READ, @intCast(std.c.EV.ADD | std.c.EV.ENABLE), @intFromPtr(&b.selfpipe));
-            var status: c_int = undefined;
-            // The C original's loop condition is `errno != EINTR`, which
-            // retries on every error but that one. Reproduced.
-            while (true) {
-                status = std.c.kevent(b.kq, @ptrCast(&event), 1, undefined, 0, null);
-                if (!(status == -1 and c.errno() != ev.EINTR)) break;
-            }
+            const status = c.retryIntr(std.c.kevent, .{ b.kq, @as([*]const Kevent, @ptrCast(&event)), 1, undefined, 0, null });
             if (status != -1) return;
         }
         ev.exitWith(@src(), "failed to initialize event loop");
@@ -576,7 +552,7 @@ const Kqueue = struct {
         b.kq = 0;
     }
 
-    fn loop1(has_timeout: bool, timeout: ev.JanetTimestamp) raise.Raising(void) {
+    fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Raising(void) {
         // The interval is calculated per iteration. When it drops to zero or
         // below the timeout is zero; an infinite timeout would make other
         // fibers miss theirs. `ev_core.kqueueInterval` is what keeps it at
@@ -595,40 +571,38 @@ const Kqueue = struct {
             } else {
                 status = std.c.kevent(b.kq, undefined, 0, &events, max_events, null);
             }
-            if (!(status == -1 and c.errno() == ev.EINTR)) break;
+            if (!(status == -1 and c.errno() == c.eintr)) break;
         }
         if (status == -1) ev.exitWith(@src(), "failed to poll events");
 
         b.timer_enabled = has_timeout;
 
-        var i: usize = 0;
-        while (i < @as(usize, @intCast(status))) : (i += 1) {
-            const p = events[i].udata;
+        for (events[0..@as(usize, @intCast(status))]) |event| {
+            const p = event.udata;
             if (p == @intFromPtr(&b.selfpipe)) {
                 SelfPipe.handle();
                 continue;
             }
             const s: *stream_mod.Stream = @ptrFromInt(p);
-            const filt = events[i].filter;
-            const has_err = events[i].flags & @as(u16, @intCast(std.c.EV.ERROR)) != 0;
-            const has_hup = events[i].flags & @as(u16, @intCast(std.c.EV.EOF)) != 0;
+            const filt = event.filter;
+            const has_err = event.flags & @as(u16, @intCast(std.c.EV.ERROR)) != 0;
+            const has_hup = event.flags & @as(u16, @intCast(std.c.EV.EOF)) != 0;
             // The C original walks j = 0 then j = 1, taking the *write* fiber
             // first. Reproduced, including that both directions see an ERR
             // and a HUP.
-            var j: usize = 0;
-            while (j < 2) : (j += 1) {
+            for (0..2) |j| {
                 const f = (if (j != 0) s.read_fiber else s.write_fiber) orelse continue;
                 if (f.ev_callback != null and has_err) {
-                    try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_ERR);
+                    try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
                 }
                 if (f.ev_callback != null and filt == EVFILT_READ and f == s.read_fiber) {
-                    try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_READ);
+                    try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.read);
                 }
                 if (f.ev_callback != null and filt == EVFILT_WRITE and f == s.write_fiber) {
-                    try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_WRITE);
+                    try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.write);
                 }
                 if (f.ev_callback != null and has_hup) {
-                    try ev_callback.of(f.ev_callback)(f, constants.JANET_ASYNC_EVENT_HUP);
+                    try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
                 }
             }
             try stream_mod.checkToClose(s);
@@ -715,12 +689,11 @@ const Poll = struct {
         b.streams = null;
     }
 
-    fn loop1(has_timeout: bool, timeout: ev.JanetTimestamp) raise.Raising(void) {
+    fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Raising(void) {
         const b = &vm_state.current().ev.backend;
 
         // Set event flags.
-        var i: usize = 0;
-        while (i < b.stream_count) : (i += 1) {
+        for (0..b.stream_count) |i| {
             const s = streams()[i];
             const pfd = &fds()[i + 1];
             pfd.events = 0;
@@ -744,13 +717,12 @@ const Poll = struct {
                 to = if (now > timeout) 0 else @intCast(timeout - now);
             }
             ready = std.c.poll(fds(), @intCast(b.stream_count + 1), to);
-            if (!(ready == -1 and c.errno() == ev.EINTR)) break;
+            if (!(ready == -1 and c.errno() == c.eintr)) break;
         }
         if (ready == -1) ev.exitWith(@src(), "failed to poll events");
 
         // Undo the negative hack.
-        i = 0;
-        while (i < b.stream_count) : (i += 1) {
+        for (0..b.stream_count) |i| {
             const pfd = &fds()[i + 1];
             if (pfd.fd < 0) pfd.fd = -pfd.fd;
         }
@@ -760,7 +732,7 @@ const Poll = struct {
             SelfPipe.handle();
         }
 
-        i = 0;
+        var i: usize = 0;
         while (i < b.stream_count) : (i += 1) {
             const pfd = &fds()[i + 1];
             const s = streams()[i];

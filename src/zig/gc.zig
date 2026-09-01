@@ -11,7 +11,7 @@
 //!
 //! **Nothing here holds anything a skipped cleanup would strand.** One call
 //! reaches code this runtime does not own: `freeOneScratch` calls a
-//! `JanetScratchFinalizer` an embedder installed through `janet_sfinalizer`.
+//! `ScratchFinalizer` an embedder installed through `janet_sfinalizer`.
 //! No in-tree caller installs one, and a finalizer that raises is undefined
 //! behaviour, but the frames below must still hold nothing. A raise from a
 //! scratch finalizer leaves `scratch_len` unreduced and the block re-finalized
@@ -20,8 +20,8 @@
 //! Two pieces of the C arithmetic are reproduced rather than repaired, and
 //! both are in `FOUND.md`:
 //!
-//!  - The scratch table grows by `newcap * @sizeOf(Scratch)` where the element
-//!    is a `*Scratch`. The header is a function pointer plus a flexible array,
+//!  - The scratch table grows by `newcap * @sizeOf(ScratchBlock)` where the element
+//!    is a `*ScratchBlock`. The header is a function pointer plus a flexible array,
 //!    so it is never smaller than a pointer and the table is over-allocated
 //!    rather than short — harmless, and preserved.
 //!  - `smalloc` and `srealloc` add the header size to the caller's size without
@@ -31,8 +31,8 @@
 //!
 //! One assumption the C code makes is worth naming because this file relies on
 //! it in the same way. `janet_smalloc` returns `s->mem` and `janet_mem2scratch`
-//! recovers the header with `((JanetScratch *)mem) - 1`; those are inverses
-//! only if `sizeof(JanetScratch)` equals `offsetof(JanetScratch, mem)`, which
+//! recovers the header with `((ScratchBlock *)mem) - 1`; those are inverses
+//! only if `sizeof(ScratchBlock)` equals `offsetof(ScratchBlock, mem)`, which
 //! holds because the header is one pointer followed by a `long long[]`. Zig
 //! does the same arithmetic through `header_size` below, so the two
 //! implementations hand out and accept the same addresses.
@@ -46,7 +46,7 @@ const abi = @import("abi");
 ///
 /// It lives here rather than in `abi.zig` because nothing an author compiles
 /// reads a memory type: it is the collector's vocabulary. It was briefly in
-/// the boundary module, carried there by `JanetGCObject`'s two accessors,
+/// the boundary module, carried there by `GCObject`'s two accessors,
 /// which is the "shares a file" coupling `DESIGN.md` §14 is against surviving
 /// at one-declaration scale. The accessors are free functions below for the
 /// same reason.
@@ -72,13 +72,8 @@ pub const MemoryType = enum(u8) {
 };
 
 /// The block's type, read out of the low byte of the header's flag word.
-pub inline fn memoryTypeOf(self: *const abi.JanetGCObject) MemoryType {
-    return @enumFromInt(@as(u8, @truncate(@as(u32, @bitCast(self.flags)))));
-}
-
-/// Write it, leaving `JANET_MEM_REACHABLE` and `JANET_MEM_DISABLED` alone.
-pub inline fn setMemoryTypeOf(self: *abi.JanetGCObject, to: MemoryType) void {
-    self.flags = (self.flags & ~@as(i32, 0xFF)) | @as(i32, @intFromEnum(to));
+pub inline fn memoryTypeOf(self: *const abi.GCObject) MemoryType {
+    return @enumFromInt(self.flags.type);
 }
 
 comptime {
@@ -98,8 +93,8 @@ comptime {
     };
     std.debug.assert(expected_memory.len == @typeInfo(MemoryType).@"enum".fields.len);
     for (expected_memory) |row| std.debug.assert(@intFromEnum(row[0]) == row[1]);
-    // The stored field is `JANET_MEM_TYPEBITS` wide and `JANET_MEM_REACHABLE`
-    // is the first bit above it, so a type can never collide with a flag.
+    // The stored field is eight bits wide and the reachable mark is the first
+    // bit above it, so a type can never collide with a flag.
     for (@typeInfo(MemoryType).@"enum".fields) |f| std.debug.assert(f.value <= 0xFF);
 }
 const utils = @import("utils.zig");
@@ -115,9 +110,9 @@ const vm_state = @import("vm/state.zig");
 /// the two calls are already the ones `janet_init` and `janet_deinit` make.
 pub const Collector = struct {
     /// The main heap: every block `janet_gcalloc` returns, newest first.
-    blocks: ?*abi.JanetGCObject = null,
+    blocks: ?*abi.GCObject = null,
     /// The weak heap, which `janet_clear_memory` deliberately does not walk.
-    weak_blocks: ?*abi.JanetGCObject = null,
+    weak_blocks: ?*abi.GCObject = null,
     /// Bytes allocated since the last collection, and the threshold that ends
     /// the interval.
     next_collection: usize = 0,
@@ -125,7 +120,7 @@ pub const Collector = struct {
     block_count: usize = 0,
     /// Nesting depth, not a flag: `gcSuspend` answers the previous value and
     /// `gcResume` restores it, so a scope may nest inside another.
-    suspend_count: c_int = 0,
+    suspend_count: u32 = 0,
     /// True for the duration of the mark phase. Nothing in the runtime reads
     /// it; `test/gc_mark.zig` does, to assert that a `gcmark` callback runs
     /// inside the phase rather than beside it.
@@ -152,22 +147,22 @@ pub const Collector = struct {
     orig_rootcount: usize = 0,
 };
 
-/// The GC root set. A stretchy array of values the collector marks first.
-pub const Roots = vm_state.Vector(repr.Value);
+/// The GC root set. The values the collector marks first.
+pub const Roots = std.ArrayListUnmanaged(repr.Value);
 
 /// The scratch table: allocations freed together at the next
 /// `janet_free_all_scratch` rather than by the collector.
-pub const Scratch = vm_state.Vector(*JanetScratch);
+pub const ScratchTable = std.ArrayListUnmanaged(*ScratchBlock);
 
-pub const JanetScratchFinalizer = ?*const fn (?*anyopaque) callconv(.c) void;
+pub const ScratchFinalizer = ?*const fn (?*anyopaque) callconv(.c) void;
 
 /// `extern` for the same reason the four heads have it, and it is the reason
 /// the plan's "four" undercounts: `scratch_data` is `@offsetOf(_mem)` and the
-/// allocator sizes the block `@sizeOf(JanetScratch) + payload`. A `[0]T` in an
+/// allocator sizes the block `@sizeOf(ScratchBlock) + payload`. A `[0]T` in an
 /// auto-layout struct is not guaranteed to stay last, and if it moved the
 /// payload would be written over a header field.
-pub const JanetScratch = extern struct {
-    finalize: JanetScratchFinalizer = null,
+pub const ScratchBlock = extern struct {
+    finalize: ScratchFinalizer = null,
     _mem: [0]c_longlong = std.mem.zeroes([0]c_longlong),
     pub fn mem(_self: anytype) @TypeOf(&_self._mem[0]) {
         return @ptrCast(@alignCast(&_self._mem));
@@ -180,10 +175,10 @@ pub const JanetScratch = extern struct {
 /// lands where C lands rather than tripping a conversion check.
 const first_weak_type: MemoryType = MemoryType.table_weakk;
 
-/// The distance from a `JanetScratch` header to the memory it hands out. See
+/// The distance from a `ScratchBlock` header to the memory it hands out. See
 /// the note at the head of the file about why this is `@sizeOf` and not an
 /// offset of the flexible array member.
-const header_size = @sizeOf(JanetScratch);
+const header_size = @sizeOf(ScratchBlock);
 
 // ------------------------------------------------------------- collectable
 
@@ -203,7 +198,7 @@ pub fn gcpressure(s: usize) void {
 /// two typed wrappers below, and a contract whose subject is the list itself.
 /// Everything else names the type it is allocating and lets `gcalloc` answer
 /// a pointer to it.
-pub fn gcallocBytes(mtype: MemoryType, size: usize) *abi.JanetGCObject {
+pub fn gcallocBytes(mtype: MemoryType, size: usize) *abi.GCObject {
     const v = vm_state.current();
     const g = &v.gc;
 
@@ -213,9 +208,9 @@ pub fn gcallocBytes(mtype: MemoryType, size: usize) *abi.JanetGCObject {
     // not the collector's, and naming `g` beside it is what makes that visible.
     if (v.symcache.entries == null) fatal.fatal("please initialize janet before use");
 
-    const mem: *abi.JanetGCObject = @ptrCast(@alignCast(utils.rawAlloc(size)));
+    const mem: *abi.GCObject = @ptrCast(@alignCast(utils.rawAlloc(size)));
 
-    mem.flags = @intFromEnum(mtype);
+    mem.flags = .{ .type = @intFromEnum(mtype) };
 
     g.next_collection +%= size;
     if (@intFromEnum(mtype) < @intFromEnum(first_weak_type)) {
@@ -230,10 +225,10 @@ pub fn gcallocBytes(mtype: MemoryType, size: usize) *abi.JanetGCObject {
     return mem;
 }
 
-/// **Every collectable type puts its `JanetGCObject` first**, and this is what
+/// **Every collectable type puts its `GCObject` first**, and this is what
 /// says so.
 ///
-/// `gcallocBytes` writes the memory type through a `*JanetGCObject` at the
+/// `gcallocBytes` writes the memory type through a `*GCObject` at the
 /// start of the block and the sweep recovers the header the same way, so the
 /// cast back to `*T` is only sound while the header is at offset zero. The heap
 /// types are ordinary auto-layout structs -- `extern` is kept only where a
@@ -334,18 +329,23 @@ pub fn collectorInit(g: *Collector) void {
 
 /// The root set starts empty; `gcroot` is what grows it.
 pub fn rootsInit(r: *Roots) void {
-    r.* = .{};
+    r.* = .empty;
 }
 
 /// Release the root set and return it to what `rootsInit` starts from.
+///
+/// **The reset after the free is load-bearing and is not the container's.**
+/// `ArrayListUnmanaged.deinit` ends `self.* = undefined`, which is exactly the
+/// dangling-pointer-with-a-live-capacity state `scratchDeinit`'s note below
+/// records against upstream. The reset is what this port does instead.
 pub fn rootsDeinit(r: *Roots) void {
-    utils.free(r.items);
-    r.* = .{};
+    r.deinit(utils.heap);
+    r.* = .empty;
 }
 
 /// The scratch table starts empty.
-pub fn scratchInit(s: *Scratch) void {
-    s.* = .{};
+pub fn scratchInit(s: *ScratchTable) void {
+    s.* = .empty;
 }
 
 /// Release the scratch table. The blocks themselves are `freeAllScratch`'s,
@@ -355,10 +355,12 @@ pub fn scratchInit(s: *Scratch) void {
 /// `janet_clear_memory` frees the table and leaves `scratch_mem` dangling with
 /// `scratch_cap` at its old value, so a `janet_smalloc` before the next
 /// `janet_init` takes the no-growth path and writes through the freed pointer.
-pub fn scratchDeinit(s: *Scratch) void {
+pub fn scratchDeinit(s: *ScratchTable) void {
     freeAllScratch(s);
-    utils.free(@ptrCast(s.items));
-    s.* = .{};
+    s.deinit(utils.heap);
+    // See `rootsDeinit`: the container's `deinit` leaves `undefined` behind,
+    // and leaving it is the defect this reset exists to prevent.
+    s.* = .empty;
 }
 
 // -------------------------------------------------------------- root set
@@ -367,16 +369,7 @@ pub fn scratchDeinit(s: *Scratch) void {
 /// root set is a multiset, not a set, which is why this appends unconditionally.
 pub fn gcroot(root: repr.Value) void {
     const r = &vm_state.current().roots;
-    const newcount = r.count +% 1;
-    if (newcount > r.capacity) {
-        const newcap = 2 *% newcount;
-        // The C original stores the result before testing it, so a failed
-        // grow leaves `roots` null on the way to exiting. Preserved.
-        r.items = @ptrCast(@alignCast(utils.realloc(r.items, @sizeOf(repr.Value) *% newcap)));
-        if (r.items == null) fatal.outOfMemory();
-        r.capacity = newcap;
-    }
-    r.appendAssumingCapacity(root);
+    r.append(utils.heap, root) catch fatal.outOfMemory();
 }
 
 /// Identity for root bookkeeping. The three immediate types compare equal to
@@ -395,13 +388,12 @@ fn idequals(lhs: repr.Value, rhs: repr.Value) bool {
 /// may depend on.
 pub fn gcunroot(root: repr.Value) bool {
     const r = &vm_state.current().roots;
-    const top = r.count;
+    const top = r.items.len;
     // Bottom to top, as the C original is; its comment says the access
     // pattern is expected to be LIFO, but the scan starts at slot zero.
-    var i: usize = 0;
-    while (i < top) : (i += 1) {
-        if (idequals(root, r.at(i).*)) {
-            r.swapRemove(i);
+    for (0..top) |i| {
+        if (idequals(root, r.items[i])) {
+            _ = r.swapRemove(i);
             return true;
         }
     }
@@ -417,12 +409,12 @@ pub fn gcunroot(root: repr.Value) bool {
 /// shadows `roots + root_count` — the two fall together, one per match.
 pub fn gcunrootall(root: repr.Value) bool {
     const r = &vm_state.current().roots;
-    var top = r.count;
+    var top = r.items.len;
     var found = false;
     var i: usize = 0;
     while (i < top) : (i += 1) {
-        if (idequals(root, r.at(i).*)) {
-            r.swapRemove(i);
+        if (idequals(root, r.items[i])) {
+            _ = r.swapRemove(i);
             top -= 1;
             found = true;
         }
@@ -435,33 +427,33 @@ pub fn gcunrootall(root: repr.Value) bool {
 /// Suspend collection, returning the previous nesting depth. The handle is the
 /// depth to restore, not a token to match, so unlocking with a stale handle
 /// deliberately unwinds every lock taken since it was issued.
-pub fn gclock() c_int {
+pub fn gclock() u32 {
     const g = &vm_state.current().gc;
     const previous = g.suspend_count;
     g.suspend_count = previous +% 1;
     return previous;
 }
 
-pub fn gcunlock(handle: c_int) void {
+pub fn gcunlock(handle: u32) void {
     vm_state.current().gc.suspend_count = handle;
 }
 
 // --------------------------------------------------------------- scratch
 
 /// The memory a scratch header hands out.
-inline fn scratchData(s: *JanetScratch) *anyopaque {
+inline fn scratchData(s: *ScratchBlock) *anyopaque {
     return @ptrFromInt(@intFromPtr(s) + header_size);
 }
 
 /// The inverse. Wrapping subtraction so that a null argument produces the same
 /// wild pointer the C original computes rather than trapping before it.
-inline fn mem2scratch(mem: ?*anyopaque) *JanetScratch {
+inline fn mem2scratch(mem: ?*anyopaque) *ScratchBlock {
     return @ptrFromInt(@intFromPtr(mem) -% header_size);
 }
 
 /// Run a scratch block's finalizer, if it has one, and release it. The
 /// finalizer is embedder code; see the note at the head of the file.
-fn freeOneScratch(s: *JanetScratch) void {
+fn freeOneScratch(s: *ScratchBlock) void {
     if (s.finalize) |finalize| finalize(scratchData(s));
     utils.free(s);
 }
@@ -469,36 +461,24 @@ fn freeOneScratch(s: *JanetScratch) void {
 /// Release every scratch block. Called by `janet_collect` at the end of a
 /// collection and by `janet_clear_memory` at shutdown.
 ///
-/// **It takes the table.** `scratchDeinit` once accepted a `*Scratch` and then
-/// called this on the *current* VM's, so a call for any other `Scratch` would
+/// **It takes the table.** `scratchDeinit` once accepted a `*ScratchTable` and then
+/// called this on the *current* VM's, so a call for any other `ScratchTable` would
 /// have freed one table's blocks and the other's pointer array. The two are
 /// the same object today and the signature said otherwise.
-pub fn freeAllScratch(table: *Scratch) void {
-    for (table.slice()) |block| freeOneScratch(block);
-    table.count = 0;
+pub fn freeAllScratch(table: *ScratchTable) void {
+    for (table.items) |block| freeOneScratch(block);
+    table.clearRetainingCapacity();
 }
 
 /// Allocate scratch memory: freed automatically at the next collection, and
 /// optionally before that with `janet_sfree`. The header carries the finalizer
 /// and the table of live blocks carries the pointer.
 pub fn smalloc(size: usize) *anyopaque {
-    const s: *JanetScratch = @ptrCast(@alignCast(utils.rawAlloc(header_size +% size)));
+    const s: *ScratchBlock = @ptrCast(@alignCast(utils.rawAlloc(header_size +% size)));
     s.finalize = null;
 
     const table = &vm_state.current().scratch;
-    if (table.count == table.capacity) {
-        const newcap = 2 *% table.capacity +% 2;
-        // `header_size` rather than the pointer size, reproducing the C
-        // original's element size. See the note at the head of the file.
-        // The cast is only Zig's: a `JanetScratch **` is a double pointer,
-        // which does not coerce to `void *` on its own.
-        const newmem = utils.realloc(@ptrCast(table.items), newcap *% header_size) orelse
-            fatal.outOfMemory();
-        table.capacity = newcap;
-        table.items = @ptrCast(@alignCast(newmem));
-    }
-
-    table.appendAssumingCapacity(s);
+    table.append(utils.heap, s) catch fatal.outOfMemory();
     return scratchData(s);
 }
 
@@ -518,13 +498,13 @@ pub fn srealloc(mem: ?*anyopaque, size: usize) ?*anyopaque {
     if (mem == null) return smalloc(size);
     const s = mem2scratch(mem);
     const table = &vm_state.current().scratch;
-    var i = table.count;
+    var i = table.items.len;
     while (i > 0) {
         i -= 1;
-        if (table.at(i).* == s) {
-            const news: *JanetScratch = @ptrCast(@alignCast(utils.realloc(s, size +% header_size) orelse
+        if (table.items[i] == s) {
+            const news: *ScratchBlock = @ptrCast(@alignCast(utils.realloc(s, size +% header_size) orelse
                 fatal.outOfMemory()));
-            table.at(i).* = news;
+            table.items[i] = news;
             return scratchData(news);
         }
     }
@@ -533,7 +513,7 @@ pub fn srealloc(mem: ?*anyopaque, size: usize) ?*anyopaque {
 
 /// Install a finalizer to run when the block is released, whether by
 /// `janet_sfree` or by the next collection.
-pub fn sfinalizer(mem: ?*anyopaque, finalizer: JanetScratchFinalizer) void {
+pub fn sfinalizer(mem: ?*anyopaque, finalizer: ScratchFinalizer) void {
     mem2scratch(mem).finalize = finalizer;
 }
 
@@ -541,11 +521,11 @@ pub fn sfree(mem: ?*anyopaque) void {
     if (mem == null) return;
     const s = mem2scratch(mem);
     const table = &vm_state.current().scratch;
-    var i = table.count;
+    var i = table.items.len;
     while (i > 0) {
         i -= 1;
-        if (table.at(i).* == s) {
-            table.swapRemove(i);
+        if (table.items[i] == s) {
+            _ = table.swapRemove(i);
             freeOneScratch(s);
             return;
         }
@@ -573,10 +553,10 @@ pub fn sfree(mem: ?*anyopaque) void {
 // `remap` never fail here; the standard signatures still allow it, and a
 // caller written to the interface stays correct either way.
 
-/// What `janet_smalloc` aligns to: the offset of `JanetScratch._mem`, which is
+/// What `janet_smalloc` aligns to: the offset of `ScratchBlock._mem`, which is
 /// a `[0]c_longlong` behind a function pointer. Nothing in the tree asks for
 /// more; a request that did would be a silent misalignment, so it aborts.
-const max_scratch_align: std.mem.Alignment = .fromByteUnits(@alignOf(JanetScratch));
+const max_scratch_align: std.mem.Alignment = .fromByteUnits(@alignOf(ScratchBlock));
 
 fn scratchAllocatorAlloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
     if (@intFromEnum(alignment) > @intFromEnum(max_scratch_align))

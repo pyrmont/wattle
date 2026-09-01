@@ -94,10 +94,9 @@ fn expectSandboxRefusal(source: []const u8) void {
     var buffer: [512]u8 = undefined;
     const wrapped = std.fmt.bufPrintZ(&buffer, "(fiber/new (fn [] {s}) :ye)", .{source}) catch unreachable;
     const fiberv = eval(wrapped);
-    var out = wrap.fromNil();
-    const sig = vm_entry.continueFiber(wrap.toFiber(fiberv), wrap.fromNil(), &out);
-    expect(sig == abi.Signal.@"error");
-    expect(harness.stringValueIs(out, "operation forbidden by sandbox"));
+    const resumed = vm_entry.continueFiber(wrap.toFiber(fiberv), wrap.fromNil());
+    expect(resumed.signal == abi.Signal.@"error");
+    expect(harness.stringValueIs(resumed.value, "operation forbidden by sandbox"));
 }
 
 // ---------------------------------------------------------- frame readers
@@ -152,7 +151,7 @@ var scribble_roots: [4]repr.Value = undefined;
 var scribble_bytes: [64]u8 = undefined;
 
 fn scribbleOverTheVm() void {
-    const bytes: *abi.JanetGCObject = @ptrCast(@alignCast(&scribble_bytes));
+    const bytes: *abi.GCObject = @ptrCast(@alignCast(&scribble_bytes));
     harness.vm().gc.blocks = bytes;
     harness.vm().gc.weak_blocks = bytes;
     harness.vm().gc.next_collection = 4242;
@@ -163,17 +162,13 @@ fn scribbleOverTheVm() void {
     // Scribbling it is what makes the assertion in `theStateInitLeaves`
     // capable of failing.
     harness.vm().gc.suspend_count = 11;
-    harness.vm().roots.items = &scribble_roots;
-    harness.vm().roots.count = 3;
+    harness.vm().roots.items = scribble_roots[0..3];
     harness.vm().roots.capacity = 4;
     harness.vm().user = bytes;
-    harness.vm().scratch.items = @ptrCast(@alignCast(bytes));
-    harness.vm().scratch.count = 5;
+    harness.vm().scratch.items = @as([*]*gc_alloc.ScratchBlock, @ptrCast(@alignCast(bytes)))[0..5];
     harness.vm().scratch.capacity = 6;
     harness.vm().sandbox_flags = vm_lifecycle.Sandbox.of(&.{"asm"});
-    harness.vm().registry.rows.items = @ptrCast(@alignCast(bytes));
     harness.vm().registry.rows.capacity = 7;
-    harness.vm().registry.rows.count = 8;
     harness.vm().registry.dirty = true;
     harness.vm().abstract_registry = null;
     harness.vm().traversal.at = @ptrCast(@alignCast(bytes));
@@ -211,17 +206,16 @@ fn theStateInitLeaves() raise.Raising(void) {
     expect(harness.vm().gc.blocks != null); // the abstract registry is allocated during init
 
     // Roots: empty except for the abstract registry.
-    expect(harness.vm().roots.items != null);
-    expect(harness.vm().roots.count == 1);
+    expect(harness.vm().roots.items.len == 1);
     expect(harness.vm().abstract_registry != null);
-    expect(harness.equals(harness.vm().roots.at(0).*, wrap.fromTable(harness.vm().abstract_registry.?)));
+    expect(harness.equals(harness.vm().roots.items[0], wrap.fromTable(harness.vm().abstract_registry.?)));
 
-    // Scratch memory. Asserted as the whole type against what `scratchInit`
-    // starts from rather than field by field: a field added to `gc_alloc.Scratch`
+    // ScratchTable memory. Asserted as the whole type against what `scratchInit`
+    // starts from rather than field by field: a field added to `gc_alloc.ScratchTable`
     // is covered here without this line being edited, and the omission that
     // `FOUND.md` records could not have been written.
     expect(harness.vm().user == null);
-    expect(std.meta.eql(harness.vm().scratch, gc_alloc.Scratch{}));
+    expect(std.meta.eql(harness.vm().scratch, gc_alloc.ScratchTable.empty));
 
     // The suspension depth, which `janet_init` never assigned and
     // `gc.collectorInit` does. The scribble above set it, so this fails
@@ -241,19 +235,15 @@ fn theStateInitLeaves() raise.Raising(void) {
     // so their `items` is null and `slice()` must be empty rather than a
     // trap; `roots` holds the abstract registry and is the non-empty case
     // beside them.
-    expect(harness.vm().scratch.items == null);
-    expect(harness.vm().scratch.isEmpty());
-    expect(harness.vm().scratch.slice().len == 0);
-    expect(harness.vm().registry.rows.items == null);
-    expect(harness.vm().registry.rows.isEmpty());
-    expect(harness.vm().registry.rows.slice().len == 0);
-    expect(!harness.vm().roots.isEmpty());
-    expect(harness.vm().roots.slice().len == 1);
-    expect(harness.equals(harness.vm().roots.at(0).*, wrap.fromTable(harness.vm().abstract_registry.?)));
+    expect(harness.vm().scratch.items.len == 0);
+    expect(harness.vm().scratch.capacity == 0);
+    expect(harness.vm().registry.rows.items.len == 0);
+    expect(harness.vm().registry.rows.capacity == 0);
+    expect(harness.vm().roots.items.len == 1);
+    expect(harness.equals(harness.vm().roots.items[0], wrap.fromTable(harness.vm().abstract_registry.?)));
     if (comptime config.ev) {
-        expect(harness.vm().ev.tq.items == null);
-        expect(harness.vm().ev.tq.isEmpty());
-        expect(harness.vm().ev.tq.slice().len == 0);
+        expect(harness.vm().ev.tq.items.len == 0);
+        expect(harness.vm().ev.tq.capacity == 0);
     }
 
     // Traversal, used by marshalling.
@@ -322,10 +312,10 @@ fn whatDeinitClears() raise.Raising(void) {
 
     // Preconditions, so that the assertions below are about the teardown.
     expect(harness.vm().core_env != null);
-    expect(harness.vm().registry.rows.items != null);
-    expect(harness.vm().roots.items != null);
+    expect(harness.vm().registry.rows.items.len != 0);
+    expect(harness.vm().roots.items.len != 0);
     expect(harness.vm().symcache.count > 0);
-    expect(harness.vm().scratch.items != null);
+    expect(harness.vm().scratch.capacity != 0);
     expect(harness.vm().traversal.base != null);
 
     vm_lifecycle.deinit();
@@ -335,8 +325,8 @@ fn whatDeinitClears() raise.Raising(void) {
     // this is that statement read back -- and a field added to any of the five
     // is covered without this contract being edited, which is what makes the
     // omission below impossible to write.
-    expect(std.meta.eql(harness.vm().scratch, gc_alloc.Scratch{}));
-    expect(std.meta.eql(harness.vm().roots, gc_alloc.Roots{}));
+    expect(std.meta.eql(harness.vm().scratch, gc_alloc.ScratchTable.empty));
+    expect(std.meta.eql(harness.vm().roots, gc_alloc.Roots.empty));
     expect(std.meta.eql(harness.vm().traversal, order.Traversal{}));
     expect(std.meta.eql(harness.vm().symcache, symbols.SymbolCache{}));
 
@@ -628,7 +618,7 @@ fn aPrefixedCfunctionFrame() void {
 /// the decoding.
 fn aFrameWithNoProgramCounter() void {
     const fnv = eval("(do (defn named [] nil) named)");
-    const fiber = fibers.new(wrap.toFunction(fnv), 64, 0, null).?;
+    const fiber = fibers.new(wrap.toFunction(fnv), 64, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     const fr = harness.frame.current(fiber);
     expect(fr.func != null and fr.pc != null);
@@ -655,7 +645,7 @@ fn unregisteredCfunction(argv: []repr.Value) raise.Raising(repr.Value) {
 
 fn anUnregisteredCfunctionFrame() void {
     const fnv = eval("(fn [] nil)");
-    const fiber = fibers.new(wrap.toFunction(fnv), 64, 0, null).?;
+    const fiber = fibers.new(wrap.toFunction(fnv), 64, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     fibers.cframe(fiber, raise.stored(&unregisteredCfunction));
 

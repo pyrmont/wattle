@@ -18,8 +18,8 @@
 //!
 //! **`Table` and `Buffer` are opaque handles.** An author only ever holds a
 //! *pointer* to one -- `module.zig`'s `Env` is a `*Table`, and an abstract
-//! type's `tostring` renders into a `*Buffer`. The runtime's own `JanetTable`
-//! and `JanetBuffer` stay full structs in `value/`. Both sides pass one
+//! type's `tostring` renders into a `*Buffer`. The runtime's own
+//! `tables.Table` and `buffers.Buffer` stay full structs in `value/`. Both sides pass one
 //! pointer, so the two layouts need not agree; the runtime casts where it
 //! implements a callback and where it dispatches through one, and
 //! `cabi_check.zig` is where that substitution is written down.
@@ -50,7 +50,7 @@ pub const Table = opaque {};
 /// **Author-side:** `AbstractType.tostring` and `abstract_type.Spec`'s
 /// `tostring` slot take a `*Buffer`, which is the buffer the pretty-printer is
 /// rendering into. Same argument as `Table`: one pointer crosses, and
-/// `types.JanetBuffer` keeps the layout on the runtime's side.
+/// `buffers.Buffer` keeps the layout on the runtime's side.
 pub const Buffer = opaque {};
 
 // ---------------------------------------------------------------------------
@@ -106,10 +106,9 @@ pub const Signal = enum(c_uint) {
     /// **Clamping is Janet's own answer, not a new one.** `JOP_SIGNAL` takes a
     /// raw number out of an instruction field and does exactly this:
     /// `if (s > JANET_SIGNAL_USER9) s = JANET_SIGNAL_USER9; if (s < 0) s = 0;`.
-    /// Applying the interpreter's rule at the C boundary as well makes one
-    /// rule where there were two, and turns what used to be an out-of-domain
-    /// value travelling through six bits of a fiber's GC flags into a signal
-    /// the runtime can name.
+    /// Applying the interpreter's rule at the C boundary as well is what keeps
+    /// an out-of-domain value from travelling through six bits of a fiber's GC
+    /// flags.
     ///
     /// What this does *not* preserve is the round trip: Janet returned an
     /// out-of-range injected number to its caller unchanged. `DESIGN.md`
@@ -154,7 +153,7 @@ comptime {
 /// `fn ([]Value) Error!Value` into this slot at registration, and it is what
 /// `Reg.cfun` and `Method.cfun` hold on the wire. `raise.zig` compiles into
 /// the author's module, so both sides have to mean the same pointer type.
-pub const JanetCFunction = ?*const fn (argc: i32, argv: [*c]repr.Value) callconv(.c) repr.Value;
+pub const CFunction = ?*const fn (argc: i32, argv: [*c]repr.Value) callconv(.c) repr.Value;
 
 /// One registration row: a name, a cfunction, and three pieces of metadata a
 /// build may omit.
@@ -178,7 +177,7 @@ pub const JanetCFunction = ?*const fn (argc: i32, argv: [*c]repr.Value) callconv
 /// `extern` because this *is* the layout `janet_cfuns_ext` receives.
 pub const Reg = extern struct {
     name: ?[*:0]const u8 = null,
-    cfun: JanetCFunction = null,
+    cfun: CFunction = null,
     documentation: ?[*:0]const u8 = null,
     source_file: ?[*:0]const u8 = null,
     source_line: i32 = 0,
@@ -193,14 +192,8 @@ pub const Reg = extern struct {
 /// `:keyword`. It is its own type because a method table is not a registration
 /// -- `DESIGN.md` section 6 keeps them apart for that reason.
 ///
-/// **There was one of these on each side of the boundary.** `module.zig` and
-/// `method_type.zig` each declared an `extern struct Method` with these two
-/// fields, and `tools/check/layouts.txt` carried a row for each; the layout is
-/// the agreement, so declaring it twice was the thing this file exists to
-/// stop. Both now name this one.
-///
 /// The layout is Janet's exactly -- a name and a pointer -- and the pointer is
-/// the same pointer. What differs from `JanetCFunction` is the *declared* type
+/// the same pointer. What differs from `CFunction` is the *declared* type
 /// of the function it points at, which is what makes a method's `try` a
 /// compile error to omit. Where one of these arrays meets a signature the C
 /// ABI still fixes -- `janet_getmethod`, `janet_nextmethod`,
@@ -216,7 +209,7 @@ pub const Method = extern struct {
 /// one of these; the loader reads it to refuse a module built for a different
 /// runtime. It is one of the two entry points `dynlib.zig` looks up by name,
 /// so its layout is as much of the published surface as the names are.
-pub const JanetBuildConfig = extern struct {
+pub const BuildConfig = extern struct {
     major: c_uint = 0,
     minor: c_uint = 0,
     patch: c_uint = 0,
@@ -233,11 +226,11 @@ pub const JanetBuildConfig = extern struct {
 /// author writing a byte-like abstract declares this shape and the runtime
 /// reads it back.
 ///
-/// `len` is `usize` because it is a length. It was `i32` because
-/// `janet_bytes_view` declared it that way, and every loop in the tree that
-/// walks a byte view took its counter's type from this field -- which is
-/// what made the counters `i32` and the indexing a cast.
-pub const JanetByteView = extern struct {
+/// `len` is `usize` because it is a length, where upstream's
+/// `janet_bytes_view` declares it `i32`. Every loop in the tree that walks a
+/// byte view takes its counter's type from this field, so the width here is
+/// what decides whether the indexing needs a cast.
+pub const ByteView = extern struct {
     bytes: ?[*]const u8,
     len: usize = 0,
 };
@@ -245,9 +238,9 @@ pub const JanetByteView = extern struct {
 /// The state a marshalling or unmarshalling callback is handed.
 ///
 /// **Author-side:** `abstract_type.Spec`'s `marshal` and `unmarshal` callbacks
-/// take a `*JanetMarshalContext`, and an author's callback passes it back to
+/// take a `*MarshalContext`, and an author's callback passes it back to
 /// the runtime's marshalling entry points.
-pub const JanetMarshalContext = struct {
+pub const MarshalContext = struct {
     m_state: ?*anyopaque = null,
     u_state: ?*anyopaque = null,
     flags: c_int = 0,
@@ -264,15 +257,8 @@ pub const JanetMarshalContext = struct {
 /// runtime reads the same fourteen slots out of it. It is the largest single
 /// reason this file exists.
 ///
-/// There is one, and there was very nearly two: an erased C description here
-/// and a raising one in `abstract_type.zig`, held together by a comptime walk
-/// over both field lists and bridged at 155 call sites. That existed so a C
-/// header could keep declaring the erased shape while Zig dispatched through
-/// the error union, and with no such header the two were describing one thing
-/// twice.
-///
 /// It is declared *here* rather than in `abstract_type.zig`, which owns the
-/// interface, because `JanetAbstractHead.type` and `JanetMarshalContext.at`
+/// interface, because `AbstractHead.type` and `MarshalContext.at`
 /// name it by pointer and both of those are boundary declarations too.
 ///
 /// The payload is `?*anyopaque` here because this is the *erased* vtable;
@@ -285,78 +271,110 @@ pub const JanetMarshalContext = struct {
 /// `abstract_type.zig` for the argument.
 ///
 /// **`name` is a slice and this struct is not `extern`**, which is
-/// `DESIGN.md` section 5 entire. Eleven of these objects were published as
-/// *data* symbols -- `janet_peg_type`, `janet_stream_type`, `janet_file_type`
-/// and eight more -- and Zig refuses to `@export` a struct with automatic
-/// layout, which a slice field forces. All eleven were retired, on the ground
-/// that a data export is unusable without a layout to read it by and no such
-/// layout is published. Nothing observes the field order, so nothing has to
-/// fix it.
+/// `DESIGN.md` section 5 entire. Zig refuses to `@export` a struct with
+/// automatic layout, which a slice field forces, so none of these objects can
+/// be published as a *data* symbol -- and none is, on the ground that a data
+/// export is unusable without a layout to read it by and no such layout is
+/// published. Nothing observes the field order, so nothing has to fix it.
 pub const AbstractType = struct {
     name: []const u8,
     gc: ?*const fn (data: ?*anyopaque, len: usize) callconv(.c) void = null,
     gcmark: ?*const fn (data: ?*anyopaque, len: usize) callconv(.c) void = null,
     get: ?*const fn (data: ?*anyopaque, key: repr.Value) error{JanetSignal}!?repr.Value = null,
     put: ?*const fn (data: ?*anyopaque, key: repr.Value, value: repr.Value) error{JanetSignal}!void = null,
-    marshal: ?*const fn (p: ?*anyopaque, ctx: *JanetMarshalContext) error{JanetSignal}!void = null,
-    unmarshal: ?*const fn (ctx: *JanetMarshalContext) error{JanetSignal}!?*anyopaque = null,
+    marshal: ?*const fn (p: ?*anyopaque, ctx: *MarshalContext) error{JanetSignal}!void = null,
+    unmarshal: ?*const fn (ctx: *MarshalContext) error{JanetSignal}!?*anyopaque = null,
     tostring: ?*const fn (p: ?*anyopaque, buffer: *Buffer) error{JanetSignal}!void = null,
     compare: ?*const fn (lhs: ?*anyopaque, rhs: ?*anyopaque) callconv(.c) i32 = null,
     hash: ?*const fn (p: ?*anyopaque, len: usize) callconv(.c) i32 = null,
     next: ?*const fn (p: ?*anyopaque, key: repr.Value) error{JanetSignal}!repr.Value = null,
     call: ?*const fn (p: ?*anyopaque, argc: i32, argv: [*]repr.Value) error{JanetSignal}!repr.Value = null,
     length: ?*const fn (p: ?*anyopaque, len: usize) error{JanetSignal}!usize = null,
-    bytes: ?*const fn (p: ?*anyopaque, len: usize) callconv(.c) JanetByteView = null,
+    bytes: ?*const fn (p: ?*anyopaque, len: usize) callconv(.c) ByteView = null,
     gcperthread: ?*const fn (data: ?*anyopaque, len: usize) callconv(.c) void = null,
 };
 
 /// The width of a refcount. Windows' `InterlockedIncrement` takes a `LONG`;
 /// everywhere else it is an `i32`.
 ///
-/// **Author-side, at one remove:** `JanetGCData.refcount` is one, so it fixes
-/// that union's size and with it where `JanetAbstractHead.type` sits. See
-/// `JanetGCObject`.
-pub const JanetAtomicInt = if (builtin.os.tag == .windows) c_long else i32;
+/// **Author-side, at one remove:** `GCData.refcount` is one, so it fixes
+/// that union's size and with it where `AbstractHead.type` sits. See
+/// `GCObject`.
+pub const AtomicInt = if (builtin.os.tag == .windows) c_long else i32;
 
-/// `JanetGCObject.data`: a block is either on the heap list or refcounted.
+/// `GCObject.data`: a block is either on the heap list or refcounted.
 ///
-/// **Author-side, at one remove:** a by-value field of `JanetGCObject`. See
+/// **Author-side, at one remove:** a by-value field of `GCObject`. See
 /// there.
-pub const JanetGCData = extern union {
-    next: ?*JanetGCObject,
-    refcount: JanetAtomicInt,
+pub const GCData = extern union {
+    next: ?*GCObject,
+    refcount: AtomicInt,
 };
 
 /// The collector's header, which every heap block opens with.
 ///
-/// **Author-side, at one remove:** `JanetAbstractHead` opens with one, so its
+/// **Author-side, at one remove:** `AbstractHead` opens with one, so its
 /// size and alignment are what put `type` where `abstract_type.ofAbstract`
 /// reads it. An author never touches the flags; the layout still has to agree,
-/// which is why this travelled with the head rather than staying behind.
-/// It carries no methods, and that is deliberate. `memoryType` and
-/// `setMemoryType` used to be declared here, and a method cannot live outside
-/// its struct -- so `MemoryType` had to be in this file too, with no
-/// author-side caller of its own. Nothing an author compiles reads a memory
-/// type. The two accessors are `gc.memoryTypeOf` and `gc.setMemoryTypeOf`, and
-/// the enum went with them.
-pub const JanetGCObject = extern struct {
-    flags: i32 = 0,
-    data: JanetGCData = std.mem.zeroes(JanetGCData),
+/// which is why it is here alongside the head.
+/// **It carries no methods, and that is what keeps `MemoryType` out of this
+/// file.** A method cannot live outside its struct, so an accessor here would
+/// drag the memory-type vocabulary into every author's compilation -- and
+/// nothing an author compiles reads a memory type. `gc.memoryTypeOf` reads the
+/// field from outside instead, and the enum lives beside it.
+pub const GCObject = extern struct {
+    flags: GCFlags = .{},
+    data: GCData = std.mem.zeroes(GCData),
 };
+
+/// The header's flag word, which is three things at once.
+///
+/// **Author-side:** none of it, directly. It is here because `GCObject`
+/// is, and a `packed struct(u32)` field is extern-compatible, so the header
+/// keeps its layout and every heap type keeps its declared field order.
+///
+/// `type` is a `u8` rather than `gc.MemoryType` because `abi` may not import
+/// `gc`: the enum lives with the allocator that reads it (`DESIGN.md` §14) and
+/// `gc.memoryTypeOf` is the one place the byte becomes one.
+///
+/// `own` is bits 16 through 21, and what they mean is decided by `type`. Each
+/// owner file names its own -- `tuples.isBracketed`, `functions.isTraced`,
+/// `buffers.isForeign`, `tables.isScratch`, `fibers.isRoot` -- and a fiber
+/// also reads the whole field at once, as the signal `signal.signalInject`
+/// arms it to raise. That overlap is real: arming a resume signal clears the
+/// three fiber bits, which nothing observes because a fiber is running between
+/// the write and the next schedule.
+pub const GCFlags = packed struct(u32) {
+    type: u8 = 0,
+    reachable: bool = false,
+    disabled: bool = false,
+    _reserved: u6 = 0,
+    own: u6 = 0,
+    _high: u10 = 0,
+};
+
+comptime {
+    // The word is `int32_t` in the C original and travels in a core image as a
+    // tuple's `flags >> 16`, so the width and the bit positions are the
+    // contract. Compared against a mask table rather than against a
+    // re-declaration, because what has to hold is where each bit sits.
+    std.debug.assert(@sizeOf(GCFlags) == @sizeOf(i32));
+    std.debug.assert(@as(u32, @bitCast(GCFlags{ .type = 0xFF })) == 0xFF);
+    std.debug.assert(@as(u32, @bitCast(GCFlags{ .reachable = true })) == 0x100);
+    std.debug.assert(@as(u32, @bitCast(GCFlags{ .disabled = true })) == 0x200);
+    std.debug.assert(@as(u32, @bitCast(GCFlags{ .own = 0x3F })) == 0x3F0000);
+}
 
 /// The header in front of an abstract's payload.
 ///
 /// **Author-side:** `abstract_type.ofAbstract` reads `type` out of one to start
 /// a dispatch, and that is the whole of what an author's compilation does with
 /// it -- but doing it needs the field order, so the layout is agreed.
-pub const JanetAbstractHead = extern struct {
-    gc: JanetGCObject = .{},
+pub const AbstractHead = extern struct {
+    gc: GCObject = .{},
     type: *const AbstractType,
     size: usize = 0,
     _data: [0]c_longlong = std.mem.zeroes([0]c_longlong),
-    pub fn data(_self: anytype) @TypeOf(&_self._data[0]) {
-        return @ptrCast(@alignCast(&_self._data));
-    }
 };
 
 /// Where an abstract's payload begins inside its allocation.
@@ -365,7 +383,7 @@ pub const JanetAbstractHead = extern struct {
 /// rather than `@sizeOf` of the head, for the reason `DESIGN.md` section 3
 /// gives: the compiler reports where it put the payload rather than where it
 /// ought to go. The two agree on every layout Claret builds today.
-pub const abstract_payload = @offsetOf(JanetAbstractHead, "_data");
+pub const abstract_payload = @offsetOf(AbstractHead, "_data");
 
 /// Recover an abstract's head from its payload.
 ///
@@ -377,6 +395,6 @@ pub const abstract_payload = @offsetOf(JanetAbstractHead, "_data");
 /// The parameter is `?*const anyopaque` rather than `JanetAbstract` so that a
 /// `*const` caller needs no cast; the head itself is mutable, as every caller
 /// marks or frees through it.
-pub inline fn abstractHead(a: ?*const anyopaque) *JanetAbstractHead {
+pub inline fn abstractHead(a: ?*const anyopaque) *AbstractHead {
     return @ptrFromInt(@intFromPtr(a) -% abstract_payload);
 }
