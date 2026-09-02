@@ -13,8 +13,8 @@
 //!    type's `marshal` and `unmarshal` callbacks and from nowhere else. The
 //!    core types that have such callbacks exercise four of the twenty between
 //!    them.
-//!  - `janet_env_lookup_into`'s `prefix` and `recurse` parameters are both
-//!    fixed by `janet_env_lookup`, which is what `env-lookup` calls.
+//!  - `marsh.envLookupInto`'s `prefix` and `recurse` parameters are both
+//!    fixed by `marsh.envLookup`, which is what `env-lookup` calls.
 //!  - `unmarshal`'s `next` out-parameter is dropped by `cfun_unmarshal`.
 //!
 //! The wire format is the other reason. A marshalled stream is a file format,
@@ -38,8 +38,8 @@
 //! because a raise reached C as a report and the read that followed it would
 //! otherwise walk off the end of the stream -- with the truncation section
 //! below cutting the stream at every offset, each of those really was reached.
-//! Here every one of them is `try`, and `janet_contract_raising` loses its only
-//! user in the tree.
+//! Here every one of them is `try`, and the raising flag it tested has no
+//! reader left.
 //!
 //! **And writing the callback as the runtime types it found a live defect in
 //! the runtime**, one directory over. `marshalSize` had only a `raise.reported`
@@ -133,7 +133,7 @@ fn refusedBy(bytes: []const u8) ?harness.Raise {
 // One abstract type whose callbacks drive every entry point of the context
 // API, so that a round trip through it is a round trip through all twenty.
 // The pointer fields are written only in unsafe mode, which is also what makes
-// this type a witness for `janet_marshal_flags`.
+// this type a witness for the context's `flags` field.
 
 const Probe = extern struct {
     i32_field: i32,
@@ -746,7 +746,7 @@ fn envLookupIntoPrefixesAndRecurses() void {
     marsh_mod.envLookupInto(empty, env, "", 1);
     expect(harness.integerIs(tables.get(empty, value.fromBytes("plain", .symbol)), 2));
 
-    // `janet_env_lookup` is the recursive, unprefixed case with a fresh table.
+    // `marsh.envLookup` is the recursive, unprefixed case with a fresh table.
     const made = marsh_mod.envLookup(env);
     expect(harness.integerIs(tables.get(made, value.fromBytes("inherited", .symbol)), 1));
 }

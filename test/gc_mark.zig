@@ -1,5 +1,5 @@
 //! Behavioral contract for the collector's mark phase: the traversal, the
-//! recursion guard, and `janet_collect`.
+//! recursion guard, and `gc/mark.zig`'s `collect`.
 //!
 //! Marking has no return value and frees nothing, so almost everything here is
 //! observed the same way: clear `JANET_MEM_REACHABLE` on the objects under
@@ -28,7 +28,7 @@
 //!
 //! So the question is asked of the *allocator* rather than of the type. Each
 //! head is a GC block -- the runtime allocates `Head + payload` in one
-//! `janet_gcalloc` and hands back the address of the flexible array -- so the
+//! `gc.gcallocWithPayload` and hands back the address of the flexible array -- so the
 //! block at the front of the heap list immediately afterwards *is* the header,
 //! and the difference between the two addresses is the offset measured at run
 //! time. That catches a runtime that computed an offset one way and allocated
@@ -76,7 +76,8 @@ fn unmark(pointer: ?*anyopaque) void {
 }
 
 /// The head of whatever `value` refers to, or null for a value the collector
-/// does not trace. Mirrors the cases `janet_check_liveref` distinguishes.
+/// does not trace. Mirrors the cases `gc/sweep.zig`'s `checkLiveref`
+/// distinguishes.
 fn headOf(val: repr.Value) ?*anyopaque {
     return switch (repr.typeOf(val)) {
         repr.Tag.array,
@@ -111,7 +112,7 @@ fn freshHeap() void {
     gc_mark.collect();
 }
 
-/// The block `janet_gcalloc` most recently prepended to the main heap.
+/// The block the allocator most recently prepended to the main heap.
 fn newestBlock() usize {
     return @intFromPtr(harness.vm().gc.blocks);
 }
@@ -144,10 +145,10 @@ fn theHeadOffsets() void {
     const abstract = abstracts.newBytes(&at_plain, 8);
     expect(@intFromPtr(abstract) - newestBlock() == @sizeOf(abi.AbstractHead));
 
-    // `JanetFunction`'s environments are its own flexible array, and the
+    // `functions.Function`'s environments are its own flexible array, and the
     // function *is* its block — so the oracle is what lives at the computed
     // slot rather than a difference of addresses. A closure with a captured
-    // binding puts a real `JanetFuncEnv` there; if the offset were wrong the
+    // binding puts a real `functions.FuncEnv` there; if the offset were wrong the
     // slot would hold padding, and a padding word is not a live block of type
     // `JANET_MEMORY_FUNCENV`.
     var out: repr.Value = undefined;
@@ -616,7 +617,7 @@ fn theGuardRootsTheOverflow() !void {
     _ = gc_alloc.gcunroot(head);
 }
 
-/// What the guard defers, `janet_collect` finishes. The chain below is three
+/// What the guard defers, the drain loop in `collect` finishes. The chain below is three
 /// times the guard's depth, and the only reference to its last link is through
 /// every link before it; if the drain loop stopped early or dropped what it
 /// popped, the weak table would lose the entry in the sweep.

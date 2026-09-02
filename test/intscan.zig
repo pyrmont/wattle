@@ -1,5 +1,5 @@
-//! Behavioral contract for the two integer scanners, `janet_scan_int64` and
-//! `janet_scan_uint64`.
+//! Behavioral contract for the two integer scanners, `scan.scanInt64` and
+//! `scan.scanUint64`.
 //!
 //! Janet's own `scan-number` goes through the *floating-point* scanner, so
 //! nothing in the language reaches these two except `int/s64` and `int/u64`,

@@ -2,8 +2,8 @@
 //!
 //! ## They had never been built
 //!
-//! Four `LLVMFuzzerTestOneInput` entry points over Janet's public header: the
-//! parser, the compiler, `janet_dobytes` and `janet_unmarshal`. **No build
+//! Four `LLVMFuzzerTestOneInput` entry points: the parser, the compiler,
+//! `env.dobytes` and `marsh.unmarshal`. **No build
 //! system in this tree ever named one** -- they were built, if at all, by a
 //! `clang -fsanitize=fuzzer` somebody typed elsewhere. So these are not a port
 //! of a working instrument; `zig build fuzz` is the first thing that has ever
@@ -11,13 +11,12 @@
 //!
 //! ## Why a translation would abort on almost every input
 //!
-//! A C original opens a `janet_try_init` scope, calls its entry point, and
-//! calls `janet_restore`. That is right for C and wrong here: three of the
-//! four entry points are `raise.reported` or `raise.panicking(...).abi`
-//! wrappers, so a raise leaves a *report* rather than travelling, and
-//! `janet_restore` aborts on an outstanding one. A fuzzer's inputs are mostly
-//! malformed, so a faithful translation would die with
-//! translation would die with
+//! A C original opens a protected scope, calls its entry point, and closes
+//! it. That is right for C and wrong here: three of the four published entry
+//! points are `raise.reported` or `raise.panicking(...).abi` wrappers, so a
+//! raise leaves a *report* rather than travelling, and `signal.restore` aborts
+//! on an outstanding one. A fuzzer's inputs are mostly malformed, so a
+//! faithful translation would die with
 //!
 //!     janet abort: a raise was reported to a C caller and never consumed
 //!
@@ -25,15 +24,15 @@
 //! byte string that got there.
 //!
 //! So each target reaches the *raising* function by import and reads the
-//! refusal as a value, which is `swallowed.py`'s rule applied to a caller that
-//! did not exist yet:
+//! refusal as a value, which is `tools/check/swallowed.janet`'s rule applied
+//! to a caller that did not exist yet:
 //!
-//! | target | the abi a translation would call | what this calls |
-//! | --- | --- | --- |
-//! | parser | `janet_parser_consume`, `janet_parser_eof` | `parser_core.consumeChecked`, `parser_core.eofChecked` |
-//! | compile | `janet_compile` → `janet_compile_lint` | `compiler_primitives.janet_compile_lintImpl` |
-//! | dobytes | `janet_dobytes` | `core_env.janet_dobytesImpl` |
-//! | unmarshal | `janet_unmarshal` | `marsh.unmarshal` |
+//! | target | what this calls |
+//! | --- | --- |
+//! | parser | `parser_core.consumeChecked`, `parser_core.eofChecked` |
+//! | compile | `compiler_primitives.compileLintImpl` |
+//! | dobytes | `core_env.dobytesImpl` |
+//! | unmarshal | `marsh.unmarshal` |
 //!
 //! `harness.raised` is the protected scope, unchanged from what sixty-five
 //! contracts use it for. A raise is the expected outcome here rather than the
@@ -78,8 +77,9 @@ const max_input = 4096;
 ///
 /// It is the expensive choice and it is the right one for a fuzzer: a runtime
 /// carried across inputs makes a crash depend on the inputs before it, and a
-/// reproducer that needs a history is not a reproducer. `janet_deinit` also
-/// frees the heap, so a leak this finds is attributable to the one input.
+/// reproducer that needs a history is not a reproducer. `vm_lifecycle.deinit`
+/// also frees the heap, so a leak this finds is attributable to the one
+/// input.
 fn session(comptime body: fn (env: *tables.Table, data: []const u8) void, data: []const u8) void {
     harness.init();
     defer vm_lifecycle.deinit();

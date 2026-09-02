@@ -50,8 +50,9 @@ var scope: primitives.Scope = undefined;
 var child: primitives.Scope = undefined;
 var unused: primitives.Scope = undefined;
 
-/// The recursion guard is consulted and decremented by `janetc_value`, so
-/// every section that compiles a form resets it the way `janet_compile` does.
+/// The recursion guard is consulted and decremented by `compiler.valueImpl`,
+/// so every section that compiles a form resets it the way `compiler.compile`
+/// does.
 const recursion_guard = 1024;
 
 fn emitted(index: usize) u32 {

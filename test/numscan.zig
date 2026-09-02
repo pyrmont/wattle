@@ -1,4 +1,4 @@
-//! Behavioral contract for Janet's number scanner: `janet_scan_number`, its
+//! Behavioral contract for Janet's number scanner: `scan.scanNumber`, its
 //! explicit-base form, the `:s`/`:u`/`:n` suffixes, and `numscan.bufferDtostrAbi`.
 //!
 //! Janet's reader reaches this for every numeric literal, so the suites

@@ -39,7 +39,7 @@ const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const tables = @import("subsystems").value.tables;
 const expect = @import("expect.zig").expect;
-/// `janet_rng_longseed` as the boundary publishes it.
+/// The long seed as the boundary publishes it.
 ///
 /// `math.rngLongseed` takes a `[]const u8`, so the negative length the
 /// contract below pins cannot be handed to it. The published entry point still
@@ -109,9 +109,9 @@ fn theLongSeed() void {
     expectState(&rng, empty.a, empty.b, empty.c, empty.d);
 
     // An empty seed reads nothing rather than walking backwards. The negative
-    // length this used to pin belonged to `janet_rng_longseed`, which is not
-    // part of the published surface: `rngLongseed` takes a slice, and a
-    // negative length is a state the type forbids.
+    // length this used to pin belonged to a boundary form that is not part of
+    // the published surface: `rngLongseed` takes a slice, and a negative
+    // length is a state the type forbids.
     math.rngLongseed(&rng, "janet"[0..0]);
     expectState(&rng, empty.a, empty.b, empty.c, empty.d);
 }
@@ -148,8 +148,8 @@ fn theDoubleDraw() void {
 /// the same object every time it is asked for.
 ///
 /// It used to assert that the generator is not null. That assertion went with
-/// the call: `janet_default_rng` was declared `[*c]Rng`, so the pointer
-/// arrived maybe-null and the test was the check; `math.defaultRng` returns
+/// the call: the accessor was declared `[*c]Rng`, so the pointer arrived
+/// maybe-null and the test was the check; `math.defaultRng` returns
 /// `*Rng` and Zig will not let it be null. `DESIGN.md` §3 -- the property
 /// stopped being an agreement and became a construction.
 fn theDefaultRng() void {

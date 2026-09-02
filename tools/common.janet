@@ -296,7 +296,8 @@
   column is still a column.
 
   Moved here from `seam.janet` for rule 26, unchanged in what it counts --
-  verified line by line over `src/zig` and `test/` before the swap. That tool
+  verified line by line over the runtime source and `test/` before the swap.
+  That tool
   counted a reference inside a comment as a call until rule 6, and the check
   that says the stripper works is that a comment-only reference scores as
   absent."
@@ -312,8 +313,24 @@
     (when (< k (- (length lines) 1)) (buffer/push out "\n")))
   (string out))
 
+(def src-dirs
+  ``The three directories the runtime's Zig lives in, in the order a tool
+  should walk them.
+
+  A directory says which compilation includes its files: `src/api` is compiled
+  into a native module's `.so` as well as the runtime, `src/host` is the
+  platform's shapes and what libc is asked for, and `src/runtime` is the
+  runtime as one compilation. The two package roots sit above all three at the
+  top of `src/`: `root.zig`, which the runtime compiles, and `module.zig`,
+  which a native module's `.so` compiles. `src-files` walks both with the
+  directories.
+
+  Every instrument walks this rather than naming a directory of its own, so
+  one edit here changes the population every inventory measures.``
+  ["src/api" "src/host" "src/runtime"])
+
 (def outside-runtime-root
-  "The `src/zig/` files that are not part of the `subsystems` module.
+  "The files under `src/` that are not part of the `subsystems` module.
 
   This set had a shorter name while the subsystems sat in a directory of their
   own: it was \"not under that directory\", and half a dozen tools tested the
@@ -341,20 +358,20 @@
   deleted file translated `janet.h`; this one holds what the runtime and a
   separately compiled module must agree on, and it is a module root of its own
   for that reason."
-  {"src/zig/abi.zig" true
-   "src/zig/cabi.zig" true
-   "src/zig/constants.zig" true
-   "src/zig/corefn.zig" true
-   "src/zig/native_module.zig" true
-   "src/zig/raise.zig" true})
+  {"src/api/abi.zig" true
+   "src/host/cabi.zig" true
+   "src/api/constants.zig" true
+   "src/runtime/corefn.zig" true
+   "src/runtime/native_module.zig" true
+   "src/api/raise.zig" true})
 
 (defn runtime-file?
   "Whether `path` is one of the files the `subsystems` module compiles.
 
   The test a tool wants when it asks \"may I rewrite this\": everything under
-  `src/zig/` except `outside-runtime-root`."
+  one of `src-dirs` except `outside-runtime-root`."
   [path]
-  (and (string/has-prefix? "src/zig/" path)
+  (and (some |(string/has-prefix? (string $ "/") path) src-dirs)
        (not (outside-runtime-root path))))
 
 (defn zig-files
@@ -368,6 +385,18 @@
         :directory (walk path)
         :file (when (string/has-suffix? ".zig" entry) (array/push out path)))))
   (walk dir)
+  out)
+
+(defn src-files
+  ``Every `.zig` file of the runtime's own source, repo-relative.
+
+  The two package roots -- `src/root.zig` and `src/module.zig` -- plus
+  everything under `src-dirs`. This is the population every inventory under
+  `tools/check` measures, and leaving a root out of it silently shrinks every
+  one of them.``
+  []
+  (def out @["src/module.zig" "src/root.zig"])
+  (each d src-dirs (array/concat out (zig-files d)))
   out)
 
 (defn word-byte?

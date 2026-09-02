@@ -9,10 +9,11 @@
 //! `@embedFile`, so nothing routes those bytes through a stream a host may
 //! translate.
 //!
-//! **It imports the runtime rather than linking it**, which is why it lives
-//! here rather than under `src/zig/`: a module's root directory owns every
-//! file beneath it, and two modules cannot claim the same one. `src/boot/`
-//! holds the bootstrap script too, which is what its name is about.
+//! **It imports the runtime rather than linking it**, and is the root of its
+//! own module for that reason: it reaches the runtime by the name
+//! `subsystems`, the way `test/` and the client do, rather than being a file
+//! of it. `src/boot/` holds the bootstrap script too, which is what its name
+//! is about.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -43,8 +44,8 @@ fn changeDirectory(path: [*:0]const u8) c_int {
 /// `dobytes` has already printed a message and a trace, and both come out of
 /// the fiber's frame walk -- so a defect in that walk, or in the collector
 /// that feeds it, loses the diagnosis exactly when it is needed. A defect in
-/// the mark phase has produced exactly that: the entire symptom was this
-/// program exiting 1 in silence, with all 65 contracts passing.
+/// the mark phase produces exactly that, and the whole symptom is this program
+/// exiting 1 in silence with every contract passing.
 ///
 /// So this reads the value directly rather than formatting it: an error is a
 /// string or a keyword nine times in ten, and the type name alone is worth
@@ -124,11 +125,11 @@ pub fn main(init: std.process.Init) !u8 {
     //
     // `dobytes` already prints a message and a trace, but both come out of the
     // fiber's frame walk -- so a defect in that walk, or in the collector that
-    // feeds it, loses the diagnosis exactly when it is needed. That is not
-    // hypothetical: a defect in the mark phase has produced exactly that, and
-    // the whole symptom was this program exiting 1 in silence, with every
-    // contract passing. One `%v` of the value costs nothing and does not depend on a
-    // single frame being walkable.
+    // feeds it, loses the diagnosis exactly when it is needed -- a defect in
+    // the mark phase produces exactly that, and the whole symptom is this
+    // program exiting 1 in silence with every contract passing. One `%v` of
+    // the value costs nothing and does not depend on a single frame being
+    // walkable.
     var result = wrap.fromNil();
     const status = env_core.dobytes(env, source.ptr, @intCast(source.len), boot_filename, &result) catch
         fail("The bootstrap's own diagnostics raised\n", .{});

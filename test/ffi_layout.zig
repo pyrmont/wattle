@@ -45,7 +45,7 @@ const Layout = ffi_layout.Layout;
 
 const expect = @import("expect.zig").expect;
 
-/// `JanetFFIPrimType`, written out rather than imported — see the header.
+/// `types.PrimType`, written out rather than imported — see the header.
 const prim_void: i32 = 0;
 const prim_bool: i32 = 1;
 const prim_ptr: i32 = 2;
@@ -61,7 +61,7 @@ const prim_uint32: i32 = 11;
 const prim_int64: i32 = 12;
 const prim_uint64: i32 = 13;
 
-/// `JanetFFICallingConvention`, likewise.
+/// `types.Cc`, likewise.
 const cc_none: i32 = 0;
 const cc_sysv64: i32 = 1;
 const cc_win64: i32 = 2;

@@ -7,9 +7,9 @@
 //! The registration *table* is the first. Its contents decide what exists, its
 //! order is what `janet_nextmethod` walks, and its docstring and source-map
 //! columns are what `(doc ...)` reads; a surface assembled from four files in
-//! `janet_lib_os`'s original order can get every function right and the order
-//! wrong, and no Janet assertion would notice. `os.c` had one table literal
-//! and the Zig surface concatenates seven slices, so the order is newly a
+//! upstream's `os/` order can get every function right and the order wrong,
+//! and no Janet assertion would notice. Upstream has one table literal and
+//! `os.libOs` concatenates seven slices, so the order is newly a
 //! thing that can break.
 //!
 //! The second is the stat reader. Janet sees only the values built on top of
@@ -19,7 +19,7 @@
 //!
 //! The third is the `core/process` abstract type's shape: which of its
 //! fourteen callbacks are null is a fact about the type rather than about any
-//! process, and `janet_abstract_type` is the only way to ask.
+//! process, and the value's own head is the only way to ask.
 //!
 //! The fourth is the signal table. `os_process.zig` holds the *names* and
 //! reports a position; the surface holds the number each position carries on
@@ -35,7 +35,7 @@
 //! **The source-map order check is unconditional.** It once ran only under a
 //! bootstrap built from Zig, because a C bootstrap recorded a `.c` path for
 //! every binding however the surface was compiled. Every source path in the
-//! image is `src/zig/`-relative, so the loop runs in every configuration.
+//! image is `src/`-relative, so the loop runs in every configuration.
 //!
 //! **A reduced-OS build is skipped rather than compiled away.** The subject is
 //! still compiled in that configuration -- four `os/` functions of the
@@ -88,8 +88,7 @@ const scratch = "/tmp/janet-os-surface-contract";
 // ==========================================================================
 
 /// Every `os/` binding this configuration must define, listed in the order
-/// `janet_lib_os` registers them so that the list can be read beside the
-/// table. See `theRegistration` below for what is and is not asserted about
+/// `os.libOs` registers them so that the list can be read beside the table. See `theRegistration` below for what is and is not asserted about
 /// that order -- less than the listing suggests.
 const expected_bindings: []const [*:0]const u8 = blk: {
     var list: []const [*:0]const u8 = &.{
@@ -166,7 +165,7 @@ fn bindingField(env: *tables.Table, name: [*:0]const u8, field: [*:0]const u8) r
 /// Registration *order* is not observable, and finding that out is worth
 /// recording because the C contract first asserted that it was.
 ///
-/// `janet_lib_os` puts its rows into the core environment, which is a hash
+/// `os.libOs` puts its rows into the core environment, which is a hash
 /// table, so nothing downstream can see which row came first. The source map
 /// looked like a way to read the order back, and it is not: `JANET_CORE_FN`
 /// records the line of the *definition* and `os.c` defined its cfunctions in a
@@ -179,7 +178,7 @@ fn bindingField(env: *tables.Table, name: [*:0]const u8, field: [*:0]const u8) r
 /// environment.
 ///
 /// The order check that follows is narrower still: it compares source-map
-/// lines only where two consecutive names come from the same `src/zig/` file,
+/// lines only where two consecutive names come from the same `src/` file,
 /// so it catches two rows exchanged within one file and nothing across files.
 fn theRegistration() void {
     const env: *tables.Table = harness.coreEnv();
@@ -211,7 +210,7 @@ fn theRegistration() void {
             const file = wrap.toString(tuple[0]);
             const line = wrap.toInteger(tuple[1]);
             const length: usize = strings.head(file).length;
-            const from_zig = length > 8 and std.mem.eql(u8, file[0..8], "src/zig/");
+            const from_zig = length > 4 and std.mem.eql(u8, file[0..4], "src/");
             if (from_zig and previous_file != null and
                 strings.equal(previous_file.?, file))
             {
@@ -331,7 +330,7 @@ fn theStatRead() void {
     // A directory and a file differ in the mode word and in nothing this
     // function decides: the classification is the caller's.
     var directory_mode: u32 = 0;
-    expect(host_stat.statRead("src/zig", false, &directory_mode, &numbers) == 0);
+    expect(host_stat.statRead("src/runtime", false, &directory_mode, &numbers) == 0);
     expect(directory_mode != mode);
 }
 

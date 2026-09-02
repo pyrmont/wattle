@@ -127,7 +127,7 @@ fn dynamicLoadingWorks() bool {
 
 // ------------------------------------------------------------ registration
 
-/// Every name `janet_lib_ffi` registers. A binding that stops being registered
+/// Every name `ffi.libFfi` registers. A binding that stops being registered
 /// is what this catches: a registration table is the one place a cfunction can
 /// go missing without a link error.
 const ffi_bindings = [_][*:0]const u8{
@@ -218,9 +218,9 @@ fn primTable() void {
 /// The callback set of the abstract behind `expr`, checked slot by slot. Only
 /// `name` is visible from Janet, and only through `(type x)`.
 ///
-/// The stored form is what is read — `janet_abstract_type` on the value, as
-/// the C contract did — rather than the `abstract_type.AbstractType` these are
-/// declared as. It is the same memory, and it is the view every other reader
+/// The stored form is what is read — the `type` pointer in the value's own
+/// head — rather than the `abstract_type.AbstractType` these are declared
+/// as. It is the same memory, and it is the view every other reader
 /// of an abstract gets.
 fn expectShape(
     expr: [*:0]const u8,
@@ -233,8 +233,8 @@ fn expectShape(
     const val = eval(expr);
     expect(harness.isType(val, repr.Tag.abstract));
     const at = abi.abstractHead(wrap.toAbstract(val)).type;
-    // `strcmp`, not `janet_cstrcmp`: an abstract type's `name` is a plain C
-    // string rather than a length-prefixed `JanetString`, and the second reads
+    // `strcmp`, not `utils.cstrcmp`: an abstract type's `name` is a plain C
+    // string rather than a length-prefixed `strings.String`, and the second reads
     // a header that is not there.
     expect(std.mem.eql(u8, at.name, std.mem.span(name)));
     expect((at.gc != null) == has_gc);
@@ -682,8 +682,8 @@ const Large24 = extern struct { x: i64, y: i64, z: i64 };
 /// a *nonzero* stack offset. That is the whole condition: at offset zero the
 /// byte offset and the same number read as a word index agree by accident.
 /// The weighted sum comes back as a `double` rather than an `int64` so that
-/// the case reads its answer with `janet_unwrap_number`. `janet_unwrap_s64` is
-/// declared only under `JANET_INT_TYPES`, and `-Dint-types=false` is a matrix
+/// the case reads its answer with `wrap.toNumber`. `ints.unwrapS64` is
+/// compiled only with integer types, and `-Dint-types=false` is a matrix
 /// entry — which is where the first version of this case failed to compile.
 /// Nothing here is about the return: every weight is small and exact in a
 /// `double`.

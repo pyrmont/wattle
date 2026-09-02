@@ -51,7 +51,7 @@ const AllocResult = ffi_classify.AllocResult;
 
 const expect = @import("expect.zig").expect;
 
-/// `JanetFFIPrimType`, written out rather than imported — see the header.
+/// `types.PrimType`, written out rather than imported — see the header.
 const prim_void: u32 = 0;
 const prim_bool: u32 = 1;
 const prim_ptr: u32 = 2;
@@ -68,7 +68,7 @@ const prim_int64: u32 = 12;
 const prim_uint64: u32 = 13;
 const prim_struct: u32 = 14;
 
-/// `JanetFFIWordSpec`, likewise.
+/// `types.Spec`, likewise.
 const sysv64_integer: u32 = 0;
 const sysv64_sse: u32 = 1;
 const sysv64_pair_intint: u32 = 3;

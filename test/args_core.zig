@@ -23,8 +23,8 @@
 //!
 //! ## Writing this file found a live defect, and it was in a caller
 //!
-//! A C contract skipped `janet_getinteger64` and `janet_getuinteger64` whenever
-//! `JANET_INT_TYPES` was defined, which is the default — its `EXPECTED_PANICS`
+//! A C contract skipped `args.GetInteger64` and `args.GetUInteger64` whenever
+//! integer types were compiled in, which is the default — its `EXPECTED_PANICS`
 //! is 70 with integer types and 74 without — because in that configuration
 //! those two do not fill in a fault at all: they delegate to the 64-bit
 //! unwrap, which raises its own message. Asking *how* it raises is what found
@@ -315,7 +315,7 @@ fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
 }
 
 /// `checkfloat`'s range is symmetric about zero: `-FLT_MAX` to `FLT_MAX`, the
-/// way `checkInteger8`'s is `INT8_MIN` to `INT8_MAX`. Within it the round trip
+/// way `checkint8`'s is `INT8_MIN` to `INT8_MAX`. Within it the round trip
 /// through `f32` decides, so a double carrying more precision than a float
 /// holds is refused and a subnormal is not.
 ///
@@ -537,19 +537,20 @@ fn theByteAndCstringShapes() raise.Raising(void) {
 
 /// The third cbytes shape: a buffer that cannot be realloced and is exactly
 /// full, where pushing a terminator would raise. It is copied with the scratch
-/// allocator instead, which the suites never reach because a no-realloc buffer
-/// only comes from `janet_buffer_init_custom` paths.
+/// allocator instead, which the suites never reach: nothing in the runtime
+/// sets `JANET_BUFFER_FLAG_NO_REALLOC`, so such a buffer is only ever built by
+/// hand, as this case does.
 fn cbytesCopiesAFullNoReallocBuffer() raise.Raising(void) {
     const b = buffers.new(0);
     var backing = [_]u8{ 'a', 'b', 'c' };
 
-    // **Not `janet_buffer_init`.** That is for a buffer the caller owns: it
+    // **Not `buffers.init`.** That is for a buffer the caller owns: it
     // sets `gc.data.next = null` and `gc.flags = JANET_MEM_DISABLED`, which on
     // a *collectable* buffer writes through the block at the head of the heap
     // list and severs it. This contract did that and orphaned eighty-four
     // blocks, which is what a leak check had been reporting.
     //
-    // `janet_buffer_deinit` alone is what this needs: it frees the payload and
+    // `buffers.deinit` alone is what this needs: it frees the payload and
     // nulls the pointer, leaving the block on the list and its type intact.
     buffers.deinit(b);
     b.data = &backing;
@@ -571,7 +572,7 @@ fn cbytesCopiesAFullNoReallocBuffer() raise.Raising(void) {
     expect(b.count == 3);
     expect(std.mem.eql(u8, &backing, "abc"));
 
-    // Put it back into a shape `janet_buffer_deinit` can free.
+    // Put it back into a shape `buffers.deinit` can free.
     b.data = null;
     b.count = 0;
     b.capacity = 0;
@@ -800,10 +801,10 @@ fn nextmethodIsAnIterator() void {
 
 // ------------------------------------------------------------- predicates
 
-/// The ten check functions are public API in their own right, and `getSize` is
-/// the only caller of `janet_checksize` that could otherwise show a
-/// disagreement. Janet casts to `size_t` before testing, which is undefined
-/// for a negative or enormous double; this tests before casting. Every input
+/// The ten check functions are the argument layer's own vocabulary, and
+/// `getSize` is the only caller of `args.checksize` that could otherwise show
+/// a disagreement. Upstream casts to `size_t` before testing, which is
+/// undefined for a negative or enormous double; this tests before casting. Every input
 /// either language defines has to reach the same answer.
 fn thePredicatesAgreeWithTheGetters() void {
     expect(args_core.checkint(harness.wrapInteger(0)));
@@ -828,7 +829,7 @@ fn thePredicatesAgreeWithTheGetters() void {
     expect(!args_core.checkint(wrap.fromNumber(inf)));
     expect(!args_core.checkint(wrap.fromNumber(-inf)));
     expect(!args_core.checkfloat(wrap.fromNumber(inf)));
-    // `janet_checksize` is absent here for the reason given above.
+    // `args.checksize` is absent here for the reason given above.
 }
 
 // ---------------------------------------------------------------- the view

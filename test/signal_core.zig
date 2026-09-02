@@ -29,14 +29,12 @@
 //!
 //! ## The four public abis are still tested
 //!
-//! `janet_signalv`, `janet_panicv`, `janet_panic` and `janet_panics` each
+//! `signal.signalv`, `signal.panicv`, `signal.panic` and `signal.panics` each
 //! record through `raise.signal`'s family and then hand the raise to a C
-//! caller as a report. Two of them -- `janet_panicv` and `janet_panic` -- have
-//! Zig callers through the C ABI in `interop.zig` and `native_module.zig`.
-//! The other two have **no in-tree caller at all**, and stay because they are
-//! the published perimeter: an embedder's `janet_panics` is the only thing
-//! that will ever call it. A public entry point with no in-tree caller is
-//! precisely the kind that rots without anything saying so.
+//! caller as a report. **None of the four has an in-tree caller outside this
+//! contract**; they stay because they are the reporting perimeter an embedder
+//! reaches. A public entry point with no in-tree caller is precisely the kind
+//! that rots without anything saying so.
 //!
 //! `harness.abiRaised` is what reads one.
 
@@ -175,12 +173,12 @@ fn tryScopesNest() void {
     harness.vm().coerce_error = old_coerce_error;
 }
 
-/// The scope and the raise end to end: `janet_try_init` points the return
+/// The scope and the raise end to end: `signal.tryInit` points the return
 /// register at this frame's payload slot, `raise.panic` decides and records,
 /// and the payload arrives in the scope's own slot.
 ///
 /// The scope is not a formality even though nothing jumps any more —
-/// `janet_signal_plan` answers `TOP_LEVEL` when `return_reg` is null and a
+/// `signal.signalPlan` answers `TOP_LEVEL` when `return_reg` is null and a
 /// `TOP_LEVEL` raise ends the process. `harness.raised` is that scope.
 fn aScopeCatchesAPanic() void {
     const base = harness.vm().stackn;
@@ -317,10 +315,8 @@ fn thePlanBumpsTheRootFiber(nothing: *functions.Function) void {
 /// tail call into an implicit return, so a raise that skipped it would resume
 /// differently from one that set it.
 ///
-/// Reached by import rather than by symbol, and that is the whole of what this
-/// part changed about it: `janet_signal_commit` was an `export fn` with a
-/// declaration in `state.h` whose only caller outside its own file was this
-/// contract. It is `signalCommit` now.
+/// Reached by import rather than by symbol: `signal.signalCommit` is not
+/// exported, and this contract is its only caller outside its own file.
 fn theCommitPublishesAndMarks(nothing: *functions.Function) void {
     var reg = wrap.fromNil();
     const message = value.fromBytes("payload", .string);
@@ -486,8 +482,8 @@ fn theEntryPoints() void {
 
 /// The four abis, each `raise.report` over one of the entry points above.
 ///
-/// `janet_panicf` is in `test/pp_format.zig`: its format string is a
-/// `comptime` parameter, so a caller instantiates the raise rather than
+/// `pp_format.panicf` is tested in `test/pp_format.zig`: its format string is
+/// a `comptime` parameter, so a caller instantiates the raise rather than
 /// calling it, and it sits beside the engine that builds its message.
 fn thePublicAbis() void {
     const plain = harness.abiRaised(signal_core_mod.panic, .{"plain"}).?;
@@ -506,8 +502,8 @@ fn thePublicAbis() void {
     expect(signalled.signal == abi.Signal.yield);
     expect(signalled.says("suspended"));
 
-    // `janet_panics` takes a `JanetString`, which carries its own length, and
-    // must not re-intern it through a C string. Nothing else in the tree
+    // `signal.panics` takes an interned string, which carries its own length,
+    // and must not re-intern it through a C string. Nothing else in the tree
     // notices: every other message raised anywhere is NUL-free, so a
     // `janet_cstring` inserted here would produce an equal string in every
     // case but this one. A mutation sweep found that hole, which is why the

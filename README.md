@@ -290,7 +290,7 @@ If installed, you can also run `man janet` to get usage information.
 ## Embedding
 
 `zig build` produces `zig-out/lib/libjanet.a` and `zig-out/lib/libjanet.so`
-(or `.dylib`). The library exports 434 C symbols, and `src/zig/capi.zig` is the
+(or `.dylib`). The library exports 434 C symbols, and `src/runtime/capi.zig` is the
 one file that publishes them: every entry point there states the signature it
 publishes, and the compiler checks it.
 
@@ -299,7 +299,7 @@ publishes, and the compiler checks it.
 its definition, so shipping it would promise less than the tree keeps. What a C
 caller sees is `capi.zig`; a generated header is not written yet.
 
-**The native-module interface is Zig.** `src/zig/module.zig` is what a module
+**The native-module interface is Zig.** `src/module.zig` is what a module
 imports, and `examples/numarray/` is the worked example. A C program cannot
 define a cfunction for this runtime: a cfunction returns an error union over
 Zig's own calling convention, so no C body can have that type and no C caller

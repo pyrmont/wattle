@@ -98,8 +98,8 @@ fn namesHoldTheirPositions() void {
     }
 }
 
-/// Janet searches each table with `janet_strbinsearch`, which requires it to
-/// be sorted. Neither implementation depends on that now, but a table that
+/// Upstream Janet binary-searches each table, which requires it to be
+/// sorted. Neither implementation depends on that now, but a table that
 /// stopped being sorted would mean the two disagreed about which entries were
 /// reachable at all.
 fn eachVocabularyIsAscending() void {

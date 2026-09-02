@@ -1,0 +1,441 @@
+//! The interface a native module imports, and the only one it needs.
+//!
+//! Native modules remain a goal; a C API for writing them does not. Nothing
+//! has to keep working that was compiled against upstream Janet's public
+//! header, but a module should still be writable in native code, so this is a
+//! real interface with third-party authors, not an internal detail.
+//!
+//! **One import.** A module writes `@import("janet")` and nothing else. The
+//! declarations below are a *deliberate* list: what an author is offered,
+//! decided here, rather than whatever the runtime still calls through a symbol.
+//!
+//! **What a module links against.** A native module is a shared object the
+//! loader opens at run time, so it reaches the runtime through the symbol
+//! table. The `extern fn` declarations at the foot of this file are that
+//! boundary, and they are why this interface is a small file rather than a
+//! second compilation of the runtime: `abstract_type.zig` and `raise.zig`
+//! compile *into* the module, and everything they need is a symbol.
+//!
+//! The Zig-side calling convention is `.auto`, which is deterministic for a
+//! compiler version and target rather than documented -- `client/interop.zig`
+//! has the note. That is the guarantee this interface makes: **a module is
+//! built with the same Zig version as the runtime it loads into.** It is a
+//! source interface, not a binary one.
+//!
+//! **What is deliberately not here**: the value representation, the head
+//! structs, the collector, the VM. A module holds Janet's data as an opaque
+//! `Value` and shares only `src/api/abi.zig`, which `DESIGN.md` section 4
+//! decides: private to public breaks nobody, public to private breaks every
+//! module there is.
+
+const std = @import("std");
+const abi = @import("abi");
+const repr = @import("repr");
+const constants = @import("constants");
+const config = @import("config");
+const raise = @import("api/raise.zig");
+const crossings = @import("api/crossings.zig");
+const abstract_type = @import("api/abstract_type.zig");
+
+// ==========================================================================
+// The vocabulary
+// ==========================================================================
+
+/// A Janet value.
+///
+/// **Its representation is unsupported, which is not the same as hidden.**
+/// This is an alias of the runtime's own value type, so a module that reaches
+/// into its union fields will compile. Nothing stops it and nothing is meant
+/// to imply otherwise: the interface here is the operations below, and a
+/// module that reads the representation is relying on something that changes
+/// with `-Dnanbox`, with the target's pointer width, and without notice.
+///
+/// A by-value runtime type cannot be `opaque` in Zig -- the caller has to know
+/// its size to hold one -- so the distinction is stated rather than enforced.
+pub const Value = repr.Value;
+
+/// What every fallible entry point here answers. `error.JanetSignal` says the
+/// signal and its payload are recorded in the runtime's state -- see `panic`.
+pub const Error = raise.Error;
+
+/// An environment table, which is what a module's entry point is handed.
+///
+/// A handle rather than a layout: every operation on an environment is a call
+/// across the symbol boundary, so an author needs the object and not its
+/// fields. The runtime's `tables.Table` keeps the layout, and the two are
+/// one pointer to each other. Same for the `*Buffer` an abstract type's
+/// `tostring` renders into. `abi.zig`'s header has the argument.
+pub const Env = abi.Table;
+
+/// A module's cfunction: arguments in, a value or a signal out.
+pub const CFunction = raise.CFunction;
+
+/// An abstract type's dispatch description, and the constructor that builds
+/// one from callbacks over `*T`. `DESIGN.md` section 5.
+pub const AbstractType = abstract_type.AbstractType;
+
+/// The definition-site checker, so a fixture or an author can reach it without
+/// a module of its own.
+pub const abstracts = abstract_type;
+pub const define = abstract_type.define;
+
+/// One registration row. `DESIGN.md` section 6: one struct, five fields, and
+/// the three a build may omit are defaulted.
+pub const Reg = abi.Reg;
+
+/// The alignment every cfunction must be declared with.
+///
+/// Under 64-bit nanboxing with a nonzero pointer shift, wrapping a cfunction
+/// reuses the low bits of its pointer and registration asserts they are clear
+/// -- with `janet abort`, at load time, naming the module. `16` satisfies
+/// every shift the build accepts, and over-aligning costs padding measured in
+/// bytes. Write `fn myFn(argv: []Value) align(module.fn_align) Error!Value`.
+pub const fn_align = 16;
+
+// ==========================================================================
+// Raising
+// ==========================================================================
+
+/// Refuse, with a message. The signal and payload go into the runtime's state
+/// and `error.JanetSignal` says so.
+pub const panic = raise.panic;
+
+// ==========================================================================
+// Arguments
+// ==========================================================================
+
+/// Exactly `n` arguments, or a refusal naming the arity.
+pub fn fixarity(argv: []const Value, n: i32) Error!void {
+    return crossing(crossings.janet_fixarity(@intCast(argv.len), n));
+}
+
+/// Between `lo` and `hi`, with `-1` for "no bound".
+pub fn arity(argv: []const Value, lo: i32, hi: i32) Error!void {
+    return crossing(crossings.janet_arity(@intCast(argv.len), lo, hi));
+}
+
+pub fn getNumber(argv: []const Value, n: i32) Error!f64 {
+    return crossing(crossings.janet_getnumber(argv.ptr, n));
+}
+
+pub fn getInteger(argv: []const Value, n: i32) Error!i32 {
+    return crossing(crossings.janet_getinteger(argv.ptr, n));
+}
+
+/// An argument of this abstract type, as a `*T`.
+///
+/// The typed half of `DESIGN.md` section 5: the runtime checks the type and
+/// this returns the payload already cast, so a module author's first line is
+/// not an unchecked `@ptrCast` the runtime cannot diagnose.
+pub fn getAbstract(comptime T: type, argv: []const Value, n: i32, at: *const AbstractType) Error!*T {
+    const p = try crossing(crossings.janet_getabstract(argv.ptr, n, at));
+    return @ptrCast(@alignCast(p.?));
+}
+
+/// The size of a value the runtime treats as a count.
+pub fn getSize(argv: []const Value, n: i32) Error!usize {
+    return crossing(crossings.janet_getsize(argv.ptr, n));
+}
+
+// ==========================================================================
+// Values
+// ==========================================================================
+
+pub const number = crossings.janet_wrap_number;
+pub const nil = crossings.janet_wrap_nil;
+
+/// Wrap an abstract's payload as a value.
+pub fn abstract(p: *anyopaque) Value {
+    return crossings.janet_wrap_abstract(p);
+}
+
+/// Whether a value is an integer the runtime can hand back as `i32`.
+pub fn isInteger(v: Value) bool {
+    return crossings.janet_checkint(v) != 0;
+}
+
+// The two below cross the symbol table, where the tag travels as a `c_uint`;
+// `repr.Tag` is the runtime's spelling and does not cross. A module author
+// sees neither -- they see `bool`.
+
+/// Whether a value is a keyword, which is what a method lookup is keyed on.
+pub fn isKeyword(v: Value) bool {
+    return crossings.janet_checktype(v, @intFromEnum(repr.Tag.keyword)) != 0;
+}
+
+/// Whether a value is a number.
+pub fn isNumber(v: Value) bool {
+    return crossings.janet_checktype(v, @intFromEnum(repr.Tag.number)) != 0;
+}
+
+pub const toInteger = crossings.janet_unwrap_integer;
+pub const toNumber = crossings.janet_unwrap_number;
+
+// ==========================================================================
+// Methods
+// ==========================================================================
+
+/// One row of a method table: a name and a cfunction, exactly as a
+/// registration row is a name and a cfunction. It is its own type because a
+/// method table is not a registration -- `DESIGN.md` section 6 keeps them
+/// apart for that reason.
+///
+/// `abi.Method` is the one declaration, shared with the runtime's own
+/// `method_type.zig`: a layout declared on both sides of a compilation
+/// boundary is what `abi.zig` exists to stop, and
+/// `tools/check/layouts.txt` carries a single row for it.
+pub const Method = abi.Method;
+
+/// Answer a `:keyword` lookup out of a method table, or nothing.
+///
+/// This is what an abstract type's `get` callback delegates to when the key is
+/// a keyword, which is how `(:scale a 5)` finds `scale`. It answers `?Value`
+/// because that is what `get` answers: absence is the absent value, not a flag
+/// beside an out-parameter.
+pub fn getMethod(key: Value, methods: []const Method) Error!?Value {
+    const table = terminate(Method, methods);
+    var out: Value = undefined;
+    if (try crossing(crossings.janet_getmethod(crossings.janet_unwrap_keyword(key), @ptrCast(&table), &out)) == 0) return null;
+    return out;
+}
+
+/// The next method name after `key`, or nil at the end -- an abstract type's
+/// `next` callback over the same table.
+pub fn nextMethod(methods: []const Method, key: Value) Error!Value {
+    const table = terminate(Method, methods);
+    return crossing(crossings.janet_nextmethod(@ptrCast(&table), key));
+}
+
+// ==========================================================================
+// Allocating an abstract
+// ==========================================================================
+
+/// Allocate an abstract of this type, as a `*T`.
+///
+/// `size` is the whole allocation and defaults to `@sizeOf(T)`. It is a
+/// parameter because `T` is the *header* type: an abstract may carry trailing
+/// bytes, which is the shape `DESIGN.md` section 3 describes and what the
+/// runtime's own socket-address, compiled-PEG and stream types all do.
+pub fn new(comptime T: type, at: *const AbstractType, size: ?usize) *T {
+    const p = crossings.janet_abstract(at, size orelse @sizeOf(T));
+    return @ptrCast(@alignCast(p.?));
+}
+
+/// The runtime's allocator, for memory an abstract owns and its `gc` frees:
+/// `n` contiguous zeroed `T`, or null if the allocation failed.
+///
+/// Zeroed is `calloc`'s own guarantee rather than a `@memset` after the fact,
+/// and a module may rely on it.
+///
+/// **Typed for the reason `new` is typed.** The hook underneath answers
+/// `?*anyopaque` for a count and an element size, so an untyped re-export of it
+/// put `@sizeOf`, `@alignCast` and `@ptrCast` at every call in every module
+/// that allocates -- and the `@alignCast` is the one that matters. `malloc`
+/// promises no more than `max_align_t`; written out at an author's call site
+/// that is an assumption nothing checks, and an over-aligned payload is
+/// undefined behaviour with no diagnostic. Here it is a compile error, below.
+///
+/// **The null is kept, and that is where this parts company with `new`.**
+/// `janet_abstract` collects and aborts, so it has no null to hand back; a
+/// cfunction has a scope above it and may refuse. `orelse return panic("...")`
+/// is the shape, and `examples/numarray` is the worked instance -- including
+/// the ordering it forces, which is the part worth reading.
+pub inline fn alloc(comptime T: type, n: usize) ?[]T {
+    if (@alignOf(T) > @alignOf(std.c.max_align_t)) @compileError(std.fmt.comptimePrint(
+        "alloc({s}): this type's alignment is {d}. The runtime's allocator is " ++
+            "malloc-backed and promises nothing stricter than `max_align_t`, so a payload " ++
+            "needing more has to align its own storage inside an allocation this can make.",
+        .{ @typeName(T), @alignOf(T) },
+    ));
+    const p = crossings.janet_calloc(n, @sizeOf(T)) orelse return null;
+    const many: [*]T = @ptrCast(@alignCast(p));
+    return many[0..n];
+}
+
+/// Free what `alloc` returned, as either the slice or the pointer the owner
+/// kept.
+///
+/// Typed for the other half of the same reason: a `free` taking `?*anyopaque`
+/// leaves a `@ptrCast` in the one callback that must not get memory wrong.
+pub inline fn free(mem: anytype) void {
+    const p = switch (@typeInfo(@TypeOf(mem)).pointer.size) {
+        .slice => mem.ptr,
+        else => mem,
+    };
+    crossings.janet_free(@ptrCast(p));
+}
+
+// ==========================================================================
+// Registering
+// ==========================================================================
+
+/// Install a table of cfunctions into the environment the entry point was
+/// handed.
+///
+/// The table is a slice with no terminator row: its length is known where it
+/// is written. `DESIGN.md` section 6.
+pub fn cfuns(env: *Env, prefix: ?[*:0]const u8, table: []const Reg) void {
+    const terminated = terminate(Reg, table);
+    crossings.janet_cfuns_ext(env, prefix, @ptrCast(&terminated));
+}
+
+/// The most rows one table may hold, terminator excluded.
+///
+/// **It is the buffer's length minus the terminator, and it says so.** Naming
+/// the bound once and deriving both the buffer and the assertion from it is
+/// what keeps the prose and the check from disagreeing.
+///
+/// The bound applies to a **method table as well as a registration table** --
+/// both go through `terminate` -- and the two are not equally easy to live
+/// with. A registration table splits into two `cfuns` calls with no visible
+/// difference. A method table is one value handed to `getMethod` and
+/// `nextMethod`, so splitting one changes what an abstract type answers; a
+/// type needing more than this many methods wants a different lookup, not a
+/// second table.
+pub const max_table_rows = 128;
+
+/// A null-name row appended to a table, because the four entry points a module
+/// can reach are C symbols that read one.
+///
+/// The bound is a fixed buffer rather than an allocation on purpose: this runs
+/// at module load, before there is anything to clean up if it failed.
+fn terminate(comptime Row: type, rows: []const Row) [max_table_rows + 1]Row {
+    std.debug.assert(rows.len <= max_table_rows);
+    var out: [max_table_rows + 1]Row = @splat(.{});
+    @memcpy(out[0..rows.len], rows);
+    return out;
+}
+
+/// One row, with the cfunction stored the way the runtime holds it.
+///
+/// The runtime holds a cfunction in a slot typed by the C ABI, so putting one
+/// there is a `@ptrCast` and a cast accepts anything. `checkCFunction` is what
+/// stops that being the module author's problem: the shape is checked here,
+/// at the registration, which is the only place it can still be diagnosed.
+pub fn reg(comptime name: [:0]const u8, cfun: anytype, comptime doc: ?[:0]const u8) Reg {
+    comptime checkCFunction(name, @TypeOf(cfun));
+    return .{
+        .name = name.ptr,
+        .cfun = raise.stored(cfun),
+        .documentation = if (doc) |d| d.ptr else null,
+    };
+}
+
+/// The contract a cfunction has to meet, stated rather than cast over.
+///
+/// **A decision about a callback type is a decision about somebody else's
+/// compile error**, so the truth goes in the type where it can be diagnosed
+/// early. Without this the
+/// mistake is a wrong function pointer in a registration table, and it
+/// surfaces as a crash inside the interpreter with nothing naming the module.
+fn checkCFunction(comptime name: []const u8, comptime Given: type) void {
+    const where = "cfunction '" ++ name ++ "': ";
+    const wanted = "it must be `fn (argv: []Value) align(module.fn_align) Error!Value`";
+
+    const fn_info = switch (@typeInfo(Given)) {
+        .@"fn" => |fi| fi,
+        .pointer => |ptr| switch (@typeInfo(ptr.child)) {
+            .@"fn" => |fi| fi,
+            else => @compileError(where ++ "this is not a function -- " ++ wanted),
+        },
+        else => @compileError(where ++ "this is not a function -- " ++ wanted),
+    };
+    if (fn_info.params.len != 1 or fn_info.params[0].type != []Value) {
+        @compileError(where ++ "it takes its arguments as one `[]Value` slice, not " ++
+            "a count and a pointer -- " ++ wanted);
+    }
+    const R = fn_info.return_type orelse @compileError(where ++ wanted);
+    if (R != Error!Value) {
+        // **The exact type, not the shape of it.** Accepting any error union
+        // whose payload is `Value` admits `anyerror!Value`, which the runtime
+        // then invokes through the narrower `Error!Value`: a broader error set
+        // reinterpreted at the call rather than diagnosed at the definition,
+        // which is the one place it can be.
+        @compileError(where ++ "its return type is `" ++ @typeName(R) ++
+            "`. A cfunction answers a `Value` or a signal, so the type is exactly " ++
+            "`Error!Value`: a wider error set is reinterpreted at the call rather " ++
+            "than diagnosed here.");
+    }
+
+    // **Alignment, which the expected-signature text advertises and nothing
+    // checked.** `raise.stored` casts the pointer into the slot the runtime
+    // holds a cfunction in, and Janet tags that pointer, so an under-aligned
+    // function either survives by an accident of the linker or fails a runtime
+    // assertion far from its definition. A function's declared alignment is
+    // part of its type, so this is answerable here.
+    // A pointer's `alignment` is optional in 0.16 -- `null` means "whatever the
+    // pointee's natural alignment is" -- so the pointee answers when it is.
+    const given_align: comptime_int = switch (@typeInfo(Given)) {
+        .@"fn" => @alignOf(Given),
+        .pointer => |ptr| ptr.alignment orelse @alignOf(ptr.child),
+        else => unreachable,
+    };
+    if (given_align < fn_align) {
+        @compileError(where ++ "its alignment is " ++ digits(given_align) ++
+            ". The runtime tags the low bits of a cfunction's address, so the " ++
+            "alignment must be at least `module.fn_align`, which is " ++
+            digits(fn_align) ++ ".");
+    }
+}
+
+/// A small unsigned number as text, for a `@compileError` message.
+fn digits(comptime n: comptime_int) []const u8 {
+    return std.fmt.comptimePrint("{d}", .{n});
+}
+
+/// Define a non-function binding.
+pub fn def(env: *Env, comptime name: [:0]const u8, val: Value, comptime doc: ?[:0]const u8) void {
+    crossings.janet_def(env, name.ptr, val, if (doc) |d| d.ptr else null);
+}
+
+// ==========================================================================
+// The module entry point
+// ==========================================================================
+
+/// The two symbols the loader looks up by name.
+///
+/// They are written out as two ordinary exports, and the only thing C about
+/// them is the names `env.zig` looks up after `dynlib.zig` opens the object.
+/// A module says:
+///
+/// ```zig
+/// comptime { module.entry(defs); }
+/// ```
+///
+/// where `defs` is `fn (*module.Env) void`.
+pub fn entry(comptime defs: fn (*Env) void) void {
+    const Shim = struct {
+        fn modConfig() callconv(.c) abi.BuildConfig {
+            return .{
+                .major = config.version_major,
+                .minor = config.version_minor,
+                .patch = config.version_patch,
+                .bits = constants.JANET_CURRENT_CONFIG_BITS,
+            };
+        }
+        fn modInit(env: *Env) callconv(.c) void {
+            defs(env);
+        }
+    };
+    @export(&Shim.modConfig, .{ .name = "_janet_mod_config" });
+    @export(&Shim.modInit, .{ .name = "_janet_init" });
+}
+
+// ==========================================================================
+// The symbols a module links against
+// ==========================================================================
+//
+// This is the boundary, and it is deliberately short. Every name here is one
+// the runtime exports.
+//
+// They are declared rather than reached through `cabi.zig` because that file
+// is the *runtime's* residual seam -- what the runtime still calls through a
+// symbol -- which is a different question from what a module is offered.
+
+/// A refusal made by the runtime arrives as a *report* rather than as an
+/// error, because the symbol it crossed has a C calling convention and Zig
+/// will not put an error union on one. This is where it becomes an error
+/// again, at the one boundary that has to convert it.
+inline fn crossing(v: anytype) Error!@TypeOf(v) {
+    return raise.crossing(v);
+}

@@ -134,7 +134,7 @@ const at_finalizing_parent = abstract_type.define(anyopaque, .{
 /// An object allocated from `gcmark` is freed by the collection that ran the
 /// callback. The mark phase has already passed the head of the list by the
 /// time the block is prepended, so nothing marks it, and the sweep in the same
-/// `janet_collect` frees it and runs its finalizer.
+/// `collect` frees it and runs its finalizer.
 ///
 /// The finalizer count is what makes this observable without touching the
 /// freed block: a third-party `gcmark` that allocated something and stored it
@@ -281,7 +281,7 @@ fn allocateInChild() void {
 }
 
 /// Each thread's heap belongs to that thread. A port that reached a
-/// process-wide `janet_vm` rather than the thread-local one would still pass
+/// process-wide VM rather than the thread-local one would still pass
 /// every other test in the tree: the damage is invisible until two runtimes
 /// exist at once, and then it is heap corruption rather than a wrong answer.
 fn eachThreadHasItsOwnHeap() !void {

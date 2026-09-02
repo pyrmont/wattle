@@ -12,11 +12,11 @@
 //!    the host actually gave it. A host with no IPv6 route never reaches the
 //!    `AF_INET6` arm, no host reaches the "unknown address family" arm, and a
 //!    macOS host cannot construct Linux's abstract unix address, whose leading
-//!    NUL is what selects the `'@'` branch. All four are a `@memset` and a
-//!    `janet_abstract` away, because `janet_address_type` is a bare byte buffer
-//!    with no callbacks -- which is also why the abstract can be built by hand
+//!    NUL is what selects the `'@'` branch. All four are a `@memset` and an
+//!    `abstracts.newBytes` away, because `net.addressType` is a bare byte
+//!    buffer with no callbacks -- which is also why the abstract can be built by hand
 //!    at all.
-//!  - **The order of `net_stream_methods`.** `JanetStream` is public and its
+//!  - **The order of `net_stream_methods`.** `ev_stream.Stream` is public and its
 //!    `methods` member is the table, so the fourteen rows can be read back in
 //!    order. From Janet only membership is visible.
 //!  - **The failure paths that need an argument no Janet caller would write.**
@@ -122,7 +122,7 @@ fn expectRaisePrefix(name: [*:0]const u8, argv: []repr.Value, prefix: []const u8
 }
 
 /// A cfunction that is expected to return, by the name the registry knows.
-/// This is the pointer `janet_lib_net` registered, so it is the same abi a
+/// This is the pointer `net.libNet` registered, so it is the same cfunction a
 /// Janet call would reach.
 fn callCore(name: [*:0]const u8, argv: []repr.Value) repr.Value {
     return harness.callCore(name, argv) catch
@@ -187,7 +187,7 @@ fn pathLength(val: repr.Value) usize {
 // Registration
 // ==========================================================================
 
-/// Every name `janet_lib_net` registers, in the order it registers them. The
+/// Every name `net.libNet` registers, in the order it registers them. The
 /// order is not itself a contract -- a table has none -- but the list is: a
 /// binding that stops being registered is what this catches, and a
 /// registration table is the one place a cfunction can go missing without a
@@ -465,7 +465,7 @@ fn theStreamFaults() void {
         expectRaisePrefix("net/peername", &argv, "Failed to get peername on ");
     }
 
-    // The method table, in order. `JanetStream` is public, so the rows can be
+    // The method table, in order. `ev_stream.Stream` is public, so the rows can be
     // read back; from Janet only membership is visible.
     {
         const expected = [_][]const u8{
@@ -510,14 +510,14 @@ fn theStreamFaults() void {
 
     // A closed stream is refused before any host call is made, and the two
     // name-reading cfunctions check it themselves rather than through
-    // `janet_stream_flags`.
+    // `ev/stream.streamFlags`.
     {
         const stream: *ev_stream.Stream = @ptrCast(@alignCast(wrap.toAbstract(listener)));
         raise.reported(ev_stream.streamClose(stream));
         var one = [_]repr.Value{listener};
         expectRaise("net/localname", &one, "stream closed");
         expectRaise("net/peername", &one, "stream closed");
-        // Everything else reports through `janet_stream_flags`, whose wording
+        // Everything else reports through `streamFlags`, whose wording
         // belongs to the event loop rather than to this subsystem.
         var shutdown_argv = [_]repr.Value{ listener, value.fromBytes("rw", .keyword) };
         expectRaise("net/shutdown", &shutdown_argv, "stream is closed");

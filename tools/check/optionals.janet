@@ -188,7 +188,7 @@
 
   (def rows @[])
   (var total 0)
-  (each path (tools/zig-files "src/zig")
+  (each path (tools/src-files)
     (def text (tools/strip-comments (slurp path)))
     (+= total (length (string/find-all ".?" text)))
     (each [name line body] (bodies-in text)
@@ -216,7 +216,7 @@
   (buffer/push out "# **Class `tested` must be empty.**\n#\n")
   (buffer/push out (string/format "#   tested       %d sites, %d occurrences\n" (length tested-rows) occurrences))
   (buffer/push out (string/format "#   accumulator  %d sites\n" (- (length rows) (length tested-rows))))
-  (buffer/push out (string/format "#   `.?` in src/zig  %d occurrences\n" total))
+  (buffer/push out (string/format "#   `.?` in src/  %d occurrences\n" total))
   (buffer/push out "#\n# columns: class  site  receiver  occurrences  function\n\n")
   (each r rows
     (buffer/push out (string/format "%-10s %-40s %-28s %-4d %s\n"
@@ -239,5 +239,5 @@
     (do
       (spit list-path text)
       (print "wrote " list-path " -- " (length tested-rows) " sites in class `tested`, "
-             occurrences " occurrences, out of " total " `.?` in src/zig")
+             occurrences " occurrences, out of " total " `.?` in src/")
       (os/exit 0))))

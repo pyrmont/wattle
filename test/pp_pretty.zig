@@ -12,17 +12,15 @@
 //!
 //! ## No abi
 //!
-//! **`janet_jdn`'s abi does not exist**, and this file is why. A comment on it
-//! said: "Nothing in the tree calls it -- it is declared in no header and
-//! reached from no C file, and has been dead since it was added." That was
-//! wrong by one: a C contract *was* calling it, by hand-declaring the symbol,
-//! and it was the only caller in the tree. What is left is `jdn`, which
-//! raises, and which this file `try`s.
+//! **`pretty.jdn` has no abi**, and this file is why. One existed with a
+//! comment saying nothing in the tree called it; that was wrong by one, since
+//! a C contract *was* calling it by hand-declaring the symbol, and it was the
+//! only caller. What is left is `jdn`, which raises, and which this file
+//! `try`s.
 //!
 //! The panic assertions are the other retirement. The C original spelled each
-//! as a fourteen-line `EXPECT_PANIC` macro over `janet_try_init`,
-//! `janet_contract_arm`, `janet_contract_raised` and `janet_contract_signal`,
-//! and counted how many fired because "a case that silently stopped panicking
+//! as a fourteen-line `EXPECT_PANIC` macro over a protected scope and three
+//! flag reads, and counted how many fired because "a case that silently stopped panicking
 //! would look exactly like one that passed". Here a refusal is a value, the
 //! count is unnecessary, and the message is checked by `Raise.says`.
 
@@ -84,8 +82,8 @@ const guard = config.recursion_guard;
 
 /// Print with an explicit width and flag set.
 ///
-/// There is no entry point that takes them directly: `janet_pretty` fixes the
-/// width at 80. This goes through the formatter instead, which is how every
+/// There is no entry point that takes them directly: `pretty.prettyBuffer`
+/// fixes the width at 80. This goes through the formatter instead, which is how every
 /// real caller reaches those parameters anyway — and it means the start length
 /// and the lookback barrier are set the way a `%p` in the middle of a format
 /// string sets them rather than the way a test would.

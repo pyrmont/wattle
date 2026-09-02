@@ -1,40 +1,38 @@
-//! Behavioral contract for the thread-local VM state: the storage of
-//! `janet_vm` itself, the operations that copy it whole, the interpreter
-//! interrupt, and the dynamic bindings that choose between two tables.
+//! Behavioral contract for the thread-local VM state: the storage itself, the
+//! operations that copy it whole, the interpreter interrupt, and the dynamic
+//! bindings that choose between two tables.
 //!
-//! Nothing below calls `janet_init`, with one exception. These are operations
+//! Nothing below brings a VM up, with one exception. These are operations
 //! over the state as a whole — its address, whole-structure copies, an atomic
 //! counter — and none of them reads a field the runtime has to have filled in.
 //! Keeping the VM uninitialised is deliberate: it lets the destructive cases
 //! write whatever they like. The dynamic bindings run last, inside their own
-//! `janet_init`/`janet_deinit`, so that the cases above still get an
+//! `vm_lifecycle.init`/`deinit`, so that the cases above still get an
 //! uninitialised VM to scribble on.
 //!
 //! ## The layout section is gone, and the deletion is the argument
 //!
-//! The C original opened with three assertions and they were the reason
-//! `janet_vm_state_size`, `janet_vm_state_align` and `JanetVMAlignProbe`
-//! existed:
+//! The C original opened with three assertions, and a size accessor, an
+//! alignment accessor and an alignment probe existed for them:
 //!
 //!     expect(janet_vm_state_size() == sizeof(Vm));
 //!     expect(janet_vm_state_align() == offsetof(JanetVMAlignProbe, vm));
 //!
 //! The two sides were two *compilers'* views of one C header: a C build's, and
-//! a Zig build's through `@cImport`. `janet_vm_save` copies the whole structure
-//! using the owner's length, so a disagreement would truncate or overrun a copy
-//! and neither would be a compile error. That was a real oracle for as long as
-//! C files read `janet_vm.field`.
+//! a Zig build's through `@cImport`. `vmSave` copies the whole
+//! structure using the owner's length, so a disagreement would truncate or
+//! overrun a copy and neither would be a compile error. That was a real oracle
+//! for as long as C files read the VM's fields.
 //!
-//! There is one view now: `@sizeOf(vm_state.Vm)` is what `janet_vm_alloc`
-//! allocates, what `janet_vm_save` copies, and what `janet_vm_state_size`
-//! returned -- so asserting the equality would be asserting a definition. The
-//! second side was **the C implementation**, and it is not somewhere else in
-//! `test/` but gone.
+//! There is one view now: `@sizeOf(vm_state.Vm)` is what `vm_state.vmAlloc`
+//! allocates and what `vmSave` copies, so asserting the equality would be
+//! asserting a definition. The second side was **the C implementation**, and
+//! it is not somewhere else in `test/` but gone.
 //!
 //! So the section is dropped rather than translated, and the three
 //! declarations it was the only caller of go with it. The guard-page case --
 //! "a save must copy no further than the end of the structure" -- is the same
-//! claim from the other end and goes for the same reason: `janet_vm_save` is
+//! claim from the other end and goes for the same reason: `vmSave` is
 //! `into.* = current().*`, and a whole-struct assignment writing past the
 //! struct is not a behaviour Zig has.
 
@@ -70,12 +68,13 @@ const has_threads = constants.JANET_VM_THREAD_LOCAL != 0 and builtin.os.tag != .
 
 // ------------------------------------------------------------------ address
 
-/// `janet_local_vm()` must name the object this thread runs on.
+/// `vm_state.localVm()` must name the object this thread runs on.
 ///
 /// **The comparison it used to make is gone with its subject.** The left side
 /// was what the function computed and the right side was where the linker put
 /// an exported symbol, which is what let Zig define the storage while C files
-/// wrote `janet_vm.field`. There is no export, so there is no second view, and
+/// wrote its fields by name. There is no export, so there is no second view,
+/// and
 /// asserting `localVm() == current()` would be asserting that a one-line
 /// function calls the function it calls.
 ///
@@ -98,12 +97,12 @@ fn allocAndFree() void {
     // `expect(a != null)` cannot be written: a translated `[*c]Vm` made the
     // result "maybe null, maybe many" and the assertion a real check. The
     // definition returns `*vm_state.Vm` and either succeeds or reaches
-    // `janet_zig_out_of_memory`, which does not return -- so the property is
-    // carried by the type and comparing with null is a compile error.
+    // `fatal.outOfMemory`, which does not return -- so the property is carried
+    // by the type and comparing with null is a compile error.
     // `DESIGN.md` section 3: the property stops being an agreement between two
     // spellings and becomes a construction from one.
     expect(a != b);
-    // A detached VM is a destination for `janet_vm_save` and nothing else, so
+    // A detached VM is a destination for `vmSave` and nothing else, so
     // the only thing to check about a fresh one is that it can hold a save.
     vm_state.vmSave(a);
     vm_state.vmSave(b);
@@ -316,7 +315,7 @@ fn threadLocalStorage() !void {
 
 // ------------------------------------------------------ dynamic bindings
 
-/// `janet_dyn` and `janet_setdyn` choose between two tables, and which one is
+/// `vm_state.dyn` and `vm_state.setdyn` choose between two tables, and which one is
 /// the VM's business rather than the fiber's: a running fiber's own env when
 /// there is one, `vm.top_dyns` when there is not. Both tables are
 /// created lazily, and the laziness is the part a port can quietly lose — a

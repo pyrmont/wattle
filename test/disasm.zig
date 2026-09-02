@@ -1,11 +1,11 @@
-//! Behavioral contract for `janet_disasm`: a `JanetFuncDef` rendered as the
-//! struct `disasm` answers.
+//! Behavioral contract for `bytecode/disasm.zig`'s `disasm`: a
+//! `functions.FuncDef` rendered as the struct it answers.
 //!
 //! Every field of a function definition has to appear, under the right key and
 //! in the right form, and a Janet program cannot check that: to see a field it
 //! must first produce a function that *has* one, and several of these fields
 //! only arise from bytecode the compiler emits in particular circumstances.
-//! Building the `JanetFuncDef` by hand is what lets one fixture carry all of
+//! Building the `functions.FuncDef` by hand is what lets one fixture carry all of
 //! them at once — a vararg, structarg, named-args function with constants, a
 //! source map, an environment list, a symbol map and a child definition.
 //!

@@ -6,8 +6,8 @@
 //! Most of this subsystem is reachable from Janet source. What is here is what
 //! inside the runtime can reach: the registry's own ordering and growth, the
 //! four registration entry points as an embedder calls them,
-//! `janet_binding_from_entry` on entries the compiler would never build, and
-//! the two `janet_core_*` forms.
+//! `registry.bindingFromEntry` on entries the compiler would never build, and
+//! the two core-environment forms.
 //!
 //! ## Two things this contract does that a C one could not
 //!
@@ -24,8 +24,8 @@
 //! for pushing the *same* pointer 513 times. So the array it grew was one key
 //! repeated, and the ordering assertion beside it was very nearly
 //! vacuous: three distinct rows among five hundred identical ones. A comptime
-//! family gives as many distinct probes as are asked for, and `theSortIsTotal`
-//! below runs the sort over sixteen of them.
+//! family gives as many distinct probes as are asked for, and
+//! `theSortIsTotalOverDistinctKeys` below runs the sort over sixteen of them.
 //!
 //! Sixteen rather than five hundred and thirteen, deliberately. Reaching the
 //! capacity floor with distinct keys would need 513 generated functions to
@@ -68,9 +68,9 @@ const expect = @import("expect.zig").expect;
 /// strings rather than Janet ones.
 ///
 /// `harness.stringIs` is the Janet-string form and is the wrong tool here:
-/// `janet_cstrcmp` reads a length out of the head that precedes its argument,
-/// and `Row.name` points into the binary's rodata with no head
-/// in front of it.
+/// `utils.cstrcmp` reads a length out of the head that precedes its argument,
+/// and `Row.name` points into the binary's rodata with no head in front of
+/// it.
 fn cstringIs(s: ?[*:0]const u8, expected: []const u8) bool {
     if (s == null) return false;
     return std.mem.eql(u8, std.mem.span(s.?), expected);
@@ -80,7 +80,7 @@ fn cstringIs(s: ?[*:0]const u8, expected: []const u8) bool {
 
 /// A cfunction that exists only to be a registry key.
 ///
-/// `align(corefn.alignment)` because `capi.janet_cfuns` checks it:
+/// `align(corefn.alignment)` because registration checks it:
 /// `checkPointerAlign` refuses a cfunction pointer whose low bits the
 /// nanbox-64 pointer shift would steal, and `-Dnanbox-pointer-shift=2` is a
 /// matrix entry. The C original got the alignment from
@@ -130,7 +130,7 @@ fn theRegistryRecordsWhatItWasGiven() void {
     expect(found != null);
     expect(found.?.cfun == probe_two);
     expect(cstringIs(found.?.name, "probe/two"));
-    // `janet_register` passes no prefix and no source location.
+    // `registry.register` passes no prefix and no source location.
     expect(found.?.name_prefix == null);
     expect(found.?.source_file == null);
     expect(found.?.source_line == 0);
@@ -242,33 +242,7 @@ fn theRegistryGrowsPastItsFloor() void {
 
 // ------------------------------------------------- the registration entries
 
-/// Janet's narrow `JanetReg`, declared here because a C caller's is what this
-/// contract is testing.
-///
-/// The runtime has one `Reg` -- `DESIGN.md` section 6 -- and the narrow
-/// three-field layout survives only as `capi.zig`'s `CReg`, which no runtime
-/// file spells. So the *subject* of the four published entry points is a
-/// layout the runtime does not use, and a contract on them has to declare it.
-/// That is `test/value_wrap.zig`'s situation exactly: the contract holds the
-/// other spelling on purpose, and collapsing the two would leave it asserting
-/// that one thing equals itself.
-/// The narrow registration row, declared here rather than borrowed from
-/// `capi.zig`: what the two narrow entry points widen from is the layout this
-/// contract is checking, so reading it from the subject would make the check
-/// circular. `@ptrCast` at each call is what says the two agree.
-const CReg = extern struct {
-    name: ?[*:0]const u8 = null,
-    cfun: abi.CFunction = null,
-    documentation: ?[*:0]const u8 = null,
-};
-
-/// The tables a C caller passes: null-name-terminated, in both shapes.
-const c_reg = [_]CReg{
-    .{ .name = "one", .cfun = probe_one, .documentation = "the first" },
-    .{ .name = "two", .cfun = probe_two, .documentation = null },
-    .{},
-};
-
+/// The table a caller passes by symbol: null-name-terminated.
 const c_reg_ext = [_]abi.Reg{
     .{
         .name = "three",
@@ -301,10 +275,9 @@ fn checkEntry(env: *tables.Table, name: [*:0]const u8, has_doc: bool, has_map: b
 /// The one entry point a native module reaches by symbol, and the sentinel
 /// adapter behind it.
 ///
-/// `janet_cfuns_ext` is the whole of `module.zig`'s registration surface. The
-/// three narrow and prefixing forms beside it went with the exports nothing
-/// consumed, and `CReg` -- the row with no source file or line -- went with
-/// them, so the widening this used to check has no caller left.
+/// `janet_cfuns_ext` is the whole of `module.zig`'s registration surface, and
+/// `abi.Reg` is the one row shape. There is no narrow row to widen, so the
+/// only thing to check is that a full row registers with its source map.
 fn thePublishedEntryPointDefinesAndRegisters() void {
     const env = tables.new(4);
 
@@ -384,10 +357,10 @@ fn theSliceFormsInstallTheSameRows() void {
 
 // ------------------------------------------------------------- def and var
 
-/// `janet_var` and `janet_var_sm` are `raise.panicking` abis over
-/// `janet_var_smImpl`, which raises because pushing onto the `:ref` array can.
-/// A caller inside the compilation reaches the implementation, so a refusal
-/// would arrive here as an error rather than as a report nobody consumed.
+/// `registry.defVarAbi` is the reporting form over `registry.defVarSm`, which
+/// raises because pushing onto the `:ref` array can. A caller inside the
+/// compilation reaches the raising one, so a refusal arrives here as an error
+/// rather than as a report nobody consumed.
 ///
 /// Both abis are reached only through this contract; the raising forms are what
 /// the runtime itself calls.
@@ -444,7 +417,7 @@ fn theBindingIsASummaryOfFourKeys() void {
     expect(harness.integerIs(b.value, 1));
 
     // A ref makes it a var, and the binding's value is the array rather than
-    // its contents -- dereferencing is `janet_resolve`'s job.
+    // its contents -- dereferencing is `registry.resolve`'s job.
     entry = tables.new(2);
     tables.put(entry, value.fromBytes("ref", .keyword), wrap.fromArray(arrays.new(1)));
     b = bindingOf(entry);
@@ -540,8 +513,8 @@ fn resolveDereferencesOnlyTheDynamicBindings() raise.Raising(void) {
     expect(harness.integerIs(d.value, 3));
 
     // A plain var resolves to the ref *array*, not to its contents: only the
-    // two dynamic types are dereferenced. So `janet_resolve` and
-    // `janet_resolve_ext` agree here, and differ only below.
+    // two dynamic types are dereferenced. So `registry.resolve` and
+    // `registry.resolveExt` agree here, and differ only below.
     try registry.defVarSm(env, "v", harness.wrapInteger(4), null, null, 0);
     const v = registry_mod.resolve(env, symbols.csymbol("v"));
     expect(v.type == .@"var");
@@ -565,7 +538,7 @@ fn resolveDereferencesOnlyTheDynamicBindings() raise.Raising(void) {
 }
 
 fn theCoreFormsReachTheCoreEnvironment() void {
-    // `janet_resolve_core` and `janet_get_core_table` reach the core
+    // `registry.resolveCore` and `registry.getCoreTable` reach the core
     // environment rather than one the caller built.
     expect(harness.isType(registry_mod.resolveCore("string/find"), repr.Tag.cfunction));
     expect(harness.isType(registry_mod.resolveCore("no-such-binding-17f"), repr.Tag.nil));
@@ -612,7 +585,7 @@ fn theAbstractRegistryRefusesASecondTypeUnderOneName() raise.Raising(void) {
     expect(registry_mod.getAbstractType(value.fromBytes("registry/probe", .symbol)) ==
         &probe_at);
 
-    // An unregistered name answers null, which is what `janet_unmarshal` turns
+    // An unregistered name answers null, which is what `marsh.unmarshal` turns
     // into "unknown abstract type".
     expect(registry_mod.getAbstractType(value.fromBytes("registry/never", .symbol)) == null);
     expect(registry_mod.getAbstractType(wrap.fromNil()) == null);

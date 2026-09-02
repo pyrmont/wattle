@@ -11,8 +11,8 @@
 //!
 //! Two properties get more attention than their size suggests.
 //!
-//! **The traversal is not recursion.** `janet_equals` and `janet_compare` walk
-//! nested tuples and structs with an explicit stack in `janet_vm`, because a
+//! **The traversal is not recursion.** `order.equals` and `order.compare` walk
+//! nested tuples and structs with an explicit stack on the VM, because a
 //! literal nested a few thousand deep is a value a parser will hand you and a
 //! native stack overflow is not a catchable error. A case that only compares
 //! shallow values passes just as happily against a recursive implementation, so
@@ -25,7 +25,7 @@
 //!
 //! ## The abstract fixtures need no adapter
 //!
-//! A `JanetAbstractType`'s callbacks are Zig's, so C can define none of them
+//! A `abstract_type.AbstractType`'s callbacks are Zig's, so C can define none of them
 //! and a C contract needs a pool of pre-built tables. The two this file
 //! supplies are `compare` and `hash`, typed **non**-raising for the reason
 //! `abstract_type.zig` gives: they are called from inside comparisons that
@@ -127,7 +127,7 @@ fn stackCapacity() isize {
 // -------------------------------------------------------- abstract fixtures
 
 /// Three abstract types, differing only in which callbacks they supply, so that
-/// each branch of the abstract arm of `janet_compare` and of `janet_hash` is
+/// each branch of the abstract arm of `order.compare` and of `order.hash` is
 /// reached by a type that reaches no other.
 const Cell = extern struct {
     key: i32,
@@ -213,7 +213,7 @@ fn theHashAgreesWithEquality() void {
 /// All three string-like types hash their bytes and nothing else, so a keyword,
 /// a symbol and a string spelled alike collide while comparing unequal. This is
 /// not an accident to be tidied up: it is exactly the collision that makes the
-/// `janet_compare` tiebreak in `janet_struct_put_ext` load-bearing, and
+/// `order.compare` tiebreak in `structs.putExt` load-bearing, and
 /// `test/struct_table.zig` has the other half of the story.
 fn theStringLikesShareOneHash() void {
     expect(order.hash(kw("tie")) == order.hash(str("tie")));
@@ -239,7 +239,7 @@ fn theHashNormalizesNegativeZero() void {
 /// The exact numbers, which nothing else pins and which are not free to change.
 /// A struct's bucket array is part of the language contract -- `{1 2 3 4}` and
 /// `{3 4 1 2}` are the same value because they lay out identically -- and the
-/// layout is a function of `janet_hash`. So the hash of a double is observable
+/// layout is a function of `order.hash`. So the hash of a double is observable
 /// through every struct with a numeric key, and it does not vary with the
 /// target or with `-Dprf`: the double's bits are fixed, `murmur64` is fixed,
 /// and the result is the *high* word of the mix. Taking the low word instead
@@ -252,7 +252,7 @@ fn theExactNumberHashes() void {
     expect(order.hash(num(1e300)) == -701392662);
     // Zero is the fixed point of the mixer -- every step of `murmur64` maps
     // zero to zero -- so `0` hashes to the same 0 that `nil` and `false` do.
-    // Not a defect, but it is the reason `janet_hash` of a number cannot be
+    // Not a defect, but it is the reason `order.hash` of a number cannot be
     // assumed nonzero.
     expect(order.hash(num(0.0)) == 0);
 }
@@ -336,7 +336,7 @@ fn highWordOf(mixed: u64) i32 {
 /// to say which half of the mix is taken. Taking the low word would be just as
 /// good a hash and a different language, for the same reason the exact number
 /// hashes above matter -- a struct keyed by anything that lands here lays out
-/// accordingly. `harness.u64Of` is the same payload word `janet_hash` reads,
+/// accordingly. `harness.u64Of` is the same payload word `order.hash` reads,
 /// and spells a different field per value representation.
 fn thePointerHashIsTheHighWord() void {
     if (@sizeOf(f64) != @sizeOf(*anyopaque)) return;
@@ -440,7 +440,7 @@ fn theEqualityOfTuples() void {
 }
 
 /// A value is equal to itself even when it contains something that is not equal
-/// to itself. `janet_equals` short-circuits on pointer identity for a tuple
+/// to itself. `order.equals` short-circuits on pointer identity for a tuple
 /// before it looks at any element, so a tuple holding a NaN is `=` to itself
 /// and not `=` to a separately built tuple with the same bits.
 ///
@@ -490,7 +490,7 @@ fn theEqualityOfStructs() void {
     expect(!harness.equals(with, mkstruct(&kvs, other_proto)));
 }
 
-/// Three checks in `janet_equals` sit behind the stored-hash comparison and are
+/// Three checks in `order.equals` sit behind the stored-hash comparison and are
 /// unreachable while the hashes disagree -- which, for values that differ, they
 /// essentially always do. They are not dead code: a 32-bit hash collides, and
 /// when it does these are what stop the traversal from reading a bucket array
@@ -504,7 +504,7 @@ fn theChecksBehindTheHash() void {
     // Tuple length. Two identical two-element tuples, one of which claims to
     // be one element long. Without the length check the traversal compares
     // element zero, finds it equal, runs out of the shorter side, and -- with
-    // `index2` clear, which is what `janet_equals` pushes -- reports that
+    // `index2` clear, which is what `order.equals` pushes -- reports that
     // there is nothing more to compare. The answer would be "equal".
     const pair = [_]repr.Value{ intv(1), intv(2) };
     const t1 = mktuple(&pair, false);
@@ -536,12 +536,12 @@ fn theChecksBehindTheHash() void {
     expect(structHash(wrap.toStruct(s1)) == structHash(wrap.toStruct(s2)));
     expect(!harness.equals(s1, s2));
 
-    // Struct prototype presence. `janet_struct_end` folds the prototype pointer
+    // Struct prototype presence. `structs.end` folds the prototype pointer
     // into the hash, so in practice the hash rejects this pair before the
     // presence check is consulted; forcing the hashes together is the only way
     // to reach it. Without it the traversal walks the buckets, finds them
     // identical, reaches the prototype hop, and the hop's `return 3` ends
-    // `janet_equals`'s loop the same way a completed traversal would -- so the
+    // `order.equals`'s loop the same way a completed traversal would -- so the
     // answer would be "equal".
     const pk = [_]repr.Value{ kw("p"), intv(1) };
     const proto = mkstruct(&pk, null);
@@ -562,7 +562,7 @@ fn theChecksBehindTheHash() void {
     expect(!harness.equals(without, with));
 }
 
-/// `janet_compare` orders two structs by capacity, then by stored hash, and
+/// `order.compare` orders two structs by capacity, then by stored hash, and
 /// only then by contents. Each of the first two is isolated by forcing the
 /// later criteria to disagree with it: an implementation that dropped either
 /// would still order most structs plausibly and would no longer be reproducing
@@ -617,7 +617,7 @@ fn theStructOrderingCriteriaAreInOrder() void {
     expect(harness.equals(structs.get(wrap.toStruct(c2), kw("a")), intv(2)));
     expect(order.compare(c1, c2) == -1);
     expect(order.compare(c2, c1) == 1);
-    // `janet_equals` reaches it on the same terms and for the same reason.
+    // `order.equals` reaches it on the same terms and for the same reason.
     expect(!harness.equals(c1, c2));
 }
 
@@ -677,9 +677,9 @@ fn theOrderOfNumbers() void {
     expect(order.compare(num(1.0), num(1.0)) == 0);
     expect(order.compare(num(-0.0), num(0.0)) == 0);
     expect(order.compare(num(-inf), num(inf)) == -1);
-    // NaN is not orderable and the C says so in a comment: both directions
-    // return 1, so `janet_compare` is not antisymmetric on NaN. Pinned because
-    // it is the behaviour, not because it is desirable.
+    // NaN is not orderable: both directions return 1, so `order.compare` is
+    // not antisymmetric on NaN. Pinned because it is the behaviour, not
+    // because it is desirable.
     expect(order.compare(num(nan), num(1.0)) == 1);
     expect(order.compare(num(1.0), num(nan)) == 1);
     expect(order.compare(num(nan), num(nan)) == 1);
@@ -841,7 +841,7 @@ fn theOrderOfAbstracts() void {
 /// part way through, so the accumulator is rooted across every allocation that
 /// could trigger one. A value held only in a Zig local is not reachable, and
 /// each level here is kept alive solely by the level above it -- so losing the
-/// accumulator for the length of one `janet_tuple_begin` would free the entire
+/// accumulator for the length of one `tuples.begin` would free the entire
 /// chain built so far. The successor is rooted before its predecessor is
 /// released, never the other way round.
 ///
@@ -974,7 +974,7 @@ fn theStackIsResetNotUnwound() void {
     const deep_a = nestTuples(200, intv(0));
     const deep_b = nestTuples(200, intv(1));
 
-    // `janet_compare`, because it is the one that descends: see
+    // `order.compare`, because it is the one that descends: see
     // `theBaseSlotIsDead`. Two hundred levels down it finds the leaf and
     // returns, leaving two hundred nodes behind it.
     expect(order.compare(deep_a, deep_b) == -1);
@@ -1026,13 +1026,13 @@ fn theStackGrowthPolicy() void {
 /// that pushes exactly one node and stops inside it leaves the pointer one past
 /// the base, and one that runs to the end leaves it *at* the base.
 ///
-/// Observed through `janet_compare` rather than `janet_equals`, and the reason
-/// is worth stating because it governs the two cases above as well.
-/// `janet_equals` compares the stored hashes of two tuples before it pushes
-/// anything, so two tuples that differ almost never reach the traversal at all
-/// -- the only inputs that get `janet_equals` into the stack are ones that are
-/// *equal*, which then run to completion. `janet_compare` has no such exit,
-/// since an ordering cannot stop at "different", so it always pushes.
+/// Observed through `order.compare` rather than `order.equals`, and the reason
+/// is worth stating because it governs the two cases above as well. `equals`
+/// compares the stored hashes of two tuples before it pushes anything, so two
+/// tuples that differ almost never reach the traversal at all -- the only
+/// inputs that get `equals` into the stack are ones that are *equal*, which
+/// then run to completion. `compare` has no such exit, since an ordering
+/// cannot stop at "different", so it always pushes.
 fn theBaseSlotIsDead() void {
     const items = [_]repr.Value{intv(0)};
     const other = [_]repr.Value{intv(1)};
@@ -1049,7 +1049,7 @@ fn theBaseSlotIsDead() void {
     expect(order.compare(a, d) == -1);
     expect(stackDepth() == 1);
 
-    // And `janet_equals` settles the same pair on the stored hash, without
+    // And `order.equals` settles the same pair on the stored hash, without
     // pushing at all -- which is the claim the comment above makes.
     expect(tupleHash(wrap.toTuple(a)) != tupleHash(wrap.toTuple(d)));
     expect(!harness.equals(a, d));
@@ -1061,11 +1061,11 @@ fn theBaseSlotIsDead() void {
 /// The three functions against one corpus covering every `repr.Tag`, checking
 /// the relations that hold *between* them rather than any one in isolation:
 ///
-///   - `janet_compare` is a total order: reflexive, antisymmetric, and its sign
-///     agrees with `janet_equals` being zero.
-///   - `janet_equals` implies equal `janet_hash`.
+///   - `order.compare` is a total order: reflexive, antisymmetric, and its
+///     sign agrees with `order.equals` being zero.
+///   - `order.equals` implies equal `order.hash`.
 ///
-/// NaN is excluded, since it satisfies none of them and the C says so.
+/// NaN is excluded, since it satisfies none of them.
 fn theRelationsHoldOverACorpus() void {
     // Built under a lock and rooted before it is released: the corpus is a Zig
     // array, so every element after the first would be unreachable during the

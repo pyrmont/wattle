@@ -1,5 +1,5 @@
-//! Behavioral contract for `janet_bytecode_movopt`, the dead-store pass that
-//! runs over a `JanetFuncDef` after compilation.
+//! Behavioral contract for `optimize.bytecodeMovopt`, the dead-store pass that
+//! runs over a `functions.FuncDef` after compilation.
 //!
 //! The pass rewrites instructions in place to `JOP_NOOP`, and there is no way
 //! to see that from Janet: the suites can observe that a program still
@@ -9,7 +9,7 @@
 //!
 //! Each case is one hand-assembled function body rather than compiled source,
 //! because the point is the shape of the bytecode and not the shape of the
-//! program that produced it. A `JanetFuncDef` is zeroed and given three
+//! program that produced it. A `functions.FuncDef` is zeroed and given three
 //! fields, which is everything the pass reads.
 
 const std = @import("std");

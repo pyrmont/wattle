@@ -1,16 +1,15 @@
 //! Behavioral contract for abstract value construction and the threaded
-//! abstract refcount: `janet_abstract_begin`, `janet_abstract_end`,
-//! `janet_abstract`, their threaded counterparts, and
-//! `janet_abstract_incref`, `janet_abstract_decref` and
-//! `janet_abstract_decref_maybe_free`.
+//! abstract refcount: `abstracts.beginBytes`, `abstracts.end`,
+//! `abstracts.newBytes`, their threaded counterparts, and `abstracts.incref`,
+//! `abstracts.decref` and `abstracts.decrefMaybeFree`.
 //!
 //! These nine functions are almost all bookkeeping, and bookkeeping is what
 //! has to be checked, because the return values agree between a correct
 //! implementation and several wrong ones. Four channels carry it:
 //!
-//!  - `janet_abstract_head` recovers the header, so `size`, `type` and the raw
+//!  - `abi.abstractHead` recovers the header, so `size`, `type` and the raw
 //!    `gc.flags` word are readable directly. The flags word is where the
-//!    difference between `janet_gc_settype`'s or and a plain store shows up,
+//!    difference between `abstracts.end`'s `|=` and a plain store shows up,
 //!    and nothing else observes it.
 //!  - `vm.gc.blocks` and `vm.gc.block_count` say whether the collector
 //!    was given the block. A plain abstract must be on the list; a threaded
@@ -22,13 +21,13 @@
 //!    calls on the way out.
 //!
 //! The two-step protocol gets a case of its own because it is the only reason
-//! `janet_abstract_begin` exists separately: a collection between the two
+//! `beginBytes` exists separately from `newBytes`: a collection between the two
 //! calls must free the block without traversing or finalizing it, and an
 //! abstract type whose `gcmark` and `gc` count their calls is what proves it.
 //!
 //! ## No adapter between the contract and the table
 //!
-//! A `JanetAbstractType`'s callbacks are Zig's, so C can define none of them
+//! A `abstract_type.AbstractType`'s callbacks are Zig's, so C can define none of them
 //! and a C contract needs a pool of pre-built tables to reach one. This file
 //! needs `gc`, `gcmark` and `gcperthread`, all three typed **non**-raising for
 //! a reason `abstract_type.zig` sets out: a raise from a finalizer runs
@@ -120,7 +119,7 @@ fn headOf(abstract: ?*anyopaque) *abi.AbstractHead {
 
 // -------------------------------------------------- plain construction
 
-/// `janet_abstract_begin` writes the two header fields and nothing else, and
+/// `abstracts.beginBytes` writes the two header fields and nothing else, and
 /// hands the block to the collector tagged `JANET_MEMORY_NONE`. The tag is the
 /// whole point: the payload is uninitialised at this moment and the block is
 /// already reachable from `vm.gc.blocks`.
@@ -150,7 +149,7 @@ fn beginPublishesAnUntypedBlock() void {
     _ = abstracts.end(a);
 }
 
-/// `janet_abstract_end` writes the type tag and returns the same pointer.
+/// `abstracts.end` writes the type tag and returns the same pointer.
 fn endTypesTheBlock() void {
     const a = abstracts.beginBytes(counted(), 8);
     const head = headOf(a);
@@ -163,7 +162,7 @@ fn endTypesTheBlock() void {
     expect(head.type == counted());
 }
 
-/// `janet_gc_settype` is an or, not a store, and this is the only place the
+/// The type tag is written with `|=`, not a store, and this is the only place the
 /// difference is visible: a block marked reachable by a collection that ran
 /// between `begin` and `end` must still be marked afterwards. A store would
 /// clear `JANET_MEM_REACHABLE` and the sweep would then free a block the
@@ -213,7 +212,7 @@ fn zeroLengthAbstract() void {
 }
 
 /// The payload is untouched by construction, so an embedder that writes it
-/// before `janet_abstract_end` finds it intact afterwards.
+/// before `abstracts.end` finds it intact afterwards.
 fn payloadSurvivesEnd() void {
     const a = abstracts.beginBytes(bare(), 16);
     const payload: [*]u8 = @ptrCast(a);
@@ -227,7 +226,7 @@ fn payloadSurvivesEnd() void {
 /// The reason `begin` and `end` are separate. A block tagged
 /// `JANET_MEMORY_NONE` is on the heap list and visible to the collector with
 /// an uninitialised payload, and what makes that safe is the sweep rather than
-/// the mark phase: `janet_deinit_block` has no case for that tag, so the block
+/// the mark phase: `gc/sweep.zig`'s `deinitBlock` has no case for that tag, so the block
 /// is freed without its finalizer running and without anything reading a field
 /// of the payload. An abstract type whose `gc` frees a pointer it has not been
 /// given yet is the crash this prevents.
@@ -253,9 +252,9 @@ fn collectionBetweenBeginAndEnd() void {
 /// What the tag does *not* do is keep the traversal away. The mark phase
 /// dispatches on the type of the value it is given, not on the block's memory
 /// tag, so an embedder that wraps and roots the block before filling it in
-/// gets `gcmark` called on an uninitialised payload. That is Janet's behaviour
-/// and it is reproduced; the caller's obligation is to root the value after
-/// `janet_abstract_end`, not before. Pinned here so that a runtime which
+/// gets `gcmark` called on an uninitialised payload. That is upstream's
+/// behaviour and it is kept; the caller's obligation is to root the value
+/// after `abstracts.end`, not before. Pinned here so that a runtime which
 /// "fixed" it by tagging early would be caught.
 fn theWindowDoesNotStopTheTraversal() void {
     settle();
@@ -284,7 +283,7 @@ fn theWindowDoesNotStopTheTraversal() void {
     expect(perthread_calls == 0);
 }
 
-/// Once `janet_abstract_end` has run, the same block is traversed and
+/// Once `abstracts.end` has run, the same block is traversed and
 /// finalized like any other abstract. Without this, an implementation that
 /// never tags the block at all passes every case above.
 fn aFinishedAbstractIsTraversedAndFinalized() void {
@@ -313,8 +312,8 @@ var threaded_gc_calls: i32 = 0;
 var threaded_gc_data: ?*anyopaque = null;
 var threaded_gc_len: usize = 0;
 
-/// The finalizer records what it was handed. `janet_abstract_decref_maybe_free`
-/// calls it as `head->type->gc(head->data, head->size)`, and both arguments
+/// The finalizer records what it was handed. `abstracts.decrefMaybeFree`
+/// calls it with the head's payload pointer and its `size`, and both arguments
 /// are easy to get wrong in a way no return value reveals: the header is one
 /// word from the payload, and `size` is the only place the payload's length is
 /// recorded once the caller has let go of it.
@@ -345,22 +344,23 @@ fn threadedBare() *const abi.AbstractType {
 /// tidiness -- freeing the block while `vm.ev.threaded_abstracts` still
 /// keys on it leaves the next collection reading a freed header, which is why
 /// every threaded case here ends this way rather than by calling
-/// `janet_abstract_decref_maybe_free` alone.
+/// `abstracts.decrefMaybeFree` alone.
 fn drop(a: ?*anyopaque) i32 {
     _ = tables.remove(&harness.vm().ev.threaded_abstracts, wrap.fromAbstract(a));
     return abstracts.decrefMaybeFree(a);
 }
 
-/// Whether the visit record holds this abstract. `janet_table_get` returns nil
-/// for an absent key and the stored boolean for a present one, and the sweep
+/// Whether the visit record holds this abstract. `tables.get` returns nil for
+/// an absent key and the stored boolean for a present one, and the sweep
 /// distinguishes the two, so this does as well.
 fn tracked(a: ?*anyopaque) bool {
     const entry = tables.get(&harness.vm().ev.threaded_abstracts, wrap.fromAbstract(a));
     return !harness.isType(entry, repr.Tag.nil);
 }
 
-/// A threaded abstract is `janet_malloc`ed, not `janet_gcalloc`ed. It is on
-/// neither heap list and the block count does not move -- what records it is
+/// A threaded abstract comes from the plain heap allocator, not from
+/// `gc.gcallocWithPayload`. It is on neither heap list and the block count
+/// does not move -- what records it is
 /// the visit table, and what keeps it alive is the refcount that starts at one.
 fn beginThreadedRegistersWithoutTheHeap() void {
     settle();
@@ -381,10 +381,10 @@ fn beginThreadedRegistersWithoutTheHeap() void {
     expect(!heap.onList(harness.vm().gc.blocks, head));
     expect(!heap.onList(harness.vm().gc.weak_blocks, head));
 
-    // The threaded path adds `size + sizeof(head)` by hand where
-    // `janet_gcalloc` adds the size it was asked for. Same total -- plus
+    // The threaded path adds `size + @sizeOf(head)` by hand where
+    // `gc.gcallocBytes` adds the size it was asked for. Same total -- plus
     // whatever the visit table charged if this entry made it rehash, since
-    // `janet_memalloc_empty` bills its new bucket array to the same counter.
+    // `value.memallocEmpty` bills its new bucket array to the same counter.
     var table_charge: usize = 0;
     if (harness.vm().ev.threaded_abstracts.capacity != before_capacity) {
         table_charge = @as(usize, @intCast(harness.vm().ev.threaded_abstracts.capacity)) * @sizeOf(tables.KV);
@@ -407,7 +407,7 @@ fn beginThreadedRegistersWithoutTheHeap() void {
     expect(drop(a) == 0);
 }
 
-/// `janet_abstract_end_threaded` sets a tag `begin` has already set, so the
+/// `abstracts.endThreaded` sets a tag `beginThreaded` has already set, so the
 /// only observable requirement is that it changes nothing and returns its
 /// argument. An implementation that stored `JANET_MEMORY_ABSTRACT` instead
 /// would put a malloced block on the collector's abstract path, which is a
@@ -464,7 +464,7 @@ fn increfAndDecrefReturnTheNewCount() void {
     expect(drop(a) == 0);
 }
 
-/// `janet_abstract_decref` does not act on a zero. It is the primitive the
+/// `abstracts.decref` does not act on a zero. It is the primitive the
 /// caller uses when it intends to decide for itself, and the block survives it
 /// -- which is readable, because nothing has freed the header.
 fn decrefToZeroDoesNotFree() void {
@@ -602,7 +602,7 @@ fn atomicsReturnTheNewValue() void {
     expect(abstracts.atomicDec(&x) == 0);
     expect(abstracts.atomicLoad(&x) == 0);
 
-    // Signed, and nothing stops it going below zero. `janet_abstract_decref`
+    // Signed, and nothing stops it going below zero. `abstracts.decref`
     // relies on reaching exactly 0, not on saturating there.
     expect(abstracts.atomicDec(&x) == -1);
     expect(abstracts.atomicLoadRelaxed(&x) == -1);

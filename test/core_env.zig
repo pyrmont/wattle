@@ -11,18 +11,18 @@
 //!    only from inside the runtime.
 //!  - `coreLookupTable` is the same table without the unmarshal, and is
 //!    reached from `marsh.zig` with a null argument and from nowhere else.
-//!  - `janet_dobytes` reports a *set of flags* and a value. Janet code sees
-//!    neither: `dofile` and the REPL go through `janet_dostring`, which drops
+//!  - `env.dobytes` reports a *set of flags* and a value. Janet code sees
+//!    neither: `dofile` and the REPL go through `env.dostring`, which drops
 //!    the distinction, and the diagnostics go to stderr rather than to a
-//!    value. The `len` parameter has no Janet spelling either — `janet_dostring`
+//!    value. The `len` parameter has no Janet spelling either — `dostring`
 //!    computes it — so a stream that stops mid-source is only reachable here.
 //!  - `loopFiber` is called by `interop.zig` and by no Janet code.
-//!  - `janet_native` is behind `(native ...)`, which needs a shared object on
-//!    disk to say anything at all. Its failure paths do not.
+//!  - `env.zig`'s `native` is behind `(native ...)`, which needs a shared
+//!    object on disk to say anything at all. Its failure paths do not.
 //!
-//! The diagnostics are captured rather than printed. `janet_dynprintf`
+//! The diagnostics are captured rather than printed. `pp_format.dynprintf`
 //! resolves `:err` before falling back to the handle, and at the top level —
-//! which is where `janet_dobytes` prints its diagnostics from, after the fiber
+//! which is where `dobytes` prints its diagnostics from, after the fiber
 //! has finished — that lookup goes to `vm.top_dyns`. So binding `:err`
 //! to a buffer here both asserts the text and keeps this program's output
 //! clean.
@@ -30,16 +30,15 @@
 //! ## How the subjects are reached
 //!
 //! **Four entry points are called by import rather than through their abis.**
-//! `janet_core_env`, `janet_core_lookup_table`, `janet_dobytes` and
-//! `janet_loop_fiber` are each one line of `raise.reported` over a
-//! `raise.Raising` implementation. Every one of them can raise, so a contract
+//! `coreEnv`, `coreLookupTable`, `dobytes` and `loopFiber` each have a
+//! `raise.reported` wrapper over a `raise.Raising` implementation. Every one of them can raise, so a contract
 //! on the far side of a symbol table has to arm a flag to see it, where here
 //! it is an `error.JanetSignal` the compiler will not let the file ignore.
 //!
-//! **`janet_native` is still called as an abi**, with `harness.abiRaised`, and
-//! that is deliberate: its implementation is private and `cfunNative` calls it
-//! directly, so the abi has no in-tree caller and exists for an embedder
-//! alone. Testing an abi as an abi is the right shape for a thing whose only
+//! **`env.zig`'s native loader is still called as an abi**, with
+//! `harness.abiRaised`, and that is deliberate: the implementation is private
+//! and `cfunNative` calls it directly, so the abi has no in-tree caller and
+//! exists for an embedder alone. Testing an abi as an abi is the right shape for a thing whose only
 //! users are outside the tree.
 //!
 //! **No panic counter.** Every refusal is `harness.abiRaised(...).?`, and the
@@ -111,8 +110,8 @@ fn expectString(x: repr.Value, expected: []const u8) void {
     }
 }
 
-/// `janet_dostring` on the implementation rather than the abi: the source is
-/// NUL-terminated, so the length is computed the way the export computes it.
+/// `dostring`'s shape over `dobytesImpl`: the source is NUL-terminated, so the
+/// length is computed the way `dostring` computes it.
 fn doString(source: [:0]const u8, path: ?[*:0]const u8, out: ?*repr.Value) raise.Raising(c_int) {
     return core_env.dobytesImpl(test_env, source, path, out);
 }
@@ -167,9 +166,9 @@ fn theLengthParameterTruncatesTheSource() raise.Raising(void) {
     expect(try core_env.dobytesImpl(test_env, "(+ 1 2)"[0..5], "contract", &out) ==
         constants.JANET_DO_ERROR_PARSE);
 
-    // The bound is exclusive. `janet_dostring` always passes a length that
-    // stops on a NUL, so only a caller of `janet_dobytes` can tell an
-    // off-by-one here from correct behaviour: reading one byte too many turns
+    // The bound is exclusive. `dostring` always passes a length that stops on
+    // a NUL, so only a caller of `dobytes` can tell an off-by-one here from
+    // correct behaviour: reading one byte too many turns
     // 1 into 12.
     expect(try core_env.dobytesImpl(test_env, "12"[0..1], "contract", &out) == 0);
     expect(wrap.toNumber(out) == 1.0);
@@ -316,9 +315,9 @@ fn loopFiberReportsAStatus() raise.Raising(void) {
 
 /// The image is `@embedFile`d, and the length the runtime hands `unmarshal` is
 /// one byte shorter than it was. A generated C array declared the bytes with a
-/// trailing `0` so that it had a terminator, and `janet_core_image_size` was
-/// that array's `sizeof` -- so the runtime described the image as 324,311
-/// bytes when it was 324,310.
+/// trailing `0` so that it had a terminator, and the size accessor beside it
+/// answered that array's `sizeof` -- so the runtime described the image as
+/// 324,311 bytes when it was 324,310.
 ///
 /// That was harmless because nothing read the extra byte, which is an
 /// assumption rather than an observation. This is the observation: unmarshal
@@ -376,7 +375,7 @@ fn theLookupTableTakesReplacements() raise.Raising(void) {
 // ------------------------------------------------------------------ getline
 //
 // `(getline)` reads through `(dyn :in)` and writes its prompt through
-// `(dyn :out)`, both of which `janet_dynfile` resolves and both of which fall
+// `(dyn :out)`, both of which `io.dynfile` resolves and both of which fall
 // back to the process handles. The Janet suites cannot bind either without a
 // file to bind it to, and cannot assert what was read without controlling what
 // is on the other end, so the whole cfunction is exercised here.
@@ -396,9 +395,9 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
     const out_handle = io_core.makefile(out_file, constants.JANET_FILE_WRITE);
     gc_alloc.gcroot(in_handle);
     gc_alloc.gcroot(out_handle);
-    // Into the environment table rather than through `janet_setdyn`. A dynamic
-    // binding is fiber-local, `janet_dobytes` gives each form a fiber whose
-    // env is this table, and `janet_setdyn` at the top level -- where there is
+    // Into the environment table rather than through `vm_state.setdyn`. A
+    // dynamic binding is fiber-local, `dobytes` gives each form a fiber whose
+    // env is this table, and `setdyn` at the top level -- where there is
     // no fiber -- writes to `vm.top_dyns` instead, which the cfunction
     // never looks at. That split is why `:err` above is set the other way:
     // those diagnostics are printed after the fiber has finished.

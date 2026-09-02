@@ -12,17 +12,17 @@
 //!
 //! GC pressure is the second channel. Both halves charge
 //! `vm.gc.next_collection` for the payloads they allocate, and they do it
-//! inconsistently — the buffer charges before its `janet_realloc` and the
-//! array after, `janet_array_n` charges nothing at all. None of that is a
+//! inconsistently — the buffer charges before its reallocation and the array
+//! after, and `arrays.newFrom` charges nothing at all. None of that is a
 //! defect, but all of it is observable, so it is pinned here.
 //!
 //! ## What the refusals cost, before and after
 //!
 //! The C original reached a refusal through an `EXPECT_PANIC` macro: open a
-//! scope, arm `janet_contract_arm`, call the abi, read
-//! `janet_contract_raised`, read `janet_contract_signal`, restore, and compare
-//! the payload string — twenty lines of macro for six call sites, plus a
-//! `panics_fired` tally at the foot to prove all six had run.
+//! scope, arm a flag, call the abi, read whether it fired, read the signal,
+//! restore, and compare the payload string — twenty lines of macro for six
+//! call sites, plus a `panics_fired` tally at the foot to prove all six had
+//! run.
 //!
 //! Here a refusal is a value. `harness.raised` returns the `Raise` or null,
 //! the assertion is one line at the site, and the tally is gone because a
@@ -43,9 +43,9 @@
 //! not asserted at all. **`array/ensure` rejects both before they get here**,
 //! which `suite-corelib.janet` pins.
 //!
-//! Two overflow refusals are also uncovered. `bufferExtra`'s is asserted below
-//! because it is reachable with a large `n` and an empty buffer, but
-//! `arrayPush`'s requires an array of `INT32_MAX` elements to already exist,
+//! Two overflow refusals are also uncovered. `buffers.extra`'s is asserted
+//! below because it is reachable with a large `n` and an empty buffer, but
+//! `arrays.push`'s requires an array of `INT32_MAX` elements to already exist,
 //! which is not something a test can arrange.
 
 const std = @import("std");
@@ -69,8 +69,8 @@ const heap = harness.heap;
 // --------------------------------------------------------------- helpers
 
 /// Does this C library's `realloc(p, 0)` return a block, or NULL? The answer
-/// decides whether the zero-growth case in `janet_array_ensure` returns or
-/// exits, and it is a property of the allocator rather than of Janet.
+/// decides whether the zero-growth case in `arrays.ensure` returns or exits,
+/// and it is a property of the allocator rather than of Janet.
 fn reallocZeroReturnsABlock() bool {
     const p = utils.malloc(16);
     expect(p != null);
@@ -84,7 +84,7 @@ fn reallocZeroReturnsABlock() bool {
 
 /// A collectable buffer starts empty, lands on the strong heap list, and is
 /// given a floor of four bytes of capacity however little was asked for. The
-/// floor is the buffer's alone; `janet_array` has no equivalent.
+/// floor is the buffer's alone; `arrays.new` has no equivalent.
 fn bufferStartsWithACapacityFloor() void {
     const b = buffers.new(0);
     expect(b.count == 0);
@@ -142,7 +142,7 @@ fn pointerBufferNeverReallocates() !void {
     expect(heap.memoryType(b) == gc_alloc.MemoryType.buffer);
     expect(heap.onList(harness.vm().gc.blocks, b));
 
-    // Growing within the existing capacity is fine -- `bufferEnsure` returns
+    // Growing within the existing capacity is fine -- `buffers.ensure` returns
     // before it consults the flag.
     try buffers.ensure(b, 8, 1);
     expect(b.data == @as([*]u8, &foreign));
@@ -237,7 +237,7 @@ fn bufferSetcountZeroFills() !void {
     expect(b.slice()[3] == 0);
 }
 
-/// `bufferExtra` reserves room without moving the count, and doubles rather
+/// `buffers.extra` reserves room without moving the count, and doubles rather
 /// than using the growth factor.
 fn bufferExtraDoubles() !void {
     const b = buffers.new(4);
@@ -317,7 +317,7 @@ fn bufferPushesLittleEndian() !void {
 fn bufferChargesGcPressure() !void {
     var charge = harness.vm().gc.next_collection;
     const b = buffers.new(64);
-    // `janet_gcalloc` charges the block, and the payload is charged on top.
+    // `gc.gcalloc` charges the block, and the payload is charged on top.
     expect(harness.vm().gc.next_collection == charge + @sizeOf(buffers.Buffer) + 64);
 
     charge = harness.vm().gc.next_collection;
@@ -381,8 +381,8 @@ fn weakArrayIsANormalArrayElsewhere() !void {
     expect(s.capacity == a.capacity);
 }
 
-/// `janet_array_n` copies its elements and sets count and capacity to the same
-/// value, so the result is exactly full.
+/// `arrays.newFrom` copies its elements and sets count and capacity to the
+/// same value, so the result is exactly full.
 fn arrayNIsExactlyFull() void {
     var elements = [3]repr.Value{
         harness.wrapInteger(10),
@@ -474,7 +474,7 @@ fn arraySetcountPushPopPeek() !void {
 }
 
 /// The array's GC accounting, including the two asymmetries with the buffer:
-/// `janet_array_n` charges nothing, and `janet_array_ensure` charges after its
+/// `arrays.newFrom` charges nothing, and `arrays.ensure` charges after its
 /// allocation rather than before.
 fn arrayChargesGcPressure() void {
     var charge = harness.vm().gc.next_collection;
@@ -492,7 +492,7 @@ fn arrayChargesGcPressure() void {
     _ = arrays.new(0);
     expect(harness.vm().gc.next_collection == charge + @sizeOf(arrays.Array));
 
-    // `janet_array_n` allocates a payload and charges nothing for it.
+    // `arrays.newFrom` allocates a payload and charges nothing for it.
     var elements = [_]repr.Value{wrap.fromNil()} ** 4;
     charge = harness.vm().gc.next_collection;
     const n = arrays.newFrom(&elements);
@@ -542,8 +542,8 @@ fn zeroGrowthReleasesThePayload() !void {
 
 // ------------------------------------------------------ across the seam
 
-/// The collector frees a container's payload through `janet_deinit_block`,
-/// which calls `janet_buffer_deinit` from this subsystem. Both containers are
+/// The collector frees a container's payload through `gc/sweep.zig`'s
+/// `deinitBlock`, which calls `buffers.deinit` from this subsystem. Both containers are
 /// freed the same way, so one collection covers the round trip in both
 /// directions.
 fn theCollectorReclaimsBoth() !void {

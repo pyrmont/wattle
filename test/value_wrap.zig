@@ -19,18 +19,19 @@
 //!
 //! ## The two spellings are compared in one section
 //!
-//! Each constructor has two spellings: `wrap.fromX`, which a Zig caller
-//! inlines, and `wrap.abi.fromX`, the `callconv(.c)` body beside it that the
-//! library exports. Asserting the two agree is `theTwoSpellingsAgree`'s job
-//! and only its. A `wrap.abi.fromX` anywhere else below is a way of building
-//! a value and nothing more; reading one as half of a comparison would credit
-//! its case with a claim it does not make.
+//! Each constructor has two spellings: a `wrap.from*` function, which a Zig
+//! caller inlines, and the `callconv(.c)` body of the same name in
+//! `wrap.abi`, which the library exports. Asserting the two agree is
+//! `theTwoSpellingsAgree`'s job and only its. A `wrap.abi` constructor
+//! anywhere else below is a way of building a value and nothing more; reading
+//! one as half of a comparison would credit its case with a claim it does not
+//! make.
 //!
-//! **A Zig contract cannot reach a macro.** Janet declares `janet_checktype`,
-//! `janet_truthy`, `janet_wrap_integer` and their kin as functions *beside*
-//! macros of the same name, and C's rule that a parenthesised name is not
-//! macro-expanded is what lets a C contract compare the two. There is one
-//! spelling here, so asserting they agree would be a case that cannot fail.
+//! **There is no macro half.** Upstream declares the type test, the truth
+//! test, the integer wrap and their kin as functions *beside* macros of the
+//! same name, and C's rule that a parenthesised name is not macro-expanded is
+//! what lets a C contract compare the two. Each has one spelling here, so
+//! asserting they agree would be a case that cannot fail.
 //!
 //! What the two sides of that comparison really were is *the operation a
 //! caller gets inlined* and *the operation the library exports*, and this
@@ -203,8 +204,8 @@ fn pointerRoundTrips() void {
     expect(wrap.toCfunction(wrap.abi.fromCfunction(theCFunction())) == theCFunction());
 }
 
-/// A null payload is a legal value for every pointer type -- `janet_wrap_fiber`
-/// is called with one every time a fiber has no child. It must not be confused
+/// A null payload is a legal value for every pointer type -- `wrap.fromFiber`
+/// takes one every time a fiber has no child. It must not be confused
 /// with nil, and it must come back null.
 fn nullPayloadsRoundTrip() void {
     expect(wrap.toPointer(wrap.abi.fromFiber(null)) == null);
@@ -262,7 +263,7 @@ fn numbersRoundTrip() void {
         expect(wrap.toNumber(v) == x);
     }
     // Negative zero is preserved as a bit pattern, not merely as a value:
-    // `janet_hash` normalizes it away and the representation must not.
+    // `order.hash` normalizes it away and the representation must not.
     expect(wrap.toNumber(wrap.fromNumber(-0.0)) == 0.0);
     expect(1.0 / wrap.toNumber(wrap.fromNumber(-0.0)) < 0.0);
 }
@@ -286,7 +287,7 @@ fn nanIsANumber() void {
     expect(repr.checkTypes(v, repr.TagSet.one(.number)));
 }
 
-/// `janet_wrap_number_safe` is the entry point unmarshalling uses for a double
+/// `wrap.fromNumberSafe` is the entry point unmarshalling uses for a double
 /// that came off the wire, and its job is to make sure a crafted payload cannot
 /// be read back as a tagged value. Under both NaN-boxed layouts it replaces any
 /// NaN with the canonical quiet one; under the tagged layout it does not,
@@ -333,10 +334,10 @@ fn theIntegerConversions() void {
     expect(sameValue(wrap.fromInteger(-5), harness.wrapInteger(-5)));
 
     {
-        // `capi.zig` publishes `janet_wrap_integer` only under a NaN-boxed
-        // layout, which is the asymmetry `wrap.c` has. The `callconv(.c)` body
-        // behind it is compiled under all three, so these run everywhere now
-        // that the contract imports rather than links.
+        // Upstream publishes an integer wrap only under a NaN-boxed layout.
+        // `wrap.abi.fromInteger` is compiled under all three, and the contract
+        // imports it rather than linking against an export, so these run
+        // everywhere.
         expect(sameValue(wrap.abi.fromInteger(7), wrap.fromNumber(7.0)));
         expect(wrap.toIntegerAbi(wrap.abi.fromInteger(-5)) == -5);
         expect(wrap.toIntegerAbi(wrap.abi.fromInteger(std.math.maxInt(i32))) == std.math.maxInt(i32));
@@ -345,9 +346,9 @@ fn theIntegerConversions() void {
 
 // ------------------------------------------------------- booleans and truth
 
-/// `janet_wrap_boolean` normalizes: any non-zero argument makes the same value
-/// as `janet_wrap_true`, and `janet_unwrap_boolean` answers 0 or 1 rather than
-/// whatever went in.
+/// `wrap.abi.fromBoolean` normalizes: any non-zero argument makes the same
+/// value as `wrap.abi.fromTrue`, and `wrap.toBoolean` reads back the
+/// normalized answer rather than whatever went in.
 fn booleansNormalize() void {
     expect(sameValue(wrap.abi.fromBoolean(1), wrap.abi.fromTrue()));
     expect(sameValue(wrap.abi.fromBoolean(2), wrap.abi.fromTrue()));
@@ -412,8 +413,8 @@ fn theCheckTypeMatrix() void {
     }
 }
 
-/// `janet_checktypes` is the type as a bit in a mask, and the *exported* form
-/// answers the masked bit rather than a normalized boolean -- Janet's
+/// `repr.checkTypes` is the type as a bit in a mask, and the *exported* form
+/// answers the masked bit rather than a normalized boolean -- upstream's
 /// contract, kept when the internal one became `bool`, so both halves are
 /// asserted here and the bit is asserted only of the abi form.
 fn checkTypes() void {
@@ -510,9 +511,8 @@ fn theTwoSpellingsAgree() void {
     for (awkward) |value| agreeOn(value);
 
     // The one accessor with two implementations. `toIntegerAbi` truncates
-    // toward zero through a `c_int` where `toInteger` reads the payload;
-    // `janet_unwrap_function` and `janet_unwrap_boolean` had no second body
-    // and went with the export.
+    // toward zero through a `c_int` where `toInteger` reads the payload. The
+    // other unwraps have one body each.
     expect(wrap.toInteger(wrap.fromNumber(-9.5)) == wrap.toIntegerAbi(wrap.fromNumber(-9.5)));
 }
 
@@ -552,7 +552,7 @@ fn exactLayoutNanbox64() void {
     expect(wrap.nanboxToPointer(wrap.nanboxFromCPointer(p, array_tag)) == p);
     expect(harness.u64Of(wrap.nanboxFromPointer(p, array_tag)) == word);
 
-    // The canonical NaN is what `janet_wrap_number_safe` stores, and it is not
+    // The canonical NaN is what `wrap.fromNumberSafe` stores, and it is not
     // mistaken for a tagged value.
     const canonical: u64 = @bitCast(wrap.toNumber(wrap.fromNumberSafe(std.math.nan(f64))));
     expect(repr.typeOf(wrap.fromNumberSafe(std.math.nan(f64))) == repr.Tag.number);
@@ -621,11 +621,11 @@ const exactLayout = switch (layout) {
 
 // ------------------------------------------------------ empty bucket arrays
 
-/// `janet_memalloc_empty` is the allocator every dictionary's bucket array
+/// `value.memallocEmpty` is the allocator every dictionary's bucket array
 /// comes from. Three things are its contract: the block is `count` pairs long,
 /// every pair is nil/nil, and the collection budget is charged for the bytes.
-/// The charge is what only this case sees -- `janet_gcalloc` bills its own
-/// blocks and this one is a plain `janet_malloc`.
+/// The charge is what only this case sees -- `gc.gcallocBytes` bills its own
+/// blocks and this one is a plain heap allocation.
 fn memallocEmpty() void {
     for ([_]i32{ 1, 8, 257 }) |n| {
         const before = harness.vm().gc.next_collection;
@@ -653,7 +653,7 @@ fn memallocEmptyOfZero() void {
     utils.free(mem);
 }
 
-/// `janet_memempty` clears a block the caller already owns. The block is
+/// `value.memempty` clears a block the caller already owns. The block is
 /// dirtied first with values of a type that is not nil under every layout, so a
 /// fill that did nothing at all would be caught rather than passing on whatever
 /// the allocator happened to leave.

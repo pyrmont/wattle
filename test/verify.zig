@@ -1,4 +1,5 @@
-//! Behavioral contract for `janet_verify`, the bytecode validator.
+//! Behavioral contract for `bytecode/verify.zig`'s `verify`, the bytecode
+//! validator.
 //!
 //! Every one of its fifteen numbered refusals is a function the compiler will
 //! never emit, so nothing written in Janet can reach any of them. They exist

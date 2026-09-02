@@ -254,7 +254,9 @@
       (case (os/stat path :mode)
         :directory (walk path)
         :file (when (string/has-suffix? ".zig" entry) (array/push paths path)))))
-  (walk "src/zig")
+  (each d tools/src-dirs (walk d))
+  (array/push paths "src/root.zig")
+  (sort paths)
 
   (def sources @{})
   (each path paths (put sources path (slurp path)))
@@ -281,7 +283,7 @@
   # So the set is both: the Zig names, and every symbol `capi.zig` exports
   # whose target is one of them.
   (def flattening (merge @{} abi-names))
-  (let [capi (get sources "src/zig/capi.zig" "")]
+  (let [capi (get sources "src/runtime/capi.zig" "")]
     (def target @{})                   # capi entry point -> the impl name it calls
     (var prev nil)
     (each line (string/split "\n" capi)

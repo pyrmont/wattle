@@ -1,17 +1,18 @@
 //! Behavioral contract for the collector's sweep: dropping dead weak
 //! references, unlinking and freeing unreachable blocks, running finalizers,
-//! and tearing the heap down at `janet_deinit`.
+//! and tearing the heap down at `vm_lifecycle.deinit`.
 //!
-//! The sweep is driven through `janet_collect` rather than by calling
-//! `janet_sweep` directly, and that is not a convenience. `janet_sweep` frees
-//! every block the mark phase did not reach, so calling it against a hand-made
+//! The sweep is driven through `gc/mark.zig`'s `collect` rather than by calling
+//! `gc/sweep.zig`'s `sweep` directly, and that is not a convenience. `sweep`
+//! frees every block the mark phase did not reach, so calling it against a
+//! hand-made
 //! mark set would free the core environment along with everything else.
 //! Driving it through a collection means liveness is expressed the way the
 //! runtime expresses it — a value is alive because it is rooted — and the mark
 //! phase is an input to this contract rather than part of it.
 //!
 //! Freeing is mostly invisible: a freed block cannot be read, and a
-//! `janet_free` that does not happen leaves nothing to observe from inside the
+//! free that does not happen leaves nothing to observe from inside the
 //! process. So three channels stand in for it. `vm.gc.block_count` is
 //! decremented exactly once per block freed. An abstract type's `gc` and
 //! `gcperthread` callbacks fire on the way out and can count themselves. And
@@ -19,7 +20,7 @@
 //! which is the only external obligation any immutable block has.
 //!
 //! What that leaves uncovered is honest to state: the frees inside
-//! `janet_deinit_block` for an array's, a table's, a fiber's or a funcdef's
+//! `gc/sweep.zig`'s `deinitBlock` for an array's, a table's, a fiber's or a funcdef's
 //! payload are leaks when omitted and double frees when duplicated, and
 //! neither is observable here. A leak checker sees the first; the second is
 //! what the repeated init/deinit cycle at the end of this file would catch.
@@ -60,8 +61,8 @@ const fibers = @import("subsystems").value.fibers;
 const abi = @import("abi");
 const expect = @import("expect.zig").expect;
 
-/// `vm.ev.threaded_abstracts` and `janet_abstract_threaded` exist only
-/// where the event loop does, and this has to be comptime so that the branch
+/// `vm.ev.threaded_abstracts` and `abstracts.threaded` exist only where the
+/// event loop does, and this has to be comptime so that the branch
 /// naming them is not analysed elsewhere.
 ///
 /// `options` is the build's `Selection`, which names **subsystems** rather
@@ -183,7 +184,7 @@ fn aSurvivorKeepsItsPayloadAndLosesItsMark() void {
 /// `JANET_MEM_DISABLED` holds a block through a sweep that never reached it,
 /// and unlike `JANET_MEM_REACHABLE` it is not cleared on the way past — it
 /// holds the block through every later sweep too, until whoever set it clears
-/// it. `janet_buffer_init` sets it on a caller-owned buffer for exactly that
+/// it. `buffers.init` sets it on a caller-owned buffer for exactly that
 /// reason; here it is set by hand on a heap block, which is the general case
 /// the flag is defined for.
 fn theDisabledFlagOutlivesASweep() void {
@@ -323,7 +324,7 @@ fn aWeakArrayDropsDeadElementsInPlace() void {
 /// half that may have died. A weak-keyed table therefore keeps an entry whose
 /// value is otherwise unreferenced — the walk marked that value — and drops
 /// one whose key is. A dropped entry becomes the (nil, false) tombstone
-/// `janet_table_put` writes, so the count falls and the deleted count rises.
+/// `tables.put` writes, so the count falls and the deleted count rises.
 fn theFourTableKinds() void {
     settle();
 
@@ -480,9 +481,9 @@ fn aThreadedAbstractLosesItsReference() void {
 
 // --------------------------------------------------------------- teardown
 
-/// `janet_clear_memory` is not a collection. Nothing is marked, rooting buys a
-/// block nothing, and every finalizer runs — which is what makes
-/// `janet_deinit` safe to call with live values outstanding.
+/// `gc/sweep.zig`'s `clearMemory` is not a collection. Nothing is marked,
+/// rooting buys a block nothing, and every finalizer runs — which is what
+/// makes `vm_lifecycle.deinit` safe to call with live values outstanding.
 ///
 /// **The last assertion pins the guarantee: both heaps come back empty.**
 /// Walking `vm.gc.blocks` and not `vm.gc.weak_blocks` leaks the block and the

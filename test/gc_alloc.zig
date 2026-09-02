@@ -2,17 +2,18 @@
 //! two heap lists, the root set, the GC suspend counter, and the scratch
 //! allocator.
 //!
-//! Every operation under test is a mutation of `janet_vm`'s collection fields,
-//! and the fields are the observable result. There is no public accessor for
-//! `block_count` or `scratch_len`, and inventing one would test the accessor —
-//! so this file reads `janet_vm` directly, which the Zig driver can do because
-//! it *is* the runtime's compilation.
+//! Every operation under test is a mutation of the VM's collection fields, and
+//! the fields are the observable result. There is no accessor for
+//! `block_count` or the scratch table's length, and inventing one would test
+//! the accessor — so this file reads the VM directly, which the Zig driver can
+//! do because it *is* the runtime's compilation.
 //!
 //! Two things are deliberately not exercised. Nothing here lets a synthetic
-//! block reach `janet_sweep`: each allocation case unlinks what it made and
-//! restores the counters, so the contract stays independent of marking and
-//! sweeping. And the two fatal paths — `janet_srealloc` and `janet_sfree` on a
-//! pointer this allocator never handed out — abort the process, so they are
+//! block reach `gc/sweep.zig`'s `sweep`: each allocation case unlinks what it
+//! made and restores the counters, so the contract stays independent of
+//! marking and sweeping. And the fatal paths — `gc.srealloc` and `gc.sfree` on
+//! a pointer this allocator never handed out, and the checked adds in
+//! `gc.smalloc` and `gc.gcallocWithPayload` — abort the process, so they are
 //! described here rather than run.
 //!
 //! ## The header arithmetic has a real oracle here
@@ -39,8 +40,8 @@ const abi = @import("abi");
 const expect = @import("expect.zig").expect;
 
 /// The scratch header sits exactly one header below the pointer the caller
-/// holds. That relationship is the whole allocator: `janet_srealloc`,
-/// `janet_sfree` and `janet_sfinalizer` all recover it by subtraction.
+/// holds. That relationship is the whole allocator: `gc.srealloc`, `gc.sfree`
+/// and `gc.sfinalizer` all recover it by subtraction.
 fn headerOf(memory: ?*anyopaque) *gc_alloc.ScratchBlock {
     return @ptrFromInt(@intFromPtr(memory) - @sizeOf(gc_alloc.ScratchBlock));
 }
@@ -66,7 +67,8 @@ fn nextOf(block: *abi.GCObject) ?*abi.GCObject {
 }
 
 /// Undo one allocation, restoring every field it moved. Only valid for the
-/// block at the head of its list, which is where `janet_gcalloc` just put it.
+/// block at the head of its list, which is where `gc.gcallocBytes` just put
+/// it.
 fn unlinkHead(weak: bool, size: usize) void {
     const head = asBlock(if (weak) harness.vm().gc.weak_blocks else harness.vm().gc.blocks);
     if (weak) {
@@ -87,7 +89,7 @@ fn isReachable(block: *abi.GCObject) bool {
     return harness.gcBits(block.flags) & constants.JANET_MEM_REACHABLE != 0;
 }
 
-/// The only thing `janet_gcpressure` does is move the threshold. It must not
+/// The only thing `gc.gcpressure` does is move the threshold. It must not
 /// collect, and it must not touch the block count — the bytes it is told about
 /// were allocated outside the collector's accounting.
 fn theGcPressure() void {
@@ -402,8 +404,8 @@ fn theSuspendCounterNests() void {
 }
 
 /// A suspended collector does not collect. This is the one property the
-/// counter exists for, and it is checked through `janet_collect` rather than by
-/// reading the field back.
+/// counter exists for, and it is checked through `gc/mark.zig`'s `collect`
+/// rather than by reading the field back.
 fn aSuspendedCollectorDoesNotCollect() void {
     const handle = gc_alloc.gclock();
     harness.vm().gc.next_collection = 12345;
@@ -442,8 +444,8 @@ fn smallocRegistersItsBlock() void {
     expect(harness.vm().scratch.items.len == base);
 }
 
-/// `janet_scalloc` zeroes, and the zero-length cases still produce a
-/// registered block.
+/// `gc.scalloc` zeroes, and the zero-length cases still produce a registered
+/// block.
 fn scallocZeroes() void {
     const base = harness.vm().scratch.items.len;
 
@@ -575,9 +577,9 @@ fn theScratchTableGrows() void {
 }
 
 /// Releasing everything runs each finalizer and empties the table. This is what
-/// `janet_collect` does at the end of a collection and `janet_clear_memory`
-/// does at shutdown, which is why the scratch API needs no explicit free to be
-/// correct.
+/// `gc/mark.zig`'s `collect` does at the end of a collection and
+/// `gc/sweep.zig`'s `clearMemory` does at shutdown, which is why the scratch
+/// API needs no explicit free to be correct.
 fn freeAllScratchRunsEveryFinalizer() void {
     gc_mark.collect();
     expect(harness.vm().scratch.items.len == 0);

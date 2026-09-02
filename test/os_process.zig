@@ -160,7 +160,7 @@ fn theSignalLookup() void {
     expect(os_process.signalIndex("nosuch", 6) == -1);
 
     // A key whose own bytes end in a terminator matches the shorter name,
-    // which is what `janet_cstrcmp` did here.
+    // which is `utils.cstrcmp`'s rule.
     expect(os_process.signalIndex("int\x00x", 5) == 1);
 
     // Every name is its signal's own, lower-cased with the `SIG` dropped, and

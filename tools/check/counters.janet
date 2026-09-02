@@ -140,7 +140,7 @@
   (os/cd tools/root)
 
   (def rows @[])
-  (each path (tools/zig-files "src/zig")
+  (each path (tools/src-files)
     (def text (tools/strip-comments (slurp path)))
     (each l (loops-in text)
       (def resolved (resolve-bound text (l :at) (l :bound)))

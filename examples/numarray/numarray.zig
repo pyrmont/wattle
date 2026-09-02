@@ -47,7 +47,7 @@ const NumArray = struct {
 /// — a finalizer runs mid-sweep on an object that is already unreachable, so
 /// there is no scope above it and nothing to retry.
 fn numArrayGc(self: *NumArray, _: usize) void {
-    janet.free(@ptrCast(self.data));
+    janet.free(self.data);
 }
 
 fn numArrayGet(self: *NumArray, key: janet.Value) janet.Error!?janet.Value {
@@ -111,11 +111,16 @@ fn new(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
     const requested = try janet.getInteger(argv, 0);
     if (requested < 0) return janet.panic("expected a non-negative size");
     const size: usize = @intCast(requested);
+    // **The payload is allocated before the abstract, because this one can
+    // refuse.** `janet.new` returns a block that is already on the collector's
+    // heap list and already tagged as an abstract, so from that moment a sweep
+    // may run this type's `gc` over it. Allocating second and raising on
+    // failure would leave exactly that block unreachable with `data` never
+    // written, and the finalizer would free a wild pointer. Allocating first
+    // puts nothing between `new` and the assignment below.
+    const data = janet.alloc(f64, size) orelse return janet.panic("out of memory");
     const array = janet.new(NumArray, &num_array_type, null);
-    array.* = .{
-        .data = @ptrCast(@alignCast(janet.alloc(size, @sizeOf(f64)).?)),
-        .size = size,
-    };
+    array.* = .{ .data = data.ptr, .size = size };
     return janet.abstract(array);
 }
 

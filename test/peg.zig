@@ -29,10 +29,9 @@
 //!
 //! **`peg/compile` is reached as a cfunction rather than by import**, because
 //! a grammar error has to arrive as a refusal rather than as a status code
-//! `janet_dostring` has already caught. No shim is involved -- a cfunction
-//! *is* a raising Zig function, so `harness.core` and `harness.raised` are the
-//! whole of it and
-//! `janet_contract_call_cfunction` loses a user.
+//! `env.dostring` has already caught. No shim is involved -- a cfunction *is*
+//! a raising Zig function, so `harness.core` and `harness.raised` are the
+//! whole of it.
 
 const std = @import("std");
 const config = @import("config");
@@ -82,9 +81,9 @@ var compile_cfun: raise.CFunction = undefined;
 /// verifier's move with it, so the assertions that name a width have to as
 /// well.
 ///
-/// Read from the environment rather than from a build condition:
-/// `janet_unwrap_s64` exists exactly when the boxed integer types do, which is
-/// the same test `peg.zig` itself makes.
+/// Read from the environment rather than from a build condition: the boxed
+/// 64-bit conversions are compiled exactly when the integer types are, which
+/// is the same test `peg.zig` itself makes.
 const max_readint_width: u32 = if (config.int_types) 8 else 6;
 const max_readint_width_text = if (max_readint_width == 8) "8" else "6";
 
@@ -494,7 +493,7 @@ fn theMatcherReachesItsRecursionGuard() raise.Raising(void) {
 //
 // A compiled peg is a marshalled abstract, and its payload is the bytecode
 // word for word. The bytes below pin the opcode numbers: renumbering the
-// `JanetPegOpcode` enum would keep every Janet test passing and invalidate
+// `constants.PegRule` enum would keep every Janet test passing and invalidate
 // every stored peg.
 
 fn theMarshalledFormIsTheBytecode() raise.Raising(void) {
@@ -639,6 +638,7 @@ fn anEmptyProgramIsRefused() void {
 /// own is not the oracle for it.
 const lb_real: u8 = 200;
 const lb_integer: u8 = 205;
+const lb_nil: u8 = 201;
 
 /// `(argument n)` takes a non-negative index from the compiler; crafted
 /// bytecode need not, so the matcher tests both ends of the range and answers
@@ -678,6 +678,32 @@ fn anInstructionCountLongerThanTheStreamIsRefused() void {
     });
     rejected(&.{ 4, 0, b(constants.PegRule.nchar), 1 });
     _ = accepted(&.{ 2, 0, b(constants.PegRule.nchar), 1 });
+}
+
+/// A constant count is refused on the same ground and by the same bound: every
+/// constant on the wire carries a lead byte, so the bytes remaining bound the
+/// count of them exactly as they bound the count of words.
+///
+/// The first stream names 2^32 - 1 constants in seventeen bytes. Unbounded
+/// that is a request for 2^32 values -- 32 GiB where a `Value` is eight bytes
+/// wide and 64 GiB where it is sixteen, and on a 32-bit target a product that
+/// wraps the constants term to zero and leaves the fill loop writing past an
+/// allocation the size of its header. The second names four and supplies none.
+/// The third names one and supplies it, which the bound must not refuse.
+fn aConstantCountLongerThanTheStreamIsRefused() void {
+    rejected(&.{
+        0, // bytecode_len
+        lb_integer, 255, 255, 255, 255, // num_constants = 0xFFFFFFFF
+    });
+    rejected(&.{ 2, 4, b(constants.PegRule.nchar), 1 });
+    _ = accepted(&.{ 2, 1, b(constants.PegRule.nchar), 1, lb_nil });
+
+    // **The bound is on the sum, and this is the case that says so.** Two
+    // words and two constants are each within the three bytes that follow,
+    // and the four of them together are not. Two independent tests accept
+    // this stream and fail later, with `unexpected end of source` after the
+    // allocation; one test on the sum refuses it before.
+    rejected(&.{ 2, 2, b(constants.PegRule.nchar), 1, lb_nil });
 }
 
 /// A literal's byte count is the stream's too, and the word count derived from
@@ -738,6 +764,7 @@ fn body() raise.Raising(void) {
     anEmptyProgramIsRefused();
     try aNegativeArgumentIndexCapturesNil();
     anInstructionCountLongerThanTheStreamIsRefused();
+    aConstantCountLongerThanTheStreamIsRefused();
     aLiteralLengthCannotWrapItsWordCount();
     try everyReadintPegSurvivesARoundTrip();
     try theMatcherReachesItsRecursionGuard();

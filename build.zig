@@ -72,14 +72,15 @@ const test_suites = &[_]Suite{
 
 // **This file compiles no C and holds no C flags.** Neither `src/` nor `test/`
 // contains a `.c`. What remains of C in this tree is four hand-written headers
-// under `src/zig` -- `janet_features.h` and the three host translations -- and
+// -- `src/host/janet_features.h` and the three host translations under
+// `src/runtime` -- and
 // libc itself, which is deliberate: "no C in the tree" and "no libc" are
 // different claims, and only the first is a goal.
 
 const BuildOptions = struct {
     /// Set only for the object set the bootstrap image generator is built
     /// from. A core cfunction table carries docstrings in the generator and not
-    /// in the runtime, and `src/zig/corefn.zig` reads it to decide.
+    /// in the runtime, and `src/runtime/corefn.zig` reads it to decide.
     /// It is a field rather than a parameter because the alternative is
     /// threading a boolean through six constructors that have no other use
     /// for it.
@@ -122,7 +123,7 @@ const BuildOptions = struct {
 /// Which subsystems this configuration answers in Zig.
 ///
 /// One bool per subsystem, computed once by `zigSelection` and read **once**, by
-/// `src/zig/root.zig`, which imports the file each one selects.
+/// `src/root.zig`, which imports the file each one selects.
 ///
 /// One reader is the point. With two -- an import here and a guard there --
 /// they are two separate lists, and a subsystem can be compiled without being
@@ -186,7 +187,7 @@ const Selection = struct {
     /// Whether any subsystem at all is answered by Zig, computed by reflection
     /// over the fields rather than from a list.
     ///
-    /// `src/zig/fatal.zig` provides `janet_zig_out_of_memory` and
+    /// `src/runtime/fatal.zig` provides `janet_zig_out_of_memory` and
     /// `janet_zig_fatal`, and nineteen subsystems call one of them. This
     /// condition used to name the ones that did, and such a list goes stale the
     /// moment something adds a twentieth: ten of the nineteen were missing once,
@@ -256,13 +257,13 @@ pub fn janetModule(
         break :blk cfg;
     });
     const repr_module = b.createModule(.{
-        .root_source_file = b.path("src/zig/repr.zig"),
+        .root_source_file = b.path("src/api/repr.zig"),
         .target = target,
         .optimize = optimize,
     });
     repr_module.addImport("config", config_module);
     // **`abi` rather than `types`, which is the whole of what this package
-    // publishes as a layout.** `src/zig/abi.zig` holds what a separately
+    // publishes as a layout.** `src/api/abi.zig` holds what a separately
     // compiled module and the runtime must agree on -- the abstract-type
     // vtable, the registration and method rows, the abstract head and the
     // subtraction that recovers it, the signal numbering, the build config --
@@ -270,13 +271,13 @@ pub fn janetModule(
     // fifty-odd declarations an author's compilation never names into the
     // author's `.so`, because they shared a file.
     const abi_module = b.createModule(.{
-        .root_source_file = b.path("src/zig/abi.zig"),
+        .root_source_file = b.path("src/api/abi.zig"),
         .target = target,
         .optimize = optimize,
     });
     abi_module.addImport("repr", repr_module);
     const constants_module = b.createModule(.{
-        .root_source_file = b.path("src/zig/constants.zig"),
+        .root_source_file = b.path("src/api/constants.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -289,7 +290,7 @@ pub fn janetModule(
     // as an import a module whose source cannot resolve it, which is a trap
     // rather than a service.
     const janet_module = b.createModule(.{
-        .root_source_file = b.path("src/zig/module.zig"),
+        .root_source_file = b.path("src/module.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -360,7 +361,7 @@ pub fn build(b: *std.Build) void {
     boot_module.sanitize_thread = null;
     // The generator gets the same subsystems as the runtime, built a second
     // time because they must run on the host -- see `boot_host` above -- and
-    // with `bootstrap` set. `src/zig/corefn.zig` is what reads it: a core
+    // with `bootstrap` set. `src/runtime/corefn.zig` is what reads it: a core
     // cfunction carries its docstring in the generator and not in the runtime,
     // and defines a binding where the runtime only puts a value.
     const boot_options = blk: {
@@ -485,7 +486,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(client);
 
     // `janet`, the module a native module imports -- and the *only* one it
-    // imports. `src/zig/module.zig` has the argument; what it costs the build
+    // imports. `src/module.zig` has the argument; what it costs the build
     // is this function, which any module in the tree asks for by name.
     const nativeModule = struct {
         fn make(
@@ -498,7 +499,7 @@ pub fn build(b: *std.Build) void {
             name: []const u8,
         ) *std.Build.Step.Compile {
             const janet_module = bb.createModule(.{
-                .root_source_file = bb.path("src/zig/module.zig"),
+                .root_source_file = bb.path("src/module.zig"),
                 .target = t,
                 .optimize = o,
             });
@@ -533,7 +534,7 @@ pub fn build(b: *std.Build) void {
         target,
         optimize,
         options,
-        "src/zig/native_module.zig",
+        "src/runtime/native_module.zig",
         "janet-zig-native",
     );
     // Dynamic module loading is platform-specific, so ship this alongside the
@@ -688,6 +689,13 @@ pub fn build(b: *std.Build) void {
                 "`module.fn_align`, which is 16.",
         },
         .{
+            .file = "test/module-errors/overaligned_payload.zig",
+            .phrase = "alloc(overaligned_payload.Wide): this type's alignment is 128. The " ++
+                "runtime's allocator is malloc-backed and promises nothing stricter than " ++
+                "`max_align_t`, so a payload needing more has to align its own storage " ++
+                "inside an allocation this can make.",
+        },
+        .{
             .file = "test/module-errors/nonraising_get.zig",
             .phrase = "abstract type 'module-errors/nonraising-get', callback 'get': this " ++
                 "callback may raise and its return type must say so: write `raise.Error!?Value`. " ++
@@ -704,7 +712,7 @@ pub fn build(b: *std.Build) void {
     // and its leaves and nothing else.
     if (makeRuntimeGraph(b, target, optimize, options, image_source)) |graph| {
         const janet_module = b.createModule(.{
-            .root_source_file = b.path("src/zig/module.zig"),
+            .root_source_file = b.path("src/module.zig"),
             .target = target,
             .optimize = optimize,
         });
@@ -1438,10 +1446,12 @@ fn configureCModule(
     target: std.Build.ResolvedTarget,
     options: BuildOptions,
 ) void {
-    // One include path, because there is one place a header can be:
-    // `os/abi.h`, `net/abi.h`, `filewatch/abi.h` and the `janet_features.h`
-    // the three of them open with.
-    module.addIncludePath(b.path("src/zig"));
+    // Two include paths, one per tier that holds a header: the three subsystem
+    // translations `os/abi.h`, `net/abi.h` and `filewatch/abi.h` are runtime
+    // files, and the `janet_features.h` all three of them open with is the
+    // host's.
+    module.addIncludePath(b.path("src/runtime"));
+    module.addIncludePath(b.path("src/host"));
     module.linkSystemLibrary("c", .{});
     applySanitizers(module, options);
     linkPlatformLibraries(module, target.result.os.tag, options.single_threaded);
@@ -1640,7 +1650,7 @@ const RuntimeGraph = struct {
     /// the author package this one; the runtime's own graph never does.
     module_config: *std.Build.Module,
     /// What a separately compiled module and the runtime must agree on, and
-    /// nothing else -- `src/zig/abi.zig`. `janetModule` hands an author's
+    /// nothing else -- `src/api/abi.zig`. `janetModule` hands an author's
     /// package this one; the runtime has it too, so that its `AbstractType`
     /// and an author's are one type.
     abi: *std.Build.Module,
@@ -1685,12 +1695,12 @@ fn makeRuntimeGraph(
     // each keep what they declare inside one subsystem for the same reason.
     const config_module = makeConfigModule(b, janetConfig(options, target));
 
-    // The value representation. Its own module because `src/zig/root.zig` is a
+    // The value representation. Its own module because `src/root.zig` is a
     // module root and cannot reach a file above itself. The representation is a
     // module below it -- see `RuntimeGraph.repr` for why the import list is the
     // gate.
     const repr_module = b.createModule(.{
-        .root_source_file = b.path("src/zig/repr.zig"),
+        .root_source_file = b.path("src/api/repr.zig"),
         .target = target,
         .optimize = optimize,
         .pic = true,
@@ -1701,7 +1711,7 @@ fn makeRuntimeGraph(
     // names `abi.Signal` and `abi.JanetCFunction`. One instance, so that the
     // runtime's `AbstractType` and an author's are one type.
     const abi_module = b.createModule(.{
-        .root_source_file = b.path("src/zig/abi.zig"),
+        .root_source_file = b.path("src/api/abi.zig"),
         .target = target,
         .optimize = optimize,
         .pic = true,
@@ -1713,7 +1723,7 @@ fn makeRuntimeGraph(
     // `root` because `cabi` names the same six and cannot import a file of
     // `root`; its import list is `std` and `builtin` and nothing else.
     const host_module = b.createModule(.{
-        .root_source_file = b.path("src/zig/host.zig"),
+        .root_source_file = b.path("src/host/host.zig"),
         .target = target,
         .optimize = optimize,
         .pic = true,
@@ -1725,7 +1735,7 @@ fn makeRuntimeGraph(
     // The constants, opcodes and flags, owned by Zig. Its own module because
     // the bootstrap, the client and the runtime all spell them.
     const constants_module = b.createModule(.{
-        .root_source_file = b.path("src/zig/constants.zig"),
+        .root_source_file = b.path("src/api/constants.zig"),
         .target = target,
         .optimize = optimize,
         .pic = true,
@@ -1741,7 +1751,7 @@ fn makeRuntimeGraph(
     // `const c = @import("cabi");` and every module that has a `c` needs this
     // import by name.
     const cabi_module = b.createModule(.{
-        .root_source_file = b.path("src/zig/cabi.zig"),
+        .root_source_file = b.path("src/host/cabi.zig"),
         .target = target,
         .optimize = optimize,
         .pic = true,
@@ -1753,7 +1763,7 @@ fn makeRuntimeGraph(
     cabi_module.addImport("constants", constants_module);
 
     const module = b.createModule(.{
-        .root_source_file = b.path("src/zig/root.zig"),
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         // Linked into the shared library as well as the static one, and ELF

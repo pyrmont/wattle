@@ -375,8 +375,9 @@ fn theConstantPoolFills() void {
     full.ra = .{};
     defer full.ra.deinit();
 
-    // `vGrow` is gone with the prefix arithmetic; `setCount` reserves and
-    // then claims the room, which is the same two steps in one call.
+    // `harness.vector`'s `setCount` reserves the room and then claims it, which
+    // is what fills the pool without the quadratic cost of pushing 0xFFFF
+    // constants one at a time.
     vector.setCount(&full.consts, 0xFFFF);
     for (full.consts.items, 0..) |*constant, index| {
         constant.* = wrap.fromNumber(1000.0 + @as(f64, @floatFromInt(index)));

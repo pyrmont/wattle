@@ -23,7 +23,7 @@
 #
 # ## Three classes
 #
-#   published    `src/zig/module.zig` declares it.  Part 1 decided this set;
+#   published    `src/module.zig` declares it.  Part 1 decided this set;
 #                it is the interface a native-module author writes against,
 #                and every name in it was `JANET_API` too.
 #   compat       `JANET_API`, and nothing declares it now.  No caller can
@@ -164,7 +164,7 @@
   out)
 
 (defn- runtime-decl-paths
-  "Every `.zig` under `src/zig` except the manifest itself, `cabi.zig` and
+  "Every `.zig` of the runtime source except the manifest itself, `cabi.zig` and
   `module.zig`, which get tags of their own.
 
   **This has to be the whole tree, and increment 2b found out the hard way.**
@@ -174,10 +174,10 @@
   `env.zig` declares thirteen `janet_lib_*`, `pp/format.zig` declares
   `janet_io_write` -- which `tools/check/seam.txt` does not count either, because it
   counts the `c.` spelling. Phase 11 Part 16's grep is the general form: an
-  `extern fn` inside `src/zig` naming something defined inside `src/zig`."
+  `extern fn` inside the runtime source naming something defined there."
   []
-  (def skip {"src/zig/capi.zig" true "src/zig/cabi.zig" true "src/zig/module.zig" true})
-  (filter |(not (get skip $)) (tools/zig-files "src/zig")))
+  (def skip {"src/runtime/capi.zig" true "src/host/cabi.zig" true "src/module.zig" true})
+  (filter |(not (get skip $)) (tools/src-files)))
 
 (defn- audiences
   "`{name -> @[tag …]}` for every symbol something here reaches by symbol."
@@ -186,8 +186,8 @@
   (defn note [name tag]
     (put out name (array/push (or (get out name) @[]) tag)))
   (eachp [tag paths]
-         {"module" ["src/zig/module.zig"]
-          "cabi" ["src/zig/cabi.zig"]
+         {"module" ["src/module.zig"]
+          "cabi" ["src/host/cabi.zig"]
           "src" (runtime-decl-paths)
           "test" (tools/glob "test/*.zig")
           "example" (tools/glob "examples/*/*.zig")}
@@ -245,8 +245,8 @@
   # the ones the sample module's own code path takes: `janet_zig_fatal` and
   # `janet_zig_c_raise_record` are on the `raise.total` and abi paths, which
   # `numarray` never reaches.
-  (def pub-set (merge (tabseq [n :in (keys (decl-names ["src/zig/module.zig"
-                                                       "src/zig/cabi.zig"]))] n true)
+  (def pub-set (merge (tabseq [n :in (keys (decl-names ["src/module.zig"
+                                                       "src/host/cabi.zig"]))] n true)
                       needed))
   (def aud (audiences))
   (eachp [n _] needed

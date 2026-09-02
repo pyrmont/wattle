@@ -1,15 +1,14 @@
 //! Behavioral contract for the collector's treatment of a fiber entered by
-//! `janet_pcall` from a cfunction.
+//! `vm_entry.pcall` from a cfunction.
 //!
 //! ## What the subject is
 //!
-//! `janet_collect` marks exactly one fiber: `vm.root_fiber`, and then
-//! whatever chain of `child` pointers hangs off it. Neither reaches a fiber
-//! entered through `janet_pcall` from inside a cfunction. `vm.fiber` is
-//! set to the new fiber and `root_fiber` is not — `continueNoCheck` assigns it
-//! only when it is null — and `janet_pcall` never sets `child`, because
-//! `child` is what `janet_resume` and `JOP_RESUME` maintain for a *Janet*
-//! nesting.
+//! `gc/mark.zig`'s `collect` marks exactly one fiber: `vm.root_fiber`, and
+//! then whatever chain of `child` pointers hangs off it. Neither reaches a
+//! fiber entered through `pcall` from inside a cfunction. `vm.fiber` is set to
+//! the new fiber and `root_fiber` is not — `continueNoCheck` assigns it only
+//! when it is null — and `pcall` never sets `child`, because `child` is what
+//! `fiber/resume` and `JOP_RESUME` maintain for a *Janet* nesting.
 //!
 //! So the nested fiber is in no root set, is actively running, and owns the
 //! stack every frame above it is executing on. `continueNoCheck` roots it by
@@ -58,7 +57,7 @@ var direct_calls: u32 = 0;
 
 // ------------------------------------------------------------------ premise
 
-/// The three facts that make a nested `janet_pcall` a collector hazard, read
+/// The three facts that make a nested `pcall` a collector hazard, read
 /// from the runtime at the moment one is running.
 ///
 /// Asserted rather than assumed: every assertion below is about a fiber the
@@ -80,12 +79,12 @@ fn assertNested(nested: *fibers.Fiber) void {
     while (link) |current| : (link = current.child) expect(current != nested);
 }
 
-/// Whether `fiber` is in `janet_vm`'s root set.
+/// Whether `fiber` is in the VM's root set.
 ///
 /// The mark phase walks `roots` after `root_fiber`, so this is the whole of
-/// what makes a `janet_pcall`ed fiber reachable. Read by scanning rather than
-/// by counting, because `janet_gcroot` appends and the position is not a
-/// property anything should depend on.
+/// what makes a `pcall`ed fiber reachable. Read by scanning rather than by
+/// counting, because `gc.gcroot` appends and the position is not a property
+/// anything should depend on.
 fn rooted(fiber: *fibers.Fiber) bool {
     const v = harness.vm();
     var i: u32 = 0;
@@ -99,12 +98,12 @@ fn rooted(fiber: *fibers.Fiber) bool {
 
 // -------------------------------------------------------------- direct case
 
-/// Collect while a `janet_pcall`ed fiber is the running one, and assert it is
-/// still on the heap afterwards.
+/// Collect while a `pcall`ed fiber is the running one, and assert it is still
+/// on the heap afterwards.
 ///
 /// Called from Janet source running on the nested fiber, which is the only
-/// place the situation exists. Everything it needs is read out of `janet_vm`
-/// rather than passed in, because the point is what the *collector* can see.
+/// place the situation exists. Everything it needs is read off the VM rather
+/// than passed in, because the point is what the *collector* can see.
 fn cfunCollectHere(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
 
@@ -132,8 +131,8 @@ fn cfunCollectHere(argv: []repr.Value) raise.Raising(repr.Value) {
     // assertion that cannot succeed.
     //
     // What can be read is the root set, and it is the mechanism itself.
-    // `continueNoCheck` roots the fiber precisely because `janet_collect`
-    // reaches no other way to it, so a survival with this false would be a
+    // `continueNoCheck` roots the fiber precisely because the mark phase
+    // reaches it no other way, so a survival with this false would be a
     // survival by accident.
     expect(rooted(nested));
 
@@ -143,10 +142,9 @@ fn cfunCollectHere(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// Call a Janet function on a fresh fiber, from C's position.
 ///
-/// This is the original's `cfun_call_via_pcall` and the shape of the whole
-/// hazard: a cfunction that re-enters the interpreter. `janet_pcall` reports
-/// its signal rather than raising, so the refusal is re-raised here — which is
-/// what the C version's `janet_panicv` did and what makes a failure inside the
+/// The shape of the whole hazard: a cfunction that re-enters the interpreter.
+/// `pcall` reports its signal rather than raising, so the refusal is re-raised
+/// here through `raise.panicv`, which is what makes a failure inside the
 /// callback arrive at the Janet caller as an ordinary error.
 fn cfunCallViaPcall(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
@@ -187,10 +185,10 @@ fn directCase() void {
 
 /// Single nesting, under collection pressure.
 ///
-/// `F1 -> gcpcall/call -> janet_pcall -> F2`, where F2 is `vm.fiber` and
-/// not `root_fiber`. Every allocation is made from Janet source on purpose:
-/// `janet_gcalloc` does not itself collect, and the VM loop's `vm_checkgc_next`
-/// is what does — so a C-side allocation would not put the pressure where the
+/// `F1 -> gcpcall/call -> pcall -> F2`, where F2 is `vm.fiber` and not
+/// `root_fiber`. Every allocation is made from Janet source on purpose:
+/// `gc.gcallocBytes` does not itself collect, and the VM loop's collection
+/// check is what does — so a C-side allocation would not put the pressure where the
 /// hazard is.
 fn singleNesting() void {
     eval(
@@ -216,7 +214,7 @@ fn singleNesting() void {
 /// `F1 -> gcpcall/call -> janet_pcall -> F2 -> gcpcall/call -> janet_pcall ->
 /// F3`. F2 is the one at risk here and it is worse placed than F2 above: it is
 /// neither `root_fiber` (F1 is) nor `vm.fiber` (F3 is), and the only
-/// thing holding it is a `JanetTryState` on the C stack, which is not a root.
+/// thing holding it is a `vm_state.TryState` on the C stack, which is not a root.
 fn deepNesting() void {
     eval(
         \\(gcsetinterval 1024)

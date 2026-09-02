@@ -235,7 +235,7 @@
 
   `zig fmt --check` is the third, added in Phase 12 increment 4, and it is
   here rather than in CI on purpose. Fifteen files had drifted out of the
-  formatter -- eight under `src/zig`, seven under `test/` -- because nothing
+  formatter -- eight under `src/`, seven under `test/` -- because nothing
   ran it, and the drift is invisible in review: the diff of a reformat is
   every line of the hunk. The matrix is the instrument this project actually
   runs per increment, so it is where a whole-tree property gets enforced. It
@@ -247,14 +247,14 @@
   # `zig fmt --check` names each unformatted file on stdout and exits
   # non-zero. Reported as one problem listing all of them rather than one
   # per file, so the message stays a sentence and still says what to fix.
-  (def fmt (tools/sh "zig fmt --check build.zig src/zig test" :timeout 120))
+  (def fmt (tools/sh "zig fmt --check build.zig src test" :timeout 120))
   (unless (zero? (or (fmt :code) 1))
     (def files (filter |(not (empty? $)) (string/split "\n" (string/trim (fmt :out)))))
     (put problems
          (if (empty? files)
            (string/format "`zig fmt --check` failed and named no file: %s"
                           (tools/head (string/trim (tools/both fmt)) 200))
-           (string/format "%d file%s not `zig fmt` clean -- run `zig fmt build.zig src/zig test`:\n    %s"
+           (string/format "%d file%s not `zig fmt` clean -- run `zig fmt build.zig src test`:\n    %s"
                           (length files) (if (= 1 (length files)) " is" "s are")
                           (string/join (sort files) "\n    ")))
          true))

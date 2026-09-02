@@ -1,7 +1,7 @@
-//! Behavioral contract for `janet_next` and the indexed and keyed accessors.
+//! Behavioral contract for `access.next` and the indexed and keyed accessors.
 //!
 //! Nine functions, and the reason they are one contract is that they disagree
-//! with each other on purpose. `in`, `getImpl` and `getIndex` answer the same
+//! with each other on purpose. `access.zig`'s `in`, `get` and `getIndex` answer the same
 //! question about the same value and differ only in what a failure is -- a
 //! panic, a nil, or a panic for one kind of failure and a nil for another.
 //! Testing any one of them in isolation would pin a policy without pinning the
@@ -25,7 +25,7 @@
 //! other succeeds. An implementation that used one bound for both would pass
 //! every case that did not look in that band.
 //!
-//! **`janet_next` on a fiber has two error policies and they are chosen by an
+//! **`access.next` on a fiber has two error policies and they are chosen by an
 //! argument.** `nextImpl`'s `is_interpreter` flag decides whether a signal from
 //! the resumed fiber is re-raised as that signal or converted to a panic, and
 //! it decides whether `vm.fiber.child` is cleared first. No in-tree
@@ -180,8 +180,8 @@ const at_huge = abstract_type.define(anyopaque, .{
 });
 
 /// A type with no `length` callback but a `:length` method, which is the other
-/// half of `length`'s abstract arm. The method is found through `getImpl` --
-/// one of the functions under test -- so this arm re-enters the file it is
+/// half of `length`'s abstract arm. The method is found through `access.get`
+/// -- one of the functions under test -- so this arm re-enters the file it is
 /// testing.
 fn methodSeven(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
@@ -556,7 +556,7 @@ fn theNextEntryPointOutsideAnyFiber() !void {
 /// complement of those two.
 fn nextOnAnUnresumableFiber() void {
     // One form, because `(fiber/current)` has to be read and used inside the
-    // same fiber -- `janet_dostring` runs each top-level form in its own.
+    // same fiber -- `env.dostring` runs each top-level form in its own.
     const r = run_("(do" ++
         " (def dead (fiber/new (fn [] 1))) (resume dead)" ++
         " (def errd (fiber/new (fn [] (error :x)) :e)) (resume errd)" ++
@@ -742,8 +742,8 @@ fn inOnAFiber() void {
 
 // -------------------------------------------------------------- janet_get
 
-/// Everything `in` panics about, `getImpl` answers nil to -- including the
-/// container type itself, which is why `getImpl` accepts a number as a data
+/// Everything `in` panics about, `access.get` answers nil to -- including the
+/// container type itself, which is why `get` accepts a number as a data
 /// structure and `in` does not.
 fn getAnswersNilWhereInPanics() !void {
     const a = arrays.new(1);
@@ -929,7 +929,7 @@ fn theTwoLengthBoundsAreDifferent() !void {
 }
 
 /// Without a `length` callback the length comes from a `:length` method, which
-/// is looked up through `getImpl` -- so this arm re-enters the file under test.
+/// is looked up through `access.get` -- so this arm re-enters the file under test.
 /// `length` checks the result and `lengthv` does not, which is the second place
 /// the two disagree.
 fn theLengthFallsBackToAMethod() !void {

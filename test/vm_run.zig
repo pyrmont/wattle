@@ -5,13 +5,13 @@
 //!
 //! **The messages the loop raises itself.** Fourteen of them, and they are the
 //! one part of `runVm` that no Janet program checks and every Janet programmer
-//! reads. Each is built by `janet_panicf` with a `%v` holding a `Janet`, a `%d`
-//! holding an `int32_t` and a `%s` holding a `const char *`, so a formatting
-//! mistake produces a plausible wrong message rather than a crash. Every one is
-//! compared byte for byte.
+//! reads. Each is built by `pp_format.panicf` with a `%v` holding a `Janet`, a
+//! `%d` holding an `int32_t` and a `%s` holding a `const char *`, so a
+//! formatting mistake produces a plausible wrong message rather than a crash.
+//! Every one is compared byte for byte.
 //!
-//! **The signal, not the message.** `janet_continue` hands back a
-//! `JanetSignal`, and several opcodes exist only to produce a particular one:
+//! **The signal, not the message.** `vm_entry.continueFiber` hands back a
+//! signal, and several opcodes exist only to produce a particular one:
 //! `JOP_SIGNAL` clamps its operand into the user range, an unknown opcode is
 //! how a breakpoint reports itself, and `JOP_PROPAGATE` passes a child's status
 //! upward unchanged. A test that only looked at payloads would pass with all
@@ -89,10 +89,10 @@ fn eval(source: [*:0]const u8) repr.Value {
     return out;
 }
 
-/// Wrapped in a fiber rather than handed to `janet_dostring`, because
-/// `janet_dostring` prints a stack trace on the way out: this file expects
-/// twenty-five errors and would otherwise bury its own output in them. The
-/// fiber masks error and yield, so `janet_continue` reports the signal instead.
+/// Wrapped in a fiber rather than handed to `env.dostring`, because `dostring`
+/// prints a stack trace on the way out: this file expects twenty-five errors
+/// and would otherwise bury its own output in them. The fiber masks error and
+/// yield, so `vm_entry.continueFiber` reports the signal instead.
 fn raised(source: []const u8) repr.Value {
     var buffer: [2048]u8 = undefined;
     const wrapped = std.fmt.bufPrintZ(&buffer, "(fiber/new (fn [] {s}) :ye)", .{source}) catch unreachable;
@@ -130,7 +130,7 @@ fn expectErrorPrefix(source: []const u8, prefix: []const u8) void {
     }
 }
 
-/// Compares pretty-printed forms rather than values, because `janet_equals` on
+/// Compares pretty-printed forms rather than values, because `order.equals` on
 /// a mutable collection compares identity: two separately built `@[1 2 3]`s are
 /// not equal, and most of what the loop constructs is mutable.
 fn expectEqual(source: []const u8, expected: []const u8) void {
@@ -266,7 +266,7 @@ fn comparison() void {
     // unwraps to a NaN.
     expectEqual("(do (defn f [x] (= x 0)) [(f 0) (f nil) (f :kw)])", "[true false false]");
     expectEqual("(do (defn f [x] (not= x 0)) [(f 0) (f nil)])", "[false true]");
-    // A non-number operand goes through `janet_compare`, which orders across
+    // A non-number operand goes through `order.compare`, which orders across
     // types rather than raising.
     expectEqual("(do (defn f [a b] (< a b)) (f :a :b))", "true");
     expectEqual("(do (defn f [x] (< x 3)) (f :a))", "false");
@@ -494,7 +494,7 @@ fn aFiberResumedAfterARaiseInsideACfunction() void {
 }
 
 /// An injected signal is delivered instead of resuming, and is read back out
-/// of `gc.flags` where `janet_signal_inject` put it.
+/// of `gc.flags` where `signal.signalInject` put it.
 fn anInjectedSignal() void {
     const fiberv = eval("(fiber/new (fn [] (yield 1) :never) :y)");
     var resumed = resumeFiber(fiberv, wrap.fromNil());
@@ -511,7 +511,7 @@ fn anInjectedSignal() void {
 /// An opcode the loop does not recognise returns `JANET_SIGNAL_DEBUG` and sets
 /// three flags, so that the resume re-runs the instruction with the breakpoint
 /// bit masked off. Bit 7 of the instruction word is how a breakpoint is set,
-/// and `stepImpl` sets a temporary one.
+/// and `vm_entry.step` sets a temporary one.
 fn aBreakpointReachesTheUnknownOpcodeArm() raise.Raising(void) {
     var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (+ 1 2) (+ 3 4) :done) :dy)");
@@ -529,7 +529,7 @@ fn aBreakpointReachesTheUnknownOpcodeArm() raise.Raising(void) {
     expect(harness.keywordIs(resumed.value, "done"));
 }
 
-/// `stepImpl`'s breakpoints are temporary: it restores the instruction words
+/// `vm_entry.step`'s breakpoints are temporary: it restores the instruction words
 /// on the way out, so the resume never re-reads one with bit 7 set. A
 /// breakpoint set with `debug/fbreak` stays, and resuming from it is the only
 /// state in which the mask the loop applies to its first opcode does anything.

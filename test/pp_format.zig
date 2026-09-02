@@ -74,7 +74,7 @@ fn checkBuffer(b: *buffers.Buffer, expected: []const u8) void {
     }
 }
 
-/// `janet_wrap_integer`, which no Zig contract may call under
+/// The integer wrap, which no Zig contract may spell directly under
 /// `-Dnanbox=false`. This file found that, and `test/harness.zig` now holds
 /// the replacement and the argument for it.
 const wrapInteger = harness.wrapInteger;
@@ -93,12 +93,12 @@ fn eval(source: [*:0]const u8) repr.Value {
 
 /// A raise, with the message it carried.
 ///
-/// The C original spelled this as a macro over `janet_try_init`,
-/// `janet_contract_arm` and `janet_contract_raised`, because a raise reached it
-/// as a report on a flag. Here it is the error union itself; the scope is still
-/// needed, because `janet_try_init` is what points `vm.return_reg` at a
-/// payload and therefore what makes `janet_signal_plan` answer `RAISE` rather
-/// than ending the process.
+/// The C original spelled this as a macro over a protected scope and a
+/// raised-flag pair, because a raise reached it as a report on a flag. Here it
+/// is the error union itself; the scope is still needed, because
+/// `signal.tryInit` is what points `vm.return_reg` at a payload and therefore
+/// what makes `signal.signalPlan` answer `RAISE` rather than ending the
+/// process.
 fn expectRaise(comptime message: []const u8, comptime body: anytype, args: anytype) void {
     var state: vm_state.TryState = undefined;
     signal_core.tryInit(&state);
@@ -559,11 +559,10 @@ extern fn remove(path: [*]const u8) callconv(.c) c_int;
 
 /// The stream operations, by import.
 ///
-/// Three of them were `extern fn janet_io_*` declarations here, because that
-/// is what they were: a seam exported so a C caller could reach them. Fourteen
-/// of the fifteen have no caller left anywhere and stopped being symbols.
-/// `janet_io_write` is the one that stays, because `pp/format.zig` itself is a
-/// real caller by symbol.
+/// Three of them were hand-declared `extern fn`s here, because that is what
+/// they were: a seam exported so a C caller could reach them. None of the
+/// fifteen is a symbol any more; `io.write` is the one with a caller outside
+/// its own subsystem, in `pp/format.zig`.
 const host = @import("host");
 const io_core = @import("subsystems").io;
 const pp_format = @import("subsystems").pp_format;

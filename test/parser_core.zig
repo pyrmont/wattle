@@ -10,9 +10,8 @@
 //! ## Two refusals a C contract cannot reach
 //!
 //!
-//! `janet_parser_consume` and `janet_parser_eof` are abis over
-//! `consumeChecked` and `eofChecked`, which panic on a parser that has already
-//! finished or is holding an unread error. From C those are a jump with
+//! `parser.consumeChecked` and `parser.eofChecked` panic on a parser that has
+//! already finished or is holding an unread error. From C those are a jump with
 //! nowhere to go — the C contract simply never fed a dead parser, so the two
 //! messages had no test. Here each is one line, because `consumeChecked` is an
 //! ordinary import and its refusal is a value.
@@ -23,10 +22,10 @@
 //!
 //! ## The error field is read once
 //!
-//! `janet_parser_error` clears what it returns and flushes the parser, which
+//! `parser.parserError` clears what it returns and flushes the parser, which
 //! is why the "unexpected closing delimiter" case asserts `:root`
-//! immediately afterwards. A second read answers null. That is deliberate C
-//! behaviour and the reason `consumeChecked` has a second refusal: a parser
+//! immediately afterwards. A second read answers null. That is deliberate and
+//! the reason `consumeChecked` has a second refusal: a parser
 //! whose error has *not* been read cannot be fed.
 
 const std = @import("std");
@@ -291,7 +290,7 @@ fn theAtoms() !void {
     expect(harness.symbolIs(parser_core.parserProduce(&parser), "symbol"));
 }
 
-/// The two refusals `janet_parser_consume` carries, neither of which the C
+/// The two refusals `parser.consumeChecked` carries, neither of which the C
 /// contract could reach.
 ///
 /// The distinction they draw is the parser's whole error policy: a *parse*

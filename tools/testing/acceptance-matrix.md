@@ -83,12 +83,12 @@ to compile on `test/helper.janet`'s first line.
 this out one entry at a time.** A preflight checks, in about a second and with
 no build at all, that every `contracts-default` name is a real `test/*.zig`, that
 every `-D` option every job passes still exists in `build.zig`, and that
-`zig fmt --check build.zig src/zig test` is clean; it reports
+`zig fmt --check build.zig src test` is clean; it reports
 *all* the problems at once.
 
 **The formatter is enforced there and deliberately not in CI.** Phase 12
 increment 4 found fifteen files that had drifted out of `zig fmt` -- eight
-under `src/zig`, seven under `test/` -- because nothing ran it. The drift is
+under `src/`, seven under `test/` -- because nothing ran it. The drift is
 invisible in review, since the diff of a reformat is every line of the hunk,
 and it is not a per-configuration question, so it is one run over the tree
 before the first build rather than a job. If it refuses, the message names
@@ -130,7 +130,7 @@ and its successors under `phase_11.md`'s rule 19.
 
 **The cadence is matrix per increment, container at the gate**, and that is
 Phase 10's practice rather than a new rule: nineteen matrix runs are recorded
-in `src/zig/README.md`, one per increment, against a podman recipe that had run
+in `src/README.md`, one per increment, against a podman recipe that had run
 twice in the project's life. `phase_11.md`'s "What each increment runs" has the
 table and the argument for why a configuration failure found late is worse than
 it looks -- it is a `harness.zig` change to retrofit, not one contract to fix.

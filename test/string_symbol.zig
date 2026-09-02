@@ -1,14 +1,15 @@
 //! Behavioral contract for the immutable head-allocated sequences: strings,
 //! symbols and the symbol cache, and tuples.
 //!
-//! All three of these types are a header and a payload in one `janet_gcalloc`,
+//! All three of these types are a header and a payload in one
+//! `gc.gcallocWithPayload`,
 //! and the value Janet passes around is the address of the payload.
 //!
 //! The observable surface splits three ways.
 //!
 //! The fields are directly checkable: a string's length and hash, a tuple's
 //! length, hash and source-map position, and the memory type in the GC header
-//! that decides which of `janet_deinit_block`'s cases will eventually free it.
+//! that decides which of `gc/sweep.zig`'s `deinitBlock` cases will free it.
 //!
 //! The symbol cache is checkable through `vm.symcache.count` and
 //! `vm.symcache.deleted`, and through pointer identity: interning means two
@@ -18,7 +19,7 @@
 //! the one worth asserting hardest.
 //!
 //! Hashing is checkable only for consistency, not for value.
-//! `janet_string_calchash` is a different subsystem and changes under `-Dprf`,
+//! `value.hashBytes` is a different subsystem and changes under `-Dprf`,
 //! so nothing here asserts a particular hash. What it does assert is that the
 //! hash a constructor stores is the one that function returns, and that equal
 //! contents hash equally.
@@ -38,7 +39,7 @@
 //!
 //! ## Two things deliberately not covered, unchanged from the C original
 //!
-//! `janet_string_begin` and `janet_tuple_begin` leave the hash uninitialised,
+//! `strings.begin` and `tuples.begin` leave the hash uninitialised,
 //! and there is no way to assert an indeterminate value; the cases below read
 //! it only after the matching `end`. And `cacheFindmem` ends the process when
 //! the table is full, which the rehash floor makes unreachable — the cases
@@ -474,7 +475,7 @@ fn tombstonesForceARehash() void {
 /// underscore.
 const gensym_length: i32 = @as(i32, @intCast(@typeInfo(@TypeOf(harness.vm().gensym_counter)).array.len)) - 1;
 
-/// The leading underscore comes from `janet_symcache_init` and nothing else
+/// The leading underscore comes from `symbols.cacheInit` and nothing else
 /// ever writes it, so it is the one part of the counter's initial state that
 /// survives to be observed. This case has to run before the one below, which
 /// resets the counter itself and would make the same assertion vacuous.
@@ -489,7 +490,7 @@ fn generatedNamesComeFromTheInitialCounter() void {
     _ = gc_alloc.gcunroot(wrap.fromSymbol(g));
 }
 
-/// Reset the odometer to the state `janet_symcache_init` leaves.
+/// Reset the odometer to the state `symbols.cacheInit` leaves.
 fn resetGensymCounter() void {
     @memset(&harness.vm().gensym_counter, '0');
     harness.vm().gensym_counter[0] = '_';
@@ -499,7 +500,7 @@ fn resetGensymCounter() void {
 /// only when a name is already taken -- so the sequence is exactly the
 /// odometer.
 fn gensymAdvancesTheOdometer() void {
-    // Start from the state `janet_symcache_init` leaves, so the sequence is
+    // Start from the state `symbols.cacheInit` leaves, so the sequence is
     // predictable however many gensyms ran before this. Collecting first drops
     // the ones earlier cases made, which would otherwise still be cached and
     // would make the counter skip past them.
@@ -570,7 +571,7 @@ fn gensymCarriesBetweenPositions() void {
 }
 
 /// The collector's one external obligation: a symbol that dies leaves the
-/// cache. `janet_deinit_block` calls `janet_symbol_deinit` from this
+/// cache. `gc/sweep.zig`'s `deinitBlock` calls `symbols.deinit` from this
 /// subsystem, so the round trip is entirely inside Zig.
 fn collectedSymbolLeavesTheCache() void {
     gc_mark.collect();

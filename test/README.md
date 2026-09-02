@@ -2,7 +2,7 @@
 
 *The layers, what each is for, and what a change owes before it is believed.
 [../DESIGN.md](../DESIGN.md) section 12 has the Janet behaviours this runtime
-kept and the ones it changed; [../src/zig/README.md](../src/zig/README.md) the
+kept and the ones it changed; [../src/README.md](../src/README.md) the
 rules the runtime holds itself to; [../tools/README.md](../tools/README.md) the
 instruments named below.*
 
@@ -15,7 +15,7 @@ Six layers, and a change is believed when the ones it touches pass:
   exact message, a flag table's order, a collector's block list. Each is
   compiled *into* a second copy of the runtime, so it calls its subject by
   import and a raise arrives as a value.
-- **The in-file `test` blocks** under `src/zig`, run by `zig build test` as
+- **The in-file `test` blocks** under `src/`, run by `zig build test` as
   `janet-runtime-test`. Interior facts with no runtime under them — a
   classification table, a mode-string parser.
 - **The fuzz targets**, `test/fuzz.zig`: parser, compiler, marshalling and
@@ -106,7 +106,7 @@ Two practical traps, both cost a cycle to rediscover:
 said one and none, and it was wrong for two phases.** The cause was our own
 include path: a `features.h` of ours sat on the `-I` path, `-I` beats the system
 search path, and it therefore answered `#include <features.h>` for **every libc
-header that asked**. (It is `src/zig/janet_features.h` now, and the rename is
+header that asked**. (It is `src/host/janet_features.h` now, and the rename is
 what closes the hazard.) glibc's `features.h` is what defines
 `__GLIBC_USE`, so `#if __GLIBC_USE (IEC_60559_BFP_EXT)` became `0 (...)` and the
 translation failed 6,662 times; musl's 32-bit headers lost their own feature

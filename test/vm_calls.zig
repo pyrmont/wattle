@@ -11,12 +11,12 @@
 //! Four properties get more attention than their size suggests.
 //!
 //! **The whole battery runs inside a real fiber.** `methodInvoke` reaches
-//! `callImpl` for a function callee, which requires a current fiber and a frame
-//! to push onto. Rather than installing one by hand, `run` registers a
+//! `vm/entry.zig`'s `call` for a function callee, which requires a current
+//! fiber and a frame to push onto. Rather than installing one by hand, `run` registers a
 //! cfunction and calls it from Janet source, so every assertion below runs
-//! where `run_vm` would have made the same call.
+//! where `runVm` would have made the same call.
 //!
-//! **The seven refusal messages.** Each is built by `janet_panicf` with a
+//! **The seven refusal messages.** Each is built by `pp_format.panicf` with a
 //! `Janet` in a `%v`, a `const char *` in a `%s` and an `int32_t` in a `%d`,
 //! and a mismatch there produces a plausible wrong message rather than a
 //! crash, so every message is compared byte for byte. The values chosen for
@@ -35,7 +35,7 @@
 //! exists because an `EXPECT_PANIC` macro that silently stops firing looks
 //! like a pass, and `harness.raised` answers null instead.
 //!
-//! **There is no adapter pool.** A `JanetAbstractType`'s `call`, `get` and
+//! **There is no adapter pool.** A `abstract_type.AbstractType`'s `call`, `get` and
 //! `tostring` callbacks are Zig's and raising, so C can define none of them
 //! and a C contract needs a pool of pre-built tables for all three of this
 //! file's abstract types. A Zig contract writes the callback.
@@ -149,7 +149,7 @@ fn callableCall(_: *anyopaque, argv: []repr.Value) raise.Error!repr.Value {
 const at_callable = abstract_type.define(anyopaque, .{ .name = "vm-calls/callable", .call = &callableCall });
 
 /// Indexable: no `call`, so `methodInvoke` falls out of the abstract arm into
-/// the arity check and `janet_in`.
+/// the arity check and `access.in`.
 fn indexableGet(_: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
     if (!args_core_mod.checkint(key)) return null;
     return harness.wrapInteger(wrap.toInteger(key) * 10);
@@ -157,8 +157,8 @@ fn indexableGet(_: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
 
 const at_indexable = abstract_type.define(anyopaque, .{ .name = "vm-calls/indexable", .get = &indexableGet });
 
-/// Raises from `tostring`, which `fillString` reaches through
-/// `janet_to_string_b`.
+/// Raises from `tostring`, which `vm.fillString` reaches through
+/// `pp.toStringB`.
 fn loudTostring(_: *anyopaque, _: *abi.Buffer) raise.Error!void {
     return raise.panic("tostring raised");
 }
@@ -204,7 +204,7 @@ fn invokeAnAbstractWithACallCallback() raise.Raising(void) {
     expect(wrap.toNumber(try vm_calls.methodInvoke(callable_value, argv[0..3])) == 3);
     expect(wrap.toNumber(try vm_calls.methodInvoke(callable_value, &.{})) == 0);
     // One argument is the case that tells the two paths apart by value rather
-    // than by arity: the indexed fallback would answer with `janet_in` on an
+    // than by arity: the indexed fallback would answer with `access.in` on an
     // abstract that has no `get`, and the callback answers 1.
     expect(wrap.toNumber(try vm_calls.methodInvoke(callable_value, argv[0..1])) == 1);
 }
@@ -258,9 +258,9 @@ fn theDefaultArmReversesTheLookup() raise.Raising(void) {
 
 // ------------------------------------------------------------ methodLookup
 
-/// Raising, and it must be: `methodLookup` reaching `janet_get` through the
-/// abi makes an abstract's `get` refusing into a report nobody consumes, and
-/// every one of its four callers is `raise.Raising`. The three cases here
+/// Raising, and it must be: a reporting form of `access.get` under
+/// `methodLookup` would make an abstract's `get` refusing into a report nobody
+/// consumes, and every one of its four callers is `raise.Raising`. The three cases here
 /// answer rather than raise, so each is a `try`; the refusal that motivated
 /// the change is asserted below.
 fn methodLookup() raise.Raising(void) {
@@ -419,7 +419,7 @@ fn fillString() raise.Raising(void) {
 /// There were two halves here and the second is gone rather than fixed. It
 /// drove `fillTable` through an abstract whose `hash` raised, from inside a
 /// callback whose signature had no way to say it had failed. `hash` is typed
-/// non-raising — see `src/zig/abstract_type.zig` — because it is reached from
+/// non-raising — see `src/api/abstract_type.zig` — because it is reached from
 /// comparisons that must be total, so a raise there has no caller that could
 /// act on it, and the callback now has no way to produce one. `tostring` is
 /// raising and is what this keeps.
@@ -476,7 +476,8 @@ pub fn run() void {
     makeAbstracts();
 
     // From Janet source, so that everything above runs with a live fiber under
-    // it: `methodInvoke` reaches `callImpl`, which has no meaning without one.
+    // it: `methodInvoke` reaches `vm_entry.call`, which has no meaning without
+    // one.
     _ = eval("(vmcalls/contract)");
 
     vm_lifecycle.deinit();

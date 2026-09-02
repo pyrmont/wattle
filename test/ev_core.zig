@@ -8,9 +8,9 @@
 //! resize, deadlines firing in time order — is covered by `test/suite-ev.janet`
 //! rather than here, and deliberately so.
 //!
-//! `ev/give`, `ev/take` and `ev/sleep` all end in `janet_await`, which suspends
-//! the calling fiber whether or not the operation could be satisfied
-//! immediately. `janet_dostring` runs a source string one top-level form at a
+//! `ev/give`, `ev/take` and `ev/sleep` all end in `ev.awaitEvent`, which
+//! suspends the calling fiber whether or not the operation could be satisfied
+//! immediately. `env.dostring` runs a source string one top-level form at a
 //! time and only drains the event loop once the whole string has been read, so
 //! a form that follows a suspending one runs while the earlier form is still
 //! parked. An assertion written that way observes an intermediate state: a

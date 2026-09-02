@@ -1,13 +1,13 @@
 //! Behavioral contract for the key/value containers: structs and tables,
 //! including the three weak table variants.
 //!
-//! The two share the `JanetKV` bucket layout and nothing else about how they
+//! The two share the `tables.KV` bucket layout and nothing else about how they
 //! use it, so this file is organised around the two probing disciplines rather
 //! than around the two halves of the subsystem.
 //!
 //! A struct's layout is observable and is part of the language contract. Robin
 //! Hood insertion exists so that the bucket array depends on the *set* of
-//! pairs and not on the order they arrived in, because `janet_struct_end`
+//! pairs and not on the order they arrived in, because `structs.end`
 //! hashes the array -- `{1 2 3 4}` and `{3 4 1 2}` must be byte-for-byte
 //! identical or they would not be `=`. So the struct cases compare whole
 //! bucket arrays position by position rather than asserting properties of one
@@ -84,7 +84,7 @@ fn kw(name: [*:0]const u8) repr.Value {
 }
 
 /// The bucket a key would like to occupy. Spelled out rather than reusing
-/// `janet_maphash`, so that a change to that macro shows up as a failure
+/// `value.zig`'s `mapHash`, so that a change there shows up as a failure
 /// rather than being tracked silently.
 fn idealIndex(capacity: u32, key: repr.Value) u32 {
     const hash: u32 = @bitCast(order.hash(key));
@@ -163,7 +163,7 @@ fn sameLayout(a: [*]const tables.KV, b: [*]const tables.KV, capacity: u32) bool 
 
 // ------------------------------------------------------ struct: allocation
 
-/// The capacity policy. `janet_tablen` is a *strict* next power of two, so
+/// The capacity policy. `value.capacityFor` is a *strict* next power of two, so
 /// twice the pair count is rounded up past itself: a two-pair struct gets
 /// eight buckets, not four. Asserted as exact numbers because the load factor
 /// is what bounds Robin Hood displacement, and an off-by-one-doubling would
@@ -197,7 +197,7 @@ fn structBeginInitialisesTheHead() void {
 
 /// The whole reason Robin Hood insertion is here. Two structs built from the
 /// same pairs in different orders must have identical bucket arrays, because
-/// `janet_struct_end` hashes the array and `janet_equals` compares the hash
+/// `structs.end` hashes the array and `order.equals` compares the hash
 /// first. Compared over the entire array rather than pair by pair, so that a
 /// difference in *position* fails as loudly as a difference in contents.
 fn structLayoutIsOrderIndependent() void {
@@ -269,10 +269,10 @@ fn structCollisionRunIsOrderedByHash() void {
 
 /// The last tiebreak, and the only one that reaches outside this subsystem.
 ///
-/// `janet_hash` reads only the bytes for all three string-like types, so a
+/// `order.hash` reads only the bytes for all three string-like types, so a
 /// keyword and a string spelled the same have the same hash. They want the
 /// same bucket, they tie on displacement and they tie on hash, so
-/// `janet_compare` is the only thing left -- and the only thing stopping the
+/// `order.compare` is the only thing left -- and the only thing stopping the
 /// second from being taken for a duplicate of the first, which would silently
 /// drop it.
 fn structHashTieFallsThroughToCompare() void {
@@ -337,7 +337,7 @@ fn structPutDropsTheSurplus() void {
     expect(harness.isType(structs.rawget(s, kw("b")), repr.Tag.nil));
 }
 
-/// `replace` is what separates `janet_struct_put` from the flattening path:
+/// `replace` is what separates `structs.put` from the flattening path:
 /// `struct/proto-flatten` walks child first and must not let a prototype's
 /// binding overwrite the child's.
 fn structPutExtHonoursReplace() void {
@@ -520,7 +520,7 @@ fn structToTable() void {
 
 // ------------------------------------------------------- table: allocation
 
-/// `janet_tablen` rounds strictly up, so a requested capacity of zero still
+/// `value.capacityFor` rounds strictly up, so a requested capacity of zero still
 /// gets one bucket -- there is no such thing as an empty bucket array.
 ///
 /// A *negative* request reaches a capacity of zero, and such a table cannot be
@@ -566,7 +566,7 @@ fn tableConstructorMarksAndLists() void {
 
 /// A scratch table is caller-owned memory whose buckets come from the scratch
 /// allocator. The flag lives in the same word as the memory type, which is
-/// safe only because such a table is never `janet_gcalloc`ed -- so the flag is
+/// safe only because such a table is never `gc.gcalloc`ed -- so the flag is
 /// asserted as the whole word, not as a bit.
 fn tableInitUsesScratchMemory() void {
     var local: tables.Table = undefined;
@@ -632,8 +632,9 @@ fn tableGrowthCapacities() void {
 // --------------------------------------------------------- table: removal
 
 /// A removal leaves a nil key and a *false* value. The falseness is the
-/// tombstone marker: `janet_dict_find` stops only where key and value are both
-/// nil, so a run of probes passes through the hole instead of ending at it.
+/// tombstone marker: `value.dictionaryFind` stops only where key and value are
+/// both nil, so a run of probes passes through the hole instead of ending at
+/// it.
 fn removeLeavesATombstone() void {
     const t = tables.new(4);
     tables.put(t, kw("a"), harness.wrapInteger(1));
@@ -677,8 +678,8 @@ fn aTombstoneDoesNotTruncateAProbeRun() void {
 /// A rehash is the only thing that reclaims a tombstone.
 ///
 /// It is tempting to expect re-inserting the key that was just removed to fill
-/// its own hole, and the `--t->deleted` branch in `janet_table_put` reads as
-/// though it does. It does not. `janet_dict_find` returns the first *truly*
+/// its own hole, and the decrement of `deleted` in `tables.put` reads as
+/// though it does. It does not. `value.dictionaryFind` returns the first *truly*
 /// empty bucket it reaches and falls back on a remembered tombstone only if
 /// the array has no empty bucket anywhere -- and the growth policy keeps the
 /// array at most half full counting tombstones, so an empty bucket always

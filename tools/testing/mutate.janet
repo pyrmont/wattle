@@ -158,7 +158,7 @@
 # Phase 10 Part 13: the event loop. Four sources behind one selector, so the
 # sweep is run four times with `--src`; `contract` and `suites` are the same
 # for all four.
-(def src-default "src/zig/ev.zig")
+(def src-default "src/runtime/ev.zig")
 (def contract "ev_loop")
 # Three rather than six, and the trim is a measurement rather than a taste.
 # A mutant that breaks the loop *hangs* every suite it reaches, at `bound`

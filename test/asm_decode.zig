@@ -1,5 +1,5 @@
-//! Behavioral contract for `janet_asm_decode_instruction`: one bytecode word
-//! turned back into the tuple the assembler would have written.
+//! Behavioral contract for `bytecode/disasm.zig`'s `asmDecodeInstruction`: one
+//! bytecode word turned back into the tuple the assembler would have written.
 //!
 //! `disasm` reaches this for every instruction of a function, so the Janet
 //! suites exercise it heavily and observe almost nothing about it — a

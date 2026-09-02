@@ -33,7 +33,7 @@ may require changes before being merged.
   runs.
 * Be consistent with the style. The runtime is Zig: use `zig fmt`, and read the
   surrounding file for how much a comment is expected to explain — this tree
-  documents *why* far more than most. `src/zig/README.md` has the rules the
+  documents *why* far more than most. `src/README.md` has the rules the
   runtime holds itself to, the source tree and the module graph.
 
   For janet code, use lisp indentation with 2 spaces. One can use janet.vim to
@@ -48,12 +48,12 @@ OSSFuzz or well constructed CI pipelines.
 
 ## Runtime style
 
-The runtime is Zig. `src/zig/README.md` has the rules that hold, and the two
-worth knowing before a first change are that only `src/zig/capi.zig` exports a
+The runtime is Zig. `src/README.md` has the rules that hold, and the two
+worth knowing before a first change are that only `src/runtime/capi.zig` exports a
 C symbol and that a raising function returns `raise.Raising(T)` rather than
 jumping.
 
-The only C left is four hand-written headers under `src/zig` — the three host
+The only C left is four hand-written headers under `src/` — the three host
 translations and the feature-test macros they open with — and libc, which every
 Zig file reaches through `@cImport`.
 

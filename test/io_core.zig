@@ -1,34 +1,32 @@
 //! Behavioral contract for the file subsystem: mode-string parsing, the
 //! stream host operations, the `core/file` abstract type, the public
-//! `JanetFile` entry points, and the cfunction surface over all of them.
+//! `io.File` entry points, and the cfunction surface over all of them.
 //!
 //! ## Why this file exists rather than the suite covering it
 //!
-//! Three things here are unreachable from Janet. The `JanetFile` entry points
+//! Three things here are unreachable from Janet. The `io.File` entry points
 //! are C API with no Janet spelling; the abstract type's `marshal` and
 //! `unmarshal` callbacks run only under `JANET_MARSHAL_UNSAFE`, which
-//! `(marshal f)` never sets; and a `JanetFile` whose flags and whose stream
+//! `(marshal f)` never sets; and a `io.File` whose flags and whose stream
 //! disagree is a thing only an embedder can build, and is the only way into
 //! two of the failure paths.
 //!
 //! ## How the subjects are reached
 //!
-//! **The kernels are reached by import.** Fifteen `janet_io_*` symbols were
-//! hand-declared once, because none of them is in a header. They were exported
-//! for a C caller that no longer exists, so fourteen of the fifteen stopped
-//! being symbols at all. `janet_io_write` is the exception and stays: it has a
-//! real caller in `pp/format.zig`, which reaches it by symbol on purpose so
-//! that the printer does not depend on the whole io surface.
+//! **The kernels are reached by import.** Fifteen host operations were
+//! hand-declared symbols once, for a C caller that no longer exists. All
+//! fifteen are ordinary imports now, `io.write` -- the one with a caller
+//! outside this subsystem, in `pp/format.zig` -- included.
 //!
 //! **The three mode-scan status codes and the five `JANET_IO_MODE_*` values
 //! are named rather than restated.** A third copy of numbers two files already
 //! agree on is a place they can drift.
 //!
-//! **The public API half goes through the abis**, deliberately. That section
-//! is about the published entry points, and `janet_getjfile` and
-//! `janet_getfile` are `raise.reported` wrappers whose report is exactly what
-//! a C embedder sees -- so `harness.abiRaised` is the right instrument and
-//! `harness.raised` would test something else.
+//! **The public API half reaches `io.getjfile` and `io.getfile` raising.**
+//! Neither has a reporting wrapper any more, so `harness.raised` is the
+//! instrument and an argument fault arrives as an error. `expectAbiRaise`
+//! below is kept for a published entry point that reports, and has no caller
+//! today.
 
 const std = @import("std");
 const repr = @import("repr");
@@ -251,7 +249,7 @@ fn theSeekOrigins() void {
     expect(io_core.seekWhence("set", 3) == 1);
     expect(io_core.seekWhence("end", 3) == 2);
 
-    // Only whole names match, as `janet_cstrcmp` required.
+    // Only whole names match, which is `utils.cstrcmp`'s rule.
     expect(io_core.seekWhence("cu", 2) == -1);
     expect(io_core.seekWhence("current", 7) == -1);
     expect(io_core.seekWhence("", 0) == -1);
@@ -398,7 +396,7 @@ fn theMethodOrder() raise.Raising(void) {
     // `next` and `get` ignore the payload -- they read the method table -- and
     // a C contract could pass `null` for it, because the slot was `void *`.
     // The runtime cannot: a dispatch starts from a live abstract's header, so
-    // the payload is always a real `JanetFile`. The typed callback says so and
+    // the payload is always a real `io.File`. The typed callback says so and
     // the erased shim asserts it, so the contract supplies one.
     var borrowed: io_core_mod.File = std.mem.zeroes(io_core_mod.File);
     const payload: ?*anyopaque = &borrowed;
@@ -427,7 +425,7 @@ fn theMethodOrder() raise.Raising(void) {
 fn thePublicApi() raise.Raising(void) {
     const raw = io_core.open(scratch, "wb").?;
 
-    // `janet_makejfile` hands back the payload; `janet_makefile` wraps it. The
+    // `io.makejfile` hands back the payload; `io.makefile` wraps it. The
     // buffer size is the C library's default, which is what `file/open`
     // compares against to decide whether a caller asked for another one.
     const jf = io_core_mod.makejfile(@ptrCast(@alignCast(raw)), constants.JANET_FILE_WRITE);
@@ -472,9 +470,8 @@ fn thePublicApi() raise.Raising(void) {
     expect(asHandle(borrowed.file) == asHandle(stdio.out()));
 
     // A value of the wrong type is an argument fault rather than a null. It
-    // arrives as an error rather than as a report, because the reporting half
-    // of both getters is in `capi.zig` -- which is where an entry point that
-    // has to build a slice out of an index belongs.
+    // arrives as an error rather than as a report: neither getter has a
+    // reporting half any more.
     var bad = [_]repr.Value{harness.wrapInteger(3)};
     expectRaisePrefix(io_core_mod.getjfile, .{ bad[0..1], @as(i32, 0) }, "bad slot #0");
     expectRaisePrefix(io_core_mod.getfile, .{ bad[0..1], @as(i32, 0), null }, "bad slot #0");
@@ -584,10 +581,10 @@ fn theMarshalledBufferSize() raise.Raising(void) {
 // What only a mismatched handle reaches
 // ==========================================================================
 
-/// A `JanetFile`'s flags and its stream can disagree, which nothing in Janet
+/// A `io.File`'s flags and its stream can disagree, which nothing in Janet
 /// can arrange and which is the only way into two of the failure paths. Both
-/// are reachable by an embedder, since `janet_makejfile` takes the flag word
-/// from its caller and never consults the stream.
+/// are reachable by an embedder, since `io.makejfile` takes the flag word from
+/// its caller and never consults the stream.
 fn theMismatchedHandles() void {
     const writer = io_core.open(scratch, "wb").?;
     const claims_readable = wrap.fromAbstract(
@@ -844,7 +841,7 @@ pub fn run() void {
 
     harness.init();
     // The abstract type has to be in the registry before anything marshals a
-    // file, and the registration is `janet_lib_io`'s. Building the core
+    // file, and the registration is `io.libIo`'s. Building the core
     // environment first is also what the public section needs, and it is
     // memoized, so the two share one.
     _ = harness.coreEnv();

@@ -19,7 +19,7 @@
 # reproducible across checkouts if it carries any: a C compiler is handed
 # absolute paths, `__FILE__` keeps them, and a core cfunction's source file goes
 # into the image. There were twenty-two. A Zig-registered cfunction records a
-# repo-relative path instead -- `src/zig/io.zig` -- so the figure fell by one
+# repo-relative path instead -- `src/runtime/io.zig` -- so the figure fell by one
 # per C file that emptied, and reached zero with the last C source.
 #
 # **The bytes, against a saved copy.** That is what the reproducibility bullet in
@@ -36,7 +36,7 @@
 (def out-prefix "/tmp/janet-image-out")
 
 # An *absolute* path starts at a `/`. A repo-relative one that happens to
-# contain a directory -- `src/zig/value/tables.zig`, which is what a
+# contain a directory -- `src/runtime/value/tables.zig`, which is what a
 # Zig-registered cfunction records -- must not match at its interior slash.
 # Without the lookbehind every Zig path is counted as a host path, which
 # inflates the figure by exactly the number of Zig-registered subsystems: it

@@ -110,8 +110,8 @@ extern fn atof(str: [*:0]const u8) callconv(.c) f64;
 /// Check a subset of numbers against the system implementation.
 ///
 /// This depends on the system's `atof` being correct, which may not hold on an
-/// old or non-compliant one, and it can only check base ten. Both caveats are
-/// the C original's and both still apply.
+/// old or non-compliant one, and it can only check base ten. Both caveats
+/// still apply.
 fn validStr(comptime str: [:0]const u8) void {
     const jnum = scan.scanNumber(str);
     expect(jnum != null, "scan_number accepts " ++ str);
@@ -136,12 +136,8 @@ pub fn numberTest() void {
 pub fn systemTest() void {
     expect(@sizeOf(*anyopaque) == if (!config.bits64) 4 else 8, "pointer width");
 
-    // "The version defines are self-consistent" stood here, comparing
-    // `JANET_VERSION` against `{MAJOR}.{MINOR}.{PATCH}{EXTRA}` rebuilt from
-    // the parts. That was worth checking while the two were hand-maintained
-    // lines of a header.
-    //
-    // `build.zig` now has one `version`, and `version_string` is
+    // There is no version-consistency check here, and there is nothing left
+    // to check: `build.zig` has one `version`, and `version_string` is
     // `comptimePrint`ed from `major`, `minor`, `patch` and `version_extra`.
     // The whole is built from the parts, so the comparison is a tautology --
     // `DESIGN.md` §3's phrase for exactly this: the property "stops being an
@@ -161,8 +157,7 @@ pub fn systemTest() void {
         "3.14159265",
     );
 
-    // A NaN is still a number. The C reached for `NAN` and fell back to
-    // `0.0 / 0.0` where the macro was absent; Zig has the value directly.
+    // A NaN is still a number, and `std.math.nan` names one directly.
     expect(
         checkType(wrap.fromNumber(std.math.nan(f64)), repr.Tag.number),
         "NaN is a number",

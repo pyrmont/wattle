@@ -301,7 +301,7 @@ fn theFlooredDivision() !void {
 
     // Dividing by zero raises, while the modulo above does not.
     //
-    // Through `janet_pcall` rather than `harness.raised`, and the reason is
+    // Through `vm_entry.pcall` rather than `harness.raised`, and the reason is
     // worth stating because it is the first case in this phase where the new
     // mechanism is the *wrong* tool: `div` is not a cfunction. It is a Janet
     // function that dispatches to the abstract type's `div` method, so there
@@ -349,8 +349,9 @@ fn theFlooredDivision() !void {
 /// under test is not that the conversion refuses — `theSignedAgainstDoubles`
 /// covers that — but that the refusal *arrives*.
 ///
-/// `Box(T).unwrap` was bound to `janet_unwrap_s64`, the abi, from inside
-/// `raise.Raising` methods, so every one of these killed the process with
+/// `Box(T).unwrap` was bound to a reporting form of the conversion, from
+/// inside `raise.Raising` methods, so every one of these killed the process
+/// with
 /// `a raise was reported to a C caller and never consumed` instead of raising
 /// -- hidden behind a comptime alias, which is what `tools/check/swallowed.janet`
 /// now looks for.

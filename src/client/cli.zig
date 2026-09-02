@@ -7,8 +7,9 @@
 //! a compilation boundary. It is still its own compilation, because a native
 //! module resolves into the client's symbol table rather than the library's.
 //!
-//! It lives here rather than under `src/zig/` because a module's root
-//! directory owns every file beneath it, and two modules cannot claim one.
+//! It is the root of its own module and reaches the runtime by the name
+//! `subsystems`, so it is a separate compilation rather than a file of the
+//! runtime.
 
 const std = @import("std");
 const repr = @import("repr");

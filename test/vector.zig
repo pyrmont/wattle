@@ -85,9 +85,10 @@ pub fn run() void {
 
     // -------------------------------------------------------------- flatten
     //
-    // `janet_v_flatten`: the elements alone, in `janet_malloc` memory. It is
+    // `scratch_vector.flatten`: the elements alone, in heap memory. It is
     // the one operation with no standard equivalent, and the allocator is the
-    // reason — `toOwnedSlice` would hand back scratch memory, and a funcdef's
+    // reason — `std.ArrayListUnmanaged.toOwnedSlice` over this vector's own
+    // allocator would hand back scratch memory, and a funcdef's
     // constants outlive the collection that would sweep it. So the copy is
     // *not* a scratch block.
     {

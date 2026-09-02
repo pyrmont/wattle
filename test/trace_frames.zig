@@ -1,12 +1,12 @@
 //! Behavioral contract for stack frame decoding and the trace it is printed
 //! into.
 //!
-//! What this file guards is a rendering. `janet_stacktrace_ext` prints the
+//! What this file guards is a rendering. `debug.stacktraceExt` prints the
 //! trace every Janet user reads, and the decoding under test decides every
 //! part of each line except the punctuation. The suites cover the two common
 //! shapes — a named Janet function with a source map, and a registered
 //! cfunction — and nothing else, because the remaining shapes need a funcdef
-//! or a registry entry that the compiler and `janet_cfuns` never produce.
+//! or a registry entry that the compiler and `registry.cfuns` never produce.
 //!
 //! So the cases are enumerated here rather than sampled, and the awkward one
 //! is the point: **the name and the location are classified separately**, and
@@ -15,10 +15,9 @@
 //!
 //! ## The entry points are called by import
 //!
-//! `janet_trace_frame` and `janet_stacktrace_ext` are the two abis; each is
-//! one line of `raise.reported` over the entry point beside it. This calls the
-//! entry points directly, so a raise from a `tostring` callback reached
-//! through `%v` -- the only raise either can make -- arrives as
+//! `debug.traceFrame` and `debug.stacktraceExt` are `raise.Raising` and this
+//! calls them directly, so a raise from a `tostring` callback reached through
+//! `%v` -- the only raise either can make -- arrives as
 //! `error.JanetSignal` rather than as a report nobody consumes.
 //!
 //! The two abis stay: each has callers inside the runtime that cannot carry an
@@ -79,8 +78,8 @@ fn frameOfCfunction(frame: *vm_state.StackFrame, cfun: abi.CFunction) void {
 
 fn decode(frame: *vm_state.StackFrame) tf.TraceFrame {
     var out: tf.TraceFrame = undefined;
-    // `janet_trace_frameImpl` is `raise.Raising(void)` and never raises: it
-    // reads a funcdef and the registry and writes a plain structure. The
+    // `debug.traceFrame` is `raise.Raising(void)` and never raises: it reads
+    // a funcdef and the registry and writes a plain structure. The
     // `catch` is what the type asks for, not a case this contract expects.
     tf.traceFrame(frame, &out) catch unreachable;
     return out;
@@ -248,7 +247,7 @@ fn aRegisteredCfunction() void {
 
 /// A cfunction the registry has never heard of renders as a bare
 /// `<cfunction>` with no source and no location. Reaching this from Janet
-/// needs a cfunction installed without `janet_cfuns`, which nothing in the
+/// needs a cfunction installed without `registry.cfuns`, which nothing in the
 /// core does — and the decoder must not dereference the null the registry
 /// returns.
 fn anUnregisteredCfunction() void {
@@ -290,8 +289,8 @@ fn aRegisteredCfunctionWithoutAName() void {
 }
 
 /// A registry entry whose source line is zero or negative reports no location.
-/// `janet_cfuns` installs exactly this for every function registered without
-/// source information.
+/// `registry.cfuns` installs exactly this for every function registered
+/// without source information.
 fn aRegisteredCfunctionWithoutALine() void {
     const reg = registry.registryGet(keyOf(&probeNamed));
     const saved = reg.?.source_line;
@@ -352,8 +351,8 @@ fn contents(sink: *buffers.Buffer) []const u8 {
 
 /// Run the printer with `:err` bound to a buffer, which is how the rendering
 /// is read back rather than sent to the harness's stderr.
-/// `janet_stacktrace_ext` goes through `janet_dynprintf`, and that is exactly
-/// what the binding redirects.
+/// `debug.stacktraceExt` goes through `pp_format.dynprintf`, and that is
+/// exactly what the binding redirects.
 fn traceInto(
     sink: *buffers.Buffer,
     fiber: *fibers.Fiber,
@@ -368,7 +367,7 @@ fn traceInto(
 
 /// The `%s/%s` branch, which no suite can reach: it is taken only when a
 /// registered cfunction has a *prefix*, and every core registration passes
-/// null for one. A native module calling `janet_cfuns_prefix` gets one, and so
+/// null for one. A native module registering with a prefix gets one, and so
 /// does the registry entry this file plants by hand.
 fn aPrefixedCfunctionRenders() raise.Raising(void) {
     const sink = buffers.new(256);

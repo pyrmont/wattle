@@ -20,6 +20,7 @@
 # collects the evidence for each of the three reasons instead:
 #
 #   abi     the type, or a pointer to it, is in a `callconv(.c)` signature
+#           -- in *code*: the corpus below has its comments stripped first
 #   field   it is a by-value field of another `extern` layout
 #   repr    something reads its representation -- `@sizeOf`, `@offsetOf`,
 #           `@bitCast`, `@ptrCast`, `std.mem.zeroes`, `safe_memcpy`
@@ -136,7 +137,7 @@
   configuration compiles exactly one of them."
   []
   (def out @[])
-  (each path (tools/zig-files "src/zig")
+  (each path (tools/src-files)
     (def lines (string/split "\n" (slurp path)))
     (loop [i :range [0 (length lines)]]
       (def m (peg/match ~(* (thru "const ") (<- (some (+ :w "_"))) " = " (<- (thru -1)))
@@ -155,14 +156,26 @@
                        (break)))
                    found)))
         (when (or direct conditional)
-          (array/push out {:file (string/replace "src/zig/" "" path)
+          (array/push out {:file (string/replace "src/" "" path)
                            :line (inc i)
                            :name (string name)})))))
   out)
 
 (defn- corpus []
   (def out @{})
-  (each path (tools/zig-files "src/zig") (put out path (slurp path)))
+  # **Comments stripped, because prose is not evidence.**  The scan below
+  # decides `abi` by finding `callconv(.c)` or `extern fn` near an occurrence
+  # of the name, and a comment that merely *mentions* a layout beside an
+  # `extern fn` declaration satisfied that.  Five of the 63 rows carried
+  # evidence they did not have -- `Method` from a sentence in `crossings.zig`
+  # naming `abi.Method` above the `extern fn` block, three `OVERLAPPED` rows
+  # the same way, and `ffi/types.Layout`, which is used only inside its own
+  # file and was `fixed` by a paragraph containing the words "extern fn".
+  # Found at Phase 17 Part 2f, when rewriting one of those sentences moved a
+  # row.  `strip-comments` keeps string literals, so a name inside an
+  # `@export(.{ .name = "..." })` still counts.
+  (each path (tools/src-files)
+    (put out path (tools/strip-comments (slurp path))))
   out)
 
 (defn- word-hits
@@ -222,12 +235,17 @@
     (def name (d :name))
     (def tags @{})
     (when (get foreign name) (put tags "host" true))
-    (when (string/has-suffix? "/abi.zig" (d :file)) (put tags "host" true))
+    # The three host-header translations are the `abi.zig` files inside the
+    # runtime -- `os/`, `net/`, `filewatch/`. `api/abi.zig` is the module
+    # boundary and is not one of them, so the suffix alone is not the test.
+    (when (and (string/has-prefix? "runtime/" (d :file))
+               (string/has-suffix? "/abi.zig" (d :file)))
+      (put tags "host" true))
     (when (get compiler-fixed name) (put tags "abi" true))
     # A layout with a member typed out of the file's `@cImport` is the
     # platform's whatever its own name is: `net.zig`'s `OptValue` holds a
     # `struct_ip_mreq` and its bytes go to `setsockopt`.
-    (let [text (get texts (string "src/zig/" (d :file)) "")
+    (let [text (get texts (string "src/" (d :file)) "")
           at (string/find (string "const " name " = extern") text)]
       (when at
         (def close (or (string/find "\n};" text at) (length text)))
@@ -346,7 +364,8 @@
 
   **It never writes the live tree.** It copies the repository into a scratch
   directory of its own, strips there and builds there. An earlier version
-  edited `src/zig` in place and restored it from a fixed `/tmp` backup through
+  edited the working tree in place and restored it from a fixed `/tmp` backup
+  through
   a `defer`, which covered ordinary control flow and nothing else: a killed or
   crashed run left the tree stripped or, worse, half-restored, and two
   concurrent runs shared one backup. The tree is normally dirty mid-increment,
@@ -387,12 +406,12 @@
   # and leaving the scratch tree behind fills /tmp a gigabyte at a time.
   (def decls (declarations))
   (defer (tools/rm-rf workdir)
-    (each path (tools/zig-files (string workdir "/src/zig"))
+    (each path (tools/zig-files (string workdir "/src"))
       (def text (slurp path))
       (def lines (string/split "\n" text))
       (var touched false)
       (each d decls
-        (when (and (= (string workdir "/src/zig/" (d :file)) path)
+        (when (and (= (string workdir "/src/" (d :file)) path)
                    (not (get compiler-fixed (d :name))))
           (def i (dec (d :line)))
           (def a (string "const " (d :name) " = extern "))

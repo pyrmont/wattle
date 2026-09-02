@@ -113,7 +113,7 @@ use site rather than as a missing symbol at the declaration. `@hasDecl` says
 yes. The same pass demoted `_IOW`, and with it `FIONBIO`, to a
 `@compileError` that only fires if something names it. So a cross-compile is
 the only thing that finds either, and the fix is a restatement in Zig with a
-`comptime` assertion on `@offsetOf` to keep it honest -- `src/zig/net/abi.zig`
+`comptime` assertion on `@offsetOf` to keep it honest -- `src/runtime/net/abi.zig`
 has both.
 
 That file is one of the tree's three *host* translations, with `os/abi.h` and
@@ -128,7 +128,7 @@ strongest of them: Rosetta.** An `x86_64-macos` build *runs* on Apple silicon,
 suites and contracts and all, so `zig build -Dtarget=x86_64-macos` followed by
 `zig build test` executes a second architecture rather than merely compiling
 one. That is how SysV64's calling convention stopped being unvalidated here --
-`src/zig/README.md` had recorded for four parts that "end-to-end SysV calls
+`src/README.md` had recorded for four parts that "end-to-end SysV calls
 remain unvalidated here" -- and it costs about 46 seconds an entry. Use it
 whenever the thing under test is architecture-specific and not merely
 platform-specific. It does not replace the musl and Windows cross-compiles: it

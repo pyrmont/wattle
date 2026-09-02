@@ -9,11 +9,12 @@
 //! ## The scope is not a formality
 //!
 //! A raise consults `vm.return_reg` to decide where it is going.
-//! `janet_signal_plan` answers `TOP_LEVEL` when that pointer is null, and a
-//! `TOP_LEVEL` raise ends the process rather than reporting — so a contract
-//! that means to *observe* a raise has to open a scope first, even though
-//! nothing jumps any more. `janet_try_init` is what points `return_reg` at a
-//! payload slot; `janet_restore` puts back what was there.
+//! `signal.zig`'s `signalPlan` answers `TOP_LEVEL` when that pointer is null,
+//! and a `TOP_LEVEL` raise ends the process rather than reporting — so a
+//! contract that means to *observe* a raise has to open a scope first, even
+//! though nothing jumps any more. `signal_core.tryInit` is what points
+//! `return_reg` at a payload slot; `signal_core.restore` puts back what was
+//! there. `raised` and `abiRaised` below are the two lines of that.
 //!
 //! It is worth restating because the natural assumption is the opposite one:
 //! that the scope went with the `setjmp`. The `setjmp` was never the scope,
@@ -157,8 +158,8 @@ pub const Raise = struct {
 ///     const r = harness.raised(subsystems.args.getBytes, .{ argv, 0 }).?;
 ///     expect(r.says("bad slot #0, expected bytes, got nil"));
 ///
-/// The payload is read before `janet_restore` runs, because restoring is what
-/// puts the outer scope's return register back.
+/// The payload is read before `signal_core.restore` runs, because restoring is
+/// what puts the outer scope's return register back.
 pub fn raised(function: anytype, args: anytype) ?Raise {
     var state: vm_state.TryState = undefined;
     signal_core.tryInit(&state);
@@ -174,9 +175,9 @@ pub fn raised(function: anytype, args: anytype) ?Raise {
 ///
 /// `vm/state.zig`'s `current()` is the owner's accessor, and a contract is
 /// inside the compilation, so it can call it. There is no second view to
-/// compare it against: `janet_vm` is not a symbol, so no file reaches the
-/// storage through the symbol table and no contract can put two spellings of
-/// one address on either side of an `==`.
+/// compare it against: the storage is not a symbol, so no file reaches it
+/// through the symbol table and no contract can put two spellings of one
+/// address on either side of an `==`.
 pub fn vm() *vm_state.Vm {
     return vm_state.current();
 }
@@ -188,10 +189,10 @@ pub fn vm() *vm_state.Vm {
 /// reads is the VM's `c_raised`, and a contract inside the compilation can
 /// read it directly.
 ///
-/// The report has to be taken **inside** the scope. `janet_restore` aborts on
-/// an outstanding one, which is what makes a leaked report surface at a scope
-/// boundary rather than at the raise, and it would fire here rather than
-/// answering the question asked.
+/// The report has to be taken **inside** the scope. `signal_core.restore`
+/// aborts on an outstanding one, which is what makes a leaked report surface
+/// at a scope boundary rather than at the raise, and it would fire here rather
+/// than answering the question asked.
 ///
 /// Reach for `raised` instead wherever the subject is a Zig function.
 pub fn abiRaised(abi: anytype, args: anytype) ?Raise {
@@ -208,8 +209,8 @@ pub fn abiRaised(abi: anytype, args: anytype) ?Raise {
 
 /// A core cfunction by name, with the calling convention it actually has.
 ///
-/// `janet_resolve_core` answers a `Value` holding a `CFunction`, which is
-/// a pointer to a raising Zig function rather than to a C one.
+/// `registry.resolveCore` answers a `Value` holding a `CFunction`, which is a
+/// pointer to a raising Zig function rather than to a C one.
 /// `raise.cfunction` is the cast that says so.
 pub fn core(name: [*:0]const u8) raise.CFunction {
     const val = registry.resolveCore(name);
@@ -242,7 +243,7 @@ pub const has_ev = config.ev;
 
 /// One Janet form, run in a fiber of its own and driven to completion.
 ///
-/// `janet_dostring` evaluates each *top level* form in its own fiber and does
+/// `env.zig`'s `dostring` evaluates each *top level* form in its own fiber and does
 /// not drive the event loop, so a form that spawns a process and then waits on
 /// it can outlive the wait that follows: the spawn is scheduled, the wait
 /// suspends, `dostring` returns, and the next form runs against a fiber that
@@ -253,8 +254,8 @@ pub const has_ev = config.ev;
 /// It is here because two contracts need it: `os_process` and `os_surface`,
 /// the two whose subjects spawn.
 /// The fiber is rooted for the length of the run: it is reachable from the
-/// scheduler while it is queued, but not between `janet_fiber` and
-/// `janet_schedule`, and the compile of the *next* contract's source is an
+/// scheduler while it is queued, but not between `fibers.new` and
+/// `ev.schedule`, and the compile of the *next* contract's source is an
 /// allocation that can collect.
 pub fn inFiber(environment: *tables.Table, source: []const u8) void {
     var buffer: [16384]u8 = undefined;
@@ -298,7 +299,7 @@ pub inline fn isType(val: repr.Value, want: anytype) bool {
     return repr.checkType(val, want);
 }
 
-/// `janet_equals` as a predicate, for the same reason as `isType`.
+/// `order.equals` as a predicate, for the same reason as `isType`.
 pub inline fn equals(left: repr.Value, right: repr.Value) bool {
     return order.equals(left, right);
 }
@@ -346,7 +347,7 @@ pub fn integerIs(val: repr.Value, expected: i32) bool {
 }
 
 /// The same for the three string-like types, which a contract has to tell
-/// apart: `janet_unwrap_string` will happily read a keyword.
+/// apart: `wrap.toString` will happily read a keyword.
 pub fn stringValueIs(val: repr.Value, expected: [*:0]const u8) bool {
     return isType(val, repr.Tag.string) and stringIs(wrap.toString(val), expected);
 }
@@ -392,14 +393,14 @@ pub fn coreOptional(name: [*:0]const u8) ?raise.CFunction {
     return raise.cfunction(wrap.toCfunction(val));
 }
 
-/// `janet_cstrcmp` as a predicate, which is how every contract wants it.
+/// `utils.cstrcmp` as a predicate, which is how every contract wants it.
 pub fn stringIs(string: strings.String, expected: [*:0]const u8) bool {
     return utils.cstrcmp(string, expected) == 0;
 }
 
 /// The compiler's growable vector, spelled the way a contract wants it.
 ///
-/// The arithmetic is `src/zig/scratch_vector.zig`'s; this is the element type
+/// The arithmetic is `src/runtime/scratch_vector.zig`'s; this is the element type
 /// The scratch vector, for a contract that wants one without naming the
 /// allocator at every call.
 ///
@@ -420,11 +421,11 @@ pub const vector = struct {
         return v.capacity;
     }
 
-    /// `janet_v_push`. Takes the vector *variable* rather than its value,
-    /// because growing it moves the allocation.
+    /// Takes the vector *variable* rather than its value, because growing it
+    /// moves the allocation.
     pub const push = scratch_vector.push;
 
-    /// `janet_v_empty`: the count goes to zero and the allocation stays.
+    /// The count goes to zero and the allocation stays.
     pub fn empty(v: anytype) void {
         v.shrinkRetainingCapacity(0);
     }
@@ -438,16 +439,16 @@ pub const vector = struct {
         v.items.len = n;
     }
 
-    /// `janet_v_free`. A vector belongs to the scratch allocator rather than
-    /// to the collector.
+    /// A vector belongs to the scratch allocator rather than to the
+    /// collector.
     pub const free = scratch_vector.free;
 };
 
-/// `fiber.h`'s frame macros, which `@cImport` does not translate.
+/// A fiber's stack frames, as a contract reaches them.
 ///
-/// `janet_stack_frame` is the cast from a stack slot back to the header that
-/// precedes it, and `janet_fiber_frame` is that composed with the fiber's
-/// current frame index. Three contracts need them: `vm_lifecycle` to build a
+/// `at` is the cast from a stack slot back to the header that precedes it --
+/// `fibers.stackFrame`'s arithmetic -- and `current` is that composed with the
+/// fiber's own frame index. Three contracts need them: `vm_lifecycle` to build a
 /// frame to decode, `vm_entry` to read the program counter a step stopped at,
 /// and `vm_calls` to place arguments where `JOP_CALL` would have left them.
 ///
@@ -456,13 +457,13 @@ pub const vector = struct {
 /// would change a contract that is verified capable of failing in order to
 /// change nothing, which is the same call `heap` records one declaration up.
 pub const frame = struct {
-    /// `janet_stack_frame(fiber->data + index)`.
+    /// The frame header below the slot at `index`.
     pub fn at(fiber: *fibers.Fiber, index: i32) *vm_state.StackFrame {
         const base = fiber.data.? + @as(usize, @intCast(index));
         return @ptrCast(@alignCast(base - @as(usize, @intCast(constants.JANET_FRAME_SIZE))));
     }
 
-    /// `janet_fiber_frame(fiber)`: the frame the fiber is stopped in.
+    /// The frame the fiber is stopped in.
     pub fn current(fiber: *fibers.Fiber) *vm_state.StackFrame {
         return at(fiber, fiber.frame);
     }
@@ -470,10 +471,8 @@ pub const frame = struct {
 
 /// The collector's two heap lists, as a contract reads them.
 ///
-/// `janet_gc_header`, `janet_gc_type` and their kin are function-like macros
-/// over `GCObject`, which no translation carries across; `abi.zig` owns
-/// the head arithmetic for all of them. Four contracts need the same three
-/// lines to answer the same two questions: what memory type did the
+/// `abi.zig` owns the head arithmetic these read. Four contracts need the same
+/// three lines to answer the same two questions: what memory type did the
 /// constructor stamp, and which list did that put the block on. Those two
 /// questions are how a container contract sees the collector at all.
 ///
@@ -483,20 +482,19 @@ pub const frame = struct {
 /// to change nothing.
 pub const heap = struct {
     /// Every collectable block begins with its `GCObject`, so the block
-    /// pointer *is* the header. `janet_gc_header` is that cast and nothing
-    /// else.
+    /// pointer *is* the header, and this is that cast and nothing else.
     pub fn headerOf(block: ?*anyopaque) *boundary.GCObject {
         return @ptrCast(@alignCast(block.?));
     }
 
-    /// `janet_gc_type`: the low byte of the flags word, which is what decides
-    /// which of `janet_deinit_block`'s cases will eventually free the block
-    /// and which of the two lists it is on.
+    /// The low byte of the flags word, which is what decides which of
+    /// `gc/sweep.zig`'s `deinitBlock` cases will eventually free the block and
+    /// which of the two lists it is on.
     pub fn memoryType(block: ?*anyopaque) gc_alloc.MemoryType {
         return gc_alloc.memoryTypeOf(headerOf(block));
     }
 
-    /// `janet_gc_reachable`: the mark bit, which the sweep reads and which a
+    /// The mark bit, which the sweep reads and which a
     /// freshly allocated block must not have set — an allocation that arrived
     /// pre-marked would survive one collection it had no right to.
     pub fn reachable(block: ?*anyopaque) bool {

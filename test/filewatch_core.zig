@@ -6,8 +6,8 @@
 //! `test/suite-filewatch.janet` drives a real watcher over a real directory,
 //! which is what it is for. Five things have no Janet spelling at all:
 //!
-//!  - **The abstract type's callback set.** `janet_filewatch_at` is
-//!    `JANET_ATEND_GCMARK`, so a mark callback and nothing else. From Janet
+//!  - **The abstract type's callback set.** `filewatch.watcherType` has a
+//!    mark callback and nothing else. From Janet
 //!    only the *name* is visible, through `(type watcher)`; that the `get`,
 //!    `put`, `tostring`, `compare`, `hash`, `next`, `call`, `length` and
 //!    `bytes` slots are all null is what makes a watcher opaque, and it is
@@ -106,7 +106,7 @@ fn expectRaise(name: [*:0]const u8, argv: []repr.Value, message: []const u8) voi
     raises_seen += 1;
 }
 
-/// For a message whose tail is the host's own wording: `janet_ev_lasterr`
+/// For a message whose tail is the host's own wording: `ev/stream.evLasterr`
 /// renders `strerror`, which differs by platform and by libc, and pinning it
 /// would make this contract a test of the C library. An abstract rendered by
 /// `%v` carries an address, which is the other reason.
@@ -143,7 +143,7 @@ fn callCore(name: [*:0]const u8, argv: []repr.Value) repr.Value {
 // Registration
 // ==========================================================================
 
-/// Every name `janet_lib_filewatch` registers, in the order it registers them.
+/// Every name `filewatch.libFilewatch` registers, in the order it registers them.
 /// The order is not itself a contract -- a table has none -- but the list is: a
 /// binding that stops being registered is what this catches, and a
 /// registration table is the one place a cfunction can go missing without a
@@ -372,7 +372,7 @@ fn theLifecycle(chan: repr.Value) void {
     defer _ = gc_alloc.gcunroot(watcher);
 
     // A path the host cannot open. The two backends word this differently --
-    // inotify reports `janet_ev_lasterr` bare and kqueue prefixes it -- and
+    // inotify reports `evLasterr` bare and kqueue prefixes it -- and
     // both are the host's `strerror` after that.
     {
         var argv = [_]repr.Value{

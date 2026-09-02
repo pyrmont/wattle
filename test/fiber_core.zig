@@ -1,7 +1,7 @@
 //! Behavioral contract for the fiber stack-frame machinery.
 //!
 //! Almost everything here is exercised constantly by the Janet suites — every
-//! function call in the language goes through `janet_fiber_funcframe` — so
+//! function call in the language goes through `fibers.funcframe` — so
 //! what this file is for is the edges the suites reach only by accident: the
 //! arity boundaries, an empty variadic tail against a non-empty one, a tail
 //! call that has to move its arguments down over the frame it is replacing,
@@ -10,19 +10,17 @@
 //!
 //! ## The four pushes have no abi left
 //!
-//! Each kernel raises "stack overflow" by returning `raise.Error`, and beside
-//! each sat an abi -- `janet_fiber_push` and its three siblings -- that turned
-//! the raise back into what a C caller expects. A contract on the far side of
-//! a symbol table has to test both, because they are two mechanisms carrying
-//! one decision.
+//! Each of `fibers.push`, `pushn`, `push2` and `push3` raises "stack overflow"
+//! by returning `raise.Error`, and nothing wraps that into a report. A
+//! contract on the far side of a symbol table would have to test both forms,
+//! because they would be two mechanisms carrying one decision.
 //!
 //! All four are gone: the interpreter reaches the kernels by import, and a C
 //! contract was the last caller of each.
 //!
 //! **This file predicted that and had to be edited for it**, which is the
-//! point worth keeping. The abi case here was the last caller of
-//! `janet_fiber_push` in the whole tree -- a contract testing an abi that
-//! existed for nobody -- so deleting the abi turned it into a compile error
+//! point worth keeping. The abi case here was the last caller of the push abi
+//! in the whole tree -- a contract testing an abi that existed for nobody -- so deleting the abi turned it into a compile error
 //! naming its own line. An abi whose only remaining caller is the contract
 //! that tests it is an abi with no callers; the test is not a use.
 //! So the overflow section reaches four kernels by import, where the original
@@ -72,10 +70,10 @@ const frame_size: i32 = constants.JANET_FRAME_SIZE;
 
 var test_env: *tables.Table = undefined;
 
-// `fiber.h`'s three frame macros, which `@cImport` does not translate.
-// `janet_stack_frame` is the cast, `janet_fiber_frame` the composition, and
-// `janet_fiber_set_status` a read-modify-write over the status field. Six
-// lines here rather than at each of the twenty sites below.
+// The three frame helpers this file needs: the cast from a stack slot to the
+// header below it, that composed with the fiber's frame index, and a
+// read-modify-write over the status field. Six lines here rather than at each
+// of the twenty sites below.
 
 fn frameAt(fiber: *fibers.Fiber, index: i32) *vm_state.StackFrame {
     const base = fiber.data.? + @as(usize, @intCast(index));
@@ -96,9 +94,9 @@ fn slot(fiber: *fibers.Fiber, index: i32) repr.Value {
 
 // ------------------------------------------------------- without a runtime
 
-/// `janet_fiber_setcapacity` is reachable without `janet_init`: it resizes a
-/// plain allocation and charges the collector's byte budget, and touches
-/// nothing else. Testing it here keeps the arithmetic visible instead of
+/// `fibers.setcapacity` is reachable without a live VM: it resizes a plain
+/// allocation and charges the collector's byte budget, and touches nothing
+/// else. Testing it here keeps the arithmetic visible instead of
 /// buried under a live heap whose budget is moving for other reasons.
 fn setcapacityChargesTheBudget() void {
     var fiber: fibers.Fiber = std.mem.zeroes(fibers.Fiber);
@@ -140,8 +138,8 @@ fn chargeChildBudget() void {
 
 /// The budget belongs to the calling thread's VM. This is the one property the
 /// port could plausibly get wrong while still linking and passing everything
-/// else: reaching a process-wide `janet_vm` instead of a thread-local one is
-/// invisible until two threads run at once.
+/// else: reaching a process-wide VM instead of a thread-local one is invisible
+/// until two threads run at once.
 fn theBudgetIsPerThread() !void {
     if (!has_threads) return;
 
@@ -195,8 +193,8 @@ fn theFuncframeLayout(add: *functions.Function) void {
     expect(frame.pc == add.def.?.bytecode);
     expect(frame.env == null);
     expect(frame.prevframe == 0);
-    // `janet_fiber_reset` adds ENTRANCE after the frame is pushed, so the
-    // frame itself must have been left with no other flags set.
+    // `fibers.reset` adds ENTRANCE after the frame is pushed, so the frame
+    // itself must have been left with no other flags set.
     expect(@as(i32, @bitCast(frame.flags)) == constants.JANET_STACKFRAME_ENTRANCE);
 
     expect(harness.integerIs(slot(fiber, fiber.frame), 11));
@@ -204,9 +202,9 @@ fn theFuncframeLayout(add: *functions.Function) void {
     assertNilFrom(fiber, fiber.frame + 2, fiber.frame + add.def.?.slotcount);
 }
 
-/// A rejected arity must leave the fiber exactly as it was, because callers
-/// use the return value to implement `janet_pcall` rather than to recover from
-/// a partially built frame.
+/// A rejected arity must leave the fiber exactly as it was, because
+/// `vm/entry.zig`'s `pcall` is built on the return value rather than on
+/// recovering from a partially built frame.
 fn theFuncframeArityRejection(add: *functions.Function) raise.Raising(void) {
     const args = [_]repr.Value{
         harness.wrapInteger(1),
@@ -497,8 +495,8 @@ fn thePushBounds(add: *functions.Function) raise.Raising(void) {
     const saved = fiber.stacktop;
     const zero = harness.wrapInteger(0);
 
-    // An abi case for `janet_fiber_push` stood here; the header says why it
-    // could not survive the abi.
+    // An abi case for the push stood here; the header says why it could not
+    // survive the abi's removal.
     fiber.stacktop = std.math.maxInt(i32);
     expect(harness.raised(fibers.push, .{ fiber, zero }).?.says("stack overflow"));
 
@@ -527,13 +525,13 @@ fn thePushBounds(add: *functions.Function) raise.Raising(void) {
 /// `JOP_PUSH_ARRAY` is the one push whose count comes from a value rather than
 /// from the instruction, so an array claiming `INT32_MAX` elements drives
 /// `pushn` past its bound without the contract having to reach inside a
-/// running fiber. Nothing dereferences the claim — `janet_indexed_view` copies
+/// running fiber. Nothing dereferences the claim — `args.indexedView` copies
 /// the pointer and the count, and `pushn` checks the count first — but the
-/// collector would, so the array exists only inside a `janet_gclock`.
+/// collector would, so the array exists only inside a `gc.gclock`.
 ///
 /// What this observes that the section above cannot: the raise leaves
-/// `run_vm`'s frame as a returned error, crosses the loop, and arrives at
-/// `janet_pcall` as a signal.
+/// `runVm`'s frame as a returned error, crosses the loop, and arrives at
+/// `vm_entry.pcall` as a signal.
 fn anOverflowThroughTheInterpreter() void {
     const splice = compileFunction("(fn [f xs] (f ;xs))");
     const identity = compileFunction("(fn [& xs] xs)");
@@ -562,7 +560,7 @@ fn anOverflowThroughTheInterpreter() void {
 
 // --------------------------------------------------- function environments
 
-/// `janet_env_valid` exists for unmarshalled environments, which record their
+/// `functions.envValid` exists for unmarshalled environments, which record their
 /// stack offset negated and are trusted only if a live frame of the fiber they
 /// name still matches them in offset, identity, and slot count. Each of those
 /// three is checked separately, because a validator that ignored one would

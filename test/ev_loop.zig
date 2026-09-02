@@ -6,10 +6,10 @@
 //! `test/suite-ev.janet` has 742 assertions and every one of them goes through
 //! the thirty `ev/` bindings. Five areas have no Janet spelling at all:
 //!
-//!  - **The embedder's channel API.** `janet_channel_make`,
-//!    `janet_channel_give` and `janet_channel_take` are the non-blocking mode
-//!    (`mode == 2`) of the push and pop, which `ev/give` and `ev/take` never
-//!    select. Only the supervisor path inside the loop reaches it otherwise,
+//!  - **The embedder's channel API.** `channel.channelMake`,
+//!    `channel.channelGive` and `channel.channelTake` are the non-blocking
+//!    mode (`Caller.detached`) of the push and pop, which `ev/give` and
+//!    `ev/take` never select. Only the supervisor path inside the loop reaches it otherwise,
 //!    and then only on a fiber that has already failed.
 //!  - **`makeStreamExt`.** Type-punning a stream -- a larger allocation and a
 //!    caller-supplied method table -- is what `net.zig` does and what no Janet
@@ -17,11 +17,11 @@
 //!  - **`makePipe`'s four modes.** Janet reaches mode 1 through `os/spawn` and
 //!    nothing else; the descriptor flags each mode sets are invisible from
 //!    Janet even then.
-//!  - **`janet_ev_default_threaded_callback`'s nine tags.** `ev/thread` uses
-//!    two of them.
-//!  - **The abis.** `janet_channel_give`, `janet_marshal` and their kin are
-//!    published, and what an embedder sees when one refuses is a report rather
-//!    than an error. `harness.abiRaised` is the instrument for that half and
+//!  - **`ev.evDefaultThreadedCallback`'s nine tags.** `ev/thread` uses two of
+//!    them.
+//!  - **The abis.** `channel.channelGiveAbi`, `marsh.marshalAbi` and their kin
+//!    report rather than raise, and a report is what an embedder sees when one
+//!    refuses. `harness.abiRaised` is the instrument for that half and
 //!    `harness.raised` for the other.
 //!
 //! ## What it deliberately does not do
@@ -41,11 +41,11 @@
 //!  - a protected scope so that a C body could raise into it. `harness.raised`
 //!    is that, and the section below tests it directly.
 //!  - three shims that called an abstract type's raising callbacks on C's
-//!    behalf. `janet_stream_type` is an `abstract_type.AbstractType` here, so
-//!    the callbacks are called and the error is handled.
+//!    behalf. `ev/stream.streamType` is an `abstract_type.AbstractType` here,
+//!    so the callbacks are called and the error is handled.
 //!  - an adapter that turned a C cfunction into one the runtime could call. A
 //!    cfunction written in Zig needs no adapter; `raise.stored` is the cast
-//!    that puts one in a `JanetMethod` row or a `janet_def`.
+//!    that puts one in an `abi.Method` row or a `registry.def`.
 //!
 //! **The section that tested the shim tests the harness instead.** Deleting it
 //! outright would drop the only direct check of the mechanism sixty-three
@@ -135,10 +135,8 @@ fn returnsQuietly() raise.Raising(void) {
     return;
 }
 
-/// `harness.raised` is what `janet_contract_protect` was, and it is the
-/// mechanism every contract in this driver rests on. Nothing else asserts it
-/// directly, so the three claims the C section made about the shim are kept
-/// and pointed here.
+/// `harness.raised` is the mechanism every contract in this driver rests on.
+/// Nothing else asserts it directly, so its three claims are made here.
 fn theProtectedScope() void {
     // The returning arm answers null.
     expect(harness.raised(returnsQuietly, .{}) == null);
@@ -150,8 +148,8 @@ fn theProtectedScope() void {
 
     // Scopes nest, and the inner one does not swallow the outer's state. This
     // is the claim that is about the scope rather than about the call: an
-    // inner `janet_try_init` moves `vm.return_reg` and `janet_restore`
-    // has to put back what was there, not null.
+    // inner `signal.tryInit` moves `vm.return_reg` and `signal.restore` has to
+    // put back what was there, not null.
     const outer = harness.raised(struct {
         fn body() raise.Raising(void) {
             expect(harness.raised(returnsQuietly, .{}) == null);
@@ -251,9 +249,8 @@ fn theChannelGetters() void {
     expect(try_(channel.getChannel(&argv, 0)) == chan);
 
     // `optChannel` takes the default for a missing argument and for nil, and
-    // the channel for anything else. The count travels in the slice: the abi
-    // that took `(argv, argc, n)` is `capi.zig`'s `janet_optchannel`, and what
-    // is left here reads `argv.len`.
+    // the channel for anything else. The count travels in the slice rather
+    // than as a separate `argc`, so this reads `argv.len`.
     expect(try_(ev_channel.optChannel(argv[0..1], 1, null)) == null);
     expect(try_(ev_channel.optChannel(argv[0..2], 1, null)) == null);
     expect(try_(ev_channel.optChannel(argv[0..2], 0, null)) == chan);
@@ -313,9 +310,9 @@ fn theStreamExtension() void {
     expect(boundary.abstractHead(ps).size == @sizeOf(ProbeStream));
 
     // The abstract carries the type this file imports rather than some other
-    // registration of the same name. Asserted through `janet_abstract_type`,
-    // whose answer is a run-time value: two declarations compared at comptime
-    // are never equal whatever the linker did.
+    // registration of the same name. Asserted through the head's own `type`
+    // pointer, which is a run-time value: two declarations compared at
+    // comptime are never equal whatever the linker did.
     expect(boundary.abstractHead(ps).type == &stream.streamType);
 
     // The getter reaches the caller's table rather than the default one.
@@ -489,8 +486,8 @@ fn thePipeModes() void {
 }
 
 fn theLastError() void {
-    // `janet_ev_lasterr` reads errno and renders it, with no side effect of
-    // its own -- the same errno gives the same string twice.
+    // `evLasterr` reads errno and renders it, with no side effect of its own
+    // -- the same errno gives the same string twice.
     std.c._errno().* = @intFromEnum(std.posix.E.BADF);
     const first = stream.evLasterr();
     const second = stream.evLasterr();
@@ -554,16 +551,17 @@ fn thePostedEventRoundTrip() void {
     expect(ev_mod.loopDone());
 }
 
-/// A null callback is what `loop1Interrupt` posts, to wake a loop that is
-/// blocked in the backend and do nothing else.
+/// A null callback is an event that wakes a loop blocked in the backend and
+/// does nothing else. `ev.Callback` is optional, and this is what exercises
+/// the null arm of it.
 ///
 /// **The reference it takes is given back by the turn that delivers it**, on
 /// every backend. `evPostEvent` raises the listener count unconditionally, so
 /// that the loop cannot decide it is done while an event is in flight; a
 /// handler that lowered it only when there was a callback to run would leave
 /// the count one higher for ever, and a loop that was interrupted once would
-/// never report done again. One turn is what this drives, rather than
-/// `janet_loop`, because the assertion is about that turn.
+/// never report done again. One turn is what this drives, rather than `loop`,
+/// because the assertion is about that turn.
 fn theNullCallback() void {
     expect(ev_mod.loopDone());
     const msg = std.mem.zeroes(ev_mod.GenericMessage);
@@ -573,7 +571,7 @@ fn theNullCallback() void {
     expect(ev_mod.loopDone());
 }
 
-/// `janet_ev_default_threaded_callback` with a null fiber is the cleanup-only
+/// `ev.evDefaultThreadedCallback` with a null fiber is the cleanup-only
 /// path: nothing is scheduled, and **the payload is released for the two tags
 /// that own one**.
 ///
@@ -757,8 +755,8 @@ fn theCancelOfANonTask() void {
     expect(!try_(channel.channelTake(sup, &event)));
 }
 
-/// `janet_schedule_soon` puts a task at the head of the spawn queue where
-/// `janet_schedule` appends. Nothing in Janet chooses between them.
+/// `ev.scheduleSoon` puts a task at the head of the spawn queue where
+/// `ev.schedule` appends. Nothing in Janet chooses between them.
 fn theScheduleSoonOrder() void {
     const out = doString(
         \\(def log @[])
@@ -792,8 +790,8 @@ fn theScheduleSignalOrder() void {
     const tup = wrap.toTuple(out);
     const log = wrap.toArray(tup[0]);
 
-    // `janet_schedule_signal` appends where `janet_schedule_soon` prepends,
-    // and nothing in Janet chooses between the two.
+    // `scheduleSignal` appends where `scheduleSoon` prepends, and nothing in
+    // Janet chooses between the two.
     ev.scheduleSignal(wrap.toFiber(tup[1]), wrap.fromNil(), boundary.Signal.ok);
     ev.scheduleSoon(wrap.toFiber(tup[2]), wrap.fromNil(), boundary.Signal.ok);
     raise.reported(ev_mod.loop());
@@ -874,7 +872,7 @@ fn theCancelAppends() void {
 
 /// A stream carries a file descriptor, so both directions refuse to work
 /// without `JANET_MARSHAL_UNSAFE` -- and the refusal reaches an embedder as a
-/// report, which is what `janet_marshal` is. `ev/thread` is the only thing in
+/// report, which is what `marsh.marshalAbi` leaves. `ev/thread` is the only thing in
 /// Janet that marshals unsafely, and it never marshals a bare stream, so
 /// neither the refusal nor the success path has a Janet spelling.
 fn theStreamMarshalling() void {
@@ -946,8 +944,8 @@ fn theStreamMarshalling() void {
 // What only the queue holds
 // ==========================================================================
 
-/// `janet_ev_mark` walks the spawn queue and marks each task's *value* as well
-/// as its fiber. The fiber is redundant -- scheduling also puts it in
+/// `ev.evMark` walks the spawn queue and marks each task's *value* as well as
+/// its fiber. The fiber is redundant -- scheduling also puts it in
 /// `vm.ev.active_tasks`, which is a root -- but the resume value is not held
 /// anywhere else, so the queue's walk is the only thing keeping it alive.
 ///
@@ -983,12 +981,11 @@ fn theMarkedTaskValues() void {
     expect(payloadIs(got, "only-in-the-queue"));
 }
 
-/// `janet_loop` returns when `janet_loop_done` says there is nothing left, and
-/// a task suspended on a timer counts as something left -- through
-/// `is_suspended`, which raises the listener count on the way out of `loop1`.
-/// Every Janet test reaches this from *inside* the loop, where the caller's own
-/// fiber keeps it alive; only a caller outside can watch `janet_loop` decide
-/// for itself.
+/// `ev.loop` returns when `ev.loopDone` says there is nothing left, and a task
+/// suspended on a timer counts as something left -- through `is_suspended`,
+/// which raises the listener count on the way out of `loop1`. Every Janet test
+/// reaches this from *inside* the loop, where the caller's own fiber keeps it
+/// alive; only a caller outside can watch `loop` decide for itself.
 fn theLoopWaitsForASleepingTask() void {
     expect(ev_mod.loopDone());
     const out = doString(
@@ -1016,7 +1013,7 @@ fn theLoopWaitsForASleepingTask() void {
 // The threaded flag, and optchannel's boundary
 // ==========================================================================
 
-/// `janet_channel_make_threaded` differs from `janet_channel_make` in one
+/// `channel.channelMakeThreaded` differs from `channel.channelMake` in one
 /// field, and no binding reads it. What reads it is the packing: a threaded
 /// channel marshals anything that is not one of five self-contained types on
 /// the way in and unmarshals it on the way out, and an unthreaded one stores
@@ -1057,9 +1054,10 @@ fn theThreadedFlag() void {
     expect(std.mem.eql(u8, copy.slice()[0..length], original.slice()[0..length]));
 }
 
-/// `janet_optchannel` takes its default when the argument is absent or nil, and
-/// the channel otherwise. "Absent" is `argc > n`, and the boundary is the case
-/// where the argument *exists* in the array but the count says it does not.
+/// `channel.optChannel` takes its default when the argument is absent or nil,
+/// and the channel otherwise. "Absent" is `argv.len > n`, and the boundary is
+/// the case where the argument *exists* in the array but the slice's length
+/// says it does not.
 fn theOptChannelBoundary() void {
     const chanv = doString("(ev/chan 1)");
     gc_alloc.gcroot(chanv);
@@ -1081,10 +1079,9 @@ fn theOptChannelBoundary() void {
 
 /// A value at the index that is not a channel is an argument error.
 ///
-/// Its other half was the `janet_getchannel` shim: the pointer-and-count to
-/// slice conversion and the report it left instead of an error. That entry
-/// point is not part of the published surface, so both went with it; what a
-/// Janet program can still observe is the refusal.
+/// `channel.getChannel` takes the argument slice and raises, so there is no
+/// pointer-and-count conversion and no report to consume; what a Janet program
+/// observes is the refusal.
 fn theWrongArgumentIsNotAChannel() void {
     const chanv = doString("(ev/chan 1)");
     gc_alloc.gcroot(chanv);

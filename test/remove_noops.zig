@@ -1,4 +1,4 @@
-//! Behavioral contract for `janet_bytecode_remove_noops`, the compaction pass
+//! Behavioral contract for `optimize.bytecodeRemoveNoops`, the compaction pass
 //! that deletes `JOP_NOOP` and repairs everything that pointed past one.
 //!
 //! Three tables index the bytecode by program counter, and all three have to
@@ -133,7 +133,7 @@ fn aFunctionWithNoNoopsIsUntouched() void {
 /// The runtime is initialised here and by nine sibling contracts it is not,
 /// which is a distinction this file had to make the hard way.
 ///
-/// `janet_bytecode_remove_noops` opens with `janet_smalloc` for its pc map, so
+/// `optimize.bytecodeRemoveNoops` opens with `gc.smalloc` for its pc map, so
 /// this subject reaches VM state even though it looks like pure bytecode
 /// arithmetic. Without an initialised runtime that call lands on whatever the
 /// previous contract's teardown left behind, which is how the no-argument

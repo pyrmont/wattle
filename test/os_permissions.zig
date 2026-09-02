@@ -22,9 +22,8 @@
 //!
 //! Validation happens above the kernels, in the argument layer, and a contract
 //! on the far side of a symbol table can only observe it by compiling a Janet
-//! closure with `janet_dostring` and calling it under `janet_pcall` -- three
-//! lines and a
-//! wrapper function per case, "so they stay off stderr". Here the cfunction is
+//! closure with `env.dostring` and calling it under `vm_entry.pcall` -- three
+//! lines and a wrapper function per case, "so they stay off stderr". Here the cfunction is
 //! called directly and the refusal is a value, so each case is one line and
 //! says which argument was rejected.
 

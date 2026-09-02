@@ -22,8 +22,8 @@
 //!
 //! ## One preserved quirk
 //!
-//! `os_stat.fieldLookup` replaced a `janet_cstrcmp`, which stops at a
-//! NUL shared by the key and the name. So a key whose own bytes end in NUL
+//! `os_stat.fieldLookup` keeps `utils.cstrcmp`'s rule, which stops at a NUL
+//! shared by the key and the name. So a key whose own bytes end in NUL
 //! still matches: `lookup("dev\0", 4)` is 0 rather than -1. That is deliberate
 //! and is asserted below so a port cannot tidy it away.
 
@@ -146,7 +146,7 @@ fn theFieldRegistry() void {
     expect(os_stat.fieldLookup("Dev", 3) == -1);
     expect(os_stat.fieldLookup("int-permission", 14) == -1);
 
-    // The preserved `janet_cstrcmp` quirk; see the header comment.
+    // The preserved `utils.cstrcmp` quirk; see the header comment.
     expect(os_stat.fieldLookup("dev\x00", 4) == 0);
 }
 

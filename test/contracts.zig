@@ -24,7 +24,7 @@
 //!
 //! ## The shape
 //!
-//! One file per subject, each with its own `janet_init`/`janet_deinit` pair so
+//! One file per subject, each with its own `vm_lifecycle.init`/`deinit` pair so
 //! that none inherits another's heap; they run in the order this file
 //! declares them; with no argument every compiled-in contract runs, and with
 //! one argument only the contract named runs, which is what `tools/testing/contract.sh`
@@ -52,7 +52,7 @@ const options = @import("options");
 
 // The runtime, pulled in for its `export`s rather than for its namespace.
 //
-// This line is what makes the binary a Janet. `src/zig/root.zig`
+// This line is what makes the binary a Janet. `src/root.zig`
 // emits every subsystem's `export`s from a container-level `comptime` block,
 // and a module nothing references is never analysed -- so without this,
 // `build.zig` hands the compilation a whole runtime and the link fails on
@@ -171,7 +171,7 @@ const contracts: []const Contract = blk: {
 ///
 /// **This exists because `leaks --atExit` cannot measure a contract that
 /// forks**, and three of the sixty-five do. That mode inserts
-/// `libLeaksAtExit.dylib`, which interposes `_exit` and `abort` with
+/// `/usr/lib/libLeaksAtExit.dylib`, which interposes `_exit` and `abort` with
 /// `kill(getpid(), SIGSTOP)` followed by the real one -- the stop is how the
 /// `leaks` process is told there is a heap to scan. A `fork()`ed child carries
 /// the dylib in its inherited image, stops itself the same way, and nothing

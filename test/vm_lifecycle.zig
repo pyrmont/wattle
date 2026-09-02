@@ -3,12 +3,12 @@
 //!
 //! Two subjects, because they share a lifecycle.
 //!
-//! **`janet_init`, `janet_deinit`, and the sandbox.** These are the first and
-//! last functions an embedder calls, and every other test binary in this tree
-//! depends on them working without ever looking at them: a suite that reaches
-//! `main` has already proved `janet_init` does *something*. What it has not
-//! proved is which fields of `janet_vm` are set, which are deliberately left
-//! alone, and what `janet_deinit` puts back — and those are the difference
+//! **`vm_lifecycle.init`, `vm_lifecycle.deinit`, and the sandbox.** These are
+//! the first and last functions an embedder calls, and every other test binary
+//! in this tree depends on them working without ever looking at them: a suite
+//! that reaches `main` has already proved `init` does *something*. What it has
+//! not proved is which fields of the VM are set, which are deliberately left
+//! alone, and what `deinit` puts back — and those are the difference
 //! between a host that can cycle the runtime and one that cannot. Every field
 //! `init` assigns is asserted here, in the state it leaves, and so is the
 //! subset `deinit` clears. A second full cycle runs afterwards, because a
@@ -21,16 +21,15 @@
 //! so it is pinned directly rather than through a standard-library function
 //! that happens to check a flag.
 //!
-//! **`janet_debug_frame`.** Formerly `doframe`. `debug/stack` is the only
-//! caller, and what it returns is a table whose keys are the runtime's answer
-//! to "where am I". The Janet suites call it and check almost nothing about it.
+//! **`debug.debugFrame`.** `debug/stack` is the only caller, and what it
+//! returns is a table whose keys are the runtime's answer to "where am I". The Janet suites call it and check almost nothing about it.
 //!
 //! ## What only a contract inside the compilation can do
 //!
 //! **The unregistered-cfunction case is unconditional.** Reading the cfunction
 //! registry entry without testing it for null makes decoding a cframe whose
-//! function was never passed through `janet_cfuns` a null dereference. This
-//! runtime consumes `janet_trace_frame`, which has the check.
+//! function was never registered a null dereference. This runtime consumes
+//! `debug.traceFrame`, which has the check.
 //!
 //! **There is no panic counter.** A C contract counted its `EXPECT_PANIC`s and
 //! compared the total at the end, because a case that silently stopped raising
@@ -87,8 +86,8 @@ fn eval(source: [*:0]const u8) repr.Value {
 
 /// The same refusal reached through the standard library rather than through
 /// the assert directly. Wrapped in a fiber rather than handed to
-/// `janet_dostring`, because `janet_dostring` prints a stack trace on the way
-/// out and catches the error itself.
+/// `env.dostring`, because `dostring` prints a stack trace on the way out and
+/// catches the error itself.
 fn expectSandboxRefusal(source: []const u8) void {
     var buffer: [512]u8 = undefined;
     const wrapped = std.fmt.bufPrintZ(&buffer, "(fiber/new (fn [] {s}) :ye)", .{source}) catch unreachable;
@@ -130,7 +129,7 @@ fn expectAbsent(built: repr.Value, key: [*:0]const u8) void {
     }
 }
 
-/// `janet_debug_frame`'s implementation. It is `raise.Raising(Janet)` because
+/// `debug.debugFrame`. It is `raise.Raising(Value)` because
 /// the trace decoding under it can reach an abstract's `tostring`; nothing in
 /// this file builds such a frame, so a raise here would be a defect rather
 /// than a case.
@@ -144,7 +143,7 @@ fn decode(f: *vm_state.StackFrame) repr.Value {
 // that calls it after a previous runtime was torn down by something other than
 // `deinit` — depends on that. Every field it sets is scribbled on first, so the
 // assertions below are about what init wrote rather than about what a freshly
-// zeroed `janet_vm` already held.
+// zeroed VM already held.
 
 var scribble_roots: [4]repr.Value = undefined;
 var scribble_bytes: [64]u8 = undefined;
@@ -193,8 +192,8 @@ fn theStateInitLeaves() raise.Raising(void) {
     expect(try vm_lifecycle.init() == 0);
 
     // The three that would otherwise be invisible: they are zero in a freshly
-    // zeroed `janet_vm`, so only the scribble above can tell an assignment
-    // from an assumption.
+    // zeroed VM, so only the scribble above can tell an assignment from an
+    // assumption.
     expect(harness.vm().gc.next_collection < 4242);
     expect(harness.vm().gc.weak_blocks == null);
     expect(harness.vm().gc.block_count == 1);
@@ -256,7 +255,7 @@ fn theStateInitLeaves() raise.Raising(void) {
     expect(harness.vm().stackn == 0);
     expect(harness.vm().auto_suspend == 0);
 
-    // The symbol cache belongs to `janet_symcache_init`, which `init` calls
+    // The symbol cache belongs to `symbols.cacheInit`, which `init` calls
     // after the collector's fields and before the first allocation.
     expect(harness.vm().symcache.entries != null);
     expect(harness.vm().symcache.count == 0);
@@ -266,22 +265,7 @@ fn theStateInitLeaves() raise.Raising(void) {
     vm_lifecycle.deinit();
 }
 
-/// What `deinit` puts back, and what it deliberately does not touch.
-/// What `janet_deinit` leaves behind, and it is asserted as *every pointer the
-/// teardown frees* rather than as the list of fields it happens to assign.
-///
-/// The difference is the whole point. This function used to enumerate the
-/// assignments in `deinit`, which means it was written from the implementation
-/// and could only ever agree with it -- so it said nothing about
-/// `scratch_mem` or the three traversal fields, the two things teardown freed
-/// and did not clear. A `janet_smalloc` between a `janet_deinit` and the next
-/// `janet_init` therefore wrote eight bytes through a freed pointer, and only
-/// glibc's allocator hardening ever said so.
-///
-/// So the rule this pins is the invariant and not the code: **anything
-/// teardown frees, teardown clears**, and `janet_init` assigning a field is
-/// what says the field is part of the reset.
-/// One level of nesting, so that `janet_equals` has to descend and therefore
+/// One level of nesting, so that `order.equals` has to descend and therefore
 /// has to push a traversal node. A flat pair is compared without ever growing
 /// the stack.
 fn deepen(inner: repr.Value) repr.Value {
@@ -290,6 +274,20 @@ fn deepen(inner: repr.Value) repr.Value {
     return wrap.fromTuple(tuples.end(t));
 }
 
+/// What `deinit` puts back, asserted as *every pointer the teardown frees*
+/// rather than as the list of fields it happens to assign.
+///
+/// The difference is the whole point. This function used to enumerate the
+/// assignments in `deinit`, which means it was written from the implementation
+/// and could only ever agree with it -- so it said nothing about
+/// `scratch_mem` or the three traversal fields, the two things teardown freed
+/// and did not clear. A `gc.smalloc` between a `deinit` and the next `init`
+/// therefore wrote eight bytes through a freed pointer, and only glibc's
+/// allocator hardening ever said so.
+///
+/// So the rule this pins is the invariant and not the code: **anything
+/// teardown frees, teardown clears**, and `init` assigning a field is what
+/// says the field is part of the reset.
 fn whatDeinitClears() raise.Raising(void) {
     var dummy: i32 = 0;
     expect(try vm_lifecycle.init() == 0);
@@ -487,7 +485,7 @@ fn aJanetFrame() void {
 }
 
 /// An anonymous function reports no name and still reports everything else,
-/// which is the classification `janet_trace_frame` calls NAME_ANONYMOUS and
+/// which is the classification `debug.traceFrame` calls NAME_ANONYMOUS and
 /// which this consumer renders as the absence of a key.
 fn anAnonymousJanetFrame() void {
     const frames = eval("((fn [] (debug/stack (fiber/current))))");
@@ -583,7 +581,7 @@ fn aTailCallFrame() void {
 /// A cfunction registered with a prefix, which the core's own are not: every
 /// core registration puts the qualified name in `name` and leaves
 /// `name_prefix` null, so `debug/stack` above cannot tell a dropped prefix
-/// from a kept one. This one is registered through `janet_cfuns` with a
+/// from a kept one. This one is registered through `registry.cfuns` with a
 /// prefix, and with neither a source file nor a source line, so it also pins
 /// the two keys a registry entry without them must not produce.
 ///
@@ -610,7 +608,7 @@ fn aPrefixedCfunctionFrame() void {
 
 /// A frame that has a function and no program counter reports the function and
 /// nothing that depends on where it stopped. Nothing in the runtime builds one
-/// — `janet_fiber_funcframe` always sets `pc` — so it is constructed here,
+/// — `fibers.funcframe` always sets `pc` — so it is constructed here,
 /// which is also the only way to reach the guard that skips the second half of
 /// the decoding.
 fn aFrameWithNoProgramCounter() void {
@@ -631,9 +629,9 @@ fn aFrameWithNoProgramCounter() void {
     expectAbsent(built, "source-line");
 }
 
-/// A cfunction that was never passed through `janet_cfuns` has no registry
-/// entry. The C implementation read the entry anyway; this one asks
-/// `janet_trace_frame`, which checks. See the header.
+/// A cfunction that was never passed through `registry.cfuns` has no registry
+/// entry. The C implementation read the entry anyway; `debug.traceFrame`
+/// checks. See the header.
 fn unregisteredCfunction(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 

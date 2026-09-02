@@ -17,7 +17,7 @@
 //!
 //! ## The shim that dies here
 //!
-//! A `JanetSpecial`'s `compile` is a raising Zig function, so a C contract
+//! A `special_type.Special`'s `compile` is a raising Zig function, so a C contract
 //! cannot call one: it needs a shim written for exactly this purpose and
 //! nothing else. Here the call is `special.of(...).compile.?(...)` with `try`,
 //! so the shim has no caller — along with the module the build was compiling a
@@ -423,8 +423,8 @@ fn theBindingForms(arguments: []repr.Value) !void {
 ///
 /// A protected call is the instrument here and always was: what raises is
 /// inside the interpreter, not inside a Zig function this file could import.
-/// The same file uses the import for a special's `compile` and
-/// `janet_dostring` for a whole program, and neither could be substituted for
+/// The same file uses the import for a special's `compile` and `env.dostring`
+/// for a whole program, and neither could be substituted for
 /// the other.
 fn theWholeCompilations() void {
     const environment = harness.coreEnv();

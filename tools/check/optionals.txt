@@ -7,7 +7,7 @@
 #
 #   tested       0 sites, 0 occurrences
 #   accumulator  0 sites
-#   `.?` in src/zig  546 occurrences
+#   `.?` in src/  546 occurrences
 #
 # columns: class  site  receiver  occurrences  function
 

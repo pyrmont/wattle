@@ -94,9 +94,9 @@ fn theHeadAccessorsRecoverWhatTheConstructorsWrote() void {
 
 // -------------------------------------------------------------------- hashes
 
-/// The three hash helpers, which need no heap and run before `janet_init`.
+/// The three hash helpers, which need no heap and run before a VM exists.
 ///
-/// `janet_string_calchash` has two implementations and the configuration picks
+/// `value.hashBytes` has two implementations and the configuration picks
 /// one. The condition is `config.prf` rather than a field of `options`: the
 /// subsystem is compiled either way and what changes is which body it
 /// compiles, so no `Selection` field answers the question.
@@ -169,7 +169,7 @@ fn cstrcmpStopsAtWhicheverEndComesFirst() void {
     expect(utils.cstrcmp(embedded, "a\x00b") == 0);
 }
 
-// `janet_strbinsearch` wants an array of structs whose first member is a
+// `utils.strbinsearch` wants an array of structs whose first member is a
 // `char *`, sorted by it. Two shapes, to prove the item size is respected
 // rather than assumed.
 const SearchSmall = extern struct {
@@ -269,7 +269,7 @@ fn theProbeDistinguishesATombstoneFromAnEmptyBucket() void {
     }
 }
 
-/// A struct takes the same probe, and `janet_dictionary_get` is the wrapper
+/// A struct takes the same probe, and `value.dictionaryGet` is the wrapper
 /// that turns "found a nil key" into nil.
 fn dictionaryGetTurnsAMissIntoNil() void {
     const kvs = structs.begin(2);
@@ -287,7 +287,7 @@ fn dictionaryGetTurnsAMissIntoNil() void {
     ));
 }
 
-/// `janet_dict_find_keyword` matches by bytes without interning, so a lookup
+/// `value.dictionaryFindKeyword` matches by bytes without interning, so a lookup
 /// needs neither a `Janet` nor a symbol table entry.
 fn theKeywordProbeComparesLengthBeforeBytes() void {
     const kt = tables.new(4);
@@ -381,7 +381,7 @@ fn theCollectionHashesAreWhatTheHeadsStore() void {
     expect(value.hashIndexed(items[0..0]) == 33);
     expect(value.hashDictionary(&.{}) == 33);
 
-    // A tuple's stored hash is what `janet_array_calchash` computed, and the
+    // A tuple's stored hash is what `value.hashIndexed` computed, and the
     // head it is stored in is recovered by the accessor above.
     const tup = tuples.newFrom(&items);
     expect(utils.tupleHead(tup).hash == value.hashIndexed(tup[0..3]));

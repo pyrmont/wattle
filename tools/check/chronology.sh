@@ -11,7 +11,7 @@
 # under `port/`; the section banners of the form `-- what X.zig was`; and this
 # project's own retired header. Each is prose that was true while something was
 # being moved and is false or meaningless now that it has been. Asked of the
-# **shipped source**: `src/zig`, `src/boot`, `test`, `examples`, `build.zig`.
+# **shipped source**: `src`, `test`, `examples`, `build.zig`.
 #
 # It is *not* asked of `DESIGN.md` or `tools/`, and that is a decision rather
 # than an omission. A decision record that says "decided 2026-08-31, measured at
@@ -22,10 +22,12 @@
 # which almost none is a finding, and an instrument whose output is almost all
 # noise is one nobody reads.
 #
-# **A name for a file that does not exist** — `src/zig/types.zig`,
-# `stretchy.zig`, `NAMESPACES.md`. This one is asked **everywhere**, `DESIGN.md`
-# and `tools/` included, because a document naming a file that is not there is
-# wrong wherever it sits and a reader cannot check it.
+# **A name for a file or directory that does not exist** — a retired
+# `types.zig`, `stretchy.zig`, `NAMESPACES.md`, and `src/zig`, which Phase 17
+# split into `src/api`, `src/host` and `src/runtime`. This one is asked
+# **everywhere**, the top-level documents, `DESIGN.md` and `tools/` included,
+# because a document naming a path that is not there is wrong wherever it sits
+# and a reader cannot check it.
 #
 # A retired **`-D<x>-core` selector option** is deliberately *not* in the wide
 # question, although it looks like the same thing. A retired *file* can be
@@ -33,11 +35,16 @@
 # rewriting one falsifies the record rather than repairing it. The option stays
 # in the shipped-source question above, where a live file naming one is wrong.
 #
+# Both questions skip `.zig-cache` and `zig-out`. `examples/standalone` builds
+# a cache of its own inside the tree, and a compiler cache is full of `std`
+# file names that match either pattern.
+#
 # ## Five exclusions, and they are the whole of the difficulty
 #
-# **`ffi/types.zig` exists.** The deleted catalogue was `src/zig/types.zig`;
+# **`ffi/types.zig` exists.** The deleted catalogue sat at the top of the
+# runtime source;
 # the FFI's own type module is live and named on twelve lines. The pattern
-# refuses a `types.zig` with a `/` before it, and refuses `src/zig/ffi/`
+# refuses a `types.zig` with a `/` before it, and refuses `src/runtime/ffi/`
 # outright -- a file in that directory writes `@import("types.zig")` for its
 # own neighbour, with no path to distinguish it by.
 #
@@ -80,7 +87,8 @@ status=0
 # ------------------------------------------------- chronology, shipped source
 
 if grep -rnE 'Phase [0-9]+|increment [0-9]+[a-z]?|Part [0-9]+[a-z]?|batch [0-9]|SPIKE-?[0-9]+|PLAN\.md|NAMESPACES\.md|phase_1[0-9]\.md|the hinge|selector|-D[a-z]+-(core|engine|loop|sockets|access|alloc|primitives|trampoline|encode)|src/core/|janet\.h|util\.h|what `[a-z_]+\.zig` was|[a-z_]+_(core|surface|files|time|stat|loop|stream|sockets|pretty|access|alloc|symbol|array|table|frames|flags)\.zig' \
-    src/zig src/boot test examples build.zig |
+    --exclude-dir=.zig-cache --exclude-dir=zig-out \
+    src test examples build.zig |
   grep -vE 'test/[a-z_0-9]+\.zig|@import\("[a-z_0-9]+\.zig"\)|host_stat\.zig|trace_frames\.zig|filewatch_flags\.zig|filewatch_core\.zig'
 then
   echo "chronology.sh: the lines above cite the migration rather than the code." >&2
@@ -89,12 +97,14 @@ fi
 
 # ------------------------------- a name for a thing that does not exist, anywhere
 
-if grep -rnE '(^|[^/a-z_])types\.zig|stretchy\.zig|NAMESPACES\.md' \
-    src/zig src/boot test examples build.zig tools DESIGN.md 2>/dev/null |
-  grep -vE '\.zig-cache|ffi_types\.zig|^src/zig/ffi/|^tools/check/chronology\.sh' |
+if grep -rnE '(^|[^/a-z_])types\.zig|stretchy\.zig|NAMESPACES\.md|src/zig' \
+    --exclude-dir=.zig-cache --exclude-dir=zig-out \
+    src test examples build.zig tools DESIGN.md AGENTS.md README.md \
+    CONTRIBUTING.md 2>/dev/null |
+  grep -vE '\.zig-cache|ffi_types\.zig|^src/runtime/ffi/|^tools/check/chronology\.sh' |
   grep -vE 'does not exist|There is no'
 then
-  echo "chronology.sh: the lines above name a file that does not exist." >&2
+  echo "chronology.sh: the lines above name a file or directory that does not exist." >&2
   status=1
 fi
 

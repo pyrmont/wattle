@@ -1,5 +1,5 @@
-//! Behavioral contract for `janet_asm`: an assembly source turned into a
-//! `JanetFuncDef`, and the eighteen ways it refuses.
+//! Behavioral contract for `bytecode.assembleValue`: an assembly source turned
+//! into a `functions.FuncDef`, and the eighteen ways it refuses.
 //!
 //! `test/suite-asm.janet` runs nine assemblies and checks that they execute.
 //! What it cannot check is the *bytecode words* — a wrong operand encoding
@@ -7,8 +7,8 @@
 //! refusal messages, because `asm` raises and a suite that raises stops.
 //!
 //! Both are asserted here, and the refusals are the bulk of it. They are worth
-//! the space for a reason particular to this subsystem: `janet_asm` reports by
-//! filling in an `AssembleResult.error` rather than by raising, so **the
+//! the space for a reason particular to this subsystem: `assembleValue`
+//! reports by filling in an `AssembleResult.error` rather than by raising, so **the
 //! message is a return value and part of the interface**. A port that changed
 //! the wording would be changing observable behaviour, and nothing else in the
 //! tree would notice.
@@ -46,7 +46,7 @@ var environment: *tables.Table = undefined;
 
 /// Evaluate an assembly source and assemble the value it answers.
 ///
-/// `janet_dostring` is a protected entry point -- it answers a status rather
+/// `env.dostring` is a protected entry point -- it answers a status rather
 /// than raising -- so the quoted structure arrives here without a scope.
 fn assemble(source: [*:0]const u8) bytecode.AssembleResult {
     var val: repr.Value = undefined;
@@ -221,7 +221,7 @@ fn theRefusals() void {
     );
 }
 
-/// The seven runs a `JanetFuncDef` carries, each a pointer whose length is a
+/// The seven runs a `functions.FuncDef` carries, each a pointer whose length is a
 /// different field, and each answering the empty slice when the run is absent.
 ///
 /// Two of the pairings are not derivable from the field

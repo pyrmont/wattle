@@ -1,6 +1,6 @@
-//! Behavioral contract for rendering one Janet value as text:
-//! `janet_to_string_b`, `janet_description_b`, their two non-buffer wrappers,
-//! and the escape table underneath all four.
+//! Behavioral contract for rendering one Janet value as text: `pp.toStringB`,
+//! `pp.descriptionB`, their two non-buffer wrappers, and the escape table
+//! underneath all four.
 //!
 //! ## Why this exists rather than leaning on the Janet suites
 //!
@@ -10,21 +10,21 @@
 //! special-case a buffer printed into itself, and neither property is
 //! observable through a cfunction that returns a fresh string.
 //!
-//! The escape width is the other subject. `escapeStringImpl` answers how many
-//! columns it wrote and the pretty printer's alignment is computed from it, so
+//! The escape width is the other subject. `pp.zig`'s `escapeString` answers how
+//! many columns it wrote and the pretty printer's alignment is computed from it, so
 //! a width consistently two too small would show up only as slightly wrong
 //! wrapping in output no test compares.
 //!
 //! ## No abi, and no adapter
 //!
-//! **`janet_zig_pp_escape_string` does not exist**, and this file is why. It
-//! had exactly one caller left: a C contract, which needed the width and could
-//! not take a `raise.Raising(i32)`. Inside the compilation the width is just a
+//! **`escapeString` has no abi**, and this file is why. One existed with
+//! exactly one caller left: a C contract, which needed the width and could not
+//! take a `raise.Raising(i32)`. Inside the compilation the width is just a
 //! return value and the error is just an error, so the abi, its
 //! `raise.reported` wrapper and its `@export` all went with the `.c` file.
 //!
 //! The abstract type below is the other one. A C contract has to build a
-//! `JanetAbstractType` and pass it through an adapter pool,
+//! `abstract_type.AbstractType` and pass it through an adapter pool,
 //! because the runtime dispatches raising Zig callbacks and C cannot define
 //! one. Here it is an ordinary `AbstractType` literal with no callbacks at
 //! all.
@@ -190,8 +190,8 @@ fn theNumbers() !void {
 
 // -------------------------------------------------------- the two wrappers
 
-/// `janet_to_string` answers with the contents of a byte type and with a
-/// rendering of everything else; `janet_description` renders in every case.
+/// `pp.toString` answers with the contents of a byte type and with a
+/// rendering of everything else; `pp.description` renders in every case.
 /// The three byte types take a path through neither renderer at all, which is
 /// why a change there is invisible to a test that only checks the text.
 /// Neither wrapper can raise for any value below, which is why they are called
@@ -259,9 +259,8 @@ fn theCfunctionsAndFunctions() !void {
 ///
 /// **It is a container declaration and must stay one.** An abstract stores
 /// its type by address and outlives the frame that made it, so a
-/// function-local would leave `janet_clear_memory` dereferencing a dead
-/// pointer at teardown -- a bus error inside `deinitBlock`, nowhere near
-/// here. It was a local while it was a struct literal, which Zig materialises
+/// function-local would leave `gc/sweep.zig`'s `clearMemory` dereferencing a
+/// dead pointer at teardown -- a bus error inside `deinitBlock`, nowhere near
 /// here. It was a local while it was a struct literal, which Zig materialises
 /// statically; making it a call is what surfaced the crash.
 const long_name = abstract_type.define(anyopaque, .{

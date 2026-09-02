@@ -1,6 +1,6 @@
 //! Behavioral contract for the allocation of the three remaining collectable
-//! kinds: `janet_fiber` and `janet_fiber_reset`, and `janet_funcdef_alloc`,
-//! `janet_thunk` and `janet_thunk_delay`.
+//! kinds: `fibers.new` and `fibers.reset`, and `functions.FuncDef.new`,
+//! `functions.thunk` and `functions.thunkDelay`.
 //!
 //! These are almost entirely field initialisation, and field initialisation is
 //! what a port silently gets wrong: a missed store leaves whatever
@@ -15,30 +15,29 @@
 //!    memory types was written, and `vm.gc.blocks` says the collector was
 //!    handed the block.
 //!  - `vm.gc.next_collection`, which each of these functions charges. A
-//!    fiber is charged twice, once by `janet_gcalloc` for the block and once by
+//!    fiber is charged twice, once by `gc.gcalloc` for the block and once by
 //!    hand for the value stack, and the second charge is the one only this
 //!    contract sees.
-//!  - The fiber's own fields after a *failed* `janet_fiber_reset`. This is the
+//!  - The fiber's own fields after a *failed* `fibers.reset`. This is the
 //!    only way to observe the newborn state: a successful call runs
-//!    `janet_fiber_funcframe` over it, which overwrites `frame`, `stackstart`
+//!    `fibers.funcframe` over it, which overwrites `frame`, `stackstart`
 //!    and `stacktop` before returning.
-//!  - `janet_collect`, run with the new object rooted and again with it
+//!  - `gc/mark.zig`'s `collect`, run with the new object rooted and again with it
 //!    unrooted, which is what says the block was initialised well enough for
 //!    the mark phase to walk it and the sweep to free it.
 //!
 //! ## Where the flexible-array assertion went
 //!
-//! The C original opened with
-//! `sizeof(JanetFunction) == offsetof(JanetFunction, envs)`, which is what
-//! makes `janet_thunk`'s `@sizeOf(JanetFunction)` the right size for a function
-//! with no environments. A translated head drops its flexible array member, so
+//! The C original opened with `sizeof(JanetFunction) == offsetof(JanetFunction,
+//! envs)`, which is what makes `functions.thunk`'s `@sizeOf(Function)` the
+//! right size for a function with no environments. A translated head drops its flexible array member, so
 //! `@offsetOf` does not compile here and a comparison would be `@sizeOf`
 //! against itself. `test/gc_mark.zig` derives the offset from the allocator
 //! instead.
 //!
 //! ## One case needs a child process
 //!
-//! `janet_thunk` refuses a def that needs upvalues, and refuses it *fatally* —
+//! `functions.thunk` refuses a def that needs upvalues, and refuses it *fatally* —
 //! the block it allocates is sized for no environments at all, so a caller that
 //! got one back would read `envs[0]` off the end of a 24-byte allocation. An
 //! abort is what a child process can report back and nothing in-process can.
@@ -107,7 +106,7 @@ fn fiberFrame(fiber: *fibers.Fiber) *vm_state.StackFrame {
     return @ptrCast(@alignCast(fiber.data.? + @as(usize, @intCast(fiber.frame - frame_size))));
 }
 
-/// The newborn state, as `janet_fiber_reset` leaves it. Read after a rejected
+/// The newborn state, as `fibers.reset` leaves it. Read after a rejected
 /// call, where nothing has run over it.
 fn assertNewborn(fiber: *fibers.Fiber, expect_stacktop: i32) void {
     expect(fiber.maxstack == config.stack_max);
@@ -134,7 +133,7 @@ fn assertNewborn(fiber: *fibers.Fiber, expect_stacktop: i32) void {
     }
 }
 
-/// Write a distinguishable value into every field `janet_fiber_reset` is
+/// Write a distinguishable value into every field `fibers.reset` is
 /// supposed to clear, so that the assertions above are about stores rather than
 /// about what the allocator happened to hand back.
 fn dirty(fiber: *fibers.Fiber, child: *fibers.Fiber, env: *tables.Table) void {
@@ -192,8 +191,8 @@ fn theCapacityFloor(nullary: *functions.Function) void {
     expect((fibers.new(nullary, 32, &.{}) catch unreachable).capacity == 32);
 }
 
-/// A fiber costs the collector two charges: the block, billed by
-/// `janet_gcalloc`, and the value stack, billed by hand. Nothing else in the
+/// A fiber costs the collector two charges: the block, billed by `gc.gcalloc`,
+/// and the value stack, billed by hand. Nothing else in the
 /// call allocates, so long as the callee takes no arguments and its frame fits
 /// in the capacity asked for.
 fn aFiberChargesBlockAndStack(nullary: *functions.Function) void {
@@ -215,9 +214,10 @@ fn aFiberChargesBlockAndStack(nullary: *functions.Function) void {
 // -------------------------------------------------------------- fiber_reset
 
 /// A rejected arity is reported by returning `error.Arity`, and leaves the fiber in the
-/// newborn state rather than half-built -- callers use the return value to
-/// implement `janet_pcall`, not to recover a partial frame. This is also the
-/// only vantage point from which `janet_fiber_reset`'s own stores are visible.
+/// newborn state rather than half-built -- `vm/entry.zig`'s `pcall` is built
+/// on the return value rather than on recovering a partial frame. This is also
+/// the only vantage point from which `fibers.reset`'s own stores are
+/// visible.
 fn aRejectedResetLeavesANewborn(binary: *functions.Function, nullary: *functions.Function) void {
     const fiber = fibers.new(nullary, 64, &.{}) catch unreachable;
     const child = fibers.new(nullary, 32, &.{}) catch unreachable;
@@ -239,7 +239,7 @@ fn aRejectedResetLeavesANewborn(binary: *functions.Function, nullary: *functions
 }
 
 /// Recycling keeps the stack the fiber already paid for. This is the whole
-/// reason `janet_fiber_reset` exists as a separate entry point, and a port that
+/// reason `fibers.reset` exists as a separate entry point, and a port that
 /// cleared capacity or data would still pass everything else here.
 fn aResetKeepsTheStack(binary: *functions.Function, nullary: *functions.Function) void {
     const fiber = fibers.new(nullary, 4096, &.{}) catch unreachable;
@@ -324,7 +324,7 @@ fn theArgumentBlockGrowsOnEquality(variadic: *functions.Function) void {
     expect(fiber.capacity == 64);
 }
 
-/// A fiber built by `janet_fiber` is left with its first frame pushed and
+/// A fiber built by `fibers.new` is left with its first frame pushed and
 /// marked as an entrance frame, and -- under the event loop -- with no
 /// supervisor.
 fn aFiberIsReadyToRun(binary: *functions.Function) void {
@@ -363,7 +363,7 @@ fn aFiberSurvivesACollection(nullary: *functions.Function) void {
 
 // ----------------------------------------------------------------- funcdefs
 
-/// Every field `janet_funcdef_alloc` writes.
+/// Every field `functions.FuncDef.new` writes.
 ///
 /// A missing store here is only visible when the memory underneath it held
 /// something else, and on the development target it never does: macOS zeroes a
@@ -487,12 +487,12 @@ fn thunksAreDistinct() void {
 }
 
 /// A thunk over a def that needs upvalues is refused, and refused fatally: the
-/// block `janet_thunk` allocates is sized for no environments at all, so a
+/// block `functions.thunk` allocates is sized for no environments at all, so a
 /// caller that got one back would read `envs[0]` off the end of a 24-byte
-/// allocation. `janet_zig_fatal` aborts, and abort is what a child process can
+/// allocation. `fatal.fatal` aborts, and abort is what a child process can
 /// report back.
 ///
-/// `std.fork` rather than the runtime's own `janet_os_fork`, because the
+/// `std.fork` rather than the runtime's own `os_process.forkProcess`, because the
 /// point is to observe the abort rather than to exercise the process
 /// subsystem — and because `os_procs` is not compiled in every configuration
 /// this contract runs under.
@@ -539,10 +539,10 @@ fn repeatedCycles(nullary: *functions.Function) void {
 
 // -------------------------------------------------------- delayed thunks
 
-/// `janet_thunk_delay` assembles a funcdef by hand rather than compiling one,
-/// and every field it sets is one the interpreter will read. The two
-/// allocations are `janet_malloc` and not `janet_gcalloc` deliberately: a
-/// funcdef owns its bytecode and constants outright.
+/// `functions.thunkDelay` assembles a funcdef by hand rather than compiling
+/// one, and every field it sets is one the interpreter will read. The two
+/// allocations come from the plain heap allocator rather than from `gc.gcalloc`
+/// deliberately: a funcdef owns its bytecode and constants outright.
 ///
 /// The last assertion is the one that matters. Every field could be right and
 /// the bytecode still be wrong -- `JOP_LOAD_CONSTANT` takes its constant index

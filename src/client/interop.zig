@@ -189,23 +189,20 @@ fn define(env: *tables.Table) raise.Raising(void) {
     }
 }
 
-// ---------------------------------------------- what the C bridge was for
+// ------------------------------------------------ registration and probes
 //
-// Everything below was the last `.c` file under `src/`. It survived on two
-// reasons that have both expired: `janet_wrap_integer` is a macro a Zig caller
-// could not use, which four subsystems now write out in three lines; and a
-// protected scope was a `setjmp`, which is `tryInit` and a report now.
+// Everything below is an ordinary Zig function: a protected scope is
+// `signal.tryInit` and a report, and wrapping an integer is three lines.
 
 /// Run `define` inside a protected scope and say whether it raised.
 ///
-/// `tryInit` is what points the VM's `return_reg` at a payload, and therefore
-/// what makes `signalPlan` answer `RAISE` rather than ending the process.
+/// `signal.tryInit` is what points the VM's `return_reg` at a payload, and
+/// therefore what makes `signal.plan` answer `.raise` rather than ending the
+/// process.
 ///
-/// **It answers a bool rather than a `Signal`.** The signal came from the VM's
-/// `pending_signal` and no caller ever read it -- `cli.zig` compared it against
-/// `JANET_SIGNAL_OK` and nothing else -- so the only thing that field carried
-/// here was the answer this returns. Reading it was also the last thing in the
-/// tree that needed the VM state to be a linker symbol.
+/// **It answers a bool rather than a `Signal`**, because the only thing a
+/// caller does with the signal is compare it against `ok`, which is what this
+/// answers.
 pub fn register(env: *tables.Table, err: ?*repr.Value) bool {
     var state: vm_state.TryState = undefined;
     signal_core.tryInit(&state);
@@ -220,8 +217,8 @@ pub fn register(env: *tables.Table, err: ?*repr.Value) bool {
 /// The interop test's rooted-value probe: allocate an array, root it, push
 /// through a collection, and hand it back.
 ///
-/// Janet carries a comment about `volatile` locals that does not apply here:
-/// it is about what a jump left indeterminate, and nothing jumps.
+/// No `volatile` local is needed: that would be about what a jump leaves
+/// indeterminate, and nothing jumps.
 fn makeRooted(out: *repr.Value) bool {
     var state: vm_state.TryState = undefined;
     var rooted: ?repr.Value = null;
@@ -251,15 +248,13 @@ fn rootedProbe(rooted: *?repr.Value) raise.Raising(void) {
     gc_mark.collect();
 }
 
-/// `janet_wrap_integer`, written out: Janet declares it beside its macro and
-/// defines the symbol only for the two nanbox layouts. Four subsystems carry
-/// the same three lines.
+/// An integer as a value, written out here as it is in the four subsystems
+/// that need it.
 ///
-/// **It takes and returns values rather than pointers.** The out-parameter
-/// shape here was the C bridge's, and it did not survive being asked for by an
-/// ordinary Zig caller: `&argv[0]` is `*allowzero const Value` when `argv` is
-/// `[*c]`, and only a declaration as lossy as a C header's would take that for
-/// a `*const Value`.
+/// **It takes and returns values rather than pointers.** An out-parameter
+/// would not survive an ordinary Zig caller: `&argv[0]` is
+/// `*allowzero const Value` when `argv` is `[*c]`, and only a declaration as
+/// lossy as a C header's would take that for a `*const Value`.
 fn wrapInteger(value: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(value));
 }
