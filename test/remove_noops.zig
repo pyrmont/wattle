@@ -136,9 +136,8 @@ fn aFunctionWithNoNoopsIsUntouched() void {
 /// `janet_bytecode_remove_noops` opens with `janet_smalloc` for its pc map, so
 /// this subject reaches VM state even though it looks like pure bytecode
 /// arithmetic. Without an initialised runtime that call lands on whatever the
-/// previous contract's `janet_deinit` left behind, and it left a freed pointer:
-/// `FOUND.md` has the bisection, and the no-argument driver run aborted under
-/// glibc for eleven parts because of these two missing lines.
+/// previous contract's teardown left behind, which is how the no-argument
+/// driver run aborted under glibc for eleven parts: two missing lines here.
 pub fn run() void {
     harness.init();
     theThreeTablesMoveTogether();

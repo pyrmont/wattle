@@ -141,8 +141,8 @@ fn theRegistryRecordsWhatItWasGiven() void {
     expect(found != null and found.?.cfun == probe_three);
 
     // A cfunction that was never registered answers null rather than a
-    // neighbouring row, which is the case `debug.zig`'s frame walk
-    // dereferences without checking -- `FOUND.md` has that one.
+    // neighbouring row. `debug.zig`'s frame walk tests for that null; reading
+    // the row without testing is a dereference of it.
     expect(registry_mod.registryGet(probe_unregistered) == null);
 
     // Registering the same pointer twice appends a second row rather than
@@ -155,9 +155,9 @@ fn theRegistryRecordsWhatItWasGiven() void {
 }
 
 /// The sort is by pointer and orders the *whole* array, not only the rows this
-/// contract added. That is what the bisection in `janet_registry_get` is
-/// written against, and it holds even though the linear scan above it means
-/// the bisection never runs.
+/// contract added. That is what the bisection in `registryGet` is written
+/// against, and the bisection is the lookup, so this is the invariant every
+/// lookup in the runtime depends on rather than a property nothing reads.
 ///
 /// The C original asserted this over three distinct keys and five hundred
 /// copies of a fourth. Sixteen more distinct rows is what makes the insertion
@@ -182,6 +182,42 @@ fn theSortIsTotalOverDistinctKeys() void {
     while (i < rows.len) : (i += 1) {
         expect(@intFromPtr(rows[i - 1].cfun) <= @intFromPtr(rows[i].cfun));
     }
+}
+
+/// The lookup is a bisection, so its answers are checked against an
+/// independently derived one: a linear walk of the whole array, which is the
+/// shape the C original ran *before* its bisection and which is why the
+/// bisection had never answered a lookup. Every row is looked up by its key,
+/// and the row the bisection answers with is the row the walk finds first --
+/// which matters because the growth case above registered one key over and
+/// over, so a third of this array is duplicates of one pointer.
+///
+/// Then two keys that are in no row: one this contract never registers, and
+/// one that is not a function at all.
+fn theLookupAgreesWithAWalk() void {
+    // One lookup first, so that the sort the lookup owes has happened before
+    // the array is walked: `sortRows` reorders in place, and a walk that
+    // triggered it half way through would be reading two different arrays.
+    _ = registry_mod.registryGet(probe_one);
+    const rows = harness.vm().registry.rows.items;
+    // The growth case ran first, so the array is past its first reallocation
+    // and the bisection has five or six steps to get wrong.
+    expect(rows.len > 30);
+    for (rows) |row| {
+        var expected: ?*const registry_mod.Row = null;
+        for (rows) |*candidate| {
+            if (candidate.cfun == row.cfun) {
+                expected = candidate;
+                break;
+            }
+        }
+        const found = registry_mod.registryGet(row.cfun);
+        expect(found != null);
+        expect(found.? == expected.?);
+    }
+
+    expect(registry_mod.registryGet(probe_unregistered) == null);
+    expect(registry_mod.registryGet(null) == null);
 }
 
 /// Growth. The floor is 512 entries, which the core alone does not reach, so
@@ -660,6 +696,7 @@ fn body() raise.Raising(void) {
     theRegistryRecordsWhatItWasGiven();
     theSortIsTotalOverDistinctKeys();
     theRegistryGrowsPastItsFloor();
+    theLookupAgreesWithAWalk();
     thePublishedEntryPointDefinesAndRegisters();
     thePrefixingFormRewritesOnlyTheName();
     theSliceFormsInstallTheSameRows();

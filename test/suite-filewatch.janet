@@ -133,12 +133,43 @@
 (assert-no-error "unlisten once" (filewatch/unlisten probe-watcher))
 (assert-no-error "unlisten twice" (filewatch/unlisten probe-watcher))
 
-# And the watcher is dead after that: `filewatch/unlisten` closes the
-# watcher's own descriptor and nothing reopens it. See `FOUND.md`,
-# "filewatch/unlisten leaves the watcher unusable".
+# And the watcher is closed after that: `filewatch/unlisten` closes the
+# watcher's own descriptor and nothing reopens it. All three calls say so, and
+# the one that matters is `listen` -- without the refusal it reported success,
+# started a fiber on a closed stream, delivered nothing ever after, and kept
+# the event loop from finishing.
 (when (not is-win)
-  (assert-error "a watcher cannot be added to after unlisten"
-                (filewatch/add probe-watcher probe-dir :all)))
+  (assert (= "watcher is closed" (errmsg |(filewatch/add probe-watcher probe-dir :all)))
+          "a closed watcher cannot be added to")
+  (assert (= "watcher is closed" (errmsg |(filewatch/listen probe-watcher)))
+          "a closed watcher cannot listen")
+  (assert (= "watcher is closed" (errmsg |(filewatch/remove probe-watcher probe-dir)))
+          "a closed watcher cannot be removed from"))
+
+# The descriptors a kqueue watcher opens are its own, and it closes them: one
+# per `filewatch/add`, returned on unlisten and at collection. On Linux and
+# Windows there are none to count, so the assertion is about the platform that
+# has them.
+(when (and (not is-win) (= :macos (os/which)))
+  (defn- nfds [] (length (os/dir "/dev/fd")))
+  (def fd-dir "janet-suite-filewatch-fds")
+  (os/mkdir fd-dir)
+  (defer (rmrf fd-dir)
+    (gccollect)
+    (def before (nfds))
+    # No binding for the watcher: a `def` in the loop body leaves the last
+    # one reachable, and one uncollected watcher is two descriptors -- its own
+    # kqueue and the path it watched.
+    (loop [_ :range [0 20]]
+      (filewatch/add (filewatch/new (ev/chan 4)) fd-dir :all))
+    (gccollect)
+    # The bound is `before + 2` rather than `before`: the loop's last watcher
+    # can still be reachable from an interpreter stack slot, and one watcher is
+    # two descriptors -- its own kqueue and the one path it watched. What this
+    # rules out is the leak, which is proportional: twenty watchers that never
+    # close what they opened are forty descriptors.
+    (assert (<= (nfds) (+ before 2))
+            "a collected watcher returns the descriptors it opened")))
 (gccollect)
 (rmrf probe-dir)
 

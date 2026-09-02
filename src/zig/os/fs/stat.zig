@@ -254,16 +254,18 @@ pub fn hostPermToUnix(mode: u32) i32 {
 
 /// Convert Janet's portable nine-bit value back into host permission bits.
 ///
-/// The Windows tests are decimal 111, 222, and 444 rather than octal. That is
-/// a defect in the C implementation, recorded in `FOUND.md`; it is reproduced
-/// here so the two implementations stay observationally identical until the
-/// behavior is decided.
+/// **The masks are octal**, which is what `hostPermToUnix` above tests with
+/// and what every permission constant in this subsystem is written in. Decimal
+/// `111`, `222` and `444` are `0o157`, `0o336` and `0o674`, which overlap the
+/// wrong fields: decimal 222 shares the group-read bit with `8r444`, so
+/// `(os/chmod p 8r444)` leaves a Windows file writable, because `_chmod`
+/// derives the read-only attribute from `_S_IWRITE`.
 pub fn hostPermFromUnix(permissions: i32) u32 {
     if (windows) {
         var mode: u32 = 0;
-        if (permissions & 111 != 0) mode |= w_iexec;
-        if (permissions & 222 != 0) mode |= w_iwrite;
-        if (permissions & 444 != 0) mode |= w_iread;
+        if (permissions & 0o111 != 0) mode |= w_iexec;
+        if (permissions & 0o222 != 0) mode |= w_iwrite;
+        if (permissions & 0o444 != 0) mode |= w_iread;
         return mode;
     }
     return @bitCast(permissions);

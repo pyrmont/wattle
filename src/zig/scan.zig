@@ -178,10 +178,9 @@ fn convert(negative: bool, mant: *BigNat, base: i32, exponent_in: i32) f64 {
     var exponent = exponent_in;
     var exponent2: i32 = 0;
 
-    // The C original computes the base-2 size estimate before short-circuiting
-    // zero. That ordering is unobservable, and evaluating `c.log2` first makes an
-    // out-of-range radix produce a NaN conversion, so the zero test comes first
-    // here. See FOUND.md.
+    // The zero test comes before the base-2 size estimate. The ordering is
+    // unobservable for an in-range radix, and evaluating `c.log2` first makes
+    // an out-of-range one produce a NaN conversion.
     if (mant.digits.items.len == 0 and mant.first_digit == 0) return if (negative) -0.0 else 0.0;
 
     // Estimate the base-2 exponent of the result to within a factor of about
@@ -364,9 +363,9 @@ pub fn scanNumber(str: []const u8) ?f64 {
 /// Like `scanNumber`, but also recognizes the `:s` and `:u` 64-bit integer
 /// suffixes and the explicit `:n` double suffix.
 ///
-/// The C original leaves its scratch indeterminate when scanning fails and
-/// wraps it anyway; a caller was expected to know not to read it. An optional
-/// says the same thing and cannot be got wrong. See `FOUND.md`.
+/// The optional is the failure channel: a scan that fails has no value to
+/// wrap, and leaving the scratch indeterminate and wrapping it anyway asks
+/// every caller to know not to read it.
 pub fn scanNumeric(str: []const u8) ?repr.Value {
     const len: i32 = @intCast(str.len);
     if (len < 2 or str[str.len - 2] != ':') {

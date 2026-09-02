@@ -299,9 +299,9 @@ fn acceptWindows(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.As
     const streamv = wrap.fromAbstract(astream);
     if (state.function) |f| {
         // Schedule the worker, then listen again for the next connection.
-        // `.?` for the reason the POSIX arm above gives: the C original
-        // dereferences whatever `janet_fiber` answered, and it answers null
-        // when the handler's arity rejects one argument. `FOUND.md`.
+        // `catch unreachable` for the reason the POSIX arm above gives:
+        // `net/accept-loop` refused any handler whose arity cannot take
+        // exactly this one argument.
         const sub_fiber = fibers.new(f, 64, (&streamv)[0..1]) catch unreachable;
         sub_fiber.supervisor_channel = fiber.supervisor_channel;
         ev_loop.schedule(sub_fiber, wrap.fromNil());
@@ -334,14 +334,13 @@ fn acceptPosix(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.Asyn
     const astream = try makeStream(connfd, stream_readable | stream_writable);
     const streamv = wrap.fromAbstract(astream);
     if (state.function) |f| {
-        // `.?` rather than a check, because upstream has none: it dereferences
-        // whatever the fiber constructor answered, and that is null when the
-        // handler's arity rejects one argument -- so a `net/server` given a
-        // handler of the wrong arity segfaults there. The unwrap makes it a
-        // named panic instead of a null store, and only on the path upstream
-        // leaves undefined; `FOUND.md` records it. **Typing the return is what
-        // surfaced it**: a nullable-and-implicitly-dereferenceable pointer let
-        // the deref through without a word.
+        // **`catch unreachable` because the arity was checked where it is
+        // knowable.** `net/accept-loop` refuses any handler that cannot take
+        // exactly the one argument this passes, so the constructor cannot
+        // reject it here -- at the first connection, with no caller left to
+        // tell. Checking only the lower bound is what left this reachable, and
+        // dereferencing the constructor's answer without checking at all is a
+        // null store in a server.
         const sub_fiber = fibers.new(f, 64, (&streamv)[0..1]) catch unreachable;
         sub_fiber.supervisor_channel = fiber.supervisor_channel;
         ev_loop.schedule(sub_fiber, wrap.fromNil());
@@ -429,8 +428,9 @@ fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
     var info = try getAddrInfo(argv, 0, socktype, false);
     // Both of these were released by hand before each of the eleven returns
     // below, and `makeStream` raises between the last of them and the connect.
-    // `net.c` releases the unix domain address with `freeaddrinfo`, which did
-    // not allocate it; `AddrInfo.free` picks the right one. `FOUND.md`.
+    // `AddrInfo.free` picks the allocator from the discriminant: a unix domain
+    // address did not come from `getaddrinfo` and is not `freeaddrinfo`'s to
+    // release.
     defer info.free();
     var addrlen: SockLen = info.size;
 
@@ -550,12 +550,12 @@ fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
     const failed = if (windows) status == h.SOCKET_ERROR else status == -1;
     const would_block = if (windows) h.WSAEWOULDBLOCK else h.EINPROGRESS;
     if (failed and err != would_block) {
-        // The stream above already owns this handle, and its finalizer will
-        // close it again -- by which point the number may belong to something
-        // else. `FOUND.md` has the entry and a reproducer that loses a
-        // `file/open`'s writes. Closing a valid descriptor is defined, so the
-        // port reproduces the sequence rather than repairing it.
-        net_abi.sockClose(sock);
+        // **The stream owns the handle from `makeStream` onwards**, so this
+        // closes it *through* the stream. Closing the number by hand leaves a
+        // stream whose closed flag was never set holding it, and the collector
+        // closes it a second time -- by which point the kernel may have given
+        // it to something else, which is the next `file/open`.
+        try ev_loop.streamClose(stream);
         const lasterr = ev_stream.evLasterr();
         return pp_format.panicf("could not connect socket: %V", .{lasterr});
     }
@@ -703,7 +703,16 @@ fn cfunAcceptLoop(argv: []repr.Value) raise.Raising(repr.Value) {
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_acceptable | stream_socket);
     const fun = try args_core.getFunction(argv, 1);
-    if (fun.def.?.min_arity < 1) return raise.panic("handler function must take at least 1 argument");
+    // **Both ends of the arity, because the handler is entered with exactly
+    // one argument.** The lower bound is the established one and its message
+    // is unchanged; the upper is new, and without it a handler requiring two
+    // arguments reaches the accept callback, where the fiber constructor
+    // rejects the single argument it is given -- at the first connection, with
+    // no caller left to tell. `max_arity` needs no test of its own: it is
+    // never below `min_arity`.
+    const def = fun.def.?;
+    if (def.min_arity < 1) return raise.panic("handler function must take at least 1 argument");
+    if (def.min_arity > 1) return raise.panic("handler function must take at most 1 argument");
     return schedAccept(stream, fun);
 }
 
@@ -1089,7 +1098,7 @@ pub fn socketType(argv: []repr.Value, n: usize) raise.Raising(c_int) {
 /// -- which is why the C has to remember, at each of the seven places it
 /// releases one, which allocator it came from. Carrying the discriminant with
 /// the pointer is the same information in a shape the compiler checks. It is
-/// also the shape that makes `FOUND.md`'s leak visible as a missing call
+/// also the shape that makes a missing release visible as a missing call
 /// rather than as a `janet_free` that looks like every other one.
 pub const AddrInfo = struct {
     /// The `getaddrinfo` chain, or null for a unix domain address. It may also
@@ -1206,9 +1215,7 @@ pub fn soGetName(sa_any: ?*const anyopaque) raise.Raising(repr.Value) {
         if (family == h.AF_INET6) {
             const sai6: *const net_abi.SockAddrIn6 = @ptrCast(@alignCast(sa_any));
             if (net_abi.inetNtop(h.AF_INET6, &sai6.sin6_addr, &buffer, buffer.len) == null) {
-                // "ipv4" is the C original's word, in its IPv6 arm. A port
-                // reproduces defined behaviour; `FOUND.md` has the entry.
-                return raise.panic("unable to decode ipv4 host address");
+                return raise.panic("unable to decode ipv6 host address");
             }
             var pair = [2]repr.Value{
                 value.fromBytes(std.mem.sliceTo(&buffer, 0), .string),
@@ -1264,15 +1271,16 @@ pub fn cfunSockaddr(argv: []repr.Value) raise.Raising(repr.Value) {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_connect"})); // connect OR listen
     try args_core.arity(argv, 2, 4);
     const socktype = try socketType(argv, 2);
-    // The guard counts to three and the subscript counts to four, so a
-    // three-argument call reads a slot it was not given. `FOUND.md` has the
-    // entry; the read is inside the fiber's own stack, so it is a wrong answer
-    // rather than a fault, and the condition is reproduced as written.
-    const make_arr = argv.len >= 3 and repr.truthy(argv[3]);
+    // **The guard counts to four because the subscript does.** `multi` is the
+    // fourth argument, so a three-argument call has not been given one and the
+    // documented answer is the single address; counting to three instead reads
+    // a slot that is not there, which is a wrong answer in C and an
+    // out-of-bounds index on a slice.
+    const make_arr = argv.len >= 4 and repr.truthy(argv[3]);
     const info = try getAddrInfo(argv, 0, socktype, false);
-    // `net.c` returns from the unix domain arm below without releasing
-    // `info`, and the `janet_array_push` in the loop below it can raise past
-    // its release too. `FOUND.md`; both are closed by this one line.
+    // The unix domain arm below returns without reaching a hand-written
+    // release, and the `janet_array_push` in the loop after it can raise past
+    // one; the `defer` covers both.
     defer info.free();
 
     if (!windows) {

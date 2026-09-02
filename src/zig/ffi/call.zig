@@ -36,13 +36,18 @@
 //!    neither can generate more than about 128 words. `ffi/signature` reports
 //!    it, so it is found once at description time rather than on every call.
 //!
-//! ## The uninitialized register arrays are not reproduced
+//! ## A narrow argument is extended, not just placed
 //!
-//! `FOUND.md` records that Janet stores an argument narrower than a register
-//! into an uninitialized array, so every `:s8`, `:u8`, `:s16` and `:u16`
-//! argument reaches its callee with stack residue in the high bits. Reading
-//! uninitialized memory is undefined rather than merely wrong, so this records
-//! it and gets it right. Every bank and the frame are zeroed here.
+//! **Extension is the caller's job under both conventions**: a callee that
+//! declares `int8_t` is entitled to read the whole register without masking.
+//! Storing an `:s8` at its own width sets one byte and leaves the other seven
+//! as they were, so `-1` arrives as 255 where the bank is zeroed and as stack
+//! residue where it is not. `marshal.writeRegister` is the write a register
+//! slot gets; `marshal.writeOne` keeps the type's own width, which is what a
+//! struct field and an array element need.
+//!
+//! Every bank and the frame are zeroed as well, because reading uninitialized
+//! memory is undefined rather than merely wrong.
 //!
 //! ## Scratch and raising
 //!
@@ -355,15 +360,14 @@ fn classify(cc: Cc, ty: Type) Spec {
 /// How many vector registers an AAPCS64 homogeneous floating-point aggregate
 /// occupies, or zero where the question does not arise.
 ///
-/// §6.8.2 gives an HFA **one register per member**. The C implementation sized
-/// it by bytes, which agrees only when a member is exactly eight bytes wide --
-/// so an aggregate of `double` was right by coincidence and one of `float` got
-/// half the registers it needed, with two members written into each. See
-/// `FOUND.md`.
+/// §6.8.2 gives an HFA **one register per member**, which is what this counts.
+/// Sizing it by bytes agrees only when a member is exactly eight bytes wide:
+/// an aggregate of `double` comes out right by coincidence and one of `float`
+/// gets half the registers it needs, with two members written into each.
 ///
 /// Zero for a scalar and for a top-level array, whose extent both conventions
-/// ignore for a reason `FOUND.md` records separately; the byte arithmetic
-/// stands there, which is where it was always right. The classifier has
+/// ignore because the size already has the count multiplied in; the byte
+/// arithmetic stands there, which is where it was always right. The classifier has
 /// already decided this argument is an HFA, so the only question left is how
 /// many members it has.
 fn hfaMembers(ty: Type) u32 {
@@ -426,12 +430,12 @@ fn applySlots(
 // ==========================================================================
 
 pub fn cfunSignature(argv: []const repr.Value) raise.Raising(repr.Value) {
-    // The upper bound is `FOUND.md`'s one-line repair and a deliberate
-    // divergence from Janet. C checks only the lower bound, so `arg_count` is
-    // whatever the caller passed and the loop below fills `mappings` and
-    // `slots` past their ends -- into this frame and then into its caller's,
-    // with no native library and no call involved, since `ffi/signature` only
-    // describes one. The bound is on `argc` and the first two arguments are the
+    // The upper bound is a deliberate divergence from Janet, which checks
+    // only the lower one: without it `arg_count` is whatever the caller passed
+    // and the loop below fills `mappings` and `slots` past their ends -- into
+    // this frame and then into its caller's, with no native library and no
+    // call involved, since `ffi/signature` only describes one. The bound is on
+    // `argc` and the first two arguments are the
     // convention and the return type, so it admits exactly `max_args` argument
     // types and refuses a signature the structure could never have
     // represented.
@@ -586,7 +590,7 @@ fn callSysv64(sig: *Signature, function_pointer: *const anyopaque, argv: []const
 
     for (sig.args[0..sig.arg_count], 2..) |arg, n| {
         switch (arg.spec) {
-            .sysv64_integer => try marshal.writeOne(&gen[arg.offset], argv, n, arg.type, ffi_types.max_recur),
+            .sysv64_integer => try marshal.writeRegister(&gen[arg.offset], argv, n, arg.type, ffi_types.max_recur),
             .sysv64_sse => try marshal.writeOne(&fp[arg.offset], argv, n, arg.type, ffi_types.max_recur),
             .sysv64_memory => try marshal.writeOne(
                 frame.at(@as(usize, arg.offset) * @sizeOf(u64)),
@@ -689,7 +693,7 @@ fn callWin64(sig: *Signature, function_pointer: *const anyopaque, argv: []const 
                 try marshal.writeOne(payload, argv, n, arg.type, ffi_types.max_recur);
                 regs[arg.offset] = @intFromPtr(payload);
             },
-            else => try marshal.writeOne(&regs[arg.offset], argv, n, arg.type, ffi_types.max_recur),
+            else => try marshal.writeRegister(&regs[arg.offset], argv, n, arg.type, ffi_types.max_recur),
         }
     }
 
@@ -722,9 +726,10 @@ fn callWin64(sig: *Signature, function_pointer: *const anyopaque, argv: []const 
 /// because at eight bytes a member the two layouts coincide and the copy is a
 /// move of each word onto itself.
 ///
-/// This half is not in `FOUND.md`'s entry, which describes only the outgoing
-/// direction. It is the same defect read backwards, found by asking whether it
-/// could be: `ret_hfa2` answered `(1.5 0)`.
+/// The gathering is needed in this direction for the same reason the scatter
+/// is needed in the outgoing one: the register layout and the type's own
+/// layout coincide only at eight bytes a member. `ret_hfa2` is the case that
+/// tells them apart.
 fn gatherHfaReturn(buffer: [*]u8, ty: Type) void {
     const members = hfaMembers(ty);
     if (members <= 1) return;
@@ -761,8 +766,14 @@ fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: []cons
         // scratch and scattered afterwards. A single-member aggregate and a
         // scalar need neither.
         const scatter: u32 = if (arg.spec == .aapcs64_sse) hfaMembers(arg.type) else 0;
+        // A general register takes the extended write; every other placement
+        // is memory the callee reads at the type's own width.
+        if (arg.spec == .aapcs64_general) {
+            try marshal.writeRegister(&gen[arg.offset], argv, n, arg.type, ffi_types.max_recur);
+            continue;
+        }
         const to: [*]u8 = switch (arg.spec) {
-            .aapcs64_general => @ptrCast(&gen[arg.offset]),
+            .aapcs64_general => unreachable,
             .aapcs64_sse => if (scatter > 1) &hfa_buf else @ptrCast(&fp[arg.offset]),
             .aapcs64_general_ref => blk: {
                 const payload = frame.at(arg.offset2);
@@ -773,9 +784,8 @@ fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: []cons
             .aapcs64_stack_ref => blk: {
                 const payload = frame.at(arg.offset2);
                 // A byte offset, like every other arm of this switch and like
-                // the `aapcs64_stack` case three lines up. C read it as a word
-                // index and wrote the pointer eight times further out --
-                // usually past its own `alloca` block. See `FOUND.md`.
+                // the `aapcs64_stack` case three lines up -- not a word index,
+                // which would place the pointer eight times further out.
                 const slot: *align(1) u64 = @ptrCast(frame.at(arg.offset));
                 slot.* = @intFromPtr(payload);
                 break :blk payload;

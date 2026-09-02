@@ -36,9 +36,9 @@
 //! and for the heap list that type puts them on. What the collector then does
 //! with them belongs to `test/gc_sweep.zig`, which already has it.
 //!
-//! `janet_table_proto_flatten` walks a prototype chain to its end rather than
-//! to `JANET_MAX_PROTO_DEPTH`, so a cyclic chain does not terminate.
-//! `FOUND.md` records it. No assertion can pin a hang.
+//! `protoFlatten` walks a prototype chain to `max_proto_depth` and no
+//! further, which is what makes a cyclic chain terminate; the suite is where
+//! that is pinned, because the value it produces is a Janet-level answer.
 
 const std = @import("std");
 const config = @import("config");
@@ -523,13 +523,12 @@ fn structToTable() void {
 /// `janet_tablen` rounds strictly up, so a requested capacity of zero still
 /// gets one bucket -- there is no such thing as an empty bucket array.
 ///
-/// C reached one from a *negative* request, and the resulting table could not
-/// be looked up in at all: `janet_maphash` masks the hash with `capacity - 1`,
-/// which for a zero capacity is every bit set, so `janet_dict_find` treats the
-/// whole hash as a bucket number and both of its loops are bounded by it
-/// rather than by the capacity. `FOUND.md` records it, with the reproducer.
-/// A capacity is a `usize` here and that request cannot be made, which is why
-/// nothing below builds one.
+/// A *negative* request reaches a capacity of zero, and such a table cannot be
+/// looked up in at all: `mapHash` masks the hash with `capacity - 1`, which
+/// for a zero capacity is every bit set, so `dictionaryFind` treats the whole
+/// hash as a bucket number and both of its loops are bounded by it rather than
+/// by the capacity. A capacity is a `usize` here and that request cannot be
+/// made, which is why nothing below builds one.
 fn tableCapacityRounding() void {
     expect(tables.new(0).capacity == 1);
     expect(tables.new(1).capacity == 2);
@@ -684,7 +683,7 @@ fn aTombstoneDoesNotTruncateAProbeRun() void {
 /// the array has no empty bucket anywhere -- and the growth policy keeps the
 /// array at most half full counting tombstones, so an empty bucket always
 /// exists. The re-inserted key therefore takes the slot *after* its own hole
-/// and the tombstone stays. `FOUND.md` records the branch as unreachable.
+/// and the tombstone stays, which is why `put` has no tombstone to retire.
 fn tombstonesAreReclaimed() void {
     const t = tables.new(4);
     tables.put(t, kw("a"), harness.wrapInteger(1));
@@ -891,11 +890,10 @@ fn tableCloneCopiesTheLayout() void {
     expect(harness.isType(tables.rawget(t, kw("new")), repr.Tag.nil));
 }
 
-/// Cloning a table with no bucket array. This is the `memcpy(dst, NULL, 0)`
-/// that `FOUND.md` records against the C original, and it is the only thing
-/// asserted here: the clone's fields, not its usability. A zero-capacity table
-/// cannot be looked up in on either side -- see `tableCapacityRounding` -- so
-/// a clone of one cannot be either.
+/// Cloning a table with no bucket array, which is the `memcpy(dst, NULL, 0)`
+/// that `safe_memcpy` exists for. The clone's fields are the only thing
+/// asserted here, not its usability: a zero-capacity table cannot be looked up
+/// in -- see `tableCapacityRounding` -- so a clone of one cannot be either.
 fn tableCloneOfAnEmptyArray() void {
     // No constructor produces a null bucket array any more -- see
     // `tableCapacityRounding` -- so the state is built directly, which is what

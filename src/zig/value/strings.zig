@@ -199,12 +199,10 @@ pub fn cstring(str: [*:0]const u8) [*:0]const u8 {
 /// across a call that can raise.
 ///
 /// `lookup` comes from `utils.calloc` and is released by `deinit`, **which
-/// every user of this state owes a `defer`**. Janet released it on every path
-/// it could see and missed the ones it could not: `janet_text_substitution`
-/// runs a Janet function, and a raise from there skipped the `kmp_deinit`
-/// below it, stranding four bytes per pattern byte. `FOUND.md` has the
-/// measurement; `DESIGN.md` section 12 is why it is fixed here rather than
-/// reproduced.
+/// every user of this state owes a `defer`**. Releasing it on each visible
+/// path instead misses the ones that are not visible: `registry.textSubstitution`
+/// runs a Janet function, and a raise from there passes any hand-written
+/// release below it, stranding four bytes per pattern byte.
 const KmpState = struct {
     i: i32,
     j: i32,
@@ -447,7 +445,7 @@ fn cfunStringReplaceall(argv: []repr.Value) align(corefn.alignment) raise.Raisin
     _ = buffers.init(&b, @intCast(s.kmp.text.len));
     // `buffers.init` takes its storage from `utils.malloc` and marks the header
     // disabled, so the collector never owns it and only this `defer` returns
-    // it. That is the second half of the `FOUND.md` leak.
+    // it. The substitution below raises, which is what the `defer` is for.
     defer buffers.deinit(&b);
     while (true) {
         const result = s.kmp.next();

@@ -119,8 +119,11 @@ pub const FILE = host.FILE;
 /// bytes reached before the scan stopped — a sandbox denial for a prefix comes
 /// out before the complaint about a later bad byte.
 ///
-/// A repeated flag yields a flag word of -1, which the caller then uses as a
-/// flag word. `FOUND.md` records that and it is reproduced rather than fixed.
+/// A repeated flag is reported as `mode_repeated` with a flag word of -1, and
+/// **-1 is not a flag word**: `checkFlags` raises on it rather than passing it
+/// on. Every bit set includes `file_closed` and `file_not_closeable`, which is
+/// a handle that reports itself closed, refuses every operation, refuses to be
+/// closed, and so never returns its descriptor.
 pub fn scanMode(
     mode: [*]const u8,
     len: usize,
@@ -239,12 +242,13 @@ pub fn temp() ?*FILE {
 /// definition, and every caller inside this file has a `JanetFile` and
 /// therefore a stream already.
 ///
-/// The stream is optional throughout. A closed `JanetFile` holds a null, and
-/// two of the paths below can be reached with one: `c.fflush(NULL)` flushes
-/// every output stream in the process, and `c.setvbuf(NULL, ...)` is undefined.
-/// Both are recorded in `FOUND.md` and reproduced rather than trapped on,
-/// which is only possible if the null travels as a null instead of through a
-/// checked cast.
+/// The stream is optional throughout, because a closed `JanetFile` holds a
+/// null. **No caller here reaches one**: `flusher` skips a closed file rather
+/// than handing `c.fflush` a null, which would flush every output stream in
+/// the process; `fileUnmarshal` skips the buffer-size restoration when
+/// `c.fdopen` failed, because `c.setvbuf(NULL, ...)` is undefined; and
+/// `getfile` raises before it hands one out. The optional stays because the
+/// type is what says the null is a state rather than an accident.
 pub fn close(file: ?*FILE) i32 {
     return c.fclose(file);
 }
@@ -307,15 +311,15 @@ pub fn seek(file: ?*FILE, offset: i64, whence: i32) i32 {
         else => seek_end,
     };
     if (windows) return c._fseeki64(file, offset, origin);
-    // A 32-bit `long` narrows the offset here exactly as the C
-    // implementation's implicit conversion did; `FOUND.md` records what that
-    // costs a 32-bit host.
-    return c.fseek(file, @truncate(offset), origin);
+    // `fseeko`, not `fseek`: the docstring promises files of more than 4GB,
+    // and `long` is 32 bits on a 32-bit POSIX host where `off_t` is 64. On a
+    // 64-bit host the two are the same call.
+    return c.fseeko(file, offset, origin);
 }
 
 pub fn tell(file: ?*FILE) i64 {
     if (windows) return c._ftelli64(file);
-    return c.ftell(file);
+    return c.ftello(file);
 }
 
 /// Close the stream's descriptor across an exec. `c.fopen` has no standard flag
@@ -449,7 +453,10 @@ fn fileUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*File) {
     setStreamOf(iof, reopened);
     iof.flags = if (reopened == null) file_closed else flags;
     iof.vbufsize = try marsh.unmarshalSize(ctx);
-    if (iof.vbufsize != bufsiz) {
+    // Only when there is a stream to set it on. A failed `fdopen` set the
+    // closed flag above, and `setvbuf` has no meaning for a null stream --
+    // C99 §7.19.5.6.
+    if (reopened != null and iof.vbufsize != bufsiz) {
         if (setBufferSize(reopened, iof.vbufsize) != 0) {
             exitWith(@src(), "unmarshal setvbuf");
         }
@@ -490,6 +497,11 @@ fn checkFlags(str: strings.String) raise.Raising(i32) {
     if (status == mode_bad_later) {
         return pp_format.panicf("invalid flag %c, expected +, b, or n", .{@as(c_int, str[@intCast(index)])});
     }
+    // A repeat gets its own message: naming `+` as one of the flags expected
+    // while refusing a `+` would be no diagnosis at all.
+    if (status == mode_repeated) {
+        return pp_format.panicf("repeated flag %c in file mode", .{@as(c_int, str[@intCast(index)])});
+    }
     return flags;
 }
 
@@ -525,9 +537,13 @@ fn cfunFopen(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
     const fname = try args_core.getString(argv, 0);
     var fmode: strings.String = undefined;
     var flags: i32 = undefined;
-    // A third argument leaves the mode unscanned and the file read-only; that
-    // is the C original's `argc == 2` and is recorded in `FOUND.md`.
-    if (argv.len == 2) {
+    // **The mode is read whenever it is given**, whether or not a buffer size
+    // follows it. Reading it only at exactly two arguments leaves a three-
+    // argument call with an unscanned mode and a read-only handle, so `:wb
+    // 4096` opens for reading and `:zzz 4096` is accepted where `:zzz` is not.
+    // The sandbox assertion below the branch is the default's; the mode's own
+    // is asserted by `checkFlags`.
+    if (argv.len >= 2) {
         fmode = try args_core.getKeyword(argv, 1);
         flags = try checkFlags(fmode);
     } else {
@@ -567,6 +583,10 @@ fn cfunFopen(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
 ///
 /// A short read is not by itself a failure -- it is how the end of the file is
 /// reached -- so the error indicator decides.
+///
+/// The readability test is kept here as well as at `cfunFread`'s head, because
+/// this is reachable from `io.zig`'s other readers and a check at one caller
+/// is a check one caller can be added beside.
 fn readChunk(iof: *File, buffer: *buffers.Buffer, n_bytes_max: usize) raise.Raising(void) {
     if (iof.flags & (file_read | file_update) == 0) {
         return raise.panic("file is not readable");
@@ -583,6 +603,14 @@ fn cfunFread(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
     try args_core.arity(argv, 2, 3);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
+    // **All three arms, not the two that go through `readChunk`.** `:line`
+    // reads with `getChar` rather than `readChunk`, so a readability test that
+    // lives only in `readChunk` leaves `:line` answering `nil` on a write-only
+    // file -- and that `nil` is not an empty line, it is `getc` on a stream
+    // opened for writing, which C99 §7.19.5.3 leaves undefined.
+    if (iof.flags & (file_read | file_update) == 0) {
+        return raise.panic("file is not readable");
+    }
     const buffer = if (argv.len == 2) buffers.new(0) else try args_core.getBuffer(argv, 2);
     const bufstart = buffer.count;
     if (repr.checkType(argv[1], repr.Tag.keyword)) {
@@ -945,6 +973,11 @@ fn flusher(name: [*:0]const u8, dflt_file: ?*FILE) void {
             const abstract = wrap.toAbstract(x);
             if (abi.abstractHead(abstract).type != &fileType) return;
             const iofile: *File = @ptrCast(@alignCast(abstract));
+            // **A closed file is skipped.** It holds a null stream, and
+            // `fflush(NULL)` is not an error in C99 §7.19.5.2 -- it flushes
+            // every stream open for output in the process, which is not what
+            // naming one closed file asks for.
+            if (iofile.flags & file_closed != 0) return;
             _ = flush(streamOf(iofile));
         },
         else => {},
@@ -970,9 +1003,18 @@ pub fn getjfile(argv: []const repr.Value, n: usize) raise.Raising(*File) {
     return try args_core.getAbstract(File, argv, n, &fileType);
 }
 
+/// The stream of a file argument, or a raise if there is none.
+///
+/// **A closed file has no stream, and this is where that is said.** Closing
+/// nulls the pointer deliberately, and every cfunction in this file tests the
+/// closed flag before it touches a stream -- but a caller outside the file
+/// reaching through this accessor has no flag word unless it asks for one, and
+/// the one that did not ask reached `fileno(NULL)`. The test belongs here,
+/// where every such caller inherits it.
 pub fn getfile(argv: []const repr.Value, n: usize, flags: ?*i32) raise.Raising(?*FILE) {
     const iof: *File = try args_core.getAbstract(File, argv, n, &fileType);
     if (flags) |slot| slot.* = iof.flags;
+    if (iof.flags & file_closed != 0) return raise.panic("file is closed");
     return @ptrCast(iof.file);
 }
 

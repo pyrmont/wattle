@@ -326,4 +326,19 @@
 (assert (= 9007199254740992 (int/to-number (int/s64 "9007199254740992")))
         "int/to-number at the bound")
 
+# The same rule at 64 bits: a boxed integer's shift count is taken modulo 64.
+(assert (= (int/u64 1) (:<< (int/u64 1) 64)) "a 64-bit shift count is taken modulo 64")
+(assert (= (int/u64 2) (:<< (int/u64 1) 65)) "and again past the width")
+(assert (= (int/u64 256) (:>> (int/u64 256) 64)) "the right shift takes it the same way")
+(assert (= (int/s64 -1) (:>> (int/s64 -1) 64)) "signed too")
+
+# INT64_MIN / -1 has no representable result, and all six methods refuse it.
+(def most-negative (int/s64 "-9223372036854775808"))
+(each op [/ % div mod]
+  (assert-error "INT64_MIN divided by -1" (op most-negative (int/s64 -1))))
+(assert-error "INT64_MIN divided by -1" (:rdiv (int/s64 -1) most-negative))
+(assert-error "INT64_MIN divided by -1" (:rmod (int/s64 -1) most-negative))
+(assert (= (int/s64 "-9223372036854775808") (div most-negative (int/s64 1)))
+        "and the divisors either side of it still divide")
+
 (end-suite)

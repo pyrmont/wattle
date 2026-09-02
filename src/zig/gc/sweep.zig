@@ -24,13 +24,12 @@
 //! `janet_deinit_block` runs *before* the unlink, so every later collection
 //! finds it unreachable again and finalizes it again.
 //!
-//! One defect is reproduced rather than repaired, and it is in `FOUND.md`:
-//! `janet_clear_memory` frees the main heap and never touches
-//! `vm.gc.weak_blocks`, so every weak table and weak array still alive at
-//! `janet_deinit` leaks its block and its data array — 32KB per cycle for a
-//! 4096-element weak array, measured and recorded in `FOUND.md`. This file walks
-//! the same one list the original does, and `test/gc_sweep.zig` asserts the
-//! leak's signature so that whichever side is fixed first says so.
+//! **Teardown walks both heaps.** Freeing the main heap and leaving
+//! `vm.gc.weak_blocks` alone leaks a block and a data array for every weak
+//! table and weak array still alive at teardown — 32KB a cycle for a
+//! 4096-element weak array — and then nulls the list head, which drops the
+//! last pointer to them. `clearMemory` below walks the two lists with one
+//! body, and `test/gc_sweep.zig` pins that both come back empty.
 
 const repr = @import("repr");
 const constants = @import("constants");
@@ -163,10 +162,11 @@ fn deinitBlock(mem: *abi.GCObject) void {
             }
             if (head.type.gc) |gc| {
                 // A finalizer cannot raise -- `abstract_type.zig` has the
-                // contract, and `FOUND.md`'s "A panicking finalizer poisons
-                // the heap and kills the process at deinit" is what allowing
-                // it costs. The nonzero return is the failure channel, and
-                // this is `janet_assert(!head->type->gc(...))` unchanged.
+                // contract, and the cost of allowing it is the heap: the block
+                // is finalized but neither freed nor unlinked, and every later
+                // sweep finalizes it again. The nonzero return is the failure
+                // channel, and this is `janet_assert(!head->type->gc(...))`
+                // unchanged.
                 gc(abstracts.data(head), head.size);
             }
         },
@@ -265,12 +265,18 @@ fn dropDeadEntries(table: *tables.Table, memtype: gc_alloc.MemoryType) void {
 /// Unlink and free every unreachable block on one heap list, clearing the
 /// reachable flag on the survivors so the next mark phase starts clean.
 ///
-/// `janet_deinit_block` runs before the unlink, which is the C original's
-/// order and is load-bearing for the note at the head of this file: a
-/// finalizer that raises leaves the block on the list and it is finalized
-/// again next time. The list is passed by pointer because the head is a
-/// `janet_vm` field
-/// and both lists are swept the same way.
+/// `deinitBlock` runs before the unlink, which is the C original's order and
+/// is load-bearing for the note at the head of this file: a finalizer that
+/// raises leaves the block on the list and it is finalized again next time.
+/// The list is passed by pointer because the head is a `Vm` field and both
+/// lists are swept the same way.
+///
+/// **The predecessor is re-derived after the finalizer, not carried across
+/// it.** A finalizer may allocate, `gcalloc` prepends, and the block being
+/// freed may be the head -- in which case the head has moved and restoring it
+/// from the saved `next` would unlink whatever the finalizer allocated from
+/// every list there is. Those blocks are then reachable from nothing: never
+/// marked, never swept, never freed at teardown, and still counted.
 fn freeUnreachable(list: *?*abi.GCObject) void {
     const g = &vm_state.current().gc;
     var previous: ?*abi.GCObject = null;
@@ -283,6 +289,7 @@ fn freeUnreachable(list: *?*abi.GCObject) void {
         } else {
             g.block_count -%= 1;
             deinitBlock(block);
+            if (previous == null and list.* != current) previous = predecessorOf(list.*, block);
             if (previous) |p| {
                 p.data.next = next;
             } else {
@@ -292,6 +299,18 @@ fn freeUnreachable(list: *?*abi.GCObject) void {
         }
         current = next;
     }
+}
+
+/// The block whose `next` is `target`, walking from `head`. Null when `target`
+/// is the head, which is the case the caller has already ruled out; a null
+/// answer for any other reason would mean the list no longer contains the
+/// block being freed, and the caller then falls back to moving the head.
+fn predecessorOf(head: ?*abi.GCObject, target: *abi.GCObject) ?*abi.GCObject {
+    var node = head;
+    while (node) |block| : (node = block.data.next) {
+        if (block.data.next == target) return block;
+    }
+    return null;
 }
 
 /// Free everything the mark phase did not reach, and drop the weak references
@@ -406,14 +425,11 @@ pub fn clearMemory() void {
         }
     }
 
-    // Both heaps, with one body. `janet_clear_memory` walked `blocks` and not
-    // `weak_blocks`, so every weak table and weak array still allocated at
-    // teardown leaked its block and the `data` array that block owned --
-    // 42.4KB a cycle against a strong control's 10.2KB. `janet_init` then set
-    // the list head to null, so the next cycle dropped the last pointer to
-    // them and the memory was unrecoverable rather than merely retained.
-    // `FOUND.md` has the probe; `DESIGN.md` section 12 is why it is fixed here
-    // rather than reproduced.
+    // Both heaps, with one body. Walking `blocks` and not `weak_blocks` leaks
+    // the block and the `data` array for every weak table and weak array still
+    // allocated at teardown -- 42.4KB a cycle against a strong control's
+    // 10.2KB -- and the list head is nulled next, which drops the last pointer
+    // to them and makes the memory unrecoverable rather than merely retained.
     //
     // Nothing a running program observes moves: the weak heap is reached only
     // at teardown, and everything on it is unreachable by then by
@@ -430,11 +446,10 @@ pub fn clearMemory() void {
     }
 
     // The scratch table, whose three fields go together for the reason
-    // `gc.scratchDeinit` carries: upstream frees the table and leaves
-    // `scratch_mem` dangling with `scratch_cap` at its old value, so a
-    // `janet_smalloc` before the next `janet_init` writes through the pointer
-    // It is heap corruption that only glibc's allocator hardening detects;
-    // `FOUND.md` has the bisection.
+    // `gc.scratchDeinit` carries: freeing the table and leaving `scratch_mem`
+    // dangling with `scratch_cap` at its old value lets a `janet_smalloc`
+    // before the next `janet_init` write through the freed pointer. It is heap
+    // corruption that only glibc's allocator hardening detects.
     //
     // Nulling here makes that path **correct** rather than loud, and the
     // difference is worth stating: with all three cleared, the next

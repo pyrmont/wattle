@@ -10,7 +10,18 @@
 (var skip-count 0)
 (var skip-n 0)
 
-(var is-verbose (os/getenv "VERBOSE"))
+# `compif` rather than `if`, three times below, because a reduced-OS build
+# registers only `os/exit`, `os/which`, `os/arch`, `os/compiler` and
+# `os/isatty` -- and a reference to an unregistered binding is a *compile*
+# error, so an ordinary runtime guard would not survive loading this file.
+# What each fallback answers is the same thing the real call answers when it
+# has nothing to report: no verbosity, and no elapsed time.
+(var is-verbose (compif (dyn 'os/getenv) (os/getenv "VERBOSE") nil))
+
+(defn- clock-now
+  "Seconds of CPU time, or zero where the build has no clock to ask."
+  []
+  (compif (dyn 'os/clock) (os/clock) 0))
 
 (defn- assert-no-tail
   "Override's the default assert with some nice error handling."
@@ -78,11 +89,11 @@
        (cond
          (number? x) (string x)
          (string x)))
-  (set start-time (os/clock))
+  (set start-time (clock-now))
   (eprint "Starting suite " suite-name "..."))
 
 (defn end-suite []
-  (def delta (- (os/clock) start-time))
+  (def delta (- (clock-now) start-time))
   (eprinf "Finished suite %s in %.3f seconds - " suite-name delta)
   (eprint num-tests-passed " of " num-tests-run " tests passed (" skip-count " skipped).")
   (if (not= (+ skip-count num-tests-passed) num-tests-run) (os/exit 1)))
@@ -90,13 +101,18 @@
 (defn rmrf
   "rm -rf in janet"
   [x]
-  (case (os/lstat x :mode)
-    nil nil
-    :directory (do
-                 (each y (os/dir x)
-                   (rmrf (string x "/" y)))
-                 (os/rmdir x))
-    (os/rm x))
+  (compif (dyn 'os/lstat)
+    (case (os/lstat x :mode)
+      nil nil
+      :directory (do
+                   (each y (os/dir x)
+                     (rmrf (string x "/" y)))
+                   (os/rmdir x))
+      (os/rm x))
+    # A build with no filesystem bindings cannot have made anything to remove,
+    # and a caller that got here has already failed on the call that would have
+    # created it. Raising says so rather than reporting a clean removal.
+    (errorf "rmrf: this build has no filesystem bindings (%s)" x))
   nil)
 
 (defn randdir

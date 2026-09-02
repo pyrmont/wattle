@@ -13,10 +13,10 @@
 //! ## Why comparison goes through a compiled Janet function
 //!
 //! A double argument written as a Janet literal becomes a compile-time
-//! constant, and `janetc_loadconst` casts such a constant to `int32_t` without
-//! excluding NaN first — `FOUND.md` has that defect, unresolved. Calling a
+//! constant, so a contract that wrote its vectors as literals would be
+//! asserting about the constant folder as much as about `compare`. Calling a
 //! compiled `(fn [a b] (compare a b))` with values built in Zig keeps the
-//! constant folder out of it, so these vectors do not depend on it.
+//! folder out of it, so these vectors do not depend on it.
 //!
 //! ## NaN compares equal to everything
 //!
@@ -258,10 +258,9 @@ fn theFormatters() !void {
 
 /// Floored division and modulo, through the `div` and `mod` methods.
 ///
-/// `INT64_MIN / -1` is deliberately absent. The `/` and `%` methods reject it
-/// with a Janet error, but `div` and `mod` do not guard it and reach an
-/// undefined division — `FOUND.md` has it, unresolved. Pinning either outcome
-/// would assert behaviour that has not been decided.
+/// `INT64_MIN / -1` has no representable result, and all six methods refuse
+/// it with one message. The refusal is asserted at the end, because it is the
+/// one input where the division itself has no answer to render.
 fn theFlooredDivision() !void {
     const cases = [_]struct { [:0]const u8, []const u8 }{
         // Floored division rounds toward negative infinity, unlike `/`.
@@ -316,6 +315,30 @@ fn theFlooredDivision() !void {
         &.{},
         null,
     ).signal == abi.Signal.@"error");
+
+    // `INT64_MIN / -1`, through every method that can reach it. Each is a
+    // Janet-level dispatch for the reason above, so each is a protected call.
+    for ([_][:0]const u8{
+        "(fn [] (/ (int/s64 \"-9223372036854775808\") (int/s64 -1)))",
+        "(fn [] (% (int/s64 \"-9223372036854775808\") (int/s64 -1)))",
+        "(fn [] (div (int/s64 \"-9223372036854775808\") (int/s64 -1)))",
+        "(fn [] (mod (int/s64 \"-9223372036854775808\") (int/s64 -1)))",
+        "(fn [] (:rdiv (int/s64 -1) (int/s64 \"-9223372036854775808\")))",
+        "(fn [] (:rmod (int/s64 -1) (int/s64 \"-9223372036854775808\")))",
+    }) |source| {
+        const fn_value = eval(source.ptr);
+        expect(vm_entry.pcall(wrap.toFunction(fn_value), &.{}, null).signal == abi.Signal.@"error");
+    }
+
+    // And the neighbouring divisors, which are representable and must not be
+    // caught by the guard.
+    for ([_][:0]const u8{
+        "(fn [] (div (int/s64 \"-9223372036854775808\") (int/s64 1)))",
+        "(fn [] (div (int/s64 \"-9223372036854775807\") (int/s64 -1)))",
+    }) |source| {
+        const fn_value = eval(source.ptr);
+        expect(vm_entry.pcall(wrap.toFunction(fn_value), &.{}, null).signal == abi.Signal.ok);
+    }
 }
 
 /// An operand the boxed types cannot convert refuses *catchably*.

@@ -252,11 +252,12 @@ fn theFuncframeVarargs(rest: *functions.Function) void {
     expect(tuples.head(wrap.toTuple(tail)).length == 0);
 }
 
-/// `&keys` sets `JANET_FUNCDEF_FLAG_STRUCTARG`, and the tail is built with
-/// `janet_struct_put` instead of `janet_tuple_n`. Only even-length tails are
-/// asserted here: an odd one reads a slot past the arguments, which is a
-/// defect in `makeStructN` recorded in `FOUND.md`, so pinning it would pin an
-/// out-of-range read rather than a behavior.
+/// `&keys` sets the funcdef's `structarg` flag, and the tail is built with
+/// `structs.put` instead of `tuples.n`. An odd-length tail drops its last
+/// value, which is what the C original's own comment says it does and what
+/// `makeStructN`'s `i + 1 < len` makes true: the loop condition is the whole
+/// difference between ignoring that value and pairing it with the slot past
+/// the arguments.
 fn theFuncframeStructargs(keyed: *functions.Function) void {
     const args = [_]repr.Value{
         harness.wrapInteger(1),
@@ -278,6 +279,23 @@ fn theFuncframeStructargs(keyed: *functions.Function) void {
     tail = slot(fiber, fiber.frame + keyed.def.?.arity);
     expect(harness.isType(tail, repr.Tag.@"struct"));
     expect(structs.head(wrap.toStruct(tail)).length == 0);
+
+    // An odd-length tail: the last key has no value, so it is dropped rather
+    // than paired with whatever the slot past the arguments holds. Four
+    // arguments -- one fixed and three keyed -- so the struct is one pair.
+    const odd = [_]repr.Value{
+        harness.wrapInteger(1),
+        value.fromBytes("a", .keyword),
+        harness.wrapInteger(7),
+        value.fromBytes("b", .keyword),
+    };
+    fiber = rootedFiber(keyed, odd[0..4]);
+    tail = slot(fiber, fiber.frame + keyed.def.?.arity);
+    expect(harness.isType(tail, repr.Tag.@"struct"));
+    const oddstruct = wrap.toStruct(tail);
+    expect(structs.head(oddstruct).length == 1);
+    expect(harness.integerIs(harness.field(oddstruct, "a"), 7));
+    expect(harness.isType(harness.field(oddstruct, "b"), repr.Tag.nil));
 }
 
 // --------------------------------------------------------------- tail calls
@@ -631,6 +649,27 @@ fn anEnvironmentDetachesWhenItsFiberStops(add: *functions.Function) void {
     utils.free(env.as.values);
 }
 
+/// An environment the validator rejects is already the empty off-stack
+/// variant, so detaching it has nothing to do. The path matters because an
+/// unmarshalled environment can name a frame that does not exist, and the
+/// frame walk that drops it detaches whatever it finds.
+fn detachingARejectedEnvironmentIsANoOp(add: *functions.Function) void {
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const fiber = rootedFiber(add, args[0..2]);
+
+    var env: functions.FuncEnv = std.mem.zeroes(functions.FuncEnv);
+    // A negative offset naming no frame of this fiber: what an unmarshalled
+    // environment looks like when the stream is not one `marsh` wrote.
+    env.offset = -(fiber.frame + 8);
+    env.length = 2;
+    env.as.fiber = fiber;
+
+    functions.envDetach(&env);
+    expect(env.offset == 0);
+    expect(env.length == 0);
+    expect(env.as.values == null);
+}
+
 /// A detached copy keeps only the slots an inner closure actually captured.
 /// The rest are nil'd rather than copied, which is what stops a closure from
 /// rooting every local of the frame it was made in.
@@ -742,6 +781,7 @@ fn body() raise.Raising(void) {
     anOverflowThroughTheInterpreter();
     theEnvironmentValidator(add, other);
     anEnvironmentDetachesWhenItsFiberStops(add);
+    detachingARejectedEnvironmentIsANoOp(add);
     detachHonoursTheClosureBitset(capturing);
     statusAndResumability(add);
     theCurrentAndRootFiber(add);

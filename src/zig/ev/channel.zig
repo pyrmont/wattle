@@ -110,7 +110,8 @@ fn pack(chan: *Channel, x: *repr.Value) raise.Raising(bool) {
                 ev.outOfMemory(@src())));
             // `marshal` raises on any value a threaded channel cannot carry --
             // an alive fiber, a file in safe mode, an unregistered cfunction --
-            // and this buffer is not the collector's. `FOUND.md`.
+            // and this buffer is not the collector's, so the raise has to
+            // release it here.
             errdefer {
                 buffers.deinit(buf);
                 utils.free(buf);
@@ -250,18 +251,21 @@ fn chanatMarshal(chan: *Channel, ctx: *abi.MarshalContext) raise.Raising(void) {
 }
 
 fn chanatUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Channel) {
+    // The lead byte `chanatMarshal` wrote says which heap the channel lived
+    // on. A threaded one cannot be rebuilt from a portable stream: it wants an
+    // allocation on the threaded heap and a reference count handed to whoever
+    // reads it, and this encoding carries neither. So it is refused where the
+    // caller can act on it, and every path past here has the byte clear.
     const is_threaded = try marsh.unmarshalByte(ctx);
-    const abst: *Channel = unwrap(if (is_threaded != 0)
-        try marsh.unmarshalAbstractThreaded(ctx, @sizeOf(Channel))
-    else
-        try marsh.unmarshalAbstract(ctx, @sizeOf(Channel)));
+    if (is_threaded != 0) return raise.panic("cannot unmarshal a threaded channel");
+    const abst: *Channel = unwrap(try marsh.unmarshalAbstract(ctx, @sizeOf(Channel)));
     const is_closed = try marsh.unmarshalByte(ctx);
     const limit = try marsh.unmarshalInt(ctx);
     const count = try marsh.unmarshalInt(ctx);
     if (count < 0) return raise.panic("invalid negative channel count");
     if (count > limit) return raise.panic("invalid channel count");
-    // The C original initialises the channel unthreaded whatever the byte it
-    // just read said. Reproduced, not repaired; `FOUND.md` has the entry.
+    // Unthreaded, and that is the byte's answer rather than a constant: the
+    // threaded case raised above.
     chanInit(abst, limit, false);
     abst.closed = is_closed != 0;
     for (0..@as(usize, @intCast(count))) |_| {
@@ -402,11 +406,10 @@ pub const Caller = enum(c_int) {
 
 /// Push a value, reporting whether the caller should block.
 ///
-/// **The caller holds the lock across this and releases it.** It used to
-/// release the lock itself, on each of its own returns -- which the two
-/// `raise` paths inside `pack` and `unpack` went straight past, leaving a
-/// threaded channel locked against every other thread. `FOUND.md` has the
-/// deadlock; a `defer` in each caller is the fix.
+/// **The caller holds the lock across this and releases it**, with a `defer`.
+/// Releasing it here instead, on each of this function's own returns, is what
+/// the two `raise` paths inside `pack` and `unpack` go straight past, and a
+/// threaded channel left locked is locked against every other thread.
 fn pushWithLock(chan: *Channel, x_in: repr.Value, mode: Caller) raise.Raising(bool) {
     var x = x_in;
     var reader: Pending = undefined;
@@ -479,8 +482,8 @@ pub fn push(chan: *Channel, x: repr.Value, mode: Caller) raise.Raising(bool) {
 ///
 /// **The caller holds the lock across this and releases it**, for the reason
 /// `pushWithLock` gives -- and for one more of its own: the `.detached` arm
-/// below returned without unlocking at all, which `FOUND.md` records as a
-/// threaded channel left locked when it is empty.
+/// below returns without unlocking, so an empty threaded channel would stay
+/// locked if the release were this function's.
 fn popWithLock(chan: *Channel, item: *repr.Value, is_choice: Caller) raise.Raising(bool) {
     var writer: Pending = undefined;
     if (chan.closed) {

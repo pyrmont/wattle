@@ -82,10 +82,11 @@ pub fn mutexLock(mutex: *anyopaque) void {
 /// panicked. It raises by returning now, which is what took the last
 /// `janet_panic` call site out of C.
 ///
-/// The Windows arm cannot report: `c.LeaveCriticalSection` returns `void`, and
-/// the C original's comment -- "error handling? May want to keep counter" --
-/// records that the author knew. Reproduced rather than repaired; `FOUND.md`
-/// has the asymmetry.
+/// **The Windows arm cannot fail and so cannot report.**
+/// `c.LeaveCriticalSection` returns `void`: Win32 gives a critical-section
+/// release no failure to observe, where `pthread_mutex_unlock` answers an
+/// `errno`. The asymmetry is the platform's, and the raising return type is
+/// what the POSIX arm needs.
 pub fn mutexUnlock(mutex: *anyopaque) raise.Raising(void) {
     if (windows) {
         c.LeaveCriticalSection(@ptrCast(@alignCast(mutex)));

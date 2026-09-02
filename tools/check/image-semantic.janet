@@ -63,8 +63,14 @@
           (print "  ! differs: " name)
           (eachk k (merge fa fb)
             (unless (= (get fa k) (get fb k))
-              (printf "      %v: %.120s" k (string (get fa k)))
-              (printf "      %v: %.120s" k (string (get fb k))))))
+              # `%.99s`, not `%.120s`. Janet's format grammar takes at most two
+              # digits of width or precision, so a three-digit one raises
+              # `invalid format (width or precision too long)` -- which this
+              # line did on every difference it was ever asked to print, in
+              # both implementations. An instrument whose reporting path cannot
+              # run reads exactly like a clean tree.
+              (printf "      %v: %.99s" k (string (get fa k)))
+              (printf "      %v: %.99s" k (string (get fb k))))))
         (unless (deep= (get ea :source-map) (get eb :source-map))
           (++ moved)))))
   (printf "\n%d bindings compared" (length names))

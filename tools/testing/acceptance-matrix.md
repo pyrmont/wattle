@@ -51,6 +51,16 @@ and then ask of each reduced configuration whether the types that contract
 names still exist there. When one does not, that is what `skip=` is for --
 `Job("contracts", "no peg", ["-Dpeg=false"], skip=("peg",))`.
 
+**A *suite* a configuration cannot load is `build.zig`'s to skip, not
+`skip=`'s.** `skip=` names contracts. A Janet suite resolves its bindings at
+compile time, so one naming a binding the build did not register refuses to
+load and takes the whole file with it — there is no per-case skip to reach for.
+`build.zig`'s `test_suites` list carries the condition instead: an entry marked
+`needs_os = true` is not scheduled under `-Dreduced-os=true`. Seven of the 35
+are marked, which is why the `reduced os` entry became a `full` job at Phase 16
+Part 4 after years as a `contracts` one — until then every suite there failed
+to compile on `test/helper.janet`'s first line.
+
 **Two more, from Phase 11 Part 20, and the preflight catches neither.**
 
   - **A contract a configuration does not *compile* fails the same way a

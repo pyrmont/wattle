@@ -44,6 +44,7 @@ const utils = @import("../utils.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const args_core = @import("../args.zig");
 const fatal = @import("../fatal.zig");
+const order = @import("../value/helpers/order.zig");
 const value = @import("../value.zig");
 const buffers = @import("../value/buffers.zig");
 const numscan = @import("../scan.zig");
@@ -262,12 +263,69 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Raising(bool) {
 /// The body the table and struct cases share. In C it is written out twice
 /// over `tab->data`/`tab->capacity` and `st`/`janet_struct_capacity(st)`; the
 /// two copies are identical once those two expressions are parameters.
+///
+/// **The keys are sorted**, as `prettyEntries` sorts them, because JDN is a
+/// serialisation format and storage order is not reproducible: a key hashed by
+/// *pointer* -- a buffer, an array, a table, a fiber, an abstract -- sits in a
+/// bucket chosen by an allocation address, so the same value prints
+/// differently in two runs of the same binary.
+///
+/// **The sort is `std.mem.sort` and not `utils.sortedKeys`.** That one is an
+/// insertion sort, and `prettyEntries` affords it only because it refuses to
+/// sort past `dict_keysort_limit` and truncates instead. There is no
+/// truncation here to fall back on, so a quadratic sort over every entry would
+/// make a large dictionary quadratic to serialise. `std.mem.sort` is stable,
+/// so the order agrees with `%p`'s entry for entry.
 fn printJdnKvs(S: *Pretty, kvs: []const tables.KV, depth: c_int) raise.Raising(bool) {
-    var first = true;
+    const ks_start = S.keysort_start;
+    defer S.keysort_start = ks_start;
+
+    var len: usize = 0;
     for (kvs) |*kv| {
+        if (!repr.checkType(kv.key, repr.Tag.nil)) len += 1;
+    }
+    if (len == 0) return false;
+
+    // The sort indices for every dictionary on the recursion stack share one
+    // scratch allocation, each nesting level taking the slice above the one
+    // below it -- the same arrangement `prettyEntries` uses, and the same
+    // buffer.
+    const mincap: i64 = @as(i64, @intCast(len)) + @as(i64, ks_start);
+    if (mincap > std.math.maxInt(i32)) return true;
+    if (S.keysort_capacity < mincap) {
+        S.keysort_capacity = if (mincap >= std.math.maxInt(i32) / 2)
+            std.math.maxInt(i32)
+        else
+            @intCast(mincap * 2);
+        S.keysort_buffer = @ptrCast(@alignCast(gc_alloc.srealloc(
+            S.keysort_buffer,
+            @sizeOf(i32) * @as(usize, @intCast(S.keysort_capacity)),
+        )));
+        if (S.keysort_buffer == null) fatal.outOfMemory();
+    }
+    // A nonzero `len` forces `mincap` above `keysort_capacity` unless the
+    // capacity is already nonzero, and a nonzero capacity is one some level
+    // allocated and checked -- so the buffer is here.
+    const buf = (S.keysort_buffer orelse unreachable) + @as(usize, @intCast(ks_start));
+    var next: usize = 0;
+    for (kvs, 0..) |*kv, i| {
         if (repr.checkType(kv.key, repr.Tag.nil)) continue;
-        try if (!first) S.pushByte(' ');
-        first = false;
+        buf[next] = @intCast(i);
+        next += 1;
+    }
+    std.mem.sort(i32, buf[0..len], kvs, struct {
+        fn lessThan(context: []const tables.KV, a: i32, b: i32) bool {
+            return order.compare(
+                context[@intCast(a)].key,
+                context[@intCast(b)].key,
+            ) < 0;
+        }
+    }.lessThan);
+    S.keysort_start += @intCast(len);
+
+    for (buf[0..len], 0..) |j, i| {
+        const kv = &kvs[@intCast(j)];
+        try if (i != 0) S.pushByte(' ');
         if (try printJdnOne(S, kv.key, depth - 1)) return true;
         try S.pushByte(' ');
         if (try printJdnOne(S, kv.value, depth - 1)) return true;

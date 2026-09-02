@@ -140,7 +140,7 @@ pub fn formatU64(val: u64, out: [*]u8) i32 {
 /// C's division truncates toward zero, so a negative quotient with a remainder
 /// is one step above the floor.
 pub fn s64Divf(op1: i64, op2: i64) i64 {
-    const x = divideTruncating(op1, op2);
+    const x = @divTrunc(op1, op2);
     const negative_quotient = (op1 ^ op2) < 0;
     const inexact = x *% op2 != op1;
     return x -% @intFromBool(negative_quotient and inexact);
@@ -150,25 +150,20 @@ pub fn s64Divf(op1: i64, op2: i64) i64 {
 /// A zero divisor yields the dividend unchanged, matching the C original.
 pub fn s64Mod(op1: i64, op2: i64) i64 {
     if (op2 == 0) return op1;
-    const x = remainderTruncating(op1, op2);
+    const x = @rem(op1, op2);
     if ((op1 ^ op2) < 0 and x != 0) return x +% op2;
     return x;
 }
 
-/// `INT64_MIN / -1` has no representable result. The `/` and `%` methods
-/// reject it with a Janet error, but `div` and `mod` do not, so the C code
-/// reaches a division that is undefined and platform-dependent -- see
-/// FOUND.md. These reproduce the two's-complement result that the development
-/// target produces, rather than introducing an error the C version never
-/// raised.
-fn divideTruncating(numerator: i64, denominator: i64) i64 {
-    if (denominator == -1) return 0 -% numerator;
-    return @divTrunc(numerator, denominator);
-}
-
-fn remainderTruncating(numerator: i64, denominator: i64) i64 {
-    if (denominator == -1) return 0;
-    return @rem(numerator, denominator);
+/// `INT64_MIN / -1` has no representable result, so every method that can
+/// reach it refuses it. `divCheck` is the refusal and the four hand-written
+/// methods below call it where the generated `/` and `%` make the same test
+/// inline; without it the division is a trap on x86-64 and the dividend on
+/// AArch64, which is two answers and neither of them one.
+fn divCheck(op1: i64, op2: i64) raise.Raising(void) {
+    if (op2 == -1 and op1 == std.math.minInt(i64)) {
+        return raise.panic("INT64_MIN divided by -1");
+    }
 }
 
 // ==========================================================================
@@ -345,13 +340,13 @@ fn applyBin(comptime op: BinOp, lhs: u64, rhs: u64) u64 {
         .band => lhs & rhs,
         .bor => lhs | rhs,
         .bxor => lhs ^ rhs,
-        // A shift count of 64 or more is undefined in C, and a Debug build
-        // traps on it rather than producing a value -- `FOUND.md` has the
-        // reproducer. `@intCast` reproduces both halves of that: it traps in a
-        // safe build and is undefined in a release one, exactly where the C
-        // does.
-        .shl => lhs << @intCast(rhs),
-        .shr => lhs >> @intCast(rhs),
+        // **The count is taken modulo the operand's width**, which is the
+        // answer the interpreter's own `<<` on an ordinary integer gives at
+        // 32 bits and the answer both supported architectures' shift
+        // instructions give. C leaves a count at or beyond the width
+        // undefined; `@truncate` decides it, once, for every build.
+        .shl => lhs << @truncate(rhs),
+        .shr => lhs >> @truncate(rhs),
     };
 }
 
@@ -459,6 +454,7 @@ fn cfunS64Divf(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
     const op1 = try unwrapS64(argv[0]);
     const op2 = try unwrapS64(argv[1]);
     if (op2 == 0) return raise.panic("division by zero");
+    try divCheck(op1, op2);
     return boxed(i64, &s64Type, s64Divf(op1, op2));
 }
 
@@ -467,6 +463,7 @@ fn cfunS64Divfi(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.V
     const op2 = try unwrapS64(argv[0]);
     const op1 = try unwrapS64(argv[1]);
     if (op2 == 0) return raise.panic("division by zero");
+    try divCheck(op1, op2);
     return boxed(i64, &s64Type, s64Divf(op1, op2));
 }
 
@@ -474,6 +471,7 @@ fn cfunS64Mod(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
     try args_core.fixarity(argv, 2);
     const op1 = try unwrapS64(argv[0]);
     const op2 = try unwrapS64(argv[1]);
+    try divCheck(op1, op2);
     return boxed(i64, &s64Type, s64Mod(op1, op2));
 }
 
@@ -481,6 +479,7 @@ fn cfunS64Modi(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
     try args_core.fixarity(argv, 2);
     const op2 = try unwrapS64(argv[0]);
     const op1 = try unwrapS64(argv[1]);
+    try divCheck(op1, op2);
     return boxed(i64, &s64Type, s64Mod(op1, op2));
 }
 

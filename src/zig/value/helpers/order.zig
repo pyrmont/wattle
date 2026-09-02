@@ -74,19 +74,24 @@
 //!
 //! ## What is reproduced rather than repaired
 //!
-//! **A re-entrant `compare` callback corrupts the comparison that called it.**
-//! There is one traversal stack per VM and both entry points reset it, so a
-//! callback that compares anything -- or merely looks something up, since
-//! `janet_table_get` reaches `janet_equals` through `janet_dict_find` --
-//! destroys the state of the comparison that invoked it. `traversalNext` then
-//! sees an empty stack, reports 2 for "no next node", and `janet_compare`
-//! returns `status - 2`, which is zero: two values that differ are reported
-//! equal. Nothing crashes and no sanitizer fires. `abstract_type.zig` settles
-//! that such a callback may not *raise*, and that is written down; that it may
-//! not *compare* is written down nowhere. `FOUND.md` records it, with the
-//! reproducer. `janet_equals` has the same hole and is
-//! shielded from it in practice, because it compares stored hashes before
-//! pushing anything and so only ever traverses values that are equal.
+//! **A `compare` callback may not re-enter the comparison.** There is one
+//! traversal stack per VM and both entry points reset it, so a callback that
+//! compares anything -- or merely looks something up, since `tables.get`
+//! reaches `equals` through `dictionaryFind` -- destroys the state of the
+//! comparison that invoked it. `traversalNext` then sees an empty stack,
+//! reports 2 for "no next node", and `compare` returns `status - 2`, which is
+//! zero: two values that differ are reported equal. Nothing crashes and no
+//! sanitizer fires.
+//!
+//! That is a rule and not a defect, and it is one of the three in
+//! `DESIGN.md` section 12's table of what an abstract type's callbacks may not
+//! do. Making it safe means saving the whole traversal array around the
+//! callback -- the pointer is not enough, because the inner comparison resets
+//! to the *base* and writes over the outer one's nodes -- or moving the reset
+//! from the entry points to a depth counter, and both put a cost on every
+//! comparison for a case no type in the tree reaches. `equals` has the same
+//! hole and is shielded from it in practice, because it compares stored hashes
+//! before pushing anything and so only ever traverses values that are equal.
 //!
 //! **`janet_compare` is not an ordering on NaN.** Both `==` and `<` are false,
 //! so it returns 1 whichever way round the arguments are. The C comment above
@@ -122,6 +127,7 @@
 //! word carries the type tag and the tagged one does not. Nothing may depend
 //! on a hash being stable across builds, and nothing does.
 
+const std = @import("std");
 const config = @import("config");
 const gc_alloc = @import("../../gc.zig");
 const strings = @import("../strings.zig");
@@ -140,9 +146,9 @@ const abi = @import("abi");
 /// together. This file owns it, and its header explains why the stack is the
 /// shape rather than an optimisation.
 ///
-/// A dangling `base` is `FOUND.md`'s -- `push` decides whether to grow on
-/// `base == null`, so a freed one sends it to `janet_realloc` with a pointer
-/// that is already free.
+/// A dangling `base` is what a release that does not reset costs: `push`
+/// decides whether to grow on `base == null`, so a freed one sends it to
+/// `janet_realloc` with a pointer that is already free.
 pub const Traversal = struct {
     at: ?[*]TraversalNode = null,
     top: ?[*]TraversalNode = null,
@@ -185,12 +191,12 @@ pub fn traversalInit(t: *Traversal) void {
 
 /// Release the stack and return it to what `traversalInit` starts from.
 ///
-/// **All three, not just `base`.** `FOUND.md` has the reason: `push` decides
-/// whether to grow on `base == null`, so a dangling one reaches
-/// `janet_realloc` with a freed pointer -- and clearing only `base` would
-/// leave `at` and `top` pointing into the same freed block, which is the same
-/// inconsistency one field over. A type whose reset is one statement is what
-/// stops the second half being a choice.
+/// **All three, not just `base`.** `push` decides whether to grow on
+/// `base == null`, so a dangling one reaches `janet_realloc` with a freed
+/// pointer -- and clearing only `base` would leave `at` and `top` pointing
+/// into the same freed block, which is the same inconsistency one field over.
+/// A type whose reset is one statement is what stops the second half being a
+/// choice.
 pub fn traversalDeinit(t: *Traversal) void {
     utils.free(t.base);
     t.* = .{};
@@ -293,16 +299,28 @@ fn traversalNext(stack: *Traversal, x: *repr.Value, y: *repr.Value) i32 {
 
 // ------------------------------------------------------------ abstract types
 
-/// `janet_compare_abstract`. Identity first, then the abstract *type* pointers
-/// -- which is what orders two unrelated abstract types against each other,
-/// arbitrarily but consistently within one process -- and only then the type's
-/// own `compare`, with a pointer comparison standing in when it has none.
+/// `janet_compare_abstract`. Identity first, then the abstract types **by
+/// name**, and only then the type's own `compare`, with a pointer comparison
+/// standing in when it has none.
+///
+/// **The name, not the descriptor's address.** Ordering two unrelated abstract
+/// types by where the linker put their descriptors is arbitrary *and* not
+/// stable: the same source relinked is entitled to swap them, and `(sort @[(int/s64 -3)
+/// (int/u64 5)])` is a Janet program that can see the difference. A name is a
+/// property of the type. Two distinct types with one name would fall back to
+/// the descriptor address, which is where this started.
 fn compareAbstract(xx: abstracts.Abstract, yy: abstracts.Abstract) i32 {
     if (xx == yy) return 0;
     const xt = abi.abstractHead(xx).type;
     const yt = abi.abstractHead(yy).type;
     if (xt != yt) {
-        return if (@intFromPtr(xt) > @intFromPtr(yt)) 1 else -1;
+        switch (std.mem.order(u8, xt.name, yt.name)) {
+            .lt => return -1,
+            .gt => return 1,
+            // Two distinct types with one name: nothing orders them but where
+            // they were linked, which is where this started.
+            .eq => return if (@intFromPtr(xt) > @intFromPtr(yt)) 1 else -1,
+        }
     }
     const callback = xt.compare orelse {
         return if (@intFromPtr(xx) > @intFromPtr(yy)) 1 else -1;

@@ -12,42 +12,62 @@ const version_string = std.fmt.comptimePrint("{d}.{d}.{d}{s}", .{
 });
 const build_name = "zig";
 
-const test_suites = &.{
-    "test/suite-array.janet",
-    "test/suite-asm.janet",
-    "test/suite-boot.janet",
-    "test/suite-buffer.janet",
-    "test/suite-bundle.janet",
-    "test/suite-capi.janet",
-    "test/suite-cfuns.janet",
-    "test/suite-compile.janet",
-    "test/suite-corelib.janet",
-    "test/suite-debug.janet",
-    "test/suite-ev.janet",
-    "test/suite-ev2.janet",
-    "test/suite-ffi.janet",
-    "test/suite-filewatch.janet",
-    "test/suite-inttypes.janet",
-    "test/suite-io.janet",
-    "test/suite-marsh.janet",
-    "test/suite-math.janet",
-    "test/suite-net.janet",
-    "test/suite-os.janet",
-    "test/suite-parse.janet",
-    "test/suite-peg.janet",
-    "test/suite-pp.janet",
-    "test/suite-specials.janet",
-    "test/suite-string.janet",
-    "test/suite-strtod.janet",
-    "test/suite-struct.janet",
-    "test/suite-symcache.janet",
-    "test/suite-table.janet",
-    "test/suite-tuple.janet",
-    "test/suite-unknown.janet",
-    "test/suite-value.janet",
-    "test/suite-vm.janet",
-    "test/suite-zig-interop.janet",
-    "test/regalloc-bytecode.janet",
+/// The Janet suites, and the configuration each one needs.
+///
+/// **A suite whose subject or whose fixtures a configuration does not compile
+/// is not scheduled**, which is `test/contracts.zig`'s rule for contracts
+/// applied to the other half of the test surface. A Janet file resolves its
+/// bindings at *compile* time, so a suite naming a binding the build did not
+/// register does not skip a case -- it refuses to load, and the whole suite is
+/// lost with it.
+///
+/// `needs_os` is the only condition so far. `-Dreduced-os=true` registers five
+/// `os` bindings and no more, and these seven suites reach past them:
+/// `suite-os` is *about* the OS library, and the other six use the filesystem,
+/// the environment or a subprocess to build their fixtures. Everything else
+/// runs unchanged, which is 28 of the 35 -- the population this gate is worth
+/// having for.
+const Suite = struct {
+    path: []const u8,
+    needs_os: bool = false,
+};
+
+const test_suites = &[_]Suite{
+    .{ .path = "test/suite-array.janet" },
+    .{ .path = "test/suite-asm.janet" },
+    .{ .path = "test/suite-boot.janet" },
+    .{ .path = "test/suite-buffer.janet" },
+    .{ .path = "test/suite-bundle.janet", .needs_os = true },
+    .{ .path = "test/suite-capi.janet" },
+    .{ .path = "test/suite-cfuns.janet" },
+    .{ .path = "test/suite-compile.janet" },
+    .{ .path = "test/suite-corelib.janet" },
+    .{ .path = "test/suite-debug.janet" },
+    .{ .path = "test/suite-ev.janet", .needs_os = true },
+    .{ .path = "test/suite-ev2.janet", .needs_os = true },
+    .{ .path = "test/suite-ffi.janet" },
+    .{ .path = "test/suite-filewatch.janet", .needs_os = true },
+    .{ .path = "test/suite-inttypes.janet" },
+    .{ .path = "test/suite-io.janet", .needs_os = true },
+    .{ .path = "test/suite-marsh.janet" },
+    .{ .path = "test/suite-math.janet" },
+    .{ .path = "test/suite-net.janet", .needs_os = true },
+    .{ .path = "test/suite-os.janet", .needs_os = true },
+    .{ .path = "test/suite-parse.janet" },
+    .{ .path = "test/suite-peg.janet" },
+    .{ .path = "test/suite-pp.janet" },
+    .{ .path = "test/suite-specials.janet" },
+    .{ .path = "test/suite-string.janet" },
+    .{ .path = "test/suite-strtod.janet" },
+    .{ .path = "test/suite-struct.janet" },
+    .{ .path = "test/suite-symcache.janet" },
+    .{ .path = "test/suite-table.janet" },
+    .{ .path = "test/suite-tuple.janet" },
+    .{ .path = "test/suite-unknown.janet" },
+    .{ .path = "test/suite-value.janet" },
+    .{ .path = "test/suite-vm.janet" },
+    .{ .path = "test/suite-zig-interop.janet" },
+    .{ .path = "test/regalloc-bytecode.janet" },
 };
 
 // **This file compiles no C and holds no C flags.** Neither `src/` nor `test/`
@@ -844,10 +864,12 @@ pub fn build(b: *std.Build) void {
     }
 
     inline for (test_suites) |suite| {
-        const run_suite = b.addRunArtifact(client);
-        run_suite.setCwd(b.path("."));
-        run_suite.addArg(suite);
-        test_step.dependOn(&run_suite.step);
+        if (!suite.needs_os or !options.reduced_os) {
+            const run_suite = b.addRunArtifact(client);
+            run_suite.setCwd(b.path("."));
+            run_suite.addArg(suite.path);
+            test_step.dependOn(&run_suite.step);
+        }
     }
 }
 
@@ -1103,9 +1125,16 @@ fn addCliChecks(
 }
 
 fn readOptions(b: *std.Build) BuildOptions {
-    const pointer_shift = b.option(i32, "nanbox-pointer-shift", "Override the NaN-box pointer shift (0 through 4)");
+    // 0 through 2, not the 0 through 4 Janet's own header advertises. The shift takes
+    // the low bits of a wrapped pointer, so every cfunction and abstract type
+    // descriptor has to be aligned to `1 << shift`; at 3 and 4 that is more
+    // than a function pointer carries on its own, and the registration check
+    // aborts the bootstrap. Raising the ceiling means declaring the alignment
+    // on every cfunction in the tree, which is a change nothing asks for.
+    const pointer_shift = b.option(i32, "nanbox-pointer-shift", "Override the NaN-box pointer shift (0 through 2)");
     if (pointer_shift) |shift| {
-        if (shift < 0 or shift > 4) @panic("-Dnanbox-pointer-shift must be between 0 and 4");
+        if (shift < 0 or shift > 2) @panic("-Dnanbox-pointer-shift must be between 0 and 2: " ++
+            "a shift above 2 needs every cfunction pointer aligned past what a function pointer promises");
     }
 
     const options: BuildOptions = .{
@@ -1423,9 +1452,10 @@ fn configureCModule(
 ///
 /// **`sanitize_c` is set explicitly rather than left to the optimize mode.**
 /// Zig turns C undefined-behaviour checking on in Debug and ReleaseSafe by
-/// itself, and the tree had been relying on that: the `janet_vm` misalignment
-/// in `FOUND.md` was found by a check nobody had asked for. A check that fires
-/// by luck is not a gate, and the default is `.trap`, which aborts on a bare
+/// itself, and the tree had been relying on that: an alignment fault in the
+/// runtime's own thread-local state was found by a check nobody had asked for.
+/// A check that fires by luck is not a gate, and the default is `.trap`, which
+/// aborts on a bare
 /// `ud2` with no message and no line. `.full` links the UBSan runtime and
 /// prints what was violated and where, which is the difference between a
 /// diagnosis and a core dump.

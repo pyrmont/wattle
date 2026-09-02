@@ -17,17 +17,10 @@
 //! scratch finalizer leaves `scratch_len` unreduced and the block re-finalized
 //! on the next collection, which is what Janet does too.
 //!
-//! Two pieces of the C arithmetic are reproduced rather than repaired, and
-//! both are in `FOUND.md`:
-//!
-//!  - The scratch table grows by `newcap * @sizeOf(ScratchBlock)` where the element
-//!    is a `*ScratchBlock`. The header is a function pointer plus a flexible array,
-//!    so it is never smaller than a pointer and the table is over-allocated
-//!    rather than short — harmless, and preserved.
-//!  - `smalloc` and `srealloc` add the header size to the caller's size without
-//!    checking for wraparound, so a near-`SIZE_MAX` request allocates a few
-//!    bytes and returns a pointer into a block far too small. Wrapping addition
-//!    is used below to reproduce it exactly rather than trap.
+//! **The header size is added with a checked add.** A request within a header
+//! of `SIZE_MAX` is an out-of-memory rather than a small allocation the caller
+//! believes addresses the whole range, which is the exit `scalloc` already
+//! took for its own multiplication.
 //!
 //! One assumption the C code makes is worth naming because this file relies on
 //! it in the same way. `janet_smalloc` returns `s->mem` and `janet_mem2scratch`
@@ -301,12 +294,11 @@ pub inline fn gcallocWithPayload(
 // ------------------------------------------------------------- lifecycle
 //
 // **The three aggregates `Vm` gives this file are constructed and destroyed
-// here, not in `vm/lifecycle.zig`.** `janet_init` used to set thirteen of
-// these fields by name and `janet_deinit` clear three of them, and the class
-// of defect that produces is in `FOUND.md` twice over -- the traversal stack
-// and the cfunction registry are both one member left out of an assignment
-// list. A type whose starting state is one statement has no list to leave a
-// member out of.
+// here, not in `vm/lifecycle.zig`.** Setting thirteen fields by name at init
+// and clearing three of them at deinit is a list, and a list is a place to
+// leave a member out of -- which is how a traversal stack and a cfunction
+// registry come to be freed with their counts and capacities still set. A
+// type whose starting state is one statement has no such list.
 //
 // The types are declared just above and their lifecycles are here because a
 // starting state is one statement rather than an assignment list.
@@ -351,10 +343,10 @@ pub fn scratchInit(s: *ScratchTable) void {
 /// Release the scratch table. The blocks themselves are `freeAllScratch`'s,
 /// which runs first because this frees the table that names them.
 ///
-/// The three fields go together, and `FOUND.md` has why: upstream's
-/// `janet_clear_memory` frees the table and leaves `scratch_mem` dangling with
-/// `scratch_cap` at its old value, so a `janet_smalloc` before the next
-/// `janet_init` takes the no-growth path and writes through the freed pointer.
+/// **The three fields go together.** Freeing the table and leaving
+/// `scratch_mem` dangling with `scratch_cap` at its old value lets a
+/// `janet_smalloc` before the next `janet_init` take the no-growth path and
+/// write through the freed pointer.
 pub fn scratchDeinit(s: *ScratchTable) void {
     freeAllScratch(s);
     s.deinit(utils.heap);
@@ -402,21 +394,20 @@ pub fn gcunroot(root: repr.Value) bool {
 
 /// Drop every rooting of `root`, returning whether there was at least one.
 ///
-/// It does not, in fact, drop every one. Filling the vacated slot from the top
-/// and then advancing skips whatever was moved down, so a root that appears
-/// twice can survive with one rooting left. `FOUND.md` records it; this
-/// reproduces it. `top` shadows `root_count` the way the C original's `vtop`
-/// shadows `roots + root_count` — the two fall together, one per match.
+/// **The index does not advance on a match.** `swapRemove` fills the vacated
+/// slot from the top, so the element now at `i` has not been examined;
+/// advancing past it leaves half the rootings behind and still reports
+/// success.
 pub fn gcunrootall(root: repr.Value) bool {
     const r = &vm_state.current().roots;
-    var top = r.items.len;
     var found = false;
     var i: usize = 0;
-    while (i < top) : (i += 1) {
+    while (i < r.items.len) {
         if (idequals(root, r.items[i])) {
             _ = r.swapRemove(i);
-            top -= 1;
             found = true;
+        } else {
+            i += 1;
         }
     }
     return found;
@@ -474,7 +465,8 @@ pub fn freeAllScratch(table: *ScratchTable) void {
 /// optionally before that with `janet_sfree`. The header carries the finalizer
 /// and the table of live blocks carries the pointer.
 pub fn smalloc(size: usize) *anyopaque {
-    const s: *ScratchBlock = @ptrCast(@alignCast(utils.rawAlloc(header_size +% size)));
+    const total = std.math.add(usize, header_size, size) catch fatal.outOfMemory();
+    const s: *ScratchBlock = @ptrCast(@alignCast(utils.rawAlloc(total)));
     s.finalize = null;
 
     const table = &vm_state.current().scratch;
@@ -502,7 +494,8 @@ pub fn srealloc(mem: ?*anyopaque, size: usize) ?*anyopaque {
     while (i > 0) {
         i -= 1;
         if (table.items[i] == s) {
-            const news: *ScratchBlock = @ptrCast(@alignCast(utils.realloc(s, size +% header_size) orelse
+            const total = std.math.add(usize, size, header_size) catch fatal.outOfMemory();
+            const news: *ScratchBlock = @ptrCast(@alignCast(utils.realloc(s, total) orelse
                 fatal.outOfMemory()));
             table.items[i] = news;
             return scratchData(news);

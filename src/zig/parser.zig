@@ -803,8 +803,8 @@ pub fn parserDeinit(parser: *Parser) void {
     parser.buf.deinit(utils.heap);
     parser.states.deinit(utils.heap);
     // `ArrayListUnmanaged.deinit` ends `self.* = undefined`; see
-    // `gc.rootsDeinit`. The C original leaves the same state and `FOUND.md`
-    // records what it costs.
+    // `gc.rootsDeinit`. A parser left in that state is one whose next use
+    // reads a freed pointer through a capacity that still looks live.
     parser.args = .empty;
     parser.buf = .empty;
     parser.states = .empty;
@@ -1048,13 +1048,11 @@ fn cfunParserError(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
     try args_core.fixarity(argv, 1);
     const parser = try getParser(argv, 0);
     const message = parserError(parser) orelse return wrap.fromNil();
-    // The first arm is unreachable, and is C's: `parserError` above clears
-    // `generated_error` before it returns, so the test below is always false
-    // and every message is interned here. `FOUND.md` records it.
-    return if (parser.generated_error)
-        wrap.fromString(@ptrCast(message))
-    else
-        value.fromBytes(std.mem.span(message), .string);
+    // Interned from its bytes whatever built it. `parserError` above has
+    // already cleared `generated_error`, so by here there is no longer a
+    // generated message to distinguish -- and interning one costs a hash and a
+    // cache probe rather than an answer.
+    return value.fromBytes(std.mem.span(message), .string);
 }
 
 fn cfunParserProduce(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {

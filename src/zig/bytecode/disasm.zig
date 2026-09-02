@@ -49,12 +49,7 @@ inline fn asmWrapTuple(val: tuples.Tuple) repr.Value {
 
 /// `janet_tuple_flag(value) |= JANET_TUPLE_FLAG_BRACKETCTOR`, which is what
 /// makes a disassembled instruction print as `[...]` rather than `(...)`.
-///
-/// **The name says "breakpoint" and the flag it sets does not.** It is
-/// upstream's, reproduced rather than corrected, because renaming it here would
-/// hide the discrepancy rather than record it. `FOUND.md` has the entry.
-///
-inline fn asmSetBreakpoint(val: tuples.Tuple) void {
+inline fn asmMarkBracketed(val: tuples.Tuple) void {
     tuples.setBracketed(tuples.head(val));
 }
 
@@ -98,7 +93,7 @@ pub fn asmDecodeInstruction(instruction: u32) repr.Value {
     };
 
     if (instruction & 0x80 != 0) {
-        asmSetBreakpoint(result);
+        asmMarkBracketed(result);
     }
     return asmWrapTuple(result);
 }

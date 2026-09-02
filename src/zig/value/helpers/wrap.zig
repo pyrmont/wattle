@@ -49,9 +49,9 @@
 //! an out-of-range double, and the two behavioural targets already disagree:
 //! aarch64's `fcvtzs` saturates where x86-64's `cvttsd2si` yields `INT32_MIN`.
 //! Zig has no saturating float-to-integer cast and `@intFromFloat` is illegal
-//! behaviour outside the destination range, so this tests before converting. It
-//! saturates, which is the development target's answer; `FOUND.md` records the
-//! divergence, and no contract pins it.
+//! behaviour outside the destination range, so this tests before converting.
+//! **It saturates**, which is the development target's answer, and it is
+//! defined for every double a caller can hand it.
 
 const std = @import("std");
 const repr = @import("repr");

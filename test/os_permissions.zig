@@ -15,8 +15,8 @@
 //! position**. So `"xxxxxxxxx"` parses as 0111 — the `x`s in the execute
 //! positions count and the rest do not — and `"rwxgarbage"` parses as 0700.
 //! Neither is a string a person would write, and both are recorded here so
-//! that a port cannot quietly make the parser stricter. `FOUND.md` is for
-//! defects; this is not one, it is a shape.
+//! that the parser cannot quietly become stricter. It is a shape rather than a
+//! defect: the position-sensitivity is what `mode` means.
 //!
 //! ## The refusals
 //!

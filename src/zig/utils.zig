@@ -469,16 +469,14 @@ pub const heap: std.mem.Allocator = .{ .ptr = undefined, .vtable = &allocator_vt
 /// C's conversion of a signed count to `size_t`: sign-extend to the pointer
 /// width, then reinterpret.
 ///
-/// **For a negative count that yields a very large size, and that is the
-/// point.** It is what the C original does, and it is the reproduction
-/// `FOUND.md`'s "`array/ensure` does not validate its growth factor" describes
-/// — the arithmetic that turns an unvalidated negative into an allocation
-/// request nobody meant. `@intCast` would trap on exactly the values this
-/// exists to carry, so the conversion is written out.
+/// **For a negative count it yields a very large size, and that is the
+/// point.** It is what the C original does, and `@intCast` would trap on
+/// exactly the values it exists to carry, so the conversion is written out.
 ///
-/// **Every call site is a place a program-supplied count that may be negative
-/// still becomes a size**, and under `DESIGN.md` §12 that is an argument error
-/// rather than a wrap. One copy, so the population is countable.
+/// **Every call site is a place a count that may be negative still becomes a
+/// size.** Where the count comes from a program the argument is rejected
+/// before it reaches here; the sites that remain are index arithmetic over
+/// quantities the runtime derives. One copy, so the population is countable.
 pub inline fn asSize(n: i32) usize {
     return @bitCast(@as(isize, n));
 }

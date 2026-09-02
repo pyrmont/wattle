@@ -61,14 +61,12 @@
 //! bucket, is gone: `cacheFindmem` exits the process rather than answering
 //! one, and `Lookup` now says so in the type.
 //!
-//! `cacheFindmem` ends the process through `janet_assert` when the table is
-//! full, and the load factor that is supposed to make that impossible has a
-//! gap at a capacity of two. It is reachable: a rehash chooses two buckets
-//! when `cache_count` is zero, and `janet_init` leaves it at zero because the
-//! core environment is built lazily. Five hundred and thirteen transient
-//! symbols, one collection and three more symbols abort the process.
-//! `FOUND.md` has it, with the reproducer. The port reproduces both the policy
-//! and the exit.
+//! `cacheFindmem` ends the process when the table is full, and the load factor
+//! is what makes that impossible -- **at a capacity of four or more**. At one
+//! and at two the factor's own maximum fills the table, and a rehash chooses
+//! two buckets whenever `count` is zero, which `janet_init` leaves it as
+//! because the core environment is built lazily. `cachePut` floors the target
+//! at four for that reason.
 //!
 //! **Nothing here holds anything across a raise**, with one exception.
 //! Nothing here raises directly, but `janet_gcalloc` can trigger a collection
@@ -192,8 +190,8 @@ fn cacheFindmem(sc: *SymbolCache, str: []const u8, hash: i32) Lookup {
         }
     }
 
-    // The load factor `cachePut` maintains is what makes a full table
-    // impossible, and `FOUND.md` records the one capacity where it does not.
+    // The load factor `cachePut` maintains, floor and all, is what makes a
+    // full table impossible.
     return .{ .vacant = first_empty orelse fatal.fatal("symcache failed to get memory") };
 }
 
@@ -234,7 +232,14 @@ fn cacheResize(sc: *SymbolCache, new_capacity: u32) void {
 fn cachePut(sc: *SymbolCache, x: [*:0]const u8, vacant: *?[*:0]const u8) void {
     var slot = vacant;
     if ((sc.count +% sc.deleted) *% 2 > sc.capacity) {
-        cacheResize(sc, @intCast(value.capacityFor(2 *% sc.count +% 1)));
+        // **Floored at four buckets.** The target is derived from `count`,
+        // which is zero once every symbol has died, and `capacityFor` answers
+        // one or two for a small count. At those two capacities this load
+        // factor -- tested before the increment, so at most `capacity / 2 + 1`
+        // entries afterwards -- fills the table, and a full table is what
+        // `cacheFindmem` has no answer for.
+        const target: u32 = @intCast(value.capacityFor(2 *% sc.count +% 1));
+        cacheResize(sc, @max(target, 4));
         slot = switch (cacheFind(sc, x)) {
             .found, .vacant => |found| found,
         };

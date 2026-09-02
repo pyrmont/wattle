@@ -182,10 +182,9 @@ fn mkbare(at: *const abi.AbstractType) repr.Value {
 
 // ------------------------------------------------------------------ hashing
 
-/// The constants, which nothing else pins. `janet_hash` of nil is the identity
-/// of an empty bucket in every dictionary in the runtime, and `false` hashing
-/// to zero is what makes `false` the one key a zero-capacity table can be
-/// looked up with -- see `FOUND.md`.
+/// The constants, which nothing else pins. `order.hash` of nil is the identity
+/// of an empty bucket in every dictionary in the runtime, and `false` hashes
+/// to zero.
 fn theHashOfTheAtoms() void {
     expect(order.hash(wrap.fromNil()) == 0);
     expect(order.hash(wrap.fromFalse()) == 0);
@@ -793,10 +792,10 @@ fn theOrderOfMutableContainers() void {
     expect(fwd == @as(c_int, if (@intFromPtr(t1) > @intFromPtr(t2)) 1 else -1));
 }
 
-/// Abstracts: identity first, then the abstract *type* pointer when the types
+/// Abstracts: identity first, then the abstract type's *name* when the types
 /// differ -- which is what lets two unrelated abstract types be sorted into one
-/// array without either knowing about the other -- and only then the type's own
-/// `compare`.
+/// array without either knowing about the other, and in an order that survives
+/// a relink -- and only then the type's own `compare`.
 fn theOrderOfAbstracts() void {
     const a = mkcell(1);
     const b = mkcell(2);
@@ -813,15 +812,25 @@ fn theOrderOfAbstracts() void {
     expect(fwd == @as(c_int, if (@intFromPtr(wrap.toAbstract(p)) >
         @intFromPtr(wrap.toAbstract(q))) 1 else -1));
 
-    // Different types: decided by the type pointers, before either type's
-    // callback could be consulted -- the cell type has one and it is not used.
+    // Different types: decided by the names, before either type's callback
+    // could be consulted -- the cell type has one and it is not used. The
+    // direction is asserted absolutely, from the names spelled out here rather
+    // than read off the descriptors, because "some stable order" is satisfied
+    // by the reverse of this one and the reverse is a different language.
     const r = mkbare(otherType());
     const cross = order.compare(p, r);
     expect(cross != 0 and cross == -order.compare(r, p));
-    expect(cross == @as(c_int, if (@intFromPtr(bareType()) > @intFromPtr(otherType())) 1 else -1));
+    expect(std.mem.lessThan(u8, "value-order/bare", "value-order/other"));
+    expect(cross == -1);
 
-    expect(order.compare(a, p) ==
-        @as(c_int, if (@intFromPtr(cellType()) > @intFromPtr(bareType())) 1 else -1));
+    // "cell" before "bare" would be the wrong way round, so this also says the
+    // comparison is on the whole name rather than on its first byte.
+    expect(std.mem.lessThan(u8, "value-order/bare", "value-order/cell"));
+    expect(order.compare(a, p) == 1);
+
+    // And the order does not depend on where the descriptors landed, which is
+    // what the previous answer did depend on.
+    expect(@intFromPtr(bareType()) != @intFromPtr(otherType()));
 }
 
 // --------------------------------------------------------------- traversal

@@ -7,10 +7,13 @@
 //! of their own are beside this file in `os/`.
 //!
 //! **The bodies are compiled unconditionally and the *registration* is what is
-//! gated.** `-Dreduced-os=true` leaves only `os/exit`, `os/which`, `os/arch`,
-//! `os/compiler` and `os/isatty` registered; the kernels behind the rest are
-//! still compiled, which is what keeps them type-checked in a configuration
-//! that does not offer them.
+//! gated.** `-Dreduced-os=true` leaves only `os/exit`, `os/which`, `os/arch`
+//! and `os/compiler` registered -- `libOs` pushes `selfEntries()` and nothing
+//! else -- and the kernels behind the rest are still compiled, which is what
+//! keeps them type-checked in a configuration that does not offer them.
+//! `boot.janet` substitutes a macro for `os/isatty` where the binding is
+//! absent, which is the one place the reduced build's answer differs from no
+//! answer at all.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -300,7 +303,12 @@ fn cfunClock(argv: []repr.Value) raise.Raising(repr.Value) {
 fn cfunSleep(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const delay = try args_core.getNumber(argv, 0);
-    if (delay < 0) return raise.panic("invalid argument to sleep");
+    // A negative delay, a NaN and a value no `time_t` can carry are one
+    // refusal: none of them names a duration. `math/int-max` is how a caller
+    // asks for the longest one there is.
+    if (delay < 0 or !os_files.secondsFitTimeT(delay)) {
+        return raise.panic("invalid argument to sleep");
+    }
     sleepFor(delay);
     return wrap.fromNil();
 }
@@ -318,7 +326,7 @@ fn selfEntries() []const corefn.Entry {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
             corefn.reg("os/exit", &cfunExit, @src(), "(os/exit &opt x force)", "Exit from janet with an exit code equal to x. If x is not an integer, " ++
-                "the exit with status equal the hash of x. If `force` is truthy will exit immediately and " ++
+                "exits with status 1. If `force` is truthy will exit immediately and " ++
                 "skip cleanup code."),
             corefn.reg("os/which", &cfunWhich, @src(), "(os/which &opt test)", "Check the current operating system. If `test` is nil or unset, Returns one of:\n\n" ++
                 "* :windows\n\n* :mingw\n\n* :cygwin\n\n* :macos\n\n" ++
@@ -419,9 +427,9 @@ fn hrtimeEntries() []const corefn.Entry {
 
 pub fn libOs(env: *tables.Table) raise.Raising(void) {
     // `janet_lib_os` opens with a Windows critical-section initialisation
-    // guarded by `JANET_THREADS`, which `FOUND.md` records is defined nowhere
-    // in this tree. It is recorded here rather than written: a branch no
-    // configuration compiles is a branch nothing checks.
+    // guarded by `JANET_THREADS`, which no build in this tree defines. It is
+    // recorded here rather than written: a branch no configuration compiles is
+    // a branch nothing checks.
     var table: [512]corefn.Entry = undefined;
     var n: usize = 0;
     const push = struct {

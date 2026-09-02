@@ -106,8 +106,9 @@ pub const TypeNode = extern struct {
     is_aligned: u32,
     /// Byte offset within the enclosing struct; zero at the root.
     offset: u32,
-    /// -1 when the type is not an array. Both conventions ignore this, faithful
-    /// to the C they replace; see the nested-array entry in `FOUND.md`.
+    /// -1 when the type is not an array. Both conventions ignore it: `size`
+    /// already has the count multiplied in, which is the only thing a
+    /// classifier needs from it.
     array_count: i32,
 };
 
@@ -128,7 +129,7 @@ pub const ArgSlot = struct {
     ///
     /// Zero where the caller could not say — every non-SSE argument, a scalar,
     /// and a top-level array of floats, whose extent the conventions ignore
-    /// for a reason `FOUND.md` records separately. The byte arithmetic stands
+    /// because `size` already has the count multiplied in. The byte arithmetic stands
     /// in those cases, which is where it was always right.
     ///
     /// It has to be a field because the allocator sees an `ArgSlot` and not a
@@ -210,6 +211,7 @@ fn sysv64ClassifyStruct(nodes: []const TypeNode, idx: usize, shift: u64) Walk {
         // Two eightbytes: decide each half separately, then name the pair.
         var has_int_lo: u32 = 0;
         var has_int_hi: u32 = 0;
+        var any_memory = false;
         while (remaining > 0) : (remaining -= 1) {
             const field = nodes[child];
             const walk = sysv64ClassifyExt(nodes, child, shift +% field.offset);
@@ -228,10 +230,20 @@ fn sysv64ClassifyStruct(nodes: []const TypeNode, idx: usize, shift: u64) Walk {
                 },
                 sysv64_pair_intsse => has_int_lo = 1,
                 sysv64_pair_sseint => has_int_hi = 2,
+                // **A field that classifies as memory forces the whole
+                // aggregate to memory**, which is the AMD64 ABI §3.2.3
+                // post-merger rule and what the eight-byte-or-under merge
+                // below already does. Discarding it here would make the same
+                // field decide the argument at one size and count for nothing
+                // at another: a packed nested struct sends any aggregate to
+                // memory regardless of size, so `[:s64 [:u8 :pack :u32]]`
+                // would travel in a register pair the callee reads from the
+                // stack.
+                sysv64_memory => any_memory = true,
                 else => {},
             }
         }
-        clazz = switch (has_int_hi + has_int_lo) {
+        clazz = if (any_memory) sysv64_memory else switch (has_int_hi + has_int_lo) {
             0 => sysv64_pair_ssesse,
             1 => sysv64_pair_intsse,
             2 => sysv64_pair_sseint,
@@ -281,10 +293,9 @@ fn aapcs64Classify(nodes: []const TypeNode, idx: usize) Walk {
             const end = skipSubtree(nodes, idx);
 
             // A homogeneous floating-point aggregate travels in the vector
-            // registers. C reads the first field without checking that one
-            // exists; an empty struct is reachable through the empty tuple type,
-            // so the guard below is a deliberate divergence recorded in
-            // `FOUND.md` rather than a transcription slip.
+            // registers. An empty struct is reachable through the empty tuple
+            // type, so the field count is tested before a first field is read:
+            // the guard below is deliberate, not a transcription slip.
             if (node.field_count > 0 and node.field_count <= 4) {
                 const first = idx + 1;
                 if (aapcs64Classify(nodes, first).class == aapcs64_sse) {
@@ -579,9 +590,9 @@ pub fn allocAapcs64(
             },
             aapcs64_sse => {
                 // One register per member for an aggregate, one for a scalar.
-                // Sizing this by bytes gave a four-float HFA two registers
-                // where the callee reads four, and wrote its members two to a
-                // register -- `FOUND.md` has it.
+                // Sizing this by bytes gives a four-float HFA two registers
+                // where the callee reads four, and writes its members two to a
+                // register.
                 const needed_registers = if (arg.hfa_members != 0)
                     arg.hfa_members
                 else

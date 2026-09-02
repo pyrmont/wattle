@@ -4,10 +4,10 @@ Janet's runtime, written in Zig. This file is for someone reading or changing
 it: what holds, where things are, and which mistakes the tree is shaped to
 prevent.
 
-Three other documents carry the rest. [`../../DESIGN.md`](../../DESIGN.md) has
+Two other documents carry the rest. [`../../DESIGN.md`](../../DESIGN.md) has
 the decisions about what the language *is* — the value representation, the
-module interface, the pointer conventions. [`../../FOUND.md`](../../FOUND.md)
-has the defects inherited from Janet and deliberately kept.
+module interface, the pointer conventions, and section 12's two tables of every
+Janet behaviour this runtime examined: the ones it kept and the ones it changed.
 [`../../test/README.md`](../../test/README.md) has the test strategy and what a
 change owes before it is believed.
 

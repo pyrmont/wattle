@@ -50,10 +50,10 @@
 //! ## Reading the layout
 //!
 //! The three-way `#ifdef` chain is unavailable, because a `JANET_*` macro
-//! derived from the compiler's predefines is unreliable through `@cImport` --
-//! `FOUND.md` has the case. The layout is read off the shape of the
-//! translated `Janet` instead, which is what `value_wrap.zig` and
-//! `value_order.zig` both do.
+//! derived from the compiler's predefines is unreliable through `@cImport`:
+//! the front end and the compilation can disagree about a predefine. The
+//! layout is read off the shape of the translated `Janet` instead, which is
+//! what `value_wrap.zig` and `value_order.zig` both do.
 //!
 //! That the subject and the contract read the same source is not a weakening:
 //! neither side ever had an independent opinion about which layout this is.
@@ -311,9 +311,11 @@ fn wrapNumberSafe() void {
 }
 
 /// `janet_unwrap_integer` truncates toward zero. Only in-range inputs are
-/// checked: Janet's cast is undefined outside the destination range and the
-/// two behavioural targets already disagree about it, so nothing here can be
-/// asserted for both. `FOUND.md` records what this runtime does instead.
+/// checked: an unchecked cast is undefined outside the destination range and
+/// the two behavioural targets disagree about what it produces --
+/// aarch64's `fcvtzs` saturates where x86-64's `cvttsd2si` yields `INT32_MIN`
+/// -- so nothing here can be asserted for both. This runtime tests before
+/// converting and saturates.
 fn theIntegerConversions() void {
     expect(wrap.toIntegerAbi(wrap.fromNumber(0.0)) == 0);
     expect(wrap.toIntegerAbi(wrap.fromNumber(1.9)) == 1);
@@ -332,9 +334,9 @@ fn theIntegerConversions() void {
 
     {
         // `capi.zig` publishes `janet_wrap_integer` only under a NaN-boxed
-        // layout, reproducing the defect `FOUND.md` records against `wrap.c`.
-        // The `callconv(.c)` body behind it is compiled under all three, so
-        // these run everywhere now that the contract imports rather than links.
+        // layout, which is the asymmetry `wrap.c` has. The `callconv(.c)` body
+        // behind it is compiled under all three, so these run everywhere now
+        // that the contract imports rather than links.
         expect(sameValue(wrap.abi.fromInteger(7), wrap.fromNumber(7.0)));
         expect(wrap.toIntegerAbi(wrap.abi.fromInteger(-5)) == -5);
         expect(wrap.toIntegerAbi(wrap.abi.fromInteger(std.math.maxInt(i32))) == std.math.maxInt(i32));
@@ -508,9 +510,9 @@ fn theTwoSpellingsAgree() void {
     for (awkward) |value| agreeOn(value);
 
     // The one accessor with two implementations. `toIntegerAbi` truncates
-    // toward zero through a `c_int` where `toInteger` reads the payload, which
-    // is the asymmetry `FOUND.md` records; `janet_unwrap_function` and
-    // `janet_unwrap_boolean` had no second body and went with the export.
+    // toward zero through a `c_int` where `toInteger` reads the payload;
+    // `janet_unwrap_function` and `janet_unwrap_boolean` had no second body
+    // and went with the export.
     expect(wrap.toInteger(wrap.fromNumber(-9.5)) == wrap.toIntegerAbi(wrap.fromNumber(-9.5)));
 }
 
@@ -604,7 +606,9 @@ fn exactLayoutTagged() void {
     expect(harness.u64Of(wrap.fromNumber(1.5)) == @as(u64, @bitCast(@as(f64, 1.5))));
 
     // The one layout that does not canonicalize a NaN, because it has no tag
-    // space in the double to protect. `FOUND.md` has the asymmetry.
+    // space in the double to protect: canonicalization exists to keep a
+    // payload out of the bits a NaN-boxed layout reads as a tag, and the
+    // tagged layout reads none of them.
     const hostile: u64 = 0x7FF0000000000123;
     expect(harness.u64Of(wrap.fromNumberSafe(@bitCast(hostile))) == hostile);
 }

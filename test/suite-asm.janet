@@ -88,5 +88,32 @@
   (assert (string/find "bogus-op" (string err))
           "nested assembly failure names the child's instruction"))
 
+# A closure may name an enclosing function's environment by symbol. The
+# assembler has not captured it yet at the point the operand is read, so the
+# lookup falls through to the capture walk rather than refusing the name.
+(def outer-asm
+  (asm '{:name outer
+         :arity 1
+         :slots 2
+         :closures [{:name child :arity 0 :slots 1 :bytecode [(ldu 0 outer 0) (ret 0)]}]
+         :bytecode [(clo 1 child) (ret 1)]}))
+(assert (function? outer-asm) "asm resolves an outer environment named by symbol")
+(assert (= 42 ((outer-asm 42))) "the captured environment is the caller's frame")
+
+# A name no ancestor has, and the name of the function being assembled, are
+# both environments that cannot be indexed.
+(assert-error "unknown environment nowhere"
+              (asm '{:name outer
+                     :arity 1
+                     :slots 2
+                     :closures [{:name child :arity 0 :slots 1 :bytecode [(ldu 0 nowhere 0) (ret 0)]}]
+                     :bytecode [(clo 1 child) (ret 1)]}))
+(assert-error "unknown environment child"
+              (asm '{:name outer
+                     :arity 1
+                     :slots 2
+                     :closures [{:name child :arity 0 :slots 1 :bytecode [(ldu 0 child 0) (ret 0)]}]
+                     :bytecode [(clo 1 child) (ret 1)]}))
+
 (end-suite)
 

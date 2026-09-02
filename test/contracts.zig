@@ -197,12 +197,13 @@ fn pauseForLeakCheck() void {
 /// in the order given, **in one process**.
 ///
 /// **The no-argument form is the interesting one.** Every contract opens with
-/// an init and closes with a deinit, so it is sixty-five teardowns
-/// and re-initialisations of the whole runtime — and `FOUND.md` records that
-/// this binary aborts in glibc's `malloc_consolidate` with no argument while
-/// **every contract passes when run by name**. A defect that needs the sequence
-/// cannot be bisected one name at a time, and a name may be repeated, which is
-/// what asks whether the sequence matters at all or only the count.
+/// an init and closes with a deinit, so it is sixty-five teardowns and
+/// re-initialisations of the whole runtime, and a defect that lives in the
+/// sequence shows here and nowhere else: this binary once aborted in glibc's
+/// `malloc_consolidate` with no argument while **every contract passed when
+/// run by name**. Such a defect cannot be bisected one name at a time, and a
+/// name may be repeated, which is what asks whether the sequence matters at
+/// all or only the count.
 pub fn main(init: std.process.Init) !u8 {
     const arguments = try init.minimal.args.toSlice(init.arena.allocator());
 

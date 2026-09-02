@@ -10,7 +10,7 @@
 #   namespace 1
 #   orphan    0
 #
-#   1927 `pub` declarations in src/zig
+#   1920 `pub` declarations in src/zig
 #
 # columns: class  site  name
 

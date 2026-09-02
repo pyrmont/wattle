@@ -90,9 +90,9 @@
 //! `janet_abstract_begin_threaded` has a `janet_malloc`ed header in hand when
 //! it calls `janet_table_put`; a raise out of that call leaks the header,
 //! because nothing has recorded it yet -- not a heap list, not the visit
-//! table, not the caller. Janet leaks it identically. It is reachable only
-//! through a third-party `hash` callback that is not allowed to raise, so it
-//! is stated here rather than in `FOUND.md`.
+//! table, not the caller. It is reachable only through a third-party `hash`
+//! callback, which is not allowed to raise -- so the leak is stated here as
+//! the cost of breaking that rule rather than as a path the runtime has.
 //!
 //! The finalizer is the other way round: by the time it runs, the refcount is
 //! already zero and no other thread can reach the block, so a signal out of it

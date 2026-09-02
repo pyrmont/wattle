@@ -346,12 +346,9 @@ fn theAddressLookup() void {
     expect(tupleIs2(unpack(callCore("net/address", argv[0..4])), "127.0.0.1", 9999));
 }
 
-/// **Three calls, three leaks, and they are the subject rather than an
-/// oversight.** `FOUND.md` records that `cfun_net_sockaddr` returns from the
-/// unix-domain branch without freeing the `addrinfo` it built, and that is
-/// reproduced; `tools/testing/leaks.sh` carries `expected_net_sockets=3` for exactly
-/// these, so adding or removing a `net/address :unix` call here changes that
-/// expectation and fixing the defect empties it.
+/// **Three calls and no leaks.** `net/address`'s unix-domain branch returns
+/// through a `defer`, so the address it builds is released on every path out
+/// of it; `tools/testing/leaks.sh` expects zero here, which is what says so.
 fn theUnixAddressLookup() void {
     const path = "/tmp/janet-contract.sock";
     var argv = [_]repr.Value{
@@ -422,16 +419,14 @@ fn theArgumentFaults() void {
     // A unix domain address cannot also be bound to an outgoing interface, and
     // `net/connect` is where that is decided.
     //
-    // **The path is short on purpose, and the reason is a defect.** Janet
-    // releases the address on this path with `freeaddrinfo`, which did not
-    // allocate it -- the unix arm of the lookup returns a `janet_calloc`ed
-    // `struct sockaddr_un` -- so it reads `ai_canonname` and `ai_next` out of
-    // `sun_path` and frees whatever it finds. With a path long enough to reach
-    // those offsets that is an abort, and measured on this machine the
-    // threshold is between 11 and 26 characters. `FOUND.md` has the entry and
-    // the reproducer; this runtime releases it correctly, so eleven characters
-    // is what left the reinterpreted fields zero under both implementations,
-    // and it is kept because the *message* is what this asserts.
+    // **The path is short on purpose.** Releasing this address with
+    // `freeaddrinfo`, which did not allocate it -- the unix arm of the lookup
+    // answers a `janet_calloc`ed `struct sockaddr_un` -- reads `ai_canonname`
+    // and `ai_next` out of `sun_path` and frees whatever it finds; measured on
+    // this machine the path length at which that becomes an abort is between
+    // 11 and 26 characters. `AddrInfo.free` picks the allocator from the
+    // discriminant, so the length no longer decides anything, and eleven
+    // characters is kept because the *message* is what this asserts.
     var argv = [_]repr.Value{
         value.fromBytes("unix", .keyword),
         value.fromBytes("/tmp/a.sock", .string),

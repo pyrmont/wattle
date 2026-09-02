@@ -27,11 +27,10 @@
 //!
 //! ## What only a contract inside the compilation can do
 //!
-//! **The unregistered-cfunction case is unconditional.** Janet reads the
-//! cfunction registry entry without checking it for null, so decoding a cframe
-//! whose function was never passed through `janet_cfuns` dereferences null;
-//! `FOUND.md` records it. This runtime consumes `janet_trace_frame`, which has
-//! the check.
+//! **The unregistered-cfunction case is unconditional.** Reading the cfunction
+//! registry entry without testing it for null makes decoding a cframe whose
+//! function was never passed through `janet_cfuns` a null dereference. This
+//! runtime consumes `janet_trace_frame`, which has the check.
 //!
 //! **There is no panic counter.** A C contract counted its `EXPECT_PANIC`s and
 //! compared the total at the end, because a case that silently stopped raising
@@ -212,8 +211,8 @@ fn theStateInitLeaves() raise.Raising(void) {
 
     // ScratchTable memory. Asserted as the whole type against what `scratchInit`
     // starts from rather than field by field: a field added to `gc_alloc.ScratchTable`
-    // is covered here without this line being edited, and the omission that
-    // `FOUND.md` records could not have been written.
+    // is covered here without this line being edited, and a field left out of
+    // the reset has no way to pass.
     expect(harness.vm().user == null);
     expect(std.meta.eql(harness.vm().scratch, gc_alloc.ScratchTable.empty));
 
@@ -271,14 +270,13 @@ fn theStateInitLeaves() raise.Raising(void) {
 /// What `janet_deinit` leaves behind, and it is asserted as *every pointer the
 /// teardown frees* rather than as the list of fields it happens to assign.
 ///
-/// The difference is what `FOUND.md`'s teardown entry is about. This function
-/// used to enumerate the assignments in `deinit`, which means it was written
-/// from the implementation and could only ever agree with it -- so it said
-/// nothing about
+/// The difference is the whole point. This function used to enumerate the
+/// assignments in `deinit`, which means it was written from the implementation
+/// and could only ever agree with it -- so it said nothing about
 /// `scratch_mem` or the three traversal fields, the two things teardown freed
 /// and did not clear. A `janet_smalloc` between a `janet_deinit` and the next
 /// `janet_init` therefore wrote eight bytes through a freed pointer, and only
-/// glibc's allocator hardening ever said so. `FOUND.md` has the bisection.
+/// glibc's allocator hardening ever said so.
 ///
 /// So the rule this pins is the invariant and not the code: **anything
 /// teardown frees, teardown clears**, and `janet_init` assigning a field is
@@ -330,12 +328,11 @@ fn whatDeinitClears() raise.Raising(void) {
     expect(std.meta.eql(harness.vm().traversal, order.Traversal{}));
     expect(std.meta.eql(harness.vm().symcache, symbols.SymbolCache{}));
 
-    // **The registry, and this one is `FOUND.md`'s.** Upstream's
-    // `janet_deinit` frees the rows and leaves `count`, `capacity` and `dirty`
-    // set, so `janet_registry_get` bisects null over a non-zero count in the
-    // window before the next `janet_init`. Comparing the whole `Registry` is
-    // what catches that; asserting `rows == null` alone is exactly the
-    // assertion that missed it.
+    // **The registry.** A teardown that frees the rows and leaves `count`,
+    // `capacity` and `dirty` set makes `registryGet` bisect null over a
+    // non-zero count in the window before the next init. Comparing the whole
+    // `Registry` is what catches that; asserting `rows == null` alone is
+    // exactly the assertion that misses it.
     expect(std.meta.eql(harness.vm().registry, registry.Registry{}));
 
     expect(harness.vm().abstract_registry == null);

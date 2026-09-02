@@ -41,14 +41,14 @@
 //! `getInteger64` calls `ints.unwrapS64`. This file holds nothing across any of
 //! them.
 //!
-//! Two pieces of the C original's arithmetic are reproduced rather than
-//! repaired, and both are recorded in `FOUND.md`. The range faults widen their
-//! three operands to `int64_t` before handing them to a `%d` that Janet's own
-//! formatter reads as an `int32_t`; the widening is preserved here so that the
-//! rendering is identical on the targets where it happens to work.
-//! `checkfloat` tests against `FLT_MIN`, the smallest positive *normal* float,
-//! rather than `-FLT_MAX`, so `getFloat` rejects zero and every negative
-//! value. Neither is fixed by this port.
+//! The range faults carry their three operands as `i64`, which is the width
+//! the C original widened them to; `%d` here renders those 64 bits, so the
+//! digits are the same for every index either implementation can produce.
+//!
+//! **The range tests are symmetric.** `checkfloat`'s lower bound is
+//! `-FLT_MAX`, the way `checkInteger8`'s is `INT8_MIN`; a bound of `FLT_MIN`
+//! would be the smallest positive *normal* float and would reject zero and
+//! every negative value.
 
 const std = @import("std");
 const raise = @import("raise.zig");
@@ -57,6 +57,7 @@ const repr = @import("repr");
 const access = @import("value/helpers/access.zig");
 const options = @import("options");
 const gc_alloc = @import("gc.zig");
+const fatal = @import("fatal.zig");
 const utils = @import("utils.zig");
 const wrap = @import("value/helpers/wrap.zig");
 pub const tables = @import("value/tables.zig");
@@ -163,17 +164,21 @@ pub fn checkuint64(x: repr.Value) bool {
     return dval == back;
 }
 
-/// `janet_checkfloatrange` tests `(x) >= FLT_MIN`, and `FLT_MIN` is the
-/// smallest positive normal float rather than the most negative one. So this
-/// rejects 0.0, every negative value, and every subnormal, which is almost
-/// certainly not what "is this representable as a float" was meant to mean.
-/// Recorded in `FOUND.md` and reproduced here: `janet_getfloat` has no caller
-/// in the core, so the behavior belongs to third-party modules and changing it
-/// is not this port's decision to make.
+/// Whether a double is exactly representable as an `f32`.
+///
+/// **The lower bound is `-FLT_MAX`, the most negative finite float**, which is
+/// what every sibling range test's lower bound is: `checkInteger8`'s is
+/// `INT8_MIN`, not one. A bound of `FLT_MIN` -- the smallest positive *normal*
+/// float -- would reject 0.0, every negative value and every subnormal, and
+/// answer that `-1.5` is not representable as a float.
+///
+/// The round trip is what decides the rest: a value inside the range that does
+/// not survive the narrowing is not representable, and a NaN or an infinity
+/// fails the range test before it gets there.
 pub fn checkfloat(x: repr.Value) bool {
     if (!repr.checkType(x, repr.Tag.number)) return false;
     const dval = wrap.toNumber(x);
-    if (!(dval >= std.math.floatMin(f32) and dval <= std.math.floatMax(f32))) return false;
+    if (!(dval >= -std.math.floatMax(f32) and dval <= std.math.floatMax(f32))) return false;
     const narrowed: f32 = @floatCast(dval);
     const back: f64 = @floatCast(narrowed);
     return dval == back;
@@ -251,8 +256,8 @@ pub const Fault = union(enum) {
     /// is `janet_gethalfrange`'s; the argument index reports the half-open one.
     ///
     /// The three quantities are `i64` because the C original widened them to
-    /// `int64_t` for a `%d` that read an `int32_t`. See `FOUND.md`; the
-    /// widening is reproduced so the rendering is identical.
+    /// `int64_t`; `%d` renders that width here, so the digits are identical
+    /// for every index either implementation can produce.
     range: struct { which: [*:0]const u8, raw: i64, lo: i64, hi: i64, inclusive: bool },
     bad_flag: struct { byte: u8, permitted: [*:0]const u8 },
     embedded_zero,
@@ -460,25 +465,40 @@ inline fn abstractBytes(abst: abstracts.Abstract) abi.ByteView {
     return head.type.bytes.?(abst, head.size);
 }
 
-/// Which shape `getCBytes` must use. Both buffer shapes mutate or allocate, so
-/// neither is carried out here; the third is an ordinary byte view and its own
-/// failure is reported by `argBytes`. It cannot fault, so it takes no fault.
-pub const CBytes = enum { copy, terminate, view };
+/// Which shape `getCBytes` must use.
+///
+/// **`view` is only for the shapes that carry their own terminator**: a string,
+/// a symbol and a keyword are interned with one. An abstract's `bytes` callback
+/// answers a view of the module author's choosing and nothing requires a
+/// terminator after it, so it is copied and terminated the way an unresizable
+/// buffer is -- otherwise `getCBytes` would hand back a pointer whose C string
+/// runs past the end of the view.
+///
+/// Both copying shapes mutate or allocate, so neither is carried out here. It
+/// cannot fault, so it takes no fault.
+pub const CBytes = enum { copy_buffer, copy_view, terminate, view };
 
 pub fn argCbytes(argv: []const repr.Value, n: usize) CBytes {
     const x = argv[n];
     if (repr.checkType(x, repr.Tag.buffer)) {
         const buffer = wrap.toBuffer(x);
         if (buffers.isForeign(buffer) and buffer.count == buffer.capacity) {
-            return .copy;
+            return .copy_buffer;
         }
         return .terminate;
     }
+    if (repr.checkType(x, repr.Tag.abstract)) return .copy_view;
     return .view;
 }
 
-pub fn argZeros(bytes: [*:0]const u8, len: usize, fault: *Fault) bool {
-    if (std.mem.len(bytes) == len) return true;
+/// Whether `bytes` holds no zero, over the length the caller measured.
+///
+/// **The view is what is searched, not a walk to the first terminator.** The
+/// two are the same question only where a terminator is known to sit at `len`;
+/// for a view that carries no terminator, walking reads past the end and
+/// answers about whatever follows it.
+pub fn argZeros(bytes: []const u8, fault: *Fault) bool {
+    if (std.mem.indexOfScalar(u8, bytes, 0) == null) return true;
     fault.* = .embedded_zero;
     return false;
 }
@@ -536,10 +556,13 @@ pub fn argArgindex(
 
 // ------------------------------------------------------------------- flags
 
-/// The 64-flag ceiling is the C original's, and it truncates silently rather
-/// than reporting: a `flags` string longer than 64 characters has its tail
-/// ignored, so a keyword naming one of those characters is rejected as
-/// unexpected. Preserved.
+/// **The 64-flag ceiling is the result type's, and exceeding it is the
+/// caller's mistake rather than the user's.** A `u64` has no bit for a
+/// sixty-fifth flag, so a `flags` set longer than 64 characters cannot be
+/// honoured; clamping it instead turns the caller's mistake into a wrong
+/// answer about the *user's* input, rejecting a keyword that names a character
+/// the quoted set visibly contains. The set is written by whoever registered
+/// the cfunction, so that is who the diagnosis names.
 pub fn argFlags(
     keyw: [*]const u8,
     klen: usize,
@@ -547,8 +570,8 @@ pub fn argFlags(
     fault: *Fault,
 ) ?u64 {
     var ret: u64 = 0;
-    var flen: usize = std.mem.len(flags);
-    if (flen > 64) flen = 64;
+    const flen: usize = std.mem.len(flags);
+    if (flen > 64) fatal.fatal("permitted flag set is longer than 64 characters");
     for (keyw[0..klen]) |byte| {
         var i: usize = 0;
         while (i < flen) : (i += 1) {
@@ -678,14 +701,12 @@ fn raiseFault(argv: ?[]const repr.Value, fault: Fault) raise.Error {
             "bad slot #%d, expected %s, got %v",
             .{ @as(i32, @intCast(f.slot)), f.expected.name(), argv.?[f.slot] },
         ),
-        // The three int64_t arguments to "%d" below are the C original's, and
-        // C's "%d" read an int32_t from the va_list before widening it, which
-        // is undefined and is recorded in FOUND.md. It was reproduced here
-        // while the other implementation was C and could be compared against.
+        // The three int64_t arguments to "%d" below are the C original's.
         // There is no va_list here: "%d" renders the 64 bits its specifier
-        // always asked for, so these are simply correct. The digits are
-        // unchanged for any index that fits in an int32_t, which is every
-        // index either implementation was ever observed on.
+        // always asked for, so the width the arguments carry is the width the
+        // conversion reads. The digits are unchanged for any index that fits
+        // in an int32_t, which is every index either implementation was ever
+        // observed on.
         .range => |f| if (f.inclusive) pp_format.panicf(
             "%s index %d out of range [%d,%d]",
             .{ f.which, f.raw, f.lo, f.hi },
@@ -961,7 +982,7 @@ pub fn getCBytes(argv: []const repr.Value, n: usize) raise.Raising([*c]const u8)
     var cstr: [*c]const u8 = undefined;
     var len: usize = undefined;
     switch (argCbytes(argv, n)) {
-        .copy => {
+        .copy_buffer => {
             // Make a copy with janet_smalloc in the rare case we have a buffer
             // that cannot be realloced and pushing a 0 byte would raise.
             const buffer = wrap.toBuffer(argv[n]);
@@ -971,6 +992,17 @@ pub fn getCBytes(argv: []const repr.Value, n: usize) raise.Raising([*c]const u8)
             copy[count] = 0;
             cstr = copy;
             len = @intCast(buffer.count);
+        },
+        .copy_view => {
+            // An abstract's `bytes` callback answers a view with no terminator
+            // of its own, so the terminator is added here. A zero-length view
+            // still gets the one byte, which is the terminator.
+            const view = try getBytes(argv, n);
+            const copy: [*]u8 = @ptrCast(gc_alloc.smalloc(view.len + 1));
+            if (view.len != 0) @memcpy(copy[0..view.len], view.bytes.?[0..view.len]);
+            copy[view.len] = 0;
+            cstr = copy;
+            len = view.len;
         },
         .terminate => {
             // Ensure trailing 0
@@ -986,7 +1018,7 @@ pub fn getCBytes(argv: []const repr.Value, n: usize) raise.Raising([*c]const u8)
             len = view.len;
         },
     }
-    if (!argZeros(cstr, len, &fault)) return raiseFault(argv, fault);
+    if (!argZeros(cstr[0..len], &fault)) return raiseFault(argv, fault);
     return cstr;
 }
 

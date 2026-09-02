@@ -91,8 +91,8 @@ inline fn flagAt(flags: u64, index: u6) bool {
 /// order. This is the other half: what number each position carries on *this*
 /// platform, or -1 where the headers define none.
 ///
-/// The misspelling `vtlarm` is `signal_names`' and is recorded in `FOUND.md`;
-/// it is not repeated here, because this table is indexed rather than named.
+/// This table is indexed rather than named, so it and `signal_names` cannot
+/// disagree about which position is which signal.
 const signal_number_names = [_][:0]const u8{
     "SIGKILL", "SIGINT",    "SIGABRT", "SIGFPE",  "SIGILL",  "SIGSEGV",
     "SIGTERM", "SIGALRM",   "SIGHUP",  "SIGPIPE", "SIGQUIT", "SIGUSR1",
@@ -272,6 +272,14 @@ fn procWait(proc: *Proc) raise.Raising(repr.Value) {
             status = try procGetStatus(proc);
         }
         proc.return_code = status;
+        // **The `:x` flag is honoured here too.** Only the evented completion
+        // callback reads it in the C original, so a build without the event
+        // loop accepted the flag and did nothing with it -- which leaves a
+        // caller relying on it for error handling with none. The message is
+        // the callback's, so the two configurations answer alike.
+        if (status != 0 and proc.flags & proc_error_nonzero != 0) {
+            return pp_format.panicf("command failed with non-zero exit code %d", .{status});
+        }
         return wrap.fromInteger(proc.return_code);
     }
 }
@@ -767,11 +775,8 @@ fn spawnPosix(
         // the result, so the result is deliberately discarded.
         if (!use_environ) oa.setEnviron(@ptrCast(envp));
         _ = exec(cargv[0].?, cargv, if (flagAt(flags, 1)) 1 else 0);
-        // `%s`, not the `%p` Janet writes. `%p` pulls a `Janet` and
-        // `cargv[0]` is a `char *`: a mismatched `va_arg` type, which is
-        // undefined, so this gets it right instead of reproducing it. Janet
-        // prints the pointer's bits as a denormal double; `FOUND.md` has the
-        // entry and records this as a deliberate divergence.
+        // `%s`, not `%p`: `%p` takes a `Janet` and `cargv[0]` is a `char *`,
+        // so a `%p` here renders the pointer's bits as a denormal double.
         return pp_format.panicf("%s: %s", .{
             cargv[0].?,
             utils.strerrorSafe(if (c.errno() != 0) c.errno() else h.ENOENT),
@@ -1004,15 +1009,16 @@ fn cfunPosixChroot(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `os_shell_subr`, which runs on a worker thread.
 ///
-/// It frees the copied command and leaves `args.argp` pointing at the freed
-/// block; the default threaded callback frees it a second time, which aborts.
-/// That is the defect `FOUND.md` records, reproduced here rather than
-/// repaired, and it is why `test/zig` exercises only the
-/// no-argument form.
+/// **The reply's payload pointer is cleared after the request's is freed.**
+/// The reply's tag is an integer or a boolean, which carries no payload, so
+/// leaving the freed request pointer in it hands the callback something that
+/// has already been released -- which is exactly what `goThreadSubr` clears
+/// for the same reason.
 fn shellSubroutine(args: ev_loop.GenericMessage) callconv(.c) ev_loop.GenericMessage {
     var out = args;
     const stat = shell(@ptrCast(@alignCast(args.argp)));
     utils.free(args.argp);
+    out.argp = null;
     out.tag = if (args.argi != 0) constants.JANET_EV_TCTAG_INTEGER else constants.JANET_EV_TCTAG_BOOLEAN;
     out.argi = stat;
     return out;
@@ -1100,9 +1106,9 @@ fn cfunSigaction(argv: []repr.Value) raise.Raising(repr.Value) {
     if (!repr.checkType(oldhandler, repr.Tag.nil)) _ = gc_alloc.gcunroot(oldhandler);
     if (handler) |f| {
         // A handler is entered with no arguments, so one that cannot accept
-        // zero can never run. `janet_fiber` answers null for it and the C
-        // scheduled that null; refusing here names the mistake at the line
-        // that made it. `FOUND.md` has the original behaviour.
+        // zero can never run: no fiber can be built for it. Refusing at
+        // registration names the mistake at the line that made it, where the
+        // caller can still act on it.
         if (f.def.?.min_arity > 0) {
             return pp_format.panicf(
                 "signal handler must accept zero arguments, got one of arity %d",
@@ -1116,12 +1122,13 @@ fn cfunSigaction(argv: []repr.Value) raise.Raising(repr.Value) {
         tables.put(&vm_state.current().ev.signal_handlers, wrap.fromInteger(sig), wrap.fromNil());
     }
 
-    // `mask` is used uninitialised by the C original: `sigaddset` adds to
-    // whatever was on the stack, and only `sigemptyset` would have made it a
-    // set holding just this signal. Reproduced -- it is a defined operation on
-    // an indeterminate value rather than undefined behaviour, and the mask
-    // only widens what is blocked during the handler.
+    // **Emptied before it is added to**, which is what makes the mask hold
+    // just this signal. `sigaddset` adds to an existing set, so without the
+    // `sigemptyset` the mask the handler runs under is whatever was on the
+    // stack -- the same pair the unblock set below already writes in the right
+    // order.
     var mask: h.sigset_t = undefined;
+    _ = oa.sigemptyset(&mask);
     _ = oa.sigaddset(&mask, sig);
     var action: h.struct_sigaction = std.mem.zeroes(h.struct_sigaction);
     action.sa_flags |= h.SA_RESTART;
@@ -1319,8 +1326,9 @@ pub const wait_unknown: i32 = 3;
 /// and reports the ones its headers left out as undefined — exactly as the
 /// `#ifdef`-gated table did by omitting them.
 ///
-/// `vtlarm` is a misspelling of `vtalrm` that this list preserves; it is
-/// recorded in `FOUND.md` as a defect and reproduced rather than corrected.
+/// Each name is its signal's own, lower-cased with the `SIG` dropped, which
+/// is the rule every one of them follows -- `vtalrm` for `SIGVTALRM`, and no
+/// alias for the `vtlarm` this list once carried.
 const signal_names = [_][:0]const u8{
     "kill",
     "int",
@@ -1347,7 +1355,7 @@ const signal_names = [_][:0]const u8{
     "sys",
     "trap",
     "urg",
-    "vtlarm",
+    "vtalrm",
     "xcpu",
     "xfsz",
 };
@@ -1606,9 +1614,10 @@ test "signal keywords match whole names only" {
     try std.testing.expectEqual(@as(i32, -1), signalIndex("kil", 3));
     try std.testing.expectEqual(@as(i32, -1), signalIndex("killer", 6));
     try std.testing.expectEqual(@as(i32, -1), signalIndex("", 0));
-    // The misspelling the C table carried is the name that resolves.
-    try std.testing.expectEqual(@as(i32, 25), signalIndex("vtlarm", 6));
-    try std.testing.expectEqual(@as(i32, -1), signalIndex("vtalrm", 6));
+    // The signal's own name with the `SIG` dropped, like every other row, and
+    // no alias for the transposition the table once carried.
+    try std.testing.expectEqual(@as(i32, 25), signalIndex("vtalrm", 6));
+    try std.testing.expectEqual(@as(i32, -1), signalIndex("vtlarm", 6));
 }
 
 test "environment keys with a separator or a terminator are refused" {

@@ -22,14 +22,7 @@
 //! the instruction it stopped on, and whether it pops a C frame first. Nothing
 //! else in the tree reads them and the suites reach them only incidentally.
 //!
-//! Three things are deliberately not pinned.
-//!
-//! `"rhs must be valid 32-bit signed integer, got %f"` hands a `Janet` to a
-//! `%f`, which the formatter reads as a `double`. That is undefined, it is
-//! recorded in `FOUND.md`, and the two behavioral targets already disagree —
-//! aarch64 Darwin prints the value and x86-64 Linux prints `0.000000`. Phase
-//! 8's sixth rule says nothing pins undefined behavior, so only the fixed
-//! prefix is asserted.
+//! Two things are deliberately not pinned.
 //!
 //! `"invalid constant"`, `"invalid funcdef"`, `"invalid upvalue index"` and
 //! `"invalid upvalue environment"` are unreachable from here: the assembler
@@ -178,13 +171,19 @@ fn arithmeticTakesTheNumericPath() void {
     expectEqual("(do (defn f [a b] [(div a b) (mod a b) (% a b)]) (f 7 -2))", "[-4 -1 1]");
     expectEqual("(do (defn f [a b] (mod a b)) (f 7 0))", "7");
     expectEqual("(do (defn f [a b] [(band a b) (bor a b) (bxor a b)]) (f 12 10))", "[8 14 6]");
-    // The left operand of a left shift stays positive and in range: C leaves
-    // `int32_t << int32_t` undefined for a negative value, for an overflow into
-    // the sign bit, and for a count above 31, and a Debug build aborts on all
-    // three. `FOUND.md` has it, and nothing here pins it. The two right shifts
-    // take the negative operand, where C is merely implementation-defined and
-    // both targets agree.
     expectEqual("(do (defn f [a b] (blshift a b)) (f 3 4))", "48");
+    // **A shift is a wrapping shift and its count is taken modulo 32.** C
+    // leaves all three of these undefined -- a negative left operand, an
+    // overflow into the sign bit, and a count at or above the width -- and
+    // this defines them, which is what makes them assertable at all. The
+    // answers are what both supported architectures' shift instructions give,
+    // so a release build of the C original agrees; a Debug build of it aborts.
+    expectEqual("(do (defn f [a b] (blshift a b)) (f -8 1))", "-16");
+    expectEqual("(do (defn f [a b] (blshift a b)) (f 1 31))", "-2147483648");
+    expectEqual("(do (defn f [a b] (blshift a b)) (f 1 32))", "1");
+    expectEqual("(do (defn f [a b] (blshift a b)) (f 1 33))", "2");
+    expectEqual("(do (defn f [a b] (brshift a b)) (f -8 33))", "-4");
+    expectEqual("(do (defn f [a b] (brushift a b)) (f 4026531840 33))", "2013265920");
     // The unsigned form narrows its left operand to `uint32_t`, so a negative
     // one raises there rather than shifting; only the signed form takes it.
     expectEqual("(do (defn f [a b] (brshift a b)) (f -8 1))", "-4");
@@ -207,26 +206,26 @@ fn aBitwiseOperandOutOfRange() void {
     expectError("(do (defn f [x] (blshift x 3)) (f 1e20))", "value 1e+20 out of range for 32-bit signed integers");
     expectError("(do (defn f [x] (brushift x 3)) (f 1e20))", "value 1e+20 out of range for 32-bit unsigned integers");
     // A NaN fails the range test rather than the round trip. Produced by
-    // dividing at run time rather than written as `math/nan`: a NaN *constant*
-    // reaches `janetc_loadconst`, which casts it to `int32_t` unchecked, and a
-    // Debug build aborts before this opcode runs. `FOUND.md` has it; it is the
-    // compiler's defect rather than the loop's, and this contract found it by
-    // accident.
+    // dividing at run time, so that the constant folder is out of it and this
+    // vector is about the opcode rather than about the emitter; the emitter's
+    // own narrowing of a NaN constant is checked, and the literal form below
+    // reaches the same message.
     expectError("(do (defn f [a b] (band (/ a b) 1)) (f 0 0))", "value nan out of range for 32-bit signed integers");
+    expectError("(band math/nan 1)", "value nan out of range for 32-bit signed integers");
 }
 
 /// The right operand is narrowed to `int32_t` whatever the left was narrowed
-/// to, and its message is the one `FOUND.md` records: the `Janet` is handed to
-/// a `%f`.
+/// to, and **the whole message is pinned**: `%f` renders the operand as the
+/// `double` it is, so the digits are the same on every target.
 fn aBitwiseRightOperandOutOfRange() void {
-    expectErrorPrefix("(band 1 1e20)", "rhs must be valid 32-bit signed integer, got ");
-    expectErrorPrefix("(brushift 1 1e20)", "rhs must be valid 32-bit signed integer, got ");
+    expectError("(band 1 1e20)", "rhs must be valid 32-bit signed integer, got 100000000000000000000.000000");
+    expectError("(brushift 1 1e20)", "rhs must be valid 32-bit signed integer, got 100000000000000000000.000000");
     // A count that fits a `uint32_t` and not an `int32_t` is rejected even by
     // the unsigned opcode. That asymmetry is the only well-defined way to tell
     // the two narrowings apart.
-    expectErrorPrefix(
+    expectError(
         "(do (defn f [a b] (brushift a b)) (f 4 3000000000))",
-        "rhs must be valid 32-bit signed integer, got ",
+        "rhs must be valid 32-bit signed integer, got 3000000000.000000",
     );
 }
 

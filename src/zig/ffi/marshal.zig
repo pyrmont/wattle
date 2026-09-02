@@ -2,18 +2,15 @@
 //! appear there, and the same memory read back. It holds Janet values and can
 //! raise on every second line.
 //!
-//! ## Misaligned access is reproduced rather than repaired
+//! ## Misaligned access is written out
 //!
-//! A `:pack`ed struct field lands wherever the previous field ended, so
-//! `((double *) to)[0] = ...` writes through a pointer that may not be aligned
-//! for a `double`. `FOUND.md` records this as a pre-existing defect that is
-//! deliberately left unfixed, so this has to place the same bytes.
-//!
-//! Every access here therefore goes through an `align(1)` pointer. That is the
-//! same store, and it produces the same byte image, but where C's version is
+//! A `:pack`ed struct field lands wherever the previous field ended, so a
+//! `double` field can sit at an odd offset. Writing it through a `*double` is
 //! undefined -- and aborts under the sanitizer, which is why the differential
-//! corpus's byte-image half runs at `ReleaseFast` -- Zig's is defined. The
-//! divergence is entirely in what a sanitizer says about it.
+//! corpus's byte-image half runs at `ReleaseFast`.
+//!
+//! **Every access here goes through an `align(1)` pointer.** That is the same
+//! store and the same byte image, said in a way that is defined.
 //!
 //! ## Scratch and raising
 //!
@@ -140,6 +137,58 @@ pub fn writeOne(
         .uint32 => put(u32, to, @truncate(try args_core.getUInteger64(argv, n))),
         .uint64 => put(u64, to, try args_core.getUInteger64(argv, n)),
     }
+}
+
+/// Write one argument into a **register slot**, extended to the register's
+/// width.
+///
+/// **Extension is the caller's job under both AAPCS64 and the SysV ABI**: a
+/// callee that declares `int8_t` is entitled to read the whole register
+/// without masking. `writeOne` places a value at the type's own width, which
+/// is what a struct field and an array element need and is wrong here -- an
+/// `:s8` of -1 written as one byte reaches such a callee as 255, whatever the
+/// other seven bytes hold.
+///
+/// Everything wider than a register, and everything that is not an integer,
+/// falls through to `writeOne`: a float's register is written at full width by
+/// that path already, and an aggregate in a register bank is a pair the caller
+/// splits itself.
+pub fn writeRegister(
+    to: *u64,
+    argv: []const repr.Value,
+    n: usize,
+    ty: Type,
+    recur: c_int,
+) raise.Error!void {
+    if (ty.array_count < 0) {
+        switch (ty.prim) {
+            .bool => {
+                to.* = if (try args_core.getBoolean(argv, n)) 1 else 0;
+                return;
+            },
+            .int8, .int16, .int32 => {
+                const narrowed = try args_core.getInteger(argv, n);
+                const widened: i64 = switch (ty.prim) {
+                    .int8 => @as(i8, @truncate(narrowed)),
+                    .int16 => @as(i16, @truncate(narrowed)),
+                    else => narrowed,
+                };
+                to.* = @bitCast(widened);
+                return;
+            },
+            .uint8, .uint16, .uint32 => {
+                const narrowed = try args_core.getUInteger64(argv, n);
+                to.* = switch (ty.prim) {
+                    .uint8 => @as(u8, @truncate(narrowed)),
+                    .uint16 => @as(u16, @truncate(narrowed)),
+                    else => @as(u32, @truncate(narrowed)),
+                };
+                return;
+            },
+            else => {},
+        }
+    }
+    return writeOne(to, argv, n, ty, recur);
 }
 
 /// `janet_ffi_read_one`: the inverse of `writeOne`, assuming the memory holds

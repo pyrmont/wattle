@@ -271,5 +271,17 @@
 (gccollect)
 (assert (= :done (resume suspended)) "the suspended fiber's frames survive a collection")
 
+# A shift is a wrapping shift and its count is taken modulo the operand's
+# width. C leaves all three of these undefined -- a negative left operand, an
+# overflow into the sign bit, and a count at or beyond the width -- and this
+# runtime answers them, so a program may rely on the answers.
+(assert (= -16 (blshift -8 1)) "a left shift of a negative value wraps")
+(assert (= -2147483648 (blshift 1 31)) "a left shift into the sign bit wraps")
+(assert (= 1 (blshift 1 32)) "a shift count is taken modulo 32")
+(assert (= 2 (blshift 1 33)) "and again past the width")
+(assert (= -4 (brshift -8 33)) "the signed right shift takes the count the same way")
+(assert (= 2013265920 (brushift 4026531840 33))
+        "and so does the unsigned one")
+
 (end-suite)
 

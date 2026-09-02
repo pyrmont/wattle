@@ -38,10 +38,9 @@
 //! > that could act on an error, and nothing to retry.
 //!
 //! So a raise from one has nowhere to go **for anybody**, including a native
-//! module. `FOUND.md`'s "A panicking finalizer poisons the heap and kills the
-//! process at deinit" is what C's attempt to allow it costs: the block is
-//! finalized but neither freed nor unlinked, every later sweep finalizes it
-//! again, and `janet_deinit` eventually exits the process.
+//! module. Allowing it costs the heap: the block is finalized but neither
+//! freed nor unlinked, every later sweep finalizes it again, and the deinit
+//! that follows exits the process.
 //!
 //! Typing them non-raising is what turns that into a **compile error at the
 //! callback's own definition**, which is the only place the diagnosis is
@@ -56,6 +55,36 @@
 //!
 //! The other eight run inside an interpreter frame with a real scope above
 //! them, and a module author reporting an error from one is ordinary.
+//!
+//! ## The three rules the type system cannot state
+//!
+//! Beyond not raising, three restrictions bind `compare`, `hash`, `gcmark`
+//! and `gc`. Nothing checks them; `DESIGN.md` section 12 carries them as the
+//! behaviours this runtime keeps from Janet by decision, and they are here
+//! because this is the file a module author reads.
+//!
+//!  - **`hash` and `compare` may not allocate GC memory.** They run from
+//!    inside a dictionary build -- `structs.begin` allocates the struct
+//!    through the collector and the caller fills it one pair at a time -- and
+//!    the half-built dictionary is reachable only from that frame. A
+//!    collection triggered from underneath sweeps it while it is still being
+//!    written into.
+//!  - **`compare` may not re-enter a comparison.** There is one traversal
+//!    stack per VM and both entry points reset it on the way in, so a
+//!    callback that compares anything, or merely looks something up, discards
+//!    the state of the comparison that called it. The outer comparison then
+//!    reports two values that differ as equal. Nothing crashes.
+//!  - **`gcmark` may not keep anything it allocates.** An object allocated
+//!    during the mark phase is prepended to the heap with its mark bit clear,
+//!    and the mark phase reaches objects from the root set rather than by
+//!    walking the heap, so the sweep in that same collection frees it.
+//!
+//! Each has a fix that costs every ordinary call something -- rooting the
+//! dictionary under construction, saving the traversal array around every
+//! callback, marking or deferring during the sweep -- and the callbacks are a
+//! module author's, so the cost would be paid by every program to make three
+//! things safe that no type in this tree does. `test/gc_stress.zig` pins the
+//! third, which is the one with an observable answer.
 
 const std = @import("std");
 const raise = @import("raise.zig");

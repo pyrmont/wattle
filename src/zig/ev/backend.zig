@@ -165,15 +165,21 @@ const SelfPipe = struct {
     }
 
     /// Drain the pipe, running each posted callback. One short read ends it.
+    ///
+    /// **The reference is given back whether or not there is a callback**, and
+    /// that is what balances `postEvent`, which takes one unconditionally so
+    /// the loop cannot decide it is done while an event is in flight. An event
+    /// posted with no callback is what `loop1Interrupt` sends -- it exists to
+    /// wake a loop blocked in the backend and do nothing else -- so putting
+    /// the decrement inside the null test leaves that loop never finishing.
+    /// The completion-port handler below already decrements outside it.
     fn handle() void {
         var response: ev.SelfPipeEvent = undefined;
         while (true) {
             const status = c.retryIntr(c.read, .{ vm_state.current().ev.backend.selfpipe[0], @as([*]u8, @ptrCast(&response)), @sizeOf(ev.SelfPipeEvent) });
             if (status <= 0) return;
-            if (response.cb) |cb| {
-                cb(response.msg);
-                ev.evDecRefcount();
-            }
+            if (response.cb) |cb| cb(response.msg);
+            ev.evDecRefcount();
         }
     }
 
@@ -402,10 +408,16 @@ const Epoll = struct {
         try registerImpl(s, true, false);
     }
 
+    /// **`ENOENT` is not an error here.** epoll keys a registration by
+    /// descriptor, so a stream whose descriptor was duplicated -- which is
+    /// what an unsafe marshal does -- was never added under the number it is
+    /// now being removed by. Deregistering something that is not registered is
+    /// the state this is trying to reach, and kqueue answers it silently.
+    /// Anything else is still raised.
     fn unregister(s: *stream_mod.Stream) raise.Raising(void) {
         if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) != 0) return;
         const status = c.retryIntr(c.epoll_ctl, .{ vm_state.current().ev.backend.epoll, EPOLL_CTL_DEL, s.handle, null });
-        if (status == -1) return raise.panicv(stream_mod.evLasterr());
+        if (status == -1 and c.errno() != @intFromEnum(std.c.E.NOENT)) return raise.panicv(stream_mod.evLasterr());
         s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
     }
 

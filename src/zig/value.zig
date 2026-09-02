@@ -267,10 +267,9 @@ pub fn hashDictionary(kvs: []const tables.KV) i32 {
 /// A hash folded into a bucket index.
 ///
 /// The mask is `cap - 1` rather than `cap % capacity` because every capacity
-/// the runtime produces is a power of two. It is not written to survive a
-/// capacity of zero, and `FOUND.md`'s "A zero-capacity table cannot be looked
-/// up in" is what happens when one arrives: the mask becomes `0xFFFFFFFF`, the
-/// identity, and the probes below run off the array.
+/// the runtime produces is a power of two. **It is not written to survive a
+/// capacity of zero**, and no constructor produces one: the mask would become
+/// `0xFFFFFFFF`, the identity, and the probes below would run off the array.
 ///
 /// The subtraction wraps rather than trapping. `cap` is `INT32_MIN` in no
 /// reachable call -- `janet_capacityFor` never returns it -- and C's own
@@ -292,8 +291,8 @@ inline fn isNil(val: repr.Value) bool {
 /// not is a tombstone, remembered as a candidate and scanned past, because the
 /// key may still be further along. So the answer is the key's own bucket if it
 /// is present, the first tombstone if it is not, and a truly empty bucket
-/// otherwise -- which is the order `janet_table_put` depends on and the reason
-/// its tombstone-retiring branch is dead code, in `FOUND.md`.
+/// otherwise -- which is the order `tables.put` depends on, and the reason it
+/// never has a tombstone to retire.
 ///
 /// A capacity of zero sends this off the array; see `mapHash`. That is
 /// undefined in C and is not reproduced: a safety-checked build traps at the

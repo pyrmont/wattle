@@ -87,7 +87,12 @@ pub fn verify(definition: *functions.FuncDef) Verdict {
         }
     }
 
-    switch (constants.Opcode.fromWord(definition.instructions()[@intCast(bytecode_length - 1)])) {
+    // `& 0x7F` for the same reason the operand loop above masks: bit 7 of an
+    // instruction word is the breakpoint flag, not part of the opcode. A
+    // breakpoint is set on a function that already verified, so it may not
+    // decide whether that function verifies.
+    const last = definition.instructions()[@intCast(bytecode_length - 1)];
+    switch (constants.Opcode.fromWord(last & 0x7F)) {
         .@"return", .return_nil, .jump, .@"error", .tailcall => {},
         else => return .does_not_terminate,
     }

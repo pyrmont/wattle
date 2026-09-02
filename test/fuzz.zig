@@ -191,9 +191,11 @@ test "dobytes" {
 /// Deserialize untrusted bytes.
 ///
 /// The target with the most to say: `marsh.zig` reconstructs funcdefs, envs
-/// and fibers from a byte stream, and `FOUND.md` already carries three defects
-/// found by reading it. A registry is looked up because the C original did —
-/// it is what lets a stream name an abstract type or a cfunction.
+/// and fibers from a byte stream. It is the runtime's one untrusted entry
+/// point, and reading it found four out-of-bounds reads and one out-of-bounds
+/// write, every one of them in a length or an index the stream supplied. A
+/// registry is looked up because the C original did — it is what lets a stream
+/// name an abstract type or a cfunction.
 fn unmarshalBody(env: *tables.Table, data: []const u8) void {
     const registry = marsh_mod.envLookup(env);
     var next: [*]const u8 = undefined;

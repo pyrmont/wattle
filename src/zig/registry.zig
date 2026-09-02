@@ -148,11 +148,11 @@ pub fn defVarAbi(env: *tables.Table, name: [*:0]const u8, val: repr.Value, doc: 
 /// The registry's whole lifecycle, and the reason it is two functions rather
 /// than eight assignments in `janet_init` and two in `janet_deinit`.
 ///
-/// **A `janet_deinit` that frees the rows and leaves the three scalars set**
-/// makes `registryGet` bisect `null` over a non-zero `count`, and `registryPut`
+/// **A teardown that frees the rows and leaves the three scalars set** makes
+/// `registryGet` bisect `null` over a non-zero `count`, and `registryPut`
 /// write `rows[count]` through the freed pointer, in the window before the
-/// next `janet_init`. It is Janet's, and `FOUND.md` has the entry. It is not
-/// fixed in place here; the state is made unsayable instead.
+/// next init. Two functions over one type is what makes that state unsayable:
+/// there is no assignment list to leave a member out of.
 pub fn registryInit(r: *Registry) void {
     r.* = .{};
 }
@@ -232,29 +232,32 @@ pub fn registryPut(
 
 /// Find a builtin's metadata by its function pointer, or null.
 ///
-/// **The linear scan makes the bisection below it dead code, and that is the C
-/// original's, reproduced.** The scan is exhaustive, so a key it does not find
-/// is not in the array and the bisection cannot find it either; a key it does
-/// find has already been returned. So every lookup is O(n) over three hundred
-/// entries, and the sort that `registry_dirty` maintains buys nothing. It is
-/// defined behaviour rather than a fault, so it is reproduced and recorded in
-/// `FOUND.md` rather than repaired.
+/// **The bisection is the lookup**, which is what the sorted array and the
+/// `dirty` flag are maintained for. The C original walks the whole array
+/// first and bisects afterwards; the walk is exhaustive, so it answered every
+/// lookup that could be answered and the bisection below it never ran to a
+/// success. What that cost is O(n) over three hundred rows, per frame, on the
+/// path a stack trace takes to name each one.
 fn getRow(r: *Registry, key: abi.CFunction) ?*Row {
     if (r.dirty) sortRows(r);
 
     const rows = r.rows.items;
-    for (rows) |*row| {
-        if (row.cfun == key) return row;
-    }
-    if (rows.len == 0) return null;
-
-    var lo: [*]Row = rows.ptr;
-    var hi: [*]Row = lo + rows.len;
-    while (@intFromPtr(lo) < @intFromPtr(hi)) {
-        const span = (@intFromPtr(hi) - @intFromPtr(lo)) / @sizeOf(Row);
-        const mid = lo + span / 2;
-        if (mid[0].cfun == key) return &mid[0];
-        if (@intFromPtr(mid[0].cfun) > @intFromPtr(key)) {
+    var lo: usize = 0;
+    var hi: usize = rows.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (rows[mid].cfun == key) {
+            // **The first row with this key, not whichever the bisection
+            // landed on.** One cfunction may be registered more than once
+            // under different names, and the walk this replaced answered the
+            // first in array order. `sortRows` places a later registration
+            // ahead of an earlier one with the same key, so that is the most
+            // recent, and it stays the answer.
+            var first = mid;
+            while (first > 0 and rows[first - 1].cfun == key) first -= 1;
+            return &rows[first];
+        }
+        if (@intFromPtr(rows[mid].cfun) > @intFromPtr(key)) {
             hi = mid;
         } else {
             lo = mid + 1;

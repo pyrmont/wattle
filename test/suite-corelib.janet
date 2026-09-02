@@ -271,11 +271,22 @@
 (assert (= (string (module/expand-path "a/...b" ":all:")) "a/...b") "expand-path flushes three leading dots")
 (assert (= (string (module/expand-path "a/.b" ":all:")) "a/.b") "expand-path flushes one leading dot")
 
-# A trailing . or .. with no separator after it is dropped rather than applied.
-# Recorded in FOUND.md; reproduced rather than repaired.
-(assert (= (string (module/expand-path "a/b/.." ":all:")) "a/b/") "expand-path drops a trailing dot-dot")
+# A trailing . or .. is applied, so a path means the same thing with and
+# without a separator after it. The trailing separator the closed form leaves
+# behind is the pass's own and is kept.
+(assert (= (string (module/expand-path "a/b/.." ":all:")) "a/") "expand-path applies a trailing dot-dot")
 (assert (= (string (module/expand-path "a/b/../" ":all:")) "a/") "expand-path applies a closed dot-dot")
+(assert (= (string (module/expand-path "a/b/." ":all:")) "a/b/") "expand-path drops a trailing dot")
 (assert (= (string (module/expand-path "." ":all:")) "") "expand-path drops a lone dot")
+(assert (= (string (module/expand-path ".." ":all:")) "..") "expand-path keeps a lone dot-dot")
+(assert (= (string (module/expand-path "/a/b/.." ":all:")) "/a/") "expand-path applies a trailing dot-dot under a root")
+(assert (= (string (module/expand-path "a/b/../.." ":all:")) "") "expand-path applies two trailing dot-dots")
+(assert (= (string (module/expand-path "a/b/../../" ":all:")) "") "expand-path applies two closed dot-dots")
+(assert (= (string (module/expand-path "..." ":all:")) "...") "expand-path keeps a trailing three dots")
+(assert (= (string (module/expand-path "a/..." ":all:")) "a/...") "expand-path keeps three dots after a segment")
+# The forms that end in an ordinary character are untouched by the second pass.
+(assert (= (string (module/expand-path "a/b" ":all:")) "a/b") "expand-path adds no separator")
+(assert (= (string (module/expand-path "" ":all:")) "") "expand-path leaves an empty path empty")
 
 (assert-error-value "expand-path rejects a non-string current-file" "expected string, got 5"
                     (with-dyns [:current-file 5] (module/expand-path "a" ":cur:")))
@@ -319,12 +330,19 @@
 (assert (= :suspended (signal-status :await)) "signal :await")
 (assert (= :user0 (signal-status 0)) "signal 0")
 (assert (= :user7 (signal-status 7)) "signal 7")
-# 8 and 9 are accepted and are the interrupt and await signals rather than user
-# signals, which the docstring's "0 through 7" does not say. FOUND.md has it.
-(assert (= :interrupted (signal-status 8)) "signal 8 is the interrupt signal")
-(assert (= :suspended (signal-status 9)) "signal 9 is the await signal")
-(assert-error-value "signal above range" "expected user signal between 0 and 9, got 10" (signal 10))
-(assert-error-value "signal below range" "expected user signal between 0 and 9, got -1" (signal -1))
+# The integer form reaches the user signals and only those. 8 and 9 are the
+# interrupt and await signals, which is why the bound stops at 7 -- the same
+# bound the docstring states, and the keyword form has no `:user8` either.
+(assert-error-value "signal 8 is not a user signal"
+                    "expected user signal between 0 and 7, got 8" (signal 8))
+(assert-error-value "signal 9 is not a user signal"
+                    "expected user signal between 0 and 7, got 9" (signal 9))
+(assert-error-value "signal above range" "expected user signal between 0 and 7, got 10" (signal 10))
+(assert-error-value "signal below range" "expected user signal between 0 and 7, got -1" (signal -1))
+# The two signals the integer form no longer reaches are still reachable by
+# name, which is the only way they were ever meant to be.
+(assert (= :interrupted (signal-status :interrupt)) "signal :interrupt still reaches the interrupt")
+(assert (= :suspended (signal-status :await)) "signal :await still reaches the await")
 (assert-error-value "signal unknown keyword" "unknown signal :nope" (signal :nope))
 # A string is rejected by the keyword getter before the signal-name walk is
 # reached, so the message is the argument layer's rather than this one's.
@@ -554,10 +572,9 @@
 
 # `array/ensure` validates both its arguments.
 #
-# `FOUND.md`'s "`array/ensure` does not validate its growth factor" was
-# reachable from here: a growth of zero freed the array's backing store and
-# left `count` claiming the elements, and a negative one asked for most of the
-# address space and ended the process. The boundary now rejects a growth below
+# Without the second check a growth of zero frees the array's backing store
+# and leaves `count` claiming the elements, and a negative one asks for most of
+# the address space and ends the process. The boundary rejects a growth below
 # one, the way it already rejected a count below one.
 (assert-error "expected positive integer" (array/ensure @[1 2 3] 100 0))
 (assert-error "expected positive integer" (array/ensure @[1 2 3] 100 -1))

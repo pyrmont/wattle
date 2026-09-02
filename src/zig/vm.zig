@@ -190,6 +190,13 @@ const Op = enum {
     /// The bitwise operators, on the narrowed left operand and an `int32_t`
     /// right operand, with the result cast back before it is wrapped. C spells
     /// the cast `(type1) (x1 op x2)`; the shifts are the ones where it matters.
+    ///
+    /// **A shift is a wrapping shift and its count is taken modulo the
+    /// operand's width.** C leaves three of these undefined -- a negative left
+    /// operand, an overflow into the sign bit, and a count at or beyond the
+    /// width -- and every target this runtime supports answers them the same
+    /// way, which is the answer written here. The boxed 64-bit shifts in
+    /// `value/ints.zig` follow the same rule at 64 bits.
     inline fn applyBits(comptime self: Op, x1: self.intType(), x2: i32) self.intType() {
         const T = self.intType();
         const shift: std.math.Log2Int(T) = @truncate(@as(u32, @bitCast(x2)));
@@ -501,15 +508,12 @@ const Interp = struct {
             }
             if (!checkRange(i32, y2)) {
                 self.commit();
-                // `y2`, not `op2`. Janet passes the `Janet` to a `%f` that
-                // reads a `double` -- undefined, and observed to print
-                // `0.000000` on x86-64 where the System V classification sends
-                // the union through a general-purpose register while
-                // `va_arg(double)` reads the SSE save area. `FOUND.md` has the
-                // measurement and names `y2` as the value the message wants.
-                // There is no defined behaviour to reproduce, so this gets it
-                // right; the tuple driver made it a compile error rather than
-                // a choice.
+                // `y2`, not `op2`: `%f` renders a `double`, and `op2` is a
+                // `Janet`. Handing the union to it prints `0.000000` on
+                // x86-64, where the System V classification sends it through a
+                // general-purpose register while the conversion reads the SSE
+                // save area. The tuple driver makes that a compile error
+                // rather than a choice.
                 return try self.raisef("rhs must be valid 32-bit signed integer, got %f", .{y2});
             }
             const x1: T = @intFromFloat(y1);
@@ -1071,10 +1075,19 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             }
             if (repr.checkType(callee, repr.Tag.function)) {
                 self.func = wrap.toFunction(callee);
+                // **The commit goes before the trace and `stack` is reloaded
+                // after it.** Tracing renders through `(dyn :err)`, which may
+                // be a Janet function, which runs on this fiber and may grow
+                // its stack -- and `commit` writes the program counter through
+                // `self.stack`. Committing after the trace writes it where the
+                // stack used to be, so the frame keeps the program counter of
+                // the instruction now executing and re-runs the call when it
+                // is next resumed from.
+                self.commit();
                 if (functions.isTraced(self.func)) {
                     try traceFiber(self.func, fiber.stacktop - fiber.stackstart, fiber);
+                    self.reload();
                 }
-                self.commit();
                 fibers.funcframe(fiber, self.func) catch {
                     const n = fiber.stacktop - fiber.stackstart;
                     return try self.raisef("%v called with %d argument%s, expected %d", .{
@@ -1104,8 +1117,11 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             } else {
                 self.commit();
                 const v = try vm_calls.callNonfn(fiber, callee);
-                // `stack` is deliberately not refreshed here; FOUND.md records
-                // it, and reproducing it is the point.
+                // Reloaded for the same reason the cfunction branch above
+                // reloads: an abstract type's `call` or `get` callback may
+                // re-enter the interpreter and grow the fiber, and `stack` is
+                // a pointer into what it grew out of.
+                self.reload();
                 self.stack[fA(self.pc)] = v;
                 self.pc += 1;
                 continue :sw self.nextOp();
@@ -1122,8 +1138,12 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             }
             if (repr.checkType(callee, repr.Tag.function)) {
                 self.func = wrap.toFunction(callee);
+                // As in `.call` above: the trace may grow the fiber's stack,
+                // so `stack` is reloaded before anything reads it again. There
+                // is no commit here -- a tail call replaces the frame.
                 if (functions.isTraced(self.func)) {
                     try traceFiber(self.func, fiber.stacktop - fiber.stackstart, fiber);
+                    self.reload();
                 }
                 fibers.funcframeTail(fiber, self.func) catch {
                     stackFrame(fiber.data.? + utils.asSize(fiber.frame)).pc = self.pc;
@@ -1365,14 +1385,13 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             const mem = fiber.data.? + utils.asSize(fiber.stackstart);
             var buffer: buffers.Buffer = undefined;
             _ = buffers.init(&buffer, 10 *% utils.asSize(count));
-            // A raise inside the loop returns without reaching the deinit
-            // below, so the buffer's janet_malloc block is leaked. That is what
-            // Janet does too; see FOUND.md, "JOP_MAKE_STRING leaks its
-            // scratch buffer when a conversion raises". Reproduced deliberately
-            // rather than fixed, which is why this arm does not use `defer`.
+            // `defer`, because the fill raises: an abstract type's `tostring`
+            // can, and `buffers.ensure` does past `INT32_MAX`. The storage is
+            // `janet_malloc`ed and off the collector's list, so nothing but
+            // this line can free it and nothing else holds the pointer.
+            defer buffers.deinit(&buffer);
             try vm_calls.fillString(&buffer, mem[0..utils.asSize(count)]);
             self.stack[fD(self.pc)] = value.fromBytes(buffer.slice(), .string);
-            buffers.deinit(&buffer);
             fiber.stacktop = fiber.stackstart;
             self.maybeCollect();
             self.pc += 1;
@@ -1633,10 +1652,12 @@ pub fn mcall(name: [*:0]const u8, argv: []repr.Value) raise.Error!repr.Value {
 /// `fill_table`, renamed. `JOP_MAKE_TABLE` over a run of key/value pairs on the
 /// fiber stack.
 ///
-/// `janet_table_put` hashes and compares every key on the way in, so an
-/// abstract key with a `hash` or `compare` callback can raise from inside this
-/// loop, or run the collector while the table being filled is unrooted.
-/// `FOUND.md` has the second of those; it is Janet's and is reproduced.
+/// `tables.put` hashes and compares every key on the way in, so an abstract
+/// key with a `hash` or `compare` callback runs from inside this loop. Such a
+/// callback may not raise, may not re-enter a comparison, and **may not
+/// allocate GC memory**: the table being filled is reachable only from this
+/// frame, so a collection triggered from underneath here frees it. The three
+/// rules are one line in `DESIGN.md` section 12.
 pub fn fillTable(table: *tables.Table, mem: ?[*]const repr.Value, count: i32) void {
     var i: i32 = 0;
     while (i < count) : (i += 2) {
@@ -1660,9 +1681,9 @@ pub fn fillStruct(st: [*]tables.KV, mem: [*]const repr.Value, count: i32) void {
 /// This is the loop that reaches an abstract type's `tostring` callback, and
 /// `janet_to_string_b` can also raise `buffer overflow` from `janet_buffer_ensure`
 /// with no callback involved at all. `JOP_MAKE_STRING`'s scratch buffer is
-/// `janet_malloc`ed and invisible to the collector, so a raise from here leaks
-/// it — recorded in `FOUND.md`, reproduced rather than repaired, and the reason
-/// the trampoline build takes one scope around this loop rather than one per
+/// `janet_malloc`ed and invisible to the collector, so a raise from here would
+/// strand it if its arm did not `defer` the release -- which is also why the
+/// trampoline build takes one scope around this loop rather than one per
 /// element.
 /// **This raises, and it must.** It was once reached through an abi that
 /// reported instead, from inside `runVm`, which is itself raising -- so a

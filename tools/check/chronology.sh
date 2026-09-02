@@ -13,28 +13,24 @@
 # being moved and is false or meaningless now that it has been. Asked of the
 # **shipped source**: `src/zig`, `src/boot`, `test`, `examples`, `build.zig`.
 #
-# It is *not* asked of `DESIGN.md`, `FOUND.md` or `tools/`, and that is a
-# decision rather than an omission. A decision record that says "decided
-# 2026-08-31, measured at Phase 14 increment 4a" is stating its evidence; a
-# defect log that says "found under `-Dev-loop=c`" is stating where the defect
-# was reproduced; an instrument's header that says "it reported four of sixteen
-# until Phase 15 Part 1b" is stating why the instrument has the shape it has.
-# Those are the citations the repository rules ask *for*. Asking this question
-# of those files returns 632 lines of which almost none is a finding, and an
-# instrument whose output is almost all noise is one nobody reads.
+# It is *not* asked of `DESIGN.md` or `tools/`, and that is a decision rather
+# than an omission. A decision record that says "decided 2026-08-31, measured at
+# Phase 14 increment 4a" is stating its evidence; an instrument's header that
+# says "it reported four of sixteen until Phase 15 Part 1b" is stating why the
+# instrument has the shape it has. Those are the citations the repository rules
+# ask *for*. Asking this question of those files returns hundreds of lines of
+# which almost none is a finding, and an instrument whose output is almost all
+# noise is one nobody reads.
 #
 # **A name for a file that does not exist** — `src/zig/types.zig`,
-# `stretchy.zig`, `NAMESPACES.md`. This one is asked **everywhere**,
-# `DESIGN.md`, `FOUND.md` and `tools/` included, because a document naming a
-# file that is not there is wrong wherever it sits and a reader cannot check
-# it.
+# `stretchy.zig`, `NAMESPACES.md`. This one is asked **everywhere**, `DESIGN.md`
+# and `tools/` included, because a document naming a file that is not there is
+# wrong wherever it sits and a reader cannot check it.
 #
 # A retired **`-D<x>-core` selector option** is deliberately *not* in the wide
-# question, although it looks like the same thing. It is not: `FOUND.md`
-# reproduces a defect with `zig build -Dfiber-core=c` because that is the
-# command that produced the backtrace quoted beneath it, and rewriting it would
-# falsify the record rather than repair it. A retired *file* can be checked by
-# looking; a retired *command* is the log saying what was run. The option stays
+# question, although it looks like the same thing. A retired *file* can be
+# checked by looking; a retired *command* may be a log saying what was run, and
+# rewriting one falsifies the record rather than repairing it. The option stays
 # in the shipped-source question above, where a live file naming one is wrong.
 #
 # ## Five exclusions, and they are the whole of the difficulty
@@ -62,11 +58,10 @@
 # say so. A line containing "does not exist" or "There is no" is dropped, which
 # is decidable by shape rather than by a list of exempt lines.
 #
-# **`src/core/` and `janet.h` name upstream C.** `FOUND.md` cites
-# `src/core/os.c` at the line a defect lives on and `DESIGN.md` compares
-# against `janet.h`'s declarations; both are the subject rather than a stale
-# reference. They stay in the shipped-source question, where this project
-# having had its own `janet.h` is what makes a mention wrong.
+# **`src/core/` and `janet.h` name upstream C.** `DESIGN.md` compares against
+# `janet.h`'s declarations, which is the subject rather than a stale reference.
+# They stay in the shipped-source question, where this project having had its
+# own `janet.h` is what makes a mention wrong.
 #
 # ## Why this is a script and not a build check
 #
@@ -95,7 +90,7 @@ fi
 # ------------------------------- a name for a thing that does not exist, anywhere
 
 if grep -rnE '(^|[^/a-z_])types\.zig|stretchy\.zig|NAMESPACES\.md' \
-    src/zig src/boot test examples build.zig tools DESIGN.md FOUND.md 2>/dev/null |
+    src/zig src/boot test examples build.zig tools DESIGN.md 2>/dev/null |
   grep -vE '\.zig-cache|ffi_types\.zig|^src/zig/ffi/|^tools/check/chronology\.sh' |
   grep -vE 'does not exist|There is no'
 then

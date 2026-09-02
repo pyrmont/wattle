@@ -320,10 +320,19 @@
 (parser/flush pq)
 (assert (not (parser/has-more pq)) "flush empties the queue")
 
-# parser/error re-interns a literal message and returns a generated one as is.
+# parser/error interns whatever message the parser is holding, and takes it:
+# a second call has nothing to answer with. Both kinds of message go the same
+# way -- a literal one, and one the parser built from a format.
 (def pm (parser/new))
 (parser/consume pm ")")
-(assert (string? (parser/error pm)) "generated error is a string")
+(assert (= "unexpected closing delimiter )" (parser/error pm)) "a literal message")
+(assert (nil? (parser/error pm)) "the message is taken, not copied")
+(def pg (parser/new))
+(parser/consume pg "(")
+(parser/eof pg)
+(assert (= "unexpected end of source, ( opened at line 1, column 1" (parser/error pg))
+        "a generated message")
+(assert (nil? (parser/error pg)) "a generated message is taken too")
 (assert (nil? (parser/error (parser/new))) "no error is nil")
 
 # parser/insert into a string frame, into a token frame, and at the top level.

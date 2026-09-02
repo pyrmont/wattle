@@ -154,6 +154,21 @@ neldb\0\0\0\xD8\x05printG\x01\0\xDE\xDE\xDE'\x03\0marshal_tes/\x02
 (testmarsh (table/weak-values 10) "marsh table/weak-values")
 (testmarsh (table/weak 10) "marsh table/weak")
 
+# The weak lead bytes are 226 through 232 in every configuration. The event
+# loop is a build option and a lead byte is a wire format, so a build that
+# cannot produce a threaded abstract still leaves 224 and 225 unused rather
+# than reusing them for something else.
+(assert (= 226 (in (marshal (table/weak-keys 4)) 0)) "table/weak-keys lead byte")
+(assert (= 227 (in (marshal (table/weak-values 4)) 0)) "table/weak-values lead byte")
+(assert (= 228 (in (marshal (table/weak 4)) 0)) "table/weak lead byte")
+(assert (= 232 (in (marshal (array/weak 4)) 0)) "array/weak lead byte")
+(assert (= 229 (in (marshal (table/setproto (table/weak-keys 4) @{})) 0))
+        "table/weak-keys with prototype lead byte")
+(assert (= 230 (in (marshal (table/setproto (table/weak-values 4) @{})) 0))
+        "table/weak-values with prototype lead byte")
+(assert (= 231 (in (marshal (table/setproto (table/weak 4) @{})) 0))
+        "table/weak with prototype lead byte")
+
 # Now check that gc works with weak containers after marshalling
 
 # Turn off automatic GC for testing weak references
@@ -224,14 +239,13 @@ neldb\0\0\0\xD8\x05printG\x01\0\xDE\xDE\xDE'\x03\0marshal_tes/\x02
 (assert (deep= (freeze t) (freeze tclone)) "marsh weak tables with prototypes 4")
 (assert (deep= (getproto t) (getproto tclone)) "marsh weak tables with prototypes 5")
 
-# A threaded channel marshals and cannot be read back: the safe encoding for a
-# threaded abstract calls janet_unmarshal_abstract_threaded, whose only
-# compiled arm raises. See FOUND.md, "janet_unmarshal_abstract_threaded is
-# compiled out of every build there is".
+# A threaded channel marshals and cannot be read back. The portable encoding
+# carries the channel's contents; rebuilding a threaded one wants an allocation
+# on the threaded heap and a reference count, and the stream has neither.
 (compwhen (dyn 'ev/thread-chan)
   (def tchan (ev/thread-chan 4))
   (assert (buffer? (marshal tchan)) "threaded channel marshals")
-  (assert-error "threaded abstracts not supported"
+  (assert-error "cannot unmarshal a threaded channel"
                 (unmarshal (marshal tchan)))
   # The unthreaded one is what isolates the flag byte as the cause.
   (assert (= :core/channel (type (unmarshal (marshal (ev/chan 4)))))

@@ -953,12 +953,23 @@ inline fn payloadText(return_value: GenericMessage) [*:0]const u8 {
     return @ptrCast(return_value.argp);
 }
 
-/// The C original writes this cleanup switch twice, and both copies send
-/// every tag but the two `*_STRINGF` ones to a `default` that also frees. So
-/// the payload is freed for every tag; the two named cases are documentation
-/// rather than a condition, and that is reproduced here.
+/// Release the reply payload, **for the two tags that own one and no others**.
+///
+/// `*_STRINGF` is the "string, freed" tag: the subroutine allocated the bytes
+/// and the callback releases them. Every other tag either carries no payload
+/// or points at something that is not the callback's -- `ERR_STRING` points at
+/// a string literal, and a tag that carries no payload at all can still be
+/// carrying the *request* pointer the subroutine has already released.
+///
+/// Freeing for every tag is what makes `(os/shell "cmd")` abort the process
+/// and `ev/thread`'s start failure free `"failed to start thread"`.
 inline fn freeThreadedPayload(return_value: GenericMessage) void {
-    utils.free(return_value.argp);
+    switch (return_value.tag) {
+        constants.JANET_EV_TCTAG_STRINGF,
+        constants.JANET_EV_TCTAG_ERR_STRINGF,
+        => utils.free(return_value.argp),
+        else => {},
+    }
 }
 
 pub fn threadedAwait(fp: ThreadedSubroutine, tag: c_int, argi: c_int, argp: ?*anyopaque) raise.Error {

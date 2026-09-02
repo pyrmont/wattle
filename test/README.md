@@ -1,10 +1,10 @@
 # How this runtime is tested
 
 *The layers, what each is for, and what a change owes before it is believed.
-[../FOUND.md](../FOUND.md) has the Janet defects this runtime preserves;
-[../src/zig/README.md](../src/zig/README.md) the rules the runtime holds
-itself to; [../tools/README.md](../tools/README.md) the instruments named
-below.*
+[../DESIGN.md](../DESIGN.md) section 12 has the Janet behaviours this runtime
+kept and the ones it changed; [../src/zig/README.md](../src/zig/README.md) the
+rules the runtime holds itself to; [../tools/README.md](../tools/README.md) the
+instruments named below.*
 
 Six layers, and a change is believed when the ones it touches pass:
 
@@ -237,7 +237,7 @@ Current coverage:
 | Linux x86-64 musl    | cross-compile, emulated container | Tagged representation only; `asm_decode` segfaults under emulation, so individual contracts are run rather than the sweep                               |
 | Windows x86-64 MinGW | cross-compile                     | **Builds**, and is a matrix entry. Binaries have never been executed                                                                                    |
 | Linux riscv32 musl   | cross-compile                     | Builds only. One of **three** 32-bit targets -- `x86-linux-musl` and `arm-linux-musleabihf` build too -- which are what compile the 32-bit NaN-boxing and pointer-width branches; binaries deliberately unexecuted, see below |
-| Linux glibc, x86-64 and aarch64 | cross-compile, native container | **Builds and runs**: the driver at exit 0 with no argument *and* 65 of 65 by name, all 42 in-file tests, 32 of 34 suites -- the same two as musl. The no-argument abort in `malloc_consolidate` this row carried for two phases was diagnosed and fixed -- `FOUND.md` has the mechanism. Run at a phase gate rather than in CI, which tests Linux against musl |
+| Linux glibc, x86-64 and aarch64 | cross-compile, native container | **Builds and runs**: the driver at exit 0 with no argument *and* 65 of 65 by name, all 42 in-file tests, 32 of 34 suites -- the same two as musl. The no-argument abort in `malloc_consolidate` this row carried for two phases was diagnosed and fixed: a contract called into the runtime after its deinit, and glibc was the allocator that noticed. Run at a phase gate rather than in CI, which tests Linux against musl |
 
 
 **The two suites that do not pass on Linux, and why they are not a gap.** They
@@ -293,10 +293,19 @@ Five limitations constrain this, none of which are Janet defects:
    appears to. The difference is the core dump each crash writes; pass
    `--ulimit core=0` to podman.
 3. Emulation also misreports the host CPU, so `-Dcpu=baseline` is required.
-4. `-Dreduced-os=true` cannot run the Janet suites at all, on any platform.
-   `test/helper.janet` opens by reading `os/getenv`, which a reduced-OS build
-   does not have, so every suite fails to compile. Verify that configuration
-   with `zig build zig-contract-test`, which runs the contracts and passes.
+4. `-Dreduced-os=true` runs **28 of the 35 suites**, and the seven it does not
+   are named in `build.zig`'s `test_suites` list with `needs_os = true`. That
+   build registers four `os` bindings — `os/exit`, `os/which`, `os/arch` and
+   `os/compiler` — and a Janet file resolves its bindings at *compile* time, so
+   a suite naming one it does not have refuses to load rather than skipping a
+   case. `suite-os` is about the OS library and the other six build fixtures
+   with the filesystem, the environment or a subprocess.
+
+   `test/helper.janet` asks `compif` for `os/getenv` and `os/clock` for the
+   same reason, and its `rmrf` raises rather than reporting a clean removal
+   where there is no filesystem to remove from. The matrix's `reduced os` entry
+   is a `full` job because of this; it was a `contracts` job while every suite
+   there failed to compile.
 
 5. **No Windows binary has ever been executed**, here or anywhere.
    `x86_64-windows-gnu` is a `build` entry of `tools/testing/matrix.janet` and it
@@ -327,24 +336,24 @@ the hazard and a raw `fork` is.
 `tools/testing/leaks.sh` reaches the same heap by a route with no interposer in it: the
 contract driver stops *itself* at the end of `main` when `JANET_CONTRACT_PAUSE`
 is set, and the script scans the stopped process with `leaks <pid>` and then
-resumes it. It expects zero everywhere, excludes `gc_stress` — which orphans a
-block by design — and carries `gc_sweep`'s eight and `net_sockets`' three as
-the `FOUND.md` defects those contracts pin on purpose, so a difference in any
-of them is a non-zero exit rather than a number for a person to compare.
+resumes it. It expects zero everywhere, with no exclusions and no exceptions: `gc_sweep`'s
+eight, `net_sockets`' three and `gc_stress`'s deliberate orphan were each a
+defect and each is fixed, so a non-zero count anywhere is a non-zero exit rather
+than a number for a person to compare.
 
     ./tools/testing/leaks.sh                  # all 65, about 42 seconds
     ./tools/testing/leaks.sh args_core marsh  # just these
 
-**64 of the 65 are measured.** macOS only: `leaks` is Apple's, and the
-container checks below are what the second platform gets instead.
+**All 65 are measured.** macOS only: `leaks` is Apple's, and the container
+checks below are what the second platform gets instead.
 
 *This section said for a while that the hang was "not a fork", on the evidence
 of a process count. The count is three rather than two, and the third process is
 in state `T`.*
 
-Because of (2), the x86-64 predictions recorded in `FOUND.md` — the SIGFPE from
-`INT64_MIN` divided by -1 in particular — remain inferred rather than observed.
-They should be confirmed on real hardware before any decision rests on them.
+Because of (2), predictions about x86-64 trap behaviour remain inferred rather
+than observed. They should be confirmed on real hardware before any decision
+rests on them.
 
 Introducing a second platform immediately found two `build.zig` defects that a
 macOS-only build could not expose, both fixed:

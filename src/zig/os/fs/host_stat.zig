@@ -208,11 +208,11 @@ inline fn put(numbers: [*]f64, field: Field, value: f64) void {
 /// It is here rather than in `io.zig` for the reason the whole file exists: it
 /// needs `struct stat`, and naming one is the thing that is per-platform.
 ///
-/// Upstream ignores `fstat`'s result and reads the mode word regardless; that is
-/// reproduced rather than repaired, because a failure leaves the buffer
-/// uninitialised and the answer it then gives is whatever was on the stack.
-/// `FOUND.md` has the entry. Zeroing first makes this answer determinate
-/// without making it *different* on any path where Janet's was defined.
+/// **The call's result is checked and the buffer is zeroed before it.**
+/// Reading the mode word regardless leaves the answer to whatever was on the
+/// stack when the call fails; zeroing alone would make it determinate, and
+/// answering `false` is what says the question could not be asked. Both arms
+/// do the same thing, which is what the Linux arm's `statx` check already did.
 pub fn isDirectory(file: ?*anyopaque) bool {
     if (windows or builtin.os.tag == .plan9) return false;
     const fd = c.fileno(file);
@@ -224,7 +224,7 @@ pub fn isDirectory(file: ?*anyopaque) bool {
         return (stx.mode & S_IFMT) == S_IFDIR;
     }
     var st: Stat = std.mem.zeroes(Stat);
-    _ = c_fstat(fd, &st);
+    if (c_fstat(fd, &st) < 0) return false;
     return (@as(u32, @intCast(st.st_mode)) & S_IFMT) == S_IFDIR;
 }
 

@@ -30,6 +30,7 @@ const wrap = @import("value/helpers/wrap.zig");
 const abstracts = @import("value/abstracts.zig");
 const value = @import("value.zig");
 const ev_stream = @import("ev/stream.zig");
+const fatal = @import("fatal.zig");
 
 // -------------------------------------------------------------------------
 // The cfunctions.
@@ -102,7 +103,28 @@ const Watcher = struct {
     channel: ?*ev_channel.Channel,
     default_flags: u32,
     is_watching: c_int,
+    /// kqueue only: the per-path descriptors this watcher opened.
+    ///
+    /// **They are held here rather than read back out of
+    /// `watch_descriptors`.** The `gc` callback that closes them runs
+    /// mid-sweep, and the table is a collectable block that may already have
+    /// been freed by then, so a callback that walked it would be reading a
+    /// freed table to decide what to close. This list is an owned allocation
+    /// the callback frees itself.
+    watched_fds: if (backend == .kqueue) std.ArrayListUnmanaged(c_int) else void,
 };
+
+/// `JANET_STREAM_CLOSED`. A watcher whose own descriptor is closed cannot
+/// listen and cannot be added to; `listen` is where that is said, because
+/// `add` already fails at the call it is made on.
+const stream_closed: u32 = @intCast(constants.JANET_STREAM_CLOSED);
+
+/// Whether the watcher's own instance descriptor is still open.
+fn watcherIsOpen(watcher: *const Watcher) bool {
+    if (backend == .windows) return true;
+    const s = watcher.stream orelse return false;
+    return s.flags & stream_closed == 0;
+}
 
 fn watcherOf(p: ?*anyopaque) *Watcher {
     return @ptrCast(@alignCast(p));
@@ -341,11 +363,10 @@ const kqueue = struct {
         if (values.len != 14) @compileError("the kqueue table is not whole");
     }
 
-    /// `KqueueWatcherState`. Janet allocates this with `janet_malloc` and sets
-    /// only `watcher`, so every cookie it reports is derived from
-    /// uninitialised heap. Reading it is undefined rather than merely wrong,
-    /// so there is nothing to reproduce and this starts from zero;
-    /// `FOUND.md` has the entry.
+    /// `KqueueWatcherState`. **The cookie starts at zero**, and is a counter
+    /// of the events this watcher has reported rather than an inotify cookie:
+    /// allocating the state without setting it derives every cookie from
+    /// whatever the heap held.
     const State = extern struct {
         watcher: *Watcher,
         cookie: u32,
@@ -373,6 +394,7 @@ const kqueue = struct {
         watcher.channel = channel;
         watcher.default_flags = default_flags;
         watcher.is_watching = 0;
+        watcher.watched_fds = .empty;
         watcher.stream = try ev_loop.makeStream(kq, stream_readable, null);
         try ev_loop.levelTriggeredStream(watcher.stream.?);
     }
@@ -392,6 +414,9 @@ const kqueue = struct {
         }
         const name = value.fromBytes(std.mem.span(path), .string);
         const wd = wrap.fromInteger(file_fd);
+        // Recorded before the table, so that a raise out of `tables.put` --
+        // which allocates -- cannot strand a descriptor nothing owns.
+        watcher.watched_fds.append(utils.heap, file_fd) catch fatal.outOfMemory();
         tables.put(watcher.watch_descriptors.?, name, wd);
         tables.put(watcher.watch_descriptors.?, wd, name);
     }
@@ -407,6 +432,7 @@ const kqueue = struct {
         const wd = wrap.toInteger(check);
         const result = c.retryIntr(h.close, .{wd});
         if (result == -1) return raise.panicv(ev_stream.evLasterr());
+        forgetFd(watcher, wd);
         tables.put(watcher.watch_descriptors.?, pathv, wrap.fromNil());
         tables.put(watcher.watch_descriptors.?, wrap.fromInteger(wd), wrap.fromNil());
     }
@@ -485,15 +511,44 @@ const kqueue = struct {
         gc_alloc.gcroot(wrap.fromAbstract(watcher));
     }
 
+    /// Unlistening closes the kqueue, and every per-path descriptor with it:
+    /// closing the kqueue leaves the watches registered against nothing, and
+    /// the watcher is not usable afterwards -- `listen` refuses it. Leaving
+    /// them open would leak one descriptor per `filewatch/add`.
     fn unlisten(watcher: *Watcher) raise.Raising(void) {
         if (watcher.is_watching == 0) return;
         watcher.is_watching = 0;
+        closeWatchedFds(watcher);
         try ev_loop.streamClose(watcher.stream.?);
         _ = gc_alloc.gcunroot(wrap.fromAbstract(watcher));
     }
 
     fn mark(watcher: *Watcher) void {
         gc_mark.mark(wrap.fromAbstract(watcher.stream));
+    }
+
+    /// Drop one descriptor from the owned list. Linear, and the list is the
+    /// number of paths one watcher watches.
+    fn forgetFd(watcher: *Watcher, fd: c_int) void {
+        for (watcher.watched_fds.items, 0..) |held, i| {
+            if (held == fd) {
+                _ = watcher.watched_fds.swapRemove(i);
+                return;
+            }
+        }
+    }
+
+    /// Close every descriptor this watcher opened and release the list. Safe
+    /// to call twice: the list is emptied as it goes.
+    fn closeWatchedFds(watcher: *Watcher) void {
+        for (watcher.watched_fds.items) |fd| _ = c.retryIntr(h.close, .{fd});
+        watcher.watched_fds.clearRetainingCapacity();
+    }
+
+    /// The `gc` callback. It reads nothing collectable: see `watched_fds`.
+    fn gc(watcher: *Watcher) void {
+        closeWatchedFds(watcher);
+        watcher.watched_fds.deinit(utils.heap);
     }
 };
 
@@ -918,6 +973,20 @@ fn splitPath(
 // ==========================================================================
 
 /// `janet_filewatch_mark`.
+/// Release what the watcher owns outside the collector's heap.
+///
+/// Only the kqueue backend has any: a descriptor per watched path, opened by
+/// `filewatch/add` and closed by `filewatch/remove` or by
+/// `filewatch/unlisten`. A watcher that is added to and then simply dropped
+/// reaches neither, which is one descriptor leaked per `filewatch/add`.
+///
+/// It reads nothing collectable -- see `Watcher.watched_fds` for why -- and it
+/// cannot raise, which `DESIGN.md` section 5 is what enforces.
+fn filewatchGc(watcher: *Watcher, _: usize) void {
+    if (watcher.channel == null) return; // Incomplete initialization
+    kqueue.gc(watcher);
+}
+
 fn filewatchMark(watcher: *Watcher, _: usize) void {
     if (watcher.channel == null) return; // Incomplete initialization
     be.mark(watcher);
@@ -934,6 +1003,7 @@ fn filewatchMark(watcher: *Watcher, _: usize) void {
 pub const watcherType = abstract_type.define(Watcher, .{
     .name = "filewatch/watcher",
     .gcmark = &filewatchMark,
+    .gc = if (backend == .kqueue) &filewatchGc else null,
 });
 
 // ==========================================================================
@@ -953,6 +1023,9 @@ fn cfunMake(argv: []repr.Value) raise.Raising(repr.Value) {
 fn cfunAdd(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, -1);
     const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
+    // The same refusal `filewatch/listen` makes, so that the three calls give
+    // one account of a closed watcher rather than three.
+    if (!watcherIsOpen(watcher)) return raise.panic("watcher is closed");
     const path = try args_core.getCString(argv, 1);
     const flags = watcher.default_flags | try be.decode(argv[2..]);
     try be.add(watcher, path, flags);
@@ -962,6 +1035,7 @@ fn cfunAdd(argv: []repr.Value) raise.Raising(repr.Value) {
 fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
+    if (!watcherIsOpen(watcher)) return raise.panic("watcher is closed");
     // TODO - pass string in directly to avoid extra allocation
     const path = try args_core.getCString(argv, 1);
     try be.remove(watcher, path);
@@ -971,6 +1045,13 @@ fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
 fn cfunListen(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
+    // **A closed watcher cannot listen.** `filewatch/unlisten` closes the
+    // watcher's own descriptor -- the inotify instance or the kqueue -- and
+    // nothing reopens it, so listening again starts a fiber on a closed
+    // stream: it reports success, delivers nothing ever again, and keeps the
+    // event loop from finishing. `filewatch/add` already fails at the call it
+    // is made on; this is the other half.
+    if (!watcherIsOpen(watcher)) return raise.panic("watcher is closed");
     try be.listen(watcher);
     return wrap.fromNil();
 }

@@ -388,6 +388,40 @@ fn theRaises() void {
     argv[0] = eval("@[:int32 1 2]");
     expectRaisePrefix(ffi_size, .{argv[0..1]}, "array type must be of form @[type count], got ");
 
+    // **A nested array type is refused rather than flattened.** A type carries
+    // one array count, so assigning the outer one over the inner leaves
+    // `@[@[:u8 4] 3]` three bytes wide rather than twelve -- a quarter of the
+    // size the expression names, and as a struct field that moves every later
+    // field's offset. The message names the spelling that works.
+    argv[0] = eval("@[:u8 4]");
+    expect(wrap.toNumber(ffi_size(argv[0..1]) catch @panic("ffi_core: ffi/size raised")) == 4);
+    argv[0] = eval("@[@[:u8 4] 3]");
+    expectRaisePrefix(ffi_size, .{argv[0..1]}, "nested array type ");
+    // The struct of inner arrays is the working spelling, and it is twelve.
+    argv[0] = eval("@[[:u8 :u8 :u8 :u8] 3]");
+    expect(wrap.toNumber(ffi_size(argv[0..1]) catch @panic("ffi_core: ffi/size raised")) == 12);
+
+    // **A raw pointer cannot become a cfunction.** Every pointer this can be
+    // given is a C function, and a cfunction here takes a `[]Value` over Zig's
+    // own calling convention -- so the value it used to answer was one the
+    // interpreter believed and the callee did not honour. The argument is
+    // still checked, which is what the second case says.
+    const pointer_cfunction = harness.core("ffi/pointer-cfunction");
+    // The pointer is taken here rather than looked up through `ffi/native`.
+    // A release build of this driver need not put its own symbols in the
+    // dynamic symbol table, and `ffi/lookup` then answers nil, which would
+    // make the case about a nil argument instead -- which is what the second
+    // case below is for. Any C function's address is the shape the argument
+    // is meant to have, and `asS8` is one this file already defines.
+    argv[0] = wrap.fromPointer(@ptrCast(@constCast(&asS8)));
+    expectRaise(
+        pointer_cfunction,
+        .{argv[0..1]},
+        "a raw pointer cannot become a cfunction; use ffi/signature and ffi/call",
+    );
+    argv[0] = harness.wrapInteger(7);
+    expectRaise(pointer_cfunction, .{argv[0..1]}, "bad slot #0, expected pointer, got 7");
+
     // A struct of one void member: the void type has no alignment, which is
     // the `el_align == 0` arm of the layout loop.
     argv[0] = value.fromBytes("void", .keyword);
@@ -494,15 +528,14 @@ fn hfa2Build(seed: f32) callconv(.c) Hfa2 {
 }
 
 /// AAPCS64 §6.8.2 passes a homogeneous floating-point aggregate in one vector
-/// AAPCS64 6.8.2 passes a homogeneous floating-point aggregate in one vector
-/// register per member. `FOUND.md` records Janet sizing it by bytes instead,
-/// which agrees only for a member exactly eight bytes wide -- so an aggregate
-/// of `double` was right by coincidence and one of `float` was given half the
-/// registers, with two members packed into the first.
+/// register per member. Sizing it by bytes agrees only for a member exactly
+/// eight bytes wide -- so an aggregate of `double` comes out right by
+/// coincidence and one of `float` is given half the registers, with two
+/// members packed into the first.
 ///
-/// The entry describes the outgoing direction only. **The return is the same
-/// defect read backwards**: each member comes back in its own register, so a
-/// two-float aggregate arrived as `(1.5 0)`.
+/// **The return is the same question read backwards**: each member comes back
+/// in its own register, so a two-float aggregate gathered by bytes arrives as
+/// `(1.5 0)`. Both directions are asserted here.
 ///
 /// Gated on the convention rather than on `builtin`, because what matters is
 /// which convention `:default` resolves to.
@@ -554,6 +587,74 @@ fn homogeneousFloatAggregates() void {
         expect(tuples.head(built).length == 2);
         expect(wrap.toNumber(built[0]) == 1.5);
         expect(wrap.toNumber(built[1]) == 2.5);
+    }
+}
+
+// ------------------------------------------- arguments narrower than a register
+
+/// The callees. Each widens its own narrow parameter, so what it answers is
+/// what the *register* held for the width the signature declared.
+fn asS8(x: i8) callconv(.c) f64 {
+    return @floatFromInt(x);
+}
+fn asU8(x: u8) callconv(.c) f64 {
+    return @floatFromInt(x);
+}
+fn asS16(x: i16) callconv(.c) f64 {
+    return @floatFromInt(x);
+}
+fn asU16(x: u16) callconv(.c) f64 {
+    return @floatFromInt(x);
+}
+fn asBool(x: bool) callconv(.c) f64 {
+    return if (x) 1 else 0;
+}
+
+/// **An integer narrower than a register is extended into it.**
+///
+/// Both AAPCS64 and the SysV ABI make extension the caller's job: a callee
+/// declaring `int8_t` may read the whole register without masking. Writing the
+/// value at its own width sets one byte and leaves the other seven as they
+/// were, so `:s8` of -1 arrives as 255 where the bank is zeroed and as stack
+/// residue where it is not -- which is why this survives casual testing, since
+/// a callee that happens to mask its own argument answers correctly either
+/// way. These do not mask: each widens the parameter the compiler gave it.
+fn narrowIntegerArgumentsAreExtended() void {
+    const ffi_signature = harness.core("ffi/signature");
+    const ffi_call_fn = harness.core("ffi/call");
+
+    const Case = struct {
+        callee: *const anyopaque,
+        argtype: [*:0]const u8,
+        given: repr.Value,
+        want: f64,
+    };
+    const cases = [_]Case{
+        .{ .callee = @ptrCast(&asS8), .argtype = "s8", .given = wrap.fromNumber(-1), .want = -1 },
+        .{ .callee = @ptrCast(&asS8), .argtype = "s8", .given = wrap.fromNumber(127), .want = 127 },
+        .{ .callee = @ptrCast(&asU8), .argtype = "u8", .given = wrap.fromNumber(255), .want = 255 },
+        .{ .callee = @ptrCast(&asS16), .argtype = "s16", .given = wrap.fromNumber(-1), .want = -1 },
+        .{ .callee = @ptrCast(&asS16), .argtype = "s16", .given = wrap.fromNumber(-32768), .want = -32768 },
+        .{ .callee = @ptrCast(&asU16), .argtype = "u16", .given = wrap.fromNumber(65535), .want = 65535 },
+        .{ .callee = @ptrCast(&asBool), .argtype = "bool", .given = wrap.fromTrue(), .want = 1 },
+        .{ .callee = @ptrCast(&asBool), .argtype = "bool", .given = wrap.fromFalse(), .want = 0 },
+    };
+
+    for (cases) |case| {
+        var argtypes = [_]repr.Value{
+            value.fromBytes("default", .keyword),
+            value.fromBytes("double", .keyword),
+            value.fromBytes(std.mem.span(case.argtype), .keyword),
+        };
+        const sig = ffi_signature(argtypes[0..3]) catch @panic("ffi_core: ffi/signature raised");
+        var args = [_]repr.Value{
+            wrap.fromPointer(@constCast(case.callee)),
+            sig,
+            case.given,
+        };
+        const answer = ffi_call_fn(args[0..3]) catch @panic("ffi_core: ffi/call raised");
+        expect(harness.isType(answer, repr.Tag.number));
+        expect(wrap.toNumber(answer) == case.want);
     }
 }
 
@@ -652,11 +753,11 @@ fn anAggregateBehindAStackArgument() void {
 
 // ------------------------------------------------- the signature arity bound
 
-/// The one-line repair `FOUND.md` carried as its only agreed-but-unmade fix,
-/// and a deliberate divergence from Janet.
+/// The arity bound, and a deliberate divergence from Janet.
 ///
-/// A `Signature` stores `max_args` mappings and the builder filled them for
-/// every argument passed, with only a lower bound on the arity. Past the
+/// A `Signature` stores `max_args` mappings, and a builder that fills them for
+/// every argument passed with only a lower bound on the arity runs past them.
+/// Past the
 /// thirty-second the writes went off the end of two stack arrays and into the
 /// builder's own frame — a safety trap in a checked build and a silent overrun
 /// in `ReleaseFast` — and the count recorded in the abstract was one no array
@@ -702,6 +803,7 @@ pub fn run() void {
     theRaises();
     theSignatureArityBound();
     homogeneousFloatAggregates();
+    narrowIntegerArgumentsAreExtended();
     anAggregateBehindAStackArgument();
 
     std.debug.print("ffi_core contract ok ({d} raises)\n", .{raises_seen});

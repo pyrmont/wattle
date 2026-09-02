@@ -135,9 +135,24 @@
   # went (`signal_core`), and the binding surface (`registry`). `io_core`,
   # `os_fs`, `os_surface` and `filewatch_core` still cannot be named, for the
   # reasons above.
-  ["value_wrap" "value_alloc" "string_symbol" "struct_table"
-   "gc_alloc" "gc_mark" "regalloc" "emit_core"
-   "compiler_primitives" "marsh" "signal_core" "registry"])
+  #
+  # Phase 16 replaced these with the contracts over the subsystems whose
+  # behaviour it changed: the marshaller's lead bytes and its new
+  # bytes-remaining bound (`marsh`), the peg verifier and matcher (`peg`), the
+  # bytecode verifier's terminator mask (`verify`), the parser's error path
+  # (`parser_core`), the collector's roots, interval, scratch and sweep
+  # (`gc_alloc`, `gc_mark`, `gc_sweep`), the comparison order and the two
+  # accessors (`value_order`, `value_access`), the boxed integers' division
+  # and shifts (`inttypes`), the varargs tail (`fiber_core`), the registry
+  # lookup that became a bisection (`registry`), and the interpreter's shifts
+  # and its trace (`vm_run`). `ev_loop`, `gc_stress`, `io_core`, `os_fs`,
+  # `os_surface` and `filewatch_core` are subjects that still cannot be named
+  # -- the fixture and working-directory reasons above, and `ev_loop` is not
+  # listed at all under `-Dev=false` or `-Dsingle-threaded=true`. The `full`
+  # entries run all 65 and cover them.
+  ["marsh" "peg" "verify" "parser_core"
+   "gc_alloc" "gc_mark" "gc_sweep" "value_order"
+   "value_access" "inttypes" "fiber_core" "registry" "vm_run"])
 
 # Every command gets a bound. Phase 10 Part 16 lost thirty-six minutes to a
 # `zig build test` whose `suite-ev.janet` parked in `kevent` with an empty
@@ -448,7 +463,13 @@
     # It named only `os_stat` until increment 8b picked `os_fs` as a subject
     # and the entry failed with `os_fs was not compiled into this binary` --
     # a harness gap that had simply never been selected for.
-    (job "contracts" "reduced os" ["-Dreduced-os=true"]
+    #
+    # **A `full` entry since Phase 16 Part 4.** It was `contracts` because the
+    # suites could not run at all here -- `test/helper.janet` named `os/getenv`
+    # and an unknown symbol is a compile error, so every suite refused to load.
+    # The harness asks `compif` now and `build.zig` does not schedule the seven
+    # suites whose fixtures need the OS, so the other 28 run.
+    (job "full" "reduced os" ["-Dreduced-os=true"]
          ["os_fs" "os_stat" "os_fs_paths" "os_permissions"
           "os_environ" "os_time" "os_process"])
     (job "contracts" "tagged values" ["-Dnanbox=false"])
@@ -530,13 +551,8 @@
 
   (var jobs (all-jobs))
   (when (has-value? argv "--all-full")
-    # reduced-os stays shallow whatever is asked: test/helper.janet names
-    # seven os/ functions a reduced build does not define, and an unknown
-    # symbol is a compile error, so the suites cannot run there at all.
     (set jobs (map (fn [j]
-                     (if (and (= (j :kind) "contracts") (not= (j :name) "reduced os"))
-                       (merge j {:kind "full"})
-                       j))
+                     (if (= (j :kind) "contracts") (merge j {:kind "full"}) j))
                    jobs)))
   (when only
     (def wanted (string/split "," only))

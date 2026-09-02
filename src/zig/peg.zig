@@ -140,21 +140,6 @@ inline fn shift(pointer: [*]const u8, delta: i32) [*]const u8 {
     return @ptrFromInt(@intFromPtr(pointer) +% @as(usize, @bitCast(@as(isize, delta))));
 }
 
-/// `s->extrav[index]`, with `index` signed and unchecked.
-///
-/// Written as address arithmetic rather than as `extrav[@intCast(index)]`
-/// because the index can be negative: `(argument)` takes a non-negative
-/// integer from the compiler, but crafted bytecode does not go through the
-/// compiler and the matcher does not check. `FOUND.md` has the entry. An
-/// `@intCast` here would turn a silent out-of-bounds read into a Zig panic in
-/// a safety-checked build and into something worse in a fast one, which is a
-/// change in behaviour rather than a reproduction of it.
-inline fn extraAt(extrav: ?[*]const repr.Value, index: i32) repr.Value {
-    const offset = @as(usize, @bitCast(@as(isize, index))) *% @sizeOf(repr.Value);
-    const element: *align(@alignOf(repr.Value)) const repr.Value = @ptrFromInt(@intFromPtr(extrav.?) +% offset);
-    return element.*;
-}
-
 /// Print to `(dyn :err)`. Written out here the same way `debug.zig` writes it
 /// out, except that the format is a runtime value: `(??)` picks between a
 /// coloured and a plain rendering per line.
@@ -577,8 +562,15 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
             },
 
             .argument => {
+                // Signed, and both ends are tested. `(argument n)` takes a
+                // non-negative index from the compiler, but this word may have
+                // come off a stream instead -- and `extrav` is null whenever
+                // `peg/match` was called with no extra arguments at all.
                 const index: i32 = @bitCast(rule[1]);
-                const capture = if (index >= s.extrac) wrap.fromNil() else extraAt(s.extrav, index);
+                const capture = if (index < 0 or index >= s.extrac)
+                    wrap.fromNil()
+                else
+                    s.extrav.?[@intCast(index)];
                 try pushcap(s, capture, rule[2]);
                 return text;
             },
@@ -878,10 +870,15 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
                 try down1(s);
                 const length_match = try pegRule(s, s.ruleAt(rule[1]), text);
                 up1(s);
-                // The C original returns here without putting `mode` back, and
-                // that is reproduced rather than fixed: see `FOUND.md`.
-                var next_text = length_match orelse return null;
+                // The mode and the captures go back before every exit, this
+                // one included: a caller that put the matcher into accumulate
+                // mode gets it back that way whether the length pattern
+                // matched or not.
                 s.mode = oldmode;
+                var next_text = length_match orelse {
+                    capLoad(s, cs);
+                    return null;
+                };
                 const num_sub_captures: i32 = @intCast(s.captures.count - cs.cap);
                 if (num_sub_captures <= 0) {
                     capLoad(s, cs);
@@ -1416,11 +1413,8 @@ fn specArgument(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
     emit2(r, constants.PegRule.argument, @bitCast(index), tag);
 }
 
-/// The one special that checks its arity with `janet_arity` rather than
-/// `peg_arity`, so a wrong count here reports "arity mismatch" and leaves the
-/// builder's two vectors unfreed. Reproduced; see `FOUND.md`.
 fn specConstant(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
-    try args_core.arity(argv, 1, 2);
+    try pegArity(b, argv.len, 1, 2);
     const r = reserve(b, 3);
     const tag: u32 = if (argv.len == 2) try emitTag(b, argv[1]) else 0;
     emit2(r, constants.PegRule.constant, emitConstant(b, argv[0]), tag);
@@ -1780,19 +1774,19 @@ fn pegMarshal(peg: *Peg, ctx: *abi.MarshalContext) raise.Raising(void) {
 /// aligned, which is what lets the header, the bytecode and the constants share
 /// one allocation.
 fn sizePadded(offset: usize, size: usize) usize {
-    // Wrapping, because C's `size_t` arithmetic is and `peg_unmarshal` feeds
-    // this a length it took from the stream. `FOUND.md` has what that costs.
-    const x = size +% offset -% 1;
-    return x -% (x % size);
+    const x = size + offset - 1;
+    return x - (x % size);
 }
 
-/// `OVERFLOW_CHECK`, the verifier's only bounds test.
+/// `OVERFLOW_CHECK`: whether an instruction of `n` words starting at `index`
+/// runs off the end of a program of `limit` words.
 ///
-/// `limit -% n` is the C original's `blen - (n)` and underflows for the same
-/// inputs, which is a defect and is reproduced rather than repaired -- see
-/// `FOUND.md`, where the off-by-one for `RULE_LITERAL` is recorded with it.
-inline fn overflows(index: u32, limit: u32, n: u32) bool {
-    return index > limit -% n;
+/// **`n > limit` is tested first and is not redundant.** Without it the
+/// subtraction underflows for a program shorter than the instruction, which is
+/// exactly the case the test exists for. `n` is 64-bit because two callers
+/// compute it from an operand the stream supplied.
+inline fn overflows(index: u32, limit: u32, n: u64) bool {
+    return n > limit or index > limit - @as(u32, @intCast(n));
 }
 
 /// Whether every instruction in `bytecode` is one the matcher can run.
@@ -1820,6 +1814,9 @@ fn verifyBytecode(
     op_flags: [*]u8,
 ) Verdict {
     var has_backref = false;
+    // A program with no instructions has no first instruction to run, and the
+    // matcher would read whatever the allocation holds where one would be.
+    if (blen == 0) return .{ .ok = false, .has_backref = false };
     var i: u32 = 0;
     while (i < blen) {
         const instr = bytecode[i];
@@ -1827,9 +1824,16 @@ fn verifyBytecode(
         op_flags[i] |= 0x02;
 
         switch (constants.PegRule.fromWord(instr)) {
-            .literal => {
-                if (overflows(i, blen, 1)) return .{ .ok = false, .has_backref = has_backref }; // We only read rule[1].
-                i += 2 +% ((rule[1] +% 3) >> 2);
+            .literal => { // [byte count, packed bytes...]
+                // Two words are read -- the rule and its count -- and the
+                // packed bytes follow. The word count is 64-bit arithmetic
+                // because `rule[1]` came off the stream: in 32 bits
+                // `(0xFFFFFFFF + 3) >> 2` is zero, and a literal claiming four
+                // billion bytes would be scored as occupying two words.
+                if (overflows(i, blen, 2)) return .{ .ok = false, .has_backref = has_backref };
+                const words: u64 = 2 + ((@as(u64, rule[1]) + 3) >> 2);
+                if (overflows(i, blen, words)) return .{ .ok = false, .has_backref = has_backref };
+                i += @intCast(words);
             },
             .debug => i += 1, // [0 words]
             .nchar,
@@ -1853,7 +1857,7 @@ fn verifyBytecode(
             .choice, constants.PegRule.sequence => { // [len, rules...]
                 if (overflows(i, blen, 2)) return .{ .ok = false, .has_backref = has_backref };
                 const len = rule[1];
-                if (overflows(i, blen, 2 +% len)) return .{ .ok = false, .has_backref = has_backref };
+                if (overflows(i, blen, 2 + @as(u64, len))) return .{ .ok = false, .has_backref = has_backref };
                 for (rule[2..][0..len]) |referenced| {
                     if (referenced >= blen) return .{ .ok = false, .has_backref = has_backref };
                     op_flags[referenced] |= 0x01;
@@ -1927,9 +1931,13 @@ fn verifyBytecode(
                 op_flags[rule[1]] |= 0x01;
                 i += 2;
             },
-            .readint => { // [width | endianness | signedness, tag]
+            .readint => { // [width | (signedness << 4) | (endianness << 5), tag]
+                // The width is the low four bits. The two flags above it are
+                // part of the operand the compiler emits, so comparing the
+                // whole word against the maximum width rejects three of the
+                // four specials' own output.
                 if (overflows(i, blen, 3)) return .{ .ok = false, .has_backref = has_backref };
-                if (rule[1] > max_readint_width) return .{ .ok = false, .has_backref = has_backref };
+                if ((rule[1] & 0xF) > max_readint_width) return .{ .ok = false, .has_backref = has_backref };
                 i += 3;
             },
             .nth => { // [nth, rule, tag]
@@ -1956,18 +1964,26 @@ fn pegUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Peg) {
     const bytecode_len = try marsh.unmarshalSize(ctx);
     const num_constants: u32 = @bitCast(try marsh.unmarshalInt(ctx));
 
-    // Offsets, which have to match `makePeg`.
-    // Every one of these wraps rather than traps, which is what the C original
-    // does and is not a tidy-up this port may make: `bytecode_len` came off the
-    // wire, and a length above 2^62 wraps `bytecode_size` to something small.
-    // `FOUND.md` records where that leads.
-    const bytecode_start = sizePadded(@sizeOf(Peg), @sizeOf(u32));
-    const bytecode_size = bytecode_len *% @sizeOf(u32);
-    const constants_start = sizePadded(bytecode_start +% bytecode_size, @sizeOf(repr.Value));
-    const total_size = constants_start +% @sizeOf(repr.Value) *% @as(usize, num_constants);
+    // **The length is bounded by the bytes left in the stream**, and that is
+    // what keeps the size arithmetic below honest. One instruction word is at
+    // least one byte on the wire, so a stream carrying `n` words has at least
+    // `n` bytes remaining; a length that fails this test cannot be read
+    // whatever is allocated for it. Without the bound, `bytecode_len` above
+    // 2^62 wraps `bytecode_size` to something small, the abstract comes out
+    // the size of its header, and the loop that fills it writes until the
+    // stream runs out rather than until the buffer is full.
+    //
+    // It is a denial-of-service bound too: short, bad input no longer reserves
+    // a lot of memory.
+    if (bytecode_len > marsh.unmarshalRemaining(ctx)) {
+        return raise.panic("invalid peg bytecode");
+    }
 
-    // No DOS prevention: the bytecode and the constants could be read ahead of
-    // the allocation so that short, bad input does not reserve a lot of memory.
+    // Offsets, which have to match `makePeg`.
+    const bytecode_start = sizePadded(@sizeOf(Peg), @sizeOf(u32));
+    const bytecode_size = bytecode_len * @sizeOf(u32);
+    const constants_start = sizePadded(bytecode_start + bytecode_size, @sizeOf(repr.Value));
+    const total_size = constants_start + @sizeOf(repr.Value) * @as(usize, num_constants);
 
     const mem: [*]u8 = @ptrCast(try marsh.unmarshalAbstract(ctx, total_size));
     const peg: *Peg = @ptrCast(@alignCast(mem));

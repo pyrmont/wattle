@@ -241,8 +241,12 @@ fn aCompileErrorNamesAPosition() raise.Raising(void) {
 }
 
 /// A macro that raises during expansion leaves a fiber behind, and that branch
-/// prints the context *without* a newline and follows it with a stack trace,
-/// where the ordinary branch prints the whole message with one.
+/// follows the message with a stack trace where the ordinary branch does not.
+///
+/// **Both branches print the same one line, and the context appears once.**
+/// The trace renders the same string the line does, so printing the context
+/// here as well would print it twice; printing it with no separator would run
+/// it straight into the trace's own `error: `.
 fn aMacroExpansionErrorPrintsATrace() raise.Raising(void) {
     var out = wrap.fromNil();
     errReset();
@@ -251,13 +255,17 @@ fn aMacroExpansionErrorPrintsATrace() raise.Raising(void) {
         "contract",
         &out,
     ) == constants.JANET_DO_ERROR_COMPILE);
-    // The context is printed with `%s` and no separator, so it runs straight
-    // into the first line of the trace. `FOUND.md` records that; it is pinned
-    // here because it is the whole difference between this branch and the
-    // ordinary one.
-    expectErrPrefix("contract:1:48: compile errorerror: contract:1:48: compile error: ");
+    expectErrPrefix("contract:1:48: compile error: ");
     expect(std.mem.indexOf(u8, errText(), "expansion") != null);
     expect(std.mem.indexOf(u8, errText(), "\n  in contract-boom ") != null);
+    // The context appears once, not twice, and the trace begins on its own
+    // line rather than against the end of it.
+    expect(std.mem.indexOf(u8, errText(), "compile errorerror:") == null);
+    expect(std.mem.indexOf(
+        u8,
+        errText(),
+        "compile error: (macro) expansion\nerror: ",
+    ) != null);
 }
 
 fn aRuntimeErrorReportsTheValue() raise.Raising(void) {
@@ -461,8 +469,10 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
         _ = gc_alloc.gcunroot(nul_handle);
     }
 
-    // The documented third parameter is accepted and ignored: `getline` never
-    // looks at `argv[2]`. `FOUND.md` has it.
+    // The third parameter is part of the interface rather than of this
+    // implementation: a client that reads lines with completion binds its own
+    // `getline` over this one and honours the env, and the core reader accepts
+    // the argument and ignores it.
     c.rewind(in);
     expect(try doString("(getline \"\" @\"\" :not-a-table)", "contract", &result) == 0);
     expect(wrap.toBuffer(result).count == 11);

@@ -224,15 +224,20 @@
     (assert (= "buffered" (string (slurp flushed))) "flush flushes the bound file")))
 
 # An explicit buffer size is applied, and a size the C library cannot allocate
-# is reported rather than ignored. A write mode cannot be reached this way at
-# all -- the third argument replaces the mode with read-only, which FOUND.md
-# records -- so a failing `setvbuf` is the only observable the size has.
+# is reported rather than ignored. The mode beside it is honoured: a buffer
+# size is a third argument, not a replacement for the second.
 (def buffered "janet-suite-io-11-buffered")
 (defer (os/rm buffered)
   (spit buffered "sized")
   (each n [0 1 8192]
     (with [f (file/open buffered :r n)]
       (assert (= "sized" (string (file/read f :all))) (string "buffer size " n))))
+  (with [f (file/open buffered :w 8192)]
+    (file/write f "written"))
+  (assert (= "written" (string (slurp buffered))) "a buffer size keeps the write mode")
+  (assert-error-value "a mode is scanned beside a buffer size"
+                      "invalid flag z, expected w, a, or r"
+                      (file/open buffered :zzz 8192))
   (assert-error-value "unallocatable buffer size" "failed to set buffer size for file"
                       (file/open buffered :r (- (math/pow 2 53) 1))))
 

@@ -55,37 +55,26 @@
 //! and needs the link. That asymmetry is reproduced exactly, and writing it as
 //! a `defer` would be wrong.
 //!
-//! ## What is reproduced rather than repaired
+//! ## Two pieces of arithmetic that are written out, and one that is bounded
 //!
-//! Three pieces of the C original's arithmetic are undefined behaviour that
-//! happens to work, and all three are in `FOUND.md` rather than fixed here.
-//! Zig has no undefined behaviour to inherit, so each one is written as the
-//! explicit wrapping or address-space operation the C compiles to in practice.
+//! `nextBucket` advances a bucket pointer that may be null. For a table or
+//! struct `nextImpl` computes `value.dictionaryFind(...) + 1`, and
+//! `value.dictionaryFind` answers null when it finds neither the key, nor an
+//! empty bucket, nor a tombstone. No dictionary a caller can build reaches
+//! that state -- every constructor rounds its capacity up through
+//! `value.capacityFor`, so a dictionary always has a spare bucket, and a
+//! zero-capacity table, which no constructor produces, would die inside
+//! `value.dictionaryFind` rather than return from it. So this is a latent
+//! increment rather than a live one, and it is written as arithmetic on
+//! `usize` so that it stays defined for whatever makes it reachable later.
 //!
-//!  - **`janet_next_impl` advances a bucket pointer that may be null.** For a
-//!    table or struct it computes `value.dictionaryFind(...) + 1`, and
-//!    `value.dictionaryFind` returns `NULL` when it finds neither the key, nor an
-//!    empty bucket, nor a tombstone. No dictionary a caller can build reaches
-//!    that state -- every constructor rounds its capacity up through
-//!    `value.capacityFor`, so a dictionary always has a spare bucket, and the one
-//!    exception is the zero-capacity table `FOUND.md` already records, which
-//!    dies inside `value.dictionaryFind` rather than returning from it. So this is
-//!    a latent increment rather than a live one, and it is written as
-//!    arithmetic on `usize` so that it stays defined for whatever makes it
-//!    reachable later.
-//!  - **`janet_next_impl` overflows the index it is asked to advance past.**
-//!    `janet_unwrap_integer(key) + 1` on a key of `INT32_MAX` is signed
-//!    overflow. It wraps to `INT32_MIN`, the `i >= 0` test then rejects it and
-//!    the answer is right. Written here with `+%`.
-//!  - **`janet_putindex` overflows the capacity it asks for.** `index + 1` on
-//!    an index of `INT32_MAX` is signed overflow, and unlike `janet_put` --
-//!    which bounds the index at `INT32_MAX - 1` through `getter_checkint` --
-//!    `janet_putindex` takes the `int32_t` directly from its caller with no
-//!    bound at all. Written here with `+%`, which reproduces the wrap the C
-//!    compiles to; what follows it is a `janet_array_ensure` for a negative
-//!    capacity, which is where the C original's behaviour stops being
-//!    defensible. The VM only ever reaches this with a bytecode immediate, so
-//!    it takes a C API caller to get there.
+//! **The two indices that could overflow are bounded instead of wrapped.**
+//! `nextImpl` stops at `INT32_MAX` rather than advancing past it, and
+//! `putIndex` takes the `INT32_MAX - 1` bound `put` beside it already had.
+//! Both are the C original's signed overflow, which wraps in practice; the
+//! first wrapped to a rejected index and answered correctly by accident, and
+//! the second reached `arrays.ensure` with a negative capacity and wrote past
+//! the allocation.
 //!
 //! A fourth is not arithmetic. `janet_length` and `janet_lengthv` render an
 //! abstract type's `size_t` length with `%u`, which Janet's formatter reads
@@ -143,8 +132,8 @@ inline fn nextBucket(p: ?*const tables.KV) *const tables.KV {
 /// `janet_next`. The public entry, which is `janet_next_impl` with the
 /// interpreter flag clear -- so a signal from a resumed fiber becomes a panic
 /// rather than being re-raised. Nothing in the tree calls it; `run_vm` always
-/// passes one. It exists for embedders, and `FOUND.md` has what happens when
-/// one uses it on a fiber.
+/// passes the flag set. It exists for a module, and a module is the one caller
+/// that may reach the fiber arm with no fiber of its own running.
 pub fn next(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
     return nextImpl(ds, key, false);
 }
@@ -205,7 +194,12 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Rai
             if (repr.checkType(key, repr.Tag.nil)) {
                 i = 0;
             } else if (args_core.checkint(key)) {
-                i = wrap.toInteger(key) +% 1;
+                // The last representable index has no successor, so iteration
+                // ends there rather than wrapping to `INT32_MIN` and being
+                // rejected by the range test below.
+                const previous = wrap.toInteger(key);
+                if (previous == std.math.maxInt(i32)) return wrap.fromNil();
+                i = previous + 1;
             } else {
                 return wrap.fromNil();
             }
@@ -242,7 +236,13 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Rai
             {
                 return wrap.fromNil();
             }
-            vm_state.current().fiber.?.child = child;
+            // **Only when there is a fiber to link into.** The parent link
+            // is what puts the resumed fiber on the caller's chain so a trace
+            // or `debug/lineage` can see it; with no fiber running there is no
+            // chain, which is the state an embedder calling `next` from its
+            // own code is in. The interpreter always has one.
+            const parent = vm_state.current().fiber;
+            if (parent) |p| p.child = child;
             const resumed = vm_entry.continueFiber(child, wrap.fromNil());
             const sig = resumed.signal;
             retreg = resumed.value;
@@ -253,11 +253,11 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Rai
                     // has to still be there when it does.
                     return raise.signal(sig, retreg);
                 } else {
-                    vm_state.current().fiber.?.child = null;
+                    if (parent) |p| p.child = null;
                     return raise.panicv(retreg);
                 }
             }
-            vm_state.current().fiber.?.child = null;
+            if (parent) |p| p.child = null;
             if (sig == abi.Signal.ok or
                 sig == abi.Signal.@"error" or
                 sig == abi.Signal.user0 or
@@ -588,25 +588,33 @@ pub fn lengthv(x: repr.Value) raise.Raising(repr.Value) {
 /// integer at all, so `(put @"" 0 300)` stores 44 and does not complain. That
 /// is established behaviour, not an oversight, and the same truncation is in
 /// `janet_put`.
+///
+/// **The index is bounded exactly as `put` bounds its key**, and for the same
+/// reason: the growth arms compute `index + 1`, and the last representable
+/// index has no successor. The interpreter reaches here with a bytecode
+/// immediate and cannot exceed it; a module computing an index can.
 pub fn putIndex(ds: repr.Value, index: i32, val: repr.Value) raise.Raising(void) {
-    switch (repr.typeOf(ds)) {
+    const vtype = repr.typeOf(ds);
+    switch (vtype) {
         repr.Tag.array => {
             const array = wrap.toArray(ds);
+            _ = try getterCheckInt(vtype, wrap.fromInteger(index), std.math.maxInt(i32) - 1);
             if (index >= array.count) {
-                arrays.ensure(array, @intCast(index +% 1), 2);
-                @memset(array.reserved()[array.count..utils.asSize(index +% 1)], wrap.fromNil());
-                array.count = @intCast(index +% 1);
+                arrays.ensure(array, @intCast(index + 1), 2);
+                @memset(array.reserved()[array.count..utils.asSize(index + 1)], wrap.fromNil());
+                array.count = @intCast(index + 1);
             }
             array.slice()[utils.asSize(index)] = val;
         },
         repr.Tag.buffer => {
             const buffer = wrap.toBuffer(ds);
+            _ = try getterCheckInt(vtype, wrap.fromInteger(index), std.math.maxInt(i32) - 1);
             if (!args_core.checkint(val))
                 return pp_format.panicf("can only put integers in buffers, got %v", .{val});
             if (index >= buffer.count) {
-                try buffers.ensure(buffer, @intCast(index +% 1), 2);
-                @memset(buffer.reserved()[buffer.count..utils.asSize(index +% 1)], 0);
-                buffer.count = @intCast(index +% 1);
+                try buffers.ensure(buffer, @intCast(index + 1), 2);
+                @memset(buffer.reserved()[buffer.count..utils.asSize(index + 1)], 0);
+                buffer.count = @intCast(index + 1);
             }
             buffer.slice()[utils.asSize(index)] = @truncate(@as(u32, @bitCast(wrap.toInteger(val))));
         },

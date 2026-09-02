@@ -50,10 +50,10 @@
 //! pool of pre-built tables. In Zig they are ordinary functions that return
 //! `raise.Error!T`.
 //!
-//! What is deliberately not covered: three undefined-behaviour edges.
-//! `(next "abc" 2147483647)` and `putIndex` at `INT32_MAX` are signed overflow,
-//! and `next` on a fiber from outside a running fiber is a null dereference.
-//! All three are in `FOUND.md`.
+//! Three edges the C original leaves undefined are answers here, and each has
+//! a case below: `next` at `INT32_MAX` ends the iteration rather than wrapping,
+//! `putIndex` bounds its index the way `put` does, and `next` on a fiber with
+//! no fiber running resumes it without joining a chain there is none of.
 
 const std = @import("std");
 const repr = @import("repr");
@@ -413,6 +413,13 @@ fn nextPastTheEnd() !void {
     expect(isNil(try access.next(s, intv(2))));
     expect(isNil(try access.next(s, intv(99))));
     expect(isNil(try access.next(value.fromBytes("", .string), wrap.fromNil())));
+
+    // The last representable index has no successor, so the iteration ends
+    // there. Answering nil by adding one and being rejected for going negative
+    // is the same answer by an accident that only holds where the addition
+    // wraps.
+    expect(isNil(try access.next(s, intv(2147483647))));
+    expect(isNil(try access.next(s, intv(2147483646))));
 }
 
 // --------------------------------------------------------- next: the rest
@@ -443,10 +450,10 @@ fn nextOnANonIterablePanics() void {
 
 // ----------------------------------------------------------- next: fibers
 
-// `next` writes `vm.fiber.child` before resuming, so every fiber case has
-// to run with a fiber on the VM. These cfunctions are how: they are called from
-// Janet source, so `vm.fiber` is the fiber running that source.
-// `FOUND.md` has what happens without one.
+// `next` writes `vm.fiber.child` before resuming *when there is a fiber*, so
+// the cases about the chain have to run with one on the VM. These cfunctions
+// are how: they are called from Janet source, so `vm.fiber` is the fiber
+// running that source. The case with no fiber is separate, below.
 
 fn cfunNext(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
@@ -523,6 +530,25 @@ fn theNextEntryPointOnAFiber() void {
     expect(harness.equals(v[1], kw("a")));
     expect(isNil(v[2]));
     expect(isNil(v[3]));
+}
+
+/// The published entry point with no fiber running, which is the state a
+/// native module calling it from its own code is in. There is no chain to join,
+/// so the fiber is resumed without one and the iteration is otherwise the same
+/// as `theNextEntryPointOnAFiber`'s.
+///
+/// This case is called from the contract body rather than through `run_`,
+/// because running it from Janet source is exactly what would give it a fiber.
+fn theNextEntryPointOutsideAnyFiber() !void {
+    expect(harness.vm().fiber == null);
+    const f = run_("(fiber/new (fn [] (yield :a) :done))");
+    gc_alloc.gcroot(f);
+    defer _ = gc_alloc.gcunroot(f);
+    const first = try access.next(f, wrap.fromNil());
+    expect(harness.equals(first, intv(0)));
+    expect(harness.vm().fiber == null);
+    expect(harness.equals(try access.in(f, intv(0)), kw("a")));
+    expect(isNil(try access.next(f, intv(0))));
 }
 
 /// Every status that cannot be resumed answers nil without touching the fiber.
@@ -1022,8 +1048,10 @@ fn aRejectedBufferWriteDoesNotGrowIt() void {
     expect(b.count == 0);
 }
 
-/// `put` bounds its index at `INT32_MAX - 1`, which is the bound `putIndex` does
-/// not have. `FOUND.md` has the other side.
+/// `put` bounds its index at `INT32_MAX - 1` so that the `index + 1` its
+/// growth arm computes cannot overflow, and `putIndex` takes the same bound
+/// from the same helper -- so the two refuse the same indices with the same
+/// message, whichever a caller reaches.
 fn putBoundsTheIndex() void {
     const a = arrays.new(0);
     expect(refusal(access.put, .{ wrap.fromArray(a), intv(2147483647), intv(1) })
@@ -1031,6 +1059,17 @@ fn putBoundsTheIndex() void {
     expect(refusal(access.put, .{ wrap.fromArray(a), intv(-1), intv(1) })
         .says("expected integer key for array in range [0, 2147483646), got -1"));
     expect(a.count == 0);
+
+    expect(refusal(access.putIndex, .{ wrap.fromArray(a), 2147483647, intv(1) })
+        .says("expected integer key for array in range [0, 2147483646), got 2147483647"));
+    expect(refusal(access.putIndex, .{ wrap.fromArray(a), -1, intv(1) })
+        .says("expected integer key for array in range [0, 2147483646), got -1"));
+    expect(a.count == 0);
+
+    const b = buffers.new(0);
+    expect(refusal(access.putIndex, .{ wrap.fromBuffer(b), 2147483647, intv(1) })
+        .says("expected integer key for buffer in range [0, 2147483646), got 2147483647"));
+    expect(b.count == 0);
 }
 
 fn putOnATableAndAnAbstract() !void {
@@ -1154,6 +1193,7 @@ fn body() !void {
 
     nextResumesAFiber();
     theNextEntryPointOnAFiber();
+    try theNextEntryPointOutsideAnyFiber();
     nextOnAnUnresumableFiber();
     theInterpreterFlagChoosesTheErrorPolicy();
     theChildSlotIsCleared();

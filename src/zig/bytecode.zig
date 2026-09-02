@@ -152,7 +152,12 @@ fn addEnv(a: *Assembler, envname: repr.Value) i32 {
     const envindex = def.environments_length;
     tables.put(&a.envs, envname, wrap.fromNumber(@floatFromInt(envindex)));
     if (envindex >= @as(usize, @intCast(a.environments_capacity))) {
-        const newcap = 2 * envindex;
+        // **At least one.** The C original's `2 * envindex` is zero for the
+        // first environment, which is a `realloc` to nothing followed by a
+        // write into it -- and that arm has never run in either
+        // implementation, because the branch that reaches this function was
+        // unreachable until the symbolic lookup above it was repaired.
+        const newcap = @max(2 * envindex, envindex + 1);
         def.environments = utils.resizeMany(i32, def.environments, @intCast(newcap));
         a.environments_capacity = @intCast(newcap);
     }
@@ -1041,11 +1046,20 @@ fn resolveArgument(
         repr.Tag.symbol => {
             const argument_table = table orelse return a.failv(resolutionError(val, 0));
             const found = tables.get(argument_table, val);
-            if (!repr.checkType(found, repr.Tag.number)) return a.failv(resolutionError(val, 2));
-            result = @intFromFloat(wrap.toNumber(found));
-            if (argument_type == constants.OperandKind.environment and result == -1) {
+            if (repr.checkType(found, repr.Tag.number)) {
+                result = @intFromFloat(wrap.toNumber(found));
+            } else if (argument_type == constants.OperandKind.environment) {
+                // An environment operand may name an enclosing function this
+                // assembler has not captured yet, which is what `addEnv` is
+                // for: it walks the parent chain and records the capture on
+                // the way back down. Both of its negatives are failures here
+                // -- -2 is "no ancestor has that name" and -1 is "that is the
+                // function being assembled", which is not an environment a
+                // `ldu` can index.
                 result = addEnv(context, val);
-                if (result < -1) return a.failv(resolutionError(val, 3));
+                if (result < 0) return a.failv(resolutionError(val, 3));
+            } else {
+                return a.failv(resolutionError(val, 2));
             }
         },
         else => return a.failv(resolutionError(val, 0)),

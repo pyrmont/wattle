@@ -20,8 +20,6 @@ const wrap = @import("value/helpers/wrap.zig");
 const abstracts = @import("value/abstracts.zig");
 
 const repr = @import("repr");
-const registry = @import("registry.zig");
-const abi = @import("abi");
 const tables = @import("value/tables.zig");
 
 // ==========================================================================
@@ -163,18 +161,26 @@ fn cfunPointerBuffer(argv: []const repr.Value) raise.Raising(repr.Value) {
     return wrap.fromBuffer(try buffers.pointerUnsafe(at, @intCast(capacity), @intCast(count)));
 }
 
+/// **A raw pointer is not a cfunction here, and this says so rather than
+/// answering one.**
+///
+/// Every pointer this can be given is a C function -- it comes from a shared
+/// object built by a C toolchain, usually straight out of `ffi/lookup`. A
+/// cfunction in this runtime is not a C function: it takes a `[]Value`,
+/// answers an error union, and travels over Zig's own calling convention. So
+/// the value this used to build was a claim the interpreter believed and the
+/// callee did not honour, and calling it read the argument count and the
+/// argument pointer out of the wrong registers.
+///
+/// `ffi/lookup` and `ffi/signature` are how a C function is called, and they
+/// describe the convention rather than assuming one.
 fn cfunPointerCfunction(argv: []const repr.Value) raise.Raising(repr.Value) {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 1, 4);
-    const pointer = try args_core.getPointer(argv, 0);
-    const name = try args_core.optCString(argv, 1, null);
-    const source = try args_core.optCString(argv, 2, null);
-    const line = try args_core.optInteger(argv, 3, -1);
-    const cfun: abi.CFunction = @ptrCast(@alignCast(pointer));
-    if (name != null or source != null or line != -1) {
-        registry.registryPut(cfun, name, null, source, line);
-    }
-    return wrap.fromCfunction(cfun);
+    _ = try args_core.getPointer(argv, 0);
+    return raise.panic(
+        "a raw pointer cannot become a cfunction; use ffi/signature and ffi/call",
+    );
 }
 
 fn cfunCallingConventions(argv: []const repr.Value) raise.Raising(repr.Value) {
@@ -225,7 +231,10 @@ pub fn libFfi(env: *tables.Table) void {
             "to be manipulated with buffer functions. Attempts to resize or extend the buffer " ++
             "beyond its initial capacity will raise an error. As with many FFI functions, this is memory " ++
             "unsafe and can potentially allow out of bounds memory access. Returns a new buffer."),
-        corefn.reg("ffi/pointer-cfunction", &cfunPointerCfunction, @src(), "(ffi/pointer-cfunction pointer &opt name source-file source-line)", "Create a C Function from a raw pointer. Optionally give the cfunction a name and " ++
+        corefn.reg("ffi/pointer-cfunction", &cfunPointerCfunction, @src(), "(ffi/pointer-cfunction pointer &opt name source-file source-line)", "Raises: a raw pointer names a C function, and a cfunction is not a C " ++
+            "function, so there is nothing to hand back. Use `ffi/signature` and `ffi/call`, " ++
+            "which describe the calling convention rather than assuming one. " ++
+            "The arguments are still checked, so a wrong one is reported as such. Unused: a name and " ++
             "source location for stack traces and debugging."),
         corefn.reg("ffi/calling-conventions", &cfunCallingConventions, @src(), "(ffi/calling-conventions)", "Get an array of all supported calling conventions on the current architecture. Some architectures may have some FFI " ++
             "functionality (ffi/malloc, ffi/free, ffi/read, ffi/write, etc.) but not support " ++

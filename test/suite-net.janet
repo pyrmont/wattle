@@ -58,10 +58,15 @@
 
 # net/address, and the shape of what it returns.
 #
-# `multi` is passed explicitly everywhere below, including where it is false.
-# `net/address` reads its fourth argument whenever it was given three, which
-# `FOUND.md` records; a suite that relied on the three-argument form would
-# be asserting whatever the fiber stack happened to hold.
+# `multi` is the fourth argument, so a three-argument call has not been given
+# one and answers the single address it documents. Reading the fourth slot
+# whenever three were given answers with whatever the caller's frame left
+# behind, which is a wrong answer where `argv` is a pointer and an
+# out-of-bounds index where it is a slice.
+(assert (= :core/socket-address (type (net/address "127.0.0.1" 8123 :stream)))
+        "three arguments answer one address")
+(assert (= :core/socket-address (type (net/address "127.0.0.1" 8123)))
+        "two arguments answer one address")
 (def addr (net/address "127.0.0.1" 8123 :stream false))
 (assert (= :core/socket-address (type addr)) "net/address returns an address")
 (assert (= ["127.0.0.1" 8123] (net/address-unpack addr)) "an address unpacks")
@@ -73,6 +78,33 @@
         "every address multi returns unpacks")
 (assert-error "net/address rejects an unknown type"
               (net/address "127.0.0.1" 8123 :tcp false))
+
+# A connection handler is entered with the connection and nothing else, so its
+# arity is checked where the handler is first seen -- before any connection --
+# rather than at the first one, where the fiber constructor's refusal reaches
+# no caller. `net/server` spawns the loop asynchronously, so `net/accept-loop`
+# is where a suite can ask.
+(def arity-listener (net/listen "127.0.0.1" "8127"))
+(defer (:close arity-listener)
+  (assert-error-value "a handler taking no arguments is refused"
+                      "handler function must take at least 1 argument"
+                      (net/accept-loop arity-listener (fn [] nil)))
+  (assert-error-value "a handler taking two arguments is refused"
+                      "handler function must take at most 1 argument"
+                      (net/accept-loop arity-listener (fn [_a _b] nil))))
+
+# A failed connect closes the socket through the stream that owns it, so the
+# descriptor number is not left dead for the next thing that opens one.
+(def probe-path "janet-suite-net-probe")
+(defer (os/rm probe-path)
+  (assert-error "connect to a socket that is not there"
+                (net/connect :unix "/tmp/janet-suite-net-no-such-socket"))
+  (with [f (file/open probe-path :w)]
+    (file/write f "hello")
+    (gccollect)
+    (assert-no-error "the next descriptor still works" (file/flush f)))
+  (assert (= "hello" (string (slurp probe-path)))
+          "a failed connect does not close the next descriptor"))
 (assert-error "net/address rejects an unresolvable host"
               (net/address "no-such-host.invalid" 8123))
 

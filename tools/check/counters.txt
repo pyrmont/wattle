@@ -12,6 +12,6 @@
 #
 # columns: class  site  counter  bound
 
-b-seam       src/zig/marsh.zig:1075                   i                length
-a-janet      src/zig/peg.zig:902                      i                nrep
+b-seam       src/zig/marsh.zig:1058                   i                length
+a-janet      src/zig/peg.zig:899                      i                nrep
 c-decision   src/zig/utils.zig:147                    index            len

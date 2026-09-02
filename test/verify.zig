@@ -27,14 +27,12 @@
 //! writing the seventy-seven values out a second time would prove only that
 //! two lists were typed the same way.
 //!
-//! ## One inconsistency is reproduced rather than fixed
+//! ## The breakpoint bit is not part of an opcode
 //!
-//! The dispatch loop masks the breakpoint bit off with `0x7F` before looking
-//! an opcode up, and the terminator check masks with `0xFF`. So a breakpoint
-//! on the *last* instruction turns a valid function into refusal 9, and a
-//! breakpoint anywhere else is invisible. That is the C original's behaviour
-//! and `FOUND.md` has the entry; it is asserted here so a port cannot
-//! quietly repair it.
+//! Bit 7 of an instruction word is the breakpoint flag, and every lookup in
+//! the verifier masks it off. A breakpoint is set on bytecode that already
+//! verified, so wherever it is set it must leave the verdict alone -- on the
+//! last instruction as much as on any other.
 
 const std = @import("std");
 const constants = @import("constants");
@@ -177,21 +175,33 @@ fn theShapesDisagreeWhereTheyShould() void {
     expect(verify.verify(&definition).number() == 0);
 }
 
-/// The `0x7F` / `0xFF` inconsistency; see the header comment.
-fn aBreakpointOnTheLastInstructionIsRefused() void {
+/// A breakpoint is invisible to the verifier wherever it is set; see the
+/// header comment.
+fn aBreakpointDoesNotChangeTheVerdict() void {
     var bytecode = [_]u32{ harness.op(constants.Opcode.return_nil), harness.op(constants.Opcode.return_nil) };
     var definition = baseDefinition(&bytecode);
     definition.arity = 0;
     definition.slotcount = 2;
     definition.bytecode_length = 2;
 
-    // Anywhere but last: invisible.
+    // Anywhere but last.
     bytecode[0] = harness.op(constants.Opcode.load_integer) | @as(u32, 0x80);
     bytecode[1] = harness.op(constants.Opcode.return_nil);
     expect(verify.verify(&definition).number() == 0);
 
-    // On the terminator: refusal 9, because that check masks with 0xFF.
+    // On the terminator, which is the case the mask decides.
     bytecode[1] = harness.op(constants.Opcode.return_nil) | @as(u32, 0x80);
+    expect(verify.verify(&definition).number() == 0);
+
+    // On both.
+    bytecode[0] = harness.op(constants.Opcode.load_integer) | @as(u32, 0x80);
+    expect(verify.verify(&definition).number() == 0);
+
+    // And the check the mask must not disarm: a last instruction that is
+    // genuinely not a terminator is still refusal 9, breakpoint or not.
+    bytecode[1] = harness.op(constants.Opcode.load_integer) | @as(u32, 0x80);
+    expect(verify.verify(&definition).number() == 9);
+    bytecode[1] = harness.op(constants.Opcode.load_integer);
     expect(verify.verify(&definition).number() == 9);
 }
 
@@ -221,6 +231,6 @@ pub fn run() void {
     theRefusalsAreNumbered();
     everyRowIsAShape();
     theShapesDisagreeWhereTheyShould();
-    aBreakpointOnTheLastInstructionIsRefused();
+    aBreakpointDoesNotChangeTheVerdict();
     theFiveTerminators();
 }

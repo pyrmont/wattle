@@ -565,9 +565,9 @@ fn traceChain(fiber: *fibers.Fiber, state: *TraceState) raise.Raising(void) {
         switch (descriptor.loc_kind) {
             constants.JANET_TRACE_LOC_SOURCEMAP => try eprintf(" on line %d, column %d", .{ descriptor.line, descriptor.column }),
             constants.JANET_TRACE_LOC_PC => try eprintf(" pc=%d", .{descriptor.pc}),
-            // The `long` widening is the original's. Janet's "%d" reads an
-            // int32_t, so it is a width mismatch; it is preserved rather than
-            // fixed, and recorded in FOUND.md.
+            // The `long` widening is the original's, and `%d` here renders
+            // the 64 bits the specifier asks for, so the digits are the same
+            // for every line number either implementation can produce.
             constants.JANET_TRACE_LOC_CFUN_LINE => try eprintf(" on line %d", .{@as(c_long, descriptor.line)}),
             else => {},
         }

@@ -288,11 +288,12 @@ fn unrootingSwapsFromTheTop() void {
     expect(harness.vm().roots.items.len == base);
 }
 
-/// `janet_gcunrootall` does not remove every rooting, despite what Janet's
-/// comment says. It fills the vacated slot from the top and then advances, so
-/// the value it just moved down is never examined: n rootings become
-/// floor(n / 2). `FOUND.md` carries the defect; this pins the behaviour.
-fn unrootAllHalves() void {
+/// `gcunrootall` sets a value's effective reference count to zero, whatever it
+/// was. The removal fills the vacated slot from the top, so the count is what
+/// says whether the element moved down was examined too: an implementation
+/// that advanced past it would leave floor(n / 2) behind and still report
+/// success.
+fn unrootAllRemovesEveryRooting() void {
     for ([_]usize{ 1, 2, 3, 4, 5, 8 }) |n| {
         const base = harness.vm().roots.items.len;
         const val = wrap.fromArray(arrays.new(0));
@@ -301,14 +302,31 @@ fn unrootAllHalves() void {
         expect(harness.vm().roots.items.len == base + n);
 
         expect(gc_alloc.gcunrootall(val));
-        expect(harness.vm().roots.items.len == base + n / 2);
-
-        // What survives really is still rooted, and can be removed one at a
-        // time.
-        for (0..n / 2) |_| expect(gc_alloc.gcunroot(val));
         expect(harness.vm().roots.items.len == base);
+        expect(!gc_alloc.gcunroot(val));
         expect(!gc_alloc.gcunrootall(val));
     }
+}
+
+/// And it removes only that value's rootings. A run of the same value between
+/// two others is the shape a swap-remove can get wrong in the other direction.
+fn unrootAllLeavesOtherRootingsAlone() void {
+    const base = harness.vm().roots.items.len;
+    const keep_a = wrap.fromArray(arrays.new(0));
+    const target = wrap.fromArray(arrays.new(0));
+    const keep_b = wrap.fromArray(arrays.new(0));
+
+    gc_alloc.gcroot(keep_a);
+    for (0..3) |_| gc_alloc.gcroot(target);
+    gc_alloc.gcroot(keep_b);
+    gc_alloc.gcroot(keep_a);
+
+    expect(gc_alloc.gcunrootall(target));
+    expect(harness.vm().roots.items.len == base + 3);
+    expect(gc_alloc.gcunroot(keep_a));
+    expect(gc_alloc.gcunroot(keep_a));
+    expect(gc_alloc.gcunroot(keep_b));
+    expect(harness.vm().roots.items.len == base);
 }
 
 /// An absent value reports absence and changes nothing.
@@ -602,7 +620,8 @@ pub fn run() void {
     rootsAreMatchedByPointer();
     immediatesMatchAnyValueOfTheirType();
     unrootingSwapsFromTheTop();
-    unrootAllHalves();
+    unrootAllRemovesEveryRooting();
+    unrootAllLeavesOtherRootingsAlone();
     unrootAllOfAnAbsentValue();
     theRootSetGrows();
 

@@ -22,10 +22,11 @@
 //! ## One trace line
 //!
 //! `janet_call`'s trace goes through `janet_eprintf`, a variadic. Zig can call
-//! a C variadic but cannot define one, and `janet_dynprintf` calls a `:err`
-//! handler through the interpreter -- `FOUND.md` records what that does to a
-//! frame pointer. `janet_call` is not exposed to it, because the argv it
-//! traces belongs to its caller rather than to the fiber.
+//! a C variadic but cannot define one, and `dynprintf` calls a `:err` handler
+//! through the interpreter, which can grow the fiber's stack. `call` is not
+//! exposed to that, because the argv it traces belongs to its caller rather
+//! than to the fiber; the interpreter's own trace reloads its frame pointer
+//! after the trace for exactly this reason.
 
 const config = @import("config");
 const raise = @import("../raise.zig");

@@ -1,10 +1,9 @@
 //! A finalizer that raises.
 //!
 //! `gc` runs mid-sweep on an object that is already unreachable, so there is
-//! no scope above it and nothing to retry. `DESIGN.md` section 5 and
-//! `FOUND.md`'s "A panicking finalizer poisons the heap and kills the process
-//! at deinit" are why this is a compile error at the author's own definition
-//! rather than a run-time abort in somebody else's program.
+//! no scope above it and nothing to retry. `DESIGN.md` section 5 is why this
+//! is a compile error at the author's own definition rather than a poisoned
+//! heap in somebody else's program.
 //!
 //! `build.zig`'s `module-errors` step compiles this and requires the failure.
 

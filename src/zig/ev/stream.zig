@@ -333,10 +333,9 @@ fn streamNext(stream: *Stream, key: repr.Value) raise.Raising(repr.Value) {
 
 /// `[fd=N]`, so that a user can print the descriptor when debugging.
 ///
-/// Janet hands `janet_formatb` a `JanetHandle` for a `%d`, which pulls an
-/// `int32_t`. That is exact away from Windows and a mismatched vararg width
-/// there, which is undefined, so this truncates explicitly rather than
-/// reproducing it. `FOUND.md` has the entry.
+/// A `JanetHandle` is wider than the `%d` that renders it on Windows, so the
+/// narrowing is written here rather than left to a conversion: away from
+/// Windows the handle is already an `i32` and the truncation is exact.
 fn streamToString(stream: *Stream, buffer: *abi.Buffer) raise.Raising(void) {
     const shown: i32 = if (windows) @truncate(@as(isize, @bitCast(@intFromPtr(stream.handle)))) else stream.handle;
     // The callback slot takes the boundary's handle, because a module author

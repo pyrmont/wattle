@@ -58,11 +58,13 @@ const time_fmt_size = 250;
 /// `time_to_tm`: the optional timestamp at `n` and the optional local flag at
 /// `n + 1`, into the caller's structure.
 ///
-/// The failure mode of the two host calls is not checked, exactly as the C
-/// original does not check it: `localtime_r` answers NULL for a timestamp its
-/// arithmetic cannot represent, and both implementations then read the
-/// structure they passed in. Reproduced rather than repaired, and recorded in
-/// `FOUND.md`.
+/// **The two host calls are checked.** `localtime_r` and `gmtime_r` answer
+/// NULL for a timestamp their arithmetic cannot represent, and they are
+/// documented to leave the caller's structure unspecified when they do -- so
+/// reading it regardless answers with whatever the conversion left behind, and
+/// on a host whose `_r` functions return without writing it answers with the
+/// stack. The Windows and Plan 9 entry points report the same failure as a
+/// nonzero return.
 fn timeToTm(argv: []const repr.Value, n: usize, out: *h.struct_tm) raise.Raising(void) {
     var t: h.time_t = undefined;
     if (argv.len > n and !repr.checkType(argv[n], repr.Tag.nil)) {
@@ -71,21 +73,18 @@ fn timeToTm(argv: []const repr.Value, n: usize, out: *h.struct_tm) raise.Raising
         t = oa.time(null);
     }
     const local = argv.len > n + 1 and repr.truthy(argv[n + 1]);
-    if (local) {
+    const filled = if (local) blk: {
         if (windows) {
             c._tzset();
-            _ = oa._localtime64_s(out, &t);
-        } else {
-            c.tzset();
-            _ = oa.localtime_r(&t, out);
+            break :blk oa._localtime64_s(out, &t) == 0;
         }
-    } else {
-        if (windows) {
-            _ = oa._gmtime64_s(out, &t);
-        } else {
-            _ = oa.gmtime_r(&t, out);
-        }
-    }
+        c.tzset();
+        break :blk oa.localtime_r(&t, out) != null;
+    } else blk: {
+        if (windows) break :blk oa._gmtime64_s(out, &t) == 0;
+        break :blk oa.gmtime_r(&t, out) != null;
+    };
+    if (!filled) return raise.panic("cannot convert timestamp to a date");
 }
 
 fn cfunDate(argv: []repr.Value) raise.Raising(repr.Value) {

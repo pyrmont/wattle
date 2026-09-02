@@ -124,12 +124,10 @@ fn errorClib() [*:0]const u8 {
         null,
     );
 
-    // Janet's own line is `error_clib_buf[strlen(error_clib_buf) - 1] = '\0'`,
-    // which strips the newline `c.FormatMessageA` appends. **When the call
-    // writes nothing it indexes [-1]**, which is a write outside the array;
-    // `FOUND.md` has it. That is undefined rather than merely wrong, so this
-    // records it instead of reproducing it and the strip is guarded. Every
-    // other input behaves identically.
+    // The strip removes the newline `c.FormatMessageA` appends, and it is
+    // guarded on both the call's success and the resulting length: an
+    // unguarded `buf[strlen(buf) - 1] = '\0'` indexes below the array when
+    // the call writes nothing. Every other input behaves identically.
     const len = std.mem.len(@as([*:0]const u8, @ptrCast(&error_clib_buf)));
     if (written != 0 and len != 0) error_clib_buf[len - 1] = 0;
 

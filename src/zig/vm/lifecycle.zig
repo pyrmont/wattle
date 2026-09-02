@@ -125,11 +125,10 @@ pub fn deinit() void {
 }
 
 pub fn deinitAbi() void {
-    // Nothing here can raise: `gc` and `gcmark` are typed non-raising, and the
-    // only thing teardown could ever raise was a finalizer, through
-    // `clearMemory`. `FOUND.md`'s "A panicking finalizer poisons the heap and
-    // kills the process at deinit" was the report of that path, and the type is
-    // what closed it.
+    // Nothing here can raise: `gc` and `gcmark` are typed non-raising, and a
+    // finalizer reached through `clearMemory` is the only thing teardown could
+    // ever have raised from. The type is what closes that path, at the
+    // callback's own definition.
     deinit();
 }
 

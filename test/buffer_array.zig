@@ -29,18 +29,19 @@
 //! refusal that did not happen fails where it was expected rather than in a
 //! count at the end.
 //!
-//! ## What this file cannot cover, unchanged from the C original
+//! ## What this file cannot cover
 //!
-//! `FOUND.md` records that `array/ensure` passes an unchecked growth factor to
-//! `janet_array_ensure`, and that a factor of zero or less makes the
-//! arithmetic produce a capacity that is zero or negative. The negative case
-//! ends the process through `JANET_OUT_OF_MEMORY` — every negative capacity
-//! converts to a `usize` near the top of the range, so the allocation always
-//! fails — and a test cannot survive it. The zero case depends on the C
-//! library: `realloc(p, 0)` returns a minimal block on macOS and NULL on
-//! glibc, and the second answer also reaches `JANET_OUT_OF_MEMORY`. So the
-//! zero case is asserted only after probing the allocator for which answer it
-//! gives, and the negative case is left to `FOUND.md`'s reproducer.
+//! `arrays.ensure` is an internal entry point that takes its growth factor on
+//! trust, and a factor of zero or less makes the arithmetic produce a capacity
+//! that is zero or negative. The negative case ends the process through
+//! `JANET_OUT_OF_MEMORY` — every negative capacity converts to a `usize` near
+//! the top of the range, so the allocation always fails — and a test cannot
+//! survive it. The zero case depends on the C library: `realloc(p, 0)` returns
+//! a minimal block on macOS and NULL on glibc, and the second answer also
+//! reaches `JANET_OUT_OF_MEMORY`. So the zero case is asserted only after
+//! probing the allocator for which answer it gives, and the negative case is
+//! not asserted at all. **`array/ensure` rejects both before they get here**,
+//! which `suite-corelib.janet` pins.
 //!
 //! Two overflow refusals are also uncovered. `bufferExtra`'s is asserted below
 //! because it is reachable with a large `n` and an empty buffer, but
@@ -500,15 +501,15 @@ fn arrayChargesGcPressure() void {
     expect(harness.vm().gc.next_collection == charge + @sizeOf(arrays.Array));
 }
 
-/// `FOUND.md`: a growth factor of zero releases the payload while leaving
-/// `count` alone.
+/// A growth factor of zero releases the payload while leaving `count` alone.
 ///
-/// **The function still does this; the boundary no longer lets a Janet program
-/// reach it.** `array/ensure` rejects a growth below one, the way it already
-/// rejected a count below one, because `Array.count` is `usize` and a negative
-/// capacity has nowhere to go. `arrays.ensure` itself is unchanged -- every
-/// in-tree caller passes 1 or 2 -- so this still asserts what it always did, and
-/// `suite-corelib.janet` asserts the refusal on the other side of the wall.
+/// **The internal function still does this; the boundary does not let a Janet
+/// program reach it.** `array/ensure` rejects a growth below one, the way it
+/// already rejected a count below one, because `Array.count` is `usize` and a
+/// negative capacity has nowhere to go. `arrays.ensure` itself takes the
+/// factor on trust -- every in-tree caller passes 1 or 2 -- so this asserts
+/// what the internal entry point does, and `suite-corelib.janet` asserts the
+/// refusal on the other side of the wall.
 /// See the note at the head of this file about why the allocator is probed
 /// first.
 fn zeroGrowthReleasesThePayload() !void {

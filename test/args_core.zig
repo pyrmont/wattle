@@ -15,11 +15,11 @@
 //! integer, both range foldings, the flag ceiling, the three cbytes shapes —
 //! are not reached at all. They are enumerated here.
 //!
-//! Two behaviors are pinned rather than asserted as correct. `janet_checkfloat`
-//! tests against `FLT_MIN`, so `getFloat` rejects zero and every negative
-//! number; and `getFlags` silently ignores a permitted set longer than 64
-//! characters. Both are in `FOUND.md`, both are reproduced, and
-//! both are pinned so that a later fix has to be deliberate.
+//! Three of them are guarantees a module author reaches and a Janet program
+//! does not: `checkfloat`'s range is symmetric about zero, `getFlags` refuses
+//! a permitted set it cannot represent rather than clamping it, and
+//! `getCBytes` answers a terminated string for every shape it accepts,
+//! including an abstract's byte view.
 //!
 //! ## Writing this file found a live defect, and it was in a caller
 //!
@@ -279,16 +279,20 @@ fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
     Case.accepts(slot, args.getNat, std.math.maxInt(i32), std.math.maxInt(i32));
     Case.rejects(slot, args.getNat, -1);
 
-    // Only the defined half of `janet_checksize`'s domain is exercised. The C
-    // original casts to `size_t` before testing the round trip, which is
-    // undefined for a negative, infinite or enormous double and aborts a
-    // sanitizer build outright — reachable from Janet source as
-    // `(gcsetinterval -1)`. It is in `FOUND.md`, and per this phase's rules
-    // undefined behavior gets no contract, because the result would belong to
-    // the development target rather than to the language.
+    // **`getSize` tests the range before it converts**, so its whole domain
+    // is exercised rather than half of it: a negative, a non-finite and an
+    // enormous double are rejected as arguments. Casting to `size_t` first is
+    // undefined for exactly those, and `(gcsetinterval -1)` reaches it from
+    // Janet source.
     Case.accepts(slot, args.getSize, 0, 0);
     Case.accepts(slot, args.getSize, 1, 1);
     Case.rejects(slot, args.getSize, 1.5);
+    Case.rejects(slot, args.getSize, -1);
+    Case.rejects(slot, args.getSize, -1.5);
+    Case.rejects(slot, args.getSize, std.math.inf(f64));
+    Case.rejects(slot, args.getSize, -std.math.inf(f64));
+    Case.rejects(slot, args.getSize, std.math.nan(f64));
+    Case.rejects(slot, args.getSize, 1e300);
 
     if (comptime !config.int_types) {
         Case.accepts(slot, args.getInteger64, 9007199254740992.0, 9007199254740992);
@@ -310,33 +314,46 @@ fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
     Case.rejects(slot, args.getNat, 0.5);
 }
 
-/// `janet_checkfloat` tests `>= FLT_MIN`, and `FLT_MIN` is the smallest
-/// positive *normal* float rather than the most negative finite one. So
-/// `getFloat` rejects zero, every negative value, and every subnormal, and
-/// accepts only positive normals that survive a round trip through `f32`.
-/// This is a defect in Janet, recorded in `FOUND.md`, and it is pinned rather
-/// than asserted as correct: the behaviour is reproduced, and a later fix has
-/// to be a deliberate change to this test.
-fn getFloatRejectsZeroAndNegatives() raise.Raising(void) {
+/// `checkfloat`'s range is symmetric about zero: `-FLT_MAX` to `FLT_MAX`, the
+/// way `checkInteger8`'s is `INT8_MIN` to `INT8_MAX`. Within it the round trip
+/// through `f32` decides, so a double carrying more precision than a float
+/// holds is refused and a subnormal is not.
+///
+/// A lower bound of `FLT_MIN` -- the smallest positive *normal* float -- is the
+/// shape this pins against: it would reject zero, every negative value and
+/// every subnormal, and answer that `-1.5` is not representable as a float.
+fn getFloatTakesTheWholeFloatRange() raise.Raising(void) {
     var argv = [_]repr.Value{wrap.fromNumber(1.5)};
     const a = slots(&argv);
     expect(try args.getFloat(a, 0) == 1.5);
 
     argv[0] = wrap.fromNumber(0.0);
-    refuses(args.getFloat, .{ a, 0 }, "bad slot #0, expected float number, got 0");
+    expect(try args.getFloat(a, 0) == 0.0);
     argv[0] = wrap.fromNumber(-1.5);
-    refuses(args.getFloat, .{ a, 0 }, "bad slot #0, expected float number, got -1.5");
+    expect(try args.getFloat(a, 0) == -1.5);
 
     const flt_min = std.math.floatMin(f32);
     const flt_max = std.math.floatMax(f32);
-    expect(!args_core.checkfloat(wrap.fromNumber(0.0)));
-    expect(!args_core.checkfloat(wrap.fromNumber(-1.0)));
-    expect(!args_core.checkfloat(wrap.fromNumber(@as(f64, flt_min) / 2.0)));
+    expect(args_core.checkfloat(wrap.fromNumber(0.0)));
+    expect(args_core.checkfloat(wrap.fromNumber(-0.0)));
+    expect(args_core.checkfloat(wrap.fromNumber(-1.0)));
+    expect(args_core.checkfloat(wrap.fromNumber(@as(f64, flt_min) / 2.0)));
     expect(args_core.checkfloat(wrap.fromNumber(flt_min)));
+    expect(args_core.checkfloat(wrap.fromNumber(-flt_min)));
     expect(args_core.checkfloat(wrap.fromNumber(flt_max)));
+    expect(args_core.checkfloat(wrap.fromNumber(-@as(f64, flt_max))));
+    // Both ends, and the first double past each of them.
     expect(!args_core.checkfloat(wrap.fromNumber(@as(f64, flt_max) * 2.0)));
+    expect(!args_core.checkfloat(wrap.fromNumber(@as(f64, flt_max) * -2.0)));
+    // Neither infinity nor a NaN is a float this converts.
+    expect(!args_core.checkfloat(wrap.fromNumber(std.math.inf(f64))));
+    expect(!args_core.checkfloat(wrap.fromNumber(-std.math.inf(f64))));
+    expect(!args_core.checkfloat(wrap.fromNumberSafe(std.math.nan(f64))));
     // A double with more precision than a float holds fails the round trip.
     expect(!args_core.checkfloat(wrap.fromNumber(1.0000000000000002)));
+    // And the refusal still reads the way it always did.
+    argv[0] = wrap.fromNumber(1.0000000000000002);
+    refuses(args.getFloat, .{ a, 0 }, "bad slot #0, expected float number, got 1");
 }
 
 // ----------------------------------------------------------------- ranges
@@ -457,20 +474,17 @@ fn eachCharacterContributesTheBitAtItsPosition() raise.Raising(void) {
     argv[0] = value.fromBytes("a", .string);
     refuses(args.getFlags, .{ a, 0, "abc" }, "bad slot #0, expected keyword, got \"a\"");
 
-    // A permitted set longer than 64 characters has its tail silently ignored,
-    // so a character that appears only past the ceiling is reported as
-    // unexpected rather than accepted. Pinned, not endorsed: `FOUND.md`.
+    // **Exactly 64 is the ceiling and the last character still counts.** A
+    // `u64` has a bit for it and none for a sixty-fifth; a set longer than
+    // that is the caller's mistake and ends the process rather than clamping,
+    // which is why only the boundary can be asserted here.
     var wide: [80]u8 = @splat(0);
-    for (0..70) |i| wide[i] = '0' + @as(u8, @intCast(i % 10));
-    wide[64] = 'Z';
-    wide[70] = 0;
+    for (0..64) |i| wide[i] = '0' + @as(u8, @intCast(i % 10));
+    wide[63] = 'Z';
+    wide[64] = 0;
     argv[0] = value.fromBytes("Z", .keyword);
-    refuses(
-        args.getFlags,
-        .{ a, 0, @as([*:0]const u8, @ptrCast(&wide)) },
-        "unexpected flag Z, expected one of " ++
-            "\"0123456789012345678901234567890123456789012345678901234567890123Z56789\"",
-    );
+    expect(try args.getFlags(a, 0, @as([*:0]const u8, @ptrCast(&wide))) ==
+        @as(u64, 1) << 63);
 }
 
 // ------------------------------------------------------------- byte access
@@ -622,6 +636,50 @@ fn theAbstractGettersAndTheBytesCallback() raise.Raising(void) {
     expect(try args.optAbstract(a, 0, &probe_at, null) == p);
     expect(try args.optAbstract(a, 2, &probe_at, p) == p);
     expect(try args.optAbstract(a[0..1], 2, &probe_at, p) == p);
+}
+
+/// **`getCBytes` answers a terminated string for an abstract's byte view, and
+/// the zero check measures the view.**
+///
+/// An abstract's `bytes` callback answers whatever the module author chose and
+/// nothing requires a terminator after it, which makes this the one shape the
+/// other two questions can be asked of separately:
+///
+///  - a check that walks to the first zero measures the memory *after* the
+///    view, so a view holding no zero at all is refused for holding one as
+///    soon as the bytes behind it are non-zero;
+///  - a view handed back as-is is a C string that runs past its own end.
+///
+/// The payload here is eight bytes of `Z` with `xyz` written over the first
+/// three, so a walk from the view's start reaches byte 8 and the view reaches
+/// byte 3. Both answers are asserted.
+fn cbytesTerminatesAnAbstractsView() raise.Raising(void) {
+    const q = abstracts.newBytes(&probe_bytes_at, 8);
+    @memset(@as([*]u8, @ptrCast(q))[0..8], 'Z');
+    @memcpy(@as([*]u8, @ptrCast(q))[0..3], "xyz");
+
+    var argv = [_]repr.Value{wrap.fromAbstract(q)};
+    const a = slots(&argv);
+
+    // The view is three bytes and the five behind it are not zero, so a walk
+    // and a measurement disagree about it. **The walk is asserted to pass the
+    // view, not to stop anywhere**: where it stops is a property of whatever
+    // the allocator put after the payload, which is exactly the reason a walk
+    // is the wrong instrument here.
+    const v = try args.getBytes(a, 0);
+    expect(v.len == 3);
+    expect(std.mem.len(@as([*:0]const u8, @ptrCast(v.bytes.?))) >= 8);
+
+    // The answer is a terminated copy of the view, not the view.
+    const s = try args.getCBytes(a, 0);
+    expect(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(s))), "xyz"));
+    expect(@intFromPtr(s) != @intFromPtr(v.bytes.?));
+    // And the payload is untouched.
+    expect(std.mem.eql(u8, @as([*]const u8, @ptrCast(q))[0..8], "xyzZZZZZ"));
+
+    // A zero *inside* the view is still an embedded zero.
+    @as([*]u8, @ptrCast(q))[1] = 0;
+    refuses(args.getCBytes, .{ a, 0 }, "bytes contain embedded 0s");
 }
 
 // -------------------------------------------------------------- defaulting
@@ -804,13 +862,14 @@ fn body() raise.Raising(void) {
     try everyTypeGetterNamesItsSlotAndItsType();
     try everyExpectationCodeHasItsOwnNoun();
     try theWidthsAcceptExactlyTheirRange();
-    try getFloatRejectsZeroAndNegatives();
+    try getFloatTakesTheWholeFloatRange();
     try theTwoFoldingsDifferInOneEnd();
     try getSliceCollapsesAnInvertedRange();
     try eachCharacterContributesTheBitAtItsPosition();
     try theByteAndCstringShapes();
     try cbytesCopiesAFullNoReallocBuffer();
     try theAbstractGettersAndTheBytesCallback();
+    try cbytesTerminatesAnAbstractsView();
     try pastTheEndAndAnExplicitNilBothMeanTheDefault();
     theThreeStrlikeComparisonsCheckTheTypeToo();
     nextmethodIsAnIterator();

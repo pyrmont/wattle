@@ -165,41 +165,24 @@ pub const Lead = enum(u8) {
     unsafe_cfunction = 221,
     unsafe_pointer = 222,
     struct_proto = 223,
+
+    /// 224 and 225 are written and read in every configuration. A build
+    /// without the event loop cannot produce a threaded abstract or a pointer
+    /// buffer, so it never writes one; what it must still do is give the two
+    /// numbers away, because the seven weak-container bytes below them are
+    /// wire-format constants and a feature flag does not get to move a wire
+    /// format.
+    threaded_abstract = 224,
+    pointer_buffer = 225,
+
+    table_weakk = 226,
+    table_weakv = 227,
+    table_weakkv = 228,
+    table_weakk_proto = 229,
+    table_weakv_proto = 230,
+    table_weakkv_proto = 231,
+    array_weak = 232,
     _,
-
-    /// The nine whose numbers the configuration decides, which is why they are
-    /// constants of this type and not members: an enum's tag values are fixed
-    /// where it is declared, and these are not.
-    ///
-    /// `LB_THREADED_ABSTRACT` and `LB_POINTER_BUFFER` are inside
-    /// `#ifdef JANET_EV` in the C original's enum and the seven weak-container
-    /// lead bytes that follow them are not. An enum numbers from whatever came
-    /// before, so **the weak lead bytes are 226 through 232 in an event-loop
-    /// build and 224 through 230 without one**, and a stream written by one
-    /// cannot be read by the other.
-    ///
-    /// That is a defect, it is upstream's, and it is reproduced here rather
-    /// than repaired: pinning the numbers would make this implementation
-    /// disagree with the C one under `-Dev=false`, which is the one
-    /// configuration where the difference shows. `FOUND.md` has the entry and
-    /// `test/marsh.zig` pins the arithmetic in both configurations.
-    ///
-    /// It is also why they cannot be members. Without the event loop
-    /// `threaded_abstract` and `table_weakk` are both 224, and an enum with
-    /// two members of one value does not compile -- so the collision the
-    /// format has is a collision the type would have too.
-    pub const threaded_abstract: Lead = @enumFromInt(224);
-    pub const pointer_buffer: Lead = @enumFromInt(225);
-
-    const weak_base: u8 = if (has_ev) 226 else 224;
-
-    pub const table_weakk: Lead = @enumFromInt(weak_base + 0);
-    pub const table_weakv: Lead = @enumFromInt(weak_base + 1);
-    pub const table_weakkv: Lead = @enumFromInt(weak_base + 2);
-    pub const table_weakk_proto: Lead = @enumFromInt(weak_base + 3);
-    pub const table_weakv_proto: Lead = @enumFromInt(weak_base + 4);
-    pub const table_weakkv_proto: Lead = @enumFromInt(weak_base + 5);
-    pub const array_weak: Lead = @enumFromInt(weak_base + 6);
 
     pub inline fn byte(self: Lead) u8 {
         return @intFromEnum(self);
@@ -1442,6 +1425,13 @@ pub fn unmarshalEnsure(ctx: *abi.MarshalContext, size: usize) raise.Raising(void
     return eosAddr(unmarshalState(ctx), @intFromPtr(ctx.data) +% size);
 }
 
+/// How many bytes of the stream are still unread. An `unmarshal` callback that
+/// is told a count before it is told the elements uses this to refuse a count
+/// the stream could not be carrying: no element is shorter than one byte.
+pub fn unmarshalRemaining(ctx: *abi.MarshalContext) usize {
+    return @intFromPtr(unmarshalState(ctx).end) - @intFromPtr(ctx.data.?);
+}
+
 pub fn unmarshalInt(ctx: *abi.MarshalContext) raise.Raising(i32) {
     var cursor = ctx.data.?;
     defer ctx.data = cursor;
@@ -1508,14 +1498,6 @@ pub fn unmarshalAbstract(ctx: *abi.MarshalContext, size: usize) raise.Raising(?*
     return p;
 }
 
-/// Always raises. `JANET_THREADS` is defined by nothing in this tree, so the
-/// C original's other arm has never been compiled -- see `FOUND.md`.
-pub fn unmarshalAbstractThreaded(ctx: *abi.MarshalContext, size: usize) raise.Raising(?*anyopaque) {
-    _ = ctx;
-    _ = size;
-    return raise.panic("threaded abstracts not supported");
-}
-
 pub fn unmarshalFlags(ctx: *abi.MarshalContext) c_int {
     return ctx.flags;
 }
@@ -1562,9 +1544,11 @@ fn unmarshalOne(
         return .{ .value = immediate, .next = data };
     }
 
-    // The two event-loop lead bytes are tested before the switch rather than
-    // inside it: without `JANET_EV` their numbers belong to the weak
-    // containers, which is the renumbering `weak_base` documents.
+    // The two event-loop lead bytes are read before the switch rather than
+    // inside it because their arms reach `vm.ev`, which a build without the
+    // event loop does not have. The numbers are theirs in every configuration;
+    // a reduced build simply never meets one, and 224 and 225 take the
+    // "unknown byte" path below.
     if (has_ev) {
         switch (lead) {
             Lead.pointer_buffer => {

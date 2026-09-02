@@ -283,11 +283,15 @@ fn sysv64DescendsIntoNestedStructs() void {
     expect(classifySysv64(&packed_nodes) == sysv64_memory);
 }
 
-/// The two-eightbyte rules look only for integer classes, so a field that
-/// reached memory is dropped instead of carrying the aggregate to memory the
-/// way the merge rule just did. Recorded in `FOUND.md`; asserted here because
-/// it is the behaviour this runtime reproduces.
-fn sysv64DropsAMemoryFieldFromAPair() void {
+/// **A field that reaches memory carries the aggregate to memory at both
+/// sizes.** The merge rule above does it for a struct of eight bytes or fewer;
+/// the two-eightbyte rules do it here. Looking only for integer classes across
+/// the two halves drops the memory field instead, so the same field decides
+/// the argument at one size and counts for nothing at another -- and a packed
+/// nested aggregate then travels in a register pair the callee's compiler
+/// reads from the stack, which misplaces it and every argument after it. AMD64
+/// ABI §3.2.3, the post-merger rule.
+fn sysv64CarriesAMemoryFieldOutOfAPair() void {
     var nodes = [_]TypeNode{
         structNode(16, 2, 0),
         structNode(8, 1, 0),
@@ -295,7 +299,13 @@ fn sysv64DropsAMemoryFieldFromAPair() void {
         leaf(prim_double, 8, 8),
     };
     nodes[1].is_aligned = 0;
-    expect(classifySysv64(&nodes) == sysv64_pair_ssesse);
+    expect(classifySysv64(&nodes) == sysv64_memory);
+
+    // The same shape with the nested struct aligned is the pair it was always
+    // meant to be, which is what says the forcing is the memory class's doing
+    // rather than the nesting's.
+    nodes[1].is_aligned = 1;
+    expect(classifySysv64(&nodes) == sysv64_pair_intsse);
 }
 
 /// A struct's fields must be walked in full even when a class is decided
@@ -414,9 +424,9 @@ fn aapcs64UsesTheWholeExtentOfAnArray() void {
     expect(classifyAapcs64(&nodes) == aapcs64_general_ref);
 }
 
-/// Janet reads the first field of a struct with no fields; this declines to.
-/// A zero-field struct is reachable: a type of `[:pack]` names a member
-/// that is not there. See `FOUND.md`.
+/// A zero-field struct is reachable -- a type of `[:pack]` names a member that
+/// is not there -- so the classifier tests the field count before it reads a
+/// first field.
 fn aapcs64HandlesAnEmptyStruct() void {
     const empty = [_]TypeNode{structNode(0, 0, 0)};
     expect(classifyAapcs64(&empty) == aapcs64_general);
@@ -747,13 +757,12 @@ fn aapcs64SpillsAReferencePointer() void {
     expect(result.stack_count == 16 + 32);
 }
 
-/// One vector register per member, which is what AAPCS64 §6.8.2 says and what
-/// `FOUND.md` records the C implementation getting wrong.
+/// One vector register per member, which is what AAPCS64 §6.8.2 says.
 ///
 /// Sizing an HFA by bytes agrees with the ABI exactly when a member is eight
-/// bytes wide, so an aggregate of `double` was right by coincidence and one of
-/// `float` was given half the registers the callee reads. Both are here, and
-/// the `double` case is the one that would have passed before the fix.
+/// bytes wide, so an aggregate of `double` comes out right by coincidence and
+/// one of `float` is given half the registers the callee reads. Both are here,
+/// and the `double` case is the one that passes either way.
 fn aapcs64GivesAnHfaOneRegisterPerMember() void {
     // Two floats: eight bytes, two members, two registers. The byte
     // arithmetic gave this one.
@@ -1024,7 +1033,7 @@ pub fn run() void {
     sysv64MergesANarrowStruct();
     sysv64UsesTheOffsetToPickTheEightbyte();
     sysv64DescendsIntoNestedStructs();
-    sysv64DropsAMemoryFieldFromAPair();
+    sysv64CarriesAMemoryFieldOutOfAPair();
     sysv64SkipsADecidedSubtreeCorrectly();
 
     aapcs64ClassifiesScalars();

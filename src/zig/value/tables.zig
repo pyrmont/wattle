@@ -42,19 +42,19 @@
 //! same rule covers both: a callback that raises is out of contract. Nothing
 //! is restructured to survive it, because surviving it is not the promise.
 //!
-//! ## What is reproduced rather than repaired
+//! ## What no table here can be
 //!
-//! A table whose capacity is zero cannot be looked up in at all, and
-//! `janet_table` produces one for any negative capacity. The details are on
-//! `initImpl` below; the short version is that `janet_maphash` degenerates
-//! into the identity when the mask is all ones, so the whole hash is used as a
-//! bucket number and only a hash of zero stays in bounds. Not reachable from
-//! Janet source, kept as written, recorded in `FOUND.md`.
+//! **A table whose capacity is zero cannot be looked up in at all**, and no
+//! constructor here produces one: capacities are `usize` and `value.capacityFor`
+//! answers at least one. The details are on `initImpl` below; the short
+//! version is that `value.mapHash` degenerates into the identity when the mask
+//! is all ones, so the whole hash is used as a bucket number and only a hash
+//! of zero stays in bounds.
 //!
-//! The tombstone-retiring branch in `janet_table_put` and `putNoOverwrite` is
-//! unreachable for the same kind of reason -- the load factor guarantees an
-//! empty bucket, and `value.dictionaryFind` prefers one over a tombstone. Also
-//! kept, also recorded.
+//! For a related reason, neither `put` nor `putNoOverwrite` retires a
+//! tombstone: the load factor guarantees an empty bucket and
+//! `value.dictionaryFind` prefers one over a tombstone, so the bucket they
+//! fill is never a tombstone. A rehash is the only thing that reclaims one.
 //!
 //! `janet_table_clone` copies with plain `memcpy`. A table with a null bucket
 //! array makes that `memcpy(dst, NULL, 0)`, which the standard does not
@@ -63,8 +63,9 @@
 //! at least one. A zeroed `Table` still holds those fields, which is how
 //! `test/struct_table.zig` builds the case. `safe_memcpy` exists in `util.c`
 //! for exactly this, "avoid some undefined behavior that was common in the
-//! code base", and this call site was missed. The port uses `safe_memcpy` and
-//! `FOUND.md` records the C original. No observable behaviour differs.
+//! code base", and it is what `clone` below uses: `memcpy` with a null source
+//! and a zero length is undefined even though every implementation makes it a
+//! no-op.
 
 const std = @import("std");
 const config = @import("config");
@@ -121,9 +122,9 @@ fn memallocEmptyLocal(count: usize) [*]KV {
 ///
 /// The requested capacity is rounded up by `value.capacityFor`, which returns
 /// the smallest power of two strictly greater than its argument -- so a
-/// requested zero gets *one* bucket, not none. C reached zero for a negative
-/// request and left `data` null, which is a table no lookup survives;
-/// `FOUND.md` records what that does and the type no longer admits it.
+/// requested zero gets *one* bucket, not none. A capacity of zero leaves
+/// `data` null, which is a table no lookup survives, and the `usize` parameter
+/// is what makes the negative request that reached it unsayable.
 ///
 /// The stack flag is *assigned* rather than or-ed, which overwrites the memory
 /// type in `gc.flags`. That is safe only because a scratch table is never
@@ -342,17 +343,11 @@ pub fn put(t: *Table, key: repr.Value, val: repr.Value) void {
         rehash(t, value.capacityFor(2 *% t.count +% 2));
     }
     // The growth test above leaves the array less than half full counting
-    // tombstones, so this probe always reaches an empty bucket and cannot come
-    // back empty-handed.
+    // tombstones, so this probe always reaches an empty bucket: it cannot come
+    // back empty-handed, and what it comes back with is never a tombstone.
+    // `deleted` therefore stands until the next rehash, which is what makes a
+    // churned table rehash and shrink.
     const bucket = find(t, key) orelse unreachable;
-    // A boolean in an empty bucket's value is the tombstone marker, so filling
-    // that bucket would retire one. It never happens: `value.dictionaryFind` returns
-    // a remembered tombstone only when the array holds no empty bucket at all,
-    // and the growth test above keeps the array at most half full counting
-    // tombstones. So a rehash is the only thing that ever reclaims one, and
-    // this branch is dead. `FOUND.md` records it. Kept, because this
-    // reproduces rather than tidies.
-    if (repr.checkType(bucket.value, repr.Tag.boolean)) t.deleted -= 1;
     bucket.key = key;
     bucket.value = val;
     t.count += 1;
@@ -369,9 +364,8 @@ fn putNoOverwrite(t: *Table, key: repr.Value, val: repr.Value) void {
         rehash(t, value.capacityFor(2 *% t.count +% 2));
     }
     // As in `put`: the growth test leaves an empty bucket for this probe to
-    // find, so it cannot come back empty-handed.
+    // find, so it cannot come back empty-handed or with a tombstone.
     const bucket = find(t, key) orelse unreachable;
-    if (repr.checkType(bucket.value, repr.Tag.boolean)) t.deleted -= 1;
     bucket.key = key;
     bucket.value = val;
     t.count += 1;
@@ -392,9 +386,8 @@ pub fn clear(t: *Table) void {
 /// prototype is shared, not copied.
 ///
 /// `safe_memcpy` rather than `memcpy`: an empty table has a null `data` and a
-/// zero capacity, and `memcpy(dst, NULL, 0)` is undefined behaviour the C
-/// original reaches from `(table/clone @{})`. `FOUND.md` has it. Nothing
-/// observable differs.
+/// zero capacity, and `memcpy(dst, NULL, 0)` is undefined behaviour, which
+/// `(table/clone @{})` reaches.
 pub fn clone(table: *Table) *Table {
     const new_table = gc_alloc.gcalloc(Table, .table);
     new_table.count = table.count;
@@ -439,15 +432,19 @@ pub fn toStruct(t: *Table) [*]const KV {
 /// Collapse a prototype chain into one table.
 ///
 /// Walked child first with `putNoOverwrite`, so a binding nearer the child
-/// wins -- the same precedence a lookup through the chain would have given. The
-/// chain is followed to its end rather than to `JANET_MAX_PROTO_DEPTH`, so a
-/// cyclic prototype chain does not terminate here. That is the C behaviour and
-/// it is left alone: `table/setproto` accepts a cycle, and the lookup paths
-/// that bound their depth are the reason it is otherwise survivable.
+/// wins -- the same precedence a lookup through the chain would have given.
+///
+/// **Bounded by `max_proto_depth`**, like every other prototype walk here.
+/// `table/setproto` accepts a cycle, so an unbounded walk does not terminate;
+/// the bound also makes the result exactly the set a lookup through the chain
+/// can reach, which is the set the flattening is for.
 pub fn protoFlatten(t_in: *Table) *Table {
     const new_table = new(0);
     var t: ?*Table = t_in;
+    var depth: c_int = config.max_proto_depth;
     while (t) |tab| : (t = tab.proto) {
+        if (depth == 0) break;
+        depth -= 1;
         for (tab.slots()) |kv| {
             if (!isNilKey(kv.key)) putNoOverwrite(new_table, kv.key, kv.value);
         }

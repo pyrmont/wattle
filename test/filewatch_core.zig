@@ -17,13 +17,12 @@
 //!    field, so `filewatchMark` opens by asking whether the channel is set.
 //!    Nothing in Janet can hand the collector a watcher in that state; a
 //!    `@memset` and a `janet_abstract` can.
-//!  - **A stale `errno`.** Two of the subject's retry loops used to repeat on
-//!    *success* -- `FOUND.md`, "filewatch/remove retries a call that
-//!    succeeded", now fixed -- and reaching that needs `EINTR` in `errno` when
-//!    the cfunction is entered, which no Janet program can arrange. The
-//!    assertion stays for the reason it was written: this is the only place
-//!    the removal can be asked with a dirty `errno`, and it now says the
-//!    answer does not depend on one.
+//!  - **A stale `errno`.** A retry loop that repeats on *success* while
+//!    `errno` holds `EINTR` needs `EINTR` in `errno` when the cfunction is
+//!    entered, which no Janet program can arrange. `c.retryIntr` repeats only
+//!    a call that failed, and this is the only place the removal can be asked
+//!    with a dirty `errno`, so the assertion is what says the answer does not
+//!    depend on one.
 //!  - **The two halves of the flag table.** The names are in
 //!    `filewatch_flags.zig` and the values are in the subject, and only a
 //!    contract can ask the name lookup and the value decoder the same question
@@ -312,7 +311,12 @@ fn theAbstractType(chan: repr.Value) void {
     const abst = wrap.toAbstract(watcher);
     const at = &filewatch_core.watcherType;
     expect(std.mem.eql(u8, at.name, "filewatch/watcher"));
-    expect(at.gc == null);
+    // **The `gc` callback exists exactly where there is something to release.**
+    // Only the kqueue backend opens a descriptor per watched path; on the
+    // other two a watcher owns nothing outside the collector's heap, and a
+    // callback that did nothing would be one more thing to read and discount.
+    expect((at.gc != null) ==
+        (backend != null and backend.?.platform == .kqueue));
     expect(at.gcmark != null);
     expect(at.get == null);
     expect(at.put == null);
@@ -392,11 +396,10 @@ fn theLifecycle(chan: repr.Value) void {
         expectRaise("filewatch/remove", &argv, "bad watch descriptor");
     }
 
-    // `FOUND.md`, "filewatch/remove retries a call that succeeded". The C
-    // original's loop repeated while the call *succeeded* and `errno` held
-    // EINTR, so a stale EINTR turned one successful removal into two attempts
-    // and the second one failed. The retry is now `c.retryIntr`, which repeats
-    // only a call that failed, so a dirty `errno` changes nothing.
+    // **A removal succeeds with a dirty `errno`.** A loop that repeats while
+    // the call *succeeded* and `errno` holds EINTR turns one successful
+    // removal into two attempts, and the second one fails. `c.retryIntr`
+    // repeats only a call that failed, so a stale `errno` changes nothing.
     {
         var argv = [_]repr.Value{ watcher, dir };
         std.c._errno().* = @intFromEnum(std.posix.E.INTR);
@@ -427,16 +430,21 @@ fn theLifecycle(chan: repr.Value) void {
         expect(harness.isType(callCore("filewatch/unlisten", &one), repr.Tag.nil));
     }
 
-    // And the watcher is dead after that, which is why this is the last thing
-    // the lifecycle does. `filewatch/unlisten` closes the *watcher's own*
-    // descriptor -- the inotify instance or the kqueue -- and nothing reopens
-    // it, so every later `filewatch/add` fails on it. `FOUND.md` has the entry;
-    // it is pinned here because it is the shape of the whole object's life, and
-    // because a Janet program that hit it would see the failure several calls
-    // away from the call that caused it.
+    // **The watcher is closed after that, and all three calls say so.**
+    // `filewatch/unlisten` closes the watcher's own descriptor -- the inotify
+    // instance or the kqueue -- and nothing reopens it. The one that mattered
+    // is `listen`: without the refusal it reported success, started a fiber on
+    // a closed stream, delivered nothing ever again, and kept the event loop
+    // from finishing, so a program saw the failure nowhere at all.
+    //
+    // This is the last thing the lifecycle does, because it is the end of it.
     {
         var argv = [_]repr.Value{ watcher, dir, value.fromBytes("all", .keyword) };
-        expectAnyRaise("filewatch/add", &argv);
+        expectRaise("filewatch/add", &argv, "watcher is closed");
+        var one = [_]repr.Value{watcher};
+        expectRaise("filewatch/listen", &one, "watcher is closed");
+        var two = [_]repr.Value{ watcher, dir };
+        expectRaise("filewatch/remove", &two, "watcher is closed");
     }
 
     _ = std.c.rmdir(probe_dir);

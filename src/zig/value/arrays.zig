@@ -25,15 +25,13 @@
 //! conversions are written out through `asSize` below and the arithmetic uses
 //! wrapping operators wherever the C original can wrap.
 //!
-//! This is not hypothetical, and the reachable instance is here rather than in
-//! `buffers.zig`. `array/ensure` passes its third argument to
-//! `janet_array_ensure` unchecked, so a growth of zero frees an array's backing
-//! store while leaving `count` untouched — a use-after-free reachable from pure
-//! Janet — and a negative growth requests almost the whole address space and
-//! ends the process through `JANET_OUT_OF_MEMORY`, which `protect` cannot catch.
-//! `FOUND.md` records both symptoms and the measurement; they are left unfixed
-//! under the usual rule and reproduced exactly here. `test/buffer_array.zig`
-//! pins them.
+//! **`array/ensure` validates both of its arguments**, and the reachable
+//! instance that makes that necessary is here rather than in `buffers.zig`:
+//! passing a growth factor through unchecked lets a growth of zero free an
+//! array's backing store while leaving `count` untouched — a use-after-free
+//! reachable from pure Janet — and a negative growth request almost the whole
+//! address space, ending the process through `JANET_OUT_OF_MEMORY`, which
+//! `protect` cannot catch. `test/buffer_array.zig` pins both refusals.
 //!
 //! Two asymmetries with `buffers.zig` are preserved for the same reason, and
 //! neither is a defect:
@@ -182,18 +180,11 @@ pub fn newFrom(elements: []const repr.Value) *Array {
     return array;
 }
 
-/// Grow an array to at least `capacity`, overshooting by `growth`.
-///
-/// This is the function `FOUND.md` records against: `array/ensure` hands a
-/// script's growth factor straight through, and a factor of zero or less
-/// produces a zero or negative capacity that this passes to `janet_realloc`
-/// while leaving `count` alone. Reproduced exactly, wrapping operators and all.
 /// Grow an array to hold `capacity_in` elements, multiplied by `growth`.
 ///
 /// `growth` is a multiplier, so it is a count of copies rather than a signed
-/// quantity: `cfunArrayEnsure` rejects a growth below one -- which is
-/// `FOUND.md`'s "`array/ensure` does not validate its growth factor" -- and
-/// every internal caller passes one or two. The clamp at `INT32_MAX` stays,
+/// quantity: `cfunArrayEnsure` rejects a growth below one, and every internal
+/// caller passes one or two. The clamp at `INT32_MAX` stays,
 /// because the capacity it produces is what a marshalled array carries.
 pub fn ensure(array: *Array, capacity_in: usize, growth: usize) void {
     const old = array.data;
@@ -322,10 +313,9 @@ fn cfunArrayEnsure(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
     const array = try args_core.getArray(argv, 0);
     const newcount = try args_core.getInteger(argv, 1);
     const growth = try args_core.getInteger(argv, 2);
-    // Both arguments, not just the count. `FOUND.md`'s "`array/ensure` does
-    // not validate its growth factor" is what the second check closes: a
-    // growth of zero freed the backing store and left `count` claiming the
-    // elements, and a negative one asked for most of the address space.
+    // Both arguments, not just the count. Without the second check a growth
+    // of zero frees the backing store and leaves `count` claiming the
+    // elements, and a negative one asks for most of the address space.
     if (newcount < 1) return raise.panic("expected positive integer");
     if (growth < 1) return raise.panic("expected positive integer");
     ensure(array, @intCast(newcount), @intCast(growth));

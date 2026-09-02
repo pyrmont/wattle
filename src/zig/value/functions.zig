@@ -53,15 +53,12 @@
 //! enormous allocation, which is the only reason the cast to `usize` below is
 //! safe.
 //!
-//! ## Arithmetic reproduced rather than repaired
+//! ## The argument block is bounded
 //!
-//! `fibers.reset` computes `fiber.stacktop + argc` and then `2 * newstacktop`
-//! in `i32`. Both overflow for large enough arguments. Wrapping operators are
-//! used below to give one defined answer -- the two's-complement one -- rather
-//! than to trap: a trap would be a new behaviour where upstream has none, and
-//! `fibers.setcapacity` already turns the resulting negative capacity into a
-//! fatal out-of-memory, which is where a caller passing an `argc` near
-//! `INT32_MAX` ends up. `FOUND.md` records it.
+//! `fibers.reset` sizes room for the caller's arguments with a checked add and
+//! `fibers.grow`'s clamp, so an `argc` near `INT32_MAX` is refused by a bound
+//! rather than by two wraps and a request for more bytes than there are
+//! addresses. The refusal is the same fatal out-of-memory either way.
 //!
 //! ## `janet_thunk` asserts after it stores
 //!
@@ -200,7 +197,11 @@ pub fn thunkDelay(x: repr.Value) *Function {
 pub fn envDetach(maybe_env: ?*FuncEnv) void {
     // Check for closure environment
     const env = maybe_env orelse return;
-    _ = envValid(env);
+    // An environment the validator rejects has already been made the empty
+    // off-stack variant -- which is what detaching produces -- and `as.values`
+    // is the null it wrote over `as.fiber`. There is nothing left to copy and
+    // nothing left to copy it from.
+    if (!envValid(env)) return;
     const len = env.length;
     const bytes = fibers.stackBytes(len);
     const memory = utils.malloc(bytes);

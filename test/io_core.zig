@@ -52,6 +52,7 @@ const pp_describe = @import("subsystems").pp_describe;
 /// `boundary` rather than `abi`, which `expectAbiRaise` takes as a parameter
 /// name.
 const boundary = @import("abi");
+const config = @import("config");
 const tables = @import("subsystems").value.tables;
 const io_core = subsystems.io;
 const marsh = subsystems.marsh;
@@ -219,8 +220,10 @@ fn theModeScanning() void {
     expect(r.index == 1);
     expect(r.sandbox == vm_lifecycle.Sandbox.of(&.{"fs_read"}));
 
-    // A repeated flag yields a flag word of -1, which the caller then uses as
-    // a flag word; see `FOUND.md`.
+    // A repeated flag is reported as `mode_repeated` with a flag word of -1.
+    // The -1 is what the kernel answers rather than what a caller uses:
+    // `checkFlags` raises on the status, because -1 has every bit set and two
+    // of them are `file_closed` and `file_not_closeable`.
     r = scan("r++");
     expect(r.status == io_core.mode_repeated);
     expect(r.flags == -1);
@@ -724,34 +727,87 @@ fn theCoreFunctions() void {
         \\(assert (= "invalid flag +, expected w, a, or r" (why (keyword "+"))))
         \\(assert (= "invalid flag q, expected +, b, or n" (why :rq)))
         \\(assert (= "invalid flag q, expected +, b, or n" (why :r+q)))
+        \\# A repeat gets its own message: naming `+` among the flags expected
+        \\# while refusing a `+` would be no diagnosis at all.
+        \\(assert (= "repeated flag + in file mode" (why :r++)))
+        \\(assert (= "repeated flag b in file mode" (why :rbb)))
+        \\(assert (= "repeated flag n in file mode" (why :rnn)))
+        \\# Across intervening flags, not only next to itself.
+        \\(assert (= "repeated flag b in file mode" (why :rbnb)))
     );
 
-    // A repeated flag produces a handle with every flag bit set, which reports
-    // itself as closed while its descriptor stays open. `FOUND.md` records
-    // this; it is reproduced rather than fixed.
-    doString(env,
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :r++))
-        \\(assert (= :core/file (type f)))
-        \\(assert (not (first (protect (file/read f :all)))))
-        \\(assert (nil? (file/close f)))
-    );
+    // **A repeated flag opens nothing.** The -1 the scan reports is not a flag
+    // word: every bit set includes `file_closed` and `file_not_closeable`, so
+    // the handle would report itself closed, refuse every operation, refuse to
+    // be closed, and keep its descriptor past collection. The descriptor count
+    // is what says the refusal happens before the open rather than after it.
+    //
+    // The count is `os/dir` over `/dev/fd`, and `-Dreduced-os=true` registers
+    // no `os/dir` -- so this case has no instrument there rather than a
+    // weaker one. The refusal itself is asserted above in every
+    // configuration; what is gated is the leak check behind it.
+    if (!config.reduced_os) {
+        doString(env,
+            \\(defn nfds [] (length (os/dir "/dev/fd")))
+            \\(def before (nfds))
+            \\(repeat 50 (protect (file/open "janet-zig-io-core-public-9d24" :r++)))
+            \\(gccollect)
+            \\(assert (= before (nfds)))
+        );
+    }
 
-    // Supplying a buffer size replaces the requested mode with read-only and
-    // skips the mode scan entirely, so a write mode neither truncates nor
-    // writes and a nonsense mode is accepted. `FOUND.md` records this; it is
-    // reproduced rather than fixed.
+    // **A buffer size does not replace the mode.** Reading the mode only at
+    // exactly two arguments leaves a three-argument call unscanned and
+    // read-only, so `:wb 8192` would neither truncate nor write and `:zzz`
+    // would be accepted where the two-argument form refuses it.
     doString(env,
         \\(spit "janet-zig-io-core-public-9d24" "buffered")
         \\(def f (file/open "janet-zig-io-core-public-9d24" :wb 8192))
         \\(assert (= :core/file (type f)))
-        \\(assert (not (first (protect (file/write f "x")))))
-        \\(assert (= "buffered" (string (file/read f :all))))
+        \\(file/write f "x")
         \\(file/close f)
-        \\(assert (= "buffered" (string (slurp "janet-zig-io-core-public-9d24"))))
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :zzz 0))
-        \\(assert (= :core/file (type f)))
-        \\(assert (= "buffered" (string (file/read f :all))))
+        \\(assert (= "x" (string (slurp "janet-zig-io-core-public-9d24"))))
+        \\(assert (= "invalid flag z, expected w, a, or r"
+        \\           (last (protect (file/open "janet-zig-io-core-public-9d24" :zzz 0)))))
+        \\# The read mode is still the default when no mode is given at all.
+        \\(def f (file/open "janet-zig-io-core-public-9d24"))
+        \\(assert (= "x" (string (file/read f :all))))
         \\(file/close f)
+    );
+
+    // **A write-only file refuses all three reads alike.** `:line` reads with
+    // `getc` rather than through `readChunk`, so a readability test that lives
+    // only in `readChunk` leaves `:line` answering nil -- and that nil is
+    // `getc` on a stream opened for writing, which is undefined rather than an
+    // empty line.
+    doString(env,
+        \\(def f (file/open "janet-zig-io-core-public-9d24" :w))
+        \\(each form [:all :line 3]
+        \\  (assert (= "file is not readable" (last (protect (file/read f form))))))
+        \\(file/close f)
+    );
+
+    // **A closed file has no stream to hand out.** `os/isatty` reaches one
+    // through `getfile`, which is outside this file's own closed-flag tests,
+    // and `fileno` of a null stream has no defined answer.
+    //
+    // `-Dreduced-os=true` registers no `os/isatty` -- `boot.janet` substitutes
+    // a macro answering true where the binding is absent -- so the getfile
+    // half is gated on the binding being the runtime's. The flusher half below
+    // reaches the same closed stream by another route and runs everywhere.
+    if (!config.reduced_os) {
+        doString(env,
+            \\(def f (file/temp))
+            \\(file/close f)
+            \\(assert (= "file is closed" (last (protect (os/isatty f)))))
+        );
+    }
+    // Flushing through a closed file flushes nothing rather than every stream
+    // in the process, which is what `fflush(NULL)` does.
+    doString(env,
+        \\(def f (file/temp))
+        \\(file/close f)
+        \\(assert (nil? (with-dyns [:out f] (flush))))
     );
 
     // `file/temp` is anonymous, readable, and writable.

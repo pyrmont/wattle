@@ -191,5 +191,39 @@
 (debug/break "brk-src" 1 40)
 (debug/unbreak "brk-src" 1 40)
 
+# A breakpoint is bit 7 of the instruction word, and the bytecode verifier
+# masks it off wherever it appears -- including on the last instruction, which
+# is the one the terminator check reads. Marshalling is what runs the verifier.
+# `disasm` is what names the last offset, and it goes with the assembler.
+(compwhen (dyn 'disasm)
+  (defn breakable-tail [x] (+ x 1))
+  (def last-offset (dec (length (disasm breakable-tail :bytecode))))
+  (debug/fbreak breakable-tail last-offset)
+  (assert (function? (unmarshal (marshal breakable-tail)))
+          "a breakpoint on the last instruction survives a marshal round trip")
+  (debug/fbreak breakable-tail 0)
+  (assert (function? (unmarshal (marshal breakable-tail)))
+          "a breakpoint anywhere else does too")
+  (debug/unfbreak breakable-tail last-offset)
+  (debug/unfbreak breakable-tail 0))
+
+# A traced call renders through (dyn :err), and a handler written in Janet runs
+# on the same fiber -- so it can grow that fiber's stack while the interpreter
+# is standing on a pointer into it. The call is traced once and completes.
+(defn deep-args [& xs] (length xs))
+(def traced-chunks @[])
+(defn growing-err [b] (def _ (deep-args ;(range 200))) (array/push traced-chunks (string b)) nil)
+(defn traced-meth [self a b c d] (+ 0 5 (length [self a b c d])))
+(trace traced-meth)
+(def trace-result
+  (with-dyns [:err growing-err]
+    (traced-meth :self :A :B :C :D)))
+(untrace traced-meth)
+(assert (= 10 trace-result) "a traced call whose handler grows the stack returns")
+(assert (= 1 (count |(string/has-prefix? "trace (" $) traced-chunks))
+        "and is traced exactly once")
+(assert (= " :self" (get traced-chunks 1))
+        "with the arguments it was called with")
+
 (end-suite)
 

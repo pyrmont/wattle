@@ -371,9 +371,8 @@ pub fn field(structure: structs.Struct, name: [*:0]const u8) repr.Value {
 /// Here rather than at each site because every contract that builds an integer
 /// argument wants it.
 ///
-/// Four subsystems write these three lines out with the reason at the site,
-/// and `FOUND.md` has the entry. It is here so that a contract does not become
-/// the eighth.
+/// Four subsystems write these three lines out with the reason at the site.
+/// It is here so that a contract does not become the eighth.
 pub inline fn wrapInteger(x: i32) repr.Value {
     return wrap.fromNumber(@floatFromInt(x));
 }

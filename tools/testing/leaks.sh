@@ -54,20 +54,18 @@ if [ "$(uname -s)" != "Darwin" ]; then
     exit 2
 fi
 
-# `gc_stress` orphans a block on purpose, so it is excluded rather than
-# expected: its whole subject is a heap the collector is not allowed to reach.
-#
-# **Every other contract is expected to leak nothing, and there are no
-# exceptions left.** There were two. `net_sockets` was expected at 3 until
-# Phase 14 Part 3c closed the `net/address` unix domain leak, and `gc_sweep` at
-# 8 until increment 4g walked the weak heap at teardown; both under
-# `DESIGN.md` §12, both with the `FOUND.md` status line written first.
+# **Every contract is expected to leak nothing, and there are no exceptions.**
+# There were three. `net_sockets` was expected at 3 until Phase 14 Part 3c
+# closed the `net/address` unix domain leak, `gc_sweep` at 8 until increment 4g
+# walked the weak heap at teardown, and `gc_stress` was excluded outright until
+# Phase 16 Part 2 stopped the sweep orphaning what a finalizer allocates -- the
+# 48 bytes it leaked were the subject of the contract rather than a mistake in
+# it. All three under `DESIGN.md` section 12.
 #
 # **These expectations tighten and never loosen**: a count that drops is a leak
 # that was fixed and the number comes down with it; a count that rises is a
-# regression, whatever else changed in the same increment. Adding an
-# `expected_` entry back needs a `FOUND.md` entry to point at.
-excluded="gc_stress"
+# regression, whatever else changed in the same increment.
+excluded=""
 
 if [ $# -gt 0 ]; then
     names=$*
@@ -128,7 +126,7 @@ for name in $names; do
         if [ "$want" = "0" ]; then
             printf '%-24s 0\n' "$name"
         else
-            printf '%-24s %s (expected: FOUND.md)\n' "$name" "$count"
+            printf '%-24s %s (expected)\n' "$name" "$count"
         fi
     else
         printf '%-24s %s LEAKS, expected %s\n' "$name" "$count" "$want"

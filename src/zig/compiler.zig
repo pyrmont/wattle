@@ -52,9 +52,8 @@ pub const CompileResult = struct {
 ///
 /// **The type mask is `repr.TagSet`, which is what it always was.** `cslot`
 /// built it with `1 << janet_type(x)` and `JANET_SLOTTYPE_ANY` was `0xFFFF`;
-/// both are `TagSet` operations now, and the two sites that wrote a raw tag
-/// where a mask was meant no longer have a spelling (`FOUND.md`, "The compiler
-/// writes a raw type tag where a `1 << tag` mask is meant").
+/// both are `TagSet` operations now, and a raw tag written where a mask is
+/// meant has no spelling against this layout.
 pub const SlotFlags = packed struct(u32) {
     /// Which Janet types this slot may hold. Written in six places and read in
     /// none -- an inference channel that was built and never consumed. It is

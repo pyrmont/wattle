@@ -7,8 +7,7 @@
 //! Command-line escaping has no caller outside Windows, the signal lookup
 //! reports a *position* that `os/proc-kill` turns into a number and then into
 //! a panic, and the wait classification is collapsed into a single integer
-//! before Janet sees it. The public section then pins what a caller does see,
-//! including the misspelled signal keyword `FOUND.md` records.
+//! before Janet sees it. The public section then pins what a caller does see.
 //!
 //! ## How the subjects are reached
 //!
@@ -164,10 +163,11 @@ fn theSignalLookup() void {
     // which is what `janet_cstrcmp` did here.
     expect(os_process.signalIndex("int\x00x", 5) == 1);
 
-    // The table misspells the name SIGVTALRM would give, so the documented
-    // spelling is the one that fails. See `FOUND.md`.
-    expect(os_process.signalIndex("vtlarm", 6) == 25);
-    expect(os_process.signalIndex("vtalrm", 6) == -1);
+    // Every name is its signal's own, lower-cased with the `SIG` dropped, and
+    // `vtalrm` is no exception: there is no alias for the `vtlarm` this table
+    // once carried.
+    expect(os_process.signalIndex("vtalrm", 6) == 25);
+    expect(os_process.signalIndex("vtlarm", 6) == -1);
 }
 
 // ==========================================================================
@@ -284,23 +284,17 @@ fn theCoreFunctions() void {
         \\(assert (= 3 (os/execute ["sh" "-c" "exit 3"] :p)))
     );
 
-    // The `:x` flag turns a non-zero code into an error -- but only where the
-    // event loop is compiled in. The flag is read in the wait callback, which
-    // does not exist otherwise, so a build without the event loop accepts the
-    // flag and ignores it. That is recorded in `FOUND.md` and left unfixed, so
-    // the contract pins each configuration as it stands.
+    // **The `:x` flag turns a non-zero code into an error in every
+    // configuration.** The flag is read in the evented wait callback, which
+    // does not exist without the event loop, so the non-evented wait reads it
+    // too rather than accepting the flag and ignoring it -- a caller relying
+    // on `:x` for error handling would otherwise get none, silently, in one
+    // build and not the other. Both raise the same message.
     harness.inFiber(env,
         \\(assert (= 0 (os/execute ["/bin/sh" "-c" "exit 0"] :x)))
+        \\(assert (= "command failed with non-zero exit code 1"
+        \\           (in (protect (os/execute ["/bin/sh" "-c" "exit 1"] :x)) 1)))
     );
-    if (harness.has_ev) {
-        harness.inFiber(env,
-            \\(assert (not (first (protect (os/execute ["/bin/sh" "-c" "exit 1"] :x)))))
-        );
-    } else {
-        harness.inFiber(env,
-            \\(assert (= 1 (os/execute ["/bin/sh" "-c" "exit 1"] :x)))
-        );
-    }
 
     // A supplied environment reaches the child, and a key holding a separator
     // is dropped rather than passed as a different name.
@@ -315,13 +309,14 @@ fn theCoreFunctions() void {
         \\(assert (= 143 (os/proc-kill p true :term)))
     );
 
-    // Signal keywords are looked up whole, and the table's misspelling of
-    // SIGVTALRM is the spelling that resolves. See `FOUND.md`.
+    // Signal keywords are looked up whole, and `vtalrm` is the spelling that
+    // resolves -- the signal's own name with the `SIG` dropped, like every
+    // other row of the table. A prefix of a name is not a name.
     harness.inFiber(env,
         \\(def p (os/spawn ["/bin/sh" "-c" "sleep 10"]))
-        \\(assert (not (first (protect (os/proc-kill p false :vtalrm)))))
+        \\(assert (not (first (protect (os/proc-kill p false :vtlarm)))))
         \\(assert (not (first (protect (os/proc-kill p false :kil)))))
-        \\(os/proc-kill p false :vtlarm)
+        \\(os/proc-kill p false :vtalrm)
         \\(assert (>= (os/proc-wait p) 129))
     );
 
@@ -334,14 +329,18 @@ fn theCoreFunctions() void {
 
     // The remaining process functions report the host directly.
     //
-    // `os/shell` is called without a command, which is the only form that
-    // survives: passing one aborts the process under the event loop, because
-    // the subroutine frees the copied command and the default callback frees
-    // it again. That is recorded in `FOUND.md` and left unfixed, so the
-    // contract cannot exercise it.
+    // **`os/shell` is called with a command as well as without one.** The
+    // command form is the one that used to abort the process: the subroutine
+    // frees the copy it was handed and the reply carries a tag with no payload,
+    // so a callback that freed for every tag freed it a second time.
     harness.inFiber(env,
         \\(assert (> (os/getpid) 0))
         \\(assert (boolean? (os/shell)))
+        \\(assert (= 0 (os/shell "exit 0")))
+        \\# The answer is `system`'s wait status rather than the exit code,
+        \\# which is what "pass a command string directly to the system shell"
+        \\# means and is unchanged by the fix.
+        \\(assert (= 768 (os/shell "exit 3")))
     );
 }
 

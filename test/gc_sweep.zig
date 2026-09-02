@@ -484,12 +484,10 @@ fn aThreadedAbstractLosesItsReference() void {
 /// block nothing, and every finalizer runs — which is what makes
 /// `janet_deinit` safe to call with live values outstanding.
 ///
-/// **The last assertion used to pin a defect and now pins the guarantee.**
-/// Teardown walked `vm.gc.blocks` and never touched `vm.gc.weak_blocks`, so
-/// every weak table and weak array alive at deinit leaked its block and its
-/// data array, and the list head still pointing at them afterwards was that
-/// leak seen from inside. It is fixed here and `FOUND.md` records the
-/// divergence from upstream.
+/// **The last assertion pins the guarantee: both heaps come back empty.**
+/// Walking `vm.gc.blocks` and not `vm.gc.weak_blocks` leaks the block and the
+/// data array of every weak table and weak array alive at deinit, and the list
+/// head still pointing at them afterwards is that leak seen from inside.
 ///
 /// It was visible from outside too: `tools/testing/leaks.sh` carried
 /// `expected_gc_sweep=8` -- the four weak containers this file leaves alive

@@ -263,10 +263,15 @@ pub fn reset(
 ) ArityError!*Fiber {
     resetState(fiber);
     if (args.len != 0) {
-        const newstacktop = fiber.stacktop +% @as(i32, @intCast(args.len));
-        if (newstacktop >= fiber.capacity) {
-            setcapacity(fiber, 2 *% newstacktop);
-        }
+        // The sum and the doubling are both bounded, which is what `grow`
+        // beside this does for the other route into `setcapacity`. Unbounded
+        // they wrap negative, and `setcapacity` turns a negative count into an
+        // enormous byte request and a fatal out-of-memory -- the right refusal
+        // reached through two wraps.
+        const requested = std.math.add(i32, fiber.stacktop, @intCast(args.len)) catch
+            fatal.outOfMemory();
+        if (requested >= fiber.capacity) grow(fiber, requested);
+        const newstacktop = requested;
         const dest = fiber.data.? + @as(usize, @intCast(fiber.stacktop));
         @memcpy(dest[0..args.len], args);
         fiber.stacktop = newstacktop;

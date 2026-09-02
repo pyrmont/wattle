@@ -163,13 +163,14 @@ fn native(name: [*:0]const u8, err: *?strings.String) raise.Raising(ModuleEntry)
         host.bits != modconf.bits)
     {
         var errbuf: [128]u8 = undefined;
-        // The `%.d` in the host's minor position is the C original's and is
-        // reproduced: it is precision zero, so a zero minor version prints as
-        // nothing at all. `FOUND.md` has it.
+        // Both versions are spelled the same way. `%.d` is precision zero,
+        // which writes nothing at all for a value of zero, so a host built
+        // from an `x.0.y` release would report itself as `x..y` beside a
+        // module reporting `x.0.y` -- one message, two spellings of one field.
         _ = c.snprintf(
             &errbuf,
             errbuf.len,
-            "config mismatch - host %d.%.d.%d(%.4x) vs. module %d.%d.%d(%.4x) - native needs to be recompiled!",
+            "config mismatch - host %d.%d.%d(%.4x) vs. module %d.%d.%d(%.4x) - native needs to be recompiled!",
             host.major,
             host.minor,
             host.patch,
@@ -306,6 +307,14 @@ fn cfunExpandPath(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 /// `dot_count` carries three states rather than a count: non-negative is a run
 /// of leading dots in the current segment, and -1 means the segment has a
 /// non-dot character in it and the dots are no longer leading.
+///
+/// **A dot run that ends the string is applied after the loop.** A run only
+/// reaches a branch when a separator ends it, so without the second block
+/// below a trailing `.` or `..` is collected and dropped without ever being
+/// applied -- which makes `a/b/..` answer `a/b/` while `a/b/../` answers `a/`,
+/// the same path meaning two things depending on whether it ends in a
+/// separator. The block is the separator branch's three dot cases and not its
+/// fourth: a path that did not end in a separator does not gain one.
 fn normalizePath(out: *buffers.Buffer) void {
     const data = out.data;
     const end: usize = @intCast(out.count);
@@ -352,6 +361,27 @@ fn normalizePath(out: *buffers.Buffer) void {
             }
             dot_count = -1;
             data.?[print] = ch;
+            print += 1;
+        }
+    }
+    // The run that ended the string. Every write below replaces bytes the run
+    // itself occupied, so `print` cannot pass `end`.
+    if (dot_count == 1) {
+        // A bare "." segment: dropped, and there is no separator to drop with
+        // it.
+    } else if (dot_count == 2) {
+        if (normal_section_count > 0) {
+            print -= 1; // unprint the last separator
+            while (print > 0 and !isPathSep(data.?[print - 1])) print -= 1;
+            normal_section_count -= 1;
+        } else {
+            data.?[print] = '.';
+            data.?[print + 1] = '.';
+            print += 2;
+        }
+    } else if (dot_count > 2) {
+        while (dot_count > 0) : (dot_count -= 1) {
+            data.?[print] = '.';
             print += 1;
         }
     }
@@ -654,8 +684,13 @@ fn cfunSignal(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
     const payload = if (argv.len == 2) argv[1] else wrap.fromNil();
     if (args_core.checkint(argv[0])) {
         const s = wrap.toInteger(argv[0]);
-        if (s < 0 or s > 9) {
-            return pp_format.panicf("expected user signal between 0 and 9, got %d", .{s});
+        // **0 through 7, which is what `user0` through `user7` are.** The two
+        // signals past them are `interrupt` and `event`, so a wider bound here
+        // lets a program raise the interpreter's own signals through the form
+        // documented as the user one; the keyword form has no such gap,
+        // because `signalNames` has no `:user8`.
+        if (s < 0 or s > 7) {
+            return pp_format.panicf("expected user signal between 0 and 7, got %d", .{s});
         }
         return raise.signal(@enumFromInt(@intFromEnum(abi.Signal.user0) + @as(c_uint, @intCast(s))), payload);
     }
@@ -675,11 +710,10 @@ fn cfunMemcmp(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
     const len = try args_core.optNat(argv, 2, @intCast(if (a.len < b.len) a.len else b.len));
     const offset_a = try args_core.optNat(argv, 3, 0);
     const offset_b = try args_core.optNat(argv, 4, 0);
-    // The C original adds these as `int32_t`, which overflows for a large
-    // offset and a large length and lets the comparison read off the end of
-    // both views. Signed overflow is undefined, so there is nothing to
-    // reproduce: the sum is taken wide and the check answers correctly.
-    // `FOUND.md` records the C behaviour.
+    // The sum is taken wide so that the bound holds for every offset and
+    // length a caller can pass: at `int32_t` a large offset and a large length
+    // overflow the addition and let the comparison read off the end of both
+    // views.
     if (@as(i64, offset_a) + @as(i64, len) > a.len) {
         return pp_format.panicf("invalid offset-a: %d", .{offset_a});
     }
@@ -1475,11 +1509,14 @@ pub fn dobytesImpl(
                 const ctx = try pp_format.formatc("%s:%d:%d: compile error", .{ path, line, col });
                 const errstr = try pp_format.formatc("%s: %s", .{ ctx, cres.@"error" });
                 ret = wrap.fromString(errstr);
+                // **One line, both branches, and the context appears once.**
+                // `stacktraceExt` renders `ret`, which is `errstr`, which
+                // begins with `ctx` -- so printing `ctx` here as well prints
+                // the context twice, and printing it with no separator runs it
+                // straight into the trace's own `error: `.
+                try eprintf("%s\n", .{errstr});
                 if (cres.macrofiber != null) {
-                    try eprintf("%s", .{ctx});
                     try trace_frames.stacktraceExt(cres.macrofiber, ret, "");
-                } else {
-                    try eprintf("%s\n", .{errstr});
                 }
                 errflags |= constants.JANET_DO_ERROR_COMPILE;
                 done = true;

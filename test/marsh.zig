@@ -247,16 +247,6 @@ const never_at = abstract_type.define(anyopaque, .{
     .unmarshal = neverUnmarshal,
 });
 
-fn threadedUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*anyopaque) {
-    return (try marsh.unmarshalAbstractThreaded(ctx, 1)).?;
-}
-
-const threaded_at = abstract_type.define(anyopaque, .{
-    .name = "test/marsh-threaded",
-    .marshal = protocolMarshal,
-    .unmarshal = threadedUnmarshal,
-});
-
 /// A type with no callbacks at all, which is what makes a value
 /// unmarshallable rather than merely unregistered.
 const inert_at = abstract_type.define(anyopaque, .{ .name = "test/marsh-inert" });
@@ -434,14 +424,6 @@ fn theAbstractProtocolIsEnforced() raise.Raising(void) {
     expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("janet_unmarshal_abstract not called"));
 
-    const threaded: *u8 = @ptrCast(abstracts.newBytes(stored(&threaded_at), 1));
-    threaded.* = 7;
-    b = try marshalled(keep(wrap.fromAbstract(threaded)), null, 0);
-    // `JANET_THREADS` is defined by no build in this tree, so this arm is the
-    // only one that has ever been compiled. See `FOUND.md`.
-    expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
-        .says("threaded abstracts not supported"));
-
     const inert: *i32 = @ptrCast(@alignCast(abstracts.newBytes(stored(&inert_at), @sizeOf(i32))));
     inert.* = 7;
     expect(harness.raised(
@@ -513,20 +495,14 @@ fn pointersAndCfunctionsNeedTheUnsafeFlag() raise.Raising(void) {
 
 // ------------------------------------------------------- the weak vocabulary
 
-/// `LB_THREADED_ABSTRACT` and `LB_POINTER_BUFFER` are inside `#ifdef JANET_EV`
-/// in the lead-byte enum and the seven weak-container bytes that follow them
-/// are not, so the weak bytes renumber with the build. That is a defect, it is
-/// upstream's, and this pins it in whichever configuration is being built --
-/// see `FOUND.md`.
+/// The seven weak-container lead bytes are 226 through 232, and they are that
+/// in every configuration. The event loop is a feature flag and a lead byte is
+/// a wire format, so a build that cannot produce a threaded abstract still
+/// gives 224 and 225 away rather than reusing them.
 ///
-/// Janet spells the two cases as an `#ifdef JANET_EV` cascade, and this is the
-/// same question asked of the same input: `config.ev` is what `marsh.zig`'s
-/// own `has_ev` reads. What must *not* be read here is `marsh.zig`'s
-/// `weak_base`, which is the arithmetic under test.
-///
-/// The lead-byte enumeration is private to the subsystem, so there is no
-/// `LB_POINTER_BUFFER` in the translation to ask instead.
-const lb_weak_base: u8 = if (constants.JANET_VM_HAS_EV != 0) 226 else 224;
+/// The number is written here rather than read from `marsh.zig`, which is what
+/// makes this a check: the subject and the oracle are independently derived.
+const lb_weak_base: u8 = 226;
 
 // The lead bytes this file names by number, so that the numbers appear once.
 // Every one is a wire-format constant, and a renumbering would silently
@@ -540,7 +516,7 @@ const lb_funcdef_ref: u8 = 220;
 const lb_unsafe_cfunction: u8 = 221;
 const lb_unsafe_pointer: u8 = 222;
 
-fn theWeakLeadBytesMoveWithTheEventLoop() raise.Raising(void) {
+fn theWeakLeadBytesAreTheSameInEveryConfiguration() raise.Raising(void) {
     const weakk = tables.weakk(1);
     const weakv = tables.weakv(1);
     const weakkv = tables.weakkv(1);
@@ -806,8 +782,8 @@ fn aTruncatedStreamIsRefusedAtEveryLength() raise.Raising(void) {
 }
 
 fn theDiagnosticsNameAByteAndAnOffset() void {
-    // The byte is rendered by `%x`, which reads a 64-bit argument from a call
-    // that passes a 32-bit one in the C original -- see `FOUND.md`.
+    // The byte is rendered by `%x`, which takes 64 bits and rejects a narrower
+    // or signed argument at compile time.
     expect(refusedBy("\xff").?.says("unknown byte ff at index 0"));
     expect(refusedBy("\xd1\x01\xff").?.says("unknown byte ff at index 2"));
     // A lead byte in [192, 200) is not an integer encoding.
@@ -882,7 +858,6 @@ fn body() raise.Raising(void) {
     try registry.registerAbstractType(stored(&refuser_at));
     try registry.registerAbstractType(stored(&twice_at));
     try registry.registerAbstractType(stored(&never_at));
-    try registry.registerAbstractType(stored(&threaded_at));
     try registry.registerAbstractType(stored(&inert_at));
     try registry.registerAbstractType(stored(&toobig_at));
 
@@ -894,7 +869,7 @@ fn body() raise.Raising(void) {
     try theAbstractProtocolIsEnforced();
     try theUnsafeGateOnTheContextApi();
     try pointersAndCfunctionsNeedTheUnsafeFlag();
-    try theWeakLeadBytesMoveWithTheEventLoop();
+    try theWeakLeadBytesAreTheSameInEveryConfiguration();
     try whenAValueBecomesAReference();
     aReferenceIndexIsBoundsChecked();
     try functionStreamsAndTheirBackReferences();

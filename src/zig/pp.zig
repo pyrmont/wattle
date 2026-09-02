@@ -160,14 +160,21 @@ fn escapeStringB(buffer: *buffers.Buffer, str: strings.String) raise.Raising(voi
     _ = try escapeString(buffer, str[0..strings.head(str).length]);
 }
 
+/// **The length is read before the marker is pushed**, which is what makes a
+/// buffer describing *itself* describe what it held. Pushing first and then
+/// escaping `source.slice()` escapes the `@` as well, because the push has
+/// already moved `count` past it: `(buffer/format b "%v" b)` on a buffer
+/// holding `a` answers `a@"a@"`. The pretty printer keeps the same record
+/// under the name `bufstartlen`.
 fn escapeBufferB(buffer: *buffers.Buffer, source: *buffers.Buffer) raise.Raising(void) {
+    const count: usize = @intCast(source.count);
     if (source == buffer) {
         // Reserve the worst case up front so that the buffer cannot resize
         // underneath the loop that is reading it.
         try buffers.ensure(source, source.count + 5 * source.count + 3, 1);
     }
     try buffers.pushU8(buffer, '@');
-    _ = try escapeString(buffer, source.slice());
+    _ = try escapeString(buffer, source.slice()[0..count]);
 }
 
 // ---------------------------------------------------------------- to_string

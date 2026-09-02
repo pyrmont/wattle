@@ -9,31 +9,24 @@
 //! rather than split across three files because both are properties of the
 //! collector as a whole rather than of any one function in it.
 //!
-//! ## Two of the assertions below pin defects
+//! ## What a GC callback may allocate
 //!
-//! A GC callback may not keep anything it allocates, and the two halves of
-//! that sentence fail differently:
+//! **A `gcmark` callback may not keep anything it allocates.** The block is
+//! prepended to `vm.gc.blocks` with its mark bit clear, and the mark phase
+//! reaches objects from the root set rather than by walking that list, so the
+//! sweep in the same collection frees it. The object is created and destroyed
+//! inside one collection and the caller never sees it live. That is a rule
+//! rather than a defect — making it survive means marking during the mark
+//! phase or deferring the sweep, either of which changes what a collection is
+//! — and it is stated in `DESIGN.md` §12 with the other two rules about what
+//! an abstract type's callbacks may not do.
 //!
-//!  - Allocated from `gcmark`, during the mark phase: the block is prepended
-//!    to `vm.gc.blocks` with its mark bit clear, and the sweep that follows in
-//!    the same collection frees it. The object is created and destroyed inside
-//!    one collection and the caller never sees it live.
-//!
-//!  - Allocated from a finalizer, during the sweep: the outcome depends on
-//!    where in the heap list the block being finalized sits. Mid-list it is
-//!    fine and the new block is collected on the next cycle. At the *head* it
-//!    is orphaned permanently — the sweep restores the list head from a
-//!    pointer it saved before the callback ran, which discards the prepend.
-//!    The block is then reachable from nothing, is never finalized, is not
-//!    freed by `janet_deinit`, and `vm.gc.block_count` counts it forever.
-//!
-//! Both are the C implementation's behaviour and both are in `FOUND.md`. They
-//! are pinned rather than merely described because a leak is deterministic and
-//! observable — unlike undefined behaviour, which this phase's rules say not
-//! to pin.
-//!
-//! **This contract leaks on purpose and must stay out of the leak-checker
-//! gate.**
+//! **A finalizer may.** What it allocates is collected on the next cycle,
+//! wherever in the heap list the block being finalized sat. The sweep re-derives
+//! the predecessor of the block it is unlinking after the callback rather than
+//! trusting the head it saved before it, which is what makes the head case
+//! behave like the mid-list one; both are asserted below, because the position
+//! dependence is what the two cases exist to rule out.
 //!
 //! ## The cross-thread half
 //!
@@ -204,15 +197,14 @@ fn finalizerAllocationSurvivesWhenMidList() void {
     expect(orphanedBlocks() == orphans_before);
 }
 
-/// The defect. When the block being finalized *is* the head of the heap list,
-/// the sweep restores the head from the pointer it saved before running the
-/// callback, and the block the callback allocated is discarded with it.
+/// The case the position dependence turned on: the block being finalized *is*
+/// the head of the heap list, so the finalizer's own allocation is prepended
+/// in front of it and the head the sweep saved before the callback is stale.
 ///
-/// What is asserted is every consequence: the block is counted and not on the
-/// list, its finalizer never runs however many collections follow, and the gap
-/// never closes. `FOUND.md` has the analysis. Nothing here dereferences the
-/// orphan — it is unreachable by construction, which is the whole problem.
-fn finalizerAllocationIsOrphanedAtTheHead() void {
+/// What is asserted is that the answer is the mid-list one — the new block is
+/// on the list, is collected on the next cycle, and the gap between
+/// `block_count` and the walked list never opens.
+fn finalizerAllocationSurvivesAtTheHead() void {
     const orphans_before = orphanedBlocks();
 
     child_finalized = 0;
@@ -225,14 +217,12 @@ fn finalizerAllocationIsOrphanedAtTheHead() void {
     gc_mark.collect();
     expect(parent_finalized == 1);
     expect(allocations_left == 0); // the callback allocated
-    expect(child_finalized == 0); // and it was never freed
-    expect(orphanedBlocks() == orphans_before + 1); // counted, not listed
+    expect(child_finalized == 0); // and it survived this collection
+    expect(orphanedBlocks() == orphans_before); // on the list, and counted once
 
-    // No number of collections reclaims it, because nothing can reach it.
     gc_mark.collect();
-    gc_mark.collect();
-    expect(child_finalized == 0);
-    expect(orphanedBlocks() == orphans_before + 1);
+    expect(child_finalized == 1); // collected on the next
+    expect(orphanedBlocks() == orphans_before);
 }
 
 // ---------------------------------------------------------- cross-thread
@@ -360,7 +350,7 @@ fn body() !void {
 
     allocationFromGcmarkDiesInTheSameCollection();
     finalizerAllocationSurvivesWhenMidList();
-    finalizerAllocationIsOrphanedAtTheHead();
+    finalizerAllocationSurvivesAtTheHead();
 
     if (has_threads) {
         try theRefcountIsAtomicAcrossThreads();

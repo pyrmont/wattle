@@ -59,10 +59,10 @@ pub inline fn setEnviron(value: EnvironVector) void {
 ///
 /// Both are empty in every build this tree can produce. Janet guards the real
 /// bodies -- a `pthread_mutex_t` or a `CRITICAL_SECTION` -- with
-/// `JANET_THREADS`, and `FOUND.md` records that `JANET_THREADS` is defined
-/// nowhere in the tree. The guarded arms are recorded here rather than
-/// written: Zig does not analyse a comptime-false branch, so carrying them
-/// would produce something even less checked than what they replaced.
+/// `JANET_THREADS`, which no build in this tree defines. The guarded arms are
+/// recorded here rather than written: Zig does not analyse a comptime-false
+/// branch, so carrying them would produce something even less checked than
+/// what they replaced.
 ///
 /// They are kept as named no-ops rather than deleted because the *places* they
 /// are called from are the contract -- `os/getenv` holds the lock across the

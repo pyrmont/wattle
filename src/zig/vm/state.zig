@@ -287,15 +287,12 @@ pub const TryState = struct {
 /// stated once rather than at each read.
 ///
 /// **It owns the representation and not the memory**, and both halves of that
-/// are deliberate. Growth is the owner's, and the four owners would not agree
-/// on a shared one if they could: the root set grows when
-/// `count + 1 > capacity` and doubles `count + 1`, the registry grows on
-/// `count == capacity` to `(count + 1) * 2` with a floor of 512, the scratch
-/// table to `2 * capacity + 2` and deliberately multiplies by
-/// `@sizeOf(ScratchBlock)` where the element is a pointer (`FOUND.md`, and
-/// `gc.zig`'s header), and the event loop's timer queue reports an allocation
-/// failure with its own source location. Each owner keeps its rule; what they
-/// share is the shape and the reads.
+/// are deliberate. Growth is the owner's, and the owners would not agree on a
+/// shared rule if they could: the root set grows when `count + 1 > capacity`
+/// and doubles `count + 1`, the registry grows on `count == capacity` to
+/// `(count + 1) * 2` with a floor of 512, and the event loop's timer queue
+/// reports an allocation failure with its own source location. Each owner
+/// keeps its rule; what they share is the shape and the reads.
 ///
 pub fn Vector(comptime T: type) type {
     return struct {

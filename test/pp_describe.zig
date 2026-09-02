@@ -108,11 +108,11 @@ fn aBufferPrintedIntoItself() !void {
     const d: *buffers.Buffer = buffers.new(1);
     _ = buffers.pushCstringAbi(d, "a\nb");
     try describe.descriptionB(d, wrap.fromBuffer(d));
-    // The '@' is pushed before the length is read, so it is escaped as part of
-    // the contents. That is a defect and it is pinned rather than corrected:
-    // `FOUND.md` has it, and the pretty printer avoids it by escaping
-    // `bufstartlen` bytes instead of `count`.
-    checkBuffer(d, "a\nb@\"a\\nb@\"");
+    // **The length is read before the '@' is pushed**, so what is escaped is
+    // what the buffer held rather than what it holds after the marker. Pushing
+    // first makes the marker part of its own escaped content, which is
+    // `a\nb@"a\\nb@"` -- the trailing `@` inside the quotes.
+    checkBuffer(d, "a\nb@\"a\\nb\"");
 }
 
 // ---------------------------------------------------------------- escaping

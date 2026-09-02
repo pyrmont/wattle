@@ -40,10 +40,10 @@
 //!
 //! `janet_string_begin` and `janet_tuple_begin` leave the hash uninitialised,
 //! and there is no way to assert an indeterminate value; the cases below read
-//! it only after the matching `end`. And `janet_symcache_findmem` ends the
-//! process when the table is full, which `FOUND.md` records as reachable only
-//! at a capacity of two — a state that needs `cache_count` to reach zero and
-//! so cannot be arranged while a core environment is loaded.
+//! it only after the matching `end`. And `cacheFindmem` ends the process when
+//! the table is full, which the rehash floor makes unreachable — the cases
+//! that would have to be arranged to reach it end the test process rather than
+//! failing an assertion.
 
 const std = @import("std");
 const repr = @import("repr");

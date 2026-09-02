@@ -400,9 +400,12 @@ fn theSignalTable() void {
         \\(assert (= "undefined signal :nosuchsignal"
         \\           (in (protect (os/proc-kill p false :nosuchsignal)) 1)))
         \\(assert (>= (os/proc-kill p true) 128))
+        \\# `:vtalrm` is the spelling the table carries -- the signal's own
+        \\# name with the `SIG` dropped -- and the transposition is not an
+        \\# alias for it.
         \\(def q (sleeper))
-        \\(assert (= "undefined signal :vtalrm"
-        \\           (in (protect (os/proc-kill q false :vtalrm)) 1)))
+        \\(assert (= "undefined signal :vtlarm"
+        \\           (in (protect (os/proc-kill q false :vtlarm)) 1)))
         \\(assert (>= (os/proc-kill q true) 128))
         \\(file/close null)
     );
@@ -532,10 +535,9 @@ fn thePlatform() void {
         \\# one and the fallback where there is not -- and `(os/cpu-count)` with
         \\# no argument is exactly the test for which. `(= 7 (os/cpu-count 7))`
         \\# asserts the fallback as though it were the answer: true on macOS,
-        \\# where `janet_os_cpu_count` has no arm at all and returns -1, and
-        \\# false in a Linux container, where the count is real. `FOUND.md` has
-        \\# the Darwin half. The form below holds on both hosts and is the
-        \\# stronger claim on each.
+        \\# where the count has no arm at all and comes back -1, and false in a
+        \\# Linux container, where the count is real. The form below holds on
+        \\# both hosts and is the stronger claim on each.
         \\(assert (= (os/cpu-count 7) (or (os/cpu-count) 7)))
     );
 }
@@ -638,12 +640,12 @@ fn theLinks() void {
 
 /// `os/rm` and the filesystem sandbox.
 ///
-/// This is the one place the runtime deliberately departs from Janet's
-/// behaviour, by agreement rather than by rule: Janet asserts no permission in
-/// `os/rm` while asserting `JANET_SANDBOX_FS_WRITE` in every one of its
-/// neighbours, so a sandboxed program could delete any file the process could
-/// reach. `FOUND.md` keeps the entry for reporting upstream and the fix is
-/// carried here.
+/// **Every filesystem entry point asserts the permission its operation needs**,
+/// and `os/rm` and `os/readlink` are the two that once did not: `os/rm`
+/// asserted nothing at all while its nine neighbours asserted `fs_write`, so a
+/// sandboxed program could delete any file the process could reach, and
+/// `os/readlink` asserted nothing where `os/stat`, `os/dir` and `os/realpath`
+/// assert `fs_read`.
 ///
 /// `sandbox` is irreversible within a VM, so this runs in a `janet_init` of
 /// its own and does its setup before forbidding anything. The file it leaves
@@ -867,9 +869,8 @@ fn theSigaction() void {
         \\(assert (= "undefined signal :nosuchsignal"
         \\           (in (protect (os/sigaction :nosuchsignal (fn [] nil))) 1)))
         \\# A handler is entered with no arguments, so one that cannot accept
-        \\# zero can never run. The C registered it and dereferenced null when
-        \\# the signal arrived; `FOUND.md` records that, and the refusal
-        \\# below is the agreed fix -- at registration, where the mistake is.
+        \\# zero can never run: no fiber can be built for it. The refusal is at
+        \\# registration, where the caller can still act on it.
         \\(assert (string/has-prefix?
         \\           "signal handler must accept zero arguments"
         \\           (in (protect (os/sigaction :usr1 (fn [x] nil))) 1)))

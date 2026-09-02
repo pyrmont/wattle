@@ -37,7 +37,6 @@
 //! them on. `theGrammarFaults` below asserts all six there.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const repr = @import("repr");
 const constants = @import("constants");
 const raise = @import("subsystems").raise;
@@ -55,7 +54,7 @@ const wrap = @import("subsystems").value.wrap;
 
 var test_env: *tables.Table = undefined;
 var raises_fired: usize = 0;
-const expected_raises = 15;
+const expected_raises = 18;
 
 // ------------------------------------------------------------- assertions
 
@@ -152,34 +151,6 @@ fn everyArgumentWidthInOneCall() void {
     checkString(s, "A|-2000000000|-8000000000000000000|fedcba9876543210|3.25|tail|:kw|7");
 }
 
-/// `%D` renders whatever the host libc makes of an unrecognised conversion,
-/// and this is the only place that says so.
-///
-/// **This assertion used to sit inside `everyArgumentWidthInOneCall`, and it
-/// made that contract fail on Linux.** `FOUND.md` records the defect --
-/// `format_mappings` carries `D` and `I` entries that `FMT_REPLACE_INTTYPES`
-/// never consults, so the specifier reaches `snprintf` unrewritten -- and says
-/// of Janet that it "pins only that the mapping does *not* happen, which is
-/// the part that is the same everywhere". Pinning the *rendering* instead is
-/// pinning macOS's BSD synonym for `%ld`, and musl produces nothing at all.
-///
-/// So the widths above use `%d`, which maps to `PRId64` and is well defined on
-/// every host, and the host-specific behaviour is asserted here and only where
-/// it is known. Nothing is lost on macOS and Linux stops failing on a
-/// divergence this project has already decided not to fix.
-fn theUnmappedIntegerConversions() void {
-    if (builtin.os.tag != .macos) return;
-
-    // macOS accepts `%D` as a BSD synonym for `%ld`...
-    const rendered = fmt.formatc("%D", .{@as(i64, -8000000000000000000)}) catch @panic("raised");
-    checkString(rendered, "-8000000000000000000");
-
-    // ...and does not recognise `%I`, rendering the conversion character as a
-    // literal, padded according to the flags.
-    const literal = fmt.formatc("[%-8I]", .{@as(i64, 8)}) catch @panic("raised");
-    checkString(literal, "[I       ]");
-}
-
 /// `formatb` appends to a buffer the caller already owns, and returns it. A
 /// version that replaced the contents rather than appending would be invisible
 /// until an embedder tripped over it.
@@ -244,22 +215,26 @@ fn theTypeNameConversion() void {
     checkString(fmt.formatc("%t", .{wrap.fromNil()}) catch @panic("raised"), "nil");
 }
 
-/// `%D` and `%I` are declared in the mapping table and never reached by it,
-/// because the table is consulted only for the lower-case spellings. What they
-/// print is whatever the host's `snprintf` makes of an unrecognised conversion,
-/// and that is what is pinned: *not* the 64-bit rendering the table intends.
-/// `FOUND.md` has the entry.
+/// **`%D` and `%I` are not conversions**, and the refusal is the same on every
+/// host.
 ///
-/// The assertion is deliberately weak -- it says the mapping did not happen,
-/// rather than what the libc did instead -- because the libc's answer differs
-/// by platform and pinning it would make this a platform check.
-fn theUpperCaseIntegerConversionsAreNotMapped() void {
-    const d = fmt.formatc("%D", .{@as(i64, 5)}) catch @panic("raised");
-    const i = fmt.formatc("%I", .{@as(i64, 6)}) catch @panic("raised");
-
-    // Were the table consulted, these would be "5" and "6".
-    expect(!std.mem.eql(u8, bytes(i), "6"));
-    _ = d; // BSD libc happens to accept %D, glibc and musl do not.
+/// They were entries in a mapping table that the scan consulted only for the
+/// lower-case spellings, so the specifier reached `snprintf` unrewritten and
+/// what it printed was whatever the host libc made of it: `%ld` on macOS,
+/// which accepts `%D` as a BSD synonym, and nothing on glibc or musl. Pinning
+/// that meant either pinning one host's libc or asserting only that the
+/// mapping had not happened.
+///
+/// Against `formatTuple` both spellings are compile errors, which is why only
+/// the runtime loop can be asked here -- and it is the reachable half in any
+/// case, because a Janet program supplies `string/format`'s format string.
+fn theUpperCaseIntegerConversionsAreRefused() void {
+    var one = [_]repr.Value{wrapInteger(5)};
+    expectRaise("invalid conversion '%D' to 'format'", formatted, .{ "%D", one[0..] });
+    expectRaise("invalid conversion '%I' to 'format'", formatted, .{ "%I", one[0..] });
+    // The flags and width travel into the message the way they do for every
+    // other unrecognised conversion.
+    expectRaise("invalid conversion '%-8I' to 'format'", formatted, .{ "%-8I", one[0..] });
 }
 
 // --------------------------------------------------- the specifier grammar
@@ -329,6 +304,69 @@ fn theRefusals() void {
     var fn_slot = [_]repr.Value{eval("print")};
     expectRaise("could not print to jdn format", fmt.formatc, .{ "%j", .{fn_slot[0]} });
     expectRaise("could not print to jdn format", formatted, .{ "%j", fn_slot[0..] });
+}
+
+/// **`%j` sorts a dictionary's keys, so the same value writes the same bytes.**
+///
+/// The keys here hash by *pointer*, which is what makes this assertable at
+/// all: a buffer's bucket is chosen by its allocation address, so in storage
+/// order the four entries come out in an order that differs between runs of
+/// one binary. Keyword keys would hash by contents and could pass without the
+/// sort.
+///
+/// `%q` is the oracle rather than a literal: it has sorted since before this
+/// contract existed, and asserting the two agree says the orders are one order
+/// rather than two that happen to match today.
+fn theJdnWriterSortsItsKeys() void {
+    const b1 = buffers.new(1);
+    const b2 = buffers.new(1);
+    const b3 = buffers.new(1);
+    const b4 = buffers.new(1);
+    _ = buffers.pushCstringAbi(b1, "a");
+    _ = buffers.pushCstringAbi(b2, "b");
+    _ = buffers.pushCstringAbi(b3, "c");
+    _ = buffers.pushCstringAbi(b4, "d");
+
+    const t = tables.new(8);
+    _ = tables.put(t, wrap.fromBuffer(b1), wrapInteger(1));
+    _ = tables.put(t, wrap.fromBuffer(b2), wrapInteger(2));
+    _ = tables.put(t, wrap.fromBuffer(b3), wrapInteger(3));
+    _ = tables.put(t, wrap.fromBuffer(b4), wrapInteger(4));
+
+    var slot = [_]repr.Value{wrap.fromTable(t)};
+    const jdn = formatted("%j", slot[0..]) catch @panic("raised");
+
+    // The same order the pretty printer has always produced. **This is the
+    // assertion, and the order itself is not**: two buffers order by address,
+    // so which of the four comes first is the allocator's answer and differs
+    // between platforms. What must not differ is that `%j` and `%q` give one
+    // order rather than two that happen to agree here.
+    const pretty = formatted("%q", slot[0..]) catch @panic("raised");
+    expect(std.mem.eql(u8, bytes(jdn), bytes(pretty)));
+
+    // And it survives the storage order changing under it, which is the whole
+    // of what "reproducible" means: rehashing moves every entry to a new
+    // bucket and `%j` renders the same bytes.
+    var before: [128]u8 = undefined;
+    const before_len = bytes(jdn).len;
+    @memcpy(before[0..before_len], bytes(jdn));
+    for (0..64) |i| {
+        const filler = buffers.new(1);
+        buffers.pushCstringAbi(filler, "z");
+        tables.put(t, wrap.fromBuffer(filler), wrapInteger(@intCast(i)));
+        _ = tables.remove(t, wrap.fromBuffer(filler));
+    }
+    expect(t.capacity > 8);
+    const after = formatted("%j", slot[0..]) catch @panic("raised");
+    expect(std.mem.eql(u8, before[0..before_len], bytes(after)));
+
+    // A struct takes the same path, and nesting keeps each level's own order.
+    const nested = eval("{:b {:z 1 :a 2} :a 3}");
+    var nest_slot = [_]repr.Value{nested};
+    checkString(
+        formatted("%j", nest_slot[0..]) catch @panic("raised"),
+        "{:a 3 :b {:a 2 :z 1}}",
+    );
 }
 
 /// The three faults `scanFormat` raises, on the loop that can still reach them.
@@ -556,15 +594,15 @@ pub fn run() void {
     _ = gc_alloc.gcroot(wrap.fromTable(test_env));
 
     everyArgumentWidthInOneCall();
-    theUnmappedIntegerConversions();
     formatbAppendsAndReturnsItsBuffer();
     theJanetStringConversion();
     theTypeSetConversion();
     theTypeNameConversion();
-    theUpperCaseIntegerConversionsAreNotMapped();
+    theUpperCaseIntegerConversionsAreRefused();
     flagsWidthAndPrecisionSurviveTheRebuild();
     aBareStringConversionHasNoLengthLimit();
     theRefusals();
+    theJdnWriterSortsItsKeys();
     theGrammarFaults();
     anOversizedItemIsRefused();
     theTwoLoopsAgreeWhereTheyOverlap();

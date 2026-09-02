@@ -112,15 +112,15 @@ fn cfunCd(argv: []repr.Value) raise.Raising(repr.Value) {
     return wrap.fromNil();
 }
 
-/// The sandbox assertion here is a *fix*, not a reproduction, and it is the
-/// one place this increment deliberately departs from the C original's
-/// behaviour by agreement rather than by rule.
+/// **Every filesystem entry point asserts the capability its operation needs**,
+/// and this is one of the two that once did not. `os/mkdir`, `os/rmdir`,
+/// `os/cd`, `os/rename`, `os/touch`, `os/chmod`, `os/umask`, `os/link` and
+/// `os/symlink` all assert filesystem write; without the line below a program
+/// under a full filesystem sandbox could still delete any file the process
+/// could reach. `os/readlink` is the other, and asserts filesystem read.
 ///
-/// Upstream asserts nothing in `os/rm`, while `os/mkdir`, `os/rmdir`, `os/cd`,
-/// `os/rename`, `os/touch`, `os/chmod`, `os/umask`, `os/link` and `os/symlink`
-/// all assert the filesystem-write capability -- so a program under a full
-/// filesystem sandbox could still delete any file the process could reach.
-/// `FOUND.md` keeps the entry for reporting upstream.
+/// The assertion goes *before* the arity check, which is the order all nine
+/// neighbours use and which is observable.
 fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 1);
@@ -153,6 +153,9 @@ fn cfunTouch(argv: []repr.Value) raise.Raising(repr.Value) {
     if (argv.len >= 2) {
         actime = try args_core.getNumber(argv, 1);
         modtime = if (argv.len >= 3) try args_core.getNumber(argv, 2) else actime;
+        if (!secondsFitTimeT(actime) or !secondsFitTimeT(modtime)) {
+            return raise.panic("invalid argument to touch");
+        }
     }
     if (touch(@ptrCast(path), argv.len >= 2, actime, modtime) == -1) {
         return raise.panic(@ptrCast(utils.strerrorSafe(c.errno())));
@@ -204,6 +207,7 @@ fn cfunSymlink(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// Like `os/rm`, this one asserts no sandbox permission.
 fn cfunReadlink(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.fixarity(argv, 1);
     if (windows) return raise.panic("not supported on Windows");
     var buffer: [oa.path_max]u8 = undefined;
@@ -223,13 +227,15 @@ fn cfunRealpath(argv: []repr.Value) raise.Raising(repr.Value) {
     const dest = canonicalPath(@ptrCast(src)) orelse {
         return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), src });
     };
+    // The host allocated it, so the host's `free` releases it -- and the
+    // release is a `defer` because the interning below can raise and the
+    // Windows arm raises on its own account.
+    defer utils.free(dest);
     const ret = value.fromBytes(std.mem.span(dest), .string);
     if (windows) {
-        const attrib = c.GetFileAttributesA(dest);
-        c.free(dest);
-        if (attrib == 0xFFFF_FFFF) return pp_format.panicf("path does not exist: %v", .{ret});
-    } else {
-        utils.free(dest);
+        if (c.GetFileAttributesA(dest) == 0xFFFF_FFFF) {
+            return pp_format.panicf("path does not exist: %v", .{ret});
+        }
     }
     return ret;
 }
@@ -564,11 +570,32 @@ pub fn canonicalPath(path: [*:0]const u8) ?[*:0]u8 {
     return c.realpath(path, null);
 }
 
+/// Whether a seconds value is one a `time_t` can carry.
+///
+/// **The two callers that take seconds from a program ask this first.**
+/// `os/sleep` and `os/touch` both convert a double the caller supplied, and a
+/// conversion is not a check: a NaN converts to zero, so `(os/sleep math/nan)`
+/// sleeps no time at all and `(os/touch p math/nan)` writes the epoch; an
+/// infinity or `1e300` converts to `time_t`'s maximum, so a sleep hangs for a
+/// geological age and a timestamp is silently something else. Neither is an
+/// answer, and a program that means "forever" can say `math/int-max`.
+///
+/// It is one helper rather than one check per site because it is one question.
+pub fn secondsFitTimeT(x: f64) bool {
+    if (!std.math.isFinite(x)) return false;
+    const low: f64 = @floatFromInt(@as(TimeT, std.math.minInt(TimeT)));
+    const high: f64 = @floatFromInt(@as(TimeT, std.math.maxInt(TimeT)));
+    return x > low and x < high;
+}
+
 /// Convert toward zero, clamping instead of trapping. This reproduces the
 /// AArch64 conversion the C implementation performs without a sanitizer: a NaN
 /// becomes zero and an out-of-range value becomes the nearest bound. A NaN is
 /// separated first because `@intFromFloat` is illegal for it and because the
 /// ordinary comparisons below would otherwise send it to the low bound.
+///
+/// Every remaining caller has already established its argument's range --
+/// `secondsFitTimeT` above is what the two that take one from a program use.
 fn saturatingCast(comptime T: type, x: f64) T {
     if (std.math.isNan(x)) return 0;
     const low: f64 = @floatFromInt(@as(T, std.math.minInt(T)));

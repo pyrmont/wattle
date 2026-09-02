@@ -233,14 +233,13 @@ pub extern fn unsetenv(name: [*:0]const u8) callconv(.c) c_int;
 pub extern fn _putenv_s(name: [*:0]const u8, value: [*:0]const u8) callconv(.c) c_int;
 
 // used by `os/fs.zig`
-/// The host allocates the path and this frees it, on the POSIX/Windows split
-/// `FOUND.md` records: `canonicalPath` is `realpath` on POSIX and
-/// `_fullpath` on Windows, and the Windows result is released with the plain
-/// `free` rather than Janet's, because `_fullpath` used the plain `malloc`.
+/// The host allocates the path and this frees it: `canonicalPath` is
+/// `realpath` on POSIX and `_fullpath` on Windows, both of which allocate with
+/// the host's allocator, so the host's `free` is what releases the result.
 ///
-/// The `janet_cstringv` between the allocation and the release can raise, and
-/// a raise here strands the allocation. That is the C original's behaviour,
-/// reproduced rather than repaired with a `defer`.
+/// **The caller releases it with a `defer`**, because the interning between
+/// the allocation and the release can raise: a hand-written release below the
+/// raise is one the raise goes straight past, stranding a path-sized block.
 pub extern fn free(ptr: ?*anyopaque) callconv(.c) void;
 
 pub extern fn GetFileAttributesA(name: [*:0]const u8) callconv(.c) u32;
@@ -392,11 +391,10 @@ pub const eintr: c_int = @intFromEnum(std.c.E.INTR);
 /// Call `f(args)` again for as long as it fails because a signal interrupted
 /// it, and answer whatever it finally returned.
 ///
-/// Thirty retry loops were written out, each three lines, and writing them out
-/// is how two of them came to be wrong: `FOUND.md`'s "The kqueue backend's
-/// initialisation retries on every error except `EINTR`" and "`filewatch/remove`
-/// retries a call that succeeded". Both were faithful copies of `ev.c` and
-/// `filewatch.c`, and both are fixed by there being one loop.
+/// Thirty retry loops written out, three lines each, is thirty chances to
+/// invert the test -- to retry on every error *except* `EINTR`, or to retry a
+/// call that succeeded. There is one loop instead, and it is the only place
+/// the condition is written.
 ///
 /// The failure test is `< 0`, which is every call this wraps: `close`, `read`,
 /// `write`, `open`, `kevent`, `epoll_wait`, `inotify_rm_watch`, `waitpid` and
@@ -418,9 +416,13 @@ pub extern fn ferror(file: ?*host.FILE) callconv(.c) c_int;
 
 pub extern fn setvbuf(file: ?*host.FILE, buffer: ?[*]u8, mode: c_int, size: usize) callconv(.c) c_int;
 
-pub extern fn fseek(file: ?*host.FILE, offset: c_long, whence: c_int) callconv(.c) c_int;
+/// The POSIX seek pair, in its 64-bit spelling. `fseek` and `ftell` carry a
+/// `long`, which is 32 bits on a 32-bit POSIX host; `off_t` is 64 bits on every
+/// target this builds for, and `file/seek`'s docstring promises files of more
+/// than 4GB. On a 64-bit host the two pairs are the same call.
+pub extern fn fseeko(file: ?*host.FILE, offset: i64, whence: c_int) callconv(.c) c_int;
 
-pub extern fn ftell(file: ?*host.FILE) callconv(.c) c_long;
+pub extern fn ftello(file: ?*host.FILE) callconv(.c) i64;
 
 /// Janet redirects `fseek` and `ftell` to the 64-bit Microsoft variants, so the
 /// port calls what the C implementation calls rather than the narrow ones.

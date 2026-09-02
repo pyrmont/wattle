@@ -180,7 +180,6 @@ one, so the translation of that header for that target says `JANET_POSIX`
 where the *compilation* of it says `JANET_WINDOWS` -- and `JanetHandle`, which
 is `void *` on one and `int` on the other, follows it. Test the platform with
 `builtin.os.tag`; read the build's own answer out of `@import("config")`.
-`FOUND.md` has the entry.
 
 That header is gone with `janet.h` at Phase 12 increment 5f, and the hazard is
 not: the three host headers still `#include` system headers that read the same

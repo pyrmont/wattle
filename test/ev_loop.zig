@@ -95,22 +95,6 @@ const stream = subsystems.ev_stream;
 const expect = @import("expect.zig").expect;
 const windows = builtin.os.tag == .windows;
 
-/// Whether closing a stream whose handle was never registered with the backend
-/// is quiet.
-///
-/// It is not, on epoll. `ev_backend.zig`'s two `unregister` implementations
-/// disagree about the same error path: the kqueue one discards the status of
-/// its `EV_DELETE` -- "the status might be -1 on the BSDs for subprocesses" --
-/// and the epoll one ends `if (status == -1) return raise.panicv(...)`. So a
-/// `dup`ed handle, which was never `EPOLL_CTL_ADD`ed under its own number,
-/// raises ENOENT on Linux and is silently ignored on macOS.
-///
-/// `FOUND.md` has the entry. It is quarantined here rather than fixed, because
-/// the divergence is inherited from Janet and a gate is not where a
-/// behavioural change to the event loop belongs: assert the part that is
-/// common and quarantine the rest.
-const unregister_of_an_unregistered_handle_is_quiet = builtin.os.tag != .linux;
-
 /// `INVALID_HANDLE_VALUE`, written out rather than imported.
 ///
 /// `ev/stream.zig` has the same two lines privately, and that is deliberate:
@@ -570,48 +554,57 @@ fn thePostedEventRoundTrip() void {
     expect(ev_mod.loopDone());
 }
 
-/// A null callback is what `janet_loop1_interrupt` posts, to wake a loop that
-/// is blocked in the backend and do nothing else.
+/// A null callback is what `loop1Interrupt` posts, to wake a loop that is
+/// blocked in the backend and do nothing else.
 ///
-/// **The reference it takes is never given back.** `janet_ev_post_event`
-/// raises the listener count unconditionally, and the self-pipe handler lowers
-/// it only inside `if (response.cb) |cb|`. So a null callback leaves the count
-/// one higher for ever and `janet_loop_done` never reports done again. The
-/// Windows completion port lowers it outside the test and does not have this.
-/// Both are reproduced rather than repaired, and `FOUND.md` has the entry --
-/// which is why this drives one turn of the loop rather than calling
-/// `janet_loop`, and why it puts the count back by hand afterwards.
+/// **The reference it takes is given back by the turn that delivers it**, on
+/// every backend. `evPostEvent` raises the listener count unconditionally, so
+/// that the loop cannot decide it is done while an event is in flight; a
+/// handler that lowered it only when there was a callback to run would leave
+/// the count one higher for ever, and a loop that was interrupted once would
+/// never report done again. One turn is what this drives, rather than
+/// `janet_loop`, because the assertion is about that turn.
 fn theNullCallback() void {
     expect(ev_mod.loopDone());
     const msg = std.mem.zeroes(ev_mod.GenericMessage);
     ev.evPostEvent(null, null, msg);
     expect(!ev_mod.loopDone());
     _ = raise.reported(ev_mod.loop1());
-    if (windows) {
-        expect(ev_mod.loopDone());
-    } else {
-        expect(!ev_mod.loopDone());
-        ev.evDecRefcount();
-        expect(ev_mod.loopDone());
-    }
+    expect(ev_mod.loopDone());
 }
 
 /// `janet_ev_default_threaded_callback` with a null fiber is the cleanup-only
-/// path: nothing is scheduled and the payload is released. Every tag frees,
-/// because both of the original's switches send everything but the two
-/// `*_STRINGF` cases to a `default` that also frees.
+/// path: nothing is scheduled, and **the payload is released for the two tags
+/// that own one**.
+///
+/// `*_STRINGF` is the "string, freed" tag -- the subroutine allocated the
+/// bytes and the callback releases them. Every other tag either carries no
+/// payload or points at something that is not the callback's: `ERR_STRING`
+/// points at a string literal, and a tag carrying no payload can still be
+/// carrying the *request* pointer the subroutine has already released.
+///
+/// Freeing for every tag is what makes `(os/shell "cmd")` abort the process
+/// and `ev/thread`'s start failure free `"failed to start thread"`. The two
+/// halves are asserted here by construction: every payload below is a separate
+/// heap block, so `tools/testing/leaks.sh` counts a payload the callback
+/// should have freed and did not, and the sanitizer catches one it freed twice.
 fn theThreadedReplyTags() void {
-    const tags = [_]c_int{
-        constants.JANET_EV_TCTAG_NIL,         constants.JANET_EV_TCTAG_INTEGER,
-        constants.JANET_EV_TCTAG_STRING,      constants.JANET_EV_TCTAG_STRINGF,
-        constants.JANET_EV_TCTAG_KEYWORD,     constants.JANET_EV_TCTAG_ERR_STRING,
-        constants.JANET_EV_TCTAG_ERR_STRINGF, constants.JANET_EV_TCTAG_ERR_KEYWORD,
-        constants.JANET_EV_TCTAG_BOOLEAN,
+    const Case = struct { tag: c_int, callback_frees: bool };
+    const cases = [_]Case{
+        .{ .tag = constants.JANET_EV_TCTAG_NIL, .callback_frees = false },
+        .{ .tag = constants.JANET_EV_TCTAG_INTEGER, .callback_frees = false },
+        .{ .tag = constants.JANET_EV_TCTAG_STRING, .callback_frees = false },
+        .{ .tag = constants.JANET_EV_TCTAG_STRINGF, .callback_frees = true },
+        .{ .tag = constants.JANET_EV_TCTAG_KEYWORD, .callback_frees = false },
+        .{ .tag = constants.JANET_EV_TCTAG_ERR_STRING, .callback_frees = false },
+        .{ .tag = constants.JANET_EV_TCTAG_ERR_STRINGF, .callback_frees = true },
+        .{ .tag = constants.JANET_EV_TCTAG_ERR_KEYWORD, .callback_frees = false },
+        .{ .tag = constants.JANET_EV_TCTAG_BOOLEAN, .callback_frees = false },
     };
-    var freed: u32 = 0;
-    for (tags) |tag| {
+    var owned: u32 = 0;
+    for (cases) |case| {
         var msg = std.mem.zeroes(ev_mod.GenericMessage);
-        msg.tag = @intCast(tag);
+        msg.tag = @intCast(case.tag);
         msg.fiber = null;
         // A heap payload, so that a missing free is a leak a sanitizer sees
         // and a double free is a crash.
@@ -620,9 +613,14 @@ fn theThreadedReplyTags() void {
         @memcpy(bytes[0..8], "abcdefg\x00");
         msg.argp = payload;
         ev_mod.evDefaultThreadedCallback(msg);
-        freed += 1;
+        if (case.callback_frees) {
+            owned += 1;
+        } else {
+            // Not the callback's, so it is this contract's.
+            utils.free(payload);
+        }
     }
-    expect(freed == 9);
+    expect(owned == 2);
     // The loop is untouched: a null fiber schedules nothing.
     expect(ev_mod.loopDone());
 }
@@ -936,21 +934,10 @@ fn theStreamMarshalling() void {
     }
     // `back.handle` is the `dup`, and nothing ever registered *it* -- the
     // marshal duplicated the descriptor and cleared NODUPS, so the close takes
-    // the deregistering path with a handle the backend has never seen. On
-    // epoll that is an ENOENT this contract has no scope to catch; see the
-    // constant above.
-    if (unregister_of_an_unregistered_handle_is_quiet) {
-        try_(stream.streamClose(back));
-    } else {
-        // The stream still has to go, and the assertions above are what this
-        // section is for. Dropping the reference lets the collector take it by
-        // the same path, which is where the ENOENT would arrive too -- so the
-        // handle is closed directly and the stream marked, rather than routed
-        // through the backend.
-        expect(c.close(back.handle) == 0);
-        back.handle = invalidHandle();
-        back.flags |= @intCast(constants.JANET_STREAM_CLOSED);
-    }
+    // the deregistering path with a handle the backend has never seen.
+    // Deregistering something that was never registered is quiet on every
+    // backend: it is the state the call is trying to reach.
+    try_(stream.streamClose(back));
     try_(stream.streamClose(s));
     closeFarEnd(handles);
 }

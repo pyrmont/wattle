@@ -21,20 +21,10 @@
 //! nothing, so the damage is exactly what Janet suffers: a half-marked heap,
 //! no sweep, and `next_collection` left where it was.
 //!
-//! Three details of the C original are reproduced rather than repaired, and all
-//! three are in `FOUND.md`:
-//!
-//!  - `janet_collect` indexes the root set with a `uint32_t` while the bound is
-//!    a `size_t`, so a root set above 2^32 entries would loop forever. The
-//!    counter here wraps for the same reason rather than trapping.
-//!  - The collection-interval heuristic multiplies `block_count` by 8 and by
-//!    `sizeof(GCObject)` without a check, so a heap large enough to
-//!    overflow `size_t` would compute a nonsense interval. Wrapping arithmetic
-//!    keeps the two implementations bit-identical there.
-//!  - `janet_mark_array` marks elements only for `JANET_MEMORY_ARRAY`, so a
-//!    weak array's contents are skipped here and dropped in the sweep. That one
-//!    is deliberate in the original; it is listed because the type test is easy
-//!    to read as redundant and is not.
+//! One detail of the walk is easy to read as redundant and is not:
+//! `markArray` marks elements only for `MemoryType.array`, so a weak array's
+//! contents are skipped here and dropped in the sweep. That is what makes the
+//! array weak.
 
 const std = @import("std");
 const config = @import("config");
@@ -112,9 +102,8 @@ inline fn funcEnv(func: *functions.Function, i: usize) *functions.FuncEnv {
 /// `frame + frame_size <= stackstart <= stacktop <= maxstack` before the
 /// collector can ever see one.
 ///
-/// This reproduced C's wild pointer until 2026-08-31; `FOUND.md`'s "The
-/// collector's frame walk forms a wild pointer rather than checking" records
-/// what it was and why it went.
+/// Without the assertion a negative index forms a pointer before the array,
+/// which the walk then reads through.
 inline fn stackAt(data: [*]repr.Value, index: i32) [*]repr.Value {
     std.debug.assert(index >= 0);
     return data + @as(usize, @intCast(index));
@@ -405,10 +394,12 @@ pub fn collect() void {
     g.mark_phase = true;
 
     // Prevent many major collections back to back. A full collection is
-    // O(block_count), so a large heap gets a proportionally larger interval;
-    // the products wrap rather than trap, as the C original's do.
-    if (g.block_count *% 8 > g.interval) {
-        g.interval = g.block_count *% @sizeOf(abi.GCObject);
+    // O(block_count), so a large heap gets a proportionally larger interval.
+    // Both products saturate: the value is a heuristic, so a heap too large to
+    // multiply gets the largest interval there is rather than a wrapped one,
+    // which would be an interval smaller than the heap it was derived from.
+    if (g.block_count *| 8 > g.interval) {
+        g.interval = g.block_count *| @sizeOf(abi.GCObject);
     }
 
     g.orig_rootcount = roots.items.len;
@@ -418,10 +409,8 @@ pub fn collect() void {
     // Null outside the interpreter loop, which `janet_collect` may be called from.
     if (v.root_fiber) |root| markFiber(root);
 
-    // The counter is 32-bit while the bound it is compared against is a
-    // `usize`; see the note at the head of this file.
-    var i: u32 = 0;
-    while (i < g.orig_rootcount) : (i +%= 1) {
+    var i: usize = 0;
+    while (i < g.orig_rootcount) : (i += 1) {
         mark(roots.items[i]);
     }
     while (g.orig_rootcount < roots.items.len) {

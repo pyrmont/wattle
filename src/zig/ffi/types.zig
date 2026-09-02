@@ -30,8 +30,8 @@ const strings = @import("../value/strings.zig");
 /// How deep a type may nest before `ffi/read` and `ffi/write` give up.
 pub const max_recur: c_int = 64;
 
-/// The most arguments a signature may hold. `ffi.c`'s `JANET_FFI_MAX_ARGS`,
-/// and the bound its own `cfun_ffi_signature` fails to check -- see `FOUND.md`.
+/// The most arguments a signature may hold. `ffi.c`'s `JANET_FFI_MAX_ARGS`.
+/// `cfunSignature` checks it: the mapping and slot arrays are sized by it.
 pub const max_args: u32 = 32;
 
 // ==========================================================================
@@ -415,6 +415,18 @@ pub fn decodeType(x: repr.Value) raise.Raising(Type) {
             return pp_format.panicf("array type must be of form @[type count], got %v", .{x});
         }
         ret = try decodeType(els[0]);
+        // **A nested array type is refused rather than flattened.** A `Type`
+        // carries one `array_count`, so assigning here would overwrite the
+        // inner dimension and leave a type a quarter of the size the
+        // expression names -- and as a struct field that moves every later
+        // field's offset. The working spelling is a struct of the inner
+        // arrays, which the message names.
+        if (ret.array_count >= 0) {
+            return pp_format.panicf(
+                "nested array type %v; use a struct of the inner arrays, as in @[[:u8 :u8 :u8 :u8] 3]",
+                .{x},
+            );
+        }
         ret.array_count = if (els.len == 1) 0 else try args_core.getNat(els, 1);
     } else {
         ret.st = try buildStruct(els);

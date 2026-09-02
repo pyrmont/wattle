@@ -23,8 +23,9 @@
 //! flattening it into C's calling convention on the last line; `formatTuple`
 //! below takes the tuple instead. The walk happens once, at compile time, so
 //! the engine *indexes* rather than pulls, and the specifier and the value it
-//! renders are checked against each other at the call site. `FOUND.md` has
-//! four entries that are exactly the mistake that check now rejects.
+//! renders are checked against each other at the call site. A conversion
+//! handed the wrong type or the wrong width is a compile error rather than a
+//! `va_arg` reading whatever the caller happened to push.
 //!
 //! ## Two loops, not one engine
 //!
@@ -115,12 +116,15 @@ const int64_modifier = if (@sizeOf(c_long) == 8) "l" else "ll";
 
 /// The six conversions of `fmt_replace_inttypes`, and only those.
 ///
-/// `%D` and `%I` are deliberately absent, which reproduces a defect rather than
-/// tidying one. C's `format_mappings` table carries entries for both, but
-/// `scanformat` consults it only for characters in `FMT_REPLACE_INTTYPES`,
-/// which are lower case — so the two upper-case entries are dead, `%D` and `%I`
-/// reach `c.snprintf` unrewritten, and what they print is whatever the host libc
-/// makes of an invalid conversion. `FOUND.md` has the measurement.
+/// **`%D` and `%I` are not conversions.** C's `format_mappings` table carries
+/// entries for both, and `scanformat` consults that table only for the
+/// characters in `FMT_REPLACE_INTTYPES`, which are lower case — so the two
+/// upper-case entries are unreachable, the specifier reaches `c.snprintf`
+/// unrewritten, and what it prints is whatever the host libc makes of an
+/// unrecognised conversion. That is `%ld` on macOS, which accepts `%D` as a
+/// BSD synonym, and nothing on glibc or musl. A conversion that means
+/// different things on different hosts is not one, so both take the
+/// invalid-conversion path here.
 fn intMapping(conversion: u8) []const u8 {
     return switch (conversion) {
         'd' => int64_modifier ++ "d",
@@ -230,18 +234,16 @@ const PrettyOpts = struct {
         if (depth < 1) depth = recursion_guard;
 
         const has_color = conversion == 'P' or conversion == 'Q' or conversion == 'M' or conversion == 'N';
-        var has_oneline = conversion == 'Q' or conversion == 'q' or conversion == 'N' or conversion == 'n';
+        const has_oneline = conversion == 'Q' or conversion == 'q' or conversion == 'N' or conversion == 'n';
         const has_notrunc = conversion == 'M' or conversion == 'm' or conversion == 'N' or conversion == 'n';
 
+        // **The width cannot be negative**: `scanFormat` fills the field from
+        // digits only, and a leading `-` is consumed as a flag before it. So a
+        // zero is the only value that means anything other than a column
+        // count, and it means "the default page". `%q` is how one-line output
+        // is asked for.
         var columns = Specifier.number(&spec.width);
-        if (columns == 0) {
-            columns = columns_default;
-        } else if (columns < 0) {
-            // Unreachable: the width field holds only digits, because '-' is
-            // consumed as a flag before it. Reproduced from the C, and
-            // recorded in `FOUND.md`.
-            has_oneline = true;
-        }
+        if (columns == 0) columns = columns_default;
 
         return .{
             .depth = depth,
@@ -427,8 +429,8 @@ fn compileFormat(comptime format: []const u8) []const Op {
 /// Render one conversion. The coercions are what the `va_arg` accessors used
 /// to be, and they are the whole point of the change: `@as` rejects a
 /// narrowing, so a caller handing `%d` a 64-bit value is a compile error where
-/// it used to be undefined behaviour. `FOUND.md` has four entries that are
-/// exactly this mistake, three of them in code this runtime still runs.
+/// a variadic driver would have read the wrong width and rendered whatever
+/// that produced.
 inline fn renderConversion(
     b: *buffers.Buffer,
     comptime spec: Specifier,
@@ -446,10 +448,8 @@ inline fn renderConversion(
         // `%lld`. A variadic driver pulled an `int32_t` and widened it, which
         // was an artifact of the `va_list` rather than of the conversion.
         // Nothing pulls now, so the value the caller passed is the value that
-        // renders. `FOUND.md` records both sites: a mismatched vararg width
-        // has no defined behaviour to reproduce, so this gets it right.
+        // renders.
         'd', 'i' => item.render(&local, @as(i64, arg)),
-        'D', 'I' => item.render(&local, @as(i64, arg)),
         'x', 'X', 'o', 'u' => item.render(&local, @as(u64, arg)),
         'a', 'A', 'e', 'E', 'f', 'g', 'G' => item.render(&local, @as(f64, arg)),
 
@@ -498,9 +498,8 @@ inline fn renderConversion(
 }
 
 /// The `%s` and `%S` coercion. Anything that is already a NUL-terminated run
-/// of bytes is accepted and nothing else is; a Janet value handed to `%s` is
-/// the mistake `FOUND.md` records twice in `os.c`, and it is a compile error
-/// here rather than a denormal in the message.
+/// of bytes is accepted and nothing else is, so a Janet value handed to `%s`
+/// is a compile error here rather than a denormal in the message.
 inline fn asCString(arg: anytype) [*:0]const u8 {
     const T = @TypeOf(arg);
     return switch (@typeInfo(T)) {
@@ -583,11 +582,11 @@ pub fn formatb(
 /// directly"; only `format` had to become `comptime`, and every caller passed a
 /// literal already.
 ///
-/// The `defer` is new and closes two leaks the C had, both on paths that leave
-/// the switch without reaching `janet_buffer_deinit`: an abstract that is not a
-/// file, and the raise from `assertWriteable`. `FOUND.md` records them. The
-/// order of the two is C's -- format first, then check the file -- so the
-/// message a non-writeable file raises is unchanged.
+/// The `defer` covers the two paths that leave the switch without reaching a
+/// hand-written `janet_buffer_deinit`: an abstract that is not a file, and the
+/// raise from `assertWriteable`. The order of the two is C's -- format first,
+/// then check the file -- so the message a non-writeable file raises is
+/// unchanged.
 pub fn dynprintf(
     name: ?[*:0]const u8,
     /// `host.FILE` rather than `io.FILE`, which is an alias for it: this file
@@ -709,9 +708,9 @@ pub fn bufferFormat(
         var item = Item{};
         switch (conversion) {
             'c' => item.render(&spec, @as(c_int, @intCast(try args_core.getInteger(argv, arg)))),
-            // Unlike the variadic driver, the four integer spellings are one
+            // Unlike the variadic driver, the two integer spellings are one
             // case: the argument is a Janet number either way.
-            'D', 'I', 'd', 'i' => item.render(&spec, try args_core.getInteger64(argv, arg)),
+            'd', 'i' => item.render(&spec, try args_core.getInteger64(argv, arg)),
             'x', 'X', 'o', 'u' => item.render(&spec, try args_core.getUInteger64(argv, arg)),
             'a', 'A', 'e', 'E', 'f', 'g', 'G' => item.render(&spec, try args_core.getNumber(argv, arg)),
 
