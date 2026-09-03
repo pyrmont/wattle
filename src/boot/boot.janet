@@ -3038,9 +3038,14 @@
 (module/add-file-extension ".janet" :source)
 (module/add-file-extension ".jimage" :source)
 # These obviously won't work on all platforms, but if a user explicitly
-# tries to import them, we may as well try.
+# tries to import them, we may as well try. `.dylib` is what macOS names a
+# shared object, and it is here for the reason `.dll` is: the list is an
+# escape hatch for a path a user spelled out, and leaving out the one
+# extension a supported platform actually uses made it the one platform the
+# hatch did not cover. `DESIGN.md` section 12 records the change.
 (module/add-file-extension ".so" :native)
 (module/add-file-extension ".dll" :native)
+(module/add-file-extension ".dylib" :native)
 (array/insert module/paths 0
               [(fn is-cached [path] (if (in (dyn *module-cache* module/cache) path) path))
                :preload

@@ -16,7 +16,7 @@ fn widened(argv: []janet.Value) align(janet.fn_align) anyerror!janet.Value {
     return argv[0];
 }
 
-fn defs(env: *janet.Env) void {
+fn defs(env: *janet.Env) janet.Error!void {
     janet.cfuns(env, "broad", &.{
         janet.reg("widened", &widened, null),
     });

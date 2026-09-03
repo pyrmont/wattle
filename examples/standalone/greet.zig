@@ -27,7 +27,7 @@ fn hello(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
     return janet.abstract(g);
 }
 
-fn defs(env: *janet.Env) void {
+fn defs(env: *janet.Env) janet.Error!void {
     janet.cfuns(env, "standalone", &.{
         janet.reg("hello", &hello, "(standalone/hello)\n\nAnswer a greeting."),
     });

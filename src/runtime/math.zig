@@ -183,22 +183,22 @@ fn rngNext(_: *Rng, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(&rng_methods), key);
 }
 
-fn rngMarshal(rng: *Rng, ctx: *abi.MarshalContext) raise.Raising(void) {
-    marsh.marshalAbstract(ctx, rng);
-    try marsh.marshalInt(ctx, @bitCast(rng.a));
-    try marsh.marshalInt(ctx, @bitCast(rng.b));
-    try marsh.marshalInt(ctx, @bitCast(rng.c));
-    try marsh.marshalInt(ctx, @bitCast(rng.d));
-    try marsh.marshalInt(ctx, @bitCast(rng.counter));
+fn rngMarshal(rng: *Rng, m: *abi.Marshal) raise.Raising(void) {
+    marsh.marshalAbstract(m, rng);
+    try marsh.marshalInt(m, @bitCast(rng.a));
+    try marsh.marshalInt(m, @bitCast(rng.b));
+    try marsh.marshalInt(m, @bitCast(rng.c));
+    try marsh.marshalInt(m, @bitCast(rng.d));
+    try marsh.marshalInt(m, @bitCast(rng.counter));
 }
 
-fn rngUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Rng) {
-    const rng: *Rng = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(Rng))));
-    rng.a = @bitCast(try marsh.unmarshalInt(ctx));
-    rng.b = @bitCast(try marsh.unmarshalInt(ctx));
-    rng.c = @bitCast(try marsh.unmarshalInt(ctx));
-    rng.d = @bitCast(try marsh.unmarshalInt(ctx));
-    rng.counter = @bitCast(try marsh.unmarshalInt(ctx));
+fn rngUnmarshal(u: *abi.Unmarshal) raise.Raising(*Rng) {
+    const rng: *Rng = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(Rng))));
+    rng.a = @bitCast(try marsh.unmarshalInt(u));
+    rng.b = @bitCast(try marsh.unmarshalInt(u));
+    rng.c = @bitCast(try marsh.unmarshalInt(u));
+    rng.d = @bitCast(try marsh.unmarshalInt(u));
+    rng.counter = @bitCast(try marsh.unmarshalInt(u));
     return rng;
 }
 

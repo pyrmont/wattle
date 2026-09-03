@@ -145,35 +145,35 @@ const Probe = extern struct {
     ptr: ?*anyopaque,
 };
 
-fn probeMarshal(probe: *Probe, ctx: *abi.MarshalContext) raise.Raising(void) {
-    marsh_mod.marshalAbstract(ctx, probe);
-    try marsh.marshalInt(ctx, probe.i32_field);
-    try marsh.marshalInt64(ctx, probe.i64_field);
-    try marsh.marshalSize(ctx, probe.sz);
-    try marsh.marshalByte(ctx, probe.byte);
-    try marsh.marshalBytes(ctx, &probe.bytes);
-    try marsh.marshalJanet(ctx, probe.value);
-    const unsafe = (marsh_mod.marshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE) != 0;
-    try marsh.marshalByte(ctx, @intFromBool(unsafe));
-    if (unsafe) try marsh.marshalPtr(ctx, probe.ptr);
+fn probeMarshal(probe: *Probe, m: *abi.Marshal) raise.Raising(void) {
+    marsh_mod.marshalAbstract(m, probe);
+    try marsh.marshalInt(m, probe.i32_field);
+    try marsh.marshalInt64(m, probe.i64_field);
+    try marsh.marshalSize(m, probe.sz);
+    try marsh.marshalByte(m, probe.byte);
+    try marsh.marshalBytes(m, &probe.bytes);
+    try marsh.marshalJanet(m, probe.value);
+    const unsafe = (marsh_mod.marshalFlags(m) & constants.JANET_MARSHAL_UNSAFE) != 0;
+    try marsh.marshalByte(m, @intFromBool(unsafe));
+    if (unsafe) try marsh.marshalPtr(m, probe.ptr);
 }
 
 /// Every read is a `try`, which is the whole of what the C original spelled as
 /// a `BAIL_IF_RAISING` after each one -- see the header comment.
-fn probeUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Probe) {
-    const probe: *Probe = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(Probe))));
-    probe.i32_field = try marsh.unmarshalInt(ctx);
-    probe.i64_field = try marsh.unmarshalInt64(ctx);
-    probe.sz = try marsh.unmarshalSize(ctx);
-    try marsh.unmarshalEnsure(ctx, 1);
-    probe.byte = try marsh.unmarshalByte(ctx);
-    try marsh.unmarshalBytes(ctx, &probe.bytes, probe.bytes.len);
-    probe.value = try marsh.unmarshalJanet(ctx);
+fn probeUnmarshal(u: *abi.Unmarshal) raise.Raising(*Probe) {
+    const probe: *Probe = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(Probe))));
+    probe.i32_field = try marsh.unmarshalInt(u);
+    probe.i64_field = try marsh.unmarshalInt64(u);
+    probe.sz = try marsh.unmarshalSize(u);
+    try marsh.unmarshalEnsure(u, 1);
+    probe.byte = try marsh.unmarshalByte(u);
+    try marsh.unmarshalBytes(u, &probe.bytes, probe.bytes.len);
+    probe.value = try marsh.unmarshalJanet(u);
     probe.ptr = null;
-    const unsafe = try marsh.unmarshalByte(ctx);
+    const unsafe = try marsh.unmarshalByte(u);
     if (unsafe != 0) {
-        expect((marsh_mod.unmarshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE) != 0);
-        probe.ptr = try marsh.unmarshalPtr(ctx);
+        expect((marsh_mod.unmarshalFlags(u) & constants.JANET_MARSHAL_UNSAFE) != 0);
+        probe.ptr = try marsh.unmarshalPtr(u);
     }
     return probe;
 }
@@ -186,14 +186,14 @@ const probe_at = abstract_type.define(Probe, .{
 
 /// A type that always reaches for a pointer, so that the safe-mode refusal has
 /// something to refuse.
-fn refuserMarshal(p: *anyopaque, ctx: *abi.MarshalContext) raise.Raising(void) {
-    marsh_mod.marshalAbstract(ctx, p);
-    try marsh.marshalPtr(ctx, p);
+fn refuserMarshal(p: *anyopaque, m: *abi.Marshal) raise.Raising(void) {
+    marsh_mod.marshalAbstract(m, p);
+    try marsh.marshalPtr(m, p);
 }
 
-fn refuserUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*anyopaque) {
-    const p = (try marsh.unmarshalAbstract(ctx, @sizeOf(i32))).?;
-    _ = try marsh.unmarshalPtr(ctx);
+fn refuserUnmarshal(u: *abi.Unmarshal) raise.Raising(*anyopaque) {
+    const p = (try marsh.unmarshalAbstract(u, @sizeOf(i32))).?;
+    _ = try marsh.unmarshalPtr(u);
     return p;
 }
 
@@ -204,10 +204,10 @@ const refuser_at = abstract_type.define(anyopaque, .{
 });
 
 /// A type that writes more bytes than a Janet buffer can index.
-fn toobigMarshal(p: *anyopaque, ctx: *abi.MarshalContext) raise.Raising(void) {
-    marsh_mod.marshalAbstract(ctx, p);
+fn toobigMarshal(p: *anyopaque, m: *abi.Marshal) raise.Raising(void) {
+    marsh_mod.marshalAbstract(m, p);
     const bytes: [*]const u8 = @ptrCast(p);
-    try marsh.marshalBytes(ctx, bytes[0 .. @as(usize, std.math.maxInt(i32)) + 1]);
+    try marsh.marshalBytes(m, bytes[0 .. @as(usize, std.math.maxInt(i32)) + 1]);
 }
 
 const toobig_at = abstract_type.define(anyopaque, .{
@@ -217,15 +217,15 @@ const toobig_at = abstract_type.define(anyopaque, .{
 
 /// The marshal half of the three types whose *unmarshal* half breaks the
 /// abstract protocol.
-fn protocolMarshal(p: *anyopaque, ctx: *abi.MarshalContext) raise.Raising(void) {
-    marsh_mod.marshalAbstract(ctx, p);
-    try marsh.marshalByte(ctx, @as(*u8, @ptrCast(p)).*);
+fn protocolMarshal(p: *anyopaque, m: *abi.Marshal) raise.Raising(void) {
+    marsh_mod.marshalAbstract(m, p);
+    try marsh.marshalByte(m, @as(*u8, @ptrCast(p)).*);
 }
 
 /// Registers itself twice.
-fn twiceUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*anyopaque) {
-    const p = (try marsh.unmarshalAbstract(ctx, 1)).?;
-    try marsh.unmarshalAbstractReuse(ctx, p);
+fn twiceUnmarshal(u: *abi.Unmarshal) raise.Raising(*anyopaque) {
+    const p = (try marsh.unmarshalAbstract(u, 1)).?;
+    try marsh.unmarshalAbstractReuse(u, p);
     return p;
 }
 
@@ -236,8 +236,8 @@ const twice_at = abstract_type.define(anyopaque, .{
 });
 
 /// Never registers at all.
-fn neverUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*anyopaque) {
-    _ = try marsh.unmarshalByte(ctx);
+fn neverUnmarshal(u: *abi.Unmarshal) raise.Raising(*anyopaque) {
+    _ = try marsh.unmarshalByte(u);
     return abstracts.newFor(Probe, &probe_at);
 }
 

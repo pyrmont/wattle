@@ -69,6 +69,31 @@
 # died in the out-of-memory exit; the module says what happened instead.
 (refuses (fn [] (new -1)) "expected a non-negative size")
 
+# `tostring` renders through the `*Render` capability the runtime hands the
+# callback. `(string x)` is the callback's bytes exactly; `(describe x)` is the
+# same bytes with the `<numarray ...>` the runtime writes around them.
+(def small (new 3))
+(put small 0 1)
+(put small 1 2.5)
+(assert (= "[1 2.5 0]" (string small)) "tostring renders the elements")
+(assert (= "<numarray [1 2.5 0]>" (describe small))
+        (string "expected the described form, got " (describe small)))
+
+# `marshal` and `unmarshal` round-trip through the two capabilities. The type
+# has to be registered for this to work at all -- an abstract carries its
+# type's *name* on the wire -- and `defs` is where the module does that.
+(def round (unmarshal (marshal small)))
+(assert (= "[1 2.5 0]" (string round)) "the elements survived a round trip")
+(assert (= 3 (:length round)) "so did the length")
+(assert (not= round small) "and it is a new array, not the same one")
+
+# A truncated stream is refused rather than read past, and by the callback's
+# own bound rather than by running off the end: twelve bytes is past the
+# abstract's framing and its type name, so the count has been read and the
+# elements have not. `numArrayUnmarshal` refuses before it allocates for them.
+(def truncated (buffer/slice (marshal (new 200)) 0 12))
+(refuses (fn [] (unmarshal truncated)) "numarray is longer than the stream")
+
 # Zero is a size, not an error: an empty array reads as a miss everywhere.
 (def empty-array (new 0))
 (assert (= 0 (:length empty-array)) "zero is a legal size")

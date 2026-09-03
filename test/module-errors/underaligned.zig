@@ -16,7 +16,7 @@ fn cramped(argv: []janet.Value) align(1) janet.Error!janet.Value {
     return argv[0];
 }
 
-fn defs(env: *janet.Env) void {
+fn defs(env: *janet.Env) janet.Error!void {
     janet.cfuns(env, "cramped", &.{
         janet.reg("cramped", &cramped, null),
     });

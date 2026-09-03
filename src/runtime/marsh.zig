@@ -276,6 +276,11 @@ pub fn envLookup(env: *tables.Table) *tables.Table {
 /// reclaims a set of vectors a raise abandoned, and `scratch_vector.zig`'s own
 /// header states the same rule. A `defer` here would be the only place in the
 /// runtime that freed on the way out of a raise.
+///
+/// **`flags` is the one field a callback can see, and it belongs to a nesting
+/// level rather than to the traversal.** `abi.Marshal` is a pointer to this
+/// struct, so `marshalOneAbstract` sets the field to its own level's value,
+/// calls the callback, and restores what was there. See there.
 const MarshalState = struct {
     buf: *buffers.Buffer,
     seen: tables.Table,
@@ -284,6 +289,7 @@ const MarshalState = struct {
     seen_defs: scratch_vector.Vector(*functions.FuncDef),
     nextid: i32,
     maybe_cycles: bool,
+    flags: c_int,
 };
 
 inline fn pushByte(st: *MarshalState, b: u8) raise.Raising(void) {
@@ -571,14 +577,15 @@ fn marshalOneAbstract(st: *MarshalState, x: repr.Value, flags: c_int) raise.Rais
     if (at.marshal) |marshal_fn| {
         try pushByte(st, Lead.abstract.byte());
         try marshalOne(st, value.fromBytes(at.name, .symbol), flags + 1);
-        var context: abi.MarshalContext = .{
-            .m_state = st,
-            .u_state = null,
-            .flags = flags + 1,
-            .data = null,
-            .at = at,
-        };
-        try marshal_fn(abstract, &context);
+        // **The callback's flag word is this level's, and the state struct is
+        // shared.** `pushValue` re-enters `marshalOne`, which may reach a
+        // nested abstract and call *its* callback through this same struct, so
+        // the previous level's value is restored on the way out -- including
+        // on the raising path, which is what the `defer` is for.
+        const outer_flags = st.flags;
+        defer st.flags = outer_flags;
+        st.flags = flags + 1;
+        try marshal_fn(abstract, @ptrCast(st));
     } else {
         return pp_format.panicf("cannot marshal %p", .{x});
     }
@@ -806,6 +813,7 @@ pub fn marshal(
         .seen_defs = .empty,
         .nextid = 0,
         .maybe_cycles = (flags & constants.JANET_MARSHAL_NO_CYCLES) == 0,
+        .flags = flags,
     };
     _ = tables.init(&st.seen, 0);
     try marshalOne(&st, x, flags);
@@ -825,55 +833,69 @@ pub const marshalAbi = raise.panicking(marshal).abi;
 // through the traversal frames the callback was called from and nothing has to
 // be freed on the way; the other four -- the two flag reads, `marshalAbstract`
 // and `unmarshalRemaining` -- cannot fail.
+//
+// **The first parameter is the capability, and it is the state struct.** A
+// callback holds an `*abi.Marshal` or an `*abi.Unmarshal`, which is a pointer
+// to `MarshalState` or `UnmarshalState` and nothing else; `marshalState` and
+// `unmarshalState` cast it back. `capi.zig` publishes one symbol per entry
+// point below and `module.zig` names them `push*` and `pull*`, but the
+// runtime's own abstract types reach these directly, as ordinary Zig calls.
 
-inline fn marshalState(ctx: *abi.MarshalContext) *MarshalState {
-    return @ptrCast(@alignCast(ctx.m_state));
+/// The state struct behind a `*abi.Marshal`, which is the same pointer.
+///
+/// `marshalOneAbstract` hands the callback its own `*MarshalState` cast to the
+/// capability; this casts it back. There is no field to load on the way,
+/// because the capability *is* the state.
+inline fn marshalState(m: *abi.Marshal) *MarshalState {
+    return @ptrCast(@alignCast(m));
 }
 
 /// `usize` is not 64 bits everywhere -- `riscv32-linux` is one of this
 /// project's cross-compile targets -- so the value widens to `u64` first and
 /// is only then reinterpreted as `i64`. `@bitCast` refuses a width change,
 /// which is what keeps the widening and the reinterpretation separate steps.
-pub fn marshalSize(ctx: *abi.MarshalContext, val: usize) raise.Raising(void) {
-    return marshalInt64(ctx, @bitCast(@as(u64, val)));
+pub fn marshalSize(m: *abi.Marshal, val: usize) raise.Raising(void) {
+    return marshalInt64(m, @bitCast(@as(u64, val)));
 }
 
-pub fn marshalInt64(ctx: *abi.MarshalContext, val: i64) raise.Raising(void) {
-    try push64(marshalState(ctx), @bitCast(val));
+pub fn marshalInt64(m: *abi.Marshal, val: i64) raise.Raising(void) {
+    try push64(marshalState(m), @bitCast(val));
 }
 
-pub fn marshalInt(ctx: *abi.MarshalContext, val: i32) raise.Raising(void) {
-    try pushInt(marshalState(ctx), val);
+pub fn marshalInt(m: *abi.Marshal, val: i32) raise.Raising(void) {
+    try pushInt(marshalState(m), val);
 }
 
 /// Only meaningful in unsafe mode; a pointer means nothing to another process.
-pub fn marshalPtr(ctx: *abi.MarshalContext, ptr: ?*const anyopaque) raise.Raising(void) {
-    if ((ctx.flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
+pub fn marshalPtr(m: *abi.Marshal, ptr: ?*const anyopaque) raise.Raising(void) {
+    const st = marshalState(m);
+    if ((st.flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
         return raise.panic("can only marshal pointers in unsafe mode");
     }
-    try pushPointer(marshalState(ctx), ptr);
+    try pushPointer(st, ptr);
 }
 
-pub fn marshalByte(ctx: *abi.MarshalContext, val: u8) raise.Raising(void) {
-    try pushByte(marshalState(ctx), val);
+pub fn marshalByte(m: *abi.Marshal, val: u8) raise.Raising(void) {
+    try pushByte(marshalState(m), val);
 }
 
-pub fn marshalBytes(ctx: *abi.MarshalContext, bytes: []const u8) raise.Raising(void) {
-    const st = marshalState(ctx);
+pub fn marshalBytes(m: *abi.Marshal, bytes: []const u8) raise.Raising(void) {
+    const st = marshalState(m);
     if (bytes.len > std.math.maxInt(i32)) return raise.panic("size_t too large to fit in buffer");
     try pushBytes(st, bytes);
 }
 
-pub fn marshalJanet(ctx: *abi.MarshalContext, x: repr.Value) raise.Raising(void) {
-    return marshalOne(marshalState(ctx), x, ctx.flags + 1);
+pub fn marshalJanet(m: *abi.Marshal, x: repr.Value) raise.Raising(void) {
+    const st = marshalState(m);
+    return marshalOne(st, x, st.flags + 1);
 }
 
-pub fn marshalAbstract(ctx: *abi.MarshalContext, abstract: ?*anyopaque) void {
-    markSeen(marshalState(ctx), wrap.fromAbstract(abstract));
+pub fn marshalAbstract(m: *abi.Marshal, abstract: ?*anyopaque) void {
+    markSeen(marshalState(m), wrap.fromAbstract(abstract));
 }
 
-pub fn marshalFlags(ctx: *abi.MarshalContext) c_int {
-    return ctx.flags;
+pub fn marshalFlags(m: *abi.Marshal) c_int {
+    return marshalState(m).flags;
 }
 
 // ==========================================================================
@@ -883,6 +905,14 @@ pub fn marshalFlags(ctx: *abi.MarshalContext) c_int {
 /// The unmarshaller's state: the three reference vectors it fills as it
 /// decodes, the registry an unsafe stream is resolved against, and the span of
 /// bytes being read. There is no error field -- failure is a raise.
+///
+/// **The last three belong to a nesting level rather than to the traversal.**
+/// `abi.Unmarshal` is a pointer to this struct, so they are what an
+/// `unmarshal` callback reads and advances: `flags` is its level's flag word,
+/// `data` the cursor it reads from and leaves behind, and `at` the type it has
+/// yet to enter into `lookup`. `unmarshalOneAbstract` sets all three, calls
+/// the callback, reads the first two back and restores what was there. See
+/// there.
 const UnmarshalState = struct {
     lookup: scratch_vector.Vector(repr.Value),
     reg: ?*tables.Table,
@@ -890,6 +920,9 @@ const UnmarshalState = struct {
     lookup_defs: scratch_vector.Vector(*functions.FuncDef),
     start: [*]const u8,
     end: [*]const u8,
+    flags: c_int = 0,
+    data: ?[*]const u8 = null,
+    at: ?*const abstract_type.AbstractType = null,
 };
 
 /// What every `unmarshal*` below answers: the value it decoded, and the
@@ -1414,89 +1447,100 @@ fn unmarshalOneFiber(
 
 // ----------------------------------------------- the unmarshal context API
 
-inline fn unmarshalState(ctx: *abi.MarshalContext) *UnmarshalState {
-    return @ptrCast(@alignCast(ctx.u_state));
+/// The state struct behind a `*abi.Unmarshal`, which is the same pointer.
+///
+/// `unmarshalOneAbstract` hands the callback its own `*UnmarshalState` cast to
+/// the capability; this casts it back. There is no field to load on the way,
+/// because the capability *is* the state.
+inline fn unmarshalState(u: *abi.Unmarshal) *UnmarshalState {
+    return @ptrCast(@alignCast(u));
 }
 
-pub fn unmarshalEnsure(ctx: *abi.MarshalContext, size: usize) raise.Raising(void) {
-    return eosAddr(unmarshalState(ctx), @intFromPtr(ctx.data) +% size);
+pub fn unmarshalEnsure(u: *abi.Unmarshal, size: usize) raise.Raising(void) {
+    const st = unmarshalState(u);
+    return eosAddr(st, @intFromPtr(st.data) +% size);
 }
 
 /// How many bytes of the stream are still unread. An `unmarshal` callback that
 /// is told a count before it is told the elements uses this to refuse a count
 /// the stream could not be carrying: no element is shorter than one byte.
-pub fn unmarshalRemaining(ctx: *abi.MarshalContext) usize {
-    return @intFromPtr(unmarshalState(ctx).end) - @intFromPtr(ctx.data.?);
+pub fn unmarshalRemaining(u: *abi.Unmarshal) usize {
+    const st = unmarshalState(u);
+    return @intFromPtr(st.end) - @intFromPtr(st.data.?);
 }
 
-pub fn unmarshalInt(ctx: *abi.MarshalContext) raise.Raising(i32) {
-    var cursor = ctx.data.?;
-    defer ctx.data = cursor;
-    return readInt(unmarshalState(ctx), &cursor);
+pub fn unmarshalInt(u: *abi.Unmarshal) raise.Raising(i32) {
+    const st = unmarshalState(u);
+    var cursor = st.data.?;
+    defer st.data = cursor;
+    return readInt(st, &cursor);
 }
 
-pub fn unmarshalSize(ctx: *abi.MarshalContext) raise.Raising(usize) {
-    return @truncate(@as(u64, @bitCast(try unmarshalInt64(ctx))));
+pub fn unmarshalSize(u: *abi.Unmarshal) raise.Raising(usize) {
+    return @truncate(@as(u64, @bitCast(try unmarshalInt64(u))));
 }
 
-pub fn unmarshalInt64(ctx: *abi.MarshalContext) raise.Raising(i64) {
-    var cursor = ctx.data.?;
-    defer ctx.data = cursor;
-    return @bitCast(try read64(unmarshalState(ctx), &cursor));
+pub fn unmarshalInt64(u: *abi.Unmarshal) raise.Raising(i64) {
+    const st = unmarshalState(u);
+    var cursor = st.data.?;
+    defer st.data = cursor;
+    return @bitCast(try read64(st, &cursor));
 }
 
-pub fn unmarshalPtr(ctx: *abi.MarshalContext) raise.Raising(?*anyopaque) {
-    if ((ctx.flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
+pub fn unmarshalPtr(u: *abi.Unmarshal) raise.Raising(?*anyopaque) {
+    const st = unmarshalState(u);
+    if ((st.flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
         return raise.panic("can only unmarshal pointers in unsafe mode");
     }
-    const st = unmarshalState(ctx);
-    try eosAddr(st, @intFromPtr(ctx.data) +% @sizeOf(?*anyopaque) -% 1);
+    try eosAddr(st, @intFromPtr(st.data) +% @sizeOf(?*anyopaque) -% 1);
     var ptr: ?*anyopaque = undefined;
-    @memcpy(@as([*]u8, @ptrCast(&ptr))[0..@sizeOf(?*anyopaque)], ctx.data.?[0..@sizeOf(?*anyopaque)]);
-    ctx.data.? += @sizeOf(?*anyopaque);
+    @memcpy(@as([*]u8, @ptrCast(&ptr))[0..@sizeOf(?*anyopaque)], st.data.?[0..@sizeOf(?*anyopaque)]);
+    st.data.? += @sizeOf(?*anyopaque);
     return ptr;
 }
 
-pub fn unmarshalByte(ctx: *abi.MarshalContext) raise.Raising(u8) {
-    const st = unmarshalState(ctx);
-    try eos(st, ctx.data.?);
-    const val = ctx.data.?[0];
-    ctx.data.? += 1;
+pub fn unmarshalByte(u: *abi.Unmarshal) raise.Raising(u8) {
+    const st = unmarshalState(u);
+    try eos(st, st.data.?);
+    const val = st.data.?[0];
+    st.data.? += 1;
     return val;
 }
 
-pub fn unmarshalBytes(ctx: *abi.MarshalContext, dest: [*]u8, len: usize) raise.Raising(void) {
-    const st = unmarshalState(ctx);
-    try eosAddr(st, @intFromPtr(ctx.data) +% len -% 1);
-    @memcpy(dest[0..len], ctx.data.?[0..len]);
-    ctx.data.? += len;
+pub fn unmarshalBytes(u: *abi.Unmarshal, dest: [*]u8, len: usize) raise.Raising(void) {
+    const st = unmarshalState(u);
+    try eosAddr(st, @intFromPtr(st.data) +% len -% 1);
+    @memcpy(dest[0..len], st.data.?[0..len]);
+    st.data.? += len;
 }
 
-pub fn unmarshalJanet(ctx: *abi.MarshalContext) raise.Raising(repr.Value) {
-    const decoded = try unmarshalOne(unmarshalState(ctx), ctx.data.?, ctx.flags);
-    ctx.data = decoded.next;
+pub fn unmarshalJanet(u: *abi.Unmarshal) raise.Raising(repr.Value) {
+    const st = unmarshalState(u);
+    const decoded = try unmarshalOne(st, st.data.?, st.flags);
+    st.data = decoded.next;
     return decoded.value;
 }
 
 /// Enter an already-allocated abstract into the reference table, and mark the
 /// context as having done so. `at` is the flag: `unmarshalOneAbstract` checks
 /// that it was cleared, which is how a callback that forgets is caught.
-pub fn unmarshalAbstractReuse(ctx: *abi.MarshalContext, p: ?*anyopaque) raise.Raising(void) {
-    if (ctx.at == null) {
+pub fn unmarshalAbstractReuse(u: *abi.Unmarshal, p: ?*anyopaque) raise.Raising(void) {
+    const st = unmarshalState(u);
+    if (st.at == null) {
         return raise.panic("janet_unmarshal_abstract called more than once");
     }
-    scratch_vector.push(&unmarshalState(ctx).lookup, wrap.fromAbstract(p));
-    ctx.at = null;
+    scratch_vector.push(&st.lookup, wrap.fromAbstract(p));
+    st.at = null;
 }
 
-pub fn unmarshalAbstract(ctx: *abi.MarshalContext, size: usize) raise.Raising(?*anyopaque) {
-    const p = abstracts.newBytes(ctx.at.?, size);
-    try unmarshalAbstractReuse(ctx, p);
+pub fn unmarshalAbstract(u: *abi.Unmarshal, size: usize) raise.Raising(?*anyopaque) {
+    const p = abstracts.newBytes(unmarshalState(u).at.?, size);
+    try unmarshalAbstractReuse(u, p);
     return p;
 }
 
-pub fn unmarshalFlags(ctx: *abi.MarshalContext) c_int {
-    return ctx.flags;
+pub fn unmarshalFlags(u: *abi.Unmarshal) c_int {
+    return unmarshalState(u).flags;
 }
 
 fn unmarshalOneAbstract(
@@ -1509,18 +1553,29 @@ fn unmarshalOneAbstract(
     const stored_at = registry.getAbstractType(key.value);
     const at = stored_at orelse return raise.panic("unknown abstract type");
     if (at.unmarshal) |unmarshal_fn| {
-        var context: abi.MarshalContext = .{
-            .m_state = null,
-            .u_state = st,
-            .flags = flags,
-            .data = data,
-            .at = stored_at,
-        };
-        const abst = try unmarshal_fn(&context);
+        // **The three per-level fields are this level's, and the state struct
+        // is shared.** `pullValue` re-enters `unmarshalOne`, which may reach a
+        // nested abstract and call *its* callback through this same struct, so
+        // the previous level's cursor, flag word and pending type are restored
+        // on the way out -- including on the raising path, which is what the
+        // `defer` is for. The two reads below happen before it runs: a `defer`
+        // is reached after the returned expression is evaluated.
+        const outer_flags = st.flags;
+        const outer_data = st.data;
+        const outer_at = st.at;
+        defer {
+            st.flags = outer_flags;
+            st.data = outer_data;
+            st.at = outer_at;
+        }
+        st.flags = flags;
+        st.data = data;
+        st.at = stored_at;
+        const abst = try unmarshal_fn(@ptrCast(st));
         marshAssert(abst != null, "null pointer abstract");
         const decoded = wrap.fromAbstract(abst);
-        if (context.at != null) return raise.panic("janet_unmarshal_abstract not called");
-        return .{ .value = decoded, .next = context.data.? };
+        if (st.at != null) return raise.panic("janet_unmarshal_abstract not called");
+        return .{ .value = decoded, .next = st.data.? };
     }
     return raise.panic("invalid abstract type - no unmarshal function pointer");
 }

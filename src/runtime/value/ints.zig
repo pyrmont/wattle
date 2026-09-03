@@ -59,14 +59,16 @@ pub fn Boxed(comptime T: type) type {
             return words[0] ^ words[1];
         }
 
-        pub fn marshal(box: *T, ctx: *abi.MarshalContext) raise.Raising(void) {
-            marsh.marshalAbstract(ctx, box);
-            try marsh.marshalInt64(ctx, @bitCast(box.*));
+        /// Both boxes marshal identically: eight bytes, and the type comes
+        /// from the abstract header rather than from the payload.
+        pub fn marshal(box: *T, m: *abi.Marshal) raise.Raising(void) {
+            marsh.marshalAbstract(m, box);
+            try marsh.marshalInt64(m, @bitCast(box.*));
         }
 
-        pub fn unmarshal(ctx: *abi.MarshalContext) raise.Raising(*T) {
-            const box: *T = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(T))));
-            box.* = @bitCast(try marsh.unmarshalInt64(ctx));
+        pub fn unmarshal(u: *abi.Unmarshal) raise.Raising(*T) {
+            const box: *T = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(T))));
+            box.* = @bitCast(try marsh.unmarshalInt64(u));
             return box;
         }
     };
@@ -202,22 +204,22 @@ fn uint64Next(_: *u64, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(&u64_methods), key);
 }
 
-/// Both boxes marshal identically: eight bytes, and the type comes from the
-/// abstract header rather than from the payload.
-/// The reservation of 32 bytes is what makes writing
-/// straight into `buffer->data + buffer->count` safe: the longest decimal
-/// rendering of a 64-bit integer is 20 characters.
-// The two `tostring` slots take `abi.Buffer`, the handle a module author is
-// offered, and the runtime recovers its own layout on the first line. See
-// `abi.zig`'s header.
-fn itS64Tostring(box: *i64, handle: *abi.Buffer) raise.Raising(void) {
-    const buffer: *buffers.Buffer = @ptrCast(@alignCast(handle));
+// The two `tostring` slots take `abi.Render`, the capability a module author is
+// offered in place of the buffer's layout. These two types are the runtime's
+// own and never cross, so each recovers `buffers.Buffer` on its first line and
+// pushes with an ordinary Zig call. See `abi.zig`'s header.
+
+/// The reservation of 32 bytes is what makes writing straight into
+/// `buffer->data + buffer->count` safe: the longest decimal rendering of a
+/// 64-bit integer is 20 characters.
+fn itS64Tostring(box: *i64, render: *abi.Render) raise.Raising(void) {
+    const buffer: *buffers.Buffer = @ptrCast(@alignCast(render));
     try buffers.extra(buffer, 32);
     buffer.count += @intCast(formatS64(box.*, buffer.data.? + @as(usize, @intCast(buffer.count))));
 }
 
-fn itU64Tostring(box: *u64, handle: *abi.Buffer) raise.Raising(void) {
-    const buffer: *buffers.Buffer = @ptrCast(@alignCast(handle));
+fn itU64Tostring(box: *u64, render: *abi.Render) raise.Raising(void) {
+    const buffer: *buffers.Buffer = @ptrCast(@alignCast(render));
     try buffers.extra(buffer, 32);
     buffer.count += @intCast(formatU64(box.*, buffer.data.? + @as(usize, @intCast(buffer.count))));
 }

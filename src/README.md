@@ -40,15 +40,15 @@ change owes before it is believed.
   answers `error{JanetSignal}!Value` over Zig's own calling convention, so
   `argv[n]` is bounds-checked where in C it read whatever was there.
 
-- **One file exports, and it is `capi.zig`.** 27 published names: 17 `@export`s
-  and 10 `publish(...)` calls. The only other export in `src/` is
+- **One file exports, and it is `capi.zig`.** 86 published names: 66 `@export`s
+  and 20 `publish(...)` calls. The only other export in `src/` is
   `module.zig`'s pair of loader shims, which belongs to a dynamically loaded
   module rather than to the runtime. Everything else a file needs from a
   neighbour it reaches by `@import`, which keeps the error union, allows
   inlining, and is checked.
 
 - **`cabi.zig` is what is genuinely external**: libc and the host — 161
-  declarations. `crossings.zig` holds the 27 a separately compiled module
+  declarations. `crossings.zig` holds the 86 a separately compiled module
   reaches by name. `cabi_check.zig` compares every one of `crossings.zig`'s
   against the definition it names, on every build, because an `extern fn` is
   otherwise a promise the compiler believes without reading — and an author's
@@ -137,7 +137,7 @@ Nine files outside the subsystems are worth naming:
 | `runtime/capi.zig` | the export manifest — every published symbol, and the signature it publishes |
 | `host/cabi.zig` | every `extern` declaration the runtime makes |
 | `host/cabi_check.zig` | the comparison of each of those against its definition |
-| `api/crossings.zig` | the 27 runtime symbols a separately compiled module reaches by name, and the only other file allowed to declare one |
+| `api/crossings.zig` | the 86 runtime symbols a separately compiled module reaches by name, and the only other file allowed to declare one |
 | `host/host.zig`, `api/constants.zig`, `api/repr.zig` | the host's own shapes, the constants, and the value representation, each its own build module |
 | `api/abi.zig` | the declarations a separately compiled module and the runtime must agree on, and nothing else |
 | `api/raise.zig` | the error union, the flattening forms, and the cfunction type |
@@ -158,7 +158,7 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root
 - `abi` is what a separately compiled module and the runtime must agree on, and
   nothing else: the abstract-type vtable, the registration and method rows, the
   abstract head and the subtraction that recovers it, the signal numbering, the
-  build config, and opaque `Table` and `Buffer` handles. Its import list is
+  build config, and the six capabilities. Its import list is
   `repr` alone. **It is the module an author's package gets** —
   `build.zig`'s `janetModule` hands out this one — so the runtime and an
   author's `.so` agree by construction rather than by review.
@@ -196,21 +196,25 @@ compilation for that reason.
 
 Three things do, and they are checked differently.
 
-**Published symbols.** `capi.zig` holds all 27 of them. 17 are `@export`s of an
+**Published symbols.** `capi.zig` holds all 86 of them. 66 are `@export`s of an
 entry point declared in that file, so the published signature is written there
-and the compiler checks the forwarding call. The other 10 export a target
+and the compiler checks the forwarding call. The other 20 export a target
 directly and carry a `publish(symbol, target, Signature)` assertion beside the
 `@export` — because an `@export` states no signature at all, and whatever the
 target happens to be declared as becomes the ABI.
 
 **Declarations of things outside.** `cabi.zig`'s 161 `extern fn`, and
-`crossings.zig`'s 27 — the module side of the same boundary, which `raise.zig`
+`crossings.zig`'s 86 — the module side of the same boundary, which `raise.zig`
 and `module.zig` call. `tools/check/seam.janet --check` fails if an
 `extern fn janet*` appears anywhere else. `cabi_check.zig` compares each of
-`crossings.zig`'s 27 and the six libc-side pairs against the definition it
+`crossings.zig`'s 86 and the six libc-side pairs against the definition it
 names, by exact type equality — not compatibility, with one declared exception:
-`abi.Table` and `abi.Buffer` are opaque handles standing for `tables.Table` and
-`buffers.Buffer`, and only the pointee is substituted. The comparison has found
+`abi.Env` and `abi.Render` are the capabilities standing for `tables.Table` and
+`buffers.Buffer`, and only the pointee is substituted. The other four
+capabilities need no such row: `marsh.zig`'s entry points take `abi.Marshal`
+and `abi.Unmarshal` themselves and cast back, and `capi.zig`'s event-loop entry
+points take `abi.Loop` and `abi.Wake` and cast in one helper, so in all four the
+declaration and the definition already spell the same thing. The comparison has found
 a `noreturn` declared against a `void` definition, a missing sentinel, four lost
 nullabilities and a method row declared as the wrong one of two layouts, none of
 which any test could reach.

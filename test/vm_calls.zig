@@ -159,7 +159,7 @@ const at_indexable = abstract_type.define(anyopaque, .{ .name = "vm-calls/indexa
 
 /// Raises from `tostring`, which `vm.fillString` reaches through
 /// `pp.toStringB`.
-fn loudTostring(_: *anyopaque, _: *abi.Buffer) raise.Error!void {
+fn loudTostring(_: *anyopaque, _: *abi.Render) raise.Error!void {
     return raise.panic("tostring raised");
 }
 

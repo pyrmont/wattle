@@ -221,6 +221,30 @@ pub fn pushCstringAbi(buffer: *Buffer, cstring: [*:0]const u8) void {
     raise.reported(pushCString(buffer, cstring));
 }
 
+/// Append to the buffer a `Value` names, refusing anything that is not one.
+///
+/// **The module boundary's form**, for the reason `arrays.pushChecked` gives:
+/// a `*Buffer` does not cross to an author, so a module names a buffer by its
+/// `Value` and the tag test is here.
+pub fn pushBytesChecked(v: repr.Value, bytes: []const u8) raise.Raising(void) {
+    if (!repr.checkType(v, repr.Tag.buffer)) {
+        return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.one(repr.Tag.buffer), v });
+    }
+    return pushBytes(wrap.toBuffer(v), bytes);
+}
+
+/// A new buffer holding a copy of `bytes`.
+///
+/// `arrays.newFrom` is the same constructor for the other mutable sequence,
+/// and this one raises where that does not: `pushBytes` grows through
+/// `ensure`, which is the path a length no allocation could hold is refused
+/// on.
+pub fn newFrom(bytes: []const u8) raise.Raising(*Buffer) {
+    const buffer = new(bytes.len);
+    try pushBytes(buffer, bytes);
+    return buffer;
+}
+
 pub fn pushBytes(buffer: *Buffer, bytes: []const u8) raise.Raising(void) {
     if (0 == bytes.len) return;
     try extra(buffer, @intCast(bytes.len));

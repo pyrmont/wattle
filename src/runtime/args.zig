@@ -48,6 +48,7 @@ const structs = @import("value/structs.zig");
 const abstracts = @import("value/abstracts.zig");
 const abi = @import("abi");
 const method_type = @import("method_type.zig");
+const vm_state = @import("vm/state.zig");
 
 /// The two 64-bit conversions, when the configuration has them.
 ///
@@ -57,19 +58,15 @@ const method_type = @import("method_type.zig");
 /// sufficient rather than a stub.
 const inttypes = if (options.int_types_core) @import("value/ints.zig") else struct {};
 
-/// `dictionaryView`'s answer. `cap` is the *capacity* of the backing
-/// table, which the caller walks to `cap` rather than to `len`; both are
-/// counts.
-pub const DictView = extern struct {
-    kvs: ?[*]const tables.KV = null,
-    len: usize = 0,
-    cap: usize = 0,
-};
-
-pub const Range = extern struct {
-    start: i32 = 0,
-    end: i32 = 0,
-};
+/// `dictionaryView`'s answer, and `getSlice`'s.
+///
+/// **Both are declared in `abi.zig` because a module author receives them**:
+/// `janet_getdictionary` and `janet_getrange` return them by value, so the two
+/// compilations have to spell the same fields. The operations that build them
+/// are here, which is the split every other crossed layout has. `abi.zig` has
+/// what each field means.
+pub const DictView = abi.DictView;
+pub const Range = abi.Range;
 
 // -------------------------------------------------------------- predicates
 
@@ -884,6 +881,27 @@ pub fn getSlice(argv: []const repr.Value) raise.Raising(Range) {
     return range_out;
 }
 
+/// The two ends of a slice argument sitting at `n` and `n + 1`, folded against
+/// `length`.
+///
+/// **`getSlice`'s general form, and a separate function rather than a widening
+/// of it.** `getSlice` is `(x &opt start end)` exactly: it checks its own
+/// arity, reads the length out of `argv[0]` and starts at slot 1, which is
+/// what every core builtin taking a slice wants. A module author's ends are not always in those slots and the
+/// length is not always a Janet value's -- a wrap width or a C library's
+/// buffer size is a count of the module's own -- so both are parameters here.
+///
+/// An absent or nil slot takes the whole range, which is `startRange` and
+/// `endRange`'s rule and not a new one; an end below the start is clamped up
+/// to it, which is `getSlice`'s.
+pub fn getRange(argv: []const repr.Value, n: usize, length: i32) raise.Raising(Range) {
+    var out: Range = undefined;
+    out.start = try startRange(argv, n, length);
+    out.end = try endRange(argv, n + 1, length);
+    if (out.end < out.start) out.end = out.start;
+    return out;
+}
+
 // ------------------------------------------------------------------ views
 
 pub fn getIndexed(argv: []const repr.Value, n: usize) raise.Raising([]const repr.Value) {
@@ -1077,9 +1095,13 @@ pub fn nextmethod(methods: [*]const method_type.CMethod, key: repr.Value) repr.V
 // dictionary, and get on with something else when it is not.
 //
 // They are why the kernels report into a `Fault` instead of returning
-// `raise.Raising`, and the reason is internal rather than published:
-// `DESIGN.md` section 11. The shape is the point -- absence is `null`, not a
-// zero beside an out-parameter a caller has to know not to read.
+// `raise.Raising`. **The shape is the point -- absence is `null`, not a zero
+// beside an out-parameter a caller has to know not to read** -- and it is the
+// shape on both sides of the boundary: Phase 18 Part 7b published all three,
+// and `module.zig` answers `?[]const u8`, `?[]const repr.Value` and
+// `?DictView` exactly as these do. Only the crossing between them is
+// different, because a `callconv(.c)` signature carries neither an optional
+// nor a slice; the three `*Abi` shims below are where that is paid, once.
 
 /// A byte view as the range it describes.
 ///
@@ -1157,11 +1179,13 @@ fn IndexAbi(comptime f: anytype) type {
     return switch (info.params.len) {
         2 => struct {
             pub fn abi(argv: [*]const repr.Value, n: i32) callconv(.c) P {
+                vm_state.requireJanetThread();
                 return f(argv[0..@intCast(n + 1)], @intCast(n)) catch raise.reportToC(P);
             }
         },
         3 => struct {
             pub fn abi(argv: [*]const repr.Value, n: i32, third: info.params[2].type.?) callconv(.c) P {
+                vm_state.requireJanetThread();
                 return f(argv[0..@intCast(n + 1)], @intCast(n), third) catch raise.reportToC(P);
             }
         },
@@ -1175,10 +1199,87 @@ fn IndexAbi(comptime f: anytype) type {
 // dedicated shim with no other caller, which is why `capi.zig` states its
 // signature at the `publish` rather than declaring an entry point over it.
 
-pub const fixArityAbi = raise.panicking(fixArity).abi;
-pub const checkArityAbi = raise.panicking(checkArity).abi;
+/// The two arity checks, published.
+///
+/// **They are written out rather than taken from `raise.panicking`**, which is
+/// the only reason this pair looks different from the family below.
+/// `panicking` builds every hand-written abi in the runtime and all but these
+/// two are internal; putting the boundary's thread check inside it would
+/// charge every one of them for a rule that belongs to the crossings a module
+/// reaches by symbol. The bodies are what `panicking`'s two- and
+/// three-parameter arms already generate.
+pub fn fixArityAbi(argc: i32, fix: i32) callconv(.c) void {
+    vm_state.requireJanetThread();
+    return fixArity(argc, fix) catch raise.reportToC(void);
+}
+
+pub fn checkArityAbi(argc: i32, min: i32, max: i32) callconv(.c) void {
+    vm_state.requireJanetThread();
+    return checkArity(argc, min, max) catch raise.reportToC(void);
+}
 
 pub const getAbstractAbi = IndexAbi(getAbstractPtr).abi;
+
+/// `getIndexed`'s answer as the struct the boundary can carry.
+///
+/// **The one getter in the family that needs a conversion.** `getBytes` and
+/// `getDictionary` already answer an `extern` struct; this one answers a
+/// slice, which has no guaranteed in-memory representation and so cannot
+/// appear in a `callconv(.c)` signature. The pointer and the count cross as
+/// `abi.IndexedView` and `module.getIndexed` rebuilds the slice.
+fn indexedAbi(argv: []const repr.Value, n: usize) raise.Raising(abi.IndexedView) {
+    const items = try getIndexed(argv, n);
+    return .{ .items = items.ptr, .len = items.len };
+}
+
+/// The three `Value`-form probes, as the boundary can carry them.
+///
+/// **An out-parameter here and an optional on both sides of it.** `bytesView`,
+/// `indexedView` and `dictionaryView` answer `?T`, which is the shape their
+/// header argues for; a `callconv(.c)` return carries neither an optional nor
+/// a slice, so absence becomes the `bool` and the value becomes the `extern`
+/// view. `module.zig` rebuilds the optional, so an author sees the same shape
+/// a runtime caller does and nobody outside these three functions reads a zero
+/// beside an out-parameter.
+///
+/// None can raise: `bytesView`'s abstract arm runs a `bytes` callback, which
+/// is one of the six that cannot, so there is no report to flatten.
+pub fn bytesViewAbi(x: repr.Value, out: *abi.ByteView) callconv(.c) bool {
+    vm_state.requireJanetThread();
+    const bytes = bytesView(x) orelse return false;
+    out.* = .{ .bytes = bytes.ptr, .len = bytes.len };
+    return true;
+}
+
+pub fn indexedViewAbi(x: repr.Value, out: *abi.IndexedView) callconv(.c) bool {
+    vm_state.requireJanetThread();
+    const items = indexedView(x) orelse return false;
+    out.* = .{ .items = items.ptr, .len = items.len };
+    return true;
+}
+
+pub fn dictionaryViewAbi(x: repr.Value, out: *abi.DictView) callconv(.c) bool {
+    vm_state.requireJanetThread();
+    out.* = dictionaryView(x) orelse return false;
+    return true;
+}
+
+pub const getBytesAbi = IndexAbi(getBytes).abi;
+pub const getIndexedAbi = IndexAbi(indexedAbi).abi;
+pub const getDictionaryAbi = IndexAbi(getDictionary).abi;
+
+/// `getRange`'s shim, which carries the argument count where the rest of the
+/// family does not.
+///
+/// **`IndexAbi` cannot generate this one.** It builds the slice `argv[0..n +
+/// 1]`, which is exactly the assertion a caller passing `n` makes and is long
+/// enough for every getter that reads one slot. This getter reads `argv[n +
+/// 1]` as well, and that slot's *absence* is what makes the end default --
+/// a distinction only a count carries.
+pub fn getRangeAbi(argv: [*]const repr.Value, argc: i32, n: i32, length: i32) callconv(.c) Range {
+    vm_state.requireJanetThread();
+    return getRange(argv[0..@intCast(argc)], @intCast(n), length) catch raise.reportToC(Range);
+}
 
 // ----------------------------------------------- the Zig side of the layer
 //

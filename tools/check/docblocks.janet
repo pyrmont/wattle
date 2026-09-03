@@ -1,0 +1,153 @@
+#!/usr/bin/env janet
+# Every `///` block that does not sit on the declaration it documents.
+#
+#     ./tools/check/docblocks.janet           regenerate tools/check/docblocks.txt
+#     ./tools/check/docblocks.janet --check   fail if the tree disagrees with it
+#
+# ## Why this exists
+#
+# **A doc comment attaches to the next declaration, however far away it is.**
+# Zig skips ordinary `//` comments and blank lines looking for one, so a `///`
+# block separated from its subject still compiles -- and now documents whatever
+# follows the gap. Nothing else in this tree can see that. `zig fmt` is
+# indifferent to it, `build.zig` has no opinion, and `references.janet` checks
+# that the identifiers a comment names resolve, which they still do: the
+# sentence is true, it is attached to the wrong thing.
+#
+# Phase 18 Part 7b introduced one by inserting a section between `getRange`'s
+# `///` block and `getRange`. The interface then documented a range getter on a
+# bytes probe and `getRange` had none. It survived a build, a full gate, and a
+# second session's review of that very block's prose, and what exposed it two
+# parts later was an unrelated name collision on the line below.
+#
+# A scan for the shape found two more, which is what made it an instrument
+# rather than a fix: `abstract_type.zig`'s `slots`, whose doc sat above a
+# `// zig fmt: off`, and `value/ints.zig`, where a paragraph about `marshal`
+# had come to rest on a `tostring`. The first was harmless and the second was
+# not, and neither is distinguishable from the other by shape -- which is the
+# argument for gating on the shape.
+#
+# ## The rule
+#
+# The last `///` line of a run is immediately followed by the declaration it
+# documents. A `// zig fmt: off`, a section banner or a blank line goes *above*
+# the block, never between it and its subject.
+#
+# ## The classes
+#
+#   stranded  a `///` run followed by a blank line or a `//` line before any
+#             declaration. **This class must be empty.**
+#
+# There is one class on purpose. A doc comment either sits on its declaration or
+# it does not, and the two sites this was written for -- one benign, one a real
+# misattribution -- are the same shape. Sorting them by whether the result looks
+# harmful would be sorting them by a reading, which is what the instrument
+# exists to stop relying on.
+#
+# ## What it cannot see
+#
+# **It reads shape, not meaning.** A `///` block correctly adjacent to the
+# *wrong* declaration is invisible here, and so is a block adjacent to the right
+# one that says something false -- those are what a reader and
+# `references.janet` are for. What this catches is the mechanical case where the
+# gap itself is the defect.
+#
+# It also does not look inside a `///` run for an embedded blank `//` line,
+# because a doc comment written as `///` throughout is one run and a reader
+# separating paragraphs uses `///` with nothing after it, which stays in the
+# run.
+
+(import ../common :as tools)
+
+(def list-path "tools/check/docblocks.txt")
+
+(defn- trim [line] (string/trim line))
+
+(defn- doc-line? [l] (string/has-prefix? "///" (trim l)))
+(defn- plain-comment? [l]
+  (def t (trim l))
+  (and (string/has-prefix? "//" t) (not (string/has-prefix? "///" t))))
+
+(defn- stranded
+  ``Every `///` run in `text` that a gap separates from the next declaration.
+
+  A run ends at the first line that is not `///`. What follows decides: another
+  line of code closes it with no finding, and a blank line or a `//` line
+  strands it.``
+  [text path]
+  (def lines (string/split "\n" text))
+  (def out @[])
+  (var i 0)
+  (while (< i (length lines))
+    (if (doc-line? (lines i))
+      (do
+        (def start i)
+        (while (and (< i (length lines)) (doc-line? (lines i))) (++ i))
+        # `i` is the first line after the run. A gap is a blank line or a plain
+        # comment; anything else -- including end of file -- closes the run.
+        (def next-line (get lines i ""))
+        (when (or (empty? (trim next-line)) (plain-comment? next-line))
+          (array/push out {:where (string (string/replace "src/" "" path) ":" (inc start))
+                           :first (trim (lines start))})))
+      (++ i)))
+  out)
+
+(defn main [& argv]
+  (def check (has-value? argv "--check"))
+  (os/cd tools/root)
+
+  (def paths (array/concat @[] (tools/src-files)
+                           (tools/zig-files "test")
+                           (tools/zig-files "examples")))
+  (def rows @[])
+  (var runs 0)
+  (each path paths
+    (def text (slurp path))
+    (each r (stranded text path) (array/push rows r))
+    # The population, for the header: how many `///` runs there are at all.
+    (var prev false)
+    (each l (string/split "\n" text)
+      (def d (doc-line? l))
+      (when (and d (not prev)) (++ runs))
+      (set prev d)))
+
+  (sort rows (fn [a b] (< (a :where) (b :where))))
+
+  (def out @"")
+  (buffer/push out "# `///` blocks that a gap separates from the declaration they document.\n")
+  (buffer/push out "# Generated by `./tools/check/docblocks.janet`; do not edit.\n#\n")
+  (buffer/push out "# A doc comment attaches to the next declaration however far away it is,\n")
+  (buffer/push out "# so a `//` line or a blank line between a `///` run and its subject\n")
+  (buffer/push out "# moves the documentation onto whatever follows the gap. Nothing else in\n")
+  (buffer/push out "# this tree sees that: `zig fmt` is indifferent and `references.janet`\n")
+  (buffer/push out "# checks that the names a comment uses resolve, which they still do.\n#\n")
+  (buffer/push out "# **It reads shape, not meaning.** A block correctly adjacent to the\n")
+  (buffer/push out "# wrong declaration is invisible here. See the script's header.\n#\n")
+  (buffer/push out "# **Class `stranded` must be empty.**\n#\n")
+  (buffer/push out (string/format "#   stranded  %d\n" (length rows)))
+  (buffer/push out (string/format "#\n#   %d `///` blocks over %d files\n" runs (length paths)))
+  (buffer/push out "#\n# columns: class     site  first line\n\n")
+  (each r rows
+    (buffer/push out (string/format "%-9s %-44s %s\n" "stranded" (r :where) (r :first))))
+  (def text (string out))
+
+  (if check
+    (do
+      (defn parse [ls]
+        (def m @{})
+        (each l (string/split "\n" ls)
+          (unless (or (empty? l) (string/has-prefix? "#" l))
+            (def p (filter |(not (empty? $)) (string/split " " l)))
+            (when (>= (length p) 2) (put m (p 1) true))))
+        m)
+      (def o (parse (slurp list-path))) (def n (parse text))
+      (each k (sort (filter |(nil? (get n $)) (keys o))) (print "retired  " k))
+      (each k (sort (filter |(nil? (get o $)) (keys n))) (eprint "NEW      " k))
+      (print (length rows) " stranded `///` blocks, out of " runs
+             (if (empty? rows) "" " -- the gate is that this is zero"))
+      (os/exit (if (empty? rows) 0 1)))
+    (do
+      (spit list-path text)
+      (print "wrote " list-path " -- " (length rows) " stranded, out of " runs
+             " `///` blocks")
+      (os/exit 0))))

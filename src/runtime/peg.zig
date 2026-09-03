@@ -1751,12 +1751,12 @@ fn pegMark(peg: *Peg, _: usize) void {
     for (peg.constantValues()) |x| gc_mark.mark(x);
 }
 
-fn pegMarshal(peg: *Peg, ctx: *abi.MarshalContext) raise.Raising(void) {
-    try marsh.marshalSize(ctx, peg.bytecode_len);
-    try marsh.marshalInt(ctx, @bitCast(peg.num_constants));
-    marsh.marshalAbstract(ctx, peg);
-    for (peg.instructions()) |instruction| try marsh.marshalInt(ctx, @bitCast(instruction));
-    for (peg.constantValues()) |x| try marsh.marshalJanet(ctx, x);
+fn pegMarshal(peg: *Peg, m: *abi.Marshal) raise.Raising(void) {
+    try marsh.marshalSize(m, peg.bytecode_len);
+    try marsh.marshalInt(m, @bitCast(peg.num_constants));
+    marsh.marshalAbstract(m, peg);
+    for (peg.instructions()) |instruction| try marsh.marshalInt(m, @bitCast(instruction));
+    for (peg.constantValues()) |x| try marsh.marshalJanet(m, x);
 }
 
 /// Round `offset` up so that an array of `size`-byte elements placed there is
@@ -1956,9 +1956,9 @@ fn verifyBytecode(
     return .{ .ok = true, .has_backref = has_backref };
 }
 
-fn pegUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Peg) {
-    const bytecode_len = try marsh.unmarshalSize(ctx);
-    const num_constants: u32 = @bitCast(try marsh.unmarshalInt(ctx));
+fn pegUnmarshal(u: *abi.Unmarshal) raise.Raising(*Peg) {
+    const bytecode_len = try marsh.unmarshalSize(u);
+    const num_constants: u32 = @bitCast(try marsh.unmarshalInt(u));
 
     // **The two counts together are bounded by the bytes left in the stream**,
     // and that is what keeps the size arithmetic below honest. One instruction
@@ -1980,7 +1980,7 @@ fn pegUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Peg) {
     // of input would otherwise ask for 2^32 values -- 32 GiB, or 64 GiB where
     // a `Value` is sixteen bytes wide. With the bound the reservation is
     // linear in the bytes actually supplied.
-    const remaining = marsh.unmarshalRemaining(ctx);
+    const remaining = marsh.unmarshalRemaining(u);
     if (bytecode_len > remaining or num_constants > remaining - bytecode_len) {
         return raise.panic("invalid peg bytecode");
     }
@@ -1991,7 +1991,7 @@ fn pegUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Peg) {
     const constants_start = sizePadded(bytecode_start + bytecode_size, @sizeOf(repr.Value));
     const total_size = constants_start + @sizeOf(repr.Value) * @as(usize, num_constants);
 
-    const mem: [*]u8 = @ptrCast(try marsh.unmarshalAbstract(ctx, total_size));
+    const mem: [*]u8 = @ptrCast(try marsh.unmarshalAbstract(u, total_size));
     const peg: *Peg = @ptrCast(@alignCast(mem));
     const bytecode: [*]u32 = @ptrCast(@alignCast(mem + bytecode_start));
     const consts: [*]repr.Value = @ptrCast(@alignCast(mem + constants_start));
@@ -2000,8 +2000,8 @@ fn pegUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Peg) {
     peg.bytecode_len = bytecode_len;
     peg.num_constants = num_constants;
 
-    for (bytecode[0..peg.bytecode_len]) |*word| word.* = @bitCast(try marsh.unmarshalInt(ctx));
-    for (consts[0..peg.num_constants]) |*constant| constant.* = try marsh.unmarshalJanet(ctx);
+    for (bytecode[0..peg.bytecode_len]) |*word| word.* = @bitCast(try marsh.unmarshalInt(u));
+    for (consts[0..peg.num_constants]) |*constant| constant.* = try marsh.unmarshalJanet(u);
 
     // After here, nothing raises except the rejection at the end.
 

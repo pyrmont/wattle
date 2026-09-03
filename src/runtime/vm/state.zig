@@ -27,6 +27,7 @@ const abi = @import("abi");
 const vm_lifecycle = @import("lifecycle.zig");
 const functions = @import("../value/functions.zig");
 const fibers = @import("../value/fibers.zig");
+const fatal = @import("../fatal.zig");
 
 // ---------------------------------------------------------------------------
 // The VM state
@@ -124,6 +125,63 @@ pub inline fn current() *Vm {
 
 pub fn localVm() *Vm {
     return current();
+}
+
+/// Whether this thread's VM has been brought up.
+///
+/// **The symbol cache is the probe, read as a liveness question rather than as
+/// cache work.** `vm/lifecycle.zig`'s `init` calls `symbols.cacheInit` second,
+/// before anything a program can reach has interned or allocated, and
+/// `symbols.cacheDeinit` puts `entries` back to null on the way out. So a null
+/// `entries` means this thread is not between those two calls.
+///
+/// **It reads a `threadlocal var` and dereferences nothing.** `storage.vm`
+/// above is thread-local in every build but `-Dsingle-threaded`, so a thread
+/// that never ran `janet_init` sees the zeroed one and this answers false; on
+/// a thread that did, it is one load and a compare.
+///
+/// Two callers ask it, for two different failures, and each states its own
+/// message. `gc.gcallocBytes` asks whether an embedder forgot to bring the VM
+/// up at all. `capi.zig`'s entry points and `args.zig`'s `*Abi` shims ask
+/// whether the *calling thread* is one that runs Janet, which is the check
+/// `DESIGN.md` section 15 puts on every crossing but `post`.
+pub inline fn isInitialised() bool {
+    return current().symcache.entries != null;
+}
+
+/// Abort unless the calling thread is running Janet.
+///
+/// **Every published crossing but `janet_post` opens with this**, which is
+/// ruling 1 of `DESIGN.md` section 15's event-loop rule. A module that holds a
+/// `Loop` can hand a runtime pointer to a thread the runtime did not start,
+/// and every crossing but `post` finds the VM through the thread-local above:
+/// on a thread that never ran `janet_init` that thread-local is the zeroed
+/// one, so a crossing reads a null registry, a null collector and a null
+/// symbol cache and does something undefined with them. One load and a compare
+/// is what stands between that and a message.
+///
+/// **It lives in the boundary shims only.** `capi.zig`'s entry points and
+/// `args.zig`'s generated `*Abi` shims are the whole population, which is why
+/// this is declared here rather than in either: they are two files and this is
+/// one rule. No runtime-internal path pays it.
+///
+/// **Four crossings are exempt, and each says why at its own definition.**
+/// `janet_post`, because it is the one a thread with no VM may call; and
+/// `raise.zig`'s flag pair and its abort, because none of the three can be the
+/// first crossing on a thread and a check that cannot fire first guards
+/// nothing.
+///
+/// **It is blind in a `-Dsingle-threaded` build**, where the storage above is
+/// one process-wide `var` and every thread sees an initialised VM. That costs
+/// nothing to the rule it enforces: that build has no event loop
+/// (`build.zig`'s `ev` is `and !options.single_threaded`), so no module can
+/// obtain a `Loop` and no thread the runtime did not start holds anything to
+/// call a crossing with.
+///
+/// It is here rather than in `fatal.zig` because the question is about the
+/// storage above; `fatal.zig` knows how to give up and nothing about a VM.
+pub inline fn requireJanetThread() void {
+    if (!isInitialised()) fatal.fatal("called from a thread that is not running Janet");
 }
 
 /// The fiber this thread is running, for the callers that have already

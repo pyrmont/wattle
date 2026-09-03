@@ -186,6 +186,22 @@ pub fn setcount(array: *Array, count: usize) void {
     array.count = count;
 }
 
+/// Push onto the array a `Value` names, refusing anything that is not one.
+///
+/// **The module boundary's form.** `DESIGN.md` section 15 keeps `*Array` off
+/// the author surface -- an aggregate an author can obtain from a `Value` is
+/// addressed by that `Value` -- so a module names an array the only way it
+/// can, and the tag test is on this side. The refusal names the type and the
+/// value and no argument slot, because there is no slot: the array may have
+/// come out of a view, where a slot number would name nothing the caller can
+/// see.
+pub fn pushChecked(v: repr.Value, x: repr.Value) raise.Raising(void) {
+    if (!repr.checkType(v, repr.Tag.array)) {
+        return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.one(repr.Tag.array), v });
+    }
+    return push(wrap.toArray(v), x);
+}
+
 pub fn push(array: *Array, x: repr.Value) raise.Raising(void) {
     if (array.count == std.math.maxInt(i32)) {
         return raise.panic("array overflow");

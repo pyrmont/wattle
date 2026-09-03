@@ -150,9 +150,61 @@
   # -- the fixture and working-directory reasons above, and `ev_loop` is not
   # listed at all under `-Dev=false` or `-Dsingle-threaded=true`. The `full`
   # entries run all 65 and cover them.
-  ["marsh" "peg" "verify" "parser_core"
-   "gc_alloc" "gc_mark" "gc_sweep" "value_order"
-   "value_access" "inttypes" "fiber_core" "registry" "vm_run"])
+  #
+  # Phase 18 replaced these with the contracts over the boundary it moved. The
+  # phase rewrote the marshaller's two state structs and every `marshal*` and
+  # `unmarshal*` entry point, so `marsh` is the primary subject; the six
+  # runtime types that implement the two slots are covered by `inttypes`,
+  # `peg` and `math` (`io_core` and the two ev contracts cannot be named --
+  # the working-directory and fixture reasons above, and the ev pair is not
+  # listed under `-Dev=false` or `-Dsingle-threaded=true`). The `tostring`
+  # slot changed its parameter type, so both of `pp.zig`'s dispatch sites are
+  # here (`pp_describe`, `pp_pretty`, `pp_format`) along with the contract
+  # that raises from one (`vm_calls`). `abstract_core` is the vtable those
+  # slots sit in; `registry` is the abstract-type registry the phase
+  # published; `gc_mark` is what the new `janet_mark` crossing publishes; and
+  # `signal_core` is where a raise flattened through one of the eighteen new
+  # reporting shims would show as a wrong signal rather than a compile error.
+  # `core_env` says the registration surface still holds what it held. The
+  # `full` entries run all 65.
+  #
+  # Phase 18 Part 7 replaced these with the contracts over the views it
+  # published. The part edited no `args.zig` getter and added shims beside
+  # them, so what a `contracts` entry can break is the layer underneath: every
+  # fault message the getters raise (`args_core`), and the formatter that
+  # renders them (`pp_format`); the six aggregates the three views read
+  # (`string_symbol`, `buffer_array`, `struct_table`); the unwraps behind each
+  # getter and the `abi` namespace's bit layout (`value_wrap`); the length
+  # `getRange` folds against (`value_access`); the file `KV` moved out of and
+  # the traversal that walks a table (`marsh`); `abi.zig`'s own restructuring,
+  # since `AbstractType` and `AbstractHead` share the file the views moved into
+  # (`abstract_core`); and the published boundary (`registry`, `core_env`).
+  # `io_core`, `os_fs`, `os_surface` and `filewatch_core` still cannot be
+  # named, for the reasons above. The `full` entries run all 65.
+  #
+  # Phase 18 Part 8 keeps Part 7's list and adds the two the constructors
+  # reach: `value_alloc`, because every constructor allocates through the
+  # collector, and `gc_mark`, because a composite built by a module is
+  # reachable only from the value it answered. `buffer_array`, `struct_table`,
+  # `string_symbol` and `value_access` were already here and are now the
+  # constructors' subjects as well as the views'.
+  #
+  # Phase 18 Part 10 replaced these with the contracts over the boundary check
+  # and the two shims. The check went into 65 of `capi.zig`'s 66 entry points
+  # and eight `args.zig` shims, so what a `contracts` entry can break is every
+  # fault message those shims still raise (`args_core`) and the formatter that
+  # renders them (`pp_format`); the probe the check shares with the collector's
+  # allocator, which this part extracted into `vm/state.zig` (`gc_alloc`,
+  # `vm_state`); the fiber predicate `wake` tests and the entry points around
+  # it (`fiber_core`, `vm_entry`); the raise flattening the four new reporting
+  # crossings go through (`signal_core`); the unwraps and the `abi` namespace
+  # the message packing uses (`value_wrap`); and the published boundary
+  # (`registry`, `core_env`). `ev_loop` and `ev_core` are the part's own
+  # subjects and neither can be named: the pair is not listed at all under
+  # `-Dev=false` or `-Dsingle-threaded=true`, which is the trap this header
+  # records four times over. The `full` entries run all 65 and cover them.
+  ["args_core" "pp_format" "gc_alloc" "vm_state" "fiber_core" "vm_entry"
+   "signal_core" "value_wrap" "registry" "core_env"])
 
 # Every command gets a bound. Phase 10 Part 16 lost thirty-six minutes to a
 # `zig build test` whose `suite-ev.janet` parked in `kevent` with an empty

@@ -209,7 +209,7 @@ pub fn toStringB(buffer: *buffers.Buffer, x: repr.Value) raise.Raising(void) {
             const p = wrap.toAbstract(x);
             const t = abstract_type.ofAbstract(p);
             if (t.tostring) |tostring| {
-                // The slot takes `abi.Buffer`; see `abi.zig`.
+                // The slot takes `*abi.Render`; see `abi.zig`.
                 try tostring(p, @ptrCast(buffer));
             } else {
                 try stringDescriptionB(buffer, t.name, p);

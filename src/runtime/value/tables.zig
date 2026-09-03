@@ -138,6 +138,23 @@ pub fn new(capacity: usize) *Table {
     return initImpl(table, capacity, false);
 }
 
+/// A table from a caller's pairs, which is what the module boundary's
+/// `tableOf` answers. See `structs.newFrom` for why this takes pairs rather
+/// than a view, and for what a nil value does.
+///
+/// **The capacity is `2 * len` so that no `put` in the loop can rehash.**
+/// `new` rounds its argument up through `value.capacityFor`, which answers the
+/// smallest power of two strictly greater than what it is given, and `put`
+/// grows when `2 * (count + deleted + 1)` passes the capacity -- so `new(2)`
+/// gives four buckets and the *second* pair reallocates. Sizing up front makes
+/// the first allocation the only one, which is what a constructor filling a
+/// table it just made should cost.
+pub fn newFrom(kvs: []const KV) *Table {
+    const t = new(2 *| kvs.len);
+    for (kvs) |kv| put(t, kv.key, kv.value);
+    return t;
+}
+
 /// The three weak variants differ from `new` above only in their memory type,
 /// which is what puts them on `vm.gc.weak_blocks` instead of
 /// `vm.gc.blocks` and tells `gc_sweep.zig` which half of each pair to drop
@@ -549,7 +566,11 @@ pub const Table = struct {
         return self.data.?[0..self.capacity];
     }
 };
-pub const KV = extern struct {
-    key: repr.Value = std.mem.zeroes(repr.Value),
-    value: repr.Value = std.mem.zeroes(repr.Value),
-};
+/// One entry: a key beside its value.
+///
+/// **Declared in `abi.zig` because a module author walks one.** A dictionary
+/// crosses to an author as `abi.DictView`, which points at an array of these,
+/// so both compilations have to spell the same two fields; the operations over
+/// a table are all here, which is the split `AbstractHead`, `Method` and
+/// `ByteView` already have.
+pub const KV = abi.KV;

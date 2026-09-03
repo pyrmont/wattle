@@ -464,7 +464,14 @@ pub fn length(x: repr.Value) raise.Raising(i32) {
             }
             var argv = [_]repr.Value{x};
             const len = try vm_calls.mcall("length", &argv);
-            if (!args_core.checkint(len))
+            // **Both ends of the range, in one rule.** The slot arm above
+            // refuses a length past `maxInt(i32)` because no caller can use
+            // one; a Janet-level `:length` method may answer a *negative*,
+            // which `checkint` accepts and no caller can use either. Refusing
+            // it here rather than at each caller is what lets every reader of
+            // this function's `i32` treat it as a count. `DESIGN.md` section
+            // 12 has the decision.
+            if (!args_core.checkint(len) or wrap.toInteger(len) < 0)
                 return pp_format.panicf("invalid integer length %v", .{len});
             return wrap.toInteger(len);
         },
@@ -506,7 +513,19 @@ pub fn lengthv(x: repr.Value) raise.Raising(repr.Value) {
                 }
             }
             var argv = [_]repr.Value{x};
-            return try vm_calls.mcall("length", &argv);
+            const len = try vm_calls.mcall("length", &argv);
+            // **A length, and this is the arm the `length` builtin reaches.**
+            // `checksize` is the whole rule -- a number, integral, and in
+            // `[0, maxInt(usize)]` -- so a method answering a negative, a
+            // fraction or something that is not a number at all is refused
+            // here rather than handed on as a length. `length` above asks
+            // `checkint` for the same three things against a narrower bound,
+            // which is the one documented difference between these two
+            // functions.
+            if (!args_core.checksize(len)) {
+                return pp_format.panicf("invalid integer length %v", .{len});
+            }
+            return len;
         },
         else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.lengthable, x }),
     }

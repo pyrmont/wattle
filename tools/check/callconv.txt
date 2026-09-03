@@ -5,12 +5,12 @@
 #
 # **Class `residue` must be empty.**
 #
-#   export    39
+#   export    98
 #   slot      2
 #   callback  15
 #   residue   0
 #
-#   not definitions: 123 `extern fn` declarations, 33 function-pointer types
+#   not definitions: 123 `extern fn` declarations, 44 function-pointer types
 #
 # columns: class  site  function
 
@@ -29,27 +29,83 @@ export    api/raise.zig:342                            abi
 export    api/raise.zig:347                            abi
 export    api/raise.zig:352                            abi
 export    api/raise.zig:357                            abi
-export    module.zig:368                               modConfig
-export    module.zig:376                               modInit
-export    runtime/args.zig:1159                        abi
-export    runtime/args.zig:1164                        abi
-export    runtime/capi.zig:101                         janet_zig_c_raise_take
-export    runtime/capi.zig:104                         janet_zig_c_raise_record
-export    runtime/capi.zig:107                         janet_zig_fatal
-export    runtime/capi.zig:110                         janet_zig_signal_record
-export    runtime/capi.zig:116                         janet_calloc
-export    runtime/capi.zig:119                         janet_free
-export    runtime/capi.zig:125                         janet_abstract
-export    runtime/capi.zig:128                         janet_cstring
-export    runtime/capi.zig:131                         janet_checktype
-export    runtime/capi.zig:135                         janet_unwrap_integer
-export    runtime/capi.zig:138                         janet_unwrap_keyword
-export    runtime/capi.zig:141                         janet_unwrap_number
-export    runtime/capi.zig:64                          janet_checkint
-export    runtime/capi.zig:67                          janet_getmethod
-export    runtime/capi.zig:70                          janet_nextmethod
-export    runtime/capi.zig:92                          janet_cfuns_ext
-export    runtime/capi.zig:95                          janet_def
+export    module.zig:1533                              modConfig
+export    module.zig:1544                              modInit
+export    runtime/args.zig:1181                        abi
+export    runtime/args.zig:1187                        abi
+export    runtime/args.zig:1211                        fixArityAbi
+export    runtime/args.zig:1216                        checkArityAbi
+export    runtime/args.zig:1247                        bytesViewAbi
+export    runtime/args.zig:1254                        indexedViewAbi
+export    runtime/args.zig:1261                        dictionaryViewAbi
+export    runtime/args.zig:1279                        getRangeAbi
+export    runtime/capi.zig:102                         janet_nextmethod
+export    runtime/capi.zig:125                         janet_cfuns_ext
+export    runtime/capi.zig:129                         janet_def
+export    runtime/capi.zig:136                         janet_register_abstract_type
+export    runtime/capi.zig:168                         janet_zig_c_raise_take
+export    runtime/capi.zig:171                         janet_zig_c_raise_record
+export    runtime/capi.zig:174                         janet_zig_fatal
+export    runtime/capi.zig:177                         janet_zig_signal_record
+export    runtime/capi.zig:184                         janet_calloc
+export    runtime/capi.zig:188                         janet_free
+export    runtime/capi.zig:195                         janet_abstract
+export    runtime/capi.zig:207                         janet_buffer_push_bytes
+export    runtime/capi.zig:215                         janet_mark
+export    runtime/capi.zig:219                         janet_cstring
+export    runtime/capi.zig:223                         janet_checktype
+export    runtime/capi.zig:228                         janet_unwrap_integer
+export    runtime/capi.zig:232                         janet_unwrap_keyword
+export    runtime/capi.zig:236                         janet_unwrap_number
+export    runtime/capi.zig:253                         janet_marshal_size
+export    runtime/capi.zig:257                         janet_marshal_int
+export    runtime/capi.zig:261                         janet_marshal_int64
+export    runtime/capi.zig:265                         janet_marshal_byte
+export    runtime/capi.zig:269                         janet_marshal_bytes
+export    runtime/capi.zig:273                         janet_marshal_janet
+export    runtime/capi.zig:277                         janet_marshal_abstract
+export    runtime/capi.zig:281                         janet_marshal_ptr
+export    runtime/capi.zig:285                         janet_marshal_flags
+export    runtime/capi.zig:289                         janet_unmarshal_size
+export    runtime/capi.zig:293                         janet_unmarshal_int
+export    runtime/capi.zig:297                         janet_unmarshal_int64
+export    runtime/capi.zig:301                         janet_unmarshal_byte
+export    runtime/capi.zig:305                         janet_unmarshal_bytes
+export    runtime/capi.zig:309                         janet_unmarshal_janet
+export    runtime/capi.zig:313                         janet_unmarshal_abstract
+export    runtime/capi.zig:317                         janet_unmarshal_abstract_reuse
+export    runtime/capi.zig:321                         janet_unmarshal_ptr
+export    runtime/capi.zig:325                         janet_unmarshal_ensure
+export    runtime/capi.zig:329                         janet_unmarshal_remaining
+export    runtime/capi.zig:333                         janet_unmarshal_flags
+export    runtime/capi.zig:348                         janet_wrap_boolean
+export    runtime/capi.zig:352                         janet_truthy
+export    runtime/capi.zig:356                         janet_unwrap_pointer
+export    runtime/capi.zig:360                         janet_new_string
+export    runtime/capi.zig:364                         janet_new_symbol
+export    runtime/capi.zig:368                         janet_new_keyword
+export    runtime/capi.zig:372                         janet_new_tuple
+export    runtime/capi.zig:376                         janet_new_array
+export    runtime/capi.zig:387                         janet_new_buffer
+export    runtime/capi.zig:391                         janet_new_struct
+export    runtime/capi.zig:395                         janet_new_table
+export    runtime/capi.zig:399                         janet_get
+export    runtime/capi.zig:403                         janet_put
+export    runtime/capi.zig:407                         janet_length
+export    runtime/capi.zig:411                         janet_array_push_value
+export    runtime/capi.zig:415                         janet_buffer_push_value
+export    runtime/capi.zig:430                         janet_call_value
+export    runtime/capi.zig:456                         janet_pcall_value
+export    runtime/capi.zig:473                         janet_fiber_status_value
+export    runtime/capi.zig:481                         janet_gcroot
+export    runtime/capi.zig:485                         janet_gcunroot
+export    runtime/capi.zig:527                         janet_current_loop
+export    runtime/capi.zig:548                         janet_root_fiber_value
+callback  runtime/capi.zig:572                         trampoline
+export    runtime/capi.zig:629                         janet_post
+export    runtime/capi.zig:636                         janet_wake
+export    runtime/capi.zig:94                          janet_checkint
+export    runtime/capi.zig:98                          janet_getmethod
 callback  runtime/ev.zig:1159                          goThreadSubr
 callback  runtime/ev.zig:554                           timeoutCallback
 callback  runtime/ev.zig:594                           timeoutBodyPosix
@@ -59,6 +115,9 @@ callback  runtime/ev/channel.zig:331                   threadChanCallback
 callback  runtime/ffi/call.zig:858                     sysv64Callback
 callback  runtime/ffi/call.zig:862                     win64Callback
 callback  runtime/ffi/call.zig:866                     aapcs64Callback
+export    runtime/native_module.zig:726                workDone
+export    runtime/native_module.zig:753                abandonDone
+export    runtime/native_module.zig:763                stampedeDone
 callback  runtime/os/process.zig:1018                  shellSubroutine
 export    runtime/os/process.zig:1060                  plain
 export    runtime/os/process.zig:1066                  interrupting
@@ -69,4 +128,4 @@ export    runtime/value/helpers/wrap.zig:280           fromNil
 export    runtime/value/helpers/wrap.zig:300           fromNumber
 export    runtime/value/helpers/wrap.zig:304           fromString
 export    runtime/value/helpers/wrap.zig:348           fromAbstract
-callback  runtime/value/helpers/wrap.zig:352           fromPointer
+export    runtime/value/helpers/wrap.zig:352           fromPointer

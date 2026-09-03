@@ -138,9 +138,9 @@ pub const Decision = struct {
 ///
 /// The `sched_id` bump happens here rather than in the caller because it must
 /// precede the coercion message: building that message can itself panic, and a
-/// re-entrant raise must find the counter already advanced. `janet_call` in
-/// `vm/entry.zig` open-codes the same three decisions on its own return path
-/// and has to stay in step; its comment says so.
+/// re-entrant raise must find the counter already advanced. `vm/entry.zig`'s
+/// `call` open-codes the same three decisions on its own return path and has
+/// to stay in step; its comment says so.
 pub fn signalPlan(sig: abi.Signal) Decision {
     const v = vm_state.current();
     if (v.return_reg == null) return .{ .plan = .top_level, .signal = sig };

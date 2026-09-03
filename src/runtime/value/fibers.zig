@@ -50,30 +50,16 @@ const ev_loop = @import("../ev.zig");
 const frame_size: i32 = constants.JANET_FRAME_SIZE;
 
 /// A fiber's status, stored in six bits of its flag word, which `statusOf`
-/// below reads and whose width it asserts.
+/// below reads and whose width the `comptime` block beside `statusOf`
+/// asserts.
 ///
-/// **The first fourteen are the signal's**, which is why `utils.zig` carries
-/// two name tables rather than one and why `vm.zig` can read a status out of
-/// the flag word and use it as a signal. `new` and `alive` are the two a
-/// signal has no name for.
-pub const FiberStatus = enum(c_uint) {
-    dead = 0,
-    @"error" = 1,
-    debug = 2,
-    pending = 3,
-    user0 = 4,
-    user1 = 5,
-    user2 = 6,
-    user3 = 7,
-    user4 = 8,
-    user5 = 9,
-    user6 = 10,
-    user7 = 11,
-    user8 = 12,
-    user9 = 13,
-    new = 14,
-    alive = 15,
-};
+/// **Declared in `abi.zig` because a module author reads one.** `module.pcall`
+/// hands back a fiber and `module.fiberStatus` answers this over it, so both
+/// compilations have to agree on the numbering; every operation over a fiber
+/// is here, which is the split `KV`, `Method` and `ByteView` already have.
+/// It is a vocabulary rather than a layout, which is why `abi.zig` gaining it
+/// leaves `DESIGN.md` section 15's invariant intact.
+pub const FiberStatus = abi.FiberStatus;
 
 /// The GC header's per-type field, as a fiber reads it. `canceled`,
 /// `suspended` and `root` are the event loop's three bits, and the same six
@@ -89,40 +75,6 @@ pub const EvFlags = packed struct(u6) {
 
 pub inline fn evFlags(fiber: *const Fiber) EvFlags {
     return @bitCast(fiber.gc.flags.own);
-}
-
-comptime {
-    // Against upstream Janet at `17b3f8c4`. The values are marshalled -- a
-    // fiber's status travels in an image -- so a shift here is a wrong answer
-    // from a working program rather than a build failure.
-    // **One expected-value table per vocabulary, in that order.** A
-    // sample of four values and a count cannot catch a transposition: swapping
-    // two unasserted members leaves both the count and every sampled value
-    // correct. The table is the whole population, and the length assertion
-    // beside it is what stops a member being added without a row.
-    //
-    // `Signal`'s own table is in `abi.zig`, beside the enum; the cross-check
-    // below is here because it is a claim about this file's vocabulary.
-    const expected_status = [_]struct { FiberStatus, comptime_int }{
-        .{ .dead, 0 },   .{ .@"error", 1 }, .{ .debug, 2 },  .{ .pending, 3 },
-        .{ .user0, 4 },  .{ .user1, 5 },    .{ .user2, 6 },  .{ .user3, 7 },
-        .{ .user4, 8 },  .{ .user5, 9 },    .{ .user6, 10 }, .{ .user7, 11 },
-        .{ .user8, 12 }, .{ .user9, 13 },   .{ .new, 14 },   .{ .alive, 15 },
-    };
-    std.debug.assert(expected_status.len == @typeInfo(FiberStatus).@"enum".fields.len);
-    for (expected_status) |row| std.debug.assert(@intFromEnum(row[0]) == row[1]);
-    // Every signal value is also a status value, which is what lets `vm.zig`
-    // read six bits out of a fiber's flag word and hand the result on as a
-    // signal. It is a claim about *values* and not about names: `ok` is
-    // `dead` at 0 and `yield` is `pending` at 3, and ten of the fourteen names
-    // do coincide, which is why `utils.zig` carries two tables.
-    for (@typeInfo(abi.Signal).@"enum".fields) |f| {
-        var found = false;
-        for (@typeInfo(FiberStatus).@"enum".fields) |g| {
-            if (g.value == f.value) found = true;
-        }
-        std.debug.assert(found);
-    }
 }
 
 inline fn dataAt(fiber: *Fiber, index: i32) [*]repr.Value {
@@ -368,12 +320,41 @@ pub fn pushn(
     const n: i32 = @intCast(arr.len);
     if (fiber.stacktop > std.math.maxInt(i32) -% n) return raise.panic("stack overflow");
     const newtop = fiber.stacktop +% n;
-    if (newtop > fiber.capacity) grow(fiber, newtop);
-    // Guarded rather than unconditional: `arr` is an empty slice over a null
+    var src = arr;
+    if (newtop > fiber.capacity) {
+        // **The source may be a slice of this same stack, and growing frees
+        // it.** `grow` reaches `setcapacity`, which reallocates, so a caller
+        // pushing a run that lives on this fiber -- a native module forwarding
+        // its own `argv` through `vm/entry.zig`'s `callValue` is the short way
+        // to get one -- would have the copy below read the block that was just
+        // released. The offset is what carries the slice across the move.
+        //
+        // It is inside the growth branch and not above it because that is
+        // where the hazard is: a push that fits reallocates nothing, and its
+        // path is untouched. The branch it does sit in already copies the
+        // whole stack, so two pointer comparisons are not a cost that shows.
+        const offset = stackOffset(fiber, src);
+        grow(fiber, newtop);
+        if (offset) |at| src = (fiber.data.? + at)[0..src.len];
+    }
+    // Guarded rather than unconditional: `src` is an empty slice over a null
     // pointer at several call sites, and copying zero bytes from a null source
     // is undefined even where every implementation makes it a no-op.
-    if (arr.len != 0) @memcpy(dataAt(fiber, fiber.stacktop)[0..arr.len], arr);
+    if (src.len != 0) @memcpy(dataAt(fiber, fiber.stacktop)[0..src.len], src);
     fiber.stacktop = newtop;
+}
+
+/// Where `arr` starts within this fiber's stack, or null if it is elsewhere.
+///
+/// An empty slice answers null: it carries no pointer worth re-deriving, and
+/// `pushn` copies nothing from it.
+fn stackOffset(fiber: *const Fiber, arr: []const repr.Value) ?usize {
+    const data = fiber.data orelse return null;
+    if (arr.len == 0) return null;
+    const base = @intFromPtr(data);
+    const start = @intFromPtr(arr.ptr);
+    if (start < base or start >= base + stackBytes(fiber.capacity)) return null;
+    return (start - base) / @sizeOf(repr.Value);
 }
 
 // --------------------------------------------------------------- varargs
@@ -661,6 +642,20 @@ comptime {
 
 pub fn status(f: *Fiber) FiberStatus {
     return statusOf(f);
+}
+
+/// The status of the fiber a `Value` names, refusing anything that is not one.
+///
+/// **The module boundary's form**, in the shape `arrays.pushChecked` set:
+/// `DESIGN.md` section 15 keeps `*Fiber` off the author surface, so a module
+/// names a fiber the only way it can and the tag test is on this side. The
+/// refusal names the type and the value and no argument slot, because there is
+/// none -- the fiber came back from `pcall` rather than out of `argv`.
+pub fn statusChecked(v: repr.Value) raise.Raising(FiberStatus) {
+    if (!repr.checkType(v, repr.Tag.fiber)) {
+        return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.one(repr.Tag.fiber), v });
+    }
+    return statusOf(wrap.toFiber(v));
 }
 
 pub fn canResume(fiber: *Fiber) bool {

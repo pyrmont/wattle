@@ -399,19 +399,19 @@ fn fileNext(_: *File, key: repr.Value) raise.Raising(repr.Value) {
 /// do. A closeable file is duplicated so that the marshalled copy owns its own
 /// descriptor; a borrowed one -- `stdout` and its kin -- is written as it
 /// stands.
-fn fileMarshal(iof: *File, ctx: *abi.MarshalContext) raise.Raising(void) {
-    if (marsh.marshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE == 0) {
+fn fileMarshal(iof: *File, m: *abi.Marshal) raise.Raising(void) {
+    if (marsh.marshalFlags(m) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("cannot marshal file in safe mode");
     }
-    marsh.marshalAbstract(ctx, iof);
+    marsh.marshalAbstract(m, iof);
     const borrowed = iof.flags & file_not_closeable != 0;
     const fno: c_int = if (windows)
         (if (borrowed) c._fileno(streamOf(iof)) else c._dup(c._fileno(streamOf(iof))))
     else
         (if (borrowed) c.fileno(streamOf(iof)) else c.dup(c.fileno(streamOf(iof))));
-    try marsh.marshalInt(ctx, @intCast(fno));
-    try marsh.marshalInt(ctx, iof.flags);
-    try marsh.marshalSize(ctx, iof.vbufsize);
+    try marsh.marshalInt(m, @intCast(fno));
+    try marsh.marshalInt(m, iof.flags);
+    try marsh.marshalSize(m, iof.vbufsize);
 }
 
 /// Reattach a descriptor read back out of a stream.
@@ -419,19 +419,19 @@ fn fileMarshal(iof: *File, ctx: *abi.MarshalContext) raise.Raising(void) {
 /// The mode is rebuilt from the flag word rather than carried, which is why
 /// `modeFromFlags` is not the inverse of `scanMode`: `c.fdopen` only has to
 /// accept it.
-fn fileUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*File) {
-    if (marsh.unmarshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE == 0) {
+fn fileUnmarshal(u: *abi.Unmarshal) raise.Raising(*File) {
+    if (marsh.unmarshalFlags(u) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("cannot unmarshal file in safe mode");
     }
-    const iof: *File = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(File))));
-    const fd = try marsh.unmarshalInt(ctx);
-    const flags = try marsh.unmarshalInt(ctx);
+    const iof: *File = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(File))));
+    const fd = try marsh.unmarshalInt(u);
+    const flags = try marsh.unmarshalInt(u);
     var fmt: [4]u8 = undefined;
     _ = modeFromFlags(flags, &fmt);
     const reopened = if (windows) c._fdopen(fd, @ptrCast(&fmt)) else c.fdopen(fd, @ptrCast(&fmt));
     setStreamOf(iof, reopened);
     iof.flags = if (reopened == null) file_closed else flags;
-    iof.vbufsize = try marsh.unmarshalSize(ctx);
+    iof.vbufsize = try marsh.unmarshalSize(u);
     // Only when there is a stream to set it on. A failed `fdopen` set the
     // closed flag above, and `setvbuf` has no meaning for a null stream --
     // C99 §7.19.5.6.

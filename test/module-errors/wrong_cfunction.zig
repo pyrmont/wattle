@@ -17,7 +17,7 @@ fn oldShape(argc: i32, argv: [*]janet.Value) janet.Value {
     return argv[0];
 }
 
-fn defs(env: *janet.Env) void {
+fn defs(env: *janet.Env) janet.Error!void {
     janet.cfuns(env, "wrong", &.{
         janet.reg("identity", &oldShape, null),
     });

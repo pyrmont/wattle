@@ -586,4 +586,22 @@
 (assert (= 3 (length ensured)) "array/ensure keeps the count")
 (assert (deep= @[1 2 3] ensured) "array/ensure keeps the elements")
 
+# `module/paths` registers a native file extension per platform spelling, and
+# `.dylib` was missing where `.dll` was present -- so macOS was the one
+# supported platform whose own name for a shared object could not be imported
+# by an explicit path. `DESIGN.md` section 12 records the change.
+(defn- native-extension? [ext]
+  (some (fn [entry]
+          (and (indexed? entry)
+               (= ":all:" (first entry))
+               (= :native (get entry 1))
+               (function? (get entry 2))
+               ((get entry 2) (string "mymod" ext))))
+        module/paths))
+
+(assert (native-extension? ".so") "module/paths imports a .so by path")
+(assert (native-extension? ".dll") "module/paths imports a .dll by path")
+(assert (native-extension? ".dylib") "module/paths imports a .dylib by path")
+(assert (not (native-extension? ".dylibx")) "and not an extension nobody registered")
+
 (end-suite)

@@ -554,6 +554,34 @@ pub fn build(b: *std.Build) void {
     );
     installTest(b, options, numarray_module);
 
+    // `examples/url`, the worked example of the views: a module that owns
+    // nothing, reads its arguments through the three views and a range, and
+    // answers a string. `DESIGN.md` section 15's other half.
+    const url_module = nativeModule(
+        b,
+        runtime_graph,
+        target,
+        optimize,
+        options,
+        "examples/url/url.zig",
+        "url",
+    );
+    installTest(b, options, url_module);
+
+    // `examples/digest`, the worked example of scheduling work through the
+    // event loop: one cfunction that hashes on a thread of its own, so the
+    // loop is never blocked. `DESIGN.md` section 15's last section.
+    const digest_module = nativeModule(
+        b,
+        runtime_graph,
+        target,
+        optimize,
+        options,
+        "examples/digest/digest.zig",
+        "digest",
+    );
+    installTest(b, options, digest_module);
+
     // The three host translations -- `os/abi.h`, `net/abi.h`, `filewatch/abi.h`
     // -- have no oracle and need none: each keeps what it declares inside one
     // subsystem, and every name it publishes has a Zig caller that fails to
@@ -694,6 +722,23 @@ pub fn build(b: *std.Build) void {
                 "runtime's allocator is malloc-backed and promises nothing stricter than " ++
                 "`max_align_t`, so a payload needing more has to align its own storage " ++
                 "inside an allocation this can make.",
+        },
+        .{
+            .file = "test/module-errors/isunsafe_wrong_type.zig",
+            .phrase = "isUnsafe takes the `*Marshal` a `marshal` callback is handed or the " ++
+                "`*Unmarshal` an `unmarshal` callback is handed -- it is " ++
+                "`*isunsafe_wrong_type.Payload`.",
+        },
+        .{
+            // **Zig's own message, not one of this project's.** The other
+            // fixtures turn on a `@compileError` written here, because the
+            // mistake is in the `define` literal where a check can see it.
+            // This one is inside the callback body, and the diagnosis wanted
+            // is exactly the type mismatch: it names both capabilities, and
+            // its notes point at the two `opaque` declarations and at the
+            // parameter in `module.zig` that will not take the other one.
+            .file = "test/module-errors/pull_on_marshal.zig",
+            .phrase = "expected type '*abi.Unmarshal', found '*abi.Marshal'",
         },
         .{
             .file = "test/module-errors/nonraising_get.zig",
@@ -869,6 +914,22 @@ pub fn build(b: *std.Build) void {
         run_numarray.addArg("examples/numarray/test/numarray.janet");
         run_numarray.addFileArg(numarray_module.getEmittedBin());
         test_step.dependOn(&run_numarray.step);
+
+        // The views' worked example, loaded the same way.
+        const run_url = b.addRunArtifact(client);
+        run_url.setCwd(b.path("."));
+        run_url.addArg("examples/url/test/url.janet");
+        run_url.addFileArg(url_module.getEmittedBin());
+        test_step.dependOn(&run_url.step);
+
+        // The event loop's worked example. Its test file skips its own body in
+        // a build with no loop, exactly as `test/zig-native.janet` does, so it
+        // is scheduled on the same condition as the other two.
+        const run_digest = b.addRunArtifact(client);
+        run_digest.setCwd(b.path("."));
+        run_digest.addArg("examples/digest/test/digest.janet");
+        run_digest.addFileArg(digest_module.getEmittedBin());
+        test_step.dependOn(&run_digest.step);
     }
 
     inline for (test_suites) |suite| {

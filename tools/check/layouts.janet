@@ -310,7 +310,12 @@
     "#\n"
     (string/format "# layouts  %d\n# residue  %d\n#\n" (length rows) residue)
     "# columns: class  name  file:line  evidence\n\n")
-  (each r (sort-by |($ :name) rows)
+  # Sorted by name *and* file, because the sort is not stable and several names
+  # carry more than one row -- `Overlapped` has three, `SignedHead` four. Keyed
+  # on the name alone those rows permuted between two runs over an unchanged
+  # tree, so a diff of this file reported churn that was the sort's and not the
+  # tree's.
+  (each r (sort-by |(string ($ :name) "\0" ($ :file)) rows)
     (buffer/push out (string/format "%-8s %-28s %-34s %s\n"
                                     (r :class) (r :name)
                                     (string (r :file) ":" (r :line))

@@ -25,7 +25,7 @@ fn make(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
     return janet.nil();
 }
 
-fn defs(env: *janet.Env) void {
+fn defs(env: *janet.Env) janet.Error!void {
     janet.cfuns(env, "overaligned", &.{
         janet.reg("make", &make, null),
     });

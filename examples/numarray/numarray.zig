@@ -88,6 +88,68 @@ fn numArrayPut(self: *NumArray, key: janet.Value, value: janet.Value) janet.Erro
     self.slice()[index] = janet.toNumber(value);
 }
 
+/// How the array prints. `(string a)`, `(print a)` and `%V` are exactly what
+/// this pushes; `(describe a)` and `%v` wrap the same bytes in
+/// `<numarray ...>`, which the runtime adds around the callback rather than
+/// asking it for. The two are `pp.zig`'s `toStringB` and `descriptionB`, and
+/// only the second wraps.
+///
+/// **The `*janet.Render` is a capability, and appending is all it does.** It
+/// is not a value and not a buffer's layout: an author holds the pointer, hands
+/// it back to `push` or `format`, and cannot store it — the buffer behind it is
+/// the pretty-printer's and does not outlive the call. `format` is sugar over
+/// `push`, so the loop below could be written with either.
+fn numArrayTostring(self: *NumArray, render: *janet.Render) janet.Error!void {
+    try janet.push(render, "[");
+    for (self.slice(), 0..) |cell, i| {
+        if (i != 0) try janet.push(render, " ");
+        try janet.format(render, "{d}", .{cell});
+    }
+    try janet.push(render, "]");
+}
+
+/// How the array is written to a stream: the element count, then the elements.
+///
+/// **`pushAbstract` comes first**, before any of the payload. It enters this
+/// object into the stream's reference table, so a value marshalled later in
+/// the same stream that refers back to this array encodes a reference rather
+/// than a second copy — and `unmarshal` registers in the same position, which
+/// is what makes the two tables line up. The runtime refuses an `unmarshal`
+/// that never registers at all.
+///
+/// **`pushNumber` and not a raw `pushBytes` of the doubles.** There is no float
+/// entry point on the boundary, so the obvious move is to push the elements'
+/// bytes — and a stream written on one machine then decodes as garbage on
+/// another. A number `Value` is the runtime's own encoding and travels.
+fn numArrayMarshal(self: *NumArray, m: *janet.Marshal) janet.Error!void {
+    janet.pushAbstract(m, self);
+    try janet.pushSize(m, self.size);
+    for (self.slice()) |cell| try janet.pushNumber(m, cell);
+}
+
+/// The same in reverse, and the order is the point.
+///
+/// **The count is bounded by the bytes left before anything is allocated for
+/// it.** `size` is a number the stream chose; no element is shorter than one
+/// byte, so a stream promising more elements than it has bytes remaining is
+/// refused here rather than in the allocator. Without the bound, a few bytes
+/// of input ask for an arbitrary allocation.
+///
+/// **The storage is allocated before `pullAbstract`**, for the reason `new`
+/// gives at greater length: from the moment `pullAbstract` hands back a block
+/// it is on the collector's heap list and tagged as this type, so a raise
+/// between there and the assignment would leave `numArrayGc` freeing a `data`
+/// that was never written.
+fn numArrayUnmarshal(u: *janet.Unmarshal) janet.Error!*NumArray {
+    const size = try janet.pullSize(u);
+    if (size > janet.pullRemaining(u)) return janet.panic("numarray is longer than the stream");
+    const data = janet.alloc(f64, size) orelse return janet.panic("out of memory");
+    const array = try janet.pullAbstract(u, NumArray, null);
+    array.* = .{ .data = data.ptr, .size = size };
+    for (array.slice()) |*cell| cell.* = try janet.pullNumber(u);
+    return array;
+}
+
 /// The abstract type: one declaration, one payload type, the callbacks it
 /// actually has.
 const num_array_type = janet.define(NumArray, .{
@@ -95,6 +157,9 @@ const num_array_type = janet.define(NumArray, .{
     .gc = numArrayGc,
     .get = numArrayGet,
     .put = numArrayPut,
+    .tostring = numArrayTostring,
+    .marshal = numArrayMarshal,
+    .unmarshal = numArrayUnmarshal,
 });
 
 // --------------------------------------------------------- the cfunctions
@@ -154,7 +219,13 @@ const methods = [_]janet.Method{
 
 // -------------------------------------------------------------- the module
 
-fn defs(env: *janet.Env) void {
+fn defs(env: *janet.Env) janet.Error!void {
+    // **A type with an `unmarshal` callback has to be registered**, or the
+    // unmarshaller never finds it: a marshalled abstract carries its type's
+    // name on the wire and resolves it through the runtime's registry. This is
+    // what `defs` may raise for, and why the loader tests for a refusal after
+    // `_janet_init`.
+    try janet.registerAbstract(&num_array_type);
     janet.cfuns(env, "numarray", &.{
         janet.reg("new", &new, "(numarray/new size)\n\nCreate new numarray"),
         janet.reg("scale", &scale, "(numarray/scale numarray factor)\n\nScale numarray by factor"),

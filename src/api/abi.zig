@@ -16,13 +16,22 @@
 //! the eleven it does. A declaration that cannot name an author-side caller
 //! does not belong here.
 //!
-//! **`Table` and `Buffer` are opaque handles.** An author only ever holds a
-//! *pointer* to one -- `module.zig`'s `Env` is a `*Table`, and an abstract
-//! type's `tostring` renders into a `*Buffer`. The runtime's own
-//! `tables.Table` and `buffers.Buffer` stay full structs in `value/`. Both sides pass one
-//! pointer, so the two layouts need not agree; the runtime casts where it
-//! implements a callback and where it dispatches through one, and
-//! `cabi_check.zig` is where that substitution is written down.
+//! **The rule for what a type may be.** A type crosses to an author only if it
+//! is a **read-only view** consumed without a further crossing, or a
+//! **capability** the runtime hands in and the author can only hand back.
+//! Anything an author can obtain from a `Value` or turn into a `Value` is
+//! addressed by that `Value` and never as a pointer, and a capability is never
+//! convertible to or from a `Value` on the author's side.
+//!
+//! A capability is `opaque {}`, so an author holds a *pointer* to one and can
+//! neither read a field nor make one. `Env`, `Render`, `Marshal`, `Unmarshal`,
+//! `Loop` and `Wake` below are the six; the runtime's `tables.Table`,
+//! `buffers.Buffer`, `marsh.MarshalState`, `marsh.UnmarshalState` and -- for
+//! the last two -- `vm/state.zig`'s `Vm` keep the layouts they stand for. One
+//! pointer crosses, so the two layouts need not agree: the runtime casts where
+//! it implements a callback and where it dispatches through one, and
+//! `cabi_check.zig`'s `capabilityFor` is where that substitution is written
+//! down.
 //!
 //! The author-side files are `module.zig`, `abstract_type.zig`, `raise.zig`
 //! and `crossings.zig` -- the four this package compiles *into* a module --
@@ -33,25 +42,119 @@ const builtin = @import("builtin");
 const repr = @import("repr");
 
 // ---------------------------------------------------------------------------
-// The two handles
+// The capabilities
 // ---------------------------------------------------------------------------
 
-/// An environment table, as a handle.
+/// The authority to define a binding in the environment a module is loading
+/// into.
 ///
-/// **Author-side:** `module.zig`'s `Env` is this type, so it is what a module's
-/// entry point is handed and what `module.cfuns` and `module.def` register
-/// into. An author never reads a field of one -- every operation on an
-/// environment is a call across the symbol boundary -- so the layout is not
-/// part of the agreement and `tables.Table` keeps it.
-pub const Table = opaque {};
+/// **Author-side:** `module.zig`'s `Env` is this type, so it is what a
+/// module's entry point is handed and what `module.cfuns` and `module.def`
+/// register into. It is named for what it permits rather than for
+/// `tables.Table`, which is what the pointer lands on: an author never reads a
+/// field of one, because every operation on an environment is a call across
+/// the symbol boundary.
+pub const Env = opaque {};
 
-/// A byte buffer, as a handle.
+/// The authority to append bytes to the buffer a value is being rendered into.
 ///
 /// **Author-side:** `AbstractType.tostring` and `abstract_type.Spec`'s
-/// `tostring` slot take a `*Buffer`, which is the buffer the pretty-printer is
-/// rendering into. Same argument as `Table`: one pointer crosses, and
-/// `buffers.Buffer` keeps the layout on the runtime's side.
-pub const Buffer = opaque {};
+/// `tostring` slot take a `*Render`, and `module.push` and `module.format` are
+/// what an author appends with.
+///
+/// **It is a capability rather than a `Value` because the buffer behind it may
+/// not be collectable.** Which buffer arrives depends on the caller: `%V` into
+/// a user's buffer and `print` into one hand the callback an ordinary heap
+/// buffer, but `pp.zig`'s `description` and `toString` render into a *stack
+/// local* prepared by `buffers.init`, which sets `gc.data.next` to null and
+/// the disabled flag so the block is never linked into the heap list. A
+/// `Value` an author kept would therefore sometimes outlive the frame it
+/// points into, and nothing at the callback says which case it is in.
+pub const Render = opaque {};
+
+/// The authority to append to the stream a value is being marshalled into.
+///
+/// **Author-side:** `abstract_type.Spec`'s `marshal` slot takes a `*Marshal`,
+/// and `module.zig`'s `push*` functions are what an author appends with.
+///
+/// **The push side and the pull side are two types, not one.** The runtime
+/// builds each at its own site -- `marsh.zig`'s `marshalOneAbstract` and
+/// `unmarshalOneAbstract` -- and one bidirectional type would let a `pull*`
+/// inside a `marshal` callback compile and then read a stream that is not
+/// there. Two types make that a compile error at the callback's own
+/// definition, which is where `DESIGN.md` section 5 puts every other decision
+/// about a module author's mistake.
+pub const Marshal = opaque {};
+
+/// The authority to read from the stream a value is being unmarshalled from.
+///
+/// **Author-side:** `abstract_type.Spec`'s `unmarshal` slot takes a
+/// `*Unmarshal`, and `module.zig`'s `pull*` functions are what an author reads
+/// with. See `Marshal` for why the two directions are separate types.
+pub const Unmarshal = opaque {};
+
+/// The authority to ask the event loop to run a callback at its next turn.
+///
+/// **Author-side:** `module.loop` answers one and `module.post` is the only
+/// function that accepts one. A module's own thread holds it across the span
+/// it is doing work for, which makes this the first capability an author *asks
+/// for* rather than is handed, and the first that is used from a thread the
+/// runtime did not start.
+///
+/// **`post` is the whole of what it permits, and that is why it is not the
+/// same type as `Wake`.** Behind both is the `Vm` the loop belongs to. A
+/// worker thread that could reach `wake` would resume a fiber from a thread
+/// with no VM, on a scheduler queue with no lock; two types make that
+/// unspellable rather than merely undocumented.
+///
+/// **Its lifetime is the runtime's**: valid until the VM that answered it
+/// shuts down. A module whose thread holds one is what has to stop that
+/// thread first, and that is the one ownership contract on this surface.
+pub const Loop = opaque {};
+
+/// The authority to put a fiber back on the run queue with a value.
+///
+/// **Author-side:** the runtime hands one to a posted callback as its first
+/// parameter, and `module.wake` is the only function that accepts one. It is
+/// handed in for one call in the way `Render` is, and it is valid for that
+/// call only: the callback runs on the loop thread between two fibers, which
+/// is the one moment resuming a fiber is safe.
+///
+/// See `Loop` for why the two are separate types over the same pointer.
+pub const Wake = opaque {};
+
+/// The alignment a function pointer must carry to survive being wrapped.
+///
+/// Under 64-bit nanboxing with a nonzero pointer shift, `repr.fromPointer`
+/// stores a pointer shifted right and `repr.toPointer` shifts it back, so the
+/// low `nanbox_pointer_shift` bits are discarded. `16` satisfies every shift
+/// the build accepts. `module.fn_align` is this, and its doc is where an
+/// author reads it.
+pub const fn_align = 16;
+
+/// What `post` asks the loop thread to run.
+///
+/// `callconv(.c)` because it travels through the runtime's own event message,
+/// and a plain pointer beside it because the context is the module's and the
+/// runtime never reads it. **It cannot raise**, which is the same contract the
+/// six non-raising abstract-type slots carry and for the same reason: it runs
+/// off the self-pipe with no scope above it to raise into.
+///
+/// Building a `Value` inside one is allowed. Allocating through the collector
+/// is fatal on failure rather than a raise, and no safe point runs between
+/// fibers on the loop thread -- `ev.zig`'s `loop1` calls `continueSignal` once
+/// per queued task and reaches nothing else that collects.
+///
+/// **The alignment is in the type, and it has to be.** `capi.zig`'s `post`
+/// carries this pointer to the loop thread in the event message's `argj` slot,
+/// which is a `repr.Value` -- and a pointer-tagged `Value` discards the low
+/// `nanbox_pointer_shift` bits. A cfunction meets the same hazard and answers
+/// it the same way, except that a cfunction's alignment is checked at
+/// registration by `registry.checkPointerAlign` and a posted callback is
+/// registered nowhere. Stating it here makes an under-aligned one a coercion
+/// error at the author's own `&callback`, which is the only place it can still
+/// be diagnosed.
+pub const PostCallback = *align(fn_align) const fn (wake: *Wake, ctx: *anyopaque) callconv(.c) void;
 
 // ---------------------------------------------------------------------------
 // Signalling
@@ -129,8 +232,9 @@ comptime {
     // correct. The table is the whole population, and the length assertion
     // beside it is what stops a member being added without a row.
     //
-    // `FiberStatus`'s table, and the claim that every signal value is also a
-    // status value, are in `value/fibers.zig` beside the enum they are about.
+    // `FiberStatus`'s own table is below, beside that enum; the claim that
+    // every signal value is also a status value is there too, because it is a
+    // claim about the wider of the two vocabularies.
     const expected_signal = [_]struct { Signal, comptime_int }{
         .{ .ok, 0 },     .{ .@"error", 1 }, .{ .debug, 2 },  .{ .yield, 3 },
         .{ .user0, 4 },  .{ .user1, 5 },    .{ .user2, 6 },  .{ .user3, 7 },
@@ -141,6 +245,74 @@ comptime {
     for (expected_signal) |row| std.debug.assert(@intFromEnum(row[0]) == row[1]);
     std.debug.assert(Signal.interrupt == .user8);
     std.debug.assert(Signal.event == .user9);
+}
+
+/// What a fiber's status is, which is what `pcall` hands back a fiber to be
+/// asked.
+///
+/// **Author-side:** `module.pcall` answers a fiber and `module.fiberStatus`
+/// answers this over it, so a module that has to look at a yield rather than
+/// propagate it reads the status here. `value/fibers.zig` aliases the name and
+/// holds every operation over a fiber, which is the split `KV`, `Method` and
+/// `ByteView` already have.
+///
+/// **This is a vocabulary and not a layout**, which is the distinction
+/// `DESIGN.md` section 15's invariant turns on: an enum is a numbering the two
+/// compilations agree on, where a layout is a type an author is handed. So
+/// this file gains a declaration and `tools/check/layouts.txt` gains no row.
+///
+/// **The first fourteen are the signal's**, which is why `utils.zig` carries
+/// two name tables rather than one and why `vm.zig` can read a status out of a
+/// fiber's flag word and use it as a signal. `new` and `alive` are the two a
+/// signal has no name for.
+///
+/// The stored width is six bits of `fibers.FiberFlags`, and the assertion that
+/// every member fits is in `value/fibers.zig` beside `statusOf`, the reader
+/// that narrows to it: this file cannot see the flag word.
+pub const FiberStatus = enum(c_uint) {
+    dead = 0,
+    @"error" = 1,
+    debug = 2,
+    pending = 3,
+    user0 = 4,
+    user1 = 5,
+    user2 = 6,
+    user3 = 7,
+    user4 = 8,
+    user5 = 9,
+    user6 = 10,
+    user7 = 11,
+    user8 = 12,
+    user9 = 13,
+    new = 14,
+    alive = 15,
+};
+
+comptime {
+    // Against upstream Janet at `17b3f8c4`. The values are marshalled -- a
+    // fiber's status travels in an image -- so a shift here is a wrong answer
+    // from a working program rather than a build failure. The table is the
+    // whole population, for the reason `Signal`'s is.
+    const expected_status = [_]struct { FiberStatus, comptime_int }{
+        .{ .dead, 0 },   .{ .@"error", 1 }, .{ .debug, 2 },  .{ .pending, 3 },
+        .{ .user0, 4 },  .{ .user1, 5 },    .{ .user2, 6 },  .{ .user3, 7 },
+        .{ .user4, 8 },  .{ .user5, 9 },    .{ .user6, 10 }, .{ .user7, 11 },
+        .{ .user8, 12 }, .{ .user9, 13 },   .{ .new, 14 },   .{ .alive, 15 },
+    };
+    std.debug.assert(expected_status.len == @typeInfo(FiberStatus).@"enum".fields.len);
+    for (expected_status) |row| std.debug.assert(@intFromEnum(row[0]) == row[1]);
+    // Every signal value is also a status value, which is what lets `vm.zig`
+    // read six bits out of a fiber's flag word and hand the result on as a
+    // signal. It is a claim about *values* and not about names: `ok` is `dead`
+    // at 0 and `yield` is `pending` at 3, and ten of the fourteen names do
+    // coincide, which is why `utils.zig` carries two tables.
+    for (@typeInfo(Signal).@"enum".fields) |f| {
+        var found = false;
+        for (@typeInfo(FiberStatus).@"enum".fields) |g| {
+            if (f.value == g.value) found = true;
+        }
+        std.debug.assert(found);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -214,14 +386,37 @@ pub const BuildConfig = extern struct {
 };
 
 // ---------------------------------------------------------------------------
-// Abstract types
+// The views
 // ---------------------------------------------------------------------------
+//
+// **A view is a pointer to elements and a count, and the three differ only in
+// what an element is**: a `u8`, a `Value`, or a `KV`. They are the other half
+// of `DESIGN.md` section 15's rule -- a heap type an author can obtain from a
+// `Value` is read through a view and never handed over as a pointer to the
+// aggregate itself, so `strings`, `tuples.Tuple`, `arrays.Array`,
+// `structs.Struct`, `tables.Table` and `buffers.Buffer` all stay inside the
+// runtime while their contents cross. `Range` is here for the same reason and
+// is not a view: it is the pair of folded indices a slice argument answers.
+//
+// **A view is not a capability**, and does not go in `cabi_check.zig`'s
+// `capabilityFor`. It carries no authority and is handed back to nothing: the
+// runtime answers one and the author reads it. How long one stays valid
+// differs by what it points into, and that is stated at the `module.zig`
+// getter that answers it, which is where an author meets it.
+//
+// **They are `extern` because each crosses a `callconv(.c)` signature.** A
+// slice has no guaranteed in-memory representation, so the crossing carries
+// the struct and `module.zig` rebuilds the slice on the author's side. The
+// heads these point into -- a string's, a tuple's, a struct's, and the
+// `Table` and `Array` structs -- stay internal; `DESIGN.md` section 4 is that
+// decision and nothing here weakens it.
 
 /// A byte sequence and its length, as `args.bytesView` answers it.
 ///
 /// **Author-side:** `abstract_type.Spec`'s `bytes` callback returns one, so an
 /// author writing a byte-like abstract declares this shape and the runtime
-/// reads it back.
+/// reads it back; and `janet_getbytes` answers one, which `module.getBytes`
+/// rebuilds as a `[]const u8`.
 ///
 /// `len` is `usize` because it is a length, where upstream declares the same
 /// field `int32_t`. Every loop in the tree that walks a byte view takes its
@@ -232,18 +427,75 @@ pub const ByteView = extern struct {
     len: usize = 0,
 };
 
-/// The state a marshalling or unmarshalling callback is handed.
+/// The elements of a tuple or an array, as `args.argIndexed` answers them.
 ///
-/// **Author-side:** `abstract_type.Spec`'s `marshal` and `unmarshal` callbacks
-/// take a `*MarshalContext`, and an author's callback passes it back to
-/// the runtime's marshalling entry points.
-pub const MarshalContext = struct {
-    m_state: ?*anyopaque = null,
-    u_state: ?*anyopaque = null,
-    flags: c_int = 0,
-    data: ?[*]const u8 = null,
-    at: ?*const AbstractType = null,
+/// **Author-side:** `janet_getindexed` returns one and `module.getIndexed`
+/// rebuilds the `[]const Value`. It is `ByteView`'s analogue over the other
+/// element type, and it is a separate declaration for the only reason a view
+/// ever is: the element type is what a view *is*.
+///
+/// **`items` is optional, and no runtime path answers the null.** An empty
+/// array does have a null data pointer -- `arrays.init(a, 0)` leaves it so and
+/// `array/trim` restores it -- but `args.argIndexed` substitutes the empty
+/// slice for it *before* this struct is built, so what crosses is always a
+/// real pointer with a zero length. The optional is the field's declared
+/// default and a formality on the author's side, not a case the runtime
+/// produces.
+pub const IndexedView = extern struct {
+    items: ?[*]const repr.Value = null,
+    len: usize = 0,
 };
+
+/// One entry of a table or a struct: a key beside its value.
+///
+/// **Author-side:** `DictView` points at an array of these, so an author
+/// walking a dictionary reads both fields of each.
+///
+/// **The declaration is here and every operation over it is in
+/// `value/tables.zig`**, which aliases this name -- the treatment
+/// `AbstractHead`, `Method` and `ByteView` already get. A layout both
+/// compilations spell has to be declared once, and `tools/check/layouts.txt`
+/// carries the single row this produces.
+pub const KV = extern struct {
+    key: repr.Value = std.mem.zeroes(repr.Value),
+    value: repr.Value = std.mem.zeroes(repr.Value),
+};
+
+/// A table's or a struct's entries, as `args.dictionaryView` answers them.
+///
+/// **Author-side:** `janet_getdictionary` returns one and
+/// `module.getDictionary` hands it straight over, because unlike the other two
+/// there is no slice to rebuild -- a dictionary walk needs all three numbers.
+///
+/// **Three quantities rather than two.** `kvs` is the whole hash array, `cap`
+/// long, and `len` is how many of its slots are occupied: a walk reads every
+/// slot and skips the empty ones, so neither number alone describes it. Both
+/// are counts.
+pub const DictView = extern struct {
+    kvs: ?[*]const KV = null,
+    len: usize = 0,
+    cap: usize = 0,
+};
+
+/// A slice argument's two folded indices, as `args.getSlice` answers them.
+///
+/// **Author-side:** `janet_getrange` returns one and `module.getRange` hands
+/// it over unchanged.
+///
+/// **`i32` because a Janet index is `i32`**, not because the C original said
+/// so: `args.range` folds a negative index against the length and reports a
+/// half-open interval in the same width the interpreter indexes with. An
+/// author slicing Zig memory with one casts, and that cast is at the boundary
+/// where a Janet integer becomes a Zig one, which is where `DESIGN.md`
+/// section 9 puts it.
+pub const Range = extern struct {
+    start: i32 = 0,
+    end: i32 = 0,
+};
+
+// ---------------------------------------------------------------------------
+// Abstract types
+// ---------------------------------------------------------------------------
 
 /// An abstract type's dispatch description: the one the runtime stores, the
 /// one a module author declares, and the only one there is.
@@ -255,8 +507,8 @@ pub const MarshalContext = struct {
 /// reason this file exists.
 ///
 /// It is declared *here* rather than in `abstract_type.zig`, which owns the
-/// interface, because `AbstractHead.type` and `MarshalContext.at`
-/// name it by pointer and both of those are boundary declarations too.
+/// interface, because `AbstractHead` names it by pointer and that is a
+/// boundary declaration too.
 ///
 /// The payload is `?*anyopaque` here because this is the *erased* vtable;
 /// `abstract_type.define` generates it from callbacks written over `*T`, which
@@ -279,9 +531,9 @@ pub const AbstractType = struct {
     gcmark: ?*const fn (data: ?*anyopaque, len: usize) callconv(.c) void = null,
     get: ?*const fn (data: ?*anyopaque, key: repr.Value) error{JanetSignal}!?repr.Value = null,
     put: ?*const fn (data: ?*anyopaque, key: repr.Value, value: repr.Value) error{JanetSignal}!void = null,
-    marshal: ?*const fn (p: ?*anyopaque, ctx: *MarshalContext) error{JanetSignal}!void = null,
-    unmarshal: ?*const fn (ctx: *MarshalContext) error{JanetSignal}!?*anyopaque = null,
-    tostring: ?*const fn (p: ?*anyopaque, buffer: *Buffer) error{JanetSignal}!void = null,
+    marshal: ?*const fn (p: ?*anyopaque, m: *Marshal) error{JanetSignal}!void = null,
+    unmarshal: ?*const fn (u: *Unmarshal) error{JanetSignal}!?*anyopaque = null,
+    tostring: ?*const fn (p: ?*anyopaque, render: *Render) error{JanetSignal}!void = null,
     compare: ?*const fn (lhs: ?*anyopaque, rhs: ?*anyopaque) callconv(.c) i32 = null,
     hash: ?*const fn (p: ?*anyopaque, len: usize) callconv(.c) i32 = null,
     next: ?*const fn (p: ?*anyopaque, key: repr.Value) error{JanetSignal}!repr.Value = null,

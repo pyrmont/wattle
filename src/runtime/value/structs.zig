@@ -147,6 +147,23 @@ pub fn begin(count: usize) [*]tables.KV {
     return st;
 }
 
+/// A struct from a caller's pairs, which is what the module boundary's
+/// `structOf` answers.
+///
+/// **The pairs are not a hash array.** A `DictView` is `cap` slots with
+/// empties among them; this is `kvs.len` pairs with nothing empty among them,
+/// and `begin` sizes the table from that count. A repeated key replaces
+/// without filling a new slot, so the struct is under-filled and `end`
+/// re-begins it at the true count -- which is why a caller may pass
+/// duplicates and get what a struct literal gives.
+///
+/// A nil value or an unstorable key drops its pair, exactly as a literal does.
+pub fn newFrom(kvs: []const tables.KV) [*]const tables.KV {
+    const st = begin(kvs.len);
+    for (kvs) |kv| put(st, kv.key, kv.value);
+    return end(st);
+}
+
 /// Find the bucket holding `key`, or the first empty bucket on its probe path.
 ///
 /// A struct has no tombstones, so the first nil key ends the search and there

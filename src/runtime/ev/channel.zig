@@ -237,29 +237,29 @@ fn chanatNext(_: *Channel, key: repr.Value) raise.Raising(repr.Value) {
     return args_core.nextmethod(@ptrCast(&chanat_methods), key);
 }
 
-fn chanatMarshal(chan: *Channel, ctx: *abi.MarshalContext) raise.Raising(void) {
-    try marsh.marshalByte(ctx, @intFromBool(chan.is_threaded));
-    marsh.marshalAbstract(ctx, chan);
-    try marsh.marshalByte(ctx, @intFromBool(chan.closed));
-    try marsh.marshalInt(ctx, chan.limit);
-    try marsh.marshalInt(ctx, chan.items.count());
+fn chanatMarshal(chan: *Channel, m: *abi.Marshal) raise.Raising(void) {
+    try marsh.marshalByte(m, @intFromBool(chan.is_threaded));
+    marsh.marshalAbstract(m, chan);
+    try marsh.marshalByte(m, @intFromBool(chan.closed));
+    try marsh.marshalInt(m, chan.limit);
+    try marsh.marshalInt(m, chan.items.count());
     for (chan.items.segments()) |run| {
-        for (run) |item| try marsh.marshalJanet(ctx, item);
+        for (run) |item| try marsh.marshalJanet(m, item);
     }
 }
 
-fn chanatUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Channel) {
+fn chanatUnmarshal(u: *abi.Unmarshal) raise.Raising(*Channel) {
     // The lead byte `chanatMarshal` wrote says which heap the channel lived
     // on. A threaded one cannot be rebuilt from a portable stream: it wants an
     // allocation on the threaded heap and a reference count handed to whoever
     // reads it, and this encoding carries neither. So it is refused where the
     // caller can act on it, and every path past here has the byte clear.
-    const is_threaded = try marsh.unmarshalByte(ctx);
+    const is_threaded = try marsh.unmarshalByte(u);
     if (is_threaded != 0) return raise.panic("cannot unmarshal a threaded channel");
-    const abst: *Channel = unwrap(try marsh.unmarshalAbstract(ctx, @sizeOf(Channel)));
-    const is_closed = try marsh.unmarshalByte(ctx);
-    const limit = try marsh.unmarshalInt(ctx);
-    const count = try marsh.unmarshalInt(ctx);
+    const abst: *Channel = unwrap(try marsh.unmarshalAbstract(u, @sizeOf(Channel)));
+    const is_closed = try marsh.unmarshalByte(u);
+    const limit = try marsh.unmarshalInt(u);
+    const count = try marsh.unmarshalInt(u);
     if (count < 0) return raise.panic("invalid negative channel count");
     if (count > limit) return raise.panic("invalid channel count");
     // Unthreaded, and that is the byte's answer rather than a constant: the
@@ -267,7 +267,7 @@ fn chanatUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Channel) {
     chanInit(abst, limit, false);
     abst.closed = is_closed != 0;
     for (0..@as(usize, @intCast(count))) |_| {
-        const item = try marsh.unmarshalJanet(ctx);
+        const item = try marsh.unmarshalJanet(u);
         ev.assert(@src(), abst.items.push(item) == 0, "bad unmarshal channel");
     }
     return abst;

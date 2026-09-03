@@ -930,14 +930,20 @@ fn theTwoLengthBoundsAreDifferent() !void {
 
 /// Without a `length` callback the length comes from a `:length` method, which
 /// is looked up through `access.get` -- so this arm re-enters the file under test.
-/// `length` checks the result and `lengthv` does not, which is the second place
-/// the two disagree.
+///
+/// **Both check the result now, and the bound is the only thing they still
+/// disagree about.** `length` asks `checkint` and `lengthv` asks `checksize`,
+/// so each refuses a method answering a negative, a fraction or something that
+/// is not a number, and they part company only where a length exceeds what an
+/// `i32` holds -- which is the reason `lengthv` exists. `lengthv` used to hand
+/// a method's answer straight back whatever it was, and `DESIGN.md` section 12
+/// carries the decision that ended that.
 fn theLengthFallsBackToAMethod() !void {
     expect(try access.length(good_method_value) == 7);
     expect(harness.equals(try access.lengthv(good_method_value), intv(7)));
 
     expect(refusal(access.length, .{bad_method_value}).says("invalid integer length :not-a-number"));
-    expect(harness.equals(try access.lengthv(bad_method_value), kw("not-a-number")));
+    expect(refusal(access.lengthv, .{bad_method_value}).says("invalid integer length :not-a-number"));
 
     expect(refusal(access.length, .{bare_value})
         .beginsWith("could not find method :length for <value-access/bare "));

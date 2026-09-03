@@ -187,11 +187,12 @@ pub fn gcallocBytes(mtype: MemoryType, size: usize) *abi.GCObject {
     const v = vm_state.current();
     const g = &v.gc;
 
-    // The symbol cache, read as a liveness probe rather than as cache work:
-    // VM start-up allocates it first, so a null table means nothing has been
-    // initialised. It is the one place this file names an aggregate that is
-    // not the collector's, and naming `g` beside it is what makes that visible.
-    if (v.symcache.entries == null) fatal.fatal("please initialize janet before use");
+    // The liveness probe, which is `vm/state.zig`'s and is asked here for the
+    // embedder who never called `janet_init`. The boundary asks the same
+    // question of a *thread* and says so differently; the predicate is
+    // declared once so the two messages cannot come to disagree about what
+    // they are testing.
+    if (!vm_state.isInitialised()) fatal.fatal("please initialize janet before use");
 
     const mem: *abi.GCObject = @ptrCast(@alignCast(utils.rawAlloc(size)));
 

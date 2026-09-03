@@ -270,16 +270,16 @@ fn streamGetter(stream: *Stream, key: repr.Value) raise.Raising(?repr.Value) {
     return args_core.findMethod(key, @ptrCast(@alignCast(stream.methods)));
 }
 
-fn streamMarshal(s: *Stream, ctx: *abi.MarshalContext) raise.Raising(void) {
-    if (marsh.marshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE == 0) {
+fn streamMarshal(s: *Stream, m: *abi.Marshal) raise.Raising(void) {
+    if (marsh.marshalFlags(m) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("can only marshal stream with unsafe flag");
     }
     // This stream might now be duplicated, which invalidates some EV
     // optimizations.
     s.flags &= ~stream_nodups;
-    marsh.marshalAbstract(ctx, s);
-    try marsh.marshalInt(ctx, @bitCast(s.flags));
-    try marsh.marshalPtr(ctx, s.methods);
+    marsh.marshalAbstract(m, s);
+    try marsh.marshalInt(m, @bitCast(s.flags));
+    try marsh.marshalPtr(m, s.methods);
     if (windows) {
         // **Unresolved:** there is no reference counting to stop a handle
         // being closed or collected in transit, and `c.DuplicateHandle` does
@@ -298,30 +298,30 @@ fn streamMarshal(s: *Stream, ctx: *abi.MarshalContext) raise.Raising(void) {
                 DUPLICATE_SAME_ACCESS,
             );
         }
-        try marsh.marshalInt64(ctx, @bitCast(@intFromPtr(duph)));
+        try marsh.marshalInt64(m, @bitCast(@intFromPtr(duph)));
     } else {
         // Marshal after dup because it is easier than maintaining our own
         // reference counting.
         const duph = c.dup(s.handle);
         if (duph < 0) return pp_format.panicf("failed to duplicate stream handle: %V", .{evLasterr()});
-        try marsh.marshalInt(ctx, duph);
+        try marsh.marshalInt(m, duph);
     }
 }
 
-fn streamUnmarshal(ctx: *abi.MarshalContext) raise.Raising(*Stream) {
-    if (marsh.unmarshalFlags(ctx) & constants.JANET_MARSHAL_UNSAFE == 0) {
+fn streamUnmarshal(u: *abi.Unmarshal) raise.Raising(*Stream) {
+    if (marsh.unmarshalFlags(u) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("can only unmarshal stream with unsafe flag");
     }
-    const p: *Stream = @ptrCast(@alignCast(try marsh.unmarshalAbstract(ctx, @sizeOf(Stream))));
+    const p: *Stream = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(Stream))));
     // Listening state cannot be shared across threads.
     p.read_fiber = null;
     p.write_fiber = null;
-    p.flags = @bitCast(try marsh.unmarshalInt(ctx));
-    p.methods = try marsh.unmarshalPtr(ctx);
+    p.flags = @bitCast(try marsh.unmarshalInt(u));
+    p.methods = try marsh.unmarshalPtr(u);
     if (windows) {
-        p.handle = @ptrFromInt(@as(usize, @bitCast(try marsh.unmarshalInt64(ctx))));
+        p.handle = @ptrFromInt(@as(usize, @bitCast(try marsh.unmarshalInt64(u))));
     } else {
-        p.handle = try marsh.unmarshalInt(ctx);
+        p.handle = try marsh.unmarshalInt(u);
     }
     // Only the poll backend keeps its own table of streams, so only it has to
     // be told about one that arrived by unmarshalling.
@@ -338,12 +338,13 @@ fn streamNext(stream: *Stream, key: repr.Value) raise.Raising(repr.Value) {
 /// A `host.Handle` is wider than the `%d` that renders it on Windows, so the
 /// narrowing is written here rather than left to a conversion: away from
 /// Windows the handle is already an `i32` and the truncation is exact.
-fn streamToString(stream: *Stream, buffer: *abi.Buffer) raise.Raising(void) {
+fn streamToString(stream: *Stream, render: *abi.Render) raise.Raising(void) {
     const shown: i32 = if (windows) @truncate(@as(isize, @bitCast(@intFromPtr(stream.handle)))) else stream.handle;
-    // The callback slot takes the boundary's handle, because a module author
-    // is offered a buffer and not its layout; the runtime owns the layout and
-    // recovers it here. `abi.zig`'s header has the argument.
-    _ = try pp_format.formatb(@ptrCast(@alignCast(buffer)), "[fd=%d]", .{shown});
+    // The slot takes `abi.Render`, the capability a module author is offered in
+    // place of the buffer's layout. This type is the runtime's own and never
+    // crosses, so it recovers `buffers.Buffer` here and formats with an
+    // ordinary Zig call. `abi.zig`'s header has the rule.
+    _ = try pp_format.formatb(@ptrCast(@alignCast(render)), "[fd=%d]", .{shown});
 }
 
 /// `pub` for the three subsystems that reach it by import -- `ev.zig`,

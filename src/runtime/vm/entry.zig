@@ -26,6 +26,7 @@
 //! than to the fiber; the interpreter's own trace reloads its frame pointer
 //! after the trace for exactly this reason.
 
+const std = @import("std");
 const config = @import("config");
 const raise = @import("../../api/raise.zig");
 const pp_format = @import("../pp/format.zig");
@@ -245,6 +246,79 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
     }
 
     return vm_state.current().return_reg.?.*;
+}
+
+/// Call any value `(f ...)` calls, from a host frame, raising as `call` does.
+///
+/// **`call` above is narrower than Janet's call, and this is the difference.**
+/// It takes a `*functions.Function`, which is the callee the interpreter's own
+/// host-to-Janet path has already resolved. Janet's call is wider: `vm.zig`'s
+/// `.call` and `.tailcall` arms dispatch a function and a cfunction
+/// themselves, and hand everything else to `callNonfn`, which is
+/// `methodInvoke` -- an abstract with a `call` slot, and the six indexable
+/// types, which index their one argument rather than call it. This is that
+/// whole vocabulary reached from a host frame, so that a module author's
+/// `call` is Janet's call; `capi.zig` is its only caller.
+///
+/// **The arguments are copied onto the current fiber's stack, under a `cframe`
+/// of their own**, which is the technique `vm.zig`'s own arms use and not a
+/// third one. Three things make it necessary, and each is a property of the
+/// callee or of the collector rather than of this function:
+///
+/// - a cfunction may write to its `argv` -- `ev/channel.zig`'s
+///   `fisherYatesArgs` shuffles it in place, which is what makes `ev/rselect`
+///   fair -- so a `[]const` slice cannot be handed through;
+/// - `gc/mark.zig`'s `markFiber` traces `[stackstart, stacktop)` and each
+///   frame's locals, and nothing above the top frame, so a callee that
+///   re-enters the interpreter and reaches a safe point would not otherwise
+///   see these values at all;
+/// - the frame is what keeps them there. `cframe` puts its struct *above* the
+///   arguments and leaves them as the frame's locals, so a nested `call`
+///   underneath pushes above them instead of over them.
+///
+/// The function arm returns before any of that, because `call` does all three
+/// for itself: it pushes with `fibers.pushn` and covers a dirty stack with a
+/// guard frame of its own.
+///
+/// **These arguments may be the caller's own `argv`**, which is the ordinary
+/// case and is a slice of this same stack. `fibers.pushn` handles that where
+/// the hazard is, in the branch that grows and therefore reallocates; nothing
+/// is needed here.
+pub fn callValue(callee: repr.Value, argv: []const repr.Value) raise.Error!repr.Value {
+    if (vm_state.current().fiber == null) {
+        return raise.panic("janet_call failed because there is no current fiber");
+    }
+    const fiber = vm_state.currentFiber();
+    // **The stack is clean here, and this is where that is checked rather than
+    // assumed.** Every route to this function runs under a frame that left it
+    // so: `vm.zig`'s `.call` arm installs a `cframe` before invoking a
+    // cfunction, and `callNonfn` resets `stacktop` to `stackstart` before
+    // reaching `methodInvoke`. A dirty entry would put `cframe`'s `nextframe`
+    // below the arguments pushed below, so the frame would name the wrong
+    // values -- and `call`'s guard frame reserves, which relocates the stack
+    // in a `-Dfiber-stack-shuffle` build and would strand an aliasing `argv`.
+    // Neither is reachable, and an assertion is what says so in every debug
+    // build the matrix runs rather than in a sentence.
+    std.debug.assert(fiber.stacktop == fiber.stackstart);
+    if (repr.checkType(callee, repr.Tag.function)) {
+        return call(wrap.toFunction(callee), argv);
+    }
+    try fibers.pushn(fiber, argv);
+    // The real cfunction where there is one, so a trace through a module's
+    // `call` names what a trace through `(f ...)` names; the placeholder
+    // otherwise, exactly as `call`'s guard frame uses it.
+    fibers.cframe(fiber, if (repr.checkType(callee, repr.Tag.cfunction))
+        wrap.toCfunction(callee)
+    else
+        raise.stored(&voidCFunction));
+    // Read after `cframe`, which reserves and may therefore move the stack.
+    const pushed = (fiber.data.? + utils.asSize(fiber.frame))[0..argv.len];
+    const answer = try vm_run.methodInvoke(callee, pushed);
+    // `popframe` restores all three indices, which is why nothing else is
+    // saved here. A raise leaves the frame standing, which is what `vm.zig`'s
+    // own cfunction arm leaves too.
+    fibers.popframe(fiber);
+    return answer;
 }
 
 // -------------------------------------------------------------- resuming

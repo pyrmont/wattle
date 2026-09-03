@@ -106,9 +106,9 @@ pub fn Spec(comptime T: type) type {
         gcmark: ?*const fn (*T, usize) void = null,
         get: ?*const fn (*T, repr.Value) raise.Error!?repr.Value = null,
         put: ?*const fn (*T, repr.Value, repr.Value) raise.Error!void = null,
-        marshal: ?*const fn (*T, *abi.MarshalContext) raise.Error!void = null,
-        unmarshal: ?*const fn (*abi.MarshalContext) raise.Error!*T = null,
-        tostring: ?*const fn (*T, *abi.Buffer) raise.Error!void = null,
+        marshal: ?*const fn (*T, *abi.Marshal) raise.Error!void = null,
+        unmarshal: ?*const fn (*abi.Unmarshal) raise.Error!*T = null,
+        tostring: ?*const fn (*T, *abi.Render) raise.Error!void = null,
         /// **`compare` may not allocate GC memory, and may not re-enter a
         /// comparison.** It runs from inside a dictionary build --
         /// `structs.begin` allocates the struct through the collector and the
@@ -130,9 +130,9 @@ pub fn Spec(comptime T: type) type {
     };
 }
 
+// zig fmt: off
 /// The slots, in the erased vtable's order. Used by `check` to say what a
 /// misspelled field could have been.
-// zig fmt: off
 const slots = [_][:0]const u8{
     "gc", "gcmark", "get", "put", "marshal", "unmarshal", "tostring",
     "compare", "hash", "next", "call", "length", "bytes", "gcperthread",
@@ -170,14 +170,14 @@ fn Erased(comptime T: type, comptime spec: Spec(T)) type {
         fn put(p: ?*anyopaque, key: repr.Value, value: repr.Value) raise.Error!void {
             return spec.put.?(mut(p), key, value);
         }
-        fn marshal(p: ?*anyopaque, ctx: *abi.MarshalContext) raise.Error!void {
-            return spec.marshal.?(mut(p), ctx);
+        fn marshal(p: ?*anyopaque, m: *abi.Marshal) raise.Error!void {
+            return spec.marshal.?(mut(p), m);
         }
-        fn unmarshal(ctx: *abi.MarshalContext) raise.Error!?*anyopaque {
-            return try spec.unmarshal.?(ctx);
+        fn unmarshal(u: *abi.Unmarshal) raise.Error!?*anyopaque {
+            return try spec.unmarshal.?(u);
         }
-        fn tostring(p: ?*anyopaque, buffer: *abi.Buffer) raise.Error!void {
-            return spec.tostring.?(mut(p), buffer);
+        fn tostring(p: ?*anyopaque, render: *abi.Render) raise.Error!void {
+            return spec.tostring.?(mut(p), render);
         }
         fn compare(lhs: ?*anyopaque, rhs: ?*anyopaque) callconv(.c) i32 {
             return spec.compare.?(ro(lhs), ro(rhs));
