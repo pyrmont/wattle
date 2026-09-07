@@ -6,73 +6,80 @@
 //! `test/suite-filewatch.janet` drives a real watcher over a real directory,
 //! which is what it is for. Five things have no Janet spelling at all:
 //!
-//!  - **The abstract type's callback set.** `filewatch.watcherType` has a
-//!    mark callback and nothing else. From Janet
-//!    only the *name* is visible, through `(type watcher)`; that the `get`,
-//!    `put`, `tostring`, `compare`, `hash`, `next`, `call`, `length` and
-//!    `bytes` slots are all null is what makes a watcher opaque, and it is
-//!    invisible from the language.
-//!  - **The mark callback on an incompletely initialised watcher.**
-//!    `janet_abstract` does not zero, and the watcher is filled field by
-//!    field, so `filewatchMark` opens by asking whether the channel is set.
-//!    Nothing in Janet can hand the collector a watcher in that state; a
-//!    `@memset` and a `janet_abstract` can.
-//!  - **A stale `errno`.** A retry loop that repeats on *success* while
-//!    `errno` holds `EINTR` needs `EINTR` in `errno` when the cfunction is
-//!    entered, which no Janet program can arrange. `c.retryIntr` repeats only
-//!    a call that failed, and this is the only place the removal can be asked
-//!    with a dirty `errno`, so the assertion is what says the answer does not
-//!    depend on one.
-//!  - **The two halves of the flag table.** The names are in
+//!  - The abstract type's callback set. `filewatch.watcherType` has a mark
+//!    callback and nothing else. From Janet only the *name* is visible,
+//!    through `(type watcher)`; that the `get`, `put`, `tostring`, `compare`,
+//!    `hash`, `next`, `call`, `length` and `bytes` slots are all null is what
+//!    makes a watcher opaque, and it is invisible from the language.
+//!  - The mark callback on an incompletely initialised watcher. An abstract's
+//!    payload is not zeroed and the watcher is filled field by field, so
+//!    `filewatchMark` opens by asking whether the channel is set. Nothing in
+//!    Janet can give the collector a watcher in that state; a `@memset` and an
+//!    `abstracts.newBytes` can.
+//!  - A stale `errno`. A retry loop that repeats on *success* while `errno` is
+//!    `EINTR` needs `EINTR` in `errno` when the cfunction is entered, which no
+//!    Janet program can arrange. `c.retryIntr` repeats only a call that
+//!    failed, and this is the only place the removal can be asked with a dirty
+//!    `errno`, so the assertion is what says the result does not depend on
+//!    one.
+//!  - The two halves of the flag table. The names are in
 //!    `filewatch_flags.zig` and the values are in the subject, and only a
 //!    contract can ask the name lookup and the value decoder the same question
-//!    and compare the answers.
-//!  - **The failure messages that need an argument no Janet caller would
-//!    write.** A raise is asserted here by its *message*, which is the
-//!    difference between a test and a tautology.
+//!    and compare what each gives back.
+//!  - The failure messages that need an argument no Janet caller would write.
+//!    A raise is asserted here by its *message*, which is the difference
+//!    between a test and a tautology.
 //!
 //! ## What it deliberately does not do
 //!
 //! It does not run the event loop. `filewatch/listen` starts a fiber that
 //! suspends on the watcher's stream, and pumping that from a contract means
-//! running the loop -- a contract that waits on the kernel is a contract that
-//! hangs when it is wrong. The suite does that, where it belongs. What is
+//! running the loop, and a contract that waits on the kernel hangs when it is
+//! wrong. The suite does that. What is
 //! checked here is everything either side of it: the argument decoding, the
 //! flag decoding, the watcher's shape, and every raise on the way.
 //!
-//! ## What only a contract inside the compilation can do
+//! ## Two things about how the subjects are reached
 //!
-//! **A refusal is a value.** `harness.raised` is the whole of it here, because
-//! a cfunction is a raising Zig function and this contract is compiled beside
-//! it. Reaching one from the far side of a symbol table takes a scope, an
-//! armed flag, a call through an adapter and a report read back.
+//! A refusal is a value. A cfunction is a raising Zig function and this
+//! contract is compiled beside it, so `harness.raised` is the whole of it.
 //!
-//! **The backend is derived from Zig's target rather than from the subject.**
-//! Asking the subject which backend it compiled would be circular, so this file
-//! reads `builtin.os.tag` instead and lets the two disagree if they ever do.
+//! The backend is derived from Zig's target rather than from the subject.
+//! Asking the subject which backend it compiled would be circular, so this
+//! file reads `builtin.os.tag` instead and lets the two disagree if they ever
+//! do.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
-const repr = @import("repr");
-const harness = @import("harness.zig");
 
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
+const abstracts = @import("subsystems").value.abstracts;
+const args_core = @import("subsystems").args;
+const core_env = @import("subsystems").env;
+const ev_channel = @import("subsystems").ev_channel;
+const expect = @import("expect.zig").expect;
+const filewatch_core = subsystems.filewatch;
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
+const order = @import("subsystems").value.order;
+const pp_describe = @import("subsystems").pp_describe;
+const repr = @import("repr");
 const subsystems = @import("subsystems");
 const value = @import("subsystems").value;
-const gc_alloc = @import("subsystems").gc_alloc;
-const order = @import("subsystems").value.order;
-const core_env = @import("subsystems").env;
-const wrap = @import("subsystems").value.wrap;
-const args_core = @import("subsystems").args;
 const vm_lifecycle = @import("subsystems").lifecycle;
-const abstracts = @import("subsystems").value.abstracts;
-const pp_describe = @import("subsystems").pp_describe;
-const ev_channel = @import("subsystems").ev_channel;
-const abi = @import("abi");
-const filewatch_core = subsystems.filewatch;
-const flags = subsystems.filewatch;
-const Platform = flags.Platform;
+const wrap = @import("subsystems").value.wrap;
 
-const expect = @import("expect.zig").expect;
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 /// Which vocabulary this target's backend uses, and the word it puts in
 /// "unknown %s flag". Null where the host has no backend at all, in which case
@@ -84,12 +91,28 @@ const backend: ?struct { platform: Platform, word: []const u8 } = switch (builti
     else => null,
 };
 
+/// Every name `filewatch.libFilewatch` registers, in registration order. The
+/// order is not itself pinned, a table having none, but the list is: a
+/// binding that stops being registered is what this catches, and a
+/// registration table is the one place a cfunction can go missing without a
+/// link error.
+const filewatch_bindings = [_][*:0]const u8{
+    "filewatch/new",    "filewatch/add",      "filewatch/remove",
+    "filewatch/listen", "filewatch/unlisten",
+};
+
+const probe_dir = "/tmp/janet-filewatch-contract";
+var raises_seen: u32 = 0;
 const windows = builtin.os.tag == .windows;
 
-var raises_seen: u32 = 0;
+// ==========================================================================
+// Aliased types
+// ==========================================================================
+
+const Platform = filewatch_core.Platform;
 
 // ==========================================================================
-// Refusals
+// Cases
 // ==========================================================================
 
 fn expectRaise(name: [*:0]const u8, argv: []repr.Value, message: []const u8) void {
@@ -109,7 +132,7 @@ fn expectRaise(name: [*:0]const u8, argv: []repr.Value, message: []const u8) voi
 /// For a message whose tail is the host's own wording: `ev/stream.evLasterr`
 /// renders `strerror`, which differs by platform and by libc, and pinning it
 /// would make this contract a test of the C library. An abstract rendered by
-/// `%v` carries an address, which is the other reason.
+/// `%v` renders an address, which is the other reason.
 fn expectRaisePrefix(name: [*:0]const u8, argv: []repr.Value, prefix: []const u8) void {
     const r = harness.coreRaised(name, argv) orelse {
         std.debug.print("filewatch_core: expected a raise starting: {s}\n", .{prefix});
@@ -133,35 +156,11 @@ fn expectAnyRaise(name: [*:0]const u8, argv: []repr.Value) void {
     raises_seen += 1;
 }
 
-/// A cfunction that is expected to return, by the name the registry knows.
+/// A cfunction expected to return, called by the name the registry has for it.
 fn callCore(name: [*:0]const u8, argv: []repr.Value) repr.Value {
     return harness.callCore(name, argv) catch
         @panic("filewatch_core: a call that should have returned raised");
 }
-
-// ==========================================================================
-// Registration
-// ==========================================================================
-
-/// Every name `filewatch.libFilewatch` registers, in the order it registers them.
-/// The order is not itself a contract -- a table has none -- but the list is: a
-/// binding that stops being registered is what this catches, and a
-/// registration table is the one place a cfunction can go missing without a
-/// link error.
-const filewatch_bindings = [_][*:0]const u8{
-    "filewatch/new",    "filewatch/add",      "filewatch/remove",
-    "filewatch/listen", "filewatch/unlisten",
-};
-
-fn theRegistration() void {
-    expect(filewatch_bindings.len == 5);
-    // `harness.core` asserts the binding resolves to a cfunction.
-    for (filewatch_bindings) |name| _ = harness.core(name);
-}
-
-// ==========================================================================
-// A channel
-// ==========================================================================
 
 /// `filewatch/new` takes a channel and there is no entry point that makes one,
 /// so it comes from the language. Nothing else in this file does.
@@ -174,9 +173,11 @@ fn makeChannel() repr.Value {
     return chan;
 }
 
-// ==========================================================================
-// Arguments and flags
-// ==========================================================================
+fn theRegistration() void {
+    expect(filewatch_bindings.len == 5);
+    // `harness.core` asserts the binding resolves to a cfunction.
+    for (filewatch_bindings) |name| _ = harness.core(name);
+}
 
 fn theArgumentFaults(chan: repr.Value) void {
     var one = [_]repr.Value{chan};
@@ -191,7 +192,7 @@ fn theArgumentFaults(chan: repr.Value) void {
     expectRaise("filewatch/unlisten", &none, "arity mismatch, expected 1, got 0");
 
     // A channel is not a watcher, and every entry point that takes one says so
-    // with the abstract type's name -- which is the only place that name is
+    // with the abstract type's name, which is the only place that name is
     // visible from outside the subsystem.
     expectRaisePrefix("filewatch/listen", &one, "bad slot #0, expected filewatch/watcher, got ");
 }
@@ -221,7 +222,7 @@ fn theFlagFaults(chan: repr.Value, word: []const u8) void {
         expectRaise("filewatch/new", &argv, message);
     }
     {
-        // A keyword holding a zero byte matches nothing. It is the case the
+        // A keyword with a zero byte in it matches nothing. It is the case the
         // name lookup compares by length for, and it is unreachable from a
         // source literal.
         const bytes = [_]u8{ 'a', 'l', 'l', 0 };
@@ -232,7 +233,7 @@ fn theFlagFaults(chan: repr.Value, word: []const u8) void {
 
 /// The two halves of one table. The names are `filewatch_flags.zig`'s and the
 /// values are the subject's, and the index the lookup reports is what selects a
-/// value -- so a name the host has a constant for is accepted and one it does
+/// value, so a name the host has a constant for is accepted and one it does
 /// not is refused *by that name*. Asking every row of this platform's
 /// vocabulary is the only way to see the halves line up.
 ///
@@ -242,12 +243,12 @@ fn theFlagTableHalves(chan: repr.Value, platform: Platform, word: []const u8) vo
     var buffer: [64]u8 = undefined;
     const unknown = std.fmt.bufPrint(&buffer, "unknown {s} flag :", .{word}) catch unreachable;
 
-    const count = flags.flagCount(platform);
+    const count = filewatch_core.flagCount(platform);
     expect(count > 0);
 
     var accepted: u32 = 0;
     for (0..count) |i| {
-        const name = flags.flagName(platform, i).?;
+        const name = filewatch_core.flagName(platform, i).?;
         var argv = [_]repr.Value{ chan, value.fromBytes(name, .keyword) };
         if (harness.coreRaised("filewatch/new", &argv)) |r| {
             // The only reason a name from this platform's own vocabulary is
@@ -268,18 +269,18 @@ fn theFlagTableHalves(chan: repr.Value, platform: Platform, word: []const u8) vo
     // and `linux_names` is alphabetical, so `access` sorts ahead. The assertion
     // was true on the two platforms anybody had run it on and false on the
     // third for as long as it existed.
-    expect(flags.flagIndex(platform, "all") != null);
+    expect(filewatch_core.flagIndex(platform, "all") != null);
 
     // A name that belongs to a different backend is refused here, which is
     // what makes the split a split rather than one shared vocabulary. The
     // three tables share only `all`.
     const other: Platform = if (platform == .linux) .windows else .linux;
     var refused: u32 = 0;
-    for (0..flags.flagCount(other)) |i| {
-        const name = flags.flagName(other, i).?;
+    for (0..filewatch_core.flagCount(other)) |i| {
+        const name = filewatch_core.flagName(other, i).?;
         if (std.mem.eql(u8, name, "all")) continue;
         // Names shared with this platform's vocabulary are not the test.
-        if (flags.flagIndex(platform, name) != null) continue;
+        if (filewatch_core.flagIndex(platform, name) != null) continue;
         var argv = [_]repr.Value{ chan, value.fromBytes(name, .keyword) };
         expectRaisePrefix("filewatch/new", &argv, unknown);
         refused += 1;
@@ -287,13 +288,9 @@ fn theFlagTableHalves(chan: repr.Value, platform: Platform, word: []const u8) vo
     expect(refused >= 1);
 }
 
-// ==========================================================================
-// The abstract type
-// ==========================================================================
-
-/// `JANET_ATEND_GCMARK`: a mark callback and nothing else. Every later slot
-/// being null is what makes a watcher opaque to `get`, `put`, `next`, `compare`
-/// and the rest, and none of that is visible from Janet.
+/// A mark callback and nothing else. Every other slot being null is what makes
+/// a watcher opaque to `get`, `put`, `next`, `compare` and the rest, and none
+/// of that is visible from Janet.
 fn theAbstractType(chan: repr.Value) void {
     var argv = [_]repr.Value{chan};
     const watcher = callCore("filewatch/new", &argv);
@@ -301,8 +298,8 @@ fn theAbstractType(chan: repr.Value) void {
 
     // A `Janet` in a local is not a root: the collector scans the VM and the
     // fiber stacks, and a cfunction's arguments are on one of those. Nothing
-    // here is, so every watcher this file holds across an allocation has to be
-    // rooted by hand -- and a watcher that is collected closes its stream, so
+    // here is, so every watcher this file keeps across an allocation has to be
+    // rooted by hand, and a watcher that is collected closes its stream, so
     // the symptom is a later call failing on a descriptor the test still
     // believes it owns.
     gc_alloc.gcroot(watcher);
@@ -311,7 +308,7 @@ fn theAbstractType(chan: repr.Value) void {
     const abst = wrap.toAbstract(watcher);
     const at = &filewatch_core.watcherType;
     expect(std.mem.eql(u8, at.name, "filewatch/watcher"));
-    // **The `gc` callback exists exactly where there is something to release.**
+    // The `gc` callback exists exactly where there is something to release.
     // Only the kqueue backend opens a descriptor per watched path; on the
     // other two a watcher owns nothing outside the collector's heap, and a
     // callback that did nothing would be one more thing to read and discount.
@@ -332,7 +329,7 @@ fn theAbstractType(chan: repr.Value) void {
     expect(at.gcperthread == null);
 
     // The registered type is this one: `janet_abstract` stored this address
-    // and a watcher answers with it.
+    // and a watcher reports it.
     expect(abi.abstractHead(abst).type == at);
 
     // The live watcher marks without complaint.
@@ -350,12 +347,6 @@ fn theAbstractType(chan: repr.Value) void {
     at.gcmark.?(blank, size);
 }
 
-// ==========================================================================
-// The watcher lifecycle
-// ==========================================================================
-
-const probe_dir = "/tmp/janet-filewatch-contract";
-
 fn theLifecycle(chan: repr.Value) void {
     var new_argv = [_]repr.Value{chan};
     const dir = value.fromBytes(probe_dir, .string);
@@ -371,8 +362,8 @@ fn theLifecycle(chan: repr.Value) void {
     gc_alloc.gcroot(watcher);
     defer _ = gc_alloc.gcunroot(watcher);
 
-    // A path the host cannot open. The two backends word this differently --
-    // inotify reports `evLasterr` bare and kqueue prefixes it -- and
+    // A path the host cannot open. The two backends word this differently,
+    // inotify reporting `evLasterr` bare and kqueue prefixing it, and
     // both are the host's `strerror` after that.
     {
         var argv = [_]repr.Value{
@@ -396,8 +387,8 @@ fn theLifecycle(chan: repr.Value) void {
         expectRaise("filewatch/remove", &argv, "bad watch descriptor");
     }
 
-    // **A removal succeeds with a dirty `errno`.** A loop that repeats while
-    // the call *succeeded* and `errno` holds EINTR turns one successful
+    // A removal succeeds with a dirty `errno`. A loop that repeats while the
+    // call *succeeded* and `errno` is EINTR turns one successful
     // removal into two attempts, and the second one fails. `c.retryIntr`
     // repeats only a call that failed, so a stale `errno` changes nothing.
     {
@@ -406,7 +397,7 @@ fn theLifecycle(chan: repr.Value) void {
         expect(order.equals(callCore("filewatch/remove", &argv), watcher));
     }
 
-    // With a clean `errno` the same call is the ordinary one, and it answers
+    // With a clean `errno` the same call is the ordinary one, and it reports
     // with the watcher. The descriptor above is gone, so this needs a fresh
     // watch first.
     {
@@ -430,9 +421,9 @@ fn theLifecycle(chan: repr.Value) void {
         expect(harness.isType(callCore("filewatch/unlisten", &one), repr.Tag.nil));
     }
 
-    // **The watcher is closed after that, and all three calls say so.**
-    // `filewatch/unlisten` closes the watcher's own descriptor -- the inotify
-    // instance or the kqueue -- and nothing reopens it. The one that mattered
+    // The watcher is closed after that, and all three calls say so.
+    // `filewatch/unlisten` closes the watcher's own descriptor, the inotify
+    // instance or the kqueue, and nothing reopens it. The one that matters
     // is `listen`: without the refusal it reported success, started a fiber on
     // a closed stream, delivered nothing ever again, and kept the event loop
     // from finishing, so a program saw the failure nowhere at all.
@@ -449,6 +440,10 @@ fn theLifecycle(chan: repr.Value) void {
 
     _ = std.c.rmdir(probe_dir);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

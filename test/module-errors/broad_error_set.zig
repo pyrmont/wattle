@@ -2,9 +2,9 @@
 //!
 //! `Error` is `error{JanetSignal}` and nothing else, because the runtime
 //! invokes a cfunction *through* that type. An `anyerror!Value` looks like it
-//! should be accepted -- it is a superset, and the payload is right -- but the
-//! call reinterprets it as the narrower type, so the author's extra errors are
-//! silently unrepresentable rather than diagnosed. The definition is the only
+//! should be accepted, being a superset with the right payload, but the call
+//! reinterprets it as the narrower type, so the author's extra errors are
+//! unrepresentable with nothing said about it. The definition is the only
 //! place the mistake can still be pointed at.
 //!
 //! `build.zig`'s `module-errors` step compiles this and requires the failure.

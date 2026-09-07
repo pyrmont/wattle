@@ -1,42 +1,49 @@
 //! Behavioral contract for the incremental parser.
 //!
-//! Janet's parser is a byte-at-a-time state machine with a public C entry
-//! point, and the suites reach it only through `parse` and the REPL — which
-//! feed it whole strings and read whole values. What they cannot see is the
+//! Janet's parser is a byte-at-a-time state machine, and the suites reach it
+//! only through `parse` and the REPL, which feed it whole strings and read
+//! whole values. What they cannot see is the
 //! machine between bytes: the state stack growing, a clone diverging from its
 //! original, an error being *read* and thereby cleared, a partial string
 //! sitting in `buf`. Those are the states this file drives directly.
 //!
-//! ## Two refusals a C contract cannot reach
-//!
+//! ## The checked pair is called rather than the abis
 //!
 //! `parser.consumeChecked` and `parser.eofChecked` panic on a parser that has
-//! already finished or is holding an unread error. From C those are a jump with
-//! nowhere to go — the C contract simply never fed a dead parser, so the two
-//! messages had no test. Here each is one line, because `consumeChecked` is an
-//! ordinary import and its refusal is a value.
-//!
-//! This is why the contract calls the *checked* pair rather than the abis. The
-//! abis are still what a fuzz target drives, so nothing here is dead; what the
-//! contract gains is being able to see both halves.
+//! already finished or has an unread error in it. Reached by import each
+//! refusal is a value, so both messages are one line here. The abis beside
+//! them are what a fuzz target drives.
 //!
 //! ## The error field is read once
 //!
 //! `parser.parserError` clears what it returns and flushes the parser, which
 //! is why the "unexpected closing delimiter" case asserts `:root`
-//! immediately afterwards. A second read answers null. That is deliberate and
-//! the reason `consumeChecked` has a second refusal: a parser
-//! whose error has *not* been read cannot be fed.
+//! immediately afterwards. A second read gives null. That is deliberate and
+//! the reason `consumeChecked` has a second refusal: a parser whose error has
+//! *not* been read cannot be fed.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const expect = @import("expect.zig").expect;
 const harness = @import("harness.zig");
 const parser_core = @import("subsystems").parser;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
+const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
 const tuples = @import("subsystems").value.tuples;
-const expect = @import("expect.zig").expect;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// Feed a whole string, one byte at a time, the way the public entry point is
 /// documented to be used.
@@ -99,9 +106,9 @@ fn aCloneOwnsItsOwnQueue() !void {
     expect(harness.integerIs(parser_core.parserProduce(&parser), 2));
     expect(!hasMore(&parser));
 
-    // The clone still has both, and `produce_wrapped` answers the one-element
-    // tuple the parser stores rather than the value inside it — which is where
-    // the source mapping lives.
+    // The clone still has both, and `parserProduceWrapped` gives back the
+    // one-element tuple the parser stores rather than the value inside it,
+    // which is where the source mapping lives.
     const wrapped = parser_core.parserProduceWrapped(&clone);
     expect(harness.isType(wrapped, repr.Tag.tuple));
     const tuple = wrap.toTuple(wrapped);
@@ -132,7 +139,7 @@ fn theStringEscapes() !void {
     expect(std.mem.eql(u8, string[0..expected.len], &expected));
 }
 
-/// The other two literal forms that carry their own delimiters.
+/// The other two literal forms that bring their own delimiters.
 fn theOtherLiterals() !void {
     var parser: parser_core.Parser = undefined;
 
@@ -194,7 +201,7 @@ fn theStateStackGrows() !void {
 }
 
 /// `'x` is rewritten to `(quote x)` by the parser rather than by a macro, and
-/// the tuple it builds carries the source mapping.
+/// the tuple it builds is where the source mapping lives.
 fn theQuoteShorthand() !void {
     var parser: parser_core.Parser = undefined;
     parser_core.parserInit(&parser);
@@ -234,7 +241,7 @@ fn theParseErrors() !void {
     parser_core.parserDeinit(&parser);
 
     // Reading the error clears it and flushes the parser, so the status goes
-    // back to root and a second read answers nothing. The message names where
+    // back to root and a second read gives nothing. The message names where
     // the unclosed form opened, so it is matched by prefix rather than whole.
     parser_core.parserInit(&parser);
     try consume(&parser, ")");
@@ -290,15 +297,14 @@ fn theAtoms() !void {
     expect(harness.symbolIs(parser_core.parserProduce(&parser), "symbol"));
 }
 
-/// The two refusals `parser.consumeChecked` carries, neither of which the C
-/// contract could reach.
+/// The two refusals `parser.consumeChecked` can make.
 ///
 /// The distinction they draw is the parser's whole error policy: a *parse*
-/// error is data, and goes into `parser->error` for the caller to read; a
-/// *use* error — feeding a machine that has already finished, or one whose
-/// error nobody has looked at — is a panic, because there is no value to
-/// answer with. Both halves are asserted here because a port could easily
-/// keep one and lose the other.
+/// error is data and goes into the parser's own error field for the caller to
+/// read, while a *use* error is a panic, there being no value to give back.
+/// Feeding a machine that has already finished is one, and feeding one whose
+/// error nobody has looked at is the other. Both are asserted here because a
+/// port could keep one and lose the other.
 fn aFinishedParserRefusesMore() !void {
     var parser: parser_core.Parser = undefined;
 
@@ -329,6 +335,10 @@ fn aFinishedParserRefusesMore() !void {
     expect(harness.integerIs(parser_core.parserProduce(&parser), 7));
     parser_core.parserDeinit(&parser);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() !void {
     try theFreshParser();

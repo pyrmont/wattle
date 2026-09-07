@@ -8,12 +8,25 @@
 //! get right: the two extremes of each range, the value one past each, the
 //! radix prefixes, and the digit separator.
 //!
-//! Both take a length rather than a terminator, so a Zig slice is the natural
-//! argument and the `strlen` the C original needed is gone.
+//! Both take a length rather than a terminator, so a slice is the whole of
+//! what a caller passes.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const scan = @import("subsystems").scan;
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const expect = @import("expect.zig").expect;
+const scan = @import("subsystems").scan;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn signed(text: []const u8, out: *i64) bool {
     out.* = scan.scanInt64(text) orelse return false;
@@ -61,6 +74,10 @@ fn theUnsignedRange() void {
     expect(!unsigned("37r1", &value));
     expect(!unsigned("12z", &value));
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     theSignedRange();

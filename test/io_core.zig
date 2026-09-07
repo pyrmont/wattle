@@ -13,59 +13,92 @@
 //!
 //! ## How the subjects are reached
 //!
-//! **The kernels are reached by import.** Fifteen host operations were
-//! hand-declared symbols once, for a C caller that no longer exists. All
-//! fifteen are ordinary imports now, `io.write` -- the one with a caller
-//! outside this subsystem, in `pp/format.zig` -- included.
+//! The fifteen host operations are reached by import, `io.write` included,
+//! which is the one with a caller outside its own subsystem, in
+//! `pp/format.zig`.
 //!
-//! **The three mode-scan status codes and the five `JANET_IO_MODE_*` values
-//! are named rather than restated.** A third copy of numbers two files already
-//! agree on is a place they can drift.
+//! The three mode-scan status codes and the five file-mode flags are named
+//! rather than restated. A third copy of numbers two files already agree on is
+//! a place they can drift.
 //!
-//! **The public API half reaches `io.getjfile` and `io.getfile` raising.**
-//! Neither has a reporting wrapper any more, so `harness.raised` is the
-//! instrument and an argument fault arrives as an error. `expectAbiRaise`
-//! below is kept for a published entry point that reports, and has no caller
-//! today.
+//! The public API half reaches `io.getjfile` and `io.getfile` as raising
+//! functions, so `harness.raised` is the instrument and an argument fault
+//! arrives as an error. `expectAbiRaise` below is for a published entry point
+//! that reports instead, and has no caller today.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const constants = @import("constants");
-const c = @import("cabi");
-const raise = @import("subsystems").raise;
-const harness = @import("harness.zig");
 
-const subsystems = @import("subsystems");
-const value = @import("subsystems").value;
-const strings = @import("subsystems").value.strings;
-const core_env = @import("subsystems").env;
-const vm_state = @import("subsystems").vm_state;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const io_core_mod = @import("subsystems").io;
-const wrap = @import("subsystems").value.wrap;
-const buffers = @import("subsystems").value.buffers;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const abstracts = @import("subsystems").value.abstracts;
-const math = @import("subsystems").math;
-const pp_describe = @import("subsystems").pp_describe;
+
 /// `boundary` rather than `abi`, which `expectAbiRaise` takes as a parameter
 /// name.
 const boundary = @import("abi");
+const buffers = @import("subsystems").value.buffers;
+const c = @import("cabi");
 const config = @import("config");
-const tables = @import("subsystems").value.tables;
+const constants = @import("constants");
+const core_env = @import("subsystems").env;
+const expect = @import("expect.zig").expect;
+const harness = @import("harness.zig");
 const io_core = subsystems.io;
 const marsh = subsystems.marsh;
+const math = @import("subsystems").math;
+const pp_describe = @import("subsystems").pp_describe;
+const raise = @import("subsystems").raise;
+const repr = @import("repr");
 
 /// The three standard streams, and the only spelling of them a contract in
 /// this tree may use.
 ///
 /// `c.stdout` is an inline *function* in Darwin's headers, a *variable* of
-/// opaque type on musl -- which is not callable -- and on mingw a constant
+/// opaque type on musl, which is not callable, and on mingw a constant
 /// whose initializer calls an extern function, which Zig rejects outright as
 /// "comptime call of extern function". `stdio.zig` exists for exactly that and
 /// names the symbol underneath the macro instead; its header comment has the
-/// table. A C contract could write `stdout` and think nothing of it, and the
-/// matrix's four cross-compile entries are the only instrument that says so.
+/// table, and the matrix's four cross-compile entries are what would catch a
+/// contract naming `stdout` directly.
 const stdio = subsystems.stdio;
+const strings = @import("subsystems").value.strings;
+const subsystems = @import("subsystems");
+const tables = @import("subsystems").value.tables;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const vm_state = @import("subsystems").vm_state;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// Six, not seven: `dynprintf`'s "file is not writeable" case is in
+/// `test/pp_format.zig`, with its subject.
+const expected_raises = 6;
+const public = "janet-zig-io-core-public-9d24";
+var raises_seen: u32 = 0;
+const scratch = "janet-zig-io-core-9d24";
+
+// ==========================================================================
+// Types
+// ==========================================================================
+
+const Scan = struct {
+    status: i32,
+    flags: i32,
+    sandbox: vm_lifecycle.Sandbox,
+    index: i32,
+};
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// A `*host.FILE` as the `?*anyopaque` the stream kernels deal in. The same
 /// pointer, a different Zig type.
@@ -73,22 +106,12 @@ fn asHandle(file: anytype) ?*anyopaque {
     return @ptrCast(@alignCast(file));
 }
 
-const expect = @import("expect.zig").expect;
-
-/// Six, not seven: `dynprintf`'s "file is not writeable" case is in
-/// `test/pp_format.zig`, with its subject.
-const expected_raises = 6;
-var raises_seen: u32 = 0;
-
-const scratch = "janet-zig-io-core-9d24";
-const public = "janet-zig-io-core-public-9d24";
-
 fn cleanPaths() void {
     _ = c.remove(scratch);
     _ = c.remove(public);
 }
 
-/// A refusal, by the message it carried. Reading the message is what
+/// A refusal, by the message it came with. Reading the message is what
 /// distinguishes "it refused" from "it refused for the reason this case is
 /// about": three mutations inside message literals once survived a whole sweep
 /// against a contract that only asked whether something raised.
@@ -116,8 +139,8 @@ fn expectAbiRaise(abi: anytype, args: anytype, message: ?[]const u8) void {
     raises_seen += 1;
 }
 
-/// For the one message that carries an address: `%v` renders a `core/file` by
-/// pointer, so only the fixed part can be compared -- and the fixed part is
+/// For the one message with an address in it: `%v` renders a `core/file` by
+/// pointer, so only the fixed part can be compared, and the fixed part is
 /// exactly what distinguishes it from the message the other branch produces.
 fn expectRaisePrefix(function: anytype, args: anytype, prefix: []const u8) void {
     const r = harness.raised(function, args) orelse
@@ -126,17 +149,6 @@ fn expectRaisePrefix(function: anytype, args: anytype, prefix: []const u8) void 
     expect(r.beginsWith(prefix));
     raises_seen += 1;
 }
-
-// ==========================================================================
-// The mode scanner
-// ==========================================================================
-
-const Scan = struct {
-    status: i32,
-    flags: i32,
-    sandbox: vm_lifecycle.Sandbox,
-    index: i32,
-};
 
 /// A mode string is scanned as a whole; the caller reads back the flag word,
 /// the permissions the accepted prefix implies, and where the scan stopped.
@@ -150,6 +162,14 @@ fn scan(mode: []const u8) Scan {
         &out.index,
     );
     return out;
+}
+
+fn doString(environment: *tables.Table, source: [*:0]const u8) void {
+    var result = wrap.fromNil();
+    if (core_env.dostring(environment, source, "io-core-contract", &result) != 0) {
+        std.debug.print("io_core: {s}\n", .{pp_describe.toString(result)});
+        @panic("io_core: a contract form failed");
+    }
 }
 
 fn theModeScanning() void {
@@ -219,7 +239,7 @@ fn theModeScanning() void {
     expect(r.sandbox == vm_lifecycle.Sandbox.of(&.{"fs_read"}));
 
     // A repeated flag is reported as `mode_repeated` with a flag word of -1.
-    // The -1 is what the kernel answers rather than what a caller uses:
+    // The -1 is what the kernel returns rather than what a caller passes:
     // `checkFlags` raises on the status, because -1 has every bit set and two
     // of them are `file_closed` and `file_not_closeable`.
     r = scan("r++");
@@ -285,10 +305,6 @@ fn theModeReconstruction() void {
     expect(io_core.modeFromFlags(constants.JANET_FILE_BINARY, &out) == 0);
     expect(out[0] == 0);
 }
-
-// ==========================================================================
-// The stream operations
-// ==========================================================================
 
 fn theStreamOperations() void {
     var buffer: [32]u8 = undefined;
@@ -361,10 +377,6 @@ fn theStreamOperations() void {
     _ = c.remove(scratch);
 }
 
-// ==========================================================================
-// The abstract type
-// ==========================================================================
-
 fn theAbstractType() void {
     // The callback set is part of the type's contract: `core/file` has a
     // finalizer, a method getter, a marshal pair and a key walker, and nothing
@@ -393,12 +405,12 @@ fn theMethodOrder() raise.Raising(void) {
     const at = &io_core.fileType;
     const expected = [_][*:0]const u8{ "close", "flush", "read", "seek", "tell", "write" };
 
-    // `next` and `get` ignore the payload -- they read the method table -- and
-    // a C contract could pass `null` for it, because the slot was `void *`.
+    // `next` and `get` ignore the payload, reading the method table instead,
+    // so what is passed here stands in for a file without being one.
     // The runtime cannot: a dispatch starts from a live abstract's header, so
     // the payload is always a real `io.File`. The typed callback says so and
     // the erased shim asserts it, so the contract supplies one.
-    var borrowed: io_core_mod.File = std.mem.zeroes(io_core_mod.File);
+    var borrowed: io_core.File = std.mem.zeroes(io_core.File);
     const payload: ?*anyopaque = &borrowed;
 
     var key = wrap.fromNil();
@@ -411,16 +423,12 @@ fn theMethodOrder() raise.Raising(void) {
     }
     expect(i == expected.len);
 
-    // The getter answers only keywords, and only names in the table.
+    // The getter accepts only keywords, and only names in the table.
     const out = (try at.get.?(payload, value.fromBytes("read", .keyword))).?;
     expect(harness.isType(out, repr.Tag.cfunction));
     expect((try at.get.?(payload, value.fromBytes("open", .keyword))) == null);
     expect((try at.get.?(payload, value.fromBytes("read", .string))) == null);
 }
-
-// ==========================================================================
-// The public C API
-// ==========================================================================
 
 fn thePublicApi() raise.Raising(void) {
     const raw = io_core.open(scratch, "wb").?;
@@ -428,44 +436,44 @@ fn thePublicApi() raise.Raising(void) {
     // `io.makejfile` hands back the payload; `io.makefile` wraps it. The
     // buffer size is the C library's default, which is what `file/open`
     // compares against to decide whether a caller asked for another one.
-    const jf = io_core_mod.makejfile(@ptrCast(@alignCast(raw)), constants.JANET_FILE_WRITE);
+    const jf = io_core.makejfile(@ptrCast(@alignCast(raw)), constants.JANET_FILE_WRITE);
     expect(@as(?*anyopaque, @ptrCast(jf.file)) == @as(?*anyopaque, raw));
     expect(jf.flags == constants.JANET_FILE_WRITE);
     expect(jf.vbufsize == c.BUFSIZ);
 
     const wrapped = wrap.fromAbstract(jf);
-    expect(io_core_mod.checkfile(wrapped) == @as(?*anyopaque, jf));
-    expect(io_core_mod.checkfile(wrap.fromNil()) == null);
-    expect(io_core_mod.checkfile(harness.wrapInteger(3)) == null);
+    expect(io_core.checkfile(wrapped) == @as(?*anyopaque, jf));
+    expect(io_core.checkfile(wrap.fromNil()) == null);
+    expect(io_core.checkfile(harness.wrapInteger(3)) == null);
 
     var flags: i32 = 0;
-    expect(@as(?*anyopaque, @ptrCast(io_core_mod.unwrapfile(wrapped, &flags))) == @as(?*anyopaque, raw));
+    expect(@as(?*anyopaque, @ptrCast(io_core.unwrapfile(wrapped, &flags))) == @as(?*anyopaque, raw));
     expect(flags == constants.JANET_FILE_WRITE);
-    expect(@as(?*anyopaque, @ptrCast(io_core_mod.unwrapfile(wrapped, null))) == @as(?*anyopaque, raw));
+    expect(@as(?*anyopaque, @ptrCast(io_core.unwrapfile(wrapped, null))) == @as(?*anyopaque, raw));
 
     // The reporting halves of these two are `capi.zig`'s, which is where a
     // boundary that builds a slice out of an index belongs. What is left takes
     // the slice.
     var argv = [_]repr.Value{wrapped};
-    expect(try io_core_mod.getjfile(argv[0..1], 0) == jf);
+    expect(try io_core.getjfile(argv[0..1], 0) == jf);
     flags = 0;
-    expect(@as(?*anyopaque, @ptrCast(try io_core_mod.getfile(argv[0..1], 0, &flags))) == @as(?*anyopaque, raw));
+    expect(@as(?*anyopaque, @ptrCast(try io_core.getfile(argv[0..1], 0, &flags))) == @as(?*anyopaque, raw));
     expect(flags == constants.JANET_FILE_WRITE);
-    expect(@as(?*anyopaque, @ptrCast(try io_core_mod.getfile(argv[0..1], 0, null))) == @as(?*anyopaque, raw));
+    expect(@as(?*anyopaque, @ptrCast(try io_core.getfile(argv[0..1], 0, null))) == @as(?*anyopaque, raw));
 
     // Closing marks the payload and clears the stream, so a later use is a
     // null dereference rather than a use-after-free. A second close is a
     // no-op, and so is closing a file this runtime only borrowed.
-    expect(io_core_mod.fileClose(jf) == 0);
+    expect(io_core.fileClose(jf) == 0);
     expect(jf.flags & constants.JANET_FILE_CLOSED != 0);
     expect(jf.file == null);
-    expect(io_core_mod.fileClose(jf) == 0);
+    expect(io_core.fileClose(jf) == 0);
 
-    const borrowed = io_core_mod.makejfile(
+    const borrowed = io_core.makejfile(
         stdio.out(),
         constants.JANET_FILE_APPEND | constants.JANET_FILE_NOT_CLOSEABLE,
     );
-    expect(io_core_mod.fileClose(borrowed) == 0);
+    expect(io_core.fileClose(borrowed) == 0);
     expect(borrowed.flags & constants.JANET_FILE_CLOSED == 0);
     expect(asHandle(borrowed.file) == asHandle(stdio.out()));
 
@@ -473,8 +481,8 @@ fn thePublicApi() raise.Raising(void) {
     // arrives as an error rather than as a report: neither getter has a
     // reporting half any more.
     var bad = [_]repr.Value{harness.wrapInteger(3)};
-    expectRaisePrefix(io_core_mod.getjfile, .{ bad[0..1], @as(i32, 0) }, "bad slot #0");
-    expectRaisePrefix(io_core_mod.getfile, .{ bad[0..1], @as(i32, 0), null }, "bad slot #0");
+    expectRaisePrefix(io_core.getjfile, .{ bad[0..1], @as(i32, 0) }, "bad slot #0");
+    expectRaisePrefix(io_core.getfile, .{ bad[0..1], @as(i32, 0), null }, "bad slot #0");
 
     _ = c.remove(scratch);
 }
@@ -482,30 +490,26 @@ fn thePublicApi() raise.Raising(void) {
 fn theDynamicFile() void {
     // Outside a fiber the dynamic bindings live in the VM's top-level table,
     // which is what lets this run without one.
-    expect(asHandle(io_core_mod.dynfile("io-core-out", stdio.out())) == asHandle(stdio.out()));
-    expect(asHandle(io_core_mod.dynfile("io-core-out", null)) == null);
+    expect(asHandle(io_core.dynfile("io-core-out", stdio.out())) == asHandle(stdio.out()));
+    expect(asHandle(io_core.dynfile("io-core-out", null)) == null);
 
     // Anything that is not a `core/file` falls back to the default, including
     // another abstract type.
     vm_state.setdyn("io-core-out", harness.wrapInteger(3));
-    expect(asHandle(io_core_mod.dynfile("io-core-out", stdio.err())) == asHandle(stdio.err()));
+    expect(asHandle(io_core.dynfile("io-core-out", stdio.err())) == asHandle(stdio.err()));
     vm_state.setdyn("io-core-out", wrap.fromAbstract(
         abstracts.newFor(math.Rng, &math.rngType),
     ));
-    expect(asHandle(io_core_mod.dynfile("io-core-out", stdio.err())) == asHandle(stdio.err()));
+    expect(asHandle(io_core.dynfile("io-core-out", stdio.err())) == asHandle(stdio.err()));
 
-    const jf = io_core_mod.makejfile(
+    const jf = io_core.makejfile(
         stdio.out(),
         constants.JANET_FILE_APPEND | constants.JANET_FILE_NOT_CLOSEABLE,
     );
     vm_state.setdyn("io-core-out", wrap.fromAbstract(jf));
-    expect(asHandle(io_core_mod.dynfile("io-core-out", stdio.err())) == asHandle(stdio.out()));
+    expect(asHandle(io_core.dynfile("io-core-out", stdio.err())) == asHandle(stdio.out()));
     vm_state.setdyn("io-core-out", wrap.fromNil());
 }
-
-// ==========================================================================
-// Marshalling
-// ==========================================================================
 
 fn marshalled(buffer: *buffers.Buffer, val: repr.Value, flags: c_int) raise.Raising(void) {
     return marsh.marshal(buffer, val, null, flags);
@@ -519,7 +523,7 @@ fn unmarshalled(buffer: *buffers.Buffer, flags: c_int) raise.Raising(repr.Value)
 /// can ask for, so the whole callback pair is unreachable from the language.
 fn theMarshalling() raise.Raising(void) {
     const raw = io_core.open(scratch, "wb").?;
-    const file = wrap.fromAbstract(io_core_mod.makejfile(@ptrCast(@alignCast(raw)), constants.JANET_FILE_WRITE));
+    const file = wrap.fromAbstract(io_core.makejfile(@ptrCast(@alignCast(raw)), constants.JANET_FILE_WRITE));
 
     const buffer = buffers.new(0);
     expectRaise(marshalled, .{ buffer, file, @as(c_int, 0) }, "cannot marshal file in safe mode");
@@ -532,9 +536,9 @@ fn theMarshalling() raise.Raising(void) {
     expectRaise(unmarshalled, .{ buffer, @as(c_int, 0) }, "cannot unmarshal file in safe mode");
 
     const back = try unmarshalled(buffer, constants.JANET_MARSHAL_UNSAFE);
-    const copy = io_core_mod.checkfile(back);
+    const copy = io_core.checkfile(back);
     expect(copy != null);
-    const copyf: *io_core_mod.File = @ptrCast(@alignCast(copy));
+    const copyf: *io_core.File = @ptrCast(@alignCast(copy));
     expect(copyf.flags == constants.JANET_FILE_WRITE);
     expect(copyf.vbufsize == c.BUFSIZ);
 
@@ -542,9 +546,9 @@ fn theMarshalling() raise.Raising(void) {
     // the copy is a different stream on the same file and closing one leaves
     // the other usable.
     expect(@as(?*anyopaque, @ptrCast(copyf.file)) != @as(?*anyopaque, raw));
-    expect(io_core_mod.fileClose(copyf) == 0);
+    expect(io_core.fileClose(copyf) == 0);
     expect(io_core.write(raw, "kept", 4) == 1);
-    expect(io_core_mod.fileClose(@ptrCast(@alignCast(io_core_mod.checkfile(file)))) == 0);
+    expect(io_core.fileClose(@ptrCast(@alignCast(io_core.checkfile(file)))) == 0);
     _ = c.remove(scratch);
 }
 
@@ -553,15 +557,15 @@ fn theMarshalling() raise.Raising(void) {
 /// reaches the filesystem with no flush and a buffered one does not.
 fn theMarshalledBufferSize() raise.Raising(void) {
     const stream = io_core.open(scratch, "wb").?;
-    const jf = io_core_mod.makejfile(@ptrCast(@alignCast(stream)), constants.JANET_FILE_WRITE);
+    const jf = io_core.makejfile(@ptrCast(@alignCast(stream)), constants.JANET_FILE_WRITE);
     jf.vbufsize = 0;
     const file = wrap.fromAbstract(jf);
 
     const buffer = buffers.new(0);
     try marshalled(buffer, file, constants.JANET_MARSHAL_UNSAFE);
-    const copy = io_core_mod.checkfile(try unmarshalled(buffer, constants.JANET_MARSHAL_UNSAFE));
+    const copy = io_core.checkfile(try unmarshalled(buffer, constants.JANET_MARSHAL_UNSAFE));
     expect(copy != null);
-    const copyf: *io_core_mod.File = @ptrCast(@alignCast(copy));
+    const copyf: *io_core.File = @ptrCast(@alignCast(copy));
     expect(copyf.vbufsize == 0);
 
     expect(io_core.write(@ptrCast(copyf.file), "now", 3) == 1);
@@ -572,14 +576,10 @@ fn theMarshalledBufferSize() raise.Raising(void) {
         expect(std.mem.eql(u8, seen[0..3], "now"));
         expect(io_core.close(check) == 0);
     }
-    expect(io_core_mod.fileClose(copyf) == 0);
-    expect(io_core_mod.fileClose(jf) == 0);
+    expect(io_core.fileClose(copyf) == 0);
+    expect(io_core.fileClose(jf) == 0);
     _ = c.remove(scratch);
 }
-
-// ==========================================================================
-// What only a mismatched handle reaches
-// ==========================================================================
 
 /// A `io.File`'s flags and its stream can disagree, which nothing in Janet
 /// can arrange and which is the only way into two of the failure paths. Both
@@ -588,18 +588,18 @@ fn theMarshalledBufferSize() raise.Raising(void) {
 fn theMismatchedHandles() void {
     const writer = io_core.open(scratch, "wb").?;
     const claims_readable = wrap.fromAbstract(
-        io_core_mod.makejfile(@ptrCast(@alignCast(writer)), constants.JANET_FILE_READ),
+        io_core.makejfile(@ptrCast(@alignCast(writer)), constants.JANET_FILE_READ),
     );
 
     // The readability check passes on the flags and the read then fails, which
     // is the branch that separates a short read from a broken one.
     var read_args = [_]repr.Value{ claims_readable, harness.wrapInteger(10) };
     expectRaise(harness.core("file/read"), .{read_args[0..2]}, "could not read file");
-    expect(io_core_mod.fileClose(@ptrCast(@alignCast(io_core_mod.checkfile(claims_readable)))) == 0);
+    expect(io_core.fileClose(@ptrCast(@alignCast(io_core.checkfile(claims_readable)))) == 0);
 
     const reader = io_core.open(scratch, "rb").?;
     const claims_writeable = wrap.fromAbstract(
-        io_core_mod.makejfile(@ptrCast(@alignCast(reader)), constants.JANET_FILE_WRITE),
+        io_core.makejfile(@ptrCast(@alignCast(reader)), constants.JANET_FILE_WRITE),
     );
 
     // `xprint` has no default handle, so a failed write names the destination
@@ -613,21 +613,9 @@ fn theMismatchedHandles() void {
         .{print_args[0..2]},
         "cannot print 4 bytes to ",
     );
-    expect(io_core_mod.fileClose(@ptrCast(@alignCast(io_core_mod.checkfile(claims_writeable)))) == 0);
+    expect(io_core.fileClose(@ptrCast(@alignCast(io_core.checkfile(claims_writeable)))) == 0);
 
     _ = c.remove(scratch);
-}
-
-// ==========================================================================
-// What a Janet caller sees
-// ==========================================================================
-
-fn doString(environment: *tables.Table, source: [*:0]const u8) void {
-    var result = wrap.fromNil();
-    if (core_env.dostring(environment, source, "io-core-contract", &result) != 0) {
-        std.debug.print("io_core: {s}\n", .{pp_describe.toString(result)});
-        @panic("io_core: a contract form failed");
-    }
 }
 
 fn theCoreFunctions() void {
@@ -733,14 +721,14 @@ fn theCoreFunctions() void {
         \\(assert (= "repeated flag b in file mode" (why :rbnb)))
     );
 
-    // **A repeated flag opens nothing.** The -1 the scan reports is not a flag
+    // A repeated flag opens nothing. The -1 the scan reports is not a flag
     // word: every bit set includes `file_closed` and `file_not_closeable`, so
     // the handle would report itself closed, refuse every operation, refuse to
     // be closed, and keep its descriptor past collection. The descriptor count
     // is what says the refusal happens before the open rather than after it.
     //
     // The count is `os/dir` over `/dev/fd`, and `-Dreduced-os=true` registers
-    // no `os/dir` -- so this case has no instrument there rather than a
+    // no `os/dir`, so this case has no instrument there rather than a
     // weaker one. The refusal itself is asserted above in every
     // configuration; what is gated is the leak check behind it.
     if (!config.reduced_os) {
@@ -753,7 +741,7 @@ fn theCoreFunctions() void {
         );
     }
 
-    // **A buffer size does not replace the mode.** Reading the mode only at
+    // A buffer size does not replace the mode. Reading the mode only at
     // exactly two arguments leaves a three-argument call unscanned and
     // read-only, so `:wb 8192` would neither truncate nor write and `:zzz`
     // would be accepted where the two-argument form refuses it.
@@ -772,9 +760,9 @@ fn theCoreFunctions() void {
         \\(file/close f)
     );
 
-    // **A write-only file refuses all three reads alike.** `:line` reads with
+    // A write-only file refuses all three reads alike. `:line` reads with
     // `getc` rather than through `readChunk`, so a readability test that lives
-    // only in `readChunk` leaves `:line` answering nil -- and that nil is
+    // only in `readChunk` leaves `:line` giving nil, and that nil is
     // `getc` on a stream opened for writing, which is undefined rather than an
     // empty line.
     doString(env,
@@ -784,12 +772,12 @@ fn theCoreFunctions() void {
         \\(file/close f)
     );
 
-    // **A closed file has no stream to hand out.** `os/isatty` reaches one
+    // A closed file has no stream to hand out. `os/isatty` reaches one
     // through `getfile`, which is outside this file's own closed-flag tests,
-    // and `fileno` of a null stream has no defined answer.
+    // and `fileno` of a null stream has no defined result.
     //
-    // `-Dreduced-os=true` registers no `os/isatty` -- `boot.janet` substitutes
-    // a macro answering true where the binding is absent -- so the getfile
+    // `-Dreduced-os=true` registers no `os/isatty`, `boot.janet` substituting
+    // a macro that is true where the binding is absent, so the getfile
     // half is gated on the binding being the runtime's. The flusher half below
     // reaches the same closed stream by another route and runs everywhere.
     if (!config.reduced_os) {
@@ -830,6 +818,10 @@ fn theCoreFunctions() void {
     // The scratch file is removed by `cleanPaths` rather than by `os/rm`, so
     // this contract still runs in a reduced-OS build.
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     cleanPaths();

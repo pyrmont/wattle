@@ -31,11 +31,17 @@
 # ## What counts as resolved
 #
 # **The name is spelled somewhere in code** -- in `src/`, `test/`, `examples/`
-# or `build.zig`, with comments stripped by `tools/strip-comments`. Deliberately
-# loose, and loose in the same direction as `orphans.janet`: a name is resolved
-# if any file writes it, however it reaches it. A loose test gives a small
-# must-be-empty class and no false accusations, which is what makes each row
-# worth reading.
+# or `build.zig`, with comments and string literals stripped by
+# `tools/strip-comments`. Deliberately loose about *how* the name is reached,
+# and loose in the same direction as `orphans.janet`: a name is resolved if any
+# file writes it. A loose test gives a small must-be-empty class and no false
+# accusations, which is what makes each row worth reading.
+#
+# A literal is not code for this question, for `orphans.janet`'s reason. The
+# case here was `janet_addtimeout` and `janet_addtimeout_nil`, named in a doc
+# comment in `test/ev_loop.zig` and declared nowhere: the file's own
+# contract-only docstring was the sole place either was written, so each
+# resolved against the other half of its own mistake.
 #
 # It follows that this cannot see a *wrong* name that happens to exist
 # elsewhere. `deinitBlock` would resolve whether or not the file citing it is
@@ -48,16 +54,21 @@
 #
 #   - `camelCase` -- Zig's function convention and this runtime's. A camelCase
 #     name in a comment is a claim about a declaration here.
-#   - `janet_*` -- the C-era symbols. The runtime declares none of them except
-#     the handful `capi.zig` still exports, so an unresolved one is a name for
-#     something the tree used to have.
+#   - `janet_*` and `janetc_*` -- the C-era symbols, the second being the
+#     compiler's own family. The runtime declares none of them except the
+#     handful `capi.zig` still exports, so an unresolved one is a name for
+#     something the tree used to have. `janetc_*` is `snake_case` and was
+#     ungated with the rest of that shape until seven of them were found by
+#     reading; the prefix is what separates them from the C fields and libc
+#     functions a comment may legitimately name.
 #
 # **Everything else is deliberately not gated**, because a comment that names
 # something outside this tree is doing its job. `SCREAMING_CASE` is C macros
 # and libc constants under discussion (`JANET_RECURSION_GUARD`, `SIZE_MAX`,
-# `EINTR`); `snake_case` is C functions and struct fields (`janetc_value`,
-# `s_addr`, `_data`); `Capitalized` is a mix of C types being compared against
-# (`JanetTable`) and this tree's own. Gating those three costs 393 rows of
+# `EINTR`); `snake_case` is C functions and struct fields (`s_addr`, `_data`),
+# less the `janetc_*` prefix gated above; `Capitalized` is a mix of C types
+# being compared against (`JanetTable`) and this tree's own. Gating those
+# three costs 393 rows of
 # which almost all are legitimate, which is an instrument nobody reads --
 # measured before this file was written, rather than assumed.
 #
@@ -114,9 +125,16 @@
   and a qualified name is checked at both ends -- which is what caught
   `raise.callCFunction`, whose left half was right. A trailing `()` is dropped.
   A component that is not a bare identifier -- `array/ensure`, `-Dnanbox`,
-  `%v`, `gc.zig`'s suffix -- is not one and is skipped.``
+  `%v` -- is not one and is skipped.
+
+  A span whose last component is a source suffix is a file name rather than a
+  qualified declaration, and is skipped whole. `gc.zig` was harmless split,
+  its left half being ungated anyway; `janet_features.h` is not, its left half
+  landing in the `janet_*` population as a name for a header that exists.``
   [text]
   (def out @[])
+  (def suffixes {"zig" true "h" true "c" true "janet" true "md" true
+                 "txt" true "sh" true})
   (def lines (string/split "\n" text))
   (for i 0 (length lines)
     (def line (lines i))
@@ -130,8 +148,10 @@
         # does not declare and must not be accused of missing. The prefix is
         # the only reliable signal for that: `ceilPowerOfTwo` bare is
         # indistinguishable from one of ours.
-        (unless (string/has-prefix? "std." bare)
-        (each part (string/split "." bare)
+        (def parts (string/split "." bare))
+        (unless (or (string/has-prefix? "std." bare)
+                    (suffixes (last parts)))
+        (each part parts
           (when (peg/match ~(* (<- (* (+ :a "_") (any (+ :w "_")))) -1) part)
             (array/push out [part (inc i)])))))))
   out)
@@ -140,7 +160,8 @@
   "Which gated population `name` belongs to, or nil for the ungated rest."
   [name]
   (cond
-    (string/has-prefix? "janet_" name) "c-era"
+    (or (string/has-prefix? "janet_" name)
+        (string/has-prefix? "janetc_" name)) "c-era"
     # camelCase: a lowercase run, then an uppercase, then anything.
     (peg/match ~(* (some (range "az" "09")) (range "AZ") (any (+ :w "_")) -1) name) "unresolved"
     nil))
@@ -149,15 +170,16 @@
   (def check (has-value? argv "--check"))
   (os/cd tools/root)
 
-  # The code corpus: every Zig file in the repository with its comments
-  # stripped. `strip-comments` keeps string literals, which is what lets a name
-  # inside an `@export(.{ .name = "janet_f" })` resolve.
+  # The code corpus: every Zig file in the repository with its comments and
+  # its string literals stripped. A name inside a docstring, a registration
+  # string or an `@import` path is prose or a path rather than a declaration,
+  # so resolving against one says a name exists when nothing declares it.
   (def code @"")
   (each path (array/concat @[] (tools/src-files)
                            (tools/zig-files "test")
                            (tools/zig-files "examples")
                            @["build.zig"])
-    (buffer/push code (tools/strip-comments (slurp path)))
+    (buffer/push code (tools/strip-comments (slurp path) false))
     (buffer/push code "\n"))
   (def corpus (string code))
 

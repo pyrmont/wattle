@@ -26,45 +26,61 @@
 //!
 //! ## Where the head-layout assertion went
 //!
-//! The C original opened by pinning `sizeof(JanetStringHead) ==
-//! offsetof(JanetStringHead, data)` for the string and tuple heads, and then
-//! checked the recovery arithmetic in both directions. Neither survives a
-//! translation: `@cImport` drops a flexible array member, so `@offsetOf` does
-//! not compile and `utils.stringHead` recovers the header with `@sizeOf` —
-//! which makes both comparisons `@sizeOf` against itself.
+//! The head offsets are not pinned here. What would say a string or tuple
+//! head is exactly its own size is that the size equals the offset of `data`,
+//! and a head with a flexible array member loses it in translation, so
+//! `@offsetOf` does not compile against one while `utils.stringHead` recovers
+//! the header with `@sizeOf`. The comparison would be `@sizeOf` against
+//! itself. `test/gc_mark.zig`'s `theHeadOffsets` derives each offset from the
+//! address the allocator recorded and compares it against `@sizeOf`, and it
+//! covers the string and tuple heads.
 //!
-//! `test/gc_mark.zig`'s `theHeadOffsets` derives each offset from the
-//! address the allocator recorded and compares it against `@sizeOf`, which is
-//! the runtime claim. Both cover the string and tuple heads this file used to.
+//! ## Two things this deliberately does not cover
 //!
-//! ## Two things deliberately not covered, unchanged from the C original
-//!
-//! `strings.begin` and `tuples.begin` leave the hash uninitialised,
-//! and there is no way to assert an indeterminate value; the cases below read
-//! it only after the matching `end`. And `cacheFindmem` ends the process when
-//! the table is full, which the rehash floor makes unreachable — the cases
-//! that would have to be arranged to reach it end the test process rather than
-//! failing an assertion.
+//! `strings.begin` and `tuples.begin` leave the hash uninitialised, and there
+//! is no way to assert an indeterminate value, so the cases below read it only
+//! after the matching `end`. And `cacheFindmem` ends the process when the
+//! table is full, which the rehash floor puts out of reach: a case arranged to
+//! get there would end the test process rather than fail an assertion.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const harness = @import("harness.zig");
-const value = @import("subsystems").value;
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const core_env = @import("subsystems").env;
+const expect = @import("expect.zig").expect;
 const gc_alloc = @import("subsystems").gc_alloc;
+const gc_mark = @import("subsystems").gc_mark;
+const harness = @import("harness.zig");
+const heap = harness.heap;
+
+const registry = @import("subsystems").registry;
+const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
 const symbols = @import("subsystems").value.symbols;
 const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
-const gc_mark = @import("subsystems").gc_mark;
-const core_env = @import("subsystems").env;
-const registry = @import("subsystems").registry;
-const wrap = @import("subsystems").value.wrap;
+const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
-const expect = @import("expect.zig").expect;
+const wrap = @import("subsystems").value.wrap;
 
-const heap = harness.heap;
+// ==========================================================================
+// Constants
+// ==========================================================================
 
-// --------------------------------------------------------------- helpers
+/// The length of a generated name, which is the odometer minus its leading
+/// underscore.
+const gensym_length: i32 = @as(i32, @intCast(@typeInfo(@TypeOf(harness.vm().gensym_counter)).array.len)) - 1;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn stringLength(s: [*]const u8) u32 {
     return strings.head(s).length;
@@ -93,52 +109,6 @@ fn inCache(symbol: [*:0]const u8) bool {
     return false;
 }
 
-// ---------------------------------------------------------------- string
-
-/// Fill the allocator's free list with blocks of `size` whose bytes are all
-/// 0xFF, and report whether they come back that way.
-///
-/// Every assertion that a constructor wrote a terminator is vacuous on a block
-/// that arrived zeroed, and whether one does is a property of the C library
-/// rather than of Janet: macOS zeroes small allocations and leaves large ones
-/// alone, glibc leaves both. So the terminator case probes first and asserts
-/// only where the answer makes the assertion mean something.
-fn dirtyFreeList(size: usize) bool {
-    var junk: [8]?*anyopaque = undefined;
-    for (&junk) |*slot| {
-        slot.* = utils.malloc(size);
-        expect(slot.* != null);
-        @memset(@as([*]u8, @ptrCast(slot.*))[0..size], 0xFF);
-    }
-    for (junk) |slot| utils.free(slot);
-
-    const check: [*]u8 = @ptrCast(utils.malloc(size).?);
-    const dirty = check[size - 1] != 0;
-    @memset(check[0..size], 0xFF);
-    utils.free(check);
-    return dirty;
-}
-
-/// Both constructors write a zero one byte past the length, so that a Janet
-/// string can be handed to a C function that expects one. Asserted on a block
-/// large enough that this allocator does not zero it -- see above.
-fn constructorsWriteTheTerminator() void {
-    const n: i32 = 8192;
-    const block = @sizeOf(strings.StringHead) + @as(usize, n) + 1;
-    if (!dirtyFreeList(block)) return;
-
-    const begun = strings.begin(n);
-    expect(begun[@intCast(n)] == 0);
-
-    const source: [*]u8 = @ptrCast(utils.malloc(@intCast(n)).?);
-    @memset(source[0..@intCast(n)], 'x');
-    _ = dirtyFreeList(block);
-    const copied = strings.new(source[0..@intCast(n)]);
-    expect(copied[@intCast(n)] == 0);
-    expect(std.mem.eql(u8, copied[0..@intCast(n)], source[0..@intCast(n)]));
-    utils.free(source);
-}
-
 /// A string built in two steps: the length is set by `begin`, the terminator
 /// is written by `begin`, and the hash is written by `end` and nowhere else.
 fn stringBeginAndEnd() void {
@@ -159,6 +129,50 @@ fn stringBeginAndEnd() void {
     expect(stringLength(e) == 0);
     expect(e[0] == 0);
     expect(stringHash(strings.end(e)) == calchash(""));
+}
+
+/// Fill the allocator's free list with blocks of `size` whose bytes are all
+/// 0xFF, and report whether they come back that way.
+///
+/// Every assertion that a constructor wrote a terminator is vacuous on a block
+/// that arrived zeroed, and whether one does is a property of the C library
+/// rather than of Janet: macOS zeroes small allocations and leaves large ones
+/// alone, glibc leaves both. So the terminator case probes first and asserts
+/// only where a dirty block makes the assertion mean something.
+fn dirtyFreeList(size: usize) bool {
+    var junk: [8]?*anyopaque = undefined;
+    for (&junk) |*slot| {
+        slot.* = utils.malloc(size);
+        expect(slot.* != null);
+        @memset(@as([*]u8, @ptrCast(slot.*))[0..size], 0xFF);
+    }
+    for (junk) |slot| utils.free(slot);
+
+    const check: [*]u8 = @ptrCast(utils.malloc(size).?);
+    const dirty = check[size - 1] != 0;
+    @memset(check[0..size], 0xFF);
+    utils.free(check);
+    return dirty;
+}
+
+/// Both constructors write a zero one byte past the length, so that a Janet
+/// string can be handed to a C function that expects one. Asserted on a block
+/// large enough that this allocator does not zero it; see `dirtyFreeList`.
+fn constructorsWriteTheTerminator() void {
+    const n: i32 = 8192;
+    const block = @sizeOf(strings.StringHead) + @as(usize, n) + 1;
+    if (!dirtyFreeList(block)) return;
+
+    const begun = strings.begin(n);
+    expect(begun[@intCast(n)] == 0);
+
+    const source: [*]u8 = @ptrCast(utils.malloc(@intCast(n)).?);
+    @memset(source[0..@intCast(n)], 'x');
+    _ = dirtyFreeList(block);
+    const copied = strings.new(source[0..@intCast(n)]);
+    expect(copied[@intCast(n)] == 0);
+    expect(std.mem.eql(u8, copied[0..@intCast(n)], source[0..@intCast(n)]));
+    utils.free(source);
 }
 
 /// The one-step constructor copies and hashes immediately.
@@ -232,8 +246,8 @@ fn stringEquality() void {
     // Same bytes, right hash and length: equal.
     expect(strings.equalconst(a, "abc", calchash("abc")));
 
-    // A wrong hash rejects even when the bytes are identical -- the hash is
-    // trusted, not recomputed, which is the whole point of this entry point.
+    // A wrong hash rejects even when the bytes are identical, because this
+    // entry point trusts the hash it is given rather than recomputing it.
     expect(!strings.equalconst(a, "abc", calchash("zzz")));
 
     // The length and byte checks are harder to reach honestly, because the
@@ -254,8 +268,6 @@ fn stringEquality() void {
     const n2 = strings.new("a\x00c");
     expect(!strings.equal(n1, n2));
 }
-
-// ---------------------------------------------------------------- symbol
 
 /// Interning is pointer identity, which is stronger than equality and is what
 /// the rest of the runtime relies on.
@@ -294,7 +306,7 @@ fn symbolInterns() void {
 }
 
 /// Removing a symbol leaves a tombstone: the count falls, the deleted count
-/// rises, and the name is available again -- at a new address.
+/// rises, and the name is available again, at a new address.
 fn symbolDeinitLeavesATombstone() void {
     var count = harness.vm().symcache.count;
     var deleted = harness.vm().symcache.deleted;
@@ -386,8 +398,8 @@ fn lookupReclaimsATombstone() void {
     expect(cacheIndexOf(a) == null);
     expect(harness.vm().symcache.entries.?[pos_a] != null);
 
-    // Looking the second one up moves it into that slot. Its address does not
-    // change -- interning is still identity -- only its position does.
+    // Looking the second one up moves it into that slot. Its address does
+    // not change, interning still being identity; only its position does.
     expect(symbols.csymbol(second.ptr) == b);
     expect(cacheIndexOf(b).? == pos_a);
     expect(harness.vm().symcache.entries.?[pos_b] != null);
@@ -471,10 +483,6 @@ fn tombstonesForceARehash() void {
     expect(rehashed);
 }
 
-/// The length of a generated name, which is the odometer minus its leading
-/// underscore.
-const gensym_length: i32 = @as(i32, @intCast(@typeInfo(@TypeOf(harness.vm().gensym_counter)).array.len)) - 1;
-
 /// The leading underscore comes from `symbols.cacheInit` and nothing else
 /// ever writes it, so it is the one part of the counter's initial state that
 /// survives to be observed. This case has to run before the one below, which
@@ -497,7 +505,7 @@ fn resetGensymCounter() void {
 }
 
 /// A generated symbol is interned like any other, and the counter advances
-/// only when a name is already taken -- so the sequence is exactly the
+/// only when a name is already taken, so the sequence is exactly the
 /// odometer.
 fn gensymAdvancesTheOdometer() void {
     // Start from the state `symbols.cacheInit` leaves, so the sequence is
@@ -518,19 +526,19 @@ fn gensymAdvancesTheOdometer() void {
         expect(inCache(slot.*));
     }
 
-    // All distinct, and each is the one the cache holds for its own name.
+    // All distinct, and each is the one the cache has interned for its name.
     for (seen, 0..) |symbol, i| {
         for (seen[i + 1 ..]) |other| expect(symbol != other);
         expect(symbols.new(symbol[0..@intCast(gensym_length)]) == symbol);
     }
 
-    // The last character walks '0'..'9', then 'a'..'z', then 'A'..'Z' -- the
-    // two carries at '9' and at 'z' are the whole of what `inc_gensym` does
-    // beyond incrementing a byte. Only the final position moves over forty
-    // names, so the rest stay where the reset above put them.
+    // The last character walks '0'..'9', then 'a'..'z', then 'A'..'Z', and
+    // the two rollovers at '9' and at 'z' are the whole of what the counter
+    // does beyond incrementing a byte. Only the final position moves over
+    // forty names, so the rest stay where the reset above put them.
     //
     // The starting point is read from the first name rather than assumed to be
-    // '0', because a name the cache already holds is skipped rather than
+    // '0', because a name already in the cache is skipped rather than
     // reused, and a symbol surviving from the boot process would shift the
     // whole run by one.
     const alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -544,10 +552,10 @@ fn gensymAdvancesTheOdometer() void {
     for (seen) |symbol| _ = gc_alloc.gcunroot(wrap.fromSymbol(symbol));
 }
 
-/// The third carry, which the forty-name run above cannot reach: exhausting a
-/// position wraps it to '0' and advances the one to its left. Reaching it by
-/// counting would take sixty-three names, so the odometer is set to its last
-/// value at the lowest position and stepped once.
+/// The rollover between positions, which the forty-name run above cannot
+/// reach: exhausting a position wraps it to '0' and advances the one to its
+/// left. Getting there by counting would take sixty-three names, so the
+/// odometer is set to its last value at the lowest position and stepped once.
 fn gensymCarriesBetweenPositions() void {
     gc_mark.collect();
     const last: usize = @intCast(gensym_length - 1);
@@ -596,8 +604,6 @@ fn collectedSymbolLeavesTheCache() void {
     _ = gc_alloc.gcunroot(wrap.fromSymbol(kept));
 }
 
-// ----------------------------------------------------------------- tuple
-
 /// A tuple built in two steps. `begin` sets the length and marks the
 /// source-map position absent with -1; `end` computes the hash over every
 /// slot.
@@ -622,8 +628,8 @@ fn tupleBeginAndEnd() void {
     expect(tuples.head(empty).hash == value.hashIndexed(empty[0..0]));
 }
 
-/// The one-step constructor copies its elements and closes the tuple, so equal
-/// contents give equal hashes -- which is what the dictionaries need.
+/// The one-step constructor copies its elements and closes the tuple, so
+/// equal contents give equal hashes, which is what the dictionaries need.
 fn tupleNCopiesAndHashes() void {
     var source = [3]repr.Value{
         harness.wrapInteger(10),
@@ -662,8 +668,6 @@ fn tupleNCopiesAndHashes() void {
     expect(tuples.head(none).length == 0);
 }
 
-// ------------------------------------------------------ across the seam
-
 /// The standard library reaches all of this through the core environment, so
 /// the Zig entry points above have to agree with what Janet sees.
 fn fromJanet() void {
@@ -689,19 +693,16 @@ fn fromJanet() void {
     expect(tuples.head(wrap.toTuple(r[6])).length == 2);
 }
 
-// ------------------------------------------------------ the registration
-
 /// Every core cfunction is registered with the file and line it was declared
 /// on, and that pair is what a stack trace prints for a frame that is not a
 /// Janet function. The location comes from `@src()` at the registration table
-/// row rather than from `__LINE__` at the definition; what has to hold either
-/// way is that there *is* one.
+/// row rather than from the line of the definition, and what this asserts is
+/// that there is one at all.
 ///
-/// This is here rather than in a Janet suite because nothing in Janet reads
-/// the registry directly -- the `:source-map` a binding carries comes from the
-/// image, so a runtime that recorded nothing would still answer `(doc)`
-/// correctly and only stack traces would go blank. A mutation sweep found that
-/// hole.
+/// It is here rather than in a Janet suite because nothing in Janet reads the
+/// registry directly: the `:source-map` of a binding comes from the image, so
+/// a runtime that recorded nothing would still print `(doc)` correctly and
+/// only stack traces would go blank.
 fn theRegistryRecordsALocation() void {
     const names = [_][*:0]const u8{
         "tuple/join",  "string/split",  "buffer/blit", "array/concat",
@@ -720,6 +721,10 @@ fn theRegistryRecordsALocation() void {
         expect(entry.?.source_line > 0);
     }
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

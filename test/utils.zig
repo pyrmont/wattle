@@ -2,12 +2,12 @@
 //! dictionary probe every lookup goes through, the two string comparisons, the
 //! key sort, and the four out-of-line head accessors.
 //!
-//! Janet source reaches the probe and the comparisons on the path of every
-//! the probe and the comparisons are on the path of every table lookup and
-//! every printed table. What is here is what only a caller *inside* the
-//! runtime can see: the probe's own return value, which distinguishes a
-//! tombstone from an empty bucket; the comparisons' behaviour around an
-//! embedded NUL; and the collection hashes' one predictable value.
+//! The probe and the comparisons are on the path of every table lookup and
+//! every printed table, so Janet source reaches them constantly. What is here
+//! is what only a caller *inside* the runtime can see: the probe's own return
+//! value, which distinguishes a tombstone from an empty bucket; the
+//! comparisons' behaviour around an embedded NUL; and the collection hashes'
+//! one predictable value.
 //!
 //! ## Nothing in this subsystem raises, so nothing here opens a scope
 //!
@@ -17,50 +17,87 @@
 //!
 //! ## The four accessors recover what four other files wrote
 //!
-//! A C contract could open by comparing each head accessor with the macro of
-//! the same name -- `(janet_string_head)(s) == janet_string_head(s)`,
-//! parenthesised on the left so the macro did not eat it. There is one
-//! spelling here, so that comparison would compare a name with itself.
-//!
-//! What is left is a real question rather than a consolation prize: **the four
-//! accessors in `utils.zig` recover what four *other* files wrote.** A
-//! string's length is written through `value/strings.zig`'s own
-//! `head` and read here through `utils.zig`'s `headOf`; a struct's
-//! through `value/structs.zig`'s. So
-//! each case below builds a value with a constructor and reads its head back
-//! with the accessor, which is two independent spellings of the same offset
-//! after all — just not the two the C file compared.
+//! A string's length is written through `value/strings.zig`'s own `head` and
+//! read back here through `utils.zig`'s accessor; a struct's through
+//! `value/structs.zig`'s. So each case below builds a value with a constructor
+//! and reads its head back with the accessor, which puts two independent
+//! spellings of the same offset against each other.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const constants = @import("constants");
-const harness = @import("harness.zig");
-const config = @import("config");
 
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
 const abstract_type = @import("subsystems").abstract_type;
+const abstracts = @import("subsystems").value.abstracts;
+const config = @import("config");
+const constants = @import("constants");
+const expect = @import("expect.zig").expect;
+
+const harness = @import("harness.zig");
+const order = @import("subsystems").value.order;
+const repr = @import("repr");
+const strings = @import("subsystems").value.strings;
 const structs = @import("subsystems").value.structs;
 const tables = @import("subsystems").value.tables;
-const strings = @import("subsystems").value.strings;
 const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
 const value = @import("subsystems").value;
-const order = @import("subsystems").value.order;
-const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
-const abstracts = @import("subsystems").value.abstracts;
-const abi = @import("abi");
-const expect = @import("expect.zig").expect;
+const wrap = @import("subsystems").value.wrap;
 
-// ------------------------------------------------------------------- heads
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+const big_table = [_]SearchBig{
+    .{ .name = "alpha", .a = 0, .b = 0, .d = 0 },
+    .{ .name = "beta", .a = 0, .b = 0, .d = 0 },
+    .{ .name = "gamma", .a = 0, .b = 0, .d = 0 },
+};
 
 const head_probe_at = abstract_type.define(anyopaque, .{ .name = "utils/head-probe" });
+
+const small_table = [_]SearchSmall{
+    .{ .name = "alpha", .value = 1 },
+    .{ .name = "beta", .value = 2 },
+    .{ .name = "delta", .value = 3 },
+    .{ .name = "gamma", .value = 4 },
+    .{ .name = "omega", .value = 5 },
+};
+
+// ==========================================================================
+// Types
+// ==========================================================================
+
+const SearchBig = extern struct {
+    name: [*]const u8,
+    a: f64,
+    b: f64,
+    d: f64,
+};
+
+const SearchSmall = extern struct {
+    name: [*]const u8,
+    value: c_int,
+};
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// The distance from a head to the payload Janet hands around, which is what
 /// each accessor subtracts.
 ///
-/// **`@sizeOf` here is the oracle and must stay `@sizeOf`.** The runtime
-/// subtracts `types.<kind>_payload`, which is `@offsetOf(Head, "_data")`; this
-/// file asserts that what the accessor actually moved by equals the *other*
+/// `@sizeOf` here is the oracle and has to stay `@sizeOf`. The runtime
+/// subtracts `types.<kind>_payload`, which is `@offsetOf(Head, "_data")`, and
+/// this file asserts that what the accessor moved by equals the *other*
 /// spelling. Rewriting these four to the constant would compare it with itself
 /// and the check would pass forever.
 fn payloadOffset(head: anytype, payload: anytype) usize {
@@ -92,16 +129,13 @@ fn theHeadAccessorsRecoverWhatTheConstructorsWrote() void {
     expect(payloadOffset(abstract_head, abst) == @sizeOf(abi.AbstractHead));
 }
 
-// -------------------------------------------------------------------- hashes
-
 /// The three hash helpers, which need no heap and run before a VM exists.
 ///
 /// `value.hashBytes` has two implementations and the configuration picks
 /// one. The condition is `config.prf` rather than a field of `options`: the
 /// subsystem is compiled either way and what changes is which body it
-/// compiles, so no `Selection` field answers the question.
-/// `JANET_HASH_KEY_SIZE` exists only under the same condition, which is why
-/// the key is declared inside the branch.
+/// compiles, so no `Selection` field covers it. The hash key size exists only
+/// under the same condition, so the key is declared inside the branch.
 fn theHashesAreTheOnesTheirCallersExpect() void {
     expect(value.hashMix(0, 0) == 0x53a3c667);
     expect(value.hashMix(1, 2) == 0x53a3d6f6);
@@ -129,26 +163,23 @@ fn theHashesAreTheOnesTheirCallersExpect() void {
     }
 }
 
-/// `capacityFor` took an `int32_t` in C and answered zero for a negative one,
-/// which was the only route to a bucket array of no buckets. It takes a
-/// `usize`, so that argument does not exist and the answer is at least one for
-/// everything it can be given.
+/// `value.capacityFor` takes a `usize`, so there is no negative argument to
+/// round down and no route to a bucket array of no buckets. Its result is at
+/// least one for everything it can be given.
 fn tablenRoundsUpToAPowerOfTwo() void {
     expect(value.capacityFor(0) == 1);
     expect(value.capacityFor(1) == 2);
     expect(value.capacityFor(2) == 4);
     expect(value.capacityFor(3) == 4);
     expect(value.capacityFor(1024) == 2048);
-    // The one value that cannot be rounded up, and is answered unchanged.
+    // The one value that cannot be rounded up, and comes back unchanged.
     expect(value.capacityFor(std.math.maxInt(i32)) == std.math.maxInt(i32));
 }
 
-// -------------------------------------------------------------- comparisons
-
 fn cstrcmpStopsAtWhicheverEndComesFirst() void {
-    // A Janet string knows its length; the C string ends at a NUL. So the
-    // comparison stops at whichever comes first, and equality needs both to
-    // end together.
+    // A Janet string has its length in its head and a C string ends at a NUL,
+    // so the comparison stops at whichever comes first and equality needs both
+    // to end together.
     expect(utils.cstrcmp(strings.cstring("abc"), "abc") == 0);
     expect(utils.cstrcmp(strings.cstring(""), "") == 0);
     expect(utils.cstrcmp(strings.cstring("abc"), "abd") == -1);
@@ -169,34 +200,9 @@ fn cstrcmpStopsAtWhicheverEndComesFirst() void {
     expect(utils.cstrcmp(embedded, "a\x00b") == 0);
 }
 
-// `utils.strbinsearch` wants an array of structs whose first member is a
-// `char *`, sorted by it. Two shapes, to prove the item size is respected
+// `utils.strbinsearch` takes an array of structs whose first member is a
+// `char *`, sorted by it. Two shapes, to show the item size is respected
 // rather than assumed.
-const SearchSmall = extern struct {
-    name: [*]const u8,
-    value: c_int,
-};
-
-const SearchBig = extern struct {
-    name: [*]const u8,
-    a: f64,
-    b: f64,
-    d: f64,
-};
-
-const small_table = [_]SearchSmall{
-    .{ .name = "alpha", .value = 1 },
-    .{ .name = "beta", .value = 2 },
-    .{ .name = "delta", .value = 3 },
-    .{ .name = "gamma", .value = 4 },
-    .{ .name = "omega", .value = 5 },
-};
-
-const big_table = [_]SearchBig{
-    .{ .name = "alpha", .a = 0, .b = 0, .d = 0 },
-    .{ .name = "beta", .a = 0, .b = 0, .d = 0 },
-    .{ .name = "gamma", .a = 0, .b = 0, .d = 0 },
-};
 
 fn findSmall(count: usize, key: [*:0]const u8) ?*const SearchSmall {
     const hit = utils.strbinsearch(
@@ -227,10 +233,9 @@ fn strbinsearchRespectsTheItemSize() void {
     expect(bighit == &big_table[2]);
 }
 
-// ------------------------------------------------------------- the probe
-
-/// The probe's three answers: the key's own bucket, the first tombstone, and a
-/// never-used bucket. Only a caller inside the runtime sees which one it got.
+/// The three buckets the probe can return: the key's own, the first
+/// tombstone, and a never-used one. Only a caller inside the runtime sees
+/// which it got.
 fn theProbeDistinguishesATombstoneFromAnEmptyBucket() void {
     const t = tables.new(8);
     const present = value.fromBytes("present", .keyword);
@@ -243,7 +248,7 @@ fn theProbeDistinguishesATombstoneFromAnEmptyBucket() void {
     expect(harness.equals(kv.?.key, present));
     expect(wrap.toInteger(kv.?.value) == 1);
 
-    // An absent key lands on a bucket whose key is nil -- that is what makes
+    // An absent key lands on a bucket whose key is nil, which is what makes
     // it a place to put one.
     kv = value.dictionaryFind(t.slots(), absent);
     expect(kv != null);
@@ -287,8 +292,8 @@ fn dictionaryGetTurnsAMissIntoNil() void {
     ));
 }
 
-/// `value.dictionaryFindKeyword` matches by bytes without interning, so a lookup
-/// needs neither a `Janet` nor a symbol table entry.
+/// `value.dictionaryFindKeyword` matches by bytes without interning, so a
+/// lookup needs neither a `Janet` nor a symbol table entry.
 fn theKeywordProbeComparesLengthBeforeBytes() void {
     const kt = tables.new(4);
     tables.put(kt, value.fromBytes("kw", .keyword), harness.wrapInteger(9));
@@ -350,7 +355,7 @@ fn sortedKeysAnswersBucketIndicesInKeyOrder() void {
     }
     var n = utils.sortedKeys(t.data.?, @intCast(t.capacity), &buffer);
     expect(n == 6);
-    // The answer is bucket *indices*, in key order.
+    // What comes back is bucket *indices*, in key order.
     i = 0;
     while (i < n) : (i += 1) {
         const key = t.slots()[@intCast(buffer[@intCast(i)])].key;
@@ -393,8 +398,6 @@ fn theCollectionHashesAreWhatTheHeadsStore() void {
     expect(head.hash == value.hashDictionary(st[0..head.capacity]));
 }
 
-// ---------------------------------------------------- the four name tables
-
 /// `utils.base64` and the three name tables, checked by position.
 ///
 /// The expectations are written out rather than read from `utils.zig`: the
@@ -403,7 +406,7 @@ fn theCollectionHashesAreWhatTheHeadsStore() void {
 /// except this. That is the independent derivation, and it is the way a table
 /// indexed by an integer breaks.
 fn theTablesAreIndexedByTheNumbersACallerHas() void {
-    // 0-9, A-Z, a-z, `_`, `=`, and the terminator the C original carries.
+    // 0-9, A-Z, a-z, `_`, `=`, and the terminator.
     expect(utils.base64[0] == '0');
     expect(utils.base64[10] == 'A');
     expect(utils.base64[36] == 'a');
@@ -433,10 +436,13 @@ fn theTablesAreIndexedByTheNumbersACallerHas() void {
     for (0..14) |i| expect(std.mem.span(utils.signalNames[i]).len > 0);
 }
 
+// ==========================================================================
+// Entry
+// ==========================================================================
+
 pub fn run() void {
-    // The three helpers that touch no heap, run before there is one — as the C
-    // original did, and for the same reason: nothing here needs a VM, and a
-    // hash that needed one would be a finding.
+    // The two cases that touch no heap, run before there is one. Nothing in
+    // either needs a VM, and a hash that needed one would be a finding.
     theHashesAreTheOnesTheirCallersExpect();
     tablenRoundsUpToAPowerOfTwo();
 

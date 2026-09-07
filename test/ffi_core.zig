@@ -6,77 +6,119 @@
 //! `test/suite-ffi.janet` exercises the type system and a spike corpus drives
 //! real calls against real C. Six things have no Janet spelling:
 //!
-//!  - **The primitive size and alignment table.** `ffi_types.zig`'s `primInfo`
-//!    is a restatement of the host's own numbers, and a restatement is a place
-//!    two answers can drift apart. Every entry is checked below against the
-//!    type it names, which is the same argument `test/ffi_layout.zig` makes
+//!  - The primitive size and alignment table. `ffi_types.zig`'s `primInfo` is
+//!    a restatement of the host's own numbers, and a restatement is a place
+//!    two descriptions can drift apart. Every entry is checked below against
+//!    the type it names, which is the argument `test/ffi_layout.zig` makes
 //!    for the struct layout machine.
-//!  - **The abstract types' callback sets.** `core/ffi-struct` and
-//!    `core/ffi-signature` are `JANET_ATEND_GCMARK`, so a mark callback and
-//!    eleven null slots; `core/ffi-native` is `JANET_ATEND_NAME` and has
-//!    twelve. From Janet only the *name* is visible, through `(type x)`. That
-//!    the `get`, `put`, `call` and `next` slots are null is what makes these
-//!    values opaque, and it is invisible from the language.
-//!  - **The callback entry with no userdata.** Every callback ends there, and
-//!    its first act is to check for a null `userdata` and complain. A Janet
+//!  - The abstract types' callback sets. `core/ffi-struct` and
+//!    `core/ffi-signature` have a mark callback and no other; `core/ffi-native`
+//!    has none at all. From Janet only the *name* is visible, through
+//!    `(type x)`. That the `get`, `put`, `call` and `next` slots are null is
+//!    what makes these values opaque, and it is invisible from the language.
+//!  - The callback entry with no userdata. Every callback ends there, and its
+//!    first act is to check for a null `userdata` and complain. A Janet
 //!    program reaches it only through a C library calling back, which always
-//!    passes the pointer it was given, so the null arm is unreachable from the
-//!    language and reachable in one line from here.
-//!  - **The outgoing half of the frame.** `AllocResult` carries
-//!    `arg_stack_count` because a Zig caller declares the outgoing stack words
-//!    as function parameters and must not count the by-reference payloads that
-//!    follow them. Nothing in Janet can observe the split; the allocators can
-//!    be asked directly.
-//!  - **The rung ceiling.** Past 1024 words of outgoing arguments there is no
+//!    passes the pointer it was given, so the null arm is unreachable from
+//!    the language and reachable in one line from here.
+//!  - The outgoing half of the frame. `AllocResult` has `arg_stack_count`
+//!    because a Zig caller declares the outgoing stack words as function
+//!    parameters and must not count the by-reference payloads that follow
+//!    them. Nothing in Janet can observe the split; the allocators can be
+//!    asked directly.
+//!  - The rung ceiling. Past 1024 words of outgoing arguments there is no
 //!    function type to call through, and `ffi/signature` reports it. Only
-//!    SysV64 can reach it, so the assertion is on the allocator rather than on
-//!    a call this host could make.
-//!  - **The failure messages.** A raise is asserted here by its *message*,
-//!    which is the difference between a test and a tautology.
+//!    SysV64 can reach it, so the assertion is on the allocator rather than
+//!    on a call this host could make.
+//!  - The failure messages. A raise is asserted here by its *message*, which
+//!    is the difference between a test and a tautology.
 //!
-//! **Nothing here reaches a symbol.** Three allocators and the callback entry
-//! were hand-declared once, because none of the four is in a header; they were
-//! exported for a C caller that no longer exists, and this contract was the
-//! last reader of the names. All four are ordinary Zig functions, reached by
-//! `@import` like any other.
+//! ## Where the oracles come from
 //!
-//! **The alignment oracle is rebuilt rather than translated.** `ffi_core.c`
-//! spelled `ALIGNOF(type)` as `offsetof(struct { char c; type member; },
-//! member)` — `alignof` is not in c99 — so it derived alignment from the
-//! compiler's *struct layout* rather than asking for it directly.
-//! `@alignOf(T)` is the direct question, and it is also the expression
-//! `primInfo` itself uses, so a translation would have compared `primInfo`
-//! with itself. `alignOfMember` below is the C macro's shape in Zig, and the
-//! pairing it checks — this name means this machine type — is what the table
-//! actually encodes.
+//! The alignment oracle is built here rather than borrowed. `alignOfMember`
+//! asks what offset a member of the type takes after one byte, which is a
+//! question about struct layout. `@alignOf(T)` is the direct question, and it
+//! is also the expression `primInfo` itself uses, so asking it here would
+//! compare `primInfo` with itself. The pairing `alignOfMember` checks, that
+//! this name means this machine type, is what the table encodes.
+//!
+//! The callees the calling cases use are functions in this file. A contract
+//! is compiled into the runtime, so it can hand `ffi/call` the address of one
+//! of them and make a real call with no shared library anywhere.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const harness = @import("harness.zig");
 
-const subsystems = @import("subsystems");
-const value = @import("subsystems").value;
-const config = @import("config");
-const gc_alloc = @import("subsystems").gc_alloc;
-const tuples = @import("subsystems").value.tuples;
-const core_env = @import("subsystems").env;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const buffers = @import("subsystems").value.buffers;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const abi = @import("abi");
-const ffi_classify = subsystems.ffi_classify;
-const ffi_call = subsystems.ffi_call;
-
-const ArgSlot = ffi_classify.ArgSlot;
-const AllocResult = ffi_classify.AllocResult;
-
+const buffers = @import("subsystems").value.buffers;
+const config = @import("config");
+const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
+const ffi_call = subsystems.ffi_call;
+const ffi_classify = subsystems.ffi_classify;
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
+const repr = @import("repr");
+const subsystems = @import("subsystems");
+const tuples = @import("subsystems").value.tuples;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
 
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// Every name `ffi.libFfi` registers. A binding that stops being registered
+/// is what this catches: a registration table is the one place a cfunction
+/// can go missing without a link error.
+const ffi_bindings = [_][*:0]const u8{
+    "ffi/native",              "ffi/lookup", "ffi/close",          "ffi/signature",
+    "ffi/call",                "ffi/struct", "ffi/write",          "ffi/read",
+    "ffi/size",                "ffi/align",  "ffi/trampoline",     "ffi/jitfn",
+    "ffi/malloc",              "ffi/free",   "ffi/pointer-buffer", "ffi/pointer-cfunction",
+    "ffi/calling-conventions",
+};
+
+/// Whether the FFI subsystem was compiled in, which is not the same question
+/// as whether this host can load anything. `dynamicLoadingWorks` is the
+/// second question.
 const has_dynamic_modules = config.dynamic_modules;
 
+/// The `types.PrimType` and `types.Spec` ordinals these cases name, copied
+/// out rather than imported so that the assertions have an oracle
+/// independent of the enumerations they check.
+const prim_int64: u32 = 12;
+const prim_struct: u32 = 14;
+const sysv64_integer: u32 = 0;
+const sysv64_memory: u32 = 8;
+const win64_register: u32 = 9;
+const aapcs64_general: u32 = 13;
+const aapcs64_general_ref: u32 = 15;
+
+/// How many refusals the run has read the message of. Printed at the end, so
+/// that a case quietly ceasing to raise is visible.
 var raises_seen: u32 = 0;
 
-/// A refusal, by the message it carried. Reading the message is what
+// ==========================================================================
+// Aliased types
+// ==========================================================================
+
+const AllocResult = ffi_classify.AllocResult;
+const ArgSlot = ffi_classify.ArgSlot;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
+
+/// A refusal, by the message it reports. Reading the message is what
 /// distinguishes "it refused" from "it refused for the reason this case is
 /// about", and every one of these messages is a line of `ffi_types.zig`,
 /// `ffi_marshal.zig` or `ffi_call.zig` that nothing else reaches.
@@ -100,6 +142,7 @@ fn expectRaisePrefix(function: anytype, args: anytype, prefix: []const u8) void 
     raises_seen += 1;
 }
 
+/// Evaluate `source` in the core environment and give back its value.
 fn eval(source: [*:0]const u8) repr.Value {
     var out = wrap.fromNil();
     const env = harness.coreEnv();
@@ -107,16 +150,15 @@ fn eval(source: [*:0]const u8) repr.Value {
     return out;
 }
 
-/// Whether this host can actually load anything, which is a different question
-/// from whether the subsystem was compiled.
+/// Whether this host can actually load anything, which is a different
+/// question from whether the subsystem was compiled.
 ///
-/// `-Ddynamic-modules` answers the second. Zig links musl targets statically
-/// and musl's static `dlopen` is a stub that always fails -- `test/README.md`
-/// records it as the first of its limitations -- so on `aarch64-linux-musl`
-/// the subsystem is present, every binding is registered, and every
-/// `ffi/native` raises "Dynamic loading not supported". A build option cannot
-/// answer that; the environment can. Found by a container run, which was the
-/// first time this contract had executed anywhere but macOS.
+/// `-Ddynamic-modules` settles the second. Zig links musl targets statically
+/// and musl's static `dlopen` is a stub that always fails, which
+/// `test/README.md` records as the first of its limitations, so on
+/// `aarch64-linux-musl` the subsystem is present, every binding is
+/// registered, and every `ffi/native` raises "Dynamic loading not supported".
+/// A build option cannot settle that; asking the environment can.
 fn dynamicLoadingWorks() bool {
     if (!has_dynamic_modules) return false;
     var out = wrap.fromNil();
@@ -125,18 +167,34 @@ fn dynamicLoadingWorks() bool {
     return repr.truthy(out);
 }
 
-// ------------------------------------------------------------ registration
+/// One allocated argument, as a convention reports it.
+fn slot(prim: u32, spec: u32, size: u64, alignment: u32) ArgSlot {
+    return .{
+        .size = size,
+        .prim = prim,
+        .spec = spec,
+        .alignment = alignment,
+        .offset = 0,
+        .offset2 = 0,
+        // Nothing in this file is a homogeneous floating-point aggregate.
+        .hfa_members = 0,
+    };
+}
 
-/// Every name `ffi.libFfi` registers. A binding that stops being registered
-/// is what this catches: a registration table is the one place a cfunction can
-/// go missing without a link error.
-const ffi_bindings = [_][*:0]const u8{
-    "ffi/native",              "ffi/lookup", "ffi/close",          "ffi/signature",
-    "ffi/call",                "ffi/struct", "ffi/write",          "ffi/read",
-    "ffi/size",                "ffi/align",  "ffi/trampoline",     "ffi/jitfn",
-    "ffi/malloc",              "ffi/free",   "ffi/pointer-buffer", "ffi/pointer-cfunction",
-    "ffi/calling-conventions",
-};
+/// Whether `ffi/calling-conventions` names `want`. A convention a build
+/// cannot call is still describable, so asking the binding is the only way to
+/// tell which one `:default` will resolve to.
+fn supports(want: [*:0]const u8) bool {
+    const conventions = harness.core("ffi/calling-conventions");
+    const listed = conventions(&.{}) catch return false;
+    if (!harness.isType(listed, repr.Tag.array)) return false;
+    const array = wrap.toArray(listed);
+    var i: i32 = 0;
+    while (i < array.count) : (i += 1) {
+        if (harness.keywordIs(array.slice()[@intCast(i)], want)) return true;
+    }
+    return false;
+}
 
 fn registration() void {
     expect(ffi_bindings.len == 17);
@@ -145,16 +203,18 @@ fn registration() void {
     for (ffi_bindings) |name| _ = harness.core(name);
 }
 
-// ------------------------------------------------- the host's own numbers
-
-/// `ALIGNOF` as `ffi.c` spelled it, in Zig: the offset a member of this type
-/// takes after one byte. See the header for why it is not `@alignOf`.
+/// The offset a member of this type takes after one byte, which is the
+/// alignment read off a struct layout rather than asked for directly.
 fn alignOfMember(comptime T: type) usize {
     return @offsetOf(extern struct { leading: u8, member: T }, "member");
 }
 
+/// One row of the table: the keyword a Janet program writes, and the size and
+/// alignment the host gives the type it names.
 const PrimCase = struct { name: [*:0]const u8, size: usize, alignment: usize };
 
+/// A row built from the Zig type the keyword stands for, so that the two
+/// numbers come from the compiler rather than from `primInfo`.
 fn primCase(name: [*:0]const u8, comptime T: type) PrimCase {
     return .{ .name = name, .size = @sizeOf(T), .alignment = alignOfMember(T) };
 }
@@ -213,15 +273,13 @@ fn primTable() void {
     }
 }
 
-// ----------------------------------------------------- the abstract types
-
 /// The callback set of the abstract behind `expr`, checked slot by slot. Only
 /// `name` is visible from Janet, and only through `(type x)`.
 ///
-/// The stored form is what is read — the `type` pointer in the value's own
-/// head — rather than the `abstract_type.AbstractType` these are declared
-/// as. It is the same memory, and it is the view every other reader
-/// of an abstract gets.
+/// What is read is the stored form, the `type` pointer in the value's own
+/// head, rather than the `abstract_type.AbstractType` these are declared as.
+/// It is the same memory, and it is the view every other reader of an
+/// abstract sees.
 fn expectShape(
     expr: [*:0]const u8,
     name: [*:0]const u8,
@@ -233,9 +291,9 @@ fn expectShape(
     const val = eval(expr);
     expect(harness.isType(val, repr.Tag.abstract));
     const at = abi.abstractHead(wrap.toAbstract(val)).type;
-    // `strcmp`, not `utils.cstrcmp`: an abstract type's `name` is a plain C
-    // string rather than a length-prefixed `strings.String`, and the second reads
-    // a header that is not there.
+    // `std.mem.eql` over a span, not `utils.cstrcmp`: an abstract type's
+    // `name` is a Zig slice and `cstrcmp` takes two sentinel-terminated
+    // pointers, so the parameter is spanned and the two compared as slices.
     expect(std.mem.eql(u8, at.name, std.mem.span(name)));
     expect((at.gc != null) == has_gc);
     expect((at.gcmark != null) == has_gcmark);
@@ -262,8 +320,6 @@ fn abstractTypes() void {
     }
 }
 
-// --------------------------------------------------- the callback entry
-
 /// The null-userdata arm, which no Janet program can produce: a C library
 /// always passes back the pointer it was handed. It complains and returns
 /// rather than raising, so reaching it at all is the assertion.
@@ -271,33 +327,10 @@ fn callbackWithoutUserdata() void {
     ffi_call.callbackEntry(null, null);
 }
 
-// ------------------------------------------ the outgoing half of the frame
-
-const prim_int64: u32 = 12;
-const prim_struct: u32 = 14;
-const sysv64_integer: u32 = 0;
-const sysv64_memory: u32 = 8;
-const win64_register: u32 = 9;
-const aapcs64_general: u32 = 13;
-const aapcs64_general_ref: u32 = 15;
-
-fn slot(prim: u32, spec: u32, size: u64, alignment: u32) ArgSlot {
-    return .{
-        .size = size,
-        .prim = prim,
-        .spec = spec,
-        .alignment = alignment,
-        .offset = 0,
-        .offset2 = 0,
-        // Nothing in this file is a homogeneous floating-point aggregate.
-        .hfa_members = 0,
-    };
-}
-
 /// A by-reference payload is part of the frame and is *not* an outgoing
-/// argument, and only the split tells a caller how many parameters to declare.
-/// Win64 and AAPCS64 both have a payload area; SysV64 has none, and its two
-/// counts are therefore equal.
+/// argument, and only the split tells a caller how many parameters to
+/// declare. Win64 and AAPCS64 both have a payload area; SysV64 has none, and
+/// its two counts are therefore equal.
 fn outgoingSplit() void {
     var args: [16]ArgSlot = undefined;
     var ret: ArgSlot = undefined;
@@ -364,8 +397,6 @@ fn ceilingIsReachableOnlyOnSysv() void {
     expect(result.arg_stack_count == 0);
 }
 
-// ------------------------------------------------------------- the raises
-
 fn theRaises() void {
     var argv: [4]repr.Value = undefined;
 
@@ -388,9 +419,9 @@ fn theRaises() void {
     argv[0] = eval("@[:int32 1 2]");
     expectRaisePrefix(ffi_size, .{argv[0..1]}, "array type must be of form @[type count], got ");
 
-    // **A nested array type is refused rather than flattened.** A type carries
-    // one array count, so assigning the outer one over the inner leaves
-    // `@[@[:u8 4] 3]` three bytes wide rather than twelve -- a quarter of the
+    // A nested array type is refused rather than flattened. A type has room
+    // for one array count, so assigning the outer one over the inner leaves
+    // `@[@[:u8 4] 3]` three bytes wide rather than twelve, a quarter of the
     // size the expression names, and as a struct field that moves every later
     // field's offset. The message names the spelling that works.
     argv[0] = eval("@[:u8 4]");
@@ -401,16 +432,16 @@ fn theRaises() void {
     argv[0] = eval("@[[:u8 :u8 :u8 :u8] 3]");
     expect(wrap.toNumber(ffi_size(argv[0..1]) catch @panic("ffi_core: ffi/size raised")) == 12);
 
-    // **A raw pointer cannot become a cfunction.** Every pointer this can be
-    // given is a C function, and a cfunction here takes a `[]Value` over Zig's
-    // own calling convention -- so the value it used to answer was one the
-    // interpreter believed and the callee did not honour. The argument is
-    // still checked, which is what the second case says.
+    // A raw pointer cannot become a cfunction. Every pointer this can be
+    // given is a C function, and a cfunction here takes a `[]Value` over
+    // Zig's own calling convention, so no conversion between the two is
+    // possible. The argument is still checked, which is what the second case
+    // says.
     const pointer_cfunction = harness.core("ffi/pointer-cfunction");
     // The pointer is taken here rather than looked up through `ffi/native`.
     // A release build of this driver need not put its own symbols in the
-    // dynamic symbol table, and `ffi/lookup` then answers nil, which would
-    // make the case about a nil argument instead -- which is what the second
+    // dynamic symbol table, and `ffi/lookup` then gives nil, which would
+    // make the case about a nil argument instead. That is what the second
     // case below is for. Any C function's address is the shape the argument
     // is meant to have, and `asS8` is one this file already defines.
     argv[0] = wrap.fromPointer(@ptrCast(@constCast(&asS8)));
@@ -484,7 +515,7 @@ fn theRaises() void {
     // A native object closed twice, and the running binary refusing to close.
     //
     // Without dynamic modules there is no native object to have: `Clib`
-    // reduces to an `int` and `load_clib` to a no-op that answers zero, so
+    // reduces to an `int` and `load_clib` to a no-op returning zero, so
     // `ffi/native` always raises. That arm is the whole of this section in
     // such a build, and it is a real arm.
     if (dynamicLoadingWorks()) {
@@ -503,20 +534,51 @@ fn theRaises() void {
         expectRaise(harness.core("ffi/native"), .{&.{}}, "dynamic modules not supported");
     } else {
         // Compiled, registered, and unable to load: a statically linked musl
-        // build. Asserted rather than skipped, so the arm says what it is --
-        // the message comes from the loader, not from the disabled-feature stub
-        // the branch above pins, and the two are different refusals.
+        // build. Asserted rather than skipped, so the arm says what it is:
+        // the message comes from the loader, not from the disabled-feature
+        // stub the branch above pins, and the two are different refusals.
         expectRaise(harness.core("ffi/native"), .{&.{}}, "Dynamic loading not supported");
     }
 }
 
-// ------------------------------------------------ homogeneous float aggregates
-
-/// A two-member HFA and the two directions it travels.
+/// The arity bound, and a deliberate divergence from Janet.
 ///
-/// These are the callee. A Zig contract is compiled into the runtime, so it can
-/// hand `ffi/call` the address of a function in this file and make a real call
-/// with no shared library anywhere.
+/// A `Signature` stores `max_args` mappings, and a builder that fills one per
+/// argument for a call with only a lower bound on its arity would run past
+/// them, writing off the end of two stack arrays and into its own frame and
+/// recording a count in the abstract that no array is large enough for.
+/// `ffi/signature`
+/// only describes a call, so no native library and no call are needed to
+/// reach the guard.
+///
+/// Thirty-two is written out rather than read from `ffi/types.zig`: the limit
+/// is a value a Janet program can observe, and asking the subject how many
+/// arguments it accepts would pass whatever it said.
+///
+/// `:none` rather than `:default`, because the arity check runs before any
+/// convention is consulted, so this covers the guard on every host, including
+/// one whose only convention is `:none`.
+fn theSignatureArityBound() void {
+    const signature = harness.core("ffi/signature");
+    var argv: [42]repr.Value = undefined;
+    argv[0] = value.fromBytes("none", .keyword);
+    argv[1] = value.fromBytes("void", .keyword);
+    for (argv[2..]) |*a| a.* = value.fromBytes("s64", .keyword);
+
+    // Thirty-two argument types is exactly the structure's room, so the bound
+    // admits it. The two leading arguments are the convention and the return
+    // type, so the arity the message names is thirty-four.
+    const full = signature(argv[0..34]) catch @panic("ffi_core: 32 arguments were refused");
+    expect(harness.isType(full, repr.Tag.abstract));
+
+    // One more is refused as an ordinary arity error rather than a corrupted
+    // frame, and so is a signature far past the bound.
+    expectRaise(signature, .{argv[0..35]}, "arity mismatch, expected at most 34, got 35");
+    expectRaise(signature, .{argv[0..42]}, "arity mismatch, expected at most 34, got 42");
+}
+
+/// A two-member homogeneous floating-point aggregate, and the two callees the
+/// case below calls with it.
 const Hfa2 = extern struct { a: f32, b: f32 };
 
 fn hfa2Weighted(s: Hfa2) callconv(.c) f64 {
@@ -527,14 +589,14 @@ fn hfa2Build(seed: f32) callconv(.c) Hfa2 {
     return .{ .a = seed, .b = seed + 1 };
 }
 
-/// AAPCS64 §6.8.2 passes a homogeneous floating-point aggregate in one vector
-/// register per member. Sizing it by bytes agrees only for a member exactly
-/// eight bytes wide -- so an aggregate of `double` comes out right by
+/// AAPCS64 passes a homogeneous floating-point aggregate in one vector
+/// register per member. Sizing it by bytes agrees with that only for a member
+/// exactly eight bytes wide, so an aggregate of `double` comes out right by
 /// coincidence and one of `float` is given half the registers, with two
 /// members packed into the first.
 ///
-/// **The return is the same question read backwards**: each member comes back
-/// in its own register, so a two-float aggregate gathered by bytes arrives as
+/// The return is the same question read backwards: each member comes back in
+/// its own register, so a two-float aggregate gathered by bytes arrives as
 /// `(1.5 0)`. Both directions are asserted here.
 ///
 /// Gated on the convention rather than on `builtin`, because what matters is
@@ -590,35 +652,37 @@ fn homogeneousFloatAggregates() void {
     }
 }
 
-// ------------------------------------------- arguments narrower than a register
-
-/// The callees. Each widens its own narrow parameter, so what it answers is
-/// what the *register* held for the width the signature declared.
+/// The callees. Each widens its own narrow parameter, so what it returns is
+/// what the *register* contained for the width the signature declared.
 fn asS8(x: i8) callconv(.c) f64 {
     return @floatFromInt(x);
 }
+
 fn asU8(x: u8) callconv(.c) f64 {
     return @floatFromInt(x);
 }
+
 fn asS16(x: i16) callconv(.c) f64 {
     return @floatFromInt(x);
 }
+
 fn asU16(x: u16) callconv(.c) f64 {
     return @floatFromInt(x);
 }
+
 fn asBool(x: bool) callconv(.c) f64 {
     return if (x) 1 else 0;
 }
 
-/// **An integer narrower than a register is extended into it.**
+/// An integer narrower than a register is extended into it.
 ///
 /// Both AAPCS64 and the SysV ABI make extension the caller's job: a callee
-/// declaring `int8_t` may read the whole register without masking. Writing the
-/// value at its own width sets one byte and leaves the other seven as they
-/// were, so `:s8` of -1 arrives as 255 where the bank is zeroed and as stack
-/// residue where it is not -- which is why this survives casual testing, since
-/// a callee that happens to mask its own argument answers correctly either
-/// way. These do not mask: each widens the parameter the compiler gave it.
+/// declaring `int8_t` may read the whole register without masking. Writing
+/// the value at its own width sets one byte and leaves the other seven as
+/// they were, so `:s8` of -1 arrives as 255 where the bank is zeroed and as
+/// stack residue where it is not. A callee that masks its own argument is
+/// correct either way, which is what lets the defect survive casual testing;
+/// these five do not mask.
 fn narrowIntegerArgumentsAreExtended() void {
     const ffi_signature = harness.core("ffi/signature");
     const ffi_call_fn = harness.core("ffi/call");
@@ -658,35 +722,18 @@ fn narrowIntegerArgumentsAreExtended() void {
     }
 }
 
-/// Whether `ffi/calling-conventions` names `want`. A convention a build cannot
-/// call is still describable, so asking the binding is the only way to know
-/// which one `:default` will resolve to.
-fn supports(want: [*:0]const u8) bool {
-    const conventions = harness.core("ffi/calling-conventions");
-    const listed = conventions(&.{}) catch return false;
-    if (!harness.isType(listed, repr.Tag.array)) return false;
-    const array = wrap.toArray(listed);
-    var i: i32 = 0;
-    while (i < array.count) : (i += 1) {
-        if (harness.keywordIs(array.slice()[@intCast(i)], want)) return true;
-    }
-    return false;
-}
-
-// ------------------------------------------- an aggregate behind a stack argument
-
+/// Nine integers exhaust the general registers and put one word on the stack,
+/// so the aggregate behind them is passed by reference with its pointer slot
+/// at a *nonzero* stack offset. That is the whole condition: at offset zero a
+/// byte offset and the same number read as a word index agree by accident,
+/// and only a nonzero offset separates the two readings.
+///
+/// The weighted sum comes back as a `double` rather than an `int64` so that
+/// the case reads it with `wrap.toNumber`. `ints.unwrapS64` is compiled only
+/// with integer types, and `-Dint-types=false` is a matrix entry. Nothing
+/// here is about the return: every weight is small and exact in a `double`.
 const Large24 = extern struct { x: i64, y: i64, z: i64 };
 
-/// Nine integers exhaust the general registers and put one word on the stack,
-/// so the aggregate behind them is passed by reference with its pointer slot at
-/// a *nonzero* stack offset. That is the whole condition: at offset zero the
-/// byte offset and the same number read as a word index agree by accident.
-/// The weighted sum comes back as a `double` rather than an `int64` so that
-/// the case reads its answer with `wrap.toNumber`. `ints.unwrapS64` is
-/// compiled only with integer types, and `-Dint-types=false` is a matrix
-/// entry — which is where the first version of this case failed to compile.
-/// Nothing here is about the return: every weight is small and exact in a
-/// `double`.
 fn stackRefWeighted(
     p0: i64,
     p1: i64,
@@ -704,14 +751,11 @@ fn stackRefWeighted(
     return @floatFromInt(total);
 }
 
-/// `AAPCS64_STACK_REF` read a byte offset as a word index, so the pointer to
-/// the payload was written eight times further out than the allocator planned
-/// — past the frame in C, and into the wrong slot here. The callee then
-/// dereferenced whatever was at the right offset, which on this host is zero.
-///
-/// It hid behind an accident, and this case is built to defeat it: with no
-/// stack argument ahead of the aggregate the offset is zero and both readings
-/// agree.
+/// The pointer to a by-reference payload goes at a stack offset counted in
+/// words, and this case is the one that can tell that from an offset counted
+/// in bytes. With no stack argument ahead of the aggregate the offset is zero
+/// and the two readings agree, so the aggregate is put behind a stack
+/// argument and the offset is not zero.
 fn anAggregateBehindAStackArgument() void {
     if (!supports("aapcs64")) return;
 
@@ -751,45 +795,9 @@ fn anAggregateBehindAStackArgument() void {
     expect(wrap.toNumber(answer) == 285 + 748);
 }
 
-// ------------------------------------------------- the signature arity bound
-
-/// The arity bound, and a deliberate divergence from Janet.
-///
-/// A `Signature` stores `max_args` mappings, and a builder that fills them for
-/// every argument passed with only a lower bound on the arity runs past them.
-/// Past the
-/// thirty-second the writes went off the end of two stack arrays and into the
-/// builder's own frame — a safety trap in a checked build and a silent overrun
-/// in `ReleaseFast` — and the count recorded in the abstract was one no array
-/// could hold, so a later `ffi/call` read past the end as well. No native
-/// library and no call were needed to reach it: `ffi/signature` only describes
-/// a call.
-///
-/// **Thirty-two is written out rather than read from `ffi/types.zig`**: the
-/// limit is a value a Janet program can observe, and asking the subject how
-/// many arguments it accepts would pass whatever it answered.
-///
-/// `:none` rather than `:default` because the arity check runs before any
-/// convention is consulted, so this covers the guard on every host — including
-/// one whose only convention is `:none`.
-fn theSignatureArityBound() void {
-    const signature = harness.core("ffi/signature");
-    var argv: [42]repr.Value = undefined;
-    argv[0] = value.fromBytes("none", .keyword);
-    argv[1] = value.fromBytes("void", .keyword);
-    for (argv[2..]) |*a| a.* = value.fromBytes("s64", .keyword);
-
-    // Thirty-two argument types is exactly what the structure holds, so the
-    // bound admits it. The two leading arguments are the convention and the
-    // return type, which is why the arity the message names is thirty-four.
-    const full = signature(argv[0..34]) catch @panic("ffi_core: 32 arguments were refused");
-    expect(harness.isType(full, repr.Tag.abstract));
-
-    // One more is refused as an ordinary arity error rather than a corrupted
-    // frame, and so is a signature far past the bound.
-    expectRaise(signature, .{argv[0..35]}, "arity mismatch, expected at most 34, got 35");
-    expectRaise(signature, .{argv[0..42]}, "arity mismatch, expected at most 34, got 42");
-}
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

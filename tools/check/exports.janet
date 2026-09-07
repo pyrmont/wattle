@@ -23,9 +23,11 @@
 #
 # ## Three classes
 #
-#   published    `src/module.zig` declares it.  Part 1 decided this set;
-#                it is the interface a native-module author writes against,
-#                and every name in it was `JANET_API` too.
+#   published    something in this tree reaches it through the symbol table.
+#                Part 1 decided that set from `src/module.zig`'s declarations;
+#                the module table emptied it: a native module now reaches
+#                the runtime through `src/api/interface.zig`'s struct of
+#                function pointers and declares no symbol at all.
 #   compat       `JANET_API`, and nothing declares it now.  No caller can
 #                reach one: the header is not installed and a Zig caller would
 #                use `module.zig`.  Retained pending a decision about an
@@ -123,10 +125,9 @@
   A `.so` built against the `janet` module is linked with
   `linker_allow_shlib_undefined`, so its undefined symbols are exactly what it
   expects the client to publish -- which is the falsifiable form of \"what is
-  the published surface\".  It is **not** `module.zig`'s declaration list:
-  `raise.zig` reaches `janet_zig_c_raise_take` and `janet_zig_signal_record`
-  through `cabi`, and a module that defines a cfunction needs both.  Increment
-  2b found that by hiding them and watching `dlopen` refuse the module.
+  the published surface\".  That set is empty since the module table, and the
+  emptiness is the point: a module reaches the runtime through the table
+  `_janet_init` is handed, so nothing is left for `dlopen` to resolve.
 
   `build.zig` installs both modules under `<prefix>/test` when
   `-Dinstall-tests=true`, which is why the build above passes it."
@@ -237,14 +238,11 @@
   (def names (exported))
   (def [api where] (header-sets))
   (def needed (native-needs))
-  # Two declaration files, because `module.zig` is not the whole boundary.
-  # `raise.zig` compiles into a native module as well as into the runtime, and
-  # its `config.native_module` arm reaches six symbols through `cabi.zig` --
-  # which since Part 1 holds libc and those six and nothing else, so reading it
-  # is reading the boundary rather than guessing at it. `native-needs` sees only
-  # the ones the sample module's own code path takes: `janet_zig_fatal` and
-  # `janet_zig_c_raise_record` are on the `raise.total` and abi paths, which
-  # `numarray` never reaches.
+  # Both declaration files are read, and both are expected to be empty of
+  # `janet*` now: `module.zig` declares nothing and `cabi.zig` holds libc.
+  # They stay in the query because an `extern fn janet_x` reappearing in
+  # either is exactly what this column is for -- `seam.janet` reports the
+  # declaration and this reports what it would bind to.
   (def pub-set (merge (tabseq [n :in (keys (decl-names ["src/module.zig"
                                                        "src/host/cabi.zig"]))] n true)
                       needed))
@@ -284,12 +282,13 @@
     "#\n"
     "# `class` is decided by two facts and no reading: whether a built native\n"
     "# module requires the symbol, and whether the retired `janet.h` marked\n"
-    "# the declaration `JANET_API`.  `published` is what `module.zig` declares\n"
-    "# **plus what a module's undefined-symbol set actually names**, which is\n"
-    "# not the same list -- `raise.zig` reaches two `janet_zig_*` symbols\n"
-    "# through `cabi` and a module that defines a cfunction needs both;\n"
+    "# the declaration `JANET_API`.  `published` is what this tree declares\n"
+    "# **plus what a module's undefined-symbol set actually names**; the\n"
+    "# module table took both to zero, because a native module reaches the\n"
+    "# runtime through `src/api/interface.zig`'s struct of function pointers\n"
+    "# rather than by name.\n"
     "# `compat` is the rest of `JANET_API`, retained while whether\n"
-    "# Claret publishes an embedding interface is undecided; `residue` was\n"
+    "# this runtime publishes an embedding interface is undecided; `residue` was\n"
     "# never public even in C, because `-fvisibility=hidden` and an internal\n"
     "# header are what the C build said about it.\n"
     "#\n"

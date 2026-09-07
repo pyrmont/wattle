@@ -6,24 +6,24 @@
 //! drive real sockets over the loopback interface, which is what they are for.
 //! Five things have no Janet spelling at all:
 //!
-//!  - **A socket address this machine cannot produce.** `soGetName` -- the
-//!    decoder behind `net/address-unpack`, `net/localname` and `net/peername`
-//!    -- switches on `sa_family`, and a Janet program can only hand it a family
-//!    the host actually gave it. A host with no IPv6 route never reaches the
+//!  - A socket address this machine cannot produce. `soGetName`, the decoder
+//!    behind `net/address-unpack`, `net/localname` and `net/peername`,
+//!    switches on `sa_family`, and a Janet program can only give it a family
+//!    the host actually produced. A host with no IPv6 route never reaches the
 //!    `AF_INET6` arm, no host reaches the "unknown address family" arm, and a
 //!    macOS host cannot construct Linux's abstract unix address, whose leading
 //!    NUL is what selects the `'@'` branch. All four are a `@memset` and an
 //!    `abstracts.newBytes` away, because `net.addressType` is a bare byte
-//!    buffer with no callbacks -- which is also why the abstract can be built by hand
-//!    at all.
-//!  - **The order of `net_stream_methods`.** `ev_stream.Stream` is public and its
-//!    `methods` member is the table, so the fourteen rows can be read back in
-//!    order. From Janet only membership is visible.
-//!  - **The failure paths that need an argument no Janet caller would write.**
-//!    A raise is asserted here by its *message* rather than by its existence,
+//!    buffer with no callbacks, which is also what lets the abstract be built
+//!    by hand at all.
+//!  - The order of the stream method table. `ev_stream.Stream` is public and
+//!    its `methods` member is the table, so the fourteen rows can be read back
+//!    in order. From Janet only membership is visible.
+//!  - The failure paths that need an argument no Janet caller would write. A
+//!    raise is asserted here by its *message* rather than by its existence,
 //!    which is the difference between a test and a tautology.
-//!  - **A `sun_path` longer than the structure.** The truncating copy is
-//!    invisible from Janet, which sees only the shortened name coming back.
+//!  - A `sun_path` longer than the structure. The truncating copy is invisible
+//!    from Janet, which sees only the shortened name coming back.
 //!
 //! ## What it deliberately does not do
 //!
@@ -35,58 +35,79 @@
 //! suspension: the argument decoding, the address lookup, the socket setup and
 //! every raise on the way.
 //!
-//! ## What only a contract inside the compilation can do
+//! ## Two things about how the subjects are reached
 //!
-//! **A refusal is a value.** This calls the cfunction and reads the error,
-//! where a contract on the far side of a symbol table has to arm a flag, call
-//! through an adapter and read a report.
+//! A refusal is a value: this calls the cfunction and reads the error.
 //!
-//! **The address structures come from `std.posix` rather than from the host
-//! headers.** Building a `struct sockaddr_in` from the same translation the
-//! subject reads would make the two descriptions one. `std`'s are written per
-//! platform and independently, so the bytes this file lays down and the bytes
-//! the decoder reads are described by two different things, and a disagreement
-//! is a failure
-//! rather than a silence. It also keeps the contract module free of a fourth
-//! `@cImport` of the socket headers.
+//! The address structures come from `std.posix` rather than from the host
+//! headers. Building a `sockaddr_in` from the same translation the subject
+//! reads would make the two descriptions one. `std`'s are written per platform
+//! and independently, so the bytes this file lays down and the bytes the
+//! decoder reads come from two different descriptions and a disagreement is a
+//! failure rather than a silence. It also keeps the contract module free of a
+//! fourth `@cImport` of the socket headers.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
-const repr = @import("repr");
-const harness = @import("harness.zig");
-const ev_stream = @import("subsystems").ev_stream;
-const raise = @import("subsystems").raise;
 
-const subsystems = @import("subsystems");
-const value = @import("subsystems").value;
-const config = @import("config");
-const gc_alloc = @import("subsystems").gc_alloc;
-const core_env = @import("subsystems").env;
-const wrap = @import("subsystems").value.wrap;
-const args_core = @import("subsystems").args;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const abstracts = @import("subsystems").value.abstracts;
-const pp_describe = @import("subsystems").pp_describe;
-const strings = @import("subsystems").value.strings;
-const tuples = @import("subsystems").value.tuples;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const abi = @import("abi");
+const abstracts = @import("subsystems").value.abstracts;
+const args_core = @import("subsystems").args;
+const config = @import("config");
+const core_env = @import("subsystems").env;
+const ev_stream = @import("subsystems").ev_stream;
+const expect = @import("expect.zig").expect;
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
 const method_type = @import("subsystems").method_type;
 const net_addr = subsystems.net;
-
-const expect = @import("expect.zig").expect;
 const posix = std.posix;
+const pp_describe = @import("subsystems").pp_describe;
+const raise = @import("subsystems").raise;
+const repr = @import("repr");
+const strings = @import("subsystems").value.strings;
+const subsystems = @import("subsystems");
+const tuples = @import("subsystems").value.tuples;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
 
-const windows = builtin.os.tag == .windows;
-const has_ipv6 = config.ipv6;
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 /// Ten on Windows, which reaches neither the unix-domain bindhost refusal nor
 /// anything else this file guards. The count is asserted at the end, because a
 /// case that silently stopped raising would otherwise pass.
 const expected_raises: u32 = if (windows) 10 else 11;
+const has_ipv6 = config.ipv6;
+
+/// Every name `net.libNet` registers, in the order it registers them. The
+/// order is not itself pinned, a table having none, but the list is: a
+/// binding that stops being registered is what this catches, and a
+/// registration table is the one place a cfunction can go missing without a
+/// link error.
+const net_bindings = [_][*:0]const u8{
+    "net/address",     "net/listen",    "net/socket",    "net/accept",
+    "net/accept-loop", "net/read",      "net/chunk",     "net/write",
+    "net/send-to",     "net/recv-from", "net/flush",     "net/connect",
+    "net/shutdown",    "net/peername",  "net/localname", "net/address-unpack",
+    "net/setsockopt",
+};
+
 var raises_seen: u32 = 0;
+const windows = builtin.os.tag == .windows;
 
 // ==========================================================================
-// Refusals
+// Cases
 // ==========================================================================
 
 fn expectRaise(name: [*:0]const u8, argv: []repr.Value, message: []const u8) void {
@@ -103,10 +124,10 @@ fn expectRaise(name: [*:0]const u8, argv: []repr.Value, message: []const u8) voi
     raises_seen += 1;
 }
 
-/// For a message whose tail is the host's own wording -- `gai_strerror` and
+/// For a message whose tail is the host's own wording, `gai_strerror` and
 /// `strerror` differ by platform and by libc, and pinning them would make this
-/// contract a test of the C library -- or which names a stream and therefore
-/// carries an address.
+/// contract a test of the C library, or which names a stream and therefore
+/// renders an address.
 fn expectRaisePrefix(name: [*:0]const u8, argv: []repr.Value, prefix: []const u8) void {
     const r = harness.coreRaised(name, argv) orelse {
         std.debug.print("net_sockets: expected a raise starting: {s}\n", .{prefix});
@@ -121,17 +142,13 @@ fn expectRaisePrefix(name: [*:0]const u8, argv: []repr.Value, prefix: []const u8
     raises_seen += 1;
 }
 
-/// A cfunction that is expected to return, by the name the registry knows.
+/// A cfunction expected to return, called by the name the registry has for it.
 /// This is the pointer `net.libNet` registered, so it is the same cfunction a
 /// Janet call would reach.
 fn callCore(name: [*:0]const u8, argv: []repr.Value) repr.Value {
     return harness.callCore(name, argv) catch
         @panic("net_sockets: a call that should have returned raised");
 }
-
-// ==========================================================================
-// Helpers
-// ==========================================================================
 
 /// Wrap `bytes` as a `core/socket-address`, which is what `net/address-unpack`
 /// takes. The abstract has no callbacks, so this is the whole of building one.
@@ -183,35 +200,8 @@ fn pathLength(val: repr.Value) usize {
     return @intCast(strings.head(wrap.toString(t[0])).length);
 }
 
-// ==========================================================================
-// Registration
-// ==========================================================================
-
-/// Every name `net.libNet` registers, in the order it registers them. The
-/// order is not itself a contract -- a table has none -- but the list is: a
-/// binding that stops being registered is what this catches, and a
-/// registration table is the one place a cfunction can go missing without a
-/// link error.
-const net_bindings = [_][*:0]const u8{
-    "net/address",     "net/listen",    "net/socket",    "net/accept",
-    "net/accept-loop", "net/read",      "net/chunk",     "net/write",
-    "net/send-to",     "net/recv-from", "net/flush",     "net/connect",
-    "net/shutdown",    "net/peername",  "net/localname", "net/address-unpack",
-    "net/setsockopt",
-};
-
-fn theRegistration() void {
-    expect(net_bindings.len == 17);
-    // `harness.core` asserts the binding resolves to a cfunction.
-    for (net_bindings) |name| _ = harness.core(name);
-}
-
-// ==========================================================================
-// Decoding an address
-// ==========================================================================
-
 /// An `AF_INET` address, laid out by `std.posix` and parsed by `std.Io.net`.
-/// Zeroed first, exactly as the C contract's `memset` left it -- macOS's
+/// Zeroed first, because macOS's
 /// `sin_len` is zero there too, and the decoder does not read it.
 fn ip4(text: []const u8, port: u16) posix.sockaddr.in {
     const parsed = std.Io.net.Ip4Address.parse(text, port) catch unreachable;
@@ -229,6 +219,12 @@ fn ip6(text: []const u8, port: u16) posix.sockaddr.in6 {
     sin6.port = std.mem.nativeToBig(u16, port);
     sin6.addr = parsed.bytes;
     return sin6;
+}
+
+fn theRegistration() void {
+    expect(net_bindings.len == 17);
+    // `harness.core` asserts the binding resolves to a cfunction.
+    for (net_bindings) |name| _ = harness.core(name);
 }
 
 fn theIpv4Decoding() void {
@@ -276,7 +272,8 @@ fn theUnixDecoding() void {
     }
 
     // Linux's abstract namespace: the name starts at a NUL, and the decoder
-    // shows that NUL as '@'. Only the *decoder* is per-platform-free -- this
+    // shows that NUL as '@'. Only the *decoder* is free of the platform, so
+    // this
     // address can be built and read back anywhere, which is the point of
     // building it by hand.
     {
@@ -305,10 +302,6 @@ fn theUnknownFamily() void {
     var argv = [_]repr.Value{addressOf(asBytes(&storage))};
     expectRaise("net/address-unpack", &argv, "unknown address family");
 }
-
-// ==========================================================================
-// Looking one up
-// ==========================================================================
 
 fn theAddressLookup() void {
     // A numeric host needs no resolver, so this is the one lookup that is the
@@ -346,7 +339,7 @@ fn theAddressLookup() void {
     expect(tupleIs2(unpack(callCore("net/address", argv[0..4])), "127.0.0.1", 9999));
 }
 
-/// **Three calls and no leaks.** `net/address`'s unix-domain branch returns
+/// Three calls and no leaks. `net/address`'s unix-domain branch returns
 /// through a `defer`, so the address it builds is released on every path out
 /// of it; `tools/testing/leaks.sh` expects zero here, which is what says so.
 fn theUnixAddressLookup() void {
@@ -360,8 +353,8 @@ fn theUnixAddressLookup() void {
     expect(tupleIs1(unpack(callCore("net/address", argv[0..2])), path));
 
     // A name longer than `sun_path` is truncated rather than rejected, and the
-    // terminator is kept -- so what comes back is one byte short of the field.
-    // The C original spells this as `snprintf(.., sizeof path, "%s", ..)` and
+    // terminator is kept, so what comes back is one byte short of the field.
+    // A `snprintf` with the field's own size would behave the same way, and
     // nothing in Janet can see the difference between that and a copy that
     // overruns.
     {
@@ -385,10 +378,6 @@ fn theUnixAddressLookup() void {
     }
 }
 
-// ==========================================================================
-// The raise paths
-// ==========================================================================
-
 fn theArgumentFaults() void {
     // The socket type vocabulary: two keywords and nothing else.
     {
@@ -404,7 +393,7 @@ fn theArgumentFaults() void {
         );
     }
 
-    // A host the resolver cannot answer for. The tail is `gai_strerror`'s and
+    // A host the resolver cannot resolve. The tail is `gai_strerror`'s and
     // differs by libc, so only the prefix is pinned.
     {
         var argv = [_]repr.Value{
@@ -419,9 +408,9 @@ fn theArgumentFaults() void {
     // A unix domain address cannot also be bound to an outgoing interface, and
     // `net/connect` is where that is decided.
     //
-    // **The path is short on purpose.** Releasing this address with
-    // `freeaddrinfo`, which did not allocate it -- the unix arm of the lookup
-    // answers a `janet_calloc`ed `struct sockaddr_un` -- reads `ai_canonname`
+    // The path is short on purpose. Releasing this address with
+    // `freeaddrinfo`, which did not allocate it, the unix arm of the lookup
+    // returning an allocated `sockaddr_un` instead, reads `ai_canonname`
     // and `ai_next` out of `sun_path` and frees whatever it finds; measured on
     // this machine the path length at which that becomes an abort is between
     // 11 and 26 characters. `AddrInfo.free` picks the allocator from the
@@ -447,7 +436,7 @@ fn theStreamFaults() void {
     defer _ = gc_alloc.gcunroot(listener);
 
     // Its local name is a real address, decoded by the same path the
-    // hand-built ones above went through -- and the number the kernel picked is
+    // hand-built ones above went through, and the number the kernel picked is
     // whatever it picked, so only the host is pinned.
     {
         var argv = [_]repr.Value{listener};
@@ -465,8 +454,8 @@ fn theStreamFaults() void {
         expectRaisePrefix("net/peername", &argv, "Failed to get peername on ");
     }
 
-    // The method table, in order. `ev_stream.Stream` is public, so the rows can be
-    // read back; from Janet only membership is visible.
+    // The method table, in order. `ev_stream.Stream` is public, so the rows
+    // can be read back; from Janet only membership is visible.
     {
         const expected = [_][]const u8{
             "chunk",   "close",       "read",     "write",      "flush",
@@ -490,7 +479,7 @@ fn theStreamFaults() void {
         expectRaise("net/shutdown", &argv, "unexpected keyword :both");
     }
 
-    // And the option table's, which is a name it does not hold.
+    // And the option table's, which is a name it does not have.
     {
         var argv = [_]repr.Value{
             listener,
@@ -513,7 +502,7 @@ fn theStreamFaults() void {
     // `ev/stream.streamFlags`.
     {
         const stream: *ev_stream.Stream = @ptrCast(@alignCast(wrap.toAbstract(listener)));
-        raise.reported(ev_stream.streamClose(stream));
+        raise.toAbi(ev_stream.streamClose(stream));
         var one = [_]repr.Value{listener};
         expectRaise("net/localname", &one, "stream closed");
         expectRaise("net/peername", &one, "stream closed");
@@ -524,20 +513,16 @@ fn theStreamFaults() void {
     }
 }
 
-// ==========================================================================
-// An unbound socket
-// ==========================================================================
-
 fn theUnboundSocket() void {
     // `net/socket` binds nothing, so its local name is the wildcard address on
-    // port zero -- the one decode a live socket cannot otherwise produce.
+    // port zero, which is the one decode a live socket cannot produce.
     {
         var argv = [_]repr.Value{ value.fromBytes("datagram", .keyword), value.fromBytes("ipv4", .keyword) };
         const sock = callCore("net/socket", &argv);
         expect(harness.isType(sock, repr.Tag.abstract));
         var name_argv = [_]repr.Value{sock};
         expect(tupleIs2(callCore("net/localname", &name_argv), "0.0.0.0", 0));
-        raise.reported(ev_stream.streamClose(@ptrCast(@alignCast(wrap.toAbstract(sock)))));
+        raise.toAbi(ev_stream.streamClose(@ptrCast(@alignCast(wrap.toAbstract(sock)))));
     }
 
     // No arguments at all is a stream socket in whatever family the resolver
@@ -546,9 +531,13 @@ fn theUnboundSocket() void {
         var none = [_]repr.Value{};
         const sock = callCore("net/socket", &none);
         expect(harness.isType(sock, repr.Tag.abstract));
-        raise.reported(ev_stream.streamClose(@ptrCast(@alignCast(wrap.toAbstract(sock)))));
+        raise.toAbi(ev_stream.streamClose(@ptrCast(@alignCast(wrap.toAbstract(sock)))));
     }
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

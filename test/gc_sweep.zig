@@ -2,74 +2,112 @@
 //! references, unlinking and freeing unreachable blocks, running finalizers,
 //! and tearing the heap down at `vm_lifecycle.deinit`.
 //!
-//! The sweep is driven through `gc/mark.zig`'s `collect` rather than by calling
-//! `gc/sweep.zig`'s `sweep` directly, and that is not a convenience. `sweep`
-//! frees every block the mark phase did not reach, so calling it against a
-//! hand-made
-//! mark set would free the core environment along with everything else.
-//! Driving it through a collection means liveness is expressed the way the
-//! runtime expresses it — a value is alive because it is rooted — and the mark
-//! phase is an input to this contract rather than part of it.
+//! The sweep is driven through `gc/mark.zig`'s `collect` rather than by
+//! calling `gc/sweep.zig`'s `sweep` directly, and that is not a convenience.
+//! `sweep` frees every block the mark phase did not reach, so calling it
+//! against a hand-made mark set would free the core environment along with
+//! everything else. Driving it through a collection means liveness is
+//! expressed the way the runtime expresses it, a value being alive because it
+//! is rooted, and the mark phase is an input to this contract rather than part
+//! of it.
 //!
-//! Freeing is mostly invisible: a freed block cannot be read, and a
-//! free that does not happen leaves nothing to observe from inside the
-//! process. So three channels stand in for it. `vm.gc.block_count` is
-//! decremented exactly once per block freed. An abstract type's `gc` and
-//! `gcperthread` callbacks fire on the way out and can count themselves. And
-//! `vm.symcache.count` falls when a symbol block leaves the symbol cache,
-//! which is the only external obligation any immutable block has.
+//! Freeing is mostly invisible: a freed block cannot be read, and a free that
+//! does not happen leaves nothing to observe from inside the process. So three
+//! channels stand in for it. `vm.gc.block_count` is decremented exactly once
+//! per block freed. An abstract type's `gc` and `gcperthread` callbacks fire
+//! on the way out and can count themselves. And `vm.symcache.count` falls when
+//! a symbol block leaves the symbol cache, which is the only external
+//! obligation any immutable block has.
 //!
-//! What that leaves uncovered is honest to state: the frees inside
-//! `gc/sweep.zig`'s `deinitBlock` for an array's, a table's, a fiber's or a funcdef's
-//! payload are leaks when omitted and double frees when duplicated, and
-//! neither is observable here. A leak checker sees the first; the second is
-//! what the repeated init/deinit cycle at the end of this file would catch.
+//! What that leaves uncovered is worth stating: the frees inside
+//! `gc/sweep.zig`'s `deinitBlock` for an array's, a table's, a fiber's or a
+//! funcdef's payload are leaks when omitted and double frees when duplicated,
+//! and neither is observable here. A leak checker sees the first; the second
+//! is what the repeated init and deinit cycle at the end of this file would
+//! catch.
 //!
-//! Nothing here exercises a raising finalizer. The hinge typed `gc`
-//! non-raising, so the case can no longer be written — see `test/gc_mark.zig`,
-//! which says the same thing about `gcmark`.
+//! Nothing here exercises a raising finalizer, because `gc` is typed
+//! non-raising and there is no such case to write. `test/gc_mark.zig` says the
+//! same of `gcmark`.
 //!
 //! ## The head-offset check is not repeated here
 //!
-//! a C predecessor of this file carried its own copy of the four
-//! `sizeof(Head) == offsetof(Head, data)` assertions, because each C contract
-//! was a standalone translation unit and the sweep crosses those headers in
-//! both directions. **`test/gc_mark.zig` now holds the one oracle**, and it is
-//! a different one: the C spelling cannot be translated at all, so what
-//! replaced it derives the offset from the allocator at run time. Copying that
-//! machinery into a second file would test the same property twice and give
-//! two places to keep correct. The property belongs to the layout rather than
-//! to either subsystem.
+//! `test/gc_mark.zig` has the one oracle for it, derived from the allocator at
+//! run time rather than from the type. Copying that machinery into a second
+//! file would test the same property twice and give two places to keep
+//! correct, and the property belongs to the layout rather than to either
+//! subsystem.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const constants = @import("constants");
-const options = @import("options");
-const value = @import("subsystems").value;
-const harness = @import("harness.zig");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
 const abstract_type = @import("subsystems").abstract_type;
-const tables = @import("subsystems").value.tables;
-const gc_alloc = @import("subsystems").gc_alloc;
+const abstracts = @import("subsystems").value.abstracts;
 const arrays = @import("subsystems").value.arrays;
 const buffers = @import("subsystems").value.buffers;
-const gc_mark = @import("subsystems").gc_mark;
+const constants = @import("constants");
 const core_env = @import("subsystems").env;
-const wrap = @import("subsystems").value.wrap;
-const abstracts = @import("subsystems").value.abstracts;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const fibers = @import("subsystems").value.fibers;
-const abi = @import("abi");
 const expect = @import("expect.zig").expect;
+const fibers = @import("subsystems").value.fibers;
+const gc_alloc = @import("subsystems").gc_alloc;
+const gc_mark = @import("subsystems").gc_mark;
+const harness = @import("harness.zig");
+const options = @import("options");
+const repr = @import("repr");
+const tables = @import("subsystems").value.tables;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+const at_final = abstract_type.define(anyopaque, .{ .name = "gc-sweep-test/final", .gc = probeGc });
+
+const at_ordered = abstract_type.define(anyopaque, .{
+    .name = "gc-sweep-test/ordered",
+    .gc = probeGcOrdered,
+    .gcperthread = probePerthreadOrdered,
+});
+
+const at_plain = abstract_type.define(anyopaque, .{ .name = "gc-sweep-test/plain" });
+
+const at_threaded = abstract_type.define(anyopaque, .{
+    .name = "gc-sweep-test/threaded",
+    .gc = probeThreadedGc,
+    .gcperthread = probeThreadedPerthread,
+});
+
+var gc_calls: i32 = 0;
+var gc_data: ?*anyopaque = null;
+var gc_size: usize = 0;
 
 /// `vm.ev.threaded_abstracts` and `abstracts.threaded` exist only where the
 /// event loop does, and this has to be comptime so that the branch
 /// naming them is not analysed elsewhere.
 ///
-/// `options` is the build's `Selection`, which names **subsystems** rather
+/// `options` is the build's `Selection`, which names subsystems rather
 /// than features, so there is no `options.ev` to read.
 /// `ev_core` is set to `hasEv(options)` by `build.zig` and is therefore the
 /// same condition spelled in the vocabulary this module has.
 const has_ev = options.ev;
+var order_len: usize = 0;
+var order_log: [8]u8 = undefined;
+var threaded_gc_calls: i32 = 0;
+var threaded_perthread_calls: i32 = 0;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn headerOf(pointer: ?*anyopaque) *abi.GCObject {
     return @ptrCast(@alignCast(pointer.?));
@@ -80,7 +118,7 @@ fn reachable(pointer: ?*anyopaque) bool {
 }
 
 /// Whether a block is still on one of the two heap lists. Only ever called for
-/// a block that is known to have survived, so nothing freed is dereferenced.
+/// a block that survived the sweep, so nothing freed is dereferenced.
 fn onList(list: ?*anyopaque, block: ?*anyopaque) bool {
     var current = list;
     while (current != null) {
@@ -96,20 +134,11 @@ fn settle() void {
     gc_mark.collect();
 }
 
-// ------------------------------------------------------------ probe types
-
-var gc_calls: i32 = 0;
-var gc_data: ?*anyopaque = null;
-var gc_size: usize = 0;
-
 fn probeGc(data: *anyopaque, length: usize) void {
     gc_calls += 1;
     gc_data = data;
     gc_size = length;
 }
-
-var order_log: [8]u8 = undefined;
-var order_len: usize = 0;
 
 fn logOrder(character: u8) void {
     if (order_len < order_log.len) {
@@ -126,13 +155,13 @@ fn probePerthreadOrdered(_: *anyopaque, _: usize) void {
     logOrder('P');
 }
 
-const at_final = abstract_type.define(anyopaque, .{ .name = "gc-sweep-test/final", .gc = probeGc });
-const at_ordered = abstract_type.define(anyopaque, .{
-    .name = "gc-sweep-test/ordered",
-    .gc = probeGcOrdered,
-    .gcperthread = probePerthreadOrdered,
-});
-const at_plain = abstract_type.define(anyopaque, .{ .name = "gc-sweep-test/plain" });
+fn probeThreadedGc(_: *anyopaque, _: usize) void {
+    threaded_gc_calls += 1;
+}
+
+fn probeThreadedPerthread(_: *anyopaque, _: usize) void {
+    threaded_perthread_calls += 1;
+}
 
 fn plain() *const abi.AbstractType {
     return &at_plain;
@@ -141,8 +170,6 @@ fn plain() *const abi.AbstractType {
 fn final() *const abi.AbstractType {
     return &at_final;
 }
-
-// --------------------------------------------------------- freeing blocks
 
 /// The block count is the sweep's arithmetic made visible: one decrement per
 /// block freed, and no decrement for a block kept.
@@ -181,9 +208,9 @@ fn aSurvivorKeepsItsPayloadAndLosesItsMark() void {
     expect(harness.vm().gc.block_count == before);
 }
 
-/// `JANET_MEM_DISABLED` holds a block through a sweep that never reached it,
-/// and unlike `JANET_MEM_REACHABLE` it is not cleared on the way past — it
-/// holds the block through every later sweep too, until whoever set it clears
+/// `JANET_MEM_DISABLED` keeps a block through a sweep that never reached it,
+/// and unlike `JANET_MEM_REACHABLE` it is not cleared on the way past. It
+/// keeps the block through every later sweep too, until whoever set it clears
 /// it. `buffers.init` sets it on a caller-owned buffer for exactly that
 /// reason; here it is set by hand on a heap block, which is the general case
 /// the flag is defined for.
@@ -208,10 +235,8 @@ fn theDisabledFlagOutlivesASweep() void {
     expect(harness.vm().gc.block_count == before);
 }
 
-// ------------------------------------------------------------ finalization
-
 /// A finalizer runs once, on the way out, with the pointer and size the
-/// runtime handed the type — not the block address, and not the header size.
+/// runtime gave the type, rather than the block address or the header size.
 fn aFinalizerRunsOnceWithTheAbstract() void {
     settle();
     const abstract = abstracts.newBytes(final(), 24);
@@ -289,8 +314,6 @@ fn aSymbolLeavesTheCache() void {
     expect(harness.vm().symcache.deleted == deleted + 1);
 }
 
-// -------------------------------------------------------------- weak heap
-
 /// A weak array keeps its shape and loses its dead elements. The count does
 /// not change and the live entries do not move: a dead slot becomes nil in
 /// place, which is what lets an index into a weak array stay meaningful across
@@ -322,7 +345,8 @@ fn aWeakArrayDropsDeadElementsInPlace() void {
 /// Which half of an entry is checked is what makes a table weak, and it
 /// mirrors the mark phase exactly: whichever half the walk did not mark is the
 /// half that may have died. A weak-keyed table therefore keeps an entry whose
-/// value is otherwise unreferenced — the walk marked that value — and drops
+/// value is otherwise unreferenced, the walk having marked that value, and
+/// drops
 /// one whose key is. A dropped entry becomes the (nil, false) tombstone
 /// `tables.put` writes, so the count falls and the deleted count rises.
 fn theFourTableKinds() void {
@@ -377,7 +401,7 @@ fn theFourTableKinds() void {
 }
 
 /// The weak heap is swept for blocks as well as for references. A weak
-/// container nothing refers to is freed like any other block — it is on a
+/// container nothing refers to is freed like any other block, being on a
 /// separate list, not exempt from collection.
 fn weakContainersAreThemselvesCollected() void {
     settle();
@@ -396,8 +420,9 @@ fn weakContainersAreThemselvesCollected() void {
 /// A weak reference to a block that is itself dying is dropped, not read after
 /// it is freed. That is the whole reason the weak heap is walked twice: the
 /// first pass consults the mark of every value a surviving weak container
-/// holds, and the second frees. Reversing them would make this case a
-/// use-after-free rather than a wrong answer, so what is asserted here is only
+/// keeps, and the second frees. Reversing them would make this case a
+/// use-after-free rather than a wrong result, so what is asserted here is
+/// only
 /// that the survivor is intact and empty; a sanitizer is what sees the
 /// difference.
 fn aWeakEntryAndItsTargetDieTogether() void {
@@ -415,7 +440,7 @@ fn aWeakEntryAndItsTargetDieTogether() void {
     expect(onList(harness.vm().gc.weak_blocks, weak));
 
     // The table and its key survive this collection; the buffer does not. The
-    // key is alive because a weak-valued table marks its keys — the entry was
+    // key is alive because a weak-valued table marks its keys, so the entry was
     // dropped by the sweep, after the walk had already reached the keyword
     // through it. The next collection is where the keyword goes, which is the
     // one collection of lag a weak table costs.
@@ -426,33 +451,14 @@ fn aWeakEntryAndItsTargetDieTogether() void {
     _ = gc_alloc.gcunroot(wrap.fromTable(weak));
 }
 
-// ------------------------------------------------------ threaded abstracts
-
-var threaded_gc_calls: i32 = 0;
-var threaded_perthread_calls: i32 = 0;
-
-fn probeThreadedGc(_: *anyopaque, _: usize) void {
-    threaded_gc_calls += 1;
-}
-
-fn probeThreadedPerthread(_: *anyopaque, _: usize) void {
-    threaded_perthread_calls += 1;
-}
-
-const at_threaded = abstract_type.define(anyopaque, .{
-    .name = "gc-sweep-test/threaded",
-    .gc = probeThreadedGc,
-    .gcperthread = probeThreadedPerthread,
-});
-
 /// A threaded abstract is not on either heap list, so the sweep decides its
 /// fate through `vm.ev.threaded_abstracts` instead. The table is a visit
 /// record: the mark phase writes true for every threaded abstract it reaches,
 /// and the sweep reads the entry and resets it to false for next time. An
 /// entry still false is one this interpreter no longer refers to, so this
-/// interpreter's reference goes — and because the last reference anywhere is
+/// interpreter's reference goes, and because the last reference anywhere is
 /// what frees the value, the type's `gc` runs exactly once across every
-/// interpreter that ever held it.
+/// interpreter that ever had one.
 fn aThreadedAbstractLosesItsReference() void {
     settle();
     const abstract = abstracts.threaded(&at_threaded, 8);
@@ -479,22 +485,16 @@ fn aThreadedAbstractLosesItsReference() void {
     expect(threaded_gc_calls == 1);
 }
 
-// --------------------------------------------------------------- teardown
-
 /// `gc/sweep.zig`'s `clearMemory` is not a collection. Nothing is marked,
-/// rooting buys a block nothing, and every finalizer runs — which is what
+/// rooting buys a block nothing, and every finalizer runs, which is what
 /// makes `vm_lifecycle.deinit` safe to call with live values outstanding.
 ///
-/// **The last assertion pins the guarantee: both heaps come back empty.**
-/// Walking `vm.gc.blocks` and not `vm.gc.weak_blocks` leaks the block and the
-/// data array of every weak table and weak array alive at deinit, and the list
-/// head still pointing at them afterwards is that leak seen from inside.
-///
-/// It was visible from outside too: `tools/testing/leaks.sh` carried
-/// `expected_gc_sweep=8` -- the four weak containers this file leaves alive
-/// across a teardown, the one here and `repeatedCycles`' three, times the block
-/// and the data array each of them leaked. That entry is gone and the script
-/// expects zero everywhere.
+/// The last assertion is the guarantee: both heaps come back empty. A teardown
+/// that walked `vm.gc.blocks` and not `vm.gc.weak_blocks` would leak the block
+/// and the data array of every weak table and weak array alive at deinit, and
+/// a list head still pointing at them afterwards is that leak seen from
+/// inside. `tools/testing/leaks.sh` sees the same thing from outside and
+/// expects zero here, as it does everywhere.
 fn clearMemoryFinalizesEverything() void {
     const abstract = abstracts.newBytes(final(), 8);
     gc_alloc.gcroot(wrap.fromAbstract(abstract));
@@ -513,7 +513,7 @@ fn clearMemoryFinalizesEverything() void {
     harness.init();
 }
 
-/// A second cycle over a heap that has held every block type. Nothing is
+/// A second cycle over a heap that has had every block type on it. Nothing is
 /// asserted beyond arriving here: this is the case that fails by crashing, and
 /// it is the only coverage there is for the frees inside
 fn repeatedCycles() void {
@@ -543,6 +543,10 @@ fn repeatedCycles() void {
         harness.init();
     }
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

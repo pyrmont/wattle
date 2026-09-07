@@ -2,28 +2,28 @@
 //! into a `functions.FuncDef`, and the eighteen ways it refuses.
 //!
 //! `test/suite-asm.janet` runs nine assemblies and checks that they execute.
-//! What it cannot check is the *bytecode words* — a wrong operand encoding
-//! that happens to run is indistinguishable from a right one — or any of the
+//! What it cannot check is the *bytecode words*, a wrong operand encoding that
+//! happens to run being indistinguishable from a right one, or any of the
 //! refusal messages, because `asm` raises and a suite that raises stops.
 //!
 //! Both are asserted here, and the refusals are the bulk of it. They are worth
 //! the space for a reason particular to this subsystem: `assembleValue`
-//! reports by filling in an `AssembleResult.error` rather than by raising, so **the
-//! message is a return value and part of the interface**. A port that changed
-//! the wording would be changing observable behaviour, and nothing else in the
-//! tree would notice.
+//! reports by filling in an `AssembleResult.error` rather than by raising, so
+//! the message is a return value and part of the interface. Changing the
+//! wording would change observable behaviour, and nothing else in the tree
+//! would notice.
 //!
 //! ## What the first assembly is for
 //!
-//! One function carrying five different operand encodings, so that the
+//! One function with five different operand encodings in it, so that the
 //! bytecode assertions below cover the shapes rather than one of them five
 //! times: a signed 16-bit immediate (`ldi ... -12` as `0xFFF4`), a signed
 //! 8-bit immediate (`addim ... -3` as `0xFD`), a type mask assembled from
 //! keywords, a constant index, and a label resolved to a relative jump.
 //!
-//! It also carries a slot *alias* — `(first first-alias)` names one slot
-//! twice — which is the only way to tell that the slot table maps names to
-//! indices rather than positions.
+//! It also has a slot *alias*, `(first first-alias)` naming one slot twice,
+//! which is the only way to tell that the slot table maps names to indices
+//! rather than positions.
 //!
 //! ## `:closures` and `:defs` are the same key
 //!
@@ -31,23 +31,35 @@
 //! because dropping either is a silent compatibility break for hand-written
 //! assembly.
 
-const repr = @import("repr");
-const constants = @import("constants");
-const harness = @import("harness.zig");
-const core_env = @import("subsystems").env;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const bytecode = @import("subsystems").bytecode;
-const functions = @import("subsystems").value.functions;
-const tables = @import("subsystems").value.tables;
+const constants = @import("constants");
+const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
+const functions = @import("subsystems").value.functions;
+const harness = @import("harness.zig");
+const repr = @import("repr");
+const tables = @import("subsystems").value.tables;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 var environment: *tables.Table = undefined;
 
-/// Evaluate an assembly source and assemble the value it answers.
+// ==========================================================================
+// Cases
+// ==========================================================================
+
+/// Evaluate an assembly source and assemble the value it produces.
 ///
-/// `env.dostring` is a protected entry point -- it answers a status rather
-/// than raising -- so the quoted structure arrives here without a scope.
+/// `env.dostring` is a protected entry point and returns a status rather than
+/// raising, so the quoted structure arrives here without a scope.
 fn assemble(source: [*:0]const u8) bytecode.AssembleResult {
     var val: repr.Value = undefined;
     expect(core_env.dostring(environment, source, "asm-encode-test", &val) == 0);
@@ -103,7 +115,7 @@ fn theOperandEncodings() void {
     expect(definition.instructions()[4] == harness.op(constants.Opcode.jump) | (@as(u32, 1) << 8));
     expect(constants.Opcode.fromWord(definition.instructions()[5]) == constants.Opcode.return_nil);
 
-    // Two names, two slots -- the alias did not create a third.
+    // Two names, two slots: the alias did not create a third.
     expect(definition.slotcount == 2);
 
     expect(definition.constants_length == 1);
@@ -167,6 +179,56 @@ fn theSourceMapAndSymbolMap() void {
     expect(empty.environments_length == 0);
 }
 
+/// The seven runs inside a `functions.FuncDef`, each a pointer whose length is
+/// a different field, and each giving back the empty slice when the run is
+/// absent.
+///
+/// Two of the pairings are not derivable from the field names and are what
+/// these accessors exist to state: `sourcemap` is as long as the *bytecode*,
+/// and `closure_bitset` is a bit per slot rounded up to a word. The empty half
+/// matters because a funcdef with no bytecode at all is reachable:
+/// `unmarshalOneDef` builds one before it fills anything, and the compiler
+/// leaves `bytecode` null for a zero-length body.
+fn theSevenRunsOfAFuncdef() void {
+    var empty: functions.FuncDef = .{};
+    expect(empty.constantValues().len == 0);
+    expect(empty.instructions().len == 0);
+    expect(empty.environmentIndices().len == 0);
+    expect(empty.subdefs().len == 0);
+    expect(empty.symbols().len == 0);
+    expect(empty.sourceMappings().len == 0);
+    expect(empty.closureBits().len == 0);
+
+    // A real one, so that an accessor which always gave back empty would fail.
+    const def = accepted("'{:bytecode [(noop) (retn)] :constants [7 :k] :sourcemap [[1 2] [3 4]]}");
+    expect(def.instructions().len == 2);
+    expect(def.constantValues().len == 2);
+
+    // The pairing: one source mapping per *instruction*, with no length field
+    // of its own anywhere in the structure.
+    expect(def.sourceMappings().len == def.instructions().len);
+    expect(def.sourceMappings()[0].line == 1);
+    expect(def.sourceMappings()[1].column == 4);
+
+    // A funcdef with a sourcemap pointer but a zero bytecode length gives back
+    // empty rather than trapping, which is the state `unmarshalOneDef` passes
+    // through.
+    var truncated = def.*;
+    truncated.bytecode_length = 0;
+    expect(truncated.sourceMappings().len == 0);
+    expect(truncated.instructions().len == 0);
+
+    // And the bitset is a bit per slot, rounded up: thirty-three slots is two
+    // words, not one.
+    var bits = [_]u32{ 0, 0 };
+    var closure: functions.FuncDef = .{ .closure_bitset = &bits, .slotcount = 33 };
+    expect(closure.closureBits().len == 2);
+    closure.slotcount = 32;
+    expect(closure.closureBits().len == 1);
+    closure.closure_bitset = null;
+    expect(closure.closureBits().len == 0);
+}
+
 /// The eighteen refusals, and their exact wording. See the header comment for
 /// why the wording is the contract rather than an implementation detail.
 fn theRefusals() void {
@@ -221,54 +283,9 @@ fn theRefusals() void {
     );
 }
 
-/// The seven runs a `functions.FuncDef` carries, each a pointer whose length is a
-/// different field, and each answering the empty slice when the run is absent.
-///
-/// Two of the pairings are not derivable from the field
-/// names and are what these accessors exist to state: `sourcemap` is as long
-/// as the **bytecode**, and `closure_bitset` is a bit per slot rounded up to a
-/// word. The empty half matters because a funcdef with no bytecode at all is
-/// reachable -- `unmarshalOneDef` builds one before it fills anything, and the
-/// compiler leaves `bytecode` null for a zero-length body.
-fn theSevenRunsOfAFuncdef() void {
-    var empty: functions.FuncDef = .{};
-    expect(empty.constantValues().len == 0);
-    expect(empty.instructions().len == 0);
-    expect(empty.environmentIndices().len == 0);
-    expect(empty.subdefs().len == 0);
-    expect(empty.symbols().len == 0);
-    expect(empty.sourceMappings().len == 0);
-    expect(empty.closureBits().len == 0);
-
-    // A real one, so that an accessor which always answered empty would fail.
-    const def = accepted("'{:bytecode [(noop) (retn)] :constants [7 :k] :sourcemap [[1 2] [3 4]]}");
-    expect(def.instructions().len == 2);
-    expect(def.constantValues().len == 2);
-
-    // The pairing: one source mapping per *instruction*, with no length field
-    // of its own anywhere in the structure.
-    expect(def.sourceMappings().len == def.instructions().len);
-    expect(def.sourceMappings()[0].line == 1);
-    expect(def.sourceMappings()[1].column == 4);
-
-    // A funcdef with a sourcemap pointer but a zero bytecode length answers
-    // empty rather than trapping, which is the state `unmarshalOneDef` passes
-    // through.
-    var truncated = def.*;
-    truncated.bytecode_length = 0;
-    expect(truncated.sourceMappings().len == 0);
-    expect(truncated.instructions().len == 0);
-
-    // And the bitset is a bit per slot, rounded up: thirty-three slots is two
-    // words, not one.
-    var bits = [_]u32{ 0, 0 };
-    var closure: functions.FuncDef = .{ .closure_bitset = &bits, .slotcount = 33 };
-    expect(closure.closureBits().len == 2);
-    closure.slotcount = 32;
-    expect(closure.closureBits().len == 1);
-    closure.closure_bitset = null;
-    expect(closure.closureBits().len == 0);
-}
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

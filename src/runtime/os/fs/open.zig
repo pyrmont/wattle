@@ -3,46 +3,124 @@
 //! Out of the bucket for both of the split rule's reasons: `os/open` is a name
 //! Janet publishes, and what it returns is a stream with a type of its own;
 //! and the POSIX and Windows halves below exist because the platforms differ.
-//! Both are compiled on every target so the flag rules stay one subject rather
-//! than two.
+//! Both are compiled on every target so that the flag rules stay one subject
+//! rather than two.
+//!
+//! The file is reached only under the event loop, because what it produces is
+//! an `ev/stream.Stream`. Zig does not analyse a function nothing references,
+//! so the registration table's comptime `if` is what keeps this out of a
+//! `-Dev=false` build, where that type is not compiled at all.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
-const repr = @import("repr");
-const c = @import("cabi");
-const raise = @import("../../../api/raise.zig");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const args_core = @import("../../args.zig");
+const c = @import("cabi");
 const ev_loop = @import("../../ev.zig");
-const vm_lifecycle = @import("../../vm/lifecycle.zig");
-const wrap = @import("../../value/helpers/wrap.zig");
-const oa = @import("../abi.zig");
-const h = oa.h;
-const stat = @import("stat.zig");
 const ev_stream = @import("../../ev/stream.zig");
 const host = @import("host");
+const oa = @import("../abi.zig");
+const raise = @import("../../../api/raise.zig");
+const repr = @import("repr");
+const stat = @import("stat.zig");
+const vm_lifecycle = @import("../../vm/lifecycle.zig");
+const wrap = @import("../../value/helpers/wrap.zig");
+
+/// `os/abi.zig`'s translation, which is where every `h.`-qualified constant
+/// below comes from.
+const h = oa.h;
 
 // ==========================================================================
-// `os/open`
+// Constants
 // ==========================================================================
-//
-// Compiled only under the event loop, because it produces an
-// `ev/stream.Stream`. Zig does not analyse a function nothing references, so
-// the registration table's comptime `if` is what keeps this out of a
-// `-Dev=false` build, where that type is not compiled at all.
 
+/// The two stream flags `ev.makeStream` takes, which say which halves of the
+/// stream a caller asked for.
 const stream_readable: u32 = 0x200;
 const stream_writable: u32 = 0x400;
 
-/// The flag letters `os/open` accepts. Both vocabularies are compiled on every
-/// target, and only one is reachable; the rule they implement belongs to the
-/// host's `c.open` interface rather than to the machine running the build, which
-/// is the same reason `-Dos-process` compiles the Windows command-line
+/// Whether this target takes the `CreateFileA` arm rather than the `open`
+/// one.
+const windows = builtin.os.tag == .windows;
+
+// ==========================================================================
+// Types
+// ==========================================================================
+
+/// What a flag scan reports back: the stream flags the letters asked for, and
+/// whether a letter turned stream mode off.
+///
+/// The flag letters `os/open` accepts are two vocabularies, both compiled on
+/// every target with only one reachable. The rule they implement belongs to
+/// the host's `c.open` interface rather than to the machine running the build,
+/// which is the same reason `os/process.zig` compiles the Windows command-line
 /// escaping everywhere.
 const OpenScan = struct {
     stream_flags: u32 = 0,
     disable_stream_mode: bool = false,
 };
 
+/// The six arguments `CreateFileA` takes, gathered by the Windows scan.
+const WindowsOpen = struct {
+    desired_access: u32 = 0,
+    share_mode: u32 = 0,
+    creation_disp: u32 = 0,
+    file_flags: u32 = 0,
+    file_attributes: u32 = 0,
+    inherited_handle: bool = false,
+};
+
+// ==========================================================================
+// Public functions
+// ==========================================================================
+
+/// `(os/open path &opt flags mode)`, which returns a stream rather than a
+/// file.
+pub fn cfunOpen(argv: []repr.Value) raise.Raising(repr.Value) {
+    try args_core.arity(argv, 1, 3);
+    const path = try args_core.getCString(argv, 0);
+    const opt_flags: [*:0]const u8 = @ptrCast(try args_core.optKeyword(argv, 1, "r"));
+    const mode = try stat.optMode(argv, 2, 0o666);
+    var scan: OpenScan = .{};
+    var fd: host.Handle = undefined;
+    if (windows) {
+        const w = try openWindows(opt_flags, &scan);
+        var sa_attr: h.SECURITY_ATTRIBUTES = std.mem.zeroes(h.SECURITY_ATTRIBUTES);
+        sa_attr.nLength = @sizeOf(h.SECURITY_ATTRIBUTES);
+        if (w.inherited_handle) sa_attr.bInheritHandle = 1;
+        fd = h.CreateFileA(
+            path,
+            w.desired_access,
+            w.share_mode,
+            &sa_attr,
+            w.creation_disp,
+            w.file_flags | w.file_attributes,
+            null,
+        );
+        if (fd == h.INVALID_HANDLE_VALUE) return raise.panicv(ev_stream.evLasterr());
+    } else {
+        const open_flags = try openPosix(opt_flags, &scan);
+        fd = c.retryIntr(c.open, .{ @as([*:0]const u8, @ptrCast(path)), open_flags, mode });
+        if (fd == -1) return raise.panicv(ev_stream.evLasterr());
+    }
+    const flags = if (scan.disable_stream_mode) 0 else scan.stream_flags;
+    return wrap.fromAbstract(try ev_loop.makeStream(fd, flags, null));
+}
+
+// ==========================================================================
+// Private functions
+// ==========================================================================
+
+/// Reads the flag letters into the `open` flag word, asserting the sandbox
+/// permission each letter implies as it is reached.
 fn openPosix(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(c_int) {
     var open_flags: c_int = h.O_NONBLOCK;
     if (builtin.os.tag == .linux) open_flags |= h.O_CLOEXEC;
@@ -80,8 +158,8 @@ fn openPosix(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(c_int) {
             else => {},
         }
     }
-    // A three-way fixup, and its last arm is contract: neither flag and both
-    // flags alike give `O_RDWR`.
+    // A three-way fixup, and its last arm is one a caller depends on: neither
+    // flag and both flags alike give `O_RDWR`.
     if (read_flag and !write_flag) {
         open_flags |= h.O_RDONLY;
     } else if (write_flag and !read_flag) {
@@ -92,15 +170,10 @@ fn openPosix(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(c_int) {
     return open_flags;
 }
 
-const WindowsOpen = struct {
-    desired_access: u32 = 0,
-    share_mode: u32 = 0,
-    creation_disp: u32 = 0,
-    file_flags: u32 = 0,
-    file_attributes: u32 = 0,
-    inherited_handle: bool = false,
-};
-
+/// The same for `CreateFileA`, whose five words the letters are spread across.
+/// The creation disposition is the one place the two interfaces do not line
+/// up: POSIX combines `O_CREAT`, `O_EXCL` and `O_TRUNC` freely and Windows has
+/// five named dispositions, so a combination outside those five is refused.
 fn openWindows(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(WindowsOpen) {
     const o_creat: u32 = 1;
     const o_excl: u32 = 2;
@@ -162,36 +235,3 @@ fn openWindows(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(WindowsO
     if (w.file_attributes == 0) w.file_attributes = h.FILE_ATTRIBUTE_NORMAL;
     return w;
 }
-
-pub fn cfunOpen(argv: []repr.Value) raise.Raising(repr.Value) {
-    try args_core.arity(argv, 1, 3);
-    const path = try args_core.getCString(argv, 0);
-    const opt_flags: [*:0]const u8 = @ptrCast(try args_core.optKeyword(argv, 1, "r"));
-    const mode = try stat.optMode(argv, 2, 0o666);
-    var scan: OpenScan = .{};
-    var fd: host.Handle = undefined;
-    if (windows) {
-        const w = try openWindows(opt_flags, &scan);
-        var sa_attr: h.SECURITY_ATTRIBUTES = std.mem.zeroes(h.SECURITY_ATTRIBUTES);
-        sa_attr.nLength = @sizeOf(h.SECURITY_ATTRIBUTES);
-        if (w.inherited_handle) sa_attr.bInheritHandle = 1;
-        fd = h.CreateFileA(
-            path,
-            w.desired_access,
-            w.share_mode,
-            &sa_attr,
-            w.creation_disp,
-            w.file_flags | w.file_attributes,
-            null,
-        );
-        if (fd == h.INVALID_HANDLE_VALUE) return raise.panicv(ev_stream.evLasterr());
-    } else {
-        const open_flags = try openPosix(opt_flags, &scan);
-        fd = c.retryIntr(c.open, .{ @as([*:0]const u8, @ptrCast(path)), open_flags, mode });
-        if (fd == -1) return raise.panicv(ev_stream.evLasterr());
-    }
-    const flags = if (scan.disable_stream_mode) 0 else scan.stream_flags;
-    return wrap.fromAbstract(try ev_loop.makeStream(fd, flags, null));
-}
-
-const windows = builtin.os.tag == .windows;

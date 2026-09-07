@@ -1,19 +1,18 @@
 //! A payload the runtime's allocator cannot align, allocated.
 //!
 //! `janet_calloc` is `malloc`-backed, so the strictest alignment it promises
-//! is `max_align_t`. While `alloc` answered `?*anyopaque`, an author asking
-//! for more wrote the `@alignCast` at their own call site -- an assumption
-//! nothing checked, and undefined behaviour with no diagnostic anywhere.
-//! `alloc` takes the type instead, so the assumption is checked where it is
-//! made.
+//! is `max_align_t`. `alloc` takes the payload type rather than returning a
+//! `?*anyopaque`, so a request for more than that is refused at the call that
+//! makes it. Given the opaque pointer an author would write the `@alignCast`
+//! themselves, and nothing would check it.
 //!
 //! `build.zig`'s `module-errors` step compiles this and requires the failure.
 
 const janet = @import("janet");
 
 /// Over-aligned on purpose. A cache-line-aligned lane is the plausible way an
-/// author arrives here: it is a reasonable thing to want and the allocator
-/// still cannot supply it.
+/// author arrives here: a reasonable thing to ask for, and still more than the
+/// allocator can supply.
 const Wide = struct {
     lane: f64 align(128),
 };

@@ -2,83 +2,93 @@
 //! kinds: `fibers.new` and `fibers.reset`, and `functions.FuncDef.new`,
 //! `functions.thunk` and `functions.thunkDelay`.
 //!
-//! These are almost entirely field initialisation, and field initialisation is
-//! what a port silently gets wrong: a missed store leaves whatever
-//! `janet_malloc` returned, which is usually the corpse of a previous block and
-//! so is usually plausible. So the cases below read every field they can and
-//! prefer dirtying a field before the call to asserting a value that a fresh
-//! allocation might have had anyway.
+//! These are almost entirely field initialisation, and a missed store leaves
+//! whatever the allocator returned, which is usually the corpse of a previous
+//! block and so is usually plausible. The cases below therefore read every
+//! field they can, and prefer dirtying a field before the call to asserting a
+//! value a fresh allocation might have had anyway.
 //!
-//! Four channels carry it:
+//! Four channels reach these facts:
 //!
 //!  - The block header. `harness.heap.memoryType` says which of the three
 //!    memory types was written, and `vm.gc.blocks` says the collector was
-//!    handed the block.
-//!  - `vm.gc.next_collection`, which each of these functions charges. A
-//!    fiber is charged twice, once by `gc.gcalloc` for the block and once by
-//!    hand for the value stack, and the second charge is the one only this
-//!    contract sees.
-//!  - The fiber's own fields after a *failed* `fibers.reset`. This is the
-//!    only way to observe the newborn state: a successful call runs
-//!    `fibers.funcframe` over it, which overwrites `frame`, `stackstart`
-//!    and `stacktop` before returning.
-//!  - `gc/mark.zig`'s `collect`, run with the new object rooted and again with it
-//!    unrooted, which is what says the block was initialised well enough for
-//!    the mark phase to walk it and the sweep to free it.
+//!    given the block.
+//!  - `vm.gc.next_collection`, which each of these functions charges. A fiber
+//!    is charged twice, once by `gc.gcalloc` for the block and once by hand
+//!    for the value stack, and the second charge is the one only this contract
+//!    sees.
+//!  - The fiber's own fields after a *failed* `fibers.reset`. This is the only
+//!    way to observe the newborn state: a successful call runs
+//!    `fibers.funcframe` over it, which overwrites `frame`, `stackstart` and
+//!    `stacktop` before returning.
+//!  - `gc/mark.zig`'s `collect`, run with the new object rooted and again with
+//!    it unrooted, which is what says the block was initialised well enough
+//!    for the mark phase to walk it and the sweep to free it.
 //!
-//! ## Where the flexible-array assertion went
+//! ## The flexible-array assertion is not here
 //!
-//! The C original opened with `sizeof(JanetFunction) == offsetof(JanetFunction,
-//! envs)`, which is what makes `functions.thunk`'s `@sizeOf(Function)` the
-//! right size for a function with no environments. A translated head drops its flexible array member, so
-//! `@offsetOf` does not compile here and a comparison would be `@sizeOf`
-//! against itself. `test/gc_mark.zig` derives the offset from the allocator
-//! instead.
+//! What makes `functions.thunk`'s `@sizeOf(Function)` the right size for a
+//! function with no environments is that the size equals the offset of `envs`.
+//! A head with a flexible array member loses it in translation, so `@offsetOf`
+//! does not compile against one and the comparison would be `@sizeOf` against
+//! itself. `test/gc_mark.zig` derives the offset from the allocator instead.
 //!
 //! ## One case needs a child process
 //!
-//! `functions.thunk` refuses a def that needs upvalues, and refuses it *fatally* —
-//! the block it allocates is sized for no environments at all, so a caller that
-//! got one back would read `envs[0]` off the end of a 24-byte allocation. An
-//! abort is what a child process can report back and nothing in-process can.
-//! The Windows path is cross-compiled and never executed, so it is left out
-//! rather than written blind, exactly as the C original left it out.
+//! `functions.thunk` refuses a def that needs upvalues, and refuses it
+//! *fatally*: the block it allocates is sized for no environments at all, so a
+//! caller that got one back would read `envs[0]` off the end of a 24-byte
+//! allocation. An abort is what a child process can report back and nothing
+//! in-process can. The Windows path is cross-compiled and never executed, so
+//! that case is left out rather than written blind.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
-const repr = @import("repr");
-const constants = @import("constants");
-const harness = @import("harness.zig");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
 const config = @import("config");
-const value = @import("subsystems").value;
+const constants = @import("constants");
+const core_env = @import("subsystems").env;
+const expect = @import("expect.zig").expect;
+const fibers = @import("subsystems").value.fibers;
+const functions = @import("subsystems").value.functions;
 const gc_alloc = @import("subsystems").gc_alloc;
 const gc_mark = @import("subsystems").gc_mark;
-const functions = @import("subsystems").value.functions;
-const core_env = @import("subsystems").env;
-const vm_entry = @import("subsystems").vm_entry;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const tables = @import("subsystems").value.tables;
-const fibers = @import("subsystems").value.fibers;
-const abi = @import("abi");
-const vm_state = @import("subsystems").vm_state;
-
+const harness = @import("harness.zig");
 const heap = harness.heap;
-const expect = @import("expect.zig").expect;
+const repr = @import("repr");
+const tables = @import("subsystems").value.tables;
+const value = @import("subsystems").value;
+const vm_entry = @import("subsystems").vm_entry;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const vm_state = @import("subsystems").vm_state;
+const wrap = @import("subsystems").value.wrap;
 
-/// `JANET_EV` decides whether a fiber has the five scheduler fields.
-///
-/// This used to ask the *translated type* -- `@hasField(c.JanetFiber,
-/// "sched_id")` -- on the stated grounds that "a `JANET_*` macro is not
-/// reliable through `@cImport`". The build says what it compiled, which
-/// removes the premise rather than working around it.
-const with_ev = config.ev;
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 const frame_size: i32 = constants.JANET_FRAME_SIZE;
-
 var test_env: *tables.Table = undefined;
 
-// ----------------------------------------------------------------- helpers
+/// Whether a fiber has the five scheduler fields, which is whether the event
+/// loop was compiled.
+///
+/// Read from `config`, which is the build's own statement of what it compiled,
+/// rather than from the shape of the fiber type.
+const with_ev = config.ev;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// Reach a quiet heap, so that a later collection's effects are attributable
 /// to what this contract made rather than to what an earlier case left behind.
@@ -100,72 +110,12 @@ fn statusOf(fiber: *fibers.Fiber) i32 {
     return fiber.flags.status;
 }
 
-/// A frame's header, which lives in the slots immediately below the frame's
-/// base.
-fn fiberFrame(fiber: *fibers.Fiber) *vm_state.StackFrame {
-    return @ptrCast(@alignCast(fiber.data.? + @as(usize, @intCast(fiber.frame - frame_size))));
-}
-
-/// The newborn state, as `fibers.reset` leaves it. Read after a rejected
-/// call, where nothing has run over it.
-fn assertNewborn(fiber: *fibers.Fiber, expect_stacktop: i32) void {
-    expect(fiber.maxstack == config.stack_max);
-    expect(fiber.frame == 0);
-    expect(fiber.stackstart == frame_size);
-    expect(fiber.stacktop == expect_stacktop);
-    expect(fiber.child == null);
-    expect(fiber.env == null);
-    expect(harness.isType(fiber.last_value, repr.Tag.nil));
-    // The flag word `resetState` leaves, asserted as the bit pattern rather
-    // than through `fibers.FiberFlags`: yield trapped (bit 3), `resume_no_useval`
-    // (bit 25) and `resume_no_skip` (bit 26), with the status field masked out.
-    // Spelling the number is what keeps the oracle independent of the struct
-    // whose layout it is checking.
-    expect((@as(u32, @bitCast(fiber.flags)) & ~@as(u32, 0x3F0000)) ==
-        (1 << 3) | (1 << 25) | (1 << 26));
-    expect(statusOf(fiber) == @intFromEnum(fibers.FiberStatus.new));
-    if (with_ev) {
-        expect(fiber.sched_id == 0);
-        expect(fiber.ev_callback == null);
-        expect(fiber.ev_state == null);
-        expect(fiber.ev_stream == null);
-        expect(fiber.supervisor_channel == null);
-    }
-}
-
-/// Write a distinguishable value into every field `fibers.reset` is
-/// supposed to clear, so that the assertions above are about stores rather than
-/// about what the allocator happened to hand back.
-fn dirty(fiber: *fibers.Fiber, child: *fibers.Fiber, env: *tables.Table) void {
-    fiber.maxstack = 7;
-    fiber.frame = 11;
-    fiber.stackstart = 13;
-    fiber.stacktop = 17;
-    fiber.child = child;
-    fiber.env = env;
-    fiber.last_value = harness.wrapInteger(23);
-    fiber.flags = .{
-        .traps = .of(&.{.@"error"}),
-        .did_raise = true,
-        .status = @intFromEnum(fibers.FiberStatus.alive),
-    };
-    if (with_ev) {
-        fiber.sched_id = 29;
-        fiber.ev_callback = null;
-        fiber.ev_state = @ptrCast(fiber);
-        fiber.ev_stream = null;
-        fiber.supervisor_channel = @ptrCast(fiber);
-    }
-}
-
 fn onBlocks(block: ?*anyopaque) bool {
     return heap.onList(harness.vm().gc.blocks, block);
 }
 
-// ------------------------------------------------------------ fiber blocks
-
 /// A fiber is a collectable block the collector is given immediately, tagged
-/// `JANET_MEMORY_FIBER`, plus a plain allocation for the value stack that hangs
+/// `MemoryType.fiber`, plus a plain allocation for the value stack that hangs
 /// off it.
 fn aFiberIsACollectableBlock(nullary: *functions.Function) void {
     const fiber = fibers.new(nullary, 32, &.{}) catch unreachable;
@@ -211,13 +161,64 @@ fn aFiberChargesBlockAndStack(nullary: *functions.Function) void {
     expect(after - before == @sizeOf(fibers.Fiber) + 32 * @sizeOf(repr.Value));
 }
 
-// -------------------------------------------------------------- fiber_reset
+/// The newborn state, as `fibers.reset` leaves it. Read after a rejected
+/// call, where nothing has run over it.
+fn assertNewborn(fiber: *fibers.Fiber, expect_stacktop: i32) void {
+    expect(fiber.maxstack == config.stack_max);
+    expect(fiber.frame == 0);
+    expect(fiber.stackstart == frame_size);
+    expect(fiber.stacktop == expect_stacktop);
+    expect(fiber.child == null);
+    expect(fiber.env == null);
+    expect(harness.isType(fiber.last_value, repr.Tag.nil));
+    // The flag word `resetState` leaves, asserted as the bit pattern rather
+    // than through `fibers.FiberFlags`: yield trapped (bit 3),
+    // `resume_no_useval` (bit 25) and `resume_no_skip` (bit 26), with the
+    // status field masked out.
+    // Spelling the number is what keeps the oracle independent of the struct
+    // whose layout it is checking.
+    expect((@as(u32, @bitCast(fiber.flags)) & ~@as(u32, 0x3F0000)) ==
+        (1 << 3) | (1 << 25) | (1 << 26));
+    expect(statusOf(fiber) == @intFromEnum(fibers.FiberStatus.new));
+    if (with_ev) {
+        expect(fiber.sched_id == 0);
+        expect(fiber.ev_callback == null);
+        expect(fiber.ev_state == null);
+        expect(fiber.ev_stream == null);
+        expect(fiber.supervisor_channel == null);
+    }
+}
 
-/// A rejected arity is reported by returning `error.Arity`, and leaves the fiber in the
-/// newborn state rather than half-built -- `vm/entry.zig`'s `pcall` is built
-/// on the return value rather than on recovering a partial frame. This is also
-/// the only vantage point from which `fibers.reset`'s own stores are
-/// visible.
+/// Write a distinguishable value into every field `fibers.reset` is
+/// supposed to clear, so that the assertions above are about stores rather than
+/// about what the allocator happened to hand back.
+fn dirty(fiber: *fibers.Fiber, child: *fibers.Fiber, env: *tables.Table) void {
+    fiber.maxstack = 7;
+    fiber.frame = 11;
+    fiber.stackstart = 13;
+    fiber.stacktop = 17;
+    fiber.child = child;
+    fiber.env = env;
+    fiber.last_value = harness.wrapInteger(23);
+    fiber.flags = .{
+        .traps = .of(&.{.@"error"}),
+        .did_raise = true,
+        .status = @intFromEnum(fibers.FiberStatus.alive),
+    };
+    if (with_ev) {
+        fiber.sched_id = 29;
+        fiber.ev_callback = null;
+        fiber.ev_state = @ptrCast(fiber);
+        fiber.ev_stream = null;
+        fiber.supervisor_channel = @ptrCast(fiber);
+    }
+}
+
+/// A rejected arity is reported by returning `error.Arity`, and leaves the
+/// fiber in the newborn state rather than half-built, `vm/entry.zig`'s `pcall`
+/// being built on the return value rather than on recovering a partial frame.
+/// This is also the only vantage point from which `fibers.reset`'s own stores
+/// are visible.
 fn aRejectedResetLeavesANewborn(binary: *functions.Function, nullary: *functions.Function) void {
     const fiber = fibers.new(nullary, 64, &.{}) catch unreachable;
     const child = fibers.new(nullary, 32, &.{}) catch unreachable;
@@ -306,9 +307,9 @@ fn argumentsLandAboveTheFrame(binary: *functions.Function, nullary: *functions.F
 /// frame that follows is small enough to fit either way.
 ///
 /// The frame that follows is `2 * JANET_FRAME_SIZE + slotcount` regardless of
-/// how many arguments were pushed -- `funcframe` measures from `stackstart`,
-/// which the argument block does not move -- so the assertion below is
-/// independent of the vararg function's arity.
+/// how many arguments were pushed, because `funcframe` measures from
+/// `stackstart` and the argument block does not move it. So the assertion
+/// below is independent of the vararg function's arity.
 fn theArgumentBlockGrowsOnEquality(variadic: *functions.Function) void {
     const argc: i32 = 32 - frame_size;
     var args: [28]repr.Value = undefined;
@@ -324,8 +325,14 @@ fn theArgumentBlockGrowsOnEquality(variadic: *functions.Function) void {
     expect(fiber.capacity == 64);
 }
 
+/// A frame's header, which lives in the slots immediately below the frame's
+/// base.
+fn fiberFrame(fiber: *fibers.Fiber) *vm_state.StackFrame {
+    return @ptrCast(@alignCast(fiber.data.? + @as(usize, @intCast(fiber.frame - frame_size))));
+}
+
 /// A fiber built by `fibers.new` is left with its first frame pushed and
-/// marked as an entrance frame, and -- under the event loop -- with no
+/// marked as an entrance frame, and, under the event loop, with no
 /// supervisor.
 fn aFiberIsReadyToRun(binary: *functions.Function) void {
     var args = [_]repr.Value{ harness.wrapInteger(3), harness.wrapInteger(4) };
@@ -361,16 +368,14 @@ fn aFiberSurvivesACollection(nullary: *functions.Function) void {
     expect(harness.vm().gc.block_count == blocks_before);
 }
 
-// ----------------------------------------------------------------- funcdefs
-
 /// Every field `functions.FuncDef.new` writes.
 ///
-/// A missing store here is only visible when the memory underneath it held
-/// something else, and on the development target it never does: macOS zeroes a
-/// block on free, so a recycled block reads exactly like a correctly emptied
-/// one. Every field below whose right answer is zero is therefore beyond an
-/// in-process contract on this platform, and the mutation sweep says so. Only
-/// `max_arity`, which starts at `INT32_MAX`, is checkable here.
+/// A missing store here is only visible when the memory underneath it was
+/// something else, and on macOS it never is: a block is zeroed on free, so a
+/// recycled block reads exactly like a correctly emptied one. Every field
+/// below whose correct value is zero is therefore out of reach of an
+/// in-process contract on that platform. Only `max_arity`, which starts at
+/// `INT32_MAX`, is checkable here.
 fn assertEmptyFuncdef(def: *functions.FuncDef) void {
     expect(def.environments == null);
     expect(def.constants == null);
@@ -449,9 +454,7 @@ fn anEmptyFuncdefSurvivesACollection() void {
     expect(harness.vm().gc.block_count == blocks_before);
 }
 
-// ------------------------------------------------------------------- thunks
-
-/// A thunk is a `JANET_MEMORY_FUNCTION` block wrapping one funcdef and no
+/// A thunk is a `MemoryType.function` block wrapping one funcdef and no
 /// environments, sized for exactly that.
 fn aThunkWrapsTheDef() void {
     const def = functions.defs.new();
@@ -492,10 +495,10 @@ fn thunksAreDistinct() void {
 /// allocation. `fatal.fatal` aborts, and abort is what a child process can
 /// report back.
 ///
-/// `std.fork` rather than the runtime's own `os_process.forkProcess`, because the
-/// point is to observe the abort rather than to exercise the process
-/// subsystem — and because `os_procs` is not compiled in every configuration
-/// this contract runs under.
+/// `std.fork` rather than the runtime's own `os_process.forkProcess`, because
+/// what this observes is the abort rather than the process subsystem, and
+/// because that subsystem is not compiled in every configuration this contract
+/// runs under.
 fn aThunkRefusesUpvalues() void {
     const child = std.c.fork();
     expect(child >= 0);
@@ -517,37 +520,16 @@ fn aThunkRefusesUpvalues() void {
     expect(std.c.W.TERMSIG(bits) == std.c.SIG.ABRT);
 }
 
-// --------------------------------------------------------------- pressure
-
-/// Repeated allocation of all three kinds, with collections in between, so that
-/// a block whose header or fields were written wrongly is swept rather than
-/// merely inspected.
-fn repeatedCycles(nullary: *functions.Function) void {
-    var i: i32 = 0;
-    while (i < 64) : (i += 1) {
-        const fiber = wrap.fromFiber(fibers.new(nullary, i, &.{}) catch unreachable);
-        const thunk = wrap.fromFunction(functions.thunk(functions.defs.new()));
-        gc_alloc.gcroot(fiber);
-        gc_alloc.gcroot(thunk);
-        gc_mark.collect();
-        _ = functions.defs.new();
-        _ = gc_alloc.gcunroot(thunk);
-        _ = gc_alloc.gcunroot(fiber);
-        gc_mark.collect();
-    }
-}
-
-// -------------------------------------------------------- delayed thunks
-
 /// `functions.thunkDelay` assembles a funcdef by hand rather than compiling
 /// one, and every field it sets is one the interpreter will read. The two
 /// allocations come from the plain heap allocator rather than from `gc.gcalloc`
 /// deliberately: a funcdef owns its bytecode and constants outright.
 ///
 /// The last assertion is the one that matters. Every field could be right and
-/// the bytecode still be wrong -- `JOP_LOAD_CONSTANT` takes its constant index
-/// from the instruction, and a zeroed second word would return an empty slot
-/// instead of the value. Calling it is the only check that covers that.
+/// the bytecode still be wrong: the load-constant opcode takes its constant
+/// index from the instruction, and a zeroed second word would give back an
+/// empty slot instead of the value. Calling the thunk is the only check that
+/// covers it.
 fn aDelayedThunkReturnsItsValue() void {
     var x = value.fromBytes("delayed", .string);
 
@@ -578,7 +560,27 @@ fn aDelayedThunkReturnsItsValue() void {
     expect(harness.equals(resumed.value, x));
 }
 
-// ------------------------------------------------------------------- main
+/// Repeated allocation of all three kinds, with collections in between, so that
+/// a block whose header or fields were written wrongly is swept rather than
+/// merely inspected.
+fn repeatedCycles(nullary: *functions.Function) void {
+    var i: i32 = 0;
+    while (i < 64) : (i += 1) {
+        const fiber = wrap.fromFiber(fibers.new(nullary, i, &.{}) catch unreachable);
+        const thunk = wrap.fromFunction(functions.thunk(functions.defs.new()));
+        gc_alloc.gcroot(fiber);
+        gc_alloc.gcroot(thunk);
+        gc_mark.collect();
+        _ = functions.defs.new();
+        _ = gc_alloc.gcunroot(thunk);
+        _ = gc_alloc.gcunroot(fiber);
+        gc_mark.collect();
+    }
+}
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

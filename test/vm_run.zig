@@ -3,24 +3,25 @@
 //! The Janet suites already run every opcode; thirty-eight of them execute for
 //! this binary to reach `main`. What they do not pin is what this file is for.
 //!
-//! **The messages the loop raises itself.** Fourteen of them, and they are the
-//! one part of `runVm` that no Janet program checks and every Janet programmer
-//! reads. Each is built by `pp_format.panicf` with a `%v` holding a `Janet`, a
-//! `%d` holding an `int32_t` and a `%s` holding a `const char *`, so a
-//! formatting mistake produces a plausible wrong message rather than a crash.
-//! Every one is compared byte for byte.
+//! The messages the loop raises itself, fourteen of them, are the one part of
+//! `runVm` that no Janet program checks and every Janet programmer reads. Each
+//! is built by `pp_format.panicf` with a `%v` for a `Janet`, a `%d` for an
+//! `int32_t` and a `%s` for a `const char *`, so a formatting mistake produces
+//! a plausible wrong message rather than a crash. Every one is compared byte
+//! for byte.
 //!
-//! **The signal, not the message.** `vm_entry.continueFiber` hands back a
+//! The signal rather than the message. `vm_entry.continueFiber` returns a
 //! signal, and several opcodes exist only to produce a particular one:
 //! `JOP_SIGNAL` clamps its operand into the user range, an unknown opcode is
-//! how a breakpoint reports itself, and `JOP_PROPAGATE` passes a child's status
-//! upward unchanged. A test that only looked at payloads would pass with all
-//! three confused.
+//! how a breakpoint reports itself, and `JOP_PROPAGATE` passes a child's
+//! status upward unchanged. A test that only looked at payloads would pass
+//! with all three confused.
 //!
-//! **The resume-state decoding at the head of the loop.** Five flags decide
-//! where a resumed fiber puts the value it was resumed with, whether it re-runs
-//! the instruction it stopped on, and whether it pops a C frame first. Nothing
-//! else in the tree reads them and the suites reach them only incidentally.
+//! The resume-state decoding at the head of the loop. Five flags decide where
+//! a resumed fiber puts the value it was resumed with, whether it re-runs the
+//! instruction it stopped on, and whether it pops a native frame first.
+//! Nothing else in the tree reads them and the suites reach them only
+//! incidentally.
 //!
 //! Two things are deliberately not pinned.
 //!
@@ -30,49 +31,59 @@
 //! funcdef built by hand or unmarshalled from crafted bytes. They are the
 //! verifier's subject rather than the loop's.
 //!
-//! `JOP_SIGNAL`'s lower clamp is unreachable for the same reason — the
-//! assembler will not encode a negative operand in a one-byte field.
+//! `JOP_SIGNAL`'s lower clamp is unreachable for the same reason, the
+//! assembler declining to encode a negative operand in a one-byte field.
 //!
 //! ## Two things this contract does differently
 //!
-//! **There is no error counter.** Counting the expected errors and comparing
-//! the total at the end is what a C contract needs, because a case that
-//! silently stopped raising looks exactly like one that passed. `raised` below
-//! asserts the signal at each site and stops there.
+//! Nothing counts the errors. `raised` below asserts the signal at each site
+//! and stops there, so a case that stopped raising fails where it stands.
 //!
-//! **The assembler sections ask the environment rather than the
-//! configuration.** `harness.coreOptional("asm")` is the distinction: what
-//! these cases need is the `asm` *binding*, and `options` names subsystems.
+//! The assembler sections ask the environment rather than the configuration.
+//! `harness.coreOptional("asm")` is the distinction: what these cases need is
+//! the `asm` *binding*, and `options` names subsystems.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const raise = @import("subsystems").raise;
-const harness = @import("harness.zig");
 
-const subsystems = @import("subsystems");
-const value = @import("subsystems").value;
-const gc_alloc = @import("subsystems").gc_alloc;
-const core_env = @import("subsystems").env;
-const fibers = @import("subsystems").value.fibers;
-const signal_core = @import("subsystems").signal;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const vm_entry_mod = @import("subsystems").vm_entry;
-const pp_describe = @import("subsystems").pp_describe;
-const strings = @import("subsystems").value.strings;
-const tuples = @import("subsystems").value.tuples;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const abi = @import("abi");
-const tables = @import("subsystems").value.tables;
-const vm_entry = subsystems.vm_entry;
-
+const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
+const fibers = @import("subsystems").value.fibers;
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
+const pp_describe = @import("subsystems").pp_describe;
+const raise = @import("subsystems").raise;
+const repr = @import("repr");
+const signal_core = @import("subsystems").signal;
+const subsystems = @import("subsystems");
+const tables = @import("subsystems").value.tables;
+const tuples = @import("subsystems").value.tuples;
+const value = @import("subsystems").value;
+const vm_entry = subsystems.vm_entry;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
 
-var test_env: ?*tables.Table = null;
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 /// Whether this build registered `asm`. Four groups of cases below can only be
 /// expressed in assembled bytecode, and an absent binding is a *compile* error
 /// inside `eval` rather than the runtime error they are looking for.
 var has_assembler = false;
+var test_env: ?*tables.Table = null;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// Roots whatever it produces and never unroots it: a Janet value in a Zig
 /// local is not a root, and these live across calls that compile source and
@@ -97,7 +108,7 @@ fn raised(source: []const u8) repr.Value {
     var buffer: [2048]u8 = undefined;
     const wrapped = std.fmt.bufPrintZ(&buffer, "(fiber/new (fn [] {s}) :ye)", .{source}) catch unreachable;
     const fiberv = eval(wrapped);
-    const resumed = vm_entry_mod.continueFiber(wrap.toFiber(fiberv), wrap.fromNil());
+    const resumed = vm_entry.continueFiber(wrap.toFiber(fiberv), wrap.fromNil());
     if (resumed.signal != abi.Signal.@"error") {
         std.debug.print("expected an error from: {s}\n", .{source});
         expect(false);
@@ -112,20 +123,6 @@ fn expectError(source: []const u8, message: [*:0]const u8) void {
         std.debug.print("source:   {s}\n", .{source});
         std.debug.print("expected: {s}\n", .{message});
         std.debug.print("     got: {s}\n", .{pp_describe.toString(payload)});
-        expect(false);
-    }
-}
-
-/// For the one message whose tail is undefined; see the header.
-fn expectErrorPrefix(source: []const u8, prefix: []const u8) void {
-    const payload = raised(source);
-    expect(harness.isType(payload, repr.Tag.string));
-    const text = wrap.toString(payload);
-    const length: usize = strings.head(text).length;
-    if (!std.mem.startsWith(u8, text[0..length], prefix)) {
-        std.debug.print("source:   {s}\n", .{source});
-        std.debug.print("expected prefix: {s}\n", .{prefix});
-        std.debug.print("            got: {s}\n", .{text[0..length]});
         expect(false);
     }
 }
@@ -147,23 +144,21 @@ fn expectEqual(source: []const u8, expected: []const u8) void {
 }
 
 /// Resume a fiber built in Janet source and report the signal as well as the
-/// value, which is the whole point of the `JOP_SIGNAL` and `JOP_PROPAGATE`
+/// value, which is what the `JOP_SIGNAL` and `JOP_PROPAGATE`
 /// cases.
-fn resumeFiber(fiberv: repr.Value, in: repr.Value) vm_entry_mod.Resumed {
+fn resumeFiber(fiberv: repr.Value, in: repr.Value) vm_entry.Resumed {
     expect(harness.isType(fiberv, repr.Tag.fiber));
-    return vm_entry_mod.continueFiber(wrap.toFiber(fiberv), in);
+    return vm_entry.continueFiber(wrap.toFiber(fiberv), in);
 }
-
-// ------------------------------------------ arithmetic and bitwise operands
 
 /// The four arithmetic opcodes and their immediate forms take the numeric path
 /// only when both operands are numbers, and every other opcode in the group
 /// narrows a double to an integer first. The narrowing is what raises.
 ///
 /// Every operand here comes from a function parameter, and that is not
-/// stylistic. The compiler folds constant arithmetic, so `(- 2 3)` is a load of
-/// -1 and reaches no opcode at all: the mutation sweep proved it by swapping
-/// the operands of every binary opcode without failing a single assertion. A
+/// stylistic. The compiler folds constant arithmetic, so `(- 2 3)` is a load
+/// of -1 and reaches no opcode at all: with constant operands the operands of
+/// every binary opcode could be swapped without failing an assertion here. A
 /// contract for the interpreter has to keep its operands away from the
 /// optimizer.
 fn arithmeticTakesTheNumericPath() void {
@@ -172,12 +167,11 @@ fn arithmeticTakesTheNumericPath() void {
     expectEqual("(do (defn f [a b] (mod a b)) (f 7 0))", "7");
     expectEqual("(do (defn f [a b] [(band a b) (bor a b) (bxor a b)]) (f 12 10))", "[8 14 6]");
     expectEqual("(do (defn f [a b] (blshift a b)) (f 3 4))", "48");
-    // **A shift is a wrapping shift and its count is taken modulo 32.** C
-    // leaves all three of these undefined -- a negative left operand, an
-    // overflow into the sign bit, and a count at or above the width -- and
-    // this defines them, which is what makes them assertable at all. The
-    // answers are what both supported architectures' shift instructions give,
-    // so a release build of the C original agrees; a Debug build of it aborts.
+    // A shift is a wrapping shift and its count is taken modulo 32. C leaves
+    // all three of these undefined, a negative left operand, an overflow into
+    // the sign bit and a count at or above the width, and this runtime defines
+    // all three, which is what makes them assertable at all. The results are
+    // what both supported architectures' shift instructions produce.
     expectEqual("(do (defn f [a b] (blshift a b)) (f -8 1))", "-16");
     expectEqual("(do (defn f [a b] (blshift a b)) (f 1 31))", "-2147483648");
     expectEqual("(do (defn f [a b] (blshift a b)) (f 1 32))", "1");
@@ -215,7 +209,7 @@ fn aBitwiseOperandOutOfRange() void {
 }
 
 /// The right operand is narrowed to `int32_t` whatever the left was narrowed
-/// to, and **the whole message is pinned**: `%f` renders the operand as the
+/// to, and the whole message is pinned: `%f` renders the operand as the
 /// `double` it is, so the digits are the same on every target.
 fn aBitwiseRightOperandOutOfRange() void {
     expectError("(band 1 1e20)", "rhs must be valid 32-bit signed integer, got 100000000000000000000.000000");
@@ -249,8 +243,6 @@ fn theOperatorFallbacks() void {
     expectError("(do (defn f [x] (+ x 3)) (f :kw))", "could not find method :+ for :kw");
 }
 
-// -------------------------------------------------- comparison and equality
-
 fn comparison() void {
     expectEqual("(do (defn f [a b] [(< a b) (<= a b) (> a b) (>= a b)]) (f 1 2))", "[true true false false]");
     expectEqual("(do (defn f [a b] [(< a b) (<= a b) (> a b) (>= a b)]) (f 2 2))", "[false true false true]");
@@ -260,7 +252,7 @@ fn comparison() void {
     // The immediate forms, including the negative operand.
     expectEqual("(do (defn f [x] [(< x 3) (> x 3)]) [(f 2) (f 4)])", "[[true false] [false true]]");
     expectEqual("(do (defn f [x] [(< x -3) (> x -3)]) [(f -5) (f 0)])", "[[true false] [false true]]");
-    // Equality against an immediate answers false for a non-number without
+    // Equality against an immediate is false for a non-number without
     // unwrapping it. Zero is the operand that distinguishes checking from not
     // checking, because a tagged-layout nil unwraps to 0.0 and a NaN-boxed one
     // unwraps to a NaN.
@@ -272,10 +264,8 @@ fn comparison() void {
     expectEqual("(do (defn f [x] (< x 3)) (f :a))", "false");
 }
 
-// --------------------------------------------------------------- calling
-
 /// The arity message is built at `JOP_CALL` and again at `JOP_TAILCALL`, with
-/// a `%v` for the callee, two `%d`s and a `%s` carrying the plural. Both sites
+/// a `%v` for the callee, two `%d`s and a `%s` for the plural. Both sites
 /// and both spellings of the plural are asserted, because they are separate
 /// format calls.
 fn theCallArityMessage() void {
@@ -285,7 +275,7 @@ fn theCallArityMessage() void {
     expectError("(do (defn f [x y] x) (defn g [] (f 1)) (g))", "<function f> called with 1 argument, expected 2");
     // JOP_CALL: the same message from a separate site, which the arithmetic
     // around the call is here to force. Every tail-position case above misses
-    // it entirely, which the mutation sweep found by inverting one plural.
+    // this site entirely, so inverting its plural alone would go unnoticed.
     expectError("(do (defn f [x] x) (defn g [] (+ 1 (f))) (g))", "<function f> called with 0 arguments, expected 1");
     expectError("(do (defn f [x y] x) (defn g [] (+ 1 (f 1))) (g))", "<function f> called with 1 argument, expected 2");
 }
@@ -305,7 +295,7 @@ fn callingANonFunction() void {
     // A keyword callee is a method *name* rather than a key: `JOP_CALL`
     // resolves it against the receiver and then calls whatever it named, with
     // the receiver as the first argument. `(:a @{:a 2})` is consequently nil
-    // and not 2 — it finds 2 and calls it, and calling a number indexes the
+    // and not 2: it finds 2 and calls it, and calling a number indexes the
     // receiver by it.
     expectEqual("(:a @{:a 2})", "nil");
     expectEqual("(do (def t @{:go (fn [self x] [:went x])}) (:go t 7))", "[:went 7]");
@@ -325,8 +315,6 @@ fn stackOverflow() void {
     expect(harness.stringValueIs(resumed.value, "stack overflow"));
 }
 
-// ------------------------------------------------------------ type assertions
-
 /// `vm_assert_type` and `vm_assert_types` share one message and one formatter,
 /// and `%T` renders a bitmask of permitted types rather than a single one.
 fn theTypeAssertions() void {
@@ -344,8 +332,6 @@ fn theTypeAssertions() void {
     expectError("(do (defn f [& xs] xs) (f ;5))", "expected array or tuple, got 5");
 }
 
-// ------------------------------------------------- collection constructors
-
 fn theCollectionConstructors() void {
     expectEqual("@[1 2 3]", "@[1 2 3]");
     expectEqual("[1 2 3]", "[1 2 3]");
@@ -353,7 +339,7 @@ fn theCollectionConstructors() void {
     expectEqual("{:a 1}", "{:a 1}");
     expectEqual("(string \"a\" 1 :b)", "\"a1b\"");
     expectEqual("(buffer \"a\" 1 :b)", "@\"a1b\"");
-    // A bracket tuple carries a flag the round tuple does not, set inside the
+    // A bracket tuple has a flag the round tuple does not, set inside the
     // opcode the two share.
     expectEqual("(tuple/type '(1 2))", ":parens");
     expectEqual("(tuple/type '[1 2])", ":brackets");
@@ -382,8 +368,6 @@ fn anOddConstructorArgumentCount() void {
         "expected even number of arguments to struct constructor, got 1",
     );
 }
-
-// ------------------------------------------------------------------- signals
 
 /// `JOP_SIGNAL` clamps its operand into the user range. The upper clamp is
 /// reachable; the lower is not, because the assembler will not encode a
@@ -419,7 +403,7 @@ fn theErrorOpcode() void {
 
 /// `JOP_PROPAGATE` hands a child's status upward as the parent's signal, and
 /// refuses a status above the user range with the only message in the loop
-/// that carries a `%s` from a static table.
+/// that takes a `%s` from a static table.
 fn thePropagateOpcode() void {
     const fiberv = eval(
         "(do (def child (fiber/new (fn [] (yield :inner)) :y))" ++
@@ -430,12 +414,10 @@ fn thePropagateOpcode() void {
     expect(resumed.signal == abi.Signal.yield);
     expect(harness.keywordIs(resumed.value, "outer"));
 
-    // Only `:new` and `:alive` sit above JANET_STATUS_USER9, so an unstarted
+    // Only `:new` and `:alive` sit above the user signals, so an unstarted
     // child is the reachable half of the check and a dead one propagates fine.
     expectError("(propagate :x (fiber/new (fn [] 1) :y))", "cannot propagate from fiber with status :new");
 }
-
-// ------------------------------------------------------- resume-state decoding
 
 /// Five flags at the head of the loop decide what a resumed fiber does with
 /// the value it was resumed with. Nothing else in the tree reads them.
@@ -458,7 +440,7 @@ fn aResumedFiberReceivesItsValue() void {
 }
 
 /// A fiber that has not started yet takes its resume value as its first
-/// argument rather than into a slot, which happens above the loop — but the
+/// argument rather than into a slot, which happens above the loop, but the
 /// loop still has to skip the instruction it would otherwise re-run.
 fn aNewFiberReceivesItsValueAsAnArgument() void {
     const fiberv = eval("(fiber/new (fn [x] [:got x]) :y)");
@@ -467,7 +449,7 @@ fn aNewFiberReceivesItsValueAsAnArgument() void {
     expect(harness.keywordIs(wrap.toTuple(resumed.value)[1], "in"));
 }
 
-/// After a raise the fiber carries `JANET_FIBER_DID_RAISE`, which the head of
+/// After a raise the fiber has `FiberFlags.did_raise` set, which the head of
 /// the loop reads to pop a C frame and to turn a raise at a tail call into an
 /// implicit return. The signal-injection path sets it too, and travels in
 /// `gc.flags` rather than in `flags`.
@@ -477,7 +459,7 @@ fn aFiberResumedAfterARaise() void {
     expect(resumed.signal == abi.Signal.@"error");
     expect(harness.keywordIs(resumed.value, "boom"));
     // And is refused a second time, by `checkCanResume` rather than by the
-    // loop — which is the boundary `vm_entry` owns.
+    // loop, which is the boundary `vm_entry` owns.
     expectError(
         "(do (def f (fiber/new (fn [] (error :boom)) :ey)) (resume f) (resume f))",
         "cannot resume fiber with status :error",
@@ -506,9 +488,7 @@ fn anInjectedSignal() void {
     expect(harness.keywordIs(resumed.value, "injected"));
 }
 
-// -------------------------------------------------------------- breakpoints
-
-/// An opcode the loop does not recognise returns `JANET_SIGNAL_DEBUG` and sets
+/// An opcode the loop does not recognise returns `abi.Signal.debug` and sets
 /// three flags, so that the resume re-runs the instruction with the breakpoint
 /// bit masked off. Bit 7 of the instruction word is how a breakpoint is set,
 /// and `vm_entry.step` sets a temporary one.
@@ -524,13 +504,13 @@ fn aBreakpointReachesTheUnknownOpcodeArm() raise.Raising(void) {
     sig = try vm_entry.step(fiber, wrap.fromNil(), &out);
     expect(sig == abi.Signal.debug);
     // And letting it run finishes.
-    const resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    const resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
     expect(resumed.signal == abi.Signal.ok);
     expect(harness.keywordIs(resumed.value, "done"));
 }
 
-/// `vm_entry.step`'s breakpoints are temporary: it restores the instruction words
-/// on the way out, so the resume never re-reads one with bit 7 set. A
+/// `vm_entry.step`'s breakpoints are temporary: it restores the instruction
+/// words on the way out, so the resume never re-reads one with bit 7 set. A
 /// breakpoint set with `debug/fbreak` stays, and resuming from it is the only
 /// state in which the mask the loop applies to its first opcode does anything.
 fn aPermanentBreakpoint() void {
@@ -540,19 +520,17 @@ fn aPermanentBreakpoint() void {
             "    (debug/fbreak g 0) f)",
     );
     const fiber = wrap.toFiber(fiberv);
-    var resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    var resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
     expect(resumed.signal == abi.Signal.debug);
     // Resuming re-runs the breakpointed instruction with bit 7 masked off, so
     // the second call reaches the same breakpoint rather than the loop
     // reporting the same one forever.
-    resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
     expect(resumed.signal == abi.Signal.debug);
-    resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
     expect(resumed.signal == abi.Signal.ok);
     expect(harness.keywordIs(resumed.value, "done"));
 }
-
-// --------------------------------------------------------- the quieter opcodes
 
 /// Opcodes with no message and no signal of their own, grouped because each is
 /// one line and a missing one is invisible.
@@ -615,7 +593,9 @@ fn theRemainingOpcodes() void {
     );
 }
 
-// ------------------------------------------------------------------- entry
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() raise.Raising(void) {
     test_env = harness.coreEnv();

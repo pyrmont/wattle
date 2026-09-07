@@ -366,12 +366,7 @@
   (def quiet (has-value? argv "--quiet"))
   (os/cd tools/root)
 
-  # `cabi_check.zig` names every declaration in a `@TypeOf` to compare it with
-  # its definition. Those are not calls -- they are the instrument that watches
-  # the calls -- and counting them would add exactly one to every row, which
-  # leaves the ordering right and every number wrong.
-  (def paths (filter |(not= $ "src/host/cabi_check.zig")
-                     (array/concat (tools/src-files) (tools/zig-files "test"))))
+  (def paths (array/concat (tools/src-files) (tools/zig-files "test")))
   (def sources @{})
   (each path paths (put sources path (tools/strip-comments (slurp path))))
 
@@ -385,27 +380,18 @@
   # this tool has never seen; three of them declared
   # `janet_table_get_keyword`'s sentinel away. 8a took the population to zero.
   #
-  # `cabi.zig` is where a deliberate indirection is declared, because
-  # `cabi_check.zig` compares every declaration there against the definition it
-  # names. `capi.zig` is the export manifest and `module.zig` is the published
-  # native-module client, which links against a shipped library rather than
-  # against this tree. Anywhere else is a finding.
-  #
-  # `crossings.zig` is the fourth, added at Phase 14 increment 4a, and it is
-  # allowed on the same terms rather than as an exemption: **`cabi_check.zig`
-  # compares its six declarations too**, against the same definitions
-  # `cabi.zig`'s are compared against. It exists so `raise.zig` can be compiled
-  # into a native module without `cabi` -- an author's `.so` was taking 163
-  # libc and runtime declarations to obtain six. If a fifth file ever wants on
-  # this list, the question to ask is not whether it is special but whether
-  # `cabi_check.zig` covers it.
+  # **`cabi.zig` is the only file left, and the exemption is now a rule about
+  # one file rather than a list of four.** The module table retired the symbol
+  # boundary: a native module reaches the runtime through `src/api/interface.zig`'s
+  # struct of function pointers, which the compiler type-checks at
+  # `capi.zig`'s initializer, so `crossings.zig` and `cabi_check.zig` are gone
+  # and neither `capi.zig` nor `module.zig` declares an `extern fn` any more.
+  # What `cabi.zig` declares is libc's, which is genuinely outside this tree.
+  # A `janet`-prefixed `extern fn` anywhere is now a finding, `cabi.zig`
+  # included -- the runtime publishes no such name for one to resolve to.
   (def declared-elsewhere @[])
   (eachp [path text] sources
-    (unless (or (string/has-prefix? "test/" path)
-                (= path "src/host/cabi.zig")
-                (= path "src/runtime/capi.zig")
-                (= path "src/api/crossings.zig")
-                (= path "src/module.zig"))
+    (unless (string/has-prefix? "test/" path)
       (each i (string/find-all "extern fn janet" text)
         (array/push declared-elsewhere
                     [path (+ 1 (length (string/find-all "\n" (string/slice text 0 i))))]))))
@@ -466,8 +452,8 @@
     (eprint "unresolved: c." name " reaches no Zig export"))
 
   (each [path line] declared-elsewhere
-    (eprint "declared outside the four checked files: " path ":" line
-            " -- an unchecked `extern fn janet*`"))
+    (eprint "a Janet symbol declared by hand: " path ":" line
+            " -- the runtime publishes no `janet*` name to resolve it"))
 
   (if check
     (do
@@ -488,7 +474,7 @@
       (when (and (empty? arrived) (empty? departed) (empty? moved))
         (print "the tree and " list-path " agree"))
       (when (empty? declared-elsewhere)
-        (print "0 `extern fn janet*` declared outside the four checked files"))
+        (print "0 `extern fn janet*` under src/"))
       (os/exit (if (and (empty? arrived) (empty? unresolved)
                         (empty? declared-elsewhere)) 0 1)))
     (do

@@ -2,56 +2,72 @@
 //! classification and argument allocation for SysV AMD64, Windows x64 and
 //! AAPCS64.
 //!
-//! All three conventions are asserted here on every target. In `ffi.c` each was
-//! compiled only on the architecture that uses it, so on any one machine two of
-//! the three were never built, let alone exercised; nothing about
-//! classification or argument placement is architecture-specific except the
-//! rules being encoded, so all three run everywhere now. `ffi_call.zig` keeps
-//! the conditions that decide which convention a build is allowed to *call* —
-//! being able to describe a Windows signature is not the same as being able to
-//! make a Windows call.
+//! All three are asserted on every target. Nothing about classification or
+//! argument placement is architecture-specific except the rules being
+//! encoded, so a build that cannot make a Windows call can still be asked
+//! whether it describes a Windows signature correctly. `ffi_call.zig` keeps
+//! the conditions that decide which convention a build may actually call
+//! through.
 //!
 //! The AAPCS64 rules differ on Apple platforms, where stack arguments are
 //! packed at their natural alignment rather than rounded up to a word. That
 //! difference arrives as a parameter rather than a conditional, so both
-//! variants are checked here regardless of which one the host would use.
+//! variants are checked whichever one the host would use.
 //!
 //! Types reach the conventions as a flat pre-order array of nodes rather than
-//! as a `Type`, so this file builds them directly and needs no Janet heap:
-//! every case below is a literal description of a type, which also means a case
-//! can describe something `ffi_types.zig` would never build.
+//! as a `Type`, so the cases build them directly and need no Janet heap.
+//! Every case is a literal description of a type, which also means a case can
+//! describe something `ffi_types.zig` would never build.
 //!
 //! ## Where the oracles come from
 //!
-//! **The three flat structures are the subject's own.** A contract on the far
-//! side of a symbol table has to declare its own `TypeNode`, `ArgSlot` and
-//! `AllocResult`, because the definitions are file-local to the subsystem --
-//! and what that buys is a layout mirror nothing compares. There were three of
-//! them at one point: the subsystem's, the caller's, and the contract's. This
-//! imports the definitions, so a field added on one side cannot be missed on
-//! the other.
+//! The three flat structures are the subject's own. `TypeNode`, `ArgSlot` and
+//! `AllocResult` are imported rather than redeclared, so a field added on one
+//! side cannot be missed on the other. Redeclaring them would put a layout
+//! mirror here that nothing compares.
 //!
-//! **The ordinals are written out**, for `test/ffi_layout.zig`'s reason: the
+//! The ordinals are written out, for `test/ffi_layout.zig`'s reason: the
 //! numbers are the wire between the classifier and `ffi/call.zig`'s `Spec`
-//! enumeration, and reading them out of the subject would be an assertion that
-//! cannot fail.
-//!
-//! **The empty-node case is new.** Both classifiers open with a guard for a
-//! zero-length walk and nothing reached it: the C contract always passed at
-//! least one node, because a C array of length zero is not something that file
-//! could spell. It is one line here.
+//! enumeration, and reading them out of the subject would be an assertion
+//! that cannot fail.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const subsystems = @import("subsystems");
-const ffi_classify = subsystems.ffi_classify;
 
-const TypeNode = ffi_classify.TypeNode;
-const ArgSlot = ffi_classify.ArgSlot;
-const AllocResult = ffi_classify.AllocResult;
+// ==========================================================================
+// Project imports
+// ==========================================================================
 
 const expect = @import("expect.zig").expect;
+const ffi_classify = subsystems.ffi_classify;
+const subsystems = @import("subsystems");
 
-/// `types.PrimType`, written out rather than imported — see the header.
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// The width of the AAPCS64 trampoline's return buffer, which `ffi_call.zig`
+/// passes as the size of a real structure.
+const aapcs64_max_ret: u64 = 128;
+
+/// `AllocResult`'s status codes, written out on the same footing as the
+/// ordinals below.
+const alloc_ok: u32 = 0;
+const alloc_unsupported_spec: u32 = 1;
+const alloc_return_too_big: u32 = 2;
+
+/// The two classifiers, under the names the cases below use. There is no
+/// third: Windows x64 decides a class and allocates a register in one pass,
+/// so its cases go straight to the allocator.
+const classifyAapcs64 = ffi_classify.classifyAapcs64;
+
+const classifySysv64 = ffi_classify.classifySysv64;
+
+/// `types.PrimType`'s ordinals, copied out rather than imported, so that the
+/// assertions have an oracle independent of the enumeration they check.
 const prim_void: u32 = 0;
 const prim_bool: u32 = 1;
 const prim_ptr: u32 = 2;
@@ -68,7 +84,9 @@ const prim_int64: u32 = 12;
 const prim_uint64: u32 = 13;
 const prim_struct: u32 = 14;
 
-/// `types.Spec`, likewise.
+/// `types.Spec`'s ordinals, copied out on the same footing. Two of the
+/// enumeration's nineteen are missing here, 2 and 12, because no case below
+/// reaches `sysv64_sseup` or `win64_stack_ref`.
 const sysv64_integer: u32 = 0;
 const sysv64_sse: u32 = 1;
 const sysv64_pair_intint: u32 = 3;
@@ -87,16 +105,19 @@ const aapcs64_stack: u32 = 16;
 const aapcs64_stack_ref: u32 = 17;
 const aapcs64_none: u32 = 18;
 
-const alloc_ok: u32 = 0;
-const alloc_unsupported_spec: u32 = 1;
-const alloc_return_too_big: u32 = 2;
+// ==========================================================================
+// Aliased types
+// ==========================================================================
 
-/// The width of the AAPCS64 trampoline's return buffer, which `ffi_call.zig`
-/// passes as the size of a real structure.
-const aapcs64_max_ret: u64 = 128;
+const AllocResult = ffi_classify.AllocResult;
+const ArgSlot = ffi_classify.ArgSlot;
+const TypeNode = ffi_classify.TypeNode;
 
-// -- Building types -------------------------------------------------------
+// ==========================================================================
+// Cases
+// ==========================================================================
 
+/// One node of a scalar type, at `offset` within whatever encloses it.
 fn leaf(prim: u32, size: u64, offset: u32) TypeNode {
     return .{
         .size = size,
@@ -109,6 +130,8 @@ fn leaf(prim: u32, size: u64, offset: u32) TypeNode {
     };
 }
 
+/// The header node of a struct, whose `field_count` fields follow it in the
+/// array.
 fn structNode(size: u32, field_count: u32, offset: u32) TypeNode {
     return .{
         .size = size,
@@ -121,6 +144,7 @@ fn structNode(size: u32, field_count: u32, offset: u32) TypeNode {
     };
 }
 
+/// One allocated argument, as a convention reports it.
 fn slot(prim: u32, size: u64, alignment: u32, spec: u32) ArgSlot {
     return .{
         .size = size,
@@ -134,18 +158,13 @@ fn slot(prim: u32, size: u64, alignment: u32, spec: u32) ArgSlot {
 }
 
 /// A homogeneous floating-point aggregate, which `ffi_call.zig` describes by
-/// its member count rather than by its width. Zero means "the caller could not
-/// say", and the allocator falls back to the byte arithmetic there.
+/// its member count rather than by its width. Zero means the caller could not
+/// say, and the allocator falls back to the byte arithmetic there.
 fn hfaSlot(size: u64, members: u32) ArgSlot {
     var s = slot(prim_struct, size, 8, aapcs64_sse);
     s.hfa_members = members;
     return s;
 }
-
-const classifySysv64 = ffi_classify.classifySysv64;
-const classifyAapcs64 = ffi_classify.classifyAapcs64;
-
-// -- SysV classification --------------------------------------------------
 
 fn sysv64ClassifiesScalars() void {
     const cases = [_]struct { prim: u32, size: u64, expected: u32 }{
@@ -261,8 +280,8 @@ fn sysv64UsesTheOffsetToPickTheEightbyte() void {
 }
 
 fn sysv64DescendsIntoNestedStructs() void {
-    // { { double } ; int64 } — the nested struct classifies SSE on its own and
-    // the outer pair is named from the two halves.
+    // { { double } ; int64 }: the nested struct classifies SSE on its own
+    // and the outer pair is named from the two halves.
     const nodes = [_]TypeNode{
         structNode(16, 2, 0),
         structNode(8, 1, 0),
@@ -271,8 +290,8 @@ fn sysv64DescendsIntoNestedStructs() void {
     };
     expect(classifySysv64(&nodes) == sysv64_pair_sseint);
 
-    // A nested struct that reached memory carries the whole enclosing type
-    // there with it, when that type fits in a single eightbyte and so goes
+    // A nested struct that reached memory sends the whole enclosing type
+    // there too, when that type fits in a single eightbyte and so goes
     // through the merge rule.
     var packed_nodes = [_]TypeNode{
         structNode(8, 1, 0),
@@ -283,14 +302,15 @@ fn sysv64DescendsIntoNestedStructs() void {
     expect(classifySysv64(&packed_nodes) == sysv64_memory);
 }
 
-/// **A field that reaches memory carries the aggregate to memory at both
-/// sizes.** The merge rule above does it for a struct of eight bytes or fewer;
-/// the two-eightbyte rules do it here. Looking only for integer classes across
-/// the two halves drops the memory field instead, so the same field decides
-/// the argument at one size and counts for nothing at another -- and a packed
-/// nested aggregate then travels in a register pair the callee's compiler
-/// reads from the stack, which misplaces it and every argument after it. AMD64
-/// ABI §3.2.3, the post-merger rule.
+/// A field that reaches memory sends the whole aggregate to memory at both
+/// sizes. The merge rule does it for a struct of eight bytes or fewer, and
+/// the two-eightbyte rules do it here.
+///
+/// Looking only for integer classes across the two halves drops the memory
+/// field instead, so the same field decides the argument at one size and
+/// counts for nothing at another. A packed nested aggregate then goes in a
+/// register pair while the callee's compiler reads it from the stack, which
+/// misplaces it and every argument after it.
 fn sysv64CarriesAMemoryFieldOutOfAPair() void {
     var nodes = [_]TypeNode{
         structNode(16, 2, 0),
@@ -335,8 +355,6 @@ fn sysv64SkipsADecidedSubtreeCorrectly() void {
     };
     expect(classifySysv64(&nested) == sysv64_pair_sseint);
 }
-
-// -- AAPCS64 classification -----------------------------------------------
 
 fn aapcs64ClassifiesScalars() void {
     const cases = [_]struct { prim: u32, size: u64, expected: u32 }{
@@ -424,25 +442,22 @@ fn aapcs64UsesTheWholeExtentOfAnArray() void {
     expect(classifyAapcs64(&nodes) == aapcs64_general_ref);
 }
 
-/// A zero-field struct is reachable -- a type of `[:pack]` names a member that
-/// is not there -- so the classifier tests the field count before it reads a
-/// first field.
+/// A zero-field struct is reachable, since a type of `[:pack]` names a member
+/// that is not there, so the classifier tests the field count before it reads
+/// a first field.
 fn aapcs64HandlesAnEmptyStruct() void {
     const empty = [_]TypeNode{structNode(0, 0, 0)};
     expect(classifyAapcs64(&empty) == aapcs64_general);
 }
 
 /// Neither classifier is given a node to look at. Both open with a guard for
-/// it and neither guard had a caller: a zero-length array is not something the
-/// C contract could spell, and `ffi_call.zig` always serializes at least the
-/// root of a type.
+/// the zero-length walk, and `ffi_call.zig` always serializes at least the
+/// root of a type, so this is the only caller either guard has.
 fn bothClassifiersAcceptNoNodes() void {
     const none: []const TypeNode = &.{};
     expect(classifySysv64(none) == sysv64_no_class);
     expect(classifyAapcs64(none) == aapcs64_none);
 }
-
-// -- Windows x64 allocation -----------------------------------------------
 
 fn win64FillsFourRegistersThenTheStack() void {
     var ret = slot(prim_int64, 8, 8, 0);
@@ -512,8 +527,8 @@ fn win64ReservesARegisterForAWideReturn() void {
     ffi_classify.allocWin64(&result, &ret, &args);
 
     expect(ret.spec == win64_register_ref);
-    // The first register holds the return pointer, so only three arguments fit
-    // and the fourth spills.
+    // The return pointer takes the first register, so only three arguments
+    // fit and the fourth spills.
     expect(args[0].offset == 1);
     expect(args[2].spec == win64_register);
     expect(args[3].spec == win64_stack);
@@ -528,8 +543,6 @@ fn win64RoundsTheStackToAnEvenNumberOfWords() void {
     // One argument on the stack, rounded up to a pair.
     expect(result.stack_count == 2);
 }
-
-// -- SysV allocation ------------------------------------------------------
 
 fn sysv64FillsTheIntegerRegisters() void {
     var ret = slot(prim_void, 0, 1, sysv64_no_class);
@@ -594,7 +607,7 @@ fn sysv64PlacesRegisterPairs() void {
     expect(args[0].offset == 0 and args[0].offset2 == 1);
     // One integer then one vector.
     expect(args[1].offset == 2 and args[1].offset2 == 0);
-    // A vector first, then an integer — the offsets swap roles.
+    // A vector first, then an integer, so the offsets swap roles.
     expect(args[2].offset == 1 and args[2].offset2 == 3);
     // Two vector registers.
     expect(args[3].offset == 2 and args[3].offset2 == 3);
@@ -646,8 +659,6 @@ fn sysv64ReportsASpecItCannotPlace() void {
     expect(result.error_kind == alloc_unsupported_spec);
     expect(result.error_arg == 1);
 }
-
-// -- AAPCS64 allocation ---------------------------------------------------
 
 fn aapcs64FillsBothRegisterBanks() void {
     var ret = slot(prim_void, 0, 1, aapcs64_none);
@@ -720,6 +731,76 @@ fn aapcs64AlignsStackAggregatesToAWord() void {
     }
 }
 
+/// One vector register per member.
+///
+/// Sizing an HFA by bytes agrees with the ABI exactly when a member is eight
+/// bytes wide, so an aggregate of `double` comes out right by coincidence and
+/// one of `float` is given half the registers the callee reads. Both are
+/// here, and the `double` case is the one that passes either way.
+fn aapcs64GivesAnHfaOneRegisterPerMember() void {
+    // Two floats: eight bytes, two members, two registers. The byte
+    // arithmetic gave this one.
+    {
+        var ret = slot(prim_void, 0, 1, aapcs64_none);
+        var args = [_]ArgSlot{ hfaSlot(8, 2), slot(prim_double, 8, 8, aapcs64_sse) };
+        var result: AllocResult = undefined;
+        ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
+        expect(args[0].spec == aapcs64_sse);
+        expect(args[0].offset == 0);
+        // The scalar behind it starts at the third register, not the second.
+        expect(args[1].offset == 2);
+    }
+
+    // Four floats: sixteen bytes, four members, four registers.
+    {
+        var ret = slot(prim_void, 0, 1, aapcs64_none);
+        var args = [_]ArgSlot{ hfaSlot(16, 4), slot(prim_double, 8, 8, aapcs64_sse) };
+        var result: AllocResult = undefined;
+        ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
+        expect(args[0].offset == 0);
+        expect(args[1].offset == 4);
+    }
+
+    // Four doubles: thirty-two bytes, four members, four registers either way.
+    {
+        var ret = slot(prim_void, 0, 1, aapcs64_none);
+        var args = [_]ArgSlot{ hfaSlot(32, 4), slot(prim_double, 8, 8, aapcs64_sse) };
+        var result: AllocResult = undefined;
+        ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
+        expect(args[0].offset == 0);
+        expect(args[1].offset == 4);
+    }
+
+    // A member count of zero means the caller could not say, either a scalar
+    // or an array whose extent the conventions ignore, and the byte
+    // arithmetic stands there.
+    {
+        var ret = slot(prim_void, 0, 1, aapcs64_none);
+        var args = [_]ArgSlot{ slot(prim_float, 4, 4, aapcs64_sse), slot(prim_double, 8, 8, aapcs64_sse) };
+        var result: AllocResult = undefined;
+        ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
+        expect(args[0].offset == 0);
+        expect(args[1].offset == 1);
+    }
+}
+
+/// The register count decides where an aggregate lands, so an HFA that no
+/// longer fits goes to the stack whole. Seven of the eight vector registers
+/// are spent, and a two-member aggregate needs two.
+fn aapcs64SpillsAnHfaThatNoLongerFits() void {
+    var ret = slot(prim_void, 0, 1, aapcs64_none);
+    var args: [8]ArgSlot = undefined;
+    for (args[0..7]) |*a| a.* = slot(prim_double, 8, 8, aapcs64_sse);
+    args[7] = hfaSlot(8, 2);
+    var result: AllocResult = undefined;
+    ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
+
+    expect(args[6].spec == aapcs64_sse);
+    expect(args[6].offset == 6);
+    expect(args[7].spec == aapcs64_stack);
+    expect(args[7].offset == 0);
+}
+
 fn aapcs64PlacesTheReferenceAreaAfterTheStack() void {
     var ret = slot(prim_void, 0, 1, aapcs64_none);
     var args = [_]ArgSlot{
@@ -755,76 +836,6 @@ fn aapcs64SpillsAReferencePointer() void {
     // follows it.
     expect(args[8].offset2 == 16);
     expect(result.stack_count == 16 + 32);
-}
-
-/// One vector register per member, which is what AAPCS64 §6.8.2 says.
-///
-/// Sizing an HFA by bytes agrees with the ABI exactly when a member is eight
-/// bytes wide, so an aggregate of `double` comes out right by coincidence and
-/// one of `float` is given half the registers the callee reads. Both are here,
-/// and the `double` case is the one that passes either way.
-fn aapcs64GivesAnHfaOneRegisterPerMember() void {
-    // Two floats: eight bytes, two members, two registers. The byte
-    // arithmetic gave this one.
-    {
-        var ret = slot(prim_void, 0, 1, aapcs64_none);
-        var args = [_]ArgSlot{ hfaSlot(8, 2), slot(prim_double, 8, 8, aapcs64_sse) };
-        var result: AllocResult = undefined;
-        ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
-        expect(args[0].spec == aapcs64_sse);
-        expect(args[0].offset == 0);
-        // The scalar behind it starts at the third register, not the second.
-        expect(args[1].offset == 2);
-    }
-
-    // Four floats: sixteen bytes, four members, four registers.
-    {
-        var ret = slot(prim_void, 0, 1, aapcs64_none);
-        var args = [_]ArgSlot{ hfaSlot(16, 4), slot(prim_double, 8, 8, aapcs64_sse) };
-        var result: AllocResult = undefined;
-        ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
-        expect(args[0].offset == 0);
-        expect(args[1].offset == 4);
-    }
-
-    // Four doubles: thirty-two bytes, four members, four registers either way.
-    {
-        var ret = slot(prim_void, 0, 1, aapcs64_none);
-        var args = [_]ArgSlot{ hfaSlot(32, 4), slot(prim_double, 8, 8, aapcs64_sse) };
-        var result: AllocResult = undefined;
-        ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
-        expect(args[0].offset == 0);
-        expect(args[1].offset == 4);
-    }
-
-    // A member count of zero means the caller could not say -- a scalar, or an
-    // array whose extent the conventions ignore -- and the byte arithmetic
-    // stands there.
-    {
-        var ret = slot(prim_void, 0, 1, aapcs64_none);
-        var args = [_]ArgSlot{ slot(prim_float, 4, 4, aapcs64_sse), slot(prim_double, 8, 8, aapcs64_sse) };
-        var result: AllocResult = undefined;
-        ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
-        expect(args[0].offset == 0);
-        expect(args[1].offset == 1);
-    }
-}
-
-/// The register count decides where an aggregate lands, so an HFA that no
-/// longer fits goes to the stack whole. Seven of the eight vector registers
-/// are spent, and a two-member aggregate needs two.
-fn aapcs64SpillsAnHfaThatNoLongerFits() void {
-    var ret = slot(prim_void, 0, 1, aapcs64_none);
-    var args: [8]ArgSlot = undefined;
-    for (args[0..7]) |*a| a.* = slot(prim_double, 8, 8, aapcs64_sse);
-    args[7] = hfaSlot(8, 2);
-    var result: AllocResult = undefined;
-    ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
-
-    expect(args[6].spec == aapcs64_sse);
-    expect(args[6].offset == 6);
-    expect(args[7].spec == aapcs64_stack);
-    expect(args[7].offset == 0);
 }
 
 fn aapcs64NamesTheReturnVariant() void {
@@ -872,10 +883,8 @@ fn aapcs64ReportsASpecItCannotPlace() void {
     expect(result.error_arg == 1);
 }
 
-// -- Invariants -----------------------------------------------------------
-
-/// Whatever the mix of arguments, a convention must never hand two of them the
-/// same register, and every register it names must be one that exists.
+/// Whatever the mix of arguments, a convention must never give two of them
+/// the same register, and every register it names must be one that exists.
 fn noConventionReusesARegister() void {
     const sysv_specs = [_]u32{
         sysv64_integer,     sysv64_sse,         sysv64_pair_intint,
@@ -1024,6 +1033,10 @@ fn aapcs64DoesNotBackfillRegisters() void {
     expect(args[1].spec == aapcs64_stack);
     expect(args[2].spec == aapcs64_stack);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     sysv64ClassifiesScalars();

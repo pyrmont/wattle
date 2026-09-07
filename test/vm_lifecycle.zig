@@ -3,71 +3,86 @@
 //!
 //! Two subjects, because they share a lifecycle.
 //!
-//! **`vm_lifecycle.init`, `vm_lifecycle.deinit`, and the sandbox.** These are
-//! the first and last functions an embedder calls, and every other test binary
-//! in this tree depends on them working without ever looking at them: a suite
-//! that reaches `main` has already proved `init` does *something*. What it has
-//! not proved is which fields of the VM are set, which are deliberately left
-//! alone, and what `deinit` puts back — and those are the difference
-//! between a host that can cycle the runtime and one that cannot. Every field
-//! `init` assigns is asserted here, in the state it leaves, and so is the
-//! subset `deinit` clears. A second full cycle runs afterwards, because a
-//! teardown that leaks a pointer looks identical to one that does not until
-//! something reuses it.
+//! `vm_lifecycle.init`, `vm_lifecycle.deinit` and the sandbox are the first
+//! and last functions an embedder calls, and every other test binary in this
+//! tree depends on them working without ever looking at them: a suite that
+//! reaches `main` has already shown `init` does *something*. What it has not
+//! shown is which fields of the VM are set, which are deliberately left alone,
+//! and what `deinit` puts back, and those are the difference between a host
+//! that can cycle the runtime and one that cannot. Every field `init` assigns
+//! is asserted here in the state it leaves, and so is the subset `deinit`
+//! clears. A second full cycle runs afterwards, because a teardown that leaks
+//! a pointer looks identical to one that does not until something reuses it.
 //!
 //! The sandbox is four lines and one of them is a refusal. It is also one-way
-//! by construction — `sandbox` asserts against `JANET_SANDBOX_SANDBOX` before
-//! widening the flags — and the one-way property is the whole security claim,
+//! by construction, `sandbox` asserting against the sandbox flag itself before
+//! widening the flags, and the one-way property is the whole security claim,
 //! so it is pinned directly rather than through a standard-library function
 //! that happens to check a flag.
 //!
-//! **`debug.debugFrame`.** `debug/stack` is the only caller, and what it
-//! returns is a table whose keys are the runtime's answer to "where am I". The Janet suites call it and check almost nothing about it.
+//! `debug.debugFrame` is the second subject. `debug/stack` is its only caller,
+//! and what it returns is a table whose keys are where the runtime believes it
+//! is. The Janet suites call it and check almost nothing about it.
 //!
 //! ## What only a contract inside the compilation can do
 //!
-//! **The unregistered-cfunction case is unconditional.** Reading the cfunction
-//! registry entry without testing it for null makes decoding a cframe whose
-//! function was never registered a null dereference. This runtime consumes
-//! `debug.traceFrame`, which has the check.
+//! The unregistered-cfunction case is unconditional here. Reading the
+//! cfunction registry entry without testing it for null would make decoding a
+//! cframe whose function was never registered a null dereference; this runtime
+//! consumes `debug.traceFrame`, which has the check.
 //!
-//! **There is no panic counter.** A C contract counted its `EXPECT_PANIC`s and
-//! compared the total at the end, because a case that silently stopped raising
-//! looked exactly like one that passed. `harness.raised` answers null when
-//! nothing raised and every site unwraps it, so a refusal that stops arriving
-//! fails at its own line.
+//! A refusal is a value. `harness.raised` returns null where nothing raised
+//! and every site unwraps it, so a refusal that stops arriving fails at its
+//! own line and nothing counts them at the end.
 //!
-//! **The decoder is reached by import**, so a raise from a `tostring` callback
+//! The decoder is reached by import, so a raise from a `tostring` callback
 //! reached through the trace decoding arrives as `error.JanetSignal` rather
 //! than as a report nobody consumes.
 
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
+
 const std = @import("std");
-const repr = @import("repr");
-const config = @import("config");
-const raise = @import("subsystems").raise;
-const harness = @import("harness.zig");
 
-const subsystems = @import("subsystems");
-const value = @import("subsystems").value;
-const tables = @import("subsystems").value.tables;
-const gc_alloc = @import("subsystems").gc_alloc;
-const tuples = @import("subsystems").value.tuples;
-const order = @import("subsystems").value.order;
-const core_env = @import("subsystems").env;
-const wrap = @import("subsystems").value.wrap;
-const fibers = @import("subsystems").value.fibers;
-const vm_entry = @import("subsystems").vm_entry;
-const pp_describe = @import("subsystems").pp_describe;
-const registry = @import("subsystems").registry;
-const vm_lifecycle = subsystems.lifecycle;
-const debug_frames = subsystems.debug;
-const symbols = @import("subsystems").value.symbols;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const abi = @import("abi");
-const vm_state = @import("subsystems").vm_state;
-
+const config = @import("config");
+const core_env = @import("subsystems").env;
+const debug_frames = subsystems.debug;
 const expect = @import("expect.zig").expect;
+const fibers = @import("subsystems").value.fibers;
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
+const order = @import("subsystems").value.order;
+const pp_describe = @import("subsystems").pp_describe;
+const raise = @import("subsystems").raise;
+const registry = @import("subsystems").registry;
+const repr = @import("repr");
+const subsystems = @import("subsystems");
+const symbols = @import("subsystems").value.symbols;
+const tables = @import("subsystems").value.tables;
+const tuples = @import("subsystems").value.tuples;
+const value = @import("subsystems").value;
+const vm_entry = @import("subsystems").vm_entry;
+const vm_lifecycle = subsystems.lifecycle;
+const vm_state = @import("subsystems").vm_state;
+const wrap = @import("subsystems").value.wrap;
 
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+var scribble_bytes: [64]u8 = undefined;
+var scribble_roots: [4]repr.Value = undefined;
 var test_env: ?*tables.Table = null;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// Roots whatever it produces and never unroots it: a Janet value in a Zig
 /// local is not a root, and these live across calls that compile source and
@@ -83,21 +98,6 @@ fn eval(source: [*:0]const u8) repr.Value {
     gc_alloc.gcroot(out);
     return out;
 }
-
-/// The same refusal reached through the standard library rather than through
-/// the assert directly. Wrapped in a fiber rather than handed to
-/// `env.dostring`, because `dostring` prints a stack trace on the way out and
-/// catches the error itself.
-fn expectSandboxRefusal(source: []const u8) void {
-    var buffer: [512]u8 = undefined;
-    const wrapped = std.fmt.bufPrintZ(&buffer, "(fiber/new (fn [] {s}) :ye)", .{source}) catch unreachable;
-    const fiberv = eval(wrapped);
-    const resumed = vm_entry.continueFiber(wrap.toFiber(fiberv), wrap.fromNil());
-    expect(resumed.signal == abi.Signal.@"error");
-    expect(harness.stringValueIs(resumed.value, "operation forbidden by sandbox"));
-}
-
-// ---------------------------------------------------------- frame readers
 
 /// A key of the table the decoder builds.
 fn frameGet(built: repr.Value, key: [*:0]const u8) repr.Value {
@@ -129,6 +129,19 @@ fn expectAbsent(built: repr.Value, key: [*:0]const u8) void {
     }
 }
 
+/// The same refusal reached through the standard library rather than through
+/// the assert directly. Wrapped in a fiber rather than handed to
+/// `env.dostring`, because `dostring` prints a stack trace on the way out and
+/// catches the error itself.
+fn expectSandboxRefusal(source: []const u8) void {
+    var buffer: [512]u8 = undefined;
+    const wrapped = std.fmt.bufPrintZ(&buffer, "(fiber/new (fn [] {s}) :ye)", .{source}) catch unreachable;
+    const fiberv = eval(wrapped);
+    const resumed = vm_entry.continueFiber(wrap.toFiber(fiberv), wrap.fromNil());
+    expect(resumed.signal == abi.Signal.@"error");
+    expect(harness.stringValueIs(resumed.value, "operation forbidden by sandbox"));
+}
+
 /// `debug.debugFrame`. It is `raise.Raising(Value)` because
 /// the trace decoding under it can reach an abstract's `tostring`; nothing in
 /// this file builds such a frame, so a raise here would be a defect rather
@@ -137,16 +150,11 @@ fn decode(f: *vm_state.StackFrame) repr.Value {
     return debug_frames.debugFrame(f) catch @panic("vm_lifecycle: decoding a frame raised");
 }
 
-// --------------------------------------------------------------- init state
-
-// `init` assigns rather than assumes, and a host that reuses a thread — or
-// that calls it after a previous runtime was torn down by something other than
-// `deinit` — depends on that. Every field it sets is scribbled on first, so the
-// assertions below are about what init wrote rather than about what a freshly
-// zeroed VM already held.
-
-var scribble_roots: [4]repr.Value = undefined;
-var scribble_bytes: [64]u8 = undefined;
+// `init` assigns rather than assumes, and a host that reuses a thread depends
+// on that, as does one that calls it after a previous runtime was torn down by
+// something other than `deinit`. Every field it sets is scribbled on first, so
+// the assertions below are about what `init` wrote rather than about what a
+// freshly zeroed VM started with.
 
 fn scribbleOverTheVm() void {
     const bytes: *abi.GCObject = @ptrCast(@alignCast(&scribble_bytes));
@@ -156,7 +164,7 @@ fn scribbleOverTheVm() void {
     harness.vm().gc.interval = 99;
     harness.vm().gc.block_count = 77;
     harness.vm().gc.mark_phase = true;
-    // `janet_init` never assigned this one and `gc.collectorInit` does.
+    // `vm_lifecycle.init` never assigned this one and `gc.collectorInit` does.
     // Scribbling it is what makes the assertion in `theStateInitLeaves`
     // capable of failing.
     harness.vm().gc.suspend_count = 11;
@@ -185,7 +193,7 @@ fn scribbleOverTheVm() void {
 /// Three of these are not literally what `init` assigned: `blocks` and
 /// `next_collection` have moved because the abstract registry is allocated
 /// during init, and `root_count` is one because that registry is rooted.
-/// Asserting those rather than the assigned values is the point — they are
+/// Asserting those rather than the assigned values is deliberate: they are
 /// what the next line of an embedder's code sees.
 fn theStateInitLeaves() raise.Raising(void) {
     scribbleOverTheVm();
@@ -208,14 +216,14 @@ fn theStateInitLeaves() raise.Raising(void) {
     expect(harness.vm().abstract_registry != null);
     expect(harness.equals(harness.vm().roots.items[0], wrap.fromTable(harness.vm().abstract_registry.?)));
 
-    // ScratchTable memory. Asserted as the whole type against what `scratchInit`
-    // starts from rather than field by field: a field added to `gc_alloc.ScratchTable`
-    // is covered here without this line being edited, and a field left out of
-    // the reset has no way to pass.
+    // ScratchTable memory, asserted as the whole type against what
+    // `scratchInit` starts from rather than field by field: a field added to
+    // `gc_alloc.ScratchTable` is covered without this line being edited, and a
+    // field left out of the reset has no way to pass.
     expect(harness.vm().user == null);
     expect(std.meta.eql(harness.vm().scratch, gc_alloc.ScratchTable.empty));
 
-    // The suspension depth, which `janet_init` never assigned and
+    // The suspension depth, which `vm_lifecycle.init` never assigned and
     // `gc.collectorInit` does. The scribble above set it, so this fails
     // against the old code.
     expect(harness.vm().gc.suspend_count == 0);
@@ -226,12 +234,12 @@ fn theStateInitLeaves() raise.Raising(void) {
     // Cfunction registry: empty, and not yet sorted.
     expect(std.meta.eql(harness.vm().registry, registry.Registry{}));
 
-    // The empty case of `vm_state.Vector`, which is the ordinary state of three
-    // of the VM's four grown arrays at this point and which the pointer they
-    // replaced could not be asked about without unwrapping a null.
+    // The empty case of a grown array, which is the ordinary state of three
+    // of the VM's four at this point and which the pointer they replaced could
+    // not be asked about without unwrapping a null.
     // `scratch`, `registry.rows` and the timer queue have never been grown,
     // so their `items` is null and `slice()` must be empty rather than a
-    // trap; `roots` holds the abstract registry and is the non-empty case
+    // trap. `roots` has the abstract registry in it and is the non-empty case
     // beside them.
     expect(harness.vm().scratch.items.len == 0);
     expect(harness.vm().scratch.capacity == 0);
@@ -277,17 +285,15 @@ fn deepen(inner: repr.Value) repr.Value {
 /// What `deinit` puts back, asserted as *every pointer the teardown frees*
 /// rather than as the list of fields it happens to assign.
 ///
-/// The difference is the whole point. This function used to enumerate the
-/// assignments in `deinit`, which means it was written from the implementation
-/// and could only ever agree with it -- so it said nothing about
-/// `scratch_mem` or the three traversal fields, the two things teardown freed
-/// and did not clear. A `gc.smalloc` between a `deinit` and the next `init`
-/// therefore wrote eight bytes through a freed pointer, and only glibc's
-/// allocator hardening ever said so.
+/// The difference matters. A list written from the assignments in `deinit`
+/// can only ever agree with `deinit`, and would say nothing about a pointer
+/// teardown frees and leaves set. A `gc.smalloc` between a `deinit` and the
+/// next `init` would then write through a freed pointer, which nothing but an
+/// allocator's own hardening would notice.
 ///
-/// So the rule this pins is the invariant and not the code: **anything
-/// teardown frees, teardown clears**, and `init` assigning a field is what
-/// says the field is part of the reset.
+/// So what this pins is the invariant rather than the code: anything teardown
+/// frees, teardown clears, and `init` assigning a field is what says the field
+/// is part of the reset.
 fn whatDeinitClears() raise.Raising(void) {
     var dummy: i32 = 0;
     expect(try vm_lifecycle.init() == 0);
@@ -296,8 +302,8 @@ fn whatDeinitClears() raise.Raising(void) {
 
     // The scratch table and the traversal stack are both allocated lazily, so
     // each needs something to have used it before the teardown can be asked
-    // whether it cleaned up. Without these two the assertions below hold
-    // vacuously, which is exactly how the omission survived.
+    // whether it cleaned up. Without these two the assertions below are
+    // vacuous, and a teardown that cleared nothing would pass them.
     const scratch = gc_alloc.smalloc(16);
     gc_alloc.sfree(scratch);
     var nested_l = wrap.fromTuple(tuples.end(tuples.begin(0)));
@@ -317,16 +323,15 @@ fn whatDeinitClears() raise.Raising(void) {
     vm_lifecycle.deinit();
 
     // The five teardown owns entire, asserted as types rather than as the
-    // fields somebody remembered. Each owner's `deinit` ends in `.* = .{}`, so
-    // this is that statement read back -- and a field added to any of the five
-    // is covered without this contract being edited, which is what makes the
-    // omission below impossible to write.
+    // fields somebody remembered. Each owner's `deinit` ends in `.* = .{}`,
+    // so this is that statement read back, and a field added to any of the
+    // five is covered without this contract being edited.
     expect(std.meta.eql(harness.vm().scratch, gc_alloc.ScratchTable.empty));
     expect(std.meta.eql(harness.vm().roots, gc_alloc.Roots.empty));
     expect(std.meta.eql(harness.vm().traversal, order.Traversal{}));
     expect(std.meta.eql(harness.vm().symcache, symbols.SymbolCache{}));
 
-    // **The registry.** A teardown that frees the rows and leaves `count`,
+    // The registry. A teardown that frees the rows and leaves `count`,
     // `capacity` and `dirty` set makes `registryGet` bisect null over a
     // non-zero count in the window before the next init. Comparing the whole
     // `Registry` is what catches that; asserting `rows == null` alone is
@@ -342,7 +347,7 @@ fn whatDeinitClears() raise.Raising(void) {
 
     // `clearMemory` ran: it is the one line of teardown whose effect is a heap
     // rather than a field, and this is the only field it leaves behind to say
-    // so. It does not reset `block_count`, which is why that is not asserted.
+    // so. It does not reset `block_count`, so that is not asserted.
     expect(harness.vm().gc.blocks == null);
 }
 
@@ -360,55 +365,6 @@ fn aSecondCycle() raise.Raising(void) {
     test_env = null;
 }
 
-// ------------------------------------------------------------------ sandbox
-
-/// The sandbox accumulates and never narrows, and `sandboxAssert` is the only
-/// thing that reads it. Run in its own cycle, because nothing can undo it.
-fn theSandboxIsOneWay() raise.Raising(void) {
-    expect(try vm_lifecycle.init() == 0);
-    test_env = harness.coreEnv();
-
-    // Nothing forbidden yet.
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.all);
-    expect(harness.vm().sandbox_flags == vm_lifecycle.Sandbox.none);
-
-    try vm_lifecycle.sandbox(vm_lifecycle.Sandbox.of(&.{"asm"}));
-    expect(harness.vm().sandbox_flags == vm_lifecycle.Sandbox.of(&.{"asm"}));
-    expect(harness.raised(vm_lifecycle.sandboxAssert, .{vm_lifecycle.Sandbox.of(&.{"asm"})}).?.says("operation forbidden by sandbox"));
-
-    // A flag that was not set is still allowed, and the assert takes a mask
-    // rather than a single flag.
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"hrtime"}));
-    expect(harness.raised(
-        vm_lifecycle.sandboxAssert,
-        .{vm_lifecycle.Sandbox.of(&.{ "asm", "hrtime" })},
-    ).?.says("operation forbidden by sandbox"));
-
-    // Flags accumulate rather than replace.
-    try vm_lifecycle.sandbox(vm_lifecycle.Sandbox.of(&.{"hrtime"}));
-    expect(harness.vm().sandbox_flags == vm_lifecycle.Sandbox.of(&.{ "asm", "hrtime" }));
-
-    // Reached through the standard library, which is how it is used. `asm` is
-    // absent from a build without the assembler, and an absent binding is a
-    // compile error inside `eval` rather than the sandbox refusal being
-    // asserted — so the environment is asked rather than `options`, which
-    // names subsystems and not registrations.
-    if (harness.coreOptional("asm") != null) {
-        expectSandboxRefusal("(asm '{:arity 0 :bytecode [(ret 0)]})");
-    }
-
-    // And the lock: once the sandbox itself is forbidden, nothing more can be
-    // added, including nothing.
-    try vm_lifecycle.sandbox(vm_lifecycle.Sandbox.of(&.{"sandbox"}));
-    expect(harness.raised(vm_lifecycle.sandbox, .{vm_lifecycle.Sandbox.none}).?.says("operation forbidden by sandbox"));
-    expect(harness.vm().sandbox_flags == vm_lifecycle.Sandbox.of(&.{ "asm", "hrtime", "sandbox" }));
-
-    vm_lifecycle.deinit();
-    test_env = null;
-}
-
-// ------------------------------------------------------------- stack frames
-
 /// The Janet-function case, with everything a funcdef can contribute: a name,
 /// a source, a source map, a program counter, the register file, and the
 /// symbol map that turns registers back into names.
@@ -425,8 +381,9 @@ fn aJanetFrame() void {
     //
     // `total` is read after the call on purpose and `scoped` goes out of scope
     // before it: a binding whose last use is before the frame stops is dead
-    // there, the symbol map says so, and `scoped`'s register still holds
-    // something by then, which is what makes its absence an assertion rather
+    // there, the symbol map says so, and `scoped`'s register still has
+    // something in it by then, which is what makes its absence an assertion
+    // rather
     // than an accident. The contract is about what is live at the program
     // counter, not about what the source mentions.
     const frames = eval(
@@ -457,7 +414,7 @@ fn aJanetFrame() void {
     }
 
     // The register file is copied whole, its length is the funcdef's, and its
-    // contents are the frame's — the first two registers hold the arguments.
+    // contents are the frame's, with the arguments in the first two registers.
     const slots = frameGet(built, "slots");
     expect(harness.isType(slots, repr.Tag.array));
     expect(wrap.toArray(slots).count == function.def.?.slotcount);
@@ -476,9 +433,9 @@ fn aJanetFrame() void {
     // And a binding that is not live there is absent. Two of them, for two
     // different reasons: `st` is written by the call this frame is stopped at
     // and has not happened yet, and `scoped` left its scope two lines above
-    // while its register still holds a value. Only the second can tell a
-    // missing death bound from a working one — a table with a nil value is a
-    // table without the key, so a binding reported live but holding nil looks
+    // while its register still has a value in it. Only the second can tell a
+    // missing death bound from a working one: a table with a nil value is a
+    // table without the key, so a binding reported live but set to nil looks
     // exactly like one correctly left out.
     expect(harness.isType(tables.get(bindings, value.fromBytes("st", .symbol)), repr.Tag.nil));
     expect(harness.isType(tables.get(bindings, value.fromBytes("scoped", .symbol)), repr.Tag.nil));
@@ -502,7 +459,7 @@ fn anAnonymousJanetFrame() void {
 fn aCapturedBinding() void {
     // `(f)` is deliberately not in tail position. A tail call replaces the
     // caller's frame, `outer` would be gone, and the environment would have
-    // been detached — which is the other branch of the same test, reading the
+    // been detached, which is the other branch of the same test, reading the
     // captured value off the stack rather than out of it. Keeping `outer`
     // alive is what makes this the on-stack case.
     const frames = eval(
@@ -524,7 +481,7 @@ fn aCapturedBinding() void {
 
 /// The same closure entered by a tail call: `outer`'s frame is replaced, its
 /// environment is detached, and the captured value is read from the
-/// environment rather than from the stack it used to live on.
+/// environment rather than from the stack slot it was captured from.
 fn aCapturedBindingOffTheStack() void {
     const frames = eval(
         "(do (defn outer2 [captured]" ++
@@ -543,9 +500,9 @@ fn aCapturedBindingOffTheStack() void {
 
 /// The registered-cfunction case. `debug/stack` is itself the top frame, so it
 /// describes its own registration: a prefixed name, the source file it was
-/// declared in, the line, and a column of one — which is not a column anybody
-/// measured, but a constant this consumer supplies because the registry has no
-/// column to give.
+/// declared in, the line, and a column of one. That column is not measured
+/// from anything; it is a constant this consumer supplies, the registry having
+/// no column to give.
 fn aRegisteredCfunctionFrame() void {
     const frames = eval("(debug/stack (fiber/current))");
     const built = wrap.toArray(frames).slice()[0];
@@ -563,19 +520,14 @@ fn aRegisteredCfunctionFrame() void {
     expectInteger(built, "source-column", 1);
 }
 
-/// A tail call is reported, and it is the one key that comes from the frame's
-/// own flags rather than from anything it points at.
-fn aTailCallFrame() void {
-    const frames = eval(
-        "(do (defn inner [] (debug/stack (fiber/current)))" ++
-            "    (defn outer [] (inner))" ++
-            "    (outer))",
-    );
-    // `inner` was entered by a tail call from `outer`, so `outer`'s frame is
-    // gone and `inner`'s carries the flag.
-    const built = wrap.toArray(frames).slice()[1];
-    expectString(built, "name", "inner");
-    expect(harness.equals(frameGet(built, "tail"), wrap.fromTrue()));
+fn aPrefixedCfunctionFrame() void {
+    const built = eval("(selfframe)");
+    expect(harness.equals(frameGet(built, "c"), wrap.fromTrue()));
+    expectString(built, "name", "vmlife/selfframe");
+    expectAbsent(built, "source");
+    expectAbsent(built, "source-line");
+    expectAbsent(built, "source-column");
+    expectAbsent(built, "function");
 }
 
 /// A cfunction registered with a prefix, which the core's own are not: every
@@ -596,19 +548,24 @@ const cfuns = [_]abi.Reg{
     .{ .name = "selfframe", .cfun = raise.stored(&cfunSelfframe), .documentation = "(selfframe)\n\nIts own stack frame." },
 };
 
-fn aPrefixedCfunctionFrame() void {
-    const built = eval("(selfframe)");
-    expect(harness.equals(frameGet(built, "c"), wrap.fromTrue()));
-    expectString(built, "name", "vmlife/selfframe");
-    expectAbsent(built, "source");
-    expectAbsent(built, "source-line");
-    expectAbsent(built, "source-column");
-    expectAbsent(built, "function");
+/// A tail call is reported, and it is the one key that comes from the frame's
+/// own flags rather than from anything it points at.
+fn aTailCallFrame() void {
+    const frames = eval(
+        "(do (defn inner [] (debug/stack (fiber/current)))" ++
+            "    (defn outer [] (inner))" ++
+            "    (outer))",
+    );
+    // `inner` was entered by a tail call from `outer`, so `outer`'s frame is
+    // gone and `inner`'s is the one with the flag.
+    const built = wrap.toArray(frames).slice()[1];
+    expectString(built, "name", "inner");
+    expect(harness.equals(frameGet(built, "tail"), wrap.fromTrue()));
 }
 
 /// A frame that has a function and no program counter reports the function and
-/// nothing that depends on where it stopped. Nothing in the runtime builds one
-/// — `fibers.funcframe` always sets `pc` — so it is constructed here,
+/// nothing that depends on where it stopped. Nothing in the runtime builds
+/// one, `fibers.funcframe` always setting `pc`, so it is constructed here,
 /// which is also the only way to reach the guard that skips the second half of
 /// the decoding.
 fn aFrameWithNoProgramCounter() void {
@@ -652,7 +609,54 @@ fn anUnregisteredCfunctionFrame() void {
     expectAbsent(built, "function");
 }
 
-// ------------------------------------------------------------------- entry
+/// The sandbox accumulates and never narrows, and `sandboxAssert` is the only
+/// thing that reads it. Run in its own cycle, because nothing can undo it.
+fn theSandboxIsOneWay() raise.Raising(void) {
+    expect(try vm_lifecycle.init() == 0);
+    test_env = harness.coreEnv();
+
+    // Nothing forbidden yet.
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.all);
+    expect(harness.vm().sandbox_flags == vm_lifecycle.Sandbox.none);
+
+    try vm_lifecycle.sandbox(vm_lifecycle.Sandbox.of(&.{"asm"}));
+    expect(harness.vm().sandbox_flags == vm_lifecycle.Sandbox.of(&.{"asm"}));
+    expect(harness.raised(vm_lifecycle.sandboxAssert, .{vm_lifecycle.Sandbox.of(&.{"asm"})}).?.says("operation forbidden by sandbox"));
+
+    // A flag that was not set is still allowed, and the assert takes a mask
+    // rather than a single flag.
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"hrtime"}));
+    expect(harness.raised(
+        vm_lifecycle.sandboxAssert,
+        .{vm_lifecycle.Sandbox.of(&.{ "asm", "hrtime" })},
+    ).?.says("operation forbidden by sandbox"));
+
+    // Flags accumulate rather than replace.
+    try vm_lifecycle.sandbox(vm_lifecycle.Sandbox.of(&.{"hrtime"}));
+    expect(harness.vm().sandbox_flags == vm_lifecycle.Sandbox.of(&.{ "asm", "hrtime" }));
+
+    // Reached through the standard library, which is how it is used. `asm` is
+    // absent from a build without the assembler, and an absent binding is a
+    // compile error inside `eval` rather than the sandbox refusal being
+    // asserted, so the environment is asked rather than `options`, which
+    // names subsystems rather than registrations.
+    if (harness.coreOptional("asm") != null) {
+        expectSandboxRefusal("(asm '{:arity 0 :bytecode [(ret 0)]})");
+    }
+
+    // And the lock: once the sandbox itself is forbidden, nothing more can be
+    // added, including nothing.
+    try vm_lifecycle.sandbox(vm_lifecycle.Sandbox.of(&.{"sandbox"}));
+    expect(harness.raised(vm_lifecycle.sandbox, .{vm_lifecycle.Sandbox.none}).?.says("operation forbidden by sandbox"));
+    expect(harness.vm().sandbox_flags == vm_lifecycle.Sandbox.of(&.{ "asm", "hrtime", "sandbox" }));
+
+    vm_lifecycle.deinit();
+    test_env = null;
+}
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() raise.Raising(void) {
     // Three cycles of their own, before anything shared exists.

@@ -5,8 +5,8 @@
 //! move together: the jump offsets inside the instructions, the source map
 //! that gives each instruction a line and column, and the symbol map that
 //! gives each local a live range. Nothing in Janet can see any of them
-//! directly — a program with a stale jump offset does not misbehave subtly, it
-//! executes the wrong instruction — so this is asserted on hand-assembled
+//! directly, and a program with a stale jump offset does not misbehave subtly
+//! but executes the wrong instruction, so this is asserted on hand-assembled
 //! bytecode rather than through the compiler that produces it.
 //!
 //! ## The shape of the fixture
@@ -24,8 +24,8 @@
 //!     5   JOP_RETURN_NIL                    3
 //!
 //! Each jump crosses exactly one deleted instruction, so each offset shrinks
-//! by one — which is the smallest fixture that can tell "adjusted" from
-//! "left alone" and from "adjusted twice".
+//! by one. That is the smallest fixture that can tell "adjusted" from "left
+//! alone" and from "adjusted twice".
 //!
 //! ## The two symbol-map entries are not the same case twice
 //!
@@ -36,14 +36,27 @@
 //! the same table would map `UINT32_MAX` to the end of the function and give
 //! the symbol a range it never had.
 
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
+
 const std = @import("std");
-const utils = @import("subsystems").utils;
-const remove_noops = @import("subsystems").optimize;
-const harness = @import("harness.zig");
-const vm_lifecycle = @import("subsystems").lifecycle;
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const constants = @import("constants");
-const functions = @import("subsystems").value.functions;
 const expect = @import("expect.zig").expect;
+const functions = @import("subsystems").value.functions;
+const harness = @import("harness.zig");
+const remove_noops = @import("subsystems").optimize;
+const utils = @import("subsystems").utils;
+const vm_lifecycle = @import("subsystems").lifecycle;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// `JOP_JUMP`'s offset is a signed 24-bit field in the top three bytes, so a
 /// backward jump is written as a wrapped `u32`.
@@ -129,6 +142,10 @@ fn aFunctionWithNoNoopsIsUntouched() void {
 
     utils.free(@ptrCast(definition.bytecode));
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 /// The runtime is initialised here and by nine sibling contracts it is not,
 /// which is a distinction this file had to make the hard way.

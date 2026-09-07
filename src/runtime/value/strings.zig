@@ -1,6 +1,12 @@
-//! `strings.String`: immutable interned-by-value bytes, their comparison, and
-//! the `string/*` surface -- along with `symbol/slice` and `keyword/slice`,
-//! which are byte operations that happen to return an interned value.
+//! Immutable bytes, their comparison, and the `string/*` surface, along with
+//! `symbol/slice` and `keyword/slice`, which are byte operations that happen
+//! to return an interned value.
+//!
+//! `new` allocates a string and fills it in one step. `begin` and `end` are
+//! the two-step form for a caller that writes the bytes itself: `begin` sizes
+//! and terminates the block, and `end` computes the hash. `head` and `data`
+//! move between the value and its header, and `compare`, `equal` and
+//! `equalconst` are the comparisons.
 //!
 //! ## One allocation strategy, three files
 //!
@@ -11,195 +17,100 @@
 //! `gc.gcallocWithPayload`, sized once and never resized. That is what makes
 //! them immutable in the runtime's sense, and it is why the three share:
 //!
-//!  - **A head recovered by pointer arithmetic.** The value Janet passes
-//!    around is the address of the payload, not of the block, so every
-//!    operation subtracts the header size to get back to the header.
-//!    `gc/sweep.zig` already does this for the free path; `head` below is the
-//!    same shape, subtracting `@offsetOf(StringHead, "_data")`.
-//!    `test/gc_mark.zig` checks the offset the allocator actually used.
-//!  - **A hash computed once, at the end of construction.** `begin` leaves
-//!    `hash` uninitialised and `end` fills it in, so a value observed between
-//!    the two has an indeterminate hash and nothing may put it in a dictionary
-//!    before `end` runs.
+//!  - A head recovered by pointer arithmetic. The value Janet passes around
+//!    is the address of the payload, not of the block, so every operation
+//!    subtracts the header size to get back to the header. `gc/sweep.zig`
+//!    already does this for the free path; `head` below is the same shape,
+//!    subtracting `@offsetOf(StringHead, "_data")`. `test/gc_mark.zig` checks
+//!    the offset the allocator actually used.
+//!  - A hash computed once, at the end of construction. `begin` leaves `hash`
+//!    uninitialised and `end` fills it in, so a value observed between the two
+//!    has an indeterminate hash and nothing may put it in a dictionary before
+//!    `end` runs.
 //!
 //! There is no `keywords.zig` because a keyword and a symbol are the same
 //! interned bytes under a different tag, and `helpers/wrap.zig` is where the
-//! tag lives. **This file owns the string head accessors**: `head` and `data`
-//! are `pub` so that `symbols.zig` reaches them rather than keeping a copy,
+//! tag lives. This file owns the string head accessors: `head` and `data` are
+//! `pub` so that `symbols.zig` reaches them rather than keeping a copy,
 //! because two copies of a pointer offset can disagree where a caller sees it.
+//!
+//! ## The cfunction surface
+//!
+//! What raises is the argument layer and the buffer pushes, and the
+//! `cfunString*` functions are where both are reached. Nothing above them
+//! raises: `gcalloc` can trigger a collection, but an abstract type's `gc` and
+//! `gcmark` are `callconv(.c) void` by contract, so a collection has no error
+//! to deliver. `KmpState` is the one thing in this file that owns heap memory
+//! across a call that can raise, and every user of it owes a `defer`.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const corefn = @import("../corefn.zig");
-const repr = @import("repr");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
+const args_core = @import("../args.zig");
+const arrays = @import("arrays.zig");
+const buffers = @import("buffers.zig");
 const c = @import("cabi");
+const corefn = @import("../corefn.zig");
+const fatal = @import("../fatal.zig");
+const gc_alloc = @import("../gc.zig");
+const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
 const registry = @import("../registry.zig");
-const pp_format = @import("../pp/format.zig");
-const gc_alloc = @import("../gc.zig");
-const utils = @import("../utils.zig");
-const wrap = @import("helpers/wrap.zig");
-const args_core = @import("../args.zig");
-const fatal = @import("../fatal.zig");
+const repr = @import("repr");
 const symbols = @import("symbols.zig");
-const buffers = @import("buffers.zig");
-const arrays = @import("arrays.zig");
-const tuples = @import("tuples.zig");
-const value = @import("../value.zig");
-const abi = @import("abi");
 const tables = @import("tables.zig");
+const tuples = @import("tuples.zig");
+const utils = @import("../utils.zig");
+const value = @import("../value.zig");
+const wrap = @import("helpers/wrap.zig");
 
-/// A string's head: the collector's object, the length and the hash, with the
-/// bytes following it in the same allocation.
-pub const StringHead = extern struct {
-    gc: abi.GCObject = .{},
-    length: u32 = 0,
-    hash: i32 = 0,
-    _data: [0]u8 = std.mem.zeroes([0]u8),
-};
+// ==========================================================================
+// Constants
+// ==========================================================================
 
-comptime {
-    // The width is the contract -- a marshalled string carries it and the
-    // payload sits behind it -- and the sign is not, so the head is compared
-    // against a re-declaration with the signed field rather than against a
-    // remembered offset, which would be a different number per target.
-    // `hash` stays signed: it is a hash, and `value.hashBytes` answers an
-    // `i32`.
-    const SignedHead = extern struct {
-        gc: abi.GCObject = .{},
-        length: i32 = 0,
-        hash: i32 = 0,
-        _data: [0]u8 = std.mem.zeroes([0]u8),
-    };
-    std.debug.assert(@offsetOf(StringHead, "_data") == @offsetOf(SignedHead, "_data"));
-    std.debug.assert(@offsetOf(StringHead, "hash") == @offsetOf(SignedHead, "hash"));
-    std.debug.assert(@sizeOf(StringHead) == @sizeOf(SignedHead));
-}
+/// What `string/trim` and its two halves treat as whitespace where the caller
+/// names no set: space, tab, carriage return, newline, vertical tab and form
+/// feed.
+const default_trim_set = " \t\r\n\x0b\x0c";
 
 /// Where the bytes begin within the block. `@offsetOf` and not `@sizeOf`: the
 /// head is Zig's own declaration, so `_data` is an ordinary field whose offset
 /// the compiler takes exactly.
 pub const string_payload = @offsetOf(StringHead, "_data");
 
-/// Recover a string's head from the bytes Janet passes around. Symbols and
-/// keywords are strings and use this too.
-pub inline fn head(s: [*]const u8) *StringHead {
-    return @ptrFromInt(@intFromPtr(s) -% string_payload);
-}
-
-/// The inverse, for a block the allocator has just returned. It takes a
-/// `*const` head and hands back a mutable payload: the allocator's caller has
-/// to write through it, and a const head is what a comparison or a hash holds.
-pub inline fn data(hd: *const StringHead) [*]u8 {
-    return @ptrFromInt(@intFromPtr(hd) +% string_payload);
-}
+// ==========================================================================
+// Aliased types
+// ==========================================================================
 
 /// The three interned byte pointers. A symbol and a keyword are the same
-/// interned bytes as a string under a different tag, which is why neither has
-/// a head of its own.
+/// interned bytes as a string under a different tag. Neither has a head of its
+/// own.
+pub const Keyword = [*:0]const u8;
 pub const String = [*:0]const u8;
 pub const Symbol = [*:0]const u8;
-pub const Keyword = [*:0]const u8;
-
-pub inline fn lengthOf(s: [*]const u8) u32 {
-    return head(s).length;
-}
-
-pub inline fn hashOf(s: [*]const u8) i32 {
-    return head(s).hash;
-}
-
-/// An interned string's bytes, counted from its head. The NUL past the end is
-/// real and is not included, which is what `lengthOf` above answers too.
-pub inline fn bytesOf(s: [*]const u8) []const u8 {
-    return s[0..head(s).length];
-}
-
-// ------------------------------------------------------------------ string
-
-/// Allocate a string of `length` bytes and terminate it. The bytes themselves
-/// are uninitialised and so is the hash: the caller fills the first and `end`
-/// below computes the second.
-pub fn begin(length: usize) [*]u8 {
-    const hd = gc_alloc.gcallocWithPayload(StringHead, .string, length +% 1);
-    hd.length = @intCast(length);
-    const payload = data(hd);
-    payload[length] = 0;
-    return payload;
-}
-
-/// Close a string built by hand. This is the only place a string's hash is
-/// written outside `new` below, and until it runs the head holds whatever the
-/// allocator left there.
-pub fn end(str: [*]u8) [*:0]const u8 {
-    head(str).hash = value.hashBytes(str[0..lengthOf(str)]);
-    return @ptrCast(str);
-}
-
-/// Allocate a string and fill it from `buf` in one step.
-pub fn new(buf: []const u8) [*:0]const u8 {
-    const hd = gc_alloc.gcallocWithPayload(StringHead, .string, buf.len +% 1);
-    hd.length = @intCast(buf.len);
-    hd.hash = value.hashBytes(buf);
-    const payload = data(hd);
-    @memcpy(payload[0..buf.len], buf);
-    payload[buf.len] = 0;
-    return @ptrCast(payload);
-}
-
-/// Order two strings. Shorter is less when one is a prefix of the other, and
-/// the `memcmp` result is normalised to -1, 0 or 1 rather than passed through:
-/// `memcmp` may return any value of the right sign, and Janet's comparison
-/// contract is the three-valued one.
-pub fn compare(lhs: [*]const u8, rhs: [*]const u8) c_int {
-    const xlen = lengthOf(lhs);
-    const ylen = lengthOf(rhs);
-    const len = if (xlen > ylen) ylen else xlen;
-    const res = c.memcmp(lhs, rhs, @intCast(len));
-    if (res != 0) return if (res > 0) 1 else -1;
-    if (xlen == ylen) return 0;
-    return if (xlen < ylen) -1 else 1;
-}
-
-/// Compare an interned string against a length and hash the caller already has,
-/// which is what makes the symbol cache cheap: an unequal hash rejects without
-/// touching the bytes.
-pub fn equalconst(lhs: [*]const u8, rhs: []const u8, rhash: i32) bool {
-    const lhash = hashOf(lhs);
-    const llen = lengthOf(lhs);
-    if (lhash != rhash or llen != @as(i32, @intCast(rhs.len))) return false;
-    if (lhs == rhs.ptr) return true;
-    return c.memcmp(lhs, rhs.ptr, rhs.len) == 0;
-}
-
-pub fn equal(lhs: [*]const u8, rhs: [*]const u8) bool {
-    return equalconst(lhs, bytesOf(rhs), hashOf(rhs));
-}
-
-pub fn cstring(str: [*:0]const u8) [*:0]const u8 {
-    return new(str[0..c.strlen(str)]);
-}
 
 // ==========================================================================
-// string/*, keyword/slice and symbol/slice, the cfunction surface.
-//
-// **What raises here is the argument layer and the buffer pushes**, and this
-// is where both are reached. Nothing above the divider raises: `gcalloc` can
-// trigger a collection, but an abstract type's `gc` and `gcmark` are `void`
-// callbacks by contract, so a collection has no error to carry out.
-// `KmpState` below is the one thing in this file that owns heap memory across
-// a call that can raise.
+// Types
 // ==========================================================================
 
-/// Knuth-Morris-Pratt, and the one piece of this file that owns heap memory
-/// across a call that can raise.
+/// Knuth-Morris-Pratt search state, and the one piece of this file that owns
+/// heap memory across a call that can raise.
 ///
-/// `lookup` comes from `utils.calloc` and is released by `deinit`, **which
-/// every user of this state owes a `defer`**. Releasing it on each visible
-/// path instead misses the ones that are not visible: `registry.textSubstitution`
-/// runs a Janet function, and a raise from there *returns* out of this frame,
-/// so a release written as an ordinary statement below the call never runs.
-/// `lookup` is `utils.calloc`'s and no collector owns it, so that leaks four
-/// bytes per pattern byte.
+/// `lookup` comes from `utils.calloc` and is released by `deinit`, which every
+/// user of this state owes a `defer`. Releasing it on each visible path
+/// instead misses the paths that are not visible:
+/// `registry.textSubstitution` runs a Janet function, and a raise from there
+/// returns out of this frame, so a release written as an ordinary statement
+/// below the call never runs. `lookup` is `utils.calloc`'s and no collector
+/// owns it, so the omission leaks the whole table.
 const KmpState = struct {
     i: i32,
     j: i32,
@@ -207,6 +118,8 @@ const KmpState = struct {
     text: []const u8,
     pat: []const u8,
 
+    /// Builds the state and its jump table. `text` is what is searched and
+    /// `pat` the pattern, which must not be empty.
     fn init(text: []const u8, pat: []const u8) raise.Raising(KmpState) {
         if (pat.len == 0) return raise.panic("expected non-empty pattern");
         const lookup: [*]i32 = @ptrCast(@alignCast(utils.calloc(pat.len, @sizeOf(i32)) orelse
@@ -227,15 +140,20 @@ const KmpState = struct {
         return s;
     }
 
+    /// Releases the jump table. Owed a `defer` at every construction.
     fn deinit(s: *KmpState) void {
         utils.free(@ptrCast(s.lookup));
     }
 
+    /// Restarts the search at `i`, discarding any partial match.
     fn seti(s: *KmpState, i: i32) void {
         s.i = i;
         s.j = 0;
     }
 
+    /// The index of the next match at or after the current position, or -1
+    /// where there is none. The state advances past the match, so repeated
+    /// calls walk overlapping matches one at a time.
     fn next(s: *KmpState) i32 {
         var i = s.i;
         var j = s.j;
@@ -258,359 +176,119 @@ const KmpState = struct {
     }
 };
 
-fn findsetup(argv: []repr.Value, extra: i32) raise.Raising(KmpState) {
-    try args_core.arity(argv, 2, 3 + extra);
-    const pat = try args_core.getBytes(argv, 0);
-    const text = try args_core.getBytes(argv, 1);
-    var start: i32 = 0;
-    if (argv.len >= 3) {
-        start = try args_core.getInteger(argv, 2);
-        if (start < 0) return raise.panic("expected non-negative start index");
-    }
-    var s = try KmpState.init(args_core.viewBytes(text), args_core.viewBytes(pat));
-    s.i = start;
-    return s;
-}
-
-fn cfunStringSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    const view = try args_core.getBytes(argv, 0);
-    const range = try args_core.getSlice(argv);
-    return wrap.fromString(new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
-}
-
-fn cfunSymbolSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    const view = try args_core.getBytes(argv, 0);
-    const range = try args_core.getSlice(argv);
-    return wrap.fromSymbol(symbols.new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
-}
-
-fn cfunKeywordSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    const view = try args_core.getBytes(argv, 0);
-    const range = try args_core.getSlice(argv);
-    // A keyword and a symbol are the same interned bytes under a different tag.
-    return wrap.fromKeyword(symbols.new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
-}
-
-fn cfunStringRepeat(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 2);
-    const view = try args_core.getBytes(argv, 0);
-    const rep = try args_core.getInteger(argv, 1);
-    if (rep < 0) return raise.panic("expected non-negative number of repetitions");
-    if (rep == 0) return value.fromBytes("", .string);
-    const mulres = @as(i64, rep) * @as(i64, @intCast(view.len));
-    if (mulres > std.math.maxInt(i32)) return raise.panic("result string is too long");
-    const newbuf = begin(@intCast(mulres));
-    var offset: usize = 0;
-    const total: usize = @intCast(mulres);
-    while (offset < total) : (offset += view.len) {
-        @memcpy(newbuf[offset..][0..view.len], args_core.viewBytes(view));
-    }
-    return wrap.fromString(end(newbuf));
-}
-
-fn cfunStringBytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 1);
-    const view = try args_core.getBytes(argv, 0);
-    const tup = tuples.begin(@intCast(view.len));
-    for (0..view.len) |i| tup[i] = wrap.fromInteger(view.bytes.?[i]);
-    return wrap.fromTuple(tuples.end(tup));
-}
-
-fn cfunStringFrombytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    const buf = begin(argv.len);
-    for (0..argv.len) |i| {
-        buf[i] = @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, i))));
-    }
-    return wrap.fromString(end(buf));
-}
-
-/// ASCII only, as the docstring says: the two case functions test the byte
-/// ranges directly rather than calling `tolower`, so a locale cannot change
-/// what they do.
-fn mapCase(comptime lo: u8, comptime hi: u8, comptime delta: i8, argv: []repr.Value) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 1);
-    const view = try args_core.getBytes(argv, 0);
-    const buf = begin(@intCast(view.len));
-    for (0..view.len) |i| {
-        const byte = view.bytes.?[i];
-        buf[i] = if (byte >= lo and byte <= hi)
-            @intCast(@as(i16, byte) + delta)
-        else
-            byte;
-    }
-    return wrap.fromString(end(buf));
-}
-
-fn cfunStringAsciilower(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    return try mapCase(65, 90, 32, argv);
-}
-
-fn cfunStringAsciiupper(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    return try mapCase(97, 122, -32, argv);
-}
-
-fn cfunStringReverse(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 1);
-    const view = try args_core.getBytes(argv, 0);
-    const buf = begin(@intCast(view.len));
-    for (0..view.len) |i| buf[i] = view.bytes.?[view.len - 1 - i];
-    return wrap.fromString(end(buf));
-}
-
-fn cfunStringFind(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var state = try findsetup(argv, 0);
-    defer state.deinit();
-    const result = state.next();
-    return if (result < 0) wrap.fromNil() else wrap.fromInteger(result);
-}
-
-fn cfunStringHasprefix(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 2);
-    const prefix = try args_core.getBytes(argv, 0);
-    const str = try args_core.getBytes(argv, 1);
-    if (str.len < prefix.len) return wrap.fromFalse();
-    const n = prefix.len;
-    return wrap.fromBoolean(std.mem.eql(u8, prefix.bytes.?[0..n], str.bytes.?[0..n]));
-}
-
-fn cfunStringHassuffix(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 2);
-    const suffix = try args_core.getBytes(argv, 0);
-    const str = try args_core.getBytes(argv, 1);
-    if (str.len < suffix.len) return wrap.fromFalse();
-    const n = suffix.len;
-    const tail = str.bytes.? + (str.len - suffix.len);
-    return wrap.fromBoolean(std.mem.eql(u8, suffix.bytes.?[0..n], tail[0..n]));
-}
-
-fn cfunStringFindall(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var state = try findsetup(argv, 0);
-    defer state.deinit();
-    const array = arrays.new(0);
-    while (true) {
-        const result = state.next();
-        if (result < 0) break;
-        try arrays.push(array, wrap.fromInteger(result));
-    }
-    return wrap.fromArray(array);
-}
-
+/// A `KmpState` beside the substitution `string/replace` and
+/// `string/replace-all` apply at each match.
 const ReplaceState = struct { kmp: KmpState, subst: repr.Value };
 
-fn replacesetup(argv: []repr.Value) raise.Raising(ReplaceState) {
-    try args_core.arity(argv, 3, 4);
-    const pat = try args_core.getBytes(argv, 0);
-    const subst = argv[1];
-    const text = try args_core.getBytes(argv, 2);
-    var start: i32 = 0;
-    if (argv.len == 4) {
-        start = try args_core.getInteger(argv, 3);
-        if (start < 0) return raise.panic("expected non-negative start index");
-    }
-    var s: ReplaceState = .{
-        .kmp = try KmpState.init(args_core.viewBytes(text), args_core.viewBytes(pat)),
-        .subst = subst,
-    };
-    s.kmp.i = start;
-    return s;
+/// A string's head: the collector's object, the length and the hash, with the
+/// bytes following it in the same allocation.
+///
+/// Symbols and keywords use this head too. The bytes are NUL-terminated past
+/// `length`, and the terminator is not counted.
+pub const StringHead = extern struct {
+    gc: abi.GCObject = .{},
+    length: u32 = 0,
+    hash: i32 = 0,
+    _data: [0]u8 = std.mem.zeroes([0]u8),
+};
+
+// ==========================================================================
+// Public functions
+// ==========================================================================
+
+/// Allocates a string of `length` bytes and terminates it.
+///
+/// The bytes themselves are uninitialised and so is the hash: the caller fills
+/// the first and `end` computes the second.
+pub fn begin(length: usize) [*]u8 {
+    const hd = gc_alloc.gcallocWithPayload(StringHead, .string, length +% 1);
+    hd.length = @intCast(length);
+    const payload = data(hd);
+    payload[length] = 0;
+    return payload;
 }
 
-fn cfunStringReplace(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var s = try replacesetup(argv);
-    defer s.kmp.deinit();
-    const result = s.kmp.next();
-    if (result < 0) return wrap.fromString(new(s.kmp.text));
-    const at: usize = @intCast(result);
-    const subst = try registry.textSubstitution(
-        &s.subst,
-        s.kmp.text[at..][0..s.kmp.pat.len],
-        null,
-    );
-    const buf = begin(@intCast(s.kmp.text.len - s.kmp.pat.len + subst.len));
-    const tail = s.kmp.text[at + s.kmp.pat.len ..];
-    @memcpy(buf[0..at], s.kmp.text[0..at]);
-    @memcpy(buf[at..][0..subst.len], args_core.viewBytes(subst));
-    @memcpy(buf[at + subst.len ..][0..tail.len], tail);
-    return wrap.fromString(end(buf));
+/// An interned string's bytes, counted from its head. The NUL past the end is
+/// real and is not included, which is what `lengthOf` reports too.
+pub inline fn bytesOf(s: [*]const u8) []const u8 {
+    return s[0..head(s).length];
 }
 
-fn cfunStringReplaceall(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var s = try replacesetup(argv);
-    defer s.kmp.deinit();
-    var b: buffers.Buffer = undefined;
-    var lastindex: i32 = 0;
-    _ = buffers.init(&b, @intCast(s.kmp.text.len));
-    // `buffers.init` takes its storage from `utils.malloc` and marks the header
-    // disabled, so the collector never owns it and only this `defer` returns
-    // it. The substitution below raises, which is what the `defer` is for.
-    defer buffers.deinit(&b);
-    while (true) {
-        const result = s.kmp.next();
-        if (result < 0) break;
-        const subst = try registry.textSubstitution(
-            &s.subst,
-            s.kmp.text[@intCast(result)..][0..s.kmp.pat.len],
-            null,
-        );
-        try buffers.pushBytes(&b, s.kmp.text[@intCast(lastindex)..@intCast(result)]);
-        try buffers.pushBytes(&b, args_core.viewBytes(subst));
-        lastindex = result + @as(i32, @intCast(s.kmp.pat.len));
-        s.kmp.seti(lastindex);
-    }
-    try buffers.pushBytes(&b, s.kmp.text[@intCast(lastindex)..]);
-    return wrap.fromString(new(b.slice()));
+/// Orders two strings.
+///
+/// Shorter is less where one is a prefix of the other, and the `memcmp` result
+/// is normalised to -1, 0 or 1 rather than passed through: `memcmp` may return
+/// any value of the right sign, and Janet's comparison contract is the
+/// three-valued one.
+pub fn compare(lhs: [*]const u8, rhs: [*]const u8) c_int {
+    const xlen = lengthOf(lhs);
+    const ylen = lengthOf(rhs);
+    const len = if (xlen > ylen) ylen else xlen;
+    const res = c.memcmp(lhs, rhs, @intCast(len));
+    if (res != 0) return if (res > 0) 1 else -1;
+    if (xlen == ylen) return 0;
+    return if (xlen < ylen) -1 else 1;
 }
 
-/// **The limit arithmetic is contract, decrement and all.** `limit` defaults
-/// to -1, so decrementing runs away from zero and never stops the loop, and an
-/// explicit limit of 0 behaves like an explicit 1. `DESIGN.md` section 12 is
-/// where a change to that would have to be decided.
-fn cfunStringSplit(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var limit: i32 = -1;
-    var lastindex: i32 = 0;
-    if (argv.len == 4) limit = try args_core.getInteger(argv, 3);
-    var state = try findsetup(argv, 1);
-    defer state.deinit();
-    const array = arrays.new(0);
-    while (true) {
-        const result = state.next();
-        if (result < 0) break;
-        limit -%= 1;
-        if (limit == 0) break;
-        const slice = new(state.text[@intCast(lastindex)..@intCast(result)]);
-        try arrays.push(array, wrap.fromString(slice));
-        lastindex = result + @as(i32, @intCast(state.pat.len));
-        state.seti(lastindex);
-    }
-    const slice = new(state.text[@intCast(lastindex)..]);
-    try arrays.push(array, wrap.fromString(slice));
-    return wrap.fromArray(array);
+/// Allocates a string from a NUL-terminated one, measuring it with `strlen`.
+pub fn cstring(str: [*:0]const u8) [*:0]const u8 {
+    return new(str[0..c.strlen(str)]);
 }
 
-/// A 256-bit set held in eight words, indexed by the top three bits of the
-/// byte and masked by the low five, which is worth keeping over a `[256]bool`
-/// that would be clearer and slower.
-fn cfunStringCheckset(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var bitset: [8]u32 = @splat(0);
-    try args_core.fixarity(argv, 2);
-    const set = try args_core.getBytes(argv, 0);
-    const str = try args_core.getBytes(argv, 1);
-    for (0..set.len) |i| {
-        const byte = set.bytes.?[i];
-        bitset[byte >> 5] |= @as(u32, 1) << @intCast(byte & 0x1F);
-    }
-    for (0..str.len) |i| {
-        const byte = str.bytes.?[i];
-        if (bitset[byte >> 5] & (@as(u32, 1) << @intCast(byte & 0x1F)) == 0) {
-            return wrap.fromFalse();
-        }
-    }
-    return wrap.fromTrue();
+/// The inverse of `head`, for a block the allocator has just returned.
+///
+/// `hd` is the head. It is `*const` and the result is mutable: the allocator's
+/// caller writes through the result, and a comparison or a hash is given a
+/// const head.
+pub inline fn data(hd: *const StringHead) [*]u8 {
+    return @ptrFromInt(@intFromPtr(hd) +% string_payload);
 }
 
-fn cfunStringJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    try args_core.arity(argv, 1, 2);
-    const parts = try args_core.getIndexed(argv, 0);
-    const joiner: abi.ByteView = if (argv.len == 2)
-        try args_core.getBytes(argv, 1)
-    else
-        .{ .bytes = "", .len = 0 };
-
-    // Two passes, and the first one is what rejects a bad part: nothing is
-    // allocated until every item is known to be a byte sequence and the total
-    // is known to fit.
-    var finallen: i64 = 0;
-    for (0..parts.len) |i| {
-        const chunk = args_core.bytesView(parts[i]) orelse {
-            return pp_format.panicf("item %d of parts is not a byte sequence, got %v", .{ @as(i64, @intCast(i)), parts[i] });
-        };
-        if (i != 0) finallen += @intCast(joiner.len);
-        finallen += @intCast(chunk.len);
-        if (finallen > std.math.maxInt(i32)) return raise.panic("result string too long");
-    }
-
-    const buf = begin(@intCast(finallen));
-    var out: usize = 0;
-    for (0..parts.len) |i| {
-        if (i != 0) {
-            @memcpy(buf[out..][0..joiner.len], args_core.viewBytes(joiner));
-            out += joiner.len;
-        }
-        const chunk = args_core.bytesView(parts[i]).?;
-        @memcpy(buf[out..][0..chunk.len], chunk);
-        out += chunk.len;
-    }
-    return wrap.fromString(end(buf));
+/// Closes a string built by hand, computing its hash and returning it as a
+/// terminated string.
+///
+/// This is the only place a string's hash is written outside `new`, and until
+/// it runs the head has whatever the allocator left there.
+pub fn end(str: [*]u8) [*:0]const u8 {
+    head(str).hash = value.hashBytes(str[0..lengthOf(str)]);
+    return @ptrCast(str);
 }
 
-fn cfunStringFormat(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    try args_core.arity(argv, 1, -1);
-    const buffer = buffers.new(0);
-    const strfrmt = try args_core.getString(argv, 0);
-    try pp_format.bufferFormat(buffer, @ptrCast(strfrmt), 1, argv);
-    return wrap.fromString(new(buffer.slice()));
+/// Whether two interned strings have equal bytes.
+pub fn equal(lhs: [*]const u8, rhs: [*]const u8) bool {
+    return equalconst(lhs, bytesOf(rhs), hashOf(rhs));
 }
 
-const default_trim_set = " \t\r\n\x0b\x0c";
-
-fn trimArgs(argv: []repr.Value, str: *abi.ByteView, set: *abi.ByteView) raise.Raising(void) {
-    try args_core.arity(argv, 1, 2);
-    str.* = try args_core.getBytes(argv, 0);
-    if (argv.len >= 2) {
-        set.* = try args_core.getBytes(argv, 1);
-    } else {
-        set.* = .{ .bytes = default_trim_set, .len = default_trim_set.len };
-    }
+/// Compares an interned string against a length and hash the caller has
+/// already, which is what makes the symbol cache cheap: an unequal hash
+/// rejects without touching the bytes.
+pub fn equalconst(lhs: [*]const u8, rhs: []const u8, rhash: i32) bool {
+    const lhash = hashOf(lhs);
+    const llen = lengthOf(lhs);
+    if (lhash != rhash or llen != @as(i32, @intCast(rhs.len))) return false;
+    if (lhs == rhs.ptr) return true;
+    return c.memcmp(lhs, rhs.ptr, rhs.len) == 0;
 }
 
-fn inSet(set: abi.ByteView, x: u8) bool {
-    for (0..set.len) |j| if (set.bytes.?[j] == x) return true;
-    return false;
+/// An interned string's hash, read from its head.
+pub inline fn hashOf(s: [*]const u8) i32 {
+    return head(s).hash;
 }
 
-fn leftEdge(str: abi.ByteView, set: abi.ByteView) usize {
-    for (0..str.len) |i| if (!inSet(set, str.bytes.?[i])) return i;
-    return str.len;
+/// Recovers a string's head from the bytes Janet passes around. Symbols and
+/// keywords are strings and use this too.
+pub inline fn head(s: [*]const u8) *StringHead {
+    return @ptrFromInt(@intFromPtr(s) -% string_payload);
 }
 
-/// The walk is backwards and the counter is **unsigned anyway**, because
-/// the decrement is separable from the use: guard, step, then read. The
-/// `i32` form ran to -1 to terminate, which is the shape that cannot be
-/// unsigned; this one stops at zero having read index zero.
-fn rightEdge(str: abi.ByteView, set: abi.ByteView) usize {
-    var i = str.len;
-    while (i > 0) {
-        i -= 1;
-        if (!inSet(set, str.bytes.?[i])) return i + 1;
-    }
-    return 0;
+/// An interned string's length in bytes, read from its head. The terminator is
+/// not counted.
+pub inline fn lengthOf(s: [*]const u8) u32 {
+    return head(s).length;
 }
 
-fn cfunStringTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var str: abi.ByteView = undefined;
-    var set: abi.ByteView = undefined;
-    try trimArgs(argv, &str, &set);
-    const left = leftEdge(str, set);
-    const right = rightEdge(str, set);
-    if (right < left) return wrap.fromString(new(""));
-    return wrap.fromString(new(str.bytes.?[left..right]));
-}
-
-fn cfunStringTriml(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var str: abi.ByteView = undefined;
-    var set: abi.ByteView = undefined;
-    try trimArgs(argv, &str, &set);
-    const left = leftEdge(str, set);
-    return wrap.fromString(new(str.bytes.?[left..str.len]));
-}
-
-fn cfunStringTrimr(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    var str: abi.ByteView = undefined;
-    var set: abi.ByteView = undefined;
-    try trimArgs(argv, &str, &set);
-    return wrap.fromString(new(str.bytes.?[0..rightEdge(str, set)]));
-}
-
+/// Installs the `string/`, `symbol/slice` and `keyword/slice` cfunctions into
+/// `env`.
 pub fn lib(env: *tables.Table) void {
     const slice_doc = "Returns a substring from a byte sequence. The substring is from " ++
         "index `start` inclusive to index `end`, exclusive. All indexing " ++
@@ -695,4 +373,431 @@ pub fn lib(env: *tables.Table) void {
         corefn.reg("string/trimr", &cfunStringTrimr, @src(), "(string/trimr str &opt set)", "Trim trailing " ++ trim_doc_tail),
     };
     corefn.install(env, entries);
+}
+
+/// Allocates a string and fills it from `buf` in one step.
+pub fn new(buf: []const u8) [*:0]const u8 {
+    const hd = gc_alloc.gcallocWithPayload(StringHead, .string, buf.len +% 1);
+    hd.length = @intCast(buf.len);
+    hd.hash = value.hashBytes(buf);
+    const payload = data(hd);
+    @memcpy(payload[0..buf.len], buf);
+    payload[buf.len] = 0;
+    return @ptrCast(payload);
+}
+
+// ==========================================================================
+// Private functions
+// ==========================================================================
+
+/// `keyword/slice`: `string/slice` returning a keyword.
+fn cfunKeywordSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    const view = try args_core.getBytes(argv, 0);
+    const range = try args_core.getSlice(argv);
+    // A keyword and a symbol are the same interned bytes under a different tag.
+    return wrap.fromKeyword(symbols.new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
+}
+
+/// `string/ascii-lower`: the ASCII upper-case bytes lowered.
+fn cfunStringAsciilower(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    return try mapCase(65, 90, 32, argv);
+}
+
+/// `string/ascii-upper`: the ASCII lower-case bytes raised.
+fn cfunStringAsciiupper(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    return try mapCase(97, 122, -32, argv);
+}
+
+/// `string/bytes`: a tuple of the byte values.
+fn cfunStringBytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 1);
+    const view = try args_core.getBytes(argv, 0);
+    const tup = tuples.begin(@intCast(view.len));
+    for (0..view.len) |i| tup[i] = wrap.fromInteger(view.bytes.?[i]);
+    return wrap.fromTuple(tuples.end(tup));
+}
+
+/// `string/check-set`: whether every byte of a string appears in a set.
+///
+/// The set is 256 bits in eight words, indexed by the top three bits of the
+/// byte and masked by the low five.
+fn cfunStringCheckset(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    var bitset: [8]u32 = @splat(0);
+    try args_core.fixarity(argv, 2);
+    const set = try args_core.getBytes(argv, 0);
+    const str = try args_core.getBytes(argv, 1);
+    for (0..set.len) |i| {
+        const byte = set.bytes.?[i];
+        bitset[byte >> 5] |= @as(u32, 1) << @intCast(byte & 0x1F);
+    }
+    for (0..str.len) |i| {
+        const byte = str.bytes.?[i];
+        if (bitset[byte >> 5] & (@as(u32, 1) << @intCast(byte & 0x1F)) == 0) {
+            return wrap.fromFalse();
+        }
+    }
+    return wrap.fromTrue();
+}
+
+/// `string/find`: the index of the first match, or nil.
+fn cfunStringFind(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    var state = try findsetup(argv, 0);
+    defer state.deinit();
+    const result = state.next();
+    return if (result < 0) wrap.fromNil() else wrap.fromInteger(result);
+}
+
+/// `string/find-all`: an array of the index of every match, overlapping
+/// matches counted one at a time.
+fn cfunStringFindall(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    var state = try findsetup(argv, 0);
+    defer state.deinit();
+    const array = arrays.new(0);
+    while (true) {
+        const result = state.next();
+        if (result < 0) break;
+        try arrays.push(array, wrap.fromInteger(result));
+    }
+    return wrap.fromArray(array);
+}
+
+/// `string/format`: `pp_format.bufferFormat` into a fresh buffer, returned as
+/// a string.
+fn cfunStringFormat(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    try args_core.arity(argv, 1, -1);
+    const buffer = buffers.new(0);
+    const strfrmt = try args_core.getString(argv, 0);
+    try pp_format.bufferFormat(buffer, @ptrCast(strfrmt), 1, argv);
+    return wrap.fromString(new(buffer.slice()));
+}
+
+/// `string/from-bytes`: a string of the byte values given as arguments.
+fn cfunStringFrombytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    const buf = begin(argv.len);
+    for (0..argv.len) |i| {
+        buf[i] = @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, i))));
+    }
+    return wrap.fromString(end(buf));
+}
+
+/// `string/has-prefix?`: whether a byte sequence starts with another.
+fn cfunStringHasprefix(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 2);
+    const prefix = try args_core.getBytes(argv, 0);
+    const str = try args_core.getBytes(argv, 1);
+    if (str.len < prefix.len) return wrap.fromFalse();
+    const n = prefix.len;
+    return wrap.fromBoolean(std.mem.eql(u8, prefix.bytes.?[0..n], str.bytes.?[0..n]));
+}
+
+/// `string/has-suffix?`: whether a byte sequence ends with another.
+fn cfunStringHassuffix(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 2);
+    const suffix = try args_core.getBytes(argv, 0);
+    const str = try args_core.getBytes(argv, 1);
+    if (str.len < suffix.len) return wrap.fromFalse();
+    const n = suffix.len;
+    const tail = str.bytes.? + (str.len - suffix.len);
+    return wrap.fromBoolean(std.mem.eql(u8, suffix.bytes.?[0..n], tail[0..n]));
+}
+
+/// `string/join`: the parts concatenated, optionally with a separator between
+/// them.
+fn cfunStringJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    try args_core.arity(argv, 1, 2);
+    const parts = try args_core.getIndexed(argv, 0);
+    const joiner: abi.ByteView = if (argv.len == 2)
+        try args_core.getBytes(argv, 1)
+    else
+        .{ .bytes = "", .len = 0 };
+
+    // Two passes, and the first is what rejects a bad part: nothing is
+    // allocated until every item is known to be a byte sequence and the total
+    // is known to fit.
+    var finallen: i64 = 0;
+    for (0..parts.len) |i| {
+        const chunk = args_core.bytesView(parts[i]) orelse {
+            return pp_format.panicf("item %d of parts is not a byte sequence, got %v", .{ @as(i64, @intCast(i)), parts[i] });
+        };
+        if (i != 0) finallen += @intCast(joiner.len);
+        finallen += @intCast(chunk.len);
+        if (finallen > std.math.maxInt(i32)) return raise.panic("result string too long");
+    }
+
+    const buf = begin(@intCast(finallen));
+    var out: usize = 0;
+    for (0..parts.len) |i| {
+        if (i != 0) {
+            @memcpy(buf[out..][0..joiner.len], args_core.viewBytes(joiner));
+            out += joiner.len;
+        }
+        const chunk = args_core.bytesView(parts[i]).?;
+        @memcpy(buf[out..][0..chunk.len], chunk);
+        out += chunk.len;
+    }
+    return wrap.fromString(end(buf));
+}
+
+/// `string/repeat`: `n` copies of a byte sequence concatenated.
+fn cfunStringRepeat(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 2);
+    const view = try args_core.getBytes(argv, 0);
+    const rep = try args_core.getInteger(argv, 1);
+    if (rep < 0) return raise.panic("expected non-negative number of repetitions");
+    if (rep == 0) return value.fromBytes("", .string);
+    const mulres = @as(i64, rep) * @as(i64, @intCast(view.len));
+    if (mulres > std.math.maxInt(i32)) return raise.panic("result string is too long");
+    const newbuf = begin(@intCast(mulres));
+    var offset: usize = 0;
+    const total: usize = @intCast(mulres);
+    while (offset < total) : (offset += view.len) {
+        @memcpy(newbuf[offset..][0..view.len], args_core.viewBytes(view));
+    }
+    return wrap.fromString(end(newbuf));
+}
+
+/// `string/replace`: the first match replaced.
+fn cfunStringReplace(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    var s = try replacesetup(argv);
+    defer s.kmp.deinit();
+    const result = s.kmp.next();
+    if (result < 0) return wrap.fromString(new(s.kmp.text));
+    const at: usize = @intCast(result);
+    const subst = try registry.textSubstitution(
+        &s.subst,
+        s.kmp.text[at..][0..s.kmp.pat.len],
+        null,
+    );
+    const buf = begin(@intCast(s.kmp.text.len - s.kmp.pat.len + subst.len));
+    const tail = s.kmp.text[at + s.kmp.pat.len ..];
+    @memcpy(buf[0..at], s.kmp.text[0..at]);
+    @memcpy(buf[at..][0..subst.len], args_core.viewBytes(subst));
+    @memcpy(buf[at + subst.len ..][0..tail.len], tail);
+    return wrap.fromString(end(buf));
+}
+
+/// `string/replace-all`: every non-overlapping match replaced.
+fn cfunStringReplaceall(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    var s = try replacesetup(argv);
+    defer s.kmp.deinit();
+    var b: buffers.Buffer = undefined;
+    var lastindex: i32 = 0;
+    _ = buffers.init(&b, @intCast(s.kmp.text.len));
+    // `buffers.init` takes its storage from `utils.malloc` and marks the header
+    // disabled, so the collector never owns it and only this `defer` returns
+    // it. The substitution below raises, which is what the `defer` is for.
+    defer buffers.deinit(&b);
+    while (true) {
+        const result = s.kmp.next();
+        if (result < 0) break;
+        const subst = try registry.textSubstitution(
+            &s.subst,
+            s.kmp.text[@intCast(result)..][0..s.kmp.pat.len],
+            null,
+        );
+        try buffers.pushBytes(&b, s.kmp.text[@intCast(lastindex)..@intCast(result)]);
+        try buffers.pushBytes(&b, args_core.viewBytes(subst));
+        lastindex = result + @as(i32, @intCast(s.kmp.pat.len));
+        s.kmp.seti(lastindex);
+    }
+    try buffers.pushBytes(&b, s.kmp.text[@intCast(lastindex)..]);
+    return wrap.fromString(new(b.slice()));
+}
+
+/// `string/reverse`: the bytes in the opposite order.
+fn cfunStringReverse(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 1);
+    const view = try args_core.getBytes(argv, 0);
+    const buf = begin(@intCast(view.len));
+    for (0..view.len) |i| buf[i] = view.bytes.?[view.len - 1 - i];
+    return wrap.fromString(end(buf));
+}
+
+/// `string/slice`: a new string over a half-open range of a byte sequence.
+fn cfunStringSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    const view = try args_core.getBytes(argv, 0);
+    const range = try args_core.getSlice(argv);
+    return wrap.fromString(new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
+}
+
+/// `string/split`: an array of the pieces between matches of a delimiter.
+///
+/// The limit arithmetic is the contract, decrement and all. `limit` defaults
+/// to -1 and is tested against zero after each decrement, so the default runs
+/// away from zero and never stops the loop. An explicit 0 decrements to -1 and
+/// therefore behaves like the default rather than like a limit of one.
+fn cfunStringSplit(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    var limit: i32 = -1;
+    var lastindex: i32 = 0;
+    if (argv.len == 4) limit = try args_core.getInteger(argv, 3);
+    var state = try findsetup(argv, 1);
+    defer state.deinit();
+    const array = arrays.new(0);
+    while (true) {
+        const result = state.next();
+        if (result < 0) break;
+        limit -%= 1;
+        if (limit == 0) break;
+        const slice = new(state.text[@intCast(lastindex)..@intCast(result)]);
+        try arrays.push(array, wrap.fromString(slice));
+        lastindex = result + @as(i32, @intCast(state.pat.len));
+        state.seti(lastindex);
+    }
+    const slice = new(state.text[@intCast(lastindex)..]);
+    try arrays.push(array, wrap.fromString(slice));
+    return wrap.fromArray(array);
+}
+
+/// `string/trim`: leading and trailing bytes of a set dropped.
+fn cfunStringTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    var str: abi.ByteView = undefined;
+    var set: abi.ByteView = undefined;
+    try trimArgs(argv, &str, &set);
+    const left = leftEdge(str, set);
+    const right = rightEdge(str, set);
+    if (right < left) return wrap.fromString(new(""));
+    return wrap.fromString(new(str.bytes.?[left..right]));
+}
+
+/// `string/triml`: leading bytes of a set dropped.
+fn cfunStringTriml(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    var str: abi.ByteView = undefined;
+    var set: abi.ByteView = undefined;
+    try trimArgs(argv, &str, &set);
+    const left = leftEdge(str, set);
+    return wrap.fromString(new(str.bytes.?[left..str.len]));
+}
+
+/// `string/trimr`: trailing bytes of a set dropped.
+fn cfunStringTrimr(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    var str: abi.ByteView = undefined;
+    var set: abi.ByteView = undefined;
+    try trimArgs(argv, &str, &set);
+    return wrap.fromString(new(str.bytes.?[0..rightEdge(str, set)]));
+}
+
+/// `symbol/slice`: `string/slice` returning a symbol.
+fn cfunSymbolSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    const view = try args_core.getBytes(argv, 0);
+    const range = try args_core.getSlice(argv);
+    return wrap.fromSymbol(symbols.new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
+}
+
+/// The shared argument handling of `string/find`, `string/find-all` and
+/// `string/split`, returning the search state positioned at the start index.
+///
+/// `extra` is how many optional arguments the caller takes beyond the start
+/// index. The result owns heap memory, so the caller owes a `defer`.
+fn findsetup(argv: []repr.Value, extra: i32) raise.Raising(KmpState) {
+    try args_core.arity(argv, 2, 3 + extra);
+    const pat = try args_core.getBytes(argv, 0);
+    const text = try args_core.getBytes(argv, 1);
+    var start: i32 = 0;
+    if (argv.len >= 3) {
+        start = try args_core.getInteger(argv, 2);
+        if (start < 0) return raise.panic("expected non-negative start index");
+    }
+    var s = try KmpState.init(args_core.viewBytes(text), args_core.viewBytes(pat));
+    s.i = start;
+    return s;
+}
+
+/// Whether `x` is one of `set`'s bytes.
+fn inSet(set: abi.ByteView, x: u8) bool {
+    for (0..set.len) |j| if (set.bytes.?[j] == x) return true;
+    return false;
+}
+
+/// The index of the first byte of `str` that is not in `set`, or `str.len`
+/// where every byte is.
+fn leftEdge(str: abi.ByteView, set: abi.ByteView) usize {
+    for (0..str.len) |i| if (!inSet(set, str.bytes.?[i])) return i;
+    return str.len;
+}
+
+/// The shared body of `string/ascii-lower` and `string/ascii-upper`: the bytes
+/// from `lo` through `hi` shifted by `delta` and the rest copied.
+///
+/// ASCII only, as the docstring says: the byte ranges are tested directly
+/// rather than through `tolower`, so a locale cannot change what they do.
+fn mapCase(comptime lo: u8, comptime hi: u8, comptime delta: i8, argv: []repr.Value) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 1);
+    const view = try args_core.getBytes(argv, 0);
+    const buf = begin(@intCast(view.len));
+    for (0..view.len) |i| {
+        const byte = view.bytes.?[i];
+        buf[i] = if (byte >= lo and byte <= hi)
+            @intCast(@as(i16, byte) + delta)
+        else
+            byte;
+    }
+    return wrap.fromString(end(buf));
+}
+
+/// The shared argument handling of `string/replace` and
+/// `string/replace-all`, returning the search state and the substitution. The
+/// result owns heap memory, so the caller owes a `defer`.
+fn replacesetup(argv: []repr.Value) raise.Raising(ReplaceState) {
+    try args_core.arity(argv, 3, 4);
+    const pat = try args_core.getBytes(argv, 0);
+    const subst = argv[1];
+    const text = try args_core.getBytes(argv, 2);
+    var start: i32 = 0;
+    if (argv.len == 4) {
+        start = try args_core.getInteger(argv, 3);
+        if (start < 0) return raise.panic("expected non-negative start index");
+    }
+    var s: ReplaceState = .{
+        .kmp = try KmpState.init(args_core.viewBytes(text), args_core.viewBytes(pat)),
+        .subst = subst,
+    };
+    s.kmp.i = start;
+    return s;
+}
+
+/// One past the index of the last byte of `str` that is not in `set`, or zero
+/// where every byte is.
+///
+/// The walk is backwards and the counter is unsigned anyway, because the
+/// decrement is separable from the use: guard, step, then read.
+fn rightEdge(str: abi.ByteView, set: abi.ByteView) usize {
+    var i = str.len;
+    while (i > 0) {
+        i -= 1;
+        if (!inSet(set, str.bytes.?[i])) return i + 1;
+    }
+    return 0;
+}
+
+/// The shared argument handling of the three trims: the byte sequence and the
+/// set, which defaults to `default_trim_set`.
+fn trimArgs(argv: []repr.Value, str: *abi.ByteView, set: *abi.ByteView) raise.Raising(void) {
+    try args_core.arity(argv, 1, 2);
+    str.* = try args_core.getBytes(argv, 0);
+    if (argv.len >= 2) {
+        set.* = try args_core.getBytes(argv, 1);
+    } else {
+        set.* = .{ .bytes = default_trim_set, .len = default_trim_set.len };
+    }
+}
+
+// ==========================================================================
+// Tests
+// ==========================================================================
+
+// `StringHead` against a re-declaration with a signed length. The width is the
+// contract, a marshalled string records it and the payload sits behind it, and
+// the sign is not, so the comparison is against that re-declaration rather than
+// against a remembered offset, which would be a different number per target.
+// `hash` stays signed: it is a hash, and `value.hashBytes` returns an `i32`.
+comptime {
+    const SignedHead = extern struct {
+        gc: abi.GCObject = .{},
+        length: i32 = 0,
+        hash: i32 = 0,
+        _data: [0]u8 = std.mem.zeroes([0]u8),
+    };
+    std.debug.assert(@offsetOf(StringHead, "_data") == @offsetOf(SignedHead, "_data"));
+    std.debug.assert(@offsetOf(StringHead, "hash") == @offsetOf(SignedHead, "hash"));
+    std.debug.assert(@sizeOf(StringHead) == @sizeOf(SignedHead));
 }

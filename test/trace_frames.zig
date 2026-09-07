@@ -3,54 +3,69 @@
 //!
 //! What this file guards is a rendering. `debug.stacktraceExt` prints the
 //! trace every Janet user reads, and the decoding under test decides every
-//! part of each line except the punctuation. The suites cover the two common
-//! shapes — a named Janet function with a source map, and a registered
-//! cfunction — and nothing else, because the remaining shapes need a funcdef
-//! or a registry entry that the compiler and `registry.cfuns` never produce.
+//! part of each line except the punctuation. The suites cover two common
+//! shapes, a named Janet function with a source map and a registered
+//! cfunction, and nothing else, because the remaining shapes need a funcdef or
+//! a registry entry that the compiler and `registry.cfuns` never produce.
 //!
 //! So the cases are enumerated here rather than sampled, and the awkward one
-//! is the point: **the name and the location are classified separately**, and
-//! an entry that fails the name test can still pass the location test.
-//! Collapsing the two is the mistake this file exists to catch.
+//! is what the file exists for: the name and the location are classified
+//! separately, and an entry that fails the name test can still pass the
+//! location test. Collapsing the two is the mistake this catches.
 //!
 //! ## The entry points are called by import
 //!
 //! `debug.traceFrame` and `debug.stacktraceExt` are `raise.Raising` and this
 //! calls them directly, so a raise from a `tostring` callback reached through
-//! `%v` -- the only raise either can make -- arrives as
+//! `%v`, which is the only raise either can make, arrives as
 //! `error.JanetSignal` rather than as a report nobody consumes.
 //!
-//! The two abis stay: each has callers inside the runtime that cannot carry an
-//! error union.
+//! The two abis stay, each having callers inside the runtime that cannot take
+//! an error union.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const constants = @import("constants");
-const raise = @import("subsystems").raise;
-const value = @import("subsystems").value;
-const harness = @import("harness.zig");
-const tf = @import("subsystems").debug;
-const gc_alloc = @import("subsystems").gc_alloc;
-const core_env = @import("subsystems").env;
-const vm_state = @import("subsystems").vm_state;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const wrap = @import("subsystems").value.wrap;
-const buffers = @import("subsystems").value.buffers;
-const fibers = @import("subsystems").value.fibers;
-const vm_entry = @import("subsystems").vm_entry;
-const registry = @import("subsystems").registry;
-const abi = @import("abi");
-const functions = @import("subsystems").value.functions;
-const tables = @import("subsystems").value.tables;
 
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
+const buffers = @import("subsystems").value.buffers;
+const constants = @import("constants");
+const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
+const fibers = @import("subsystems").value.fibers;
+const functions = @import("subsystems").value.functions;
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
+const raise = @import("subsystems").raise;
+const registry = @import("subsystems").registry;
+const repr = @import("repr");
+const tables = @import("subsystems").value.tables;
+const tf = @import("subsystems").debug;
+const value = @import("subsystems").value;
+const vm_entry = @import("subsystems").vm_entry;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const vm_state = @import("subsystems").vm_state;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 /// The line the registry is told this contract's probe was defined on. It is
-/// the contract's number rather than the file's — nothing reads the file — and
+/// the contract's number rather than the file's, nothing reading the file, and
 /// it is asserted literally below, so it is named once here.
 const probe_line: i32 = 41;
-
 var test_env: *tables.Table = undefined;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn compileFunction(source: [*:0]const u8) *functions.Function {
     var out = wrap.fromNil();
@@ -63,7 +78,7 @@ fn compileFunction(source: [*:0]const u8) *functions.Function {
 /// The decoder reads three fields of a frame and nothing else, so a frame can
 /// be a plain local rather than four slots carved out of a live fiber's stack.
 /// That keeps every case below constructible, including the ones no fiber
-/// would ever hold.
+/// would ever produce.
 fn frameOfFunction(frame: *vm_state.StackFrame, func: *functions.Function, pc_offset: i32) void {
     frame.* = std.mem.zeroes(vm_state.StackFrame);
     frame.func = func;
@@ -76,35 +91,17 @@ fn frameOfCfunction(frame: *vm_state.StackFrame, cfun: abi.CFunction) void {
     frame.pc = @ptrFromInt(@intFromPtr(cfun));
 }
 
-fn decode(frame: *vm_state.StackFrame) tf.TraceFrame {
-    var out: tf.TraceFrame = undefined;
-    // `debug.traceFrame` is `raise.Raising(void)` and never raises: it reads
-    // a funcdef and the registry and writes a plain structure. The
-    // `catch` is what the type asks for, not a case this contract expects.
-    tf.traceFrame(frame, &out) catch unreachable;
-    return out;
-}
-
-// Three cfunctions used only as registry keys. They are never called; what
-// matters is that each is a **distinct address** the registry can be keyed on.
-//
-// In C these would be three `static Janet f(int32_t, Janet *)` with identical
-// bodies. Here they have the type a builtin has --
-// `raise.Raising(repr.Value)` over Zig's own calling convention -- and
-// `raise.stored` is the cast into the `Row` key, which is still
-// C's layout.
-//
-// **Each returns a different value, and that is load-bearing rather than
-// decorative.** Written as three identical `return janet_wrap_nil()` bodies —
-// which is what a transcription of the C gives — every optimize mode above
-// Debug folds them into one function, so all three keys become one address:
-// `janet_registry_get(probeUnregistered)` answers the entry planted for
-// `probeNamed`, and `anUnregisteredCfunction` fails. Debug passes, and the
-// three `-Doptimize=Release*` entries of the acceptance matrix do not.
-//
-// Distinct returns are the cheapest way to make the folding illegal, and they
-// are free: nothing calls these.
-
+/// Three cfunctions used only as registry keys. They are never called; what
+/// matters is that each is a distinct address the registry can be keyed on,
+/// and each has the type a builtin has.
+///
+/// Each returns a different value, and that is load-bearing rather than
+/// decorative. Three identical bodies would be folded into one function by
+/// every optimize mode above Debug, so all three keys would become one
+/// address, the registry lookup for `probeUnregistered` would find the entry
+/// planted for `probeNamed`, and `anUnregisteredCfunction` would fail in every
+/// release build while passing in Debug. Distinct returns make the folding
+/// illegal and cost nothing, since nothing calls these.
 fn probeNamed(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
@@ -123,13 +120,42 @@ fn probeUnregistered(argv: []repr.Value) raise.Raising(repr.Value) {
     return harness.wrapInteger(3);
 }
 
+fn decode(frame: *vm_state.StackFrame) tf.TraceFrame {
+    var out: tf.TraceFrame = undefined;
+    // `debug.traceFrame` is `raise.Raising(void)` and never raises: it reads
+    // a funcdef and the registry and writes a plain structure. The
+    // `catch` is what the type asks for, not a case this contract expects.
+    tf.traceFrame(frame, &out) catch unreachable;
+    return out;
+}
+
+/// `raise.stored` is the cast from one of the three probes into the `Row` key
+/// the registry is indexed by.
 fn keyOf(probe: raise.CFunction) abi.CFunction {
     return raise.stored(probe);
 }
 
-// -------------------------------------------------------- Janet functions
+fn contents(sink: *buffers.Buffer) []const u8 {
+    return sink.slice();
+}
 
-/// A compiled function carries a name, a source, and a source map, which is
+/// Run the printer with `:err` bound to a buffer, which is how the rendering
+/// is read back rather than sent to the harness's stderr.
+/// `debug.stacktraceExt` goes through `pp_format.dynprintf`, and that is
+/// exactly what the binding redirects.
+fn traceInto(
+    sink: *buffers.Buffer,
+    fiber: *fibers.Fiber,
+    err: repr.Value,
+    prefix: ?[*:0]const u8,
+) raise.Raising(void) {
+    buffers.setcount(sink, 0) catch @panic("trace_frames: setcount raised");
+    vm_state.setdyn("err", wrap.fromBuffer(sink));
+    defer vm_state.setdyn("err", wrap.fromNil());
+    try tf.stacktraceExt(fiber, err, prefix);
+}
+
+/// A compiled function has a name, a source and a source map, which is
 /// the shape behind almost every line of a real trace. A `-Dsourcemaps=false`
 /// build has no source map to decode and takes the bytecode-offset path below
 /// for every Janet frame in the program instead.
@@ -162,8 +188,8 @@ fn aNamedFunctionWithASourcemap(named: *functions.Function) void {
 }
 
 /// A funcdef with no name renders as `<anonymous>`, and the descriptor says so
-/// by kind rather than by handing the caller that string — the caller owns the
-/// wording.
+/// by kind rather than by giving the caller that string, the wording being the
+/// caller's.
 fn anAnonymousFunction(anonymous: *functions.Function) void {
     expect(anonymous.def.?.name == null);
 
@@ -197,10 +223,8 @@ fn aFunctionWithoutASourcemap(named: *functions.Function) void {
     expect(desc.column == 0);
 }
 
-/// A function frame whose program counter is null reports no location at all —
-/// not offset zero, and not the registry line a cfunction would report. The C
-/// original arrives here by falling out of one branch into another that cannot
-/// fire, which is exactly the kind of accident a rewrite tidies away.
+/// A function frame whose program counter is null reports no location at all:
+/// not offset zero, and not the registry line a cfunction would report.
 fn aFunctionWithoutAPc(named: *functions.Function) void {
     var frame: vm_state.StackFrame = undefined;
     frameOfFunction(&frame, named, -1);
@@ -226,8 +250,6 @@ fn theTailCallFlag(named: *functions.Function) void {
     expect(desc.tail == 1);
 }
 
-// ------------------------------------------------------------- cfunctions
-
 /// A registered cfunction reports its prefix, its name, its file, and its
 /// line. This is every core function that appears in a trace.
 fn aRegisteredCfunction() void {
@@ -248,7 +270,7 @@ fn aRegisteredCfunction() void {
 /// A cfunction the registry has never heard of renders as a bare
 /// `<cfunction>` with no source and no location. Reaching this from Janet
 /// needs a cfunction installed without `registry.cfuns`, which nothing in the
-/// core does — and the decoder must not dereference the null the registry
+/// core does, and the decoder must not dereference the null the registry
 /// returns.
 fn anUnregisteredCfunction() void {
     expect(registry.registryGet(keyOf(&probeUnregistered)) == null);
@@ -266,7 +288,7 @@ fn anUnregisteredCfunction() void {
 
 /// The case the two-field descriptor exists for. A registry entry with no name
 /// fails the name test and still passes the location test, so the frame
-/// renders as `<cfunction> on line 99` — a bare name with a real location. One
+/// renders as `<cfunction> on line 99`, a bare name with a real location. One
 /// tag covering both would have to choose, and either choice changes a line of
 /// output the runtime prints today.
 fn aRegisteredCfunctionWithoutAName() void {
@@ -328,8 +350,8 @@ fn aRegisteredCfunctionWithoutAPrefix() void {
 }
 
 /// Neither a function nor a cfunction: the frame contributes a bare `  in`
-/// line. A cframe pushed with a null cfunction produces this, and `janet_call`
-/// pushes one whenever it has to clear a dirty stack.
+/// line. A cframe pushed with a null cfunction produces this, and
+/// `vm_entry.call` pushes one whenever it has to clear a dirty stack.
 fn anEmptyFrame() void {
     var frame: vm_state.StackFrame = undefined;
     frameOfCfunction(&frame, null);
@@ -341,28 +363,6 @@ fn anEmptyFrame() void {
     expect(desc.source == null);
     expect(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
     expect(desc.tail == 0);
-}
-
-// ------------------------------------------------------------ whole traces
-
-fn contents(sink: *buffers.Buffer) []const u8 {
-    return sink.slice();
-}
-
-/// Run the printer with `:err` bound to a buffer, which is how the rendering
-/// is read back rather than sent to the harness's stderr.
-/// `debug.stacktraceExt` goes through `pp_format.dynprintf`, and that is
-/// exactly what the binding redirects.
-fn traceInto(
-    sink: *buffers.Buffer,
-    fiber: *fibers.Fiber,
-    err: repr.Value,
-    prefix: ?[*:0]const u8,
-) raise.Raising(void) {
-    buffers.setcount(sink, 0) catch @panic("trace_frames: setcount raised");
-    vm_state.setdyn("err", wrap.fromBuffer(sink));
-    defer vm_state.setdyn("err", wrap.fromNil());
-    try tf.stacktraceExt(fiber, err, prefix);
 }
 
 /// The `%s/%s` branch, which no suite can reach: it is taken only when a
@@ -407,8 +407,8 @@ fn aPrefixedCfunctionRenders() raise.Raising(void) {
     expect(std.mem.endsWith(u8, contents(sink), "\x1b[0m"));
 }
 
-/// The decoder is one half of a printer, so run the printer too — over a real
-/// fiber that has stopped at an error, which is the only check here that the
+/// The decoder is one half of a printer, so the printer runs too, over a real
+/// fiber that has stopped at an error. It is the only check here that the
 /// descriptor and the loop that consumes it agree about the frames of a live
 /// stack.
 ///
@@ -440,7 +440,9 @@ fn aStacktraceOverARealFiber(failing: *functions.Function) raise.Raising(void) {
     expect(std.mem.indexOf(u8, contents(sink), "error: from a fiber") == null);
 }
 
-// ------------------------------------------------------------------- main
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() raise.Raising(void) {
     test_env = harness.coreEnv();

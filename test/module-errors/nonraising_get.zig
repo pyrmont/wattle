@@ -1,13 +1,13 @@
 //! A `get` that cannot report a refusal.
 //!
-//! The other half of the raising contract: `get` runs inside an interpreter
-//! frame with a real scope above it, so its return type has to carry the error
-//! the author will eventually want to return.
+//! The other half of the raising rule: `get` runs inside an interpreter frame
+//! with a real scope above it, so its return type has to include the error an
+//! author eventually returns.
 //!
 //! `build.zig`'s `module-errors` step compiles this and requires the failure.
 
-const repr = @import("repr");
 const janet = @import("janet");
+const repr = @import("repr");
 
 const Payload = struct { n: i32 };
 

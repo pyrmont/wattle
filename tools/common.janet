@@ -291,23 +291,28 @@
   "`text` with `//` comments and `\\\\` literals blanked, newlines preserved.
 
   What a *reader* of Zig source wants: the code, at the line numbers it
-  actually occupies, with quoted literals left in place because a symbol name
-  can be inside one. Non-code bytes become spaces rather than vanishing, so a
+  actually occupies. Non-code bytes become spaces rather than vanishing, so a
   column is still a column.
+
+  `keep-literals` decides whether a quoted string or character literal counts
+  as code, and defaults to true. A caller asking *whether a name is written
+  anywhere* wants false: a name inside a docstring, a registration string or an
+  `@import` path is prose or a path rather than a use of the declaration, and
+  counting one hides a dead declaration behind its own mention.
 
   Moved here from `seam.janet` for rule 26, unchanged in what it counts --
   verified line by line over the runtime source and `test/` before the swap.
-  That tool
-  counted a reference inside a comment as a call until rule 6, and the check
-  that says the stripper works is that a comment-only reference scores as
-  absent."
-  [text]
+  That tool counted a reference inside a comment as a call until rule 6, and
+  the check that says the stripper works is that a comment-only reference
+  scores as absent."
+  [text &opt keep-literals]
+  (default keep-literals true)
   (def out @"")
   (def lines (string/split "\n" text))
   (for k 0 (length lines)
     (def line (lines k))
     (def blank (buffer/new-filled (length line) (chr " ")))
-    (each [s e] (code-spans line true)
+    (each [s e] (code-spans line keep-literals)
       (buffer/blit blank line s s e))
     (buffer/push out blank)
     (when (< k (- (length lines) 1)) (buffer/push out "\n")))

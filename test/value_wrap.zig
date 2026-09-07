@@ -2,9 +2,9 @@
 //! `value_wrap.zig` defines.
 //!
 //! This is the one contract in the tree whose *content* changes shape per
-//! target. `JANET_NANBOX_64`, `JANET_NANBOX_32` and the tagged fallback are
-//! three different implementations behind one set of signatures, so the cases
-//! below come in two kinds and both are needed.
+//! target. The two NaN-boxed layouts and the tagged fallback are three
+//! different implementations behind one set of signatures, so the cases below
+//! come in two kinds and both are needed.
 //!
 //!  - The layout-independent ones, which are the bulk. A wrapper's type tag, a
 //!    round trip through the matching unwrapper, the fact that two wrappers
@@ -27,26 +27,14 @@
 //! one as half of a comparison would credit its case with a claim it does not
 //! make.
 //!
-//! **There is no macro half.** Upstream declares the type test, the truth
-//! test, the integer wrap and their kin as functions *beside* macros of the
-//! same name, and C's rule that a parenthesised name is not macro-expanded is
-//! what lets a C contract compare the two. Each has one spelling here, so
-//! asserting they agree would be a case that cannot fail.
+//! The two sides of that comparison are the operation a caller gets inlined
+//! and the operation the library exports. They are not the same code path, so
+//! a disagreement between them would make the interpreter behave differently
+//! from the C API about the same value.
 //!
-//! What the two sides of that comparison really were is *the operation a
-//! caller gets inlined* and *the operation the library exports*, and this
-//! runtime has that same pair: the `pub inline fn` a caller reaches --
-//! measured at +89% on the arithmetic workload when it went through the symbol
-//! table instead -- and the `@export`s beside them. Twenty-one
-//! operations have both spellings, they are not the same code path, and a
-//! disagreement would make the interpreter answer differently from the C API
-//! about the same value. `theTwoSpellingsAgree` is that channel, and it is the
-//! C original's claim carried over rather than a new one.
-//!
-//! It is weaker than it looks in the same way the original was, and for the
-//! same reason its own header gave: both spellings bottom out in `repr`, so
-//! this catches an operation wired to the wrong helper and nothing more. The
-//! absolute bit patterns are what catch the helper itself.
+//! It is a weaker channel than it looks: both spellings bottom out in `repr`,
+//! so it catches an operation wired to the wrong helper and nothing more. The
+//! absolute bit patterns below are what catch the helper itself.
 //!
 //! ## Reading the layout
 //!
@@ -61,34 +49,43 @@
 //! What each side computes *from* it is independent, and that is where the
 //! assertions are.
 
-const std = @import("std");
-const repr = @import("repr");
-const raise = @import("subsystems").raise;
-const harness = @import("harness.zig");
-const corefn = @import("subsystems").corefn;
-const config = @import("config");
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
-const subsystems = @import("subsystems");
-const wrap = @import("subsystems").value.wrap;
+const std = @import("std");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
 const arrays = @import("subsystems").value.arrays;
 const buffers = @import("subsystems").value.buffers;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const structs = @import("subsystems").value.structs;
-const tables = @import("subsystems").value.tables;
-const gc_alloc = @import("subsystems").gc_alloc;
-const strings = @import("subsystems").value.strings;
-const symbols = @import("subsystems").value.symbols;
-const tuples = @import("subsystems").value.tuples;
-const utils = @import("subsystems").utils;
-const gc_mark = @import("subsystems").gc_mark;
-const abi = @import("abi");
-const functions = @import("subsystems").value.functions;
-const fibers = @import("subsystems").value.fibers;
+const config = @import("config");
+const corefn = @import("subsystems").corefn;
 const expect = @import("expect.zig").expect;
 
-// ------------------------------------------------------------------ layout
+const fibers = @import("subsystems").value.fibers;
+const functions = @import("subsystems").value.functions;
+const gc_alloc = @import("subsystems").gc_alloc;
+const gc_mark = @import("subsystems").gc_mark;
+const harness = @import("harness.zig");
+const raise = @import("subsystems").raise;
+const repr = @import("repr");
+const strings = @import("subsystems").value.strings;
+const structs = @import("subsystems").value.structs;
+const subsystems = @import("subsystems");
+const symbols = @import("subsystems").value.symbols;
+const tables = @import("subsystems").value.tables;
+const tuples = @import("subsystems").value.tuples;
+const utils = @import("subsystems").utils;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
 
-const Layout = enum { nanbox64, nanbox32, tagged };
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 /// Which of the three representations this build compiled with, read off the
 /// build's own configuration rather than off the value type.
@@ -99,7 +96,16 @@ else if (config.value_repr == .nanbox_32)
 else
     .nanbox64;
 
-// ----------------------------------------------------------------- helpers
+// ==========================================================================
+// Types
+// ==========================================================================
+
+/// The three value representations, as this file names them.
+const Layout = enum { nanbox64, nanbox32, tagged };
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// Two values are the same value when their payload word and their type agree.
 /// `std.mem.eql` over the bytes would be wrong under the tagged layout, whose
@@ -111,25 +117,28 @@ fn sameValue(a: repr.Value, b: repr.Value) bool {
 
 /// A cfunction to wrap. Its address is the only function pointer in the file,
 /// and under a pointer-shifted NaN-box it has to satisfy the same alignment
-/// every registered cfunction does -- which is what `corefn.alignment` is.
+/// every registered cfunction does, which is what `corefn.alignment` states.
 fn aCFunction(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return wrap.abi.fromNil();
 }
 
+/// The same function as the `abi.CFunction` a wrapper takes.
 fn theCFunction() abi.CFunction {
     return raise.stored(&aCFunction);
 }
 
-/// Sixteen-byte-aligned storage, so the addresses handed to the pointer
-/// wrappers are legal under every value of `repr.pointer_shift`,
-/// which ranges up to 4. A shift discards low bits that the wrapper never
-/// restores, so an under-aligned pointer would not round trip on aarch64 Linux
-/// and would on macOS -- a difference in the test rather than in the code.
+/// Sixteen-byte-aligned storage, so the addresses given to the pointer
+/// wrappers are legal under every value of `repr.pointer_shift`, which ranges
+/// up to 4. A shift discards low bits the wrapper never restores, so an
+/// under-aligned pointer would round trip on one target and not on another,
+/// which is a difference in the test rather than in the code.
 var block_a: [64]u8 align(16) = undefined;
 var block_b: [64]u8 align(16) = undefined;
 
+/// The address of `block_a`, and `pointerB` that of `block_b`. Two of them,
+/// because a case about two wrappers producing different values needs two.
 fn pointerA() ?*anyopaque {
     return @ptrCast(&block_a);
 }
@@ -149,7 +158,26 @@ fn at(t: repr.Tag) usize {
     return @intFromEnum(t);
 }
 
-// -------------------------------------------------- type tags and round trips
+/// One value of each type, in tag order, so the matrix below can be written as
+/// a loop rather than as a hundred and sixty-nine assertions.
+fn buildOneOfEach(out: *[repr.tag_count]repr.Value) void {
+    out[at(.number)] = wrap.fromNumber(2.5);
+    out[at(.nil)] = wrap.abi.fromNil();
+    out[at(.boolean)] = wrap.abi.fromTrue();
+    out[at(.fiber)] = wrap.abi.fromFiber(@ptrCast(@alignCast(pointerA())));
+    out[at(.string)] = wrap.abi.fromString(strings.cstring("s"));
+    out[at(.symbol)] = wrap.abi.fromSymbol(symbols.csymbol("s"));
+    out[at(.keyword)] = wrap.abi.fromKeyword(symbols.csymbol("s"));
+    out[at(.array)] = wrap.abi.fromArray(arrays.new(0));
+    out[at(.tuple)] = wrap.abi.fromTuple(tuples.newFrom(&.{}));
+    out[at(.table)] = wrap.abi.fromTable(tables.new(0));
+    out[at(.@"struct")] = wrap.abi.fromStruct(structs.end(structs.begin(0)));
+    out[at(.buffer)] = wrap.abi.fromBuffer(buffers.new(0));
+    out[at(.function)] = wrap.abi.fromFunction(@ptrCast(@alignCast(pointerA())));
+    out[at(.cfunction)] = wrap.abi.fromCfunction(theCFunction());
+    out[at(.abstract)] = wrap.abi.fromAbstract(pointerB());
+    out[at(.pointer)] = wrap.abi.fromPointer(pointerB());
+}
 
 /// Every wrapper stamps its own type, and `janet_type` reads it back. This is
 /// the whole of the representation's job stated once. The pointers are not
@@ -179,9 +207,9 @@ fn eachWrapperStampsItsType() void {
 
 /// Every pointer wrapper round trips through its own unwrapper, for three
 /// addresses: two static blocks and one from the allocator, which is the only
-/// one whose value is not known at link time. Sixteen-byte aligned, which is
-/// what the pointer wrappers require -- a NaN-boxed 64-bit build discards the
-/// low bits on every target that nanboxes.
+/// one the linker does not fix. All three are sixteen-byte aligned, which is
+/// what the pointer wrappers require, since a NaN-boxed 64-bit build discards
+/// the low bits on every target that nanboxes.
 fn pointerRoundTrips() void {
     const heap_block = utils.malloc(64);
     expect(heap_block != null);
@@ -204,9 +232,9 @@ fn pointerRoundTrips() void {
     expect(wrap.toCfunction(wrap.abi.fromCfunction(theCFunction())) == theCFunction());
 }
 
-/// A null payload is a legal value for every pointer type -- `wrap.fromFiber`
-/// takes one every time a fiber has no child. It must not be confused
-/// with nil, and it must come back null.
+/// A null payload is a legal value for every pointer type: `wrap.fromFiber`
+/// takes one every time a fiber has no child. It must not be confused with
+/// nil, and it must come back null.
 fn nullPayloadsRoundTrip() void {
     expect(wrap.toPointer(wrap.abi.fromFiber(null)) == null);
     expect(wrap.toPointerAbi(wrap.abi.fromPointer(null)) == null);
@@ -241,8 +269,6 @@ fn theTagIsPartOfTheValue() void {
     expect(!sameValue(wrap.abi.fromNil(), wrap.abi.fromFalse()));
 }
 
-// ------------------------------------------------------------------- numbers
-
 /// Doubles survive the representation exactly, including the ones that are
 /// awkward to store beside a tag: both zeroes, both infinities, the smallest
 /// subnormal, and the largest finite. Under either NaN-boxed layout the
@@ -268,14 +294,14 @@ fn numbersRoundTrip() void {
     expect(1.0 / wrap.toNumber(wrap.fromNumber(-0.0)) < 0.0);
 }
 
-/// A NaN is a number, not a tagged value. Under a NaN-boxed layout this is the
-/// one case where the tag space and the payload space collide, and `janet_type`
-/// has to answer `JANET_NUMBER` for a quiet NaN whose bits look like a tag.
+/// A NaN is a number, not a tagged value. Under a NaN-boxed layout this is
+/// the one case where the tag space and the payload space collide, so
+/// `repr.typeOf` has to report a number for a quiet NaN whose bits look like a
+/// tag.
 ///
-/// It is checked through both spellings -- the published abi and the inline
-/// surface -- because a mutation sweep found the second arm of the NaN test
-/// reachable through only one of them. See `theTwoSpellingsAgree`, which covers
-/// this value among its awkward ones.
+/// Checked through both spellings, the published abi and the inline surface,
+/// because the second arm of the NaN test is reachable through only one of
+/// them. `theTwoSpellingsAgree` covers this value among its awkward ones.
 fn nanIsANumber() void {
     const nan = std.math.nan(f64);
     const v = wrap.fromNumber(nan);
@@ -291,8 +317,8 @@ fn nanIsANumber() void {
 /// that came off the wire, and its job is to make sure a crafted payload cannot
 /// be read back as a tagged value. Under both NaN-boxed layouts it replaces any
 /// NaN with the canonical quiet one; under the tagged layout it does not,
-/// because there is no tag space in the double to protect. That asymmetry is in
-/// the C original and is reproduced.
+/// because there is no tag space in the double to protect. That asymmetry is
+/// deliberate, and both arms are asserted below.
 fn wrapNumberSafe() void {
     for ([_]f64{ 0.0, -3.25, std.math.inf(f64) }) |x| {
         expect(sameValue(wrap.fromNumberSafe(x), wrap.fromNumber(x)));
@@ -311,12 +337,12 @@ fn wrapNumberSafe() void {
     }
 }
 
-/// `janet_unwrap_integer` truncates toward zero. Only in-range inputs are
-/// checked: an unchecked cast is undefined outside the destination range and
-/// the two behavioural targets disagree about what it produces --
-/// aarch64's `fcvtzs` saturates where x86-64's `cvttsd2si` yields `INT32_MIN`
-/// -- so nothing here can be asserted for both. This runtime tests before
-/// converting and saturates.
+/// `wrap.toIntegerAbi` truncates toward zero. Only in-range inputs are
+/// checked, because an unchecked cast is undefined outside the destination
+/// range and the two behavioural targets differ there: aarch64's `fcvtzs`
+/// saturates where x86-64's `cvttsd2si` yields `INT32_MIN`, so nothing out of
+/// range can be asserted for both. This runtime tests before converting and
+/// saturates.
 fn theIntegerConversions() void {
     expect(wrap.toIntegerAbi(wrap.fromNumber(0.0)) == 0);
     expect(wrap.toIntegerAbi(wrap.fromNumber(1.9)) == 1);
@@ -334,21 +360,18 @@ fn theIntegerConversions() void {
     expect(sameValue(wrap.fromInteger(-5), harness.wrapInteger(-5)));
 
     {
-        // Upstream publishes an integer wrap only under a NaN-boxed layout.
-        // `wrap.abi.fromInteger` is compiled under all three, and the contract
-        // imports it rather than linking against an export, so these run
-        // everywhere.
+        // `wrap.abi.fromInteger` is compiled under all three layouts and the
+        // contract imports it rather than linking against an export, so these
+        // run everywhere.
         expect(sameValue(wrap.abi.fromInteger(7), wrap.fromNumber(7.0)));
         expect(wrap.toIntegerAbi(wrap.abi.fromInteger(-5)) == -5);
         expect(wrap.toIntegerAbi(wrap.abi.fromInteger(std.math.maxInt(i32))) == std.math.maxInt(i32));
     }
 }
 
-// ------------------------------------------------------- booleans and truth
-
 /// `wrap.abi.fromBoolean` normalizes: any non-zero argument makes the same
 /// value as `wrap.abi.fromTrue`, and `wrap.toBoolean` reads back the
-/// normalized answer rather than whatever went in.
+/// normalized value rather than whatever went in.
 fn booleansNormalize() void {
     expect(sameValue(wrap.abi.fromBoolean(1), wrap.abi.fromTrue()));
     expect(sameValue(wrap.abi.fromBoolean(2), wrap.abi.fromTrue()));
@@ -359,9 +382,9 @@ fn booleansNormalize() void {
     expect(wrap.toBoolean(wrap.abi.fromBoolean(37)));
 }
 
-/// Exactly two values are false, and everything else is true -- including zero,
-/// the empty string and an empty array, which is the difference between Janet's
-/// truthiness and C's.
+/// Exactly two values are false and everything else is true, including zero,
+/// the empty string and an empty array, which is where Janet's truthiness
+/// parts company with C's.
 fn truthiness() void {
     expect(!repr.truthy(wrap.abi.fromNil()));
     expect(!repr.truthy(wrap.abi.fromFalse()));
@@ -375,33 +398,10 @@ fn truthiness() void {
     expect(repr.truthy(wrap.abi.fromPointer(null)));
 }
 
-// ------------------------------------------------- checktype and checktypes
-
-/// One value of each type, in tag order, so the matrix below can be written as
-/// a loop rather than as a hundred and sixty-nine assertions.
-fn buildOneOfEach(out: *[repr.tag_count]repr.Value) void {
-    out[at(.number)] = wrap.fromNumber(2.5);
-    out[at(.nil)] = wrap.abi.fromNil();
-    out[at(.boolean)] = wrap.abi.fromTrue();
-    out[at(.fiber)] = wrap.abi.fromFiber(@ptrCast(@alignCast(pointerA())));
-    out[at(.string)] = wrap.abi.fromString(strings.cstring("s"));
-    out[at(.symbol)] = wrap.abi.fromSymbol(symbols.csymbol("s"));
-    out[at(.keyword)] = wrap.abi.fromKeyword(symbols.csymbol("s"));
-    out[at(.array)] = wrap.abi.fromArray(arrays.new(0));
-    out[at(.tuple)] = wrap.abi.fromTuple(tuples.newFrom(&.{}));
-    out[at(.table)] = wrap.abi.fromTable(tables.new(0));
-    out[at(.@"struct")] = wrap.abi.fromStruct(structs.end(structs.begin(0)));
-    out[at(.buffer)] = wrap.abi.fromBuffer(buffers.new(0));
-    out[at(.function)] = wrap.abi.fromFunction(@ptrCast(@alignCast(pointerA())));
-    out[at(.cfunction)] = wrap.abi.fromCfunction(theCFunction());
-    out[at(.abstract)] = wrap.abi.fromAbstract(pointerB());
-    out[at(.pointer)] = wrap.abi.fromPointer(pointerB());
-}
-
-/// `janet_checktype` agrees with `janet_type` for every value against every
-/// type, and it is the full matrix rather than the diagonal: under a NaN-boxed
-/// layout the number case is tested differently from the rest, so a wrong
-/// answer is as likely to be a false positive as a false negative.
+/// The type predicate agrees with `repr.typeOf` for every value against every
+/// type. It is the full matrix rather than the diagonal, because under a
+/// NaN-boxed layout the number case is tested differently from the rest, so a
+/// wrong result is as likely to be a false positive as a false negative.
 fn theCheckTypeMatrix() void {
     var values: [repr.tag_count]repr.Value = undefined;
     buildOneOfEach(&values);
@@ -414,9 +414,9 @@ fn theCheckTypeMatrix() void {
 }
 
 /// `repr.checkTypes` is the type as a bit in a mask, and the *exported* form
-/// answers the masked bit rather than a normalized boolean -- upstream's
-/// contract, kept when the internal one became `bool`, so both halves are
-/// asserted here and the bit is asserted only of the abi form.
+/// returns the masked bit rather than a normalized boolean, where the internal
+/// one returns a `bool`. Both halves are asserted here and the bit only of the
+/// abi form.
 fn checkTypes() void {
     var values: [repr.tag_count]repr.Value = undefined;
     buildOneOfEach(&values);
@@ -438,22 +438,20 @@ fn checkTypes() void {
     expect(!repr.checkTypes(values[at(.array)], repr.TagSet.bytes));
 }
 
-// --------------------------------------------- the two spellings agree
-
 /// Every predicate with both an internal and an exported form, checked
-/// against each other for one value. Factored out because the set of values
-/// that matters is larger than one per type -- see the call site.
+/// against each other for the one value `v`. Factored out because the set of
+/// values that matters is larger than one per type; see the call site.
 ///
-/// **Both sides are spelled here rather than borrowed.** These read the
-/// published form directly instead of `harness.isType`, and that is the whole
-/// point of the function: a harness helper that pointed at the internal
-/// spelling would turn every comparison here into a function against itself.
+/// Both sides are spelled out here rather than borrowed. These read the
+/// published form directly instead of `harness.isType`, because a harness
+/// helper pointing at the internal spelling would turn every comparison here
+/// into a function compared against itself.
 ///
-/// `janet_checktype` is the only predicate left with two implementations. It
-/// guards the tag against `repr.tag_count` and answers 0 for a number outside
-/// the vocabulary, which `repr.checkType` does not do and cannot -- its
-/// argument is already a `Tag`. So the loop below is the range guard as much
-/// as it is the agreement.
+/// `capi.janet_checktype` is the only predicate left with two
+/// implementations. It guards the tag against `repr.tag_count` and gives 0 for
+/// a number outside the vocabulary, which `repr.checkType` does not do and
+/// cannot, its argument already being a `Tag`. So the loop below is the range
+/// guard as much as it is the agreement.
 fn agreeOn(v: repr.Value) void {
     for (0..repr.tag_count) |j| {
         expect(repr.checkType(v, typeAt(j)) == (subsystems.capi.janet_checktype(v, @intCast(j)) != 0));
@@ -462,18 +460,17 @@ fn agreeOn(v: repr.Value) void {
     expect(subsystems.capi.janet_checktype(v, std.math.maxInt(c_uint)) == 0);
 }
 
-/// The channel the C original had as macro-against-function, restated as
-/// inline-against-export. See the header for why the two are not the same
-/// question and why this one is the closest replacement available.
+/// The inline spelling of each operation against the exported one, for every
+/// value in the sample and for the awkward ones beside it. The header says
+/// what that channel does and does not catch.
 fn theTwoSpellingsAgree() void {
     var values: [repr.tag_count]repr.Value = undefined;
     buildOneOfEach(&values);
     const p = pointerA();
 
-    // The constructors. Each inline declaration is the body of the identically
-    // named export, so a disagreement means one of the two was wired to the
-    // wrong helper -- which is exactly what the C channel could catch and no
-    // more.
+    // The constructors. Each inline declaration is the body of the
+    // identically named export, so a disagreement means one of the two is
+    // wired to the wrong helper.
     expect(sameValue(wrap.fromNil(), wrap.abi.fromNil()));
     expect(sameValue(wrap.fromTrue(), wrap.abi.fromTrue()));
     expect(sameValue(wrap.fromFalse(), wrap.abi.fromFalse()));
@@ -490,13 +487,13 @@ fn theTwoSpellingsAgree() void {
     // The predicates, over one value per type...
     for (values) |value| agreeOn(value);
 
-    // ...and then over the values that take the *other* arm of each. One value
-    // per type is not enough, and a mutation sweep against the C original is
-    // what said so: `buildOneOfEach` samples `2.5` and `true`, which take the
-    // ordinary arm of every predicate. A NaN's type nibble under a NaN-boxed
-    // layout reads as `JANET_NUMBER`, so it is recognized by the second half of
-    // `isNumber` rather than the first; `false` is the only value whose
-    // truthiness depends on the payload rather than on the tag.
+    // ...and then over the values that take the *other* arm of each. One
+    // value per type is not enough, because `buildOneOfEach` samples `2.5`
+    // and `true`, which take the ordinary arm of every predicate. A NaN's
+    // type nibble under a NaN-boxed layout reads as the number tag, so it is
+    // recognized by the second half of `isNumber` rather than the first, and
+    // `false` is the only value whose truthiness depends on the payload
+    // rather than on the tag.
     const awkward = [_]repr.Value{
         wrap.fromNumber(std.math.nan(f64)),
         wrap.fromNumber(std.math.inf(f64)),
@@ -516,14 +513,12 @@ fn theTwoSpellingsAgree() void {
     expect(wrap.toInteger(wrap.fromNumber(-9.5)) == wrap.toIntegerAbi(wrap.fromNumber(-9.5)));
 }
 
-// ------------------------------------------------------ the exact bit layout
-
 /// The assertions that say this is *the* representation rather than a working
 /// one. Each is computed from the tag numbering and the payload mask, and none
 /// of them goes through an implementation of the thing under test.
 ///
-/// One per layout, selected below. Zig analyses only the body it is handed, so
-/// the two that do not apply are never compiled -- which they could not be:
+/// One per layout, selected below. Zig analyses only the body it is handed,
+/// so the two that do not apply are never compiled, and they could not be:
 /// each layout's helpers exist only in that layout's build.
 fn exactLayoutNanbox64() void {
     const p = pointerA();
@@ -591,9 +586,9 @@ fn exactLayoutTagged() void {
     const p = pointerA();
 
     // The tag is a field of its own, and the payload union is zeroed before
-    // the narrower member is written -- which is what the `as.u64 = 0` in
-    // `JANET_WRAP_DEFINE` is for, and the only way to see it is through a
-    // member narrower than the union.
+    // the narrower member is written, which is what the `as.u64 = 0` in
+    // `repr.zig`'s wrappers is for. The only way to see it is through a member
+    // narrower than the union.
     expect(wrap.abi.fromNil().type == @intFromEnum(repr.Tag.nil));
     expect(harness.u64Of(wrap.abi.fromNil()) == 0);
     expect(wrap.abi.fromTrue().type == @intFromEnum(repr.Tag.boolean));
@@ -619,12 +614,10 @@ const exactLayout = switch (layout) {
     .tagged => exactLayoutTagged,
 };
 
-// ------------------------------------------------------ empty bucket arrays
-
 /// `value.memallocEmpty` is the allocator every dictionary's bucket array
 /// comes from. Three things are its contract: the block is `count` pairs long,
 /// every pair is nil/nil, and the collection budget is charged for the bytes.
-/// The charge is what only this case sees -- `gc.gcallocBytes` bills its own
+/// The charge is what only this case sees: `gc.gcallocBytes` bills its own
 /// blocks and this one is a plain heap allocation.
 fn memallocEmpty() void {
     for ([_]i32{ 1, 8, 257 }) |n| {
@@ -683,8 +676,6 @@ fn mememptyClearsADirtyBlock() void {
     expect(harness.isType(kvs[0].key, repr.Tag.boolean));
 }
 
-// -------------------------------------------------------------- collection
-
 /// Values built by these wrappers are what the collector traverses, so the last
 /// case is that a heap object reached only through a wrapped value survives a
 /// collection while rooted and is freed once it is not.
@@ -713,7 +704,9 @@ fn repeatedCycles() void {
     }
 }
 
-// ------------------------------------------------------------------- main
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

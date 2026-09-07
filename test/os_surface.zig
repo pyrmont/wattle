@@ -5,91 +5,76 @@
 //! invisible from there, and they are what this file is for.
 //!
 //! The registration *table* is the first. Its contents decide what exists, its
-//! order is what `janet_nextmethod` walks, and its docstring and source-map
-//! columns are what `(doc ...)` reads; a surface assembled from four files in
-//! upstream's `os/` order can get every function right and the order wrong,
-//! and no Janet assertion would notice. Upstream has one table literal and
-//! `os.libOs` concatenates seven slices, so the order is newly a
-//! thing that can break.
+//! order is what a method walk reports, and its docstring and source-map
+//! columns are what `(doc ...)` reads. A surface assembled from four files can
+//! get every function right and the order wrong, and no Janet assertion would
+//! notice. `os.libOs` concatenates seven slices, so the order is something
+//! that can break.
 //!
 //! The second is the stat reader. Janet sees only the values built on top of
-//! it, so its contract -- the field indices, the zeroing of the slots no
-//! platform writes, the -1 for a path that cannot be stat'ed -- has no
-//! spelling on that side.
+//! it, so what it owes has no spelling on that side: the field indices, the
+//! zeroing of the slots no platform writes, and the -1 for a path that cannot
+//! be stat'ed.
 //!
 //! The third is the `core/process` abstract type's shape: which of its
 //! fourteen callbacks are null is a fact about the type rather than about any
 //! process, and the value's own head is the only way to ask.
 //!
-//! The fourth is the signal table. `os_process.zig` holds the *names* and
-//! reports a position; the surface holds the number each position carries on
+//! The fourth is the signal table. `os_process.zig` has the *names* and
+//! reports a position; the surface has the number each position stands for on
 //! this platform. Only the pair together produce a signal, and `os/proc-kill`
 //! shows a caller nothing but "it worked" or "undefined signal".
 //!
 //! ## How the subjects are reached
 //!
-//! **The stat reader and the field registry are reached by import.** Both were
-//! hand-declared symbols while a C caller needed them, and both ends were Zig
-//! long before anything said so.
+//! The stat reader and the field registry are reached by import, so the reader
+//! this file drives is the one `os/stat` uses.
 //!
-//! **The source-map order check is unconditional.** It once ran only under a
-//! bootstrap built from Zig, because a C bootstrap recorded a `.c` path for
-//! every binding however the surface was compiled. Every source path in the
-//! image is `src/`-relative, so the loop runs in every configuration.
+//! The source-map order check is unconditional: every source path in the image
+//! is `src/`-relative, so the loop runs in every configuration.
 //!
-//! **A reduced-OS build is skipped rather than compiled away.** The subject is
-//! still compiled in that configuration -- four `os/` functions of the
-//! forty-odd below -- so the skip says which it is rather than pretending the
-//! file does not exist.
+//! A reduced-OS build is skipped rather than compiled away. The subject is
+//! still compiled in that configuration, four `os/` functions of the forty-odd
+//! below, so the skip says which it is rather than pretending the file does
+//! not exist.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
-const repr = @import("repr");
-const harness = @import("harness.zig");
-
-const subsystems = @import("subsystems");
-const value = @import("subsystems").value;
-const config = @import("config");
-const structs = @import("subsystems").value.structs;
-const tables = @import("subsystems").value.tables;
-const strings = @import("subsystems").value.strings;
-const utils = @import("subsystems").utils;
-const wrap = @import("subsystems").value.wrap;
-const args_core = @import("subsystems").args;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const tuples = @import("subsystems").value.tuples;
-const host_stat = subsystems.host_stat;
-const os_stat = subsystems.stat;
-const os_files = subsystems.os_files;
-
-const expect = @import("expect.zig").expect;
-
-const windows = builtin.os.tag == .windows;
-const reduced_os = config.reduced_os;
-const no_processes = !config.processes;
-const no_locales = !config.locales;
-const no_sourcemaps = !config.sourcemaps;
-const no_docstrings = !config.docstrings;
-const no_cryptorand = !config.cryptorand;
-
-/// The two the surface itself reads, so that this file cannot disagree with
-/// its subject about which entry points exist.
-const no_umask = os_files.no_umask;
-const no_symlinks = os_files.no_symlinks;
-
-/// Whether the process functions are compiled *and* reachable. Every one of
-/// them is POSIX-only in this contract's assertions.
-const has_processes = !no_processes and !windows;
-
-const scratch = "/tmp/janet-os-surface-contract";
 
 // ==========================================================================
-// The registration table
+// Project imports
+// ==========================================================================
+
+const args_core = @import("subsystems").args;
+const config = @import("config");
+const expect = @import("expect.zig").expect;
+const harness = @import("harness.zig");
+const host_stat = subsystems.host_stat;
+const os_files = subsystems.fs;
+const os_stat = subsystems.stat;
+const repr = @import("repr");
+const strings = @import("subsystems").value.strings;
+const structs = @import("subsystems").value.structs;
+const subsystems = @import("subsystems");
+const tables = @import("subsystems").value.tables;
+const tuples = @import("subsystems").value.tuples;
+const utils = @import("subsystems").utils;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
 // ==========================================================================
 
 /// Every `os/` binding this configuration must define, listed in the order
-/// `os.libOs` registers them so that the list can be read beside the table. See `theRegistration` below for what is and is not asserted about
-/// that order -- less than the listing suggests.
+/// `os.libOs` registers them so that the list can be read beside the table.
+/// `theRegistration` below says what is and is not asserted about that order,
+/// which is less than the listing suggests.
 const expected_bindings: []const [*:0]const u8 = blk: {
     var list: []const [*:0]const u8 = &.{
         "os/exit",
@@ -151,6 +136,55 @@ const expected_bindings: []const [*:0]const u8 = blk: {
     break :blk list;
 };
 
+/// Whether the process functions are compiled *and* reachable. Every one of
+/// them is POSIX-only in this contract's assertions.
+const has_processes = !no_processes and !windows;
+const no_cryptorand = !config.cryptorand;
+const no_docstrings = !config.docstrings;
+const no_locales = !config.locales;
+const no_processes = !config.processes;
+const no_sourcemaps = !config.sourcemaps;
+const no_symlinks = os_files.no_symlinks;
+
+/// The two the surface itself reads, so that this file cannot disagree with
+/// its subject about which entry points exist.
+const no_umask = os_files.no_umask;
+const reduced_os = config.reduced_os;
+const scratch = "/tmp/janet-os-surface-contract";
+
+const windows = builtin.os.tag == .windows;
+
+// ==========================================================================
+// Aliased types
+// ==========================================================================
+
+/// The field identifiers, restated here so that a renumbering on either side
+/// fails against a third copy rather than agreeing with itself.
+/// `test/os_stat.zig` pins the *names* in their order; this pins the *numbers*
+/// the stat reader writes at.
+const Field = struct {
+    const dev = 0;
+    const inode = 1;
+    const mode = 2;
+    const int_permissions = 3;
+    const permissions = 4;
+    const uid = 5;
+    const gid = 6;
+    const nlink = 7;
+    const rdev = 8;
+    const size = 9;
+    const blocks = 10;
+    const blocksize = 11;
+    const accessed = 12;
+    const modified = 13;
+    const changed = 14;
+    const count = 15;
+};
+
+// ==========================================================================
+// Cases
+// ==========================================================================
+
 fn bindingField(env: *tables.Table, name: [*:0]const u8, field: [*:0]const u8) repr.Value {
     const binding = tables.get(env, value.fromBytes(std.mem.span(name), .symbol));
     if (harness.isType(binding, repr.Tag.table)) {
@@ -162,20 +196,65 @@ fn bindingField(env: *tables.Table, name: [*:0]const u8, field: [*:0]const u8) r
     return wrap.fromNil();
 }
 
-/// Registration *order* is not observable, and finding that out is worth
-/// recording because the C contract first asserted that it was.
+fn theStatRead() void {
+    expect(os_stat.fieldCount() == Field.count);
+    expect(std.mem.eql(u8, std.mem.span(os_stat.fieldName(Field.dev).?), "dev"));
+    expect(std.mem.eql(u8, std.mem.span(os_stat.fieldName(Field.size).?), "size"));
+    expect(std.mem.eql(u8, std.mem.span(os_stat.fieldName(Field.changed).?), "changed"));
+
+    // A path that cannot be stat'ed reports -1 and is the only failure this
+    // reports at all; `errno` is not consulted by the caller.
+    var mode: u32 = 0xABCD;
+    var numbers: [Field.count]f64 = undefined;
+    for (&numbers) |*n| n.* = -12345.0;
+    expect(host_stat.statRead("no/such/path/xyz", false, &mode, &numbers) == -1);
+    // Nothing is written on failure, including the mode.
+    expect(mode == 0xABCD);
+    expect(numbers[Field.size] == -12345.0);
+
+    // A real path fills every slot. The three the caller never reads through
+    // `numbers`, which is mode and the two permission renderings built from it,
+    // are zero rather than indeterminate: a descriptor's unwritten fields are
+    // part of its contract and nothing about the type says so.
+    //
+    // `build.zig` is the file asked for, because it is the one file whose
+    // absence stops this contract from being built at all.
+    expect(host_stat.statRead("build.zig", false, &mode, &numbers) == 0);
+    expect(mode != 0);
+    expect(numbers[Field.mode] == 0.0);
+    expect(numbers[Field.int_permissions] == 0.0);
+    expect(numbers[Field.permissions] == 0.0);
+    expect(numbers[Field.size] > 0.0);
+    expect(numbers[Field.nlink] >= 1.0);
+    expect(numbers[Field.inode] > 0.0);
+    expect(numbers[Field.modified] > 0.0);
+    if (!windows) {
+        expect(numbers[Field.blocksize] > 0.0);
+    } else {
+        // The two slots no Windows stat has. They are zero because the array
+        // is zeroed, not because anything wrote them.
+        expect(numbers[Field.blocks] == 0.0);
+        expect(numbers[Field.blocksize] == 0.0);
+    }
+
+    // A directory and a file differ in the mode word and in nothing this
+    // function decides: the classification is the caller's.
+    var directory_mode: u32 = 0;
+    expect(host_stat.statRead("src/runtime", false, &directory_mode, &numbers) == 0);
+    expect(directory_mode != mode);
+}
+
+/// Registration *order* is not observable, so what is asserted here is the
+/// *set*.
 ///
-/// `os.libOs` puts its rows into the core environment, which is a hash
-/// table, so nothing downstream can see which row came first. The source map
-/// looked like a way to read the order back, and it is not: `JANET_CORE_FN`
-/// records the line of the *definition* and `os.c` defined its cfunctions in a
-/// wholly different order from the one it registered them in. Only
-/// `corefn.reg` records the row, because `@src()` is valid only inside a
-/// function and the row is where it is called.
+/// `os.libOs` puts its rows into the core environment, which is a hash table,
+/// so nothing downstream can see which row came first. The source map is not a
+/// way to read the order back either: `corefn.reg` records the line of the
+/// registration row rather than of the definition, because `@src()` is valid
+/// only inside a function and the row is where it is called.
 ///
-/// So what is asserted here is the *set*, which catches a function dropped,
-/// added, or duplicated -- a duplicate makes the list longer than the
-/// environment.
+/// The set catches a function dropped, added or duplicated, a duplicate making
+/// the list longer than the environment.
 ///
 /// The order check that follows is narrower still: it compares source-map
 /// lines only where two consecutive names come from the same `src/` file,
@@ -193,12 +272,11 @@ fn theRegistration() void {
         expect(harness.isType(binding, repr.Tag.table) or harness.isType(binding, repr.Tag.@"struct"));
         count += 1;
 
-        // `corefn.reg` and `JANET_CORE_FN` both drop the source map when the
-        // *bootstrap* was built without one, and the runtime arm always keeps
-        // it. So the column exists in every configuration except
-        // `-Dsourcemaps=false`, and asking for it there is asking for
-        // something the build was told not to record. The matrix has that
-        // entry, and this is what it found.
+        // `corefn.reg` drops the source map when the *bootstrap* was built
+        // without one, and the runtime arm always keeps it. So the column
+        // exists in every configuration except `-Dsourcemaps=false`, and
+        // asking for it there is asking for something the build was told not
+        // to record. The matrix has that entry.
         if (!no_sourcemaps) {
             const smap = bindingField(env, name, "source-map");
             expect(harness.isType(smap, repr.Tag.tuple));
@@ -221,7 +299,7 @@ fn theRegistration() void {
         }
     }
 
-    // And nothing outside the list: every `os/` symbol the environment holds
+    // And nothing outside the list: every `os/` symbol in the environment
     // has to be one this file named. A function added to the surface and left
     // out of `expected_bindings` fails here rather than silently, and a name
     // listed twice makes `count` exceed `found`.
@@ -258,161 +336,6 @@ fn theRegistration() void {
         }
     }
 }
-
-// ==========================================================================
-// The stat reader
-// ==========================================================================
-
-/// The field identifiers, restated here so that a renumbering on either side
-/// fails against a third copy rather than agreeing with itself.
-/// `test/os_stat.zig` pins the *names* in their order; this pins the *numbers*
-/// the stat reader writes at.
-const Field = struct {
-    const dev = 0;
-    const inode = 1;
-    const mode = 2;
-    const int_permissions = 3;
-    const permissions = 4;
-    const uid = 5;
-    const gid = 6;
-    const nlink = 7;
-    const rdev = 8;
-    const size = 9;
-    const blocks = 10;
-    const blocksize = 11;
-    const accessed = 12;
-    const modified = 13;
-    const changed = 14;
-    const count = 15;
-};
-
-fn theStatRead() void {
-    expect(os_stat.fieldCount() == Field.count);
-    expect(std.mem.eql(u8, std.mem.span(os_stat.fieldName(Field.dev).?), "dev"));
-    expect(std.mem.eql(u8, std.mem.span(os_stat.fieldName(Field.size).?), "size"));
-    expect(std.mem.eql(u8, std.mem.span(os_stat.fieldName(Field.changed).?), "changed"));
-
-    // A path that cannot be stat'ed reports -1 and is the only failure this
-    // reports at all; `errno` is not consulted by the caller.
-    var mode: u32 = 0xABCD;
-    var numbers: [Field.count]f64 = undefined;
-    for (&numbers) |*n| n.* = -12345.0;
-    expect(host_stat.statRead("no/such/path/xyz", false, &mode, &numbers) == -1);
-    // Nothing is written on failure, including the mode.
-    expect(mode == 0xABCD);
-    expect(numbers[Field.size] == -12345.0);
-
-    // A real path fills every slot. The three the caller never reads through
-    // `numbers` -- mode, and the two permission renderings built from it --
-    // are zero rather than indeterminate: a descriptor's unwritten fields are
-    // part of its contract and nothing about the type says so.
-    //
-    // `build.zig` is the file asked for, because it is the one file whose
-    // absence stops this contract from being built at all.
-    expect(host_stat.statRead("build.zig", false, &mode, &numbers) == 0);
-    expect(mode != 0);
-    expect(numbers[Field.mode] == 0.0);
-    expect(numbers[Field.int_permissions] == 0.0);
-    expect(numbers[Field.permissions] == 0.0);
-    expect(numbers[Field.size] > 0.0);
-    expect(numbers[Field.nlink] >= 1.0);
-    expect(numbers[Field.inode] > 0.0);
-    expect(numbers[Field.modified] > 0.0);
-    if (!windows) {
-        expect(numbers[Field.blocksize] > 0.0);
-    } else {
-        // The two slots no Windows stat has. They are zero because the array
-        // is zeroed, not because anything wrote them.
-        expect(numbers[Field.blocks] == 0.0);
-        expect(numbers[Field.blocksize] == 0.0);
-    }
-
-    // A directory and a file differ in the mode word and in nothing this
-    // function decides: the classification is the caller's.
-    var directory_mode: u32 = 0;
-    expect(host_stat.statRead("src/runtime", false, &directory_mode, &numbers) == 0);
-    expect(directory_mode != mode);
-}
-
-// ==========================================================================
-// The `core/process` type and the signal numbers
-// ==========================================================================
-
-/// Which callbacks the type supplies is a fact about the type. A process is
-/// not marshallable, has no string rendering, and does not compare or hash --
-/// so `(marshal p)` must fail and `(string p)` must fall back on the generic
-/// abstract rendering. A port that filled one of those in by accident would
-/// pass every suite.
-fn theProcessType() void {
-    const env: *tables.Table = harness.coreEnv();
-    harness.inFiber(env,
-        \\(def null (file/open "/dev/null" :w))
-        \\# `/usr/bin/true` stood here and at one site below. Alpine is busybox
-        \\# and puts it at `/bin/true`, so both spawns died with ENOENT the first
-        \\# time this contract ran off macOS.
-        \\# `/bin/sh` is already this file's dependency a dozen lines down and is
-        \\# the one path every POSIX host agrees on.
-        \\(def p (os/spawn ["/bin/sh" "-c" "exit 0"] :p {:out null :err null}))
-        \\(def at (type p))
-        \\(assert (= :core/process at))
-        \\(assert (= 0 (os/proc-wait p)))
-        \\(assert (not (first (protect (marshal p)))))
-        \\(assert (string/has-prefix? "<core/process " (string p)))
-        \\(assert (deep= @[:wait :kill :close :in :out :err] (keys p)))
-        \\(file/close null)
-    );
-}
-
-/// The signal table: a name the platform defines resolves, and one it does not
-/// reports "undefined signal" with the keyword in the message.
-///
-/// Two details here are about the *sweep* rather than about signals, and both
-/// were forced by a false-catch channel a mutation run found. A child is given
-/// an explicit stdout and stderr instead of inheriting this process's, because
-/// the sweep runs a contract with its output captured and blocks until every
-/// writer to the pipe closes -- including a grandchild that outlived an
-/// aborting contract. And the kill is *asserted* rather than merely performed,
-/// so a mutated `os/proc-kill` that returns without killing fails an assertion
-/// here rather than leaking a child that then holds the harness's pipe for its
-/// whole timeout.
-///
-/// SIGKILL is what the death assertion uses, and that is not fastidiousness:
-/// an ignored disposition is inherited across fork and exec, `nohup` ignores
-/// SIGHUP, and the sweep launches `mutate.py` with `nohup`. SIGKILL is the one
-/// signal that cannot be caught or ignored.
-fn theSignalTable() void {
-    const env: *tables.Table = harness.coreEnv();
-    harness.inFiber(env,
-        \\(def null (file/open "/dev/null" :w))
-        \\(defn sleeper [] (os/spawn ["/bin/sleep" "30"] :p {:out null :err null}))
-        \\(each sig [:int :term :hup :usr1 :usr2 :alrm :chld :cont]
-        \\  (def p (sleeper))
-        \\  (def res (protect (os/proc-kill p false sig)))
-        \\  (assert (first res) (string "signal " sig " resolves to a number"))
-        \\  (assert (>= (os/proc-kill p true :kill) 128)
-        \\          (string "the child of " sig " is killed")))
-        \\(def k (sleeper))
-        \\(assert (= 137 (os/proc-kill k true :kill)))
-        \\(def d (sleeper))
-        \\(assert (= 137 (os/proc-kill d true)))
-        \\(def p (sleeper))
-        \\(assert (= "undefined signal :nosuchsignal"
-        \\           (in (protect (os/proc-kill p false :nosuchsignal)) 1)))
-        \\(assert (>= (os/proc-kill p true) 128))
-        \\# `:vtalrm` is the spelling the table carries -- the signal's own
-        \\# name with the `SIG` dropped -- and the transposition is not an
-        \\# alias for it.
-        \\(def q (sleeper))
-        \\(assert (= "undefined signal :vtlarm"
-        \\           (in (protect (os/proc-kill q false :vtlarm)) 1)))
-        \\(assert (>= (os/proc-kill q true) 128))
-        \\(file/close null)
-    );
-}
-
-// ==========================================================================
-// What the suites reach but do not assert
-// ==========================================================================
 
 /// The calendar's three functions, which `suite-os.janet` asserts nothing
 /// about. Fixed timestamps rather than the current time, because the current
@@ -494,8 +417,8 @@ fn theClock() void {
 
 /// The environment lock is a no-op in every build this tree can produce, so
 /// what is left to assert is the shape of what crosses it: `os/environ` must
-/// preserve a value holding `=`, and an empty value is a value rather than an
-/// absence.
+/// preserve a value containing `=`, and an empty value is a value rather than
+/// an absence.
 fn theEnvironment() void {
     const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
@@ -516,7 +439,7 @@ fn theEnvironment() void {
 }
 
 /// Platform introspection. The values are the host's, so the assertions are
-/// about the shape of the answer and about `os/which`'s two modes, which no
+/// about the shape of the result and about `os/which`'s two modes, which no
 /// suite exercises.
 fn thePlatform() void {
     const env: *tables.Table = harness.coreEnv();
@@ -541,152 +464,14 @@ fn thePlatform() void {
     );
 }
 
-// ==========================================================================
-// What the first mutation sweep found missing
-// ==========================================================================
-//
-// Everything above was written before that sweep and everything below after
-// it. The split is worth keeping visible: the sweep left 135 survivors out of
-// 302, and the great majority of the reachable ones were in three places the
-// contract had not looked at -- `os/open`'s flag scanner, the optional-argument
-// branches of half the surface, and the parts of `os/spawn` that only a
-// redirection exercises. A contract written by reading the code finds what the
-// code says; a sweep finds what the tests do not say.
-//
-// Files go under /tmp rather than the working directory, which is the other
-// thing that sweep taught: a mutant left a mode-0000 `unique.txt` in the repo
-// root and every later mutant was then "caught" by a suite that could not
-// reopen it.
-
-fn theOpenFlags() void {
-    if (!harness.has_ev) return;
-    var env: *tables.Table = harness.coreEnv();
-    harness.inFiber(env,
-        \\(os/mkdir "/tmp/janet-os-surface-contract")
-        \\(defn p [n] (string "/tmp/janet-os-surface-contract/" n))
-        \\(each n (os/dir "/tmp/janet-os-surface-contract") (os/rm (p n)))
-        \\(spit (p "ro") "abc") (os/chmod (p "ro") 8r444)
-        \\(spit (p "wo") "abc") (os/chmod (p "wo") 8r222)
-        \\(spit (p "rw") "abc") (os/chmod (p "rw") 8r644)
-        \\(def s (os/open (p "ro") :r))
-        \\(assert (= "abc" (string (:read s 3))))
-        \\(assert (= "bad stream, expected writable stream"
-        \\           (in (protect (:write s "z")) 1)))
-        \\(:close s)
-        \\(def s2 (os/open (p "wo") :w))
-        \\(:write s2 "z")
-        \\(assert (= "bad stream, expected readable stream"
-        \\           (in (protect (:read s2 1)) 1)))
-        \\(:close s2)
-        \\(def s3 (os/open (p "rw") :rw))
-        \\(:write s3 "Q")
-        \\(:close s3)
-        \\(assert (= "Qbc" (string (slurp (p "rw")))))
-    );
-    vm_lifecycle.deinit();
-
-    harness.init();
-    env = harness.coreEnv();
-    harness.inFiber(env,
-        \\(defn p [n] (string "/tmp/janet-os-surface-contract/" n))
-        \\(def s (os/open (p "rw") :rN))
-        \\(assert (= "bad stream, expected readable stream"
-        \\           (in (protect (:read s 1)) 1)))
-        \\(:close s)
-        \\(spit (p "ap") "1")
-        \\(def a (os/open (p "ap") :wa)) (:write a "2") (:close a)
-        \\(assert (= "12" (string (slurp (p "ap")))))
-        \\(spit (p "tr") "xyz")
-        \\(:close (os/open (p "tr") :wt))
-        \\(assert (= 0 (length (slurp (p "tr")))))
-        \\(:close (os/open (p "ce") :wce))
-        \\(assert (= "File exists" (in (protect (os/open (p "ce") :wce)) 1)))
-        \\(:close (os/open (p "md") :wc 8r640))
-        \\(assert (= "rw-r-----" (os/stat (p "md") :permissions)))
-        \\(def z (os/open (p "rw") :rZ)) (:close z)
-    );
-}
-
-/// `os/link`'s third argument decides between a hard link and a symbolic one,
-/// and `os/symlink` is the same call with it forced true. Nothing above looked
-/// at the argument at all.
-fn theLinks() void {
-    if (windows) return;
-    const env: *tables.Table = harness.coreEnv();
-    harness.inFiber(env,
-        \\(protect (os/mkdir "/tmp/janet-os-surface-contract"))
-        \\(defn p [n] (string "/tmp/janet-os-surface-contract/" n))
-        \\(defn rm [n] (protect (os/rm (p n))))
-        \\(rm "h") (rm "s") (rm "h2")
-        \\(spit (p "tgt") "abc")
-        \\(os/link (p "tgt") (p "h") false)
-        \\(assert (= :file (os/lstat (p "h") :mode)))
-        \\(assert (= 2 (os/stat (p "tgt") :nlink)))
-        \\(os/link (p "tgt") (p "h2"))
-        \\(assert (= :file (os/lstat (p "h2") :mode)))
-        \\(assert (= 3 (os/stat (p "tgt") :nlink)))
-        \\(os/link (p "tgt") (p "s") true)
-        \\(assert (= :link (os/lstat (p "s") :mode)))
-        \\(assert (= :file (os/stat (p "s") :mode)))
-        \\(assert (= (p "tgt") (os/readlink (p "s"))))
-        \\(rm "s")
-        \\(os/symlink (p "tgt") (p "s"))
-        \\(assert (= :link (os/lstat (p "s") :mode)))
-        \\(each n (os/dir "/tmp/janet-os-surface-contract") (protect (os/rm (p n))))
-        \\(os/rmdir "/tmp/janet-os-surface-contract")
-    );
-}
-
-/// `os/rm` and the filesystem sandbox.
-///
-/// **Every filesystem entry point asserts the permission its operation needs**,
-/// and `os/rm` and `os/readlink` are the two that once did not: `os/rm`
-/// asserted nothing at all while its nine neighbours asserted `fs_write`, so a
-/// sandboxed program could delete any file the process could reach, and
-/// `os/readlink` asserted nothing where `os/stat`, `os/dir` and `os/realpath`
-/// assert `fs_read`.
-///
-/// `sandbox` is irreversible within a VM, so this runs in a `janet_init` of
-/// its own and does its setup before forbidding anything. The file it leaves
-/// behind is cleaned by `theLinks`, which runs after it and removes the whole
-/// scratch directory.
-fn theRemoveSandbox() void {
-    var env: *tables.Table = harness.coreEnv();
-    harness.inFiber(env,
-        \\(protect (os/mkdir "/tmp/janet-os-surface-contract"))
-        \\(def victim (string "/tmp/janet-os-surface-contract/victim"))
-        \\(spit victim "x")
-        \\(assert (os/stat victim))
-        \\(sandbox :fs-write)
-        \\(assert (= "operation forbidden by sandbox"
-        \\           (in (protect (os/rm victim)) 1)))
-        \\(assert (os/stat victim) "the file survives a forbidden os/rm")
-        \\(assert (= "operation forbidden by sandbox" (in (protect (os/rm)) 1)))
-        \\(assert (= "operation forbidden by sandbox" (in (protect (os/rm 5)) 1)))
-        \\(assert (= "operation forbidden by sandbox"
-        \\           (in (protect (os/rmdir "/tmp/janet-os-surface-contract")) 1)))
-    );
-    vm_lifecycle.deinit();
-
-    // A fresh VM, because the one above can never leave its sandbox. Without a
-    // sandbox the delete still works, which is the half of the behaviour that
-    // must not have changed.
-    harness.init();
-    env = harness.coreEnv();
-    harness.inFiber(env,
-        \\(def victim (string "/tmp/janet-os-surface-contract/victim"))
-        \\(assert (os/stat victim))
-        \\(os/rm victim)
-        \\(assert (nil? (os/stat victim)))
-        \\(spit victim "x")
-        \\(sandbox :fs-read)
-        \\(os/rm victim)
-    );
-}
-
 /// The optional-argument branches. Each of these is an `argc >` or an
-/// `argc ==` that decides whether a slot is read at all, and a mutation that
-/// inverts one reads a slot that is not there or ignores one that is.
+/// `argc ==` that decides whether a slot is read at all, and inverting one
+/// reads a slot that is not there or ignores one that is.
+///
+/// The files these open go under /tmp rather than the working directory,
+/// because a failure part way through can leave a mode-0000 file behind and a
+/// later run would then fail for a reason that has nothing to do with the
+/// code.
 fn theOptionalArguments() void {
     const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
@@ -776,8 +561,237 @@ fn theOptionalArguments() void {
     );
 }
 
+fn theOpenFlags() void {
+    if (!harness.has_ev) return;
+    var env: *tables.Table = harness.coreEnv();
+    harness.inFiber(env,
+        \\(os/mkdir "/tmp/janet-os-surface-contract")
+        \\(defn p [n] (string "/tmp/janet-os-surface-contract/" n))
+        \\(each n (os/dir "/tmp/janet-os-surface-contract") (os/rm (p n)))
+        \\(spit (p "ro") "abc") (os/chmod (p "ro") 8r444)
+        \\(spit (p "wo") "abc") (os/chmod (p "wo") 8r222)
+        \\(spit (p "rw") "abc") (os/chmod (p "rw") 8r644)
+        \\(def s (os/open (p "ro") :r))
+        \\(assert (= "abc" (string (:read s 3))))
+        \\(assert (= "bad stream, expected writable stream"
+        \\           (in (protect (:write s "z")) 1)))
+        \\(:close s)
+        \\(def s2 (os/open (p "wo") :w))
+        \\(:write s2 "z")
+        \\(assert (= "bad stream, expected readable stream"
+        \\           (in (protect (:read s2 1)) 1)))
+        \\(:close s2)
+        \\(def s3 (os/open (p "rw") :rw))
+        \\(:write s3 "Q")
+        \\(:close s3)
+        \\(assert (= "Qbc" (string (slurp (p "rw")))))
+    );
+    vm_lifecycle.deinit();
+
+    harness.init();
+    env = harness.coreEnv();
+    harness.inFiber(env,
+        \\(defn p [n] (string "/tmp/janet-os-surface-contract/" n))
+        \\(def s (os/open (p "rw") :rN))
+        \\(assert (= "bad stream, expected readable stream"
+        \\           (in (protect (:read s 1)) 1)))
+        \\(:close s)
+        \\(spit (p "ap") "1")
+        \\(def a (os/open (p "ap") :wa)) (:write a "2") (:close a)
+        \\(assert (= "12" (string (slurp (p "ap")))))
+        \\(spit (p "tr") "xyz")
+        \\(:close (os/open (p "tr") :wt))
+        \\(assert (= 0 (length (slurp (p "tr")))))
+        \\(:close (os/open (p "ce") :wce))
+        \\(assert (= "File exists" (in (protect (os/open (p "ce") :wce)) 1)))
+        \\(:close (os/open (p "md") :wc 8r640))
+        \\(assert (= "rw-r-----" (os/stat (p "md") :permissions)))
+        \\(def z (os/open (p "rw") :rZ)) (:close z)
+    );
+}
+
+/// `os/rm` and the filesystem sandbox.
+///
+/// Every filesystem entry point asserts the permission its operation needs,
+/// and `os/rm` and `os/readlink` are the two that once did not: `os/rm`
+/// asserted nothing at all while its nine neighbours asserted `fs_write`, so a
+/// sandboxed program could delete any file the process could reach, and
+/// `os/readlink` asserted nothing where `os/stat`, `os/dir` and `os/realpath`
+/// assert `fs_read`.
+///
+/// `sandbox` is irreversible within a VM, so this runs in a VM of its own and
+/// does its setup before forbidding anything. The file it leaves
+/// behind is cleaned by `theLinks`, which runs after it and removes the whole
+/// scratch directory.
+fn theRemoveSandbox() void {
+    var env: *tables.Table = harness.coreEnv();
+    harness.inFiber(env,
+        \\(protect (os/mkdir "/tmp/janet-os-surface-contract"))
+        \\(def victim (string "/tmp/janet-os-surface-contract/victim"))
+        \\(spit victim "x")
+        \\(assert (os/stat victim))
+        \\(sandbox :fs-write)
+        \\(assert (= "operation forbidden by sandbox"
+        \\           (in (protect (os/rm victim)) 1)))
+        \\(assert (os/stat victim) "the file survives a forbidden os/rm")
+        \\(assert (= "operation forbidden by sandbox" (in (protect (os/rm)) 1)))
+        \\(assert (= "operation forbidden by sandbox" (in (protect (os/rm 5)) 1)))
+        \\(assert (= "operation forbidden by sandbox"
+        \\           (in (protect (os/rmdir "/tmp/janet-os-surface-contract")) 1)))
+    );
+    vm_lifecycle.deinit();
+
+    // A fresh VM, because the one above can never leave its sandbox. Without a
+    // sandbox the delete still works, which is the half of the behaviour that
+    // must not have changed.
+    harness.init();
+    env = harness.coreEnv();
+    harness.inFiber(env,
+        \\(def victim (string "/tmp/janet-os-surface-contract/victim"))
+        \\(assert (os/stat victim))
+        \\(os/rm victim)
+        \\(assert (nil? (os/stat victim)))
+        \\(spit victim "x")
+        \\(sandbox :fs-read)
+        \\(os/rm victim)
+    );
+}
+
+/// `os/link`'s third argument decides between a hard link and a symbolic one,
+/// and `os/symlink` is the same call with it forced true. Nothing above looked
+/// at the argument at all.
+fn theLinks() void {
+    if (windows) return;
+    const env: *tables.Table = harness.coreEnv();
+    harness.inFiber(env,
+        \\(protect (os/mkdir "/tmp/janet-os-surface-contract"))
+        \\(defn p [n] (string "/tmp/janet-os-surface-contract/" n))
+        \\(defn rm [n] (protect (os/rm (p n))))
+        \\(rm "h") (rm "s") (rm "h2")
+        \\(spit (p "tgt") "abc")
+        \\(os/link (p "tgt") (p "h") false)
+        \\(assert (= :file (os/lstat (p "h") :mode)))
+        \\(assert (= 2 (os/stat (p "tgt") :nlink)))
+        \\(os/link (p "tgt") (p "h2"))
+        \\(assert (= :file (os/lstat (p "h2") :mode)))
+        \\(assert (= 3 (os/stat (p "tgt") :nlink)))
+        \\(os/link (p "tgt") (p "s") true)
+        \\(assert (= :link (os/lstat (p "s") :mode)))
+        \\(assert (= :file (os/stat (p "s") :mode)))
+        \\(assert (= (p "tgt") (os/readlink (p "s"))))
+        \\(rm "s")
+        \\(os/symlink (p "tgt") (p "s"))
+        \\(assert (= :link (os/lstat (p "s") :mode)))
+        \\(each n (os/dir "/tmp/janet-os-surface-contract") (protect (os/rm (p n))))
+        \\(os/rmdir "/tmp/janet-os-surface-contract")
+    );
+}
+
+/// `os/pipe` and its two flag letters.
+fn thePipe() void {
+    if (!harness.has_ev) return;
+    const env: *tables.Table = harness.coreEnv();
+    harness.inFiber(env,
+        \\(def [r w] (os/pipe))
+        \\(:write w "abc")
+        \\(assert (= "abc" (string (:read r 3))))
+        \\(:close w) (:close r)
+        \\(def [r2 w2] (os/pipe nil))
+        \\(:close w2) (:close r2)
+        \\(def [r3 w3] (os/pipe :W))
+        \\(assert (= "bad stream, expected writable stream"
+        \\           (in (protect (:write w3 "x")) 1)))
+        \\(:close w3) (:close r3)
+        \\(def [r4 w4] (os/pipe :R))
+        \\(assert (= "bad stream, expected readable stream"
+        \\           (in (protect (:read r4 1)) 1)))
+        \\(:close w4) (:close r4)
+    );
+}
+
+// `os/exit`'s `force` argument is *not* tested here.
+//
+// `force` chooses `_Exit` over `exit`, and the only visible difference is
+// whether the C library's buffered output is flushed on the way out. That can
+// only be asked of a child process running a Janet snippet, and this contract
+// has no interpreter to spawn: `(dyn :executable)` is the CLI's binding and
+// `core_env.coreEnv` does not set it, so a contract inside the runtime cannot
+// name a janet binary.
+
+/// Which callbacks the type supplies is a fact about the type. A process is
+/// not marshallable, has no string rendering, and does not compare or hash,
+/// so `(marshal p)` must fail and `(string p)` must fall back on the generic
+/// abstract rendering. A port that filled one of those in by accident would
+/// pass every suite.
+fn theProcessType() void {
+    const env: *tables.Table = harness.coreEnv();
+    harness.inFiber(env,
+        \\(def null (file/open "/dev/null" :w))
+        \\# `/usr/bin/true` stood here and at one site below. Alpine is busybox
+        \\# and puts it at `/bin/true`, so both spawns died with ENOENT the first
+        \\# time this contract ran off macOS.
+        \\# `/bin/sh` is already this file's dependency a dozen lines down and is
+        \\# the one path every POSIX host agrees on.
+        \\(def p (os/spawn ["/bin/sh" "-c" "exit 0"] :p {:out null :err null}))
+        \\(def at (type p))
+        \\(assert (= :core/process at))
+        \\(assert (= 0 (os/proc-wait p)))
+        \\(assert (not (first (protect (marshal p)))))
+        \\(assert (string/has-prefix? "<core/process " (string p)))
+        \\(assert (deep= @[:wait :kill :close :in :out :err] (keys p)))
+        \\(file/close null)
+    );
+}
+
+/// The signal table: a name the platform defines resolves, and one it does not
+/// reports "undefined signal" with the keyword in the message.
+///
+/// Two details here are about the *sweep* rather than about signals, and both
+/// were forced by a false-catch channel a mutation run found. A child is given
+/// an explicit stdout and stderr instead of inheriting this process's, because
+/// the sweep runs a contract with its output captured and blocks until every
+/// writer to the pipe closes, including a grandchild that outlived an
+/// aborting contract. And the kill is *asserted* rather than merely performed,
+/// so a mutated `os/proc-kill` that returns without killing fails an assertion
+/// here rather than leaking a child that then keeps the harness's pipe for its
+/// whole timeout.
+///
+/// SIGKILL is what the death assertion uses, and that is not fastidiousness:
+/// an ignored disposition is inherited across fork and exec, `nohup` ignores
+/// SIGHUP, and the sweep launches `mutate.py` with `nohup`. SIGKILL is the one
+/// signal that cannot be caught or ignored.
+fn theSignalTable() void {
+    const env: *tables.Table = harness.coreEnv();
+    harness.inFiber(env,
+        \\(def null (file/open "/dev/null" :w))
+        \\(defn sleeper [] (os/spawn ["/bin/sleep" "30"] :p {:out null :err null}))
+        \\(each sig [:int :term :hup :usr1 :usr2 :alrm :chld :cont]
+        \\  (def p (sleeper))
+        \\  (def res (protect (os/proc-kill p false sig)))
+        \\  (assert (first res) (string "signal " sig " resolves to a number"))
+        \\  (assert (>= (os/proc-kill p true :kill) 128)
+        \\          (string "the child of " sig " is killed")))
+        \\(def k (sleeper))
+        \\(assert (= 137 (os/proc-kill k true :kill)))
+        \\(def d (sleeper))
+        \\(assert (= 137 (os/proc-kill d true)))
+        \\(def p (sleeper))
+        \\(assert (= "undefined signal :nosuchsignal"
+        \\           (in (protect (os/proc-kill p false :nosuchsignal)) 1)))
+        \\(assert (>= (os/proc-kill p true) 128))
+        \\# `:vtalrm` is the spelling the table carries -- the signal's own
+        \\# name with the `SIG` dropped -- and the transposition is not an
+        \\# alias for it.
+        \\(def q (sleeper))
+        \\(assert (= "undefined signal :vtlarm"
+        \\           (in (protect (os/proc-kill q false :vtlarm)) 1)))
+        \\(assert (>= (os/proc-kill q true) 128))
+        \\(file/close null)
+    );
+}
+
 /// `os/spawn`'s redirections and flags. Everything here needs a subprocess
-/// that actually produces output or an exit code, which is why none of it is
+/// that actually produces output or an exit code, so none of it is
 /// reachable from the type-shape test above.
 fn theSpawnRedirection() void {
     if (!harness.has_ev) return;
@@ -832,7 +846,7 @@ fn theSpawnRedirection() void {
 }
 
 /// The environment block `os/execute` builds under `:e`. Its POSIX arm drops a
-/// key holding `=` or NUL and keeps everything else, which is a rule
+/// key containing `=` or NUL and keeps everything else, which is a rule
 /// `os_process.zig` owns and this is the only thing that runs it end to end.
 fn theExecuteEnvironment() void {
     const env: *tables.Table = harness.coreEnv();
@@ -881,7 +895,7 @@ fn theSigaction() void {
 
 /// `os/posix-fork` returns nil in the child and a `core/process` in the
 /// parent. The child exits with `force` so that it does not flush the buffered
-/// output the parent has already queued -- which is what makes this safe to
+/// output the parent has already queued, which is what makes this safe to
 /// run inside a contract at all.
 fn thePosixFork() void {
     const env: *tables.Table = harness.coreEnv();
@@ -895,45 +909,12 @@ fn thePosixFork() void {
     );
 }
 
-/// `os/pipe` and its two flag letters.
-fn thePipe() void {
-    if (!harness.has_ev) return;
-    const env: *tables.Table = harness.coreEnv();
-    harness.inFiber(env,
-        \\(def [r w] (os/pipe))
-        \\(:write w "abc")
-        \\(assert (= "abc" (string (:read r 3))))
-        \\(:close w) (:close r)
-        \\(def [r2 w2] (os/pipe nil))
-        \\(:close w2) (:close r2)
-        \\(def [r3 w3] (os/pipe :W))
-        \\(assert (= "bad stream, expected writable stream"
-        \\           (in (protect (:write w3 "x")) 1)))
-        \\(:close w3) (:close r3)
-        \\(def [r4 w4] (os/pipe :R))
-        \\(assert (= "bad stream, expected readable stream"
-        \\           (in (protect (:read r4 1)) 1)))
-        \\(:close w4) (:close r4)
-    );
-}
-
-// `os/exit`'s `force` argument is *not* tested here, and the reason is worth
-// recording because the mutation sweep asks about it twice.
-//
-// `force` chooses `_Exit` over `exit`, and the only visible difference is
-// whether the C library's buffered output is flushed on the way out. That can
-// only be asked of a child process running a Janet snippet, and this contract
-// has no interpreter to spawn: `(dyn :executable)` is the CLI's binding and
-// `janet_core_env` does not set it, so a contract inside the runtime cannot
-// name a janet binary. Forking and redirecting the child through a pipe would
-// work and is more machinery than two mutants are worth.
-//
-// Both mutants therefore stand as deliberate survivors. The behaviour itself
-// is real and was verified by hand: `(prin "x") (os/exit 0)` prints `x` and
-// `(prin "x") (os/exit 0 true)` prints nothing.
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 /// One section, each in a VM of its own so that none inherits another's heap
-/// -- or, for the two that sandbox themselves, another's sandbox.
+/// or, for the two that sandbox themselves, another's sandbox.
 fn section(comptime body: fn () void) void {
     harness.init();
     body();
@@ -944,7 +925,7 @@ pub fn run() void {
     if (reduced_os) {
         // A reduced-OS build compiles four `os/` functions and none of this
         // file's subjects. The Janet suites cannot run against such a build at
-        // all -- `test/helper.janet` itself needs `os/getenv` -- so the
+        // all, `test/helper.janet` itself needing `os/getenv`, so the
         // library linking and the contracts passing is the whole of what that
         // configuration claims.
         std.debug.print("os_surface contract skipped (reduced OS)\n", .{});

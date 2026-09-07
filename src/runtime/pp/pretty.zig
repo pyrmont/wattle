@@ -1,82 +1,76 @@
-//! Laying a structure of Janet values out on a page, and writing one back out
-//! as JDN.
+//! Laying a structure of Janet values out on a page, and writing a value back
+//! out as JDN.
 //!
-//! `pp.zig` answers what a single value is called. This is everything that
-//! needs more than one: the recursion into arrays, tuples, structs and tables,
-//! the cycle table that stops it looping, the column arithmetic, the newline
-//! backtracking that pulls a short tail back onto its parent's line, the two
-//! truncation limits, and the key sort that makes a dictionary print the same
-//! way twice.
+//! `pp.zig` renders what a single value is called. This file is everything
+//! that takes more than a single value: the recursion into arrays, tuples,
+//! structs and tables, the cycle table that stops it looping, the column
+//! arithmetic, the newline backtracking that pulls a short tail back onto its
+//! parent's line, the two truncation limits, and the key sort that makes a
+//! dictionary print the same way twice.
 //!
-//! ## Two printers, one state record
-//!
-//! `Pretty` serves both the pretty printer and the JDN writer, and they share
+//! `Pretty` serves both the pretty printer and the JDN writer, which share
 //! almost nothing else: JDN has no width, no colour, no alignment and no
-//! truncation, and it *fails* on values the pretty printer renders happily --
-//! a function, a fiber, an abstract, a keyword that would not read back. The
-//! record is shared because `seen` and the buffer are common to both.
+//! truncation, and it fails on values the pretty printer renders happily, such
+//! as a function, a fiber, an abstract, or a keyword that would not read back.
+//! The record is shared because `seen` and the buffer are common to both.
 //!
-//! ## What raises here
+//! Two things in the recursion raise. `pp.descriptionB` does, when an abstract
+//! type's `tostring` does, and a buffer push does, on a buffer that cannot
+//! grow. `tables.put` does not: a type's `hash` and `compare` are
+//! `callconv(.c) i32` with no error channel.
 //!
-//! **One call in the recursion can raise**: `pp.descriptionB`, when an
-//! abstract type's `tostring` does. `tables.put` cannot -- a type's `hash` and
-//! `compare` are `callconv(.c) i32` and have no error channel. The buffer
-//! pushes can raise too, on a buffer that cannot grow.
-//!
-//! A value with no JDN form is *not* a raise in the recursion: `printJdnOne`
+//! A value with no JDN form is not a raise in the recursion. `printJdnOne`
 //! reports it upwards as a `bool` and only `jdn` turns it into a panic, so the
-//! recursion carries no second error channel and the message is written once.
+//! recursion needs no second error channel and the message is written once.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const raise = @import("../../api/raise.zig");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const args_core = @import("../args.zig");
+const buffers = @import("../value/buffers.zig");
 const describe = @import("../pp.zig");
+const fatal = @import("../fatal.zig");
+const gc_alloc = @import("../gc.zig");
+const numscan = @import("../scan.zig");
+const order = @import("../value/helpers/order.zig");
+const raise = @import("../../api/raise.zig");
+const repr = @import("repr");
+const strings = @import("../value/strings.zig");
 const structs = @import("../value/structs.zig");
 const tables = @import("../value/tables.zig");
-const gc_alloc = @import("../gc.zig");
-const utils = @import("../utils.zig");
-const wrap = @import("../value/helpers/wrap.zig");
-const args_core = @import("../args.zig");
-const fatal = @import("../fatal.zig");
-const order = @import("../value/helpers/order.zig");
-const value = @import("../value.zig");
-const buffers = @import("../value/buffers.zig");
-const numscan = @import("../scan.zig");
-const strings = @import("../value/strings.zig");
 const tuples = @import("../value/tuples.zig");
+const utils = @import("../utils.zig");
+const value = @import("../value.zig");
+const wrap = @import("../value/helpers/wrap.zig");
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// The two truncation limits, and the size past which sorting a dictionary's
+/// keys is given up on.
+const array_limit: i32 = 160;
+const dict_keysort_limit: i32 = 2000;
+const dict_limit: i32 = 30;
 
 /// How much room `integerToStringB` reserves before it writes digits.
 const bufsize = 64;
 
-/// The page width a `%p` with no explicit width gets.
-const columns_default: c_int = 80;
-
-/// The two truncation limits and the point past which sorting keys is
-/// abandoned as not worth it.
-const dict_limit: i32 = 30;
-const dict_keysort_limit: i32 = 2000;
-const array_limit: i32 = 160;
-
-/// What the caller asked the pretty printer for. Three independent bits,
-/// numbered 1, 2 and 4, and the numbers reach no wire.
-pub const PrettyFlags = packed struct(c_int) {
-    /// Emit ANSI colour escapes.
-    color: bool = false,
-    /// Never break a line.
-    oneline: bool = false,
-    /// Print every element of a long collection rather than eliding.
-    notrunc: bool = false,
-    _reserved: u29 = 0,
-};
-
-// ----------------------------------------------------------------- colouring
-
-const cycle_color = "\x1B[36m";
+/// The escapes that are not per type: a prototype's `_name`, the reset that
+/// follows any escape, and a cycle marker.
 const class_color = "\x1B[34m";
 const color_reset = "\x1B[0m";
+const cycle_color = "\x1B[36m";
 
-/// One escape per tag, in `repr.Tag` order -- which starts at
-/// `repr.Tag.number`, not at `repr.Tag.nil`.
+/// One escape per tag, in `repr.Tag` order, which starts at `repr.Tag.number`
+/// rather than at `repr.Tag.nil`.
 const type_colors = [16][*:0]const u8{
     "\x1B[32m", // number
     "\x1B[36m", // nil
@@ -96,17 +90,19 @@ const type_colors = [16][*:0]const u8{
     "\x1B[36m", // pointer
 };
 
-// -------------------------------------------------------------- the printer
+// ==========================================================================
+// Types
+// ==========================================================================
 
 /// One pretty-print in progress: where the output goes, how deep and how wide
 /// it has got, and what the caller asked for.
 ///
-/// **Two of its fields are scratch, and neither is freed on a raising path.**
-/// `seen` is a scratch table, so `tables.deinit` takes the `gc.sfree` arm --
-/// but `prettyBuffer` `try`s its recursion before reaching that call, so a
-/// raise returns past it; `jdn` holds the error union and deinitializes first,
-/// so it does free. The key-sort buffer is never freed here on any path: there
-/// is no `gc.sfree` for it in this file, and its `gc.srealloc` block is the
+/// Two of its fields are scratch, and neither is freed on a raising path.
+/// `seen` is a scratch table, so `tables.deinit` takes the `gc.sfree` arm, but
+/// `prettyBuffer` `try`s its recursion before reaching that call, so a raise
+/// returns past it; `jdn` keeps the error union and deinitialises first, so it
+/// does free. The key-sort buffer is freed here on no path: there is no
+/// `gc.sfree` for it in this file, and its `gc.srealloc` block is the
 /// collector's from the start. Nothing is leaked either way, because
 /// `gc.freeAllScratch` reclaims both at the end of the next collection.
 const Pretty = struct {
@@ -137,8 +133,183 @@ const Pretty = struct {
     }
 };
 
-/// How many decimal digits `x` needs, for a non-positive `x`. Counting on the
-/// negative side is what lets the most negative `i32` be counted at all.
+/// What the caller asked the pretty printer for: three independent bits,
+/// numbered as C's `JANET_PRETTY_COLOR`, `JANET_PRETTY_ONELINE` and
+/// `JANET_PRETTY_NOTRUNC`.
+pub const PrettyFlags = packed struct(c_int) {
+    /// Emit ANSI colour escapes.
+    color: bool = false,
+    /// Never break a line.
+    oneline: bool = false,
+    /// Print every element of a long collection rather than eliding.
+    notrunc: bool = false,
+    _reserved: u29 = 0,
+};
+
+// ==========================================================================
+// Public functions
+// ==========================================================================
+
+/// Renders `x` as JDN into `buffer`, or raises saying it cannot be.
+///
+/// This is the only raise the file decides, and why `printJdnOne` reports a
+/// flag rather than raising: the message is written once, here.
+/// `pp/format.zig` imports this and `try`s it.
+///
+/// `startlen` and `lookback_barrier` are parameters rather than read from the
+/// buffer's count, because every caller reaching this through the formatter
+/// already has both.
+pub fn jdn(
+    buffer: ?*buffers.Buffer,
+    depth: c_int,
+    x: repr.Value,
+    startlen: usize,
+    lookback_barrier: usize,
+) raise.Raising(*buffers.Buffer) {
+    var S = initState(buffer, depth, 0, .{}, startlen, lookback_barrier);
+    const failed = printJdnOne(&S, x, depth);
+    tables.deinit(&S.seen);
+    if (try failed) return raise.panic("could not print to jdn format");
+    return S.buffer;
+}
+
+/// The pretty-printing perimeter, which `pp/format.zig` reaches `%p` and its
+/// seven siblings through, by import.
+///
+/// `buffer` is the destination, or null for a fresh one; `depth` and `width`
+/// are the recursion budget and the page width; `startlen` is where the
+/// message began in the buffer, and `lookback_barrier` where a reflow must
+/// stop.
+///
+/// It raises: the buffer pushes underneath it can overflow, and an abstract
+/// type's `tostring` can. The raise is returned, and nothing calls this across
+/// the ABI.
+pub fn prettyBuffer(
+    buffer: ?*buffers.Buffer,
+    depth: c_int,
+    width: c_int,
+    flags: PrettyFlags,
+    x: repr.Value,
+    startlen: usize,
+    lookback_barrier: usize,
+) raise.Raising(*buffers.Buffer) {
+    var S = initState(buffer, depth, width, flags, startlen, lookback_barrier);
+    try prettyOne(&S, x);
+    backtrackNewlines(&S);
+    tables.deinit(&S.seen);
+    return S.buffer;
+}
+
+// ==========================================================================
+// Private functions
+// ==========================================================================
+
+/// Having just closed a bracket, walks back over what was written and, where
+/// the whole tail fits inside the page width, pulls it up onto one line by
+/// deleting the newlines and their indentation.
+///
+/// The walk stops at `lookback_barrier`, which is where the caller's own text
+/// ended: a `%p` writing into a buffer with output already in it must not
+/// reflow what was there before.
+fn backtrackNewlines(S: *const Pretty) void {
+    if (S.flags.oneline or S.buffer.count <= 0) return;
+    switch (S.buffer.slice()[@intCast(S.buffer.count - 1)]) {
+        ')', '}', ']' => {},
+        else => return,
+    }
+
+    var removed: i32 = 0;
+    const old_count = S.buffer.count;
+    // The walk below is signed on purpose: it runs down to one byte past the
+    // barrier, and the `offset += 1` after the loop brings it back. With
+    // `buffer.count` unsigned that step underflows, so the two indices are
+    // widened here and narrowed once, after the loop has finished.
+    var offset: isize = @intCast(old_count);
+    const b0: isize = @intCast(S.lookback_barrier);
+    var columns = S.width;
+    var align_run: i32 = 0;
+
+    offset -= 1;
+    while (offset >= b0) : (offset -= 1) {
+        const at = S.buffer.data.? + @as(usize, @intCast(offset));
+        if (at[0] == '\n') {
+            // A line indented less than the leaf is a parent's line, and
+            // pulling past it would reflow more than this bracket's contents.
+            if (align_run < S.leaf_align) break;
+            columns += align_run;
+            removed += align_run;
+            align_run = 0;
+        } else if (at[0] == ' ') {
+            align_run += 1;
+        } else {
+            align_run = 0;
+            // A colour escape occupies no columns, so step over it rather
+            // than charging the page for it: `\x1B[0m` and `\x1B[3<n>m`.
+            if (S.flags.color and at[0] == 'm') {
+                if (offset >= 3 + b0 and std.mem.eql(u8, (at - 3)[0..4], color_reset)) {
+                    offset -= 3;
+                    columns += 1;
+                } else if (offset >= 4 + b0 and std.mem.eql(u8, (at - 4)[0..3], "\x1B[3")) {
+                    offset -= 4;
+                    columns += 1;
+                }
+            }
+        }
+        columns -= 1;
+        if (columns <= 0) return;
+    }
+
+    // Either the walk ran off the barrier, or it stopped on a newline it must
+    // not disturb; in both cases the rewrite starts one byte later.
+    offset += 1;
+    if (offset < b0) fatal.fatal("bad buffer index");
+    const start: usize = @intCast(offset);
+
+    S.buffer.count -= @as(usize, @intCast(removed));
+    // The compaction reads ahead of what it writes, up to `old_count`, which
+    // is past the count just shortened, so it works over the allocation rather
+    // than over `slice()`, and the `read >= old_count` guard below keeps it
+    // inside that range.
+    //
+    // The two cursors are independent, and `start` is not established as being
+    // at or below the count just shortened, so `for (start..count)` would trap
+    // on the empty case this loop correctly does nothing for.
+    const bytes = S.buffer.reserved();
+    var read = start;
+    var i = start;
+    while (i < S.buffer.count) : (i += 1) {
+        if (bytes[read] == '\n') {
+            bytes[i] = ' ';
+            // Skip the newline and the indentation that followed it. The
+            // single space just written is what the whole run collapses to.
+            read += 1;
+            while (bytes[read] == ' ') {
+                if (read >= old_count) fatal.fatal("bad replacement of newline");
+                read += 1;
+            }
+        } else {
+            bytes[i] = bytes[read];
+            read += 1;
+        }
+    }
+}
+
+/// Whether a symbol or keyword contains a character that stops it reading
+/// back. `sym` is the text and `issym` says which of the two it is, since a
+/// symbol may not begin with a digit. Text that fails this has no JDN form.
+fn containsBadChars(sym: strings.String, issym: bool) bool {
+    const len = strings.head(sym).length;
+    if (len != 0 and issym and sym[0] >= '0' and sym[0] <= '9') return true;
+    if (!numscan.validUtf8(sym[0..@intCast(len)])) return true;
+    for (sym[0..len]) |ch| {
+        if (!numscan.isSymbolChar(ch)) return true;
+    }
+    return false;
+}
+
+/// How many decimal digits `start` needs, for a non-positive `start`. Counting
+/// on the negative side is what lets the most negative `i32` be counted at
+/// all.
 fn countDig10(start: i32) i32 {
     var x = start;
     var result: i32 = 1;
@@ -152,13 +323,40 @@ fn countDig10(start: i32) i32 {
     }
 }
 
-/// Write `val` as decimal digits and answer how many bytes went in, which is
-/// what the cycle marker adds to its alignment.
+/// The state both perimeters start from, as they share the record.
+///
+/// `leaf_align` is set to zero rather than left `undefined`. Nothing reads it
+/// before it is written in any case that could be constructed: the only reader
+/// is `backtrackNewlines`, which returns before it unless the buffer ends in a
+/// closing bracket, and anything that puts one there has gone through a
+/// container and written the field. An uninitialised read is still not a
+/// behaviour worth preserving.
+fn initState(buffer: ?*buffers.Buffer, depth: c_int, width: c_int, flags: PrettyFlags, startlen: usize, lookback_barrier: usize) Pretty {
+    var S = Pretty{
+        .buffer = buffer orelse buffers.new(0),
+        .depth = depth,
+        .width = width,
+        .align_col = 0,
+        .leaf_align = 0,
+        .flags = flags,
+        .bufstartlen = startlen,
+        .lookback_barrier = lookback_barrier,
+        .keysort_buffer = null,
+        .keysort_capacity = 0,
+        .keysort_start = 0,
+        .seen = undefined,
+    };
+    _ = tables.init(&S.seen, 10);
+    return S;
+}
+
+/// Writes `val` to `buffer` as decimal digits and returns how many bytes went
+/// in, which is what the cycle marker adds to its alignment.
 ///
 /// The digits are produced from the negative side for the same reason
 /// `countDig10` counts there: negating the most negative `i32` overflows and
-/// negating the rest does not, so the loop works in the range that holds every
-/// input.
+/// negating any other value does not, so the loop stays in the range every
+/// input fits.
 fn integerToStringB(buffer: *buffers.Buffer, val: i32) raise.Raising(i32) {
     try buffers.extra(buffer, bufsize);
     var at = buffer.data.? + @as(usize, @intCast(buffer.count));
@@ -189,26 +387,86 @@ fn integerToStringB(buffer: *buffers.Buffer, val: i32) raise.Raising(i32) {
     return len + neg;
 }
 
-/// Whether a symbol or keyword holds a character that stops it reading back.
-/// One that fails this has no JDN form,
-/// because reading the printed text back would not produce the same value.
-fn containsBadChars(sym: strings.String, issym: bool) bool {
-    const len = strings.head(sym).length;
-    if (len != 0 and issym and sym[0] >= '0' and sym[0] <= '9') return true;
-    if (!numscan.validUtf8(sym[0..@intCast(len)])) return true;
-    for (sym[0..len]) |ch| {
-        if (!numscan.isSymbolChar(ch)) return true;
+/// The entries of a struct or table, as `printJdnOne` writes them.
+///
+/// The two containers differ only in where their buckets and capacity come
+/// from, so both arrive as parameters.
+///
+/// The keys are sorted, as `prettyEntries` sorts them, because JDN is a
+/// serialisation format and storage order is not reproducible: a key hashed by
+/// pointer, such as a buffer, an array, a table, a fiber or an abstract, sits
+/// in a bucket chosen by an allocation address, so the same value prints
+/// differently in two runs of the same binary.
+///
+/// The sort is `std.mem.sort` rather than `utils.sortedKeys`, which is an
+/// insertion sort. `prettyEntries` affords an insertion sort because it
+/// refuses to sort past `dict_keysort_limit` and truncates instead. There is
+/// nothing to truncate to here, so a quadratic sort over every entry would
+/// make a large dictionary quadratic to serialise. `std.mem.sort` is stable,
+/// so the order agrees with `%p`'s entry for entry.
+fn printJdnKvs(S: *Pretty, kvs: []const tables.KV, depth: c_int) raise.Raising(bool) {
+    const ks_start = S.keysort_start;
+    defer S.keysort_start = ks_start;
+
+    var len: usize = 0;
+    for (kvs) |*kv| {
+        if (!repr.checkType(kv.key, repr.Tag.nil)) len += 1;
+    }
+    if (len == 0) return false;
+
+    // The sort indices for every dictionary on the recursion stack share one
+    // scratch allocation, each nesting level taking the slice above the level
+    // below it. `prettyEntries` uses the same arrangement and the same
+    // buffer.
+    const mincap: i64 = @as(i64, @intCast(len)) + @as(i64, ks_start);
+    if (mincap > std.math.maxInt(i32)) return true;
+    if (S.keysort_capacity < mincap) {
+        S.keysort_capacity = if (mincap >= std.math.maxInt(i32) / 2)
+            std.math.maxInt(i32)
+        else
+            @intCast(mincap * 2);
+        S.keysort_buffer = @ptrCast(@alignCast(gc_alloc.srealloc(
+            S.keysort_buffer,
+            @sizeOf(i32) * @as(usize, @intCast(S.keysort_capacity)),
+        )));
+        if (S.keysort_buffer == null) fatal.outOfMemory();
+    }
+    // A nonzero `len` forces `mincap` above `keysort_capacity` unless the
+    // capacity is already nonzero, and a nonzero capacity means some level
+    // allocated the buffer and checked it, so the buffer is here.
+    const buf = (S.keysort_buffer orelse unreachable) + @as(usize, @intCast(ks_start));
+    var next: usize = 0;
+    for (kvs, 0..) |*kv, i| {
+        if (repr.checkType(kv.key, repr.Tag.nil)) continue;
+        buf[next] = @intCast(i);
+        next += 1;
+    }
+    std.mem.sort(i32, buf[0..len], kvs, struct {
+        fn lessThan(context: []const tables.KV, a: i32, b: i32) bool {
+            return order.compare(
+                context[@intCast(a)].key,
+                context[@intCast(b)].key,
+            ) < 0;
+        }
+    }.lessThan);
+    S.keysort_start += @intCast(len);
+
+    for (buf[0..len], 0..) |j, i| {
+        const kv = &kvs[@intCast(j)];
+        try if (i != 0) S.pushByte(' ');
+        if (try printJdnOne(S, kv.key, depth - 1)) return true;
+        try S.pushByte(' ');
+        if (try printJdnOne(S, kv.value, depth - 1)) return true;
     }
     return false;
 }
 
-// ------------------------------------------------------------------- the JDN
-
-/// Reports failure rather than raising it: `true` means the
-/// value has no JDN representation, and the perimeter is what panics.
+/// Writes `x` as JDN, recursing to `depth`.
 ///
-/// Depth is a parameter here rather than a field of the record, because JDN
-/// counts down a separate recursion from the pretty printer's.
+/// Failure is reported rather than raised: `true` means the value has no JDN
+/// form, and the perimeter is what panics. Depth is a parameter here rather
+/// than a field of the record, because JDN counts down a recursion of its own,
+/// separate from the pretty printer's.
 fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Raising(bool) {
     if (depth == 0) return true;
     switch (repr.typeOf(x)) {
@@ -265,171 +523,9 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Raising(bool) {
     return false;
 }
 
-/// The body the table and struct cases share: the two differ only in where
-/// their buckets and capacity come from, so both arrive as parameters.
-///
-/// **The keys are sorted**, as `prettyEntries` sorts them, because JDN is a
-/// serialisation format and storage order is not reproducible: a key hashed by
-/// *pointer* -- a buffer, an array, a table, a fiber, an abstract -- sits in a
-/// bucket chosen by an allocation address, so the same value prints
-/// differently in two runs of the same binary.
-///
-/// **The sort is `std.mem.sort` and not `utils.sortedKeys`.** That one is an
-/// insertion sort, and `prettyEntries` affords it only because it refuses to
-/// sort past `dict_keysort_limit` and truncates instead. There is no
-/// truncation here to fall back on, so a quadratic sort over every entry would
-/// make a large dictionary quadratic to serialise. `std.mem.sort` is stable,
-/// so the order agrees with `%p`'s entry for entry.
-fn printJdnKvs(S: *Pretty, kvs: []const tables.KV, depth: c_int) raise.Raising(bool) {
-    const ks_start = S.keysort_start;
-    defer S.keysort_start = ks_start;
-
-    var len: usize = 0;
-    for (kvs) |*kv| {
-        if (!repr.checkType(kv.key, repr.Tag.nil)) len += 1;
-    }
-    if (len == 0) return false;
-
-    // The sort indices for every dictionary on the recursion stack share one
-    // scratch allocation, each nesting level taking the slice above the one
-    // below it -- the same arrangement `prettyEntries` uses, and the same
-    // buffer.
-    const mincap: i64 = @as(i64, @intCast(len)) + @as(i64, ks_start);
-    if (mincap > std.math.maxInt(i32)) return true;
-    if (S.keysort_capacity < mincap) {
-        S.keysort_capacity = if (mincap >= std.math.maxInt(i32) / 2)
-            std.math.maxInt(i32)
-        else
-            @intCast(mincap * 2);
-        S.keysort_buffer = @ptrCast(@alignCast(gc_alloc.srealloc(
-            S.keysort_buffer,
-            @sizeOf(i32) * @as(usize, @intCast(S.keysort_capacity)),
-        )));
-        if (S.keysort_buffer == null) fatal.outOfMemory();
-    }
-    // A nonzero `len` forces `mincap` above `keysort_capacity` unless the
-    // capacity is already nonzero, and a nonzero capacity is one some level
-    // allocated and checked -- so the buffer is here.
-    const buf = (S.keysort_buffer orelse unreachable) + @as(usize, @intCast(ks_start));
-    var next: usize = 0;
-    for (kvs, 0..) |*kv, i| {
-        if (repr.checkType(kv.key, repr.Tag.nil)) continue;
-        buf[next] = @intCast(i);
-        next += 1;
-    }
-    std.mem.sort(i32, buf[0..len], kvs, struct {
-        fn lessThan(context: []const tables.KV, a: i32, b: i32) bool {
-            return order.compare(
-                context[@intCast(a)].key,
-                context[@intCast(b)].key,
-            ) < 0;
-        }
-    }.lessThan);
-    S.keysort_start += @intCast(len);
-
-    for (buf[0..len], 0..) |j, i| {
-        const kv = &kvs[@intCast(j)];
-        try if (i != 0) S.pushByte(' ');
-        if (try printJdnOne(S, kv.key, depth - 1)) return true;
-        try S.pushByte(' ');
-        if (try printJdnOne(S, kv.value, depth - 1)) return true;
-    }
-    return false;
-}
-
-// ------------------------------------------------------- the layout pass
-
-/// Having just closed a bracket, walk back over what was written and, if the
-/// whole tail would fit inside the page width, pull it up onto one line by
-/// deleting the newlines and their indentation.
-///
-/// The walk stops at `lookback_barrier`, which is where the caller's own text
-/// ended: `%p` writing into a buffer that already holds output must not reflow
-/// what was there before it.
-fn backtrackNewlines(S: *const Pretty) void {
-    if (S.flags.oneline or S.buffer.count <= 0) return;
-    switch (S.buffer.slice()[@intCast(S.buffer.count - 1)]) {
-        ')', '}', ']' => {},
-        else => return,
-    }
-
-    var removed: i32 = 0;
-    const old_count = S.buffer.count;
-    // The walk below is **signed on purpose**: it runs down to one byte past
-    // the barrier and the `offset += 1` after the loop is what brings it back.
-    // With `buffer.count` unsigned that step underflows, so the two indices
-    // are widened here and narrowed once, after the loop has finished.
-    var offset: isize = @intCast(old_count);
-    const b0: isize = @intCast(S.lookback_barrier);
-    var columns = S.width;
-    var align_run: i32 = 0;
-
-    offset -= 1;
-    while (offset >= b0) : (offset -= 1) {
-        const at = S.buffer.data.? + @as(usize, @intCast(offset));
-        if (at[0] == '\n') {
-            // A line indented less than the leaf is a parent's line, and
-            // pulling past it would reflow more than this bracket's contents.
-            if (align_run < S.leaf_align) break;
-            columns += align_run;
-            removed += align_run;
-            align_run = 0;
-        } else if (at[0] == ' ') {
-            align_run += 1;
-        } else {
-            align_run = 0;
-            // A colour escape occupies no columns, so step over it rather
-            // than charging the page for it: `\x1B[0m` and `\x1B[3<n>m`.
-            if (S.flags.color and at[0] == 'm') {
-                if (offset >= 3 + b0 and std.mem.eql(u8, (at - 3)[0..4], color_reset)) {
-                    offset -= 3;
-                    columns += 1;
-                } else if (offset >= 4 + b0 and std.mem.eql(u8, (at - 4)[0..3], "\x1B[3")) {
-                    offset -= 4;
-                    columns += 1;
-                }
-            }
-        }
-        columns -= 1;
-        if (columns <= 0) return;
-    }
-
-    // Either the walk ran off the barrier, or it stopped on a newline it must
-    // not disturb; in both cases the rewrite starts one byte later.
-    offset += 1;
-    if (offset < b0) fatal.fatal("bad buffer index");
-    const start: usize = @intCast(offset);
-
-    S.buffer.count -= @as(usize, @intCast(removed));
-    // The compaction reads ahead of what it writes, up to `old_count`, which
-    // is past the count just shortened -- so it works over the allocation
-    // rather than over `slice()`, and the `read >= old_count` guard below is
-    // what keeps it inside that range.
-    // Two independent cursors, and `start` is not established as being at or
-    // below the count just shortened -- `for (start..count)` would trap on the
-    // empty case this correctly does nothing for.
-    const bytes = S.buffer.reserved();
-    var read = start;
-    var i = start;
-    while (i < S.buffer.count) : (i += 1) {
-        if (bytes[read] == '\n') {
-            bytes[i] = ' ';
-            // Skip the newline and the indentation that followed it. The
-            // single space just written is what the whole run collapses to.
-            read += 1;
-            while (bytes[read] == ' ') {
-                if (read >= old_count) fatal.fatal("bad replacement of newline");
-                read += 1;
-            }
-        } else {
-            bytes[i] = bytes[read];
-            read += 1;
-        }
-    }
-}
-
 /// `print_newline`. In one-line mode a separator is a space and nothing else
-/// happens; otherwise this is where the reflow attempt is made.
+/// happens; otherwise this is where the reflow attempt is made. `align_col` is
+/// the column the new line is indented to.
 fn printNewline(S: *Pretty, align_col: c_int) raise.Raising(void) {
     if (S.flags.oneline) {
         try S.pushByte(' ');
@@ -443,120 +539,6 @@ fn printNewline(S: *Pretty, align_col: c_int) raise.Raising(void) {
     // loop below simply does not run when they do.
     const indent: usize = if (S.align_col > 0) @intCast(S.align_col) else 0;
     for (0..indent) |_| try S.pushByte(' ');
-}
-
-/// The `...` that both truncations and the depth limit write.
-fn pushEllipsis(S: *Pretty) raise.Raising(void) {
-    try S.pushCstring("...");
-    S.align_col += 3;
-}
-
-/// Render one value, recursing into containers.
-fn prettyOne(S: *Pretty, x: repr.Value) raise.Raising(void) {
-    // Record the value as seen, unless it is one of the four types that
-    // cannot participate in a cycle and so never needs a marker.
-    switch (repr.typeOf(x)) {
-        repr.Tag.nil, repr.Tag.number, repr.Tag.symbol, repr.Tag.boolean => {},
-        else => {
-            const seenid = tables.get(&S.seen, x);
-            if (repr.checkType(seenid, repr.Tag.number)) {
-                try S.pushColor(cycle_color);
-                try S.pushCstring("<cycle ");
-                S.align_col += 8 + try integerToStringB(S.buffer, wrap.toInteger(seenid));
-                try S.pushByte('>');
-                try S.pushColor(color_reset);
-                return;
-            }
-            // The id is the count *before* the insertion, so the first value
-            // recorded is `<cycle 0>`.
-            _ = tables.put(&S.seen, x, wrap.fromInteger(@intCast(S.seen.count)));
-        },
-    }
-
-    switch (repr.typeOf(x)) {
-        repr.Tag.array, repr.Tag.tuple => try prettyIndexed(S, x),
-        repr.Tag.@"struct", repr.Tag.table => try prettyDictionary(S, x),
-        else => try prettyLeaf(S, x),
-    }
-
-    _ = tables.remove(&S.seen, x);
-}
-
-/// Everything with no structure to walk into, which is what `pp_describe.zig`
-/// renders. The alignment is recovered from how much the buffer grew, since
-/// that layer counts nothing.
-fn prettyLeaf(S: *Pretty, x: repr.Value) raise.Raising(void) {
-    try S.pushColor(type_colors[@intFromEnum(repr.typeOf(x))]);
-    if (repr.checkType(x, repr.Tag.buffer) and wrap.toBuffer(x) == S.buffer) {
-        // Printing a buffer into itself. Reserve the worst case first, then
-        // escape only what was there when printing started, so that the loop
-        // does not chase its own output.
-        try buffers.ensure(S.buffer, S.buffer.count + S.bufstartlen * 4 + 3, 1);
-        try S.pushByte('@');
-        // `try`, not an abi. Through a `raise.reported` wrapper a raise inside
-        // the escape becomes a report nobody consumes: the blank width is used
-        // and the outstanding report kills the process at the next scope
-        // boundary. Both functions are in this compilation and `prettyLeaf` is
-        // already `raise.Raising`, so an ordinary import carries it.
-        S.align_col += 1 + try describe.escapeString(S.buffer, S.buffer.slice()[0..@intCast(S.bufstartlen)]);
-    } else {
-        S.align_col -= @as(i32, @intCast(S.buffer.count));
-        try describe.descriptionB(S.buffer, x);
-        S.align_col += @as(i32, @intCast(S.buffer.count));
-    }
-    try S.pushColor(color_reset);
-}
-
-/// An array or a tuple.
-fn prettyIndexed(S: *Pretty, x: repr.Value) raise.Raising(void) {
-    const isarray = repr.checkType(x, repr.Tag.array);
-    const arr = args_core.indexedView(x).?;
-    const bracketed = !isarray and tuples.isBracketed(tuples.head(arr.ptr));
-
-    const opener: [*:0]const u8 = if (isarray) "@[" else if (bracketed) "[" else "(";
-    const closer: u8 = if (isarray or bracketed) ']' else ')';
-    try S.pushCstring(opener);
-    S.align_col += @intCast(std.mem.len(opener));
-    const align_col = S.align_col;
-    S.leaf_align = align_col;
-
-    S.depth -= 1;
-    if (S.depth == 0) {
-        try pushEllipsis(S);
-    } else if (arr.len > array_limit and !S.flags.notrunc) {
-        // Three from each end, with the elision between them.
-        for (0..3) |i| {
-            try if (i != 0) printNewline(S, align_col);
-            try prettyOne(S, arr[i]);
-        }
-        try printNewline(S, align_col);
-        try pushEllipsis(S);
-        // `array_limit` is 160 and this arm is `arr.len > array_limit`, so
-        // taking three off the end cannot underflow.
-        for (arr.len - 3..arr.len) |i| {
-            try printNewline(S, align_col);
-            try prettyOne(S, arr[i]);
-        }
-    } else {
-        for (0..arr.len) |i| {
-            try if (i != 0) printNewline(S, align_col);
-            try prettyOne(S, arr[i]);
-        }
-    }
-    S.depth += 1;
-
-    try S.pushByte(closer);
-    S.align_col += 1;
-}
-
-/// The `_name` a prototype may carry, which is what makes an object-like table
-/// print as `@Name{...}` rather than `@{...}`.
-fn pushClassName(S: *Pretty, name: repr.Value) raise.Raising(void) {
-    const n = args_core.bytesView(name) orelse return;
-    try S.pushColor(class_color);
-    try buffers.pushBytes(S.buffer, n);
-    S.align_col += @intCast(n.len);
-    try S.pushColor(color_reset);
 }
 
 /// A struct or a table.
@@ -616,7 +598,7 @@ fn prettyEntries(S: *Pretty, x: repr.Value, align_col: c_int) raise.Raising(void
     } else {
         // The sort indices for every dictionary on the recursion stack share
         // one scratch allocation, each nesting level taking the slice above
-        // the one below it.
+        // the level below it.
         var mincap: i64 = @as(i64, @intCast(len)) + @as(i64, ks_start);
         if (mincap > std.math.maxInt(i32)) {
             truncated = true;
@@ -645,8 +627,8 @@ fn prettyEntries(S: *Pretty, x: repr.Value, align_col: c_int) raise.Raising(void
         for (0..len) |i| {
             try if (i != 0) printNewline(S, align_col);
             // A nonzero `len` forces `mincap` above `keysort_capacity` unless
-            // the capacity is already nonzero, and a nonzero capacity is one
-            // some level allocated and checked -- so the buffer is here.
+            // the capacity is already nonzero, and a nonzero capacity means
+            // some level allocated the buffer and checked it, so it is here.
             const buf = S.keysort_buffer orelse unreachable;
             const j = buf[i + @as(usize, @intCast(ks_start))];
             try prettyEntry(S, view.kvs.?[@intCast(j)]);
@@ -660,6 +642,7 @@ fn prettyEntries(S: *Pretty, x: repr.Value, align_col: c_int) raise.Raising(void
     S.keysort_start = ks_start;
 }
 
+/// One key and its value, a space apart.
 fn prettyEntry(S: *Pretty, kv: tables.KV) raise.Raising(void) {
     try prettyOne(S, kv.key);
     try S.pushByte(' ');
@@ -667,76 +650,117 @@ fn prettyEntry(S: *Pretty, kv: tables.KV) raise.Raising(void) {
     try prettyOne(S, kv.value);
 }
 
-// ------------------------------------------------------------- the perimeter
+/// An array or a tuple.
+fn prettyIndexed(S: *Pretty, x: repr.Value) raise.Raising(void) {
+    const isarray = repr.checkType(x, repr.Tag.array);
+    const arr = args_core.indexedView(x).?;
+    const bracketed = !isarray and tuples.isBracketed(tuples.head(arr.ptr));
 
-/// The two perimeters share this, as they share the record.
-///
-/// `leaf_align` is set to zero rather than left `undefined`. Nothing reads it
-/// before it is written in any case that could be constructed — the only
-/// reader is `backtrackNewlines`, which returns before it unless the buffer
-/// ends in a closing bracket, and anything that puts one there has gone
-/// through a container and written the field — but an uninitialised read is
-/// not a behaviour worth preserving.
-fn initState(buffer: ?*buffers.Buffer, depth: c_int, width: c_int, flags: PrettyFlags, startlen: usize, lookback_barrier: usize) Pretty {
-    var S = Pretty{
-        .buffer = buffer orelse buffers.new(0),
-        .depth = depth,
-        .width = width,
-        .align_col = 0,
-        .leaf_align = 0,
-        .flags = flags,
-        .bufstartlen = startlen,
-        .lookback_barrier = lookback_barrier,
-        .keysort_buffer = null,
-        .keysort_capacity = 0,
-        .keysort_start = 0,
-        .seen = undefined,
-    };
-    _ = tables.init(&S.seen, 10);
-    return S;
+    const opener: [*:0]const u8 = if (isarray) "@[" else if (bracketed) "[" else "(";
+    const closer: u8 = if (isarray or bracketed) ']' else ')';
+    try S.pushCstring(opener);
+    S.align_col += @intCast(std.mem.len(opener));
+    const align_col = S.align_col;
+    S.leaf_align = align_col;
+
+    S.depth -= 1;
+    if (S.depth == 0) {
+        try pushEllipsis(S);
+    } else if (arr.len > array_limit and !S.flags.notrunc) {
+        // Three from each end, with the elision between them.
+        for (0..3) |i| {
+            try if (i != 0) printNewline(S, align_col);
+            try prettyOne(S, arr[i]);
+        }
+        try printNewline(S, align_col);
+        try pushEllipsis(S);
+        // `array_limit` is 160 and this arm is `arr.len > array_limit`, so
+        // taking three off the end cannot underflow.
+        for (arr.len - 3..arr.len) |i| {
+            try printNewline(S, align_col);
+            try prettyOne(S, arr[i]);
+        }
+    } else {
+        for (0..arr.len) |i| {
+            try if (i != 0) printNewline(S, align_col);
+            try prettyOne(S, arr[i]);
+        }
+    }
+    S.depth += 1;
+
+    try S.pushByte(closer);
+    S.align_col += 1;
 }
 
-/// The pretty-printing perimeter, which `pp/format.zig` reaches `%p` and its
-/// seven siblings through, by import.
-///
-/// It raises: the buffer pushes underneath it can overflow, and an abstract
-/// type's `tostring` can. The raise is returned, and nothing calls this across
-/// the ABI -- an error union could not cross one if anything did.
-pub fn prettyBuffer(
-    buffer: ?*buffers.Buffer,
-    depth: c_int,
-    width: c_int,
-    flags: PrettyFlags,
-    x: repr.Value,
-    startlen: usize,
-    lookback_barrier: usize,
-) raise.Raising(*buffers.Buffer) {
-    var S = initState(buffer, depth, width, flags, startlen, lookback_barrier);
-    try prettyOne(&S, x);
-    backtrackNewlines(&S);
-    tables.deinit(&S.seen);
-    return S.buffer;
+/// Everything with no structure to walk into, which is what `pp.zig` renders.
+/// The alignment is recovered from how much the buffer grew, since that layer
+/// counts no columns.
+fn prettyLeaf(S: *Pretty, x: repr.Value) raise.Raising(void) {
+    try S.pushColor(type_colors[@intFromEnum(repr.typeOf(x))]);
+    if (repr.checkType(x, repr.Tag.buffer) and wrap.toBuffer(x) == S.buffer) {
+        // Printing a buffer into itself. Reserve the worst case first, then
+        // escape only what was there when printing started, so that the loop
+        // does not chase its own output.
+        try buffers.ensure(S.buffer, S.buffer.count + S.bufstartlen * 4 + 3, 1);
+        try S.pushByte('@');
+        // `try`, not an abi. Through a `raise.toAbi` wrapper a raise inside
+        // the escape becomes a report nobody consumes: the blank width is used
+        // and the outstanding report kills the process at the next scope
+        // boundary. Both functions are in this compilation and `prettyLeaf` is
+        // already `raise.Raising`, so an ordinary import is enough.
+        S.align_col += 1 + try describe.escapeString(S.buffer, S.buffer.slice()[0..@intCast(S.bufstartlen)]);
+    } else {
+        S.align_col -= @as(i32, @intCast(S.buffer.count));
+        try describe.descriptionB(S.buffer, x);
+        S.align_col += @as(i32, @intCast(S.buffer.count));
+    }
+    try S.pushColor(color_reset);
 }
 
-/// Render a value as JDN, or raise saying it cannot be.
-///
-/// The only raise this file decides, and the reason `printJdnOne` answers a
-/// flag rather than raising: the message is written once, here. `pp/format.zig`
-/// imports this and `try`s it.
-pub fn jdn(
-    buffer: ?*buffers.Buffer,
-    depth: c_int,
-    x: repr.Value,
-    startlen: usize,
-    lookback_barrier: usize,
-) raise.Raising(*buffers.Buffer) {
-    var S = initState(buffer, depth, 0, .{}, startlen, lookback_barrier);
-    const failed = printJdnOne(&S, x, depth);
-    tables.deinit(&S.seen);
-    if (try failed) return raise.panic("could not print to jdn format");
-    return S.buffer;
+/// Renders `x`, recording it as seen and recursing into a container.
+fn prettyOne(S: *Pretty, x: repr.Value) raise.Raising(void) {
+    // Record the value as seen, unless it is one of the four types that
+    // cannot participate in a cycle and so never needs a marker.
+    switch (repr.typeOf(x)) {
+        repr.Tag.nil, repr.Tag.number, repr.Tag.symbol, repr.Tag.boolean => {},
+        else => {
+            const seenid = tables.get(&S.seen, x);
+            if (repr.checkType(seenid, repr.Tag.number)) {
+                try S.pushColor(cycle_color);
+                try S.pushCstring("<cycle ");
+                S.align_col += 8 + try integerToStringB(S.buffer, wrap.toInteger(seenid));
+                try S.pushByte('>');
+                try S.pushColor(color_reset);
+                return;
+            }
+            // The id is the count *before* the insertion, so the first value
+            // recorded is `<cycle 0>`.
+            _ = tables.put(&S.seen, x, wrap.fromInteger(@intCast(S.seen.count)));
+        },
+    }
+
+    switch (repr.typeOf(x)) {
+        repr.Tag.array, repr.Tag.tuple => try prettyIndexed(S, x),
+        repr.Tag.@"struct", repr.Tag.table => try prettyDictionary(S, x),
+        else => try prettyLeaf(S, x),
+    }
+
+    _ = tables.remove(&S.seen, x);
 }
 
-// `jdn` takes `startlen` and the lookback barrier explicitly rather than
-// reading the buffer's current count, because that is what every caller
-// reaching it through the formatter already has to hand.
+/// Renders the `_name` a prototype may define, which is what makes an
+/// object-like table print as `@Name{...}` rather than `@{...}`. A `name` that
+/// is no byte sequence prints nothing.
+fn pushClassName(S: *Pretty, name: repr.Value) raise.Raising(void) {
+    const n = args_core.bytesView(name) orelse return;
+    try S.pushColor(class_color);
+    try buffers.pushBytes(S.buffer, n);
+    S.align_col += @intCast(n.len);
+    try S.pushColor(color_reset);
+}
+
+/// The `...` that both truncations and the depth limit write.
+fn pushEllipsis(S: *Pretty) raise.Raising(void) {
+    try S.pushCstring("...");
+    S.align_col += 3;
+}

@@ -454,8 +454,9 @@
 # and the mutation sweep found this: inverting the `<` comparator's result
 # changes nothing observable until `<` stops being a call.
 #
-# These also matter more than they look: the bodies exist only in the image, so
-# `-Dboot=zig` is the only configuration that assembles them at all.
+# These also matter more than they look: the bodies exist only in the image.
+# The bootstrap generator assembles them once, and every ordinary build
+# unmarshals them, so no other compilation builds them at all.
 
 (defn- thru [f & args] (apply f args))
 

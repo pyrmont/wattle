@@ -50,7 +50,7 @@
 
 # ---------------------------------------------------- the dictionary view
 #
-# Both members, and the walk that skips the empty slots. The order is the hash
+# Both members, and the walk `Pairs` gives. The order is the hash
 # order, so the assertions sort.
 
 (defn- parts [s] (sort (string/split "&" s)))

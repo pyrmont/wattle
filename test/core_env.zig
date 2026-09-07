@@ -7,74 +7,85 @@
 //!
 //!  - `coreEnv`'s `replacements` parameter has no Janet spelling at all.
 //!    Nothing in the tree passes it a non-null table, so the substitution it
-//!    performs — and the memoization that makes it a one-shot — are reachable
+//!    performs, and the memoization that makes it a one-shot, are reachable
 //!    only from inside the runtime.
 //!  - `coreLookupTable` is the same table without the unmarshal, and is
 //!    reached from `marsh.zig` with a null argument and from nowhere else.
 //!  - `env.dobytes` reports a *set of flags* and a value. Janet code sees
 //!    neither: `dofile` and the REPL go through `env.dostring`, which drops
 //!    the distinction, and the diagnostics go to stderr rather than to a
-//!    value. The `len` parameter has no Janet spelling either — `dostring`
-//!    computes it — so a stream that stops mid-source is only reachable here.
+//!    value. The `len` parameter has no Janet spelling either, `dostring`
+//!    computing it, so a stream that stops mid-source is only reachable here.
 //!  - `loopFiber` is called by `interop.zig` and by no Janet code.
 //!  - `env.zig`'s `native` is behind `(native ...)`, which needs a shared
 //!    object on disk to say anything at all. Its failure paths do not.
 //!
 //! The diagnostics are captured rather than printed. `pp_format.dynprintf`
-//! resolves `:err` before falling back to the handle, and at the top level —
-//! which is where `dobytes` prints its diagnostics from, after the fiber
-//! has finished — that lookup goes to `vm.top_dyns`. So binding `:err`
-//! to a buffer here both asserts the text and keeps this program's output
-//! clean.
+//! resolves `:err` before falling back to the handle, and at the top level,
+//! which is where `dobytes` prints its diagnostics from once the fiber has
+//! finished, that lookup goes to `vm.top_dyns`. So binding `:err` to a buffer
+//! here both asserts the text and keeps this program's output clean.
 //!
 //! ## How the subjects are reached
 //!
-//! **Four entry points are called by import rather than through their abis.**
+//! Four entry points are called by import rather than through their abis.
 //! `coreEnv`, `coreLookupTable`, `dobytes` and `loopFiber` each have a
-//! `raise.reported` wrapper over a `raise.Raising` implementation. Every one of them can raise, so a contract
-//! on the far side of a symbol table has to arm a flag to see it, where here
-//! it is an `error.JanetSignal` the compiler will not let the file ignore.
+//! `raise.toAbi` wrapper over a `raise.Raising` implementation, and every one
+//! of them can raise. Called directly, a raise is an `error.JanetSignal` the
+//! compiler will not let this file ignore.
 //!
-//! **`env.zig`'s native loader is still called as an abi**, with
-//! `harness.abiRaised`, and that is deliberate: the implementation is private
-//! and `cfunNative` calls it directly, so the abi has no in-tree caller and
-//! exists for an embedder alone. Testing an abi as an abi is the right shape for a thing whose only
-//! users are outside the tree.
+//! The native loader is called as an abi instead, with `harness.abiRaised`.
+//! Its implementation is private and `cfunNative` calls that directly, so the
+//! abi has no in-tree caller and exists for an embedder alone, which makes an
+//! abi the right thing to test.
 //!
-//! **No panic counter.** Every refusal is `harness.abiRaised(...).?`, and the
-//! unwrap of a null is the same failure a counter would produce.
-//!
-//! **No adapter pool.** A cfunction is a Zig function, so C cannot define one
-//! at all; `replacedGcinterval` below is an ordinary declaration.
+//! A refusal is a value here: every one is `harness.abiRaised(...).?`, and the
+//! unwrap of a null fails at the site that expected it.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const constants = @import("constants");
-const c = @import("cabi");
-const raise = @import("subsystems").raise;
-const corefn = @import("subsystems").corefn;
-const harness = @import("harness.zig");
-const value = @import("subsystems").value;
 
-const core_env = @import("subsystems").env;
-const marsh = @import("subsystems").marsh;
-const tables = @import("subsystems").value.tables;
-const gc_alloc = @import("subsystems").gc_alloc;
-const vm_state = @import("subsystems").vm_state;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const io_core = @import("subsystems").io;
-const wrap = @import("subsystems").value.wrap;
-const buffers = @import("subsystems").value.buffers;
-const strings = @import("subsystems").value.strings;
-const fibers = @import("subsystems").value.fibers;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const abi = @import("abi");
-
+const buffers = @import("subsystems").value.buffers;
+const c = @import("cabi");
+const constants = @import("constants");
+const core_env = @import("subsystems").env;
+const corefn = @import("subsystems").corefn;
 const expect = @import("expect.zig").expect;
+const fibers = @import("subsystems").value.fibers;
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
+const io_core = @import("subsystems").io;
+const marsh = @import("subsystems").marsh;
+const raise = @import("subsystems").raise;
+const repr = @import("repr");
+const strings = @import("subsystems").value.strings;
+const tables = @import("subsystems").value.tables;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const vm_state = @import("subsystems").vm_state;
+const wrap = @import("subsystems").value.wrap;
 
-var test_env: *tables.Table = undefined;
+// ==========================================================================
+// Constants
+// ==========================================================================
+
 var errsink: *buffers.Buffer = undefined;
 
-// ------------------------------------------------------- captured stderr
+const replacement_key = raise.stored(&replacedGcinterval);
+
+var test_env: *tables.Table = undefined;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn errReset() void {
     errsink.count = 0;
@@ -116,7 +127,6 @@ fn doString(source: [:0]const u8, path: ?[*:0]const u8, out: ?*repr.Value) raise
     return core_env.dobytesImpl(test_env, source, path, out);
 }
 
-// ----------------------------------------------------- the replacement cfun
 //
 // `gcinterval` is the substitution target because nothing in `boot.janet`
 // calls it while the image is loading, so replacing it cannot affect anything
@@ -127,10 +137,6 @@ fn replacedGcinterval(argv: []repr.Value) align(corefn.alignment) raise.Raising(
 
     return value.fromBytes("replaced", .keyword);
 }
-
-const replacement_key = raise.stored(&replacedGcinterval);
-
-// ---------------------------------------------------------- the flag words
 
 fn aCleanRunReportsNoFlags() raise.Raising(void) {
     var out = wrap.fromTrue();
@@ -144,7 +150,7 @@ fn aCleanRunReportsNoFlags() raise.Raising(void) {
     expect(try doString("(+ 1 2) (+ 3 4)", "contract", &out) == 0);
     expect(wrap.toNumber(out) == 7.0);
 
-    // An empty source runs nothing and answers nil.
+    // An empty source runs nothing and gives nil.
     expect(try doString("", "contract", &out) == 0);
     expect(harness.isType(out, repr.Tag.nil));
 
@@ -242,7 +248,7 @@ fn aCompileErrorNamesAPosition() raise.Raising(void) {
 /// A macro that raises during expansion leaves a fiber behind, and that branch
 /// follows the message with a stack trace where the ordinary branch does not.
 ///
-/// **Both branches print the same one line, and the context appears once.**
+/// Both branches print the same one line, and the context appears once.
 /// The trace renders the same string the line does, so printing the context
 /// here as well would print it twice; printing it with no separator would run
 /// it straight into the trace's own `error: `.
@@ -276,8 +282,8 @@ fn aRuntimeErrorReportsTheValue() raise.Raising(void) {
     expectErrPrefix("error: thrown\n  in thunk [contract] ");
 }
 
-/// Every failure sets `done`, so the flag word only ever holds one bit and the
-/// forms after the failing one never run.
+/// Every failure sets `done`, so the flag word only ever has one bit set and
+/// the forms after the failing one never run.
 fn aFailureStopsTheStream() raise.Raising(void) {
     var out = wrap.fromNil();
     errReset();
@@ -297,8 +303,6 @@ fn aNullSourcePathIsNamedUnknown() raise.Raising(void) {
     expectString(out, "<unknown>:1:8: parse error: unexpected closing delimiter )");
 }
 
-// --------------------------------------------------------------- loopFiber
-
 fn loopFiberReportsAStatus() raise.Raising(void) {
     var out = wrap.fromNil();
     errReset();
@@ -311,20 +315,13 @@ fn loopFiberReportsAStatus() raise.Raising(void) {
     expect(try core_env.loopFiber(wrap.toFiber(out)) == @intFromEnum(fibers.FiberStatus.@"error"));
 }
 
-// ------------------------------------------------------- the embedded image
-
-/// The image is `@embedFile`d, and the length the runtime hands `unmarshal` is
-/// one byte shorter than it was. A generated C array declared the bytes with a
-/// trailing `0` so that it had a terminator, and the size accessor beside it
-/// answered that array's `sizeof` -- so the runtime described the image as
-/// 324,311 bytes when it was 324,310.
+/// The image is `@embedFile`d, and this unmarshals it against the same length
+/// the runtime uses and asks where the stream stopped.
 ///
-/// That was harmless because nothing read the extra byte, which is an
-/// assumption rather than an observation. This is the observation: unmarshal
-/// against the same length the runtime uses and ask where it stopped. The
-/// stream ends exactly where the file does, so there was no slack the longer
-/// length was covering for -- and if an emitter ever leaves some, this says so
-/// rather than the next reader having to re-derive why the two numbers differ.
+/// The two numbers agreeing is the assertion. A generated image with a
+/// terminator byte on the end, or a length taken from an array's size rather
+/// than from the stream, would leave slack that nothing else here would
+/// notice, since nothing reads past the last value.
 fn theImageIsConsumedExactly() raise.Raising(void) {
     const image = core_env.core_image;
     var next: [*]const u8 = undefined;
@@ -332,8 +329,6 @@ fn theImageIsConsumedExactly() raise.Raising(void) {
     expect(harness.isType(out, repr.Tag.table));
     expect(@intFromPtr(next) == @intFromPtr(image) + image.len);
 }
-
-// ------------------------------------------------------- the lookup table
 
 fn theLookupTableIsKeyedBySymbol() raise.Raising(void) {
     const dict = try core_env.coreLookupTable(null);
@@ -372,7 +367,6 @@ fn theLookupTableTakesReplacements() raise.Raising(void) {
     expect(dict.count > replacements.count);
 }
 
-// ------------------------------------------------------------------ getline
 //
 // `(getline)` reads through `(dyn :in)` and writes its prompt through
 // `(dyn :out)`, both of which `io.dynfile` resolves and both of which fall
@@ -397,8 +391,8 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
     gc_alloc.gcroot(out_handle);
     // Into the environment table rather than through `vm_state.setdyn`. A
     // dynamic binding is fiber-local, `dobytes` gives each form a fiber whose
-    // env is this table, and `setdyn` at the top level -- where there is
-    // no fiber -- writes to `vm.top_dyns` instead, which the cfunction
+    // env is this table, and `setdyn` at the top level, where there is no
+    // fiber, writes to `vm.top_dyns` instead, which the cfunction
     // never looks at. That split is why `:err` above is set the other way:
     // those diagnostics are printed after the fiber has finished.
     tables.put(test_env, value.fromBytes("in", .keyword), in_handle);
@@ -414,9 +408,9 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
         expect(std.mem.eql(u8, b.slice()[0..11], "first line\n"));
     }
 
-    // A supplied buffer is reused -- the same object comes back, not a copy --
-    // and its previous contents are dropped. The last line has no newline, so
-    // this also covers the EOF exit.
+    // A supplied buffer is reused: the same object comes back rather than a
+    // copy, and its previous contents are dropped. The last line has no
+    // newline, so this also covers the EOF exit.
     expect(try doString(
         "(let [b @\"seed\"] [(= b (getline \"P>\" b)) b])",
         "contract",
@@ -430,7 +424,7 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
         expect(std.mem.eql(u8, b.slice()[0..6], "second"));
     }
 
-    // At EOF it answers an empty buffer rather than failing.
+    // At EOF it gives an empty buffer rather than failing.
     expect(try doString("(getline)", "contract", &result) == 0);
     expect(wrap.toBuffer(result).count == 0);
 
@@ -486,8 +480,6 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
     _ = gc_alloc.gcunroot(out_handle);
 }
 
-// ------------------------------------------------------------ janet_native
-
 fn nativeReportsALoaderError() void {
     var err: ?strings.String = null;
     const init = core_env.nativeAbi("./contract-no-such-module.so", &err);
@@ -496,13 +488,11 @@ fn nativeReportsALoaderError() void {
     expect(strings.head(err.?).length > 0);
 }
 
-// ------------------------------------------------------------------ sandbox
-//
-// Every capability `(sandbox ...)` applies is permanent for the VM, so this
-// runs last and the suites cannot run it at all. What it pins is that the
-// argument walk visits every argument and accumulates a flag per capability,
-// which is invisible from Janet: there is no way to read the flag word back.
-
+/// Every capability `(sandbox ...)` applies is permanent for the VM, so this
+/// runs last and the suites cannot run it at all. What it pins is that the
+/// argument walk visits every argument and accumulates a flag per capability,
+/// which is invisible from Janet, there being no way to read the flag word
+/// back.
 fn sandboxAccumulatesEveryCapability() raise.Raising(void) {
     var out = wrap.fromNil();
     expect(!harness.vm().sandbox_flags.intersects(vm_lifecycle.Sandbox.of(&.{"hrtime"})));
@@ -538,7 +528,9 @@ fn nativeIsBehindTheSandbox() void {
     expect(refusal.signal == abi.Signal.@"error");
 }
 
-// ------------------------------------------------------------------- entry
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() raise.Raising(void) {
     // `coreEnv` memoizes into `vm.core_env`, so the replacement table

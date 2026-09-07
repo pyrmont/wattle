@@ -1,8 +1,9 @@
 //! A callback slot that does not exist.
 //!
-//! A typo in a field name is the cheapest mistake to make and, with C's
-//! positional initializer and its sixteen `JANET_ATEND_*` macros, one of the
-//! more expensive to find.
+//! A typo in a field name is the cheapest mistake to make and, where the slot
+//! set is positional and the names are the caller's own, one of the more
+//! expensive to find. `janet.define` takes a struct literal, so a field that
+//! names no slot is refused at the definition.
 //!
 //! `build.zig`'s `module-errors` step compiles this and requires the failure.
 

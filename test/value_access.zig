@@ -1,89 +1,162 @@
 //! Behavioral contract for `access.next` and the indexed and keyed accessors.
 //!
 //! Nine functions, and the reason they are one contract is that they disagree
-//! with each other on purpose. `access.zig`'s `in`, `get` and `getIndex` answer the same
-//! question about the same value and differ only in what a failure is -- a
-//! panic, a nil, or a panic for one kind of failure and a nil for another.
-//! Testing any one of them in isolation would pin a policy without pinning the
-//! differences between the three policies, and the differences are the part a
-//! port gets wrong. So the sections below run the same failing input through
-//! all three and assert each answer against the others.
+//! with each other on purpose. `access.zig`'s `in`, `get` and `getIndex`
+//! resolve the same question about the same value and differ only in what a
+//! failure is: a panic, a nil, or a panic for one kind of failure and a nil
+//! for another. Testing any one of them alone would pin a policy without
+//! pinning the differences between the three, and the differences are the part
+//! a port gets wrong. So the cases below run the same failing input through
+//! all three and assert each result against the others.
 //!
 //! Three properties get more attention than their size suggests.
 //!
-//! **The panic messages are the formatter's test.** `%v` puts a `Janet` --
-//! eight bytes under nanboxing, sixteen under `-Dnanbox=false` -- through the
+//! The panic messages are the formatter's test. `%v` puts a `Janet`, eight
+//! bytes under nanboxing and sixteen under `-Dnanbox=false`, through the
 //! variadic formatter; `%T` puts a type-flag mask through as an `int`, `%u` a
 //! `size_t`, `%d` an `int32_t`. Every one of those is a place where a mismatch
 //! would produce a plausible-looking wrong message rather than a crash, so
 //! every message here is compared byte for byte rather than merely being
 //! expected to appear.
 //!
-//! **The two length bounds are not the same bound.** `length` rejects an
-//! abstract length above `INT32_MAX` and `lengthv` rejects one at or above
+//! The two length bounds are not the same bound. `length` rejects an abstract
+//! length above `INT32_MAX` and `lengthv` rejects one at or above
 //! `JANET_INTMAX_INT64`, so there is a wide band in which one panics and the
 //! other succeeds. An implementation that used one bound for both would pass
 //! every case that did not look in that band.
 //!
-//! **`access.next` on a fiber has two error policies and they are chosen by an
-//! argument.** `nextImpl`'s `is_interpreter` flag decides whether a signal from
-//! the resumed fiber is re-raised as that signal or converted to a panic, and
-//! it decides whether `vm.fiber.child` is cleared first. No in-tree
-//! caller passes zero -- the VM always passes one -- so the whole `next` entry
-//! point is reachable only from outside, and it is tested here through a
-//! cfunction registered for the purpose.
+//! `access.next` on a fiber has two error policies and an argument chooses
+//! between them. `nextImpl`'s `is_interpreter` flag decides whether a signal
+//! from the resumed fiber is re-raised as that signal or converted to a panic,
+//! and it decides whether `vm.fiber.child` is cleared first. No in-tree caller
+//! passes zero, the VM always passing one, so that half of the entry point is
+//! reachable only from outside and is tested here through a cfunction
+//! registered for the purpose.
 //!
-//! ## No panic counter
+//! ## A refusal is a value, so there is no panic counter
 //!
-//! A C contract counts its panics: forty-nine `EXPECT_PANIC`s and an assertion
-//! at the foot that all forty-nine fired, because each is a twenty-line macro
-//! -- open a scope, arm the flag, call the abi, read the flag, read the signal,
-//! restore, compare the payload -- and with a macro that big it is worth
-//! proving every one ran. Here a refusal is a value and each is
-//! one line, so a refusal that stops happening fails at the call that expected
-//! it rather than in a count at the end. That is a better failure and not
-//! merely a shorter one; the tally is gone.
+//! Each refusal below is one line, `refusal(...)` followed by an assertion on
+//! the message, so a refusal that stops happening fails at the call that
+//! expected it. Nothing counts them at the foot of the file, because there is
+//! no macro whose every invocation has to be shown to have run.
 //!
 //! The abstract fixtures need no adapter either. Five of the callbacks used
-//! here -- `get`, `put`, `next`, `length` and the two methods -- are raising in
-//! `abstract_type.zig`, which is exactly why C cannot define them and needs a
-//! pool of pre-built tables. In Zig they are ordinary functions that return
+//! here, `get`, `put`, `next`, `length` and the two methods, are raising in
+//! `abstract_type.zig`, and here they are ordinary functions returning
 //! `raise.Error!T`.
 //!
-//! Three edges the C original leaves undefined are answers here, and each has
-//! a case below: `next` at `INT32_MAX` ends the iteration rather than wrapping,
+//! Three edges are settled here rather than left undefined, and each has a
+//! case below: `next` at `INT32_MAX` ends the iteration rather than wrapping,
 //! `putIndex` bounds its index the way `put` does, and `next` on a fiber with
 //! no fiber running resumes it without joining a chain there is none of.
 
-const std = @import("std");
-const repr = @import("repr");
-const raise = @import("subsystems").raise;
-const corefn = @import("subsystems").corefn;
-const harness = @import("harness.zig");
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
-const subsystems = @import("subsystems");
-const value = @import("subsystems").value;
-const structs = @import("subsystems").value.structs;
-const tables = @import("subsystems").value.tables;
-const gc_alloc = @import("subsystems").gc_alloc;
-const arrays = @import("subsystems").value.arrays;
-const buffers = @import("subsystems").value.buffers;
-const tuples = @import("subsystems").value.tuples;
-const utils = @import("subsystems").utils;
-const core_env = @import("subsystems").env;
-const wrap = @import("subsystems").value.wrap;
-const args_core_mod = @import("subsystems").args;
-const vm_lifecycle = @import("subsystems").lifecycle;
+const std = @import("std");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
+const abstract_type = subsystems.abstract_type;
 const abstracts = @import("subsystems").value.abstracts;
 const access = @import("subsystems").value.access;
-const registry = @import("subsystems").registry;
-const abi = @import("abi");
 const args_core = subsystems.args;
-const abstract_type = subsystems.abstract_type;
-const AbstractType = abstract_type.AbstractType;
+const arrays = @import("subsystems").value.arrays;
+const buffers = @import("subsystems").value.buffers;
+const core_env = @import("subsystems").env;
+const corefn = @import("subsystems").corefn;
 const expect = @import("expect.zig").expect;
 
-// ----------------------------------------------------------------- helpers
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
+const raise = @import("subsystems").raise;
+const registry = @import("subsystems").registry;
+const repr = @import("repr");
+const structs = @import("subsystems").value.structs;
+const subsystems = @import("subsystems");
+const tables = @import("subsystems").value.tables;
+const tuples = @import("subsystems").value.tuples;
+const utils = @import("subsystems").utils;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+const at_bad_method = abstract_type.define(anyopaque, .{
+    .name = "value-access/bad-method",
+    .get = &badMethodGet,
+});
+
+/// No callbacks at all: the type every "no getter", "no setter" and "no next"
+/// arm is written for.
+const at_bare = abstract_type.define(anyopaque, .{ .name = "value-access/bare" });
+const at_big = abstract_type.define(anyopaque, .{ .name = "value-access/big", .length = &bigLength });
+
+const at_good_method = abstract_type.define(anyopaque, .{
+    .name = "value-access/good-method",
+    .get = &goodMethodGet,
+});
+
+const at_huge = abstract_type.define(anyopaque, .{
+    .name = "value-access/huge",
+    .length = if (intmax_int64_fits_in_a_length) &hugeLength else null,
+});
+
+const at_slots = abstract_type.define(Slots, .{
+    .name = "value-access/slots",
+    .get = &slotsGet,
+    .put = &slotsPut,
+    .next = &slotsNext,
+    .length = &slotsLength,
+});
+
+var bad_method_value: repr.Value = undefined;
+var bare_value: repr.Value = undefined;
+var big_value: repr.Value = undefined;
+var good_method_value: repr.Value = undefined;
+var huge_value: repr.Value = undefined;
+
+/// Whether the upper half of that straddle can be *expressed* on this target.
+///
+/// A `length` callback returns a `size_t` and `JANET_INTMAX_INT64` is 2^53,
+/// so on a 32-bit target the bound `lengthv` enforces is out of reach through
+/// this interface and the case below has nothing to say. Truncating the
+/// literal instead would turn a case about the 2^53 bound into a case about
+/// 4294967295 that asserts the wrong message; the case is skipped rather than
+/// faked, and Zig refusing the literal is what forces the choice.
+const intmax_int64_fits_in_a_length = std.math.maxInt(usize) >= 9007199254740992;
+
+const not_lengthable = "expected string, symbol, keyword, array, tuple, " ++
+    "table, struct or buffer, got ";
+
+var slots_value: repr.Value = undefined;
+
+// ==========================================================================
+// Aliased types
+// ==========================================================================
+
+const AbstractType = abstract_type.AbstractType;
+
+// ==========================================================================
+// Types
+// ==========================================================================
+
+/// Three integer slots, addressed by integer keys, with every callback the
+/// accessors reach. `next` walks 0, 1, 2 and stops.
+const Slots = extern struct {
+    slot: [3]i32,
+};
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn kw(name: [*:0]const u8) repr.Value {
     return value.fromBytes(std.mem.span(name), .keyword);
@@ -98,8 +171,8 @@ fn isNil(x: repr.Value) bool {
 }
 
 /// The refusal a call made, which every panic case here reads. Named rather
-/// than spelled at each site so that the `.?` -- "it must have refused" -- is
-/// in one place.
+/// than spelled at each site so that the `.?`, which is the claim that it must
+/// have refused, is in one place.
 fn refusal(function: anytype, args: anytype) harness.Raise {
     return harness.raised(function, args).?;
 }
@@ -108,23 +181,15 @@ fn returns(function: anytype, args: anytype) void {
     expect(harness.raised(function, args) == null);
 }
 
-// ------------------------------------------------------- abstract fixtures
-
-/// Three integer slots, addressed by integer keys, with every callback the
-/// accessors reach. `next` walks 0, 1, 2 and stops.
-const Slots = extern struct {
-    slot: [3]i32,
-};
-
 fn slotsGet(s: *Slots, key: repr.Value) raise.Error!?repr.Value {
-    if (!args_core_mod.checkint(key)) return null;
+    if (!args_core.checkint(key)) return null;
     const i = wrap.toInteger(key);
     if (i < 0 or i > 2) return null;
     return harness.wrapInteger(s.slot[@intCast(i)]);
 }
 
 fn slotsPut(s: *Slots, key: repr.Value, val: repr.Value) raise.Error!void {
-    if (!args_core_mod.checkint(key)) return raise.panic("slots: bad key");
+    if (!args_core.checkint(key)) return raise.panic("slots: bad key");
     const i = wrap.toInteger(key);
     if (i < 0 or i > 2) return raise.panic("slots: key out of range");
     s.slot[@intCast(i)] = wrap.toInteger(val);
@@ -140,48 +205,18 @@ fn slotsLength(_: *Slots, _: usize) raise.Error!usize {
     return 3;
 }
 
-const at_slots = abstract_type.define(Slots, .{
-    .name = "value-access/slots",
-    .get = &slotsGet,
-    .put = &slotsPut,
-    .next = &slotsNext,
-    .length = &slotsLength,
-});
-
-/// No callbacks at all: the type every "no getter", "no setter" and "no next"
-/// arm is written for.
-const at_bare = abstract_type.define(anyopaque, .{ .name = "value-access/bare" });
-
 /// Two lengths chosen to straddle the two different bounds.
 fn bigLength(_: *anyopaque, _: usize) raise.Error!usize {
     return 2147483648; // INT32_MAX + 1
 }
 
-/// Whether the upper half of that straddle can be *expressed* on this target.
-///
-/// A `length` callback answers a `size_t`, and `JANET_INTMAX_INT64` is 2^53 --
-/// so on a 32-bit target the bound `lengthv` enforces is unreachable through
-/// this interface and the case below has nothing to say. The C original wrote
-/// the constant anyway and let the cast truncate it silently, which on
-/// `riscv32` would have made a case about the 2^53 bound into a case about
-/// 4294967295 that quietly asserts the wrong message. Zig refuses the literal,
-/// which is how this was found: skip rather than fake, arriving from the
-/// compiler instead of from a reading.
-const intmax_int64_fits_in_a_length = std.math.maxInt(usize) >= 9007199254740992;
-
 fn hugeLength(_: *anyopaque, _: usize) raise.Error!usize {
     return 9007199254740992; // JANET_INTMAX_INT64
 }
 
-const at_big = abstract_type.define(anyopaque, .{ .name = "value-access/big", .length = &bigLength });
-const at_huge = abstract_type.define(anyopaque, .{
-    .name = "value-access/huge",
-    .length = if (intmax_int64_fits_in_a_length) &hugeLength else null,
-});
-
 /// A type with no `length` callback but a `:length` method, which is the other
-/// half of `length`'s abstract arm. The method is found through `access.get`
-/// -- one of the functions under test -- so this arm re-enters the file it is
+/// half of `length`'s abstract arm. The method is found through `access.get`,
+/// one of the functions under test, so this arm re-enters the file it is
 /// testing.
 fn methodSeven(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
@@ -196,31 +231,14 @@ fn methodKeyword(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
 }
 
 fn goodMethodGet(_: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
-    if (!args_core_mod.keyeq(key, "length")) return null;
+    if (!args_core.keyeq(key, "length")) return null;
     return wrap.fromCfunction(raise.stored(&methodSeven));
 }
 
 fn badMethodGet(_: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
-    if (!args_core_mod.keyeq(key, "length")) return null;
+    if (!args_core.keyeq(key, "length")) return null;
     return wrap.fromCfunction(raise.stored(&methodKeyword));
 }
-
-const at_good_method = abstract_type.define(anyopaque, .{
-    .name = "value-access/good-method",
-    .get = &goodMethodGet,
-});
-
-const at_bad_method = abstract_type.define(anyopaque, .{
-    .name = "value-access/bad-method",
-    .get = &badMethodGet,
-});
-
-var slots_value: repr.Value = undefined;
-var bare_value: repr.Value = undefined;
-var big_value: repr.Value = undefined;
-var huge_value: repr.Value = undefined;
-var good_method_value: repr.Value = undefined;
-var bad_method_value: repr.Value = undefined;
 
 fn typeOf(at: *const AbstractType) *const abi.AbstractType {
     return at;
@@ -247,8 +265,6 @@ fn aCFunctionValue() repr.Value {
     return wrap.fromCfunction(raise.stored(&methodSeven));
 }
 
-// ------------------------------------------------------------ next: tables
-
 /// The property that matters is completeness, not the order: starting from nil
 /// and following `next` has to visit every key exactly once and then stop. A
 /// bucket walk that skipped an occupied slot, or that restarted, would still
@@ -262,7 +278,7 @@ fn nextVisitsEveryTableKeyOnce() !void {
     var count: usize = 0;
     var k = try access.next(wrap.fromTable(t), wrap.fromNil());
     while (!isNil(k)) : (k = try access.next(wrap.fromTable(t), k)) {
-        expect(args_core_mod.checkint(k));
+        expect(args_core.checkint(k));
         const i = wrap.toInteger(k);
         expect(i >= 0 and i < n);
         expect(!seen[@intCast(i)]); // a key was visited twice
@@ -273,8 +289,8 @@ fn nextVisitsEveryTableKeyOnce() !void {
     expect(count == n);
 }
 
-/// Removing a key leaves a tombstone -- a bucket whose key is nil and whose
-/// value is not -- and the walk has to step over it like any other empty bucket
+/// Removing a key leaves a tombstone, a bucket whose key is nil and whose
+/// value is not, and the walk has to step over it like any other empty bucket
 /// rather than stopping at it.
 fn nextStepsOverTombstones() !void {
     const t = tables.new(0);
@@ -313,8 +329,8 @@ fn nextVisitsEveryStructKeyOnce() !void {
 
 /// Iteration reads the bucket array and nothing else, so a prototype's keys are
 /// not visited even though `in` finds them. The two disagree, and that is
-/// established behaviour rather than an accident: `(each k s ...)` over a struct
-/// with a prototype sees only the struct's own keys.
+/// established behaviour rather than an accident: `(each k s ...)` over a
+/// struct with a prototype sees only the struct's own keys.
 fn nextDoesNotFollowAStructPrototype() !void {
     const pst = structs.begin(1);
     structs.put(pst, kw("inherited"), intv(1));
@@ -348,15 +364,13 @@ fn nextDoesNotFollowATablePrototype() !void {
     expect(harness.equals(try access.in(wrap.fromTable(t), kw("inherited")), intv(1)));
 }
 
-/// An empty dictionary answers nil to the first step rather than walking off the
-/// end of a zero-length bucket array.
+/// An empty dictionary gives nil for the first step rather than walking off
+/// the end of a zero-length bucket array.
 fn nextOverEmptyDictionaries() !void {
     expect(isNil(try access.next(wrap.fromTable(tables.new(0)), wrap.fromNil())));
     const empty = wrap.fromStruct(structs.end(structs.begin(0)));
     expect(isNil(try access.next(empty, wrap.fromNil())));
 }
-
-// -------------------------------------------------------- next: sequences
 
 fn nextOverEachSequenceType() !void {
     const b = buffers.new(4);
@@ -416,13 +430,11 @@ fn nextPastTheEnd() !void {
 
     // The last representable index has no successor, so the iteration ends
     // there. Answering nil by adding one and being rejected for going negative
-    // is the same answer by an accident that only holds where the addition
+    // is the same result by an accident that appears only where the addition
     // wraps.
     expect(isNil(try access.next(s, intv(2147483647))));
     expect(isNil(try access.next(s, intv(2147483646))));
 }
-
-// --------------------------------------------------------- next: the rest
 
 fn nextOnAnAbstract() !void {
     var k = try access.next(slots_value, wrap.fromNil());
@@ -447,8 +459,6 @@ fn nextOnANonIterablePanics() void {
     expect(refusal(access.next, .{ aCFunctionValue(), wrap.fromNil() })
         .beginsWith("expected iterable type, got <cfunction "));
 }
-
-// ----------------------------------------------------------- next: fibers
 
 // `next` writes `vm.fiber.child` before resuming *when there is a fiber*, so
 // the cases about the chain have to run with one on the VM. These cfunctions
@@ -499,8 +509,8 @@ fn run_(src: [*:0]const u8) repr.Value {
 }
 
 /// Iterating a fiber runs it, and the key it yields is always the integer zero
-/// -- a fiber has no index. The value comes back through `in`, which is the
-/// whole reason the accessors have a `JANET_FIBER` arm at all.
+/// because a fiber has no index. The value comes back through `in`, which is
+/// what the accessors' fiber arm is for.
 fn nextResumesAFiber() void {
     const r = run_("(def f (fiber/new (fn [] (yield :a) (yield :b) :done)))" ++
         "[(next f nil) (in f 0)" ++
@@ -515,13 +525,13 @@ fn nextResumesAFiber() void {
     // The resume that finishes the fiber discards the return value and stops.
     expect(isNil(v[4]));
     expect(harness.equals(v[5], kw("dead")));
-    // A dead fiber answers nil without being resumed.
+    // A dead fiber gives nil without being resumed.
     expect(isNil(v[6]));
 }
 
-/// `next` -- the entry point with `is_interpreter` clear -- has no in-tree
-/// caller, so this is the only exercise it gets. It agrees with the
-/// interpreter's path everywhere except on a signal.
+/// `next` with `is_interpreter` clear has no in-tree caller, so this is the
+/// only exercise that arm gets. It agrees with the interpreter's path
+/// everywhere except on a signal.
 fn theNextEntryPointOnAFiber() void {
     const r = run_("(def f (fiber/new (fn [] (yield :a) :done)))" ++
         "[(va/next f nil) (in f 0) (va/next f 0) (va/next f 0)]");
@@ -551,12 +561,12 @@ fn theNextEntryPointOutsideAnyFiber() !void {
     expect(isNil(try access.next(f, intv(0))));
 }
 
-/// Every status that cannot be resumed answers nil without touching the fiber.
+/// Every status that cannot be resumed gives nil without touching the fiber.
 /// `:new` and `:pending` are the two that can, and the list below is the
 /// complement of those two.
 fn nextOnAnUnresumableFiber() void {
     // One form, because `(fiber/current)` has to be read and used inside the
-    // same fiber -- `env.dostring` runs each top-level form in its own.
+    // same fiber, and `env.dostring` runs each top-level form in its own.
     const r = run_("(do" ++
         " (def dead (fiber/new (fn [] 1))) (resume dead)" ++
         " (def errd (fiber/new (fn [] (error :x)) :e)) (resume errd)" ++
@@ -606,10 +616,11 @@ fn theChildSlotIsCleared() void {
     expect(repr.truthy(v[1])); // child not cleared before the panic
 }
 
-/// Resuming through `next` links the child into the caller's fiber chain before
-/// it runs, and that link is what `debug/lineage` walks -- and, through the same
-/// chain, what puts the resumed fiber's frames into a stack trace. The link is
-/// only observable while the child is running, so the child observes it itself.
+/// Resuming through `next` links the child into the caller's fiber chain
+/// before it runs. That link is what `debug/lineage` walks, and through the
+/// same chain it is what puts the resumed fiber's frames into a stack trace.
+/// It is only observable while the child is running, so the child observes it
+/// itself.
 fn theResumedFiberJoinsTheLineage() void {
     const r = run_("(do" ++
         " (def log @[])" ++
@@ -625,8 +636,6 @@ fn theResumedFiberJoinsTheLineage() void {
     // the resumed fiber was not linked into the caller's chain
     expect(wrap.toInteger(log.slice()[0]) == 2);
 }
-
-// --------------------------------------------------------------- janet_in
 
 fn inReadsEveryContainer() !void {
     const a = arrays.new(2);
@@ -659,9 +668,9 @@ fn inReadsEveryContainer() !void {
     expect(harness.equals(try access.in(slots_value, intv(2)), intv(12)));
 }
 
-/// A key that is merely absent from a dictionary is nil, not an error. The panic
-/// in `in` is about keys that are wrong for the container, and a dictionary
-/// accepts every key.
+/// A key that is merely absent from a dictionary is nil rather than an error.
+/// The panic in `in` is about keys that are wrong for the container, and a
+/// dictionary accepts every key.
 fn inOnAMissingDictionaryKeyIsNil() !void {
     const tab = tables.new(0);
     expect(isNil(try access.in(wrap.fromTable(tab), kw("nope"))));
@@ -702,9 +711,6 @@ fn inPanicsOnABadKey() void {
         .says("expected integer key for keyword in range [0, 3), got 9"));
 }
 
-const not_lengthable = "expected string, symbol, keyword, array, tuple, " ++
-    "table, struct or buffer, got ";
-
 /// The `%T` message, which renders a type-flag mask rather than a value. Two
 /// different masks appear in this file and they have to stay different.
 fn inOnANonLengthablePanics() void {
@@ -740,11 +746,9 @@ fn inOnAFiber() void {
     expect(harness.equals(p[1], value.fromBytes("expected key 0, got 1", .string)));
 }
 
-// -------------------------------------------------------------- janet_get
-
-/// Everything `in` panics about, `access.get` answers nil to -- including the
-/// container type itself, which is why `get` accepts a number as a data
-/// structure and `in` does not.
+/// Everything `in` panics about, `access.get` gives nil for, the container
+/// type included: `get` accepts a number as a data structure where `in`
+/// refuses one.
 fn getAnswersNilWhereInPanics() !void {
     const a = arrays.new(1);
     harness.arrayPush(a, intv(0));
@@ -802,11 +806,10 @@ fn getAgreesWithInWhereBothSucceed() !void {
     }
 }
 
-// --------------------------------------------------------- janet_getindex
-
 /// The third policy: a negative index and a missing getter panic, and every
-/// other failure is nil. The abstract arm is where it parts company with `in` --
-/// a `get` that runs and reports absence is an error there and a nil here.
+/// other failure is nil. The abstract arm is where it parts company with
+/// `in`: a `get` that runs and reports absence is an error there and a nil
+/// here.
 fn theGetIndexPolicies() !void {
     const a = arrays.new(1);
     harness.arrayPush(a, kw("x"));
@@ -854,8 +857,6 @@ fn getIndexOnAFiber() !void {
     expect(isNil(try access.getIndex(r, 1)));
 }
 
-// ---------------------------------------------------------------- lengths
-
 fn theLengthOfEveryContainer() !void {
     const a = arrays.new(3);
     for (0..3) |i| harness.arrayPush(a, intv(@intCast(i)));
@@ -893,8 +894,8 @@ fn theLengthOfEveryContainer() !void {
     expect(utils.structHead(wrap.toStruct(w)).capacity > 9);
 }
 
-/// A table's length is its live count, so removing a key shortens it even though
-/// the tombstone stays in the bucket array.
+/// A table's length is its live count, so removing a key shortens it even
+/// though the tombstone stays in the bucket array.
 fn theLengthOfATableIgnoresTombstones() !void {
     const tab = tables.new(0);
     for (0..8) |i| tables.put(tab, intv(@intCast(i)), intv(@intCast(i)));
@@ -907,8 +908,8 @@ fn theLengthOfATableIgnoresTombstones() !void {
 fn theAbstractLengthCallback() !void {
     expect(try access.length(slots_value) == 3);
     expect(harness.equals(try access.lengthv(slots_value), wrap.fromNumber(3.0)));
-    // `lengthv` wraps a callback's length as a double rather than as an integer,
-    // and the two are equal but not identically represented.
+    // `lengthv` wraps a callback's length as a double rather than as an
+    // integer, and the two are equal but not identically represented.
     expect(harness.isType(try access.lengthv(slots_value), repr.Tag.number));
 }
 
@@ -929,15 +930,14 @@ fn theTwoLengthBoundsAreDifferent() !void {
 }
 
 /// Without a `length` callback the length comes from a `:length` method, which
-/// is looked up through `access.get` -- so this arm re-enters the file under test.
+/// is looked up through `access.get`, so this arm re-enters the file under
+/// test.
 ///
-/// **Both check the result now, and the bound is the only thing they still
-/// disagree about.** `length` asks `checkint` and `lengthv` asks `checksize`,
-/// so each refuses a method answering a negative, a fraction or something that
-/// is not a number, and they part company only where a length exceeds what an
-/// `i32` holds -- which is the reason `lengthv` exists. `lengthv` used to hand
-/// a method's answer straight back whatever it was, and `DESIGN.md` section 12
-/// carries the decision that ended that.
+/// Both check the method's result and the bound is the only thing they differ
+/// on. `length` asks `checkint` and `lengthv` asks `checksize`, so each
+/// refuses a method that gives back a negative, a fraction or something that
+/// is not a number, and they part company only where a length exceeds the
+/// range of an `i32`, which is what `lengthv` exists for.
 fn theLengthFallsBackToAMethod() !void {
     expect(try access.length(good_method_value) == 7);
     expect(harness.equals(try access.lengthv(good_method_value), intv(7)));
@@ -958,10 +958,8 @@ fn theLengthOfANonLengthablePanics() void {
     expect(refusal(access.lengthv, .{wrap.fromNil()}).says(not_lengthable ++ "nil"));
 }
 
-// ---------------------------------------------------------------- setters
-
-/// Writing past the end grows the container, and the two growable types fill the
-/// gap differently: an array with nil, a buffer with zero.
+/// Writing past the end grows the container, and the two growable types fill
+/// the gap differently: an array with nil, a buffer with zero.
 fn putGrowsAnArrayWithNils() !void {
     const a = arrays.new(0);
     harness.arrayPush(a, kw("first"));
@@ -1044,9 +1042,9 @@ fn putChecksTheKeyBeforeTheValue() void {
     expect(b.count == 2 and b.slice()[0] == 'A');
 }
 
-/// The value check comes before the growth, so a rejected write to a buffer does
-/// not resize it -- which is not true of the key check on an array, where there
-/// is nothing to reject after the bound.
+/// The value check comes before the growth, so a rejected write to a buffer
+/// does not resize it. The key check on an array is not the same, there being
+/// nothing left to reject once the bound is passed.
 fn aRejectedBufferWriteDoesNotGrowIt() void {
     const b = buffers.new(0);
     expect(refusal(access.putIndex, .{ wrap.fromBuffer(b), 100, kw("y") })
@@ -1056,8 +1054,8 @@ fn aRejectedBufferWriteDoesNotGrowIt() void {
 
 /// `put` bounds its index at `INT32_MAX - 1` so that the `index + 1` its
 /// growth arm computes cannot overflow, and `putIndex` takes the same bound
-/// from the same helper -- so the two refuse the same indices with the same
-/// message, whichever a caller reaches.
+/// from the same helper, so the two refuse the same indices with the same
+/// message whichever a caller reaches.
 fn putBoundsTheIndex() void {
     const a = arrays.new(0);
     expect(refusal(access.put, .{ wrap.fromArray(a), intv(2147483647), intv(1) })
@@ -1117,8 +1115,6 @@ fn putOnANonWritablePanics() void {
         .beginsWith("no setter for <value-access/bare "));
 }
 
-// ------------------------------------------------------- from Janet source
-
 fn fromJanet() void {
     const out = run_(
         "[(do (var n 0) (each x @{:a 1 :b 2 :c 3} (+= n x)) n) " ++
@@ -1171,13 +1167,15 @@ fn fromJanet() void {
     }
 }
 
-// ------------------------------------------------------------------- main
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 /// The body, so that a raise on a *success* path ends the run with a named
 /// panic rather than being caught and reported. `test/harness.zig`'s header has
 /// the argument: a contract that expects a call to succeed needs no scope, and
-/// opening one would replace the runtime's own message -- which names the panic
-/// -- with a less informative assertion.
+/// opening one would replace the runtime's own message, which names the panic,
+/// with a less informative assertion.
 fn body() !void {
     makeAbstracts();
     registry.cfuns(harness.coreEnv(), null, &cfuns);

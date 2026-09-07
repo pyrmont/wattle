@@ -1,5 +1,5 @@
 //! Behavioral contract for directory enumeration, links, timestamps and
-//! canonical paths — the kernels behind `os/dir`, `os/link`, `os/symlink`,
+//! canonical paths: the kernels behind `os/dir`, `os/link`, `os/symlink`,
 //! `os/readlink`, `os/touch` and `os/realpath`.
 //!
 //! ## What only the kernels can be asked
@@ -7,22 +7,23 @@
 //! Each of these has a shape at the C level that the Janet function smooths
 //! over, and the smoothing is where a port goes wrong:
 //!
-//!   - **enumeration is a three-call protocol** — open, next until it answers
-//!     zero, close — and `next` must skip `.` and `..` itself. `os/dir`
-//!     returns a finished array, so nothing above can tell a skipped entry
+//!   - enumeration is a three-call protocol, open then next until it returns
+//!     zero then close, and `next` must skip `.` and `..` itself. `os/dir`
+//!     returns a finished array, so nothing above it can tell a skipped entry
 //!     from one that was never produced.
-//!   - **`readlink` truncates rather than failing** when the buffer is too
-//!     short, and answers the length written. That is what the caller's
-//!     "length reached the buffer size" test detects, and it is invisible
-//!     from `os/readlink`, which always supplies a large enough buffer.
-//!   - **`touch` converts a `double` to a time by truncation, not rounding.**
-//!     `os/touch` takes integers from Janet in practice, so the fractional
-//!     case has no Janet caller at all.
+//!   - `readlink` truncates rather than failing when the buffer is too short,
+//!     and gives back the length written. That is what the caller's "length
+//!     reached the buffer size" test detects, and it is invisible from
+//!     `os/readlink`, which always supplies a large enough buffer.
+//!   - `touch` converts a `double` to a time by truncation rather than
+//!     rounding. `os/touch` takes integers from Janet in practice, so the
+//!     fractional case has no Janet caller at all.
 //!
 //! ## Unix only, and deliberately
 //!
-//! The directory and link kernels do not exist on Windows — the public
-//! functions there panic or use the CRT's own enumeration — so those sections
+//! The directory and link kernels do not exist on Windows, the public
+//! functions there panicking or using the CRT's own enumeration, so those
+//! sections
 //! are `comptime`-guarded off rather than given a second implementation. This
 //! tree's platform scope makes Windows a build target rather than a tested
 //! one, and an arm written but never run is worse than an absent one.
@@ -36,22 +37,30 @@
 //! there: `contracts` jobs do not take the suites lock and share one working
 //! directory.
 
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
+
 const std = @import("std");
 const builtin = @import("builtin");
-const repr = @import("repr");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const c = @import("cabi");
-const harness = @import("harness.zig");
-const value = @import("subsystems").value;
 const config = @import("config");
-const utils = @import("subsystems").utils;
 const core_env = @import("subsystems").env;
-const vm_lifecycle = @import("subsystems").lifecycle;
+const expect = @import("expect.zig").expect;
+const fs = @import("subsystems").fs;
+const harness = @import("harness.zig");
 
 /// The runtime's own stat reader, reached by *import* rather than by symbol.
 ///
 /// This is the first contract in the tree that needs to be inside the
 /// compilation for something other than a raise. `sys/stat.h` is deliberately
-/// outside the host translations -- `os/abi.h` records why -- so a contract
+/// outside the host translations, for which `os/abi.h` records the reason, so
+/// a contract
 /// linking `libjanet.a` would have to translate `struct stat` a second time
 /// and read `st_ino`, `st_nlink` and `st_mtimespec` out of its own copy.
 /// Inside the
@@ -62,21 +71,62 @@ const vm_lifecycle = @import("subsystems").lifecycle;
 /// Reading metadata and writing it are different kernels; what would be
 /// circular is using `statRead` to check `statRead`, and nothing here does.
 const host_stat = @import("subsystems").host_stat;
-const fs = @import("subsystems").fs;
+const repr = @import("repr");
 const tables = @import("subsystems").value.tables;
-const expect = @import("expect.zig").expect;
-const Field = host_stat.Field;
+const utils = @import("subsystems").utils;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
 
-const unix = builtin.os.tag != .windows;
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 const dir = "janet-zig-os-paths-direct-6b1d";
+var environment: *tables.Table = undefined;
 const file = "janet-zig-os-paths-direct-6b1d/first";
-const other = "janet-zig-os-paths-direct-6b1d/second";
-const sub = "janet-zig-os-paths-direct-6b1d/inner";
 const hard = "janet-zig-os-paths-direct-6b1d/hard";
-const soft = "janet-zig-os-paths-direct-6b1d/soft";
 const missing = "janet-zig-os-paths-absent-6b1d";
+const other = "janet-zig-os-paths-direct-6b1d/second";
 const public_dir = "janet-zig-os-paths-public-4f70";
+const soft = "janet-zig-os-paths-direct-6b1d/soft";
+const sub = "janet-zig-os-paths-direct-6b1d/inner";
+const unix = builtin.os.tag != .windows;
+
+// ==========================================================================
+// Aliased types
+// ==========================================================================
+
+const Field = host_stat.Field;
+
+// ==========================================================================
+// Types
+// ==========================================================================
+
+const Listing = struct {
+    names: [16][256]u8 = undefined,
+    count: usize = 0,
+
+    fn has(self: *const Listing, name: []const u8) bool {
+        for (self.names[0..self.count]) |stored| {
+            if (std.mem.eql(u8, std.mem.sliceTo(&stored, 0), name)) return true;
+        }
+        return false;
+    }
+};
+
+/// Every numeric field of one path, as `os/stat` would see them.
+const Metadata = struct {
+    mode: u32,
+    numbers: [Field.count]f64,
+
+    fn get(self: *const Metadata, field: Field) f64 {
+        return self.numbers[@intFromEnum(field)];
+    }
+};
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn makeFile(path: [*:0]const u8) void {
     const handle = c.fopen(path, "wb");
@@ -108,19 +158,10 @@ fn setErrno(code: c_int) void {
     std.c._errno().* = code;
 }
 
-// ------------------------------------------------------------ enumeration
-
-const Listing = struct {
-    names: [16][256]u8 = undefined,
-    count: usize = 0,
-
-    fn has(self: *const Listing, name: []const u8) bool {
-        for (self.names[0..self.count]) |stored| {
-            if (std.mem.eql(u8, std.mem.sliceTo(&stored, 0), name)) return true;
-        }
-        return false;
-    }
-};
+fn eval(source: [*:0]const u8) void {
+    var result: repr.Value = undefined;
+    expect(core_env.dostring(environment, source, "os-fs-paths-contract", &result) == 0);
+}
 
 /// One full listing, asserting the protocol as it goes: no entry repeats, and
 /// `.` and `..` never appear.
@@ -187,18 +228,6 @@ fn theDirectories() void {
     expect(fs.hostRemove(other) == 0);
 }
 
-// ------------------------------------------------------------------ links
-
-/// Every numeric field of one path, as `os/stat` would see them.
-const Metadata = struct {
-    mode: u32,
-    numbers: [Field.count]f64,
-
-    fn get(self: *const Metadata, field: Field) f64 {
-        return self.numbers[@intFromEnum(field)];
-    }
-};
-
 fn metadataOf(path: [*:0]const u8, follow: bool) Metadata {
     var result: Metadata = undefined;
     expect(host_stat.statRead(path, !follow, &result.mode, &result.numbers) == 0);
@@ -255,8 +284,6 @@ fn theLinks() void {
     expect(fs.hostRemove(soft) == 0);
 }
 
-// ------------------------------------------------------------- timestamps
-
 fn theTimestamps() void {
     expect(fs.touch(file, true, 1000000000.0, 1000000123.0) == 0);
     var info = statOf(file);
@@ -278,8 +305,6 @@ fn theTimestamps() void {
     expect(errnoValue() == @intFromEnum(std.c.E.NOENT));
 }
 
-// --------------------------------------------------------------- realpath
-
 fn theRealpath() void {
     if (!config.realpath) return;
 
@@ -299,19 +324,10 @@ fn theRealpath() void {
     expect(std.mem.eql(u8, absolute, std.mem.span(again)));
 
     // A missing path fails on POSIX. Windows' `_fullpath` succeeds instead and
-    // the public function checks separately, which is why this is Unix-only.
+    // the public function checks separately, so this stays Unix-only.
     setErrno(0);
     expect(fs.canonicalPath(missing) == null);
     expect(errnoValue() == @intFromEnum(std.c.E.NOENT));
-}
-
-// -------------------------------------------------------- the Janet surface
-
-var environment: *tables.Table = undefined;
-
-fn eval(source: [*:0]const u8) void {
-    var result: repr.Value = undefined;
-    expect(core_env.dostring(environment, source, "os-fs-paths-contract", &result) == 0);
 }
 
 fn theCoreFunctions() void {
@@ -320,8 +336,8 @@ fn theCoreFunctions() void {
         \\(spit "janet-zig-os-paths-public-4f70/file" "path-contract")
     );
 
-    // `os/dir` answers entry names, and *appends* to a supplied array rather
-    // than replacing its contents -- which is why the length is two.
+    // `os/dir` gives entry names, and *appends* to a supplied array rather
+    // than replacing its contents, so the length is two.
     eval(
         \\(def entries (os/dir "janet-zig-os-paths-public-4f70"))
         \\(assert (array? entries))
@@ -374,8 +390,8 @@ fn theCoreFunctions() void {
     }
 }
 
-/// The refusals, which the C contract could only reach through `protect`
-/// inside a Janet string.
+/// The refusals, each reached by calling the cfunction directly so that the
+/// message is a value rather than something printed inside a Janet string.
 fn theRefusals() void {
     var args: [2]repr.Value = undefined;
     args[0] = value.fromBytes(missing, .string);
@@ -402,6 +418,10 @@ fn tearDown() void {
         \\(os/rmdir "janet-zig-os-paths-public-4f70")
     );
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     cleanPaths();

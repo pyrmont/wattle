@@ -11,30 +11,40 @@
 //! ## The parser is permissive, and that is established behaviour
 //!
 //! It is position-sensitive rather than grammatical: it looks for `r` at
-//! position 0, `w` at 1, `x` at 2 and so on, and **any other byte clears that
-//! position**. So `"xxxxxxxxx"` parses as 0111 — the `x`s in the execute
-//! positions count and the rest do not — and `"rwxgarbage"` parses as 0700.
+//! position 0, `w` at 1, `x` at 2 and so on, and any other byte clears that
+//! position. So `"xxxxxxxxx"` parses as 0111, the `x`s in the execute
+//! positions counting and the rest not, and `"rwxgarbage"` parses as 0700.
 //! Neither is a string a person would write, and both are recorded here so
-//! that the parser cannot quietly become stricter. It is a shape rather than a
-//! defect: the position-sensitivity is what `mode` means.
+//! that a change to the parser would be deliberate. The position-sensitivity
+//! is what `mode` means.
 //!
 //! ## The refusals
 //!
-//! Validation happens above the kernels, in the argument layer, and a contract
-//! on the far side of a symbol table can only observe it by compiling a Janet
-//! closure with `env.dostring` and calling it under `vm_entry.pcall` -- three
-//! lines and a wrapper function per case, "so they stay off stderr". Here the cfunction is
-//! called directly and the refusal is a value, so each case is one line and
-//! says which argument was rejected.
+//! Validation happens above the kernels, in the argument layer. The cfunction
+//! is called directly here and the refusal is a value, so each case is one
+//! line and says which argument was rejected.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const value = @import("subsystems").value;
-const harness = @import("harness.zig");
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const stat = @import("subsystems").stat;
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const expect = @import("expect.zig").expect;
+const harness = @import("harness.zig");
+const repr = @import("repr");
+const stat = @import("subsystems").stat;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn parse(text: []const u8) i32 {
     return stat.hostParsePermissions(text.ptr);
@@ -88,7 +98,7 @@ fn theCoreFunctions() !void {
     const rendered = try permString(args[0..1]);
     expect(harness.stringIs(wrap.toString(rendered), "rw-r-----"));
 
-    // `os/perm-string` accepts a string as well as an integer and answers it
+    // `os/perm-string` accepts a string as well as an integer and gives it
     // back, so that a caller can pass either through without asking which.
     args[0] = value.fromBytes("rwxrwxrwx", .string);
     expect(harness.stringIs(wrap.toString(try permString(args[0..1])), "rwxrwxrwx"));
@@ -116,6 +126,10 @@ fn theRefusals() void {
     // is what says the refusal happened above them rather than inside one.
     expect(parse("rwxrwxrwx") == 0o777);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

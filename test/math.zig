@@ -3,8 +3,8 @@
 //!
 //! ## Every vector is exact, because the state is marshalled
 //!
-//! A `math/rng` survives `marshal`/`unmarshal` bit for bit, so its output is
-//! not a statistical property that a port may approximate — it is a format.
+//! A `math/rng` survives marshalling and unmarshalling bit for bit, so its
+//! output is a format rather than a statistical property to approximate.
 //! Two Janet programs, or one program and an image written by an older build,
 //! have to agree on every word. So the assertions below are literal sequences
 //! rather than distribution checks, and the post-seed state is pinned as well
@@ -16,9 +16,9 @@
 //! ## The seeding has three cases the suites cannot reach
 //!
 //! Seeding runs sixteen warmup draws, so the post-seed state is not the seed.
-//! A long seed **folds by XOR into sixteen bytes**, so a twenty-byte input and
-//! a carefully chosen different twenty-byte input reach the same state — and
-//! an all-zero state forces `a` to 1, which is the branch that stops the
+//! A long seed folds by XOR into sixteen bytes, so a twenty-byte input and a
+//! carefully chosen different twenty-byte input reach the same state, and an
+//! all-zero state forces `a` to 1, which is the branch that stops the
 //! generator producing nothing but zeros forever. Reaching that from Janet
 //! means finding a seed string that cancels, which nothing does by accident.
 //!
@@ -29,16 +29,41 @@
 //! the emitter as much as about `math/gcd`. Calling the cfunction avoids the
 //! compiler entirely, so these vectors do not depend on it.
 
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
+
 const std = @import("std");
-const repr = @import("repr");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const c = @import("cabi");
-const harness = @import("harness.zig");
 const core_env = @import("subsystems").env;
-const math = @import("subsystems").math;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const tables = @import("subsystems").value.tables;
 const expect = @import("expect.zig").expect;
+const harness = @import("harness.zig");
+const math = @import("subsystems").math;
+const repr = @import("repr");
+const tables = @import("subsystems").value.tables;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+var environment: *tables.Table = undefined;
+
+const from_zero = [_]u32{
+    0x7cb7e804, 0x5cc33daa, 0xe9aa2ab6, 0x6ce3abcb,
+    0x0f68de54, 0x3ce19a65, 0x8faa2224, 0xe4c19f5b,
+};
+
+// ==========================================================================
+// Cases
+// ==========================================================================
+
 /// The long seed as the boundary publishes it.
 ///
 /// `math.rngLongseed` takes a `[]const u8`, so the negative length the
@@ -60,10 +85,15 @@ fn expectState(rng: *const math.Rng, a: u32, b: u32, d: u32, e: u32) void {
     expect(rng.d == e);
 }
 
-const from_zero = [_]u32{
-    0x7cb7e804, 0x5cc33daa, 0xe9aa2ab6, 0x6ce3abcb,
-    0x0f68de54, 0x3ce19a65, 0x8faa2224, 0xe4c19f5b,
-};
+fn eval(source: [*:0]const u8) repr.Value {
+    var result: repr.Value = undefined;
+    expect(core_env.dostring(environment, source, "math-contract", &result) == 0);
+    return result;
+}
+
+fn truthy(source: [*:0]const u8) void {
+    expect(repr.truthy(eval(source)));
+}
 
 fn theSeed() void {
     var rng: math.Rng = undefined;
@@ -78,7 +108,7 @@ fn theSeed() void {
     expectState(&rng, 0xbbf082e8, 0xa4ecbbdc, 0xceeb0ecf, 0xd9874a93);
     expectSequence(&rng, &.{ 0x35310846, 0x7e749c7f, 0x09e1b927, 0x2255b762 });
 
-    // Reseeding is a full reset: the counter does not carry over.
+    // Reseeding is a full reset, and the counter starts again from zero.
     math.rngSeed(&rng, 0);
     expect(rng.counter == 0x00587c50);
     expectSequence(&rng, &from_zero);
@@ -101,17 +131,16 @@ fn theLongSeed() void {
     math.rngLongseed(&empty, "");
     expectState(&empty, 0x9c5f0f15, 0x094111e2, 0xcd5101c1, 0x0c55143a);
 
-    // Bytes that cancel under the fold reach that same forced state — which is
+    // Bytes that cancel under the fold reach that same forced state, which is
     // the only way to show the forcing is about the folded value rather than
     // about the input being empty.
     const cancels = [20]u8{ 1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4 };
     math.rngLongseed(&rng, &cancels);
     expectState(&rng, empty.a, empty.b, empty.c, empty.d);
 
-    // An empty seed reads nothing rather than walking backwards. The negative
-    // length this used to pin belonged to a boundary form that is not part of
-    // the published surface: `rngLongseed` takes a slice, and a negative
-    // length is a state the type forbids.
+    // An empty seed reads nothing rather than walking backwards. There is no
+    // negative-length case to write: `rngLongseed` takes a slice, and a
+    // negative length is a state the type forbids.
     math.rngLongseed(&rng, "janet"[0..0]);
     expectState(&rng, empty.a, empty.b, empty.c, empty.d);
 }
@@ -147,11 +176,8 @@ fn theDoubleDraw() void {
 /// `math/seedrandom` and `math/random` run on one shared generator, and it is
 /// the same object every time it is asked for.
 ///
-/// It used to assert that the generator is not null. That assertion went with
-/// the call: the accessor was declared `[*c]Rng`, so the pointer arrived
-/// maybe-null and the test was the check; `math.defaultRng` returns
-/// `*Rng` and Zig will not let it be null. `DESIGN.md` §3 -- the property
-/// stopped being an agreement and became a construction.
+/// There is no null check to write: `math.defaultRng` returns `*Rng`, so the
+/// type states what an assertion would have tested.
 fn theDefaultRng() void {
     const shared = math.defaultRng();
 
@@ -159,8 +185,6 @@ fn theDefaultRng() void {
     expect(math.rngU32(shared) == 0x7cb7e804);
     expect(math.defaultRng() == shared);
 }
-
-// ------------------------------------------------------------- gcd and lcm
 
 fn call2(fun: anytype, a: f64, b: f64) !f64 {
     var argv = [2]repr.Value{ wrap.fromNumber(a), wrap.fromNumber(b) };
@@ -203,27 +227,13 @@ fn theGcdAndLcm() !void {
     expect(std.math.isNan(try call2(lcm, inf, 4)));
     expect(std.math.isNan(try call2(lcm, 4, inf)));
 
-    // NaN in, NaN out — and `lcm(0, 0)` is NaN rather than zero, because it
+    // NaN in, NaN out, and `lcm(0, 0)` is NaN rather than zero, because it
     // divides by the gcd.
     expect(std.math.isNan(try call2(gcd, nan, 4)));
     expect(std.math.isNan(try call2(gcd, 4, nan)));
     expect(std.math.isNan(try call2(gcd, nan, nan)));
     expect(std.math.isNan(try call2(lcm, nan, 4)));
     expect(std.math.isNan(try call2(lcm, 0, 0)));
-}
-
-// -------------------------------------------------------- the Janet surface
-
-var environment: *tables.Table = undefined;
-
-fn eval(source: [*:0]const u8) repr.Value {
-    var result: repr.Value = undefined;
-    expect(core_env.dostring(environment, source, "math-contract", &result) == 0);
-    return result;
-}
-
-fn truthy(source: [*:0]const u8) void {
-    expect(repr.truthy(eval(source)));
 }
 
 fn theRngInt() void {
@@ -239,7 +249,7 @@ fn theRngInt() void {
         @as(f64, @floatFromInt(from_zero[0] >> 1)));
 
     // A bound of 1 always yields 0, and consumes exactly one word per call
-    // because every draw falls inside the acceptance window — which the third
+    // because every draw falls inside the acceptance window, which the third
     // element proves by being the *third* word of the sequence.
     const bounded = wrap.toTuple(eval(
         "(let [r (math/rng 0)] [(math/rng-int r 1) (math/rng-int r 1) (math/rng-int r)])",
@@ -298,6 +308,10 @@ fn theMarshalRoundTrip() void {
         \\           (seq [_ :range [0 8]] (math/rng-int c)))))
     );
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

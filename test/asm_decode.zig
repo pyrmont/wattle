@@ -2,20 +2,20 @@
 //! bytecode word turned back into the tuple the assembler would have written.
 //!
 //! `disasm` reaches this for every instruction of a function, so the Janet
-//! suites exercise it heavily and observe almost nothing about it — a
+//! suites exercise it heavily and observe almost nothing about it: a
 //! disassembly that decoded an operand wrongly still looks like a
 //! disassembly. What is pinned here is the *shape* each instruction type
 //! produces, and in particular the three ways an operand byte can be read.
 //!
 //! ## The three readings of the same bits
 //!
-//! An operand is not just a number, and the whole point of the instruction
-//! table is to say which of these each field is:
+//! An operand is not just a number, and what the instruction table decides is
+//! which of these each field is:
 //!
-//!   - **unsigned**, as a slot index or a constant index;
-//!   - **signed**, as a jump displacement or a small integer literal, where
+//!   - unsigned, as a slot index or a constant index;
+//!   - signed, as a jump displacement or a small integer literal, where
 //!     `0xFFFFFE` in the top three bytes is -2 rather than 16,777,214;
-//!   - **unsigned again in a field that looks signed**, which
+//!   - unsigned again in a field that looks signed, which
 //!     `JOP_SHIFT_RIGHT_UNSIGNED_IMMEDIATE` is: its 8-bit immediate reads as
 //!     253 where `JOP_ADD_IMMEDIATE`'s reads as -3 from the identical byte.
 //!
@@ -31,14 +31,22 @@
 //! it comes back as the tuple's bracket-constructor flag rather than as an
 //! operand.
 
-const repr = @import("repr");
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const constants = @import("constants");
-const harness = @import("harness.zig");
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
 const disasm = @import("subsystems").disasm;
-const tuples = @import("subsystems").value.tuples;
 const expect = @import("expect.zig").expect;
+const harness = @import("harness.zig");
+const repr = @import("repr");
+const tuples = @import("subsystems").value.tuples;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// Decode, and assert the instruction is the named one with `length` fields.
 fn decoded(instruction: u32, length: i32, name: [*:0]const u8) [*]const repr.Value {
@@ -118,6 +126,10 @@ fn aBreakpointIsAFlagRatherThanAnOperand() void {
     const tuple = decoded(harness.op(constants.Opcode.noop) | @as(u32, 0x80), 1, "noop");
     expect((harness.gcBits(tuples.head(tuple).gc.flags) & constants.JANET_TUPLE_FLAG_BRACKETCTOR) != 0);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

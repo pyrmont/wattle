@@ -3,22 +3,35 @@
 //!
 //! The pass rewrites instructions in place to `JOP_NOOP`, and there is no way
 //! to see that from Janet: the suites can observe that a program still
-//! computes the right answer, which is true whether the pass fired or not.
-//! What is asserted here is which instructions it removes and — the more
-//! important half — which it must leave alone.
+//! computes the right result, which is true whether the pass fired or not.
+//! What is asserted here is which instructions it removes and, the more
+//! important half, which it must leave alone.
 //!
 //! Each case is one hand-assembled function body rather than compiled source,
 //! because the point is the shape of the bytecode and not the shape of the
 //! program that produced it. A `functions.FuncDef` is zeroed and given three
 //! fields, which is everything the pass reads.
 
-const std = @import("std");
-const movopt = @import("subsystems").optimize;
-const constants = @import("constants");
-const functions = @import("subsystems").value.functions;
-const expect = @import("expect.zig").expect;
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
-/// A definition holding nothing but the bytecode under test. Zeroed rather
+const std = @import("std");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const constants = @import("constants");
+const expect = @import("expect.zig").expect;
+const functions = @import("subsystems").value.functions;
+const movopt = @import("subsystems").optimize;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
+
+/// A definition containing nothing but the bytecode under test. Zeroed rather
 /// than partially initialised, because the pass reads `closure_bitset` and a
 /// stray pointer there is the difference between a dead store and a captured
 /// one.
@@ -63,7 +76,7 @@ fn aLiveLoadIsKept() void {
     expect(constants.Opcode.fromWord(returned[0]) == constants.Opcode.load_nil);
 
     // Captured by a closure. Nothing in the bytecode reads slot 0, so only
-    // `closure_bitset` says this store is live -- and a pass that ignored it
+    // `closure_bitset` says this store is live, and a pass that ignored it
     // would compile a correct program into a wrong one.
     var captured = [_]u32{ constants.Opcode.load_nil.number(), constants.Opcode.return_nil.number() };
     var closure_bits = [_]u32{1};
@@ -79,6 +92,10 @@ fn aLiveLoadIsKept() void {
     movopt.bytecodeMovopt(&definition);
     expect(constants.Opcode.fromWord(effectful[0]) == constants.Opcode.make_buffer);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     aDeadLoadIsRemoved();

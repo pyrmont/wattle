@@ -1,58 +1,73 @@
 //! Bytecode as text: one instruction decoded, and a whole `functions.FuncDef`
 //! disassembled.
 //!
-//! A decoder -- an encoded word to the tuple `(op arg ...)`, the reverse of the
-//! assembler's table -- and the `FuncDef` walk that calls it once per
-//! instruction. One is the other's inner loop, and neither has a name Janet
-//! publishes or exists because a platform differs, so they are one file.
+//! `asmDecodeInstruction` turns one encoded word into the tuple
+//! `(op arg ...)`, which is the reverse of the assembler's table.
+//! `disassembleField` reads one field of a funcdef and `disasm` reads them
+//! all. The first is the second's inner loop, and neither publishes a Janet
+//! name of its own or exists because a platform differs, so they are one file.
 
-const repr = @import("repr");
-const constants = @import("constants");
+// ==========================================================================
+// Project imports
+// ==========================================================================
 
-const asm_encode = @import("../bytecode.zig");
-const gc_alloc = @import("../gc.zig");
 const arrays = @import("../value/arrays.zig");
+const asm_encode = @import("../bytecode.zig");
+const constants = @import("constants");
+const functions = @import("../value/functions.zig");
+const gc_alloc = @import("../gc.zig");
+const repr = @import("repr");
+const strings = @import("../value/strings.zig");
+const structs = @import("../value/structs.zig");
 const symbols = @import("../value/symbols.zig");
 const tables = @import("../value/tables.zig");
 const tuples = @import("../value/tuples.zig");
-const wrap = @import("../value/helpers/wrap.zig");
 const verify = @import("verify.zig");
-const strings = @import("../value/strings.zig");
-const structs = @import("../value/structs.zig");
-const functions = @import("../value/functions.zig");
+const wrap = @import("../value/helpers/wrap.zig");
 
-// ---------------------------------------------------------------------------
-// One instruction, decoded.
-// ---------------------------------------------------------------------------
+// ==========================================================================
+// Constants
+// ==========================================================================
 
-/// The instruction name for an encoded word, or `null` for an opcode this
-/// build does not know.
+/// The `birth_pc` a symbol map entry uses to say that its slot is an upvalue
+/// rather than a stack slot.
+const std_max_u32 = ~@as(u32, 0);
+
+// ==========================================================================
+// Types
+// ==========================================================================
+
+/// Which part of a funcdef `disassembleField` reads, with `all` for the whole
+/// struct. The numbering is what `disassembleFieldExport` takes across the
+/// boundary.
+pub const Field = enum(c_int) {
+    arity,
+    min_arity,
+    max_arity,
+    bytecode,
+    source,
+    vararg,
+    structarg,
+    namedargs,
+    name,
+    slotcount,
+    symbolmap,
+    constants,
+    sourcemap,
+    environments,
+    defs,
+    all,
+};
+
+// ==========================================================================
+// Public functions
+// ==========================================================================
+
+/// Decodes one instruction word into the tuple `(op arg ...)`.
 ///
-/// A walk over the assembler's own table rather than a second copy of it: that
-/// table is what the assembler matches names against, and one table means a
-/// name that assembles is a name that disassembles.
-fn asmOpcodeName(instruction: u32) ?[*:0]const u8 {
-    const opcode = constants.Opcode.fromWord(instruction & 0x7F);
-    for (asm_encode.opcodes) |def| {
-        if (def.opcode == opcode) return def.name;
-    }
-    return null;
-}
-
-inline fn asmWrapSymbol(val: [*:0]const u8) repr.Value {
-    return wrap.fromSymbol(symbols.csymbol(val));
-}
-
-inline fn asmWrapTuple(val: tuples.Tuple) repr.Value {
-    return wrap.fromTuple(val);
-}
-
-/// `janet_tuple_flag(value) |= JANET_TUPLE_FLAG_BRACKETCTOR`, which is what
-/// makes a disassembled instruction print as `[...]` rather than `(...)`.
-inline fn asmMarkBracketed(val: tuples.Tuple) void {
-    tuples.setBracketed(tuples.head(val));
-}
-
+/// An opcode this build has no name for decodes to the raw word as an integer
+/// instead. A word with the breakpoint bit set decodes to a bracketed tuple,
+/// which is what makes it print as `[...]`.
 pub fn asmDecodeInstruction(instruction: u32) repr.Value {
     const name_bytes = asmOpcodeName(instruction) orelse {
         return wrap.fromInteger(@bitCast(instruction));
@@ -98,87 +113,12 @@ pub fn asmDecodeInstruction(instruction: u32) repr.Value {
     return asmWrapTuple(result);
 }
 
-fn makeTuple(values: []const repr.Value) tuples.Tuple {
-    const tuple = tuples.begin(@intCast(values.len));
-    for (values, 0..) |val, index| tuple[index] = val;
-    return tuples.end(tuple);
-}
-
-fn integer(val: i32) repr.Value {
-    return wrap.fromInteger(val);
-}
-
-fn argument(instruction: u32, byte: u5, mask: u32) i32 {
-    return @intCast((instruction >> (byte * 8)) & mask);
-}
-
-fn signedShift(instruction: u32, shift: u5) i32 {
-    const signed: i32 = @bitCast(instruction);
-    return signed >> shift;
-}
-
-// ---------------------------------------------------------------------------
-// A whole `functions.FuncDef`, disassembled.
-// ---------------------------------------------------------------------------
-
-pub const Field = enum(c_int) {
-    arity,
-    min_arity,
-    max_arity,
-    bytecode,
-    source,
-    vararg,
-    structarg,
-    namedargs,
-    name,
-    slotcount,
-    symbolmap,
-    constants,
-    sourcemap,
-    environments,
-    defs,
-    all,
-};
-
-// The eight wraps this file builds its table from, named locally so the table
-// below reads as a table.
-inline fn disasmWrapNil() repr.Value {
-    return wrap.fromNil();
-}
-inline fn disasmWrapBoolean(val: c_int) repr.Value {
-    return wrap.fromBoolean(val != 0);
-}
-inline fn disasmWrapString(val: strings.String) repr.Value {
-    return wrap.fromString(val);
-}
-inline fn disasmWrapSymbol(val: strings.Symbol) repr.Value {
-    return wrap.fromSymbol(val);
-}
-inline fn disasmWrapArray(val: *arrays.Array) repr.Value {
-    return wrap.fromArray(val);
-}
-inline fn disasmWrapTuple(val: tuples.Tuple) repr.Value {
-    return wrap.fromTuple(val);
-}
-inline fn disasmWrapStruct(val: structs.Struct) repr.Value {
-    return wrap.fromStruct(val);
-}
-inline fn disasmKeyword(val: [*:0]const u8) repr.Value {
-    return wrap.fromKeyword(symbols.csymbol(val));
-}
-
-/// The whole disassembly: `disassembleField` with the `all` field, and there is
-/// nothing else to it.
+/// The whole disassembly, as a struct of every field.
 pub fn disasm(definition: *functions.FuncDef) repr.Value {
     return disassembleFieldExport(definition, @intFromEnum(Field.all));
 }
 
-pub fn disassembleFieldExport(definition: *functions.FuncDef, field_value: c_int) repr.Value {
-    const gc_lock = gc_alloc.gclock();
-    defer gc_alloc.gcunlock(gc_lock);
-    return disassembleField(definition, @enumFromInt(field_value));
-}
-
+/// One field of `definition`, by `Field`.
 pub fn disassembleField(definition: *functions.FuncDef, field: Field) repr.Value {
     return switch (field) {
         .arity => wrap.fromInteger(definition.arity),
@@ -203,74 +143,91 @@ pub fn disassembleField(definition: *functions.FuncDef, field: Field) repr.Value
     };
 }
 
-fn disassembleSymbolMap(definition: *functions.FuncDef) repr.Value {
-    if (definition.symbolmap == null) return wrapNil();
-    const result = arrays.new(definition.symbolmap_length);
-    const upvalue = disasmKeyword("upvalue");
-    for (definition.symbols(), 0..) |mapping, index| {
-        const tuple = tuples.begin(4);
-        tuple[0] = if (mapping.birth_pc == std_max_u32)
-            upvalue
-        else
-            wrapUnsigned(mapping.birth_pc);
-        tuple[1] = wrapUnsigned(mapping.death_pc);
-        tuple[2] = wrapUnsigned(mapping.slot_index);
-        tuple[3] = disasmWrapSymbol(mapping.symbol.?);
-        result.reserved()[index] = disasmWrapTuple(tuples.end(tuple));
-    }
-    result.count = definition.symbolmap_length;
-    return disasmWrapArray(result);
+/// `disassembleField` by field number, under a collector lock.
+///
+/// The lock covers the whole walk because every arm allocates and none of the
+/// intermediate values is rooted.
+pub fn disassembleFieldExport(definition: *functions.FuncDef, field_value: c_int) repr.Value {
+    const gc_lock = gc_alloc.gclock();
+    defer gc_alloc.gcunlock(gc_lock);
+    return disassembleField(definition, @enumFromInt(field_value));
 }
 
-fn disassembleBytecode(definition: *functions.FuncDef) repr.Value {
-    const result = arrays.new(definition.bytecode_length);
-    for (definition.instructions(), 0..) |instruction, index| {
-        result.reserved()[index] = asmDecodeInstruction(instruction);
-    }
-    result.count = definition.bytecode_length;
-    return disasmWrapArray(result);
+// ==========================================================================
+// Private functions
+// ==========================================================================
+
+/// One byte-aligned field of an instruction word, masked to `mask`.
+fn argument(instruction: u32, byte: u5, mask: u32) i32 {
+    return @intCast((instruction >> (byte * 8)) & mask);
 }
 
-fn disassembleConstants(definition: *functions.FuncDef) repr.Value {
-    const result = arrays.new(definition.constants_length);
-    for (definition.constantValues(), 0..) |constant, index| {
-        result.reserved()[index] = constant;
-    }
-    result.count = definition.constants_length;
-    return disasmWrapArray(result);
+/// Marks a decoded instruction bracketed, which is what makes it print as
+/// `[...]` rather than `(...)`.
+inline fn asmMarkBracketed(val: tuples.Tuple) void {
+    tuples.setBracketed(tuples.head(val));
 }
 
-fn disassembleSourceMap(definition: *functions.FuncDef) repr.Value {
-    if (definition.sourcemap == null) return wrapNil();
-    const result = arrays.new(definition.bytecode_length);
-    for (definition.sourceMappings(), 0..) |mapping, index| {
-        const tuple = tuples.begin(2);
-        tuple[0] = wrap.fromInteger(mapping.line);
-        tuple[1] = wrap.fromInteger(mapping.column);
-        result.reserved()[index] = disasmWrapTuple(tuples.end(tuple));
+/// The instruction name for an encoded word, or null for an opcode the table
+/// has no row for.
+///
+/// A walk over the assembler's own table rather than a second copy of it: that
+/// table is what the assembler matches names against, and one table means a
+/// name that assembles is a name that disassembles.
+fn asmOpcodeName(instruction: u32) ?[*:0]const u8 {
+    const opcode = constants.Opcode.fromWord(instruction & 0x7F);
+    for (asm_encode.opcodes) |def| {
+        if (def.opcode == opcode) return def.name;
     }
-    result.count = definition.bytecode_length;
-    return disasmWrapArray(result);
+    return null;
 }
 
-fn disassembleEnvironments(definition: *functions.FuncDef) repr.Value {
-    const result = arrays.new(definition.environments_length);
-    for (definition.environmentIndices(), 0..) |environment, index| {
-        result.reserved()[index] = wrap.fromInteger(environment);
-    }
-    result.count = definition.environments_length;
-    return disasmWrapArray(result);
+/// A decoded instruction's opcode name, as a symbol.
+inline fn asmWrapSymbol(val: [*:0]const u8) repr.Value {
+    return wrap.fromSymbol(symbols.csymbol(val));
 }
 
-fn disassembleDefinitions(definition: *functions.FuncDef) repr.Value {
-    const result = arrays.new(definition.defs_length);
-    for (definition.subdefs(), 0..) |subdef, index| {
-        result.reserved()[index] = disassembleAll(subdef);
-    }
-    result.count = definition.defs_length;
-    return disasmWrapArray(result);
+/// A decoded instruction's tuple, as a value.
+inline fn asmWrapTuple(val: tuples.Tuple) repr.Value {
+    return wrap.fromTuple(val);
 }
 
+/// The eight wraps the field walk is built from, named locally so that each
+/// arm reads as one line.
+inline fn disasmKeyword(val: [*:0]const u8) repr.Value {
+    return wrap.fromKeyword(symbols.csymbol(val));
+}
+
+inline fn disasmWrapArray(val: *arrays.Array) repr.Value {
+    return wrap.fromArray(val);
+}
+
+inline fn disasmWrapBoolean(val: c_int) repr.Value {
+    return wrap.fromBoolean(val != 0);
+}
+
+inline fn disasmWrapNil() repr.Value {
+    return wrap.fromNil();
+}
+
+inline fn disasmWrapString(val: strings.String) repr.Value {
+    return wrap.fromString(val);
+}
+
+inline fn disasmWrapStruct(val: structs.Struct) repr.Value {
+    return wrap.fromStruct(val);
+}
+
+inline fn disasmWrapSymbol(val: strings.Symbol) repr.Value {
+    return wrap.fromSymbol(val);
+}
+
+inline fn disasmWrapTuple(val: tuples.Tuple) repr.Value {
+    return wrap.fromTuple(val);
+}
+
+/// Every field of `definition`, as a struct keyed by keyword. A subdefinition
+/// is disassembled the same way, so this recurses through `defs`.
 fn disassembleAll(definition: *functions.FuncDef) repr.Value {
     const result = tables.new(10);
     put(result, "arity", disassembleField(definition, .arity));
@@ -291,20 +248,118 @@ fn disassembleAll(definition: *functions.FuncDef) repr.Value {
     return disasmWrapStruct(tables.toStruct(result));
 }
 
+/// Every instruction of `definition`, decoded, as an array.
+fn disassembleBytecode(definition: *functions.FuncDef) repr.Value {
+    const result = arrays.new(definition.bytecode_length);
+    for (definition.instructions(), 0..) |instruction, index| {
+        result.reserved()[index] = asmDecodeInstruction(instruction);
+    }
+    result.count = definition.bytecode_length;
+    return disasmWrapArray(result);
+}
+
+/// `definition`'s constant pool, as an array.
+fn disassembleConstants(definition: *functions.FuncDef) repr.Value {
+    const result = arrays.new(definition.constants_length);
+    for (definition.constantValues(), 0..) |constant, index| {
+        result.reserved()[index] = constant;
+    }
+    result.count = definition.constants_length;
+    return disasmWrapArray(result);
+}
+
+/// `definition`'s nested definitions, each disassembled in full.
+fn disassembleDefinitions(definition: *functions.FuncDef) repr.Value {
+    const result = arrays.new(definition.defs_length);
+    for (definition.subdefs(), 0..) |subdef, index| {
+        result.reserved()[index] = disassembleAll(subdef);
+    }
+    result.count = definition.defs_length;
+    return disasmWrapArray(result);
+}
+
+/// `definition`'s captured environment indices, as an array.
+fn disassembleEnvironments(definition: *functions.FuncDef) repr.Value {
+    const result = arrays.new(definition.environments_length);
+    for (definition.environmentIndices(), 0..) |environment, index| {
+        result.reserved()[index] = wrap.fromInteger(environment);
+    }
+    result.count = definition.environments_length;
+    return disasmWrapArray(result);
+}
+
+/// `definition`'s source map, as an array of `(line column)` tuples, or nil
+/// where it has none.
+fn disassembleSourceMap(definition: *functions.FuncDef) repr.Value {
+    if (definition.sourcemap == null) return wrapNil();
+    const result = arrays.new(definition.bytecode_length);
+    for (definition.sourceMappings(), 0..) |mapping, index| {
+        const tuple = tuples.begin(2);
+        tuple[0] = wrap.fromInteger(mapping.line);
+        tuple[1] = wrap.fromInteger(mapping.column);
+        result.reserved()[index] = disasmWrapTuple(tuples.end(tuple));
+    }
+    result.count = definition.bytecode_length;
+    return disasmWrapArray(result);
+}
+
+/// `definition`'s symbol map, as an array of
+/// `(birth death slot symbol)` tuples, or nil where it has none. An upvalue
+/// entry has the keyword `:upvalue` in place of its birth position.
+fn disassembleSymbolMap(definition: *functions.FuncDef) repr.Value {
+    if (definition.symbolmap == null) return wrapNil();
+    const result = arrays.new(definition.symbolmap_length);
+    const upvalue = disasmKeyword("upvalue");
+    for (definition.symbols(), 0..) |mapping, index| {
+        const tuple = tuples.begin(4);
+        tuple[0] = if (mapping.birth_pc == std_max_u32)
+            upvalue
+        else
+            wrapUnsigned(mapping.birth_pc);
+        tuple[1] = wrapUnsigned(mapping.death_pc);
+        tuple[2] = wrapUnsigned(mapping.slot_index);
+        tuple[3] = disasmWrapSymbol(mapping.symbol.?);
+        result.reserved()[index] = disasmWrapTuple(tuples.end(tuple));
+    }
+    result.count = definition.symbolmap_length;
+    return disasmWrapArray(result);
+}
+
+/// An `i32` as a value.
+fn integer(val: i32) repr.Value {
+    return wrap.fromInteger(val);
+}
+
+/// A tuple of `values`, closed.
+fn makeTuple(values: []const repr.Value) tuples.Tuple {
+    const tuple = tuples.begin(@intCast(values.len));
+    for (values, 0..) |val, index| tuple[index] = val;
+    return tuples.end(tuple);
+}
+
+/// Binds `key`, as a keyword, to `val` in `table`.
 fn put(table: *tables.Table, key: [*:0]const u8, val: repr.Value) void {
     tables.put(table, disasmKeyword(key), val);
 }
 
-fn wrapNil() repr.Value {
-    return disasmWrapNil();
+/// A signed instruction field, as an arithmetic right shift of the word
+/// reinterpreted as a signed 32-bit integer.
+fn signedShift(instruction: u32, shift: u5) i32 {
+    const signed: i32 = @bitCast(instruction);
+    return signed >> shift;
 }
 
-fn wrapUnsigned(val: u32) repr.Value {
-    return wrap.fromInteger(@bitCast(val));
-}
-
+/// A `bool` as a value.
 fn wrapBoolean(val: bool) repr.Value {
     return disasmWrapBoolean(@intFromBool(val));
 }
 
-const std_max_u32 = ~@as(u32, 0);
+/// Nil, as a value.
+fn wrapNil() repr.Value {
+    return disasmWrapNil();
+}
+
+/// A `u32` as a value, reinterpreted rather than widened.
+fn wrapUnsigned(val: u32) repr.Value {
+    return wrap.fromInteger(@bitCast(val));
+}

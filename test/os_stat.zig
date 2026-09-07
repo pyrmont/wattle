@@ -8,7 +8,7 @@
 //! inverses, and the index they agree on is what the getters switch on. So the
 //! *order* of the fifteen names is load-bearing: inserting a field in the
 //! middle renumbers everything after it, and every getter then reads the wrong
-//! member. Nothing in Janet can see an index — `os/stat` answers keywords — so
+//! member. Nothing in Janet can see an index, `os/stat` taking keywords, so
 //! the list below is the only place that ordering is written down twice.
 //!
 //! ## Two permission projections, and only one of them round-trips everywhere
@@ -17,7 +17,7 @@
 //! host's mode bits and Janet's portable nine. On Unix they are the identity
 //! and every one of the 512 values round-trips, which is asserted
 //! exhaustively. On Windows the CRT collapses user, group and other into three
-//! bits, so only the reduced value survives a round trip — the contract is
+//! bits, so only the reduced value survives a round trip, and the contract is
 //! weaker there because the platform is, and saying which is the point.
 //!
 //! ## One preserved quirk
@@ -27,22 +27,35 @@
 //! still matches: `lookup("dev\0", 4)` is 0 rather than -1. That is deliberate
 //! and is asserted below so a port cannot tidy it away.
 
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
+
 const std = @import("std");
 const builtin = @import("builtin");
-const repr = @import("repr");
-const harness = @import("harness.zig");
-const value = @import("subsystems").value;
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const config = @import("config");
 const core_env = @import("subsystems").env;
+const expect = @import("expect.zig").expect;
+const fs = @import("subsystems").fs;
+const harness = @import("harness.zig");
+
+/// The field registry, by import.
+const os_stat = @import("subsystems").stat;
+const repr = @import("repr");
+const tables = @import("subsystems").value.tables;
+const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
 
-/// The field registry, by import. The three symbols this file used to declare
-/// existed because the subsystem was reaching its own kernels through the
-/// linker and a C contract was the only other reader.
-const os_stat = @import("subsystems").stat;
-const fs = @import("subsystems").fs;
-const tables = @import("subsystems").value.tables;
-const expect = @import("expect.zig").expect;
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+var environment: *tables.Table = undefined;
 
 /// The registry, in order. See the header comment on why the order matters.
 const expected_fields = [_][]const u8{
@@ -67,17 +80,32 @@ const work_dir = "janet-zig-os-stat-4d71";
 const work_file = "janet-zig-os-stat-4d71/file";
 const work_link = "janet-zig-os-stat-4d71/link";
 
+// ==========================================================================
+// Cases
+// ==========================================================================
+
 fn modeNameIs(mode: u32, expected: []const u8) bool {
     return std.mem.eql(u8, std.mem.span(os_stat.hostModeName(mode)), expected);
 }
 
+fn eval(source: [*:0]const u8) void {
+    var result: repr.Value = undefined;
+    expect(core_env.dostring(environment, source, "os-stat-contract", &result) == 0);
+}
+
+fn cleanPaths() void {
+    _ = fs.hostRemove(work_link);
+    _ = fs.hostRemove(work_file);
+    _ = fs.hostRmdir(work_dir);
+}
+
 /// Janet tests the three type bits individually rather than masking with
-/// `S_IFMT` first, which is why a mode with no type bits at all is "other"
+/// `S_IFMT` first, so a mode with no type bits at all is "other"
 /// rather than a misclassification.
 ///
-/// Unix only, and the guard is a `comptime`-known condition so the branch is
-/// not analysed on a Windows cross-compile -- `std.c.S` has no members there.
-/// The C original carried a `_S_IFREG` arm for the CRT; this tree's platform
+/// Unix only, and the guard is a `comptime` condition so the branch is not
+/// analysed on a Windows cross-compile, `std.c.S` having no members there.
+/// There is no CRT arm beside it, because this tree's platform
 /// scope makes Windows a build target rather than a tested one, so the arm is
 /// dropped rather than written and never run.
 fn theModeNames() void {
@@ -150,15 +178,6 @@ fn theFieldRegistry() void {
     expect(os_stat.fieldLookup("dev\x00", 4) == 0);
 }
 
-// -------------------------------------------------------- the Janet surface
-
-var environment: *tables.Table = undefined;
-
-fn eval(source: [*:0]const u8) void {
-    var result: repr.Value = undefined;
-    expect(core_env.dostring(environment, source, "os-stat-contract", &result) == 0);
-}
-
 /// Written in Janet because every assertion here is about a *keyword-keyed
 /// table*, which Janet states in a line and Zig states in five unwraps.
 fn theCoreFunctions() void {
@@ -168,8 +187,9 @@ fn theCoreFunctions() void {
         \\(os/chmod "janet-zig-os-stat-4d71/file" 8r640)
     );
 
-    // A whole-table result carries every registry field, under the registry's
-    // own names -- which is the Janet-visible half of `theFieldRegistry`.
+    // A whole-table result has every registry field in it, under the
+    // registry's own names, which is the Janet-visible half of
+    // `theFieldRegistry`.
     eval(
         \\(def st (os/stat "janet-zig-os-stat-4d71/file"))
         \\(assert (table? st))
@@ -200,8 +220,8 @@ fn theCoreFunctions() void {
         \\(assert (= :directory (os/stat "janet-zig-os-stat-4d71" :mode)))
     );
 
-    // A supplied table is filled and returned -- the same table, with its
-    // existing entry intact, which is why the length is sixteen.
+    // A supplied table is filled and returned: the same table, with its
+    // existing entry intact, so the length is sixteen.
     eval(
         \\(def tab @{:seed true})
         \\(assert (= tab (os/stat "janet-zig-os-stat-4d71/file" tab)))
@@ -224,8 +244,8 @@ fn theCoreFunctions() void {
     }
 }
 
-/// An unknown field keyword raises rather than answering nil, and a prefix of
-/// a real one is still unknown. The C contract reached these through `protect`
+/// An unknown field keyword raises rather than giving nil, and a prefix of a
+/// real one is still unknown. These are reached
 /// inside a Janet string; here they are values.
 fn theRefusals() void {
     const stat = harness.core("os/stat");
@@ -240,11 +260,9 @@ fn theRefusals() void {
     expect(harness.raised(stat, .{args[0..2]}) != null);
 }
 
-fn cleanPaths() void {
-    _ = fs.hostRemove(work_link);
-    _ = fs.hostRemove(work_file);
-    _ = fs.hostRmdir(work_dir);
-}
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     theModeNames();

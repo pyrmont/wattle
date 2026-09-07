@@ -4,83 +4,131 @@
 //! These are the easiest containers in the runtime to observe, because almost
 //! everything they do is visible in three `int32_t` fields and a pointer. So
 //! this file asserts the fields directly rather than through the standard
-//! library: `count`, `capacity`, and what `data` holds after each operation.
-//! The capacity policy is the interesting part — both types overshoot by a
-//! caller-supplied growth factor, and the exact resulting capacity is a
-//! contract, not an implementation detail, because `array/ensure` exposes it
-//! to Janet code.
+//! library: `count`, `capacity`, and what `data` contains after each
+//! operation. The capacity policy is the interesting part, both types
+//! overshooting by a caller-supplied growth factor, and `array/ensure`
+//! exposes the resulting capacity to Janet code, so it is fixed rather than
+//! free to change.
 //!
 //! GC pressure is the second channel. Both halves charge
 //! `vm.gc.next_collection` for the payloads they allocate, and they do it
-//! inconsistently — the buffer charges before its reallocation and the array
+//! inconsistently: the buffer charges before its reallocation and the array
 //! after, and `arrays.newFrom` charges nothing at all. None of that is a
-//! defect, but all of it is observable, so it is pinned here.
+//! defect and all of it is observable, so it is pinned here.
 //!
-//! ## What the refusals cost, before and after
-//!
-//! The C original reached a refusal through an `EXPECT_PANIC` macro: open a
-//! scope, arm a flag, call the abi, read whether it fired, read the signal,
-//! restore, and compare the payload string — twenty lines of macro for six
-//! call sites, plus a `panics_fired` tally at the foot to prove all six had
-//! run.
-//!
-//! Here a refusal is a value. `harness.raised` returns the `Raise` or null,
-//! the assertion is one line at the site, and the tally is gone because a
-//! refusal that did not happen fails where it was expected rather than in a
-//! count at the end.
+//! A refusal is a value in this file. `harness.raised` returns the `Raise` or
+//! null and the assertion is one line at the site, so a refusal that stops
+//! happening fails where it was expected.
 //!
 //! ## What this file cannot cover
 //!
 //! `arrays.ensure` is an internal entry point that takes its growth factor on
 //! trust, and a factor of zero or less makes the arithmetic produce a capacity
-//! that is zero or negative. The negative case ends the process through
-//! `JANET_OUT_OF_MEMORY` — every negative capacity converts to a `usize` near
-//! the top of the range, so the allocation always fails — and a test cannot
-//! survive it. The zero case depends on the C library: `realloc(p, 0)` returns
-//! a minimal block on macOS and NULL on glibc, and the second answer also
-//! reaches `JANET_OUT_OF_MEMORY`. So the zero case is asserted only after
-//! probing the allocator for which answer it gives, and the negative case is
-//! not asserted at all. **`array/ensure` rejects both before they get here**,
-//! which `suite-corelib.janet` pins.
+//! that is zero or negative. The negative case ends the process, because every
+//! negative capacity converts to a `usize` near the top of the range and the
+//! allocation always fails, and a test cannot survive that. The zero case
+//! depends on the C library: `realloc(p, 0)` gives back a minimal block on
+//! macOS and NULL on glibc, and the second of those ends the process the same
+//! way. So the zero case is asserted only after probing the allocator for
+//! which it does, and the negative case is not asserted at all. `array/ensure`
+//! rejects both before they get here, which `suite-corelib.janet` pins.
 //!
 //! Two overflow refusals are also uncovered. `buffers.extra`'s is asserted
 //! below because it is reachable with a large `n` and an empty buffer, but
 //! `arrays.push`'s requires an array of `INT32_MAX` elements to already exist,
 //! which is not something a test can arrange.
 
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
+
 const std = @import("std");
-const repr = @import("repr");
-const constants = @import("constants");
-const harness = @import("harness.zig");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const arrays = @import("subsystems").value.arrays;
 const buffers = @import("subsystems").value.buffers;
-const tables = @import("subsystems").value.tables;
-const gc_alloc = @import("subsystems").gc_alloc;
-const strings = @import("subsystems").value.strings;
-const utils = @import("subsystems").utils;
-const gc_mark = @import("subsystems").gc_mark;
+const constants = @import("constants");
 const core_env = @import("subsystems").env;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
 const expect = @import("expect.zig").expect;
-
+const gc_alloc = @import("subsystems").gc_alloc;
+const gc_mark = @import("subsystems").gc_mark;
+const harness = @import("harness.zig");
 const heap = harness.heap;
 
-// --------------------------------------------------------------- helpers
+const repr = @import("repr");
+const strings = @import("subsystems").value.strings;
+const tables = @import("subsystems").value.tables;
+const utils = @import("subsystems").utils;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
 
-/// Does this C library's `realloc(p, 0)` return a block, or NULL? The answer
-/// decides whether the zero-growth case in `arrays.ensure` returns or exits,
-/// and it is a property of the allocator rather than of Janet.
-fn reallocZeroReturnsABlock() bool {
-    const p = utils.malloc(16);
-    expect(p != null);
-    const q = utils.realloc(p, 0);
-    if (q == null) return false;
-    utils.free(q);
-    return true;
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// The foreign memory a pointer buffer wraps. At file scope because the
+/// buffer outlives the case that makes it.
+var foreign = [8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 };
+
+// ==========================================================================
+// Cases
+// ==========================================================================
+
+/// The empty case of the three collection views, which is the case a raw
+/// `data.?[0..count]` cannot express: `buffers.init(b, 0)` and `arrays.new(0)`
+/// both leave `data` null, and slicing null traps even for a zero-length
+/// range.
+///
+/// Each of the three is checked at zero and then again
+/// after one element, so a view that reported empty for everything would fail
+/// too.
+fn theEmptyViews() !void {
+    // A collection that has never been grown: `data` is null and `count` is
+    // zero, which is what `std.mem.zeroes` and `tables.init(t, 0)` both leave
+    // behind. This is the case `data.?[0..count]` traps on.
+    var empty_buffer: buffers.Buffer = .{};
+    expect(empty_buffer.data == null);
+    expect(empty_buffer.slice().len == 0);
+    expect(empty_buffer.reserved().len == 0);
+    expect(empty_buffer.spare().len == 0);
+
+    var empty_array: arrays.Array = .{};
+    expect(empty_array.data == null);
+    expect(empty_array.slice().len == 0);
+    expect(empty_array.reserved().len == 0);
+
+    var empty_table: tables.Table = .{};
+    expect(empty_table.data == null);
+    expect(empty_table.slots().len == 0);
+
+    // And the non-empty case beside it, so that a view which always reported
+    // the empty slice would fail here rather than pass both halves.
+    const b = buffers.new(0);
+    try buffers.pushU8(b, 'q');
+    expect(b.slice().len == 1);
+    expect(b.slice()[0] == 'q');
+    expect(b.reserved().len == @as(usize, @intCast(b.capacity)));
+    expect(b.spare().len == @as(usize, @intCast(b.capacity - 1)));
+
+    const a = arrays.new(0);
+    expect(a.slice().len == 0);
+    try arrays.push(a, harness.wrapInteger(7));
+    expect(a.slice().len == 1);
+    expect(harness.integerIs(a.slice()[0], 7));
+
+    // A table's view is its *slot* array, so it is `capacity` long rather
+    // than `count` long, which is the reason it is not called `slice`.
+    var table: tables.Table = .{};
+    _ = tables.initRaw(&table, 4);
+    tables.put(&table, harness.wrapInteger(1), harness.wrapInteger(2));
+    expect(table.count == 1);
+    expect(table.slots().len == @as(usize, @intCast(table.capacity)));
+    expect(table.slots().len > table.count);
+    tables.deinit(&table);
 }
-
-// ---------------------------------------------------------------- buffer
 
 /// A collectable buffer starts empty, lands on the strong heap list, and is
 /// given a floor of four bytes of capacity however little was asked for. The
@@ -126,10 +174,6 @@ fn callerOwnedBufferIsDisabled() !void {
     expect(b.data == null);
 }
 
-/// The foreign memory a pointer buffer wraps. At file scope because the buffer
-/// outlives the case that makes it, exactly as the C original's `static` did.
-var foreign = [8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 };
-
 /// A pointer buffer wraps memory the runtime did not allocate. The block is
 /// collectable but the payload is not: the NO_REALLOC flag makes every growth
 /// path refuse and makes deinit leave the foreign pointer alone.
@@ -142,8 +186,8 @@ fn pointerBufferNeverReallocates() !void {
     expect(heap.memoryType(b) == gc_alloc.MemoryType.buffer);
     expect(heap.onList(harness.vm().gc.blocks, b));
 
-    // Growing within the existing capacity is fine -- `buffers.ensure` returns
-    // before it consults the flag.
+    // Growing within the existing capacity is fine, and `buffers.ensure`
+    // returns before it consults the flag.
     try buffers.ensure(b, 8, 1);
     expect(b.data == @as([*]u8, &foreign));
 
@@ -208,10 +252,9 @@ fn bufferEnsureAppliesTheGrowthFactor() !void {
 /// Growing the count zero-fills the bytes it newly covers; shrinking keeps the
 /// capacity and the bytes above the new count.
 ///
-/// The negative-count case this used to assert is gone with the `i32`
-/// parameter: `setcount` takes a `usize` and the only Janet path that can
-/// produce a negative -- `os/cryptorand` -- rejects it, which
-/// `test/suite-os.janet` pins.
+/// There is no negative-count case: `setcount` takes a `usize`, and the one
+/// Janet path that could produce a negative is `os/cryptorand`, which rejects
+/// it before it gets here. `test/suite-os.janet` pins that refusal.
 fn bufferSetcountZeroFills() !void {
     const b = buffers.new(4);
     try buffers.pushCString(b, "xy");
@@ -293,7 +336,7 @@ fn bufferPushesLittleEndian() !void {
     }
 
     // Bytes, C strings, and Janet strings. A zero-length push is a no-op that
-    // does not even reserve, which is why it can be checked by capacity.
+    // does not even reserve, so capacity is what distinguishes them.
     try buffers.setcount(b, 0);
     const capacity = b.capacity;
     try buffers.pushBytes(b, "ignored"[0..0]);
@@ -305,8 +348,8 @@ fn bufferPushesLittleEndian() !void {
     expect(b.count == 11);
     expect(std.mem.eql(u8, b.slice()[0..11], "onetwothree"));
 
-    // A Janet string may hold an interior zero, and the length comes from its
-    // head rather than from the bytes.
+    // A Janet string may contain an interior zero, and the length comes from
+    // its head rather than from the bytes.
     try buffers.setcount(b, 0);
     try buffers.pushString(b, strings.new("a\x00b"));
     expect(b.count == 3);
@@ -335,8 +378,6 @@ fn bufferChargesGcPressure() !void {
     _ = buffers.new(1);
     expect(harness.vm().gc.next_collection == charge + @sizeOf(buffers.Buffer) + 4);
 }
-
-// ----------------------------------------------------------------- array
 
 /// An array has no capacity floor, and a capacity of zero means no payload at
 /// all rather than an empty one.
@@ -457,7 +498,7 @@ fn arraySetcountPushPopPeek() !void {
 
     // The negative-count case is gone with the `i32` parameter. `setcount`
     // takes a `usize`, nothing registers an `array/setcount` binding, and
-    // `capi.zig` does not publish it -- so there is no caller left that could
+    // `capi.zig` does not publish it, so there is no caller left that could
     // reach it with a negative, and the range check is the type.
 
     arrays.setcount(a, 0);
@@ -501,13 +542,25 @@ fn arrayChargesGcPressure() void {
     expect(harness.vm().gc.next_collection == charge + @sizeOf(arrays.Array));
 }
 
+/// Whether this C library's `realloc(p, 0)` gives back a block or NULL. Which
+/// decides whether the zero-growth case in `arrays.ensure` returns or exits,
+/// and it is a property of the allocator rather than of Janet.
+fn reallocZeroReturnsABlock() bool {
+    const p = utils.malloc(16);
+    expect(p != null);
+    const q = utils.realloc(p, 0);
+    if (q == null) return false;
+    utils.free(q);
+    return true;
+}
+
 /// A growth factor of zero releases the payload while leaving `count` alone.
 ///
-/// **The internal function still does this; the boundary does not let a Janet
-/// program reach it.** `array/ensure` rejects a growth below one, the way it
+/// The internal function still does this and the boundary does not let a
+/// Janet program reach it. `array/ensure` rejects a growth below one, as it
 /// already rejected a count below one, because `Array.count` is `usize` and a
 /// negative capacity has nowhere to go. `arrays.ensure` itself takes the
-/// factor on trust -- every in-tree caller passes 1 or 2 -- so this asserts
+/// factor on trust, every in-tree caller passing 1 or 2, so this asserts
 /// what the internal entry point does, and `suite-corelib.janet` asserts the
 /// refusal on the other side of the wall.
 /// See the note at the head of this file about why the allocator is probed
@@ -524,7 +577,7 @@ fn zeroGrowthReleasesThePayload() !void {
     arrays.ensure(a, 100, 0);
 
     // The capacity is gone and the count is not, so every element the array
-    // claims to hold is now a read of freed memory. Nothing below reads one.
+    // claims to have is now a read of freed memory. Nothing below reads one.
     expect(a.capacity == 0);
     expect(a.count == 5);
 
@@ -540,12 +593,10 @@ fn zeroGrowthReleasesThePayload() !void {
     a.count = 0;
 }
 
-// ------------------------------------------------------ across the seam
-
 /// The collector frees a container's payload through `gc/sweep.zig`'s
-/// `deinitBlock`, which calls `buffers.deinit` from this subsystem. Both containers are
-/// freed the same way, so one collection covers the round trip in both
-/// directions.
+/// `deinitBlock`, which calls `buffers.deinit` from this subsystem. Both
+/// containers are freed the same way, so one collection covers the round trip
+/// in both directions.
 fn theCollectorReclaimsBoth() !void {
     gc_mark.collect();
     const before = harness.vm().gc.block_count;
@@ -562,7 +613,7 @@ fn theCollectorReclaimsBoth() !void {
     gc_mark.collect();
     expect(harness.vm().gc.block_count == before);
 
-    // A rooted one survives the same collection, and is still usable -- which
+    // A rooted one survives the same collection and is still usable, which
     // is the assertion that its payload was not freed underneath it.
     const keep = buffers.new(16);
     try buffers.pushCString(keep, "kept");
@@ -598,57 +649,9 @@ fn fromJanet() void {
     expect(harness.integerIs(t[4], 1));
 }
 
-/// The empty case of the three collection views, which is the case a raw
-/// `data.?[0..count]` cannot express: `janet_buffer_init(b, 0)` and
-/// `janet_array_init(a, 0)` both leave `data` null, and slicing null traps
-/// even for a zero-length range.
-///
-/// Each of the three is checked at zero and then again
-/// after one element, so a view that always answered empty would fail too.
-fn theEmptyViews() !void {
-    // A collection that has never been grown: `data` is null and `count` is
-    // zero, which is what `std.mem.zeroes` and `janet_table_init(t, 0)` both
-    // leave behind. This is the case `data.?[0..count]` traps on.
-    var empty_buffer: buffers.Buffer = .{};
-    expect(empty_buffer.data == null);
-    expect(empty_buffer.slice().len == 0);
-    expect(empty_buffer.reserved().len == 0);
-    expect(empty_buffer.spare().len == 0);
-
-    var empty_array: arrays.Array = .{};
-    expect(empty_array.data == null);
-    expect(empty_array.slice().len == 0);
-    expect(empty_array.reserved().len == 0);
-
-    var empty_table: tables.Table = .{};
-    expect(empty_table.data == null);
-    expect(empty_table.slots().len == 0);
-
-    // And the non-empty case beside it, so that a view which always answered
-    // the empty slice would fail here rather than pass both halves.
-    const b = buffers.new(0);
-    try buffers.pushU8(b, 'q');
-    expect(b.slice().len == 1);
-    expect(b.slice()[0] == 'q');
-    expect(b.reserved().len == @as(usize, @intCast(b.capacity)));
-    expect(b.spare().len == @as(usize, @intCast(b.capacity - 1)));
-
-    const a = arrays.new(0);
-    expect(a.slice().len == 0);
-    try arrays.push(a, harness.wrapInteger(7));
-    expect(a.slice().len == 1);
-    expect(harness.integerIs(a.slice()[0], 7));
-
-    // A table's view is its *slot* array, so it is `capacity` long rather
-    // than `count` long -- which is the reason it is not called `slice`.
-    var table: tables.Table = .{};
-    _ = tables.initRaw(&table, 4);
-    tables.put(&table, harness.wrapInteger(1), harness.wrapInteger(2));
-    expect(table.count == 1);
-    expect(table.slots().len == @as(usize, @intCast(table.capacity)));
-    expect(table.slots().len > table.count);
-    tables.deinit(&table);
-}
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() !void {
     try theEmptyViews();

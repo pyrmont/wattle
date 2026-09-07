@@ -1,31 +1,23 @@
-//! The four fuzz targets.
+//! The four fuzz targets: the parser, the compiler, `env.dobytes` and
+//! `marsh.unmarshal`.
 //!
-//! ## They had never been built
+//! ## Each target calls the raising function rather than the published one
 //!
-//! Four `LLVMFuzzerTestOneInput` entry points: the parser, the compiler,
-//! `env.dobytes` and `marsh.unmarshal`. **No build
-//! system in this tree ever named one** -- they were built, if at all, by a
-//! `clang -fsanitize=fuzzer` somebody typed elsewhere. So these are not a port
-//! of a working instrument; `zig build fuzz` is the first thing that has ever
-//! run them.
+//! Three of the four published entry points are `raise.toAbi` or
+//! `raise.panicking(...).abi` wrappers, so a raise leaves a *report* rather
+//! than travelling, and `signal.restore` aborts on an outstanding one. A
+//! target that opened a protected scope, called a published entry point and
+//! closed the scope again would therefore die with
 //!
-//! ## Why a translation would abort on almost every input
-//!
-//! A C original opens a protected scope, calls its entry point, and closes
-//! it. That is right for C and wrong here: three of the four published entry
-//! points are `raise.reported` or `raise.panicking(...).abi` wrappers, so a
-//! raise leaves a *report* rather than travelling, and `signal.restore` aborts
-//! on an outstanding one. A fuzzer's inputs are mostly malformed, so a
-//! faithful translation would die with
-//!
-//!     janet abort: a raise was reported to a C caller and never consumed
+//!     janet abort: a raise was reported across the C ABI and never consumed
 //!
 //! on roughly its first interesting input, naming neither the target nor the
-//! byte string that got there.
+//! byte string that got there. A fuzzer's inputs are mostly malformed, so that
+//! is most of them.
 //!
 //! So each target reaches the *raising* function by import and reads the
-//! refusal as a value, which is `tools/check/swallowed.janet`'s rule applied
-//! to a caller that did not exist yet:
+//! refusal as a value, which is the rule `tools/check/swallowed.janet`
+//! applies to every caller under `src/`:
 //!
 //! | target | what this calls |
 //! | --- | --- |
@@ -34,115 +26,73 @@
 //! | dobytes | `core_env.dobytesImpl` |
 //! | unmarshal | `marsh.unmarshal` |
 //!
-//! `harness.raised` is the protected scope, unchanged from what sixty-five
-//! contracts use it for. A raise is the expected outcome here rather than the
+//! `harness.raised` is the protected scope, the same one the sixty-five
+//! contracts open. A raise is the expected outcome here rather than the
 //! asserted one, so nothing is asserted about the payload: what a fuzz target
-//! is looking for is a crash, an unreachable, or a leak — not a wrong answer.
+//! looks for is a crash, an unreachable or a leak rather than a wrong result.
 //!
 //! ## Running them
 //!
-//!     zig build fuzz            # each target once over its corpus: a smoke check
-//!     zig build fuzz --fuzz     # the actual campaign
+//!     zig build fuzz          # each target once over its corpus
+//!     zig build fuzz --fuzz   # the campaign
 //!
-//! The first is what `zig build test` runs, and it is there for the reason the
-//! C originals died of: a fuzz target nothing executes is a file, not an
-//! instrument.
+//! `zig build test` runs the first, so that every target is executed on an
+//! ordinary test run rather than only when a campaign is asked for.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const harness = @import("harness.zig");
 
-const subsystems = @import("subsystems");
-const strings = @import("subsystems").value.strings;
-const marsh_mod = @import("subsystems").marsh;
-const parser_core_mod = @import("subsystems").parser;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const tables = @import("subsystems").value.tables;
-const parser_core = subsystems.parser;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const compiler_primitives = subsystems.compiler_primitives;
 const core_env = subsystems.env;
+const harness = @import("harness.zig");
 const marsh = subsystems.marsh;
+const parser_core = subsystems.parser;
+const repr = @import("repr");
+const strings = @import("subsystems").value.strings;
+const subsystems = @import("subsystems");
+const tables = @import("subsystems").value.tables;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 /// The largest input a target is handed.
 ///
-/// The C originals took whatever libFuzzer gave them. `Smith.slice` fills a
-/// caller-owned buffer, so the bound is here instead; 4 KiB is well past the
-/// sizes that reach interesting states in any of the four and keeps one input
-/// cheap enough that a campaign is dominated by the runtime it drives rather
-/// than by the bytes it generates.
+/// `Smith.slice` fills a caller-owned buffer, so the bound is the buffer's.
+/// 4 KiB is well past the sizes that reach interesting states in any of the
+/// four, and it keeps one input cheap enough that a campaign is dominated by
+/// the runtime it drives rather than by the bytes it generates.
 const max_input = 4096;
 
-/// One Janet per input, which is what the C originals did.
-///
-/// It is the expensive choice and it is the right one for a fuzzer: a runtime
-/// carried across inputs makes a crash depend on the inputs before it, and a
-/// reproducer that needs a history is not a reproducer. `vm_lifecycle.deinit`
-/// also frees the heap, so a leak this finds is attributable to the one
-/// input.
-fn session(comptime body: fn (env: *tables.Table, data: []const u8) void, data: []const u8) void {
-    harness.init();
-    defer vm_lifecycle.deinit();
-    body(harness.coreEnv(), data);
-}
-
-// ------------------------------------------------------------------- parser
-
-/// Feed untrusted bytes to the parser one at a time.
-///
-/// The original is `fuzz_dostring.c`, whose name says `dostring` and whose
-/// body and comment both say parser. The name is not carried across: what it
-/// does is what it is called here, and `dobytes` below is the target the old
-/// name suggests.
-fn parserBody(env: *tables.Table, data: []const u8) void {
-    _ = env;
-    var parser: parser_core_mod.Parser = undefined;
-    parser_core_mod.parserInit(&parser);
-    defer parser_core_mod.parserDeinit(&parser);
-
-    for (data) |byte| {
-        switch (parser_core_mod.parserStatus(&parser)) {
-            parser_core_mod.ParserStatus.dead, parser_core_mod.ParserStatus.@"error" => return,
-            else => {},
-        }
-        _ = harness.raised(parser_core.consumeChecked, .{ &parser, byte });
-
-        // Drain, so that a form that parses is also *built*. The C original
-        // left them in the parser, which meant the value constructors were
-        // never reached for this target at all.
-        while (parser_core_mod.parserHasMore(&parser)) _ = parser_core_mod.parserProduce(&parser);
-    }
-
-    _ = harness.raised(parser_core.eofChecked, .{&parser});
-}
-
-test "parser" {
-    try std.testing.fuzz({}, struct {
-        fn one(_: void, smith: *std.testing.Smith) anyerror!void {
-            var buffer: [max_input]u8 = undefined;
-            const length = smith.slice(&buffer);
-            session(parserBody, buffer[0..length]);
-        }
-    }.one, .{});
-}
-
-// ------------------------------------------------------------------ compile
+// ==========================================================================
+// Private functions
+// ==========================================================================
 
 /// Parse untrusted bytes and compile every form they produce.
 fn compileBody(env: *tables.Table, data: []const u8) void {
-    var parser: parser_core_mod.Parser = undefined;
-    parser_core_mod.parserInit(&parser);
-    defer parser_core_mod.parserDeinit(&parser);
+    var parser: parser_core.Parser = undefined;
+    parser_core.parserInit(&parser);
+    defer parser_core.parserDeinit(&parser);
 
     const where = strings.cstring("fuzz");
 
     for (data) |byte| {
-        if (parser_core_mod.parserStatus(&parser) == parser_core_mod.ParserStatus.@"error") return;
+        if (parser_core.parserStatus(&parser) == parser_core.ParserStatus.@"error") return;
         _ = harness.raised(parser_core.consumeChecked, .{ &parser, byte });
-        while (parser_core_mod.parserHasMore(&parser)) {
-            const form = parser_core_mod.parserProduce(&parser);
-            // The result carries its own error field for an ordinary compile
-            // failure; the scope is for the refusals that are not ordinary.
+        while (parser_core.parserHasMore(&parser)) {
+            const form = parser_core.parserProduce(&parser);
+            // An ordinary compile failure comes back in the result's own
+            // error field; the scope is for the refusals that are not
+            // ordinary.
             _ = harness.raised(
                 compiler_primitives.compileLintImpl,
                 .{ form, env, where, null },
@@ -150,18 +100,6 @@ fn compileBody(env: *tables.Table, data: []const u8) void {
         }
     }
 }
-
-test "compile" {
-    try std.testing.fuzz({}, struct {
-        fn one(_: void, smith: *std.testing.Smith) anyerror!void {
-            var buffer: [max_input]u8 = undefined;
-            const length = smith.slice(&buffer);
-            session(compileBody, buffer[0..length]);
-        }
-    }.one, .{});
-}
-
-// ------------------------------------------------------------------ dobytes
 
 /// Parse, compile and *run* untrusted bytes.
 ///
@@ -176,6 +114,72 @@ fn dobytesBody(env: *tables.Table, data: []const u8) void {
     });
 }
 
+/// Feed untrusted bytes to the parser one at a time.
+///
+/// Each form that parses is also drained, so that the value constructors are
+/// reached rather than left unbuilt inside the parser. `dobytes` is the
+/// target that goes on to compile and run what this one only parses.
+fn parserBody(env: *tables.Table, data: []const u8) void {
+    _ = env;
+    var parser: parser_core.Parser = undefined;
+    parser_core.parserInit(&parser);
+    defer parser_core.parserDeinit(&parser);
+
+    for (data) |byte| {
+        switch (parser_core.parserStatus(&parser)) {
+            parser_core.ParserStatus.dead, parser_core.ParserStatus.@"error" => return,
+            else => {},
+        }
+        _ = harness.raised(parser_core.consumeChecked, .{ &parser, byte });
+
+        // Drain, so that a form that parses is also *built*: a form left in
+        // the parser never reaches the value constructors.
+        while (parser_core.parserHasMore(&parser)) _ = parser_core.parserProduce(&parser);
+    }
+
+    _ = harness.raised(parser_core.eofChecked, .{&parser});
+}
+
+/// Runs `body` over `data` in a runtime of its own.
+///
+/// One Janet per input is the expensive choice and the right one for a
+/// fuzzer: a runtime reused across inputs makes a crash depend on the inputs
+/// before it, and a reproducer that needs a history is not a reproducer.
+/// `vm_lifecycle.deinit` also frees the heap, so a leak this finds is
+/// attributable to the one input.
+fn session(comptime body: fn (env: *tables.Table, data: []const u8) void, data: []const u8) void {
+    harness.init();
+    defer vm_lifecycle.deinit();
+    body(harness.coreEnv(), data);
+}
+
+/// Deserialize untrusted bytes.
+///
+/// The deepest reach of the four into what a byte string can ask for:
+/// `marsh.zig` reconstructs funcdefs, envs and fibers from a stream, and every
+/// length and index it uses comes out of that stream. A registry is looked up
+/// and passed because that is what lets a stream name an abstract type or a
+/// cfunction, so leaving it out would put those two paths out of reach.
+fn unmarshalBody(env: *tables.Table, data: []const u8) void {
+    const registry = marsh.envLookup(env);
+    var next: [*]const u8 = undefined;
+    _ = harness.raised(marsh.unmarshal, .{ data, 0, registry, &next });
+}
+
+// ==========================================================================
+// Tests
+// ==========================================================================
+
+test "compile" {
+    try std.testing.fuzz({}, struct {
+        fn one(_: void, smith: *std.testing.Smith) anyerror!void {
+            var buffer: [max_input]u8 = undefined;
+            const length = smith.slice(&buffer);
+            session(compileBody, buffer[0..length]);
+        }
+    }.one, .{});
+}
+
 test "dobytes" {
     try std.testing.fuzz({}, struct {
         fn one(_: void, smith: *std.testing.Smith) anyerror!void {
@@ -186,20 +190,14 @@ test "dobytes" {
     }.one, .{});
 }
 
-// ---------------------------------------------------------------- unmarshal
-
-/// Deserialize untrusted bytes.
-///
-/// The target with the most to say: `marsh.zig` reconstructs funcdefs, envs
-/// and fibers from a byte stream. It is the runtime's one untrusted entry
-/// point, and reading it found four out-of-bounds reads and one out-of-bounds
-/// write, every one of them in a length or an index the stream supplied. A
-/// registry is looked up because the C original did — it is what lets a stream
-/// name an abstract type or a cfunction.
-fn unmarshalBody(env: *tables.Table, data: []const u8) void {
-    const registry = marsh_mod.envLookup(env);
-    var next: [*]const u8 = undefined;
-    _ = harness.raised(marsh.unmarshal, .{ data, 0, registry, &next });
+test "parser" {
+    try std.testing.fuzz({}, struct {
+        fn one(_: void, smith: *std.testing.Smith) anyerror!void {
+            var buffer: [max_input]u8 = undefined;
+            const length = smith.slice(&buffer);
+            session(parserBody, buffer[0..length]);
+        }
+    }.one, .{});
 }
 
 test "unmarshal" {

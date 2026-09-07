@@ -1,33 +1,103 @@
-//! The runtime's Zig root: every subsystem this configuration answers in Zig,
-//! gathered into one module and one compilation.
+//! The runtime module's root file.
 //!
-//! ## One compilation is what makes the raise checked
+//! `build.zig` builds the runtime object and the in-file `test` blocks from
+//! this module. It also imports it under the name `subsystems` into the
+//! client, the bootstrap image generator, the contract driver and the fuzz
+//! tests.
 //!
-//! A Zig **module** is a root file plus everything it reaches by relative
-//! `@import`; it is a namespace and a settings scope, not a compile barrier,
-//! and a raise crosses one -- `raise.Error` is declared in the `raise` module
-//! and a subsystem writes `raise.Error!repr.Value` across the import. A
-//! **compilation** is one `zig build-obj` run and can hold several modules;
-//! this one holds eight, with `abi`, `raise`, `corefn` and the three host
-//! header translations beside the root.
+//! ## Configurable imports
 //!
-//! What nothing sees through is a *compilation* boundary: the only thing that
-//! joins two separately compiled objects is a symbol, which means a C calling
-//! convention, and Zig refuses an error union in one --
+//! The `comptime` block imports a subsystem when `options` says the build
+//! selected it. The imports are discarded rather than bound because binding
+//! each to a `const` would suggest a namespace someone reads. Importing a file
+//! here makes Zig analyse its container level, which runs the file's `comptime`
+//! blocks and, in a test build, collects its `test` blocks.
 //!
-//! ```text
-//! error: return type 'error{X}!i32' not allowed in function with calling
-//! convention 'aarch64_aapcs_darwin'
-//! ```
+//! A file the block does not name is analysed when something the compilation
+//! analyses refers to it. So `os.zig` causes `os/date.zig` to be analysed. A
+//! test build analyses less of the tree than an object build. A file it does
+//! not analyse contributes no `test` blocks. So a file whose tests must run is
+//! named here even when a subsystem imports it.
 //!
-//! -- so with every subsystem in one compilation a neighbour is reached by
-//! path, the call is an ordinary Zig call, and a caller that forgets to `try`
-//! a raise-capable callee is a compile error.
+//! ## Lazy names
 //!
-//! **Nothing here decides anything.** The conditions are `build.zig`'s, passed
-//! in through `@import("options")`, and `zigSelection` is the one place each
-//! is written, so a subsystem cannot be compiled without being guarded off.
+//! The declarations above the block are how a compilation outside the runtime
+//! names a subsystem (e.g. `@import("subsystems").peg`). A `pub const` at
+//! container scope is analysed only when something references it, and nothing
+//! in the runtime references these. A build that turns a subsystem off does
+//! not compile it and binding to a name does not force it to do so.
 
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+pub const abstract_type = @import("api/abstract_type.zig");
+pub const args = @import("runtime/args.zig");
+pub const bytecode = @import("runtime/bytecode.zig");
+pub const capi = @import("runtime/capi.zig");
+pub const compiler_primitives = @import("runtime/compiler.zig");
+pub const corefn = @import("runtime/corefn.zig");
+pub const date = @import("runtime/os/date.zig");
+pub const debug = @import("runtime/debug.zig");
+pub const disasm = @import("runtime/bytecode/disasm.zig");
+pub const dynlib = @import("runtime/dynlib.zig");
+pub const emit_core = @import("runtime/compiler/emit.zig");
+pub const env = @import("runtime/env.zig");
+pub const ev = @import("runtime/ev.zig");
+pub const ev_backend = @import("runtime/ev/backend.zig");
+pub const ev_channel = @import("runtime/ev/channel.zig");
+pub const ev_stream = @import("runtime/ev/stream.zig");
+pub const fatal = @import("runtime/fatal.zig");
+pub const ffi = @import("runtime/ffi.zig");
+pub const ffi_call = @import("runtime/ffi/call.zig");
+pub const ffi_classify = @import("runtime/ffi/classify.zig");
+pub const ffi_marshal = @import("runtime/ffi/marshal.zig");
+pub const ffi_types = @import("runtime/ffi/types.zig");
+pub const filewatch = @import("runtime/filewatch.zig");
+pub const fs = @import("runtime/os/fs.zig");
+pub const gc_alloc = @import("runtime/gc.zig");
+pub const gc_mark = @import("runtime/gc/mark.zig");
+pub const gc_sweep = @import("runtime/gc/sweep.zig");
+pub const host_stat = @import("runtime/os/fs/host_stat.zig");
+pub const inttypes = @import("runtime/value/ints.zig");
+pub const io = @import("runtime/io.zig");
+pub const lifecycle = @import("runtime/vm/lifecycle.zig");
+pub const marsh = @import("runtime/marsh.zig");
+pub const math = @import("runtime/math.zig");
+pub const method_type = @import("runtime/method_type.zig");
+pub const net = @import("runtime/net.zig");
+pub const open = @import("runtime/os/fs/open.zig");
+pub const optimize = @import("runtime/compiler/optimize.zig");
+pub const os = @import("runtime/os.zig");
+pub const os_locks = @import("runtime/ev/locks.zig");
+pub const parser = @import("runtime/parser.zig");
+pub const peg = @import("runtime/peg.zig");
+pub const pp_describe = @import("runtime/pp.zig");
+pub const pp_format = @import("runtime/pp/format.zig");
+pub const pp_pretty = @import("runtime/pp/pretty.zig");
+pub const process = @import("runtime/os/process.zig");
+pub const raise = @import("api/raise.zig");
+pub const regalloc = @import("runtime/compiler/regalloc.zig");
+pub const registry = @import("runtime/registry.zig");
+pub const scan = @import("runtime/scan.zig");
+pub const scratch_vector = @import("runtime/scratch_vector.zig");
+pub const signal = @import("runtime/signal.zig");
+pub const special = @import("runtime/special_type.zig");
+pub const specials_core = @import("runtime/compiler/specials.zig");
+pub const stat = @import("runtime/os/fs/stat.zig");
+pub const stdio = @import("runtime/stdio.zig");
+pub const utils = @import("runtime/utils.zig");
+pub const value = @import("runtime/value.zig");
+pub const verify = @import("runtime/bytecode/verify.zig");
+pub const vm = @import("runtime/vm.zig");
+pub const vm_entry = @import("runtime/vm/entry.zig");
+pub const vm_state = @import("runtime/vm/state.zig");
+
+// ==========================================================================
+// Compile-time imports
+// ==========================================================================
+
+/// What the build decided, as comptime booleans generated by `zig build`.
 const options = @import("options");
 
 comptime {
@@ -52,10 +122,9 @@ comptime {
 
     // Platform and standard-library services.
     if (options.os_fs) _ = @import("runtime/os/fs.zig");
-    // Named here although `os/fs.zig` already reaches it, because a name in
-    // this block is what puts a file's `test` blocks in `janet-runtime-test`.
-    // A file reached only through a lazy container-level `const` is analysed
-    // when something calls into it, and its tests are not collected at all.
+
+    // Named although `os/fs.zig` imports it. A test build analyses none of the
+    // calls that reach it, so its `test` blocks need this name.
     if (options.os_fs) _ = @import("runtime/os/fs/stat.zig");
     if (options.io) _ = @import("runtime/io.zig");
     if (options.os_process) _ = @import("runtime/os/process.zig");
@@ -85,9 +154,6 @@ comptime {
     if (options.abstracts) _ = @import("runtime/value/abstracts.zig");
     if (options.functions) _ = @import("runtime/value/functions.zig");
     if (options.wrap) _ = @import("runtime/value/helpers/wrap.zig");
-    _ = @import("runtime/ev/locks.zig");
-    _ = @import("runtime/os/fs/host_stat.zig");
-    _ = @import("runtime/fatal.zig");
     if (options.pp) _ = @import("runtime/pp/format.zig");
     if (options.marsh) _ = @import("runtime/marsh.zig");
     if (options.peg_engine) _ = @import("runtime/peg.zig");
@@ -100,139 +166,4 @@ comptime {
     if (options.vm) _ = @import("runtime/vm.zig");
     if (options.vm_entry) _ = @import("runtime/vm/entry.zig");
     if (options.lifecycle) _ = @import("runtime/vm/lifecycle.zig");
-}
-
-// **The imports above are discarded rather than bound.** A subsystem's
-// contribution is its `export`s and nothing here calls it, so
-// `_ = @import(...)` in a `comptime` block is what makes Zig analyse the file
-// and emit them; binding each to a `const` would suggest a namespace someone
-// reads. Two files are imported by the interpreter as well as by this block --
-// `vm.zig`'s call protocol and `value/helpers/wrap.zig`, because the loop
-// inlines them, measured at 2.4-3.4% on method dispatch and 89% on arithmetic
-// for reaching them out of line. One module means one instance either way.
-// The other absences are subsystems reached through the file that registers
-// them: `os/date.zig`, `os/fs.zig` and `os/process.zig` through `os.zig`,
-// `ev/stream.zig`, `ev/channel.zig` and `ev/backend.zig` through `ev.zig`,
-// `ffi/types.zig`, `ffi/marshal.zig` and `ffi/call.zig` through `ffi.zig`,
-// and `pp/pretty.zig` through `pp.zig`.
-
-// ------------------------------------------------------- the same, by name
-
-// The block above is what makes a subsystem's `export`s exist; this one is
-// what lets something *call* a subsystem without going through one.
-//
-// The caller is `test/contracts.zig`, which `build.zig` gives this file as an
-// imported module. A contract that reaches its subject here is inside the
-// compilation, so `raise.Error` crosses to it exactly as it crosses between
-// two subsystems -- which is the whole reason the contracts are built this way
-// rather than linked against `libjanet.a`. `makeRuntimeGraph` has the
-// argument.
-//
-// **These are lazy and must stay lazy.** A `pub const` at container scope is
-// analysed when something references it, and nothing in the runtime
-// references any of these -- so a configuration that cannot compile a
-// subsystem is unharmed as long as no contract names it either. That is the
-// same condition `build.zig` already applies to the contract *list*
-// (`-Dpeg=false` compiles neither `peg.zig` nor the peg contract), so the two
-// cannot drift apart without the build saying so. Do not add a
-// `comptime { _ = ... }` over this block: it would make every name eager and
-// break `-Dpeg=false`, `-Dffi=false` and `-Dev=false` at once.
-//
-// The list is deliberately flat rather than grouped the way the block above
-// is. A contract spells one name and does not care which layer it came from.
-
-pub const scratch_vector = @import("runtime/scratch_vector.zig");
-pub const utils = @import("runtime/utils.zig");
-pub const registry = @import("runtime/registry.zig");
-pub const regalloc = @import("runtime/compiler/regalloc.zig");
-pub const verify = @import("runtime/bytecode/verify.zig");
-pub const emit_core = @import("runtime/compiler/emit.zig");
-pub const disasm = @import("runtime/bytecode/disasm.zig");
-pub const bytecode = @import("runtime/bytecode.zig");
-pub const compiler_primitives = @import("runtime/compiler.zig");
-pub const parser = @import("runtime/parser.zig");
-pub const specials_core = @import("runtime/compiler/specials.zig");
-pub const special = @import("runtime/special_type.zig");
-pub const optimize = @import("runtime/compiler/optimize.zig");
-
-pub const scan = @import("runtime/scan.zig");
-pub const math = @import("runtime/math.zig");
-pub const inttypes = @import("runtime/value/ints.zig");
-
-pub const fs = @import("runtime/os/fs.zig");
-pub const stat = @import("runtime/os/fs/stat.zig");
-pub const open = @import("runtime/os/fs/open.zig");
-pub const io = @import("runtime/io.zig");
-pub const os = @import("runtime/os.zig");
-pub const date = @import("runtime/os/date.zig");
-pub const os_files = @import("runtime/os/fs.zig");
-pub const process = @import("runtime/os/process.zig");
-pub const os_locks = @import("runtime/ev/locks.zig");
-pub const host_stat = @import("runtime/os/fs/host_stat.zig");
-pub const ev = @import("runtime/ev.zig");
-pub const ev_channel = @import("runtime/ev/channel.zig");
-pub const ev_stream = @import("runtime/ev/stream.zig");
-pub const ev_backend = @import("runtime/ev/backend.zig");
-pub const net = @import("runtime/net.zig");
-pub const ffi_classify = @import("runtime/ffi/classify.zig");
-pub const ffi = @import("runtime/ffi.zig");
-pub const ffi_types = @import("runtime/ffi/types.zig");
-pub const ffi_marshal = @import("runtime/ffi/marshal.zig");
-pub const ffi_call = @import("runtime/ffi/call.zig");
-pub const filewatch = @import("runtime/filewatch.zig");
-
-pub const args = @import("runtime/args.zig");
-pub const gc_alloc = @import("runtime/gc.zig");
-pub const gc_mark = @import("runtime/gc/mark.zig");
-pub const gc_sweep = @import("runtime/gc/sweep.zig");
-/// The value layer's namespace. `test/` reaches a leaf through it --
-/// `@import("subsystems").value.tables` -- exactly as it reaches every other
-/// subsystem through the flat declarations above. The leaf, not the group, is
-/// the import unit.
-pub const value = @import("runtime/value.zig");
-pub const abstract_type = @import("api/abstract_type.zig");
-pub const method_type = @import("runtime/method_type.zig");
-pub const pp_format = @import("runtime/pp/format.zig");
-pub const pp_pretty = @import("runtime/pp/pretty.zig");
-pub const pp_describe = @import("runtime/pp.zig");
-pub const marsh = @import("runtime/marsh.zig");
-pub const peg = @import("runtime/peg.zig");
-pub const env = @import("runtime/env.zig");
-
-pub const signal = @import("runtime/signal.zig");
-pub const debug = @import("runtime/debug.zig");
-pub const vm = @import("runtime/vm.zig");
-pub const vm_entry = @import("runtime/vm/entry.zig");
-pub const lifecycle = @import("runtime/vm/lifecycle.zig");
-pub const vm_state = @import("runtime/vm/state.zig");
-pub const dynlib = @import("runtime/dynlib.zig");
-pub const stdio = @import("runtime/stdio.zig");
-pub const fatal = @import("runtime/fatal.zig");
-
-/// The raise vocabulary and the core-cfunction registration layer, named here
-/// so that a caller outside this compilation -- a contract, the client, the
-/// image generator -- reaches them the way a subsystem does.
-pub const raise = @import("api/raise.zig");
-pub const corefn = @import("runtime/corefn.zig");
-
-/// The published entry points, reachable by import rather than by symbol.
-///
-/// A contract that is about what a native module sees -- the registration
-/// surface, the arity checks, the wrappers `module.zig` declares -- names the
-/// entry point here. Everything else a contract needs is the subsystem above.
-pub const capi = @import("runtime/capi.zig");
-
-// `cabi_check.zig`: `cabi.zig`'s declarations against the definitions they
-// name. An `extern fn` is a promise the compiler believes, and this is what
-// stops it being taken on trust.
-comptime {
-    @import("host/cabi_check.zig").verify();
-}
-
-// `capi.zig` is the C ABI, and the only file under `src/` that exports.
-// Referencing it here is what makes its `comptime` blocks run -- and those
-// blocks, rather than the list above, are what decides which subsystems a
-// configuration compiles.
-comptime {
-    _ = @import("runtime/capi.zig");
 }

@@ -1,10 +1,10 @@
-# AFL Fuzzing scripts
+# AFL fuzzing scripts
 
-To use these, you need to install afl (of course), and xterm. A tiling window manager helps manage
-many concurrent fuzzer instances.
+To use these, install afl and xterm. A tiling window manager helps manage many
+concurrent fuzzer instances.
 
-Note, afl sometimes requires system configuration, if you find AFL quitting prematurely, try manually
-launching it and addressing any error messages.
+AFL sometimes requires system configuration. If AFL quits prematurely, launch
+it by hand and address the error messages it prints.
 
 ## Fuzz the parser
 ```

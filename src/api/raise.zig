@@ -1,142 +1,232 @@
-//! Raising a Janet signal by returning, rather than by jumping.
+//! Raising a Janet signal by returning rather than by jumping.
 //!
-//! The file every subsystem imports. It is shared like `cabi.zig` rather than
-//! selected like a subsystem, because it holds no `export` at all: every
-//! subsystem can import it without the definitions appearing twice.
+//! Every subsystem imports this file. It is shared rather than selected,
+//! because it declares no `export`: two subsystems can import it without a
+//! definition appearing twice.
 //!
-//! **One error, and everything else has a home elsewhere.** `Error` has a
-//! single member. Zig errors carry no payload, and both things a
-//! raise carries already have homes: the value goes to the VM's `return_reg`,
-//! which is where the try scope pointed it, and the signal goes to
-//! `pending_signal` beside it.
+//! `Error` and `CFunction` are `module.zig`'s, re-exported under the names the
+//! runtime uses. That import is a cycle, since `module.zig` imports this file.
+//! It costs nothing: both declarations are comptime, and no function of
+//! `module.zig` is analysed in the runtime.
 //!
-//! **The decision is shared; only the delivery differs.**
-//! `signal.signalRecord` does everything a raise does except deliver it: the
-//! plan, the coercion message, the commit into the return register, the fiber
-//! flag. Every delivery calls it, so they cannot drift.
+//! ## How a raise reaches its caller
 //!
-//!  - A Zig caller gets `error.JanetSignal` returned, and reads
-//!    `pending_signal` at the `catch`.
-//!  - An abi caller gets `signal.signalv`, which calls it and then reports,
-//!    with the signal taken from the same field.
+//! An _abi_ is a `callconv(.c)` wrapper around a raise-capable function.
 //!
-//! **A Zig error is fully unwound before the report happens**, which is why a
-//! `defer` is safe here. An abi catches the error in its own frame and only
-//! then reports, so every `errdefer` between the raise and that frame has
-//! already run. `defer` and `errdefer` are legal everywhere.
+//! `Error` has one member. A Zig error has no payload, and both parts of a
+//! raise are stored elsewhere: the value goes to the VM's `return_reg`, where
+//! the try scope points, and the signal goes to `pending_signal` beside it.
+//!
+//! `runtime/signal.zig`'s `signalRecord` makes every part of the decision
+//! except the delivery: the plan, the coercion message, the commit into the
+//! return register, the fiber flag. Both deliveries call it, so they cannot
+//! differ.
+//!
+//! - A Zig caller is returned `error.JanetSignal` and reads `pending_signal`
+//!   at the `catch`.
+//!
+//! - A caller across the C ABI reaches `runtime/signal.zig`'s `signalv`, which
+//!   records the raise and then reports it, with the signal read from the same
+//!   field.
+//!
+//! A Zig error is fully unwound before a report happens, so `defer` and
+//! `errdefer` are legal everywhere. An abi catches the error in its own frame
+//! and reports only then, so every `errdefer` between the raise and that frame
+//! has already run.
+//!
+//! ## The two compilations
+//!
+//! This file is compiled into the runtime and into a native module. Inside the
+//! runtime it reaches `runtime/signal.zig`, `runtime/value/strings.zig`,
+//! `runtime/value/helpers/wrap.zig` and `runtime/fatal.zig` by import. Inside
+//! a native module the runtime is on the other side of a `dlopen`, so the same
+//! four calls go through `interface.rt`, whose `signal_record`, `cstring`,
+//! `wrap_string`, `c_raise_take`, `c_raise_record` and `fatal` fields exist
+//! for them.
+//!
+//! `in_module` picks the arm. The imports are container-level `const`s and so
+//! are lazy: the arm a compilation does not take is never analysed, so a
+//! native module does not compile the runtime files named here.
+//!
+//! `interface.rt` is assigned before any of this runs. The only way into a
+//! module is `module.entry`'s `_janet_init` shim, which stores the table the
+//! loader passed before it calls the author's `defs`.
+//!
+//! `panicf` is not here. A raise whose message Janet's own formatter builds
+//! lives in `runtime/pp/format.zig`, beside the engine, because `%v` and the
+//! eight spellings of `%q` run the pretty printer.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const abi = @import("abi");
-const repr = @import("repr");
-const config = @import("config");
-const c = @import("crossings.zig");
 
-/// **This file is compiled into two different things.**
-///
-/// Inside the runtime it is an ordinary file of `root` and reaches
-/// `signal.zig`, `value/strings.zig`, `value/helpers/wrap.zig` and `fatal.zig`
-/// by import, the way any neighbour does. Inside a *native module* it is the
-/// root of its own module and the runtime is on the other side of a `dlopen`,
-/// so the same four calls are symbols — which is why `janet_zig_signal_record`,
-/// `janet_cstring`, `janet_wrap_string`, `janet_zig_c_raise_take`,
-/// `janet_zig_c_raise_record` and `janet_zig_fatal` are published.
-///
-/// `config.native_module` picks the arm. The imports below are container-level
-/// `const`s and therefore lazy: the arm a compilation does not take is loaded
-/// and never analysed, so a native module does not compile the runtime it
-/// names here.
-///
-/// The six symbols are declared in `crossings.zig` rather than in `cabi.zig`,
-/// and that is what keeps `cabi` out of a module author's compilation
-/// entirely -- with it, the 163 libc declarations, `FILE`, `host.Handle` and
-/// the two `pthread` types that an author's `.so` has no use for.
-const in_module = config.native_module;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
+const config = @import("config");
+const fatal_impl = @import("../runtime/fatal.zig");
+const interface = @import("interface.zig");
+const module = @import("../module.zig");
+const repr = @import("repr");
 const signal_impl = @import("../runtime/signal.zig");
 const strings_impl = @import("../runtime/value/strings.zig");
 const wrap_impl = @import("../runtime/value/helpers/wrap.zig");
-const fatal_impl = @import("../runtime/fatal.zig");
 
-/// The one error a raise-capable function can return.
-pub const Error = error{JanetSignal};
+// ==========================================================================
+// Constants
+// ==========================================================================
 
-/// Shorthand for a raise-capable result. `Raising(Janet)` reads better at a
-/// declaration than `Error!Janet` and is the same type.
+/// Whether this compilation is a native module rather than the runtime.
+///
+/// Every function here that reaches the runtime tests this and takes either an
+/// import or a field of `interface.rt`.
+const in_module = config.native_module;
+
+// ==========================================================================
+// Aliased types
+// ==========================================================================
+
+/// The type of a Janet builtin. This is `module.CFunction`, under the name the
+/// runtime uses.
+///
+/// A cfunction takes its arguments as one slice and returns a `Value` or
+/// raises, so a caller has to `try` it. Janet's own signature is
+/// `Janet (*)(int32_t, Janet *)`, which returns no error union, so a C body
+/// cannot have this type and a C caller cannot invoke it. `abi.CFunction` is
+/// the C ABI's shape for the same pointer, and `cfunction` and `stored` are
+/// the casts between the two.
+///
+/// The alignment is not part of the type. It is a property of each definition,
+/// written at the `fn`, and Zig coerces an over-aligned function pointer to a
+/// plain one.
+pub const CFunction = module.CFunction;
+
+/// The one error a raise-capable function returns. This is `module.Error`,
+/// under the name the runtime uses.
+pub const Error = module.Error;
+
+// ==========================================================================
+// Types
+// ==========================================================================
+
+/// A raise-capable result over `T`. `Raising(T)` and `Error!T` are the same
+/// type.
 pub fn Raising(comptime T: type) type {
     return Error!T;
 }
 
-// ---------------------------------------------------------------- raising
+// ==========================================================================
+// Public functions
+// ==========================================================================
 
-/// Raise `sig` with `message`. The Zig delivery: record, then return.
+/// Reads a cfunction out of a stored slot.
 ///
-/// Recording lives in `signal.zig` with the rest of the signal decision. It
-/// does not return when the plan is `TOP_LEVEL`: there is no scope to raise
-/// into, so the process or the thread ends.
-pub fn signal(sig: abi.Signal, message: repr.Value) Error {
-    if (comptime in_module) {
-        // The published entry point takes the wire width, because a C caller
-        // may pass any `c_uint`; the caller here already holds a member, so it
-        // converts the other way and the clamp on the far side is a no-op.
-        c.janet_zig_signal_record(@intFromEnum(sig), message);
-    } else {
-        signal_impl.signalRecord(sig, message);
-    }
-    return error.JanetSignal;
+/// `slot` is the C ABI's shape for the pointer, which is how a `Value`'s union
+/// member, a registration row, a registry key and a stack frame's `pc` are
+/// typed. That is a layout rather than a calling convention, so this is a cast
+/// and everything downstream of it is an ordinary Zig call that returns an
+/// error. This function cannot raise.
+///
+/// See `stored`, which is the same pointer on its way into that storage.
+pub inline fn cfunction(slot: abi.CFunction) CFunction {
+    return @ptrCast(slot.?);
 }
 
-/// Raise an error carrying `message`, which may be any Janet value.
-pub fn panicv(message: repr.Value) Error {
-    return signal(.@"error", message);
+/// Returns the value a call through an abi produced, or the error it reported.
+///
+/// `value` is the result of that call. A `callconv(.c)` callee returns no
+/// error union, so `toAbi` moves the raise onto a flag, and this is where it
+/// comes back off. This function raises if a raise reached the abi.
+///
+/// ```zig
+/// const value = try raise.fromAbi(interface.rt.call_value(f, p, n));
+/// ```
+///
+/// `module.zig` wraps every call it makes through the table in this, and
+/// `runtime/env.zig` wraps the `_janet_init` it reached by name.
+pub inline fn fromAbi(value: anytype) Error!@TypeOf(value) {
+    if (tookCRaise()) return error.JanetSignal;
+    return value;
 }
 
-/// Raise an error carrying a string.
+/// Raises an error whose message is a string.
 ///
-/// The parameter is a sentinel-terminated pointer rather than a slice because
-/// `janet_cstring` walks to a NUL. A slice would accept one that has none and
-/// read past its end; a string literal satisfies this signature as it stands.
+/// `message` is a sentinel-terminated pointer rather than a slice, because the
+/// runtime walks it to a NUL. A slice would accept a string with no terminator
+/// and read past its end, and a string literal satisfies this signature as it
+/// stands.
 pub fn panic(message: [*:0]const u8) Error {
-    if (comptime in_module) return panicv(c.janet_wrap_string(c.janet_cstring(message)));
+    if (comptime in_module) return panicv(interface.rt.wrap_string(interface.rt.cstring(message)));
     return panicv(wrap_impl.fromString(strings_impl.cstring(message)));
 }
 
-// `panicf` -- a raise whose message Janet's own formatter builds -- is not
-// here. It lives in `pp/format.zig`, beside the engine, because `%v` and the
-// eight spellings of `%q` run the pretty printer and this file is the shared
-// mechanism rather than a subsystem.
+/// Builds the abi of a raise-capable function.
+///
+/// `f` is that function. The result has one declaration, `abi`, which calls
+/// `f` and reports a returned error to the C caller rather than jumping:
+///
+/// ```zig
+/// pub const marshalAbi = raise.panicking(marshal).abi;
+/// ```
+///
+/// A signature of more than five parameters is a compile error. A Zig function
+/// body cannot be written generically over a parameter list, only over a type,
+/// so each arity is a case. Add a case when a subsystem needs another arity.
+///
+/// Two limits are neither checked nor currently reached: a parameter's
+/// `noalias` is dropped, and a variadic function has no abi.
+pub fn panicking(comptime f: anytype) type {
+    const info = @typeInfo(@TypeOf(f)).@"fn";
+    const P = @typeInfo(info.return_type.?).error_union.payload;
+    const p = info.params;
+    return switch (p.len) {
+        0 => struct {
+            pub fn abi() callconv(.c) P {
+                return f() catch reportToAbi(P);
+            }
+        },
+        1 => struct {
+            pub fn abi(a: p[0].type.?) callconv(.c) P {
+                return f(a) catch reportToAbi(P);
+            }
+        },
+        2 => struct {
+            pub fn abi(a: p[0].type.?, b: p[1].type.?) callconv(.c) P {
+                return f(a, b) catch reportToAbi(P);
+            }
+        },
+        3 => struct {
+            pub fn abi(a: p[0].type.?, b: p[1].type.?, d: p[2].type.?) callconv(.c) P {
+                return f(a, b, d) catch reportToAbi(P);
+            }
+        },
+        4 => struct {
+            pub fn abi(a: p[0].type.?, b: p[1].type.?, d: p[2].type.?, e: p[3].type.?) callconv(.c) P {
+                return f(a, b, d, e) catch reportToAbi(P);
+            }
+        },
+        5 => struct {
+            pub fn abi(a: p[0].type.?, b: p[1].type.?, d: p[2].type.?, e: p[3].type.?, g: p[4].type.?) callconv(.c) P {
+                return f(a, b, d, e, g) catch reportToAbi(P);
+            }
+        },
+        else => @compileError("panicking: add an arity case for this signature"),
+    };
+}
 
-// ---------------------------------------------------------- the cfunction
-
-/// What a Janet builtin is.
+/// Builds the abi of a raise-capable function whose last parameter is a slice.
 ///
-/// A cfunction returns `Error!Value` and is called with Zig's own calling
-/// convention, so a raise leaves it the way a raise leaves anything else -- as
-/// a returned error the caller must `try`, which makes forgetting the test a
-/// compile error. Janet's own signature is `Janet (*)(int32_t, Janet *)`, and
-/// a C function cannot return an error union at all.
+/// `f` is that function. The result's `abi` takes `argc` and `argv` where `f`
+/// takes a slice, and rebuilds the slice from the pair. An arity other than
+/// one, two or four is a compile error.
 ///
-/// **What it costs is every C cfunction.** A C body cannot have this type and
-/// a C caller cannot invoke it.
-///
-/// **The arguments are a slice.** Janet's own signature fixes them at
-/// `int32_t argc, Janet *argv`, which is a pointer with a count beside it and
-/// an unchecked `argv[n]`. Both sides of this call are Zig -- the pointer is
-/// reached by `@ptrCast` off the stored slot, with no thunk -- so the type
-/// says what is true and the index is checked. `DESIGN.md` section 9.
-///
-/// The alignment is not part of the type. `JANET_CFUNCTION_ALIGN` is a
-/// property of each definition -- `corefn.alignment`, written at the `fn` --
-/// and Zig coerces an over-aligned function pointer to a plain one, so the
-/// type does not have to carry the maximum every `-Dnanbox-pointer-shift`
-/// might ask for.
-pub const CFunction = *const fn ([]repr.Value) Error!repr.Value;
-
-/// A published entry point whose C signature carries `(..., int32_t argc,
-/// const Janet *argv)` where the Zig one takes a slice in their place.
-///
-/// `panicking` mirrors its subject's parameter list, so it cannot build a
-/// `callconv(.c)` abi for a function taking a slice -- a slice has no
-/// guaranteed in-memory representation. This expands the last parameter back
-/// into the pair. `pp/format.zig`'s `bufferFormatPanicking` is the one use.
+/// `panicking` cannot build this abi, because a slice has no guaranteed
+/// in-memory representation and so cannot cross a `callconv(.c)` signature.
+/// `runtime/pp/format.zig`'s `bufferFormatPanicking` is the one use.
 pub fn panickingArgv(comptime f: anytype) type {
     const info = @typeInfo(@TypeOf(f)).@"fn";
     const P = @typeInfo(info.return_type.?).error_union.payload;
@@ -146,218 +236,158 @@ pub fn panickingArgv(comptime f: anytype) type {
     return switch (p.len) {
         1 => struct {
             pub fn abi(argc: i32, argv: Ptr) callconv(.c) P {
-                return f(argv[0..@intCast(argc)]) catch reportToC(P);
+                return f(argv[0..@intCast(argc)]) catch reportToAbi(P);
             }
         },
         2 => struct {
             pub fn abi(a: p[0].type.?, argc: i32, argv: Ptr) callconv(.c) P {
-                return f(a, argv[0..@intCast(argc)]) catch reportToC(P);
+                return f(a, argv[0..@intCast(argc)]) catch reportToAbi(P);
             }
         },
         4 => struct {
             pub fn abi(a: p[0].type.?, b: p[1].type.?, d: p[2].type.?, argc: i32, argv: Ptr) callconv(.c) P {
-                return f(a, b, d, argv[0..@intCast(argc)]) catch reportToC(P);
+                return f(a, b, d, argv[0..@intCast(argc)]) catch reportToAbi(P);
             }
         },
         else => @compileError("panickingArgv: unhandled arity"),
     };
 }
 
-/// A cfunction read out of a stored slot.
+/// Raises an error whose message is any Janet value.
 ///
-/// The places that *hold* one are typed by the C ABI's layout: a `Value`'s
-/// union member, a registration row, a registry key, a stack frame's `pc`.
-/// That is a layout rather than a calling convention, so the cast is here, in
-/// one inline function, and everything downstream of it is an ordinary Zig
-/// call that returns an error.
-pub inline fn cfunction(slot: abi.CFunction) CFunction {
-    return @ptrCast(slot.?);
+/// `message` is that value.
+pub fn panicv(message: repr.Value) Error {
+    return signal(.@"error", message);
 }
 
-/// The same pointer on its way into that storage, at registration.
-pub inline fn stored(cfun: anytype) abi.CFunction {
-    return @ptrCast(cfun);
+/// Reports a raise across the C ABI, taking the raise that produced it.
+///
+/// `_` is unused by construction: everything a report needs is already on the
+/// VM. This is the counterpart of `toAbi` for a function that returns the bare
+/// error set rather than an error union.
+///
+/// ```zig
+/// pub fn panicv(message: repr.Value) void {
+///     raise.report(raise.panicv(message));
+/// }
+/// ```
+///
+/// That is `runtime/signal.zig`'s. `panicv` here and `runtime/ev.zig`'s
+/// `awaitEvent` are the functions that return the bare error set. Neither is
+/// `noreturn`, because a report is how the abi's caller is told.
+pub inline fn report(_: Error) void {
+    raiseRecord();
 }
 
-// ------------------------------------------- reporting to a C caller
-
-/// Hand a raise to a C caller by returning, rather than by jumping.
+/// Reports a raise to a C caller and returns a zeroed value of `T`.
 ///
-/// The C callers are the variadic shells, and none can take a jump:
-/// catching one needs a `setjmp`, and there is no `setjmp` anywhere in this
-/// tree.
+/// `T` is the abi's return type. The C callers are the variadic shells, and
+/// none can take a jump: catching a jump needs a `setjmp`, and this tree has
+/// none. So an abi records the raise and returns, and its caller tests
+/// `tookCRaise` on the next statement:
 ///
-/// So an abi records the raise and returns a zeroed value, and its caller
-/// tests `tookCRaise` on the next statement:
+/// ```zig
+/// const value = interface.rt.call_value(f, p, n);
+/// if (raise.tookCRaise()) return error.JanetSignal;
+/// ```
 ///
-///     const s = janet_formatc("...", args);
-///     if (raise.tookCRaise()) return error.JanetSignal;
-///
-/// **This is not a flag on the hot path.** It is on the C ABI, which the
-/// runtime never crosses; it costs the runtime nothing because the runtime
-/// does not call it.
-///
-/// Zeroed rather than `undefined`: an unspecified value that is determinate
-/// keeps a forgotten test reproducible.
-pub inline fn reportToC(comptime T: type) T {
+/// The result is zeroed rather than `undefined`, so a forgotten test gives the
+/// same wrong answer every time. No caller may read it.
+pub inline fn reportToAbi(comptime T: type) T {
     raiseRecord();
     return blank(T);
 }
 
-/// An all-zero value of any type an abi can return.
+/// Raises `sig` with `message`.
 ///
-/// `std.mem.zeroes` refuses a non-nullable pointer, and it is right to: zero is
-/// not a value of `*JanetTable`. Three abis return one. Writing the bytes
-/// instead keeps the determinacy argument above — a caller that forgets the
-/// test gets the same wrong answer every time rather than whatever was in the
-/// register — without asking the type system to agree that the result is
-/// meaningful. It is not meaningful; no caller may look at it.
+/// `sig` is the signal to raise and `message` is the value that goes with it.
+/// The record is made in `runtime/signal.zig`, with the rest of the signal
+/// decision. This function does not return when the plan is `TOP_LEVEL`: there
+/// is no scope to raise into, so the process or the thread ends.
+pub fn signal(sig: abi.Signal, message: repr.Value) Error {
+    if (comptime in_module) {
+        // The table's field takes the wire width, because a C caller may pass
+        // any `c_uint`. The caller here holds a member, so the conversion goes
+        // the other way and the clamp on the far side does nothing.
+        interface.rt.signal_record(@intFromEnum(sig), message);
+    } else {
+        signal_impl.signalRecord(sig, message);
+    }
+    return error.JanetSignal;
+}
+
+/// Returns a cfunction on its way into a stored slot, at registration.
+///
+/// `cfun` is the cfunction. This function cannot raise.
+///
+/// See `cfunction`, which is the cast back out of that storage.
+pub inline fn stored(cfun: anytype) abi.CFunction {
+    return @ptrCast(cfun);
+}
+
+/// Returns the value a raise-capable call produced, or a determinate zero if
+/// it raised.
+///
+/// `result` is the whole error-union expression rather than a type, so a call
+/// site does not have to name its payload. The raise is recorded for the abi's
+/// caller either way.
+///
+/// This is what a hand-written abi is made of. `panicking` builds the same
+/// thing for the abis that are derived rather than written, and `fromAbi` is
+/// the inverse, on the other side of the call.
+pub inline fn toAbi(result: anytype) @typeInfo(@TypeOf(result)).error_union.payload {
+    const Payload = @typeInfo(@TypeOf(result)).error_union.payload;
+    return result catch reportToAbi(Payload);
+}
+
+/// Returns whether a raise reached an abi since this was last asked, and
+/// clears the flag.
+///
+/// The result is meaningful on the statement after a call into C that could
+/// reach an abi, and nowhere else. This function cannot raise.
+pub inline fn tookCRaise() bool {
+    if (comptime in_module) return interface.rt.c_raise_take() != 0;
+    return signal_impl.cRaiseTake();
+}
+
+/// Returns the value of a raise-capable call at a site that cannot take a
+/// raise, and aborts if it raised.
+///
+/// `result` is that call, and `site` names the position and appears in the
+/// abort message.
+///
+/// Some raise-capable calls sit at a position rather than under a caller: a
+/// collector traversal, a finalizer, a teardown, the entry point of a thread.
+/// There is no scope above any of them and nothing that could consume an
+/// error. Prefer making the enclosing function raising, and use this only
+/// where the position has no caller that can take an error.
+pub inline fn total(
+    result: anytype,
+    comptime site: [:0]const u8,
+) @typeInfo(@TypeOf(result)).error_union.payload {
+    const message = "a raise reached " ++ site ++ ", which has no caller that can take an error";
+    return result catch if (comptime in_module) interface.rt.fatal(message) else fatal_impl.fatal(message);
+}
+
+// ==========================================================================
+// Private functions
+// ==========================================================================
+
+/// Returns an all-zero value of any type an abi can return.
+///
+/// `std.mem.zeroes` rejects a non-nullable pointer, and rightly: zero is not a
+/// value of a `*JanetTable`. Writing the bytes instead keeps `reportToAbi`'s
+/// determinacy without asking the type system to accept the result as
+/// meaningful. No caller may read it.
 inline fn blank(comptime T: type) T {
     var value: T = undefined;
     if (@sizeOf(T) != 0) @memset(std.mem.asBytes(&value), 0);
     return value;
 }
 
-/// The value a raise-capable call produced, or a determinate zero if it
-/// raised — with the raise recorded for the C caller either way.
+/// Records that a raise reached an abi.
 ///
-/// This is what a hand-written abi is made of, and it takes the whole
-/// error-union expression rather than a type so that a call site does not have
-/// to name its payload. `panicking` builds the same thing for the abis that
-/// are derived rather than written.
-pub inline fn reported(result: anytype) @typeInfo(@TypeOf(result)).error_union.payload {
-    const Payload = @typeInfo(@TypeOf(result)).error_union.payload;
-    return result catch reportToC(Payload);
-}
-
-/// A raise reported to a C caller, taking the raise that produced it.
-///
-/// The counterpart of `reported` for a function that answers with the bare
-/// error set rather than an error union. `panicv` above and `ev.zig`'s
-/// `awaitEvent` are the two ends of that population: one is an error the
-/// caller asked for, the other is how a fiber suspends. Neither is
-/// `noreturn`, because a report is how a C caller is told.
-///
-///     pub fn panicv(message: repr.Value) void {
-///         raise.report(raise.panicv(message));
-///     }
-///
-/// which is `signal.zig`'s. The parameter is unused by construction:
-/// everything the report needs is already on the VM.
-pub inline fn report(_: Error) void {
-    raiseRecord();
-}
-
-/// The value a call *through the C ABI* produced, or the error it reported.
-///
-/// A Zig caller that reaches its neighbour by symbol rather than by import
-/// gets that neighbour's abi, which reports instead of returning an error.
-/// This turns the report back:
-///
-///     const value = try raise.crossing(janet_call(fun, argc, argv));
-///
-/// Each one is a crossing an ordinary import would remove, marked rather than
-/// hidden. `tools/check/seam.janet` counts them.
-pub inline fn crossing(value: anytype) Error!@TypeOf(value) {
-    if (tookCRaise()) return error.JanetSignal;
-    return value;
-}
-
-/// Whether a raise reached an abi since this was last asked. Clears.
-///
-/// Meaningful on the statement after a call into C that could reach one, and
-/// nowhere else.
-pub inline fn tookCRaise() bool {
-    if (comptime in_module) return c.janet_zig_c_raise_take() != 0;
-    return signal_impl.cRaiseTake();
-}
-
+/// `report` and `reportToAbi` are the callers. This function cannot raise.
 inline fn raiseRecord() void {
-    if (comptime in_module) c.janet_zig_c_raise_record() else signal_impl.cRaiseRecord();
-}
-
-// ------------------------------------------- a call that may not raise
-
-/// A raise-capable call at a site that cannot carry a raise, asserted rather
-/// than delivered.
-///
-/// Some raise-capable calls sit at a *position* rather than under a caller: a
-/// collector traversal, a finalizer, a teardown, the entry point of a thread.
-/// There is no scope above any of them and nothing that could consume an
-/// error.
-///
-/// The rule this encodes: **where a raise cannot travel, say so at the site
-/// rather than letting it leave.** An abort that names the position is worth
-/// more than a jump into a half-torn-down VM, and it is a great deal easier to
-/// debug than the blank value the flag protocol would leave.
-///
-/// This is a behaviour change wherever the C original jumped and something
-/// upstream caught it, so it is not to be reached for by default. Prefer
-/// making the enclosing function raising; use this only when the position
-/// genuinely has no caller that can take an error, and say which in `site`.
-pub inline fn total(
-    result: anytype,
-    comptime site: [:0]const u8,
-) @typeInfo(@TypeOf(result)).error_union.payload {
-    const message = "a raise reached " ++ site ++ ", which cannot carry one";
-    return result catch if (comptime in_module) c.janet_zig_fatal(message) else fatal_impl.fatal(message);
-}
-
-/// Build the abi of a raise-capable function: call it, and hand a
-/// returned error to the C caller as a *report* rather than as a jump.
-///
-/// It is built rather than written out, because 177 hand-written abis that can
-/// drift from their implementations is a silent ABI change rather than a
-/// compile error.
-///
-///     pub const callNonfnPanicking = raise.panicking(callNonfn).abi;
-///
-/// The arity cases are unavoidable: a Zig function body cannot be written
-/// generically over an arbitrary parameter list, only over an arbitrary type.
-/// `@Fn` would construct the *type* — Zig 0.16 replaced `@Type` with per-kind
-/// builtins and that is the one for functions — but the body still has to name
-/// its parameters, so the switch would remain and the constructed type would
-/// buy nothing that inference does not already give. Add a case when a
-/// subsystem needs one.
-///
-/// Two limits, both currently vacuous and neither checked: a parameter's
-/// `noalias` is dropped, and a variadic function has no abi. Nothing this
-/// wraps is either.
-pub fn panicking(comptime f: anytype) type {
-    const info = @typeInfo(@TypeOf(f)).@"fn";
-    const P = @typeInfo(info.return_type.?).error_union.payload;
-    const p = info.params;
-    return switch (p.len) {
-        0 => struct {
-            pub fn abi() callconv(.c) P {
-                return f() catch reportToC(P);
-            }
-        },
-        1 => struct {
-            pub fn abi(a: p[0].type.?) callconv(.c) P {
-                return f(a) catch reportToC(P);
-            }
-        },
-        2 => struct {
-            pub fn abi(a: p[0].type.?, b: p[1].type.?) callconv(.c) P {
-                return f(a, b) catch reportToC(P);
-            }
-        },
-        3 => struct {
-            pub fn abi(a: p[0].type.?, b: p[1].type.?, d: p[2].type.?) callconv(.c) P {
-                return f(a, b, d) catch reportToC(P);
-            }
-        },
-        4 => struct {
-            pub fn abi(a: p[0].type.?, b: p[1].type.?, d: p[2].type.?, e: p[3].type.?) callconv(.c) P {
-                return f(a, b, d, e) catch reportToC(P);
-            }
-        },
-        5 => struct {
-            pub fn abi(a: p[0].type.?, b: p[1].type.?, d: p[2].type.?, e: p[3].type.?, g: p[4].type.?) callconv(.c) P {
-                return f(a, b, d, e, g) catch reportToC(P);
-            }
-        },
-        else => @compileError("raise.panicking: add an arity case for this signature"),
-    };
+    if (comptime in_module) interface.rt.c_raise_record() else signal_impl.cRaiseRecord();
 }

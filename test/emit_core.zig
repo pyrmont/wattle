@@ -1,8 +1,8 @@
 //! Behavioral contract for the compiler's instruction emitter.
 //!
-//! `emit.c`'s job is to turn a slot — which may be a near register, a far
-//! register, an upvalue, a constant or a reference cell — into the one or two
-//! or three instructions that move it where an opcode can reach it. Every
+//! The emitter turns a slot, which may be a near register, a far register, an
+//! upvalue, a constant or a reference cell, into the one or two or three
+//! instructions that move it where an opcode can reach it. Every
 //! Janet program exercises the common paths, and none of the suites can aim
 //! at a particular one: the emitter is chosen by the *compiler*, from slots
 //! the compiler allocated, so a source program that provokes a far-register
@@ -13,13 +13,13 @@
 //!
 //! ## The four failures, and why they are here
 //!
-//! Each is a `janetc_cerror` call, and none is reachable from Janet source
-//! without a program too large to put in a suite -- sixty-five thousand live
-//! registers, or a function with more than 0xFFFF constants -- so the only way
-//! to see them is to construct the state.
+//! None is reachable from Janet source without a program too large to put in a
+//! suite, needing sixty-five thousand live registers or a function with more
+//! than 0xFFFF constants, so the only way to see them is to construct the
+//! state.
 //!
-//! They are *recorded* rather than raised: `janetc_error` keeps the first
-//! error and returns, so each case clears the status before the next one, and
+//! They are *recorded* rather than raised: the compiler keeps the first error
+//! and returns, so each case clears the status before the next one, and
 //! "jump is too far" deliberately emits the truncated instruction anyway. The
 //! compile has already failed and the bytecode is never run.
 //!
@@ -29,20 +29,37 @@
 //! them through an ordinary call. Reaching a subject by import is for a
 //! raise-capable function and there is none here.
 
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
+
 const std = @import("std");
-const repr = @import("repr");
-const constants = @import("constants");
-const harness = @import("harness.zig");
-const value = @import("subsystems").value;
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const compiler_primitives = @import("subsystems").compiler_primitives;
+const constants = @import("constants");
 const emit_core = @import("subsystems").emit_core;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
 const expect = @import("expect.zig").expect;
+const harness = @import("harness.zig");
+const repr = @import("repr");
+const value = @import("subsystems").value;
 const vector = harness.vector;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 var compiler: compiler_primitives.Compiler = undefined;
 var scope: compiler_primitives.Scope = undefined;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// A slot built by hand, which is the whole reason this file exists.
 fn slot(index: i32, envindex: i32, flags: compiler_primitives.SlotFlags, constant: repr.Value) compiler_primitives.Slot {
@@ -54,7 +71,7 @@ fn slot(index: i32, envindex: i32, flags: compiler_primitives.SlotFlags, constan
     };
 }
 
-/// A plain near register holding nothing in particular.
+/// A plain near register with no type bits set.
 fn near(index: i32) compiler_primitives.Slot {
     return slot(index, -1, .{}, wrap.fromNil());
 }
@@ -98,8 +115,8 @@ fn theTwoAllocators() void {
 
 /// Slot equality, which decides whether a copy emits anything at all.
 ///
-/// The type bits are masked off before comparison — that is what makes the
-/// first pair equal despite differing flags — and the constant is compared
+/// The type bits are masked off before comparison, which is what makes the
+/// first pair equal despite differing flags, and the constant is compared
 /// only for the two slot kinds that have one.
 fn slotEquality() void {
     const equal = emit_core.sequal;
@@ -158,7 +175,7 @@ fn theSourceMapKeepsPace() void {
     }
 }
 
-/// The seven shapes `janetc_copy` picks between, one per case.
+/// The seven shapes `emit_core.copy` picks between, one per case.
 ///
 /// Which one it picks is decided entirely by the two slots: whether each is
 /// near (an index that fits in eight bits), far, an upvalue, a constant, or a
@@ -220,7 +237,7 @@ fn theCopies(reference: repr.Value) void {
 }
 
 /// The ten emit entry points, one per operand shape, each asserted on the
-/// exact word it produced and on the instruction index it answered.
+/// exact word it produced and on the instruction index it returned.
 ///
 /// The index is the contract as much as the word is: a caller keeps it to
 /// patch a jump later, and every one of these returns the position of the
@@ -262,7 +279,7 @@ fn theEmitShapes() void {
 }
 
 /// A far slot in an instruction that has only eight bits for it is moved into
-/// a temporary, operated on, and — when the caller asks for a write-back —
+/// a temporary, operated on, and, when the caller asks for a write-back,
 /// moved out again. Three instructions where the caller wrote one.
 fn theWriteBack() void {
     clearEmission();
@@ -280,7 +297,7 @@ fn theWriteBack() void {
 }
 
 /// The same for a constant operand: it is loaded into a register first, so the
-/// answered index is the second instruction rather than the first.
+/// returned index is the second instruction rather than the first.
 fn aConstantOperandIsLoadedFirst() void {
     clearEmission();
     expect(emit_core.emitSlot(
@@ -308,7 +325,7 @@ fn aConstantCannotBeWritten() void {
 }
 
 /// A jump whose displacement does not fit in the signed sixteen bits the
-/// instruction carries, in both directions — and the boundary that does.
+/// instruction has room for, in both directions, and the boundary that does.
 fn aJumpMayBeTooFar() void {
     clearError();
     clearEmission();
@@ -325,7 +342,7 @@ fn aJumpMayBeTooFar() void {
     expect(failedWith("jump is too far"));
 
     // A displacement that only just fits reports nothing. It is measured from
-    // the instruction after the jump, which is why the NOOP matters.
+    // the instruction after the jump, so the NOOP is what makes it reachable.
     clearError();
     clearEmission();
     emit_core.emit(&compiler, harness.op(constants.Opcode.noop));
@@ -335,9 +352,9 @@ fn aJumpMayBeTooFar() void {
 
 /// Far registers past the sixteen bits an instruction has for one.
 ///
-/// `janetc_regalloc_1` hands out the whole 32-bit range and takes the lowest
-/// free bit, so the ceiling is the emitter's to enforce and reaching it means
-/// marking everything below it as taken.
+/// `RegisterAllocator.allocate` hands out the whole 32-bit range and takes the
+/// lowest free bit, so the ceiling is the emitter's to enforce and reaching it
+/// means marking everything below it as taken.
 fn theRegisterCeiling() void {
     var full: compiler_primitives.Scope = .{ .name = "full" };
     full.flags = compiler_primitives.ScopeFlags{ .function = true };
@@ -353,11 +370,11 @@ fn theRegisterCeiling() void {
     expect(emit_core.allocfar(&compiler) > 0xFFFF);
     expect(failedWith("ran out of internal registers"));
 
-    // The same ceiling through `janetc_farslot`, which lives in
+    // The same ceiling through `farslot`, which lives in
     // `compiler_primitives` and reports the same message.
     clearError();
-    // Answers nothing as well as reporting: the register it could not allocate
-    // used to come back as `undefined`, and thirteen callers read it.
+    // Nothing comes back as well as the report, so a caller cannot read a
+    // register the allocator never produced.
     expect(compiler_primitives.farslot(&compiler) == null);
     expect(failedWith("ran out of internal registers"));
 }
@@ -365,8 +382,8 @@ fn theRegisterCeiling() void {
 /// "too many constants" is reported when the function's constant pool is
 /// full, which is 0xFFFF entries.
 ///
-/// Filling it honestly is quadratic — the pool is searched linearly on every
-/// insert — so the vector is grown once and its count set directly, with every
+/// Filling it honestly is quadratic, the pool being searched linearly on every
+/// insert, so the vector is grown once and its count set directly, with every
 /// entry a distinct value so that the search finds no match and tries to
 /// append.
 fn theConstantPoolFills() void {
@@ -397,6 +414,10 @@ fn theConstantPoolFills() void {
     );
     expect(failedWith("too many constants"));
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

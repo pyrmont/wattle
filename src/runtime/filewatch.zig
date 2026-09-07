@@ -3,99 +3,190 @@
 //!
 //! The flag vocabulary is here rather than beside this file because it has no
 //! name Janet publishes and one importer. `filewatch/abi.zig` is where the
-//! platform difference actually lives.
+//! platform difference actually lives, and `be` below is the one name every
+//! call goes through, which is what makes the platform choice a value rather
+//! than a conditional at every call.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
+
 const std = @import("std");
-const corefn = @import("corefn.zig");
-const raise = @import("../api/raise.zig");
-const pp_format = @import("pp/format.zig");
-const fw_abi = @import("filewatch/abi.zig");
-const repr = @import("repr");
-const constants = @import("constants");
-const c = @import("cabi");
-const stdio = @import("stdio.zig");
-const ev_loop = @import("ev.zig");
-const ev_channel = @import("ev/channel.zig");
-const vm_lifecycle = @import("vm/lifecycle.zig");
-const args_core = @import("args.zig");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const abstract_type = @import("../api/abstract_type.zig");
-const structs = @import("value/structs.zig");
-const tables = @import("value/tables.zig");
-const gc_alloc = @import("gc.zig");
-const strings = @import("value/strings.zig");
-const utils = @import("utils.zig");
-const gc_mark = @import("gc/mark.zig");
-const fibers = @import("value/fibers.zig");
-const functions = @import("value/functions.zig");
-const wrap = @import("value/helpers/wrap.zig");
 const abstracts = @import("value/abstracts.zig");
-const value = @import("value.zig");
+const args_core = @import("args.zig");
+const c = @import("cabi");
+const constants = @import("constants");
+const corefn = @import("corefn.zig");
+const ev_channel = @import("ev/channel.zig");
+const ev_loop = @import("ev.zig");
 const ev_stream = @import("ev/stream.zig");
 const fatal = @import("fatal.zig");
+const fibers = @import("value/fibers.zig");
+const functions = @import("value/functions.zig");
+const fw_abi = @import("filewatch/abi.zig");
+const gc_alloc = @import("gc.zig");
+const gc_mark = @import("gc/mark.zig");
+const pp_format = @import("pp/format.zig");
+const raise = @import("../api/raise.zig");
+const repr = @import("repr");
+const stdio = @import("stdio.zig");
+const strings = @import("value/strings.zig");
+const structs = @import("value/structs.zig");
+const tables = @import("value/tables.zig");
+const utils = @import("utils.zig");
+const value = @import("value.zig");
+const vm_lifecycle = @import("vm/lifecycle.zig");
+const wrap = @import("value/helpers/wrap.zig");
 
-// -------------------------------------------------------------------------
-// The cfunctions.
-// -------------------------------------------------------------------------
-
+/// `filewatch/abi.zig`'s translation, which is where every `h.`-qualified
+/// name below comes from.
 const h = fw_abi.h;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// The backend the call below dispatches to, chosen by `filewatch/abi.zig`.
 const backend = fw_abi.backend;
 
+/// The backend this target compiles. Every call in this file goes through this
+/// one name.
+const be = switch (backend) {
+    .inotify => inotify,
+    .windows => win,
+    .kqueue => kqueue,
+    .none => unsupported,
+};
+
+/// The platform whose vocabulary this target's backend uses, or nothing where
+/// there is no backend and therefore no vocabulary.
+const be_platform: ?Platform = switch (backend) {
+    .inotify => .linux,
+    .windows => .windows,
+    .kqueue => .kqueue,
+    .none => null,
+};
+
+/// The kqueue vocabulary, in the order its value table lists it.
+///
+/// This is the superset across the BSDs and macOS. Six of these, `close`,
+/// `close-write`, `funlock`, `open`, `read` and `truncate`, are conditional on
+/// the host defining the matching `NOTE_*` constant, and on a host that does
+/// not, the value is zero and a lookup for it is refused.
+const kqueue_names = [_][:0]const u8{
+    "all",
+    "attrib",
+    "close",
+    "close-write",
+    "delete",
+    "extend",
+    "funlock",
+    "link",
+    "open",
+    "read",
+    "rename",
+    "revoke",
+    "truncate",
+    "write",
+};
+
+/// The inotify vocabulary, in the order its value table lists it.
+///
+/// The order is what the value array agrees with, so it must not be disturbed;
+/// it is also ascending, which is what the original binary search assumed.
+const linux_names = [_][:0]const u8{
+    "access",
+    "all",
+    "attrib",
+    "close-nowrite",
+    "close-write",
+    "create",
+    "delete",
+    "delete-self",
+    "ignored",
+    "modify",
+    "move-self",
+    "moved-from",
+    "moved-to",
+    "open",
+    "q-overflow",
+    "unmount",
+};
+
+/// `constants.JANET_STREAM_CLOSED`. A watcher whose own descriptor is closed
+/// cannot listen and cannot be added to; `listen` is where that is said,
+/// because `add` already fails at the call it is made on.
+const stream_closed: u32 = @intCast(constants.JANET_STREAM_CLOSED);
+
+/// `constants.JANET_STREAM_READABLE`, which a watcher's own stream is created
+/// with.
 const stream_readable: u32 = @intCast(constants.JANET_STREAM_READABLE);
 
-/// Abort with the caller's `@src()` unless `cond`.
-fn assert(comptime where: std.builtin.SourceLocation, cond: bool, comptime message: []const u8) void {
-    if (cond) return;
-    const line = std.fmt.comptimePrint(
-        "janet abort at {s}:{d}: {s}\n",
-        .{ where.file, where.line, message },
-    );
-    _ = c.fwrite(line.ptr, 1, line.len, stdio.err());
-    c.abort();
-}
-
-// ==========================================================================
-// The keyword vocabularies
-// ==========================================================================
-
-/// Decode a list of keywords into one backend's flag mask.
+/// The watcher's abstract type. Every field after `gcmark` is null, which the
+/// structure already defaults them to.
 ///
-/// `values` is the backend's flag values in the table's own order, so the
-/// index the lookup reports selects one directly. `what` names the backend in
-/// the raise, which is the only part of the message that ever differed between
-/// them.
-fn decodeFlags(
-    options: []const repr.Value,
-    platform: Platform,
-    values: []const u32,
-    comptime what: [*:0]const u8,
-) raise.Raising(u32) {
-    var mask: u32 = 0;
-    for (options) |opt| {
-        if (!repr.checkType(opt, repr.Tag.keyword)) {
-            return pp_format.panicf("expected keyword, got %v", .{opt});
-        }
-        const keyw = wrap.toKeyword(opt);
-        const name = keyw[0..strings.head(keyw).length];
-        const index = flagIndex(platform, name) orelse
-            return pp_format.panicf("unknown %s flag %v", .{ what, opt });
-        if (index >= values.len or values[index] == 0) {
-            return pp_format.panicf("unknown %s flag %v", .{ what, opt });
-        }
-        mask |= values[index];
-    }
-    return mask;
-}
+/// `pub` for `test/filewatch_core.zig`, which reads the fields directly: every
+/// field after `gcmark` being null is what makes a watcher opaque.
+pub const watcherType = abstract_type.define(Watcher, .{
+    .name = "filewatch/watcher",
+    .gcmark = &filewatchMark,
+    .gc = if (backend == .kqueue) &filewatchGc else null,
+});
+
+/// The Windows `FILE_ACTION_*` names, by code.
+const windows_action_names = [_][:0]const u8{
+    "unknown",
+    "added",
+    "removed",
+    "modified",
+    "renamed-old",
+    "renamed-new",
+};
+
+/// The `ReadDirectoryChangesW` vocabulary, in the order its value table lists
+/// it. `recursive` is Janet's own flag rather than one of the platform's: it
+/// decides the watch-subtree argument instead of joining the filter mask.
+const windows_names = [_][:0]const u8{
+    "all",
+    "attributes",
+    "creation",
+    "dir-name",
+    "file-name",
+    "last-access",
+    "last-write",
+    "recursive",
+    "security",
+    "size",
+};
 
 // ==========================================================================
-// The watcher
+// Types
 // ==========================================================================
 
-/// The watcher an `os/filewatch` value holds.
+/// The platform a vocabulary belongs to.
+///
+/// The numbers are written out because `abi.h` restates the platform chain as
+/// an integer rather than reading it back from the predefines, and the two
+/// have to agree.
+pub const Platform = enum(u32) {
+    linux = 0,
+    windows = 1,
+    kqueue = 2,
+};
+
+/// The watcher behind an `os/filewatch` value.
 ///
 /// A plain Zig struct rather than an `extern` one: nothing outside this file
 /// reads a field and the abstract is sized with `@sizeOf`. The layout is
-/// conditional -- there is no `stream` member on Windows, where a watch owns a
-/// handle each rather than the watcher owning one, and `void` is how that
-/// member is spelled away.
+/// conditional, since there is no `stream` member on Windows, where a watch
+/// owns a handle each rather than the watcher owning one, and `void` is how
+/// that member is spelled away.
 const Watcher = struct {
     stream: if (backend == .windows) void else ?*ev_stream.Stream,
     watch_descriptors: ?*tables.Table,
@@ -104,35 +195,15 @@ const Watcher = struct {
     is_watching: c_int,
     /// kqueue only: the per-path descriptors this watcher opened.
     ///
-    /// **They are held here rather than read back out of
-    /// `watch_descriptors`.** The `gc` callback that closes them runs
-    /// mid-sweep, and the table is a collectable block that may already have
-    /// been freed by then, so a callback that walked it would be reading a
-    /// freed table to decide what to close. This list is an owned allocation
-    /// the callback frees itself.
+    /// They are kept here rather than read back out of `watch_descriptors`.
+    /// The `gc` callback that closes them runs mid-sweep, and the table is a
+    /// collectable block that may already have been freed by then, so a
+    /// callback that walked it would be reading a freed table to decide what
+    /// to close. This list is an owned allocation the callback frees itself.
     watched_fds: if (backend == .kqueue) std.ArrayListUnmanaged(c_int) else void,
 };
 
-/// `constants.JANET_STREAM_CLOSED`. A watcher whose own descriptor is closed cannot
-/// listen and cannot be added to; `listen` is where that is said, because
-/// `add` already fails at the call it is made on.
-const stream_closed: u32 = @intCast(constants.JANET_STREAM_CLOSED);
-
-/// Whether the watcher's own instance descriptor is still open.
-fn watcherIsOpen(watcher: *const Watcher) bool {
-    if (backend == .windows) return true;
-    const s = watcher.stream orelse return false;
-    return s.flags & stream_closed == 0;
-}
-
-fn watcherOf(p: ?*anyopaque) *Watcher {
-    return @ptrCast(@alignCast(p));
-}
-
-// ==========================================================================
-// inotify
-// ==========================================================================
-
+/// The inotify backend.
 const inotify = struct {
     /// inotify's flag values, in the order `linux_names` below lists them.
     /// The two arrays are one table split in half,
@@ -316,17 +387,14 @@ const inotify = struct {
     }
 };
 
-// ==========================================================================
-// kqueue
-// ==========================================================================
-
+/// The kqueue backend, for macOS and the BSDs.
 const kqueue = struct {
     /// Janet's own flag rather than one of the platform's: it is not a
     /// `NOTE_*` value and is masked out before `kevent(2)` sees it. Only the
     /// Windows backend has one; kqueue's table is entirely the host's.
     const note = struct {
         /// A `NOTE_*` the host does not define is zero here, which
-        /// `decodeFlags` refuses -- the same answer as leaving the entry out
+        /// `decodeFlags` refuses, exactly as it would refuse a name left out
         /// of the table altogether.
         fn value(comptime name: []const u8) u32 {
             return if (@hasDecl(h, name)) @intCast(@field(h, name)) else 0;
@@ -361,10 +429,10 @@ const kqueue = struct {
         if (values.len != 14) @compileError("the kqueue table is not whole");
     }
 
-    /// The per-watcher kqueue state. **The cookie starts at zero**, and is a counter
-    /// of the events this watcher has reported rather than an inotify cookie:
-    /// allocating the state without setting it derives every cookie from
-    /// whatever the heap held.
+    /// The per-watcher kqueue state. The cookie starts at zero and counts the
+    /// events this watcher has reported, rather than being an inotify cookie:
+    /// allocating the state without setting it would derive every cookie from
+    /// whatever was in the heap block.
     const State = extern struct {
         watcher: *Watcher,
         cookie: u32,
@@ -412,8 +480,8 @@ const kqueue = struct {
         }
         const name = value.fromBytes(std.mem.span(path), .string);
         const wd = wrap.fromInteger(file_fd);
-        // Recorded before the table, so that a raise out of `tables.put` --
-        // which allocates -- cannot strand a descriptor nothing owns.
+        // Recorded before the table, so that a raise out of `tables.put`,
+        // which allocates, cannot strand a descriptor nothing owns.
         watcher.watched_fds.append(utils.heap, file_fd) catch fatal.outOfMemory();
         tables.put(watcher.watch_descriptors.?, name, wd);
         tables.put(watcher.watch_descriptors.?, wd, name);
@@ -511,8 +579,8 @@ const kqueue = struct {
 
     /// Unlistening closes the kqueue, and every per-path descriptor with it:
     /// closing the kqueue leaves the watches registered against nothing, and
-    /// the watcher is not usable afterwards -- `listen` refuses it. Leaving
-    /// them open would leak one descriptor per `filewatch/add`.
+    /// the watcher is not usable afterwards, since `listen` refuses it.
+    /// Leaving them open would leak one descriptor per `filewatch/add`.
     fn unlisten(watcher: *Watcher) raise.Raising(void) {
         if (watcher.is_watching == 0) return;
         watcher.is_watching = 0;
@@ -550,15 +618,64 @@ const kqueue = struct {
     }
 };
 
-// ==========================================================================
-// `ReadDirectoryChangesW`
-// ==========================================================================
+/// The arm for a platform with no backend, whose every entry point raises
+/// "filewatch not supported on this platform".
+const unsupported = struct {
+    const message = "filewatch not supported on this platform";
 
+    fn decode(options: []const repr.Value) raise.Raising(u32) {
+        _ = options;
+        return 0;
+    }
+
+    fn init(watcher: *Watcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
+        _ = watcher;
+        _ = channel;
+        _ = default_flags;
+        return raise.panic(message);
+    }
+
+    fn add(watcher: *Watcher, path: [*:0]const u8, flags: u32) raise.Raising(void) {
+        _ = watcher;
+        _ = path;
+        _ = flags;
+        return raise.panic(message);
+    }
+
+    fn remove(watcher: *Watcher, path: [*:0]const u8) raise.Raising(void) {
+        _ = watcher;
+        _ = path;
+        return raise.panic(message);
+    }
+
+    fn listen(watcher: *Watcher) raise.Raising(void) {
+        _ = watcher;
+        return raise.panic(message);
+    }
+
+    fn unlisten(watcher: *Watcher) raise.Raising(void) {
+        _ = watcher;
+        return raise.panic(message);
+    }
+
+    /// Nothing, where the other backends' `mark` marks the watcher's stream.
+    ///
+    /// The field exists on this platform and nothing ever assigns it, because
+    /// `init` raises before it could. Marking it would hand the collector an
+    /// uninitialised pointer, which is undefined rather than merely wrong.
+    /// The path is unreachable either way: a watcher that never initialised
+    /// has no root to be marked from.
+    fn mark(watcher: *Watcher) void {
+        _ = watcher;
+    }
+};
+
+/// The `ReadDirectoryChangesW` backend.
 const win = struct {
-    /// The recursive-watch flag: Janet's own rather than one of the
-    /// platform's: it decides the watch-subtree argument `ReadDirectoryChangesW`
-    /// takes fourth instead of joining the filter mask, and is masked out of
-    /// the mask that reaches the call.
+    /// The recursive-watch flag, which is Janet's own rather than one of the
+    /// platform's: it decides the watch-subtree argument
+    /// `ReadDirectoryChangesW` takes fourth instead of joining the filter
+    /// mask, and is masked out of what reaches the call.
     const recursive: u32 = 0x100000;
 
     /// Since the file info padding includes embedded file names, include more
@@ -816,251 +933,54 @@ const win = struct {
 };
 
 // ==========================================================================
-// The platform with no backend
+// Public functions
 // ==========================================================================
 
-const unsupported = struct {
-    const message = "filewatch not supported on this platform";
-
-    fn decode(options: []const repr.Value) raise.Raising(u32) {
-        _ = options;
-        return 0;
-    }
-
-    fn init(watcher: *Watcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
-        _ = watcher;
-        _ = channel;
-        _ = default_flags;
-        return raise.panic(message);
-    }
-
-    fn add(watcher: *Watcher, path: [*:0]const u8, flags: u32) raise.Raising(void) {
-        _ = watcher;
-        _ = path;
-        _ = flags;
-        return raise.panic(message);
-    }
-
-    fn remove(watcher: *Watcher, path: [*:0]const u8) raise.Raising(void) {
-        _ = watcher;
-        _ = path;
-        return raise.panic(message);
-    }
-
-    fn listen(watcher: *Watcher) raise.Raising(void) {
-        _ = watcher;
-        return raise.panic(message);
-    }
-
-    fn unlisten(watcher: *Watcher) raise.Raising(void) {
-        _ = watcher;
-        return raise.panic(message);
-    }
-
-    /// Nothing, where the other backends' `mark` marks the watcher's stream.
-    ///
-    /// The field exists on this platform and nothing ever assigns it, because
-    /// `init` raises before it could. Marking it would hand the collector an
-    /// uninitialised pointer, which is undefined rather than merely wrong.
-    /// The path is unreachable either way: a watcher that never initialised
-    /// has no root to be marked from.
-    fn mark(watcher: *Watcher) void {
-        _ = watcher;
-    }
-};
-
-// The platform with no backend is compiled on every target, not only on the
-// ones that have no backend.
-//
-// Nothing in it is host-specific -- seven functions that raise one message --
-// so there is no reason for it to be the one implementation no configuration
-// compiles. Zig analyses a container's declarations lazily, and a plain
-// `_ = unsupported` does not reach a function body; taking the address of each
-// one does.
-comptime {
-    if (backend != .none) {
-        _ = &unsupported.decode;
-        _ = &unsupported.init;
-        _ = &unsupported.add;
-        _ = &unsupported.remove;
-        _ = &unsupported.listen;
-        _ = &unsupported.unlisten;
-        _ = &unsupported.mark;
-    }
-}
-
-/// The backend this target compiles. Every call below goes through this one
-/// name, which is what makes the platform choice a value rather than a
-/// conditional at every call.
-const be = switch (backend) {
-    .inotify => inotify,
-    .windows => win,
-    .kqueue => kqueue,
-    .none => unsupported,
-};
-
-/// The platform whose vocabulary this target's backend uses, or null where
-/// there is no backend and therefore no vocabulary.
-const be_platform: ?Platform = switch (backend) {
-    .inotify => .linux,
-    .windows => .windows,
-    .kqueue => .kqueue,
-    .none => null,
-};
-
-/// The two halves of the flag table agree on their length.
+/// The keyword name for a Windows `FILE_ACTION_*` code, or nothing where the
+/// code is outside the documented range.
 ///
-/// Each half asserts its own length against a literal -- 16, 10, 14 -- and
-/// neither assertion can see the other. This one compares them, which is the
-/// thing worth knowing, and it is the only reason the count lookup exists: the
-/// loops above index the value table directly, so a disagreement would
-/// otherwise show up as a name read from the wrong row rather than as a
-/// fault.
-fn assertTableIsWhole() void {
-    // `comptime` on the unwrap, not merely on the value: `be.values` does not
-    // exist in the no-backend arm, and Zig analyses both branches of a runtime
-    // `if` however unreachable one of them is. This is the one place the
-    // fourth backend would fail to compile if the guard were ordinary.
-    if (comptime be_platform) |platform| {
-        assert(
-            @src(),
-            flagCount(platform) == be.values.len,
-            "the two halves of the flag table disagree about its length",
-        );
+/// The C original indexed a six-entry array with the code and had nothing to
+/// say about a code beyond it. Reporting nothing instead lets the Windows
+/// decoder name the fallback explicitly rather than read past the array.
+pub fn actionName(action: u32) ?[:0]const u8 {
+    if (action >= windows_action_names.len) return null;
+    return windows_action_names[action];
+}
+
+/// How many flags a platform names. Each backend asserts its value array
+/// against this so that the two halves cannot drift apart unnoticed.
+pub fn flagCount(platform: Platform) usize {
+    return namesFor(platform).len;
+}
+
+/// The position of a flag name in a platform's table, or nothing for a name
+/// the platform does not have.
+///
+/// The keyword arrives as bytes rather than as a C string, because a Janet
+/// keyword is length-prefixed and may contain a zero byte. That is also what
+/// `utils.cstrcmp` compares, so a match here means what a match means there.
+/// The search is linear over at most sixteen entries and does not need the
+/// table sorted, which is one standing invariant fewer than a binary search
+/// would need.
+pub fn flagIndex(platform: Platform, name: []const u8) ?usize {
+    for (namesFor(platform), 0..) |entry, index| {
+        if (std.mem.eql(u8, name, entry)) return index;
     }
+    return null;
 }
 
-// ==========================================================================
-// Shared decoding
-// ==========================================================================
-
-/// The dirname/basename split that inotify and kqueue both make on a path with
-/// no name of its own.
+/// The flag name at a position, or nothing where the position is out of range.
 ///
-/// The two backends agree on the split and disagree on what a path with no
-/// separator in it means, so both answers to that are parameters: inotify
-/// reports the whole path as the directory and no file at all, and kqueue
-/// reports `.` as the directory and the whole path as the file. Everything
-/// else -- including scanning from the terminating zero rather than from the
-/// last byte, which is why a path ending in `/` splits on that one -- is
-/// shared, and was written out twice in C.
-fn splitPath(
-    kvs: [*]tables.KV,
-    path: repr.Value,
-    no_sep_dir: repr.Value,
-    no_sep_file: repr.Value,
-) void {
-    const spath = wrap.toString(path);
-    const len = strings.head(spath).length;
-    var cursor: u32 = len;
-    while (cursor > 0 and spath[cursor] != '/') cursor -= 1;
-    if (cursor == 0) {
-        structs.put(kvs, value.fromBytes("dir-name", .keyword), no_sep_dir);
-        structs.put(kvs, value.fromBytes("file-name", .keyword), no_sep_file);
-    } else {
-        structs.put(kvs, value.fromBytes("dir-name", .keyword), wrap.fromString(strings.new(spath[0..@intCast(cursor)])));
-        structs.put(kvs, value.fromBytes("file-name", .keyword), wrap.fromString(strings.new(spath[@intCast(cursor + 1)..@intCast(len)])));
-    }
+/// The value half indexes its own array and does not need this; the assertion
+/// does, to check that both halves agree on the order the index refers to, and
+/// so does the event decoder, which names the flag it matched.
+pub fn flagName(platform: Platform, index: usize) ?[:0]const u8 {
+    const names = namesFor(platform);
+    if (index >= names.len) return null;
+    return names[index];
 }
 
-// ==========================================================================
-// The abstract type
-// ==========================================================================
-
-/// Release what the watcher owns outside the collector's heap.
-///
-/// Only the kqueue backend has any: a descriptor per watched path, opened by
-/// `filewatch/add` and closed by `filewatch/remove` or by
-/// `filewatch/unlisten`. A watcher that is added to and then simply dropped
-/// reaches neither, which is one descriptor leaked per `filewatch/add`.
-///
-/// It reads nothing collectable -- see `Watcher.watched_fds` for why -- and it
-/// cannot raise, which `DESIGN.md` section 5 is what enforces.
-fn filewatchGc(watcher: *Watcher, _: usize) void {
-    if (watcher.channel == null) return; // Incomplete initialization
-    kqueue.gc(watcher);
-}
-
-fn filewatchMark(watcher: *Watcher, _: usize) void {
-    if (watcher.channel == null) return; // Incomplete initialization
-    be.mark(watcher);
-    gc_mark.mark(wrap.fromAbstract(watcher.channel));
-    gc_mark.mark(wrap.fromTable(watcher.watch_descriptors.?));
-}
-
-/// The watcher's abstract type. Every field after `gcmark` is null, which the
-/// structure already defaults them to.
-///
-/// `pub` for `test/filewatch_core.zig`, which reads the fields directly:
-/// every field after `gcmark` being null is what makes a watcher opaque.
-pub const watcherType = abstract_type.define(Watcher, .{
-    .name = "filewatch/watcher",
-    .gcmark = &filewatchMark,
-    .gc = if (backend == .kqueue) &filewatchGc else null,
-});
-
-// ==========================================================================
-// The cfunctions
-// ==========================================================================
-
-fn cfunMake(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
-    try args_core.arity(argv, 1, -1);
-    const channel = try ev_loop.getChannel(argv, 0);
-    const watcher = watcherOf(abstracts.newFor(Watcher, &watcherType));
-    const default_flags = try be.decode(argv[1..]);
-    try be.init(watcher, channel, default_flags);
-    return wrap.fromAbstract(watcher);
-}
-
-fn cfunAdd(argv: []repr.Value) raise.Raising(repr.Value) {
-    try args_core.arity(argv, 2, -1);
-    const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
-    // The same refusal `filewatch/listen` makes, so that the three calls give
-    // one account of a closed watcher rather than three.
-    if (!watcherIsOpen(watcher)) return raise.panic("watcher is closed");
-    const path = try args_core.getCString(argv, 1);
-    const flags = watcher.default_flags | try be.decode(argv[2..]);
-    try be.add(watcher, path, flags);
-    return argv[0];
-}
-
-fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 2);
-    const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
-    if (!watcherIsOpen(watcher)) return raise.panic("watcher is closed");
-    // TODO - pass string in directly to avoid extra allocation
-    const path = try args_core.getCString(argv, 1);
-    try be.remove(watcher, path);
-    return argv[0];
-}
-
-fn cfunListen(argv: []repr.Value) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 1);
-    const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
-    // **A closed watcher cannot listen.** `filewatch/unlisten` closes the
-    // watcher's own descriptor -- the inotify instance or the kqueue -- and
-    // nothing reopens it, so listening again starts a fiber on a closed
-    // stream: it reports success, delivers nothing ever again, and keeps the
-    // event loop from finishing. `filewatch/add` already fails at the call it
-    // is made on; this is the other half.
-    if (!watcherIsOpen(watcher)) return raise.panic("watcher is closed");
-    try be.listen(watcher);
-    return wrap.fromNil();
-}
-
-fn cfunUnlisten(argv: []repr.Value) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 1);
-    const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
-    try be.unlisten(watcher);
-    return wrap.fromNil();
-}
-
-// ==========================================================================
-// Registration
-// ==========================================================================
-
-/// Install the `filewatch/` bindings, in upstream Janet's own registration
+/// Installs the `filewatch/` bindings, in upstream Janet's own registration
 /// order.
 pub fn libFilewatch(env: *tables.Table) void {
     assertTableIsWhole();
@@ -1139,100 +1059,152 @@ pub fn libFilewatch(env: *tables.Table) void {
     corefn.install(env, table);
 }
 
-// -------------------------------------------------------------------------
-// The flag vocabulary.
-// -------------------------------------------------------------------------
+// ==========================================================================
+// Private functions
+// ==========================================================================
 
-// ---------------------------------------------------------------------------
-// Platform ordinals
-// ---------------------------------------------------------------------------
+/// Aborts with the caller's `@src()` unless `cond`.
+fn assert(comptime where: std.builtin.SourceLocation, cond: bool, comptime message: []const u8) void {
+    if (cond) return;
+    const line = std.fmt.comptimePrint(
+        "janet abort at {s}:{d}: {s}\n",
+        .{ where.file, where.line, message },
+    );
+    _ = c.fwrite(line.ptr, 1, line.len, stdio.err());
+    c.abort();
+}
 
-/// Mirrored by the `JANET_WATCH_PLATFORM_*` macros in `filewatch.c`, which a
-/// compile-time assertion beside them pins to these values.
-pub const Platform = enum(u32) {
-    linux = 0,
-    windows = 1,
-    kqueue = 2,
-};
-
-// ---------------------------------------------------------------------------
-// Name tables
-// ---------------------------------------------------------------------------
-
-/// The inotify vocabulary, in the order `watcher_flags_linux` lists it.
+/// Checks that the two halves of the flag table agree on their length.
 ///
-/// The order is the contract with C's value array, so it must not be disturbed;
-/// it is also ascending, which is what the original binary search assumed.
-const linux_names = [_][:0]const u8{
-    "access",
-    "all",
-    "attrib",
-    "close-nowrite",
-    "close-write",
-    "create",
-    "delete",
-    "delete-self",
-    "ignored",
-    "modify",
-    "move-self",
-    "moved-from",
-    "moved-to",
-    "open",
-    "q-overflow",
-    "unmount",
-};
+/// Each half asserts its own length against a literal, 16, 10 and 14, and
+/// neither assertion can see the other. This one compares them, which is the
+/// thing worth knowing, and it is the only reason the count lookup exists: the
+/// loops elsewhere index the value table directly, so a disagreement would
+/// otherwise show up as a name read from the wrong row rather than as a fault.
+fn assertTableIsWhole() void {
+    // `comptime` on the unwrap, not merely on the value: `be.values` does not
+    // exist in the no-backend arm, and Zig analyses both branches of a runtime
+    // `if` however unreachable one of them is. This is the one place the
+    // fourth backend would fail to compile if the guard were ordinary.
+    if (comptime be_platform) |platform| {
+        assert(
+            @src(),
+            flagCount(platform) == be.values.len,
+            "the two halves of the flag table disagree about its length",
+        );
+    }
+}
 
-/// The `ReadDirectoryChangesW` vocabulary, in the order `watcher_flags_windows`
-/// lists it. `recursive` is Janet's own flag rather than one of the platform's:
-/// it decides the watch-subtree argument instead of joining the filter mask.
-const windows_names = [_][:0]const u8{
-    "all",
-    "attributes",
-    "creation",
-    "dir-name",
-    "file-name",
-    "last-access",
-    "last-write",
-    "recursive",
-    "security",
-    "size",
-};
+/// `(filewatch/add watcher path & flags)`.
+fn cfunAdd(argv: []repr.Value) raise.Raising(repr.Value) {
+    try args_core.arity(argv, 2, -1);
+    const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
+    // The same refusal `filewatch/listen` makes, so that the three calls give
+    // one account of a closed watcher rather than three.
+    if (!watcherIsOpen(watcher)) return raise.panic("watcher is closed");
+    const path = try args_core.getCString(argv, 1);
+    const flags = watcher.default_flags | try be.decode(argv[2..]);
+    try be.add(watcher, path, flags);
+    return argv[0];
+}
 
-/// The kqueue vocabulary, in the order `watcher_flags_kqueue` lists it.
+/// `(filewatch/listen watcher)`.
+fn cfunListen(argv: []repr.Value) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 1);
+    const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
+    // A closed watcher cannot listen. `filewatch/unlisten` closes the
+    // watcher's own descriptor, the inotify instance or the kqueue, and
+    // nothing reopens it, so listening again starts a fiber on a closed
+    // stream: it reports success, delivers nothing ever again, and keeps the
+    // event loop from finishing. `filewatch/add` already fails at the call it
+    // is made on; this is the other half.
+    if (!watcherIsOpen(watcher)) return raise.panic("watcher is closed");
+    try be.listen(watcher);
+    return wrap.fromNil();
+}
+
+/// `(filewatch/new channel & default-flags)`.
+fn cfunMake(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
+    try args_core.arity(argv, 1, -1);
+    const channel = try ev_loop.getChannel(argv, 0);
+    const watcher = watcherOf(abstracts.newFor(Watcher, &watcherType));
+    const default_flags = try be.decode(argv[1..]);
+    try be.init(watcher, channel, default_flags);
+    return wrap.fromAbstract(watcher);
+}
+
+/// `(filewatch/remove watcher path)`.
+fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 2);
+    const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
+    if (!watcherIsOpen(watcher)) return raise.panic("watcher is closed");
+    // TODO - pass string in directly to avoid extra allocation
+    const path = try args_core.getCString(argv, 1);
+    try be.remove(watcher, path);
+    return argv[0];
+}
+
+/// `(filewatch/unlisten watcher)`.
+fn cfunUnlisten(argv: []repr.Value) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 1);
+    const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
+    try be.unlisten(watcher);
+    return wrap.fromNil();
+}
+
+/// Decodes a list of keywords into one backend's flag mask.
 ///
-/// This is the superset across the BSDs and macOS. Six of these — `close`,
-/// `close-write`, `funlock`, `open`, `read`, and `truncate` — are conditional
-/// on the host defining the matching `NOTE_*` constant, and on a host that does
-/// not, C stores zero and the lookup's answer is refused there.
-const kqueue_names = [_][:0]const u8{
-    "all",
-    "attrib",
-    "close",
-    "close-write",
-    "delete",
-    "extend",
-    "funlock",
-    "link",
-    "open",
-    "read",
-    "rename",
-    "revoke",
-    "truncate",
-    "write",
-};
+/// `values` is the backend's flag values in the table's own order, so the
+/// index the lookup reports selects one directly. `what` names the backend in
+/// the raise, which is the only part of the message that ever differed between
+/// them.
+fn decodeFlags(
+    options: []const repr.Value,
+    platform: Platform,
+    values: []const u32,
+    comptime what: [*:0]const u8,
+) raise.Raising(u32) {
+    var mask: u32 = 0;
+    for (options) |opt| {
+        if (!repr.checkType(opt, repr.Tag.keyword)) {
+            return pp_format.panicf("expected keyword, got %v", .{opt});
+        }
+        const keyw = wrap.toKeyword(opt);
+        const name = keyw[0..strings.head(keyw).length];
+        const index = flagIndex(platform, name) orelse
+            return pp_format.panicf("unknown %s flag %v", .{ what, opt });
+        if (index >= values.len or values[index] == 0) {
+            return pp_format.panicf("unknown %s flag %v", .{ what, opt });
+        }
+        mask |= values[index];
+    }
+    return mask;
+}
 
-/// The names `filewatch.c` gives Windows' `FILE_ACTION_*` codes, indexed by the
-/// code itself. Entry zero is the placeholder for a code outside the range the
-/// API documents.
-const windows_action_names = [_][:0]const u8{
-    "unknown",
-    "added",
-    "removed",
-    "modified",
-    "renamed-old",
-    "renamed-new",
-};
+/// Releases what the watcher owns outside the collector's heap.
+///
+/// Only the kqueue backend has any: a descriptor per watched path, opened by
+/// `filewatch/add` and closed by `filewatch/remove` or by
+/// `filewatch/unlisten`. A watcher that is added to and then simply dropped
+/// reaches neither, which is one descriptor leaked per `filewatch/add`.
+///
+/// It reads nothing collectable, for the reason `Watcher.watched_fds` gives,
+/// and it cannot raise, which is what an abstract type's `gc` slot requires.
+fn filewatchGc(watcher: *Watcher, _: usize) void {
+    if (watcher.channel == null) return; // Incomplete initialization
+    kqueue.gc(watcher);
+}
 
+/// Traces the channel and the watch-descriptor table.
+fn filewatchMark(watcher: *Watcher, _: usize) void {
+    if (watcher.channel == null) return; // Incomplete initialization
+    be.mark(watcher);
+    gc_mark.mark(wrap.fromAbstract(watcher.channel));
+    gc_mark.mark(wrap.fromTable(watcher.watch_descriptors.?));
+}
+
+/// The names a platform's vocabulary is made of.
 fn namesFor(platform: Platform) []const [:0]const u8 {
     return switch (platform) {
         .linux => &linux_names,
@@ -1241,60 +1213,61 @@ fn namesFor(platform: Platform) []const [:0]const u8 {
     };
 }
 
-// ---------------------------------------------------------------------------
-// Lookup
-// ---------------------------------------------------------------------------
-
-/// Report the position of a flag name in a platform's table, or null for a
-/// name the platform does not have.
+/// The dirname and basename split that inotify and kqueue both make on a path
+/// with no name of its own.
 ///
-/// The keyword arrives as bytes rather than as a C string, because a Janet
-/// keyword is length-prefixed and may contain a zero byte. That is also what
-/// `utils.cstrcmp` compares, so a match here means what a match means there.
-/// The search is linear over at most sixteen entries and does not need the
-/// table sorted, which is one standing invariant fewer than a binary search
-/// would carry.
-pub fn flagIndex(platform: Platform, name: []const u8) ?usize {
-    for (namesFor(platform), 0..) |entry, index| {
-        if (std.mem.eql(u8, name, entry)) return index;
+/// The two backends agree on the split and disagree on what a path with no
+/// separator in it means, so both readings are parameters: inotify reports the
+/// whole path as the directory and no file at all, and kqueue reports `.` as
+/// the directory and the whole path as the file. Everything else is shared,
+/// including scanning from the terminating zero rather than from the last
+/// byte, which is what makes a path ending in `/` split on that separator, and
+/// it was written out twice in C.
+fn splitPath(
+    kvs: [*]tables.KV,
+    path: repr.Value,
+    no_sep_dir: repr.Value,
+    no_sep_file: repr.Value,
+) void {
+    const spath = wrap.toString(path);
+    const len = strings.head(spath).length;
+    var cursor: u32 = len;
+    while (cursor > 0 and spath[cursor] != '/') cursor -= 1;
+    if (cursor == 0) {
+        structs.put(kvs, value.fromBytes("dir-name", .keyword), no_sep_dir);
+        structs.put(kvs, value.fromBytes("file-name", .keyword), no_sep_file);
+    } else {
+        structs.put(kvs, value.fromBytes("dir-name", .keyword), wrap.fromString(strings.new(spath[0..@intCast(cursor)])));
+        structs.put(kvs, value.fromBytes("file-name", .keyword), wrap.fromString(strings.new(spath[@intCast(cursor + 1)..@intCast(len)])));
     }
-    return null;
 }
 
-/// The number of flags a platform names. Each backend above asserts its value
-/// array against this so the two halves cannot drift apart unnoticed.
-pub fn flagCount(platform: Platform) usize {
-    return namesFor(platform).len;
+/// Whether the watcher's own instance descriptor is still open.
+fn watcherIsOpen(watcher: *const Watcher) bool {
+    if (backend == .windows) return true;
+    const s = watcher.stream orelse return false;
+    return s.flags & stream_closed == 0;
 }
 
-/// The flag name at a position, or null when the position is out of range.
-///
-/// The value half indexes its own array and does not need this; the contract
-/// does, to assert that both halves agree on the order the index refers to,
-/// and so does the event decoder, which names the flag it matched.
-pub fn flagName(platform: Platform, index: usize) ?[:0]const u8 {
-    const names = namesFor(platform);
-    if (index >= names.len) return null;
-    return names[index];
+/// The watcher behind an abstract's payload pointer.
+fn watcherOf(p: ?*anyopaque) *Watcher {
+    return @ptrCast(@alignCast(p));
 }
 
-/// The keyword name for a Windows `FILE_ACTION_*` code, or null when the code
-/// is outside the documented range.
-///
-/// The C original indexed a six-entry array with the code and had nothing to
-/// say about a code beyond it. Reporting null instead lets the Windows decoder
-/// name the fallback explicitly rather than read past the array.
-pub fn actionName(action: u32) ?[:0]const u8 {
-    if (action >= windows_action_names.len) return null;
-    return windows_action_names[action];
-}
-
-// ---------------------------------------------------------------------------
+// ==========================================================================
 // Tests
-// ---------------------------------------------------------------------------
+// ==========================================================================
 
-fn indexOf(platform: Platform, name: []const u8) ?usize {
-    return flagIndex(platform, name);
+comptime {
+    if (backend != .none) {
+        _ = &unsupported.decode;
+        _ = &unsupported.init;
+        _ = &unsupported.add;
+        _ = &unsupported.remove;
+        _ = &unsupported.listen;
+        _ = &unsupported.unlisten;
+        _ = &unsupported.mark;
+    }
 }
 
 test "every table is ascending" {
@@ -1340,13 +1313,6 @@ test "a name containing a zero byte matches nothing" {
     try std.testing.expect(indexOf(.linux, "a\x00ll") == null);
 }
 
-// There is no "an unknown platform reports rather than indexes" test, and its
-// absence is the interesting half. An exported form took the ordinal as a
-// `u32` and answered -1 for 3, because C had no way to say that only three
-// values exist; `Platform` says it, so the case cannot be written. A type
-// refusing a mistake is better than a test catching it, but the assertion it
-// replaces was real, so this note stands where it was.
-
 test "counts match the tables" {
     try std.testing.expectEqual(@as(usize, 16), flagCount(.linux));
     try std.testing.expectEqual(@as(usize, 10), flagCount(.windows));
@@ -1364,4 +1330,9 @@ test "action names cover the documented codes" {
     for (windows_action_names, 0..) |expected, code| {
         try std.testing.expectEqualStrings(expected, actionName(@intCast(code)).?);
     }
+}
+
+/// `flagIndex` under the name the tests below call it by.
+fn indexOf(platform: Platform, name: []const u8) ?usize {
+    return flagIndex(platform, name);
 }

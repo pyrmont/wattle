@@ -2,28 +2,39 @@
 //! a shared library is loaded into, and the registration below.
 //!
 //! Nothing decides anything here. The type system is `ffi/types.zig`, the
-//! marshalling `ffi/marshal.zig`, and the calling machinery `ffi/call.zig`;
+//! marshalling `ffi/marshal.zig` and the calling machinery `ffi/call.zig`;
 //! this file is arity, sandbox assertions and registration.
 
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abstract_type = @import("../api/abstract_type.zig");
+const abstracts = @import("value/abstracts.zig");
+const args_core = @import("args.zig");
+const buffers = @import("value/buffers.zig");
+const clib = @import("dynlib.zig");
 const corefn = @import("corefn.zig");
-const raise = @import("../api/raise.zig");
+const ffi_call = @import("ffi/call.zig");
 const ffi_types = @import("ffi/types.zig");
 const marshal = @import("ffi/marshal.zig");
-const ffi_call = @import("ffi/call.zig");
-const args_core = @import("args.zig");
-const clib = @import("dynlib.zig");
-const buffers = @import("value/buffers.zig");
-const vm_lifecycle = @import("vm/lifecycle.zig");
-const abstract_type = @import("../api/abstract_type.zig");
-const utils = @import("utils.zig");
-const wrap = @import("value/helpers/wrap.zig");
-const abstracts = @import("value/abstracts.zig");
-
+const raise = @import("../api/raise.zig");
 const repr = @import("repr");
 const tables = @import("value/tables.zig");
+const utils = @import("utils.zig");
+const vm_lifecycle = @import("vm/lifecycle.zig");
+const wrap = @import("value/helpers/wrap.zig");
 
 // ==========================================================================
-// The native object
+// Constants
+// ==========================================================================
+
+/// The loaded-library abstract type. Every field after `name` is null, which
+/// the structure already defaults them to.
+const native_at = abstract_type.define(AbstractNative, .{ .name = "core/ffi-native" });
+
+// ==========================================================================
+// Types
 // ==========================================================================
 
 const AbstractNative = extern struct {
@@ -32,164 +43,8 @@ const AbstractNative = extern struct {
     is_self: c_int,
 };
 
-/// The loaded-library abstract type. Every field after `name` is null, which
-/// the structure already defaults them to.
-const native_at = abstract_type.define(AbstractNative, .{ .name = "core/ffi-native" });
-
 // ==========================================================================
-// The cfunctions
-// ==========================================================================
-
-fn cfunRawNative(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_define"}));
-    try args_core.arity(argv, 0, 1);
-    const path = try args_core.optCString(argv, 0, null);
-    const lib = clib.load(path);
-    if (clib.failed(lib)) return raise.panic(clib.lastError());
-    const anative: *AbstractNative = abstracts.newFor(AbstractNative, &native_at);
-    anative.lib = lib;
-    anative.closed = 0;
-    anative.is_self = @intFromBool(path == null);
-    return wrap.fromAbstract(anative);
-}
-
-fn cfunNativeLookup(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_define"}));
-    try args_core.fixarity(argv, 2);
-    const anative: *AbstractNative = try args_core.getAbstract(AbstractNative, argv, 0, &native_at);
-    const sym = try args_core.getCString(argv, 1);
-    if (anative.closed != 0) return raise.panic("native object already closed");
-    const val = try clib.symbol(anative.lib, sym) orelse return wrap.fromNil();
-    return wrap.fromPointer(val);
-}
-
-fn cfunNativeClose(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_define"}));
-    try args_core.fixarity(argv, 1);
-    const anative: *AbstractNative = try args_core.getAbstract(AbstractNative, argv, 0, &native_at);
-    if (anative.closed != 0) return raise.panic("native object already closed");
-    if (anative.is_self != 0) return raise.panic("cannot close self");
-    anative.closed = 1;
-    clib.free(anative.lib);
-    return wrap.fromNil();
-}
-
-fn cfunFfiStruct(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try args_core.arity(argv, 1, -1);
-    return wrap.fromAbstract(try ffi_types.buildStruct(argv));
-}
-
-fn cfunFfiSize(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 1);
-    const size = ffi_types.typeSize(try ffi_types.decodeType(argv[0]));
-    return wrap.fromNumber(@floatFromInt(size));
-}
-
-fn cfunFfiAlign(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 1);
-    const alignment = ffi_types.typeAlign(try ffi_types.decodeType(argv[0]));
-    return wrap.fromNumber(@floatFromInt(alignment));
-}
-
-fn cfunBufferWrite(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
-    try args_core.arity(argv, 2, 4);
-    const ty = try ffi_types.decodeType(argv[0]);
-    const el_size = ffi_types.typeSize(ty);
-    const buffer = try args_core.optBuffer(argv, 2, ffi_types.typeSize(ty));
-    var index: usize = @intCast(try args_core.optNat(argv, 3, @intCast(buffer.count)));
-    const old_count = buffer.count;
-    if (index > old_count) return raise.panic("index out of bounds");
-    // The extension is measured from `index` rather than from the end, so the
-    // count moves there and back around it.
-    buffer.count = index;
-    try buffers.extra(buffer, el_size);
-    buffer.count = old_count;
-    @memset(buffer.reserved()[index .. index + el_size], 0);
-    try marshal.writeOne(buffer.data.? + index, argv, 1, ty, ffi_types.max_recur);
-    index += el_size;
-    if (buffer.count < index) buffer.count = index;
-    return wrap.fromBuffer(buffer);
-}
-
-fn cfunBufferRead(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
-    try args_core.arity(argv, 2, 3);
-    const ty = try ffi_types.decodeType(argv[0]);
-    const offset: usize = @intCast(try args_core.optNat(argv, 2, 0));
-    if (repr.checkType(argv[1], repr.Tag.pointer)) {
-        const ptr: [*]const u8 = @ptrCast(wrap.toPointer(argv[1]));
-        return marshal.readOne(ptr + offset, ty, ffi_types.max_recur);
-    }
-    const el_size = ffi_types.typeSize(ty);
-    const bytes = try args_core.getBytes(argv, 1);
-    if (@as(usize, @intCast(bytes.len)) < offset + el_size) return raise.panic("read out of range");
-    return marshal.readOne(bytes.bytes.? + offset, ty, ffi_types.max_recur);
-}
-
-fn cfunFfiMalloc(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
-    try args_core.fixarity(argv, 1);
-    const size = try args_core.getSize(argv, 0);
-    if (size == 0) return wrap.fromNil();
-    return wrap.fromPointer(utils.malloc(size));
-}
-
-fn cfunFfiFree(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
-    try args_core.fixarity(argv, 1);
-    if (repr.checkType(argv[0], repr.Tag.nil)) return wrap.fromNil();
-    utils.free(try args_core.getPointer(argv, 0));
-    return wrap.fromNil();
-}
-
-fn cfunPointerBuffer(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
-    try args_core.arity(argv, 2, 4);
-    const pointer: [*]u8 = @ptrCast(try args_core.getPointer(argv, 0));
-    const capacity = try args_core.getNat(argv, 1);
-    const count = try args_core.optNat(argv, 2, 0);
-    const offset = try args_core.optInteger64(argv, 3, 0);
-    // The offset is signed and is added to the pointer the way C adds it:
-    // `((uint8_t *) pointer) + offset`, which on a 32-bit target narrows the
-    // 64-bit offset rather than refusing it. `@truncate` is that narrowing;
-    // `@intCast` would trap on the same input.
-    const delta: isize = @truncate(offset);
-    const at: [*]u8 = @ptrFromInt(@intFromPtr(pointer) +% @as(usize, @bitCast(delta)));
-    // Both getters have already refused a negative, which is where the range
-    // check belongs; the widths meet here.
-    return wrap.fromBuffer(try buffers.pointerUnsafe(at, @intCast(capacity), @intCast(count)));
-}
-
-/// **A raw pointer is not a cfunction here, and this says so rather than
-/// answering one.**
-///
-/// Every pointer this can be given is a C function -- it comes from a shared
-/// object built by a C toolchain, usually straight out of `ffi/lookup`. A
-/// cfunction in this runtime is not a C function: it takes a `[]Value`,
-/// answers an error union, and travels over Zig's own calling convention. So
-/// wrapping such a pointer as a cfunction would be a claim the interpreter
-/// believes and the callee does not honour, and calling it would read the
-/// argument count and the argument pointer out of the wrong registers.
-///
-/// `ffi/lookup` and `ffi/signature` are how a C function is called, and they
-/// describe the convention rather than assuming one.
-fn cfunPointerCfunction(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
-    try args_core.arity(argv, 1, 4);
-    _ = try args_core.getPointer(argv, 0);
-    return raise.panic(
-        "a raw pointer cannot become a cfunction; use ffi/signature and ffi/call",
-    );
-}
-
-fn cfunCallingConventions(argv: []const repr.Value) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 0);
-    return ffi_call.supportedConventions();
-}
-
-// ==========================================================================
-// Registration
+// Public functions
 // ==========================================================================
 
 /// Install the `ffi/` bindings, in upstream Janet's own registration order.
@@ -243,4 +98,168 @@ pub fn libFfi(env: *tables.Table) void {
             "convention which is a placeholder that cannot be used at runtime."),
     };
     corefn.install(env, table);
+}
+
+// ==========================================================================
+// Private functions
+// ==========================================================================
+
+/// `(ffi/buffer-read type buffer &opt offset)`.
+fn cfunBufferRead(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
+    try args_core.arity(argv, 2, 3);
+    const ty = try ffi_types.decodeType(argv[0]);
+    const offset: usize = @intCast(try args_core.optNat(argv, 2, 0));
+    if (repr.checkType(argv[1], repr.Tag.pointer)) {
+        const ptr: [*]const u8 = @ptrCast(wrap.toPointer(argv[1]));
+        return marshal.readOne(ptr + offset, ty, ffi_types.max_recur);
+    }
+    const el_size = ffi_types.typeSize(ty);
+    const bytes = try args_core.getBytes(argv, 1);
+    if (@as(usize, @intCast(bytes.len)) < offset + el_size) return raise.panic("read out of range");
+    return marshal.readOne(bytes.bytes.? + offset, ty, ffi_types.max_recur);
+}
+
+/// `(ffi/buffer-write type value &opt buffer offset)`.
+fn cfunBufferWrite(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
+    try args_core.arity(argv, 2, 4);
+    const ty = try ffi_types.decodeType(argv[0]);
+    const el_size = ffi_types.typeSize(ty);
+    const buffer = try args_core.optBuffer(argv, 2, ffi_types.typeSize(ty));
+    var index: usize = @intCast(try args_core.optNat(argv, 3, @intCast(buffer.count)));
+    const old_count = buffer.count;
+    if (index > old_count) return raise.panic("index out of bounds");
+    // The extension is measured from `index` rather than from the end, so the
+    // count moves there and back around it.
+    buffer.count = index;
+    try buffers.extra(buffer, el_size);
+    buffer.count = old_count;
+    @memset(buffer.reserved()[index .. index + el_size], 0);
+    try marshal.writeOne(buffer.data.? + index, argv, 1, ty, ffi_types.max_recur);
+    index += el_size;
+    if (buffer.count < index) buffer.count = index;
+    return wrap.fromBuffer(buffer);
+}
+
+/// `(ffi/calling-conventions)`, which lists the conventions this build can
+/// call.
+fn cfunCallingConventions(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 0);
+    return ffi_call.supportedConventions();
+}
+
+/// `(ffi/align type)`.
+fn cfunFfiAlign(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 1);
+    const alignment = ffi_types.typeAlign(try ffi_types.decodeType(argv[0]));
+    return wrap.fromNumber(@floatFromInt(alignment));
+}
+
+/// `(ffi/free pointer)`.
+fn cfunFfiFree(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
+    try args_core.fixarity(argv, 1);
+    if (repr.checkType(argv[0], repr.Tag.nil)) return wrap.fromNil();
+    utils.free(try args_core.getPointer(argv, 0));
+    return wrap.fromNil();
+}
+
+/// `(ffi/malloc size)`.
+fn cfunFfiMalloc(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
+    try args_core.fixarity(argv, 1);
+    const size = try args_core.getSize(argv, 0);
+    if (size == 0) return wrap.fromNil();
+    return wrap.fromPointer(utils.malloc(size));
+}
+
+/// `(ffi/size type)`.
+fn cfunFfiSize(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 1);
+    const size = ffi_types.typeSize(try ffi_types.decodeType(argv[0]));
+    return wrap.fromNumber(@floatFromInt(size));
+}
+
+/// `(ffi/struct & types)`.
+fn cfunFfiStruct(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try args_core.arity(argv, 1, -1);
+    return wrap.fromAbstract(try ffi_types.buildStruct(argv));
+}
+
+/// `(ffi/close native)`.
+fn cfunNativeClose(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_define"}));
+    try args_core.fixarity(argv, 1);
+    const anative: *AbstractNative = try args_core.getAbstract(AbstractNative, argv, 0, &native_at);
+    if (anative.closed != 0) return raise.panic("native object already closed");
+    if (anative.is_self != 0) return raise.panic("cannot close self");
+    anative.closed = 1;
+    clib.free(anative.lib);
+    return wrap.fromNil();
+}
+
+/// `(ffi/lookup native name)`.
+fn cfunNativeLookup(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_define"}));
+    try args_core.fixarity(argv, 2);
+    const anative: *AbstractNative = try args_core.getAbstract(AbstractNative, argv, 0, &native_at);
+    const sym = try args_core.getCString(argv, 1);
+    if (anative.closed != 0) return raise.panic("native object already closed");
+    const val = try clib.symbol(anative.lib, sym) orelse return wrap.fromNil();
+    return wrap.fromPointer(val);
+}
+
+/// `(ffi/pointer-buffer pointer capacity &opt count offset)`.
+fn cfunPointerBuffer(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
+    try args_core.arity(argv, 2, 4);
+    const pointer: [*]u8 = @ptrCast(try args_core.getPointer(argv, 0));
+    const capacity = try args_core.getNat(argv, 1);
+    const count = try args_core.optNat(argv, 2, 0);
+    const offset = try args_core.optInteger64(argv, 3, 0);
+    // The offset is signed and is added to the pointer the way C adds it:
+    // `((uint8_t *) pointer) + offset`, which on a 32-bit target narrows the
+    // 64-bit offset rather than refusing it. `@truncate` is that narrowing;
+    // `@intCast` would trap on the same input.
+    const delta: isize = @truncate(offset);
+    const at: [*]u8 = @ptrFromInt(@intFromPtr(pointer) +% @as(usize, @bitCast(delta)));
+    // Both getters have already refused a negative, which is where the range
+    // check belongs; the widths meet here.
+    return wrap.fromBuffer(try buffers.pointerUnsafe(at, @intCast(capacity), @intCast(count)));
+}
+
+/// `(ffi/pointer-cfunction pointer)`, which refuses rather than wrapping.
+///
+/// Every pointer this can be given is a C function: it comes from a shared
+/// object built by a C toolchain, usually straight out of `ffi/lookup`. A
+/// cfunction in this runtime is not a C function: it takes a `[]Value`,
+/// returns an error union, and travels over Zig's own calling convention. So
+/// wrapping such a pointer as a cfunction would be a claim the interpreter
+/// believes and the callee does not honour, and calling it would read the
+/// argument count and the argument pointer out of the wrong registers.
+///
+/// `ffi/lookup` and `ffi/signature` are how a C function is called, and they
+/// describe the convention rather than assuming one.
+fn cfunPointerCfunction(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
+    try args_core.arity(argv, 1, 4);
+    _ = try args_core.getPointer(argv, 0);
+    return raise.panic(
+        "a raw pointer cannot become a cfunction; use ffi/signature and ffi/call",
+    );
+}
+
+/// `(ffi/native &opt path)`.
+fn cfunRawNative(argv: []const repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_define"}));
+    try args_core.arity(argv, 0, 1);
+    const path = try args_core.optCString(argv, 0, null);
+    const lib = clib.load(path);
+    if (clib.failed(lib)) return raise.panic(clib.lastError());
+    const anative: *AbstractNative = abstracts.newFor(AbstractNative, &native_at);
+    anative.lib = lib;
+    anative.closed = 0;
+    anative.is_self = @intFromBool(path == null);
+    return wrap.fromAbstract(anative);
 }

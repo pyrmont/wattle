@@ -2,24 +2,32 @@
 //! `validUtf8` and `isSymbolChar`.
 //!
 //! Both are reached from the parser rather than from Janet, and the inputs
-//! that matter are exactly the ones no Janet program can hand them — a source
-//! file holding an overlong encoding does not parse, so a suite cannot ask
+//! that matter are exactly the ones no Janet program can give them: a source
+//! file with an overlong encoding in it does not parse, so a suite cannot ask
 //! whether the validator rejected it or the reader did.
 //!
 //! ## The permissive case is deliberate, and this is where it is written down
 //!
 //! `validUtf8` accepts `f7 bf bf bf`, which encodes U+1FFFFF and is
 //! above Unicode's U+10FFFF ceiling. A strict validator refuses it. This one
-//! checks the *shape* — a lead byte, the right number of continuations, and no
-//! overlong form — and does not range-check the code point. That is Janet's
+//! checks the *shape*, a lead byte, the right number of continuations and no
+//! overlong form, and does not range-check the code point. That is Janet's
 //! behaviour rather than an oversight, and the assertion below is here so that
 //! a port cannot quietly tighten it.
 //!
 //! Both take primitives and neither is reachable from Janet source, so this
 //! file is the only thing that asks either of them anything.
 
-const scan = @import("subsystems").scan;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const expect = @import("expect.zig").expect;
+const scan = @import("subsystems").scan;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn valid(bytes: []const u8) bool {
     return scan.validUtf8(bytes);
@@ -48,7 +56,7 @@ fn theMalformedEncodings() void {
 
     // A three-byte lead with only one continuation.
     expect(!valid(&.{ 0xe3, 0x81 }));
-    // A continuation slot holding an ASCII byte.
+    // A continuation slot with an ASCII byte in it.
     expect(!valid(&.{ 0xe3, 0x41, 0x98 }));
     // Five bytes, which UTF-8 has not had since 2003.
     expect(!valid(&.{ 0xf8, 0x88, 0x80, 0x80, 0x80 }));
@@ -60,7 +68,7 @@ fn theSymbolAlphabet() void {
     expect(symbolChar('0'));
     expect(symbolChar('-'));
     // Every byte with the high bit set is a symbol character, which is how a
-    // symbol may hold UTF-8 without the parser decoding it.
+    // symbol may contain UTF-8 without the parser decoding it.
     expect(symbolChar(0x80));
 
     expect(!symbolChar(' '));
@@ -68,6 +76,10 @@ fn theSymbolAlphabet() void {
     expect(!symbolChar('('));
     expect(!symbolChar(')'));
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     theWellFormedEncodings();

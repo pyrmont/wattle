@@ -11,51 +11,90 @@
 //!
 //! Two properties get more attention than their size suggests.
 //!
-//! **The traversal is not recursion.** `order.equals` and `order.compare` walk
+//! The traversal is not recursion. `order.equals` and `order.compare` walk
 //! nested tuples and structs with an explicit stack on the VM, because a
-//! literal nested a few thousand deep is a value a parser will hand you and a
+//! literal nested a few thousand deep is a value a parser will produce and a
 //! native stack overflow is not a catchable error. A case that only compares
-//! shallow values passes just as happily against a recursive implementation, so
-//! the depth cases here use depths that would blow a native stack.
+//! shallow values passes just as happily against a recursive implementation,
+//! so the depth cases here use depths that would blow a native stack.
 //!
-//! **The stack is scratch, not state.** Both entry points reset it on the way
-//! in and neither pops what it pushed, so a comparison that returns early
+//! The stack is scratch rather than state. Both entry points reset it on the
+//! way in and neither pops what it pushed, so a comparison that returns early
 //! leaves nodes behind. That is only correct if the next comparison is
 //! unaffected, which is asserted directly rather than assumed.
 //!
-//! ## The abstract fixtures need no adapter
+//! ## The abstract fixtures
 //!
-//! A `abstract_type.AbstractType`'s callbacks are Zig's, so C can define none of them
-//! and a C contract needs a pool of pre-built tables. The two this file
-//! supplies are `compare` and `hash`, typed **non**-raising for the reason
-//! `abstract_type.zig` gives: they are called from inside comparisons that
-//! must be total, so there is nowhere for a raise to go. They are ordinary
-//! `callconv(.c)` functions here and the table is the runtime's own
-//! `AbstractType`. Fifteen `CONTRACT_AT` uses went for free.
+//! `abstract_type.define` takes Zig callbacks, so the three probe types below
+//! are ordinary declarations and the table is the runtime's own
+//! `AbstractType`. The two callbacks this file supplies are `compare` and
+//! `hash`, typed non-raising for the reason `abstract_type.zig` gives: they
+//! are called from inside comparisons that must be total, so there is nowhere
+//! for a raise to go.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const constants = @import("constants");
-const harness = @import("harness.zig");
-const value = @import("subsystems").value;
 
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
 const abstract_type = @import("subsystems").abstract_type;
-const structs = @import("subsystems").value.structs;
-const tables = @import("subsystems").value.tables;
-const gc_alloc = @import("subsystems").gc_alloc;
-const tuples = @import("subsystems").value.tuples;
-const utils = @import("subsystems").utils;
-const order = @import("subsystems").value.order;
-const core_env = @import("subsystems").env;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
+const abstracts = @import("subsystems").value.abstracts;
 const arrays = @import("subsystems").value.arrays;
 const buffers = @import("subsystems").value.buffers;
-const abstracts = @import("subsystems").value.abstracts;
-const abi = @import("abi");
+const constants = @import("constants");
+const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
 
-// ----------------------------------------------------------------- helpers
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
+const order = @import("subsystems").value.order;
+const repr = @import("repr");
+const structs = @import("subsystems").value.structs;
+const tables = @import("subsystems").value.tables;
+const tuples = @import("subsystems").value.tuples;
+const utils = @import("subsystems").utils;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// Supplies neither, so it falls back to pointer identity for both.
+const at_bare = abstract_type.define(anyopaque, .{ .name = "value-order/bare" });
+
+/// Supplies both callbacks.
+const at_cell = abstract_type.define(Cell, .{
+    .name = "value-order/cell",
+    .compare = &cellCompare,
+    .hash = &cellHash,
+});
+
+/// A second callback-less type, so that two abstracts of *different* types can
+/// be ordered without either type's `compare` being consulted.
+const at_other = abstract_type.define(anyopaque, .{ .name = "value-order/other" });
+
+// ==========================================================================
+// Types
+// ==========================================================================
+
+/// Three abstract types, differing only in which callbacks they supply, so that
+/// each branch of the abstract arm of `order.compare` and of `order.hash` is
+/// reached by a type that reaches no other.
+const Cell = extern struct {
+    key: i32,
+};
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn kw(name: [*:0]const u8) repr.Value {
     return value.fromBytes(std.mem.span(name), .keyword);
@@ -124,15 +163,6 @@ fn stackCapacity() isize {
     );
 }
 
-// -------------------------------------------------------- abstract fixtures
-
-/// Three abstract types, differing only in which callbacks they supply, so that
-/// each branch of the abstract arm of `order.compare` and of `order.hash` is
-/// reached by a type that reaches no other.
-const Cell = extern struct {
-    key: i32,
-};
-
 fn cellHash(cell: *const Cell, _: usize) i32 {
     return cell.key;
 }
@@ -141,20 +171,6 @@ fn cellCompare(lhs: *const Cell, rhs: *const Cell) i32 {
     if (lhs.key == rhs.key) return 0;
     return if (lhs.key < rhs.key) -1 else 1;
 }
-
-/// Supplies both callbacks.
-const at_cell = abstract_type.define(Cell, .{
-    .name = "value-order/cell",
-    .compare = &cellCompare,
-    .hash = &cellHash,
-});
-
-/// Supplies neither, so it falls back to pointer identity for both.
-const at_bare = abstract_type.define(anyopaque, .{ .name = "value-order/bare" });
-
-/// A second callback-less type, so that two abstracts of *different* types can
-/// be ordered without either type's `compare` being consulted.
-const at_other = abstract_type.define(anyopaque, .{ .name = "value-order/other" });
 
 fn cellType() *const abi.AbstractType {
     return &at_cell;
@@ -180,7 +196,30 @@ fn mkbare(at: *const abi.AbstractType) repr.Value {
     return wrap.fromAbstract(cell);
 }
 
-// ------------------------------------------------------------------ hashing
+/// Build a tuple nested `depth` levels deep: `(0 (1 (2 ... leaf)))`.
+///
+/// Twenty thousand levels is megabytes of allocation and the collector will
+/// run part way through, so the accumulator is rooted across every allocation
+/// that could trigger one. A value reachable only from a Zig local is not
+/// reachable to the collector, and each level here is kept alive by the level
+/// above it alone, so losing the accumulator for the length of one
+/// `tuples.begin` would free the whole chain built so far. The successor is
+/// rooted before its predecessor is released, never the other way round.
+///
+/// The result is left rooted and the caller unroots it.
+fn nestTuples(depth: i32, leaf: repr.Value) repr.Value {
+    var acc = leaf;
+    gc_alloc.gcroot(acc);
+    var i: i32 = 0;
+    while (i < depth) : (i += 1) {
+        const items = [_]repr.Value{ intv(i), acc };
+        const next = mktuple(&items, false);
+        gc_alloc.gcroot(next);
+        _ = gc_alloc.gcunroot(acc);
+        acc = next;
+    }
+    return acc;
+}
 
 /// The constants, which nothing else pins. `order.hash` of nil is the identity
 /// of an empty bucket in every dictionary in the runtime, and `false` hashes
@@ -224,21 +263,21 @@ fn theStringLikesShareOneHash() void {
 }
 
 /// Negative zero is normalized before the number is mixed, so that `0.0` and
-/// `-0.0` -- which are `=` -- do not land in different buckets. The `+= 0.0`
-/// that does it is one statement and deleting it breaks nothing else.
+/// `-0.0`, which are `=`, do not land in different buckets. The `+= 0.0` that
+/// does it is one statement and deleting it breaks nothing else.
 fn theHashNormalizesNegativeZero() void {
     expect(harness.equals(num(0.0), num(-0.0)));
     expect(order.hash(num(0.0)) == order.hash(num(-0.0)));
     // And the mixing is not a no-op: neighbouring doubles must not share a
-    // hash, or the assertion above would hold for a `return 0`.
+    // hash, or a `return 0` would satisfy the assertion above.
     expect(order.hash(num(0.0)) != order.hash(num(1.0)));
     expect(order.hash(num(1.0)) != order.hash(num(2.0)));
     expect(order.hash(num(1.0)) != order.hash(num(1.0000000000000002)));
 }
 
 /// The exact numbers, which nothing else pins and which are not free to change.
-/// A struct's bucket array is part of the language contract -- `{1 2 3 4}` and
-/// `{3 4 1 2}` are the same value because they lay out identically -- and the
+/// A struct's bucket array is part of the language contract, `{1 2 3 4}` and
+/// `{3 4 1 2}` being the same value because they lay out identically, and the
 /// layout is a function of `order.hash`. So the hash of a double is observable
 /// through every struct with a numeric key, and it does not vary with the
 /// target or with `-Dprf`: the double's bits are fixed, `murmur64` is fixed,
@@ -250,15 +289,15 @@ fn theExactNumberHashes() void {
     expect(order.hash(num(-1.0)) == -1784919109);
     expect(order.hash(num(1.5)) == -2007118713);
     expect(order.hash(num(1e300)) == -701392662);
-    // Zero is the fixed point of the mixer -- every step of `murmur64` maps
-    // zero to zero -- so `0` hashes to the same 0 that `nil` and `false` do.
+    // Zero is the fixed point of the mixer, every step of `murmur64` mapping
+    // zero to zero, so `0` hashes to the same 0 that `nil` and `false` do.
     // Not a defect, but it is the reason `order.hash` of a number cannot be
     // assumed nonzero.
     expect(order.hash(num(0.0)) == 0);
 }
 
-/// An integer and the double that equals it are the same Janet number, so they
-/// must hash alike -- there is no separate integer hash to get wrong.
+/// An integer and the double that equals it are the same Janet number, so
+/// they must hash alike; there is no separate integer hash to get wrong.
 fn integersAndDoublesHashAlike() void {
     expect(harness.equals(intv(7), num(7.0)));
     expect(order.hash(intv(7)) == order.hash(num(7.0)));
@@ -335,7 +374,7 @@ fn highWordOf(mixed: u64) i32 {
 /// nothing else can pin: a pointer is not a constant, so this is the only way
 /// to say which half of the mix is taken. Taking the low word would be just as
 /// good a hash and a different language, for the same reason the exact number
-/// hashes above matter -- a struct keyed by anything that lands here lays out
+/// hashes above matter: a struct keyed by anything that lands here lays out
 /// accordingly. `harness.u64Of` is the same payload word `order.hash` reads,
 /// and spells a different field per value representation.
 fn thePointerHashIsTheHighWord() void {
@@ -358,8 +397,6 @@ fn thePointerHashIsStable() void {
     expect(order.hash(wrap.fromBuffer(b)) == order.hash(wrap.fromBuffer(b)));
     expect(order.hash(wrap.fromTable(t)) != order.hash(wrap.fromArray(a)));
 }
-
-// ----------------------------------------------------------------- equality
 
 fn theEqualityOfAtoms() void {
     expect(harness.equals(wrap.fromNil(), wrap.fromNil()));
@@ -385,10 +422,10 @@ fn theEqualityOfNumbers() void {
     expect(!harness.equals(num(inf), num(-inf)));
 }
 
-/// Strings compare by content and are not interned, so two distinct allocations
-/// with the same bytes are equal. Symbols and keywords *are* interned, so the
-/// same spelling is the same pointer -- the assertion is that both routes end
-/// at the same answer.
+/// Strings compare by content and are not interned, so two distinct
+/// allocations with the same bytes are equal. Symbols and keywords *are*
+/// interned, so the same spelling is the same pointer, and the assertion is
+/// that both routes end at the same place.
 fn theEqualityOfStringLikes() void {
     const s1 = str("hello");
     const s2 = str("hello");
@@ -439,14 +476,15 @@ fn theEqualityOfTuples() void {
     expect(harness.equals(a, a));
 }
 
-/// A value is equal to itself even when it contains something that is not equal
-/// to itself. `order.equals` short-circuits on pointer identity for a tuple
-/// before it looks at any element, so a tuple holding a NaN is `=` to itself
-/// and not `=` to a separately built tuple with the same bits.
+/// A value is equal to itself even when it contains something that is not
+/// equal to itself. `order.equals` short-circuits on pointer identity for a
+/// tuple before it looks at any element, so a tuple with a NaN in it is `=` to
+/// itself and not `=` to a separately built tuple with the same bits.
 ///
-/// Pinned because it is the only observable consequence of that short-circuit
-/// -- for every other value the two routes agree -- and because dropping it
-/// would silently make `(= x x)` false for a value a program is holding.
+/// Pinned because it is the only observable consequence of that
+/// short-circuit, the two routes agreeing for every other value, and because
+/// dropping it would silently make `(= x x)` false for a value in a live
+/// variable.
 fn aTupleHoldingNanEqualsItself() void {
     const items = [_]repr.Value{num(std.math.nan(f64))};
     const a = mktuple(&items, false);
@@ -457,16 +495,16 @@ fn aTupleHoldingNanEqualsItself() void {
     defer _ = gc_alloc.gcunroot(b);
 
     expect(harness.equals(a, a));
-    // Same length, same stored hash -- the NaN bits are the same bits -- so
-    // this one reaches the traversal, and the traversal finds a NaN.
+    // Same length and the same stored hash, the NaN bits being the same
+    // bits, so this one reaches the traversal, and the traversal finds a NaN.
     expect(tupleHash(wrap.toTuple(a)) == tupleHash(wrap.toTuple(b)));
     expect(!harness.equals(a, b));
 }
 
 /// Struct equality is layout equality, which the Robin Hood insert exists to
-/// make order-independent, plus a prototype check that is *presence* only --
+/// make order-independent, plus a prototype check that is *presence* only:
 /// two structs whose prototypes differ are still compared through the
-/// traversal, not rejected up front.
+/// traversal rather than rejected up front.
 fn theEqualityOfStructs() void {
     const kvs = [_]repr.Value{ kw("x"), intv(1), kw("y"), intv(2) };
     const rev = [_]repr.Value{ kw("y"), intv(2), kw("x"), intv(1) };
@@ -490,9 +528,9 @@ fn theEqualityOfStructs() void {
     expect(!harness.equals(with, mkstruct(&kvs, other_proto)));
 }
 
-/// Three checks in `order.equals` sit behind the stored-hash comparison and are
-/// unreachable while the hashes disagree -- which, for values that differ, they
-/// essentially always do. They are not dead code: a 32-bit hash collides, and
+/// Three checks in `order.equals` sit behind the stored-hash comparison and
+/// are unreachable while the hashes disagree, which for values that differ is
+/// almost always. They are not dead code: a 32-bit hash collides, and
 /// when it does these are what stop the traversal from reading a bucket array
 /// off the end of itself or from reporting two different values equal.
 ///
@@ -503,9 +541,9 @@ fn theEqualityOfStructs() void {
 fn theChecksBehindTheHash() void {
     // Tuple length. Two identical two-element tuples, one of which claims to
     // be one element long. Without the length check the traversal compares
-    // element zero, finds it equal, runs out of the shorter side, and -- with
-    // `index2` clear, which is what `order.equals` pushes -- reports that
-    // there is nothing more to compare. The answer would be "equal".
+    // element zero, finds it equal, runs out of the shorter side, and, with
+    // `index2` clear as `order.equals` pushes it, reports that there is
+    // nothing more to compare. The result would be "equal".
     const pair = [_]repr.Value{ intv(1), intv(2) };
     const t1 = mktuple(&pair, false);
     gc_alloc.gcroot(t1);
@@ -541,8 +579,8 @@ fn theChecksBehindTheHash() void {
     // presence check is consulted; forcing the hashes together is the only way
     // to reach it. Without it the traversal walks the buckets, finds them
     // identical, reaches the prototype hop, and the hop's `return 3` ends
-    // `order.equals`'s loop the same way a completed traversal would -- so the
-    // answer would be "equal".
+    // `order.equals`'s loop the same way a completed traversal would, so the
+    // result would be "equal".
     const pk = [_]repr.Value{ kw("p"), intv(1) };
     const proto = mkstruct(&pk, null);
     gc_alloc.gcroot(proto);
@@ -564,9 +602,8 @@ fn theChecksBehindTheHash() void {
 
 /// `order.compare` orders two structs by capacity, then by stored hash, and
 /// only then by contents. Each of the first two is isolated by forcing the
-/// later criteria to disagree with it: an implementation that dropped either
-/// would still order most structs plausibly and would no longer be reproducing
-/// this one.
+/// later criteria to disagree with it, because an implementation that dropped
+/// either would still order most structs plausibly.
 fn theStructOrderingCriteriaAreInOrder() void {
     const one = [_]repr.Value{ kw("a"), intv(1) };
     const two = [_]repr.Value{ kw("a"), intv(1), kw("b"), intv(2) };
@@ -604,7 +641,7 @@ fn theStructOrderingCriteriaAreInOrder() void {
     // at a struct's contents. Reaching it needs everything above it to tie:
     // same capacity, same key, and the hash forced to agree. Then the *values*
     // decide, which is the only case in the file where a struct's value slot is
-    // compared at all -- every other pair of structs is settled by the stored
+    // compared at all; every other pair of structs is settled by the stored
     // hash long before.
     const c1 = mkstruct(&lo, null);
     gc_alloc.gcroot(c1);
@@ -645,14 +682,12 @@ fn theEqualityOfAbstracts() void {
     expect(!harness.equals(p, r));
 }
 
-// ----------------------------------------------------------------- ordering
-
 /// Across types the order is the `repr.Tag` enumeration, which makes it
-/// arbitrary and stable -- both of which the sort in the standard library
-/// depends on.
+/// arbitrary and stable, and the sort in the standard library depends on
+/// both.
 fn theOrderAcrossTypes() void {
     // In enumeration order, which is *not* the order a reader would guess:
-    // `JANET_NUMBER` is zero and `JANET_NIL` follows it.
+    // `repr.Tag.number` is zero and `repr.Tag.nil` follows it.
     const ordered = [_]repr.Value{
         num(0.0), wrap.fromNil(), wrap.fromFalse(),
         str("s"), sym("s"),       kw("s"),
@@ -703,9 +738,9 @@ fn theOrderOfStringLikes() void {
     expect(order.compare(kw("a"), kw("b")) < 0);
 }
 
-/// Tuples order element-wise, and a prefix sorts before its extension -- which
-/// the traversal decides, not a length check up front. The bracket flag is
-/// checked before any element and outranks all of them.
+/// Tuples order element-wise, and a prefix sorts before its extension, which
+/// the traversal decides rather than a length check up front. The bracket flag
+/// is checked before any element and outranks all of them.
 fn theOrderOfTuples() void {
     const a = [_]repr.Value{ intv(1), intv(2) };
     const b = [_]repr.Value{ intv(1), intv(2), intv(3) };
@@ -793,9 +828,9 @@ fn theOrderOfMutableContainers() void {
 }
 
 /// Abstracts: identity first, then the abstract type's *name* when the types
-/// differ -- which is what lets two unrelated abstract types be sorted into one
-/// array without either knowing about the other, and in an order that survives
-/// a relink -- and only then the type's own `compare`.
+/// differ, which is what lets two unrelated abstract types be sorted into one
+/// array in an order that survives a relink and needs nothing of either type.
+/// The type's own `compare` is consulted only after that.
 fn theOrderOfAbstracts() void {
     const a = mkcell(1);
     const b = mkcell(2);
@@ -813,7 +848,7 @@ fn theOrderOfAbstracts() void {
         @intFromPtr(wrap.toAbstract(q))) 1 else -1));
 
     // Different types: decided by the names, before either type's callback
-    // could be consulted -- the cell type has one and it is not used. The
+    // could be consulted, and the cell type has one that is not used. The
     // direction is asserted absolutely, from the names spelled out here rather
     // than read off the descriptors, because "some stable order" is satisfied
     // by the reverse of this one and the reverse is a different language.
@@ -828,104 +863,56 @@ fn theOrderOfAbstracts() void {
     expect(std.mem.lessThan(u8, "value-order/bare", "value-order/cell"));
     expect(order.compare(a, p) == 1);
 
-    // And the order does not depend on where the descriptors landed, which is
-    // what the previous answer did depend on.
+    // And the order does not depend on where the descriptors landed, which
+    // the identity comparison above it does.
     expect(@intFromPtr(bareType()) != @intFromPtr(otherType()));
 }
 
-// --------------------------------------------------------------- traversal
-
-/// Build a tuple nested `depth` levels deep: `(0 (1 (2 ... leaf)))`.
+/// The base slot is never used: the stack pointer is pre-incremented before a
+/// node is stored, and the walk stops strictly above the base. So a comparison
+/// that pushes exactly one node and stops inside it leaves the pointer one past
+/// the base, and one that runs to the end leaves it *at* the base.
 ///
-/// Twenty thousand levels is megabytes of allocation and the collector will run
-/// part way through, so the accumulator is rooted across every allocation that
-/// could trigger one. A value held only in a Zig local is not reachable, and
-/// each level here is kept alive solely by the level above it -- so losing the
-/// accumulator for the length of one `tuples.begin` would free the entire
-/// chain built so far. The successor is rooted before its predecessor is
-/// released, never the other way round.
-///
-/// The result is left rooted and the caller unroots it.
-fn nestTuples(depth: i32, leaf: repr.Value) repr.Value {
-    var acc = leaf;
-    gc_alloc.gcroot(acc);
-    var i: i32 = 0;
-    while (i < depth) : (i += 1) {
-        const items = [_]repr.Value{ intv(i), acc };
-        const next = mktuple(&items, false);
-        gc_alloc.gcroot(next);
-        _ = gc_alloc.gcunroot(acc);
-        acc = next;
-    }
-    return acc;
-}
-
-/// Build a struct nested `depth` levels deep: `{:k {:k {:k leaf}}}`, rooted the
-/// same way and on the same terms.
-fn nestStructs(depth: i32, leaf: repr.Value) repr.Value {
-    var acc = leaf;
-    gc_alloc.gcroot(acc);
-    var i: i32 = 0;
-    while (i < depth) : (i += 1) {
-        const kvs = [_]repr.Value{ kw("k"), acc };
-        const next = mkstruct(&kvs, null);
-        gc_alloc.gcroot(next);
-        _ = gc_alloc.gcunroot(acc);
-        acc = next;
-    }
-    return acc;
-}
-
-/// The traversal is an explicit stack, not recursion. Twenty thousand levels of
-/// nesting is a value a parser will produce and a depth a recursive comparison
-/// would not survive on any default thread stack.
-///
-/// Both directions are asserted: equal all the way down, and differing only at
-/// the very bottom, so that the walk is shown to reach the leaf rather than
-/// stopping early and returning a hopeful answer.
-fn deepTuplesDoNotRecurse() void {
-    const a = nestTuples(20000, intv(0));
-    const b = nestTuples(20000, intv(0));
-    const d = nestTuples(20000, intv(1));
-    defer {
-        _ = gc_alloc.gcunroot(a);
-        _ = gc_alloc.gcunroot(b);
-        _ = gc_alloc.gcunroot(d);
-    }
+/// Observed through `order.compare` rather than `order.equals`, and the reason
+/// is worth stating because it governs the two cases above as well. `equals`
+/// compares the stored hashes of two tuples before it pushes anything, so two
+/// tuples that differ almost never reach the traversal at all: the only inputs
+/// that get `equals` into the stack are ones that are *equal*, and those run
+/// to completion. `compare` has no such exit, an ordering being unable to stop
+/// at "different", so it always pushes.
+fn theBaseSlotIsDead() void {
+    const items = [_]repr.Value{intv(0)};
+    const other = [_]repr.Value{intv(1)};
+    const a = mktuple(&items, false);
+    const b = mktuple(&items, false);
+    const d = mktuple(&other, false);
 
     expect(harness.equals(a, b));
-    expect(!harness.equals(a, d));
+    expect(stackDepth() == 0);
     expect(order.compare(a, b) == 0);
+    expect(stackDepth() == 0);
+
+    // Stops inside the tuple's node, which is therefore still on the stack.
     expect(order.compare(a, d) == -1);
-    expect(order.compare(d, a) == 1);
-}
+    expect(stackDepth() == 1);
 
-fn deepStructsDoNotRecurse() void {
-    const a = nestStructs(20000, intv(0));
-    const b = nestStructs(20000, intv(0));
-    const d = nestStructs(20000, intv(1));
-    defer {
-        _ = gc_alloc.gcunroot(a);
-        _ = gc_alloc.gcunroot(b);
-        _ = gc_alloc.gcunroot(d);
-    }
-
-    expect(harness.equals(a, b));
+    // And `order.equals` settles the same pair on the stored hash, without
+    // pushing at all, which is what the block above claims.
+    expect(tupleHash(wrap.toTuple(a)) != tupleHash(wrap.toTuple(d)));
     expect(!harness.equals(a, d));
-    expect(order.compare(a, b) == 0);
-    expect(order.compare(a, d) == -1);
+    expect(stackDepth() == 0);
 }
 
 /// A long prototype chain is walked by the same stack, and the hop at the
-/// bottom of the traversal replaces the current node rather than pushing on top
-/// of it -- so comparing a chain of N prototypes does not need N nodes.
+/// bottom of the traversal replaces the current node rather than pushing on
+/// top of it, so comparing a chain of N prototypes does not need N nodes.
 ///
 /// A successful comparison ends with the stack pointer back at the base, so the
 /// depth afterwards says nothing. What does say something is the *capacity*,
 /// which only ever grows and starts at a floor of 128: if the hop pushed, five
-/// hundred levels would have forced two doublings. This is why this case runs
-/// before the deep ones -- they grow the array past the floor and it is never
-/// given back.
+/// hundred levels would have forced two doublings. That is what puts this
+/// case before the deep ones: they grow the array past the floor and it is
+/// never given back.
 fn thePrototypeHopReplacesTheNode() void {
     const kvs = [_]repr.Value{ kw("a"), intv(1) };
     var a = wrap.fromNil();
@@ -966,6 +953,32 @@ fn thePrototypeHopReplacesTheNode() void {
     expect(levels == 500);
 }
 
+/// The stack grows by doubling from a floor of 128 nodes and never shrinks, so
+/// a deep comparison after a shallow one reuses the array. Asserted on the
+/// capacity in nodes, which is the growth policy and nothing else.
+fn theStackGrowthPolicy() void {
+    expect(harness.equals(intv(1), intv(1)));
+    if (harness.vm().traversal.base != null) expect(stackCapacity() >= 128);
+
+    const a = nestTuples(5000, intv(0));
+    const b = nestTuples(5000, intv(0));
+    defer {
+        _ = gc_alloc.gcunroot(a);
+        _ = gc_alloc.gcunroot(b);
+    }
+    expect(harness.equals(a, b));
+
+    const grown = stackCapacity();
+    expect(grown >= 5000);
+    // Doubling, so never far past what was needed.
+    expect(grown < 4 * 5001);
+
+    // And the array is not given back: a shallow comparison afterwards leaves
+    // the capacity where it was.
+    expect(harness.equals(intv(1), intv(1)));
+    expect(stackCapacity() == grown);
+}
+
 /// Neither entry point pops what it pushed: an early rejection deep inside a
 /// traversal leaves nodes on the stack. That is only sound because the next
 /// comparison resets the pointer on the way in, which is asserted by running a
@@ -995,71 +1008,64 @@ fn theStackIsResetNotUnwound() void {
     _ = gc_alloc.gcunroot(deep_c);
 }
 
-/// The stack grows by doubling from a floor of 128 nodes and never shrinks, so
-/// a deep comparison after a shallow one reuses the array. Asserted on the
-/// capacity in nodes, which is the growth policy and nothing else.
-fn theStackGrowthPolicy() void {
-    expect(harness.equals(intv(1), intv(1)));
-    if (harness.vm().traversal.base != null) expect(stackCapacity() >= 128);
-
-    const a = nestTuples(5000, intv(0));
-    const b = nestTuples(5000, intv(0));
+/// The traversal is an explicit stack, not recursion. Twenty thousand levels of
+/// nesting is a value a parser will produce and a depth a recursive comparison
+/// would not survive on any default thread stack.
+///
+/// Both directions are asserted: equal all the way down, and differing only
+/// at the very bottom, so that the walk is shown to reach the leaf rather than
+/// stopping early on a guess.
+fn deepTuplesDoNotRecurse() void {
+    const a = nestTuples(20000, intv(0));
+    const b = nestTuples(20000, intv(0));
+    const d = nestTuples(20000, intv(1));
     defer {
         _ = gc_alloc.gcunroot(a);
         _ = gc_alloc.gcunroot(b);
+        _ = gc_alloc.gcunroot(d);
     }
-    expect(harness.equals(a, b));
-
-    const grown = stackCapacity();
-    expect(grown >= 5000);
-    // Doubling, so never far past what was needed.
-    expect(grown < 4 * 5001);
-
-    // And the array is not given back: a shallow comparison afterwards leaves
-    // the capacity where it was.
-    expect(harness.equals(intv(1), intv(1)));
-    expect(stackCapacity() == grown);
-}
-
-/// The base slot is never used: the stack pointer is pre-incremented before a
-/// node is stored, and the walk stops strictly above the base. So a comparison
-/// that pushes exactly one node and stops inside it leaves the pointer one past
-/// the base, and one that runs to the end leaves it *at* the base.
-///
-/// Observed through `order.compare` rather than `order.equals`, and the reason
-/// is worth stating because it governs the two cases above as well. `equals`
-/// compares the stored hashes of two tuples before it pushes anything, so two
-/// tuples that differ almost never reach the traversal at all -- the only
-/// inputs that get `equals` into the stack are ones that are *equal*, which
-/// then run to completion. `compare` has no such exit, since an ordering
-/// cannot stop at "different", so it always pushes.
-fn theBaseSlotIsDead() void {
-    const items = [_]repr.Value{intv(0)};
-    const other = [_]repr.Value{intv(1)};
-    const a = mktuple(&items, false);
-    const b = mktuple(&items, false);
-    const d = mktuple(&other, false);
 
     expect(harness.equals(a, b));
-    expect(stackDepth() == 0);
-    expect(order.compare(a, b) == 0);
-    expect(stackDepth() == 0);
-
-    // Stops inside the tuple's node, which is therefore still on the stack.
-    expect(order.compare(a, d) == -1);
-    expect(stackDepth() == 1);
-
-    // And `order.equals` settles the same pair on the stored hash, without
-    // pushing at all -- which is the claim the comment above makes.
-    expect(tupleHash(wrap.toTuple(a)) != tupleHash(wrap.toTuple(d)));
     expect(!harness.equals(a, d));
-    expect(stackDepth() == 0);
+    expect(order.compare(a, b) == 0);
+    expect(order.compare(a, d) == -1);
+    expect(order.compare(d, a) == 1);
 }
 
-// ------------------------------------------------------------ the contract
+/// Build a struct nested `depth` levels deep: `{:k {:k {:k leaf}}}`, rooted the
+/// same way and on the same terms.
+fn nestStructs(depth: i32, leaf: repr.Value) repr.Value {
+    var acc = leaf;
+    gc_alloc.gcroot(acc);
+    var i: i32 = 0;
+    while (i < depth) : (i += 1) {
+        const kvs = [_]repr.Value{ kw("k"), acc };
+        const next = mkstruct(&kvs, null);
+        gc_alloc.gcroot(next);
+        _ = gc_alloc.gcunroot(acc);
+        acc = next;
+    }
+    return acc;
+}
+
+fn deepStructsDoNotRecurse() void {
+    const a = nestStructs(20000, intv(0));
+    const b = nestStructs(20000, intv(0));
+    const d = nestStructs(20000, intv(1));
+    defer {
+        _ = gc_alloc.gcunroot(a);
+        _ = gc_alloc.gcunroot(b);
+        _ = gc_alloc.gcunroot(d);
+    }
+
+    expect(harness.equals(a, b));
+    expect(!harness.equals(a, d));
+    expect(order.compare(a, b) == 0);
+    expect(order.compare(a, d) == -1);
+}
 
 /// The three functions against one corpus covering every `repr.Tag`, checking
-/// the relations that hold *between* them rather than any one in isolation:
+/// the relations *between* them rather than any one in isolation:
 ///
 ///   - `order.compare` is a total order: reflexive, antisymmetric, and its
 ///     sign agrees with `order.equals` being zero.
@@ -1133,8 +1139,6 @@ fn theRelationsHoldOverACorpus() void {
     }
 }
 
-// ------------------------------------------------------- through the runtime
-
 /// The same properties once more, reached the way a Janet program reaches them,
 /// so that the entry points above are shown to be the ones the language is
 /// actually built on.
@@ -1165,9 +1169,9 @@ fn fromJanet() void {
     expect(repr.truthy(r[7]));
     expect(repr.truthy(r[8]));
     // `sorted` puts the types in `repr.Tag` order, which is the ordering
-    // across types this file pins from the outside -- and that order starts
-    // with numbers, because `JANET_NUMBER` is zero. It returns an array, not a
-    // tuple.
+    // across types this file pins from the outside, and that order starts with
+    // numbers because the number tag is zero. It returns an array rather than
+    // a tuple.
     const sortd = wrap.toArray(r[9]).data;
     expect(wrap.toInteger(sortd.?[0]) == 1);
     expect(wrap.toInteger(sortd.?[1]) == 2);
@@ -1179,7 +1183,9 @@ fn fromJanet() void {
     expect(repr.truthy(r[10]));
 }
 
-// ------------------------------------------------------------------- main
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

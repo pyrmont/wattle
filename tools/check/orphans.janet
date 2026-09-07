@@ -24,11 +24,19 @@
 #
 # The declared name, spelled anywhere in `src/`, `test/`, `examples/` or
 # `build.zig` other than at its own declaration, in code rather than in a
-# comment. That is deliberately loose: a name is a reference if any file writes
-# it, however it reaches it -- `@import` qualified, bare inside its own file, in
-# an `@export`, in a `publish` assertion, in a `@field` string. A loose test
-# gives a **small** must-be-empty class and no false accusations, which is what
-# makes each row worth reading.
+# comment or a string literal. That is deliberately loose about *how* the name
+# is reached: `@import` qualified, bare inside its own file, in an `@export`, in
+# a `publish` assertion. A loose test gives a **small** must-be-empty class and
+# no false accusations, which is what makes each row worth reading.
+#
+# A string literal is not code for this question. `pub const date =
+# @import("runtime/os/date.zig")` names `date` twice on its own line, once as
+# the declaration and once inside the path, so counting the literal made the
+# whole of `root.zig`'s namespace block exempt itself. `debug.stacktrace` was
+# the case that mattered: nothing calls it, and it read as referenced because
+# `corefn.reg` registers `"debug/stacktrace"` beside it. Nothing in the tree
+# is reached only through a literal -- an `@export(&f, ...)` names `f` in code
+# on the same line -- so the strictness costs no row.
 #
 # ## The classes
 #
@@ -101,7 +109,11 @@
                            (tools/zig-files "test")
                            (tools/zig-files "examples")
                            @["build.zig"])
-    (put sources path (tools/strip-comments (slurp path))))
+    # `keep-literals` false: a name inside a docstring, a registration string
+    # or an `@import` path is prose or a path rather than a use of the
+    # declaration, and counting one hides a dead declaration behind its own
+    # mention.
+    (put sources path (tools/strip-comments (slurp path) false)))
 
   (def rows @[])
   (var total 0)

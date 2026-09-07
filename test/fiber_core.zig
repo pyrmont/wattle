@@ -1,80 +1,85 @@
 //! Behavioral contract for the fiber stack-frame machinery.
 //!
-//! Almost everything here is exercised constantly by the Janet suites — every
-//! function call in the language goes through `fibers.funcframe` — so
-//! what this file is for is the edges the suites reach only by accident: the
-//! arity boundaries, an empty variadic tail against a non-empty one, a tail
-//! call that has to move its arguments down over the frame it is replacing,
-//! and the environment validator, whose whole job is to reject input the
-//! suites never produce.
+//! Almost everything here is exercised constantly by the Janet suites, every
+//! function call in the language going through `fibers.funcframe`, so what
+//! this file is for is the edges the suites reach only by accident: the arity
+//! boundaries, an empty variadic tail against a non-empty one, a tail call
+//! that has to move its arguments down over the frame it is replacing, and the
+//! environment validator, whose whole job is to reject input the suites never
+//! produce.
 //!
-//! ## The four pushes have no abi left
+//! ## The four pushes are reached by import
 //!
 //! Each of `fibers.push`, `pushn`, `push2` and `push3` raises "stack overflow"
-//! by returning `raise.Error`, and nothing wraps that into a report. A
-//! contract on the far side of a symbol table would have to test both forms,
-//! because they would be two mechanisms carrying one decision.
+//! by returning `raise.Error`, and nothing wraps that into a report. The
+//! interpreter reaches the kernels directly and so does the overflow section
+//! below, so there is one mechanism to test rather than two.
 //!
-//! All four are gone: the interpreter reaches the kernels by import, and a C
-//! contract was the last caller of each.
+//! ## The bounds are tested one apart
 //!
-//! **This file predicted that and had to be edited for it**, which is the
-//! point worth keeping. The abi case here was the last caller of the push abi
-//! in the whole tree -- a contract testing an abi that existed for nobody -- so deleting the abi turned it into a compile error
-//! naming its own line. An abi whose only remaining caller is the contract
-//! that tests it is an abi with no callers; the test is not a use.
-//! So the overflow section reaches four kernels by import, where the original
-//! reached four of each.
-//!
-//! ## What did not change
-//!
-//! The bounds are still tested one apart. Each push reserves room for what it
-//! is about to write, so a single push refuses only at `INT32_MAX` itself and
-//! the three-value push refuses two slots earlier; testing them at a common
-//! value would leave three of the four bounds unobserved. Setting `stacktop`
-//! by hand reaches the guard in a few instructions and is safe to do because
-//! every one of the four checks its bound *before* it touches `fiber.data`.
+//! Each push reserves room for what it is about to write, so a single push
+//! refuses only at `INT32_MAX` itself and the three-value push refuses two
+//! slots earlier. Testing them at a common value would leave three of the four
+//! bounds unobserved. Setting `stacktop` by hand reaches the guard in a few
+//! instructions and is safe to do because every one of the four checks its
+//! bound *before* it touches `fiber.data`.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
-const repr = @import("repr");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
+const arrays = @import("subsystems").value.arrays;
 const constants = @import("constants");
-const options = @import("options");
-const raise = @import("subsystems").raise;
-const value = @import("subsystems").value;
-const harness = @import("harness.zig");
+const core_env = @import("subsystems").env;
+const expect = @import("expect.zig").expect;
+const fibers = @import("subsystems").value.fibers;
 const functions = @import("subsystems").value.functions;
 const gc_alloc = @import("subsystems").gc_alloc;
-const utils = @import("subsystems").utils;
-const core_env = @import("subsystems").env;
-const vm_entry = @import("subsystems").vm_entry;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const arrays = @import("subsystems").value.arrays;
-const fibers = @import("subsystems").value.fibers;
-const tuples = @import("subsystems").value.tuples;
+const harness = @import("harness.zig");
+const options = @import("options");
+const raise = @import("subsystems").raise;
+const repr = @import("repr");
 const structs = @import("subsystems").value.structs;
-const abi = @import("abi");
-const vm_state = @import("subsystems").vm_state;
 const tables = @import("subsystems").value.tables;
+const tuples = @import("subsystems").value.tuples;
+const utils = @import("subsystems").utils;
+const value = @import("subsystems").value;
+const vm_entry = @import("subsystems").vm_entry;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const vm_state = @import("subsystems").vm_state;
+const wrap = @import("subsystems").value.wrap;
 
-const expect = @import("expect.zig").expect;
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+var child_charge: usize = 0;
+var child_saw_main: usize = 0;
+const frame_size: i32 = constants.JANET_FRAME_SIZE;
 
 /// `options.ev` is `hasEv(options)`, which is already
 /// `ev and !single_threaded`. Windows is cross-compiled and never executed
-/// here, so its path is left out rather than written blind — the same
+/// here, so its path is left out rather than written blind, on the same
 /// condition, and the same reason, as `test/gc_stress.zig`.
 const has_threads = options.ev and builtin.os.tag != .windows;
-
-const frame_size: i32 = constants.JANET_FRAME_SIZE;
-
 var test_env: *tables.Table = undefined;
 
-// The three frame helpers this file needs: the cast from a stack slot to the
-// header below it, that composed with the fiber's frame index, and a
-// read-modify-write over the status field. Six lines here rather than at each
-// of the twenty sites below.
+// ==========================================================================
+// Cases
+// ==========================================================================
 
+/// The cast from a stack slot to the frame header below it. `currentFrame`
+/// is this composed with the fiber's own frame index, and `setStatus` is a
+/// read-modify-write over the status field. Six lines here rather than at
+/// each of the twenty sites below.
 fn frameAt(fiber: *fibers.Fiber, index: i32) *vm_state.StackFrame {
     const base = fiber.data.? + @as(usize, @intCast(index));
     return @ptrCast(@alignCast(base - @as(usize, @intCast(frame_size))));
@@ -92,7 +97,24 @@ fn slot(fiber: *fibers.Fiber, index: i32) repr.Value {
     return fiber.data.?[@intCast(index)];
 }
 
-// ------------------------------------------------------- without a runtime
+fn compileFunction(source: [*:0]const u8) *functions.Function {
+    var out = wrap.fromNil();
+    expect(core_env.dostring(test_env, source, "fiber-core-test", &out) == 0);
+    expect(harness.isType(out, repr.Tag.function));
+    gc_alloc.gcroot(out);
+    return wrap.toFunction(out);
+}
+
+fn rootedFiber(func: *functions.Function, argv: []const repr.Value) *fibers.Fiber {
+    const fiber = fibers.new(func, 32, argv) catch unreachable;
+    gc_alloc.gcroot(wrap.fromFiber(fiber));
+    return fiber;
+}
+
+fn assertNilFrom(fiber: *fibers.Fiber, first: i32, last: i32) void {
+    var i = first;
+    while (i < last) : (i += 1) expect(harness.isType(slot(fiber, i), repr.Tag.nil));
+}
 
 /// `fibers.setcapacity` is reachable without a live VM: it resizes a plain
 /// allocation and charges the collector's byte budget, and touches nothing
@@ -112,10 +134,9 @@ fn setcapacityChargesTheBudget() void {
     expect(fiber.capacity == 100);
     expect(harness.vm().gc.next_collection == 100 * @sizeOf(repr.Value));
 
-    // Shrinking gives the difference back. The C original writes this as
-    // `next_collection += sizeof(Janet) * diff` with a negative `diff`, so the
-    // refund is an unsigned wraparound rather than a subtraction; the result is
-    // the same and the spelling is what a port could get wrong.
+    // Shrinking gives the difference back. The refund is a subtraction here
+    // rather than an add of a negative product, which would reach the same
+    // number through an unsigned wraparound.
     const before = harness.vm().gc.next_collection;
     fibers.setcapacity(&fiber, 60);
     expect(fiber.capacity == 60);
@@ -124,9 +145,6 @@ fn setcapacityChargesTheBudget() void {
     utils.free(fiber.data);
     harness.vm().gc.next_collection = 0;
 }
-
-var child_charge: usize = 0;
-var child_saw_main: usize = 0;
 
 fn chargeChildBudget() void {
     var fiber: fibers.Fiber = std.mem.zeroes(fibers.Fiber);
@@ -153,29 +171,6 @@ fn theBudgetIsPerThread() !void {
     expect(harness.vm().gc.next_collection == main_before);
     harness.vm().gc.next_collection = 0;
 }
-
-// ----------------------------------------------------------------- helpers
-
-fn compileFunction(source: [*:0]const u8) *functions.Function {
-    var out = wrap.fromNil();
-    expect(core_env.dostring(test_env, source, "fiber-core-test", &out) == 0);
-    expect(harness.isType(out, repr.Tag.function));
-    gc_alloc.gcroot(out);
-    return wrap.toFunction(out);
-}
-
-fn rootedFiber(func: *functions.Function, argv: []const repr.Value) *fibers.Fiber {
-    const fiber = fibers.new(func, 32, argv) catch unreachable;
-    gc_alloc.gcroot(wrap.fromFiber(fiber));
-    return fiber;
-}
-
-fn assertNilFrom(fiber: *fibers.Fiber, first: i32, last: i32) void {
-    var i = first;
-    while (i < last) : (i += 1) expect(harness.isType(slot(fiber, i), repr.Tag.nil));
-}
-
-// --------------------------------------------------------------- funcframes
 
 /// A fresh fiber's first frame: base at `JANET_FRAME_SIZE`, arguments at the
 /// frame's slot 0, every remaining slot nil because the collector walks them.
@@ -228,7 +223,7 @@ fn theFuncframeArityRejection(add: *functions.Function) raise.Raising(void) {
 }
 
 /// A variadic tail is a tuple, and an empty one is the empty tuple rather than
-/// a missing slot — the slot is a live local of the callee either way.
+/// a missing slot, the slot being a live local of the callee either way.
 fn theFuncframeVarargs(rest: *functions.Function) void {
     const args = [_]repr.Value{
         harness.wrapInteger(1),
@@ -252,10 +247,9 @@ fn theFuncframeVarargs(rest: *functions.Function) void {
 
 /// `&keys` sets the funcdef's `structarg` flag, and the tail is built with
 /// `structs.put` instead of `tuples.n`. An odd-length tail drops its last
-/// value, which is what the C original's own comment says it does and what
-/// `makeStructN`'s `i + 1 < len` makes true: the loop condition is the whole
-/// difference between ignoring that value and pairing it with the slot past
-/// the arguments.
+/// value, which is what `makeStructN`'s `i + 1 < len` decides: that loop
+/// condition is the whole difference between ignoring the value and pairing
+/// it with the slot past the arguments.
 fn theFuncframeStructargs(keyed: *functions.Function) void {
     const args = [_]repr.Value{
         harness.wrapInteger(1),
@@ -279,8 +273,8 @@ fn theFuncframeStructargs(keyed: *functions.Function) void {
     expect(structs.head(wrap.toStruct(tail)).length == 0);
 
     // An odd-length tail: the last key has no value, so it is dropped rather
-    // than paired with whatever the slot past the arguments holds. Four
-    // arguments -- one fixed and three keyed -- so the struct is one pair.
+    // than paired with whatever is in the slot past the arguments. Four
+    // arguments, one fixed and three keyed, so the struct is one pair.
     const odd = [_]repr.Value{
         harness.wrapInteger(1),
         value.fromBytes("a", .keyword),
@@ -295,8 +289,6 @@ fn theFuncframeStructargs(keyed: *functions.Function) void {
     expect(harness.integerIs(harness.field(oddstruct, "a"), 7));
     expect(harness.isType(harness.field(oddstruct, "b"), repr.Tag.nil));
 }
-
-// --------------------------------------------------------------- tail calls
 
 /// A tail call reuses the current frame: the arguments move down over the
 /// outgoing function's slots, the rest are nil'd, and the frame is repointed
@@ -377,15 +369,13 @@ fn theFuncframeTailVarargs(add: *functions.Function, rest: *functions.Function) 
     expect(tuples.head(wrap.toTuple(tail)).length == 0);
 }
 
-// ----------------------------------------------------------------- c frames
-
 fn aCfunction(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return wrap.fromNil();
 }
 
-/// A C frame carries the function in the slot a Janet frame uses for its
+/// A C frame puts the function in the slot a Janet frame uses for its
 /// program counter, and is recognised by its null `func`.
 fn theCframeAndPopframe(add: *functions.Function) raise.Raising(void) {
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
@@ -428,8 +418,6 @@ fn theCframeAndPopframe(add: *functions.Function) raise.Raising(void) {
     expect(fiber.stackstart == stacktop);
 }
 
-// ------------------------------------------------------------------ pushes
-
 fn thePushes(add: *functions.Function) raise.Raising(void) {
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
@@ -457,8 +445,8 @@ fn thePushes(add: *functions.Function) raise.Raising(void) {
     while (i < 9) : (i += 1) expect(harness.integerIs(slot(fiber, start + i), 100 + i));
 
     // A zero-length push accepts a null array. That is what `safe_memcpy` is
-    // for — `memcpy` with a null source is undefined however long it is told
-    // to copy — and `pushn` is called that way.
+    // for, `memcpy` with a null source being undefined however long it is
+    // told to copy, and `pushn` is called that way.
     try fibers.pushn(fiber, &.{});
     expect(fiber.stacktop == start + 9);
 
@@ -525,8 +513,8 @@ fn thePushBounds(add: *functions.Function) raise.Raising(void) {
 /// `JOP_PUSH_ARRAY` is the one push whose count comes from a value rather than
 /// from the instruction, so an array claiming `INT32_MAX` elements drives
 /// `pushn` past its bound without the contract having to reach inside a
-/// running fiber. Nothing dereferences the claim — `args.indexedView` copies
-/// the pointer and the count, and `pushn` checks the count first — but the
+/// running fiber. Nothing dereferences the claim, `args.indexedView` copying
+/// the pointer and the count and `pushn` checking the count first, but the
 /// collector would, so the array exists only inside a `gc.gclock`.
 ///
 /// What this observes that the section above cannot: the raise leaves
@@ -558,11 +546,10 @@ fn anOverflowThroughTheInterpreter() void {
     expect(tuples.head(wrap.toTuple(resumed.value)).length == 2);
 }
 
-// --------------------------------------------------- function environments
-
-/// `functions.envValid` exists for unmarshalled environments, which record their
-/// stack offset negated and are trusted only if a live frame of the fiber they
-/// name still matches them in offset, identity, and slot count. Each of those
+/// `functions.envValid` exists for unmarshalled environments, which record
+/// their stack offset negated and are trusted only if a live frame of the
+/// fiber they name still matches them in offset, identity and slot count. Each
+/// of those
 /// three is checked separately, because a validator that ignored one would
 /// pass every test built only from valid input.
 fn theEnvironmentValidator(add: *functions.Function, other: *functions.Function) void {
@@ -617,7 +604,7 @@ fn theEnvironmentValidator(add: *functions.Function, other: *functions.Function)
 fn anEnvironmentDetachesWhenItsFiberStops(add: *functions.Function) void {
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
-    // This half wants the unfiltered copy, which is what a function with no
+    // This half needs the unfiltered copy, which is what a function with no
     // inner closure gets.
     expect(add.def.?.closure_bitset == null);
 
@@ -706,8 +693,6 @@ fn detachHonoursTheClosureBitset(capturing: *functions.Function) void {
     utils.free(env.as.values);
 }
 
-// --------------------------------------------------------------- inspection
-
 fn statusAndResumability(add: *functions.Function) void {
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
@@ -751,7 +736,9 @@ fn theCurrentAndRootFiber(add: *functions.Function) void {
     harness.vm().root_fiber = saved_root;
 }
 
-// ------------------------------------------------------------------- main
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() raise.Raising(void) {
     test_env = harness.coreEnv();

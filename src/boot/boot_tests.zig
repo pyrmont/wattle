@@ -1,67 +1,60 @@
 //! The five smoke tests the image generator runs before it generates anything.
 //!
-//! They predate every contract in `test/` and they check the things a broken
-//! build breaks first: that an array grows, that a buffer's two ways of filling
-//! it agree, that number scanning matches the system's `atof`, that the version
-//! macros are self-consistent, and that a table round-trips. They run before
-//! the generator generates anything, which is the earliest point at which any
-//! of it can be checked at all.
+//! `boot.zig`'s `main` calls `all`, which runs the five in order, and nothing
+//! else calls them. They run before the core environment exists, so a raise
+//! has no protected scope above it and `expect` turns every failure into a
+//! panic naming the check.
+//!
+//! What each covers: `arrayTest` that an array grows, pops and compares
+//! elementwise; `bufferTest` that a buffer's two ways of filling it produce
+//! the same bytes; `numberTest` that number scanning matches the system's
+//! `atof` on base ten; `systemTest` the pointer width, reflexive equality over
+//! every immediate and both number forms, and structural equality over
+//! strings, symbols and tuples; and `tableTest` that a table puts, gets and
+//! removes.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
-const config = @import("config");
-const repr = @import("repr");
-const subsystems = @import("subsystems");
 
-const value = subsystems.value;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const arrays = subsystems.value.arrays;
 const buffers = subsystems.value.buffers;
+const config = @import("config");
+const order = subsystems.value.order;
+const repr = @import("repr");
+const scan = subsystems.scan;
+const subsystems = @import("subsystems");
 const tables = subsystems.value.tables;
 const tuples = subsystems.value.tuples;
+const value = subsystems.value;
 const wrap = subsystems.value.wrap;
-const order = subsystems.value.order;
-const scan = subsystems.scan;
 
-inline fn stringv(bytes: []const u8) repr.Value {
-    return value.fromBytes(bytes, .string);
-}
+// ==========================================================================
+// Public functions
+// ==========================================================================
 
-inline fn symbolv(bytes: []const u8) repr.Value {
-    return value.fromBytes(bytes, .symbol);
-}
-
-/// `janet_wrap_integer`, written out: `wrap.fromInteger` exists under every
-/// layout, and this says the generator's own numbers are doubles like any
-/// other, which is what the reflexive-equality cases below are checking.
-inline fn int(x: i32) repr.Value {
-    return wrap.fromNumber(@floatFromInt(x));
-}
-
-fn expect(ok: bool, comptime what: []const u8) void {
-    if (!ok) std.debug.panic("boot test failed: " ++ what, .{});
-}
-
-/// The three raising primitives, with the raise turned into a failure.
+/// Runs the five smoke tests in order.
 ///
-/// These run before the core environment exists, so there is no protected
-/// scope above them and a raise here is a broken build rather than a program
-/// error. `expect` says the same thing about every other line.
-fn push(array: *arrays.Array, x: repr.Value) void {
-    arrays.push(array, x) catch expect(false, "array push raised");
+/// `boot.zig`'s `main` is the one caller, and it calls this before it
+/// generates anything. A failed check panics rather than returning.
+pub fn all() void {
+    arrayTest();
+    bufferTest();
+    numberTest();
+    systemTest();
+    tableTest();
 }
 
-fn pushCstring(buffer: *buffers.Buffer, str: [*:0]const u8) void {
-    buffers.pushCString(buffer, str) catch expect(false, "buffer push raised");
-}
-
-fn pushU8(buffer: *buffers.Buffer, byte: u8) void {
-    buffers.pushU8(buffer, byte) catch expect(false, "buffer push raised");
-}
-
-fn checkType(x: repr.Value, tag: repr.Tag) bool {
-    return repr.checkType(x, tag);
-}
-
+/// Checks that an array grows, pops and compares elementwise.
+///
+/// A failed check panics.
 pub fn arrayTest() void {
     const array1 = arrays.new(10);
     const array2 = arrays.new(0);
@@ -86,6 +79,10 @@ pub fn arrayTest() void {
     expect(array1.*.count == 5, "array1 count after two pops");
 }
 
+/// Checks that a buffer's two ways of filling it produce the same bytes.
+///
+/// One buffer is filled with a C string and the other byte by byte, and the
+/// two are compared for count, capacity and contents. A failed check panics.
 pub fn bufferTest() void {
     const buffer1 = buffers.new(100);
     const buffer2 = buffers.new(0);
@@ -105,19 +102,10 @@ pub fn bufferTest() void {
     }
 }
 
-extern fn atof(str: [*:0]const u8) callconv(.c) f64;
-
-/// Check a subset of numbers against the system implementation.
+/// Checks that number scanning matches the system's `atof`.
 ///
-/// This depends on the system's `atof` being correct, which may not hold on an
-/// old or non-compliant one, and it can only check base ten. Both caveats
-/// still apply.
-fn validStr(comptime str: [:0]const u8) void {
-    const jnum = scan.scanNumber(str);
-    expect(jnum != null, "scan_number accepts " ++ str);
-    expect(atof(str.ptr) == jnum.?, "scan_number agrees with atof on " ++ str);
-}
-
+/// A failed check panics. This returns without checking anything on plan9,
+/// which has no `atof` to compare against.
 pub fn numberTest() void {
     if (builtin.os.tag == .plan9) return;
     inline for (.{
@@ -133,15 +121,19 @@ pub fn numberTest() void {
     }) |s| validStr(s);
 }
 
+/// Checks the pointer width, and equality over every immediate and both
+/// number forms.
+///
+/// Reflexive equality over the immediates is also the test of the NaN-boxed
+/// layouts, since a wrapped value that does not compare equal to itself is a
+/// wrong tag or a wrong payload. A failed check panics.
 pub fn systemTest() void {
     expect(@sizeOf(*anyopaque) == if (!config.bits64) 4 else 8, "pointer width");
 
-    // There is no version-consistency check here, and there is nothing left
-    // to check: `build.zig` has one `version`, and `version_string` is
-    // `comptimePrint`ed from `major`, `minor`, `patch` and `version_extra`.
-    // The whole is built from the parts, so the comparison is a tautology --
-    // `DESIGN.md` §3's phrase for exactly this: the property "stops being an
-    // agreement and becomes a construction".
+    // No version-consistency check, because there is nothing left to compare.
+    // `build.zig` has one `version`, and `version_string` is `comptimePrint`ed
+    // from `major`, `minor`, `patch` and `version_extra`, so the whole is
+    // built from the parts and the comparison would be a tautology.
 
     // Reflexive equality, which is also the nanbox test.
     expect(order.equals(wrap.fromNil(), wrap.fromNil()), "nil");
@@ -157,7 +149,7 @@ pub fn systemTest() void {
         "3.14159265",
     );
 
-    // A NaN is still a number, and `std.math.nan` names one directly.
+    // A NaN is still a number, and `std.math.nan` names a NaN directly.
     expect(
         checkType(wrap.fromNumber(std.math.nan(f64)), repr.Tag.number),
         "NaN is a number",
@@ -181,6 +173,10 @@ pub fn systemTest() void {
     expect(order.equals(tuple1, tuple2), "structurally equal tuples");
 }
 
+/// Checks that a table puts, gets and removes.
+///
+/// Removing a key and putting nil are the same operation, and the test covers
+/// both. A failed check panics.
 pub fn tableTest() void {
     const t1 = tables.new(10);
     const t2 = tables.new(0);
@@ -230,10 +226,71 @@ pub fn tableTest() void {
     expect(t2.*.count == 2, "t2 count after two removals");
 }
 
-pub fn all() void {
-    arrayTest();
-    bufferTest();
-    numberTest();
-    systemTest();
-    tableTest();
+// ==========================================================================
+// Private functions
+// ==========================================================================
+
+/// The C library's string-to-double conversion, which `validStr` compares
+/// number scanning against.
+extern fn atof(str: [*:0]const u8) callconv(.c) f64;
+
+/// Whether a value has this tag.
+fn checkType(x: repr.Value, tag: repr.Tag) bool {
+    return repr.checkType(x, tag);
+}
+
+/// Panics unless `ok`, naming `what` in the message.
+///
+/// These tests run before the core environment exists, so there is no
+/// protected scope above them and a failure is a broken build rather than a
+/// program error.
+fn expect(ok: bool, comptime what: []const u8) void {
+    if (!ok) std.debug.panic("boot test failed: " ++ what, .{});
+}
+
+/// An integer as a Janet number.
+///
+/// `wrap.fromInteger` exists under every layout, and writing the conversion
+/// out here says that the generator's own numbers are doubles like any other,
+/// which is what the reflexive-equality checks in `systemTest` rest on.
+inline fn int(x: i32) repr.Value {
+    return wrap.fromNumber(@floatFromInt(x));
+}
+
+/// The three raising primitives, with a raise turned into a failed check.
+///
+/// These run before the core environment exists, so there is no protected
+/// scope above them and a raise is a broken build rather than a program
+/// error. `expect` says the same of every other line.
+fn push(array: *arrays.Array, x: repr.Value) void {
+    arrays.push(array, x) catch expect(false, "array push raised");
+}
+
+fn pushCstring(buffer: *buffers.Buffer, str: [*:0]const u8) void {
+    buffers.pushCString(buffer, str) catch expect(false, "buffer push raised");
+}
+
+fn pushU8(buffer: *buffers.Buffer, byte: u8) void {
+    buffers.pushU8(buffer, byte) catch expect(false, "buffer push raised");
+}
+
+/// A slice of bytes as a Janet string.
+inline fn stringv(bytes: []const u8) repr.Value {
+    return value.fromBytes(bytes, .string);
+}
+
+/// A slice of bytes as a Janet symbol.
+inline fn symbolv(bytes: []const u8) repr.Value {
+    return value.fromBytes(bytes, .symbol);
+}
+
+/// Checks one number literal against the system's `atof`.
+///
+/// `str` is the literal, and it appears in the message of a failed check.
+/// This depends on the system's `atof` being correct, which may not hold on
+/// an old or non-compliant implementation, and it can only check base ten.
+fn validStr(comptime str: [:0]const u8) void {
+    const jnum = scan.scanNumber(str);
+    expect(jnum != null, "scan_number accepts " ++ str);
+    expect(atof(str.ptr) == jnum.?, "scan_number agrees with atof on " ++ str);
 }

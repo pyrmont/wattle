@@ -1,4 +1,4 @@
-//! The four polling backends: the Windows completion port, `epoll`, `kqueue`,
+//! The four polling backends: the Windows completion port, `epoll`, `kqueue`
 //! and `poll`. Part of the event loop; `ev.zig` has the reasoning for why the
 //! four files are one module.
 //!
@@ -6,36 +6,48 @@
 //! a container's declarations only when something references them, so exactly
 //! one backend is compiled per target and the other three cost nothing.
 //!
-//! **The selection and the VM's layout must agree.** `Vm` carries a different
-//! block per backend, so a build that compiled one arm and laid out another
-//! would read every field at the wrong offset. The `comptime` block below
-//! Windows arm, and the comptime check below asserts the two agree.
+//! The selection and the VM's layout must agree. `VmBackend` is a different
+//! block per backend and `vm/state.zig`'s `Vm` embeds one, so a build that
+//! compiled one arm and laid out another would read every field at the wrong
+//! offset. The `comptime` block at the foot of this file asserts the two
+//! agree, in the two ways they could disagree: the platform test against the
+//! build's, and the two POSIX switches against each other.
 //!
-//! **No host structure is translated.** `struct kevent`, `struct epoll_event`,
+//! No host structure is translated. `struct kevent`, `struct epoll_event`,
 //! `struct itimerspec` and `struct pollfd` come from `std`, which declares
 //! each per target, and `std` is where a structure with a per-target layout
 //! should come from. The calls themselves are one-line `extern fn`s.
 
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
+
 const std = @import("std");
 const builtin = @import("builtin");
-const raise = @import("../../api/raise.zig");
-const pp_format = @import("../pp/format.zig");
-const ev = @import("../ev.zig");
-const ev_core = @import("../ev.zig");
-const stream_mod = @import("stream.zig");
 
-const constants = @import("constants");
-const vm_state = @import("../vm/state.zig");
-const ev_callback = @import("../callback_type.zig");
-const config = @import("config");
-const utils = @import("../utils.zig");
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const c = @import("cabi");
+const config = @import("config");
+const constants = @import("constants");
+const ev = @import("../ev.zig");
+const ev_callback = @import("../callback_type.zig");
 const fibers = @import("../value/fibers.zig");
 const host = @import("host");
-const windows = ev.windows;
+const pp_format = @import("../pp/format.zig");
+const raise = @import("../../api/raise.zig");
+const stream_mod = @import("stream.zig");
+const utils = @import("../utils.zig");
+const vm_state = @import("../vm/state.zig");
 
-pub const Backend = enum { iocp, epoll, kqueue, poll };
+// ==========================================================================
+// Constants
+// ==========================================================================
 
+/// The backend this build compiles, which follows the platform and the two
+/// switches `-Depoll` and `-Dkqueue`.
 pub const selected: Backend = if (windows)
     .iocp
 else if (config.ev_epoll)
@@ -45,190 +57,152 @@ else if (config.ev_kqueue)
 else
     .poll;
 
-comptime {
-    // The backend follows the platform and two `-D` switches, and `Vm` is laid
-    // out differently per backend. If the two ever disagreed, every field this
-    // file names would be at the wrong offset. Assert the agreement rather
-    // than hope for it.
-    if (windows != (builtin.os.tag == .windows)) {
-        @compileError("ev_backend: the translation and the build disagree about Windows");
-    }
-    if (!windows and config.ev_epoll and config.ev_kqueue) {
-        @compileError("ev_backend: the translation selects two POSIX backends");
-    }
-}
-
-/// The event loop's per-mechanism state. Four arms, chosen the way
-/// `build.zig` chooses the backend, and each holds exactly what its own
-/// arm below reads. `vm/state.zig`'s `Vm` carries one.
-///
-/// `new_thread_attr` and `selfpipe` are in three of the four rather than in
-/// `VmEv`: they are what a POSIX backend needs to start a thread and to wake
-/// itself, and Windows does neither that way.
-pub const VmBackend = if (builtin.os.tag == .windows)
-    struct {
-        iocp: ?[*]?*anyopaque = null,
-        connect_ex: ?*anyopaque = null,
-        connect_ex_loaded: bool = false,
-    }
-else if (config.ev_epoll)
-    struct {
-        new_thread_attr: host.pthread_attr_t = std.mem.zeroes(host.pthread_attr_t),
-        selfpipe: [2]host.Handle = std.mem.zeroes([2]host.Handle),
-        epoll: c_int = 0,
-        timerfd: c_int = 0,
-        timer_enabled: bool = false,
-    }
-else if (config.ev_kqueue)
-    struct {
-        new_thread_attr: host.pthread_attr_t = std.mem.zeroes(host.pthread_attr_t),
-        selfpipe: [2]host.Handle = std.mem.zeroes([2]host.Handle),
-        kq: c_int = 0,
-        timer_enabled: bool = false,
-    }
-else
-    struct {
-        new_thread_attr: host.pthread_attr_t = std.mem.zeroes(host.pthread_attr_t),
-        selfpipe: [2]host.Handle = std.mem.zeroes([2]host.Handle),
-        streams: ?[*]*stream_mod.Stream = null,
-        stream_count: usize = 0,
-        stream_capacity: usize = 0,
-        fds: ?[*]std.c.pollfd = null,
-    };
-
-/// The four backends wear one interface, and several of its entry points
-/// declare an error that only some of them return: `init` raises on `iocp` and
-/// on `epoll`, `edgeTriggered`, `levelTriggered` and `unregister` only on
-/// `epoll`, `register` on `iocp` and `epoll`, and `kqueue` and `poll` raise
-/// from none of them.
-///
-/// A function that cannot raise should not pretend it can, and this is the
-/// exception that rule has to make. The dispatch below picks a backend at
-/// comptime and calls it by name; if the signatures differed per backend, the
-/// *call site* would need a `try` on some targets and not on others, which is
-/// not something one source line can be. A cross-compile is what finds a
-/// disagreement, because the host build never compiles the other arms.
-const impl = switch (selected) {
-    .iocp => Iocp,
-    .epoll => Epoll,
-    .kqueue => Kqueue,
-    .poll => Poll,
-};
+/// Whether this target takes the completion-port arm, read from `ev.zig` so
+/// that the whole subsystem tests it in one place.
+const windows = ev.windows;
 
 // ==========================================================================
-// The seam the rest of the object uses
+// Types
 // ==========================================================================
 
-pub inline fn registerStream(s: *stream_mod.Stream) raise.Raising(void) {
-    try impl.register(s);
-}
+/// The four mechanisms a build can poll with.
+pub const Backend = enum { iocp, epoll, kqueue, poll };
 
-pub inline fn unregisterStream(s: *stream_mod.Stream) raise.Raising(void) {
-    try impl.unregister(s);
-}
+/// The Linux backend, over `epoll` and a `timerfd`.
+const Epoll = struct {
+    const linux = std.os.linux;
 
-pub inline fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Raising(void) {
-    try impl.loop1(has_timeout, timeout);
-}
+    const EPOLL_CTL_ADD: c_int = linux.EPOLL.CTL_ADD;
+    const EPOLL_CTL_DEL: c_int = linux.EPOLL.CTL_DEL;
+    const EPOLL_CTL_MOD: c_int = linux.EPOLL.CTL_MOD;
+    const EPOLLIN: u32 = linux.EPOLL.IN;
+    const EPOLLOUT: u32 = linux.EPOLL.OUT;
+    const EPOLLERR: u32 = linux.EPOLL.ERR;
+    const EPOLLHUP: u32 = linux.EPOLL.HUP;
+    const EPOLLET: u32 = linux.EPOLL.ET;
+    const EPOLL_CLOEXEC: c_int = @intCast(linux.EPOLL.CLOEXEC);
+    /// `TFD_CLOEXEC` and `TFD_NONBLOCK` are `O_CLOEXEC` and `O_NONBLOCK`, and
+    /// `TFD_TIMER_ABSTIME` is 1 on every architecture Linux supports.
+    const TFD_CLOEXEC: c_int = EPOLL_CLOEXEC;
+    const TFD_NONBLOCK: c_int = @intCast(@as(u32, @bitCast(linux.TFD{ .NONBLOCK = true })));
+    const TFD_TIMER_ABSTIME: c_int = 1;
+    const CLOCK_MONOTONIC: c_int = @intFromEnum(linux.CLOCK.MONOTONIC);
 
-pub fn evInit() raise.Raising(void) {
-    ev.evInitCommon();
-    try impl.init();
-}
+    const max_events = 64;
 
-pub fn evDeinit() void {
-    ev.evDeinitCommon();
-    impl.deinit();
-}
-
-pub fn edgeTriggeredStream(s: *stream_mod.Stream) raise.Raising(void) {
-    try impl.edgeTriggered(s);
-}
-
-pub fn levelTriggeredStream(s: *stream_mod.Stream) raise.Raising(void) {
-    try impl.levelTriggered(s);
-}
-
-// ==========================================================================
-// The self pipe
-// ==========================================================================
-
-/// On Windows the completion port carries custom events itself, so there is no
-/// self pipe at all; every other backend needs a descriptor it can wake by
-/// writing to.
-const SelfPipe = struct {
-    fn setup() void {
-        if (stream_mod.makePipe(&vm_state.current().ev.backend.selfpipe, 1) != 0) {
-            ev.exitWith(@src(), "failed to initialize self pipe in event loop");
-        }
-    }
-
-    /// Drain the pipe, running each posted callback. One short read ends it.
-    ///
-    /// **The reference is given back whether or not there is a callback**, and
-    /// that is what balances `ev.zig`'s `evPostEvent`, which takes one
-    /// unconditionally so the loop cannot decide it is done while an event is
-    /// in flight. `ev.ThreadedCallback` is optional, so an event with no
-    /// callback is one the type admits, and putting the decrement inside the
-    /// null test would leave a loop that received one never finishing. **No
-    /// caller posts one today**: every `evPostEvent` in the tree passes a
-    /// callback. The completion-port handler below already decrements outside
-    /// the test.
-    fn handle() void {
-        var response: ev.SelfPipeEvent = undefined;
-        while (true) {
-            const status = c.retryIntr(c.read, .{ vm_state.current().ev.backend.selfpipe[0], @as([*]u8, @ptrCast(&response)), @sizeOf(ev.SelfPipeEvent) });
-            if (status <= 0) return;
-            if (response.cb) |cb| cb(response.msg);
-            ev.evDecRefcount();
-        }
-    }
-
-    fn cleanup() void {
+    fn init() raise.Raising(void) {
+        SelfPipe.setup();
         const b = &vm_state.current().ev.backend;
-        _ = c.close(b.selfpipe[0]);
-        _ = c.close(b.selfpipe[1]);
+        b.epoll = c.epoll_create1(EPOLL_CLOEXEC);
+        b.timerfd = c.timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+        b.timer_enabled = false;
+        if (b.epoll != -1 and b.timerfd != -1) {
+            var event: c.EpollEvent = .{ .events = EPOLLIN | EPOLLET, .data = .{ .ptr = @intFromPtr(&b.timerfd) } };
+            if (c.epoll_ctl(b.epoll, EPOLL_CTL_ADD, b.timerfd, &event) != -1) {
+                event = .{ .events = EPOLLIN | EPOLLET, .data = .{ .ptr = @intFromPtr(&b.selfpipe) } };
+                if (c.epoll_ctl(b.epoll, EPOLL_CTL_ADD, b.selfpipe[0], &event) != -1) return;
+            }
+        }
+        ev.exitWith(@src(), "failed to initialize event loop");
+    }
+
+    fn deinit() void {
+        const b = &vm_state.current().ev.backend;
+        _ = c.close(b.epoll);
+        _ = c.close(b.timerfd);
+        SelfPipe.cleanup();
+        b.epoll = 0;
+    }
+
+    fn registerImpl(s: *stream_mod.Stream, mod: bool, edge_trigger: bool) raise.Raising(void) {
+        var event: c.EpollEvent = .{
+            .events = if (edge_trigger) EPOLLET else 0,
+            .data = .{ .ptr = @intFromPtr(s) },
+        };
+        const readable: u32 = @intCast(constants.JANET_STREAM_READABLE | constants.JANET_STREAM_ACCEPTABLE);
+        if (s.flags & readable != 0) event.events |= EPOLLIN;
+        if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_WRITABLE)) != 0) event.events |= EPOLLOUT;
+        const status = c.retryIntr(c.epoll_ctl, .{
+            vm_state.current().ev.backend.epoll,
+            if (mod) EPOLL_CTL_MOD else EPOLL_CTL_ADD,
+            s.handle,
+            &event,
+        });
+        if (status == -1) {
+            if (c.errno() == ev.EPERM) {
+                // Couldn't add to the event loop, so assume it completes
+                // synchronously.
+                s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
+            } else {
+                return raise.panicv(stream_mod.evLasterr());
+            }
+        }
+    }
+
+    fn register(s: *stream_mod.Stream) raise.Raising(void) {
+        try registerImpl(s, false, true);
+    }
+
+    fn edgeTriggered(s: *stream_mod.Stream) raise.Raising(void) {
+        try registerImpl(s, true, true);
+    }
+
+    fn levelTriggered(s: *stream_mod.Stream) raise.Raising(void) {
+        try registerImpl(s, true, false);
+    }
+
+    /// `ENOENT` is not an error here. epoll keys a registration by
+    /// descriptor, so a stream whose descriptor was duplicated, which is what
+    /// an unsafe marshal does, was never added under the number it is now
+    /// being removed by. Deregistering something that is not registered is the
+    /// state this is trying to reach, and kqueue reaches it silently. Anything
+    /// else is still raised.
+    fn unregister(s: *stream_mod.Stream) raise.Raising(void) {
+        if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) != 0) return;
+        const status = c.retryIntr(c.epoll_ctl, .{ vm_state.current().ev.backend.epoll, EPOLL_CTL_DEL, s.handle, null });
+        if (status == -1 and c.errno() != @intFromEnum(std.c.E.NOENT)) return raise.panicv(stream_mod.evLasterr());
+        s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
+    }
+
+    fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Raising(void) {
+        const b = &vm_state.current().ev.backend;
+        if (b.timer_enabled or has_timeout) {
+            var its = std.mem.zeroes(c.ITimerSpec);
+            if (has_timeout) {
+                its.it_value.sec = @intCast(@divTrunc(timeout, 1000));
+                its.it_value.nsec = @intCast(@rem(timeout, 1000) * 1000000);
+            }
+            _ = c.timerfd_settime(b.timerfd, TFD_TIMER_ABSTIME, &its, null);
+        }
+        b.timer_enabled = has_timeout;
+
+        var events: [max_events]c.EpollEvent = undefined;
+        const ready = c.retryIntr(c.epoll_wait, .{ b.epoll, &events, max_events, -1 });
+        if (ready == -1) ev.exitWith(@src(), "failed to poll events");
+
+        for (events[0..@as(usize, @intCast(ready))]) |event| {
+            const p = event.data.ptr;
+            if (p == @intFromPtr(&b.timerfd)) {
+                // Timer expired, ignore.
+            } else if (p == @intFromPtr(&b.selfpipe)) {
+                SelfPipe.handle();
+            } else {
+                const s: *stream_mod.Stream = @ptrFromInt(p);
+                const mask = event.events;
+                try stepMasked(
+                    s,
+                    mask & EPOLLIN != 0,
+                    mask & EPOLLOUT != 0,
+                    mask & EPOLLERR != 0,
+                    mask & EPOLLHUP != 0,
+                    false,
+                );
+            }
+        }
     }
 };
 
-/// Deliver one event to whichever fiber is waiting on `s`, for the two
-/// backends that report a bare readiness mask.
-fn stepMasked(s: *stream_mod.Stream, readable: bool, writable: bool, has_err: bool, has_hup: bool, comptime else_chain: bool) raise.Raising(void) {
-    const rf = s.read_fiber;
-    const wf = s.write_fiber;
-    if (rf) |f| {
-        if (f.ev_callback != null and readable) {
-            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.read);
-        } else if (else_chain and f.ev_callback != null and has_hup) {
-            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
-        } else if (else_chain and f.ev_callback != null and has_err) {
-            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
-        }
-        if (!else_chain) {
-            if (f.ev_callback != null and has_err) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
-            if (f.ev_callback != null and has_hup) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
-        }
-    }
-    if (wf) |f| {
-        if (f.ev_callback != null and writable) {
-            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.write);
-        } else if (else_chain and f.ev_callback != null and has_hup) {
-            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
-        } else if (else_chain and f.ev_callback != null and has_err) {
-            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
-        }
-        if (!else_chain) {
-            if (f.ev_callback != null and has_err) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
-            if (f.ev_callback != null and has_hup) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
-        }
-    }
-    try stream_mod.checkToClose(s);
-}
-
-// ==========================================================================
-// Windows: an IO completion port
-// ==========================================================================
-
+/// The Windows backend, over an IO completion port.
 const Iocp = struct {
     fn init() raise.Raising(void) {
         const b = &vm_state.current().ev.backend;
@@ -323,147 +297,7 @@ const Iocp = struct {
     }
 };
 
-// ==========================================================================
-// Linux: epoll, with a timerfd for the deadline
-// ==========================================================================
-
-const Epoll = struct {
-    const linux = std.os.linux;
-
-    const EPOLL_CTL_ADD: c_int = linux.EPOLL.CTL_ADD;
-    const EPOLL_CTL_DEL: c_int = linux.EPOLL.CTL_DEL;
-    const EPOLL_CTL_MOD: c_int = linux.EPOLL.CTL_MOD;
-    const EPOLLIN: u32 = linux.EPOLL.IN;
-    const EPOLLOUT: u32 = linux.EPOLL.OUT;
-    const EPOLLERR: u32 = linux.EPOLL.ERR;
-    const EPOLLHUP: u32 = linux.EPOLL.HUP;
-    const EPOLLET: u32 = linux.EPOLL.ET;
-    const EPOLL_CLOEXEC: c_int = @intCast(linux.EPOLL.CLOEXEC);
-    /// `TFD_CLOEXEC` and `TFD_NONBLOCK` are `O_CLOEXEC` and `O_NONBLOCK`, and
-    /// `TFD_TIMER_ABSTIME` is 1 on every architecture Linux supports.
-    const TFD_CLOEXEC: c_int = EPOLL_CLOEXEC;
-    const TFD_NONBLOCK: c_int = @intCast(@as(u32, @bitCast(linux.TFD{ .NONBLOCK = true })));
-    const TFD_TIMER_ABSTIME: c_int = 1;
-    const CLOCK_MONOTONIC: c_int = @intFromEnum(linux.CLOCK.MONOTONIC);
-
-    const max_events = 64;
-
-    fn init() raise.Raising(void) {
-        SelfPipe.setup();
-        const b = &vm_state.current().ev.backend;
-        b.epoll = c.epoll_create1(EPOLL_CLOEXEC);
-        b.timerfd = c.timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-        b.timer_enabled = false;
-        if (b.epoll != -1 and b.timerfd != -1) {
-            var event: c.EpollEvent = .{ .events = EPOLLIN | EPOLLET, .data = .{ .ptr = @intFromPtr(&b.timerfd) } };
-            if (c.epoll_ctl(b.epoll, EPOLL_CTL_ADD, b.timerfd, &event) != -1) {
-                event = .{ .events = EPOLLIN | EPOLLET, .data = .{ .ptr = @intFromPtr(&b.selfpipe) } };
-                if (c.epoll_ctl(b.epoll, EPOLL_CTL_ADD, b.selfpipe[0], &event) != -1) return;
-            }
-        }
-        ev.exitWith(@src(), "failed to initialize event loop");
-    }
-
-    fn deinit() void {
-        const b = &vm_state.current().ev.backend;
-        _ = c.close(b.epoll);
-        _ = c.close(b.timerfd);
-        SelfPipe.cleanup();
-        b.epoll = 0;
-    }
-
-    fn registerImpl(s: *stream_mod.Stream, mod: bool, edge_trigger: bool) raise.Raising(void) {
-        var event: c.EpollEvent = .{
-            .events = if (edge_trigger) EPOLLET else 0,
-            .data = .{ .ptr = @intFromPtr(s) },
-        };
-        const readable: u32 = @intCast(constants.JANET_STREAM_READABLE | constants.JANET_STREAM_ACCEPTABLE);
-        if (s.flags & readable != 0) event.events |= EPOLLIN;
-        if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_WRITABLE)) != 0) event.events |= EPOLLOUT;
-        const status = c.retryIntr(c.epoll_ctl, .{
-            vm_state.current().ev.backend.epoll,
-            if (mod) EPOLL_CTL_MOD else EPOLL_CTL_ADD,
-            s.handle,
-            &event,
-        });
-        if (status == -1) {
-            if (c.errno() == ev.EPERM) {
-                // Couldn't add to the event loop, so assume it completes
-                // synchronously.
-                s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
-            } else {
-                return raise.panicv(stream_mod.evLasterr());
-            }
-        }
-    }
-
-    fn register(s: *stream_mod.Stream) raise.Raising(void) {
-        try registerImpl(s, false, true);
-    }
-
-    fn edgeTriggered(s: *stream_mod.Stream) raise.Raising(void) {
-        try registerImpl(s, true, true);
-    }
-
-    fn levelTriggered(s: *stream_mod.Stream) raise.Raising(void) {
-        try registerImpl(s, true, false);
-    }
-
-    /// **`ENOENT` is not an error here.** epoll keys a registration by
-    /// descriptor, so a stream whose descriptor was duplicated -- which is
-    /// what an unsafe marshal does -- was never added under the number it is
-    /// now being removed by. Deregistering something that is not registered is
-    /// the state this is trying to reach, and kqueue answers it silently.
-    /// Anything else is still raised.
-    fn unregister(s: *stream_mod.Stream) raise.Raising(void) {
-        if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) != 0) return;
-        const status = c.retryIntr(c.epoll_ctl, .{ vm_state.current().ev.backend.epoll, EPOLL_CTL_DEL, s.handle, null });
-        if (status == -1 and c.errno() != @intFromEnum(std.c.E.NOENT)) return raise.panicv(stream_mod.evLasterr());
-        s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
-    }
-
-    fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Raising(void) {
-        const b = &vm_state.current().ev.backend;
-        if (b.timer_enabled or has_timeout) {
-            var its = std.mem.zeroes(c.ITimerSpec);
-            if (has_timeout) {
-                its.it_value.sec = @intCast(@divTrunc(timeout, 1000));
-                its.it_value.nsec = @intCast(@rem(timeout, 1000) * 1000000);
-            }
-            _ = c.timerfd_settime(b.timerfd, TFD_TIMER_ABSTIME, &its, null);
-        }
-        b.timer_enabled = has_timeout;
-
-        var events: [max_events]c.EpollEvent = undefined;
-        const ready = c.retryIntr(c.epoll_wait, .{ b.epoll, &events, max_events, -1 });
-        if (ready == -1) ev.exitWith(@src(), "failed to poll events");
-
-        for (events[0..@as(usize, @intCast(ready))]) |event| {
-            const p = event.data.ptr;
-            if (p == @intFromPtr(&b.timerfd)) {
-                // Timer expired, ignore.
-            } else if (p == @intFromPtr(&b.selfpipe)) {
-                SelfPipe.handle();
-            } else {
-                const s: *stream_mod.Stream = @ptrFromInt(p);
-                const mask = event.events;
-                try stepMasked(
-                    s,
-                    mask & EPOLLIN != 0,
-                    mask & EPOLLOUT != 0,
-                    mask & EPOLLERR != 0,
-                    mask & EPOLLHUP != 0,
-                    false,
-                );
-            }
-        }
-    }
-};
-
-// ==========================================================================
-// BSD and macOS: kqueue
-// ==========================================================================
-
+/// The BSD and macOS backend, over `kqueue`.
 const Kqueue = struct {
     const Kevent = std.c.Kevent;
     const EVFILT_READ: i16 = std.c.EVFILT.READ;
@@ -542,7 +376,7 @@ const Kqueue = struct {
     }
 
     fn init() raise.Raising(void) {
-        // **Unresolved:** the self pipe could be an `EVFILT_USER` instead.
+        // Unresolved: the self pipe could be an `EVFILT_USER` instead.
         SelfPipe.setup();
         const b = &vm_state.current().ev.backend;
         b.kq = std.c.kqueue();
@@ -566,7 +400,7 @@ const Kqueue = struct {
     fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Raising(void) {
         // The interval is calculated per iteration. When it drops to zero or
         // below the timeout is zero; an infinite timeout would make other
-        // fibers miss theirs. `ev_core.kqueueInterval` is what keeps it at
+        // fibers miss theirs. `ev.kqueueInterval` is what keeps it at
         // or above the minimum the platform accepts.
         const b = &vm_state.current().ev.backend;
         var ts: std.c.timespec = undefined;
@@ -576,7 +410,7 @@ const Kqueue = struct {
             if (b.timer_enabled or has_timeout) {
                 var sec: i64 = undefined;
                 var nsec: i64 = undefined;
-                ev_core.tsToParts(ev_core.kqueueInterval(timeout - ev.tsNow()), &sec, &nsec);
+                ev.tsToParts(ev.kqueueInterval(timeout - ev.tsNow()), &sec, &nsec);
                 ts = .{ .sec = @intCast(sec), .nsec = @intCast(nsec) };
                 status = std.c.kevent(b.kq, undefined, 0, &events, max_events, &ts);
             } else {
@@ -598,8 +432,8 @@ const Kqueue = struct {
             const filt = event.filter;
             const has_err = event.flags & @as(u16, @intCast(std.c.EV.ERROR)) != 0;
             const has_hup = event.flags & @as(u16, @intCast(std.c.EV.EOF)) != 0;
-            // The walk takes the *write* fiber first, and both directions see
-            // an ERR and a HUP. That order is contract.
+            // The walk takes the write fiber first, and both directions see
+            // an ERR and a HUP. A program can observe that order.
             for (0..2) |j| {
                 const f = (if (j != 0) s.read_fiber else s.write_fiber) orelse continue;
                 if (f.ev_callback != null and has_err) {
@@ -620,10 +454,8 @@ const Kqueue = struct {
     }
 };
 
-// ==========================================================================
-// Everywhere else: poll
-// ==========================================================================
-
+/// The fallback backend, over `poll`, for a POSIX target with neither `epoll`
+/// nor `kqueue`.
 const Poll = struct {
     const PollFd = std.c.pollfd;
     const POLLIN: i16 = @intCast(std.c.POLL.IN);
@@ -759,3 +591,200 @@ const Poll = struct {
         }
     }
 };
+
+/// The pipe every backend but the completion port wakes itself by writing to.
+///
+/// On Windows the completion port takes custom events itself, so there is no
+/// self pipe at all.
+const SelfPipe = struct {
+    fn setup() void {
+        if (stream_mod.makePipe(&vm_state.current().ev.backend.selfpipe, 1) != 0) {
+            ev.exitWith(@src(), "failed to initialize self pipe in event loop");
+        }
+    }
+
+    /// Drain the pipe, running each posted callback. One short read ends it.
+    ///
+    /// The reference is given back whether or not there is a callback, and
+    /// that is what balances `ev.zig`'s `evPostEvent`, which takes one
+    /// unconditionally so the loop cannot decide it is done while an event is
+    /// in flight. `ev.ThreadedCallback` is optional, so an event with no
+    /// callback is one the type admits, and putting the decrement inside the
+    /// null test would leave a loop that received one never finishing. No
+    /// caller posts one today, since every `evPostEvent` in the tree passes a
+    /// callback, and the completion-port handler already decrements outside
+    /// the test.
+    fn handle() void {
+        var response: ev.SelfPipeEvent = undefined;
+        while (true) {
+            const status = c.retryIntr(c.read, .{ vm_state.current().ev.backend.selfpipe[0], @as([*]u8, @ptrCast(&response)), @sizeOf(ev.SelfPipeEvent) });
+            if (status <= 0) return;
+            if (response.cb) |cb| cb(response.msg);
+            ev.evDecRefcount();
+        }
+    }
+
+    fn cleanup() void {
+        const b = &vm_state.current().ev.backend;
+        _ = c.close(b.selfpipe[0]);
+        _ = c.close(b.selfpipe[1]);
+    }
+};
+
+/// The event loop's per-mechanism state. Four arms, chosen the way `build.zig`
+/// chooses the backend, and each has exactly what its own backend below reads.
+/// `vm/state.zig`'s `Vm` embeds one.
+///
+/// `new_thread_attr` and `selfpipe` are in three of the four rather than in
+/// `VmEv`: they are what a POSIX backend needs to start a thread and to wake
+/// itself, and Windows does neither that way.
+pub const VmBackend = if (builtin.os.tag == .windows)
+    struct {
+        iocp: ?[*]?*anyopaque = null,
+        connect_ex: ?*anyopaque = null,
+        connect_ex_loaded: bool = false,
+    }
+else if (config.ev_epoll)
+    struct {
+        new_thread_attr: host.pthread_attr_t = std.mem.zeroes(host.pthread_attr_t),
+        selfpipe: [2]host.Handle = std.mem.zeroes([2]host.Handle),
+        epoll: c_int = 0,
+        timerfd: c_int = 0,
+        timer_enabled: bool = false,
+    }
+else if (config.ev_kqueue)
+    struct {
+        new_thread_attr: host.pthread_attr_t = std.mem.zeroes(host.pthread_attr_t),
+        selfpipe: [2]host.Handle = std.mem.zeroes([2]host.Handle),
+        kq: c_int = 0,
+        timer_enabled: bool = false,
+    }
+else
+    struct {
+        new_thread_attr: host.pthread_attr_t = std.mem.zeroes(host.pthread_attr_t),
+        selfpipe: [2]host.Handle = std.mem.zeroes([2]host.Handle),
+        streams: ?[*]*stream_mod.Stream = null,
+        stream_count: usize = 0,
+        stream_capacity: usize = 0,
+        fds: ?[*]std.c.pollfd = null,
+    };
+
+/// The backend the dispatch below calls, which is `selected`'s namespace.
+///
+/// The four backends wear one interface, and several of its entry points
+/// declare an error that only some of them return: `init` raises on `iocp` and
+/// on `epoll`, `edgeTriggered`, `levelTriggered` and `unregister` only on
+/// `epoll`, `register` on `iocp` and `epoll`, and `kqueue` and `poll` raise
+/// from none of them.
+///
+/// A function that cannot raise should not pretend it can, and this is the
+/// exception that rule has to make. The dispatch picks a backend at comptime
+/// and calls it by name; if the signatures differed per backend, the call site
+/// would need a `try` on some targets and not on others, which is not
+/// something one source line can be. A cross-compile is what finds a
+/// disagreement, because the host build never compiles the other arms.
+const impl = switch (selected) {
+    .iocp => Iocp,
+    .epoll => Epoll,
+    .kqueue => Kqueue,
+    .poll => Poll,
+};
+
+// ==========================================================================
+// Public functions
+// ==========================================================================
+
+/// Puts a stream into edge-triggered mode, which is what a stream reading
+/// through a callback needs.
+pub fn edgeTriggeredStream(s: *stream_mod.Stream) raise.Raising(void) {
+    try impl.edgeTriggered(s);
+}
+
+/// Tears the backend down at VM teardown.
+pub fn evDeinit() void {
+    ev.evDeinitCommon();
+    impl.deinit();
+}
+
+/// Sets the backend up at VM startup, including the self pipe where the
+/// backend has one.
+pub fn evInit() raise.Raising(void) {
+    ev.evInitCommon();
+    try impl.init();
+}
+
+/// Puts a stream into level-triggered mode, which is the default.
+pub fn levelTriggeredStream(s: *stream_mod.Stream) raise.Raising(void) {
+    try impl.levelTriggered(s);
+}
+
+/// One turn of the loop: waits for readiness up to the timeout, and delivers
+/// what arrived.
+pub inline fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Raising(void) {
+    try impl.loop1(has_timeout, timeout);
+}
+
+/// Registers a stream with the backend.
+pub inline fn registerStream(s: *stream_mod.Stream) raise.Raising(void) {
+    try impl.register(s);
+}
+
+/// Removes a stream from the backend, which a closing stream does.
+pub inline fn unregisterStream(s: *stream_mod.Stream) raise.Raising(void) {
+    try impl.unregister(s);
+}
+
+// ==========================================================================
+// Private functions
+// ==========================================================================
+
+/// Delivers one event to whichever fiber is waiting on `s`, for the two
+/// backends that report a bare readiness mask.
+fn stepMasked(s: *stream_mod.Stream, readable: bool, writable: bool, has_err: bool, has_hup: bool, comptime else_chain: bool) raise.Raising(void) {
+    const rf = s.read_fiber;
+    const wf = s.write_fiber;
+    if (rf) |f| {
+        if (f.ev_callback != null and readable) {
+            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.read);
+        } else if (else_chain and f.ev_callback != null and has_hup) {
+            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
+        } else if (else_chain and f.ev_callback != null and has_err) {
+            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
+        }
+        if (!else_chain) {
+            if (f.ev_callback != null and has_err) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
+            if (f.ev_callback != null and has_hup) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
+        }
+    }
+    if (wf) |f| {
+        if (f.ev_callback != null and writable) {
+            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.write);
+        } else if (else_chain and f.ev_callback != null and has_hup) {
+            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
+        } else if (else_chain and f.ev_callback != null and has_err) {
+            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
+        }
+        if (!else_chain) {
+            if (f.ev_callback != null and has_err) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
+            if (f.ev_callback != null and has_hup) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
+        }
+    }
+    try stream_mod.checkToClose(s);
+}
+
+// ==========================================================================
+// Tests
+// ==========================================================================
+
+comptime {
+    // The backend follows the platform and two `-D` switches, and `Vm` is laid
+    // out differently per backend. If the two ever disagreed, every field this
+    // file names would be at the wrong offset. Assert the agreement rather
+    // than hope for it.
+    if (windows != (builtin.os.tag == .windows)) {
+        @compileError("ev_backend: the translation and the build disagree about Windows");
+    }
+    if (!windows and config.ev_epoll and config.ev_kqueue) {
+        @compileError("ev_backend: the translation selects two POSIX backends");
+    }
+}

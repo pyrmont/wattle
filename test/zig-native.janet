@@ -23,9 +23,9 @@
 
 (def k (keep @[1 2 3] 7))
 
-# `bytes`: the abstract answers a byte view, so anything taking a byte sequence
-# takes it. `string/join` is the shortest such call.
-(assert (= "keeper" (string/join [k])) "the bytes slot answers a byte view")
+# `bytes`: the abstract answers bytes, so anything taking a byte sequence takes
+# it. `string/join` is the shortest such call.
+(assert (= "keeper" (string/join [k])) "the bytes slot answers bytes")
 
 # `length`, `call`, `get` (both arms), `next` and `put`.
 (assert (= 6 (length k)) "the length slot")
@@ -88,6 +88,8 @@
 (def cut (from-module 'cut))
 (def wrap (from-module 'wrap))
 (def classify (from-module 'classify))
+(def named (from-module 'named))
+(def peek (from-module 'peek))
 
 (defn- refusal
   "The message a call refuses with, or nil if it did not refuse."
@@ -97,10 +99,11 @@
 
 # `getBytes` and `getIndexed`, on both members of each pair. A module of
 # markable's shape reads a string argument and a tuple of keywords; it must
-# read a buffer and an array just as well, because the view is the same view.
+# read a buffer and an array just as well, because the getter answers the same
+# slice for both members of a pair.
 (assert (= "<0>hi</0>" (markup "hi")) "getBytes reads a string")
 (assert (= "<0>hi</0>" (markup @"hi")) "and a buffer")
-(assert (= "<0></0>" (markup "")) "an empty view is the empty slice, not a trap")
+(assert (= "<0></0>" (markup "")) "an empty argument is the empty slice, not a trap")
 (assert (= "<5>hi</5>" (markup "hi" [:sourcepos :smart])) "getIndexed reads a tuple")
 (assert (= "<5>hi</5>" (markup "hi" @[:sourcepos :smart])) "and an array")
 (assert (= "<0>hi</0>" (markup "hi" [])) "an empty tuple is the empty slice")
@@ -118,8 +121,8 @@
 (assert (= "bad slot #2, expected boolean, got 3" (refusal markup "x" [] 3))
         "and refuses a non-boolean with the runtime's own message")
 
-# The wrong type, on each view getter. The message is `args.zig`'s, which is
-# the same one a C module got for the same mistake.
+# The wrong type, on each of the three getters. The message is `args.zig`'s,
+# which is the same one a C module got for the same mistake.
 (assert (= "bad slot #0, expected string, symbol, keyword or buffer, got 3"
            (refusal markup 3))
         "getBytes refuses a number")
@@ -128,9 +131,9 @@
 (assert (= "bad slot #0, expected table or struct, got \"x\"" (refusal tally "x"))
         "getDictionary refuses a string")
 
-# `getDictionary`, on both members of its pair. The walk reads every slot and
-# skips the empty ones, and the fixture refuses if its own count disagrees
-# with the view's `len`.
+# `getDictionary`, on both members of its pair. The walk is `Pairs`, whose
+# `next` answers one pair at a time, and the fixture refuses if its own count
+# disagrees with the `len` it was given.
 (assert (= 6 (tally {:a 1 :b 2 :c 3})) "getDictionary reads a struct")
 (assert (= 6 (tally @{:a 1 :b 2 :c 3})) "and a table")
 (assert (= 0 (tally {})) "an empty struct walks to zero")
@@ -139,7 +142,7 @@
 
 # `getRange`: a negative index, an absent slot and the clamp are the ones
 # every core builtin taking a slice already has.
-(assert (= "abcde" (cut "abcde")) "an absent range is the whole view")
+(assert (= "abcde" (cut "abcde")) "an absent range is the whole slice")
 (assert (= "cde" (cut "abcde" 2)) "an absent end runs to the length")
 (assert (= "bc" (cut "abcde" 1 3)) "both ends given")
 (assert (= "e" (cut "abcde" -2)) "a negative start counts from the end")
@@ -153,7 +156,7 @@
 # `getUInteger`, which is a wrap column and not a size: the refusal names the
 # width it wanted.
 (assert (= "abc" (wrap "abcde" 3)) "getUInteger reads a width")
-(assert (= "abcde" (wrap "abcde" 99)) "a width past the length is the whole view")
+(assert (= "abcde" (wrap "abcde" 99)) "a width past the length is the whole slice")
 (assert (= "bad slot #1, expected 32 bit unsigned integer, got -1"
            (refusal wrap "abcde" -1))
         "and refuses a negative one")
@@ -164,11 +167,13 @@
 (assert (= "number" (classify 1)))
 # The one value a Janet program can build a raw pointer from is an FFI symbol
 # lookup, and a build without FFI has none -- so this arm is reached only where
-# there is something to reach it with.
+# there is something to reach it with. The symbol is libc's, because the
+# runtime publishes none: a native module reaches it through the table
+# `_janet_init` is handed, so `nm` on the process finds no `janet_*` at all.
 (def ffi-lookup (get-in (curenv) ['ffi/lookup :value]))
 (def ffi-native (get-in (curenv) ['ffi/native :value]))
 (when (and ffi-lookup ffi-native)
-  (assert (= "pointer" (classify (ffi-lookup (ffi-native nil) "janet_cstring")))))
+  (assert (= "pointer" (classify (ffi-lookup (ffi-native nil) "malloc")))))
 (assert (= "string" (classify "s")))
 (assert (= "symbol" (classify 'sym)))
 (assert (= "keyword" (classify :kw)))
@@ -177,9 +182,33 @@
 (assert (= "array" (classify @[1])))
 (assert (= "struct" (classify {})))
 (assert (= "table" (classify @{})))
-(assert (= "other" (classify classify)) "a cfunction is none of the twelve")
+(assert (= "function" (classify (fn [] nil))) "a function is the thirteenth")
+(assert (= "other" (classify classify)) "a cfunction is none of the thirteen")
 
-# The three `Value`-form views, which are what read an element out of a view.
+# The tag-specific unwraps, which answer a NUL-terminated slice where the
+# predicates answer a bool. Each takes one tag: the buffer holding the same
+# bytes is a miss rather than a refusal, because a buffer carries no
+# terminator.
+(assert (= "abc" (named "abc")) "toString reads a string")
+(assert (= "abc" (named 'abc)) "toSymbol a symbol")
+(assert (= "abc" (named :abc)) "toKeyword a keyword")
+(assert (= "" (named "")) "and an empty string, whose terminator is all it has")
+(assert (nil? (named @"abc")) "a buffer has no terminator and is not one of the three")
+(assert (nil? (named 3)) "nor is a number, and that is not a refusal")
+
+# `toAbstract`: a keeper read out of an aggregate, the case with no slot for
+# `getAbstract` to read. The test is on the abstract type's identity, so
+# another module type in the same position is a refusal rather than a read of
+# its payload.
+(assert (deep= @[1 2 3] (peek [k] 0)) "toAbstract reads a keeper out of a tuple")
+(assert (deep= @[1 2 3] (peek @[:x k] 1)) "and out of an array, at an index")
+(assert (= "element 0 is not a keeper" (refusal peek [:x] 0))
+        "a value that is not an abstract is refused by the module, not the runtime")
+# The other half of that test -- an abstract of this module's *other* type --
+# is asserted where `odd` is defined, further down.
+
+# The three `Value`-form getters, which read a value that came out of an
+# aggregate rather than an argument slot.
 # Each answers nothing rather than raising, on both members of its pair.
 (def viewed (from-module 'viewed))
 
@@ -190,12 +219,9 @@
 (assert (= "indexed 2" (viewed [1 2])) "indexedView on a tuple")
 (assert (= "indexed 2" (viewed @[1 2])) "and on an array")
 (assert (= "indexed 0" (viewed @[])) "and on an empty array, whose data pointer is null")
-# The capacity is checked inside the module rather than asserted here: a struct
-# and a table of the same two entries hold 8 and 4 buckets today and neither is
-# a promise, while "at least one, and never fewer than there are entries" is.
 (assert (= "dictionary 2" (viewed {:a 1 :b 2})) "dictionaryView on a struct")
 (assert (= "dictionary 2" (viewed @{:a 1 :b 2})) "and on a table")
-(assert (= "dictionary 0" (viewed @{})) "an empty table has a view, and a bucket")
+(assert (= "dictionary 0" (viewed @{})) "an empty table has entries, and none of them")
 (assert (= "dictionary 0" (viewed {})) "and so does an empty struct")
 (assert (= "none" (viewed 3)) "a number has no view, and that is not a refusal")
 (assert (= "none" (viewed nil)) "nor does nil")
@@ -306,6 +332,12 @@
         "the module's length refuses a non-number")
 (assert (= "invalid integer length \"not a number at all\"" (refusal length (odd 1)))
         "and so does Janet's own -- the two agree on every arm but the bound")
+
+# `toAbstract` tests the abstract type's identity rather than the tag: an
+# `odd` unwraps to a valid pointer into a payload that is not a keeper's, and
+# reading it as one would fail silently.
+(assert (= "element 0 is not a keeper" (refusal peek [(odd 0)] 0))
+        "an abstract of the module's other type is not a keeper")
 
 # ==========================================================================
 # Calling back into Janet

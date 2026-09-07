@@ -1,91 +1,102 @@
 //! Behavioral contract for the interpreter's entry points: the six functions
-//! that stand above `run_vm` and decide whether, and in what state, the loop is
-//! entered at all.
+//! that stand above `run_vm` and decide whether, and in what state, the loop
+//! is entered at all.
 //!
 //! These are the runtime's front door, and almost nothing in the Janet suites
 //! looks at them directly: a suite that calls a function exercises `call` only
-//! in the sense that a passenger exercises an airframe. What this file
-//! pins is the part the suites cannot see.
+//! in the sense that a passenger exercises an airframe. What this file pins is
+//! the part the suites cannot see.
 //!
-//! **Reporting versus raising, per function.** Four of the six only ever
-//! return a signal; `step` and `call` raise. Getting that
-//! backwards for even one condition turns a recoverable error into an abort.
+//! Reporting against raising, per function. Four of the six only ever return a
+//! signal, and `step` and `call` raise. Getting that backwards for even one
+//! condition turns a recoverable error into an abort.
 //!
-//! **The messages.** Nine of them, compared byte for byte. The three arity
-//! messages matter most, because they are the only place a C caller learns why
-//! its call was rejected, and the three cases — exact, minimum, maximum — are
-//! chosen by a two-branch cascade that reads plausibly when wrong.
+//! The messages, nine of them, compared byte for byte. The three arity
+//! messages matter most, because they are the only place a caller outside the
+//! runtime learns why its call was rejected, and the three cases (exact,
+//! minimum and maximum) are chosen by a two-branch cascade that reads
+//! plausibly when wrong.
 //!
-//! **The state each one leaves behind.** `checkCanResume` marks the fiber
-//! errored for one of its three refusals and not for the other two.
-//! `pcall` writes its out-parameter before it decides whether it failed.
-//! `vm/entry.zig`'s `call` restores `stackn`, the gc lock, and a dirty stack on
-//! the way out. Its `step` writes breakpoints into the shared bytecode and
-//! takes them out again, so a function stepped once must still run normally
-//! afterwards. None
-//! of that is visible in a return value and all of it is asserted.
+//! The state each one leaves behind. `checkCanResume` marks the fiber errored
+//! for one of its three refusals and not for the other two. `pcall` writes its
+//! out-parameter before it decides whether it failed. `vm/entry.zig`'s `call`
+//! restores `stackn`, the gc lock and a dirty stack on the way out. Its `step`
+//! writes breakpoints into the shared bytecode and takes them out again, so a
+//! function stepped once must still run normally afterwards. None of that is
+//! visible in a return value and all of it is asserted.
 //!
-//! **The coercion.** `call` sets `coerce_error`, so a signal the loop hands
-//! back rather than raises — a yield, in practice — is turned into an error
+//! The coercion. `call` sets `coerce_error`, so a signal the loop returns
+//! rather than raises, which in practice is a yield, is turned into an error
 //! with a message built there rather than in `signal.signalv`. It is the one
 //! message in the runtime that names a signal, and reaching it needs a Janet
 //! function called through `call` rather than through `JOP_CALL`, which is
 //! what the operator fallback below arranges.
 //!
 //! The three functions the arity messages name are given names on purpose:
-//! `%v` renders an unnamed function with its address, and the point of those
-//! three cases is the message, not the pointer.
+//! `%v` renders an unnamed function with its address, and what those three
+//! cases are about is the message rather than the pointer.
 //!
 //! ## The mechanism is in the type
 //!
-//! **There are no counters.** A C contract counts raises and reports
-//! separately and compares both totals at the end, because "the same refusal
-//! delivered by the wrong mechanism would still carry the right message" and
-//! an `EXPECT_PANIC` that silently stopped firing looks like a pass. Here the
-//! mechanism is in the *type*:
+//! Nothing counts refusals here, because the type does the counting.
 //! `vm_entry.pcall` and `vm_entry.continueFiber` return a `Resumed` and cannot
-//! raise, `vm_entry.step` and `vm_entry.call` return `raise.Error!T` and
-//! `harness.raised` will not compile against anything else. A refusal that changed mechanism would
-//! not build, and one that stopped arriving unwraps a null at its own line.
+//! raise; `vm_entry.step` and `vm_entry.call` return `raise.Error!T`, and
+//! `harness.raised` will not compile against anything else. A refusal that
+//! changed mechanism would not build, and one that stopped arriving unwraps a
+//! null at its own line.
 //!
-//! One thing is deliberately not pinned: the trace line's argument list holds
+//! One thing is deliberately not pinned: the trace line's argument list is
 //! `%p` renderings of whatever was passed, which for a function or a table is
 //! an address, so only the fixed prefix is compared. All three statuses
-//! `vm_entry.step` refuses are asserted -- `:dead` and `:error` below, and
+//! `vm_entry.step` refuses are asserted: `:dead` and `:error` below, and
 //! `:alive` from inside a running fiber, where `cfunProbe` is the only place
 //! that can reach one.
 
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
+
 const std = @import("std");
-const config = @import("config");
-const repr = @import("repr");
-const constants = @import("constants");
-const raise = @import("subsystems").raise;
-const harness = @import("harness.zig");
 
-const subsystems = @import("subsystems");
-const value = @import("subsystems").value;
-const gc_alloc = @import("subsystems").gc_alloc;
-const core_env = @import("subsystems").env;
-const vm_entry_mod = @import("subsystems").vm_entry;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const fibers = @import("subsystems").value.fibers;
-const pp_describe = @import("subsystems").pp_describe;
-const registry = @import("subsystems").registry;
-const strings = @import("subsystems").value.strings;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const abi = @import("abi");
-const functions = @import("subsystems").value.functions;
-const tables = @import("subsystems").value.tables;
-const vm_entry = subsystems.vm_entry;
 const args_core = subsystems.args;
-
+const config = @import("config");
+const constants = @import("constants");
+const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
+const fibers = @import("subsystems").value.fibers;
+const functions = @import("subsystems").value.functions;
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
+const pp_describe = @import("subsystems").pp_describe;
+const raise = @import("subsystems").raise;
+const registry = @import("subsystems").registry;
+const repr = @import("repr");
+const strings = @import("subsystems").value.strings;
+const subsystems = @import("subsystems");
+const tables = @import("subsystems").value.tables;
+const value = @import("subsystems").value;
+const vm_entry = subsystems.vm_entry;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 /// `JANET_VM_HAS_EV`, which is what `checkCanResume` reads to decide whether
 /// its root-fiber refusal may name the scheduler's entry points.
 const has_ev = constants.JANET_VM_HAS_EV != 0;
-
+const max_stops = 256;
 var test_env: ?*tables.Table = null;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// Roots whatever it produces and never unroots it, for the reason
 /// `vm_calls` gives: a Janet value in a Zig local is not a root, and these
@@ -118,7 +129,7 @@ fn fiberOver(source: [*:0]const u8) *fibers.Fiber {
 
 /// A refusal that arrives as a value. `resumed` is the caller's, already
 /// returned; this only checks that the pair says what it should.
-fn expectReport(resumed: vm_entry_mod.Resumed, message: [*:0]const u8) void {
+fn expectReport(resumed: vm_entry.Resumed, message: [*:0]const u8) void {
     expect(resumed.signal == abi.Signal.@"error");
     if (!harness.stringValueIs(resumed.value, message)) {
         std.debug.print("expected: {s}\n     got: {s}\n", .{ message, pp_describe.toString(resumed.value) });
@@ -126,27 +137,25 @@ fn expectReport(resumed: vm_entry_mod.Resumed, message: [*:0]const u8) void {
     }
 }
 
-// ------------------------------------------------------------------ pcall
-
 /// `vm_entry.pcall` reports. Nothing it does raises, including the arity
-/// failure, which is the whole reason `fibers.reset` answers `error.Arity`
+/// failure, which is the whole reason `fibers.reset` returns `error.Arity`
 /// instead of panicking the way `fibers.funcframe`'s other caller does.
 fn pcallReportsRatherThanRaises() void {
-    var resumed = vm_entry_mod.pcall(evalfn("(fn [] (+ 1 2))"), &.{}, null);
+    var resumed = vm_entry.pcall(evalfn("(fn [] (+ 1 2))"), &.{}, null);
     expect(resumed.signal == abi.Signal.ok);
     expect(harness.integerIs(resumed.value, 3));
 
     var args = [_]repr.Value{ harness.wrapInteger(4), harness.wrapInteger(5) };
-    resumed = vm_entry_mod.pcall(evalfn("(fn [a b] (* a b))"), &args, null);
+    resumed = vm_entry.pcall(evalfn("(fn [a b] (* a b))"), &args, null);
     expect(resumed.signal == abi.Signal.ok);
     expect(harness.integerIs(resumed.value, 20));
 
-    resumed = vm_entry_mod.pcall(evalfn("(fn [] (error \"boom\"))"), &.{}, null);
+    resumed = vm_entry.pcall(evalfn("(fn [] (error \"boom\"))"), &.{}, null);
     expectReport(resumed, "boom");
 
     // The fiber `pcall` builds masks yield, so a yield comes back as a
     // signal rather than propagating past it.
-    resumed = vm_entry_mod.pcall(evalfn("(fn [] (yield 7) 8)"), &.{}, null);
+    resumed = vm_entry.pcall(evalfn("(fn [] (yield 7) 8)"), &.{}, null);
     expect(resumed.signal == abi.Signal.yield);
     expect(harness.integerIs(resumed.value, 7));
 }
@@ -157,43 +166,42 @@ fn pcallReportsRatherThanRaises() void {
 fn pcallWithAReusedFiber() void {
     var f: ?*fibers.Fiber = null;
 
-    var resumed = vm_entry_mod.pcall(evalfn("(fn [] 1)"), &.{}, &f);
+    var resumed = vm_entry.pcall(evalfn("(fn [] 1)"), &.{}, &f);
     expect(resumed.signal == abi.Signal.ok);
     expect(f != null);
     const first = f;
     gc_alloc.gcroot(wrap.fromFiber(f.?));
 
-    resumed = vm_entry_mod.pcall(evalfn("(fn [] 2)"), &.{}, &f);
+    resumed = vm_entry.pcall(evalfn("(fn [] 2)"), &.{}, &f);
     expect(resumed.signal == abi.Signal.ok);
     expect(f == first); // a supplied fiber is reset, not replaced
     expect(harness.integerIs(resumed.value, 2));
 
     // Too few arguments for a fixed arity: the frame cannot be built, and the
-    // report is a bare "arity mismatch" with no detail, unlike `janet_call`'s.
-    resumed = vm_entry_mod.pcall(evalfn("(fn [a b] a)"), &.{}, &f);
+    // report is a bare "arity mismatch" with no detail, unlike
+    // `vm_entry.call`'s.
+    resumed = vm_entry.pcall(evalfn("(fn [a b] a)"), &.{}, &f);
     expectReport(resumed, "arity mismatch");
     expect(f == null); // the out-parameter is written before the null check
 }
 
-// --------------------------------------------------------- can-resume gate
-
 fn resumingAFiberThatCannotBe() void {
     var fiber = fiberOver("(fn [] 1)");
 
-    var resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    var resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
     expect(resumed.signal == abi.Signal.ok);
     expect(fibers.status(fiber) == fibers.FiberStatus.dead);
 
-    resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
     expectReport(resumed, "cannot resume fiber with status :dead");
 
     // An unmasked user signal leaves the fiber in the matching status, which
     // is inside the band the gate refuses.
     fiber = fiberOver("(fn [] (signal 0 :stopped))");
-    resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
     expect(resumed.signal == abi.Signal.user0);
     expect(fibers.status(fiber) == fibers.FiberStatus.user0);
-    resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
     expectReport(resumed, "cannot resume fiber with status :user0");
 }
 
@@ -205,7 +213,7 @@ fn theRecursionGuardMarksTheFiber() void {
 
     expect(fibers.status(fiber) == fibers.FiberStatus.new);
     harness.vm().stackn = config.recursion_guard;
-    const resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    const resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
     harness.vm().stackn = saved;
 
     expectReport(resumed, "C stack recursed too deeply");
@@ -218,37 +226,33 @@ fn theRecursionGuardMarksTheFiber() void {
 /// from outside the loop.
 fn cancellingASuspendedFiber() void {
     var fiber = fiberOver("(fn [] (yield 1) :finished)");
-    var resumed = vm_entry_mod.continueFiber(fiber, wrap.fromNil());
+    var resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
     expect(resumed.signal == abi.Signal.yield);
     expect(harness.integerIs(resumed.value, 1));
 
-    resumed = vm_entry_mod.continueSignal(fiber, value.fromBytes("stop", .string), abi.Signal.@"error");
+    resumed = vm_entry.continueSignal(fiber, value.fromBytes("stop", .string), abi.Signal.@"error");
     expectReport(resumed, "stop");
     expect(fibers.status(fiber) == fibers.FiberStatus.@"error");
 
-    // `JANET_SIGNAL_OK` injects nothing and resumes normally, which is the
+    // `abi.Signal.ok` injects nothing and resumes normally, which is the
     // branch that keeps `continueSignal` from being `continueFiber` with an
     // extra argument.
     fiber = fiberOver("(fn [] (yield 1) :finished)");
-    expect(vm_entry_mod.continueFiber(fiber, wrap.fromNil()).signal == abi.Signal.yield);
-    resumed = vm_entry_mod.continueSignal(fiber, wrap.fromNil(), abi.Signal.ok);
+    expect(vm_entry.continueFiber(fiber, wrap.fromNil()).signal == abi.Signal.yield);
+    resumed = vm_entry.continueSignal(fiber, wrap.fromNil(), abi.Signal.ok);
     expect(resumed.signal == abi.Signal.ok);
     expect(harness.keywordIs(resumed.value, "finished"));
 }
 
-// ------------------------------------------------------------------- step
-
-// Stepping walks the bytecode by writing a breakpoint bit into it and taking
-// it out again. The bit lives in the funcdef, which every fiber over that
-// function shares, so a step that failed to restore one would leave a
-// permanent breakpoint behind — which is what the second half of each case
-// checks.
-
-const max_stops = 256;
-
 /// Steps until the fiber finishes, recording the bytecode offset it stopped at
 /// each time. The offsets are the subject: a step count says only that
 /// stepping happened, while the offsets say which instructions it visited.
+///
+/// Stepping walks the bytecode by writing a breakpoint bit into it and taking
+/// it out again. The bit lives in the funcdef, which every fiber over that
+/// function shares, so a step that failed to restore one would leave a
+/// permanent breakpoint behind, which is what the second half of each case
+/// below checks.
 fn stepToCompletion(fiber: *fibers.Fiber, out: *repr.Value, stops: *[max_stops]i32) raise.Raising(usize) {
     const def = harness.frame.current(fiber).func.?.def.?;
     var nstops: usize = 0;
@@ -263,10 +267,6 @@ fn stepToCompletion(fiber: *fibers.Fiber, out: *repr.Value, stops: *[max_stops]i
     }
     expect(sig == abi.Signal.ok);
     return nstops;
-}
-
-fn stoppedAt(stops: []const i32, offset: i32) bool {
-    return std.mem.indexOfScalar(i32, stops, offset) != null;
 }
 
 fn steppingStraightLineCode() raise.Raising(void) {
@@ -289,9 +289,13 @@ fn steppingStraightLineCode() raise.Raising(void) {
     expect(harness.integerIs(out, 3));
 
     // The same funcdef, run without stepping: every breakpoint was taken out.
-    const resumed = vm_entry_mod.pcall(fun, &.{}, null);
+    const resumed = vm_entry.pcall(fun, &.{}, null);
     expect(resumed.signal == abi.Signal.ok);
     expect(harness.integerIs(resumed.value, 3));
+}
+
+fn stoppedAt(stops: []const i32, offset: i32) bool {
+    return std.mem.indexOfScalar(i32, stops, offset) != null;
 }
 
 /// A branch has two candidate successors, and both get a breakpoint. That is
@@ -299,7 +303,7 @@ fn steppingStraightLineCode() raise.Raising(void) {
 /// stepping a program and stepping the parts of it that fall through.
 ///
 /// Asserted structurally rather than by counting steps. The step count does
-/// separate the two — nineteen with the second breakpoint, fifteen without —
+/// separate the two, nineteen with the second breakpoint and fifteen without,
 /// but it pins the compiler's instruction selection for one expression rather
 /// than the property being tested.
 fn steppingAcrossBranches() raise.Raising(void) {
@@ -331,7 +335,7 @@ fn steppingAcrossBranches() raise.Raising(void) {
     expect(stoppedAt(stops[0..nstops], target)); // stepped into the branch target
 
     // The same funcdef, run without stepping: every breakpoint was taken out.
-    const resumed = vm_entry_mod.pcall(fun, &.{}, null);
+    const resumed = vm_entry.pcall(fun, &.{}, null);
     expect(resumed.signal == abi.Signal.ok);
     expect(harness.keywordIs(resumed.value, "yes"));
 }
@@ -344,14 +348,12 @@ fn steppingAFiberThatCannotBe() void {
     const dead = fiberOver("(fn [] 1)");
     const errored = fiberOver("(fn [] (error \"boom\"))");
 
-    expect(vm_entry_mod.continueFiber(dead, wrap.fromNil()).signal == abi.Signal.ok);
+    expect(vm_entry.continueFiber(dead, wrap.fromNil()).signal == abi.Signal.ok);
     expect(harness.raised(vm_entry.step, .{ dead, wrap.fromNil(), &out }).?.says("cannot step fiber with status :dead"));
 
-    expect(vm_entry_mod.continueFiber(errored, wrap.fromNil()).signal == abi.Signal.@"error");
+    expect(vm_entry.continueFiber(errored, wrap.fromNil()).signal == abi.Signal.@"error");
     expect(harness.raised(vm_entry.step, .{ errored, wrap.fromNil(), &out }).?.says("cannot step fiber with status :error"));
 }
-
-// ----------------------------------------------------------- entry checks
 
 /// Both entry conditions raise, and both are reachable only from outside a
 /// running fiber or with the recursion counter already at its limit.
@@ -361,8 +363,6 @@ fn callingWithoutAFiber() void {
     expect(harness.raised(vm_entry.call, .{ fun, &.{} }).?.says("janet_call failed because there is no current fiber"));
 }
 
-// ------------------------------------------------- inside a running fiber
-
 /// Five things need `vm.fiber` to be set, and the only honest way to get
 /// that is to be called by the interpreter.
 fn cfunProbe(argv: []repr.Value) raise.Raising(repr.Value) {
@@ -371,7 +371,7 @@ fn cfunProbe(argv: []repr.Value) raise.Raising(repr.Value) {
     const self = harness.vm().fiber.?;
 
     // The fiber running this cfunction is alive, and both gates refuse it.
-    var resumed = vm_entry_mod.continueFiber(self, wrap.fromNil());
+    var resumed = vm_entry.continueFiber(self, wrap.fromNil());
     expectReport(resumed, "cannot resume fiber with status :alive");
 
     var stepped = wrap.fromNil();
@@ -383,9 +383,9 @@ fn cfunProbe(argv: []repr.Value) raise.Raising(repr.Value) {
     {
         const rooted = fiberOver("(fn [] 1)");
         harness.gcSetBits(&rooted.gc.flags, constants.JANET_FIBER_FLAG_ROOT);
-        resumed = vm_entry_mod.continueFiber(rooted, wrap.fromNil());
+        resumed = vm_entry.continueFiber(rooted, wrap.fromNil());
         expectReport(resumed, if (has_ev) "cannot resume root fiber, use ev/go" else "cannot resume root fiber");
-        resumed = vm_entry_mod.continueSignal(rooted, wrap.fromNil(), abi.Signal.@"error");
+        resumed = vm_entry.continueSignal(rooted, wrap.fromNil(), abi.Signal.@"error");
         expectReport(resumed, if (has_ev) "cannot cancel root fiber, use ev/cancel" else "cannot cancel root fiber");
     }
 
@@ -403,9 +403,10 @@ fn cfunProbe(argv: []repr.Value) raise.Raising(repr.Value) {
     expect(harness.raised(vm_entry.call, .{ fun, args[0..2] }).?.says("C stack recursed too deeply"));
     harness.vm().stackn = saved;
 
-    // A dirty stack: values pushed above `stackstart` that `vm_entry.call` must
-    // not overwrite. It pushes a guard frame to protect them and pops it again, so
-    // both the pushed value and the two stack marks survive the call.
+    // A dirty stack: values pushed above `stackstart` that `vm_entry.call`
+    // must not overwrite. It pushes a guard frame to protect them and pops it
+    // again, so both the pushed value and the two stack marks survive the
+    // call.
     {
         try fibers.push(self, harness.wrapInteger(99));
         const start_before = self.stackstart;
@@ -450,15 +451,13 @@ const cfuns = [_]abi.Reg{
     .{ .name = "vmentry/arity", .cfun = raise.stored(&cfunArityVariants), .documentation = null },
 };
 
-// ------------------------------------------------------- the coercion path
-
-/// `vm_entry.call` sets `coerce_error`, so a signal the loop returns rather than
-/// raises becomes an error with a message naming the signal it came from.
+/// `vm_entry.call` sets `coerce_error`, so a signal the loop returns rather
+/// than raises becomes an error with a message naming the signal it came from.
 /// Reaching it needs a Janet function entered through `call`, which the binary
 /// operator fallback arranges: `(+ t 1)` on a table looks up `:+` and invokes
 /// it as a method, and `vm.methodInvoke` calls `call` for a Janet function.
 fn aSignalTheLoopReturnsIsCoerced() void {
-    const resumed = vm_entry_mod.pcall(
+    const resumed = vm_entry.pcall(
         evalfn("(fn [] (def t @{:+ (fn [self other] (yield 5))}) (+ t 1))"),
         &.{},
         null,
@@ -466,11 +465,10 @@ fn aSignalTheLoopReturnsIsCoerced() void {
     expectReport(resumed, "5 coerced from yield to error");
 }
 
-// ------------------------------------------------------------- the tracing
-
 /// The trace line goes through a `(dyn :err)` write, which lands in the `:err`
-/// dynamic binding when it holds a buffer. Only the prefix is compared: the
-/// argument list renders a table and a function with `%p`, and both carry
+/// dynamic binding where that binding is a buffer. Only the prefix is
+/// compared, because the argument list renders a table and a function with
+/// `%p` and both give
 /// addresses.
 fn aTracedCall() void {
     const named = eval(
@@ -505,7 +503,9 @@ fn aTracedCall() void {
     }
 }
 
-// ------------------------------------------------------------------- entry
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() raise.Raising(void) {
     test_env = harness.coreEnv();

@@ -11,56 +11,63 @@
 //! So the first two-thirds of this file calls each special's `compile`
 //! directly, with hand-built arguments and a hand-built scope, and asserts the
 //! bytecode and the recorded error. The last third is Janet source, for the
-//! cases where the interesting behaviour is a whole compilation — a `while`
-//! that closes over its condition, a destructuring `var`, the five parameter
-//! forms of `fn`.
+//! cases where the interesting behaviour is a whole compilation: a `while`
+//! that closes over its condition, a destructuring `var`, and the five
+//! parameter forms of `fn`.
 //!
-//! ## The shim that dies here
+//! ## The callbacks are called directly
 //!
-//! A `special_type.Special`'s `compile` is a raising Zig function, so a C contract
-//! cannot call one: it needs a shim written for exactly this purpose and
-//! nothing else. Here the call is `special.of(...).compile.?(...)` with `try`,
-//! so the shim has no caller — along with the module the build was compiling a
-//! second time to give it a layout.
-//!
-//! The shim's comment said it existed for a C contract, and it did, and it was
-//! the last thing standing between the build and one fewer module.
+//! A `special_type.Special`'s `compile` is a raising Zig function, and this
+//! file calls it as one, with `try`. No shim stands between the two, so a
+//! raise from a macro or a lint arrives as `error.JanetSignal` and the
+//! compiler checks that this file handles it.
 
-const config = @import("config");
-const repr = @import("repr");
-const constants = @import("constants");
-const harness = @import("harness.zig");
-const vector = harness.vector;
-const subsystems = @import("subsystems");
-const value = @import("subsystems").value;
-const tables = @import("subsystems").value.tables;
-const symbols = @import("subsystems").value.symbols;
-const tuples = @import("subsystems").value.tuples;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const compiler_primitives = @import("subsystems").compiler_primitives;
+const config = @import("config");
+const constants = @import("constants");
 const core_env = @import("subsystems").env;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const specials_core = @import("subsystems").specials_core;
 const expect = @import("expect.zig").expect;
-const primitives = subsystems.compiler_primitives;
+const harness = @import("harness.zig");
+const repr = @import("repr");
 const special_type = subsystems.special;
+const specials_core = @import("subsystems").specials_core;
+const subsystems = @import("subsystems");
+const symbols = @import("subsystems").value.symbols;
+const tables = @import("subsystems").value.tables;
+const tuples = @import("subsystems").value.tuples;
+const value = @import("subsystems").value;
+const vector = harness.vector;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 var compiler: compiler_primitives.Compiler = undefined;
 var scope: compiler_primitives.Scope = undefined;
 
-/// A special by name, with the raising signature it actually has.
+// ==========================================================================
+// Cases
+// ==========================================================================
+
+/// A special by name, with the raising signature it has.
 ///
-/// This used to end in a cast from a storage type to the typed mirror beside
-/// it. There is one description, so the lookup answers what the callback is.
+/// There is one description per special, so the lookup gives back the callback
+/// itself rather than a storage type to be cast.
 fn special(name: [*:0]const u8) *const special_type.Special {
     const found = specials_core.lookupSpecial(symbols.csymbol(name));
     expect(found != null);
     return found.?;
 }
 
-/// Compile one form through a special, the way `janetc_value` would. The count
-/// and the pointer were separate parameters until 2d; the slice carries both,
-/// which is what lets a caller pass fewer arguments than the array holds.
+/// Compile one form through a special, the way `valueImpl` would. `count` is
+/// separate from the slice so that a caller can pass fewer arguments than the
+/// array it built has room for.
 fn compile(name: [*:0]const u8, options: compiler_primitives.FormOptions, count: i32, arguments: []const repr.Value) !compiler_primitives.Slot {
     return special(name).compile.?(options, arguments[0..@intCast(count)]);
 }
@@ -89,14 +96,14 @@ fn operationOf(word: u32) u32 {
 }
 
 /// The lookup itself: an unknown name is not a special, which is what lets
-/// `janetc_value` fall through to a function call.
+/// `valueImpl` fall through to a function call.
 fn anUnknownNameIsNotASpecial() void {
     expect(specials_core.lookupSpecial(symbols.csymbol("not-a-special")) == null);
 }
 
-/// `quote` answers its argument untouched, and `splice` answers its argument
-/// with a flag — but only where the surrounding form said it would accept
-/// one. Everywhere else it is an error with a whole sentence of explanation,
+/// `quote` gives back its argument untouched, and `splice` gives it back with
+/// a flag, but only where the surrounding form said it would accept one.
+/// Everywhere else it is an error with a whole sentence of explanation,
 /// which is the message users actually meet.
 fn theQuotingForms(arguments: []const repr.Value) !void {
     var options = compiler_primitives.foptsDefault(&compiler);
@@ -132,7 +139,7 @@ fn theQuotingForms(arguments: []const repr.Value) !void {
     clearError();
 }
 
-/// `do` and `upscope` both answer their last form; the difference is that
+/// `do` and `upscope` both produce their last form; the difference is that
 /// `do` opens a scope and `upscope` does not. Neither leaves one open.
 fn theSequencingForms(arguments: []const repr.Value) !void {
     const options = compiler_primitives.foptsDefault(&compiler);
@@ -170,21 +177,22 @@ fn theBreakForm(arguments: []const repr.Value) !void {
     expect(harness.isType(result.constant, repr.Tag.nil));
     expect(emittedCount() == 1);
     expect(emitted(0) == harness.op(constants.Opcode.return_nil));
-    try primitives.popscope(&compiler);
+    try compiler_primitives.popscope(&compiler);
 
-    // In a while loop it jumps, and the displacement is patched later — so
-    // the word carries the placeholder the loop will overwrite.
+    // In a while loop it jumps, and the displacement is patched later, so the
+    // word is the placeholder the loop will overwrite.
     vector.empty(&compiler.buffer);
     compiler_primitives.pushScope(&scope, &compiler, .{ .while_body = true }, "while");
     result = try compile("break", options, 0, arguments);
     expect(harness.isType(result.constant, repr.Tag.nil));
     expect(emittedCount() == 1);
     expect(emitted(0) == 0x80 | harness.op(constants.Opcode.jump));
-    try primitives.popscope(&compiler);
+    try compiler_primitives.popscope(&compiler);
 }
 
-/// `if` folds when the condition is a known constant, and branches when it is
-/// not. Folding is what keeps `(if false ...)` from emitting a dead arm.
+/// `if` folds when the condition is a constant the compiler can see, and
+/// branches when it is not. Folding is what keeps `(if false ...)` from
+/// emitting a dead arm.
 fn theIfForm(arguments: []repr.Value) !void {
     const options = compiler_primitives.foptsDefault(&compiler);
 
@@ -204,7 +212,7 @@ fn theIfForm(arguments: []repr.Value) !void {
     expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
     expect(!result.flags.constant);
     expect(emittedCount() == 1);
-    try primitives.popscope(&compiler);
+    try compiler_primitives.popscope(&compiler);
 
     // A condition the compiler cannot see through emits a real branch, and
     // the jump displacement is patched to a nonzero value.
@@ -213,7 +221,7 @@ fn theIfForm(arguments: []repr.Value) !void {
     {
         const symbol = symbols.csymbol("condition");
         const condition = compiler_primitives.farslot(&compiler).?;
-        try primitives.nameslot(&compiler, symbol, condition, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
+        try compiler_primitives.nameslot(&compiler, symbol, condition, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
         arguments[0] = wrap.fromSymbol(symbol);
     }
     result = try compile("if", options, 3, arguments);
@@ -222,7 +230,7 @@ fn theIfForm(arguments: []repr.Value) !void {
     expect(emittedCount() >= 4);
     expect(operationOf(emitted(0)) == harness.op(constants.Opcode.jump_if_not));
     expect(emitted(0) >> 16 != 0);
-    try primitives.popscope(&compiler);
+    try compiler_primitives.popscope(&compiler);
 }
 
 /// `quasiquote` folds to a constant wherever it can, rewrites `unquote` into
@@ -250,7 +258,7 @@ fn theQuasiquoteForm(arguments: []repr.Value) !void {
     expect(harness.integerIs(result.constant, 43));
 
     // A quoted tuple is not a constant, because a tuple is built rather than
-    // interned — so the last instruction constructs it.
+    // interned, so the last instruction constructs it.
     vector.empty(&compiler.buffer);
     compiler_primitives.pushScope(&scope, &compiler, .{ .function = true }, "quasiquote-root");
     tuple = tuples.begin(2);
@@ -261,13 +269,13 @@ fn theQuasiquoteForm(arguments: []repr.Value) !void {
     expect(!result.flags.constant);
     expect(emittedCount() == 4);
     expect(operationOf(emitted(3)) == harness.op(constants.Opcode.make_tuple));
-    try primitives.popscope(&compiler);
+    try compiler_primitives.popscope(&compiler);
 }
 
 /// `while` with a constant condition is either nothing at all or an infinite
-/// loop, and with a real condition it is a test, a body and a back-jump —
-/// with the three displacements asserted, because a loop that jumps one
-/// instruction wrong still terminates and still gives the wrong answer.
+/// loop, and with a real condition it is a test, a body and a back-jump. All
+/// three displacements are asserted, because a loop that jumps one instruction
+/// wrong still terminates and still computes the wrong result.
 fn theWhileForm(arguments: []repr.Value) !void {
     const options = compiler_primitives.foptsDefault(&compiler);
 
@@ -299,7 +307,7 @@ fn theWhileForm(arguments: []repr.Value) !void {
     {
         const symbol = symbols.csymbol("while-condition");
         const condition = compiler_primitives.farslot(&compiler).?;
-        try primitives.nameslot(&compiler, symbol, condition, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
+        try compiler_primitives.nameslot(&compiler, symbol, condition, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
         arguments[0] = wrap.fromSymbol(symbol);
         const tuple = tuples.begin(1);
         tuple[0] = value.fromBytes("break", .symbol);
@@ -313,7 +321,7 @@ fn theWhileForm(arguments: []repr.Value) !void {
     expect(operationOf(emitted(1)) == harness.op(constants.Opcode.jump));
     expect(emitted(1) >> 8 == 2);
     expect(operationOf(emitted(2)) == harness.op(constants.Opcode.jump));
-    try primitives.popscope(&compiler);
+    try compiler_primitives.popscope(&compiler);
 }
 
 /// `set` takes a symbol or a tuple; the first is a register write and the
@@ -339,14 +347,14 @@ fn theSetForm(arguments: []repr.Value) !void {
         const symbol = symbols.csymbol("mutable");
         var slot = compiler_primitives.farslot(&compiler).?;
         slot.flags.mutable = true;
-        try primitives.nameslot(&compiler, symbol, slot, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
+        try compiler_primitives.nameslot(&compiler, symbol, slot, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
         arguments[0] = wrap.fromSymbol(symbol);
         arguments[1] = harness.wrapInteger(7);
         result = try compile("set", options, 2, arguments);
         expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
         expect(result.index == slot.index);
     }
-    try primitives.popscope(&compiler);
+    try compiler_primitives.popscope(&compiler);
 
     // A tuple l-value is a field write.
     vector.empty(&compiler.buffer);
@@ -363,7 +371,7 @@ fn theSetForm(arguments: []repr.Value) !void {
         expect(emittedCount() > 0);
         expect(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.Opcode.put));
     }
-    try primitives.popscope(&compiler);
+    try compiler_primitives.popscope(&compiler);
 }
 
 /// The two binding forms and the function literal, each on its arity check,
@@ -415,7 +423,7 @@ fn theBindingForms(arguments: []repr.Value) !void {
     expect(scope.defs.items[0].bytecode_length == 1);
     expect(operationOf(scope.defs.items[0].instructions()[0]) == harness.op(constants.Opcode.return_nil));
     expect(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.Opcode.closure));
-    try primitives.popscope(&compiler);
+    try compiler_primitives.popscope(&compiler);
 }
 
 /// The cases where the interesting behaviour is a whole compilation, driven
@@ -536,6 +544,10 @@ fn theWholeCompilations() void {
         expect(harness.integerIs(results[4], 3));
     }
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() !void {
     anUnknownNameIsNotASpecial();

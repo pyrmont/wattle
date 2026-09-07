@@ -2,54 +2,68 @@
 //! operations that copy it whole, the interpreter interrupt, and the dynamic
 //! bindings that choose between two tables.
 //!
-//! Nothing below brings a VM up, with one exception. These are operations
-//! over the state as a whole — its address, whole-structure copies, an atomic
-//! counter — and none of them reads a field the runtime has to have filled in.
+//! Nothing below brings a VM up, with one exception. These are operations over
+//! the state as a whole, its address, whole-structure copies and an atomic
+//! counter, and none of them reads a field the runtime has to have filled in.
 //! Keeping the VM uninitialised is deliberate: it lets the destructive cases
 //! write whatever they like. The dynamic bindings run last, inside their own
-//! `vm_lifecycle.init`/`deinit`, so that the cases above still get an
+//! `vm_lifecycle.init` and `deinit`, so that the cases above still get an
 //! uninitialised VM to scribble on.
 //!
-//! ## The layout section is gone, and the deletion is the argument
+//! ## There is no layout section
 //!
-//! The C original opened with three assertions, and a size accessor, an
-//! alignment accessor and an alignment probe existed for them:
-//!
-//!     expect(janet_vm_state_size() == sizeof(Vm));
-//!     expect(janet_vm_state_align() == offsetof(JanetVMAlignProbe, vm));
-//!
-//! The two sides were two *compilers'* views of one C header: a C build's, and
-//! a Zig build's through `@cImport`. `vmSave` copies the whole
-//! structure using the owner's length, so a disagreement would truncate or
-//! overrun a copy and neither would be a compile error. That was a real oracle
-//! for as long as C files read the VM's fields.
-//!
-//! There is one view now: `@sizeOf(vm_state.Vm)` is what `vm_state.vmAlloc`
-//! allocates and what `vmSave` copies, so asserting the equality would be
-//! asserting a definition. The second side was **the C implementation**, and
-//! it is not somewhere else in `test/` but gone.
-//!
-//! So the section is dropped rather than translated, and the three
-//! declarations it was the only caller of go with it. The guard-page case --
-//! "a save must copy no further than the end of the structure" -- is the same
-//! claim from the other end and goes for the same reason: `vmSave` is
-//! `into.* = current().*`, and a whole-struct assignment writing past the
-//! struct is not a behaviour Zig has.
+//! `@sizeOf(vm_state.Vm)` is what `vm_state.vmAlloc` allocates and what
+//! `vmSave` copies, so asserting that a size accessor agrees with it would be
+//! asserting a definition rather than checking anything. The same goes for the
+//! bound on how far a save may copy: `vmSave` is `into.* = current().*`, and a
+//! whole-struct assignment writing past the struct is not a behaviour Zig has.
+//! Both were worth checking while two compilers had separate views of one
+//! header. There is one view now.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
-const repr = @import("repr");
-const constants = @import("constants");
-const harness = @import("harness.zig");
-const config = @import("config");
-const gc_alloc = @import("subsystems").gc_alloc;
-const functions = @import("subsystems").value.functions;
-const vm_state = @import("subsystems").vm_state;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const wrap = @import("subsystems").value.wrap;
-const fibers = @import("subsystems").value.fibers;
 
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const config = @import("config");
+const constants = @import("constants");
 const expect = @import("expect.zig").expect;
+const fibers = @import("subsystems").value.fibers;
+const functions = @import("subsystems").value.functions;
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
+const repr = @import("repr");
+const vm_lifecycle = @import("subsystems").lifecycle;
+const vm_state = @import("subsystems").vm_state;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+var child_local_matches = false;
+var child_saw_zero = false;
+var child_vm: ?*vm_state.Vm = null;
+
+/// The per-thread half of the contract needs a second thread to say it with.
+/// `constants.JANET_VM_THREAD_LOCAL` is false only in a single-threaded
+/// build, where the storage is one process-wide object by construction and
+/// there is nothing here to check. Windows is cross-compiled and never
+/// executed, so its path is left out rather than written blind, on the same
+/// condition and for the same reason as `test/fiber_core.zig`.
+const has_threads = constants.JANET_VM_THREAD_LOCAL != 0 and builtin.os.tag != .windows;
+
+var main_vm: *vm_state.Vm = undefined;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// The VM this thread is running, through the owner's accessor, as in every
 /// other contract.
@@ -57,30 +71,13 @@ fn vm() *vm_state.Vm {
     return vm_state.current();
 }
 
-/// The per-thread half of the contract needs a second thread to say it with.
-/// `constants.JANET_VM_THREAD_LOCAL` is the answer to the question this
-/// section asks — it is false only in a single-threaded build, where the
-/// storage is one process-wide object by construction and there is nothing
-/// here to check. Windows is cross-compiled and never executed, so its path is
-/// left out rather than written blind -- `test/fiber_core.zig` guards on the
-/// same condition for the same reason.
-const has_threads = constants.JANET_VM_THREAD_LOCAL != 0 and builtin.os.tag != .windows;
-
-// ------------------------------------------------------------------ address
-
 /// `vm_state.localVm()` must name the object this thread runs on.
 ///
-/// **The comparison it used to make is gone with its subject.** The left side
-/// was what the function computed and the right side was where the linker put
-/// an exported symbol, which is what let Zig define the storage while C files
-/// wrote its fields by name. There is no export, so there is no second view,
-/// and
-/// asserting `localVm() == current()` would be asserting that a one-line
-/// function calls the function it calls.
-///
-/// What is left is not circular: the exported entry point must answer a VM
-/// that reads and writes as this thread's, which is a claim about behaviour
-/// rather than about two spellings of an address.
+/// The assertion is about behaviour rather than about two spellings of an
+/// address. Asserting `localVm() == current()` would be asserting that a
+/// one-line function calls the function it calls, since there is no second
+/// view of that address to compare it against. What is checked instead is that
+/// a write through one is a read through the other, in both directions.
 fn localVmAnswersThisThread() void {
     vm().stackn = 1234;
     expect(vm_state.localVm().stackn == 1234);
@@ -89,21 +86,16 @@ fn localVmAnswersThisThread() void {
     vm().stackn = 0;
 }
 
-// --------------------------------------------------------------- allocation
-
 fn allocAndFree() void {
     const a = vm_state.vmAlloc();
     const b = vm_state.vmAlloc();
-    // `expect(a != null)` cannot be written: a translated `[*c]Vm` made the
-    // result "maybe null, maybe many" and the assertion a real check. The
-    // definition returns `*vm_state.Vm` and either succeeds or reaches
-    // `fatal.outOfMemory`, which does not return -- so the property is carried
-    // by the type and comparing with null is a compile error.
-    // `DESIGN.md` section 3: the property stops being an agreement between two
-    // spellings and becomes a construction from one.
+    // `expect(a != null)` is a compile error rather than a check:
+    // `vm_state.vmAlloc` returns `*vm_state.Vm`, so it either succeeds or
+    // reaches `fatal.outOfMemory`, which does not return. The type states the
+    // property and there is nothing left to assert about it.
     expect(a != b);
-    // A detached VM is a destination for `vmSave` and nothing else, so
-    // the only thing to check about a fresh one is that it can hold a save.
+    // A detached VM is a destination for `vmSave` and nothing else, so the
+    // only thing to check about a fresh one is that a save lands in it.
     vm_state.vmSave(a);
     vm_state.vmSave(b);
     vm_state.vmFree(a);
@@ -111,12 +103,10 @@ fn allocAndFree() void {
     vm_state.vmFree(null);
 }
 
-// ------------------------------------------------------------ save and load
-
 /// Two snapshots taken around a change must differ in the changed field and
 /// restore independently. `stackn` is the witness because it is a scalar the
-/// VM owns outright — a field reached through one of the VM's pointers would
-/// be shared by every snapshot rather than copied.
+/// VM owns outright, where a field reached through one of the VM's pointers
+/// would be shared by every snapshot rather than copied.
 fn saveLoadRoundTrip() void {
     const first = vm_state.vmAlloc();
     const second = vm_state.vmAlloc();
@@ -154,11 +144,10 @@ fn saveLoadRoundTrip() void {
 /// A save must copy the fields at the very end of the structure as well as the
 /// ones at the front.
 ///
-/// The C original reached the last member through a cascade of `#ifdef`s over
-/// `JANET_EV`, `JANET_WINDOWS`, `JANET_EV_EPOLL` and `JANET_EV_KQUEUE` —
-/// four configuration questions asked in order to find out one structural
-/// fact. `@hasField` asks the structure instead, which is both shorter and a
-/// better question: a configuration that gains a backend does not need a
+/// Which field is last depends on the event loop and its backend, so
+/// `@hasField` asks the structure rather than asking the configuration what it
+/// selected. That is the better question here: a configuration that gains a
+/// backend does not need a
 /// branch here, and a field that is renamed fails to compile rather than
 /// silently dropping out of the sweep.
 fn saveSpansTheStructure() void {
@@ -168,10 +157,9 @@ fn saveSpansTheStructure() void {
     vm().registry.rows.capacity = 0x2222;
     vm().roots.capacity = 0x3333;
     vm().sandbox_flags = vm_lifecycle.Sandbox.fromBits(0x4444);
-    // Aligned, unlike the C original's 0x5555: `traversal_base` is a typed
-    // pointer and Zig rejects a `@ptrFromInt` that cannot satisfy its
-    // alignment. The value is a witness rather than an address, so any
-    // distinguishable one does.
+    // Aligned, because `traversal.base` is a typed pointer and Zig rejects a
+    // `@ptrFromInt` that cannot satisfy its alignment. The value is a witness
+    // rather than an address, so any distinguishable one does.
     vm().traversal.base = @ptrFromInt(0x5550);
     if (comptime builtin.os.tag != .windows) {
         vm().strerror_buf[0] = 'z';
@@ -222,8 +210,6 @@ fn saveSpansTheStructure() void {
     vm().* = std.mem.zeroes(vm_state.Vm);
 }
 
-// ------------------------------------------------------------- interruption
-
 /// The interrupt counter is a signed counter, not a flag: nested interrupts
 /// are balanced by the same number of handled calls. A null argument means the
 /// calling thread's own VM, which is the form `os/sigaction`'s handler uses.
@@ -252,19 +238,12 @@ fn interruptCounter() void {
     vm_state.vmFree(other);
 }
 
-// ------------------------------------------------------------------ threads
-
-var main_vm: *vm_state.Vm = undefined;
-var child_vm: ?*vm_state.Vm = null;
-var child_saw_zero = false;
-var child_local_matches = false;
-
 /// Whether every field of `state` is the field a freshly declared `Vm` has.
 ///
-/// **Field by field, not byte by byte.** `Vm` has automatic layout, so the
-/// padding between its fields is not part of its value; asserting that all
-/// `@sizeOf(vm_state.Vm)` bytes are zero is a claim about the compiler's field
-/// placement and the TLS section rather than about the VM. A field loop
+/// Field by field rather than byte by byte. `Vm` has automatic layout, so the
+/// padding between its fields is not part of its value, and asserting that all
+/// `@sizeOf(vm_state.Vm)` bytes are zero would be a claim about the compiler's
+/// field placement and the TLS section rather than about the VM. A field loop
 /// compares only what the type means.
 ///
 /// `std.meta.eql` cannot be used on the whole struct: `Vm` reaches
@@ -293,8 +272,8 @@ fn child() void {
 /// rather than merely global, and it is the one thing a Zig `threadlocal var`
 /// could plausibly get wrong while still linking.
 ///
-/// `test/fiber_core.zig` asserts a neighbouring fact — that the collector's
-/// budget is per-thread — and it is not this one: that reads a field through
+/// `test/fiber_core.zig` asserts a neighbouring fact, that the collector's
+/// budget is per-thread, and it is not this one: that reads a field through
 /// the VM accessor from a second thread, while this reads the *storage*,
 /// including that a fresh thread's copy is zeroed. Neither subsumes the other.
 fn threadLocalStorage() !void {
@@ -313,13 +292,11 @@ fn threadLocalStorage() !void {
     vm().stackn = 0;
 }
 
-// ------------------------------------------------------ dynamic bindings
-
-/// `vm_state.dyn` and `vm_state.setdyn` choose between two tables, and which one is
-/// the VM's business rather than the fiber's: a running fiber's own env when
-/// there is one, `vm.top_dyns` when there is not. Both tables are
-/// created lazily, and the laziness is the part a port can quietly lose — a
-/// reader that allocated would turn every `(dyn :missing)` into a table.
+/// `vm_state.dyn` and `vm_state.setdyn` choose between two tables, and which
+/// one is the VM's business rather than the fiber's: a running fiber's own env
+/// where there is one, `vm.top_dyns` where there is not. Both tables are
+/// created lazily, and the laziness is the part a port can quietly lose, since
+/// a reader that allocated would turn every `(dyn :missing)` into a table.
 ///
 /// The Janet suites exercise this constantly through `setdyn` and `dyn`, but
 /// always with a fiber running, so the no-fiber half below is reached by
@@ -362,7 +339,9 @@ fn dynamicBindings() void {
     vm().top_dyns = saved_dyns;
 }
 
-// ------------------------------------------------------------------- entry
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     localVmAnswersThisThread();

@@ -6,20 +6,19 @@
 //! `test/suite-ev.janet` has 742 assertions and every one of them goes through
 //! the thirty `ev/` bindings. Five areas have no Janet spelling at all:
 //!
-//!  - **The embedder's channel API.** `channel.channelMake`,
+//!  - The embedder's channel API. `channel.channelMake`,
 //!    `channel.channelGive` and `channel.channelTake` are the non-blocking
 //!    mode (`Caller.detached`) of the push and pop, which `ev/give` and
-//!    `ev/take` never select. Only the supervisor path inside the loop reaches it otherwise,
-//!    and then only on a fiber that has already failed.
-//!  - **`makeStreamExt`.** Type-punning a stream -- a larger allocation and a
-//!    caller-supplied method table -- is what `net.zig` does and what no Janet
+//!    `ev/take` never select. Only the supervisor path inside the loop reaches
+//!    it otherwise, and then only on a fiber that has already failed.
+//!  - `makeStreamExt`. Type-punning a stream, a larger allocation with a
+//!    caller-supplied method table, is what `net.zig` does and what no Janet
 //!    program can ask for.
-//!  - **`makePipe`'s four modes.** Janet reaches mode 1 through `os/spawn` and
-//!    nothing else; the descriptor flags each mode sets are invisible from
+//!  - `makePipe`'s four modes. Janet reaches mode 1 through `os/spawn` and
+//!    nothing else, and the descriptor flags each mode sets are invisible from
 //!    Janet even then.
-//!  - **`ev.evDefaultThreadedCallback`'s nine tags.** `ev/thread` uses two of
-//!    them.
-//!  - **The abis.** `channel.channelGiveAbi`, `marsh.marshalAbi` and their kin
+//!  - `ev.evDefaultThreadedCallback`'s nine tags. `ev/thread` uses two.
+//!  - The abis. `channel.channelGiveAbi`, `marsh.marshalAbi` and their kin
 //!    report rather than raise, and a report is what an embedder sees when one
 //!    refuses. `harness.abiRaised` is the instrument for that half and
 //!    `harness.raised` for the other.
@@ -33,67 +32,97 @@
 //! ordering decisions, and the self-pipe round trip, which one turn of the
 //! loop performs without entering the backend at all.
 //!
-//! ## Why a contract inside the compilation matters here
+//! ## Two things about how the subjects are reached
 //!
-//! Four of the five things a C contract needed from an adapter object were the
-//! reason that object existed:
+//! `theProtectedScope` tests `harness.raised` directly, which is the mechanism
+//! sixty-three contracts rest on and the only place it is checked as a
+//! subject: a returning call gives null, a raising call gives the signal and
+//! the payload, and the scopes nest. Everything else here calls its subject
+//! and reads the refusal as a value, `ev/stream.streamType`'s raising
+//! callbacks included.
 //!
-//!  - a protected scope so that a C body could raise into it. `harness.raised`
-//!    is that, and the section below tests it directly.
-//!  - three shims that called an abstract type's raising callbacks on C's
-//!    behalf. `ev/stream.streamType` is an `abstract_type.AbstractType` here,
-//!    so the callbacks are called and the error is handled.
-//!  - an adapter that turned a C cfunction into one the runtime could call. A
-//!    cfunction written in Zig needs no adapter; `raise.stored` is the cast
-//!    that puts one in an `abi.Method` row or a `registry.def`.
-//!
-//! **The section that tested the shim tests the harness instead.** Deleting it
-//! outright would drop the only direct check of the mechanism sixty-three
-//! contracts rest on, so the same three claims point at `harness.raised`: a
-//! returning call answers null, a raising call answers the signal and the
-//! payload, and the scopes nest.
-//!
-//! **The Windows arm compiles, and its predecessor did not.** `zig build
-//! -Dtarget=x86_64-windows-gnu -Dinstall-tests=true` failed on three
-//! `INVALID_HANDLE_VALUE`s, and nothing caught it because the driver that held
-//! them was installed only under `-Dinstall-tests` and the matrix's
-//! cross-compile entries do not pass it. This driver is installed
-//! unconditionally, so those entries compile this file.
+//! The Windows arm of this file compiles. The contract driver is installed
+//! unconditionally, so the matrix's cross-compile entries build it whether or
+//! not they pass `-Dinstall-tests`.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
-const repr = @import("repr");
-const constants = @import("constants");
-const raise = @import("subsystems").raise;
-const harness = @import("harness.zig");
 
-const subsystems = @import("subsystems");
-const value = @import("subsystems").value;
-const gc_alloc = @import("subsystems").gc_alloc;
-const buffers = @import("subsystems").value.buffers;
-const utils = @import("subsystems").utils;
-const order = @import("subsystems").value.order;
-const gc_mark = @import("subsystems").gc_mark;
-const core_env = @import("subsystems").env;
-const registry = @import("subsystems").registry;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const pp_describe = @import("subsystems").pp_describe;
-const ev_mod = @import("subsystems").ev;
-const ev_channel = @import("subsystems").ev_channel;
-const c = @import("cabi");
-const strings = @import("subsystems").value.strings;
-const tuples = @import("subsystems").value.tuples;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 /// `boundary` rather than `abi`, which a local below binds to a raise report.
 const boundary = @import("abi");
-const method_type = @import("subsystems").method_type;
-const host = @import("host");
-const ev = subsystems.ev;
+const buffers = @import("subsystems").value.buffers;
+const c = @import("cabi");
 const channel = subsystems.ev_channel;
-const stream = subsystems.ev_stream;
-
+const constants = @import("constants");
+const core_env = @import("subsystems").env;
+const ev = subsystems.ev;
 const expect = @import("expect.zig").expect;
+const gc_alloc = @import("subsystems").gc_alloc;
+const gc_mark = @import("subsystems").gc_mark;
+const harness = @import("harness.zig");
+const host = @import("host");
+const method_type = @import("subsystems").method_type;
+const order = @import("subsystems").value.order;
+const pp_describe = @import("subsystems").pp_describe;
+const raise = @import("subsystems").raise;
+const registry = @import("subsystems").registry;
+const repr = @import("repr");
+const strings = @import("subsystems").value.strings;
+const stream = subsystems.ev_stream;
+const subsystems = @import("subsystems");
+const tuples = @import("subsystems").value.tuples;
+const utils = @import("subsystems").utils;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// The flag values are `std`'s rather than the subject's, which has its own
+/// four constants ten lines from `makePipe`. Importing them
+/// would make this compare the subject with itself, and the question here is
+/// whether the descriptor the *host* gave back has the flag set.
+const fd_cloexec: c_int = std.c.FD_CLOEXEC;
+const o_nonblock: c_int = @bitCast(@as(u32, @bitCast(std.c.O{ .NONBLOCK = true })));
+var post_record: PostRecord = .{};
+
+const probe_methods = [_]method_type.CMethod{
+    .{ .name = "probe", .cfun = raise.stored(&probeMethod) },
+    .{ .name = null, .cfun = null },
+};
+
 const windows = builtin.os.tag == .windows;
+
+// ==========================================================================
+// Types
+// ==========================================================================
+
+const PostRecord = struct {
+    calls: u32 = 0,
+    tag: i32 = 0,
+    value: repr.Value = undefined,
+};
+
+/// A stream with room for a payload after the header, which is what
+/// `makeStreamExt` exists for.
+const ProbeStream = extern struct {
+    stream: stream.Stream,
+    marker: u64,
+};
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// `INVALID_HANDLE_VALUE`, written out rather than imported.
 ///
@@ -123,10 +152,6 @@ fn doString(source: [*:0]const u8) repr.Value {
     return out;
 }
 
-// ==========================================================================
-// The protected scope, which is now the harness's own
-// ==========================================================================
-
 fn raisesContractPanic() raise.Raising(void) {
     return raise.panic("contract panic");
 }
@@ -138,10 +163,10 @@ fn returnsQuietly() raise.Raising(void) {
 /// `harness.raised` is the mechanism every contract in this driver rests on.
 /// Nothing else asserts it directly, so its three claims are made here.
 fn theProtectedScope() void {
-    // The returning arm answers null.
+    // The returning arm gives null.
     expect(harness.raised(returnsQuietly, .{}) == null);
 
-    // The raising arm answers the signal and the payload.
+    // The raising arm gives the signal and the payload.
     const r = harness.raised(raisesContractPanic, .{}).?;
     expect(r.signal == boundary.Signal.@"error");
     expect(r.says("contract panic"));
@@ -160,10 +185,6 @@ fn theProtectedScope() void {
     }.body, .{}).?;
     expect(outer.says("outer panic"));
 }
-
-// ==========================================================================
-// Channels
-// ==========================================================================
 
 fn theEmbedderChannelApi() void {
     const chan = channel.channelMake(2).?;
@@ -216,8 +237,8 @@ fn theThreadedChannel() void {
     expect(payloadIs(out, "packed"));
 }
 
-/// Giving to a closed channel raises, and this asserts the *abi* -- what a
-/// caller across a compilation boundary sees, which is a report. The import
+/// Giving to a closed channel raises, and this asserts the *abi*, which is
+/// what a caller across a compilation boundary sees: a report. The import
 /// beside it is the same refusal arriving as an error.
 fn theClosedChannel() void {
     const chanv = doString("(def c (ev/chan 4)) (ev/chan-close c) c");
@@ -251,14 +272,10 @@ fn theChannelGetters() void {
     // `optChannel` takes the default for a missing argument and for nil, and
     // the channel for anything else. The count travels in the slice rather
     // than as a separate `argc`, so this reads `argv.len`.
-    expect(try_(ev_channel.optChannel(argv[0..1], 1, null)) == null);
-    expect(try_(ev_channel.optChannel(argv[0..2], 1, null)) == null);
-    expect(try_(ev_channel.optChannel(argv[0..2], 0, null)) == chan);
+    expect(try_(channel.optChannel(argv[0..1], 1, null)) == null);
+    expect(try_(channel.optChannel(argv[0..2], 1, null)) == null);
+    expect(try_(channel.optChannel(argv[0..2], 0, null)) == chan);
 }
-
-// ==========================================================================
-// Streams
-// ==========================================================================
 
 fn probeMethod(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
@@ -266,19 +283,7 @@ fn probeMethod(argv: []repr.Value) raise.Raising(repr.Value) {
     return value.fromBytes("probe", .keyword);
 }
 
-const probe_methods = [_]method_type.CMethod{
-    .{ .name = "probe", .cfun = raise.stored(&probeMethod) },
-    .{ .name = null, .cfun = null },
-};
-
-/// A stream with room for a payload after the header, which is what
-/// `makeStreamExt` exists for.
-const ProbeStream = extern struct {
-    stream: stream.Stream,
-    marker: u64,
-};
-
-/// A pipe, and the pair of handles it answers with. Every stream section needs
+/// A pipe, and the pair of handles it gives back. Every stream section needs
 /// one and every one of them closes the far end by hand.
 fn probePipe() [2]host.Handle {
     var handles: [2]host.Handle = undefined;
@@ -309,7 +314,7 @@ fn theStreamExtension() void {
     // The abstract's size is the caller's, not the header's.
     expect(boundary.abstractHead(ps).size == @sizeOf(ProbeStream));
 
-    // The abstract carries the type this file imports rather than some other
+    // The abstract has the type this file imports rather than some other
     // registration of the same name. Asserted through the head's own `type`
     // pointer, which is a run-time value: two declarations compared at
     // comptime are never equal whatever the linker did.
@@ -419,7 +424,7 @@ fn theNotCloseableStream() void {
     try_(stream.streamClose(s));
 
     // The handle is forgotten either way; what NOT_CLOSEABLE changes is that
-    // the descriptor itself survives, which is why it is still usable here.
+    // the descriptor itself survives, so it is still usable here.
     expect(s.flags & @as(u32, @intCast(constants.JANET_STREAM_CLOSED)) != 0);
     expect(s.handle == invalidHandle());
 
@@ -432,16 +437,75 @@ fn theNotCloseableStream() void {
     }
 }
 
-// ==========================================================================
-// Pipes
-// ==========================================================================
+/// A stream is a file descriptor, so both directions refuse to work without
+/// `JANET_MARSHAL_UNSAFE`, and the refusal reaches an embedder as the report
+/// `marsh.marshalAbi` leaves. `ev/thread` is the only thing in Janet that
+/// marshals unsafely, and it never marshals a bare stream, so neither the
+/// refusal nor the success path has a Janet spelling.
+fn theStreamMarshalling() void {
+    const handles = probePipe();
+    const s = try_(stream.makeStream(handles[0], @intCast(constants.JANET_STREAM_READABLE), null));
+    const streamv = wrap.fromAbstract(s);
+    gc_alloc.gcroot(streamv);
+    defer _ = gc_alloc.gcunroot(streamv);
 
-/// The flag values are `std`'s rather than the subject's, which has its own
-/// four constants ten lines from `makePipe`. Importing them
-/// would make this compare the subject with itself, and the question here is
-/// whether the descriptor the *host* handed back carries the flag.
-const fd_cloexec: c_int = std.c.FD_CLOEXEC;
-const o_nonblock: c_int = @bitCast(@as(u32, @bitCast(std.c.O{ .NONBLOCK = true })));
+    const buffer = buffers.new(32);
+    {
+        const r = harness.abiRaised(subsystems.marsh.marshalAbi, .{ buffer, streamv, null, 0 }).?;
+        expect(r.says("can only marshal stream with unsafe flag"));
+    }
+
+    // With the flag, it marshals, and duplicates the descriptor on the way
+    // out, which is what makes an unmarshalled stream independent of this one.
+    buffer.count = 0;
+    subsystems.marsh.marshalAbi(buffer, streamv, null, constants.JANET_MARSHAL_UNSAFE);
+    expect(buffer.count > 0);
+
+    // Marshalling clears NODUPS, because the handle may now have two owners.
+    expect(s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) == 0);
+
+    // The reader refuses without the flag too.
+    {
+        const r = harness.abiRaised(
+            subsystems.marsh.unmarshalAbi,
+            .{ buffer.data, @as(usize, @intCast(buffer.count)), 0, null, null },
+        ).?;
+        expect(r.says("can only unmarshal stream with unsafe flag"));
+    }
+
+    const backv = subsystems.marsh.unmarshalAbi(
+        buffer.data,
+        @intCast(buffer.count),
+        constants.JANET_MARSHAL_UNSAFE,
+        null,
+        null,
+    );
+    gc_alloc.gcroot(backv);
+    defer _ = gc_alloc.gcunroot(backv);
+    const back: *stream.Stream = @ptrCast(@alignCast(wrap.toAbstract(backv)));
+    expect(back != s);
+    // A different descriptor for the same pipe: `dup` was called.
+    expect(back.handle != s.handle);
+    expect(back.flags == s.flags);
+    expect(back.read_fiber == null and back.write_fiber == null);
+
+    if (!windows) {
+        // Both ends really do read the same pipe.
+        var byte: u8 = 'z';
+        var got: u8 = 0;
+        expect(c.write(handles[1], @ptrCast(&byte), 1) == 1);
+        expect(c.read(back.handle, @ptrCast(&got), 1) == 1);
+        expect(got == 'z');
+    }
+    // `back.handle` is the `dup`, and nothing ever registered *it*: the
+    // marshal duplicated the descriptor and cleared NODUPS, so the close takes
+    // the deregistering path with a handle the backend has never seen.
+    // Deregistering something that was never registered is quiet on every
+    // backend: it is the state the call is trying to reach.
+    try_(stream.streamClose(back));
+    try_(stream.streamClose(s));
+    closeFarEnd(handles);
+}
 
 fn isCloexec(fd: c_int) bool {
     const flags = c.fcntl(fd, std.c.F.GETFD);
@@ -487,7 +551,7 @@ fn thePipeModes() void {
 
 fn theLastError() void {
     // `evLasterr` reads errno and renders it, with no side effect of its own
-    // -- the same errno gives the same string twice.
+    // the same errno gives the same string twice.
     std.c._errno().* = @intFromEnum(std.posix.E.BADF);
     const first = stream.evLasterr();
     const second = stream.evLasterr();
@@ -497,35 +561,23 @@ fn theLastError() void {
     expect(!order.equals(first, stream.evLasterr()));
 }
 
-// ==========================================================================
-// The loop's own state
-// ==========================================================================
-
 fn theLoopExitCondition() void {
     // Nothing scheduled, no timers, no listeners.
-    expect(ev_mod.loopDone());
+    expect(ev.loopDone());
 
     // A listener is enough to keep the loop alive, and the count is a count
     // rather than a flag.
     ev.evIncRefcount();
-    expect(!ev_mod.loopDone());
+    expect(!ev.loopDone());
     ev.evIncRefcount();
-    expect(!ev_mod.loopDone());
+    expect(!ev.loopDone());
     ev.evDecRefcount();
-    expect(!ev_mod.loopDone());
+    expect(!ev.loopDone());
     ev.evDecRefcount();
-    expect(ev_mod.loopDone());
+    expect(ev.loopDone());
 }
 
-const PostRecord = struct {
-    calls: u32 = 0,
-    tag: i32 = 0,
-    value: repr.Value = undefined,
-};
-
-var post_record: PostRecord = .{};
-
-fn postCallback(msg: ev_mod.GenericMessage) callconv(.c) void {
+fn postCallback(msg: ev.GenericMessage) callconv(.c) void {
     post_record.calls += 1;
     post_record.tag = msg.tag;
     post_record.value = msg.argj;
@@ -536,26 +588,26 @@ fn postCallback(msg: ev_mod.GenericMessage) callconv(.c) void {
 /// the same round trip goes through the completion port instead.
 fn thePostedEventRoundTrip() void {
     post_record = .{};
-    var msg = std.mem.zeroes(ev_mod.GenericMessage);
+    var msg = std.mem.zeroes(ev.GenericMessage);
     msg.tag = 41;
     msg.argj = harness.wrapInteger(42);
 
-    expect(ev_mod.loopDone());
+    expect(ev.loopDone());
     ev.evPostEvent(null, &postCallback, msg);
-    expect(!ev_mod.loopDone());
+    expect(!ev.loopDone());
 
-    raise.reported(ev_mod.loop());
+    raise.toAbi(ev.loop());
     expect(post_record.calls == 1);
     expect(post_record.tag == 41);
     expect(wrap.toInteger(post_record.value) == 42);
-    expect(ev_mod.loopDone());
+    expect(ev.loopDone());
 }
 
 /// A null callback is an event that wakes a loop blocked in the backend and
-/// does nothing else. `ev.Callback` is optional, and this is what exercises
-/// the null arm of it.
+/// does nothing else. `ev.ThreadedCallback` is optional, and this is what
+/// exercises the null arm of it.
 ///
-/// **The reference it takes is given back by the turn that delivers it**, on
+/// The reference it takes is given back by the turn that delivers it, on
 /// every backend. `evPostEvent` raises the listener count unconditionally, so
 /// that the loop cannot decide it is done while an event is in flight; a
 /// handler that lowered it only when there was a callback to run would leave
@@ -563,23 +615,23 @@ fn thePostedEventRoundTrip() void {
 /// never report done again. One turn is what this drives, rather than `loop`,
 /// because the assertion is about that turn.
 fn theNullCallback() void {
-    expect(ev_mod.loopDone());
-    const msg = std.mem.zeroes(ev_mod.GenericMessage);
+    expect(ev.loopDone());
+    const msg = std.mem.zeroes(ev.GenericMessage);
     ev.evPostEvent(null, null, msg);
-    expect(!ev_mod.loopDone());
-    _ = raise.reported(ev_mod.loop1());
-    expect(ev_mod.loopDone());
+    expect(!ev.loopDone());
+    _ = raise.toAbi(ev.loop1());
+    expect(ev.loopDone());
 }
 
 /// `ev.evDefaultThreadedCallback` with a null fiber is the cleanup-only
-/// path: nothing is scheduled, and **the payload is released for the two tags
-/// that own one**.
+/// path: nothing is scheduled, and the payload is released for the two tags
+/// that own one.
 ///
-/// `*_STRINGF` is the "string, freed" tag -- the subroutine allocated the
-/// bytes and the callback releases them. Every other tag either carries no
+/// `*_STRINGF` is the "string, freed" tag: the subroutine allocated the bytes
+/// and the callback releases them. Every other tag either has no
 /// payload or points at something that is not the callback's: `ERR_STRING`
-/// points at a string literal, and a tag carrying no payload can still be
-/// carrying the *request* pointer the subroutine has already released.
+/// points at a string literal, and a tag with no payload may still name the
+/// *request* pointer the subroutine has already released.
 ///
 /// Freeing for every tag is what makes `(os/shell "cmd")` abort the process
 /// and `ev/thread`'s start failure free `"failed to start thread"`. The two
@@ -601,7 +653,7 @@ fn theThreadedReplyTags() void {
     };
     var owned: u32 = 0;
     for (cases) |case| {
-        var msg = std.mem.zeroes(ev_mod.GenericMessage);
+        var msg = std.mem.zeroes(ev.GenericMessage);
         msg.tag = @intCast(case.tag);
         msg.fiber = null;
         // A heap payload, so that a missing free is a leak a sanitizer sees
@@ -610,7 +662,7 @@ fn theThreadedReplyTags() void {
         const bytes: [*]u8 = @ptrCast(payload);
         @memcpy(bytes[0..8], "abcdefg\x00");
         msg.argp = payload;
-        ev_mod.evDefaultThreadedCallback(msg);
+        ev.evDefaultThreadedCallback(msg);
         if (case.callback_frees) {
             owned += 1;
         } else {
@@ -620,12 +672,8 @@ fn theThreadedReplyTags() void {
     }
     expect(owned == 2);
     // The loop is untouched: a null fiber schedules nothing.
-    expect(ev_mod.loopDone());
+    expect(ev.loopDone());
 }
-
-// ==========================================================================
-// The timer heap
-// ==========================================================================
 
 /// Scheduling three deadlines out of order checks the ordering the heap
 /// imposes rather than the wall clock: they come back in order.
@@ -645,16 +693,16 @@ fn theOrderedTimeouts() void {
     expect(harness.keywordIs(log.slice()[2], "c"));
 }
 
-/// `janet_addtimeout` and `janet_addtimeout_nil` differ in one field of the
-/// `Timeout` they build: `is_error`. An expired error timeout cancels the
-/// fiber and an expired nil timeout resumes it with nil.
+/// `ev.addtimeout` and `ev.addtimeoutNil` differ in one field of the `Timeout`
+/// they build: `is_error`. An expired error timeout cancels the fiber and an
+/// expired nil timeout resumes it with nil.
 ///
-/// Neither can be called from here directly -- both read
-/// `vm.root_fiber`, which is only set while the loop is running a task
-/// -- and `janet_addtimeout_nil` has **no Janet caller at all**: `ev/read`'s
-/// optional timeout uses the error one, and only the socket layer uses the
-/// other. So the contract lends the core environment a cfunction of its own
-/// and drives it from a task, which is the only way to reach the pair.
+/// Neither can be called from here directly. Both go through
+/// `addFiberTimeout`, which reads `vm.root_fiber.?`, and that is set only
+/// while the loop is running a task. `addtimeoutNil` has no caller in the tree
+/// at all: `ev/read`'s optional timeout and the socket layer both take the
+/// error one. So the contract lends the core environment a cfunction of its
+/// own and drives it from a task, which is the only way to reach the pair.
 fn cfunAddTimeout(argv: []repr.Value) raise.Raising(repr.Value) {
     try subsystems.args.fixarity(argv, 2);
     const sec = try subsystems.args.getNumber(argv, 0);
@@ -672,8 +720,8 @@ fn theTwoTimeoutConstructors() void {
         env,
         "test/add-timeout",
         wrap.fromCfunction(raise.stored(&cfunAddTimeout)),
-        "Contract-only: janet_addtimeout when the second argument is true, " ++
-            "janet_addtimeout_nil when it is false.",
+        "Contract-only: ev.addtimeout when the second argument is true, " ++
+            "ev.addtimeoutNil when it is false.",
     );
 
     const out = doString(
@@ -696,19 +744,15 @@ fn theTwoTimeoutConstructors() void {
             expect(harness.isType(row[1], repr.Tag.nil));
         } else {
             // `addtimeout` cancels the fiber, so `protect` reports a failure
-            // carrying the message the loop supplies.
+            // with the message the loop supplies.
             const pair = wrap.toTuple(row[1]);
             expect(harness.isType(pair[0], repr.Tag.boolean));
             expect(!wrap.toBoolean(pair[0]));
             expect(payloadIs(pair[1], "timeout"));
         }
     }
-    expect(ev_mod.loopDone());
+    expect(ev.loopDone());
 }
-
-// ==========================================================================
-// Scheduling
-// ==========================================================================
 
 /// `cancel` is the one scheduling entry point that raises, and only for a
 /// fiber the loop has never seen.
@@ -737,11 +781,11 @@ fn theCancelOfANonTask() void {
 
     ev.schedule(fiber, wrap.fromNil());
     expect(harness.raised(ev.cancel, .{ fiber, value.fromBytes("nope", .string) }) == null);
-    raise.reported(ev_mod.loop());
-    expect(ev_mod.loopDone());
+    raise.toAbi(ev.loop());
+    expect(ev.loopDone());
 
     // The supervisor got `[:error fiber nil]` rather than a stack trace on
-    // stderr, and the fiber's last value is what the cancel carried.
+    // stderr, and the fiber's last value is what the cancel passed.
     var event = wrap.fromNil();
     expect(try_(channel.channelTake(sup, &event)));
     expect(harness.isType(event, repr.Tag.tuple));
@@ -771,7 +815,7 @@ fn theScheduleSoonOrder() void {
 
     ev.schedule(wrap.toFiber(tup[1]), wrap.fromNil());
     ev.scheduleSoon(wrap.toFiber(tup[2]), wrap.fromNil(), boundary.Signal.ok);
-    raise.reported(ev_mod.loop());
+    raise.toAbi(ev.loop());
 
     expect(log.count == 2);
     expect(harness.keywordIs(log.slice()[0], "b"));
@@ -794,7 +838,7 @@ fn theScheduleSignalOrder() void {
     // Janet chooses between the two.
     ev.scheduleSignal(wrap.toFiber(tup[1]), wrap.fromNil(), boundary.Signal.ok);
     ev.scheduleSoon(wrap.toFiber(tup[2]), wrap.fromNil(), boundary.Signal.ok);
-    raise.reported(ev_mod.loop());
+    raise.toAbi(ev.loop());
 
     expect(log.count == 2);
     expect(harness.keywordIs(log.slice()[0], "b"));
@@ -802,7 +846,7 @@ fn theScheduleSignalOrder() void {
 }
 
 /// `theScheduleSignalOrder` pairs an append with a prepend, which cannot tell
-/// "appends" from "prepends" -- with both prepending the order comes out the
+/// "appends" from "prepends": with both prepending the order comes out the
 /// same. Three appends in a row can.
 fn theScheduleSignalIsFifo() void {
     const out = doString(
@@ -820,7 +864,7 @@ fn theScheduleSignalIsFifo() void {
     for (1..4) |i| {
         ev.scheduleSignal(wrap.toFiber(tup[@intCast(i)]), wrap.fromNil(), boundary.Signal.ok);
     }
-    raise.reported(ev_mod.loop());
+    raise.toAbi(ev.loop());
 
     expect(log.count == 3);
     expect(harness.keywordIs(log.slice()[0], "a"));
@@ -828,125 +872,9 @@ fn theScheduleSignalIsFifo() void {
     expect(harness.keywordIs(log.slice()[2], "c"));
 }
 
-/// `cancel` appends too, and nothing above distinguishes that from prepending.
-/// Both fibers report into the same channel, so the order they reach it in is
-/// the assertion -- and the cancel's `sched_id` bump means the schedule that
-/// preceded it is skipped rather than run.
-fn theCancelAppends() void {
-    const out = doString(
-        \\(def out (ev/chan 8))
-        \\(def a (fiber/new (fn [] (ev/give out :a)) :e))
-        \\(def b (fiber/new (fn [] (ev/sleep 10)) :e))
-        \\[out a b]
-    );
-    gc_alloc.gcroot(out);
-    defer _ = gc_alloc.gcunroot(out);
-    const tup = wrap.toTuple(out);
-    const chan = try_(channel.getChannel(tup[0..1], 0)).?;
-    const a = wrap.toFiber(tup[1]);
-    const b = wrap.toFiber(tup[2]);
-    b.supervisor_channel = @ptrCast(chan);
-
-    // b is scheduled first, so it is a task and `cancel` will accept it; the
-    // cancel then supersedes that schedule.
-    ev.schedule(b, wrap.fromNil());
-    ev.schedule(a, wrap.fromNil());
-    expect(harness.raised(ev.cancel, .{ b, value.fromBytes("late", .string) }) == null);
-    raise.reported(ev_mod.loop());
-
-    var first = wrap.fromNil();
-    var second = wrap.fromNil();
-    expect(try_(channel.channelTake(chan, &first)));
-    expect(try_(channel.channelTake(chan, &second)));
-    // The task queued before the cancel runs first: the cancel appended.
-    expect(harness.keywordIs(first, "a"));
-    // And b ran once, as an error, rather than twice or as a sleep.
-    expect(harness.isType(second, repr.Tag.tuple));
-    expect(harness.keywordIs(wrap.toTuple(second)[0], "error"));
-    expect(!try_(channel.channelTake(chan, &first)));
-}
-
-// ==========================================================================
-// Marshalling a stream
-// ==========================================================================
-
-/// A stream carries a file descriptor, so both directions refuse to work
-/// without `JANET_MARSHAL_UNSAFE` -- and the refusal reaches an embedder as a
-/// report, which is what `marsh.marshalAbi` leaves. `ev/thread` is the only thing in
-/// Janet that marshals unsafely, and it never marshals a bare stream, so
-/// neither the refusal nor the success path has a Janet spelling.
-fn theStreamMarshalling() void {
-    const handles = probePipe();
-    const s = try_(stream.makeStream(handles[0], @intCast(constants.JANET_STREAM_READABLE), null));
-    const streamv = wrap.fromAbstract(s);
-    gc_alloc.gcroot(streamv);
-    defer _ = gc_alloc.gcunroot(streamv);
-
-    const buffer = buffers.new(32);
-    {
-        const r = harness.abiRaised(subsystems.marsh.marshalAbi, .{ buffer, streamv, null, 0 }).?;
-        expect(r.says("can only marshal stream with unsafe flag"));
-    }
-
-    // With the flag, it marshals -- and duplicates the descriptor on the way
-    // out, which is what makes an unmarshalled stream independent of this one.
-    buffer.count = 0;
-    subsystems.marsh.marshalAbi(buffer, streamv, null, constants.JANET_MARSHAL_UNSAFE);
-    expect(buffer.count > 0);
-
-    // Marshalling clears NODUPS, because the handle may now have two owners.
-    expect(s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) == 0);
-
-    // The reader refuses without the flag too.
-    {
-        const r = harness.abiRaised(
-            subsystems.marsh.unmarshalAbi,
-            .{ buffer.data, @as(usize, @intCast(buffer.count)), 0, null, null },
-        ).?;
-        expect(r.says("can only unmarshal stream with unsafe flag"));
-    }
-
-    const backv = subsystems.marsh.unmarshalAbi(
-        buffer.data,
-        @intCast(buffer.count),
-        constants.JANET_MARSHAL_UNSAFE,
-        null,
-        null,
-    );
-    gc_alloc.gcroot(backv);
-    defer _ = gc_alloc.gcunroot(backv);
-    const back: *stream.Stream = @ptrCast(@alignCast(wrap.toAbstract(backv)));
-    expect(back != s);
-    // A different descriptor for the same pipe: `dup` was called.
-    expect(back.handle != s.handle);
-    expect(back.flags == s.flags);
-    expect(back.read_fiber == null and back.write_fiber == null);
-
-    if (!windows) {
-        // Both ends really do read the same pipe.
-        var byte: u8 = 'z';
-        var got: u8 = 0;
-        expect(c.write(handles[1], @ptrCast(&byte), 1) == 1);
-        expect(c.read(back.handle, @ptrCast(&got), 1) == 1);
-        expect(got == 'z');
-    }
-    // `back.handle` is the `dup`, and nothing ever registered *it* -- the
-    // marshal duplicated the descriptor and cleared NODUPS, so the close takes
-    // the deregistering path with a handle the backend has never seen.
-    // Deregistering something that was never registered is quiet on every
-    // backend: it is the state the call is trying to reach.
-    try_(stream.streamClose(back));
-    try_(stream.streamClose(s));
-    closeFarEnd(handles);
-}
-
-// ==========================================================================
-// What only the queue holds
-// ==========================================================================
-
 /// `ev.evMark` walks the spawn queue and marks each task's *value* as well as
-/// its fiber. The fiber is redundant -- scheduling also puts it in
-/// `vm.ev.active_tasks`, which is a root -- but the resume value is not held
+/// its fiber. The fiber is redundant, scheduling also putting it in
+/// `vm.ev.active_tasks`, which is a root, but the resume value is not kept
 /// anywhere else, so the queue's walk is the only thing keeping it alive.
 ///
 /// Reaching that needs a value with no other reference, which `ev/go` cannot
@@ -974,7 +902,7 @@ fn theMarkedTaskValues() void {
 
     // Nothing but the task entry refers to it now.
     gc_mark.collect();
-    raise.reported(ev_mod.loop());
+    raise.toAbi(ev.loop());
 
     var got = wrap.fromNil();
     expect(try_(channel.channelTake(chan, &got)));
@@ -982,12 +910,12 @@ fn theMarkedTaskValues() void {
 }
 
 /// `ev.loop` returns when `ev.loopDone` says there is nothing left, and a task
-/// suspended on a timer counts as something left -- through `is_suspended`,
+/// suspended on a timer counts as something left, through `is_suspended`,
 /// which raises the listener count on the way out of `loop1`. Every Janet test
 /// reaches this from *inside* the loop, where the caller's own fiber keeps it
 /// alive; only a caller outside can watch `loop` decide for itself.
 fn theLoopWaitsForASleepingTask() void {
-    expect(ev_mod.loopDone());
+    expect(ev.loopDone());
     const out = doString(
         \\(def out (ev/chan 8))
         \\(def f (fiber/new (fn [] (ev/sleep 0.05) (ev/give out :done)) :e))
@@ -999,19 +927,53 @@ fn theLoopWaitsForASleepingTask() void {
     const chan = try_(channel.getChannel(tup[0..1], 0)).?;
 
     ev.schedule(wrap.toFiber(tup[1]), wrap.fromNil());
-    expect(!ev_mod.loopDone());
-    raise.reported(ev_mod.loop());
+    expect(!ev.loopDone());
+    raise.toAbi(ev.loop());
 
     // It ran to completion rather than being abandoned at its first suspend.
     var got = wrap.fromNil();
     expect(try_(channel.channelTake(chan, &got)));
     expect(harness.keywordIs(got, "done"));
-    expect(ev_mod.loopDone());
+    expect(ev.loopDone());
 }
 
-// ==========================================================================
-// The threaded flag, and optchannel's boundary
-// ==========================================================================
+/// `cancel` appends too, and nothing above distinguishes that from prepending.
+/// Both fibers report into the same channel, so the order they reach it in is
+/// the assertion, and the cancel's `sched_id` bump means the schedule that
+/// preceded it is skipped rather than run.
+fn theCancelAppends() void {
+    const out = doString(
+        \\(def out (ev/chan 8))
+        \\(def a (fiber/new (fn [] (ev/give out :a)) :e))
+        \\(def b (fiber/new (fn [] (ev/sleep 10)) :e))
+        \\[out a b]
+    );
+    gc_alloc.gcroot(out);
+    defer _ = gc_alloc.gcunroot(out);
+    const tup = wrap.toTuple(out);
+    const chan = try_(channel.getChannel(tup[0..1], 0)).?;
+    const a = wrap.toFiber(tup[1]);
+    const b = wrap.toFiber(tup[2]);
+    b.supervisor_channel = @ptrCast(chan);
+
+    // b is scheduled first, so it is a task and `cancel` will accept it; the
+    // cancel then supersedes that schedule.
+    ev.schedule(b, wrap.fromNil());
+    ev.schedule(a, wrap.fromNil());
+    expect(harness.raised(ev.cancel, .{ b, value.fromBytes("late", .string) }) == null);
+    raise.toAbi(ev.loop());
+
+    var first = wrap.fromNil();
+    var second = wrap.fromNil();
+    expect(try_(channel.channelTake(chan, &first)));
+    expect(try_(channel.channelTake(chan, &second)));
+    // The task queued before the cancel runs first: the cancel appended.
+    expect(harness.keywordIs(first, "a"));
+    // And b ran once, as an error, rather than twice or as a sleep.
+    expect(harness.isType(second, repr.Tag.tuple));
+    expect(harness.keywordIs(wrap.toTuple(second)[0], "error"));
+    expect(!try_(channel.channelTake(chan, &first)));
+}
 
 /// `channel.channelMakeThreaded` differs from `channel.channelMake` in one
 /// field, and no binding reads it. What reads it is the packing: a threaded
@@ -1067,14 +1029,14 @@ fn theOptChannelBoundary() void {
     const chan = try_(channel.getChannel(&argv, 0)).?;
 
     // A channel is there and the count says so.
-    expect(try_(ev_channel.optChannel(argv[0..1], 0, null)) == chan);
+    expect(try_(channel.optChannel(argv[0..1], 0, null)) == chan);
     // A channel is there and the count says it is not: the default wins, and
     // the value at that index is never looked at. An empty slice is the count
     // saying zero, which a sentinel table cannot express and a slice can.
-    expect(try_(ev_channel.optChannel(argv[0..0], 0, null)) == null);
-    expect(try_(ev_channel.optChannel(argv[0..0], 0, chan)) == chan);
+    expect(try_(channel.optChannel(argv[0..0], 0, null)) == null);
+    expect(try_(channel.optChannel(argv[0..0], 0, chan)) == chan);
     // Present but nil: the default wins.
-    expect(try_(ev_channel.optChannel(argv[0..2], 1, null)) == null);
+    expect(try_(channel.optChannel(argv[0..2], 1, null)) == null);
 }
 
 /// A value at the index that is not a channel is an argument error.
@@ -1093,6 +1055,10 @@ fn theWrongArgumentIsNotAChannel() void {
     const refusal = harness.raised(channel.getChannel, .{ @as([]const repr.Value, &argv), @as(i32, 1) }).?;
     expect(refusal.signal == boundary.Signal.@"error");
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

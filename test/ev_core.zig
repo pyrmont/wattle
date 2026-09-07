@@ -4,9 +4,9 @@
 //!
 //! ## Why this file exists rather than the suite covering it
 //!
-//! The Janet-level behaviour these kernels produce — channel ordering across a
-//! resize, deadlines firing in time order — is covered by `test/suite-ev.janet`
-//! rather than here, and deliberately so.
+//! The Janet-level behaviour these kernels produce, channel ordering across a
+//! resize and deadlines firing in time order, is covered by
+//! `test/suite-ev.janet` rather than here, and deliberately so.
 //!
 //! `ev/give`, `ev/take` and `ev/sleep` all end in `ev.awaitEvent`, which
 //! suspends the calling fiber whether or not the operation could be satisfied
@@ -17,43 +17,51 @@
 //! channel drained by a suspended loop still reports its items, and a print
 //! placed after the loop emits before the loop's own output. That is the
 //! embedding API behaving as designed, not a defect, but it makes any assertion
-//! of this shape meaningless. `harness.inFiber` is the answer where the subject
-//! is a cfunction; here the subject is arithmetic, and pinning it with fixed
-//! vectors is both cheaper and stricter.
+//! of this shape meaningless. `harness.inFiber` is the instrument where the
+//! subject is a cfunction; here the subject is arithmetic, and pinning it with
+//! fixed vectors is both cheaper and stricter.
 //!
 //! ## Two things about how the subjects are reached
 //!
-//! **The heap is driven through `Timeout` itself.** The kernels used to
-//! take a base pointer, a stride and the offset of the `when` field, and a
-//! local `Entry` with a different layout was what proved they needed none of
-//! `Timeout`'s definition. They take `[]const Timeout` now -- there
-//! is one heap in the runtime and one element type in it -- so the stand-in
-//! would assert nothing that the real element does not. The heap is still
-//! built here, from `when` values alone: `zeroes` fills the `pthread_t` on
-//! POSIX and the two `HANDLE`s on Windows, and nothing in the ordering reads
-//! them.
+//! The heap is driven through `Timeout` itself. Its kernels take
+//! `[]const Timeout`, there being one heap in the runtime and one element type
+//! in it, so a stand-in element would assert nothing the real one does not.
+//! The heap is built here from `when` values alone: `zeroes` fills the
+//! `pthread_t` on POSIX and the two `HANDLE`s on Windows, and nothing in the
+//! ordering reads them.
 //!
-//! **One assertion could not survive, and the type is why.**
-//! `janet_ev_q_pop(&q, NULL, sizeof(int32_t))` is what a C contract writes to
-//! check that an empty queue reports before it writes. `pop` takes a `*T`, so
-//! there is no null to pass. What is kept is the half that still has a
-//! subject: a pop from an empty queue leaves the caller's variable as it was
-//! -- said here because the next reader will look for the other.
+//! There is no case for popping into a null destination, because `pop` takes a
+//! `*T` and there is no null to pass. What is asserted instead is the half
+//! that still has a subject: a pop from an empty queue leaves the caller's
+//! variable as it was.
 //!
-//! **The queue is a `Queue(T)` rather than a byte ring.** The element type is
-//! the compiler's business, so the `@sizeOf` that used to accompany every call
-//! is gone, and the two element types below -- `i32` and a 40-byte `Big` --
-//! are what stands in for the runtime's `Task`, `Pending` and `Value`.
+//! The queue is a `Queue(T)` rather than a byte ring, so the element type is
+//! the compiler's business rather than a size passed at every call. The two
+//! element types below, an `i32` and a 40-byte `Big`, stand in for the
+//! runtime's `Task`, `Pending` and `Value`.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
 
-const subsystems = @import("subsystems");
-const ev_core = subsystems.ev;
+// ==========================================================================
+// Project imports
+// ==========================================================================
 
+const ev_core = subsystems.ev;
 const expect = @import("expect.zig").expect;
+const subsystems = @import("subsystems");
 
 // ==========================================================================
-// The generic queue
+// Types
+// ==========================================================================
+
+const Entry = ev_core.Timeout;
+
+// ==========================================================================
+// Cases
 // ==========================================================================
 
 fn theEmptyQueue() void {
@@ -212,13 +220,7 @@ fn theQueueKeepsASpareSlot() void {
     }
 }
 
-// ==========================================================================
-// The timeout min heap
-// ==========================================================================
-
-const Entry = ev_core.Timeout;
-
-/// The heap element carries more than the ordering reads, and `sched_id` is
+/// The heap element has more in it than the ordering reads, and `sched_id` is
 /// the one other scalar in it, so it stands in for the marker the sort check
 /// needs to tell two equal `when` values apart.
 fn entry(when: i64, marker: u32) Entry {
@@ -351,10 +353,6 @@ fn theHeapOrdersAFullSequence() void {
     expect(count == 0);
 }
 
-// ==========================================================================
-// The timestamp arithmetic
-// ==========================================================================
-
 fn theDelta() void {
     expect(ev_core.tsDelta(1000, 0.0) == 1000);
     expect(ev_core.tsDelta(1000, 1.0) == 2000);
@@ -409,6 +407,10 @@ fn theKqueueInterval() void {
     expect(ev_core.kqueueInterval(-1) == 0);
     expect(ev_core.kqueueInterval(std.math.minInt(i64)) == 0);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     theEmptyQueue();

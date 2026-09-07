@@ -4,11 +4,9 @@
 //!
 //! ## The abstract types are reached as themselves
 //!
-//! `janet_s64_type` and `janet_u64_type` are `AbstractType` values whose
-//! `tostring` raises, so a C contract cannot call one: it needs a shim that
-//! exists purely to let C invoke a raising Zig callback. Here the type is
-//! declared with the runtime's own layout and the callback is called with
-//! `try`.
+//! The two `AbstractType` values have a raising `tostring`, and this file
+//! calls it with `try` over the runtime's own type rather than through
+//! anything that would flatten the raise.
 //!
 //! ## Why comparison goes through a compiled Janet function
 //!
@@ -20,41 +18,61 @@
 //!
 //! ## NaN compares equal to everything
 //!
-//! That is not a bug being pinned; it is how a comparison that must answer
-//! `-1`, `0` or `1` reports "no ordering". It is asserted so a port cannot
-//! decide to answer something else.
+//! That is not a bug being pinned; it is how a comparison restricted to `-1`,
+//! `0` and `1` reports "no ordering". It is asserted so that a change to it
+//! would be deliberate.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const constants = @import("constants");
-const harness = @import("harness.zig");
-const subsystems = @import("subsystems");
-const gc_alloc = @import("subsystems").gc_alloc;
-const buffers = @import("subsystems").value.buffers;
-const core_env = @import("subsystems").env;
-const vm_entry = @import("subsystems").vm_entry;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const inttypes = @import("subsystems").inttypes;
-const strings = @import("subsystems").value.strings;
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const abi = @import("abi");
-const functions = @import("subsystems").value.functions;
-const tables = @import("subsystems").value.tables;
+const buffers = @import("subsystems").value.buffers;
+const constants = @import("constants");
+const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
+const functions = @import("subsystems").value.functions;
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
+const inttypes = @import("subsystems").inttypes;
+const repr = @import("repr");
+const strings = @import("subsystems").value.strings;
+const subsystems = @import("subsystems");
+const tables = @import("subsystems").value.tables;
+const vm_entry = @import("subsystems").vm_entry;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
 
-const AbstractType = subsystems.abstract_type.AbstractType;
+// ==========================================================================
+// Constants
+// ==========================================================================
 
-/// The runtime's two abstract types, by import. They were reached by symbol
-/// while they were `export const` with no namespace entry; both are ordinary
-/// `pub const`s built by `abstract_type.define` now.
-/// **Pointers, not aliases.** An alias of a `const` is a
-/// *copy*, so `&janet_s64_type` would be an address the runtime never handed
-/// out and an abstract built through it would be refused by its own type.
+var compare_fn: *functions.Function = undefined;
+var environment: *tables.Table = undefined;
+
+/// The runtime's two abstract types, by import.
+///
+/// Pointers rather than aliases: an alias of a `const` is a *copy*, so an
+/// address taken through one would be an address the runtime never handed out,
+/// and an abstract built with it would be refused by its own type.
 const janet_s64_type = &inttypes.s64Type;
 const janet_u64_type = &inttypes.u64Type;
 
-var environment: *tables.Table = undefined;
-var compare_fn: *functions.Function = undefined;
+// ==========================================================================
+// Aliased types
+// ==========================================================================
+
+const AbstractType = subsystems.abstract_type.AbstractType;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn compareValues(a: repr.Value, b: repr.Value) f64 {
     var argv = [2]repr.Value{ a, b };
@@ -82,10 +100,14 @@ fn bufferIs(b: *buffers.Buffer, expected: []const u8) bool {
     return count == expected.len and std.mem.eql(u8, b.slice()[0..count], expected);
 }
 
-// ------------------------------------------------------------------- hash
+fn eval(source: [*:0]const u8) repr.Value {
+    var out: repr.Value = undefined;
+    expect(core_env.dostring(environment, source, "inttypes-contract", &out) == 0);
+    return out;
+}
 
-/// The hash folds the two halves together, so it is stable and independent of
-/// which of the two types holds the bits.
+/// The hash folds the two halves together, so it is stable and the same for
+/// either of the two types over the same bits.
 fn theHash() void {
     var a: i64 = 0;
     var b: i64 = 1;
@@ -104,8 +126,6 @@ fn theHash() void {
     var high: i64 = @as(i64, 1) << 32;
     expect(janet_s64_type.hash.?(&high, @sizeOf(i64)) == 1);
 }
-
-// ------------------------------------------------------- abstract compare
 
 fn theAbstractCompare() void {
     var s_small: i64 = -5;
@@ -130,8 +150,6 @@ fn theAbstractCompare() void {
     var one: u64 = 1;
     expect(janet_u64_type.compare.?(&high_bit, &one) == 1);
 }
-
-// ----------------------------------------------------- mixed with doubles
 
 fn theSignedAgainstDoubles() void {
     const inf = std.math.inf(f64);
@@ -178,7 +196,7 @@ fn theUnsignedAgainstDoubles() void {
     expect(compareU64Double(6, 5.5) == 1);
 
     // Every unsigned value is above every negative double, including zero
-    // against a small negative — the case a naive cast gets wrong.
+    // against a small negative, which is the case a naive cast gets wrong.
     expect(compareU64Double(0, -0.5) == 1);
     expect(compareU64Double(0, -1e300) == 1);
     expect(compareU64Double(max, -1.0) == 1);
@@ -221,8 +239,6 @@ fn theTwoTypesAgainstEachOther() void {
     expect(compareValues(s_max, inttypes.wrapU64(std.math.maxInt(i64))) == 0);
 }
 
-// ------------------------------------------------------------- formatting
-
 fn theFormatters() !void {
     const b: *buffers.Buffer = buffers.new(0);
 
@@ -254,13 +270,11 @@ fn theFormatters() !void {
     expect(bufferIs(b, "n=42"));
 }
 
-// -------------------------------------------------- floored division
-
 /// Floored division and modulo, through the `div` and `mod` methods.
 ///
 /// `INT64_MIN / -1` has no representable result, and all six methods refuse
 /// it with one message. The refusal is asserted at the end, because it is the
-/// one input where the division itself has no answer to render.
+/// one input the division has no result to render for.
 fn theFlooredDivision() !void {
     const cases = [_]struct { [:0]const u8, []const u8 }{
         // Floored division rounds toward negative infinity, unlike `/`.
@@ -301,14 +315,12 @@ fn theFlooredDivision() !void {
 
     // Dividing by zero raises, while the modulo above does not.
     //
-    // Through `vm_entry.pcall` rather than `harness.raised`, and the reason is
-    // worth stating because it is the first case in this phase where the new
-    // mechanism is the *wrong* tool: `div` is not a cfunction. It is a Janet
-    // function that dispatches to the abstract type's `div` method, so there
-    // is no `raise.CFunction` to call and no error to catch — the raise
-    // happens inside the interpreter, and a protected call is exactly the
-    // instrument for that. `harness.core("div")` fails its type assertion,
-    // which is how this was found.
+    // Through `vm_entry.pcall` rather than `harness.raised`, because `div` is
+    // not a cfunction. It is a Janet function that dispatches to the abstract
+    // type's `div` method, so there is no `raise.CFunction` to call and no
+    // error to catch: the raise happens inside the interpreter, and a
+    // protected call is the instrument for that. `harness.core("div")` fails
+    // its type assertion.
     const closure = eval("(fn [] (div (int/s64 1) (int/s64 0)))");
     expect(vm_entry.pcall(
         wrap.toFunction(closure),
@@ -343,18 +355,16 @@ fn theFlooredDivision() !void {
 
 /// An operand the boxed types cannot convert refuses *catchably*.
 ///
-/// The reason it is asserted from Janet rather than through `harness.raised`
-/// is the reason above:
-/// reached by the interpreter's binop fallback, not called directly. What is
-/// under test is not that the conversion refuses — `theSignedAgainstDoubles`
-/// covers that — but that the refusal *arrives*.
+/// Asserted from Janet rather than through `harness.raised` for the reason
+/// above: this is reached by the interpreter's binop fallback rather than
+/// called directly. What is under test is not that the conversion refuses,
+/// which `theSignedAgainstDoubles` covers, but that the refusal *arrives*.
 ///
-/// `Box(T).unwrap` was bound to a reporting form of the conversion, from
-/// inside `raise.Raising` methods, so every one of these killed the process
-/// with
-/// `a raise was reported to a C caller and never consumed` instead of raising
-/// -- hidden behind a comptime alias, which is what `tools/check/swallowed.janet`
-/// now looks for.
+/// A `Box(T).unwrap` bound to a reporting form of the conversion from inside a
+/// `raise.Raising` method would end the process with `a raise was reported
+/// across the C ABI and never consumed` instead of raising, and it would be
+/// hidden behind a comptime alias. `tools/check/swallowed.janet` is what looks
+/// for that shape.
 fn anUnconvertibleOperandRefusesCatchably() void {
     const cases = [_][*:0]const u8{
         "(fn [] (+ (int/s64 1) {}))",
@@ -384,11 +394,9 @@ fn anUnconvertibleOperandRefusesCatchably() void {
     }
 }
 
-fn eval(source: [*:0]const u8) repr.Value {
-    var out: repr.Value = undefined;
-    expect(core_env.dostring(environment, source, "inttypes-contract", &out) == 0);
-    return out;
-}
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() !void {
     theHash();

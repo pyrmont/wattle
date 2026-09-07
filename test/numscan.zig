@@ -1,48 +1,74 @@
 //! Behavioral contract for Janet's number scanner: `scan.scanNumber`, its
-//! explicit-base form, the `:s`/`:u`/`:n` suffixes, and `numscan.bufferDtostrAbi`.
+//! explicit-base form, the `:s`, `:u` and `:n` suffixes, and
+//! `numscan.bufferDtostrAbi`.
 //!
 //! Janet's reader reaches this for every numeric literal, so the suites
 //! exercise it constantly and pin almost none of it: a literal that scans to
 //! the wrong double still *is* a double, and a rejection is a parse error that
 //! reads the same whatever produced it. What is asserted here is the set of
-//! inputs where the answer is a specific bit pattern, and the set where the
-//! answer is "no".
+//! inputs that must scan to a specific bit pattern, and the set that must be
+//! rejected.
 //!
 //! ## Bit patterns, not values
 //!
 //! Every comparison below is over the bits rather than over `==`, and that is
-//! load-bearing twice: it separates `-0.0` from `0.0`, which several cases turn
-//! on, and it refuses to let a NaN compare equal to anything including itself.
-//! A contract written with `==` would pass while scanning `-0` to positive zero.
+//! load-bearing twice: it separates `-0.0` from `0.0`, which several cases
+//! turn on, and it will not let a NaN compare equal to anything, itself
+//! included.
+//! A contract written with `==` would pass while scanning `-0` to positive
+//! zero.
 //!
 //! ## Two rounding behaviours that are Janet's rather than the host's
 //!
-//! **Ties go away from zero**, not to even, so `9007199254740993` rounds *up*
-//! where a round-to-even `strtod` rounds down. And **the exponent accumulator
-//! saturates** rather than wrapping, so `1e99999` is infinity and `1e-99999`
-//! is zero instead of whatever a wrapped counter would produce. Neither is
-//! reachable as a distinguishable answer from Janet.
+//! Ties go away from zero rather than to even, so `9007199254740993` rounds
+//! *up* where a round-to-even `strtod` rounds down. And the exponent
+//! accumulator saturates rather than wrapping, so `1e99999` is infinity and
+//! `1e-99999` is zero instead of whatever a wrapped counter would produce.
+//! Neither difference is distinguishable from Janet.
 //!
 //! ## The radix prefixes have three surprises
 //!
 //! A radix of 0 or 1 falls back to base ten rather than failing. Outside base
-//! ten `e` is an ordinary digit, so `&` introduces the exponent instead — and
-//! **the exponent's own digits are read in the mantissa's radix**, which makes
+//! ten `e` is an ordinary digit, so `&` introduces the exponent instead, and
+//! the exponent's own digits are read in the mantissa's radix, which makes
 //! `2r1&10` equal 4 rather than 1024. `p` is likewise a digit in bases above
 //! 25, so `26r1p` is 51.
 
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
+
 const std = @import("std");
-const repr = @import("repr");
-const constants = @import("constants");
-const options = @import("options");
-const harness = @import("harness.zig");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const buffers = @import("subsystems").value.buffers;
-const numscan = @import("subsystems").scan;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const inttypes = @import("subsystems").inttypes;
-const raise = @import("subsystems").raise;
+const constants = @import("constants");
 const expect = @import("expect.zig").expect;
+const harness = @import("harness.zig");
+const inttypes = @import("subsystems").inttypes;
+const numscan = @import("subsystems").scan;
+const options = @import("options");
+const raise = @import("subsystems").raise;
+const repr = @import("repr");
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// 0xFFFF bytes is the documented cutoff, and the two sides of it are the
+/// assertion. Static rather than stack: 64 KB is past what a contract should
+/// put on one.
+var digits: [0x10002]u8 = undefined;
+const inf = std.math.inf(f64);
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn scan(text: []const u8, out: *f64) bool {
     out.* = numscan.scanNumber(text) orelse return false;
@@ -66,8 +92,6 @@ fn rejects(text: []const u8) bool {
     var val: f64 = 12345.0;
     return !scan(text, &val);
 }
-
-const inf = std.math.inf(f64);
 
 fn theIntegers() void {
     expect(scansTo("0", 0.0));
@@ -223,15 +247,10 @@ fn theRejections() void {
     //
     // Only the empty range survives as a case. `scanNumber` takes a
     // `[]const u8`, and the negative length the C entry point could still be
-    // handed is a state the type forbids -- there is no published entry point
+    // given is a state the type forbids, there being no published entry point
     // taking an `int32_t` any more.
     expect(numscan.scanNumber("1"[0..0]) == null);
 }
-
-/// 0xFFFF bytes is the documented cutoff, and the two sides of it are the
-/// assertion. Static rather than stack: 64 KB is past what a contract should
-/// put on one.
-var digits: [0x10002]u8 = undefined;
 
 fn theLongInput() void {
     var val: f64 = 0.0;
@@ -273,9 +292,8 @@ fn theWideMantissa() void {
     expect(scansTo("1234567890123456789e289", 1234567890123456789e289));
 }
 
-/// `scanNumeric` answers an optional. The assertions below were written
-/// against a zero-is-success code beside an out-parameter, and this keeps
-/// their shape rather than rewriting forty of them.
+/// `scanNumeric` returns an optional, and this puts it back into the
+/// out-parameter and boolean shape the forty assertions below are written in.
 fn setScanned(out: *repr.Value, text: []const u8) bool {
     out.* = numscan.scanNumeric(text) orelse return false;
     return true;
@@ -295,16 +313,16 @@ fn theNumericSuffixes() void {
     expect(harness.isType(val, repr.Tag.number));
     expect(wrap.toNumber(val) == 12.0);
 
-    // Both extremes, which are exactly the values a double cannot hold.
+    // Both extremes, which are exactly the values a double cannot represent.
     expect(setScanned(&val, "-9223372036854775808:s"));
     expect(inttypes.isInt(val) == constants.IntType.s64);
-    expect(raise.reported(inttypes.unwrapS64(val)) == std.math.minInt(i64));
+    expect(raise.toAbi(inttypes.unwrapS64(val)) == std.math.minInt(i64));
 
     expect(setScanned(&val, "18446744073709551615:u"));
     expect(inttypes.isInt(val) == constants.IntType.u64);
-    expect(raise.reported(inttypes.unwrapU64(val)) == std.math.maxInt(u64));
+    expect(raise.toAbi(inttypes.unwrapU64(val)) == std.math.maxInt(u64));
 
-    // Out of range for the requested width, a sign the width cannot hold, an
+    // Out of range for the requested width, a sign the width cannot take, an
     // unknown suffix, and a bad mantissa all report failure.
     expect(!setScanned(&val, "18446744073709551616:u"));
     expect(!setScanned(&val, "-1:u"));
@@ -347,6 +365,10 @@ fn theDoubleToString() void {
     const count: usize = @intCast(b.count);
     expect(std.mem.indexOfScalar(u8, b.slice()[0..count], ',') == null);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

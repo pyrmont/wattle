@@ -11,31 +11,31 @@
 //! A contract in *this* binary is on the near side. `build.zig` builds the
 //! runtime's module graph a second time with this file as its root, so a
 //! contract reaches its subject through `@import("subsystems")` and a raise
-//! crosses as `error.JanetSignal` — the same way it crosses between two
+//! crosses as `error.JanetSignal`, the same way it crosses between two
 //! subsystems, and checked by the compiler in the same way. Nothing is
 //! reported, nothing is adapted, and a contract that forgets to handle a raise
 //! does not compile.
 //!
-//! The cost is one more compilation of the runtime. The alternative — a
-//! contract module compiled beside `libjanet.a` — gives a *local copy* of the
+//! The cost is one more compilation of the runtime. The alternative, a
+//! contract module compiled beside `libjanet.a`, gives a *local copy* of the
 //! subject rather than the one the rest of the binary runs, which a
 //! `comptime`-generic subject can take and a collector or an interpreter
 //! cannot.
 //!
 //! ## The shape
 //!
-//! One file per subject, each with its own `vm_lifecycle.init`/`deinit` pair so
-//! that none inherits another's heap; they run in the order this file
-//! declares them; with no argument every compiled-in contract runs, and with
-//! one argument only the contract named runs, which is what `tools/testing/contract.sh`
-//! drives.
+//! One file per subject, each with its own `vm_lifecycle.init` and `deinit`
+//! pair so that none inherits another's heap, and they run in the order this
+//! file declares them. With no argument every compiled-in contract runs; with
+//! one argument only the contract named does, which is the form
+//! `tools/testing/contract.sh` drives.
 //!
 //! ## Adding one
 //!
 //! A contract is `test/<name>.zig` exposing `pub fn run() void`, added to the
 //! list below under the same condition `build.zig` applies to its subsystem.
 //! Those conditions are read from `options`, which is the build's own
-//! `Selection` — so a contract exists exactly when its subject does, and the
+//! `Selection`, so a contract exists exactly when its subject does, and the
 //! two cannot drift. A driver on the far side of a symbol table needs that
 //! condition written twice, once in the build and once in its own list.
 //!
@@ -43,49 +43,51 @@
 //! `expect.zig` is the assertion every contract uses, and `fuzz.zig` is the
 //! four fuzz targets, which cannot be contracts because `std.testing.fuzz`
 //! resolves through `@import("root").fuzz` and so needs a test root of its own.
-//! All three are named in `checkContractsListed`'s `exempt`, which is the list
-//! that keeps "not a contract" from meaning "forgotten".
+//! Those three and this file are `checkContractsListed`'s `exempt` list in
+//! `build.zig`, which is what keeps "not a contract" from meaning
+//! "forgotten": every other `test/*.zig` has to appear below.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const options = @import("options");
 
-// The runtime, pulled in for its `export`s rather than for its namespace.
-//
-// This line is what makes the binary a Janet. `src/root.zig`
-// emits every subsystem's `export`s from a container-level `comptime` block,
-// and a module nothing references is never analysed -- so without this,
-// `build.zig` hands the compilation a whole runtime and the link fails on
-// `janet_init`.
-//
-// The `pub const` namespace beside that block stays lazy, which is the
-// property `-Dpeg=false` and `-Dffi=false` rest on: naming a subsystem here
-// forces the exports, and only a contract that actually spells
-// `subsystems.peg` forces `peg.zig`.
+// ==========================================================================
+// Compile-time imports
+// ==========================================================================
+
 comptime {
+    // The runtime, pulled in for its `export`s rather than for its namespace,
+    // which is what makes this binary a Janet. `src/root.zig` emits every
+    // subsystem's `export`s from a container-level `comptime` block, and a
+    // module nothing references is never analysed, so without this line
+    // `build.zig` hands the compilation a whole runtime and the link fails
+    // for want of the exports it never emitted.
+    //
+    // The `pub const` namespace beside that block stays lazy, which is what
+    // `-Dpeg=false` and `-Dffi=false` rest on: naming a subsystem here forces
+    // the exports, and only a contract that spells `subsystems.peg` forces
+    // `peg.zig`.
     _ = @import("subsystems");
 }
 
-const Contract = struct {
-    name: []const u8,
-    run: *const fn () void,
-};
+// ==========================================================================
+// Constants
+// ==========================================================================
 
-/// One entry, resolved at comptime.
+/// Every contract this binary compiled, in the order it runs them.
 ///
-/// The file is passed as a type rather than derived from the name, because
-/// `@import`'s operand must be a literal and `name ++ ".zig"` is not one. So
-/// the name appears twice on each line; it is the string `tools/testing/contract.sh`
-/// passes on the command line, and the only thing that checks it against the
-/// file is that both are on the same line.
-fn with(
-    comptime list: []const Contract,
-    comptime name: []const u8,
-    comptime file: type,
-) []const Contract {
-    return list ++ [_]Contract{.{ .name = name, .run = &file.run }};
-}
-
+/// A row is guarded by the same `options` field `build.zig` guards its
+/// subject with, so a contract is here exactly when the subsystem it is about
+/// is, and the two cannot drift apart. `with` is what appends one.
 const contracts: []const Contract = blk: {
     var list: []const Contract = &.{};
     list = with(list, "vector", @import("vector.zig"));
@@ -166,44 +168,31 @@ const contracts: []const Contract = blk: {
     break :blk list;
 };
 
-/// Stop this process at the end of `main` when `JANET_CONTRACT_PAUSE` is set,
-/// so that `leaks <pid>` can scan a heap that is finished with.
-///
-/// **This exists because `leaks --atExit` cannot measure a contract that
-/// forks**, and three of the sixty-five do. That mode inserts
-/// `/usr/lib/libLeaksAtExit.dylib`, which interposes `_exit` and `abort` with
-/// `kill(getpid(), SIGSTOP)` followed by the real one -- the stop is how the
-/// `leaks` process is told there is a heap to scan. A `fork()`ed child carries
-/// the dylib in its inherited image, stops itself the same way, and nothing
-/// ever resumes it: `leaks` is watching the parent. The parent's `waitpid`
-/// then never returns, which is the hang the leak check's own header records
-/// as "never returns under it" and read as *not* a fork.
-///
-/// An `exec`ed child is safe -- the dylib's initializer strips itself from
-/// `DYLD_INSERT_LIBRARIES`, so `os/spawn` is not the hazard and a raw
-/// `fork` is: `os_process` has seven, `value_alloc` one, and `os_surface`
-/// reaches one through `os/posix-fork`.
-///
-/// Stopping here instead reaches the same heap by a route with no interposer
-/// in it, so a child exits normally and the leak check covers all three.
-/// `tools/testing/leaks.sh` drives it.
-fn pauseForLeakCheck() void {
-    if (builtin.os.tag == .windows) return;
-    if (std.c.getenv("JANET_CONTRACT_PAUSE") == null) return;
-    _ = std.c.kill(std.c.getpid(), std.c.SIG.STOP);
-}
+// ==========================================================================
+// Types
+// ==========================================================================
+
+/// One row of the list below: the name the command line spells, and the
+/// entry point to call for it.
+const Contract = struct {
+    name: []const u8,
+    run: *const fn () void,
+};
+
+// ==========================================================================
+// Public functions
+// ==========================================================================
 
 /// No argument runs every contract in list order; one or more names run those,
-/// in the order given, **in one process**.
+/// in the order given. Either way it is one process.
 ///
-/// **The no-argument form is the interesting one.** Every contract opens with
-/// an init and closes with a deinit, so it is sixty-five teardowns and
-/// re-initialisations of the whole runtime, and a defect that lives in the
-/// sequence shows here and nowhere else: this binary once aborted in glibc's
-/// `malloc_consolidate` with no argument while **every contract passed when
-/// run by name**. Such a defect cannot be bisected one name at a time, and a
-/// name may be repeated, which is what asks whether the sequence matters at
-/// all or only the count.
+/// The no-argument form is the one that covers the sequence. Every contract
+/// opens with an init and closes with a deinit, so running the list is
+/// sixty-five teardowns and re-initialisations of the whole runtime, and a
+/// defect that survives a deinit into the next init shows here and in nothing
+/// else the tree runs. Such a defect cannot be bisected one name at a time,
+/// since each name on its own passes. A name may be repeated, which asks
+/// whether it is the sequence that matters or only the count.
 pub fn main(init: std.process.Init) !u8 {
     const arguments = try init.minimal.args.toSlice(init.arena.allocator());
 
@@ -240,4 +229,51 @@ pub fn main(init: std.process.Init) !u8 {
     for (contracts) |contract| contract.run();
     pauseForLeakCheck();
     return 0;
+}
+
+// ==========================================================================
+// Private functions
+// ==========================================================================
+
+/// Stop this process at the end of `main` when `JANET_CONTRACT_PAUSE` is set,
+/// so that `leaks <pid>` can scan a heap that is finished with.
+///
+/// It is here because `leaks --atExit` cannot measure a contract that forks,
+/// and three of the sixty-five do. That mode inserts
+/// `/usr/lib/libLeaksAtExit.dylib`, which interposes `_exit` and `abort` with
+/// `kill(getpid(), SIGSTOP)` followed by the real one, the stop being how the
+/// `leaks` process is told there is a heap to scan. A `fork()`ed child
+/// inherits the dylib in its image, stops itself the same way, and nothing
+/// resumes it, because `leaks` is watching the parent; the parent's `waitpid`
+/// never returns.
+///
+/// An `exec`ed child is safe, because the dylib's initializer strips itself
+/// from `DYLD_INSERT_LIBRARIES`. So `os/spawn` is not the hazard and a raw
+/// `fork` is: `os_process` has seven, `value_alloc` one, and `os_surface`
+/// reaches one through `os/posix-fork`.
+///
+/// Stopping here reaches the same heap by a route with no interposer in it, so
+/// a child exits normally and the leak check covers all three.
+/// `tools/testing/leaks.sh` drives it.
+fn pauseForLeakCheck() void {
+    if (builtin.os.tag == .windows) return;
+    if (std.c.getenv("JANET_CONTRACT_PAUSE") == null) return;
+    _ = std.c.kill(std.c.getpid(), std.c.SIG.STOP);
+}
+
+/// One entry, resolved at comptime.
+///
+/// `list` is the list so far, `name` the string the command line spells and
+/// `file` the contract's file.
+///
+/// The file is passed as a type rather than derived from the name, because
+/// `@import`'s operand must be a literal and `name ++ ".zig"` is not one. So
+/// the name appears twice on each row, and the only thing that checks the two
+/// against each other is that both are on the same line.
+fn with(
+    comptime list: []const Contract,
+    comptime name: []const u8,
+    comptime file: type,
+) []const Contract {
+    return list ++ [_]Contract{.{ .name = name, .run = &file.run }};
 }

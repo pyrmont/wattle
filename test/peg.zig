@@ -4,80 +4,81 @@
 //! that suite has 366 assertions and every one of them is about what a pattern
 //! *matches*. Three things it cannot see:
 //!
-//!  - **The bytecode.** The compiler, the matcher and the verifier share a
-//!    private instruction encoding that appears in no header and has no other
-//!    consumer, so a change made consistently in all three is invisible from
-//!    Janet. It is also a file format: a marshalled peg is those words, so a
-//!    renumbered opcode silently invalidates every stored peg.
-//!  - **The one allocation.** `makePeg` packs the header, the bytecode and the
-//!    constants into a single `janet_abstract`, with padding computed so that
-//!    each array is aligned. Nothing in Janet can observe the layout, and
+//!  - The bytecode. The compiler, the matcher and the verifier share a private
+//!    instruction encoding with no other consumer, so a change made
+//!    consistently in all three is invisible from Janet. It is also a file
+//!    format: a marshalled peg is those words, so a renumbered opcode silently
+//!    invalidates every stored peg.
+//!  - The one allocation. `makePeg` packs the header, the bytecode and the
+//!    constants into a single abstract, with padding computed so that each
+//!    array is aligned. Nothing in Janet can observe the layout, and
 //!    `pegUnmarshal` has to reproduce it exactly or read the wrong words.
-//!  - **Crafted bytecode.** `pegUnmarshal` is the untrusted entry point, and
-//!    most of what it must reject cannot be produced by the compiler at all.
+//!  - Crafted bytecode. `pegUnmarshal` is the untrusted entry point, and most
+//!    of what it must reject cannot be produced by the compiler at all.
 //!
-//! The shape of the peg's callback table is a contract too, and one Janet
-//! cannot see: which callbacks a peg has decides what the runtime will do
-//! with one.
+//! The shape of the peg's callback table is pinned too, and Janet cannot see
+//! it: which callbacks a peg has decides what the runtime will do with one.
+//! `theAbstractTypeIsShapedAsTheRuntimeExpects` asserts the table the runtime
+//! dispatches through.
 //!
-//! ## What only a contract inside the compilation can do
-//!
-//! **The callback table is read once.** A C contract reads it twice and
-//! requires the two readings to agree, because a published declaration and the
-//! definition are two descriptions of one layout. There is one description
-//! here, so a second reading would assert that a thing equals itself.
-//!
-//! **`peg/compile` is reached as a cfunction rather than by import**, because
-//! a grammar error has to arrive as a refusal rather than as a status code
-//! `env.dostring` has already caught. No shim is involved -- a cfunction *is*
-//! a raising Zig function, so `harness.core` and `harness.raised` are the
-//! whole of it.
+//! `peg/compile` is reached as a cfunction rather than by import, because a
+//! grammar error has to arrive as a refusal rather than as a status code
+//! `env.dostring` has already caught. A cfunction *is* a raising Zig function,
+//! so `harness.core` and `harness.raised` are the whole of it.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const config = @import("config");
-const repr = @import("repr");
-const constants = @import("constants");
-const c = @import("cabi");
-const raise = @import("subsystems").raise;
-const harness = @import("harness.zig");
 
-const subsystems = @import("subsystems");
-const value = @import("subsystems").value;
-const gc_alloc = @import("subsystems").gc_alloc;
-const utils = @import("subsystems").utils;
-const core_env = @import("subsystems").env;
-const registry = @import("subsystems").registry;
-const wrap = @import("subsystems").value.wrap;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const access = @import("subsystems").value.access;
 const args_core = @import("subsystems").args;
-const vm_lifecycle = @import("subsystems").lifecycle;
 const arrays = @import("subsystems").value.arrays;
 const buffers = @import("subsystems").value.buffers;
-const peg = subsystems.peg;
-const marsh = subsystems.marsh;
-const access = @import("subsystems").value.access;
-const strings = @import("subsystems").value.strings;
-const tables = @import("subsystems").value.tables;
-const vm_calls = subsystems.vm;
-
+const c = @import("cabi");
+const config = @import("config");
+const constants = @import("constants");
+const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
+const marsh = subsystems.marsh;
 const op = harness.op;
+const peg = subsystems.peg;
+const raise = @import("subsystems").raise;
+const registry = @import("subsystems").registry;
+const repr = @import("repr");
+const strings = @import("subsystems").value.strings;
+const subsystems = @import("subsystems");
+const tables = @import("subsystems").value.tables;
+const utils = @import("subsystems").utils;
+const value = @import("subsystems").value;
+const vm_calls = subsystems.vm;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
 
-var test_env: *tables.Table = undefined;
-
-/// Compiled pegs and the forms they came from. A `Janet` in a Zig local is not
-/// a GC root, and compiling one form allocates enough to collect the next.
-var rooted: *arrays.Array = undefined;
-
-fn keep(val: repr.Value) repr.Value {
-    harness.arrayPush(rooted, val);
-    return val;
-}
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 /// `peg/compile`, resolved once. The type assertion is `harness.core`'s.
 var compile_cfun: raise.CFunction = undefined;
+const lb_integer: u8 = 205;
+const lb_nil: u8 = 201;
 
-/// Six without `JANET_INT_TYPES` and eight with it, because a `double` capture
-/// cannot carry more than 53 bits. Both the compiler's limit and the
+/// The two marshal lead bytes these streams spell by number, for the reason
+/// `test/marsh.zig` gives: the enumeration is a file format and the subject's
+/// own is not the oracle for it.
+const lb_real: u8 = 200;
+
+/// Six without the integer types and eight with them, because a `double`
+/// capture cannot represent more than 53 bits. Both the compiler's limit and
+/// the
 /// verifier's move with it, so the assertions that name a width have to as
 /// well.
 ///
@@ -87,7 +88,26 @@ var compile_cfun: raise.CFunction = undefined;
 const max_readint_width: u32 = if (config.int_types) 8 else 6;
 const max_readint_width_text = if (max_readint_width == 8) "8" else "6";
 
-// ------------------------------------------------------------- evaluation
+/// The framing every crafted stream shares, up to and including the type name.
+/// What follows is `bytecode_len`, `num_constants`, the words and the
+/// constants, all of them small enough to be one byte each in the marshal
+/// encoding except
+/// where a case says otherwise.
+const peg_header = [_]u8{ 217, 207, 8 } ++ "core/peg".*;
+
+/// Compiled pegs and the forms they came from. A `Janet` in a Zig local is not
+/// a GC root, and compiling one form allocates enough to collect the next.
+var rooted: *arrays.Array = undefined;
+var test_env: *tables.Table = undefined;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
+
+fn keep(val: repr.Value) repr.Value {
+    harness.arrayPush(rooted, val);
+    return val;
+}
 
 fn evaluate(source: [*:0]const u8) repr.Value {
     var out = wrap.fromNil();
@@ -128,8 +148,6 @@ fn bytecodeIs(pattern: []const u8, expected: []const u32) void {
     @panic("bytecode mismatch");
 }
 
-// -------------------------------------------------------- the abstract type
-
 /// Which callbacks a peg's abstract type has, and which it does not. A peg has
 /// no `gc` because it
 /// owns no memory outside its own allocation, no `tostring` because the
@@ -159,17 +177,15 @@ fn theAbstractTypeIsShapedAsTheRuntimeExpects() void {
     expect(zig.bytes == null);
 
     // Registered under its own name, which is what lets a marshalled peg name
-    // its type on the wire. The registry answers with a pointer it was handed
-    // at registration, so this is a run-time comparison of two addresses and
-    // not something the compiler can fold -- which is the half of the retired
-    // two-description check that was always worth keeping.
+    // its type on the wire. The registry gives back the pointer it was given
+    // at registration, so this compares two addresses at run time rather than
+    // something the compiler can fold.
     const registered = registry.getAbstractType(value.fromBytes("core/peg", .symbol));
     expect(registered == zig);
 }
 
-/// The five methods, in the order `janet_nextmethod` walks them -- which is
-/// the order `(keys peg)` reports and therefore the order a Janet program
-/// sees.
+/// The five methods, in the order `args.nextmethod` walks them, which is the
+/// order `(keys peg)` reports and therefore the order a Janet program sees.
 fn theMethodTableAndItsOrder() raise.Raising(void) {
     const val = wrap.fromAbstract(compiled("\"a\""));
     const names = [_][*:0]const u8{ "match", "find", "find-all", "replace", "replace-all" };
@@ -186,13 +202,12 @@ fn theMethodTableAndItsOrder() raise.Raising(void) {
     expect(harness.isType(try access.get(val, harness.wrapInteger(0)), repr.Tag.nil));
 }
 
-// ------------------------------------------------------- the one allocation
-//
-// `makePeg` and `pegUnmarshal` compute the same three offsets, and they have
-// to agree: the unmarshaller writes through pointers the compiler never sees.
-// The formula is duplicated here rather than shared, so that a change to it in
-// the implementation shows up as a failure rather than as agreement.
-
+/// The alignment formula, written out again rather than imported.
+///
+/// `makePeg` and `pegUnmarshal` compute the same three offsets and have to
+/// agree, the unmarshaller writing through pointers the compiler never sees.
+/// Duplicating the formula here is what makes a change to it in the
+/// implementation show up as a failure rather than as agreement.
 fn padded(offset: usize, size: usize) usize {
     const x = size + offset - 1;
     return x - (x % size);
@@ -210,8 +225,8 @@ fn theHeaderBytecodeAndConstantsShareOneAllocation() void {
     expect(p.num_constants == 1);
     expect(harness.equals(p.constantValues()[0], harness.wrapInteger(7)));
 
-    // Both arrays are aligned for their element type, which is the whole point
-    // of the padding.
+    // Both arrays are aligned for their element type, which is what the
+    // padding is computed for.
     expect(@intFromPtr(p.bytecode) % @sizeOf(u32) == 0);
     expect(@intFromPtr(p.constants) % @sizeOf(repr.Value) == 0);
 
@@ -220,13 +235,10 @@ fn theHeaderBytecodeAndConstantsShareOneAllocation() void {
         constants_start + p.num_constants * @sizeOf(repr.Value));
 }
 
-// --------------------------------------------------------- the instructions
-//
-// One assertion per opcode the compiler can emit, which is the vocabulary the
-// matcher switches on and the verifier walks. Written as literal words for the
-// reason `test/marsh.zig` writes literal bytes: a round trip through the same
-// two halves agrees with itself whatever it encodes.
-
+/// One assertion per opcode the compiler can emit, which is the vocabulary the
+/// matcher switches on and the verifier walks. Written as literal words for
+/// the reason `test/marsh.zig` writes literal bytes: a round trip through the
+/// same two halves agrees with itself whatever it encodes.
 fn everySpecialEmitsItsInstruction() void {
     // Primitives, which are not tuples at all.
     bytecodeIs("true", &.{ op(constants.PegRule.nchar), 0 });
@@ -328,7 +340,7 @@ fn everySpecialEmitsItsInstruction() void {
 /// maintain the third capture stack at all.
 fn tagsAreNumberedAndBackrefsAreFlagged() void {
     bytecodeIs("'(<- 1 :a)", &.{ op(constants.PegRule.capture), 3, 1, op(constants.PegRule.nchar), 1 });
-    // The third capture is the first one again -- same tuple, same grammar --
+    // The third capture is the first one again, same tuple and same grammar,
     // so it is cached rather than emitted, and its tag is reused too.
     bytecodeIs("'(* (<- 1 :a) (<- 1 :b) (<- 1 :a))", &.{
         op(constants.PegRule.sequence), 3, 5, 10,                          5,
@@ -360,13 +372,10 @@ fn theCompilerCachesRules() void {
     });
 }
 
-// ---------------------------------------------------------- grammar errors
-//
-// Every one of these renders through `pegPanic`, which prints the form being
-// compiled and then the message. There is no exception: all fifty-seven
-// specials check their arity the same way, so every grammar error names the
-// form that caused it.
-
+/// Every one of these renders through `pegPanic`, which prints the form being
+/// compiled and then the message. There is no exception: all fifty-seven
+/// specials check their arity the same way, so every grammar error names the
+/// form that caused it.
 fn grammarErrorsNameTheForm() void {
     expect(grammarError("'(unknown-special)").endsWith(", unknown special unknown-special"));
     expect(grammarError("'()").endsWith(", tuple in grammar must have non-zero length"));
@@ -400,32 +409,25 @@ fn grammarErrorsNameTheForm() void {
     expect(grammarError("(tuple '* ;(map (fn [i] ~(<- 1 ,(keyword \"t\" i))) (range 256)))")
         .endsWith(", too many tags - up to 255 tags are supported per peg"));
 
-    // `(constant)` is the one that used to answer without the form; it is
-    // spelled out here rather than left to `endsWith` because the prefix is
-    // the whole point of the case.
+    // `(constant)` is spelled out whole rather than left to `endsWith`,
+    // because the prefix naming the form is what this case is about.
     expect(grammarError("'(constant)")
         .says("grammar error in (constant), arity mismatch, expected at least 1, got 0"));
 }
 
-// ------------------------------------------------------------ the two guards
-//
-// The compiler and the matcher each have a recursion budget, and they are not
-// the same budget: the matcher's is reset per attempt by `pegCallReset`, so
-// `peg/find` gets a fresh one at every offset. Both start at
-// `JANET_RECURSION_GUARD`.
-//
-// Both are asserted here. Reaching the matcher's needs a left-recursive
-// grammar, which drives `pegRule` as deep as the subject is long; the budget
-// is a frame count, so what the case proves is that this implementation's
-// frame is small enough to reach it in the configuration the driver is built
-// in rather than to run out of stack first.
-
-/// The `[status message]` a `(protect ...)` answered.
+/// The `[status message]` pair a `(protect ...)` produced.
 fn protectedResult(val: repr.Value) struct { ok: bool, message: repr.Value } {
     const pair = wrap.toTuple(val);
     return .{ .ok = wrap.toBoolean(pair[0]), .message = pair[1] };
 }
 
+/// The compiler and the matcher each have a recursion budget, and they are not
+/// the same budget: the matcher's is reset per attempt by `pegCallReset`, so
+/// `peg/find` gets a fresh one at every offset. Both start at the recursion
+/// guard.
+///
+/// This asserts the compiler's. `theMatcherReachesItsRecursionGuard` asserts
+/// the other, and needs a left-recursive grammar to do it.
 fn theCompilerBoundsBothOfItsRecursions() void {
     // A keyword chain that resolves through more than the guard allows.
     // `pegCompile1` walks this in a loop rather than by recursing.
@@ -449,7 +451,7 @@ fn theCompilerBoundsBothOfItsRecursions() void {
     expect(!nested.ok);
     {
         // The form this one names is a thousand rules deep, so only the tail
-        // of the message is a contract.
+        // of the message can be compared.
         const message = wrap.toString(nested.message);
         const length: usize = strings.head(message).length;
         expect(std.mem.endsWith(u8, message[0..length], ", peg grammar recursed too deeply"));
@@ -465,37 +467,10 @@ fn theCompilerBoundsBothOfItsRecursions() void {
     expect(just_inside.ok);
 }
 
-/// The matcher's budget, which is spent one frame per nested rule and reset
-/// per attempt. A left-recursive grammar is what reaches it: the depth follows
-/// the subject's length rather than the pattern's.
-///
-/// A hundred thousand characters is far past the budget of 1024, so what the
-/// case distinguishes is reaching the guard from running out of stack on the
-/// way -- the guard counts frames and cannot know how large one is.
-fn theMatcherReachesItsRecursionGuard() raise.Raising(void) {
-    const deep = protectedResult(evaluate(
-        \\(protect (peg/match (peg/compile '{:main (+ (* "a" :main) 0)})
-        \\                    (string/repeat "a" 100000)))
-    ));
-    expect(!deep.ok);
-    expect(harness.stringValueIs(deep.message, "peg/match recursed too deeply"));
-
-    // A subject short enough to fit inside the budget still matches, which is
-    // what makes the refusal above the guard rather than the grammar.
-    const shallow = protectedResult(evaluate(
-        \\(protect (peg/match (peg/compile '{:main (+ (* "a" :main) 0)})
-        \\                    (string/repeat "a" 100)))
-    ));
-    expect(shallow.ok);
-}
-
-// --------------------------------------------------------------- the wire
-//
-// A compiled peg is a marshalled abstract, and its payload is the bytecode
-// word for word. The bytes below pin the opcode numbers: renumbering the
-// `constants.PegRule` enum would keep every Janet test passing and invalidate
-// every stored peg.
-
+/// A compiled peg is a marshalled abstract, and its payload is the bytecode
+/// word for word. The bytes below pin the opcode numbers: renumbering the
+/// `constants.PegRule` enum would keep every Janet test passing and invalidate
+/// every stored peg.
 fn theMarshalledFormIsTheBytecode() raise.Raising(void) {
     const p = compiled("\"a\"");
     const buffer = buffers.new(32);
@@ -542,21 +517,13 @@ fn theMarshalledFormIsTheBytecode() raise.Raising(void) {
         @intFromPtr(p.bytecode) - @intFromPtr(p));
 }
 
-// -------------------------------------------------- the untrusted entry point
-//
-// Everything below builds a peg stream by hand. `pegUnmarshal` is the only way
-// bytecode the compiler could not have produced reaches the matcher, and most
-// of the verifier is unreachable without it.
-
-/// The framing every crafted stream shares, up to and including the type name.
-/// What follows is `bytecode_len`, `num_constants`, the words, the constants --
-/// all of them small enough to be one byte each in the marshal encoding except
-/// where a case says otherwise.
-const peg_header = [_]u8{ 217, 207, 8 } ++ "core/peg".*;
-
 /// An opcode as the one byte a marshalled word of it is.
 ///
-/// Every crafted stream below is a *byte* string rather than a word list --
+/// Everything from here down builds a peg stream by hand. `pegUnmarshal` is
+/// the only way bytecode the compiler could not have produced reaches the
+/// matcher, and most of the verifier is unreachable without it.
+///
+/// Every crafted stream below is a *byte* string rather than a word list:
 /// `pegUnmarshal` reads its counts and its words through the marshal integer
 /// encoding, and a value under 128 is one bare byte there. So an opcode
 /// appears in these streams as its own number, and writing it as `b(RULE_NOT)`
@@ -609,7 +576,7 @@ fn theVerifierWalksEveryInstruction() void {
     rejected(&.{ 4, 0, b(constants.PegRule.not), 1, b(constants.PegRule.nchar), 1 });
     // Unreachable bytecode is rejected too, which is stricter than a
     // depth-first walk would be: word 2 is an instruction nothing refers to,
-    // and that is fine -- only the reverse is an error.
+    // and that is fine; only the reverse is an error.
     _ = accepted(&.{ 4, 0, b(constants.PegRule.nchar), 1, b(constants.PegRule.nchar), 1 });
 
     // `has_backref` is recovered from the bytecode rather than marshalled.
@@ -633,16 +600,9 @@ fn anEmptyProgramIsRefused() void {
     });
 }
 
-/// The two marshal lead bytes these streams spell by number, for the reason
-/// `test/marsh.zig` gives: the enumeration is a file format and the subject's
-/// own is not the oracle for it.
-const lb_real: u8 = 200;
-const lb_integer: u8 = 205;
-const lb_nil: u8 = 201;
-
 /// `(argument n)` takes a non-negative index from the compiler; crafted
-/// bytecode need not, so the matcher tests both ends of the range and answers
-/// nil outside it -- the same answer an index past the end already gave.
+/// bytecode need not, so the matcher tests both ends of the range and gives
+/// nil outside it, which is what an index past the end already gave.
 ///
 /// The stream is accepted, because a nonsensical operand is not by itself
 /// invalid bytecode; what is asserted is that running it is safe. `peg/match`
@@ -663,8 +623,8 @@ fn aNegativeArgumentIndexCapturesNil() raise.Raising(void) {
     expect(harness.isType(array.slice()[0], repr.Tag.nil));
 }
 
-/// An instruction count is refused when the stream is too short to be carrying
-/// it, before anything is allocated or multiplied. One word is at least one
+/// An instruction count is refused when the stream is too short for it,
+/// before anything is allocated or multiplied. One word is at least one
 /// byte on the wire, so the bytes remaining are the bound.
 ///
 /// The first stream names 2^62 words, which is the length whose byte count
@@ -681,11 +641,11 @@ fn anInstructionCountLongerThanTheStreamIsRefused() void {
 }
 
 /// A constant count is refused on the same ground and by the same bound: every
-/// constant on the wire carries a lead byte, so the bytes remaining bound the
+/// constant on the wire has a lead byte, so the bytes remaining bound the
 /// count of them exactly as they bound the count of words.
 ///
 /// The first stream names 2^32 - 1 constants in seventeen bytes. Unbounded
-/// that is a request for 2^32 values -- 32 GiB where a `Value` is eight bytes
+/// that is a request for 2^32 values, 32 GiB where a `Value` is eight bytes
 /// wide and 64 GiB where it is sixteen, and on a 32-bit target a product that
 /// wraps the constants term to zero and leaves the fill loop writing past an
 /// allocation the size of its header. The second names four and supplies none.
@@ -698,7 +658,7 @@ fn aConstantCountLongerThanTheStreamIsRefused() void {
     rejected(&.{ 2, 4, b(constants.PegRule.nchar), 1 });
     _ = accepted(&.{ 2, 1, b(constants.PegRule.nchar), 1, lb_nil });
 
-    // **The bound is on the sum, and this is the case that says so.** Two
+    // The bound is on the sum, and this is the case that says so. Two
     // words and two constants are each within the three bytes that follow,
     // and the four of them together are not. Two independent tests accept
     // this stream and fail later, with `unexpected end of source` after the
@@ -742,7 +702,33 @@ fn everyReadintPegSurvivesARoundTrip() raise.Raising(void) {
     rejected(&.{ 3, 0, b(constants.PegRule.readint), lb_integer, 0, 0, 0, @intCast(signed_be | @as(u32, @intCast(max_readint_width + 1))), 0 });
 }
 
-// -------------------------------------------------------------------- entry
+/// The matcher's budget, which is spent one frame per nested rule and reset
+/// per attempt. A left-recursive grammar is what reaches it: the depth follows
+/// the subject's length rather than the pattern's.
+///
+/// A hundred thousand characters is far past the budget of 1024, so what the
+/// case distinguishes is reaching the guard from running out of stack on the
+/// way, the guard counting frames without knowing how large one is.
+fn theMatcherReachesItsRecursionGuard() raise.Raising(void) {
+    const deep = protectedResult(evaluate(
+        \\(protect (peg/match (peg/compile '{:main (+ (* "a" :main) 0)})
+        \\                    (string/repeat "a" 100000)))
+    ));
+    expect(!deep.ok);
+    expect(harness.stringValueIs(deep.message, "peg/match recursed too deeply"));
+
+    // A subject short enough to fit inside the budget still matches, which is
+    // what makes the refusal above the guard rather than the grammar.
+    const shallow = protectedResult(evaluate(
+        \\(protect (peg/match (peg/compile '{:main (+ (* "a" :main) 0)})
+        \\                    (string/repeat "a" 100)))
+    ));
+    expect(shallow.ok);
+}
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() raise.Raising(void) {
     test_env = harness.coreEnv();

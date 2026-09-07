@@ -9,60 +9,91 @@
 //! `registry.bindingFromEntry` on entries the compiler would never build, and
 //! the two core-environment forms.
 //!
-//! ## Two things this contract does that a C one could not
+//! ## The two raise-capable entry points are called by import
 //!
-//! **The two raise-capable entry points are called by import.**
-//! `registerAbstractType` and `textSubstitution` are `raise.Raising` functions
-//! with a `raise.panicking` abi over each; a contract on the far side of a
-//! symbol table could only reach the abi and read a report. Here the refusal
-//! is a value, so each is one `harness.raised` line.
+//! `registerAbstractType` and `textSubstitution` are `raise.Raising`
+//! functions with a `raise.panicking` abi over each. Called directly, each
+//! refusal is a value and one `harness.raised` line.
 //!
-//! **The registry gets distinct keys.** Janet's growth section says its own
-//! limitation out loud -- "every row needs a distinct key, and the key is a
-//! function pointer, so the keys have to come from somewhere. Offsetting into
-//! a table of distinct pointers is not available in portable C" -- and settles
-//! for pushing the *same* pointer 513 times. So the array it grew was one key
-//! repeated, and the ordering assertion beside it was very nearly
-//! vacuous: three distinct rows among five hundred identical ones. A comptime
-//! family gives as many distinct probes as are asked for, and
-//! `theSortIsTotalOverDistinctKeys` below runs the sort over sixteen of them.
+//! ## The sort is exercised over distinct keys
 //!
-//! Sixteen rather than five hundred and thirteen, deliberately. Reaching the
-//! capacity floor with distinct keys would need 513 generated functions to
-//! test the `realloc`, which is a property of the *array* and not of the keys;
-//! the fill below still does that with a repeated pointer, which is all it
-//! ever needed.
+//! A registry key is a function pointer, so a sort tested with one pointer
+//! pushed many times is a sort over one key repeated. `Probe` is a comptime
+//! family that gives as many distinct functions as are asked for, and
+//! `theSortIsTotalOverDistinctKeys` runs the sort over sixteen of them.
 //!
-//! **Each probe returns a different integer**, and that is not decoration. A
-//! registry key is an address, so a contract about the registry answering
-//! differently for different keys has "these are distinct addresses" as the
-//! premise of every assertion in it -- and every optimize mode above Debug
-//! folds identical function bodies into one address. Nothing calls these
-//! probes, so nothing reads the values; what they buy is that the fold is
-//! illegal.
+//! Sixteen rather than the capacity floor, deliberately. Reaching the floor
+//! with distinct keys would need 513 generated functions to test the
+//! `realloc`, which is a property of the *array* rather than of the keys, and
+//! `theRegistryGrowsPastItsFloor` still does that with a repeated pointer.
+//!
+//! Each probe returns a different integer, and that is not decoration. A
+//! contract about the registry behaving differently for different keys has
+//! "these are distinct addresses" as the premise of every assertion in it, and
+//! every optimize mode above Debug folds identical function bodies into one
+//! address. Nothing calls these probes, so nothing reads the values; what they
+//! buy is that the fold is illegal.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const raise = @import("subsystems").raise;
-const corefn = @import("subsystems").corefn;
-const harness = @import("harness.zig");
 
-const subsystems = @import("subsystems");
-const value = @import("subsystems").value;
-const tables = @import("subsystems").value.tables;
-const symbols = @import("subsystems").value.symbols;
-const utils = @import("subsystems").utils;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
+const abstract_type = subsystems.abstract_type;
 const args_core = @import("subsystems").args;
-const registry_mod = @import("subsystems").registry;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
 const arrays = @import("subsystems").value.arrays;
 const capi = @import("subsystems").capi;
-const abi = @import("abi");
-const registry = subsystems.registry;
-const abstract_type = subsystems.abstract_type;
-
+const corefn = @import("subsystems").corefn;
 const expect = @import("expect.zig").expect;
+const harness = @import("harness.zig");
+const raise = @import("subsystems").raise;
+const registry = subsystems.registry;
+const repr = @import("repr");
+const subsystems = @import("subsystems");
+const symbols = @import("subsystems").value.symbols;
+const tables = @import("subsystems").value.tables;
+const utils = @import("subsystems").utils;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+const family: [family_size]abi.CFunction = blk: {
+    var keys: [family_size]abi.CFunction = undefined;
+    for (&keys, 0..) |*slot, i| slot.* = keyOf(100 + @as(i32, @intCast(i)));
+    break :blk keys;
+};
+
+/// Sixteen more, distinct from each other and from the five above.
+const family_size = 16;
+const filler = keyOf(5);
+/// Two abstract types under one name, for the refusal below.
+///
+/// `var` rather than `const`, and that matters. Two `const`s with identical
+/// initialisers are merged into one address by every optimize mode above
+/// Debug, so registering the "different" type would register the same pointer,
+/// which is the no-op case asserted just above the refusal; the refusal would
+/// never happen and `harness.raised(...).?` would unwrap a null. Two mutable
+/// objects have distinct addresses. Nothing writes to either.
+var probe_at = abstract_type.define(anyopaque, .{ .name = "registry/probe" });
+var probe_at_same_name = abstract_type.define(anyopaque, .{ .name = "registry/probe" });
+const probe_one = keyOf(1);
+const probe_three = keyOf(3);
+const probe_two = keyOf(2);
+const probe_unregistered = keyOf(4);
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// `strcmp` against a literal, for the three registry fields that are plain C
 /// strings rather than Janet ones.
@@ -76,15 +107,12 @@ fn cstringIs(s: ?[*:0]const u8, expected: []const u8) bool {
     return std.mem.eql(u8, std.mem.span(s.?), expected);
 }
 
-// ------------------------------------------------------------------ probes
-
 /// A cfunction that exists only to be a registry key.
 ///
 /// `align(corefn.alignment)` because registration checks it:
 /// `checkPointerAlign` refuses a cfunction pointer whose low bits the
 /// nanbox-64 pointer shift would steal, and `-Dnanbox-pointer-shift=2` is a
-/// matrix entry. The C original got the alignment from
-/// `JANET_CFUNCTION_ALIGN`; this is the same requirement spelled in Zig.
+/// matrix entry, so each probe is declared with `corefn.alignment`.
 fn Probe(comptime tag: i32) type {
     return struct {
         fn run(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
@@ -99,33 +127,17 @@ fn keyOf(comptime tag: i32) abi.CFunction {
     return raise.stored(&Probe(tag).run);
 }
 
-const probe_one = keyOf(1);
-const probe_two = keyOf(2);
-const probe_three = keyOf(3);
-const probe_unregistered = keyOf(4);
-const filler = keyOf(5);
-
-/// Sixteen more, distinct from each other and from the five above.
-const family_size = 16;
-const family: [family_size]abi.CFunction = blk: {
-    var keys: [family_size]abi.CFunction = undefined;
-    for (&keys, 0..) |*slot, i| slot.* = keyOf(100 + @as(i32, @intCast(i)));
-    break :blk keys;
-};
-
-// ------------------------------------------------------------- the registry
-
 fn theRegistryRecordsWhatItWasGiven() void {
     const before = harness.vm().registry.rows.items.len;
 
-    registry_mod.register("probe/one", probe_one);
-    registry_mod.register("probe/two", probe_two);
-    registry_mod.register("probe/three", probe_three);
+    registry.register("probe/one", probe_one);
+    registry.register("probe/two", probe_two);
+    registry.register("probe/three", probe_three);
     expect(harness.vm().registry.rows.items.len == before + 3);
 
     // Registration marks the array dirty; the first lookup sorts it.
     expect(harness.vm().registry.dirty);
-    var found = registry_mod.registryGet(probe_two);
+    var found = registry.registryGet(probe_two);
     expect(harness.vm().registry.dirty == false);
     expect(found != null);
     expect(found.?.cfun == probe_two);
@@ -135,22 +147,22 @@ fn theRegistryRecordsWhatItWasGiven() void {
     expect(found.?.source_file == null);
     expect(found.?.source_line == 0);
 
-    found = registry_mod.registryGet(probe_one);
+    found = registry.registryGet(probe_one);
     expect(found != null and found.?.cfun == probe_one);
-    found = registry_mod.registryGet(probe_three);
+    found = registry.registryGet(probe_three);
     expect(found != null and found.?.cfun == probe_three);
 
-    // A cfunction that was never registered answers null rather than a
+    // A cfunction that was never registered gives null rather than a
     // neighbouring row. `debug.zig`'s frame walk tests for that null; reading
     // the row without testing is a dereference of it.
-    expect(registry_mod.registryGet(probe_unregistered) == null);
+    expect(registry.registryGet(probe_unregistered) == null);
 
     // Registering the same pointer twice appends a second row rather than
     // replacing the first. Reproduced from C: nothing dedupes.
     const again = harness.vm().registry.rows.items.len;
-    registry_mod.register("probe/one-again", probe_one);
+    registry.register("probe/one-again", probe_one);
     expect(harness.vm().registry.rows.items.len == again + 1);
-    found = registry_mod.registryGet(probe_one);
+    found = registry.registryGet(probe_one);
     expect(found != null and found.?.cfun == probe_one);
 }
 
@@ -159,20 +171,19 @@ fn theRegistryRecordsWhatItWasGiven() void {
 /// against, and the bisection is the lookup, so this is the invariant every
 /// lookup in the runtime depends on rather than a property nothing reads.
 ///
-/// The C original asserted this over three distinct keys and five hundred
-/// copies of a fourth. Sixteen more distinct rows is what makes the insertion
-/// sort actually have work to do, and each is looked up afterwards so that a
-/// sort which lost or duplicated a row is caught rather than merely ordered.
+/// Sixteen distinct rows is what gives the insertion sort work to do, and each
+/// is looked up afterwards so that a sort which lost or duplicated a row is
+/// caught rather than merely ordered.
 fn theSortIsTotalOverDistinctKeys() void {
     for (family, 0..) |key, i| {
         var name: [32]u8 = @splat(0);
         _ = std.fmt.bufPrint(&name, "probe/family-{d}", .{i}) catch unreachable;
-        registry_mod.registryPut(key, @ptrCast(&name), null, null, 0);
+        registry.registryPut(key, @ptrCast(&name), null, null, 0);
     }
 
     // Every one of them is found, and found at its own row.
     for (family) |key| {
-        const row = registry_mod.registryGet(key);
+        const row = registry.registryGet(key);
         expect(row != null);
         expect(row.?.cfun == key);
     }
@@ -184,42 +195,6 @@ fn theSortIsTotalOverDistinctKeys() void {
     }
 }
 
-/// The lookup is a bisection, so its answers are checked against an
-/// independently derived one: a linear walk of the whole array, which is the
-/// shape the C original ran *before* its bisection and which is why the
-/// bisection had never answered a lookup. Every row is looked up by its key,
-/// and the row the bisection answers with is the row the walk finds first --
-/// which matters because the growth case above registered one key over and
-/// over, so a third of this array is duplicates of one pointer.
-///
-/// Then two keys that are in no row: one this contract never registers, and
-/// one that is not a function at all.
-fn theLookupAgreesWithAWalk() void {
-    // One lookup first, so that the sort the lookup owes has happened before
-    // the array is walked: `sortRows` reorders in place, and a walk that
-    // triggered it half way through would be reading two different arrays.
-    _ = registry_mod.registryGet(probe_one);
-    const rows = harness.vm().registry.rows.items;
-    // The growth case ran first, so the array is past its first reallocation
-    // and the bisection has five or six steps to get wrong.
-    expect(rows.len > 30);
-    for (rows) |row| {
-        var expected: ?*const registry_mod.Row = null;
-        for (rows) |*candidate| {
-            if (candidate.cfun == row.cfun) {
-                expected = candidate;
-                break;
-            }
-        }
-        const found = registry_mod.registryGet(row.cfun);
-        expect(found != null);
-        expect(found.? == expected.?);
-    }
-
-    expect(registry_mod.registryGet(probe_unregistered) == null);
-    expect(registry_mod.registryGet(null) == null);
-}
-
 /// Growth. The floor is 512 entries, which the core alone does not reach, so
 /// this is the only place the doubling is exercised at all.
 ///
@@ -229,7 +204,7 @@ fn theRegistryGrowsPastItsFloor() void {
     const cap = harness.vm().registry.rows.capacity;
     const count = harness.vm().registry.rows.items.len;
     while (harness.vm().registry.rows.items.len < cap + 1) {
-        registry_mod.registryPut(filler, "probe/filler", null, null, 0);
+        registry.registryPut(filler, "probe/filler", null, null, 0);
     }
     expect(harness.vm().registry.rows.capacity > cap);
     expect(harness.vm().registry.rows.items.len > count);
@@ -240,7 +215,39 @@ fn theRegistryGrowsPastItsFloor() void {
     expect(harness.vm().registry.rows.items.len == harness.vm().registry.rows.items.len);
 }
 
-// ------------------------------------------------- the registration entries
+/// The lookup is a bisection, so it is checked against an
+/// independently derived one: a linear walk of the whole array. Every row is
+/// looked up by its key, and the row the bisection returns is the row the walk
+/// finds first, which matters because the growth case above registered one key
+/// over and over, so a third of this array is duplicates of one pointer.
+///
+/// Then two keys that are in no row: one this contract never registers, and
+/// one that is not a function at all.
+fn theLookupAgreesWithAWalk() void {
+    // One lookup first, so that the sort the lookup owes has happened before
+    // the array is walked: `sortRows` reorders in place, and a walk that
+    // triggered it half way through would be reading two different arrays.
+    _ = registry.registryGet(probe_one);
+    const rows = harness.vm().registry.rows.items;
+    // The growth case ran first, so the array is past its first reallocation
+    // and the bisection has five or six steps to get wrong.
+    expect(rows.len > 30);
+    for (rows) |row| {
+        var expected: ?*const registry.Row = null;
+        for (rows) |*candidate| {
+            if (candidate.cfun == row.cfun) {
+                expected = candidate;
+                break;
+            }
+        }
+        const found = registry.registryGet(row.cfun);
+        expect(found != null);
+        expect(found.? == expected.?);
+    }
+
+    expect(registry.registryGet(probe_unregistered) == null);
+    expect(registry.registryGet(null) == null);
+}
 
 /// The table a caller passes by symbol: null-name-terminated.
 const c_reg_ext = [_]abi.Reg{
@@ -281,7 +288,7 @@ fn checkEntry(env: *tables.Table, name: [*:0]const u8, has_doc: bool, has_map: b
 fn thePublishedEntryPointDefinesAndRegisters() void {
     const env = tables.new(4);
 
-    capi.janet_cfuns_ext(env, "probe", &c_reg_ext);
+    capi.janet_cfuns_ext(@ptrCast(env), "probe", &c_reg_ext);
     checkEntry(env, "three", true, true);
 
     const entry = tables.get(env, value.fromBytes("three", .symbol));
@@ -295,7 +302,7 @@ fn thePublishedEntryPointDefinesAndRegisters() void {
 
     // The registry got the *unprefixed* name and the prefix separately, for
     // all four entry points. The prefix only changes the binding's name.
-    const row = registry_mod.registryGet(probe_three);
+    const row = registry.registryGet(probe_three);
     expect(cstringIs(row.?.name, "three"));
     expect(cstringIs(row.?.name_prefix, "probe"));
 }
@@ -303,19 +310,19 @@ fn thePublishedEntryPointDefinesAndRegisters() void {
 fn thePrefixingFormRewritesOnlyTheName() void {
     const env = tables.new(4);
 
-    registry_mod.cfunsPrefix(env, "pre", &probe_reg);
+    registry.cfunsPrefix(env, "pre", &probe_reg);
     checkEntry(env, "pre/one", true, false);
     checkEntry(env, "pre/two", false, false);
     expect(harness.isType(tables.get(env, value.fromBytes("one", .symbol)), repr.Tag.nil));
 
     // A prefix long enough that the name buffer's 256-byte reserve is not what
-    // carries it, so the realloc in `NameBuf.name` is exercised.
+    // long, so the realloc in `NameBuf.name` is exercised.
     {
         var big: [400]u8 = @splat('p');
         big[big.len - 1] = 0;
         var expected: [420]u8 = @splat(0);
         const env2 = tables.new(4);
-        registry_mod.cfunsPrefix(env2, @ptrCast(&big), &probe_reg);
+        registry.cfunsPrefix(env2, @ptrCast(&big), &probe_reg);
         _ = std.fmt.bufPrint(&expected, "{s}/one", .{big[0 .. big.len - 1]}) catch unreachable;
         checkEntry(env2, @ptrCast(&expected), true, false);
     }
@@ -323,7 +330,7 @@ fn thePrefixingFormRewritesOnlyTheName() void {
     // A null environment registers without defining, and must not build a name
     // buffer at all. Both surviving entry points take it.
     capi.janet_cfuns_ext(null, "probe", &c_reg_ext);
-    registry_mod.cfunsPrefix(null, "probe", &probe_reg);
+    registry.cfunsPrefix(null, "probe", &probe_reg);
 }
 
 /// The two entry points a table *inside* the runtime uses, which take a slice
@@ -336,26 +343,24 @@ fn thePrefixingFormRewritesOnlyTheName() void {
 fn theSliceFormsInstallTheSameRows() void {
     const env = tables.new(4);
 
-    registry_mod.cfuns(env, "probe", &probe_reg);
+    registry.cfuns(env, "probe", &probe_reg);
     checkEntry(env, "one", true, false);
     checkEntry(env, "two", false, false);
     // Two rows, and nothing past them: the terminator is not what stopped it.
     expect(probe_reg.len == 2);
 
     const env2 = tables.new(4);
-    registry_mod.cfunsPrefix(env2, "pre", &probe_reg);
+    registry.cfunsPrefix(env2, "pre", &probe_reg);
     checkEntry(env2, "pre/one", true, false);
     expect(harness.isType(tables.get(env2, value.fromBytes("one", .symbol)), repr.Tag.nil));
 
-    registry_mod.cfuns(null, "probe", &probe_reg);
-    registry_mod.cfunsPrefix(null, "probe", &probe_reg);
+    registry.cfuns(null, "probe", &probe_reg);
+    registry.cfunsPrefix(null, "probe", &probe_reg);
 
     // An empty table is the case a sentinel array cannot express without a
     // row, and a slice can.
-    registry_mod.cfuns(env2, "probe", &.{});
+    registry.cfuns(env2, "probe", &.{});
 }
-
-// ------------------------------------------------------------- def and var
 
 /// `registry.defVarAbi` is the reporting form over `registry.defVarSm`, which
 /// raises because pushing onto the `:ref` array can. A caller inside the
@@ -367,7 +372,7 @@ fn theSliceFormsInstallTheSameRows() void {
 fn defAndVarBuildDifferentEntries() raise.Raising(void) {
     const env = tables.new(4);
 
-    registry_mod.def(env, "d", harness.wrapInteger(7), "doc for d");
+    registry.def(env, "d", harness.wrapInteger(7), "doc for d");
     var t = wrap.toTable(tables.get(env, value.fromBytes("d", .symbol)));
     expect(harness.integerIs(tables.get(t, value.fromBytes("value", .keyword)), 7));
     expect(harness.isType(tables.get(t, value.fromBytes("ref", .keyword)), repr.Tag.nil));
@@ -385,7 +390,7 @@ fn defAndVarBuildDifferentEntries() raise.Raising(void) {
 
     // A source line of zero suppresses the map even when the file is given,
     // because the file alone locates nothing.
-    registry_mod.defSm(env, "nomap", wrap.fromNil(), null, "f.c", 0);
+    registry.defSm(env, "nomap", wrap.fromNil(), null, "f.c", 0);
     t = wrap.toTable(tables.get(env, value.fromBytes("nomap", .symbol)));
     expect(harness.isType(tables.get(t, value.fromBytes("source-map", .keyword)), repr.Tag.nil));
 
@@ -394,19 +399,17 @@ fn defAndVarBuildDifferentEntries() raise.Raising(void) {
     expect(!harness.isType(tables.get(t, value.fromBytes("source-map", .keyword)), repr.Tag.nil));
 }
 
-// ------------------------------------------------------- reading a binding
-
-fn bindingOf(entry: *tables.Table) registry_mod.Binding {
-    return registry_mod.bindingFromEntry(wrap.fromTable(entry));
+fn bindingOf(entry: *tables.Table) registry.Binding {
+    return registry.bindingFromEntry(wrap.fromTable(entry));
 }
 
 fn theBindingIsASummaryOfFourKeys() void {
     // Anything that is not a table is NONE with a nil value.
-    var b = registry_mod.bindingFromEntry(wrap.fromNil());
+    var b = registry.bindingFromEntry(wrap.fromNil());
     expect(b.type == .none);
     expect(harness.isType(b.value, repr.Tag.nil));
     expect(b.deprecation == .none);
-    b = registry_mod.bindingFromEntry(harness.wrapInteger(3));
+    b = registry.bindingFromEntry(harness.wrapInteger(3));
     expect(b.type == .none);
 
     // A plain def.
@@ -417,7 +420,7 @@ fn theBindingIsASummaryOfFourKeys() void {
     expect(harness.integerIs(b.value, 1));
 
     // A ref makes it a var, and the binding's value is the array rather than
-    // its contents -- dereferencing is `registry.resolve`'s job.
+    // its contents; dereferencing is `registry.resolve`'s job.
     entry = tables.new(2);
     tables.put(entry, value.fromBytes("ref", .keyword), wrap.fromArray(arrays.new(1)));
     b = bindingOf(entry);
@@ -482,7 +485,7 @@ fn deprecationReadsAKeywordAndFallsBackToNormal() void {
         expect(bindingOf(entry).deprecation == case.expect);
     }
 
-    // A non-keyword that is not nil is NORMAL, whatever it is -- including
+    // A non-keyword that is not nil is NORMAL, whatever it is, including
     // `false`, which is not nil.
     var entry = tables.new(2);
     tables.put(entry, value.fromBytes("value", .keyword), wrap.fromNil());
@@ -495,20 +498,18 @@ fn deprecationReadsAKeywordAndFallsBackToNormal() void {
     expect(bindingOf(entry).deprecation == .normal);
 }
 
-// ------------------------------------------------------------- resolution
-
 fn resolveDereferencesOnlyTheDynamicBindings() raise.Raising(void) {
     const env = tables.new(4);
     const ref = arrays.new(1);
 
-    // An unbound symbol answers NONE with a nil value, rather than a value the
-    // caller has to know not to read.
-    const missing = registry_mod.resolve(env, symbols.csymbol("missing"));
+    // An unbound symbol gives NONE with a nil value, rather than a value the
+    // caller would have to be told not to read.
+    const missing = registry.resolve(env, symbols.csymbol("missing"));
     expect(missing.type == .none);
     expect(harness.isType(missing.value, repr.Tag.nil));
 
-    registry_mod.def(env, "d", harness.wrapInteger(3), null);
-    const d = registry_mod.resolve(env, symbols.csymbol("d"));
+    registry.def(env, "d", harness.wrapInteger(3), null);
+    const d = registry.resolve(env, symbols.csymbol("d"));
     expect(d.type == .def);
     expect(harness.integerIs(d.value, 3));
 
@@ -516,11 +517,11 @@ fn resolveDereferencesOnlyTheDynamicBindings() raise.Raising(void) {
     // two dynamic types are dereferenced. So `registry.resolve` and
     // `registry.resolveExt` agree here, and differ only below.
     try registry.defVarSm(env, "v", harness.wrapInteger(4), null, null, 0);
-    const v = registry_mod.resolve(env, symbols.csymbol("v"));
+    const v = registry.resolve(env, symbols.csymbol("v"));
     expect(v.type == .@"var");
     expect(harness.isType(v.value, repr.Tag.array));
     expect(harness.integerIs(wrap.toArray(v.value).slice()[0], 4));
-    expect(harness.isType(registry_mod.resolveExt(env, symbols.csymbol("v")).value, repr.Tag.array));
+    expect(harness.isType(registry.resolveExt(env, symbols.csymbol("v")).value, repr.Tag.array));
 
     // A dynamic def dereferences to the array's last element.
     harness.arrayPush(ref, harness.wrapInteger(5));
@@ -528,11 +529,11 @@ fn resolveDereferencesOnlyTheDynamicBindings() raise.Raising(void) {
     tables.put(entry, value.fromBytes("ref", .keyword), wrap.fromArray(ref));
     tables.put(entry, value.fromBytes("redef", .keyword), wrap.fromTrue());
     tables.put(env, value.fromBytes("dd", .symbol), wrap.fromTable(entry));
-    const dd5 = registry_mod.resolve(env, symbols.csymbol("dd"));
+    const dd5 = registry.resolve(env, symbols.csymbol("dd"));
     expect(dd5.type == .dynamic_def);
     expect(harness.integerIs(dd5.value, 5));
     harness.arrayPush(ref, harness.wrapInteger(6));
-    const dd6 = registry_mod.resolve(env, symbols.csymbol("dd"));
+    const dd6 = registry.resolve(env, symbols.csymbol("dd"));
     expect(dd6.type == .dynamic_def);
     expect(harness.integerIs(dd6.value, 6));
 }
@@ -540,36 +541,18 @@ fn resolveDereferencesOnlyTheDynamicBindings() raise.Raising(void) {
 fn theCoreFormsReachTheCoreEnvironment() void {
     // `registry.resolveCore` and `registry.getCoreTable` reach the core
     // environment rather than one the caller built.
-    expect(harness.isType(registry_mod.resolveCore("string/find"), repr.Tag.cfunction));
-    expect(harness.isType(registry_mod.resolveCore("no-such-binding-17f"), repr.Tag.nil));
+    expect(harness.isType(registry.resolveCore("string/find"), repr.Tag.cfunction));
+    expect(harness.isType(registry.resolveCore("no-such-binding-17f"), repr.Tag.nil));
 
-    expect(registry_mod.getCoreTable("module/cache") != null);
-    expect(registry_mod.getCoreTable("no-such-binding-17f") == null);
+    expect(registry.getCoreTable("module/cache") != null);
+    expect(registry.getCoreTable("no-such-binding-17f") == null);
     // Bound, but not to a table.
-    expect(registry_mod.getCoreTable("string/find") == null);
+    expect(registry.getCoreTable("string/find") == null);
 }
 
-// -------------------------------------------------- the abstract registry
-
-// Two abstract types with the same name and *different addresses*, which is
-// the whole premise of the section below: the registry keys on the name and
-// refuses a second type under one that is taken.
-//
-// **They are `var` rather than `const`, and that matters.** Written as two
-// `const`s -- which is what a transcription of Janet's two
-// `static const JanetAbstractType` gives -- their initialisers are identical,
-// so every optimize mode above Debug merges them into one address. Registering
-// the "different" type then registers the same pointer, which is the no-op
-// case asserted just above it, and the refusal never happens:
-// `harness.raised(...).?` unwrapped a null and the contract died with `attempt
-// to use null value` under `ReleaseSafe`, `ReleaseFast` and `ReleaseSmall`.
-// Debug passed.
-//
-// Two mutable objects must have distinct addresses, so `var` is the whole fix.
-// Nothing writes to either.
-var probe_at = abstract_type.define(anyopaque, .{ .name = "registry/probe" });
-var probe_at_same_name = abstract_type.define(anyopaque, .{ .name = "registry/probe" });
-
+/// The registry keys on the name, so a second type under a name already taken
+/// is refused. The two probes above have the same name and different
+/// addresses, which is what makes the refusal reachable.
 fn theAbstractRegistryRefusesASecondTypeUnderOneName() raise.Raising(void) {
     // The premise, asserted rather than assumed. Without this the merge above
     // shows up as a null unwrap three assertions later, in a message that
@@ -577,22 +560,20 @@ fn theAbstractRegistryRefusesASecondTypeUnderOneName() raise.Raising(void) {
     expect(&probe_at != &probe_at_same_name);
 
     try registry.registerAbstractType(&probe_at);
-    expect(registry_mod.getAbstractType(value.fromBytes("registry/probe", .symbol)) ==
+    expect(registry.getAbstractType(value.fromBytes("registry/probe", .symbol)) ==
         &probe_at);
 
     // Registering the same type twice is a no-op rather than an error.
     try registry.registerAbstractType(&probe_at);
-    expect(registry_mod.getAbstractType(value.fromBytes("registry/probe", .symbol)) ==
+    expect(registry.getAbstractType(value.fromBytes("registry/probe", .symbol)) ==
         &probe_at);
 
-    // An unregistered name answers null, which is what `marsh.unmarshal` turns
+    // An unregistered name gives null, which is what `marsh.unmarshal` turns
     // into "unknown abstract type".
-    expect(registry_mod.getAbstractType(value.fromBytes("registry/never", .symbol)) == null);
-    expect(registry_mod.getAbstractType(wrap.fromNil()) == null);
+    expect(registry.getAbstractType(value.fromBytes("registry/never", .symbol)) == null);
+    expect(registry.getAbstractType(wrap.fromNil()) == null);
 
-    // A *different* type under a name already taken raises. This is the one
-    // raise in what was `util.c`, and in the C contract it took a try scope, a
-    // flag and four lines to observe.
+    // A *different* type under a name already taken raises.
     const refusal = harness.raised(
         registry.registerAbstractType,
         .{&probe_at_same_name},
@@ -602,11 +583,9 @@ fn theAbstractRegistryRefusesASecondTypeUnderOneName() raise.Raising(void) {
         "a type with the same name exists"));
 
     // The failed registration left the first type in place.
-    expect(registry_mod.getAbstractType(value.fromBytes("registry/probe", .symbol)) ==
+    expect(registry.getAbstractType(value.fromBytes("registry/probe", .symbol)) ==
         &probe_at);
 }
-
-// ------------------------------------------------------ text substitution
 
 fn bytesAre(view: abi.ByteView, expected: []const u8) bool {
     if (view.len != expected.len) return false;
@@ -634,7 +613,7 @@ fn substitutionMemoizesAValueAndCallsACallable() raise.Raising(void) {
     expect(bytesAre(view, "42"));
 
     // A cfunction is called with the matched text.
-    subst = registry_mod.resolveCore("string/ascii-upper");
+    subst = registry.resolveCore("string/ascii-upper");
     expect(harness.isType(subst, repr.Tag.cfunction));
     view = try registry.textSubstitution(&subst, matched[0..@intCast(2)], null);
     expect(bytesAre(view, "AB"));
@@ -642,11 +621,10 @@ fn substitutionMemoizesAValueAndCallsACallable() raise.Raising(void) {
     // the next match.
     expect(harness.isType(subst, repr.Tag.cfunction));
 
-    // A raising cfunction. A builtin returns its raise, and this is the fourth
-    // place in the tree that invokes a cfunction pointer -- the one a count of
-    // three missed. Here the substitution is `raise.Raising` and the refusal is
-    // the return value.
-    var finder = registry_mod.resolveCore("string/find");
+    // A raising cfunction. `textSubstitution` is `raise.Raising` and invokes
+    // the cfunction pointer itself, so the refusal arrives as its return
+    // value.
+    var finder = registry.resolveCore("string/find");
     const refusal = harness.raised(
         registry.textSubstitution,
         .{ &finder, matched[0..2], @as(?*arrays.Array, null) },
@@ -658,12 +636,14 @@ fn substitutionMemoizesAValueAndCallsACallable() raise.Raising(void) {
     // a start index proves the second argument arrived.
     const extra = arrays.new(1);
     harness.arrayPush(extra, harness.wrapInteger(2));
-    subst = registry_mod.resolveCore("string/slice");
+    subst = registry.resolveCore("string/slice");
     view = try registry.textSubstitution(&subst, "abcd", extra);
     expect(bytesAre(view, "cd"));
 }
 
-// ------------------------------------------------------------------ entry
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() raise.Raising(void) {
     theRegistryRecordsWhatItWasGiven();

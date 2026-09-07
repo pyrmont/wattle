@@ -3,12 +3,13 @@
 #
 # `class` is decided by two facts and no reading: whether a built native
 # module requires the symbol, and whether the retired `janet.h` marked
-# the declaration `JANET_API`.  `published` is what `module.zig` declares
-# **plus what a module's undefined-symbol set actually names**, which is
-# not the same list -- `raise.zig` reaches two `janet_zig_*` symbols
-# through `cabi` and a module that defines a cfunction needs both;
+# the declaration `JANET_API`.  `published` is what this tree declares
+# **plus what a module's undefined-symbol set actually names**; the
+# module table took both to zero, because a native module reaches the
+# runtime through `src/api/interface.zig`'s struct of function pointers
+# rather than by name.
 # `compat` is the rest of `JANET_API`, retained while whether
-# Claret publishes an embedding interface is undecided; `residue` was
+# this runtime publishes an embedding interface is undecided; `residue` was
 # never public even in C, because `-fvisibility=hidden` and an internal
 # header are what the C build said about it.
 #
@@ -24,11 +25,11 @@
 #
 # headers read from  17b3f8c4
 #
-# published       81
-# compat           5
+# published        0
+# compat           0
 # residue          0
 # linker           2
-# total           88
+# total            2
 #
 # residue with no audience at all  0
 #
@@ -36,89 +37,3 @@
 
 linker     __dso_handle                             -
 linker     _mh_dylib_header                         -
-published  janet_abstract                           janet.h          native,src
-published  janet_arity                              janet.h          native,src
-published  janet_array_push_value                   -                native,src
-published  janet_buffer_push_bytes                  janet.h          native,src
-published  janet_buffer_push_value                  -                native,src
-published  janet_bytes_view                         janet.h          native,src
-published  janet_call_value                         -                native,src
-published  janet_calloc                             janet.h          native,src
-published  janet_cfuns_ext                          janet.h          native,src
-published  janet_checkint                           janet.h          native,src
-published  janet_checktype                          janet.h          native,src
-published  janet_cstring                            janet.h          cabi,native,src
-published  janet_current_loop                       -                native,src
-compat     janet_def                                janet.h          src
-published  janet_dictionary_view                    janet.h          native,src
-published  janet_fiber_status_value                 -                native,src
-published  janet_fixarity                           janet.h          native,src
-published  janet_free                               janet.h          native,src
-published  janet_gcroot                             janet.h          native,src
-published  janet_gcunroot                           janet.h          native,src
-published  janet_get                                janet.h          native,src
-published  janet_getabstract                        janet.h          native,src
-published  janet_getboolean                         janet.h          native,src
-published  janet_getbytes                           janet.h          native,src
-published  janet_getdictionary                      janet.h          native,src
-published  janet_getindexed                         janet.h          native,src
-published  janet_getinteger                         janet.h          native,src
-published  janet_getmethod                          janet.h          native,src
-published  janet_getnumber                          janet.h          native,src
-published  janet_getrange                           -                native,src
-compat     janet_getsize                            janet.h          src
-published  janet_getuinteger                        janet.h          native,src
-published  janet_indexed_view                       janet.h          native,src
-published  janet_length                             janet.h          native,src
-published  janet_mark                               janet.h          native,src
-published  janet_marshal_abstract                   janet.h          native,src
-published  janet_marshal_byte                       janet.h          native,src
-published  janet_marshal_bytes                      janet.h          native,src
-published  janet_marshal_flags                      janet.h          native,src
-published  janet_marshal_int                        janet.h          native,src
-published  janet_marshal_int64                      janet.h          native,src
-published  janet_marshal_janet                      janet.h          native,src
-compat     janet_marshal_ptr                        janet.h          src
-published  janet_marshal_size                       janet.h          native,src
-published  janet_new_array                          -                native,src
-published  janet_new_buffer                         -                native,src
-published  janet_new_keyword                        -                native,src
-published  janet_new_string                         -                native,src
-published  janet_new_struct                         -                native,src
-published  janet_new_symbol                         -                native,src
-published  janet_new_table                          -                native,src
-published  janet_new_tuple                          -                native,src
-published  janet_nextmethod                         janet.h          native,src
-published  janet_pcall_value                        -                native,src
-published  janet_post                               -                native,src
-published  janet_put                                janet.h          native,src
-published  janet_register_abstract_type             janet.h          native,src
-published  janet_root_fiber_value                   -                native,src
-published  janet_truthy                             janet.h          native,src
-published  janet_unmarshal_abstract                 janet.h          native,src
-compat     janet_unmarshal_abstract_reuse           janet.h          src
-published  janet_unmarshal_byte                     janet.h          native,src
-published  janet_unmarshal_bytes                    janet.h          native,src
-published  janet_unmarshal_ensure                   janet.h          native,src
-published  janet_unmarshal_flags                    janet.h          native,src
-published  janet_unmarshal_int                      janet.h          native,src
-published  janet_unmarshal_int64                    janet.h          native,src
-published  janet_unmarshal_janet                    janet.h          native,src
-compat     janet_unmarshal_ptr                      janet.h          src
-published  janet_unmarshal_remaining                -                native,src
-published  janet_unmarshal_size                     janet.h          native,src
-published  janet_unwrap_integer                     janet.h          native,src
-published  janet_unwrap_keyword                     janet.h          native,src
-published  janet_unwrap_number                      janet.h          native,src
-published  janet_unwrap_pointer                     janet.h          native,src
-published  janet_wake                               -                native,src
-published  janet_wrap_abstract                      janet.h          native,src
-published  janet_wrap_boolean                       janet.h          native,src
-published  janet_wrap_nil                           janet.h          native,src
-published  janet_wrap_number                        janet.h          native,src
-published  janet_wrap_pointer                       janet.h          native,src
-published  janet_wrap_string                        janet.h          cabi,native,src
-published  janet_zig_c_raise_record                 core/state.h     cabi,native,src
-published  janet_zig_c_raise_take                   core/state.h     cabi,native,src
-published  janet_zig_fatal                          -                cabi,src
-published  janet_zig_signal_record                  core/state.h     cabi,native,src

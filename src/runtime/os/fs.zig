@@ -2,329 +2,164 @@
 //! own, and the host calls behind them.
 //!
 //! Three files once. A fourth destination, `os/fs/paths.zig`, was designed and
-//! does not exist: **this subtree registers nineteen `os/` cfunctions and only
-//! two groups of them have a name Janet publishes** -- `os/stat` with
-//! `os/lstat`, which share a field registry, and `os/open`, which has a type of
-//! its own. Those two are the leaves beside this file. The other sixteen --
-//! `os/cwd`, `os/dir`, `os/touch`, `os/realpath`, `os/link`, `os/symlink`,
+//! does not exist: this subtree registers nineteen `os/` cfunctions and only
+//! two groups of them have a name Janet publishes, `os/stat` with `os/lstat`,
+//! which share a field registry, and `os/open`, which has a type of its own.
+//! Those two are the leaves beside this file. The other sixteen, `os/cwd`,
+//! `os/dir`, `os/touch`, `os/realpath`, `os/link`, `os/symlink`,
 //! `os/readlink`, `os/chmod`, `os/umask`, `os/mkdir`, `os/rmdir`, `os/rm`,
-//! `os/cd`, `os/rename`, `os/perm-string`, `os/perm-int` -- are individual
+//! `os/cd`, `os/rename`, `os/perm-string` and `os/perm-int`, are individual
 //! cfunctions, and "paths" names none of them. They are the bucket, which is
 //! what a piece with no name of its own gets.
 //!
 //! `entries()` stays in this file because `os.zig` slices it three ways, and
 //! that order is upstream Janet's `os/` registration order.
+//!
+//! Every platform test here goes through `builtin.os.tag`, never through a
+//! translated macro. Aro, the translate-c front end, predefines `__unix__`,
+//! `unix` and `__unix` for `x86_64-windows-gnu` on top of `_WIN32`, so a
+//! header whose own chain tests Unix first reports POSIX in the translation
+//! and Windows in the compilation of the same header for the same target. The
+//! first assertion at the foot of this file is what would catch a regression.
+//!
+//! The host calls at the foot are the ones whose signatures name a type this
+//! subsystem owns, so they stay with the type rather than moving to
+//! `cabi.zig`.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
-const repr = @import("repr");
-const constants = @import("constants");
-const c = @import("cabi");
-const raise = @import("../../api/raise.zig");
-const corefn = @import("../corefn.zig");
-const config = @import("config");
-const oa = @import("abi.zig");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const args_core = @import("../args.zig");
 const arrays = @import("../value/arrays.zig");
-const wrap = @import("../value/helpers/wrap.zig");
-const pp_format = @import("../pp/format.zig");
-const vm_lifecycle = @import("../vm/lifecycle.zig");
-const stat = @import("fs/stat.zig");
-const value = @import("../value.zig");
+const c = @import("cabi");
+const config = @import("config");
+const constants = @import("constants");
+const corefn = @import("../corefn.zig");
+const oa = @import("abi.zig");
 const open_file = @import("fs/open.zig");
+const pp_format = @import("../pp/format.zig");
+const raise = @import("../../api/raise.zig");
+const repr = @import("repr");
+const stat = @import("fs/stat.zig");
 const utils = @import("../utils.zig");
+const value = @import("../value.zig");
+const vm_lifecycle = @import("../vm/lifecycle.zig");
+const wrap = @import("../value/helpers/wrap.zig");
 
+/// `os/abi.zig`'s translation, which is where the Windows enumeration's
+/// `_finddata_t` comes from.
 const h = oa.h;
 
-const windows = builtin.os.tag == .windows;
+// ==========================================================================
+// Constants
+// ==========================================================================
 
-// **Every platform test here goes through `builtin.os.tag`, never through a
-// translated macro.** Aro -- the translate-c front end -- predefines
-// `__unix__`, `unix` and `__unix` for `x86_64-windows-gnu` on top of `_WIN32`,
-// so a header whose own chain tests Unix first answers "POSIX" in the
-// *translation* and "Windows" in the *compilation* of the same header for the
-// same target. The assertion below is what would catch a regression.
-comptime {
-    if ((builtin.os.tag == .windows) and !windows)
-        @compileError("platform tests must not read a translated platform macro");
-}
+/// `MAX_PATH`, which `_fullpath` takes as its buffer size.
+const MAX_PATH = 260;
 
-pub const no_symlinks = !config.symlinks;
-pub const no_realpath = !config.realpath;
-pub const no_umask = !config.umask;
+/// Whether this build has the event loop, which decides whether `os/open` is
+/// registered at all.
 pub const has_ev = config.ev;
 
-comptime {
-    if (has_ev != (constants.JANET_VM_HAS_EV != 0))
-        @compileError("config.ev disagrees with constants' restatement of it");
+/// The three filesystem features a build can be without. Each turns its own
+/// cfunctions into a refusal rather than removing them, so a program meets a
+/// message rather than a missing binding.
+pub const no_realpath = !config.realpath;
+pub const no_symlinks = !config.symlinks;
+pub const no_umask = !config.umask;
+
+/// Whether this target takes the Windows arm of the calls below.
+const windows = builtin.os.tag == .windows;
+
+// ==========================================================================
+// Aliased types
+// ==========================================================================
+
+/// `struct utimbuf` is two `time_t` values, which is the one host structure
+/// this subsystem builds rather than receiving. It is never shared across the
+/// boundary: the two times cross as doubles and the structure lives only for
+/// the duration of the call.
+const TimeT = if (windows) i64 else std.c.time_t;
+
+// ==========================================================================
+// Types
+// ==========================================================================
+
+/// One read of a directory stream. Three outcomes rather than two, which is
+/// what makes this a union and not an optional: the end of the stream and a
+/// failed read are different results, and only the second leaves `errno` set.
+pub const DirRead = union(enum) {
+    /// The next entry that is neither "." nor "..", borrowed from the stream.
+    entry: [*:0]const u8,
+    /// The stream is exhausted.
+    end,
+    /// The read failed; `errno` describes it.
+    failed,
+};
+
+// ==========================================================================
+// Public functions
+// ==========================================================================
+
+/// Resolves a path to its canonical absolute form, following `.`, `..` and
+/// symbolic links. The result is allocated by the host and released by the
+/// caller.
+pub fn canonicalPath(path: [*:0]const u8) ?[*:0]u8 {
+    if (windows) return c._fullpath(null, path, MAX_PATH);
+    return c.realpath(path, null);
 }
 
-pub fn cfunPermissionString(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 1);
-    return stat.makePermstring(try stat.getUnixMode(argv, 0));
-}
-
+/// `(os/perm-int perm)`.
 pub fn cfunPermissionInt(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return wrap.fromInteger(try stat.getUnixMode(argv, 0));
 }
 
-// ==========================================================================
-// Basic filesystem operations
-// ==========================================================================
-
-fn cfunCwd(argv: []repr.Value) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 0);
-    var buf: [h.FILENAME_MAX]u8 = undefined;
-    if (hostGetcwd(&buf, h.FILENAME_MAX) != 0) {
-        return raise.panic("could not get current directory");
-    }
-    return value.fromBytes(std.mem.sliceTo(&buf, 0), .string);
-}
-
-fn cfunMkdir(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
+/// `(os/perm-string perm)`.
+pub fn cfunPermissionString(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
-    const path = try args_core.getCString(argv, 0);
-    const res = hostMkdir(@ptrCast(path));
-    if (res == 0) return wrap.fromTrue();
-    if (c.errno() == h.EEXIST) return wrap.fromFalse();
-    return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
+    return stat.makePermstring(try stat.getUnixMode(argv, 0));
 }
 
-fn cfunRmdir(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
-    try args_core.fixarity(argv, 1);
-    const path = try args_core.getCString(argv, 0);
-    if (hostRmdir(@ptrCast(path)) == -1) {
-        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
+/// Closes a directory stream.
+pub fn dirClose(handle: *anyopaque) void {
+    _ = std.c.closedir(@ptrCast(handle));
+}
+
+/// The `1` / `0` / `-1` spelling of `dirNext`, kept because
+/// `test/os_fs_paths` reaches it. Nothing inside the runtime calls it:
+/// `dirPosix` takes the union.
+pub fn dirNextAbi(handle: *anyopaque, name_out: *[*:0]const u8) i32 {
+    switch (dirNext(handle)) {
+        .entry => |name| {
+            name_out.* = name;
+            return 1;
+        },
+        .end => return 0,
+        .failed => return -1,
     }
-    return wrap.fromNil();
 }
 
-fn cfunCd(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
-    try args_core.fixarity(argv, 1);
-    const path = try args_core.getCString(argv, 0);
-    if (hostChdir(@ptrCast(path)) == -1) {
-        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
-    }
-    return wrap.fromNil();
+/// Opens a directory stream, reporting failure through `errno` as `opendir`
+/// does.
+pub fn dirOpen(path: [*:0]const u8) ?*anyopaque {
+    return @ptrCast(std.c.opendir(path));
 }
 
-/// **Every filesystem entry point asserts the capability its operation needs**,
-/// and this is one of the two that once did not. `os/mkdir`, `os/rmdir`,
-/// `os/cd`, `os/rename`, `os/touch`, `os/chmod`, `os/umask`, `os/link` and
-/// `os/symlink` all assert filesystem write; without the line below a program
-/// under a full filesystem sandbox could still delete any file the process
-/// could reach. `os/readlink` is the other, and asserts filesystem read.
+/// The sixteen registrations, which `os.zig` slices three ways.
 ///
-/// The assertion goes *before* the arity check, which is the order all nine
-/// neighbours use and which is observable.
-fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
-    try args_core.fixarity(argv, 1);
-    const path = try args_core.getCString(argv, 0);
-    if (hostRemove(@ptrCast(path)) == -1) {
-        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
-    }
-    return wrap.fromNil();
-}
-
-/// The one failure message in this family that is the bare `strerror` text
-/// rather than a `%s: %s` naming the path.
-fn cfunRename(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
-    try args_core.fixarity(argv, 2);
-    const src = try args_core.getCString(argv, 0);
-    const dest = try args_core.getCString(argv, 1);
-    if (hostRename(@ptrCast(src), @ptrCast(dest)) != 0) {
-        return raise.panic(@ptrCast(utils.strerrorSafe(c.errno())));
-    }
-    return wrap.fromNil();
-}
-
-fn cfunTouch(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
-    try args_core.arity(argv, 1, 3);
-    const path = try args_core.getCString(argv, 0);
-    var actime: f64 = 0;
-    var modtime: f64 = 0;
-    if (argv.len >= 2) {
-        actime = try args_core.getNumber(argv, 1);
-        modtime = if (argv.len >= 3) try args_core.getNumber(argv, 2) else actime;
-        if (!secondsFitTimeT(actime) or !secondsFitTimeT(modtime)) {
-            return raise.panic("invalid argument to touch");
-        }
-    }
-    if (touch(@ptrCast(path), argv.len >= 2, actime, modtime) == -1) {
-        return raise.panic(@ptrCast(utils.strerrorSafe(c.errno())));
-    }
-    return wrap.fromNil();
-}
-
-// ==========================================================================
-// Links
-// ==========================================================================
-
-/// Where the symbolic-link entry points do not exist, `os/link`'s `symlink`
-/// argument silently makes a hard link instead. That is the contract a Janet
-/// program sees, and the choice is written out here so that the entry point and
-/// the helper cannot disagree about which function is called.
-inline fn symlinkOrLink(old: [*:0]const u8, new: [*:0]const u8) i32 {
-    return if (no_symlinks) hardLink(old, new) else symbolicLink(old, new);
-}
-
-fn cfunLink(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
-    try args_core.arity(argv, 2, 3);
-    if (windows) return raise.panic("not supported on Windows or Plan 9");
-    const oldpath = try args_core.getCString(argv, 0);
-    const newpath = try args_core.getCString(argv, 1);
-    const symbolic = argv.len == 3 and repr.truthy(argv[2]);
-    const res = if (symbolic)
-        symlinkOrLink(@ptrCast(oldpath), @ptrCast(newpath))
-    else
-        hardLink(@ptrCast(oldpath), @ptrCast(newpath));
-    if (res == -1) {
-        return pp_format.panicf("%s: %s -> %s", .{ utils.strerrorSafe(c.errno()), oldpath, newpath });
-    }
-    return wrap.fromNil();
-}
-
-fn cfunSymlink(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
-    try args_core.fixarity(argv, 2);
-    if (windows) return raise.panic("not supported on Windows or Plan 9");
-    const oldpath = try args_core.getCString(argv, 0);
-    const newpath = try args_core.getCString(argv, 1);
-    if (symlinkOrLink(@ptrCast(oldpath), @ptrCast(newpath)) == -1) {
-        return pp_format.panicf("%s: %s -> %s", .{ utils.strerrorSafe(c.errno()), oldpath, newpath });
-    }
-    return wrap.fromNil();
-}
-
-/// Like `os/rm`, this one asserts no sandbox permission.
-fn cfunReadlink(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
-    try args_core.fixarity(argv, 1);
-    if (windows) return raise.panic("not supported on Windows");
-    var buffer: [oa.path_max]u8 = undefined;
-    const path = try args_core.getCString(argv, 0);
-    const len = readLink(@ptrCast(path), &buffer, buffer.len);
-    if (len < 0 or @as(usize, @intCast(len)) >= buffer.len) {
-        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
-    }
-    return value.fromBytes(buffer[0..@intCast(len)], .string);
-}
-
-fn cfunRealpath(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
-    try args_core.fixarity(argv, 1);
-    const src = try args_core.getCString(argv, 0);
-    if (no_realpath) return raise.panic("os/realpath not enabled for this platform");
-    const dest = canonicalPath(@ptrCast(src)) orelse {
-        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), src });
-    };
-    // The host allocated it, so the host's `free` releases it -- and the
-    // release is a `defer` because the interning below can raise and the
-    // Windows arm raises on its own account.
-    defer utils.free(dest);
-    const ret = value.fromBytes(std.mem.span(dest), .string);
-    if (windows) {
-        if (c.GetFileAttributesA(dest) == 0xFFFF_FFFF) {
-            return pp_format.panicf("path does not exist: %v", .{ret});
-        }
-    }
-    return ret;
-}
-
-// ==========================================================================
-// Directory enumeration
-// ==========================================================================
-
-/// The Windows enumeration, written here rather than left in C. See the head
-/// of this file: `_finddata_t` translates completely on mingw, which the
-/// `-Dos-fs-paths` note assumed it would not.
-fn dirWindows(dir: [*]const u8, paths: *arrays.Array) raise.Raising(void) {
-    var afile: h._finddata_t = undefined;
-    var pattern: [h.MAX_PATH + 1]u8 = undefined;
-    const dirlen = std.mem.len(@as([*:0]const u8, @ptrCast(dir)));
-    if (dirlen > pattern.len - 3) return pp_format.panicf("path too long: %s", .{dir});
-    _ = std.fmt.bufPrintZ(&pattern, "{s}/*", .{@as([*:0]const u8, @ptrCast(dir))}) catch unreachable;
-    const res = h._findfirst(&pattern, &afile);
-    if (res == -1) return raise.panicv(value.fromBytes(std.mem.span(utils.strerrorSafe(c.errno())), .string));
-    while (true) {
-        const name: [*:0]const u8 = @ptrCast(&afile.name);
-        if (!std.mem.eql(u8, std.mem.span(name), ".") and
-            !std.mem.eql(u8, std.mem.span(name), ".."))
-        {
-            try arrays.push(paths, value.fromBytes(std.mem.span(name), .string));
-        }
-        if (h._findnext(res, &afile) == -1) break;
-    }
-    _ = h._findclose(res);
-}
-
-/// The POSIX enumeration, through `-Dos-fs-paths`'s explicit iterator. The
-/// close-then-panic on a failed read is the C original's, and the errno is
-/// saved across the close because closing can overwrite it.
-fn dirPosix(dir: [*]const u8, paths: *arrays.Array) raise.Raising(void) {
-    const dfd = dirOpen(@ptrCast(dir)) orelse {
-        return pp_format.panicf("cannot open directory %s: %s", .{ dir, utils.strerrorSafe(c.errno()) });
-    };
-    while (true) {
-        switch (dirNext(dfd)) {
-            .failed => {
-                const olderr = c.errno();
-                dirClose(dfd);
-                return pp_format.panicf("failed to read directory %s: %s", .{ dir, utils.strerrorSafe(olderr) });
-            },
-            .end => break,
-            .entry => |name| try arrays.push(paths, value.fromBytes(std.mem.span(name), .string)),
-        }
-    }
-    dirClose(dfd);
-}
-
-fn cfunDir(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
-    try args_core.arity(argv, 1, 2);
-    const dir = try args_core.getCString(argv, 0);
-    const paths = if (argv.len == 2) try args_core.getArray(argv, 1) else arrays.new(0);
-    if (windows) try dirWindows(dir, paths) else try dirPosix(dir, paths);
-    return wrap.fromArray(paths);
-}
-
-fn cfunChmod(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
-    try args_core.fixarity(argv, 2);
-    const path = try args_core.getCString(argv, 0);
-    const mode = try stat.getMode(argv, 1);
-    const res = if (windows) c._chmod(@ptrCast(path), mode) else oa.chmod(@ptrCast(path), mode);
-    if (res == -1) return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
-    return wrap.fromNil();
-}
-
-fn cfunUmask(argv: []repr.Value) raise.Raising(repr.Value) {
-    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
-    try args_core.fixarity(argv, 1);
-    const mask = try stat.getMode(argv, 0);
-    const res = if (windows) c._umask(mask) else oa.umask(mask);
-    return wrap.fromInteger(stat.hostPermToUnix(@intCast(res)));
-}
-
-// ==========================================================================
-// Registration
-//
-// The rows this file contributes to the `os/` module. `os.zig` assembles them,
-// because the registration order interleaves this file's with its own.
-// ==========================================================================
-
-/// `@src()` is only valid inside a function, so a table that wants to record
-/// its own rows has to be built in one. `comptime` makes the result a
-/// compile-time constant all the same, and taking its address promotes it to
-/// static storage, so nothing is assembled at run time.
+/// `@src()` is only valid inside a function, so a table that records its own
+/// rows has to be built in one. `comptime` makes the result a compile-time
+/// constant all the same, and taking its address promotes it to static
+/// storage, so nothing is assembled at run time.
 pub fn entries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
@@ -392,10 +227,10 @@ pub fn entries() []const corefn.Entry {
     return &list;
 }
 
-/// `os/open` is registered separately because it exists only under the event
-/// loop, and because upstream's `os/` table lists it after the process family
-/// rather than with the filesystem ones. The order of the table is observable --
-/// `janet_nextmethod` walks it -- so it is preserved.
+/// `os/open`'s registration, which is separate because it exists only under
+/// the event loop, and because upstream's `os/` table lists it after the
+/// process family rather than with the filesystem ones. The order of the table
+/// is observable, since `nextmethod` walks it, so it is preserved.
 pub fn evEntries() []const corefn.Entry {
     if (!has_ev) return &.{};
     const list = comptime [_]corefn.Entry{
@@ -429,6 +264,17 @@ pub fn evEntries() []const corefn.Entry {
     return &list;
 }
 
+/// `link`.
+pub fn hardLink(oldpath: [*:0]const u8, newpath: [*:0]const u8) i32 {
+    return c.link(oldpath, newpath);
+}
+
+/// `chdir`.
+pub fn hostChdir(path: [*:0]const u8) i32 {
+    return if (builtin.os.tag == .windows) c._chdir(path) else c.chdir(path);
+}
+
+/// `getcwd`, into the caller's buffer.
 pub fn hostGetcwd(buffer: [*]u8, size: i32) i32 {
     const result = if (builtin.os.tag == .windows)
         c._getcwd(buffer, size)
@@ -437,58 +283,278 @@ pub fn hostGetcwd(buffer: [*]u8, size: i32) i32 {
     return if (result == null) -1 else 0;
 }
 
+/// `mkdir`, with the mode argument Windows does not take.
 pub fn hostMkdir(path: [*:0]const u8) i32 {
     if (builtin.os.tag == .windows) return c._mkdir(path);
     return c.mkdir(path, 0o775);
 }
 
-pub fn hostRmdir(path: [*:0]const u8) i32 {
-    return if (builtin.os.tag == .windows) c._rmdir(path) else c.rmdir(path);
-}
-
-pub fn hostChdir(path: [*:0]const u8) i32 {
-    return if (builtin.os.tag == .windows) c._chdir(path) else c.chdir(path);
-}
-
+/// `remove`.
 pub fn hostRemove(path: [*:0]const u8) i32 {
     return c.remove(path);
 }
 
+/// `rename`.
 pub fn hostRename(old_path: [*:0]const u8, new_path: [*:0]const u8) i32 {
     return c.rename(old_path, new_path);
 }
 
-/// `struct utimbuf` is two `time_t` values, which is the one host structure
-/// this subsystem builds rather than receiving. It is never shared across the
-/// boundary: C passes the two times as doubles and the structure lives only for
-/// the duration of the call.
-const TimeT = if (windows) i64 else std.c.time_t;
-const MAX_PATH = 260;
-
-comptime {
-    if (!windows) {}
+/// `rmdir`.
+pub fn hostRmdir(path: [*:0]const u8) i32 {
+    return if (builtin.os.tag == .windows) c._rmdir(path) else c.rmdir(path);
 }
 
-/// Open a directory stream, reporting failure through `errno` as `opendir`
+/// Reads a link target into the caller's buffer, returning its length or -1.
+/// The target is not terminated, and a target longer than the buffer is
+/// truncated rather than reported, so a caller compares the length against the
+/// buffer size.
+pub fn readLink(path: [*:0]const u8, buffer: [*]u8, size: usize) i64 {
+    return @intCast(std.c.readlink(path, buffer, size));
+}
+
+/// Whether a seconds value is inside `time_t`'s range.
+///
+/// The two callers that take seconds from a program ask this first. `os/sleep`
+/// and `os/touch` both convert a double the caller supplied, and a conversion
+/// is not a check: a NaN converts to zero, so `(os/sleep math/nan)` would
+/// sleep no time at all and `(os/touch p math/nan)` would write the epoch; an
+/// infinity or `1e300` converts to `time_t`'s maximum, so a sleep would hang
+/// for a geological age and a timestamp would silently be something else.
+/// Neither is a result to give back, and a program that means "forever" can
+/// say `math/int-max`.
+///
+/// It is one helper rather than one check per site because it is one question.
+pub fn secondsFitTimeT(x: f64) bool {
+    if (!std.math.isFinite(x)) return false;
+    const low: f64 = @floatFromInt(@as(TimeT, std.math.minInt(TimeT)));
+    const high: f64 = @floatFromInt(@as(TimeT, std.math.maxInt(TimeT)));
+    return x > low and x < high;
+}
+
+/// `symlink`.
+pub fn symbolicLink(oldpath: [*:0]const u8, newpath: [*:0]const u8) i32 {
+    return std.c.symlink(oldpath, newpath);
+}
+
+/// Sets a file's access and modification times, or sets both to the current
+/// time when `has_times` is false.
+///
+/// The argument defaults are already resolved; the times arrive as doubles
+/// because that is what a Janet program has. A double that no `time_t` can
+/// represent saturates rather than trapping, the same way `os.zig`'s sleep
 /// does.
-pub fn dirOpen(path: [*:0]const u8) ?*anyopaque {
-    return @ptrCast(std.c.opendir(path));
+pub fn touch(path: [*:0]const u8, has_times: bool, actime: f64, modtime: f64) i32 {
+    if (!has_times) {
+        return if (windows) c._utime64(path, null) else c.utime(path, null);
+    }
+    const times: c.utimbuf = .{
+        .actime = saturatingCast(TimeT, actime),
+        .modtime = saturatingCast(TimeT, modtime),
+    };
+    return if (windows) c._utime64(path, &times) else c.utime(path, &times);
 }
 
-/// One read of a directory stream. Three outcomes rather than two, which is
-/// why this is a union and not an optional: the end of the stream and a failed
-/// read are different answers, and only the second leaves `errno` set.
-pub const DirRead = union(enum) {
-    /// The next entry that is neither "." nor "..", borrowed from the stream.
-    entry: [*:0]const u8,
-    /// The stream is exhausted.
-    end,
-    /// The read failed; `errno` describes it.
-    failed,
-};
+// ==========================================================================
+// Private functions
+// ==========================================================================
 
-/// Report the next entry that is neither "." nor "..", borrowing the name from
-/// the directory stream.
+/// `(os/cd path)`.
+fn cfunCd(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
+    try args_core.fixarity(argv, 1);
+    const path = try args_core.getCString(argv, 0);
+    if (hostChdir(@ptrCast(path)) == -1) {
+        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
+    }
+    return wrap.fromNil();
+}
+
+/// `(os/chmod path mode)`.
+fn cfunChmod(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
+    try args_core.fixarity(argv, 2);
+    const path = try args_core.getCString(argv, 0);
+    const mode = try stat.getMode(argv, 1);
+    const res = if (windows) c._chmod(@ptrCast(path), mode) else oa.chmod(@ptrCast(path), mode);
+    if (res == -1) return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
+    return wrap.fromNil();
+}
+
+/// `(os/cwd)`.
+fn cfunCwd(argv: []repr.Value) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 0);
+    var buf: [h.FILENAME_MAX]u8 = undefined;
+    if (hostGetcwd(&buf, h.FILENAME_MAX) != 0) {
+        return raise.panic("could not get current directory");
+    }
+    return value.fromBytes(std.mem.sliceTo(&buf, 0), .string);
+}
+
+/// `(os/dir path &opt array)`.
+fn cfunDir(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
+    try args_core.arity(argv, 1, 2);
+    const dir = try args_core.getCString(argv, 0);
+    const paths = if (argv.len == 2) try args_core.getArray(argv, 1) else arrays.new(0);
+    if (windows) try dirWindows(dir, paths) else try dirPosix(dir, paths);
+    return wrap.fromArray(paths);
+}
+
+/// `(os/link oldpath newpath &opt symlink)`.
+fn cfunLink(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
+    try args_core.arity(argv, 2, 3);
+    if (windows) return raise.panic("not supported on Windows or Plan 9");
+    const oldpath = try args_core.getCString(argv, 0);
+    const newpath = try args_core.getCString(argv, 1);
+    const symbolic = argv.len == 3 and repr.truthy(argv[2]);
+    const res = if (symbolic)
+        symlinkOrLink(@ptrCast(oldpath), @ptrCast(newpath))
+    else
+        hardLink(@ptrCast(oldpath), @ptrCast(newpath));
+    if (res == -1) {
+        return pp_format.panicf("%s: %s -> %s", .{ utils.strerrorSafe(c.errno()), oldpath, newpath });
+    }
+    return wrap.fromNil();
+}
+
+/// `(os/mkdir path)`.
+fn cfunMkdir(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
+    try args_core.fixarity(argv, 1);
+    const path = try args_core.getCString(argv, 0);
+    const res = hostMkdir(@ptrCast(path));
+    if (res == 0) return wrap.fromTrue();
+    if (c.errno() == h.EEXIST) return wrap.fromFalse();
+    return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
+}
+
+/// `(os/readlink path)`. Like `os/rm`, this asserts a sandbox permission
+/// before anything else, and its is filesystem read.
+fn cfunReadlink(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
+    try args_core.fixarity(argv, 1);
+    if (windows) return raise.panic("not supported on Windows");
+    var buffer: [oa.path_max]u8 = undefined;
+    const path = try args_core.getCString(argv, 0);
+    const len = readLink(@ptrCast(path), &buffer, buffer.len);
+    if (len < 0 or @as(usize, @intCast(len)) >= buffer.len) {
+        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
+    }
+    return value.fromBytes(buffer[0..@intCast(len)], .string);
+}
+
+/// `(os/realpath path)`.
+fn cfunRealpath(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
+    try args_core.fixarity(argv, 1);
+    const src = try args_core.getCString(argv, 0);
+    if (no_realpath) return raise.panic("os/realpath not enabled for this platform");
+    const dest = canonicalPath(@ptrCast(src)) orelse {
+        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), src });
+    };
+    // The host allocated it, so the host's `free` releases it, and the
+    // release is a `defer` because the interning below can raise and the
+    // Windows arm raises on its own account.
+    defer utils.free(dest);
+    const ret = value.fromBytes(std.mem.span(dest), .string);
+    if (windows) {
+        if (c.GetFileAttributesA(dest) == 0xFFFF_FFFF) {
+            return pp_format.panicf("path does not exist: %v", .{ret});
+        }
+    }
+    return ret;
+}
+
+/// `(os/rm path)`.
+///
+/// Every filesystem entry point asserts the capability its operation needs,
+/// and this is one of the two that once did not. `os/mkdir`, `os/rmdir`,
+/// `os/cd`, `os/rename`, `os/touch`, `os/chmod`, `os/umask`, `os/link` and
+/// `os/symlink` all assert filesystem write; without the line below, a program
+/// under a full filesystem sandbox could still delete any file the process
+/// could reach. `os/readlink` is the other, and asserts filesystem read.
+///
+/// The assertion goes before the arity check, which is the order all nine
+/// neighbours use and which a program can observe.
+fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
+    try args_core.fixarity(argv, 1);
+    const path = try args_core.getCString(argv, 0);
+    if (hostRemove(@ptrCast(path)) == -1) {
+        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
+    }
+    return wrap.fromNil();
+}
+
+/// `(os/rename oldpath newpath)`. The one failure message in this family that
+/// is the bare `strerror` text rather than a `%s: %s` naming the path.
+fn cfunRename(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
+    try args_core.fixarity(argv, 2);
+    const src = try args_core.getCString(argv, 0);
+    const dest = try args_core.getCString(argv, 1);
+    if (hostRename(@ptrCast(src), @ptrCast(dest)) != 0) {
+        return raise.panic(@ptrCast(utils.strerrorSafe(c.errno())));
+    }
+    return wrap.fromNil();
+}
+
+/// `(os/rmdir path)`.
+fn cfunRmdir(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
+    try args_core.fixarity(argv, 1);
+    const path = try args_core.getCString(argv, 0);
+    if (hostRmdir(@ptrCast(path)) == -1) {
+        return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
+    }
+    return wrap.fromNil();
+}
+
+/// `(os/symlink oldpath newpath)`.
+fn cfunSymlink(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
+    try args_core.fixarity(argv, 2);
+    if (windows) return raise.panic("not supported on Windows or Plan 9");
+    const oldpath = try args_core.getCString(argv, 0);
+    const newpath = try args_core.getCString(argv, 1);
+    if (symlinkOrLink(@ptrCast(oldpath), @ptrCast(newpath)) == -1) {
+        return pp_format.panicf("%s: %s -> %s", .{ utils.strerrorSafe(c.errno()), oldpath, newpath });
+    }
+    return wrap.fromNil();
+}
+
+/// `(os/touch path &opt actime modtime)`.
+fn cfunTouch(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
+    try args_core.arity(argv, 1, 3);
+    const path = try args_core.getCString(argv, 0);
+    var actime: f64 = 0;
+    var modtime: f64 = 0;
+    if (argv.len >= 2) {
+        actime = try args_core.getNumber(argv, 1);
+        modtime = if (argv.len >= 3) try args_core.getNumber(argv, 2) else actime;
+        if (!secondsFitTimeT(actime) or !secondsFitTimeT(modtime)) {
+            return raise.panic("invalid argument to touch");
+        }
+    }
+    if (touch(@ptrCast(path), argv.len >= 2, actime, modtime) == -1) {
+        return raise.panic(@ptrCast(utils.strerrorSafe(c.errno())));
+    }
+    return wrap.fromNil();
+}
+
+/// `(os/umask mask)`.
+fn cfunUmask(argv: []repr.Value) raise.Raising(repr.Value) {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
+    try args_core.fixarity(argv, 1);
+    const mask = try stat.getMode(argv, 0);
+    const res = if (windows) c._umask(mask) else oa.umask(mask);
+    return wrap.fromInteger(stat.hostPermToUnix(@intCast(res)));
+}
+
+/// Reports the next entry that is neither "." nor "..", borrowing the name
+/// from the directory stream.
 ///
 /// The C loop this replaces cleared `errno` before each read, because a null
 /// result means either the end of the stream or a failure.
@@ -505,95 +571,65 @@ fn dirNext(handle: *anyopaque) DirRead {
     }
 }
 
-/// The `1` / `0` / `-1` spelling of `dirNext`, kept because `test/os_fs_paths`
-/// reaches it. Nothing inside the runtime calls it: `dirPosix` takes the union.
-pub fn dirNextAbi(handle: *anyopaque, name_out: *[*:0]const u8) i32 {
-    switch (dirNext(handle)) {
-        .entry => |name| {
-            name_out.* = name;
-            return 1;
-        },
-        .end => return 0,
-        .failed => return -1,
+/// The POSIX enumeration, through an explicit iterator. The close-then-panic
+/// on a failed read is the C original's, and the errno is saved across the
+/// close because closing can overwrite it.
+fn dirPosix(dir: [*]const u8, paths: *arrays.Array) raise.Raising(void) {
+    const dfd = dirOpen(@ptrCast(dir)) orelse {
+        return pp_format.panicf("cannot open directory %s: %s", .{ dir, utils.strerrorSafe(c.errno()) });
+    };
+    while (true) {
+        switch (dirNext(dfd)) {
+            .failed => {
+                const olderr = c.errno();
+                dirClose(dfd);
+                return pp_format.panicf("failed to read directory %s: %s", .{ dir, utils.strerrorSafe(olderr) });
+            },
+            .end => break,
+            .entry => |name| try arrays.push(paths, value.fromBytes(std.mem.span(name), .string)),
+        }
     }
+    dirClose(dfd);
 }
 
-pub fn dirClose(handle: *anyopaque) void {
-    _ = std.c.closedir(@ptrCast(handle));
+/// The Windows enumeration, written here rather than left in C: `_finddata_t`
+/// translates completely on mingw, which the design note for a separate paths
+/// file had assumed it would not.
+fn dirWindows(dir: [*]const u8, paths: *arrays.Array) raise.Raising(void) {
+    var afile: h._finddata_t = undefined;
+    var pattern: [h.MAX_PATH + 1]u8 = undefined;
+    const dirlen = std.mem.len(@as([*:0]const u8, @ptrCast(dir)));
+    if (dirlen > pattern.len - 3) return pp_format.panicf("path too long: %s", .{dir});
+    _ = std.fmt.bufPrintZ(&pattern, "{s}/*", .{@as([*:0]const u8, @ptrCast(dir))}) catch unreachable;
+    const res = h._findfirst(&pattern, &afile);
+    if (res == -1) return raise.panicv(value.fromBytes(std.mem.span(utils.strerrorSafe(c.errno())), .string));
+    while (true) {
+        const name: [*:0]const u8 = @ptrCast(&afile.name);
+        if (!std.mem.eql(u8, std.mem.span(name), ".") and
+            !std.mem.eql(u8, std.mem.span(name), ".."))
+        {
+            try arrays.push(paths, value.fromBytes(std.mem.span(name), .string));
+        }
+        if (h._findnext(res, &afile) == -1) break;
+    }
+    _ = h._findclose(res);
 }
 
+/// Whether a directory entry is "." or "..", matching neither a longer name
+/// that starts with a dot nor the empty name.
 fn isDotEntry(name: [*:0]const u8) bool {
     if (name[0] != '.') return false;
     if (name[1] == 0) return true;
     return name[1] == '.' and name[2] == 0;
 }
 
-pub fn hardLink(oldpath: [*:0]const u8, newpath: [*:0]const u8) i32 {
-    return c.link(oldpath, newpath);
-}
-
-pub fn symbolicLink(oldpath: [*:0]const u8, newpath: [*:0]const u8) i32 {
-    return std.c.symlink(oldpath, newpath);
-}
-
-/// Read a link target into the caller's buffer, returning its length or -1.
-/// The target is not terminated, and a target longer than the buffer is
-/// truncated rather than reported, which is why C compares the length against
-/// the buffer size.
-pub fn readLink(path: [*:0]const u8, buffer: [*]u8, size: usize) i64 {
-    return @intCast(std.c.readlink(path, buffer, size));
-}
-
-/// Set a file's access and modification times, or set both to the current time
-/// when `has_times` is zero.
-///
-/// The argument defaults are already resolved; the times arrive as doubles
-/// because that is what Janet holds. A double that no `time_t` can represent
-/// saturates rather than trapping, the same way `os.zig`'s sleep does.
-pub fn touch(path: [*:0]const u8, has_times: bool, actime: f64, modtime: f64) i32 {
-    if (!has_times) {
-        return if (windows) c._utime64(path, null) else c.utime(path, null);
-    }
-    const times: c.utimbuf = .{
-        .actime = saturatingCast(TimeT, actime),
-        .modtime = saturatingCast(TimeT, modtime),
-    };
-    return if (windows) c._utime64(path, &times) else c.utime(path, &times);
-}
-
-/// Resolve a path to its canonical absolute form, following `.`, `..`, and
-/// symbolic links. The result is allocated by the host and released by the
-/// caller.
-pub fn canonicalPath(path: [*:0]const u8) ?[*:0]u8 {
-    if (windows) return c._fullpath(null, path, MAX_PATH);
-    return c.realpath(path, null);
-}
-
-/// Whether a seconds value is one a `time_t` can carry.
-///
-/// **The two callers that take seconds from a program ask this first.**
-/// `os/sleep` and `os/touch` both convert a double the caller supplied, and a
-/// conversion is not a check: a NaN converts to zero, so `(os/sleep math/nan)`
-/// sleeps no time at all and `(os/touch p math/nan)` writes the epoch; an
-/// infinity or `1e300` converts to `time_t`'s maximum, so a sleep hangs for a
-/// geological age and a timestamp is silently something else. Neither is an
-/// answer, and a program that means "forever" can say `math/int-max`.
-///
-/// It is one helper rather than one check per site because it is one question.
-pub fn secondsFitTimeT(x: f64) bool {
-    if (!std.math.isFinite(x)) return false;
-    const low: f64 = @floatFromInt(@as(TimeT, std.math.minInt(TimeT)));
-    const high: f64 = @floatFromInt(@as(TimeT, std.math.maxInt(TimeT)));
-    return x > low and x < high;
-}
-
-/// Convert toward zero, clamping instead of trapping. This reproduces the
+/// Converts toward zero, clamping instead of trapping. This reproduces the
 /// AArch64 conversion the C implementation performs without a sanitizer: a NaN
 /// becomes zero and an out-of-range value becomes the nearest bound. A NaN is
 /// separated first because `@intFromFloat` is illegal for it and because the
 /// ordinary comparisons below would otherwise send it to the low bound.
 ///
-/// Every remaining caller has already established its argument's range --
+/// Every remaining caller has already established its argument's range, and
 /// `secondsFitTimeT` above is what the two that take one from a program use.
 fn saturatingCast(comptime T: type, x: f64) T {
     if (std.math.isNan(x)) return 0;
@@ -602,6 +638,28 @@ fn saturatingCast(comptime T: type, x: f64) T {
     if (!(x > low)) return std.math.minInt(T);
     if (x >= high) return std.math.maxInt(T);
     return @intFromFloat(x);
+}
+
+/// Where the symbolic-link entry points do not exist, `os/link`'s `symlink`
+/// argument silently makes a hard link instead. That is what a Janet program
+/// sees, and the choice is written out here so that the entry point and the
+/// helper cannot disagree about which function is called.
+inline fn symlinkOrLink(old: [*:0]const u8, new: [*:0]const u8) i32 {
+    return if (no_symlinks) hardLink(old, new) else symbolicLink(old, new);
+}
+
+// ==========================================================================
+// Tests
+// ==========================================================================
+
+comptime {
+    if ((builtin.os.tag == .windows) and !windows)
+        @compileError("platform tests must not read a translated platform macro");
+}
+
+comptime {
+    if (has_ev != (constants.JANET_VM_HAS_EV != 0))
+        @compileError("config.ev disagrees with constants' restatement of it");
 }
 
 test "dot entries are recognized without matching longer names" {
@@ -620,6 +678,3 @@ test "saturating conversion clamps rather than trapping" {
     try std.testing.expectEqual(@as(i64, std.math.maxInt(i64)), saturatingCast(i64, 1e300));
     try std.testing.expectEqual(@as(i64, std.math.minInt(i64)), saturatingCast(i64, -1e300));
 }
-
-// The host calls whose signatures name a type this subsystem owns, so they
-// stay with the type rather than moving to `cabi.zig`.

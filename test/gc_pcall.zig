@@ -6,8 +6,8 @@
 //! `gc/mark.zig`'s `collect` marks exactly one fiber: `vm.root_fiber`, and
 //! then whatever chain of `child` pointers hangs off it. Neither reaches a
 //! fiber entered through `pcall` from inside a cfunction. `vm.fiber` is set to
-//! the new fiber and `root_fiber` is not — `continueNoCheck` assigns it only
-//! when it is null — and `pcall` never sets `child`, because `child` is what
+//! the new fiber and `root_fiber` is not, `continueNoCheck` assigning it only
+//! when it is null, and `pcall` never sets `child`, because `child` is what
 //! `fiber/resume` and `JOP_RESUME` maintain for a *Janet* nesting.
 //!
 //! So the nested fiber is in no root set, is actively running, and owns the
@@ -21,41 +21,54 @@
 //!
 //! ## Why a direct case as well as the stress ones
 //!
-//! **The stress cases are kept and a direct one is added.** Two programs drive
-//! 200 rounds each at `(gcsetinterval 1024)` and infer the fiber's survival
-//! from the answers coming back right. That is a real regression test and it
-//! stays. What it cannot do is *name* the mechanism: it hopes a collection
-//! lands while the nested fiber is live. `directCase` below makes the
-//! collection happen at a chosen instant and asserts the survival
-//! what stops that.
+//! There are three cases and they cover the same line from two directions.
+//! `singleNesting` and `deepNesting` drive 200 rounds each at
+//! `(gcsetinterval 1024)` and infer the fiber's survival from the results
+//! coming back right, which is a real regression test but leaves the timing to
+//! chance: each is hoping a collection lands while the nested fiber is live.
+//! `directCase` makes the collection happen at a chosen instant instead, and
+//! asserts both that the block is still on the heap list and that the root set
+//! is why.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const raise = @import("subsystems").raise;
-const harness = @import("harness.zig");
 
-const gc_mark = @import("subsystems").gc_mark;
-const core_env = @import("subsystems").env;
-const vm_entry = @import("subsystems").vm_entry;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const args_core = @import("subsystems").args;
-const registry = @import("subsystems").registry;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const abi = @import("abi");
-const fibers = @import("subsystems").value.fibers;
-const tables = @import("subsystems").value.tables;
-
+const args_core = @import("subsystems").args;
+const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
+const fibers = @import("subsystems").value.fibers;
+const gc_mark = @import("subsystems").gc_mark;
+const harness = @import("harness.zig");
+const raise = @import("subsystems").raise;
+const registry = @import("subsystems").registry;
+const repr = @import("repr");
+const tables = @import("subsystems").value.tables;
+const vm_entry = @import("subsystems").vm_entry;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// How many times `directCase`'s cfunction was reached, read at the end. A
+/// cfunction that silently stopped being called would leave every assertion in
+/// it unexecuted and the contract green.
+var direct_calls: u32 = 0;
 
 var test_env: ?*tables.Table = null;
 
-/// How many times `directCase`'s cfunction was reached. Read at the end,
-/// because a cfunction that silently stopped being called would leave every
-/// assertion in it unexecuted and the contract green — the failure mode the
-/// panic counters in the C contracts existed for.
-var direct_calls: u32 = 0;
-
-// ------------------------------------------------------------------ premise
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// The three facts that make a nested `pcall` a collector hazard, read
 /// from the runtime at the moment one is running.
@@ -96,8 +109,6 @@ fn rooted(fiber: *fibers.Fiber) bool {
     return false;
 }
 
-// -------------------------------------------------------------- direct case
-
 /// Collect while a `pcall`ed fiber is the running one, and assert it is still
 /// on the heap afterwards.
 ///
@@ -110,23 +121,23 @@ fn cfunCollectHere(argv: []repr.Value) raise.Raising(repr.Value) {
     const nested = harness.vm().fiber.?;
     assertNested(nested);
 
-    // The block is the header, so the fiber pointer is what the heap list
-    // holds. Both reads bracket the collection.
+    // The block is the header, so the fiber pointer is what appears on the
+    // heap list. Both reads bracket the collection.
     const block: ?*anyopaque = @ptrCast(nested);
     expect(harness.heap.onList(harness.vm().gc.blocks, block));
 
     gc_mark.collect();
 
     // The claim. Without `continueNoCheck`'s rooting this block is unreachable
-    // from every root the mark phase has, so the sweep frees it -- along with
-    // `fiber->data`, the stack this cfunction's caller is executing on.
+    // from every root the mark phase has, so the sweep frees it, along with
+    // `fiber.data`, the stack this cfunction's caller is executing on.
     expect(harness.heap.onList(harness.vm().gc.blocks, block));
 
     // And *why* it survived, which the assertion above cannot say on its own.
     //
     // The obvious second reading is the mark bit, and it is unavailable: the
     // sweep clears `JANET_MEM_REACHABLE` on every survivor so that the next
-    // mark phase starts from a clean heap, so `harness.heap.reachable` answers
+    // mark phase starts from a clean heap, so `harness.heap.reachable` is
     // false here for every live block in the process. Asserting it would be an
     // assertion that cannot succeed.
     //
@@ -161,8 +172,6 @@ const cfuns = [_]abi.Reg{
     .{ .name = "gcpcall/collect-here", .cfun = raise.stored(&cfunCollectHere), .documentation = null },
 };
 
-// ------------------------------------------------------------------ evaluate
-
 fn eval(source: [*:0]const u8) void {
     var out = wrap.fromNil();
     expect(core_env.dostring(test_env.?, source, "gc-pcall-test", &out) == 0);
@@ -187,9 +196,9 @@ fn directCase() void {
 ///
 /// `F1 -> gcpcall/call -> pcall -> F2`, where F2 is `vm.fiber` and not
 /// `root_fiber`. Every allocation is made from Janet source on purpose:
-/// `gc.gcallocBytes` does not itself collect, and the VM loop's collection
-/// check is what does — so a C-side allocation would not put the pressure where the
-/// hazard is.
+/// `gc.gcallocBytes` does not itself collect and the VM loop's collection
+/// check is what does, so an allocation made from Zig would not put the
+/// pressure where the hazard is.
 fn singleNesting() void {
     eval(
         \\(gcsetinterval 1024)
@@ -211,10 +220,12 @@ fn singleNesting() void {
 
 /// Deep nesting, under collection pressure.
 ///
-/// `F1 -> gcpcall/call -> janet_pcall -> F2 -> gcpcall/call -> janet_pcall ->
-/// F3`. F2 is the one at risk here and it is worse placed than F2 above: it is
+/// `F1 -> gcpcall/call -> vm_entry.pcall -> F2 -> gcpcall/call ->
+/// vm_entry.pcall -> F3`. F2 is the one at risk here and it is worse placed
+/// than F2 above: it is
 /// neither `root_fiber` (F1 is) nor `vm.fiber` (F3 is), and the only
-/// thing holding it is a `vm_state.TryState` on the C stack, which is not a root.
+/// reference to it is a `vm_state.TryState` on the native stack, which is not
+/// a root.
 fn deepNesting() void {
     eval(
         \\(gcsetinterval 1024)
@@ -247,6 +258,10 @@ fn deepNesting() void {
         \\    (string "round " round ": expected '" expected "', got '" (describe result) "'")))
     );
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

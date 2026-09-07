@@ -167,8 +167,9 @@
   # decides `abi` by finding `callconv(.c)` or `extern fn` near an occurrence
   # of the name, and a comment that merely *mentions* a layout beside an
   # `extern fn` declaration satisfied that.  Five of the 63 rows carried
-  # evidence they did not have -- `Method` from a sentence in `crossings.zig`
-  # naming `abi.Method` above the `extern fn` block, three `OVERLAPPED` rows
+  # evidence they did not have -- `Method` from a sentence in the module's
+  # declaration file naming `abi.Method` above an `extern fn` block, three
+  # `OVERLAPPED` rows
   # the same way, and `ffi/types.Layout`, which is used only inside its own
   # file and was `fixed` by a paragraph containing the words "extern fn".
   # Found at Phase 17 Part 2f, when rewriting one of those sentences moved a
@@ -192,10 +193,27 @@
     (set at (+ i (length word))))
   out)
 
+(defn- matching-close
+  "The index of the `}` closing the `{` at `open`, or the end of `text`."
+  [text open]
+  (var depth 0)
+  (var k open)
+  (def n (length text))
+  (while (< k n)
+    (def ch (get text k))
+    (when (= ch (chr "{")) (++ depth))
+    (when (= ch (chr "}"))
+      (-- depth)
+      (when (= depth 0) (break)))
+    (++ k))
+  k)
+
 (defn- container-is-extern
   "Whether the aggregate enclosing byte `i` was declared `extern`.  Read by
   finding the nearest aggregate opening before `i`, which is what decides
-  whether a field of this type is a field of an `extern` layout."
+  whether a field of this type is a field of an `extern` layout.  The
+  enclosure is checked: an opening whose matching close falls before `i` does
+  not enclose it and is passed over."
   [text i]
   (var best -1)
   (var answer false)
@@ -203,7 +221,8 @@
     (var at 0)
     (while (def k (string/find needle text at))
       (if (< k i)
-        (do (when (> k best)
+        (do (when (and (> k best)
+                       (< i (matching-close text (+ k (length needle) -1))))
               (set best k)
               (set answer (and (>= k 7) (= "extern " (string/slice text (- k 7) k)))))
             (set at (+ k 1)))

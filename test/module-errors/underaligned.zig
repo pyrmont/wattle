@@ -1,11 +1,11 @@
 //! A cfunction aligned to less than the runtime needs.
 //!
-//! The runtime tags the low bits of a cfunction's address, so `module.fn_align`
-//! is a requirement rather than a suggestion -- and the expected-signature text
-//! has always said so. Nothing checked it: `raise.stored` casts the pointer
-//! into the runtime's slot, and an under-aligned function then either survives
-//! by an accident of the linker or trips a runtime assertion a long way from
-//! the definition that caused it.
+//! The runtime tags the low bits of a cfunction's address, so
+//! `module.fn_align` is a requirement rather than a suggestion. `raise.stored`
+//! casts the pointer into the runtime's slot and cannot refuse it there, so an
+//! under-aligned function either survives by an accident of the linker or
+//! trips a runtime assertion a long way from the definition that caused it.
+//! The alignment is checked at the definition instead.
 //!
 //! `build.zig`'s `module-errors` step compiles this and requires the failure.
 

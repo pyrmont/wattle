@@ -1,51 +1,72 @@
-//! Behavioral contract for the FFI type system's portable kernels: the
-//! machine-type and calling-convention name tables, and the struct layout
-//! machine that assigns every field its offset.
+//! Behavioral contract for the portable half of the FFI type system: the
+//! machine-type and calling-convention name tables, `typeExtent`, and the
+//! `Layout` machine that assigns every struct field its offset.
 //!
-//! The name tables are pinned name by name, including every alias, because a
-//! table is exactly the kind of thing a port drops one entry from. The layout
-//! machine is checked two ways: against fixed vectors, and against the offsets
-//! a compiler itself assigns to equivalent structures. The second is the
-//! stronger check — it says the machine reproduces the platform's ABI rather
-//! than merely reproducing whatever the previous implementation did.
+//! The name tables are pinned name by name, every alias included, because a
+//! table is the kind of thing a rewrite drops one entry from with nothing
+//! else to catch it. The layout machine is checked twice over: against fixed
+//! vectors, and against the offsets a compiler assigns to the equivalent
+//! `extern struct`.
 //!
-//! All four calling-convention names are asserted here even though a build
-//! enables at most one of them. Deciding which are enabled stays in
-//! `ffi_types.zig`; decoding a name does not depend on the target, and
-//! asserting that on every target is the coverage the arch-gated C original
-//! could never have.
+//! All four calling-convention names are asserted even though a build enables
+//! at most one of them. Which of them are enabled is `ffi_types.zig`'s
+//! question; decoding a name is not, so every target checks every name.
 //!
 //! ## Where the oracles come from
 //!
-//! **The subject is reached by import.** Six symbols existed because a C
-//! contract and a C caller were the only readers of functions in no header;
-//! with the contract inside the compilation there is no reason for any of them
-//! to be a symbol, and the second copy of `Layout` at the calling end went
-//! with them.
+//! The ordinals are written out below rather than imported, and that is this
+//! file's one real oracle question. The subject spells them as a `PrimType`
+//! enumeration, so `lookupPrim("void") == @intFromEnum(PrimType.void)` would
+//! be an assertion that cannot fail. An independent copy of the enumeration
+//! is the oracle: the constants are the wire between this table and the
+//! subject's own, and either end may be wrong.
 //!
-//! **The ordinals are written out here rather than imported.** That is
-//! deliberate and it is the file's only real oracle question. The subject
-//! spells them as a `PrimType` enumeration; asserting `lookupPrim("void") ==
-//! @intFromEnum(PrimType.void)` would be an assertion that cannot fail. An
-//! independent copy of the enumeration *is* the oracle, so the numbers below
-//! are the wire between this table and the subject's own enumeration, and
-//! either end may be wrong.
+//! The host-ABI section keeps both sides for the same reason. Zig's
+//! `extern struct` is the same claim about the same C ABI computed by a
+//! different implementation of it, the compiler's rather than this
+//! hand-written machine's, so `@offsetOf` compares two descriptions.
+//! Describing the expectation with `Layout` would have compared the machine
+//! with itself.
 //!
-//! **The host-ABI section keeps both sides.** Zig's `extern struct` is the
-//! same claim asked of the same C ABI, computed by a different implementation
-//! of it -- the compiler's, not this hand-written machine's -- so `@offsetOf`
-//! is a comparison of two descriptions. Reaching for `Layout` to describe the
-//! expectation would have compared the machine with itself.
+//! The two sweeps at the end assert rules rather than stored results: a field
+//! starts on its own boundary and no earlier than the end of the field ahead
+//! of it, the struct takes the strictest alignment any field asked for, and
+//! the total is a whole number of those.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const subsystems = @import("subsystems");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const config = @import("config");
-const ffi_layout = subsystems.ffi_types;
-const Layout = ffi_layout.Layout;
-
 const expect = @import("expect.zig").expect;
+const ffi_layout = subsystems.ffi_types;
+const subsystems = @import("subsystems");
 
-/// `types.PrimType`, written out rather than imported — see the header.
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// `lookupCc`, under the name the cases below use.
+const cc = ffi_layout.lookupCc;
+
+/// `types.Cc`'s ordinals, copied out on the same footing as `prim_void` and
+/// the rest.
+const cc_none: i32 = 0;
+const cc_sysv64: i32 = 1;
+const cc_win64: i32 = 2;
+const cc_aapcs64: i32 = 3;
+
+/// `lookupPrim`, under the name the cases below use.
+const prim = ffi_layout.lookupPrim;
+
+/// `types.PrimType`'s ordinals, copied out rather than imported, so that the
+/// assertions have an oracle independent of the enumeration they check.
 const prim_void: i32 = 0;
 const prim_bool: i32 = 1;
 const prim_ptr: i32 = 2;
@@ -61,17 +82,18 @@ const prim_uint32: i32 = 11;
 const prim_int64: i32 = 12;
 const prim_uint64: i32 = 13;
 
-/// `types.Cc`, likewise.
-const cc_none: i32 = 0;
-const cc_sysv64: i32 = 1;
-const cc_win64: i32 = 2;
-const cc_aapcs64: i32 = 3;
+// ==========================================================================
+// Aliased types
+// ==========================================================================
 
-const prim = ffi_layout.lookupPrim;
-const cc = ffi_layout.lookupCc;
+/// The struct-layout machine this file is mostly about.
+const Layout = ffi_layout.Layout;
 
-// ------------------------------------------------------------- name tables
+// ==========================================================================
+// Cases
+// ==========================================================================
 
+/// Every machine type's primary name decodes to its own ordinal.
 fn primaryMachineTypes() void {
     expect(prim("void") == prim_void);
     expect(prim("bool") == prim_bool);
@@ -90,6 +112,8 @@ fn primaryMachineTypes() void {
     expect(prim("uint64") == prim_uint64);
 }
 
+/// The alternative spellings, each decoding to the ordinal of the primary
+/// name it stands for.
 fn machineTypeAliases() void {
     expect(prim("r32") == prim_float);
     expect(prim("r64") == prim_double);
@@ -114,8 +138,8 @@ fn machineTypeAliases() void {
 
 /// The only two names whose meaning depends on the word size.
 ///
-/// The condition is `config.bits64` -- the same input the subject reads, rather
-/// than the subject's answer, and rather than `@sizeOf(usize)`, which is a
+/// The condition is `config.bits64`, the same input the subject reads, rather
+/// than the subject's own result and rather than `@sizeOf(usize)`, which is a
 /// different question that happens to agree here.
 fn wordSizedMachineTypes() void {
     if (comptime config.bits64) {
@@ -127,6 +151,10 @@ fn wordSizedMachineTypes() void {
     }
 }
 
+/// A name the table does not have decodes to -1, and three shapes of near
+/// miss are named separately because each could pass under a different
+/// mistake: a prefix of a real name, a real name with something appended, and
+/// a name containing a zero byte.
 fn unknownMachineTypes() void {
     expect(prim("nonesuch") == -1);
     expect(prim("") == -1);
@@ -139,12 +167,13 @@ fn unknownMachineTypes() void {
     expect(prim("voidx") == -1);
 
     // A keyword may contain a zero byte, so the length is what delimits the
-    // name rather than a terminator. The C contract had to pass a length
-    // beside the pointer to say this; a slice carries it.
+    // name rather than a terminator.
     expect(prim("vo\x00d") == -1);
     expect(prim("void\x00x") == -1);
 }
 
+/// All four convention names decode on every target, and `default` is not one
+/// of them.
 fn cfunCallingConventions() void {
     // Every convention decodes on every target, including the three that this
     // build cannot call through.
@@ -163,8 +192,8 @@ fn cfunCallingConventions() void {
     expect(cc("win64"[0..4]) == -1);
 }
 
-// ------------------------------------------------------------ type extents
-
+/// `typeExtent` multiplies a size by an array count. A negative count means
+/// the type is not an array, and a count of zero is a real zero.
 fn typeExtents() void {
     const extent = ffi_layout.typeExtent;
 
@@ -182,8 +211,6 @@ fn typeExtents() void {
     expect(extent(8, 1024) == 8192);
 }
 
-// -------------------------------------------------------- layout machinery
-
 fn layoutOfNothing() void {
     var layout = Layout.init();
     expect(layout.size == 0);
@@ -195,6 +222,8 @@ fn layoutOfNothing() void {
     expect(layout.is_aligned == 1);
 }
 
+/// Each field is pushed forward to its own boundary, and the total is rounded
+/// to the struct's.
 fn layoutPadsBetweenFields() void {
     var layout = Layout.init();
     expect(layout.place(1, 1, false) == 0);
@@ -237,6 +266,9 @@ fn layoutOfAnArrayMember() void {
     expect(layout.alignment == 4);
 }
 
+/// A packed field starts where the one ahead of it ended, adds nothing to the
+/// struct's alignment, and clears `is_aligned` when it lands off its own
+/// boundary.
 fn packedFieldsLeaveNoPadding() void {
     var layout = Layout.init();
     expect(layout.place(1, 1, true) == 0);
@@ -251,6 +283,8 @@ fn packedFieldsLeaveNoPadding() void {
     expect(layout.is_aligned == 0);
 }
 
+/// `is_aligned` reports where the fields landed rather than whether packing
+/// was asked for, so two packed fields that happen to be natural set it.
 fn packedFieldsCanStillBeAligned() void {
     var layout = Layout.init();
     expect(layout.place(4, 4, true) == 0);
@@ -288,8 +322,7 @@ fn layoutRoundsTheTotalUp() void {
     expect(layout.size % layout.alignment == 0);
 }
 
-// --------------------------------------------- agreement with the host ABI
-
+/// The three shapes the case below lays out both ways.
 const HostCharDouble = extern struct {
     a: u8,
     b: f64,
@@ -312,10 +345,9 @@ const HostNested = extern struct {
 /// Lay out the equivalent of a C structure and compare every offset and the
 /// total against what the compiler assigned to an `extern struct`.
 ///
-/// `extern struct` is Zig's implementation of the platform C ABI, and this
-/// machine is a hand-written one; the two agreeing is what says the machine
-/// reproduces the ABI rather than only its own past output. That is the same
-/// pairing a C predecessor of this file had with `offsetof`, one compiler over.
+/// `extern struct` is Zig's implementation of the platform C ABI and this
+/// machine is a hand-written one, so the two agreeing says the machine
+/// reproduces the ABI rather than only its own past output.
 fn layoutMatchesTheCompiler() void {
     var layout = Layout.init();
     expect(layout.place(@sizeOf(u8), @alignOf(u8), false) == @offsetOf(HostCharDouble, "a"));
@@ -343,10 +375,8 @@ fn layoutMatchesTheCompiler() void {
     expect(layout.size == @sizeOf(HostNested));
 }
 
-// -------------------------------------------------------------- invariants
-
 /// Sweep every combination of a few sizes and alignments and check the rules
-/// that must hold whatever the inputs were, rather than a stored expectation
+/// that are true whatever the inputs were, rather than a stored expectation
 /// for each one.
 fn layoutInvariantsOverASweep() void {
     const alignments = [_]usize{ 1, 2, 4, 8, 16 };
@@ -419,6 +449,10 @@ fn packedLayoutInvariantsOverASweep() void {
         }
     }
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     primaryMachineTypes();

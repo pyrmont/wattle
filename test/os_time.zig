@@ -3,7 +3,7 @@
 //!
 //! A clock cannot be pinned to fixed vectors the way a parser can, so what is
 //! asserted here is a set of *invariants* rather than values: which ranges each
-//! source falls in, which orderings hold between two readings, what an
+//! source falls in, which orderings two readings guarantee, what an
 //! unrecognised source does, and that a sleep actually advances a monotonic
 //! clock. Those are the properties a port can break while still returning
 //! plausible numbers, and no Janet suite reaches `os.gettimeAbi` at all.
@@ -18,19 +18,37 @@
 //!
 //! ## The fallback for an unknown source is established behaviour
 //!
-//! `os.gettimeAbi` given a source it does not recognise answers the real-time
-//! clock and reports success, rather than failing. That is the C shim's
-//! behaviour — it initialises its clock id before testing the source — and it
-//! is asserted here so a port cannot quietly start refusing.
+//! `os.gettimeAbi` given a source it does not recognise gives the real-time
+//! clock and reports success rather than failing, because it initialises its
+//! clock id before it tests the source. That is asserted here so a change to
+//! it would be deliberate.
 
-const repr = @import("repr");
-const value = @import("subsystems").value;
-const harness = @import("harness.zig");
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const core_env = @import("subsystems").env;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const os = @import("subsystems").os;
-const tables = @import("subsystems").value.tables;
 const expect = @import("expect.zig").expect;
+const harness = @import("harness.zig");
+const os = @import("subsystems").os;
+const repr = @import("repr");
+const tables = @import("subsystems").value.tables;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+var environment: *tables.Table = undefined;
+
+/// Any run of this is after the start of 2023 and before the end of 2200.
+const epoch_lower = 1672531200;
+const epoch_upper = 7289654400;
+
+// ==========================================================================
+// Types
+// ==========================================================================
 
 /// The three clock sources, restated here so that a renumbering on either side
 /// fails rather than agreeing with itself.
@@ -38,7 +56,7 @@ const Source = enum(c_int) {
     realtime = 0,
     monotonic = 1,
     cputime = 2,
-    /// Not a source. Used to reach the fallback below.
+    /// Not a source, and the value that reaches the fallback below.
     unrecognised = 99,
 };
 
@@ -50,21 +68,21 @@ const TimeSpec = extern struct {
     nanoseconds: isize,
 };
 
-/// Any run of this is after the start of 2023 and before the end of 2200.
-const epoch_lower = 1672531200;
-const epoch_upper = 7289654400;
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn read(source: Source) TimeSpec {
     // `os.Timespec` is the host's `struct timespec` and this is the contract's
     // independent restatement of it, so the two are separate types with the
     // same fields. On riscv32 the host's is more strictly aligned than a pair
-    // of `isize`s, which is what the `@alignCast` says -- and which is itself
+    // of `isize`s, which is what the `@alignCast` says, and which is itself
     // a claim: if the two ever disagreed on size or offsets, the fields read
     // below would be wrong.
     var spec: TimeSpec align(@alignOf(os.Timespec)) = undefined;
     expect(os.gettimeAbi(@ptrCast(&spec), @bitCast(@intFromEnum(source))) == 0);
     // Normalised: the nanosecond field is a remainder, not a free-running
-    // count, so a port that forgot to carry would show up here.
+    // count, so a nanosecond field at or above a second would show up here.
     expect(spec.nanoseconds >= 0);
     expect(spec.nanoseconds < 1_000_000_000);
     return spec;
@@ -73,6 +91,11 @@ fn read(source: Source) TimeSpec {
 fn seconds(spec: TimeSpec) f64 {
     return @as(f64, @floatFromInt(spec.seconds)) +
         @as(f64, @floatFromInt(spec.nanoseconds)) / 1e9;
+}
+
+fn eval(source: [*:0]const u8) void {
+    var result: repr.Value = undefined;
+    expect(core_env.dostring(environment, source, "os-time-contract", &result) == 0);
 }
 
 fn theRealtimeClock() void {
@@ -98,8 +121,7 @@ fn theCputimeClockAccumulates() void {
     const before = read(.cputime);
 
     // Work the optimiser cannot remove, so that the clock has something to
-    // measure. `volatile` in the C original; a mutable sink read afterwards
-    // does the same job here.
+    // measure: a mutable sink, read afterwards so nothing can fold it away.
     var sink: f64 = 0;
     var i: i32 = 0;
     while (i < 8_000_000) : (i += 1) sink += @floatFromInt(i);
@@ -135,25 +157,16 @@ fn sleepingAdvancesTheMonotonicClock() void {
     expect(seconds(idle_after) - seconds(idle_before) < 10.0);
 }
 
-// -------------------------------------------------------- the Janet surface
-
-var environment: *tables.Table = undefined;
-
-fn eval(source: [*:0]const u8) void {
-    var result: repr.Value = undefined;
-    expect(core_env.dostring(environment, source, "os-time-contract", &result) == 0);
-}
-
 /// `os/clock` takes a source and a format, and the combinations are what the
 /// suites do not cover. Written in Janet rather than in Zig because each of
 /// these is one assertion about a returned value's shape, which Janet says in
-/// a quarter of the space -- and because `:tuple` returns a tuple of two
+/// a quarter of the space, and because `:tuple` returns a tuple of two
 /// numbers whose second field is a nanosecond remainder, which is far easier
 /// to state as a predicate than to unwrap.
 fn theSourcesAndFormats() void {
     // Absent from a reduced-OS build, and `options.os_time` does not say so:
     // that field is `hasGettime`, which is true there because the *subsystem*
-    // is still compiled -- the event loop needs `os.gettimeAbi` whether or not
+    // is still compiled, the event loop needing `os.gettimeAbi` whether or not
     // `os/clock` is registered. The kernels above run either way; only this
     // section and `theRefusals` depend on the registration.
     if (harness.coreOptional("os/clock") == null) return;
@@ -194,8 +207,8 @@ fn theSourcesAndFormats() void {
     );
 }
 
-/// The refusals, which validation makes above the kernels. Read as values
-/// rather than through `protect`, which is what the C contract had to use.
+/// The refusals, which validation makes above the kernels. Each is read as a
+/// value rather than through `protect`.
 fn theRefusals() void {
     const clock = harness.coreOptional("os/clock") orelse return;
     const sleep = harness.coreOptional("os/sleep") orelse return;
@@ -212,6 +225,10 @@ fn theRefusals() void {
     argument[0] = harness.wrapInteger(-1);
     expect(harness.raised(sleep, .{argument[0..1]}) != null);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     theRealtimeClock();

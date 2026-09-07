@@ -2,46 +2,59 @@
 //! `os/getenv`, `os/setenv` and `os/environ`.
 //!
 //! The four kernels are `os_environ.zig`'s whole surface and none of them
-//! raises: they take and answer C strings, and Janet's validation and
-//! allocation happen above them. So half of this file reaches them by symbol,
-//! exactly as the C original did, and asserts on the scanning arithmetic —
-//! `os.environSeparator` in particular, whose three interesting inputs
-//! are an entry with no `=` at all, an entry whose value is empty, and the
-//! `=C:=C:\work` form Windows puts in its environment for a drive's working
-//! directory, where the separator is at index zero and must not be read as
-//! "missing".
+//! raises: they take and give back C strings, and Janet's validation and
+//! allocation happen above them. So half of this file reaches them directly
+//! and asserts on the scanning arithmetic, `os.environSeparator` in
+//! particular, whose three interesting inputs are an entry with no `=` at all,
+//! an entry whose value is empty, and the `=C:=C:\work` form Windows puts in
+//! its environment for a drive's working directory, where the separator is at
+//! index zero and must not be read as "missing".
 //!
 //! ## The cfunctions are called directly
 //!
-//! A cfunction is not a C function: it returns `error{JanetSignal}!Value` over
-//! Zig's calling convention, so a contract on the far side of a symbol table
-//! can neither call one nor learn that one had raised except through a report.
-//! This file calls one directly and writes `try`.
+//! A cfunction returns `error{JanetSignal}!Value` over Zig's calling
+//! convention, so this file calls one and writes `try`.
 //!
-//! That is what makes `theRefusals` below possible at all. The C contract
-//! asserted only the calls that *succeed*; a refusal was reachable only as a
-//! flag it would have had to arm, test and clear around every call. Here a
-//! refusal is a value, so the contract can say which refusals the two
-//! functions owe and what each one says — and `os/setenv` refusing a keyword
-//! where it wants a string is precisely the boundary between this subsystem
+//! That is what makes `theRefusals` below possible: a refusal is a value, so
+//! the contract can say which refusals the two functions owe and what each one
+//! says. `os/setenv` refusing a keyword where it needs a string is precisely
+//! the boundary between this subsystem
 //! and the argument layer.
 
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
+
 const std = @import("std");
-const repr = @import("repr");
-const harness = @import("harness.zig");
-const value = @import("subsystems").value;
 const builtin = @import("builtin");
-const tables = @import("subsystems").value.tables;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const os = @import("subsystems").os;
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const abi = @import("abi");
 const expect = @import("expect.zig").expect;
+const harness = @import("harness.zig");
+const os = @import("subsystems").os;
+const repr = @import("repr");
+const tables = @import("subsystems").value.tables;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+const missing_name = "JANET_ZIG_OS_ENVIRON_MISSING_7A21C9";
 
 /// Unlikely to collide with a real variable, which matters because this
 /// contract writes to the process's own environment and does not restore it.
 const test_name = "JANET_ZIG_OS_ENVIRON_CONTRACT_6F6B4D";
-const missing_name = "JANET_ZIG_OS_ENVIRON_MISSING_7A21C9";
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn theScanning() void {
     // `environCount` takes the array `environ` itself is, whose entries are
@@ -65,7 +78,7 @@ fn theHostOperations() void {
     const empty = os.environGet(test_name).?;
     expect(empty[0] == 0);
 
-    // A value holding the separator, which the scanner above has to split on
+    // A value containing the separator, which the scanner above has to split on
     // the first `=` rather than the last.
     expect(os.environSet(test_name, "first=second") == 0);
     expect(std.mem.orderZ(u8, os.environGet(test_name).?, "first=second") == .eq);
@@ -98,8 +111,8 @@ fn theCoreFunctions() !void {
         expect(harness.stringIs(wrap.toString(captured), "public-value"));
     }
 
-    // A second argument to `os/getenv` is the value answered when the variable
-    // is unset, and it is answered as-is rather than coerced to a string.
+    // A second argument to `os/getenv` is the value used when the variable is
+    // unset, and it comes back as it stands rather than coerced to a string.
     args[0] = value.fromBytes(missing_name, .string);
     args[1] = value.fromBytes("fallback", .keyword);
     expect(harness.equals(try getenv(args[0..2]), args[1]));
@@ -111,7 +124,7 @@ fn theCoreFunctions() !void {
     expect(harness.isType(try getenv(args[0..1]), repr.Tag.nil));
 }
 
-/// What the two functions refuse, which the C contract could not ask.
+/// What the two functions refuse.
 fn theRefusals() void {
     const setenv = harness.core("os/setenv");
     const getenv = harness.core("os/getenv");
@@ -140,6 +153,10 @@ fn theRefusals() void {
     // And the variable is not set as a side effect of the refusal.
     expect(os.environGet(test_name) == null);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     theScanning();

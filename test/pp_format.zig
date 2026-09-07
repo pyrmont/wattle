@@ -1,18 +1,10 @@
 //! Behavioral contract for the format-string engine.
 //!
-//! Its subject has no C name: `formatTuple`'s format string is a `comptime`
-//! parameter, so a caller does not call it, a caller *instantiates* it. No C
-//! contract could.
-//!
-//! ## What it links against
-//!
-//! The runtime, because it is inside it: `@import("subsystems").pp_format` is
-//! the same file the rest of the binary runs.
-//!
-//! **A contract compiled beside `libjanet.a` would test a local copy** --
-//! sharing the runtime's state and its source but not its code -- which is the
-//! reason this driver is a second compilation of the runtime rather than a
-//! program linked against it.
+//! `formatTuple`'s format string is a `comptime` parameter, so a caller does
+//! not call it so much as instantiate it, and only a contract inside the
+//! compilation can do that. `@import("subsystems").pp_format` is the same file
+//! the rest of the binary runs, which is what the driver being a second
+//! compilation of the runtime buys.
 //!
 //! ## Why this file exists rather than leaning on the Janet suites
 //!
@@ -23,40 +15,72 @@
 //! string there and a Janet value here. The suites exercise one of the two and
 //! the panic messages of neither.
 //!
-//! ## What moved, and where the three grammar faults went
+//! ## Where the grammar faults are asserted
 //!
-//! The C original asserted seven refusals that this file cannot: `"%z"`,
-//! `"%5z"`, `"%ld"`, `"%-+ #0-d"`, `"%123d"` and `"%.123f"` were runtime
-//! panics from `scanFormat`, and against a `comptime` format string they are
-//! **compile errors** -- `comptimeScan` raises them with `@compileError`, so
-//! the case cannot be written down at all.
+//! `"%z"`, `"%5z"`, `"%ld"`, `"%-+ #0-d"`, `"%123d"` and `"%.123f"` cannot be
+//! written against `formatTuple` at all: `comptimeScan` refuses each with
+//! `@compileError`, so the case would not build.
 //!
-//! They are not lost. Every one is still reachable through `bufferFormat`,
-//! which keeps the runtime parser because `string/format` takes its format
-//! string from Janet source, and that is the loop a user can actually reach
-//! them on. `theGrammarFaults` below asserts all six there.
+//! Every one is reachable through `bufferFormat`, which keeps the runtime
+//! parser because `string/format` takes its format string from Janet source,
+//! and that is the loop a user reaches them on. `theGrammarFaults` below
+//! asserts all six there.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const buffers = @import("subsystems").value.buffers;
+const c = @import("cabi");
 const constants = @import("constants");
-const raise = @import("subsystems").raise;
-const harness = @import("harness.zig");
-const value = @import("subsystems").value;
+const core_env = @import("subsystems").env;
+const expect = @import("expect.zig").expect;
 const fmt = @import("subsystems").pp_format;
 const gc_alloc = @import("subsystems").gc_alloc;
-const buffers = @import("subsystems").value.buffers;
-const strings = @import("subsystems").value.strings;
-const core_env = @import("subsystems").env;
-const vm_state = @import("subsystems").vm_state;
-const vm_lifecycle = @import("subsystems").lifecycle;
+const harness = @import("harness.zig");
+
+/// The host's `FILE` and the stream operations, both by import.
+///
+/// `io_core.write` is what `pp/format.zig` itself calls, at its line 323, and
+/// it is the reason a format contract needs the stream layer at all. The rest
+/// are for `dynprintfReachesItsFourDestinations`, which writes a real file and
+/// reads it back.
+const host = @import("host");
+const io_core = @import("subsystems").io;
+const raise = @import("subsystems").raise;
+const repr = @import("repr");
 const signal_core = @import("subsystems").signal;
+const strings = @import("subsystems").value.strings;
+const tables = @import("subsystems").value.tables;
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const vm_state = @import("subsystems").vm_state;
 const wrap = @import("subsystems").value.wrap;
 
-var test_env: *tables.Table = undefined;
-var raises_fired: usize = 0;
+// ==========================================================================
+// Constants
+// ==========================================================================
+
 const expected_raises = 18;
 
-// ------------------------------------------------------------- assertions
+var raises_fired: usize = 0;
+const scratch = "janet-zig-pp-format-9d24";
+var test_env: *tables.Table = undefined;
+
+/// The integer wrap, which no Zig contract may spell directly under
+/// `-Dnanbox=false`. `test/harness.zig` is where
+/// the replacement and the argument for it.
+const wrapInteger = harness.wrapInteger;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn checkString(s: strings.String, expected: []const u8) void {
     const len: usize = strings.head(s).length;
@@ -74,11 +98,6 @@ fn checkBuffer(b: *buffers.Buffer, expected: []const u8) void {
     }
 }
 
-/// The integer wrap, which no Zig contract may spell directly under
-/// `-Dnanbox=false`. This file found that, and `test/harness.zig` now holds
-/// the replacement and the argument for it.
-const wrapInteger = harness.wrapInteger;
-
 fn bytes(s: strings.String) []const u8 {
     return s[0..strings.head(s).length];
 }
@@ -91,13 +110,13 @@ fn eval(source: [*:0]const u8) repr.Value {
     return out;
 }
 
-/// A raise, with the message it carried.
+/// A raise, with the message it came with.
 ///
-/// The C original spelled this as a macro over a protected scope and a
+/// A protected scope and a
 /// raised-flag pair, because a raise reached it as a report on a flag. Here it
 /// is the error union itself; the scope is still needed, because
 /// `signal.tryInit` is what points `vm.return_reg` at a payload and therefore
-/// what makes `signal.signalPlan` answer `RAISE` rather than ending the
+/// what makes `signal.signalPlan` decide `RAISE` rather than ending the
 /// process.
 fn expectRaise(comptime message: []const u8, comptime body: anytype, args: anytype) void {
     var state: vm_state.TryState = undefined;
@@ -121,12 +140,10 @@ fn expectRaise(comptime message: []const u8, comptime body: anytype, args: anyty
 
 fn formatted(format: [*]const u8, argv: []repr.Value) raise.Raising(strings.String) {
     const b = buffers.new(32);
-    pp_format.bufferFormatPanicking(b, format, 0, @intCast(argv.len), argv.ptr);
-    _ = try raise.crossing({});
+    fmt.bufferFormatPanicking(b, format, 0, @intCast(argv.len), argv.ptr);
+    _ = try raise.fromAbi({});
     return strings.new(b.slice());
 }
-
-// ------------------------------------------- the widths that crossed va_arg
 
 /// Every argument the tuple driver can render, in one call.
 ///
@@ -134,8 +151,8 @@ fn formatted(format: [*]const u8, argv: []repr.Value) raise.Raising(strings.Stri
 /// width corrupted every argument after it as well as its own, and it survives
 /// the move because the widths still differ: `%c` renders a `c_int`, `%d` an
 /// `i32`, `%D` an `i64`, `%x` a `u64`, `%f` an `f64`, `%s` a C string, `%v` a
-/// `Janet`. What used to be a runtime hazard is now a coercion the compiler
-/// checks, which is the whole point of the change -- but the rendering still
+/// `Janet`. The coercion is checked by the compiler rather than at run time,
+/// but the rendering still
 /// has to be right.
 fn everyArgumentWidthInOneCall() void {
     const s = fmt.formatc("%c|%d|%d|%x|%.2f|%s|%v|%d", .{
@@ -166,11 +183,9 @@ fn formatbAppendsAndReturnsItsBuffer() void {
     checkBuffer(b, "head:1-2|tail");
 }
 
-// ----------------------------------------- the conversions only Zig reaches
-
-/// `%S` takes a Janet string and knows its length without walking it, where
+/// `%S` takes a Janet string, whose length is in its head, where
 /// `%s` takes a C string and does. The difference is only observable for a
-/// string with an interior zero, which is exactly the case `%s` cannot carry.
+/// string with an interior zero, which is exactly the case `%s` cannot render.
 fn theJanetStringConversion() void {
     const raw = [_]u8{ 'a', 0, 'b' };
     const embedded = strings.new(raw[0..@intCast(3)]);
@@ -185,14 +200,15 @@ fn theJanetStringConversion() void {
 
 /// `%T` renders a *set* of types, which is what an argument check reports.
 /// There is no Janet syntax for it: the only callers build the mask from a
-/// `repr.TagSet` -- what `JANET_TFLAG_*` used to spell as an `int`.
+/// `repr.TagSet`, a bit per tag rather than a bare `int`.
 fn theTypeSetConversion() void {
     // One member: no separator at all.
     checkString(
         fmt.formatc("%T", .{repr.TagSet.one(.number)}) catch @panic("raised"),
         "number",
     );
-    // Two: joined with " or " rather than a comma, because the last pair always is.
+    // Two: joined with " or " rather than a comma, the last pair always being
+    // joined that way.
     checkString(
         fmt.formatc("%T", .{repr.TagSet.of(&.{ .number, .string })}) catch @panic("raised"),
         "number or string",
@@ -215,7 +231,7 @@ fn theTypeNameConversion() void {
     checkString(fmt.formatc("%t", .{wrap.fromNil()}) catch @panic("raised"), "nil");
 }
 
-/// **`%D` and `%I` are not conversions**, and the refusal is the same on every
+/// `%D` and `%I` are not conversions, and the refusal is the same on every
 /// host.
 ///
 /// They were entries in a mapping table that the scan consulted only for the
@@ -225,8 +241,8 @@ fn theTypeNameConversion() void {
 /// that meant either pinning one host's libc or asserting only that the
 /// mapping had not happened.
 ///
-/// Against `formatTuple` both spellings are compile errors, which is why only
-/// the runtime loop can be asked here -- and it is the reachable half in any
+/// Against `formatTuple` both spellings are compile errors, so only the
+/// runtime loop can be asked here, and it is the reachable half in any
 /// case, because a Janet program supplies `string/format`'s format string.
 fn theUpperCaseIntegerConversionsAreRefused() void {
     var one = [_]repr.Value{wrapInteger(5)};
@@ -236,8 +252,6 @@ fn theUpperCaseIntegerConversionsAreRefused() void {
     // other unrecognised conversion.
     expectRaise("invalid conversion '%-8I' to 'format'", formatted, .{ "%-8I", one[0..] });
 }
-
-// --------------------------------------------------- the specifier grammar
 
 /// Flags, width and precision all reach `snprintf` through the rebuilt
 /// specifier, and the integer conversions are rebuilt with a 64-bit length
@@ -269,8 +283,6 @@ fn aBareStringConversionHasNoLengthLimit() void {
     const s = fmt.formatc("%s", .{@as([*]const u8, &big)}) catch @panic("raised");
     expect(strings.head(s).length == big.len - 1);
 }
-
-// -------------------------------------------------------- the raise messages
 
 /// Every way the engine refuses at *runtime*, with the message it refuses
 /// with. These are user-visible strings that no suite asserts, and a port that
@@ -306,7 +318,7 @@ fn theRefusals() void {
     expectRaise("could not print to jdn format", formatted, .{ "%j", fn_slot[0..] });
 }
 
-/// **`%j` sorts a dictionary's keys, so the same value writes the same bytes.**
+/// `%j` sorts a dictionary's keys, so the same value writes the same bytes.
 ///
 /// The keys here hash by *pointer*, which is what makes this assertable at
 /// all: a buffer's bucket is chosen by its allocation address, so in storage
@@ -336,9 +348,9 @@ fn theJdnWriterSortsItsKeys() void {
     var slot = [_]repr.Value{wrap.fromTable(t)};
     const jdn = formatted("%j", slot[0..]) catch @panic("raised");
 
-    // The same order the pretty printer has always produced. **This is the
-    // assertion, and the order itself is not**: two buffers order by address,
-    // so which of the four comes first is the allocator's answer and differs
+    // The same order the pretty printer produces. That agreement is the
+    // assertion and the order itself is not: two buffers order by address, so
+    // which of the four comes first is the allocator's business and differs
     // between platforms. What must not differ is that `%j` and `%q` give one
     // order rather than two that happen to agree here.
     const pretty = formatted("%q", slot[0..]) catch @panic("raised");
@@ -372,7 +384,7 @@ fn theJdnWriterSortsItsKeys() void {
 /// The three faults `scanFormat` raises, on the loop that can still reach them.
 ///
 /// Against `formatTuple` all six of these are compile errors, so the cases
-/// below are the whole of the coverage now -- and they are the reachable half
+/// below are the whole of the coverage, and they are the reachable half
 /// in any case, because a Janet program supplies `string/format`'s format
 /// string and no Janet program supplies `formatTuple`'s.
 fn theGrammarFaults() void {
@@ -389,7 +401,7 @@ fn theGrammarFaults() void {
     // Six flag characters, where five is the whole set.
     expectRaise("invalid format (repeated flags)", formatted, .{ "%-+ #0-d", one[0..] });
 
-    // Three digits of width, where the field holds two.
+    // Three digits of width, where the field has room for two.
     expectRaise("invalid format (width or precision too long)", formatted, .{ "%123d", one[0..] });
     expectRaise("invalid format (width or precision too long)", formatted, .{ "%.123f", one[0..] });
 }
@@ -401,7 +413,7 @@ fn theGrammarFaults() void {
 /// The boundary case matters more than the obvious one. `%.99f` of 1e155 needs
 /// exactly 256 bytes, which is the scratch's size: `snprintf` wrote 255 and a
 /// terminator, and reported 256. A check spelled `>` rather than `>=` accepts
-/// that and pushes 256 bytes out of a buffer holding 255 real ones, so the
+/// that and pushes 256 bytes out of a buffer with 255 real ones in it, so the
 /// output ends in a stray zero byte. Only this one length shows it.
 fn anOversizedItemIsRefused() void {
     expectRaise("format buffer overflow", fmt.formatc, .{ "%99.99f", .{@as(f64, 1e300)} });
@@ -411,8 +423,6 @@ fn anOversizedItemIsRefused() void {
     const ok = fmt.formatc("%.99f", .{@as(f64, 1e154)}) catch @panic("raised");
     expect(strings.head(ok).length == 255);
 }
-
-// -------------------------------------------------------- the two loops
 
 fn theTwoLoopsAgreeWhereTheyOverlap() void {
     var slot = [_]repr.Value{eval("@{:a [1 2 3] :b \"x\"}")};
@@ -435,8 +445,6 @@ fn theTwoLoopsAgreeWhereTheyOverlap() void {
         bytes(fmt.formatc("%8.2e", .{third}) catch @panic("raised")),
     );
 }
-
-// ------------------------------------------------- the pretty conversions
 
 /// Eight characters select the same printer with three flags between them, and
 /// the decoding is by character rather than by table. Each flag is asserted
@@ -497,16 +505,12 @@ fn aPrettyConversionAfterOtherText() void {
     expect(std.mem.eql(u8, b.slice()[0..8], "prefix)\n"));
 }
 
-// ----------------------------------------------- the fourth entry point
-
-const scratch = "janet-zig-pp-format-9d24";
-
 /// `dynprintf`'s four destinations.
 ///
 /// It asserts the routing rather than the rendering: `dynprintf` is one of the
-/// four entry points a variadic surface once held, and it sits in
+/// four entry points of the variadic surface, and it sits in
 /// `pp/format.zig` beside the other three.
-/// What it asserts is the routing rather than the rendering -- a bound buffer,
+/// What it asserts is the routing rather than the rendering: a bound buffer,
 /// an absent name, an empty name, a null name, a bound value of the wrong
 /// type, and a file that cannot be written.
 fn dynprintfReachesItsFourDestinations() void {
@@ -520,7 +524,7 @@ fn dynprintfReachesItsFourDestinations() void {
 
     // A name that is not bound, and an empty name, both use the default handle
     // rather than doing nothing.
-    var raw = fopen(scratch, "wb");
+    var raw = c.fopen(scratch, "wb");
     expect(raw != null);
     fmt.dynprintf("pp-format-absent", raw, "to the default", .{}) catch @panic("raised");
     fmt.dynprintf("", raw, "%d", .{@as(i32, 42)}) catch @panic("raised");
@@ -551,28 +555,13 @@ fn dynprintfReachesItsFourDestinations() void {
     expect(io_core.fileClose(jf) == 0);
 
     vm_state.setdyn("pp-format-out", wrap.fromNil());
-    _ = remove(scratch);
+    _ = c.remove(scratch);
 }
-
-extern fn fopen(path: [*]const u8, mode: [*]const u8) callconv(.c) ?*host.FILE;
-extern fn remove(path: [*]const u8) callconv(.c) c_int;
-
-/// The stream operations, by import.
-///
-/// Three of them were hand-declared `extern fn`s here, because that is what
-/// they were: a seam exported so a C caller could reach them. None of the
-/// fifteen is a symbol any more; `io.write` is the one with a caller outside
-/// its own subsystem, in `pp/format.zig`.
-const host = @import("host");
-const io_core = @import("subsystems").io;
-const pp_format = @import("subsystems").pp_format;
-const tables = @import("subsystems").value.tables;
-const expect = @import("expect.zig").expect;
 
 /// A formatted raise.
 ///
-/// `panicf` answers with the bare error set rather than an error union --
-/// every call to it raises -- so the thunk gives `expectRaise` the shape it
+/// `panicf` returns the bare error set rather than an error union, every call
+/// to it raising, so the thunk gives `expectRaise` the shape it
 /// tests, which is the same shape every other subject here has.
 fn panicfThunk(comptime format: [:0]const u8, args: anytype) raise.Raising(void) {
     return fmt.panicf(format, args);
@@ -585,7 +574,9 @@ fn panicfCarriesItsFormattedMessage() void {
     });
 }
 
-// -------------------------------------------------------------------- main
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

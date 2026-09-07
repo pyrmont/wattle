@@ -7,13 +7,15 @@
 # **Class `orphan` must be empty.**
 #
 #   surface   2
-#   namespace 1
+#   namespace 3
 #   orphan    0
 #
-#   2158 `pub` declarations in src/
+#   2075 `pub` declarations in src/
 #
 # columns: class  site  name
 
-surface   module.zig:1181                              pullAbstractReuse
-surface   module.zig:1219                              pullPointer
-namespace root.zig:180                                 ffi_marshal
+surface   module.zig:1113                              pullAbstractReuse
+surface   module.zig:1152                              pullPointer
+namespace root.zig:40                                  date
+namespace root.zig:43                                  dynlib
+namespace root.zig:54                                  ffi_marshal

@@ -1,218 +1,82 @@
 //! The interpreter loop, and the call protocol it dispatches through.
 //!
+//! `runVm` is the loop. `methodInvoke`, `callNonfn`, `resolveMethod`,
+//! `methodLookup`, `unaryCall`, `binopCall` and `mcall` are the call protocol,
+//! `fillTable`, `fillStruct` and `fillString` the three constructor loops, and
+//! `traceFiber` and `traceArgv` what `(trace)` prints.
+//!
 //! The call protocol is imported by the loop as well as by the root, because
-//! the loop inlines it: reaching it out of line cost 2.4-3.4% on method
-//! dispatch and 89% on arithmetic, measured.
+//! the loop inlines it. Reaching it out of line costs enough on method
+//! dispatch and on arithmetic to be visible in a benchmark.
+//!
+//! The value operations the loop reaches on every instruction are `wrap`'s and
+//! `repr`'s own, named directly at every site. They are `pub inline fn`, which
+//! is what keeps them out of the symbol table; reaching them through it costs
+//! the arithmetic workload about as much again.
+//!
+//! There is no per-call `setjmp` scope around the loop. Its callees, the
+//! access layer, the callee layer, the fiber pushes, `order.zig`'s `equals`
+//! and `compare`, the three fills and the cfunction call, each return their
+//! raise, so there is nothing left for a scope to catch.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
+
 const std = @import("std");
-const raise = @import("../api/raise.zig");
-const pp_format = @import("pp/format.zig");
-const repr = @import("repr");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
+const abstract_type = @import("../api/abstract_type.zig");
+const abstracts = @import("value/abstracts.zig");
+const access = @import("value/helpers/access.zig");
+const args_core = @import("args.zig");
+const arrays = @import("value/arrays.zig");
+const buffers = @import("value/buffers.zig");
+const c = @import("cabi");
 const constants = @import("constants");
-const vm_state = @import("vm/state.zig");
+const fibers = @import("value/fibers.zig");
+const functions = @import("value/functions.zig");
+const gc_alloc = @import("gc.zig");
+const gc_mark = @import("gc/mark.zig");
+const order = @import("value/helpers/order.zig");
+const pp_describe = @import("pp.zig");
+const pp_format = @import("pp/format.zig");
+const raise = @import("../api/raise.zig");
+const repr = @import("repr");
 const stdio = @import("stdio.zig");
 const structs = @import("value/structs.zig");
 const tables = @import("value/tables.zig");
-const gc_alloc = @import("gc.zig");
-const arrays = @import("value/arrays.zig");
-const buffers = @import("value/buffers.zig");
 const tuples = @import("value/tuples.zig");
-const order = @import("value/helpers/order.zig");
-const abstracts = @import("value/abstracts.zig");
-const gc_mark = @import("gc/mark.zig");
-const args_core = @import("args.zig");
-const vm_calls = @import("vm.zig");
-const wrap = @import("value/helpers/wrap.zig");
-const fibers = @import("value/fibers.zig");
-const functions = @import("value/functions.zig");
-const access = @import("value/helpers/access.zig");
-const vm_entry = @import("vm/entry.zig");
-const pp_describe = @import("pp.zig");
-const abstract_type = @import("../api/abstract_type.zig");
-const value = @import("value.zig");
 const utils = @import("utils.zig");
-const c = @import("cabi");
-const abi = @import("abi");
+const value = @import("value.zig");
+const vm_calls = @import("vm.zig");
+const vm_entry = @import("vm/entry.zig");
+const vm_state = @import("vm/state.zig");
+const wrap = @import("value/helpers/wrap.zig");
 
-// -------------------------------------------------------------------------
-// The loop.
-// -------------------------------------------------------------------------
+// ==========================================================================
+// Constants
+// ==========================================================================
 
-/// Whether this build checks for an interpreter interrupt between instructions.
-/// The negative spelling is Janet's; `constants` states it positively so the
-/// guards below read forwards.
-const has_interrupt = constants.JANET_VM_HAS_INTERRUPT == 1;
-
-/// A stack frame's size in `Value` slots. `stackFrame` below is the one place
-/// that does the arithmetic.
+/// A stack frame's size in `Value` slots. `stackFrame` is the one place that
+/// does the arithmetic.
 const frame_size: i32 = constants.JANET_FRAME_SIZE;
 
-inline fn stackFrame(values: [*]repr.Value) *vm_state.StackFrame {
-    return @ptrCast(@alignCast(values - frame_size));
-}
+/// Whether this build checks for an interpreter interrupt between
+/// instructions. The negative spelling is Janet's; `constants` states it
+/// positively so the guards read forwards.
+const has_interrupt = constants.JANET_VM_HAS_INTERRUPT == 1;
 
-/// `func->envs[i]` as an lvalue.
-inline fn funcEnvSlot(func: *functions.Function, i: i32) *?*functions.FuncEnv {
-    return &functions.envsOf(func)[@intCast(i)];
-}
+// ==========================================================================
+// Types
+// ==========================================================================
 
-// ------------------------------------------------------------ value layer
-
-// The value operations the loop reaches on every instruction are `wrap`'s and
-// `repr`'s own, named directly at ninety sites. They are `pub inline fn`, which
-// is what keeps them out of the symbol table: reaching them through it cost the
-// arithmetic workload 89%, measured.
-
-/// Whether `dval` is exactly representable in `T`.
-///
-/// A range check first, so that the round trip through the integer type --
-/// which is what rejects a fractional value -- is always in range and Zig's
-/// conversion safety check cannot fire. NaN fails the first comparison.
-inline fn checkRange(comptime T: type, dval: f64) bool {
-    const lo: f64 = @floatFromInt(std.math.minInt(T));
-    const hi: f64 = @floatFromInt(std.math.maxInt(T));
-    if (!(dval >= lo and dval <= hi)) return false;
-    const truncated: T = @intFromFloat(dval);
-    const back: f64 = @floatFromInt(truncated);
-    return dval == back;
-}
-
-// ------------------------------------------------------- instruction word
-
-// One instruction word:
-//
-//     CC | BB | AA | OP
-//     DD | DD | DD | OP
-//     EE | EE | AA | OP
-
-inline fn fA(pc: [*]const u32) u32 {
-    return (pc[0] >> 8) & 0xFF;
-}
-inline fn fB(pc: [*]const u32) u32 {
-    return (pc[0] >> 16) & 0xFF;
-}
-inline fn fC(pc: [*]const u32) u32 {
-    return pc[0] >> 24;
-}
-inline fn fD(pc: [*]const u32) u32 {
-    return pc[0] >> 8;
-}
-inline fn fE(pc: [*]const u32) u32 {
-    return pc[0] >> 16;
-}
-
-/// Signed interpretations of the same fields, as C's arithmetic right shift of
-/// the word reinterpreted as `int32_t`.
-inline fn fCS(pc: [*]const u32) i32 {
-    return @as(i32, @bitCast(pc[0])) >> 24;
-}
-inline fn fDS(pc: [*]const u32) i32 {
-    return @as(i32, @bitCast(pc[0])) >> 8;
-}
-inline fn fES(pc: [*]const u32) i32 {
-    return @as(i32, @bitCast(pc[0])) >> 16;
-}
-
-// There is no per-call `setjmp` scope around this loop. Its thirteen callees
-// -- the access layer, the callee layer, the fiber pushes, `order.zig`'s
-// `equals` and `compare`, the three fills and the cfunction call -- each return
-// their raise, so there is nothing left for a scope to catch.
-
-// ------------------------------------------------------- opcode templates
-
-/// The four arithmetic operators that have both a register and an immediate
-/// form, plus the six bitwise ones. The method names are the operator spelled
-/// out, exactly as C's `#op` stringification produces them — which is why
-/// `.shift_right` and `.shift_right_unsigned` both fall back to `:>>`.
-const Op = enum {
-    add,
-    sub,
-    mul,
-    div,
-    band,
-    bor,
-    bxor,
-    shl,
-    shr,
-    shru,
-
-    inline fn method(comptime self: Op) [*:0]const u8 {
-        return switch (self) {
-            .add => "+",
-            .sub => "-",
-            .mul => "*",
-            .div => "/",
-            .band => "&",
-            .bor => "|",
-            .bxor => "^",
-            .shl => "<<",
-            .shr => ">>",
-            .shru => ">>",
-        };
-    }
-
-    inline fn rmethod(comptime self: Op) [*:0]const u8 {
-        return switch (self) {
-            .add => "r+",
-            .sub => "r-",
-            .mul => "r*",
-            .div => "r/",
-            .band => "r&",
-            .bor => "r|",
-            .bxor => "r^",
-            .shl => "r<<",
-            .shr => "r>>",
-            .shru => "r>>",
-        };
-    }
-
-    inline fn applyNumber(comptime self: Op, x1: f64, x2: f64) f64 {
-        return switch (self) {
-            .add => x1 + x2,
-            .sub => x1 - x2,
-            .mul => x1 * x2,
-            .div => x1 / x2,
-            else => @compileError("not an arithmetic operator"),
-        };
-    }
-
-    /// The integer type the operand is narrowed to, and the message naming it.
-    inline fn intType(comptime self: Op) type {
-        return switch (self) {
-            .shru => u32,
-            else => i32,
-        };
-    }
-
-    inline fn intMessage(comptime self: Op) []const u8 {
-        return if (self.intType() == u32) "32-bit unsigned integers" else "32-bit signed integers";
-    }
-
-    /// The bitwise operators, on the narrowed left operand and an `i32` right
-    /// operand, with the result cast back to the narrowed type before it is
-    /// wrapped. The shifts are where that cast matters.
-    ///
-    /// **A shift is a wrapping shift and its count is taken modulo the
-    /// operand's width**, and that is contract: a negative left operand, an
-    /// overflow into the sign bit, and a count at or beyond the width all have
-    /// an answer here, and it is the one every supported target gives. The
-    /// boxed 64-bit shifts in
-    /// `value/ints.zig` follow the same rule at 64 bits.
-    inline fn applyBits(comptime self: Op, x1: self.intType(), x2: i32) self.intType() {
-        const T = self.intType();
-        const shift: std.math.Log2Int(T) = @truncate(@as(u32, @bitCast(x2)));
-        return switch (self) {
-            .band => x1 & @as(T, @bitCast(x2)),
-            .bor => x1 | @as(T, @bitCast(x2)),
-            .bxor => x1 ^ @as(T, @bitCast(x2)),
-            .shl => x1 << shift,
-            .shr, .shru => x1 >> shift,
-            else => @compileError("not a bitwise operator"),
-        };
-    }
-};
-
-/// The six comparison operators, which reach `order.zig`'s `compare` rather
-/// than a method when either operand is not a number.
+/// The four comparison operators, which reach `order.zig`'s `compare` rather
+/// than a method where either operand is not a number.
 const Cmp = enum {
     lt,
     le,
@@ -238,15 +102,13 @@ const Cmp = enum {
     }
 };
 
-// ------------------------------------------------------- interpreter state
-
-/// `run_vm`'s three registers plus the fiber they belong to.
+/// `runVm`'s three registers plus the fiber they belong to.
 ///
-/// C declares `stack`, `pc` and `func` `register` and keeps the `setjmp` out of
-/// their frame so that stays true. Here they are fields of a structure whose
-/// address never reaches a call the optimiser cannot see through: every method
-/// below is `inline`, and the only pointer handed to a C frame is the context
-/// `scoped` builds, which is a separate object holding copies.
+/// C declares `stack`, `pc` and `func` `register` and keeps the `setjmp` out
+/// of their frame so that stays true. Here they are fields of a structure
+/// whose address never reaches a call the optimiser cannot see through: every
+/// method is `inline`, and the only pointer handed to a C frame is the context
+/// `scoped` builds, which is a separate object with copies in it.
 const Interp = struct {
     fiber: *fibers.Fiber,
     stack: [*]repr.Value,
@@ -260,7 +122,7 @@ const Interp = struct {
     /// Darwin. See `pinned()`'s comment for the count and the oracle.
     vm: *vm_state.Vm,
 
-    // ---- state movement
+    // State movement.
 
     /// Publish the program counter before anything that could raise, so a
     /// stack trace names the instruction rather than its predecessor.
@@ -297,7 +159,7 @@ const Interp = struct {
         if (self.vm.gc.next_collection >= self.vm.gc.interval) gc_mark.collect();
     }
 
-    // ---- leaving the loop
+    // Leaving the loop.
 
     /// Leave the loop with a signal and a value, committing the program
     /// counter on the way out.
@@ -315,9 +177,9 @@ const Interp = struct {
 
     /// Returns the error out of `runVm` rather than jumping past its frame,
     /// and sets `fibers.FiberFlags.did_raise` exactly as `signal.zig`'s
-    /// `signalv` does -- both reach `signalCommit` through
-    /// `raise.signal` -- because the resume path reads that flag to pop a C
-    /// frame and to turn a raise at a tail call into an implicit return.
+    /// `signalv` does, both reaching `signalCommit` through `raise.signal`,
+    /// because the resume path reads that flag to pop a C frame and to turn a
+    /// raise at a tail call into an implicit return.
     ///
     /// It does not commit. Each site keeps whatever commit it already had,
     /// because that is not uniform: `.push_array` commits nothing, `.call`
@@ -332,14 +194,15 @@ const Interp = struct {
         return raise.signal(sig, v);
     }
 
-    /// Raise an `error` signal carrying `v`.
+    /// Raise an `error` signal with `v` as its value.
     inline fn raisev(self: *Interp, v: repr.Value) raise.Error!abi.Signal {
         return try self.raiseSignal(abi.Signal.@"error", v);
     }
 
-    /// Raise with a formatted message, built by `pp_format.panicf`, which parses
-    /// the format string at compile time and indexes the tuple; the specifier
-    /// and the value it renders are checked against each other here.
+    /// Raise with a formatted message, built by `pp_format.panicf`, which
+    /// parses the format string at compile time and indexes the tuple; the
+    /// specifier and the value it renders are checked against each other
+    /// here.
     inline fn raisef(self: *Interp, comptime format: [:0]const u8, args: anytype) raise.Error!abi.Signal {
         _ = self;
         return pp_format.panicf(format, args);
@@ -351,8 +214,8 @@ const Interp = struct {
         return try self.raisev(value.fromBytes(std.mem.span(message), .string));
     }
 
-    /// Nothing when `condition` holds, and a raise carrying `message` when it
-    /// does not.
+    /// Nothing where `condition` is true, and a raise with `message` where it
+    /// is not.
     inline fn assert(self: *Interp, condition: bool, message: [*:0]const u8) raise.Error!?abi.Signal {
         if (condition) return null;
         return try self.throw(message);
@@ -385,7 +248,7 @@ const Interp = struct {
         return null;
     }
 
-    // ---- opcode templates
+    // Opcode templates.
     //
     // Each returns null to mean "the instruction is done and `pc` is where the
     // next dispatch should read it", and a signal to mean "leave the loop".
@@ -528,9 +391,9 @@ const Interp = struct {
         return self.binopFallback(op.method(), op.rmethod(), op1, op2);
     }
 
-    /// The tail both fallbacks share: commit, try `:op` on the left operand and
-    /// then `:rop` on the right, refresh `stack` because the call may have moved
-    /// it, and check the collector.
+    /// The tail both fallbacks share: commit, try `:op` on the left operand
+    /// and then `:rop` on the right, refresh `stack` because the call may have
+    /// moved it, and check the collector.
     inline fn binopFallback(
         self: *Interp,
         lmethod: [*:0]const u8,
@@ -586,17 +449,271 @@ const Interp = struct {
     }
 };
 
-/// A bitwise result back to a `f64`, over `i32` or `u32`. Named so that the
-/// `u32` case, which is the only one whose result can exceed what an `i32`
-/// holds, cannot be written the other way by accident.
-inline fn intToDouble(comptime T: type, x: T) f64 {
-    return @floatFromInt(x);
+/// The four arithmetic operators that have both a register and an immediate
+/// form, plus the six bitwise ones. The method names are the operator spelled
+/// out, so `.shift_right` and `.shift_right_unsigned` both fall back to `:>>`.
+const Op = enum {
+    add,
+    sub,
+    mul,
+    div,
+    band,
+    bor,
+    bxor,
+    shl,
+    shr,
+    shru,
+
+    inline fn method(comptime self: Op) [*:0]const u8 {
+        return switch (self) {
+            .add => "+",
+            .sub => "-",
+            .mul => "*",
+            .div => "/",
+            .band => "&",
+            .bor => "|",
+            .bxor => "^",
+            .shl => "<<",
+            .shr => ">>",
+            .shru => ">>",
+        };
+    }
+
+    inline fn rmethod(comptime self: Op) [*:0]const u8 {
+        return switch (self) {
+            .add => "r+",
+            .sub => "r-",
+            .mul => "r*",
+            .div => "r/",
+            .band => "r&",
+            .bor => "r|",
+            .bxor => "r^",
+            .shl => "r<<",
+            .shr => "r>>",
+            .shru => "r>>",
+        };
+    }
+
+    inline fn applyNumber(comptime self: Op, x1: f64, x2: f64) f64 {
+        return switch (self) {
+            .add => x1 + x2,
+            .sub => x1 - x2,
+            .mul => x1 * x2,
+            .div => x1 / x2,
+            else => @compileError("not an arithmetic operator"),
+        };
+    }
+
+    /// The integer type the operand is narrowed to, and the message naming it.
+    inline fn intType(comptime self: Op) type {
+        return switch (self) {
+            .shru => u32,
+            else => i32,
+        };
+    }
+
+    inline fn intMessage(comptime self: Op) []const u8 {
+        return if (self.intType() == u32) "32-bit unsigned integers" else "32-bit signed integers";
+    }
+
+    /// The bitwise operators, on the narrowed left operand and an `i32` right
+    /// operand, with the result cast back to the narrowed type before it is
+    /// wrapped. The shifts are where that cast matters.
+    ///
+    /// A shift is a wrapping shift and its count is taken modulo the
+    /// operand's width. A negative left operand, an overflow into the sign
+    /// bit, and a count at or beyond the width each have a defined result
+    /// here, and it is the one every supported target gives. The boxed 64-bit
+    /// shifts in `value/ints.zig` follow the same rule at 64 bits.
+    inline fn applyBits(comptime self: Op, x1: self.intType(), x2: i32) self.intType() {
+        const T = self.intType();
+        const shift: std.math.Log2Int(T) = @truncate(@as(u32, @bitCast(x2)));
+        return switch (self) {
+            .band => x1 & @as(T, @bitCast(x2)),
+            .bor => x1 | @as(T, @bitCast(x2)),
+            .bxor => x1 ^ @as(T, @bitCast(x2)),
+            .shl => x1 << shift,
+            .shr, .shru => x1 >> shift,
+            else => @compileError("not a bitwise operator"),
+        };
+    }
+};
+
+// ==========================================================================
+// Public functions
+// ==========================================================================
+
+/// The operator fallback for a two-operand opcode where at least one operand
+/// is not a number: `(+ x y)` on a non-number tries `:+` on the left operand
+/// and then `:r+` on the right.
+///
+/// The right-hand attempt swaps the arguments, so a `:r+` method receives its
+/// own receiver first. Both `argv` arrays are built before the nil check that
+/// might discard them, which is safe only because the panic path never reads
+/// one of them.
+pub fn binopCall(lmethod: [*:0]const u8, rmethod: [*:0]const u8, lhs: repr.Value, rhs: repr.Value) raise.Error!repr.Value {
+    const lm = try methodLookup(lhs, lmethod);
+    if (isNil(lm)) {
+        const lr = try methodLookup(rhs, rmethod);
+        var argv = [_]repr.Value{ rhs, lhs };
+        if (isNil(lr)) {
+            return pp_format.panicf(
+                "could not find method :%s for %v or :%s for %v",
+                .{ lmethod, lhs, rmethod, rhs },
+            );
+        }
+        return methodInvoke(lr, argv[0..2]);
+    } else {
+        var argv = [_]repr.Value{ lhs, rhs };
+        return methodInvoke(lm, argv[0..2]);
+    }
 }
 
-// -------------------------------------------------------------- the loop
+/// The `.call` and `.tailcall` path for a callee that is not a
+/// `functions.Function`, with the arguments already pushed onto the fiber
+/// stack.
+///
+/// It resets `stacktop` to `stackstart` before invoking, so the callee sees an
+/// unpushed stack and the arguments it reads live above the new top. That is
+/// not tidiness: `methodInvoke` can reach `vm/entry.zig`'s `call`, which
+/// pushes a frame of its own, and it would push it over these arguments if the
+/// top were still where the caller left it.
+pub fn callNonfn(fiber: *fibers.Fiber, callee: repr.Value) raise.Error!repr.Value {
+    const argc = fiber.stacktop - fiber.stackstart;
+    fiber.stacktop = fiber.stackstart;
+    return methodInvoke(callee, (fiber.data.? + utils.asSize(fiber.stacktop))[0..@intCast(argc)]);
+}
 
-/// The interpreter loop. `pub` because `vm/entry.zig` drives it, which is why
-/// it carries a name specific enough to sit in a symbol table.
+/// `.make_string` and `.make_buffer`, which stringify each element in turn.
+///
+/// This is the loop that reaches an abstract type's `tostring` callback, and
+/// `pp.zig`'s `toStringB` can also raise `buffer overflow` from
+/// `buffers.extra`, which every push goes through, with no callback involved
+/// at all. `.make_string`'s scratch buffer comes from `utils.allocMany` and is
+/// off the collector's list, so that arm wraps it in a `defer`.
+///
+/// It raises, and it has to. Reached through a reporting abi instead, from
+/// inside `runVm`, which is itself raising, a `tostring` refusal would be
+/// flattened into a report nobody consumes: the loop would go on to build a
+/// string out of a half-filled buffer, and the outstanding report would kill
+/// the process at the next scope boundary, arbitrarily far from the cause. An
+/// ordinary import is all it takes not to need the abi at all.
+pub fn fillString(buffer: *buffers.Buffer, mem: []const repr.Value) raise.Raising(void) {
+    for (mem) |x| try pp_describe.toStringB(buffer, x);
+}
+
+/// `.make_struct`, over a struct still under construction: `structs.put`
+/// writes into the buckets `structs.begin` allocated, and the caller calls
+/// `structs.end` afterwards.
+pub fn fillStruct(st: [*]tables.KV, mem: [*]const repr.Value, count: i32) void {
+    var i: i32 = 0;
+    while (i < count) : (i += 2) {
+        structs.put(st, mem[utils.asSize(i)], mem[utils.asSize(i + 1)]);
+    }
+}
+
+/// `.make_table` over a run of key and value pairs on the fiber stack.
+///
+/// `tables.put` hashes and compares every key on the way in, so an abstract
+/// key with a `hash` or `compare` callback runs from inside this loop. Such a
+/// callback has no way to raise, `abi.zig` declaring both `callconv(.c)`, and
+/// it may neither re-enter a comparison nor allocate GC memory: the table
+/// being filled is reachable only from this frame, so a collection triggered
+/// from underneath here would free it.
+pub fn fillTable(table: *tables.Table, mem: ?[*]const repr.Value, count: i32) void {
+    var i: i32 = 0;
+    while (i < count) : (i += 2) {
+        tables.put(table, mem.?[utils.asSize(i)], mem.?[utils.asSize(i + 1)]);
+    }
+}
+
+/// The entry for calling a method by name.
+///
+/// `access.zig`'s `length` and `lengthv` reach it for `:length` on an abstract
+/// type with no `length` callback, and `runVm` reaches it from the
+/// immediate-operand arithmetic opcodes.
+pub fn mcall(name: [*:0]const u8, argv: []repr.Value) raise.Error!repr.Value {
+    if (argv.len < 1) {
+        return pp_format.panicf("method :%s expected at least 1 argument", .{name});
+    }
+    const method = try methodLookup(argv[0], name);
+    if (isNil(method)) {
+        return pp_format.panicf("could not find method :%s for %v", .{ name, argv[0] });
+    }
+    return methodInvoke(method, argv);
+}
+
+/// Calls a value that has already been resolved to a callee, dispatching on
+/// what kind of thing it turned out to be.
+///
+/// The abstract arm calls `invokeIndexed` itself rather than falling through
+/// into the six indexable types beside it, because Zig has no fallthrough. The
+/// order it keeps is that the type's own `call` callback is consulted first,
+/// and only its absence reaches the arity check.
+///
+/// The default arm is the one that reverses the operands: calling a keyword
+/// looks the keyword up in its argument, which is what makes `(:key struct)`
+/// work, while calling a table looks the argument up in the table.
+pub fn methodInvoke(method: repr.Value, argv: []repr.Value) raise.Error!repr.Value {
+    switch (repr.typeOf(method)) {
+        repr.Tag.cfunction => return raise.cfunction(wrap.toCfunction(method))(argv),
+        repr.Tag.function => {
+            const fun = wrap.toFunction(method);
+            return try vm_entry.call(fun, argv);
+        },
+        repr.Tag.abstract => {
+            const abst = wrap.toAbstract(method);
+            const at = abstract_type.ofAbstract(abst);
+            if (at.call) |call| return try call(abst, @intCast(argv.len), argv.ptr);
+            return try invokeIndexed(method, argv, true);
+        },
+        repr.Tag.string,
+        repr.Tag.buffer,
+        repr.Tag.table,
+        repr.Tag.@"struct",
+        repr.Tag.array,
+        repr.Tag.tuple,
+        => return try invokeIndexed(method, argv, true),
+        else => return try invokeIndexed(method, argv, false),
+    }
+}
+
+/// Looks a method up by C string, which is how the operator fallbacks and
+/// `mcall` name theirs.
+///
+/// The name is interned on every call, through `value.fromBytes`. The symbol
+/// cache makes the second and later calls a lookup rather than an allocation.
+pub fn methodLookup(x: repr.Value, name: [*:0]const u8) raise.Raising(repr.Value) {
+    return methodToFun(value.fromBytes(std.mem.span(name), .keyword), x);
+}
+
+/// Turns the keyword of a method call into the callee it names, reading the
+/// receiver from the bottom of the pushed arguments.
+///
+/// The zero-argument branch cannot be reached from Janet source, the compiler
+/// rejecting a method call with no receiver outright, so `asm` is the only
+/// route to it and `test/vm_calls.zig` takes that route.
+pub fn resolveMethod(name: repr.Value, fiber: *fibers.Fiber) raise.Error!repr.Value {
+    const argc = fiber.stacktop - fiber.stackstart;
+    if (argc < 1) {
+        return pp_format.panicf("method call (%v) takes at least 1 argument, got 0", .{name});
+    }
+    const receiver = fiber.data.?[utils.asSize(fiber.stackstart)];
+    const callee = try methodToFun(name, receiver);
+    if (isNil(callee)) {
+        return pp_format.panicf("unknown method %v invoked on %v", .{ name, receiver });
+    }
+    return callee;
+}
+
+/// The interpreter loop.
+///
+/// `fiber_in` is the fiber to run and `in` the value the resume passes in.
+/// The result is the signal the loop left on; the value that goes with it is
+/// in the VM's `return_reg`.
+///
+/// It is `pub` because `vm/entry.zig` drives it, so it has a name specific
+/// enough to sit in a symbol table.
 pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
     // Seventy-eight arms, each of which inlines several comptime templates.
     @setEvalBranchQuota(20000);
@@ -613,7 +730,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
     // resuming. It travels in `gc.flags` rather than in `flags`, for the
     // reason `signalInject` gives.
     //
-    // The `@enumFromInt` below is safe because the six bits can only hold a
+    // The `@enumFromInt` below is safe because the six bits can only contain a
     // value `signalInject` put there, and every caller of that reaches it
     // through `Signal.fromWire`, which is the clamp. Without that clamp an
     // injected 14 through 63 would build an out-of-domain value of an
@@ -634,7 +751,8 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             fibers.popframe(fiber);
             self.restore();
         }
-        // Check if we were at a tail call instruction. If so, do implicit return.
+        // Check if we were at a tail call instruction. If so, do an implicit
+        // return.
         if (constants.Opcode.fromWord(self.pc[0]) == .tailcall) {
             const entrance_frame = stackFrame(self.stack).flags.entrance;
             fibers.popframe(fiber);
@@ -665,7 +783,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
         .@"error" => return self.ret(abi.Signal.@"error", self.stack[fA(self.pc)]),
 
         .typecheck => {
-            // The instruction's E field *is* the set: `.typecheck` carries
+            // The instruction's E field *is* the set: `.typecheck` has
             // sixteen bits and `repr.TagSet` is sixteen bits, which is the
             // bytecode width the exit condition says to keep explicit.
             if (try self.assertTypes(self.stack[fA(self.pc)], repr.TagSet.fromBits(@intCast(fE(self.pc))))) |s| return s;
@@ -1078,10 +1196,10 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             }
             if (repr.checkType(callee, repr.Tag.function)) {
                 self.func = wrap.toFunction(callee);
-                // **The commit goes before the trace and `stack` is reloaded
-                // after it.** Tracing renders through `(dyn :err)`, which may
-                // be a Janet function, which runs on this fiber and may grow
-                // its stack -- and `commit` writes the program counter through
+                // The commit goes before the trace and `stack` is reloaded
+                // after it. Tracing renders through `(dyn :err)`, which may be
+                // a Janet function, which runs on this fiber and may grow its
+                // stack, and `commit` writes the program counter through
                 // `self.stack`. Committing after the trace writes it where the
                 // stack used to be, so the frame keeps the program counter of
                 // the instruction now executing and re-runs the call when it
@@ -1143,7 +1261,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
                 self.func = wrap.toFunction(callee);
                 // As in `.call` above: the trace may grow the fiber's stack,
                 // so `stack` is reloaded before anything reads it again. There
-                // is no commit here -- a tail call replaces the frame.
+                // is no commit here, because a tail call replaces the frame.
                 if (functions.isTraced(self.func)) {
                     try traceFiber(self.func, fiber.stacktop - fiber.stackstart, fiber);
                     self.reload();
@@ -1298,7 +1416,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
 
         .get => {
             self.commit();
-            // A missing key answers nil rather than raising -- but a table's
+            // A missing key gives back nil rather than raising, but a table's
             // prototype chain, an abstract type's `get` and a `next` callback
             // are all reachable from here, and any of those may, so the `try`
             // is not decoration.
@@ -1391,7 +1509,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             // `defer`, because the fill raises: an abstract type's `tostring`
             // can, and `buffers.ensure` does past `INT32_MAX`. The storage is
             // `utils.allocMany`'s and off the collector's list, so nothing but
-            // this line can free it and nothing else holds the pointer.
+            // this line can free it and nothing else refers to the pointer.
             defer buffers.deinit(&buffer);
             try vm_calls.fillString(&buffer, mem[0..utils.asSize(count)]);
             self.stack[fD(self.pc)] = value.fromBytes(buffer.slice(), .string);
@@ -1413,7 +1531,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             continue :sw self.nextOp();
         },
 
-        // An opcode the loop does not know, which is how a breakpoint is set:
+        // An opcode with no arm in the table, which is how a breakpoint is set:
         // bit 7 of the instruction word takes it out of the table.
         else => {
             fiber.flags.breakpoint = true;
@@ -1424,26 +1542,25 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
     }
 }
 
-/// Move the program counter by a signed instruction field. Zig's pointer
-/// arithmetic takes an unsigned offset, so the two's complement is taken
-/// explicitly and the wrap is what a backwards jump relies on.
-inline fn asOffset(n: i32) usize {
-    return @bitCast(@as(isize, n));
-}
-
-// ------------------------------------------------------------- `(trace)`
-
-/// Print a traced call and its arguments to `(dyn :err)`.
+/// Prints a traced call and its arguments to `(dyn :err)`, taking an argv the
+/// caller owns.
 ///
-/// **There are two entry points because of the stack.** Printing can resize a
+/// There are two entry points because of the stack. Printing can resize a
 /// fiber's stack, so `fiber.data + fiber.stackstart` has to be recomputed for
 /// every element and a pointer handed across would freeze at the first.
-/// `traceFiber` recomputes; `traceArgv` takes an argv the caller owns and that
-/// nothing here can move.
+/// `traceFiber` recomputes; this one takes an argv that nothing here can move.
 ///
 /// Both raise. `dynprintf` can, because `(dyn :err)` may be a Janet function,
-/// and both callers -- `runVm` and `vm/entry.call` -- carry one already, so the
+/// and both callers, `runVm` and `vm/entry.call`, are raising already, so the
 /// raise a traced call's rendering produces is returned rather than reported.
+pub fn traceArgv(func: *functions.Function, argv: []const repr.Value) raise.Raising(void) {
+    try traceHeader(func);
+    for (argv) |a| try eprintf(" %p", .{a});
+    try eprintf(")\n", .{});
+}
+
+/// Prints a traced call and its arguments to `(dyn :err)`, reading the
+/// arguments off the fiber stack. See `traceArgv`.
 pub fn traceFiber(func: *functions.Function, argc: i32, fiber: *fibers.Fiber) raise.Raising(void) {
     try traceHeader(func);
     // `argv` is re-derived per argument on purpose: `eprintf` reaches
@@ -1456,33 +1573,91 @@ pub fn traceFiber(func: *functions.Function, argc: i32, fiber: *fibers.Fiber) ra
     try eprintf(")\n", .{});
 }
 
-pub fn traceArgv(func: *functions.Function, argv: []const repr.Value) raise.Raising(void) {
-    try traceHeader(func);
-    for (argv) |a| try eprintf(" %p", .{a});
-    try eprintf(")\n", .{});
-}
-
-fn traceHeader(func: *functions.Function) raise.Raising(void) {
-    if (func.def.?.name != null) {
-        try eprintf("trace (%S", .{func.def.?.name});
-    } else {
-        try eprintf("trace (%p", .{wrap.fromFunction(func)});
+/// The operator fallback for a one-operand opcode whose operand is not a
+/// number. `.bnot` is the only one that reaches it.
+pub fn unaryCall(method: [*:0]const u8, arg: repr.Value) raise.Error!repr.Value {
+    const m = try methodLookup(arg, method);
+    if (isNil(m)) {
+        return pp_format.panicf("could not find method :%s for %v", .{ method, arg });
     }
+    var argv = [_]repr.Value{arg};
+    return methodInvoke(m, argv[0..1]);
 }
 
+// ==========================================================================
+// Private functions
+// ==========================================================================
+
+/// Moves the program counter by a signed instruction field. Zig's pointer
+/// arithmetic takes an unsigned offset, so the two's complement is taken
+/// explicitly and the wrap is what a backwards jump relies on.
+inline fn asOffset(n: i32) usize {
+    return @bitCast(@as(isize, n));
+}
+
+/// Whether `dval` is exactly representable in `T`.
+///
+/// A range check first, so that the round trip through the integer type, which
+/// is what rejects a fractional value, is always in range and Zig's conversion
+/// safety check cannot fire. NaN fails the first comparison.
+inline fn checkRange(comptime T: type, dval: f64) bool {
+    const lo: f64 = @floatFromInt(std.math.minInt(T));
+    const hi: f64 = @floatFromInt(std.math.maxInt(T));
+    if (!(dval >= lo and dval <= hi)) return false;
+    const truncated: T = @intFromFloat(dval);
+    const back: f64 = @floatFromInt(truncated);
+    return dval == back;
+}
+
+/// Prints to `(dyn :err)`, falling back to the standard error handle.
 inline fn eprintf(comptime format: [:0]const u8, args: anytype) raise.Raising(void) {
     return pp_format.dynprintf("err", stdio.err(), format, args);
 }
 
-// -------------------------------------------------------------------------
-// The call protocol.
-// -------------------------------------------------------------------------
-
-inline fn isNil(x: repr.Value) bool {
-    return repr.checkType(x, repr.Tag.nil);
+/// The unsigned fields of one instruction word:
+///
+///     CC | BB | AA | OP
+///     DD | DD | DD | OP
+///     EE | EE | AA | OP
+inline fn fA(pc: [*]const u32) u32 {
+    return (pc[0] >> 8) & 0xFF;
+}
+inline fn fB(pc: [*]const u32) u32 {
+    return (pc[0] >> 16) & 0xFF;
+}
+inline fn fC(pc: [*]const u32) u32 {
+    return pc[0] >> 24;
+}
+inline fn fD(pc: [*]const u32) u32 {
+    return pc[0] >> 8;
+}
+inline fn fE(pc: [*]const u32) u32 {
+    return pc[0] >> 16;
 }
 
-// -------------------------------------------------------------- invocation
+/// Signed interpretations of the same fields, as an arithmetic right shift of
+/// the word reinterpreted as a signed 32-bit integer.
+inline fn fCS(pc: [*]const u32) i32 {
+    return @as(i32, @bitCast(pc[0])) >> 24;
+}
+inline fn fDS(pc: [*]const u32) i32 {
+    return @as(i32, @bitCast(pc[0])) >> 8;
+}
+inline fn fES(pc: [*]const u32) i32 {
+    return @as(i32, @bitCast(pc[0])) >> 16;
+}
+
+/// `func.envs[i]` as an lvalue.
+inline fn funcEnvSlot(func: *functions.Function, i: i32) *?*functions.FuncEnv {
+    return &functions.envsOf(func)[@intCast(i)];
+}
+
+/// A bitwise result back to an `f64`, over `i32` or `u32`. Named so that the
+/// `u32` case, the only one whose result can exceed an `i32`'s range,
+/// cannot be written the other way by accident.
+inline fn intToDouble(comptime T: type, x: T) f64 {
+    return @floatFromInt(x);
+}
 
 /// The arity check and indexed access shared by `methodInvoke`'s last two
 /// arms. `method_is_ds` picks which operand is the data structure, which is
@@ -1499,193 +1674,35 @@ inline fn invokeIndexed(method: repr.Value, argv: []repr.Value, method_is_ds: bo
     return if (method_is_ds) try access.in(method, argv[0]) else try access.in(argv[0], method);
 }
 
-/// Calls a value that has already been resolved to a callee, dispatching on
-/// what kind of thing it turned out to be.
-///
-/// The abstract arm calls `invokeIndexed` itself rather than falling through
-/// into the six indexable types beside it, because Zig has no fallthrough. The
-/// order it keeps is that the type's own `call` callback is consulted first,
-/// and only its absence reaches the arity check.
-///
-/// The default arm is the one that reverses the operands: calling a keyword
-/// looks the *keyword* up in its argument, which is what makes `(:key struct)`
-/// work, while calling a table looks the *argument* up in the table.
-pub fn methodInvoke(method: repr.Value, argv: []repr.Value) raise.Error!repr.Value {
-    switch (repr.typeOf(method)) {
-        repr.Tag.cfunction => return raise.cfunction(wrap.toCfunction(method))(argv),
-        repr.Tag.function => {
-            const fun = wrap.toFunction(method);
-            return try vm_entry.call(fun, argv);
-        },
-        repr.Tag.abstract => {
-            const abst = wrap.toAbstract(method);
-            const at = abstract_type.ofAbstract(abst);
-            if (at.call) |call| return try call(abst, @intCast(argv.len), argv.ptr);
-            return try invokeIndexed(method, argv, true);
-        },
-        repr.Tag.string,
-        repr.Tag.buffer,
-        repr.Tag.table,
-        repr.Tag.@"struct",
-        repr.Tag.array,
-        repr.Tag.tuple,
-        => return try invokeIndexed(method, argv, true),
-        else => return try invokeIndexed(method, argv, false),
-    }
-}
-
-/// The `.call` and `.tailcall` path for a callee that is not a
-/// `functions.Function`, with the arguments already pushed onto the fiber
-/// stack.
-///
-/// It resets `stacktop` to `stackstart` *before* invoking, so the callee sees
-/// an unpushed stack and the arguments it reads live above the new top. That is
-/// not tidiness: `methodInvoke` can reach `vm/entry.zig`'s `call`, which pushes
-/// a frame of its own, and it would push it over these arguments if the top
-/// were still where the caller left it.
-pub fn callNonfn(fiber: *fibers.Fiber, callee: repr.Value) raise.Error!repr.Value {
-    const argc = fiber.stacktop - fiber.stackstart;
-    fiber.stacktop = fiber.stackstart;
-    return methodInvoke(callee, (fiber.data.? + utils.asSize(fiber.stacktop))[0..@intCast(argc)]);
+/// Whether `x` is nil.
+inline fn isNil(x: repr.Value) bool {
+    return repr.checkType(x, repr.Tag.nil);
 }
 
 /// Kept as a Zig-private inline rather than a symbol: it is `access.get` with
 /// its operands swapped, and both of its callers are here.
 ///
-/// **Raising, and it must be.** Every caller in the chain above is
+/// It is raising, and it has to be. Every caller in the chain above is
 /// `raise.Raising`, and an abstract's `get` callback can refuse, so a
 /// reporting form here would leave a report nobody consumes: the binop
 /// fallback looks `:r+` up on the right operand and that lookup is this
-/// function, which is what makes `(+ (int/s64 1) {})` a catchable error
-/// rather than a dead process.
+/// function, which is what makes `(+ (int/s64 1) {})` a catchable error rather
+/// than a dead process.
 inline fn methodToFun(method: repr.Value, obj: repr.Value) raise.Raising(repr.Value) {
     return access.get(obj, method);
 }
 
-/// Turns the keyword of a method call into the
-/// callee it names, reading the receiver from the bottom of the pushed
-/// arguments.
-///
-/// The zero-argument branch cannot be reached from Janet source — the compiler
-/// rejects a method call with no receiver outright — so `asm` is the only route
-/// to it, and `test/vm_calls.zig` takes that route.
-pub fn resolveMethod(name: repr.Value, fiber: *fibers.Fiber) raise.Error!repr.Value {
-    const argc = fiber.stacktop - fiber.stackstart;
-    if (argc < 1) {
-        return pp_format.panicf("method call (%v) takes at least 1 argument, got 0", .{name});
-    }
-    const receiver = fiber.data.?[utils.asSize(fiber.stackstart)];
-    const callee = try methodToFun(name, receiver);
-    if (isNil(callee)) {
-        return pp_format.panicf("unknown method %v invoked on %v", .{ name, receiver });
-    }
-    return callee;
+/// The frame that sits immediately below `values`.
+inline fn stackFrame(values: [*]repr.Value) *vm_state.StackFrame {
+    return @ptrCast(@alignCast(values - frame_size));
 }
 
-/// Looks a method up by C string, which is how the operator fallbacks and
-/// `mcall` name theirs.
-///
-/// The name is interned on every call, through `value.fromBytes`. The symbol
-/// cache makes the second and later calls a lookup rather than an
-/// allocation.
-pub fn methodLookup(x: repr.Value, name: [*:0]const u8) raise.Raising(repr.Value) {
-    return methodToFun(value.fromBytes(std.mem.span(name), .keyword), x);
-}
-
-/// The operator fallback for a one-operand opcode whose
-/// operand is not a number — `.bnot` is the only one that reaches it.
-pub fn unaryCall(method: [*:0]const u8, arg: repr.Value) raise.Error!repr.Value {
-    const m = try methodLookup(arg, method);
-    if (isNil(m)) {
-        return pp_format.panicf("could not find method :%s for %v", .{ method, arg });
-    }
-    var argv = [_]repr.Value{arg};
-    return methodInvoke(m, argv[0..1]);
-}
-
-/// The operator fallback for a two-operand opcode where at least one operand
-/// is not a number: `(+ x y)` on a non-number tries `:+` on the left operand
-/// and then `:r+` on the right.
-///
-/// The right-hand attempt swaps the arguments, so a `:r+` method receives its
-/// own receiver first. Both `argv` arrays are built before the nil check that
-/// might discard them, which is safe only because the panic path never reads
-/// one.
-pub fn binopCall(lmethod: [*:0]const u8, rmethod: [*:0]const u8, lhs: repr.Value, rhs: repr.Value) raise.Error!repr.Value {
-    const lm = try methodLookup(lhs, lmethod);
-    if (isNil(lm)) {
-        const lr = try methodLookup(rhs, rmethod);
-        var argv = [_]repr.Value{ rhs, lhs };
-        if (isNil(lr)) {
-            return pp_format.panicf(
-                "could not find method :%s for %v or :%s for %v",
-                .{ lmethod, lhs, rmethod, rhs },
-            );
-        }
-        return methodInvoke(lr, argv[0..2]);
+/// Prints the opening of a traced call: the function's name where it has one,
+/// and its rendering where it does not.
+fn traceHeader(func: *functions.Function) raise.Raising(void) {
+    if (func.def.?.name != null) {
+        try eprintf("trace (%S", .{func.def.?.name});
     } else {
-        var argv = [_]repr.Value{ lhs, rhs };
-        return methodInvoke(lm, argv[0..2]);
+        try eprintf("trace (%p", .{wrap.fromFunction(func)});
     }
-}
-
-/// The entry for calling a method by name. `access.zig`'s `length` and
-/// `lengthv` reach it for `:length` on an abstract type with no `length`
-/// callback, and `runVm` reaches it from the immediate-operand arithmetic
-/// opcodes.
-pub fn mcall(name: [*:0]const u8, argv: []repr.Value) raise.Error!repr.Value {
-    if (argv.len < 1) {
-        return pp_format.panicf("method :%s expected at least 1 argument", .{name});
-    }
-    const method = try methodLookup(argv[0], name);
-    if (isNil(method)) {
-        return pp_format.panicf("could not find method :%s for %v", .{ name, argv[0] });
-    }
-    return methodInvoke(method, argv);
-}
-
-// ------------------------------------------------------------- fill loops
-
-/// `.make_table` over a run of key/value pairs on the fiber stack.
-///
-/// `tables.put` hashes and compares every key on the way in, so an abstract
-/// key with a `hash` or `compare` callback runs from inside this loop. Such a
-/// callback may not raise, may not re-enter a comparison, and **may not
-/// allocate GC memory**: the table being filled is reachable only from this
-/// frame, so a collection triggered from underneath here frees it. The three
-/// rules are one line in `DESIGN.md` section 12.
-pub fn fillTable(table: *tables.Table, mem: ?[*]const repr.Value, count: i32) void {
-    var i: i32 = 0;
-    while (i < count) : (i += 2) {
-        tables.put(table, mem.?[utils.asSize(i)], mem.?[utils.asSize(i + 1)]);
-    }
-}
-
-/// `.make_struct`, over a struct still under construction: `structs.put`
-/// writes into the buckets `structs.begin` allocated, and the caller calls
-/// `structs.end` afterwards.
-pub fn fillStruct(st: [*]tables.KV, mem: [*]const repr.Value, count: i32) void {
-    var i: i32 = 0;
-    while (i < count) : (i += 2) {
-        structs.put(st, mem[utils.asSize(i)], mem[utils.asSize(i + 1)]);
-    }
-}
-
-/// `.make_string` and `.make_buffer`, which stringify each element in
-/// turn.
-///
-/// This is the loop that reaches an abstract type's `tostring` callback, and
-/// `pp.zig`'s `toStringB` can also raise `buffer overflow` from `buffers.extra`,
-/// which every push goes through, with no callback involved at all.
-/// `.make_string`'s scratch buffer comes from `utils.allocMany` and is off the
-/// collector's list, which is why that arm wraps it in a `defer`.
-///
-/// **This raises, and it must.** Reached through a reporting abi instead, from
-/// inside `runVm`, which is itself raising, a `tostring` refusal would be
-/// flattened into a report nobody consumes: the loop would go on to build a
-/// string out of a half-filled buffer, and the outstanding report would kill
-/// the process at the next scope boundary, arbitrarily far from the cause. An
-/// ordinary import is all it takes not to need the abi at all.
-pub fn fillString(buffer: *buffers.Buffer, mem: []const repr.Value) raise.Raising(void) {
-    for (mem) |x| try pp_describe.toStringB(buffer, x);
 }

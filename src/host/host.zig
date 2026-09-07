@@ -2,68 +2,93 @@
 //! way.
 //!
 //! A descriptor, a `FILE`, a pthread handle and its attributes, a mutex: none
-//! of these is Janet's, and none of them can be derived. What each is is fixed
-//! by the platform and its libc, so the one thing that matters is that every
-//! file naming one names *this* declaration -- two spellings of
-//! `pthread_attr_t` in one program is a silent offset mismatch, not a compile
-//! error.
+//! of these is Janet's, and none can be derived. What each is is fixed by the
+//! platform and its libc, so what matters is that every file naming such a
+//! shape names this declaration. Two spellings of `pthread_attr_t` in one
+//! program is a silent offset mismatch rather than a compile error.
 //!
-//! **Only the host's own shapes are here.** Every value and runtime type lives
-//! with the file that owns what is done to it -- `DESIGN.md` section 14 --
-//! `fibers.Fiber`, `tables.Table`, `functions.FuncDef`, `ev_stream.Stream`.
-//! These six cannot, and the reason is the one `DESIGN.md` section 14 gives for
-//! `abi.zig`: **two modules must agree on them.** `cabi.zig` declares
-//! `pthread_create`, `pthread_join`, `fdopen` and the Win32 handle calls, and
-//! it is a separate module because its `@cImport` needs the C include path; a
-//! file of `root` cannot be imported by it. So this is a module, like `abi` and
-//! for the same reason -- not a catalogue, and not a residue.
+//! `build.zig` roots a module at this file, so `host` is a module rather than
+//! a file of the runtime. `cabi.zig` is a module for the same reason: its
+//! `@cImport` needs the C include path, and a file of `root` cannot be
+//! imported by it.
+//!
+//! This file is an authoritative Zig source, and so are `api/constants.zig`
+//! and `api/repr.zig`. Nothing translates a Janet header into any of the
+//! three. Reaching libc through `@cImport` is deliberate: "no C in the tree"
+//! and "no libc" are different claims and only the first is a goal, and what
+//! matters is that a size comes from the platform rather than from a table
+//! kept by hand.
+//!
+//! Only the host's own shapes are here. Every value and runtime type lives
+//! with the file that owns what is done to it: `value/fibers.zig`'s `Fiber`,
+//! `value/tables.zig`'s `Table`, `value/functions.zig`'s `FuncDef`,
+//! `ev/stream.zig`'s `Stream`. These six cannot, for the reason `abi.zig`'s
+//! declarations cannot: two modules must agree on them.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
 
+// ==========================================================================
+// Aliased types
+// ==========================================================================
+
+/// A libc `FILE`, from `std.c`. `cabi.zig`'s stream calls take a `?*FILE`,
+/// and `runtime/io.zig` names it and reads no field of it.
 pub const FILE = std.c.FILE;
 
 /// The pthread types, from libc rather than from `std.c`.
 ///
-/// **`std.c` is wrong for musl and it would not have shown up here.** It
-/// carries glibc's `pthread_attr_t` -- 56 bytes of storage plus a `c_long` of
-/// alignment -- where musl's is 56 bytes total on 64-bit and 36 on 32-bit.
-/// `Vm` embeds one, so taking `std.c`'s would move every field after
-/// `new_thread_attr` on every Linux target while remaining correct on macOS.
-/// It was caught as `size 56 vs 64` and `36 vs 60`, and only because the
-/// cross-compile targets run.
+/// `std.c` declares glibc's `pthread_attr_t`, and musl's has a different
+/// size, so `std.c`'s is wrong on a musl target and correct on macOS.
+/// `runtime/ev/backend.zig`'s `VmBackend` embeds a `pthread_attr_t` in
+/// three of its four arms, and `vm/state.zig`'s `Vm` has a `VmBackend`, so
+/// taking `std.c`'s would move every field after `new_thread_attr` on every
+/// Linux target. The size has to come from the platform rather than from a
+/// table kept by hand.
 ///
-/// Reaching libc through `@cImport` is deliberate: "no C in the tree" and "no
-/// libc" are different claims, and only the first is a goal. What matters is
-/// that the size comes from the platform rather than from a table someone
-/// maintains by hand.
+/// Nothing crosses a translation boundary by value. `cabi.zig` declares
+/// `pthread_attr_init` and its neighbours, each taking a pointer, so these
+/// three types are storage and an address and nothing more.
+pub const pthread_attr_t = libc.pthread_attr_t;
+pub const pthread_mutex_t = libc.pthread_mutex_t;
+pub const pthread_t = libc.pthread_t;
+
+// ==========================================================================
+// Types
+// ==========================================================================
+
+/// Windows' mutex, which `runtime/ev/channel.zig` selects instead of a
+/// `pthread_mutex_t`, and `void` off Windows where that selection is
+/// comptime-false.
 ///
-/// Nothing crosses a translation boundary by value. `ev.zig` declares
-/// `pthread_attr_init` and its neighbours itself, taking a pointer, so these
-/// types are storage and an address and nothing more.
+/// It comes from `std.os.windows` rather than from a `@cImport`, because there
+/// is one Windows ABI: the per-libc difference that makes `std.c`'s
+/// `pthread_attr_t` wrong has no analogue here.
+pub const CRITICAL_SECTION = if (builtin.os.tag == .windows)
+    std.os.windows.CRITICAL_SECTION
+else
+    void;
+
+/// A file or socket descriptor. Windows gives back a `HANDLE`, so the type is
+/// a pointer there and a `c_int` everywhere else.
+pub const Handle = if (builtin.os.tag == .windows) ?*anyopaque else c_int;
+
+/// Where the three pthread types above come from.
+///
+/// Off Windows this is `@cImport` of `pthread.h`, so each size is the
+/// platform's. On Windows there are no pthreads, and the arm declares the
+/// three names anyway, two as empty structs and `pthread_t` as an opaque
+/// pointer, because all three still have to resolve.
 const libc = if (builtin.os.tag == .windows) struct {
-    // No pthreads. `Vm`'s Windows arm has no `new_thread_attr` field, so
-    // nothing below is instantiated -- but both names still have to resolve.
+    // `VmBackend`'s Windows arm has no `new_thread_attr` field, so nothing
+    // here is instantiated.
     pub const pthread_attr_t = extern struct {};
     pub const pthread_t = ?*anyopaque;
     pub const pthread_mutex_t = extern struct {};
 } else @cImport({
     @cInclude("pthread.h");
 });
-
-pub const pthread_attr_t = libc.pthread_attr_t;
-pub const pthread_t = libc.pthread_t;
-pub const pthread_mutex_t = libc.pthread_mutex_t;
-
-/// Windows' mutex, which `ev/channel.zig` selects instead of a
-/// `pthread_mutex_t`. From `std.os.windows` rather than from a `@cImport`,
-/// because there is one Windows ABI -- the per-libc caveat that made
-/// `std.pthread_attr_t` wrong does not have an analogue here. `void` off
-/// Windows, where the branch selecting it is comptime-false.
-pub const CRITICAL_SECTION = if (builtin.os.tag == .windows)
-    std.os.windows.CRITICAL_SECTION
-else
-    void;
-
-/// A file or socket descriptor. Windows hands back a `HANDLE`.
-pub const Handle = if (builtin.os.tag == .windows) ?*anyopaque else c_int;

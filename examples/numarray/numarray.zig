@@ -1,106 +1,126 @@
 //! A native module, written in Zig against the published interface.
 //!
-//! This is `numarray.c` — the sample that shipped with Janet — brought over
-//! to the interface `DESIGN.md` sections 5 and 6 decided on. It is here to be
-//! *read*: everything a module author needs is `@import("janet")`, and the
-//! two things this file no longer contains are the point.
+//! `build.zig` builds this module and `examples/numarray/test/numarray.janet`
+//! loads it. `zig build test` runs that test file.
 //!
-//! **The cast is gone.** The C original opens every callback with
+//! ## Differences with the C version
+//!
+//! This file is `numarray.c`, the sample that shipped with Janet, brought
+//! over to the interface recorded in `DESIGN.md` sections 5 and 6. Two things
+//! the C original contains are absent from the Zig version.
+//!
+//! ### Type casting
+//!
+//! The C original opens every callback with a cast:
 //!
 //! ```c
 //! static int num_array_gc(void *p, size_t s) {
 //!     num_array *array = (num_array *)p;   /* nothing checks this */
 //! ```
 //!
-//! and nothing in the language or the runtime can tell you it is wrong.
+//! Nothing in the language or the runtime reports that cast as wrong.
 //! `janet.define(NumArray, .{ ... })` takes the payload type once and
-//! generates the erased dispatch, so a callback is written over `*NumArray`
-//! and a mistake is a compile error at the callback's own definition. Break
-//! one on purpose and `zig build module-errors` shows what an author sees.
+//! generates the erased dispatch. A callback is written over `*NumArray`, so
+//! a mistake is a compile error at the callback's own definition. Break a
+//! callback on purpose and `zig build module-errors` shows what an author
+//! sees.
 //!
-//! **The `JANET_ATEND_PUT` chain is gone.** C needs sixteen macros to let an
-//! author fill in the first few fields of a positional initializer without a
-//! warning; Zig's default field values are that mechanism, so a declaration
-//! names the fields it sets and a callback added later breaks nobody's source.
+//! ### Callback list
 //!
-//! Built by `build.zig` and loaded by `examples/numarray/test/numarray.janet`,
-//! which `zig build test` runs — because "a sample module compiles and loads"
-//! is a claim, and a sample nothing executes is a file rather than an example.
+//! C needs sixteen macros to let an author fill in the first few fields of a
+//! positional initializer without a warning. Zig's default field values are
+//! that mechanism. A declaration names the fields it sets, and a callback
+//! added later breaks nobody's source.
 
 const janet = @import("janet");
 
-/// The payload. `janet.define` is told about this type once, below, and every
-/// callback is written over it.
+/// The payload of a `numarray` abstract.
+///
+/// `janet.define` names this type once, below, and every callback is
+/// written over `*NumArray`. `data` is the elements' storage and `size` is
+/// how many elements it holds.
 const NumArray = struct {
     data: [*]f64,
     size: usize,
 
+    /// Returns the elements of `self` as a slice.
     fn slice(self: *NumArray) []f64 {
         return self.data[0..self.size];
     }
 };
 
-// ---------------------------------------------------------- the callbacks
+// ==========================================================================
+// The callbacks
+// ==========================================================================
 
-/// A finalizer cannot raise and has nothing to report, and the interface says
-/// both in its type: this returns `void`. `DESIGN.md` section 5 has the reason
-/// — a finalizer runs mid-sweep on an object that is already unreachable, so
-/// there is no scope above it and nothing to retry.
+/// Frees the elements of `self`. Implements the `gc` callback.
+///
+/// This function cannot raise. `DESIGN.md` section 5 gives the reason.
 fn numArrayGc(self: *NumArray, _: usize) void {
     janet.free(self.data);
 }
 
+/// Returns the element of `self` at `key`, or a method of `self` when `key`
+/// is a keyword. Implements the `get` callback.
+///
+/// `key` is an integer index or a keyword naming a row of `methods`.
+///
+/// This function raises if `key` is neither an integer nor a keyword. It
+/// returns null if an integer `key` addresses no element, and null if a
+/// keyword `key` names no row of `methods`.
 fn numArrayGet(self: *NumArray, key: janet.Value) janet.Error!?janet.Value {
     if (janet.isKeyword(key)) return janet.getMethod(key, &methods);
-    if (!janet.isInteger(key)) return janet.panic("expected integer key");
-    // A negative index is out of range, not index zero. See `inRange`.
-    const index = inRange(self, janet.toInteger(key)) orelse return null;
+    const i = janet.toInteger(key) orelse return janet.panic("expected integer key");
+    // A negative index is out of range rather than index zero.
+    const index = inRange(self, i) orelse return null;
     return janet.number(self.slice()[index]);
 }
 
-/// `i` as an index into `self`, or null if it addresses no element.
+/// Returns `i` as an index into `self`, or null if `i` addresses no element.
 ///
-/// **A negative index is a miss, and this is the one place that is decided.**
-/// The C original wrote `(size_t) i`, so -1 became a very large index and fell
-/// out of the `>= size` test on its own -- a lookup failure for `get` and a
-/// silently ignored write for `put`. Clamping with `@max(0, i)` instead, which
-/// is the obvious Zig transliteration, quietly turns `(a -1)` into `(a 0)` and
-/// `(put a -1 x)` into a write over element zero. That is a worse answer than
-/// either: it is wrong data rather than a refusal.
+/// `i` is a Janet index and may be negative.
 ///
-/// So the conversion is written out. The behaviour a Janet program sees is the
-/// C original's exactly, and it no longer depends on an accident of unsigned
-/// wraparound.
+/// This function returns null if `i` is negative or if `i` is not below
+/// `self.size`.
 fn inRange(self: *const NumArray, i: i32) ?usize {
+    // The C original cast `i` to `size_t`, so -1 became a large unsigned
+    // index that the `>= size` test rejected. Checking the sign gives the
+    // same result without relying on wraparound; clamping with `@max(0, i)`
+    // would not, because `(a -1)` would read element zero.
     if (i < 0) return null;
     const index: usize = @intCast(i);
     return if (index < self.size) index else null;
 }
 
-/// `put` runs inside an interpreter frame with a real scope above it, so it
-/// may raise and its type says that too.
+/// Sets the element of `self` at `key` to `value`. Implements the `put`
+/// callback.
+///
+/// `key` is an integer index and `value` is a number.
+///
+/// This function raises if `key` is not an integer or `value` is not a
+/// number. A `key` that addresses no element is ignored rather than refused,
+/// which is the C original's behaviour.
 fn numArrayPut(self: *NumArray, key: janet.Value, value: janet.Value) janet.Error!void {
-    if (!janet.isInteger(key)) return janet.panic("expected integer key");
-    if (!janet.isNumber(value)) return janet.panic("expected number value");
-    // Out of range is ignored rather than refused, which is the C original's
-    // choice and is kept; `inRange` has the negative half.
-    const index = inRange(self, janet.toInteger(key)) orelse return;
-    self.slice()[index] = janet.toNumber(value);
+    const i = janet.toInteger(key) orelse return janet.panic("expected integer key");
+    const x = janet.toNumber(value) orelse return janet.panic("expected number value");
+    // An index outside the array ends the call without a write.
+    const index = inRange(self, i) orelse return;
+    self.slice()[index] = x;
 }
 
-/// How the array prints. `(string a)`, `(print a)` and `%V` are exactly what
-/// this pushes; `(describe a)` and `%v` wrap the same bytes in
-/// `<numarray ...>`, which the runtime adds around the callback rather than
-/// asking it for. The two are `pp.zig`'s `toStringB` and `descriptionB`, and
-/// only the second wraps.
+/// Renders `self` as its elements, separated by spaces, in square brackets.
+/// Implements the `tostring` callback.
 ///
-/// **The `*janet.Render` is a capability, and appending is all it does.** It
-/// is not a value and not a buffer's layout: an author holds the pointer, hands
-/// it back to `push` or `format`, and cannot store it — the buffer behind it is
-/// the pretty-printer's and does not outlive the call. `format` is sugar over
-/// `push`, so the loop below could be written with either.
+/// `render` is the capability to append to the buffer being built.
+///
+/// This function raises if an append fails.
+///
+/// `(string a)`, `(print a)` and `%V` print exactly what this callback pushes.
+/// `(describe a)` and `%v` print the same bytes inside `<numarray ...>`; the
+/// runtime adds that wrapper.
 fn numArrayTostring(self: *NumArray, render: *janet.Render) janet.Error!void {
     try janet.push(render, "[");
+    // `janet.format` is a convenience over `janet.push`; either would do.
     for (self.slice(), 0..) |cell, i| {
         if (i != 0) try janet.push(render, " ");
         try janet.format(render, "{d}", .{cell});
@@ -108,41 +128,37 @@ fn numArrayTostring(self: *NumArray, render: *janet.Render) janet.Error!void {
     try janet.push(render, "]");
 }
 
-/// How the array is written to a stream: the element count, then the elements.
+/// Writes `self` to a stream: the element count, then the elements.
+/// Implements the `marshal` callback.
 ///
-/// **`pushAbstract` comes first**, before any of the payload. It enters this
-/// object into the stream's reference table, so a value marshalled later in
-/// the same stream that refers back to this array encodes a reference rather
-/// than a second copy — and `unmarshal` registers in the same position, which
-/// is what makes the two tables line up. The runtime refuses an `unmarshal`
-/// that never registers at all.
+/// `m` is the capability to append to the stream.
 ///
-/// **`pushNumber` and not a raw `pushBytes` of the doubles.** There is no float
-/// entry point on the boundary, so the obvious move is to push the elements'
-/// bytes — and a stream written on one machine then decodes as garbage on
-/// another. A number `Value` is the runtime's own encoding and travels.
+/// This function raises if a push fails.
 fn numArrayMarshal(self: *NumArray, m: *janet.Marshal) janet.Error!void {
+    // Before the payload; `numArrayUnmarshal` calls `janet.pullAbstract` at
+    // the same point.
     janet.pushAbstract(m, self);
     try janet.pushSize(m, self.size);
+    // As `Value`s rather than raw bytes, so the encoding does not depend on
+    // the writing machine's byte order.
     for (self.slice()) |cell| try janet.pushNumber(m, cell);
 }
 
-/// The same in reverse, and the order is the point.
+/// Reads a `NumArray` back from a stream. Implements the `unmarshal`
+/// callback.
 ///
-/// **The count is bounded by the bytes left before anything is allocated for
-/// it.** `size` is a number the stream chose; no element is shorter than one
-/// byte, so a stream promising more elements than it has bytes remaining is
-/// refused here rather than in the allocator. Without the bound, a few bytes
-/// of input ask for an arbitrary allocation.
+/// `u` is the capability to read from the stream.
 ///
-/// **The storage is allocated before `pullAbstract`**, for the reason `new`
-/// gives at greater length: from the moment `pullAbstract` hands back a block
-/// it is on the collector's heap list and tagged as this type, so a raise
-/// between there and the assignment would leave `numArrayGc` freeing a `data`
-/// that was never written.
+/// This function raises if a pull fails, if the count exceeds the bytes
+/// remaining, or if the allocation fails. It reads the element count and
+/// then the elements, which is the order `numArrayMarshal` writes them in.
 fn numArrayUnmarshal(u: *janet.Unmarshal) janet.Error!*NumArray {
     const size = try janet.pullSize(u);
+    // A malformed stream can claim more elements than it has bytes.
     if (size > janet.pullRemaining(u)) return janet.panic("numarray is longer than the stream");
+    // Allocated before `janet.pullAbstract`: from the moment that returns, the
+    // block is on the collector's heap list and `numArrayGc` may run on it,
+    // so `data` must be valid by then.
     const data = janet.alloc(f64, size) orelse return janet.panic("out of memory");
     const array = try janet.pullAbstract(u, NumArray, null);
     array.* = .{ .data = data.ptr, .size = size };
@@ -150,8 +166,9 @@ fn numArrayUnmarshal(u: *janet.Unmarshal) janet.Error!*NumArray {
     return array;
 }
 
-/// The abstract type: one declaration, one payload type, the callbacks it
-/// actually has.
+/// The `numarray` abstract type: one payload type and the six callbacks this
+/// module has. `new` passes it to `janet.new`, `scale`, `sum` and `length`
+/// pass it to `janet.getAbstract`, and `defs` registers it.
 const num_array_type = janet.define(NumArray, .{
     .name = "numarray",
     .gc = numArrayGc,
@@ -162,33 +179,41 @@ const num_array_type = janet.define(NumArray, .{
     .unmarshal = numArrayUnmarshal,
 });
 
-// --------------------------------------------------------- the cfunctions
+// ==========================================================================
+// The cfunctions
+// ==========================================================================
 
+/// Creates a numarray of `size` zeroed elements. Implements
+/// `(numarray/new size)`.
+///
+/// `argv` slot 0 is the element count.
+///
+/// This function raises if the arity is wrong, if slot 0 is not an integer,
+/// if the count is negative, or if the allocation fails.
 fn new(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
-    // **A negative size is refused, and that is a deliberate difference.** The
-    // C original converted it to `size_t` as well, so `(numarray/new -1)` asked
-    // `janet_calloc` for about 147 exabytes and died in the out-of-memory exit
-    // -- a real outcome, but not one worth copying into the module an author
-    // reads first. Clamping to zero, the other obvious choice, hands back an
-    // empty array as though the argument had been fine. Refusing says what
-    // happened, and a cfunction may refuse.
+    // Refused rather than clamped to zero. The C original converted it to
+    // `size_t`, so `(numarray/new -1)` asked for more memory than exists.
     const requested = try janet.getInteger(argv, 0);
     if (requested < 0) return janet.panic("expected a non-negative size");
     const size: usize = @intCast(requested);
-    // **The payload is allocated before the abstract, because this one can
-    // refuse.** `janet.new` returns a block that is already on the collector's
-    // heap list and already tagged as an abstract, so from that moment a sweep
-    // may run this type's `gc` over it. Allocating second and raising on
-    // failure would leave exactly that block unreachable with `data` never
-    // written, and the finalizer would free a wild pointer. Allocating first
-    // puts nothing between `new` and the assignment below.
+    // Allocated before `janet.new`: `janet.new` returns a block that is
+    // already on the collector's heap list, so a sweep may call `numArrayGc`
+    // on it from that moment, and `data` must be valid by then.
     const data = janet.alloc(f64, size) orelse return janet.panic("out of memory");
     const array = janet.new(NumArray, &num_array_type, null);
     array.* = .{ .data = data.ptr, .size = size };
     return janet.abstract(array);
 }
 
+/// Scales every element of the array by `factor` and returns the array.
+/// Implements `(numarray/scale numarray factor)`.
+///
+/// `argv` slot 0 is the numarray and slot 1 is the factor. The elements are
+/// scaled in place.
+///
+/// This function raises if the arity is wrong, if slot 0 is not a numarray,
+/// or if slot 1 is not a number.
 fn scale(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
     try janet.fixarity(argv, 2);
     const array = try janet.getAbstract(NumArray, argv, 0, &num_array_type);
@@ -197,6 +222,13 @@ fn scale(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
     return argv[0];
 }
 
+/// Returns the sum of the array's elements. Implements
+/// `(numarray/sum numarray)`.
+///
+/// `argv` slot 0 is the numarray.
+///
+/// This function raises if the arity is wrong or if slot 0 is not a
+/// numarray.
 fn sum(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const array = try janet.getAbstract(NumArray, argv, 0, &num_array_type);
@@ -205,26 +237,40 @@ fn sum(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
     return janet.number(total);
 }
 
+/// Returns the number of elements in the array. Implements
+/// `(numarray/length numarray)`.
+///
+/// `argv` slot 0 is the numarray.
+///
+/// This function raises if the arity is wrong or if slot 0 is not a
+/// numarray.
 fn length(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const array = try janet.getAbstract(NumArray, argv, 0, &num_array_type);
     return janet.number(@floatFromInt(array.size));
 }
 
+/// The method table `numArrayGet` looks a keyword key up in, with a row for
+/// `scale`, `sum` and `length`.
 const methods = [_]janet.Method{
     .{ .name = "scale", .cfun = &scale },
     .{ .name = "sum", .cfun = &sum },
     .{ .name = "length", .cfun = &length },
 };
 
-// -------------------------------------------------------------- the module
+// ==========================================================================
+// The module
+// ==========================================================================
 
+/// Registers the abstract type and defines the module's four cfunctions.
+///
+/// `env` is the capability to define a binding in the environment the module
+/// is loading into. `janet.entry` below passes `defs` to the loader.
+///
+/// This function raises if `janet.registerAbstract` refuses.
 fn defs(env: *janet.Env) janet.Error!void {
-    // **A type with an `unmarshal` callback has to be registered**, or the
-    // unmarshaller never finds it: a marshalled abstract carries its type's
-    // name on the wire and resolves it through the runtime's registry. This is
-    // what `defs` may raise for, and why the loader tests for a refusal after
-    // `_janet_init`.
+    // A marshalled abstract names its type, and unmarshalling a name the
+    // registry does not have raises `unknown abstract type`.
     try janet.registerAbstract(&num_array_type);
     janet.cfuns(env, "numarray", &.{
         janet.reg("new", &new, "(numarray/new size)\n\nCreate new numarray"),

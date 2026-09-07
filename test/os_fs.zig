@@ -1,43 +1,59 @@
 //! Behavioral contract for the basic filesystem kernels: `getcwd`, `mkdir`,
 //! `rmdir`, `chdir`, `remove` and `rename`, and the `os/` functions over them.
 //!
-//! Two things here are not reachable from Janet. The kernels answer a status
-//! and set `errno`, where the Janet functions answer a boolean or raise — so
+//! Two things here are not reachable from Janet. The kernels return a status
+//! and set `errno`, where the Janet functions give a boolean or raise, so
 //! the distinction between "the directory already existed" and "the call
-//! failed" exists only below the Janet surface. And `os/mkdir` answers *false*
+//! failed" exists only below the Janet surface. And `os/mkdir` gives *false*
 //! for an existing directory rather than raising, which is a return value a
-//! suite would have to know to look for.
+//! suite would have to be written to look for.
 //!
 //! ## The fixture is a real directory, and it is cleaned twice
 //!
 //! Once before the run and once after. Before, because a previous run that
 //! aborted mid-way leaves the tree behind and every assertion after that fails
-//! for the wrong reason -- one suite's leftover file once made fifty-seven
+//! for the wrong reason, so one suite's leftover file cannot make fifty-seven
 //! mutants look caught. After, because `tools/testing/matrix.janet` runs
 //! entries concurrently in the repository working directory.
 //!
-//! The names carry a random-looking suffix for the same reason: two matrix
+//! The names have a random-looking suffix for the same reason: two matrix
 //! entries share a working directory, and a fixture named `test-dir` would
 //! have them deleting each other's.
 
-const std = @import("std");
-const repr = @import("repr");
-const c = @import("cabi");
-const harness = @import("harness.zig");
-const value = @import("subsystems").value;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const fs = @import("subsystems").fs;
-const expect = @import("expect.zig").expect;
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
+const std = @import("std");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const c = @import("cabi");
+const expect = @import("expect.zig").expect;
+const fs = @import("subsystems").fs;
+const harness = @import("harness.zig");
+const repr = @import("repr");
+const value = @import("subsystems").value;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+const direct_dest = "janet-zig-os-fs-direct-83c2/dest";
 const direct_dir = "janet-zig-os-fs-direct-83c2";
 const direct_source = "janet-zig-os-fs-direct-83c2/source";
-const direct_dest = "janet-zig-os-fs-direct-83c2/dest";
+const path_max = 4096;
+const public_dest = "janet-zig-os-fs-public-91af/dest";
 const public_dir = "janet-zig-os-fs-public-91af";
 const public_source = "janet-zig-os-fs-public-91af/source";
-const public_dest = "janet-zig-os-fs-public-91af/dest";
 
-const path_max = 4096;
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// The working directory as a NUL-terminated slice. Sentinel-terminated
 /// rather than plain, because every kernel below takes a C string and a plain
@@ -47,8 +63,8 @@ fn cwd(buffer: *[path_max]u8) [:0]const u8 {
     return std.mem.span(@as([*:0]const u8, @ptrCast(buffer)));
 }
 
-/// A file with known contents, written through libc so that nothing under test
-/// is used to build the fixture for the things under test.
+/// A file with fixed contents, written through libc so that nothing under test
+/// builds the fixture for the things under test.
 fn makeFile(path: [*:0]const u8) void {
     const file = c.fopen(path, "wb");
     expect(file != null);
@@ -111,7 +127,7 @@ fn theCoreFunctions(original: [:0]const u8) !void {
     expect(harness.stringIs(wrap.toString(here), original.ptr));
 
     args[0] = value.fromBytes(public_dir, .string);
-    // True the first time, false the second -- not a raise.
+    // True the first time, false the second, and not a raise.
     expect(wrap.toBoolean(try mkdir(args[0..1])));
     expect(!wrap.toBoolean(try mkdir(args[0..1])));
 
@@ -131,7 +147,7 @@ fn theCoreFunctions(original: [:0]const u8) !void {
     expect(harness.isType(try rmdir(args[0..1]), repr.Tag.nil));
 }
 
-/// What the Janet surface refuses, which the C contract did not ask. Each is a
+/// What the Janet surface refuses. Each is a
 /// call the kernel below would have failed at; the point is that the failure
 /// arrives as a raise rather than as a silent false.
 fn theRefusals() void {
@@ -149,6 +165,10 @@ fn theRefusals() void {
     args[0] = harness.wrapInteger(7);
     expect(harness.raised(cd, .{args[0..1]}) != null);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     var buffer: [path_max]u8 = undefined;

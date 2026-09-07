@@ -1,52 +1,56 @@
 //! `ffi.c`'s marshalling: a Janet value written into memory as a C value would
-//! appear there, and the same memory read back. It holds Janet values and can
+//! appear there, and the same memory read back. It takes Janet values and can
 //! raise on every second line.
 //!
-//! ## Misaligned access is written out
-//!
-//! A `:pack`ed struct field lands wherever the previous field ended, so a
-//! `double` field can sit at an odd offset. Writing it through a `*double` is
-//! undefined -- and aborts under the sanitizer, which is why the differential
-//! corpus's byte-image half runs at `ReleaseFast`.
-//!
-//! **Every access here goes through an `align(1)` pointer.** That is the same
-//! store and the same byte image, said in a way that is defined.
-//!
-//! ## Scratch and raising
+//! Misaligned access is written out. A `:pack`ed struct field lands wherever
+//! the previous field ended, so a `double` field can sit at an odd offset.
+//! Writing it through a `*double` is undefined, and aborts under the
+//! sanitizer, which is what makes the differential corpus's byte-image half
+//! run at `ReleaseFast`. Every access here goes through an `align(1)` pointer:
+//! the same store and the same byte image, said in a way that is defined.
 //!
 //! The argument layer raises, so a raise can cross these frames. Nothing here
-//! holds anything a skipped cleanup would strand.
+//! owns anything a skipped cleanup would strand.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const raise = @import("../../api/raise.zig");
-const pp_format = @import("../pp/format.zig");
-const ffi_types = @import("types.zig");
-const args_core = @import("../args.zig");
-const config = @import("config");
-const gc_alloc = @import("../gc.zig");
-const tuples = @import("../value/tuples.zig");
-const wrap = @import("../value/helpers/wrap.zig");
-const arrays = @import("../value/arrays.zig");
 
-const repr = @import("repr");
-const value = @import("../value.zig");
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const args_core = @import("../args.zig");
+const arrays = @import("../value/arrays.zig");
+const config = @import("config");
+const ffi_types = @import("types.zig");
+const gc_alloc = @import("../gc.zig");
 const inttypes = @import("../value/ints.zig");
-const Type = ffi_types.Type;
-const Struct = ffi_types.Struct;
+const pp_format = @import("../pp/format.zig");
+const raise = @import("../../api/raise.zig");
+const repr = @import("repr");
+const tuples = @import("../value/tuples.zig");
+const value = @import("../value.zig");
+const wrap = @import("../value/helpers/wrap.zig");
+
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 const has_int_types = config.int_types;
 
-/// Store `value` at `to`, which may be aligned for nothing at all.
-inline fn put(comptime T: type, to: *anyopaque, val: T) void {
-    const p: *align(1) T = @ptrCast(@alignCast(@as([*]align(1) u8, @ptrCast(to))));
-    p.* = val;
-}
+// ==========================================================================
+// Aliased types
+// ==========================================================================
 
-/// Load a `T` from `from`, which may be aligned for nothing at all.
-inline fn get(comptime T: type, from: [*]const u8) T {
-    const p: *align(1) const T = @ptrCast(from);
-    return p.*;
-}
+const Struct = ffi_types.Struct;
+const Type = ffi_types.Type;
+
+// ==========================================================================
+// Public functions
+// ==========================================================================
 
 /// Every Janet type that can stand in for a C pointer.
 pub fn getPointer(argv: []const repr.Value, n: usize) raise.Raising(?*anyopaque) {
@@ -70,6 +74,69 @@ pub fn getPointer(argv: []const repr.Value, n: usize) raise.Raising(?*anyopaque)
             "bad slot #%d, expected ffi pointer convertible type, got %v",
             .{ @as(i64, @intCast(n)), argv[n] },
         ),
+    };
+}
+
+/// The inverse of `writeOne`, on the assumption that the memory is what the
+/// type says it is.
+pub fn readOne(from: [*]const u8, ty: Type, recur: c_int) raise.Raising(repr.Value) {
+    if (recur == 0) return raise.panic("recursion too deep");
+
+    if (ty.array_count >= 0) {
+        const el_type = ty.element();
+        const el_size = ffi_types.typeSize(el_type);
+        const array = arrays.new(@intCast(ty.array_count));
+        var cursor = from;
+        // `array_count` stays signed, since -1 is its "not an array" marker,
+        // and the branch above is what rules that out here.
+        for (0..@as(usize, @intCast(ty.array_count))) |_| {
+            try arrays.push(array, try readOne(cursor, el_type, recur - 1));
+            cursor += el_size;
+        }
+        return wrap.fromArray(array);
+    }
+
+    return switch (ty.prim) {
+        .void => wrap.fromNil(),
+        .@"struct" => blk: {
+            const st = ty.st.?;
+            const members = Struct.fields(st);
+            const tup = tuples.begin(@intCast(st.field_count));
+            for (members[0..st.field_count], 0..) |member, i| {
+                tup[i] = try readOne(from + member.offset, member.type, recur - 1);
+            }
+            break :blk wrap.fromTuple(tuples.end(tup));
+        },
+        .double => wrap.fromNumber(get(f64, from)),
+        .float => wrap.fromNumber(get(f32, from)),
+        .ptr => blk: {
+            const ptr = get(?*anyopaque, from);
+            break :blk if (ptr == null) wrap.fromNil() else wrap.fromPointer(ptr);
+        },
+        .string => value.fromBytes(std.mem.span(get([*:0]const u8, from)), .string),
+        // Read as a byte and compared, not loaded as a `bool`. The memory is
+        // whatever the callee left there, and a byte that is neither 0 nor 1
+        // is not a valid `bool` in Zig, where C's `((bool *) from)[0]` is
+        // merely nonzero. This gives the same result for every input and a
+        // defined one for all of them.
+        .bool => wrap.fromBoolean(get(u8, from) != 0),
+        .int8 => wrap.fromNumber(@floatFromInt(get(i8, from))),
+        .int16 => wrap.fromNumber(@floatFromInt(get(i16, from))),
+        .int32 => wrap.fromNumber(@floatFromInt(get(i32, from))),
+        .uint8 => wrap.fromNumber(@floatFromInt(get(u8, from))),
+        .uint16 => wrap.fromNumber(@floatFromInt(get(u16, from))),
+        .uint32 => wrap.fromNumber(@floatFromInt(get(u32, from))),
+        // Without the integer types these two lose precision exactly as the C
+        // original does, and the branch is on the build rather than on the
+        // value for that reason.
+        .int64 => if (has_int_types)
+            inttypes.wrapS64(get(i64, from))
+        else
+            wrap.fromNumber(@floatFromInt(get(i64, from))),
+        .uint64 => if (has_int_types)
+            inttypes.wrapU64(get(u64, from))
+        else
+            wrap.fromNumber(@floatFromInt(get(u64, from))),
     };
 }
 
@@ -139,15 +206,14 @@ pub fn writeOne(
     }
 }
 
-/// Write one argument into a **register slot**, extended to the register's
-/// width.
+/// Write one argument into a register slot, extended to the register's width.
 ///
-/// **Extension is the caller's job under both AAPCS64 and the SysV ABI**: a
-/// callee that declares `int8_t` is entitled to read the whole register
-/// without masking. `writeOne` places a value at the type's own width, which
-/// is what a struct field and an array element need and is wrong here -- an
-/// `:s8` of -1 written as one byte reaches such a callee as 255, whatever the
-/// other seven bytes hold.
+/// Extension is the caller's job under both AAPCS64 and the SysV ABI: a callee
+/// that declares `int8_t` is entitled to read the whole register without
+/// masking. `writeOne` places a value at the type's own width, which is what a
+/// struct field and an array element need and is wrong here: an `:s8` of -1
+/// written as one byte reaches such a callee as 255, whatever is in the other
+/// seven bytes.
 ///
 /// Everything wider than a register, and everything that is not an integer,
 /// falls through to `writeOne`: a float's register is written at full width by
@@ -191,65 +257,18 @@ pub fn writeRegister(
     return writeOne(to, argv, n, ty, recur);
 }
 
-/// The inverse of `writeOne`, assuming the memory holds what the type says it
-/// holds.
-pub fn readOne(from: [*]const u8, ty: Type, recur: c_int) raise.Raising(repr.Value) {
-    if (recur == 0) return raise.panic("recursion too deep");
+// ==========================================================================
+// Private functions
+// ==========================================================================
 
-    if (ty.array_count >= 0) {
-        const el_type = ty.element();
-        const el_size = ffi_types.typeSize(el_type);
-        const array = arrays.new(@intCast(ty.array_count));
-        var cursor = from;
-        // `array_count` stays signed -- -1 is its "not an array" marker, and
-        // the branch above is what rules it out here.
-        for (0..@as(usize, @intCast(ty.array_count))) |_| {
-            try arrays.push(array, try readOne(cursor, el_type, recur - 1));
-            cursor += el_size;
-        }
-        return wrap.fromArray(array);
-    }
+/// Load a `T` from `from`, which may be aligned for nothing at all.
+inline fn get(comptime T: type, from: [*]const u8) T {
+    const p: *align(1) const T = @ptrCast(from);
+    return p.*;
+}
 
-    return switch (ty.prim) {
-        .void => wrap.fromNil(),
-        .@"struct" => blk: {
-            const st = ty.st.?;
-            const members = Struct.fields(st);
-            const tup = tuples.begin(@intCast(st.field_count));
-            for (members[0..st.field_count], 0..) |member, i| {
-                tup[i] = try readOne(from + member.offset, member.type, recur - 1);
-            }
-            break :blk wrap.fromTuple(tuples.end(tup));
-        },
-        .double => wrap.fromNumber(get(f64, from)),
-        .float => wrap.fromNumber(get(f32, from)),
-        .ptr => blk: {
-            const ptr = get(?*anyopaque, from);
-            break :blk if (ptr == null) wrap.fromNil() else wrap.fromPointer(ptr);
-        },
-        .string => value.fromBytes(std.mem.span(get([*:0]const u8, from)), .string),
-        // Read as a byte and compared, not loaded as a `bool`. The memory is
-        // whatever the callee left there, and a byte that is neither 0 nor 1
-        // is not a valid `bool` in Zig -- where C's `((bool *) from)[0]` is
-        // merely nonzero. This is the same answer for every input and a
-        // defined one for all of them.
-        .bool => wrap.fromBoolean(get(u8, from) != 0),
-        .int8 => wrap.fromNumber(@floatFromInt(get(i8, from))),
-        .int16 => wrap.fromNumber(@floatFromInt(get(i16, from))),
-        .int32 => wrap.fromNumber(@floatFromInt(get(i32, from))),
-        .uint8 => wrap.fromNumber(@floatFromInt(get(u8, from))),
-        .uint16 => wrap.fromNumber(@floatFromInt(get(u16, from))),
-        .uint32 => wrap.fromNumber(@floatFromInt(get(u32, from))),
-        // Without the integer types these two lose precision exactly as the C
-        // original does, which is why the branch is on the build rather than on
-        // the value.
-        .int64 => if (has_int_types)
-            inttypes.wrapS64(get(i64, from))
-        else
-            wrap.fromNumber(@floatFromInt(get(i64, from))),
-        .uint64 => if (has_int_types)
-            inttypes.wrapU64(get(u64, from))
-        else
-            wrap.fromNumber(@floatFromInt(get(u64, from))),
-    };
+/// Store `value` at `to`, which may be aligned for nothing at all.
+inline fn put(comptime T: type, to: *anyopaque, val: T) void {
+    const p: *align(1) T = @ptrCast(@alignCast(@as([*]align(1) u8, @ptrCast(to))));
+    p.* = val;
 }

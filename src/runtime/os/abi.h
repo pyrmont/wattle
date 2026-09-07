@@ -61,7 +61,26 @@
 #include <sys/utime.h>
 #else
 #include <unistd.h>
+
+/* `spawn.h` puts its Darwin extensions behind `_DARWIN_C_SOURCE`, which
+ * `janet_features.h` defines, and that block includes
+ * `mach/exception_types.h`. The chain reaches `mach/message.h`, whose message
+ * descriptor structs hold bitfields; `translate-c` demotes each to an opaque
+ * type, and the header's own `_Static_assert` on their sizes, live under
+ * `__arm64__`, then asks `@sizeOf` of an opaque type. That assertion is in
+ * Zig's bundled Darwin headers, which a build naming a target reads in place
+ * of the host SDK, and the SDK's copy of the header omits it. Clearing the
+ * macro for this one include stops `spawn.h` at its POSIX declarations. This
+ * translation reads no Darwin spawn extension: `posix_spawn_file_actions_t`
+ * and the `posix_spawn` family are declared above the block. */
+#if defined(__APPLE__)
+#undef _DARWIN_C_SOURCE
 #include <spawn.h>
+#define _DARWIN_C_SOURCE
+#else
+#include <spawn.h>
+#endif
+
 #include <pthread.h>
 #endif
 

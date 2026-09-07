@@ -29,11 +29,20 @@
 # because a document naming a path that is not there is wrong wherever it sits
 # and a reader cannot check it.
 #
-# A retired **`-D<x>-core` selector option** is deliberately *not* in the wide
-# question, although it looks like the same thing. A retired *file* can be
-# checked by looking; a retired *command* may be a log saying what was run, and
-# rewriting one falsifies the record rather than repairing it. The option stays
-# in the shipped-source question above, where a live file naming one is wrong.
+# **A `-D` option the build does not have** is the third question, and it is
+# derived rather than listed. `build.zig`'s own `b.option` calls are the set of
+# options that exist, plus `target`, `cpu` and `optimize`, which Zig declares
+# for it. Anything else a shipped file spells after `-D` names a switch nobody
+# can pass. A hard-coded list of retired suffixes was what this asked before,
+# and it fired on nothing: the retired options are named `-Dboot`,
+# `-Dvalue-wrap`, `-Dgc-mark` and their kin, and no list written once keeps up
+# with the next one.
+#
+# It is asked of the **shipped source** only, for the reason the chronology
+# question is. A retired *file* can be checked by looking; a retired *command*
+# may be a log saying what was run, and rewriting one falsifies the record
+# rather than repairing it. `tools/testing/acceptance-matrix.md` and
+# `tools/testing/mutation.md` are exactly that, and they stay out.
 #
 # Both questions skip `.zig-cache` and `zig-out`. `examples/standalone` builds
 # a cache of its own inside the tree, and a compiler cache is full of `std`
@@ -86,10 +95,10 @@ status=0
 
 # ------------------------------------------------- chronology, shipped source
 
-if grep -rnE 'Phase [0-9]+|increment [0-9]+[a-z]?|Part [0-9]+[a-z]?|batch [0-9]|SPIKE-?[0-9]+|PLAN\.md|NAMESPACES\.md|phase_1[0-9]\.md|the hinge|selector|-D[a-z]+-(core|engine|loop|sockets|access|alloc|primitives|trampoline|encode)|src/core/|janet\.h|util\.h|what `[a-z_]+\.zig` was|[a-z_]+_(core|surface|files|time|stat|loop|stream|sockets|pretty|access|alloc|symbol|array|table|frames|flags)\.zig' \
+if grep -rnE 'Phase [0-9]+|increment [0-9]+[a-z]?|Part [0-9]+[a-z]?|batch [0-9]|SPIKE-?[0-9]+|PLAN\.md|NAMESPACES\.md|phase_1[0-9]\.md|the hinge|selector|src/core/|janet\.h|util\.h|what `[a-z_]+\.zig` was|[a-z_]+_(core|surface|files|time|stat|loop|stream|sockets|pretty|access|alloc|symbol|array|table|frames|flags)\.zig' \
     --exclude-dir=.zig-cache --exclude-dir=zig-out \
     src test examples build.zig |
-  grep -vE 'test/[a-z_0-9]+\.zig|@import\("[a-z_0-9]+\.zig"\)|host_stat\.zig|trace_frames\.zig|filewatch_flags\.zig|filewatch_core\.zig'
+  grep -vE '^[^:]+:[0-9]+:.*(test/[a-z_0-9]+\.zig|@import\("[a-z_0-9]+\.zig"\)|host_stat\.zig|trace_frames\.zig|filewatch_flags\.zig|filewatch_core\.zig)'
 then
   echo "chronology.sh: the lines above cite the migration rather than the code." >&2
   status=1
@@ -105,6 +114,47 @@ if grep -rnE '(^|[^/a-z_])types\.zig|stretchy\.zig|NAMESPACES\.md|src/zig' \
   grep -vE 'does not exist|There is no'
 then
   echo "chronology.sh: the lines above name a file or directory that does not exist." >&2
+  status=1
+fi
+
+# ------------------------------------- a `-D` option this build does not have
+
+live_options=$(
+  {
+    grep -oE 'b\.option\([^,]*, "[a-z0-9-]+"' build.zig | sed 's/.*"\(.*\)"/\1/'
+    # Zig declares these three for every build script.
+    printf '%s\n' target cpu optimize
+  } | sort -u
+)
+
+# `awk` reads the set from the environment: `-v` does not take a newline, and
+# `-e` rather than `--` because `--` would end option parsing before the two
+# `--exclude-dir`s.
+export live_options
+
+retired_options=$(
+  grep -rnE --exclude-dir=.zig-cache --exclude-dir=zig-out \
+      -e '-D[a-z0-9]' \
+      src test examples build.zig |
+  grep -vE 'does not exist|There is no' |
+  awk '
+    BEGIN {
+      n = split(ENVIRON["live_options"], a, "\n")
+      for (i = 1; i <= n; i++) have[a[i]] = 1
+    }
+    {
+      rest = $0
+      while (match(rest, /-D[a-z0-9][a-z0-9-]*/)) {
+        name = substr(rest, RSTART + 2, RLENGTH - 2)
+        if (!(name in have)) { print; break }
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+    }'
+)
+
+if [ -n "$retired_options" ]; then
+  printf '%s\n' "$retired_options"
+  echo "chronology.sh: the lines above name a -D option this build does not have." >&2
   status=1
 fi
 

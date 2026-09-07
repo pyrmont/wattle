@@ -4,40 +4,74 @@
 //! `strings.zig`, `symbols.zig` and `tuples.zig` are one allocation strategy: a
 //! header and its payload in a single collectable block, sized once and never
 //! resized, which is what makes them immutable in the runtime's sense. An array
-//! or a buffer is the other shape -- a fixed-size block pointing at a payload
-//! that can be reallocated. Two consequences hold for all three:
+//! or a buffer is the other shape, a fixed-size block pointing at a payload
+//! that can be reallocated. Two consequences follow for all three:
 //!
-//!  - **A head recovered by pointer arithmetic.** The value Janet passes around
-//!    is the address of the payload, not of the block, so `head` subtracts
-//!    `tuple_payload`. `test/gc_mark.zig` checks the offset the allocator
-//!    actually used.
-//!  - **A hash computed once, at the end of construction.** `begin` leaves
-//!    `hash` uninitialised and `end` fills it in, so a value observed between
-//!    the two has an indeterminate hash and nothing may put it in a dictionary.
+//! - A head is recovered by pointer arithmetic. The value Janet passes around
+//!   is the address of the payload rather than of the block, so `head`
+//!   subtracts `tuple_payload`. `test/gc_mark.zig` checks the offset the
+//!   allocator actually used.
+//!
+//! - A hash is computed once, at the end of construction. `begin` leaves `hash`
+//!   uninitialised and `end` fills it in, so a value observed between the two
+//!   has an indeterminate hash and nothing may put it in a dictionary.
 //!
 //! The taxonomy that separates them is Janet's own: a string and a symbol are
-//! **bytes**, a tuple is **indexed**. There is no `keywords.zig` because a
-//! keyword is a symbol under a different tag, and `helpers/wrap.zig` is where
-//! the tag lives. A tuple's core is three functions and twenty-five lines, each
-//! the string pattern with a `Value` in place of a `u8`; what gives it its own
-//! file is that taxonomy, which makes `arrays.zig` its neighbour rather than
-//! `strings.zig`.
+//! bytes, a tuple is indexed. There is no `keywords.zig` because a keyword is a
+//! symbol under a different tag, and `helpers/wrap.zig` is where the tag lives.
+//! A tuple's core is the string pattern with a `Value` in place of a `u8`; what
+//! gives it its own file is that taxonomy, which makes `arrays.zig` its
+//! neighbour rather than `strings.zig`.
 //!
-//! **Nothing here holds anything across a raise.** Nothing here raises
-//! directly, but `gcalloc` can trigger a collection and a finalizer may raise,
-//! so a raise can still pass through these frames.
+//! Nothing here keeps a value across a raise. Nothing here raises directly, but
+//! `gcalloc` can trigger a collection and a finalizer may raise, so a raise can
+//! still pass through these frames.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const corefn = @import("../corefn.zig");
-const repr = @import("repr");
-const raise = @import("../../api/raise.zig");
-const pp_format = @import("../pp/format.zig");
-const gc_alloc = @import("../gc.zig");
-const wrap = @import("helpers/wrap.zig");
-const args_core = @import("../args.zig");
-const value = @import("../value.zig");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const abi = @import("abi");
+const args_core = @import("../args.zig");
+const corefn = @import("../corefn.zig");
+const gc_alloc = @import("../gc.zig");
+const pp_format = @import("../pp/format.zig");
+const raise = @import("../../api/raise.zig");
+const repr = @import("repr");
 const tables = @import("tables.zig");
+const value = @import("../value.zig");
+const wrap = @import("helpers/wrap.zig");
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// Bit 0 of the collector header's per-type field: the tuple was written with
+/// brackets rather than parentheses.
+///
+/// `tuple/type` reports it, the printer reads it, the comparison and the hash
+/// both fold it in, and it travels in a marshalled tuple, so it is a property
+/// of the value rather than a hint.
+const own_bracket_ctor: u6 = 1;
+
+/// Where the slots begin within the block.
+///
+/// `@offsetOf` rather than `@sizeOf`: the head is Zig's own declaration, so
+/// `_data` is an ordinary field whose offset the compiler takes exactly.
+pub const tuple_payload = @offsetOf(TupleHead, "_data");
+
+// ==========================================================================
+// Types
+// ==========================================================================
+
+/// The slot array Janet passes a tuple around as.
+pub const Tuple = [*]const repr.Value;
 
 /// A tuple's head: the collector's object, the length, the hash and the two
 /// source-map fields, with the slots following it in the same allocation.
@@ -50,68 +84,15 @@ pub const TupleHead = extern struct {
     _data: [0]repr.Value = std.mem.zeroes([0]repr.Value),
 };
 
-comptime {
-    // As `StringHead`: the width is the contract and the sign is not. The two
-    // source-map fields stay signed because -1 is what marks a tuple as having
-    // no position, and `hash` stays signed because it is a hash.
-    const SignedHead = extern struct {
-        gc: abi.GCObject = .{},
-        length: i32 = 0,
-        hash: i32 = 0,
-        sm_line: i32 = 0,
-        sm_column: i32 = 0,
-        _data: [0]repr.Value = std.mem.zeroes([0]repr.Value),
-    };
-    std.debug.assert(@offsetOf(TupleHead, "_data") == @offsetOf(SignedHead, "_data"));
-    std.debug.assert(@offsetOf(TupleHead, "sm_line") == @offsetOf(SignedHead, "sm_line"));
-    std.debug.assert(@sizeOf(TupleHead) == @sizeOf(SignedHead));
-}
+// ==========================================================================
+// Public functions
+// ==========================================================================
 
-/// Bit 0 of the GC header's per-type field: the tuple is a bracketed one rather
-/// than a parenthesised one. `tuple/type` answers it, the printer
-/// reads it, the comparison and the hash both fold it in, and it travels in a
-/// marshalled tuple -- so it is a property of the value and not a hint.
-const own_bracket_ctor: u6 = 1;
-
-pub inline fn isBracketed(hd: *const TupleHead) bool {
-    return hd.gc.flags.own & own_bracket_ctor != 0;
-}
-
-pub inline fn setBracketed(hd: *TupleHead) void {
-    hd.gc.flags.own |= own_bracket_ctor;
-}
-
-/// Where the slots begin within the block. `@offsetOf` and not `@sizeOf`: the
-/// head is Zig's own declaration, so `_data` is an ordinary field whose offset
-/// the compiler takes exactly.
-pub const tuple_payload = @offsetOf(TupleHead, "_data");
-
-/// The slot array Janet passes a tuple around as.
-pub const Tuple = [*]const repr.Value;
-
-/// Recover a tuple's head from its slot array.
-pub inline fn head(t: [*]const repr.Value) *TupleHead {
-    return @ptrFromInt(@intFromPtr(t) -% tuple_payload);
-}
-
-/// The inverse, for a block the allocator has just returned. It takes a
-/// `*const` head and hands back a mutable payload: the allocator's caller has
-/// to write through it, and a const head is what a comparison or a hash holds.
-pub inline fn data(hd: *const TupleHead) [*]repr.Value {
-    return @ptrFromInt(@intFromPtr(hd) +% tuple_payload);
-}
-
-/// The tuple's elements. The length lives in the head, so this is the pairing
-/// said once, the way `arrays.slice` and `FuncDef`'s accessors say theirs.
-pub inline fn view(t: [*]const repr.Value) []const repr.Value {
-    const length = head(t).length;
-    if (length == 0) return &.{};
-    return t[0..length];
-}
-
-/// Allocate a tuple of `length` slots. The slots and the hash are
-/// uninitialised; the source-map fields are set to -1, which is what marks a
-/// tuple as having no position rather than one at line zero.
+/// Allocates a tuple of `length` slots.
+///
+/// `length` is the slot count. The slots and the hash are uninitialised, and
+/// the source-map fields are set to -1, which is what marks a tuple as having
+/// no position rather than one at line zero.
 pub fn begin(length: usize) [*]repr.Value {
     const hd = gc_alloc.gcallocWithPayload(
         TupleHead,
@@ -124,72 +105,101 @@ pub fn begin(length: usize) [*]repr.Value {
     return data(hd);
 }
 
-/// Close a tuple, which is where its hash comes from. Every slot must be
-/// filled before this runs -- the hash covers all of them.
+/// Returns the payload of a block the allocator has just returned.
+///
+/// `hd` is the head. It takes a `*const` head and gives back a mutable payload:
+/// the allocator's caller has to write through it, and a const head is what a
+/// comparison or a hash is given.
+pub inline fn data(hd: *const TupleHead) [*]repr.Value {
+    return @ptrFromInt(@intFromPtr(hd) +% tuple_payload);
+}
+
+/// Closes a tuple, which is where its hash comes from.
+///
+/// `tuple` is the slot array. Every slot must be filled before this runs,
+/// because the hash covers all of them.
 pub fn end(tuple: [*]repr.Value) [*]const repr.Value {
     head(tuple).hash = value.hashIndexed(tuple[0..head(tuple).length]);
     return tuple;
 }
 
+/// Recovers a tuple's head from its slot array.
+pub inline fn head(t: [*]const repr.Value) *TupleHead {
+    return @ptrFromInt(@intFromPtr(t) -% tuple_payload);
+}
+
+/// Whether the tuple was written with brackets.
+pub inline fn isBracketed(hd: *const TupleHead) bool {
+    return hd.gc.flags.own & own_bracket_ctor != 0;
+}
+
+/// Installs the `tuple/*` cfunctions into the core environment.
+pub fn lib(env: *tables.Table) void {
+    const entries = comptime [_]corefn.Entry{
+        corefn.reg("tuple/brackets", &cfunTupleBrackets, @src(), "(tuple/brackets & xs)", "Creates a new bracketed tuple containing the elements xs."),
+        corefn.reg("tuple/slice", &cfunTupleSlice, @src(), "(tuple/slice arrtup [,start=0 [,end=(length arrtup)]])", "Take a sub-sequence of an array or tuple from index `start` " ++
+            "inclusive to index `end` exclusive. If `start` or `end` are not provided, " ++
+            "they default to 0 and the length of `arrtup`, respectively. " ++
+            "`start` and `end` can also be negative to indicate indexing " ++
+            "from the end of the input. Note that if `start` is negative it is " ++
+            "exclusive, and if `end` is negative it is inclusive, to allow a full " ++
+            "negative slice range. Returns the new tuple."),
+        corefn.reg("tuple/type", &cfunTupleType, @src(), "(tuple/type tup)", "Checks how the tuple was constructed. Will return the keyword " ++
+            ":brackets if the tuple was parsed with brackets, and :parens " ++
+            "otherwise. The two types of tuples will behave the same most of " ++
+            "the time, but will print differently and be treated differently by " ++
+            "the compiler."),
+        corefn.reg("tuple/sourcemap", &cfunTupleSourcemap, @src(), "(tuple/sourcemap tup)", "Returns the sourcemap metadata attached to a tuple, " ++
+            "which is another tuple (line, column)."),
+        corefn.reg("tuple/setmap", &cfunTupleSetmap, @src(), "(tuple/setmap tup line column)", "Set the sourcemap metadata on a tuple. `line` and `column` " ++
+            "should be integers. Returns the modified tuple."),
+        corefn.reg("tuple/join", &cfunTupleJoin, @src(), "(tuple/join & parts)", "Create a tuple by joining together other tuples and arrays."),
+    };
+    corefn.install(env, entries);
+}
+
+/// Allocates and closes a tuple over `values`.
 pub fn newFrom(values: []const repr.Value) [*]const repr.Value {
     const t = begin(values.len);
     @memcpy(t[0..values.len], values);
     return end(t);
 }
 
+/// Marks the tuple as written with brackets.
+pub inline fn setBracketed(hd: *TupleHead) void {
+    hd.gc.flags.own |= own_bracket_ctor;
+}
+
+/// Returns a tuple's elements.
+///
+/// `t` is the slot array. The length is in the head, so this is the pairing
+/// said once, the way `arrays.slice` and `FuncDef`'s accessors say theirs.
+pub inline fn view(t: [*]const repr.Value) []const repr.Value {
+    const length = head(t).length;
+    if (length == 0) return &.{};
+    return t[0..length];
+}
+
 // ==========================================================================
-// tuple/*, the cfunction surface.
-//
-// Everything above this line is value construction. A published
-// `CFunction` has no error channel in its signature, so each of these
-// delivers its raise through an abi. Nothing below holds anything across a
-// call that can raise.
+// Private functions
 // ==========================================================================
 
+/// The `tuple/*` cfunctions.
+///
+/// Everything above is value construction. A published cfunction has no error
+/// channel in its signature, so each of these delivers its raise through an
+/// abi, and none keeps a value across a call that can raise.
+///
+/// `cfunTupleJoin`'s two passes over `argv` are not redundant: the first is
+/// what rejects a bad argument and checks the total for overflow, and it has to
+/// finish before anything is allocated, because `begin` would otherwise leave a
+/// half-filled tuple behind when a later argument turned out not to be indexed.
 fn cfunTupleBrackets(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     const tup = newFrom(argv);
     setBracketed(head(tup));
     return wrap.fromTuple(tup);
 }
 
-fn cfunTupleSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    const indexed = try args_core.getIndexed(argv, 0);
-    const range = try args_core.getSlice(argv);
-    return wrap.fromTuple(newFrom(indexed[@intCast(range.start)..@intCast(range.end)]));
-}
-
-fn cfunTupleType(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 1);
-    const tup = try args_core.getTuple(argv, 0);
-    if (isBracketed(head(tup))) {
-        return value.fromBytes("brackets", .keyword);
-    }
-    return value.fromBytes("parens", .keyword);
-}
-
-fn cfunTupleSourcemap(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 1);
-    const tup = try args_core.getTuple(argv, 0);
-    var contents: [2]repr.Value = .{
-        wrap.fromInteger(head(tup).sm_line),
-        wrap.fromInteger(head(tup).sm_column),
-    };
-    return wrap.fromTuple(newFrom(&contents));
-}
-
-fn cfunTupleSetmap(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
-    try args_core.fixarity(argv, 3);
-    const tup = try args_core.getTuple(argv, 0);
-    head(tup).sm_line = try args_core.getInteger(argv, 1);
-    head(tup).sm_column = try args_core.getInteger(argv, 2);
-    return argv[0];
-}
-
-/// The two passes over `argv` are not redundant: the first is what rejects a
-/// bad argument and what checks the total for overflow, and it has to finish
-/// before anything is allocated, because `begin` would otherwise leave a
-/// half-filled tuple behind when the second argument turned out not to be
-/// indexed.
 fn cfunTupleJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
     try args_core.arity(argv, 0, -1);
     var total_len: i32 = 0;
@@ -210,26 +220,56 @@ fn cfunTupleJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
     return wrap.fromTuple(end(tup));
 }
 
-pub fn lib(env: *tables.Table) void {
-    const entries = comptime [_]corefn.Entry{
-        corefn.reg("tuple/brackets", &cfunTupleBrackets, @src(), "(tuple/brackets & xs)", "Creates a new bracketed tuple containing the elements xs."),
-        corefn.reg("tuple/slice", &cfunTupleSlice, @src(), "(tuple/slice arrtup [,start=0 [,end=(length arrtup)]])", "Take a sub-sequence of an array or tuple from index `start` " ++
-            "inclusive to index `end` exclusive. If `start` or `end` are not provided, " ++
-            "they default to 0 and the length of `arrtup`, respectively. " ++
-            "`start` and `end` can also be negative to indicate indexing " ++
-            "from the end of the input. Note that if `start` is negative it is " ++
-            "exclusive, and if `end` is negative it is inclusive, to allow a full " ++
-            "negative slice range. Returns the new tuple."),
-        corefn.reg("tuple/type", &cfunTupleType, @src(), "(tuple/type tup)", "Checks how the tuple was constructed. Will return the keyword " ++
-            ":brackets if the tuple was parsed with brackets, and :parens " ++
-            "otherwise. The two types of tuples will behave the same most of " ++
-            "the time, but will print differently and be treated differently by " ++
-            "the compiler."),
-        corefn.reg("tuple/sourcemap", &cfunTupleSourcemap, @src(), "(tuple/sourcemap tup)", "Returns the sourcemap metadata attached to a tuple, " ++
-            "which is another tuple (line, column)."),
-        corefn.reg("tuple/setmap", &cfunTupleSetmap, @src(), "(tuple/setmap tup line column)", "Set the sourcemap metadata on a tuple. line and column indicate " ++
-            "should be integers."),
-        corefn.reg("tuple/join", &cfunTupleJoin, @src(), "(tuple/join & parts)", "Create a tuple by joining together other tuples and arrays."),
+fn cfunTupleSetmap(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 3);
+    const tup = try args_core.getTuple(argv, 0);
+    head(tup).sm_line = try args_core.getInteger(argv, 1);
+    head(tup).sm_column = try args_core.getInteger(argv, 2);
+    return argv[0];
+}
+
+fn cfunTupleSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    const indexed = try args_core.getIndexed(argv, 0);
+    const range = try args_core.getSlice(argv);
+    return wrap.fromTuple(newFrom(indexed[@intCast(range.start)..@intCast(range.end)]));
+}
+
+fn cfunTupleSourcemap(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 1);
+    const tup = try args_core.getTuple(argv, 0);
+    var contents: [2]repr.Value = .{
+        wrap.fromInteger(head(tup).sm_line),
+        wrap.fromInteger(head(tup).sm_column),
     };
-    corefn.install(env, entries);
+    return wrap.fromTuple(newFrom(&contents));
+}
+
+fn cfunTupleType(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 1);
+    const tup = try args_core.getTuple(argv, 0);
+    if (isBracketed(head(tup))) {
+        return value.fromBytes("brackets", .keyword);
+    }
+    return value.fromBytes("parens", .keyword);
+}
+
+// ==========================================================================
+// Tests
+// ==========================================================================
+
+comptime {
+    // As `StringHead`: the width is the contract and the sign is not. The two
+    // source-map fields stay signed because -1 is what marks a tuple as having
+    // no position, and `hash` stays signed because it is a hash.
+    const SignedHead = extern struct {
+        gc: abi.GCObject = .{},
+        length: i32 = 0,
+        hash: i32 = 0,
+        sm_line: i32 = 0,
+        sm_column: i32 = 0,
+        _data: [0]repr.Value = std.mem.zeroes([0]repr.Value),
+    };
+    std.debug.assert(@offsetOf(TupleHead, "_data") == @offsetOf(SignedHead, "_data"));
+    std.debug.assert(@offsetOf(TupleHead, "sm_line") == @offsetOf(SignedHead, "sm_line"));
+    std.debug.assert(@sizeOf(TupleHead) == @sizeOf(SignedHead));
 }

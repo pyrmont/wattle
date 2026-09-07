@@ -5,42 +5,62 @@
 //! Every operation under test is a mutation of the VM's collection fields, and
 //! the fields are the observable result. There is no accessor for
 //! `block_count` or the scratch table's length, and inventing one would test
-//! the accessor — so this file reads the VM directly, which the Zig driver can
-//! do because it *is* the runtime's compilation.
+//! the accessor, so this file reads the VM directly. The Zig driver can do
+//! that because it *is* the runtime's compilation.
 //!
 //! Two things are deliberately not exercised. Nothing here lets a synthetic
 //! block reach `gc/sweep.zig`'s `sweep`: each allocation case unlinks what it
 //! made and restores the counters, so the contract stays independent of
-//! marking and sweeping. And the fatal paths — `gc.srealloc` and `gc.sfree` on
-//! a pointer this allocator never handed out, and the checked adds in
-//! `gc.smalloc` and `gc.gcallocWithPayload` — abort the process, so they are
-//! described here rather than run.
+//! marking and sweeping. And the fatal paths abort the process, so they are
+//! described here rather than run: `gc.srealloc` and `gc.sfree` on a pointer
+//! this allocator never handed out, and the checked adds in `gc.smalloc` and
+//! `gc.gcallocWithPayload`.
 //!
 //! ## The header arithmetic has a real oracle here
 //!
-//! `ScratchBlock` ends in a flexible array, so `@cImport` drops the member and
-//! Zig recovers the header with `@sizeOf` — the same assumption `gc_mark.zig`
-//! and `gc_sweep.zig` make about the four value heads. In this file the
-//! assumption is *checked* rather than assumed, and by the allocator itself:
-//! `janet_smalloc` registers the header in `scratch_mem` and returns a pointer
-//! into it, so `scratch_mem[base] == headerOf(p)` compares Zig's arithmetic
-//! against an address the runtime recorded. `test/gc_mark.zig` explains what
-//! had to be built to get the same guarantee for the value heads.
+//! `ScratchBlock` ends in a flexible array, so the header is recovered with
+//! `@sizeOf`, which is the same assumption `gc_mark.zig` and `gc_sweep.zig`
+//! make about the four value heads. Here it is checked rather than assumed,
+//! and by the allocator itself: `gc.smalloc` registers the header in the
+//! scratch table and returns a pointer into it, so comparing that table entry
+//! against `headerOf(p)` puts Zig's arithmetic against an address the runtime
+//! recorded. `test/gc_mark.zig` sets out what had to be built to get the same
+//! guarantee for the value heads.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const constants = @import("constants");
-const harness = @import("harness.zig");
-const gc_alloc = @import("subsystems").gc_alloc;
-const utils = @import("subsystems").utils;
-const gc_mark = @import("subsystems").gc_mark;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const arrays = @import("subsystems").value.arrays;
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const abi = @import("abi");
+const arrays = @import("subsystems").value.arrays;
+const constants = @import("constants");
 const expect = @import("expect.zig").expect;
+const gc_alloc = @import("subsystems").gc_alloc;
+const gc_mark = @import("subsystems").gc_mark;
+const harness = @import("harness.zig");
+const utils = @import("subsystems").utils;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+var finalizer_args: [8]?*anyopaque = undefined;
+var finalizer_calls: usize = 0;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// The scratch header sits exactly one header below the pointer the caller
-/// holds. That relationship is the whole allocator: `gc.srealloc`, `gc.sfree`
+/// gets. That relationship is the whole allocator: `gc.srealloc`, `gc.sfree`
 /// and `gc.sfinalizer` all recover it by subtraction.
 fn headerOf(memory: ?*anyopaque) *gc_alloc.ScratchBlock {
     return @ptrFromInt(@intFromPtr(memory) - @sizeOf(gc_alloc.ScratchBlock));
@@ -85,13 +105,14 @@ fn typeOf(block: *abi.GCObject) gc_alloc.MemoryType {
     return gc_alloc.memoryTypeOf(block);
 }
 
-fn isReachable(block: *abi.GCObject) bool {
-    return harness.gcBits(block.flags) & constants.JANET_MEM_REACHABLE != 0;
+fn recordFinalizer(memory: ?*anyopaque) callconv(.c) void {
+    if (finalizer_calls < finalizer_args.len) finalizer_args[finalizer_calls] = memory;
+    finalizer_calls += 1;
 }
 
 /// The only thing `gc.gcpressure` does is move the threshold. It must not
-/// collect, and it must not touch the block count — the bytes it is told about
-/// were allocated outside the collector's accounting.
+/// collect, and it must not touch the block count, the bytes it is told about
+/// having been allocated outside the collector's accounting.
 fn theGcPressure() void {
     const before = harness.vm().gc.next_collection;
     const blocks = harness.vm().gc.block_count;
@@ -106,8 +127,12 @@ fn theGcPressure() void {
     harness.vm().gc.next_collection = before;
 }
 
-/// A new block goes on the front of the normal heap, carries its type in the
-/// low byte of `flags` and nothing else, and is counted. It is emphatically
+fn isReachable(block: *abi.GCObject) bool {
+    return harness.gcBits(block.flags) & constants.JANET_MEM_REACHABLE != 0;
+}
+
+/// A new block goes on the front of the normal heap with its type in the low
+/// byte of `flags` and nothing else, and is counted. It is emphatically
 /// not marked: the caller has not filled it in yet, and a collection that
 /// treated it as reachable would trace uninitialised memory.
 fn aNewBlockGoesOnTheNormalHeap() void {
@@ -121,7 +146,7 @@ fn aNewBlockGoesOnTheNormalHeap() void {
     expect(harness.vm().gc.blocks == block);
     expect(nextOf(block) == previous);
     expect(typeOf(block) == gc_alloc.MemoryType.array);
-    // The whole word, not only the type byte: a fresh block carries no flags.
+    // The whole word, not only the type byte: a fresh block has no flags set.
     expect(harness.gcBits(block.flags) == @intFromEnum(gc_alloc.MemoryType.array));
     expect(!isReachable(block));
     expect(harness.vm().gc.block_count == count + 1);
@@ -134,7 +159,7 @@ fn aNewBlockGoesOnTheNormalHeap() void {
     expect(harness.vm().gc.next_collection == next);
 }
 
-/// The four weak types are the ones at or above `JANET_MEMORY_TABLE_WEAKK`,
+/// The four weak types are the ones at or above `MemoryType.table_weakk`,
 /// and the boundary is exactly that: the split is a numeric comparison against
 /// the first weak constant, not a table of types.
 fn theWeakTypesGoOnTheWeakHeap() void {
@@ -165,7 +190,7 @@ fn theWeakTypesGoOnTheWeakHeap() void {
 }
 
 /// Every type below the boundary goes on the normal heap. Worth stating for
-/// `JANET_MEMORY_NONE` in particular, which is zero and therefore the value a
+/// `MemoryType.none` in particular, which is zero and therefore the value a
 /// caller reaches by mistake.
 fn theStrongTypesGoOnTheNormalHeap() void {
     const strong_types = [_]gc_alloc.MemoryType{
@@ -243,8 +268,8 @@ fn rootsAreMatchedByPointer() void {
 
 /// The three types the collector never traces compare equal to any value of
 /// their own type. Rooting one number and unrooting a different one succeeds,
-/// which is harmless — the slot held nothing worth keeping either way — but it
-/// is observable, so it is pinned here.
+/// which is harmless, the slot having nothing worth keeping either way, but
+/// it is observable, so it is pinned here.
 fn immediatesMatchAnyValueOfTheirType() void {
     const base = harness.vm().roots.items.len;
 
@@ -346,12 +371,11 @@ fn unrootAllOfAnAbsentValue() void {
 
 /// The root set grows when it fills, and the roots survive the growth.
 ///
-/// **Not the growth rule.** This asserted `capacity == 2 * (at_capacity + 1)`
-/// while the root set carried its own doubling; under D6 that rule is
-/// `ArrayListUnmanaged`'s and is not behaviour a program observes -- only
-/// *when* a reallocation happens, which nothing can see. What a caller can see
-/// is that rooting past the capacity keeps every root, at its index, and that
-/// unrooting them all restores the count. That is what is asserted.
+/// Not the growth rule. The rule is `ArrayListUnmanaged`'s and decides only
+/// *when* a reallocation happens, which nothing a program can run observes.
+/// What a caller can see is that rooting past the capacity keeps every root at
+/// its index and that unrooting them all restores the count, and that is what
+/// is asserted.
 fn theRootSetGrows() void {
     const base = harness.vm().roots.items.len;
     const val = wrap.fromArray(arrays.new(0));
@@ -377,8 +401,8 @@ fn theRootSetGrows() void {
 }
 
 /// The handle is the depth to restore, not a token to match. Unlocking with an
-/// outer handle discards every lock taken since, which is what makes it safe
-/// for a cleanup path to hold one handle across nested regions.
+/// outer handle discards every lock taken since, which is what makes one
+/// handle safe to keep across nested regions on a cleanup path.
 fn theSuspendCounterNests() void {
     const base = harness.vm().gc.suspend_count;
 
@@ -414,14 +438,6 @@ fn aSuspendedCollectorDoesNotCollect() void {
     gc_alloc.gcunlock(handle);
     gc_mark.collect();
     expect(harness.vm().gc.next_collection == 0);
-}
-
-var finalizer_calls: usize = 0;
-var finalizer_args: [8]?*anyopaque = undefined;
-
-fn recordFinalizer(memory: ?*anyopaque) callconv(.c) void {
-    if (finalizer_calls < finalizer_args.len) finalizer_args[finalizer_calls] = memory;
-    finalizer_calls += 1;
 }
 
 /// A scratch block is registered in the table, and the pointer handed back sits
@@ -467,8 +483,8 @@ fn scallocZeroes() void {
     expect(harness.vm().scratch.items.len == base);
 }
 
-/// `janet_srealloc` keeps the block in the same table slot, preserves the
-/// bytes that fit, and carries the finalizer across — the header moves with
+/// `gc.srealloc` keeps the block in the same table slot, preserves the bytes
+/// that fit, and takes the finalizer across with it, the header moving with
 /// the allocation. A null pointer means allocate.
 fn sreallocKeepsItsSlot() void {
     const base = harness.vm().scratch.items.len;
@@ -561,9 +577,9 @@ fn theScratchTableGrows() void {
     held[count] = gc_alloc.smalloc(8);
     @memset(@as([*]u8, @ptrCast(held[count].?))[0..8], @intCast(count));
     count += 1;
-    // Not the growth rule -- see `theRootSetGrows`. What the table owes is
-    // that every live block is still findable in it after the growth, which
-    // the loop below checks.
+    // Not the growth rule; see `theRootSetGrows`. What the table owes is that
+    // every live block is still findable in it after the growth, which the
+    // loop below checks.
     expect(harness.vm().scratch.capacity > at_capacity);
     expect(harness.vm().scratch.items.len == base + count);
 
@@ -576,10 +592,10 @@ fn theScratchTableGrows() void {
     expect(harness.vm().scratch.items.len == base);
 }
 
-/// Releasing everything runs each finalizer and empties the table. This is what
+/// Releasing everything runs each finalizer and empties the table. It is what
 /// `gc/mark.zig`'s `collect` does at the end of a collection and
-/// `gc/sweep.zig`'s `clearMemory` does at shutdown, which is why the scratch
-/// API needs no explicit free to be correct.
+/// `gc/sweep.zig`'s `clearMemory` does at shutdown, so a caller of the scratch
+/// allocator needs no explicit free to be correct.
 fn freeAllScratchRunsEveryFinalizer() void {
     gc_mark.collect();
     expect(harness.vm().scratch.items.len == 0);
@@ -608,6 +624,10 @@ fn aCollectionFreesScratch() void {
     expect(finalizer_args[0] == p);
     expect(harness.vm().scratch.items.len == 0);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     harness.init();

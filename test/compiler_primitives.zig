@@ -1,4 +1,4 @@
-//! Behavioral contract for the compiler's primitives — the layer between the
+//! Behavioral contract for the compiler's primitives, the layer between the
 //! special forms and the emitter.
 //!
 //! Scopes, slots, symbol resolution, upvalue capture and the funcdef that
@@ -9,51 +9,64 @@
 //! produce the same result and a wrong debug image. So this file drives the
 //! primitives directly and asserts the intermediate state.
 //!
-//! The order matters. This is one compilation carried from an empty scope to
-//! a finished funcdef, and the assertions about `birth_pc`, `death_pc` and
-//! the symbol map are assertions about *when* things happened. The sections
-//! below are named for readability; they are not independent.
+//! The order matters. This is one compilation driven from an empty scope to a
+//! finished funcdef, and the assertions about `birth_pc`, `death_pc` and the
+//! symbol map are assertions about *when* things happened. The cases below are
+//! not independent of each other.
 //!
-//! ## Why this reaches the `Impl` functions rather than the exports
+//! ## The raising primitives are reached by import
 //!
-//! Eight of the primitives are raise-capable — `janetc_value` compiles an
-//! arbitrary form, which can reach a macro, a lint at strict level, or an
-//! abstract type's `tostring` inside an error message. Each keeps an abi
-//! beside it that flattens the raise into a report.
-//!
-//! A C contract has no choice but the abi. This one calls the raising
-//! function: a raise crosses as `error.JanetSignal`, the compiler checks that
-//! this file handles it, and the abis lose their last caller.
+//! Eight of them are raise-capable, `valueImpl` compiling an arbitrary form
+//! that can reach a macro, a lint at strict level, or an abstract type's
+//! `tostring` inside an error message. This file calls the raising function
+//! rather than the abi beside it, so a raise crosses as `error.JanetSignal`
+//! and the compiler checks that this file handles it.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const arrays = @import("subsystems").value.arrays;
 const constants = @import("constants");
+const expect = @import("expect.zig").expect;
+const functions = @import("subsystems").value.functions;
 const harness = @import("harness.zig");
+const primitives = @import("subsystems").compiler_primitives;
+const registry = @import("subsystems").registry;
+const repr = @import("repr");
+const strings = @import("subsystems").value.strings;
+const structs = @import("subsystems").value.structs;
+const symbols = @import("subsystems").value.symbols;
+const tables = @import("subsystems").value.tables;
+const tuples = @import("subsystems").value.tuples;
 const value = @import("subsystems").value;
 const vector = harness.vector;
-const primitives = @import("subsystems").compiler_primitives;
-const structs = @import("subsystems").value.structs;
-const tables = @import("subsystems").value.tables;
-const strings = @import("subsystems").value.strings;
-const symbols = @import("subsystems").value.symbols;
-const tuples = @import("subsystems").value.tuples;
-const registry = @import("subsystems").registry;
-const wrap = @import("subsystems").value.wrap;
 const vm_lifecycle = @import("subsystems").lifecycle;
-const arrays = @import("subsystems").value.arrays;
-const compiler_primitives = @import("subsystems").compiler_primitives;
-const functions = @import("subsystems").value.functions;
-const expect = @import("expect.zig").expect;
+const wrap = @import("subsystems").value.wrap;
 
-var compiler: primitives.Compiler = undefined;
-var scope: primitives.Scope = undefined;
+// ==========================================================================
+// Constants
+// ==========================================================================
+
 var child: primitives.Scope = undefined;
-var unused: primitives.Scope = undefined;
+var compiler: primitives.Compiler = undefined;
 
 /// The recursion guard is consulted and decremented by `compiler.valueImpl`,
 /// so every section that compiles a form resets it the way `compiler.compile`
 /// does.
 const recursion_guard = 1024;
+var scope: primitives.Scope = undefined;
+var unused: primitives.Scope = undefined;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn emitted(index: usize) u32 {
     return compiler.buffer.items[index];
@@ -63,13 +76,13 @@ fn emittedCount() i32 {
     return @intCast(vector.count(compiler.buffer));
 }
 
-/// The opcode in a word, which several assertions here want without the
+/// The opcode in a word, which several assertions here read without the
 /// operands.
 fn operationOf(word: u32) u32 {
     return word & 0xFF;
 }
 
-/// `janetc_fopts_default` describes a form with no expectations: any type is
+/// `foptsDefault` describes a form with no expectations: any type is
 /// acceptable, no flags are set, and the hint is a nil constant.
 fn theDefaultFormOptions() void {
     const options = primitives.foptsDefault(&compiler);
@@ -80,7 +93,7 @@ fn theDefaultFormOptions() void {
     expect(harness.isType(options.hint.constant, repr.Tag.nil));
 }
 
-/// A constant slot carries the value's type in its low bits, which is what
+/// A constant slot records the value's type in its low bits, which is what
 /// lets the emitter decide whether an immediate will do.
 fn aConstantSlotRemembersItsType() void {
     const slot = primitives.cslot(wrap.fromTrue());
@@ -91,7 +104,7 @@ fn aConstantSlotRemembersItsType() void {
     expect(wrap.toBoolean(slot.constant));
 }
 
-/// A far slot is handed back when it is freed — unless it has been named, in
+/// A far slot is handed back when it is freed, unless it has been named, in
 /// which case it belongs to a binding and stays taken. That single rule is
 /// what keeps a `def`'s register alive for the rest of its scope.
 fn aNamedSlotIsNotReclaimed() void {
@@ -110,7 +123,7 @@ fn aNamedSlotIsNotReclaimed() void {
     expect(primitives.farslot(&compiler).?.index == 2);
 }
 
-/// `compiler_primitives.defAddflags` derives a funcdef's `HAS*` flags from which of its
+/// `primitives.defAddflags` derives a funcdef's `HAS*` flags from which of its
 /// optional fields are populated, so it must *clear* the ones that are not.
 /// A marshalled image trusts those flags to say which sections follow.
 fn theFuncdefFlagsAreDerived() void {
@@ -130,7 +143,7 @@ fn theFuncdefFlagsAreDerived() void {
         .hasclobitset = true,
         .namedargs = true,
     };
-    compiler_primitives.defAddflags(&definition);
+    primitives.defAddflags(&definition);
     // Every claim was false, so only the flag that is not derived survives.
     expect(std.meta.eql(definition.flags, functions.FuncDefFlags{ .vararg = true }));
 
@@ -141,7 +154,7 @@ fn theFuncdefFlagsAreDerived() void {
     definition.sourcemap = @ptrCast(&mapping);
     definition.closure_bitset = @ptrCast(&closure_bits);
     definition.named_args_count = 2;
-    compiler_primitives.defAddflags(&definition);
+    primitives.defAddflags(&definition);
     expect(definition.flags.vararg);
     expect(definition.flags.hasname);
     expect(definition.flags.hassource);
@@ -189,12 +202,12 @@ fn poppingAScopeHandsUpItsSymbols() !void {
     try primitives.popscope(&compiler);
     expect(compiler.scope == &scope);
     expect(scope.child == null);
-    // A closure scope marks its parent as one too, so the parent knows it
-    // needs an environment.
+    // A closure scope marks its parent as one too, which is how the parent
+    // comes to need an environment.
     expect(scope.flags.closure);
     expect(scope.ra.max >= 8);
     expect(vector.count(scope.syms) == 1);
-    // The name is dropped and only `sym2` would survive — and `keep` clears
+    // The name is dropped and only `sym2` would survive, and `keep` clears
     // that too, because the slot is being kept rather than the binding.
     expect(scope.syms.items[0].sym == null);
     expect(scope.syms.items[0].sym2 == null);
@@ -214,7 +227,7 @@ fn anUnusedScopeStillKeepsItsResultSlot() !void {
     expect(scope.ra.isTaken(10));
 }
 
-/// `janetc_return` marks the slot returned and emits at most once, so a
+/// `compileReturn` marks the slot returned and emits at most once, so a
 /// second call on an already-returned slot emits nothing.
 fn returningIsIdempotent() void {
     vector.empty(&compiler.buffer);
@@ -254,7 +267,7 @@ fn aHintIsHonouredOnlyWhenItIsNear() void {
 }
 
 /// A list of values becomes a vector of slots, and a dictionary becomes a
-/// flat key-value vector in *sorted key order* — which is what makes a struct
+/// flat key-value vector in *sorted key order*, which is what makes a struct
 /// literal compile deterministically whatever order it was written in.
 fn valuesBecomeSlots() !void {
     var values = [2]repr.Value{ harness.wrapInteger(10), wrap.fromTrue() };
@@ -280,7 +293,7 @@ fn valuesBecomeSlots() !void {
     primitives.freeslots(&compiler, slots);
 }
 
-/// The four kinds `janetc_value` distinguishes: a self-evaluating atom, a
+/// The four kinds `valueImpl` distinguishes: a self-evaluating atom, a
 /// structure it can fold to a constant, one it has to build at run time, and
 /// a call.
 fn theFourKindsOfForm() !void {
@@ -342,7 +355,7 @@ fn theFourKindsOfForm() !void {
     expect(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.Opcode.tailcall));
 
     // A one-element call whose head is not callable is a compile error rather
-    // than a raise: the compiler records it and answers a nil constant.
+    // than a raise: the compiler records it and returns a nil constant.
     call = tuples.begin(1);
     call[0] = value.fromBytes("key", .keyword);
     vector.empty(&compiler.buffer);
@@ -351,15 +364,15 @@ fn theFourKindsOfForm() !void {
     slot = try primitives.valueImpl(options, wrap.fromTuple(tuples.end(call)));
     expect(slot.flags.constant);
     expect(harness.isType(slot.constant, repr.Tag.nil));
-    expect(compiler.result.status == compiler_primitives.CompileStatus.@"error");
+    expect(compiler.result.status == primitives.CompileStatus.@"error");
     expect(compiler.result.@"error" != null);
-    compiler.result.status = compiler_primitives.CompileStatus.ok;
+    compiler.result.status = primitives.CompileStatus.ok;
     compiler.result.@"error" = null;
     compiler.recursion_guard = recursion_guard;
 }
 
 /// Pushing arguments picks the widest instruction that fits, and a splice
-/// forces the one-at-a-time form — which is what the negative arity means.
+/// forces the one-at-a-time form, which is what the negative arity means.
 fn theArgumentPush() void {
     var slots: harness.Vector(primitives.Slot) = .empty;
     var slot: primitives.Slot = std.mem.zeroes(primitives.Slot);
@@ -391,7 +404,7 @@ fn theArgumentPush() void {
 ///
 /// The difference is the whole of Janet's mutable-binding representation: a
 /// `var` is a one-element array in the environment and every read is an
-/// index into it, which is why the slot is `REF | NAMED | MUTABLE` and not
+/// index into it, so the slot is `REF | NAMED | MUTABLE` rather than
 /// `CONSTANT`.
 fn theGlobalBindings() !void {
     registry.def(compiler.env.?, "global-def", harness.wrapInteger(42), null);
@@ -413,7 +426,7 @@ fn theGlobalBindings() !void {
 /// A local binding, and then the capture of it by a nested function.
 ///
 /// Resolving a local from an inner function scope is what turns it into an
-/// upvalue: the outer scope gains `JANET_SCOPE_ENV`, the symbol is marked
+/// upvalue: the outer scope gains `ScopeFlags.env`, the symbol is marked
 /// `keep`, its register is reserved in the outer *upvalue* allocator, and the
 /// inner scope gains an environment reference. Five separate pieces of state,
 /// all of which a wrong port could get individually wrong while still
@@ -499,13 +512,17 @@ fn theFirstErrorIsKept() !void {
     const slot = try primitives.resolve(&compiler, symbol);
     expect(slot.flags.constant);
     expect(harness.isType(slot.constant, repr.Tag.nil));
-    expect(compiler.result.status == compiler_primitives.CompileStatus.@"error");
+    expect(compiler.result.status == primitives.CompileStatus.@"error");
     expect(compiler.result.@"error" != null);
 
     const first = compiler.result.@"error";
     primitives.cerror(&compiler, "replacement error");
     expect(compiler.result.@"error" == first);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() !void {
     theDefaultFormOptions();

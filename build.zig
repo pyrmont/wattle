@@ -21,11 +21,11 @@ const build_name = "zig";
 /// register does not skip a case -- it refuses to load, and the whole suite is
 /// lost with it.
 ///
-/// `needs_os` is the only condition so far. `-Dreduced-os=true` registers five
+/// `needs_os` is the only condition so far. `-Dreduced-os=true` registers four
 /// `os` bindings and no more, and these seven suites reach past them:
 /// `suite-os` is *about* the OS library, and the other six use the filesystem,
 /// the environment or a subprocess to build their fixtures. Everything else
-/// runs unchanged, which is 28 of the 35 -- the population this gate is worth
+/// runs unchanged, which is 27 of the 34, the population this gate is worth
 /// having for.
 const Suite = struct {
     path: []const u8,
@@ -80,7 +80,7 @@ const test_suites = &[_]Suite{
 const BuildOptions = struct {
     /// Set only for the object set the bootstrap image generator is built
     /// from. A core cfunction table carries docstrings in the generator and not
-    /// in the runtime, and `src/runtime/corefn.zig` reads it to decide.
+    /// in the runtime, and `src/runtime/corefn.zig` reads it to select.
     /// It is a field rather than a parameter because the alternative is
     /// threading a boolean through six constructors that have no other use
     /// for it.
@@ -187,10 +187,11 @@ const Selection = struct {
     /// Whether any subsystem at all is answered by Zig, computed by reflection
     /// over the fields rather than from a list.
     ///
-    /// `src/runtime/fatal.zig` provides `janet_zig_out_of_memory` and
-    /// `janet_zig_fatal`, and nineteen subsystems call one of them. This
-    /// condition used to name the ones that did, and such a list goes stale the
-    /// moment something adds a twentieth: ten of the nineteen were missing once,
+    /// `src/runtime/fatal.zig` provides `outOfMemory` and `fatal`, which
+    /// subsystems throughout the tree reach by import; the `janet_zig_*` names
+    /// the module table points at are `capi.zig`'s. This condition used to name
+    /// the subsystems that called one of the two, and such a list goes stale
+    /// the moment something adds another: ten of them were missing once,
     /// which nothing noticed because the default build turns every subsystem on
     /// and one of the named few was always among
     /// them. Only a build selecting a single unnamed subsystem failed to link,
@@ -228,9 +229,10 @@ const Selection = struct {
 /// **Two things have to match and neither is checked here.** The dependent must
 /// use the same Zig version as the runtime it loads into -- a module is a
 /// source dependency and Zig makes no ABI promise across versions -- and it
-/// must be built with the same value representation and feature options as that
-/// runtime, because `config` decides `Value`'s layout. Loading a `-Dnanbox=false`
-/// module into a NaN-boxed runtime is not a link error; it is wrong values.
+/// must be built with the same value representation and feature options as
+/// that runtime, because `config` determines `Value`'s layout. Loading a
+/// `-Dnanbox=false` module into a NaN-boxed runtime is not a link error; it
+/// is wrong values.
 /// `examples/standalone` is the worked instance and `zig build standalone`
 /// builds it the way an outside author would.
 /// The options `build()` resolved, so `janetModule` can reuse them.
@@ -283,12 +285,12 @@ pub fn janetModule(
     });
     constants_module.addImport("config", config_module);
     constants_module.addImport("repr", repr_module);
-    // **No `cabi`.** `crossings.zig` was split out of it so that an author's
-    // `.so` would not take 163 libc declarations to obtain six, and with
-    // `types` gone nothing in the author package -- `module.zig`, `raise.zig`,
-    // `abstract_type.zig`, `crossings.zig` -- imports it at all. It was here
-    // as an import a module whose source cannot resolve it, which is a trap
-    // rather than a service.
+    // **No `cabi`.** Nothing in the author package -- `module.zig`,
+    // `raise.zig`, `abstract_type.zig`, `interface.zig` -- declares an extern
+    // function at all: an author's calls go through `interface.rt`, and libc
+    // is the runtime's business. Offering it here would put 163 declarations
+    // a module's source cannot resolve into the author's `.so`, which is a
+    // trap rather than a service.
     const janet_module = b.createModule(.{
         .root_source_file = b.path("src/module.zig"),
         .target = target,
@@ -374,7 +376,7 @@ pub fn build(b: *std.Build) void {
     // Zig function.
     //
     // It gets its own instance of the graph, built for `boot_host` and carrying
-    // `bootstrap = true`, because `corefn.zig` reads that to decide which
+    // `bootstrap = true`, because `corefn.zig` reads that to select which
     // registration shape to emit and the two halves of one build must not
     // disagree about it.
     const boot_graph = makeRuntimeGraph(b, boot_host, .Debug, boot_options, null);
@@ -420,8 +422,9 @@ pub fn build(b: *std.Build) void {
         .root_module = static_module,
     });
     // **No header is installed, and the gap is deliberate.** What a native
-    // module reaches by symbol is `capi.zig`, where every published name states
-    // the signature it publishes and the compiler checks it. A hand-written
+    // module reaches is `api/interface.zig`'s `Runtime`, whose field types are
+    // the signatures and which the compiler checks `capi.zig`'s initializer
+    // against. A hand-written
     // header would declare the same surface with nothing comparing a
     // declaration to its definition, which is a weaker promise than the tree
     // keeps.
@@ -555,8 +558,9 @@ pub fn build(b: *std.Build) void {
     installTest(b, options, numarray_module);
 
     // `examples/url`, the worked example of the views: a module that owns
-    // nothing, reads its arguments through the three views and a range, and
-    // answers a string. `DESIGN.md` section 15's other half.
+    // nothing, reads every shape an argument can be -- bytes, elements,
+    // entries and a range -- and answers a string. `DESIGN.md` section 15's
+    // other half.
     const url_module = nativeModule(
         b,
         runtime_graph,
@@ -675,30 +679,27 @@ pub fn build(b: *std.Build) void {
         .{
             .file = "test/module-errors/wrong_payload.zig",
             .phrase = "abstract type 'module-errors/wrong-payload', callback 'gc': the first " ++
-                "parameter must be `*wrong_payload.Right`, the payload type given to `define` " ++
-                "-- it is `*wrong_payload.Wrong`. `define` generates the cast from the " ++
-                "runtime's erased pointer, so the callback never writes one.",
+                "parameter must be `*wrong_payload.Right`, the payload type given to " ++
+                "`define`. The type given is `*wrong_payload.Wrong`. `define` generates the " ++
+                "cast from the runtime's erased pointer.",
         },
         .{
             .file = "test/module-errors/raising_gc.zig",
             .phrase = "abstract type 'module-errors/raising-gc', callback 'gc': this callback " ++
-                "cannot raise, and that is a contract rather than an oversight. `gc` and " ++
-                "`gcmark` run inside the collector -- a finalizer on an object that is already " ++
-                "unreachable, a mark mid-traversal -- and `compare`, `hash`, `bytes` and " ++
-                "`gcperthread` run inside operations that must be total. There is no scope " ++
-                "above any of them and nothing to retry, so a raise would have nowhere to " ++
-                "go, and none of the six has a return value to report one through either.",
+                "cannot raise. `gc` and `gcmark` run inside a collection. `compare`, `hash`, " ++
+                "`bytes` and `gcperthread` run inside an operation that must produce a " ++
+                "result. None of the six has a return type to report a raise through.",
         },
         .{
             .file = "test/module-errors/unknown_slot.zig",
             .phrase = "abstract type 'module-errors/unknown-slot' has no callback named " ++
-                "'finalizer'. The callbacks are: gc, gcmark, get, put, marshal, unmarshal, " ++
-                "tostring, compare, hash, next, call, length, bytes, gcperthread",
+                "'finalizer'. The callbacks are: gc, gcmark, gcperthread, get, put, next, " ++
+                "length, call, compare, hash, tostring, bytes, marshal, unmarshal",
         },
         .{
             .file = "test/module-errors/wrong_cfunction.zig",
             .phrase = "cfunction 'identity': it takes its arguments as one `[]Value` slice, " ++
-                "not a count and a pointer -- it must be `fn (argv: []Value) " ++
+                "not a count and a pointer. It must be `fn (argv: []Value) " ++
                 "align(module.fn_align) Error!Value`",
         },
         .{
@@ -706,7 +707,7 @@ pub fn build(b: *std.Build) void {
             // The tail only: the anonymous-union suffix Zig gives `Value`
             // changes per compilation, so a phrase containing the given type
             // would be a check on the compiler's numbering.
-            .phrase = "A cfunction answers a `Value` or a signal, so the type is exactly " ++
+            .phrase = "A cfunction returns a `Value` or raises, so the type is exactly " ++
                 "`Error!Value`: a wider error set is reinterpreted at the call rather " ++
                 "than diagnosed here.",
         },
@@ -719,21 +720,21 @@ pub fn build(b: *std.Build) void {
         .{
             .file = "test/module-errors/overaligned_payload.zig",
             .phrase = "alloc(overaligned_payload.Wide): this type's alignment is 128. The " ++
-                "runtime's allocator is malloc-backed and promises nothing stricter than " ++
-                "`max_align_t`, so a payload needing more has to align its own storage " ++
-                "inside an allocation this can make.",
+                "runtime's allocator is malloc-backed, so its guaranteed alignment is " ++
+                "`max_align_t`. A payload needing more must align its own storage inside " ++
+                "an allocation from `alloc`.",
         },
         .{
             .file = "test/module-errors/isunsafe_wrong_type.zig",
-            .phrase = "isUnsafe takes the `*Marshal` a `marshal` callback is handed or the " ++
-                "`*Unmarshal` an `unmarshal` callback is handed -- it is " ++
+            .phrase = "isUnsafe takes the `*Marshal` a `marshal` callback receives or the " ++
+                "`*Unmarshal` an `unmarshal` callback receives. The type given is " ++
                 "`*isunsafe_wrong_type.Payload`.",
         },
         .{
             // **Zig's own message, not one of this project's.** The other
             // fixtures turn on a `@compileError` written here, because the
             // mistake is in the `define` literal where a check can see it.
-            // This one is inside the callback body, and the diagnosis wanted
+            // This one is inside the callback body, and the diagnosis required
             // is exactly the type mismatch: it names both capabilities, and
             // its notes point at the two `opaque` declarations and at the
             // parameter in `module.zig` that will not take the other one.
@@ -743,8 +744,8 @@ pub fn build(b: *std.Build) void {
         .{
             .file = "test/module-errors/nonraising_get.zig",
             .phrase = "abstract type 'module-errors/nonraising-get', callback 'get': this " ++
-                "callback may raise and its return type must say so: write `raise.Error!?Value`. " ++
-                "It runs inside an interpreter frame with a real scope above it.",
+                "callback may raise, so write `raise.Error!?Value` as its return type. The " ++
+                "slot runs inside an interpreter frame with a scope above it.",
         },
     };
     // **A fixture must not import `subsystems`, and the matrix is what says
@@ -1258,22 +1259,24 @@ fn readOptions(b: *std.Build) BuildOptions {
 
 /// Which of the three value representations this build compiles.
 ///
-/// `DESIGN.md` section 7 drops `nanbox_32` and renames the option to
-/// `-Dvalue-repr`. Neither is done: all three are still selectable by
-/// `-Dnanbox` and the target's word size.
+/// All three are chosen by `-Dnanbox` and the target's word size, and there is
+/// no build option that names the representation directly. `DESIGN.md` section
+/// 7 records the decision both to drop `nanbox_32` and to give the choice an
+/// option of its own; neither is done, and this note is where that stays
+/// recorded.
 const ValueRepr = enum { nanbox_64, nanbox_32, tagged };
 
-/// What the build decided, as comptime facts for `@import("config")`.
+/// What the build set, as comptime facts for `@import("config")`.
 ///
 /// This struct is where configuration is *resolved*. A file reads
 /// `config.<name>`; nothing asks a translation what it was compiled with.
 ///
 /// **The fields are positives, and the build options they come from are a
 /// mixture.** A `-D` flag names the feature (`-Dpeg`, `-Dev`), but the clause
-/// that decides whether the subsystem exists also folds in the target and the
-/// other options -- the event loop is off on a single-threaded build and under
-/// Emscripten, epoll exists only on Linux, kqueue only on the BSDs. Each such
-/// clause is written out below beside the field it decides, because the
+/// that determines whether the subsystem exists also folds in the target and
+/// the other options -- the event loop is off on a single-threaded build and
+/// under Emscripten, epoll exists only on Linux, kqueue only on the BSDs. Each
+/// such clause is written out below beside the field it sets, because the
 /// derivation is what a reader needs and `options.<name>` alone is not it.
 ///
 /// Four facts that were macros in Janet are *not* fields here --
@@ -1289,9 +1292,9 @@ const Config = struct {
     ///
     /// `raise.zig` and `abstract_type.zig` are compiled into both, and the
     /// difference is not a feature: inside the runtime a raise reaches
-    /// `signal.zig` by import, and inside a module the same call is a symbol,
-    /// because the runtime is on the other side of a `dlopen`. `raise.zig`
-    /// carries both arms and picks on this.
+    /// `signal.zig` by import, and inside a module the same call goes through
+    /// `interface.rt`, because the runtime is on the other side of a `dlopen`.
+    /// `raise.zig` carries both arms and picks on this.
     native_module: bool,
     docstrings: bool,
     sourcemaps: bool,
@@ -1339,7 +1342,7 @@ const Config = struct {
 
     /// Whether the target is 64-bit. A field rather than `@sizeOf(usize)` at
     /// the call site because `test/ffi_layout.zig` says
-    /// why: a contract wants "the same input the subject reads, rather than
+    /// why: a contract needs "the same input the subject reads, rather than
     /// the subject's answer, and rather than `@sizeOf(usize)`, which is a
     /// different question that happens to agree here".
     bits64: bool,
@@ -1379,7 +1382,7 @@ const Config = struct {
     debug: bool = false,
 };
 
-/// The one derivation: what the `-D` options and the target together decide.
+/// The one derivation: what the `-D` options and the target together determine.
 ///
 /// Every comptime fact a file reads as `config.<name>` is answered here and
 /// nowhere else, so a file cannot be compiled under one answer and guarded
@@ -1535,9 +1538,10 @@ fn configureCModule(
 /// is not cosmetic: forcing `.full` everywhere puts the UBSan runtime inside
 /// ReleaseFast, which is the mode a release artifact is built in. Measured --
 /// a ReleaseFast build with `sanitize_c = .full` reports on `(gcsetinterval -1)`
-/// where the same build without it does not. The gate wants the check *named*,
-/// not the shipping binary changed, so the release modes keep the `.off` Zig
-/// would have chosen and the two checked modes say `.full` out loud.
+/// where the same build without it does not. The gate requires the check
+/// *named*, not the shipping binary changed, so the release modes keep the
+/// `.off` Zig would have chosen and the two checked modes say `.full` out
+/// loud.
 ///
 /// `sanitize_thread` is opt-in through `-Dsanitize-thread` rather than on by
 /// default. TSan needs its own runtime and slows the suites by roughly an order
@@ -1706,7 +1710,8 @@ const RuntimeGraph = struct {
     ///
     /// `raise.zig` and `abstract_type.zig` compile into a native module as
     /// well as into the runtime, and inside a module the calls `raise.zig`
-    /// makes are symbols rather than imports. Every module-shaped graph below
+    /// makes go through `interface.rt` rather than an import. Every
+    /// module-shaped graph below
     /// -- `janetModule`, `nativeModule`, the `module-errors` fixtures -- hands
     /// the author package this one; the runtime's own graph never does.
     module_config: *std.Build.Module,
@@ -1715,12 +1720,12 @@ const RuntimeGraph = struct {
     /// package this one; the runtime has it too, so that its `AbstractType`
     /// and an author's are one type.
     abi: *std.Build.Module,
-    /// What is left of the type catalogue: the shapes the host decides, which
-    /// `root` and `cabi` both name and must spell the same way. A contract
-    /// reaches it the way the runtime does -- compiled *into* a second copy of
-    /// the runtime -- so `test/` spells the same declarations. A module the
-    /// runtime has and the contracts do not is a call-site rewrite that stops
-    /// at the `src/` boundary.
+    /// What is left of the type catalogue: the shapes the host determines,
+    /// which `root` and `cabi` both name and must spell the same way. A
+    /// contract reaches it the way the runtime does -- compiled *into* a second
+    /// copy of the runtime -- so `test/` spells the same declarations. A module
+    /// the runtime has and the contracts do not is a call-site rewrite that
+    /// stops at the `src/` boundary.
     host: *std.Build.Module,
     constants: *std.Build.Module,
     cabi: *std.Build.Module,
@@ -1744,7 +1749,7 @@ fn makeRuntimeGraph(
     const sel = zigSelection(options);
     if (!sel.any()) return null;
 
-    // What the build decided, as comptime constants rather than as macros a
+    // What the build set, as comptime constants rather than as macros a
     // `@cImport` is asked about. Created first because the subsystems select
     // the value representation and the event-loop backend from it.
     //
@@ -1779,8 +1784,8 @@ fn makeRuntimeGraph(
     });
     abi_module.addImport("repr", repr_module);
 
-    // The shapes the host decides -- `FILE`, the descriptor, the pthread types
-    // and Windows' critical section. Still a module rather than a file of
+    // The shapes the host determines -- `FILE`, the descriptor, the pthread
+    // types and Windows' critical section. Still a module rather than a file of
     // `root` because `cabi` names the same six and cannot import a file of
     // `root`; its import list is `std` and `builtin` and nothing else.
     const host_module = b.createModule(.{
@@ -1853,16 +1858,16 @@ fn makeRuntimeGraph(
     // references is never resolved.
     if (image_source) |image| module.addAnonymousImport("janet_image", .{ .root_source_file = image });
 
-    // **`raise.zig` and `corefn.zig` are ordinary files of `root`.** They were
-    // modules, and being modules is what forced them to call the runtime
-    // through its own symbol table: a module reaches only its declared imports,
-    // so `raise.signal` could not name `signal.zig` and `corefn` could not name
-    // `env.zig`. Twelve exports existed for that and nothing else.
+    // **`raise.zig` and `corefn.zig` are ordinary files of `root`.** A Zig
+    // module reaches only its declared imports, so as modules `raise.signal`
+    // could not name `signal.zig` and `corefn` could not name `env.zig`. As
+    // files they name both by `@import`, which keeps the error union and
+    // allows inlining.
     //
-    // They are still module *roots* in the native-module package
-    // (`janetModule` above), where the calls they cannot make by import really
-    // are symbols. `raise.zig` carries both arms and picks at comptime on
-    // `config.native_module`.
+    // `raise.zig` is also a file of the native-module package (`janetModule`
+    // above), where `signal.zig` sits on the far side of a `dlopen` and the
+    // calls it cannot make by import go through `interface.rt` instead. It
+    // carries both arms and picks at comptime on `config.native_module`.
 
     // **The three host translations are not modules.** `os/abi.zig`,
     // `net/abi.zig` and `filewatch/abi.zig` each sit beside the hand-written

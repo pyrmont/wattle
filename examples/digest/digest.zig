@@ -1,91 +1,89 @@
-//! A native Janet module written in Zig: the worked example of **scheduling
-//! work through the event loop**, as `url` is of the views and `numarray` of
-//! the abstract type.
+//! A native Janet module written in Zig: the worked example of scheduling
+//! work through the event loop.
 //!
-//! `DESIGN.md` section 15 reduces the loop to one sentence -- when something
-//! happens, resume a fiber with a value -- and gives a module three operations
-//! to take part in it: `await` suspends, `post` knocks, `wake` resumes. This
-//! module is the smallest honest use of all three. It hashes bytes, which is
-//! real work with no I/O in it, on a thread of its own, so the fiber that
-//! asked waits and every other fiber in the program keeps running.
+//! `url` is the worked example of the views and `numarray` is the worked
+//! example of the abstract type. This module imports `janet` and `std` and
+//! nothing else. `build.zig` builds it and `examples/digest/test/digest.janet`
+//! loads it, which `zig build test` runs.
 //!
 //! ```janet
 //! (import digest)
-//! (digest/sha256 "abc")   # -> "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+//! (digest/sha256 "abc")
+//! # -> "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 //! ```
 //!
-//! **The shape is five steps and the order is the contract.** Read the loop
-//! and the fiber; root what has to survive the wait; start the thread; suspend
-//! with `await`. The thread computes and posts. The callback, back on the loop
-//! thread, builds the answer, wakes the fiber, unroots and frees.
+//! ## Taking part in the event loop
 //!
-//! **Starting the thread before the suspend is not a race.** The loop is
-//! single-threaded, so an event the worker posts before this cfunction has
-//! returned is not processed until the fiber has suspended. There is no
-//! window and therefore nothing to synchronise.
+//! `DESIGN.md` section 15 reduces the loop to one sentence: when something
+//! happens, resume a fiber with a value. It gives a module three operations to
+//! take part in it. `janet.await` suspends, `janet.post` queues a callback for
+//! the loop thread, and `janet.wake` resumes. This module uses all three. It
+//! hashes bytes, which is work with no I/O in it, on a thread of its own, so
+//! the calling fiber waits and every other fiber in the program keeps running.
 //!
-//! **The worker thread touches nothing in `janet.*` but `post`**, which is the
-//! one function on the surface a thread with no VM may call. Everything else
-//! finds the VM through a thread-local that thread does not have, and calling
-//! one aborts with `called from a thread that is not running Janet` rather
-//! than reading null state.
+//! The shape is five steps and the order is required. `sha256` reads the
+//! loop and the fiber, roots what has to survive the wait, starts the thread
+//! and suspends with `janet.await`. The thread computes and posts.
+//! `hashDone`, back on the loop thread, builds the result, wakes the fiber,
+//! unroots and frees.
 //!
-//! It imports `janet` and `std` and nothing else. Built by `build.zig` and
-//! loaded by `test/digest.janet`, which `zig build test` runs.
+//! ## What the worker thread may call
+//!
+//! The worker thread touches nothing in `janet.*` but `janet.post`, which
+//! is the one function on the surface a thread that is not running Janet may
+//! call. Every other function finds the runtime through a thread-local that
+//! thread does not have. Calling any of them aborts with `called from a
+//! thread that is not running Janet` rather than reading null state.
 
 const std = @import("std");
 const janet = @import("janet");
 
-/// One hash in flight: what the cfunction fills in, the thread computes into,
-/// and the callback reads and frees.
+/// One hash in flight: what the cfunction fills in, the thread computes
+/// into, and the callback reads and frees.
 ///
-/// **It is the module's own allocation and its lifetime is exactly the wait.**
-/// The runtime never reads it -- `post` carries it as an opaque pointer and
-/// hands it straight back -- so freeing it in the callback is the module's job
-/// and happens on both branches of the `wake` below.
+/// `sha256` allocates a `Hash`, `hashOnThread` takes a `*Hash` and
+/// `hashDone` frees the allocation.
+///
+/// A `Hash` is the module's own allocation: `janet.post` passes it to the
+/// callback as an opaque pointer, and `hashDone` frees it.
 const Hash = struct {
-    /// The loop, read on the loop thread and used on the worker's.
+    /// The loop, read on the loop thread and used on the worker thread.
     loop: *janet.Loop,
     /// The fiber to wake, rooted for the whole wait.
     fiber: janet.Value,
-    /// The argument, rooted for the whole wait. **This is what keeps `bytes`
-    /// valid**: the slice points at the string's own storage, and the fiber is
-    /// suspended, so nothing else in the program is holding the value on this
-    /// module's behalf.
+    /// The argument, rooted for the whole wait so that `bytes` stays valid.
     source: janet.Value,
+    /// The bytes to hash, read on the worker thread.
     bytes: []const u8,
+    /// The result, written on the worker thread and read on the loop thread.
     digest: [std.crypto.hash.sha2.Sha256.digest_length]u8,
 };
 
-/// The worker thread: hash, post, exit.
+/// Hashes `job.bytes` into `job.digest` and posts `hashDone`.
 ///
-/// Every line of this function runs on a thread with no VM. It reads the two
-/// fields it was given, writes one, and calls the one crossing that is legal
-/// here.
+/// `job` is the hash in flight. This function is the whole of the worker
+/// thread's work.
+///
+/// This function cannot raise.
+///
+/// This function runs on a thread that is not running Janet.
 fn hashOnThread(job: *Hash) void {
     std.crypto.hash.sha2.Sha256.hash(job.bytes, &job.digest, .{});
+    // The one crossing a thread that is not running Janet may call.
     janet.post(job.loop, &hashDone, job);
 }
 
-/// The callback, on the loop thread, between two fibers.
+/// Renders the digest as hex, wakes the fiber and frees the job.
 ///
-/// **`align(janet.fn_align)` is not decoration.** The runtime carries this
-/// pointer to the loop thread inside a Janet value, which under a nonzero
-/// `-Dnanbox-pointer-shift` reuses its low bits; `janet.PostCallback` carries
-/// the alignment in its type so that forgetting it is a compile error here
-/// rather than a call to the wrong address there. A cfunction is declared the
-/// same way and for the same reason.
+/// `w` is the capability to put the fiber back on the run queue, and `raw`
+/// is the `*Hash` that `hashOnThread` passed to `janet.post`. This function
+/// runs on the loop thread, between two fibers.
 ///
-/// **Building a `Value` here is allowed**: allocating through the collector is
-/// fatal on failure rather than a raise, and no safe point runs between fibers
-/// on the loop thread. What is not allowed is raising -- this signature cannot
-/// carry one -- or doing work, which belongs on the thread above.
+/// This function cannot raise, and its signature cannot express a raise.
 ///
-/// **The cleanup is unconditional, and that is the point of reading `wake`'s
-/// answer.** A `false` means `ev/cancel` moved the fiber on, or that it
-/// finished; the runtime would have dropped the resume, and the root and the
-/// allocation are still this module's. A module that unrooted and freed only
-/// under the `true` branch would leak exactly the cancelled case.
+/// `align(janet.fn_align)` is required: `janet.PostCallback` includes the
+/// alignment in its type, because the runtime passes the pointer inside a
+/// `Value` whose low bits a nonzero `-Dnanbox-pointer-shift` reuses.
 fn hashDone(w: *janet.Wake, raw: *anyopaque) align(janet.fn_align) callconv(.c) void {
     const job: *Hash = @ptrCast(@alignCast(raw));
     const digits = "0123456789abcdef";
@@ -94,29 +92,31 @@ fn hashDone(w: *janet.Wake, raw: *anyopaque) align(janet.fn_align) callconv(.c) 
         hex[i * 2] = digits[byte >> 4];
         hex[i * 2 + 1] = digits[byte & 0xf];
     }
+    // Building a `Value` here is allowed: allocation through the collector is
+    // fatal on failure rather than a raise, and no safe point runs between
+    // fibers on the loop thread.
     _ = janet.wake(w, job.fiber, janet.string(&hex));
+    // On both branches of `janet.wake`: a `false` means `ev/cancel` moved the
+    // fiber on or it finished, and the root and the allocation are still this
+    // module's.
     _ = janet.gcunroot(job.source);
     _ = janet.gcunroot(job.fiber);
     janet.free(job);
 }
 
-/// `(digest/sha256 bytes)` -- the SHA-256 of `bytes`, as lowercase hex.
+/// Returns the SHA-256 of `bytes` as lowercase hex, hashed on a thread of
+/// its own. Implements `(digest/sha256 bytes)`.
 ///
-/// **How long the bytes stay valid is the getter's rule, and the root is what
-/// buys the part of it this needs.** A string's, a symbol's and a keyword's
-/// bytes are stable while the value is reachable, so rooting the argument is
-/// exactly enough: the fiber is suspended and nothing else holds it. A
-/// *buffer's* bytes are `data[0..count]`, and a push from another fiber may
-/// move them -- so hashing a buffer another fiber can write to while this
-/// waits is the caller's to avoid, and is the one thing this module cannot
-/// check for them.
+/// `argv` slot 0 is the bytes to hash. This function suspends the calling
+/// fiber, and the result reaches that fiber when `hashDone` wakes it.
 ///
-/// The refusal for a wrong argument type is the runtime's, from `getBytes`.
-/// The refusal for a build with no event loop is the runtime's too, from
-/// `loop`, and reads `event loop not enabled`.
+/// This function raises if the arity is wrong, if slot 0 is not a string,
+/// symbol, keyword or buffer, if the build has no event loop, if the
+/// allocation fails, or if the thread cannot be started.
 fn sha256(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const bytes = try janet.getBytes(argv, 0);
+    // Raises `event loop not enabled` in a build without the loop.
     const l = try janet.loop();
     const fiber = try janet.rootFiber();
 
@@ -129,12 +129,18 @@ fn sha256(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
         .bytes = bytes,
         .digest = undefined,
     };
+    // The fiber is suspended, so nothing else keeps the argument reachable.
+    // The root keeps a string's, a symbol's or a keyword's bytes stable for
+    // the wait; a buffer's bytes move on a push from another fiber, which
+    // this module cannot prevent.
     janet.gcroot(job.fiber);
     janet.gcroot(job.source);
 
+    // Started before the suspend, which is not a race: the loop is
+    // single-threaded, so an event posted before this cfunction returns is
+    // not processed until the fiber has suspended.
     const thread = std.Thread.spawn(.{}, hashOnThread, .{job}) catch {
-        // Nothing has been posted, so this frame is the only owner and the
-        // cleanup is the callback's, done here instead.
+        // Nothing has been posted, so this frame does the callback's cleanup.
         _ = janet.gcunroot(job.source);
         _ = janet.gcunroot(job.fiber);
         janet.free(job);
@@ -149,6 +155,12 @@ fn sha256(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 // The module entry point
 // ==========================================================================
 
+/// Defines the module's one cfunction.
+///
+/// `env` is the capability to define a binding in the environment the module
+/// is loading into. `janet.entry` below passes `defs` to the loader.
+///
+/// This function cannot raise.
 fn defs(env: *janet.Env) janet.Error!void {
     janet.cfuns(env, "digest", &.{
         janet.reg(

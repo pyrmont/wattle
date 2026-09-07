@@ -1,25 +1,42 @@
 //! Behavioral contract for the compiler's register allocator.
 //!
-//! Nothing in Janet names a register. The allocator is reached only from
-//! `compile.c`'s descendants, and the states worth asserting — a freed
-//! register being handed out again, a clone diverging from its original, the
-//! temporary registers at the top of the file — arise from bytecode shapes
-//! rather than from source shapes, so the suites cannot aim at them.
+//! Nothing in Janet names a register. The allocator is reached only from the
+//! compiler, and the states worth asserting arise from bytecode shapes rather
+//! than from source shapes, so the suites cannot aim at them: a freed register
+//! handed out again, a clone diverging from its original, and the temporary
+//! registers at the top of the file.
 //!
-//! The bitset grows in words and `capacity` counts bits, which is why a fresh
-//! allocator answers zero for both counters rather than a preallocated span, and why
-//! touching register 100 on a clone must not touch it on the original: the
-//! clone owns its own allocation from the moment it is made.
+//! The bitset grows in words while `capacity` counts bits, so a fresh
+//! allocator reports zero for both counters rather than a preallocated span.
+//! Touching register 100 on a clone must not touch it on the original, the
+//! clone owning its own allocation from the moment it is made.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const regalloc = @import("subsystems").regalloc;
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const constants = @import("constants");
 const expect = @import("expect.zig").expect;
+const regalloc = @import("subsystems").regalloc;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
 
 /// The last of the eight temporaries, chosen because it is the one whose
 /// register number the allocator computes rather than assigns: 0xf3 is
 /// `JANETC_REGTEMP_3` counted down from the top of the 0xff range.
 const temp_3 = constants.RegisterTemp.t3;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn check(allocator: *regalloc.RegisterAllocator, register: u32) bool {
     return allocator.isTaken(register);
@@ -58,8 +75,8 @@ fn aCloneOwnsItsOwnBits() void {
     expect(clone.chunks.items.len == allocator.chunks.items.len);
     expect(std.mem.eql(u32, clone.chunks.items, allocator.chunks.items));
     expect(clone.max == allocator.max);
-    // The temporaries are *not* carried across: a clone starts with none held,
-    // because the scope that held them is the one being left behind.
+    // The temporaries are *not* copied across: a clone starts with none
+    // reserved, the scope that reserved them being the one left behind.
     expect(clone.regtemps == 0);
 
     clone.touch(101);
@@ -83,6 +100,10 @@ fn theTemporariesSitAboveTheOrdinaryRegisters() void {
     allocator.freeTemp(0xf3, temp_3);
     expect(allocator.regtemps == 0);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 pub fn run() void {
     theEmptyAllocator();

@@ -5,7 +5,7 @@
 # caller gets a determinate blank value, and whoever opens the next protected
 # scope aborts with
 #
-#     janet abort: a raise was reported to a C caller and never consumed
+#     janet abort: a raise was reported across the C ABI and never consumed
 #
 # That is correct when the caller really is C, and a defect when the caller is a
 # Zig function that could have propagated the error itself.  The message names
@@ -26,7 +26,7 @@
 #
 #     export fn janet_x(...) callconv(.c) T { return raise.reported(xImpl(...)); }
 #
-#     const xAbi = raise.panicking(x).abi;   // `panicking` is `reportToC` too
+#     const xAbi = raise.panicking(x).abi;   // `panicking` is `reportToAbi` too
 #     comptime { @export(&xAbi, .{ .name = "janet_x" }); }
 #
 # ## Why it is transitive
@@ -94,7 +94,7 @@
 # non-raising, not a guess that one is.
 (def allow @{})
 
-(def flattens ["raise.reported" "raise.report(" "reportToC" "raise.panicking"])
+(def flattens ["raise.reported" "raise.report(" "reportToAbi" "raise.panicking"])
 
 # Janet's `:w` is alphanumeric and does not include the underscore, so `\w` is
 # spelled out.  Every pattern here is one of Python's, translated rather than
@@ -370,11 +370,9 @@
           # `try raise.crossing(<call>)` on the same line.
           (or (string/find "raise.crossing" line) (string/find "raise.declared" line))
           nil
-          # `try crossing(<call>)` -- `interop.zig`'s own copy, which exists
-          # because the Zig client is not the runtime's module and cannot
-          # import `raise`. Its header says so and `cabi_check.zig` compares
-          # the declaration against the definition; recognising only the
-          # dotted spelling would report every call in that file.
+          # `try crossing(<call>)` -- the undotted spelling a file that
+          # cannot import `raise` writes for itself. Recognising only the
+          # dotted one would report every call in such a file.
           (string/find "try crossing(" line)
           nil
           # `_ = try raise.crossing({});` on the next non-blank line, which

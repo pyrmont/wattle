@@ -5,44 +5,51 @@
 //! From Janet these are reached only through `string/format` and
 //! `buffer/format`, which always supply a buffer and always take the page
 //! width from the format string. Three of the printer's parameters are
-//! therefore never varied from Janet at all — the null buffer, the start
-//! length, and the lookback barrier — and the last two exist precisely so that
-//! printing *into text that is already there* behaves differently from
-//! printing into an empty buffer.
+//! therefore never varied from Janet at all, the null buffer, the start length
+//! and the lookback barrier, and the last two exist precisely so that printing
+//! *into text that is already there* behaves differently from printing into an
+//! empty buffer.
 //!
-//! ## No abi
-//!
-//! **`pretty.jdn` has no abi**, and this file is why. One existed with a
-//! comment saying nothing in the tree called it; that was wrong by one, since
-//! a C contract *was* calling it by hand-declaring the symbol, and it was the
-//! only caller. What is left is `jdn`, which raises, and which this file
-//! `try`s.
-//!
-//! The panic assertions are the other retirement. The C original spelled each
-//! as a fourteen-line `EXPECT_PANIC` macro over a protected scope and three
-//! flag reads, and counted how many fired because "a case that silently stopped panicking
-//! would look exactly like one that passed". Here a refusal is a value, the
-//! count is unnecessary, and the message is checked by `Raise.says`.
+//! `pretty.jdn` raises and this file `try`s it, so there is no abi to test
+//! beside it. A refusal is a value here, and `Raise.says` checks the message
+//! at the site that expected it.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const config = @import("config");
-const repr = @import("repr");
-const constants = @import("constants");
-const harness = @import("harness.zig");
-const subsystems = @import("subsystems");
-const gc_alloc = @import("subsystems").gc_alloc;
-const buffers = @import("subsystems").value.buffers;
-const core_env = @import("subsystems").env;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
 const abi = @import("abi");
-const tables = @import("subsystems").value.tables;
+const buffers = @import("subsystems").value.buffers;
+const config = @import("config");
+const constants = @import("constants");
+const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
-
-const pretty = subsystems.pp_pretty;
 const format = subsystems.pp_format;
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
+const pretty = subsystems.pp_pretty;
+const repr = @import("repr");
+const subsystems = @import("subsystems");
+const tables = @import("subsystems").value.tables;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
 
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+const guard = config.recursion_guard;
 var test_env: *tables.Table = undefined;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn checkBuffer(b: *buffers.Buffer, expected: []const u8) void {
     const count: usize = @intCast(b.count);
@@ -78,18 +85,16 @@ fn buffer(capacity: usize) *buffers.Buffer {
     return buffers.new(capacity);
 }
 
-const guard = config.recursion_guard;
-
 /// Print with an explicit width and flag set.
 ///
 /// There is no entry point that takes them directly: `pretty.prettyBuffer`
-/// fixes the width at 80. This goes through the formatter instead, which is how every
-/// real caller reaches those parameters anyway — and it means the start length
-/// and the lookback barrier are set the way a `%p` in the middle of a format
-/// string sets them rather than the way a test would.
+/// fixes the width at 80. This goes through the formatter instead, which is
+/// how every real caller reaches those parameters anyway, and it means the
+/// start length and the lookback barrier are set the way a `%p` in the middle
+/// of a format string sets them rather than the way a test would.
 ///
-/// Eight conversion characters carry the eight flag combinations, and the
-/// width field holds two digits, which bounds the width at 99.
+/// Eight conversion characters cover the eight flag combinations, and the
+/// width field is two digits, which bounds the width at 99.
 fn prettyWidth(b: *buffers.Buffer, width: u32, flags: c_int, x: repr.Value) !void {
     const conv = [8]u8{ 'p', 'P', 'q', 'Q', 'm', 'M', 'n', 'N' };
     const index: usize =
@@ -106,11 +111,9 @@ fn prettyWidth(b: *buffers.Buffer, width: u32, flags: c_int, x: repr.Value) !voi
     try format.bufferFormat(b, &spec, 0, argv[0..1]);
 }
 
-// ------------------------------------------------------- the null buffer
-
 /// Both printers allocate their own buffer when given none. No caller in the
-/// tree passes null — every one is a format string with a buffer already in
-/// hand — so this branch has never run outside this file.
+/// tree passes null, every one being a format string with a buffer already in
+/// hand, so this branch runs nowhere but here.
 fn aNullBufferIsAllocated() !void {
     const b = try pretty.prettyBuffer(null, guard, 80, .{}, eval("[1 2 3]"), 0, 0);
     checkBuffer(b, "(1 2 3)");
@@ -118,8 +121,6 @@ fn aNullBufferIsAllocated() !void {
     const j = try pretty.jdn(null, guard, eval("[1 2 3]"), 0, 0);
     checkBuffer(j, "(1 2 3)");
 }
-
-// -------------------------------------------------- the lookback barrier
 
 /// The barrier is what stops the reflow from rewriting text the caller had
 /// already put in the buffer. Without it a `%p` in the middle of a format
@@ -133,7 +134,7 @@ fn theBarrierProtectsEarlierText() !void {
     _ = buffers.pushCstringAbi(b, preamble);
     try prettyWidth(b, 12, 0, val);
 
-    // Byte for byte, the preamble is untouched — including its newlines and
+    // Byte for byte, the preamble is untouched, including its newlines and
     // the ')' that would otherwise make the backtracker start here.
     const count: usize = @intCast(b.count);
     expect(count > preamble.len);
@@ -142,8 +143,6 @@ fn theBarrierProtectsEarlierText() !void {
     // And what followed it did wrap, so the case is not vacuous.
     expect(std.mem.indexOfScalar(u8, b.slice()[preamble.len..count], '\n') != null);
 }
-
-// ------------------------------------------------------------ the width
 
 /// A narrow page wraps and a wide one does not, from the same value. The pair
 /// is what makes the width parameter's effect observable at all, and the wide
@@ -183,7 +182,7 @@ fn nestingBlocksTheReflow() !void {
 
 /// Colour escapes occupy no columns, and the backtracker steps over them
 /// rather than charging the page for them. The same value at the same width
-/// must therefore wrap the same way with and without colour — the one
+/// must therefore wrap the same way with and without colour, which is the one
 /// observable consequence of two comparisons nothing else covers.
 fn colourCostsNoColumns() !void {
     const val = eval("@[1 2 3 4 5]");
@@ -206,9 +205,7 @@ fn colourCostsNoColumns() !void {
     expect(newlines(narrow_colored) == 4);
 }
 
-// ------------------------------------------------------------ the cycles
-
-/// A cycle marker carries the id of the value it points back at, and the id is
+/// A cycle marker names the id of the value it points back at, and the id is
 /// written by the printer's own integer formatter rather than by `snprintf`.
 /// A two-digit id is what makes that formatter's digit loop run more than
 /// once; every cycle in the Janet suites is `<cycle 0>`.
@@ -233,8 +230,6 @@ fn aRepeatThatIsNotACycle() !void {
     try prettyWidth(b, 99, constants.JANET_PRETTY_ONELINE, pair);
     checkBuffer(b, "@[@[1 2] @[1 2]]");
 }
-
-// ------------------------------------------------------- the truncations
 
 /// An indexed value longer than the limit prints three from each end with an
 /// elision between; one exactly at the limit prints whole. The boundary is
@@ -280,7 +275,7 @@ fn theDictionaryTruncationBoundary() !void {
 
 /// Keys are sorted, so a table prints the same way twice however it was built.
 /// Above the key-sort limit the sort is abandoned and storage order is used
-/// instead — which is still deterministic for one table, so what the boundary
+/// instead, which is still deterministic for one table, so what the boundary
 /// changes is whether *two* tables with the same contents print alike.
 fn keysAreSortedBelowTheLimit() !void {
     const forward = buffer(1024);
@@ -299,10 +294,6 @@ fn keysAreSortedBelowTheLimit() !void {
     expect(std.mem.eql(u8, forward.slice()[0..6], "@{0 0 "));
 }
 
-/// Nested dictionaries share one key-sort scratch allocation, each level
-/// taking the slice above the level below it and putting the cursor back on
-/// the way out. A level that forgot to restore the cursor would grow the
-/// scratch without bound and mis-index the level above it.
 fn nestedDictionariesShareTheKeySortScratch() !void {
     const b = buffer(4096);
     try prettyWidth(b, 99, constants.JANET_PRETTY_ONELINE, eval(
@@ -311,11 +302,6 @@ fn nestedDictionariesShareTheKeySortScratch() !void {
     checkBuffer(b, "{:a {:x 1 :y 2 :z 3} :b {:x 4 :y 5 :z 6} :c {:x 7 :y 8 :z 9}}");
 }
 
-// --------------------------------------------------------------- depth
-
-/// The depth limit elides rather than recursing, and it is counted per level
-/// of nesting rather than per value. The depth is the precision, which is
-/// where every real caller puts it.
 fn theDepthLimit() !void {
     const b = buffer(64);
     var argv = [1]repr.Value{eval("[1 [2 [3 [4]]]]")};
@@ -323,11 +309,6 @@ fn theDepthLimit() !void {
     checkBuffer(b, "(1 (...))");
 }
 
-// ----------------------------------------------------------------- JDN
-
-/// JDN and the pretty printer disagree on which values exist. Everything JDN
-/// can write reads back as itself, so a function, a fiber or a keyword that
-/// would not lex has no form and the writer fails rather than inventing one.
 fn whatJdnRefuses() !void {
     // One key, because JDN walks a dictionary in storage order rather than
     // sorted order and two would pin the hash layout rather than the writer.
@@ -347,9 +328,6 @@ fn whatJdnRefuses() !void {
     }
 }
 
-/// A symbol may not start with a digit and a keyword may. The `issym` flag is
-/// the only thing that separates the two, and swapping it is invisible unless
-/// both are tried.
 fn jdnTreatsSymbolsAndKeywordsDifferently() !void {
     const b = buffer(64);
     _ = try pretty.jdn(b, guard, eval("(keyword \"1abc\")"), 0, 0);
@@ -361,6 +339,10 @@ fn jdnTreatsSymbolsAndKeywordsDifferently() !void {
         .{ buffer(16), guard, symbol, @as(i32, 0), @as(i32, 0) },
     ) != null);
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() !void {
     try aNullBufferIsAllocated();

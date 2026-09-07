@@ -11,22 +11,20 @@
 //!
 //! ## What a GC callback may allocate
 //!
-//! **A `gcmark` callback may not keep anything it allocates.** The block is
+//! A `gcmark` callback may not keep anything it allocates. The block is
 //! prepended to `vm.gc.blocks` with its mark bit clear, and the mark phase
 //! reaches objects from the root set rather than by walking that list, so the
 //! sweep in the same collection frees it. The object is created and destroyed
 //! inside one collection and the caller never sees it live. That is a rule
-//! rather than a defect — making it survive means marking during the mark
-//! phase or deferring the sweep, either of which changes what a collection is
-//! — and it is stated in `DESIGN.md` §12 with the other two rules about what
-//! an abstract type's callbacks may not do.
+//! rather than a defect: making it survive would mean marking during the mark
+//! phase or deferring the sweep, either of which changes what a collection is.
 //!
-//! **A finalizer may.** What it allocates is collected on the next cycle,
-//! wherever in the heap list the block being finalized sat. The sweep re-derives
-//! the predecessor of the block it is unlinking after the callback rather than
+//! A finalizer may. What it allocates is collected on the next cycle, wherever
+//! in the heap list the block being finalized sat. The sweep re-derives the
+//! predecessor of the block it is unlinking after the callback rather than
 //! trusting the head it saved before it, which is what makes the head case
-//! behave like the mid-list one; both are asserted below, because the position
-//! dependence is what the two cases exist to rule out.
+//! behave like the mid-list one. Both are asserted below, the position
+//! dependence being what the two cases exist to rule out.
 //!
 //! ## The cross-thread half
 //!
@@ -35,31 +33,70 @@
 //! and that the last reference finalizes exactly once no matter which thread
 //! drops it.
 //!
-//! It needs threads and `vm.ev.threaded_abstracts`, so it is guarded -- by
-//! `std.Thread` rather than by a `#include <pthread.h>` behind three
-//! `#ifdef`s.
+//! It needs threads and `vm.ev.threaded_abstracts`, so `has_threads` guards
+//! it.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const stress_rounds = 2000;
 const builtin = @import("builtin");
-const options = @import("options");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
 const abstract_type = @import("subsystems").abstract_type;
-const tables = @import("subsystems").value.tables;
+const abstracts = @import("subsystems").value.abstracts;
+const arrays = @import("subsystems").value.arrays;
+const expect = @import("expect.zig").expect;
 const gc_alloc = @import("subsystems").gc_alloc;
 const gc_mark = @import("subsystems").gc_mark;
 const harness = @import("harness.zig");
-const wrap = @import("subsystems").value.wrap;
-const abstracts = @import("subsystems").value.abstracts;
+const options = @import("options");
+const tables = @import("subsystems").value.tables;
 const vm_lifecycle = @import("subsystems").lifecycle;
-const arrays = @import("subsystems").value.arrays;
-const abi = @import("abi");
-const expect = @import("expect.zig").expect;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+var allocations_left: i32 = 0;
+const at_child = abstract_type.define(anyopaque, .{ .name = "gc-stress/child", .gc = childGc });
+
+const at_finalizing_parent = abstract_type.define(anyopaque, .{
+    .name = "gc-stress/finalizing-parent",
+    .gc = allocatingGc,
+});
+
+const at_marking_parent = abstract_type.define(anyopaque, .{
+    .name = "gc-stress/marking-parent",
+    .gc = parentGc,
+    .gcmark = allocatingGcmark,
+});
+
+const at_shared = abstract_type.define(anyopaque, .{ .name = "gc-stress/shared", .gc = threadedGc });
+var child_block_count: usize = 0;
+var child_finalized: i32 = 0;
+var child_saw_main_blocks: usize = 0;
 
 /// `options.ev` is `hasEv(options)`, which is already
 /// `ev and !single_threaded`. Windows is cross-compiled and never executed
-/// here, so its path is left out rather than written blind — the same
-/// condition, and the same reason, as `test/fiber_core.zig`.
+/// here, so its path is left out rather than written blind, on the same
+/// condition and for the same reason as `test/fiber_core.zig`.
 const has_threads = options.ev and builtin.os.tag != .windows;
+var parent_finalized: i32 = 0;
+var shared_abstract: ?*anyopaque = null;
+const stress_rounds = 2000;
+const stress_threads = 4;
+var threaded_finalized: i32 = 0;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn headerOf(pointer: ?*anyopaque) *abi.GCObject {
     return @ptrCast(@alignCast(pointer.?));
@@ -85,17 +122,9 @@ fn orphanedBlocks() isize {
     return @as(isize, @intCast(harness.vm().gc.block_count)) - @as(isize, @intCast(walkBlocks()));
 }
 
-// ------------------------------------------- allocation from callbacks
-
-var child_finalized: i32 = 0;
-var parent_finalized: i32 = 0;
-var allocations_left: i32 = 0;
-
 fn childGc(_: *anyopaque, _: usize) void {
     child_finalized += 1;
 }
-
-const at_child = abstract_type.define(anyopaque, .{ .name = "gc-stress/child", .gc = childGc });
 
 /// A `gcmark` that allocates. Bounded by `allocations_left` so that marking
 /// terminates: without the bound each new block would be marked in turn and
@@ -111,12 +140,6 @@ fn parentGc(_: *anyopaque, _: usize) void {
     parent_finalized += 1;
 }
 
-const at_marking_parent = abstract_type.define(anyopaque, .{
-    .name = "gc-stress/marking-parent",
-    .gc = parentGc,
-    .gcmark = allocatingGcmark,
-});
-
 /// A finalizer that allocates while the sweep is walking the block list.
 fn allocatingGc(_: *anyopaque, _: usize) void {
     parent_finalized += 1;
@@ -126,10 +149,9 @@ fn allocatingGc(_: *anyopaque, _: usize) void {
     }
 }
 
-const at_finalizing_parent = abstract_type.define(anyopaque, .{
-    .name = "gc-stress/finalizing-parent",
-    .gc = allocatingGc,
-});
+fn threadedGc(_: *anyopaque, _: usize) void {
+    threaded_finalized += 1;
+}
 
 /// An object allocated from `gcmark` is freed by the collection that ran the
 /// callback. The mark phase has already passed the head of the list by the
@@ -138,7 +160,7 @@ const at_finalizing_parent = abstract_type.define(anyopaque, .{
 ///
 /// The finalizer count is what makes this observable without touching the
 /// freed block: a third-party `gcmark` that allocated something and stored it
-/// would be left holding a dangling pointer, and there is no safe way to read
+/// would be left with a dangling pointer, and there is no safe way to read
 /// that.
 fn allocationFromGcmarkDiesInTheSameCollection() void {
     const orphans_before = orphanedBlocks();
@@ -168,7 +190,7 @@ fn allocationFromGcmarkDiesInTheSameCollection() void {
 /// collected on the next one, having never been marked.
 ///
 /// The keeper is allocated after the dying block and rooted, so it is the head
-/// and is retained — which is what puts the dying block mid-list with a
+/// and is retained, which is what puts the dying block mid-list with a
 /// non-null predecessor.
 fn finalizerAllocationSurvivesWhenMidList() void {
     const orphans_before = orphanedBlocks();
@@ -201,8 +223,8 @@ fn finalizerAllocationSurvivesWhenMidList() void {
 /// the head of the heap list, so the finalizer's own allocation is prepended
 /// in front of it and the head the sweep saved before the callback is stale.
 ///
-/// What is asserted is that the answer is the mid-list one — the new block is
-/// on the list, is collected on the next cycle, and the gap between
+/// What is asserted is that it behaves like the mid-list case: the new block
+/// is on the list, is collected on the next cycle, and the gap between
 /// `block_count` and the walked list never opens.
 fn finalizerAllocationSurvivesAtTheHead() void {
     const orphans_before = orphanedBlocks();
@@ -224,19 +246,6 @@ fn finalizerAllocationSurvivesAtTheHead() void {
     expect(child_finalized == 1); // collected on the next
     expect(orphanedBlocks() == orphans_before);
 }
-
-// ---------------------------------------------------------- cross-thread
-
-const stress_threads = 4;
-
-var threaded_finalized: i32 = 0;
-var shared_abstract: ?*anyopaque = null;
-
-fn threadedGc(_: *anyopaque, _: usize) void {
-    threaded_finalized += 1;
-}
-
-const at_shared = abstract_type.define(anyopaque, .{ .name = "gc-stress/shared", .gc = threadedGc });
 
 /// Each worker runs its own runtime, which is what a real second thread does.
 /// The reference it takes is balanced before it exits, so the count returns to
@@ -268,9 +277,6 @@ fn theRefcountIsAtomicAcrossThreads() !void {
     expect(abstracts.decref(shared_abstract) == 1);
 }
 
-var child_block_count: usize = 0;
-var child_saw_main_blocks: usize = 0;
-
 fn allocateInChild() void {
     child_saw_main_blocks = harness.vm().gc.block_count;
     harness.init();
@@ -283,7 +289,7 @@ fn allocateInChild() void {
 /// Each thread's heap belongs to that thread. A port that reached a
 /// process-wide VM rather than the thread-local one would still pass
 /// every other test in the tree: the damage is invisible until two runtimes
-/// exist at once, and then it is heap corruption rather than a wrong answer.
+/// exist at once, and then it is heap corruption rather than a wrong count.
 fn eachThreadHasItsOwnHeap() !void {
     const main_blocks_before = harness.vm().gc.block_count;
     const main_walk_before = walkBlocks();
@@ -291,7 +297,8 @@ fn eachThreadHasItsOwnHeap() !void {
     const thread = try std.Thread.spawn(.{}, allocateInChild, .{});
     thread.join();
 
-    // Before its own `janet_init`, the child's VM is zeroed rather than shared.
+    // Before its own `vm_lifecycle.init`, the child's VM is zeroed rather
+    // than shared.
     expect(child_saw_main_blocks == 0);
     expect(child_block_count >= 64);
     // And nothing it did touched this thread's heap.
@@ -312,14 +319,12 @@ fn theLastReferenceFinalizesOnce() !void {
     thread.join();
     expect(threaded_finalized == 0);
 
-    // This thread still holds the reference it was made with. Dropping it is
+    // This thread still has the reference it was made with. Dropping it is
     // what frees the block and runs the finalizer.
     _ = tables.remove(&harness.vm().ev.threaded_abstracts, wrap.fromAbstract(abstract));
     expect(abstracts.decrefMaybeFree(abstract) == 0);
     expect(threaded_finalized == 1);
 }
-
-// ---------------------------------------------------------------- cycles
 
 /// Every collector contract ends by cycling the runtime, and this one has more
 /// reason than most: the callbacks above run during collection, and a state
@@ -344,6 +349,10 @@ fn repeatedCycles() void {
         expect(orphanedBlocks() == orphans_before);
     }
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() !void {
     expect(orphanedBlocks() == 0);

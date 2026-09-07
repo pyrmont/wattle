@@ -6,9 +6,9 @@
 //! Janet or unobservable there.
 //!
 //!  - `JANET_MARSHAL_UNSAFE` has no Janet spelling. `cfun_marshal` never sets
-//!    it and `cfun_unmarshal` passes a hard zero, so pointers, cfunctions,
-//!    pointer-backed buffers and threaded abstracts -- five of the twenty-nine
-//!    lead bytes -- are reachable only from a caller inside the runtime.
+//!    it and `cfun_unmarshal` passes a hard zero, so five of the twenty-nine
+//!    lead bytes are reachable only from a caller inside the runtime:
+//!    pointers, cfunctions, pointer-backed buffers and threaded abstracts.
 //!  - The twenty-function marshal context API is called from an abstract
 //!    type's `marshal` and `unmarshal` callbacks and from nowhere else. The
 //!    core types that have such callbacks exercise four of the twenty between
@@ -21,77 +21,142 @@
 //! so its bytes are the contract rather than an implementation detail, and the
 //! assertions below are written against literal bytes for that reason.
 //!
-//! ## The probe type is written rather than adapted
+//! ## The probe type's callbacks are written here
 //!
-//! An abstract type's callbacks are Zig functions, so a C contract cannot
-//! define one at all: `abstract_type.zig` types `marshal`, `unmarshal`, `get`,
-//! `put`, `next`,
-//! `call` and `tostring` as raising, and C has no error union, so a C contract
-//! needs a pool of pre-built tables to reach one at all.
+//! `abstract_type.zig` types `marshal`, `unmarshal`, `get`, `put`, `next`,
+//! `call` and `tostring` as raising, and this file writes each one as an
+//! ordinary Zig function. Every read inside `probeUnmarshal` is a `try`, which
+//! matters because the truncation section below cuts the stream at every
+//! offset: a read that continued past a refusal would walk off the end.
 //!
-//! What it cost the C contract is worth recording, because it is what a shim
-//! count hides. Every read in `probe_unmarshal` had to be followed by
-//!
-//!     #define BAIL_IF_RAISING(value) \
-//!         do { if (janet_contract_raising()) return (value); } while (0)
-//!
-//! because a raise reached C as a report and the read that followed it would
-//! otherwise walk off the end of the stream -- with the truncation section
-//! below cutting the stream at every offset, each of those really was reached.
-//! Here every one of them is `try`, and the raising flag it tested has no
-//! reader left.
-//!
-//! **And writing the callback as the runtime types it found a live defect in
-//! the runtime**, one directory over. `marshalSize` had only a `raise.reported`
-//! form, and `peg.zig`'s and `io.zig`'s marshal callbacks were both calling it
-//! from inside a raising callback -- so a buffer that refused to grow at
-//! exactly that call became a report nobody consumed. The raising twin is what
-//! closed it, and the `marshalSize` assertions below are the reproduction.
+//! `marshalSize` is raising for the same reason, and the assertions below
+//! cover it: a callback that reached only a reporting form of it would turn a
+//! buffer refusing to grow into a report nobody consumes.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const repr = @import("repr");
-const constants = @import("constants");
-const raise = @import("subsystems").raise;
-const harness = @import("harness.zig");
 
-const subsystems = @import("subsystems");
-const value = @import("subsystems").value;
-const structs = @import("subsystems").value.structs;
-const tables = @import("subsystems").value.tables;
-const gc_alloc = @import("subsystems").gc_alloc;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
+const abstract_type = subsystems.abstract_type;
+const abstracts = @import("subsystems").value.abstracts;
 const arrays = @import("subsystems").value.arrays;
 const buffers = @import("subsystems").value.buffers;
+const constants = @import("constants");
 const core_env = @import("subsystems").env;
-const vm_entry = @import("subsystems").vm_entry;
-const marsh_mod = @import("subsystems").marsh;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const abstracts = @import("subsystems").value.abstracts;
-const abi = @import("abi");
-const fibers = @import("subsystems").value.fibers;
-const marsh = subsystems.marsh;
-const registry = subsystems.registry;
-const abstract_type = subsystems.abstract_type;
-const AbstractType = abstract_type.AbstractType;
-
 const expect = @import("expect.zig").expect;
+const fibers = @import("subsystems").value.fibers;
+const gc_alloc = @import("subsystems").gc_alloc;
+const harness = @import("harness.zig");
+const marsh = subsystems.marsh;
+const raise = @import("subsystems").raise;
+const registry = subsystems.registry;
+const repr = @import("repr");
+const structs = @import("subsystems").value.structs;
+const subsystems = @import("subsystems");
+const tables = @import("subsystems").value.tables;
+const value = @import("subsystems").value;
+const vm_entry = @import("subsystems").vm_entry;
+const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
 
-var test_env: *tables.Table = undefined;
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// A type with no callbacks at all, which is what makes a value
+/// unmarshallable rather than merely unregistered.
+const inert_at = abstract_type.define(anyopaque, .{ .name = "test/marsh-inert" });
+const lb_abstract: u8 = 217;
+const lb_fiber: u8 = 204;
+const lb_funcdef_ref: u8 = 220;
+const lb_funcenv_ref: u8 = 219;
+const lb_real: u8 = 200;
+const lb_symbol: u8 = 207;
+const lb_unsafe_cfunction: u8 = 221;
+const lb_unsafe_pointer: u8 = 222;
+
+/// The seven weak-container lead bytes are 226 through 232, and they are that
+/// in every configuration. The event loop is a feature flag and a lead byte is
+/// a wire format, so a build that cannot produce a threaded abstract still
+/// gives 224 and 225 away rather than reusing them.
+///
+/// The number is written here rather than read from `marsh.zig`, which is what
+/// makes this a check: the subject and the oracle are independently derived.
+const lb_weak_base: u8 = 226;
+
+const never_at = abstract_type.define(anyopaque, .{
+    .name = "test/marsh-never",
+    .marshal = protocolMarshal,
+    .unmarshal = neverUnmarshal,
+});
+
+const probe_at = abstract_type.define(Probe, .{
+    .name = "test/marsh-probe",
+    .marshal = probeMarshal,
+    .unmarshal = probeUnmarshal,
+});
+
+const refuser_at = abstract_type.define(anyopaque, .{
+    .name = "test/marsh-refuser",
+    .marshal = refuserMarshal,
+    .unmarshal = refuserUnmarshal,
+});
 
 /// Values a `Janet` local would not keep alive. The probe types have no
-/// `gcmark`, so nothing an abstract holds is a root either.
+/// `gcmark`, so nothing reachable only from an abstract is a root either.
 var rooted: *arrays.Array = undefined;
+var test_env: *tables.Table = undefined;
+
+const toobig_at = abstract_type.define(anyopaque, .{
+    .name = "test/marsh-toobig",
+    .marshal = toobigMarshal,
+});
+
+const twice_at = abstract_type.define(anyopaque, .{
+    .name = "test/marsh-twice",
+    .marshal = protocolMarshal,
+    .unmarshal = twiceUnmarshal,
+});
+
+// ==========================================================================
+// Aliased types
+// ==========================================================================
+
+const AbstractType = abstract_type.AbstractType;
+
+// ==========================================================================
+// Types
+// ==========================================================================
+
+const Probe = extern struct {
+    i32_field: i32,
+    i64_field: i64,
+    sz: usize,
+    byte: u8,
+    bytes: [4]u8,
+    value: repr.Value,
+    ptr: ?*anyopaque,
+};
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 fn keep(val: repr.Value) repr.Value {
     harness.arrayPush(rooted, val);
     return val;
 }
 
-// ------------------------------------------------------------ wire assertions
-
 /// A buffer's contents against a literal, with both rendered on a mismatch.
 ///
-/// The C original's `check_bytes` printed the two byte strings and then
+/// A byte-string comparison that printed both sides and then
 /// `expect(0)`. Kept, because a wire-format failure is unreadable without
 /// them: the assertion that fires says only that two buffers differ.
 fn wireIs(b: *buffers.Buffer, expected: []const u8) void {
@@ -117,7 +182,7 @@ fn unmarshalled(b: *buffers.Buffer, flags: c_int) raise.Raising(repr.Value) {
 
 /// `unmarshal` over a literal, which is how every crafted stream below is
 /// spelled. Slices rather than pointer-and-length: the length of a Zig string
-/// literal is part of it, and the C original had to write `sizeof(x) - 1` at
+/// literal is part of it, and a length taken from the literal's own size at
 /// every site to say the same thing.
 fn unmarshalBytes(bytes: []const u8, flags: c_int) raise.Raising(repr.Value) {
     return marsh.unmarshal(bytes, flags, null, null);
@@ -128,38 +193,25 @@ fn refusedBy(bytes: []const u8) ?harness.Raise {
     return harness.raised(unmarshalBytes, .{ bytes, @as(c_int, 0) });
 }
 
-// ------------------------------------------------------- the probe abstract
-//
-// One abstract type whose callbacks drive every entry point of the context
-// API, so that a round trip through it is a round trip through all twenty.
-// The pointer fields are written only in unsafe mode, which is also what makes
-// this type a witness for the context's `flags` field.
-
-const Probe = extern struct {
-    i32_field: i32,
-    i64_field: i64,
-    sz: usize,
-    byte: u8,
-    bytes: [4]u8,
-    value: repr.Value,
-    ptr: ?*anyopaque,
-};
-
+/// One abstract type's callbacks, between them driving every entry point of
+/// the context API, so that a round trip through the probe is a round trip
+/// through all twenty. The pointer fields are written only in unsafe mode,
+/// which is what makes this type a witness for the context's `flags` field.
 fn probeMarshal(probe: *Probe, m: *abi.Marshal) raise.Raising(void) {
-    marsh_mod.marshalAbstract(m, probe);
+    marsh.marshalAbstract(m, probe);
     try marsh.marshalInt(m, probe.i32_field);
     try marsh.marshalInt64(m, probe.i64_field);
     try marsh.marshalSize(m, probe.sz);
     try marsh.marshalByte(m, probe.byte);
     try marsh.marshalBytes(m, &probe.bytes);
     try marsh.marshalJanet(m, probe.value);
-    const unsafe = (marsh_mod.marshalFlags(m) & constants.JANET_MARSHAL_UNSAFE) != 0;
+    const unsafe = (marsh.marshalFlags(m) & constants.JANET_MARSHAL_UNSAFE) != 0;
     try marsh.marshalByte(m, @intFromBool(unsafe));
     if (unsafe) try marsh.marshalPtr(m, probe.ptr);
 }
 
-/// Every read is a `try`, which is the whole of what the C original spelled as
-/// a `BAIL_IF_RAISING` after each one -- see the header comment.
+/// Every read is a `try`, so a refusal stops the walk where it happens rather
+/// than at the next read that ran past the end.
 fn probeUnmarshal(u: *abi.Unmarshal) raise.Raising(*Probe) {
     const probe: *Probe = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(Probe))));
     probe.i32_field = try marsh.unmarshalInt(u);
@@ -172,22 +224,16 @@ fn probeUnmarshal(u: *abi.Unmarshal) raise.Raising(*Probe) {
     probe.ptr = null;
     const unsafe = try marsh.unmarshalByte(u);
     if (unsafe != 0) {
-        expect((marsh_mod.unmarshalFlags(u) & constants.JANET_MARSHAL_UNSAFE) != 0);
+        expect((marsh.unmarshalFlags(u) & constants.JANET_MARSHAL_UNSAFE) != 0);
         probe.ptr = try marsh.unmarshalPtr(u);
     }
     return probe;
 }
 
-const probe_at = abstract_type.define(Probe, .{
-    .name = "test/marsh-probe",
-    .marshal = probeMarshal,
-    .unmarshal = probeUnmarshal,
-});
-
 /// A type that always reaches for a pointer, so that the safe-mode refusal has
 /// something to refuse.
 fn refuserMarshal(p: *anyopaque, m: *abi.Marshal) raise.Raising(void) {
-    marsh_mod.marshalAbstract(m, p);
+    marsh.marshalAbstract(m, p);
     try marsh.marshalPtr(m, p);
 }
 
@@ -197,28 +243,17 @@ fn refuserUnmarshal(u: *abi.Unmarshal) raise.Raising(*anyopaque) {
     return p;
 }
 
-const refuser_at = abstract_type.define(anyopaque, .{
-    .name = "test/marsh-refuser",
-    .marshal = refuserMarshal,
-    .unmarshal = refuserUnmarshal,
-});
-
 /// A type that writes more bytes than a Janet buffer can index.
 fn toobigMarshal(p: *anyopaque, m: *abi.Marshal) raise.Raising(void) {
-    marsh_mod.marshalAbstract(m, p);
+    marsh.marshalAbstract(m, p);
     const bytes: [*]const u8 = @ptrCast(p);
     try marsh.marshalBytes(m, bytes[0 .. @as(usize, std.math.maxInt(i32)) + 1]);
 }
 
-const toobig_at = abstract_type.define(anyopaque, .{
-    .name = "test/marsh-toobig",
-    .marshal = toobigMarshal,
-});
-
 /// The marshal half of the three types whose *unmarshal* half breaks the
 /// abstract protocol.
 fn protocolMarshal(p: *anyopaque, m: *abi.Marshal) raise.Raising(void) {
-    marsh_mod.marshalAbstract(m, p);
+    marsh.marshalAbstract(m, p);
     try marsh.marshalByte(m, @as(*u8, @ptrCast(p)).*);
 }
 
@@ -229,33 +264,15 @@ fn twiceUnmarshal(u: *abi.Unmarshal) raise.Raising(*anyopaque) {
     return p;
 }
 
-const twice_at = abstract_type.define(anyopaque, .{
-    .name = "test/marsh-twice",
-    .marshal = protocolMarshal,
-    .unmarshal = twiceUnmarshal,
-});
-
 /// Never registers at all.
 fn neverUnmarshal(u: *abi.Unmarshal) raise.Raising(*anyopaque) {
     _ = try marsh.unmarshalByte(u);
     return abstracts.newFor(Probe, &probe_at);
 }
 
-const never_at = abstract_type.define(anyopaque, .{
-    .name = "test/marsh-never",
-    .marshal = protocolMarshal,
-    .unmarshal = neverUnmarshal,
-});
-
-/// A type with no callbacks at all, which is what makes a value
-/// unmarshallable rather than merely unregistered.
-const inert_at = abstract_type.define(anyopaque, .{ .name = "test/marsh-inert" });
-
 fn stored(at: *const AbstractType) *const abi.AbstractType {
     return at;
 }
-
-// -------------------------------------------------------- the integer codec
 
 /// `pushInt` picks one of three encodings by range, and `readInt` picks by
 /// lead byte. Neither boundary is observable from Janet, where a marshalled
@@ -306,8 +323,6 @@ fn realsAndIntegralDoublesDiffer() raise.Raising(void) {
     expect(wrap.toNumber(try unmarshalled(b, 0)) == 2147483648.0);
 }
 
-// -------------------------------------------------------- the 64-bit codec
-
 /// `push64` is length-prefixed above 0xF0 and bare below it, and only the
 /// context API reaches it.
 fn theSizeEncodingBoundaries() raise.Raising(void) {
@@ -347,8 +362,6 @@ fn theSizeEncodingBoundaries() raise.Raising(void) {
     expect(refusedBy("\xf9\x00\x00\x00\x00\x00\x00\x00\x00\x00").?.says("unknown byte f9 at index 0"));
 }
 
-// ---------------------------------------------------------- the context API
-
 fn makeProbe() *Probe {
     const probe: *Probe = @ptrCast(@alignCast(abstracts.newBytes(stored(&probe_at), @sizeOf(Probe))));
     probe.i32_field = -12345;
@@ -379,7 +392,7 @@ fn theContextApiRoundTrips() raise.Raising(void) {
     // Safe mode: the pointer was not written, so it does not come back.
     expect(back.ptr == null);
 
-    // Unsafe mode carries it.
+    // Unsafe mode lets it through.
     b = try marshalled(wrap.fromAbstract(probe), null, constants.JANET_MARSHAL_UNSAFE);
     back = @ptrCast(@alignCast(wrap.toAbstract(
         keep(try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE)),
@@ -454,14 +467,11 @@ fn theUnsafeGateOnTheContextApi() raise.Raising(void) {
     ).?.says("size_t too large to fit in buffer"));
 }
 
-// ------------------------------------------------------- the unsafe payloads
-
 /// A cfunction that exists to be a value with an address.
 ///
 /// `align(corefn.alignment)` for `test/registry.zig`'s reason: nanbox-64 with
 /// a pointer shift steals the low bits of a cfunction pointer, and
-/// `-Dnanbox-pointer-shift=2` is a matrix entry. The C original got the same
-/// requirement from `JANET_CFUNCTION_ALIGN`.
+/// `-Dnanbox-pointer-shift=2` is a matrix entry.
 fn aCfunction(argv: []repr.Value) align(@import("subsystems").corefn.alignment) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
@@ -493,29 +503,6 @@ fn pointersAndCfunctionsNeedTheUnsafeFlag() raise.Raising(void) {
         .says("unsafe flag not given, will not unmarshal function pointer at index 1"));
 }
 
-// ------------------------------------------------------- the weak vocabulary
-
-/// The seven weak-container lead bytes are 226 through 232, and they are that
-/// in every configuration. The event loop is a feature flag and a lead byte is
-/// a wire format, so a build that cannot produce a threaded abstract still
-/// gives 224 and 225 away rather than reusing them.
-///
-/// The number is written here rather than read from `marsh.zig`, which is what
-/// makes this a check: the subject and the oracle are independently derived.
-const lb_weak_base: u8 = 226;
-
-// The lead bytes this file names by number, so that the numbers appear once.
-// Every one is a wire-format constant, and a renumbering would silently
-// invalidate every stored image.
-const lb_real: u8 = 200;
-const lb_fiber: u8 = 204;
-const lb_symbol: u8 = 207;
-const lb_abstract: u8 = 217;
-const lb_funcenv_ref: u8 = 219;
-const lb_funcdef_ref: u8 = 220;
-const lb_unsafe_cfunction: u8 = 221;
-const lb_unsafe_pointer: u8 = 222;
-
 fn theWeakLeadBytesAreTheSameInEveryConfiguration() raise.Raising(void) {
     const weakk = tables.weakk(1);
     const weakv = tables.weakv(1);
@@ -543,8 +530,6 @@ fn theWeakLeadBytesAreTheSameInEveryConfiguration() raise.Raising(void) {
     expect(harness.isType(back, repr.Tag.table));
     expect(wrap.toTable(back).proto != null);
 }
-
-// ------------------------------------------------------- the reference table
 
 /// A tuple and a struct are marked seen *after* their contents are written and
 /// everything else before, which decides whether a self-reference is
@@ -595,8 +580,6 @@ fn aReferenceIndexIsBoundsChecked() void {
     expect(refusedBy("\xd7\x00\xdc\x00").?.says("invalid funcdef reference 0"));
 }
 
-// -------------------------------------------------- functions and closures
-
 fn onlyIndexOf(b: *buffers.Buffer, lead: u8) i32 {
     var found: i32 = -1;
     var i: i32 = 0;
@@ -641,7 +624,7 @@ fn functionStreamsAndTheirBackReferences() raise.Raising(void) {
         .says("invalid funcenv reference 127"));
 
     // Two instances of one `fn` share a funcdef, and only the second is a back
-    // reference -- the closed-over values are still written twice.
+    // reference; the closed-over values are still written twice.
     out = evaluate("(tuple ;(map (fn [x] (fn [] x)) [7 8]))");
     b = try marshalled(out, null, 0);
     _ = keep(wrap.fromBuffer(b));
@@ -654,18 +637,16 @@ fn functionStreamsAndTheirBackReferences() raise.Raising(void) {
     expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("invalid funcdef reference 127"));
 
-    // A function carries at most 255 environments on the wire.
+    // A function has at most 255 environments on the wire.
     expect(refusedBy("\xd7\xcd\x00\x00\x01\x00").?
         .says("invalid function - too many environments (256)"));
 
     // A funcdef is verified before it is handed back. This one declares no
     // flags, no slots, no constants and no bytecode, which is the smallest
-    // well-formed header a stream can carry and still not be a function.
+    // well-formed header a stream can have and still not be a function.
     expect(refusedBy("\xd7\x00\x00\x00\x00\x00\x00\x00\x00").?
         .says("funcdef has invalid bytecode"));
 }
-
-// ------------------------------------------------------------- the registry
 
 fn theReverseRegistryShortCircuits() raise.Raising(void) {
     const rreg = tables.new(1);
@@ -693,8 +674,6 @@ fn theReverseRegistryShortCircuits() raise.Raising(void) {
     wireIs(b, "\xd1\x02\xd8\x08an-array\xda\x01");
 }
 
-// -------------------------------------------------------- the environment API
-
 fn anEntry(key: [*:0]const u8, val: repr.Value) repr.Value {
     const entry = tables.new(1);
     tables.put(entry, value.fromBytes(std.mem.span(key), .keyword), val);
@@ -719,7 +698,7 @@ fn envLookupIntoPrefixesAndRecurses() void {
     tables.put(env, value.fromBytes("not-a-symbol", .keyword), anEntry("value", w(5)));
 
     const flat = tables.new(0);
-    marsh_mod.envLookupInto(flat, env, null, 1);
+    marsh.envLookupInto(flat, env, null, 1);
     expect(harness.integerIs(tables.get(flat, value.fromBytes("plain", .symbol)), 2));
     expect(harness.integerIs(tables.get(flat, value.fromBytes("by-ref", .symbol)), 3));
     expect(harness.integerIs(tables.get(flat, value.fromBytes("from-struct", .symbol)), 4));
@@ -729,36 +708,34 @@ fn envLookupIntoPrefixesAndRecurses() void {
 
     // Without recursion the prototype is not walked.
     const shallow = tables.new(0);
-    marsh_mod.envLookupInto(shallow, env, null, 0);
+    marsh.envLookupInto(shallow, env, null, 0);
     expect(harness.integerIs(tables.get(shallow, value.fromBytes("plain", .symbol)), 2));
     expect(harness.isType(tables.get(shallow, value.fromBytes("inherited", .symbol)), repr.Tag.nil));
 
     // A prefix is prepended to the symbol, not to the entry.
     const prefixed = tables.new(0);
-    marsh_mod.envLookupInto(prefixed, env, "mod/", 1);
+    marsh.envLookupInto(prefixed, env, "mod/", 1);
     expect(harness.integerIs(tables.get(prefixed, value.fromBytes("mod/plain", .symbol)), 2));
     expect(harness.integerIs(tables.get(prefixed, value.fromBytes("mod/inherited", .symbol)), 1));
     expect(harness.isType(tables.get(prefixed, value.fromBytes("plain", .symbol)), repr.Tag.nil));
 
     // An empty prefix is not the same code path as a null one, and gives the
-    // same answer.
+    // same result.
     const empty = tables.new(0);
-    marsh_mod.envLookupInto(empty, env, "", 1);
+    marsh.envLookupInto(empty, env, "", 1);
     expect(harness.integerIs(tables.get(empty, value.fromBytes("plain", .symbol)), 2));
 
     // `marsh.envLookup` is the recursive, unprefixed case with a fresh table.
-    const made = marsh_mod.envLookup(env);
+    const made = marsh.envLookup(env);
     expect(harness.integerIs(tables.get(made, value.fromBytes("inherited", .symbol)), 1));
 }
-
-// -------------------------------------------------------------- truncation
 
 /// Every read is bounds checked, and the check is what stops a corrupt stream
 /// from reading past the buffer rather than merely producing a wrong value.
 ///
-/// This is the section the C original's `BAIL_IF_RAISING` existed for: cutting
+/// Cutting
 /// the stream at every offset drives a raise out of every read in
-/// `probeUnmarshal` in turn, and a C callback that carried on past one would
+/// `probeUnmarshal` in turn, and a callback that continued past one would
 /// read from beyond the end of the source.
 fn aTruncatedStreamIsRefusedAtEveryLength() raise.Raising(void) {
     const probe = makeProbe();
@@ -800,8 +777,6 @@ fn aPrototypeIsTypeChecked() void {
     expect(refusedBy("\xd4\x00\x00").?.says("expected type table, got 0"));
 }
 
-// ------------------------------------------------------------------- fibers
-
 /// A fiber is only ALIVE while it is running, so the refusal can only be
 /// provoked from inside one.
 fn aLiveFiberCannotBeMarshalled() raise.Raising(void) {
@@ -819,16 +794,14 @@ fn aLiveFiberCannotBeMarshalled() raise.Raising(void) {
     expect(harness.isType(try unmarshalled(b, 0), repr.Tag.fiber));
 
     expect(refusedBy("\xcc\x00\x01\x00\x00\x00").?.says("fiber has incorrect stack setup"));
-    // A status field of 16 is one past `JANET_STATUS_ALIVE` and still inside
+    // A status field of 16 is one past the last `FiberStatus` and still inside
     // the six-bit status mask, so it survives every other check.
     expect(refusedBy("\xcc\xcd\x00\x10\x00\x00\x00\x04\x04\x04\xc9").?
         .says("invalid fiber status"));
 }
 
-// ---------------------------------------------------- what `next` reports
-
 /// `cfun_unmarshal` drops the out-parameter, so this is the only caller that
-/// can see where a value ended -- which is what makes a stream of concatenated
+/// can see where a value ended, which is what makes a stream of concatenated
 /// values readable at all.
 fn nextPointsPastTheValue() raise.Raising(void) {
     const b = buffers.new(16);
@@ -846,7 +819,9 @@ fn nextPointsPastTheValue() raise.Raising(void) {
     expect(next == b.data.? + @as(usize, @intCast(b.count)));
 }
 
-// -------------------------------------------------------------------- entry
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() raise.Raising(void) {
     test_env = harness.coreEnv();

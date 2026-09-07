@@ -1,62 +1,90 @@
 //! Loading a native module: a library handle and the four operations over it,
 //! for POSIX, for Windows, and for a build with dynamic modules turned off.
 //!
-//! **The Win32 loader is the only one written out.** On POSIX the four are
+//! The Win32 loader is the only one written out. On POSIX the four are
 //! `dlopen`, `dlsym`, `dlclose` and `dlerror` and there is nothing to write;
 //! on Windows all four are real functions, below.
 //!
-//! ## Why `symbol` raises and the others do not
+//! One path here can fail in a way a Janet program should see: `symbolClib`,
+//! asked for a symbol in the process rather than in a loaded library, walks
+//! every loaded module and panics where `c.EnumProcessModules` fails. Nothing
+//! else reports anything but a null pointer. So `symbol` returns
+//! `raise.Raising(?*anyopaque)` on every platform while only the Windows arm
+//! ever returns the error: one source line, `try dynlib.symbol(...)`, cannot
+//! need a `try` on Windows and not on Linux. `ev/backend.zig`'s four backends
+//! are the same shape.
 //!
-//! Exactly one path here can fail in a way a Janet program should see:
-//! `symbolClib`, asked for a symbol in the *process* rather than in a loaded
-//! library, walks every loaded module and panics if `c.EnumProcessModules`
-//! fails. Nothing else reports anything but a null pointer.
-//!
-//! So `symbol` returns `raise.Raising(?*anyopaque)` on every platform while
-//! only the Windows arm can ever return the error. Declaring what you cannot
-//! do yields where several implementations share a call site: one source line,
-//! `try dynlib.symbol(...)`, cannot need a `try` on Windows and not on Linux.
-//! `ev/backend.zig`'s four backends are the same shape.
-//!
-//! ## None of this is executed here
-//!
-//! macOS and Linux run the `dlopen` arm, and the Windows arm is compiled by
-//! `x86_64-windows-gnu` and executed by nothing. What that buys is type
-//! checking and no more, so the Windows arm below is written to be read
-//! against upstream's line by line, and the one place it deliberately differs
-//! says so.
+//! The Windows arm is compiled and never executed. macOS and Linux run the
+//! `dlopen` arm, and `x86_64-windows-gnu` compiles the other. What that buys
+//! is type checking and no more, so the Windows arm below is written to be
+//! read against upstream line by line, and the one place it deliberately
+//! differs says so.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
-const raise = @import("../api/raise.zig");
-const pp_format = @import("pp/format.zig");
-const config = @import("config");
-const c = @import("cabi");
 
-const windows = builtin.os.tag == .windows;
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const c = @import("cabi");
+const config = @import("config");
+const pp_format = @import("pp/format.zig");
+const raise = @import("../api/raise.zig");
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// The two `FormatMessage` flags this file passes: take the text from the
+/// system's own table, and leave insert sequences unexpanded.
+const FORMAT_MESSAGE_FROM_SYSTEM: u32 = 0x1000;
+const FORMAT_MESSAGE_IGNORE_INSERTS: u32 = 0x200;
+
+/// `MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT)`, which is
+/// `(SUBLANG_DEFAULT << 10) | LANG_NEUTRAL` and therefore `0x400`. Written as
+/// the arithmetic rather than the constant so it can be read against the
+/// macro.
+const LANG_NEUTRAL_SUBLANG_DEFAULT: u32 = (1 << 10) | 0;
+
+/// `c.FormatMessageA`'s buffer, static so that the text stays valid until the
+/// next failure on any thread. That is a race, and nothing in the tree reaches
+/// it twice.
+var error_clib_buf: [256]u8 = @splat(0);
+
+/// Whether this build loads native modules at all. With it off, the four
+/// operations below are stubs and the error string is the only real one left.
 const has_dynamic_modules = config.dynamic_modules;
 
+/// Whether this target uses the Win32 loader below.
+const windows = builtin.os.tag == .windows;
+
+// ==========================================================================
+// Types
+// ==========================================================================
+
 /// A loaded library. A `HINSTANCE` on Windows and a `void *` elsewhere, which
-/// are the same width; `c_int` when the feature is off, so the stubs below have
-/// something to return.
+/// are the same width; `c_int` when the feature is off, so that the stubs
+/// below have something to return.
 pub const Handle = if (has_dynamic_modules) ?*anyopaque else c_int;
 
-pub fn load(name: ?[*:0]const u8) Handle {
-    if (!has_dynamic_modules) return 0;
-    if (windows) return loadClib(name);
-    return std.c.dlopen(name, .{ .NOW = true });
+// ==========================================================================
+// Public functions
+// ==========================================================================
+
+/// Whether a handle is a failed load. With dynamic modules off, every load has
+/// failed.
+pub fn failed(lib: Handle) bool {
+    if (!has_dynamic_modules) return true;
+    return lib == null;
 }
 
-/// Look a symbol up, in one library or across the whole process.
-///
-/// The error is declared on every platform and returned only on Windows; the
-/// head of this file says why.
-pub fn symbol(lib: Handle, sym: [*:0]const u8) raise.Raising(?*anyopaque) {
-    if (!has_dynamic_modules) return null;
-    if (windows) return symbolClib(lib, sym);
-    return std.c.dlsym(lib, sym);
-}
-
+/// Closes a library. On Windows the handle for the running process is left
+/// alone, since it is not the loader's to close.
 pub fn free(lib: Handle) void {
     if (!has_dynamic_modules) return;
     if (windows) return freeClib(lib);
@@ -65,9 +93,9 @@ pub fn free(lib: Handle) void {
 
 /// The last loader error as text.
 ///
-/// `dlerror` answers null when nothing has failed, and both callers --
-/// `ffi.zig`'s `raise.panic` and `env.zig`'s `strings.cstring` -- would walk
-/// from address zero if it were handed on. It is unreachable through either,
+/// `dlerror` gives back null where nothing has failed, and both callers,
+/// `ffi.zig`'s `raise.panic` and `env.zig`'s `strings.cstring`, would walk
+/// from address zero if that were handed on. It is unreachable through either,
 /// each of which reaches this only on the branch a failed `dlopen` took. The
 /// null arm is written out rather than left implicit, because Zig's type says
 /// it can happen.
@@ -77,34 +105,29 @@ pub fn lastError() [*:0]const u8 {
     return std.c.dlerror() orelse "unknown dynamic linker error";
 }
 
-pub fn failed(lib: Handle) bool {
-    if (!has_dynamic_modules) return true;
-    return lib == null;
+/// Opens the library at `name`, or the running process where `name` is null. A
+/// failed load is a null handle, which `failed` tests.
+pub fn load(name: ?[*:0]const u8) Handle {
+    if (!has_dynamic_modules) return 0;
+    if (windows) return loadClib(name);
+    return std.c.dlopen(name, .{ .NOW = true });
+}
+
+/// Looks a symbol up, in one library or across the whole process.
+///
+/// The error is declared on every platform and returned only on Windows; the
+/// head of this file says why.
+pub fn symbol(lib: Handle, sym: [*:0]const u8) raise.Raising(?*anyopaque) {
+    if (!has_dynamic_modules) return null;
+    if (windows) return symbolClib(lib, sym);
+    return std.c.dlsym(lib, sym);
 }
 
 // ==========================================================================
-// The Win32 loader
+// Private functions
 // ==========================================================================
 
-// With dynamic modules off, only the error string is real; the rest are stubs.
-
-fn errorClibUnsupported() [*:0]const u8 {
-    return "dynamic modules not supported";
-}
-
-/// `c.FormatMessageA`'s buffer, static so that the answer stays valid until
-/// the next failure on any thread. That is a race, and nothing in the tree can
-/// reach it twice.
-var error_clib_buf: [256]u8 = @splat(0);
-
-const FORMAT_MESSAGE_FROM_SYSTEM: u32 = 0x1000;
-const FORMAT_MESSAGE_IGNORE_INSERTS: u32 = 0x200;
-
-/// `MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT)`, which is
-/// `(SUBLANG_DEFAULT << 10) | LANG_NEUTRAL` and therefore `0x400`. Written as
-/// the arithmetic rather than the constant so it can be read against the macro.
-const LANG_NEUTRAL_SUBLANG_DEFAULT: u32 = (1 << 10) | 0;
-
+/// The last Win32 error as text, in the static buffer above.
 fn errorClib() [*:0]const u8 {
     const written = c.FormatMessageA(
         FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
@@ -126,29 +149,36 @@ fn errorClib() [*:0]const u8 {
     return @ptrCast(&error_clib_buf);
 }
 
-/// A null name asks for the running process rather than for a library, and
-/// `GetModuleHandle(NULL)` is how Win32 spells that. `free` and `symbol` both
-/// test against it, which is why it is a handle rather than a flag.
-fn loadClib(name: ?[*:0]const u8) ?*anyopaque {
-    const path = name orelse return c.GetModuleHandleA(null);
-    return c.LoadLibraryA(path);
+/// The error text for a build with no dynamic modules, which is the one
+/// operation still real in such a build.
+fn errorClibUnsupported() [*:0]const u8 {
+    return "dynamic modules not supported";
 }
 
+/// `FreeLibrary`, except on the handle for the running process.
 fn freeClib(lib: ?*anyopaque) void {
     if (lib != c.GetModuleHandleA(null)) {
         _ = c.FreeLibrary(lib);
     }
 }
 
+/// A null name asks for the running process rather than for a library, and
+/// `GetModuleHandle(NULL)` is how Win32 spells that. `free` and `symbol` both
+/// test against it, which is what makes it a handle rather than a flag.
+fn loadClib(name: ?[*:0]const u8) ?*anyopaque {
+    const path = name orelse return c.GetModuleHandleA(null);
+    return c.LoadLibraryA(path);
+}
+
 /// A symbol in one library, or the first match across every module the process
 /// has loaded.
 ///
-/// The second case is what `(ffi/native)` with no path asks for. **The array
-/// of 1024 module handles is a fixed limit and it is contract.**
-/// `c.EnumProcessModules` reports how much it *wanted* in `needed`, and
+/// The second case is what `(ffi/native)` with no path asks for. The array of
+/// 1024 module handles is a fixed limit and a caller may depend on it:
+/// `c.EnumProcessModules` writes the room it needed into `needed`, and
 /// nothing here grows the array or notices the truncation, so a process with
 /// more than 1024 modules searches the first 1024 and says nothing. It is
-/// defined behaviour, just a limit nobody documented.
+/// defined behaviour, and a limit nobody documented.
 fn symbolClib(lib: ?*anyopaque, sym: [*:0]const u8) raise.Raising(?*anyopaque) {
     if (lib != c.GetModuleHandleA(null)) {
         return c.GetProcAddress(lib, sym);

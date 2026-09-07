@@ -4,64 +4,91 @@
 //! Marking has no return value and frees nothing, so almost everything here is
 //! observed the same way: clear `JANET_MEM_REACHABLE` on the objects under
 //! test, mark one value, and ask which headers came back set. The bit is the
-//! result, which is why this file reads block headers directly.
+//! result, so this file reads block headers directly.
 //!
 //! Two observations cannot be made that way and use a weak table instead. A
 //! collection ends by clearing every `REACHABLE` bit it set, so "was this
 //! marked *during* the collection?" is gone by the time the call returns. A
-//! weak-valued table answers it: the sweep drops exactly the values the mark
+//! weak-valued table settles it: the sweep drops exactly the values the mark
 //! phase did not reach, so an entry still there afterwards was marked. That
 //! relies on the sweep, which makes it an observation channel rather than part
 //! of what is under test.
 //!
 //! Nothing here exercises a raising `gcmark`. `gcmark` and `gc` are typed
-//! non-raising precisely because a raise from either has nowhere to go, so the
-//! case cannot be written -- which is the point of typing them that way.
+//! non-raising precisely because a raise from either has nowhere to go, so
+//! there is no such case to write.
 //!
 //! ## The head offsets are measured rather than asserted
 //!
-//! A C contract can open with five assertions of the form
-//! `sizeof(Head) == offsetof(Head, data)`. Translating those five lines here
-//! would compare `@sizeOf(X)` with `@sizeOf(X)`: compiled, passed, proved
-//! nothing, because a translated head drops the flexible array member and
-//! every head in the runtime is recovered with `@sizeOf` instead.
+//! Asserting `@sizeOf(Head) == @offsetOf(Head, data)` is not available: a head
+//! with a flexible array member loses it in translation, so `@offsetOf` does
+//! not compile against one and every head in the runtime is recovered with
+//! `@sizeOf`. The comparison would be `@sizeOf` against itself.
 //!
 //! So the question is asked of the *allocator* rather than of the type. Each
-//! head is a GC block -- the runtime allocates `Head + payload` in one
-//! `gc.gcallocWithPayload` and hands back the address of the flexible array -- so the
-//! block at the front of the heap list immediately afterwards *is* the header,
-//! and the difference between the two addresses is the offset measured at run
-//! time. That catches a runtime that computed an offset one way and allocated
-//! another, which is the claim worth making here.
+//! head is a GC block: the runtime allocates `Head + payload` in one
+//! `gc.gcallocWithPayload` and gives back the address of the flexible array,
+//! so the block at the front of the heap list immediately afterwards is the
+//! header, and the difference between the two addresses is the offset measured
+//! at run time. That catches a runtime that computed an offset one way and
+//! allocated another, which is the claim worth making here.
+
+// ==========================================================================
+// Standard library imports
+// ==========================================================================
 
 const std = @import("std");
-const config = @import("config");
-const repr = @import("repr");
-const constants = @import("constants");
-const value = @import("subsystems").value;
-const harness = @import("harness.zig");
+
+// ==========================================================================
+// Project imports
+// ==========================================================================
+
+const abi = @import("abi");
 const abstract_type = @import("subsystems").abstract_type;
-const structs = @import("subsystems").value.structs;
-const tables = @import("subsystems").value.tables;
-const gc_alloc = @import("subsystems").gc_alloc;
+const abstracts = @import("subsystems").value.abstracts;
 const arrays = @import("subsystems").value.arrays;
 const buffers = @import("subsystems").value.buffers;
+const config = @import("config");
+const constants = @import("constants");
+const core_env = @import("subsystems").env;
+const expect = @import("expect.zig").expect;
+const functions = @import("subsystems").value.functions;
+const gc_alloc = @import("subsystems").gc_alloc;
+const gc_mark = @import("subsystems").gc_mark;
+const harness = @import("harness.zig");
+const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
+const structs = @import("subsystems").value.structs;
+const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
-const gc_mark = @import("subsystems").gc_mark;
-const core_env = @import("subsystems").env;
-const wrap = @import("subsystems").value.wrap;
-const vm_lifecycle = @import("subsystems").lifecycle;
-const abstracts = @import("subsystems").value.abstracts;
+const value = @import("subsystems").value;
 const vm_entry = @import("subsystems").vm_entry;
-const abi = @import("abi");
+const vm_lifecycle = @import("subsystems").lifecycle;
 const vm_state = @import("subsystems").vm_state;
-const functions = @import("subsystems").value.functions;
-const expect = @import("expect.zig").expect;
+const wrap = @import("subsystems").value.wrap;
+
+// ==========================================================================
+// Constants
+// ==========================================================================
+
+/// The two probe types. `gcmark` and `gc` are typed non-raising, so the
+/// callbacks are ordinary functions and the table is the runtime's own.
+const at_marked = abstract_type.define(anyopaque, .{ .name = "gc-mark-test/marked", .gcmark = probeGcmark });
+const at_plain = abstract_type.define(anyopaque, .{ .name = "gc-mark-test/plain" });
+
+var probe_child_value: repr.Value = undefined;
+var probe_gcmark_calls: i32 = 0;
+var probe_root_value: repr.Value = undefined;
+var probe_roots_on_mark = false;
+var probe_saw_mark_phase: ?bool = null;
+
+// ==========================================================================
+// Cases
+// ==========================================================================
 
 /// The contract uses the runtime's own arithmetic to *find* a header. That is
-/// circular only for the layout question, which `theHeadOffsets` answers from
+/// circular only for the layout question, which `theHeadOffsets` settles from
 /// the allocator instead.
 fn headerOf(pointer: ?*anyopaque) *abi.GCObject {
     return @ptrCast(@alignCast(pointer.?));
@@ -112,9 +139,27 @@ fn freshHeap() void {
     gc_mark.collect();
 }
 
+fn probeGcmark(_: *anyopaque, _: usize) void {
+    probe_gcmark_calls += 1;
+    probe_saw_mark_phase = harness.vm().gc.mark_phase;
+    gc_mark.mark(probe_child_value);
+    if (probe_roots_on_mark) gc_alloc.gcroot(probe_root_value);
+}
+
 /// The block the allocator most recently prepended to the main heap.
 fn newestBlock() usize {
     return @intFromPtr(harness.vm().gc.blocks);
+}
+
+/// Whether a block is still on the main heap list. Only ever called for a
+/// block still alive, so nothing freed is dereferenced.
+fn onBlockList(block: ?*anyopaque) bool {
+    var current = harness.vm().gc.blocks;
+    while (current) |header| {
+        if (@as(?*anyopaque, @ptrCast(header)) == block) return true;
+        current = header.data.next;
+    }
+    return false;
 }
 
 /// The runtime's payload offsets against its own allocator.
@@ -122,7 +167,7 @@ fn newestBlock() usize {
 /// Each case allocates one value of the kind under test and compares the
 /// pointer the runtime handed back against the block it just allocated.
 ///
-/// **`@sizeOf` here is the oracle and must stay `@sizeOf`**, for the reason
+/// `@sizeOf` here is the oracle and has to stay `@sizeOf`, for the reason
 /// `test/utils.zig` gives at `payloadOffset`: the allocator uses
 /// `types.<kind>_payload`, and this compares what it did against the other
 /// spelling of the same number.
@@ -145,12 +190,12 @@ fn theHeadOffsets() void {
     const abstract = abstracts.newBytes(&at_plain, 8);
     expect(@intFromPtr(abstract) - newestBlock() == @sizeOf(abi.AbstractHead));
 
-    // `functions.Function`'s environments are its own flexible array, and the
-    // function *is* its block — so the oracle is what lives at the computed
+    // `functions.Function`'s environments are its own flexible array and the
+    // function is its own block, so the oracle is what lives at the computed
     // slot rather than a difference of addresses. A closure with a captured
-    // binding puts a real `functions.FuncEnv` there; if the offset were wrong the
-    // slot would hold padding, and a padding word is not a live block of type
-    // `JANET_MEMORY_FUNCENV`.
+    // binding puts a real `functions.FuncEnv` there; if the offset were wrong
+    // the slot would be padding, and a padding word is not a live block of
+    // the funcenv memory type.
     var out: repr.Value = undefined;
     expect(core_env.dostring(
         harness.coreEnv(),
@@ -170,40 +215,6 @@ fn theHeadOffsets() void {
 
     _ = gc_alloc.gcunroot(out);
 }
-
-/// Whether a block is still on the main heap list. Only ever called for a
-/// block known to be live, so nothing freed is dereferenced.
-fn onBlockList(block: ?*anyopaque) bool {
-    var current = harness.vm().gc.blocks;
-    while (current) |header| {
-        if (@as(?*anyopaque, @ptrCast(header)) == block) return true;
-        current = header.data.next;
-    }
-    return false;
-}
-
-// ------------------------------------------------------------- probe types
-
-var probe_gcmark_calls: i32 = 0;
-var probe_saw_mark_phase: ?bool = null;
-var probe_roots_on_mark = false;
-var probe_root_value: repr.Value = undefined;
-var probe_child_value: repr.Value = undefined;
-
-fn probeGcmark(_: *anyopaque, _: usize) void {
-    probe_gcmark_calls += 1;
-    probe_saw_mark_phase = harness.vm().gc.mark_phase;
-    gc_mark.mark(probe_child_value);
-    if (probe_roots_on_mark) gc_alloc.gcroot(probe_root_value);
-}
-
-/// The two callbacks this file needs are `gcmark` and `gc`, which are typed
-/// **non**-raising, so they are ordinary `callconv(.c)` functions and the
-/// table is the runtime's own.
-const at_marked = abstract_type.define(anyopaque, .{ .name = "gc-mark-test/marked", .gcmark = probeGcmark });
-const at_plain = abstract_type.define(anyopaque, .{ .name = "gc-mark-test/plain" });
-
-// ------------------------------------------------------------ leaf marking
 
 /// The types the collector does not trace must be accepted and ignored, and
 /// must not disturb the guard: the string marked afterwards proves `depth`
@@ -252,8 +263,6 @@ fn aBuffer() void {
     expect(reachable(buffer));
 }
 
-// ----------------------------------------------------------------- arrays
-
 fn anArrayMarksItsElements() void {
     const array = arrays.new(2);
     const string = value.fromBytes("in an array", .string);
@@ -283,13 +292,10 @@ fn aWeakArrayDoesNotMarkItsElements() void {
     expect(!valueReachable(string));
 }
 
-// ----------------------------------------------------------------- tables
-
 /// Which half of an entry the mark phase follows is what makes a table weak.
 /// All four kinds are checked together because the difference between them is
 /// the contract: a weak-keyed table keeps its values alive, a weak-valued
-/// table keeps its keys, and one weak in both keeps neither — the last being
-/// the case with no branch of its own in the C original.
+/// table keeps its keys, and one weak in both keeps neither.
 fn theFourTableKinds() void {
     const Case = struct {
         make: *const fn (usize) *tables.Table,
@@ -352,8 +358,6 @@ fn thePrototypeChain() void {
     expect(reachable(x) and reachable(y));
 }
 
-// -------------------------------------------------------- structs, tuples
-
 fn aStructMarksItsProtoAndEntries() void {
     const proto_builder = structs.begin(1);
     const proto_value = value.fromBytes("in the struct proto", .string);
@@ -400,8 +404,6 @@ fn aTupleMarksItsElements() void {
     expect(valueReachable(items[1]));
 }
 
-// -------------------------------------------------------------- abstracts
-
 /// The callback runs once per collection, not once per reference: the
 /// reachability test in front of it is what stops a shared abstract from being
 /// walked again by every holder.
@@ -429,8 +431,6 @@ fn anAbstractWithoutAGcmark() void {
     expect(reachable(utils.abstractHead(abstract)));
 }
 
-// ------------------------------------------------------ functions, fibers
-
 /// `func->envs[i]`, which `@cImport` cannot spell: `envs` is a flexible array
 /// member. `theHeadOffsets` is what makes this arithmetic safe to write.
 fn funcEnv(function: *functions.Function, index: usize) *functions.FuncEnv {
@@ -441,7 +441,7 @@ fn funcEnv(function: *functions.Function, index: usize) *functions.FuncEnv {
 
 /// Every value a closure can still reach has to be marked through it: the
 /// definition, the definition's source name, and the captured environment. The
-/// environment is the interesting one — the mark detaches it from its dead
+/// environment is the interesting one: the mark detaches it from its dead
 /// fiber first, so what is marked is the copied-out values rather than the
 /// fiber.
 fn aClosureMarksItsCapturedEnvironment() void {
@@ -492,8 +492,8 @@ fn aClosureMarksItsCapturedEnvironment() void {
     _ = gc_alloc.gcunroot(out);
 }
 
-/// A suspended fiber holds its frames, and each frame holds a function whose
-/// only reference may be that frame. The fiber below is stopped inside a call,
+/// A suspended fiber keeps its frames, and a frame may be the only reference
+/// to the function it names. The fiber below is stopped inside a call,
 /// so `frame->func` is set and the frame walk is what reaches it.
 fn aSuspendedFiberMarksItsFrames() void {
     var out: repr.Value = undefined;
@@ -570,9 +570,7 @@ fn theFiberChildChain() void {
     _ = gc_alloc.gcunroot(parent_value);
 }
 
-// --------------------------------------------------------- recursion guard
-
-/// Build a chain of `n` single-element arrays, each holding the next.
+/// Build a chain of single-element arrays, each pointing at the next.
 /// Collection is suspended for the duration: nothing roots the chain until it
 /// is finished, and it is long enough that building it would otherwise trigger
 /// one.
@@ -587,10 +585,10 @@ fn buildChain(chain: []*arrays.Array) void {
 }
 
 /// The guard is exact, and where it stops is the contract. Marking a chain one
-/// link longer than `JANET_RECURSION_GUARD` marks every link up to the limit
-/// and *roots* the one after it — rooting rather than recursing is what keeps
-/// the traversal off the C stack, and rooting rather than dropping is what
-/// keeps the rest of the graph from being collected.
+/// link longer than `config.recursion_guard` marks every link up to the limit
+/// and *roots* the one after it. Rooting rather than recursing is what keeps
+/// the traversal off the native stack, and rooting rather than dropping is
+/// what keeps the rest of the graph from being collected.
 fn theGuardRootsTheOverflow() !void {
     const n: usize = config.recursion_guard + 2;
     const chain = try std.heap.c_allocator.alloc(*arrays.Array, n);
@@ -617,10 +615,10 @@ fn theGuardRootsTheOverflow() !void {
     _ = gc_alloc.gcunroot(head);
 }
 
-/// What the guard defers, the drain loop in `collect` finishes. The chain below is three
-/// times the guard's depth, and the only reference to its last link is through
-/// every link before it; if the drain loop stopped early or dropped what it
-/// popped, the weak table would lose the entry in the sweep.
+/// What the guard defers, the drain loop in `collect` finishes. The chain
+/// below is three times the guard's depth and the only reference to its last
+/// link is through every link before it, so if the drain loop stopped early or
+/// dropped what it popped, the weak table would lose the entry in the sweep.
 fn aCollectionFinishesDeepGraphs() !void {
     const n: usize = 3 * config.recursion_guard;
     const chain = try std.heap.c_allocator.alloc(*arrays.Array, n);
@@ -646,8 +644,6 @@ fn aCollectionFinishesDeepGraphs() !void {
     _ = gc_alloc.gcunroot(witness_value);
     _ = gc_alloc.gcunroot(head);
 }
-
-// ------------------------------------------------------------- collection
 
 /// A root added while the collection is running is consumed by it: marked, and
 /// removed. Only the roots that predate the collection survive it.
@@ -699,8 +695,8 @@ fn theMarkPhaseFlag() void {
     _ = gc_alloc.gcunroot(abstract_value);
 }
 
-/// A locked collector does nothing at all — not even the bookkeeping at the
-/// end of a collection, which is how the early return is told apart from a
+/// A locked collector does nothing at all, not even the bookkeeping at the end
+/// of a collection, which is how the early return is told apart from a
 /// collection that found nothing to do.
 fn aLockedCollectorDoesNothing() void {
     freshHeap();
@@ -737,6 +733,10 @@ fn theIntervalHeuristic() void {
 
     harness.vm().gc.interval = saved;
 }
+
+// ==========================================================================
+// Entry
+// ==========================================================================
 
 fn body() !void {
     theHeadOffsets();

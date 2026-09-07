@@ -12,16 +12,10 @@
 # The `macro` mechanism and the `header` column went with `janet.h` at
 # increment 5f; `seam.janet` records what they were for.
 #
-# names              6  across     6 references
+# names              0  across     0 references
 #
-# references         6  in src/
+# references         0  in src/
 #                    0  in test/
 #
 # columns: refs  src/    test/  mechanism  name  definition
 
-    1     1     0  @export     janet_cstring                            src/runtime/value/strings.zig:178
-    1     1     0  @export     janet_wrap_string                        src/runtime/value/helpers/wrap.zig:202
-    1     1     0  @export     janet_zig_c_raise_record                 src/runtime/signal.zig:100
-    1     1     0  @export     janet_zig_c_raise_take                   src/runtime/capi.zig:155
-    1     1     0  @export     janet_zig_fatal                          src/runtime/fatal.zig:25
-    1     1     0  @export     janet_zig_signal_record                  src/runtime/signal.zig:219

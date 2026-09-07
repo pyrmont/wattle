@@ -8,23 +8,23 @@
 #
 # ## Why this exists
 #
-# `DESIGN.md`'s D7 says a definition carries `callconv(.c)` only if `capi.zig`
-# exports it, libc or the loader calls it back, or it fills an erased slot. That
-# is a rule about *definitions*, and Phase 15 Part 5 met it **by reading**: a
-# person went through the sites and reported them clean. A rule met by reading
-# is a claim, and Phase 15's own hand-offs say twice what happens to those --
-# `zig build test`'s 42 had never been compiled, and three cross-builds had
-# never been run. So this asks the same question mechanically.
+# A definition carries `callconv(.c)` only if `capi.zig` exports it, libc or
+# the loader calls it back, or it fills an erased slot; `DESIGN.md` section 9
+# has the boundary decision behind that rule. That is a rule about
+# *definitions*, and Phase 15 Part 5 met it **by reading**: a person went
+# through the sites and reported them clean. A rule met by reading is a claim,
+# and Phase 15's own hand-offs say twice what happens to those -- `zig build
+# test`'s 42 had never been compiled, and three cross-builds had never been
+# run. So this asks the same question mechanically.
 #
 # ## What is and is not in the population
 #
 # Three shapes spell `callconv(.c)` and only one of them is a definition:
 #
 #   extern fn janet_x(...) callconv(.c) T;    a *declaration* of something
-#                                             outside. `cabi.zig` and
-#                                             `crossings.zig` own these and
-#                                             `seam.janet` polices where they
-#                                             may appear.
+#                                             outside. `cabi.zig` owns these
+#                                             and `seam.janet` polices where
+#                                             they may appear.
 #   ?*const fn (...) callconv(.c) T           a function-pointer *type*. It is
 #                                             what creates an erased slot
 #                                             rather than what fills one, and
@@ -35,9 +35,8 @@
 #
 # ## The classes
 #
-#   export    the tree `@export`s it, or `capi.zig` names it in a `publish`
-#             assertion. It is a published symbol and its calling convention is
-#             the ABI.
+#   export    the tree `@export`s it. It is a published symbol and its
+#             calling convention is the ABI.
 #   slot      its address is stored in a struct field -- an `AbstractType`
 #             vtable, a method row, a `Reg` row, a `Timeout`'s callback. The
 #             slot's declared type is `callconv(.c)`, so the definition has no
@@ -133,13 +132,12 @@
         :type (++ fn-types)
         :def (array/push defs @{:name name :where (string (string/replace "src/" "" path) ":" line)}))))
 
-  # The set of names whose address `capi.zig` or `module.zig` publishes. Both
-  # spell the target through a container -- `@export(&Shim.modInit, ...)`,
-  # `publish("janet_wrap_nil", &impl.value_helpers_wrap.abi.fromNil, ...)` --
-  # so the last path segment is the definition and the prefix is how the file
-  # reaches it.
+  # The set of names whose address the tree exports. `module.zig`'s pair of
+  # loader shims is the whole population since the module table -- `@export(&Shim.modInit,
+  # ...)` -- and it is spelled through a container, so the last path segment is
+  # the definition and the prefix is how the file reaches it.
   (def published @{})
-  (each pattern ["@export(&" "publish(\"" ", &"]
+  (each pattern ["@export(&"]
     (var at 0)
     (while (def i (string/find pattern whole at))
       (set at (+ i (length pattern)))
