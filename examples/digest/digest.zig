@@ -80,11 +80,7 @@ fn hashOnThread(job: *Hash) void {
 /// runs on the loop thread, between two fibers.
 ///
 /// This function cannot raise, and its signature cannot express a raise.
-///
-/// `align(janet.fn_align)` is required: `janet.PostCallback` includes the
-/// alignment in its type, because the runtime passes the pointer inside a
-/// `Value` whose low bits a nonzero `-Dnanbox-pointer-shift` reuses.
-fn hashDone(w: *janet.Wake, raw: *anyopaque) align(janet.fn_align) callconv(.c) void {
+fn hashDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void {
     const job: *Hash = @ptrCast(@alignCast(raw));
     const digits = "0123456789abcdef";
     var hex: [2 * @typeInfo(@FieldType(Hash, "digest")).array.len]u8 = undefined;
@@ -113,7 +109,7 @@ fn hashDone(w: *janet.Wake, raw: *anyopaque) align(janet.fn_align) callconv(.c) 
 /// This function raises if the arity is wrong, if slot 0 is not a string,
 /// symbol, keyword or buffer, if the build has no event loop, if the
 /// allocation fails, or if the thread cannot be started.
-fn sha256(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn sha256(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const bytes = try janet.getBytes(argv, 0);
     // Raises `event loop not enabled` in a build without the loop.

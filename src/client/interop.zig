@@ -28,7 +28,6 @@ const access = subsystems.value.access;
 const args = subsystems.args;
 const arrays = subsystems.value.arrays;
 const buffers = subsystems.value.buffers;
-const corefn = @import("subsystems").corefn;
 const fibers = @import("subsystems").value.fibers;
 const functions = @import("subsystems").value.functions;
 const gc_alloc = subsystems.gc_alloc;
@@ -47,10 +46,6 @@ const wrap = subsystems.value.wrap;
 // ==========================================================================
 // Constants
 // ==========================================================================
-
-/// The alignment every cfunction here declares. It is `corefn.alignment`, so
-/// this file and the runtime cannot differ on it.
-const alignment = corefn.alignment;
 
 /// The five operations `dispatch` switches on, in the order it numbers them.
 /// Each `cfunZig*` function passes an operation to `dispatchOrPanic`.
@@ -139,7 +134,7 @@ pub fn setIo(io: std.Io) void {
 /// Each checks its arity, checks any type the operation needs, and passes its
 /// operation to `dispatchOrPanic`. `zig/call` and `zig/length` are the two
 /// that check a type, because `dispatch` unwraps without checking.
-fn cfunZigCall(argv: []repr.Value) align(alignment) raise.Raising(repr.Value) {
+fn cfunZigCall(argv: []repr.Value) raise.Raising(repr.Value) {
     try args.fixArity(@intCast(argv.len), 2);
     if (!repr.checkType(argv[0], repr.Tag.function)) {
         return args.panicType(argv[0], 0, repr.TagSet.one(.function));
@@ -147,17 +142,17 @@ fn cfunZigCall(argv: []repr.Value) align(alignment) raise.Raising(repr.Value) {
     return dispatchOrPanic(call_operation, argv);
 }
 
-fn cfunZigFail(argv: []repr.Value) align(alignment) raise.Raising(repr.Value) {
+fn cfunZigFail(argv: []repr.Value) raise.Raising(repr.Value) {
     try args.fixArity(@intCast(argv.len), 1);
     return dispatchOrPanic(fail_operation, argv);
 }
 
-fn cfunZigIdentity(argv: []repr.Value) align(alignment) raise.Raising(repr.Value) {
+fn cfunZigIdentity(argv: []repr.Value) raise.Raising(repr.Value) {
     try args.fixArity(@intCast(argv.len), 1);
     return dispatchOrPanic(identity_operation, argv);
 }
 
-fn cfunZigLength(argv: []repr.Value) align(alignment) raise.Raising(repr.Value) {
+fn cfunZigLength(argv: []repr.Value) raise.Raising(repr.Value) {
     try args.fixArity(@intCast(argv.len), 1);
     if (!repr.checkTypes(argv[0], repr.TagSet.lengthable)) {
         return args.panicType(argv[0], 0, repr.TagSet.lengthable);
@@ -165,7 +160,7 @@ fn cfunZigLength(argv: []repr.Value) align(alignment) raise.Raising(repr.Value) 
     return dispatchOrPanic(length_operation, argv);
 }
 
-fn cfunZigRooted(argv: []repr.Value) align(alignment) raise.Raising(repr.Value) {
+fn cfunZigRooted(argv: []repr.Value) raise.Raising(repr.Value) {
     try args.fixArity(@intCast(argv.len), 0);
     return dispatchOrPanic(rooted_operation, argv);
 }
@@ -246,7 +241,7 @@ fn dispatchOrPanic(operation: i32, argv: []repr.Value) raise.Raising(repr.Value)
 /// here, all optional. The buffer is truncated and then filled with one line
 /// including its newline, or left empty at end of input. This function raises
 /// on a wrong argument type and returns the buffer.
-fn lineGetter(argv: []repr.Value) align(alignment) raise.Raising(repr.Value) {
+fn lineGetter(argv: []repr.Value) raise.Raising(repr.Value) {
     try args.checkArity(@intCast(argv.len), 0, 3);
     const prompt: [*:0]const u8 = if (argv.len >= 1) try args.GetString.get(argv, 0) else "";
     const buffer = if (argv.len >= 2) try args.GetBuffer.get(argv, 1) else buffers.new(10);

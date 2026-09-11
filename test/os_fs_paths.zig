@@ -298,8 +298,13 @@ fn theTimestamps() void {
 
     // A time no `time_t` holds saturates rather than trapping. 2^63 is the
     // edge: `maxInt(i64)` rounds to it as a double, and it is one more than an
-    // `i64` holds.
-    expect(fs.touch(file, true, 0x1p63, 0x1p63) == 0);
+    // `i64` holds. What the host then does with the saturated value is the
+    // host's: a POSIX filesystem stores it, and WASI, whose timestamps are
+    // unsigned nanoseconds in 64 bits, has no room for that many seconds and
+    // refuses it. The saturation is what this asserts either way -- the call
+    // returns rather than trapping on the conversion.
+    const saturated = fs.touch(file, true, 0x1p63, 0x1p63);
+    expect(if (builtin.os.tag == .wasi) saturated == -1 else saturated == 0);
 
     // With no times the host supplies the current one.
     expect(fs.touch(file, false, 0, 0) == 0);

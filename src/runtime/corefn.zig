@@ -55,19 +55,6 @@ const tables = @import("value/tables.zig");
 // Constants
 // ==========================================================================
 
-/// The alignment a core cfunction is declared with where it is declared with
-/// one. It is not on every cfunction in the tree.
-///
-/// Under 64-bit nanboxing with a nonzero pointer shift, wrapping a cfunction
-/// reuses the low bits of its pointer, and `registry.zig` aborts at
-/// registration if they are not clear. `1 << 4` is stated rather than the
-/// configured shift so that the build does not thread the number into each
-/// object, and over-aligning costs padding measured in bytes. The shift itself
-/// is clamped to 0 through 2 in `build.zig`, and the cfunctions that declare no
-/// alignment are why: at 3 and 4 the registration check aborts the bootstrap on
-/// one of them.
-pub const alignment = 16;
-
 /// Whether this compilation is the bootstrap image generator rather than the
 /// runtime. A core cfunction table has docstrings in the generator and not in
 /// the runtime.

@@ -65,10 +65,10 @@ var child_charge: usize = 0;
 var child_saw_main: usize = 0;
 const frame_size: i32 = constants.JANET_FRAME_SIZE;
 
-/// `options.ev` is `hasEv(options)`, which is already
-/// `ev and !single_threaded`. Windows is cross-compiled and never executed
-/// here, so its path is left out rather than written blind, on the same
-/// condition, and the same reason, as `test/gc_stress.zig`.
+/// `options.ev` is `Config.ev`, which is already `ev and !single_threaded`.
+/// Windows is cross-compiled and never executed here, so its path is left out
+/// rather than written blind, on the same condition, and the same reason, as
+/// `test/gc_stress.zig`.
 const has_threads = options.ev and builtin.os.tag != .windows;
 var test_env: *tables.Table = undefined;
 
@@ -185,7 +185,7 @@ fn theFuncframeLayout(add: *functions.Function) void {
     expect(fiber.capacity >= fiber.stacktop);
 
     expect(frame.func == add);
-    expect(frame.pc == add.def.?.bytecode);
+    expect(frame.pc.bytecode == add.def.?.bytecode);
     expect(frame.env == null);
     expect(frame.prevframe == 0);
     // `fibers.reset` adds ENTRANCE after the frame is pushed, so the frame
@@ -304,7 +304,7 @@ fn theFuncframeTail(add: *functions.Function, other: *functions.Function) raise.
     const frame = currentFrame(fiber);
     expect(fiber.frame == base);
     expect(frame.func == other);
-    expect(frame.pc == other.def.?.bytecode);
+    expect(frame.pc.bytecode == other.def.?.bytecode);
     expect(frame.env == null);
     expect(@as(i32, @bitCast(frame.flags)) & constants.JANET_STACKFRAME_TAILCALL != 0);
     // The entrance flag belongs to the frame, not to the function in it, and a
@@ -390,7 +390,7 @@ fn theCframeAndPopframe(add: *functions.Function) raise.Raising(void) {
 
     expect(fiber.frame == stacktop);
     expect(frame.func == null);
-    expect(@intFromPtr(frame.pc) == @intFromPtr(cfun));
+    expect(frame.pc.cfunction == cfun);
     expect(frame.env == null);
     expect(@as(i32, @bitCast(frame.flags)) == 0);
     expect(frame.prevframe == base);

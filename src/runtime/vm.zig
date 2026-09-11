@@ -127,7 +127,7 @@ const Interp = struct {
     /// Publish the program counter before anything that could raise, so a
     /// stack trace names the instruction rather than its predecessor.
     inline fn commit(self: *Interp) void {
-        stackFrame(self.stack).pc = self.pc;
+        stackFrame(self.stack).pc = .{ .bytecode = self.pc };
     }
 
     /// Re-read all three registers from the frame the fiber is now in.
@@ -142,7 +142,7 @@ const Interp = struct {
         self.stack = self.fiber.data.? + utils.asSize(self.fiber.frame);
         const frame = stackFrame(self.stack);
         if (frame.func) |function| self.func = function;
-        if (frame.pc) |counter| self.pc = counter;
+        if (frame.pc.bytecode) |counter| self.pc = counter;
     }
 
     /// `stack = fiber->data + fiber->frame`, which the opcode bodies do on
@@ -1267,7 +1267,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
                     self.reload();
                 }
                 fibers.funcframeTail(fiber, self.func) catch {
-                    stackFrame(fiber.data.? + utils.asSize(fiber.frame)).pc = self.pc;
+                    stackFrame(fiber.data.? + utils.asSize(fiber.frame)).pc = .{ .bytecode = self.pc };
                     const n = fiber.stacktop - fiber.stackstart;
                     return try self.raisef("%v called with %d argument%s, expected %d", .{
                         callee,

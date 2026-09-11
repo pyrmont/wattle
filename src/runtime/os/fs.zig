@@ -118,13 +118,13 @@ pub fn canonicalPath(path: [*:0]const u8) ?[*:0]u8 {
 }
 
 /// `(os/perm-int perm)`.
-pub fn cfunPermissionInt(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+pub fn cfunPermissionInt(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return wrap.fromInteger(try stat.getUnixMode(argv, 0));
 }
 
 /// `(os/perm-string perm)`.
-pub fn cfunPermissionString(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+pub fn cfunPermissionString(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return stat.makePermstring(try stat.getUnixMode(argv, 0));
 }
@@ -375,6 +375,10 @@ fn cfunChmod(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const path = try args_core.getCString(argv, 0);
     const mode = try stat.getMode(argv, 1);
+    // WASI has no permission bits to set. The call succeeds and changes
+    // nothing there, as Windows's `_chmod` ignores the bits it cannot
+    // represent.
+    if (builtin.os.tag == .wasi) return wrap.fromNil();
     const res = if (windows) c._chmod(@ptrCast(path), mode) else oa.chmod(@ptrCast(path), mode);
     if (res == -1) return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
     return wrap.fromNil();
@@ -559,15 +563,29 @@ fn cfunUmask(argv: []repr.Value) raise.Raising(repr.Value) {
 /// The C loop this replaces cleared `errno` before each read, because a null
 /// result means either the end of the stream or a failure.
 fn dirNext(handle: *anyopaque) DirRead {
-    const dir: *std.c.DIR = @ptrCast(handle);
     while (true) {
         c.setErrno(0);
-        const entry = std.c.readdir(dir) orelse {
+        const name = readEntryName(handle) orelse {
             return if (c.errno() != 0) .failed else .end;
         };
-        const name: [*:0]const u8 = @ptrCast(&entry.name);
         if (isDotEntry(name)) continue;
         return .{ .entry = name };
+    }
+}
+
+/// Reads the next entry from a directory stream and returns its name, or null
+/// at the end of the stream or on a failure.
+///
+/// `std.c` types a WASI `readdir` result as `*void`, so on WASI the entry is
+/// read through `os/abi.h`'s `struct dirent`.
+inline fn readEntryName(handle: *anyopaque) ?[*:0]const u8 {
+    if (builtin.os.tag == .wasi) {
+        const entry = h.readdir(@ptrCast(handle));
+        if (entry == null) return null;
+        return @ptrCast(h.janet_zig_dirent_name(entry));
+    } else {
+        const entry = std.c.readdir(@ptrCast(handle)) orelse return null;
+        return @ptrCast(&entry.name);
     }
 }
 

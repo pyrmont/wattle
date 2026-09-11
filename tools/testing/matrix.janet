@@ -332,7 +332,10 @@
     (each j jobs
       (each flag (j :flags)
         (def name (first (string/split "=" flag)))
-        (unless (known name)
+        # A `-f` flag is the compiler's own rather than one of `build.zig`'s
+        # options, so the option list says nothing about it: `-fwasmtime` is
+        # what runs a wasm artifact under wasmtime.
+        (unless (or (string/has-prefix? "-f" name) (known name))
           (put problems (string/format "job %j passes %s, which build.zig no longer has"
                                        (j :name) name)
                true)))))
@@ -481,7 +484,7 @@
     # so both are passed unconditionally rather than derived from the host.
     (job "full" "poll backend" ["-Dkqueue=false" "-Depoll=false"])
     (job "full" "no ffi" ["-Dffi=false"])
-    # `hasFilewatch` is `hasEv and options.filewatch`, so neither of the
+    # The watcher is selected as `cfg.ev and cfg.filewatch`, so neither of the
     # watcher's contracts is compiled here. This entry is `full`, so it
     # runs the whole Zig driver rather than the contract list by name and
     # needs no skip; the single-threaded entry below is where that bites.
@@ -502,7 +505,7 @@
          ["asm_encode" "asm_decode" "disasm"])
     (job "contracts" "no int types" ["-Dint-types=false"] ["inttypes"])
     (job "contracts" "no dynamic modules" ["-Ddynamic-modules=false"])
-    # `hasEv` is `options.ev and !options.single_threaded`, so the two ev
+    # `Config.ev` folds in `-Dsingle-threaded` and the target, so the two ev
     # contracts cannot be compiled here -- neither the channel API nor
     # `JanetStream` is declared. The comment above this entry has said
     # so since Part 16; Part 17d is the first increment whose own contracts
@@ -545,6 +548,13 @@
     # x86_64 macOS, which runs under Rosetta on Apple silicon and is the
     # only entry that *executes* a second architecture.
     (job "full" "x86_64-macos" ["-Dtarget=x86_64-macos"])
+
+    # wasm32-wasi, which *runs* rather than only building: `-fwasmtime` runs
+    # each artifact under wasmtime, which preopens the working directory and
+    # nothing else. It is the only 32-bit entry that runs the suites, and the
+    # target derives its own configuration -- no event loop, no FFI, no
+    # processes, single-threaded -- so it needs no other flag.
+    (job "full" "wasm32-wasi" ["-Dtarget=wasm32-wasi" "-fwasmtime"])
 
     # The four cross-compiles. They matter more here than usual: the fold
     # changed which files are analysed together, and Phase 10's fifth rule

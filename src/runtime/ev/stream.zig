@@ -220,7 +220,7 @@ pub const Stream = extern struct {
 // ==========================================================================
 
 /// `(ev/chunk s n &opt buf)`.
-pub fn cfunStreamChunk(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+pub fn cfunStreamChunk(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 4);
     const s = try getStream(argv, 0);
     try streamFlags(s, stream_readable);
@@ -232,14 +232,14 @@ pub fn cfunStreamChunk(argv: []repr.Value) align(corefn.alignment) raise.Raising
 }
 
 /// `(:close s)`.
-pub fn cfunStreamClose(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+pub fn cfunStreamClose(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     try streamClose(try getStream(argv, 0));
     return argv[0];
 }
 
 /// `(ev/read s n &opt buf timeout)`.
-pub fn cfunStreamRead(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+pub fn cfunStreamRead(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 4);
     const s = try getStream(argv, 0);
     try streamFlags(s, stream_readable);
@@ -255,7 +255,7 @@ pub fn cfunStreamRead(argv: []repr.Value) align(corefn.alignment) raise.Raising(
 }
 
 /// `(ev/write s bytes &opt timeout)`.
-pub fn cfunStreamWrite(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+pub fn cfunStreamWrite(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 3);
     const s = try getStream(argv, 0);
     try streamFlags(s, stream_writable);

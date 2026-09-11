@@ -688,7 +688,7 @@ pub fn parserTokenchar(
 // ==========================================================================
 
 /// `(parser/byte parser b)`. The low eight bits of `b` are the byte fed.
-fn cfunParserByte(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunParserByte(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const parser = try getParser(argv, 0);
     const val = try args_core.getInteger(argv, 1);
@@ -697,7 +697,7 @@ fn cfunParserByte(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 }
 
 /// `(parser/clone p)`.
-fn cfunParserClone(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunParserClone(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const source = try getParser(argv, 0);
     const destination: *Parser = abstracts.newFor(Parser, &parserType);
@@ -708,7 +708,7 @@ fn cfunParserClone(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 /// `(parser/consume parser bytes &opt index)`, returning how many bytes were
 /// read. A byte that puts the parser in the error or dead state stops the
 /// loop and is counted.
-fn cfunParserConsume(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunParserConsume(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 3);
     const parser = try getParser(argv, 0);
     var view = try args_core.getBytes(argv, 1);
@@ -736,7 +736,7 @@ fn cfunParserConsume(argv: []repr.Value) align(corefn.alignment) raise.Raising(r
 }
 
 /// `(parser/eof parser)`.
-fn cfunParserEof(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunParserEof(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     try eofChecked(try getParser(argv, 0));
     return argv[0];
@@ -744,7 +744,7 @@ fn cfunParserEof(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
 
 /// `(parser/error parser)`. Reading the message clears it and flushes the
 /// parser.
-fn cfunParserError(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunParserError(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const parser = try getParser(argv, 0);
     const message = parserError(parser) orelse return wrap.fromNil();
@@ -756,14 +756,14 @@ fn cfunParserError(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 }
 
 /// `(parser/flush parser)`.
-fn cfunParserFlush(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunParserFlush(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     parserFlush(try getParser(argv, 0));
     return argv[0];
 }
 
 /// `(parser/has-more parser)`.
-fn cfunParserHasMore(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunParserHasMore(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return wrap.fromBoolean(parserHasMore(try getParser(argv, 0)));
 }
@@ -771,7 +771,7 @@ fn cfunParserHasMore(argv: []repr.Value) align(corefn.alignment) raise.Raising(r
 /// `(parser/insert parser value)`. A value inserted into a container is
 /// queued as an element of it; inserted into a string or a long string, the
 /// value's printed form is appended to the text being read.
-fn cfunParserInsert(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunParserInsert(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const parser = try getParser(argv, 0);
     var state = &parser.states.items[parser.states.items.len - 1];
@@ -803,7 +803,7 @@ fn cfunParserInsert(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
 }
 
 /// `(parser/new)`.
-fn cfunParserNew(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunParserNew(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 0);
     const parser: *Parser = abstracts.newFor(Parser, &parserType);
     parserInit(parser);
@@ -811,7 +811,7 @@ fn cfunParserNew(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
 }
 
 /// `(parser/produce parser &opt wrap)`.
-fn cfunParserProduce(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunParserProduce(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const parser = try getParser(argv, 0);
     if (argv.len == 2 and repr.truthy(argv[1])) {
@@ -822,7 +822,7 @@ fn cfunParserProduce(argv: []repr.Value) align(corefn.alignment) raise.Raising(r
 
 /// `(parser/state parser &opt key)`, with the key looked up in
 /// `state_getters` and every getter run when there is none.
-fn cfunParserState(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunParserState(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const parser = try getParser(argv, 0);
     if (argv.len == 2) {
@@ -840,7 +840,7 @@ fn cfunParserState(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 }
 
 /// `(parser/status parser)`, as the keyword rather than the number.
-fn cfunParserStatus(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunParserStatus(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const name: [*:0]const u8 = switch (parserStatus(try getParser(argv, 0))) {
         .pending => "pending",
@@ -853,7 +853,7 @@ fn cfunParserStatus(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
 
 /// `(parser/where parser &opt line col)`, setting the position first where
 /// either is given.
-fn cfunParserWhere(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunParserWhere(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
     const parser = try getParser(argv, 0);
     if (argv.len > 1) {

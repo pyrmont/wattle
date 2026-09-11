@@ -391,7 +391,7 @@ pub fn new(buf: []const u8) [*:0]const u8 {
 // ==========================================================================
 
 /// `keyword/slice`: `string/slice` returning a keyword.
-fn cfunKeywordSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunKeywordSlice(argv: []repr.Value) raise.Raising(repr.Value) {
     const view = try args_core.getBytes(argv, 0);
     const range = try args_core.getSlice(argv);
     // A keyword and a symbol are the same interned bytes under a different tag.
@@ -399,17 +399,17 @@ fn cfunKeywordSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
 }
 
 /// `string/ascii-lower`: the ASCII upper-case bytes lowered.
-fn cfunStringAsciilower(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringAsciilower(argv: []repr.Value) raise.Raising(repr.Value) {
     return try mapCase(65, 90, 32, argv);
 }
 
 /// `string/ascii-upper`: the ASCII lower-case bytes raised.
-fn cfunStringAsciiupper(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringAsciiupper(argv: []repr.Value) raise.Raising(repr.Value) {
     return try mapCase(97, 122, -32, argv);
 }
 
 /// `string/bytes`: a tuple of the byte values.
-fn cfunStringBytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringBytes(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const view = try args_core.getBytes(argv, 0);
     const tup = tuples.begin(@intCast(view.len));
@@ -421,7 +421,7 @@ fn cfunStringBytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 ///
 /// The set is 256 bits in eight words, indexed by the top three bits of the
 /// byte and masked by the low five.
-fn cfunStringCheckset(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringCheckset(argv: []repr.Value) raise.Raising(repr.Value) {
     var bitset: [8]u32 = @splat(0);
     try args_core.fixarity(argv, 2);
     const set = try args_core.getBytes(argv, 0);
@@ -440,7 +440,7 @@ fn cfunStringCheckset(argv: []repr.Value) align(corefn.alignment) raise.Raising(
 }
 
 /// `string/find`: the index of the first match, or nil.
-fn cfunStringFind(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringFind(argv: []repr.Value) raise.Raising(repr.Value) {
     var state = try findsetup(argv, 0);
     defer state.deinit();
     const result = state.next();
@@ -449,7 +449,7 @@ fn cfunStringFind(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 
 /// `string/find-all`: an array of the index of every match, overlapping
 /// matches counted one at a time.
-fn cfunStringFindall(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringFindall(argv: []repr.Value) raise.Raising(repr.Value) {
     var state = try findsetup(argv, 0);
     defer state.deinit();
     const array = arrays.new(0);
@@ -463,7 +463,7 @@ fn cfunStringFindall(argv: []repr.Value) align(corefn.alignment) raise.Raising(r
 
 /// `string/format`: `pp_format.bufferFormat` into a fresh buffer, returned as
 /// a string.
-fn cfunStringFormat(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringFormat(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const buffer = buffers.new(0);
     const strfrmt = try args_core.getString(argv, 0);
@@ -472,7 +472,7 @@ fn cfunStringFormat(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
 }
 
 /// `string/from-bytes`: a string of the byte values given as arguments.
-fn cfunStringFrombytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringFrombytes(argv: []repr.Value) raise.Raising(repr.Value) {
     const buf = begin(argv.len);
     for (0..argv.len) |i| {
         buf[i] = @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, i))));
@@ -481,7 +481,7 @@ fn cfunStringFrombytes(argv: []repr.Value) align(corefn.alignment) raise.Raising
 }
 
 /// `string/has-prefix?`: whether a byte sequence starts with another.
-fn cfunStringHasprefix(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringHasprefix(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const prefix = try args_core.getBytes(argv, 0);
     const str = try args_core.getBytes(argv, 1);
@@ -491,7 +491,7 @@ fn cfunStringHasprefix(argv: []repr.Value) align(corefn.alignment) raise.Raising
 }
 
 /// `string/has-suffix?`: whether a byte sequence ends with another.
-fn cfunStringHassuffix(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringHassuffix(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const suffix = try args_core.getBytes(argv, 0);
     const str = try args_core.getBytes(argv, 1);
@@ -503,7 +503,7 @@ fn cfunStringHassuffix(argv: []repr.Value) align(corefn.alignment) raise.Raising
 
 /// `string/join`: the parts concatenated, optionally with a separator between
 /// them.
-fn cfunStringJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringJoin(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const parts = try args_core.getIndexed(argv, 0);
     const joiner: abi.ByteView = if (argv.len == 2)
@@ -539,7 +539,7 @@ fn cfunStringJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 }
 
 /// `string/repeat`: `n` copies of a byte sequence concatenated.
-fn cfunStringRepeat(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringRepeat(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const view = try args_core.getBytes(argv, 0);
     const rep = try args_core.getInteger(argv, 1);
@@ -557,7 +557,7 @@ fn cfunStringRepeat(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
 }
 
 /// `string/replace`: the first match replaced.
-fn cfunStringReplace(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringReplace(argv: []repr.Value) raise.Raising(repr.Value) {
     var s = try replacesetup(argv);
     defer s.kmp.deinit();
     const result = s.kmp.next();
@@ -577,7 +577,7 @@ fn cfunStringReplace(argv: []repr.Value) align(corefn.alignment) raise.Raising(r
 }
 
 /// `string/replace-all`: every non-overlapping match replaced.
-fn cfunStringReplaceall(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringReplaceall(argv: []repr.Value) raise.Raising(repr.Value) {
     var s = try replacesetup(argv);
     defer s.kmp.deinit();
     var b: buffers.Buffer = undefined;
@@ -605,7 +605,7 @@ fn cfunStringReplaceall(argv: []repr.Value) align(corefn.alignment) raise.Raisin
 }
 
 /// `string/reverse`: the bytes in the opposite order.
-fn cfunStringReverse(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringReverse(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const view = try args_core.getBytes(argv, 0);
     const buf = begin(@intCast(view.len));
@@ -614,7 +614,7 @@ fn cfunStringReverse(argv: []repr.Value) align(corefn.alignment) raise.Raising(r
 }
 
 /// `string/slice`: a new string over a half-open range of a byte sequence.
-fn cfunStringSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringSlice(argv: []repr.Value) raise.Raising(repr.Value) {
     const view = try args_core.getBytes(argv, 0);
     const range = try args_core.getSlice(argv);
     return wrap.fromString(new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
@@ -626,7 +626,7 @@ fn cfunStringSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 /// to -1 and is tested against zero after each decrement, so the default runs
 /// away from zero and never stops the loop. An explicit 0 decrements to -1 and
 /// therefore behaves like the default rather than like a limit of one.
-fn cfunStringSplit(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringSplit(argv: []repr.Value) raise.Raising(repr.Value) {
     var limit: i32 = -1;
     var lastindex: i32 = 0;
     if (argv.len == 4) limit = try args_core.getInteger(argv, 3);
@@ -649,7 +649,7 @@ fn cfunStringSplit(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 }
 
 /// `string/trim`: leading and trailing bytes of a set dropped.
-fn cfunStringTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringTrim(argv: []repr.Value) raise.Raising(repr.Value) {
     var str: abi.ByteView = undefined;
     var set: abi.ByteView = undefined;
     try trimArgs(argv, &str, &set);
@@ -660,7 +660,7 @@ fn cfunStringTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 }
 
 /// `string/triml`: leading bytes of a set dropped.
-fn cfunStringTriml(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringTriml(argv: []repr.Value) raise.Raising(repr.Value) {
     var str: abi.ByteView = undefined;
     var set: abi.ByteView = undefined;
     try trimArgs(argv, &str, &set);
@@ -669,7 +669,7 @@ fn cfunStringTriml(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 }
 
 /// `string/trimr`: trailing bytes of a set dropped.
-fn cfunStringTrimr(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunStringTrimr(argv: []repr.Value) raise.Raising(repr.Value) {
     var str: abi.ByteView = undefined;
     var set: abi.ByteView = undefined;
     try trimArgs(argv, &str, &set);
@@ -677,7 +677,7 @@ fn cfunStringTrimr(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 }
 
 /// `symbol/slice`: `string/slice` returning a symbol.
-fn cfunSymbolSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunSymbolSlice(argv: []repr.Value) raise.Raising(repr.Value) {
     const view = try args_core.getBytes(argv, 0);
     const range = try args_core.getSlice(argv);
     return wrap.fromSymbol(symbols.new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));

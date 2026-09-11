@@ -151,7 +151,19 @@ const no_symlinks = os_files.no_symlinks;
 /// its subject about which entry points exist.
 const no_umask = os_files.no_umask;
 const reduced_os = config.reduced_os;
-const scratch = "/tmp/janet-os-surface-contract";
+/// The directory the sources below write in, which each of them names as
+/// `<scratch>` and `scratchPath` splices this into.
+///
+/// `/tmp` rather than the working directory, for the reason
+/// `theOptionalArguments` gives. WASI is the exception: a WASI program reaches
+/// only the directories its host maps in, and the run step maps in the working
+/// directory alone. The hazard that sends the others to `/tmp` is not there --
+/// a mode-0000 file needs an `os/chmod` that does something, and on WASI it
+/// does not.
+const scratch = if (builtin.os.tag == .wasi)
+    "janet-os-surface-contract"
+else
+    "/tmp/janet-os-surface-contract";
 
 const windows = builtin.os.tag == .windows;
 
@@ -185,6 +197,24 @@ const Field = struct {
 // ==========================================================================
 // Cases
 // ==========================================================================
+
+/// One source with every `<scratch>` in it replaced by `scratch`.
+///
+/// The sources are comptime strings, so the splice is comptime too and each
+/// call site still reads as one literal.
+fn scratchPath(comptime source: []const u8) []const u8 {
+    return comptime blk: {
+        // One scan of each source, which is longer than the default quota.
+        @setEvalBranchQuota(20000);
+        var spliced: []const u8 = "";
+        var rest: []const u8 = source;
+        while (std.mem.indexOf(u8, rest, "<scratch>")) |at| {
+            spliced = spliced ++ rest[0..at] ++ scratch;
+            rest = rest[at + "<scratch>".len ..];
+        }
+        break :blk spliced ++ rest;
+    };
+}
 
 fn bindingField(env: *tables.Table, name: [*:0]const u8, field: [*:0]const u8) repr.Value {
     const binding = tables.get(env, value.fromBytes(std.mem.span(name), .symbol));
@@ -229,13 +259,19 @@ fn theStatRead() void {
     expect(numbers[Field.nlink] >= 1.0);
     expect(numbers[Field.inode] > 0.0);
     expect(numbers[Field.modified] > 0.0);
-    if (!windows) {
-        expect(numbers[Field.blocksize] > 0.0);
-    } else {
+    if (windows) {
         // The two slots no Windows stat has. They are zero because the array
         // is zeroed, not because anything wrote them.
         expect(numbers[Field.blocks] == 0.0);
         expect(numbers[Field.blocksize] == 0.0);
+    } else if (builtin.os.tag == .wasi) {
+        // WASI has both slots and fills neither: the file description
+        // `wasi_snapshot_preview1` reports carries no block count and no block
+        // size, so the reader copies the zeroes wasi-libc left there.
+        expect(numbers[Field.blocks] == 0.0);
+        expect(numbers[Field.blocksize] == 0.0);
+    } else {
+        expect(numbers[Field.blocksize] > 0.0);
     }
 
     // A directory and a file differ in the mode word and in nothing this
@@ -512,18 +548,23 @@ fn theOptionalArguments() void {
         \\# string natively, as does Darwin. That makes the difference exactly
         \\# one hour rather than merely non-zero, which is the stronger claim and
         \\# the one the slot is actually for.
-        \\(def saved-tz (os/getenv "TZ"))
-        \\(os/setenv "TZ" "EST5EDT,M3.2.0,M11.1.0")
-        \\(assert (= 3600 (- (os/mktime (merge base {:dst false}) true)
-        \\                   (os/mktime (merge base {:dst true}) true))))
-        \\(assert (= 3600 (- (os/mktime (struct ;(kvs base) :dst false) true)
-        \\                   (os/mktime (struct ;(kvs base) :dst true) true))))
-        \\(assert (= (os/mktime base true)
-        \\           (os/mktime (merge base {:dst false}) true)))
-        \\(assert (= (os/mktime base true) (os/mktime (merge-into @{} base) true)))
-        \\(assert (= (os/mktime (merge base {:dst true}) true)
-        \\           (os/mktime (struct ;(kvs base) :dst true) true)))
-        \\(if saved-tz (os/setenv "TZ" saved-tz) (os/setenv "TZ"))
+        \\#
+        \\# WASI is where that argument runs out: it has no time zones and no
+        \\# `tzset`, local time is UTC, and `TZ` names nothing. The slot is not
+        \\# observable there at all.
+        \\(unless (= :wasi (os/which))
+        \\  (def saved-tz (os/getenv "TZ"))
+        \\  (os/setenv "TZ" "EST5EDT,M3.2.0,M11.1.0")
+        \\  (assert (= 3600 (- (os/mktime (merge base {:dst false}) true)
+        \\                     (os/mktime (merge base {:dst true}) true))))
+        \\  (assert (= 3600 (- (os/mktime (struct ;(kvs base) :dst false) true)
+        \\                     (os/mktime (struct ;(kvs base) :dst true) true))))
+        \\  (assert (= (os/mktime base true)
+        \\             (os/mktime (merge base {:dst false}) true)))
+        \\  (assert (= (os/mktime base true) (os/mktime (merge-into @{} base) true)))
+        \\  (assert (= (os/mktime (merge base {:dst true}) true)
+        \\             (os/mktime (struct ;(kvs base) :dst true) true)))
+        \\  (if saved-tz (os/setenv "TZ" saved-tz) (os/setenv "TZ")))
         \\(assert (= (os/mktime base) (os/mktime base nil)))
         \\(assert (= "expected positive integer" (in (protect (os/cryptorand -1)) 1)))
     );
@@ -565,10 +606,10 @@ fn theOptionalArguments() void {
 fn theOpenFlags() void {
     if (!harness.has_ev) return;
     var env: *tables.Table = harness.coreEnv();
-    harness.inFiber(env,
-        \\(os/mkdir "/tmp/janet-os-surface-contract")
-        \\(defn p [n] (string "/tmp/janet-os-surface-contract/" n))
-        \\(each n (os/dir "/tmp/janet-os-surface-contract") (os/rm (p n)))
+    harness.inFiber(env, scratchPath(
+        \\(os/mkdir "<scratch>")
+        \\(defn p [n] (string "<scratch>/" n))
+        \\(each n (os/dir "<scratch>") (os/rm (p n)))
         \\(spit (p "ro") "abc") (os/chmod (p "ro") 8r444)
         \\(spit (p "wo") "abc") (os/chmod (p "wo") 8r222)
         \\(spit (p "rw") "abc") (os/chmod (p "rw") 8r644)
@@ -586,13 +627,13 @@ fn theOpenFlags() void {
         \\(:write s3 "Q")
         \\(:close s3)
         \\(assert (= "Qbc" (string (slurp (p "rw")))))
-    );
+    ));
     vm_lifecycle.deinit();
 
     harness.init();
     env = harness.coreEnv();
-    harness.inFiber(env,
-        \\(defn p [n] (string "/tmp/janet-os-surface-contract/" n))
+    harness.inFiber(env, scratchPath(
+        \\(defn p [n] (string "<scratch>/" n))
         \\(def s (os/open (p "rw") :rN))
         \\(assert (= "bad stream, expected readable stream"
         \\           (in (protect (:read s 1)) 1)))
@@ -608,7 +649,7 @@ fn theOpenFlags() void {
         \\(:close (os/open (p "md") :wc 8r640))
         \\(assert (= "rw-r-----" (os/stat (p "md") :permissions)))
         \\(def z (os/open (p "rw") :rZ)) (:close z)
-    );
+    ));
 }
 
 /// `os/rm` and the filesystem sandbox.
@@ -626,9 +667,9 @@ fn theOpenFlags() void {
 /// scratch directory.
 fn theRemoveSandbox() void {
     var env: *tables.Table = harness.coreEnv();
-    harness.inFiber(env,
-        \\(protect (os/mkdir "/tmp/janet-os-surface-contract"))
-        \\(def victim (string "/tmp/janet-os-surface-contract/victim"))
+    harness.inFiber(env, scratchPath(
+        \\(protect (os/mkdir "<scratch>"))
+        \\(def victim (string "<scratch>/victim"))
         \\(spit victim "x")
         \\(assert (os/stat victim))
         \\(sandbox :fs-write)
@@ -638,8 +679,8 @@ fn theRemoveSandbox() void {
         \\(assert (= "operation forbidden by sandbox" (in (protect (os/rm)) 1)))
         \\(assert (= "operation forbidden by sandbox" (in (protect (os/rm 5)) 1)))
         \\(assert (= "operation forbidden by sandbox"
-        \\           (in (protect (os/rmdir "/tmp/janet-os-surface-contract")) 1)))
-    );
+        \\           (in (protect (os/rmdir "<scratch>")) 1)))
+    ));
     vm_lifecycle.deinit();
 
     // A fresh VM, because the one above can never leave its sandbox. Without a
@@ -647,15 +688,15 @@ fn theRemoveSandbox() void {
     // must not have changed.
     harness.init();
     env = harness.coreEnv();
-    harness.inFiber(env,
-        \\(def victim (string "/tmp/janet-os-surface-contract/victim"))
+    harness.inFiber(env, scratchPath(
+        \\(def victim (string "<scratch>/victim"))
         \\(assert (os/stat victim))
         \\(os/rm victim)
         \\(assert (nil? (os/stat victim)))
         \\(spit victim "x")
         \\(sandbox :fs-read)
         \\(os/rm victim)
-    );
+    ));
 }
 
 /// `os/link`'s third argument decides between a hard link and a symbolic one,
@@ -664,9 +705,9 @@ fn theRemoveSandbox() void {
 fn theLinks() void {
     if (windows) return;
     const env: *tables.Table = harness.coreEnv();
-    harness.inFiber(env,
-        \\(protect (os/mkdir "/tmp/janet-os-surface-contract"))
-        \\(defn p [n] (string "/tmp/janet-os-surface-contract/" n))
+    harness.inFiber(env, scratchPath(
+        \\(protect (os/mkdir "<scratch>"))
+        \\(defn p [n] (string "<scratch>/" n))
         \\(defn rm [n] (protect (os/rm (p n))))
         \\(rm "h") (rm "s") (rm "h2")
         \\(spit (p "tgt") "abc")
@@ -676,16 +717,23 @@ fn theLinks() void {
         \\(os/link (p "tgt") (p "h2"))
         \\(assert (= :file (os/lstat (p "h2") :mode)))
         \\(assert (= 3 (os/stat (p "tgt") :nlink)))
-        \\(os/link (p "tgt") (p "s") true)
+        \\# A symbolic link stores its target as given and resolves it from the
+        \\# link's own directory, so the target has to be one the link can
+        \\# follow. Every host here but WASI reaches the scratch directory by an
+        \\# absolute path, which resolves from anywhere; a WASI host refuses an
+        \\# absolute target outright, it being a path out of the directory it
+        \\# mapped in, so there the target is the name beside the link.
+        \\(def target (if (= :wasi (os/which)) "tgt" (p "tgt")))
+        \\(os/link target (p "s") true)
         \\(assert (= :link (os/lstat (p "s") :mode)))
         \\(assert (= :file (os/stat (p "s") :mode)))
-        \\(assert (= (p "tgt") (os/readlink (p "s"))))
+        \\(assert (= target (os/readlink (p "s"))))
         \\(rm "s")
-        \\(os/symlink (p "tgt") (p "s"))
+        \\(os/symlink target (p "s"))
         \\(assert (= :link (os/lstat (p "s") :mode)))
-        \\(each n (os/dir "/tmp/janet-os-surface-contract") (protect (os/rm (p n))))
-        \\(os/rmdir "/tmp/janet-os-surface-contract")
-    );
+        \\(each n (os/dir "<scratch>") (protect (os/rm (p n))))
+        \\(os/rmdir "<scratch>")
+    ));
 }
 
 /// `os/pipe` and its two flag letters.

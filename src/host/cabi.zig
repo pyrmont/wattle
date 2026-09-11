@@ -605,6 +605,8 @@ pub extern fn trunc(f64) f64;
 
 pub extern fn tzset() callconv(.c) void;
 
+pub extern fn unlink(path: [*:0]const u8) callconv(.c) c_int;
+
 pub extern fn unsetenv(name: [*:0]const u8) callconv(.c) c_int;
 
 pub extern fn utime(path: [*:0]const u8, times: ?*const utimbuf) callconv(.c) c_int;

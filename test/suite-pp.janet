@@ -157,9 +157,13 @@
 (assert-error "could not print to jdn format" (string/format "%j" [print]))
 (assert-error "could not print to jdn format" (string/format "%j" {:a print}))
 
-# The jdn printer spends one frame of a 1024-deep budget per level, so a
-# thousand levels are written and 1024 are refused. Both ends are asserted,
-# because a budget spent twice as fast still refuses the far end.
+# The jdn printer spends one frame of the build's recursion budget per level,
+# so a level short of it is written and the budget itself is refused. Both ends
+# are asserted, because a budget spent twice as fast still refuses the far end.
+#
+# The budget is 1024 everywhere but wasm, where it is 512: a wasm host's call
+# stack is smaller than a native thread's, and a budget the stack cannot hold
+# is not a guard. `build.zig` is where that is derived.
 #
 # The budget is spent in three places — an array's items, a tuple's, and a
 # dictionary's keys and values — and each has to be asserted through its own
@@ -169,15 +173,17 @@
   (defn nest-arr [n] (var d @[]) (repeat n (set d @[d])) d)
   (defn nest-tup [n] (var d []) (repeat n (set d [d])) d)
   (defn nest-tab [n] (var d @{}) (repeat n (set d @{:k d})) d)
-  (assert-no-error "a thousand levels of array print as jdn"
-                   (string/format "%j" (nest-arr 1000)))
-  (assert-error "could not print to jdn format" (string/format "%j" (nest-arr 1024)))
-  (assert-no-error "a thousand levels of tuple print as jdn"
-                   (string/format "%j" (nest-tup 1000)))
-  (assert-error "could not print to jdn format" (string/format "%j" (nest-tup 1024)))
-  (assert-no-error "a thousand levels of table print as jdn"
-                   (string/format "%j" (nest-tab 1000)))
-  (assert-error "could not print to jdn format" (string/format "%j" (nest-tab 1024))))
+  (def budget (if (= :wasm (os/arch)) 512 1024))
+  (def within (- budget 1))
+  (assert-no-error "a level short of the budget prints an array as jdn"
+                   (string/format "%j" (nest-arr within)))
+  (assert-error "could not print to jdn format" (string/format "%j" (nest-arr budget)))
+  (assert-no-error "a level short of the budget prints a tuple as jdn"
+                   (string/format "%j" (nest-tup within)))
+  (assert-error "could not print to jdn format" (string/format "%j" (nest-tup budget)))
+  (assert-no-error "a level short of the budget prints a table as jdn"
+                   (string/format "%j" (nest-tab within)))
+  (assert-error "could not print to jdn format" (string/format "%j" (nest-tab budget))))
 
 # A key that has no jdn form fails the dictionary, exactly as a value does.
 (assert-error "could not print to jdn format" (string/format "%j" @{print :a}))

@@ -70,9 +70,14 @@ const Source = enum(c_int) {
 /// The `struct timespec` the entry point fills, declared here rather than
 /// borrowed from `os.zig`: the field offsets are what this contract is
 /// checking, so reading them from the subject would make the check circular.
+///
+/// POSIX spells the members `time_t tv_sec` and `long tv_nsec`, which is a
+/// pair of `isize`s only where the two widths agree. On wasm32 they do not:
+/// `time_t` is 64 bits and `long` is 32, so a pair of `isize`s is eight bytes
+/// where the host's structure is sixteen, and the entry point writes past it.
 const TimeSpec = extern struct {
-    seconds: isize,
-    nanoseconds: isize,
+    seconds: std.c.time_t,
+    nanoseconds: c_long,
 };
 
 // ==========================================================================

@@ -30,6 +30,7 @@
 // Standard library imports
 // ==========================================================================
 
+const builtin = @import("builtin");
 const std = @import("std");
 
 // ==========================================================================
@@ -533,6 +534,21 @@ fn theMarshalling() raise.Raising(void) {
     const buffer = buffers.new(0);
     expectRaise(marshalled, .{ buffer, file, @as(c_int, 0) }, "cannot marshal file in safe mode");
 
+    // A marshalled closeable file owns a descriptor of its own, which takes a
+    // `dup`. WASI has none, so there the callback raises and the round trip
+    // below has nothing to make.
+    if (builtin.os.tag == .wasi) {
+        buffer.count = 0;
+        expectRaise(
+            marshalled,
+            .{ buffer, file, constants.JANET_MARSHAL_UNSAFE },
+            "cannot marshal a closeable file on WASI",
+        );
+        expect(io_core.fileClose(@ptrCast(@alignCast(io_core.checkfile(file)))) == 0);
+        _ = c.remove(scratch);
+        return;
+    }
+
     buffer.count = 0;
     try marshalled(buffer, file, constants.JANET_MARSHAL_UNSAFE);
     expect(buffer.count > 0);
@@ -561,6 +577,10 @@ fn theMarshalling() raise.Raising(void) {
 /// in, which is only visible if it is not the default: an unbuffered stream
 /// reaches the filesystem with no flush and a buffered one does not.
 fn theMarshalledBufferSize() raise.Raising(void) {
+    // The round trip needs a marshalled closeable file, which WASI cannot
+    // make; `theMarshalling` is where that is pinned.
+    if (builtin.os.tag == .wasi) return;
+
     const stream = io_core.open(scratch, "wb").?;
     const jf = io_core.makejfile(@ptrCast(@alignCast(stream)), constants.JANET_FILE_WRITE);
     jf.vbufsize = 0;
@@ -591,6 +611,13 @@ fn theMarshalledBufferSize() raise.Raising(void) {
 /// stream before the unmarshal is what frees it. The recorded buffer size is
 /// not the default, and there is no stream to apply it to.
 fn theUnreopenableDescriptor() raise.Raising(void) {
+    // The closed descriptor is what makes `fdopen` fail, and on WASI it does
+    // not: wasi-libc's `fdopen` does not ask the host whether the descriptor
+    // is open, so the reopened file comes back usable and this path has
+    // nothing to report. Measured under wasmtime: the copy came back with the
+    // flags it was marshalled with and a stream of its own.
+    if (builtin.os.tag == .wasi) return;
+
     const stream = io_core.open(scratch, "wb").?;
     const jf = io_core.makejfile(
         @ptrCast(@alignCast(stream)),
@@ -757,9 +784,10 @@ fn theCoreFunctions() void {
     //
     // The count is `os/dir` over `/dev/fd`, and `-Dreduced-os=true` registers
     // no `os/dir`, so this case has no instrument there rather than a
-    // weaker one. The refusal itself is asserted above in every
-    // configuration; what is gated is the leak check behind it.
-    if (!config.reduced_os) {
+    // weaker one. WASI has no `/dev` at all, which leaves it without the
+    // instrument for the same reason. The refusal itself is asserted above in
+    // every configuration; what is gated is the leak check behind it.
+    if (!config.reduced_os and builtin.os.tag != .wasi) {
         doString(env,
             \\(defn nfds [] (length (os/dir "/dev/fd")))
             \\(def before (nfds))

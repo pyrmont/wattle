@@ -263,7 +263,8 @@ fn timeToTm(argv: []const repr.Value, n: usize, out: *h.struct_tm) raise.Raising
             c._tzset();
             break :blk oa._localtime64_s(out, &t) == 0;
         }
-        c.tzset();
+        // WASI has no time zones and no `tzset`; local time is UTC there.
+        if (builtin.os.tag != .wasi) c.tzset();
         break :blk oa.localtime_r(&t, out) != null;
     } else blk: {
         if (windows) break :blk oa._gmtime64_s(out, &t) == 0;

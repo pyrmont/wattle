@@ -573,8 +573,8 @@ fn aFrameWithNoProgramCounter() void {
     const fiber = fibers.new(wrap.toFunction(fnv), 64, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     const fr = harness.frame.current(fiber);
-    expect(fr.func != null and fr.pc != null);
-    fr.pc = null;
+    expect(fr.func != null and fr.pc.bytecode != null);
+    fr.pc = .{ .bytecode = null };
 
     const built = decode(fr);
     expectString(built, "name", "named");

@@ -49,7 +49,12 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <locale.h>
+/* wasi-libc's `signal.h` is an `#error` unless `_WASI_EMULATED_SIGNAL` is
+ * defined. A WASI build has no process functions and no event loop, and those
+ * are the only readers of it. */
+#if !defined(__wasi__)
 #include <signal.h>
+#endif
 #include <stdio.h>
 #include <time.h>
 
@@ -61,6 +66,21 @@
 #include <sys/utime.h>
 #else
 #include <unistd.h>
+
+/* Zig's `std.c` types a WASI `readdir` result as `void`, so `os/fs.zig` reads
+ * the entry through this translation's `struct dirent` there. Elsewhere
+ * `std.c.readdir` carries the platform's symbol name and layout.
+ *
+ * wasi-libc declares `d_name` as a flexible array member, which `translate-c`
+ * drops, and `sizeof(struct dirent)` is not where it begins. The accessor is
+ * what keeps that offset C's to work out rather than Zig's to restate. */
+#if defined(__wasi__)
+#include <dirent.h>
+
+static inline const char *janet_zig_dirent_name(const struct dirent *entry) {
+    return entry->d_name;
+}
+#endif
 
 /* `spawn.h` puts its Darwin extensions behind `_DARWIN_C_SOURCE`, which
  * `janet_features.h` defines, and that block includes

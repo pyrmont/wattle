@@ -46,6 +46,7 @@
 // Standard library imports
 // ==========================================================================
 
+const builtin = @import("builtin");
 const std = @import("std");
 
 // ==========================================================================
@@ -58,7 +59,6 @@ const c = @import("cabi");
 const config = @import("config");
 const constants = @import("constants");
 const core_env = @import("subsystems").env;
-const corefn = @import("subsystems").corefn;
 const expect = @import("expect.zig").expect;
 const fibers = @import("subsystems").value.fibers;
 const gc_alloc = @import("subsystems").gc_alloc;
@@ -133,7 +133,7 @@ fn doString(source: [:0]const u8, path: ?[*:0]const u8, out: ?*repr.Value) raise
 // calls it while the image is loading, so replacing it cannot affect anything
 // but the one call this file makes.
 
-fn replacedGcinterval(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn replacedGcinterval(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return value.fromBytes("replaced", .keyword);
@@ -391,8 +391,8 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
     // Two handles, not one. Interleaving reads and writes on a single `FILE *`
     // without a seek between them is undefined, and `(getline)` does exactly
     // that when `:in` and `:out` name the same file.
-    const in = c.tmpfile();
-    const out_file = c.tmpfile();
+    const in = io_core.temp();
+    const out_file = io_core.temp();
     expect(in != null and out_file != null);
     _ = c.fputs("first line\nsecond", in);
     _ = c.fflush(in);
@@ -459,7 +459,7 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
     // A zero byte is data, not a terminator: the read stops at a newline or at
     // end of file and at nothing else.
     {
-        const nul = c.tmpfile();
+        const nul = io_core.temp();
         expect(nul != null);
         _ = c.fwrite("a\x00b\n", 1, 4, nul);
         _ = c.fflush(nul);
@@ -479,8 +479,17 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
     // stream open only for writing fails every read with its error indicator
     // set and its end-of-file indicator clear.
     {
-        const write_only = c.fopen("/dev/null", "w");
+        // `/dev/null` is the write-only stream everywhere there is one. WASI
+        // has no device files, so there this contract writes its own and
+        // unlinks it, the file staying open behind the name for as long as the
+        // handle does.
+        const write_only_path = "janet-zig-core-env-write-only";
+        const write_only = if (builtin.os.tag == .wasi)
+            c.fopen(write_only_path, "w")
+        else
+            c.fopen("/dev/null", "w");
         expect(write_only != null);
+        if (builtin.os.tag == .wasi) expect(c.unlink(write_only_path) == 0);
         const write_only_handle = io_core.makefile(write_only, constants.JANET_FILE_WRITE);
         gc_alloc.gcroot(write_only_handle);
         tables.put(test_env, value.fromBytes("in", .keyword), write_only_handle);

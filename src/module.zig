@@ -147,9 +147,6 @@ const repr = @import("repr");
 // Constants
 // ==========================================================================
 
-/// The alignment a cfunction and a `PostCallback` must have.
-pub const fn_align = 16;
-
 /// The most rows `cfuns`, `getMethod` and `nextMethod` accept in one table.
 pub const max_table_rows = 128;
 
@@ -308,18 +305,13 @@ pub const Pairs = struct {
 /// An author writes:
 ///
 /// ```zig
-/// fn hashDone(
-///     w: *janet.Wake,
-///     raw: *anyopaque,
-/// ) align(janet.fn_align) callconv(.c) void
+/// fn hashDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void
 /// ```
 ///
 /// The callback cannot raise. The second parameter is the `ctx` that was
 /// passed to `post`, and the runtime never reads it. The callback may build a
-/// `Value` and pass it to `wake`. The alignment is part of the type, so an
-/// under-aligned function is a compile error where the author takes its
-/// address.
-pub const PostCallback = *align(fn_align) const fn (wake: *Wake, ctx: *anyopaque) callconv(.c) void;
+/// `Value` and pass it to `wake`.
+pub const PostCallback = *const fn (wake: *Wake, ctx: *anyopaque) callconv(.c) void;
 
 /// The callbacks an abstract type is declared with, over `*T`.
 ///
@@ -1072,10 +1064,11 @@ pub fn pcall(f: Value, args: []const Value) Called {
 /// it using `toPointer` (to read it back) and `pushPointer` (to write it to a
 /// marshalling stream).
 ///
-/// `p` must be aligned to at least `fn_align`. Under 64-bit nanboxing a build
-/// may store an address shifted right, which discards its low bits, so an
-/// under-aligned pointer does not come back as the pointer that was passed
-/// in. Nothing checks this.
+/// On aarch64 other than Apple's, `p` must be aligned to 4 bytes; elsewhere it
+/// need not be aligned. The runtime there stores an address shifted right by
+/// two, which discards its low bits, so an under-aligned pointer does not come
+/// back as the pointer that was passed in. A Debug or ReleaseSafe runtime
+/// asserts the alignment; any other build does not check it.
 pub fn pointer(p: ?*anyopaque) Value {
     return interface.rt.wrap_pointer(p);
 }
@@ -1258,9 +1251,8 @@ pub fn put(d: Value, key: Value, x: Value) Error!void {
 
 /// Builds one registration row.
 ///
-/// `cfun` must be of type `fn (argv: []Value) align(fn_align) Error!Value`. A
-/// function of any other shape is a compile error describing what is wrong
-/// with it.
+/// `cfun` must be of type `fn (argv: []Value) Error!Value`. A function of any
+/// other shape is a compile error describing what is wrong with it.
 pub fn reg(comptime name: [:0]const u8, cfun: anytype, comptime doc: ?[:0]const u8) Reg {
     comptime checkCFunction(name, @TypeOf(cfun));
     return .{
@@ -1448,7 +1440,7 @@ pub fn wake(w: *Wake, fiber: Value, value: Value) bool {
 /// `name` is the registered name of the function.
 fn checkCFunction(comptime name: []const u8, comptime Given: type) void {
     const where = "cfunction '" ++ name ++ "': ";
-    const wanted = "It must be `fn (argv: []Value) align(module.fn_align) Error!Value`";
+    const wanted = "It must be `fn (argv: []Value) Error!Value`";
 
     const fn_info = switch (@typeInfo(Given)) {
         .@"fn" => |fi| fi,
@@ -1472,32 +1464,11 @@ fn checkCFunction(comptime name: []const u8, comptime Given: type) void {
             "`Error!Value`: a wider error set is reinterpreted at the call rather " ++
             "than diagnosed here.");
     }
-
-    // Janet tags the low bits of the pointer `raise.stored` casts into the
-    // runtime's slot, so an under-aligned function fails a runtime assertion
-    // far from its definition. A pointer's `alignment` is optional in 0.16, so
-    // the pointee's alignment is used when it is null.
-    const given_align: comptime_int = switch (@typeInfo(Given)) {
-        .@"fn" => @alignOf(Given),
-        .pointer => |ptr| ptr.alignment orelse @alignOf(ptr.child),
-        else => unreachable,
-    };
-    if (given_align < fn_align) {
-        @compileError(where ++ "its alignment is " ++ digits(given_align) ++
-            ". The runtime tags the low bits of a cfunction's address, so the " ++
-            "alignment must be at least `module.fn_align`, which is " ++
-            digits(fn_align) ++ ".");
-    }
 }
 
 /// Returns whether a wrapped value has this tag.
 inline fn checkTag(v: Value, comptime t: repr.Tag) bool {
     return interface.rt.checktype(v, @intFromEnum(t)) != 0;
-}
-
-/// Renders a small unsigned number as text, for a `@compileError` message.
-fn digits(comptime n: comptime_int) []const u8 {
-    return std.fmt.comptimePrint("{d}", .{n});
 }
 
 /// Turns a runtime report back into an error.

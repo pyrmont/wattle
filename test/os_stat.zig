@@ -213,10 +213,19 @@ fn theCoreFunctions() void {
     );
 
     // Unix only: the CRT has three permission bits rather than nine.
-    if (builtin.os.tag != .windows) eval(
+    if (builtin.os.tag != .windows and builtin.os.tag != .wasi) eval(
         \\(def st (os/stat "janet-zig-os-stat-4d71/file"))
         \\(assert (= 8r640 (st :int-permissions)))
         \\(assert (= "rw-r-----" (st :permissions)))
+    );
+
+    // WASI has no permission bits: `os/chmod` changes nothing there, and the
+    // file description `wasi_snapshot_preview1` reports carries none, so every
+    // bit reads as clear.
+    if (builtin.os.tag == .wasi) eval(
+        \\(def st (os/stat "janet-zig-os-stat-4d71/file"))
+        \\(assert (= 0 (st :int-permissions)))
+        \\(assert (= "---------" (st :permissions)))
     );
 
     // A keyword selects one field rather than building the table, the first

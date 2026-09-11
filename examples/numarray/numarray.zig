@@ -190,7 +190,7 @@ const num_array_type = janet.define(NumArray, .{
 ///
 /// This function raises if the arity is wrong, if slot 0 is not an integer,
 /// if the count is negative, or if the allocation fails.
-fn new(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn new(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     // Refused rather than clamped to zero. The C original converted it to
     // `size_t`, so `(numarray/new -1)` asked for more memory than exists.
@@ -214,7 +214,7 @@ fn new(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 ///
 /// This function raises if the arity is wrong, if slot 0 is not a numarray,
 /// or if slot 1 is not a number.
-fn scale(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn scale(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 2);
     const array = try janet.getAbstract(NumArray, argv, 0, &num_array_type);
     const factor = try janet.getNumber(argv, 1);
@@ -229,7 +229,7 @@ fn scale(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 ///
 /// This function raises if the arity is wrong or if slot 0 is not a
 /// numarray.
-fn sum(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn sum(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const array = try janet.getAbstract(NumArray, argv, 0, &num_array_type);
     var total: f64 = 0;
@@ -244,7 +244,7 @@ fn sum(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 ///
 /// This function raises if the arity is wrong or if slot 0 is not a
 /// numarray.
-fn length(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn length(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const array = try janet.getAbstract(NumArray, argv, 0, &num_array_type);
     return janet.number(@floatFromInt(array.size));

@@ -440,7 +440,12 @@ fn theCompilerBoundsBothOfItsRecursions() void {
         \\    (protect (peg/compile g)))
     ));
     expect(!chained.ok);
-    expect(harness.stringValueIs(chained.message, "grammar error in :r1024, reference chain too deep"));
+    // The rule the walk stops at is the guard's own number, and a wasm build
+    // lowers the guard; `build.zig` is where that is derived.
+    expect(harness.stringValueIs(chained.message, std.fmt.comptimePrint(
+        "grammar error in :r{d}, reference chain too deep",
+        .{config.recursion_guard},
+    )));
 
     // Nesting rather than chaining spends the other counter, and that one is
     // real recursion through `pegCompile1`.
@@ -458,13 +463,14 @@ fn theCompilerBoundsBothOfItsRecursions() void {
         expect(std.mem.endsWith(u8, message[0..length], ", peg grammar recursed too deeply"));
     }
 
-    // One below the budget still compiles, which is what makes the number
-    // above a boundary rather than an upper bound.
-    const just_inside = protectedResult(evaluate(
+    // Just inside the budget still compiles, which is what makes the number
+    // above a boundary rather than an upper bound. The budget is the build's
+    // recursion guard, which a wasm build lowers.
+    const just_inside = protectedResult(evaluate(std.fmt.comptimePrint(
         \\(do (var p 1)
-        \\    (loop [_ :range [0 1022]] (set p ~(! ,p)))
+        \\    (loop [_ :range [0 {d}]] (set p ~(! ,p)))
         \\    (protect (peg/compile p)))
-    ));
+    , .{config.recursion_guard - 2})));
     expect(just_inside.ok);
 }
 
@@ -817,7 +823,7 @@ fn everyVerifierArmBoundsItsOperands() void {
 /// per attempt. A left-recursive grammar is what reaches it: the depth follows
 /// the subject's length rather than the pattern's.
 ///
-/// A hundred thousand characters is far past the budget of 1024, so what the
+/// A hundred thousand characters is far past the budget, so what the
 /// case distinguishes is reaching the guard from running out of stack on the
 /// way, the guard counting frames without knowing how large one is.
 fn theMatcherReachesItsRecursionGuard() raise.Raising(void) {

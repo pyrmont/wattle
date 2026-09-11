@@ -88,6 +88,18 @@ pub const FrameFlags = packed struct(u32) {
     has_env: bool = false,
 };
 
+/// What a frame's `pc` slot holds: the program counter of a Janet frame, or
+/// the cfunction of a C frame.
+///
+/// A union rather than a cast through the address, because a wasm function
+/// pointer is a table index and not an address at all, and reinterpreting one
+/// as a data pointer fails there. `StackFrame.func` is the discriminator: it
+/// is null in a C frame and set in a Janet one.
+pub const FramePc = extern union {
+    bytecode: ?[*]u32,
+    cfunction: abi.CFunction,
+};
+
 /// One call frame: the function, the program counter, the captured
 /// environment, the index of the frame below, and the two flags.
 ///
@@ -95,7 +107,7 @@ pub const FrameFlags = packed struct(u32) {
 /// `value/fibers.zig`'s `stackFrame` is what finds it.
 pub const StackFrame = struct {
     func: ?*functions.Function = null,
-    pc: ?[*]u32 = null,
+    pc: FramePc = .{ .bytecode = null },
     env: ?*functions.FuncEnv = null,
     prevframe: i32 = 0,
     flags: FrameFlags = .{},

@@ -972,7 +972,7 @@ fn arityError(
 
 /// `compile`: the cfunction, which turns the result into the struct a Janet
 /// program reads.
-fn cfunCompile(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunCompile(argv: []repr.Value) raise.Raising(repr.Value) {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"compile"}));
     try args_core.arity(argv, 1, 4);
 

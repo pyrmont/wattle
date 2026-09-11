@@ -98,8 +98,8 @@ const at_threaded_bare = abstract_type.define(anyopaque, .{ .name = "abstract-co
 var gc_calls: i32 = 0;
 
 /// The threaded half of this subsystem exists only with the event loop.
-/// `options` names subsystems rather than features, so `ev_core` is the field
-/// `hasEv(options)` is recorded in.
+/// `options` names subsystems rather than features, so `ev` is the field
+/// `Config.ev` is recorded in.
 const has_ev = options.ev;
 
 var mark_calls: i32 = 0;

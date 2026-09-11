@@ -59,12 +59,13 @@ pub const base64: [65]u8 = ("0123456789" ++
 /// test.
 const gnuStrerrorR: GnuStrerrorR = @ptrCast(&c.strerror_r);
 
-/// Whether this target is a BSD, Apple included.
+/// Whether this target has `arc4random_buf`: a BSD, Apple included, or WASI.
 ///
 /// `arc4random` arrived on macOS at 10.7, which every version this project
 /// supports is past, so the test is by family rather than by version.
+/// wasi-libc has it, and WASI has no `/dev/urandom` to fall back to.
 const has_arc4random = switch (builtin.os.tag) {
-    .macos, .ios, .tvos, .watchos, .visionos, .freebsd, .netbsd, .openbsd, .dragonfly => true,
+    .macos, .ios, .tvos, .watchos, .visionos, .freebsd, .netbsd, .openbsd, .dragonfly, .wasi => true,
     else => false,
 };
 

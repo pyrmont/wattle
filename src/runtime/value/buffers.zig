@@ -415,28 +415,28 @@ fn bitloc(argv: []repr.Value) raise.Raising(BitLoc) {
 }
 
 /// `buffer/bit-clear`: the bit at a bit index cleared.
-fn cfunBufferBitclear(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferBitclear(argv: []repr.Value) raise.Raising(repr.Value) {
     const loc = try bitloc(argv);
     loc.buffer.slice()[@intCast(loc.index)] &= ~(@as(u8, 1) << loc.bit);
     return argv[0];
 }
 
 /// `buffer/bit`: whether the bit at a bit index is set.
-fn cfunBufferBitget(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferBitget(argv: []repr.Value) raise.Raising(repr.Value) {
     const loc = try bitloc(argv);
     const set = loc.buffer.slice()[@intCast(loc.index)] & (@as(u8, 1) << loc.bit);
     return wrap.fromBoolean(set != 0);
 }
 
 /// `buffer/bit-set`: the bit at a bit index set.
-fn cfunBufferBitset(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferBitset(argv: []repr.Value) raise.Raising(repr.Value) {
     const loc = try bitloc(argv);
     loc.buffer.slice()[@intCast(loc.index)] |= @as(u8, 1) << loc.bit;
     return argv[0];
 }
 
 /// `buffer/bit-toggle`: the bit at a bit index flipped.
-fn cfunBufferBittoggle(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferBittoggle(argv: []repr.Value) raise.Raising(repr.Value) {
     const loc = try bitloc(argv);
     loc.buffer.slice()[@intCast(loc.index)] ^= @as(u8, 1) << loc.bit;
     return argv[0];
@@ -444,7 +444,7 @@ fn cfunBufferBittoggle(argv: []repr.Value) align(corefn.alignment) raise.Raising
 
 /// `buffer/blit`: part of one byte sequence copied into a buffer, growing it
 /// where the copy runs past the end.
-fn cfunBufferBlit(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferBlit(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 5);
     const dest = try args_core.getBuffer(argv, 0);
     var src = try args_core.getBytes(argv, 1);
@@ -493,7 +493,7 @@ fn cfunBufferBlit(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 }
 
 /// `buffer/push-string`: byte sequences appended.
-fn cfunBufferChars(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferChars(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     for (1..argv.len) |i| try pushBytesAliasSafe(buffer, try args_core.getBytes(argv, i));
@@ -501,14 +501,14 @@ fn cfunBufferChars(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 }
 
 /// `buffer/clear`: the count set to zero, the backing capacity kept.
-fn cfunBufferClear(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferClear(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     (try args_core.getBuffer(argv, 0)).count = 0;
     return argv[0];
 }
 
 /// `buffer/fill`: every live byte replaced, the length unchanged.
-fn cfunBufferFill(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferFill(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const buffer = try args_core.getBuffer(argv, 0);
     const byte: u8 = if (argv.len == 2) @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, 1)))) else 0;
@@ -517,7 +517,7 @@ fn cfunBufferFill(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 }
 
 /// `buffer/format`: `pp_format.bufferFormat` appended at the end.
-fn cfunBufferFormat(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferFormat(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     const strfrmt = try args_core.getString(argv, 1);
@@ -527,7 +527,7 @@ fn cfunBufferFormat(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
 
 /// `buffer/format-at`: `buffer/format` written at an index instead of at the
 /// end, with the original length restored where the write was shorter.
-fn cfunBufferFormatAt(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferFormatAt(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     var at = try args_core.getInteger(argv, 1);
@@ -544,7 +544,7 @@ fn cfunBufferFormatAt(argv: []repr.Value) align(corefn.alignment) raise.Raising(
 }
 
 /// `buffer/from-bytes`: a buffer of the byte values given as arguments.
-fn cfunBufferFrombytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferFrombytes(argv: []repr.Value) raise.Raising(repr.Value) {
     const buffer = new(argv.len);
     for (0..argv.len) |i| {
         const byte = try args_core.getInteger(argv, i);
@@ -555,7 +555,7 @@ fn cfunBufferFrombytes(argv: []repr.Value) align(corefn.alignment) raise.Raising
 }
 
 /// `buffer/new`: an empty buffer with capacity reserved.
-fn cfunBufferNew(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferNew(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const capacity = try args_core.getInteger(argv, 0);
     // A negative request is a zero request, and `initImpl`'s floor of four
@@ -564,7 +564,7 @@ fn cfunBufferNew(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
 }
 
 /// `buffer/new-filled`: a buffer of `count` bytes, all set to one value.
-fn cfunBufferNewFilled(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferNewFilled(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const requested = try args_core.getInteger(argv, 0);
     const count: usize = if (requested < 0) 0 else @intCast(requested);
@@ -576,7 +576,7 @@ fn cfunBufferNewFilled(argv: []repr.Value) align(corefn.alignment) raise.Raising
 }
 
 /// `buffer/popn`: the last `n` bytes dropped, stopping at empty.
-fn cfunBufferPopn(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferPopn(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const buffer = try args_core.getBuffer(argv, 0);
     const n = try args_core.getInteger(argv, 1);
@@ -587,14 +587,14 @@ fn cfunBufferPopn(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 }
 
 /// `buffer/push`: bytes and byte sequences appended, by argument type.
-fn cfunBufferPush(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferPush(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     try push(try args_core.getBuffer(argv, 0), argv, 1, argv.len);
     return argv[0];
 }
 
 /// `buffer/push-at`: `buffer/push` written at an index instead of at the end.
-fn cfunBufferPushAt(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferPushAt(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     const index = try args_core.getInteger(argv, 1);
@@ -607,7 +607,7 @@ fn cfunBufferPushAt(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
 }
 
 /// `buffer/push-float32`: four bytes of a float, in the caller's byte order.
-fn cfunBufferPushFloat32(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferPushFloat32(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -616,7 +616,7 @@ fn cfunBufferPushFloat32(argv: []repr.Value) align(corefn.alignment) raise.Raisi
 }
 
 /// `buffer/push-float64`: eight bytes of a float, in the caller's byte order.
-fn cfunBufferPushFloat64(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferPushFloat64(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -625,7 +625,7 @@ fn cfunBufferPushFloat64(argv: []repr.Value) align(corefn.alignment) raise.Raisi
 }
 
 /// `buffer/push-uint16`: two bytes of an integer, in the caller's byte order.
-fn cfunBufferPushUint16(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferPushUint16(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -634,7 +634,7 @@ fn cfunBufferPushUint16(argv: []repr.Value) align(corefn.alignment) raise.Raisin
 }
 
 /// `buffer/push-uint32`: four bytes of an integer, in the caller's byte order.
-fn cfunBufferPushUint32(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferPushUint32(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -644,7 +644,7 @@ fn cfunBufferPushUint32(argv: []repr.Value) align(corefn.alignment) raise.Raisin
 
 /// `buffer/push-uint64`: eight bytes of an integer, in the caller's byte
 /// order.
-fn cfunBufferPushUint64(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferPushUint64(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -653,7 +653,7 @@ fn cfunBufferPushUint64(argv: []repr.Value) align(corefn.alignment) raise.Raisin
 }
 
 /// `buffer/slice`: a new buffer over a half-open range of a byte sequence.
-fn cfunBufferSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferSlice(argv: []repr.Value) raise.Raising(repr.Value) {
     const view = try args_core.getBytes(argv, 0);
     const range = try args_core.getSlice(argv);
     const len: usize = @intCast(range.end - range.start);
@@ -667,7 +667,7 @@ fn cfunBufferSlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 ///
 /// The floor of four is not `array/trim`'s behaviour: an empty buffer keeps a
 /// four-byte allocation where an empty array releases its payload entirely.
-fn cfunBufferTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferTrim(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const buffer = try args_core.getBuffer(argv, 0);
     try canRealloc(buffer);
@@ -682,7 +682,7 @@ fn cfunBufferTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 }
 
 /// `buffer/push-byte`: byte values appended.
-fn cfunBufferU8(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferU8(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     for (1..argv.len) |i| {
@@ -692,7 +692,7 @@ fn cfunBufferU8(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.V
 }
 
 /// `buffer/push-word`: machine words appended, four bytes each, little-endian.
-fn cfunBufferWord(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunBufferWord(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     for (1..argv.len) |i| {

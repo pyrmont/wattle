@@ -12,7 +12,7 @@
 const janet = @import("janet");
 
 /// The right shape, with an error set that is not the runtime's.
-fn widened(argv: []janet.Value) align(janet.fn_align) anyerror!janet.Value {
+fn widened(argv: []janet.Value) anyerror!janet.Value {
     return argv[0];
 }
 

@@ -262,7 +262,7 @@ fn stepToCompletion(fiber: *fibers.Fiber, out: *repr.Value, stops: *[max_stops]i
         sig = try vm_entry.step(fiber, wrap.fromNil(), out);
         if (sig != abi.Signal.debug) break;
         expect(nstops < max_stops); // stepping did not terminate
-        const pc = harness.frame.current(fiber).pc;
+        const pc = harness.frame.current(fiber).pc.bytecode;
         stops[nstops] = @intCast((@intFromPtr(pc) - @intFromPtr(def.bytecode)) / @sizeOf(u32));
         nstops += 1;
     }

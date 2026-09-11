@@ -158,8 +158,8 @@ const contracts: []const Contract = blk: {
     list = with(list, "io_core", @import("io_core.zig"));
     list = with(list, "os_surface", @import("os_surface.zig"));
     // The event loop's kernels and the file watcher's vocabularies: both are
-    // `hasEv`-conditioned in `build.zig`, and `filewatch_flags` needs the file
-    // watcher as well.
+    // conditioned on `Config.ev` in `build.zig`, and `filewatch_flags` needs
+    // the file watcher as well.
     if (options.ev) list = with(list, "ev_core", @import("ev_core.zig"));
     if (options.filewatch) list = with(list, "filewatch_flags", @import("filewatch_flags.zig"));
     if (options.filewatch) list = with(list, "filewatch_core", @import("filewatch_core.zig"));
@@ -268,7 +268,9 @@ fn report(contract: Contract) void {
 /// a child exits normally and the leak check covers all three.
 /// `tools/testing/leaks.sh` drives it.
 fn pauseForLeakCheck() void {
-    if (builtin.os.tag == .windows) return;
+    // `leaks` is a macOS tool, and WASI has neither `kill` nor a signal to
+    // send.
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return;
     if (std.c.getenv("JANET_CONTRACT_PAUSE") == null) return;
     _ = std.c.kill(std.c.getpid(), std.c.SIG.STOP);
 }

@@ -232,18 +232,22 @@ fn readCStat(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i
     put(numbers, .nlink, @floatFromInt(st.st_nlink));
     put(numbers, .rdev, @floatFromInt(st.st_rdev));
     put(numbers, .size, @floatFromInt(st.st_size));
-    // Darwin spells the three times as `st_atimespec` and reaches `st_atime`
-    // through a macro, which translate-c does not bring across; Windows has
-    // the plain `time_t` fields. Seconds either way, which is all `os/stat`
-    // reports.
+    // Darwin spells the three times as `st_atimespec`, and POSIX as `st_atim`;
+    // each reaches `st_atime` through a macro, which translate-c does not
+    // bring across. Windows has the plain `time_t` fields. Seconds either way,
+    // which is all `os/stat` reports.
     if (windows) {
         put(numbers, .accessed, @floatFromInt(st.st_atime));
         put(numbers, .modified, @floatFromInt(st.st_mtime));
         put(numbers, .changed, @floatFromInt(st.st_ctime));
-    } else {
+    } else if (builtin.os.tag.isDarwin()) {
         put(numbers, .accessed, @floatFromInt(st.st_atimespec.tv_sec));
         put(numbers, .modified, @floatFromInt(st.st_mtimespec.tv_sec));
         put(numbers, .changed, @floatFromInt(st.st_ctimespec.tv_sec));
+    } else {
+        put(numbers, .accessed, @floatFromInt(st.st_atim.tv_sec));
+        put(numbers, .modified, @floatFromInt(st.st_mtim.tv_sec));
+        put(numbers, .changed, @floatFromInt(st.st_ctim.tv_sec));
     }
     // Two of the fifteen are never written on Windows, and that is what the
     // zeroing above is for: a descriptor's unwritten fields are part of what a

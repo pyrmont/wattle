@@ -409,14 +409,14 @@ fn capSave(s: *PegState) CapState {
 }
 
 /// `(peg/compile peg)`.
-fn cfunPegCompile(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunPegCompile(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return wrap.fromAbstract(try compilePeg(argv[0]));
 }
 
 /// `(peg/find peg text &opt start & args)`, which is the first offset the
 /// pattern matches at, or nil.
-fn cfunPegFind(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunPegFind(argv: []repr.Value) raise.Raising(repr.Value) {
     var call = try pegCfunInit(argv, false);
     var i = call.start;
     while (i < call.bytes.len) : (i += 1) {
@@ -429,7 +429,7 @@ fn cfunPegFind(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
 }
 
 /// `(peg/find-all peg text &opt start & args)`.
-fn cfunPegFindAll(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunPegFindAll(argv: []repr.Value) raise.Raising(repr.Value) {
     var call = try pegCfunInit(argv, false);
     const ret = arrays.new(0);
     var i = call.start;
@@ -444,19 +444,19 @@ fn cfunPegFindAll(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 
 /// `(peg/match peg text &opt start & args)`, which is the captures as an
 /// array, or nil where the pattern does not match.
-fn cfunPegMatch(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunPegMatch(argv: []repr.Value) raise.Raising(repr.Value) {
     var call = try pegCfunInit(argv, false);
     const result = try pegRule(&call.s, call.s.bytecode, args_core.viewBytes(call.bytes).ptr + @as(usize, @intCast(call.start)));
     return if (result != null) wrap.fromArray(call.s.captures) else wrap.fromNil();
 }
 
 /// `(peg/replace peg subst text &opt start & args)`.
-fn cfunPegReplace(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunPegReplace(argv: []repr.Value) raise.Raising(repr.Value) {
     return pegReplaceGeneric(argv, true);
 }
 
 /// `(peg/replace-all peg subst text &opt start & args)`.
-fn cfunPegReplaceAll(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunPegReplaceAll(argv: []repr.Value) raise.Raising(repr.Value) {
     return pegReplaceGeneric(argv, false);
 }
 

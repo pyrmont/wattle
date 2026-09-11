@@ -554,14 +554,14 @@ fn assertType(x: repr.Value, t: repr.Tag) raise.Raising(void) {
 }
 
 /// `(env-lookup env)`.
-fn cfunEnvLookup(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunEnvLookup(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const env = try args_core.getTable(argv, 0);
     return wrap.fromTable(envLookup(env));
 }
 
 /// `(marshal x &opt reverse-lookup buffer no-cycles)`.
-fn cfunMarshal(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunMarshal(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 4);
     var rreg: ?*tables.Table = null;
     var flags: c_int = 0;
@@ -573,7 +573,7 @@ fn cfunMarshal(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
 }
 
 /// `(unmarshal buffer &opt lookup)`, which the sandbox can withhold.
-fn cfunUnmarshal(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunUnmarshal(argv: []repr.Value) raise.Raising(repr.Value) {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"unmarshal"}));
     try args_core.arity(argv, 1, 2);
     const view = try args_core.getBytes(argv, 0);
@@ -1049,7 +1049,7 @@ fn marshalOneFiber(st: *MarshalState, fiber: *fibers.Fiber, flags: c_int) raise.
         const frame = stackFrame(fiber.data.? + utils.asSize(i));
         if (frame.env != null) frame.flags.has_env = true;
         const func = frame.func orelse {
-            const as_cfun: abi.CFunction = @ptrFromInt(@intFromPtr(frame.pc));
+            const as_cfun = frame.pc.cfunction;
             return pp_format.panicf(
                 "cannot marshal fiber with c stackframe (%v)",
                 .{wrap.fromCfunction(as_cfun)},
@@ -1058,7 +1058,7 @@ fn marshalOneFiber(st: *MarshalState, fiber: *fibers.Fiber, flags: c_int) raise.
         try pushInt(st, @bitCast(frame.flags));
         try pushInt(st, frame.prevframe);
         const pcdiff: i32 = @intCast(@divExact(
-            @intFromPtr(frame.pc) - @intFromPtr(func.def.?.bytecode),
+            @intFromPtr(frame.pc.bytecode) - @intFromPtr(func.def.?.bytecode),
             @sizeOf(u32),
         ));
         try pushInt(st, pcdiff);
@@ -1950,7 +1950,7 @@ fn unmarshalOneFiber(
         }
 
         framep.env = env;
-        framep.pc = def.bytecode.? + utils.asSize(pcdiff);
+        framep.pc = .{ .bytecode = def.bytecode.? + utils.asSize(pcdiff) };
         framep.prevframe = prevframe;
         framep.flags = frameflags;
         framep.func = func;

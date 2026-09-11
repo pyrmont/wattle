@@ -614,7 +614,8 @@ pub fn run() void {
     aThunkWrapsTheDef();
     aThunkChargesItsBlock();
     thunksAreDistinct();
-    if (builtin.os.tag != .windows) aThunkRefusesUpvalues();
+    // Windows has no `fork`, and neither does WASI, which runs one process.
+    if (builtin.os.tag != .windows and builtin.os.tag != .wasi) aThunkRefusesUpvalues();
 
     aDelayedThunkReturnsItsValue();
 

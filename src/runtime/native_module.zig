@@ -195,7 +195,7 @@ const Work = struct {
 /// the context is still this module's to free, and so is the root on the
 /// fiber. Doing both here rather than under the `true` branch is the whole
 /// difference between this callback and `workDone` above.
-fn abandonDone(w: *janet.Wake, raw: *anyopaque) align(janet.fn_align) callconv(.c) void {
+fn abandonDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void {
     const work: *Work = @ptrCast(@alignCast(raw));
     if (!janet.wake(w, work.fiber, janet.number(work.answer))) {
         wake_refused += 1;
@@ -214,7 +214,7 @@ fn abandonThread(work: *Work) void {
 
 /// `(abandoned)`: a fiber whose thread posts only once released, so that the
 /// test can cancel it in between and reach `wake`'s `false`.
-fn abandoned(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn abandoned(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 0);
     const l = try janet.loop();
     const fiber = try janet.rootFiber();
@@ -232,7 +232,7 @@ fn abandoned(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value 
 }
 
 /// `(apply f & args)`: `call`, which raises on anything but a return.
-fn apply(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn apply(argv: []janet.Value) janet.Error!janet.Value {
     try janet.arity(argv, 1, -1);
     return janet.call(argv[0], argv[1..]);
 }
@@ -249,7 +249,7 @@ fn apply(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// function before it makes one, and the fiber slot is then nil, which is the
 /// one thing about the result a caller has to test before asking
 /// `fiberStatus` about it.
-fn attempt(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn attempt(argv: []janet.Value) janet.Error!janet.Value {
     try janet.arity(argv, 1, -1);
     const called = janet.pcall(argv[0], argv[1..]);
     const row = [_]janet.Value{
@@ -268,7 +268,7 @@ fn attempt(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// and `keyword`, and hands a `[]const Value` straight to `tuple` and `array`.
 /// Every constructor takes exactly what the getter of the same type gives
 /// back.
-fn built(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn built(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     // The bytes view goes straight into the three interning constructors: no
     // copy, no length recomputed, and a buffer argument works as a string one
@@ -304,7 +304,7 @@ fn built(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// reason to reach for anything else. `isFunction` is the odd one out: what it
 /// is for is refusing a callback `pcall` could not run, at the point the
 /// callback is handed over rather than at the call.
-fn classify(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn classify(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const v = argv[0];
     const name: [:0]const u8 = if (janet.isNil(v))
@@ -343,7 +343,7 @@ fn classify(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// The length handed to `getRange` is the view's own, so the negative index,
 /// the absent slot and the clamp are the ones every core builtin taking a
 /// slice already has.
-fn cut(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn cut(argv: []janet.Value) janet.Error!janet.Value {
     try janet.arity(argv, 1, 3);
     const bytes = try janet.getBytes(argv, 0);
     const range: janet.Range = try janet.getRange(argv, 1, bytes.len);
@@ -412,32 +412,32 @@ fn defs(env: *janet.Env) janet.Error!void {
 }
 
 /// `(fetch ds key)`: Janet's own `get`, over anything.
-fn fetch(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn fetch(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 2);
     return janet.get(argv[0], argv[1]);
 }
 
 /// `(finalized-count)`.
-fn finalizedCount(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn finalizedCount(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 0);
     return janet.number(@floatFromInt(finalized));
 }
 
 /// `(greeting)`: a cfunction returning a string, which `janet.cstring` is the
 /// whole of.
-fn greeting(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn greeting(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 0);
     return janet.cstring("hello from a module");
 }
 
 /// `(identity x)`: a value round-tripped through a loaded module.
-fn identity(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn identity(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     return argv[0];
 }
 
 /// `(keep x &opt rank)`: a new keeper.
-fn keep(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn keep(argv: []janet.Value) janet.Error!janet.Value {
     try janet.arity(argv, 1, 2);
     const given = if (argv.len == 2) try janet.getInteger(argv, 1) else 0;
     const k = janet.new(Keeper, &keeper_type, null);
@@ -556,7 +556,7 @@ fn keeperUnmarshal(u: *janet.Unmarshal) janet.Error!*Keeper {
 }
 
 /// `(kept keeper)`.
-fn kept(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn kept(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const k = try janet.getAbstract(Keeper, argv, 0, &keeper_type);
     return k.kept;
@@ -569,7 +569,7 @@ fn kept(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// `gc/mark.zig`'s `collect` and therefore one of the two places a collection
 /// happens at all. Without the root, what is built below is reachable from
 /// nothing the collector scans while `f` runs.
-fn keptAcross(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn keptAcross(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const pairs = [_]janet.Pair{
         .{ .key = janet.keyword("kept"), .value = janet.string("across a collection") },
@@ -588,7 +588,7 @@ fn keptAcross(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value
 /// before the suspend is not a race, because the loop is single-threaded, so
 /// an event posted before this cfunction has returned is not processed until
 /// the fiber has suspended.
-fn later(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn later(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const l = try janet.loop();
     const fiber = try janet.rootFiber();
@@ -611,14 +611,14 @@ fn later(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// loop fields are filled in every build and `loop` is the one that refuses,
 /// so a module asking for the capability is exactly where the refusal shows
 /// up. Every other shape here calls `loop` first for the same reason.
-fn loopAvailable(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn loopAvailable(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 0);
     _ = janet.loop() catch return janet.boolean(false);
     return janet.boolean(true);
 }
 
 /// `(mark-count)`.
-fn markCount(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn markCount(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 0);
     return janet.number(@floatFromInt(marks));
 }
@@ -629,7 +629,7 @@ fn markCount(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value 
 /// getters this file exercises existed: reading the byte argument, reading the
 /// indexed argument, reading a keyword out of that view, and refusing with a
 /// message naming what was wrong.
-fn markup(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn markup(argv: []janet.Value) janet.Error!janet.Value {
     try janet.arity(argv, 1, 3);
     const input = try janet.getBytes(argv, 0);
     const strict = if (argv.len == 3) try janet.getBoolean(argv, 2) else true;
@@ -662,7 +662,7 @@ fn markup(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// own message, which is what keeps `*Array` and `*Table` off the author
 /// surface. What comes back is the array's new length, through the generic
 /// `length`.
-fn mutate(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn mutate(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 3);
     try janet.arrayPush(argv[0], janet.number(99));
     try janet.put(argv[1], janet.keyword("added"), janet.boolean(true));
@@ -677,7 +677,7 @@ fn mutate(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// already has crosses rather than being looked for again. A buffer is the
 /// same bytes without a terminator, so it is nil here and `bytesView` is what
 /// reads one.
-fn named(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn named(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const v = argv[0];
     const name = janet.toString(v) orelse
@@ -694,7 +694,7 @@ fn oddGet(_: *Odd, key: janet.Value) janet.Error!?janet.Value {
 
 /// `(:length o)`: a length that is negative in mode 0 and not a number
 /// otherwise.
-fn oddLength(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn oddLength(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const self = try janet.getAbstract(Odd, argv, 0, &odd_type);
     return switch (self.mode) {
@@ -704,7 +704,7 @@ fn oddLength(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value 
 }
 
 /// `(odd &opt mode)`.
-fn oddValue(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn oddValue(argv: []janet.Value) janet.Error!janet.Value {
     try janet.arity(argv, 0, 1);
     const o = janet.new(Odd, &odd_type, null);
     o.mode = if (argv.len == 1) @truncate(try janet.getUInteger(argv, 0)) else 0;
@@ -718,7 +718,7 @@ fn oddValue(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// The unwrap tests the abstract type's identity, so an `odd` in the same
 /// position is a refusal this module words rather than a read of another
 /// type's payload.
-fn peek(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn peek(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 2);
     const items = try janet.getIndexed(argv, 0);
     const n = try janet.getSize(argv, 1);
@@ -732,7 +732,7 @@ fn peek(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 ///
 /// The check is here rather than in Janet because a Janet program cannot read
 /// a pointer back: `toPointer` is the only way, and it is on this side.
-fn pointerValue(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn pointerValue(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 0);
     const p: *anyopaque = @ptrCast(&pointer_target);
     const v = janet.pointer(p);
@@ -743,27 +743,27 @@ fn pointerValue(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Val
 }
 
 /// `(rank keeper)`.
-fn rank(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn rank(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const k = try janet.getAbstract(Keeper, argv, 0, &keeper_type);
     return janet.number(@floatFromInt(k.rank));
 }
 
 /// `(refused-freed)`.
-fn refusedFreed(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn refusedFreed(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 0);
     return janet.number(@floatFromInt(refused_freed));
 }
 
 /// `(release-abandoned)`: lets the waiting thread post.
-fn releaseAbandoned(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn releaseAbandoned(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 0);
     abandon_gate.store(true, .release);
     return janet.nil();
 }
 
 /// `(size x)`: the generic `length`, so that its refusals are reachable.
-fn size(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn size(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     return janet.number(@floatFromInt(try janet.length(argv[0])));
 }
@@ -781,7 +781,7 @@ fn size(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// The sort itself reads and writes through `get` and `put` rather than
 /// through the indexed view it started from, because a view is `data[0..count]`
 /// and a re-entry may move it.
-fn sorted(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn sorted(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 2);
     const items = try janet.getIndexed(argv, 1);
     const count = items.len;
@@ -812,7 +812,7 @@ fn sorted(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 }
 
 /// `(stampede n)`: n threads posting at once, giving back how many arrived.
-fn stampede(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn stampede(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const count = try janet.getUInteger(argv, 0);
     if (count == 0 or count > 32) return janet.panic("stampede wants 1 to 32 threads");
@@ -842,7 +842,7 @@ fn stampede(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 }
 
 /// The last arrival wakes the fiber and frees the shared context.
-fn stampedeDone(w: *janet.Wake, raw: *anyopaque) align(janet.fn_align) callconv(.c) void {
+fn stampedeDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void {
     const run: *Stampede = @ptrCast(@alignCast(raw));
     run.arrived += 1;
     if (run.arrived < run.expected) return;
@@ -862,7 +862,7 @@ fn stampedeThread(run: *Stampede) void {
 /// `(status-of x)`: `fiberStatus` over anything, so that its refusal is
 /// reachable from Janet and so that every status a fixture can put a fiber in
 /// can be asked for, `:new` and `:alive` included.
-fn statusOf(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn statusOf(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     return janet.keyword(@tagName(try janet.fiberStatus(argv[0])));
 }
@@ -876,7 +876,7 @@ fn statusOf(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// The walk is `Pairs` and the count is checked against it. An author never
 /// sees the hash array, so what a module can still get wrong is trusting `len`
 /// without walking, and this compares the two.
-fn tally(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn tally(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     var entries = try janet.getDictionary(argv, 0);
     var sum: f64 = 0;
@@ -897,7 +897,7 @@ fn tally(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// is here so that the two read side by side and the one line of difference is
 /// visible. `test/zig-native.janet` calls it and looks at nothing it gives
 /// back.
-fn unkeptAcross(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn unkeptAcross(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const pairs = [_]janet.Pair{
         .{ .key = janet.keyword("kept"), .value = janet.string("across a collection") },
@@ -908,7 +908,7 @@ fn unkeptAcross(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Val
 }
 
 /// `(unsafe-seen)`.
-fn unsafeSeen(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn unsafeSeen(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 0);
     return janet.number(@floatFromInt(unsafe_seen));
 }
@@ -919,7 +919,7 @@ fn unsafeSeen(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value
 /// element out of a view. A getter takes an argument slot and raises naming
 /// it; these take the `Value` and raise nothing, because a value pulled out of
 /// a tuple or a dictionary is in no slot the caller can be told about.
-fn viewed(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn viewed(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const v = argv[0];
     var out: [64]u8 = undefined;
@@ -939,14 +939,14 @@ fn viewed(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 }
 
 /// `(wake-refused)`.
-fn wakeRefused(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn wakeRefused(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 0);
     return janet.number(@floatFromInt(wake_refused));
 }
 
 /// The callback the worker posts: wakes the fiber, then frees the root and the
 /// context.
-fn workDone(w: *janet.Wake, raw: *anyopaque) align(janet.fn_align) callconv(.c) void {
+fn workDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void {
     const work: *Work = @ptrCast(@alignCast(raw));
     // Building a `Value` inside a posted callback is allowed. Allocating
     // through the collector is fatal on failure rather than a raise, and no
@@ -964,7 +964,7 @@ fn workThread(work: *Work) void {
 
 /// `(wrap bytes width)`: markable's unsigned-integer argument, which is a wrap
 /// column rather than a size.
-fn wrap(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn wrap(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 2);
     const bytes = try janet.getBytes(argv, 0);
     const width = try janet.getUInteger(argv, 1);

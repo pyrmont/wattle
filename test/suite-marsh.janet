@@ -252,11 +252,19 @@ neldb\0\0\0\xD8\x05printG\x01\0\xDE\xDE\xDE'\x03\0marshal_tes/\x02
           "unthreaded channel round-trips"))
 
 # Marshalling counts its depth: every recursive step is handed one more than
-# it was given, and a step above 1024 is refused. So 1024 levels is the last
-# chain that survives and 1025 is the first that does not, and a step that
-# counted two would refuse the first of those. Each shape below is asserted at
-# both ends of its own boundary, because the boundary is where a miscount
-# shows and the middle of the range is where it hides.
+# it was given, and a step above the build's recursion budget is refused. So
+# the budget is the last chain that survives and one more is the first that
+# does not, and a step that counted two would refuse the first of those. Each
+# shape below is asserted at both ends of its own boundary, because the
+# boundary is where a miscount shows and the middle of the range is where it
+# hides.
+#
+# The budget is the recursion guard: 1024, and 512 on wasm, whose host call
+# stack is smaller than a native thread's. `build.zig` derives it. The shapes
+# that cost more than one level per link have their own boundaries below,
+# each a fraction of it.
+(def budget (if (= :wasm (os/arch)) 512 1024))
+(def over (+ budget 1))
 
 # Containers cost one level each. The chain cycles the four so that one pair
 # of assertions covers the value path of all of them.
@@ -265,10 +273,10 @@ neldb\0\0\0\xD8\x05printG\x01\0\xDE\xDE\xDE'\x03\0marshal_tes/\x02
   (for i 0 depth
     (set x (case (% i 4) 0 @[x] 1 [x] 2 @{:k x} 3 {:k x})))
   x)
-(assert (buffer? (marshal (nest-values 1024))) "1024 nested containers marshal")
-(assert-error "stack overflow" (marshal (nest-values 1025)))
-(assert (buffer? (marshal (unmarshal (marshal (nest-values 1024)))))
-        "1024 nested containers round-trip")
+(assert (buffer? (marshal (nest-values budget))) "nested containers marshal at the budget")
+(assert-error "stack overflow" (marshal (nest-values over)))
+(assert (buffer? (marshal (unmarshal (marshal (nest-values budget)))))
+        "nested containers round-trip at the budget")
 
 # A key is walked before its value, so a chain built through the key position
 # reaches the other half of each dictionary.
@@ -276,20 +284,20 @@ neldb\0\0\0\xD8\x05printG\x01\0\xDE\xDE\xDE'\x03\0marshal_tes/\x02
   (var x 0)
   (for i 0 depth (set x (case (% i 2) 0 {x :v} 1 [x])))
   x)
-(assert (buffer? (marshal (nest-keys 1024))) "1024 nested keys marshal")
-(assert-error "stack overflow" (marshal (nest-keys 1025)))
-(assert (buffer? (marshal (unmarshal (marshal (nest-keys 1024)))))
-        "1024 nested keys round-trip")
+(assert (buffer? (marshal (nest-keys budget))) "nested keys marshal at the budget")
+(assert-error "stack overflow" (marshal (nest-keys over)))
+(assert (buffer? (marshal (unmarshal (marshal (nest-keys budget)))))
+        "nested keys round-trip at the budget")
 
 # A prototype is walked the same way and is the third path into a table.
 (defn- nest-protos [depth]
   (var x @{})
   (repeat depth (set x (table/setproto @{} x)))
   x)
-(assert (buffer? (marshal (nest-protos 1024))) "1024 nested prototypes marshal")
-(assert-error "stack overflow" (marshal (nest-protos 1025)))
-(assert (buffer? (marshal (unmarshal (marshal (nest-protos 1024)))))
-        "1024 nested prototypes round-trip")
+(assert (buffer? (marshal (nest-protos budget))) "nested prototypes marshal at the budget")
+(assert-error "stack overflow" (marshal (nest-protos over)))
+(assert (buffer? (marshal (unmarshal (marshal (nest-protos budget)))))
+        "nested prototypes round-trip at the budget")
 
 # A struct prototype is a fourth path, and it is not the table's: the two are
 # read by separate arms and only a chain built from structs walks this one.
@@ -297,47 +305,59 @@ neldb\0\0\0\xD8\x05printG\x01\0\xDE\xDE\xDE'\x03\0marshal_tes/\x02
   (var x (struct))
   (repeat depth (set x (struct/with-proto x)))
   x)
-(assert (buffer? (marshal (nest-struct-protos 1024)))
-        "1024 nested struct prototypes marshal")
-(assert-error "stack overflow" (marshal (nest-struct-protos 1025)))
-(assert (buffer? (marshal (unmarshal (marshal (nest-struct-protos 1024)))))
-        "1024 nested struct prototypes round-trip")
+(assert (buffer? (marshal (nest-struct-protos budget)))
+        "nested struct prototypes marshal at the budget")
+(assert-error "stack overflow" (marshal (nest-struct-protos over)))
+(assert (buffer? (marshal (unmarshal (marshal (nest-struct-protos budget)))))
+        "nested struct prototypes round-trip at the budget")
 
 # A table key, which the chain above reaches only for a struct.
 (defn- nest-table-keys [depth]
   (var x 0)
   (repeat depth (set x @{x :v}))
   x)
-(assert (buffer? (marshal (nest-table-keys 1024))) "1024 nested table keys marshal")
-(assert-error "stack overflow" (marshal (nest-table-keys 1025)))
-(assert (buffer? (marshal (unmarshal (marshal (nest-table-keys 1024)))))
-        "1024 nested table keys round-trip")
+(assert (buffer? (marshal (nest-table-keys budget))) "nested table keys marshal at the budget")
+(assert-error "stack overflow" (marshal (nest-table-keys over)))
+(assert (buffer? (marshal (unmarshal (marshal (nest-table-keys budget)))))
+        "nested table keys round-trip at the budget")
 
 # A closure costs two levels, the function and the environment holding the one
 # below it, so its boundary is half the containers'.
+(def closure-budget (div budget 2))
 (defn- nest-closures [depth]
   (var x (fn [] 0))
   (repeat depth (let [inner x] (set x (fn [] inner))))
   x)
-(assert (buffer? (marshal (nest-closures 512))) "512 nested closures marshal")
-(assert-error "stack overflow" (marshal (nest-closures 513)))
-(assert (function? (unmarshal (marshal (nest-closures 512))))
-        "512 nested closures round-trip")
+(assert (buffer? (marshal (nest-closures closure-budget)))
+        "nested closures marshal at their half of the budget")
+(assert-error "stack overflow" (marshal (nest-closures (+ closure-budget 1))))
+(assert (function? (unmarshal (marshal (nest-closures closure-budget))))
+        "nested closures round-trip at their half of the budget")
 
-# A fiber costs three, the fiber and the closure it runs, so its boundary is a
-# third.
+# A link of this chain is a fiber and the closure it runs, and it spends four
+# levels, so the boundary is a quarter of the budget. One link fewer than that,
+# because the innermost fiber is one of the four as well: the refusal falls at
+# a quarter, and the last chain that survives is one short of it. Measured at
+# both budgets.
+(def fiber-budget (- (div budget 4) 1))
 (defn- nest-fibers [depth]
   (var x (fiber/new (fn [] 0)))
   (repeat depth (let [inner x] (set x (fiber/new (fn [] inner)))))
   x)
-(assert (buffer? (marshal (nest-fibers 255))) "255 nested fibers marshal")
-(assert-error "stack overflow" (marshal (nest-fibers 256)))
-(assert (fiber? (unmarshal (marshal (nest-fibers 255))))
-        "255 nested fibers round-trip")
+(assert (buffer? (marshal (nest-fibers fiber-budget)))
+        "nested fibers marshal at their share of the budget")
+(assert-error "stack overflow" (marshal (nest-fibers (+ fiber-budget 1))))
+(assert (fiber? (unmarshal (marshal (nest-fibers fiber-budget))))
+        "nested fibers round-trip at their share of the budget")
 
 # A fiber that has run carries a stack, and its frames, their environments and
 # the values on them are written by paths a fiber that never started does not
 # reach. Resuming each one to its `yield` is what puts a frame on it.
+#
+# A link here spends four levels as well, and the chain reaches a full quarter
+# of the budget: one link more than the unstarted chain above, the innermost
+# fiber of this one being `0` rather than a fiber. Measured at both budgets.
+(def suspended-budget (div budget 4))
 (defn- nest-suspended [depth]
   (var x 0)
   (repeat depth
@@ -346,10 +366,11 @@ neldb\0\0\0\xD8\x05printG\x01\0\xDE\xDE\xDE'\x03\0marshal_tes/\x02
       (resume f)
       (set x f)))
   x)
-(assert (buffer? (marshal (nest-suspended 256))) "256 suspended fibers marshal")
-(assert-error "stack overflow" (marshal (nest-suspended 257)))
-(assert (fiber? (unmarshal (marshal (nest-suspended 256))))
-        "256 suspended fibers round-trip")
+(assert (buffer? (marshal (nest-suspended suspended-budget)))
+        "suspended fibers marshal at their share of the budget")
+(assert-error "stack overflow" (marshal (nest-suspended (+ suspended-budget 1))))
+(assert (fiber? (unmarshal (marshal (nest-suspended suspended-budget))))
+        "suspended fibers round-trip at their share of the budget")
 
 # A frame owns an environment only when something closed over its locals, and
 # the frame's environment, the values on it and the closure that holds it are
@@ -362,11 +383,11 @@ neldb\0\0\0\xD8\x05printG\x01\0\xDE\xDE\xDE'\x03\0marshal_tes/\x02
       (resume f)
       (set x f)))
   x)
-(assert (buffer? (marshal (nest-env-fibers 256)))
-        "256 fibers with closed-over frames marshal")
-(assert-error "stack overflow" (marshal (nest-env-fibers 257)))
-(assert (fiber? (unmarshal (marshal (nest-env-fibers 256))))
-        "256 fibers with closed-over frames round-trip")
+(assert (buffer? (marshal (nest-env-fibers suspended-budget)))
+        "fibers with closed-over frames marshal at their share of the budget")
+(assert-error "stack overflow" (marshal (nest-env-fibers (+ suspended-budget 1))))
+(assert (fiber? (unmarshal (marshal (nest-env-fibers suspended-budget))))
+        "fibers with closed-over frames round-trip at their share of the budget")
 
 # The two booleans have a lead byte each, and nothing above reads either one
 # back. A writer that emitted the same byte for both, or a reader that stepped

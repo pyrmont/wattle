@@ -1043,10 +1043,16 @@
 # The matcher's budget is spent one frame per nested rule, and both ends of it
 # are asserted: a budget spent twice as fast still refuses the far end, so the
 # near end is what says how fast it is spent.
-(assert (peg/match '{:main (+ (* "a" :main) 0)} (string/repeat "a" 600))
+#
+# The budget is the build's recursion guard: 1024, and 512 on wasm, whose host
+# call stack is smaller than a native thread's. `build.zig` derives it.
+(def budget (if (= :wasm (os/arch)) 512 1024))
+(assert (peg/match '{:main (+ (* "a" :main) 0)}
+                   (string/repeat "a" (- budget 424)))
         "a subject inside the recursion budget matches")
 (assert-error "peg/match recursed too deeply"
-              (peg/match '{:main (+ (* "a" :main) 0)} (string/repeat "a" 1022)))
+              (peg/match '{:main (+ (* "a" :main) 0)}
+                         (string/repeat "a" (- budget 2))))
 
 # A character class at the end of the text has no character to test, and the
 # matcher stops rather than reading the byte after the subject. The classes

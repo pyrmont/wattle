@@ -356,18 +356,24 @@
 # sandbox rejects a capability it does not know, before applying any of them
 (assert-error-value "sandbox unknown capability" "unknown capability :nope" (sandbox :nope))
 
+# Whether a size is 64 bits wide here. 2^32 is a size on a 64-bit build and
+# too large for one on a 32-bit build, where the argument layer refuses it
+# before the interval's own cap is reached. The three assertions below are
+# about that cap, so they are asked only where it is what answers.
+(def size64 (try (do (gcsetinterval 0x100000000) true) ([_] false)))
 # gcsetinterval is capped at 48 bits on a 64-bit build
-(assert-error-value "gcsetinterval cap" "interval too large" (gcsetinterval 0x1000000000000))
-# 2^64 is the double the largest size rounds to on a 64-bit build, and it is
-# refused as an argument like every other value too large for a size.
-(assert-error-value "gcsetinterval at 2^64"
-                    "bad slot #0, expected size, got 1.84467440737096e+19"
-                    (gcsetinterval (math/pow 2 64)))
+(when size64
+  (assert-error-value "gcsetinterval cap" "interval too large" (gcsetinterval 0x1000000000000))
+  # 2^64 is the double the largest size rounds to on a 64-bit build, and it is
+  # refused as an argument like every other value too large for a size.
+  (assert-error-value "gcsetinterval at 2^64"
+                      "bad slot #0, expected size, got 1.84467440737096e+19"
+                      (gcsetinterval (math/pow 2 64)))
+  (assert-no-error "gcsetinterval accepts 48 bits" (gcsetinterval 0xFFFFFFFFFFFF)))
 # The value is not read back: a collection recomputes the interval from the
 # live heap, so `gcinterval` reports the collector's number rather than the
 # last one set.
 (assert (number? (gcinterval)) "gcinterval answers a number")
-(assert-no-error "gcsetinterval accepts 48 bits" (gcsetinterval 0xFFFFFFFFFFFF))
 (gcsetinterval 0x400000)
 
 # range

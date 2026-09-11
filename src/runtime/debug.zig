@@ -20,7 +20,6 @@ const std = @import("std");
 // Project imports
 // ==========================================================================
 
-const abi = @import("abi");
 const args_core = @import("args.zig");
 const arrays = @import("value/arrays.zig");
 const constants = @import("constants");
@@ -151,13 +150,13 @@ pub fn debugFrame(frame: *vm_state.StackFrame) raise.Raising(repr.Value) {
     }
 
     const func = frame.func orelse return wrap.fromTable(t);
-    if (frame.pc == null) return wrap.fromTable(t);
+    if (frame.pc.bytecode == null) return wrap.fromTable(t);
 
     // The registers begin one frame header above the frame itself.
     const stack: [*]repr.Value = @as([*]repr.Value, @ptrCast(@alignCast(frame))) + frame_size;
 
     const offset: i32 = @intCast(@divExact(
-        @intFromPtr(frame.pc) - @intFromPtr(def.?.bytecode),
+        @intFromPtr(frame.pc.bytecode) - @intFromPtr(def.?.bytecode),
         @sizeOf(u32),
     ));
     put(t, "pc", wrap.fromInteger(offset));
@@ -308,9 +307,9 @@ pub fn traceFrame(frame: *vm_state.StackFrame, out: *TraceFrame) raise.Raising(v
         out.source = def.source;
 
         // A funcdef frame with a null pc reports no location at all.
-        if (frame.pc != null) {
+        if (frame.pc.bytecode != null) {
             const offset = @divExact(
-                @intFromPtr(frame.pc) - @intFromPtr(def.bytecode),
+                @intFromPtr(frame.pc.bytecode) - @intFromPtr(def.bytecode),
                 @sizeOf(u32),
             );
             if (def.sourcemap != null) {
@@ -326,10 +325,9 @@ pub fn traceFrame(frame: *vm_state.StackFrame, out: *TraceFrame) raise.Raising(v
         return;
     }
 
-    // A cframe stores the cfunction in the pc slot. Nothing else in the runtime
-    // reads it as a code pointer, so the cast is here and not beside the frame
-    // accessors in `vm/state.zig`.
-    const cfun: abi.CFunction = @ptrFromInt(@intFromPtr(frame.pc));
+    // A cframe stores the cfunction in the pc slot, which is why that slot is
+    // a union; `vm/state.zig`'s `FramePc` has the reasoning.
+    const cfun = frame.pc.cfunction;
     if (cfun == null) return;
 
     const reg = registry.registryGet(cfun) orelse {
@@ -361,7 +359,7 @@ pub fn traceFrame(frame: *vm_state.StackFrame, out: *TraceFrame) raise.Raising(v
 // ==========================================================================
 
 /// `debug/arg-stack`: the values on the fiber's argument stack, as an array.
-fn cfunDebugArgstack(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunDebugArgstack(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
     const array = arrays.new(@intCast(fiber.stacktop - fiber.stackstart));
@@ -379,21 +377,21 @@ fn cfunDebugArgstack(argv: []repr.Value) align(corefn.alignment) raise.Raising(r
 }
 
 /// `debug/break`: a breakpoint set at a source position.
-fn cfunDebugBreak(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunDebugBreak(argv: []repr.Value) raise.Raising(repr.Value) {
     const found = try findBySource(argv);
     try debugBreak(found.definition, found.pc);
     return wrap.fromNil();
 }
 
 /// `debug/fbreak`: a breakpoint set at a bytecode offset into a function.
-fn cfunDebugFbreak(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunDebugFbreak(argv: []repr.Value) raise.Raising(repr.Value) {
     const found = try findByFunction(argv);
     try debugBreak(found.definition, found.pc);
     return wrap.fromNil();
 }
 
 /// `debug/lineage`: a fiber and every child under it, as an array.
-fn cfunDebugLineage(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunDebugLineage(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     var fiber: ?*fibers.Fiber = try args_core.getFiber(argv, 0);
     const array = arrays.new(0);
@@ -404,7 +402,7 @@ fn cfunDebugLineage(argv: []repr.Value) align(corefn.alignment) raise.Raising(re
 }
 
 /// `debug/stack`: one table per stack frame, innermost first.
-fn cfunDebugStack(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunDebugStack(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
     const array = arrays.new(0);
@@ -418,7 +416,7 @@ fn cfunDebugStack(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 }
 
 /// `debug/stacktrace`: the fiber's stack trace printed to `(dyn :err)`.
-fn cfunDebugStacktrace(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunDebugStacktrace(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
     const fiber = try args_core.getFiber(argv, 0);
     const err = if (argv.len == 1) wrap.fromNil() else argv[1];
@@ -429,7 +427,7 @@ fn cfunDebugStacktrace(argv: []repr.Value) align(corefn.alignment) raise.Raising
 
 /// `debug/step`: one virtual instruction of the fiber, and the signal it ended
 /// on.
-fn cfunDebugStep(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunDebugStep(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const fiber = try args_core.getFiber(argv, 0);
     var out = wrap.fromNil();
@@ -438,14 +436,14 @@ fn cfunDebugStep(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
 }
 
 /// `debug/unbreak`: the breakpoint at a source position removed.
-fn cfunDebugUnbreak(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunDebugUnbreak(argv: []repr.Value) raise.Raising(repr.Value) {
     const found = try findBySource(argv);
     try debugUnbreak(found.definition, found.pc);
     return wrap.fromNil();
 }
 
 /// `debug/unfbreak`: the breakpoint at a bytecode offset removed.
-fn cfunDebugUnfbreak(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunDebugUnfbreak(argv: []repr.Value) raise.Raising(repr.Value) {
     const found = try findByFunction(argv);
     try debugUnbreak(found.definition, found.pc);
     return wrap.fromNil();

@@ -27,6 +27,7 @@
 // Standard library imports
 // ==========================================================================
 
+const builtin = @import("builtin");
 const std = @import("std");
 
 // ==========================================================================
@@ -324,13 +325,19 @@ pub fn signalRecord(sig: abi.Signal, message: repr.Value) void {
 ///
 /// The sandbox's exit capability is what makes the two endings different.
 /// Without it the process ends; with it only the calling thread does, because a
-/// sandboxed child interpreter must not be able to take the host down.
+/// sandboxed child interpreter must not be able to take the host down. A WASI
+/// build has one thread and no `pthread_exit`, so there the process ends either
+/// way, with the status the other ending uses.
 pub fn topLevelSignal(msg: [*]const u8) noreturn {
     _ = c.fputs(@ptrCast(msg), stdio.out());
-    if (!vm_state.current().sandbox_flags.intersects(vm_lifecycle.Sandbox.of(&.{"exit"}))) {
+    if (builtin.os.tag == .wasi) {
         c.exit(1);
+    } else {
+        if (!vm_state.current().sandbox_flags.intersects(vm_lifecycle.Sandbox.of(&.{"exit"}))) {
+            c.exit(1);
+        }
+        c.pthread_exit(null);
     }
-    c.pthread_exit(null);
 }
 
 /// Opens a try scope over the whole VM: six fields saved into the caller's

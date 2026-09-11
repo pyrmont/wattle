@@ -312,7 +312,7 @@ fn appendIndexed(array: *Array, x: repr.Value, vals_in: []const repr.Value) rais
 }
 
 /// `array/clear`: the count set to zero, the backing capacity kept.
-fn cfunArrayClear(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArrayClear(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     (try args_core.getArray(argv, 0)).count = 0;
     return argv[0];
@@ -320,7 +320,7 @@ fn cfunArrayClear(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 
 /// `array/concat`: the remaining arguments appended, an indexed part element
 /// by element and anything else as a single element.
-fn cfunArrayConcat(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArrayConcat(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const array = try args_core.getArray(argv, 0);
     for (argv[1..]) |part| {
@@ -339,7 +339,7 @@ fn cfunArrayConcat(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 ///
 /// Both arguments are checked and not only the count. The header says what the
 /// second check prevents.
-fn cfunArrayEnsure(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArrayEnsure(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 3);
     const array = try args_core.getArray(argv, 0);
     const newcount = try args_core.getInteger(argv, 1);
@@ -354,7 +354,7 @@ fn cfunArrayEnsure(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 }
 
 /// `array/fill`: every live element replaced, the length unchanged.
-fn cfunArrayFill(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArrayFill(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const array = try args_core.getArray(argv, 0);
     const x = if (argv.len == 2) argv[1] else wrap.fromNil();
@@ -364,7 +364,7 @@ fn cfunArrayFill(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
 
 /// `array/insert`: values inserted at an index, which may count back from the
 /// end.
-fn cfunArrayInsert(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArrayInsert(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, -1);
     const array = try args_core.getArray(argv, 0);
     var at = try args_core.getInteger(argv, 1);
@@ -395,7 +395,7 @@ fn cfunArrayInsert(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 /// `array/join`: the same as `array/concat` but for one thing, that a part
 /// which is not indexed is an error here and is appended as a single element
 /// there.
-fn cfunArrayJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArrayJoin(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const array = try args_core.getArray(argv, 0);
     for (argv[1..], 1..) |part, i| {
@@ -413,14 +413,14 @@ fn cfunArrayJoin(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
 /// `(array/new -5)` is an empty array that every later operation grows from.
 /// A capacity is a count here, so the floor at zero is written down rather
 /// than arrived at through a negative capacity nothing can satisfy.
-fn cfunArrayNew(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArrayNew(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const capacity = try args_core.getInteger(argv, 0);
     return wrap.fromArray(new(if (capacity < 0) 0 else @intCast(capacity)));
 }
 
 /// `array/new-filled`: an array of `count` elements, all set to one value.
-fn cfunArrayNewFilled(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArrayNewFilled(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 2);
     const count: usize = @intCast(try args_core.getNat(argv, 0));
     const x = if (argv.len == 2) argv[1] else wrap.fromNil();
@@ -431,19 +431,19 @@ fn cfunArrayNewFilled(argv: []repr.Value) align(corefn.alignment) raise.Raising(
 }
 
 /// `array/peek`: the last element, without modifying the array.
-fn cfunArrayPeek(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArrayPeek(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return peek(try args_core.getArray(argv, 0));
 }
 
 /// `array/pop`: the last element, removed.
-fn cfunArrayPop(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArrayPop(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return pop(try args_core.getArray(argv, 0));
 }
 
 /// `array/push`: every remaining argument appended.
-fn cfunArrayPush(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArrayPush(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const array = try args_core.getArray(argv, 0);
     if (std.math.maxInt(i32) - argv.len + 1 <= array.count) return raise.panic("array overflow");
@@ -460,7 +460,7 @@ fn cfunArrayPush(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
 }
 
 /// `array/remove`: up to `n` elements dropped from an index.
-fn cfunArrayRemove(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArrayRemove(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 3);
     const array = try args_core.getArray(argv, 0);
     var at = try args_core.getInteger(argv, 1);
@@ -486,7 +486,7 @@ fn cfunArrayRemove(argv: []repr.Value) align(corefn.alignment) raise.Raising(rep
 }
 
 /// `array/slice`: a new array over a half-open range of an array or tuple.
-fn cfunArraySlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArraySlice(argv: []repr.Value) raise.Raising(repr.Value) {
     const view = try args_core.getIndexed(argv, 0);
     const range = try args_core.getSlice(argv);
     const len: usize = @intCast(range.end - range.start);
@@ -497,7 +497,7 @@ fn cfunArraySlice(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 }
 
 /// `array/trim`: the backing capacity set to the current length.
-fn cfunArrayTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArrayTrim(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const array = try args_core.getArray(argv, 0);
     if (array.count != 0) {
@@ -514,7 +514,7 @@ fn cfunArrayTrim(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.
 }
 
 /// `array/weak`: `array/new` on the weak heap.
-fn cfunArrayWeak(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunArrayWeak(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const capacity = try args_core.getInteger(argv, 0);
     return wrap.fromArray(weak(if (capacity < 0) 0 else @intCast(capacity)));

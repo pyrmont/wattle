@@ -275,9 +275,8 @@ pub fn cframe(fiber: *Fiber, cfun: abi.CFunction) void {
 
     newframe.prevframe = oldframe;
     // The cfunction goes in the frame's `pc` slot, and a frame with a null
-    // `func` is what marks it a C frame. Function and data pointers are
-    // distinct kinds in Zig, so the reinterpretation goes through the address.
-    newframe.pc = @ptrFromInt(@intFromPtr(cfun));
+    // `func` is what marks it a C frame.
+    newframe.pc = .{ .cfunction = cfun };
     newframe.func = null;
     newframe.env = null;
     newframe.flags = .{};
@@ -835,7 +834,7 @@ fn funcframeBegin(fiber: *Fiber, func: *functions.Function) FrameBegin {
     fiber.stackstart = nextstacktop;
     const newframe = fiberFrame(fiber);
     newframe.prevframe = oldframe;
-    newframe.pc = def.bytecode;
+    newframe.pc = .{ .bytecode = def.bytecode };
     newframe.func = func;
     newframe.env = null;
     newframe.flags = .{};
@@ -924,7 +923,7 @@ fn funcframeTailFinish(
     // Point the frame at the new function.
     const frame = fiberFrame(fiber);
     frame.func = func;
-    frame.pc = def.bytecode;
+    frame.pc = .{ .bytecode = def.bytecode };
     frame.flags.tailcall = true;
 }
 

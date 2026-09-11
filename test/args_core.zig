@@ -811,8 +811,17 @@ fn thePredicatesAgreeWithTheGetters() void {
     expect(!args.checksize(wrap.fromNumber(0.5)));
     expect(args.checksize(wrap.fromNumber(0.0)));
     expect(args.checksize(wrap.fromNumber(1.0)));
-    expect(args.checksize(wrap.fromNumber(9007199254740992.0)));
-    expect(!args.checksize(wrap.fromNumber(9007199254740994.0)));
+    // The largest size and the first double past it, which is a different pair
+    // per pointer width: a 64-bit `size_t` exceeds 2^53, so the cap there is
+    // the last integer a double holds exactly, and a 32-bit one caps at
+    // `SIZE_MAX` itself.
+    if (@bitSizeOf(usize) == 64) {
+        expect(args.checksize(wrap.fromNumber(9007199254740992.0)));
+        expect(!args.checksize(wrap.fromNumber(9007199254740994.0)));
+    } else {
+        expect(args.checksize(wrap.fromNumber(4294967295.0)));
+        expect(!args.checksize(wrap.fromNumber(4294967296.0)));
+    }
 
     // `getInteger64` reaches `checkint64` only in a build without integer
     // types, so the predicate is asserted here: both ends of its range, the

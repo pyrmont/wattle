@@ -17,7 +17,7 @@ const Wide = struct {
     lane: f64 align(128),
 };
 
-fn make(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn make(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 0);
     const lanes = janet.alloc(Wide, 4) orelse return janet.panic("out of memory");
     janet.free(lanes);

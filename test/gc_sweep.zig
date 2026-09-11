@@ -96,8 +96,7 @@ var gc_size: usize = 0;
 /// naming them is not analysed elsewhere.
 ///
 /// `options` is the build's `Selection`, which names subsystems rather
-/// than features, so there is no `options.ev` to read.
-/// `ev_core` is set to `hasEv(options)` by `build.zig` and is therefore the
+/// than features. Its `ev` is set to `Config.ev` by `build.zig`, so it is the
 /// same condition spelled in the vocabulary this module has.
 const has_ev = options.ev;
 var order_len: usize = 0;

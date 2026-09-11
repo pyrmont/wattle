@@ -99,10 +99,6 @@ const in_module = config.native_module;
 /// cannot have this type and a C caller cannot invoke it. `abi.CFunction` is
 /// the C ABI's shape for the same pointer, and `cfunction` and `stored` are
 /// the casts between the two.
-///
-/// The alignment is not part of the type. It is a property of each definition,
-/// written at the `fn`, and Zig coerces an over-aligned function pointer to a
-/// plain one.
 pub const CFunction = module.CFunction;
 
 /// The one error a raise-capable function returns. This is `module.Error`,

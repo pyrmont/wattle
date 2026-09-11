@@ -202,10 +202,29 @@ types, dynamic modules or docstrings.
 ```sh
 zig build -Doptimize=ReleaseFast          # an optimized build
 zig build -Dtarget=aarch64-linux-musl     # cross-compile
+zig build -Dtarget=wasm32-wasi            # a WASI command-line build
 ```
 
 Cross-compilation needs no extra toolchain: Zig ships the C headers and linkers
 for every supported target.
+
+The WASI build needs no other flag: the target turns off the event loop, the
+FFI, networking, processes and dynamic modules, and builds single-threaded.
+Run it under any WASI host:
+
+```sh
+wasmtime run --dir . zig-out/bin/janet.wasm
+```
+
+A WASI program sees only the directories its host maps in, which is what
+`--dir` does, so a script and everything it reads have to be under one of them.
+The default `syspath` is `/usr/local/lib/janet`, so `import` needs that name
+mapped — `--dir <host-dir>::/usr/local/lib/janet` — or `JANET_PATH` set to a
+directory that is:
+
+```sh
+wasmtime run --dir . --env JANET_PATH=./lib zig-out/bin/janet.wasm script.janet
+```
 
 ### Supported platforms
 
@@ -215,7 +234,8 @@ for every supported target.
 | Linux, musl | built and fully tested; a musl target links statically |
 | Linux, glibc | built and tested in a container at each phase gate, not in CI |
 | Windows | cross-compiles; binaries have never been executed |
-| 32-bit (riscv32) | compiles only, and is the only target that type-checks the 32-bit paths |
+| wasm32-wasi | built and fully tested under wasmtime, without the event loop |
+| 32-bit (riscv32) | compiles only; wasm32-wasi is the 32-bit target that runs |
 
 `.github/workflows/test.yml` is what actually runs, and is the honest statement
 of what is covered.

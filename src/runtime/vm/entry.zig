@@ -350,7 +350,7 @@ pub fn continueNoCheck(fiber: *fibers.Fiber, in_init: repr.Value) Resumed {
     // Continue child fiber if it exists.
     if (fiber.child) |child| {
         if (vm_state.current().root_fiber == null) vm_state.current().root_fiber = fiber;
-        const instr = fiberFrame(fiber).pc.?[0];
+        const instr = fiberFrame(fiber).pc.bytecode.?[0];
         vm_state.current().stackn += 1;
         const resumed = continueFiber(child, in);
         const sig = resumed.signal;
@@ -476,7 +476,7 @@ pub fn step(fiber: *fibers.Fiber, in: repr.Value, out: *repr.Value) raise.Error!
     }
 
     // Get PC for setting breakpoints.
-    const pc: [*]u32 = fiberFrame(fiber).pc.?;
+    const pc: [*]u32 = fiberFrame(fiber).pc.bytecode.?;
 
     // Check current opcode (sans debug flag). This tells us where the next or
     // next two candidate instructions will be. Usually it's the next

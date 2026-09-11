@@ -491,11 +491,7 @@ fn theUnsafeGateOnTheContextApi() raise.Raising(void) {
 }
 
 /// A cfunction that exists to be a value with an address.
-///
-/// `align(corefn.alignment)` for `test/registry.zig`'s reason: nanbox-64 with
-/// a pointer shift steals the low bits of a cfunction pointer, and
-/// `-Dnanbox-pointer-shift=2` is a matrix entry.
-fn aCfunction(argv: []repr.Value) align(@import("subsystems").corefn.alignment) raise.Raising(repr.Value) {
+fn aCfunction(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(1729);

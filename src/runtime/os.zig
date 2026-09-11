@@ -63,9 +63,8 @@ const h = oa.h;
 
 /// The architecture name `os/arch` reports, derived from the target unless the
 /// build overrode it.
-const arch_name = if (builtin.os.tag == .emscripten)
-    "wasm"
-else switch (builtin.cpu.arch) {
+const arch_name = switch (builtin.cpu.arch) {
+    .wasm32, .wasm64 => "wasm",
     .x86_64 => "x64",
     .x86 => "x86",
     .aarch64 => "aarch64",
@@ -129,6 +128,7 @@ const os_name = switch (builtin.os.tag) {
     },
     .macos, .ios, .tvos, .watchos, .visionos => "macos",
     .emscripten => "web",
+    .wasi => "wasi",
     .linux => "linux",
     .hurd => "hurd",
     .freebsd => "freebsd",
@@ -722,7 +722,7 @@ fn selfEntries() []const corefn.Entry {
                 "skip cleanup code."),
             corefn.reg("os/which", &cfunWhich, @src(), "(os/which &opt test)", "Check the current operating system. If `test` is nil or unset, Returns one of:\n\n" ++
                 "* :windows\n\n* :mingw\n\n* :cygwin\n\n* :macos\n\n" ++
-                "* :web - Web assembly (emscripten)\n\n" ++
+                "* :web - Web assembly (emscripten)\n\n* :wasi - WebAssembly System Interface\n\n" ++
                 "* :linux\n\n* :hurd\n\n* :freebsd\n\n* :openbsd\n\n* :netbsd\n\n" ++
                 "* :dragonfly\n\n* :bsd\n\n" ++
                 "* :posix - A POSIX compatible system (default)\n\n" ++

@@ -484,8 +484,36 @@ pub fn tell(file: ?*FILE) i64 {
 }
 
 /// `tmpfile`.
+///
+/// WASI has no `tmpfile`, and wasi-libc declares `mkstemp` without defining
+/// it, so there the file is made here: a random name in the working directory,
+/// created with `O_EXCL` so that an existing file is refused rather than
+/// opened, and unlinked at once, so that, as with `tmpfile`, it is gone when
+/// the stream closes. The working directory, and not `$TMPDIR` or `/tmp`,
+/// because a WASI program sees only the directories its host maps in, and
+/// `wasmtime run --dir .` maps in that one.
 pub fn temp() ?*FILE {
-    return c.tmpfile();
+    if (builtin.os.tag == .wasi) {
+        const digits = "0123456789abcdefghijklmnopqrstuvwxyz";
+        var name = "janet-tmp-XXXXXXXX".*;
+        const suffix = name.len - 8;
+        var attempt: usize = 0;
+        while (attempt < 8) : (attempt += 1) {
+            var bytes: [8]u8 = undefined;
+            if (utils.cryptorand(&bytes, bytes.len) != 0) return null;
+            for (bytes, 0..) |byte, i| name[suffix + i] = digits[byte % digits.len];
+            const fd = std.c.open(&name, .{ .CREAT = true, .EXCL = true, .read = true, .write = true }, @as(c_uint, 0o600));
+            if (fd < 0) continue;
+            _ = c.unlink(&name);
+            return c.fdopen(fd, "w+") orelse {
+                _ = c.close(fd);
+                return null;
+            };
+        }
+        return null;
+    } else {
+        return c.tmpfile();
+    }
 }
 
 /// The stream of a file value the caller has already checked, with no test of
@@ -509,7 +537,7 @@ pub fn write(file: ?*FILE, src: [*]const u8, count: usize) i32 {
 /// `flush` and `eflush` differ only in the dynamic binding they read.
 fn Flush(comptime name: [:0]const u8, comptime handle: anytype) type {
     return struct {
-        fn cfun(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+        fn cfun(argv: []repr.Value) raise.Raising(repr.Value) {
             try args_core.fixarity(argv, 0);
 
             flusher(name.ptr, handle());
@@ -522,7 +550,7 @@ fn Flush(comptime name: [:0]const u8, comptime handle: anytype) type {
 /// they read and whether they end with a newline.
 fn Print(comptime newline: bool, comptime name: [:0]const u8, comptime handle: anytype) type {
     return struct {
-        fn cfun(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+        fn cfun(argv: []repr.Value) raise.Raising(repr.Value) {
             return print(argv, newline, name.ptr, handle());
         }
     };
@@ -531,7 +559,7 @@ fn Print(comptime newline: bool, comptime name: [:0]const u8, comptime handle: a
 /// `printf`, `prinf`, `eprintf` and `eprinf`, the same four differences.
 fn Printf(comptime newline: bool, comptime name: [:0]const u8, comptime handle: anytype) type {
     return struct {
-        fn cfun(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+        fn cfun(argv: []repr.Value) raise.Raising(repr.Value) {
             return printf(argv, newline, name.ptr, handle());
         }
     };
@@ -541,7 +569,7 @@ fn Printf(comptime newline: bool, comptime name: [:0]const u8, comptime handle: 
 /// and have no default handle to fall back on.
 fn XPrint(comptime newline: bool) type {
     return struct {
-        fn cfun(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+        fn cfun(argv: []repr.Value) raise.Raising(repr.Value) {
             try args_core.arity(argv, 1, -1);
             return printImplX(argv, newline, null, 1, argv[0]);
         }
@@ -551,7 +579,7 @@ fn XPrint(comptime newline: bool) type {
 /// `xprintf` and `xprinf`, the same again with a format string.
 fn XPrintf(comptime newline: bool) type {
     return struct {
-        fn cfun(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+        fn cfun(argv: []repr.Value) raise.Raising(repr.Value) {
             try args_core.arity(argv, 2, -1);
             return printfImplX(argv, newline, null, 1, argv[0]);
         }
@@ -559,7 +587,7 @@ fn XPrintf(comptime newline: bool) type {
 }
 
 /// `(file/close f)`.
-fn cfunFclose(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunFclose(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return wrap.fromNil();
@@ -573,7 +601,7 @@ fn cfunFclose(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
 }
 
 /// `(file/flush f)`.
-fn cfunFflush(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunFflush(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const iof = try getFile(argv, 0);
     try assertWriteable(iof);
@@ -582,7 +610,7 @@ fn cfunFflush(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
 }
 
 /// `(file/open path &opt mode buffer-size)`.
-fn cfunFopen(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunFopen(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
     const fname = try args_core.getString(argv, 0);
     var fmode: strings.String = undefined;
@@ -633,7 +661,7 @@ fn cfunFopen(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
 /// `readChunk` would leave `:line` giving back `nil` on a write-only file, and
 /// that `nil` is not an empty line: it is `getc` on a stream opened for
 /// writing, which C99 leaves undefined.
-fn cfunFread(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunFread(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 3);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -677,7 +705,7 @@ fn cfunFread(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
 }
 
 /// `(file/seek f whence &opt n)`.
-fn cfunFseek(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunFseek(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 2, 3);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -694,7 +722,7 @@ fn cfunFseek(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
 }
 
 /// `(file/tell f)`.
-fn cfunFtell(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunFtell(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -705,7 +733,7 @@ fn cfunFtell(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Valu
 
 /// `(file/write f & xs)`. Every argument is checked before any byte is
 /// written, so a bad argument leaves the file untouched.
-fn cfunFwrite(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunFwrite(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, -1);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -726,7 +754,7 @@ fn cfunFwrite(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
 }
 
 /// `(file/temp)`.
-fn cfunTemp(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunTemp(argv: []repr.Value) raise.Raising(repr.Value) {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_temp"}));
 
     try args_core.fixarity(argv, 0);
@@ -821,13 +849,19 @@ fn fileGet(_: *File, key: repr.Value) raise.Raising(?repr.Value) {
 /// Writes a live descriptor into the stream, which only an unsafe marshal may
 /// do. A closeable file is duplicated so that the marshalled copy owns its own
 /// descriptor; a borrowed file, `stdout` and its kin, is written as it stands.
+/// WASI has no `dup`, so there a closeable file raises.
 fn fileMarshal(iof: *File, m: *abi.Marshal) raise.Raising(void) {
     if (marsh.marshalFlags(m) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("cannot marshal file in safe mode");
     }
-    marsh.marshalAbstract(m, iof);
     const borrowed = iof.flags & file_not_closeable != 0;
-    const fno: c_int = if (windows)
+    if (builtin.os.tag == .wasi and !borrowed) {
+        return raise.panic("cannot marshal a closeable file on WASI");
+    }
+    marsh.marshalAbstract(m, iof);
+    const fno: c_int = if (builtin.os.tag == .wasi)
+        c.fileno(streamOf(iof))
+    else if (windows)
         (if (borrowed) c._fileno(streamOf(iof)) else c._dup(c._fileno(streamOf(iof))))
     else
         (if (borrowed) c.fileno(streamOf(iof)) else c.dup(c.fileno(streamOf(iof))));

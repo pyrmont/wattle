@@ -127,7 +127,7 @@ fn append(out: []u8, n: *usize, bytes: []const u8) janet.Error!void {
 /// This function raises if the arity is wrong, if slot 0 is not a string,
 /// symbol, keyword or buffer, if an option is unknown, or if the result does
 /// not fit in `limit` bytes.
-fn slug(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn slug(argv: []janet.Value) janet.Error!janet.Value {
     try janet.arity(argv, 1, 2);
     // A bytes view: a string, a symbol, a keyword or a buffer, read in place.
     // A buffer's bytes move on a push, so the view is used inside this call
@@ -168,7 +168,7 @@ fn slug(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// dictionary, if a key is not a keyword, if a value is neither a number nor
 /// text, if the result does not fit in `limit` bytes, or if the walk finds a
 /// different number of entries from `len`.
-fn query(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn query(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     var params = try janet.getDictionary(argv, 0);
 
@@ -217,7 +217,7 @@ fn query(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// This function raises if the arity is wrong, if slot 0 is not a string,
 /// symbol, keyword or buffer, if an index is present and is not a valid
 /// index, or if the result does not fit in `limit` bytes.
-fn cut(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn cut(argv: []janet.Value) janet.Error!janet.Value {
     try janet.arity(argv, 1, 3);
     const text = try janet.getBytes(argv, 0);
     // The length is this module's own, here the view's; a binding around a C
@@ -248,7 +248,7 @@ fn cut(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
 /// This function raises if the arity is wrong, if slot 0 is not a string,
 /// symbol, keyword or buffer, if there are more than thirty-two fields, or
 /// if a field has no `'='`.
-fn parseQuery(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn parseQuery(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const text = try janet.getBytes(argv, 0);
     if (text.len == 0) return janet.structOf(&.{});

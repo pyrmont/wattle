@@ -240,14 +240,14 @@ fn DivMethod(comptime T: type, comptime rem: bool, comptime on_zero: DivZero) ty
             acc.* = if (rem) @rem(acc.*, val) else @divTrunc(acc.*, val);
         }
 
-        fn call(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+        fn call(argv: []repr.Value) raise.Raising(repr.Value) {
             try args_core.arity(argv, 2, -1);
             var acc = try Box(T).unwrap(argv[0]);
             for (argv[1..]) |arg| try apply(&acc, try Box(T).unwrap(arg));
             return Box(T).make(acc);
         }
 
-        fn calli(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+        fn calli(argv: []repr.Value) raise.Raising(repr.Value) {
             try args_core.fixarity(argv, 2);
             var acc = try Box(T).unwrap(argv[1]);
             try apply(&acc, try Box(T).unwrap(argv[0]));
@@ -264,7 +264,7 @@ const DivZero = enum { panic, identity };
 /// Builds the one unary method, bitwise complement.
 fn NotMethod(comptime T: type) type {
     return struct {
-        fn call(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+        fn call(argv: []repr.Value) raise.Raising(repr.Value) {
             try args_core.fixarity(argv, 1);
             return Box(T).make(~try Box(T).unwrap(argv[0]));
         }
@@ -274,7 +274,7 @@ fn NotMethod(comptime T: type) type {
 /// Builds a variadic method that folds `op` left over its arguments.
 fn OpMethod(comptime T: type, comptime op: BinOp) type {
     return struct {
-        fn call(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+        fn call(argv: []repr.Value) raise.Raising(repr.Value) {
             try args_core.arity(argv, 2, -1);
             var acc: u64 = @bitCast(try Box(T).unwrap(argv[0]));
             for (argv[1..]) |arg| {
@@ -290,7 +290,7 @@ fn OpMethod(comptime T: type, comptime op: BinOp) type {
 /// fixed-arity where the plain form is variadic.
 fn OpMethodInvert(comptime T: type, comptime op: BinOp) type {
     return struct {
-        fn call(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+        fn call(argv: []repr.Value) raise.Raising(repr.Value) {
             try args_core.fixarity(argv, 2);
             const lhs: u64 = @bitCast(try Box(T).unwrap(argv[1]));
             const rhs: u64 = @bitCast(try Box(T).unwrap(argv[0]));
@@ -542,7 +542,7 @@ fn boxed(comptime T: type, at: *const abi.AbstractType, val: T) repr.Value {
 
 /// The `compare` method of `int/s64`, which orders a box against a number, an
 /// `int/s64` or an `int/u64`, and returns nil for anything else.
-fn cfunS64Compare(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunS64Compare(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     if (isInt(argv[0]) != .s64) {
         return raise.panic("compare method requires int/s64 as first argument");
@@ -569,7 +569,7 @@ fn cfunS64Compare(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 }
 
 /// `div`: floored division, refusing a zero divisor.
-fn cfunS64Divf(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunS64Divf(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const op1 = try unwrapS64(argv[0]);
     const op2 = try unwrapS64(argv[1]);
@@ -579,7 +579,7 @@ fn cfunS64Divf(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
 }
 
 /// `rdiv`: `div` with the operands swapped.
-fn cfunS64Divfi(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunS64Divfi(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const op2 = try unwrapS64(argv[0]);
     const op1 = try unwrapS64(argv[1]);
@@ -589,7 +589,7 @@ fn cfunS64Divfi(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.V
 }
 
 /// `mod`: floored modulo, which returns the dividend for a zero divisor.
-fn cfunS64Mod(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunS64Mod(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const op1 = try unwrapS64(argv[0]);
     const op2 = try unwrapS64(argv[1]);
@@ -598,7 +598,7 @@ fn cfunS64Mod(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Val
 }
 
 /// `rmod`: `mod` with the operands swapped.
-fn cfunS64Modi(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunS64Modi(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     const op2 = try unwrapS64(argv[0]);
     const op1 = try unwrapS64(argv[1]);
@@ -607,14 +607,14 @@ fn cfunS64Modi(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
 }
 
 /// `int/s64`: a boxed signed integer from a number, a string or another box.
-fn cfunS64New(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunS64New(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return wrapS64(try unwrapS64(argv[0]));
 }
 
 /// `int/to-bytes`: the eight bytes of a box, in a chosen order, appended to a
 /// buffer.
-fn cfunToBytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunToBytes(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.arity(argv, 1, 3);
     if (isInt(argv[0]) == .none) {
         return pp_format.panicf("int/to-bytes: expected an int/s64 or int/u64, got %q", .{argv[0]});
@@ -663,7 +663,7 @@ fn cfunToBytes(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Va
 /// The bound is `intmax_int64` and not `maxInt(i64)`: beyond it a double
 /// cannot tell neighbouring integers apart, so the conversion would silently
 /// round.
-fn cfunToNumber(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunToNumber(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     if (repr.typeOf(argv[0]) == repr.Tag.abstract) {
         const abst = wrap.toAbstract(argv[0]);
@@ -683,7 +683,7 @@ fn cfunToNumber(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.V
 }
 
 /// The `compare` method of `int/u64`, the unsigned twin of `cfunS64Compare`.
-fn cfunU64Compare(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunU64Compare(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 2);
     if (isInt(argv[0]) != .u64) {
         return raise.panic("compare method requires int/u64 as first argument");
@@ -710,7 +710,7 @@ fn cfunU64Compare(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr
 }
 
 /// `int/u64`: a boxed unsigned integer from a number, a string or another box.
-fn cfunU64New(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+fn cfunU64New(argv: []repr.Value) raise.Raising(repr.Value) {
     try args_core.fixarity(argv, 1);
     return wrapU64(try unwrapU64(argv[0]));
 }

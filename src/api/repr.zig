@@ -437,12 +437,16 @@ pub const nanbox64 = struct {
 
     /// Writes the pointer into the union, then shifts and tags the word.
     ///
-    /// Nothing here asserts the alignment. The shift discards the low
-    /// `pointer_shift` bits, so an unaligned pointer does not survive the
-    /// round trip. `runtime/registry.zig`'s `checkPointerAlign` is where the
-    /// alignment is checked, once per registered cfunction and abstract type
-    /// rather than on every wrap in the interpreter's path.
+    /// `p` must have its low `pointer_shift` bits clear, because the shift
+    /// discards them and `toPointer` does not restore them. When the shift is
+    /// nonzero, a Debug or ReleaseSafe build asserts this on every wrap.
+    /// `runtime/registry.zig`'s `checkPointerAlign` also checks each cfunction
+    /// and abstract type once, at registration, in every build mode.
     pub inline fn fromPointer(p: ?*anyopaque, tagmask: u64) Value {
+        if (pointer_shift != 0) {
+            const low_bits: usize = (@as(usize, 1) << pointer_shift) - 1;
+            std.debug.assert(@intFromPtr(p) & low_bits == 0);
+        }
         var ret: Value = undefined;
         ret.pointer = p;
         ret.u64 >>= pointer_shift;

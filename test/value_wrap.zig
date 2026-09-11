@@ -63,7 +63,6 @@ const abi = @import("abi");
 const arrays = @import("subsystems").value.arrays;
 const buffers = @import("subsystems").value.buffers;
 const config = @import("config");
-const corefn = @import("subsystems").corefn;
 const expect = @import("expect.zig").expect;
 
 const fibers = @import("subsystems").value.fibers;
@@ -115,10 +114,8 @@ fn sameValue(a: repr.Value, b: repr.Value) bool {
     return harness.u64Of(a) == harness.u64Of(b) and repr.typeOf(a) == repr.typeOf(b);
 }
 
-/// A cfunction to wrap. Its address is the only function pointer in the file,
-/// and under a pointer-shifted NaN-box it has to satisfy the same alignment
-/// every registered cfunction does, which is what `corefn.alignment` states.
-fn aCFunction(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+/// A cfunction to wrap. Its address is the only function pointer in the file.
+fn aCFunction(argv: []repr.Value) raise.Raising(repr.Value) {
     _ = @as(i32, @intCast(argv.len));
 
     return wrap.abi.fromNil();
@@ -130,10 +127,11 @@ fn theCFunction() abi.CFunction {
 }
 
 /// Sixteen-byte-aligned storage, so the addresses given to the pointer
-/// wrappers are legal under every value of `repr.pointer_shift`, which ranges
-/// up to 4. A shift discards low bits the wrapper never restores, so an
-/// under-aligned pointer would round trip on one target and not on another,
-/// which is a difference in the test rather than in the code.
+/// wrappers are legal under every value of `repr.pointer_shift`, which is at
+/// most 2 on aarch64 and 0 elsewhere. A shift discards low bits the wrapper
+/// never restores, so an under-aligned pointer would round trip on one target
+/// and not on another, which is a difference in the test rather than in the
+/// code.
 var block_a: [64]u8 align(16) = undefined;
 var block_b: [64]u8 align(16) = undefined;
 
@@ -207,9 +205,10 @@ fn eachWrapperStampsItsType() void {
 
 /// Every pointer wrapper round trips through its own unwrapper, for three
 /// addresses: two static blocks and one from the allocator, which is the only
-/// one the linker does not fix. All three are sixteen-byte aligned, which is
-/// what the pointer wrappers require, since a NaN-boxed 64-bit build discards
-/// the low bits on every target that nanboxes.
+/// one the linker does not fix. All three are sixteen-byte aligned, which
+/// covers what the pointer wrappers require: a NaN-boxed 64-bit build with a
+/// nonzero `repr.pointer_shift` discards that many low bits, and the shift is
+/// at most 2.
 fn pointerRoundTrips() void {
     const heap_block = utils.malloc(64);
     expect(heap_block != null);

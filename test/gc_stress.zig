@@ -83,10 +83,10 @@ var child_block_count: usize = 0;
 var child_finalized: i32 = 0;
 var child_saw_main_blocks: usize = 0;
 
-/// `options.ev` is `hasEv(options)`, which is already
-/// `ev and !single_threaded`. Windows is cross-compiled and never executed
-/// here, so its path is left out rather than written blind, on the same
-/// condition and for the same reason as `test/fiber_core.zig`.
+/// `options.ev` is `Config.ev`, which is already `ev and !single_threaded`.
+/// Windows is cross-compiled and never executed here, so its path is left out
+/// rather than written blind, on the same condition and for the same reason as
+/// `test/fiber_core.zig`.
 const has_threads = options.ev and builtin.os.tag != .windows;
 var parent_finalized: i32 = 0;
 var shared_abstract: ?*anyopaque = null;

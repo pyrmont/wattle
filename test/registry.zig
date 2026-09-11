@@ -49,7 +49,6 @@ const abstract_type = subsystems.abstract_type;
 const args_core = @import("subsystems").args;
 const arrays = @import("subsystems").value.arrays;
 const capi = @import("subsystems").capi;
-const corefn = @import("subsystems").corefn;
 const expect = @import("expect.zig").expect;
 const harness = @import("harness.zig");
 const raise = @import("subsystems").raise;
@@ -108,14 +107,9 @@ fn cstringIs(s: ?[*:0]const u8, expected: []const u8) bool {
 }
 
 /// A cfunction that exists only to be a registry key.
-///
-/// `align(corefn.alignment)` because registration checks it:
-/// `checkPointerAlign` refuses a cfunction pointer whose low bits the
-/// nanbox-64 pointer shift would steal, and `-Dnanbox-pointer-shift=2` is a
-/// matrix entry, so each probe is declared with `corefn.alignment`.
 fn Probe(comptime tag: i32) type {
     return struct {
-        fn run(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+        fn run(argv: []repr.Value) raise.Raising(repr.Value) {
             _ = @as(i32, @intCast(argv.len));
 
             return harness.wrapInteger(tag);

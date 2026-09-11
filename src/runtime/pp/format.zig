@@ -37,6 +37,7 @@ const abi = @import("abi");
 const args_core = @import("../args.zig");
 const buffers = @import("../value/buffers.zig");
 const c = @import("cabi");
+const config = @import("config");
 const host = @import("host");
 const io_core = @import("../io.zig");
 const pp_describe = @import("../pp.zig");
@@ -55,8 +56,15 @@ const wrap = @import("../value/helpers/wrap.zig");
 
 /// The page width and the recursion budget a pretty conversion is rendered
 /// with when its specifier gives no width or precision.
+///
+/// The budget is the build's native recursion guard, which is what every other
+/// recursion in the runtime spends -- the marshaller, the compiler and the PEG
+/// engine -- and which a wasm build lowers, its host's call stack being
+/// smaller than a native thread's. It was written here as a bare 1024, the
+/// guard's default, so on every build that does not set `-Drecursion-guard`
+/// this is the same number it always was.
 const columns_default: c_int = 80;
-const recursion_guard: c_int = 1024;
+const recursion_guard: c_int = config.recursion_guard;
 
 /// The flag characters a specifier may begin with. More flag characters than
 /// there are characters here means one of them was repeated.

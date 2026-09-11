@@ -39,7 +39,7 @@ const greeting_type = janet.define(Greeting, .{
 /// `argv` is empty, because this cfunction takes no arguments.
 ///
 /// This function raises if the arity is wrong.
-fn hello(argv: []janet.Value) align(janet.fn_align) janet.Error!janet.Value {
+fn hello(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 0);
     const g = janet.new(Greeting, &greeting_type, null);
     g.* = .{ .count = 1 };

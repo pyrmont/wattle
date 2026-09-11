@@ -82,13 +82,13 @@ fn compileFunction(source: [*:0]const u8) *functions.Function {
 fn frameOfFunction(frame: *vm_state.StackFrame, func: *functions.Function, pc_offset: i32) void {
     frame.* = std.mem.zeroes(vm_state.StackFrame);
     frame.func = func;
-    frame.pc = if (pc_offset < 0) null else func.def.?.bytecode.? + @as(usize, @intCast(pc_offset));
+    frame.pc = .{ .bytecode = if (pc_offset < 0) null else func.def.?.bytecode.? + @as(usize, @intCast(pc_offset)) };
 }
 
 fn frameOfCfunction(frame: *vm_state.StackFrame, cfun: abi.CFunction) void {
     frame.* = std.mem.zeroes(vm_state.StackFrame);
     frame.func = null;
-    frame.pc = @ptrFromInt(@intFromPtr(cfun));
+    frame.pc = .{ .cfunction = cfun };
 }
 
 /// Three cfunctions used only as registry keys. They are never called; what
