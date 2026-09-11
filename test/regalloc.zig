@@ -32,6 +32,7 @@ const regalloc = @import("subsystems").regalloc;
 /// The last of the eight temporaries, chosen because it is the one whose
 /// register number the allocator computes rather than assigns: 0xf3 is
 /// `JANETC_REGTEMP_3` counted down from the top of the 0xff range.
+const temp_0 = constants.RegisterTemp.t0;
 const temp_3 = constants.RegisterTemp.t3;
 
 // ==========================================================================
@@ -99,6 +100,16 @@ fn theTemporariesSitAboveTheOrdinaryRegisters() void {
 
     allocator.freeTemp(0xf3, temp_3);
     expect(allocator.regtemps == 0);
+
+    // The reserved block is not in the bitmap, so releasing a temporary that
+    // came from it releases nothing: 0xf0 is the first of those, and it stays
+    // taken. A register handed back here would be handed out again as an
+    // ordinary one and collide with the temporary still using it.
+    expect(check(&allocator, 0xf0));
+    expect(allocator.allocateTemp(temp_0) == 0xf0);
+    allocator.freeTemp(0xf0, temp_0);
+    expect(check(&allocator, 0xf0));
+    expect(allocator.allocate() != 0xf0);
 }
 
 // ==========================================================================

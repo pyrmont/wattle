@@ -1,5 +1,5 @@
 //! Behavioral contract for `bytecode.assembleValue`: an assembly source turned
-//! into a `functions.FuncDef`, and the eighteen ways it refuses.
+//! into a `functions.FuncDef`, and the twenty ways it refuses.
 //!
 //! `test/suite-asm.janet` runs nine assemblies and checks that they execute.
 //! What it cannot check is the *bytecode words*, a wrong operand encoding that
@@ -229,7 +229,7 @@ fn theSevenRunsOfAFuncdef() void {
     expect(closure.closureBits().len == 0);
 }
 
-/// The eighteen refusals, and their exact wording. See the header comment for
+/// The twenty refusals, and their exact wording. See the header comment for
 /// why the wording is the contract rather than an implementation detail.
 fn theRefusals() void {
     // A source map has to cover the bytecode exactly.
@@ -246,6 +246,14 @@ fn theRefusals() void {
 
     // The header fields.
     refused("'{:arity -1 :bytecode [(retn)]}", "arity must be non-negative, instruction 0");
+    refused(
+        "'{:arity 1 :max-arity 0 :bytecode [(retn)]}",
+        "max-arity must be greater than or equal to arity, instruction 0",
+    );
+    refused(
+        "'{:arity 1 :min-arity 2 :bytecode [(retn)]}",
+        "min-arity must be less than or equal to arity, instruction 0",
+    );
     refused(
         "'{:slots [0] :bytecode [(retn)]}",
         "slot names must be symbols or tuple of symbols, instruction 0",

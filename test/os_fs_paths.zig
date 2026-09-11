@@ -144,6 +144,7 @@ fn cleanPaths() void {
     _ = fs.hostRemove(other);
     _ = fs.hostRmdir(sub);
     _ = fs.hostRmdir(dir);
+    _ = fs.hostRemove(public_dir ++ "/empty");
     _ = fs.hostRemove(public_dir ++ "/link");
     _ = fs.hostRemove(public_dir ++ "/soft");
     _ = fs.hostRemove(public_dir ++ "/file");
@@ -295,6 +296,11 @@ fn theTimestamps() void {
     info = statOf(file);
     expect(info.get(.modified) == 1000000200);
 
+    // A time no `time_t` holds saturates rather than trapping. 2^63 is the
+    // edge: `maxInt(i64)` rounds to it as a double, and it is one more than an
+    // `i64` holds.
+    expect(fs.touch(file, true, 0x1p63, 0x1p63) == 0);
+
     // With no times the host supplies the current one.
     expect(fs.touch(file, false, 0, 0) == 0);
     info = statOf(file);
@@ -363,6 +369,14 @@ fn theCoreFunctions() void {
             \\(os/rm "janet-zig-os-paths-public-4f70/soft")
             \\(os/rm "janet-zig-os-paths-public-4f70/link")
         );
+
+        // macOS stores an empty target, where Linux refuses one, and it reads
+        // back as the empty string: a length of zero is not a failure.
+        if (builtin.os.tag == .macos) eval(
+            \\(os/symlink "" "janet-zig-os-paths-public-4f70/empty")
+            \\(assert (= "" (os/readlink "janet-zig-os-paths-public-4f70/empty")))
+            \\(os/rm "janet-zig-os-paths-public-4f70/empty")
+        );
     }
 
     // `os/touch` sets both times, defaults the modification time to the access
@@ -378,6 +392,18 @@ fn theCoreFunctions() void {
         \\(assert (= 1000000200 (stats :modified)))
         \\(os/touch "janet-zig-os-paths-public-4f70/file")
         \\(assert (> ((os/stat "janet-zig-os-paths-public-4f70/file") :modified) 1672531200))
+    );
+
+    // A time outside `time_t` is refused, at either bound and in either
+    // argument. 2^63 and its negation are the bounds as doubles.
+    eval(
+        \\(defn refused [& args] (in (protect (os/touch ;args)) 1))
+        \\(def f "janet-zig-os-paths-public-4f70/file")
+        \\(def edge (math/pow 2 63))
+        \\(assert (= "invalid argument to touch" (refused f edge)))
+        \\(assert (= "invalid argument to touch" (refused f (- edge))))
+        \\(assert (= "invalid argument to touch" (refused f 1000 edge)))
+        \\(assert (= "invalid argument to touch" (refused f edge 1000)))
     );
 
     if (config.realpath) {

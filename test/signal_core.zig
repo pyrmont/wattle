@@ -582,6 +582,15 @@ fn injectionReachesTheInnermostFiber(nothing: *functions.Function) void {
     grandchild.flags.resume_signal = false;
 }
 
+/// A signal set built from a literal holds the signals it names and no
+/// others. A fiber's trap set defaults to the empty set, and so does the
+/// `traps` field of every `FiberFlags` literal, the resume mask `runVm` clears
+/// on each entry among them.
+fn theEmptySignalSet() void {
+    expect(signal_core.SignalSet.none.bits() == 0);
+    expect((signal_core.SignalSet{ .yield = true }).bits() == 0b1000);
+}
+
 /// The injection and the resume that consumes it, end to end. This is what
 /// `ev/cancel` is built on, and it is the only check here that the carrier the
 /// injection writes is the one `run_vm` reads.
@@ -674,11 +683,11 @@ pub fn run() void {
     thePublicAbis();
     theSlotDiagnostics();
 
+    theEmptySignalSet();
     injectionReachesTheInnermostFiber(nothing);
     aContinueSignalDeliversAnError(yielder);
     aContinueSignalOfOkIsAnOrdinaryResume(yielder);
     anOutOfDomainSignalClamps(yielder);
 
     vm_lifecycle.deinit();
-    std.debug.print("signal core contract ok\n", .{});
 }

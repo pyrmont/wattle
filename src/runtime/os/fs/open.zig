@@ -122,8 +122,8 @@ pub fn cfunOpen(argv: []repr.Value) raise.Raising(repr.Value) {
 /// Reads the flag letters into the `open` flag word, asserting the sandbox
 /// permission each letter implies as it is reached.
 fn openPosix(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(c_int) {
-    var open_flags: c_int = h.O_NONBLOCK;
-    if (builtin.os.tag == .linux) open_flags |= h.O_CLOEXEC;
+    // Closed on exec, as every descriptor the runtime opens is.
+    var open_flags: c_int = h.O_NONBLOCK | h.O_CLOEXEC;
     var read_flag = false;
     var write_flag = false;
     var i: usize = 0;

@@ -40,6 +40,7 @@ const core_env = @import("subsystems").env;
 /// the compilation would have to read the report instead of the error.
 const describe = subsystems.pp_describe;
 const expect = @import("expect.zig").expect;
+const functions = @import("subsystems").value.functions;
 const gc_alloc = @import("subsystems").gc_alloc;
 const harness = @import("harness.zig");
 const repr = @import("repr");
@@ -257,6 +258,15 @@ fn theCfunctionsAndFunctions() !void {
     expect(b.count > 11);
     expect(std.mem.eql(u8, b.slice()[0..12], "<function 0x"));
     expect(b.slice()[@intCast(b.count - 1)] == '>');
+
+    // A function with no definition yet, which the unmarshaller holds while it
+    // reads the definition, prints as incomplete. The allocation is not
+    // zeroed, so the null is stored here as the unmarshaller stores it.
+    b.count = 0;
+    const incomplete = gc_alloc.gcallocWithPayload(functions.Function, .function, 0);
+    incomplete.def = null;
+    try describe.descriptionB(b, wrap.fromFunction(incomplete));
+    checkBuffer(b, "<incomplete function>");
 }
 
 fn thePointerDescriptionTruncatesItsTitle() !void {
@@ -312,5 +322,4 @@ pub fn run() void {
     body() catch @panic("pp_describe: a renderer raised unexpectedly");
 
     vm_lifecycle.deinit();
-    std.debug.print("pp describe contract ok\n", .{});
 }

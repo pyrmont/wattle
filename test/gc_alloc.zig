@@ -518,6 +518,20 @@ fn sreallocKeepsItsSlot() void {
     expect(harness.vm().scratch.items.len == base);
 }
 
+/// `scratch_heap` resizes in place to the block's own length or shorter, and
+/// refuses to grow in place, because `srealloc` may move the block.
+fn theScratchHeapResizesInPlaceOnlyDownward() void {
+    const base = harness.vm().scratch.items.len;
+    const block = gc_alloc.scratch_heap.alloc(u8, 32) catch unreachable;
+    expect(harness.vm().scratch.items.len == base + 1);
+    expect(gc_alloc.scratch_heap.resize(block, 32));
+    expect(gc_alloc.scratch_heap.resize(block, 16));
+    const shrunk: []u8 = block[0..16];
+    expect(!gc_alloc.scratch_heap.resize(shrunk, 64));
+    gc_alloc.scratch_heap.free(shrunk);
+    expect(harness.vm().scratch.items.len == base);
+}
+
 /// Freeing fills the vacated table slot from the top, the same way the root
 /// set does, and a null pointer is a no-op.
 fn sfreeSwapsFromTheTop() void {
@@ -653,6 +667,7 @@ pub fn run() void {
     smallocRegistersItsBlock();
     scallocZeroes();
     sreallocKeepsItsSlot();
+    theScratchHeapResizesInPlaceOnlyDownward();
     sfreeSwapsFromTheTop();
     aScratchFinalizerRunsOnce();
     theScratchTableGrows();

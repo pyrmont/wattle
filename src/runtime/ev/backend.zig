@@ -247,11 +247,13 @@ const Iocp = struct {
         var num_bytes_transferred: u32 = 0;
         var overlapped: ?*c.OVERLAPPED = null;
 
-        // Calculate how long to wait before timeout.
+        // Calculate how long to wait before timeout. The wait is a 32-bit
+        // count of milliseconds whose largest value is `INFINITE`, so a longer
+        // one waits the largest finite count and goes round again.
         var waittime: u32 = ev.INFINITE;
         if (has_timeout) {
             const now = ev.tsNow();
-            waittime = if (now > to) 0 else @intCast(to - now);
+            waittime = if (now > to) 0 else @intCast(@min(to - now, ev.INFINITE - 1));
         }
         const result = c.GetQueuedCompletionStatus(
             ev.iocpHandle(),
@@ -400,8 +402,8 @@ const Kqueue = struct {
     fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Raising(void) {
         // The interval is calculated per iteration. When it drops to zero or
         // below the timeout is zero; an infinite timeout would make other
-        // fibers miss theirs. `ev.kqueueInterval` is what keeps it at
-        // or above the minimum the platform accepts.
+        // fibers miss theirs. `ev.kqueueInterval` is what keeps it within
+        // the range the platform accepts.
         const b = &vm_state.current().ev.backend;
         var ts: std.c.timespec = undefined;
         var events: [max_events]Kevent = undefined;
@@ -433,7 +435,9 @@ const Kqueue = struct {
             const has_err = event.flags & @as(u16, @intCast(std.c.EV.ERROR)) != 0;
             const has_hup = event.flags & @as(u16, @intCast(std.c.EV.EOF)) != 0;
             // The walk takes the write fiber first, and both directions see
-            // an ERR and a HUP. A program can observe that order.
+            // an ERR and a HUP. A program can observe the order, and it is
+            // this backend's: `stepMasked`, which poll and epoll share, takes
+            // the read fiber first.
             for (0..2) |j| {
                 const f = (if (j != 0) s.read_fiber else s.write_fiber) orelse continue;
                 if (f.ev_callback != null and has_err) {
@@ -553,10 +557,13 @@ const Poll = struct {
 
         var ready: c_int = undefined;
         while (true) {
+            // The wait is an `int` of milliseconds, so a longer one waits the
+            // largest count and goes round again, as the completion port's
+            // does.
             var to: c_int = -1;
             if (has_timeout) {
                 const now = ev.tsNow();
-                to = if (now > timeout) 0 else @intCast(timeout - now);
+                to = if (now > timeout) 0 else @intCast(@min(timeout - now, std.math.maxInt(c_int)));
             }
             ready = std.c.poll(fds(), @intCast(b.stream_count + 1), to);
             if (!(ready == -1 and c.errno() == c.eintr)) break;

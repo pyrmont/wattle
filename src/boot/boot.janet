@@ -3042,7 +3042,7 @@
 # shared object, and it is here for the reason `.dll` is: the list is an
 # escape hatch for a path a user spelled out, and leaving out the one
 # extension a supported platform actually uses made it the one platform the
-# hatch did not cover. `DESIGN.md` section 12 records the change.
+# hatch did not cover.
 (module/add-file-extension ".so" :native)
 (module/add-file-extension ".dll" :native)
 (module/add-file-extension ".dylib" :native)

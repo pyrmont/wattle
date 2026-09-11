@@ -6,10 +6,9 @@ prevent.
 
 Two other documents have the rest. [`../DESIGN.md`](../DESIGN.md) has the
 decisions about what the language is: the value representation, the module
-interface, the pointer conventions, and section 12's two tables of every Janet
-behaviour this runtime examined, the behaviours it kept and the behaviours it
-changed. [`../test/README.md`](../test/README.md) has the test strategy and what
-a change owes before it is believed.
+interface, and the pointer conventions.
+[`../test/README.md`](../test/README.md) has the test strategy and what a change
+owes before it is believed.
 
 ## The rules that hold
 
@@ -169,7 +168,7 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root
   because `cabi` names the same six and a file of `root` cannot be imported by
   `cabi`. Every Janet aggregate lives with the operations over it instead,
   giving `tables.Table`, `fibers.Fiber`, `functions.FuncDef` and
-  `ev_stream.Stream`, which is `DESIGN.md` section 14.
+  `ev_stream.Stream`, which is `DESIGN.md` section 13.
 - `cabi` is the external declarations.
 - `options` is the `Selection` as comptime booleans, and `root.zig` is its only
   reader.

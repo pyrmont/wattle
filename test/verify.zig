@@ -242,10 +242,127 @@ fn theFiveTerminators() void {
 // Entry
 // ==========================================================================
 
+/// Every bound the validator applies, asserted at its edge.
+///
+/// The cases above reach each refusal with a value well past the limit, which
+/// says the check exists but not where it sits: a slot index of 9 against two
+/// slots is refused by `>= slot_count` and by `> slot_count` alike. The last
+/// value a bound accepts and the first it refuses are one apart, and that pair
+/// is what fixes it. Each block below is that pair.
+fn theBoundsAreCheckedAtTheirEdge() void {
+    var bytecode = [_]u32{ harness.op(constants.Opcode.return_nil), harness.op(constants.Opcode.return_nil) };
+    var definition = baseDefinition(&bytecode);
+    definition.arity = 0;
+    definition.slotcount = 2;
+    definition.bytecode_length = 2;
+
+    // The opcode table is indexed by the opcode, so the last row is
+    // `count - 1` and `count` itself is the first word with no shape.
+    bytecode[0] = @intCast(constants.Opcode.count - 1);
+    expect(verify.verify(&definition).number() != 3);
+    bytecode[0] = @intCast(constants.Opcode.count);
+    expect(verify.verify(&definition).number() == 3);
+
+    // JINT_S reads its slot from the upper twenty-four bits rather than from
+    // one byte, which is why it is the one shape `slotA` does not serve.
+    bytecode[0] = harness.op(constants.Opcode.@"return") | (@as(u32, 1) << 8);
+    expect(verify.verify(&definition).number() == 0);
+    bytecode[0] = harness.op(constants.Opcode.@"return") | (@as(u32, 2) << 8);
+    expect(verify.verify(&definition).number() == 4);
+
+    // JINT_ST, one slot and a type mask.
+    bytecode[0] = harness.op(constants.Opcode.typecheck) | (@as(u32, 1) << 8);
+    expect(verify.verify(&definition).number() == 0);
+    bytecode[0] = harness.op(constants.Opcode.typecheck) | (@as(u32, 2) << 8);
+    expect(verify.verify(&definition).number() == 4);
+
+    // JINT_L's displacement is added to the instruction's own index, so the
+    // first and last words of the function are the two edges. Instruction 0
+    // is a legal destination, which is what separates `< 0` from `<= 0`.
+    bytecode[0] = harness.op(constants.Opcode.jump);
+    expect(verify.verify(&definition).number() == 0);
+    bytecode[0] = harness.op(constants.Opcode.jump) | (@as(u32, 1) << 8);
+    expect(verify.verify(&definition).number() == 0);
+    bytecode[0] = harness.op(constants.Opcode.jump) | (@as(u32, 2) << 8);
+    expect(verify.verify(&definition).number() == 5);
+
+    // JINT_SS, both slots at the edge and each one alone, because a check
+    // written with `and` rather than `or` passes whenever either half is
+    // within range.
+    bytecode[0] = harness.op(constants.Opcode.move_far) | (@as(u32, 1) << 8) | (@as(u32, 1) << 16);
+    expect(verify.verify(&definition).number() == 0);
+    bytecode[0] = harness.op(constants.Opcode.move_far) | (@as(u32, 2) << 8) | (@as(u32, 1) << 16);
+    expect(verify.verify(&definition).number() == 4);
+    bytecode[0] = harness.op(constants.Opcode.move_far) | (@as(u32, 1) << 8) | (@as(u32, 2) << 16);
+    expect(verify.verify(&definition).number() == 4);
+
+    // JINT_SSI, whose third byte is an immediate and whose first two are the
+    // pair.
+    bytecode[0] = harness.op(constants.Opcode.add_immediate) | (@as(u32, 1) << 8) | (@as(u32, 1) << 16);
+    expect(verify.verify(&definition).number() == 0);
+    bytecode[0] = harness.op(constants.Opcode.add_immediate) | (@as(u32, 2) << 8) | (@as(u32, 1) << 16);
+    expect(verify.verify(&definition).number() == 4);
+    bytecode[0] = harness.op(constants.Opcode.add_immediate) | (@as(u32, 1) << 8) | (@as(u32, 2) << 16);
+    expect(verify.verify(&definition).number() == 4);
+
+    // JINT_SL checks the slot and then the displacement, so each is put at its
+    // own edge with the other in range.
+    bytecode[0] = harness.op(constants.Opcode.jump_if) | (@as(u32, 1) << 8) | (@as(u32, 1) << 16);
+    expect(verify.verify(&definition).number() == 0);
+    bytecode[0] = harness.op(constants.Opcode.jump_if) | (@as(u32, 2) << 8) | (@as(u32, 1) << 16);
+    expect(verify.verify(&definition).number() == 4);
+    bytecode[0] = harness.op(constants.Opcode.jump_if) | (@as(u32, 1) << 8) | (@as(u32, 2) << 16);
+    expect(verify.verify(&definition).number() == 5);
+
+    // JINT_SSS, three slots, each taken to the edge with the other two in
+    // range so that no one of the three disjuncts carries the refusal alone.
+    bytecode[0] = harness.op(constants.Opcode.add) | (@as(u32, 1) << 8) | (@as(u32, 1) << 16) | (@as(u32, 1) << 24);
+    expect(verify.verify(&definition).number() == 0);
+    bytecode[0] = harness.op(constants.Opcode.add) | (@as(u32, 2) << 8) | (@as(u32, 1) << 16) | (@as(u32, 1) << 24);
+    expect(verify.verify(&definition).number() == 4);
+    bytecode[0] = harness.op(constants.Opcode.add) | (@as(u32, 1) << 8) | (@as(u32, 2) << 16) | (@as(u32, 1) << 24);
+    expect(verify.verify(&definition).number() == 4);
+    bytecode[0] = harness.op(constants.Opcode.add) | (@as(u32, 1) << 8) | (@as(u32, 1) << 16) | (@as(u32, 2) << 24);
+    expect(verify.verify(&definition).number() == 4);
+
+    // JINT_SD, a slot and a child-funcdef index. `defs_length` is zero here,
+    // so index 0 is already one past the end and the slot is the only edge
+    // with a value below it.
+    definition.defs_length = 1;
+    bytecode[0] = harness.op(constants.Opcode.closure) | (@as(u32, 1) << 8) | (@as(u32, 0) << 16);
+    expect(verify.verify(&definition).number() == 0);
+    bytecode[0] = harness.op(constants.Opcode.closure) | (@as(u32, 2) << 8) | (@as(u32, 0) << 16);
+    expect(verify.verify(&definition).number() == 4);
+    bytecode[0] = harness.op(constants.Opcode.closure) | (@as(u32, 1) << 8) | (@as(u32, 1) << 16);
+    expect(verify.verify(&definition).number() == 6);
+    definition.defs_length = 0;
+
+    // JINT_SC, a slot and a constant index.
+    definition.constants_length = 1;
+    bytecode[0] = harness.op(constants.Opcode.load_constant) | (@as(u32, 1) << 8) | (@as(u32, 0) << 16);
+    expect(verify.verify(&definition).number() == 0);
+    bytecode[0] = harness.op(constants.Opcode.load_constant) | (@as(u32, 2) << 8) | (@as(u32, 0) << 16);
+    expect(verify.verify(&definition).number() == 4);
+    bytecode[0] = harness.op(constants.Opcode.load_constant) | (@as(u32, 1) << 8) | (@as(u32, 1) << 16);
+    expect(verify.verify(&definition).number() == 7);
+    definition.constants_length = 0;
+
+    // JINT_SES, a slot and an environment index.
+    definition.environments_length = 1;
+    bytecode[0] = harness.op(constants.Opcode.load_upvalue) | (@as(u32, 1) << 8) | (@as(u32, 0) << 16);
+    expect(verify.verify(&definition).number() == 0);
+    bytecode[0] = harness.op(constants.Opcode.load_upvalue) | (@as(u32, 2) << 8) | (@as(u32, 0) << 16);
+    expect(verify.verify(&definition).number() == 4);
+    bytecode[0] = harness.op(constants.Opcode.load_upvalue) | (@as(u32, 1) << 8) | (@as(u32, 1) << 16);
+    expect(verify.verify(&definition).number() == 8);
+    definition.environments_length = 0;
+}
+
 pub fn run() void {
     theRefusalsAreNumbered();
     everyRowIsAShape();
     theShapesDisagreeWhereTheyShould();
+    theBoundsAreCheckedAtTheirEdge();
     aBreakpointDoesNotChangeTheVerdict();
     theFiveTerminators();
 }

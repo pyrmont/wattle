@@ -79,9 +79,20 @@
 (assert (deep= (array/insert @[] 0) @[]) "array/insert nothing into an empty array")
 (assert (deep= (array/insert @[:a :b] 1) @[:a :b]) "array/insert nothing leaves the array alone")
 
+# Each insertion index outside [0, count] is refused, on both sides.
+(assert-error-value "array/insert past the end" "insertion index 3 out of range [0,2]"
+                    (array/insert @[1 2] 3 :x))
+(assert-error-value "array/insert before the start" "insertion index -1 out of range [0,2]"
+                    (array/insert @[1 2] -4 :x))
+
 # array/remove
 (assert-error "removal index 3 out of range [0,2]" (array/remove @[1 2] 3))
 (assert-error "expected non-negative integer for argument n, got -1" (array/remove @[1 2] 1 -1))
+(assert (deep= @[1 2] (array/remove @[1 2] 2)) "array/remove at the end removes nothing")
+(assert (deep= @[1 2 3] (array/remove @[1 2 3] 1 0)) "array/remove of zero elements")
+
+# array/push with nothing to push, onto an array with no payload
+(assert (deep= @[] (array/push (array/new 0))) "array/push of nothing onto an unallocated array")
 
 # array/pop
 (assert (= (array/pop @[1]) 1) "array/pop 1")
@@ -92,6 +103,16 @@
 (array/pop a1)
 (array/trim a1)
 (array/ensure @[1 1] 6 2)
+
+# array/trim keeps the elements of an array that is not empty.
+(def trimmed (array/new 10))
+(array/push trimmed 1 2)
+(array/trim trimmed)
+(assert (deep= @[1 2] trimmed) "array/trim keeps the elements")
+
+# array/ensure refuses a count or a growth below one, and takes one.
+(assert (deep= @[] (array/ensure (array/new 0) 1 2)) "array/ensure with a count of one")
+(assert (deep= @[] (array/ensure (array/new 0) 4 1)) "array/ensure with a growth of one")
 
 # array/join
 (assert (deep= @[1 2 3] (array/join @[] [1] [2] [3])) "array/join 1")

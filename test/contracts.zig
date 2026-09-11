@@ -200,7 +200,7 @@ pub fn main(init: std.process.Init) !u8 {
         // Resolve every name before running any, so an unknown one is a
         // usage error rather than a partial run: the contracts mutate global
         // runtime state, and half a sequence is not a result.
-        var chosen: [64]*const fn () void = undefined;
+        var chosen: [64]Contract = undefined;
         var count: usize = 0;
         for (arguments[1..]) |name| {
             if (count == chosen.len) {
@@ -209,7 +209,7 @@ pub fn main(init: std.process.Init) !u8 {
             }
             for (contracts) |contract| {
                 if (std.mem.eql(u8, contract.name, name)) {
-                    chosen[count] = contract.run;
+                    chosen[count] = contract;
                     count += 1;
                     break;
                 }
@@ -221,12 +221,12 @@ pub fn main(init: std.process.Init) !u8 {
                 return 2;
             }
         }
-        for (chosen[0..count]) |run| run();
+        for (chosen[0..count]) |contract| report(contract);
         pauseForLeakCheck();
         return 0;
     }
 
-    for (contracts) |contract| contract.run();
+    for (contracts) |contract| report(contract);
     pauseForLeakCheck();
     return 0;
 }
@@ -234,6 +234,18 @@ pub fn main(init: std.process.Init) !u8 {
 // ==========================================================================
 // Private functions
 // ==========================================================================
+
+/// Run one contract and print `<name> contract ok` for it.
+///
+/// The name is the one the command line spells, so a line names a contract
+/// this driver will run when given it back. A contract with a count to report
+/// prints it on a line of its own before this one. Nothing else in the
+/// driver's output holds `contract ok`, so counting those lines counts the
+/// contracts that finished.
+fn report(contract: Contract) void {
+    contract.run();
+    std.debug.print("{s} contract ok\n", .{contract.name});
+}
 
 /// Stop this process at the end of `main` when `JANET_CONTRACT_PAUSE` is set,
 /// so that `leaks <pid>` can scan a heap that is finished with.

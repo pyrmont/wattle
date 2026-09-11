@@ -1,6 +1,6 @@
 (import ./helper :prefix "")
 
-(start-suite 1)
+(start-suite)
 
 (def interop-values
   [nil true false (fiber/new (fn [] nil)) 42 1.5 "string" 'symbol :keyword
@@ -36,5 +36,23 @@
   (try (zig/fail "zig failed safely")
        ([err] err)))
 (assert (= "zig failed safely" zig-error))
+
+# The client's getline reads one line into the buffer it is given, prompt on
+# stderr, and leaves the buffer empty at the end of input.
+(compwhen (dyn 'os/spawn)
+  (def child
+    `(def b @"old")
+     (def r (getline "p> " b))
+     (prin (if (= r b) "same" "other") "|" b)
+     (prin "|" (getline "q> "))
+     (prin "|" (length (getline)))`)
+  (def p (os/spawn [(dyn *executable*) "-e" child] :p {:in :pipe :out :pipe :err :pipe}))
+  (:write (p :in) "hello\nworld\n")
+  (:close (p :in))
+  (def out (:read (p :out) :all))
+  (def err (:read (p :err) :all))
+  (assert (= 0 (os/proc-wait p)) "the getline child exits cleanly")
+  (assert (= "same|hello\n|world\n|0" (string out)) "getline reads a line at a time")
+  (assert (= "p> q> " (string err)) "and writes each prompt"))
 
 (end-suite)

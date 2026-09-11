@@ -51,6 +51,7 @@
 // ==========================================================================
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // ==========================================================================
 // Project imports
@@ -59,15 +60,19 @@ const std = @import("std");
 const abi = @import("abi");
 const buffers = @import("subsystems").value.buffers;
 const config = @import("config");
+const constants = @import("constants");
 const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
 const ffi_call = subsystems.ffi_call;
 const ffi_classify = subsystems.ffi_classify;
+const ffi_types = subsystems.ffi_types;
 const gc_alloc = @import("subsystems").gc_alloc;
+const gc_mark = @import("subsystems").gc_mark;
 const harness = @import("harness.zig");
 const repr = @import("repr");
 const subsystems = @import("subsystems");
 const tuples = @import("subsystems").value.tuples;
+const utils = @import("subsystems").utils;
 const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
@@ -431,6 +436,14 @@ fn theRaises() void {
     // The struct of inner arrays is the working spelling, and it is twelve.
     argv[0] = eval("@[[:u8 :u8 :u8 :u8] 3]");
     expect(wrap.toNumber(ffi_size(argv[0..1]) catch @panic("ffi_core: ffi/size raised")) == 12);
+    // An inner array of count zero is an array too.
+    argv[0] = eval("@[@[:u8] 3]");
+    expectRaisePrefix(ffi_size, .{argv[0..1]}, "nested array type ");
+
+    // `:none` has no trampoline, and naming it is refused rather than read as
+    // the default.
+    argv[0] = value.fromBytes("none", .keyword);
+    expectRaise(harness.core("ffi/trampoline"), .{argv[0..1]}, "calling convention not supported");
 
     // A raw pointer cannot become a cfunction. Every pointer this can be
     // given is a C function, and a cfunction here takes a `[]Value` over
@@ -589,6 +602,19 @@ fn hfa2Build(seed: f32) callconv(.c) Hfa2 {
     return .{ .a = seed, .b = seed + 1 };
 }
 
+/// An aggregate of one float, which travels in one vector register like the
+/// scalar it holds.
+const Hfa1 = extern struct { a: f32 };
+
+fn hfa1Twice(s: Hfa1) callconv(.c) f64 {
+    return @as(f64, s.a) * 2;
+}
+
+/// The double arrives in the register after the aggregate's two.
+fn hfa2ThenDouble(s: Hfa2, d: f64) callconv(.c) f64 {
+    return @as(f64, s.a) + @as(f64, s.b) * 2 + d * 4;
+}
+
 /// AAPCS64 passes a homogeneous floating-point aggregate in one vector
 /// register per member. Sizing it by bytes agrees with that only for a member
 /// exactly eight bytes wide, so an aggregate of `double` comes out right by
@@ -649,6 +675,49 @@ fn homogeneousFloatAggregates() void {
         expect(tuples.head(built).length == 2);
         expect(wrap.toNumber(built[0]) == 1.5);
         expect(wrap.toNumber(built[1]) == 2.5);
+    }
+
+    // One member is written straight into its register, with nothing to
+    // scatter.
+    {
+        var one = [_]repr.Value{value.fromBytes("float", .keyword)};
+        const hfa1 = ffi_struct(one[0..1]) catch @panic("ffi_core: ffi/struct raised");
+        var argtypes = [_]repr.Value{ value.fromBytes("default", .keyword), value.fromBytes("double", .keyword), hfa1 };
+        const sig = ffi_signature(argtypes[0..3]) catch @panic("ffi_core: ffi/signature raised");
+
+        const members = tuples.begin(1);
+        members[0] = wrap.fromNumber(1.5);
+        var args = [_]repr.Value{
+            wrap.fromPointer(@ptrCast(@constCast(&hfa1Twice))),
+            sig,
+            wrap.fromTuple(tuples.end(members)),
+        };
+        const answer = ffi_call_fn(args[0..3]) catch @panic("ffi_core: ffi/call raised");
+        expect(wrap.toNumber(answer) == 3);
+    }
+
+    // A scalar behind a two-float aggregate takes the third vector register,
+    // because the aggregate takes one per member.
+    {
+        var argtypes = [_]repr.Value{
+            value.fromBytes("default", .keyword),
+            value.fromBytes("double", .keyword),
+            hfa,
+            value.fromBytes("double", .keyword),
+        };
+        const sig = ffi_signature(argtypes[0..4]) catch @panic("ffi_core: ffi/signature raised");
+
+        const members = tuples.begin(2);
+        members[0] = wrap.fromNumber(1.5);
+        members[1] = wrap.fromNumber(2.5);
+        var args = [_]repr.Value{
+            wrap.fromPointer(@ptrCast(@constCast(&hfa2ThenDouble))),
+            sig,
+            wrap.fromTuple(tuples.end(members)),
+            wrap.fromNumber(10),
+        };
+        const answer = ffi_call_fn(args[0..4]) catch @panic("ffi_core: ffi/call raised");
+        expect(wrap.toNumber(answer) == 1.5 + 5 + 40);
     }
 }
 
@@ -795,6 +864,217 @@ fn anAggregateBehindAStackArgument() void {
     expect(wrap.toNumber(answer) == 285 + 748);
 }
 
+/// A pair of doubles, which SysV64 classifies as two vector halves.
+const Pair = extern struct { a: f64, b: f64 };
+
+fn sixThenPair(d0: f64, d1: f64, d2: f64, d3: f64, d4: f64, d5: f64, p: Pair) callconv(.c) f64 {
+    return d0 + d1 * 2 + d2 * 3 + d3 * 4 + d4 * 5 + d5 * 6 + p.a * 7 + p.b * 8;
+}
+
+/// Where the AMD64 ABI puts a pair that finds one vector register left: the
+/// seven doubles in the first seven, the last unused, and the pair's halves in
+/// the first two stack words. The parameters spell that out rather than take a
+/// `Pair`, because Zig 0.16 lowers a `Pair` in this position as its first half
+/// in the last vector register and its second on the stack, where a C
+/// compiler reads both from the stack.
+fn sevenThenPairOnTheStack(
+    d0: f64,
+    d1: f64,
+    d2: f64,
+    d3: f64,
+    d4: f64,
+    d5: f64,
+    d6: f64,
+    unused: f64,
+    a: f64,
+    b: f64,
+) callconv(.c) f64 {
+    _ = unused;
+    return d0 + d1 * 2 + d2 * 3 + d3 * 4 + d4 * 5 + d5 * 6 + d6 * 7 + a * 8 + b * 9;
+}
+
+/// Behind six doubles the pair takes the last two vector registers, and
+/// behind seven, with one left, it goes to the stack whole. `:sysv64` is
+/// refused where the target does not enable it, so these calls run on x86-64
+/// alone; `ffi_classify` asserts the placement on every target.
+fn aVectorPairWithOneRegisterLeft() void {
+    if (!supports("sysv64")) return;
+    const ffi_call_fn = harness.core("ffi/call");
+    const out = eval(
+        \\[(ffi/signature :sysv64 :double ;(array/new-filled 6 :double) [:double :double])
+        \\ (ffi/signature :sysv64 :double ;(array/new-filled 7 :double) [:double :double])
+        \\ [7 8]
+        \\ [8 9]]
+    );
+    gc_alloc.gcroot(out);
+    defer _ = gc_alloc.gcunroot(out);
+    const parts = wrap.toTuple(out);
+
+    var args: [10]repr.Value = undefined;
+    for (args[2..9], 1..) |*a, n| a.* = wrap.fromNumber(@floatFromInt(n));
+
+    args[0] = wrap.fromPointer(@ptrCast(@constCast(&sixThenPair)));
+    args[1] = parts[0];
+    args[8] = parts[2];
+    const six = ffi_call_fn(args[0..9]) catch @panic("ffi_core: ffi/call raised");
+    // 1 + 4 + ... + 36 is 91, and 7 * 7 + 8 * 8 is 113.
+    expect(wrap.toNumber(six) == 91 + 113);
+
+    args[0] = wrap.fromPointer(@ptrCast(@constCast(&sevenThenPairOnTheStack)));
+    args[1] = parts[1];
+    args[8] = wrap.fromNumber(7);
+    args[9] = parts[3];
+    const seven = ffi_call_fn(args[0..10]) catch @panic("ffi_core: ffi/call raised");
+    // 1 + 4 + ... + 49 is 140, and 8 * 8 + 9 * 9 is 145.
+    expect(wrap.toNumber(seven) == 140 + 145);
+}
+
+/// Whether this build can call through any convention, which is what a
+/// signature needs before it records its arguments' types.
+fn hasCallableConvention() bool {
+    return supports("aapcs64") or supports("sysv64") or supports("win64");
+}
+
+fn reachable(head: *abi.AbstractHead) bool {
+    return harness.gcBits(head.gc.flags) & constants.JANET_MEM_REACHABLE != 0;
+}
+
+fn unmark(head: *abi.AbstractHead) void {
+    head.gc.flags = @bitCast(harness.gcBits(head.gc.flags) & ~@as(u32, constants.JANET_MEM_REACHABLE));
+}
+
+/// A struct type and a signature each mark the struct types they hold. The
+/// inner struct is reachable only through the outer value, so its bit is set
+/// by the outer value's mark callback or not at all.
+fn theMarkCallbacksReachNestedStructs() void {
+    const outer = eval("(ffi/struct :u8 (ffi/struct :u8 :u32))");
+    gc_alloc.gcroot(outer);
+    defer _ = gc_alloc.gcunroot(outer);
+    const st: *ffi_types.Struct = @ptrCast(@alignCast(wrap.toAbstract(outer)));
+    const inner = utils.abstractHead(ffi_types.Struct.fields(st)[1].type.st);
+    expect(!reachable(inner));
+    gc_mark.mark(outer);
+    expect(reachable(inner));
+    unmark(inner);
+    unmark(utils.abstractHead(st));
+
+    // A `:none` signature records no argument types, so there is nothing for
+    // it to mark.
+    if (!hasCallableConvention()) return;
+    const sigv = eval("(ffi/signature :default :void :u8 (ffi/struct :u8 :u32))");
+    gc_alloc.gcroot(sigv);
+    defer _ = gc_alloc.gcunroot(sigv);
+    const sig: *ffi_types.Signature = @ptrCast(@alignCast(wrap.toAbstract(sigv)));
+    const held = utils.abstractHead(sig.args[1].type.st);
+    expect(!reachable(held));
+    gc_mark.mark(sigv);
+    expect(reachable(held));
+    unmark(held);
+    unmark(utils.abstractHead(sig));
+}
+
+/// AAPCS64 returns a struct wider than sixteen bytes through a buffer of 128
+/// bytes. 128 is described and 129 is refused, before any argument is
+/// decoded, so the refusal is the return's and not the bad argument's.
+fn theAapcs64ReturnBound() void {
+    if (!supports("aapcs64")) return;
+    const signature = harness.core("ffi/signature");
+    var argv: [3]repr.Value = undefined;
+    argv[0] = value.fromBytes("aapcs64", .keyword);
+
+    argv[1] = eval("[@[:u8 24]]");
+    const narrow = signature(argv[0..2]) catch @panic("ffi_core: a 24-byte return was refused");
+    expect(harness.isType(narrow, repr.Tag.abstract));
+
+    argv[1] = eval("[@[:u8 128]]");
+    const widest = signature(argv[0..2]) catch @panic("ffi_core: a 128-byte return was refused");
+    expect(harness.isType(widest, repr.Tag.abstract));
+
+    argv[1] = eval("[@[:u8 129]]");
+    argv[2] = value.fromBytes("nonesuch", .keyword);
+    expectRaise(signature, .{argv[0..3]}, "return value bigger than supported");
+}
+
+/// Sixty-four bytes, which AAPCS64 passes by reference.
+const Big64 = extern struct { w: [8]u64 };
+
+/// The scratch table's length while a callee below was running.
+var scratch_during: usize = 0;
+
+fn eightBig(a: Big64, b: Big64, c: Big64, d: Big64, e: Big64, f: Big64, g: Big64, h: Big64) callconv(.c) f64 {
+    scratch_during = harness.vm().scratch.items.len;
+    const total = a.w[7] + b.w[7] + c.w[7] + d.w[7] + e.w[7] + f.w[7] + g.w[7] + h.w[7];
+    return @floatFromInt(total);
+}
+
+fn nineBig(a: Big64, b: Big64, c: Big64, d: Big64, e: Big64, f: Big64, g: Big64, h: Big64, i: Big64) callconv(.c) f64 {
+    scratch_during = harness.vm().scratch.items.len;
+    const total = a.w[7] + b.w[7] + c.w[7] + d.w[7] + e.w[7] + f.w[7] + g.w[7] + h.w[7] + i.w[7];
+    return @floatFromInt(total);
+}
+
+/// A frame of up to 512 bytes is on the caller's stack and a larger one is a
+/// scratch block, released when the call returns. Eight 64-byte copies behind
+/// the eight general registers are exactly 512 bytes; a ninth puts its
+/// pointer on the stack and makes the frame 592.
+fn theFrameIsScratchOnlyPastTheInlineSize() void {
+    if (!supports("aapcs64")) return;
+    const ffi_call_fn = harness.core("ffi/call");
+    const out = eval(
+        \\(do
+        \\  (def big (ffi/struct ;(array/new-filled 8 :u64)))
+        \\  [(ffi/signature :aapcs64 :double ;(array/new-filled 8 big))
+        \\   (ffi/signature :aapcs64 :double ;(array/new-filled 9 big))
+        \\   (tuple ;(range 1 9))])
+    );
+    gc_alloc.gcroot(out);
+    defer _ = gc_alloc.gcunroot(out);
+    const parts = wrap.toTuple(out);
+
+    var args: [11]repr.Value = undefined;
+    for (args[2..]) |*a| a.* = parts[2];
+    const before = harness.vm().scratch.items.len;
+
+    args[0] = wrap.fromPointer(@ptrCast(@constCast(&eightBig)));
+    args[1] = parts[0];
+    const eight = ffi_call_fn(args[0..10]) catch @panic("ffi_core: ffi/call raised");
+    expect(wrap.toNumber(eight) == 64);
+    expect(scratch_during == before);
+    expect(harness.vm().scratch.items.len == before);
+
+    args[0] = wrap.fromPointer(@ptrCast(@constCast(&nineBig)));
+    args[1] = parts[1];
+    const nine = ffi_call_fn(args[0..11]) catch @panic("ffi_core: ffi/call raised");
+    expect(wrap.toNumber(nine) == 72);
+    expect(scratch_during == before + 1);
+    expect(harness.vm().scratch.items.len == before);
+}
+
+/// Apple lays a spilled aggregate at its own size, so twenty aggregates of
+/// four doubles need 72 words of stack: two fill the vector registers and
+/// eighteen follow at 32 bytes each. The ceiling is the top rung, 128.
+fn aSignatureOf72StackWordsIsDescribed() void {
+    if (!supports("aapcs64") or !builtin.os.tag.isDarwin()) return;
+    const sigv = eval("(ffi/signature :aapcs64 :void ;(array/new-filled 20 [:double :double :double :double]))");
+    const sig: *ffi_types.Signature = @ptrCast(@alignCast(wrap.toAbstract(sigv)));
+    expect(sig.arg_stack_words == 72);
+}
+
+/// An array of count zero takes no general register and writes nothing, so
+/// the `:s8` behind it arrives in the first.
+fn aZeroCountArrayArgumentWritesNothing() void {
+    if (!supports("aapcs64")) return;
+    const sig = eval("(ffi/signature :aapcs64 :double @[:u8 0] :s8)");
+    var args = [_]repr.Value{
+        wrap.fromPointer(@ptrCast(@constCast(&asS8))),
+        sig,
+        wrap.fromTuple(tuples.end(tuples.begin(0))),
+        wrap.fromNumber(-1),
+    };
+    const answer = harness.core("ffi/call")(args[0..4]) catch @panic("ffi_core: ffi/call raised");
+    expect(wrap.toNumber(answer) == -1);
+}
+
 // ==========================================================================
 // Entry
 // ==========================================================================
@@ -813,7 +1093,13 @@ pub fn run() void {
     homogeneousFloatAggregates();
     narrowIntegerArgumentsAreExtended();
     anAggregateBehindAStackArgument();
+    aVectorPairWithOneRegisterLeft();
+    theMarkCallbacksReachNestedStructs();
+    theAapcs64ReturnBound();
+    theFrameIsScratchOnlyPastTheInlineSize();
+    aSignatureOf72StackWordsIsDescribed();
+    aZeroCountArrayArgumentWritesNothing();
 
-    std.debug.print("ffi_core contract ok ({d} raises)\n", .{raises_seen});
+    std.debug.print("ffi_core raises: {d}\n", .{raises_seen});
     vm_lifecycle.deinit();
 }

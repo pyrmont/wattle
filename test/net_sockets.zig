@@ -556,5 +556,5 @@ pub fn run() void {
     theUnboundSocket();
 
     expect(raises_seen == expected_raises);
-    std.debug.print("net_sockets contract ok ({d} raises)\n", .{raises_seen});
+    std.debug.print("net_sockets raises: {d}\n", .{raises_seen});
 }

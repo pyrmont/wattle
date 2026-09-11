@@ -50,6 +50,7 @@ const std = @import("std");
 // Project imports
 // ==========================================================================
 
+const config = @import("config");
 const ev_core = subsystems.ev;
 const expect = @import("expect.zig").expect;
 const subsystems = @import("subsystems");
@@ -171,6 +172,32 @@ fn theHeadPushWraps() void {
     expect(out == 99);
     expect(q.pop(&out) == 0);
     expect(out == 0);
+}
+
+/// A head push from head one lands on zero, which is a valid index. The wrap
+/// belongs to the negative newhead alone, and adding the capacity to a newhead
+/// of zero puts the head one past the buffer.
+fn theHeadPushLandsOnZero() void {
+    var q: ev_core.Queue(i32) = undefined;
+    q.init();
+    defer q.deinit();
+
+    expect(q.push(1) == 0);
+    expect(q.push(2) == 0);
+
+    var out: i32 = -1;
+    expect(q.pop(&out) == 0);
+    expect(out == 1);
+    expect(q.head == 1);
+
+    expect(q.pushHead(7) == 0);
+    expect(q.head == 0);
+    expect(q.count() == 2);
+
+    expect(q.pop(&out) == 0);
+    expect(out == 7);
+    expect(q.pop(&out) == 0);
+    expect(out == 2);
 }
 
 /// Items larger than a machine word: the element type is what sizes the
@@ -402,10 +429,26 @@ fn theParts() void {
 fn theKqueueInterval() void {
     expect(ev_core.kqueueInterval(0) == 0);
     expect(ev_core.kqueueInterval(5) == 5);
-    expect(ev_core.kqueueInterval(std.math.maxInt(i64)) == std.math.maxInt(i64));
+    // A deadline further out than `kevent` accepts clamps to the ceiling,
+    // 2147483647 seconds in milliseconds, and the ceiling itself is kept.
+    const ceiling: i64 = 2147483647 * 1000;
+    expect(ev_core.kqueueInterval(ceiling) == ceiling);
+    expect(ev_core.kqueueInterval(ceiling + 1) == ceiling);
+    expect(ev_core.kqueueInterval(std.math.maxInt(i64)) == ceiling);
     // A deadline already in the past clamps to the minimum.
     expect(ev_core.kqueueInterval(-1) == 0);
     expect(ev_core.kqueueInterval(std.math.minInt(i64)) == 0);
+}
+
+/// `has_interrupt` is what `ev/deadline` reads before it starts a timer
+/// thread, and it is the one decision in this file no Janet program can put a
+/// value on: a build without the interrupt refuses the request, a build with
+/// it grants it, and `test/suite-ev.janet` accepts either because it cannot
+/// tell which build it is running on. The oracle is the build option itself
+/// rather than `constants.zig`'s restatement of it, so the two derivations are
+/// written independently.
+fn theInterruptFlagFollowsTheBuild() void {
+    expect(ev_core.has_interrupt == config.interpreter_interrupt);
 }
 
 // ==========================================================================
@@ -418,6 +461,7 @@ pub fn run() void {
     theHeadPushReversesTheOrder();
     theQueueWrapsAndResizes();
     theHeadPushWraps();
+    theHeadPushLandsOnZero();
     theQueueCarriesLargeItems();
     theQueueKeepsASpareSlot();
 
@@ -430,6 +474,5 @@ pub fn run() void {
     theDelta();
     theParts();
     theKqueueInterval();
-
-    std.debug.print("ev_core contract ok\n", .{});
+    theInterruptFlagFollowsTheBuild();
 }

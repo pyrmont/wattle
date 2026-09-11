@@ -44,11 +44,25 @@
 # process we started, and kill them leaves-first.
 
 (defn- process-table
-  "Every (pid ppid) pair on the host, as a table of pid -> ppid."
+  "Every (pid ppid) pair on the host, as a table of pid -> ppid.
+
+  Both pipes are drained and the wait is bounded, for the reason `sh` states
+  below: a command that fills one pipe while nothing reads the other deadlocks.
+  This one read `:out` alone and had no deadline, and it runs only from
+  `kill-tree`, which runs only when a bound has already been exceeded. An
+  unbounded wait there turns a run that was over its bound by a second into one
+  that never returns. Answering an empty table loses the descendants and kills
+  the immediate child alone, which is better than not returning."
   []
   (def out @"")
+  (def err @"")
   (def p (os/spawn ["ps" "-Ao" "pid,ppid"] :p {:out :pipe :err :pipe}))
-  (ev/gather (ev/read (p :out) :all out) (os/proc-wait p))
+  (try
+    (ev/with-deadline 10
+      (ev/gather (ev/read (p :out) :all out)
+                 (ev/read (p :err) :all err)
+                 (os/proc-wait p)))
+    ([_] (protect (os/proc-kill p))))
   (def table @{})
   (each line (string/split "\n" (string out))
     (def fields (filter |(not (empty? $)) (string/split " " (string/trim line))))
@@ -124,7 +138,10 @@
       # short bound of their own rather than the command's.
       (try (ev/with-deadline 10 (ev/take done)) ([_] nil))
       (try (ev/with-deadline 10 (ev/cancel readers "timed out")) ([_] nil))))
-  (protect (os/proc-close p))
+  # Bounded for the same reason as the two waits above: this is the last step
+  # of a path that only runs when a bound was already exceeded, and it is the
+  # one step of it that had no bound of its own.
+  (try (ev/with-deadline 10 (protect (os/proc-close p))) ([_] nil))
   {:out (string out) :err (string err) :code code :timeout timed-out})
 
 (defn ok?

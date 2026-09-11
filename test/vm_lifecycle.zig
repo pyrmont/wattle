@@ -687,5 +687,4 @@ fn body() raise.Raising(void) {
 
 pub fn run() void {
     body() catch @panic("vm_lifecycle: an operation raised unexpectedly");
-    std.debug.print("vm lifecycle contract ok\n", .{});
 }

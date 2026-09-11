@@ -302,4 +302,205 @@
                @[(< 1) (> 1) (<= 1) (>= 1) (= 1) (not= 1)])
         "a comparison of fewer than two values")
 
+(defn check-compile-message
+  [code expected note]
+  (def compiled (compile code (curenv) "suite-compile.janet"))
+  (assert (and (table? compiled) (string/find expected (get compiled :error "")))
+          note))
+
+(defn check-lint-message
+  [code expected note]
+  (def lints @[])
+  (def compiled (compile code (curenv) "suite-compile.janet" lints))
+  (assert (and (function? compiled)
+               (some |(string/find expected (in $ 3)) lints))
+          note))
+
+# A position of zero is a position. `tuple/setmap` is the only way to write
+# one, since the parser counts lines from one, and the compiler reports a
+# line only above zero. The inner form carries zero and the outer form seven,
+# so a compiler that skipped the inner map would report the outer position.
+(def zero-mapped-inner (tuple/setmap (tuple 'no-such-symbol-at-all) 0 0))
+(def zero-mapped (tuple/setmap (tuple 'do zero-mapped-inner) 7 3))
+(def zero-mapped-error (compile zero-mapped (curenv) "lint-src"))
+(assert (and (nil? (get zero-mapped-error :line))
+             (nil? (get zero-mapped-error :column)))
+        "a compile error at line and column zero reports no position")
+
+# The arity a macro refuses, at both ends of the range.
+(def macro-arity-env (make-env))
+(eval '(defmacro zero-arg-macro [] 1) macro-arity-env)
+(eval '(defmacro two-arg-macro [_a _b] 1) macro-arity-env)
+(assert (string/find "at most 0"
+                     (get (compile '(zero-arg-macro 1) macro-arity-env "s") :error ""))
+        "a macro with no parameters refuses one argument")
+(assert (string/find "at least 2"
+                     (get (compile '(two-arg-macro 1) macro-arity-env "s") :error ""))
+        "a macro of two parameters refuses one argument")
+
+# A function that takes no arguments, called with one, written both ways: a
+# count the compiler knows exactly and a count it knows only a floor for.
+(defn zero-arg-fn [] 1)
+(defn one-arg-fn [_x] 1)
+(check-compile-message '(zero-arg-fn 1) "at most 0 arguments, got 1"
+                       "a function of no parameters refuses one argument")
+(check-compile-message '(zero-arg-fn 1 ;[]) "at most 0 arguments, got at least 1"
+                       "a function of no parameters refuses one spliced argument")
+(check-good-compile '(one-arg-fn 1 ;[]) "a spliced call at exactly the maximum")
+(def callable-struct {:a 1})
+(check-good-compile '(callable-struct :a ;[]) "a struct called with a key and a splice")
+
+# A named argument is matched against the function's named keywords, which are
+# the first of its constants. A keyword that is a constant for another reason
+# is still not a named argument.
+(defn fnamed6 [&named a b c] [a b c :d])
+(check-lint-compile '(fnamed6 :d 1) "named 6 a constant keyword is not a named argument")
+(check-good-compile '(fnamed (keyword "x") 1) "named a computed key is not linted")
+
+# An underscore names a binding whose disuse is deliberate, in an inner scope
+# as well as at the top.
+(check-good-compile '(fn [] (def _unused 1) nil)
+                    "an underscore binding is not linted as unused")
+(check-lint-message '(fn [] (def used-nowhere 1) nil) "is unused"
+                    "an ordinary unused binding is linted")
+
+# A `:macro` tag binds nothing outside the top scope, and says so.
+(check-lint-message '(fn [] (def inner-macro :macro 1) inner-macro)
+                    "macro tag is ignored in inner scopes"
+                    "a macro tag in an inner scope is linted")
+
+# The three ways a `&` in a destructuring pattern is malformed, each with the
+# text that names what was found.
+(check-compile-message '(def [amp-a &] [1])
+                       "expected symbol following '& in destructuring pattern"
+                       "& is the last element of a pattern")
+(check-compile-message '(def [amp-b & amp-c amp-d] [1 2 3])
+                       "found [amp-c amp-d]"
+                       "& is followed by two symbols")
+(check-compile-message '(def [amp-e & 3] [1 2])
+                       "found 3"
+                       "& is followed by a value")
+
+# The parameter list a function literal refuses.
+(check-compile-message '(fn named-with-no-parameters) "expected function parameters"
+                       "a named function literal needs a parameter list")
+(check-compile-message '(fn [& &] 1) "& in unexpected location"
+                       "two ampersands in one parameter list")
+(check-compile-message '(fn [&keys ks-a ks-b] 1) "&keys in unexpected location"
+                       "&keys is second from last or nowhere")
+(check-compile-message '(fn [ks-c &keys &] 1) "& in unexpected location"
+                       "& after &keys")
+
+# Two destructured parameters, which is what walks the collected slot vector
+# more than once.
+(assert (deep= [1 2 3 4] ((fn [[da db] [dc dd]] [da db dc dd]) [1 2] [3 4]))
+        "two destructured parameters")
+
+# A parameter may carry the function's own name, and then it is the parameter
+# the body sees.
+(assert (= 5 ((fn self-named [self-named] self-named) 5))
+        "a parameter shadows the self reference")
+
+# `(= x nil)` and `(not= x nil)` become a nil test, and a constant one folds to
+# the arm that would have run. All four combinations, because the fold picks
+# the arm from the opcode and the constant together.
+(assert (= :b (eval ~(if (,not= nil nil) :a :b))) "a folded (not= nil nil)")
+(assert (= :a (eval ~(if (,= nil nil) :a :b))) "a folded (= nil nil)")
+(assert (= :b (eval ~(if (,= 1 nil) :a :b))) "a folded (= 1 nil)")
+(assert (= :a (eval ~(if (,not= 1 nil) :a :b))) "a folded (not= 1 nil)")
+
+# The same fold in `while`, which decides whether the loop is entered at all.
+(assert (= 0 (eval ~(do (var n 0) (while (,= 1 nil) (++ n) (break)) n)))
+        "a while whose folded nil test is false never runs")
+(assert (= 1 (eval ~(do (var n 0) (while (,not= false nil) (++ n) (break)) n)))
+        "a while whose folded nil test is true runs once")
+
+# `set` through a tuple l-value gives back the value it stored.
+(def set-target @{})
+(assert (= 5 (set (set-target :k) 5)) "set through an l-value gives back the value")
+
+# A `def` that aliases another binding's slot stays immutable.
+(check-compile-message '(fn [] (def alias-a 1) (def alias-b alias-a) (set alias-b 2))
+                       "cannot set constant"
+                       "an aliased def is not mutable")
+
+# A pattern longer than the value it destructures binds the surplus to nil.
+(assert (nil? (eval '(do (def [pat-a pat-b pat-c] [1 2]) pat-c)))
+        "a pattern longer than its value")
+
+# `(unquote)` with nothing to unquote is a one-element tuple and quotes as one.
+(assert (deep= ['unquote] (eval '(quasiquote (unquote))))
+        "an unquote with no operand")
+
+# Metadata that is not a keyword, string or struct names the binding it was
+# written on.
+(check-compile-message '(def meta-named @[] 1) "to binding meta-named"
+                       "a metadata error names its binding")
+
+# Metadata is read when the binding carries any, and `:unused` is what says a
+# binding is meant to go unread.
+(check-good-compile '(fn [] (def marked :unused 1) 2)
+                    "an unused binding marked :unused is not linted")
+
+# A binding redefined in an environment that allows it keeps the reference
+# cell the first one made, so a closure over the old name reads the new value.
+(def redef-env (make-env))
+(put redef-env :redef true)
+(eval '(var redef-counter 1) redef-env)
+(def redef-reader (eval '(fn [] redef-counter) redef-env))
+(eval '(var redef-counter 2) redef-env)
+(assert (= 2 (redef-reader)) "a redefined var keeps its reference cell")
+
+# A destructuring pattern indexes each element with an eight-bit operand
+# while the index fits in one, and with a constant key past that. 257
+# elements is one more than fits.
+(def wide-pattern
+  (string "(def [" (string/join (map |(string "wide" $) (range 257)) " ") "] (range 257))"))
+(assert (function? (compile (parse wide-pattern) (make-env) "suite-compile.janet"))
+        "a destructuring pattern of 257 elements")
+
+# `set` through a tuple l-value gives back the value it stored, computed as
+# well as constant.
+(defn set-side [] 7)
+(def set-computed @{})
+(assert (= 7 (set (set-computed :k) (set-side)))
+        "set through an l-value gives back a computed value")
+
+# What a binding shadows decides the message, and a macro is one of the
+# things it can shadow.
+(eval '(defmacro shadowed-macro [] 1))
+(check-lint-message '(fn [] (def shadowed-macro 1) shadowed-macro)
+                    "is shadowing a macro"
+                    "shadowing a macro is named as one")
+
+# A splice among the arguments makes the count a floor rather than a total,
+# and the arity message says which of the two it is.
+(defn two-arg-only [_x _y] 1)
+(check-compile-message '(fn [a b c] (two-arg-only a b ;[] c))
+                       "got at least 3"
+                       "a spliced call reports a floor")
+(check-compile-message '(fn [a b c] (two-arg-only a b c))
+                       "got 3"
+                       "an ordinary call reports a total")
+
+# A dictionary literal takes a splice in place of a key and a value pair, so
+# its keys and values are compiled with splices accepted. The reader counts a
+# splice as one item, so two of them are what an even count looks like here.
+(assert (deep= {:a 1 :b 2} ((fn [x y] {;x ;y}) [:a 1] [:b 2]))
+        "a dictionary literal built from two splices")
+
+# A while body that makes a closure is compiled as a function called once per
+# iteration, and a while body inside another one is compiled the same way.
+(assert (deep= @[2 2 2 2]
+               (eval '(do (def made @[])
+                          (var outer 0)
+                          (while (< outer 2)
+                            (var inner 0)
+                            (while (< inner 2)
+                              (array/push made (fn [] inner))
+                              (++ inner))
+                            (++ outer))
+                          (map |($) made))))
+        "closures made in a nested while body")
+
 (end-suite)

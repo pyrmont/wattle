@@ -1079,6 +1079,15 @@ fn imageCoreEnv(replacements: ?*tables.Table) raise.Raising(*tables.Table) {
     const env = wrap.toTable(marsh_out);
     vm_state.current().core_env = env;
 
+    // The image is emitted by `janet-boot`, which is built for the build host,
+    // so a value it holds is the host's. `janet/config-bits` is the one
+    // binding whose value can differ between the two, through the NaN-box
+    // pointer shift, so its value is this compilation's word.
+    const bits = tables.get(env, wrap.fromSymbol(symbols.csymbol("janet/config-bits")));
+    if (repr.checkType(bits, repr.Tag.table)) {
+        tables.put(wrap.toTable(bits), value.fromBytes("value", .keyword), wrap.fromInteger(constants.JANET_CURRENT_CONFIG_BITS));
+    }
+
     // Invert the image dict here rather than in `boot.janet`, where it would
     // break deterministic builds.
     const lidv = registry.resolve(env, symbols.csymbol("load-image-dict")).value;

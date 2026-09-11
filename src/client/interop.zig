@@ -124,8 +124,8 @@ pub fn register(env: *tables.Table, err: ?*repr.Value) bool {
 
 /// Stores the process's `Io` for `readline`.
 ///
-/// `io` is the `Io` `std.process.Init` supplies. `cli.zig`'s `main` calls this
-/// first, before any other function here runs.
+/// `io` is the `Io` `cli.zig`'s `main` builds. `main` calls this first, before
+/// any other function here runs.
 pub fn setIo(io: std.Io) void {
     process_io = io;
 }

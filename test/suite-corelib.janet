@@ -279,6 +279,10 @@
 (assert (= (string (module/expand-path "a/b/." ":all:")) "a/b/") "expand-path drops a trailing dot")
 (assert (= (string (module/expand-path "." ":all:")) "") "expand-path drops a lone dot")
 (assert (= (string (module/expand-path ".." ":all:")) "..") "expand-path keeps a lone dot-dot")
+# After a segment is dropped the output is shorter than the input, so a kept
+# trailing dot-dot is written over bytes that held something else.
+(assert (= (string (module/expand-path "./.." ":all:")) "..") "expand-path keeps a dot-dot after a dropped dot")
+(assert (= (string (module/expand-path "a/../.." ":all:")) "..") "expand-path keeps a dot-dot after an applied one")
 (assert (= (string (module/expand-path "/a/b/.." ":all:")) "/a/") "expand-path applies a trailing dot-dot under a root")
 (assert (= (string (module/expand-path "a/b/../.." ":all:")) "") "expand-path applies two trailing dot-dots")
 (assert (= (string (module/expand-path "a/b/../../" ":all:")) "") "expand-path applies two closed dot-dots")
@@ -354,6 +358,11 @@
 
 # gcsetinterval is capped at 48 bits on a 64-bit build
 (assert-error-value "gcsetinterval cap" "interval too large" (gcsetinterval 0x1000000000000))
+# 2^64 is the double the largest size rounds to on a 64-bit build, and it is
+# refused as an argument like every other value too large for a size.
+(assert-error-value "gcsetinterval at 2^64"
+                    "bad slot #0, expected size, got 1.84467440737096e+19"
+                    (gcsetinterval (math/pow 2 64)))
 # The value is not read back: a collection recomputes the interval from the
 # live heap, so `gcinterval` reports the collector's number rather than the
 # last one set.
@@ -590,7 +599,7 @@
 # `module/paths` registers a native file extension per platform spelling, and
 # `.dylib` was missing where `.dll` was present -- so macOS was the one
 # supported platform whose own name for a shared object could not be imported
-# by an explicit path. `DESIGN.md` section 12 records the change.
+# by an explicit path.
 (defn- native-extension? [ext]
   (some (fn [entry]
           (and (indexed? entry)

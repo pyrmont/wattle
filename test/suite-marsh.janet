@@ -251,4 +251,160 @@ neldb\0\0\0\xD8\x05printG\x01\0\xDE\xDE\xDE'\x03\0marshal_tes/\x02
   (assert (= :core/channel (type (unmarshal (marshal (ev/chan 4)))))
           "unthreaded channel round-trips"))
 
+# Marshalling counts its depth: every recursive step is handed one more than
+# it was given, and a step above 1024 is refused. So 1024 levels is the last
+# chain that survives and 1025 is the first that does not, and a step that
+# counted two would refuse the first of those. Each shape below is asserted at
+# both ends of its own boundary, because the boundary is where a miscount
+# shows and the middle of the range is where it hides.
+
+# Containers cost one level each. The chain cycles the four so that one pair
+# of assertions covers the value path of all of them.
+(defn- nest-values [depth]
+  (var x 0)
+  (for i 0 depth
+    (set x (case (% i 4) 0 @[x] 1 [x] 2 @{:k x} 3 {:k x})))
+  x)
+(assert (buffer? (marshal (nest-values 1024))) "1024 nested containers marshal")
+(assert-error "stack overflow" (marshal (nest-values 1025)))
+(assert (buffer? (marshal (unmarshal (marshal (nest-values 1024)))))
+        "1024 nested containers round-trip")
+
+# A key is walked before its value, so a chain built through the key position
+# reaches the other half of each dictionary.
+(defn- nest-keys [depth]
+  (var x 0)
+  (for i 0 depth (set x (case (% i 2) 0 {x :v} 1 [x])))
+  x)
+(assert (buffer? (marshal (nest-keys 1024))) "1024 nested keys marshal")
+(assert-error "stack overflow" (marshal (nest-keys 1025)))
+(assert (buffer? (marshal (unmarshal (marshal (nest-keys 1024)))))
+        "1024 nested keys round-trip")
+
+# A prototype is walked the same way and is the third path into a table.
+(defn- nest-protos [depth]
+  (var x @{})
+  (repeat depth (set x (table/setproto @{} x)))
+  x)
+(assert (buffer? (marshal (nest-protos 1024))) "1024 nested prototypes marshal")
+(assert-error "stack overflow" (marshal (nest-protos 1025)))
+(assert (buffer? (marshal (unmarshal (marshal (nest-protos 1024)))))
+        "1024 nested prototypes round-trip")
+
+# A struct prototype is a fourth path, and it is not the table's: the two are
+# read by separate arms and only a chain built from structs walks this one.
+(defn- nest-struct-protos [depth]
+  (var x (struct))
+  (repeat depth (set x (struct/with-proto x)))
+  x)
+(assert (buffer? (marshal (nest-struct-protos 1024)))
+        "1024 nested struct prototypes marshal")
+(assert-error "stack overflow" (marshal (nest-struct-protos 1025)))
+(assert (buffer? (marshal (unmarshal (marshal (nest-struct-protos 1024)))))
+        "1024 nested struct prototypes round-trip")
+
+# A table key, which the chain above reaches only for a struct.
+(defn- nest-table-keys [depth]
+  (var x 0)
+  (repeat depth (set x @{x :v}))
+  x)
+(assert (buffer? (marshal (nest-table-keys 1024))) "1024 nested table keys marshal")
+(assert-error "stack overflow" (marshal (nest-table-keys 1025)))
+(assert (buffer? (marshal (unmarshal (marshal (nest-table-keys 1024)))))
+        "1024 nested table keys round-trip")
+
+# A closure costs two levels, the function and the environment holding the one
+# below it, so its boundary is half the containers'.
+(defn- nest-closures [depth]
+  (var x (fn [] 0))
+  (repeat depth (let [inner x] (set x (fn [] inner))))
+  x)
+(assert (buffer? (marshal (nest-closures 512))) "512 nested closures marshal")
+(assert-error "stack overflow" (marshal (nest-closures 513)))
+(assert (function? (unmarshal (marshal (nest-closures 512))))
+        "512 nested closures round-trip")
+
+# A fiber costs three, the fiber and the closure it runs, so its boundary is a
+# third.
+(defn- nest-fibers [depth]
+  (var x (fiber/new (fn [] 0)))
+  (repeat depth (let [inner x] (set x (fiber/new (fn [] inner)))))
+  x)
+(assert (buffer? (marshal (nest-fibers 255))) "255 nested fibers marshal")
+(assert-error "stack overflow" (marshal (nest-fibers 256)))
+(assert (fiber? (unmarshal (marshal (nest-fibers 255))))
+        "255 nested fibers round-trip")
+
+# A fiber that has run carries a stack, and its frames, their environments and
+# the values on them are written by paths a fiber that never started does not
+# reach. Resuming each one to its `yield` is what puts a frame on it.
+(defn- nest-suspended [depth]
+  (var x 0)
+  (repeat depth
+    (let [inner x]
+      (def f (fiber/new (fn [] (yield inner) inner)))
+      (resume f)
+      (set x f)))
+  x)
+(assert (buffer? (marshal (nest-suspended 256))) "256 suspended fibers marshal")
+(assert-error "stack overflow" (marshal (nest-suspended 257)))
+(assert (fiber? (unmarshal (marshal (nest-suspended 256))))
+        "256 suspended fibers round-trip")
+
+# A frame owns an environment only when something closed over its locals, and
+# the frame's environment, the values on it and the closure that holds it are
+# each written by a path a frame without one never reaches.
+(defn- nest-env-fibers [depth]
+  (var x 0)
+  (repeat depth
+    (let [inner x]
+      (def f (fiber/new (fn [] (def held inner) (yield (fn [] held)) held)))
+      (resume f)
+      (set x f)))
+  x)
+(assert (buffer? (marshal (nest-env-fibers 256)))
+        "256 fibers with closed-over frames marshal")
+(assert-error "stack overflow" (marshal (nest-env-fibers 257)))
+(assert (fiber? (unmarshal (marshal (nest-env-fibers 256))))
+        "256 fibers with closed-over frames round-trip")
+
+# The two booleans have a lead byte each, and nothing above reads either one
+# back. A writer that emitted the same byte for both, or a reader that stepped
+# the wrong distance past one, would round-trip every value in this file.
+(assert (= true (unmarshal (marshal true))) "true round-trips")
+(assert (= false (unmarshal (marshal false))) "false round-trips")
+# Inside a container, so that what follows the lead byte is read as well: a
+# reader that walked two bytes past a boolean would take the next value's lead
+# byte for its payload.
+(assert (deep= [false true 1] (unmarshal (marshal [false true 1])))
+        "booleans round-trip beside another value")
+
+# A double is written little endian on every host, so its bytes are the one
+# assertion that fails if the byte order is decided the wrong way round. The
+# round trip cannot see it, because a reader that reverses what the writer
+# reversed agrees with itself.
+(assert (= "\xC8\0\0\0\0\0\0\xF8?" (string (marshal 1.5)))
+        "a double is written little endian")
+
+# `marshal` takes four arguments and the fourth is the one that switches
+# cycles off. Three arguments is the last call that does not read it.
+(assert (= "\x01" (string (marshal 1 @{} @""))) "marshal takes three arguments")
+(assert (= "\x01" (string (marshal 1 @{} @"" true))) "marshal takes four")
+
+# A closure whose environment is still on the stack of the fiber that made it
+# is written out as though it had already been detached, and that path is
+# reached only while that fiber cannot be marshalled. A fiber marshalling from
+# inside itself is the case: it is running, so it is alive.
+(def detaching (fiber/new (fn [] (def captured 41) (marshal (fn [] captured)))))
+(assert (= 41 ((unmarshal (resume detaching))))
+        "a closure detaches from the fiber marshalling it")
+
+# The other side of the same field: a suspended fiber whose frame holds an
+# environment carries that environment through the wire, and the resumed copy
+# reads the value out of it.
+(def suspended (fiber/new (fn [] (def held 99) (yield (fn [] held)) held)))
+(resume suspended)
+(assert (= 99 (resume (unmarshal (marshal suspended))))
+        "a frame's environment survives the wire")
+
 (end-suite)

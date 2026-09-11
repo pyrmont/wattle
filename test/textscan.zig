@@ -60,6 +60,22 @@ fn theMalformedEncodings() void {
     expect(!valid(&.{ 0xe3, 0x41, 0x98 }));
     // Five bytes, which UTF-8 has not had since 2003.
     expect(!valid(&.{ 0xf8, 0x88, 0x80, 0x80, 0x80 }));
+
+    // A continuation byte with no lead byte in front of it. Every case above
+    // starts with a lead byte, so none of them asks what happens when the
+    // width table is reached by a byte that has no width.
+    expect(!valid(&.{0x80}));
+    expect(!valid(&.{ 0x80, 0x80 }));
+}
+
+/// The smallest sequence of each width, which is the other side of the
+/// overlong tests above: those pin what is rejected one below the boundary and
+/// these pin what is accepted at it. Without them a validator that rejected
+/// the boundary too would pass every case in this file.
+fn theShortestFormOfEachWidth() void {
+    expect(valid(&.{ 0xc2, 0x80 })); // U+0080, the smallest two-byte form
+    expect(valid(&.{ 0xe0, 0xa0, 0x80 })); // U+0800, the smallest three-byte
+    expect(valid(&.{ 0xf0, 0x90, 0x80, 0x80 })); // U+10000, the smallest four
 }
 
 fn theSymbolAlphabet() void {
@@ -84,5 +100,6 @@ fn theSymbolAlphabet() void {
 pub fn run() void {
     theWellFormedEncodings();
     theMalformedEncodings();
+    theShortestFormOfEachWidth();
     theSymbolAlphabet();
 }

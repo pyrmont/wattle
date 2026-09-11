@@ -68,6 +68,12 @@ const intmin_double: f64 = -9007199254740992.0;
 /// `cfunToNumber` refuses a box outside it.
 const intmax_int64: i64 = 9007199254740992;
 
+/// The first double past each type's range, 2^63 and 2^64, exact as doubles.
+/// `maxInt(i64)` and `maxInt(u64)` are not exact and round up to these, so the
+/// range tests that come before a conversion are exclusive at them.
+const s64_limit: f64 = std.math.ldexp(@as(f64, 1.0), @bitSizeOf(i64) - 1);
+const u64_limit: f64 = std.math.ldexp(@as(f64, 1.0), @bitSizeOf(u64));
+
 /// The abstract type `int/s64` boxes an `i64` in.
 pub const s64Type = abstract_type.define(i64, .{
     .name = "core/s64",
@@ -348,7 +354,7 @@ pub fn compareS64Double(x: i64, y: f64) c_int {
     if (y > intmin_double and y < intmax_double) {
         return compareDoubles(@floatFromInt(x), y);
     }
-    if (y > @as(f64, @floatFromInt(std.math.maxInt(i64)))) return -1;
+    if (y >= s64_limit) return -1;
     if (y < @as(f64, @floatFromInt(std.math.minInt(i64)))) return 1;
     return compareScalar(i64, x, @intFromFloat(y));
 }
@@ -369,7 +375,7 @@ pub fn compareU64Double(x: u64, y: f64) c_int {
     if (y < intmax_double) {
         return compareDoubles(@floatFromInt(x), y);
     }
-    if (y > @as(f64, @floatFromInt(std.math.maxInt(u64)))) return -1;
+    if (y >= u64_limit) return -1;
     return compareScalar(u64, x, @intFromFloat(y));
 }
 

@@ -4,7 +4,7 @@
 # `zig build test` runs this with the built module's path as its argument.
 # `examples/numarray` is the worked example an author reads; this file carries
 # the slots a numeric array has no use for, and is what makes "all fourteen are
-# writable" a check rather than a sentence in `DESIGN.md` section 15.
+# writable" a check rather than a sentence in `DESIGN.md` section 14.
 
 (def module-path (get (dyn *args*) 1))
 (def module-env @{})
@@ -34,6 +34,8 @@
 # rather than indexed. `get` is what `(get x k)` and `(:method x)` reach.
 (assert (= 107 (get k 0)) "the get slot indexes the bytes")
 (assert (nil? (get k 99)) "an index past the end is a miss, not a refusal")
+(assert (= 114 (get k 5)) "the last byte of the text is the last index")
+(assert (nil? (get k 6)) "and the first index past it is a miss")
 (assert (deep= @[1 2 3] (:kept k)) "the get slot's keyword arm reaches a method")
 (assert (= 7 (:rank k)) "and the other method")
 (assert (deep= @[:kept :rank] (keys k)) "the next slot walks the method table")
@@ -50,6 +52,9 @@
 (assert (< low high) "the compare slot orders by rank")
 (assert (= 2 (length (distinct @[low high (keep :b 1)])))
         "the hash slot keys equal ranks together")
+# `keep` stamps each keeper with the next serial number, and `low` is the
+# second keeper made.
+(assert (= "keeper#1@2" (string low)) "serial numbers count the keepers made")
 
 # `marshal` and `unmarshal`, through the two capabilities. The type has to be
 # registered for this to work at all -- an abstract carries its type's *name*
@@ -69,6 +74,22 @@
 (assert (> (mark-count) marks-before) "the collector reached the gcmark slot")
 (assert (> (finalized-count) finalized-before) "and the gc slot")
 (assert (deep= @[1 2 3] (kept k)) "the marked value survived the collection")
+
+# And each counts once: a collection marks each live keeper once, so five more
+# live keepers are five more marks, and five keepers dropped are five
+# finalized.
+(gccollect)
+(def marks-a (mark-count))
+(gccollect)
+(def marks-alone (- (mark-count) marks-a))
+(var five (seq [_ :range [0 5]] (keep :five)))
+(def marks-b (mark-count))
+(gccollect)
+(assert (= (+ marks-alone 5) (- (mark-count) marks-b)) "one mark per live keeper per collection")
+(def finalized-a (finalized-count))
+(set five nil)
+(gccollect)
+(assert (= 5 (- (finalized-count) finalized-a)) "one finalization per keeper collected")
 
 # `isUnsafe` on both capabilities. It answers false everywhere a Janet program
 # can reach -- `marshal` exposes only the no-cycles flag -- so the value this
@@ -114,6 +135,11 @@
 # rather than the runtime's -- an unknown keyword is not a type error.
 (assert (= "invalid option :bogus" (refusal markup "x" [:bogus]))
         "an unknown option is refused by name")
+# `panicFormat` formats up to 255 bytes on the stack and anything longer on the
+# heap. A 240-byte name makes the refusal exactly 256 bytes.
+(def long-name (string/repeat "a" 240))
+(assert (= (string "invalid option :" long-name) (refusal markup "x" [(keyword long-name)]))
+        "a 256-byte refusal arrives whole")
 (assert (= "option 1 is not a keyword" (refusal markup "x" [:smart 3]))
         "and a non-keyword element by position")
 # `getBoolean`, which is what turns the refusal off.
@@ -152,11 +178,18 @@
 (assert (= "bc" (cut @"abcde" 1 3)) "and the source may be a buffer")
 (assert (= "start index 9 out of range [-6,5]" (refusal cut "abcde" 9))
         "an index past the length is the runtime's own refusal")
+# The module copies into 256 bytes and terminates the copy, so 255 is the
+# longest slice it gives back.
+(assert (= 255 (length (cut (string/repeat "x" 255)))) "a slice of 255 bytes fits")
+(assert (= "slice does not fit" (refusal cut (string/repeat "x" 256)))
+        "and one of 256 is refused by the module")
 
 # `getUInteger`, which is a wrap column and not a size: the refusal names the
 # width it wanted.
 (assert (= "abc" (wrap "abcde" 3)) "getUInteger reads a width")
 (assert (= "abcde" (wrap "abcde" 99)) "a width past the length is the whole slice")
+(assert (= 255 (length (wrap (string/repeat "x" 300) 300)))
+        "and a width past the module's 255 bytes is clamped to them")
 (assert (= "bad slot #1, expected 32 bit unsigned integer, got -1"
            (refusal wrap "abcde" -1))
         "and refuses a negative one")
@@ -204,6 +237,8 @@
 (assert (deep= @[1 2 3] (peek @[:x k] 1)) "and out of an array, at an index")
 (assert (= "element 0 is not a keeper" (refusal peek [:x] 0))
         "a value that is not an abstract is refused by the module, not the runtime")
+(assert (= "index 1 is past the end" (refusal peek [k] 1))
+        "and the first index past the end is refused")
 # The other half of that test -- an abstract of this module's *other* type --
 # is asserted where `odd` is defined, further down.
 
@@ -315,12 +350,12 @@
 
 # The one path where a runtime call re-enters Janet code: an abstract with no
 # `length` slot resolves `:length` as a Janet method. A method may answer a
-# negative, and the runtime refuses it -- `DESIGN.md` section 12's row. This is
-# the only place in the tree that reaches the method arm at all.
+# negative, and the runtime refuses it. This is the only place in the tree that
+# reaches the method arm at all.
 # Two ways for a method to answer something that is not a length, and both
 # spellings of the question must refuse both. `length` and `lengthv` used to
 # disagree here -- one checked its method's answer and the other did not -- and
-# each half of that was found by running it. `DESIGN.md` section 12 has the row.
+# each half of that was found by running it.
 (assert (= -1 (:length (odd 0))) "the method really does answer -1")
 (assert (= "not a number at all" (:length (odd 1))) "and really does answer a string")
 
@@ -522,6 +557,10 @@
         "eight threads post at once and every wake arrives")
 (assert (= 1 (first (ev/gather (stampede 1))))
         "and one thread is the same shape")
+(assert (= 32 (first (ev/gather (stampede 32))))
+        "thirty-two threads is the most it takes")
+(assert (= "stampede wants 1 to 32 threads" (refusal stampede 33))
+        "and thirty-three is refused before any thread starts")
 
 # A fiber cancelled between its `await` and its wake. The thread is held at a
 # gate so the ordering is the test's rather than a sleep's: suspend, cancel,

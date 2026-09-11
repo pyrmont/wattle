@@ -407,6 +407,33 @@ fn aPrefixedCfunctionRenders() raise.Raising(void) {
     expect(std.mem.endsWith(u8, contents(sink), "\x1b[0m"));
 }
 
+/// A cfunction the registry cannot name prints as `<cfunction>`, with the
+/// line when the registry has one and nothing more when it has no entry.
+/// The frames are written by hand, as in `aPrefixedCfunctionRenders`.
+fn aBareCfunctionRenders() raise.Raising(void) {
+    const sink = buffers.new(256);
+    gc_alloc.gcroot(wrap.fromBuffer(sink));
+    defer _ = gc_alloc.gcunroot(wrap.fromBuffer(sink));
+
+    const fiber = fibers.new(compileFunction("(fn [] nil)"), 32, &.{}) catch unreachable;
+    gc_alloc.gcroot(wrap.fromFiber(fiber));
+    defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
+    fiber.frame = constants.JANET_FRAME_SIZE;
+    fiber.stackstart = constants.JANET_FRAME_SIZE;
+    fiber.stacktop = constants.JANET_FRAME_SIZE;
+    const frame: *vm_state.StackFrame = @ptrCast(@alignCast(fiber.data));
+
+    frameOfCfunction(frame, keyOf(&probeUnregistered));
+    frame.prevframe = 0;
+    try traceInto(sink, fiber, value.fromBytes("bare", .string), null);
+    expect(std.mem.eql(u8, contents(sink), "  in <cfunction>\n"));
+
+    frameOfCfunction(frame, keyOf(&probeUnnamed));
+    frame.prevframe = 0;
+    try traceInto(sink, fiber, value.fromBytes("bare", .string), null);
+    expect(std.mem.eql(u8, contents(sink), "  in <cfunction> on line 99\n"));
+}
+
 /// The decoder is one half of a printer, so the printer runs too, over a real
 /// fiber that has stopped at an error. It is the only check here that the
 /// descriptor and the loop that consumes it agree about the frames of a live
@@ -433,6 +460,8 @@ fn aStacktraceOverARealFiber(failing: *functions.Function) raise.Raising(void) {
     try traceInto(sink, fiber, resumed.value, "trace-frames-test");
     expect(sink.count > 0);
     expect(std.mem.indexOf(u8, contents(sink), "trace-frames-testerror: from a fiber") != null);
+    // The failing function is anonymous, and the printer supplies the word.
+    expect(std.mem.indexOf(u8, contents(sink), "  in <anonymous> [trace-frames-test] ") != null);
 
     // And with no prefix, which suppresses the error line entirely.
     try traceInto(sink, fiber, resumed.value, null);
@@ -471,6 +500,7 @@ fn body() raise.Raising(void) {
     anEmptyFrame();
 
     try aPrefixedCfunctionRenders();
+    try aBareCfunctionRenders();
     try aStacktraceOverARealFiber(failing);
 }
 
@@ -478,6 +508,4 @@ pub fn run() void {
     harness.init();
     body() catch @panic("trace_frames: a trace raised unexpectedly");
     vm_lifecycle.deinit();
-
-    std.debug.print("trace frames contract ok\n", .{});
 }

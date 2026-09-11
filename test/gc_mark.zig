@@ -731,6 +731,13 @@ fn theIntervalHeuristic() void {
     gc_mark.collect();
     expect(harness.vm().gc.interval == high);
 
+    // The test is eight bytes a block against the interval, and an interval
+    // of exactly that is enough.
+    const exact = harness.vm().gc.block_count * 8;
+    harness.vm().gc.interval = exact;
+    gc_mark.collect();
+    expect(harness.vm().gc.interval == exact);
+
     harness.vm().gc.interval = saved;
 }
 

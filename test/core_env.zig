@@ -55,6 +55,7 @@ const std = @import("std");
 const abi = @import("abi");
 const buffers = @import("subsystems").value.buffers;
 const c = @import("cabi");
+const config = @import("config");
 const constants = @import("constants");
 const core_env = @import("subsystems").env;
 const corefn = @import("subsystems").corefn;
@@ -224,6 +225,18 @@ fn aCompileErrorPrefersTheSourceMapping() raise.Raising(void) {
     // so a position of 2 can only have come from the source mapping.
     expect(try doString("(+ 1 2)\n(def)\n", "contract", &out) == constants.JANET_DO_ERROR_COMPILE);
     expectErrPrefix("contract:2:1: compile error: ");
+
+    // A mapping is used only when both its line and its column are positive.
+    // `tuple/setmap` gives a form any mapping, and the compiler takes any whose
+    // line is not negative, so a zero at either end reaches this choice and
+    // the parser's position is reported instead.
+    const macro = "(defmacro contract-mapped [l c] (tuple/setmap (tuple 'def) l c))\n";
+    errReset();
+    expect(try doString(macro ++ "(contract-mapped 0 5)", "contract", &out) == constants.JANET_DO_ERROR_COMPILE);
+    expectErrPrefix("contract:2:21: compile error: ");
+    errReset();
+    expect(try doString(macro ++ "(contract-mapped 5 0)", "contract", &out) == constants.JANET_DO_ERROR_COMPILE);
+    expectErrPrefix("contract:2:21: compile error: ");
 }
 
 fn aParseErrorNamesAPosition() raise.Raising(void) {
@@ -462,6 +475,21 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
         _ = gc_alloc.gcunroot(nul_handle);
     }
 
+    // A read that fails short of the end of the stream stops the line too. A
+    // stream open only for writing fails every read with its error indicator
+    // set and its end-of-file indicator clear.
+    {
+        const write_only = c.fopen("/dev/null", "w");
+        expect(write_only != null);
+        const write_only_handle = io_core.makefile(write_only, constants.JANET_FILE_WRITE);
+        gc_alloc.gcroot(write_only_handle);
+        tables.put(test_env, value.fromBytes("in", .keyword), write_only_handle);
+        expect(try doString("(getline)", "contract", &result) == 0);
+        expect(wrap.toBuffer(result).count == 0);
+        tables.put(test_env, value.fromBytes("in", .keyword), in_handle);
+        _ = gc_alloc.gcunroot(write_only_handle);
+    }
+
     // The third parameter is part of the interface rather than of this
     // implementation: a client that reads lines with completion binds its own
     // `getline` over this one and honours the env, and the core reader accepts
@@ -478,6 +506,23 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
     tables.put(test_env, value.fromBytes("out", .keyword), wrap.fromNil());
     _ = gc_alloc.gcunroot(in_handle);
     _ = gc_alloc.gcunroot(out_handle);
+}
+
+/// `janet/config-bits` is janet.h's `JANET_CURRENT_CONFIG_BITS`, which a
+/// module and the runtime compare at load. janet.h's bits are 0x1 for a
+/// NaN-boxed value, 0x2 for a single-threaded build, and `0x4 << shift` for a
+/// 64-bit NaN box whose pointers are shifted. A NaN-boxed value is eight bytes
+/// and the tagged one sixteen, so the layout says which this build has.
+fn theConfigBitsAreJanetHs() raise.Raising(void) {
+    const nanboxed = @sizeOf(repr.Value) == 8;
+    const shift: u5 = @intCast(config.nanbox_pointer_shift);
+    const shifted = nanboxed and @sizeOf(usize) == 8 and shift != 0;
+    const want: i32 = (if (nanboxed) 0x1 else 0) |
+        (if (config.single_threaded) 0x2 else 0) |
+        (if (shifted) @as(i32, 0x4) << shift else 0);
+    var out = wrap.fromNil();
+    expect(try doString("janet/config-bits", "contract", &out) == 0);
+    expect(wrap.toNumber(out) == @as(f64, @floatFromInt(want)));
 }
 
 fn nativeReportsALoaderError() void {
@@ -582,6 +627,7 @@ fn body() raise.Raising(void) {
     try theLookupTableIsKeyedBySymbol();
     try theLookupTableTakesReplacements();
     try getlineReadsALineThroughTheDyn();
+    try theConfigBitsAreJanetHs();
     nativeReportsALoaderError();
     try sandboxAccumulatesEveryCapability();
     nativeIsBehindTheSandbox();
@@ -591,6 +637,4 @@ pub fn run() void {
     harness.init();
     body() catch @panic("core_env: an entry point raised unexpectedly");
     vm_lifecycle.deinit();
-
-    std.debug.print("core env contract ok\n", .{});
 }

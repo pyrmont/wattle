@@ -2,10 +2,66 @@
 
 *Moved verbatim from the former root `AGENTS.md` on 2026-08-30. Read this before running, repairing, or interpreting `tools/testing/mutate.janet` and its artifacts.*
 
-**A bare `./tools/testing/mutate.janet` starts a sweep.** It prints its three known
-defects first, which reads like a usage message and is not one. An interrupted
-sweep leaves its current mutant in the working tree: `git status` after any
-interruption, and restore the file it names before believing a later build.
+**A bare `./tools/testing/mutate.janet` prints its usage and stops.** A sweep
+needs `--src <file>` or `--all`, because a whole-tree run is thirty hours and
+is not something to start by typing the program's name. `--src` is repeatable
+and sweeps the sources in the order given under one warm-up, one log and one
+set of totals, which is the batch Phase 20 Part 2 runs:
+
+```sh
+unsetopt BG_NICE
+nohup ./tools/testing/mutate.janet --src A --src B --no-strings --log /tmp/janet-mutate-2a.log &
+```
+
+**`unsetopt BG_NICE` is not optional under zsh.** The option is on by default
+and runs every background job at nice +5, so a sweep launched with `&` is
+starved by anything at normal priority on the host. Phase 20's batches 2a and
+2b ran that way without noticing: eighteen of 2b's 258 mutants took 100 to 700
+seconds against a median of 15, and runs bounded at twelve seconds were
+measured at 325, 341 and 352. The same three sites took 12.0 seconds each at
+nice 0. It is not `nohup` and not the choice of shell command: a plain `&` with
+no `nohup` is niced too. Read `ps -o pid,ni,stat -p <pid>` after launching, and
+expect `NI 0` and no `N` in the state.
+
+**The run holds idle sleep off for itself**, and the reason took five batches
+to find. A sweep is unattended by design, so the host is idle by every measure
+the power manager takes and it sleeps underneath the run: `pmset -g log`
+recorded 61 sleeps inside batch 2f's four hours and 127 across that day, each a
+maintenance sleep the network stack dark-woke from seconds later. A frozen
+process resumes where it stopped, so every bound became a wall clock measured
+across the nap, and 2f read `contracts=238.9` and `suites=279.6` against a
+bound of twelve. The verdicts survived, because the retry re-runs a step that
+times out and the second attempt lands while the machine is awake, but a bound
+that holds only because a retry rescues it is not a bound. Batches 2b and 2d
+recorded the same overruns and guessed at load; the cause is here.
+
+`caffeinate -i` does not fix this, which is worth saying because it is the
+obvious answer and it was tried: it asserts against *idle* sleep, and with the
+display off and no input this host sleeps regardless. The setting is what
+works. The operator's session hooks already drive it, `sudo -n /usr/bin/pmset
+-a sleep 0` while a session is working and `-a sleep 1` when the last one goes
+idle, reference counted through one marker file per session under
+`$HOME/.claude/run/busy` because a global setting has no refcount of its own —
+and a detached sweep is not a session turn, so when every session goes idle
+that directory empties and sleep returns underneath the sweep. So the tool
+joins the same scheme: the warm-up writes a marker of its own there and
+disables sleep, and the restore removes it and re-enables sleep only when the
+directory is empty, which leaves a working session's marker alone. It says
+which of the two happened, and a failure is never fatal — a power setting must
+not stop a sweep.
+
+**A sweep that does not reach its restore leaves sleep switched off.** A
+`SIGKILL` never does, and neither does an abort, because the tool exits on one
+and an exit does not run the restore. The marker stays in
+`$HOME/.claude/run/busy` until it is removed by hand, so pair that with the
+`git status` an interrupted sweep already owes. The marker is placed after the
+warm-up rather than before it so that the likeliest abort of all, the warm-up
+finding the tree not green, has nothing to leak.
+
+An interrupted sweep leaves its current mutant in the working tree:
+`git status` after any interruption, and restore the file it names before
+believing a later build. Relaunch with `--resume <log>`, which skips every
+verdict the log already holds.
 
 ## Mutation sweeps
 
@@ -14,36 +70,39 @@ version: a sweep tests the tests, not the code, and every defect the rewrite
 found came from something cheaper. Do not run one
 for an increment unless asked. Everything below applies when you do run one.
 
-### Three things are known wrong with it, and none is fixed
+### What the judge does
 
-**Fix these before the next full sweep.** Phase 11 Part 29 ported the tool from
-Python and deliberately changed nothing else, because each of the three alters
-what a verdict *means* and the phase that owns the sweep should own them. The
-same list is in the script's header and the script prints it on stderr at the
-start of every judging run.
-
-1. **The contract call is bounded at 600 seconds where a suite gets 12.** So a
-   mutant that hangs the contract costs fifty times one that hangs a suite, for
-   a program that normally returns in well under a second. `ev/backend.zig`
-   *is* the event loop, so contract hangs are not the exception there: 186
-   sites with even a tenth hanging is over three hours on that source alone.
-   This has cost two runs — the Phase 11 gate's sample, which did not finish,
-   and Part 29's own verdict probe, killed at ten minutes and leaving the tree
-   mutated. `tools/sh` takes `:timeout`, so it is one argument.
-2. **A site this configuration does not compile scores SURVIVED rather than as
-   no effect.** Three of the gate's nine survivors were `WSAGetLastError` and
-   `GetLastError` in Windows arms this host does not compile — 20% of that
-   window was noise. Compare the built binary's **text section**, not the file:
-   debug info carries line and column numbers, so a mutant that changes a
-   line's length yields a different file with identical code, which is exactly
-   the case being scored. `phase_11.md`'s rule 74 has the measurement.
-3. **Then run `ev/stream.zig` and `ev/backend.zig` to completion**, which no
-   sweep has ever done. The 16.4s-a-mutant figure holds only for the first,
-   where nothing hung.
-
-**A tool repaired twice and executed zero times has been reviewed, not tested**
-— that is this instrument's whole history, and it is why the reminder is in
-three places rather than one.
+Phase 20 Part 1 closed the two defects that were the instrument's own and left
+the third to the sweep. Every judged run that is not a build now gets `bound`
+seconds, so a mutant that hangs the contract costs what one that hangs a suite
+costs; a build keeps its own longer bound, because a slow build is not a hang
+the mutant caused. After the default stage's build the judge digests each
+content-bearing section of each Mach-O file that build installed and compares
+those digests with the ones unmutated source produced. A mutation in an arm
+this configuration does not compile leaves every section identical, and it
+scores `no effect` in a tally row of its own rather than as a survivor. Nothing
+is run for it and no later stage is reached: the comparison is made once and is
+final, because `zig build test` installs nothing and every build passes
+`-Dinstall-tests=true`, so the prefix that comparison reads already holds
+everything the full stage would compile. The judge is the same for every
+source, which is what
+retired the three per-increment constants: all sixty-five contracts in one
+process, then every `test/suite-*.janet` read from the directory. The third
+defect was that `ev/stream.zig` and `ev/backend.zig` had never run to
+completion, and `--all` sweeps them first for that reason. A build that fails
+is read rather than counted: the compiler refusing the mutation is
+`uncompilable`, and the image generator refusing it is `bootstrap: <reason>`
+and a catch, because the generator parses `boot.janet` and runs
+`boot/boot_tests.zig` and so is a test layer like any other. A build that
+exceeds its bound is built a second time before it is called a hang, because a
+build that follows a runaway generator can be starved past the bound without
+being slow itself, and three of batch 2c's thirty `build (hang)` verdicts were
+mutants a contract catches in eleven seconds. Every other bounded step is run a
+second time on a timeout for the same reason and scores a hang only if the
+second attempt times out as well, because twelve seconds is close enough to a
+passing step's cost that a busy host starves one past it: three of Part 3e's
+hang catches named a suite with no connection to the subject and none of the
+three repeated.
 
 `./tools/testing/mutate.janet`, run from the repository root. Its header has the design;
 two rules survive here because they
@@ -71,6 +130,22 @@ judges the later mutants and not the earlier ones, and the log stops being one
 measurement. Let the pass finish, close the holes it found, then re-run over
 *just the survivors* — which is also far cheaper than a second full pass, and
 which `mutate.janet` prints the `--only` line for.
+
+A round of re-runs is one invocation. `--only` names sites in the `--src`
+before it, so `--src A --only 3,17 --src B --only 5` re-runs both sources
+under one warm-up, one marker and one log, and the summary of a run with
+survivors in several sources prints that line whole. Several invocations
+chained under one `nohup` are not the same thing: each exit restores sleep,
+an idle host sleeps at once, and the next warm-up runs before its marker is
+placed.
+
+**Re-run the survivors under the enumeration that produced them.** A site index
+counts sites within one source, and `--no-strings` removes sites, so the same
+index names a different line under each flag. The printed re-run line carries
+the flag the run used and the log's last field records it; a line that has lost
+it mutates the wrong sites silently, in every source that holds a
+string-literal site. Phase 20 Part 3e lost twenty-one verdicts to this and had
+to re-verify the previous pair's closures.
 
 **Cross-compile before you sweep, not after.** The four targets cost about two
 minutes:
@@ -219,7 +294,11 @@ before it starts, snapshots the cache, and after each mutant deletes everything
 outside that snapshot. The cache then sits at one baseline plus at most one
 mutant — measured at 6.0GB steady and 10.9GB peak for the escalating judge, or
 1.28GB and 1.68GB when only the default stage runs — and nothing cold-rebuilds,
-so a mutant costs 2-3 seconds of relinking instead of a minute.
+so a mutant costs 2-3 seconds of relinking instead of a minute. Between two
+sources the restored tree is built once more and its entries join the
+snapshot, because a restored source builds the image generator under a digest
+the snapshot does not hold, and Phase 20 batch 2i lost 47 verdicts to its
+deletion.
 
 Two cheaper discriminators are wrong and were measured to be wrong. **Age**
 fails because Zig stamps entries on cache *hits* as well as on creation, so
@@ -312,8 +391,9 @@ free now and knows nothing about purgeable space, which the OS hands back the
 moment a writer needs it. Phase 10 Part 13 measured **28.2GB by `statvfs`
 against 143.3GB available for important usage** on the same volume at the same
 moment, and lost two sweeps to the difference -- one aborting at mutant 0 with
-over a hundred gigabytes really available. The floor is now 10GB and is a coarse
-backstop.
+over a hundred gigabytes really available. The floor is 3GB, a coarse backstop,
+because Phase 20 batch 2h stopped at a floor of 10GB while macOS held 87GB of
+purgeable cache that it purged four minutes later.
 
 The guard that does the work is `refuse_if_disk_full`, which every judged build
 passes through: it looks for the volume-full message in the build output and

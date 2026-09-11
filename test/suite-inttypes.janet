@@ -74,8 +74,9 @@
     "s64 out of bounds for safe integer"
     (int/to-number (i64 "-9007199254740993"))))
 
-(assert-error
+(assert-error-value
   "int/to-number fails on non-abstract types"
+  "expected int/u64 or int/s64, got 1"
   (int/to-number 1))
 
 (assert-no-error
@@ -147,19 +148,23 @@
 
 # int/s64 and int/u64 parameter type checking
 # 6aea7c7f7
-(assert-error
+(assert-error-value
   "bad value passed to int/to-bytes"
+  "int/to-bytes: expected an int/s64 or int/u64, got 1"
   (int/to-bytes 1))
 
 # 6aea7c7f7
-(assert-error
+(assert-error-value
   "invalid endianness passed to int/to-bytes"
+  "int/to-bytes: expected endianness :le, :be or nil, got :little"
   (int/to-bytes (u64 0) :little))
 
 # bbb3e16fd
-(assert-error
+# A valid order, so the refusal is the buffer's and not the endianness's.
+(assert-error-value
   "invalid buffer passed to int/to-bytes"
-  (int/to-bytes (u64 0) :little :buffer))
+  "int/to-bytes: expected buffer or nil, got :buffer"
+  (int/to-bytes (u64 0) :le :buffer))
 
 # Right hand operators
 # 4fe005e3c
@@ -340,5 +345,64 @@
 (assert-error "INT64_MIN divided by -1" (:rmod (int/s64 -1) most-negative))
 (assert (= (int/s64 "-9223372036854775808") (div most-negative (int/s64 1)))
         "and the divisors either side of it still divide")
+
+# The refusal is for the one divisor -1, so the most negative value still
+# divides by anything else, through `/` and `%` as well as `div`.
+(assert (= (int/s64 "-4611686018427387904") (/ most-negative (int/s64 2)))
+        "INT64_MIN divided by 2")
+(assert (= (int/s64 0) (% most-negative (int/s64 2))) "INT64_MIN remainder 2")
+(assert (= (int/s64 3) (/ (int/s64 7) 2)) "s64 divide truncates")
+(assert (= (int/s64 -3) (/ (int/s64 -7) 2)) "s64 divide truncates toward zero")
+
+# A box of either type converts to the other by reinterpreting its bits, and a
+# box of any other abstract type does not convert.
+(assert (= (int/s64 -1) (int/s64 (int/u64 "0xFFFF_FFFF_FFFF_FFFF")))
+        "int/s64 of an int/u64")
+(assert (= (int/u64 "0xFFFF_FFFF_FFFF_FFFF") (int/u64 (int/s64 -1)))
+        "int/u64 of an int/s64")
+(assert-error "int/s64 of another abstract" (int/s64 (math/rng)))
+(assert-error "int/u64 of another abstract" (int/u64 (math/rng)))
+
+# A number converts at the ends of the range a double holds exactly, and not
+# past them.
+(assert (= (int/s64 "-9007199254740992") (int/s64 -9007199254740992))
+        "int/s64 at the lower bound")
+(assert-error "int/s64 past the upper bound" (int/s64 (math/pow 2 54)))
+(assert-error "int/s64 past the lower bound" (int/s64 (- (math/pow 2 54))))
+(assert (= -9007199254740992 (int/to-number (int/s64 "-9007199254740992")))
+        "int/to-number at the lower bound")
+(assert (= 9007199254740992 (int/to-number (int/u64 "9007199254740992")))
+        "int/to-number of an int/u64 at the bound")
+
+# With no byte order given the bytes are the host's.
+(assert (deep= (int/to-bytes (u64 1)) (buffer/push-uint64 @"" :native 1))
+        "int/to-bytes defaults to the native order")
+
+# The `compare` methods, called directly. Through `compare` a method that
+# answers nil hands over to the other operand's method, which hides it.
+(assert (= 0 (:compare (int/s64 3) (int/u64 3))) "s64 compare method on a u64")
+(assert (= 0 (:compare (int/u64 3) (int/s64 3))) "u64 compare method on an s64")
+(assert (= 0 (compare (int/u64 0) (int/s64 0))) "compare u64 0 with s64 0")
+(assert (= 0 (compare (int/u64 "9223372036854775807")
+                      (int/s64 "9223372036854775807")))
+        "compare u64 with s64 at INT64_MAX")
+(assert (= 0 (compare most-negative (- (math/pow 2 63))))
+        "compare INT64_MIN with -2^63")
+
+# 2^63 and 2^64 are the first doubles past the two ranges, and each orders
+# above a box of its type from either side, as the doubles either side of it
+# do.
+(def two-63 (math/pow 2 63))
+(def two-64 (math/pow 2 64))
+(assert (= -1 (compare (int/s64 1) two-63)) "compare s64 with 2^63")
+(assert (= 1 (compare two-63 (int/s64 1))) "compare 2^63 with s64")
+(assert (= -1 (compare (int/u64 1) two-64)) "compare u64 with 2^64")
+(assert (= 1 (compare two-64 (int/u64 1))) "compare 2^64 with u64")
+(assert (= -1 (compare (int/s64 1) (- two-63 1024)))
+        "compare s64 with the double below 2^63")
+(assert (= -1 (compare (int/s64 1) (* 2 two-63))) "compare s64 with 2^64")
+(assert (= -1 (compare (int/u64 1) (- two-64 2048)))
+        "compare u64 with the double below 2^64")
+(assert (= -1 (compare (int/u64 1) (* 2 two-64))) "compare u64 with 2^65")
 
 (end-suite)

@@ -884,15 +884,19 @@ pub fn checkint8(x: repr.Value) bool {
 /// Whether `x` is a double exactly representable as a `usize`.
 ///
 /// The range test comes before the conversion, so the conversion is always in
-/// range. Converting first is undefined for a negative or enormous double and
-/// saturates on every supported target; the two orders agree on every input,
-/// negatives, NaN and 1e300 included, because saturation and rejection agree
-/// on all of them.
+/// range. Its upper bound is 2 to the width of `usize`, exclusive, which is
+/// exact as a double. `maxInt(usize)` is not exact on a 64-bit target: it
+/// rounds up to 2^64, so an inclusive test against it admits 2^64 and the
+/// conversion is then out of range. Converting first is undefined for a
+/// negative or enormous double and saturates on every supported target; the
+/// two orders agree on every input, negatives, NaN, 1e300 and 2^64 included,
+/// because saturation and rejection agree on all of them.
 pub fn checksize(x: repr.Value) bool {
     if (!repr.checkType(x, repr.Tag.number)) return false;
     const dval = wrap.toNumber(x);
     const size_hi: f64 = @floatFromInt(std.math.maxInt(usize));
-    if (!(dval >= 0 and dval <= size_hi)) return false;
+    const size_limit: f64 = comptime std.math.ldexp(@as(f64, 1.0), @bitSizeOf(usize));
+    if (!(dval >= 0 and dval < size_limit)) return false;
     const truncated: usize = @intFromFloat(dval);
     const back: f64 = @floatFromInt(truncated);
     if (dval != back) return false;

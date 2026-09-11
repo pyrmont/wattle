@@ -378,6 +378,16 @@ fn fillStruct() void {
     expect(structs.head(done).length == 2);
     expect(harness.integerIs(harness.field(done, "a"), 1));
     expect(harness.integerIs(harness.field(done, "b"), 2));
+
+    // A struct stops taking pairs at the length it was begun with, so a pair
+    // past the count shows only where an earlier one was dropped. A nil value
+    // is dropped, which leaves room for the pair after the last.
+    const holed = structs.begin(2);
+    const past = [_]repr.Value{ kw("a"), wrap.fromNil(), kw("b"), intv(2), kw("c"), intv(3) };
+    vm_calls.fillStruct(holed, &past, 4);
+    const filled = structs.end(holed);
+    expect(harness.integerIs(harness.field(filled, "b"), 2));
+    expect(harness.isType(harness.field(filled, "c"), repr.Tag.nil));
 }
 
 fn fillString() raise.Raising(void) {
@@ -472,5 +482,4 @@ pub fn run() void {
     _ = eval("(vmcalls/contract)");
 
     vm_lifecycle.deinit();
-    std.debug.print("vm calls contract ok\n", .{});
 }

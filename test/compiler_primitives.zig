@@ -121,6 +121,14 @@ fn aNamedSlotIsNotReclaimed() void {
     slot.flags.named = true;
     primitives.freeslot(&compiler, slot);
     expect(primitives.farslot(&compiler).?.index == 2);
+
+    // An upvalue is not this scope's register either, and environment 0 is an
+    // environment: freeing one leaves the register its index names taken.
+    var upvalue = primitives.farslot(&compiler).?;
+    expect(upvalue.index == 3);
+    upvalue.envindex = 0;
+    primitives.freeslot(&compiler, upvalue);
+    expect(primitives.farslot(&compiler).?.index == 4);
 }
 
 /// `primitives.defAddflags` derives a funcdef's `HAS*` flags from which of its
@@ -264,6 +272,56 @@ fn aHintIsHonouredOnlyWhenItIsNear() void {
     expect(slot.index >= 0 and slot.index != 300);
     expect(slot.envindex == -1 and std.meta.eql(slot.flags, primitives.SlotFlags{}));
     expect(harness.isType(slot.constant, repr.Tag.nil));
+
+    // "Near" is three tests and each has an end. A hint carries a flag the
+    // fresh slot does not, so an honoured hint is told from a fresh register
+    // by the flag rather than by the index the allocator happened to give.
+    options.hint.flags = .{ .mutable = true };
+    options.hint.index = 0;
+    const zero = primitives.gettarget(options);
+    expect(zero.index == 0 and zero.flags.mutable);
+
+    options.hint.index = 0xFF;
+    const last = primitives.gettarget(options);
+    expect(last.index == 0xFF and last.flags.mutable);
+
+    // An upvalue is not a register, so a hint in environment 0 is refused
+    // however near its index is.
+    options.hint.index = 7;
+    options.hint.envindex = 0;
+    const upvalue = primitives.gettarget(options);
+    expect(upvalue.envindex == -1 and !upvalue.flags.mutable);
+}
+
+/// A function nothing closed over does not need an environment.
+///
+/// `theFinishedFuncdef` asserts the flag where it is set, which a compiler
+/// that set it always would also pass. This asserts it where it is clear.
+fn aPlainFunctionNeedsNoEnvironment() !void {
+    var plain: primitives.Scope = undefined;
+    primitives.pushScope(&plain, &compiler, .{ .function = true }, "plain");
+    compiler.recursion_guard = recursion_guard;
+    _ = try primitives.valueImpl(primitives.foptsDefault(&compiler), harness.wrapInteger(1));
+    const definition = try primitives.popFuncdef(&compiler);
+    expect(!definition.flags.needsenv);
+    expect(compiler.scope == null);
+}
+
+/// `popscopeKeepslot` keeps one register alive in the parent scope, and an
+/// upvalue is not a register: one in environment 0 leaves the parent alone.
+fn anUpvalueIsNotKeptAsARegister() !void {
+    var parent: primitives.Scope = undefined;
+    primitives.pushScope(&parent, &compiler, .{ .function = true }, "keep-parent");
+    var inner: primitives.Scope = undefined;
+    primitives.pushScope(&inner, &compiler, .{}, "keep-child");
+
+    var upvalue = std.mem.zeroes(primitives.Slot);
+    upvalue.index = 5;
+    upvalue.envindex = 0;
+    try primitives.popscopeKeepslot(&compiler, upvalue);
+    expect(compiler.scope == &parent);
+    expect(!parent.ra.isTaken(5));
+    try primitives.popscope(&compiler);
 }
 
 /// A list of values becomes a vector of slots, and a dictionary becomes a
@@ -539,6 +597,8 @@ fn body() !void {
     try theGlobalBindings();
     const captured = try aLocalIsCaptured();
     try theFinishedFuncdef(captured);
+    try aPlainFunctionNeedsNoEnvironment();
+    try anUpvalueIsNotKeptAsARegister();
     try theFirstErrorIsKept();
 }
 

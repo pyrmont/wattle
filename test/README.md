@@ -1,10 +1,8 @@
 # How this runtime is tested
 
 The layers, what each is for, and what a change owes before it is believed.
-[../DESIGN.md](../DESIGN.md) section 12 has the Janet behaviours this runtime
-kept and the behaviours it changed. [../src/README.md](../src/README.md) has the
-rules the runtime keeps, and [../tools/README.md](../tools/README.md) has the
-instruments named below.
+[../src/README.md](../src/README.md) has the rules the runtime keeps, and
+[../tools/README.md](../tools/README.md) has the instruments named below.
 
 ## The six layers
 
@@ -251,7 +249,7 @@ identical to a test that passed.
 |----------------------|-----------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
 | macOS ARM64          | native                            | Full: four optimize modes, every feature flag, both value layouts                                                                                       |
 | Linux aarch64 musl   | cross-compile, native container   | All 65 contracts, all 42 in-file tests, and 32 of 34 suites, NaN-boxed default. The two are named below. Also the second host for the image comparison, and the only thing that has ever executed a Zig contract off macOS   |
-| Linux x86-64 musl    | cross-compile, emulated container | Tagged representation only; `asm_decode` segfaults under emulation, so individual contracts are run rather than the sweep                               |
+| Linux x86-64 musl    | cross-compile, emulated container | Tagged representation only, and each contract is run by name, because `peg` ends the process under emulation. `peg`, `vm_run` and `ffi_core` fail there, and `suite-peg` with them. An `x86_64-macos` build with the same representation passes all four under Rosetta. The cause is not established without x86-64 hardware |
 | Windows x86-64 MinGW | cross-compile                     | Builds, and is a matrix entry. Binaries have never been executed                                                                                    |
 | Linux riscv32 musl   | cross-compile                     | Builds only. One of three 32-bit targets: `x86-linux-musl` and `arm-linux-musleabihf` build too. Those three are what compile the 32-bit NaN-boxing and pointer-width branches; binaries deliberately unexecuted, see below |
 | Linux glibc, x86-64 and aarch64 | cross-compile, native container | Builds and runs: the driver at exit 0 with no argument and 65 of 65 by name, all 42 in-file tests, 32 of 34 suites, the same two as musl. The no-argument abort in `malloc_consolidate` this row had for two phases was diagnosed and fixed: a contract called into the runtime after its deinit, and glibc's allocator is the check that detected it. Run at a phase gate rather than in CI, which tests Linux against musl |
@@ -261,14 +259,14 @@ identical to a test that passed.
 Neither is a gap. They are the same two under musl and under glibc, so neither
 is a libc difference:
 
-- `suite-io.janet:236`, one assertion of 85. It asserts that `file/open` with a
+- `suite-io.janet:241`, one assertion of 88. It asserts that `file/open` with a
   buffer size of `2^53 - 1` raises `failed to set buffer size for file`. Linux's
   `setvbuf` accepts the size where macOS refuses it, so the suite is asserting a
   refusal only one platform makes.
-- `suite-filewatch.janet`, six assertions of 77, all of them inotify event
+- `suite-filewatch.janet`, six assertions of 79, all of them inotify event
   ordering: the suite asserts `:create` and `:close-write` as separate events in
   order, and under the container's filesystem they coalesce and the previous
-  subtest's events are still queued when the next reads them. The 71 covering
+  subtest's events are still queued when the next reads them. The 73 covering
   argument handling, flag decoding and the watcher's life cycle pass.
 
 Fixing either means deciding what the suite should assert on a host that behaves

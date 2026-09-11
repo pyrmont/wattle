@@ -355,6 +355,4 @@ pub fn run() void {
     harness.init();
     dynamicBindings();
     vm_lifecycle.deinit();
-
-    std.debug.print("vm state contract ok\n", .{});
 }

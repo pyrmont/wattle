@@ -845,8 +845,12 @@
   (repeat 2 (let [m (ev/take out)] (put got (if (tuple? m) (first m) m) m)))
   (assert (got :nullary) "a nullary task ran")
   (assert (= [:unary :seed] (got :unary)) "a unary task was passed the value")
-  (assert-error "a binary task function is refused" (ev/go (fn [a b] a)))
-  (assert-error "a binary thread function is refused" (ev/thread (fn [a b] a))))
+  (assert-error-value "a binary task function is refused"
+                      "task function must accept 0 or 1 arguments"
+                      (ev/go (fn [a b] a)))
+  (assert-error-value "a binary thread function is refused"
+                      "function must take 0 or 1 arguments"
+                      (ev/thread (fn [a b] a))))
 
 # `ev/thread`'s `:t` flag copies the resume value into the new thread's fiber
 # environment as `task-id`, which is the only way a supervisor message from a
@@ -1060,5 +1064,305 @@
   (assert reply "a value crossed into the thread and back")
   (assert (= [:got :ping] reply) "and survived packing in both directions")
   (gccollect))
+
+# ev/to-file had no test. The mode string it builds, the two sandbox
+# permissions it asserts and the descriptor it duplicates are reached through
+# this binding and through nothing else.
+(do
+  (def path "janet-suite-tofile.txt")
+  (spit path "hello\n")
+
+  (def rs (os/open path :r))
+  (def rf (ev/to-file rs))
+  (assert (= "hello\n" (string (:read rf :all))) "ev/to-file reads a readable stream")
+  (:close rf)
+  (:close rs)
+
+  (def ws (os/open path :wt))
+  (def wf (ev/to-file ws))
+  (:write wf "written\n")
+  (:close wf)
+  (:close ws)
+  (assert (= "written\n" (string (slurp path))) "ev/to-file writes a writable stream")
+
+  (def rws (os/open path :rw))
+  (def rwf (ev/to-file rws))
+  (assert (= "written\n" (string (:read rwf :all))) "ev/to-file reads a read-write stream")
+  (:seek rwf :end)
+  (:write rwf "more\n")
+  (:close rwf)
+  (:close rws)
+  (assert (= "written\nmore\n" (string (slurp path))) "ev/to-file writes a read-write stream")
+
+  (os/rm path))
+
+# ev/chunk collects the whole count before it returns, where ev/read gives
+# back whatever one read produced.
+(do
+  (def [r w] (os/pipe))
+  (def [got] (ev/gather
+               (ev/chunk r 6)
+               (do (ev/write w "abc") (ev/sleep 0.05) (ev/write w "def"))))
+  (assert (= "abcdef" (string got)) "ev/chunk waits for the whole count")
+  (:close r)
+  (:close w))
+
+# ev/chunk's timeout argument. Nothing passed one, so the deadline it adds was
+# never registered by a test.
+(do
+  (def [r w] (os/pipe))
+  (assert-error "ev/chunk honours its timeout" (ev/chunk r 6 @"" 0.05))
+  (:close r)
+  (:close w))
+
+# ev/read with :all collects to end of stream rather than stopping at the
+# first read.
+(do
+  (def [r w] (os/pipe))
+  (def [got] (ev/gather
+               (ev/read r :all)
+               (do (ev/write w "abc") (ev/sleep 0.05) (ev/write w "def") (:close w))))
+  (assert (= "abcdef" (string got)) "ev/read :all reads to end of stream")
+  (:close r))
+
+# ev/read with a count returns what is there rather than waiting for the count.
+(do
+  (def [r w] (os/pipe))
+  (ev/write w "abc")
+  (assert (= "abc" (string (ev/read r 64))) "ev/read returns a short read")
+  (:close r)
+  (:close w))
+
+# A single ev/read takes the whole request. The four-kilobyte cap belongs to a
+# chunked read, and applying it here would halve this one.
+(do
+  (def [r w] (os/pipe))
+  (def payload (string/repeat "x" 8192))
+  (def [got] (ev/gather (ev/read r 8192) (ev/write w payload)))
+  (assert (= 8192 (length got)) "ev/read takes the whole request in one read")
+  (:close r)
+  (:close w))
+
+# Writing nothing is not a disconnect. A zero-length write outside a datagram
+# is the one case where a zero from the system call is not a hangup.
+(do
+  (def [r w] (os/pipe))
+  (assert-no-error "ev/write of nothing is not a disconnect"
+    (do
+      (ev/write w "")
+      (ev/write w @"")))
+  (:close r)
+  (:close w))
+
+# os/shell with no argument answers whether a system shell exists, and its
+# answer crosses back from the worker thread as the boolean tag of a threaded
+# call. The tag's decoder is the event loop's, which is why this is here.
+(compwhen (dyn 'os/shell)
+  (assert (os/shell) "os/shell reports that a system shell is available"))
+
+# A deadline whose seconds land exactly on the float-to-integer conversion's
+# upper bound saturates rather than converting. The fiber it checks has
+# already finished, so the timeout is dropped rather than acted on.
+(assert-no-error "a deadline at the conversion's upper bound saturates"
+  (let [f (coro :done)]
+    (resume f)
+    (ev/deadline 9.223372036854776e15 nil f)
+    (ev/sleep 0)))
+
+# An interrupted task counts as suspended, so the loop does not treat it as a
+# task that failed and print its stack trace. A subprocess is where the
+# standard error of a whole run can be read.
+(compwhen (dyn 'os/spawn)
+  (when interrupt-available?
+    (def interrupt-code
+      '(do (def f (coro (forever :foo)))
+           (ev/deadline 0.05 nil f true)
+           (protect (resume f))))
+    (def p (os/spawn [;run janet "-e" (string/format "%j" interrupt-code)] :p {:err :pipe}))
+    (def [_ err] (ev/gather (os/proc-wait p) (ev/read (p :err) :all)))
+    (assert (or (nil? err) (empty? err))
+            "an interrupted task prints no stack trace")))
+
+# Cancelling a fiber that is already cancelled is ignored, so the value the
+# first cancellation carried is the one that arrives.
+(do
+  (def ch (ev/chan))
+  (def super (ev/chan 10))
+  (def f (ev/go (fn [] (ev/take ch)) nil super))
+  (ev/sleep 0.01)
+  (ev/cancel f :first)
+  (ev/cancel f :second)
+  (def msg (ev/take super))
+  (assert (= :error (msg 0)) "a cancelled task reports an error to its supervisor")
+  (assert (= :first (fiber/last-value (msg 1)))
+          "and a second cancellation of the same fiber is ignored"))
+
+# ev/rselect shuffles its clauses in place. A shuffle that drops a clause and
+# duplicates another leaves a single call looking correct.
+(do
+  (def a (ev/chan 1))
+  (def b (ev/chan 1))
+  (repeat 20
+    (ev/give a :from-a)
+    (assert (= [:take a :from-a] (ev/rselect a b))
+            "ev/rselect keeps every clause")))
+
+# ev/thread's value is the second argument, and only a call with exactly two
+# arguments puts it there.
+(do
+  (def path "janet-suite-thread-arg.txt")
+  (ev/thread (fn [x] (spit "janet-suite-thread-arg.txt" (string/format "%j" x)))
+             :the-value)
+  (assert (= ":the-value" (string (slurp path))) "ev/thread passes its second argument")
+  (os/rm path))
+
+# A give that blocked on a threaded channel is resumed by the other thread's
+# posted event, and the value it resumes with is the channel. Nothing above
+# blocks a writer on a channel another thread drains.
+(do
+  (def ch (ev/thread-chan 1))
+  (def done (ev/thread-chan 1))
+  (ev/thread (fn [chans]
+               (def [c d] chans)
+               (ev/sleep 0.2)
+               (ev/take c)
+               (ev/take c)
+               (ev/give d :done))
+             [ch done]
+             :n)
+  (ev/give ch :a)
+  (def started (os/clock :monotonic))
+  (assert (= ch (ev/give ch :b))
+          "a give resumed from another thread gives back the channel")
+  (assert (> (- (os/clock :monotonic) started) 0.1) "and that give really blocked")
+  (assert (= :done (ev/take done)) "and the other thread drained both values"))
+
+# A collection while a write is parked reaches the write's mark hook, which
+# reports the payload as the kind it is. Nothing above collects with a write
+# in flight.
+(do
+  (def [r w] (os/pipe))
+  (def payload (string/repeat "m" 2000000))
+  (def marks @[])
+  (ev/go (fn [] (protect (ev/write w payload)) (array/push marks :wrote)))
+  (ev/sleep 0.1)
+  (assert (empty? marks) "the write is parked on a full pipe")
+  (gccollect)
+  (def got @"")
+  (ev/go (fn [] (ev/chunk r (length payload) got)))
+  (var tries 0)
+  (while (and (empty? marks) (< tries 400))
+    (ev/sleep 0.01)
+    (set tries (+ tries 1)))
+  (assert (= [:wrote] (tuple ;marks)) "the parked write finished after a collection")
+  (assert (= (length payload) (length got)) "and every byte of it arrived")
+  (:close r)
+  (:close w))
+
+# A read that finishes on a stream leaves a write parked on that same stream
+# registered. Nothing above puts both directions of one stream in flight.
+(compwhen (dyn 'net/server)
+  (do
+    (def marks @[])
+    (def both-port (string (+ 4 (scan-number test-port))))
+    (with [both-server (net/server test-host both-port)]
+      (def conn (assert (net/connect test-host both-port)))
+      (def peer (assert (net/accept both-server)))
+      (def payload (string/repeat "z" 8000000))
+      (ev/go (fn [] (protect (ev/write conn payload)) (array/push marks :wrote)))
+      (ev/go (fn [] (protect (ev/read conn 1)) (array/push marks :read)))
+      (ev/sleep 0.1)
+      (assert (empty? marks) "both directions of the socket are parked")
+      (ev/write peer "!")
+      (ev/sleep 0.1)
+      (assert (= [:read] (tuple ;marks)) "the read finished and the write is still parked")
+      (ev/go (fn [] (protect (ev/chunk peer (length payload) @""))))
+      (var tries 0)
+      (while (and (< (length marks) 2) (< tries 400))
+        (ev/sleep 0.01)
+        (set tries (+ tries 1)))
+      (assert (= [:read :wrote] (tuple ;marks))
+              "the parked write survived the read's completion on the same stream")
+      (:close peer)
+      (:close conn))))
+
+# A hangup on a stream reaches both the write fiber and the read fiber, and
+# each ends in an error. The order they are woken in is the backend's, so it is
+# not asserted.
+(compwhen (dyn 'net/server)
+  (do
+    (def woken @{})
+    (def hup-port (string (+ 3 (scan-number test-port))))
+    (with [hup-server (net/server test-host hup-port)]
+      (def conn (assert (net/connect test-host hup-port)))
+      (def peer (assert (net/accept hup-server)))
+      # Larger than any socket buffer the two ends can hold, so the write is
+      # still in flight when the peer goes away.
+      (def payload (string/repeat "x" 8000000))
+      (ev/go (fn [] (put woken :writer (first (protect (ev/write conn payload))))))
+      (ev/go (fn [] (put woken :reader (first (protect (ev/read conn 16))))))
+      (ev/sleep 0.2)
+      (assert (empty? woken) "the write and the read are both still blocked")
+      (:close peer)
+      (ev/sleep 0.3)
+      (assert (deep= @{:writer false :reader false} woken)
+              "a hangup wakes the write fiber and the read fiber, each with an error")
+      (:close conn))))
+
+# A generator that waits on the event loop part way through suspends the task
+# iterating it as well. When the loop resumes the task, the generator runs on,
+# and the interrupted `next` gets a key after a yield and nil after any signal
+# that ends the generator.
+(defn- iterate-across-a-wait [mask body]
+  (def done (ev/chan 1))
+  (ev/go (fn []
+           (def seen @[])
+           (each x (fiber/new body mask) (array/push seen x))
+           (ev/give done seen)))
+  (ev/take done))
+
+(assert (deep= @[1 2] (iterate-across-a-wait :y (fn [] (ev/sleep 0) (yield 1) (yield 2))))
+        "a yield after a wait continues the iteration")
+(assert (deep= @[1] (iterate-across-a-wait :y (fn [] (yield 1) (ev/sleep 0) :done)))
+        "a return after a wait ends the iteration")
+(assert (deep= @[1] (iterate-across-a-wait :ye (fn [] (yield 1) (ev/sleep 0) (error :stop))))
+        "a trapped error after a wait ends the iteration")
+(each n [0 1 2 3 4]
+  (assert (deep= @[1] (iterate-across-a-wait (keyword "y" n) (fn [] (yield 1) (ev/sleep 0) (signal n :stop))))
+          (string "a trapped user" n " signal after a wait ends the iteration")))
+
+# A Janet function called from a host frame, here the operator fallback's, that
+# ends on the event signal is coerced to an error, and the wait registered for
+# the task is withdrawn. The timer here is the generator's; it fires while the
+# task waits on a channel, and must not wake it.
+(def stale-given (ev/chan 1))
+(def stale-done (ev/chan 1))
+(ev/go (fn []
+         (def t @{:+ (fn [_ _] (resume (fiber/new (fn [] (ev/sleep 0.01) :late))))})
+         (def coerced (try (+ t 1) ([_] :coerced)))
+         (ev/give stale-done [coerced (ev/take stale-given)])))
+(ev/sleep 0.05)
+(ev/give stale-given :given)
+(assert (= [:coerced :given] (ev/take stale-done))
+        "a wait withdrawn by a coerced event does not wake the task")
+
+# A wait longer than the backend's timer can express is still a wait. A child
+# holds a wait of 1e12 seconds as its only timer while a thread wakes its loop
+# after a moment, so the loop polls with that wait as its deadline, and then
+# the child cancels it. The child is bounded from here, and one that overruns
+# is killed with a signal it cannot ignore.
+(compwhen (and (dyn 'os/spawn) (dyn 'ev/thread))
+  (def long-wait-code
+    `(def w (ev/spawn (ev/sleep 1e12)))
+     (ev/thread (fn [] (os/sleep 0.05)) nil)
+     (ev/cancel w "stop")
+     (prin "done")`)
+  (def long-wait (os/spawn [;run janet "-e" long-wait-code] :p {:out :pipe :err :pipe}))
+  (def long-wait-result
+    (protect (ev/with-deadline 5
+               [(string (:read (long-wait :out) :all)) (os/proc-wait long-wait)])))
+  (unless (first long-wait-result) (os/proc-kill long-wait false :kill))
+  (assert (deep= [true ["done" 0]] long-wait-result)
+          "a wait of 1e12 seconds is one the loop can poll with"))
 
 (end-suite)

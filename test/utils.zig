@@ -28,6 +28,7 @@
 // ==========================================================================
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // ==========================================================================
 // Project imports
@@ -55,6 +56,13 @@ const wrap = @import("subsystems").value.wrap;
 // ==========================================================================
 // Constants
 // ==========================================================================
+
+/// The hosts whose `cryptorand` draws from `arc4random_buf`, written out here
+/// rather than read from `utils.zig`, which keeps its own copy private.
+const bsd = switch (builtin.os.tag) {
+    .macos, .ios, .tvos, .watchos, .visionos, .freebsd, .netbsd, .openbsd, .dragonfly => true,
+    else => false,
+};
 
 const big_table = [_]SearchBig{
     .{ .name = "alpha", .a = 0, .b = 0, .d = 0 },
@@ -440,6 +448,56 @@ fn theTablesAreIndexedByTheNumbersACallerHas() void {
 // Entry
 // ==========================================================================
 
+/// A bare name gets `./` in front of it in a fresh allocation. A name that
+/// starts with a dot or holds a slash anywhere comes back as the same pointer.
+///
+/// Every name here has an even length and two have their slash at an odd
+/// index, so a scan that skipped a byte would still stop at the terminator,
+/// having missed the slash, rather than read on into whatever follows it.
+fn getProcessedNameAnchorsABareName() void {
+    const bare = utils.getProcessedName("food");
+    expect(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(bare))), "./food"));
+    utils.free(bare);
+    for ([_][*:0]const u8{ ".foo", "a/bc", "abc/de", "ab/c", "/abs" }) |name| {
+        expect(@intFromPtr(utils.getProcessedName(name)) == @intFromPtr(name));
+    }
+}
+
+/// Janet's heap resizes in place to a block's own length or shorter, and
+/// refuses to grow in place, because `realloc` may move the block.
+fn theHeapResizesInPlaceOnlyDownward() void {
+    const block = utils.heap.alloc(u8, 32) catch unreachable;
+    expect(utils.heap.resize(block, 32));
+    expect(utils.heap.resize(block, 16));
+    const shrunk: []u8 = block[0..16];
+    expect(!utils.heap.resize(shrunk, 64));
+    utils.heap.free(shrunk);
+}
+
+/// On a BSD host, macOS among them, `cryptorand` draws from `arc4random_buf`
+/// and opens nothing, so it answers with no descriptor free. The soft limit on
+/// descriptors is lowered to the lowest free one for the call and put back.
+/// Other hosts read `/dev/urandom` and skip the case.
+fn cryptorandOpensNoDescriptorOnABsd() void {
+    if (comptime bsd and config.cryptorand) {
+        var saved: std.c.rlimit = undefined;
+        expect(std.c.getrlimit(.NOFILE, &saved) == 0);
+        const lowest = std.c.open("/dev/null", .{ .ACCMODE = .RDONLY });
+        expect(lowest >= 0);
+        _ = std.c.close(lowest);
+        var lowered = saved;
+        lowered.cur = @intCast(lowest);
+        expect(std.c.setrlimit(.NOFILE, &lowered) == 0);
+        const refused = std.c.open("/dev/urandom", .{ .ACCMODE = .RDONLY });
+        var out: [16]u8 = undefined;
+        const answer = utils.cryptorand(&out, out.len);
+        expect(std.c.setrlimit(.NOFILE, &saved) == 0);
+        if (refused >= 0) _ = std.c.close(refused);
+        expect(refused < 0);
+        expect(answer == 0);
+    }
+}
+
 pub fn run() void {
     // The two cases that touch no heap, run before there is one. Nothing in
     // either needs a VM, and a hash that needed one would be a finding.
@@ -458,8 +516,9 @@ pub fn run() void {
     sortedKeysAnswersBucketIndicesInKeyOrder();
     theCollectionHashesAreWhatTheHeadsStore();
     theTablesAreIndexedByTheNumbersACallerHas();
+    getProcessedNameAnchorsABareName();
+    theHeapResizesInPlaceOnlyDownward();
+    cryptorandOpensNoDescriptorOnABsd();
 
     vm_lifecycle.deinit();
-
-    std.debug.print("utils contract ok\n", .{});
 }

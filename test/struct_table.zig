@@ -444,6 +444,14 @@ fn structGetBoundsThePrototypeChain() void {
         structs.get(deep, harness.wrapInteger(last - 1)),
         repr.Tag.nil,
     ));
+    // `getEx` walks the same bound and names the struct it found the key in.
+    const found = structs.getEx(deep, harness.wrapInteger(last));
+    expect(harness.equals(found.value, harness.wrapInteger(last)));
+    expect(harness.equals(
+        structs.rawget(found.holder.?, harness.wrapInteger(last)),
+        harness.wrapInteger(last),
+    ));
+    expect(structs.getEx(deep, harness.wrapInteger(last - 1)).holder == null);
     // rawget never leaves the head at all.
     expect(harness.isType(
         structs.rawget(deep, harness.wrapInteger(top - 1)),
@@ -763,20 +771,24 @@ fn tablePutUpdatesInPlace() void {
 }
 
 fn tableGetBoundsThePrototypeChain() void {
+    const top: i32 = config.max_proto_depth + 4;
+    const last: i32 = top - (config.max_proto_depth - 1);
     var deep: ?*tables.Table = null;
     var i: i32 = 0;
     while (i < config.max_proto_depth + 5) : (i += 1) {
         const t = tables.new(1);
         tables.put(t, harness.wrapInteger(i), harness.wrapInteger(i));
+        // The last table the walk reaches and the first it does not also hold
+        // a keyword, for `getKeyword`.
+        if (i == last) tables.put(t, kw("last"), harness.wrapInteger(i));
+        if (i == last - 1) tables.put(t, kw("past"), harness.wrapInteger(i));
         t.proto = deep;
         deep = t;
     }
-    const top: i32 = config.max_proto_depth + 4;
     expect(harness.equals(
         tables.get(deep.?, harness.wrapInteger(top)),
         harness.wrapInteger(top),
     ));
-    const last: i32 = top - (config.max_proto_depth - 1);
     expect(harness.equals(
         tables.get(deep.?, harness.wrapInteger(last)),
         harness.wrapInteger(last),
@@ -789,6 +801,24 @@ fn tableGetBoundsThePrototypeChain() void {
         tables.rawget(deep.?, harness.wrapInteger(top - 1)),
         repr.Tag.nil,
     ));
+
+    // `getEx`, `getKeyword` and `protoFlatten` walk the same bound.
+    const found = tables.getEx(deep.?, harness.wrapInteger(last));
+    expect(harness.equals(found.value, harness.wrapInteger(last)));
+    expect(harness.equals(
+        tables.rawget(found.holder.?, harness.wrapInteger(last)),
+        harness.wrapInteger(last),
+    ));
+    expect(tables.getEx(deep.?, harness.wrapInteger(last - 1)).holder == null);
+    expect(harness.equals(tables.getKeyword(deep.?, "last"), harness.wrapInteger(last)));
+    expect(harness.isType(tables.getKeyword(deep.?, "past"), repr.Tag.nil));
+    const flat = tables.protoFlatten(deep.?);
+    expect(flat.count == config.max_proto_depth + 1);
+    expect(harness.equals(
+        tables.rawget(flat, harness.wrapInteger(last)),
+        harness.wrapInteger(last),
+    ));
+    expect(harness.isType(tables.rawget(flat, harness.wrapInteger(last - 1)), repr.Tag.nil));
 }
 
 fn tableGetExReportsTheOwner() void {
@@ -826,6 +856,20 @@ fn tableGetKeyword() void {
     expect(harness.isType(tables.getKeyword(t, "missing"), repr.Tag.nil));
     // A prefix of a present key is not that key.
     expect(harness.isType(tables.getKeyword(t, "hell"), repr.Tag.nil));
+
+    // Nor is it when the two hashes are equal: the length is compared too.
+    // `word` and `wordmdtlsu` have the same unkeyed byte hash, and `-Dprf`
+    // keys the hash per process, so no fixed pair collides there.
+    if (!config.prf) {
+        expect(value.hashBytes("word") == value.hashBytes("wordmdtlsu"));
+        const long = tables.new(4);
+        tables.put(long, kw("wordmdtlsu"), harness.wrapInteger(3));
+        expect(harness.isType(tables.getKeyword(long, "word"), repr.Tag.nil));
+        expect(harness.equals(
+            tables.getKeyword(long, "wordmdtlsu"),
+            harness.wrapInteger(3),
+        ));
+    }
 }
 
 /// Clearing keeps the bucket array and the prototype, and drops both counts.
@@ -995,6 +1039,18 @@ fn tableProtoFlatten() void {
     const again = tables.protoFlatten(child);
     expect(again.deleted == 0);
     expect(harness.equals(tables.rawget(again, kw("a")), harness.wrapInteger(2)));
+
+    // The result grows by `put`'s policy, as exact capacities: a table of `n`
+    // keys flattens into the capacity `tableGrowthCapacities` has after `n`
+    // puts.
+    const expected = [9]usize{ 4, 4, 8, 8, 16, 16, 16, 16, 32 };
+    const source = tables.new(16);
+    for (expected, 0..) |capacity, n| {
+        tables.put(source, harness.wrapInteger(@intCast(n)), harness.wrapInteger(@intCast(n)));
+        const grown = tables.protoFlatten(source);
+        expect(grown.count == n + 1);
+        expect(grown.capacity == capacity);
+    }
 }
 
 /// The same properties once more, reached the way a Janet program reaches

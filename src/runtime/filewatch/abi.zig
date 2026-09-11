@@ -4,8 +4,8 @@
 //! `filewatch/abi.h` has the reasoning, including why this subsystem
 //! translates its own headers rather than sharing another subsystem's. What is
 //! here beyond the translation is what a translation cannot bring across: the
-//! backend selection as an enumeration, `EV_SET`, `S_ISDIR`, and the two
-//! Windows declarations that are in no system header.
+//! backend selection as an enumeration, `EV_SET`, and the two Windows
+//! declarations that are in no system header.
 //!
 //! The selection chain and `filewatch/abi.h`'s have to agree, and nothing but
 //! the assertion at the foot of this file would say so. The header picks which
@@ -102,15 +102,6 @@ pub fn evSetVnode(kev: *h.struct_kevent, fd: c_int, flags: u32) void {
     kev.filter = @intCast(h.EVFILT_VNODE);
     kev.flags = @intCast(h.EV_ADD | h.EV_ENABLE | h.EV_CLEAR);
     kev.fflags = @intCast(flags);
-}
-
-/// `S_ISDIR`. A function-like macro, which translate-c renders as a
-/// `@compileError` often enough that `net/abi.zig` met the same thing in
-/// `_IOW`. The expansion is one mask and one comparison and both operands are
-/// ordinary integer constants, so writing it out costs nothing and cannot be
-/// demoted.
-pub inline fn isDir(mode: anytype) bool {
-    return (@as(u32, @intCast(mode)) & @as(u32, h.S_IFMT)) == @as(u32, h.S_IFDIR);
 }
 
 // ==========================================================================

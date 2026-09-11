@@ -57,6 +57,14 @@
 (assert (< [1 2 3] [1 2 3 -1]) "tuple comparison 5")
 (assert (> [1 2 3] [1 2]) "tuple comparison 6")
 
+# Two equal structs over a prototype compare equal, and the elements after
+# them in a tuple still decide the order.
+(def proto-parent {:x 1})
+(def with-proto-1 (struct/with-proto proto-parent :k 1))
+(def with-proto-2 (struct/with-proto proto-parent :k 1))
+(assert (= -1 (cmp [with-proto-1 :a] [with-proto-2 :b]))
+        "tuple comparison past a struct's prototype")
+
 # More numerical tests
 # e05022f
 (assert (= 1 1.0) "numerical equal 1")

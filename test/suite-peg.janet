@@ -1008,4 +1008,139 @@
 (assert-error "grammar error in (constant), arity mismatch, expected at least 1, got 0"
               (peg/compile '(constant)))
 
+# Phase 20 batch 2d found these unmeasured. Each block names what it pins.
+
+# peg/find and peg/find-all stop at the last character rather than at the
+# position after it, so a pattern that matches only at the end of the text
+# matches nowhere. `-1` is that pattern: it is `(not 1)`.
+(assert (nil? (peg/find -1 "ab")) "peg/find does not try the position past the text")
+(assert (deep= @[] (peg/find-all -1 "ab")) "and neither does peg/find-all")
+(assert (deep= @[0 1] (peg/find-all 0 "ab")) "an empty match is found at each character")
+(assert (deep= @[0 1 2] (peg/find-all "a" "aaa")) "and every position is tried in turn")
+
+# A repetition of zero is a repetition, and a range of one character is a
+# range. Both are the low end of a bound the compiler checks.
+(assert (deep= @[] (peg/match '(0 "a") "")) "(0 ...) repeats zero times")
+(assert (deep= @[] (peg/match '(range "aa") "a")) "a range may be one character wide")
+(assert-error "range \"ba\" is empty" (peg/compile '(range "ba")))
+
+# `(argument n)` indexes the extra arguments, and both ends of the range give
+# nil rather than reading outside them. The negative end is covered above.
+(assert (deep= @[:arg] (peg/match '(argument 0) "x" 0 :arg))
+        "argument 0 is the first extra argument")
+(assert (deep= @[:b] (peg/match '(argument 1) "x" 0 :a :b))
+        "and argument 1 the second")
+(assert (deep= @[nil] (peg/match '(argument 1) "x" 0 :a))
+        "an index one past the last argument captures nil")
+
+# `(number ...)` takes a radix between two and thirty-six, and both bounds are
+# accepted rather than merely documented.
+(assert (deep= @[10] (peg/match ~(number 4 2) "1010")) "a radix of two is accepted")
+(assert (deep= @[35] (peg/match ~(number 1 36) "z")) "and a radix of thirty-six")
+(assert-error "expected integer between 2 and 36, got 1" (peg/compile ~(number 1 1)))
+(assert-error "expected integer between 2 and 36, got 37" (peg/compile ~(number 1 37)))
+
+# The matcher's budget is spent one frame per nested rule, and both ends of it
+# are asserted: a budget spent twice as fast still refuses the far end, so the
+# near end is what says how fast it is spent.
+(assert (peg/match '{:main (+ (* "a" :main) 0)} (string/repeat "a" 600))
+        "a subject inside the recursion budget matches")
+(assert-error "peg/match recursed too deeply"
+              (peg/match '{:main (+ (* "a" :main) 0)} (string/repeat "a" 1022)))
+
+# A character class at the end of the text has no character to test, and the
+# matcher stops rather than reading the byte after the subject. The classes
+# below hold the zero byte deliberately: a Janet string is terminated by one,
+# so a class that excludes it cannot tell a stopped matcher from one that read
+# the terminator and rejected it.
+(assert (nil? (peg/match '(* "a" (range "az")) "a")) "a range at the end of the text fails")
+(assert (nil? (peg/match ~(* "a" (range "\x00\xff")) "a"))
+        "including one that would accept the byte after the subject")
+(assert (nil? (peg/match '(* "a" (set "xyz")) "a")) "and so does a set")
+(assert (nil? (peg/match ~(* "a" (set "\x00")) "a"))
+        "including one that holds the terminator")
+
+# `(> n ...)` looks n characters away, and a look outside the subject fails
+# rather than matching against whatever is there.
+(assert (nil? (peg/match '(> 5 "a") "ab")) "a look past the end of the text fails")
+(assert (nil? (peg/match '(* "ab" (> -5 "a")) "ab")) "and one before its start")
+(assert (deep= @[] (peg/match '(> 0 "a") "ab")) "a look of zero is the position itself")
+# The end of the text is inside the range a look may land on, and one byte
+# past it is not.
+(assert (deep= @[] (peg/match '(* "ab" (> 0 -1)) "ab"))
+        "a look landing exactly at the end of the text is allowed")
+(assert (nil? (peg/match '(* "ab" (> 1 -1)) "ab"))
+        "and one landing past it is not")
+
+# `(line)` and `(column)` are read from a map of the newlines, built by a
+# binary search that has to land on the right side of each one.
+(assert (deep= @[1 2] (peg/match '(* "a" (line) (column)) "a\nb"))
+        "a position on the first line reports line one")
+(assert (deep= @[2 1] (peg/match '(* "a\n" (line) (column)) "a\nb"))
+        "a position just after a newline begins the next line")
+(assert (deep= @[2 3] (peg/match '(* "ab\ncd" (line) (column)) "ab\ncd"))
+        "a position on the second line reports its own column")
+(assert (deep= @[3 2] (peg/match '(* "a\nb\nc" (line) (column)) "a\nb\nc"))
+        "and a third line is found by the same search")
+# Enough newlines that the search iterates rather than answering from its
+# first comparison, and a position on each newline as well as after it: the
+# newline belongs to the line before it, which is the side the comparison
+# decides.
+(do
+  (def lines "a\nbb\nccc\ndddd\neeeee\nffffff")
+  (defn loc-at [n] (peg/match ~(* (between ,n ,n 1) (line) (column)) lines))
+  (assert (deep= @[1 2] (loc-at 1)) "the first newline ends the first line")
+  (assert (deep= @[2 1] (loc-at 2)) "and the byte after it begins the second")
+  (assert (deep= @[3 4] (loc-at 8)) "a newline in the middle of the map ends its own line")
+  (assert (deep= @[4 1] (loc-at 9)) "and the byte after it begins the next")
+  (assert (deep= @[4 5] (loc-at 13)) "as does the one after that")
+  (assert (deep= @[5 6] (loc-at 19)) "and the last newline in the text")
+  (assert (deep= @[6 1] (loc-at 20)) "with the final line after it"))
+
+# peg/replace walks the subject once, copying the text between matches, and an
+# empty match advances by one so the walk terminates.
+(assert (deep= @"bXnXnX" (peg/replace-all "a" "X" "banana")) "replace-all substitutes each match")
+(assert (deep= @"bXnana" (peg/replace "a" "X" "banana")) "replace substitutes the first")
+(assert (deep= @"XaXb" (peg/replace-all 0 "X" "ab")) "an empty match advances by one character")
+
+# `(nth n ...)` selects one capture of a rule, and an index past the last one
+# fails the rule rather than reading outside the captures.
+(assert (deep= @["a"] (peg/match '(nth 0 (* '"a" '"b")) "ab")) "nth 0 is the first capture")
+(assert (deep= @["b"] (peg/match '(nth 1 (* '"a" '"b")) "ab")) "nth 1 the second")
+(assert (nil? (peg/match '(nth 2 (* '"a" '"b")) "ab")) "and nth 2 of two captures fails")
+
+# `(backmatch)` matches the text of the most recent capture.
+(assert (deep= @["a"] (peg/match '(* '"a" (backmatch)) "aa")) "backmatch repeats the last capture")
+(assert (nil? (peg/match '(* '"a" (backmatch)) "ab")) "and fails where the text differs")
+
+# `(to x)` stops before its terminus and `(thru x)` after it.
+(assert (deep= @["c"] (peg/match '(* (to "c") '(any 1)) "abc")) "to stops before its terminus")
+(assert (deep= @[""] (peg/match '(* (thru "c") '(any 1)) "abc")) "thru consumes it")
+
+# `(error x)` raises with the capture the rule produced, or with a position
+# when the rule captured nothing.
+(assert-error "a" (peg/match '(error '"a") "a"))
+(assert-error "match error at line 1, column 1" (peg/match '(error) "a"))
+
+# `(lenprefix n patt)` needs its length rule to produce a capture, and fails
+# rather than reading one that is not there.
+(assert (nil? (peg/match '(lenprefix "a" "b") "ab"))
+        "a length rule that captures nothing fails the lenprefix")
+(assert (deep= @[] (peg/match ~(lenprefix (/ '(any "a") ,length) "b") "aabb"))
+        "and one that captures a count matches that many")
+
+# A readint capture is a double up to six bytes wide and a boxed integer above
+# it, because seven bytes no longer fit a double exactly.
+(assert (= :number (type (first (peg/match ~(uint 6) "\x01\x00\x00\x00\x00\x00"))))
+        "six bytes are captured as a number")
+(compwhen (dyn 'int/u64)
+  (assert (= :core/u64 (type (first (peg/match ~(uint 7) "\x01\x00\x00\x00\x00\x00\x00"))))
+          "and seven as a boxed integer"))
+(assert-no-error "a readint of zero width compiles" (peg/compile ~(uint 0)))
+
+# An accumulate nested inside an accumulate under the same tag folds into the
+# outer one rather than producing a capture of its own.
+(assert (deep= @["ab"] (peg/match '(accumulate (* '"a" (accumulate '"b"))) "ab"))
+        "a nested accumulation folds into the one around it")
+
 (end-suite)

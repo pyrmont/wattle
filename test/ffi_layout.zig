@@ -37,8 +37,6 @@
 // Standard library imports
 // ==========================================================================
 
-const std = @import("std");
-
 // ==========================================================================
 // Project imports
 // ==========================================================================
@@ -476,6 +474,4 @@ pub fn run() void {
     layoutMatchesTheCompiler();
     layoutInvariantsOverASweep();
     packedLayoutInvariantsOverASweep();
-
-    std.debug.print("ffi_layout: all tests passed\n", .{});
 }

@@ -60,6 +60,7 @@ const builtin = @import("builtin");
 const boundary = @import("abi");
 const buffers = @import("subsystems").value.buffers;
 const c = @import("cabi");
+const capi = @import("subsystems").capi;
 const channel = subsystems.ev_channel;
 const constants = @import("constants");
 const core_env = @import("subsystems").env;
@@ -235,6 +236,25 @@ fn theThreadedChannel() void {
     expect(!try_(channel.channelGive(chan, value.fromBytes("packed", .string))));
     expect(try_(channel.channelTake(chan, &out)));
     expect(payloadIs(out, "packed"));
+}
+
+/// The two embedder constructors take a `u32` and assert that it fits an
+/// `i32`, so the largest value that does fit is the one input that separates
+/// that bound from the one below it. `(ev/chan n)` reaches neither function:
+/// `cfunNew` calls `chanInit` itself, with no bound of its own.
+fn theChannelCapacityBound() void {
+    const limit: u32 = std.math.maxInt(i32);
+
+    const chan = channel.channelMake(limit).?;
+    var out = wrap.fromNil();
+    expect(!try_(channel.channelGive(chan, harness.wrapInteger(3))));
+    expect(try_(channel.channelTake(chan, &out)));
+    expect(wrap.toInteger(out) == 3);
+
+    const threaded = channel.channelMakeThreaded(limit).?;
+    expect(!try_(channel.channelGive(threaded, harness.wrapInteger(4))));
+    expect(try_(channel.channelTake(threaded, &out)));
+    expect(wrap.toInteger(out) == 4);
 }
 
 /// Giving to a closed channel raises, and this asserts the *abi*, which is
@@ -799,6 +819,38 @@ fn theCancelOfANonTask() void {
     expect(!try_(channel.channelTake(sup, &event)));
 }
 
+/// A module's `wake` answers whether the fiber will be resumed, which is how
+/// the module learns whether to free its context. It is false for a value that
+/// is not a fiber and for a fiber a cancel has already scheduled, and true for
+/// a fiber it schedules. The capability is the VM itself.
+fn theWakeAnswers() void {
+    const w: *boundary.Wake = @ptrCast(harness.vm());
+    expect(!capi.janet_wake(w, wrap.fromNumber(1), wrap.fromNil()));
+
+    const out = doString("[(fiber/new (fn [x] x) :e) (fiber/new (fn [x] x) :e)]");
+    gc_alloc.gcroot(out);
+    defer _ = gc_alloc.gcunroot(out);
+    const tup = wrap.toTuple(out);
+    const cancelled = wrap.toFiber(tup[0]);
+
+    // The supervisor takes the cancelled fiber's error, which would otherwise
+    // print a stack trace.
+    const sup = channel.channelMake(4).?;
+    const supv = wrap.fromAbstract(sup);
+    gc_alloc.gcroot(supv);
+    defer _ = gc_alloc.gcunroot(supv);
+    cancelled.supervisor_channel = @ptrCast(sup);
+
+    ev.schedule(cancelled, wrap.fromNil());
+    expect(harness.raised(ev.cancel, .{ cancelled, value.fromBytes("gone", .string) }) == null);
+    expect(!capi.janet_wake(w, tup[0], wrap.fromNil()));
+
+    expect(capi.janet_wake(w, tup[1], value.fromBytes("woken", .string)));
+    raise.toAbi(ev.loop());
+    expect(ev.loopDone());
+    expect(payloadIs(wrap.toFiber(tup[1]).last_value, "woken"));
+}
+
 /// `ev.scheduleSoon` puts a task at the head of the spawn queue where
 /// `ev.schedule` appends. Nothing in Janet chooses between them.
 fn theScheduleSoonOrder() void {
@@ -1068,6 +1120,7 @@ pub fn run() void {
 
     theEmbedderChannelApi();
     theThreadedChannel();
+    theChannelCapacityBound();
     theClosedChannel();
     theChannelGetters();
 
@@ -1091,6 +1144,7 @@ pub fn run() void {
     theOrderedTimeouts();
     theTwoTimeoutConstructors();
     theCancelOfANonTask();
+    theWakeAnswers();
     theScheduleSoonOrder();
     theScheduleSignalOrder();
     theScheduleSignalIsFifo();
@@ -1100,6 +1154,4 @@ pub fn run() void {
     theThreadedFlag();
     theOptChannelBoundary();
     theWrongArgumentIsNotAChannel();
-
-    std.debug.print("ev_loop contract ok\n", .{});
 }

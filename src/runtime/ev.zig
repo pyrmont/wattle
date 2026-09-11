@@ -111,6 +111,13 @@ pub const has_interrupt = constants.JANET_VM_HAS_INTERRUPT != 0;
 /// Whether this build has the net subsystem.
 pub const has_net = constants.JANET_VM_HAS_NET != 0;
 
+/// The longest kqueue timer interval this build will ask for, in milliseconds.
+/// macOS's `kevent` refuses a timeout whose `tv_sec` is above 2147483647 with
+/// `EINVAL`, found by bisecting `tv_sec` against an already triggered event,
+/// and the loop cannot go on after a failed poll. A longer wait polls for this
+/// long and then goes round again.
+const kqueue_max_interval: i64 = 2147483647 * milliseconds_per_second;
+
 /// The shortest kqueue timer interval this build will ask for. NetBSD rejects
 /// intervals below a millisecond; every other kqueue platform accepts zero.
 const kqueue_min_interval: i64 = 0;
@@ -677,13 +684,15 @@ pub inline fn iocpHandle() ?*anyopaque {
     return @ptrCast(vm_state.current().ev.backend.iocp);
 }
 
-/// Clamps a kqueue interval to the minimum the platform accepts.
+/// Clamps a kqueue interval to what the platform accepts, at both ends.
 ///
 /// Only the kqueue backend calls this, but the rule belongs to kqueue's
 /// interface rather than to the host running the build, so it is compiled and
 /// tested everywhere, as the Windows command-line escaping is.
 pub fn kqueueInterval(ts: i64) i64 {
-    return if (ts >= kqueue_min_interval) ts else kqueue_min_interval;
+    if (ts < kqueue_min_interval) return kqueue_min_interval;
+    if (ts > kqueue_max_interval) return kqueue_max_interval;
+    return ts;
 }
 
 /// `ev/backend.zig`'s `levelTriggeredStream`, re-exported.

@@ -604,5 +604,4 @@ pub fn run() void {
     expect(raises_fired == expected_raises);
 
     vm_lifecycle.deinit();
-    std.debug.print("pp format contract ok\n", .{});
 }

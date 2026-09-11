@@ -60,7 +60,7 @@ fi
 # walked the weak heap at teardown, and `gc_stress` was excluded outright until
 # Phase 16 Part 2 stopped the sweep orphaning what a finalizer allocates -- the
 # 48 bytes it leaked were the subject of the contract rather than a mistake in
-# it. All three under `DESIGN.md` section 12.
+# it.
 #
 # **These expectations tighten and never loosen**: a count that drops is a leak
 # that was fixed and the number comes down with it; a count that rises is a

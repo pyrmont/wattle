@@ -43,7 +43,7 @@
 #   surface   declared in `abi.zig`, `module.zig` or `capi.zig`. These three are
 #             published to a separately compiled module or to a C caller by
 #             symbol, so "nothing in this tree names it" is the expected state
-#             rather than a finding. `DESIGN.md` section 14 puts the burden on
+#             rather than a finding. `DESIGN.md` section 13 puts the burden on
 #             `abi.zig` differently and more strictly: every declaration there
 #             carries a sentence naming which author-side code needs it, and
 #             that sentence is what a reader checks.

@@ -125,9 +125,10 @@ pub fn capacityFor(val: usize) usize {
 /// nil has never been used and ends the scan; a bucket whose key is nil and
 /// whose value is not is a tombstone, remembered as a candidate and scanned
 /// past, because the key may still be further along. So the result is the key's
-/// own bucket if it is present, the first tombstone if it is not, and a truly
-/// empty bucket otherwise, which is the order `tables.put` depends on and the
-/// reason it never has a tombstone to retire.
+/// own bucket if it is present, the first truly empty bucket if it is not, and
+/// the first tombstone only when the scan meets no empty bucket, which is the
+/// order `tables.put` depends on and the reason it never has a tombstone to
+/// retire.
 ///
 /// A capacity of zero sends this off the array; see `mapHash`. No constructor
 /// produces one, and a safety-checked build traps at the first index rather

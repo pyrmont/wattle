@@ -366,9 +366,11 @@ fn cfunDebugArgstack(argv: []repr.Value) align(corefn.alignment) raise.Raising(r
     const fiber = try args_core.getFiber(argv, 0);
     const array = arrays.new(@intCast(fiber.stacktop - fiber.stackstart));
     const count: usize = @intCast(array.capacity);
+    // Into `reserved()`, then the count: `slice()` is `count` long, and the
+    // count is 0 until the elements are written.
     if (count != 0) {
         @memcpy(
-            array.slice()[0..count],
+            array.reserved()[0..count],
             (fiber.data.? + @as(usize, @intCast(fiber.stackstart)))[0..count],
         );
     }

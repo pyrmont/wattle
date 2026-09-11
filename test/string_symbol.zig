@@ -175,6 +175,23 @@ fn constructorsWriteTheTerminator() void {
     utils.free(source);
 }
 
+/// `string/repeat` copies exactly `n` times into the string `begin` sized and
+/// terminated, so the byte past the last copy is still the terminator. No
+/// allocator probe is needed: a copy past the end overwrites the zero `begin`
+/// wrote, whatever the block held before.
+///
+/// It reaches `string/repeat` through the core environment, and building that
+/// interns every core name, so it runs after the cases that count the cache.
+fn repeatStopsAtTheLength() void {
+    var argv = [_]repr.Value{ wrap.fromString(strings.cstring("ab")), harness.wrapInteger(3) };
+    const out = harness.callCore("string/repeat", &argv) catch
+        @panic("string_symbol: string/repeat raised");
+    expect(harness.isType(out, repr.Tag.string));
+    const s = wrap.toString(out);
+    expect(std.mem.eql(u8, bytesOf(s), "ababab"));
+    expect(s[6] == 0);
+}
+
 /// The one-step constructor copies and hashes immediately.
 fn stringCopiesAndHashes() void {
     const s = strings.new("world");
@@ -483,6 +500,30 @@ fn tombstonesForceARehash() void {
     expect(rehashed);
 }
 
+/// The cache resizes at the first put past half full and not at half. A put
+/// that finds `count + deleted` at exactly half the capacity leaves the
+/// capacity alone, and the next put resizes to `capacityFor(2 * count + 1)`.
+fn cacheGrowsPastHalf() void {
+    const cache = &harness.vm().symcache;
+    var name: [40]u8 = undefined;
+    var n: usize = 0;
+    while ((cache.count + cache.deleted) * 2 != cache.capacity) : (n += 1) {
+        const text = std.fmt.bufPrintZ(&name, "half-probe-{d}", .{n}) catch unreachable;
+        _ = symbols.csymbol(text.ptr);
+    }
+
+    const capacity = cache.capacity;
+    _ = symbols.csymbol("half-probe-at-half");
+    expect(cache.capacity == capacity);
+    expect((cache.count + cache.deleted) * 2 == capacity + 2);
+
+    const live = cache.count;
+    _ = symbols.csymbol("half-probe-past-half");
+    expect(cache.capacity == value.capacityFor(2 * live + 1));
+    expect(cache.deleted == 0);
+    expect(cache.count == live + 1);
+}
+
 /// The leading underscore comes from `symbols.cacheInit` and nothing else
 /// ever writes it, so it is the one part of the counter's initial state that
 /// survives to be observed. This case has to run before the one below, which
@@ -740,6 +781,7 @@ pub fn run() void {
     lookupReclaimsATombstone();
     cacheResizesAndKeepsIdentity();
     tombstonesForceARehash();
+    cacheGrowsPastHalf();
     generatedNamesComeFromTheInitialCounter();
     gensymAdvancesTheOdometer();
     gensymCarriesBetweenPositions();
@@ -748,6 +790,7 @@ pub fn run() void {
     tupleBeginAndEnd();
     tupleNCopiesAndHashes();
 
+    repeatStopsAtTheLength();
     fromJanet();
 
     theRegistryRecordsALocation();

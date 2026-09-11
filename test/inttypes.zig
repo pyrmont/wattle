@@ -183,6 +183,17 @@ fn theSignedAgainstDoubles() void {
     expect(compareS64Double(9007199254740992, 9007199254740992.0) == 0);
     expect(compareS64Double(9007199254740993, 9007199254740992.0) == 1);
     expect(compareS64Double(-9007199254740993, -9007199254740992.0) == -1);
+
+    // 2^63 is the first double past the range, and it orders above every box
+    // from either side. The doubles either side of it are the bracket.
+    const two_63 = 9223372036854775808.0;
+    expect(compareS64Double(1, two_63) == -1);
+    expect(compareS64Double(std.math.maxInt(i64), two_63) == -1);
+    expect(compareValues(wrap.fromNumber(two_63), inttypes.wrapS64(1)) == 1);
+    expect(compareS64Double(1, two_63 - 1024) == -1);
+    expect(compareS64Double(1, 2 * two_63) == -1);
+    // Below 2^63 the double is still inside the range and compared exactly.
+    expect(compareS64Double(std.math.maxInt(i64), 4611686018427387904.0) == 1);
 }
 
 fn theUnsignedAgainstDoubles() void {
@@ -208,6 +219,15 @@ fn theUnsignedAgainstDoubles() void {
 
     expect(compareU64Double(9007199254740992, 9007199254740992.0) == 0);
     expect(compareU64Double(9007199254740993, 9007199254740992.0) == 1);
+
+    // 2^64 is the first double past the range, from either side, bracketed by
+    // the double below it and 2^65.
+    const two_64 = 18446744073709551616.0;
+    expect(compareU64Double(1, two_64) == -1);
+    expect(compareU64Double(max, two_64) == -1);
+    expect(compareValues(wrap.fromNumber(two_64), inttypes.wrapU64(1)) == 1);
+    expect(compareU64Double(1, two_64 - 2048) == -1);
+    expect(compareU64Double(1, 2 * two_64) == -1);
 }
 
 /// The two 64-bit types against each other, where neither can be widened into

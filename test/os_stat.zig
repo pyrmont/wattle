@@ -38,11 +38,13 @@ const builtin = @import("builtin");
 // Project imports
 // ==========================================================================
 
+const c = @import("cabi");
 const config = @import("config");
 const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
 const fs = @import("subsystems").fs;
 const harness = @import("harness.zig");
+const host_stat = @import("subsystems").host_stat;
 
 /// The field registry, by import.
 const os_stat = @import("subsystems").stat;
@@ -174,6 +176,10 @@ fn theFieldRegistry() void {
     expect(os_stat.fieldLookup("Dev", 3) == -1);
     expect(os_stat.fieldLookup("int-permission", 14) == -1);
 
+    // The key's own length bounds the comparison, so the first three bytes of
+    // a longer buffer are `dev`.
+    expect(os_stat.fieldLookup("device", 3) == 0);
+
     // The preserved `utils.cstrcmp` quirk; see the header comment.
     expect(os_stat.fieldLookup("dev\x00", 4) == 0);
 }
@@ -213,8 +219,11 @@ fn theCoreFunctions() void {
         \\(assert (= "rw-r-----" (st :permissions)))
     );
 
-    // A keyword selects one field rather than building the table.
+    // A keyword selects one field rather than building the table, the first
+    // field in the registry among them.
     eval(
+        \\(assert (= ((os/stat "janet-zig-os-stat-4d71/file") :dev)
+        \\           (os/stat "janet-zig-os-stat-4d71/file" :dev)))
         \\(assert (= :file (os/stat "janet-zig-os-stat-4d71/file" :mode)))
         \\(assert (= 10 (os/stat "janet-zig-os-stat-4d71/file" :size)))
         \\(assert (= :directory (os/stat "janet-zig-os-stat-4d71" :mode)))
@@ -242,6 +251,22 @@ fn theCoreFunctions() void {
             \\(assert (= 10 (os/stat "janet-zig-os-stat-4d71/link" :size)))
         );
     }
+}
+
+/// `isDirectory` answers for the descriptor under an open stream: true for a
+/// directory, false for a file, and false where `fstat` cannot be asked, which
+/// a descriptor closed under the stream arranges.
+fn theDirectoryTest() void {
+    if (builtin.os.tag == .windows) return;
+    const dir = c.fopen(work_dir, "r").?;
+    expect(host_stat.isDirectory(dir));
+    _ = c.fclose(dir);
+
+    const file = c.fopen(work_file, "r").?;
+    expect(!host_stat.isDirectory(file));
+    expect(c.close(c.fileno(file)) == 0);
+    expect(!host_stat.isDirectory(file));
+    _ = c.fclose(file);
 }
 
 /// An unknown field keyword raises rather than giving nil, and a prefix of a
@@ -274,6 +299,7 @@ pub fn run() void {
     environment = harness.coreEnv();
     theCoreFunctions();
     theRefusals();
+    theDirectoryTest();
     vm_lifecycle.deinit();
     cleanPaths();
 }

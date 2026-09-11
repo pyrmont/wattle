@@ -33,16 +33,19 @@
 //! which it does, and the negative case is not asserted at all. `array/ensure`
 //! rejects both before they get here, which `suite-corelib.janet` pins.
 //!
-//! Two overflow refusals are also uncovered. `buffers.extra`'s is asserted
-//! below because it is reachable with a large `n` and an empty buffer, but
-//! `arrays.push`'s requires an array of `INT32_MAX` elements to already exist,
-//! which is not something a test can arrange.
+//! The overflow refusals are asserted on both sides of their boundaries by
+//! `theCeilings` and `theReservedCeilings`, on containers built by hand with a
+//! count near `INT32_MAX` that no allocation backs. Each operation there
+//! refuses before it reads an element or writes the one element past the
+//! count, so a ceiling costs a reservation of address space and not the
+//! elements.
 
 // ==========================================================================
 // Standard library imports
 // ==========================================================================
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // ==========================================================================
 // Project imports
@@ -218,6 +221,11 @@ fn pointerBufferNeverReallocates() !void {
         buffers.pointerUnsafe,
         .{ @as(?*anyopaque, &foreign), @as(usize, 2), @as(usize, 3) },
     ).?.says("capacity < count"));
+
+    // A capacity equal to the count is a full buffer and not a refusal.
+    const full = try buffers.pointerUnsafe(&foreign, 8, 8);
+    expect(full.count == 8);
+    expect(full.capacity == 8);
 }
 
 /// The growth factor multiplies the requested capacity, and the request is
@@ -354,6 +362,22 @@ fn bufferPushesLittleEndian() !void {
     try buffers.pushString(b, strings.new("a\x00b"));
     expect(b.count == 3);
     expect(std.mem.eql(u8, b.slice()[0..3], "a\x00b"));
+}
+
+/// `:native` is the byte order the host stores an integer in, which is `:le`
+/// on one host and `:be` on another, so the expected bytes are the host's own
+/// representation of the word.
+fn nativeOrderIsTheHosts() !void {
+    const word: u16 = 0x0102;
+    const b = buffers.new(4);
+    var argv = [_]repr.Value{
+        wrap.fromBuffer(b),
+        wrap.fromKeyword(strings.cstring("native")),
+        harness.wrapInteger(word),
+    };
+    _ = try harness.callCore("buffer/push-uint16", &argv);
+    expect(b.count == 2);
+    expect(std.mem.eql(u8, b.slice(), std.mem.asBytes(&word)));
 }
 
 /// Every payload the buffer allocates is charged to the collector.
@@ -593,6 +617,118 @@ fn zeroGrowthReleasesThePayload() !void {
     a.count = 0;
 }
 
+/// The ceilings that need no memory: `buffers.extra` takes a total of exactly
+/// `maxInt(i32)` and refuses one more.
+///
+/// The buffer is built by hand and already claims that capacity, so neither
+/// call allocates. It is on the stack and on no heap list, and nothing here
+/// runs the collector.
+fn theCeilings() !void {
+    const ceiling: usize = std.math.maxInt(i32);
+    var full: buffers.Buffer = .{ .count = 1, .capacity = ceiling, .data = &foreign };
+    try buffers.extra(&full, ceiling - 1);
+    expect(full.capacity == ceiling);
+    expect(full.count == 1);
+    expect(harness.raised(buffers.extra, .{ &full, ceiling }).?.says("buffer overflow"));
+
+    if (comptime builtin.os.tag != .windows and @sizeOf(usize) >= 8) {
+        try theReservedCeilings();
+    }
+}
+
+/// The ceilings whose accepting side writes one element at the end of the
+/// range, into address space reserved for it and otherwise untouched.
+///
+/// `buffers.extra` doubles a size of exactly half of `maxInt(i32)` to
+/// `maxInt(i32) - 1`, which reallocates two gigabytes that nothing fills.
+/// `buffer/blit` writes up to exactly `maxInt(i32)`. `array/push` refuses a
+/// push that would reach a count of `maxInt(i32)`, `array/insert` takes one
+/// that reaches it and refuses one more, and `arrays.push` refuses at the
+/// count itself. A host that refuses a reservation skips the part that uses
+/// it.
+///
+/// The doubling reallocates through the runtime's allocator, whose
+/// out-of-memory path ends the process rather than raising, so it is probed
+/// with a reservation of the same size first. A host with two gigabytes of
+/// memory, such as a container VM, refuses the probe and skips it.
+fn theReservedCeilings() !void {
+    const ceiling: usize = std.math.maxInt(i32);
+    const top: i32 = std.math.maxInt(i32);
+
+    if (reserve(ceiling)) |probe| {
+        release(probe, ceiling);
+        var half: buffers.Buffer = undefined;
+        _ = buffers.init(&half, 4);
+        try buffers.extra(&half, ceiling / 2);
+        expect(half.capacity == ceiling - 1);
+        buffers.deinit(&half);
+    }
+
+    if (reserve(ceiling)) |memory| {
+        defer release(memory, ceiling);
+        var dest: buffers.Buffer = .{ .count = ceiling - 1, .capacity = ceiling, .data = memory };
+        var argv = [_]repr.Value{
+            wrap.fromBuffer(&dest),
+            wrap.fromString(strings.cstring("xy")),
+            harness.wrapInteger(top - 1),
+        };
+        expect(harness.coreRaised("buffer/blit", &argv).?.says("buffer blit out of range"));
+        expect(dest.count == ceiling - 1);
+        argv[1] = wrap.fromString(strings.cstring("x"));
+        _ = try harness.callCore("buffer/blit", &argv);
+        expect(dest.count == ceiling);
+        expect(memory[ceiling - 1] == 'x');
+    }
+
+    const slots = ceiling * @sizeOf(repr.Value);
+    if (reserve(slots)) |memory| {
+        defer release(memory, slots);
+        var a: arrays.Array = .{
+            .count = ceiling - 2,
+            .capacity = ceiling,
+            .data = @ptrCast(@alignCast(memory)),
+        };
+        var push = [_]repr.Value{ wrap.fromArray(&a), harness.wrapInteger(7) };
+        _ = try harness.callCore("array/push", &push);
+        expect(a.count == ceiling - 1);
+        expect(harness.integerIs(a.data.?[ceiling - 2], 7));
+        expect(harness.coreRaised("array/push", &push).?.says("array overflow"));
+        expect(a.count == ceiling - 1);
+
+        var insert = [_]repr.Value{
+            wrap.fromArray(&a),
+            harness.wrapInteger(top - 1),
+            harness.wrapInteger(8),
+        };
+        _ = try harness.callCore("array/insert", &insert);
+        expect(a.count == ceiling);
+        expect(harness.integerIs(a.data.?[ceiling - 1], 8));
+        insert[1] = harness.wrapInteger(top);
+        expect(harness.coreRaised("array/insert", &insert).?.says("array overflow"));
+        expect(harness.raised(arrays.push, .{ &a, harness.wrapInteger(9) }).?.says("array overflow"));
+        expect(a.count == ceiling);
+    }
+}
+
+/// Address space for a container that claims a count near its ceiling, or
+/// null where the host refuses to reserve it. `release` returns it.
+fn reserve(bytes: usize) ?[*]u8 {
+    const ptr = std.c.mmap(
+        null,
+        bytes,
+        .{ .READ = true, .WRITE = true },
+        .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+        -1,
+        0,
+    );
+    if (ptr == std.c.MAP_FAILED) return null;
+    return @ptrCast(ptr);
+}
+
+fn release(memory: [*]u8, bytes: usize) void {
+    _ = std.c.munmap(@ptrCast(@alignCast(memory)), bytes);
+}
+
 /// The collector frees a container's payload through `gc/sweep.zig`'s
 /// `deinitBlock`, which calls `buffers.deinit` from this subsystem. Both
 /// containers are freed the same way, so one collection covers the round trip
@@ -662,6 +798,7 @@ fn body() !void {
     try bufferSetcountZeroFills();
     try bufferExtraDoubles();
     try bufferPushesLittleEndian();
+    try nativeOrderIsTheHosts();
     try bufferChargesGcPressure();
 
     try arrayHasNoCapacityFloor();
@@ -671,6 +808,7 @@ fn body() !void {
     try arraySetcountPushPopPeek();
     arrayChargesGcPressure();
     try zeroGrowthReleasesThePayload();
+    try theCeilings();
 
     try theCollectorReclaimsBoth();
     fromJanet();

@@ -89,6 +89,11 @@
 (assert (deep= t2 @{:name "john"}) "struct/to-table 2")
 (assert (deep= (getproto t1) @{:a 1 :b 2}) "struct/to-table 3")
 (assert (deep= (getproto t2) nil) "struct/to-table 4")
+(assert (deep= (struct/to-table {:a 1}) @{:a 1}) "struct/to-table with one argument")
+
+# struct/proto-flatten keeps the child's binding over the prototype's.
+(assert (deep= (struct/proto-flatten (struct/with-proto {:a 1} :a 2)) {:a 2})
+        "struct/proto-flatten keeps the child's binding")
 
 (end-suite)
 

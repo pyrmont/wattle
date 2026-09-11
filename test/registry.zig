@@ -268,6 +268,13 @@ const probe_reg = [_]abi.Reg{
     .{ .name = "two", .cfun = probe_two, .documentation = null },
 };
 
+/// A longer name and then a shorter one, so the prefixing buffer still holds
+/// the tail of the first name when the second is written over it.
+const shrinking_reg = [_]abi.Reg{
+    .{ .name = "longer", .cfun = probe_one, .documentation = null },
+    .{ .name = "ab", .cfun = probe_two, .documentation = null },
+};
+
 /// The entry a def builds: a table with `:value`, and `:doc` and `:source-map`
 /// only when there is something to put in them.
 fn checkEntry(env: *tables.Table, name: [*:0]const u8, has_doc: bool, has_map: bool) void {
@@ -325,6 +332,15 @@ fn thePrefixingFormRewritesOnlyTheName() void {
         registry.cfunsPrefix(env2, @ptrCast(&big), &probe_reg);
         _ = std.fmt.bufPrint(&expected, "{s}/one", .{big[0 .. big.len - 1]}) catch unreachable;
         checkEntry(env2, @ptrCast(&expected), true, false);
+    }
+
+    // Each name is written over the one before it in the same buffer, so the
+    // terminator is all that ends a shorter one.
+    {
+        const env3 = tables.new(4);
+        registry.cfunsPrefix(env3, "pre", &shrinking_reg);
+        checkEntry(env3, "pre/longer", false, false);
+        checkEntry(env3, "pre/ab", false, false);
     }
 
     // A null environment registers without defining, and must not build a name
@@ -666,6 +682,4 @@ pub fn run() void {
     harness.init();
     body() catch @panic("registry: an entry point raised unexpectedly");
     vm_lifecycle.deinit();
-
-    std.debug.print("registry contract ok\n", .{});
 }

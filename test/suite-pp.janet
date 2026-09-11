@@ -145,4 +145,112 @@
          "?? at [bc] (index 2)\nstack [5]:\n  [0]: \"a\"\n  [1]: 1\n  [2]: true\n  [3]: {}\n  [4]: @[]\n")
         "pretty format should not eat explicit newlines")
 
+# Phase 20 batch 2d found these unmeasured. Each block names what it pins.
+
+# `%j` refuses a value it cannot write as data, and the refusal has to travel
+# out of whatever container the value was found in. Each of the five below
+# reaches a different arm of the jdn printer, and none of them was asked for.
+(assert-error "could not print to jdn format" (string/format "%j" (/ 0 0)))
+(assert-error "could not print to jdn format" (string/format "%j" print))
+(assert-error "could not print to jdn format" (string/format "%j" @{:a print}))
+(assert-error "could not print to jdn format" (string/format "%j" @[print]))
+(assert-error "could not print to jdn format" (string/format "%j" [print]))
+(assert-error "could not print to jdn format" (string/format "%j" {:a print}))
+
+# The jdn printer spends one frame of a 1024-deep budget per level, so a
+# thousand levels are written and 1024 are refused. Both ends are asserted,
+# because a budget spent twice as fast still refuses the far end.
+#
+# The budget is spent in three places — an array's items, a tuple's, and a
+# dictionary's keys and values — and each has to be asserted through its own
+# container, because a budget spent twice as fast in one of them is spent at
+# the right rate in the other two.
+(do
+  (defn nest-arr [n] (var d @[]) (repeat n (set d @[d])) d)
+  (defn nest-tup [n] (var d []) (repeat n (set d [d])) d)
+  (defn nest-tab [n] (var d @{}) (repeat n (set d @{:k d})) d)
+  (assert-no-error "a thousand levels of array print as jdn"
+                   (string/format "%j" (nest-arr 1000)))
+  (assert-error "could not print to jdn format" (string/format "%j" (nest-arr 1024)))
+  (assert-no-error "a thousand levels of tuple print as jdn"
+                   (string/format "%j" (nest-tup 1000)))
+  (assert-error "could not print to jdn format" (string/format "%j" (nest-tup 1024)))
+  (assert-no-error "a thousand levels of table print as jdn"
+                   (string/format "%j" (nest-tab 1000)))
+  (assert-error "could not print to jdn format" (string/format "%j" (nest-tab 1024))))
+
+# A key that has no jdn form fails the dictionary, exactly as a value does.
+(assert-error "could not print to jdn format" (string/format "%j" @{print :a}))
+(assert-error "could not print to jdn format" (string/format "%j" {print :a}))
+
+# A symbol that reads back as a number has no jdn form, and a keyword does,
+# because a keyword may begin with a digit and a symbol may not.
+(assert-error "could not print to jdn format" (string/format "%j" (symbol "1abc")))
+# Both ends of the digit range, which is where the two comparisons differ.
+(assert-error "could not print to jdn format" (string/format "%j" (symbol "0abc")))
+(assert-error "could not print to jdn format" (string/format "%j" (symbol "9abc")))
+(assert (= "abc" (string/format "%j" (symbol "abc"))) "an ordinary symbol has one")
+(assert (= ":1abc" (string/format "%j" (keyword "1abc"))) "and a keyword may begin with a digit")
+
+# `%p` breaks lines and elides a long dictionary; both are defaults rather
+# than something the caller asks for.
+(do
+  (def big (table ;(mapcat |[(keyword "k" $) $] (range 40))))
+  (assert (string/find "\n" (string/format "%p" big))
+          "%p breaks a long dictionary across lines")
+  (assert (string/has-suffix? "...}" (string/format "%q" big))
+          "and elides it past thirty entries")
+  # Thirty entries is the limit itself and is printed whole; thirty-one is
+  # the first that elides.
+  (defn tab [n] (table ;(mapcat |[(keyword "k" $) $] (range n))))
+  (assert (not (string/has-suffix? "...}" (string/format "%q" (tab 30))))
+          "a dictionary of exactly thirty entries is printed whole")
+  (assert (string/has-suffix? "...}" (string/format "%q" (tab 31)))
+          "and thirty-one is the first that elides"))
+
+# The integer printer counts its digits by powers of ten, negating first so
+# that the most negative integer has a magnitude to count.
+(assert (= "0" (string/format "%q" 0)) "zero prints as one digit")
+(assert (= "-9" (string/format "%q" -9)) "and each power of ten is its own arm")
+(assert (= "-99" (string/format "%q" -99)))
+(assert (= "-999" (string/format "%q" -999)))
+(assert (= "-9999" (string/format "%q" -9999)))
+(assert (= "-99999" (string/format "%q" -99999)))
+# Each power of ten itself, which is the value the arm above it compares to.
+(assert (= "-10" (string/format "%q" -10)))
+(assert (= "-100" (string/format "%q" -100)))
+(assert (= "-1000" (string/format "%q" -1000)))
+(assert (= "-10000" (string/format "%q" -10000)))
+(assert (= "99999" (string/format "%q" 99999)) "as is the positive side")
+
+# A precision on `%j` is the depth budget, and it is read as a decimal number
+# from a three-byte field. A precision of one is one level, not the default.
+(assert-error "could not print to jdn format" (string/format "%.1j" [[1]]))
+(assert (= "(((1)))" (string/format "%.10j" [[[1]]]))
+        "a two-digit precision is read as both its digits")
+(assert (= "(1)" (string/format "%.2j" [1])) "and a small one bounds the depth")
+
+# `%%` is one literal per cent sign and consumes nothing after it.
+(assert (= "%x" (string/format "%%x")) "%% writes one per cent and no more")
+(assert (= "%" (string/format "%%")) "and it may end the format")
+
+# The three shapes the pretty printer takes, asserted as whole strings rather
+# than by a property: `%p` breaks and indents, `%q` collapses every break to
+# one space, and `%P` writes colour escapes around each value. Each is a
+# separate flag on the same walk, and the walk measures its own columns.
+(assert (= "@[@[1 2]\n  @[3 4]]" (string/format "%p" @[@[1 2] @[3 4]]))
+        "%p breaks a nested collection and indents the continuation")
+(assert (= "@[@[1 2] @[3 4]]" (string/format "%q" @[@[1 2] @[3 4]]))
+        "%q writes the same collection on one line")
+(assert (= "@[\e[32m1\e[0m \e[35m\"a\"\e[0m]" (string/format "%P" @[1 "a"]))
+        "%P wraps each value in its own colour")
+(assert (= "@{}" (string/format "%p" @{})) "an empty dictionary needs no break at all")
+
+# A buffer printed into itself is copied first, so the text being appended is
+# what the buffer held rather than what it is holding as the append proceeds.
+(do
+  (def b @"a")
+  (buffer/format b "%v" b)
+  (assert (= "a@\"a\"" (string b)) "a buffer formatted into itself reads its old contents"))
+
 (end-suite)

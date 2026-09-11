@@ -50,6 +50,17 @@
 (assert (= 3 (resume t)) "return from fiber")
 (assert (= (fiber/status t) :dead) "finished fiber is dead")
 
+# A stack ceiling of zero is a ceiling, and below zero is refused.
+(def capped (fiber/new (fn [] 1)))
+(fiber/setmaxstack capped 0)
+(assert (= 0 (fiber/maxstack capped)) "fiber/setmaxstack takes 0")
+(assert-error "fiber/setmaxstack refuses -1" (fiber/setmaxstack capped -1))
+
+# A fiber's function takes at most one argument, the first resume value.
+(assert-error-value "fiber/new refuses a binary function"
+                    "fiber function must accept 0 or 1 arguments"
+                    (fiber/new (fn [a _b] a)))
+
 # Fix yields inside nested fibers
 # 909c906
 (def yielder

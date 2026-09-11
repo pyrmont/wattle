@@ -155,6 +155,10 @@ fn theClassificationAgreesWithTheMachine() void {
         std.mem.eql(u8, compiler, "gcc") or
         std.mem.eql(u8, compiler, "kencc") or
         std.mem.eql(u8, compiler, "unknown"));
+
+    // One thing the machine can say: a binary that `uname` answers for is
+    // running on a POSIX kernel, and no MSVC build runs there.
+    if (unameSysname(&buffer) != null) expect(!std.mem.eql(u8, compiler, "msvc"));
 }
 
 /// The Janet-visible functions give the keyword form of the kernels'

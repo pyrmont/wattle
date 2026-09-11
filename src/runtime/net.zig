@@ -584,7 +584,8 @@ fn acceptPosix(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.Asyn
     const connfd: JSock = if (builtin.os.tag == .linux)
         net_abi.accept4(sockOf(stream), null, null, h.SOCK_CLOEXEC)
     else
-        // On BSDs, CLOEXEC should be inherited from server socket.
+        // An accepted socket does not take the listener's close-on-exec, so
+        // `sockNoBlock` below sets it.
         net_abi.accept(sockOf(stream), null, null);
     if (!net_abi.sockValid(connfd)) return;
 
@@ -1003,13 +1004,18 @@ fn cfunSetsockopt(argv: []repr.Value) raise.Raising(repr.Value) {
             }
         },
         .special => {
-            if (st.optname == h.IP_ADD_MEMBERSHIP or st.optname == h.IP_DROP_MEMBERSHIP) {
+            // The level as well as the number, because a platform may number
+            // an IPv6 option the same as an IPv4 one: macOS gives
+            // `IPV6_JOIN_GROUP` the number of `IP_ADD_MEMBERSHIP`.
+            if (st.level == h.IPPROTO_IP and
+                (st.optname == h.IP_ADD_MEMBERSHIP or st.optname == h.IP_DROP_MEMBERSHIP))
+            {
                 const address = try args_core.getCString(argv, 2);
                 val.v_mreq = std.mem.zeroes(h.struct_ip_mreq);
                 net_abi.inAddrBits(&val.v_mreq.imr_interface).* = net_abi.htonl(h.INADDR_ANY);
                 _ = h.inet_pton(h.AF_INET, address, net_abi.inAddrBits(&val.v_mreq.imr_multiaddr));
                 optlen = @sizeOf(h.struct_ip_mreq);
-            } else if (has_ipv6 and
+            } else if (has_ipv6 and st.level == h.IPPROTO_IPV6 and
                 (st.optname == h.IPV6_JOIN_GROUP or st.optname == h.IPV6_LEAVE_GROUP))
             {
                 const address = try args_core.getCString(argv, 2);
@@ -1347,9 +1353,9 @@ fn serverifySocket(sfd: JSock, reuse_addr: bool, reuse_port: bool) ?[*:0]const u
     return null;
 }
 
-/// Makes sure a socket does not block, and on the platforms that have it asks
-/// for `SO_NOSIGPIPE` so that a write to a closed peer is an `EPIPE` rather
-/// than a signal.
+/// Makes sure a socket does not block and is closed on exec, and on the
+/// platforms that have it asks for `SO_NOSIGPIPE` so that a write to a closed
+/// peer is an `EPIPE` rather than a signal.
 ///
 /// Every result is discarded. A socket that refuses to go non-blocking is not
 /// reported here and shows up later as a would-block that never arrives.
@@ -1358,10 +1364,11 @@ fn sockNoBlock(s: JSock) void {
         var arg: h.u_long = 1;
         _ = h.ioctlsocket(s, net_abi.fionbio, &arg);
     } else {
-        // `SOCK_CLOEXEC` is asked for at `socket(2)` where the platform has
-        // it; where it does not, `O_CLOEXEC` is set here instead.
-        const extra: c_int = if (@hasDecl(h, "SOCK_CLOEXEC")) 0 else h.O_CLOEXEC;
-        _ = h.fcntl(s, h.F_SETFL, h.fcntl(s, h.F_GETFL, @as(c_int, 0)) | h.O_NONBLOCK | extra);
+        _ = h.fcntl(s, h.F_SETFL, h.fcntl(s, h.F_GETFL, @as(c_int, 0)) | h.O_NONBLOCK);
+        // Close-on-exec is a descriptor flag, which `F_SETFD` sets. A socket
+        // made with `SOCK_CLOEXEC` has it already, and one from a plain
+        // `accept` does not, so it is set for every socket.
+        _ = h.fcntl(s, h.F_SETFD, h.FD_CLOEXEC);
         if (@hasDecl(h, "SO_NOSIGPIPE")) {
             const enable: c_int = 1;
             _ = net_abi.setSockOpt(s, h.SOL_SOCKET, h.SO_NOSIGPIPE, &enable, @sizeOf(c_int));

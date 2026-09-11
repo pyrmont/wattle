@@ -386,7 +386,9 @@ fn assertEmptyFuncdef(def: *functions.FuncDef) void {
     expect(def.name == null);
     expect(def.symbolmap == null);
 
-    expect(std.meta.eql(def.flags, functions.FuncDefFlags{}));
+    // Every bit clear, read as the word rather than against the type's field
+    // defaults, which are what `defs.new` writes.
+    expect(@as(u32, @bitCast(def.flags)) == 0);
     expect(def.slotcount == 0);
     expect(def.arity == 0);
     expect(def.min_arity == 0);
@@ -617,6 +619,4 @@ pub fn run() void {
     aDelayedThunkReturnsItsValue();
 
     repeatedCycles(nullary);
-
-    std.debug.print("value alloc contract ok\n", .{});
 }

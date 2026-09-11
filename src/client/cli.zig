@@ -43,13 +43,21 @@ const wrap = subsystems.value.wrap;
 
 /// Runs the client, and returns the process's exit status.
 ///
-/// `init` is the process's own initialisation, which supplies the arena and
-/// the `Io`. The `Io` reaches `interop.zig` before anything else, because the
-/// line getter and the `zig/*` bindings read through it. The result is 1 when
-/// the argument vector is empty and when the status does not fit a `u8`.
-pub fn main(init: std.process.Init) !u8 {
-    interop.setIo(init.io);
-    const arguments = try init.minimal.args.toSlice(init.arena.allocator());
+/// `minimal` is the arguments and the environment as the host gave them. The
+/// full `std.process.Init` would have the standard library parse the
+/// environment before `main` runs, and that parse asserts every entry has a
+/// name and an `=`, which a host does not promise. The runtime reads the
+/// environment itself, as `os/environ` does, so the `Io` built here is given
+/// none. It reaches `interop.zig` before anything else, because the line
+/// getter reads through it. The result is 1 when the argument vector is empty
+/// and when the status does not fit a `u8`.
+pub fn main(minimal: std.process.Init.Minimal) !u8 {
+    var threaded: std.Io.Threaded = .init(std.heap.c_allocator, .{ .argv0 = .init(minimal.args) });
+    defer threaded.deinit();
+    interop.setIo(threaded.io());
+    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena.deinit();
+    const arguments = try minimal.args.toSlice(arena.allocator());
     if (arguments.len == 0) return 1;
     return std.math.cast(u8, run(arguments)) orelse 1;
 }

@@ -264,6 +264,8 @@
 (assert (= :splice (reader-frame-type ";")) "splice frame")
 (assert (= :quasiquote (reader-frame-type "~")) "quasiquote frame")
 (assert (= :at (reader-frame-type "@")) "at frame")
+# The short-fn prefix has no name of its own and takes the generic one.
+(assert (= (keyword "<reader>") (reader-frame-type "|")) "short-fn frame")
 
 # A keyless call gives both, and an unknown key is an error.
 (assert (deep= @[:delimiters :frames] (sorted (keys (parser/state pd)))) "state keys")
@@ -442,6 +444,195 @@
 (gccollect)
 (assert (= "mismatched delimiter ], ( opened at line 1, column 1" (parser/error pgc))
         "a generated message survives a collection")
+
+# Phase 20 batch 2c found these unmeasured. Each block names what it pins.
+
+(defn parse-error-of
+  "The parser's message after consuming `input`, or nil."
+  [input]
+  (def psr (parser/new))
+  (parser/consume psr input)
+  (parser/error psr))
+
+# The `@` constructors. `@[` and `@{` are covered above; the other two are the
+# ones nothing reached.
+(assert (= :array (type @(1 2 3))) "@(...) makes an array")
+(assert (deep= @[1 2 3] @(1 2 3)) "@(...) holds what it was given")
+(assert (= :buffer (type @`hi`)) "@`...` makes a buffer")
+(assert (deep= @"hi" @`hi`) "@`...` holds what it was given")
+# The `@` long string is a long string as well as a buffer, so it reindents
+# and it reports itself as one to parser/state. Being a buffer does not say so.
+(assert (deep= @" hi\n " (parse (string "    @" "``" "\n      hi\n      " "``")))
+        "@`...` is reindented the way a long string is")
+(do
+  (def psr (parser/new))
+  (parser/consume psr "@``ab")
+  (assert (= :buffer ((last ((parser/state psr) :frames)) :type))
+          "and an open one reports as a buffer rather than as an at-sign"))
+
+# The frames parser/state reports. Their type names and their buffers come
+# from flags the constructors above set, and nothing asked for them.
+(do
+  (def psr (parser/new))
+  (parser/consume psr "@he")
+  (def frame (last ((parser/state psr) :frames)))
+  (assert (= :token (frame :type)) "a token begun with @ reports as a token")
+  (assert (= "@he" (frame :buffer)) "and carries what has been read of it"))
+(do
+  (def psr (parser/new))
+  (parser/consume psr "# comm")
+  (def frame (last ((parser/state psr) :frames)))
+  (assert (= :comment (frame :type)) "a comment reports as a comment")
+  (assert (= " comm" (frame :buffer)) "and its buffer excludes the # itself"))
+(do
+  (def psr (parser/new))
+  (parser/consume psr "(1 ``ab")
+  (def state-frames ((parser/state psr) :frames))
+  (assert (= :string ((last state-frames) :type)) "a long string reports as a string")
+  (assert (deep= @[1] ((get state-frames 1) :args))
+          "and the container below it still reports its own arguments"))
+
+# parser/where. A bare carriage return advances the line, and line 1 is a
+# valid line to set.
+(do
+  (defn loc [input]
+    (def psr (parser/new))
+    (parser/consume psr input)
+    (parser/where psr))
+  (assert (= [2 1] (loc "a\rb")) "a bare carriage return advances the line")
+  (assert (= [2 1] (loc "a\r\nb")) "and a carriage return followed by a newline advances it once")
+  (assert (= [2 1] (loc "a\nb")) "as does a newline alone"))
+(do
+  (def psr (parser/new))
+  (assert (= [1 0] (parser/where psr 1)) "line 1 is a line parser/where accepts")
+  (assert-error "invalid line number 0" (parser/where (parser/new) 0)))
+
+# A token that begins with a point is a number.
+(assert (= 0.5 (parse ".5")) "a leading point begins a number")
+(assert (= 5 (parse ".5e1")) "including one with an exponent")
+
+# Well-formed UTF-8 above ASCII is accepted in a symbol and in a keyword. The
+# suite rejects the malformed cases above and never accepted a valid one.
+(assert (nil? (parse-error-of "hé ")) "a symbol may hold valid UTF-8")
+(assert (nil? (parse-error-of ":hé ")) "so may a keyword")
+
+# parser/consume's offset may be the whole view, which consumes nothing.
+(do
+  (def psr (parser/new))
+  (assert (= 0 (parser/consume psr "abc" 3)) "an offset of the whole view consumes nothing")
+  (assert-error "invalid offset 4 out of range [0,3]" (parser/consume psr "abc" 4)))
+
+# parser/insert. A value inserted inside a comment belongs to the container
+# the comment is in, and one inserted at the top level is produced on its own.
+(do
+  (def psr (parser/new))
+  (parser/consume psr "(1 # note")
+  (parser/insert psr 42)
+  (parser/consume psr "\n)")
+  (assert (= [1 42] (parser/produce psr)) "insert inside a comment reaches the container"))
+(do
+  (def psr (parser/new))
+  (parser/insert psr 5)
+  (parser/insert psr 6)
+  (assert (= 5 (parser/produce psr)) "the first top-level insert is produced")
+  (assert (= 6 (parser/produce psr)) "and then the second")
+  (assert (not (parser/has-more psr)) "and there is no third"))
+
+# A closing delimiter is matched against the container that is open, not
+# against any container.
+(assert (= "mismatched delimiter ), { opened at line 1, column 1"
+           (parse-error-of "{1 2)"))
+        "a curly container refuses a paren")
+
+# Long strings. The reindentation drops the indentation the string opened at,
+# and it handles a carriage-return newline as one line ending rather than two.
+(do
+  (def tick "`")
+  (defn at-col [pad inner] (parse (string pad tick tick inner tick tick)))
+  (assert (= "  hi\n  " (at-col "    " "\n      hi\n      "))
+          "an indented long string is reindented")
+  (assert (= "  hi\r\n  " (at-col "    " "\r\n      hi\r\n      "))
+          "and so is one whose lines end with a carriage return")
+  (assert (= "  a\r\n  b\r\n  " (at-col "    " "\r\n      a\r\n      b\r\n      "))
+          "over more than one line")
+  (assert (= "  hi" (at-col "    " "\r\n      hi\r\n"))
+          "including when the last line ending is the last thing in it")
+  (assert (= "      a\r\n  b\r\n      " (at-col "    " "\r\n      a\r\n  b\r\n      "))
+          "and a line indented less than the string stops the reindentation")
+  # A blank line is indented less than the string and does not stop it, which
+  # is the arm the two line-ending tests exist for: every line above is
+  # indented in full, so neither of them is reached by any case but these.
+  (assert (= "  a\r\n\n  b\r\n  " (at-col "    " "\r\n      a\r\n\r\n      b\r\n      "))
+          "a blank line does not stop the reindentation")
+  (assert (= "  a\n\n  b\n  " (at-col "    " "\n      a\n\n      b\n      "))
+          "with either line ending")
+  (assert (= "  a\r\n\n  b\r\n  " (at-col "    " "\r\n      a\r\n  \r\n      b\r\n      "))
+          "nor does one carrying less indentation than the string and nothing else")
+  # A blank line carrying the string's full indentation is the case where the
+  # carriage return is *kept*: the indentation skip stops at the column rather
+  # than running on and eating it, so the line-ending test finds it there.
+  (assert (= "a\n\r\nb" (at-col "    " "\n    a\n    \r\n    b\n    "))
+          "a blank line indented in full keeps its carriage return")
+  (assert (= "a\r\n\r\nb" (at-col "    " "\r\n    a\r\n    \r\n    b\r\n    "))
+          "with every other line ending the same way")
+  (assert (= "a\n\r\nb\n" (at-col "    " "\n    a\n    \r\n    b\n    \r\n"))
+          "and a line ending that closes the string after it")
+  # Both line-ending tests read the byte after the one they matched, and these
+  # two put that byte at the end of the buffer.
+  (assert (= "a\n" (at-col "    " "\n    a\n  \r\n"))
+          "a short blank line whose ending closes the string is still reindented")
+  (assert (= "a\n\r" (at-col "    " "\n    a\n    \r"))
+          "and a carriage return with nothing after it is left alone")
+  # A one-character long string whose character is a carriage return: the
+  # leading-newline test reads two bytes and there is only one.
+  (assert (= "\r" (parse (string tick "\r" tick)))
+          "a long string of one carriage return is left as it is")
+  (assert (= "" (parse (string tick "\n" tick)))
+          "and one of a single newline is emptied by the leading-newline rule"))
+
+# The backtick run that ends a long string has to be as long as the one that
+# began it, and a shorter run is text.
+(do
+  (assert (= "a`b" (parse "``a`b``")) "a shorter backtick run inside a long string is text")
+  (assert (= "a``b" (parse "```a``b```")) "however long the run is")
+  (assert (= "a" (parse "``a``")) "and the matching run ends the string"))
+
+# The escapes. A hex digit is one of three ranges, a codepoint has a ceiling,
+# and the width a codepoint is written in has three boundaries.
+(assert (= "invalid hex digit in hex escape" (parse-error-of "\"\\xzz\""))
+        "a hex escape refuses a non-hex digit")
+(assert (= "invalid hex digit in unicode escape" (parse-error-of "\"\\uzzzz\""))
+        "and so does a unicode escape")
+(assert (= "invalid unicode codepoint" (parse-error-of "\"\\U110000\""))
+        "a codepoint above the Unicode ceiling is refused")
+(assert (= 4 (length "\U10ffff")) "and the ceiling itself is accepted")
+(assert (= 1 (length "\u007f")) "a codepoint at the one-byte boundary takes one byte")
+(assert (= 2 (length "\u0080")) "one just above it takes two")
+(assert (= 2 (length "\u07ff")) "a codepoint at the two-byte boundary takes two")
+(assert (= 3 (length "\u0800")) "one just above it takes three")
+(assert (= 3 (length "\uffff")) "a codepoint at the three-byte boundary takes three")
+(assert (= 4 (length "\U010000")) "and one just above it takes four")
+
+# A raw line ending inside a quoted string is dropped rather than kept.
+(assert (= "ab" (parse "\"a\nb\"")) "a newline inside a quoted string is dropped")
+(assert (= "ab" (parse "\"a\rb\"")) "and so is a carriage return")
+
+# The number scanner's radix and exponent bounds, which the parser reaches
+# through every numeric literal.
+(assert (= 5 (scan-number "2r101")) "a radix of two is the smallest one accepted")
+(assert (nil? (scan-number "1r1")) "a radix of one is refused")
+(assert (= 35 (scan-number "36rz")) "a radix of thirty-six is the largest accepted")
+(assert (nil? (scan-number "37r1")) "a radix of thirty-seven is refused")
+(assert (nil? (scan-number "2r2")) "a digit the radix does not have is refused")
+(assert (= 8 (scan-number "9r8")) "a one-digit radix ends at nine")
+(assert (nil? (scan-number "2r1e2")) "e is not an exponent marker outside base ten")
+(assert (= 2 (scan-number "2r1&1")) "& is the exponent marker a radix uses")
+(assert (nil? (scan-number "2r1&2")) "and an exponent digit the radix does not have is refused")
+(compwhen (dyn 'int/s64)
+  (assert (= "5" (string (int/s64 "2r101"))) "the integer scanner takes a radix of two")
+  (assert (= "5" (string (int/s64 "02r101"))) "written with two digits as well")
+  (assert-error "can not convert" (int/s64 "2r2"))
+  (assert-error "can not convert" (int/s64 "37r1")))
 
 (end-suite)
 

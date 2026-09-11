@@ -102,6 +102,13 @@
 (assert (string/has-prefix? "unknown " (errmsg |(filewatch/new chan foreign)))
         "a foreign backend's flag is refused")
 
+# A name in this backend's vocabulary whose constant the host does not define
+# is refused by that name. macOS defines none of these five `NOTE_*` flags.
+(when (= :macos (os/which))
+  (each flag [:close :close-write :open :read :truncate]
+    (assert (= (string "unknown bsd flag :" flag) (errmsg |(filewatch/new chan flag)))
+            (string "macOS has no constant for :" flag))))
+
 # The abstract type is opaque: it has a name and a mark callback and nothing
 # else, so it answers to `type` and to nothing that indexes or compares.
 (def probe-watcher (filewatch/new chan))
@@ -169,7 +176,22 @@
     # rules out is the leak, which is proportional: twenty watchers that never
     # close what they opened are forty descriptors.
     (assert (<= (nfds) (+ before 2))
-            "a collected watcher returns the descriptors it opened")))
+            "a collected watcher returns the descriptors it opened")
+    # `filewatch/remove` closes one path's descriptor and drops that one from
+    # the watcher's list, so `filewatch/unlisten` closes the rest and every
+    # descriptor the watcher opened is closed.
+    (def entry (string fd-dir "/entry"))
+    (spit entry "x")
+    (gccollect)
+    (def before-pair (nfds))
+    (def pair (filewatch/new (ev/chan 4)))
+    (filewatch/add pair fd-dir :all)
+    (filewatch/add pair entry :all)
+    (filewatch/remove pair fd-dir)
+    (filewatch/listen pair)
+    (filewatch/unlisten pair)
+    (assert (= before-pair (nfds))
+            "a removed path leaves the others for unlisten to close")))
 (gccollect)
 (rmrf probe-dir)
 
@@ -344,7 +366,7 @@
 # This could be ammended with some heavier-weight functionality in userspace, though.
 (when is-kqueue
   (spit-file td1 "file1.txt")
-  (expect :wd-path td1 :type :write)
+  (expect :wd-path td1 :type :write :dir-name td1 :file-name "")
   (expect-empty)
   (gccollect)
   (spit-file td1 "file1.txt")
@@ -359,6 +381,37 @@
   (rmrf (string td1 "/file1.txt"))
   (expect :type :write) # a "write" to the vnode
   (expect-empty))
+
+# A file watched by its own path is reported split at its last separator, and
+# a path with no separator is reported against ".". The name after the
+# separator has an even length, so a walk back from the terminator that
+# stepped two bytes at a time would pass over the separator.
+(when is-kqueue
+  (def split-chan (ev/chan 100))
+  (def split-watcher (filewatch/new split-chan))
+  (def split-path (string td3 "/file-4.txt"))
+  (def bare-path "janet-suite-filewatch-file")
+  (defn- event-for [path]
+    (ev/with-deadline 1
+      (var found nil)
+      (while (nil? found)
+        (def event (ev/take split-chan))
+        (when (= path (event :wd-path)) (set found event)))
+      found))
+  (spit split-path "x")
+  (spit bare-path "x")
+  (defer (do (filewatch/unlisten split-watcher) (os/rm bare-path))
+    (filewatch/add split-watcher split-path :write)
+    (filewatch/add split-watcher bare-path :write)
+    (filewatch/listen split-watcher)
+    (spit split-path "xy")
+    (def split-event (event-for split-path))
+    (assert (= td3 (split-event :dir-name)) "a watched file's directory is its path before the separator")
+    (assert (= "file-4.txt" (split-event :file-name)) "and its file name is what follows it")
+    (spit bare-path "xy")
+    (def bare-event (event-for bare-path))
+    (assert (= "." (bare-event :dir-name)) "a path with no separator is in the current directory")
+    (assert (= bare-path (bare-event :file-name)) "and is its own file name")))
 
 (assert-no-error "filewatch/unlisten no error" (filewatch/unlisten fw))
 (assert-no-error "cleanup 1" (rmrf td1))

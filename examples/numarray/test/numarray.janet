@@ -100,4 +100,4 @@
 (def [empty-ok _] (protect (empty-array 0)))
 (assert (not empty-ok) "every index of an empty array is a miss")
 
-(print "numarray ok")
+(print "numarray example ok")

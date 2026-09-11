@@ -47,6 +47,12 @@
 //! Nothing exercises a raising callback: an abstract callback may not raise.
 
 // ==========================================================================
+// Standard library imports
+// ==========================================================================
+
+const std = @import("std");
+
+// ==========================================================================
 // Project imports
 // ==========================================================================
 
@@ -589,6 +595,12 @@ fn atomicsReturnTheNewValue() void {
 
     x = 41;
     expect(abstracts.atomicInc(&x) == 42);
+
+    // The refcount is 32 bits on every target: janet.h declares
+    // `JanetAtomicInt` as `int32_t`, or as a 32-bit `long` on Windows. So the
+    // count wraps at 2^31.
+    x = std.math.maxInt(i32);
+    expect(abstracts.atomicInc(&x) == std.math.minInt(i32));
 }
 
 /// Construction has to survive a runtime that is torn down and rebuilt: the

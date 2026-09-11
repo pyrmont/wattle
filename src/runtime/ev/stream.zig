@@ -954,9 +954,14 @@ fn streamUnmarshal(u: *abi.Unmarshal) raise.Raising(*Stream) {
     } else {
         p.handle = try marsh.unmarshalInt(u);
     }
-    // Only the poll backend keeps its own table of streams, so only it has to
-    // be told about one that arrived by unmarshalling.
-    if (backend.selected == .poll) try backend.registerStream(p);
+    // The descriptor is this VM's own, from the `dup` the marshal made, so it
+    // is registered here the way `makeStreamExt` registers a fresh one. Every
+    // backend needs that: a kqueue filter, an `epoll_ctl` registration and a
+    // completion port association are each keyed by descriptor, and `poll`
+    // keeps a table of its own. Without it the speculative operation
+    // `asyncStart` performs is the only one that can complete, and a read that
+    // has to wait never wakes.
+    try backend.registerStream(p);
     return p;
 }
 

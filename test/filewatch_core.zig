@@ -32,12 +32,18 @@
 //!
 //! ## What it deliberately does not do
 //!
-//! It does not run the event loop. `filewatch/listen` starts a fiber that
-//! suspends on the watcher's stream, and pumping that from a contract means
-//! running the loop, and a contract that waits on the kernel hangs when it is
-//! wrong. The suite does that. What is
-//! checked here is everything either side of it: the argument decoding, the
-//! flag decoding, the watcher's shape, and every raise on the way.
+//! It runs the event loop for one case only. `filewatch/listen` starts a fiber
+//! that suspends on the watcher's stream, and pumping that from a contract
+//! means running the loop, and a contract that waits on the kernel hangs when
+//! it is wrong. The suite does that. What is checked here is everything either
+//! side of it: the argument decoding, the flag decoding, the watcher's shape,
+//! and every raise on the way.
+//!
+//! The one case is the kqueue backend's naming of a watched directory. The
+//! backend decides between a directory and a file by `fstat`ing the watched
+//! descriptor, and the structure `fstat` fills is laid out differently on the
+//! two macOS architectures, so the case runs wherever the driver does. Each
+//! wait in it is bounded by `ev/with-deadline`.
 //!
 //! ## Two things about how the subjects are reached
 //!
@@ -345,6 +351,20 @@ fn theAbstractType(chan: repr.Value) void {
     const bytes: [*]u8 = @ptrCast(blank);
     @memset(bytes[0..size], 0);
     at.gcmark.?(blank, size);
+
+    // Its stream is null, which is a closed watcher to every call that asks.
+    // Windows keeps no stream on the watcher and has no such state.
+    if (!windows) {
+        const unready = wrap.fromAbstract(blank);
+        gc_alloc.gcroot(unready);
+        defer _ = gc_alloc.gcunroot(unready);
+        var add_argv = [_]repr.Value{ unready, value.fromBytes(probe_dir, .string), value.fromBytes("all", .keyword) };
+        expectRaise("filewatch/add", &add_argv, "watcher is closed");
+        var remove_argv = [_]repr.Value{ unready, value.fromBytes(probe_dir, .string) };
+        expectRaise("filewatch/remove", &remove_argv, "watcher is closed");
+        var listen_argv = [_]repr.Value{unready};
+        expectRaise("filewatch/listen", &listen_argv, "watcher is closed");
+    }
 }
 
 fn theLifecycle(chan: repr.Value) void {
@@ -441,6 +461,40 @@ fn theLifecycle(chan: repr.Value) void {
     _ = std.c.rmdir(probe_dir);
 }
 
+/// A kqueue event on a watched directory names the directory whole, with an
+/// empty file name, and one on a watched file splits its path at the last
+/// separator. See the header on why this runs the loop.
+fn theEventNamesAWatchedDirectory() void {
+    harness.inFiber(harness.coreEnv(),
+        \\(def dir "/tmp/janet-filewatch-contract-events")
+        \\(def file (string dir "/f"))
+        \\(def other (string dir "/g"))
+        \\(os/mkdir dir)
+        \\(spit file "x")
+        \\(def ch (ev/chan 16))
+        \\(def fw (filewatch/new ch))
+        \\(defn event-for [path]
+        \\  (ev/with-deadline 2
+        \\    (var found nil)
+        \\    (while (nil? found)
+        \\      (def event (ev/take ch))
+        \\      (when (= path (event :wd-path)) (set found event)))
+        \\    found))
+        \\(defer (do (filewatch/unlisten fw) (os/rm file) (os/rm other) (os/rmdir dir))
+        \\  (filewatch/add fw dir :write)
+        \\  (filewatch/add fw file :write)
+        \\  (filewatch/listen fw)
+        \\  (spit other "x")
+        \\  (def on-dir (event-for dir))
+        \\  (assert (= dir (on-dir :dir-name)))
+        \\  (assert (= "" (on-dir :file-name)))
+        \\  (spit file "xy")
+        \\  (def on-file (event-for file))
+        \\  (assert (= dir (on-file :dir-name)))
+        \\  (assert (= "f" (on-file :file-name))))
+    );
+}
+
 // ==========================================================================
 // Entry
 // ==========================================================================
@@ -461,7 +515,10 @@ pub fn run() void {
         theFlagTableHalves(chan, be.platform, be.word);
         theAbstractType(chan);
         if (!windows) theLifecycle(chan);
+        if (be.platform == .kqueue and harness.coreOptional("os/mkdir") != null) {
+            theEventNamesAWatchedDirectory();
+        }
     }
 
-    std.debug.print("filewatch_core contract ok ({d} raises)\n", .{raises_seen});
+    std.debug.print("filewatch_core raises: {d}\n", .{raises_seen});
 }

@@ -23,16 +23,16 @@
 //! Nothing else in the tree reads them and the suites reach them only
 //! incidentally.
 //!
-//! Two things are deliberately not pinned.
-//!
+//! The four bounds the loop checks on an instruction's own operands,
 //! `"invalid constant"`, `"invalid funcdef"`, `"invalid upvalue index"` and
-//! `"invalid upvalue environment"` are unreachable from here: the assembler
-//! rejects every instruction that would produce them, so reaching them needs a
-//! funcdef built by hand or unmarshalled from crafted bytes. They are the
-//! verifier's subject rather than the loop's.
+//! `"invalid upvalue environment"`, cannot come from assembled code: the
+//! assembler rejects every instruction that would produce them. The cases
+//! reach them by rewriting one operand of a compiled function in place, to the
+//! first index past the end.
 //!
-//! `JOP_SIGNAL`'s lower clamp is unreachable for the same reason, the
-//! assembler declining to encode a negative operand in a one-byte field.
+//! One thing is deliberately not pinned: `JOP_SIGNAL`'s lower clamp, which is
+//! unreachable because the assembler declines to encode a negative operand in
+//! a one-byte field.
 //!
 //! ## Two things this contract does differently
 //!
@@ -54,13 +54,18 @@ const std = @import("std");
 // ==========================================================================
 
 const abi = @import("abi");
+const abstract_type = subsystems.abstract_type;
+const abstracts = @import("subsystems").value.abstracts;
+const constants = @import("constants");
 const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
 const fibers = @import("subsystems").value.fibers;
+const functions = @import("subsystems").value.functions;
 const gc_alloc = @import("subsystems").gc_alloc;
 const harness = @import("harness.zig");
 const pp_describe = @import("subsystems").pp_describe;
 const raise = @import("subsystems").raise;
+const registry = @import("subsystems").registry;
 const repr = @import("repr");
 const signal_core = @import("subsystems").signal;
 const subsystems = @import("subsystems");
@@ -75,10 +80,20 @@ const wrap = @import("subsystems").value.wrap;
 // Constants
 // ==========================================================================
 
-/// Whether this build registered `asm`. Four groups of cases below can only be
-/// expressed in assembled bytecode, and an absent binding is a *compile* error
-/// inside `eval` rather than the runtime error they are looking for.
+/// An abstract whose `put` suspends the fiber doing the put, which is the one
+/// way to resume a fiber stopped at `.put` or `.put_index`.
+const at_yielding_put = abstract_type.define(anyopaque, .{ .name = "vm-run/yielding-put", .put = &yieldingPut });
+
+/// `JANET_VM_HAS_INTERRUPT`, which decides whether the loop reads
+/// `auto_suspend` at all.
+const has_interrupt = constants.JANET_VM_HAS_INTERRUPT == 1;
+
+/// Whether this build registered `asm`. The cases that can only be expressed in
+/// assembled bytecode ask it first, because an absent binding is a *compile*
+/// error inside `eval` rather than the runtime error they are looking for.
 var has_assembler = false;
+/// The collection count `vmrun/arm-collection` set the interval to.
+var armed_at: usize = 0;
 var test_env: ?*tables.Table = null;
 
 // ==========================================================================
@@ -206,6 +221,10 @@ fn aBitwiseOperandOutOfRange() void {
     // reaches the same message.
     expectError("(do (defn f [a b] (band (/ a b) 1)) (f 0 0))", "value nan out of range for 32-bit signed integers");
     expectError("(band math/nan 1)", "value nan out of range for 32-bit signed integers");
+    // The range test at its ends: the largest and smallest values an `int32_t`
+    // holds are in range, and so is the largest a `uint32_t` holds.
+    expectEqual("(do (defn f [a b] (band a b)) [(f 2147483647 -1) (f -2147483648 -1)])", "[2147483647 -2147483648]");
+    expectEqual("(do (defn f [a b] (brushift a b)) (f 4294967295 0))", "4294967295");
 }
 
 /// The right operand is narrowed to `int32_t` whatever the left was narrowed
@@ -262,6 +281,12 @@ fn comparison() void {
     // types rather than raising.
     expectEqual("(do (defn f [a b] (< a b)) (f :a :b))", "true");
     expectEqual("(do (defn f [x] (< x 3)) (f :a))", "false");
+    // All four through `order.compare`, at the operands that tell them apart:
+    // two equal keywords, and the greater one first.
+    expectEqual(
+        "(do (defn f [a b] [(< a b) (<= a b) (> a b) (>= a b)]) [(f :a :a) (f :b :a)])",
+        "[[false true false true] [false false true true]]",
+    );
 }
 
 /// The arity message is built at `JOP_CALL` and again at `JOP_TAILCALL`, with
@@ -315,6 +340,32 @@ fn stackOverflow() void {
     expect(harness.stringValueIs(resumed.value, "stack overflow"));
 }
 
+/// `maxstack` is the deepest `stacktop` a call may start from, so a call at
+/// exactly the limit runs and one a slot past it overflows. `(debug)` stops the
+/// fiber just before the call, where `stacktop` is what the call will measure.
+/// Both call opcodes check it, the second of these being a tail call.
+fn theStackLimitIsInclusive() void {
+    const sources = [_][*:0]const u8{
+        "(do (defn g [] 2) (fiber/new (fn [] (debug) (g) 1) :d))",
+        "(do (defn g [] 2) (fiber/new (fn [] (debug) (g)) :d))",
+    };
+    for (sources) |source| {
+        for ([_]i32{ 0, 1 }) |short| {
+            const fiberv = eval(source);
+            expect(resumeFiber(fiberv, wrap.fromNil()).signal == abi.Signal.debug);
+            const fiber = wrap.toFiber(fiberv);
+            fiber.maxstack = fiber.stacktop - short;
+            const resumed = resumeFiber(fiberv, wrap.fromNil());
+            if (short == 0) {
+                expect(resumed.signal == abi.Signal.ok);
+            } else {
+                expect(resumed.signal == abi.Signal.@"error");
+                expect(harness.stringValueIs(resumed.value, "stack overflow"));
+            }
+        }
+    }
+}
+
 /// `vm_assert_type` and `vm_assert_types` share one message and one formatter,
 /// and `%T` renders a bitmask of permitted types rather than a single one.
 fn theTypeAssertions() void {
@@ -327,6 +378,8 @@ fn theTypeAssertions() void {
     if (has_assembler) {
         expectError("((asm '{:arity 1 :bytecode [(tchck 0 :number) (ret 0)]}) :kw)", "expected number, got :kw");
         expectError("((asm '{:arity 1 :bytecode [(tchck 0 :indexed) (ret 0)]}) :kw)", "expected array or tuple, got :kw");
+        // A check that passes moves on by one instruction and no further.
+        expectEqual("((asm '{:arity 1 :bytecode [(tchck 0 :number) (ldi 1 7) (ret 1)]}) 1)", "7");
     }
     // JOP_PUSH_ARRAY, which is the splice operator.
     expectError("(do (defn f [& xs] xs) (f ;5))", "expected array or tuple, got 5");
@@ -414,6 +467,17 @@ fn thePropagateOpcode() void {
     expect(resumed.signal == abi.Signal.yield);
     expect(harness.keywordIs(resumed.value, "outer"));
 
+    // `user9` is the last status the check lets through, and the one `:await`
+    // leaves. Propagating from it passes the signal up rather than refusing.
+    const awaited = eval(
+        "(do (def child (fiber/new (fn [] (signal :await :waiting)) :9))" ++
+            "    (resume child)" ++
+            "    (fiber/new (fn [] (propagate :outer child)) :9))",
+    );
+    const passed = resumeFiber(awaited, wrap.fromNil());
+    expect(passed.signal == abi.Signal.user9);
+    expect(harness.keywordIs(passed.value, "outer"));
+
     // Only `:new` and `:alive` sit above the user signals, so an unstarted
     // child is the reachable half of the check and a dead one propagates fine.
     expectError("(propagate :x (fiber/new (fn [] 1) :y))", "cannot propagate from fiber with status :new");
@@ -447,6 +511,15 @@ fn aNewFiberReceivesItsValueAsAnArgument() void {
     const resumed = resumeFiber(fiberv, value.fromBytes("in", .keyword));
     expect(resumed.signal == abi.Signal.ok);
     expect(harness.keywordIs(wrap.toTuple(resumed.value)[1], "in"));
+
+    // With no fixed parameter and a rest parameter, the value is the one
+    // element of the rest tuple. Arity zero is the edge between the two arms.
+    const variadic = eval("(fiber/new (fn [& xs] xs) :y)");
+    const rest = resumeFiber(variadic, value.fromBytes("in", .keyword));
+    expect(rest.signal == abi.Signal.ok);
+    expect(harness.isType(rest.value, repr.Tag.tuple));
+    expect(tuples.head(wrap.toTuple(rest.value)).length == 1);
+    expect(harness.keywordIs(wrap.toTuple(rest.value)[0], "in"));
 }
 
 /// After a raise the fiber has `FiberFlags.did_raise` set, which the head of
@@ -486,6 +559,18 @@ fn anInjectedSignal() void {
     resumed = resumeFiber(fiberv, value.fromBytes("injected", .keyword));
     expect(resumed.signal == abi.Signal.user3);
     expect(harness.keywordIs(resumed.value, "injected"));
+
+    // A resumable signal delivered the same way is delivered once, and the
+    // resume after it runs the fiber on from its `yield`.
+    const again = eval("(fiber/new (fn [] (yield 1) :ran-on) :y)");
+    resumed = resumeFiber(again, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.yield);
+    signal_core.signalInject(wrap.toFiber(again), abi.Signal.user5);
+    resumed = resumeFiber(again, value.fromBytes("injected", .keyword));
+    expect(resumed.signal == abi.Signal.user5);
+    resumed = resumeFiber(again, value.fromBytes("resumed", .keyword));
+    expect(resumed.signal == abi.Signal.ok);
+    expect(harness.keywordIs(resumed.value, "ran-on"));
 }
 
 /// An opcode the loop does not recognise returns `abi.Signal.debug` and sets
@@ -522,6 +607,7 @@ fn aPermanentBreakpoint() void {
     const fiber = wrap.toFiber(fiberv);
     var resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
     expect(resumed.signal == abi.Signal.debug);
+    expect(fiber.flags.breakpoint);
     // Resuming re-runs the breakpointed instruction with bit 7 masked off, so
     // the second call reaches the same breakpoint rather than the loop
     // reporting the same one forever.
@@ -530,6 +616,9 @@ fn aPermanentBreakpoint() void {
     resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
     expect(resumed.signal == abi.Signal.ok);
     expect(harness.keywordIs(resumed.value, "done"));
+    // The resume clears the flag, so a later resume does not mask the first
+    // instruction it runs.
+    expect(!fiber.flags.breakpoint);
 }
 
 /// Opcodes with no message and no signal of their own, grouped because each is
@@ -591,7 +680,198 @@ fn theRemainingOpcodes() void {
         "(do (def c (fiber/new (fn [] (yield 1)) :ye))    (resume c) (try (cancel c :stop) ([e] e)))",
         ":stop",
     );
+    // A cancel whose error the child does not trap goes on up through the
+    // fiber that cancelled, the same as a resume's.
+    expectError("(do (def c (fiber/new (fn [] (yield 1)) :y)) (resume c) (cancel c \"boom\"))", "boom");
 }
+
+/// A fiber marked as a task is refused by both opcodes, each with its own
+/// wording. `vm_entry` pins the two messages through the entry points; these
+/// are the opcodes' own arguments to the same check.
+fn theOpcodesRefuseARootFiber() void {
+    const rooted = eval("(fiber/new (fn [] 1))");
+    harness.gcSetBits(&wrap.toFiber(rooted).gc.flags, constants.JANET_FIBER_FLAG_ROOT);
+    registry.def(test_env.?, "vmrun-rooted", rooted, null);
+    expectError(
+        "(resume vmrun-rooted)",
+        if (harness.has_ev) "cannot resume root fiber, use ev/go" else "cannot resume root fiber",
+    );
+    expectError(
+        "(cancel vmrun-rooted \"x\")",
+        if (harness.has_ev) "cannot cancel root fiber, use ev/cancel" else "cannot cancel root fiber",
+    );
+}
+
+/// Resume with `auto_suspend` held at one for the length of the resume.
+fn resumeInterrupted(fiberv: repr.Value) vm_entry.Resumed {
+    harness.vm().auto_suspend = 1;
+    defer harness.vm().auto_suspend = 0;
+    return resumeFiber(fiberv, wrap.fromNil());
+}
+
+/// With `auto_suspend` set, an interrupting build leaves the loop with
+/// `Signal.interrupt` at every call, tail call and resume, and at a taken jump
+/// whose offset is zero or negative. Resuming the fiber runs the interrupted
+/// instruction again and discards the value it is resumed with.
+fn anInterrupt() void {
+    if (!has_interrupt) return;
+
+    // Each of these fibers stops first at the call, the tail call or the
+    // resume, and would otherwise finish.
+    const first_stops = [_][*:0]const u8{
+        "(do (defn g [] 2) (fiber/new (fn [] (g) 1)))",
+        "(do (defn g [] 2) (fiber/new (fn [] (g))))",
+        "(do (def c (fiber/new (fn [] 2))) (fiber/new (fn [] (resume c) 1)))",
+    };
+    for (first_stops) |source| {
+        expect(resumeInterrupted(eval(source)).signal == abi.Signal.interrupt);
+    }
+
+    if (!has_assembler) return;
+
+    // A loop stopped at its backward jump runs on from the jump. The resume
+    // value must not land in the condition register and the jump must not be
+    // skipped; either ends the loop after one pass.
+    const loop = eval(
+        "(fiber/new (asm '{:arity 0 :bytecode [(ldi 0 0) (ldi 1 3) :top (addim 0 0 1)" ++
+            " (lt 2 0 1) (jmpif 2 :top) (ret 0)]}))",
+    );
+    expect(resumeInterrupted(loop).signal == abi.Signal.interrupt);
+    const resumed = resumeFiber(loop, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.ok);
+    expect(harness.integerIs(resumed.value, 3));
+
+    // A jump to itself is a loop with nothing in it, and an interrupt is the
+    // only way out. Each conditional form is taken here.
+    const self_jumps = [_][*:0]const u8{
+        "(fiber/new (asm '{:arity 0 :bytecode [(ldt 0) :here (jmpif 0 :here) (retn)]}))",
+        "(fiber/new (asm '{:arity 0 :bytecode [(ldf 0) :here (jmpno 0 :here) (retn)]}))",
+        "(fiber/new (asm '{:arity 0 :bytecode [(ldn 0) :here (jmpni 0 :here) (retn)]}))",
+        "(fiber/new (asm '{:arity 0 :bytecode [(ldt 0) :here (jmpnn 0 :here) (retn)]}))",
+    };
+    for (self_jumps) |source| {
+        expect(resumeInterrupted(eval(source)).signal == abi.Signal.interrupt);
+    }
+}
+
+fn yieldingPut(_: *anyopaque, _: repr.Value, _: repr.Value) raise.Error!void {
+    return raise.signal(abi.Signal.yield, value.fromBytes("paused", .keyword));
+}
+
+/// `.put` and `.put_index` mark the fiber so that a resume does not write its
+/// value into the instruction's first register, which for these two holds the
+/// container rather than a result.
+fn aSuspendedPutKeepsItsContainer() void {
+    const container = wrap.fromAbstract(abstracts.newBytes(&at_yielding_put, 1));
+    gc_alloc.gcroot(container);
+    const sources = [_][*:0]const u8{
+        "(fiber/new (fn [o] (put o :k :v) o) :y)",
+        "(fiber/new (fn [o] (put o 0 :v) o) :y)",
+    };
+    for (sources) |source| {
+        const fiberv = eval(source);
+        var resumed = resumeFiber(fiberv, container);
+        expect(resumed.signal == abi.Signal.yield);
+        expect(harness.keywordIs(resumed.value, "paused"));
+        // The yield was raised, not returned, and the resume after it clears
+        // the flag that says so.
+        expect(wrap.toFiber(fiberv).flags.did_raise);
+        resumed = resumeFiber(fiberv, value.fromBytes("resumed", .keyword));
+        expect(resumed.signal == abi.Signal.ok);
+        expect(harness.equals(resumed.value, container));
+        expect(!wrap.toFiber(fiberv).flags.did_raise);
+    }
+    _ = gc_alloc.gcunroot(container);
+}
+
+/// The first instruction in `func` whose opcode is `operation`.
+fn instructionOf(func: *functions.Function, operation: constants.Opcode) *u32 {
+    for (func.def.?.instructions()) |*word| {
+        if (word.* & 0xFF == harness.op(operation)) return word;
+    }
+    @panic("vm_run: the function has no such instruction");
+}
+
+/// The error `func` raises when it runs on a fiber of its own.
+fn raisedByRunning(func: *functions.Function) repr.Value {
+    const fiber = fibers.new(func, 64, &.{}) catch unreachable;
+    gc_alloc.gcroot(wrap.fromFiber(fiber));
+    const resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
+    expect(resumed.signal == abi.Signal.@"error");
+    gc_alloc.gcroot(resumed.value);
+    return resumed.value;
+}
+
+/// Each operand bound at the first index past the end of its table, which is
+/// where `<` and `<=` part.
+fn anOperandPastItsTable() void {
+    // `.load_constant` in a function with one constant, asked for index 1.
+    var func = wrap.toFunction(eval("(fn [] :only)"));
+    var word = instructionOf(func, .load_constant);
+    word.* = (word.* & 0xFFFF) | (@as(u32, @intCast(func.def.?.constants_length)) << 16);
+    expect(harness.stringValueIs(raisedByRunning(func), "invalid constant"));
+
+    // `.closure` in a function with one nested definition, asked for index 1.
+    func = wrap.toFunction(eval("(fn [] (fn [] 1))"));
+    word = instructionOf(func, .closure);
+    word.* = (word.* & 0xFFFF) | (@as(u32, @intCast(func.def.?.defs_length)) << 16);
+    expect(harness.stringValueIs(raisedByRunning(func), "invalid funcdef"));
+
+    // `.load_upvalue` with the environment index one past the function's
+    // environments, and then with the value index one past the environment's
+    // values.
+    func = wrap.toFunction(eval("((fn [] (var x 1) (fn [] x)))"));
+    word = instructionOf(func, .load_upvalue);
+    word.* = (word.* & ~@as(u32, 0xFF << 16)) | (@as(u32, @intCast(func.def.?.environments_length)) << 16);
+    expect(harness.stringValueIs(raisedByRunning(func), "invalid upvalue environment"));
+
+    func = wrap.toFunction(eval("((fn [] (var x 1) (fn [] x)))"));
+    word = instructionOf(func, .load_upvalue);
+    const env = functions.envsOf(func)[0].?;
+    word.* = (word.* & 0x00FF_FFFF) | (@as(u32, @intCast(env.length)) << 24);
+    expect(harness.stringValueIs(raisedByRunning(func), "invalid upvalue index"));
+
+    // `.closure`'s inherited environment at the same edge. An index equal to
+    // the parent's environment count names the parent's own frame, as -1
+    // does, so the closure it builds reads that frame's value.
+    func = wrap.toFunction(eval("(fn [] (var x 5) (fn [] x))"));
+    func.def.?.subdefs()[0].environmentIndices()[0] = @intCast(func.def.?.environments_length);
+    const made = vm_entry.pcall(func, &.{}, null);
+    expect(made.signal == abi.Signal.ok);
+    gc_alloc.gcroot(made.value);
+    const read = vm_entry.pcall(wrap.toFunction(made.value), &.{}, null);
+    expect(read.signal == abi.Signal.ok);
+    expect(harness.integerIs(read.value, 5));
+}
+
+/// The collector runs when the bytes allocated since the last collection
+/// reach the interval, not only when they pass it. The first cfunction sets
+/// the interval to exactly that count and allocates nothing, the call opcode
+/// checks the two on its return, and the second cfunction reads the count.
+fn theCollectionThresholdIsInclusive() void {
+    const saved = harness.vm().gc.interval;
+    const after = eval("(do (vmrun/arm-collection) (vmrun/allocated))");
+    harness.vm().gc.interval = saved;
+    expect(armed_at > 0);
+    expect(harness.integerIs(after, 0));
+}
+
+fn cfunArmCollection(argv: []repr.Value) raise.Raising(repr.Value) {
+    _ = argv;
+    armed_at = harness.vm().gc.next_collection;
+    harness.vm().gc.interval = armed_at;
+    return wrap.fromNil();
+}
+
+fn cfunAllocated(argv: []repr.Value) raise.Raising(repr.Value) {
+    _ = argv;
+    return wrap.fromNumber(@floatFromInt(harness.vm().gc.next_collection));
+}
+
+const cfuns = [_]abi.Reg{
+    .{ .name = "vmrun/arm-collection", .cfun = raise.stored(&cfunArmCollection), .documentation = null },
+    .{ .name = "vmrun/allocated", .cfun = raise.stored(&cfunAllocated), .documentation = null },
+};
 
 // ==========================================================================
 // Entry
@@ -599,6 +879,7 @@ fn theRemainingOpcodes() void {
 
 fn body() raise.Raising(void) {
     test_env = harness.coreEnv();
+    registry.cfuns(test_env, null, &cfuns);
     has_assembler = harness.coreOptional("asm") != null;
 
     arithmeticTakesTheNumericPath();
@@ -612,6 +893,7 @@ fn body() raise.Raising(void) {
     callingACfunction();
     callingANonFunction();
     stackOverflow();
+    theStackLimitIsInclusive();
 
     theTypeAssertions();
     theCollectionConstructors();
@@ -631,12 +913,16 @@ fn body() raise.Raising(void) {
     try aBreakpointReachesTheUnknownOpcodeArm();
     aPermanentBreakpoint();
     theRemainingOpcodes();
+
+    theOpcodesRefuseARootFiber();
+    anInterrupt();
+    aSuspendedPutKeepsItsContainer();
+    anOperandPastItsTable();
+    theCollectionThresholdIsInclusive();
 }
 
 pub fn run() void {
     harness.init();
     body() catch @panic("vm_run: an operation raised unexpectedly");
     vm_lifecycle.deinit();
-
-    std.debug.print("vm run contract ok\n", .{});
 }

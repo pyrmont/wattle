@@ -568,9 +568,13 @@ pub fn forkProcess() i64 {
     return c.retryIntr(c.fork, .{});
 }
 
-/// `pipe`, or `CreatePipe` on Windows.
+/// `pipe` with both ends closed on exec, which is `ev_stream.makePipe`'s mode
+/// 3. A child is given its end by `dup2`, which clears the flag on the
+/// descriptor it makes. Windows keeps `c.pipe`; `makePipes` does not call this
+/// there.
 pub fn makePipe(fds: *[2]c_int) i32 {
-    return c.pipe(fds);
+    if (windows) return c.pipe(fds);
+    return ev_stream.makePipe(fds, 3);
 }
 
 /// `getpid`.
@@ -1112,7 +1116,10 @@ fn getStdioForHandle(handle: host.Handle, orig: ?*anyopaque, iswrite: bool) rais
             if (jf.flags & file_write != 0) flags |= stream_writable;
             if (jf.flags & file_read != 0) flags |= stream_readable;
             // A file becoming a stream gets its own duplicate of the handle,
-            // so that closing one does not close the other.
+            // so that closing one does not close the other. The duplicate
+            // stays with this process: the Windows one is not inheritable,
+            // and the POSIX one is closed on exec, which `dup` does not copy
+            // and `dup2` clears on the descriptor the child is given.
             if (windows) {
                 const prochandle = c.GetCurrentProcess();
                 var new_handle: host.Handle = undefined;
@@ -1123,6 +1130,7 @@ fn getStdioForHandle(handle: host.Handle, orig: ?*anyopaque, iswrite: bool) rais
             }
             const new_handle = c.dup(handle);
             if (new_handle < 0) return null;
+            _ = c.fcntl(new_handle, h.F_SETFD, h.FD_CLOEXEC);
             return try ev_stream.makeStream(new_handle, flags, null);
         }
         return @ptrCast(@alignCast(p));
@@ -1478,11 +1486,9 @@ fn spawnPosix(
 
     cleanupEnv(envp, @ptrCast(child_argv));
     if (status != 0) {
-        // macOS leaves `errno` unset here, which is what the fallback is for.
-        return pp_format.panicf("%p: %s", .{
-            argv[0],
-            utils.strerrorSafe(if (c.errno() != 0) c.errno() else h.ENOENT),
-        });
+        // `posix_spawn` returns the error, the child's own where exec failed,
+        // and does not set `errno`.
+        return pp_format.panicf("%p: %s", .{ argv[0], utils.strerrorSafe(status) });
     }
 
     const proc = newProc();

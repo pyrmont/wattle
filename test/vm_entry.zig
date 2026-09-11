@@ -79,6 +79,7 @@ const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
 const subsystems = @import("subsystems");
 const tables = @import("subsystems").value.tables;
+const tuples = @import("subsystems").value.tuples;
 const value = @import("subsystems").value;
 const vm_entry = subsystems.vm_entry;
 const vm_lifecycle = @import("subsystems").lifecycle;
@@ -397,10 +398,13 @@ fn cfunProbe(argv: []repr.Value) raise.Raising(repr.Value) {
     expect(harness.raised(vm_entry.call, .{ fun, args[0..1] }).?.says("arity mismatch in <function exactly-two>, expected 2, got 1"));
 
     // `vm_entry.call` raises on its own entry condition too, and does it before
-    // touching the fiber.
+    // touching the fiber. The scope `harness.raised` opens counts itself into
+    // `stackn`, so one below the guard here is the guard at the call; without
+    // a scope the same count is one below it at the call, and the call runs.
     const saved = harness.vm().stackn;
-    harness.vm().stackn = config.recursion_guard;
+    harness.vm().stackn = config.recursion_guard - 1;
     expect(harness.raised(vm_entry.call, .{ fun, args[0..2] }).?.says("C stack recursed too deeply"));
+    expect(harness.integerIs(try vm_entry.call(fun, args[0..2]), 1));
     harness.vm().stackn = saved;
 
     // A dirty stack: values pushed above `stackstart` that `vm_entry.call`
@@ -446,9 +450,36 @@ fn cfunArityVariants(argv: []repr.Value) raise.Raising(repr.Value) {
     return wrap.fromNil();
 }
 
+/// The assembler keeps `min_arity` at or below `max_arity` and the
+/// unmarshaller does not check it. With the two crossed, a call with exactly
+/// the minimum is refused for passing the maximum, and says so.
+///
+/// A cfunction of its own because a refused call leaves its arguments pushed,
+/// and a second call after it finds the stack dirty and pushes a guard frame
+/// that the refusal leaves standing too.
+fn cfunCrossedArity(argv: []repr.Value) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 0);
+
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2), harness.wrapInteger(3) };
+    const fun = evalfn("(do (defn crossed [a] a) crossed)");
+    fun.def.?.min_arity = 3;
+    fun.def.?.max_arity = 1;
+    expect(harness.raised(vm_entry.call, .{ fun, args[0..3] }).?.says("arity mismatch in <function crossed>, expected at most 1, got 3"));
+
+    return wrap.fromNil();
+}
+
+/// `stackn` as a number, for a Janet function to report the depth it runs at.
+fn cfunDepth(argv: []repr.Value) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 0);
+    return harness.wrapInteger(@intCast(harness.vm().stackn));
+}
+
 const cfuns = [_]abi.Reg{
     .{ .name = "vmentry/probe", .cfun = raise.stored(&cfunProbe), .documentation = null },
     .{ .name = "vmentry/arity", .cfun = raise.stored(&cfunArityVariants), .documentation = null },
+    .{ .name = "vmentry/crossed", .cfun = raise.stored(&cfunCrossedArity), .documentation = null },
+    .{ .name = "vmentry/depth", .cfun = raise.stored(&cfunDepth), .documentation = null },
 };
 
 /// `vm_entry.call` sets `coerce_error`, so a signal the loop returns rather
@@ -503,6 +534,26 @@ fn aTracedCall() void {
     }
 }
 
+/// `call` runs its callee one level deeper in `stackn` than its caller, and a
+/// traced call counts the trace only while the trace prints. Each pair is the
+/// depth read directly and the depth the operator fallback's callee reads
+/// through `call`, in the same `with-dyns` body, untraced and then traced.
+fn theDepthACallRunsAt() void {
+    const depths = eval(
+        "(do (def buf @\"\")" ++
+            "    (defn probe-depth [self other] (vmentry/depth))" ++
+            "    (def t @{:+ probe-depth})" ++
+            "    (def plain (with-dyns [:err buf] [(vmentry/depth) (+ t 1)]))" ++
+            "    (trace probe-depth)" ++
+            "    (def traced (with-dyns [:err buf] [(vmentry/depth) (+ t 1)]))" ++
+            "    [;plain ;traced])",
+    );
+    const four = wrap.toTuple(depths);
+    expect(tuples.head(four).length == 4);
+    expect(harness.integerIs(four[1], wrap.toInteger(four[0]) + 1));
+    expect(harness.integerIs(four[3], wrap.toInteger(four[2]) + 1));
+}
+
 // ==========================================================================
 // Entry
 // ==========================================================================
@@ -527,15 +578,15 @@ fn body() raise.Raising(void) {
     // Everything that needs a running fiber underneath it.
     _ = eval("(vmentry/probe)");
     _ = eval("(vmentry/arity)");
+    _ = eval("(vmentry/crossed)");
 
     aSignalTheLoopReturnsIsCoerced();
     aTracedCall();
+    theDepthACallRunsAt();
 }
 
 pub fn run() void {
     harness.init();
     body() catch @panic("vm_entry: an operation raised unexpectedly");
     vm_lifecycle.deinit();
-
-    std.debug.print("vm entry contract ok\n", .{});
 }

@@ -274,6 +274,11 @@ fn theSeekOrigins() void {
     expect(io_core.seekWhence("current", 7) == -1);
     expect(io_core.seekWhence("", 0) == -1);
     expect(io_core.seekWhence("CUR", 3) == -1);
+
+    // The length bounds the walk, so the byte after the key is not read: a
+    // key taken from the front of a longer word still matches.
+    expect(io_core.seekWhence("curr", 3) == 0);
+    expect(io_core.seekWhence("setx", 3) == 1);
 }
 
 fn theModeReconstruction() void {
@@ -581,6 +586,29 @@ fn theMarshalledBufferSize() raise.Raising(void) {
     _ = c.remove(scratch);
 }
 
+/// A descriptor that no longer exists unmarshals as a closed file with no
+/// stream. A borrowed file is written with its own descriptor, so closing the
+/// stream before the unmarshal is what frees it. The recorded buffer size is
+/// not the default, and there is no stream to apply it to.
+fn theUnreopenableDescriptor() raise.Raising(void) {
+    const stream = io_core.open(scratch, "wb").?;
+    const jf = io_core.makejfile(
+        @ptrCast(@alignCast(stream)),
+        constants.JANET_FILE_WRITE | constants.JANET_FILE_NOT_CLOSEABLE,
+    );
+    jf.vbufsize = 0;
+    const buffer = buffers.new(0);
+    try marshalled(buffer, wrap.fromAbstract(jf), constants.JANET_MARSHAL_UNSAFE);
+    expect(io_core.close(stream) == 0);
+
+    const copy = io_core.checkfile(try unmarshalled(buffer, constants.JANET_MARSHAL_UNSAFE));
+    expect(copy != null);
+    const copyf: *io_core.File = @ptrCast(@alignCast(copy));
+    expect(copyf.flags == constants.JANET_FILE_CLOSED);
+    expect(copyf.file == null);
+    _ = c.remove(scratch);
+}
+
 /// A `io.File`'s flags and its stream can disagree, which nothing in Janet
 /// can arrange and which is the only way into two of the failure paths. Both
 /// are reachable by an embedder, since `io.makejfile` takes the flag word from
@@ -844,6 +872,7 @@ pub fn run() void {
     theDynamicFile();
     theMarshalling() catch @panic("io_core: marshalling raised");
     theMarshalledBufferSize() catch @panic("io_core: the buffer size raised");
+    theUnreopenableDescriptor() catch @panic("io_core: an unreopenable descriptor raised");
     theMismatchedHandles();
     theCoreFunctions();
 
@@ -851,5 +880,5 @@ pub fn run() void {
     vm_lifecycle.deinit();
 
     cleanPaths();
-    std.debug.print("io_core contract ok ({d} raises)\n", .{raises_seen});
+    std.debug.print("io_core raises: {d}\n", .{raises_seen});
 }

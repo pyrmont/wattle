@@ -220,7 +220,7 @@ pub fn allocAapcs64(
                     arg.spec = aapcs64_stack;
                     stack_offset = alignUp(stack_offset, if (apple) arg_align else 8);
                     arg.offset = stack_offset;
-                    stack_offset +%= if (apple) arg_size else @max(arg_size, 8);
+                    stack_offset +%= stackBytes(arg_size, apple);
                     next_general_reg = 8;
                 }
             },
@@ -254,7 +254,7 @@ pub fn allocAapcs64(
                     arg.spec = aapcs64_stack;
                     stack_offset = alignUp(stack_offset, 8);
                     arg.offset = stack_offset;
-                    stack_offset +%= if (apple) arg_size else 8;
+                    stack_offset +%= stackBytes(arg_size, apple);
                 }
             },
             else => {
@@ -372,7 +372,9 @@ pub fn allocSysv64(
                 }
             },
             sysv64_pair_ssesse => {
-                if (next_fp_register < max_fp_regs) {
+                // Both halves need a vector register, and with one left the
+                // whole argument goes to memory, as the integer pair does.
+                if (next_fp_register + 1 < max_fp_regs) {
                     arg.offset = next_fp_register;
                     arg.offset2 = next_fp_register + 1;
                     next_fp_register += 2;
@@ -453,11 +455,12 @@ pub fn allocWin64(
 
     // The reference area sits above the stack arguments and is addressed from
     // the top, so the offsets recorded above are inverted now that the total
-    // is settled.
+    // is settled. They count sixteen-byte units and `stack_count` counts
+    // words, so each is doubled here.
     for (args) |*arg| {
         if (arg.spec == win64_stack_ref or arg.spec == win64_register_ref) {
             const size = (arg.size +% 15) & ~@as(u64, 0xF);
-            arg.offset2 = stack_count -% arg.offset2 -% @as(u32, @truncate(size / 8));
+            arg.offset2 = stack_count -% 2 *% arg.offset2 -% @as(u32, @truncate(size / 8));
         }
     }
 
@@ -549,6 +552,13 @@ fn skipSubtree(nodes: []const TypeNode, idx: usize) usize {
         i = skipSubtree(nodes, i);
     }
     return i;
+}
+
+/// The bytes a spilled AAPCS64 argument of `size` bytes takes on the stack.
+/// The generic standard rounds the size up to a whole number of words, at
+/// least one; Apple packs the argument at its own size.
+fn stackBytes(size: u32, apple: bool) u32 {
+    return if (apple) size else alignUp(@max(size, 8), 8);
 }
 
 fn structNode(size: u32, field_count: u32, offset: u32) TypeNode {

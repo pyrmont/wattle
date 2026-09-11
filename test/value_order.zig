@@ -979,6 +979,44 @@ fn theStackGrowthPolicy() void {
     expect(stackCapacity() == grown);
 }
 
+/// The stack grows on the push that would take its last slot. A fresh stack
+/// of 128 nodes holds 127, the base slot being dead, and the 128th push grows
+/// it to `2 * 127 + 1`. The stack is released first so that the floor is the
+/// capacity the case starts from.
+fn theStackGrowsAtItsLastSlot() void {
+    order.traversalDeinit(&harness.vm().traversal);
+    order.traversalInit(&harness.vm().traversal);
+    const a = nestTuples(127, intv(0));
+    const b = nestTuples(127, intv(1));
+    const c = nestTuples(128, intv(0));
+    const d = nestTuples(128, intv(1));
+    defer {
+        for ([_]repr.Value{ a, b, c, d }) |x| _ = gc_alloc.gcunroot(x);
+    }
+
+    expect(order.compare(a, b) == -1);
+    expect(stackDepth() == 127);
+    expect(stackCapacity() == 128);
+    expect(order.compare(c, d) == -1);
+    expect(stackDepth() == 128);
+    expect(stackCapacity() == 255);
+}
+
+/// A tuple that runs out first orders first, whatever its storage holds past
+/// its length. The shorter tuple is built with two slots and its length cut to
+/// one, so the slot past its end holds a value that would order the pair the
+/// other way if it were read.
+fn aShorterTupleIsNotReadPastItsEnd() void {
+    const t = tuples.begin(2);
+    t[0] = intv(1);
+    t[1] = intv(9);
+    const short = tuples.end(t);
+    utils.tupleHead(short).length = 1;
+    const long = [_]repr.Value{ intv(1), intv(5) };
+    expect(order.compare(mktuple(&long, false), wrap.fromTuple(short)) == 1);
+    expect(order.compare(wrap.fromTuple(short), mktuple(&long, false)) == -1);
+}
+
 /// Neither entry point pops what it pushed: an early rejection deep inside a
 /// traversal leaves nodes on the stack. That is only sound because the next
 /// comparison resets the pointer on the way in, which is asserted by running a
@@ -1230,6 +1268,8 @@ pub fn run() void {
     theBaseSlotIsDead();
     thePrototypeHopReplacesTheNode();
     theStackGrowthPolicy();
+    theStackGrowsAtItsLastSlot();
+    aShorterTupleIsNotReadPastItsEnd();
     theStackIsResetNotUnwound();
     deepTuplesDoNotRecurse();
     deepStructsDoNotRecurse();
@@ -1237,6 +1277,4 @@ pub fn run() void {
     theRelationsHoldOverACorpus();
 
     fromJanet();
-
-    std.debug.print("value order contract ok\n", .{});
 }

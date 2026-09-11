@@ -269,5 +269,31 @@
     (with [f (file/open held :r)]
       (assert (= before (open-fds)) "an opened file is closed on exec")))))
 
+# A stream from os/open is closed on exec as a file is. The child writes its
+# count to a file rather than a pipe, and a child that overruns is killed
+# with a signal it cannot ignore. The process keeps a stream of its own for
+# each file it was given, and those are closed before the next count.
+(compwhen (and (dyn 'os/spawn) (dyn 'os/open))
+ (when (os/stat "/dev/fd")
+  (def count-path "/tmp/janet-suite-io-fds")
+  (def held-path "/tmp/janet-suite-io-held")
+  (defn fds-in-child []
+    (with [out (file/open count-path :w)]
+      (with [null (file/open "/dev/null" :w)]
+        (def p (os/spawn [(dyn *executable*) "-e" `(print (length (os/dir "/dev/fd")))`]
+                         :p {:out out :err null}))
+        (unless (first (protect (ev/with-deadline 5 (os/proc-wait p))))
+          (os/proc-kill p false :kill))
+        (:close (p :out))
+        (:close (p :err))))
+    (scan-number (string/trim (string (slurp count-path)))))
+  (defer (do (protect (os/rm count-path)) (protect (os/rm held-path)))
+    (spit held-path "x")
+    (def before (fds-in-child))
+    (def stream (os/open held-path :r))
+    (def during (fds-in-child))
+    (:close stream)
+    (assert (= before during) "a stream from os/open is closed on exec"))))
+
 (end-suite)
 

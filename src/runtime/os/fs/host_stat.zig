@@ -153,16 +153,23 @@ pub const Field = enum(usize) {
 /// do the same thing.
 pub fn isDirectory(file: ?*anyopaque) bool {
     if (windows or builtin.os.tag == .plan9) return false;
-    const fd = c.fileno(file);
+    return descriptorIsDirectory(c.fileno(file)) orelse false;
+}
+
+/// Whether an open descriptor is a directory, or null where the call failed.
+/// `isDirectory` asks it of a stream's descriptor, and `filewatch.zig`'s
+/// kqueue backend of each watched descriptor an event names, skipping an event
+/// it cannot ask about. Windows and Plan 9 do not call it.
+pub fn descriptorIsDirectory(fd: c_int) ?bool {
     if (linux) {
         const l = std.os.linux;
         var stx: l.Statx = std.mem.zeroes(l.Statx);
         const rc = l.statx(fd, "", l.AT.EMPTY_PATH, l.STATX.BASIC_STATS, &stx);
-        if (@as(isize, @bitCast(rc)) < 0) return false;
+        if (@as(isize, @bitCast(rc)) < 0) return null;
         return (stx.mode & S_IFMT) == S_IFDIR;
     }
     var st: Stat = std.mem.zeroes(Stat);
-    if (c_fstat(fd, &st) < 0) return false;
+    if (c_fstat(fd, &st) < 0) return null;
     return (@as(u32, @intCast(st.st_mode)) & S_IFMT) == S_IFDIR;
 }
 

@@ -1,7 +1,7 @@
 # url
 
 A native Janet module written in Zig, and the worked example of the views.
-`DESIGN.md` section 15 records the decision that a type crosses to a module
+`DESIGN.md` section 14 records the decision that a type crosses to a module
 author as a view or as a capability. This module is the view half and
 `examples/numarray` is the capability half.
 
@@ -53,7 +53,7 @@ type-checks and so does `janet.tuple(try janet.getIndexed(argv, 0))`.
 `parse-query` is the worked instance. It reads a bytes view and builds a struct
 out of slices of it, with no copy and no length recomputed on the module's side.
 The runtime interns its own copy, so the struct outlives the argument. That
-symmetry is what the rule in `DESIGN.md` section 15 implies, and it is the
+symmetry is what the rule in `DESIGN.md` section 14 implies, and it is the
 reason construction needed no new shared type.
 
 `slug` reads the bytes and indexed views, `query` reads the dictionary view,

@@ -343,11 +343,122 @@ fn aJumpMayBeTooFar() void {
 
     // A displacement that only just fits reports nothing. It is measured from
     // the instruction after the jump, so the NOOP is what makes it reachable.
+    // Both ends, because each end is its own comparison.
     clearError();
     clearEmission();
     emit_core.emit(&compiler, harness.op(constants.Opcode.noop));
     _ = emit_core.emitSl(&compiler, constants.Opcode.jump_if, near(0), std.math.maxInt(i16));
     expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
+
+    clearError();
+    clearEmission();
+    emit_core.emit(&compiler, harness.op(constants.Opcode.noop));
+    _ = emit_core.emitSl(&compiler, constants.Opcode.jump_if, near(0), std.math.minInt(i16));
+    expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
+}
+
+/// The last register an instruction can name, which is 0xFFFF, and which both
+/// allocators must hand out rather than refuse.
+///
+/// `theRegisterCeiling` marks every register taken and so measures the first
+/// register past the ceiling. This measures the last one below it, which is
+/// the value the comparison is written against.
+fn theLastRegisterIsUsable() void {
+    var last: compiler_primitives.Scope = .{ .name = "last" };
+    last.flags = compiler_primitives.ScopeFlags{ .function = true };
+    last.ra = .{};
+    defer last.ra.deinit();
+
+    last.ra.touch(0xFFFF);
+    for (last.ra.chunks.items) |*chunk| chunk.* = 0xFFFFFFFF;
+    last.ra.free(0xFFFF);
+    compiler.scope = &last;
+    defer compiler.scope = &scope;
+
+    clearError();
+    expect(emit_core.allocfar(&compiler) == 0xFFFF);
+    expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
+
+    last.ra.free(0xFFFF);
+    clearError();
+    const far = compiler_primitives.farslot(&compiler).?;
+    expect(far.index == 0xFFFF);
+    expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
+}
+
+/// The register that just fits in eight bits, which is 0xFF, on each of the
+/// four tests that ask whether a slot is near.
+///
+/// A copy picks its shape from the destination first and the source second,
+/// and an operand picks whether it needs a temporary at all, so 0xFF is
+/// asserted once per test rather than once.
+fn theBoundariesOfNear(reference: repr.Value) void {
+    // A destination of 0xFF is near, so the copy is one move rather than a
+    // reversed one.
+    clearEmission();
+    emit_core.copy(&compiler, near(0xFF), near(4));
+    expect(emittedCount() == 1);
+    expect(emitted(0) == harness.op(constants.Opcode.move_near) | (0xFF << 8) | (4 << 16));
+
+    // A source of 0xFF is near, so a far destination is written in one.
+    clearEmission();
+    emit_core.copy(&compiler, near(300), near(0xFF));
+    expect(emittedCount() == 1);
+    expect(emitted(0) == harness.op(constants.Opcode.move_far) | (0xFF << 8) | (300 << 16));
+
+    // So is a source of 0, which is the other end of the same test.
+    clearEmission();
+    emit_core.copy(&compiler, near(300), near(0));
+    expect(emittedCount() == 1);
+    expect(emitted(0) == harness.op(constants.Opcode.move_far) | (0 << 8) | (300 << 16));
+
+    // An upvalue in environment 0 is not a register, whatever its index, so
+    // it goes through a temporary.
+    clearEmission();
+    emit_core.copy(&compiler, near(300), slot(2, 0, .{}, wrap.fromNil()));
+    expect(emittedCount() == 2);
+    expect(emitted(0) ==
+        harness.op(constants.Opcode.load_upvalue) | (1 << 8) | (0 << 16) | (2 << 24));
+    expect(emitted(1) == harness.op(constants.Opcode.move_far) | (1 << 8) | (300 << 16));
+
+    // Writing 0xFF into an upvalue reads the register directly.
+    clearEmission();
+    emit_core.copy(&compiler, slot(2, 1, .{}, wrap.fromNil()), near(0xFF));
+    expect(emittedCount() == 1);
+    expect(emitted(0) ==
+        harness.op(constants.Opcode.set_upvalue) | (0xFF << 8) | (1 << 16) | (2 << 24));
+
+    // And an operand of 0xFF is emitted where it stands. The shape has to be
+    // one of the four with an eight-bit slot field: `emitSlot` has sixteen
+    // bits for its slot and asks a different question of it.
+    clearEmission();
+    expect(emit_core.emitSt(&compiler, constants.Opcode.push_array, near(0xFF), 0x1234) == 0);
+    expect(emittedCount() == 1);
+    expect(emitted(0) ==
+        harness.op(constants.Opcode.push_array) | (0xFF << 8) | (0x1234 << 16));
+
+    _ = reference;
+}
+
+/// The write-back argument each emit entry point passes, read through the
+/// instruction count: a far operand costs two instructions without a
+/// write-back and three with one.
+fn theWriteBackArguments() void {
+    clearEmission();
+    _ = emit_core.emitSl(&compiler, constants.Opcode.jump_if, near(300), 0);
+    expect(emittedCount() == 2);
+
+    clearEmission();
+    _ = emit_core.emitSt(&compiler, constants.Opcode.push_array, near(300), 0x1234);
+    expect(emittedCount() == 2);
+
+    clearEmission();
+    _ = emit_core.emitSu(&compiler, constants.Opcode.get_index, near(300), 0xABCD, 0);
+    expect(emittedCount() == 2);
+
+    clearEmission();
+    _ = emit_core.emitSu(&compiler, constants.Opcode.get_index, near(300), 0xABCD, 1);
+    expect(emittedCount() == 3);
 }
 
 /// Far registers past the sixteen bits an instruction has for one.
@@ -440,6 +551,9 @@ pub fn run() void {
     aConstantCannotBeWritten();
     aJumpMayBeTooFar();
     theRegisterCeiling();
+    theLastRegisterIsUsable();
+    theBoundariesOfNear(reference);
+    theWriteBackArguments();
     theConstantPoolFills();
 
     vector.free(&compiler.buffer);

@@ -148,5 +148,22 @@
 (assert (deep= (string/split "," "a,b,c" 2) @["a,b" "c"]) "string/split start")
 (assert (deep= (string/split "," "a,b,c" 0 100) @["a" "b" "c"]) "string/split limit above count")
 
+# The last byte of each case range is in the range.
+(assert (= "az" (string/ascii-lower "AZ")) "string/ascii-lower A and Z")
+(assert (= "AZ" (string/ascii-upper "az")) "string/ascii-upper a and z")
+
+# A string is its own suffix.
+(assert (string/has-suffix? "abc" "abc") "string/has-suffix? of the whole string")
+
+# The search restarts from the pattern's own jump table after a match. After
+# "aab" at 0 the next "a" at 3 is followed by "b", so there is no second match.
+(assert (deep= (string/find-all "aab" "aabab") @[0]) "string/find-all after a partial match")
+
+# string/replace takes a start index, and 0 is one.
+(assert (= "ba" (string/replace "a" "b" "aa" 0)) "string/replace from index 0")
+
+# string/trim with a set trims that set and not whitespace.
+(assert (= "a" (string/trim "xxaxx" "x")) "string/trim with a set")
+
 (end-suite)
 

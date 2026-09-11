@@ -51,6 +51,7 @@ const builtin = @import("builtin");
 
 const args_core = @import("subsystems").args;
 const config = @import("config");
+const ev = @import("subsystems").ev;
 const expect = @import("expect.zig").expect;
 const harness = @import("harness.zig");
 const host_stat = subsystems.host_stat;
@@ -893,19 +894,77 @@ fn theSigaction() void {
     );
 }
 
+/// libc's `raise`, which runs the handler for a signal on the calling thread
+/// before it returns.
+extern fn raise(sig: c_int) callconv(.c) c_int;
+
+/// `std.c.SIG` is an enum on some targets and a plain integer on others.
+fn signalNumber(number: anytype) c_int {
+    return switch (@typeInfo(@TypeOf(number))) {
+        .@"enum" => @intCast(@intFromEnum(number)),
+        else => @intCast(number),
+    };
+}
+
+/// Which trampoline `os/sigaction` installs, read through the interrupt count.
+/// The plain one only posts an event; the interrupting one, which the third
+/// argument asks for, also counts an interrupt; and the callback that runs on
+/// the loop takes the interrupt back for the interrupting one alone. So the
+/// count stays put across a plain signal and rises by one until the loop
+/// handles an interrupting one.
+///
+/// Each callback is run by one turn of the loop with nothing scheduled, which
+/// polls, finds the posted event and returns, and the count is read before any
+/// Janet code runs again. The loop runs no fiber while the count is not zero,
+/// so a count the callback left wrong is seen here rather than as a loop that
+/// never finishes.
+fn theTrampolines() void {
+    if (!harness.has_ev) return;
+    const env: *tables.Table = harness.coreEnv();
+    const vm = harness.vm();
+    harness.inFiber(env, "(defglobal 'trampoline-hits @[nil nil])");
+    harness.inFiber(env,
+        \\(os/sigaction :usr1 (fn [] (set (trampoline-hits 0) :plain)))
+        \\(os/sigaction :usr2 (fn [] (set (trampoline-hits 1) :interrupting)) true)
+    );
+    const before = vm.auto_suspend;
+
+    _ = raise(signalNumber(std.c.SIG.USR1));
+    expect(vm.auto_suspend == before);
+    _ = ev.loop1() catch @panic("os_surface: the loop raised on a signal");
+    expect(vm.auto_suspend == before);
+
+    _ = raise(signalNumber(std.c.SIG.USR2));
+    expect(vm.auto_suspend == before + 1);
+    _ = ev.loop1() catch @panic("os_surface: the loop raised on a signal");
+    expect(vm.auto_suspend == before);
+
+    // The two handlers the callbacks scheduled run with the next fiber.
+    harness.inFiber(env,
+        \\(assert (= :plain (trampoline-hits 0)))
+        \\(assert (= :interrupting (trampoline-hits 1)))
+        \\(os/sigaction :usr1)
+        \\(os/sigaction :usr2)
+    );
+}
+
 /// `os/posix-fork` returns nil in the child and a `core/process` in the
 /// parent. The child exits with `force` so that it does not flush the buffered
 /// output the parent has already queued, which is what makes this safe to
 /// run inside a contract at all.
+///
+/// The child's exit code is its own, 7. Were the two answers swapped, the
+/// driver itself would take the child's branch and exit with 7, and the forked
+/// copy's wait would find no child and see 0.
 fn thePosixFork() void {
     const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(def p (os/posix-fork))
         \\(if p
         \\  (do (assert (= :core/process (type p)))
-        \\      (assert (int? (p :pid)))
-        \\      (assert (= 0 (os/proc-wait p))))
-        \\  (os/exit 0 true))
+        \\      (assert (pos? (p :pid)))
+        \\      (assert (= 7 (os/proc-wait p))))
+        \\  (os/exit 7 true))
     );
 }
 
@@ -952,8 +1011,7 @@ pub fn run() void {
         section(theSpawnRedirection);
         section(theExecuteEnvironment);
         section(theSigaction);
+        section(theTrampolines);
         section(thePosixFork);
     }
-
-    std.debug.print("os_surface contract ok\n", .{});
 }

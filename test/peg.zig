@@ -399,6 +399,7 @@ fn grammarErrorsNameTheForm() void {
     expect(grammarError("'(-1 1)").endsWith(", expected non-negative integer, got -1"));
     expect(grammarError("'(<- 1 \"a\")").endsWith(", expected keyword for capture tag, got \"a\""));
     expect(grammarError("'(number 1 40)").endsWith(", expected integer between 2 and 36, got 40"));
+    expect(grammarError("'(number 1 2.5)").endsWith(", expected integer between 2 and 36, got 2.5"));
     expect(grammarError("'(cmt 1 2)").endsWith(", expected function or cfunction, got 2"));
     expect(grammarError("'(uint " ++ max_readint_width_text ++ "1)")
         .endsWith(", width must be between 0 and " ++ max_readint_width_text ++
@@ -702,6 +703,116 @@ fn everyReadintPegSurvivesARoundTrip() raise.Raising(void) {
     rejected(&.{ 3, 0, b(constants.PegRule.readint), lb_integer, 0, 0, 0, @intCast(signed_be | @as(u32, @intCast(max_readint_width + 1))), 0 });
 }
 
+/// Every opcode arm of the verifier that carries a bounds check of its own,
+/// one crafted stream per check.
+///
+/// `theVerifierWalksEveryInstruction` above asserts the walk's shape through
+/// four opcodes; the arms below have their own operands and their own bounds,
+/// and each was reachable only through this file. Two checks per arm, where it
+/// has two: an instruction the bytecode is too short to hold, and an operand
+/// that indexes exactly one past the end. The second is the one that matters
+/// most, because `>= blen` and `> blen` differ only there and the matcher
+/// bounds-checks nothing it is handed.
+///
+/// The programs are two words unless the arm needs more: the opcode at word 0
+/// with its operands after it, and a trailing `nchar 1` where the arm needs a
+/// valid rule to point at.
+fn everyVerifierArmBoundsItsOperands() void {
+    const nchar = b(constants.PegRule.nchar);
+
+    // .look, [offset, rule]: three words, and the rule operand is word 2.
+    rejected(&.{ 2, 0, b(constants.PegRule.look), 0 });
+    rejected(&.{ 3, 0, b(constants.PegRule.look), 0, 3 });
+    _ = accepted(&.{ 5, 0, b(constants.PegRule.look), 0, 3, nchar, 1 });
+
+    // .choice and .sequence, [len, rules...]: the count is word 1 and every
+    // word after it is a rule index. The first stream is one word long, which
+    // is the case where the opcode has no count word at all: at two words the
+    // instruction is exactly as long as the bytecode and does not overflow.
+    rejected(&.{ 1, 0, b(constants.PegRule.choice) });
+    rejected(&.{ 1, 0, b(constants.PegRule.sequence) });
+    rejected(&.{ 2, 0, b(constants.PegRule.choice), 1 });
+    rejected(&.{ 3, 0, b(constants.PegRule.choice), 1, 3 });
+    rejected(&.{ 3, 0, b(constants.PegRule.sequence), 1, 3 });
+    _ = accepted(&.{ 5, 0, b(constants.PegRule.sequence), 1, 3, nchar, 1 });
+
+    // .if, .ifnot and .lenprefix, [rule_a, rule_b]: two rule operands.
+    rejected(&.{ 2, 0, b(constants.PegRule.@"if"), 0 });
+    rejected(&.{ 3, 0, b(constants.PegRule.@"if"), 3, 3 });
+    rejected(&.{ 5, 0, b(constants.PegRule.@"if"), 3, 5, nchar, 1 });
+    rejected(&.{ 3, 0, b(constants.PegRule.ifnot), 3, 3 });
+    rejected(&.{ 3, 0, b(constants.PegRule.lenprefix), 3, 3 });
+    _ = accepted(&.{ 5, 0, b(constants.PegRule.@"if"), 3, 3, nchar, 1 });
+
+    // .between, [lo, hi, rule]: four words, the rule at word 3.
+    rejected(&.{ 3, 0, b(constants.PegRule.between), 0, 1 });
+    rejected(&.{ 4, 0, b(constants.PegRule.between), 0, 1, 4 });
+    _ = accepted(&.{ 6, 0, b(constants.PegRule.between), 0, 1, 4, nchar, 1 });
+
+    // .capture_num, [rule, base, tag]: four words, the rule at word 1.
+    rejected(&.{ 3, 0, b(constants.PegRule.capture_num), 4, 0 });
+    rejected(&.{ 4, 0, b(constants.PegRule.capture_num), 4, 0, 0 });
+    _ = accepted(&.{ 6, 0, b(constants.PegRule.capture_num), 4, 0, 0, nchar, 1 });
+
+    // .accumulate, .group, .capture and .unref, [rule, tag].
+    rejected(&.{ 2, 0, b(constants.PegRule.accumulate), 3 });
+    rejected(&.{ 3, 0, b(constants.PegRule.accumulate), 3, 0 });
+    rejected(&.{ 3, 0, b(constants.PegRule.group), 3, 0 });
+    rejected(&.{ 3, 0, b(constants.PegRule.capture), 3, 0 });
+    rejected(&.{ 3, 0, b(constants.PegRule.unref), 3, 0 });
+    _ = accepted(&.{ 5, 0, b(constants.PegRule.accumulate), 3, 0, nchar, 1 });
+
+    // .replace, .matchtime and .matchsplice, [rule, constant, tag]: a rule
+    // index bounded by the bytecode and a constant index bounded by the
+    // constants, which is a different limit and its own check.
+    rejected(&.{ 3, 0, b(constants.PegRule.replace), 4, 0 });
+    rejected(&.{ 4, 1, b(constants.PegRule.replace), 4, 0, 0, lb_nil });
+    rejected(&.{ 6, 1, b(constants.PegRule.replace), 4, 1, 0, nchar, 1, lb_nil });
+    rejected(&.{ 6, 1, b(constants.PegRule.matchtime), 4, 1, 0, nchar, 1, lb_nil });
+    rejected(&.{ 6, 1, b(constants.PegRule.matchsplice), 4, 1, 0, nchar, 1, lb_nil });
+    _ = accepted(&.{ 6, 1, b(constants.PegRule.replace), 4, 0, 0, nchar, 1, lb_nil });
+
+    // .sub, .til and .split, [rule, rule]: both operands bounded.
+    rejected(&.{ 2, 0, b(constants.PegRule.sub), 3 });
+    rejected(&.{ 3, 0, b(constants.PegRule.sub), 3, 3 });
+    // Each operand is bounded on its own, so each needs a stream where it is
+    // the one out of range and the other is not.
+    rejected(&.{ 5, 0, b(constants.PegRule.sub), 3, 5, nchar, 1 });
+    rejected(&.{ 5, 0, b(constants.PegRule.sub), 5, 3, nchar, 1 });
+    rejected(&.{ 5, 0, b(constants.PegRule.til), 5, 3, nchar, 1 });
+    rejected(&.{ 5, 0, b(constants.PegRule.split), 5, 3, nchar, 1 });
+    rejected(&.{ 3, 0, b(constants.PegRule.til), 3, 3 });
+    rejected(&.{ 3, 0, b(constants.PegRule.split), 3, 3 });
+    _ = accepted(&.{ 5, 0, b(constants.PegRule.sub), 3, 3, nchar, 1 });
+
+    // .error, .drop, .only_tags, .not, .to and .thru, [rule]. `not` is the one
+    // the walk above already uses; the other five share its arm and its bound.
+    rejected(&.{ 1, 0, b(constants.PegRule.@"error") });
+    rejected(&.{ 2, 0, b(constants.PegRule.@"error"), 2 });
+    rejected(&.{ 2, 0, b(constants.PegRule.drop), 2 });
+    rejected(&.{ 2, 0, b(constants.PegRule.only_tags), 2 });
+    rejected(&.{ 2, 0, b(constants.PegRule.to), 2 });
+    rejected(&.{ 2, 0, b(constants.PegRule.thru), 2 });
+    _ = accepted(&.{ 4, 0, b(constants.PegRule.@"error"), 2, nchar, 1 });
+
+    // .nth, [nth, rule, tag]: four words, the rule at word 2.
+    rejected(&.{ 3, 0, b(constants.PegRule.nth), 0, 4 });
+    rejected(&.{ 4, 0, b(constants.PegRule.nth), 0, 4, 0 });
+    _ = accepted(&.{ 6, 0, b(constants.PegRule.nth), 0, 4, 0, nchar, 1 });
+
+    // .constant, [constant, tag]: bounded by the constants rather than the
+    // bytecode, and the instruction itself can run off the end.
+    rejected(&.{ 2, 1, b(constants.PegRule.constant), 0, lb_nil });
+    _ = accepted(&.{ 3, 1, b(constants.PegRule.constant), 0, 0, lb_nil });
+
+    // .literal with no count word after it at all, which is the check before
+    // the one `aLiteralLengthCannotWrapItsWordCount` reaches.
+    rejected(&.{ 1, 0, b(constants.PegRule.literal) });
+
+    // .readint with no tag word after it.
+    rejected(&.{ 2, 0, b(constants.PegRule.readint), 1 });
+}
+
 /// The matcher's budget, which is spent one frame per nested rule and reset
 /// per attempt. A left-recursive grammar is what reaches it: the depth follows
 /// the subject's length rather than the pattern's.
@@ -753,6 +864,7 @@ fn body() raise.Raising(void) {
     aConstantCountLongerThanTheStreamIsRefused();
     aLiteralLengthCannotWrapItsWordCount();
     try everyReadintPegSurvivesARoundTrip();
+    everyVerifierArmBoundsItsOperands();
     try theMatcherReachesItsRecursionGuard();
 }
 
@@ -760,6 +872,4 @@ pub fn run() void {
     harness.init();
     body() catch @panic("peg: an entry point raised unexpectedly");
     vm_lifecycle.deinit();
-
-    std.debug.print("peg contract ok\n", .{});
 }

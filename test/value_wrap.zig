@@ -736,6 +736,4 @@ pub fn run() void {
     mememptyClearsADirtyBlock();
 
     repeatedCycles();
-
-    std.debug.print("value wrap contract ok\n", .{});
 }

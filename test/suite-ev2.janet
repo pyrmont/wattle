@@ -119,4 +119,32 @@
 (assert (deep= @"hello\nworld2\n" (slurp "tmp/out.txt")) "file threading 1")
 (assert (deep= @"world1\nabc\n" (slurp "tmp/out2.txt")) "file threading 2")
 
+# A stream that crosses into a thread is registered with that thread's backend,
+# so a read on it that cannot be satisfied at once is woken when the data
+# arrives. The write is deliberately later than the child's read, because a
+# read whose data is already buffered completes in the speculative operation
+# `ev/read` starts with and never waits on the backend at all.
+#
+# The wait is bounded so that a regression fails here rather than hanging the
+# suite.
+(do
+  (def [r w] (os/pipe))
+  (def replies (ev/thread-chan 2))
+  (ev/thread (fn [carried]
+               (def [stream reply] carried)
+               (ev/give reply (string (ev/read stream 3))))
+             [r replies]
+             :n)
+  (ev/sleep 0.2)
+  (ev/write w "abc")
+  (var got nil)
+  (var tries 0)
+  (while (and (nil? got) (< tries 300))
+    (ev/sleep 0.01)
+    (set tries (+ tries 1))
+    (when (> (ev/count replies) 0) (set got (ev/take replies))))
+  (assert (= "abc" got) "a stream that crossed into a thread wakes on a later write")
+  (:close r)
+  (:close w))
+
 (end-suite)

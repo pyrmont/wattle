@@ -46,6 +46,13 @@
 
 (assert-no-error "math/rng-buffer 2" (math/seedrandom "abcdefg"))
 
+# `math/rng-int` redraws only above the largest word its modulus divides
+# evenly, and keeps a draw of exactly that word. Seed 8's first draw is
+# 1930819283, which is that word for a modulus of itself.
+(assert (= 1930819283 (math/rng-int (math/rng 8))) "seed 8's first draw")
+(assert (= 0 (math/rng-int (math/rng 8) 1930819283))
+        "math/rng-int keeps a draw at the rejection bound")
+
 # 027b2a8
 (defn assert-many [f n e]
  (var good true)

@@ -342,6 +342,29 @@ fn theSizeEncodingBoundaries() raise.Raising(void) {
         expect(back.sz == @as(usize, @truncate(val)));
     }
 
+    // The round trip above cannot see where the boundary sits, because a
+    // reader that expects the long form wherever the writer wrote it agrees
+    // with itself at every value. What does see it is the length: the bare
+    // form is one byte and the prefixed form is two, and every other field of
+    // the probe is held equal, so the wire grows by exactly one byte as the
+    // value crosses. 0xF0 is the last bare one and 0xF1 the first prefixed.
+    {
+        const widthOf = struct {
+            fn f(stored_value: u64) raise.Raising(usize) {
+                const p: *Probe = @ptrCast(@alignCast(abstracts.newBytes(stored(&probe_at), @sizeOf(Probe))));
+                p.* = std.mem.zeroes(Probe);
+                p.i64_field = @bitCast(stored_value);
+                p.value = wrap.fromNil();
+                return (try marshalled(keep(wrap.fromAbstract(p)), null, 0)).count;
+            }
+        }.f;
+        const below = try widthOf(0xEF);
+        const last_bare = try widthOf(0xF0);
+        const first_prefixed = try widthOf(0xF1);
+        expect(last_bare == below);
+        expect(first_prefixed == last_bare + 1);
+    }
+
     // The prefix byte counts the bytes that follow, little endian.
     const probe: *Probe = @ptrCast(@alignCast(abstracts.newBytes(stored(&probe_at), @sizeOf(Probe))));
     probe.* = std.mem.zeroes(Probe);
@@ -861,6 +884,4 @@ pub fn run() void {
     harness.init();
     body() catch @panic("marsh: an entry point raised unexpectedly");
     vm_lifecycle.deinit();
-
-    std.debug.print("marsh contract ok\n", .{});
 }

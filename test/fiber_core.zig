@@ -508,6 +508,164 @@ fn thePushBounds(add: *functions.Function) raise.Raising(void) {
     fiber.stacktop = saved;
 }
 
+/// A push or a frame that ends exactly at the capacity fits, so none of them
+/// grows the stack.
+fn anExactFitDoesNotGrow(add: *functions.Function) raise.Raising(void) {
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const fiber = rootedFiber(add, args[0..2]);
+    const saved = fiber.stacktop;
+    const zero = harness.wrapInteger(0);
+    const capacity = fiber.capacity;
+
+    // Every slot holds a value, so moving the top back down leaves slots the
+    // collector can walk.
+    while (fiber.stacktop < capacity) try fibers.push(fiber, zero);
+    expect(fiber.capacity == capacity);
+
+    fiber.stacktop = capacity - 2;
+    try fibers.push2(fiber, zero, zero);
+    expect(fiber.capacity == capacity);
+
+    fiber.stacktop = capacity - 3;
+    try fibers.push3(fiber, zero, zero, zero);
+    expect(fiber.capacity == capacity);
+
+    const three = [_]repr.Value{ zero, zero, zero };
+    fiber.stacktop = capacity - 3;
+    try fibers.pushn(fiber, &three);
+    expect(fiber.capacity == capacity);
+
+    // A C frame takes `JANET_FRAME_SIZE` slots above the top.
+    fiber.stacktop = capacity - frame_size;
+    fibers.cframe(fiber, raise.stored(&aCfunction));
+    expect(fiber.capacity == capacity);
+    fibers.popframe(fiber);
+    fiber.stacktop = saved;
+}
+
+/// A tail call whose arguments fill the callee's fixed parameters and end at
+/// the capacity has an empty variadic tail to store one slot past the end, so
+/// the stack grows for it.
+fn aTailCallAtTheCapacityGrowsForItsTail(add: *functions.Function, rest: *functions.Function) raise.Raising(void) {
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const fiber = rootedFiber(add, args[0..2]);
+    const base = fiber.frame;
+    const arity = rest.def.?.arity;
+
+    var i: i32 = 0;
+    while (i < arity) : (i += 1) try fibers.push(fiber, harness.wrapInteger(5 + i));
+    fibers.setcapacity(fiber, fiber.stacktop);
+    const tuplehead = fiber.stackstart + arity;
+    expect(tuplehead == fiber.capacity);
+    // The callee's own frame fits, so the growth below is the tail's alone.
+    expect(fiber.capacity >= fiber.frame + rest.def.?.slotcount + frame_size);
+
+    expect(!std.meta.isError(fibers.funcframeTail(fiber, rest)));
+    expect(fiber.capacity > tuplehead);
+    expect(harness.integerIs(slot(fiber, base), 5));
+    const tail = slot(fiber, base + arity);
+    expect(harness.isType(tail, repr.Tag.tuple));
+    expect(tuples.head(wrap.toTuple(tail)).length == 0);
+}
+
+/// A run that begins at the stack's first slot is on the stack, so a push that
+/// grows the stack copies it from the new block. Each round reads back what it
+/// pushed, and a copy from the block the growth released reads whatever the
+/// allocator left there.
+fn aRunFromTheFirstSlotSurvivesTheGrowth(add: *functions.Function) raise.Raising(void) {
+    const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    const zero = harness.wrapInteger(0);
+    var round: i32 = 0;
+    while (round < 200) : (round += 1) {
+        const fiber = fibers.new(add, 32 + round, args[0..2]) catch unreachable;
+        gc_alloc.gcroot(wrap.fromFiber(fiber));
+        defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
+        // Two slots short of full, so a run of three grows the stack and
+        // ends below where it starts.
+        while (fiber.stacktop < fiber.capacity - 2) try fibers.push(fiber, zero);
+        const top = fiber.stacktop;
+        var before: [3]repr.Value = undefined;
+        @memcpy(&before, fiber.data.?[0..3]);
+
+        try fibers.pushn(fiber, fiber.data.?[0..3]);
+        expect(fiber.capacity > top + 2);
+        const after = fiber.data.?[@intCast(top)..][0..3];
+        expect(std.mem.eql(u8, std.mem.sliceAsBytes(&before), std.mem.sliceAsBytes(after)));
+        // The three copied slots are the first frame's header and not values,
+        // so the top goes back below them before anything can collect.
+        fiber.stacktop = top;
+    }
+}
+
+/// The ceilings two pushes reach from the accepting side: `push2` and `pushn`
+/// each ending at exactly `maxInt(i32)`. The fiber is on the stack and on no
+/// heap list, its slots are address space reserved for it, and each push
+/// writes into the last page.
+fn theReservedPushCeilings() raise.Raising(void) {
+    const ceiling: i32 = std.math.maxInt(i32);
+    const bytes = @as(usize, @intCast(ceiling)) * @sizeOf(repr.Value);
+    const memory = reserve(bytes) orelse return;
+    defer release(memory, bytes);
+    var fiber: fibers.Fiber = std.mem.zeroes(fibers.Fiber);
+    fiber.data = @ptrCast(@alignCast(memory));
+    fiber.capacity = ceiling;
+    const zero = harness.wrapInteger(0);
+
+    fiber.stacktop = ceiling - 2;
+    try fibers.push2(&fiber, zero, harness.wrapInteger(7));
+    expect(fiber.stacktop == ceiling);
+    expect(harness.integerIs(fiber.data.?[@intCast(ceiling - 1)], 7));
+
+    const three = [_]repr.Value{ zero, zero, harness.wrapInteger(8) };
+    fiber.stacktop = ceiling - 3;
+    try fibers.pushn(&fiber, &three);
+    expect(fiber.stacktop == ceiling);
+    expect(harness.integerIs(fiber.data.?[@intCast(ceiling - 1)], 8));
+}
+
+/// Growth doubles a need of exactly half `maxInt(i32)` to `maxInt(i32) - 1` and
+/// clamps only a larger one. The stack is a small block claiming that
+/// capacity, so the growth reallocates to sixteen gigabytes of address space
+/// and the push writes one slot of it. A host that will not serve the size
+/// skips the case.
+fn growthAtHalfTheCeilingDoubles() raise.Raising(void) {
+    const need: i32 = @divTrunc(std.math.maxInt(i32), 2);
+    const doubled: i32 = 2 * need;
+    const bytes = fibers.stackBytes(doubled);
+    const probe = utils.malloc(bytes) orelse return;
+    utils.free(probe);
+
+    const budget = harness.vm().gc.next_collection;
+    var fiber: fibers.Fiber = std.mem.zeroes(fibers.Fiber);
+    fiber.data = utils.allocMany(repr.Value, 4);
+    fiber.capacity = need;
+    fiber.stacktop = need;
+    try fibers.push(&fiber, harness.wrapInteger(9));
+    expect(fiber.capacity == doubled);
+    expect(harness.integerIs(fiber.data.?[@intCast(need)], 9));
+    utils.free(fiber.data);
+    harness.vm().gc.next_collection = budget;
+}
+
+/// Address space for a stack that claims a capacity near its ceiling, or null
+/// where the host refuses to reserve it. `release` returns it.
+fn reserve(bytes: usize) ?[*]u8 {
+    const ptr = std.c.mmap(
+        null,
+        bytes,
+        .{ .READ = true, .WRITE = true },
+        .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+        -1,
+        0,
+    );
+    if (ptr == std.c.MAP_FAILED) return null;
+    return @ptrCast(ptr);
+}
+
+fn release(memory: [*]u8, bytes: usize) void {
+    _ = std.c.munmap(@ptrCast(@alignCast(memory)), bytes);
+}
+
 /// The whole path, reached the only way it can be: through `run_vm`.
 ///
 /// `JOP_PUSH_ARRAY` is the one push whose count comes from a value rather than
@@ -763,6 +921,13 @@ fn body() raise.Raising(void) {
     try theCframeAndPopframe(add);
     try thePushes(add);
     try thePushBounds(add);
+    try anExactFitDoesNotGrow(add);
+    try aTailCallAtTheCapacityGrowsForItsTail(add, rest);
+    try aRunFromTheFirstSlotSurvivesTheGrowth(add);
+    if (comptime builtin.os.tag != .windows and @sizeOf(usize) >= 8) {
+        try theReservedPushCeilings();
+        try growthAtHalfTheCeilingDoubles();
+    }
     anOverflowThroughTheInterpreter();
     theEnvironmentValidator(add, other);
     anEnvironmentDetachesWhenItsFiberStops(add);
@@ -779,6 +944,4 @@ pub fn run() void {
     harness.init();
     body() catch @panic("fiber_core: a fiber operation raised unexpectedly");
     vm_lifecycle.deinit();
-
-    std.debug.print("fiber core contract ok\n", .{});
 }

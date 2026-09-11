@@ -69,4 +69,56 @@
   (ffi/write :u8 10 buf)
   (assert (= 2 (length buf))))
 
+(compwhen has-ffi
+  (assert (nil? (ffi/malloc 0)) "malloc of zero bytes is nil")
+  (def p (ffi/malloc 8))
+  (assert (= :pointer (type p)) "malloc of eight bytes is a pointer")
+  (ffi/free p))
+
+# A packing keyword is not a field, so the struct still has two.
+(compwhen has-ffi
+  (assert (deep= [1 2] (ffi/read [:u8 :pack :u32] (ffi/write [:u8 :pack :u32] [1 2])))
+          ":pack keeps both fields")
+  (assert (deep= [1 2] (ffi/read [:pack-all :u8 :u32] (ffi/write [:pack-all :u8 :u32] [1 2])))
+          ":pack-all keeps both fields"))
+
+(compwhen has-ffi
+  (assert (deep= @[] (ffi/read @[:u8 0] @"a")) "an array of count zero reads as empty")
+  (assert (deep= @"" (ffi/write @[:u8 0] [])) "and writes nothing")
+  (assert (nil? (ffi/read :ptr (buffer/new-filled 8 0))) "a null pointer reads as nil")
+  (assert (= :pointer (type (ffi/read :ptr (ffi/write :ptr @"x"))))
+          "and any other pointer as a pointer")
+  (assert (= true (ffi/read :bool @"\x01")) ":bool reads one as true")
+  (assert (= false (ffi/read :bool @"\0")) "and zero as false"))
+
+# Reading and writing each allow 64 levels: 63 nested structs round-trip and a
+# 64th is refused. An array at the root counts as a level.
+(compwhen has-ffi
+  (var s62 :u8)
+  (var v62 7)
+  (repeat 62
+    (set s62 (ffi/struct s62))
+    (set v62 [v62]))
+  (def s63 (ffi/struct s62))
+  (def v63 [v62])
+  (assert (deep= v63 (ffi/read s63 (ffi/write s63 v63))) "63 nested structs round-trip")
+  (assert (deep= @[v62] (ffi/read @[s62 1] (ffi/write @[s62 1] [v62])))
+          "an array of 62 nested structs round-trips")
+  (assert (= "recursion too deep" (last (protect (ffi/read (ffi/struct s63) (ffi/write s63 v63)))))
+          "64 nested structs are refused on read")
+  (assert (= "recursion too deep" (last (protect (ffi/write (ffi/struct s63) [v63]))))
+          "and on write"))
+
+# The code returns 42. A build without the JIT refuses by name and skips.
+(compwhen has-full-ffi
+  (def ret42
+    (case (os/arch)
+      :aarch64 @"\x40\x05\x80\x52\xc0\x03\x5f\xd6"
+      :x64 @"\xb8\x2a\x00\x00\x00\xc3"))
+  (def no-jit "ffi/jitfn not available on this platform")
+  (when (and ret42 (not= no-jit (last (protect (ffi/jitfn ret42)))))
+    (def f (ffi/jitfn ret42))
+    (assert (= 42 (ffi/call f (ffi/signature :default :int))) "a jitfn is callable")
+    (assert (= (ffi/read :u32 ret42) (ffi/read :u32 f)) "and its code is readable")))
+
 (end-suite)

@@ -64,7 +64,7 @@ same reason: a stranded block is identified by where it is.
 | `contract.sh` | build and run one contract against whatever is in `zig-out` |
 | `leaks.sh` | the leak check, all 65 contracts in about 42 seconds. It does not use `leaks --atExit`, because that mode hangs on a contract that forks. Its header has the mechanism. The expectations are in the script, so a difference is a non-zero exit |
 | `matrix.janet` | the acceptance matrix: 34 entries over configurations, optimize modes and cross-compiles. Set `contracts-default` at its head to the change's own contracts. [`acceptance-matrix.md`](acceptance-matrix.md) has the operational detail |
-| `mutate.janet` | the mutation sweep. A bare invocation starts a sweep. It prints its three known defects, which reads like a usage message and is not a usage message, and an interrupted sweep leaves its current mutant in the working tree. Read [`mutation.md`](mutation.md) first |
+| `mutate.janet` | the mutation sweep. `--src <file>` is repeatable and sweeps the sources in the order given under one warm-up and one log, which is the batch Phase 20 Part 2 runs; `--all` sweeps every source under `src/` and is thirty hours. A bare invocation prints its usage and stops. An interrupted sweep leaves its current mutant in the working tree. Read [`mutation.md`](mutation.md) first |
 | `afl/` | the AFL fuzzing harness, inherited from upstream Janet and separate from `zig build fuzz` |
 
 ## bench

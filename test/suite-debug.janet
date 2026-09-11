@@ -36,6 +36,13 @@
 (assert-error "invalid bytecode offset" (debug/fbreak breakable 100000))
 (assert-error "invalid bytecode offset" (debug/fbreak breakable -1))
 (assert-error "invalid bytecode offset" (debug/unfbreak breakable 100000))
+# The first offset past the last instruction is out of range for both.
+(compwhen (dyn 'disasm)
+  (def breakable-length (length (disasm breakable :bytecode)))
+  (assert-error-value "fbreak one past the last instruction" "invalid bytecode offset"
+                      (debug/fbreak breakable breakable-length))
+  (assert-error-value "unfbreak one past the last instruction" "invalid bytecode offset"
+                      (debug/unfbreak breakable breakable-length)))
 
 # debug/break over a source position that no funcdef claims.
 (assert-error "could not find breakpoint" (debug/break "no-such-source-file" 1 1))
@@ -48,6 +55,35 @@
 (assert (= :debug (fiber/status bf)) "fbreak stops the fiber")
 (debug/unfbreak breakable 0)
 (assert (= 6 (resume bf)) "unfbreak lets it run")
+
+# debug/stack reports a local from its birth pc up to its death pc and not at
+# it. An argument is born at 0, so a breakpoint there already sees it.
+(debug/fbreak breakable 0)
+(def born (fiber/new (fn [] (breakable 5)) :dy))
+(resume born)
+(assert (deep= @{'x 5} ((first (debug/stack born)) :locals)) "an argument is a local at pc 0")
+(debug/unfbreak breakable 0)
+
+# `t` is the last entry in `scoped`'s symbol map, and it is live at the yield.
+(defn scoped [a]
+  (let [t (+ a 1)] (yield t))
+  (yield :after)
+  a)
+(def live (fiber/new scoped))
+(resume live 10)
+(assert (deep= @{'a 10 't 11} ((first (debug/stack live)) :locals))
+        "every live local is reported, the last one in the symbol map included")
+# A breakpoint at `t`'s death pc stops the fiber with `t` gone. The death pc
+# is read from the symbol map, which `disasm` reports.
+(compwhen (dyn 'disasm)
+  (def t-death ((find |(= 't (last $)) (disasm scoped :symbolmap)) 1))
+  (debug/fbreak scoped t-death)
+  (def dead (fiber/new (fn [] (scoped 10)) :dy))
+  (resume dead)
+  (resume dead)
+  (assert (= :debug (fiber/status dead)) "the fiber stops at the death pc")
+  (assert (deep= @{'a 10} ((first (debug/stack dead)) :locals)) "a local is not reported at its death pc")
+  (debug/unfbreak scoped t-death))
 
 # debug/step advances one instruction at a time.
 (def sf (fiber/new (fn [] (+ 1 2)) :dy))
@@ -71,6 +107,12 @@
 
 # debug/arg-stack is empty unless the fiber signalled mid-call.
 (assert (deep= @[] (debug/arg-stack stk-f)) "arg stack is empty")
+# An arity refusal stops the fiber with the arguments it pushed still on the
+# stack. The callee is a `var` so that the compiler cannot refuse the call.
+(var arity-one (fn [x] x))
+(def pushed (fiber/new (fn [] (arity-one 1 2 3)) :e))
+(resume pushed)
+(assert (deep= @[1 2 3] (debug/arg-stack pushed)) "arg stack holds the pushed arguments")
 
 # The stack-trace printer, captured through the :err dynamic binding rather
 # than by reading stderr. This is what makes `janet_eprintf` -- a C variadic
@@ -121,6 +163,8 @@
 (def frame-lines (filter |(string/has-prefix? "  in " $) (string/split "\n" chain-trace)))
 (assert (= 3 (length frame-lines)) "one frame line per fiber in the chain")
 (assert (string/find "depth3" (first frame-lines)) "innermost fiber prints first")
+(assert (= 1 (length (filter |(string/has-prefix? "C" $) (string/split "\n" chain-trace))))
+        "the error line is printed once for the whole chain")
 
 # The trace's location is a line and a column in that order, and the numbers
 # come from the same source map `debug/stack` reads -- so the two have to
@@ -179,6 +223,8 @@
 (def brk-fiber (fiber/new (fn [] (brk-fn 5)) :dy))
 (assert (nil? (resume brk-fiber)) "a source breakpoint raises a nil signal")
 (assert (= :debug (fiber/status brk-fiber)) "and stops the fiber")
+(assert (= 0 ((first (debug/stack brk-fiber)) :pc))
+        "at the first of the instructions mapped to the position")
 (debug/unbreak "brk-src" 1 9)
 (assert (= 6 (resume brk-fiber)) "clearing it lets the fiber finish")
 
@@ -190,6 +236,19 @@
 # A position after it does find it, because the rule is "at or before".
 (debug/break "brk-src" 1 40)
 (debug/unbreak "brk-src" 1 40)
+
+# A mapping on a later line is never chosen. The thunk `compile` returns maps
+# its form to line 1, so a breakpoint asked for on line 1 lands there, and the
+# function whose only mappings are on line 2 runs through.
+(def two-parser (parser/new))
+(parser/consume two-parser "(fn [x]\n  (+ x 1))")
+(parser/eof two-parser)
+(def two-thunk (compile (parser/produce two-parser) (curenv) "brk-two"))
+(def two-fn (two-thunk))
+(debug/break "brk-two" 1 40)
+(def two-fiber (fiber/new (fn [] (two-fn 5)) :dy))
+(assert (= 6 (resume two-fiber)) "a breakpoint asked for on line 1 is not placed on line 2")
+(debug/unbreak "brk-two" 1 40)
 
 # A breakpoint is bit 7 of the instruction word, and the bytecode verifier
 # masks it off wherever it appears -- including on the last instruction, which
@@ -224,6 +283,9 @@
         "and is traced exactly once")
 (assert (= " :self" (get traced-chunks 1))
         "with the arguments it was called with")
+(def untraced-buf @"")
+(with-dyns [:err untraced-buf] (traced-meth :self :A :B :C :D))
+(assert (empty? untraced-buf) "an untraced function prints no trace")
 
 (end-suite)
 

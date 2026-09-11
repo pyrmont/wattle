@@ -98,6 +98,7 @@ const at_bad_method = abstract_type.define(anyopaque, .{
 /// arm is written for.
 const at_bare = abstract_type.define(anyopaque, .{ .name = "value-access/bare" });
 const at_big = abstract_type.define(anyopaque, .{ .name = "value-access/big", .length = &bigLength });
+const at_edge = abstract_type.define(anyopaque, .{ .name = "value-access/edge", .length = &edgeLength });
 
 const at_good_method = abstract_type.define(anyopaque, .{
     .name = "value-access/good-method",
@@ -107,6 +108,11 @@ const at_good_method = abstract_type.define(anyopaque, .{
 const at_huge = abstract_type.define(anyopaque, .{
     .name = "value-access/huge",
     .length = if (intmax_int64_fits_in_a_length) &hugeLength else null,
+});
+
+const at_zero_method = abstract_type.define(anyopaque, .{
+    .name = "value-access/zero-method",
+    .get = &zeroMethodGet,
 });
 
 const at_slots = abstract_type.define(Slots, .{
@@ -120,8 +126,10 @@ const at_slots = abstract_type.define(Slots, .{
 var bad_method_value: repr.Value = undefined;
 var bare_value: repr.Value = undefined;
 var big_value: repr.Value = undefined;
+var edge_value: repr.Value = undefined;
 var good_method_value: repr.Value = undefined;
 var huge_value: repr.Value = undefined;
+var zero_method_value: repr.Value = undefined;
 
 /// Whether the upper half of that straddle can be *expressed* on this target.
 ///
@@ -210,6 +218,11 @@ fn bigLength(_: *anyopaque, _: usize) raise.Error!usize {
     return 2147483648; // INT32_MAX + 1
 }
 
+/// The largest length `length` accepts.
+fn edgeLength(_: *anyopaque, _: usize) raise.Error!usize {
+    return std.math.maxInt(i32);
+}
+
 fn hugeLength(_: *anyopaque, _: usize) raise.Error!usize {
     return 9007199254740992; // JANET_INTMAX_INT64
 }
@@ -240,6 +253,19 @@ fn badMethodGet(_: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
     return wrap.fromCfunction(raise.stored(&methodKeyword));
 }
 
+/// A `:length` method that answers zero, the smallest length either function
+/// accepts.
+fn methodZero(argv: []repr.Value) align(corefn.alignment) raise.Raising(repr.Value) {
+    _ = @as(i32, @intCast(argv.len));
+
+    return harness.wrapInteger(0);
+}
+
+fn zeroMethodGet(_: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
+    if (!args_core.keyeq(key, "length")) return null;
+    return wrap.fromCfunction(raise.stored(&methodZero));
+}
+
 fn typeOf(at: *const AbstractType) *const abi.AbstractType {
     return at;
 }
@@ -250,15 +276,19 @@ fn makeAbstracts() void {
     slots_value = wrap.fromAbstract(s);
     bare_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_bare), 8));
     big_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_big), 8));
+    edge_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_edge), 8));
     huge_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_huge), 8));
     good_method_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_good_method), 8));
     bad_method_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_bad_method), 8));
+    zero_method_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_zero_method), 8));
     gc_alloc.gcroot(slots_value);
     gc_alloc.gcroot(bare_value);
     gc_alloc.gcroot(big_value);
+    gc_alloc.gcroot(edge_value);
     gc_alloc.gcroot(huge_value);
     gc_alloc.gcroot(good_method_value);
     gc_alloc.gcroot(bad_method_value);
+    gc_alloc.gcroot(zero_method_value);
 }
 
 fn aCFunctionValue() repr.Value {
@@ -587,6 +617,37 @@ fn nextOnAnUnresumableFiber() void {
     expect(isNil(v[7]));
 }
 
+/// The rest of the refused statuses, each set the way a program sets it. The
+/// error has no trap here, so a resume `next` made would raise rather than be
+/// absorbed by the mask, as it is for `errd` above.
+fn nextOnTheOtherFinishedStatuses() void {
+    const r = run_("(do" ++
+        " (def untrapped (fiber/new (fn [] (error :x)))) (protect (resume untrapped))" ++
+        " (defn signalled [n] (def f (fiber/new (fn [] (signal n :s)) (keyword n))) (resume f) f)" ++
+        " (def u0 (signalled 0)) (def u1 (signalled 1)) (def u2 (signalled 2))" ++
+        " [(fiber/status untrapped) (next untrapped nil)" ++
+        "  (fiber/status u0) (next u0 nil)" ++
+        "  (fiber/status u1) (next u1 nil)" ++
+        "  (fiber/status u2) (next u2 nil)])");
+    const v = wrap.toTuple(r);
+    expect(harness.equals(v[0], kw("error")));
+    expect(harness.equals(v[2], kw("user0")));
+    expect(harness.equals(v[4], kw("user1")));
+    expect(harness.equals(v[6], kw("user2")));
+    for ([_]usize{ 1, 3, 5, 7 }) |i| expect(isNil(v[i]));
+}
+
+/// A fiber that `next` resumes and that stops on a signal it traps gives nil
+/// when that signal finishes it: the error and the user signals 0 to 4.
+fn nextOverAFiberThatStopsOnASignal() void {
+    const r = run_("(do" ++
+        " (defn signalling [n] (next (fiber/new (fn [] (signal n :s)) (keyword n)) nil))" ++
+        " [(next (fiber/new (fn [] (error :x)) :e) nil)" ++
+        "  (signalling 0) (signalling 1) (signalling 2) (signalling 3) (signalling 4)])");
+    const v = wrap.toTuple(r);
+    for (0..6) |i| expect(isNil(v[i]));
+}
+
 /// The `is_interpreter` asymmetry, which is the only thing the two entry points
 /// disagree about. A signal the resumed fiber raises and does not trap reaches
 /// the caller as that same signal through `nextImpl(..., 1)`, and as a plain
@@ -815,10 +876,12 @@ fn theGetIndexPolicies() !void {
     harness.arrayPush(a, kw("x"));
     const arr = wrap.fromArray(a);
     expect(harness.equals(try access.getIndex(arr, 0), kw("x")));
+    expect(isNil(try access.getIndex(arr, 1)));
     expect(isNil(try access.getIndex(arr, 5)));
     expect(refusal(access.getIndex, .{ arr, -1 }).says("expected non-negative index"));
     expect(refusal(access.getIndex, .{ wrap.fromNil(), -1 }).says("expected non-negative index"));
 
+    expect(isNil(try access.getIndex(value.fromBytes("ab", .string), 2)));
     expect(isNil(try access.getIndex(value.fromBytes("ab", .string), 9)));
     expect(harness.equals(try access.getIndex(value.fromBytes("ab", .string), 1), intv('b')));
     expect(isNil(try access.getIndex(wrap.fromBuffer(buffers.new(4)), 0)));
@@ -918,6 +981,7 @@ fn theAbstractLengthCallback() !void {
 /// because it returns a double. A length between them panics one and satisfies
 /// the other.
 fn theTwoLengthBoundsAreDifferent() !void {
+    expect(try access.length(edge_value) == std.math.maxInt(i32));
     expect(refusal(access.length, .{big_value}).says("invalid integer length 2147483648"));
     const lv = try access.lengthv(big_value);
     expect(harness.isType(lv, repr.Tag.number));
@@ -941,6 +1005,8 @@ fn theTwoLengthBoundsAreDifferent() !void {
 fn theLengthFallsBackToAMethod() !void {
     expect(try access.length(good_method_value) == 7);
     expect(harness.equals(try access.lengthv(good_method_value), intv(7)));
+    expect(try access.length(zero_method_value) == 0);
+    expect(harness.equals(try access.lengthv(zero_method_value), intv(0)));
 
     expect(refusal(access.length, .{bad_method_value}).says("invalid integer length :not-a-number"));
     expect(refusal(access.lengthv, .{bad_method_value}).says("invalid integer length :not-a-number"));
@@ -990,6 +1056,50 @@ fn putIndexAppendsAtTheCount() !void {
     try access.putIndex(wrap.fromBuffer(b), 1, intv('B'));
     expect(b.count == 2);
     expect(b.slice()[1] == 'B');
+}
+
+/// `put` appends at exactly the count as `putIndex` does, and both size a
+/// growth from the index written: room for one past it, doubled. A write to
+/// the last slot of the capacity grows nothing and fills no slot past it.
+fn putAtTheCountAndTheCapacity() !void {
+    const a = arrays.new(8);
+    harness.arrayPush(a, kw("a"));
+    try access.put(wrap.fromArray(a), intv(1), kw("b"));
+    expect(a.count == 2);
+    expect(harness.equals(a.slice()[1], kw("b")));
+
+    const b = buffers.new(8);
+    buffers.pushCstringAbi(b, "A");
+    try access.put(wrap.fromBuffer(b), intv(1), intv('B'));
+    expect(b.count == 2);
+    expect(b.slice()[1] == 'B');
+
+    for ([_]bool{ false, true }) |indexed| {
+        const grown_array = arrays.new(0);
+        const grown_buffer = buffers.new(0);
+        const at_capacity_array = arrays.new(4);
+        const at_capacity_buffer = buffers.new(4);
+        expect(grown_buffer.capacity == 4);
+        expect(at_capacity_array.capacity == 4);
+        expect(at_capacity_buffer.capacity == 4);
+        if (indexed) {
+            try access.putIndex(wrap.fromArray(grown_array), 4, kw("e"));
+            try access.putIndex(wrap.fromBuffer(grown_buffer), 4, intv('E'));
+            try access.putIndex(wrap.fromArray(at_capacity_array), 3, kw("d"));
+            try access.putIndex(wrap.fromBuffer(at_capacity_buffer), 3, intv('D'));
+        } else {
+            try access.put(wrap.fromArray(grown_array), intv(4), kw("e"));
+            try access.put(wrap.fromBuffer(grown_buffer), intv(4), intv('E'));
+            try access.put(wrap.fromArray(at_capacity_array), intv(3), kw("d"));
+            try access.put(wrap.fromBuffer(at_capacity_buffer), intv(3), intv('D'));
+        }
+        expect(grown_array.count == 5 and grown_array.capacity == 10);
+        expect(grown_buffer.count == 5 and grown_buffer.capacity == 10);
+        expect(at_capacity_array.count == 4 and at_capacity_array.capacity == 4);
+        expect(harness.equals(at_capacity_array.slice()[3], kw("d")));
+        expect(at_capacity_buffer.count == 4 and at_capacity_buffer.capacity == 4);
+        expect(at_capacity_buffer.slice()[3] == 'D');
+    }
 }
 
 fn putIndexGrowsABufferWithZeroes() !void {
@@ -1199,6 +1309,8 @@ fn body() !void {
     theNextEntryPointOnAFiber();
     try theNextEntryPointOutsideAnyFiber();
     nextOnAnUnresumableFiber();
+    nextOnTheOtherFinishedStatuses();
+    nextOverAFiberThatStopsOnASignal();
     theInterpreterFlagChoosesTheErrorPolicy();
     theChildSlotIsCleared();
     theResumedFiberJoinsTheLineage();
@@ -1225,6 +1337,7 @@ fn body() !void {
 
     try putGrowsAnArrayWithNils();
     try putIndexAppendsAtTheCount();
+    try putAtTheCountAndTheCapacity();
     try putIndexGrowsABufferWithZeroes();
     try aBufferTruncatesToAByte();
     putChecksTheKeyBeforeTheValue();
@@ -1240,6 +1353,4 @@ pub fn run() void {
     harness.init();
     body() catch @panic("value_access: an accessor raised unexpectedly");
     vm_lifecycle.deinit();
-
-    std.debug.print("value access contract ok\n", .{});
 }

@@ -144,6 +144,9 @@ fn arityIsCheckedAtBothBounds() raise.Raising(void) {
     // A negative bound is unbounded, so only the other side can fault.
     refuses(args.arityCount, .{ 4, -1, 3 }, "arity mismatch, expected at most 3, got 4");
     refuses(args.arityCount, .{ 0, 1, -1 }, "arity mismatch, expected at least 1, got 0");
+    // Zero is a bound on either side, not the unbounded marker.
+    refuses(args.arityCount, .{ -1, 0, 2 }, "arity mismatch, expected at least 0, got -1");
+    refuses(args.arityCount, .{ 1, 0, 0 }, "arity mismatch, expected at most 0, got 1");
 }
 
 fn everyTypeGetterNamesItsSlotAndItsType() raise.Raising(void) {
@@ -302,6 +305,9 @@ fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
     Case.rejects(slot, args.getSize, -std.math.inf(f64));
     Case.rejects(slot, args.getSize, std.math.nan(f64));
     Case.rejects(slot, args.getSize, 1e300);
+    // 2^64, which the largest `usize` rounds to as a double, is refused at
+    // the range test: converting it would be out of range.
+    Case.rejects(slot, args.getSize, 18446744073709551616.0);
 
     if (comptime !config.int_types) {
         Case.accepts(slot, args.getInteger64, 9007199254740992.0, 9007199254740992);
@@ -514,6 +520,16 @@ fn theByteAndCstringShapes() raise.Raising(void) {
     // The terminating shape leaves the buffer's visible count alone: the zero
     // is written past the end and the count is put back.
     expect(wrap.toBuffer(argv[1]).count == 3);
+
+    // A full buffer that may be reallocated is terminated in place. Only one
+    // that is both full and not reallocatable is copied.
+    {
+        const full = buffers.new(4);
+        for ("full") |byte| buffers.pushU8(full, byte) catch @panic("args_core: buffer push raised");
+        expect(full.count == full.capacity);
+        var one = [_]repr.Value{wrap.fromBuffer(full)};
+        expect(args.argCbytes(slots(&one), 0) == .terminate);
+    }
 
     refuses(args.getCString, .{ a, 1 }, "bad slot #1, expected string, got @\"buf\"");
     refuses(args.getCString, .{ a, 3 }, "bad slot #3, expected string, got nil");
@@ -798,6 +814,15 @@ fn thePredicatesAgreeWithTheGetters() void {
     expect(args.checksize(wrap.fromNumber(9007199254740992.0)));
     expect(!args.checksize(wrap.fromNumber(9007199254740994.0)));
 
+    // `getInteger64` reaches `checkint64` only in a build without integer
+    // types, so the predicate is asserted here: both ends of its range, the
+    // first double past each, and a value that is not a number.
+    expect(args.checkint64(wrap.fromNumber(9007199254740992.0)));
+    expect(args.checkint64(wrap.fromNumber(-9007199254740992.0)));
+    expect(!args.checkint64(wrap.fromNumber(9007199254740994.0)));
+    expect(!args.checkint64(wrap.fromNumber(-9007199254740994.0)));
+    expect(!args.checkint64(value.fromBytes("1", .string)));
+
     // NaN and the infinities fail the first comparison at every width rather
     // than reaching a conversion.
     const nan = std.math.nan(f64);
@@ -862,6 +887,4 @@ pub fn run() void {
     harness.init();
     body() catch @panic("args_core: a getter raised unexpectedly");
     vm_lifecycle.deinit();
-
-    std.debug.print("args core contract ok\n", .{});
 }

@@ -35,8 +35,6 @@
 // Standard library imports
 // ==========================================================================
 
-const std = @import("std");
-
 // ==========================================================================
 // Project imports
 // ==========================================================================
@@ -84,9 +82,9 @@ const prim_int64: u32 = 12;
 const prim_uint64: u32 = 13;
 const prim_struct: u32 = 14;
 
-/// `types.Spec`'s ordinals, copied out on the same footing. Two of the
-/// enumeration's nineteen are missing here, 2 and 12, because no case below
-/// reaches `sysv64_sseup` or `win64_stack_ref`.
+/// `types.Spec`'s ordinals, copied out on the same footing. One of the
+/// enumeration's nineteen is missing here, 2, because no case below reaches
+/// `sysv64_sseup`.
 const sysv64_integer: u32 = 0;
 const sysv64_sse: u32 = 1;
 const sysv64_pair_intint: u32 = 3;
@@ -98,6 +96,7 @@ const sysv64_memory: u32 = 8;
 const win64_register: u32 = 9;
 const win64_stack: u32 = 10;
 const win64_register_ref: u32 = 11;
+const win64_stack_ref: u32 = 12;
 const aapcs64_general: u32 = 13;
 const aapcs64_sse: u32 = 14;
 const aapcs64_general_ref: u32 = 15;
@@ -254,6 +253,25 @@ fn sysv64MergesANarrowStruct() void {
     // An empty struct reaches no class at all.
     const empty = [_]TypeNode{structNode(0, 0, 0)};
     expect(classifySysv64(&empty) == sysv64_no_class);
+
+    // The float first and the integer second still make it integer.
+    const reversed = [_]TypeNode{
+        structNode(8, 2, 0),
+        leaf(prim_float, 4, 0),
+        leaf(prim_int32, 4, 4),
+    };
+    expect(classifySysv64(&reversed) == sysv64_integer);
+
+    // A field that is memory makes the whole eightbyte memory, after an
+    // integer as before one.
+    var memory_second = [_]TypeNode{
+        structNode(8, 2, 0),
+        leaf(prim_uint8, 1, 0),
+        structNode(4, 1, 1),
+        leaf(prim_uint32, 4, 0),
+    };
+    memory_second[2].is_aligned = 0;
+    expect(classifySysv64(&memory_second) == sysv64_memory);
 }
 
 fn sysv64UsesTheOffsetToPickTheEightbyte() void {
@@ -519,6 +537,78 @@ fn win64PassesOddSizesByReference() void {
     expect(args[0].offset2 == 0);
 }
 
+/// One, two, four and eight bytes each fit a register slot.
+fn win64PassesNarrowScalarsInRegisters() void {
+    var ret = slot(prim_void, 0, 1, 0);
+    var args = [_]ArgSlot{
+        slot(prim_uint8, 1, 1, 0),
+        slot(prim_uint16, 2, 2, 0),
+        slot(prim_uint32, 4, 4, 0),
+        slot(prim_uint64, 8, 8, 0),
+    };
+    var result: AllocResult = undefined;
+    ffi_classify.allocWin64(&result, &ret, &args);
+
+    for (args, 0..) |arg, i| {
+        expect(arg.spec == win64_register);
+        expect(arg.offset == i);
+    }
+    expect(result.stack_count == 0);
+}
+
+/// Two copies take two slots. The raw offsets count sixteen-byte units and the
+/// area counts words, so the second sixteen-byte copy is two words below the
+/// first.
+fn win64GivesEachCopyItsOwnSlot() void {
+    var ret = slot(prim_void, 0, 1, 0);
+    var args = [_]ArgSlot{
+        slot(prim_struct, 16, 8, 0),
+        slot(prim_struct, 16, 8, 0),
+    };
+    var result: AllocResult = undefined;
+    ffi_classify.allocWin64(&result, &ret, &args);
+
+    expect(args[0].spec == win64_register_ref);
+    expect(args[1].spec == win64_register_ref);
+    expect(result.stack_count == 4);
+    expect(args[0].offset2 == 2);
+    expect(args[1].offset2 == 0);
+}
+
+/// A copy is placed down from the top of the area, above the stack words,
+/// whether its pointer is in a register or on the stack. One stack word and
+/// one sixteen-byte copy round up to four words, and the copy is words 2 and
+/// 3.
+fn win64PlacesACopyAboveTheStackWords() void {
+    {
+        var ret = slot(prim_void, 0, 1, 0);
+        var args: [5]ArgSlot = undefined;
+        args[0] = slot(prim_struct, 12, 4, 0);
+        for (args[1..]) |*a| a.* = slot(prim_int64, 8, 8, 0);
+        var result: AllocResult = undefined;
+        ffi_classify.allocWin64(&result, &ret, &args);
+
+        expect(args[0].spec == win64_register_ref);
+        expect(args[4].spec == win64_stack);
+        expect(args[4].offset == 0);
+        expect(result.stack_count == 4);
+        expect(args[0].offset2 == 2);
+    }
+    {
+        var ret = slot(prim_void, 0, 1, 0);
+        var args: [5]ArgSlot = undefined;
+        for (args[0..4]) |*a| a.* = slot(prim_int64, 8, 8, 0);
+        args[4] = slot(prim_struct, 12, 4, 0);
+        var result: AllocResult = undefined;
+        ffi_classify.allocWin64(&result, &ret, &args);
+
+        expect(args[4].spec == win64_stack_ref);
+        expect(args[4].offset == 0);
+        expect(result.stack_count == 4);
+        expect(args[4].offset2 == 2);
+    }
+}
+
 fn win64ReservesARegisterForAWideReturn() void {
     var ret = slot(prim_struct, 24, 8, 0);
     var args: [4]ArgSlot = undefined;
@@ -629,6 +719,83 @@ fn sysv64SpillsAPairThatCannotFit() void {
     expect(result.stack_count == 2);
 }
 
+/// A pair of vector halves needs two vector registers. With six used it takes
+/// the last two; with seven used it goes to the stack whole, and no register
+/// index reaches 8.
+fn sysv64SpillsAVectorPairWithOneRegisterLeft() void {
+    for ([_]usize{ 6, 7 }) |used| {
+        var ret = slot(prim_void, 0, 1, sysv64_no_class);
+        var args: [8]ArgSlot = undefined;
+        for (args[0..used]) |*a| a.* = slot(prim_double, 8, 8, sysv64_sse);
+        args[used] = slot(prim_struct, 16, 8, sysv64_pair_ssesse);
+        var result: AllocResult = undefined;
+        ffi_classify.allocSysv64(&result, &ret, args[0 .. used + 1]);
+
+        expect(result.error_kind == alloc_ok);
+        for (args[0..used], 0..) |arg, i| {
+            expect(arg.spec == sysv64_sse);
+            expect(arg.offset == i);
+        }
+        const pair = args[used];
+        if (used == 6) {
+            expect(pair.spec == sysv64_pair_ssesse);
+            expect(pair.offset == 6 and pair.offset2 == 7);
+            expect(result.stack_count == 0);
+        } else {
+            expect(pair.spec == sysv64_memory);
+            expect(pair.offset == 0);
+            expect(result.stack_count == 2);
+        }
+    }
+}
+
+/// With four used, the last two registers take the pair.
+fn sysv64PlacesAPairInTheLastTwoRegisters() void {
+    var ret = slot(prim_void, 0, 1, sysv64_no_class);
+    var args: [5]ArgSlot = undefined;
+    for (args[0..4]) |*a| a.* = slot(prim_int64, 8, 8, sysv64_integer);
+    args[4] = slot(prim_struct, 16, 8, sysv64_pair_intint);
+    var result: AllocResult = undefined;
+    ffi_classify.allocSysv64(&result, &ret, &args);
+
+    expect(args[4].spec == sysv64_pair_intint);
+    expect(args[4].offset == 4 and args[4].offset2 == 5);
+    expect(result.stack_count == 0);
+}
+
+/// Every pair with a vector half needs a vector register, and eight doubles
+/// leave none.
+fn sysv64SpillsAVectorPairWhenTheBankIsFull() void {
+    for ([_]u32{ sysv64_pair_intsse, sysv64_pair_sseint, sysv64_pair_ssesse }) |pair| {
+        var ret = slot(prim_void, 0, 1, sysv64_no_class);
+        var args: [9]ArgSlot = undefined;
+        for (args[0..8]) |*a| a.* = slot(prim_double, 8, 8, sysv64_sse);
+        args[8] = slot(prim_struct, 16, 8, pair);
+        var result: AllocResult = undefined;
+        ffi_classify.allocSysv64(&result, &ret, &args);
+
+        expect(args[8].spec == sysv64_memory);
+        expect(args[8].offset == 0);
+        expect(result.stack_count == 2);
+    }
+}
+
+/// A pair split across the banks takes one register from each, so an integer
+/// behind a vector-then-integer pair gets the second integer register.
+fn sysv64CountsTheIntegerHalfOfASplitPair() void {
+    var ret = slot(prim_void, 0, 1, sysv64_no_class);
+    var args = [_]ArgSlot{
+        slot(prim_struct, 16, 8, sysv64_pair_sseint),
+        slot(prim_int64, 8, 8, sysv64_integer),
+    };
+    var result: AllocResult = undefined;
+    ffi_classify.allocSysv64(&result, &ret, &args);
+
+    expect(args[0].offset2 == 0);
+    expect(args[1].spec == sysv64_integer);
+    expect(args[1].offset == 1);
+}
+
 fn sysv64NamesTheReturnVariant() void {
     const cases = [_]struct { ret_spec: u32, expected: u32 }{
         .{ .ret_spec = sysv64_integer, .expected = 0 },
@@ -677,6 +844,60 @@ fn aapcs64FillsBothRegisterBanks() void {
     expect(args[2].offset == 1);
     expect(args[3].offset == 1);
     expect(result.stack_count == 0);
+}
+
+/// A spilled aggregate advances the stack by its size rounded to a word, under
+/// both variants. Of five aggregates of four doubles, two fill the vector
+/// registers and three follow at 32 bytes each.
+fn aapcs64StacksAnHfaAtItsSize() void {
+    for ([_]bool{ false, true }) |apple| {
+        var ret = slot(prim_void, 0, 1, aapcs64_none);
+        var args: [5]ArgSlot = undefined;
+        for (&args) |*a| a.* = hfaSlot(32, 4);
+        var result: AllocResult = undefined;
+        ffi_classify.allocAapcs64(&result, &ret, &args, apple, aapcs64_max_ret);
+
+        expect(args[0].spec == aapcs64_sse and args[0].offset == 0);
+        expect(args[1].spec == aapcs64_sse and args[1].offset == 4);
+        for (args[2..], 0..) |arg, i| {
+            expect(arg.spec == aapcs64_stack);
+            expect(arg.offset == 32 * i);
+        }
+        expect(result.stack_count == 96);
+        expect(result.arg_stack_count == 12);
+    }
+}
+
+/// The eighth double takes the last vector register, and the ninth the stack.
+fn aapcs64FillsTheLastVectorRegister() void {
+    var ret = slot(prim_void, 0, 1, aapcs64_none);
+    var args: [9]ArgSlot = undefined;
+    for (&args) |*a| a.* = slot(prim_double, 8, 8, aapcs64_sse);
+    var result: AllocResult = undefined;
+    ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
+
+    expect(args[7].spec == aapcs64_sse);
+    expect(args[7].offset == 7);
+    expect(args[8].spec == aapcs64_stack);
+    expect(args[8].offset == 0);
+}
+
+/// A copy whose pointer is in a register still follows the stack area, so its
+/// offset moves when an argument behind it spills. The ninth integer takes a
+/// stack word, rounded to sixteen bytes, and the copy starts there.
+fn aapcs64PlacesARegisterReferenceCopyPastTheStack() void {
+    var ret = slot(prim_void, 0, 1, aapcs64_none);
+    var args: [9]ArgSlot = undefined;
+    args[0] = slot(prim_struct, 24, 8, aapcs64_general_ref);
+    for (args[1..]) |*a| a.* = slot(prim_int64, 8, 8, aapcs64_general);
+    var result: AllocResult = undefined;
+    ffi_classify.allocAapcs64(&result, &ret, &args, false, aapcs64_max_ret);
+
+    expect(args[0].spec == aapcs64_general_ref);
+    expect(args[0].offset == 0);
+    expect(args[8].spec == aapcs64_stack);
+    expect(args[0].offset2 == 16);
+    expect(result.stack_count == 16 + 32);
 }
 
 /// A general aggregate occupies as many registers as it is words wide, and it
@@ -891,9 +1112,9 @@ fn noConventionReusesARegister() void {
         sysv64_pair_intsse, sysv64_pair_sseint, sysv64_pair_ssesse,
     };
 
-    // Walk a wide range of argument sequences by treating the case number as a
-    // base-six numeral over the specs above.
-    for (0..4096) |seed| {
+    // Walk every five-argument sequence, 6^5 of them, by treating the case
+    // number as a base-six numeral over the specs above.
+    for (0..7776) |seed| {
         var ret = slot(prim_void, 0, 1, sysv64_no_class);
         var args: [5]ArgSlot = undefined;
         var n = seed;
@@ -1060,6 +1281,9 @@ pub fn run() void {
     win64FillsFourRegistersThenTheStack();
     win64MarksFloatingRegistersInTheVariant();
     win64PassesOddSizesByReference();
+    win64PassesNarrowScalarsInRegisters();
+    win64GivesEachCopyItsOwnSlot();
+    win64PlacesACopyAboveTheStackWords();
     win64ReservesARegisterForAWideReturn();
     win64RoundsTheStackToAnEvenNumberOfWords();
 
@@ -1068,10 +1292,17 @@ pub fn run() void {
     sysv64ReservesARegisterForAMemoryReturn();
     sysv64PlacesRegisterPairs();
     sysv64SpillsAPairThatCannotFit();
+    sysv64PlacesAPairInTheLastTwoRegisters();
+    sysv64SpillsAVectorPairWithOneRegisterLeft();
+    sysv64SpillsAVectorPairWhenTheBankIsFull();
+    sysv64CountsTheIntegerHalfOfASplitPair();
     sysv64NamesTheReturnVariant();
     sysv64ReportsASpecItCannotPlace();
 
     aapcs64FillsBothRegisterBanks();
+    aapcs64FillsTheLastVectorRegister();
+    aapcs64StacksAnHfaAtItsSize();
+    aapcs64PlacesARegisterReferenceCopyPastTheStack();
     aapcs64TakesSeveralRegistersForAnAggregate();
     aapcs64PacksTheStackByPlatform();
     aapcs64AlignsStackAggregatesToAWord();
@@ -1086,6 +1317,4 @@ pub fn run() void {
     noConventionReusesARegister();
     aapcs64NeverReusesARegister();
     aapcs64DoesNotBackfillRegisters();
-
-    std.debug.print("ffi_classify: all tests passed\n", .{});
 }

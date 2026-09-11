@@ -182,6 +182,4 @@ pub fn run() void {
     aNameContainingAZeroByteMatchesNothing();
     aPositionPastTheEndHasNoName();
     actionNamesCoverTheDocumentedCodes();
-
-    std.debug.print("filewatch_flags: all tests passed\n", .{});
 }

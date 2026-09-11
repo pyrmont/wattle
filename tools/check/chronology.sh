@@ -70,7 +70,7 @@
 # still a finding.
 #
 # **A line saying the file is gone is not a reference to it.** `DESIGN.md`
-# section 14 decides that `types.zig` does not exist, and it has to be able to
+# section 13 decides that `types.zig` does not exist, and it has to be able to
 # say so. A line containing "does not exist" or "There is no" is dropped, which
 # is decidable by shape rather than by a list of exempt lines.
 #

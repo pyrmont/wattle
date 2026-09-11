@@ -855,7 +855,15 @@ fn fileUnmarshal(u: *abi.Unmarshal) raise.Raising(*File) {
     const flags = try marsh.unmarshalInt(u);
     var fmt: [4]u8 = undefined;
     _ = modeFromFlags(flags, &fmt);
-    const reopened = if (windows) c._fdopen(fd, @ptrCast(&fmt)) else c.fdopen(fd, @ptrCast(&fmt));
+    // A descriptor that is not open is refused before `fdopen`, because musl's
+    // `fdopen` does not check one for a read or write mode, where macOS's and
+    // glibc's do. Either way the file comes back closed.
+    const reopened = if (windows)
+        c._fdopen(fd, @ptrCast(&fmt))
+    else if (std.c.fcntl(fd, std.c.F.GETFD) == -1)
+        null
+    else
+        c.fdopen(fd, @ptrCast(&fmt));
     setStreamOf(iof, reopened);
     iof.flags = if (reopened == null) file_closed else flags;
     iof.vbufsize = try marsh.unmarshalSize(u);

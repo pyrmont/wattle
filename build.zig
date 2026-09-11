@@ -559,7 +559,7 @@ pub fn build(b: *std.Build) void {
 
     // `examples/url`, the worked example of the views: a module that owns
     // nothing, reads every shape an argument can be -- bytes, elements,
-    // entries and a range -- and answers a string. `DESIGN.md` section 15's
+    // entries and a range -- and answers a string. `DESIGN.md` section 14's
     // other half.
     const url_module = nativeModule(
         b,
@@ -574,7 +574,7 @@ pub fn build(b: *std.Build) void {
 
     // `examples/digest`, the worked example of scheduling work through the
     // event loop: one cfunction that hashes on a thread of its own, so the
-    // loop is never blocked. `DESIGN.md` section 15's last section.
+    // loop is never blocked. `DESIGN.md` section 14's last section.
     const digest_module = nativeModule(
         b,
         runtime_graph,
@@ -897,6 +897,20 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(module_errors_step);
     addCliChecks(b, test_step, client);
 
+    // The runs that print are ordered in three phases: the two Zig-side runs
+    // (the contracts and the in-file tests), then the native-module runs
+    // below, then the Janet suites. Unordered, the blocks land in whatever
+    // order their dependencies finish building; they never mix, because the
+    // build runner locks stderr for the whole of each run that inherits it.
+    // The fuzz targets and the module-error cases print nothing on success and
+    // are left out, since waiting on them would only delay the later phases on
+    // a cold build. A failure in one phase skips the phases after it.
+    const zig_side = [_]*std.Build.Step{ zig_contracts_step, runtime_tests_step };
+    // What the suites wait on: the native-module runs when they are built,
+    // which themselves wait on `zig_side`, and `zig_side` otherwise.
+    var module_side: [4]*std.Build.Step = undefined;
+    var suites_after: []const *std.Build.Step = &zig_side;
+
     // The native-module fixture is a dynamic library and is skipped under TSan
     // for the same reason the shared library is; see there.
     if (options.dynamic_modules and target.result.os.tag != .windows and !options.sanitize_thread) {
@@ -904,6 +918,7 @@ pub fn build(b: *std.Build) void {
         run_native_test.setCwd(b.path("."));
         run_native_test.addArg("test/zig-native.janet");
         run_native_test.addFileArg(native_module.getEmittedBin());
+        for (zig_side) |step| run_native_test.step.dependOn(step);
         test_step.dependOn(&run_native_test.step);
 
         // The sample module, loaded and exercised the way a user's would be.
@@ -914,6 +929,7 @@ pub fn build(b: *std.Build) void {
         run_numarray.setCwd(b.path("."));
         run_numarray.addArg("examples/numarray/test/numarray.janet");
         run_numarray.addFileArg(numarray_module.getEmittedBin());
+        for (zig_side) |step| run_numarray.step.dependOn(step);
         test_step.dependOn(&run_numarray.step);
 
         // The views' worked example, loaded the same way.
@@ -921,6 +937,7 @@ pub fn build(b: *std.Build) void {
         run_url.setCwd(b.path("."));
         run_url.addArg("examples/url/test/url.janet");
         run_url.addFileArg(url_module.getEmittedBin());
+        for (zig_side) |step| run_url.step.dependOn(step);
         test_step.dependOn(&run_url.step);
 
         // The event loop's worked example. Its test file skips its own body in
@@ -930,7 +947,11 @@ pub fn build(b: *std.Build) void {
         run_digest.setCwd(b.path("."));
         run_digest.addArg("examples/digest/test/digest.janet");
         run_digest.addFileArg(digest_module.getEmittedBin());
+        for (zig_side) |step| run_digest.step.dependOn(step);
         test_step.dependOn(&run_digest.step);
+
+        module_side = .{ &run_native_test.step, &run_numarray.step, &run_url.step, &run_digest.step };
+        suites_after = &module_side;
     }
 
     inline for (test_suites) |suite| {
@@ -938,6 +959,7 @@ pub fn build(b: *std.Build) void {
             const run_suite = b.addRunArtifact(client);
             run_suite.setCwd(b.path("."));
             run_suite.addArg(suite.path);
+            for (suites_after) |step| run_suite.step.dependOn(step);
             test_step.dependOn(&run_suite.step);
         }
     }
@@ -1220,7 +1242,7 @@ fn readOptions(b: *std.Build) BuildOptions {
         .assembler = b.option(bool, "assembler", "Enable the assembler") orelse true,
         .peg = b.option(bool, "peg", "Enable PEG support") orelse true,
         .int_types = b.option(bool, "int-types", "Enable integer abstract types") orelse true,
-        .prf = b.option(bool, "prf", "Enable profiling instrumentation") orelse false,
+        .prf = b.option(bool, "prf", "Hash strings and symbols with the keyed half-SipHash") orelse false,
         .net = b.option(bool, "net", "Enable networking") orelse true,
         .ipv6 = b.option(bool, "ipv6", "Enable IPv6") orelse true,
         .ev = b.option(bool, "ev", "Enable the event loop") orelse true,

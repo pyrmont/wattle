@@ -53,6 +53,21 @@ const missing_name = "JANET_ZIG_OS_ENVIRON_MISSING_7A21C9";
 const test_name = "JANET_ZIG_OS_ENVIRON_CONTRACT_6F6B4D";
 
 // ==========================================================================
+// Types
+// ==========================================================================
+
+/// The process's environment vector, reached the way the host publishes it
+/// rather than through the subsystem under test.
+const host = struct {
+    extern fn _NSGetEnviron() *?[*]?[*:0]u8;
+    extern var environ: ?[*]?[*:0]u8;
+
+    fn vector() *?[*]?[*:0]u8 {
+        return if (builtin.os.tag == .macos) _NSGetEnviron() else &environ;
+    }
+};
+
+// ==========================================================================
 // Cases
 // ==========================================================================
 
@@ -124,6 +139,24 @@ fn theCoreFunctions() !void {
     expect(harness.isType(try getenv(args[0..1]), repr.Tag.nil));
 }
 
+/// An entry whose name is empty has its separator at index zero, and
+/// `os/environ` reads it as the name "" rather than as an entry with no `=`.
+/// The host's `setenv` refuses an empty name, so the vector is swapped for the
+/// length of the call.
+fn anEntryWithAnEmptyName() !void {
+    if (builtin.os.tag == .windows or builtin.os.tag == .plan9) return;
+    var entries = [_]?[*:0]u8{ @constCast("=x"), @constCast("A=1"), null };
+    const slot = host.vector();
+    const saved = slot.*;
+    slot.* = &entries;
+    const result = harness.core("os/environ")(&.{});
+    slot.* = saved;
+
+    const snapshot = wrap.toTable(try result);
+    expect(harness.stringValueIs(tables.get(snapshot, value.fromBytes("", .string)), "x"));
+    expect(harness.stringValueIs(tables.get(snapshot, value.fromBytes("A", .string)), "1"));
+}
+
 /// What the two functions refuse.
 fn theRefusals() void {
     const setenv = harness.core("os/setenv");
@@ -164,6 +197,7 @@ pub fn run() void {
 
     harness.init();
     theCoreFunctions() catch @panic("os_environ: a core function raised unexpectedly");
+    anEntryWithAnEmptyName() catch @panic("os_environ: os/environ raised on an empty name");
     theRefusals();
     vm_lifecycle.deinit();
 }

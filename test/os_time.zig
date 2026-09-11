@@ -24,6 +24,12 @@
 //! it would be deliberate.
 
 // ==========================================================================
+// Standard library imports
+// ==========================================================================
+
+const std = @import("std");
+
+// ==========================================================================
 // Project imports
 // ==========================================================================
 
@@ -35,6 +41,7 @@ const repr = @import("repr");
 const tables = @import("subsystems").value.tables;
 const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
+const wrap = @import("subsystems").value.wrap;
 
 // ==========================================================================
 // Constants
@@ -224,6 +231,10 @@ fn theRefusals() void {
     // A negative sleep is refused rather than treated as zero.
     argument[0] = harness.wrapInteger(-1);
     expect(harness.raised(sleep, .{argument[0..1]}) != null);
+
+    // So is a NaN, which names no duration.
+    argument[0] = wrap.fromNumber(std.math.nan(f64));
+    expect(harness.raised(sleep, .{argument[0..1]}).?.says("invalid argument to sleep"));
 }
 
 // ==========================================================================

@@ -36,9 +36,14 @@ const builtin = @import("builtin");
 // Project imports
 // ==========================================================================
 
+const abi = @import("abi");
+const args_core = subsystems.args;
 const expect = @import("expect.zig").expect;
 const harness = @import("harness.zig");
 const os_process = subsystems.process;
+const raise = subsystems.raise;
+const registry = subsystems.registry;
+const repr = @import("repr");
 const subsystems = @import("subsystems");
 const vm_lifecycle = @import("subsystems").lifecycle;
 
@@ -165,6 +170,10 @@ fn theSignalLookup() void {
     // which is `utils.cstrcmp`'s rule.
     expect(os_process.signalIndex("int\x00x", 5) == 1);
 
+    // The key's own length bounds the comparison, so the first four bytes of
+    // a longer buffer are `kill`.
+    expect(os_process.signalIndex("killer", 4) == 0);
+
     // Every name is its signal's own, lower-cased with the `SIG` dropped, and
     // `vtalrm` is no exception: `vtlarm` is not an alias for it.
     expect(os_process.signalIndex("vtalrm", 6) == 25);
@@ -266,8 +275,20 @@ fn theHostOperations() void {
     expect(value == 71);
 }
 
+/// How many scratch blocks the VM holds, for a Janet case to read on either
+/// side of a call that allocates and releases them.
+fn cfunScratch(argv: []repr.Value) raise.Raising(repr.Value) {
+    try args_core.fixarity(argv, 0);
+    return harness.wrapInteger(@intCast(harness.vm().scratch.items.len));
+}
+
+const cfuns = [_]abi.Reg{
+    .{ .name = "osprocess/scratch", .cfun = raise.stored(&cfunScratch), .documentation = null },
+};
+
 fn theCoreFunctions() void {
     const env = harness.coreEnv();
+    registry.cfuns(env, null, &cfuns);
 
     // An exit code reaches the caller unchanged, whether the program is named
     // by path or found on it.
@@ -295,6 +316,20 @@ fn theCoreFunctions() void {
     harness.inFiber(env,
         \\(assert (= 0 (os/execute ["/bin/sh" "-c" "[ \"$FOO\" = bar ]"] :e {"FOO" "bar"})))
         \\(assert (= 0 (os/execute ["/bin/sh" "-c" "[ -z \"$A\" ]"] :e {"A=B" "C" "FOO" "bar"})))
+    );
+
+    // The environment block is scratch memory, one block for the vector and
+    // one for each entry, and all of it is released before the call returns.
+    // The collection interval is raised so that no collection releases it
+    // instead.
+    harness.inFiber(env,
+        \\(def interval (gcinterval))
+        \\(gcsetinterval 2147483647)
+        \\(def before (osprocess/scratch))
+        \\(os/execute ["/bin/sh" "-c" "exit 0"] :e {"A" "1" "B" "2"})
+        \\(def after (osprocess/scratch))
+        \\(gcsetinterval interval)
+        \\(assert (= before after))
     );
 
     // A process ended by a signal reports that signal offset by 128.
@@ -354,6 +389,4 @@ pub fn run() void {
         theCoreFunctions();
         vm_lifecycle.deinit();
     }
-
-    std.debug.print("os_process contract ok\n", .{});
 }

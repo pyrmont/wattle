@@ -32,6 +32,7 @@ const functions = @import("value/functions.zig");
 const fw_abi = @import("filewatch/abi.zig");
 const gc_alloc = @import("gc.zig");
 const gc_mark = @import("gc/mark.zig");
+const host_stat = @import("os/fs/host_stat.zig");
 const pp_format = @import("pp/format.zig");
 const raise = @import("../api/raise.zig");
 const repr = @import("repr");
@@ -530,10 +531,9 @@ const kqueue = struct {
                     state.cookie +%= 6700417;
                     // TODO - avoid stat call here, maybe just when adding
                     // listener?
-                    var stat_buf: h.struct_stat = std.mem.zeroes(h.struct_stat);
-                    const st = c.retryIntr(h.fstat, .{ @as(c_int, @intCast(kev.ident)), &stat_buf });
-                    if (st == -1) continue;
-                    const is_dir = fw_abi.isDir(stat_buf.st_mode);
+                    // `host_stat.zig` reads the structure, whose layout and
+                    // symbol are per architecture.
+                    const is_dir = host_stat.descriptorIsDirectory(@intCast(kev.ident)) orelse continue;
                     const ident = wrapIdent(kev.ident);
                     const path = tables.get(watcher.watch_descriptors.?, ident);
                     // From one rather than zero: index zero is `all`, whose

@@ -474,10 +474,13 @@ fn aThreadedAbstractLosesItsReference() void {
     expect(harness.vm().ev.threaded_abstracts.count == tracked);
 
     _ = gc_alloc.gcunroot(val);
+    const deleted = harness.vm().ev.threaded_abstracts.deleted;
     gc_mark.collect();
     expect(threaded_perthread_calls == 1);
     expect(threaded_gc_calls == 1);
     expect(harness.vm().ev.threaded_abstracts.count == tracked - 1);
+    // The entry becomes one tombstone.
+    expect(harness.vm().ev.threaded_abstracts.deleted == deleted + 1);
 
     // The entry is a tombstone now, so a later sweep must not find it again.
     gc_mark.collect();

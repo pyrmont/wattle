@@ -370,5 +370,4 @@ pub fn run() void {
     body() catch @panic("pp_pretty: a printer raised unexpectedly");
 
     vm_lifecycle.deinit();
-    std.debug.print("pp pretty contract ok\n", .{});
 }

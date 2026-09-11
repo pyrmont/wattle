@@ -33,6 +33,23 @@
 (assert (= 32 (sum b)) "buffer bit set and clear")
 (assert-error "invalid bit index 1000" (buffer/bit-toggle b 1000))
 
+# A bit index is refused at the first byte past the end, and when it is
+# negative or not an integer, and bit 0 is an index.
+(assert (= true (buffer/bit @"\x01" 0)) "buffer/bit at index 0")
+(assert-error-value "buffer/bit one byte past the end" "invalid bit index 8"
+                    (buffer/bit @"a" 8))
+(assert-error-value "buffer/bit with a negative index" "invalid bit index -1"
+                    (buffer/bit @"\xff" -1))
+(assert-error-value "buffer/bit with a fractional index" "invalid bit index 1.5"
+                    (buffer/bit @"\xff" 1.5))
+
+# buffer/fill
+(assert (deep= @"AAA" (buffer/fill @"abc" 65)) "buffer/fill with a byte")
+(assert (deep= @"\0\0\0" (buffer/fill @"abc")) "buffer/fill with the default byte")
+
+# buffer/popn
+(assert (deep= @"abc" (buffer/popn @"abc" 0)) "buffer/popn of zero bytes")
+
 (def b2 @"hello world")
 
 (buffer/blit b2 "joyto ")
@@ -90,6 +107,9 @@
 (assert (= "\xff\xff" (string buffer-uint16-max)) "buffer/push-uint16 max")
 (assert-error "too large" (buffer/push-uint16 @"" 0x1FFFF))
 (assert-error "too small" (buffer/push-uint16 @"" -0x1))
+(assert-error-value "an unknown byte order is refused"
+                    "expected endianness :le, :be or :native, got :xx"
+                    (buffer/push-uint16 @"" :xx 1))
 
 (def buffer-uint32-be @"")
 (buffer/push-uint32 buffer-uint32-be :be 0x01020304)
@@ -163,6 +183,14 @@
         "buffer/push-at 2")
 (assert (deep= @"abc423" (buffer/push-at @"abc123" 3 "4"))
         "buffer/push-at 3")
+
+# The index runs from 0 to the count, both ends included.
+(assert (deep= @"xbc" (buffer/push-at @"abc" 0 "x")) "buffer/push-at 0")
+(assert (deep= @"abcde" (buffer/push-at @"abc" 3 "de")) "buffer/push-at the end")
+(assert-error-value "buffer/push-at past the end" "index out of range [0, 3)"
+                    (buffer/push-at @"abc" 4 "x"))
+(assert-error-value "buffer/push-at before the start" "index out of range [0, 3)"
+                    (buffer/push-at @"abc" -1 "x"))
 
 # buffer/format-at
 (def start-buf (buffer/new-filled 100 (chr "x")))
